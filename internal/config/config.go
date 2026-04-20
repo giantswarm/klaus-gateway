@@ -31,6 +31,19 @@ const (
 	DriverStatic = "static"
 )
 
+// SlackConfig holds runtime configuration for the Slack channel adapter.
+type SlackConfig struct {
+	// Enabled gates all Slack behaviour; the adapter is skipped when false.
+	Enabled bool
+	// Mode selects the connection method: "events" (Events API webhook,
+	// production) or "socketmode" (Socket Mode WebSocket, development).
+	Mode string
+	// SecretsFile is the path to a YAML file with bot_token, signing_secret,
+	// and (for socketmode) app_token. Environment variables (SLACK_BOT_TOKEN
+	// etc.) take precedence over file values.
+	SecretsFile string
+}
+
 // Config is the fully resolved runtime configuration.
 type Config struct {
 	ListenAddress string
@@ -56,6 +69,8 @@ type Config struct {
 	AutoCreate  bool
 	DefaultTTL  time.Duration
 	ShowVersion bool
+
+	Slack SlackConfig
 }
 
 // Defaults returns a Config populated with hard-coded defaults.
@@ -70,6 +85,11 @@ func Defaults() Config {
 		Driver:        DriverKlausctl,
 		KlausctlBin:   "klausctl",
 		DefaultTTL:    24 * time.Hour,
+		Slack: SlackConfig{
+			Enabled:     false,
+			Mode:        "events",
+			SecretsFile: os.ExpandEnv("$HOME/.config/klausctl/gateway/slack-secrets.yaml"),
+		},
 	}
 }
 
@@ -95,6 +115,9 @@ func Load(args []string) (Config, error) {
 	fs.BoolVar(&cfg.AutoCreate, "auto-create", cfg.AutoCreate, "Create instances on route miss.")
 	fs.DurationVar(&cfg.DefaultTTL, "default-ttl", cfg.DefaultTTL, "Default TTL for route entries.")
 	fs.BoolVar(&cfg.ShowVersion, "version", false, "Print version information and exit.")
+	fs.BoolVar(&cfg.Slack.Enabled, "slack-enabled", cfg.Slack.Enabled, "Enable the Slack channel adapter.")
+	fs.StringVar(&cfg.Slack.Mode, "slack-mode", cfg.Slack.Mode, "Slack connection mode: events or socketmode.")
+	fs.StringVar(&cfg.Slack.SecretsFile, "slack-secrets-file", cfg.Slack.SecretsFile, "Path to Slack secrets YAML file.")
 
 	fs.Usage = func() {
 		fmt.Fprintf(fs.Output(), "klaus-gateway -- channel and routing gateway in front of klaus instances.\n\n")
@@ -156,6 +179,15 @@ func applyEnv(cfg *Config) {
 		if d, err := time.ParseDuration(v); err == nil {
 			cfg.DefaultTTL = d
 		}
+	}
+	if v, ok := lookup("SLACK_ENABLED"); ok {
+		cfg.Slack.Enabled = strings.EqualFold(v, "true") || v == "1"
+	}
+	if v, ok := lookup("SLACK_MODE"); ok {
+		cfg.Slack.Mode = v
+	}
+	if v, ok := lookup("SLACK_SECRETS_FILE"); ok {
+		cfg.Slack.SecretsFile = v
 	}
 }
 

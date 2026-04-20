@@ -167,6 +167,24 @@ agentgateway:
       host: klaus-instance-example.default.svc.cluster.local
       port: 8080
 
+# Slack channel adapter.
+# Disabled by default. To enable, set slack.enabled: true and provide a
+# Kubernetes Secret named by slack.secretName containing the following keys:
+#   bot-token        -- Slack bot ... bot OAuth token
+#   signing-secret   -- signing secret for Events API request verification
+#   app-token        -- Slack app-level ... app-level token (socketmode only)
+#
+# The secret values are injected as SLACK_BOT_TOKEN, SLACK_SIGNING_SECRET,
+# and SLACK_APP_TOKEN environment variables respectively.
+slack:
+  enabled: false
+  # mode selects the connection method: "events" (Events API webhook,
+  # production) or "socketmode" (Socket Mode WebSocket, development).
+  mode: events
+  # secretName is the name of the Kubernetes Secret with Slack credentials.
+  # Required when slack.enabled is true.
+  secretName: ""
+
 global:
   podSecurityStandards:
     enforced: false
