@@ -11,15 +11,21 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/go-chi/chi/v5"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/giantswarm/klaus-gateway/internal/config"
 	"github.com/giantswarm/klaus-gateway/internal/version"
+	"github.com/giantswarm/klaus-gateway/pkg/api"
+	"github.com/giantswarm/klaus-gateway/pkg/channels"
+	"github.com/giantswarm/klaus-gateway/pkg/channels/web"
+	"github.com/giantswarm/klaus-gateway/pkg/instance"
 	"github.com/giantswarm/klaus-gateway/pkg/lifecycle"
 	"github.com/giantswarm/klaus-gateway/pkg/lifecycle/klausctl"
 	"github.com/giantswarm/klaus-gateway/pkg/lifecycle/operator"
+	"github.com/giantswarm/klaus-gateway/pkg/lifecycle/static"
 	"github.com/giantswarm/klaus-gateway/pkg/observability"
 	"github.com/giantswarm/klaus-gateway/pkg/routing"
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
@@ -106,8 +112,32 @@ func run(args []string) error {
 	}
 
 	router := routing.New(routeStore, manager, cfg.AutoCreate, cfg.DefaultTTL)
-	_ = router // wired to the public mux in the follow-up PR
-	_ = upstreamClient
+
+	instanceClient := instance.NewClient()
+	if upstreamClient != nil {
+		instanceClient.Upstream = upstreamClient
+	}
+
+	facade := &channels.Facade{
+		Router:    router,
+		Client:    instanceClient,
+		Lifecycle: manager,
+	}
+
+	webAdapter := &web.Adapter{Logger: logger}
+	if err := webAdapter.Start(ctx, facade); err != nil {
+		return fmt.Errorf("start web adapter: %w", err)
+	}
+
+	apiHandler := &api.Handler{
+		Manager:  manager,
+		Streamer: instanceClient,
+		Logger:   logger,
+	}
+
+	publicMux := chi.NewRouter()
+	apiHandler.Mount(publicMux)
+	webAdapter.Mount(publicMux)
 
 	srv := server.New(server.Options{
 		PublicAddress: cfg.ListenAddress,
@@ -115,7 +145,16 @@ func run(args []string) error {
 		Logger:        logger,
 		Metrics:       metrics,
 		Ready:         readiness(routeStore, upstreamClient),
+		Public:        publicMux,
 	})
+
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), server.DefaultShutdownTimeout)
+		defer cancel()
+		if err := webAdapter.Stop(stopCtx); err != nil {
+			logger.Warn("web adapter stop", "error", err)
+		}
+	}()
 
 	return srv.Run(ctx)
 }
@@ -158,6 +197,8 @@ func buildLifecycle(cfg config.Config) (lifecycle.Manager, error) {
 		return klausctl.New(cfg.KlausctlBin)
 	case config.DriverOperator:
 		return operator.New(cfg.OperatorMCPURL, cfg.OperatorMCPToken)
+	case config.DriverStatic:
+		return static.New(cfg.StaticInstances)
 	default:
 		return nil, fmt.Errorf("unknown driver %q", cfg.Driver)
 	}

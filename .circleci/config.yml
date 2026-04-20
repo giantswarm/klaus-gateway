@@ -3,6 +3,22 @@ version: 2.1
 orbs:
   architect: giantswarm/architect@6.15.0
 
+jobs:
+  e2e-local:
+    machine:
+      image: ubuntu-2204:current
+    steps:
+      - checkout
+      - run:
+          name: Run end-to-end compose smoke test
+          command: make e2e-local
+      - run:
+          name: Dump container logs on failure
+          when: on_fail
+          command: |
+            docker compose -f deploy/docker-compose.yml ps || true
+            docker compose -f deploy/docker-compose.yml logs --no-color --tail=200 || true
+
 workflows:
   test:
     jobs:
@@ -10,6 +26,11 @@ workflows:
           context: architect
           name: go-build
           binary: klaus-gateway
+          filters:
+            tags:
+              only: /^v.*/
+
+      - e2e-local:
           filters:
             tags:
               only: /^v.*/

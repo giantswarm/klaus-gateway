@@ -7,6 +7,25 @@
 
 include Makefile.*.mk
 
+##@ E2E
+
+E2E_COMPOSE := docker compose -f deploy/docker-compose.yml
+
+.PHONY: e2e-local e2e-local-up e2e-local-down
+e2e-local: e2e-local-up ## Bring up the compose smoke stack and run hack/smoke-completion.
+	@echo "====> $@"
+	./hack/wait-for http://127.0.0.1:8081/healthz 120
+	./hack/smoke-completion http://127.0.0.1:8080 test-instance
+	$(MAKE) e2e-local-down
+
+e2e-local-up: ## Bring the compose stack up in the background.
+	@echo "====> $@"
+	$(E2E_COMPOSE) up -d --build --wait --wait-timeout 120
+
+e2e-local-down: ## Tear the compose stack down and remove volumes.
+	@echo "====> $@"
+	-$(E2E_COMPOSE) down -v --remove-orphans
+
 ##@ General
 
 # The help target prints out all targets with their descriptions organized

@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# smoke-completion -- POST a minimal chat/completions request against the
+# klaus-gateway running in the compose stack and assert at least one SSE
+# delta with a `content` field is received.
+#
+# Usage: smoke-completion [gateway-url] [instance-name]
+set -euo pipefail
+
+gw="${1:-http://127.0.0.1:8080}"
+instance="${2:-test-instance}"
+
+tmp=$(mktemp)
+trap 'rm -f "$tmp"' EXIT
+
+status=$(curl -sS -o "$tmp" -w "%{http_code}" \
+  -H "Content-Type: application/json" \
+  -H "Accept: text/event-stream" \
+  --no-buffer --max-time 15 \
+  -X POST "${gw}/v1/${instance}/chat/completions" \
+  --data '{"stream":true,"messages":[{"role":"user","content":"ping"}]}')
+
+if [[ "$status" != "200" ]]; then
+  echo "smoke-completion: unexpected status $status" >&2
+  echo "--- response body ---" >&2
+  cat "$tmp" >&2
+  exit 1
+fi
+
+if ! grep -q '"content"' "$tmp"; then
+  echo "smoke-completion: no SSE delta with a content field" >&2
+  echo "--- response body ---" >&2
+  cat "$tmp" >&2
+  exit 1
+fi
+
+if ! grep -q '\[DONE\]' "$tmp"; then
+  echo "smoke-completion: stream did not terminate with [DONE]" >&2
+  echo "--- response body ---" >&2
+  cat "$tmp" >&2
+  exit 1
+fi
+
+echo "smoke-completion: OK"
+
+# Web channel -- verify /web/messages and /web/healthz.
+curl -fsS "${gw}/web/healthz" >/dev/null
+
+web_status=$(curl -sS -o "$tmp" -w "%{http_code}" \
+  -H "Content-Type: application/json" --no-buffer --max-time 15 \
+  -X POST "${gw}/web/messages" \
+  --data '{"channelId":"c1","userId":"u1","threadId":"t1","text":"hi"}')
+
+if [[ "$web_status" != "200" ]]; then
+  echo "smoke-completion: web /web/messages POST failed: $web_status" >&2
+  cat "$tmp" >&2
+  exit 1
+fi
+if ! grep -q '"content"' "$tmp"; then
+  echo "smoke-completion: web SSE missing content field" >&2
+  cat "$tmp" >&2
+  exit 1
+fi
+
+echo "smoke-completion: web adapter OK"
