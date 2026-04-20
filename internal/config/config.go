@@ -19,6 +19,7 @@ const (
 	StoreMemory    = "memory"
 	StoreBolt      = "bolt"
 	StoreConfigMap = "configmap"
+	StoreCRD       = "crd"
 )
 
 // Driver names understood by the lifecycle manager factory.
@@ -78,6 +79,9 @@ type Config struct {
 
 	Slack SlackConfig
 	CLI   CLIConfig
+
+	// Controller enables the embedded ChannelRoute controller-runtime manager.
+	Controller bool
 }
 
 // Defaults returns a Config populated with hard-coded defaults.
@@ -129,6 +133,7 @@ func Load(args []string) (Config, error) {
 	fs.StringVar(&cfg.Slack.Mode, "slack-mode", cfg.Slack.Mode, "Slack connection mode: events or socketmode.")
 	fs.StringVar(&cfg.Slack.SecretsFile, "slack-secrets-file", cfg.Slack.SecretsFile, "Path to Slack secrets YAML file.")
 	fs.BoolVar(&cfg.CLI.Enabled, "cli-enabled", cfg.CLI.Enabled, "Enable the CLI channel adapter at /cli/v1/*.")
+	fs.BoolVar(&cfg.Controller, "controller", cfg.Controller, "Enable the embedded ChannelRoute controller (requires --store=crd).")
 
 	fs.Usage = func() {
 		fmt.Fprintf(fs.Output(), "klaus-gateway -- channel and routing gateway in front of klaus instances.\n\n")
@@ -203,6 +208,9 @@ func applyEnv(cfg *Config) {
 	if v, ok := lookup("CLI_ENABLED"); ok {
 		cfg.CLI.Enabled = strings.EqualFold(v, "true") || v == "1"
 	}
+	if v, ok := lookup("CONTROLLER"); ok {
+		cfg.Controller = strings.EqualFold(v, "true") || v == "1"
+	}
 }
 
 func lookup(key string) (string, bool) {
@@ -212,9 +220,12 @@ func lookup(key string) (string, bool) {
 // Validate checks that the config is internally consistent.
 func (c Config) Validate() error {
 	switch c.Store {
-	case StoreMemory, StoreBolt, StoreConfigMap:
+	case StoreMemory, StoreBolt, StoreConfigMap, StoreCRD:
 	default:
-		return fmt.Errorf("invalid --store %q: must be one of memory, bolt, configmap", c.Store)
+		return fmt.Errorf("invalid --store %q: must be one of memory, bolt, configmap, crd", c.Store)
+	}
+	if c.Controller && c.Store != StoreCRD {
+		return fmt.Errorf("--controller=true requires --store=crd")
 	}
 	switch c.Driver {
 	case DriverKlausctl, DriverOperator, DriverStatic:
