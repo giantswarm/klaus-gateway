@@ -127,6 +127,11 @@ agentgateway:
       prefixes:
       - /v1/
       - /mcp
+    # CLI channel adapter route: /cli/v1/* for remote klausctl users.
+    cli:
+      enabled: false
+      prefixes:
+      - /cli/v1/
     # Direct-to-instance IDE traffic. Normally populated by klaus-operator at
     # runtime, so off by default in the chart.
     directInstance:
@@ -184,6 +189,13 @@ slack:
   # secretName is the name of the Kubernetes Secret with Slack credentials.
   # Required when slack.enabled is true.
   secretName: ""
+
+# CLI channel adapter.
+# Exposes POST /cli/v1/{instance}/run (SSE completions) and
+# POST /cli/v1/{instance}/messages (history) for remote klausctl users.
+# Disabled by default.
+cli:
+  enabled: false
 
 global:
   podSecurityStandards:
