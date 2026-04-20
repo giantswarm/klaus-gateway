@@ -1,4 +1,5 @@
-{{- if and .Values.agentgateway.enabled .Values.agentgateway.routes.chatAndMcp.enabled }}
+{{- $hasRoutes := or .Values.agentgateway.routes.chatAndMcp.enabled .Values.agentgateway.routes.cli.enabled }}
+{{- if and .Values.agentgateway.enabled $hasRoutes }}
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -16,6 +17,7 @@ spec:
     {{- end }}
     {{- end }}
   rules:
+    {{- if .Values.agentgateway.routes.chatAndMcp.enabled }}
     {{- range .Values.agentgateway.routes.chatAndMcp.prefixes }}
     - matches:
         - path:
@@ -24,5 +26,17 @@ spec:
       backendRefs:
         - name: {{ include "resource.default.name" $ }}
           port: {{ $.Values.server.port }}
+    {{- end }}
+    {{- end }}
+    {{- if .Values.agentgateway.routes.cli.enabled }}
+    {{- range .Values.agentgateway.routes.cli.prefixes }}
+    - matches:
+        - path:
+            type: PathPrefix
+            value: {{ . | quote }}
+      backendRefs:
+        - name: {{ include "resource.default.name" $ }}
+          port: {{ $.Values.server.port }}
+    {{- end }}
     {{- end }}
 {{- end }}

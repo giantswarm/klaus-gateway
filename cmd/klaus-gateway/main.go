@@ -20,6 +20,7 @@ import (
 	"github.com/giantswarm/klaus-gateway/internal/version"
 	"github.com/giantswarm/klaus-gateway/pkg/api"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
+	cliachannel "github.com/giantswarm/klaus-gateway/pkg/channels/cli"
 	slackchannel "github.com/giantswarm/klaus-gateway/pkg/channels/slack"
 	"github.com/giantswarm/klaus-gateway/pkg/channels/web"
 	"github.com/giantswarm/klaus-gateway/pkg/instance"
@@ -154,6 +155,22 @@ func run(args []string) error {
 			}
 		}()
 		logger.Info("slack adapter started", "mode", cfg.Slack.Mode)
+	}
+
+	if cfg.CLI.Enabled {
+		cliAdapter := &cliachannel.Adapter{Logger: logger}
+		if err := cliAdapter.Start(ctx, facade); err != nil {
+			return fmt.Errorf("start cli adapter: %w", err)
+		}
+		cliAdapter.Mount(publicMux)
+		defer func() {
+			stopCtx, cancel := context.WithTimeout(context.Background(), server.DefaultShutdownTimeout)
+			defer cancel()
+			if err := cliAdapter.Stop(stopCtx); err != nil {
+				logger.Warn("cli adapter stop", "error", err)
+			}
+		}()
+		logger.Info("cli adapter started")
 	}
 
 	apiHandler := &api.Handler{

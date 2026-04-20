@@ -31,6 +31,12 @@ const (
 	DriverStatic = "static"
 )
 
+// CLIConfig holds runtime configuration for the CLI channel adapter.
+type CLIConfig struct {
+	// Enabled gates all CLI behaviour; the adapter is skipped when false.
+	Enabled bool
+}
+
 // SlackConfig holds runtime configuration for the Slack channel adapter.
 type SlackConfig struct {
 	// Enabled gates all Slack behaviour; the adapter is skipped when false.
@@ -71,6 +77,7 @@ type Config struct {
 	ShowVersion bool
 
 	Slack SlackConfig
+	CLI   CLIConfig
 }
 
 // Defaults returns a Config populated with hard-coded defaults.
@@ -89,6 +96,9 @@ func Defaults() Config {
 			Enabled:     false,
 			Mode:        "events",
 			SecretsFile: os.ExpandEnv("$HOME/.config/klausctl/gateway/slack-secrets.yaml"),
+		},
+		CLI: CLIConfig{
+			Enabled: false,
 		},
 	}
 }
@@ -118,6 +128,7 @@ func Load(args []string) (Config, error) {
 	fs.BoolVar(&cfg.Slack.Enabled, "slack-enabled", cfg.Slack.Enabled, "Enable the Slack channel adapter.")
 	fs.StringVar(&cfg.Slack.Mode, "slack-mode", cfg.Slack.Mode, "Slack connection mode: events or socketmode.")
 	fs.StringVar(&cfg.Slack.SecretsFile, "slack-secrets-file", cfg.Slack.SecretsFile, "Path to Slack secrets YAML file.")
+	fs.BoolVar(&cfg.CLI.Enabled, "cli-enabled", cfg.CLI.Enabled, "Enable the CLI channel adapter at /cli/v1/*.")
 
 	fs.Usage = func() {
 		fmt.Fprintf(fs.Output(), "klaus-gateway -- channel and routing gateway in front of klaus instances.\n\n")
@@ -188,6 +199,9 @@ func applyEnv(cfg *Config) {
 	}
 	if v, ok := lookup("SLACK_SECRETS_FILE"); ok {
 		cfg.Slack.SecretsFile = v
+	}
+	if v, ok := lookup("CLI_ENABLED"); ok {
+		cfg.CLI.Enabled = strings.EqualFold(v, "true") || v == "1"
 	}
 }
 
