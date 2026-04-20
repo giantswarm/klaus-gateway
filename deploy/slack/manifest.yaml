@@ -1,0 +1,63 @@
+# Slack app manifest for the Klaus Gateway integration.
+#
+# Import this manifest at https://api.slack.com/apps?new_app=1 (choose
+# "From an app manifest") to create and configure the Slack app in one step.
+#
+# After creation:
+#   1. Copy the Signing Secret (Settings > Basic Information) into
+#      your secrets file or SLACK_SIGNING_SECRET env var.
+#   2. Copy the Bot Token (OAuth & Permissions > Bot User OAuth Token, starts
+#      with Slack bot ) into SLACK_BOT_TOKEN.
+#   3. For socketmode only: copy the App-Level Token (Settings > Basic
+#      Information > App-Level Tokens, starts with Slack app-level ) into SLACK_APP_TOKEN.
+#   4. Install the app to your workspace (Settings > Install App).
+#
+# Events API (production):
+#   Set the Request URL to https://<your-domain>/channels/slack/events and
+#   click "Save". Slack will send a URL verification challenge; the adapter
+#   handles it automatically.
+#
+# Socket Mode (development):
+#   Enable Socket Mode in Settings > Socket Mode. No public URL required.
+
+display_information:
+  name: Klaus Gateway
+  description: AI assistant powered by Klaus, routed through Klaus Gateway
+  background_color: "#1a1a2e"
+
+features:
+  bot_user:
+    display_name: Klaus
+    always_online: true
+  app_home:
+    home_tab_enabled: false
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: false
+
+oauth_config:
+  scopes:
+    bot:
+      # Send messages and update existing messages (streaming responses).
+      - chat:write
+      # Read DMs sent to the bot.
+      - im:history
+      # React to messages in channels the bot is a member of.
+      - channels:history
+      # Join public channels on invite (app_mention works without this, but
+      # history lookup requires membership).
+      - channels:join
+
+settings:
+  event_subscriptions:
+    # Events API request URL. Replace with your public hostname.
+    request_url: https://example.com/channels/slack/events
+    bot_events:
+      # Fires when a user @-mentions the bot in any channel.
+      - app_mention
+      # Fires for direct messages sent to the bot.
+      - message.im
+  interactivity:
+    is_enabled: false
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false

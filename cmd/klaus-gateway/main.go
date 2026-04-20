@@ -20,6 +20,7 @@ import (
 	"github.com/giantswarm/klaus-gateway/internal/version"
 	"github.com/giantswarm/klaus-gateway/pkg/api"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
+	slackchannel "github.com/giantswarm/klaus-gateway/pkg/channels/slack"
 	"github.com/giantswarm/klaus-gateway/pkg/channels/web"
 	"github.com/giantswarm/klaus-gateway/pkg/instance"
 	"github.com/giantswarm/klaus-gateway/pkg/lifecycle"
@@ -129,13 +130,38 @@ func run(args []string) error {
 		return fmt.Errorf("start web adapter: %w", err)
 	}
 
+	publicMux := chi.NewRouter()
+
+	if cfg.Slack.Enabled {
+		secrets, err := slackchannel.LoadSecrets(cfg.Slack.SecretsFile)
+		if err != nil {
+			return fmt.Errorf("slack secrets: %w", err)
+		}
+		slackAdapter := &slackchannel.Adapter{
+			Logger:  logger,
+			Mode:    cfg.Slack.Mode,
+			Secrets: secrets,
+		}
+		if err := slackAdapter.Start(ctx, facade); err != nil {
+			return fmt.Errorf("start slack adapter: %w", err)
+		}
+		slackAdapter.Mount(publicMux)
+		defer func() {
+			stopCtx, cancel := context.WithTimeout(context.Background(), server.DefaultShutdownTimeout)
+			defer cancel()
+			if err := slackAdapter.Stop(stopCtx); err != nil {
+				logger.Warn("slack adapter stop", "error", err)
+			}
+		}()
+		logger.Info("slack adapter started", "mode", cfg.Slack.Mode)
+	}
+
 	apiHandler := &api.Handler{
 		Manager:  manager,
 		Streamer: instanceClient,
 		Logger:   logger,
 	}
 
-	publicMux := chi.NewRouter()
 	apiHandler.Mount(publicMux)
 	webAdapter.Mount(publicMux)
 
