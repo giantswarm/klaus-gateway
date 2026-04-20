@@ -1,0 +1,60 @@
+# Compose smoke harness for klaus-gateway.
+#
+# This stack is the CI/contributor harness -- not the developer path. The
+# developer path is `klausctl gateway start` (see docs/development.md). The
+# compose variant exists so PRs get an end-to-end check without requiring
+# klausctl to be installed on CI runners.
+#
+# Layout:
+#
+#   client --> klaus-gateway:8080 --> agentgateway:8090 --> klaus-instance:8080
+#
+# klaus-gateway is configured with the `static` lifecycle driver so it maps
+# the instance name `test-instance` to the klaus-instance service without
+# needing klausctl or klaus-operator.
+
+services:
+  klaus-gateway:
+    build:
+      context: ../
+      dockerfile: deploy/klaus-gateway.Dockerfile
+    image: klaus-gateway:e2e-local
+    depends_on:
+      agentgateway:
+        condition: service_started
+      klaus-instance:
+        condition: service_started
+    environment:
+      KLAUS_GATEWAY_LISTEN_ADDRESS: ":8080"
+      KLAUS_GATEWAY_ADMIN_ADDRESS: ":8081"
+      KLAUS_GATEWAY_STORE: "memory"
+      KLAUS_GATEWAY_DRIVER: "static"
+      KLAUS_GATEWAY_STATIC_INSTANCES: "test-instance=http://klaus-instance:8080"
+      KLAUS_GATEWAY_AGENTGATEWAY_URL: "http://agentgateway:8090"
+      KLAUS_GATEWAY_AUTO_CREATE: "true"
+      KLAUS_GATEWAY_LOG_LEVEL: "info"
+    ports:
+      - "8080:8080"
+      - "8081:8081"
+
+  agentgateway:
+    # Pinned so PRs are reproducible; bump together with klausctl.
+    image: ghcr.io/agentgateway/agentgateway:v1.1.0
+    command: ["-f", "/etc/agentgateway/standalone.yaml"]
+    volumes:
+      - ./agentgateway/standalone.yaml:/etc/agentgateway/standalone.yaml:ro
+    depends_on:
+      klaus-instance:
+        condition: service_started
+    ports:
+      - "8090:8090"
+
+  klaus-instance:
+    # A tiny HTTP stub that mimics /v1/chat/completions and /mcp. Swap for
+    # ghcr.io/giantswarm/klaus:latest once CI has a way to supply an LLM key
+    # without leaking it into image layers.
+    build:
+      context: ./klaus-instance-stub
+    image: klaus-instance-stub:e2e-local
+    ports:
+      - "18080:8080"

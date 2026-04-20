@@ -1,0 +1,32 @@
+# yaml-language-server: $schema=https://agentgateway.dev/schema/config
+#
+# Standalone agentgateway config shared by two environments:
+#
+#   1. The compose smoke harness in deploy/docker-compose.yml, where this
+#      file is mounted into the ghcr.io/agentgateway/agentgateway container
+#      and routes `/v1/*` and `/mcp` to the klaus-instance service.
+#
+#   2. `klausctl gateway start --with-agentgateway` in the developer flow,
+#      where the gatewaybridge consumes the same file so the developer path
+#      and CI exercise identical routing shape.
+#
+# Routing is path-prefix only. Instance-level fan-out (when multiple klaus
+# instances run side-by-side) belongs in AgentgatewayBackend + HTTPRoute CRDs
+# and is added in the Helm follow-up PR.
+binds:
+  - port: 8090
+    listeners:
+      - protocol: HTTP
+        routes:
+          - name: klaus-v1
+            matches:
+              - path:
+                  pathPrefix: /v1
+            backends:
+              - host: klaus-instance:8080
+          - name: klaus-mcp
+            matches:
+              - path:
+                  pathPrefix: /mcp
+            backends:
+              - host: klaus-instance:8080

@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# wait-for -- poll an HTTP URL until it returns <500, up to TIMEOUT seconds.
+#
+# Usage: wait-for <url> [timeout-seconds]
+set -euo pipefail
+
+url="${1:?url required}"
+timeout="${2:-60}"
+
+start=$(date +%s)
+while true; do
+  code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 2 "$url" 2>/dev/null || echo "000")
+  case "$code" in
+    2*|3*)
+      echo "wait-for: $url is up (HTTP $code)"
+      exit 0
+      ;;
+  esac
+  now=$(date +%s)
+  if (( now - start > timeout )); then
+    echo "wait-for: timed out waiting for $url after ${timeout}s (last status $code)" >&2
+    exit 1
+  fi
+  sleep 1
+done

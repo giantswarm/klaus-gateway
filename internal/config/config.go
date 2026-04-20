@@ -25,6 +25,10 @@ const (
 const (
 	DriverKlausctl = "klausctl"
 	DriverOperator = "operator"
+	// DriverStatic serves a fixed set of instances declared at startup.
+	// Intended for compose / CI smoke harnesses and minimal single-instance
+	// deployments where no cluster-side controller is available.
+	DriverStatic = "static"
 )
 
 // Config is the fully resolved runtime configuration.
@@ -41,6 +45,9 @@ type Config struct {
 	KlausctlBin      string
 	OperatorMCPURL   string
 	OperatorMCPToken string
+	// StaticInstances is a comma-separated list of `name=baseURL` pairs used
+	// by the static driver.
+	StaticInstances string
 
 	AgentgatewayURL string
 
@@ -78,10 +85,11 @@ func Load(args []string) (Config, error) {
 	fs.StringVar(&cfg.Store, "store", cfg.Store, "Routing store: memory, bolt, configmap.")
 	fs.StringVar(&cfg.BoltPath, "bolt-path", cfg.BoltPath, "Path to the bolt database (bolt store only).")
 	fs.StringVar(&cfg.Namespace, "namespace", cfg.Namespace, "Namespace for the configmap store.")
-	fs.StringVar(&cfg.Driver, "driver", cfg.Driver, "Lifecycle driver: klausctl, operator.")
+	fs.StringVar(&cfg.Driver, "driver", cfg.Driver, "Lifecycle driver: klausctl, operator, static.")
 	fs.StringVar(&cfg.KlausctlBin, "klausctl-bin", cfg.KlausctlBin, "Path to the klausctl binary (klausctl driver only).")
 	fs.StringVar(&cfg.OperatorMCPURL, "operator-mcp-url", cfg.OperatorMCPURL, "klaus-operator MCP endpoint (operator driver only).")
 	fs.StringVar(&cfg.OperatorMCPToken, "operator-mcp-token", cfg.OperatorMCPToken, "Bearer token for the operator MCP endpoint.")
+	fs.StringVar(&cfg.StaticInstances, "static-instances", cfg.StaticInstances, "Static driver instances: name=baseURL[,name=baseURL ...].")
 	fs.StringVar(&cfg.AgentgatewayURL, "agentgateway-url", cfg.AgentgatewayURL, "Upstream agentgateway base URL. Empty means direct-to-instance bypass mode.")
 	fs.StringVar(&cfg.OTLPEndpoint, "otel-otlp-endpoint", cfg.OTLPEndpoint, "OTLP gRPC endpoint for traces. Empty disables OTel.")
 	fs.BoolVar(&cfg.AutoCreate, "auto-create", cfg.AutoCreate, "Create instances on route miss.")
@@ -132,6 +140,9 @@ func applyEnv(cfg *Config) {
 	if v, ok := lookup("OPERATOR_MCP_TOKEN"); ok {
 		cfg.OperatorMCPToken = v
 	}
+	if v, ok := lookup("STATIC_INSTANCES"); ok {
+		cfg.StaticInstances = v
+	}
 	if v, ok := lookup("AGENTGATEWAY_URL"); ok {
 		cfg.AgentgatewayURL = v
 	}
@@ -160,15 +171,18 @@ func (c Config) Validate() error {
 		return fmt.Errorf("invalid --store %q: must be one of memory, bolt, configmap", c.Store)
 	}
 	switch c.Driver {
-	case DriverKlausctl, DriverOperator:
+	case DriverKlausctl, DriverOperator, DriverStatic:
 	default:
-		return fmt.Errorf("invalid --driver %q: must be one of klausctl, operator", c.Driver)
+		return fmt.Errorf("invalid --driver %q: must be one of klausctl, operator, static", c.Driver)
 	}
 	if c.Store == StoreBolt && c.BoltPath == "" {
 		return fmt.Errorf("--bolt-path is required with --store=bolt")
 	}
 	if c.Driver == DriverOperator && c.OperatorMCPURL == "" {
 		return fmt.Errorf("--operator-mcp-url is required with --driver=operator")
+	}
+	if c.Driver == DriverStatic && c.StaticInstances == "" {
+		return fmt.Errorf("--static-instances is required with --driver=static")
 	}
 	return nil
 }
