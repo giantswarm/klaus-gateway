@@ -1,0 +1,14 @@
+apiVersion: v2
+name: klaus-gateway
+description: Channel and routing gateway in front of klaus instances; uses agentgateway as the LLM/MCP/A2A data plane
+type: application
+version: "[[ .Version ]]"
+appVersion: "[[ .AppVersion ]]"
+home: https://github.com/giantswarm/klaus-gateway
+sources:
+  - https://github.com/giantswarm/klaus-gateway
+annotations:
+  io.giantswarm.application.team: bumblebee
+maintainers:
+  - name: Giant Swarm
+    url: https://www.giantswarm.io

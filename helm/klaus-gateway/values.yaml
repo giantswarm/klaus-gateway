@@ -1,0 +1,75 @@
+# Default values for klaus-gateway.
+
+name: klaus-gateway
+serviceType: managed
+
+image:
+  registry: gsoci.azurecr.io
+  name: giantswarm/klaus-gateway
+  tag: ""
+  pullPolicy: IfNotPresent
+
+replicaCount: 1
+
+# Upstream agentgateway URL. Empty means direct-to-instance bypass mode.
+agentgatewayURL: ""
+
+# Log level: debug, info, warn, error.
+logLevel: info
+
+pod:
+  user:
+    id: 65532
+  group:
+    id: 65532
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 256Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+serviceAccount:
+  create: true
+  annotations: {}
+
+# Public HTTP server (channel adapters + /v1/* front door).
+server:
+  port: 8080
+
+# Admin endpoints: /healthz, /readyz, /metrics.
+admin:
+  port: 8081
+
+metrics:
+  enabled: true
+
+serviceMonitor:
+  enabled: true
+  interval: "60s"
+  scrapeTimeout: "45s"
+
+podSecurityContext:
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  seccompProfile:
+    type: RuntimeDefault
+  capabilities:
+    drop:
+      - ALL
+
+global:
+  podSecurityStandards:
+    enforced: false
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}

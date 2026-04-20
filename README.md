@@ -1,29 +1,49 @@
-# General Go template repository
+# klaus-gateway
 
-This is a general template repository containing some basic files every GitHub repo owned by Giant Swarm should have.
+Channel and routing gateway in front of [klaus](https://github.com/giantswarm/klaus) instances.
 
-Note also these more specific repositories:
+`klaus-gateway` is the human-facing channel layer (Slack, web, CLI, IDE) that routes inbound messages to the right klaus instance and proxies LLM/MCP/A2A traffic through [agentgateway](https://github.com/agentgateway/agentgateway) as the data plane.
 
-- [template-app](https://github.com/giantswarm/template-app)
-- [gitops-template](https://github.com/giantswarm/gitops-template)
-- [python-app-template](https://github.com/giantswarm/python-app-template)
+## Architecture
 
-## Creating a new repository
+```
+External consumers                Gateway layer                       Platform
++-----------------+               +-------------------+               +-----------------+
+| IDE / OpenAI    | ----------->  | agentgateway      |  --->  klaus-instance pods
+| Slack / web     | --> klaus-gateway -> agentgateway |
+| klausctl --remote |             | (channel adapters,|
++-----------------+               |  routing,         |               +-----------------+
+                                  |  lifecycle)       |  --->  klaus-operator (MCP)
+                                  +-------------------+
+```
 
-Please do not use the `Use this template` function in the GitHub web UI.
+- IDE and other OpenAI/MCP-native clients hit `agentgateway` directly.
+- Channel-bound traffic (Slack, web, CLI sessions) goes through `klaus-gateway`, which resolves channel identity to an instance, creates instances on demand, and forwards the request to `agentgateway`.
 
-Check out the according [handbook article](https://handbook.giantswarm.io/docs/dev-and-releng/repository/go/) for better instructions.
+See the [architecture document](https://github.com/teemow/klaus-lab/blob/main/architecture/klaus-gateway.md) and the [agentgateway-as-data-plane ADR](https://github.com/teemow/klaus-lab/blob/main/decisions/2026-04-20-1100-adr-agentgateway-as-data-plane.md) in the lab notebook for the full design.
 
-### Some suggestions for your README
+## Status
 
-After you have created your new repository, you may want to add some of these badges to the top of your README.
+Bootstrapping. Phase 0a (repo scaffold) only. Phase 1 wires up the core HTTP server, channel adapter interface, web channel, routing store, lifecycle drivers, and agentgateway upstream wiring.
 
-- **CircleCI:** After enabling builds for this repo via [this link](https://circleci.com/setup-project/gh/giantswarm/REPOSITORY_NAME), you can find badge code on [this page](https://app.circleci.com/settings/project/github/giantswarm/REPOSITORY_NAME/status-badges).
+## Layout
 
-- **Go reference:** use [this helper](https://pkg.go.dev/badge/) to create the markdown code.
+```
+cmd/                # entrypoints (added in Phase 1)
+pkg/                # exported packages (server, channels, routing, lifecycle, ...)
+internal/           # internal helpers (config, build metadata)
+helm/klaus-gateway/ # Helm chart
+deploy/             # docker-compose harness, agentgateway examples (Phase 0b)
+docs/               # development.md, deployment.md
+```
 
-- **Go report card:** enter the module name on the [front page](https://goreportcard.com/) and hit "Generate report". Then use this markdown code for your badge: `[![Go report card](https://goreportcard.com/badge/github.com/giantswarm/REPOSITORY_NAME)](https://goreportcard.com/report/github.com/giantswarm/REPOSITORY_NAME)`
+## Build
 
-- **OpenSSF Scorecard Report:** for public repos only: `[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/giantswarm/{APP-NAME}/badge)](https://securityscorecards.dev/viewer/?uri=github.com/giantswarm/{APP-NAME})`
+```bash
+go build ./...
+docker build -t klaus-gateway:dev .
+```
 
-- **Sourcegraph "used by N projects" badge**: for public Go repos only: `[![Sourcegraph](https://sourcegraph.com/github.com/giantswarm/REPOSITORY_NAME/-/badge.svg)](https://sourcegraph.com/github.com/giantswarm/REPOSITORY_NAME)`
+## License
+
+Apache 2.0 -- see [LICENSE](LICENSE).
