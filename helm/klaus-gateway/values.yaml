@@ -52,6 +52,7 @@ serviceMonitor:
 #   memory    -- process-local; state lost on restart.
 #   bolt      -- persistent local file; requires a writable mount at boltPath.
 #   configmap -- cluster-backed; one ConfigMap "klaus-gateway-routes" per namespace.
+#   crd       -- cluster-backed; one ChannelRoute CR per conversation (requires controller.enabled).
 routing:
   store: memory
   boltPath: /var/lib/klaus-gateway/routes.bolt
@@ -59,6 +60,17 @@ routing:
   defaultTTL: "24h"
   # Create instances on demand when a route key has no entry.
   autoCreate: false
+
+# CRD installation. Renders the ChannelRoute CustomResourceDefinition when true.
+# Set to false if you manage the CRD lifecycle externally (e.g. via GitOps).
+crd:
+  install: true
+
+# Embedded ChannelRoute controller. Requires --store=crd. When enabled, the
+# gateway runs an in-process controller-runtime manager that watches ChannelRoute
+# CRs and updates their status conditions to reflect instance liveness.
+controller:
+  enabled: false
 
 # Lifecycle driver: klausctl (local) or operator (MCP to klaus-operator).
 lifecycle:

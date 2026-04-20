@@ -38,8 +38,11 @@ spec:
         {{- if eq .Values.routing.store "bolt" }}
         - --bolt-path={{ .Values.routing.boltPath }}
         {{- end }}
-        {{- if eq .Values.routing.store "configmap" }}
+        {{- if or (eq .Values.routing.store "configmap") (eq .Values.routing.store "crd") }}
         - --namespace=$(POD_NAMESPACE)
+        {{- end }}
+        {{- if .Values.controller.enabled }}
+        - --controller=true
         {{- end }}
         {{- if .Values.routing.defaultTTL }}
         - --default-ttl={{ .Values.routing.defaultTTL }}

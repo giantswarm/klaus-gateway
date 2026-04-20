@@ -1,0 +1,116 @@
+{{- if .Values.crd.install }}
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: channelroutes.routing.giantswarm.io
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.17.0
+  labels:
+    {{- include "labels.common" . | nindent 4 }}
+spec:
+  group: routing.giantswarm.io
+  names:
+    kind: ChannelRoute
+    listKind: ChannelRouteList
+    plural: channelroutes
+    singular: channelroute
+    shortNames:
+    - cr
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    served: true
+    storage: true
+    subresources:
+      status: {}
+    additionalPrinterColumns:
+    - name: Channel
+      type: string
+      jsonPath: .spec.channel
+    - name: Instance
+      type: string
+      jsonPath: .spec.instance
+    - name: LastSeen
+      type: date
+      jsonPath: .spec.lastSeen
+    - name: Age
+      type: date
+      jsonPath: .metadata.creationTimestamp
+    schema:
+      openAPIV3Schema:
+        description: ChannelRoute maps a conversation key to the Klaus instance that owns it.
+        type: object
+        properties:
+          apiVersion:
+            type: string
+          kind:
+            type: string
+          metadata:
+            type: object
+          spec:
+            type: object
+            required:
+            - channel
+            - channelID
+            - userID
+            - threadID
+            - instance
+            - createdAt
+            - lastSeen
+            properties:
+              channel:
+                type: string
+                description: Channel identifies the adapter type (web, slack, cli).
+              channelID:
+                type: string
+                description: ChannelID is the workspace/team/server identifier.
+              userID:
+                type: string
+                description: UserID is the per-channel user identifier.
+              threadID:
+                type: string
+                description: ThreadID scopes the route to a specific thread; empty means per-user.
+              instance:
+                type: string
+                description: Instance is the name of the Klaus instance that owns this conversation.
+              createdAt:
+                type: string
+                format: date-time
+                description: CreatedAt is when the route was first written.
+              lastSeen:
+                type: string
+                format: date-time
+                description: LastSeen is refreshed on every message routed through this entry.
+              ttlSeconds:
+                type: integer
+                format: int64
+                description: TTLSeconds is the idle TTL in seconds. Zero means never expire.
+          status:
+            type: object
+            properties:
+              conditions:
+                type: array
+                items:
+                  type: object
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  properties:
+                    lastTransitionTime:
+                      type: string
+                      format: date-time
+                    message:
+                      type: string
+                    observedGeneration:
+                      type: integer
+                      format: int64
+                    reason:
+                      type: string
+                    status:
+                      type: string
+                    type:
+                      type: string
+{{- end }}
