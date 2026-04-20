@@ -9,6 +9,9 @@ sources:
   - https://github.com/giantswarm/klaus-gateway
 annotations:
   io.giantswarm.application.team: bumblebee
+  # Upstream agentgateway CRD version (agentgateway.dev/v1alpha1) these
+  # templates target. Bump when upstream introduces breaking schema changes.
+  klaus-gateway.giantswarm.io/agentgateway-version: v1.1.0
 maintainers:
   - name: Giant Swarm
     url: https://www.giantswarm.io

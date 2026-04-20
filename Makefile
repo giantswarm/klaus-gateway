@@ -7,6 +7,13 @@
 
 include Makefile.*.mk
 
+##@ Helm
+
+.PHONY: helm-test
+helm-test: ## Run helm lint + render assertions for the klaus-gateway chart.
+	@echo "====> $@"
+	./hack/helm-template-tests
+
 ##@ E2E
 
 E2E_COMPOSE := docker compose -f deploy/docker-compose.yml

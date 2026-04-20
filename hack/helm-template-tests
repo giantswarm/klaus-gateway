@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# Render the klaus-gateway chart in the agentgateway-disabled and -enabled
+# modes, and assert that the expected kinds are (or are not) present.
+#
+# Chart.yaml uses architect-style `[[ .Version ]]` / `[[ .AppVersion ]]`
+# placeholders that only resolve during CI. This script stamps them to
+# throwaway values in a tempdir copy so local `helm template` works.
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+chart_src="$repo_root/helm/klaus-gateway"
+
+if ! command -v helm >/dev/null 2>&1; then
+  echo "error: helm not found in PATH" >&2
+  exit 1
+fi
+
+workdir="$(mktemp -d)"
+trap 'rm -rf "$workdir"' EXIT
+
+cp -R "$chart_src" "$workdir/klaus-gateway"
+sed -i -e 's/\[\[ .Version \]\]/0.0.0-test/' \
+       -e 's/\[\[ .AppVersion \]\]/0.0.0/' \
+       "$workdir/klaus-gateway/Chart.yaml"
+
+chart="$workdir/klaus-gateway"
+
+echo "==> helm lint (default values)"
+helm lint "$chart"
+
+echo "==> helm lint (agentgateway.enabled=true)"
+helm lint "$chart" \
+  --set agentgateway.enabled=true \
+  --set agentgateway.policy.enabled=true \
+  --set agentgateway.policy.jwt.enabled=true \
+  --set agentgateway.policy.jwt.issuer=https://example.com \
+  --set agentgateway.policy.jwt.jwks.remote.backendRef.name=jwks \
+  --set agentgateway.backendsExample.enabled=true
+
+echo "==> render: agentgateway disabled -> expect no Gateway / HTTPRoute / Agentgateway* resources"
+out_off="$(helm template test "$chart")"
+for kind in Gateway HTTPRoute AgentgatewayPolicy AgentgatewayBackend; do
+  if grep -qE "^kind: $kind$" <<<"$out_off"; then
+    echo "error: default install rendered $kind but agentgateway.enabled=false" >&2
+    exit 1
+  fi
+done
+
+echo "==> render: agentgateway enabled -> expect all four new resources"
+out_on="$(helm template test "$chart" \
+  --set agentgateway.enabled=true \
+  --set agentgateway.policy.enabled=true \
+  --set agentgateway.policy.jwt.enabled=true \
+  --set agentgateway.policy.jwt.issuer=https://example.com \
+  --set agentgateway.policy.jwt.jwks.remote.backendRef.name=jwks \
+  --set agentgateway.backendsExample.enabled=true)"
+for kind in Gateway HTTPRoute AgentgatewayPolicy AgentgatewayBackend; do
+  if ! grep -qE "^kind: $kind$" <<<"$out_on"; then
+    echo "error: agentgateway.enabled=true did not render $kind" >&2
+    exit 1
+  fi
+done
+
+echo "==> all helm template tests passed"

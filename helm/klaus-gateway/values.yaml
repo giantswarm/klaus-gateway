@@ -93,6 +93,80 @@ securityContext:
     drop:
       - ALL
 
+# Optional Kubernetes Gateway API + agentgateway CRDs that sit in front of this
+# gateway. Rendered only when agentgateway.enabled is true so the chart stays
+# installable in clusters without the agentgateway CRDs.
+#
+# Targets upstream agentgateway v1.1.0 (agentgateway.dev/v1alpha1).
+agentgateway:
+  enabled: false
+  # gatewayClassName of the Gateway API controller that reconciles the Gateway.
+  gatewayClassName: agentgateway
+
+  # Gateway rendering. When create is false, the chart does not render a
+  # Gateway and the HTTPRoute attaches to the externally-managed Gateway
+  # referenced by parentRefs.
+  gateway:
+    create: true
+    parentRefs: []
+    # Listener definitions applied when create is true.
+    listeners:
+    - name: http
+      port: 80
+      protocol: HTTP
+      allowedRoutes:
+        namespaces:
+          from: Same
+    annotations: {}
+
+  routes:
+    # Primary route: /v1/* and /mcp traffic enters klaus-gateway, which then
+    # dispatches to the right klaus instance.
+    chatAndMcp:
+      enabled: true
+      prefixes:
+      - /v1/
+      - /mcp
+    # Direct-to-instance IDE traffic. Normally populated by klaus-operator at
+    # runtime, so off by default in the chart.
+    directInstance:
+      enabled: false
+
+  # AgentgatewayPolicy attached to the Gateway.
+  # Upstream v1.1.0 supports JWT but not Cedar. Cedar will be wired in when it
+  # lands upstream; see docs/deployment.md.
+  policy:
+    enabled: false
+    # JWT validation via spec.traffic.jwtAuthentication.
+    jwt:
+      enabled: false
+      mode: Strict
+      issuer: ""
+      audiences: []
+      jwks:
+        # "inline" (literal JWKS JSON) or "remote" (jwksPath + backendRef).
+        mode: remote
+        inline: ""
+        remote:
+          jwksPath: /.well-known/jwks.json
+          cacheDuration: 5m
+          backendRef:
+            group: ""
+            kind: Service
+            name: ""
+            namespace: ""
+            port: 443
+
+  # Example AgentgatewayBackend pointing at a single klaus instance Service.
+  # Real cluster usage creates one Backend per instance, owned by
+  # klaus-operator.
+  backendsExample:
+    enabled: false
+    name: klaus-instance-example
+    static:
+      host: klaus-instance-example.default.svc.cluster.local
+      port: 8080
+
 global:
   podSecurityStandards:
     enforced: false

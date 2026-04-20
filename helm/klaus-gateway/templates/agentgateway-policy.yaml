@@ -1,0 +1,52 @@
+{{- if and .Values.agentgateway.enabled .Values.agentgateway.policy.enabled }}
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: {{ include "resource.default.name" . }}
+  namespace: {{ include "resource.default.namespace" . }}
+  labels:
+    {{- include "labels.common" . | nindent 4 }}
+spec:
+  targetRefs:
+    {{- if .Values.agentgateway.gateway.create }}
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: {{ include "resource.default.name" . }}
+    {{- else }}
+    {{- range .Values.agentgateway.gateway.parentRefs }}
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: {{ .name }}
+    {{- end }}
+    {{- end }}
+  {{- if .Values.agentgateway.policy.jwt.enabled }}
+  traffic:
+    jwtAuthentication:
+      mode: {{ .Values.agentgateway.policy.jwt.mode }}
+      providers:
+        - issuer: {{ .Values.agentgateway.policy.jwt.issuer | quote }}
+          {{- with .Values.agentgateway.policy.jwt.audiences }}
+          audiences:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          jwks:
+            {{- if eq .Values.agentgateway.policy.jwt.jwks.mode "inline" }}
+            inline: |
+              {{- .Values.agentgateway.policy.jwt.jwks.inline | nindent 14 }}
+            {{- else }}
+            remote:
+              jwksPath: {{ .Values.agentgateway.policy.jwt.jwks.remote.jwksPath | quote }}
+              cacheDuration: {{ .Values.agentgateway.policy.jwt.jwks.remote.cacheDuration }}
+              backendRef:
+                {{- with .Values.agentgateway.policy.jwt.jwks.remote.backendRef.group }}
+                group: {{ . }}
+                {{- end }}
+                kind: {{ .Values.agentgateway.policy.jwt.jwks.remote.backendRef.kind }}
+                name: {{ .Values.agentgateway.policy.jwt.jwks.remote.backendRef.name | quote }}
+                {{- with .Values.agentgateway.policy.jwt.jwks.remote.backendRef.namespace }}
+                namespace: {{ . | quote }}
+                {{- end }}
+                port: {{ .Values.agentgateway.policy.jwt.jwks.remote.backendRef.port }}
+            {{- end }}
+  {{- end }}
+{{- end }}
