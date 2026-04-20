@@ -9,8 +9,9 @@ APPLICATION    := $(shell go list -m | cut -d '/' -f 3)
 BUILDTIMESTAMP := $(shell date -u '+%FT%TZ')
 GITSHA1        := $(shell git rev-parse --verify HEAD)
 MODULE         := $(shell go list -m)
-# main() is usually in `main.go`, but sometimes in `cmd/main.go` (for example in newer kubebuilder projects)
-MAIN_SOURCE    := $(shell if test -e cmd/main.go; then echo cmd/main.go; else echo main.go; fi)
+# main() is usually in `main.go`, but sometimes in `cmd/main.go` or
+# `cmd/<application>/main.go`. klaus-gateway uses the latter layout.
+MAIN_SOURCE    := $(shell if test -e cmd/klaus-gateway/main.go; then echo ./cmd/klaus-gateway; elif test -e cmd/main.go; then echo cmd/main.go; else echo main.go; fi)
 OS             := $(shell go env GOOS)
 SOURCES        := $(shell find . -name '*.go')
 VERSION        := $(shell architect project version)

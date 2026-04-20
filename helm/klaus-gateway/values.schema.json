@@ -14,7 +14,6 @@
     },
     "replicaCount": { "type": "integer", "minimum": 1 },
     "logLevel": { "type": "string", "enum": ["debug", "info", "warn", "error"] },
-    "agentgatewayURL": { "type": "string" },
     "server": {
       "type": "object",
       "properties": {
@@ -39,6 +38,36 @@
         "enabled": { "type": "boolean" },
         "interval": { "type": "string" },
         "scrapeTimeout": { "type": "string" }
+      }
+    },
+    "routing": {
+      "type": "object",
+      "properties": {
+        "store": { "type": "string", "enum": ["memory", "bolt", "configmap"] },
+        "boltPath": { "type": "string" },
+        "defaultTTL": { "type": "string" },
+        "autoCreate": { "type": "boolean" }
+      }
+    },
+    "lifecycle": {
+      "type": "object",
+      "properties": {
+        "driver": { "type": "string", "enum": ["klausctl", "operator"] },
+        "klausctlBin": { "type": "string" },
+        "operatorMCPURL": { "type": "string" },
+        "operatorMCPToken": { "type": "string" }
+      }
+    },
+    "upstream": {
+      "type": "object",
+      "properties": {
+        "agentgatewayURL": { "type": "string" }
+      }
+    },
+    "observability": {
+      "type": "object",
+      "properties": {
+        "otlpEndpoint": { "type": "string" }
       }
     }
   }

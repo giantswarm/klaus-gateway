@@ -9,7 +9,7 @@ ARG TARGETOS
 ARG TARGETARCH
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
     -ldflags "-w -extldflags '-static'" \
-    -o klaus-gateway .
+    -o klaus-gateway ./cmd/klaus-gateway
 
 FROM gsoci.azurecr.io/giantswarm/alpine:3.23.4
 
