@@ -69,6 +69,99 @@
       "properties": {
         "otlpEndpoint": { "type": "string" }
       }
+    },
+    "agentgateway": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "gatewayClassName": { "type": "string" },
+        "gateway": {
+          "type": "object",
+          "properties": {
+            "create": { "type": "boolean" },
+            "parentRefs": { "type": "array" },
+            "listeners": { "type": "array" },
+            "annotations": { "type": "object" }
+          }
+        },
+        "routes": {
+          "type": "object",
+          "properties": {
+            "chatAndMcp": {
+              "type": "object",
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "prefixes": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                }
+              }
+            },
+            "directInstance": {
+              "type": "object",
+              "properties": {
+                "enabled": { "type": "boolean" }
+              }
+            }
+          }
+        },
+        "policy": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "jwt": {
+              "type": "object",
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "mode": { "type": "string", "enum": ["Strict", "Optional", "Permissive"] },
+                "issuer": { "type": "string" },
+                "audiences": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                },
+                "jwks": {
+                  "type": "object",
+                  "properties": {
+                    "mode": { "type": "string", "enum": ["inline", "remote"] },
+                    "inline": { "type": "string" },
+                    "remote": {
+                      "type": "object",
+                      "properties": {
+                        "jwksPath": { "type": "string" },
+                        "cacheDuration": { "type": "string" },
+                        "backendRef": {
+                          "type": "object",
+                          "properties": {
+                            "group": { "type": "string" },
+                            "kind": { "type": "string" },
+                            "name": { "type": "string" },
+                            "namespace": { "type": "string" },
+                            "port": { "type": "integer" }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "backendsExample": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "name": { "type": "string" },
+            "static": {
+              "type": "object",
+              "properties": {
+                "host": { "type": "string" },
+                "port": { "type": "integer" }
+              }
+            }
+          }
+        }
+      }
     }
   }
 }

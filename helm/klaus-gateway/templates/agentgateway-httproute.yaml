@@ -1,0 +1,28 @@
+{{- if and .Values.agentgateway.enabled .Values.agentgateway.routes.chatAndMcp.enabled }}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "resource.default.name" . }}
+  namespace: {{ include "resource.default.namespace" . }}
+  labels:
+    {{- include "labels.common" . | nindent 4 }}
+spec:
+  parentRefs:
+    {{- if .Values.agentgateway.gateway.create }}
+    - name: {{ include "resource.default.name" . }}
+    {{- else }}
+    {{- with .Values.agentgateway.gateway.parentRefs }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- end }}
+  rules:
+    {{- range .Values.agentgateway.routes.chatAndMcp.prefixes }}
+    - matches:
+        - path:
+            type: PathPrefix
+            value: {{ . | quote }}
+      backendRefs:
+        - name: {{ include "resource.default.name" $ }}
+          port: {{ $.Values.server.port }}
+    {{- end }}
+{{- end }}

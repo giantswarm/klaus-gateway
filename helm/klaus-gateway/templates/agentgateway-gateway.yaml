@@ -1,0 +1,17 @@
+{{- if and .Values.agentgateway.enabled .Values.agentgateway.gateway.create }}
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: {{ include "resource.default.name" . }}
+  namespace: {{ include "resource.default.namespace" . }}
+  labels:
+    {{- include "labels.common" . | nindent 4 }}
+  {{- with .Values.agentgateway.gateway.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  gatewayClassName: {{ .Values.agentgateway.gatewayClassName }}
+  listeners:
+    {{- toYaml .Values.agentgateway.gateway.listeners | nindent 4 }}
+{{- end }}

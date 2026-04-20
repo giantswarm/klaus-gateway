@@ -1,0 +1,13 @@
+{{- if and .Values.agentgateway.enabled .Values.agentgateway.backendsExample.enabled }}
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: {{ .Values.agentgateway.backendsExample.name }}
+  namespace: {{ include "resource.default.namespace" . }}
+  labels:
+    {{- include "labels.common" . | nindent 4 }}
+spec:
+  static:
+    host: {{ .Values.agentgateway.backendsExample.static.host | quote }}
+    port: {{ .Values.agentgateway.backendsExample.static.port }}
+{{- end }}
