@@ -1,0 +1,174 @@
+// Package config resolves runtime configuration from env vars and CLI flags.
+//
+// Precedence: defaults < KLAUS_GATEWAY_* env < CLI flag. Env vars are read
+// first to seed defaults; flags then override any values that were explicitly
+// set on the command line. This keeps the binary friendly for both Helm
+// (env-driven) and local runs (flag-driven).
+package config
+
+import (
+	"flag"
+	"fmt"
+	"os"
+	"strings"
+	"time"
+)
+
+// Store names understood by the routing store factory.
+const (
+	StoreMemory    = "memory"
+	StoreBolt      = "bolt"
+	StoreConfigMap = "configmap"
+)
+
+// Driver names understood by the lifecycle manager factory.
+const (
+	DriverKlausctl = "klausctl"
+	DriverOperator = "operator"
+)
+
+// Config is the fully resolved runtime configuration.
+type Config struct {
+	ListenAddress string
+	AdminAddress  string
+	LogLevel      string
+
+	Store     string
+	BoltPath  string
+	Namespace string
+
+	Driver           string
+	KlausctlBin      string
+	OperatorMCPURL   string
+	OperatorMCPToken string
+
+	AgentgatewayURL string
+
+	OTLPEndpoint string
+
+	AutoCreate  bool
+	DefaultTTL  time.Duration
+	ShowVersion bool
+}
+
+// Defaults returns a Config populated with hard-coded defaults.
+func Defaults() Config {
+	return Config{
+		ListenAddress: ":8080",
+		AdminAddress:  ":8081",
+		LogLevel:      "info",
+		Store:         StoreMemory,
+		BoltPath:      "/var/lib/klaus-gateway/routes.bolt",
+		Namespace:     "default",
+		Driver:        DriverKlausctl,
+		KlausctlBin:   "klausctl",
+		DefaultTTL:    24 * time.Hour,
+	}
+}
+
+// Load parses env and flags into a Config. args is typically os.Args[1:].
+func Load(args []string) (Config, error) {
+	cfg := Defaults()
+	applyEnv(&cfg)
+
+	fs := flag.NewFlagSet("klaus-gateway", flag.ContinueOnError)
+	fs.StringVar(&cfg.ListenAddress, "listen-address", cfg.ListenAddress, "Address the public HTTP server binds to.")
+	fs.StringVar(&cfg.AdminAddress, "admin-address", cfg.AdminAddress, "Address for /healthz, /readyz, /metrics.")
+	fs.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "Log level: debug, info, warn, error.")
+	fs.StringVar(&cfg.Store, "store", cfg.Store, "Routing store: memory, bolt, configmap.")
+	fs.StringVar(&cfg.BoltPath, "bolt-path", cfg.BoltPath, "Path to the bolt database (bolt store only).")
+	fs.StringVar(&cfg.Namespace, "namespace", cfg.Namespace, "Namespace for the configmap store.")
+	fs.StringVar(&cfg.Driver, "driver", cfg.Driver, "Lifecycle driver: klausctl, operator.")
+	fs.StringVar(&cfg.KlausctlBin, "klausctl-bin", cfg.KlausctlBin, "Path to the klausctl binary (klausctl driver only).")
+	fs.StringVar(&cfg.OperatorMCPURL, "operator-mcp-url", cfg.OperatorMCPURL, "klaus-operator MCP endpoint (operator driver only).")
+	fs.StringVar(&cfg.OperatorMCPToken, "operator-mcp-token", cfg.OperatorMCPToken, "Bearer token for the operator MCP endpoint.")
+	fs.StringVar(&cfg.AgentgatewayURL, "agentgateway-url", cfg.AgentgatewayURL, "Upstream agentgateway base URL. Empty means direct-to-instance bypass mode.")
+	fs.StringVar(&cfg.OTLPEndpoint, "otel-otlp-endpoint", cfg.OTLPEndpoint, "OTLP gRPC endpoint for traces. Empty disables OTel.")
+	fs.BoolVar(&cfg.AutoCreate, "auto-create", cfg.AutoCreate, "Create instances on route miss.")
+	fs.DurationVar(&cfg.DefaultTTL, "default-ttl", cfg.DefaultTTL, "Default TTL for route entries.")
+	fs.BoolVar(&cfg.ShowVersion, "version", false, "Print version information and exit.")
+
+	fs.Usage = func() {
+		fmt.Fprintf(fs.Output(), "klaus-gateway -- channel and routing gateway in front of klaus instances.\n\n")
+		fmt.Fprintf(fs.Output(), "Usage:\n  %s [flags]\n\nFlags:\n", os.Args[0])
+		fs.PrintDefaults()
+	}
+
+	if err := fs.Parse(args); err != nil {
+		return Config{}, err
+	}
+
+	return cfg, nil
+}
+
+func applyEnv(cfg *Config) {
+	if v, ok := lookup("LISTEN_ADDRESS"); ok {
+		cfg.ListenAddress = v
+	}
+	if v, ok := lookup("ADMIN_ADDRESS"); ok {
+		cfg.AdminAddress = v
+	}
+	if v, ok := lookup("LOG_LEVEL"); ok {
+		cfg.LogLevel = v
+	}
+	if v, ok := lookup("STORE"); ok {
+		cfg.Store = v
+	}
+	if v, ok := lookup("BOLT_PATH"); ok {
+		cfg.BoltPath = v
+	}
+	if v, ok := lookup("NAMESPACE"); ok {
+		cfg.Namespace = v
+	}
+	if v, ok := lookup("DRIVER"); ok {
+		cfg.Driver = v
+	}
+	if v, ok := lookup("KLAUSCTL_BIN"); ok {
+		cfg.KlausctlBin = v
+	}
+	if v, ok := lookup("OPERATOR_MCP_URL"); ok {
+		cfg.OperatorMCPURL = v
+	}
+	if v, ok := lookup("OPERATOR_MCP_TOKEN"); ok {
+		cfg.OperatorMCPToken = v
+	}
+	if v, ok := lookup("AGENTGATEWAY_URL"); ok {
+		cfg.AgentgatewayURL = v
+	}
+	if v, ok := os.LookupEnv("OTEL_EXPORTER_OTLP_ENDPOINT"); ok {
+		cfg.OTLPEndpoint = v
+	}
+	if v, ok := lookup("AUTO_CREATE"); ok {
+		cfg.AutoCreate = strings.EqualFold(v, "true") || v == "1"
+	}
+	if v, ok := lookup("DEFAULT_TTL"); ok {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.DefaultTTL = d
+		}
+	}
+}
+
+func lookup(key string) (string, bool) {
+	return os.LookupEnv("KLAUS_GATEWAY_" + key)
+}
+
+// Validate checks that the config is internally consistent.
+func (c Config) Validate() error {
+	switch c.Store {
+	case StoreMemory, StoreBolt, StoreConfigMap:
+	default:
+		return fmt.Errorf("invalid --store %q: must be one of memory, bolt, configmap", c.Store)
+	}
+	switch c.Driver {
+	case DriverKlausctl, DriverOperator:
+	default:
+		return fmt.Errorf("invalid --driver %q: must be one of klausctl, operator", c.Driver)
+	}
+	if c.Store == StoreBolt && c.BoltPath == "" {
+		return fmt.Errorf("--bolt-path is required with --store=bolt")
+	}
+	if c.Driver == DriverOperator && c.OperatorMCPURL == "" {
+		return fmt.Errorf("--operator-mcp-url is required with --driver=operator")
+	}
+	return nil
+}

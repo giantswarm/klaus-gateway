@@ -34,8 +34,36 @@ spec:
         - --listen-address=:{{ .Values.server.port }}
         - --admin-address=:{{ .Values.admin.port }}
         - --log-level={{ .Values.logLevel }}
-        {{- if .Values.agentgatewayURL }}
-        - --agentgateway-url={{ .Values.agentgatewayURL }}
+        - --store={{ .Values.routing.store }}
+        {{- if eq .Values.routing.store "bolt" }}
+        - --bolt-path={{ .Values.routing.boltPath }}
+        {{- end }}
+        {{- if eq .Values.routing.store "configmap" }}
+        - --namespace=$(POD_NAMESPACE)
+        {{- end }}
+        {{- if .Values.routing.defaultTTL }}
+        - --default-ttl={{ .Values.routing.defaultTTL }}
+        {{- end }}
+        {{- if .Values.routing.autoCreate }}
+        - --auto-create
+        {{- end }}
+        - --driver={{ .Values.lifecycle.driver }}
+        {{- if and (eq .Values.lifecycle.driver "klausctl") .Values.lifecycle.klausctlBin }}
+        - --klausctl-bin={{ .Values.lifecycle.klausctlBin }}
+        {{- end }}
+        {{- if eq .Values.lifecycle.driver "operator" }}
+        {{- if .Values.lifecycle.operatorMCPURL }}
+        - --operator-mcp-url={{ .Values.lifecycle.operatorMCPURL }}
+        {{- end }}
+        {{- if .Values.lifecycle.operatorMCPToken }}
+        - --operator-mcp-token={{ .Values.lifecycle.operatorMCPToken }}
+        {{- end }}
+        {{- end }}
+        {{- if .Values.upstream.agentgatewayURL }}
+        - --agentgateway-url={{ .Values.upstream.agentgatewayURL }}
+        {{- end }}
+        {{- if .Values.observability.otlpEndpoint }}
+        - --otel-otlp-endpoint={{ .Values.observability.otlpEndpoint }}
         {{- end }}
         ports:
         - name: http
