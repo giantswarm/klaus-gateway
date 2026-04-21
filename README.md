@@ -1,59 +1,73 @@
 # klaus-gateway
 
-Channel and routing gateway in front of [klaus](https://github.com/giantswarm/klaus) instances.
+[![CircleCI](https://dl.circleci.com/status-badge/img/gh/giantswarm/klaus-gateway/tree/main.svg?style=svg)](https://dl.circleci.com/status-badge/redirect/gh/giantswarm/klaus-gateway/tree/main)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-`klaus-gateway` is the human-facing channel layer (Slack, web, CLI, IDE) that routes inbound messages to the right klaus instance and proxies LLM/MCP/A2A traffic through [agentgateway](https://github.com/agentgateway/agentgateway) as the data plane.
+`klaus-gateway` is the channel and routing front door for [Klaus](https://github.com/giantswarm/klaus) AI agent instances. It receives messages from human-facing channels — Slack, web browsers, and CLI sessions — maps each conversation to the right Klaus instance, creates instances on demand via [klausctl](https://github.com/giantswarm/klausctl) or [Klaus Operator](https://github.com/giantswarm/klaus-operator), and forwards LLM/MCP traffic through [agentgateway](https://github.com/agentgateway/agentgateway) as the data plane.
+
+## Channels
+
+| Channel | Path prefix             | Description                                    |
+|---------|-------------------------|------------------------------------------------|
+| Web     | `/web/*`                | Bytes-in / SSE-out adapter for web UIs         |
+| Slack   | `/channels/slack/*`     | Events API webhook or Socket Mode              |
+| CLI     | `/cli/v1/*`             | Remote sessions for `klausctl --remote` users  |
+
+IDE and OpenAI/MCP-native clients bypass `klaus-gateway` and connect to `agentgateway` directly.
 
 ## Architecture
 
 ```
-External consumers                Gateway layer                       Platform
-+-----------------+               +-------------------+               +-----------------+
-| IDE / OpenAI    | ----------->  | agentgateway      |  --->  klaus-instance pods
-| Slack / web     | --> klaus-gateway -> agentgateway |
-| klausctl --remote |             | (channel adapters,|
-+-----------------+               |  routing,         |               +-----------------+
-                                  |  lifecycle)       |  --->  klaus-operator (MCP)
-                                  +-------------------+
+External consumers                  Gateway layer                        Platform
++------------------+               +---------------------------+         +-----------------+
+| IDE / OpenAI SDK | -------+-----> agentgateway (data plane)  | ------> Klaus instances  |
++------------------+        |      | JWT/Cedar authn, routing  |         +-----------------+
+                            |      +---------------------------+
+| Slack / web      |        |      +---------------------------+         +-----------------+
+| klausctl --remote| -----> +----> | klaus-gateway             | ------> Klaus Operator   |
++------------------+               | channel adapters          |         | (MCP lifecycle) |
+                                   | routing table             |         +-----------------+
+                                   | lifecycle drivers         |
+                                   +---------------------------+
 ```
 
-- IDE and other OpenAI/MCP-native clients hit `agentgateway` directly.
-- Channel-bound traffic (Slack, web, CLI sessions) goes through `klaus-gateway`, which resolves channel identity to an instance, creates instances on demand, and forwards the request to `agentgateway`.
+Full design: [architecture doc](https://github.com/teemow/klaus-lab/blob/main/architecture/klaus-gateway.md) · [agentgateway ADR](https://github.com/teemow/klaus-lab/blob/main/decisions/2026-04-20-1100-adr-agentgateway-as-data-plane.md)
 
-See the [architecture document](https://github.com/teemow/klaus-lab/blob/main/architecture/klaus-gateway.md) and the [agentgateway-as-data-plane ADR](https://github.com/teemow/klaus-lab/blob/main/decisions/2026-04-20-1100-adr-agentgateway-as-data-plane.md) in the lab notebook for the full design.
+## Documentation
 
-## Status
+- [Development guide](docs/development.md) — build, test, compose harness, adding adapters
+- [Deployment guide](docs/deployment.md) — Helm chart, agentgateway wiring, channel configuration
+- [API reference](docs/api.md) — HTTP surface reference for all adapters
+- Channel guides: [Web](docs/channels-web.md) · [Slack](docs/channels-slack.md) · [CLI](docs/channels-cli.md)
 
-Phase 1 is live. The binary ships:
+## Quick start
 
-- OpenAI-compat front door at `/v1/{instance}/chat/completions` and `/v1/{instance}/chat/messages` (path-scoped so OpenAI SDKs work with just a `baseURL` change).
-- Web channel adapter at `/web/*` -- bytes-in / SSE-out, consumed by the lab webapp.
-- Routing table with memory / bolt / configmap stores.
-- Lifecycle drivers: `klausctl`, `operator`, and a `static` driver for compose / single-instance deployments.
-- Upstream wiring to agentgateway (or direct-to-instance).
-- OTel traces + Prometheus `/metrics`.
-- Compose smoke harness in `deploy/` driven by `make e2e-local`.
+```bash
+# Run the compose smoke harness (builds + end-to-end test)
+make e2e-local
 
-Slack adapter, CLI adapter, cluster Helm for agentgateway CRDs, and the ChannelRoute CRD land in follow-up PRs.
+# Build binary
+go build ./...
+
+# Build container image
+docker build -t klaus-gateway:dev .
+```
+
+For day-to-day development the preferred path is `klausctl gateway start`, which spins up
+`klaus-gateway`, `agentgateway`, and a Klaus instance with your LLM API key. See
+[docs/development.md](docs/development.md).
 
 ## Layout
 
 ```
-cmd/                # entrypoints (added in Phase 1)
-pkg/                # exported packages (server, channels, routing, lifecycle, ...)
-internal/           # internal helpers (config, build metadata)
+cmd/                # binary entrypoint
+pkg/                # channel adapters, routing, lifecycle, server, upstream
+internal/           # config, controller, version
 helm/klaus-gateway/ # Helm chart
-deploy/             # docker-compose harness, agentgateway examples (Phase 0b)
-docs/               # development.md, deployment.md
-```
-
-## Build
-
-```bash
-go build ./...
-docker build -t klaus-gateway:dev .
+deploy/             # docker-compose smoke harness + agentgateway config
+docs/               # development, deployment, API, and channel guides
 ```
 
 ## License
 
-Apache 2.0 -- see [LICENSE](LICENSE).
+Apache 2.0 — see [LICENSE](LICENSE).
