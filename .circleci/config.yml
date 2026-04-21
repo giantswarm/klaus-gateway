@@ -10,6 +10,9 @@ workflows:
           context: architect
           name: go-build
           binary: klaus-gateway
+          # Main package lives at cmd/klaus-gateway -- the architect orb
+          # defaults `path` to "." which has no Go files in this repo.
+          path: ./cmd/klaus-gateway
           filters:
             tags:
               only: /^v.*/
