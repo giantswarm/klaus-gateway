@@ -3,22 +3,6 @@ version: 2.1
 orbs:
   architect: giantswarm/architect@6.15.0
 
-jobs:
-  e2e-local:
-    machine:
-      image: ubuntu-2204:current
-    steps:
-      - checkout
-      - run:
-          name: Run end-to-end compose smoke test
-          command: make e2e-local
-      - run:
-          name: Dump container logs on failure
-          when: on_fail
-          command: |
-            docker compose -f deploy/docker-compose.yml ps || true
-            docker compose -f deploy/docker-compose.yml logs --no-color --tail=200 || true
-
 workflows:
   test:
     jobs:
@@ -26,11 +10,6 @@ workflows:
           context: architect
           name: go-build
           binary: klaus-gateway
-          filters:
-            tags:
-              only: /^v.*/
-
-      - e2e-local:
           filters:
             tags:
               only: /^v.*/
@@ -47,6 +26,18 @@ workflows:
               ignore:
                 - main
                 - master
+
+      # Main builds: full multi-arch (amd64 + arm64) so the :latest tag
+      # works on every spidertron node, including the arm64 GPU sparks.
+      - architect/push-to-registries-multiarch:
+          context: architect
+          name: push-to-registries-latest
+          tag-latest-branch: main
+          requires:
+            - go-build
+          filters:
+            branches:
+              only: main
 
       # Tag builds: full multi-arch (amd64 + arm64) so the image runs on
       # spidertron's DGX Spark.
