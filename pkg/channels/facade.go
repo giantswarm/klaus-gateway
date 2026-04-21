@@ -23,8 +23,8 @@ type InstanceClient interface {
 // Facade wires the routing.Router, instance.Client, and lifecycle.Manager
 // together into the Gateway surface used by channel adapters.
 type Facade struct {
-	Router   *routing.Router
-	Client   InstanceClient
+	Router    *routing.Router
+	Client    InstanceClient
 	Lifecycle lifecycle.Manager
 }
 

@@ -20,8 +20,8 @@ import (
 )
 
 const (
-	conditionReady   = "Ready"
-	requeueInterval  = 5 * time.Minute
+	conditionReady  = "Ready"
+	requeueInterval = 5 * time.Minute
 )
 
 // ChannelRouteReconciler reconciles ChannelRoute resources and keeps their

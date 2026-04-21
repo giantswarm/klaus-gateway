@@ -1,10 +1,10 @@
 // klaus-instance-stub mimics the HTTP surface of a real klaus instance just
 // enough for the compose smoke harness to pass:
 //
-//   POST /v1/chat/completions -- returns a short SSE stream
-//   POST /mcp                 -- responds to JSON-RPC `tools/call` for the
-//                                `messages` tool with a minimal transcript
-//   GET  /status              -- 200 ok
+//	POST /v1/chat/completions -- returns a short SSE stream
+//	POST /mcp                 -- responds to JSON-RPC `tools/call` for the
+//	                             `messages` tool with a minimal transcript
+//	GET  /status              -- 200 ok
 //
 // The stub is not a product surface. It exists solely so CI can verify
 // klaus-gateway end-to-end without pulling the real klaus image (which is
