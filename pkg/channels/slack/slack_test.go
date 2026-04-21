@@ -304,10 +304,10 @@ func TestBatchedWriter_FlushesContent(t *testing.T) {
 // --- stubGateway ---
 
 type stubGateway struct {
-	mu           sync.Mutex
+	mu            sync.Mutex
 	resolveCount_ int
-	onResolve    func(channels.InboundMessage)
-	deltas       []channels.OutboundDelta
+	onResolve     func(channels.InboundMessage)
+	deltas        []channels.OutboundDelta
 }
 
 func (s *stubGateway) resolveCount() int {

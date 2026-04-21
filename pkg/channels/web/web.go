@@ -2,9 +2,10 @@
 // other bytes-in / SSE-out consumer) calls into.
 //
 // Surface:
-//   POST /web/messages     -- send one user message, receive deltas as SSE
-//   GET  /web/messages     -- fetch history for (channelId, userId, threadId)
-//   GET  /web/healthz      -- 200 once Start has run
+//
+//	POST /web/messages     -- send one user message, receive deltas as SSE
+//	GET  /web/messages     -- fetch history for (channelId, userId, threadId)
+//	GET  /web/healthz      -- 200 once Start has run
 //
 // The adapter is channel-agnostic on the wire: it normalises requests into
 // channels.InboundMessage and hands off to the Gateway facade.
