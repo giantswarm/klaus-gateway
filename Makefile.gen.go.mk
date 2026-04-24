@@ -2,16 +2,15 @@
 #
 #    devctl
 #
-#    https://github.com/giantswarm/devctl/blob/c2dd604fd787d9aa63ec6c43c817c8596f1356f7/pkg/gen/input/makefile/internal/file/Makefile.gen.go.mk.template
+#    https://github.com/giantswarm/devctl/blob/243afc98a2832b4f85f9b1d99b15fcd2af5dff06/pkg/gen/input/makefile/internal/file/Makefile.gen.go.mk.template
 #
 
 APPLICATION    := $(shell go list -m | cut -d '/' -f 3)
 BUILDTIMESTAMP := $(shell date -u '+%FT%TZ')
 GITSHA1        := $(shell git rev-parse --verify HEAD)
 MODULE         := $(shell go list -m)
-# main() is usually in `main.go`, but sometimes in `cmd/main.go` or
-# `cmd/<application>/main.go`. klaus-gateway uses the latter layout.
-MAIN_SOURCE    := $(shell if test -e cmd/klaus-gateway/main.go; then echo ./cmd/klaus-gateway; elif test -e cmd/main.go; then echo cmd/main.go; else echo main.go; fi)
+# main() is usually in `main.go`, but sometimes in `cmd/main.go` (for example in newer kubebuilder projects)
+MAIN_SOURCE    := $(shell if test -e cmd/main.go; then echo cmd/main.go; else echo main.go; fi)
 OS             := $(shell go env GOOS)
 SOURCES        := $(shell find . -name '*.go')
 VERSION        := $(shell architect project version)
