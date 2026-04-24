@@ -3,7 +3,14 @@ name: klaus-gateway
 description: Channel and routing gateway in front of klaus instances; uses agentgateway as the LLM/MCP/A2A data plane
 type: application
 version: "[[ .Version ]]"
-appVersion: "[[ .AppVersion ]]"
+# Tie appVersion to the chart version so .Chart.AppVersion (and therefore the
+# default `image.tag`, see templates/_helpers.tpl) resolves to the same tag the
+# CI pipeline pushes to gsoci. The architect orb's default `[[ .AppVersion ]]`
+# substitution renders the literal "dev", which only matches the floating
+# image tag we used to publish on every main commit; that tag was retired by
+# the auto-release workflow in #16, so empty `image.tag` would otherwise pull
+# the now-missing :dev image.
+appVersion: "[[ .Version ]]"
 home: https://github.com/giantswarm/klaus-gateway
 sources:
   - https://github.com/giantswarm/klaus-gateway
