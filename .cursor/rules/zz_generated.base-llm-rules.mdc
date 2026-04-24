@@ -38,6 +38,15 @@ You are an AI assistant acting as an expert software developer and platform engi
 Additional language-specific rules can be found in the general style guide and in the other rules files in this repository.
 
 
+### Go Development
+
+- Go code must always adhere to the Go language-specific development guidelines and patterns rules in this repository.
+
+### Go Application Security
+
+- Ensure all Go dependencies are up to date.
+- Follow best security practices for Go applications.
+
 
 ---
 

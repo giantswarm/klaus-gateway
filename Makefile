@@ -2,36 +2,10 @@
 #
 #    devctl
 #
-#    https://github.com/giantswarm/devctl/blob/c2dd604fd787d9aa63ec6c43c817c8596f1356f7/pkg/gen/input/makefile/internal/file/Makefile.template
+#    https://github.com/giantswarm/devctl/blob/6a704f7e2a8b0f09e82b5bab88f17971af849711/pkg/gen/input/makefile/internal/file/Makefile.template
 #
 
 include Makefile.*.mk
-
-##@ Helm
-
-.PHONY: helm-test
-helm-test: ## Run helm lint + render assertions for the klaus-gateway chart.
-	@echo "====> $@"
-	./hack/helm-template-tests
-
-##@ E2E
-
-E2E_COMPOSE := docker compose -f deploy/docker-compose.yml
-
-.PHONY: e2e-local e2e-local-up e2e-local-down
-e2e-local: e2e-local-up ## Bring up the compose smoke stack and run hack/smoke-completion.
-	@echo "====> $@"
-	./hack/wait-for http://127.0.0.1:8081/healthz 120
-	./hack/smoke-completion http://127.0.0.1:8080 test-instance
-	$(MAKE) e2e-local-down
-
-e2e-local-up: ## Bring the compose stack up in the background.
-	@echo "====> $@"
-	$(E2E_COMPOSE) up -d --build --wait --wait-timeout 120
-
-e2e-local-down: ## Tear the compose stack down and remove volumes.
-	@echo "====> $@"
-	-$(E2E_COMPOSE) down -v --remove-orphans
 
 ##@ General
 
