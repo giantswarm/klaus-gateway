@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Add `.abs/main.yaml` with `replace-chart-version-with-git` /
+  `replace-app-version-with-git` enabled. Without this config app-build-suite
+  packaged the chart with the literal `0.1.0` placeholder from `Chart.yaml`,
+  which left the published chart's `appVersion` (and thus the default
+  `image.tag`) pointing at the non-existent `:0.1.0` image. The same flag is
+  used by `klaus` and `mcp-prometheus`.
+
 ### Changed
 
 - Switch the chart catalog jobs to the `app-build-suite` executor (mirrors the
