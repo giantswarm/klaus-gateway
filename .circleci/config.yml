@@ -42,11 +42,27 @@ workflows:
             branches:
               only: main
 
-      # Tag builds: full multi-arch (amd64 + arm64) so the image runs on
-      # spidertron's DGX Spark.
+      # Tag builds: push multi-arch image to gsoci (primary registry).
+      # Chart push depends on this completing successfully.
       - architect/push-to-registries-multiarch:
           context: architect
-          name: push-to-registries-release
+          name: push-to-gsoci-release
+          registries-data: "public gsoci.azurecr.io ACR_GSOCI_USERNAME ACR_GSOCI_PASSWORD true"
+          requires:
+            - go-build
+          filters:
+            tags:
+              only: /^v.*/
+            branches:
+              ignore: /.*/
+
+      # Tag builds: push multi-arch image to all registries (including China
+      # mirrors). Runs in parallel and does NOT block the chart push, so a
+      # slow/unreachable mirror only delays itself, not the primary delivery
+      # pipeline. Mirrors the mcp-prometheus split.
+      - architect/push-to-registries-multiarch:
+          context: architect
+          name: push-to-all-registries-release
           requires:
             - go-build
           filters:
@@ -69,6 +85,9 @@ workflows:
                 - main
                 - master
 
+      # Tag: push chart after gsoci image is up. Intentionally does NOT depend
+      # on push-to-all-registries-release so the chart catalog can publish the
+      # new version even if the China mirror is slow.
       - architect/push-to-app-catalog:
           context: architect
           name: push-to-app-catalog-release
@@ -76,7 +95,7 @@ workflows:
           app_catalog_test: giantswarm-test-catalog
           chart: klaus-gateway
           requires:
-            - push-to-registries-release
+            - push-to-gsoci-release
           filters:
             tags:
               only: /^v.*/

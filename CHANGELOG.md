@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Split tag-build registry push into two parallel jobs: a gsoci-only push that
+  gates the chart catalog release, and a separate "all registries" push that
+  also covers the slow China mirror. The chart push no longer waits for the
+  China mirror to come back online, mirroring the pattern in `mcp-prometheus`.
+
 ### Fixed
 
 - Set chart `appVersion` to the chart `version` so the default `image.tag`
