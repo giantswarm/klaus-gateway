@@ -80,7 +80,7 @@ func (h *Handler) completions(w http.ResponseWriter, r *http.Request) {
 		h.upstreamError(w, r, err, "stream completion")
 		return
 	}
-	defer src.Close()
+	defer func() { _ = src.Close() }()
 
 	if err := instance.ProxySSE(r.Context(), w, src); err != nil {
 		// Headers are already sent; log and return. Client either

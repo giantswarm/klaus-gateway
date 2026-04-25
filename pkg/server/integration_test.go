@@ -50,18 +50,18 @@ func TestIntegration_BootWithBolt(t *testing.T) {
 	for _, path := range []string{"/healthz", "/readyz"} {
 		resp, err := http.Get(admin.URL + path)
 		require.NoError(t, err)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		require.Equal(t, http.StatusOK, resp.StatusCode, path)
 	}
 
 	// Drive the public mux once so the RED histograms have a sample.
 	resp, err := http.Get(public.URL + "/warmup")
 	require.NoError(t, err)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	resp, err = http.Get(admin.URL + "/metrics")
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
 	require.Contains(t, string(body), "go_goroutines")
 	require.Contains(t, string(body), "klaus_gateway_request_duration_seconds")

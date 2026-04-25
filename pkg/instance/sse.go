@@ -95,15 +95,13 @@ func StreamDeltas(ctx context.Context, src io.Reader, out chan<- Delta) error {
 				event = strings.TrimSpace(strings.TrimPrefix(trimmed, "event:"))
 			case strings.HasPrefix(trimmed, "data:"):
 				payload := strings.TrimPrefix(trimmed, "data:")
-				if strings.HasPrefix(payload, " ") {
-					payload = payload[1:]
-				}
+				payload = strings.TrimPrefix(payload, " ")
 				if len(dataBuf) > 0 {
 					dataBuf = append(dataBuf, '\n')
 				}
 				dataBuf = append(dataBuf, payload...)
-			case strings.HasPrefix(trimmed, ":"):
-				// comment; ignore
+				// Lines starting with ":" are SSE comments and are ignored
+				// implicitly by falling through with no matching case.
 			}
 		}
 		if err != nil {

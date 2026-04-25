@@ -74,7 +74,7 @@ func (f *Facade) SendCompletion(ctx context.Context, ref InstanceRef, msg Inboun
 	out := make(chan OutboundDelta, 16)
 	go func() {
 		defer close(out)
-		defer src.Close()
+		defer func() { _ = src.Close() }()
 
 		deltas := make(chan instance.Delta, 16)
 		errCh := make(chan error, 1)

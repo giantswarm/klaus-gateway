@@ -52,7 +52,7 @@ func (c *Client) StreamCompletion(ctx context.Context, ref lifecycle.InstanceRef
 	}
 	if resp.StatusCode >= 300 {
 		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return nil, fmt.Errorf("instance %s: status %d: %s", ref.Name, resp.StatusCode, strings.TrimSpace(string(snippet)))
 	}
 	return resp.Body, nil
@@ -90,7 +90,7 @@ func (c *Client) CallMCPTool(ctx context.Context, ref lifecycle.InstanceRef, too
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 300 {
 		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		return nil, fmt.Errorf("mcp %s: status %d: %s", tool, resp.StatusCode, string(snippet))

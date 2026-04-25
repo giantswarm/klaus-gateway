@@ -27,7 +27,7 @@ func TestProxySSE(t *testing.T) {
 			"data: {\"delta\":\"world\"}\n",
 			"\n",
 		} {
-			fmt.Fprint(w, line)
+			_, _ = fmt.Fprint(w, line)
 			flusher.Flush()
 		}
 	}))
@@ -76,7 +76,7 @@ func TestClient_StreamCompletion(t *testing.T) {
 	body, err := c.StreamCompletion(context.Background(),
 		lifecycle.InstanceRef{Name: "i1", BaseURL: backend.URL}, []byte(`{"messages":[]}`))
 	require.NoError(t, err)
-	defer body.Close()
+	defer func() { _ = body.Close() }()
 	buf, _ := io.ReadAll(body)
 	require.Contains(t, string(buf), "data: ok")
 }

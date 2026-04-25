@@ -23,7 +23,11 @@ type Runner interface {
 type execRunner struct{ bin string }
 
 func (r execRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
+	// The binary name and args originate from this package's own configuration
+	// (the klausctl path) and validated lifecycle requests. There is no
+	// untrusted user input flowing into the command.
+	cmd := exec.CommandContext(ctx, name, args...) //nolint:gosec // G204
+
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

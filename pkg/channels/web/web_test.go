@@ -84,7 +84,7 @@ func TestPostMessages_StreamsSSE(t *testing.T) {
 	body := `{"channelId":"c1","userId":"u1","threadId":"t1","text":"hi"}`
 	resp, err := http.Post(ts.URL+"/web/messages", "application/json", strings.NewReader(body))
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	require.Equal(t, "text/event-stream", resp.Header.Get("Content-Type"))
@@ -107,7 +107,7 @@ func TestPostMessages_MissingFields(t *testing.T) {
 	ts := newServer(t, &stubGateway{})
 	resp, err := http.Post(ts.URL+"/web/messages", "application/json", strings.NewReader(`{"userId":"u1"}`))
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
@@ -117,7 +117,7 @@ func TestPostMessages_ResolveRouteNotFound(t *testing.T) {
 	body := `{"channelId":"c1","userId":"u1","threadId":"t1","text":"hi"}`
 	resp, err := http.Post(ts.URL+"/web/messages", "application/json", strings.NewReader(body))
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
 
@@ -130,7 +130,7 @@ func TestGetMessages_ReturnsHistory(t *testing.T) {
 
 	resp, err := http.Get(ts.URL + "/web/messages?channelId=c1&userId=u1&threadId=t1")
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 
 	var got struct {
@@ -145,7 +145,7 @@ func TestGetMessages_MissingParams(t *testing.T) {
 	ts := newServer(t, &stubGateway{})
 	resp, err := http.Get(ts.URL + "/web/messages")
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
@@ -153,7 +153,7 @@ func TestHealthz_AfterStart(t *testing.T) {
 	ts := newServer(t, &stubGateway{})
 	resp, err := http.Get(ts.URL + "/web/healthz")
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
@@ -166,6 +166,6 @@ func TestHealthz_BeforeStart(t *testing.T) {
 
 	resp, err := http.Get(ts.URL + "/web/healthz")
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
 }
