@@ -11,15 +11,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Split tag-build registry push into two parallel jobs: a gsoci-only push that
-  gates the chart catalog release, and a separate "all registries" push that
-  also covers the slow China mirror. The chart push no longer waits for the
-  China mirror to come back online, mirroring the pattern in `mcp-prometheus`.
-
-### Fixed
-
-- Set chart `appVersion` to the chart `version` so the default `image.tag`
-  resolves to the per-tag image pushed by the auto-release pipeline instead of
-  the now-missing floating `:dev` tag.
+- Switch the chart catalog jobs to the `app-build-suite` executor and split
+  the chart pipeline into `build-chart`, `execute chart tests`, and
+  `push-to-app-catalog{,-release}` (mirrors the klaus and mcp-prometheus
+  pattern). `app-build-suite` rewrites `Chart.yaml`'s `version` and
+  `appVersion` from the git tag at build time, which finally lets tag releases
+  publish a chart -- previously every tag build failed architect's strict
+  `helm-chart-template` validator because `pkg/project/project.go` keeps the
+  literal value `dev`.
+- Hardcode `version`/`appVersion` placeholders in `helm/klaus-gateway/Chart.yaml`
+  back to `0.1.0`. The CI's `app-build-suite` step overwrites them; templating
+  via `[[ .Version ]]` (introduced in #19) is incompatible with that flow.
+- Split the tag-build registry push into two parallel jobs: a gsoci-only push
+  that gates the chart catalog release, and a separate "all registries" push
+  that also covers the slow China mirror. The chart push no longer waits for
+  the China mirror, so a slow mirror only delays itself.
 
 [Unreleased]: https://github.com/giantswarm/REPOSITORY_NAME/tree/main

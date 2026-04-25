@@ -71,13 +71,54 @@ workflows:
             branches:
               ignore: /.*/
 
+      # Build the chart archive once and persist it for the test job. Using
+      # the app-build-suite executor (same as klaus + mcp-prometheus) so the
+      # chart's `version` and `appVersion` get rewritten from the git tag at
+      # build time, instead of going through architect's strict
+      # `helm-chart-template` validator -- which requires `pkg/project/project.go`
+      # to literally match the tag and would otherwise fail every tag build.
       - architect/push-to-app-catalog:
+          executor: app-build-suite
+          context: architect
+          name: build-klaus-gateway-chart
+          app_catalog: giantswarm-catalog
+          app_catalog_test: giantswarm-test-catalog
+          chart: klaus-gateway
+          push_to_appcatalog: false
+          push_to_oci_registry: false
+          persist_chart_archive: true
+          requires:
+            - go-build
+          filters:
+            tags:
+              only: /^v.*/
+            branches:
+              ignore:
+                - main
+                - master
+
+      - architect/run-tests-with-ats:
+          name: execute chart tests
+          requires:
+            - build-klaus-gateway-chart
+          filters:
+            tags:
+              only: /^v.*/
+            branches:
+              ignore:
+                - main
+                - master
+
+      # Branch: push chart after tests + amd64 image.
+      - architect/push-to-app-catalog:
+          executor: app-build-suite
           context: architect
           name: push-to-app-catalog
           app_catalog: giantswarm-catalog
           app_catalog_test: giantswarm-test-catalog
           chart: klaus-gateway
           requires:
+            - execute chart tests
             - push-to-registries
           filters:
             branches:
@@ -85,16 +126,18 @@ workflows:
                 - main
                 - master
 
-      # Tag: push chart after gsoci image is up. Intentionally does NOT depend
-      # on push-to-all-registries-release so the chart catalog can publish the
-      # new version even if the China mirror is slow.
+      # Tag: push chart after tests + gsoci image. Intentionally does NOT
+      # depend on push-to-all-registries-release so the chart catalog can
+      # publish the new version even if the China mirror is slow.
       - architect/push-to-app-catalog:
+          executor: app-build-suite
           context: architect
           name: push-to-app-catalog-release
           app_catalog: giantswarm-catalog
           app_catalog_test: giantswarm-test-catalog
           chart: klaus-gateway
           requires:
+            - execute chart tests
             - push-to-gsoci-release
           filters:
             tags:
