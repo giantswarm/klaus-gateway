@@ -10,6 +10,10 @@ type: application
 # mcp-prometheus chart conventions.
 version: 0.1.0
 appVersion: 0.1.0
+# app-build-suite's GiantSwarmHelmValidator requires an `icon`. Re-using the
+# generic Giant Swarm app icon since klaus-gateway doesn't have a dedicated
+# icon yet.
+icon: https://s.giantswarm.io/app-icons/giantswarm/1/light.svg
 home: https://github.com/giantswarm/klaus-gateway
 sources:
   - https://github.com/giantswarm/klaus-gateway
