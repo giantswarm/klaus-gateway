@@ -81,7 +81,7 @@ func TestCompletions_SSEPassThrough(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	require.Equal(t, "text/event-stream", resp.Header.Get("Content-Type"))
@@ -103,7 +103,7 @@ func TestCompletions_NotFound(t *testing.T) {
 
 	resp, err := http.Post(ts.URL+"/v1/missing/chat/completions", "application/json", strings.NewReader(`{}`))
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
 
@@ -119,7 +119,7 @@ func TestCompletions_UpstreamError(t *testing.T) {
 
 	resp, err := http.Post(ts.URL+"/v1/i1/chat/completions", "application/json", strings.NewReader(`{}`))
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusBadGateway, resp.StatusCode)
 }
 
@@ -135,7 +135,7 @@ func TestCompletions_UpstreamTimeout(t *testing.T) {
 
 	resp, err := http.Post(ts.URL+"/v1/i1/chat/completions", "application/json", strings.NewReader(`{}`))
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusGatewayTimeout, resp.StatusCode)
 }
 
@@ -158,7 +158,7 @@ func TestMessages_ReturnsHistory(t *testing.T) {
 
 	resp, err := http.Post(ts.URL+"/v1/i1/chat/messages?thread_id=t1", "application/json", strings.NewReader(""))
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	var got instance.MessagesResponse
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
@@ -176,7 +176,7 @@ func TestMessages_ReadsThreadIDFromBody(t *testing.T) {
 
 	resp, err := http.Post(ts.URL+"/v1/i1/chat/messages", "application/json", strings.NewReader(`{"thread_id":"from-body"}`))
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	require.Equal(t, "from-body", streamer.gotThreadID)
 }

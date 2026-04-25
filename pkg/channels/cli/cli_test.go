@@ -18,6 +18,8 @@ import (
 	"github.com/giantswarm/klaus-gateway/pkg/routing"
 )
 
+const sampleSendBody = `{"text":"hi","sessionId":"s1"}`
+
 type stubGateway struct {
 	resolveRef     channels.InstanceRef
 	resolveErr     error
@@ -85,7 +87,7 @@ func TestPostRun_StreamsSSE(t *testing.T) {
 	body := `{"text":"hello","sessionId":"s1"}`
 	resp, err := http.Post(ts.URL+"/cli/v1/test-instance/run", "application/json", strings.NewReader(body))
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	require.Equal(t, "text/event-stream", resp.Header.Get("Content-Type"))
@@ -108,17 +110,16 @@ func TestPostRun_MissingFields(t *testing.T) {
 	// sessionId missing
 	resp, err := http.Post(ts.URL+"/cli/v1/myinst/run", "application/json", strings.NewReader(`{"text":"hi"}`))
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
 func TestPostRun_ResolveNotFound(t *testing.T) {
 	gw := &stubGateway{resolveErr: routing.ErrRouteNotFound}
 	ts := newServer(t, gw)
-	body := `{"text":"hi","sessionId":"s1"}`
-	resp, err := http.Post(ts.URL+"/cli/v1/myinst/run", "application/json", strings.NewReader(body))
+	resp, err := http.Post(ts.URL+"/cli/v1/myinst/run", "application/json", strings.NewReader(sampleSendBody))
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
 
@@ -128,14 +129,13 @@ func TestPostRun_BearerIdentity(t *testing.T) {
 	}
 	ts := newServer(t, gw)
 
-	body := `{"text":"hi","sessionId":"s1"}`
-	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/cli/v1/myinst/run", bytes.NewBufferString(body))
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/cli/v1/myinst/run", bytes.NewBufferString(sampleSendBody))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer usertoken")
 
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	require.Equal(t, "usertoken", gw.resolveInbound.UserID)
 	require.Equal(t, "usertoken", gw.resolveInbound.Subject)
@@ -154,7 +154,7 @@ func TestPostRun_BodyUserIDTakesPrecedence(t *testing.T) {
 
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	require.Equal(t, "stable-user", gw.resolveInbound.UserID)
 	require.Equal(t, "sometoken", gw.resolveInbound.Subject)
@@ -170,7 +170,7 @@ func TestPostMessages_ReturnsHistory(t *testing.T) {
 	body := `{"sessionId":"s1"}`
 	resp, err := http.Post(ts.URL+"/cli/v1/myinst/messages", "application/json", strings.NewReader(body))
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 
 	var got struct {
@@ -185,7 +185,7 @@ func TestPostMessages_MissingSessionID(t *testing.T) {
 	ts := newServer(t, &stubGateway{})
 	resp, err := http.Post(ts.URL+"/cli/v1/myinst/messages", "application/json", strings.NewReader(`{}`))
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
@@ -195,7 +195,7 @@ func TestPostMessages_ResolveNotFound(t *testing.T) {
 	body := `{"sessionId":"s1"}`
 	resp, err := http.Post(ts.URL+"/cli/v1/myinst/messages", "application/json", strings.NewReader(body))
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
 
@@ -203,7 +203,7 @@ func TestHealthz_AfterStart(t *testing.T) {
 	ts := newServer(t, &stubGateway{})
 	resp, err := http.Get(ts.URL + "/cli/v1/healthz")
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
@@ -216,7 +216,7 @@ func TestHealthz_BeforeStart(t *testing.T) {
 
 	resp, err := http.Get(ts.URL + "/cli/v1/healthz")
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
 }
 
@@ -233,10 +233,9 @@ func TestPostRun_AnonymousIdentity(t *testing.T) {
 	}
 	ts := newServer(t, gw)
 
-	body := `{"text":"hi","sessionId":"s1"}`
-	resp, err := http.Post(ts.URL+"/cli/v1/myinst/run", "application/json", strings.NewReader(body))
+	resp, err := http.Post(ts.URL+"/cli/v1/myinst/run", "application/json", strings.NewReader(sampleSendBody))
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	require.Equal(t, "anonymous", gw.resolveInbound.UserID)
 }

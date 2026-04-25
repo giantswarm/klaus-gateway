@@ -88,10 +88,6 @@ type slackAPIClient struct {
 	baseURL  string
 }
 
-func newSlackAPIClient(botToken string) *slackAPIClient {
-	return &slackAPIClient{botToken: botToken, baseURL: slackAPIBase}
-}
-
 func (c *slackAPIClient) postMessage(ctx context.Context, channel, text string) (string, error) {
 	params := url.Values{
 		"channel": {channel},
@@ -129,7 +125,7 @@ func (c *slackAPIClient) post(ctx context.Context, method string, params url.Val
 	if err != nil {
 		return "", fmt.Errorf("slack %s: %w", method, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var result slackResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {

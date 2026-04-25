@@ -95,7 +95,7 @@ func (m *Manager) call(ctx context.Context, tool string, args map[string]any, ou
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 300 {
 		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		return fmt.Errorf("operator %s: status %d: %s", tool, resp.StatusCode, string(snippet))

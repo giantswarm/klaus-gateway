@@ -169,7 +169,7 @@ func (a *Adapter) postMessages(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if d.Done {
-			fmt.Fprintf(w, "event: done\ndata: {}\n\n")
+			_, _ = fmt.Fprintf(w, "event: done\ndata: {}\n\n")
 			flusher.Flush()
 			continue
 		}
@@ -242,7 +242,7 @@ func setSSEHeaders(h http.Header) {
 }
 
 func writeSSEError(w http.ResponseWriter, flusher http.Flusher, err error) {
-	fmt.Fprintf(w, "event: error\ndata: %q\n\n", err.Error())
+	_, _ = fmt.Fprintf(w, "event: error\ndata: %q\n\n", err.Error())
 	flusher.Flush()
 }
 

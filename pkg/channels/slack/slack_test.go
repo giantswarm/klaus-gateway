@@ -94,7 +94,7 @@ func TestStripMention(t *testing.T) {
 func newEventsAdapter(t *testing.T, gw channels.Gateway, fakeAPIBase string) (*slackadapter.Adapter, *httptest.Server) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	secrets := slackadapter.Secrets{
+	secrets := slackadapter.Secrets{ //nolint:gosec // G101 dummy values used only in tests
 		BotToken:      "dummy-bot-token",
 		SigningSecret: "signing-secret",
 	}
@@ -127,7 +127,7 @@ func TestEventsHandler_URLVerification(t *testing.T) {
 
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 
 	var got map[string]string
@@ -145,7 +145,7 @@ func TestEventsHandler_InvalidSignature(t *testing.T) {
 
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 }
 
@@ -164,7 +164,7 @@ func TestEventsHandler_AppMentionDispatch(t *testing.T) {
 	// Fake Slack API server: returns ok=true for postMessage and chatUpdate.
 	fakeSlack := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"ok":true,"ts":"1234.5678"}`)
+		_, _ = fmt.Fprintf(w, `{"ok":true,"ts":"1234.5678"}`)
 	}))
 	defer fakeSlack.Close()
 
@@ -190,7 +190,7 @@ func TestEventsHandler_AppMentionDispatch(t *testing.T) {
 
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 
 	// Wait for the async goroutine to fire.
@@ -234,7 +234,7 @@ func TestEventsHandler_BotMessageIgnored(t *testing.T) {
 
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 
 	// Give the goroutine time to run (it should not call Resolve).
@@ -249,12 +249,13 @@ func TestBatchedWriter_FlushesContent(t *testing.T) {
 	var updates []string
 
 	fakeSlack := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 		require.NoError(t, r.ParseForm())
 		mu.Lock()
 		updates = append(updates, r.FormValue("text"))
 		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"ok":true,"ts":"1234.5678"}`)
+		_, _ = fmt.Fprintf(w, `{"ok":true,"ts":"1234.5678"}`)
 	}))
 	defer fakeSlack.Close()
 
@@ -286,7 +287,7 @@ func TestBatchedWriter_FlushesContent(t *testing.T) {
 	req.Header.Set("X-Slack-Signature", sig)
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Wait for the batchedWriter to complete and flush.
 	require.Eventually(t, func() bool {
@@ -355,6 +356,7 @@ func TestBatchedWriter_CombinesDeltas(t *testing.T) {
 	var texts []string
 
 	fakeSlack := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 		require.NoError(t, r.ParseForm())
 		text := r.FormValue("text")
 		if strings.Contains(r.URL.Path, "chat.update") {
@@ -363,7 +365,7 @@ func TestBatchedWriter_CombinesDeltas(t *testing.T) {
 			mu.Unlock()
 		}
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"ok":true,"ts":"111.222"}`)
+		_, _ = fmt.Fprintf(w, `{"ok":true,"ts":"111.222"}`)
 	}))
 	defer fakeSlack.Close()
 
@@ -384,7 +386,7 @@ func TestBatchedWriter_CombinesDeltas(t *testing.T) {
 	req.Header.Set("X-Slack-Signature", sig)
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	require.Eventually(t, func() bool {
 		mu.Lock()
