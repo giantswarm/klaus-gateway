@@ -16,7 +16,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
       -ldflags "-w -extldflags '-static'" \
       -o klaus-gateway ./cmd/klaus-gateway
 
-FROM docker.io/library/alpine:3.20
+FROM docker.io/library/alpine:3.23
 RUN apk add --no-cache ca-certificates
 COPY --from=builder /app/klaus-gateway /klaus-gateway
 USER 65532:65532
