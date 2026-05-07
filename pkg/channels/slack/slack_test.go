@@ -22,6 +22,8 @@ import (
 	slackadapter "github.com/giantswarm/klaus-gateway/pkg/channels/slack"
 )
 
+const helloText = "hello"
+
 // signBody computes the x-slack-signature header value for body.
 func signBody(t *testing.T, signingSecret string, body []byte) (ts, sig string) {
 	t.Helper()
@@ -76,8 +78,8 @@ func TestStripMention(t *testing.T) {
 	cases := []struct {
 		in, want string
 	}{
-		{"<@U12345> hello", "hello"},
-		{"<@U12345>hello", "hello"},
+		{"<@U12345> " + helloText, helloText},
+		{"<@U12345>" + helloText, helloText},
 		{"<@BOT> hi there", "hi there"},
 		{"no mention here", "no mention here"},
 		{"", ""},
@@ -206,7 +208,7 @@ func TestEventsHandler_AppMentionDispatch(t *testing.T) {
 	require.Equal(t, "slack", got.Channel)
 	require.Equal(t, "C456", got.ChannelID)
 	require.Equal(t, "U123", got.UserID)
-	require.Equal(t, "hello", got.Text)
+	require.Equal(t, helloText, got.Text)
 }
 
 func TestEventsHandler_BotMessageIgnored(t *testing.T) {
@@ -261,7 +263,7 @@ func TestBatchedWriter_FlushesContent(t *testing.T) {
 
 	gw := &stubGateway{
 		deltas: []channels.OutboundDelta{
-			{Content: "hello"},
+			{Content: helloText},
 			{Content: " world"},
 			{Done: true},
 		},

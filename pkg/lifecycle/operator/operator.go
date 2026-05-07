@@ -16,6 +16,10 @@ import (
 	"github.com/giantswarm/klaus-gateway/pkg/lifecycle"
 )
 
+// nameKey is the JSON object key shared by the MCP tool-call envelope's
+// "name" field and the per-tool "name" argument used by every operator RPC.
+const nameKey = "name"
+
 // Manager speaks JSON-RPC MCP to klaus-operator.
 type Manager struct {
 	httpClient *http.Client
@@ -74,7 +78,7 @@ func (m *Manager) call(ctx context.Context, tool string, args map[string]any, ou
 		ID:      id,
 		Method:  "tools/call",
 		Params: map[string]any{
-			"name":      tool,
+			nameKey:     tool,
 			"arguments": args,
 		},
 	}
@@ -130,7 +134,7 @@ func (o operatorInstance) toRef() lifecycle.InstanceRef {
 // Get calls get_instance.
 func (m *Manager) Get(ctx context.Context, name string) (lifecycle.InstanceRef, error) {
 	var inst operatorInstance
-	if err := m.call(ctx, "get_instance", map[string]any{"name": name}, &inst); err != nil {
+	if err := m.call(ctx, "get_instance", map[string]any{nameKey: name}, &inst); err != nil {
 		return lifecycle.InstanceRef{}, err
 	}
 	if inst.Name == "" {
@@ -142,7 +146,7 @@ func (m *Manager) Get(ctx context.Context, name string) (lifecycle.InstanceRef, 
 // Create calls create_instance.
 func (m *Manager) Create(ctx context.Context, spec lifecycle.CreateSpec) (lifecycle.InstanceRef, error) {
 	args := map[string]any{
-		"name":       spec.Name,
+		nameKey:      spec.Name,
 		"channel":    spec.Channel,
 		"channel_id": spec.ChannelID,
 		"user_id":    spec.UserID,
@@ -173,5 +177,5 @@ func (m *Manager) List(ctx context.Context) ([]lifecycle.InstanceRef, error) {
 
 // Stop calls stop_instance.
 func (m *Manager) Stop(ctx context.Context, name string) error {
-	return m.call(ctx, "stop_instance", map[string]any{"name": name}, nil)
+	return m.call(ctx, "stop_instance", map[string]any{nameKey: name}, nil)
 }

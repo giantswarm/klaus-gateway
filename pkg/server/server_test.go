@@ -18,13 +18,15 @@ import (
 	"github.com/giantswarm/klaus-gateway/pkg/server"
 )
 
+const localhostAnyPort = "127.0.0.1:0"
+
 // newAdmin constructs a server and returns just its admin handler wired into
 // an httptest.Server.
 func newAdmin(t *testing.T, ready server.ReadinessFunc) *httptest.Server {
 	t.Helper()
 	s := server.New(server.Options{
-		PublicAddress: "127.0.0.1:0",
-		AdminAddress:  "127.0.0.1:0",
+		PublicAddress: localhostAnyPort,
+		AdminAddress:  localhostAnyPort,
 		Metrics:       observability.NewMetrics(),
 		Ready:         ready,
 	})
@@ -59,8 +61,8 @@ func TestAdmin_Readyz_NotReady(t *testing.T) {
 
 func TestAdmin_Metrics(t *testing.T) {
 	srv := server.New(server.Options{
-		PublicAddress: "127.0.0.1:0",
-		AdminAddress:  "127.0.0.1:0",
+		PublicAddress: localhostAnyPort,
+		AdminAddress:  localhostAnyPort,
 		Metrics:       observability.NewMetrics(),
 	})
 	public := httptest.NewServer(srv.PublicHandler())
@@ -91,8 +93,8 @@ func TestPublic_EmitsOTelSpan(t *testing.T) {
 	t.Cleanup(func() { otel.SetTracerProvider(prev) })
 
 	s := server.New(server.Options{
-		PublicAddress: "127.0.0.1:0",
-		AdminAddress:  "127.0.0.1:0",
+		PublicAddress: localhostAnyPort,
+		AdminAddress:  localhostAnyPort,
 		Metrics:       observability.NewMetrics(),
 	})
 	ts := httptest.NewServer(s.PublicHandler())
