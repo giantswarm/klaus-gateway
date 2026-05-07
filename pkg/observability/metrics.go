@@ -10,6 +10,12 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
+const (
+	labelRoute  = "route"
+	labelMethod = "method"
+	labelStatus = "status"
+)
+
 // Metrics holds the Prometheus collectors used by the gateway.
 type Metrics struct {
 	Registry        *prometheus.Registry
@@ -29,14 +35,14 @@ func NewMetrics() *Metrics {
 		Namespace: "klaus_gateway",
 		Name:      "requests_total",
 		Help:      "Total HTTP requests on the public mux, labelled by route and status.",
-	}, []string{"route", "method", "status"})
+	}, []string{labelRoute, labelMethod, labelStatus})
 
 	dur := prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: "klaus_gateway",
 		Name:      "request_duration_seconds",
 		Help:      "HTTP request latency on the public mux, labelled by route and status.",
 		Buckets:   prometheus.DefBuckets,
-	}, []string{"route", "method", "status"})
+	}, []string{labelRoute, labelMethod, labelStatus})
 
 	reg.MustRegister(reqs, dur)
 
@@ -58,9 +64,9 @@ func (m *Metrics) Middleware(route string) func(http.Handler) http.Handler {
 			rw := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 			next.ServeHTTP(rw, r)
 			labels := prometheus.Labels{
-				"route":  route,
-				"method": r.Method,
-				"status": strconv.Itoa(rw.status),
+				labelRoute:  route,
+				labelMethod: r.Method,
+				labelStatus: strconv.Itoa(rw.status),
 			}
 			m.RequestsTotal.With(labels).Inc()
 			m.RequestDuration.With(labels).Observe(time.Since(start).Seconds())

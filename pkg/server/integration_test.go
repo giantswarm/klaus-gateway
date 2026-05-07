@@ -33,8 +33,8 @@ func TestIntegration_BootWithBolt(t *testing.T) {
 	}))
 
 	srv := server.New(server.Options{
-		PublicAddress: "127.0.0.1:0",
-		AdminAddress:  "127.0.0.1:0",
+		PublicAddress: localhostAnyPort,
+		AdminAddress:  localhostAnyPort,
 		Metrics:       observability.NewMetrics(),
 		Ready: func(ctx context.Context) error {
 			_, err := s.List(ctx)

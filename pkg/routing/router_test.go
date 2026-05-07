@@ -14,6 +14,8 @@ import (
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store/memory"
 )
 
+const channelWeb = "web"
+
 type stubLifecycle struct {
 	getFn    func(ctx context.Context, name string) (lifecycle.InstanceRef, error)
 	createFn func(ctx context.Context, spec lifecycle.CreateSpec) (lifecycle.InstanceRef, error)
@@ -44,7 +46,7 @@ func TestRouter_CacheHit(t *testing.T) {
 	s := memory.New()
 	t.Cleanup(func() { _ = s.Close() })
 
-	k := store.Key{Channel: "web", ChannelID: "c1", UserID: "u1", ThreadID: "t1"}
+	k := store.Key{Channel: channelWeb, ChannelID: "c1", UserID: "u1", ThreadID: "t1"}
 	require.NoError(t, s.Put(ctx, k, store.Entry{Instance: "i1", LastSeen: time.Now(), TTL: time.Hour}))
 
 	mgr := &stubLifecycle{
@@ -58,7 +60,7 @@ func TestRouter_CacheHit(t *testing.T) {
 		},
 	}
 	r := routing.New(s, mgr, false, time.Hour)
-	ref, err := r.Resolve(ctx, routing.InboundMessage{Channel: "web", ChannelID: "c1", UserID: "u1", ThreadID: "t1"})
+	ref, err := r.Resolve(ctx, routing.InboundMessage{Channel: channelWeb, ChannelID: "c1", UserID: "u1", ThreadID: "t1"})
 	require.NoError(t, err)
 	require.Equal(t, "i1", ref.Name)
 }
@@ -77,14 +79,14 @@ func TestRouter_CacheMiss_AutoCreate(t *testing.T) {
 	}
 	r := routing.New(s, mgr, true, time.Hour)
 	ref, err := r.Resolve(ctx, routing.InboundMessage{
-		Channel: "web", ChannelID: "c1", UserID: "u1", ThreadID: "t1", NameHint: "klaus-abc",
+		Channel: channelWeb, ChannelID: "c1", UserID: "u1", ThreadID: "t1", NameHint: "klaus-abc",
 	})
 	require.NoError(t, err)
 	require.Equal(t, "klaus-abc", ref.Name)
 	require.True(t, created)
 
 	// Mapping should be persisted.
-	got, ok, err := s.Get(ctx, store.Key{Channel: "web", ChannelID: "c1", UserID: "u1", ThreadID: "t1"})
+	got, ok, err := s.Get(ctx, store.Key{Channel: channelWeb, ChannelID: "c1", UserID: "u1", ThreadID: "t1"})
 	require.NoError(t, err)
 	require.True(t, ok)
 	require.Equal(t, "klaus-abc", got.Instance)
@@ -97,6 +99,6 @@ func TestRouter_CacheMiss_NoAutoCreate(t *testing.T) {
 
 	mgr := &stubLifecycle{}
 	r := routing.New(s, mgr, false, time.Hour)
-	_, err := r.Resolve(ctx, routing.InboundMessage{Channel: "web", ChannelID: "c1"})
+	_, err := r.Resolve(ctx, routing.InboundMessage{Channel: channelWeb, ChannelID: "c1"})
 	require.ErrorIs(t, err, routing.ErrRouteNotFound)
 }

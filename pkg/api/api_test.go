@@ -19,6 +19,8 @@ import (
 	"github.com/giantswarm/klaus-gateway/pkg/lifecycle"
 )
 
+const testInstanceBaseURL = "http://i1"
+
 type stubManager struct {
 	refs map[string]lifecycle.InstanceRef
 }
@@ -69,7 +71,7 @@ func TestCompletions_SSEPassThrough(t *testing.T) {
 		"data: [DONE]\n\n"
 	streamer := &stubStreamer{sse: sse}
 	mgr := &stubManager{refs: map[string]lifecycle.InstanceRef{
-		"i1": {Name: "i1", BaseURL: "http://i1"},
+		"i1": {Name: "i1", BaseURL: testInstanceBaseURL},
 	}}
 	h := &api.Handler{Manager: mgr, Streamer: streamer}
 
@@ -110,7 +112,7 @@ func TestCompletions_NotFound(t *testing.T) {
 func TestCompletions_UpstreamError(t *testing.T) {
 	streamer := &stubStreamer{sseErr: errors.New("upstream blew up")}
 	mgr := &stubManager{refs: map[string]lifecycle.InstanceRef{
-		"i1": {Name: "i1", BaseURL: "http://i1"},
+		"i1": {Name: "i1", BaseURL: testInstanceBaseURL},
 	}}
 	h := &api.Handler{Manager: mgr, Streamer: streamer}
 
@@ -126,7 +128,7 @@ func TestCompletions_UpstreamError(t *testing.T) {
 func TestCompletions_UpstreamTimeout(t *testing.T) {
 	streamer := &stubStreamer{sseErr: fmt.Errorf("dial: %w", context.DeadlineExceeded)}
 	mgr := &stubManager{refs: map[string]lifecycle.InstanceRef{
-		"i1": {Name: "i1", BaseURL: "http://i1"},
+		"i1": {Name: "i1", BaseURL: testInstanceBaseURL},
 	}}
 	h := &api.Handler{Manager: mgr, Streamer: streamer}
 
@@ -149,7 +151,7 @@ func TestMessages_ReturnsHistory(t *testing.T) {
 		},
 	}
 	mgr := &stubManager{refs: map[string]lifecycle.InstanceRef{
-		"i1": {Name: "i1", BaseURL: "http://i1"},
+		"i1": {Name: "i1", BaseURL: testInstanceBaseURL},
 	}}
 	h := &api.Handler{Manager: mgr, Streamer: streamer}
 

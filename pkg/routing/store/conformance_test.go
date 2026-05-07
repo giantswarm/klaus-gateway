@@ -19,6 +19,8 @@ import (
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store/memory"
 )
 
+const channelWeb = "web"
+
 // runConformance exercises the Store contract. Every backend must pass.
 func runConformance(t *testing.T, factory func(t *testing.T) store.Store) {
 	t.Helper()
@@ -26,7 +28,7 @@ func runConformance(t *testing.T, factory func(t *testing.T) store.Store) {
 	t.Run("put-get-delete", func(t *testing.T) {
 		s := factory(t)
 		ctx := context.Background()
-		k := store.Key{Channel: "web", ChannelID: "c1", UserID: "u1", ThreadID: "t1"}
+		k := store.Key{Channel: channelWeb, ChannelID: "c1", UserID: "u1", ThreadID: "t1"}
 		e := store.Entry{Instance: "i1", CreatedAt: time.Now(), LastSeen: time.Now(), TTL: time.Hour}
 
 		_, ok, err := s.Get(ctx, k)
@@ -49,7 +51,7 @@ func runConformance(t *testing.T, factory func(t *testing.T) store.Store) {
 		s := factory(t)
 		ctx := context.Background()
 		keys := []store.Key{
-			{Channel: "web", ChannelID: "c1", UserID: "u1", ThreadID: "t1"},
+			{Channel: channelWeb, ChannelID: "c1", UserID: "u1", ThreadID: "t1"},
 			{Channel: "slack", ChannelID: "c2", UserID: "u2", ThreadID: "t2"},
 		}
 		for i, k := range keys {
@@ -66,7 +68,7 @@ func runConformance(t *testing.T, factory func(t *testing.T) store.Store) {
 	t.Run("keys-with-pipes-round-trip", func(t *testing.T) {
 		s := factory(t)
 		ctx := context.Background()
-		k := store.Key{Channel: "web", ChannelID: "c|pipe", UserID: "u1", ThreadID: `t\back`}
+		k := store.Key{Channel: channelWeb, ChannelID: "c|pipe", UserID: "u1", ThreadID: `t\back`}
 		require.NoError(t, s.Put(ctx, k, store.Entry{Instance: "inst", LastSeen: time.Now(), TTL: time.Hour}))
 		got, ok, err := s.Get(ctx, k)
 		require.NoError(t, err)
@@ -77,7 +79,7 @@ func runConformance(t *testing.T, factory func(t *testing.T) store.Store) {
 	t.Run("ttl-expired-filtered", func(t *testing.T) {
 		s := factory(t)
 		ctx := context.Background()
-		k := store.Key{Channel: "web", ChannelID: "c1", UserID: "u1", ThreadID: "t1"}
+		k := store.Key{Channel: channelWeb, ChannelID: "c1", UserID: "u1", ThreadID: "t1"}
 		e := store.Entry{
 			Instance:  "i1",
 			CreatedAt: time.Now().Add(-2 * time.Hour),
@@ -141,7 +143,7 @@ func TestCRDStore_Conformance(t *testing.T) {
 
 func TestKey_StringRoundTrip(t *testing.T) {
 	cases := []store.Key{
-		{Channel: "web", ChannelID: "abc", UserID: "u1", ThreadID: "t1"},
+		{Channel: channelWeb, ChannelID: "abc", UserID: "u1", ThreadID: "t1"},
 		{Channel: "slack", ChannelID: "C|123", UserID: `user\1`, ThreadID: ""},
 	}
 	for _, k := range cases {
