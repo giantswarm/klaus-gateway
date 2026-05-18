@@ -1,7 +1,7 @@
 version: 2.1
 
 orbs:
-  architect: giantswarm/architect@8.0.2
+  architect: giantswarm/architect@8.1.0
 
 workflows:
   test:
@@ -18,8 +18,9 @@ workflows:
               only: /^v.*/
 
       # Branch builds: amd64 only for faster PR feedback.
-      - architect/push-to-registries-multiarch:
+      - architect/push-to-registries:
           context: architect
+          multiarch: true
           name: push-to-registries
           platforms: "linux/amd64"
           requires:
@@ -32,8 +33,9 @@ workflows:
 
       # Main builds: full multi-arch (amd64 + arm64) so the :latest tag
       # works on every spidertron node, including the arm64 GPU sparks.
-      - architect/push-to-registries-multiarch:
+      - architect/push-to-registries:
           context: architect
+          multiarch: true
           name: push-to-registries-latest
           tag-latest-branch: main
           requires:
@@ -44,8 +46,9 @@ workflows:
 
       # Tag builds: push multi-arch image to gsoci (primary registry).
       # Chart push depends on this completing successfully.
-      - architect/push-to-registries-multiarch:
+      - architect/push-to-registries:
           context: architect
+          multiarch: true
           name: push-to-gsoci-release
           registries-data: "public gsoci.azurecr.io ACR_GSOCI_USERNAME ACR_GSOCI_PASSWORD true"
           requires:
@@ -60,8 +63,9 @@ workflows:
       # mirrors). Runs in parallel and does NOT block the chart push, so a
       # slow/unreachable mirror only delays itself, not the primary delivery
       # pipeline. Mirrors the mcp-prometheus split.
-      - architect/push-to-registries-multiarch:
+      - architect/push-to-registries:
           context: architect
+          multiarch: true
           name: push-to-all-registries-release
           requires:
             - go-build
