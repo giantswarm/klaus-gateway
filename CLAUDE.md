@@ -27,7 +27,7 @@ reading or writing code:
 ## Package layout
 
 ```
-cmd/klaus-gateway/      entrypoint; wires stores, lifecycle drivers, adapters, server
+main.go                 entrypoint; wires stores, lifecycle drivers, adapters, server
 pkg/api/                OpenAI-compat front door (/v1/{instance}/...)
 pkg/api/v1alpha1/       ChannelRoute CRD types (routing.giantswarm.io/v1alpha1)
 pkg/channels/           ChannelAdapter interface + Gateway facade

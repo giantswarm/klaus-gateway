@@ -86,7 +86,7 @@ The `/v1/{instance}/...` shape lets any OpenAI SDK work by setting
 ## Project layout
 
 ```
-cmd/klaus-gateway/      entrypoint; wires stores, lifecycle drivers, adapters, server
+main.go                 entrypoint; wires stores, lifecycle drivers, adapters, server
 pkg/api/                OpenAI-compat front door (/v1/{instance}/...)
 pkg/api/v1alpha1/       ChannelRoute CRD types (routing.giantswarm.io/v1alpha1)
 pkg/channels/           ChannelAdapter interface + Gateway facade
@@ -114,7 +114,7 @@ internal/version/       ldflags-injected version metadata
    - `Mount(r chi.Router)` — register HTTP routes.
 2. Normalise inbound events into `channels.InboundMessage{Channel: ChannelName, ...}`.
 3. Call `gw.Resolve(ctx, msg)` to get an `instance.Ref`, then `gw.SendCompletion(ctx, ref, msg)`.
-4. Wire the adapter in `cmd/klaus-gateway/main.go` behind a config flag (follow the
+4. Wire the adapter in `main.go` behind a config flag (follow the
    `cfg.Slack.Enabled` / `cfg.CLI.Enabled` pattern).
 5. Add a `KLAUS_GATEWAY_<NAME>_ENABLED` env var in `internal/config/config.go`.
 6. Add channel-specific docs in `docs/channels-<name>.md`.
