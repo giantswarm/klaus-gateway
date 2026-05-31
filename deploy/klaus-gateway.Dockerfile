@@ -14,7 +14,7 @@ ARG TARGETARCH
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
     go build -trimpath \
       -ldflags "-w -extldflags '-static'" \
-      -o klaus-gateway ./cmd/klaus-gateway
+      -o klaus-gateway .
 
 FROM docker.io/library/alpine:3.23
 RUN apk add --no-cache ca-certificates

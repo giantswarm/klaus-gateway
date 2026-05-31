@@ -28,7 +28,7 @@ type ChannelAdapter interface {
 }
 
 // Gateway is the server-side surface adapters call back into. The wiring in
-// cmd/klaus-gateway provides the concrete implementation (Facade).
+// main.go provides the concrete implementation (Facade).
 type Gateway interface {
 	Resolve(ctx context.Context, in InboundMessage) (InstanceRef, error)
 	SendCompletion(ctx context.Context, ref InstanceRef, msg InboundMessage) (<-chan OutboundDelta, error)
