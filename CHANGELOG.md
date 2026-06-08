@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Propagate `tasks/cancel` to the Klaus pod when a request is canceled or preempted. Previously `Cancel()` only dropped the HTTP SSE stream; the Klaus pod kept its per-contextID in-flight lock held, causing the next message for the same context to be rejected with "another request for this context is already in-flight". The gateway now tracks the pod-side task ID (from the first streamed event) and sends `tasks/cancel` directly to the pod on both explicit cancel and implicit preemption (new `Execute()` for the same contextID arriving while a previous one is still streaming).
+
 ### Changed
 
 

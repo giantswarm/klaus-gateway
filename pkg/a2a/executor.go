@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"time"
 
 	a2apkg "github.com/a2aproject/a2a-go/a2a"
 	a2aclient "github.com/a2aproject/a2a-go/a2aclient"
@@ -54,15 +55,63 @@ func AuthInfoFromContext(ctx context.Context) kagentapi.AuthInfo {
 	return auth
 }
 
+// podExec tracks an in-flight forward to a Klaus pod. The zero value is not
+// useful; always create via newPodExec.
+type podExec struct {
+	cancelPod context.CancelFunc
+	client    *a2aclient.Client
+
+	// mu guards taskID. taskID is set once, on the first streamed event from
+	// the pod; zero value means the stream has not yet produced an event.
+	mu     sync.Mutex
+	taskID a2apkg.TaskID
+}
+
+func newPodExec(cancel context.CancelFunc, client *a2aclient.Client) *podExec {
+	return &podExec{cancelPod: cancel, client: client}
+}
+
+// setTaskID records the pod's task ID on the first event; subsequent calls are
+// no-ops.
+func (p *podExec) setTaskID(id a2apkg.TaskID) {
+	p.mu.Lock()
+	if p.taskID == "" {
+		p.taskID = id
+	}
+	p.mu.Unlock()
+}
+
+// cancelAtPod sends tasks/cancel to the Klaus pod using the task ID captured
+// from the pod's first streamed event. Best-effort: if the task ID is not yet
+// known the call is skipped. Errors are logged only.
+func (p *podExec) cancelAtPod(ctx context.Context) {
+	p.mu.Lock()
+	id := p.taskID
+	p.mu.Unlock()
+	if id == "" || p.client == nil {
+		return
+	}
+	cancelCtx, done := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer done()
+	if _, err := p.client.CancelTask(cancelCtx, &a2apkg.TaskIDParams{ID: id}); err != nil {
+		slog.WarnContext(ctx, "a2a: cancel task at pod", "podTaskID", id, "error", err)
+	}
+}
+
 // ForwardingExecutor implements a2asrv.AgentExecutor. It resolves the target
 // Klaus pod via the routing table, forwards the inbound message over A2A
 // streaming, re-emits the pod's events under the gateway's own task context,
 // and pushes the completed turn to kagent.
 type ForwardingExecutor struct {
-	Router  Resolver
-	Dial    Dialer
-	Kagent  KagentPusher
-	cancels sync.Map // a2apkg.TaskID → context.CancelFunc
+	Router Resolver
+	Dial   Dialer
+	Kagent KagentPusher
+
+	// cancels maps gateway TaskID → *podExec for the a2asrv-driven Cancel() path.
+	cancels sync.Map // a2apkg.TaskID → *podExec
+	// contextCancels maps contextID → *podExec so that a new Execute() for the
+	// same context can preempt the previous forward before starting its own.
+	contextCancels sync.Map // string(contextID) → *podExec
 }
 
 // Execute resolves the pod, streams the A2A call, and pushes to kagent.
@@ -95,13 +144,28 @@ func (e *ForwardingExecutor) Execute(ctx context.Context, reqCtx *a2asrv.Request
 		return nil
 	}
 
-	// podCtx is canceled when Cancel() is called for this task, interrupting the
-	// pod stream before it finishes naturally.
+	// podCtx is canceled when Cancel() is called or when a newer Execute() for
+	// the same contextID preempts this one.
 	podCtx, cancelPod := context.WithCancel(ctx)
-	e.cancels.Store(reqCtx.TaskID, cancelPod)
+	exec := newPodExec(cancelPod, podClient)
+
+	e.cancels.Store(reqCtx.TaskID, exec)
+
+	// Preempt any previous forward for this contextID. The Klaus pod holds a
+	// per-contextID in-flight lock; the previous pod execution must be released
+	// before this one can proceed.
+	if old, loaded := e.contextCancels.Swap(reqCtx.ContextID, exec); loaded && old != nil {
+		prev := old.(*podExec)
+		prev.cancelPod()
+		go prev.cancelAtPod(ctx) // best-effort; async to not block this forward
+	}
+
 	defer func() {
 		cancelPod()
 		e.cancels.Delete(reqCtx.TaskID)
+		// Only clear contextCancels if our entry is still there (a newer Execute()
+		// may have replaced it already).
+		e.contextCancels.CompareAndDelete(reqCtx.ContextID, exec)
 	}()
 
 	// Forward with the original contextID so the pod can resume the session.
@@ -131,7 +195,8 @@ loop:
 	for event, err := range podClient.SendStreamingMessage(podCtx, params) {
 		if err != nil {
 			if podCtx.Err() != nil {
-				// Canceled via Cancel(); the cancel event is already queued.
+				// Canceled via Cancel() or preempted by a newer request; the
+				// caller has already written or will write the terminal event.
 				return nil
 			}
 			slog.WarnContext(ctx, "a2a: stream error from pod", "error", err)
@@ -140,6 +205,10 @@ loop:
 			}
 			return nil
 		}
+
+		// Capture the pod's task ID from the first event so Cancel() can issue
+		// tasks/cancel directly to the pod, releasing its per-context lock.
+		exec.setTaskID(event.TaskInfo().TaskID)
 
 		switch ev := event.(type) {
 		case *a2apkg.TaskStatusUpdateEvent:
@@ -214,14 +283,16 @@ loop:
 	return nil
 }
 
-// Cancel interrupts the in-flight pod stream (if any) and writes a canceled event.
-// If the task already completed the cancel entry was already removed; nothing is written.
+// Cancel interrupts the in-flight pod stream (if any), propagates the cancel to
+// the Klaus pod itself, and writes a canceled event.
 func (e *ForwardingExecutor) Cancel(ctx context.Context, reqCtx *a2asrv.RequestContext, queue eventqueue.Queue) error {
-	fn, ok := e.cancels.LoadAndDelete(reqCtx.TaskID)
+	raw, ok := e.cancels.LoadAndDelete(reqCtx.TaskID)
 	if !ok {
 		return nil
 	}
-	fn.(context.CancelFunc)()
+	exec := raw.(*podExec)
+	exec.cancelPod()
+	go exec.cancelAtPod(ctx) // propagate to pod; async to not delay the canceled event
 	return queue.Write(ctx, canceledEvent(reqCtx))
 }
 
