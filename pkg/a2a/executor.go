@@ -227,9 +227,6 @@ func (e *ForwardingExecutor) Cancel(ctx context.Context, reqCtx *a2asrv.RequestC
 
 func (e *ForwardingExecutor) pushToKagent(ctx context.Context, reqCtx *a2asrv.RequestContext, userText, agentText, state string, auth kagentapi.AuthInfo) {
 	sessionID := reqCtx.ContextID
-	if auth.UserSub != "" {
-		sessionID = auth.UserSub + ":" + reqCtx.ContextID
-	}
 	taskID := string(reqCtx.TaskID)
 
 	userEvent := kagentapi.NewSessionEvent(taskID+"-user", "user", userText)
