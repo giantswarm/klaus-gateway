@@ -32,6 +32,39 @@ const (
 	DriverStatic = "static"
 )
 
+// SkillConfig describes a single A2A agent skill.
+type SkillConfig struct {
+	ID          string
+	Name        string
+	Description string
+	Tags        []string
+	Examples    []string
+}
+
+// A2AConfig holds runtime configuration for the A2A server surface.
+type A2AConfig struct {
+	// Enabled gates all A2A behaviour.
+	Enabled bool
+	// CardName is the agent name served in /.well-known/agent-card.json.
+	CardName string
+	// CardDescription is the agent description in the card.
+	CardDescription string
+	// CardVersion is the semver version string in the card.
+	CardVersion string
+	// CardURL is the base URL where the gateway's /a2a endpoint is reachable.
+	CardURL string
+	// Skills overrides the default skill list. When empty, defaultSkills() is used.
+	Skills []SkillConfig
+	// StaticTarget is the base URL of the Klaus worker pod (or service) to route
+	// A2A messages to. Used with the static lifecycle driver.
+	StaticTarget string
+	// KagentEndpoint is the base URL of the kagent API.
+	// When empty, kagent push is disabled.
+	KagentEndpoint string
+	// KagentAgentRef is the X-Agent-Name value sent to kagent.
+	KagentAgentRef string
+}
+
 // CLIConfig holds runtime configuration for the CLI channel adapter.
 type CLIConfig struct {
 	// Enabled gates all CLI behaviour; the adapter is skipped when false.
@@ -79,6 +112,7 @@ type Config struct {
 
 	Slack SlackConfig
 	CLI   CLIConfig
+	A2A   A2AConfig
 
 	// Controller enables the embedded ChannelRoute controller-runtime manager.
 	Controller bool
@@ -103,6 +137,10 @@ func Defaults() Config {
 		},
 		CLI: CLIConfig{
 			Enabled: false,
+		},
+		A2A: A2AConfig{
+			CardName:    "Klaus Gateway",
+			CardVersion: "0.1.0",
 		},
 	}
 }
@@ -134,6 +172,14 @@ func Load(args []string) (Config, error) {
 	fs.StringVar(&cfg.Slack.SecretsFile, "slack-secrets-file", cfg.Slack.SecretsFile, "Path to Slack secrets YAML file.")
 	fs.BoolVar(&cfg.CLI.Enabled, "cli-enabled", cfg.CLI.Enabled, "Enable the CLI channel adapter at /cli/v1/*.")
 	fs.BoolVar(&cfg.Controller, "controller", cfg.Controller, "Enable the embedded ChannelRoute controller (requires --store=crd).")
+	fs.BoolVar(&cfg.A2A.Enabled, "a2a-enabled", cfg.A2A.Enabled, "Enable the A2A server surface.")
+	fs.StringVar(&cfg.A2A.CardName, "a2a-card-name", cfg.A2A.CardName, "Agent name in the A2A agent card.")
+	fs.StringVar(&cfg.A2A.CardDescription, "a2a-card-description", cfg.A2A.CardDescription, "Agent description in the A2A agent card.")
+	fs.StringVar(&cfg.A2A.CardVersion, "a2a-card-version", cfg.A2A.CardVersion, "Agent version in the A2A agent card.")
+	fs.StringVar(&cfg.A2A.CardURL, "a2a-card-url", cfg.A2A.CardURL, "Public URL where this gateway's /a2a endpoint is reachable.")
+	fs.StringVar(&cfg.A2A.StaticTarget, "a2a-static-target", cfg.A2A.StaticTarget, "Base URL of the Klaus worker pod to forward A2A messages to.")
+	fs.StringVar(&cfg.A2A.KagentEndpoint, "kagent-endpoint", cfg.A2A.KagentEndpoint, "Base URL of the kagent API for task/event push.")
+	fs.StringVar(&cfg.A2A.KagentAgentRef, "kagent-agent-ref", cfg.A2A.KagentAgentRef, "Agent name sent as X-Agent-Name to kagent.")
 
 	fs.Usage = func() {
 		_, _ = fmt.Fprintf(fs.Output(), "klaus-gateway -- channel and routing gateway in front of klaus instances.\n\n")
@@ -211,6 +257,30 @@ func applyEnv(cfg *Config) {
 	if v, ok := lookup("CONTROLLER"); ok {
 		cfg.Controller = strings.EqualFold(v, "true") || v == "1"
 	}
+	if v, ok := lookup("A2A_ENABLED"); ok {
+		cfg.A2A.Enabled = strings.EqualFold(v, "true") || v == "1"
+	}
+	if v, ok := lookup("A2A_CARD_NAME"); ok {
+		cfg.A2A.CardName = v
+	}
+	if v, ok := lookup("A2A_CARD_DESCRIPTION"); ok {
+		cfg.A2A.CardDescription = v
+	}
+	if v, ok := lookup("A2A_CARD_VERSION"); ok {
+		cfg.A2A.CardVersion = v
+	}
+	if v, ok := lookup("A2A_CARD_URL"); ok {
+		cfg.A2A.CardURL = v
+	}
+	if v, ok := lookup("A2A_STATIC_TARGET"); ok {
+		cfg.A2A.StaticTarget = v
+	}
+	if v, ok := os.LookupEnv("KAGENT_API_ENDPOINT"); ok {
+		cfg.A2A.KagentEndpoint = v
+	}
+	if v, ok := os.LookupEnv("KAGENT_AGENT_REF"); ok {
+		cfg.A2A.KagentAgentRef = v
+	}
 }
 
 func lookup(key string) (string, bool) {
@@ -240,6 +310,14 @@ func (c Config) Validate() error {
 	}
 	if c.Driver == DriverStatic && c.StaticInstances == "" {
 		return fmt.Errorf("--static-instances is required with --driver=static")
+	}
+	if c.A2A.Enabled {
+		if c.A2A.CardURL == "" {
+			return fmt.Errorf("--a2a-card-url is required with --a2a-enabled")
+		}
+		if c.A2A.StaticTarget == "" {
+			return fmt.Errorf("--a2a-static-target is required with --a2a-enabled")
+		}
 	}
 	return nil
 }

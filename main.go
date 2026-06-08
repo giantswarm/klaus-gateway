@@ -23,6 +23,8 @@ import (
 	ctrlzap "sigs.k8s.io/controller-runtime/pkg/log/zap"
 	ctrlmetricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
+	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
+	"github.com/giantswarm/klaus-gateway/pkg/kagentapi"
 	"github.com/giantswarm/klaus-gateway/internal/config"
 	"github.com/giantswarm/klaus-gateway/internal/controller"
 	"github.com/giantswarm/klaus-gateway/internal/version"
@@ -198,6 +200,29 @@ func run(args []string) error {
 		Manager:  manager,
 		Streamer: instanceClient,
 		Logger:   logger,
+	}
+
+	if cfg.A2A.Enabled {
+		a2aStaticManager, err := static.New("klaus-worker=" + cfg.A2A.StaticTarget)
+		if err != nil {
+			return fmt.Errorf("a2a static manager: %w", err)
+		}
+		// autoCreate=true so the first message for a contextID seeds the routing
+		// entry; the static driver never provisions pods.
+		a2aRouter := routing.New(routeStore, a2aStaticManager, true, cfg.DefaultTTL)
+		a2aKagent := kagentapi.New(cfg.A2A.KagentEndpoint, cfg.A2A.KagentAgentRef)
+		a2aExecutor := &pkga2a.ForwardingExecutor{
+			Router:  a2aRouter,
+			Dial:   pkga2a.NewClients(),
+			Kagent:  a2aKagent,
+		}
+		a2aCard := pkga2a.AgentCard(cfg.A2A)
+		pkga2a.Mount(publicMux, a2aCard, a2aExecutor)
+		logger.Info("a2a adapter mounted",
+			"card_url", cfg.A2A.CardURL,
+			"target", cfg.A2A.StaticTarget,
+			"kagent_enabled", a2aKagent.Enabled(),
+		)
 	}
 
 	apiHandler.Mount(publicMux)

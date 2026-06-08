@@ -3,6 +3,7 @@ module github.com/giantswarm/klaus-gateway
 go 1.26.0
 
 require (
+	github.com/a2aproject/a2a-go v0.3.15
 	github.com/go-chi/chi/v5 v5.3.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/stretchr/testify v1.11.1
