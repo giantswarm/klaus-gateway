@@ -34,8 +34,10 @@ func Mount(r chi.Router, card *a2apkg.AgentCard, executor a2asrv.AgentExecutor) 
 	r.Handle("/.well-known/agent-card.json", cardHandler)
 	r.Handle("/.well-known/agent.json", cardHandler)
 
-	r.Handle("/a2a", extractAuthMiddleware(jsonrpcHandler))
-	r.Handle("/a2a/*", extractAuthMiddleware(jsonrpcHandler))
+	authed := extractAuthMiddleware(jsonrpcHandler)
+	r.Handle("/", authed)
+	r.Handle("/a2a", authed)
+	r.Handle("/a2a/*", authed)
 }
 
 // extractAuthMiddleware reads the agentgateway-forwarded identity headers and
