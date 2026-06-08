@@ -98,7 +98,7 @@ spec:
             fieldRef:
               fieldPath: metadata.namespace
         {{- if and .Values.a2a.enabled .Values.a2a.kagentEndpoint }}
-        - name: KAGENT_API_ENDPOINT
+        - name: KLAUS_GATEWAY_KAGENT_ENDPOINT
           value: {{ .Values.a2a.kagentEndpoint | quote }}
         {{- end }}
         {{- if and .Values.slack.enabled .Values.slack.secretName }}

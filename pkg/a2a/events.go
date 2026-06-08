@@ -54,6 +54,48 @@ func canceledEvent(reqCtx *a2asrv.RequestContext) *a2a.TaskStatusUpdateEvent {
 	return ev
 }
 
+// inputRequiredEvent emits a final input-required status update with an optional message.
+func inputRequiredEvent(reqCtx *a2asrv.RequestContext, msg string) *a2a.TaskStatusUpdateEvent {
+	var a2aMsg *a2a.Message
+	if msg != "" {
+		a2aMsg = &a2a.Message{
+			Role:  a2a.MessageRoleAgent,
+			Parts: []a2a.Part{a2a.TextPart{Text: msg}},
+		}
+	}
+	ev := a2a.NewStatusUpdateEvent(reqCtx, a2a.TaskStateInputRequired, a2aMsg)
+	ev.Final = true
+	return ev
+}
+
+// authRequiredEvent emits a final auth-required status update with an optional message.
+func authRequiredEvent(reqCtx *a2asrv.RequestContext, msg string) *a2a.TaskStatusUpdateEvent {
+	var a2aMsg *a2a.Message
+	if msg != "" {
+		a2aMsg = &a2a.Message{
+			Role:  a2a.MessageRoleAgent,
+			Parts: []a2a.Part{a2a.TextPart{Text: msg}},
+		}
+	}
+	ev := a2a.NewStatusUpdateEvent(reqCtx, a2a.TaskStateAuthRequired, a2aMsg)
+	ev.Final = true
+	return ev
+}
+
+// rejectedEvent emits a final rejected-state status update with an optional message.
+func rejectedEvent(reqCtx *a2asrv.RequestContext, msg string) *a2a.TaskStatusUpdateEvent {
+	var a2aMsg *a2a.Message
+	if msg != "" {
+		a2aMsg = &a2a.Message{
+			Role:  a2a.MessageRoleAgent,
+			Parts: []a2a.Part{a2a.TextPart{Text: msg}},
+		}
+	}
+	ev := a2a.NewStatusUpdateEvent(reqCtx, a2a.TaskStateRejected, a2aMsg)
+	ev.Final = true
+	return ev
+}
+
 // extractText collects all text parts from a message into a single string.
 func extractText(msg *a2a.Message) string {
 	if msg == nil {

@@ -275,10 +275,10 @@ func applyEnv(cfg *Config) {
 	if v, ok := lookup("A2A_STATIC_TARGET"); ok {
 		cfg.A2A.StaticTarget = v
 	}
-	if v, ok := os.LookupEnv("KAGENT_API_ENDPOINT"); ok {
+	if v, ok := lookup("KAGENT_ENDPOINT"); ok {
 		cfg.A2A.KagentEndpoint = v
 	}
-	if v, ok := os.LookupEnv("KAGENT_AGENT_REF"); ok {
+	if v, ok := lookup("KAGENT_AGENT_REF"); ok {
 		cfg.A2A.KagentAgentRef = v
 	}
 }

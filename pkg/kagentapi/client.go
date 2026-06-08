@@ -11,8 +11,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"os"
+	"strings"
 	"time"
 )
 
@@ -74,12 +78,15 @@ func NewSessionEvent(id, role, text string) SessionEvent {
 	return SessionEvent{ID: id, Data: string(data)}
 }
 
+const defaultSATokenPath = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+
 // Client sends turn data to the kagent API. A zero-endpoint Client is a
 // no-op; callers do not need to guard on Enabled().
 type Client struct {
-	endpoint   string
-	agentRef   string
-	httpClient *http.Client
+	endpoint      string
+	agentRef      string
+	httpClient    *http.Client
+	saTokenPath   string
 }
 
 // New returns a Client targeting the given endpoint. endpoint may be empty,
@@ -87,9 +94,10 @@ type Client struct {
 // sent in the X-Agent-Name header and comes from KAGENT_AGENT_REF.
 func New(endpoint, agentRef string) *Client {
 	return &Client{
-		endpoint:   endpoint,
-		agentRef:   agentRef,
-		httpClient: &http.Client{Timeout: 10 * time.Second},
+		endpoint:    endpoint,
+		agentRef:    agentRef,
+		httpClient:  &http.Client{Timeout: 10 * time.Second},
+		saTokenPath: defaultSATokenPath,
 	}
 }
 
@@ -109,8 +117,8 @@ func (c *Client) PushEvent(ctx context.Context, sessionID string, event SessionE
 		slog.ErrorContext(ctx, "kagentapi: marshal event", "error", err)
 		return
 	}
-	url := fmt.Sprintf("%s/api/sessions/%s/events", c.endpoint, sessionID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	endpoint := fmt.Sprintf("%s/api/sessions/%s/events", c.endpoint, url.PathEscape(sessionID))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		slog.ErrorContext(ctx, "kagentapi: build event request", "error", err)
 		return
@@ -121,7 +129,10 @@ func (c *Client) PushEvent(ctx context.Context, sessionID string, event SessionE
 		slog.ErrorContext(ctx, "kagentapi: push event", "error", err, "session", sessionID)
 		return
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+	}()
 	if resp.StatusCode >= 400 {
 		slog.WarnContext(ctx, "kagentapi: push event non-2xx", "status", resp.StatusCode, "session", sessionID)
 	}
@@ -160,7 +171,10 @@ func (c *Client) StoreTask(ctx context.Context, taskID, contextID, userText, age
 		slog.ErrorContext(ctx, "kagentapi: store task", "error", err, "task", taskID)
 		return
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+	}()
 	if resp.StatusCode >= 400 {
 		slog.WarnContext(ctx, "kagentapi: store task non-2xx", "status", resp.StatusCode, "task", taskID)
 	}
@@ -168,8 +182,12 @@ func (c *Client) StoreTask(ctx context.Context, taskID, contextID, userText, age
 
 func (c *Client) setHeaders(req *http.Request, auth AuthInfo) {
 	req.Header.Set("Content-Type", "application/json")
-	if auth.BearerToken != "" {
-		req.Header.Set("Authorization", "Bearer "+auth.BearerToken)
+	token := auth.BearerToken
+	if token == "" {
+		token = c.readServiceAccountToken()
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	if auth.UserSub != "" {
 		req.Header.Set("X-User-Id", auth.UserSub)
@@ -177,4 +195,15 @@ func (c *Client) setHeaders(req *http.Request, auth AuthInfo) {
 	if c.agentRef != "" {
 		req.Header.Set("X-Agent-Name", c.agentRef)
 	}
+}
+
+func (c *Client) readServiceAccountToken() string {
+	if c.saTokenPath == "" {
+		return ""
+	}
+	data, err := os.ReadFile(c.saTokenPath)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
 }

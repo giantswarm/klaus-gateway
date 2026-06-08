@@ -49,5 +49,14 @@ spec:
         - name: {{ include "resource.default.name" $ }}
           port: {{ $.Values.server.port }}
     {{- end }}
+    {{- range .Values.agentgateway.routes.a2a.exactPaths }}
+    - matches:
+        - path:
+            type: Exact
+            value: {{ . | quote }}
+      backendRefs:
+        - name: {{ include "resource.default.name" $ }}
+          port: {{ $.Values.server.port }}
+    {{- end }}
     {{- end }}
 {{- end }}

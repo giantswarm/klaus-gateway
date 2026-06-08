@@ -154,7 +154,9 @@ agentgateway:
       enabled: false
       prefixes:
       - /a2a
-      - /.well-known/agent
+      exactPaths:
+      - /.well-known/agent-card.json
+      - /.well-known/agent.json
 
   # AgentgatewayPolicy attached to the Gateway.
   # Upstream v1.1.0 supports JWT but not Cedar. Cedar will be wired in when it

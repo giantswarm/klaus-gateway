@@ -36,7 +36,7 @@ func AgentCard(cfg config.A2AConfig) *a2a.AgentCard {
 		ProtocolVersion: "0.3.15",
 		Capabilities: a2a.AgentCapabilities{
 			Streaming:         true,
-			PushNotifications: false,
+			PushNotifications: true,
 		},
 		Skills:             skills,
 		DefaultInputModes:  []string{mimeText},

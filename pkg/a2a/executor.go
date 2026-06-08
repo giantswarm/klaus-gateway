@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
+	"sync"
 
 	a2apkg "github.com/a2aproject/a2a-go/a2a"
 	a2aclient "github.com/a2aproject/a2a-go/a2aclient"
@@ -56,9 +58,10 @@ func AuthInfoFromContext(ctx context.Context) kagentapi.AuthInfo {
 // streaming, re-emits the pod's events under the gateway's own task context,
 // and pushes the completed turn to kagent.
 type ForwardingExecutor struct {
-	Router Resolver
-	Dial   Dialer
-	Kagent KagentPusher
+	Router  Resolver
+	Dial    Dialer
+	Kagent  KagentPusher
+	cancels sync.Map // a2apkg.TaskID → context.CancelFunc
 }
 
 // Execute resolves the pod, streams the A2A call, and pushes to kagent.
@@ -91,6 +94,15 @@ func (e *ForwardingExecutor) Execute(ctx context.Context, reqCtx *a2asrv.Request
 		return nil
 	}
 
+	// podCtx is canceled when Cancel() is called for this task, interrupting the
+	// pod stream before it finishes naturally.
+	podCtx, cancelPod := context.WithCancel(ctx)
+	e.cancels.Store(reqCtx.TaskID, cancelPod)
+	defer func() {
+		cancelPod()
+		e.cancels.Delete(reqCtx.TaskID)
+	}()
+
 	// Forward with the original contextID so the pod can resume the session.
 	// Message.Metadata and params.Metadata carry per-request hints (effort,
 	// max_budget_usd, json_schema) that the pod executor reads from; pass them
@@ -107,7 +119,7 @@ func (e *ForwardingExecutor) Execute(ctx context.Context, reqCtx *a2asrv.Request
 	}
 
 	var (
-		agentText        string
+		agentText        strings.Builder
 		artifactID       a2apkg.ArtifactID
 		firstArtifact    = true
 		finalStatusEvent *a2apkg.TaskStatusUpdateEvent
@@ -115,8 +127,12 @@ func (e *ForwardingExecutor) Execute(ctx context.Context, reqCtx *a2asrv.Request
 	userText := extractText(reqCtx.Message)
 
 loop:
-	for event, err := range podClient.SendStreamingMessage(ctx, params) {
+	for event, err := range podClient.SendStreamingMessage(podCtx, params) {
 		if err != nil {
+			if podCtx.Err() != nil {
+				// Canceled via Cancel(); the cancel event is already queued.
+				return nil
+			}
 			slog.WarnContext(ctx, "a2a: stream error from pod", "error", err)
 			if qerr := queue.Write(ctx, failedEvent(reqCtx, "upstream error: "+err.Error())); qerr != nil {
 				return fmt.Errorf("write failed event: %w", qerr)
@@ -141,7 +157,7 @@ loop:
 				continue
 			}
 			text := extractTextFromParts(ev.Artifact.Parts)
-			agentText += text
+			agentText.WriteString(text)
 			var gwEvent *a2apkg.TaskArtifactUpdateEvent
 			if firstArtifact {
 				gwEvent = artifactEvent(reqCtx, text)
@@ -159,14 +175,22 @@ loop:
 	// Mirror the pod's terminal state; default to completed when no final event arrived.
 	var finalWriteErr error
 	switch {
-	case finalStatusEvent != nil && finalStatusEvent.Status.State == a2apkg.TaskStateFailed:
+	case finalStatusEvent == nil:
+		finalWriteErr = queue.Write(ctx, completedEvent(reqCtx))
+	case finalStatusEvent.Status.State == a2apkg.TaskStateFailed:
 		errText := extractText(finalStatusEvent.Status.Message)
 		if errText == "" {
 			errText = "upstream task failed"
 		}
 		finalWriteErr = queue.Write(ctx, failedEvent(reqCtx, errText))
-	case finalStatusEvent != nil && finalStatusEvent.Status.State == a2apkg.TaskStateCanceled:
+	case finalStatusEvent.Status.State == a2apkg.TaskStateCanceled:
 		finalWriteErr = queue.Write(ctx, canceledEvent(reqCtx))
+	case finalStatusEvent.Status.State == a2apkg.TaskStateInputRequired:
+		finalWriteErr = queue.Write(ctx, inputRequiredEvent(reqCtx, extractText(finalStatusEvent.Status.Message)))
+	case finalStatusEvent.Status.State == a2apkg.TaskStateAuthRequired:
+		finalWriteErr = queue.Write(ctx, authRequiredEvent(reqCtx, extractText(finalStatusEvent.Status.Message)))
+	case finalStatusEvent.Status.State == a2apkg.TaskStateRejected:
+		finalWriteErr = queue.Write(ctx, rejectedEvent(reqCtx, extractText(finalStatusEvent.Status.Message)))
 	default:
 		finalWriteErr = queue.Write(ctx, completedEvent(reqCtx))
 	}
@@ -176,19 +200,22 @@ loop:
 
 	// Push to kagent best-effort, asynchronously so the A2A response is not delayed.
 	if e.Kagent.Enabled() {
-		go e.pushToKagent(context.WithoutCancel(ctx), reqCtx, userText, agentText, auth)
+		go e.pushToKagent(context.WithoutCancel(ctx), reqCtx, userText, agentText.String(), auth)
 	}
 
 	return nil
 }
 
-// Cancel writes a canceled event and returns.
+// Cancel interrupts the in-flight pod stream (if any) and writes a canceled event.
 func (e *ForwardingExecutor) Cancel(ctx context.Context, reqCtx *a2asrv.RequestContext, queue eventqueue.Queue) error {
+	if fn, ok := e.cancels.LoadAndDelete(reqCtx.TaskID); ok {
+		fn.(context.CancelFunc)()
+	}
 	return queue.Write(ctx, canceledEvent(reqCtx))
 }
 
 func (e *ForwardingExecutor) pushToKagent(ctx context.Context, reqCtx *a2asrv.RequestContext, userText, agentText string, auth kagentapi.AuthInfo) {
-	sessionID := reqCtx.ContextID
+	sessionID := auth.UserSub + ":" + reqCtx.ContextID
 	taskID := string(reqCtx.TaskID)
 
 	userEvent := kagentapi.NewSessionEvent(taskID+"-user", "user", userText)
