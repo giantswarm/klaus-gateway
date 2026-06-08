@@ -89,7 +89,7 @@ type Client struct {
 	httpClient  *http.Client
 	saTokenPath string
 
-	saTokenMu     sync.Mutex
+	saTokenMu     sync.RWMutex
 	saTokenCached string
 	saTokenExpiry time.Time
 }
@@ -165,8 +165,8 @@ func (c *Client) StoreTask(ctx context.Context, taskID, contextID, userText, age
 		slog.ErrorContext(ctx, "kagentapi: marshal task", "error", err)
 		return
 	}
-	url := fmt.Sprintf("%s/api/tasks", c.endpoint)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	endpoint := fmt.Sprintf("%s/api/tasks", c.endpoint)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		slog.ErrorContext(ctx, "kagentapi: build task request", "error", err)
 		return
@@ -207,6 +207,14 @@ func (c *Client) readServiceAccountToken() string {
 	if c.saTokenPath == "" {
 		return ""
 	}
+	c.saTokenMu.RLock()
+	if time.Now().Before(c.saTokenExpiry) {
+		token := c.saTokenCached
+		c.saTokenMu.RUnlock()
+		return token
+	}
+	c.saTokenMu.RUnlock()
+
 	c.saTokenMu.Lock()
 	defer c.saTokenMu.Unlock()
 	if time.Now().Before(c.saTokenExpiry) {

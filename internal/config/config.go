@@ -32,15 +32,6 @@ const (
 	DriverStatic = "static"
 )
 
-// SkillConfig describes a single A2A agent skill.
-type SkillConfig struct {
-	ID          string
-	Name        string
-	Description string
-	Tags        []string
-	Examples    []string
-}
-
 // A2AConfig holds runtime configuration for the A2A server surface.
 type A2AConfig struct {
 	// Enabled gates all A2A behaviour.
@@ -53,8 +44,6 @@ type A2AConfig struct {
 	CardVersion string
 	// CardURL is the base URL where the gateway's /a2a endpoint is reachable.
 	CardURL string
-	// Skills overrides the default skill list. When empty, defaultSkills() is used.
-	Skills []SkillConfig
 	// StaticTarget is the base URL of the Klaus worker pod (or service) to route
 	// A2A messages to. Used with the static lifecycle driver.
 	StaticTarget string

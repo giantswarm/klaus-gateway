@@ -178,6 +178,8 @@ loop:
 	switch {
 	case finalStatusEvent == nil:
 		finalWriteErr = queue.Write(ctx, completedEvent(reqCtx))
+	case finalStatusEvent.Status.State == a2apkg.TaskStateCompleted:
+		finalWriteErr = queue.Write(ctx, completedEvent(reqCtx))
 	case finalStatusEvent.Status.State == a2apkg.TaskStateFailed:
 		errText := extractText(finalStatusEvent.Status.Message)
 		if errText == "" {
@@ -193,7 +195,8 @@ loop:
 	case finalStatusEvent.Status.State == a2apkg.TaskStateRejected:
 		finalWriteErr = queue.Write(ctx, rejectedEvent(reqCtx, extractText(finalStatusEvent.Status.Message)))
 	default:
-		finalWriteErr = queue.Write(ctx, completedEvent(reqCtx))
+		slog.WarnContext(ctx, "a2a: unexpected terminal state from pod", "state", finalStatusEvent.Status.State)
+		finalWriteErr = queue.Write(ctx, failedEvent(reqCtx, "unexpected terminal state: "+string(finalStatusEvent.Status.State)))
 	}
 	if finalWriteErr != nil {
 		return fmt.Errorf("write final event: %w", finalWriteErr)

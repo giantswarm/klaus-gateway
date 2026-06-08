@@ -14,18 +14,24 @@ import (
 // without this the store grows monotonically.
 const pushConfigTTL = 24 * time.Hour
 
+type timerEntry struct {
+	timer *time.Timer
+	gen   uint64
+}
+
 // ttlPushStore wraps InMemoryPushConfigStore and evicts per-task entries
 // after pushConfigTTL has elapsed since the last Save for that task.
 type ttlPushStore struct {
-	inner  *push.InMemoryPushConfigStore
-	mu     sync.Mutex
-	timers map[a2a.TaskID]*time.Timer
+	inner   *push.InMemoryPushConfigStore
+	mu      sync.Mutex
+	entries map[a2a.TaskID]timerEntry
+	nextGen uint64
 }
 
 func newTTLPushStore() *ttlPushStore {
 	return &ttlPushStore{
-		inner:  push.NewInMemoryStore(),
-		timers: make(map[a2a.TaskID]*time.Timer),
+		inner:   push.NewInMemoryStore(),
+		entries: make(map[a2a.TaskID]timerEntry),
 	}
 }
 
@@ -58,22 +64,30 @@ func (s *ttlPushStore) DeleteAll(ctx context.Context, taskID a2a.TaskID) error {
 func (s *ttlPushStore) resetTimer(taskID a2a.TaskID) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if t, ok := s.timers[taskID]; ok {
-		t.Stop()
+	if e, ok := s.entries[taskID]; ok {
+		e.timer.Stop()
 	}
-	s.timers[taskID] = time.AfterFunc(pushConfigTTL, func() {
-		_ = s.inner.DeleteAll(context.Background(), taskID)
+	s.nextGen++
+	gen := s.nextGen
+	t := time.AfterFunc(pushConfigTTL, func() {
 		s.mu.Lock()
-		delete(s.timers, taskID)
+		e, ok := s.entries[taskID]
+		if !ok || e.gen != gen {
+			s.mu.Unlock()
+			return
+		}
+		delete(s.entries, taskID)
 		s.mu.Unlock()
+		_ = s.inner.DeleteAll(context.Background(), taskID)
 	})
+	s.entries[taskID] = timerEntry{timer: t, gen: gen}
 }
 
 func (s *ttlPushStore) cancelTimer(taskID a2a.TaskID) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if t, ok := s.timers[taskID]; ok {
-		t.Stop()
-		delete(s.timers, taskID)
+	if e, ok := s.entries[taskID]; ok {
+		e.timer.Stop()
+		delete(s.entries, taskID)
 	}
 }

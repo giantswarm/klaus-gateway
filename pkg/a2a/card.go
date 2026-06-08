@@ -12,34 +12,17 @@ const mimeText = "text/plain"
 // The card is served at /.well-known/agent-card.json and used by kagent
 // to discover the agent's URL and capabilities.
 func AgentCard(cfg config.A2AConfig) *a2a.AgentCard {
-	skills := make([]a2a.AgentSkill, 0, len(cfg.Skills))
-	for _, s := range cfg.Skills {
-		skills = append(skills, a2a.AgentSkill{
-			ID:          s.ID,
-			Name:        s.Name,
-			Description: s.Description,
-			Tags:        s.Tags,
-			Examples:    s.Examples,
-			InputModes:  []string{mimeText},
-			OutputModes: []string{mimeText},
-		})
-	}
-	// Provide a minimal default skill set when none are configured.
-	if len(skills) == 0 {
-		skills = defaultSkills()
-	}
-
 	return &a2a.AgentCard{
 		Name:            cfg.CardName,
 		Description:     cfg.CardDescription,
 		Version:         cfg.CardVersion,
 		URL:             cfg.CardURL,
-		ProtocolVersion: "0.3.15",
+		ProtocolVersion: string(a2a.Version),
 		Capabilities: a2a.AgentCapabilities{
 			Streaming:         true,
 			PushNotifications: true,
 		},
-		Skills:             skills,
+		Skills:             defaultSkills(),
 		DefaultInputModes:  []string{mimeText},
 		DefaultOutputModes: []string{mimeText},
 		PreferredTransport: a2a.TransportProtocolJSONRPC,
