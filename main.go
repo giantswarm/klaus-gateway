@@ -23,11 +23,10 @@ import (
 	ctrlzap "sigs.k8s.io/controller-runtime/pkg/log/zap"
 	ctrlmetricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
-	"github.com/giantswarm/klaus-gateway/pkg/kagentapi"
 	"github.com/giantswarm/klaus-gateway/internal/config"
 	"github.com/giantswarm/klaus-gateway/internal/controller"
 	"github.com/giantswarm/klaus-gateway/internal/version"
+	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 	"github.com/giantswarm/klaus-gateway/pkg/api"
 	v1alpha1 "github.com/giantswarm/klaus-gateway/pkg/api/v1alpha1"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
@@ -35,6 +34,7 @@ import (
 	slackchannel "github.com/giantswarm/klaus-gateway/pkg/channels/slack"
 	"github.com/giantswarm/klaus-gateway/pkg/channels/web"
 	"github.com/giantswarm/klaus-gateway/pkg/instance"
+	"github.com/giantswarm/klaus-gateway/pkg/kagentapi"
 	"github.com/giantswarm/klaus-gateway/pkg/lifecycle"
 	"github.com/giantswarm/klaus-gateway/pkg/lifecycle/klausctl"
 	"github.com/giantswarm/klaus-gateway/pkg/lifecycle/operator"
@@ -212,9 +212,9 @@ func run(args []string) error {
 		a2aRouter := routing.New(routeStore, a2aStaticManager, true, cfg.DefaultTTL)
 		a2aKagent := kagentapi.New(cfg.A2A.KagentEndpoint, cfg.A2A.KagentAgentRef)
 		a2aExecutor := &pkga2a.ForwardingExecutor{
-			Router:  a2aRouter,
+			Router: a2aRouter,
 			Dial:   pkga2a.NewClients(),
-			Kagent:  a2aKagent,
+			Kagent: a2aKagent,
 		}
 		a2aCard := pkga2a.AgentCard(cfg.A2A)
 		pkga2a.Mount(publicMux, a2aCard, a2aExecutor)
