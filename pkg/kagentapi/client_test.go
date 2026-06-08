@@ -61,7 +61,7 @@ func TestClient_StoreTask(t *testing.T) {
 
 	client := kagentapi.New(srv.URL, "agent-ref")
 	auth := kagentapi.AuthInfo{BearerToken: "tok", UserSub: "bob"}
-	client.StoreTask(t.Context(), "task-1", "ctx-1", "user text", "agent text", auth)
+	client.StoreTask(t.Context(), "task-1", "ctx-1", "user text", "agent text", "completed", auth)
 
 	require.Equal(t, "/api/tasks", gotURL)
 
@@ -80,5 +80,5 @@ func TestClient_DisabledWhenNoEndpoint(t *testing.T) {
 
 	// No panic, no request sent.
 	client.PushEvent(t.Context(), "sess", kagentapi.NewSessionEvent("ev", "user", "hi"), kagentapi.AuthInfo{})
-	client.StoreTask(t.Context(), "task", "ctx", "u", "a", kagentapi.AuthInfo{})
+	client.StoreTask(t.Context(), "task", "ctx", "u", "a", "completed", kagentapi.AuthInfo{})
 }

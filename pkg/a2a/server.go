@@ -14,6 +14,7 @@ import (
 	a2apkg "github.com/a2aproject/a2a-go/a2a"
 	"github.com/a2aproject/a2a-go/a2asrv"
 	"github.com/a2aproject/a2a-go/a2asrv/push"
+
 	"github.com/giantswarm/klaus-gateway/pkg/kagentapi"
 )
 
@@ -29,7 +30,7 @@ import (
 // pass them to kagent without re-parsing tokens.
 func Mount(r chi.Router, card *a2apkg.AgentCard, executor a2asrv.AgentExecutor) {
 	handler := a2asrv.NewHandler(executor,
-		a2asrv.WithPushNotifications(push.NewInMemoryStore(), push.NewHTTPPushSender(nil)),
+		a2asrv.WithPushNotifications(newTTLPushStore(), push.NewHTTPPushSender(nil)),
 	)
 	jsonrpcHandler := a2asrv.NewJSONRPCHandler(handler)
 	cardHandler := a2asrv.NewStaticAgentCardHandler(card)
@@ -38,7 +39,6 @@ func Mount(r chi.Router, card *a2apkg.AgentCard, executor a2asrv.AgentExecutor) 
 	r.Handle("/.well-known/agent.json", cardHandler)
 
 	authed := extractAuthMiddleware(jsonrpcHandler)
-	r.Handle("/", authed)
 	r.Handle("/a2a", authed)
 	r.Handle("/a2a/*", authed)
 }

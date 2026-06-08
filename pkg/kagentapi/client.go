@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -78,15 +79,19 @@ func NewSessionEvent(id, role, text string) SessionEvent {
 	return SessionEvent{ID: id, Data: string(data)}
 }
 
-const defaultSATokenPath = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+const defaultSATokenPath = "/var/run/secrets/kubernetes.io/serviceaccount/token" //nolint:gosec // path, not a credential
 
 // Client sends turn data to the kagent API. A zero-endpoint Client is a
 // no-op; callers do not need to guard on Enabled().
 type Client struct {
-	endpoint      string
-	agentRef      string
-	httpClient    *http.Client
-	saTokenPath   string
+	endpoint    string
+	agentRef    string
+	httpClient  *http.Client
+	saTokenPath string
+
+	saTokenMu     sync.Mutex
+	saTokenCached string
+	saTokenExpiry time.Time
 }
 
 // New returns a Client targeting the given endpoint. endpoint may be empty,
@@ -139,8 +144,9 @@ func (c *Client) PushEvent(ctx context.Context, sessionID string, event SessionE
 }
 
 // StoreTask posts the completed turn as an A2A task object to kagent.
+// state is the terminal A2A task state (e.g. "completed", "failed").
 // The call is best-effort; errors are logged only.
-func (c *Client) StoreTask(ctx context.Context, taskID, contextID, userText, agentText string, auth AuthInfo) {
+func (c *Client) StoreTask(ctx context.Context, taskID, contextID, userText, agentText, state string, auth AuthInfo) {
 	if !c.Enabled() {
 		return
 	}
@@ -148,7 +154,7 @@ func (c *Client) StoreTask(ctx context.Context, taskID, contextID, userText, age
 		Kind:      "task",
 		ID:        taskID,
 		ContextID: contextID,
-		Status:    a2aTaskStatus{State: "completed"},
+		Status:    a2aTaskStatus{State: state},
 		History: []a2aMessage{
 			{Kind: kindMessage, MessageID: taskID + "-user", Role: "user", Parts: []a2aPart{{Kind: kindText, Text: userText}}},
 			{Kind: kindMessage, MessageID: taskID + "-agent", Role: "agent", Parts: []a2aPart{{Kind: kindText, Text: agentText}}},
@@ -201,9 +207,16 @@ func (c *Client) readServiceAccountToken() string {
 	if c.saTokenPath == "" {
 		return ""
 	}
+	c.saTokenMu.Lock()
+	defer c.saTokenMu.Unlock()
+	if time.Now().Before(c.saTokenExpiry) {
+		return c.saTokenCached
+	}
 	data, err := os.ReadFile(c.saTokenPath)
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(data))
+	c.saTokenCached = strings.TrimSpace(string(data))
+	c.saTokenExpiry = time.Now().Add(5 * time.Minute)
+	return c.saTokenCached
 }

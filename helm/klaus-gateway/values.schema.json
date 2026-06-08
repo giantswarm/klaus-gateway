@@ -263,6 +263,35 @@
             }
           }
         },
+        "a2a": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "cardName": {
+              "type": "string"
+            },
+            "cardDescription": {
+              "type": "string"
+            },
+            "cardVersion": {
+              "type": "string"
+            },
+            "cardURL": {
+              "type": "string"
+            },
+            "staticTarget": {
+              "type": "string"
+            },
+            "kagentEndpoint": {
+              "type": "string"
+            },
+            "kagentAgentRef": {
+              "type": "string"
+            }
+          }
+        },
         "backendsExample": {
           "type": "object",
           "properties": {

@@ -73,7 +73,7 @@ func (p *recordingPusher) PushEvent(_ context.Context, _ string, event kagentapi
 	p.events = append(p.events, event)
 }
 
-func (p *recordingPusher) StoreTask(_ context.Context, taskID, _, _, _ string, _ kagentapi.AuthInfo) {
+func (p *recordingPusher) StoreTask(_ context.Context, taskID, _, _, _, _ string, _ kagentapi.AuthInfo) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.tasks = append(p.tasks, taskID)

@@ -312,6 +312,9 @@ func (c Config) Validate() error {
 		return fmt.Errorf("--static-instances is required with --driver=static")
 	}
 	if c.A2A.Enabled {
+		if c.A2A.CardName == "" {
+			return fmt.Errorf("--a2a-card-name must not be empty")
+		}
 		if c.A2A.CardURL == "" {
 			return fmt.Errorf("--a2a-card-url is required with --a2a-enabled")
 		}

@@ -11,6 +11,7 @@ import (
 	a2aclient "github.com/a2aproject/a2a-go/a2aclient"
 	"github.com/a2aproject/a2a-go/a2asrv"
 	"github.com/a2aproject/a2a-go/a2asrv/eventqueue"
+
 	"github.com/giantswarm/klaus-gateway/pkg/kagentapi"
 	"github.com/giantswarm/klaus-gateway/pkg/lifecycle"
 	"github.com/giantswarm/klaus-gateway/pkg/routing"
@@ -33,7 +34,7 @@ type Dialer interface {
 type KagentPusher interface {
 	Enabled() bool
 	PushEvent(ctx context.Context, sessionID string, event kagentapi.SessionEvent, auth kagentapi.AuthInfo)
-	StoreTask(ctx context.Context, taskID, contextID, userText, agentText string, auth kagentapi.AuthInfo)
+	StoreTask(ctx context.Context, taskID, contextID, userText, agentText, state string, auth kagentapi.AuthInfo)
 }
 
 // authInfoKey is the context key used to pass caller identity from the HTTP
@@ -200,22 +201,32 @@ loop:
 
 	// Push to kagent best-effort, asynchronously so the A2A response is not delayed.
 	if e.Kagent.Enabled() {
-		go e.pushToKagent(context.WithoutCancel(ctx), reqCtx, userText, agentText.String(), auth)
+		finalState := string(a2apkg.TaskStateCompleted)
+		if finalStatusEvent != nil {
+			finalState = string(finalStatusEvent.Status.State)
+		}
+		go e.pushToKagent(context.WithoutCancel(ctx), reqCtx, userText, agentText.String(), finalState, auth)
 	}
 
 	return nil
 }
 
 // Cancel interrupts the in-flight pod stream (if any) and writes a canceled event.
+// If the task already completed the cancel entry was already removed; nothing is written.
 func (e *ForwardingExecutor) Cancel(ctx context.Context, reqCtx *a2asrv.RequestContext, queue eventqueue.Queue) error {
-	if fn, ok := e.cancels.LoadAndDelete(reqCtx.TaskID); ok {
-		fn.(context.CancelFunc)()
+	fn, ok := e.cancels.LoadAndDelete(reqCtx.TaskID)
+	if !ok {
+		return nil
 	}
+	fn.(context.CancelFunc)()
 	return queue.Write(ctx, canceledEvent(reqCtx))
 }
 
-func (e *ForwardingExecutor) pushToKagent(ctx context.Context, reqCtx *a2asrv.RequestContext, userText, agentText string, auth kagentapi.AuthInfo) {
-	sessionID := auth.UserSub + ":" + reqCtx.ContextID
+func (e *ForwardingExecutor) pushToKagent(ctx context.Context, reqCtx *a2asrv.RequestContext, userText, agentText, state string, auth kagentapi.AuthInfo) {
+	sessionID := reqCtx.ContextID
+	if auth.UserSub != "" {
+		sessionID = auth.UserSub + ":" + reqCtx.ContextID
+	}
 	taskID := string(reqCtx.TaskID)
 
 	userEvent := kagentapi.NewSessionEvent(taskID+"-user", "user", userText)
@@ -224,5 +235,5 @@ func (e *ForwardingExecutor) pushToKagent(ctx context.Context, reqCtx *a2asrv.Re
 	agentEvent := kagentapi.NewSessionEvent(taskID+"-agent", "agent", agentText)
 	e.Kagent.PushEvent(ctx, sessionID, agentEvent, auth)
 
-	e.Kagent.StoreTask(ctx, taskID, reqCtx.ContextID, userText, agentText, auth)
+	e.Kagent.StoreTask(ctx, taskID, reqCtx.ContextID, userText, agentText, state, auth)
 }

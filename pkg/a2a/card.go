@@ -2,6 +2,7 @@ package a2a
 
 import (
 	"github.com/a2aproject/a2a-go/a2a"
+
 	"github.com/giantswarm/klaus-gateway/internal/config"
 )
 
