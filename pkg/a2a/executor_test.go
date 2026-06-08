@@ -34,8 +34,8 @@ func (q *collectingQueue) Write(_ context.Context, event a2a.Event) error {
 	return nil
 }
 
-func (q *collectingQueue) WriteVersioned(_ context.Context, event a2a.Event, _ a2a.TaskVersion) error {
-	return q.Write(context.Background(), event)
+func (q *collectingQueue) WriteVersioned(ctx context.Context, event a2a.Event, _ a2a.TaskVersion) error {
+	return q.Write(ctx, event)
 }
 
 func (q *collectingQueue) Read(_ context.Context) (a2a.Event, a2a.TaskVersion, error) {
@@ -203,4 +203,60 @@ type failingResolver struct{ err error }
 
 func (r *failingResolver) Resolve(_ context.Context, _ routing.InboundMessage) (lifecycle.InstanceRef, error) {
 	return lifecycle.InstanceRef{}, r.err
+}
+
+// failingPodExecutor emits a Final failed event.
+type failingPodExecutor struct{ msg string }
+
+func (e *failingPodExecutor) Execute(ctx context.Context, reqCtx *a2asrv.RequestContext, queue eventqueue.Queue) error {
+	ev := a2a.NewStatusUpdateEvent(reqCtx, a2a.TaskStateFailed, &a2a.Message{
+		Role:  a2a.MessageRoleAgent,
+		Parts: []a2a.Part{a2a.TextPart{Text: e.msg}},
+	})
+	ev.Final = true
+	return queue.Write(ctx, ev)
+}
+
+func (e *failingPodExecutor) Cancel(ctx context.Context, reqCtx *a2asrv.RequestContext, queue eventqueue.Queue) error {
+	ev := a2a.NewStatusUpdateEvent(reqCtx, a2a.TaskStateCanceled, nil)
+	ev.Final = true
+	return queue.Write(ctx, ev)
+}
+
+func startPodWith(t *testing.T, exec a2asrv.AgentExecutor) *httptest.Server {
+	t.Helper()
+	h := a2asrv.NewJSONRPCHandler(a2asrv.NewHandler(exec))
+	mux := http.NewServeMux()
+	mux.Handle("/a2a", h)
+	mux.Handle("/a2a/", h)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestForwardingExecutor_Execute_PodFailurePropagated(t *testing.T) {
+	pod := startPodWith(t, &failingPodExecutor{msg: "something went wrong"})
+
+	executor := &pkga2a.ForwardingExecutor{
+		Router: &staticResolver{baseURL: pod.URL},
+		Dial:   pkga2a.NewClients(),
+		Kagent: &recordingPusher{},
+	}
+
+	queue := &collectingQueue{}
+	reqCtx := &a2asrv.RequestContext{
+		ContextID: "ctx-fail",
+		TaskID:    a2a.NewTaskID(),
+		Message:   a2a.NewMessage(a2a.MessageRoleUser, a2a.TextPart{Text: "do it"}),
+	}
+
+	err := executor.Execute(t.Context(), reqCtx, queue)
+	require.NoError(t, err)
+
+	events := queue.snapshot()
+	last := events[len(events)-1]
+	failed, ok := last.(*a2a.TaskStatusUpdateEvent)
+	require.True(t, ok, "last event must be *TaskStatusUpdateEvent")
+	require.Equal(t, a2a.TaskStateFailed, failed.Status.State)
+	require.True(t, failed.Final)
 }

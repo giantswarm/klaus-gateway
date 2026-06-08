@@ -26,7 +26,7 @@ import (
 // The identity middleware reads the caller's bearer token and X-User-Id header
 // from each request and stores them in the context so ForwardingExecutor can
 // pass them to kagent without re-parsing tokens.
-func Mount(r chi.Router, card *a2apkg.AgentCard, executor *ForwardingExecutor) {
+func Mount(r chi.Router, card *a2apkg.AgentCard, executor a2asrv.AgentExecutor) {
 	handler := a2asrv.NewHandler(executor)
 	jsonrpcHandler := a2asrv.NewJSONRPCHandler(handler)
 	cardHandler := a2asrv.NewStaticAgentCardHandler(card)

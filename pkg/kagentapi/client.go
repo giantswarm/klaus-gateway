@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"os"
 	"time"
 )
 
@@ -87,12 +86,6 @@ func New(endpoint, agentRef string) *Client {
 		agentRef:   agentRef,
 		httpClient: &http.Client{Timeout: 10 * time.Second},
 	}
-}
-
-// NewFromEnv reads KAGENT_API_ENDPOINT and KAGENT_AGENT_REF from the
-// environment.
-func NewFromEnv() *Client {
-	return New(os.Getenv("KAGENT_API_ENDPOINT"), os.Getenv("KAGENT_AGENT_REF"))
 }
 
 // Enabled reports whether the client has an endpoint configured.

@@ -107,12 +107,14 @@ func (e *ForwardingExecutor) Execute(ctx context.Context, reqCtx *a2asrv.Request
 	}
 
 	var (
-		agentText     string
-		artifactID    a2apkg.ArtifactID
-		firstArtifact = true
+		agentText        string
+		artifactID       a2apkg.ArtifactID
+		firstArtifact    = true
+		finalStatusEvent *a2apkg.TaskStatusUpdateEvent
 	)
 	userText := extractText(reqCtx.Message)
 
+loop:
 	for event, err := range podClient.SendStreamingMessage(ctx, params) {
 		if err != nil {
 			slog.WarnContext(ctx, "a2a: stream error from pod", "error", err)
@@ -130,7 +132,8 @@ func (e *ForwardingExecutor) Execute(ctx context.Context, reqCtx *a2asrv.Request
 				}
 			}
 			if ev.Final {
-				goto streamDone
+				finalStatusEvent = ev
+				break loop
 			}
 
 		case *a2apkg.TaskArtifactUpdateEvent:
@@ -153,9 +156,22 @@ func (e *ForwardingExecutor) Execute(ctx context.Context, reqCtx *a2asrv.Request
 		}
 	}
 
-streamDone:
-	if err := queue.Write(ctx, completedEvent(reqCtx)); err != nil {
-		return fmt.Errorf("write completed event: %w", err)
+	// Mirror the pod's terminal state; default to completed when no final event arrived.
+	var finalWriteErr error
+	switch {
+	case finalStatusEvent != nil && finalStatusEvent.Status.State == a2apkg.TaskStateFailed:
+		errText := extractText(finalStatusEvent.Status.Message)
+		if errText == "" {
+			errText = "upstream task failed"
+		}
+		finalWriteErr = queue.Write(ctx, failedEvent(reqCtx, errText))
+	case finalStatusEvent != nil && finalStatusEvent.Status.State == a2apkg.TaskStateCanceled:
+		finalWriteErr = queue.Write(ctx, canceledEvent(reqCtx))
+	default:
+		finalWriteErr = queue.Write(ctx, completedEvent(reqCtx))
+	}
+	if finalWriteErr != nil {
+		return fmt.Errorf("write final event: %w", finalWriteErr)
 	}
 
 	// Push to kagent best-effort, asynchronously so the A2A response is not delayed.
