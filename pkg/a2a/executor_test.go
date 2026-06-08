@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	a2aclient "github.com/a2aproject/a2a-go/a2aclient"
 	"github.com/a2aproject/a2a-go/a2a"
 	"github.com/a2aproject/a2a-go/a2asrv"
 	"github.com/a2aproject/a2a-go/a2asrv/eventqueue"
@@ -57,13 +56,6 @@ type staticResolver struct{ baseURL string }
 
 func (r *staticResolver) Resolve(_ context.Context, _ routing.InboundMessage) (lifecycle.InstanceRef, error) {
 	return lifecycle.InstanceRef{BaseURL: r.baseURL}, nil
-}
-
-// dialerFunc wraps a function to satisfy the Dialer interface.
-type dialerFunc func(ctx context.Context, baseURL string) (*a2aclient.Client, error)
-
-func (f dialerFunc) For(ctx context.Context, baseURL string) (*a2aclient.Client, error) {
-	return f(ctx, baseURL)
 }
 
 // recordingPusher records kagent push calls.

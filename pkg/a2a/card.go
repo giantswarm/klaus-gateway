@@ -5,6 +5,8 @@ import (
 	"github.com/giantswarm/klaus-gateway/internal/config"
 )
 
+const mimeText = "text/plain"
+
 // AgentCard builds the gateway's agent card from configuration.
 // The card is served at /.well-known/agent-card.json and used by kagent
 // to discover the agent's URL and capabilities.
@@ -17,8 +19,8 @@ func AgentCard(cfg config.A2AConfig) *a2a.AgentCard {
 			Description: s.Description,
 			Tags:        s.Tags,
 			Examples:    s.Examples,
-			InputModes:  []string{"text/plain"},
-			OutputModes: []string{"text/plain"},
+			InputModes:  []string{mimeText},
+			OutputModes: []string{mimeText},
 		})
 	}
 	// Provide a minimal default skill set when none are configured.
@@ -37,8 +39,8 @@ func AgentCard(cfg config.A2AConfig) *a2a.AgentCard {
 			PushNotifications: false,
 		},
 		Skills:             skills,
-		DefaultInputModes:  []string{"text/plain"},
-		DefaultOutputModes: []string{"text/plain"},
+		DefaultInputModes:  []string{mimeText},
+		DefaultOutputModes: []string{mimeText},
 		PreferredTransport: a2a.TransportProtocolJSONRPC,
 	}
 }
@@ -57,8 +59,8 @@ func defaultSkills() []a2a.AgentSkill {
 				"Review this PR diff for security issues",
 				"Add unit tests to this function",
 			},
-			InputModes:  []string{"text/plain"},
-			OutputModes: []string{"text/plain"},
+			InputModes:  []string{mimeText},
+			OutputModes: []string{mimeText},
 		},
 		{
 			ID:          "platform-ops",
@@ -70,8 +72,8 @@ func defaultSkills() []a2a.AgentSkill {
 				"Write a Helm values file for this service",
 				"Debug why this Deployment rollout is stuck",
 			},
-			InputModes:  []string{"text/plain"},
-			OutputModes: []string{"text/plain"},
+			InputModes:  []string{mimeText},
+			OutputModes: []string{mimeText},
 		},
 		{
 			ID:          "observability",
@@ -83,8 +85,8 @@ func defaultSkills() []a2a.AgentSkill {
 				"Write a recording rule for request rate by namespace",
 				"Find log lines correlated with this error spike",
 			},
-			InputModes:  []string{"text/plain"},
-			OutputModes: []string{"text/plain"},
+			InputModes:  []string{mimeText},
+			OutputModes: []string{mimeText},
 		},
 		{
 			ID:          "mcp-tools",
@@ -95,8 +97,8 @@ func defaultSkills() []a2a.AgentSkill {
 				"List available MCP servers via muster",
 				"Query Prometheus for current cluster CPU usage",
 			},
-			InputModes:  []string{"text/plain"},
-			OutputModes: []string{"text/plain"},
+			InputModes:  []string{mimeText},
+			OutputModes: []string{mimeText},
 		},
 	}
 }

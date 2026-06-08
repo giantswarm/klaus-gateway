@@ -56,14 +56,19 @@ type a2aTaskStatus struct {
 	State string `json:"state"`
 }
 
+const (
+	kindMessage = "message"
+	kindText    = "text"
+)
+
 // NewSessionEvent builds a SessionEvent encoding a single-part text message.
 // id is a unique event identifier; role is "user" or "agent".
 func NewSessionEvent(id, role, text string) SessionEvent {
 	msg := a2aMessage{
-		Kind:      "message",
+		Kind:      kindMessage,
 		MessageID: id,
 		Role:      role,
-		Parts:     []a2aPart{{Kind: "text", Text: text}},
+		Parts:     []a2aPart{{Kind: kindText, Text: text}},
 	}
 	data, _ := json.Marshal(msg)
 	return SessionEvent{ID: id, Data: string(data)}
@@ -116,7 +121,7 @@ func (c *Client) PushEvent(ctx context.Context, sessionID string, event SessionE
 		slog.ErrorContext(ctx, "kagentapi: push event", "error", err, "session", sessionID)
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 400 {
 		slog.WarnContext(ctx, "kagentapi: push event non-2xx", "status", resp.StatusCode, "session", sessionID)
 	}
@@ -134,8 +139,8 @@ func (c *Client) StoreTask(ctx context.Context, taskID, contextID, userText, age
 		ContextID: contextID,
 		Status:    a2aTaskStatus{State: "completed"},
 		History: []a2aMessage{
-			{Kind: "message", MessageID: taskID + "-user", Role: "user", Parts: []a2aPart{{Kind: "text", Text: userText}}},
-			{Kind: "message", MessageID: taskID + "-agent", Role: "agent", Parts: []a2aPart{{Kind: "text", Text: agentText}}},
+			{Kind: kindMessage, MessageID: taskID + "-user", Role: "user", Parts: []a2aPart{{Kind: kindText, Text: userText}}},
+			{Kind: kindMessage, MessageID: taskID + "-agent", Role: "agent", Parts: []a2aPart{{Kind: kindText, Text: agentText}}},
 		},
 	}
 	body, err := json.Marshal(task)
@@ -155,7 +160,7 @@ func (c *Client) StoreTask(ctx context.Context, taskID, contextID, userText, age
 		slog.ErrorContext(ctx, "kagentapi: store task", "error", err, "task", taskID)
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 400 {
 		slog.WarnContext(ctx, "kagentapi: store task non-2xx", "status", resp.StatusCode, "task", taskID)
 	}

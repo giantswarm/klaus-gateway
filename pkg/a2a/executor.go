@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 
-	a2aclient "github.com/a2aproject/a2a-go/a2aclient"
 	a2apkg "github.com/a2aproject/a2a-go/a2a"
+	a2aclient "github.com/a2aproject/a2a-go/a2aclient"
 	"github.com/a2aproject/a2a-go/a2asrv"
 	"github.com/a2aproject/a2a-go/a2asrv/eventqueue"
 	"github.com/giantswarm/klaus-gateway/pkg/kagentapi"

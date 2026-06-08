@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"sync"
 
-	a2aclient "github.com/a2aproject/a2a-go/a2aclient"
 	"github.com/a2aproject/a2a-go/a2a"
+	a2aclient "github.com/a2aproject/a2a-go/a2aclient"
 )
 
 // Clients caches one a2aclient.Client per target base URL.
