@@ -92,12 +92,17 @@ func (e *ForwardingExecutor) Execute(ctx context.Context, reqCtx *a2asrv.Request
 	}
 
 	// Forward with the original contextID so the pod can resume the session.
+	// Message.Metadata and params.Metadata carry per-request hints (effort,
+	// max_budget_usd, json_schema) that the pod executor reads from; pass them
+	// through unchanged.
 	params := &a2apkg.MessageSendParams{
+		Metadata: reqCtx.Metadata,
 		Message: &a2apkg.Message{
 			ID:        reqCtx.Message.ID,
 			Role:      reqCtx.Message.Role,
 			Parts:     reqCtx.Message.Parts,
 			ContextID: reqCtx.ContextID,
+			Metadata:  reqCtx.Message.Metadata,
 		},
 	}
 
