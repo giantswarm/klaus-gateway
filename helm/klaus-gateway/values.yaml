@@ -148,6 +148,13 @@ agentgateway:
     # runtime, so off by default in the chart.
     directInstance:
       enabled: false
+    # A2A route: /a2a and /.well-known/agent*.json for agent discovery.
+    # Enable alongside a2a.enabled.
+    a2a:
+      enabled: false
+      prefixes:
+      - /a2a
+      - /.well-known/agent
 
   # AgentgatewayPolicy attached to the Gateway.
   # Upstream v1.1.0 supports JWT but not Cedar. Cedar will be wired in when it
@@ -183,6 +190,27 @@ agentgateway:
     static:
       host: klaus-instance-example.default.svc.cluster.local
       port: 8080
+
+# A2A server surface.
+# When enabled, the gateway serves an A2A JSON-RPC endpoint at /a2a and
+# the agent card at /.well-known/agent.json.
+# staticTarget is the base URL of the Klaus worker pod (or Service) to forward
+# A2A messages to (e.g. "http://klaud-coding.kagent.svc.cluster.local:8080").
+# kagentEndpoint and kagentAgentRef wire the completed-turn push. When
+# kagentEndpoint is empty the push is silently skipped.
+a2a:
+  enabled: false
+  cardName: "Klaus Gateway"
+  cardDescription: ""
+  cardVersion: "0.1.0"
+  # cardURL is the externally-reachable base URL of this gateway (required when enabled).
+  cardURL: ""
+  # staticTarget is the Klaus worker Service base URL (required when enabled).
+  staticTarget: ""
+  # kagentEndpoint is the base URL of the kagent API. Empty disables push.
+  kagentEndpoint: ""
+  # kagentAgentRef is the X-Agent-Name header value sent to kagent.
+  kagentAgentRef: ""
 
 # Slack channel adapter.
 # Disabled by default. To enable, set slack.enabled: true and provide a

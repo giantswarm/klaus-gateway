@@ -1,4 +1,4 @@
-{{- $hasRoutes := or .Values.agentgateway.routes.chatAndMcp.enabled .Values.agentgateway.routes.cli.enabled }}
+{{- $hasRoutes := or .Values.agentgateway.routes.chatAndMcp.enabled (or .Values.agentgateway.routes.cli.enabled .Values.agentgateway.routes.a2a.enabled) }}
 {{- if and .Values.agentgateway.enabled $hasRoutes }}
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
@@ -30,6 +30,17 @@ spec:
     {{- end }}
     {{- if .Values.agentgateway.routes.cli.enabled }}
     {{- range .Values.agentgateway.routes.cli.prefixes }}
+    - matches:
+        - path:
+            type: PathPrefix
+            value: {{ . | quote }}
+      backendRefs:
+        - name: {{ include "resource.default.name" $ }}
+          port: {{ $.Values.server.port }}
+    {{- end }}
+    {{- end }}
+    {{- if .Values.agentgateway.routes.a2a.enabled }}
+    {{- range .Values.agentgateway.routes.a2a.prefixes }}
     - matches:
         - path:
             type: PathPrefix
