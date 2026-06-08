@@ -168,6 +168,14 @@ func (e *ForwardingExecutor) Execute(ctx context.Context, reqCtx *a2asrv.Request
 		e.contextCancels.CompareAndDelete(reqCtx.ContextID, exec)
 	}()
 
+	// Push the user message to kagent before starting the pod stream so the
+	// session history is populated while Klaus is thinking.
+	userText := extractText(reqCtx.Message)
+	if e.Kagent.Enabled() {
+		taskID := string(reqCtx.TaskID)
+		e.Kagent.PushEvent(ctx, reqCtx.ContextID, kagentapi.NewSessionEvent(taskID+"-user", "user", userText), auth)
+	}
+
 	// Forward with the original contextID so the pod can resume the session.
 	// Message.Metadata and params.Metadata carry per-request hints (effort,
 	// max_budget_usd, json_schema) that the pod executor reads from; pass them
@@ -189,7 +197,6 @@ func (e *ForwardingExecutor) Execute(ctx context.Context, reqCtx *a2asrv.Request
 		firstArtifact    = true
 		finalStatusEvent *a2apkg.TaskStatusUpdateEvent
 	)
-	userText := extractText(reqCtx.Message)
 
 loop:
 	for event, err := range podClient.SendStreamingMessage(podCtx, params) {
@@ -242,6 +249,20 @@ loop:
 		}
 	}
 
+	// Push agent response and task record to kagent before flushing the terminal
+	// event. The UI polls session events after the A2A stream closes; pushing here
+	// (not async) ensures the data is present when that poll lands.
+	if e.Kagent.Enabled() {
+		taskID := string(reqCtx.TaskID)
+		finalState := string(a2apkg.TaskStateCompleted)
+		if finalStatusEvent != nil {
+			finalState = string(finalStatusEvent.Status.State)
+		}
+		agentEventCtx := context.WithoutCancel(ctx)
+		e.Kagent.PushEvent(agentEventCtx, reqCtx.ContextID, kagentapi.NewSessionEvent(taskID+"-agent", "agent", agentText.String()), auth)
+		e.Kagent.StoreTask(agentEventCtx, taskID, reqCtx.ContextID, userText, agentText.String(), finalState, auth)
+	}
+
 	// Mirror the pod's terminal state; default to completed when no final event arrived.
 	var finalWriteErr error
 	switch {
@@ -271,15 +292,6 @@ loop:
 		return fmt.Errorf("write final event: %w", finalWriteErr)
 	}
 
-	// Push to kagent best-effort, asynchronously so the A2A response is not delayed.
-	if e.Kagent.Enabled() {
-		finalState := string(a2apkg.TaskStateCompleted)
-		if finalStatusEvent != nil {
-			finalState = string(finalStatusEvent.Status.State)
-		}
-		go e.pushToKagent(context.WithoutCancel(ctx), reqCtx, userText, agentText.String(), finalState, auth)
-	}
-
 	return nil
 }
 
@@ -296,15 +308,3 @@ func (e *ForwardingExecutor) Cancel(ctx context.Context, reqCtx *a2asrv.RequestC
 	return queue.Write(ctx, canceledEvent(reqCtx))
 }
 
-func (e *ForwardingExecutor) pushToKagent(ctx context.Context, reqCtx *a2asrv.RequestContext, userText, agentText, state string, auth kagentapi.AuthInfo) {
-	sessionID := reqCtx.ContextID
-	taskID := string(reqCtx.TaskID)
-
-	userEvent := kagentapi.NewSessionEvent(taskID+"-user", "user", userText)
-	e.Kagent.PushEvent(ctx, sessionID, userEvent, auth)
-
-	agentEvent := kagentapi.NewSessionEvent(taskID+"-agent", "agent", agentText)
-	e.Kagent.PushEvent(ctx, sessionID, agentEvent, auth)
-
-	e.Kagent.StoreTask(ctx, taskID, reqCtx.ContextID, userText, agentText, state, auth)
-}
