@@ -6,6 +6,9 @@
 package a2a
 
 import (
+	"bytes"
+	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 
@@ -17,6 +20,54 @@ import (
 
 	"github.com/giantswarm/klaus-gateway/pkg/kagentapi"
 )
+
+// a2aMethodCompat maps pre-v2 A2A JSON-RPC method names (used by kagent ≤ 0.9.x
+// via trpc-a2a-go) to the names expected by a2a-go/v2. Requests using new-style
+// names pass through unchanged.
+var a2aMethodCompat = map[string]string{
+	"message/send":                        "SendMessage",
+	"message/stream":                      "SendStreamingMessage",
+	"tasks/get":                           "GetTask",
+	"tasks/cancel":                        "CancelTask",
+	"tasks/resubscribe":                   "SubscribeToTask",
+	"tasks/pushNotificationConfig/set":    "CreateTaskPushNotificationConfig",
+	"tasks/pushNotificationConfig/get":    "GetTaskPushNotificationConfig",
+	"agent/getAuthenticatedExtendedCard":  "GetExtendedAgentCard",
+}
+
+// a2aCompatMiddleware rewrites legacy A2A JSON-RPC method names to their v2
+// equivalents before the request reaches the handler. It is a no-op for
+// requests that already use v2 names or for non-JSON bodies.
+func a2aCompatMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "failed to read request body", http.StatusBadRequest)
+			return
+		}
+		_ = r.Body.Close()
+
+		var msg struct {
+			Method string `json:"method"`
+		}
+		if json.Unmarshal(body, &msg) == nil {
+			if newMethod, ok := a2aMethodCompat[msg.Method]; ok {
+				// Splice the new method name into the raw JSON without
+				// re-marshalling the entire payload (preserves unknown fields).
+				body = bytes.Replace(
+					body,
+					[]byte(`"method":"`+msg.Method+`"`),
+					[]byte(`"method":"`+newMethod+`"`),
+					1,
+				)
+			}
+		}
+
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		r.ContentLength = int64(len(body))
+		next.ServeHTTP(w, r)
+	})
+}
 
 // Mount registers the A2A endpoints on r:
 //
@@ -38,7 +89,8 @@ func Mount(r chi.Router, card *a2a.AgentCard, executor a2asrv.AgentExecutor) {
 	r.Handle("/.well-known/agent-card.json", cardHandler)
 	r.Handle("/.well-known/agent.json", cardHandler)
 
-	authed := extractAuthMiddleware(jsonrpcHandler)
+	translated := a2aCompatMiddleware(jsonrpcHandler)
+	authed := extractAuthMiddleware(translated)
 	// kagent posts to the service root (POST /) rather than the /a2a path
 	// advertised in the agent card. This route should be removed once kagent
 	// honours the SupportedInterfaces URL from the card.
