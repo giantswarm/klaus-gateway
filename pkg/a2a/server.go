@@ -47,19 +47,20 @@ func a2aCompatMiddleware(next http.Handler) http.Handler {
 		}
 		_ = r.Body.Close()
 
-		var msg struct {
-			Method string `json:"method"`
-		}
-		if json.Unmarshal(body, &msg) == nil {
-			if newMethod, ok := a2aMethodCompat[msg.Method]; ok {
-				// Splice the new method name into the raw JSON without
-				// re-marshalling the entire payload (preserves unknown fields).
-				body = bytes.Replace(
-					body,
-					[]byte(`"method":"`+msg.Method+`"`),
-					[]byte(`"method":"`+newMethod+`"`),
-					1,
-				)
+		// Decode into a raw map so we can replace only the method field
+		// without touching any other fields (preserves params, id, etc.).
+		var raw map[string]json.RawMessage
+		if json.Unmarshal(body, &raw) == nil {
+			var method string
+			if json.Unmarshal(raw["method"], &method) == nil {
+				if newMethod, ok := a2aMethodCompat[method]; ok {
+					if repl, merr := json.Marshal(newMethod); merr == nil {
+						raw["method"] = repl
+						if reencoded, rerr := json.Marshal(raw); rerr == nil {
+							body = reencoded
+						}
+					}
+				}
 			}
 		}
 
