@@ -323,4 +323,3 @@ func (e *ForwardingExecutor) Cancel(ctx context.Context, execCtx *a2asrv.Executo
 		yield(canceledEvent(execCtx), nil)
 	}
 }
-
