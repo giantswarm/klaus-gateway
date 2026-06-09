@@ -3,15 +3,14 @@ package a2a_test
 import (
 	"context"
 	"fmt"
+	"iter"
 	"net/http"
 	"net/http/httptest"
 	"sync"
 	"testing"
-	"time"
 
-	"github.com/a2aproject/a2a-go/a2a"
-	"github.com/a2aproject/a2a-go/a2asrv"
-	"github.com/a2aproject/a2a-go/a2asrv/eventqueue"
+	"github.com/a2aproject/a2a-go/v2/a2a"
+	"github.com/a2aproject/a2a-go/v2/a2asrv"
 	"github.com/stretchr/testify/require"
 
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
@@ -20,35 +19,17 @@ import (
 	"github.com/giantswarm/klaus-gateway/pkg/routing"
 )
 
-// collectingQueue collects events written by the executor for assertion.
-type collectingQueue struct {
-	mu     sync.Mutex
-	events []a2a.Event
-}
-
-func (q *collectingQueue) Write(_ context.Context, event a2a.Event) error {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	q.events = append(q.events, event)
-	return nil
-}
-
-func (q *collectingQueue) WriteVersioned(ctx context.Context, event a2a.Event, _ a2a.TaskVersion) error {
-	return q.Write(ctx, event)
-}
-
-func (q *collectingQueue) Read(_ context.Context) (a2a.Event, a2a.TaskVersion, error) {
-	return nil, a2a.TaskVersionMissing, fmt.Errorf("not implemented")
-}
-
-func (q *collectingQueue) Close() error { return nil }
-
-func (q *collectingQueue) snapshot() []a2a.Event {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	snap := make([]a2a.Event, len(q.events))
-	copy(snap, q.events)
-	return snap
+// collectEvents drains an event iterator, returning all events or the first error.
+func collectEvents(ctx context.Context, seq iter.Seq2[a2a.Event, error]) ([]a2a.Event, error) {
+	var events []a2a.Event
+	for event, err := range seq {
+		if err != nil {
+			return events, err
+		}
+		events = append(events, event)
+	}
+	_ = ctx
+	return events, nil
 }
 
 // staticResolver always resolves to the given base URL.
@@ -79,22 +60,30 @@ func (p *recordingPusher) StoreTask(_ context.Context, taskID, _, _, _, _ string
 	p.tasks = append(p.tasks, taskID)
 }
 
-// fakePodExecutor emits a fixed event sequence that ends with a Final event.
+// fakePodExecutor emits a fixed event sequence that ends with a terminal event.
 type fakePodExecutor struct{}
 
-func (e *fakePodExecutor) Execute(ctx context.Context, reqCtx *a2asrv.RequestContext, queue eventqueue.Queue) error {
-	artifact := a2a.NewArtifactEvent(reqCtx, a2a.TextPart{Text: "hello world"})
-	_ = queue.Write(ctx, artifact)
-	final := a2a.NewStatusUpdateEvent(reqCtx, a2a.TaskStateCompleted, nil)
-	final.Final = true
-	_ = queue.Write(ctx, final)
-	return nil
+func (e *fakePodExecutor) Execute(_ context.Context, execCtx *a2asrv.ExecutorContext) iter.Seq2[a2a.Event, error] {
+	return func(yield func(a2a.Event, error) bool) {
+		if !yield(a2a.NewSubmittedTask(execCtx, execCtx.Message), nil) {
+			return
+		}
+		if !yield(a2a.NewStatusUpdateEvent(execCtx, a2a.TaskStateWorking, nil), nil) {
+			return
+		}
+		artifact := a2a.NewArtifactEvent(execCtx, a2a.NewTextPart("hello world"))
+		artifact.LastChunk = true
+		if !yield(artifact, nil) {
+			return
+		}
+		yield(a2a.NewStatusUpdateEvent(execCtx, a2a.TaskStateCompleted, nil), nil)
+	}
 }
 
-func (e *fakePodExecutor) Cancel(ctx context.Context, reqCtx *a2asrv.RequestContext, queue eventqueue.Queue) error {
-	ev := a2a.NewStatusUpdateEvent(reqCtx, a2a.TaskStateCanceled, nil)
-	ev.Final = true
-	return queue.Write(ctx, ev)
+func (e *fakePodExecutor) Cancel(_ context.Context, execCtx *a2asrv.ExecutorContext) iter.Seq2[a2a.Event, error] {
+	return func(yield func(a2a.Event, error) bool) {
+		yield(a2a.NewStatusUpdateEvent(execCtx, a2a.TaskStateCanceled, nil), nil)
+	}
 }
 
 // startFakePod returns an httptest server that serves an A2A endpoint at /a2a.
@@ -119,23 +108,24 @@ func TestForwardingExecutor_Execute_RelaysEvents(t *testing.T) {
 		Kagent: pusher,
 	}
 
-	queue := &collectingQueue{}
-	reqCtx := &a2asrv.RequestContext{
+	execCtx := &a2asrv.ExecutorContext{
 		ContextID: "ctx-test-1",
 		TaskID:    a2a.NewTaskID(),
-		Message:   a2a.NewMessage(a2a.MessageRoleUser, a2a.TextPart{Text: "ping"}),
+		Message:   a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("ping")),
 	}
 
-	err := executor.Execute(t.Context(), reqCtx, queue)
+	events, err := collectEvents(t.Context(), executor.Execute(t.Context(), execCtx))
 	require.NoError(t, err)
+	// Expect at least: submitted + working (initial) + artifact + completed.
+	require.GreaterOrEqual(t, len(events), 4, "expected submitted + working + artifact + completed events")
 
-	events := queue.snapshot()
-	// Expect at least: working (initial) + artifact + completed.
-	require.GreaterOrEqual(t, len(events), 3, "expected working + artifact + completed events")
+	// First event must be the submitted task.
+	_, ok := events[0].(*a2a.Task)
+	require.True(t, ok, "first event must be *Task")
 
-	// First event must be a working status.
-	working, ok := events[0].(*a2a.TaskStatusUpdateEvent)
-	require.True(t, ok, "first event must be *TaskStatusUpdateEvent")
+	// Second event must be a working status.
+	working, ok := events[1].(*a2a.TaskStatusUpdateEvent)
+	require.True(t, ok, "second event must be *TaskStatusUpdateEvent")
 	require.Equal(t, a2a.TaskStateWorking, working.Status.State)
 
 	// Last event must be completed.
@@ -143,24 +133,37 @@ func TestForwardingExecutor_Execute_RelaysEvents(t *testing.T) {
 	completed, ok := last.(*a2a.TaskStatusUpdateEvent)
 	require.True(t, ok, "last event must be *TaskStatusUpdateEvent")
 	require.Equal(t, a2a.TaskStateCompleted, completed.Status.State)
-	require.True(t, completed.Final)
+	require.True(t, completed.Status.State.Terminal())
+
+	// Exactly one artifact event must have LastChunk=true and it must appear
+	// before the completed event (the kagent UI only commits streaming text on
+	// receipt of lastChunk, so it must arrive before the terminal event).
+	var lastChunkIdx int
+	lastChunkCount := 0
+	for i, ev := range events {
+		if ae, ok := ev.(*a2a.TaskArtifactUpdateEvent); ok && ae.LastChunk {
+			lastChunkIdx = i
+			lastChunkCount++
+		}
+	}
+	require.Equal(t, 1, lastChunkCount, "expected exactly one artifact event with LastChunk=true")
+	require.Less(t, lastChunkIdx, len(events)-1, "lastChunk artifact must precede the completed event")
 
 	// All events carry the gateway contextID, not the pod contextID.
 	for _, ev := range events {
 		switch e := ev.(type) {
 		case *a2a.TaskStatusUpdateEvent:
-			require.Equal(t, reqCtx.ContextID, e.ContextID)
+			require.Equal(t, execCtx.ContextID, e.ContextID)
 		case *a2a.TaskArtifactUpdateEvent:
-			require.Equal(t, reqCtx.ContextID, e.ContextID)
+			require.Equal(t, execCtx.ContextID, e.ContextID)
 		}
 	}
 
-	// Kagent push is async; wait briefly.
-	require.Eventually(t, func() bool {
-		pusher.mu.Lock()
-		defer pusher.mu.Unlock()
-		return len(pusher.tasks) > 0
-	}, 2*time.Second, 50*time.Millisecond, "kagent StoreTask not called")
+	// StoreTask is now synchronous; it must be called before Execute returns.
+	pusher.mu.Lock()
+	taskCount := len(pusher.tasks)
+	pusher.mu.Unlock()
+	require.Greater(t, taskCount, 0, "kagent StoreTask not called")
 }
 
 func TestForwardingExecutor_Execute_RouteNotFound(t *testing.T) {
@@ -170,25 +173,24 @@ func TestForwardingExecutor_Execute_RouteNotFound(t *testing.T) {
 		Kagent: &recordingPusher{},
 	}
 
-	queue := &collectingQueue{}
-	reqCtx := &a2asrv.RequestContext{
+	execCtx := &a2asrv.ExecutorContext{
 		ContextID: "missing-ctx",
 		TaskID:    a2a.NewTaskID(),
-		Message:   a2a.NewMessage(a2a.MessageRoleUser, a2a.TextPart{Text: "hello"}),
+		Message:   a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("hello")),
 	}
 
-	err := executor.Execute(t.Context(), reqCtx, queue)
+	events, err := collectEvents(t.Context(), executor.Execute(t.Context(), execCtx))
 	require.NoError(t, err)
-
-	events := queue.snapshot()
-	require.Len(t, events, 2, "expected working + failed events")
-	working, ok := events[0].(*a2a.TaskStatusUpdateEvent)
+	require.Len(t, events, 3, "expected submitted + working + failed events")
+	_, ok := events[0].(*a2a.Task)
+	require.True(t, ok, "first event must be *Task")
+	working, ok := events[1].(*a2a.TaskStatusUpdateEvent)
 	require.True(t, ok)
 	require.Equal(t, a2a.TaskStateWorking, working.Status.State)
-	failed, ok := events[1].(*a2a.TaskStatusUpdateEvent)
+	failed, ok := events[2].(*a2a.TaskStatusUpdateEvent)
 	require.True(t, ok)
 	require.Equal(t, a2a.TaskStateFailed, failed.Status.State)
-	require.True(t, failed.Final)
+	require.True(t, failed.Status.State.Terminal())
 }
 
 type failingResolver struct{ err error }
@@ -197,22 +199,23 @@ func (r *failingResolver) Resolve(_ context.Context, _ routing.InboundMessage) (
 	return lifecycle.InstanceRef{}, r.err
 }
 
-// failingPodExecutor emits a Final failed event.
+// failingPodExecutor emits a terminal failed event.
 type failingPodExecutor struct{ msg string }
 
-func (e *failingPodExecutor) Execute(ctx context.Context, reqCtx *a2asrv.RequestContext, queue eventqueue.Queue) error {
-	ev := a2a.NewStatusUpdateEvent(reqCtx, a2a.TaskStateFailed, &a2a.Message{
-		Role:  a2a.MessageRoleAgent,
-		Parts: []a2a.Part{a2a.TextPart{Text: e.msg}},
-	})
-	ev.Final = true
-	return queue.Write(ctx, ev)
+func (e *failingPodExecutor) Execute(_ context.Context, execCtx *a2asrv.ExecutorContext) iter.Seq2[a2a.Event, error] {
+	return func(yield func(a2a.Event, error) bool) {
+		if !yield(a2a.NewSubmittedTask(execCtx, execCtx.Message), nil) {
+			return
+		}
+		yield(a2a.NewStatusUpdateEvent(execCtx, a2a.TaskStateFailed,
+			a2a.NewMessage(a2a.MessageRoleAgent, a2a.NewTextPart(e.msg))), nil)
+	}
 }
 
-func (e *failingPodExecutor) Cancel(ctx context.Context, reqCtx *a2asrv.RequestContext, queue eventqueue.Queue) error {
-	ev := a2a.NewStatusUpdateEvent(reqCtx, a2a.TaskStateCanceled, nil)
-	ev.Final = true
-	return queue.Write(ctx, ev)
+func (e *failingPodExecutor) Cancel(_ context.Context, execCtx *a2asrv.ExecutorContext) iter.Seq2[a2a.Event, error] {
+	return func(yield func(a2a.Event, error) bool) {
+		yield(a2a.NewStatusUpdateEvent(execCtx, a2a.TaskStateCanceled, nil), nil)
+	}
 }
 
 func startPodWith(t *testing.T, exec a2asrv.AgentExecutor) *httptest.Server {
@@ -235,20 +238,17 @@ func TestForwardingExecutor_Execute_PodFailurePropagated(t *testing.T) {
 		Kagent: &recordingPusher{},
 	}
 
-	queue := &collectingQueue{}
-	reqCtx := &a2asrv.RequestContext{
+	execCtx := &a2asrv.ExecutorContext{
 		ContextID: "ctx-fail",
 		TaskID:    a2a.NewTaskID(),
-		Message:   a2a.NewMessage(a2a.MessageRoleUser, a2a.TextPart{Text: "do it"}),
+		Message:   a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("do it")),
 	}
 
-	err := executor.Execute(t.Context(), reqCtx, queue)
+	events, err := collectEvents(t.Context(), executor.Execute(t.Context(), execCtx))
 	require.NoError(t, err)
-
-	events := queue.snapshot()
 	last := events[len(events)-1]
 	failed, ok := last.(*a2a.TaskStatusUpdateEvent)
 	require.True(t, ok, "last event must be *TaskStatusUpdateEvent")
 	require.Equal(t, a2a.TaskStateFailed, failed.Status.State)
-	require.True(t, failed.Final)
+	require.True(t, failed.Status.State.Terminal())
 }
