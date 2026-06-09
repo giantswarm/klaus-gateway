@@ -5,8 +5,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/a2aproject/a2a-go/a2a"
-	"github.com/a2aproject/a2a-go/a2asrv/push"
+	"github.com/a2aproject/a2a-go/v2/a2a"
+	"github.com/a2aproject/a2a-go/v2/a2asrv/push"
 )
 
 // pushConfigTTL is how long a task's push subscriptions are kept after the

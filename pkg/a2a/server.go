@@ -11,9 +11,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	a2apkg "github.com/a2aproject/a2a-go/a2a"
-	"github.com/a2aproject/a2a-go/a2asrv"
-	"github.com/a2aproject/a2a-go/a2asrv/push"
+	"github.com/a2aproject/a2a-go/v2/a2a"
+	"github.com/a2aproject/a2a-go/v2/a2asrv"
+	"github.com/a2aproject/a2a-go/v2/a2asrv/push"
 
 	"github.com/giantswarm/klaus-gateway/pkg/kagentapi"
 )
@@ -28,7 +28,7 @@ import (
 // The identity middleware reads the caller's bearer token and X-User-Id header
 // from each request and stores them in the context so ForwardingExecutor can
 // pass them to kagent without re-parsing tokens.
-func Mount(r chi.Router, card *a2apkg.AgentCard, executor a2asrv.AgentExecutor) {
+func Mount(r chi.Router, card *a2a.AgentCard, executor a2asrv.AgentExecutor) {
 	handler := a2asrv.NewHandler(executor,
 		a2asrv.WithPushNotifications(newTTLPushStore(), push.NewHTTPPushSender(nil)),
 	)

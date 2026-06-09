@@ -6,8 +6,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/a2aproject/a2a-go/a2a"
-	a2aclient "github.com/a2aproject/a2a-go/a2aclient"
+	"github.com/a2aproject/a2a-go/v2/a2a"
+	a2aclient "github.com/a2aproject/a2a-go/v2/a2aclient"
 )
 
 // Clients caches one a2aclient.Client per target base URL.
@@ -43,8 +43,12 @@ func (c *Clients) For(ctx context.Context, baseURL string) (*a2aclient.Client, e
 		return cl, nil
 	}
 
-	endpoints := []a2a.AgentInterface{
-		{Transport: a2a.TransportProtocolJSONRPC, URL: baseURL + "/a2a"},
+	endpoints := []*a2a.AgentInterface{
+		{
+			URL:             baseURL + "/a2a",
+			ProtocolBinding: a2a.TransportProtocolJSONRPC,
+			ProtocolVersion: a2a.Version,
+		},
 	}
 	cl, err := a2aclient.NewFromEndpoints(ctx, endpoints)
 	if err != nil {

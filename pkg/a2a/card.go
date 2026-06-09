@@ -1,7 +1,7 @@
 package a2a
 
 import (
-	"github.com/a2aproject/a2a-go/a2a"
+	"github.com/a2aproject/a2a-go/v2/a2a"
 
 	"github.com/giantswarm/klaus-gateway/internal/config"
 )
@@ -13,11 +13,16 @@ const mimeText = "text/plain"
 // to discover the agent's URL and capabilities.
 func AgentCard(cfg config.A2AConfig) *a2a.AgentCard {
 	return &a2a.AgentCard{
-		Name:            cfg.CardName,
-		Description:     cfg.CardDescription,
-		Version:         cfg.CardVersion,
-		URL:             cfg.CardURL,
-		ProtocolVersion: string(a2a.Version),
+		Name:        cfg.CardName,
+		Description: cfg.CardDescription,
+		Version:     cfg.CardVersion,
+		SupportedInterfaces: []*a2a.AgentInterface{
+			{
+				URL:             cfg.CardURL,
+				ProtocolBinding: a2a.TransportProtocolJSONRPC,
+				ProtocolVersion: a2a.Version,
+			},
+		},
 		Capabilities: a2a.AgentCapabilities{
 			Streaming:         true,
 			PushNotifications: true,
@@ -25,12 +30,9 @@ func AgentCard(cfg config.A2AConfig) *a2a.AgentCard {
 		Skills:             defaultSkills(),
 		DefaultInputModes:  []string{mimeText},
 		DefaultOutputModes: []string{mimeText},
-		PreferredTransport: a2a.TransportProtocolJSONRPC,
 	}
 }
 
-// defaultSkills returns skills that describe Klaus's core capabilities.
-// Used when no skills are provided via configuration.
 func defaultSkills() []a2a.AgentSkill {
 	return []a2a.AgentSkill{
 		{
