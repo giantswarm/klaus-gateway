@@ -38,10 +38,11 @@ type SessionEvent struct {
 
 // a2aMessage is the wire shape for the Data field inside a SessionEvent.
 type a2aMessage struct {
-	Kind      string    `json:"kind"`
-	MessageID string    `json:"messageId"`
-	Role      string    `json:"role"`
-	Parts     []a2aPart `json:"parts"`
+	Kind      string         `json:"kind"`
+	MessageID string         `json:"messageId"`
+	Role      string         `json:"role"`
+	Parts     []a2aPart      `json:"parts"`
+	Metadata  map[string]any `json:"metadata,omitempty"`
 }
 
 type a2aPart struct {
@@ -70,11 +71,18 @@ const (
 // NewSessionEvent builds a SessionEvent encoding a single-part text message.
 // id is a unique event identifier; role is "user" or "agent".
 func NewSessionEvent(id, role, text string) SessionEvent {
+	return NewSessionEventWithMetadata(id, role, text, nil)
+}
+
+// NewSessionEventWithMetadata builds a SessionEvent like NewSessionEvent and
+// attaches optional metadata to the encoded message. metadata is omitted when nil.
+func NewSessionEventWithMetadata(id, role, text string, metadata map[string]any) SessionEvent {
 	msg := a2aMessage{
 		Kind:      kindMessage,
 		MessageID: id,
 		Role:      role,
 		Parts:     []a2aPart{{Kind: kindText, Text: text}},
+		Metadata:  metadata,
 	}
 	data, _ := json.Marshal(msg)
 	return SessionEvent{ID: id, Data: string(data)}
@@ -146,8 +154,9 @@ func (c *Client) PushEvent(ctx context.Context, sessionID string, event SessionE
 
 // StoreTask posts the completed turn as an A2A task object to kagent.
 // state is the terminal A2A task state (e.g. "completed", "failed").
+// agentMetadata is attached to the agent history message when non-nil (e.g. kagent_usage_metadata).
 // The call is best-effort; errors are logged only.
-func (c *Client) StoreTask(ctx context.Context, taskID, contextID, userText, agentText, state string, auth AuthInfo) {
+func (c *Client) StoreTask(ctx context.Context, taskID, contextID, userText, agentText, state string, agentMetadata map[string]any, auth AuthInfo) {
 	if !c.Enabled() {
 		return
 	}
@@ -158,7 +167,7 @@ func (c *Client) StoreTask(ctx context.Context, taskID, contextID, userText, age
 		Status:    a2aTaskStatus{State: state, Timestamp: time.Now().UTC().Format(time.RFC3339)},
 		History: []a2aMessage{
 			{Kind: kindMessage, MessageID: taskID + "-user", Role: "user", Parts: []a2aPart{{Kind: kindText, Text: userText}}},
-			{Kind: kindMessage, MessageID: taskID + "-agent", Role: "agent", Parts: []a2aPart{{Kind: kindText, Text: agentText}}},
+			{Kind: kindMessage, MessageID: taskID + "-agent", Role: "agent", Parts: []a2aPart{{Kind: kindText, Text: agentText}}, Metadata: agentMetadata},
 		},
 	}
 	body, err := json.Marshal(task)

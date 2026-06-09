@@ -41,9 +41,10 @@ func (r *staticResolver) Resolve(_ context.Context, _ routing.InboundMessage) (l
 
 // recordingPusher records kagent push calls.
 type recordingPusher struct {
-	mu     sync.Mutex
-	events []kagentapi.SessionEvent
-	tasks  []string
+	mu           sync.Mutex
+	events       []kagentapi.SessionEvent
+	tasks        []string
+	agentMetaAll []map[string]any
 }
 
 func (p *recordingPusher) Enabled() bool { return true }
@@ -54,10 +55,11 @@ func (p *recordingPusher) PushEvent(_ context.Context, _ string, event kagentapi
 	p.events = append(p.events, event)
 }
 
-func (p *recordingPusher) StoreTask(_ context.Context, taskID, _, _, _, _ string, _ kagentapi.AuthInfo) {
+func (p *recordingPusher) StoreTask(_ context.Context, taskID, _, _, _, _ string, agentMetadata map[string]any, _ kagentapi.AuthInfo) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.tasks = append(p.tasks, taskID)
+	p.agentMetaAll = append(p.agentMetaAll, agentMetadata)
 }
 
 // fakePodExecutor emits a fixed event sequence that ends with a terminal event.
@@ -251,4 +253,67 @@ func TestForwardingExecutor_Execute_PodFailurePropagated(t *testing.T) {
 	require.True(t, ok, "last event must be *TaskStatusUpdateEvent")
 	require.Equal(t, a2a.TaskStateFailed, failed.Status.State)
 	require.True(t, failed.Status.State.Terminal())
+}
+
+// tokenUsagePodExecutor emits an artifact with token_usage metadata (as Klaus does).
+type tokenUsagePodExecutor struct{}
+
+func (e *tokenUsagePodExecutor) Execute(_ context.Context, execCtx *a2asrv.ExecutorContext) iter.Seq2[a2a.Event, error] {
+	return func(yield func(a2a.Event, error) bool) {
+		if !yield(a2a.NewSubmittedTask(execCtx, execCtx.Message), nil) {
+			return
+		}
+		artifact := a2a.NewArtifactEvent(execCtx, a2a.NewTextPart("forty-two"))
+		artifact.LastChunk = true
+		// Simulate what Klaus sets: generic token_usage, integer values.
+		artifact.Artifact.Metadata = map[string]any{
+			"token_usage": map[string]any{
+				"input_tokens":  float64(100),
+				"output_tokens": float64(42),
+			},
+		}
+		if !yield(artifact, nil) {
+			return
+		}
+		yield(a2a.NewStatusUpdateEvent(execCtx, a2a.TaskStateCompleted, nil), nil)
+	}
+}
+
+func (e *tokenUsagePodExecutor) Cancel(_ context.Context, execCtx *a2asrv.ExecutorContext) iter.Seq2[a2a.Event, error] {
+	return func(yield func(a2a.Event, error) bool) {
+		yield(a2a.NewStatusUpdateEvent(execCtx, a2a.TaskStateCanceled, nil), nil)
+	}
+}
+
+func TestForwardingExecutor_Execute_KagentUsageMetadata(t *testing.T) {
+	pod := startPodWith(t, &tokenUsagePodExecutor{})
+
+	pusher := &recordingPusher{}
+	executor := &pkga2a.ForwardingExecutor{
+		Router: &staticResolver{baseURL: pod.URL},
+		Dial:   pkga2a.NewClients(),
+		Kagent: pusher,
+	}
+
+	execCtx := &a2asrv.ExecutorContext{
+		ContextID: "ctx-usage",
+		TaskID:    a2a.NewTaskID(),
+		Message:   a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("what is 6x7?")),
+	}
+
+	_, err := collectEvents(t.Context(), executor.Execute(t.Context(), execCtx))
+	require.NoError(t, err)
+
+	pusher.mu.Lock()
+	defer pusher.mu.Unlock()
+
+	require.NotEmpty(t, pusher.agentMetaAll, "StoreTask must be called")
+	agentMeta := pusher.agentMetaAll[0]
+	require.NotNil(t, agentMeta, "agent metadata must be non-nil when pod emits token_usage")
+
+	kagentMeta, ok := agentMeta["kagent_usage_metadata"].(map[string]any)
+	require.True(t, ok, "kagent_usage_metadata must be a map[string]any")
+	require.EqualValues(t, int64(100), kagentMeta["promptTokenCount"])
+	require.EqualValues(t, int64(42), kagentMeta["candidatesTokenCount"])
+	require.EqualValues(t, int64(142), kagentMeta["totalTokenCount"])
 }

@@ -34,7 +34,7 @@ type Dialer interface {
 type KagentPusher interface {
 	Enabled() bool
 	PushEvent(ctx context.Context, sessionID string, event kagentapi.SessionEvent, auth kagentapi.AuthInfo)
-	StoreTask(ctx context.Context, taskID, contextID, userText, agentText, state string, auth kagentapi.AuthInfo)
+	StoreTask(ctx context.Context, taskID, contextID, userText, agentText, state string, agentMetadata map[string]any, auth kagentapi.AuthInfo)
 }
 
 // authInfoKey is the context key used to pass caller identity from the HTTP
@@ -202,6 +202,7 @@ func (e *ForwardingExecutor) Execute(ctx context.Context, execCtx *a2asrv.Execut
 			firstArtifact         = true
 			artifactLastChunkSent bool
 			finalStatusEvent      *a2apkg.TaskStatusUpdateEvent
+			lastArtifactMeta      map[string]any
 		)
 
 	loop:
@@ -250,6 +251,7 @@ func (e *ForwardingExecutor) Execute(ctx context.Context, execCtx *a2asrv.Execut
 				gwEvent.LastChunk = ev.LastChunk
 				if ev.LastChunk {
 					artifactLastChunkSent = true
+					lastArtifactMeta = ev.Artifact.Metadata
 				}
 				if !yield(gwEvent, nil) {
 					return
@@ -278,9 +280,13 @@ func (e *ForwardingExecutor) Execute(ctx context.Context, execCtx *a2asrv.Execut
 			if finalStatusEvent != nil {
 				finalState = string(finalStatusEvent.Status.State)
 			}
+			// Translate generic token_usage (set by Klaus) to kagent_usage_metadata so
+			// the kagent UI can display token counts. Translation lives here, not in the
+			// pod, to keep Klaus ignorant of kagent naming.
+			agentMeta := kagentUsageMetadata(lastArtifactMeta)
 			agentEventCtx := context.WithoutCancel(ctx)
-			e.Kagent.PushEvent(agentEventCtx, execCtx.ContextID, kagentapi.NewSessionEvent(taskID+"-agent", "agent", agentText.String()), auth)
-			e.Kagent.StoreTask(agentEventCtx, taskID, execCtx.ContextID, userText, agentText.String(), finalState, auth)
+			e.Kagent.PushEvent(agentEventCtx, execCtx.ContextID, kagentapi.NewSessionEventWithMetadata(taskID+"-agent", "agent", agentText.String(), agentMeta), auth)
+			e.Kagent.StoreTask(agentEventCtx, taskID, execCtx.ContextID, userText, agentText.String(), finalState, agentMeta, auth)
 		}
 
 		// Mirror the pod's terminal state; default to completed when no final event arrived.
@@ -307,6 +313,44 @@ func (e *ForwardingExecutor) Execute(ctx context.Context, execCtx *a2asrv.Execut
 			slog.WarnContext(ctx, "a2a: unexpected terminal state from pod", "state", finalStatusEvent.Status.State)
 			yield(failedEvent(execCtx, "unexpected terminal state: "+string(finalStatusEvent.Status.State)), nil)
 		}
+	}
+}
+
+// kagentUsageMetadata translates the generic "token_usage" map attached to a pod
+// artifact into the camelCase shape expected by kagent's UI. Returns nil when the
+// input carries no recognisable token_usage.
+//
+// Klaus sets integer fields; they arrive as float64 after JSON round-trip.
+func kagentUsageMetadata(artifactMeta map[string]any) map[string]any {
+	if artifactMeta == nil {
+		return nil
+	}
+	raw, ok := artifactMeta["token_usage"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	asInt64 := func(v any) int64 {
+		switch n := v.(type) {
+		case float64:
+			return int64(n)
+		case int64:
+			return n
+		case int:
+			return int64(n)
+		}
+		return 0
+	}
+	input := asInt64(raw["input_tokens"])
+	output := asInt64(raw["output_tokens"])
+	if input == 0 && output == 0 {
+		return nil
+	}
+	return map[string]any{
+		"kagent_usage_metadata": map[string]any{
+			"totalTokenCount":      input + output,
+			"promptTokenCount":     input,
+			"candidatesTokenCount": output,
+		},
 	}
 }
 
