@@ -101,9 +101,10 @@ func newEventsAdapter(t *testing.T, gw channels.Gateway, fakeAPIBase string) (*s
 		SigningSecret: "signing-secret",
 	}
 	a := &slackadapter.Adapter{
-		Mode:    slackadapter.ModeEvents,
-		Secrets: secrets,
-		APIBase: fakeAPIBase,
+		Mode:         slackadapter.ModeEvents,
+		Secrets:      secrets,
+		APIBase:      fakeAPIBase,
+		DefaultAgent: "test-agent",
 	}
 	require.NoError(t, a.Start(ctx, gw))
 	r := chi.NewRouter()
@@ -209,6 +210,7 @@ func TestEventsHandler_AppMentionDispatch(t *testing.T) {
 	require.Equal(t, "C456", got.ChannelID)
 	require.Equal(t, "U123", got.UserID)
 	require.Equal(t, helloText, got.Text)
+	require.Equal(t, "test-agent", got.AgentRef, "AgentRef must be set to DefaultAgent")
 }
 
 func TestEventsHandler_BotMessageIgnored(t *testing.T) {

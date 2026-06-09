@@ -7,8 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"iter"
 
+	a2apkg "github.com/a2aproject/a2a-go/v2/a2a"
+	"github.com/a2aproject/a2a-go/v2/a2asrv"
+
+	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 	"github.com/giantswarm/klaus-gateway/pkg/instance"
+	"github.com/giantswarm/klaus-gateway/pkg/kagentapi"
 	"github.com/giantswarm/klaus-gateway/pkg/lifecycle"
 	"github.com/giantswarm/klaus-gateway/pkg/routing"
 )
@@ -20,12 +26,22 @@ type InstanceClient interface {
 	Messages(ctx context.Context, ref InstanceRef, threadID string) (instance.MessagesResponse, error)
 }
 
+// ChannelExecutor is the slice of pkg/a2a.ForwardingExecutor that the Facade
+// needs to route channel turns through the A2A path. When nil, SendCompletion
+// falls back to the OpenAI /v1 path unconditionally.
+type ChannelExecutor interface {
+	Execute(ctx context.Context, execCtx *a2asrv.ExecutorContext) iter.Seq2[a2apkg.Event, error]
+}
+
 // Facade wires the routing.Router, instance.Client, and lifecycle.Manager
 // together into the Gateway surface used by channel adapters.
 type Facade struct {
 	Router    *routing.Router
 	Client    InstanceClient
 	Lifecycle lifecycle.Manager
+	// Executor, when non-nil, routes channel turns through the A2A executor
+	// instead of the OpenAI /v1 path when InboundMessage.AgentRef is set.
+	Executor ChannelExecutor
 }
 
 // Resolve maps an InboundMessage to a live InstanceRef via the routing
@@ -47,13 +63,100 @@ func (f *Facade) Resolve(ctx context.Context, in InboundMessage) (InstanceRef, e
 	return ref, nil
 }
 
-// SendCompletion POSTs a minimal OpenAI-compat body to the instance and
-// streams the SSE response as typed OutboundDelta values.
+// SendCompletion streams a completion for msg. When Executor is set and
+// msg.AgentRef is non-empty, the turn is routed through the A2A executor;
+// otherwise it falls back to the OpenAI /v1 SSE path.
 //
-// The caller must receive from the returned channel until it closes; the
-// stream goroutine exits when the upstream body ends, the context is
-// cancelled, or a send fails.
+// The caller must receive from the returned channel until it closes.
 func (f *Facade) SendCompletion(ctx context.Context, ref InstanceRef, msg InboundMessage) (<-chan OutboundDelta, error) {
+	if f.Executor != nil && msg.AgentRef != "" {
+		return f.sendViaA2A(ctx, msg)
+	}
+	return f.sendViaOpenAI(ctx, ref, msg)
+}
+
+// sendViaA2A drives ForwardingExecutor and maps A2A events to OutboundDelta.
+func (f *Facade) sendViaA2A(ctx context.Context, msg InboundMessage) (<-chan OutboundDelta, error) {
+	contextID := SynthesizeContextID(msg.Channel, msg.ChannelID, msg.UserID, msg.ThreadID, msg.AgentRef)
+
+	execCtx := &a2asrv.ExecutorContext{
+		ContextID: contextID,
+		TaskID:    a2apkg.NewTaskID(),
+		Message:   a2apkg.NewMessage(a2apkg.MessageRoleUser, a2apkg.NewTextPart(msg.Text)),
+	}
+
+	ctx = withChannelAuth(ctx, msg)
+
+	out := make(chan OutboundDelta, 16)
+	go func() {
+		defer close(out)
+		for event, err := range f.Executor.Execute(ctx, execCtx) {
+			var delta OutboundDelta
+			switch {
+			case err != nil:
+				delta = OutboundDelta{Err: err}
+			default:
+				delta = mapA2AEvent(event)
+			}
+			if delta == (OutboundDelta{}) {
+				continue
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case out <- delta:
+			}
+			if delta.Err != nil || delta.Done {
+				return
+			}
+		}
+	}()
+	return out, nil
+}
+
+// withChannelAuth seeds ctx with the identity values the ForwardingExecutor
+// reads: the caller's OAuth sub (from msg.Subject) and the target agent ref.
+func withChannelAuth(ctx context.Context, msg InboundMessage) context.Context {
+	ctx = pkga2a.WithAuthInfo(ctx, kagentapi.AuthInfo{UserSub: msg.Subject})
+	ctx = pkga2a.WithAgentRef(ctx, msg.AgentRef)
+	return ctx
+}
+
+// mapA2AEvent converts a single A2A streaming event to an OutboundDelta.
+// Returns a zero value for events that carry no channel-visible payload.
+func mapA2AEvent(event a2apkg.Event) OutboundDelta {
+	switch ev := event.(type) {
+	case *a2apkg.TaskArtifactUpdateEvent:
+		if ev.Artifact == nil {
+			return OutboundDelta{}
+		}
+		text := extractTextFromA2AParts(ev.Artifact.Parts)
+		if text == "" {
+			return OutboundDelta{}
+		}
+		return OutboundDelta{Content: text}
+	case *a2apkg.TaskStatusUpdateEvent:
+		if ev.Status.State.Terminal() {
+			return OutboundDelta{Done: true}
+		}
+	}
+	return OutboundDelta{}
+}
+
+// extractTextFromA2AParts concatenates text from A2A content parts.
+func extractTextFromA2AParts(parts a2apkg.ContentParts) string {
+	var sb bytes.Buffer
+	for _, p := range parts {
+		if p != nil {
+			sb.WriteString(p.Text())
+		}
+	}
+	return sb.String()
+}
+
+// sendViaOpenAI POSTs a minimal OpenAI-compat body to the instance and
+// streams the SSE response as typed OutboundDelta values.
+func (f *Facade) sendViaOpenAI(ctx context.Context, ref InstanceRef, msg InboundMessage) (<-chan OutboundDelta, error) {
 	if f == nil || f.Client == nil {
 		return nil, errors.New("channels: facade instance client is nil")
 	}

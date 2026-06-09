@@ -46,6 +46,9 @@ type InboundMessage struct {
 	ReplyTo     string
 	// Subject is the authenticated user's OAuth `sub` when available.
 	Subject string
+	// AgentRef is the target agent name. When set, SendCompletion routes
+	// through the A2A executor instead of the OpenAI /v1 path.
+	AgentRef string
 }
 
 // OutboundDelta is one chunk streamed from an instance back through an

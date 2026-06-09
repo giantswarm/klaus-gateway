@@ -125,6 +125,16 @@ func run(args []string) error {
 		return fmt.Errorf("build lifecycle: %w", err)
 	}
 
+	if cfg.Slack.Enabled && cfg.Driver == config.DriverStatic {
+		sm, ok := manager.(*static.Manager)
+		if !ok {
+			return fmt.Errorf("unexpected lifecycle manager type for static driver")
+		}
+		if _, err := sm.Get(ctx, cfg.Slack.DefaultAgent); err != nil {
+			return fmt.Errorf("slack-default-agent %q not found in static instances: %w", cfg.Slack.DefaultAgent, err)
+		}
+	}
+
 	if cfg.Controller {
 		if err := startController(ctx, cfg, manager, logger); err != nil {
 			return fmt.Errorf("start controller: %w", err)
@@ -162,9 +172,10 @@ func run(args []string) error {
 			return fmt.Errorf("slack secrets: %w", err)
 		}
 		slackAdapter := &slackchannel.Adapter{
-			Logger:  logger,
-			Mode:    cfg.Slack.Mode,
-			Secrets: secrets,
+			Logger:       logger,
+			Mode:         cfg.Slack.Mode,
+			Secrets:      secrets,
+			DefaultAgent: cfg.Slack.DefaultAgent,
 		}
 		if err := slackAdapter.Start(ctx, facade); err != nil {
 			return fmt.Errorf("start slack adapter: %w", err)
@@ -209,6 +220,7 @@ func run(args []string) error {
 			Dial:   pkga2a.NewClients(),
 			Kagent: a2aKagent,
 		}
+		facade.Executor = a2aExecutor
 		pkga2a.Mount(publicMux, pkga2a.AgentCard(cfg.A2A), a2aExecutor, cfg.A2A.DefaultAgent)
 		logger.Info("a2a adapter mounted",
 			"card_url", cfg.A2A.CardURL,

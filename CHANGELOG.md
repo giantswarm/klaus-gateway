@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `channels.SynthesizeContextID` derives a stable A2A contextID from `(channel, channelID, userID, threadID, agentRef)` using length-prefixed SHA-256 encoding.
+- `slack.defaultAgent` config (`--slack-default-agent` / `KLAUS_GATEWAY_SLACK_DEFAULT_AGENT`): every Slack thread routes to this named agent. Required when Slack is enabled; validated against the static instance set at startup when `--driver=static`.
+- Channel turns are now routed through the A2A executor (`ForwardingExecutor.Execute`) when `Facade.Executor` is set and `InboundMessage.AgentRef` is non-empty. Artifact events map to `OutboundDelta{Content}` and terminal status events map to `OutboundDelta{Done: true}`.
+
+### Changed
+
+- `Facade.SendCompletion` dispatches through A2A when the inbound message carries a non-empty `AgentRef` and `Facade.Executor` is set. Requests with no `AgentRef` (web and CLI channels) continue to use the OpenAI `/v1` SSE path unchanged.
+
 ### Fixed
 
 - Propagate `tasks/cancel` to the Klaus pod when a request is canceled or preempted. Previously `Cancel()` only dropped the HTTP SSE stream; the Klaus pod kept its per-contextID in-flight lock held, causing the next message for the same context to be rejected with "another request for this context is already in-flight". The gateway now tracks the pod-side task ID (from the first streamed event) and sends `tasks/cancel` directly to the pod on both explicit cancel and implicit preemption (new `Execute()` for the same contextID arriving while a previous one is still streaming).

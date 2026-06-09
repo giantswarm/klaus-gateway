@@ -71,6 +71,9 @@ type SlackConfig struct {
 	// and (for socketmode) app_token. Environment variables (SLACK_BOT_TOKEN
 	// etc.) take precedence over file values.
 	SecretsFile string
+	// DefaultAgent is the agentRef every Slack thread routes to.
+	// Required when Slack is enabled.
+	DefaultAgent string
 }
 
 // Config is the fully resolved runtime configuration.
@@ -160,6 +163,7 @@ func Load(args []string) (Config, error) {
 	fs.BoolVar(&cfg.Slack.Enabled, "slack-enabled", cfg.Slack.Enabled, "Enable the Slack channel adapter.")
 	fs.StringVar(&cfg.Slack.Mode, "slack-mode", cfg.Slack.Mode, "Slack connection mode: events or socketmode.")
 	fs.StringVar(&cfg.Slack.SecretsFile, "slack-secrets-file", cfg.Slack.SecretsFile, "Path to Slack secrets YAML file.")
+	fs.StringVar(&cfg.Slack.DefaultAgent, "slack-default-agent", cfg.Slack.DefaultAgent, "agentRef every Slack thread routes to. Required when --slack-enabled.")
 	fs.BoolVar(&cfg.CLI.Enabled, "cli-enabled", cfg.CLI.Enabled, "Enable the CLI channel adapter at /cli/v1/*.")
 	fs.BoolVar(&cfg.Controller, "controller", cfg.Controller, "Enable the embedded ChannelRoute controller (requires --store=crd).")
 	fs.BoolVar(&cfg.A2A.Enabled, "a2a-enabled", cfg.A2A.Enabled, "Enable the A2A server surface.")
@@ -241,6 +245,9 @@ func applyEnv(cfg *Config) {
 	if v, ok := lookup("SLACK_SECRETS_FILE"); ok {
 		cfg.Slack.SecretsFile = v
 	}
+	if v, ok := lookup("SLACK_DEFAULT_AGENT"); ok {
+		cfg.Slack.DefaultAgent = v
+	}
 	if v, ok := lookup("CLI_ENABLED"); ok {
 		cfg.CLI.Enabled = strings.EqualFold(v, "true") || v == "1"
 	}
@@ -300,6 +307,9 @@ func (c Config) Validate() error {
 	}
 	if c.Driver == DriverStatic && c.StaticInstances == "" {
 		return fmt.Errorf("--static-instances is required with --driver=static")
+	}
+	if c.Slack.Enabled && c.Slack.DefaultAgent == "" {
+		return fmt.Errorf("--slack-default-agent is required with --slack-enabled")
 	}
 	if c.A2A.Enabled {
 		if c.A2A.CardName == "" {
