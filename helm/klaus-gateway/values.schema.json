@@ -112,6 +112,9 @@
         },
         "operatorMCPToken": {
           "type": "string"
+        },
+        "staticInstances": {
+          "type": "string"
         }
       }
     },
@@ -147,12 +150,6 @@
           "type": "string"
         },
         "cardURL": {
-          "type": "string"
-        },
-        "staticTarget": {
-          "type": "string"
-        },
-        "targets": {
           "type": "string"
         },
         "defaultAgent": {

@@ -47,7 +47,7 @@ spec:
         {{- if .Values.routing.defaultTTL }}
         - --default-ttl={{ .Values.routing.defaultTTL }}
         {{- end }}
-        {{- if .Values.routing.autoCreate }}
+        {{- if or .Values.routing.autoCreate .Values.a2a.enabled }}
         - --auto-create
         {{- end }}
         - --driver={{ .Values.lifecycle.driver }}
@@ -61,6 +61,9 @@ spec:
         {{- if .Values.lifecycle.operatorMCPToken }}
         - --operator-mcp-token={{ .Values.lifecycle.operatorMCPToken }}
         {{- end }}
+        {{- end }}
+        {{- if and (eq .Values.lifecycle.driver "static") .Values.lifecycle.staticInstances }}
+        - --static-instances={{ .Values.lifecycle.staticInstances }}
         {{- end }}
         {{- if .Values.upstream.agentgatewayURL }}
         - --agentgateway-url={{ .Values.upstream.agentgatewayURL }}
@@ -80,11 +83,6 @@ spec:
         {{- end }}
         - --a2a-card-version={{ .Values.a2a.cardVersion }}
         - --a2a-card-url={{ .Values.a2a.cardURL }}
-        {{- if .Values.a2a.targets }}
-        - --a2a-targets={{ .Values.a2a.targets }}
-        {{- else }}
-        - --a2a-static-target={{ .Values.a2a.staticTarget }}
-        {{- end }}
         {{- if .Values.a2a.defaultAgent }}
         - --a2a-default-agent={{ .Values.a2a.defaultAgent }}
         {{- end }}

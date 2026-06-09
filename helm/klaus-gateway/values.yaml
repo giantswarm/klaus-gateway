@@ -72,13 +72,16 @@ crd:
 controller:
   enabled: false
 
-# Lifecycle driver: klausctl (local) or operator (MCP to klaus-operator).
+# Lifecycle driver: klausctl (local), operator (MCP to klaus-operator), or static.
 lifecycle:
   driver: operator
   klausctlBin: ""
   operatorMCPURL: ""
   # Bearer token for the operator MCP endpoint; empty disables auth.
   operatorMCPToken: ""
+  # staticInstances is a comma-separated list of name=baseURL pairs used when
+  # driver is "static" (e.g. "klaud-coding=http://klaud-coding.kagent.svc:8080").
+  staticInstances: ""
 
 # Upstream wiring.
 # When empty the gateway talks directly to instance BaseURLs.
@@ -196,8 +199,10 @@ agentgateway:
 # A2A server surface.
 # When enabled, the gateway serves an A2A JSON-RPC endpoint at /a2a and
 # the agent card at /.well-known/agent.json.
-# staticTarget is the base URL of the Klaus worker pod (or Service) to forward
-# A2A messages to (e.g. "http://klaud-coding.kagent.svc.cluster.local:8080").
+# Instance routing uses the same lifecycle driver as all other channels
+# (set via lifecycle.driver). For Kubernetes without the operator, use
+# lifecycle.driver=static with lifecycle.staticInstances listing each
+# agentRef=serviceURL pair.
 # kagentEndpoint and kagentAgentRef wire the completed-turn push. When
 # kagentEndpoint is empty the push is silently skipped.
 a2a:
@@ -207,15 +212,8 @@ a2a:
   cardVersion: "0.1.0"
   # cardURL is the externally-reachable base URL of this gateway (required when enabled).
   cardURL: ""
-  # staticTarget is the Klaus worker Service base URL for single-agent deployments.
-  # Ignored when targets is set.
-  staticTarget: ""
-  # targets is a comma-separated list of agentRef=baseURL pairs for multi-agent routing
-  # (e.g. "worker-a=http://host1:8080,worker-b=http://host2:8080").
-  # When set, staticTarget is ignored. Required when staticTarget is empty.
-  targets: ""
   # defaultAgent is the agentRef used when X-Agent-Ref header is absent and no path
-  # segment identifies an agent. Defaults to "klaus-worker".
+  # segment identifies an agent.
   defaultAgent: "klaus-worker"
   # kagentEndpoint is the base URL of the kagent API. Empty disables push.
   kagentEndpoint: ""
