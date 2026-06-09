@@ -41,22 +41,22 @@ func TestValidate(t *testing.T) {
 func TestValidate_A2A(t *testing.T) {
 	base := config.Defaults()
 	base.A2A.Enabled = true
-	base.A2A.CardURL = "http://gw/a2a"
+	base.A2A.KagentA2ABaseURL = "http://kagent-controller.kagent.svc.cluster.local:8083/api/a2a/kagent"
 
-	t.Run("enabled with card url is valid", func(t *testing.T) {
+	t.Run("enabled with kagent base url is valid", func(t *testing.T) {
 		require.NoError(t, base.Validate())
 	})
 
-	t.Run("enabled without card url fails", func(t *testing.T) {
+	t.Run("enabled without kagent base url fails", func(t *testing.T) {
 		cfg := base
-		cfg.A2A.CardURL = ""
+		cfg.A2A.KagentA2ABaseURL = ""
 		require.Error(t, cfg.Validate())
 	})
 }
 
 func TestA2ADefaults(t *testing.T) {
 	cfg := config.Defaults()
-	require.Equal(t, "klaus-worker", cfg.A2A.DefaultAgent)
+	require.Equal(t, "klaud-coding", cfg.A2A.DefaultAgent)
 }
 
 func TestLoad_A2ADefaultAgentEnv(t *testing.T) {

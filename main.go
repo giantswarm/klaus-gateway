@@ -34,7 +34,6 @@ import (
 	slackchannel "github.com/giantswarm/klaus-gateway/pkg/channels/slack"
 	"github.com/giantswarm/klaus-gateway/pkg/channels/web"
 	"github.com/giantswarm/klaus-gateway/pkg/instance"
-	"github.com/giantswarm/klaus-gateway/pkg/kagentapi"
 	"github.com/giantswarm/klaus-gateway/pkg/lifecycle"
 	"github.com/giantswarm/klaus-gateway/pkg/lifecycle/klausctl"
 	"github.com/giantswarm/klaus-gateway/pkg/lifecycle/operator"
@@ -214,18 +213,14 @@ func run(args []string) error {
 	}
 
 	if cfg.A2A.Enabled {
-		a2aKagent := kagentapi.New(cfg.A2A.KagentEndpoint, cfg.A2A.KagentAgentRef)
-		a2aExecutor := &pkga2a.ForwardingExecutor{
-			Router: router,
-			Dial:   pkga2a.NewClients(),
-			Kagent: a2aKagent,
+		facade.Executor = &pkga2a.KagentClient{
+			Clients:      pkga2a.NewClients(),
+			BaseURL:      cfg.A2A.KagentA2ABaseURL,
+			DefaultAgent: cfg.A2A.DefaultAgent,
 		}
-		facade.Executor = a2aExecutor
-		pkga2a.Mount(publicMux, pkga2a.AgentCard(cfg.A2A), a2aExecutor, cfg.A2A.DefaultAgent)
-		logger.Info("a2a adapter mounted",
-			"card_url", cfg.A2A.CardURL,
+		logger.Info("a2a adapter enabled",
+			"kagent_base_url", cfg.A2A.KagentA2ABaseURL,
 			"default_agent", cfg.A2A.DefaultAgent,
-			"kagent_enabled", a2aKagent.Enabled(),
 		)
 	}
 

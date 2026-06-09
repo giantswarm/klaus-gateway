@@ -32,26 +32,17 @@ const (
 	DriverStatic = "static"
 )
 
-// A2AConfig holds runtime configuration for the A2A server surface.
+// A2AConfig holds runtime configuration for the A2A client surface.
 type A2AConfig struct {
 	// Enabled gates all A2A behaviour.
 	Enabled bool
-	// CardName is the agent name served in /.well-known/agent-card.json.
-	CardName string
-	// CardDescription is the agent description in the card.
-	CardDescription string
-	// CardVersion is the semver version string in the card.
-	CardVersion string
-	// CardURL is the base URL where the gateway's /a2a endpoint is reachable.
-	CardURL string
-	// DefaultAgent is the agentRef used when X-Agent-Ref is absent and no
-	// path segment identifies an agent. Defaults to "klaus-worker".
+	// DefaultAgent is the agentRef forwarded to kagent when none is supplied
+	// by the inbound channel. Defaults to "klaud-coding".
 	DefaultAgent string
-	// KagentEndpoint is the base URL of the kagent API.
-	// When empty, kagent push is disabled.
-	KagentEndpoint string
-	// KagentAgentRef is the X-Agent-Name value sent to kagent.
-	KagentAgentRef string
+	// KagentA2ABaseURL is the base URL of the kagent A2A endpoint, without a
+	// trailing agent name segment (e.g.
+	// http://kagent-controller.kagent.svc.cluster.local:8083/api/a2a/kagent).
+	KagentA2ABaseURL string
 }
 
 // CLIConfig holds runtime configuration for the CLI channel adapter.
@@ -131,9 +122,7 @@ func Defaults() Config {
 			Enabled: false,
 		},
 		A2A: A2AConfig{
-			CardName:     "Klaus Gateway",
-			CardVersion:  "0.1.0",
-			DefaultAgent: "klaus-worker",
+			DefaultAgent: "klaud-coding",
 		},
 	}
 }
@@ -166,14 +155,9 @@ func Load(args []string) (Config, error) {
 	fs.StringVar(&cfg.Slack.DefaultAgent, "slack-default-agent", cfg.Slack.DefaultAgent, "agentRef every Slack thread routes to. Required when --slack-enabled.")
 	fs.BoolVar(&cfg.CLI.Enabled, "cli-enabled", cfg.CLI.Enabled, "Enable the CLI channel adapter at /cli/v1/*.")
 	fs.BoolVar(&cfg.Controller, "controller", cfg.Controller, "Enable the embedded ChannelRoute controller (requires --store=crd).")
-	fs.BoolVar(&cfg.A2A.Enabled, "a2a-enabled", cfg.A2A.Enabled, "Enable the A2A server surface.")
-	fs.StringVar(&cfg.A2A.CardName, "a2a-card-name", cfg.A2A.CardName, "Agent name in the A2A agent card.")
-	fs.StringVar(&cfg.A2A.CardDescription, "a2a-card-description", cfg.A2A.CardDescription, "Agent description in the A2A agent card.")
-	fs.StringVar(&cfg.A2A.CardVersion, "a2a-card-version", cfg.A2A.CardVersion, "Agent version in the A2A agent card.")
-	fs.StringVar(&cfg.A2A.CardURL, "a2a-card-url", cfg.A2A.CardURL, "Public URL where this gateway's /a2a endpoint is reachable.")
-	fs.StringVar(&cfg.A2A.DefaultAgent, "a2a-default-agent", cfg.A2A.DefaultAgent, "agentRef used when X-Agent-Ref header is absent and no path segment identifies an agent.")
-	fs.StringVar(&cfg.A2A.KagentEndpoint, "kagent-endpoint", cfg.A2A.KagentEndpoint, "Base URL of the kagent API for task/event push.")
-	fs.StringVar(&cfg.A2A.KagentAgentRef, "kagent-agent-ref", cfg.A2A.KagentAgentRef, "Agent name sent as X-Agent-Name to kagent.")
+	fs.BoolVar(&cfg.A2A.Enabled, "a2a-enabled", cfg.A2A.Enabled, "Enable the A2A client (Slack → kagent) surface.")
+	fs.StringVar(&cfg.A2A.DefaultAgent, "a2a-default-agent", cfg.A2A.DefaultAgent, "agentRef forwarded to kagent when the channel does not supply one.")
+	fs.StringVar(&cfg.A2A.KagentA2ABaseURL, "kagent-a2a-base-url", cfg.A2A.KagentA2ABaseURL, "Base URL of the kagent A2A endpoint, without trailing agent name (e.g. http://kagent-controller.kagent.svc.cluster.local:8083/api/a2a/kagent).")
 
 	fs.Usage = func() {
 		_, _ = fmt.Fprintf(fs.Output(), "klaus-gateway -- channel and routing gateway in front of klaus instances.\n\n")
@@ -257,26 +241,11 @@ func applyEnv(cfg *Config) {
 	if v, ok := lookup("A2A_ENABLED"); ok {
 		cfg.A2A.Enabled = strings.EqualFold(v, "true") || v == "1"
 	}
-	if v, ok := lookup("A2A_CARD_NAME"); ok {
-		cfg.A2A.CardName = v
-	}
-	if v, ok := lookup("A2A_CARD_DESCRIPTION"); ok {
-		cfg.A2A.CardDescription = v
-	}
-	if v, ok := lookup("A2A_CARD_VERSION"); ok {
-		cfg.A2A.CardVersion = v
-	}
-	if v, ok := lookup("A2A_CARD_URL"); ok {
-		cfg.A2A.CardURL = v
-	}
 	if v, ok := lookup("A2A_DEFAULT_AGENT"); ok {
 		cfg.A2A.DefaultAgent = v
 	}
-	if v, ok := lookup("KAGENT_ENDPOINT"); ok {
-		cfg.A2A.KagentEndpoint = v
-	}
-	if v, ok := lookup("KAGENT_AGENT_REF"); ok {
-		cfg.A2A.KagentAgentRef = v
+	if v, ok := lookup("KAGENT_A2A_BASE_URL"); ok {
+		cfg.A2A.KagentA2ABaseURL = v
 	}
 }
 
@@ -311,13 +280,8 @@ func (c Config) Validate() error {
 	if c.Slack.Enabled && c.Slack.DefaultAgent == "" {
 		return fmt.Errorf("--slack-default-agent is required with --slack-enabled")
 	}
-	if c.A2A.Enabled {
-		if c.A2A.CardName == "" {
-			return fmt.Errorf("--a2a-card-name must not be empty")
-		}
-		if c.A2A.CardURL == "" {
-			return fmt.Errorf("--a2a-card-url is required with --a2a-enabled")
-		}
+	if c.A2A.Enabled && c.A2A.KagentA2ABaseURL == "" {
+		return fmt.Errorf("--kagent-a2a-base-url is required with --a2a-enabled")
 	}
 	return nil
 }

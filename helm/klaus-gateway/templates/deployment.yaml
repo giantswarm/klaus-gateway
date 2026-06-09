@@ -77,17 +77,11 @@ spec:
         {{- end }}
         {{- if .Values.a2a.enabled }}
         - --a2a-enabled
-        - --a2a-card-name={{ .Values.a2a.cardName }}
-        {{- if .Values.a2a.cardDescription }}
-        - --a2a-card-description={{ .Values.a2a.cardDescription }}
-        {{- end }}
-        - --a2a-card-version={{ .Values.a2a.cardVersion }}
-        - --a2a-card-url={{ .Values.a2a.cardURL }}
         {{- if .Values.a2a.defaultAgent }}
         - --a2a-default-agent={{ .Values.a2a.defaultAgent }}
         {{- end }}
-        {{- if .Values.a2a.kagentAgentRef }}
-        - --kagent-agent-ref={{ .Values.a2a.kagentAgentRef }}
+        {{- if .Values.a2a.kagentA2ABaseURL }}
+        - --kagent-a2a-base-url={{ .Values.a2a.kagentA2ABaseURL }}
         {{- end }}
         {{- end }}
         ports:
@@ -102,10 +96,6 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: metadata.namespace
-        {{- if and .Values.a2a.enabled .Values.a2a.kagentEndpoint }}
-        - name: KLAUS_GATEWAY_KAGENT_ENDPOINT
-          value: {{ .Values.a2a.kagentEndpoint | quote }}
-        {{- end }}
         {{- if and .Values.slack.enabled .Values.slack.secretName }}
         - name: SLACK_BOT_TOKEN
           valueFrom:

@@ -14,7 +14,6 @@ import (
 
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 	"github.com/giantswarm/klaus-gateway/pkg/instance"
-	"github.com/giantswarm/klaus-gateway/pkg/kagentapi"
 	"github.com/giantswarm/klaus-gateway/pkg/lifecycle"
 	"github.com/giantswarm/klaus-gateway/pkg/routing"
 )
@@ -114,12 +113,9 @@ func (f *Facade) sendViaA2A(ctx context.Context, msg InboundMessage) (<-chan Out
 	return out, nil
 }
 
-// withChannelAuth seeds ctx with the identity values the ForwardingExecutor
-// reads: the caller's OAuth sub (from msg.Subject) and the target agent ref.
+// withChannelAuth seeds ctx with the target agent ref for KagentClient.
 func withChannelAuth(ctx context.Context, msg InboundMessage) context.Context {
-	ctx = pkga2a.WithAuthInfo(ctx, kagentapi.AuthInfo{UserSub: msg.Subject})
-	ctx = pkga2a.WithAgentRef(ctx, msg.AgentRef)
-	return ctx
+	return pkga2a.WithAgentRef(ctx, msg.AgentRef)
 }
 
 // mapA2AEvent converts a single A2A streaming event to an OutboundDelta.

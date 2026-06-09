@@ -151,15 +151,6 @@ agentgateway:
     # runtime, so off by default in the chart.
     directInstance:
       enabled: false
-    # A2A route: /a2a and /.well-known/agent*.json for agent discovery.
-    # Enable alongside a2a.enabled.
-    a2a:
-      enabled: false
-      prefixes:
-      - /a2a
-      exactPaths:
-      - /.well-known/agent-card.json
-      - /.well-known/agent.json
 
   # AgentgatewayPolicy attached to the Gateway.
   # Upstream v1.1.0 supports JWT but not Cedar. Cedar will be wired in when it
@@ -196,29 +187,17 @@ agentgateway:
       host: klaus-instance-example.default.svc.cluster.local
       port: 8080
 
-# A2A server surface.
-# When enabled, the gateway serves an A2A JSON-RPC endpoint at /a2a and
-# the agent card at /.well-known/agent.json.
-# Instance routing uses the same lifecycle driver as all other channels
-# (set via lifecycle.driver). For Kubernetes without the operator, use
-# lifecycle.driver=static with lifecycle.staticInstances listing each
-# agentRef=serviceURL pair.
-# kagentEndpoint and kagentAgentRef wire the completed-turn push. When
-# kagentEndpoint is empty the push is silently skipped.
+# A2A client surface (Slack → kagent).
+# When enabled, the gateway forwards Slack turns to the kagent A2A endpoint
+# identified by kagentA2ABaseURL. No A2A server is started on the gateway.
 a2a:
   enabled: false
-  cardName: "Klaus Gateway"
-  cardDescription: ""
-  cardVersion: "0.1.0"
-  # cardURL is the externally-reachable base URL of this gateway (required when enabled).
-  cardURL: ""
-  # defaultAgent is the agentRef used when X-Agent-Ref header is absent and no path
-  # segment identifies an agent.
-  defaultAgent: "klaus-worker"
-  # kagentEndpoint is the base URL of the kagent API. Empty disables push.
-  kagentEndpoint: ""
-  # kagentAgentRef is the X-Agent-Name header value sent to kagent.
-  kagentAgentRef: ""
+  # defaultAgent is the agentRef forwarded to kagent when the channel does not supply one.
+  defaultAgent: "klaud-coding"
+  # kagentA2ABaseURL is the base URL of the kagent A2A endpoint, without a trailing
+  # agent name (required when a2a.enabled is true).
+  # Example: http://kagent-controller.kagent.svc.cluster.local:8083/api/a2a/kagent
+  kagentA2ABaseURL: ""
 
 # Slack channel adapter.
 # Disabled by default. To enable, set slack.enabled: true and provide a
