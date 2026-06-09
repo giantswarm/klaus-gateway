@@ -77,10 +77,15 @@ func a2aCompatMiddleware(next http.Handler) http.Handler {
 //	/a2a                          A2A JSON-RPC endpoint (streaming + non-streaming)
 //	/a2a/                         same with trailing slash
 //
-// The identity middleware reads the caller's bearer token and X-User-Id header
-// from each request and stores them in the context so ForwardingExecutor can
-// pass them to kagent without re-parsing tokens.
-func Mount(r chi.Router, card *a2a.AgentCard, executor a2asrv.AgentExecutor) {
+// Two middleware layers wrap the JSON-RPC handler before it is mounted:
+//
+//  1. extractAuthMiddleware — reads bearer token and X-User-Id; stores AuthInfo.
+//  2. agentRefMiddleware    — resolves the target agentRef from X-Agent-Ref header,
+//     then from the /a2a/{agentRef} path segment, falling back to defaultAgent.
+//
+// defaultAgent is used when neither header nor path identifies an agent;
+// it must match one of the names declared in the static lifecycle manager.
+func Mount(r chi.Router, card *a2a.AgentCard, executor a2asrv.AgentExecutor, defaultAgent string) {
 	handler := a2asrv.NewHandler(executor,
 		a2asrv.WithPushNotifications(newTTLPushStore(), push.NewHTTPPushSender(nil)),
 	)
@@ -90,14 +95,45 @@ func Mount(r chi.Router, card *a2a.AgentCard, executor a2asrv.AgentExecutor) {
 	r.Handle("/.well-known/agent-card.json", cardHandler)
 	r.Handle("/.well-known/agent.json", cardHandler)
 
-	translated := a2aCompatMiddleware(jsonrpcHandler)
-	authed := extractAuthMiddleware(translated)
+	withCompat := a2aCompatMiddleware(jsonrpcHandler)
+	withAuth := extractAuthMiddleware(withCompat)
+	withAgent := agentRefMiddleware(withAuth, defaultAgent)
 	// kagent posts to the service root (POST /) rather than the /a2a path
 	// advertised in the agent card. This route should be removed once kagent
 	// honours the SupportedInterfaces URL from the card.
-	r.Post("/", authed.ServeHTTP)
-	r.Handle("/a2a", authed)
-	r.Handle("/a2a/*", authed)
+	r.Post("/", withAgent.ServeHTTP)
+	r.Handle("/a2a", withAgent)
+	r.Handle("/a2a/*", withAgent)
+}
+
+// agentRefMiddleware resolves the target agentRef for the inbound request and
+// stores it in the context via WithAgentRef. Resolution order:
+//
+//  1. X-Agent-Ref header (injected by agentgateway per-agent HTTPRoute).
+//  2. First path segment after /a2a/ (direct A2A calls that include the agent
+//     in the URL, e.g. curl .../a2a/worker-b).
+//  3. defaultAgent — preserves single-agent behaviour for installations that
+//     send all traffic to the same endpoint.
+func agentRefMiddleware(next http.Handler, defaultAgent string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		agentRef := r.Header.Get("X-Agent-Ref")
+		if agentRef == "" {
+			// Extract the first path segment after /a2a/.
+			seg := strings.TrimPrefix(r.URL.Path, "/a2a")
+			seg = strings.TrimPrefix(seg, "/")
+			if idx := strings.Index(seg, "/"); idx != -1 {
+				seg = seg[:idx]
+			}
+			if seg != "" {
+				agentRef = seg
+			}
+		}
+		if agentRef == "" {
+			agentRef = defaultAgent
+		}
+		ctx := WithAgentRef(r.Context(), agentRef)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
 }
 
 // extractAuthMiddleware reads the agentgateway-forwarded identity headers and

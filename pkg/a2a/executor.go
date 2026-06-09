@@ -54,6 +54,22 @@ func AuthInfoFromContext(ctx context.Context) kagentapi.AuthInfo {
 	return auth
 }
 
+// agentRefKey is the context key used to pass the resolved agentRef from the
+// HTTP middleware into the executor.
+type agentRefKey struct{}
+
+// WithAgentRef stores the resolved agentRef in ctx.
+func WithAgentRef(ctx context.Context, agentRef string) context.Context {
+	return context.WithValue(ctx, agentRefKey{}, agentRef)
+}
+
+// AgentRefFromContext retrieves the agentRef stored by WithAgentRef.
+// Returns an empty string if none is present.
+func AgentRefFromContext(ctx context.Context) string {
+	ref, _ := ctx.Value(agentRefKey{}).(string)
+	return ref
+}
+
 // podExec tracks an in-flight forward to a Klaus pod. The zero value is not
 // useful; always create via newPodExec.
 type podExec struct {
@@ -119,6 +135,7 @@ type ForwardingExecutor struct {
 func (e *ForwardingExecutor) Execute(ctx context.Context, execCtx *a2asrv.ExecutorContext) iter.Seq2[a2apkg.Event, error] {
 	return func(yield func(a2apkg.Event, error) bool) {
 		auth := AuthInfoFromContext(ctx)
+		agentRef := AgentRefFromContext(ctx)
 
 		if execCtx.StoredTask == nil {
 			if !yield(a2apkg.NewSubmittedTask(execCtx, execCtx.Message), nil) {
@@ -134,6 +151,8 @@ func (e *ForwardingExecutor) Execute(ctx context.Context, execCtx *a2asrv.Execut
 			Channel:   "a2a",
 			ChannelID: execCtx.ContextID,
 			UserID:    auth.UserSub,
+			Agent:     agentRef,
+			NameHint:  agentRef,
 		})
 		if err != nil {
 			slog.WarnContext(ctx, "a2a: route not found", "contextID", execCtx.ContextID, "error", err)

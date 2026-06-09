@@ -6,8 +6,10 @@ import (
 	"iter"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
@@ -16,7 +18,9 @@ import (
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 	"github.com/giantswarm/klaus-gateway/pkg/kagentapi"
 	"github.com/giantswarm/klaus-gateway/pkg/lifecycle"
+	"github.com/giantswarm/klaus-gateway/pkg/lifecycle/static"
 	"github.com/giantswarm/klaus-gateway/pkg/routing"
+	"github.com/giantswarm/klaus-gateway/pkg/routing/store/memory"
 )
 
 // collectEvents drains an event iterator, returning all events or the first error.
@@ -316,4 +320,116 @@ func TestForwardingExecutor_Execute_KagentUsageMetadata(t *testing.T) {
 	require.EqualValues(t, int64(100), kagentMeta["promptTokenCount"])
 	require.EqualValues(t, int64(42), kagentMeta["candidatesTokenCount"])
 	require.EqualValues(t, int64(142), kagentMeta["totalTokenCount"])
+}
+
+// echoExecutor emits a single artifact containing the fixed text string.
+type echoExecutor struct{ text string }
+
+func (e *echoExecutor) Execute(_ context.Context, execCtx *a2asrv.ExecutorContext) iter.Seq2[a2a.Event, error] {
+	return func(yield func(a2a.Event, error) bool) {
+		if !yield(a2a.NewSubmittedTask(execCtx, execCtx.Message), nil) {
+			return
+		}
+		artifact := a2a.NewArtifactEvent(execCtx, a2a.NewTextPart(e.text))
+		artifact.LastChunk = true
+		if !yield(artifact, nil) {
+			return
+		}
+		yield(a2a.NewStatusUpdateEvent(execCtx, a2a.TaskStateCompleted, nil), nil)
+	}
+}
+
+func (e *echoExecutor) Cancel(_ context.Context, execCtx *a2asrv.ExecutorContext) iter.Seq2[a2a.Event, error] {
+	return func(yield func(a2a.Event, error) bool) {
+		yield(a2a.NewStatusUpdateEvent(execCtx, a2a.TaskStateCanceled, nil), nil)
+	}
+}
+
+// extractArtifactText returns the concatenated text of the first artifact event.
+func extractArtifactText(events []a2a.Event) string {
+	for _, ev := range events {
+		if ae, ok := ev.(*a2a.TaskArtifactUpdateEvent); ok && ae.Artifact != nil {
+			var sb strings.Builder
+			for _, part := range ae.Artifact.Parts {
+				if part != nil {
+					sb.WriteString(part.Text())
+				}
+			}
+			return sb.String()
+		}
+	}
+	return ""
+}
+
+func TestForwardingExecutor_MultiAgentRouting(t *testing.T) {
+	// Two pods emit distinct text so the test can tell them apart.
+	podA := startPodWith(t, &echoExecutor{text: "from-A"})
+	podB := startPodWith(t, &echoExecutor{text: "from-B"})
+
+	manager, err := static.New("worker-a=" + podA.URL + ",worker-b=" + podB.URL)
+	require.NoError(t, err)
+	router := routing.New(memory.New(), manager, true, 24*time.Hour)
+
+	executor := &pkga2a.ForwardingExecutor{
+		Router: router,
+		Dial:   pkga2a.NewClients(),
+		Kagent: &recordingPusher{},
+	}
+
+	t.Run("worker-a routes to pod A", func(t *testing.T) {
+		ctx := pkga2a.WithAgentRef(t.Context(), "worker-a")
+		execCtx := &a2asrv.ExecutorContext{
+			ContextID: "ctx-ma-a",
+			TaskID:    a2a.NewTaskID(),
+			Message:   a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("ping")),
+		}
+		events, err := collectEvents(ctx, executor.Execute(ctx, execCtx))
+		require.NoError(t, err)
+		require.Equal(t, "from-A", extractArtifactText(events))
+	})
+
+	t.Run("worker-b routes to pod B", func(t *testing.T) {
+		ctx := pkga2a.WithAgentRef(t.Context(), "worker-b")
+		execCtx := &a2asrv.ExecutorContext{
+			ContextID: "ctx-ma-b",
+			TaskID:    a2a.NewTaskID(),
+			Message:   a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("ping")),
+		}
+		events, err := collectEvents(ctx, executor.Execute(ctx, execCtx))
+		require.NoError(t, err)
+		require.Equal(t, "from-B", extractArtifactText(events))
+	})
+
+	t.Run("same contextID under distinct agents routes to distinct pods", func(t *testing.T) {
+		// "shared-ctx" under worker-a → pod A.
+		ctxA := pkga2a.WithAgentRef(t.Context(), "worker-a")
+		execCtxA := &a2asrv.ExecutorContext{
+			ContextID: "shared-ctx",
+			TaskID:    a2a.NewTaskID(),
+			Message:   a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("ping")),
+		}
+		eventsA, err := collectEvents(ctxA, executor.Execute(ctxA, execCtxA))
+		require.NoError(t, err)
+		require.Equal(t, "from-A", extractArtifactText(eventsA), "worker-a must route to pod A")
+
+		// "shared-ctx" under worker-b → pod B (different store key).
+		ctxB := pkga2a.WithAgentRef(t.Context(), "worker-b")
+		execCtxB := &a2asrv.ExecutorContext{
+			ContextID: "shared-ctx",
+			TaskID:    a2a.NewTaskID(),
+			Message:   a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("ping")),
+		}
+		eventsB, err := collectEvents(ctxB, executor.Execute(ctxB, execCtxB))
+		require.NoError(t, err)
+		require.Equal(t, "from-B", extractArtifactText(eventsB), "worker-b must route to pod B, not pod A")
+	})
+}
+
+func TestAgentRefMiddlewareResolution(t *testing.T) {
+	// Verify that WithAgentRef/AgentRefFromContext round-trip correctly.
+	ctx := pkga2a.WithAgentRef(t.Context(), "my-agent")
+	require.Equal(t, "my-agent", pkga2a.AgentRefFromContext(ctx))
+
+	// Empty context returns empty string (no panic).
+	require.Empty(t, pkga2a.AgentRefFromContext(t.Context()))
 }

@@ -203,17 +203,17 @@ func run(args []string) error {
 	}
 
 	if cfg.A2A.Enabled {
-		// The A2A adapter always uses its own static lifecycle driver targeting
-		// cfg.A2A.StaticTarget, regardless of --driver. This is intentional: kagent
-		// pre-provisions the Klaus pod; the A2A adapter just forwards to the fixed URL.
-		// When --driver is not "static" the two lifecycle paths coexist independently.
-		if cfg.Driver != config.DriverStatic {
-			logger.Warn("a2a adapter uses static lifecycle driver; main --driver setting is ignored for A2A traffic",
-				"driver", cfg.Driver,
-				"a2a_target", cfg.A2A.StaticTarget,
-			)
+		// The A2A adapter always uses its own static lifecycle driver, regardless
+		// of --driver. kagent pre-provisions Klaus pods; the adapter just forwards
+		// to the fixed URL(s). When --driver is not "static" the two lifecycle
+		// paths coexist independently.
+		a2aInstanceSpec := cfg.A2A.Targets
+		if a2aInstanceSpec == "" {
+			// Single-agent compat: synthesise "defaultAgent=staticTarget" so the
+			// routing table and middleware agentRef both use DefaultAgent.
+			a2aInstanceSpec = cfg.A2A.DefaultAgent + "=" + cfg.A2A.StaticTarget
 		}
-		a2aStaticManager, err := static.New("klaus-worker=" + cfg.A2A.StaticTarget)
+		a2aStaticManager, err := static.New(a2aInstanceSpec)
 		if err != nil {
 			return fmt.Errorf("a2a static manager: %w", err)
 		}
@@ -227,10 +227,11 @@ func run(args []string) error {
 			Kagent: a2aKagent,
 		}
 		a2aCard := pkga2a.AgentCard(cfg.A2A)
-		pkga2a.Mount(publicMux, a2aCard, a2aExecutor)
+		pkga2a.Mount(publicMux, a2aCard, a2aExecutor, cfg.A2A.DefaultAgent)
 		logger.Info("a2a adapter mounted",
 			"card_url", cfg.A2A.CardURL,
-			"target", cfg.A2A.StaticTarget,
+			"targets", a2aInstanceSpec,
+			"default_agent", cfg.A2A.DefaultAgent,
 			"kagent_enabled", a2aKagent.Enabled(),
 		)
 	}

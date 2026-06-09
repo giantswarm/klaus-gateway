@@ -45,8 +45,16 @@ type A2AConfig struct {
 	// CardURL is the base URL where the gateway's /a2a endpoint is reachable.
 	CardURL string
 	// StaticTarget is the base URL of the Klaus worker pod (or service) to route
-	// A2A messages to. Used with the static lifecycle driver.
+	// A2A messages to. Used when only a single agent is needed.
+	// When Targets is also set, Targets takes precedence.
 	StaticTarget string
+	// Targets is a comma-separated list of agentRef=baseURL pairs for
+	// multi-agent routing (e.g. "worker-a=http://host1,worker-b=http://host2").
+	// When non-empty, StaticTarget is ignored and each agentRef maps to its own pod.
+	Targets string
+	// DefaultAgent is the agentRef used when X-Agent-Ref is absent and no
+	// path segment identifies an agent. Defaults to "klaus-worker".
+	DefaultAgent string
 	// KagentEndpoint is the base URL of the kagent API.
 	// When empty, kagent push is disabled.
 	KagentEndpoint string
@@ -128,8 +136,9 @@ func Defaults() Config {
 			Enabled: false,
 		},
 		A2A: A2AConfig{
-			CardName:    "Klaus Gateway",
-			CardVersion: "0.1.0",
+			CardName:     "Klaus Gateway",
+			CardVersion:  "0.1.0",
+			DefaultAgent: "klaus-worker",
 		},
 	}
 }
@@ -166,7 +175,9 @@ func Load(args []string) (Config, error) {
 	fs.StringVar(&cfg.A2A.CardDescription, "a2a-card-description", cfg.A2A.CardDescription, "Agent description in the A2A agent card.")
 	fs.StringVar(&cfg.A2A.CardVersion, "a2a-card-version", cfg.A2A.CardVersion, "Agent version in the A2A agent card.")
 	fs.StringVar(&cfg.A2A.CardURL, "a2a-card-url", cfg.A2A.CardURL, "Public URL where this gateway's /a2a endpoint is reachable.")
-	fs.StringVar(&cfg.A2A.StaticTarget, "a2a-static-target", cfg.A2A.StaticTarget, "Base URL of the Klaus worker pod to forward A2A messages to.")
+	fs.StringVar(&cfg.A2A.StaticTarget, "a2a-static-target", cfg.A2A.StaticTarget, "Base URL of a single Klaus worker pod to forward A2A messages to. Ignored when --a2a-targets is set.")
+	fs.StringVar(&cfg.A2A.Targets, "a2a-targets", cfg.A2A.Targets, "Multi-agent A2A targets: agentRef=baseURL[,agentRef=baseURL ...]. Takes precedence over --a2a-static-target.")
+	fs.StringVar(&cfg.A2A.DefaultAgent, "a2a-default-agent", cfg.A2A.DefaultAgent, "agentRef used when X-Agent-Ref header is absent and no path segment identifies an agent.")
 	fs.StringVar(&cfg.A2A.KagentEndpoint, "kagent-endpoint", cfg.A2A.KagentEndpoint, "Base URL of the kagent API for task/event push.")
 	fs.StringVar(&cfg.A2A.KagentAgentRef, "kagent-agent-ref", cfg.A2A.KagentAgentRef, "Agent name sent as X-Agent-Name to kagent.")
 
@@ -264,6 +275,12 @@ func applyEnv(cfg *Config) {
 	if v, ok := lookup("A2A_STATIC_TARGET"); ok {
 		cfg.A2A.StaticTarget = v
 	}
+	if v, ok := lookup("A2A_TARGETS"); ok {
+		cfg.A2A.Targets = v
+	}
+	if v, ok := lookup("A2A_DEFAULT_AGENT"); ok {
+		cfg.A2A.DefaultAgent = v
+	}
 	if v, ok := lookup("KAGENT_ENDPOINT"); ok {
 		cfg.A2A.KagentEndpoint = v
 	}
@@ -307,8 +324,8 @@ func (c Config) Validate() error {
 		if c.A2A.CardURL == "" {
 			return fmt.Errorf("--a2a-card-url is required with --a2a-enabled")
 		}
-		if c.A2A.StaticTarget == "" {
-			return fmt.Errorf("--a2a-static-target is required with --a2a-enabled")
+		if c.A2A.StaticTarget == "" && c.A2A.Targets == "" {
+			return fmt.Errorf("--a2a-static-target or --a2a-targets is required with --a2a-enabled")
 		}
 	}
 	return nil
