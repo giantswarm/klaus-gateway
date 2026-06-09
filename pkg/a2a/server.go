@@ -25,14 +25,14 @@ import (
 // via trpc-a2a-go) to the names expected by a2a-go/v2. Requests using new-style
 // names pass through unchanged.
 var a2aMethodCompat = map[string]string{
-	"message/send":                        "SendMessage",
-	"message/stream":                      "SendStreamingMessage",
-	"tasks/get":                           "GetTask",
-	"tasks/cancel":                        "CancelTask",
-	"tasks/resubscribe":                   "SubscribeToTask",
-	"tasks/pushNotificationConfig/set":    "CreateTaskPushNotificationConfig",
-	"tasks/pushNotificationConfig/get":    "GetTaskPushNotificationConfig",
-	"agent/getAuthenticatedExtendedCard":  "GetExtendedAgentCard",
+	"message/send":                       "SendMessage",
+	"message/stream":                     "SendStreamingMessage",
+	"tasks/get":                          "GetTask",
+	"tasks/cancel":                       "CancelTask",
+	"tasks/resubscribe":                  "SubscribeToTask",
+	"tasks/pushNotificationConfig/set":   "CreateTaskPushNotificationConfig",
+	"tasks/pushNotificationConfig/get":   "GetTaskPushNotificationConfig",
+	"agent/getAuthenticatedExtendedCard": "GetExtendedAgentCard",
 }
 
 // a2aCompatMiddleware rewrites legacy A2A JSON-RPC method names to their v2
