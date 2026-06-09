@@ -13,7 +13,7 @@ import (
 func SynthesizeContextID(channel, channelID, userID, threadID, agentRef string) string {
 	h := sha256.New()
 	for _, s := range []string{channel, channelID, userID, threadID, agentRef} {
-		fmt.Fprintf(h, "%d:%s|", len(s), s)
+		_, _ = fmt.Fprintf(h, "%d:%s|", len(s), s)
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }
