@@ -340,6 +340,9 @@ func (e *ForwardingExecutor) Execute(ctx context.Context, execCtx *a2asrv.Execut
 // input carries no recognisable token_usage.
 //
 // Klaus sets integer fields; they arrive as float64 after JSON round-trip.
+// Cache token fields (cache_creation_input_tokens, cache_read_input_tokens) are not
+// forwarded: kagent's UI schema has no field for them, so totalTokenCount excludes
+// cache reads and writes.
 func kagentUsageMetadata(artifactMeta map[string]any) map[string]any {
 	if artifactMeta == nil {
 		return nil

@@ -152,6 +152,12 @@
         "staticTarget": {
           "type": "string"
         },
+        "targets": {
+          "type": "string"
+        },
+        "defaultAgent": {
+          "type": "string"
+        },
         "kagentEndpoint": {
           "type": "string"
         },

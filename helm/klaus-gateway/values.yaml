@@ -207,8 +207,16 @@ a2a:
   cardVersion: "0.1.0"
   # cardURL is the externally-reachable base URL of this gateway (required when enabled).
   cardURL: ""
-  # staticTarget is the Klaus worker Service base URL (required when enabled).
+  # staticTarget is the Klaus worker Service base URL for single-agent deployments.
+  # Ignored when targets is set.
   staticTarget: ""
+  # targets is a comma-separated list of agentRef=baseURL pairs for multi-agent routing
+  # (e.g. "worker-a=http://host1:8080,worker-b=http://host2:8080").
+  # When set, staticTarget is ignored. Required when staticTarget is empty.
+  targets: ""
+  # defaultAgent is the agentRef used when X-Agent-Ref header is absent and no path
+  # segment identifies an agent. Defaults to "klaus-worker".
+  defaultAgent: "klaus-worker"
   # kagentEndpoint is the base URL of the kagent API. Empty disables push.
   kagentEndpoint: ""
   # kagentAgentRef is the X-Agent-Name header value sent to kagent.

@@ -80,7 +80,14 @@ spec:
         {{- end }}
         - --a2a-card-version={{ .Values.a2a.cardVersion }}
         - --a2a-card-url={{ .Values.a2a.cardURL }}
+        {{- if .Values.a2a.targets }}
+        - --a2a-targets={{ .Values.a2a.targets }}
+        {{- else }}
         - --a2a-static-target={{ .Values.a2a.staticTarget }}
+        {{- end }}
+        {{- if .Values.a2a.defaultAgent }}
+        - --a2a-default-agent={{ .Values.a2a.defaultAgent }}
+        {{- end }}
         {{- if .Values.a2a.kagentAgentRef }}
         - --kagent-agent-ref={{ .Values.a2a.kagentAgentRef }}
         {{- end }}
