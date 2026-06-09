@@ -203,6 +203,16 @@ func run(args []string) error {
 	}
 
 	if cfg.A2A.Enabled {
+		// The A2A adapter always uses its own static lifecycle driver targeting
+		// cfg.A2A.StaticTarget, regardless of --driver. This is intentional: kagent
+		// pre-provisions the Klaus pod; the A2A adapter just forwards to the fixed URL.
+		// When --driver is not "static" the two lifecycle paths coexist independently.
+		if cfg.Driver != config.DriverStatic {
+			logger.Warn("a2a adapter uses static lifecycle driver; main --driver setting is ignored for A2A traffic",
+				"driver", cfg.Driver,
+				"a2a_target", cfg.A2A.StaticTarget,
+			)
+		}
 		a2aStaticManager, err := static.New("klaus-worker=" + cfg.A2A.StaticTarget)
 		if err != nil {
 			return fmt.Errorf("a2a static manager: %w", err)

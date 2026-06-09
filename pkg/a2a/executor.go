@@ -173,11 +173,12 @@ func (e *ForwardingExecutor) Execute(ctx context.Context, execCtx *a2asrv.Execut
 		}()
 
 		// Push the user message to kagent before starting the pod stream so the
-		// session history is populated while Klaus is thinking.
+		// session history is populated while Klaus is thinking. Use a detached
+		// context so a client disconnect does not silently drop the push.
 		userText := extractText(execCtx.Message)
 		if e.Kagent.Enabled() {
 			taskID := string(execCtx.TaskID)
-			e.Kagent.PushEvent(ctx, execCtx.ContextID, kagentapi.NewSessionEvent(taskID+"-user", "user", userText), auth)
+			e.Kagent.PushEvent(context.WithoutCancel(ctx), execCtx.ContextID, kagentapi.NewSessionEvent(taskID+"-user", "user", userText), auth)
 		}
 
 		// Forward with the original contextID so the pod can resume the session.
@@ -314,12 +315,16 @@ func (e *ForwardingExecutor) Execute(ctx context.Context, execCtx *a2asrv.Execut
 func (e *ForwardingExecutor) Cancel(ctx context.Context, execCtx *a2asrv.ExecutorContext) iter.Seq2[a2apkg.Event, error] {
 	return func(yield func(a2apkg.Event, error) bool) {
 		raw, ok := e.cancels.LoadAndDelete(execCtx.TaskID)
-		if !ok {
-			return
+		if ok {
+			// Entry found: interrupt the in-flight stream and tell the pod.
+			exec := raw.(*podExec)
+			exec.cancelPod()
+			go exec.cancelAtPod(ctx) // propagate to pod; async to not delay the canceled event
 		}
-		exec := raw.(*podExec)
-		exec.cancelPod()
-		go exec.cancelAtPod(ctx) // propagate to pod; async to not delay the canceled event
+		// Always yield the terminal event. If Execute()'s defer already removed the
+		// entry (fast pod response racing with the cancel RPC), the a2asrv framework
+		// still expects a terminal event from Cancel(); returning an empty iterator
+		// causes the framework to return an error to the caller.
 		yield(canceledEvent(execCtx), nil)
 	}
 }

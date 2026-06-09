@@ -39,7 +39,10 @@ func Mount(r chi.Router, card *a2a.AgentCard, executor a2asrv.AgentExecutor) {
 	r.Handle("/.well-known/agent.json", cardHandler)
 
 	authed := extractAuthMiddleware(jsonrpcHandler)
-	r.Post("/", authed.ServeHTTP) // kagent ignores the /a2a path in the card URL and posts to service root
+	// kagent posts to the service root (POST /) rather than the /a2a path
+	// advertised in the agent card. This route should be removed once kagent
+	// honours the SupportedInterfaces URL from the card.
+	r.Post("/", authed.ServeHTTP)
 	r.Handle("/a2a", authed)
 	r.Handle("/a2a/*", authed)
 }

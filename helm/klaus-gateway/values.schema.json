@@ -131,6 +131,35 @@
         }
       }
     },
+    "a2a": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "cardName": {
+          "type": "string"
+        },
+        "cardDescription": {
+          "type": "string"
+        },
+        "cardVersion": {
+          "type": "string"
+        },
+        "cardURL": {
+          "type": "string"
+        },
+        "staticTarget": {
+          "type": "string"
+        },
+        "kagentEndpoint": {
+          "type": "string"
+        },
+        "kagentAgentRef": {
+          "type": "string"
+        }
+      }
+    },
     "agentgateway": {
       "type": "object",
       "properties": {
@@ -179,6 +208,40 @@
               "properties": {
                 "enabled": {
                   "type": "boolean"
+                }
+              }
+            },
+            "cli": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "prefixes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "a2a": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "prefixes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "exactPaths": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
                 }
               }
             }
@@ -260,35 +323,6 @@
                   }
                 }
               }
-            }
-          }
-        },
-        "a2a": {
-          "type": "object",
-          "properties": {
-            "enabled": {
-              "type": "boolean"
-            },
-            "cardName": {
-              "type": "string"
-            },
-            "cardDescription": {
-              "type": "string"
-            },
-            "cardVersion": {
-              "type": "string"
-            },
-            "cardURL": {
-              "type": "string"
-            },
-            "staticTarget": {
-              "type": "string"
-            },
-            "kagentEndpoint": {
-              "type": "string"
-            },
-            "kagentAgentRef": {
-              "type": "string"
             }
           }
         },

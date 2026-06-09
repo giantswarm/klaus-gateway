@@ -58,7 +58,8 @@ type a2aTask struct {
 }
 
 type a2aTaskStatus struct {
-	State string `json:"state"`
+	State     string `json:"state"`
+	Timestamp string `json:"timestamp,omitempty"`
 }
 
 const (
@@ -154,7 +155,7 @@ func (c *Client) StoreTask(ctx context.Context, taskID, contextID, userText, age
 		Kind:      "task",
 		ID:        taskID,
 		ContextID: contextID,
-		Status:    a2aTaskStatus{State: state},
+		Status:    a2aTaskStatus{State: state, Timestamp: time.Now().UTC().Format(time.RFC3339)},
 		History: []a2aMessage{
 			{Kind: kindMessage, MessageID: taskID + "-user", Role: "user", Parts: []a2aPart{{Kind: kindText, Text: userText}}},
 			{Kind: kindMessage, MessageID: taskID + "-agent", Role: "agent", Parts: []a2aPart{{Kind: kindText, Text: agentText}}},
