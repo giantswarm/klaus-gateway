@@ -36,13 +36,17 @@ const (
 type A2AConfig struct {
 	// Enabled gates all A2A behaviour.
 	Enabled bool
-	// DefaultAgent is the agentRef forwarded to kagent when none is supplied
-	// by the inbound channel. Defaults to "klaud-coding".
+	// DefaultAgent is the agentRef forwarded to the A2A orchestrator when none
+	// is supplied by the inbound channel. Defaults to "klaud-coding".
 	DefaultAgent string
-	// KagentA2ABaseURL is the base URL of the kagent A2A endpoint, without a
-	// trailing agent name segment (e.g.
+	// URL is the base URL of the A2A orchestrator endpoint, without a trailing
+	// agent name segment (e.g.
 	// http://kagent-controller.kagent.svc.cluster.local:8083/api/a2a/kagent).
-	KagentA2ABaseURL string
+	URL string
+	// TokenPath is an optional path to a file holding a Bearer token injected
+	// as Authorization on every outgoing A2A request. Projected SA tokens
+	// refresh automatically; leave empty for unauthenticated in-cluster hops.
+	TokenPath string
 }
 
 // CLIConfig holds runtime configuration for the CLI channel adapter.
@@ -155,9 +159,10 @@ func Load(args []string) (Config, error) {
 	fs.StringVar(&cfg.Slack.DefaultAgent, "slack-default-agent", cfg.Slack.DefaultAgent, "agentRef every Slack thread routes to. Required when --slack-enabled.")
 	fs.BoolVar(&cfg.CLI.Enabled, "cli-enabled", cfg.CLI.Enabled, "Enable the CLI channel adapter at /cli/v1/*.")
 	fs.BoolVar(&cfg.Controller, "controller", cfg.Controller, "Enable the embedded ChannelRoute controller (requires --store=crd).")
-	fs.BoolVar(&cfg.A2A.Enabled, "a2a-enabled", cfg.A2A.Enabled, "Enable the A2A client (Slack → kagent) surface.")
-	fs.StringVar(&cfg.A2A.DefaultAgent, "a2a-default-agent", cfg.A2A.DefaultAgent, "agentRef forwarded to kagent when the channel does not supply one.")
-	fs.StringVar(&cfg.A2A.KagentA2ABaseURL, "kagent-a2a-base-url", cfg.A2A.KagentA2ABaseURL, "Base URL of the kagent A2A endpoint, without trailing agent name (e.g. http://kagent-controller.kagent.svc.cluster.local:8083/api/a2a/kagent).")
+	fs.BoolVar(&cfg.A2A.Enabled, "a2a-enabled", cfg.A2A.Enabled, "Enable the A2A client surface.")
+	fs.StringVar(&cfg.A2A.DefaultAgent, "a2a-default-agent", cfg.A2A.DefaultAgent, "agentRef forwarded to the A2A orchestrator when the channel does not supply one.")
+	fs.StringVar(&cfg.A2A.URL, "a2a-url", cfg.A2A.URL, "Base URL of the A2A orchestrator endpoint, without trailing agent name.")
+	fs.StringVar(&cfg.A2A.TokenPath, "a2a-token-path", cfg.A2A.TokenPath, "Path to a file holding a Bearer token sent as Authorization on every A2A request (e.g. a projected SA token). Empty disables auth.")
 
 	fs.Usage = func() {
 		_, _ = fmt.Fprintf(fs.Output(), "klaus-gateway -- channel and routing gateway in front of klaus instances.\n\n")
@@ -244,8 +249,11 @@ func applyEnv(cfg *Config) {
 	if v, ok := lookup("A2A_DEFAULT_AGENT"); ok {
 		cfg.A2A.DefaultAgent = v
 	}
-	if v, ok := lookup("KAGENT_A2A_BASE_URL"); ok {
-		cfg.A2A.KagentA2ABaseURL = v
+	if v, ok := lookup("A2A_URL"); ok {
+		cfg.A2A.URL = v
+	}
+	if v, ok := lookup("A2A_TOKEN_PATH"); ok {
+		cfg.A2A.TokenPath = v
 	}
 }
 
@@ -280,8 +288,8 @@ func (c Config) Validate() error {
 	if c.Slack.Enabled && c.Slack.DefaultAgent == "" {
 		return fmt.Errorf("--slack-default-agent is required with --slack-enabled")
 	}
-	if c.A2A.Enabled && c.A2A.KagentA2ABaseURL == "" {
-		return fmt.Errorf("--kagent-a2a-base-url is required with --a2a-enabled")
+	if c.A2A.Enabled && c.A2A.URL == "" {
+		return fmt.Errorf("--a2a-url is required with --a2a-enabled")
 	}
 	return nil
 }

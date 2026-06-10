@@ -213,14 +213,15 @@ func run(args []string) error {
 	}
 
 	if cfg.A2A.Enabled {
-		facade.Executor = &pkga2a.KagentClient{
-			Clients:      pkga2a.NewClients(),
-			BaseURL:      cfg.A2A.KagentA2ABaseURL,
+		facade.Executor = &pkga2a.A2AClient{
+			Clients:      pkga2a.NewClients(cfg.A2A.TokenPath),
+			BaseURL:      cfg.A2A.URL,
 			DefaultAgent: cfg.A2A.DefaultAgent,
 		}
 		logger.Info("a2a adapter enabled",
-			"kagent_base_url", cfg.A2A.KagentA2ABaseURL,
+			"a2a_url", cfg.A2A.URL,
 			"default_agent", cfg.A2A.DefaultAgent,
+			"token_path", cfg.A2A.TokenPath,
 		)
 	}
 

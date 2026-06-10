@@ -23,18 +23,18 @@ func AgentRefFromContext(ctx context.Context) string {
 	return ref
 }
 
-// KagentClient forwards channel turns to the kagent A2A endpoint.
+// A2AClient forwards channel turns to an A2A orchestrator endpoint.
 // It satisfies the channels.ChannelExecutor interface.
-type KagentClient struct {
+type A2AClient struct {
 	Clients      *Clients
 	BaseURL      string // e.g. http://kagent-controller.kagent.svc.cluster.local:8083/api/a2a/kagent
 	DefaultAgent string
 }
 
-// Execute sends the inbound message to kagent via A2A streaming and yields
-// events as received. The target agent is read from ctx via WithAgentRef,
-// falling back to DefaultAgent.
-func (k *KagentClient) Execute(ctx context.Context, execCtx *a2asrv.ExecutorContext) iter.Seq2[a2apkg.Event, error] {
+// Execute sends the inbound message via A2A streaming and yields events as
+// received. The target agent is read from ctx via WithAgentRef, falling back
+// to DefaultAgent.
+func (k *A2AClient) Execute(ctx context.Context, execCtx *a2asrv.ExecutorContext) iter.Seq2[a2apkg.Event, error] {
 	return func(yield func(a2apkg.Event, error) bool) {
 		agentRef := AgentRefFromContext(ctx)
 		if agentRef == "" {
@@ -43,7 +43,7 @@ func (k *KagentClient) Execute(ctx context.Context, execCtx *a2asrv.ExecutorCont
 		targetURL := k.BaseURL + "/" + agentRef
 		client, err := k.Clients.For(ctx, targetURL)
 		if err != nil {
-			yield(nil, fmt.Errorf("dial kagent: %w", err))
+			yield(nil, fmt.Errorf("dial a2a: %w", err))
 			return
 		}
 		params := &a2apkg.SendMessageRequest{

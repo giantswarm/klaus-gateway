@@ -87,7 +87,7 @@ lifecycle:
 # When empty the gateway talks directly to instance BaseURLs.
 # When set, outgoing requests are rewritten through the agentgateway data-plane
 # and the instance name is passed via the X-Klaus-Instance header.
-# Not used for A2A channel traffic; A2A routes through a2a.kagentA2ABaseURL instead.
+# Not used for A2A channel traffic; A2A routes through a2a.url instead.
 upstream:
   url: ""
 
@@ -190,17 +190,27 @@ agentgateway:
       host: klaus-instance-example.default.svc.cluster.local
       port: 8080
 
-# A2A client surface (Slack → kagent).
-# When enabled, the gateway forwards Slack turns to the kagent A2A endpoint
-# identified by kagentA2ABaseURL. No A2A server is started on the gateway.
+# A2A client surface. When enabled, the gateway forwards channel turns to an
+# A2A orchestrator endpoint. No A2A server is started on the gateway.
 a2a:
   enabled: false
-  # defaultAgent is the agentRef forwarded to kagent when the channel does not supply one.
+  # defaultAgent is the agentRef forwarded to the orchestrator when the channel does not supply one.
   defaultAgent: "klaud-coding"
-  # kagentA2ABaseURL is the base URL of the kagent A2A endpoint, without a trailing
+  # url is the base URL of the A2A orchestrator endpoint, without a trailing
   # agent name (required when a2a.enabled is true).
   # Example: http://kagent-controller.kagent.svc.cluster.local:8083/api/a2a/kagent
-  kagentA2ABaseURL: ""
+  url: ""
+  # tokenPath is an optional path to a file holding a Bearer token injected as
+  # Authorization on every outgoing A2A request. Leave empty for unauthenticated
+  # in-cluster hops. When saToken.enabled is true this is auto-set.
+  tokenPath: ""
+  # saToken controls a projected ServiceAccount token mounted on the gateway pod
+  # and forwarded to the A2A orchestrator as a Bearer token.
+  saToken:
+    enabled: false
+    audience: "kagent"
+    mountPath: "/var/run/secrets/kagent/token"
+    expirationSeconds: 3600
 
 # Slack channel adapter.
 # Disabled by default. To enable, set slack.enabled: true and provide a

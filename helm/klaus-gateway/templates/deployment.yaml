@@ -83,8 +83,13 @@ spec:
         {{- if .Values.a2a.defaultAgent }}
         - --a2a-default-agent={{ .Values.a2a.defaultAgent }}
         {{- end }}
-        {{- if .Values.a2a.kagentA2ABaseURL }}
-        - --kagent-a2a-base-url={{ .Values.a2a.kagentA2ABaseURL }}
+        {{- if .Values.a2a.url }}
+        - --a2a-url={{ .Values.a2a.url }}
+        {{- end }}
+        {{- if .Values.a2a.saToken.enabled }}
+        - --a2a-token-path={{ .Values.a2a.saToken.mountPath }}
+        {{- else if .Values.a2a.tokenPath }}
+        - --a2a-token-path={{ .Values.a2a.tokenPath }}
         {{- end }}
         {{- end }}
         ports:
@@ -137,6 +142,22 @@ spec:
           {{- with .Values.securityContext }}
             {{- . | toYaml | nindent 10 }}
           {{- end }}
+        {{- if .Values.a2a.saToken.enabled }}
+        volumeMounts:
+        - name: kagent-sa-token
+          mountPath: {{ dir .Values.a2a.saToken.mountPath }}
+          readOnly: true
+        {{- end }}
+      {{- if .Values.a2a.saToken.enabled }}
+      volumes:
+      - name: kagent-sa-token
+        projected:
+          sources:
+          - serviceAccountToken:
+              path: {{ base .Values.a2a.saToken.mountPath }}
+              audience: {{ .Values.a2a.saToken.audience }}
+              expirationSeconds: {{ .Values.a2a.saToken.expirationSeconds }}
+      {{- end }}
       terminationGracePeriodSeconds: 10
       {{- with .Values.nodeSelector }}
       nodeSelector:

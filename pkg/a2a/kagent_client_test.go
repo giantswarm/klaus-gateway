@@ -52,8 +52,8 @@ func TestKagentClient_Execute_ForwardsEvents(t *testing.T) {
 	const agentName = "klaud-coding"
 	srv := startFakeKagent(t, agentName)
 
-	kc := &pkga2a.KagentClient{
-		Clients:      pkga2a.NewClients(),
+	kc := &pkga2a.A2AClient{
+		Clients:      pkga2a.NewClients(""),
 		BaseURL:      srv.URL + "/api/a2a/kagent",
 		DefaultAgent: agentName,
 	}
@@ -81,8 +81,8 @@ func TestKagentClient_Execute_UsesAgentRefFromContext(t *testing.T) {
 	const agentName = "klaud-home"
 	srv := startFakeKagent(t, agentName)
 
-	kc := &pkga2a.KagentClient{
-		Clients:      pkga2a.NewClients(),
+	kc := &pkga2a.A2AClient{
+		Clients:      pkga2a.NewClients(""),
 		BaseURL:      srv.URL + "/api/a2a/kagent",
 		DefaultAgent: "wrong-default",
 	}

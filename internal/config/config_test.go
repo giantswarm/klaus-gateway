@@ -41,15 +41,15 @@ func TestValidate(t *testing.T) {
 func TestValidate_A2A(t *testing.T) {
 	base := config.Defaults()
 	base.A2A.Enabled = true
-	base.A2A.KagentA2ABaseURL = "http://kagent-controller.kagent.svc.cluster.local:8083/api/a2a/kagent"
+	base.A2A.URL = "http://kagent-controller.kagent.svc.cluster.local:8083/api/a2a/kagent"
 
-	t.Run("enabled with kagent base url is valid", func(t *testing.T) {
+	t.Run("enabled with url is valid", func(t *testing.T) {
 		require.NoError(t, base.Validate())
 	})
 
-	t.Run("enabled without kagent base url fails", func(t *testing.T) {
+	t.Run("enabled without url fails", func(t *testing.T) {
 		cfg := base
-		cfg.A2A.KagentA2ABaseURL = ""
+		cfg.A2A.URL = ""
 		require.Error(t, cfg.Validate())
 	})
 }
