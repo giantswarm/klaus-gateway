@@ -95,6 +95,8 @@ observability:
   # Empty disables trace export; in-process spans are still created.
   otlpEndpoint: ""
 
+podLabels: {}
+
 podSecurityContext:
   seccompProfile:
     type: RuntimeDefault

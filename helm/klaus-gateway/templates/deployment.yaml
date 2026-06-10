@@ -17,6 +17,9 @@ spec:
         kubectl.kubernetes.io/default-container: {{ .Chart.Name }}
       labels:
         {{- include "labels.selector" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
     spec:
       serviceAccountName: {{ include "resource.default.name" . }}
       securityContext:
