@@ -121,7 +121,7 @@
     "upstream": {
       "type": "object",
       "properties": {
-        "agentgatewayURL": {
+        "url": {
           "type": "string"
         }
       }

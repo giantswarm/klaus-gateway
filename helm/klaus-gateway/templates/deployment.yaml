@@ -68,8 +68,8 @@ spec:
         {{- if and (eq .Values.lifecycle.driver "static") .Values.lifecycle.staticInstances }}
         - --static-instances={{ .Values.lifecycle.staticInstances }}
         {{- end }}
-        {{- if .Values.upstream.agentgatewayURL }}
-        - --agentgateway-url={{ .Values.upstream.agentgatewayURL }}
+        {{- if .Values.upstream.url }}
+        - --agentgateway-url={{ .Values.upstream.url }}
         {{- end }}
         {{- if .Values.observability.otlpEndpoint }}
         - --otel-otlp-endpoint={{ .Values.observability.otlpEndpoint }}

@@ -83,12 +83,13 @@ lifecycle:
   # driver is "static" (e.g. "klaud-coding=http://klaud-coding.kagent.svc:8080").
   staticInstances: ""
 
-# Upstream wiring.
+# Upstream wiring for the OpenAI-compat direct proxy path (pkg/api).
 # When empty the gateway talks directly to instance BaseURLs.
-# When set, outgoing requests are rewritten through this agentgateway and the
-# instance name is passed via the X-Klaus-Instance header.
+# When set, outgoing requests are rewritten through the agentgateway data-plane
+# and the instance name is passed via the X-Klaus-Instance header.
+# Not used for A2A channel traffic; A2A routes through a2a.kagentA2ABaseURL instead.
 upstream:
-  agentgatewayURL: ""
+  url: ""
 
 observability:
   # OTLP gRPC endpoint for traces (e.g. tempo.observability.svc:4317).
