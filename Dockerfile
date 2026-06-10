@@ -11,7 +11,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
     -ldflags "-w -extldflags '-static'" \
     -o klaus-gateway .
 
-FROM gsoci.azurecr.io/giantswarm/alpine:3.23.4
+FROM gsoci.azurecr.io/giantswarm/alpine:3.24.0
 
 RUN apk add --no-cache ca-certificates
 
