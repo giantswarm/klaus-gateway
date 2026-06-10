@@ -9,3 +9,9 @@ serviceMonitor:
 
 image:
   tag: "0.0.44"
+
+# The default lifecycle driver is `operator`, which requires
+# --operator-mcp-url at startup. No klaus-operator runs on the smoke cluster;
+# the gateway only dials the URL lazily, so a placeholder is enough to boot.
+lifecycle:
+  operatorMCPURL: "http://klaus-operator.klaus-operator.svc:8090/mcp"
