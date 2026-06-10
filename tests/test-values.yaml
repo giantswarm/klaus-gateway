@@ -1,0 +1,5 @@
+# Values used by app-test-suite when installing the chart on the kind smoke
+# cluster. The default chart renders a ServiceMonitor (Prometheus Operator
+# CRD), which does not exist on a bare kind cluster, so it is disabled here.
+serviceMonitor:
+  enabled: false
