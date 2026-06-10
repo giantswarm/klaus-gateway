@@ -34,7 +34,8 @@ const ChannelName = "cli"
 
 // Adapter implements channels.ChannelAdapter for the CLI channel.
 type Adapter struct {
-	Logger *slog.Logger
+	Logger       *slog.Logger
+	DefaultAgent string
 
 	gw      channels.Gateway
 	started atomic.Bool
@@ -77,6 +78,7 @@ type runRequest struct {
 	Text      string `json:"text"`
 	SessionID string `json:"sessionId"`
 	UserID    string `json:"userId,omitempty"`
+	AgentRef  string `json:"agentRef,omitempty"`
 }
 
 type messagesRequest struct {
@@ -130,6 +132,11 @@ func (a *Adapter) postRun(w http.ResponseWriter, r *http.Request) {
 		ThreadID:  in.SessionID,
 		Text:      in.Text,
 		Subject:   subject,
+	}
+	if in.AgentRef != "" {
+		msg.AgentRef = in.AgentRef
+	} else if a.DefaultAgent != "" {
+		msg.AgentRef = a.DefaultAgent
 	}
 
 	ref, err := a.gw.Resolve(r.Context(), msg)

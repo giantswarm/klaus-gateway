@@ -124,13 +124,13 @@ func run(args []string) error {
 		return fmt.Errorf("build lifecycle: %w", err)
 	}
 
-	if cfg.Slack.Enabled && cfg.Driver == config.DriverStatic {
+	if cfg.Slack.Enabled && cfg.A2A.Enabled && cfg.Driver == config.DriverStatic {
 		sm, ok := manager.(*static.Manager)
 		if !ok {
 			return fmt.Errorf("unexpected lifecycle manager type for static driver")
 		}
-		if _, err := sm.Get(ctx, cfg.Slack.DefaultAgent); err != nil {
-			return fmt.Errorf("slack-default-agent %q not found in static instances: %w", cfg.Slack.DefaultAgent, err)
+		if _, err := sm.Get(ctx, cfg.A2A.DefaultAgent); err != nil {
+			return fmt.Errorf("a2a-default-agent %q not found in static instances: %w", cfg.A2A.DefaultAgent, err)
 		}
 	}
 
@@ -159,6 +159,9 @@ func run(args []string) error {
 	}
 
 	webAdapter := &web.Adapter{Logger: logger}
+	if cfg.A2A.Enabled {
+		webAdapter.DefaultAgent = cfg.A2A.DefaultAgent
+	}
 	if err := webAdapter.Start(ctx, facade); err != nil {
 		return fmt.Errorf("start web adapter: %w", err)
 	}
@@ -174,7 +177,7 @@ func run(args []string) error {
 			Logger:       logger,
 			Mode:         cfg.Slack.Mode,
 			Secrets:      secrets,
-			DefaultAgent: cfg.Slack.DefaultAgent,
+			DefaultAgent: cfg.A2A.DefaultAgent,
 		}
 		if err := slackAdapter.Start(ctx, facade); err != nil {
 			return fmt.Errorf("start slack adapter: %w", err)
@@ -192,6 +195,9 @@ func run(args []string) error {
 
 	if cfg.CLI.Enabled {
 		cliAdapter := &cliachannel.Adapter{Logger: logger}
+		if cfg.A2A.Enabled {
+			cliAdapter.DefaultAgent = cfg.A2A.DefaultAgent
+		}
 		if err := cliAdapter.Start(ctx, facade); err != nil {
 			return fmt.Errorf("start cli adapter: %w", err)
 		}

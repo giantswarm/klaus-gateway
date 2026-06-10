@@ -28,6 +28,7 @@ type stubGateway struct {
 	history        []channels.Message
 	historyErr     error
 	resolveInbound channels.InboundMessage
+	sendInbound    channels.InboundMessage
 }
 
 func (s *stubGateway) Resolve(_ context.Context, in channels.InboundMessage) (channels.InstanceRef, error) {
@@ -41,7 +42,8 @@ func (s *stubGateway) Resolve(_ context.Context, in channels.InboundMessage) (ch
 	return s.resolveRef, nil
 }
 
-func (s *stubGateway) SendCompletion(_ context.Context, _ channels.InstanceRef, _ channels.InboundMessage) (<-chan channels.OutboundDelta, error) {
+func (s *stubGateway) SendCompletion(_ context.Context, _ channels.InstanceRef, msg channels.InboundMessage) (<-chan channels.OutboundDelta, error) {
+	s.sendInbound = msg
 	if s.sendErr != nil {
 		return nil, s.sendErr
 	}
@@ -66,6 +68,17 @@ func newServer(t *testing.T, gw channels.Gateway) *httptest.Server {
 	t.Helper()
 	a := &cli.Adapter{}
 	require.NoError(t, a.Start(context.Background(), gw))
+	r := chi.NewRouter()
+	a.Mount(r)
+	ts := httptest.NewServer(r)
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+func newServerWithDefaultAgent(t *testing.T, gw channels.Gateway, defaultAgent string) *httptest.Server {
+	t.Helper()
+	a := &cli.Adapter{DefaultAgent: defaultAgent}
+	require.NoError(t, a.Start(t.Context(), gw))
 	r := chi.NewRouter()
 	a.Mount(r)
 	ts := httptest.NewServer(r)
@@ -238,4 +251,44 @@ func TestPostRun_AnonymousIdentity(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	require.Equal(t, "anonymous", gw.resolveInbound.UserID)
+}
+
+func TestPostRun_DefaultAgentSet(t *testing.T) {
+	gw := &stubGateway{
+		deltas: []channels.OutboundDelta{{Done: true}},
+	}
+	ts := newServerWithDefaultAgent(t, gw, "my-agent")
+
+	resp, err := http.Post(ts.URL+"/cli/v1/myinst/run", "application/json", strings.NewReader(sampleSendBody))
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Equal(t, "my-agent", gw.sendInbound.AgentRef)
+}
+
+func TestPostRun_PerRequestAgentRefOverridesDefault(t *testing.T) {
+	gw := &stubGateway{
+		deltas: []channels.OutboundDelta{{Done: true}},
+	}
+	ts := newServerWithDefaultAgent(t, gw, "default-agent")
+
+	body := `{"text":"hi","sessionId":"s1","agentRef":"override-agent"}`
+	resp, err := http.Post(ts.URL+"/cli/v1/myinst/run", "application/json", strings.NewReader(body))
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Equal(t, "override-agent", gw.sendInbound.AgentRef)
+}
+
+func TestPostRun_NoAgentRefFallsBackToOpenAIPath(t *testing.T) {
+	gw := &stubGateway{
+		deltas: []channels.OutboundDelta{{Done: true}},
+	}
+	ts := newServer(t, gw)
+
+	resp, err := http.Post(ts.URL+"/cli/v1/myinst/run", "application/json", strings.NewReader(sampleSendBody))
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Equal(t, "", gw.sendInbound.AgentRef)
 }
