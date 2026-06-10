@@ -1,5 +1,11 @@
 # Values used by app-test-suite when installing the chart on the kind smoke
 # cluster. The default chart renders a ServiceMonitor (Prometheus Operator
 # CRD), which does not exist on a bare kind cluster, so it is disabled here.
+# The image is pinned to a released tag because the branch path is build+test
+# only -- the dev image referenced by the packaged chart is never pushed, so
+# the pod would hang in ImagePullBackOff.
 serviceMonitor:
   enabled: false
+
+image:
+  tag: "0.0.44"
