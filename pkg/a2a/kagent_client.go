@@ -116,20 +116,20 @@ func (k *A2AClient) Execute(ctx context.Context, execCtx *a2asrv.ExecutorContext
 // kagentStreamResult holds the "result" field of a kagent JSON-RPC SSE response.
 // kagent uses a "kind" discriminator rather than the library's wrapper-field convention.
 type kagentStreamResult struct {
-	Kind      string          `json:"kind"`
-	ContextID string          `json:"contextId,omitempty"`
-	TaskID    string          `json:"taskId,omitempty"`
-	Final     bool            `json:"final,omitempty"`
-	Status    *kagentStatus   `json:"status,omitempty"`
+	Kind      string           `json:"kind"`
+	ContextID string           `json:"contextId,omitempty"`
+	TaskID    string           `json:"taskId,omitempty"`
+	Final     bool             `json:"final,omitempty"`
+	Status    *kagentStatus    `json:"status,omitempty"`
 	Artifact  *a2apkg.Artifact `json:"artifact,omitempty"`
-	LastChunk bool            `json:"lastChunk,omitempty"`
-	Metadata  map[string]any  `json:"metadata,omitempty"`
+	LastChunk bool             `json:"lastChunk,omitempty"`
+	Metadata  map[string]any   `json:"metadata,omitempty"`
 }
 
 // kagentStatus holds a task status using the kagent/A2A-spec lowercase state strings.
 // The a2a-go library constants use TASK_STATE_* uppercase; this type bridges that gap.
 type kagentStatus struct {
-	State   string         `json:"state"`
+	State   string          `json:"state"`
 	Message *a2apkg.Message `json:"message,omitempty"`
 }
 
