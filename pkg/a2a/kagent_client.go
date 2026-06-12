@@ -98,7 +98,7 @@ func (k *A2AClient) Execute(ctx context.Context, execCtx *a2asrv.ExecutorContext
 			yield(nil, fmt.Errorf("a2a request: %w", err))
 			return
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		if resp.StatusCode != http.StatusOK {
 			yield(nil, fmt.Errorf("unexpected HTTP status: %s", resp.Status))

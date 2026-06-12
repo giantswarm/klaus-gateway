@@ -64,7 +64,7 @@ func startFakeKagent(t *testing.T, agentName string) *httptest.Server {
 
 func writeSSEResult(w http.ResponseWriter, flusher http.Flusher, result any) {
 	data, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": "1", "result": result})
-	fmt.Fprintf(w, "data: %s\n\n", data)
+	_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 	flusher.Flush()
 }
 
