@@ -220,7 +220,7 @@ func run(args []string) error {
 
 	if cfg.A2A.Enabled {
 		facade.Executor = &pkga2a.A2AClient{
-			Clients:      pkga2a.NewClients(cfg.A2A.TokenPath),
+			TokenPath:    cfg.A2A.TokenPath,
 			BaseURL:      cfg.A2A.URL,
 			DefaultAgent: cfg.A2A.DefaultAgent,
 		}
