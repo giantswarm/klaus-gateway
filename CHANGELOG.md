@@ -32,6 +32,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Pin container name in the Deployment template to the literal `klaus-gateway` rather than
+  `{{ .Chart.Name }}`. When the chart is consumed as a Helm dependency under a camelCase
+  alias (e.g. `alias: klausGateway`), Helm sets `.Chart.Name` to the alias, producing an
+  RFC 1123-invalid container name that prevents the Deployment from being applied.
+
 - Add `.abs/main.yaml` with `replace-chart-version-with-git` /
   `replace-app-version-with-git` enabled. Without this config app-build-suite
   packaged the chart with the literal `0.1.0` placeholder from `Chart.yaml`,

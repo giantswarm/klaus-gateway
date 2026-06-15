@@ -14,7 +14,7 @@ spec:
   template:
     metadata:
       annotations:
-        kubectl.kubernetes.io/default-container: {{ .Chart.Name }}
+        kubectl.kubernetes.io/default-container: klaus-gateway
       labels:
         {{- include "labels.selector" . | nindent 8 }}
         {{- with .Values.podLabels }}
@@ -30,7 +30,7 @@ spec:
           {{- . | toYaml | nindent 8 }}
         {{- end }}
       containers:
-      - name: {{ .Chart.Name }}
+      - name: klaus-gateway
         image: "{{ .Values.image.registry }}/{{ .Values.image.name }}:{{ include "image.tag" . }}"
         imagePullPolicy: "{{ .Values.image.pullPolicy }}"
         args:
