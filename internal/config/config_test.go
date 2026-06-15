@@ -37,3 +37,32 @@ func TestValidate(t *testing.T) {
 	badOp.OperatorMCPURL = ""
 	require.Error(t, badOp.Validate())
 }
+
+func TestValidate_A2A(t *testing.T) {
+	base := config.Defaults()
+	base.A2A.Enabled = true
+	base.A2A.URL = "http://kagent-controller.kagent.svc.cluster.local:8083/api/a2a/kagent"
+
+	t.Run("enabled with url is valid", func(t *testing.T) {
+		require.NoError(t, base.Validate())
+	})
+
+	t.Run("enabled without url fails", func(t *testing.T) {
+		cfg := base
+		cfg.A2A.URL = ""
+		require.Error(t, cfg.Validate())
+	})
+}
+
+func TestA2ADefaults(t *testing.T) {
+	cfg := config.Defaults()
+	require.Equal(t, "klaud-coding", cfg.A2A.DefaultAgent)
+}
+
+func TestLoad_A2ADefaultAgentEnv(t *testing.T) {
+	t.Setenv("KLAUS_GATEWAY_A2A_DEFAULT_AGENT", "worker-a")
+
+	cfg, err := config.Load([]string{})
+	require.NoError(t, err)
+	require.Equal(t, "worker-a", cfg.A2A.DefaultAgent)
+}

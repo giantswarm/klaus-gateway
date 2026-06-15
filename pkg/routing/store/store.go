@@ -22,31 +22,48 @@ type Key struct {
 	ChannelID string
 	UserID    string
 	ThreadID  string
+	// Agent is the agentRef discriminator used by the A2A multi-agent path.
+	// Empty for all other channels; omitted from the serialised form when empty
+	// so existing 4-part keys remain byte-identical.
+	Agent string
 }
 
 // String returns the canonical serialised form used as a storage key. The
 // format is stable: stores rely on it for on-disk keys.
+//
+// When Agent is non-empty a fifth pipe-separated segment is appended;
+// otherwise the output is the existing 4-part form so pre-existing store
+// entries are not invalidated.
 func (k Key) String() string {
-	return strings.Join([]string{
+	parts := []string{
 		escape(k.Channel),
 		escape(k.ChannelID),
 		escape(k.UserID),
 		escape(k.ThreadID),
-	}, "|")
+	}
+	if k.Agent != "" {
+		parts = append(parts, escape(k.Agent))
+	}
+	return strings.Join(parts, "|")
 }
 
-// ParseKey inverts Key.String.
+// ParseKey inverts Key.String. It accepts both the legacy 4-part form and the
+// extended 5-part form (with Agent).
 func ParseKey(s string) (Key, error) {
 	parts := strings.Split(s, "|")
-	if len(parts) != 4 {
-		return Key{}, fmt.Errorf("invalid key %q: expected 4 parts", s)
+	if len(parts) != 4 && len(parts) != 5 {
+		return Key{}, fmt.Errorf("invalid key %q: expected 4 or 5 parts", s)
 	}
-	return Key{
+	k := Key{
 		Channel:   unescape(parts[0]),
 		ChannelID: unescape(parts[1]),
 		UserID:    unescape(parts[2]),
 		ThreadID:  unescape(parts[3]),
-	}, nil
+	}
+	if len(parts) == 5 {
+		k.Agent = unescape(parts[4])
+	}
+	return k, nil
 }
 
 func escape(s string) string {

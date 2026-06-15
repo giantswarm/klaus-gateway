@@ -27,6 +27,27 @@ The app subscribes to two bot events:
 - `app_mention` — fires when a user `@`-mentions the bot in any channel
 - `message.im` — fires for direct messages to the bot
 
+## Agent routing
+
+Every Slack thread is routed to a single Klaus instance via the A2A executor. The target
+agent is fixed at startup using `slack.defaultAgent`.
+
+| Flag | Env var | Required |
+|------|---------|---------|
+| `--slack-default-agent` | `KLAUS_GATEWAY_SLACK_DEFAULT_AGENT` | Yes (when Slack is enabled) |
+
+When `--driver=static`, the gateway validates at startup that the named agent exists in
+the pre-configured instance set. With other drivers (klausctl, operator), the name is
+used as the instance creation hint and instances may not exist yet at startup.
+
+Example Helm values:
+
+```yaml
+slack:
+  enabled: true
+  defaultAgent: my-instance
+```
+
 ## Running in Events API mode (production)
 
 1. Create a Kubernetes Secret with the credentials:
@@ -108,11 +129,16 @@ any string that begins with `Slack bot`, `Slack app-level`, or `Slack user`.
 3. The `@mention` prefix is stripped from `app_mention` text before routing.
 4. The routing key is `(channel="slack", channelID=<Slack channel ID>, userID=<Slack user ID>,
    threadID=<thread_ts or ts>)`.
-5. The gateway resolves the routing key to a Klaus instance (creating one if auto-create is
-   enabled).
-6. A placeholder `_thinking…_` message is posted to the Slack thread immediately.
-7. Completion deltas are batched and written back via `chat.update` calls as the response
+5. A stable A2A contextID is derived from `(channel, channelID, userID, threadID, agentRef)`.
+   The same thread always maps to the same contextID, allowing Klaus to resume the conversation.
+6. The gateway forwards the turn through the A2A executor to the instance named by
+   `slack.defaultAgent`. The OpenAI `/v1` path is bypassed.
+7. A placeholder `_thinking…_` message is posted to the Slack thread immediately.
+8. Completion deltas are batched and written back via `chat.update` calls as the response
    accumulates.
+
+Instance affinity: assumes `replicas=1` per instance and sequential one-turn-at-a-time
+multiplexing until the operator lands.
 
 ## Required bot OAuth scopes
 

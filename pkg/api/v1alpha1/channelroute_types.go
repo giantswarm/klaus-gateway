@@ -6,9 +6,9 @@ import (
 )
 
 // ChannelRouteSpec defines the routing rule: it maps a conversation key
-// (channel, channelID, userID, threadID) to a named Klaus instance.
+// (channel, channelID, userID, threadID[, agent]) to a named Klaus instance.
 type ChannelRouteSpec struct {
-	// Channel identifies the adapter type (web, slack, cli).
+	// Channel identifies the adapter type (web, slack, cli, a2a).
 	Channel string `json:"channel"`
 	// ChannelID is the workspace / team / server identifier.
 	ChannelID string `json:"channelID"`
@@ -16,6 +16,9 @@ type ChannelRouteSpec struct {
 	UserID string `json:"userID"`
 	// ThreadID scopes the route to a specific thread; empty means per-user.
 	ThreadID string `json:"threadID"`
+	// Agent is the agentRef discriminator for multi-agent routing (A2A channel).
+	// Empty for all other channels.
+	Agent string `json:"agent,omitempty"`
 	// Instance is the name of the Klaus instance that owns this conversation.
 	Instance string `json:"instance"`
 	// CreatedAt is when the route was first written.

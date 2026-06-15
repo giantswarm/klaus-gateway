@@ -6,82 +6,192 @@
     "image": {
       "type": "object",
       "properties": {
-        "registry": { "type": "string" },
-        "name": { "type": "string" },
-        "tag": { "type": "string" },
-        "pullPolicy": { "type": "string" }
+        "registry": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "tag": {
+          "type": "string"
+        },
+        "pullPolicy": {
+          "type": "string"
+        }
       }
     },
-    "replicaCount": { "type": "integer", "minimum": 1 },
-    "logLevel": { "type": "string", "enum": ["debug", "info", "warn", "error"] },
+    "replicaCount": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "logLevel": {
+      "type": "string",
+      "enum": [
+        "debug",
+        "info",
+        "warn",
+        "error"
+      ]
+    },
     "server": {
       "type": "object",
       "properties": {
-        "port": { "type": "integer" }
+        "port": {
+          "type": "integer"
+        }
       }
     },
     "admin": {
       "type": "object",
       "properties": {
-        "port": { "type": "integer" }
+        "port": {
+          "type": "integer"
+        }
       }
     },
     "metrics": {
       "type": "object",
       "properties": {
-        "enabled": { "type": "boolean" }
+        "enabled": {
+          "type": "boolean"
+        }
       }
     },
     "serviceMonitor": {
       "type": "object",
       "properties": {
-        "enabled": { "type": "boolean" },
-        "interval": { "type": "string" },
-        "scrapeTimeout": { "type": "string" }
+        "enabled": {
+          "type": "boolean"
+        },
+        "interval": {
+          "type": "string"
+        },
+        "scrapeTimeout": {
+          "type": "string"
+        }
       }
     },
     "routing": {
       "type": "object",
       "properties": {
-        "store": { "type": "string", "enum": ["memory", "bolt", "configmap"] },
-        "boltPath": { "type": "string" },
-        "defaultTTL": { "type": "string" },
-        "autoCreate": { "type": "boolean" }
+        "store": {
+          "type": "string",
+          "enum": [
+            "memory",
+            "bolt",
+            "configmap"
+          ]
+        },
+        "boltPath": {
+          "type": "string"
+        },
+        "defaultTTL": {
+          "type": "string"
+        },
+        "autoCreate": {
+          "type": "boolean"
+        }
       }
     },
     "lifecycle": {
       "type": "object",
       "properties": {
-        "driver": { "type": "string", "enum": ["klausctl", "operator"] },
-        "klausctlBin": { "type": "string" },
-        "operatorMCPURL": { "type": "string" },
-        "operatorMCPToken": { "type": "string" }
+        "driver": {
+          "type": "string",
+          "enum": [
+            "klausctl",
+            "operator",
+            "static"
+          ]
+        },
+        "klausctlBin": {
+          "type": "string"
+        },
+        "operatorMCPURL": {
+          "type": "string"
+        },
+        "operatorMCPToken": {
+          "type": "string"
+        },
+        "staticInstances": {
+          "type": "string"
+        }
       }
     },
     "upstream": {
       "type": "object",
       "properties": {
-        "agentgatewayURL": { "type": "string" }
+        "url": {
+          "type": "string"
+        }
       }
     },
     "observability": {
       "type": "object",
       "properties": {
-        "otlpEndpoint": { "type": "string" }
+        "otlpEndpoint": {
+          "type": "string"
+        }
+      }
+    },
+    "a2a": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "defaultAgent": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        },
+        "tokenPath": {
+          "type": "string"
+        },
+        "saToken": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "audience": {
+              "type": "string"
+            },
+            "mountPath": {
+              "type": "string"
+            },
+            "expirationSeconds": {
+              "type": "integer"
+            }
+          }
+        }
       }
     },
     "agentgateway": {
       "type": "object",
       "properties": {
-        "enabled": { "type": "boolean" },
-        "gatewayClassName": { "type": "string" },
+        "enabled": {
+          "type": "boolean"
+        },
+        "gatewayClassName": {
+          "type": "string"
+        },
         "gateway": {
           "type": "object",
           "properties": {
-            "create": { "type": "boolean" },
-            "parentRefs": { "type": "array" },
-            "listeners": { "type": "array" },
-            "annotations": { "type": "object" }
+            "create": {
+              "type": "boolean"
+            },
+            "parentRefs": {
+              "type": "array"
+            },
+            "listeners": {
+              "type": "array"
+            },
+            "annotations": {
+              "type": "object"
+            }
           }
         },
         "routes": {
@@ -90,17 +200,57 @@
             "chatAndMcp": {
               "type": "object",
               "properties": {
-                "enabled": { "type": "boolean" },
+                "enabled": {
+                  "type": "boolean"
+                },
                 "prefixes": {
                   "type": "array",
-                  "items": { "type": "string" }
+                  "items": {
+                    "type": "string"
+                  }
                 }
               }
             },
             "directInstance": {
               "type": "object",
               "properties": {
-                "enabled": { "type": "boolean" }
+                "enabled": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "cli": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "prefixes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "a2a": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "prefixes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "exactPaths": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
               }
             }
           }
@@ -108,35 +258,72 @@
         "policy": {
           "type": "object",
           "properties": {
-            "enabled": { "type": "boolean" },
+            "enabled": {
+              "type": "boolean"
+            },
             "jwt": {
               "type": "object",
               "properties": {
-                "enabled": { "type": "boolean" },
-                "mode": { "type": "string", "enum": ["Strict", "Optional", "Permissive"] },
-                "issuer": { "type": "string" },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "mode": {
+                  "type": "string",
+                  "enum": [
+                    "Strict",
+                    "Optional",
+                    "Permissive"
+                  ]
+                },
+                "issuer": {
+                  "type": "string"
+                },
                 "audiences": {
                   "type": "array",
-                  "items": { "type": "string" }
+                  "items": {
+                    "type": "string"
+                  }
                 },
                 "jwks": {
                   "type": "object",
                   "properties": {
-                    "mode": { "type": "string", "enum": ["inline", "remote"] },
-                    "inline": { "type": "string" },
+                    "mode": {
+                      "type": "string",
+                      "enum": [
+                        "inline",
+                        "remote"
+                      ]
+                    },
+                    "inline": {
+                      "type": "string"
+                    },
                     "remote": {
                       "type": "object",
                       "properties": {
-                        "jwksPath": { "type": "string" },
-                        "cacheDuration": { "type": "string" },
+                        "jwksPath": {
+                          "type": "string"
+                        },
+                        "cacheDuration": {
+                          "type": "string"
+                        },
                         "backendRef": {
                           "type": "object",
                           "properties": {
-                            "group": { "type": "string" },
-                            "kind": { "type": "string" },
-                            "name": { "type": "string" },
-                            "namespace": { "type": "string" },
-                            "port": { "type": "integer" }
+                            "group": {
+                              "type": "string"
+                            },
+                            "kind": {
+                              "type": "string"
+                            },
+                            "name": {
+                              "type": "string"
+                            },
+                            "namespace": {
+                              "type": "string"
+                            },
+                            "port": {
+                              "type": "integer"
+                            }
                           }
                         }
                       }
@@ -150,13 +337,21 @@
         "backendsExample": {
           "type": "object",
           "properties": {
-            "enabled": { "type": "boolean" },
-            "name": { "type": "string" },
+            "enabled": {
+              "type": "boolean"
+            },
+            "name": {
+              "type": "string"
+            },
             "static": {
               "type": "object",
               "properties": {
-                "host": { "type": "string" },
-                "port": { "type": "integer" }
+                "host": {
+                  "type": "string"
+                },
+                "port": {
+                  "type": "integer"
+                }
               }
             }
           }

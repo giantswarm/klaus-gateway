@@ -32,6 +32,23 @@ const (
 	DriverStatic = "static"
 )
 
+// A2AConfig holds runtime configuration for the A2A client surface.
+type A2AConfig struct {
+	// Enabled gates all A2A behaviour.
+	Enabled bool
+	// DefaultAgent is the agentRef forwarded to the A2A orchestrator when none
+	// is supplied by the inbound channel. Defaults to "klaud-coding".
+	DefaultAgent string
+	// URL is the base URL of the A2A orchestrator endpoint, without a trailing
+	// agent name segment (e.g.
+	// http://kagent-controller.kagent.svc.cluster.local:8083/api/a2a/kagent).
+	URL string
+	// TokenPath is an optional path to a file holding a Bearer token injected
+	// as Authorization on every outgoing A2A request. Projected SA tokens
+	// refresh automatically; leave empty for unauthenticated in-cluster hops.
+	TokenPath string
+}
+
 // CLIConfig holds runtime configuration for the CLI channel adapter.
 type CLIConfig struct {
 	// Enabled gates all CLI behaviour; the adapter is skipped when false.
@@ -79,6 +96,7 @@ type Config struct {
 
 	Slack SlackConfig
 	CLI   CLIConfig
+	A2A   A2AConfig
 
 	// Controller enables the embedded ChannelRoute controller-runtime manager.
 	Controller bool
@@ -103,6 +121,9 @@ func Defaults() Config {
 		},
 		CLI: CLIConfig{
 			Enabled: false,
+		},
+		A2A: A2AConfig{
+			DefaultAgent: "klaud-coding",
 		},
 	}
 }
@@ -134,6 +155,10 @@ func Load(args []string) (Config, error) {
 	fs.StringVar(&cfg.Slack.SecretsFile, "slack-secrets-file", cfg.Slack.SecretsFile, "Path to Slack secrets YAML file.")
 	fs.BoolVar(&cfg.CLI.Enabled, "cli-enabled", cfg.CLI.Enabled, "Enable the CLI channel adapter at /cli/v1/*.")
 	fs.BoolVar(&cfg.Controller, "controller", cfg.Controller, "Enable the embedded ChannelRoute controller (requires --store=crd).")
+	fs.BoolVar(&cfg.A2A.Enabled, "a2a-enabled", cfg.A2A.Enabled, "Enable the A2A client surface.")
+	fs.StringVar(&cfg.A2A.DefaultAgent, "a2a-default-agent", cfg.A2A.DefaultAgent, "agentRef forwarded to the A2A orchestrator when the channel does not supply one.")
+	fs.StringVar(&cfg.A2A.URL, "a2a-url", cfg.A2A.URL, "Base URL of the A2A orchestrator endpoint, without trailing agent name.")
+	fs.StringVar(&cfg.A2A.TokenPath, "a2a-token-path", cfg.A2A.TokenPath, "Path to a file holding a Bearer token sent as Authorization on every A2A request (e.g. a projected SA token). Empty disables auth.")
 
 	fs.Usage = func() {
 		_, _ = fmt.Fprintf(fs.Output(), "klaus-gateway -- channel and routing gateway in front of klaus instances.\n\n")
@@ -211,6 +236,18 @@ func applyEnv(cfg *Config) {
 	if v, ok := lookup("CONTROLLER"); ok {
 		cfg.Controller = strings.EqualFold(v, "true") || v == "1"
 	}
+	if v, ok := lookup("A2A_ENABLED"); ok {
+		cfg.A2A.Enabled = strings.EqualFold(v, "true") || v == "1"
+	}
+	if v, ok := lookup("A2A_DEFAULT_AGENT"); ok {
+		cfg.A2A.DefaultAgent = v
+	}
+	if v, ok := lookup("A2A_URL"); ok {
+		cfg.A2A.URL = v
+	}
+	if v, ok := lookup("A2A_TOKEN_PATH"); ok {
+		cfg.A2A.TokenPath = v
+	}
 }
 
 func lookup(key string) (string, bool) {
@@ -240,6 +277,9 @@ func (c Config) Validate() error {
 	}
 	if c.Driver == DriverStatic && c.StaticInstances == "" {
 		return fmt.Errorf("--static-instances is required with --driver=static")
+	}
+	if c.A2A.Enabled && c.A2A.URL == "" {
+		return fmt.Errorf("--a2a-url is required with --a2a-enabled")
 	}
 	return nil
 }

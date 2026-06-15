@@ -33,6 +33,9 @@ services:
       KLAUS_GATEWAY_AGENTGATEWAY_URL: "http://agentgateway:8090"
       KLAUS_GATEWAY_AUTO_CREATE: "true"
       KLAUS_GATEWAY_LOG_LEVEL: "info"
+      KLAUS_GATEWAY_A2A_ENABLED: "true"
+      KLAUS_GATEWAY_A2A_URL: "http://agentgateway:8090/a2a"
+      KLAUS_GATEWAY_A2A_DEFAULT_AGENT: "test-instance"
     ports:
       - "8080:8080"
       - "8081:8081"

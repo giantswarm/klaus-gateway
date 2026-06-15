@@ -17,6 +17,9 @@ spec:
         kubectl.kubernetes.io/default-container: {{ .Chart.Name }}
       labels:
         {{- include "labels.selector" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
     spec:
       serviceAccountName: {{ include "resource.default.name" . }}
       securityContext:
@@ -47,7 +50,7 @@ spec:
         {{- if .Values.routing.defaultTTL }}
         - --default-ttl={{ .Values.routing.defaultTTL }}
         {{- end }}
-        {{- if .Values.routing.autoCreate }}
+        {{- if or .Values.routing.autoCreate .Values.a2a.enabled }}
         - --auto-create
         {{- end }}
         - --driver={{ .Values.lifecycle.driver }}
@@ -62,8 +65,11 @@ spec:
         - --operator-mcp-token={{ .Values.lifecycle.operatorMCPToken }}
         {{- end }}
         {{- end }}
-        {{- if .Values.upstream.agentgatewayURL }}
-        - --agentgateway-url={{ .Values.upstream.agentgatewayURL }}
+        {{- if and (eq .Values.lifecycle.driver "static") .Values.lifecycle.staticInstances }}
+        - --static-instances={{ .Values.lifecycle.staticInstances }}
+        {{- end }}
+        {{- if .Values.upstream.url }}
+        - --agentgateway-url={{ .Values.upstream.url }}
         {{- end }}
         {{- if .Values.observability.otlpEndpoint }}
         - --otel-otlp-endpoint={{ .Values.observability.otlpEndpoint }}
@@ -71,6 +77,20 @@ spec:
         {{- if .Values.slack.enabled }}
         - --slack-enabled
         - --slack-mode={{ .Values.slack.mode }}
+        {{- end }}
+        {{- if .Values.a2a.enabled }}
+        - --a2a-enabled
+        {{- if .Values.a2a.defaultAgent }}
+        - --a2a-default-agent={{ .Values.a2a.defaultAgent }}
+        {{- end }}
+        {{- if .Values.a2a.url }}
+        - --a2a-url={{ .Values.a2a.url }}
+        {{- end }}
+        {{- if .Values.a2a.saToken.enabled }}
+        - --a2a-token-path={{ .Values.a2a.saToken.mountPath }}
+        {{- else if .Values.a2a.tokenPath }}
+        - --a2a-token-path={{ .Values.a2a.tokenPath }}
+        {{- end }}
         {{- end }}
         ports:
         - name: http
@@ -122,6 +142,22 @@ spec:
           {{- with .Values.securityContext }}
             {{- . | toYaml | nindent 10 }}
           {{- end }}
+        {{- if .Values.a2a.saToken.enabled }}
+        volumeMounts:
+        - name: kagent-sa-token
+          mountPath: {{ dir .Values.a2a.saToken.mountPath }}
+          readOnly: true
+        {{- end }}
+      {{- if .Values.a2a.saToken.enabled }}
+      volumes:
+      - name: kagent-sa-token
+        projected:
+          sources:
+          - serviceAccountToken:
+              path: {{ base .Values.a2a.saToken.mountPath }}
+              audience: {{ .Values.a2a.saToken.audience }}
+              expirationSeconds: {{ .Values.a2a.saToken.expirationSeconds }}
+      {{- end }}
       terminationGracePeriodSeconds: 10
       {{- with .Values.nodeSelector }}
       nodeSelector:
