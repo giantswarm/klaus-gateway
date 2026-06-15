@@ -357,6 +357,10 @@
           }
         }
       }
+    },
+    "fullnameOverride": {
+      "type": "string",
+      "description": "Override the resource name for all Kubernetes objects. Useful when deploying as a subchart."
     }
   }
 }

@@ -3,6 +3,10 @@
 name: klaus-gateway
 serviceType: managed
 
+# Override the resource name for all Kubernetes objects. Useful when deploying
+# as a subchart where .Release.Name is the parent chart name (e.g. agentic-platform).
+fullnameOverride: ""
+
 image:
   registry: gsoci.azurecr.io
   name: giantswarm/klaus-gateway
