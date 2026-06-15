@@ -124,16 +124,6 @@ func run(args []string) error {
 		return fmt.Errorf("build lifecycle: %w", err)
 	}
 
-	if cfg.A2A.Enabled && cfg.Driver == config.DriverStatic {
-		sm, ok := manager.(*static.Manager)
-		if !ok {
-			return fmt.Errorf("unexpected lifecycle manager type for static driver")
-		}
-		if _, err := sm.Get(ctx, cfg.A2A.DefaultAgent); err != nil {
-			return fmt.Errorf("a2a-default-agent %q not found in static instances: %w", cfg.A2A.DefaultAgent, err)
-		}
-	}
-
 	if cfg.Controller {
 		if err := startController(ctx, cfg, manager, logger); err != nil {
 			return fmt.Errorf("start controller: %w", err)

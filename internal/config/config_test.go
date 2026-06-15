@@ -36,6 +36,11 @@ func TestValidate(t *testing.T) {
 	badOp.Driver = "operator"
 	badOp.OperatorMCPURL = ""
 	require.Error(t, badOp.Validate())
+
+	staticEmpty := cfg
+	staticEmpty.Driver = "static"
+	staticEmpty.StaticInstances = ""
+	require.NoError(t, staticEmpty.Validate(), "static driver with no instances is valid (A2A-only deployments)")
 }
 
 func TestValidate_A2A(t *testing.T) {

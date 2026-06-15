@@ -275,9 +275,6 @@ func (c Config) Validate() error {
 	if c.Driver == DriverOperator && c.OperatorMCPURL == "" {
 		return fmt.Errorf("--operator-mcp-url is required with --driver=operator")
 	}
-	if c.Driver == DriverStatic && c.StaticInstances == "" {
-		return fmt.Errorf("--static-instances is required with --driver=static")
-	}
 	if c.A2A.Enabled && c.A2A.URL == "" {
 		return fmt.Errorf("--a2a-url is required with --a2a-enabled")
 	}
