@@ -140,26 +140,31 @@
         "enabled": {
           "type": "boolean"
         },
-        "cardName": {
-          "type": "string"
-        },
-        "cardDescription": {
-          "type": "string"
-        },
-        "cardVersion": {
-          "type": "string"
-        },
-        "cardURL": {
-          "type": "string"
-        },
         "defaultAgent": {
           "type": "string"
         },
-        "kagentEndpoint": {
+        "url": {
           "type": "string"
         },
-        "kagentAgentRef": {
+        "tokenPath": {
           "type": "string"
+        },
+        "saToken": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "audience": {
+              "type": "string"
+            },
+            "mountPath": {
+              "type": "string"
+            },
+            "expirationSeconds": {
+              "type": "integer"
+            }
+          }
         }
       }
     },

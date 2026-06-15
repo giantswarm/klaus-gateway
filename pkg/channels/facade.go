@@ -45,10 +45,15 @@ type Facade struct {
 
 // Resolve maps an InboundMessage to a live InstanceRef via the routing
 // table (creating a new instance on miss when the router has auto-create
-// enabled).
+// enabled). On the A2A path (Executor set and AgentRef non-empty) routing is
+// bypassed and a zero InstanceRef is returned — the A2A executor routes
+// directly to the orchestrator without provisioning a Klaus instance.
 func (f *Facade) Resolve(ctx context.Context, in InboundMessage) (InstanceRef, error) {
 	if f == nil || f.Router == nil {
 		return InstanceRef{}, errors.New("channels: facade router is nil")
+	}
+	if f.Executor != nil && in.AgentRef != "" {
+		return InstanceRef{}, nil
 	}
 	ref, err := f.Router.Resolve(ctx, routing.InboundMessage{
 		Channel:   in.Channel,
@@ -89,6 +94,7 @@ func (f *Facade) sendViaA2A(ctx context.Context, msg InboundMessage) (<-chan Out
 	out := make(chan OutboundDelta, 16)
 	go func() {
 		defer close(out)
+		terminated := false
 		for event, err := range f.Executor.Execute(ctx, execCtx) {
 			var delta OutboundDelta
 			switch {
@@ -106,7 +112,14 @@ func (f *Facade) sendViaA2A(ctx context.Context, msg InboundMessage) (<-chan Out
 			case out <- delta:
 			}
 			if delta.Err != nil || delta.Done {
+				terminated = true
 				return
+			}
+		}
+		if !terminated {
+			select {
+			case <-ctx.Done():
+			case out <- OutboundDelta{Err: errors.New("a2a: stream ended without terminal status")}:
 			}
 		}
 	}()
@@ -120,6 +133,8 @@ func withChannelAuth(ctx context.Context, msg InboundMessage) context.Context {
 
 // mapA2AEvent converts a single A2A streaming event to an OutboundDelta.
 // Returns a zero value for events that carry no channel-visible payload.
+// Non-completed terminal states (failed, rejected, canceled) are mapped to an
+// error delta so channels surface them rather than silently closing.
 func mapA2AEvent(event a2apkg.Event) OutboundDelta {
 	switch ev := event.(type) {
 	case *a2apkg.TaskArtifactUpdateEvent:
@@ -132,8 +147,17 @@ func mapA2AEvent(event a2apkg.Event) OutboundDelta {
 		}
 		return OutboundDelta{Content: text}
 	case *a2apkg.TaskStatusUpdateEvent:
-		if ev.Status.State.Terminal() {
+		if ev.Status.State == a2apkg.TaskStateCompleted {
 			return OutboundDelta{Done: true}
+		}
+		if ev.Status.State.Terminal() {
+			msg := fmt.Sprintf("a2a: task ended with state %s", ev.Status.State)
+			if ev.Status.Message != nil {
+				if text := extractTextFromA2AParts(ev.Status.Message.Parts); text != "" {
+					msg = text
+				}
+			}
+			return OutboundDelta{Err: errors.New(msg)}
 		}
 	}
 	return OutboundDelta{}

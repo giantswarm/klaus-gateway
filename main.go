@@ -124,7 +124,7 @@ func run(args []string) error {
 		return fmt.Errorf("build lifecycle: %w", err)
 	}
 
-	if cfg.Slack.Enabled && cfg.A2A.Enabled && cfg.Driver == config.DriverStatic {
+	if cfg.A2A.Enabled && cfg.Driver == config.DriverStatic {
 		sm, ok := manager.(*static.Manager)
 		if !ok {
 			return fmt.Errorf("unexpected lifecycle manager type for static driver")
@@ -174,10 +174,12 @@ func run(args []string) error {
 			return fmt.Errorf("slack secrets: %w", err)
 		}
 		slackAdapter := &slackchannel.Adapter{
-			Logger:       logger,
-			Mode:         cfg.Slack.Mode,
-			Secrets:      secrets,
-			DefaultAgent: cfg.A2A.DefaultAgent,
+			Logger:   logger,
+			Mode:     cfg.Slack.Mode,
+			Secrets:  secrets,
+		}
+		if cfg.A2A.Enabled {
+			slackAdapter.DefaultAgent = cfg.A2A.DefaultAgent
 		}
 		if err := slackAdapter.Start(ctx, facade); err != nil {
 			return fmt.Errorf("start slack adapter: %w", err)

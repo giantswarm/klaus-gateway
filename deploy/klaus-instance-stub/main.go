@@ -34,6 +34,7 @@ func main() {
 	})
 	mux.HandleFunc("/v1/chat/completions", handleCompletions)
 	mux.HandleFunc("/mcp", handleMCP)
+	mux.HandleFunc("/a2a/", handleA2A)
 
 	log.Printf("klaus-instance-stub listening on %s", addr)
 	srv := &http.Server{
@@ -76,6 +77,55 @@ func handleCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	fmt.Fprint(w, "data: [DONE]\n\n")
 	flusher.Flush()
+}
+
+// handleA2A serves a minimal A2A v0.3 streaming response so the compose harness
+// can exercise the gateway's A2A path without a real kagent instance.
+func handleA2A(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "no flush", http.StatusInternalServerError)
+		return
+	}
+
+	var req struct {
+		ID json.RawMessage `json:"id"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	artifactResult := map[string]any{
+		"kind":      "artifact-update",
+		"taskId":    "t1",
+		"contextId": "ctx1",
+		"artifact": map[string]any{
+			"artifactId": "a1",
+			"parts":      []map[string]any{{"kind": "text", "text": "hello from a2a stub"}},
+		},
+		"lastChunk": true,
+	}
+	statusResult := map[string]any{
+		"kind":      "status-update",
+		"taskId":    "t1",
+		"contextId": "ctx1",
+		"status":    map[string]any{"state": "completed"},
+		"final":     true,
+	}
+	for _, result := range []any{artifactResult, statusResult} {
+		envelope := map[string]any{"jsonrpc": "2.0", "id": json.RawMessage(req.ID), "result": result}
+		b, _ := json.Marshal(envelope)
+		fmt.Fprintf(w, "data: %s\n\n", b)
+		flusher.Flush()
+	}
 }
 
 func handleMCP(w http.ResponseWriter, r *http.Request) {
