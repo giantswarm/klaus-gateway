@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Removed stale `image.tag` pin and `lifecycle.operatorMCPURL` override from `tests/test-values.yaml`. The deployment template already falls back to `.Chart.AppVersion` when `image.tag` is empty, so the smoke cluster now runs whichever binary the chart was built from. The old pin (`0.0.44`) ran the binary that still rejected `--driver=static` with empty instances, causing CrashLoopBackOff against the new chart default.
+
 ### Changed
 
 - `--driver=static` no longer requires `--static-instances` to be non-empty. An empty static instance set is now valid and acts as a no-op lifecycle manager, allowing the gateway to operate in A2A-only mode (Slack/CLI/web → kagent) without any Klaus instance management.
