@@ -113,7 +113,7 @@ func (f *Facade) sendViaA2A(ctx context.Context, msg InboundMessage) (<-chan Out
 			}
 			if delta.Err != nil || delta.Done {
 				terminated = true
-				return
+				break
 			}
 		}
 		if !terminated {
