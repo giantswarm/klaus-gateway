@@ -76,9 +76,9 @@ crd:
 controller:
   enabled: false
 
-# Lifecycle driver: klausctl (local), operator (MCP to klaus-operator), or static.
+# Lifecycle driver: klausctl (local), operator (MCP to klaus-operator), or static (no-op when staticInstances is empty).
 lifecycle:
-  driver: operator
+  driver: static
   klausctlBin: ""
   operatorMCPURL: ""
   # Bearer token for the operator MCP endpoint; empty disables auth.

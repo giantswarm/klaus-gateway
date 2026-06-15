@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `--driver=static` no longer requires `--static-instances` to be non-empty. An empty static instance set is now valid and acts as a no-op lifecycle manager, allowing the gateway to operate in A2A-only mode (Slack/CLI/web → kagent) without any Klaus instance management.
+- Helm chart default `lifecycle.driver` changed from `operator` to `static` so a bare deployment starts cleanly when only A2A routing is needed.
+
 ### Added
 
 - `channels.SynthesizeContextID` derives a stable A2A contextID from `(channel, channelID, userID, threadID, agentRef)` using length-prefixed SHA-256 encoding.
