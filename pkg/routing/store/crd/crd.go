@@ -124,6 +124,7 @@ func specFromKeyEntry(k store.Key, e store.Entry) v1alpha1.ChannelRouteSpec {
 		ChannelID:  k.ChannelID,
 		UserID:     k.UserID,
 		ThreadID:   k.ThreadID,
+		Agent:      k.Agent,
 		Instance:   e.Instance,
 		CreatedAt:  metav1.NewTime(e.CreatedAt),
 		LastSeen:   metav1.NewTime(e.LastSeen),
@@ -146,6 +147,7 @@ func keyFromCR(cr *v1alpha1.ChannelRoute) store.Key {
 		ChannelID: cr.Spec.ChannelID,
 		UserID:    cr.Spec.UserID,
 		ThreadID:  cr.Spec.ThreadID,
+		Agent:     cr.Spec.Agent,
 	}
 }
 

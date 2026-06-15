@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"io"
+	"iter"
 	"strings"
 	"testing"
 	"time"
 
+	a2apkg "github.com/a2aproject/a2a-go/v2/a2a"
+	"github.com/a2aproject/a2a-go/v2/a2asrv"
 	"github.com/stretchr/testify/require"
 
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
@@ -136,6 +139,93 @@ func TestFacade_FetchHistory(t *testing.T) {
 	require.Len(t, msgs, 2)
 	require.Equal(t, "user", msgs[0].Role)
 	require.Equal(t, "hello", msgs[1].Content)
+}
+
+// fakeChannelExecutor records calls and emits a fixed event sequence.
+type fakeChannelExecutor struct {
+	events []a2apkg.Event
+	err    error
+}
+
+func (e *fakeChannelExecutor) Execute(_ context.Context, execCtx *a2asrv.ExecutorContext) iter.Seq2[a2apkg.Event, error] {
+	return func(yield func(a2apkg.Event, error) bool) {
+		if e.err != nil {
+			yield(nil, e.err)
+			return
+		}
+		for _, ev := range e.events {
+			if !yield(ev, nil) {
+				return
+			}
+		}
+	}
+}
+
+func TestFacade_SendCompletionViaA2A_ArtifactEvents(t *testing.T) {
+	execCtx := &a2asrv.ExecutorContext{
+		ContextID: "ctx",
+		TaskID:    a2apkg.NewTaskID(),
+		Message:   a2apkg.NewMessage(a2apkg.MessageRoleUser, a2apkg.NewTextPart("hi")),
+	}
+	artifact := a2apkg.NewArtifactEvent(execCtx, a2apkg.NewTextPart("hello world"))
+	terminal := a2apkg.NewStatusUpdateEvent(execCtx, a2apkg.TaskStateCompleted, nil)
+
+	exec := &fakeChannelExecutor{events: []a2apkg.Event{artifact, terminal}}
+	f := &channels.Facade{Executor: exec}
+
+	ch, err := f.SendCompletion(t.Context(), channels.InstanceRef{}, channels.InboundMessage{
+		Channel:  "slack",
+		AgentRef: "worker",
+		Text:     "hi",
+	})
+	require.NoError(t, err)
+
+	var content strings.Builder
+	var done bool
+	for d := range ch {
+		require.NoError(t, d.Err)
+		if d.Done {
+			done = true
+		}
+		content.WriteString(d.Content)
+	}
+	require.Equal(t, "hello world", content.String())
+	require.True(t, done)
+}
+
+func TestFacade_SendCompletionViaA2A_ErrorPropagated(t *testing.T) {
+	exec := &fakeChannelExecutor{err: errors.New("executor boom")}
+	f := &channels.Facade{Executor: exec}
+
+	ch, err := f.SendCompletion(t.Context(), channels.InstanceRef{}, channels.InboundMessage{
+		AgentRef: "worker",
+		Text:     "hi",
+	})
+	require.NoError(t, err)
+
+	var gotErr error
+	for d := range ch {
+		if d.Err != nil {
+			gotErr = d.Err
+		}
+	}
+	require.ErrorContains(t, gotErr, "executor boom")
+}
+
+func TestFacade_SendCompletionFallsBackToOpenAI_WhenNoAgentRef(t *testing.T) {
+	exec := &fakeChannelExecutor{}
+	client := &fakeClient{sseBody: "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n"}
+	f := &channels.Facade{Executor: exec, Client: client}
+
+	// AgentRef is empty, so the OpenAI path must be used even though Executor is set.
+	ch, err := f.SendCompletion(t.Context(), channels.InstanceRef{Name: "i1"}, channels.InboundMessage{Text: "hi"})
+	require.NoError(t, err)
+
+	var content strings.Builder
+	for d := range ch {
+		content.WriteString(d.Content)
+	}
+	require.Equal(t, "ok", content.String())
 }
 
 // smoke test that the compile-time interface assertions hold.

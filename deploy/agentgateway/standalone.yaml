@@ -30,3 +30,9 @@ binds:
                   pathPrefix: /mcp
             backends:
               - host: klaus-instance:8080
+          - name: a2a
+            matches:
+              - path:
+                  pathPrefix: /a2a
+            backends:
+              - host: klaus-instance:8080

@@ -35,6 +35,9 @@ type Adapter struct {
 	Logger  *slog.Logger
 	Mode    string
 	Secrets Secrets
+	// DefaultAgent is the agentRef every Slack thread routes to. Must be
+	// non-empty; Start returns an error when it is unset.
+	DefaultAgent string
 	// APIBase overrides the Slack Web API base URL. Empty uses the default
 	// (https://slack.com/api). Set in tests to point at a fake server.
 	APIBase string
@@ -51,6 +54,9 @@ func (a *Adapter) Name() string { return ChannelName }
 func (a *Adapter) Start(ctx context.Context, gw channels.Gateway) error {
 	if gw == nil {
 		return errors.New("slack: nil gateway")
+	}
+	if a.DefaultAgent == "" {
+		return errors.New("slack: DefaultAgent must be set")
 	}
 	if a.Logger == nil {
 		a.Logger = slog.Default()
@@ -118,6 +124,8 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 	if !a.started.Load() {
 		return errors.New("slack: adapter not started")
 	}
+
+	msg.AgentRef = a.DefaultAgent
 
 	ref, err := a.gw.Resolve(ctx, msg)
 	if err != nil {

@@ -70,6 +70,9 @@ spec:
               threadID:
                 type: string
                 description: ThreadID scopes the route to a specific thread; empty means per-user.
+              agent:
+                type: string
+                description: Agent is the agentRef discriminator for multi-agent A2A routing. Empty for all other channels.
               instance:
                 type: string
                 description: Instance is the name of the Klaus instance that owns this conversation.

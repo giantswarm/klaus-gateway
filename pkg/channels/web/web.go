@@ -32,7 +32,8 @@ const ChannelName = "web"
 
 // Adapter implements channels.ChannelAdapter for the web channel.
 type Adapter struct {
-	Logger *slog.Logger
+	Logger       *slog.Logger
+	DefaultAgent string
 
 	gw      channels.Gateway
 	started atomic.Bool
@@ -76,6 +77,7 @@ type inboundRequest struct {
 	UserID      string                 `json:"userId"`
 	ThreadID    string                 `json:"threadId"`
 	Text        string                 `json:"text"`
+	AgentRef    string                 `json:"agentRef,omitempty"`
 	Subject     string                 `json:"subject,omitempty"`
 	ReplyTo     string                 `json:"replyTo,omitempty"`
 	Attachments []attachmentDescriptor `json:"attachments,omitempty"`
@@ -131,6 +133,11 @@ func (a *Adapter) postMessages(w http.ResponseWriter, r *http.Request) {
 		Text:      in.Text,
 		ReplyTo:   in.ReplyTo,
 		Subject:   in.Subject,
+	}
+	if in.AgentRef != "" {
+		msg.AgentRef = in.AgentRef
+	} else if a.DefaultAgent != "" {
+		msg.AgentRef = a.DefaultAgent
 	}
 	for _, att := range in.Attachments {
 		msg.Attachments = append(msg.Attachments, channels.Attachment{

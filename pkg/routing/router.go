@@ -21,6 +21,10 @@ type InboundMessage struct {
 	ChannelID string
 	UserID    string
 	ThreadID  string
+	// Agent is the agentRef discriminator for A2A multi-agent routing.
+	// Empty for all non-A2A channels; when set it is included in the store key
+	// so different agents sharing a contextID route to separate instances.
+	Agent string
 	// NameHint is used as the instance name if auto-create fires. When empty
 	// the router synthesises a deterministic name from the key.
 	NameHint string
@@ -34,6 +38,7 @@ func (m InboundMessage) Key() store.Key {
 		ChannelID: m.ChannelID,
 		UserID:    m.UserID,
 		ThreadID:  m.ThreadID,
+		Agent:     m.Agent,
 	}
 }
 
