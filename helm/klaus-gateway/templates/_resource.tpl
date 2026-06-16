@@ -3,7 +3,7 @@
 {{- if .Values.fullnameOverride -}}
 {{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" -}}
 {{- else -}}
-{{- .Release.Name | replace "." "-" | trunc 47 | trimSuffix "-" -}}
+{{- .Chart.Name | replace "." "-" | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 {{- end -}}
 
