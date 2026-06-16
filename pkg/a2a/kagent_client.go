@@ -9,7 +9,6 @@ import (
 	"io"
 	"iter"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -41,8 +40,9 @@ type A2AClient struct {
 	BaseURL string
 	// DefaultAgent is the agentRef used when the context carries none.
 	DefaultAgent string
-	// TokenPath is an optional path to a file containing a Bearer token re-read on every request.
-	TokenPath string
+	// TokenSource yields the Bearer token sent as Authorization on each request.
+	// Nil sends no Authorization header.
+	TokenSource TokenSource
 }
 
 // Execute sends the inbound message via A2A streaming ("message/stream") and yields events.
@@ -57,13 +57,13 @@ func (k *A2AClient) Execute(ctx context.Context, execCtx *a2asrv.ExecutorContext
 		endpoint := strings.TrimRight(k.BaseURL, "/") + "/" + agentRef + "/a2a"
 
 		var token string
-		if k.TokenPath != "" {
-			data, err := os.ReadFile(k.TokenPath)
+		if k.TokenSource != nil {
+			t, err := k.TokenSource.Token(ctx)
 			if err != nil {
-				yield(nil, fmt.Errorf("read bearer token: %w", err))
+				yield(nil, err)
 				return
 			}
-			token = strings.TrimSpace(string(data))
+			token = t
 		}
 
 		reqBody, err := json.Marshal(map[string]any{

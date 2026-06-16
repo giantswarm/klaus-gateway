@@ -211,8 +211,12 @@ func run(args []string) error {
 	}
 
 	if cfg.A2A.Enabled {
+		var fallback pkga2a.TokenSource
+		if cfg.A2A.TokenPath != "" {
+			fallback = pkga2a.FileTokenSource{Path: cfg.A2A.TokenPath}
+		}
 		facade.Executor = &pkga2a.A2AClient{
-			TokenPath:    cfg.A2A.TokenPath,
+			TokenSource:  pkga2a.ForwardedTokenSource{Fallback: fallback},
 			BaseURL:      cfg.A2A.URL,
 			DefaultAgent: cfg.A2A.DefaultAgent,
 		}

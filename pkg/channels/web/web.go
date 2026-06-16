@@ -126,13 +126,14 @@ func (a *Adapter) postMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	msg := channels.InboundMessage{
-		Channel:   ChannelName,
-		ChannelID: in.ChannelID,
-		UserID:    in.UserID,
-		ThreadID:  in.ThreadID,
-		Text:      in.Text,
-		ReplyTo:   in.ReplyTo,
-		Subject:   in.Subject,
+		Channel:     ChannelName,
+		ChannelID:   in.ChannelID,
+		UserID:      in.UserID,
+		ThreadID:    in.ThreadID,
+		Text:        in.Text,
+		ReplyTo:     in.ReplyTo,
+		Subject:     in.Subject,
+		BearerToken: channels.BearerToken(r),
 	}
 	if in.AgentRef != "" {
 		msg.AgentRef = in.AgentRef

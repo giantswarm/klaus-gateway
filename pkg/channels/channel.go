@@ -9,10 +9,21 @@ package channels
 
 import (
 	"context"
+	"net/http"
+	"strings"
 	"time"
 
 	"github.com/giantswarm/klaus-gateway/pkg/lifecycle"
 )
+
+// BearerToken returns the raw value of an `Authorization: Bearer` header, or
+// an empty string when absent.
+func BearerToken(r *http.Request) string {
+	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+		return strings.TrimPrefix(auth, "Bearer ")
+	}
+	return ""
+}
 
 // InstanceRef re-exports lifecycle.InstanceRef so adapters depend on this
 // package only.
@@ -46,6 +57,10 @@ type InboundMessage struct {
 	ReplyTo     string
 	// Subject is the authenticated user's OAuth `sub` when available.
 	Subject string
+	// BearerToken is the caller's raw inbound bearer token, forwarded on the
+	// A2A egress request so kagent sees the end-user identity. Empty for
+	// channels without a per-user token (e.g. Slack).
+	BearerToken string
 	// AgentRef is the target agent name. When set, SendCompletion routes
 	// through the A2A executor instead of the OpenAI /v1 path.
 	AgentRef string

@@ -126,9 +126,12 @@ func (f *Facade) sendViaA2A(ctx context.Context, msg InboundMessage) (<-chan Out
 	return out, nil
 }
 
-// withChannelAuth seeds ctx with the target agent ref for KagentClient.
+// withChannelAuth seeds ctx with the target agent ref and the caller's
+// forwarded bearer token for the A2A client.
 func withChannelAuth(ctx context.Context, msg InboundMessage) context.Context {
-	return pkga2a.WithAgentRef(ctx, msg.AgentRef)
+	ctx = pkga2a.WithAgentRef(ctx, msg.AgentRef)
+	ctx = pkga2a.WithForwardedToken(ctx, msg.BearerToken)
+	return ctx
 }
 
 // mapA2AEvent converts a single A2A streaming event to an OutboundDelta.
