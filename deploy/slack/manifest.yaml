@@ -56,8 +56,13 @@ settings:
       - app_mention
       # Fires for direct messages sent to the bot.
       - message.im
+      # Fires for messages in public channels where the bot is a member.
+      # Used to route thread replies to active bot threads without @-mention.
+      - message.channels
   interactivity:
-    is_enabled: false
+    is_enabled: true
+    # Interactions request URL. Replace with your public hostname.
+    request_url: https://example.com/channels/slack/interactions
   org_deploy_enabled: false
   socket_mode_enabled: false
   token_rotation_enabled: false

@@ -191,6 +191,9 @@ func buildKagentParams(execCtx *a2asrv.ExecutorContext) map[string]any {
 	}
 
 	params := map[string]any{"message": msg}
+	if execCtx.TaskID != "" {
+		params["taskId"] = string(execCtx.TaskID)
+	}
 	if execCtx.Metadata != nil {
 		params["metadata"] = execCtx.Metadata
 	}

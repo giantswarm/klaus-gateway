@@ -31,6 +31,7 @@ const (
 	ModeSocketMode = "socketmode"
 )
 
+
 // Adapter implements channels.ChannelAdapter for the Slack channel.
 type Adapter struct {
 	Logger  *slog.Logger
@@ -49,15 +50,19 @@ type Adapter struct {
 	// new thread's AccessState. The first entry becomes owner when non-empty.
 	AllowedUsers []string
 
-	gw        channels.Gateway
-	started   atomic.Bool
-	evHandler http.Handler
+	gw             channels.Gateway
+	started        atomic.Bool
+	evHandler      http.Handler
+	ixHandler      http.Handler // interactions endpoint; nil in socketmode
 
 	accessMu sync.Mutex
 	access   map[string]*AccessState // keyed by threadID
 
 	turnsMu sync.Mutex
 	turns   map[string]*turn // keyed by threadID; cancels in-flight SendCompletion
+
+	pendingMu    sync.Mutex
+	pendingTasks map[string]*pendingTask // keyed by threadID
 }
 
 // turn is an in-flight agent turn. The pointer identity lets dispatch clean up
@@ -67,6 +72,14 @@ type Adapter struct {
 // per conversation, so an older overlapping turn is not the expected case.
 type turn struct {
 	cancel context.CancelFunc
+}
+
+// pendingTask records the A2A task paused at input-required for a thread.
+type pendingTask struct {
+	TaskID    string
+	AgentRef  string
+	Channel   string // Slack channel ID for posting the resumed response
+	ChannelID string // logical channel ID used in the routing key
 }
 
 // Name returns the channel name used in routing keys.
@@ -100,6 +113,11 @@ func (a *Adapter) Start(ctx context.Context, gw channels.Gateway) error {
 			logger:        a.Logger,
 			ctx:           ctx,
 		}
+		a.ixHandler = &interactionsHandler{
+			signingSecret: a.Secrets.SigningSecret,
+			adapter:       a,
+			ctx:           ctx,
+		}
 	case ModeSocketMode:
 		if a.Secrets.AppToken == "" {
 			return errors.New("slack: app_token is required in socketmode")
@@ -126,13 +144,17 @@ func (a *Adapter) Stop(_ context.Context) error {
 	return nil
 }
 
-// Mount attaches /channels/slack/events to r. No-op in socketmode.
+// Mount attaches /channels/slack/events and /channels/slack/interactions to r.
+// No-op in socketmode (no HTTP handlers needed).
 func (a *Adapter) Mount(r chi.Router) {
 	if a.evHandler == nil {
 		return
 	}
 	r.Route("/channels/slack", func(r chi.Router) {
 		r.Handle("/events", a.evHandler)
+		if a.ixHandler != nil {
+			r.Handle("/interactions", a.ixHandler)
+		}
 	})
 }
 
@@ -186,6 +208,49 @@ func (a *Adapter) getAccess(threadID, ownerID string) *AccessState {
 	return state
 }
 
+// isActiveThread reports whether the bot has an active session in threadID —
+// either an access state (meaning it was mentioned at some point) or a pending
+// input-required task. Used to decide whether to route message.channels thread
+// replies without requiring an @-mention.
+func (a *Adapter) isActiveThread(threadID string) bool {
+	a.accessMu.Lock()
+	_, hasAccess := a.access[threadID]
+	a.accessMu.Unlock()
+	if hasAccess {
+		return true
+	}
+	return a.hasPendingTask(threadID)
+}
+
+// storePendingTask records a paused input-required task for a thread.
+// Any existing pending task for that thread is replaced.
+func (a *Adapter) storePendingTask(threadID string, task *pendingTask) {
+	a.pendingMu.Lock()
+	if a.pendingTasks == nil {
+		a.pendingTasks = make(map[string]*pendingTask)
+	}
+	a.pendingTasks[threadID] = task
+	a.pendingMu.Unlock()
+}
+
+// takePendingTask atomically retrieves and removes a pending task for a thread.
+// Returns nil when no task is pending.
+func (a *Adapter) takePendingTask(threadID string) *pendingTask {
+	a.pendingMu.Lock()
+	defer a.pendingMu.Unlock()
+	task := a.pendingTasks[threadID]
+	delete(a.pendingTasks, threadID)
+	return task
+}
+
+// hasPendingTask reports whether a thread has a pending input-required task.
+func (a *Adapter) hasPendingTask(threadID string) bool {
+	a.pendingMu.Lock()
+	defer a.pendingMu.Unlock()
+	_, ok := a.pendingTasks[threadID]
+	return ok
+}
+
 // dispatch resolves an inbound Slack message to a Klaus instance, posts a
 // placeholder reply in-thread, and streams the completion back via chat.update batches.
 func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, slackChannel string) error {
@@ -202,6 +267,11 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 	respond := state.Permitted(slackUser)
 
 	msg.AgentRef = a.DefaultAgent
+
+	// Resume a paused input-required task when one exists for this thread.
+	if task := a.takePendingTask(msg.ThreadID); task != nil {
+		msg.TaskID = task.TaskID
+	}
 
 	ref, err := a.gw.Resolve(ctx, msg)
 	if err != nil {
@@ -249,8 +319,25 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 		return fmt.Errorf("slack: post placeholder: %w", err)
 	}
 
-	w := newBatchedWriterWithClient(client, slackChannel, ts, msg.ThreadID, a.Logger)
-	return w.run(ctx, deltas)
+	w := newBatchedWriterWithClient(client, slackChannel, ts)
+	if err := w.run(ctx, deltas); err != nil {
+		return err
+	}
+
+	// If the agent paused for user input, post a Block Kit approval prompt and
+	// register the pending task so the next message resumes it.
+	if w.promptDelta != nil {
+		pd := w.promptDelta
+		task := &pendingTask{
+			TaskID:    pd.TaskID,
+			AgentRef:  msg.AgentRef,
+			Channel:   slackChannel,
+			ChannelID: msg.ChannelID,
+		}
+		a.storePendingTask(msg.ThreadID, task)
+		return client.postApprovalPrompt(ctx, slackChannel, msg.ThreadID, pd.Content, pd.TaskID)
+	}
+	return nil
 }
 
 // slackInnerEvent is the inner event object present in both Events API
@@ -268,18 +355,24 @@ type slackInnerEvent struct {
 
 // toInboundMessage maps a Slack inner event to the normalised InboundMessage.
 // Returns false when the event should be ignored (bot message, empty text, …).
-func (e slackInnerEvent) toInboundMessage() (channels.InboundMessage, bool) {
+// threadReplyOnly, when true, accepts only thread reply messages (thread_ts set
+// and different from ts); used for message.channels events where we only want
+// to route replies to existing bot threads.
+func (e slackInnerEvent) toInboundMessage(threadReplyOnly bool) (channels.InboundMessage, bool) {
 	if e.BotID != "" || e.SubType != "" {
 		return channels.InboundMessage{}, false
 	}
 	switch e.Type {
-	case "app_mention", "message":
+	case evtAppMention, evtMessage:
 	default:
 		return channels.InboundMessage{}, false
 	}
 	threadID := e.ThreadTS
 	if threadID == "" {
 		threadID = e.TS
+	}
+	if threadReplyOnly && e.ThreadTS == "" {
+		return channels.InboundMessage{}, false
 	}
 	text := StripMention(e.Text)
 	if text == "" {

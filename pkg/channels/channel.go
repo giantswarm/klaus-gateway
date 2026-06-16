@@ -64,6 +64,10 @@ type InboundMessage struct {
 	// AgentRef is the target agent name. When set, SendCompletion routes
 	// through the A2A executor instead of the OpenAI /v1 path.
 	AgentRef string
+	// TaskID, when set, continues an existing A2A task rather than starting a
+	// new one. Populated by the Slack adapter when a pending input-required task
+	// exists for the thread.
+	TaskID string
 }
 
 // DeltaKind classifies the content of an OutboundDelta. The zero value is
@@ -83,6 +87,10 @@ type OutboundDelta struct {
 	Content string // assistant text, or the prompt body for DeltaPrompt
 	Done    bool   // terminal: no more deltas follow
 	Err     error  // upstream/gateway failure; channel is closed after
+	// TaskID is populated on DeltaPrompt deltas to identify the A2A task that
+	// is paused waiting for input. The Slack adapter stores it so the next
+	// message (or button click) can resume the same task.
+	TaskID string
 }
 
 // Attachment is an inbound file/image payload.
