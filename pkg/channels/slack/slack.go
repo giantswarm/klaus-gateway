@@ -31,7 +31,6 @@ const (
 	ModeSocketMode = "socketmode"
 )
 
-
 // Adapter implements channels.ChannelAdapter for the Slack channel.
 type Adapter struct {
 	Logger  *slog.Logger
@@ -50,10 +49,10 @@ type Adapter struct {
 	// new thread's AccessState. The first entry becomes owner when non-empty.
 	AllowedUsers []string
 
-	gw             channels.Gateway
-	started        atomic.Bool
-	evHandler      http.Handler
-	ixHandler      http.Handler // interactions endpoint; nil in socketmode
+	gw        channels.Gateway
+	started   atomic.Bool
+	evHandler http.Handler
+	ixHandler http.Handler // interactions endpoint; nil in socketmode
 
 	accessMu sync.Mutex
 	access   map[string]*AccessState // keyed by threadID
