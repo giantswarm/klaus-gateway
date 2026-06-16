@@ -1,17 +1,20 @@
 # Values used by app-test-suite when installing the chart on the kind smoke
 # cluster. The default chart renders a ServiceMonitor (Prometheus Operator
 # CRD), which does not exist on a bare kind cluster, so it is disabled here.
-# The image is pinned to a released tag because the branch path is build+test
-# only -- the dev image referenced by the packaged chart is never pushed, so
-# the pod would hang in ImagePullBackOff.
+#
+# Branch builds use push: false in the push-to-registries job, so the dev
+# image referenced by the packaged chart's appVersion is never pushed to
+# gsoci. Pin image.tag to a released version so ATS doesn't ImagePullBackOff.
+# Bump this whenever the pinned binary is too old to pass the smoke test.
+#
+# The chart default driver is "operator", which requires --operator-mcp-url.
+# No klaus-operator runs on the smoke cluster; the gateway dials the URL
+# lazily, so a placeholder is enough to boot.
 serviceMonitor:
   enabled: false
 
 image:
-  tag: "0.0.44"
+  tag: "0.1.4"
 
-# The default lifecycle driver is `operator`, which requires
-# --operator-mcp-url at startup. No klaus-operator runs on the smoke cluster;
-# the gateway only dials the URL lazily, so a placeholder is enough to boot.
 lifecycle:
   operatorMCPURL: "http://klaus-operator.klaus-operator.svc:8090/mcp"

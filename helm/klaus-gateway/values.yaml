@@ -78,7 +78,7 @@ controller:
 
 # Lifecycle driver: klausctl (local), operator (MCP to klaus-operator), or static (no-op when staticInstances is empty).
 lifecycle:
-  driver: static
+  driver: operator
   klausctlBin: ""
   operatorMCPURL: ""
   # Bearer token for the operator MCP endpoint; empty disables auth.
