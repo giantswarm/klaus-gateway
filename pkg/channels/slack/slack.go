@@ -120,7 +120,7 @@ func (a *Adapter) apiClient() *slackAPIClient {
 
 // dispatch resolves an inbound Slack message to a Klaus instance, posts a
 // placeholder reply in-thread, and streams the completion back via chat.update batches.
-func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, slackChannel, replyTS string) error {
+func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, slackChannel string) error {
 	if !a.started.Load() {
 		return errors.New("slack: adapter not started")
 	}
@@ -143,7 +143,7 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 	}
 
 	client := a.apiClient()
-	ts, err := client.postMessage(ctx, slackChannel, "_thinking…_", replyTS)
+	ts, err := client.postMessage(ctx, slackChannel, "_thinking…_", msg.ThreadID)
 	if err != nil {
 		return fmt.Errorf("slack: post placeholder: %w", err)
 	}
@@ -192,7 +192,7 @@ func (e slackInnerEvent) toInboundMessage() (channels.InboundMessage, bool) {
 	return channels.InboundMessage{
 		Channel:   ChannelName,
 		ChannelID: e.Channel,
-		UserID:    "",      // thread-scoped session: all participants share one contextID
+		UserID:    "",     // thread-scoped session: all participants share one contextID
 		Subject:   e.User, // Slack user ID forwarded for access control and downstream identity
 		ThreadID:  threadID,
 		Text:      text,
