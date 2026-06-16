@@ -147,8 +147,12 @@ func (c *socketModeClient) readLoop(ctx context.Context, ws *websocket.Conn) {
 }
 
 func (c *socketModeClient) handleEvent(ctx context.Context, inner slackInnerEvent) {
-	msg, ok := inner.toInboundMessage()
+	threadReplyOnly := inner.Type == evtMessage && inner.ThreadTS != ""
+	msg, ok := inner.toInboundMessage(threadReplyOnly)
 	if !ok {
+		return
+	}
+	if threadReplyOnly && !c.adapter.isActiveThread(msg.ThreadID) {
 		return
 	}
 	if cmd := parseCommand(msg.Text); cmd != nil {
