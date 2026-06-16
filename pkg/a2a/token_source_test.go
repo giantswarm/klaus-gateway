@@ -1,6 +1,8 @@
 package a2a_test
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -9,6 +11,10 @@ import (
 
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 )
+
+type errorTokenSource struct{ err error }
+
+func (s errorTokenSource) Token(_ context.Context) (string, error) { return "", s.err }
 
 func TestForwardedTokenContext_RoundTrip(t *testing.T) {
 	ctx := pkga2a.WithForwardedToken(t.Context(), "user-jwt")
@@ -66,5 +72,12 @@ func TestForwardedTokenSource(t *testing.T) {
 		token, err := pkga2a.ForwardedTokenSource{}.Token(t.Context())
 		require.NoError(t, err)
 		require.Empty(t, token)
+	})
+
+	t.Run("fallback error is propagated", func(t *testing.T) {
+		src := pkga2a.ForwardedTokenSource{Fallback: errorTokenSource{err: errors.New("vault unavailable")}}
+
+		_, err := src.Token(t.Context())
+		require.EqualError(t, err, "vault unavailable")
 	})
 }
