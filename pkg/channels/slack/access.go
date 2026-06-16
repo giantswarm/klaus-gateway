@@ -6,16 +6,16 @@ import "sync"
 type BaseMode int
 
 const (
-	ModeLocked   BaseMode = iota // owner only (default)
-	ModeSelective                // owner + allowlist
-	ModeOpen                     // everyone
+	ModeLocked    BaseMode = iota // owner only (default)
+	ModeSelective                 // owner + allowlist
+	ModeOpen                      // everyone
 )
 
 // AccessState tracks per-thread access configuration.
 // All methods are safe for concurrent use.
 type AccessState struct {
 	mu      sync.RWMutex
-	Owner   string          // Slack user ID of the thread owner
+	Owner   string // Slack user ID of the thread owner
 	Mode    BaseMode
 	Observe bool            // ingest all messages but respond only to authorized users
 	Allowed map[string]bool // additional authorized users (ModeSelective)
