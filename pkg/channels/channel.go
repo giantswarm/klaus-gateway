@@ -9,10 +9,21 @@ package channels
 
 import (
 	"context"
+	"net/http"
+	"strings"
 	"time"
 
 	"github.com/giantswarm/klaus-gateway/pkg/lifecycle"
 )
+
+// BearerToken returns the raw value of an `Authorization: Bearer` header, or
+// an empty string when absent.
+func BearerToken(r *http.Request) string {
+	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+		return strings.TrimPrefix(auth, "Bearer ")
+	}
+	return ""
+}
 
 // InstanceRef re-exports lifecycle.InstanceRef so adapters depend on this
 // package only.

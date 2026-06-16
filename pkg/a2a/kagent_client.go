@@ -60,7 +60,7 @@ func (k *A2AClient) Execute(ctx context.Context, execCtx *a2asrv.ExecutorContext
 		if k.TokenSource != nil {
 			t, err := k.TokenSource.Token(ctx)
 			if err != nil {
-				yield(nil, err)
+				yield(nil, fmt.Errorf("a2a token source: %w", err))
 				return
 			}
 			token = t

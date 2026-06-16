@@ -20,7 +20,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"strings"
 	"sync/atomic"
 
 	"github.com/go-chi/chi/v5"
@@ -132,7 +131,7 @@ func (a *Adapter) postRun(w http.ResponseWriter, r *http.Request) {
 		ThreadID:    in.SessionID,
 		Text:        in.Text,
 		Subject:     subject,
-		BearerToken: bearerToken(r),
+		BearerToken: channels.BearerToken(r),
 	}
 	if in.AgentRef != "" {
 		msg.AgentRef = in.AgentRef
@@ -250,20 +249,11 @@ func (a *Adapter) resolveError(w http.ResponseWriter, err error) {
 	writeJSONError(w, http.StatusBadGateway, "resolve: "+err.Error())
 }
 
-// bearerToken returns the raw value of an `Authorization: Bearer` header, or
-// an empty string when absent.
-func bearerToken(r *http.Request) string {
-	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
-		return strings.TrimPrefix(auth, "Bearer ")
-	}
-	return ""
-}
-
 // extractIdentity returns the (userID, subject) pair for a request.
 // The Authorization Bearer value becomes the subject for downstream auth
 // passthrough. The body userId field is the stable routing identity.
 func extractIdentity(r *http.Request, bodyUserID string) (string, string) {
-	subject := bearerToken(r)
+	subject := channels.BearerToken(r)
 	if bodyUserID != "" {
 		return bodyUserID, subject
 	}
