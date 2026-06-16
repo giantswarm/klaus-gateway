@@ -20,20 +20,29 @@ const (
 
 // batchedWriter accumulates OutboundDelta content and periodically calls
 // chat.update to stay within Slack's rate limits (~4 updates/sec/channel).
+//
+// Two Slack messages are managed:
+//   - ts (the main reply): accumulates DeltaText content.
+//   - statusTS (the status line, posted lazily): shows the latest
+//     DeltaThinking, DeltaTool, or DeltaPrompt text. Updated in-place rather
+//     than accumulating; overwritten on each new status delta.
 type batchedWriter struct {
-	client  *slackAPIClient
-	channel string
-	ts      string // Slack message timestamp (acts as the message ID for updates).
+	client   *slackAPIClient
+	channel  string
+	threadTS string // thread root — used when posting the status message
+	ts       string // main reply message timestamp
 
-	mu  sync.Mutex
-	buf strings.Builder
+	mu       sync.Mutex
+	buf      strings.Builder
+	statusTS string // timestamp of the lazily-created status message; empty until first status delta
 }
 
-func newBatchedWriterWithClient(client *slackAPIClient, channel, ts string) *batchedWriter {
+func newBatchedWriterWithClient(client *slackAPIClient, channel, ts, threadTS string) *batchedWriter {
 	return &batchedWriter{
-		client:  client,
-		channel: channel,
-		ts:      ts,
+		client:   client,
+		channel:  channel,
+		ts:       ts,
+		threadTS: threadTS,
 	}
 }
 
@@ -57,12 +66,31 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 			if d.Done {
 				return w.flush(ctx)
 			}
-			if d.Content == "" {
+			if d.Content == "" && d.Tool == "" {
 				continue
 			}
-			w.mu.Lock()
-			w.buf.WriteString(d.Content)
-			w.mu.Unlock()
+			switch d.Kind {
+			case channels.DeltaText:
+				w.mu.Lock()
+				w.buf.WriteString(d.Content)
+				w.mu.Unlock()
+			case channels.DeltaThinking:
+				if err := w.updateStatus(ctx, "_"+d.Content+"_"); err != nil {
+					return err
+				}
+			case channels.DeltaTool:
+				if err := w.updateStatus(ctx, formatToolStatus(d)); err != nil {
+					return err
+				}
+			case channels.DeltaPrompt:
+				text := "_Waiting for approval…_"
+				if d.Content != "" {
+					text = d.Content
+				}
+				if err := w.updateStatus(ctx, text); err != nil {
+					return err
+				}
+			}
 
 		case <-ticker.C:
 			if err := w.flush(ctx); err != nil {
@@ -70,6 +98,41 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 			}
 		}
 	}
+}
+
+// formatToolStatus returns the mrkdwn status line for a tool delta.
+func formatToolStatus(d channels.OutboundDelta) string {
+	name := d.Tool
+	if name == "" {
+		name = d.Content
+	}
+	switch d.State {
+	case channels.ToolDone:
+		return "✅ _" + name + "_"
+	case channels.ToolError:
+		return "❌ _" + name + "_"
+	default:
+		return "⏳ _" + name + "…_"
+	}
+}
+
+// updateStatus posts or updates the status line message in-thread.
+func (w *batchedWriter) updateStatus(ctx context.Context, text string) error {
+	w.mu.Lock()
+	statusTS := w.statusTS
+	w.mu.Unlock()
+
+	if statusTS == "" {
+		ts, err := w.client.postMessage(ctx, w.channel, text, w.threadTS)
+		if err != nil {
+			return err
+		}
+		w.mu.Lock()
+		w.statusTS = ts
+		w.mu.Unlock()
+		return nil
+	}
+	return w.client.chatUpdate(ctx, w.channel, statusTS, text)
 }
 
 func (w *batchedWriter) flush(ctx context.Context) error {
