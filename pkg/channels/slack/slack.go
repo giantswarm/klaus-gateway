@@ -55,6 +55,9 @@ type Adapter struct {
 
 	accessMu sync.Mutex
 	access   map[string]*AccessState // keyed by threadID
+
+	turnsMu sync.Mutex
+	turns   map[string]context.CancelFunc // keyed by threadID; cancels in-flight SendCompletion
 }
 
 // Name returns the channel name used in routing keys.
@@ -196,7 +199,22 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 		return fmt.Errorf("slack: resolve: %w", err)
 	}
 
-	deltas, err := a.gw.SendCompletion(ctx, ref, msg)
+	// Register an in-flight turn so /stop can cancel it.
+	turnCtx, turnCancel := context.WithCancel(ctx)
+	defer turnCancel()
+	a.turnsMu.Lock()
+	if a.turns == nil {
+		a.turns = make(map[string]context.CancelFunc)
+	}
+	a.turns[msg.ThreadID] = turnCancel
+	a.turnsMu.Unlock()
+	defer func() {
+		a.turnsMu.Lock()
+		delete(a.turns, msg.ThreadID)
+		a.turnsMu.Unlock()
+	}()
+
+	deltas, err := a.gw.SendCompletion(turnCtx, ref, msg)
 	if err != nil {
 		return fmt.Errorf("slack: send completion: %w", err)
 	}

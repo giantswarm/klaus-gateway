@@ -64,6 +64,11 @@ func (h *eventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
+			if cmd := parseCommand(msg.Text); cmd != nil {
+				if h.adapter.handleCommand(h.ctx, cmd, msg.Subject, ev.Channel, msg.ThreadID) {
+					return
+				}
+			}
 			if err := h.adapter.dispatch(h.ctx, msg, ev.Channel); err != nil {
 				if !errors.Is(err, context.Canceled) {
 					h.logger.Error("slack events: dispatch error", "channel", ev.Channel, "error", err)

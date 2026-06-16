@@ -1,5 +1,7 @@
 package slack
 
+import "sync"
+
 // BaseMode controls who the agent responds to in a thread.
 type BaseMode int
 
@@ -16,11 +18,13 @@ const (
 	accessModeObserve = "observe"
 )
 
-// AccessState is the per-thread access policy. It is built once by
-// Adapter.getAccess under the adapter lock and treated as immutable
-// afterwards (config seeds owner/mode/allowlist; there is no runtime
-// mutation path yet), so the read methods need no synchronisation.
+// AccessState is the per-thread access policy. It is seeded once by
+// Adapter.getAccess (owner/mode/allowlist) under the adapter lock, and may
+// then be mutated at runtime by in-thread commands (/open, /lock, /observe).
+// Since command handling and message dispatch can run concurrently, all
+// reads and mutations go through mu.
 type AccessState struct {
+	mu      sync.RWMutex
 	owner   string          // Slack user ID of the thread owner
 	mode    BaseMode        // base response policy
 	observe bool            // ingest all messages but respond only to authorized users
@@ -29,6 +33,12 @@ type AccessState struct {
 
 // Permitted reports whether userID may receive an agent response.
 func (a *AccessState) Permitted(userID string) bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.permittedLocked(userID)
+}
+
+func (a *AccessState) permittedLocked(userID string) bool {
 	switch a.mode {
 	case ModeOpen:
 		return true
@@ -43,8 +53,41 @@ func (a *AccessState) Permitted(userID string) bool {
 // observe mode every message is forwarded for context; whether the user gets
 // a reply is decided separately by Permitted.
 func (a *AccessState) Deliver(userID string) bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
 	if a.observe {
 		return true
 	}
-	return a.Permitted(userID)
+	return a.permittedLocked(userID)
+}
+
+// IsOwner reports whether userID is the thread owner.
+func (a *AccessState) IsOwner(userID string) bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return userID == a.owner
+}
+
+// Open lets everyone in the thread receive responses.
+func (a *AccessState) Open() {
+	a.mu.Lock()
+	a.mode = ModeOpen
+	a.mu.Unlock()
+}
+
+// Lock restricts responses to the thread owner and clears observe/allowlist.
+func (a *AccessState) Lock() {
+	a.mu.Lock()
+	a.mode = ModeLocked
+	a.allowed = nil
+	a.observe = false
+	a.mu.Unlock()
+}
+
+// ToggleObserve flips observe mode and returns the new value.
+func (a *AccessState) ToggleObserve() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.observe = !a.observe
+	return a.observe
 }
