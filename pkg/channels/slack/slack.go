@@ -119,7 +119,7 @@ func (a *Adapter) apiClient() *slackAPIClient {
 }
 
 // dispatch resolves an inbound Slack message to a Klaus instance, posts a
-// placeholder reply, and streams the completion back via chat.update batches.
+// placeholder reply in-thread, and streams the completion back via chat.update batches.
 func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, slackChannel, replyTS string) error {
 	if !a.started.Load() {
 		return errors.New("slack: adapter not started")
@@ -127,17 +127,26 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 
 	msg.AgentRef = a.DefaultAgent
 
+	if msg.Subject != "" {
+		client := a.apiClient()
+		email, err := client.lookupUserEmail(ctx, msg.Subject)
+		if err != nil {
+			a.Logger.Warn("slack: user email lookup failed, falling back to user ID", "user", msg.Subject, "error", err)
+		} else if email != "" {
+			msg.Subject = email
+		}
+	}
+
 	ref, err := a.gw.Resolve(ctx, msg)
 	if err != nil {
 		return fmt.Errorf("slack: resolve: %w", err)
 	}
 
 	client := a.apiClient()
-	ts, err := client.postMessage(ctx, slackChannel, "_thinking\u2026_")
+	ts, err := client.postMessage(ctx, slackChannel, "_thinking…_", replyTS)
 	if err != nil {
 		return fmt.Errorf("slack: post placeholder: %w", err)
 	}
-	_ = replyTS // kept for future thread-reply support
 
 	deltas, err := a.gw.SendCompletion(ctx, ref, msg)
 	if err != nil {
@@ -183,7 +192,8 @@ func (e slackInnerEvent) toInboundMessage() (channels.InboundMessage, bool) {
 	return channels.InboundMessage{
 		Channel:   ChannelName,
 		ChannelID: e.Channel,
-		UserID:    e.User,
+		UserID:    "",      // thread-scoped session: all participants share one contextID
+		Subject:   e.User, // Slack user ID forwarded for access control and downstream identity
 		ThreadID:  threadID,
 		Text:      text,
 	}, true

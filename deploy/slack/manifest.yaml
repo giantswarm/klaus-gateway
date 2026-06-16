@@ -46,6 +46,9 @@ oauth_config:
       # Join public channels on invite (app_mention works without this, but
       # history lookup requires membership).
       - channels:join
+      # Look up user profiles to resolve Slack user IDs to email addresses.
+      - users:read
+      - users:read.email
 
 settings:
   event_subscriptions:
