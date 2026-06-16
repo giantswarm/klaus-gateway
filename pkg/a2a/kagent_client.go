@@ -136,7 +136,8 @@ type kagentStatus struct {
 // toA2AStatus converts the kagent status to the a2a-go library TaskStatus.
 func (s *kagentStatus) toA2AStatus() a2apkg.TaskStatus {
 	return a2apkg.TaskStatus{
-		State: mapKagentState(s.State),
+		State:   mapKagentState(s.State),
+		Message: s.Message,
 	}
 }
 

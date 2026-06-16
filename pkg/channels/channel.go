@@ -66,13 +66,35 @@ type InboundMessage struct {
 	AgentRef string
 }
 
+// DeltaKind classifies the content of an OutboundDelta.
+type DeltaKind int
+
+const (
+	DeltaText     DeltaKind = iota // regular assistant text
+	DeltaThinking                  // reasoning/thinking shown as a status line, not final content
+	DeltaTool                      // tool-call progress
+	DeltaPrompt                    // agent is waiting for user input (input-required / auth-required)
+)
+
+// ToolState classifies a tool-call delta.
+type ToolState int
+
+const (
+	ToolRunning ToolState = iota
+	ToolDone
+	ToolError
+)
+
 // OutboundDelta is one chunk streamed from an instance back through an
 // adapter. Content may be empty on the terminal delta. Err, when non-nil,
 // signals an upstream or gateway failure; the channel is closed after.
 type OutboundDelta struct {
-	Content string
-	Done    bool
-	Err     error
+	Kind    DeltaKind
+	Content string    // text or thinking content; for DeltaTool this is the human-readable description
+	Tool    string    // tool name (DeltaTool only)
+	State   ToolState // tool execution state (DeltaTool only)
+	Done    bool      // terminal: no more deltas follow
+	Err     error     // upstream/gateway failure; channel is closed after
 }
 
 // Attachment is an inbound file/image payload.

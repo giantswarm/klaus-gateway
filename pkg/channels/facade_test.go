@@ -255,5 +255,57 @@ func TestFacade_SendCompletionFallsBackToOpenAI_WhenNoAgentRef(t *testing.T) {
 	require.Equal(t, "ok", content.String())
 }
 
+func TestFacade_SendCompletionViaA2A_InputRequired_EmitsPromptDelta(t *testing.T) {
+	execCtx := &a2asrv.ExecutorContext{
+		ContextID: "ctx",
+		TaskID:    a2apkg.NewTaskID(),
+		Message:   a2apkg.NewMessage(a2apkg.MessageRoleUser, a2apkg.NewTextPart("hi")),
+	}
+	msg := a2apkg.NewMessage(a2apkg.MessageRoleAgent, a2apkg.NewTextPart("approve the tool call?"))
+	inputRequired := a2apkg.NewStatusUpdateEvent(execCtx, a2apkg.TaskStateInputRequired, msg)
+
+	exec := &fakeChannelExecutor{events: []a2apkg.Event{inputRequired}}
+	f := &channels.Facade{Executor: exec}
+
+	ch, err := f.SendCompletion(t.Context(), channels.InstanceRef{}, channels.InboundMessage{
+		AgentRef: "worker",
+		Text:     "hi",
+	})
+	require.NoError(t, err)
+
+	var deltas []channels.OutboundDelta
+	for d := range ch {
+		deltas = append(deltas, d)
+	}
+	require.Len(t, deltas, 1)
+	require.Equal(t, channels.DeltaPrompt, deltas[0].Kind)
+	require.Equal(t, "approve the tool call?", deltas[0].Content)
+}
+
+func TestFacade_SendCompletionViaA2A_AuthRequired_EmitsPromptDelta(t *testing.T) {
+	execCtx := &a2asrv.ExecutorContext{
+		ContextID: "ctx",
+		TaskID:    a2apkg.NewTaskID(),
+		Message:   a2apkg.NewMessage(a2apkg.MessageRoleUser, a2apkg.NewTextPart("hi")),
+	}
+	authRequired := a2apkg.NewStatusUpdateEvent(execCtx, a2apkg.TaskStateAuthRequired, nil)
+
+	exec := &fakeChannelExecutor{events: []a2apkg.Event{authRequired}}
+	f := &channels.Facade{Executor: exec}
+
+	ch, err := f.SendCompletion(t.Context(), channels.InstanceRef{}, channels.InboundMessage{
+		AgentRef: "worker",
+		Text:     "hi",
+	})
+	require.NoError(t, err)
+
+	var deltas []channels.OutboundDelta
+	for d := range ch {
+		deltas = append(deltas, d)
+	}
+	require.Len(t, deltas, 1)
+	require.Equal(t, channels.DeltaPrompt, deltas[0].Kind)
+}
+
 // smoke test that the compile-time interface assertions hold.
 var _ store.Store = memory.New()
