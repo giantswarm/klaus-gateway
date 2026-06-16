@@ -83,9 +83,13 @@ func (f *Facade) SendCompletion(ctx context.Context, ref InstanceRef, msg Inboun
 func (f *Facade) sendViaA2A(ctx context.Context, msg InboundMessage) (<-chan OutboundDelta, error) {
 	contextID := SynthesizeContextID(msg.Channel, msg.ChannelID, msg.UserID, msg.ThreadID, msg.AgentRef)
 
+	taskID := a2apkg.NewTaskID()
+	if msg.TaskID != "" {
+		taskID = a2apkg.TaskID(msg.TaskID)
+	}
 	execCtx := &a2asrv.ExecutorContext{
 		ContextID: contextID,
-		TaskID:    a2apkg.NewTaskID(),
+		TaskID:    taskID,
 		Message:   a2apkg.NewMessage(a2apkg.MessageRoleUser, a2apkg.NewTextPart(msg.Text)),
 	}
 
@@ -158,7 +162,7 @@ func mapA2AEvent(event a2apkg.Event) OutboundDelta {
 			if ev.Status.Message != nil {
 				prompt = extractTextFromA2AParts(ev.Status.Message.Parts)
 			}
-			return OutboundDelta{Kind: DeltaPrompt, Content: prompt}
+			return OutboundDelta{Kind: DeltaPrompt, Content: prompt, TaskID: string(ev.TaskID)}
 		default:
 			if ev.Status.State.Terminal() {
 				msg := fmt.Sprintf("a2a: task ended with state %s", ev.Status.State)
