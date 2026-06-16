@@ -6,8 +6,15 @@
 # image referenced by the packaged chart's appVersion is never pushed to
 # gsoci. Pin image.tag to a released version so ATS doesn't ImagePullBackOff.
 # Bump this whenever the pinned binary is too old to pass the smoke test.
+#
+# The chart default driver is "operator", which requires --operator-mcp-url.
+# No klaus-operator runs on the smoke cluster; the gateway dials the URL
+# lazily, so a placeholder is enough to boot.
 serviceMonitor:
   enabled: false
 
 image:
   tag: "0.1.4"
+
+lifecycle:
+  operatorMCPURL: "http://klaus-operator.klaus-operator.svc:8090/mcp"

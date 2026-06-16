@@ -11,12 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Updated `tests/test-values.yaml`: removed stale `lifecycle.operatorMCPURL` override and bumped `image.tag` from `0.0.44` to `0.1.4`. The old pin ran the binary that still rejected `--driver=static` with empty instances, causing CrashLoopBackOff against the new chart default.
+- Updated `tests/test-values.yaml`: removed stale `lifecycle.operatorMCPURL` override and bumped `image.tag` from `0.0.44` to `0.1.4`. The old pin ran the binary that rejected `--driver=static` with empty instances, causing CrashLoopBackOff.
 
 ### Changed
 
-- `--driver=static` no longer requires `--static-instances` to be non-empty. An empty static instance set is now valid and acts as a no-op lifecycle manager, allowing the gateway to operate in A2A-only mode (Slack/CLI/web → kagent) without any Klaus instance management.
-- Helm chart default `lifecycle.driver` changed from `operator` to `static` so a bare deployment starts cleanly when only A2A routing is needed.
+- `--driver=static` no longer requires `--static-instances` to be non-empty. An empty static instance set is valid and acts as a no-op lifecycle manager, allowing A2A-only deployments (Slack/CLI/web → kagent) without any Klaus instance management.
 
 ### Added
 
