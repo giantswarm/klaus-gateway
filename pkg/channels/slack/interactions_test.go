@@ -37,11 +37,11 @@ func signRequest(t *testing.T, req *http.Request, body []byte, signingSecret str
 func slackInteractionPayload(t *testing.T, actionID, threadID, channelID, messageTS, userID string) []byte {
 	t.Helper()
 	inner := map[string]any{
-		"type": "block_actions",
-		"user": map[string]any{"id": userID},
-		"channel": map[string]any{"id": channelID},
+		"type":      "block_actions",
+		"user":      map[string]any{"id": userID},
+		"channel":   map[string]any{"id": channelID},
 		"container": map[string]any{"message_ts": messageTS},
-		"message": map[string]any{"thread_ts": threadID},
+		"message":   map[string]any{"thread_ts": threadID},
 		"actions": []any{
 			map[string]any{
 				"action_id": actionID,
@@ -85,7 +85,7 @@ func TestInteractionsHandler_Approve(t *testing.T) {
 	apiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		buf := new(bytes.Buffer)
-		buf.ReadFrom(r.Body) //nolint:errcheck
+		buf.ReadFrom(r.Body) //nolint:errcheck,gosec
 
 		switch r.URL.Path {
 		case "/chat.postMessage":
@@ -100,7 +100,7 @@ func TestInteractionsHandler_Approve(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "ts": "2000.0001"})
 		case "/users.info":
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"ok": true,
+				"ok":   true,
 				"user": map[string]any{"profile": map[string]any{"email": "clicker@example.com"}},
 			})
 		default:
@@ -116,7 +116,7 @@ func TestInteractionsHandler_Approve(t *testing.T) {
 
 	a := &Adapter{
 		APIBase:      apiSrv.URL,
-		Secrets:      Secrets{BotToken: "test-bot-token", SigningSecret: secret},
+		Secrets:      Secrets{BotToken: "test-bot-token", SigningSecret: secret}, //nolint:gosec
 		DefaultAgent: "worker",
 	}
 	require.NoError(t, a.Start(t.Context(), gw))
@@ -180,7 +180,7 @@ func TestInteractionsHandler_NoPendingTask(t *testing.T) {
 	gw := &fakeGateway{}
 	a := &Adapter{
 		APIBase:      apiSrv.URL,
-		Secrets:      Secrets{BotToken: "test-bot-token", SigningSecret: secret},
+		Secrets:      Secrets{BotToken: "test-bot-token", SigningSecret: secret}, //nolint:gosec
 		DefaultAgent: "worker",
 	}
 	require.NoError(t, a.Start(t.Context(), gw))

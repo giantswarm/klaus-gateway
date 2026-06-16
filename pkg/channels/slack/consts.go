@@ -24,12 +24,12 @@ const (
 
 // Block Kit JSON field keys.
 const (
-	bkType      = "type"
-	bkText      = "text"
-	bkActionID  = "action_id"
-	bkValue     = "value"
-	bkStyle     = "style"
-	bkElements  = "elements"
+	bkType     = "type"
+	bkText     = "text"
+	bkActionID = "action_id"
+	bkValue    = "value"
+	bkStyle    = "style"
+	bkElements = "elements"
 )
 
 // Block Kit type values.
@@ -37,7 +37,7 @@ const (
 	bkSection   = "section"
 	bkActions   = "actions"
 	bkButton    = "button"
-	bkMrkdwn   = "mrkdwn"
+	bkMrkdwn    = "mrkdwn"
 	bkPlainText = "plain_text"
 	bkPrimary   = "primary"
 	bkDanger    = "danger"
