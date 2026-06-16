@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Removed stale `image.tag` pin and `lifecycle.operatorMCPURL` override from `tests/test-values.yaml`. The deployment template already falls back to `.Chart.AppVersion` when `image.tag` is empty, so the smoke cluster now runs whichever binary the chart was built from. The old pin (`0.0.44`) ran the binary that still rejected `--driver=static` with empty instances, causing CrashLoopBackOff against the new chart default.
+- Updated `tests/test-values.yaml`: removed stale `lifecycle.operatorMCPURL` override and bumped `image.tag` from `0.0.44` to `0.1.4`. The old pin ran the binary that still rejected `--driver=static` with empty instances, causing CrashLoopBackOff against the new chart default.
 
 ### Changed
 

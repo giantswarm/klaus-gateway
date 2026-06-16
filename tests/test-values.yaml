@@ -1,5 +1,13 @@
 # Values used by app-test-suite when installing the chart on the kind smoke
 # cluster. The default chart renders a ServiceMonitor (Prometheus Operator
 # CRD), which does not exist on a bare kind cluster, so it is disabled here.
+#
+# Branch builds use push: false in the push-to-registries job, so the dev
+# image referenced by the packaged chart's appVersion is never pushed to
+# gsoci. Pin image.tag to a released version so ATS doesn't ImagePullBackOff.
+# Bump this whenever the pinned binary is too old to pass the smoke test.
 serviceMonitor:
   enabled: false
+
+image:
+  tag: "0.1.4"
