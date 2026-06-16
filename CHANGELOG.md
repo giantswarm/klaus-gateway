@@ -16,9 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `--driver=static` no longer requires `--static-instances` to be non-empty. An empty static instance set is valid and acts as a no-op lifecycle manager, allowing A2A-only deployments (Slack/CLI/web → kagent) without any Klaus instance management.
+- `a2a.A2AClient.TokenPath` (string) is replaced by `a2a.A2AClient.TokenSource` (the `a2a.TokenSource` interface). `a2a.FileTokenSource` reproduces the previous per-request file read; `a2a.ForwardedTokenSource` prefers a caller token from the request context and falls back to a `TokenSource`.
 
 ### Added
 
+- A2A egress forwards the caller's inbound bearer token: `InboundMessage.BearerToken` is captured from the `Authorization` header by the web and CLI adapters and sent as `Authorization` on the A2A request, so kagent (trusted-proxy) sees the end-user identity. Channels with no per-user token (Slack) fall back to the `--a2a-token-path` ServiceAccount token. New API in `pkg/a2a`: `TokenSource`, `FileTokenSource`, `ForwardedTokenSource`, `WithForwardedToken`, `ForwardedTokenFromContext`.
 - `channels.SynthesizeContextID` derives a stable A2A contextID from `(channel, channelID, userID, threadID, agentRef)` using length-prefixed SHA-256 encoding.
 - `slack.defaultAgent` config (`--slack-default-agent` / `KLAUS_GATEWAY_SLACK_DEFAULT_AGENT`): every Slack thread routes to this named agent. Required when Slack is enabled; validated against the static instance set at startup when `--driver=static`.
 - Channel turns are now routed through the A2A executor (`ForwardingExecutor.Execute`) when `Facade.Executor` is set and `InboundMessage.AgentRef` is non-empty. Artifact events map to `OutboundDelta{Content}` and terminal status events map to `OutboundDelta{Done: true}`.

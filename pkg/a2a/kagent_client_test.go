@@ -130,6 +130,43 @@ func TestKagentClient_Execute_UsesAgentRefFromContext(t *testing.T) {
 	require.NotEmpty(t, events)
 }
 
+func TestKagentClient_Execute_ForwardsBearerToken(t *testing.T) {
+	const agentName = "klaud-coding"
+
+	var gotAuth string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/a2a/kagent/"+agentName+"/a2a", func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher := w.(http.Flusher)
+		writeSSEResult(w, flusher, map[string]any{
+			"kind": "status-update", "contextId": "c", "taskId": "t",
+			"final": true, "status": map[string]any{"state": "completed"},
+		})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	kc := &pkga2a.A2AClient{
+		BaseURL:      srv.URL + "/api/a2a/kagent",
+		DefaultAgent: agentName,
+		TokenSource:  pkga2a.ForwardedTokenSource{Fallback: nil},
+	}
+
+	ctx := pkga2a.WithForwardedToken(t.Context(), "user-jwt")
+	execCtx := &a2asrv.ExecutorContext{
+		ContextID: "ctx-tok",
+		TaskID:    a2a.NewTaskID(),
+		Message:   a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("ping")),
+	}
+	for _, err := range kc.Execute(ctx, execCtx) {
+		require.NoError(t, err)
+	}
+
+	require.Equal(t, "Bearer user-jwt", gotAuth)
+}
+
 func TestAgentRefContext_RoundTrip(t *testing.T) {
 	ctx := pkga2a.WithAgentRef(context.Background(), "my-agent")
 	require.Equal(t, "my-agent", pkga2a.AgentRefFromContext(ctx))

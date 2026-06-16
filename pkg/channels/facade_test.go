@@ -13,6 +13,7 @@ import (
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
 	"github.com/stretchr/testify/require"
 
+	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 	"github.com/giantswarm/klaus-gateway/pkg/instance"
 	"github.com/giantswarm/klaus-gateway/pkg/lifecycle"
@@ -145,10 +146,12 @@ func TestFacade_FetchHistory(t *testing.T) {
 type fakeChannelExecutor struct {
 	events []a2apkg.Event
 	err    error
+	gotCtx context.Context
 }
 
-func (e *fakeChannelExecutor) Execute(_ context.Context, execCtx *a2asrv.ExecutorContext) iter.Seq2[a2apkg.Event, error] {
+func (e *fakeChannelExecutor) Execute(ctx context.Context, execCtx *a2asrv.ExecutorContext) iter.Seq2[a2apkg.Event, error] {
 	return func(yield func(a2apkg.Event, error) bool) {
+		e.gotCtx = ctx
 		if e.err != nil {
 			yield(nil, e.err)
 			return
@@ -191,6 +194,30 @@ func TestFacade_SendCompletionViaA2A_ArtifactEvents(t *testing.T) {
 	}
 	require.Equal(t, "hello world", content.String())
 	require.True(t, done)
+}
+
+func TestFacade_SendCompletionViaA2A_ForwardsBearerToken(t *testing.T) {
+	terminal := a2apkg.NewStatusUpdateEvent(&a2asrv.ExecutorContext{
+		ContextID: "ctx",
+		TaskID:    a2apkg.NewTaskID(),
+		Message:   a2apkg.NewMessage(a2apkg.MessageRoleUser, a2apkg.NewTextPart("hi")),
+	}, a2apkg.TaskStateCompleted, nil)
+
+	exec := &fakeChannelExecutor{events: []a2apkg.Event{terminal}}
+	f := &channels.Facade{Executor: exec}
+
+	ch, err := f.SendCompletion(t.Context(), channels.InstanceRef{}, channels.InboundMessage{
+		Channel:     "web",
+		AgentRef:    "worker",
+		Text:        "hi",
+		BearerToken: "user-jwt",
+	})
+	require.NoError(t, err)
+	for range ch { //nolint:revive // drain to ensure Execute ran
+	}
+
+	require.Equal(t, "worker", pkga2a.AgentRefFromContext(exec.gotCtx))
+	require.Equal(t, "user-jwt", pkga2a.ForwardedTokenFromContext(exec.gotCtx))
 }
 
 func TestFacade_SendCompletionViaA2A_ErrorPropagated(t *testing.T) {

@@ -126,12 +126,13 @@ func (a *Adapter) postRun(w http.ResponseWriter, r *http.Request) {
 	userID, subject := extractIdentity(r, in.UserID)
 
 	msg := channels.InboundMessage{
-		Channel:   ChannelName,
-		ChannelID: instanceName,
-		UserID:    userID,
-		ThreadID:  in.SessionID,
-		Text:      in.Text,
-		Subject:   subject,
+		Channel:     ChannelName,
+		ChannelID:   instanceName,
+		UserID:      userID,
+		ThreadID:    in.SessionID,
+		Text:        in.Text,
+		Subject:     subject,
+		BearerToken: bearerToken(r),
 	}
 	if in.AgentRef != "" {
 		msg.AgentRef = in.AgentRef
@@ -249,14 +250,20 @@ func (a *Adapter) resolveError(w http.ResponseWriter, err error) {
 	writeJSONError(w, http.StatusBadGateway, "resolve: "+err.Error())
 }
 
+// bearerToken returns the raw value of an `Authorization: Bearer` header, or
+// an empty string when absent.
+func bearerToken(r *http.Request) string {
+	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+		return strings.TrimPrefix(auth, "Bearer ")
+	}
+	return ""
+}
+
 // extractIdentity returns the (userID, subject) pair for a request.
 // The Authorization Bearer value becomes the subject for downstream auth
 // passthrough. The body userId field is the stable routing identity.
 func extractIdentity(r *http.Request, bodyUserID string) (string, string) {
-	var subject string
-	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
-		subject = strings.TrimPrefix(auth, "Bearer ")
-	}
+	subject := bearerToken(r)
 	if bodyUserID != "" {
 		return bodyUserID, subject
 	}

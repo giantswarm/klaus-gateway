@@ -46,6 +46,10 @@ type InboundMessage struct {
 	ReplyTo     string
 	// Subject is the authenticated user's OAuth `sub` when available.
 	Subject string
+	// BearerToken is the caller's raw inbound bearer token, forwarded on the
+	// A2A egress request so kagent sees the end-user identity. Empty for
+	// channels without a per-user token (e.g. Slack).
+	BearerToken string
 	// AgentRef is the target agent name. When set, SendCompletion routes
 	// through the A2A executor instead of the OpenAI /v1 path.
 	AgentRef string

@@ -19,6 +19,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync/atomic"
 
 	"github.com/go-chi/chi/v5"
@@ -126,13 +127,14 @@ func (a *Adapter) postMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	msg := channels.InboundMessage{
-		Channel:   ChannelName,
-		ChannelID: in.ChannelID,
-		UserID:    in.UserID,
-		ThreadID:  in.ThreadID,
-		Text:      in.Text,
-		ReplyTo:   in.ReplyTo,
-		Subject:   in.Subject,
+		Channel:     ChannelName,
+		ChannelID:   in.ChannelID,
+		UserID:      in.UserID,
+		ThreadID:    in.ThreadID,
+		Text:        in.Text,
+		ReplyTo:     in.ReplyTo,
+		Subject:     in.Subject,
+		BearerToken: bearerToken(r),
 	}
 	if in.AgentRef != "" {
 		msg.AgentRef = in.AgentRef
@@ -239,6 +241,15 @@ func (a *Adapter) resolveError(w http.ResponseWriter, err error) {
 	}
 	a.Logger.Error("web: resolve failed", "error", err)
 	writeJSONError(w, http.StatusBadGateway, "resolve: "+err.Error())
+}
+
+// bearerToken returns the raw value of an `Authorization: Bearer` header, or
+// an empty string when absent.
+func bearerToken(r *http.Request) string {
+	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+		return strings.TrimPrefix(auth, "Bearer ")
+	}
+	return ""
 }
 
 func setSSEHeaders(h http.Header) {
