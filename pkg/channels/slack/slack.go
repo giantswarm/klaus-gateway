@@ -20,6 +20,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
+	"github.com/giantswarm/klaus-gateway/pkg/channels/slack/classifier"
 )
 
 // ChannelName identifies the Slack adapter in routing keys.
@@ -48,6 +49,9 @@ type Adapter struct {
 	// AllowedUsers is a static allow-list of Slack user IDs seeded into every
 	// new thread's AccessState. The first entry becomes owner when non-empty.
 	AllowedUsers []string
+	// Classifier classifies A2A input-required prompts and auto-approves safe ones.
+	// Nil disables auto-approval; all input-required events surface as Slack prompts.
+	Classifier *classifier.Classifier
 
 	gw        channels.Gateway
 	started   atomic.Bool
@@ -323,10 +327,27 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 		return err
 	}
 
-	// If the agent paused for user input, post a Block Kit approval prompt and
-	// register the pending task so the next message resumes it.
-	if w.promptDelta != nil {
+	// If the agent paused for user input, either auto-approve (classifier) or
+	// post a Block Kit approval prompt and wait for human action.
+	for w.promptDelta != nil {
 		pd := w.promptDelta
+		if a.Classifier != nil {
+			if ok, result := a.Classifier.ShouldAutoApprove(pd.Content); ok {
+				a.Logger.Info("slack: auto-approving input-required", "task", pd.TaskID, "risk", result.Risk, "reason", result.Reason)
+				resumeMsg := msg
+				resumeMsg.TaskID = pd.TaskID
+				resumeMsg.Text = "approved"
+				deltas, err = a.gw.SendCompletion(turnCtx, ref, resumeMsg)
+				if err != nil {
+					return fmt.Errorf("slack: auto-approve resume: %w", err)
+				}
+				w = newBatchedWriterWithClient(client, slackChannel, ts, msg.ThreadID)
+				if err := w.run(ctx, deltas); err != nil {
+					return err
+				}
+				continue
+			}
+		}
 		task := &pendingTask{
 			TaskID:    pd.TaskID,
 			AgentRef:  msg.AgentRef,
