@@ -59,6 +59,37 @@ func TestValidate_A2A(t *testing.T) {
 	})
 }
 
+func TestValidate_OIDC(t *testing.T) {
+	base := config.Defaults()
+
+	t.Run("unset is valid", func(t *testing.T) {
+		require.NoError(t, base.Validate())
+	})
+
+	t.Run("issuer with audience is valid", func(t *testing.T) {
+		cfg := base
+		cfg.OIDC.Issuer = "https://dex.example.com"
+		cfg.OIDC.Audience = "klaus-gateway"
+		require.NoError(t, cfg.Validate())
+	})
+
+	t.Run("issuer without audience fails", func(t *testing.T) {
+		cfg := base
+		cfg.OIDC.Issuer = "https://dex.example.com"
+		require.Error(t, cfg.Validate())
+	})
+}
+
+func TestLoad_OIDCEnv(t *testing.T) {
+	t.Setenv("KLAUS_GATEWAY_OIDC_ISSUER", "https://dex.example.com")
+	t.Setenv("KLAUS_GATEWAY_OIDC_AUDIENCE", "klaus-gateway")
+
+	cfg, err := config.Load([]string{})
+	require.NoError(t, err)
+	require.Equal(t, "https://dex.example.com", cfg.OIDC.Issuer)
+	require.Equal(t, "klaus-gateway", cfg.OIDC.Audience)
+}
+
 func TestA2ADefaults(t *testing.T) {
 	cfg := config.Defaults()
 	require.Equal(t, "klaud-coding", cfg.A2A.DefaultAgent)

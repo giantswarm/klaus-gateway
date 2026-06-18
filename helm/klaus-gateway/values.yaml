@@ -216,6 +216,16 @@ a2a:
     mountPath: "/var/run/secrets/kagent/token"
     expirationSeconds: 3600
 
+# OIDC ingress verification for the web and CLI channels. When issuer is set,
+# inbound bearer tokens are validated (signature, issuer, audience, expiry)
+# before being forwarded on the A2A egress request; failures return 401. Leave
+# issuer empty to forward tokens without verification.
+oidc:
+  # issuer is the OIDC issuer URL whose JWKS validates inbound bearer tokens.
+  issuer: ""
+  # audience is the expected `aud` claim. Required when issuer is set.
+  audience: ""
+
 # Slack channel adapter.
 # Disabled by default. To enable, set slack.enabled: true and provide a
 # Kubernetes Secret named by slack.secretName containing the following keys:

@@ -35,6 +35,9 @@ const ChannelName = "cli"
 type Adapter struct {
 	Logger       *slog.Logger
 	DefaultAgent string
+	// Verifier validates the inbound bearer token before it is forwarded on the
+	// A2A egress request. Nil disables ingress verification.
+	Verifier channels.TokenVerifier
 
 	gw      channels.Gateway
 	started atomic.Bool
@@ -122,7 +125,10 @@ func (a *Adapter) postRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userID, subject := extractIdentity(r, in.UserID)
+	userID, subject, token, ok := a.identity(w, r, in.UserID)
+	if !ok {
+		return
+	}
 
 	msg := channels.InboundMessage{
 		Channel:     ChannelName,
@@ -131,7 +137,7 @@ func (a *Adapter) postRun(w http.ResponseWriter, r *http.Request) {
 		ThreadID:    in.SessionID,
 		Text:        in.Text,
 		Subject:     subject,
-		BearerToken: channels.BearerToken(r),
+		BearerToken: token,
 	}
 	if in.AgentRef != "" {
 		msg.AgentRef = in.AgentRef
@@ -217,7 +223,10 @@ func (a *Adapter) postMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userID, subject := extractIdentity(r, in.UserID)
+	userID, subject, _, ok := a.identity(w, r, in.UserID)
+	if !ok {
+		return
+	}
 
 	ref, err := a.gw.Resolve(r.Context(), channels.InboundMessage{
 		Channel:   ChannelName,
@@ -249,16 +258,37 @@ func (a *Adapter) resolveError(w http.ResponseWriter, err error) {
 	writeJSONError(w, http.StatusBadGateway, "resolve: "+err.Error())
 }
 
-// extractIdentity returns the (userID, subject) pair for a request.
-// The Authorization Bearer value becomes the subject for downstream auth
-// passthrough. The body userId field is the stable routing identity.
-func extractIdentity(r *http.Request, bodyUserID string) (string, string) {
-	subject := channels.BearerToken(r)
-	if bodyUserID != "" {
-		return bodyUserID, subject
+// identity resolves the (userID, subject, bearer token) for a request and
+// reports whether it may proceed. When a Verifier is configured it validates
+// the bearer token, writing a 401 and returning ok=false on failure; the
+// verified `sub` then becomes the subject (and the userID when the body
+// supplies none). A nil Verifier skips verification.
+func (a *Adapter) identity(w http.ResponseWriter, r *http.Request, bodyUserID string) (userID, subject, token string, ok bool) {
+	token = channels.BearerToken(r)
+	if a.Verifier != nil {
+		sub, err := a.Verifier.Verify(r.Context(), token)
+		if err != nil {
+			writeJSONError(w, http.StatusUnauthorized, "invalid bearer token")
+			return "", "", "", false
+		}
+		if bodyUserID == "" {
+			return sub, sub, token, true
+		}
+		return bodyUserID, sub, token, true
 	}
-	if subject != "" {
-		return subject, subject
+	userID, subject = extractIdentity(bodyUserID, token)
+	return userID, subject, token, true
+}
+
+// extractIdentity returns the (userID, subject) pair for an unverified request.
+// The bearer token becomes the subject for downstream auth passthrough. The
+// body userId field is the stable routing identity.
+func extractIdentity(bodyUserID, token string) (string, string) {
+	if bodyUserID != "" {
+		return bodyUserID, token
+	}
+	if token != "" {
+		return token, token
 	}
 	return "anonymous", ""
 }

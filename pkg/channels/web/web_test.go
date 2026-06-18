@@ -1,8 +1,10 @@
 package web_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +18,36 @@ import (
 	"github.com/giantswarm/klaus-gateway/pkg/channels/web"
 	"github.com/giantswarm/klaus-gateway/pkg/routing"
 )
+
+type stubVerifier struct {
+	sub string
+	err error
+}
+
+func (s stubVerifier) Verify(context.Context, string) (string, error) { return s.sub, s.err }
+
+func serveAdapter(t *testing.T, a *web.Adapter, gw channels.Gateway) *httptest.Server {
+	t.Helper()
+	require.NoError(t, a.Start(t.Context(), gw))
+	r := chi.NewRouter()
+	a.Mount(r)
+	ts := httptest.NewServer(r)
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+func postWithBearer(t *testing.T, url, token, body string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, url, bytes.NewBufferString(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	return resp
+}
 
 type stubGateway struct {
 	resolveRef     channels.InstanceRef
@@ -209,6 +241,38 @@ func TestPostMessages_PerRequestAgentRefOverridesDefault(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	require.Equal(t, "override-agent", gw.sendInbound.AgentRef)
+}
+
+func TestPostMessages_NilVerifierSkipsAndForwardsToken(t *testing.T) {
+	gw := &stubGateway{deltas: []channels.OutboundDelta{{Done: true}}}
+	ts := serveAdapter(t, &web.Adapter{}, gw)
+
+	body := `{"channelId":"c1","userId":"u1","threadId":"t1","text":"hi"}`
+	resp := postWithBearer(t, ts.URL+"/web/messages", "raw-token", body)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Equal(t, "raw-token", gw.sendInbound.BearerToken)
+}
+
+func TestPostMessages_VerifierRejectsWith401(t *testing.T) {
+	gw := &stubGateway{deltas: []channels.OutboundDelta{{Done: true}}}
+	ts := serveAdapter(t, &web.Adapter{Verifier: stubVerifier{err: errors.New("bad token")}}, gw)
+
+	body := `{"channelId":"c1","userId":"u1","threadId":"t1","text":"hi"}`
+	resp := postWithBearer(t, ts.URL+"/web/messages", "bad", body)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
+func TestPostMessages_VerifiedSubjectOverridesBody(t *testing.T) {
+	gw := &stubGateway{deltas: []channels.OutboundDelta{{Done: true}}}
+	ts := serveAdapter(t, &web.Adapter{Verifier: stubVerifier{sub: "verified-sub"}}, gw)
+
+	body := `{"channelId":"c1","userId":"u1","threadId":"t1","text":"hi","subject":"client-claimed"}`
+	resp := postWithBearer(t, ts.URL+"/web/messages", "good", body)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Equal(t, "verified-sub", gw.sendInbound.Subject)
 }
 
 func TestPostMessages_NoAgentRefFallsBackToOpenAIPath(t *testing.T) {

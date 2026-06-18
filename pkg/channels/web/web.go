@@ -34,6 +34,9 @@ const ChannelName = "web"
 type Adapter struct {
 	Logger       *slog.Logger
 	DefaultAgent string
+	// Verifier validates the inbound bearer token before it is forwarded on the
+	// A2A egress request. Nil disables ingress verification.
+	Verifier channels.TokenVerifier
 
 	gw      channels.Gateway
 	started atomic.Bool
@@ -125,6 +128,17 @@ func (a *Adapter) postMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	token := channels.BearerToken(r)
+	subject := in.Subject
+	if a.Verifier != nil {
+		sub, err := a.Verifier.Verify(r.Context(), token)
+		if err != nil {
+			writeJSONError(w, http.StatusUnauthorized, "invalid bearer token")
+			return
+		}
+		subject = sub
+	}
+
 	msg := channels.InboundMessage{
 		Channel:     ChannelName,
 		ChannelID:   in.ChannelID,
@@ -132,8 +146,8 @@ func (a *Adapter) postMessages(w http.ResponseWriter, r *http.Request) {
 		ThreadID:    in.ThreadID,
 		Text:        in.Text,
 		ReplyTo:     in.ReplyTo,
-		Subject:     in.Subject,
-		BearerToken: channels.BearerToken(r),
+		Subject:     subject,
+		BearerToken: token,
 	}
 	if in.AgentRef != "" {
 		msg.AgentRef = in.AgentRef

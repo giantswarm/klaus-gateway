@@ -55,6 +55,17 @@ type CLIConfig struct {
 	Enabled bool
 }
 
+// OIDCConfig configures Dex/OIDC ingress verification for the web and CLI
+// channels. When Issuer is empty, inbound bearer tokens are forwarded without
+// verification (backwards compatible with deployments that have no OBO).
+type OIDCConfig struct {
+	// Issuer is the OIDC issuer URL whose JWKS validates inbound bearer tokens.
+	// Empty disables ingress verification.
+	Issuer string
+	// Audience is the expected `aud` claim of inbound tokens.
+	Audience string
+}
+
 // SlackConfig holds runtime configuration for the Slack channel adapter.
 type SlackConfig struct {
 	// Enabled gates all Slack behaviour; the adapter is skipped when false.
@@ -97,6 +108,7 @@ type Config struct {
 	Slack SlackConfig
 	CLI   CLIConfig
 	A2A   A2AConfig
+	OIDC  OIDCConfig
 
 	// Controller enables the embedded ChannelRoute controller-runtime manager.
 	Controller bool
@@ -159,6 +171,8 @@ func Load(args []string) (Config, error) {
 	fs.StringVar(&cfg.A2A.DefaultAgent, "a2a-default-agent", cfg.A2A.DefaultAgent, "agentRef forwarded to the A2A orchestrator when the channel does not supply one.")
 	fs.StringVar(&cfg.A2A.URL, "a2a-url", cfg.A2A.URL, "Base URL of the A2A orchestrator endpoint, without trailing agent name.")
 	fs.StringVar(&cfg.A2A.TokenPath, "a2a-token-path", cfg.A2A.TokenPath, "Path to a file holding a Bearer token sent as Authorization on every A2A request (e.g. a projected SA token). Empty disables auth.")
+	fs.StringVar(&cfg.OIDC.Issuer, "oidc-issuer", cfg.OIDC.Issuer, "OIDC issuer URL for verifying inbound bearer tokens at the web/CLI ingress. Empty disables verification.")
+	fs.StringVar(&cfg.OIDC.Audience, "oidc-audience", cfg.OIDC.Audience, "Expected audience (aud) claim of inbound bearer tokens. Required when --oidc-issuer is set.")
 
 	fs.Usage = func() {
 		_, _ = fmt.Fprintf(fs.Output(), "klaus-gateway -- channel and routing gateway in front of klaus instances.\n\n")
@@ -248,6 +262,12 @@ func applyEnv(cfg *Config) {
 	if v, ok := lookup("A2A_TOKEN_PATH"); ok {
 		cfg.A2A.TokenPath = v
 	}
+	if v, ok := lookup("OIDC_ISSUER"); ok {
+		cfg.OIDC.Issuer = v
+	}
+	if v, ok := lookup("OIDC_AUDIENCE"); ok {
+		cfg.OIDC.Audience = v
+	}
 }
 
 func lookup(key string) (string, bool) {
@@ -277,6 +297,9 @@ func (c Config) Validate() error {
 	}
 	if c.A2A.Enabled && c.A2A.URL == "" {
 		return fmt.Errorf("--a2a-url is required with --a2a-enabled")
+	}
+	if c.OIDC.Issuer != "" && c.OIDC.Audience == "" {
+		return fmt.Errorf("--oidc-audience is required with --oidc-issuer")
 	}
 	return nil
 }

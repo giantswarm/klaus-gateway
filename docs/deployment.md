@@ -253,6 +253,22 @@ agentgateway:
 
 See [docs/channels-cli.md](channels-cli.md) for usage.
 
+### OIDC ingress verification (web + CLI)
+
+The web and CLI adapters can verify the inbound `Authorization: Bearer` token as a
+Dex OIDC JWT before it is forwarded on the A2A egress request (OBO). When enabled,
+a token that fails signature, issuer, audience, or expiry validation is rejected
+with `401`; on success the verified `sub` claim becomes the request subject. The
+JWKS is fetched from the issuer's OIDC discovery endpoint on first use and cached.
+
+| Flag | Env var | Required |
+|------|---------|----------|
+| `--oidc-issuer` | `KLAUS_GATEWAY_OIDC_ISSUER` | No (unset disables verification) |
+| `--oidc-audience` | `KLAUS_GATEWAY_OIDC_AUDIENCE` | Yes when `--oidc-issuer` is set |
+
+The audience must match the `aud` claim of the Dex tokens reaching the gateway.
+The Slack adapter carries no per-user token and is unaffected.
+
 ## Values reference
 
 See `helm/klaus-gateway/values.yaml` for the full set. The agentgateway block is validated by
