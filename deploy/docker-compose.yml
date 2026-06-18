@@ -42,7 +42,7 @@ services:
 
   agentgateway:
     # Pinned so PRs are reproducible; bump together with klausctl.
-    image: ghcr.io/agentgateway/agentgateway:v1.2.1
+    image: ghcr.io/agentgateway/agentgateway:v1.3.0
     command: ["-f", "/etc/agentgateway/standalone.yaml"]
     volumes:
       - ./agentgateway/standalone.yaml:/etc/agentgateway/standalone.yaml:ro
