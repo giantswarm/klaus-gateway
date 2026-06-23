@@ -220,6 +220,47 @@ func (c *slackAPIClient) postApprovalPrompt(ctx context.Context, channel, thread
 	return err
 }
 
+// postChoicePrompt posts an ask_user question with one Block Kit button per
+// choice. Each button's value encodes the threadID, question index, and choice
+// index so the interaction handler can resolve the selected answer label.
+func (c *slackAPIClient) postChoicePrompt(ctx context.Context, channel, threadID, question string, choices []string) error {
+	elements := make([]any, 0, len(choices))
+	for i, choice := range choices {
+		elements = append(elements, map[string]any{
+			bkType:     bkButton,
+			bkText:     map[string]any{bkType: bkPlainText, bkText: truncateButtonLabel(choice)},
+			bkActionID: fmt.Sprintf("%s_%d", hitlChoice, i),
+			bkValue:    encodeChoiceValue(threadID, 0, i),
+		})
+	}
+	body := map[string]any{
+		paramChannel:  channel,
+		paramThreadTS: threadID,
+		paramText:     question,
+		paramBlocks: []any{
+			map[string]any{
+				bkType: bkSection,
+				bkText: map[string]any{bkType: bkMrkdwn, bkText: "*" + question + "*"},
+			},
+			map[string]any{
+				bkType:     bkActions,
+				bkElements: elements,
+			},
+		},
+	}
+	_, err := c.postJSON(ctx, "chat.postMessage", body)
+	return err
+}
+
+// truncateButtonLabel keeps a button label within Slack's 75-char limit.
+func truncateButtonLabel(s string) string {
+	const max = 75
+	if len(s) <= max {
+		return s
+	}
+	return s[:max-1] + "…"
+}
+
 // chatUpdateBlocks replaces a Block Kit message with plain text (used to mark
 // an approval decision after the user clicks a button).
 func (c *slackAPIClient) chatUpdateBlocks(ctx context.Context, channel, ts, text string) error {

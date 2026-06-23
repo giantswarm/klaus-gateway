@@ -425,7 +425,10 @@ func TestBatchedWriter_CombinesDeltas(t *testing.T) {
 	}
 	_, srv := newEventsAdapter(t, gw, fakeSlack.URL)
 
-	body := []byte(`{"type":"event_callback","event":{"type":"message","user":"U1","text":"hi","channel":"C1","ts":"111.000"}}`)
+	// Use a DM (channel_type "im"): top-level channel messages are intentionally
+	// dropped now (no #random chatter), so a DM is the right way to exercise the
+	// batched writer end to end.
+	body := []byte(`{"type":"event_callback","event":{"type":"message","channel_type":"im","user":"U1","text":"hi","channel":"D1","ts":"111.000"}}`)
 	stamp, sig := signBody(t, "signing-secret", body)
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/channels/slack/events", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")

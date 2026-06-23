@@ -14,8 +14,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -52,9 +55,19 @@ type Adapter struct {
 	// Classifier classifies A2A input-required prompts and auto-approves safe ones.
 	// Nil disables auto-approval; all input-required events surface as Slack prompts.
 	Classifier *classifier.Classifier
+	// DMOnly restricts the adapter to direct messages (channel_type "im").
+	// When true, channel messages and @-mentions in channels are ignored, so
+	// the bot only ever answers in a 1:1 DM. Default false (channels served).
+	DMOnly bool
+	// DropStaleEvents, when true, ignores events whose Slack ts predates this
+	// process. Socket Mode can redeliver events that were queued/unacked while
+	// a consumer was disconnected, so without this a restart replays — and
+	// re-answers — old messages. Default false (no time-based filtering).
+	DropStaleEvents bool
 
 	gw        channels.Gateway
 	started   atomic.Bool
+	startUnix int64 // process start; events older than this are dropped on reconnect
 	evHandler http.Handler
 	ixHandler http.Handler // interactions endpoint; nil in socketmode
 
@@ -83,6 +96,9 @@ type pendingTask struct {
 	AgentRef  string
 	Channel   string // Slack channel ID for posting the resumed response
 	ChannelID string // logical channel ID used in the routing key
+	// Prompt is the structured approval request the task is paused on, used to
+	// map a free-text reply or choice click back to a HITL decision.
+	Prompt *channels.HitlPrompt
 }
 
 // Name returns the channel name used in routing keys.
@@ -136,8 +152,51 @@ func (a *Adapter) Start(ctx context.Context, gw channels.Gateway) error {
 		return fmt.Errorf("slack: unknown mode %q: want %q or %q", a.Mode, ModeEvents, ModeSocketMode)
 	}
 
+	a.startUnix = time.Now().Unix()
 	a.started.Store(true)
 	return nil
+}
+
+// acceptEvent decides whether an inbound Slack event should be processed at
+// all, before any access-control or command handling. It enforces two guards:
+//
+//   - DM-only: when DMOnly is set, anything that is not a direct message
+//     (channel_type "im" / a "D…" channel ID) is dropped, so the bot answers
+//     only in 1:1 DMs and never in a public channel.
+//   - Staleness: events whose Slack ts predates this process are dropped.
+//     Socket Mode redelivers events queued while a consumer was disconnected,
+//     so without this a gateway restart replays — and re-answers — old
+//     messages. New messages (ts >= start) always pass.
+func (a *Adapter) acceptEvent(inner slackInnerEvent) bool {
+	if a.DMOnly && inner.ChannelType != "im" && !strings.HasPrefix(inner.Channel, "D") {
+		a.Logger.Debug("slack: ignoring non-DM event (DM-only mode)",
+			"channel", inner.Channel, "channel_type", inner.ChannelType)
+		return false
+	}
+	if a.DropStaleEvents && a.startUnix > 0 {
+		if sec := eventUnix(inner.TS); sec > 0 && sec < a.startUnix {
+			a.Logger.Info("slack: dropping stale event from before gateway start",
+				"event_ts", inner.TS, "channel", inner.Channel)
+			return false
+		}
+	}
+	return true
+}
+
+// eventUnix parses the integer second component of a Slack ts ("123.456").
+// Returns 0 when the value is missing or unparseable.
+func eventUnix(ts string) int64 {
+	if ts == "" {
+		return 0
+	}
+	if dot := strings.IndexByte(ts, '.'); dot >= 0 {
+		ts = ts[:dot]
+	}
+	sec, err := strconv.ParseInt(ts, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return sec
 }
 
 // Stop marks the adapter as stopped. The context passed to Start is the
@@ -272,8 +331,12 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 	msg.AgentRef = a.DefaultAgent
 
 	// Resume a paused input-required task when one exists for this thread.
+	// Map the typed reply to a structured HITL decision so the paused tool
+	// confirmation is actually resolved (a plain text reply would leave the
+	// tool call dangling and corrupt the model history).
 	if task := a.takePendingTask(msg.ThreadID); task != nil {
 		msg.TaskID = task.TaskID
+		msg.Decision = decisionFromText(task.Prompt, msg.Text)
 	}
 
 	ref, err := a.gw.Resolve(ctx, msg)
@@ -331,12 +394,15 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 	// post a Block Kit approval prompt and wait for human action.
 	for w.promptDelta != nil {
 		pd := w.promptDelta
-		if a.Classifier != nil {
+		// Only generic tool approvals are eligible for auto-approval; ask_user
+		// questions always need a real answer from the human.
+		if a.Classifier != nil && !pd.Prompt.IsAskUser() {
 			if ok, result := a.Classifier.ShouldAutoApprove(pd.Content); ok {
 				a.Logger.Info("slack: auto-approving input-required", "task", pd.TaskID, "risk", result.Risk, "reason", result.Reason)
 				resumeMsg := msg
 				resumeMsg.TaskID = pd.TaskID
 				resumeMsg.Text = "approved"
+				resumeMsg.Decision = &channels.HitlDecision{Type: channels.DecisionApprove}
 				deltas, err = a.gw.SendCompletion(turnCtx, ref, resumeMsg)
 				if err != nil {
 					return fmt.Errorf("slack: auto-approve resume: %w", err)
@@ -353,9 +419,10 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 			AgentRef:  msg.AgentRef,
 			Channel:   slackChannel,
 			ChannelID: msg.ChannelID,
+			Prompt:    pd.Prompt,
 		}
 		a.storePendingTask(msg.ThreadID, task)
-		return client.postApprovalPrompt(ctx, slackChannel, msg.ThreadID, pd.Content, pd.TaskID)
+		return a.postHitlPrompt(ctx, client, slackChannel, msg.ThreadID, pd)
 	}
 	return nil
 }
@@ -363,14 +430,31 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 // slackInnerEvent is the inner event object present in both Events API
 // and Socket Mode payloads.
 type slackInnerEvent struct {
-	Type     string `json:"type"`
-	SubType  string `json:"subtype,omitempty"`
-	BotID    string `json:"bot_id,omitempty"`
-	User     string `json:"user"`
-	Text     string `json:"text"`
-	Channel  string `json:"channel"`
-	TS       string `json:"ts"`
-	ThreadTS string `json:"thread_ts,omitempty"`
+	Type        string `json:"type"`
+	SubType     string `json:"subtype,omitempty"`
+	BotID       string `json:"bot_id,omitempty"`
+	User        string `json:"user"`
+	Text        string `json:"text"`
+	Channel     string `json:"channel"`
+	ChannelType string `json:"channel_type,omitempty"`
+	TS          string `json:"ts"`
+	ThreadTS    string `json:"thread_ts,omitempty"`
+}
+
+// isDM reports whether the event originated in a 1:1 direct message. Slack sets
+// channel_type "im" for DMs and uses a "D…" channel ID; either is sufficient.
+func (e slackInnerEvent) isDM() bool {
+	return e.ChannelType == "im" || strings.HasPrefix(e.Channel, "D")
+}
+
+// threadReplyOnly reports whether this event may only be handled as a thread
+// reply to an already-active bot thread. A plain "message" in a channel (not a
+// DM) qualifies: it must never trigger the bot on its own, so top-level channel
+// chatter is dropped by toInboundMessage and only thread replies survive (then
+// gated on active-thread state by the caller). app_mention and DMs return false
+// and always pass through.
+func (e slackInnerEvent) threadReplyOnly() bool {
+	return e.Type == evtMessage && !e.isDM()
 }
 
 // toInboundMessage maps a Slack inner event to the normalised InboundMessage.
