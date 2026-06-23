@@ -151,13 +151,13 @@ func splitAnswer(s string, multiple bool) []string {
 }
 
 var approveWords = map[string]bool{
-	"approve": true, "approved": true, "yes": true, "y": true, "ok": true,
+	"approve": true, labelApproved: true, "yes": true, "y": true, "ok": true,
 	"okay": true, "go": true, "proceed": true, "confirm": true, "do it": true,
 }
 
 var denyWords = map[string]bool{
 	"deny": true, "denied": true, "no": true, "n": true, "reject": true,
-	"cancel": true, "abort": true, "stop": true,
+	"cancel": true, "abort": true, cmdStop: true,
 }
 
 func isApproveWord(text string) bool {

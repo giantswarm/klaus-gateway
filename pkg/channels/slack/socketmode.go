@@ -15,6 +15,7 @@ import (
 const (
 	appsConnectionsOpen = "https://slack.com/api/apps.connections.open"
 	smReconnectDelay    = 5 * time.Second
+	smTypeHello         = "hello"
 )
 
 // socketModeClient connects to Slack Socket Mode and forwards events to the
@@ -138,7 +139,7 @@ func (c *socketModeClient) readLoop(ctx context.Context, ws *websocket.Conn) {
 		// (a deployed gateway, another developer's session) silently steals a
 		// share of messages. Surface num_connections on connect so a "nothing
 		// arrives" symptom is diagnosable instead of baffling.
-		if env.Type == "hello" {
+		if env.Type == smTypeHello {
 			var h struct {
 				NumConnections int `json:"num_connections"`
 			}

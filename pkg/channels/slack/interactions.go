@@ -236,7 +236,7 @@ func buildButtonDecision(act hitlAction, prompt *channels.HitlPrompt) (*channels
 	case hitlDeny:
 		return &channels.HitlDecision{Type: channels.DecisionReject}, "denied", "❌ _Denied._"
 	default: // hitlApprove
-		return &channels.HitlDecision{Type: channels.DecisionApprove}, "approved", "✅ _Approved._"
+		return &channels.HitlDecision{Type: channels.DecisionApprove}, labelApproved, "✅ _Approved._"
 	}
 }
 
