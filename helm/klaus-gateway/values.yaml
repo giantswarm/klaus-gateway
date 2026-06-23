@@ -250,6 +250,16 @@ slack:
   # secretName is the name of the Kubernetes Secret with Slack credentials.
   # Required when slack.enabled is true.
   secretName: ""
+  # autoApprove enables rule-based auto-approval of safe HITL tool prompts so
+  # they resume without a human click. ask_user questions are never
+  # auto-approved. Off by default.
+  autoApprove: false
+  # autoApproveMaxRisk is the highest risk level auto-approved: "green"
+  # (read-only; default) or "yellow" (also side-effecting).
+  autoApproveMaxRisk: green
+  # autoApproveAllowedHosts is a list of host glob patterns the classifier
+  # treats as safe network destinations (e.g. ["*.giantswarm.io"]).
+  autoApproveAllowedHosts: []
 
 # CLI channel adapter.
 # Exposes POST /cli/v1/{instance}/run (SSE completions) and

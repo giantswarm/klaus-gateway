@@ -41,6 +41,11 @@ func TestClassify(t *testing.T) {
 		{"git push origin main", RiskYellow},
 		{"kubectl apply -f deployment.yaml", RiskYellow},
 		{"helm install my-release ./chart", RiskYellow},
+		// Yellow: bare destructive verbs must not fall through to the broad
+		// green noun rules (the "file"/"show" trap).
+		{"delete file /tmp/foo.txt", RiskYellow},
+		{"remove the old config and show the result", RiskYellow},
+		{"rename /a to /b", RiskYellow},
 		// Yellow: unclassified exec
 		{"spawn subprocess for compilation", RiskYellow},
 		// Yellow: network to unknown host

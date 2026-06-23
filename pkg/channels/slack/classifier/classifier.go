@@ -4,6 +4,7 @@
 package classifier
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 )
@@ -97,6 +98,15 @@ func (c *Classifier) Classify(prompt string) Result {
 		}
 	}
 
+	// Bare destructive/mutating verbs that the structured yellow rules above
+	// miss (they require SQL-like or tool-prefixed grammar). Without this guard
+	// a prompt like "delete file X" would fall through to the broad green noun
+	// rules ("file") and be auto-approved. Escalate to yellow so a human
+	// reviews it -- never silently green a mutating verb.
+	if reMutatingVerb.MatchString(lower) {
+		return Result{Risk: RiskYellow, Reason: "mutating verb"}
+	}
+
 	// Green: read-only operations.
 	for _, rule := range greenRules {
 		if rule.re.MatchString(lower) {
@@ -112,6 +122,22 @@ func (c *Classifier) Classify(prompt string) Result {
 func (c *Classifier) ShouldAutoApprove(prompt string) (bool, Result) {
 	result := c.Classify(prompt)
 	return result.Risk <= c.Config.AutoApproveThreshold, result
+}
+
+// ParseRisk parses a risk-level name into a Risk. An empty string defaults to
+// RiskGreen; unknown values return an error. Used to resolve the configured
+// auto-approval threshold.
+func ParseRisk(s string) (Risk, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "green":
+		return RiskGreen, nil
+	case "yellow":
+		return RiskYellow, nil
+	case "red":
+		return RiskRed, nil
+	default:
+		return RiskGreen, fmt.Errorf("classifier: unknown risk level %q (want green, yellow or red)", s)
+	}
 }
 
 // hostAllowed returns true when host matches one of the configured AllowedHosts globs.
@@ -168,6 +194,11 @@ func globMatch(pattern, s string) bool {
 }
 
 var reNetwork = regexp.MustCompile(`(?i)(https?://|curl |wget |fetch |net\.dial|http\.get|socket\.connect)`)
+
+// reMutatingVerb catches bare destructive/mutating verbs not covered by the
+// structured yellow rules, so a destructive operation described in prose cannot
+// reach the broad green noun rules.
+var reMutatingVerb = regexp.MustCompile(`\b(delete|remove|destroy|drop|erase|wipe|purge|overwrite|truncate|rename|move|kill|terminate|revoke|disable|uninstall|format|reset)\b`)
 
 var reHostInURL = regexp.MustCompile(`https?://([a-zA-Z0-9._-]+)`)
 

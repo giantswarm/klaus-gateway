@@ -34,6 +34,7 @@ import (
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 	cliachannel "github.com/giantswarm/klaus-gateway/pkg/channels/cli"
 	slackchannel "github.com/giantswarm/klaus-gateway/pkg/channels/slack"
+	"github.com/giantswarm/klaus-gateway/pkg/channels/slack/classifier"
 	"github.com/giantswarm/klaus-gateway/pkg/channels/web"
 	"github.com/giantswarm/klaus-gateway/pkg/instance"
 	"github.com/giantswarm/klaus-gateway/pkg/lifecycle"
@@ -190,6 +191,20 @@ func run(args []string) error {
 		if cfg.A2A.Enabled {
 			slackAdapter.DefaultAgent = cfg.A2A.DefaultAgent
 		}
+		if cfg.Slack.AutoApprove {
+			threshold, err := classifier.ParseRisk(cfg.Slack.AutoApproveMaxRisk)
+			if err != nil {
+				return fmt.Errorf("slack auto-approve: %w", err)
+			}
+			slackAdapter.Classifier = &classifier.Classifier{Config: classifier.Config{
+				AutoApproveThreshold: threshold,
+				AllowedHosts:         cfg.Slack.AutoApproveAllowedHosts,
+			}}
+			logger.Info("slack auto-approval enabled",
+				"max_risk", threshold.String(),
+				"allowed_hosts", len(cfg.Slack.AutoApproveAllowedHosts),
+			)
+		}
 		if err := slackAdapter.Start(ctx, facade); err != nil {
 			return fmt.Errorf("start slack adapter: %w", err)
 		}
@@ -228,7 +243,7 @@ func run(args []string) error {
 		if slackAdapter != nil {
 			slackEmail = slackAdapter.LookupUserEmail
 		}
-		linker, closeLinker, err := buildOBOLinker(ctx, cfg.OBO, logger, slackEmail)
+		linker, closeLinker, err := buildOBOLinker(cfg.OBO, logger, slackEmail)
 		if err != nil {
 			return fmt.Errorf("build obo linker: %w", err)
 		}
@@ -384,7 +399,7 @@ func buildStore(cfg config.Config) (store.Store, error) {
 // returns a cleanup func that closes the link store (a no-op for the in-memory
 // store). slackEmail is the anti-spoof email lookup; nil skips the email-match
 // check at callback.
-func buildOBOLinker(ctx context.Context, cfg config.OBOConfig, logger *slog.Logger,
+func buildOBOLinker(cfg config.OBOConfig, logger *slog.Logger,
 	slackEmail func(context.Context, string) (string, error),
 ) (*musterlink.Linker, func() error, error) {
 	stateKey, err := os.ReadFile(cfg.StateKeyFile)
@@ -416,7 +431,7 @@ func buildOBOLinker(ctx context.Context, cfg config.OBOConfig, logger *slog.Logg
 		clientID = strings.TrimRight(cfg.CallbackBaseURL, "/") + musterlink.CIMDPath
 	}
 
-	linker, err := musterlink.New(ctx, musterlink.Config{
+	linker, err := musterlink.New(musterlink.Config{
 		BaseURL:       cfg.MusterURL,
 		ClientID:      clientID,
 		ClientSecret:  cfg.ClientSecret,

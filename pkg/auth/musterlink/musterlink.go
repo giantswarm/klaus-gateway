@@ -121,6 +121,7 @@ type authServerMetadata struct {
 // Linker drives the muster account-linking flow and mints human tokens.
 type Linker struct {
 	oauth         *oauth2.Config
+	baseURL       string // muster base URL; RFC 8414 discovery target
 	userinfoURL   string
 	publicBaseURL string
 	httpClient    *http.Client
@@ -130,6 +131,11 @@ type Linker struct {
 	slackEmail    func(ctx context.Context, slackUserID string) (string, error)
 	logger        *slog.Logger
 	now           func() time.Time
+
+	// discoMu guards lazy RFC 8414 discovery: oauth.Endpoint and userinfoURL
+	// are populated on first use, not at construction.
+	discoMu    sync.Mutex
+	discovered bool
 
 	mu      sync.Mutex
 	pending map[string]pendingAuth // state -> PKCE verifier
@@ -147,8 +153,10 @@ type pendingAuth struct {
 	expires  time.Time
 }
 
-// New builds a Linker, discovering muster's OAuth endpoints via RFC 8414.
-func New(ctx context.Context, cfg Config) (*Linker, error) {
+// New builds a Linker. RFC 8414 discovery of muster's OAuth endpoints is
+// deferred to first use (see ensureDiscovered), so a muster outage at gateway
+// start does not block boot -- the same deferral the OIDC ingress verifier uses.
+func New(cfg Config) (*Linker, error) {
 	if cfg.Store == nil {
 		return nil, errors.New("musterlink: Store is required")
 	}
@@ -161,10 +169,6 @@ func New(ctx context.Context, cfg Config) (*Linker, error) {
 	httpClient := cfg.HTTPClient
 	if httpClient == nil {
 		httpClient = http.DefaultClient
-	}
-	md, err := discover(ctx, httpClient, cfg.BaseURL)
-	if err != nil {
-		return nil, err
 	}
 	scopes := cfg.Scopes
 	if len(scopes) == 0 {
@@ -182,15 +186,11 @@ func New(ctx context.Context, cfg Config) (*Linker, error) {
 		oauth: &oauth2.Config{
 			ClientID:     cfg.ClientID,
 			ClientSecret: cfg.ClientSecret,
-			Endpoint: oauth2.Endpoint{
-				AuthURL:   md.AuthorizationEndpoint,
-				TokenURL:  md.TokenEndpoint,
-				AuthStyle: oauth2.AuthStyleInParams,
-			},
+			// Endpoint is populated lazily by ensureDiscovered.
 			RedirectURL: cfg.RedirectURL,
 			Scopes:      scopes,
 		},
-		userinfoURL:   md.UserinfoEndpoint,
+		baseURL:       strings.TrimRight(cfg.BaseURL, "/"),
 		publicBaseURL: strings.TrimRight(cfg.PublicBaseURL, "/"),
 		httpClient:    httpClient,
 		store:         cfg.Store,
@@ -201,6 +201,29 @@ func New(ctx context.Context, cfg Config) (*Linker, error) {
 		now:           time.Now,
 		pending:       map[string]pendingAuth{},
 	}, nil
+}
+
+// ensureDiscovered resolves muster's OAuth endpoints via RFC 8414 on first use
+// and caches them on the embedded oauth2.Config. Discovery failures are not
+// cached, so a transient muster outage is retried on the next call.
+func (l *Linker) ensureDiscovered(ctx context.Context) error {
+	l.discoMu.Lock()
+	defer l.discoMu.Unlock()
+	if l.discovered {
+		return nil
+	}
+	md, err := discover(ctx, l.httpClient, l.baseURL)
+	if err != nil {
+		return err
+	}
+	l.oauth.Endpoint = oauth2.Endpoint{
+		AuthURL:   md.AuthorizationEndpoint,
+		TokenURL:  md.TokenEndpoint,
+		AuthStyle: oauth2.AuthStyleInParams,
+	}
+	l.userinfoURL = md.UserinfoEndpoint
+	l.discovered = true
+	return nil
 }
 
 // discover fetches RFC 8414 authorization-server metadata from baseURL.
@@ -309,6 +332,11 @@ func (l *Linker) HandleLink(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid or expired sign-in link", http.StatusBadRequest)
 		return
 	}
+	if err := l.ensureDiscovered(r.Context()); err != nil {
+		l.logger.Error("musterlink: oauth discovery failed", "err", err)
+		http.Error(w, "sign-in temporarily unavailable", http.StatusBadGateway)
+		return
+	}
 	verifier := oauth2.GenerateVerifier()
 	l.putPending(state, verifier)
 	url := l.oauth.AuthCodeURL(state, oauth2.S256ChallengeOption(verifier))
@@ -374,6 +402,9 @@ func (l *Linker) HandleCallback(w http.ResponseWriter, r *http.Request) {
 // endpoint. The returned Link has no LinkedAt set; the caller stamps and stores
 // it after any email-match check.
 func (l *Linker) Exchange(ctx context.Context, code, codeVerifier string) (*Link, error) {
+	if err := l.ensureDiscovered(ctx); err != nil {
+		return nil, err
+	}
 	tok, err := l.oauth.Exchange(ctx, code, oauth2.VerifierOption(codeVerifier))
 	if err != nil {
 		return nil, fmt.Errorf("musterlink: code exchange: %w", err)
@@ -438,6 +469,9 @@ func (l *Linker) TokenFor(ctx context.Context, slackUserID string) (string, erro
 	link, ok := l.store.Get(slackUserID)
 	if !ok {
 		return "", ErrNotLinked
+	}
+	if err := l.ensureDiscovered(ctx); err != nil {
+		return "", fmt.Errorf("musterlink: discovery: %w", err)
 	}
 	src := l.oauth.TokenSource(ctx, &oauth2.Token{RefreshToken: link.RefreshToken})
 	tok, err := src.Token()

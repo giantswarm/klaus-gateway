@@ -66,14 +66,24 @@ func (v *OIDCTokenVerifier) Verify(ctx context.Context, token string) (string, e
 // completes.
 func (v *OIDCTokenVerifier) idVerifier(ctx context.Context) (*oidc.IDTokenVerifier, error) {
 	v.mu.Lock()
-	defer v.mu.Unlock()
-	if v.verifier != nil {
-		return v.verifier, nil
+	cached := v.verifier
+	v.mu.Unlock()
+	if cached != nil {
+		return cached, nil
 	}
+	// Discover outside the lock so a slow issuer does not stall concurrent
+	// verifies; a rare duplicate discovery under a first-call race is harmless
+	// (the result is idempotent and only the first store wins).
 	provider, err := oidc.NewProvider(context.WithoutCancel(ctx), v.cfg.Issuer)
 	if err != nil {
 		return nil, fmt.Errorf("oidc discovery for %q: %w", v.cfg.Issuer, err)
 	}
-	v.verifier = provider.Verifier(&oidc.Config{ClientID: v.cfg.Audience})
-	return v.verifier, nil
+	verifier := provider.Verifier(&oidc.Config{ClientID: v.cfg.Audience})
+	v.mu.Lock()
+	if v.verifier == nil {
+		v.verifier = verifier
+	}
+	cached = v.verifier
+	v.mu.Unlock()
+	return cached, nil
 }

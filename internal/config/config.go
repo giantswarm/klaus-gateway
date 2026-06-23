@@ -92,6 +92,18 @@ type SlackConfig struct {
 	// so a restart never replays messages queued while it was down.
 	// SLACK_DROP_STALE=true. Default false.
 	DropStaleEvents bool
+	// AutoApprove enables rule-based auto-approval of A2A input-required tool
+	// prompts so safe operations resume without a human click. ask_user
+	// questions are never auto-approved. SLACK_AUTO_APPROVE. Default false.
+	AutoApprove bool
+	// AutoApproveMaxRisk is the highest risk level eligible for auto-approval:
+	// "green" (read-only; default) or "yellow" (also side-effecting).
+	// SLACK_AUTO_APPROVE_MAX_RISK.
+	AutoApproveMaxRisk string
+	// AutoApproveAllowedHosts is a list of host glob patterns the classifier
+	// treats as safe network destinations. SLACK_AUTO_APPROVE_ALLOWED_HOSTS
+	// (comma-separated).
+	AutoApproveAllowedHosts []string
 }
 
 // OBOConfig configures Slack on-behalf-of (OBO) muster account linking. When
@@ -214,6 +226,8 @@ func Load(args []string) (Config, error) {
 	fs.BoolVar(&cfg.Slack.Enabled, "slack-enabled", cfg.Slack.Enabled, "Enable the Slack channel adapter.")
 	fs.StringVar(&cfg.Slack.Mode, "slack-mode", cfg.Slack.Mode, "Slack connection mode: events or socketmode.")
 	fs.StringVar(&cfg.Slack.SecretsFile, "slack-secrets-file", cfg.Slack.SecretsFile, "Path to Slack secrets YAML file.")
+	fs.BoolVar(&cfg.Slack.AutoApprove, "slack-auto-approve", cfg.Slack.AutoApprove, "Enable rule-based auto-approval of safe Slack HITL tool prompts (ask_user questions are never auto-approved).")
+	fs.StringVar(&cfg.Slack.AutoApproveMaxRisk, "slack-auto-approve-max-risk", cfg.Slack.AutoApproveMaxRisk, "Highest risk level auto-approved: green (read-only; default) or yellow.")
 	fs.BoolVar(&cfg.CLI.Enabled, "cli-enabled", cfg.CLI.Enabled, "Enable the CLI channel adapter at /cli/v1/*.")
 	fs.BoolVar(&cfg.Controller, "controller", cfg.Controller, "Enable the embedded ChannelRoute controller (requires --store=crd).")
 	fs.BoolVar(&cfg.A2A.Enabled, "a2a-enabled", cfg.A2A.Enabled, "Enable the A2A client surface.")
@@ -313,6 +327,15 @@ func applyEnv(cfg *Config) {
 	if v, ok := lookup("SLACK_DROP_STALE"); ok {
 		cfg.Slack.DropStaleEvents = strings.EqualFold(v, "true") || v == "1"
 	}
+	if v, ok := lookup("SLACK_AUTO_APPROVE"); ok {
+		cfg.Slack.AutoApprove = strings.EqualFold(v, "true") || v == "1"
+	}
+	if v, ok := lookup("SLACK_AUTO_APPROVE_MAX_RISK"); ok {
+		cfg.Slack.AutoApproveMaxRisk = v
+	}
+	if v, ok := lookup("SLACK_AUTO_APPROVE_ALLOWED_HOSTS"); ok && v != "" {
+		cfg.Slack.AutoApproveAllowedHosts = strings.Split(v, ",")
+	}
 	if v, ok := lookup("CLI_ENABLED"); ok {
 		cfg.CLI.Enabled = strings.EqualFold(v, "true") || v == "1"
 	}
@@ -407,6 +430,13 @@ func (c Config) Validate() error {
 	}
 	if c.OIDC.Issuer != "" && c.OIDC.Audience == "" {
 		return fmt.Errorf("--oidc-audience is required with --oidc-issuer")
+	}
+	if c.Slack.AutoApprove {
+		switch strings.ToLower(c.Slack.AutoApproveMaxRisk) {
+		case "", "green", "yellow":
+		default:
+			return fmt.Errorf("invalid --slack-auto-approve-max-risk %q: must be green or yellow", c.Slack.AutoApproveMaxRisk)
+		}
 	}
 	return nil
 }

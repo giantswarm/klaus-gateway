@@ -29,6 +29,15 @@ func markdownToMrkdwn(text string) string {
 		return ph
 	})
 
+	// Protect a trailing, still-unterminated fence too. During streaming the
+	// closing ``` may not have arrived yet; without this its body would be
+	// mangled by the bold/italic/link transforms below until it closes.
+	if idx := strings.Index(text, "```"); idx >= 0 {
+		ph := fmt.Sprintf("\x00fence%d\x00", len(fences))
+		fences = append(fences, fence{ph, text[idx:]})
+		text = text[:idx] + ph
+	}
+
 	// Headings: # Foo → *Foo*
 	text = reMrkdwnHeading.ReplaceAllString(text, "*$1*")
 	// Bold: **x** → *x*

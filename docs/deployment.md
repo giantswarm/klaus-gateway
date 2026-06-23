@@ -228,6 +228,26 @@ slack:
 The secret values are injected as `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET`, and
 `SLACK_APP_TOKEN` environment variables respectively.
 
+#### HITL auto-approval (optional)
+
+When the agent pauses a turn for tool approval, the gateway can auto-approve
+operations a rule-based classifier deems safe instead of prompting in Slack.
+`ask_user` questions always require a human answer. Disabled by default.
+
+```yaml
+slack:
+  autoApprove: true
+  autoApproveMaxRisk: green   # "green" (read-only; default) or "yellow" (also side-effecting)
+  autoApproveAllowedHosts:    # host globs the classifier treats as safe network destinations
+  - "*.giantswarm.io"
+```
+
+| Flag | Env | Notes |
+|------|-----|-------|
+| `--slack-auto-approve` | `KLAUS_GATEWAY_SLACK_AUTO_APPROVE` | Off unless set |
+| `--slack-auto-approve-max-risk` | `KLAUS_GATEWAY_SLACK_AUTO_APPROVE_MAX_RISK` | `green` or `yellow` |
+| (env only) | `KLAUS_GATEWAY_SLACK_AUTO_APPROVE_ALLOWED_HOSTS` | comma-separated host globs |
+
 For Events API mode, set the Request URL in your Slack app to
 `https://<your-domain>/channels/slack/events`. Use `deploy/slack/manifest.yaml` to create
 and configure the Slack app in one step.

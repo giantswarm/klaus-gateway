@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Updated `tests/test-values.yaml`: removed stale `lifecycle.operatorMCPURL` override and bumped `image.tag` from `0.0.44` to `0.1.4`. The old pin ran the binary that rejected `--driver=static` with empty instances, causing CrashLoopBackOff.
+- Slack classifier no longer lets bare destructive verbs (e.g. "delete file X") fall through to the broad read-only ("green") rules; an unmatched mutating verb now escalates to "yellow" so it is never silently auto-approved.
+- Slack replies larger than a single Slack message no longer fail the `chat.update` call; the batched writer rolls the overflow over into follow-up in-thread messages, and an in-progress (unterminated) code fence is left unformatted instead of being mangled by mrkdwn transforms.
+- `musterlink` OBO discovery is deferred to first use (matching the OIDC ingress verifier), so a muster outage at startup no longer blocks gateway boot.
 
 ### Changed
 
@@ -25,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `channels.SynthesizeContextID` derives a stable A2A contextID from `(channel, channelID, userID, threadID, agentRef)` using length-prefixed SHA-256 encoding.
 - `slack.defaultAgent` config (`--slack-default-agent` / `KLAUS_GATEWAY_SLACK_DEFAULT_AGENT`): every Slack thread routes to this named agent. Required when Slack is enabled; validated against the static instance set at startup when `--driver=static`.
 - Channel turns are now routed through the A2A executor (`ForwardingExecutor.Execute`) when `Facade.Executor` is set and `InboundMessage.AgentRef` is non-empty. Artifact events map to `OutboundDelta{Content}` and terminal status events map to `OutboundDelta{Done: true}`.
+- Slack HITL auto-approval is now configurable and wired (`--slack-auto-approve` / `KLAUS_GATEWAY_SLACK_AUTO_APPROVE`, `--slack-auto-approve-max-risk`, `KLAUS_GATEWAY_SLACK_AUTO_APPROVE_ALLOWED_HOSTS`, and `slack.autoApprove*` Helm values). When enabled, the rule-based classifier auto-approves safe (green) or optionally side-effecting (yellow) tool prompts; `ask_user` questions always require a human answer. Disabled by default.
 
 ### Changed
 

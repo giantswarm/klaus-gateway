@@ -90,7 +90,7 @@ func writeJSON(w http.ResponseWriter, v any) {
 
 func newTestLinker(t *testing.T, stub *musterStub, store Store, slackEmail func(context.Context, string) (string, error)) *Linker {
 	t.Helper()
-	l, err := New(context.Background(), Config{
+	l, err := New(Config{
 		BaseURL:      stub.server.URL,
 		ClientID:     stub.clientID,
 		ClientSecret: "secret",
@@ -108,7 +108,7 @@ func TestClientMetadataDocument(t *testing.T) {
 	// The gateway's CIMD client_id is the absolute URL of the served document.
 	const publicBase = "https://gw.example.com"
 	clientID := publicBase + CIMDPath
-	l, err := New(context.Background(), Config{
+	l, err := New(Config{
 		BaseURL:       stub.server.URL,
 		ClientID:      clientID,
 		RedirectURL:   publicBase + CallbackPath,
@@ -138,6 +138,25 @@ func TestClientMetadataDocument(t *testing.T) {
 	require.Equal(t, "none", doc.TokenEndpointAuthMethod)
 	require.Contains(t, doc.GrantTypes, "refresh_token")
 	require.Equal(t, "openid profile email offline_access", doc.Scope)
+}
+
+func TestNewDefersDiscovery(t *testing.T) {
+	// New must not contact muster: construction succeeds even when the
+	// authorization server is unreachable, so a muster outage cannot block
+	// gateway boot. The failure surfaces only on first use.
+	store := NewMemStore()
+	store.Put("U1", &Link{RefreshToken: "refresh-0"})
+	l, err := New(Config{
+		BaseURL:     "http://127.0.0.1:1", // closed port; discovery would fail
+		ClientID:    "klaus-gateway",
+		RedirectURL: "https://gw.example.com" + CallbackPath,
+		StateKey:    []byte("hmac-state-key"),
+		Store:       store,
+	})
+	require.NoError(t, err)
+
+	_, err = l.TokenFor(context.Background(), "U1")
+	require.Error(t, err, "first use must surface the deferred discovery failure")
 }
 
 func TestSignVerifyState(t *testing.T) {

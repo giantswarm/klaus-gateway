@@ -77,6 +77,10 @@ spec:
         {{- if .Values.slack.enabled }}
         - --slack-enabled
         - --slack-mode={{ .Values.slack.mode }}
+        {{- if .Values.slack.autoApprove }}
+        - --slack-auto-approve
+        - --slack-auto-approve-max-risk={{ .Values.slack.autoApproveMaxRisk }}
+        {{- end }}
         {{- end }}
         {{- if .Values.a2a.enabled }}
         - --a2a-enabled
@@ -127,6 +131,10 @@ spec:
               key: app-token
               optional: true
         {{- end }}
+        {{- end }}
+        {{- if and .Values.slack.enabled .Values.slack.autoApproveAllowedHosts }}
+        - name: KLAUS_GATEWAY_SLACK_AUTO_APPROVE_ALLOWED_HOSTS
+          value: {{ join "," .Values.slack.autoApproveAllowedHosts | quote }}
         {{- end }}
         {{- if .Values.obo.enabled }}
         # Slack OBO. client_id is auto-derived from the callback base URL (CIMD),

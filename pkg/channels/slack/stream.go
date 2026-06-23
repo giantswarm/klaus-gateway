@@ -16,6 +16,10 @@ import (
 const (
 	batchInterval = 250 * time.Millisecond
 	slackAPIBase  = "https://slack.com/api"
+	// slackMaxMessageLen caps a single Slack message body, under the 40 000-char
+	// hard limit with headroom for mrkdwn expansion. A reply that exceeds it is
+	// rolled over into follow-up in-thread messages by flush.
+	slackMaxMessageLen = 39000
 )
 
 // batchedWriter accumulates OutboundDelta content and periodically calls
@@ -40,6 +44,9 @@ type batchedWriter struct {
 	buf         strings.Builder
 	statusTS    string                  // timestamp of the lazily-created status message; empty until first status delta
 	promptDelta *channels.OutboundDelta // set when stream ends on DeltaPrompt
+	// tailTS holds the timestamps of overflow messages posted when the reply
+	// outgrows a single Slack message. Only touched from run()'s goroutine.
+	tailTS []string
 }
 
 func newBatchedWriterWithClient(client *slackAPIClient, channel, ts, threadTS string) *batchedWriter {
@@ -142,6 +149,11 @@ func (w *batchedWriter) updateStatus(ctx context.Context, text string) error {
 	return w.client.chatUpdate(ctx, w.channel, statusTS, text)
 }
 
+// flush renders the accumulated reply to mrkdwn and writes it to Slack. A reply
+// that fits one message is a single chat.update of the main message. A larger
+// reply rolls over: the head updates the main message and each subsequent chunk
+// updates (or, the first time, posts) a stable follow-up message in-thread, so
+// growing replies extend in place without duplicating messages.
 func (w *batchedWriter) flush(ctx context.Context) error {
 	w.mu.Lock()
 	text := w.buf.String()
@@ -149,7 +161,25 @@ func (w *batchedWriter) flush(ctx context.Context) error {
 	if text == "" {
 		return nil
 	}
-	return w.client.chatUpdate(ctx, w.channel, w.ts, markdownToMrkdwn(text))
+	chunks := splitAtLines(markdownToMrkdwn(text), slackMaxMessageLen)
+
+	if err := w.client.chatUpdate(ctx, w.channel, w.ts, chunks[0]); err != nil {
+		return err
+	}
+	for i, chunk := range chunks[1:] {
+		if i < len(w.tailTS) {
+			if err := w.client.chatUpdate(ctx, w.channel, w.tailTS[i], chunk); err != nil {
+				return err
+			}
+			continue
+		}
+		ts, err := w.client.postMessage(ctx, w.channel, chunk, w.threadTS)
+		if err != nil {
+			return err
+		}
+		w.tailTS = append(w.tailTS, ts)
+	}
+	return nil
 }
 
 // slackAPIClient is a minimal HTTP client for the Slack Web API.
@@ -325,13 +355,15 @@ func (c *slackAPIClient) postSignInPrompt(ctx context.Context, channel, threadID
 	return err
 }
 
-// truncateButtonLabel keeps a button label within Slack's 75-char limit.
+// truncateButtonLabel keeps a button label within Slack's 75-character limit,
+// counting runes (not bytes) so a multi-byte label is never cut mid-rune.
 func truncateButtonLabel(s string) string {
 	const max = 75
-	if len(s) <= max {
+	r := []rune(s)
+	if len(r) <= max {
 		return s
 	}
-	return s[:max-1] + "…"
+	return string(r[:max-1]) + "…"
 }
 
 // chatUpdateBlocks replaces a Block Kit message with plain text (used to mark
