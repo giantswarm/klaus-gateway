@@ -12,6 +12,13 @@ const (
 	cmdOpen    = "open"
 	cmdLock    = "lock"
 	cmdObserve = "observe"
+	cmdKlaus   = "klaus" // /klaus login | /klaus logout (OBO account linking)
+)
+
+// /klaus subcommands.
+const (
+	subLogin  = "login"
+	subLogout = "logout"
 )
 
 // slashCommand is a parsed in-thread slash command.
@@ -46,6 +53,11 @@ const helpText = `*Commands*
 • ` + "`/observe`" + ` — toggle observe mode _(owner only)_
 • ` + "`/help`" + ` — show this message`
 
+// oboHelpText is appended to helpText when OBO account linking is enabled.
+const oboHelpText = `
+• ` + "`/klaus login`" + ` — sign in to Giant Swarm so I act on your behalf
+• ` + "`/klaus logout`" + ` — sign out (run as the gateway service account)`
+
 // handleCommand processes a slash command and posts a reply in-thread.
 // Returns true when the command was consumed (caller should not dispatch).
 func (a *Adapter) handleCommand(ctx context.Context, cmd *slashCommand, slackUser, slackChannel, threadID string) bool {
@@ -61,8 +73,15 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *slashCommand, slackUse
 
 	switch cmd.Name {
 	case cmdHelp:
-		reply(helpText)
+		text := helpText
+		if a.OBO != nil {
+			text += oboHelpText
+		}
+		reply(text)
 		return true
+
+	case cmdKlaus:
+		return a.handleKlausCommand(ctx, cmd, slackUser, slackChannel, threadID, reply)
 
 	case cmdStop:
 		a.turnsMu.Lock()
@@ -123,4 +142,33 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *slashCommand, slackUse
 	}
 
 	return false
+}
+
+// handleKlausCommand handles `/klaus login` and `/klaus logout` (OBO account
+// linking). It always consumes the command (returns true). When OBO is
+// disabled it says so rather than silently dispatching the text to the agent.
+func (a *Adapter) handleKlausCommand(ctx context.Context, cmd *slashCommand, slackUser, slackChannel, threadID string, reply func(string)) bool {
+	if a.OBO == nil {
+		reply("_On-behalf-of sign-in is not enabled on this gateway._")
+		return true
+	}
+	if slackUser == "" {
+		reply("_Could not determine your Slack user; sign-in is unavailable._")
+		return true
+	}
+	sub := ""
+	if len(cmd.Args) > 0 {
+		sub = strings.ToLower(cmd.Args[0])
+	}
+	switch sub {
+	case subLogin:
+		// Explicit request: post the sign-in prompt without the nudge throttle.
+		a.postSignIn(ctx, slackChannel, threadID, slackUser)
+	case subLogout:
+		a.OBO.Unlink(slackUser)
+		reply("👋 Signed out. I'll run as the gateway service account until you `/klaus login` again.")
+	default:
+		reply("_Usage:_ `/klaus login` _or_ `/klaus logout`")
+	}
+	return true
 }
