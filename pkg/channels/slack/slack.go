@@ -386,7 +386,7 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 				a.Logger.Info("slack: auto-approving input-required", "task", pd.TaskID, "risk", result.Risk, "reason", result.Reason)
 				resumeMsg := msg
 				resumeMsg.TaskID = pd.TaskID
-				resumeMsg.Text = "approved"
+				resumeMsg.Text = labelApproved
 				resumeMsg.Decision = &channels.HitlDecision{Type: channels.DecisionApprove}
 				deltas, err = a.gw.SendCompletion(turnCtx, ref, resumeMsg)
 				if err != nil {
