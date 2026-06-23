@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -84,6 +85,37 @@ func newServerWithDefaultAgent(t *testing.T, gw channels.Gateway, defaultAgent s
 	ts := httptest.NewServer(r)
 	t.Cleanup(ts.Close)
 	return ts
+}
+
+type stubVerifier struct {
+	sub string
+	err error
+}
+
+func (s stubVerifier) Verify(context.Context, string) (string, error) { return s.sub, s.err }
+
+func newServerWithVerifier(t *testing.T, gw channels.Gateway, v channels.TokenVerifier) *httptest.Server {
+	t.Helper()
+	a := &cli.Adapter{Verifier: v}
+	require.NoError(t, a.Start(t.Context(), gw))
+	r := chi.NewRouter()
+	a.Mount(r)
+	ts := httptest.NewServer(r)
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+func postBearer(t *testing.T, url, token, body string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, url, bytes.NewBufferString(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	return resp
 }
 
 func TestPostRun_StreamsSSE(t *testing.T) {
@@ -291,4 +323,43 @@ func TestPostRun_NoAgentRefFallsBackToOpenAIPath(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	require.Equal(t, "", gw.sendInbound.AgentRef)
+}
+
+func TestPostRun_NilVerifierSkipsAndForwardsToken(t *testing.T) {
+	gw := &stubGateway{deltas: []channels.OutboundDelta{{Done: true}}}
+	ts := newServer(t, gw)
+
+	resp := postBearer(t, ts.URL+"/cli/v1/myinst/run", "raw-token", sampleSendBody)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Equal(t, "raw-token", gw.sendInbound.BearerToken)
+	require.Equal(t, "raw-token", gw.sendInbound.Subject)
+}
+
+func TestPostRun_VerifierRejectsWith401(t *testing.T) {
+	gw := &stubGateway{deltas: []channels.OutboundDelta{{Done: true}}}
+	ts := newServerWithVerifier(t, gw, stubVerifier{err: errors.New("bad token")})
+
+	resp := postBearer(t, ts.URL+"/cli/v1/myinst/run", "bad", sampleSendBody)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
+func TestPostRun_VerifiedSubjectReplacesBearer(t *testing.T) {
+	gw := &stubGateway{deltas: []channels.OutboundDelta{{Done: true}}}
+	ts := newServerWithVerifier(t, gw, stubVerifier{sub: "verified-sub"})
+
+	resp := postBearer(t, ts.URL+"/cli/v1/myinst/run", "opaque", sampleSendBody)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Equal(t, "verified-sub", gw.sendInbound.Subject)
+	require.Equal(t, "verified-sub", gw.sendInbound.UserID)
+}
+
+func TestPostMessages_VerifierRejectsWith401(t *testing.T) {
+	ts := newServerWithVerifier(t, &stubGateway{}, stubVerifier{err: errors.New("bad token")})
+
+	resp := postBearer(t, ts.URL+"/cli/v1/myinst/messages", "bad", `{"sessionId":"s1"}`)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 }

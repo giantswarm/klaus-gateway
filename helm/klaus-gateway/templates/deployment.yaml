@@ -92,6 +92,10 @@ spec:
         - --a2a-token-path={{ .Values.a2a.tokenPath }}
         {{- end }}
         {{- end }}
+        {{- if .Values.oidc.issuer }}
+        - --oidc-issuer={{ .Values.oidc.issuer }}
+        - --oidc-audience={{ .Values.oidc.audience }}
+        {{- end }}
         ports:
         - name: http
           containerPort: {{ .Values.server.port }}

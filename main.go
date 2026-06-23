@@ -150,7 +150,19 @@ func run(args []string) error {
 		Lifecycle: manager,
 	}
 
-	webAdapter := &web.Adapter{Logger: logger}
+	var verifier channels.TokenVerifier
+	if cfg.OIDC.Issuer != "" {
+		verifier = channels.NewOIDCTokenVerifier(channels.OIDCVerifierConfig{
+			Issuer:   cfg.OIDC.Issuer,
+			Audience: cfg.OIDC.Audience,
+		})
+		logger.Info("oidc ingress verification enabled",
+			"oidc_issuer", cfg.OIDC.Issuer,
+			"oidc_audience", cfg.OIDC.Audience,
+		)
+	}
+
+	webAdapter := &web.Adapter{Logger: logger, Verifier: verifier}
 	if cfg.A2A.Enabled {
 		webAdapter.DefaultAgent = cfg.A2A.DefaultAgent
 	}
@@ -193,7 +205,7 @@ func run(args []string) error {
 	}
 
 	if cfg.CLI.Enabled {
-		cliAdapter := &cliachannel.Adapter{Logger: logger}
+		cliAdapter := &cliachannel.Adapter{Logger: logger, Verifier: verifier}
 		if cfg.A2A.Enabled {
 			cliAdapter.DefaultAgent = cfg.A2A.DefaultAgent
 		}

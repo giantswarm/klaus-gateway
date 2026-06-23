@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Optional Dex/OIDC verification of inbound bearer tokens at the web and CLI ingress (`--oidc-issuer` / `KLAUS_GATEWAY_OIDC_ISSUER`, `--oidc-audience` / `KLAUS_GATEWAY_OIDC_AUDIENCE`). When the issuer is set, the token's signature, issuer, audience, and expiry are validated before it is forwarded on the A2A egress request; failures return `401` and the verified `sub` becomes the request subject. Unset issuer keeps the previous pass-through behaviour. New API in `pkg/channels`: `TokenVerifier`, `OIDCTokenVerifier`, `OIDCVerifierConfig`, `NewOIDCTokenVerifier`.
 - A2A egress forwards the caller's inbound bearer token: `InboundMessage.BearerToken` is captured from the `Authorization` header by the web and CLI adapters and sent as `Authorization` on the A2A request, so kagent (trusted-proxy) sees the end-user identity. Channels with no per-user token (Slack) fall back to the `--a2a-token-path` ServiceAccount token. New API in `pkg/a2a`: `TokenSource`, `FileTokenSource`, `ForwardedTokenSource`, `WithForwardedToken`, `ForwardedTokenFromContext`.
 - `channels.SynthesizeContextID` derives a stable A2A contextID from `(channel, channelID, userID, threadID, agentRef)` using length-prefixed SHA-256 encoding.
 - `slack.defaultAgent` config (`--slack-default-agent` / `KLAUS_GATEWAY_SLACK_DEFAULT_AGENT`): every Slack thread routes to this named agent. Required when Slack is enabled; validated against the static instance set at startup when `--driver=static`.

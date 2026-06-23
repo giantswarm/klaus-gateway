@@ -55,6 +55,17 @@ type CLIConfig struct {
 	Enabled bool
 }
 
+// OIDCConfig configures Dex/OIDC ingress verification for the web and CLI
+// channels. When Issuer is empty, inbound bearer tokens are forwarded without
+// verification (backwards compatible with deployments that have no OBO).
+type OIDCConfig struct {
+	// Issuer is the OIDC issuer URL whose JWKS validates inbound bearer tokens.
+	// Empty disables ingress verification.
+	Issuer string
+	// Audience is the expected `aud` claim of inbound tokens.
+	Audience string
+}
+
 // SlackConfig holds runtime configuration for the Slack channel adapter.
 type SlackConfig struct {
 	// Enabled gates all Slack behaviour; the adapter is skipped when false.
@@ -146,6 +157,7 @@ type Config struct {
 	CLI   CLIConfig
 	A2A   A2AConfig
 	OBO   OBOConfig
+	OIDC  OIDCConfig
 
 	// Controller enables the embedded ChannelRoute controller-runtime manager.
 	Controller bool
@@ -216,6 +228,8 @@ func Load(args []string) (Config, error) {
 	fs.StringVar(&cfg.OBO.StorePath, "obo-store-path", cfg.OBO.StorePath, "Path to the encrypted bolt link store. Empty uses an in-memory store.")
 	fs.StringVar(&cfg.OBO.StoreKeyFile, "obo-store-key-file", cfg.OBO.StoreKeyFile, "Path to the 32-byte AES-256 key file for the link store (required with --obo-store-path).")
 	fs.StringVar(&cfg.OBO.StateKeyFile, "obo-state-key-file", cfg.OBO.StateKeyFile, "Path to the HMAC key file used to sign link state (required with --obo-enabled).")
+	fs.StringVar(&cfg.OIDC.Issuer, "oidc-issuer", cfg.OIDC.Issuer, "OIDC issuer URL for verifying inbound bearer tokens at the web/CLI ingress. Empty disables verification.")
+	fs.StringVar(&cfg.OIDC.Audience, "oidc-audience", cfg.OIDC.Audience, "Expected audience (aud) claim of inbound bearer tokens. Required when --oidc-issuer is set.")
 
 	fs.Usage = func() {
 		_, _ = fmt.Fprintf(fs.Output(), "klaus-gateway -- channel and routing gateway in front of klaus instances.\n\n")
@@ -341,6 +355,12 @@ func applyEnv(cfg *Config) {
 	if v, ok := lookup("OBO_STATE_KEY_FILE"); ok {
 		cfg.OBO.StateKeyFile = v
 	}
+	if v, ok := lookup("OIDC_ISSUER"); ok {
+		cfg.OIDC.Issuer = v
+	}
+	if v, ok := lookup("OIDC_AUDIENCE"); ok {
+		cfg.OIDC.Audience = v
+	}
 }
 
 func lookup(key string) (string, bool) {
@@ -384,6 +404,9 @@ func (c Config) Validate() error {
 		if (c.OBO.StorePath == "") != (c.OBO.StoreKeyFile == "") {
 			return fmt.Errorf("--obo-store-path and --obo-store-key-file must be set together")
 		}
+	}
+	if c.OIDC.Issuer != "" && c.OIDC.Audience == "" {
+		return fmt.Errorf("--oidc-audience is required with --oidc-issuer")
 	}
 	return nil
 }
