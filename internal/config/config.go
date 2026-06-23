@@ -83,6 +83,39 @@ type SlackConfig struct {
 	DropStaleEvents bool
 }
 
+// OBOConfig configures Slack on-behalf-of (OBO) muster account linking. When
+// enabled, the gateway mounts the /auth/slack/link and /auth/slack/callback
+// routes (see pkg/auth/musterlink) and forwards a fresh human muster token per
+// Slack message instead of acting as a pure machine identity. The gateway is a
+// muster OAuth client; humans link once via a browser PKCE flow.
+type OBOConfig struct {
+	// Enabled gates all OBO behaviour and the linking routes.
+	Enabled bool
+	// MusterURL is the muster authorization-server base URL. RFC 8414 discovery
+	// (/.well-known/oauth-authorization-server) is performed against it.
+	MusterURL string
+	// ClientID / ClientSecret identify the gateway's muster OAuth client.
+	// ClientID is optional: when empty it is derived as CallbackBaseURL +
+	// /auth/slack/client.json, the CIMD-document URL the gateway self-hosts (the
+	// default and recommended mechanism). Set it only to use a pre-registered
+	// client. ClientSecret may be empty for a public (PKCE-only) client.
+	ClientID     string
+	ClientSecret string
+	// CallbackBaseURL is the gateway's public, externally reachable base URL
+	// (e.g. https://gateway.example.com). The muster redirect URI is this base
+	// joined with the callback path.
+	CallbackBaseURL string
+	// StorePath is the bolt link-store file (AES-256-GCM encrypted at rest).
+	// Empty uses an in-memory store that loses links on restart.
+	StorePath string
+	// StoreKeyFile holds the 32-byte AES-256 key for the link store. Required
+	// when StorePath is set.
+	StoreKeyFile string
+	// StateKeyFile holds the HMAC key used to sign link state (CSRF + binding
+	// the link to the requesting Slack user). Required when OBO is enabled.
+	StateKeyFile string
+}
+
 // Config is the fully resolved runtime configuration.
 type Config struct {
 	ListenAddress string
@@ -112,6 +145,7 @@ type Config struct {
 	Slack SlackConfig
 	CLI   CLIConfig
 	A2A   A2AConfig
+	OBO   OBOConfig
 
 	// Controller enables the embedded ChannelRoute controller-runtime manager.
 	Controller bool
@@ -174,6 +208,14 @@ func Load(args []string) (Config, error) {
 	fs.StringVar(&cfg.A2A.DefaultAgent, "a2a-default-agent", cfg.A2A.DefaultAgent, "agentRef forwarded to the A2A orchestrator when the channel does not supply one.")
 	fs.StringVar(&cfg.A2A.URL, "a2a-url", cfg.A2A.URL, "Base URL of the A2A orchestrator endpoint, without trailing agent name.")
 	fs.StringVar(&cfg.A2A.TokenPath, "a2a-token-path", cfg.A2A.TokenPath, "Path to a file holding a Bearer token sent as Authorization on every A2A request (e.g. a projected SA token). Empty disables auth.")
+	fs.BoolVar(&cfg.OBO.Enabled, "obo-enabled", cfg.OBO.Enabled, "Enable Slack on-behalf-of muster account linking and the /auth/slack/* routes.")
+	fs.StringVar(&cfg.OBO.MusterURL, "obo-muster-url", cfg.OBO.MusterURL, "muster authorization-server base URL (RFC 8414 discovery).")
+	fs.StringVar(&cfg.OBO.ClientID, "obo-client-id", cfg.OBO.ClientID, "Gateway's muster OAuth client ID. Optional: defaults to the self-hosted CIMD document URL (callback base URL + /auth/slack/client.json).")
+	fs.StringVar(&cfg.OBO.ClientSecret, "obo-client-secret", cfg.OBO.ClientSecret, "Gateway's muster OAuth client secret. Empty for a public PKCE client.")
+	fs.StringVar(&cfg.OBO.CallbackBaseURL, "obo-callback-base-url", cfg.OBO.CallbackBaseURL, "Gateway's public base URL; the muster redirect URI is this joined with /auth/slack/callback.")
+	fs.StringVar(&cfg.OBO.StorePath, "obo-store-path", cfg.OBO.StorePath, "Path to the encrypted bolt link store. Empty uses an in-memory store.")
+	fs.StringVar(&cfg.OBO.StoreKeyFile, "obo-store-key-file", cfg.OBO.StoreKeyFile, "Path to the 32-byte AES-256 key file for the link store (required with --obo-store-path).")
+	fs.StringVar(&cfg.OBO.StateKeyFile, "obo-state-key-file", cfg.OBO.StateKeyFile, "Path to the HMAC key file used to sign link state (required with --obo-enabled).")
 
 	fs.Usage = func() {
 		_, _ = fmt.Fprintf(fs.Output(), "klaus-gateway -- channel and routing gateway in front of klaus instances.\n\n")
@@ -279,6 +321,30 @@ func applyEnv(cfg *Config) {
 	if v, ok := lookup("A2A_TOKEN_PATH"); ok {
 		cfg.A2A.TokenPath = v
 	}
+	if v, ok := lookup("OBO_ENABLED"); ok {
+		cfg.OBO.Enabled = strings.EqualFold(v, "true") || v == "1"
+	}
+	if v, ok := lookup("OBO_MUSTER_URL"); ok {
+		cfg.OBO.MusterURL = v
+	}
+	if v, ok := lookup("OBO_CLIENT_ID"); ok {
+		cfg.OBO.ClientID = v
+	}
+	if v, ok := lookup("OBO_CLIENT_SECRET"); ok {
+		cfg.OBO.ClientSecret = v
+	}
+	if v, ok := lookup("OBO_CALLBACK_BASE_URL"); ok {
+		cfg.OBO.CallbackBaseURL = v
+	}
+	if v, ok := lookup("OBO_STORE_PATH"); ok {
+		cfg.OBO.StorePath = v
+	}
+	if v, ok := lookup("OBO_STORE_KEY_FILE"); ok {
+		cfg.OBO.StoreKeyFile = v
+	}
+	if v, ok := lookup("OBO_STATE_KEY_FILE"); ok {
+		cfg.OBO.StateKeyFile = v
+	}
 }
 
 func lookup(key string) (string, bool) {
@@ -308,6 +374,20 @@ func (c Config) Validate() error {
 	}
 	if c.A2A.Enabled && c.A2A.URL == "" {
 		return fmt.Errorf("--a2a-url is required with --a2a-enabled")
+	}
+	if c.OBO.Enabled {
+		if c.OBO.MusterURL == "" {
+			return fmt.Errorf("--obo-muster-url is required with --obo-enabled")
+		}
+		if c.OBO.CallbackBaseURL == "" {
+			return fmt.Errorf("--obo-callback-base-url is required with --obo-enabled")
+		}
+		if c.OBO.StateKeyFile == "" {
+			return fmt.Errorf("--obo-state-key-file is required with --obo-enabled")
+		}
+		if (c.OBO.StorePath == "") != (c.OBO.StoreKeyFile == "") {
+			return fmt.Errorf("--obo-store-path and --obo-store-key-file must be set together")
+		}
 	}
 	return nil
 }

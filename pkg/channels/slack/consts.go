@@ -13,6 +13,11 @@ const (
 	hitlChoice  = "hitl_choice" // ask_user single-select choice button
 )
 
+// oboSignIn is the action_id on the OBO "Sign in" URL button. The button opens
+// its url directly; the interaction payload Slack still sends is ignored
+// (classifyAction returns false), so no decision is routed.
+const oboSignIn = "obo_sign_in"
+
 // labelApproved is the human-readable resume text / approve keyword shared by
 // the button and free-text decision paths.
 const labelApproved = "approved"
@@ -31,6 +36,9 @@ const (
 	paramUser     = "user"
 	paramBlocks   = "blocks"
 )
+
+// bkURL is the Block Kit button "url" field (opens a link on click).
+const bkURL = "url"
 
 // Block Kit JSON field keys.
 const (

@@ -154,6 +154,13 @@ agentgateway:
       enabled: false
       prefixes:
       - /cli/v1/
+    # Slack OBO linking + CIMD document: /auth/slack/link, /auth/slack/callback
+    # and /auth/slack/client.json. muster and the linking browser must both be
+    # able to reach these on the gateway's public hostname. Enable with obo.
+    obo:
+      enabled: false
+      prefixes:
+      - /auth/slack/
     # Direct-to-instance IDE traffic. Normally populated by klaus-operator at
     # runtime, so off by default in the chart.
     directInstance:
@@ -240,6 +247,39 @@ slack:
 # Disabled by default.
 cli:
   enabled: false
+
+# Slack on-behalf-of (OBO) muster account linking.
+# When enabled, the gateway acts as a muster OAuth client: a human links their
+# Slack identity once via a browser PKCE flow, after which the gateway mints a
+# fresh human muster token per Slack turn (the agent acts as the human, not
+# pure M2M). It mounts /auth/slack/link, /auth/slack/callback and the CIMD
+# document at /auth/slack/client.json.
+#
+# Client registration uses CIMD (Client ID Metadata Documents), not Dynamic
+# Client Registration: the OAuth client_id is the public URL of the CIMD
+# document the gateway self-hosts (callbackBaseUrl + /auth/slack/client.json),
+# derived automatically. muster fetches and validates it -- no registration
+# token, no server-side allowlist.
+obo:
+  enabled: false
+  # musterUrl is the muster authorization-server base URL (RFC 8414 discovery).
+  musterUrl: ""
+  # callbackBaseUrl is the gateway's public, externally reachable base URL
+  # (e.g. https://agentgateway.example.com). The muster redirect URI and the
+  # CIMD client_id are derived from it.
+  callbackBaseUrl: ""
+  # storePath is the encrypted bolt link-store path. Empty uses an in-memory
+  # store (links lost on restart). When set, an emptyDir backs its directory.
+  # ponytail: emptyDir is pod-ephemeral -- links survive in-process restarts but
+  # not pod reschedules; switch to a PVC if durable links are required.
+  storePath: ""
+  # stateKey is the HMAC key used to sign link state (CSRF + Slack-user binding).
+  # Required when obo.enabled is true. Provide via a SOPS-encrypted value; the
+  # chart renders it into a Secret and mounts it as a file.
+  stateKey: ""
+  # storeKey is the 32-byte AES-256 key for the encrypted link store. Required
+  # only when storePath is set. Provide via a SOPS-encrypted value.
+  storeKey: ""
 
 global:
   podSecurityStandards:

@@ -22,11 +22,29 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/giantswarm/klaus-gateway/pkg/auth/musterlink"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 )
 
 // ChannelName identifies the Slack adapter in routing keys.
 const ChannelName = "slack"
+
+// OBOTokenSource mints a fresh per-request "on behalf of" muster access token
+// for a linked Slack user and drives the account-linking UX. *musterlink.Linker
+// satisfies it. When the adapter's OBO field is nil (OBO disabled), every turn
+// runs as the M2M ServiceAccount identity (the historical behaviour) — the
+// gateway's ForwardedTokenSource falls back to the SA token whenever
+// InboundMessage.BearerToken is empty.
+type OBOTokenSource interface {
+	// TokenFor returns a fresh human muster access token for the Slack user,
+	// or musterlink.ErrNotLinked when the user has not linked an identity.
+	TokenFor(ctx context.Context, slackUserID string) (string, error)
+	// LinkURL returns the absolute "Sign in to Giant Swarm" URL that starts the
+	// account-linking flow for the Slack user (signed, single-use state).
+	LinkURL(slackUserID string) string
+	// Unlink removes any stored link for the Slack user (the /klaus logout path).
+	Unlink(slackUserID string)
+}
 
 // Mode constants for the Slack connection method.
 const (
@@ -60,6 +78,10 @@ type Adapter struct {
 	// a consumer was disconnected, so without this a restart replays — and
 	// re-answers — old messages. Default false (no time-based filtering).
 	DropStaleEvents bool
+	// OBO, when set, mints a fresh human muster token per turn for linked Slack
+	// users so the agent acts on behalf of the human. Nil disables OBO; turns
+	// then run as the M2M ServiceAccount identity.
+	OBO OBOTokenSource
 
 	gw        channels.Gateway
 	started   atomic.Bool
@@ -75,6 +97,9 @@ type Adapter struct {
 
 	pendingMu    sync.Mutex
 	pendingTasks map[string]*pendingTask // keyed by threadID
+
+	nudgeMu sync.Mutex
+	nudged  map[string]time.Time // slackUserID -> last sign-in nudge; throttles the prompt
 }
 
 // turn is an in-flight agent turn. The pointer identity lets dispatch clean up
@@ -85,6 +110,11 @@ type Adapter struct {
 type turn struct {
 	cancel context.CancelFunc
 }
+
+// signInNudgeCooldown is the minimum time between automatic "Sign in" prompts
+// for the same unlinked Slack user, so an unlinked user is not nudged on every
+// single message. An explicit /klaus login bypasses the throttle.
+const signInNudgeCooldown = time.Hour
 
 // pendingTask records the A2A task paused at input-required for a thread.
 type pendingTask struct {
@@ -216,6 +246,13 @@ func (a *Adapter) Mount(r chi.Router) {
 	})
 }
 
+// LookupUserEmail returns the Slack-workspace-verified email for a Slack user
+// ID. It is the SlackEmail lookup the OBO linker uses at callback to enforce
+// that the linked muster identity's email matches the Slack user's (anti-spoof).
+func (a *Adapter) LookupUserEmail(ctx context.Context, slackUserID string) (string, error) {
+	return a.apiClient().lookupUserEmail(ctx, slackUserID)
+}
+
 // apiClient returns a Slack Web API client using the adapter's bot token
 // and the optional test-override base URL.
 func (a *Adapter) apiClient() *slackAPIClient {
@@ -224,6 +261,49 @@ func (a *Adapter) apiClient() *slackAPIClient {
 		base = slackAPIBase
 	}
 	return &slackAPIClient{botToken: a.Secrets.BotToken, baseURL: base}
+}
+
+// maybePostSignIn posts the ephemeral "Sign in to Giant Swarm" prompt to an
+// unlinked user, throttled per user by signInNudgeCooldown. A failure to post
+// is logged and swallowed — the turn still proceeds as M2M.
+func (a *Adapter) maybePostSignIn(ctx context.Context, slackChannel, threadID, slackUser string) {
+	if a.OBO == nil || slackUser == "" || !a.shouldNudge(slackUser) {
+		return
+	}
+	a.postSignIn(ctx, slackChannel, threadID, slackUser)
+}
+
+// postSignIn posts the ephemeral sign-in prompt unconditionally (no throttle);
+// used by the /klaus login command where the user explicitly asked to sign in.
+func (a *Adapter) postSignIn(ctx context.Context, slackChannel, threadID, slackUser string) {
+	url := a.OBO.LinkURL(slackUser)
+	if url == "" {
+		a.Logger.Warn("slack: empty sign-in link URL, skipping prompt", "user", slackUser)
+		return
+	}
+	if err := a.apiClient().postSignInPrompt(ctx, slackChannel, threadID, slackUser, url); err != nil {
+		a.Logger.Warn("slack: post sign-in prompt failed", "user", slackUser, "error", err)
+	}
+}
+
+// shouldNudge reports whether slackUser may be sign-in nudged now, recording the
+// time when it returns true so the next nudge waits signInNudgeCooldown.
+//
+// ponytail: in-memory throttle map, never pruned and reset on restart. Fine for
+// a single-replica gateway; a long-running process accumulates one small entry
+// per unlinked user. Move to a TTL cache if that ever matters.
+func (a *Adapter) shouldNudge(slackUser string) bool {
+	a.nudgeMu.Lock()
+	defer a.nudgeMu.Unlock()
+	if a.nudged == nil {
+		a.nudged = make(map[string]time.Time)
+	}
+	now := time.Now()
+	if last, ok := a.nudged[slackUser]; ok && now.Sub(last) < signInNudgeCooldown {
+		return false
+	}
+	a.nudged[slackUser] = now
+	return true
 }
 
 // getAccess returns (or lazily creates) the AccessState for a thread.
@@ -333,6 +413,37 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 	if task := a.takePendingTask(msg.ThreadID); task != nil {
 		msg.TaskID = task.TaskID
 		msg.Decision = decisionFromText(task.Prompt, msg.Text)
+	}
+
+	if msg.Subject != "" {
+		client := a.apiClient()
+		email, err := client.lookupUserEmail(ctx, msg.Subject)
+		if err != nil {
+			a.Logger.Warn("slack: user email lookup failed, falling back to user ID", "user", msg.Subject, "error", err)
+		} else if email != "" {
+			msg.Subject = email
+		}
+	}
+
+	// On-behalf-of: when OBO linking is enabled and this Slack user has linked a
+	// muster identity, mint a fresh human muster access token and forward it onto
+	// the A2A request (via withChannelAuth) so the agent acts as the human at
+	// muster. Unlinked or transient-failure turns leave BearerToken empty and
+	// fall back to the M2M ServiceAccount identity so Slack never hard-fails.
+	// An unlinked user who is actually being answered is nudged (ephemerally,
+	// throttled) to sign in so future turns can run as them.
+	if a.OBO != nil && slackUser != "" {
+		switch token, err := a.OBO.TokenFor(ctx, slackUser); {
+		case err == nil:
+			msg.BearerToken = token
+		case errors.Is(err, musterlink.ErrNotLinked):
+			a.Logger.Debug("slack: user not linked for OBO, running as M2M", "user", slackUser)
+			if respond {
+				a.maybePostSignIn(ctx, slackChannel, msg.ThreadID, slackUser)
+			}
+		default:
+			a.Logger.Warn("slack: OBO token mint failed, falling back to M2M", "user", slackUser, "error", err)
+		}
 	}
 
 	ref, err := a.gw.Resolve(ctx, msg)

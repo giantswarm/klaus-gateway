@@ -124,6 +124,24 @@ spec:
               optional: true
         {{- end }}
         {{- end }}
+        {{- if .Values.obo.enabled }}
+        # Slack OBO. client_id is auto-derived from the callback base URL (CIMD),
+        # so no client-id value is wired here.
+        - name: KLAUS_GATEWAY_OBO_ENABLED
+          value: "true"
+        - name: KLAUS_GATEWAY_OBO_MUSTER_URL
+          value: {{ .Values.obo.musterUrl | quote }}
+        - name: KLAUS_GATEWAY_OBO_CALLBACK_BASE_URL
+          value: {{ .Values.obo.callbackBaseUrl | quote }}
+        - name: KLAUS_GATEWAY_OBO_STATE_KEY_FILE
+          value: /etc/klaus-gateway/obo/state-key
+        {{- if .Values.obo.storePath }}
+        - name: KLAUS_GATEWAY_OBO_STORE_PATH
+          value: {{ .Values.obo.storePath | quote }}
+        - name: KLAUS_GATEWAY_OBO_STORE_KEY_FILE
+          value: /etc/klaus-gateway/obo/store-key
+        {{- end }}
+        {{- end }}
         livenessProbe:
           httpGet:
             path: /healthz
@@ -142,14 +160,26 @@ spec:
           {{- with .Values.securityContext }}
             {{- . | toYaml | nindent 10 }}
           {{- end }}
-        {{- if .Values.a2a.saToken.enabled }}
+        {{- if or .Values.a2a.saToken.enabled .Values.obo.enabled }}
         volumeMounts:
+        {{- if .Values.a2a.saToken.enabled }}
         - name: kagent-sa-token
           mountPath: {{ dir .Values.a2a.saToken.mountPath }}
           readOnly: true
         {{- end }}
-      {{- if .Values.a2a.saToken.enabled }}
+        {{- if .Values.obo.enabled }}
+        - name: obo-keys
+          mountPath: /etc/klaus-gateway/obo
+          readOnly: true
+        {{- if .Values.obo.storePath }}
+        - name: obo-store
+          mountPath: {{ dir .Values.obo.storePath }}
+        {{- end }}
+        {{- end }}
+        {{- end }}
+      {{- if or .Values.a2a.saToken.enabled .Values.obo.enabled }}
       volumes:
+      {{- if .Values.a2a.saToken.enabled }}
       - name: kagent-sa-token
         projected:
           sources:
@@ -157,6 +187,16 @@ spec:
               path: {{ base .Values.a2a.saToken.mountPath }}
               audience: {{ .Values.a2a.saToken.audience }}
               expirationSeconds: {{ .Values.a2a.saToken.expirationSeconds }}
+      {{- end }}
+      {{- if .Values.obo.enabled }}
+      - name: obo-keys
+        secret:
+          secretName: {{ include "resource.default.name" . }}-obo
+      {{- if .Values.obo.storePath }}
+      - name: obo-store
+        emptyDir: {}
+      {{- end }}
+      {{- end }}
       {{- end }}
       terminationGracePeriodSeconds: 10
       {{- with .Values.nodeSelector }}

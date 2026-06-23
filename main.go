@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/go-chi/chi/v5"
@@ -29,6 +30,7 @@ import (
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 	"github.com/giantswarm/klaus-gateway/pkg/api"
 	v1alpha1 "github.com/giantswarm/klaus-gateway/pkg/api/v1alpha1"
+	"github.com/giantswarm/klaus-gateway/pkg/auth/musterlink"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 	cliachannel "github.com/giantswarm/klaus-gateway/pkg/channels/cli"
 	slackchannel "github.com/giantswarm/klaus-gateway/pkg/channels/slack"
@@ -158,12 +160,13 @@ func run(args []string) error {
 
 	publicMux := chi.NewRouter()
 
+	var slackAdapter *slackchannel.Adapter
 	if cfg.Slack.Enabled {
 		secrets, err := slackchannel.LoadSecrets(cfg.Slack.SecretsFile)
 		if err != nil {
 			return fmt.Errorf("slack secrets: %w", err)
 		}
-		slackAdapter := &slackchannel.Adapter{
+		slackAdapter = &slackchannel.Adapter{
 			Logger:            logger,
 			Mode:              cfg.Slack.Mode,
 			Secrets:           secrets,
@@ -206,6 +209,35 @@ func run(args []string) error {
 			}
 		}()
 		logger.Info("cli adapter started")
+	}
+
+	if cfg.OBO.Enabled {
+		var slackEmail func(context.Context, string) (string, error)
+		if slackAdapter != nil {
+			slackEmail = slackAdapter.LookupUserEmail
+		}
+		linker, closeLinker, err := buildOBOLinker(ctx, cfg.OBO, logger, slackEmail)
+		if err != nil {
+			return fmt.Errorf("build obo linker: %w", err)
+		}
+		defer func() {
+			if err := closeLinker(); err != nil {
+				logger.Warn("obo link store close", "error", err)
+			}
+		}()
+		linker.RegisterRoutes(publicMux)
+		// Wire the linker into the Slack adapter so dispatch mints a fresh human
+		// muster token per turn for linked users (OBO). Unlinked turns fall back
+		// to the M2M ServiceAccount identity.
+		if slackAdapter != nil {
+			slackAdapter.OBO = linker
+		}
+		logger.Info("obo linking routes mounted",
+			"link_path", musterlink.LinkPath,
+			"callback_path", musterlink.CallbackPath,
+			"muster_url", cfg.OBO.MusterURL,
+			"email_match", slackEmail != nil,
+		)
 	}
 
 	apiHandler := &api.Handler{
@@ -334,6 +366,60 @@ func buildStore(cfg config.Config) (store.Store, error) {
 	default:
 		return nil, fmt.Errorf("unknown store %q", cfg.Store)
 	}
+}
+
+// buildOBOLinker constructs the muster account-linking Linker for Slack OBO. It
+// returns a cleanup func that closes the link store (a no-op for the in-memory
+// store). slackEmail is the anti-spoof email lookup; nil skips the email-match
+// check at callback.
+func buildOBOLinker(ctx context.Context, cfg config.OBOConfig, logger *slog.Logger,
+	slackEmail func(context.Context, string) (string, error),
+) (*musterlink.Linker, func() error, error) {
+	stateKey, err := os.ReadFile(cfg.StateKeyFile)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read obo state key: %w", err)
+	}
+
+	var store musterlink.Store
+	cleanup := func() error { return nil }
+	if cfg.StorePath != "" {
+		key, err := os.ReadFile(cfg.StoreKeyFile)
+		if err != nil {
+			return nil, nil, fmt.Errorf("read obo store key: %w", err)
+		}
+		bs, err := musterlink.OpenBoltStore(cfg.StorePath, key, logger)
+		if err != nil {
+			return nil, nil, err
+		}
+		store, cleanup = bs, bs.Close
+	} else {
+		store = musterlink.NewMemStore()
+	}
+
+	// CIMD: the OAuth client_id is the absolute URL of the CIMD document the
+	// gateway serves. muster fetches that URL and validates client_id == URL.
+	// An explicit --obo-client-id overrides this (e.g. a pre-registered client).
+	clientID := cfg.ClientID
+	if clientID == "" {
+		clientID = strings.TrimRight(cfg.CallbackBaseURL, "/") + musterlink.CIMDPath
+	}
+
+	linker, err := musterlink.New(ctx, musterlink.Config{
+		BaseURL:       cfg.MusterURL,
+		ClientID:      clientID,
+		ClientSecret:  cfg.ClientSecret,
+		RedirectURL:   strings.TrimRight(cfg.CallbackBaseURL, "/") + musterlink.CallbackPath,
+		PublicBaseURL: cfg.CallbackBaseURL,
+		StateKey:      stateKey,
+		Store:         store,
+		SlackEmail:    slackEmail,
+		Logger:        logger,
+	})
+	if err != nil {
+		_ = cleanup()
+		return nil, nil, err
+	}
+	return linker, cleanup, nil
 }
 
 func buildLifecycle(cfg config.Config) (lifecycle.Manager, error) {

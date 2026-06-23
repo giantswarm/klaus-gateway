@@ -252,6 +252,43 @@ func (c *slackAPIClient) postChoicePrompt(ctx context.Context, channel, threadID
 	return err
 }
 
+// postSignInPrompt posts an ephemeral (visible only to the target user)
+// Block Kit message with a "Sign in to Giant Swarm" button linking to linkURL.
+// It is used to nudge an unlinked Slack user into the OBO account-linking flow.
+// When threadID is set the prompt is posted in-thread.
+func (c *slackAPIClient) postSignInPrompt(ctx context.Context, channel, threadID, user, linkURL string) error {
+	const text = "Sign in to Giant Swarm so I can act on your behalf. " +
+		"Until you do, I run as the gateway service account."
+	body := map[string]any{
+		paramChannel: channel,
+		paramUser:    user,
+		paramText:    text,
+		paramBlocks: []any{
+			map[string]any{
+				bkType: bkSection,
+				bkText: map[string]any{bkType: bkMrkdwn, bkText: text},
+			},
+			map[string]any{
+				bkType: bkActions,
+				bkElements: []any{
+					map[string]any{
+						bkType:     bkButton,
+						bkText:     map[string]any{bkType: bkPlainText, bkText: "Sign in to Giant Swarm"},
+						bkStyle:    bkPrimary,
+						bkActionID: oboSignIn,
+						bkURL:      linkURL,
+					},
+				},
+			},
+		},
+	}
+	if threadID != "" {
+		body[paramThreadTS] = threadID
+	}
+	_, err := c.postJSON(ctx, "chat.postEphemeral", body)
+	return err
+}
+
 // truncateButtonLabel keeps a button label within Slack's 75-character limit,
 // counting runes (not bytes) so a multi-byte glyph is never split mid-rune.
 func truncateButtonLabel(s string) string {
