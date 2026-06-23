@@ -171,8 +171,18 @@ func mapKagentState(s string) a2apkg.TaskState {
 func buildKagentParams(execCtx *a2asrv.ExecutorContext) map[string]any {
 	parts := make([]map[string]any, 0, len(execCtx.Message.Parts))
 	for _, p := range execCtx.Message.Parts {
+		if p == nil {
+			continue
+		}
 		if text := p.Text(); text != "" {
 			parts = append(parts, map[string]any{"kind": "text", "text": text})
+			continue
+		}
+		// Structured data parts carry HITL decisions (decision_type,
+		// ask_user_answers). kagent resolves the paused confirmation only from
+		// a DataPart, so these must survive serialization.
+		if d := p.Data(); d != nil {
+			parts = append(parts, map[string]any{"kind": "data", "data": d})
 		}
 	}
 

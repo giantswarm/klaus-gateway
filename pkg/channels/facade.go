@@ -90,7 +90,7 @@ func (f *Facade) sendViaA2A(ctx context.Context, msg InboundMessage) (<-chan Out
 	execCtx := &a2asrv.ExecutorContext{
 		ContextID: contextID,
 		TaskID:    taskID,
-		Message:   a2apkg.NewMessage(a2apkg.MessageRoleUser, a2apkg.NewTextPart(msg.Text)),
+		Message:   a2apkg.NewMessage(a2apkg.MessageRoleUser, buildInboundParts(msg)...),
 	}
 
 	ctx = withChannelAuth(ctx, msg)
@@ -158,11 +158,19 @@ func mapA2AEvent(event a2apkg.Event) OutboundDelta {
 		case a2apkg.TaskStateCompleted:
 			return OutboundDelta{Done: true}
 		case a2apkg.TaskStateInputRequired, a2apkg.TaskStateAuthRequired:
-			prompt := ""
+			var hitl *HitlPrompt
+			text := ""
 			if ev.Status.Message != nil {
-				prompt = extractTextFromA2AParts(ev.Status.Message.Parts)
+				hitl = parseHitlPrompt(ev.Status.Message)
+				text = extractTextFromA2AParts(ev.Status.Message.Parts)
 			}
-			return OutboundDelta{Kind: DeltaPrompt, Content: prompt, TaskID: string(ev.TaskID)}
+			// kagent carries the prompt in a DataPart, so the text is usually
+			// empty; fall back to the structured hint for the classifier and
+			// any plain-text renderer.
+			if text == "" && hitl != nil {
+				text = hitl.summary()
+			}
+			return OutboundDelta{Kind: DeltaPrompt, Content: text, TaskID: string(ev.TaskID), Prompt: hitl}
 		default:
 			if ev.Status.State.Terminal() {
 				msg := fmt.Sprintf("a2a: task ended with state %s", ev.Status.State)

@@ -10,7 +10,13 @@ const (
 const (
 	hitlApprove = "hitl_approve"
 	hitlDeny    = "hitl_deny"
+	hitlChoice  = "hitl_choice" // ask_user single-select choice button
 )
+
+// maxChoiceButtons caps how many ask_user choices are rendered as buttons.
+// Beyond this (or for multi-select / multi-question prompts) the choices are
+// rendered as text and the user replies free-text in-thread.
+const maxChoiceButtons = 5
 
 // Slack Web API parameter keys (form-encoded and JSON body).
 const (

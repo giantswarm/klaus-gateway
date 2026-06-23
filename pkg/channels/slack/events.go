@@ -63,7 +63,10 @@ func (h *eventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// For message.channels events only route thread replies to active bot
 			// threads (hasPendingTask or known access state). app_mention and
 			// message.im always pass through.
-			threadReplyOnly := ev.Type == evtMessage && ev.ThreadTS != ""
+			if !h.adapter.acceptEvent(ev) {
+				return
+			}
+			threadReplyOnly := ev.threadReplyOnly()
 			msg, ok := ev.toInboundMessage(threadReplyOnly)
 			if !ok {
 				return

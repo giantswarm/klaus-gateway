@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 )
@@ -69,57 +70,84 @@ func (h *interactionsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Acknowledge immediately so Slack doesn't show a timeout spinner.
+	w.WriteHeader(http.StatusOK)
+	go h.adapter.routeInteraction(h.ctx, payload)
+}
+
+// routeInteraction dispatches a parsed Slack block_actions payload to the
+// pending HITL task. Shared by the HTTP interactions endpoint (Events API mode)
+// and the Socket Mode interactive-envelope handler (dev mode), so buttons work
+// identically in both deployments.
+func (a *Adapter) routeInteraction(ctx context.Context, payload interactionPayload) {
 	if payload.Type != "block_actions" || len(payload.Actions) == 0 {
-		w.WriteHeader(http.StatusOK)
 		return
 	}
 
 	action := payload.Actions[0]
-	if action.ActionID != hitlApprove && action.ActionID != hitlDeny {
-		w.WriteHeader(http.StatusOK)
+	act, ok := classifyAction(action.ActionID)
+	if !ok {
 		return
 	}
 
-	// Acknowledge immediately so Slack doesn't show a timeout spinner.
-	w.WriteHeader(http.StatusOK)
-
+	// The threadID is in the button value. Choice buttons encode it as JSON;
+	// approve/deny buttons carry it raw.
 	threadID := action.Value
-	slackChannel := payload.Channel.ID
-	messageTS := payload.Container.MessageTS
-	slackUser := payload.User.ID
-	approved := action.ActionID == hitlApprove
-
-	go func() {
-		if err := h.adapter.handleApproval(h.ctx, slackChannel, threadID, messageTS, slackUser, approved); err != nil {
-			if !errors.Is(err, context.Canceled) {
-				h.adapter.Logger.Error("slack interactions: approval error", "thread", threadID, "error", err)
-			}
+	if act.kind == hitlChoice {
+		cv, ok := decodeChoiceValue(action.Value)
+		if !ok {
+			return
 		}
-	}()
+		threadID = cv.Thread
+		act.choice = cv
+	}
+
+	if err := a.handleDecision(ctx, payload.Channel.ID, threadID, payload.Container.MessageTS, payload.User.ID, act); err != nil {
+		if !errors.Is(err, context.Canceled) {
+			a.Logger.Error("slack interactions: decision error", "thread", threadID, "error", err)
+		}
+	}
 }
 
-// handleApproval processes a button click: updates the prompt message to show
-// the decision, then resumes (or cancels) the pending A2A task.
-func (a *Adapter) handleApproval(ctx context.Context, slackChannel, threadID, messageTS, slackUser string, approved bool) error {
+// hitlAction is a decoded Block Kit button click.
+type hitlAction struct {
+	kind   string // hitlApprove, hitlDeny, or hitlChoice
+	choice choiceValue
+}
+
+// classifyAction maps a Block Kit action_id to a hitlAction.
+func classifyAction(actionID string) (hitlAction, bool) {
+	switch {
+	case actionID == hitlApprove:
+		return hitlAction{kind: hitlApprove}, true
+	case actionID == hitlDeny:
+		return hitlAction{kind: hitlDeny}, true
+	case strings.HasPrefix(actionID, hitlChoice):
+		return hitlAction{kind: hitlChoice}, true
+	}
+	return hitlAction{}, false
+}
+
+// handleDecision processes a button click: updates the prompt message to show
+// the decision, then resumes (or cancels) the pending A2A task with a
+// structured HITL decision.
+func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, messageTS, slackUser string, act hitlAction) error {
 	client := a.apiClient()
-
-	decisionText := "❌ _Denied._"
-	resumeText := "denied"
-	if approved {
-		decisionText = "✅ _Approved._"
-		resumeText = "approved"
-	}
-
-	// Replace the Block Kit buttons with the decision text.
-	if err := client.chatUpdateBlocks(ctx, slackChannel, messageTS, decisionText); err != nil {
-		a.Logger.Warn("slack: update approval message failed", "error", err)
-	}
 
 	// takePendingTask clears the entry atomically — if the user also typed a
 	// reply the first one wins and the other starts a fresh task.
 	task := a.takePendingTask(threadID)
 	if task == nil {
+		// Nothing pending (already answered). Still tidy up the buttons.
+		_ = client.chatUpdateBlocks(ctx, slackChannel, messageTS, "_Already answered._")
 		return nil
+	}
+
+	decision, resumeText, decisionText := buildButtonDecision(act, task.Prompt)
+
+	// Replace the Block Kit buttons with the decision text.
+	if err := client.chatUpdateBlocks(ctx, slackChannel, messageTS, decisionText); err != nil {
+		a.Logger.Warn("slack: update approval message failed", "error", err)
 	}
 
 	msg := channels.InboundMessage{
@@ -130,6 +158,7 @@ func (a *Adapter) handleApproval(ctx context.Context, slackChannel, threadID, me
 		AgentRef:  task.AgentRef,
 		TaskID:    task.TaskID,
 		Text:      resumeText,
+		Decision:  decision,
 	}
 
 	// Resolve email for the button-clicking user.
@@ -185,8 +214,40 @@ func (a *Adapter) handleApproval(ctx context.Context, slackChannel, threadID, me
 			AgentRef:  task.AgentRef,
 			Channel:   slackChannel,
 			ChannelID: task.ChannelID,
+			Prompt:    pd.Prompt,
 		})
-		return client.postApprovalPrompt(ctx, slackChannel, threadID, pd.Content, pd.TaskID)
+		return a.postHitlPrompt(ctx, client, slackChannel, threadID, pd)
 	}
 	return nil
+}
+
+// buildButtonDecision turns a Block Kit click into a structured HITL decision,
+// the human-readable resume label, and the text the prompt message is updated
+// to after the click.
+func buildButtonDecision(act hitlAction, prompt *channels.HitlPrompt) (*channels.HitlDecision, string, string) {
+	switch act.kind {
+	case hitlChoice:
+		label := choiceLabel(prompt, act.choice)
+		decision := &channels.HitlDecision{
+			Type:           channels.DecisionApprove,
+			AskUserAnswers: [][]string{{label}},
+		}
+		return decision, label, "👉 _" + label + "_"
+	case hitlDeny:
+		return &channels.HitlDecision{Type: channels.DecisionReject}, "denied", "❌ _Denied._"
+	default: // hitlApprove
+		return &channels.HitlDecision{Type: channels.DecisionApprove}, "approved", "✅ _Approved._"
+	}
+}
+
+// choiceLabel resolves a choice button's option label from the stored prompt,
+// falling back to a generic label when the prompt is unavailable.
+func choiceLabel(prompt *channels.HitlPrompt, cv choiceValue) string {
+	if prompt != nil && cv.Question >= 0 && cv.Question < len(prompt.Questions) {
+		q := prompt.Questions[cv.Question]
+		if cv.Choice >= 0 && cv.Choice < len(q.Choices) {
+			return q.Choices[cv.Choice]
+		}
+	}
+	return "selected option"
 }

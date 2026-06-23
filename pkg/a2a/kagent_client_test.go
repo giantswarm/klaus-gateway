@@ -68,6 +68,59 @@ func writeSSEResult(w http.ResponseWriter, flusher http.Flusher, result any) {
 	flusher.Flush()
 }
 
+// TestKagentClient_Execute_SerializesDataPart verifies a structured HITL
+// decision (DataPart) is forwarded as {"kind":"data","data":{...}} alongside
+// the text label. kagent resolves the paused confirmation only from a DataPart.
+func TestKagentClient_Execute_SerializesDataPart(t *testing.T) {
+	const agentName = "klaud-hitl"
+
+	var gotParts []map[string]any
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/a2a/kagent/"+agentName+"/a2a", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Params struct {
+				Message struct {
+					Parts []map[string]any `json:"parts"`
+				} `json:"message"`
+			} `json:"params"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		gotParts = body.Params.Message.Parts
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		writeSSEResult(w, flusher, map[string]any{
+			"kind": "status-update", "taskId": "t", "final": true,
+			"status": map[string]any{"state": "completed"},
+		})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	kc := &pkga2a.A2AClient{BaseURL: srv.URL + "/api/a2a/kagent", DefaultAgent: agentName}
+
+	execCtx := &a2asrv.ExecutorContext{
+		ContextID: "ctx",
+		TaskID:    a2a.NewTaskID(),
+		Message: a2a.NewMessage(a2a.MessageRoleUser,
+			a2a.NewDataPart(map[string]any{"decision_type": "approve"}),
+			a2a.NewTextPart("approved"),
+		),
+	}
+	for _, err := range kc.Execute(t.Context(), execCtx) {
+		require.NoError(t, err)
+	}
+
+	require.Len(t, gotParts, 2)
+	require.Equal(t, "data", gotParts[0]["kind"])
+	data, ok := gotParts[0]["data"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "approve", data["decision_type"])
+	require.Equal(t, "text", gotParts[1]["kind"])
+	require.Equal(t, "approved", gotParts[1]["text"])
+}
+
 func TestKagentClient_Execute_ForwardsEvents(t *testing.T) {
 	const agentName = "klaud-coding"
 	srv := startFakeKagent(t, agentName)
