@@ -127,16 +127,6 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 
 	msg.AgentRef = a.DefaultAgent
 
-	if msg.Subject != "" {
-		client := a.apiClient()
-		email, err := client.lookupUserEmail(ctx, msg.Subject)
-		if err != nil {
-			a.Logger.Warn("slack: user email lookup failed, falling back to user ID", "user", msg.Subject, "error", err)
-		} else if email != "" {
-			msg.Subject = email
-		}
-	}
-
 	ref, err := a.gw.Resolve(ctx, msg)
 	if err != nil {
 		return fmt.Errorf("slack: resolve: %w", err)
@@ -193,7 +183,7 @@ func (e slackInnerEvent) toInboundMessage() (channels.InboundMessage, bool) {
 		Channel:   ChannelName,
 		ChannelID: e.Channel,
 		UserID:    "",     // thread-scoped session: all participants share one contextID
-		Subject:   e.User, // Slack user ID forwarded for access control and downstream identity
+		Subject:   e.User, // raw Slack user ID, carried for the per-user access-control work in a later phase
 		ThreadID:  threadID,
 		Text:      text,
 	}, true

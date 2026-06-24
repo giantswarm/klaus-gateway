@@ -99,41 +99,6 @@ func (c *slackAPIClient) postMessage(ctx context.Context, channel, text, threadT
 	return c.post(ctx, "chat.postMessage", params)
 }
 
-// lookupUserEmail returns the email from the user's Slack profile.
-// Falls back to the raw Slack user ID on any error so dispatch is never blocked.
-func (c *slackAPIClient) lookupUserEmail(ctx context.Context, userID string) (string, error) {
-	params := url.Values{"user": {userID}}
-	target := c.baseURL + "/users.info?" + params.Encode()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
-	if err != nil {
-		return "", fmt.Errorf("slack users.info: build request: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+c.botToken)
-
-	resp, err := http.DefaultClient.Do(req) //nolint:gosec
-	if err != nil {
-		return "", fmt.Errorf("slack users.info: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	var result struct {
-		OK   bool   `json:"ok"`
-		Err  string `json:"error,omitempty"`
-		User struct {
-			Profile struct {
-				Email string `json:"email"`
-			} `json:"profile"`
-		} `json:"user"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("slack users.info: decode: %w", err)
-	}
-	if !result.OK {
-		return "", fmt.Errorf("slack users.info: %s", result.Err)
-	}
-	return result.User.Profile.Email, nil
-}
-
 func (c *slackAPIClient) chatUpdate(ctx context.Context, channel, ts, text string) error {
 	params := url.Values{
 		"channel": {channel},
