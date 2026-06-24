@@ -165,7 +165,7 @@ func TestEventsHandler_AppMentionDispatch(t *testing.T) {
 	}
 
 	// Fake Slack API server: returns ok=true for postMessage and chatUpdate.
-	fakeSlack := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	fakeSlack := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprintf(w, `{"ok":true,"ts":"1234.5678"}`)
 	}))
@@ -208,7 +208,8 @@ func TestEventsHandler_AppMentionDispatch(t *testing.T) {
 	mu.Unlock()
 	require.Equal(t, "slack", got.Channel)
 	require.Equal(t, "C456", got.ChannelID)
-	require.Equal(t, "U123", got.UserID)
+	require.Empty(t, got.UserID)
+	require.Empty(t, got.Subject, "Slack carries no per-user identity in this phase")
 	require.Equal(t, helloText, got.Text)
 	require.Equal(t, "test-agent", got.AgentRef, "AgentRef must be set to DefaultAgent")
 }

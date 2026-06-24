@@ -151,7 +151,7 @@ func (c *socketModeClient) handleEvent(ctx context.Context, inner slackInnerEven
 	if !ok {
 		return
 	}
-	if err := c.adapter.dispatch(ctx, msg, inner.Channel, inner.TS); err != nil {
+	if err := c.adapter.dispatch(ctx, msg, inner.Channel); err != nil {
 		c.logger.Error("slack socket mode: dispatch error", "channel", inner.Channel, "error", err)
 	}
 }

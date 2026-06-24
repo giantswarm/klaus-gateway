@@ -79,7 +79,7 @@ func (w *batchedWriter) flush(ctx context.Context) error {
 	if text == "" {
 		return nil
 	}
-	return w.client.chatUpdate(ctx, w.channel, w.ts, text)
+	return w.client.chatUpdate(ctx, w.channel, w.ts, markdownToMrkdwn(text))
 }
 
 // slackAPIClient is a minimal HTTP client for the Slack Web API.
@@ -88,10 +88,13 @@ type slackAPIClient struct {
 	baseURL  string
 }
 
-func (c *slackAPIClient) postMessage(ctx context.Context, channel, text string) (string, error) {
+func (c *slackAPIClient) postMessage(ctx context.Context, channel, text, threadTS string) (string, error) {
 	params := url.Values{
 		"channel": {channel},
 		"text":    {text},
+	}
+	if threadTS != "" {
+		params.Set("thread_ts", threadTS)
 	}
 	return c.post(ctx, "chat.postMessage", params)
 }
