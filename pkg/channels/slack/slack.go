@@ -182,8 +182,7 @@ func (e slackInnerEvent) toInboundMessage() (channels.InboundMessage, bool) {
 	return channels.InboundMessage{
 		Channel:   ChannelName,
 		ChannelID: e.Channel,
-		UserID:    "",     // thread-scoped session: all participants share one contextID
-		Subject:   e.User, // raw Slack user ID, carried for the per-user access-control work in a later phase
+		UserID:    "", // thread-scoped session: all participants share one contextID
 		ThreadID:  threadID,
 		Text:      text,
 	}, true

@@ -209,7 +209,7 @@ func TestEventsHandler_AppMentionDispatch(t *testing.T) {
 	require.Equal(t, "slack", got.Channel)
 	require.Equal(t, "C456", got.ChannelID)
 	require.Empty(t, got.UserID)
-	require.Equal(t, "U123", got.Subject)
+	require.Empty(t, got.Subject, "Slack carries no per-user identity in this phase")
 	require.Equal(t, helloText, got.Text)
 	require.Equal(t, "test-agent", got.AgentRef, "AgentRef must be set to DefaultAgent")
 }
