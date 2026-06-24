@@ -164,9 +164,13 @@ func TestEventsHandler_AppMentionDispatch(t *testing.T) {
 		},
 	}
 
-	// Fake Slack API server: returns ok=true for postMessage and chatUpdate.
+	// Fake Slack API server: handles postMessage/chatUpdate and users.info.
 	fakeSlack := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "users.info") {
+			_, _ = fmt.Fprintf(w, `{"ok":true,"user":{"profile":{"email":"u123@example.com"}}}`)
+			return
+		}
 		_, _ = fmt.Fprintf(w, `{"ok":true,"ts":"1234.5678"}`)
 	}))
 	defer fakeSlack.Close()
@@ -208,7 +212,8 @@ func TestEventsHandler_AppMentionDispatch(t *testing.T) {
 	mu.Unlock()
 	require.Equal(t, "slack", got.Channel)
 	require.Equal(t, "C456", got.ChannelID)
-	require.Equal(t, "U123", got.UserID)
+	require.Empty(t, got.UserID)
+	require.Equal(t, "u123@example.com", got.Subject)
 	require.Equal(t, helloText, got.Text)
 	require.Equal(t, "test-agent", got.AgentRef, "AgentRef must be set to DefaultAgent")
 }
