@@ -74,6 +74,13 @@ type SlackConfig struct {
 	// mode is "locked", the first user to message the bot becomes owner.
 	// SLACK_ALLOWED_USERS (comma-separated)
 	AllowedUsers []string
+	// DMOnly restricts the adapter to direct messages: channel messages and
+	// @-mentions in channels are ignored. SLACK_DM_ONLY=true. Default false.
+	DMOnly bool
+	// DropStaleEvents ignores Slack events older than the gateway's start time,
+	// so a restart never replays messages queued while it was down.
+	// SLACK_DROP_STALE=true. Default false.
+	DropStaleEvents bool
 }
 
 // Config is the fully resolved runtime configuration.
@@ -247,6 +254,12 @@ func applyEnv(cfg *Config) {
 				cfg.Slack.AllowedUsers = append(cfg.Slack.AllowedUsers, u)
 			}
 		}
+	}
+	if v, ok := lookup("SLACK_DM_ONLY"); ok {
+		cfg.Slack.DMOnly = strings.EqualFold(v, "true") || v == "1"
+	}
+	if v, ok := lookup("SLACK_DROP_STALE"); ok {
+		cfg.Slack.DropStaleEvents = strings.EqualFold(v, "true") || v == "1"
 	}
 	if v, ok := lookup("CLI_ENABLED"); ok {
 		cfg.CLI.Enabled = strings.EqualFold(v, "true") || v == "1"

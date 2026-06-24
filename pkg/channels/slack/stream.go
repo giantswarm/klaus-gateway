@@ -24,9 +24,10 @@ const (
 //
 // Two Slack messages are managed:
 //   - ts (the main reply): accumulates DeltaText content.
-//   - statusTS (the status line, posted lazily): shows the latest DeltaPrompt
-//     text (e.g. "Waiting for approval…" when the agent hits auth-required).
-//     Updated in-place rather than accumulating.
+//
+// When the stream ends on a DeltaPrompt, run() captures it in promptDelta
+// (flushing the main buffer first) and returns nil. The caller is responsible
+// for posting the approval prompt and registering the pending task.
 type batchedWriter struct {
 	client   *slackAPIClient
 	channel  string
@@ -34,10 +35,10 @@ type batchedWriter struct {
 	ts       string // main reply message timestamp
 	logger   *slog.Logger
 
-	mu         sync.Mutex
-	buf        strings.Builder
-	flushedLen int    // length of buf at the last chat.update; skips no-op flushes
-	statusTS   string // timestamp of the lazily-created status message; empty until first status delta
+	mu          sync.Mutex
+	buf         strings.Builder
+	flushedLen  int                     // length of buf at the last chat.update; skips no-op flushes
+	promptDelta *channels.OutboundDelta // set when stream ends on DeltaPrompt
 }
 
 func newBatchedWriterWithClient(client *slackAPIClient, channel, ts, threadTS string, logger *slog.Logger) *batchedWriter {
@@ -82,17 +83,15 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 				w.buf.WriteString(d.Content)
 				w.mu.Unlock()
 			case channels.DeltaPrompt:
-				// A prompt always surfaces a status line, even with no
-				// message text (e.g. auth-required with an empty body). The
-				// status line is cosmetic, so a Slack failure here must not
-				// abort delivery of the buffered answer — log and continue.
-				text := "_Waiting for approval…_"
-				if d.Content != "" {
-					text = d.Content
+				// Flush partial text so far, then hand off to the caller to post
+				// the interactive approval prompt.
+				if err := w.flush(ctx); err != nil {
+					return err
 				}
-				if err := w.updateStatus(ctx, text); err != nil {
-					w.logger.Warn("slack: status update failed", "error", err)
-				}
+				w.mu.Lock()
+				w.promptDelta = &d
+				w.mu.Unlock()
+				return nil
 			}
 
 		case <-ticker.C:
@@ -101,25 +100,6 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 			}
 		}
 	}
-}
-
-// updateStatus posts or updates the status line message in-thread.
-func (w *batchedWriter) updateStatus(ctx context.Context, text string) error {
-	w.mu.Lock()
-	statusTS := w.statusTS
-	w.mu.Unlock()
-
-	if statusTS == "" {
-		ts, err := w.client.postMessage(ctx, w.channel, text, w.threadTS)
-		if err != nil {
-			return err
-		}
-		w.mu.Lock()
-		w.statusTS = ts
-		w.mu.Unlock()
-		return nil
-	}
-	return w.client.chatUpdate(ctx, w.channel, statusTS, text)
 }
 
 func (w *batchedWriter) flush(ctx context.Context) error {
@@ -144,23 +124,185 @@ type slackAPIClient struct {
 
 func (c *slackAPIClient) postMessage(ctx context.Context, channel, text, threadTS string) (string, error) {
 	params := url.Values{
-		"channel": {channel},
-		"text":    {text},
+		paramChannel: {channel},
+		paramText:    {text},
 	}
 	if threadTS != "" {
-		params.Set("thread_ts", threadTS)
+		params.Set(paramThreadTS, threadTS)
 	}
 	return c.post(ctx, "chat.postMessage", params)
 }
 
+// lookupUserEmail returns the email from the user's Slack profile.
+// Falls back to the raw Slack user ID on any error so dispatch is never blocked.
+func (c *slackAPIClient) lookupUserEmail(ctx context.Context, userID string) (string, error) {
+	params := url.Values{paramUser: {userID}}
+	target := c.baseURL + "/users.info?" + params.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return "", fmt.Errorf("slack users.info: build request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.botToken)
+
+	resp, err := http.DefaultClient.Do(req) //nolint:gosec
+	if err != nil {
+		return "", fmt.Errorf("slack users.info: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	var result struct {
+		OK   bool   `json:"ok"`
+		Err  string `json:"error,omitempty"`
+		User struct {
+			Profile struct {
+				Email string `json:"email"`
+			} `json:"profile"`
+		} `json:"user"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("slack users.info: decode: %w", err)
+	}
+	if !result.OK {
+		return "", fmt.Errorf("slack users.info: %s", result.Err)
+	}
+	return result.User.Profile.Email, nil
+}
+
 func (c *slackAPIClient) chatUpdate(ctx context.Context, channel, ts, text string) error {
 	params := url.Values{
-		"channel": {channel},
-		"ts":      {ts},
-		"text":    {text},
+		paramChannel: {channel},
+		paramTS:      {ts},
+		paramText:    {text},
 	}
 	_, err := c.post(ctx, "chat.update", params)
 	return err
+}
+
+// postApprovalPrompt posts a Block Kit message with ✅/❌ buttons for HITL
+// approval. The button values encode the threadID so the interaction handler
+// can route the response back.
+func (c *slackAPIClient) postApprovalPrompt(ctx context.Context, channel, threadID, promptText, taskID string) error {
+	text := "_Waiting for approval…_"
+	if promptText != "" {
+		text = promptText
+	}
+	body := map[string]any{
+		paramChannel:  channel,
+		paramThreadTS: threadID,
+		paramText:     text,
+		paramBlocks: []any{
+			map[string]any{
+				bkType: bkSection,
+				bkText: map[string]any{bkType: bkMrkdwn, bkText: text},
+			},
+			map[string]any{
+				bkType: bkActions,
+				bkElements: []any{
+					map[string]any{
+						bkType:     bkButton,
+						bkText:     map[string]any{bkType: bkPlainText, bkText: "✅ Approve"},
+						bkStyle:    bkPrimary,
+						bkActionID: hitlApprove,
+						bkValue:    threadID,
+					},
+					map[string]any{
+						bkType:     bkButton,
+						bkText:     map[string]any{bkType: bkPlainText, bkText: "❌ Deny"},
+						bkStyle:    bkDanger,
+						bkActionID: hitlDeny,
+						bkValue:    threadID,
+					},
+				},
+			},
+		},
+	}
+	_, err := c.postJSON(ctx, "chat.postMessage", body)
+	return err
+}
+
+// postChoicePrompt posts an ask_user question with one Block Kit button per
+// choice. Each button's value encodes the threadID, question index, and choice
+// index so the interaction handler can resolve the selected answer label.
+func (c *slackAPIClient) postChoicePrompt(ctx context.Context, channel, threadID, question string, choices []string) error {
+	elements := make([]any, 0, len(choices))
+	for i, choice := range choices {
+		elements = append(elements, map[string]any{
+			bkType:     bkButton,
+			bkText:     map[string]any{bkType: bkPlainText, bkText: truncateButtonLabel(choice)},
+			bkActionID: fmt.Sprintf("%s_%d", hitlChoice, i),
+			bkValue:    encodeChoiceValue(threadID, i),
+		})
+	}
+	body := map[string]any{
+		paramChannel:  channel,
+		paramThreadTS: threadID,
+		paramText:     question,
+		paramBlocks: []any{
+			map[string]any{
+				bkType: bkSection,
+				bkText: map[string]any{bkType: bkMrkdwn, bkText: "*" + question + "*"},
+			},
+			map[string]any{
+				bkType:     bkActions,
+				bkElements: elements,
+			},
+		},
+	}
+	_, err := c.postJSON(ctx, "chat.postMessage", body)
+	return err
+}
+
+// truncateButtonLabel keeps a button label within Slack's 75-character limit,
+// counting runes (not bytes) so a multi-byte glyph is never split mid-rune.
+func truncateButtonLabel(s string) string {
+	const max = 75
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max-1]) + "…"
+}
+
+// chatUpdateBlocks replaces a Block Kit message with plain text (used to mark
+// an approval decision after the user clicks a button).
+func (c *slackAPIClient) chatUpdateBlocks(ctx context.Context, channel, ts, text string) error {
+	body := map[string]any{
+		paramChannel: channel,
+		paramTS:      ts,
+		paramText:    text,
+		paramBlocks:  []any{},
+	}
+	_, err := c.postJSON(ctx, "chat.update", body)
+	return err
+}
+
+func (c *slackAPIClient) postJSON(ctx context.Context, method string, body any) (string, error) {
+	data, err := json.Marshal(body)
+	if err != nil {
+		return "", fmt.Errorf("slack %s: marshal: %w", method, err)
+	}
+	target := c.baseURL + "/" + method
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, strings.NewReader(string(data)))
+	if err != nil {
+		return "", fmt.Errorf("slack %s: build request: %w", method, err)
+	}
+	req.Header.Set("Content-Type", "application/json; charset=utf-8")
+	req.Header.Set("Authorization", "Bearer "+c.botToken)
+
+	resp, err := http.DefaultClient.Do(req) //nolint:gosec
+	if err != nil {
+		return "", fmt.Errorf("slack %s: %w", method, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	var result slackResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("slack %s: decode response: %w", method, err)
+	}
+	if !result.OK {
+		return "", fmt.Errorf("slack %s: %s", method, result.Error)
+	}
+	return result.Ts, nil
 }
 
 type slackResponse struct {

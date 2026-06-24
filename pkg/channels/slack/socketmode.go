@@ -15,6 +15,7 @@ import (
 const (
 	appsConnectionsOpen = "https://slack.com/api/apps.connections.open"
 	smReconnectDelay    = 5 * time.Second
+	smTypeHello         = "hello"
 )
 
 // socketModeClient connects to Slack Socket Mode and forwards events to the
@@ -133,6 +134,40 @@ func (c *socketModeClient) readLoop(ctx context.Context, ws *websocket.Conn) {
 			_ = websocket.Message.Send(ws, ack) //nolint:staticcheck
 		}
 
+		// Slack load-balances events across every open Socket Mode connection
+		// for an app, delivering each to exactly one of them. A second consumer
+		// (a deployed gateway, another developer's session) silently steals a
+		// share of messages. Surface num_connections on connect so a "nothing
+		// arrives" symptom is diagnosable instead of baffling.
+		if env.Type == smTypeHello {
+			var h struct {
+				NumConnections int `json:"num_connections"`
+			}
+			_ = json.Unmarshal(raw, &h)
+			if h.NumConnections > 1 {
+				c.logger.Warn("slack socket mode: multiple active connections for this app; "+
+					"Slack delivers each event to only one, so this gateway will miss messages "+
+					"handled by the others. Stop the other consumer or use a dedicated app token.",
+					"num_connections", h.NumConnections)
+			} else {
+				c.logger.Info("slack socket mode: sole active connection", "num_connections", h.NumConnections)
+			}
+			continue
+		}
+
+		// Block Kit button clicks (HITL choice/approve/deny) arrive as
+		// interactive envelopes, not events_api. The HTTP /interactions
+		// endpoint is only mounted in Events API mode, so Socket Mode must
+		// route these itself or the rendered buttons would be inert.
+		if env.Type == "interactive" {
+			var payload interactionPayload
+			if err := json.Unmarshal(env.Payload, &payload); err != nil {
+				continue
+			}
+			go c.adapter.routeInteraction(ctx, payload)
+			continue
+		}
+
 		if env.Type != "events_api" {
 			continue
 		}
@@ -147,8 +182,15 @@ func (c *socketModeClient) readLoop(ctx context.Context, ws *websocket.Conn) {
 }
 
 func (c *socketModeClient) handleEvent(ctx context.Context, inner slackInnerEvent) {
-	msg, ok := inner.toInboundMessage()
+	if !c.adapter.acceptEvent(inner) {
+		return
+	}
+	threadReplyOnly := inner.threadReplyOnly()
+	msg, ok := inner.toInboundMessage(threadReplyOnly)
 	if !ok {
+		return
+	}
+	if threadReplyOnly && !c.adapter.isActiveThread(msg.ThreadID) {
 		return
 	}
 	if cmd := parseCommand(msg.Text); cmd != nil {

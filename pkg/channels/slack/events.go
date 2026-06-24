@@ -60,8 +60,18 @@ func (h *eventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if env.Type == "event_callback" && env.Event != nil {
 		ev := *env.Event
 		go func() {
-			msg, ok := ev.toInboundMessage()
+			// For message.channels events only route thread replies to active bot
+			// threads (hasPendingTask or known access state). app_mention and
+			// message.im always pass through.
+			if !h.adapter.acceptEvent(ev) {
+				return
+			}
+			threadReplyOnly := ev.threadReplyOnly()
+			msg, ok := ev.toInboundMessage(threadReplyOnly)
 			if !ok {
+				return
+			}
+			if threadReplyOnly && !h.adapter.isActiveThread(msg.ThreadID) {
 				return
 			}
 			if cmd := parseCommand(msg.Text); cmd != nil {
