@@ -230,7 +230,7 @@ func (c *slackAPIClient) postChoicePrompt(ctx context.Context, channel, threadID
 			bkType:     bkButton,
 			bkText:     map[string]any{bkType: bkPlainText, bkText: truncateButtonLabel(choice)},
 			bkActionID: fmt.Sprintf("%s_%d", hitlChoice, i),
-			bkValue:    encodeChoiceValue(threadID, 0, i),
+			bkValue:    encodeChoiceValue(threadID, i),
 		})
 	}
 	body := map[string]any{
@@ -252,13 +252,15 @@ func (c *slackAPIClient) postChoicePrompt(ctx context.Context, channel, threadID
 	return err
 }
 
-// truncateButtonLabel keeps a button label within Slack's 75-char limit.
+// truncateButtonLabel keeps a button label within Slack's 75-character limit,
+// counting runes (not bytes) so a multi-byte glyph is never split mid-rune.
 func truncateButtonLabel(s string) string {
 	const max = 75
-	if len(s) <= max {
+	r := []rune(s)
+	if len(r) <= max {
 		return s
 	}
-	return s[:max-1] + "…"
+	return string(r[:max-1]) + "…"
 }
 
 // chatUpdateBlocks replaces a Block Kit message with plain text (used to mark

@@ -14,7 +14,7 @@ const (
 )
 
 // labelApproved is the human-readable resume text / approve keyword shared by
-// the button, free-text, and auto-approve decision paths.
+// the button and free-text decision paths.
 const labelApproved = "approved"
 
 // maxChoiceButtons caps how many ask_user choices are rendered as buttons.

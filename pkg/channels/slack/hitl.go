@@ -10,15 +10,16 @@ import (
 )
 
 // choiceValue is encoded into an ask_user choice button's value so the
-// interaction handler can map a click back to a question + option.
+// interaction handler can map a click back to the selected option. Only
+// single-question ask_user prompts render as buttons, so no question index is
+// needed.
 type choiceValue struct {
-	Thread   string `json:"t"`
-	Question int    `json:"q"`
-	Choice   int    `json:"c"`
+	Thread string `json:"t"`
+	Choice int    `json:"c"`
 }
 
-func encodeChoiceValue(threadID string, q, c int) string {
-	b, _ := json.Marshal(choiceValue{Thread: threadID, Question: q, Choice: c})
+func encodeChoiceValue(threadID string, c int) string {
+	b, _ := json.Marshal(choiceValue{Thread: threadID, Choice: c})
 	return string(b)
 }
 

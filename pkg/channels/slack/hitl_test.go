@@ -57,7 +57,7 @@ func TestDecisionFromText_NilPromptIsPlainText(t *testing.T) {
 
 func TestBuildButtonDecision_Choice(t *testing.T) {
 	prompt := askUserPrompt(false, "Investigate", "Health check")
-	act := hitlAction{kind: hitlChoice, choice: choiceValue{Question: 0, Choice: 1}}
+	act := hitlAction{kind: hitlChoice, choice: choiceValue{Choice: 1}}
 
 	decision, resume, display := buildButtonDecision(act, prompt)
 	require.Equal(t, channels.DecisionApprove, decision.Type)
@@ -75,10 +75,10 @@ func TestBuildButtonDecision_ApproveDeny(t *testing.T) {
 }
 
 func TestChoiceValueRoundTrip(t *testing.T) {
-	v := encodeChoiceValue("1700.0001", 2, 3)
+	v := encodeChoiceValue("1700.0001", 3)
 	got, ok := decodeChoiceValue(v)
 	require.True(t, ok)
-	require.Equal(t, choiceValue{Thread: "1700.0001", Question: 2, Choice: 3}, got)
+	require.Equal(t, choiceValue{Thread: "1700.0001", Choice: 3}, got)
 
 	_, ok = decodeChoiceValue("not json")
 	require.False(t, ok)

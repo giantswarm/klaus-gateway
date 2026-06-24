@@ -176,51 +176,15 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 		return err
 	}
 
-	turnCtx, turnCancel := context.WithCancel(ctx)
-	defer turnCancel()
-	t := &turn{cancel: turnCancel}
-	a.turnsMu.Lock()
-	if a.turns == nil {
-		a.turns = make(map[string]*turn)
-	}
-	a.turns[threadID] = t
-	a.turnsMu.Unlock()
-	defer func() {
-		a.turnsMu.Lock()
-		if a.turns[threadID] == t {
-			delete(a.turns, threadID)
-		}
-		a.turnsMu.Unlock()
-	}()
+	turnCtx, done := a.registerTurn(ctx, threadID)
+	defer done()
 
 	deltas, err := a.gw.SendCompletion(turnCtx, ref, msg)
 	if err != nil {
 		return err
 	}
 
-	ts, err := client.postMessage(ctx, slackChannel, "_continuing…_", threadID)
-	if err != nil {
-		return err
-	}
-
-	w := newBatchedWriterWithClient(client, slackChannel, ts, threadID, a.Logger)
-	if err := w.run(ctx, deltas); err != nil {
-		return err
-	}
-
-	// Chain: if the resumed task pauses again for approval, register it.
-	if w.promptDelta != nil {
-		pd := w.promptDelta
-		a.storePendingTask(threadID, &pendingTask{
-			TaskID:    pd.TaskID,
-			AgentRef:  task.AgentRef,
-			Channel:   slackChannel,
-			ChannelID: task.ChannelID,
-			Prompt:    pd.Prompt,
-		})
-		return a.postHitlPrompt(ctx, client, slackChannel, threadID, pd)
-	}
-	return nil
+	return a.streamResponse(ctx, client, deltas, msg, slackChannel, threadID, "_continuing…_")
 }
 
 // buildButtonDecision turns a Block Kit click into a structured HITL decision,
@@ -242,11 +206,11 @@ func buildButtonDecision(act hitlAction, prompt *channels.HitlPrompt) (*channels
 	}
 }
 
-// choiceLabel resolves a choice button's option label from the stored prompt,
-// falling back to a generic label when the prompt is unavailable.
+// choiceLabel resolves a choice button's option label from the stored prompt's
+// single question, falling back to a generic label when it is unavailable.
 func choiceLabel(prompt *channels.HitlPrompt, cv choiceValue) string {
-	if prompt != nil && cv.Question >= 0 && cv.Question < len(prompt.Questions) {
-		q := prompt.Questions[cv.Question]
+	if prompt != nil && len(prompt.Questions) > 0 {
+		q := prompt.Questions[0]
 		if cv.Choice >= 0 && cv.Choice < len(q.Choices) {
 			return q.Choices[cv.Choice]
 		}

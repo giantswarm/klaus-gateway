@@ -165,8 +165,8 @@ func mapA2AEvent(event a2apkg.Event) OutboundDelta {
 				text = extractTextFromA2AParts(ev.Status.Message.Parts)
 			}
 			// kagent carries the prompt in a DataPart, so the text is usually
-			// empty; fall back to the structured hint for the classifier and
-			// any plain-text renderer.
+			// empty; fall back to the structured hint for any plain-text
+			// renderer.
 			if text == "" && hitl != nil {
 				text = hitl.summary()
 			}

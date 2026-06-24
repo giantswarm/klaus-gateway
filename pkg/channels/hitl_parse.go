@@ -125,7 +125,7 @@ func parseAskUserQuestions(args map[string]any) []HitlQuestion {
 }
 
 // summary renders a short plain-text description of the prompt, used as a
-// fallback render and as the input to the auto-approve classifier.
+// fallback render when the input-required status carries no text part.
 func (p *HitlPrompt) summary() string {
 	if p == nil {
 		return ""

@@ -23,7 +23,6 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
-	"github.com/giantswarm/klaus-gateway/pkg/channels/slack/classifier"
 )
 
 // ChannelName identifies the Slack adapter in routing keys.
@@ -52,9 +51,6 @@ type Adapter struct {
 	// AllowedUsers is a static allow-list of Slack user IDs seeded into every
 	// new thread's AccessState. The first entry becomes owner when non-empty.
 	AllowedUsers []string
-	// Classifier classifies A2A input-required prompts and auto-approves safe ones.
-	// Nil disables auto-approval; all input-required events surface as Slack prompts.
-	Classifier *classifier.Classifier
 	// DMOnly restricts the adapter to direct messages (channel_type "im").
 	// When true, channel messages and @-mentions in channels are ignored, so
 	// the bot only ever answers in a 1:1 DM. Default false (channels served).
@@ -344,23 +340,8 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 		return fmt.Errorf("slack: resolve: %w", err)
 	}
 
-	// Register an in-flight turn so /stop can cancel it.
-	turnCtx, turnCancel := context.WithCancel(ctx)
-	defer turnCancel()
-	t := &turn{cancel: turnCancel}
-	a.turnsMu.Lock()
-	if a.turns == nil {
-		a.turns = make(map[string]*turn)
-	}
-	a.turns[msg.ThreadID] = t
-	a.turnsMu.Unlock()
-	defer func() {
-		a.turnsMu.Lock()
-		if a.turns[msg.ThreadID] == t {
-			delete(a.turns, msg.ThreadID)
-		}
-		a.turnsMu.Unlock()
-	}()
+	turnCtx, done := a.registerTurn(ctx, msg.ThreadID)
+	defer done()
 
 	deltas, err := a.gw.SendCompletion(turnCtx, ref, msg)
 	if err != nil {
@@ -379,50 +360,57 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 		return nil
 	}
 
-	client := a.apiClient()
-	ts, err := client.postMessage(ctx, slackChannel, "_thinking…_", msg.ThreadID)
+	return a.streamResponse(ctx, a.apiClient(), deltas, msg, slackChannel, msg.ThreadID, "_thinking…_")
+}
+
+// registerTurn installs a cancelable in-flight turn for threadID so /stop can
+// cancel it, and returns the turn context plus a cleanup func that cancels the
+// turn and removes only this turn's registry entry (even if a later turn on the
+// same thread has already replaced it).
+func (a *Adapter) registerTurn(ctx context.Context, threadID string) (context.Context, func()) {
+	turnCtx, cancel := context.WithCancel(ctx)
+	t := &turn{cancel: cancel}
+	a.turnsMu.Lock()
+	if a.turns == nil {
+		a.turns = make(map[string]*turn)
+	}
+	a.turns[threadID] = t
+	a.turnsMu.Unlock()
+	return turnCtx, func() {
+		cancel()
+		a.turnsMu.Lock()
+		if a.turns[threadID] == t {
+			delete(a.turns, threadID)
+		}
+		a.turnsMu.Unlock()
+	}
+}
+
+// streamResponse posts a placeholder message, streams deltas into it via
+// batched chat.update calls, and — when the agent pauses for input — registers
+// the pending task and posts the HITL prompt. Shared by dispatch (a new turn)
+// and handleDecision (a button-click resume) so both render identically.
+func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, deltas <-chan channels.OutboundDelta, msg channels.InboundMessage, slackChannel, threadID, placeholder string) error {
+	ts, err := client.postMessage(ctx, slackChannel, placeholder, threadID)
 	if err != nil {
 		return fmt.Errorf("slack: post placeholder: %w", err)
 	}
 
-	w := newBatchedWriterWithClient(client, slackChannel, ts, msg.ThreadID, a.Logger)
+	w := newBatchedWriterWithClient(client, slackChannel, ts, threadID, a.Logger)
 	if err := w.run(ctx, deltas); err != nil {
 		return err
 	}
 
-	// If the agent paused for user input, either auto-approve (classifier) or
-	// post a Block Kit approval prompt and wait for human action.
-	for w.promptDelta != nil {
+	if w.promptDelta != nil {
 		pd := w.promptDelta
-		// Only generic tool approvals are eligible for auto-approval; ask_user
-		// questions always need a real answer from the human.
-		if a.Classifier != nil && !pd.Prompt.IsAskUser() {
-			if ok, result := a.Classifier.ShouldAutoApprove(pd.Content); ok {
-				a.Logger.Info("slack: auto-approving input-required", "task", pd.TaskID, "risk", result.Risk, "reason", result.Reason)
-				resumeMsg := msg
-				resumeMsg.TaskID = pd.TaskID
-				resumeMsg.Text = labelApproved
-				resumeMsg.Decision = &channels.HitlDecision{Type: channels.DecisionApprove}
-				deltas, err = a.gw.SendCompletion(turnCtx, ref, resumeMsg)
-				if err != nil {
-					return fmt.Errorf("slack: auto-approve resume: %w", err)
-				}
-				w = newBatchedWriterWithClient(client, slackChannel, ts, msg.ThreadID, a.Logger)
-				if err := w.run(ctx, deltas); err != nil {
-					return err
-				}
-				continue
-			}
-		}
-		task := &pendingTask{
+		a.storePendingTask(threadID, &pendingTask{
 			TaskID:    pd.TaskID,
 			AgentRef:  msg.AgentRef,
 			Channel:   slackChannel,
 			ChannelID: msg.ChannelID,
 			Prompt:    pd.Prompt,
-		}
-		a.storePendingTask(msg.ThreadID, task)
-		return a.postHitlPrompt(ctx, client, slackChannel, msg.ThreadID, pd)
+		})
+		return a.postHitlPrompt(ctx, client, slackChannel, threadID, pd)
 	}
 	return nil
 }
