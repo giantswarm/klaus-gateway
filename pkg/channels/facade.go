@@ -101,14 +101,17 @@ func (f *Facade) sendViaA2A(ctx context.Context, msg InboundMessage) (<-chan Out
 		terminated := false
 		for event, err := range f.Executor.Execute(ctx, execCtx) {
 			var delta OutboundDelta
-			switch {
-			case err != nil:
+			if err != nil {
 				delta = OutboundDelta{Err: err}
-			default:
+			} else {
+				// Only the mapped (error-free) path can be a no-op. Skip the
+				// zero-value here rather than after assigning an arbitrary error
+				// to Err: comparing a struct that embeds an error interface
+				// panics if the concrete error type is not comparable.
 				delta = mapA2AEvent(event)
-			}
-			if delta == (OutboundDelta{}) {
-				continue
+				if delta == (OutboundDelta{}) {
+					continue
+				}
 			}
 			select {
 			case <-ctx.Done():

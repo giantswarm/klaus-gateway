@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -59,32 +58,7 @@ func (h *eventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if env.Type == "event_callback" && env.Event != nil {
 		ev := *env.Event
-		go func() {
-			// For message.channels events only route thread replies to active bot
-			// threads (hasPendingTask or known access state). app_mention and
-			// message.im always pass through.
-			if !h.adapter.acceptEvent(ev) {
-				return
-			}
-			threadReplyOnly := ev.threadReplyOnly()
-			msg, ok := ev.toInboundMessage(threadReplyOnly)
-			if !ok {
-				return
-			}
-			if threadReplyOnly && !h.adapter.isActiveThread(msg.ThreadID) {
-				return
-			}
-			if cmd := parseCommand(msg.Text); cmd != nil {
-				if h.adapter.handleCommand(h.ctx, cmd, msg.Subject, ev.Channel, msg.ThreadID) {
-					return
-				}
-			}
-			if err := h.adapter.dispatch(h.ctx, msg, ev.Channel); err != nil {
-				if !errors.Is(err, context.Canceled) {
-					h.logger.Error("slack events: dispatch error", "channel", ev.Channel, "error", err)
-				}
-			}
-		}()
+		go h.adapter.handleInbound(h.ctx, ev)
 	}
 }
 
