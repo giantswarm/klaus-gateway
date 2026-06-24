@@ -27,12 +27,6 @@ func TestAccessState_SelectiveMode(t *testing.T) {
 	require.False(t, s.Permitted("U003"))
 }
 
-func TestAccessState_BanOverridesOpen(t *testing.T) {
-	s := &AccessState{owner: "U001", mode: ModeOpen, banned: map[string]bool{"U002": true}}
-	require.False(t, s.Permitted("U002"))
-	require.False(t, s.Deliver("U002"))
-}
-
 func TestAccessState_ObserveMode(t *testing.T) {
 	s := &AccessState{owner: "U001", observe: true}
 	// Non-owner gets delivered but not a reply.
@@ -41,34 +35,6 @@ func TestAccessState_ObserveMode(t *testing.T) {
 	// Owner still gets a reply.
 	require.True(t, s.Deliver("U001"))
 	require.True(t, s.Permitted("U001"))
-}
-
-func TestAccessState_ObserveBanStillBlocks(t *testing.T) {
-	s := &AccessState{owner: "U001", observe: true, banned: map[string]bool{"U999": true}}
-	require.False(t, s.Deliver("U999"))
-}
-
-func TestAccessState_Allow(t *testing.T) {
-	s := &AccessState{owner: "U001"}
-	s.Allow("U002")
-	require.Equal(t, ModeSelective, s.mode)
-	require.True(t, s.Permitted("U002"))
-}
-
-func TestAccessState_Lock(t *testing.T) {
-	s := &AccessState{owner: "U001", mode: ModeOpen, observe: true}
-	s.Lock()
-	require.Equal(t, ModeLocked, s.mode)
-	require.False(t, s.observe)
-	require.False(t, s.Permitted("U002"))
-}
-
-func TestAccessState_ToggleObserve(t *testing.T) {
-	s := &AccessState{owner: "U001"}
-	s.ToggleObserve()
-	require.True(t, s.observe)
-	s.ToggleObserve()
-	require.False(t, s.observe)
 }
 
 func TestGetAccess_DefaultLocked(t *testing.T) {

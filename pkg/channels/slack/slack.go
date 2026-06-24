@@ -218,7 +218,7 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 		return fmt.Errorf("slack: post placeholder: %w", err)
 	}
 
-	w := newBatchedWriterWithClient(client, slackChannel, ts, msg.ThreadID)
+	w := newBatchedWriterWithClient(client, slackChannel, ts, msg.ThreadID, a.Logger)
 	return w.run(ctx, deltas)
 }
 

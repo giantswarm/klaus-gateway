@@ -66,23 +66,13 @@ type InboundMessage struct {
 	AgentRef string
 }
 
-// DeltaKind classifies the content of an OutboundDelta.
+// DeltaKind classifies the content of an OutboundDelta. The zero value is
+// DeltaText so existing callers that leave Kind unset are unaffected.
 type DeltaKind int
 
 const (
-	DeltaText     DeltaKind = iota // regular assistant text
-	DeltaThinking                  // reasoning/thinking shown as a status line, not final content
-	DeltaTool                      // tool-call progress
-	DeltaPrompt                    // agent is waiting for user input (input-required / auth-required)
-)
-
-// ToolState classifies a tool-call delta.
-type ToolState int
-
-const (
-	ToolRunning ToolState = iota
-	ToolDone
-	ToolError
+	DeltaText   DeltaKind = iota // regular assistant text
+	DeltaPrompt                  // agent is waiting for user input (input-required / auth-required)
 )
 
 // OutboundDelta is one chunk streamed from an instance back through an
@@ -90,11 +80,9 @@ const (
 // signals an upstream or gateway failure; the channel is closed after.
 type OutboundDelta struct {
 	Kind    DeltaKind
-	Content string    // text or thinking content; for DeltaTool this is the human-readable description
-	Tool    string    // tool name (DeltaTool only)
-	State   ToolState // tool execution state (DeltaTool only)
-	Done    bool      // terminal: no more deltas follow
-	Err     error     // upstream/gateway failure; channel is closed after
+	Content string // assistant text, or the prompt body for DeltaPrompt
+	Done    bool   // terminal: no more deltas follow
+	Err     error  // upstream/gateway failure; channel is closed after
 }
 
 // Attachment is an inbound file/image payload.
