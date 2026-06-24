@@ -97,7 +97,21 @@ type Adapter struct {
 
 	pendingMu    sync.Mutex
 	pendingTasks map[string]*pendingTask // keyed by threadID
+
+	emailMu    sync.Mutex
+	emailCache map[string]emailEntry // Slack user ID -> resolved email
 }
+
+// emailEntry is a cached Slack user email with its expiry.
+type emailEntry struct {
+	email   string
+	expires time.Time
+}
+
+// userEmailCacheTTL bounds how long a resolved Slack email is reused. Emails are
+// effectively static, so a long TTL keeps users.info (a Tier-4 rate-limited
+// endpoint) off the per-turn hot path while still picking up the rare change.
+const userEmailCacheTTL = time.Hour
 
 // turn is an in-flight agent turn. The pointer identity lets dispatch clean up
 // only its own registry entry, even if a later turn on the same thread has
@@ -242,7 +256,51 @@ func (a *Adapter) Mount(r chi.Router) {
 // ID. It is the SlackEmail lookup the OBO linker uses at callback to enforce
 // that the linked muster identity's email matches the Slack user's (anti-spoof).
 func (a *Adapter) LookupUserEmail(ctx context.Context, slackUserID string) (string, error) {
-	return a.apiClient().lookupUserEmail(ctx, slackUserID)
+	return a.cachedUserEmail(ctx, slackUserID)
+}
+
+// cachedUserEmail resolves a Slack user ID to an email, memoizing successful
+// lookups for userEmailCacheTTL. Errors are not cached so a transient failure
+// is retried on the next turn.
+func (a *Adapter) cachedUserEmail(ctx context.Context, slackUserID string) (string, error) {
+	now := time.Now()
+	a.emailMu.Lock()
+	if e, ok := a.emailCache[slackUserID]; ok && now.Before(e.expires) {
+		a.emailMu.Unlock()
+		return e.email, nil
+	}
+	a.emailMu.Unlock()
+
+	email, err := a.apiClient().lookupUserEmail(ctx, slackUserID)
+	if err != nil {
+		return "", err
+	}
+	a.emailMu.Lock()
+	if a.emailCache == nil {
+		a.emailCache = make(map[string]emailEntry)
+	}
+	a.emailCache[slackUserID] = emailEntry{email: email, expires: now.Add(userEmailCacheTTL)}
+	a.emailMu.Unlock()
+	return email, nil
+}
+
+// resolveSubjectEmail replaces the Slack user ID in msg.Subject with the user's
+// workspace email when it can be resolved, so downstream identity claims carry
+// the email rather than the opaque Slack ID. A lookup failure leaves the ID in
+// place (logged, never fatal). Shared by the message-dispatch and button-click
+// paths.
+func (a *Adapter) resolveSubjectEmail(ctx context.Context, msg *channels.InboundMessage) {
+	if msg.Subject == "" {
+		return
+	}
+	email, err := a.cachedUserEmail(ctx, msg.Subject)
+	if err != nil {
+		a.Logger.Warn("slack: user email lookup failed, falling back to user ID", "user", msg.Subject, "error", err)
+		return
+	}
+	if email != "" {
+		msg.Subject = email
+	}
 }
 
 // apiClient returns a Slack Web API client using the adapter's bot token
@@ -378,15 +436,7 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 		msg.Decision = decisionFromText(task.Prompt, msg.Text)
 	}
 
-	if msg.Subject != "" {
-		client := a.apiClient()
-		email, err := client.lookupUserEmail(ctx, msg.Subject)
-		if err != nil {
-			a.Logger.Warn("slack: user email lookup failed, falling back to user ID", "user", msg.Subject, "error", err)
-		} else if email != "" {
-			msg.Subject = email
-		}
-	}
+	a.resolveSubjectEmail(ctx, &msg)
 
 	// On-behalf-of: when OBO linking is enabled and this Slack user has linked a
 	// muster identity, mint a fresh human muster access token and forward it onto

@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 
 	"github.com/go-chi/chi/v5"
@@ -216,7 +215,7 @@ func run(args []string) error {
 		if slackAdapter != nil {
 			slackEmail = slackAdapter.LookupUserEmail
 		}
-		linker, closeLinker, err := buildOBOLinker(ctx, cfg.OBO, logger, slackEmail)
+		linker, closeLinker, err := buildOBOLinker(cfg.OBO, logger, slackEmail)
 		if err != nil {
 			return fmt.Errorf("build obo linker: %w", err)
 		}
@@ -371,8 +370,9 @@ func buildStore(cfg config.Config) (store.Store, error) {
 // buildOBOLinker constructs the muster account-linking Linker for Slack OBO. It
 // returns a cleanup func that closes the link store (a no-op for the in-memory
 // store). slackEmail is the anti-spoof email lookup; nil skips the email-match
-// check at callback.
-func buildOBOLinker(ctx context.Context, cfg config.OBOConfig, logger *slog.Logger,
+// check at callback. The OAuth client_id and redirect URI are derived from
+// CallbackBaseURL by musterlink (CIMD); an explicit cfg.ClientID overrides it.
+func buildOBOLinker(cfg config.OBOConfig, logger *slog.Logger,
 	slackEmail func(context.Context, string) (string, error),
 ) (*musterlink.Linker, func() error, error) {
 	stateKey, err := os.ReadFile(cfg.StateKeyFile)
@@ -396,19 +396,10 @@ func buildOBOLinker(ctx context.Context, cfg config.OBOConfig, logger *slog.Logg
 		store = musterlink.NewMemStore()
 	}
 
-	// CIMD: the OAuth client_id is the absolute URL of the CIMD document the
-	// gateway serves. muster fetches that URL and validates client_id == URL.
-	// An explicit --obo-client-id overrides this (e.g. a pre-registered client).
-	clientID := cfg.ClientID
-	if clientID == "" {
-		clientID = strings.TrimRight(cfg.CallbackBaseURL, "/") + musterlink.CIMDPath
-	}
-
-	linker, err := musterlink.New(ctx, musterlink.Config{
+	linker, err := musterlink.New(musterlink.Config{
 		BaseURL:       cfg.MusterURL,
-		ClientID:      clientID,
+		ClientID:      cfg.ClientID,
 		ClientSecret:  cfg.ClientSecret,
-		RedirectURL:   strings.TrimRight(cfg.CallbackBaseURL, "/") + musterlink.CallbackPath,
 		PublicBaseURL: cfg.CallbackBaseURL,
 		StateKey:      stateKey,
 		Store:         store,

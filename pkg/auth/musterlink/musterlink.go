@@ -68,6 +68,9 @@ const (
 // human to complete an OAuth consent screen.
 const defaultStateTTL = 15 * time.Minute
 
+// grantTypeRefreshToken is the OAuth grant type advertised in the CIMD document.
+const grantTypeRefreshToken = "refresh_token"
+
 // ErrNotLinked is returned by TokenFor when no muster link exists for the Slack
 // user. Callers treat it as a signal to prompt the user to sign in.
 var ErrNotLinked = errors.New("musterlink: slack user is not linked to a muster identity")
@@ -121,6 +124,7 @@ type authServerMetadata struct {
 // Linker drives the muster account-linking flow and mints human tokens.
 type Linker struct {
 	oauth         *oauth2.Config
+	baseURL       string
 	userinfoURL   string
 	publicBaseURL string
 	httpClient    *http.Client
@@ -130,6 +134,13 @@ type Linker struct {
 	slackEmail    func(ctx context.Context, slackUserID string) (string, error)
 	logger        *slog.Logger
 	now           func() time.Time
+
+	// discoverMu guards lazy RFC 8414 discovery. Endpoints are resolved on
+	// first use rather than at construction so the gateway can boot (and serve
+	// non-OBO traffic plus the CIMD document) even when muster is briefly
+	// unreachable. A failed attempt is not cached, so the next request retries.
+	discoverMu sync.Mutex
+	discovered bool
 
 	mu      sync.Mutex
 	pending map[string]pendingAuth // state -> PKCE verifier
@@ -147,24 +158,44 @@ type pendingAuth struct {
 	expires  time.Time
 }
 
-// New builds a Linker, discovering muster's OAuth endpoints via RFC 8414.
-func New(ctx context.Context, cfg Config) (*Linker, error) {
+// New builds a Linker. muster's OAuth endpoints are discovered lazily (RFC 8414)
+// on first use, so construction performs no network I/O.
+//
+// ClientID and RedirectURL are optional: when empty they are derived from
+// PublicBaseURL as the self-hosted CIMD document URL (the recommended default)
+// and the callback URL respectively. PublicBaseURL is therefore required unless
+// both are supplied explicitly.
+func New(cfg Config) (*Linker, error) {
 	if cfg.Store == nil {
 		return nil, errors.New("musterlink: Store is required")
 	}
 	if len(cfg.StateKey) == 0 {
 		return nil, errors.New("musterlink: StateKey is required")
 	}
-	if cfg.ClientID == "" || cfg.RedirectURL == "" || cfg.BaseURL == "" {
-		return nil, errors.New("musterlink: BaseURL, ClientID and RedirectURL are required")
+	if cfg.BaseURL == "" {
+		return nil, errors.New("musterlink: BaseURL is required")
+	}
+	publicBaseURL := strings.TrimRight(cfg.PublicBaseURL, "/")
+	redirectURL := cfg.RedirectURL
+	if redirectURL == "" {
+		if publicBaseURL == "" {
+			return nil, errors.New("musterlink: RedirectURL or PublicBaseURL is required")
+		}
+		redirectURL = publicBaseURL + CallbackPath
+	}
+	// CIMD: the OAuth client_id is the absolute URL of the document the gateway
+	// serves at CIMDPath; muster fetches it and validates client_id == URL. An
+	// explicit ClientID overrides this (e.g. a pre-registered client).
+	clientID := cfg.ClientID
+	if clientID == "" {
+		if publicBaseURL == "" {
+			return nil, errors.New("musterlink: ClientID or PublicBaseURL is required")
+		}
+		clientID = publicBaseURL + CIMDPath
 	}
 	httpClient := cfg.HTTPClient
 	if httpClient == nil {
 		httpClient = http.DefaultClient
-	}
-	md, err := discover(ctx, httpClient, cfg.BaseURL)
-	if err != nil {
-		return nil, err
 	}
 	scopes := cfg.Scopes
 	if len(scopes) == 0 {
@@ -180,18 +211,13 @@ func New(ctx context.Context, cfg Config) (*Linker, error) {
 	}
 	return &Linker{
 		oauth: &oauth2.Config{
-			ClientID:     cfg.ClientID,
+			ClientID:     clientID,
 			ClientSecret: cfg.ClientSecret,
-			Endpoint: oauth2.Endpoint{
-				AuthURL:   md.AuthorizationEndpoint,
-				TokenURL:  md.TokenEndpoint,
-				AuthStyle: oauth2.AuthStyleInParams,
-			},
-			RedirectURL: cfg.RedirectURL,
-			Scopes:      scopes,
+			RedirectURL:  redirectURL,
+			Scopes:       scopes,
 		},
-		userinfoURL:   md.UserinfoEndpoint,
-		publicBaseURL: strings.TrimRight(cfg.PublicBaseURL, "/"),
+		baseURL:       cfg.BaseURL,
+		publicBaseURL: publicBaseURL,
 		httpClient:    httpClient,
 		store:         cfg.Store,
 		stateKey:      cfg.StateKey,
@@ -201,6 +227,29 @@ func New(ctx context.Context, cfg Config) (*Linker, error) {
 		now:           time.Now,
 		pending:       map[string]pendingAuth{},
 	}, nil
+}
+
+// ensureEndpoints lazily resolves and caches muster's OAuth endpoints via RFC
+// 8414. It is safe for concurrent use; a failed attempt is not cached so the
+// next caller retries.
+func (l *Linker) ensureEndpoints(ctx context.Context) error {
+	l.discoverMu.Lock()
+	defer l.discoverMu.Unlock()
+	if l.discovered {
+		return nil
+	}
+	md, err := discover(ctx, l.httpClient, l.baseURL)
+	if err != nil {
+		return err
+	}
+	l.oauth.Endpoint = oauth2.Endpoint{
+		AuthURL:   md.AuthorizationEndpoint,
+		TokenURL:  md.TokenEndpoint,
+		AuthStyle: oauth2.AuthStyleInParams,
+	}
+	l.userinfoURL = md.UserinfoEndpoint
+	l.discovered = true
+	return nil
 }
 
 // discover fetches RFC 8414 authorization-server metadata from baseURL.
@@ -267,7 +316,7 @@ func (l *Linker) HandleClientMetadata(w http.ResponseWriter, _ *http.Request) {
 		ClientName:              "klaus-gateway",
 		ClientURI:               "https://github.com/giantswarm/klaus-gateway",
 		RedirectURIs:            []string{l.oauth.RedirectURL},
-		GrantTypes:              []string{"authorization_code", "refresh_token"},
+		GrantTypes:              []string{"authorization_code", grantTypeRefreshToken},
 		ResponseTypes:           []string{"code"},
 		TokenEndpointAuthMethod: "none",
 		Scope:                   strings.Join(l.oauth.Scopes, " "),
@@ -309,10 +358,17 @@ func (l *Linker) HandleLink(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid or expired sign-in link", http.StatusBadRequest)
 		return
 	}
+	if err := l.ensureEndpoints(r.Context()); err != nil {
+		l.logger.Error("musterlink: discovery failed", "err", err)
+		http.Error(w, "sign-in is temporarily unavailable", http.StatusBadGateway)
+		return
+	}
 	verifier := oauth2.GenerateVerifier()
 	l.putPending(state, verifier)
 	url := l.oauth.AuthCodeURL(state, oauth2.S256ChallengeOption(verifier))
-	http.Redirect(w, r, url, http.StatusFound)
+	// G710: the redirect target is muster's discovered authorize endpoint built
+	// by oauth2, not user-controlled input.
+	http.Redirect(w, r, url, http.StatusFound) //nolint:gosec
 }
 
 // HandleCallback completes the flow: it verifies state, exchanges the code
@@ -374,6 +430,9 @@ func (l *Linker) HandleCallback(w http.ResponseWriter, r *http.Request) {
 // endpoint. The returned Link has no LinkedAt set; the caller stamps and stores
 // it after any email-match check.
 func (l *Linker) Exchange(ctx context.Context, code, codeVerifier string) (*Link, error) {
+	if err := l.ensureEndpoints(ctx); err != nil {
+		return nil, err
+	}
 	tok, err := l.oauth.Exchange(ctx, code, oauth2.VerifierOption(codeVerifier))
 	if err != nil {
 		return nil, fmt.Errorf("musterlink: code exchange: %w", err)
@@ -438,6 +497,9 @@ func (l *Linker) TokenFor(ctx context.Context, slackUserID string) (string, erro
 	link, ok := l.store.Get(slackUserID)
 	if !ok {
 		return "", ErrNotLinked
+	}
+	if err := l.ensureEndpoints(ctx); err != nil {
+		return "", fmt.Errorf("musterlink: discover endpoints: %w", err)
 	}
 	src := l.oauth.TokenSource(ctx, &oauth2.Token{RefreshToken: link.RefreshToken})
 	tok, err := src.Token()

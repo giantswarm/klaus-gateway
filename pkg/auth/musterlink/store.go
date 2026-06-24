@@ -143,7 +143,9 @@ func (s *BoltStore) Get(slackUserID string) (*Link, bool) {
 // Put encrypts and stores link. Errors are logged; a failed Put means the next
 // refresh sees the stale token and the user re-links.
 func (s *BoltStore) Put(slackUserID string, link *Link) {
-	plaintext, err := json.Marshal(link)
+	// G117: the marshaled link (incl. the refresh token) is encrypted with
+	// AES-256-GCM by seal before it is ever written to disk.
+	plaintext, err := json.Marshal(link) //nolint:gosec
 	if err != nil {
 		s.logger.Error("musterlink: marshal link failed", "err", err)
 		return

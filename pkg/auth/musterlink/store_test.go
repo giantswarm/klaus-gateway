@@ -54,7 +54,7 @@ func TestBoltStoreEncryptedAtRest(t *testing.T) {
 	s.Put("U1", &Link{RefreshToken: "topsecret-refresh-token"})
 	require.NoError(t, s.Close())
 
-	raw, err := os.ReadFile(path)
+	raw, err := os.ReadFile(path) //nolint:gosec // G304: test reads a file it just created under t.TempDir()
 	require.NoError(t, err)
 	require.NotContains(t, string(raw), "topsecret-refresh-token", "refresh token must not appear in plaintext on disk")
 }

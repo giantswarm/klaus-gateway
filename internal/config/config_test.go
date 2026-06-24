@@ -61,6 +61,7 @@ func TestValidate_A2A(t *testing.T) {
 
 func TestValidate_OBO(t *testing.T) {
 	base := config.Defaults()
+	base.Slack.Enabled = true // OBO links Slack identities, so Slack must be on
 	base.OBO = config.OBOConfig{
 		Enabled:         true,
 		MusterURL:       "https://muster.example.com",
@@ -70,6 +71,12 @@ func TestValidate_OBO(t *testing.T) {
 
 	t.Run("enabled with required fields is valid", func(t *testing.T) {
 		require.NoError(t, base.Validate())
+	})
+
+	t.Run("obo without slack fails", func(t *testing.T) {
+		cfg := base
+		cfg.Slack.Enabled = false
+		require.Error(t, cfg.Validate(), "OBO requires the Slack adapter for the email anti-spoof check")
 	})
 
 	t.Run("missing muster url fails", func(t *testing.T) {

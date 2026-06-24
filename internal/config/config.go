@@ -376,6 +376,9 @@ func (c Config) Validate() error {
 		return fmt.Errorf("--a2a-url is required with --a2a-enabled")
 	}
 	if c.OBO.Enabled {
+		if !c.Slack.Enabled {
+			return fmt.Errorf("--slack-enabled is required with --obo-enabled (OBO links Slack identities and enforces the Slack/muster email match)")
+		}
 		if c.OBO.MusterURL == "" {
 			return fmt.Errorf("--obo-muster-url is required with --obo-enabled")
 		}

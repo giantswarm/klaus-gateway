@@ -459,6 +459,34 @@ func TestDispatch_OBO_DisabledLeavesBearerTokenEmpty(t *testing.T) {
 	require.Empty(t, got.BearerToken, "with OBO disabled the turn must run as M2M")
 }
 
+func TestLookupUserEmail_Caches(t *testing.T) {
+	var mu sync.Mutex
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "users.info") {
+			mu.Lock()
+			calls++
+			mu.Unlock()
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"ok":true,"user":{"profile":{"email":"u@example.com"}}}`)
+	}))
+	defer srv.Close()
+
+	a := &slackadapter.Adapter{
+		Secrets: slackadapter.Secrets{BotToken: "dummy-bot-token"}, //nolint:gosec // G101 dummy value used only in tests
+		APIBase: srv.URL,
+	}
+	for range 3 {
+		got, err := a.LookupUserEmail(context.Background(), "U123")
+		require.NoError(t, err)
+		require.Equal(t, "u@example.com", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, 1, calls, "repeated lookups for the same user must hit users.info once")
+}
+
 // --- OBO sign-in UX ---
 
 // captureEphemeral spins up a fake Slack API that records chat.postEphemeral
