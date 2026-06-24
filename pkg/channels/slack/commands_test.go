@@ -1,7 +1,6 @@
 package slack
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -91,7 +90,7 @@ func TestHandleCommand_Stop_CancelsInFlightTurn(t *testing.T) {
 	cancel := func() { close(cancelled) }
 
 	a.turnsMu.Lock()
-	a.turns = map[string]context.CancelFunc{"T001": cancel}
+	a.turns = map[string]*turn{"T001": {cancel: cancel}}
 	a.turnsMu.Unlock()
 
 	cmd := &slashCommand{Name: "stop"}

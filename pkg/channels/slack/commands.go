@@ -56,8 +56,19 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *slashCommand, slackUse
 		}
 	}
 
-	state := a.getAccess(threadID, slackUser)
-	isOwner := state.IsOwner(slackUser)
+	// ownerOnly resolves the thread's access state and verifies the caller is
+	// the owner, replying with a refusal otherwise. Resolving lazily keeps the
+	// non-mutating commands (/help, /stop) and unknown commands free of access
+	// side effects. The first user to interact with a thread becomes its owner
+	// (see getAccess).
+	ownerOnly := func() (*AccessState, bool) {
+		state := a.getAccess(threadID, slackUser)
+		if !state.IsOwner(slackUser) {
+			reply("_Only the thread owner can run this command._")
+			return nil, false
+		}
+		return state, true
+	}
 
 	switch cmd.Name {
 	case cmdHelp:
@@ -66,21 +77,20 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *slashCommand, slackUse
 
 	case cmdStop:
 		a.turnsMu.Lock()
-		if cancel, ok := a.turns[threadID]; ok {
-			cancel()
+		if t, ok := a.turns[threadID]; ok {
+			t.cancel()
 		}
 		a.turnsMu.Unlock()
 		reply("⏹ Stopped.")
 		return true
 
 	case cmdQuit:
-		if !isOwner {
-			reply("_Only the thread owner can end the session._")
+		if _, ok := ownerOnly(); !ok {
 			return true
 		}
 		a.turnsMu.Lock()
-		if cancel, ok := a.turns[threadID]; ok {
-			cancel()
+		if t, ok := a.turns[threadID]; ok {
+			t.cancel()
 			delete(a.turns, threadID)
 		}
 		a.turnsMu.Unlock()
@@ -91,8 +101,8 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *slashCommand, slackUse
 		return true
 
 	case cmdOpen:
-		if !isOwner {
-			reply("_Only the thread owner can change access._")
+		state, ok := ownerOnly()
+		if !ok {
 			return true
 		}
 		state.Open()
@@ -100,8 +110,8 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *slashCommand, slackUse
 		return true
 
 	case cmdLock:
-		if !isOwner {
-			reply("_Only the thread owner can change access._")
+		state, ok := ownerOnly()
+		if !ok {
 			return true
 		}
 		state.Lock()
@@ -109,8 +119,8 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *slashCommand, slackUse
 		return true
 
 	case cmdObserve:
-		if !isOwner {
-			reply("_Only the thread owner can change access._")
+		state, ok := ownerOnly()
+		if !ok {
 			return true
 		}
 		if state.ToggleObserve() {

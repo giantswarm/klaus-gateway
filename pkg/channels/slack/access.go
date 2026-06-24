@@ -68,10 +68,13 @@ func (a *AccessState) IsOwner(userID string) bool {
 	return userID == a.owner
 }
 
-// Open lets everyone in the thread receive responses.
+// Open lets everyone in the thread receive responses. It also clears observe,
+// which is moot once everyone is permitted, keeping the flags consistent with
+// Lock.
 func (a *AccessState) Open() {
 	a.mu.Lock()
 	a.mode = ModeOpen
+	a.observe = false
 	a.mu.Unlock()
 }
 
