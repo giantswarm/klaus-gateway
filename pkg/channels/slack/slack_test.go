@@ -208,10 +208,52 @@ func TestEventsHandler_AppMentionDispatch(t *testing.T) {
 	mu.Unlock()
 	require.Equal(t, "slack", got.Channel)
 	require.Equal(t, "C456", got.ChannelID)
-	require.Empty(t, got.UserID)
-	require.Empty(t, got.Subject, "Slack carries no per-user identity in this phase")
+	require.Empty(t, got.UserID, "thread-scoped session shares one contextID")
+	require.Equal(t, "U123", got.Subject, "Subject carries the raw Slack user ID for access control")
 	require.Equal(t, helloText, got.Text)
 	require.Equal(t, "test-agent", got.AgentRef, "AgentRef must be set to DefaultAgent")
+}
+
+func TestEventsHandler_LockedMode_NonOwnerDropped(t *testing.T) {
+	gw := &stubGateway{}
+
+	fakeSlack := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"ok":true,"ts":"1234.5678"}`)
+	}))
+	defer fakeSlack.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	a := &slackadapter.Adapter{
+		Mode:         slackadapter.ModeEvents,
+		Secrets:      slackadapter.Secrets{BotToken: "dummy-bot-token", SigningSecret: "signing-secret"}, //nolint:gosec
+		APIBase:      fakeSlack.URL,
+		DefaultAgent: "test-agent",
+		// Default mode is locked; owner is first sender U001.
+		AllowedUsers: []string{"U001"},
+	}
+	require.NoError(t, a.Start(ctx, gw))
+	r := chi.NewRouter()
+	a.Mount(r)
+	srv := httptest.NewServer(r)
+	t.Cleanup(cancel)
+	t.Cleanup(srv.Close)
+	t.Cleanup(func() { _ = a.Stop(context.Background()) })
+
+	// U999 is not U001 — should be silently dropped.
+	payload := `{"type":"event_callback","event":{"type":"app_mention","user":"U999","text":"<@BOT> hi","channel":"C1","ts":"111.222"}}`
+	body := []byte(payload)
+	stamp, sig := signBody(t, "signing-secret", body)
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/channels/slack/events", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Slack-Request-Timestamp", stamp)
+	req.Header.Set("X-Slack-Signature", sig)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	time.Sleep(150 * time.Millisecond)
+	require.Zero(t, gw.resolveCount(), "non-owner must not trigger resolve")
 }
 
 func TestEventsHandler_BotMessageIgnored(t *testing.T) {

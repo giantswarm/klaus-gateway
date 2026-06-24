@@ -111,7 +111,7 @@ func (f *Facade) sendViaA2A(ctx context.Context, msg InboundMessage) (<-chan Out
 				return
 			case out <- delta:
 			}
-			if delta.Err != nil || delta.Done {
+			if delta.Err != nil || delta.Done || delta.Kind == DeltaPrompt {
 				terminated = true
 				break
 			}
@@ -150,17 +150,25 @@ func mapA2AEvent(event a2apkg.Event) OutboundDelta {
 		}
 		return OutboundDelta{Content: text}
 	case *a2apkg.TaskStatusUpdateEvent:
-		if ev.Status.State == a2apkg.TaskStateCompleted {
+		switch ev.Status.State {
+		case a2apkg.TaskStateCompleted:
 			return OutboundDelta{Done: true}
-		}
-		if ev.Status.State.Terminal() {
-			msg := fmt.Sprintf("a2a: task ended with state %s", ev.Status.State)
+		case a2apkg.TaskStateInputRequired, a2apkg.TaskStateAuthRequired:
+			prompt := ""
 			if ev.Status.Message != nil {
-				if text := extractTextFromA2AParts(ev.Status.Message.Parts); text != "" {
-					msg = text
-				}
+				prompt = extractTextFromA2AParts(ev.Status.Message.Parts)
 			}
-			return OutboundDelta{Err: errors.New(msg)}
+			return OutboundDelta{Kind: DeltaPrompt, Content: prompt}
+		default:
+			if ev.Status.State.Terminal() {
+				msg := fmt.Sprintf("a2a: task ended with state %s", ev.Status.State)
+				if ev.Status.Message != nil {
+					if text := extractTextFromA2AParts(ev.Status.Message.Parts); text != "" {
+						msg = text
+					}
+				}
+				return OutboundDelta{Err: errors.New(msg)}
+			}
 		}
 	}
 	return OutboundDelta{}

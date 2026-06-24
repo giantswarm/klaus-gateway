@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sync"
 	"sync/atomic"
 
 	"github.com/go-chi/chi/v5"
@@ -41,10 +42,19 @@ type Adapter struct {
 	// APIBase overrides the Slack Web API base URL. Empty uses the default
 	// (https://slack.com/api). Set in tests to point at a fake server.
 	APIBase string
+	// DefaultAccessMode sets the initial access mode for new threads.
+	// "open" or "observe"; empty/"locked" means ModeLocked (owner-only).
+	DefaultAccessMode string
+	// AllowedUsers is a static allow-list of Slack user IDs seeded into every
+	// new thread's AccessState. The first entry becomes owner when non-empty.
+	AllowedUsers []string
 
 	gw        channels.Gateway
 	started   atomic.Bool
 	evHandler http.Handler
+
+	accessMu sync.Mutex
+	access   map[string]*AccessState // keyed by threadID
 }
 
 // Name returns the channel name used in routing keys.
@@ -57,6 +67,12 @@ func (a *Adapter) Start(ctx context.Context, gw channels.Gateway) error {
 	}
 	if a.DefaultAgent == "" {
 		return errors.New("slack: DefaultAgent must be set")
+	}
+	switch a.DefaultAccessMode {
+	case "", accessModeLocked, accessModeOpen, accessModeObserve:
+	default:
+		return fmt.Errorf("slack: unknown DefaultAccessMode %q: want %s, %s, or %s",
+			a.DefaultAccessMode, accessModeLocked, accessModeOpen, accessModeObserve)
 	}
 	if a.Logger == nil {
 		a.Logger = slog.Default()
@@ -118,12 +134,60 @@ func (a *Adapter) apiClient() *slackAPIClient {
 	return &slackAPIClient{botToken: a.Secrets.BotToken, baseURL: base}
 }
 
+// getAccess returns (or lazily creates) the AccessState for a thread.
+// ownerID is the Slack user ID of the message sender; it becomes the thread
+// owner if this is the first message in the thread.
+func (a *Adapter) getAccess(threadID, ownerID string) *AccessState {
+	a.accessMu.Lock()
+	defer a.accessMu.Unlock()
+	if a.access == nil {
+		a.access = make(map[string]*AccessState)
+	}
+	if state, ok := a.access[threadID]; ok {
+		return state
+	}
+	state := &AccessState{}
+	switch a.DefaultAccessMode {
+	case accessModeOpen:
+		state.mode = ModeOpen
+	case accessModeObserve:
+		state.mode = ModeLocked
+		state.observe = true
+	default:
+		state.mode = ModeLocked
+	}
+	// A static allow-list overrides first-sender ownership: the first entry
+	// becomes owner, any remaining entries seed the selective allow-list.
+	if len(a.AllowedUsers) > 0 {
+		state.owner = a.AllowedUsers[0]
+		if len(a.AllowedUsers) > 1 {
+			state.allowed = make(map[string]bool, len(a.AllowedUsers)-1)
+			for _, u := range a.AllowedUsers[1:] {
+				state.allowed[u] = true
+			}
+			state.mode = ModeSelective
+		}
+	} else {
+		state.owner = ownerID
+	}
+	a.access[threadID] = state
+	return state
+}
+
 // dispatch resolves an inbound Slack message to a Klaus instance, posts a
 // placeholder reply in-thread, and streams the completion back via chat.update batches.
 func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, slackChannel string) error {
 	if !a.started.Load() {
 		return errors.New("slack: adapter not started")
 	}
+
+	slackUser := msg.Subject // raw Slack user ID; keys access control
+
+	state := a.getAccess(msg.ThreadID, slackUser)
+	if !state.Deliver(slackUser) {
+		return nil
+	}
+	respond := state.Permitted(slackUser)
 
 	msg.AgentRef = a.DefaultAgent
 
@@ -132,18 +196,30 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 		return fmt.Errorf("slack: resolve: %w", err)
 	}
 
+	deltas, err := a.gw.SendCompletion(ctx, ref, msg)
+	if err != nil {
+		return fmt.Errorf("slack: send completion: %w", err)
+	}
+
+	// Observe mode: forward the turn to the agent for context but suppress the
+	// Slack reply. Drain the stream so the producer completes, surfacing any
+	// upstream error in the log rather than discarding it silently.
+	if !respond {
+		for d := range deltas {
+			if d.Err != nil {
+				a.Logger.Warn("slack: observe-mode turn failed", "thread", msg.ThreadID, "error", d.Err)
+			}
+		}
+		return nil
+	}
+
 	client := a.apiClient()
 	ts, err := client.postMessage(ctx, slackChannel, "_thinking…_", msg.ThreadID)
 	if err != nil {
 		return fmt.Errorf("slack: post placeholder: %w", err)
 	}
 
-	deltas, err := a.gw.SendCompletion(ctx, ref, msg)
-	if err != nil {
-		return fmt.Errorf("slack: send completion: %w", err)
-	}
-
-	w := newBatchedWriterWithClient(client, slackChannel, ts)
+	w := newBatchedWriterWithClient(client, slackChannel, ts, msg.ThreadID, a.Logger)
 	return w.run(ctx, deltas)
 }
 
@@ -185,6 +261,10 @@ func (e slackInnerEvent) toInboundMessage() (channels.InboundMessage, bool) {
 		UserID:    "", // thread-scoped session: all participants share one contextID
 		ThreadID:  threadID,
 		Text:      text,
+		// Subject carries the raw Slack user ID. It keys per-thread access
+		// control only; mapping it to an email/OAuth sub for downstream
+		// identity is deferred to the auth phase that actually consumes it.
+		Subject: e.User,
 	}, true
 }
 

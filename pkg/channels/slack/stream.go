@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -20,20 +21,35 @@ const (
 
 // batchedWriter accumulates OutboundDelta content and periodically calls
 // chat.update to stay within Slack's rate limits (~4 updates/sec/channel).
+//
+// Two Slack messages are managed:
+//   - ts (the main reply): accumulates DeltaText content.
+//   - statusTS (the status line, posted lazily): shows the latest DeltaPrompt
+//     text (e.g. "Waiting for approval…" when the agent hits auth-required).
+//     Updated in-place rather than accumulating.
 type batchedWriter struct {
-	client  *slackAPIClient
-	channel string
-	ts      string // Slack message timestamp (acts as the message ID for updates).
+	client   *slackAPIClient
+	channel  string
+	threadTS string // thread root — used when posting the status message
+	ts       string // main reply message timestamp
+	logger   *slog.Logger
 
-	mu  sync.Mutex
-	buf strings.Builder
+	mu         sync.Mutex
+	buf        strings.Builder
+	flushedLen int    // length of buf at the last chat.update; skips no-op flushes
+	statusTS   string // timestamp of the lazily-created status message; empty until first status delta
 }
 
-func newBatchedWriterWithClient(client *slackAPIClient, channel, ts string) *batchedWriter {
+func newBatchedWriterWithClient(client *slackAPIClient, channel, ts, threadTS string, logger *slog.Logger) *batchedWriter {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return &batchedWriter{
-		client:  client,
-		channel: channel,
-		ts:      ts,
+		client:   client,
+		channel:  channel,
+		ts:       ts,
+		threadTS: threadTS,
+		logger:   logger,
 	}
 }
 
@@ -57,12 +73,27 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 			if d.Done {
 				return w.flush(ctx)
 			}
-			if d.Content == "" {
-				continue
+			switch d.Kind {
+			case channels.DeltaText:
+				if d.Content == "" {
+					continue
+				}
+				w.mu.Lock()
+				w.buf.WriteString(d.Content)
+				w.mu.Unlock()
+			case channels.DeltaPrompt:
+				// A prompt always surfaces a status line, even with no
+				// message text (e.g. auth-required with an empty body). The
+				// status line is cosmetic, so a Slack failure here must not
+				// abort delivery of the buffered answer — log and continue.
+				text := "_Waiting for approval…_"
+				if d.Content != "" {
+					text = d.Content
+				}
+				if err := w.updateStatus(ctx, text); err != nil {
+					w.logger.Warn("slack: status update failed", "error", err)
+				}
 			}
-			w.mu.Lock()
-			w.buf.WriteString(d.Content)
-			w.mu.Unlock()
 
 		case <-ticker.C:
 			if err := w.flush(ctx); err != nil {
@@ -72,13 +103,36 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 	}
 }
 
-func (w *batchedWriter) flush(ctx context.Context) error {
+// updateStatus posts or updates the status line message in-thread.
+func (w *batchedWriter) updateStatus(ctx context.Context, text string) error {
 	w.mu.Lock()
-	text := w.buf.String()
+	statusTS := w.statusTS
 	w.mu.Unlock()
-	if text == "" {
+
+	if statusTS == "" {
+		ts, err := w.client.postMessage(ctx, w.channel, text, w.threadTS)
+		if err != nil {
+			return err
+		}
+		w.mu.Lock()
+		w.statusTS = ts
+		w.mu.Unlock()
 		return nil
 	}
+	return w.client.chatUpdate(ctx, w.channel, statusTS, text)
+}
+
+func (w *batchedWriter) flush(ctx context.Context) error {
+	w.mu.Lock()
+	// Skip the chat.update when nothing new accumulated since the last flush;
+	// the ticker fires every batchInterval whether or not content changed.
+	if w.buf.Len() == w.flushedLen {
+		w.mu.Unlock()
+		return nil
+	}
+	text := w.buf.String()
+	w.flushedLen = w.buf.Len()
+	w.mu.Unlock()
 	return w.client.chatUpdate(ctx, w.channel, w.ts, markdownToMrkdwn(text))
 }
 
