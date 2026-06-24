@@ -20,11 +20,16 @@ func TestParseCommand(t *testing.T) {
 		{input: "/stop", name: "stop", args: nil},
 		{input: "/help", name: "help", args: nil},
 		{input: "/open @U123", name: "open", args: []string{"@U123"}},
+		{input: "/open <@U123>", name: "open", args: []string{"<@U123>"}},
 		{input: "/LOCK", name: "lock", args: nil},
 		{input: "  /quit  ", name: "quit", args: nil},
+		{input: "!stop", name: "stop", args: nil},
+		{input: "!open @U123", name: "open", args: []string{"@U123"}},
 		{input: "hello /stop", wantNil: true},
+		{input: "hello !stop", wantNil: true},
 		{input: "", wantNil: true},
 		{input: "/", wantNil: true},
+		{input: "!", wantNil: true},
 		{input: "no command here", wantNil: true},
 	}
 	for _, tc := range tests {
@@ -39,6 +44,16 @@ func TestParseCommand(t *testing.T) {
 			require.Equal(t, tc.args, cmd.Args)
 		})
 	}
+}
+
+func TestParseUserIDs(t *testing.T) {
+	require.Equal(t, []string{"U123"}, parseUserIDs([]string{"<@U123>"}))
+	require.Equal(t, []string{"U123"}, parseUserIDs([]string{"<@U123|alice>"}))
+	require.Equal(t, []string{"U123"}, parseUserIDs([]string{"@U123"}))
+	require.Equal(t, []string{"U123", "W456"}, parseUserIDs([]string{"U123", "W456"}))
+	require.Nil(t, parseUserIDs([]string{"everyone"}), "non-ID tokens are skipped")
+	require.Nil(t, parseUserIDs([]string{"U1"}), "too short to be a user ID")
+	require.Equal(t, []string{"U123"}, parseUserIDs([]string{"<@U123>", "garbage"}))
 }
 
 // fakeSlackServer records postMessage calls and returns minimal OK responses.
@@ -154,6 +169,30 @@ func TestHandleCommand_OpenLock_OwnerOnly(t *testing.T) {
 	require.Equal(t, ModeLocked, state.mode)
 
 	require.Equal(t, int32(3), srv.posts.Load())
+}
+
+func TestHandleCommand_Open_Selective(t *testing.T) {
+	a, _ := newTestAdapter(t)
+	_ = a.getAccess("T001", "U001")
+	state := a.getAccess("T001", "U001")
+
+	consumed := a.handleCommand(t.Context(), &slashCommand{Name: "open", Args: []string{"<@U002>"}}, "U001", "C001", "T001")
+	require.True(t, consumed)
+	require.Equal(t, ModeSelective, state.mode)
+	require.True(t, state.Permitted("U001"), "owner stays permitted")
+	require.True(t, state.Permitted("U002"), "named user is permitted")
+	require.False(t, state.Permitted("U999"), "everyone else stays excluded")
+}
+
+func TestHandleCommand_Open_InvalidArgDoesNotBroaden(t *testing.T) {
+	a, srv := newTestAdapter(t)
+	_ = a.getAccess("T001", "U001")
+	state := a.getAccess("T001", "U001")
+
+	consumed := a.handleCommand(t.Context(), &slashCommand{Name: "open", Args: []string{"everyone"}}, "U001", "C001", "T001")
+	require.True(t, consumed)
+	require.Equal(t, ModeLocked, state.mode, "a non-ID arg must not silently open the thread")
+	require.Equal(t, int32(1), srv.posts.Load(), "a usage hint is posted")
 }
 
 func TestHandleCommand_Observe_Toggle(t *testing.T) {

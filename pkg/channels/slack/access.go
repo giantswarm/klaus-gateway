@@ -78,6 +78,21 @@ func (a *AccessState) Open() {
 	a.mu.Unlock()
 }
 
+// Allow restricts responses to the owner plus the named users (selective
+// mode), replacing any previous allowlist. It clears observe for consistency
+// with Open/Lock. Callers pass a non-empty set; an empty set would leave the
+// owner as the only permitted user, which is what Lock is for.
+func (a *AccessState) Allow(userIDs ...string) {
+	a.mu.Lock()
+	a.mode = ModeSelective
+	a.observe = false
+	a.allowed = make(map[string]bool, len(userIDs))
+	for _, u := range userIDs {
+		a.allowed[u] = true
+	}
+	a.mu.Unlock()
+}
+
 // Lock restricts responses to the thread owner and clears observe/allowlist.
 func (a *AccessState) Lock() {
 	a.mu.Lock()

@@ -62,7 +62,9 @@ type Adapter struct {
 
 // turn is an in-flight agent turn. The pointer identity lets dispatch clean up
 // only its own registry entry, even if a later turn on the same thread has
-// already replaced it.
+// already replaced it. Only the most recently started turn per thread is
+// registered, so /stop cancels that one; threads are effectively serialized
+// per conversation, so an older overlapping turn is not the expected case.
 type turn struct {
 	cancel context.CancelFunc
 }
