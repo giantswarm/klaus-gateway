@@ -66,23 +66,31 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 			if d.Done {
 				return w.flush(ctx)
 			}
-			if d.Content == "" && d.Tool == "" {
-				continue
-			}
 			switch d.Kind {
 			case channels.DeltaText:
+				if d.Content == "" {
+					continue
+				}
 				w.mu.Lock()
 				w.buf.WriteString(d.Content)
 				w.mu.Unlock()
 			case channels.DeltaThinking:
+				if d.Content == "" {
+					continue
+				}
 				if err := w.updateStatus(ctx, "_"+d.Content+"_"); err != nil {
 					return err
 				}
 			case channels.DeltaTool:
+				if d.Tool == "" && d.Content == "" {
+					continue
+				}
 				if err := w.updateStatus(ctx, formatToolStatus(d)); err != nil {
 					return err
 				}
 			case channels.DeltaPrompt:
+				// A prompt always surfaces a status line, even with no
+				// message text (e.g. auth-required with an empty body).
 				text := "_Waiting for approval…_"
 				if d.Content != "" {
 					text = d.Content

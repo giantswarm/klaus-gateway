@@ -68,6 +68,11 @@ func (a *Adapter) Start(ctx context.Context, gw channels.Gateway) error {
 	if a.DefaultAgent == "" {
 		return errors.New("slack: DefaultAgent must be set")
 	}
+	switch a.DefaultAccessMode {
+	case "", "locked", "open", "observe":
+	default:
+		return fmt.Errorf("slack: unknown DefaultAccessMode %q: want locked, open, or observe", a.DefaultAccessMode)
+	}
 	if a.Logger == nil {
 		a.Logger = slog.Default()
 	}
@@ -143,24 +148,26 @@ func (a *Adapter) getAccess(threadID, ownerID string) *AccessState {
 	state := &AccessState{}
 	switch a.DefaultAccessMode {
 	case "open":
-		state.Mode = ModeOpen
+		state.mode = ModeOpen
 	case "observe":
-		state.Mode = ModeLocked
-		state.Observe = true
+		state.mode = ModeLocked
+		state.observe = true
 	default:
-		state.Mode = ModeLocked
+		state.mode = ModeLocked
 	}
+	// A static allow-list overrides first-sender ownership: the first entry
+	// becomes owner, any remaining entries seed the selective allow-list.
 	if len(a.AllowedUsers) > 0 {
-		state.Owner = a.AllowedUsers[0]
+		state.owner = a.AllowedUsers[0]
 		if len(a.AllowedUsers) > 1 {
-			state.Allowed = make(map[string]bool, len(a.AllowedUsers)-1)
+			state.allowed = make(map[string]bool, len(a.AllowedUsers)-1)
 			for _, u := range a.AllowedUsers[1:] {
-				state.Allowed[u] = true
+				state.allowed[u] = true
 			}
-			state.Mode = ModeSelective
+			state.mode = ModeSelective
 		}
 	} else {
-		state.Owner = ownerID
+		state.owner = ownerID
 	}
 	a.access[threadID] = state
 	return state
@@ -173,7 +180,7 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 		return errors.New("slack: adapter not started")
 	}
 
-	slackUser := msg.Subject // Slack user ID before email resolution
+	slackUser := msg.Subject // raw Slack user ID; keys access control
 
 	state := a.getAccess(msg.ThreadID, slackUser)
 	if !state.Deliver(slackUser) {
@@ -193,9 +200,14 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 		return fmt.Errorf("slack: send completion: %w", err)
 	}
 
-	// Observe mode: forward the turn to the agent for context but suppress the reply.
+	// Observe mode: forward the turn to the agent for context but suppress the
+	// Slack reply. Drain the stream so the producer completes, surfacing any
+	// upstream error in the log rather than discarding it silently.
 	if !respond {
-		for range deltas {
+		for d := range deltas {
+			if d.Err != nil {
+				a.Logger.Warn("slack: observe-mode turn failed", "thread", msg.ThreadID, "error", d.Err)
+			}
 		}
 		return nil
 	}
@@ -248,6 +260,10 @@ func (e slackInnerEvent) toInboundMessage() (channels.InboundMessage, bool) {
 		UserID:    "", // thread-scoped session: all participants share one contextID
 		ThreadID:  threadID,
 		Text:      text,
+		// Subject carries the raw Slack user ID. It keys per-thread access
+		// control only; mapping it to an email/OAuth sub for downstream
+		// identity is deferred to the auth phase that actually consumes it.
+		Subject: e.User,
 	}, true
 }
 

@@ -242,7 +242,11 @@ func applyEnv(cfg *Config) {
 		cfg.Slack.DefaultAccessMode = v
 	}
 	if v, ok := lookup("SLACK_ALLOWED_USERS"); ok && v != "" {
-		cfg.Slack.AllowedUsers = strings.Split(v, ",")
+		for _, u := range strings.Split(v, ",") {
+			if u = strings.TrimSpace(u); u != "" {
+				cfg.Slack.AllowedUsers = append(cfg.Slack.AllowedUsers, u)
+			}
+		}
 	}
 	if v, ok := lookup("CLI_ENABLED"); ok {
 		cfg.CLI.Enabled = strings.EqualFold(v, "true") || v == "1"
