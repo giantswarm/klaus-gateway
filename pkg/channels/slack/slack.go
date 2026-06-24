@@ -407,7 +407,7 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 				if err != nil {
 					return fmt.Errorf("slack: auto-approve resume: %w", err)
 				}
-				w = newBatchedWriterWithClient(client, slackChannel, ts, msg.ThreadID)
+				w = newBatchedWriterWithClient(client, slackChannel, ts, msg.ThreadID, a.Logger)
 				if err := w.run(ctx, deltas); err != nil {
 					return err
 				}

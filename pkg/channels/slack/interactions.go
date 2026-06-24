@@ -178,16 +178,18 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 
 	turnCtx, turnCancel := context.WithCancel(ctx)
 	defer turnCancel()
-
+	t := &turn{cancel: turnCancel}
 	a.turnsMu.Lock()
 	if a.turns == nil {
-		a.turns = make(map[string]context.CancelFunc)
+		a.turns = make(map[string]*turn)
 	}
-	a.turns[threadID] = turnCancel
+	a.turns[threadID] = t
 	a.turnsMu.Unlock()
 	defer func() {
 		a.turnsMu.Lock()
-		delete(a.turns, threadID)
+		if a.turns[threadID] == t {
+			delete(a.turns, threadID)
+		}
 		a.turnsMu.Unlock()
 	}()
 
@@ -201,7 +203,7 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 		return err
 	}
 
-	w := newBatchedWriterWithClient(client, slackChannel, ts, threadID)
+	w := newBatchedWriterWithClient(client, slackChannel, ts, threadID, a.Logger)
 	if err := w.run(ctx, deltas); err != nil {
 		return err
 	}

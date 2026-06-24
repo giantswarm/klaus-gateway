@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -77,7 +78,11 @@ func (g *fakeGateway) FetchHistory(_ context.Context, _ channels.InstanceRef) ([
 func TestInteractionsHandler_Approve(t *testing.T) {
 	const secret = "test-secret"
 
+	// The interactions handler processes the approval asynchronously (Slack
+	// requires a fast ack), so the mock server runs in a separate goroutine
+	// from the assertions below. Guard the captured calls with a mutex.
 	var (
+		mu          sync.Mutex
 		postCalls   []map[string]any
 		updateCalls []map[string]any
 	)
@@ -91,12 +96,16 @@ func TestInteractionsHandler_Approve(t *testing.T) {
 		case "/chat.postMessage":
 			var v map[string]any
 			_ = json.Unmarshal(buf.Bytes(), &v)
+			mu.Lock()
 			postCalls = append(postCalls, v)
+			mu.Unlock()
 			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "ts": "1000.0001"})
 		case "/chat.update":
 			var v map[string]any
 			_ = json.Unmarshal(buf.Bytes(), &v)
+			mu.Lock()
 			updateCalls = append(updateCalls, v)
+			mu.Unlock()
 			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "ts": "2000.0001"})
 		case "/users.info":
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -139,10 +148,17 @@ func TestInteractionsHandler_Approve(t *testing.T) {
 	require.Equal(t, http.StatusOK, rr.Code)
 
 	// The goroutine runs synchronously-enough for the test but let's give it a moment.
-	require.Eventually(t, func() bool { return len(updateCalls) > 0 }, 2*time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(updateCalls) > 0
+	}, 2*time.Second, 10*time.Millisecond)
 
 	// chat.update should have replaced buttons with approval text.
-	require.Equal(t, "✅ _Approved._", updateCalls[0]["text"])
+	mu.Lock()
+	gotText := updateCalls[0]["text"]
+	mu.Unlock()
+	require.Equal(t, "✅ _Approved._", gotText)
 
 	// Pending task should be cleared.
 	require.Nil(t, a.takePendingTask("T001"))
