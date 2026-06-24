@@ -9,55 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
+### Added
 
-- Updated `tests/test-values.yaml`: removed stale `lifecycle.operatorMCPURL` override and bumped `image.tag` from `0.0.44` to `0.1.4`. The old pin ran the binary that rejected `--driver=static` with empty instances, causing CrashLoopBackOff.
-- Slack classifier no longer lets bare destructive verbs (e.g. "delete file X") fall through to the broad read-only ("green") rules; an unmatched mutating verb now escalates to "yellow" so it is never silently auto-approved.
-- Slack replies larger than a single Slack message no longer fail the `chat.update` call; the batched writer rolls the overflow over into follow-up in-thread messages, and an in-progress (unterminated) code fence is left unformatted instead of being mangled by mrkdwn transforms.
-- `musterlink` OBO discovery is deferred to first use (matching the OIDC ingress verifier), so a muster outage at startup no longer blocks gateway boot.
+- Optional Dex/OIDC verification of inbound bearer tokens at the web and CLI ingress (`--oidc-issuer` / `KLAUS_GATEWAY_OIDC_ISSUER`, `--oidc-audience` / `KLAUS_GATEWAY_OIDC_AUDIENCE`). When the issuer is set, the token's signature, issuer, audience, and expiry are validated before it is forwarded on the A2A egress request; failures return `401` and the verified `sub` becomes the request subject. Unset issuer keeps the previous pass-through behaviour. New API in `pkg/channels`: `TokenVerifier`, `OIDCTokenVerifier`, `OIDCVerifierConfig`, `NewOIDCTokenVerifier`.
+- A2A egress forwards the caller's inbound bearer token: `InboundMessage.BearerToken` is captured from the `Authorization` header by the web and CLI adapters and sent as `Authorization` on the A2A request, so kagent (trusted-proxy) sees the end-user identity. Channels with no per-user token (Slack) fall back to the `--a2a-token-path` ServiceAccount token. New API in `pkg/a2a`: `TokenSource`, `FileTokenSource`, `ForwardedTokenSource`, `WithForwardedToken`, `ForwardedTokenFromContext`.
+- Slack OBO (on-behalf-of) muster account-linking via CIMD (`pkg/auth/musterlink`): a Slack user links their muster identity once through a browser PKCE OAuth flow, after which the gateway mints a fresh short-lived human muster token per message and forwards it on the A2A request so the downstream agent runs token-exchange with the human as the verifiable subject. Client registration uses a Client ID Metadata Document (no Dynamic Client Registration); the linked identity's email is matched against the Slack-verified email (anti-spoof).
+- `channels.SynthesizeContextID` derives a stable A2A contextID from `(channel, channelID, userID, threadID, agentRef)` using length-prefixed SHA-256 encoding.
+- `slack.defaultAgent` config (`--slack-default-agent` / `KLAUS_GATEWAY_SLACK_DEFAULT_AGENT`): every Slack thread routes to this named agent. Required when Slack is enabled; validated against the static instance set at startup when `--driver=static`.
+- Channel turns are now routed through the A2A executor (`ForwardingExecutor.Execute`) when `Facade.Executor` is set and `InboundMessage.AgentRef` is non-empty. Artifact events map to `OutboundDelta{Content}` and terminal status events map to `OutboundDelta{Done: true}`.
+- Slack HITL auto-approval is now configurable and wired (`--slack-auto-approve` / `KLAUS_GATEWAY_SLACK_AUTO_APPROVE`, `--slack-auto-approve-max-risk`, `KLAUS_GATEWAY_SLACK_AUTO_APPROVE_ALLOWED_HOSTS`, and `slack.autoApprove*` Helm values). When enabled, the rule-based classifier auto-approves safe (green) or optionally side-effecting (yellow) tool prompts; `ask_user` questions always require a human answer. **The classifier is a convenience heuristic over a natural-language hint, not a security boundary** -- destructive/"red" operations are never auto-approved regardless of threshold. Disabled by default; default threshold is `green` (read-only).
 
 ### Changed
 
 - `--driver=static` no longer requires `--static-instances` to be non-empty. An empty static instance set is valid and acts as a no-op lifecycle manager, allowing A2A-only deployments (Slack/CLI/web → kagent) without any Klaus instance management.
 - `a2a.A2AClient.TokenPath` (string) is replaced by `a2a.A2AClient.TokenSource` (the `a2a.TokenSource` interface). `a2a.FileTokenSource` reproduces the previous per-request file read; `a2a.ForwardedTokenSource` prefers a caller token from the request context and falls back to a `TokenSource`.
-
-### Added
-
-- Optional Dex/OIDC verification of inbound bearer tokens at the web and CLI ingress (`--oidc-issuer` / `KLAUS_GATEWAY_OIDC_ISSUER`, `--oidc-audience` / `KLAUS_GATEWAY_OIDC_AUDIENCE`). When the issuer is set, the token's signature, issuer, audience, and expiry are validated before it is forwarded on the A2A egress request; failures return `401` and the verified `sub` becomes the request subject. Unset issuer keeps the previous pass-through behaviour. New API in `pkg/channels`: `TokenVerifier`, `OIDCTokenVerifier`, `OIDCVerifierConfig`, `NewOIDCTokenVerifier`.
-- A2A egress forwards the caller's inbound bearer token: `InboundMessage.BearerToken` is captured from the `Authorization` header by the web and CLI adapters and sent as `Authorization` on the A2A request, so kagent (trusted-proxy) sees the end-user identity. Channels with no per-user token (Slack) fall back to the `--a2a-token-path` ServiceAccount token. New API in `pkg/a2a`: `TokenSource`, `FileTokenSource`, `ForwardedTokenSource`, `WithForwardedToken`, `ForwardedTokenFromContext`.
-- `channels.SynthesizeContextID` derives a stable A2A contextID from `(channel, channelID, userID, threadID, agentRef)` using length-prefixed SHA-256 encoding.
-- `slack.defaultAgent` config (`--slack-default-agent` / `KLAUS_GATEWAY_SLACK_DEFAULT_AGENT`): every Slack thread routes to this named agent. Required when Slack is enabled; validated against the static instance set at startup when `--driver=static`.
-- Channel turns are now routed through the A2A executor (`ForwardingExecutor.Execute`) when `Facade.Executor` is set and `InboundMessage.AgentRef` is non-empty. Artifact events map to `OutboundDelta{Content}` and terminal status events map to `OutboundDelta{Done: true}`.
-- Slack HITL auto-approval is now configurable and wired (`--slack-auto-approve` / `KLAUS_GATEWAY_SLACK_AUTO_APPROVE`, `--slack-auto-approve-max-risk`, `KLAUS_GATEWAY_SLACK_AUTO_APPROVE_ALLOWED_HOSTS`, and `slack.autoApprove*` Helm values). When enabled, the rule-based classifier auto-approves safe (green) or optionally side-effecting (yellow) tool prompts; `ask_user` questions always require a human answer. Disabled by default.
-
-### Changed
-
 - `Facade.SendCompletion` dispatches through A2A when the inbound message carries a non-empty `AgentRef` and `Facade.Executor` is set. Requests with no `AgentRef` (web and CLI channels) continue to use the OpenAI `/v1` SSE path unchanged.
-
-### Changed
-
 - Bump `giantswarm/architect` orb to `8.2.2` and re-enable cosign keyless chart signing (`sign: false` removed from every `push-to-app-catalog*` invocation). v8.2.2 ships [architect-orb#772](https://github.com/giantswarm/architect-orb/pull/772) which upgrades the `app-build-suite` executor image from `1.8.0-circleci` to `1.8.1-circleci` -- the new image includes the `cosign` binary that v8.2.0's chart signing defaults require. Closes [architect-orb#769](https://github.com/giantswarm/architect-orb/issues/769).
 - Disable cosign keyless chart signing on the `push-to-app-catalog*` jobs (`sign: false`). The architect orb's `push-to-app-catalog` defaults `sign` to `true` since v8.2.0 and shells out to `cosign`, but this repo uses `executor: app-build-suite` (so the `app_build_suite` Python CLI is available to package the chart with metadata) and the `app-build-suite` image doesn't ship `cosign`. Without this opt-out, every chart push fails on the `Mint Sigstore OIDC token` step with `cosign: command not found`. To be removed once architect-orb makes `cosign-prepare` resilient to a missing binary (or ships cosign in the `app-build-suite` executor).
 - Bump `giantswarm/architect` orb to `8.2.1` to pick up [architect-orb#767](https://github.com/giantswarm/architect-orb/pull/767): `image-login-to-registries` is now POSIX-portable, unblocking `architect/sync-china-registry` (the gsoci -> Aliyun mirror via the in-China `giantswarm/galaxy-runner`). The v8.1.0 refactor accidentally introduced bash-only `${!var}` indirect expansion in the shared login command, which BusyBox `/bin/sh` (used by the regctl executor) rejected with `bad substitution` -- so no Aliyun mirror has been happening since the migration to `split-china-push: true`. v8.2.x also enables cosign keyless signing, SLSA provenance, and SBOM attestations by default for public images and charts.
 - Replace the `push-to-gsoci-release` + `push-to-all-registries-release` workaround pair (gsoci-only push gating the chart, plus a parallel best-effort all-registries push to dodge Aliyun timeouts) with a single `push-to-registries-release` job using `split-china-push: true` and a companion `sync-china-registry` job. The cross-Pacific `docker buildx` push to the Aliyun mirror is gone; the in-China `giantswarm/galaxy-runner` runs `regctl image copy` from gsoci to Aliyun via the Singapore geo-replica. The chart catalog publish still does not gate on Aliyun.
 - Bump `giantswarm/architect` orb to `8.1.0` and migrate image pushes from the deprecated `push-to-registries-multiarch` job to `push-to-registries` with `multiarch: true`. Picks up the v8.1.0 QEMU/binfmt auto-registration, hardened buildx bootstrap, and standard OCI image labels.
-
-### Fixed
-
-- Pin container name in the Deployment template to the literal `klaus-gateway` rather than
-  `{{ .Chart.Name }}`. When the chart is consumed as a Helm dependency under a camelCase
-  alias (e.g. `alias: klausGateway`), Helm sets `.Chart.Name` to the alias, producing an
-  RFC 1123-invalid container name that prevents the Deployment from being applied.
-
-- Add `.abs/main.yaml` with `replace-chart-version-with-git` /
-  `replace-app-version-with-git` enabled. Without this config app-build-suite
-  packaged the chart with the literal `0.1.0` placeholder from `Chart.yaml`,
-  which left the published chart's `appVersion` (and thus the default
-  `image.tag`) pointing at the non-existent `:0.1.0` image. The same flag is
-  used by `klaus` and `mcp-prometheus`.
-
-### Changed
-
 - Switch the chart catalog jobs to the `app-build-suite` executor (mirrors the
   klaus and mcp-prometheus pattern). `app-build-suite` rewrites `Chart.yaml`'s
   `version` and `appVersion` from the git tag at build time, which finally
@@ -71,5 +42,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that gates the chart catalog release, and a separate "all registries" push
   that also covers the slow China mirror. The chart push no longer waits for
   the China mirror, so a slow mirror only delays itself.
+
+### Fixed
+
+- Updated `tests/test-values.yaml`: removed stale `lifecycle.operatorMCPURL` override and bumped `image.tag` from `0.0.44` to `0.1.4`. The old pin ran the binary that rejected `--driver=static` with empty instances, causing CrashLoopBackOff.
+- Slack classifier no longer lets bare destructive verbs (e.g. "delete file X") fall through to the broad read-only ("green") rules; an unmatched mutating verb now escalates to "yellow" so it is never silently auto-approved.
+- Slack replies larger than a single Slack message no longer fail the `chat.update` call; the batched writer rolls the overflow over into follow-up in-thread messages, and an in-progress (unterminated) code fence is left unformatted instead of being mangled by mrkdwn transforms.
+- `musterlink` OBO discovery is deferred to first use (matching the OIDC ingress verifier), so a muster outage at startup no longer blocks gateway boot.
+- Promote `github.com/go-jose/go-jose/v4` from an indirect to a direct dependency in `go.mod` (it is imported directly by the OIDC ingress verifier), so `go mod tidy` is clean and the `pre-commit` / `go-build` CI checks pass.
+- Pin container name in the Deployment template to the literal `klaus-gateway` rather than
+  `{{ .Chart.Name }}`. When the chart is consumed as a Helm dependency under a camelCase
+  alias (e.g. `alias: klausGateway`), Helm sets `.Chart.Name` to the alias, producing an
+  RFC 1123-invalid container name that prevents the Deployment from being applied.
+- Add `.abs/main.yaml` with `replace-chart-version-with-git` /
+  `replace-app-version-with-git` enabled. Without this config app-build-suite
+  packaged the chart with the literal `0.1.0` placeholder from `Chart.yaml`,
+  which left the published chart's `appVersion` (and thus the default
+  `image.tag`) pointing at the non-existent `:0.1.0` image. The same flag is
+  used by `klaus` and `mcp-prometheus`.
 
 [Unreleased]: https://github.com/giantswarm/REPOSITORY_NAME/tree/main

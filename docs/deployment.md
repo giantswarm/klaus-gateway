@@ -232,7 +232,29 @@ The secret values are injected as `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET`, and
 
 When the agent pauses a turn for tool approval, the gateway can auto-approve
 operations a rule-based classifier deems safe instead of prompting in Slack.
-`ask_user` questions always require a human answer. Disabled by default.
+`ask_user` questions always require a human answer. **Disabled by default**, and
+it should stay disabled unless you deliberately opt in per deployment for a
+trusted, low-blast-radius agent.
+
+> **This is a convenience heuristic, not a security boundary.** The classifier
+> matches regular expressions against the agent's natural-language approval
+> *hint* and buckets it green (read-only) / yellow (side-effecting) / red
+> (destructive or sensitive). Natural-language matching is inherently bypassable
+> (unusual phrasing, non-English, encoded commands), so never rely on it to
+> contain an untrusted agent. The real containment boundary is the agent's own
+> toolset and the downstream RBAC of the OBO/forwarded token -- not this
+> classifier.
+>
+> Red always wins: a prompt that matches any destructive/sensitive rule (e.g.
+> `rm -rf`, `sudo`, writes under `/etc`, `/root`, `/proc`, access to
+> `/etc/shadow`, `~/.ssh`, `~/.aws/credentials`, or path traversal) is **never**
+> auto-approved, regardless of `autoApproveMaxRisk`. Anything the classifier
+> cannot place is escalated to yellow (prompted), never silently greened.
+
+Setting `autoApproveMaxRisk: yellow` means **side-effecting operations
+(file writes, process execution, `kubectl apply`/`delete`, `git push`, DB
+mutations, network calls) run with no human in the loop**. Only choose `yellow`
+for an agent whose blast radius you have already constrained elsewhere.
 
 ```yaml
 slack:
@@ -245,8 +267,8 @@ slack:
 | Flag | Env | Notes |
 |------|-----|-------|
 | `--slack-auto-approve` | `KLAUS_GATEWAY_SLACK_AUTO_APPROVE` | Off unless set |
-| `--slack-auto-approve-max-risk` | `KLAUS_GATEWAY_SLACK_AUTO_APPROVE_MAX_RISK` | `green` or `yellow` |
-| (env only) | `KLAUS_GATEWAY_SLACK_AUTO_APPROVE_ALLOWED_HOSTS` | comma-separated host globs |
+| `--slack-auto-approve-max-risk` | `KLAUS_GATEWAY_SLACK_AUTO_APPROVE_MAX_RISK` | `green` or `yellow`; `red` is never auto-approved |
+| (env only) | `KLAUS_GATEWAY_SLACK_AUTO_APPROVE_ALLOWED_HOSTS` | comma-separated host globs; a network call to a non-listed host is forced to red |
 
 For Events API mode, set the Request URL in your Slack app to
 `https://<your-domain>/channels/slack/events`. Use `deploy/slack/manifest.yaml` to create
