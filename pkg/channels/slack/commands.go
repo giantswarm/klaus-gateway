@@ -20,15 +20,15 @@ type slashCommand struct {
 	Args []string // remaining tokens, e.g. ["<@U123456>"]
 }
 
-// parseCommand extracts a leading command from text. Both "/cmd" and "!cmd"
-// are accepted: in a channel the message is mention-prefixed ("@klaus /stop"),
-// so the mention is stripped first and the leading "/" survives; but in a DM
-// Slack intercepts any message beginning with "/" as a native slash command
-// and never delivers it to the app, so "!" is offered as an always-delivered
-// alternate prefix. Returns nil when the text starts with neither.
+// parseCommand extracts a leading /command from text. Commands are always
+// mention-prefixed in use ("@klaus /stop"); StripMention removes the mention
+// before this runs, leaving the leading "/" intact. Addressing the bot also
+// keeps Slack from intercepting the message as a native slash command, so the
+// same form works in channels and DMs. Returns nil when the text does not
+// start with a slash.
 func parseCommand(text string) *slashCommand {
 	text = strings.TrimSpace(text)
-	if text == "" || (text[0] != '/' && text[0] != '!') {
+	if !strings.HasPrefix(text, "/") {
 		return nil
 	}
 	parts := strings.Fields(text[1:])
@@ -77,8 +77,7 @@ func parseUserIDs(args []string) []string {
 	return ids
 }
 
-const helpText = "*Commands*\n" +
-	"In a channel, mention me first (`@klaus /stop`). In a direct message, Slack swallows `/`, so use `!` instead (`!stop`).\n" +
+const helpText = "*Commands* — mention me first, e.g. `@klaus /stop`.\n" +
 	"• `/stop` — interrupt the current turn\n" +
 	"• `/quit` — end the session _(owner only)_\n" +
 	"• `/open` — allow everyone in this thread _(owner only)_\n" +

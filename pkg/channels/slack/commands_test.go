@@ -23,13 +23,10 @@ func TestParseCommand(t *testing.T) {
 		{input: "/open <@U123>", name: "open", args: []string{"<@U123>"}},
 		{input: "/LOCK", name: "lock", args: nil},
 		{input: "  /quit  ", name: "quit", args: nil},
-		{input: "!stop", name: "stop", args: nil},
-		{input: "!open @U123", name: "open", args: []string{"@U123"}},
 		{input: "hello /stop", wantNil: true},
-		{input: "hello !stop", wantNil: true},
+		{input: "!stop", wantNil: true},
 		{input: "", wantNil: true},
 		{input: "/", wantNil: true},
-		{input: "!", wantNil: true},
 		{input: "no command here", wantNil: true},
 	}
 	for _, tc := range tests {
