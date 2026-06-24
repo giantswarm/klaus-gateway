@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 var (
@@ -58,6 +59,11 @@ func markdownToMrkdwn(text string) string {
 
 // splitAtLines splits text into chunks of at most maxLen bytes at line boundaries,
 // staying within Slack's 40 000-character message limit.
+//
+// ponytail: a code fence longer than maxLen is split like any other text, so the
+// closing ``` lands in a later chunk and both halves render unfenced. Acceptable
+// until replies routinely carry single fences over ~39 KB; the upgrade path is to
+// split fenced regions on their own and re-open the fence in the continuation.
 func splitAtLines(text string, maxLen int) []string {
 	var chunks []string
 	for len(text) > 0 {
@@ -66,10 +72,19 @@ func splitAtLines(text string, maxLen int) []string {
 			break
 		}
 		cut := strings.LastIndex(text[:maxLen], "\n")
-		if cut <= 0 {
-			cut = maxLen
+		if cut > 0 {
+			cut++ // keep the newline with the preceding chunk
 		} else {
-			cut++
+			// No line boundary in range: hard-cut, backing off to a rune
+			// boundary so a multi-byte glyph is never split (Slack rejects
+			// invalid UTF-8). At most 3 bytes of back-off for a 4-byte rune.
+			cut = maxLen
+			for cut > 0 && !utf8.RuneStart(text[cut]) {
+				cut--
+			}
+			if cut == 0 { // pathological: maxLen smaller than a single rune
+				cut = maxLen
+			}
 		}
 		chunks = append(chunks, text[:cut])
 		text = text[cut:]

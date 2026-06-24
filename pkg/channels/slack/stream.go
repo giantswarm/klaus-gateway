@@ -125,6 +125,11 @@ func (w *batchedWriter) flush(ctx context.Context) error {
 	// A larger reply rolls over: the head updates the main message and each
 	// subsequent chunk updates (or, the first time, posts) a stable follow-up
 	// message in-thread, so growing replies extend in place without duplicating.
+	//
+	// ponytail: a multi-chunk reply makes one API call per chunk every
+	// batchInterval, so a reply spanning N messages costs N calls/flush against
+	// Slack's ~4 updates/sec/channel. Fine while >39 KB replies are rare; revisit
+	// with per-call pacing if they become common.
 	chunks := splitAtLines(markdownToMrkdwn(text), slackMaxMessageLen)
 	if err := w.client.chatUpdate(ctx, w.channel, w.ts, chunks[0]); err != nil {
 		return err
