@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -18,6 +19,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/require"
 
+	"github.com/giantswarm/klaus-gateway/pkg/auth/musterlink"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 	slackadapter "github.com/giantswarm/klaus-gateway/pkg/channels/slack"
 )
@@ -347,6 +349,227 @@ func TestBatchedWriter_FlushesContent(t *testing.T) {
 	lastUpdate := updates[len(updates)-1]
 	mu.Unlock()
 	require.Contains(t, lastUpdate, "hello world")
+}
+
+// --- OBO injection ---
+
+// fakeOBO is a test OBOTokenSource: it returns token for the configured Slack
+// user and musterlink.ErrNotLinked for anyone else.
+type fakeOBO struct {
+	linkedUser string
+	token      string
+
+	mu       sync.Mutex
+	unlinked []string
+	linkURL  string
+}
+
+func (f *fakeOBO) TokenFor(_ context.Context, slackUserID string) (string, error) {
+	if slackUserID == f.linkedUser {
+		return f.token, nil
+	}
+	return "", musterlink.ErrNotLinked
+}
+
+func (f *fakeOBO) LinkURL(slackUserID string) string {
+	if f.linkURL != "" {
+		return f.linkURL
+	}
+	return "https://gw.example.com/auth/slack/link?u=signed-" + slackUserID
+}
+
+func (f *fakeOBO) Unlink(slackUserID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.unlinked = append(f.unlinked, slackUserID)
+}
+
+// dispatchAndCaptureOBO posts an app_mention from slackUser and returns the
+// InboundMessage seen by the gateway, with the adapter's OBO source set to obo.
+func dispatchAndCaptureOBO(t *testing.T, obo slackadapter.OBOTokenSource, slackUser string) channels.InboundMessage {
+	t.Helper()
+	var mu sync.Mutex
+	var captured []channels.InboundMessage
+	gw := &stubGateway{onResolve: func(msg channels.InboundMessage) {
+		mu.Lock()
+		captured = append(captured, msg)
+		mu.Unlock()
+	}}
+
+	fakeSlack := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "users.info") {
+			_, _ = fmt.Fprintf(w, `{"ok":true,"user":{"profile":{"email":"u@example.com"}}}`)
+			return
+		}
+		_, _ = fmt.Fprintf(w, `{"ok":true,"ts":"1234.5678"}`)
+	}))
+	defer fakeSlack.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	a := &slackadapter.Adapter{
+		Mode:         slackadapter.ModeEvents,
+		Secrets:      slackadapter.Secrets{BotToken: "dummy-bot-token", SigningSecret: "signing-secret"}, //nolint:gosec
+		APIBase:      fakeSlack.URL,
+		DefaultAgent: "test-agent",
+		OBO:          obo,
+	}
+	require.NoError(t, a.Start(ctx, gw))
+	r := chi.NewRouter()
+	a.Mount(r)
+	srv := httptest.NewServer(r)
+	t.Cleanup(cancel)
+	t.Cleanup(srv.Close)
+	t.Cleanup(func() { _ = a.Stop(context.Background()) })
+
+	payload := fmt.Sprintf(`{"type":"event_callback","event":{"type":"app_mention","user":%q,"text":"<@BOT> hi","channel":"C1","ts":"111.222"}}`, slackUser)
+	body := []byte(payload)
+	stamp, sig := signBody(t, "signing-secret", body)
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/channels/slack/events", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Slack-Request-Timestamp", stamp)
+	req.Header.Set("X-Slack-Signature", sig)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(captured) > 0
+	}, 2*time.Second, 50*time.Millisecond, "expected dispatch to fire")
+
+	mu.Lock()
+	defer mu.Unlock()
+	return captured[0]
+}
+
+func TestDispatch_OBO_LinkedUserSetsBearerToken(t *testing.T) {
+	got := dispatchAndCaptureOBO(t, &fakeOBO{linkedUser: "U123", token: "human-muster-token"}, "U123")
+	require.Equal(t, "human-muster-token", got.BearerToken, "linked user's turn must carry the human muster token")
+}
+
+func TestDispatch_OBO_UnlinkedUserFallsBackToM2M(t *testing.T) {
+	got := dispatchAndCaptureOBO(t, &fakeOBO{linkedUser: "U999", token: "x"}, "U123")
+	require.Empty(t, got.BearerToken, "unlinked user's turn must leave BearerToken empty (M2M fallback)")
+}
+
+func TestDispatch_OBO_DisabledLeavesBearerTokenEmpty(t *testing.T) {
+	got := dispatchAndCaptureOBO(t, nil, "U123")
+	require.Empty(t, got.BearerToken, "with OBO disabled the turn must run as M2M")
+}
+
+func TestLookupUserEmail_Caches(t *testing.T) {
+	var mu sync.Mutex
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "users.info") {
+			mu.Lock()
+			calls++
+			mu.Unlock()
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"ok":true,"user":{"profile":{"email":"u@example.com"}}}`)
+	}))
+	defer srv.Close()
+
+	a := &slackadapter.Adapter{
+		Secrets: slackadapter.Secrets{BotToken: "dummy-bot-token"}, //nolint:gosec // G101 dummy value used only in tests
+		APIBase: srv.URL,
+	}
+	for range 3 {
+		got, err := a.LookupUserEmail(context.Background(), "U123")
+		require.NoError(t, err)
+		require.Equal(t, "u@example.com", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, 1, calls, "repeated lookups for the same user must hit users.info once")
+}
+
+// --- OBO sign-in UX ---
+
+// captureEphemeral spins up a fake Slack API that records chat.postEphemeral
+// request bodies and returns ok for everything else (placeholder, chat.update,
+// users.info). It returns the server and an accessor for the captured bodies.
+func captureEphemeral(t *testing.T) (*httptest.Server, func() []map[string]any) {
+	t.Helper()
+	var mu sync.Mutex
+	var ephemeral []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "chat.postEphemeral") {
+			body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+			var m map[string]any
+			_ = json.Unmarshal(body, &m)
+			mu.Lock()
+			ephemeral = append(ephemeral, m)
+			mu.Unlock()
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "users.info") {
+			_, _ = fmt.Fprintf(w, `{"ok":true,"user":{"profile":{"email":"u@example.com"}}}`)
+			return
+		}
+		_, _ = fmt.Fprintf(w, `{"ok":true,"ts":"1234.5678"}`)
+	}))
+	return srv, func() []map[string]any {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]map[string]any(nil), ephemeral...)
+	}
+}
+
+func TestKlausLogout_Unlinks(t *testing.T) {
+	fakeSlack, _ := captureEphemeral(t)
+	defer fakeSlack.Close()
+
+	obo := &fakeOBO{linkedUser: "U123", token: "human-token"}
+	gw := &stubGateway{}
+	a, srv := newEventsAdapter(t, gw, fakeSlack.URL)
+	a.OBO = obo
+
+	payload := `{"type":"event_callback","event":{"type":"app_mention","user":"U123","text":"<@BOT> /klaus logout","channel":"C1","ts":"111.222"}}`
+	body := []byte(payload)
+	stamp, sig := signBody(t, "signing-secret", body)
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/channels/slack/events", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Slack-Request-Timestamp", stamp)
+	req.Header.Set("X-Slack-Signature", sig)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+
+	require.Eventually(t, func() bool {
+		obo.mu.Lock()
+		defer obo.mu.Unlock()
+		return len(obo.unlinked) == 1 && obo.unlinked[0] == "U123"
+	}, 2*time.Second, 50*time.Millisecond, "/klaus logout must unlink the Slack user")
+
+	require.Zero(t, gw.resolveCount(), "/klaus logout must be consumed, not dispatched to the agent")
+}
+
+func TestKlausLogin_PostsSignInPrompt(t *testing.T) {
+	fakeSlack, ephemeral := captureEphemeral(t)
+	defer fakeSlack.Close()
+
+	gw := &stubGateway{}
+	a, srv := newEventsAdapter(t, gw, fakeSlack.URL)
+	a.OBO = &fakeOBO{linkedUser: "U999", linkURL: "https://gw.example.com/auth/slack/link?u=xyz"}
+
+	payload := `{"type":"event_callback","event":{"type":"app_mention","user":"U123","text":"<@BOT> /klaus login","channel":"C1","ts":"111.222"}}`
+	body := []byte(payload)
+	stamp, sig := signBody(t, "signing-secret", body)
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/channels/slack/events", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Slack-Request-Timestamp", stamp)
+	req.Header.Set("X-Slack-Signature", sig)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+
+	require.Eventually(t, func() bool { return len(ephemeral()) > 0 },
+		2*time.Second, 50*time.Millisecond, "/klaus login must post a sign-in prompt")
+	require.Zero(t, gw.resolveCount(), "/klaus login must be consumed, not dispatched to the agent")
 }
 
 // --- stubGateway ---

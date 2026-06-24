@@ -59,6 +59,82 @@ func TestValidate_A2A(t *testing.T) {
 	})
 }
 
+func TestValidate_OBO(t *testing.T) {
+	base := config.Defaults()
+	base.Slack.Enabled = true // OBO links Slack identities, so Slack must be on
+	base.OBO = config.OBOConfig{
+		Enabled:         true,
+		MusterURL:       "https://muster.example.com",
+		CallbackBaseURL: "https://gateway.example.com",
+		StateKeyFile:    "/etc/obo/state.key",
+	}
+
+	t.Run("enabled with required fields is valid", func(t *testing.T) {
+		require.NoError(t, base.Validate())
+	})
+
+	t.Run("obo without slack fails", func(t *testing.T) {
+		cfg := base
+		cfg.Slack.Enabled = false
+		require.Error(t, cfg.Validate(), "OBO requires the Slack adapter for the email anti-spoof check")
+	})
+
+	t.Run("missing muster url fails", func(t *testing.T) {
+		cfg := base
+		cfg.OBO.MusterURL = ""
+		require.Error(t, cfg.Validate())
+	})
+
+	t.Run("client id is optional (derived from CIMD url)", func(t *testing.T) {
+		cfg := base
+		cfg.OBO.ClientID = ""
+		require.NoError(t, cfg.Validate(), "client_id defaults to the self-hosted CIMD document URL")
+	})
+
+	t.Run("missing callback base url fails", func(t *testing.T) {
+		cfg := base
+		cfg.OBO.CallbackBaseURL = ""
+		require.Error(t, cfg.Validate())
+	})
+
+	t.Run("missing state key file fails", func(t *testing.T) {
+		cfg := base
+		cfg.OBO.StateKeyFile = ""
+		require.Error(t, cfg.Validate())
+	})
+
+	t.Run("store path without key fails", func(t *testing.T) {
+		cfg := base
+		cfg.OBO.StorePath = "/var/lib/obo/links.bolt"
+		require.Error(t, cfg.Validate())
+	})
+
+	t.Run("store path with key is valid", func(t *testing.T) {
+		cfg := base
+		cfg.OBO.StorePath = "/var/lib/obo/links.bolt"
+		cfg.OBO.StoreKeyFile = "/etc/obo/store.key"
+		require.NoError(t, cfg.Validate())
+	})
+
+	t.Run("disabled skips all obo checks", func(t *testing.T) {
+		cfg := config.Defaults()
+		require.NoError(t, cfg.Validate())
+	})
+}
+
+func TestLoad_OBOEnv(t *testing.T) {
+	t.Setenv("KLAUS_GATEWAY_OBO_ENABLED", "true")
+	t.Setenv("KLAUS_GATEWAY_OBO_MUSTER_URL", "https://muster.example.com")
+	t.Setenv("KLAUS_GATEWAY_OBO_CLIENT_ID", "klaus-gateway")
+
+	cfg, err := config.Load([]string{"--obo-callback-base-url", "https://gateway.example.com"})
+	require.NoError(t, err)
+	require.True(t, cfg.OBO.Enabled)
+	require.Equal(t, "https://muster.example.com", cfg.OBO.MusterURL)
+	require.Equal(t, "klaus-gateway", cfg.OBO.ClientID)
+	require.Equal(t, "https://gateway.example.com", cfg.OBO.CallbackBaseURL, "flag sets callback base url")
+}
+
 func TestA2ADefaults(t *testing.T) {
 	cfg := config.Defaults()
 	require.Equal(t, "klaud-coding", cfg.A2A.DefaultAgent)

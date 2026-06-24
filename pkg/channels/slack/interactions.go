@@ -162,14 +162,7 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 	}
 
 	// Resolve email for the button-clicking user.
-	if slackUser != "" {
-		email, err := client.lookupUserEmail(ctx, slackUser)
-		if err != nil {
-			a.Logger.Warn("slack: user email lookup failed in interaction", "user", slackUser, "error", err)
-		} else if email != "" {
-			msg.Subject = email
-		}
-	}
+	a.resolveSubjectEmail(ctx, &msg)
 
 	ref, err := a.gw.Resolve(ctx, msg)
 	if err != nil {

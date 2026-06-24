@@ -22,11 +22,29 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/giantswarm/klaus-gateway/pkg/auth/musterlink"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 )
 
 // ChannelName identifies the Slack adapter in routing keys.
 const ChannelName = "slack"
+
+// OBOTokenSource mints a fresh per-request "on behalf of" muster access token
+// for a linked Slack user and drives the account-linking UX. *musterlink.Linker
+// satisfies it. When the adapter's OBO field is nil (OBO disabled), every turn
+// runs as the M2M ServiceAccount identity (the historical behaviour) — the
+// gateway's ForwardedTokenSource falls back to the SA token whenever
+// InboundMessage.BearerToken is empty.
+type OBOTokenSource interface {
+	// TokenFor returns a fresh human muster access token for the Slack user,
+	// or musterlink.ErrNotLinked when the user has not linked an identity.
+	TokenFor(ctx context.Context, slackUserID string) (string, error)
+	// LinkURL returns the absolute "Sign in to Giant Swarm" URL that starts the
+	// account-linking flow for the Slack user (signed, single-use state).
+	LinkURL(slackUserID string) string
+	// Unlink removes any stored link for the Slack user (the /klaus logout path).
+	Unlink(slackUserID string)
+}
 
 // Mode constants for the Slack connection method.
 const (
@@ -60,6 +78,10 @@ type Adapter struct {
 	// a consumer was disconnected, so without this a restart replays — and
 	// re-answers — old messages. Default false (no time-based filtering).
 	DropStaleEvents bool
+	// OBO, when set, mints a fresh human muster token per turn for linked Slack
+	// users so the agent acts on behalf of the human. Nil disables OBO; turns
+	// then run as the M2M ServiceAccount identity.
+	OBO OBOTokenSource
 
 	gw        channels.Gateway
 	started   atomic.Bool
@@ -75,7 +97,21 @@ type Adapter struct {
 
 	pendingMu    sync.Mutex
 	pendingTasks map[string]*pendingTask // keyed by threadID
+
+	emailMu    sync.Mutex
+	emailCache map[string]emailEntry // Slack user ID -> resolved email
 }
+
+// emailEntry is a cached Slack user email with its expiry.
+type emailEntry struct {
+	email   string
+	expires time.Time
+}
+
+// userEmailCacheTTL bounds how long a resolved Slack email is reused. Emails are
+// effectively static, so a long TTL keeps users.info (a Tier-4 rate-limited
+// endpoint) off the per-turn hot path while still picking up the rare change.
+const userEmailCacheTTL = time.Hour
 
 // turn is an in-flight agent turn. The pointer identity lets dispatch clean up
 // only its own registry entry, even if a later turn on the same thread has
@@ -216,6 +252,57 @@ func (a *Adapter) Mount(r chi.Router) {
 	})
 }
 
+// LookupUserEmail returns the Slack-workspace-verified email for a Slack user
+// ID. It is the SlackEmail lookup the OBO linker uses at callback to enforce
+// that the linked muster identity's email matches the Slack user's (anti-spoof).
+func (a *Adapter) LookupUserEmail(ctx context.Context, slackUserID string) (string, error) {
+	return a.cachedUserEmail(ctx, slackUserID)
+}
+
+// cachedUserEmail resolves a Slack user ID to an email, memoizing successful
+// lookups for userEmailCacheTTL. Errors are not cached so a transient failure
+// is retried on the next turn.
+func (a *Adapter) cachedUserEmail(ctx context.Context, slackUserID string) (string, error) {
+	now := time.Now()
+	a.emailMu.Lock()
+	if e, ok := a.emailCache[slackUserID]; ok && now.Before(e.expires) {
+		a.emailMu.Unlock()
+		return e.email, nil
+	}
+	a.emailMu.Unlock()
+
+	email, err := a.apiClient().lookupUserEmail(ctx, slackUserID)
+	if err != nil {
+		return "", err
+	}
+	a.emailMu.Lock()
+	if a.emailCache == nil {
+		a.emailCache = make(map[string]emailEntry)
+	}
+	a.emailCache[slackUserID] = emailEntry{email: email, expires: now.Add(userEmailCacheTTL)}
+	a.emailMu.Unlock()
+	return email, nil
+}
+
+// resolveSubjectEmail replaces the Slack user ID in msg.Subject with the user's
+// workspace email when it can be resolved, so downstream identity claims carry
+// the email rather than the opaque Slack ID. A lookup failure leaves the ID in
+// place (logged, never fatal). Shared by the message-dispatch and button-click
+// paths.
+func (a *Adapter) resolveSubjectEmail(ctx context.Context, msg *channels.InboundMessage) {
+	if msg.Subject == "" {
+		return
+	}
+	email, err := a.cachedUserEmail(ctx, msg.Subject)
+	if err != nil {
+		a.Logger.Warn("slack: user email lookup failed, falling back to user ID", "user", msg.Subject, "error", err)
+		return
+	}
+	if email != "" {
+		msg.Subject = email
+	}
+}
+
 // apiClient returns a Slack Web API client using the adapter's bot token
 // and the optional test-override base URL.
 func (a *Adapter) apiClient() *slackAPIClient {
@@ -224,6 +311,20 @@ func (a *Adapter) apiClient() *slackAPIClient {
 		base = slackAPIBase
 	}
 	return &slackAPIClient{botToken: a.Secrets.BotToken, baseURL: base}
+}
+
+// postSignIn posts the ephemeral "Sign in to Giant Swarm" prompt for the
+// account-linking flow. It is driven by the explicit /klaus login command. A
+// failure to post is logged and swallowed — the turn still proceeds as M2M.
+func (a *Adapter) postSignIn(ctx context.Context, slackChannel, threadID, slackUser string) {
+	url := a.OBO.LinkURL(slackUser)
+	if url == "" {
+		a.Logger.Warn("slack: empty sign-in link URL, skipping prompt", "user", slackUser)
+		return
+	}
+	if err := a.apiClient().postSignInPrompt(ctx, slackChannel, threadID, slackUser, url); err != nil {
+		a.Logger.Warn("slack: post sign-in prompt failed", "user", slackUser, "error", err)
+	}
 }
 
 // getAccess returns (or lazily creates) the AccessState for a thread.
@@ -333,6 +434,25 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 	if task := a.takePendingTask(msg.ThreadID); task != nil {
 		msg.TaskID = task.TaskID
 		msg.Decision = decisionFromText(task.Prompt, msg.Text)
+	}
+
+	a.resolveSubjectEmail(ctx, &msg)
+
+	// On-behalf-of: when OBO linking is enabled and this Slack user has linked a
+	// muster identity, mint a fresh human muster access token and forward it onto
+	// the A2A request (via withChannelAuth) so the agent acts as the human at
+	// muster. Unlinked or transient-failure turns leave BearerToken empty and
+	// fall back to the M2M ServiceAccount identity so Slack never hard-fails.
+	// Unlinked users link explicitly via /klaus login.
+	if a.OBO != nil && slackUser != "" {
+		switch token, err := a.OBO.TokenFor(ctx, slackUser); {
+		case err == nil:
+			msg.BearerToken = token
+		case errors.Is(err, musterlink.ErrNotLinked):
+			a.Logger.Debug("slack: user not linked for OBO, running as M2M", "user", slackUser)
+		default:
+			a.Logger.Warn("slack: OBO token mint failed, falling back to M2M", "user", slackUser, "error", err)
+		}
 	}
 
 	ref, err := a.gw.Resolve(ctx, msg)
