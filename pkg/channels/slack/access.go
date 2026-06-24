@@ -9,6 +9,13 @@ const (
 	ModeOpen                      // everyone
 )
 
+// Access-mode config strings accepted in SlackConfig.DefaultAccessMode.
+const (
+	accessModeLocked  = "locked"
+	accessModeOpen    = "open"
+	accessModeObserve = "observe"
+)
+
 // AccessState is the per-thread access policy. It is built once by
 // Adapter.getAccess under the adapter lock and treated as immutable
 // afterwards (config seeds owner/mode/allowlist; there is no runtime

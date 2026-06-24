@@ -69,9 +69,10 @@ func (a *Adapter) Start(ctx context.Context, gw channels.Gateway) error {
 		return errors.New("slack: DefaultAgent must be set")
 	}
 	switch a.DefaultAccessMode {
-	case "", "locked", "open", "observe":
+	case "", accessModeLocked, accessModeOpen, accessModeObserve:
 	default:
-		return fmt.Errorf("slack: unknown DefaultAccessMode %q: want locked, open, or observe", a.DefaultAccessMode)
+		return fmt.Errorf("slack: unknown DefaultAccessMode %q: want %s, %s, or %s",
+			a.DefaultAccessMode, accessModeLocked, accessModeOpen, accessModeObserve)
 	}
 	if a.Logger == nil {
 		a.Logger = slog.Default()
@@ -147,9 +148,9 @@ func (a *Adapter) getAccess(threadID, ownerID string) *AccessState {
 	}
 	state := &AccessState{}
 	switch a.DefaultAccessMode {
-	case "open":
+	case accessModeOpen:
 		state.mode = ModeOpen
-	case "observe":
+	case accessModeObserve:
 		state.mode = ModeLocked
 		state.observe = true
 	default:
