@@ -55,6 +55,18 @@ type Adapter struct {
 
 	accessMu sync.Mutex
 	access   map[string]*AccessState // keyed by threadID
+
+	turnsMu sync.Mutex
+	turns   map[string]*turn // keyed by threadID; cancels in-flight SendCompletion
+}
+
+// turn is an in-flight agent turn. The pointer identity lets dispatch clean up
+// only its own registry entry, even if a later turn on the same thread has
+// already replaced it. Only the most recently started turn per thread is
+// registered, so /stop cancels that one; threads are effectively serialized
+// per conversation, so an older overlapping turn is not the expected case.
+type turn struct {
+	cancel context.CancelFunc
 }
 
 // Name returns the channel name used in routing keys.
@@ -196,7 +208,25 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 		return fmt.Errorf("slack: resolve: %w", err)
 	}
 
-	deltas, err := a.gw.SendCompletion(ctx, ref, msg)
+	// Register an in-flight turn so /stop can cancel it.
+	turnCtx, turnCancel := context.WithCancel(ctx)
+	defer turnCancel()
+	t := &turn{cancel: turnCancel}
+	a.turnsMu.Lock()
+	if a.turns == nil {
+		a.turns = make(map[string]*turn)
+	}
+	a.turns[msg.ThreadID] = t
+	a.turnsMu.Unlock()
+	defer func() {
+		a.turnsMu.Lock()
+		if a.turns[msg.ThreadID] == t {
+			delete(a.turns, msg.ThreadID)
+		}
+		a.turnsMu.Unlock()
+	}()
+
+	deltas, err := a.gw.SendCompletion(turnCtx, ref, msg)
 	if err != nil {
 		return fmt.Errorf("slack: send completion: %w", err)
 	}
