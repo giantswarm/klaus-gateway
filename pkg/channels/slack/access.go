@@ -68,25 +68,15 @@ func (a *AccessState) IsOwner(userID string) bool {
 	return userID == a.owner
 }
 
-// Open lets everyone in the thread receive responses. It also clears observe,
-// which is moot once everyone is permitted, keeping the flags consistent with
-// Lock.
-func (a *AccessState) Open() {
-	a.mu.Lock()
-	a.mode = ModeOpen
-	a.observe = false
-	a.mu.Unlock()
-}
-
-// Allow restricts responses to the owner plus the named users (selective
-// mode), replacing any previous allowlist. It clears observe for consistency
-// with Open/Lock. Callers pass a non-empty set; an empty set would leave the
-// owner as the only permitted user, which is what Lock is for.
-func (a *AccessState) Allow(userIDs ...string) {
+// Invite adds the named users to the thread's allowlist and switches to
+// selective mode (owner + allowlist). It is additive: inviting more users
+// keeps the previously invited ones.
+func (a *AccessState) Invite(userIDs ...string) {
 	a.mu.Lock()
 	a.mode = ModeSelective
-	a.observe = false
-	a.allowed = make(map[string]bool, len(userIDs))
+	if a.allowed == nil {
+		a.allowed = make(map[string]bool, len(userIDs))
+	}
 	for _, u := range userIDs {
 		a.allowed[u] = true
 	}
@@ -100,12 +90,4 @@ func (a *AccessState) Lock() {
 	a.allowed = nil
 	a.observe = false
 	a.mu.Unlock()
-}
-
-// ToggleObserve flips observe mode and returns the new value.
-func (a *AccessState) ToggleObserve() bool {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.observe = !a.observe
-	return a.observe
 }

@@ -19,8 +19,7 @@ func TestParseCommand(t *testing.T) {
 	}{
 		{input: "/stop", name: "stop", args: nil},
 		{input: "/help", name: "help", args: nil},
-		{input: "/open @U123", name: "open", args: []string{"@U123"}},
-		{input: "/open <@U123>", name: "open", args: []string{"<@U123>"}},
+		{input: "/invite <@U123>", name: "invite", args: []string{"<@U123>"}},
 		{input: "/LOCK", name: "lock", args: nil},
 		{input: "  /quit  ", name: "quit", args: nil},
 		{input: "hello /stop", wantNil: true},
@@ -45,12 +44,11 @@ func TestParseCommand(t *testing.T) {
 
 func TestParseUserIDs(t *testing.T) {
 	require.Equal(t, []string{"U123"}, parseUserIDs([]string{"<@U123>"}))
-	require.Equal(t, []string{"U123"}, parseUserIDs([]string{"<@U123|alice>"}))
-	require.Equal(t, []string{"U123"}, parseUserIDs([]string{"@U123"}))
-	require.Equal(t, []string{"U123", "W456"}, parseUserIDs([]string{"U123", "W456"}))
-	require.Nil(t, parseUserIDs([]string{"everyone"}), "non-ID tokens are skipped")
-	require.Nil(t, parseUserIDs([]string{"U1"}), "too short to be a user ID")
-	require.Equal(t, []string{"U123"}, parseUserIDs([]string{"<@U123>", "garbage"}))
+	require.Equal(t, []string{"U123", "W456"}, parseUserIDs([]string{"<@U123>", "<@W456>"}))
+	require.Nil(t, parseUserIDs([]string{"@U123"}), "bare @mention is not Slack's encoding")
+	require.Nil(t, parseUserIDs([]string{"U123"}), "a raw id is not a mention token")
+	require.Nil(t, parseUserIDs([]string{"everyone"}), "non-mention tokens are skipped")
+	require.Equal(t, []string{"U123"}, parseUserIDs([]string{"<@U123>", "chatter"}))
 }
 
 // fakeSlackServer records postMessage calls and returns minimal OK responses.
@@ -145,61 +143,40 @@ func TestHandleCommand_Quit_OwnerOnly(t *testing.T) {
 	require.False(t, stillExists, "quit should remove access entry")
 }
 
-func TestHandleCommand_OpenLock_OwnerOnly(t *testing.T) {
+func TestHandleCommand_InviteLock_OwnerOnly(t *testing.T) {
 	a, srv := newTestAdapter(t)
 	_ = a.getAccess("T001", "U001")
-
-	// Non-owner open.
-	consumed := a.handleCommand(t.Context(), &slashCommand{Name: "open"}, "U002", "C001", "T001")
-	require.True(t, consumed)
 	state := a.getAccess("T001", "U001")
-	require.Equal(t, ModeLocked, state.mode, "non-owner open must not take effect")
 
-	// Owner open.
-	consumed = a.handleCommand(t.Context(), &slashCommand{Name: "open"}, "U001", "C001", "T001")
+	// Non-owner invite must not take effect.
+	consumed := a.handleCommand(t.Context(), &slashCommand{Name: "invite", Args: []string{"<@U002>"}}, "U002", "C001", "T001")
 	require.True(t, consumed)
-	require.Equal(t, ModeOpen, state.mode)
+	require.Equal(t, ModeLocked, state.mode, "non-owner invite must not take effect")
 
-	// Owner lock.
+	// Owner invite grants selective access to the mentioned user.
+	consumed = a.handleCommand(t.Context(), &slashCommand{Name: "invite", Args: []string{"<@U002>"}}, "U001", "C001", "T001")
+	require.True(t, consumed)
+	require.Equal(t, ModeSelective, state.mode)
+	require.True(t, state.Permitted("U001"), "owner stays permitted")
+	require.True(t, state.Permitted("U002"), "invited user is permitted")
+	require.False(t, state.Permitted("U999"), "everyone else stays excluded")
+
+	// Owner lock restricts back to owner only.
 	consumed = a.handleCommand(t.Context(), &slashCommand{Name: "lock"}, "U001", "C001", "T001")
 	require.True(t, consumed)
 	require.Equal(t, ModeLocked, state.mode)
+	require.False(t, state.Permitted("U002"), "lock revokes the invite")
 
 	require.Equal(t, int32(3), srv.posts.Load())
 }
 
-func TestHandleCommand_Open_Selective(t *testing.T) {
-	a, _ := newTestAdapter(t)
-	_ = a.getAccess("T001", "U001")
-	state := a.getAccess("T001", "U001")
-
-	consumed := a.handleCommand(t.Context(), &slashCommand{Name: "open", Args: []string{"<@U002>"}}, "U001", "C001", "T001")
-	require.True(t, consumed)
-	require.Equal(t, ModeSelective, state.mode)
-	require.True(t, state.Permitted("U001"), "owner stays permitted")
-	require.True(t, state.Permitted("U002"), "named user is permitted")
-	require.False(t, state.Permitted("U999"), "everyone else stays excluded")
-}
-
-func TestHandleCommand_Open_InvalidArgDoesNotBroaden(t *testing.T) {
+func TestHandleCommand_Invite_NoMentionShowsUsage(t *testing.T) {
 	a, srv := newTestAdapter(t)
 	_ = a.getAccess("T001", "U001")
 	state := a.getAccess("T001", "U001")
 
-	consumed := a.handleCommand(t.Context(), &slashCommand{Name: "open", Args: []string{"everyone"}}, "U001", "C001", "T001")
+	consumed := a.handleCommand(t.Context(), &slashCommand{Name: "invite"}, "U001", "C001", "T001")
 	require.True(t, consumed)
-	require.Equal(t, ModeLocked, state.mode, "a non-ID arg must not silently open the thread")
+	require.Equal(t, ModeLocked, state.mode, "a bare /invite must not change access")
 	require.Equal(t, int32(1), srv.posts.Load(), "a usage hint is posted")
-}
-
-func TestHandleCommand_Observe_Toggle(t *testing.T) {
-	a, _ := newTestAdapter(t)
-	_ = a.getAccess("T001", "U001")
-	state := a.getAccess("T001", "U001")
-
-	a.handleCommand(t.Context(), &slashCommand{Name: "observe"}, "U001", "C001", "T001")
-	require.True(t, state.observe)
-
-	a.handleCommand(t.Context(), &slashCommand{Name: "observe"}, "U001", "C001", "T001")
-	require.False(t, state.observe)
 }

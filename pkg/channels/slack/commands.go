@@ -6,12 +6,11 @@ import (
 )
 
 const (
-	cmdHelp    = "help"
-	cmdStop    = "stop"
-	cmdQuit    = "quit"
-	cmdOpen    = "open"
-	cmdLock    = "lock"
-	cmdObserve = "observe"
+	cmdHelp   = "help"
+	cmdStop   = "stop"
+	cmdQuit   = "quit"
+	cmdInvite = "invite"
+	cmdLock   = "lock"
 )
 
 // slashCommand is a parsed in-thread command.
@@ -42,36 +41,18 @@ func parseCommand(text string) *slashCommand {
 	return &slashCommand{Name: strings.ToLower(parts[0]), Args: args}
 }
 
-// isSlackUserID reports whether s looks like a Slack user/bot-user ID (U… or
-// W… followed by uppercase alphanumerics). Used to reject non-ID tokens passed
-// to /open so a typo can never silently broaden access.
-func isSlackUserID(s string) bool {
-	if len(s) < 3 || (s[0] != 'U' && s[0] != 'W') {
-		return false
-	}
-	for i := 1; i < len(s); i++ {
-		c := s[i]
-		if (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') {
-			continue
-		}
-		return false
-	}
-	return true
-}
-
-// parseUserIDs extracts Slack user IDs from command args, accepting raw IDs
-// ("U123"), "@U123", and mention tokens ("<@U123>" / "<@U123|name>"). Tokens
-// that are not user IDs are skipped.
+// parseUserIDs extracts the user IDs from "<@U123>" mention tokens in the
+// command args. Slack encodes a user mention in message text as "<@USERID>";
+// any token that is not in that form is ignored.
 func parseUserIDs(args []string) []string {
 	var ids []string
 	for _, a := range args {
-		a = strings.Trim(a, "<>")
-		a = strings.TrimPrefix(a, "@")
-		if i := strings.IndexByte(a, '|'); i >= 0 {
-			a = a[:i]
+		id, ok := strings.CutPrefix(a, "<@")
+		if !ok {
+			continue
 		}
-		if isSlackUserID(a) {
-			ids = append(ids, a)
+		if id, ok := strings.CutSuffix(id, ">"); ok && id != "" {
+			ids = append(ids, id)
 		}
 	}
 	return ids
@@ -80,10 +61,8 @@ func parseUserIDs(args []string) []string {
 const helpText = "*Commands* — mention me first, e.g. `@klaus /stop`.\n" +
 	"• `/stop` — interrupt the current turn\n" +
 	"• `/quit` — end the session _(owner only)_\n" +
-	"• `/open` — allow everyone in this thread _(owner only)_\n" +
-	"• `/open @user …` — allow only the named people _(owner only)_\n" +
-	"• `/lock` — restrict to owner only _(owner only)_\n" +
-	"• `/observe` — toggle observe mode _(owner only)_\n" +
+	"• `/invite @user` — let the mentioned people join this thread _(owner only)_\n" +
+	"• `/lock` — restrict to the owner only _(owner only)_\n" +
 	"• `/help` — show this message"
 
 // handleCommand processes a slash command and posts a reply in-thread.
@@ -140,21 +119,18 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *slashCommand, slackUse
 		reply("👋 Session ended.")
 		return true
 
-	case cmdOpen:
+	case cmdInvite:
 		state, ok := ownerOnly()
 		if !ok {
 			return true
 		}
-		switch users := parseUserIDs(cmd.Args); {
-		case len(cmd.Args) == 0:
-			state.Open()
-			reply("🔓 Thread is now open to everyone.")
-		case len(users) == 0:
-			reply("_Usage:_ `/open` _(everyone) or_ `/open @user …` _(specific people)._")
-		default:
-			state.Allow(users...)
-			reply("🔓 Now responding to the owner and the named user(s).")
+		users := parseUserIDs(cmd.Args)
+		if len(users) == 0 {
+			reply("_Usage:_ `/invite @user` — _mention the people to add to this thread._")
+			return true
 		}
+		state.Invite(users...)
+		reply("✅ Invited the mentioned user(s) to this thread.")
 		return true
 
 	case cmdLock:
@@ -164,18 +140,6 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *slashCommand, slackUse
 		}
 		state.Lock()
 		reply("🔒 Thread is now locked.")
-		return true
-
-	case cmdObserve:
-		state, ok := ownerOnly()
-		if !ok {
-			return true
-		}
-		if state.ToggleObserve() {
-			reply("👀 Observe mode on.")
-		} else {
-			reply("👀 Observe mode off.")
-		}
 		return true
 	}
 
