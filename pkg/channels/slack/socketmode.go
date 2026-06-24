@@ -177,28 +177,6 @@ func (c *socketModeClient) readLoop(ctx context.Context, ws *websocket.Conn) {
 			continue
 		}
 
-		go c.handleEvent(ctx, payload.Event)
-	}
-}
-
-func (c *socketModeClient) handleEvent(ctx context.Context, inner slackInnerEvent) {
-	if !c.adapter.acceptEvent(inner) {
-		return
-	}
-	threadReplyOnly := inner.threadReplyOnly()
-	msg, ok := inner.toInboundMessage(threadReplyOnly)
-	if !ok {
-		return
-	}
-	if threadReplyOnly && !c.adapter.isActiveThread(msg.ThreadID) {
-		return
-	}
-	if cmd := parseCommand(msg.Text); cmd != nil {
-		if c.adapter.handleCommand(ctx, cmd, msg.Subject, inner.Channel, msg.ThreadID) {
-			return
-		}
-	}
-	if err := c.adapter.dispatch(ctx, msg, inner.Channel); err != nil {
-		c.logger.Error("slack socket mode: dispatch error", "channel", inner.Channel, "error", err)
+		go c.adapter.handleInbound(ctx, payload.Event)
 	}
 }

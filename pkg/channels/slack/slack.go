@@ -410,6 +410,35 @@ func (a *Adapter) hasPendingTask(threadID string) bool {
 	return ok
 }
 
+// handleInbound runs the shared inbound pipeline for one Slack event:
+// accept-gate, normalise, active-thread gate (for channel thread replies),
+// command handling, then dispatch. Both transports (the Events API HTTP
+// handler and the Socket Mode reader) call it so the two behave identically.
+// ctx is the adapter-lifecycle context.
+func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent) {
+	if !a.acceptEvent(inner) {
+		return
+	}
+	threadReplyOnly := inner.threadReplyOnly()
+	msg, ok := inner.toInboundMessage(threadReplyOnly)
+	if !ok {
+		return
+	}
+	if threadReplyOnly && !a.isActiveThread(msg.ThreadID) {
+		return
+	}
+	if cmd := parseCommand(msg.Text); cmd != nil {
+		if a.handleCommand(ctx, cmd, msg.Subject, inner.Channel, msg.ThreadID) {
+			return
+		}
+	}
+	if err := a.dispatch(ctx, msg, inner.Channel); err != nil {
+		if !errors.Is(err, context.Canceled) {
+			a.Logger.Error("slack: dispatch error", "channel", inner.Channel, "error", err)
+		}
+	}
+}
+
 // dispatch resolves an inbound Slack message to a Klaus instance, posts a
 // placeholder reply in-thread, and streams the completion back via chat.update batches.
 func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, slackChannel string) error {

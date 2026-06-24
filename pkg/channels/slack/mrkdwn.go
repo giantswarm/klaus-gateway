@@ -29,6 +29,15 @@ func markdownToMrkdwn(text string) string {
 		return ph
 	})
 
+	// Protect a trailing, still-unterminated fence too. During streaming the
+	// closing ``` may not have arrived yet; without this its body would be
+	// mangled by the bold/italic/link transforms below until it closes.
+	if idx := strings.Index(text, "```"); idx >= 0 {
+		ph := fmt.Sprintf("\x00fence%d\x00", len(fences))
+		fences = append(fences, fence{ph, text[idx:]})
+		text = text[:idx] + ph
+	}
+
 	// Headings: # Foo → *Foo*
 	text = reMrkdwnHeading.ReplaceAllString(text, "*$1*")
 	// Bold: **x** → *x*
@@ -45,4 +54,25 @@ func markdownToMrkdwn(text string) string {
 		text = strings.ReplaceAll(text, f.placeholder, f.original)
 	}
 	return text
+}
+
+// splitAtLines splits text into chunks of at most maxLen bytes at line boundaries,
+// staying within Slack's 40 000-character message limit.
+func splitAtLines(text string, maxLen int) []string {
+	var chunks []string
+	for len(text) > 0 {
+		if len(text) <= maxLen {
+			chunks = append(chunks, text)
+			break
+		}
+		cut := strings.LastIndex(text[:maxLen], "\n")
+		if cut <= 0 {
+			cut = maxLen
+		} else {
+			cut++
+		}
+		chunks = append(chunks, text[:cut])
+		text = text[cut:]
+	}
+	return chunks
 }

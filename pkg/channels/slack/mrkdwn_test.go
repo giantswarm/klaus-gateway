@@ -1,6 +1,7 @@
 package slack
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -73,6 +74,11 @@ func TestMarkdownToMrkdwn(t *testing.T) {
 			want: "plain text",
 		},
 		{
+			name: "unterminated trailing fence is preserved",
+			in:   "text **bold**\n```go\nfmt.Println",
+			want: "text *bold*\n```go\nfmt.Println",
+		},
+		{
 			name: "empty string",
 			in:   "",
 			want: "",
@@ -84,4 +90,38 @@ func TestMarkdownToMrkdwn(t *testing.T) {
 			require.Equal(t, tc.want, markdownToMrkdwn(tc.in))
 		})
 	}
+}
+
+func TestSplitAtLines(t *testing.T) {
+	t.Run("empty string", func(t *testing.T) {
+		require.Empty(t, splitAtLines("", 10))
+	})
+
+	t.Run("within limit", func(t *testing.T) {
+		require.Equal(t, []string{"hello"}, splitAtLines("hello", 10))
+	})
+
+	t.Run("exactly limit", func(t *testing.T) {
+		require.Equal(t, []string{"hello"}, splitAtLines("hello", 5))
+	})
+
+	t.Run("over limit splits at newline", func(t *testing.T) {
+		text := "line one\nline two\nline three"
+		chunks := splitAtLines(text, 9)
+		require.Equal(t, "line one\n", chunks[0])
+		require.Greater(t, len(chunks), 1)
+		require.Equal(t, text, strings.Join(chunks, ""))
+	})
+
+	t.Run("no newline in chunk causes hard cut", func(t *testing.T) {
+		text := "abcdefghij"
+		chunks := splitAtLines(text, 4)
+		require.Equal(t, "abcd", chunks[0])
+		require.Equal(t, text, strings.Join(chunks, ""))
+	})
+
+	t.Run("reassembles to original", func(t *testing.T) {
+		text := "alpha\nbeta\ngamma\ndelta\nepsilon"
+		require.Equal(t, text, strings.Join(splitAtLines(text, 12), ""))
+	})
 }

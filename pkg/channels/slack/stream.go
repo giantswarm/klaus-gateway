@@ -17,6 +17,10 @@ import (
 const (
 	batchInterval = 250 * time.Millisecond
 	slackAPIBase  = "https://slack.com/api"
+	// slackMaxMessageLen caps a single Slack message body, under the 40 000-char
+	// hard limit with headroom for mrkdwn expansion. A reply that exceeds it is
+	// rolled over into follow-up in-thread messages by flush.
+	slackMaxMessageLen = 39000
 )
 
 // batchedWriter accumulates OutboundDelta content and periodically calls
@@ -39,6 +43,9 @@ type batchedWriter struct {
 	buf         strings.Builder
 	flushedLen  int                     // length of buf at the last chat.update; skips no-op flushes
 	promptDelta *channels.OutboundDelta // set when stream ends on DeltaPrompt
+	// tailTS holds the timestamps of overflow messages posted when the reply
+	// outgrows a single Slack message. Only touched from run()'s goroutine.
+	tailTS []string
 }
 
 func newBatchedWriterWithClient(client *slackAPIClient, channel, ts, threadTS string, logger *slog.Logger) *batchedWriter {
@@ -113,7 +120,29 @@ func (w *batchedWriter) flush(ctx context.Context) error {
 	text := w.buf.String()
 	w.flushedLen = w.buf.Len()
 	w.mu.Unlock()
-	return w.client.chatUpdate(ctx, w.channel, w.ts, markdownToMrkdwn(text))
+
+	// A reply that fits one message is a single chat.update of the main message.
+	// A larger reply rolls over: the head updates the main message and each
+	// subsequent chunk updates (or, the first time, posts) a stable follow-up
+	// message in-thread, so growing replies extend in place without duplicating.
+	chunks := splitAtLines(markdownToMrkdwn(text), slackMaxMessageLen)
+	if err := w.client.chatUpdate(ctx, w.channel, w.ts, chunks[0]); err != nil {
+		return err
+	}
+	for i, chunk := range chunks[1:] {
+		if i < len(w.tailTS) {
+			if err := w.client.chatUpdate(ctx, w.channel, w.tailTS[i], chunk); err != nil {
+				return err
+			}
+			continue
+		}
+		ts, err := w.client.postMessage(ctx, w.channel, chunk, w.threadTS)
+		if err != nil {
+			return err
+		}
+		w.tailTS = append(w.tailTS, ts)
+	}
+	return nil
 }
 
 // slackAPIClient is a minimal HTTP client for the Slack Web API.
