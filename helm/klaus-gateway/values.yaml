@@ -237,12 +237,19 @@ slack:
   # mode selects the connection method: "events" (Events API webhook,
   # production) or "socketmode" (Socket Mode WebSocket, development).
   mode: events
-  # secretName is the name of the Kubernetes Secret with Slack credentials.
+  # secretName is the name of the Kubernetes Secret with Slack credentials
+  # (keys: bot-token, signing-secret, and app-token for socketmode).
   # Required when slack.enabled is true.
   secretName: ""
   # dmOnly restricts the adapter to direct messages: channel messages and
   # @-mentions in channels are ignored. Rendered as SLACK_DM_ONLY. Default false.
   dmOnly: false
+  # botToken / signingSecret / appToken: when set (typically SOPS-encrypted via
+  # the agentic-platform umbrella), the chart renders the secretName Secret from
+  # them. Leave empty to reference an externally-managed Secret of that name.
+  botToken: ""
+  signingSecret: ""
+  appToken: ""
 
 # CLI channel adapter.
 # Exposes POST /cli/v1/{instance}/run (SSE completions) and
