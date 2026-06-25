@@ -124,6 +124,10 @@ spec:
               optional: true
         {{- end }}
         {{- end }}
+        {{- if and .Values.slack.enabled .Values.slack.dmOnly }}
+        - name: KLAUS_GATEWAY_SLACK_DM_ONLY
+          value: "true"
+        {{- end }}
         {{- if .Values.obo.enabled }}
         # Slack OBO. client_id is auto-derived from the callback base URL (CIMD),
         # so no client-id value is wired here.
