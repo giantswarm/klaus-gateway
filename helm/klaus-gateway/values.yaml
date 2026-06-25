@@ -240,6 +240,9 @@ slack:
   # secretName is the name of the Kubernetes Secret with Slack credentials.
   # Required when slack.enabled is true.
   secretName: ""
+  # dmOnly restricts the adapter to direct messages: channel messages and
+  # @-mentions in channels are ignored. Rendered as SLACK_DM_ONLY. Default false.
+  dmOnly: false
 
 # CLI channel adapter.
 # Exposes POST /cli/v1/{instance}/run (SSE completions) and
