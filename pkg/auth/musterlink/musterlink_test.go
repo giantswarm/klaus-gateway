@@ -198,6 +198,41 @@ func TestTokenForRefreshAndRotate(t *testing.T) {
 	require.Equal(t, "refresh-1", got.RefreshToken)
 }
 
+func TestTokenForReusesCachedAccessToken(t *testing.T) {
+	stub := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
+	store := NewMemStore()
+	store.Put("U1", &Link{Sub: "muster-sub", Email: "a@example.com", RefreshToken: "refresh-0"})
+	l := newTestLinker(t, stub, store, nil)
+
+	tok1, err := l.TokenFor(context.Background(), "U1")
+	require.NoError(t, err)
+	require.Equal(t, "access-1", tok1)
+
+	// A second call within the token's lifetime reuses the cached access token
+	// and must not spend the (rotating) refresh token again -- doing so would
+	// race muster's rotation and burn the link.
+	tok2, err := l.TokenFor(context.Background(), "U1")
+	require.NoError(t, err)
+	require.Equal(t, "access-1", tok2)
+
+	stub.mu.Lock()
+	calls := stub.counter
+	stub.mu.Unlock()
+	require.Equal(t, 1, calls, "second TokenFor must reuse the cached token, not refresh")
+}
+
+func TestTokenForRefreshesExpiredCachedToken(t *testing.T) {
+	stub := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
+	store := NewMemStore()
+	// A cached token already past expiry must be discarded and refreshed.
+	store.Put("U1", &Link{RefreshToken: "refresh-0", AccessToken: "stale", Expiry: time.Now().Add(-time.Minute)})
+	l := newTestLinker(t, stub, store, nil)
+
+	tok, err := l.TokenFor(context.Background(), "U1")
+	require.NoError(t, err)
+	require.Equal(t, "access-1", tok)
+}
+
 func TestTokenForNotLinked(t *testing.T) {
 	stub := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
 	l := newTestLinker(t, stub, NewMemStore(), nil)
