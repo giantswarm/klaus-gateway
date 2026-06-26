@@ -71,6 +71,11 @@ const defaultStateTTL = 15 * time.Minute
 // grantTypeRefreshToken is the OAuth grant type advertised in the CIMD document.
 const grantTypeRefreshToken = "refresh_token"
 
+// accessTokenRefreshSkew refreshes a cached muster access token this long
+// before it actually expires, so a token handed to a downstream A2A call is not
+// about to expire mid-request.
+const accessTokenRefreshSkew = 60 * time.Second
+
 // ErrNotLinked is returned by TokenFor when no muster link exists for the Slack
 // user. Callers treat it as a signal to prompt the user to sign in.
 var ErrNotLinked = errors.New("musterlink: slack user is not linked to a muster identity")
@@ -144,6 +149,12 @@ type Linker struct {
 
 	mu      sync.Mutex
 	pending map[string]pendingAuth // state -> PKCE verifier
+
+	// refreshMu guards refreshLocks; each per-user lock serializes that user's
+	// token refreshes so concurrent messages (e.g. Slack event retries) don't
+	// both spend the rotating refresh token and invalidate the link.
+	refreshMu    sync.Mutex
+	refreshLocks map[string]*sync.Mutex
 }
 
 // pendingAuth holds the PKCE code verifier between the authorize redirect and
@@ -226,6 +237,7 @@ func New(cfg Config) (*Linker, error) {
 		logger:        logger,
 		now:           time.Now,
 		pending:       map[string]pendingAuth{},
+		refreshLocks:  map[string]*sync.Mutex{},
 	}, nil
 }
 
@@ -483,20 +495,42 @@ func (l *Linker) userinfo(ctx context.Context, accessToken string) (sub, email s
 	return ui.Sub, ui.Email, nil
 }
 
-// TokenFor loads the Slack user's muster link, refreshes it to obtain a fresh
-// short-lived muster access token, rotates the stored refresh token when muster
-// issues a new one (muster rotates by default), and returns the raw token. It
-// returns ErrNotLinked when no link exists and drops the link on a hard refresh
-// failure (invalid/expired refresh token) so the next attempt prompts a clean
-// re-link.
+// TokenFor returns a fresh short-lived human muster access token for the Slack
+// user. It reuses a still-valid cached access token when one is stored, and
+// only when none is valid does it refresh: it spends the stored (rotating)
+// muster refresh token, caches the new access token with its expiry, rotates
+// the stored refresh token, and persists both. It returns ErrNotLinked when no
+// link exists and drops the link on a hard refresh failure (invalid/expired
+// refresh token) so the next attempt prompts a clean re-link.
+//
+// Refreshes are serialized per user: a Slack turn can drive several TokenFor
+// calls (event retries, concurrent messages), and muster invalidates the old
+// refresh token on rotation, so two simultaneous refreshes would race and burn
+// the link. The cached access token means those extra calls return without
+// refreshing at all.
 //
 // ponytail: returns the access token as the forwarded subject token. If the
 // downstream STS leg requires the id_token JWT instead, prefer
 // tok.Extra("id_token") here -- a one-line switch.
 func (l *Linker) TokenFor(ctx context.Context, slackUserID string) (string, error) {
+	// Fast path: a still-valid cached access token avoids a refresh (and the
+	// per-user lock) entirely.
+	if link, ok := l.store.Get(slackUserID); ok {
+		if tok := validCachedToken(link, l.now()); tok != "" {
+			return tok, nil
+		}
+	}
+
+	unlock := l.lockUser(slackUserID)
+	defer unlock()
+
 	link, ok := l.store.Get(slackUserID)
 	if !ok {
 		return "", ErrNotLinked
+	}
+	// Re-check under the lock: a concurrent caller may have just refreshed.
+	if tok := validCachedToken(link, l.now()); tok != "" {
+		return tok, nil
 	}
 	if err := l.ensureEndpoints(ctx); err != nil {
 		return "", fmt.Errorf("musterlink: discover endpoints: %w", err)
@@ -512,15 +546,44 @@ func (l *Linker) TokenFor(ctx context.Context, slackUserID string) (string, erro
 		}
 		return "", fmt.Errorf("musterlink: refresh token for slack user: %w", err)
 	}
-	if tok.RefreshToken != "" && tok.RefreshToken != link.RefreshToken {
-		rotated := *link
-		rotated.RefreshToken = tok.RefreshToken
-		l.store.Put(slackUserID, &rotated)
-	}
 	if tok.AccessToken == "" {
 		return "", errors.New("musterlink: refresh response carried no access token")
 	}
+	updated := *link
+	if tok.RefreshToken != "" {
+		updated.RefreshToken = tok.RefreshToken
+	}
+	updated.AccessToken = tok.AccessToken
+	updated.Expiry = tok.Expiry
+	l.store.Put(slackUserID, &updated)
 	return tok.AccessToken, nil
+}
+
+// validCachedToken returns the link's cached access token when it is present
+// and not within accessTokenRefreshSkew of expiry, else "". A zero Expiry is
+// treated as unknown and forces a refresh.
+func validCachedToken(link *Link, now time.Time) string {
+	if link.AccessToken == "" || link.Expiry.IsZero() {
+		return ""
+	}
+	if now.Add(accessTokenRefreshSkew).Before(link.Expiry) {
+		return link.AccessToken
+	}
+	return ""
+}
+
+// lockUser returns the per-user refresh lock, held; the caller defers the
+// returned unlock.
+func (l *Linker) lockUser(slackUserID string) func() {
+	l.refreshMu.Lock()
+	mu, ok := l.refreshLocks[slackUserID]
+	if !ok {
+		mu = &sync.Mutex{}
+		l.refreshLocks[slackUserID] = mu
+	}
+	l.refreshMu.Unlock()
+	mu.Lock()
+	return mu.Unlock
 }
 
 func (l *Linker) mac(payload string) []byte {
