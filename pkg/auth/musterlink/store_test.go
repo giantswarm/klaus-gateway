@@ -1,6 +1,8 @@
 package musterlink
 
 import (
+	"encoding/base64"
+	"encoding/hex"
 	"os"
 	"testing"
 	"time"
@@ -78,6 +80,60 @@ func TestBoltStoreWrongKeyFailsClosed(t *testing.T) {
 func TestNewGCMRejectsBadKeyLength(t *testing.T) {
 	_, err := OpenBoltStore(t.TempDir()+"/x.bolt", []byte("tooshort"), nil)
 	require.Error(t, err)
+}
+
+func TestNormalizeStoreKey(t *testing.T) {
+	raw := key32()
+
+	t.Run("raw 32 bytes used verbatim", func(t *testing.T) {
+		got, err := normalizeStoreKey(raw)
+		require.NoError(t, err)
+		require.Equal(t, raw, got)
+	})
+
+	t.Run("base64 std (the SOPS-staged form) decodes to 32 bytes", func(t *testing.T) {
+		enc := base64.StdEncoding.EncodeToString(raw) // 44 chars, the real gazelle case
+		require.Len(t, enc, 44)
+		got, err := normalizeStoreKey([]byte(enc))
+		require.NoError(t, err)
+		require.Equal(t, raw, got)
+	})
+
+	t.Run("trailing newline is trimmed", func(t *testing.T) {
+		got, err := normalizeStoreKey([]byte(base64.StdEncoding.EncodeToString(raw) + "\n"))
+		require.NoError(t, err)
+		require.Equal(t, raw, got)
+	})
+
+	t.Run("hex decodes to 32 bytes", func(t *testing.T) {
+		got, err := normalizeStoreKey([]byte(hex.EncodeToString(raw)))
+		require.NoError(t, err)
+		require.Equal(t, raw, got)
+	})
+
+	t.Run("garbage that is not 32 bytes is rejected", func(t *testing.T) {
+		_, err := normalizeStoreKey([]byte("nope"))
+		require.Error(t, err)
+	})
+}
+
+func TestBoltStoreAcceptsBase64Key(t *testing.T) {
+	path := t.TempDir() + "/links.bolt"
+	encKey := []byte(base64.StdEncoding.EncodeToString(key32()))
+
+	s, err := OpenBoltStore(path, encKey, nil)
+	require.NoError(t, err)
+	s.Put("U1", &Link{RefreshToken: "rt"})
+	require.NoError(t, s.Close())
+
+	// Reopen with the raw form of the same key: it must decrypt what the
+	// base64 form wrote, proving both forms resolve to identical key material.
+	s2, err := OpenBoltStore(path, key32(), nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = s2.Close() })
+	got, ok := s2.Get("U1")
+	require.True(t, ok)
+	require.Equal(t, "rt", got.RefreshToken)
 }
 
 func TestMemStore(t *testing.T) {

@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -354,10 +355,12 @@ func TestBatchedWriter_FlushesContent(t *testing.T) {
 // --- OBO injection ---
 
 // fakeOBO is a test OBOTokenSource: it returns token for the configured Slack
-// user and musterlink.ErrNotLinked for anyone else.
+// user and musterlink.ErrNotLinked for anyone else. When tokenErr is set it is
+// returned for the linked user instead (a transient token-mint failure).
 type fakeOBO struct {
 	linkedUser string
 	token      string
+	tokenErr   error
 
 	mu       sync.Mutex
 	unlinked []string
@@ -366,6 +369,9 @@ type fakeOBO struct {
 
 func (f *fakeOBO) TokenFor(_ context.Context, slackUserID string) (string, error) {
 	if slackUserID == f.linkedUser {
+		if f.tokenErr != nil {
+			return "", f.tokenErr
+		}
 		return f.token, nil
 	}
 	return "", musterlink.ErrNotLinked
@@ -449,14 +455,80 @@ func TestDispatch_OBO_LinkedUserSetsBearerToken(t *testing.T) {
 	require.Equal(t, "human-muster-token", got.BearerToken, "linked user's turn must carry the human muster token")
 }
 
-func TestDispatch_OBO_UnlinkedUserFallsBackToM2M(t *testing.T) {
-	got := dispatchAndCaptureOBO(t, &fakeOBO{linkedUser: "U999", token: "x"}, "U123")
-	require.Empty(t, got.BearerToken, "unlinked user's turn must leave BearerToken empty (M2M fallback)")
-}
-
 func TestDispatch_OBO_DisabledLeavesBearerTokenEmpty(t *testing.T) {
 	got := dispatchAndCaptureOBO(t, nil, "U123")
 	require.Empty(t, got.BearerToken, "with OBO disabled the turn must run as M2M")
+}
+
+// With linking enabled, an unlinked user's turn is aborted with a sign-in
+// prompt and never dispatched to the agent — no silent M2M service-account
+// fallback (klaus-gateway#116).
+func TestDispatch_OBO_UnlinkedUserPromptsSignInAndDoesNotDispatch(t *testing.T) {
+	fakeSlack, ephemeral := captureEphemeral(t)
+	defer fakeSlack.Close()
+
+	gw := &stubGateway{}
+	a, srv := newEventsAdapter(t, gw, fakeSlack.URL)
+	a.OBO = &fakeOBO{linkedUser: "U999", token: "x", linkURL: "https://gw.example.com/auth/slack/link?u=xyz"}
+
+	payload := `{"type":"event_callback","event":{"type":"app_mention","user":"U123","text":"<@BOT> hi","channel":"C1","ts":"111.222"}}`
+	body := []byte(payload)
+	stamp, sig := signBody(t, "signing-secret", body)
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/channels/slack/events", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Slack-Request-Timestamp", stamp)
+	req.Header.Set("X-Slack-Signature", sig)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+
+	require.Eventually(t, func() bool {
+		return len(ephemeral()) >= 1
+	}, 2*time.Second, 50*time.Millisecond, "unlinked user must be prompted to sign in")
+	require.Zero(t, gw.resolveCount(), "unlinked turn must not reach the agent (no M2M fallback)")
+}
+
+// A linked user hitting a transient token-mint failure gets a clear error and
+// the turn is aborted — never run as the service account.
+func TestDispatch_OBO_TokenErrorAbortsTurn(t *testing.T) {
+	var mu sync.Mutex
+	var messages int
+	fakeSlack := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "users.info") {
+			_, _ = fmt.Fprintf(w, `{"ok":true,"user":{"profile":{"email":"u@example.com"}}}`)
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "chat.postMessage") {
+			mu.Lock()
+			messages++
+			mu.Unlock()
+		}
+		_, _ = fmt.Fprintf(w, `{"ok":true,"ts":"1234.5678"}`)
+	}))
+	defer fakeSlack.Close()
+
+	gw := &stubGateway{}
+	a, srv := newEventsAdapter(t, gw, fakeSlack.URL)
+	a.OBO = &fakeOBO{linkedUser: "U123", token: "x", tokenErr: errors.New("muster unreachable")}
+
+	payload := `{"type":"event_callback","event":{"type":"app_mention","user":"U123","text":"<@BOT> hi","channel":"C1","ts":"111.222"}}`
+	body := []byte(payload)
+	stamp, sig := signBody(t, "signing-secret", body)
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/channels/slack/events", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Slack-Request-Timestamp", stamp)
+	req.Header.Set("X-Slack-Signature", sig)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return messages >= 1
+	}, 2*time.Second, 50*time.Millisecond, "a transient token failure must surface an error message")
+	require.Zero(t, gw.resolveCount(), "a transient token failure must not reach the agent as the SA")
 }
 
 func TestLookupUserEmail_Caches(t *testing.T) {

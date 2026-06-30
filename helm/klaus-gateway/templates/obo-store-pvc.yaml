@@ -1,0 +1,18 @@
+{{- if and .Values.obo.enabled .Values.obo.storePath .Values.obo.persistence.enabled (not .Values.obo.persistence.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "resource.default.name" . }}-obo-store
+  namespace: {{ include "resource.default.namespace" . }}
+  labels:
+    {{- include "labels.common" . | nindent 4 }}
+spec:
+  accessModes:
+  - {{ .Values.obo.persistence.accessMode }}
+  resources:
+    requests:
+      storage: {{ .Values.obo.persistence.size }}
+  {{- with .Values.obo.persistence.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+{{- end }}

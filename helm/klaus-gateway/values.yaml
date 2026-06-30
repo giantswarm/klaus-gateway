@@ -279,16 +279,29 @@ obo:
   # CIMD client_id are derived from it.
   callbackBaseUrl: ""
   # storePath is the encrypted bolt link-store path. Empty uses an in-memory
-  # store (links lost on restart). When set, an emptyDir backs its directory.
-  # ponytail: emptyDir is pod-ephemeral -- links survive in-process restarts but
-  # not pod reschedules; switch to a PVC if durable links are required.
+  # store (links lost on restart). When set, persistence (below) decides whether
+  # the directory is backed by an emptyDir (pod-ephemeral) or a PVC (durable).
   storePath: ""
+  # persistence backs storePath's directory. Disabled -> emptyDir: links survive
+  # in-process restarts but not pod reschedules (rollouts, node drains). Enabled
+  # -> a ReadWriteOnce PVC so links survive pod recreation; recommended for
+  # multi-user use. With a single RWO claim the Deployment uses the Recreate
+  # strategy (the old pod must release the volume before the new one mounts it).
+  persistence:
+    enabled: false
+    size: 64Mi
+    accessMode: ReadWriteOnce
+    # storageClass: "" uses the cluster default. existingClaim: "" lets the chart
+    # create the PVC; set it to reuse a pre-provisioned claim.
+    storageClass: ""
+    existingClaim: ""
   # stateKey is the HMAC key used to sign link state (CSRF + Slack-user binding).
   # Required when obo.enabled is true. Provide via a SOPS-encrypted value; the
   # chart renders it into a Secret and mounts it as a file.
   stateKey: ""
-  # storeKey is the 32-byte AES-256 key for the encrypted link store. Required
-  # only when storePath is set. Provide via a SOPS-encrypted value.
+  # storeKey is the AES-256 key for the encrypted link store, required only when
+  # storePath is set. Accepts 32 raw bytes or a base64/hex encoding of 32 bytes
+  # (a SOPS-staged base64 value works directly). Provide via a SOPS value.
   storeKey: ""
 
 global:
