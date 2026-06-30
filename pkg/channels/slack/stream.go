@@ -291,8 +291,8 @@ func (c *slackAPIClient) postChoicePrompt(ctx context.Context, channel, threadID
 // It is used to nudge an unlinked Slack user into the OBO account-linking flow.
 // When threadID is set the prompt is posted in-thread.
 func (c *slackAPIClient) postSignInPrompt(ctx context.Context, channel, threadID, user, linkURL string) error {
-	const text = "Sign in to Giant Swarm so I can act on your behalf. " +
-		"Until you do, I run as the gateway service account."
+	const text = "Sign in to Giant Swarm so I can act as you. " +
+		"Until you do, I can't run tools on your behalf."
 	body := map[string]any{
 		paramChannel: channel,
 		paramUser:    user,

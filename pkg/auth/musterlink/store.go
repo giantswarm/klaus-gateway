@@ -4,10 +4,13 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -95,9 +98,15 @@ type BoltStore struct {
 	logger *slog.Logger
 }
 
-// OpenBoltStore opens or creates an encrypted link store at path. key must be
-// exactly 32 bytes (AES-256). A nil logger defaults to slog.Default().
+// OpenBoltStore opens or creates an encrypted link store at path. key must
+// resolve to a 32-byte AES-256 key: it is used verbatim when it is exactly 32
+// raw bytes, otherwise it is base64- or hex-decoded (see normalizeStoreKey).
+// A nil logger defaults to slog.Default().
 func OpenBoltStore(path string, key []byte, logger *slog.Logger) (*BoltStore, error) {
+	key, err := normalizeStoreKey(key)
+	if err != nil {
+		return nil, err
+	}
 	gcm, err := newGCM(key)
 	if err != nil {
 		return nil, err
@@ -197,6 +206,33 @@ func (s *BoltStore) open(ciphertext []byte) ([]byte, error) {
 		return nil, fmt.Errorf("ciphertext shorter than nonce")
 	}
 	return s.gcm.Open(nil, ciphertext[:ns], ciphertext[ns:], nil)
+}
+
+// normalizeStoreKey resolves the configured link-store key to the raw 32-byte
+// AES-256 key. A 32-byte input is raw key material and used as-is. Anything else
+// is treated as a text encoding: surrounding whitespace is trimmed (secret files
+// routinely carry a trailing newline) and the value is base64- or hex-decoded.
+// Only a result of exactly 32 bytes is accepted, so a misconfigured key fails
+// loudly at startup instead of silently weakening encryption. This is what makes
+// a SOPS-staged 44-char base64 key (the common case) work without forcing
+// operators to stage raw bytes.
+func normalizeStoreKey(raw []byte) ([]byte, error) {
+	if len(raw) == 32 {
+		return raw, nil
+	}
+	s := strings.TrimSpace(string(raw))
+	for _, decode := range []func(string) ([]byte, error){
+		base64.StdEncoding.DecodeString,
+		base64.RawStdEncoding.DecodeString,
+		base64.URLEncoding.DecodeString,
+		base64.RawURLEncoding.DecodeString,
+		hex.DecodeString,
+	} {
+		if k, err := decode(s); err == nil && len(k) == 32 {
+			return k, nil
+		}
+	}
+	return nil, fmt.Errorf("musterlink: store key must be 32 raw bytes or a base64/hex encoding of 32 bytes (got %d bytes)", len(raw))
 }
 
 func newGCM(key []byte) (cipher.AEAD, error) {

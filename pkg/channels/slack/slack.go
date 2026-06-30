@@ -29,12 +29,14 @@ import (
 // ChannelName identifies the Slack adapter in routing keys.
 const ChannelName = "slack"
 
-// OBOTokenSource mints a fresh per-request "on behalf of" muster access token
-// for a linked Slack user and drives the account-linking UX. *musterlink.Linker
-// satisfies it. When the adapter's OBO field is nil (OBO disabled), every turn
-// runs as the M2M ServiceAccount identity (the historical behaviour) — the
-// gateway's ForwardedTokenSource falls back to the SA token whenever
-// InboundMessage.BearerToken is empty.
+// OBOTokenSource mints a fresh per-request human muster access token for a
+// linked Slack user and drives the account-linking UX. *musterlink.Linker
+// satisfies it. When the adapter's OBO field is non-nil (linking enabled), the
+// human token is the only credential forwarded to the agent: a turn without one
+// is aborted rather than degraded to the gateway service account (see
+// klaus-gateway#116). When OBO is nil (linking disabled), there is no human
+// path and turns run as the M2M ServiceAccount identity (the historical
+// behaviour) via the gateway's ForwardedTokenSource fallback.
 type OBOTokenSource interface {
 	// TokenFor returns a fresh human muster access token for the Slack user,
 	// or musterlink.ErrNotLinked when the user has not linked an identity.
@@ -314,8 +316,9 @@ func (a *Adapter) apiClient() *slackAPIClient {
 }
 
 // postSignIn posts the ephemeral "Sign in to Giant Swarm" prompt for the
-// account-linking flow. It is driven by the explicit /klaus login command. A
-// failure to post is logged and swallowed — the turn still proceeds as M2M.
+// account-linking flow. It is driven by the explicit /klaus login command and
+// by an unlinked user's first turn (which is aborted, not run as the SA). A
+// failure to post is logged and swallowed.
 func (a *Adapter) postSignIn(ctx context.Context, slackChannel, threadID, slackUser string) {
 	url := a.OBO.LinkURL(slackUser)
 	if url == "" {
@@ -467,20 +470,35 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 
 	a.resolveSubjectEmail(ctx, &msg)
 
-	// On-behalf-of: when OBO linking is enabled and this Slack user has linked a
-	// muster identity, mint a fresh human muster access token and forward it onto
-	// the A2A request (via withChannelAuth) so the agent acts as the human at
-	// muster. Unlinked or transient-failure turns leave BearerToken empty and
-	// fall back to the M2M ServiceAccount identity so Slack never hard-fails.
-	// Unlinked users link explicitly via /klaus login.
+	// Human-token forwarding: when linking is enabled, the human's muster token
+	// is the only credential we forward — the agent always acts as the human,
+	// never as the gateway service account. So a turn without a valid human
+	// token is aborted (not silently degraded to the M2M SA identity, which is
+	// confusing, masks failures, and is a privilege risk — klaus-gateway#116):
+	//   - unlinked user  -> prompt sign-in and stop;
+	//   - transient error -> surface it and stop.
+	// In both cases we only message a user we would actually respond to (a DM
+	// sender is always permitted; observe-mode onlookers stay silent).
 	if a.OBO != nil && slackUser != "" {
-		switch token, err := a.OBO.TokenFor(ctx, slackUser); {
+		token, err := a.OBO.TokenFor(ctx, slackUser)
+		switch {
 		case err == nil:
 			msg.BearerToken = token
 		case errors.Is(err, musterlink.ErrNotLinked):
-			a.Logger.Debug("slack: user not linked for OBO, running as M2M", "user", slackUser)
+			a.Logger.Debug("slack: user not linked, prompting sign-in", "user", slackUser)
+			if respond {
+				a.postSignIn(ctx, slackChannel, msg.ThreadID, slackUser)
+			}
+			return nil
 		default:
-			a.Logger.Warn("slack: OBO token mint failed, falling back to M2M", "user", slackUser, "error", err)
+			a.Logger.Warn("slack: human token unavailable, aborting turn", "user", slackUser, "error", err)
+			if respond {
+				const msgText = "I couldn't refresh your Giant Swarm sign-in just now. Please try again in a moment; if it keeps failing, re-link with the `login` command (type it with a leading space)."
+				if _, perr := a.apiClient().postMessage(ctx, slackChannel, msgText, msg.ThreadID); perr != nil {
+					a.Logger.Warn("slack: post token-error message failed", "user", slackUser, "error", perr)
+				}
+			}
+			return nil
 		}
 	}
 

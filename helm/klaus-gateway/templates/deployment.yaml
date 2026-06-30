@@ -7,6 +7,13 @@ metadata:
     {{- include "labels.common" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
+  {{- if and .Values.obo.enabled .Values.obo.storePath .Values.obo.persistence.enabled }}
+  # A single ReadWriteOnce link-store PVC cannot be mounted by two pods at once,
+  # so a rolling update would deadlock (new pod pending on a volume the old pod
+  # still holds). Recreate releases the volume before the replacement starts.
+  strategy:
+    type: Recreate
+  {{- end }}
   revisionHistoryLimit: 3
   selector:
     matchLabels:
@@ -26,6 +33,11 @@ spec:
         runAsNonRoot: true
         runAsUser: {{ .Values.pod.user.id }}
         runAsGroup: {{ .Values.pod.group.id }}
+        {{- if and .Values.obo.enabled .Values.obo.storePath .Values.obo.persistence.enabled }}
+        # Make the link-store PVC group-owned and group-writable by the non-root
+        # runtime user so the encrypted bolt file can be created.
+        fsGroup: {{ .Values.pod.group.id }}
+        {{- end }}
         {{- with .Values.podSecurityContext }}
           {{- . | toYaml | nindent 8 }}
         {{- end }}
@@ -198,7 +210,12 @@ spec:
           secretName: {{ include "resource.default.name" . }}-obo
       {{- if .Values.obo.storePath }}
       - name: obo-store
+        {{- if .Values.obo.persistence.enabled }}
+        persistentVolumeClaim:
+          claimName: {{ .Values.obo.persistence.existingClaim | default (printf "%s-obo-store" (include "resource.default.name" .)) }}
+        {{- else }}
         emptyDir: {}
+        {{- end }}
       {{- end }}
       {{- end }}
       {{- end }}

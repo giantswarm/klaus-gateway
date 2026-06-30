@@ -387,6 +387,26 @@
         "storePath": {
           "type": "string"
         },
+        "persistence": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "size": {
+              "type": "string"
+            },
+            "accessMode": {
+              "type": "string"
+            },
+            "storageClass": {
+              "type": "string"
+            },
+            "existingClaim": {
+              "type": "string"
+            }
+          }
+        },
         "stateKey": {
           "type": "string"
         },

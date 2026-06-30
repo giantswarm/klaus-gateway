@@ -74,8 +74,8 @@ const helpText = "*Commands* — mention me first, e.g. `@klaus /stop`.\n" +
 
 // oboHelpText is appended to helpText when OBO account linking is enabled.
 const oboHelpText = `
-• ` + "`/klaus login`" + ` — sign in to Giant Swarm so I act on your behalf
-• ` + "`/klaus logout`" + ` — sign out (run as the gateway service account)`
+• ` + "`/klaus login`" + ` — sign in to Giant Swarm so I act as you
+• ` + "`/klaus logout`" + ` — sign out (I'll ask you to sign in again before the next turn)`
 
 // handleCommand processes a slash command and posts a reply in-thread.
 // Returns true when the command was consumed (caller should not dispatch).
@@ -187,7 +187,7 @@ func (a *Adapter) handleKlausCommand(ctx context.Context, cmd *slashCommand, sla
 		a.postSignIn(ctx, slackChannel, threadID, slackUser)
 	case subLogout:
 		a.OBO.Unlink(slackUser)
-		reply("👋 Signed out. I'll run as the gateway service account until you `/klaus login` again.")
+		reply("👋 Signed out. I'll ask you to `/klaus login` again before I can act as you.")
 	default:
 		reply("_Usage:_ `/klaus login` _or_ `/klaus logout`")
 	}
