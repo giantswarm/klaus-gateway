@@ -495,15 +495,6 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 	}
 	defer a.releaseThread(msg.ThreadID)
 
-	// Resume a paused input-required task when one exists for this thread.
-	// Map the typed reply to a structured HITL decision so the paused tool
-	// confirmation is actually resolved (a plain text reply would leave the
-	// tool call dangling and corrupt the model history).
-	if task := a.takePendingTask(msg.ThreadID); task != nil {
-		msg.TaskID = task.TaskID
-		msg.Decision = decisionFromText(task.Prompt, msg.Text)
-	}
-
 	a.resolveSubjectEmail(ctx, &msg)
 
 	// Human-token forwarding: when linking is enabled, the human's muster token
@@ -536,6 +527,18 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 			}
 			return nil
 		}
+	}
+
+	// Resume a paused input-required task when one exists for this thread. Done
+	// only after the turn is committed to run (thread slot acquired, human token
+	// resolved): takePendingTask deletes the entry, so consuming it on a branch
+	// that then aborts would strand the paused A2A task. Map the typed reply to a
+	// structured HITL decision so the paused tool confirmation is actually
+	// resolved (a plain text reply would leave the tool call dangling and corrupt
+	// the model history).
+	if task := a.takePendingTask(msg.ThreadID); task != nil {
+		msg.TaskID = task.TaskID
+		msg.Decision = decisionFromText(task.Prompt, msg.Text)
 	}
 
 	ref, err := a.gw.Resolve(ctx, msg)
