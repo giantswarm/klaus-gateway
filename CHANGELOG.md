@@ -28,7 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Slack shows turn progress with message reactions on the triggering message (a working emoji, swapped to done or failed when the turn ends) instead of a `_thinking…_` placeholder. `SLACK_PROGRESS_MODE` selects `auto` (default), `reactions`, or `text`; `auto` falls back to a text placeholder when the `reactions:write` scope is unavailable. Requires the new `reactions:write` bot scope.
-- Slack agent replies render as Block Kit `markdown` blocks (native GitHub-flavored Markdown) instead of the lossy mrkdwn conversion, chunked at 12,000 characters with code-fence-aware rollover into follow-up in-thread messages.
+- Slack agent replies render as Block Kit `markdown` blocks (Slack's native Markdown: bold, italic, lists, tables, code blocks) instead of the lossy mrkdwn conversion, chunked at 12,000 characters with code-fence-aware rollover into follow-up in-thread messages.
 - `--driver=static` no longer requires `--static-instances` to be non-empty. An empty static instance set is valid and acts as a no-op lifecycle manager, allowing A2A-only deployments (Slack/CLI/web → kagent) without any Klaus instance management.
 - `a2a.A2AClient.TokenPath` (string) is replaced by `a2a.A2AClient.TokenSource` (the `a2a.TokenSource` interface). `a2a.FileTokenSource` reproduces the previous per-request file read; `a2a.ForwardedTokenSource` prefers a caller token from the request context and falls back to a `TokenSource`.
 

@@ -23,7 +23,7 @@ func TestSplitMarkdown(t *testing.T) {
 	t.Run("closes and reopens a fence across a boundary", func(t *testing.T) {
 		// A code fence spanning a chunk boundary must be closed at the end of the
 		// first chunk and reopened at the start of the next, so each chunk is
-		// balanced GFM.
+		// balanced Markdown.
 		text := "```go\n" + strings.Repeat("x := 1\n", 10) + "```\n"
 		chunks := splitMarkdown(text, 24)
 		require.Greater(t, len(chunks), 1)

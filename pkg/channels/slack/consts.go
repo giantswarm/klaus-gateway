@@ -77,7 +77,7 @@ const (
 	bkActions   = "actions"
 	bkButton    = "button"
 	bkMrkdwn    = "mrkdwn"
-	bkMarkdown  = "markdown" // top-level markdown block (native GFM)
+	bkMarkdown  = "markdown" // top-level Slack markdown block
 	bkPlainText = "plain_text"
 	bkPrimary   = "primary"
 	bkDanger    = "danger"

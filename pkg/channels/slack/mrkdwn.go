@@ -9,7 +9,7 @@ import (
 // markdown blocks, breaking on line boundaries and never inside a fenced code
 // block: when a chunk boundary (or the streaming tail) falls inside an open
 // fence, the fence is closed at the chunk's end and reopened at the next chunk's
-// start, so every chunk is self-contained, balanced GFM. A single line longer
+// start, so every chunk is self-contained, balanced Markdown. A single line longer
 // than maxLen is hard-split via splitAtLines.
 func splitMarkdown(text string, maxLen int) []string {
 	var chunks []string

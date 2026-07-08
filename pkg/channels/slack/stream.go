@@ -132,7 +132,7 @@ func (w *batchedWriter) flush(ctx context.Context) error {
 	w.flushedLen = w.buf.Len()
 	w.mu.Unlock()
 
-	// Agent output renders as Block Kit markdown blocks (native GFM). A reply that
+	// Agent output renders as Block Kit markdown blocks. A reply that
 	// fits one block updates the main message; a larger reply rolls over into
 	// stable follow-up messages in-thread. The head message is posted lazily on
 	// the first flush when ts is empty (reactions mode), else updated in place.
@@ -246,7 +246,8 @@ func (c *slackAPIClient) reaction(ctx context.Context, method, channel, ts, name
 }
 
 // markdownBlocks wraps text in a single Block Kit markdown block, which renders
-// GitHub-flavored Markdown natively (no mrkdwn conversion).
+// Slack's supported Markdown (bold, italic, lists, tables, code blocks, ...)
+// natively, without the mrkdwn conversion.
 func markdownBlocks(md string) []any {
 	return []any{map[string]any{bkType: bkMarkdown, bkText: md}}
 }
