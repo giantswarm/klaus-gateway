@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 
 	"github.com/go-chi/chi/v5"
@@ -262,12 +261,7 @@ func run(args []string) error {
 			BaseURL:      cfg.A2A.URL,
 			DefaultAgent: cfg.A2A.DefaultAgent,
 		}
-		restURL := cfg.A2A.RESTURL
-		if restURL == "" {
-			if root, _, ok := strings.Cut(cfg.A2A.URL, "/api/a2a"); ok {
-				restURL = root
-			}
-		}
+		restURL := cfg.A2A.ResolvedRESTURL()
 		if restURL != "" {
 			facade.Sessions = &pkga2a.SessionsClient{
 				BaseURL:     restURL,

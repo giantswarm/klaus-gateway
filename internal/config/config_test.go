@@ -157,3 +157,41 @@ func TestLoad_SlackAllowedUsersEnv(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []string{"U001", "U002"}, cfg.Slack.AllowedUsers)
 }
+
+func TestA2AConfig_ResolvedRESTURL(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  config.A2AConfig
+		want string
+	}{
+		{
+			name: "explicit RESTURL wins",
+			cfg:  config.A2AConfig{RESTURL: "http://rest.example", URL: "http://a2a.example/api/a2a/kagent"},
+			want: "http://rest.example",
+		},
+		{
+			name: "derive through agentgateway keeps the path prefix",
+			cfg:  config.A2AConfig{URL: "http://agentgateway.agentic-platform.svc.cluster.local:8080/kagent/api/a2a/kagent"},
+			want: "http://agentgateway.agentic-platform.svc.cluster.local:8080/kagent",
+		},
+		{
+			name: "derive direct to controller",
+			cfg:  config.A2AConfig{URL: "http://kagent-controller.kagent.svc.cluster.local:8083/api/a2a/kagent"},
+			want: "http://kagent-controller.kagent.svc.cluster.local:8083",
+		},
+		{
+			name: "no /api/a2a in URL is not derivable",
+			cfg:  config.A2AConfig{URL: "http://agentgateway:8080/kagent"},
+			want: "",
+		},
+		{
+			name: "both empty",
+			cfg:  config.A2AConfig{},
+			want: "",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, tc.cfg.ResolvedRESTURL())
+		})
+	}
+}

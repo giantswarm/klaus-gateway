@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"iter"
+	"time"
 
 	a2apkg "github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
@@ -58,19 +59,27 @@ type Facade struct {
 // when no session client is configured or the lookup errored; exists is then
 // meaningless and the caller should stay silent. The caller's forwarded token
 // is seeded so kagent resolves the same principal the A2A turn will (the lookup
-// keys on the session's user_id).
+// keys on the session's user_id). The lookup is bounded by a short timeout: it
+// sits before the turn, so a slow or unreachable REST endpoint must not stall
+// the first reply.
 func (f *Facade) SessionResumable(ctx context.Context, msg InboundMessage) (exists, checked bool) {
 	if f == nil || f.Sessions == nil {
 		return false, false
 	}
 	contextID := SynthesizeContextID(msg.Channel, msg.ChannelID, msg.UserID, msg.ThreadID, msg.AgentRef)
 	ctx = withChannelAuth(ctx, msg)
+	ctx, cancel := context.WithTimeout(ctx, sessionCheckTimeout)
+	defer cancel()
 	ok, err := f.Sessions.Exists(ctx, contextID)
 	if err != nil {
 		return false, false
 	}
 	return ok, true
 }
+
+// sessionCheckTimeout bounds the resume existence-check, which runs on the
+// turn's critical path.
+const sessionCheckTimeout = 3 * time.Second
 
 // Resolve maps an InboundMessage to a live InstanceRef via the routing
 // table (creating a new instance on miss when the router has auto-create

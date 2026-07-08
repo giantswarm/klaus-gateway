@@ -541,7 +541,8 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 	// session that has since been evicted. Announce the "starting fresh"
 	// degradation up front so the user is not surprised by lost context. Only for
 	// replies (not a fresh root mention), only when we would reply, at most once
-	// per thread. Advisory: never blocks the turn.
+	// per thread. Advisory: never aborts the turn, and bounded by a short timeout
+	// so a slow REST endpoint cannot stall the first reply.
 	if respond && firstSight && msg.ThreadID != msg.MessageID {
 		a.maybeAnnounceResume(ctx, msg, slackChannel)
 	}

@@ -1,6 +1,9 @@
 package slack
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -69,6 +72,30 @@ func TestBatchedWriter_SumsUsageAcrossTurn(t *testing.T) {
 
 	require.NoError(t, w.run(t.Context(), ch))
 	require.Equal(t, channels.TurnUsage{InputTokens: 130, OutputTokens: 70, TotalTokens: 200}, w.turnUsage)
+}
+
+// TestBatchedWriter_CapsToolActivity verifies a tool-heavy turn does not flood
+// the thread: at most maxToolMessages tool posts plus one truncation note.
+func TestBatchedWriter_CapsToolActivity(t *testing.T) {
+	var posts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		posts.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"ts":"1"}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	w := newBatchedWriterWithClient(&slackAPIClient{baseURL: srv.URL}, "C1", "", "T1", detailsOn, nil)
+
+	ch := make(chan channels.OutboundDelta, 20)
+	for range 15 {
+		ch <- channels.OutboundDelta{Kind: channels.DeltaToolActivity, Tool: &channels.ToolActivity{Name: "list_pods", Kind: channels.ToolCall}}
+	}
+	ch <- channels.OutboundDelta{Done: true}
+	close(ch)
+
+	require.NoError(t, w.run(t.Context(), ch))
+	require.Equal(t, int32(maxToolMessages+1), posts.Load(), "10 tool posts + 1 truncation note")
 }
 
 func TestCompactJSON_TruncatesAndEmpty(t *testing.T) {
