@@ -59,6 +59,10 @@ const emptyOutputNote = "_(the agent finished without a reply)_"
 // the failed emoji instead).
 const failedNote = "_(the turn failed; please try again)_"
 
+// resumeStartingFreshNotice is posted when a reply lands in a thread whose
+// kagent session no longer exists, so the user is not confused by lost context.
+const resumeStartingFreshNotice = "I couldn't find our earlier conversation in this thread, so I'm starting fresh."
+
 // Slack Web API parameter keys (form-encoded and JSON body).
 const (
 	paramChannel   = "channel"

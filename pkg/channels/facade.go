@@ -32,6 +32,13 @@ type ChannelExecutor interface {
 	Execute(ctx context.Context, execCtx *a2asrv.ExecutorContext) iter.Seq2[a2apkg.Event, error]
 }
 
+// SessionExistsChecker reports whether a kagent session exists, keyed by the
+// synthesized contextID. Implemented by pkg/a2a.SessionsClient; nil disables
+// the resume existence-check.
+type SessionExistsChecker interface {
+	Exists(ctx context.Context, sessionID string) (bool, error)
+}
+
 // Facade wires the routing.Router, instance.Client, and lifecycle.Manager
 // together into the Gateway surface used by channel adapters.
 type Facade struct {
@@ -41,6 +48,28 @@ type Facade struct {
 	// Executor, when non-nil, routes channel turns through the A2A executor
 	// instead of the OpenAI /v1 path when InboundMessage.AgentRef is set.
 	Executor ChannelExecutor
+	// Sessions, when non-nil, backs SessionResumable. Nil leaves the check
+	// unavailable (SessionResumable reports checked=false).
+	Sessions SessionExistsChecker
+}
+
+// SessionResumable reports whether the kagent session for msg's thread already
+// exists, so a reply resumes it rather than starting fresh. checked is false
+// when no session client is configured or the lookup errored; exists is then
+// meaningless and the caller should stay silent. The caller's forwarded token
+// is seeded so kagent resolves the same principal the A2A turn will (the lookup
+// keys on the session's user_id).
+func (f *Facade) SessionResumable(ctx context.Context, msg InboundMessage) (exists, checked bool) {
+	if f == nil || f.Sessions == nil {
+		return false, false
+	}
+	contextID := SynthesizeContextID(msg.Channel, msg.ChannelID, msg.UserID, msg.ThreadID, msg.AgentRef)
+	ctx = withChannelAuth(ctx, msg)
+	ok, err := f.Sessions.Exists(ctx, contextID)
+	if err != nil {
+		return false, false
+	}
+	return ok, true
 }
 
 // Resolve maps an InboundMessage to a live InstanceRef via the routing

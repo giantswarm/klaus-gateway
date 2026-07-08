@@ -41,6 +41,11 @@ type batchedWriter struct {
 	threadTS string // thread root — used when posting the status message
 	ts       string // main reply message timestamp
 	logger   *slog.Logger
+	details  detailsLevel // tool-activity verbosity snapshotted at turn start
+
+	// turnUsage accumulates the per-LLM-call usage kagent reports across the
+	// turn into the turn total. Only touched from run()'s goroutine.
+	turnUsage channels.TurnUsage
 
 	mu          sync.Mutex
 	buf         strings.Builder
@@ -51,7 +56,7 @@ type batchedWriter struct {
 	tailTS []string
 }
 
-func newBatchedWriterWithClient(client *slackAPIClient, channel, ts, threadTS string, logger *slog.Logger) *batchedWriter {
+func newBatchedWriterWithClient(client *slackAPIClient, channel, ts, threadTS string, details detailsLevel, logger *slog.Logger) *batchedWriter {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -60,6 +65,7 @@ func newBatchedWriterWithClient(client *slackAPIClient, channel, ts, threadTS st
 		channel:  channel,
 		ts:       ts,
 		threadTS: threadTS,
+		details:  details,
 		logger:   logger,
 	}
 }
@@ -79,10 +85,11 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 				return w.flush(ctx)
 			}
 			if d.Usage != nil {
-				w.logger.Debug("slack: turn usage",
-					"input", d.Usage.InputTokens,
-					"output", d.Usage.OutputTokens,
-					"total", d.Usage.TotalTokens)
+				// kagent reports usage per LLM call, so sum across the turn for
+				// the turn total (the terminal event alone under-counts).
+				w.turnUsage.InputTokens += d.Usage.InputTokens
+				w.turnUsage.OutputTokens += d.Usage.OutputTokens
+				w.turnUsage.TotalTokens += d.Usage.TotalTokens
 			}
 			if d.Err != nil {
 				return d.Err
@@ -99,9 +106,7 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 				w.buf.WriteString(d.Content)
 				w.mu.Unlock()
 			case channels.DeltaToolActivity:
-				// Progress is signalled by the reaction/placeholder; tool activity
-				// is logged, not rendered inline.
-				w.logger.Debug("slack: tool activity", "tool", d.Content)
+				w.renderToolActivity(ctx, d.Tool)
 			case channels.DeltaPrompt:
 				// Flush partial text so far, then hand off to the caller to post
 				// the interactive approval prompt.
@@ -120,6 +125,62 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 			}
 		}
 	}
+}
+
+// tool-activity rendering caps, kept compact so a default-on stream does not
+// overwhelm the thread; Slack additionally collapses long code blocks.
+const (
+	toolArgsMax   = 500
+	toolResultMax = 800
+)
+
+// renderToolActivity posts a compact record of a tool call (and, at
+// detailsFull, its result) when details are enabled. Rendered as a fenced code
+// block so Slack collapses long payloads behind "show more". Best-effort: a
+// post failure is logged and never aborts the turn.
+func (w *batchedWriter) renderToolActivity(ctx context.Context, tool *channels.ToolActivity) {
+	if w.details == detailsOff || tool == nil {
+		return
+	}
+	var md string
+	switch tool.Kind {
+	case channels.ToolCall:
+		md = "🔧 `" + tool.Name + "`"
+		if summary := compactJSON(tool.Args, toolArgsMax); summary != "" {
+			md += "\n```\n" + summary + "\n```"
+		}
+	case channels.ToolResult:
+		if w.details != detailsFull {
+			return
+		}
+		preview := compactJSON(tool.Response, toolResultMax)
+		if preview == "" {
+			return
+		}
+		md = "↳ `" + tool.Name + "` result\n```\n" + preview + "\n```"
+	default:
+		return
+	}
+	if _, err := w.client.postMarkdown(ctx, w.channel, md, w.threadTS); err != nil {
+		w.logger.Warn("slack: post tool activity failed", "tool", tool.Name, "error", err)
+	}
+}
+
+// compactJSON marshals a tool payload to a single line, truncated to max runes.
+// Returns "" for an empty or unmarshalable payload.
+func compactJSON(v map[string]any, max int) string {
+	if len(v) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return ""
+	}
+	rs := []rune(string(b))
+	if len(rs) > max {
+		return string(rs[:max]) + "…"
+	}
+	return string(rs)
 }
 
 // wroteContent reports whether any agent text has been flushed to Slack. Used

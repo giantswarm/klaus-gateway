@@ -309,3 +309,36 @@ func TestFacade_SendCompletionViaA2A_AuthRequired_EmitsPromptDelta(t *testing.T)
 
 // smoke test that the compile-time interface assertions hold.
 var _ store.Store = memory.New()
+
+type fakeSessions struct {
+	exists bool
+	err    error
+	gotID  string
+}
+
+func (f *fakeSessions) Exists(_ context.Context, id string) (bool, error) {
+	f.gotID = id
+	return f.exists, f.err
+}
+
+func TestFacade_SessionResumable(t *testing.T) {
+	msg := channels.InboundMessage{Channel: "slack", ChannelID: "C1", ThreadID: "T1", AgentRef: "sre"}
+	want := channels.SynthesizeContextID(msg.Channel, msg.ChannelID, msg.UserID, msg.ThreadID, msg.AgentRef)
+
+	fs := &fakeSessions{exists: true}
+	f := &channels.Facade{Sessions: fs}
+	exists, checked := f.SessionResumable(context.Background(), msg)
+	require.True(t, checked)
+	require.True(t, exists)
+	require.Equal(t, want, fs.gotID, "the synthesized contextID is looked up")
+
+	// A lookup error is reported as indeterminate (checked=false).
+	f = &channels.Facade{Sessions: &fakeSessions{err: errors.New("boom")}}
+	exists, checked = f.SessionResumable(context.Background(), msg)
+	require.False(t, checked)
+	require.False(t, exists)
+
+	// No session client configured -> unavailable.
+	_, checked = (&channels.Facade{}).SessionResumable(context.Background(), msg)
+	require.False(t, checked)
+}
