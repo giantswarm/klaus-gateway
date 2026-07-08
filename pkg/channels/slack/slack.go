@@ -125,7 +125,24 @@ type Adapter struct {
 	emailCache map[string]emailEntry // Slack user ID -> resolved email
 
 	seenEventsMu sync.Mutex
-	seenEvents   map[string]time.Time // Events API event_id -> dedup entry expiry
+	seenEvents   map[string]time.Time // Slack event_id -> dedup entry expiry
+
+	// detailsMu guards details. Absent thread resolves to detailsOn (the MVP
+	// default). State persists for the thread's lifetime (there is no session
+	// end; resume-by-default).
+	detailsMu sync.Mutex
+	details   map[string]detailsLevel // keyed by threadID
+
+	// usageMu guards both usage maps. lastTurn holds the most recent turn's
+	// summed token counts; sessionTotal accumulates across the thread's turns.
+	usageMu      sync.Mutex
+	lastTurn     map[string]channels.TurnUsage // keyed by threadID
+	sessionTotal map[string]channels.TurnUsage // keyed by threadID
+
+	// resumeChecked records threadIDs whose resume existence-check already ran
+	// this process, so the "starting fresh" notice posts at most once per thread.
+	resumeMu      sync.Mutex
+	resumeChecked map[string]struct{}
 }
 
 // emailEntry is a cached Slack user email with its expiry.
@@ -484,6 +501,11 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 
 	slackUser := msg.Subject // raw Slack user ID; keys access control
 
+	// Captured before getAccess creates the thread's access entry: true when this
+	// process has no record of the thread, i.e. a reply into a thread it did not
+	// start (typically after a restart): the case the resume check targets.
+	firstSight := !a.isActiveThread(msg.ThreadID)
+
 	state := a.getAccess(msg.ThreadID, slackUser)
 	if !state.Deliver(slackUser) {
 		return nil
@@ -517,6 +539,15 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 		return nil
 	}
 	msg.BearerToken = token
+
+	// A reply into a thread this process did not start may be resuming a kagent
+	// session that has since been evicted. Announce the "starting fresh"
+	// degradation up front so the user is not surprised by lost context. Only for
+	// replies (not a fresh root mention), only when we would reply, at most once
+	// per thread. Advisory: never blocks the turn.
+	if respond && firstSight && msg.ThreadID != msg.MessageID {
+		a.maybeAnnounceResume(ctx, msg, slackChannel)
+	}
 
 	// Resume a paused input-required task when one exists for this thread. Done
 	// only after the turn is committed to run (thread slot acquired, human token
@@ -635,7 +666,7 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 	// or "" in reactions mode (the writer posts the first answer message lazily).
 	prog, replyTS := a.startProgress(ctx, client, slackChannel, threadID, triggerTS, placeholder)
 
-	w := newBatchedWriterWithClient(client, slackChannel, replyTS, threadID, a.Logger)
+	w := newBatchedWriterWithClient(client, slackChannel, replyTS, threadID, a.detailsLevel(threadID), a.Logger)
 	if err := w.run(ctx, deltas); err != nil {
 		prog.failed(ctx)
 		// In text mode prog.failed is a no-op (no reaction to swap), so the
@@ -648,6 +679,7 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 		}
 		return err
 	}
+	a.recordTurnUsage(threadID, w.turnUsage)
 
 	if w.promptDelta != nil {
 		prog.clear(ctx) // paused waiting on the user; drop the working indicator

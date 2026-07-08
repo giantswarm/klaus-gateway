@@ -170,6 +170,33 @@ func TestHandleCommand_InviteLock_OwnerOnly(t *testing.T) {
 	require.Equal(t, int32(3), srv.posts.Load())
 }
 
+func TestHandleCommand_Details_SetsLevel(t *testing.T) {
+	a, srv := newTestAdapter(t)
+
+	require.Equal(t, detailsOn, a.detailsLevel("T1"), "default is on")
+
+	require.True(t, a.handleCommand(t.Context(), &slashCommand{Name: "details", Args: []string{"off"}}, "U1", "C1", "T1"))
+	require.Equal(t, detailsOff, a.detailsLevel("T1"))
+
+	require.True(t, a.handleCommand(t.Context(), &slashCommand{Name: "details", Args: []string{"full"}}, "U1", "C1", "T1"))
+	require.Equal(t, detailsFull, a.detailsLevel("T1"))
+
+	// No arg reports the current level; a bad arg shows usage — both consumed,
+	// neither changes the level.
+	require.True(t, a.handleCommand(t.Context(), &slashCommand{Name: "details"}, "U1", "C1", "T1"))
+	require.True(t, a.handleCommand(t.Context(), &slashCommand{Name: "details", Args: []string{"loud"}}, "U1", "C1", "T1"))
+	require.Equal(t, detailsFull, a.detailsLevel("T1"))
+
+	require.Equal(t, int32(4), srv.posts.Load())
+}
+
+func TestHandleCommand_Usage_Consumed(t *testing.T) {
+	a, srv := newTestAdapter(t)
+	consumed := a.handleCommand(t.Context(), &slashCommand{Name: "usage"}, "U1", "C1", "T1")
+	require.True(t, consumed)
+	require.Equal(t, int32(1), srv.posts.Load())
+}
+
 func TestHandleCommand_Invite_NoMentionShowsUsage(t *testing.T) {
 	a, srv := newTestAdapter(t)
 	_ = a.getAccess("T001", "U001")

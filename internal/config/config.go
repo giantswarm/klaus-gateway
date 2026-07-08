@@ -47,6 +47,11 @@ type A2AConfig struct {
 	// as Authorization on every outgoing A2A request. Projected SA tokens
 	// refresh automatically; leave empty for unauthenticated in-cluster hops.
 	TokenPath string
+	// RESTURL is the kagent controller root for the REST API (e.g.
+	// http://kagent-controller.kagent.svc.cluster.local:8083), used for the
+	// session resume existence-check. Empty derives it from URL by trimming the
+	// /api/a2a/... suffix.
+	RESTURL string
 }
 
 // CLIConfig holds runtime configuration for the CLI channel adapter.
@@ -229,6 +234,7 @@ func Load(args []string) (Config, error) {
 	fs.StringVar(&cfg.A2A.DefaultAgent, "a2a-default-agent", cfg.A2A.DefaultAgent, "agentRef forwarded to the A2A orchestrator when the channel does not supply one.")
 	fs.StringVar(&cfg.A2A.URL, "a2a-url", cfg.A2A.URL, "Base URL of the A2A orchestrator endpoint, without trailing agent name.")
 	fs.StringVar(&cfg.A2A.TokenPath, "a2a-token-path", cfg.A2A.TokenPath, "Path to a file holding a Bearer token sent as Authorization on every A2A request (e.g. a projected SA token). Empty disables auth.")
+	fs.StringVar(&cfg.A2A.RESTURL, "a2a-rest-url", cfg.A2A.RESTURL, "kagent controller root for the REST API (session resume check). Empty derives it from --a2a-url.")
 	fs.BoolVar(&cfg.OBO.Enabled, "obo-enabled", cfg.OBO.Enabled, "Enable Slack on-behalf-of muster account linking and the /auth/slack/* routes.")
 	fs.StringVar(&cfg.OBO.MusterURL, "obo-muster-url", cfg.OBO.MusterURL, "muster authorization-server base URL (RFC 8414 discovery).")
 	fs.StringVar(&cfg.OBO.ClientID, "obo-client-id", cfg.OBO.ClientID, "Gateway's muster OAuth client ID. Optional: defaults to the self-hosted CIMD document URL (callback base URL + /auth/slack/client.json).")
@@ -356,6 +362,9 @@ func applyEnv(cfg *Config) {
 	}
 	if v, ok := lookup("A2A_TOKEN_PATH"); ok {
 		cfg.A2A.TokenPath = v
+	}
+	if v, ok := lookup("A2A_REST_URL"); ok {
+		cfg.A2A.RESTURL = v
 	}
 	if v, ok := lookup("OBO_ENABLED"); ok {
 		cfg.OBO.Enabled = strings.EqualFold(v, "true") || v == "1"

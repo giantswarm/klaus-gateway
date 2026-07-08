@@ -653,11 +653,32 @@ func TestKlausLogin_PostsSignInPrompt(t *testing.T) {
 type stubGateway struct {
 	mu            sync.Mutex
 	resolveCount_ int
+	resumeCount_  int
 	onResolve     func(channels.InboundMessage)
 	deltas        []channels.OutboundDelta
 	// hold, when non-nil, keeps a turn in flight: SendCompletion streams deltas
 	// then blocks until hold is closed, so a test can hold the per-thread slot.
 	hold chan struct{}
+	// onSessionResumable, when set, backs SessionResumable; nil reports the check
+	// as unavailable (checked=false).
+	onSessionResumable func(channels.InboundMessage) (exists, checked bool)
+}
+
+func (s *stubGateway) resumeCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.resumeCount_
+}
+
+func (s *stubGateway) SessionResumable(_ context.Context, msg channels.InboundMessage) (bool, bool) {
+	s.mu.Lock()
+	s.resumeCount_++
+	cb := s.onSessionResumable
+	s.mu.Unlock()
+	if cb == nil {
+		return false, false
+	}
+	return cb(msg)
 }
 
 func (s *stubGateway) resolveCount() int {
