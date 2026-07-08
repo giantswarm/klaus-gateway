@@ -30,10 +30,7 @@ func splitMarkdown(text string, maxLen int) []string {
 		chunks = append(chunks, s)
 	}
 
-	for _, line := range strings.SplitAfter(text, "\n") {
-		if line == "" { // trailing element from SplitAfter
-			continue
-		}
+	for line := range strings.Lines(text) {
 		if b.Len() > 0 && b.Len()+len(line) > maxLen {
 			emit()
 		}

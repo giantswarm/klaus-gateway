@@ -1,6 +1,7 @@
 package slack
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"log/slog"
@@ -96,17 +97,11 @@ func (a *Adapter) reactionsMode() bool {
 }
 
 func (a *Adapter) progressEmojis() progressEmojis {
-	e := progressEmojis{working: a.WorkingEmoji, done: a.DoneEmoji, failed: a.FailedEmoji}
-	if e.working == "" {
-		e.working = defaultWorkingEmoji
+	return progressEmojis{
+		working: cmp.Or(a.WorkingEmoji, defaultWorkingEmoji),
+		done:    cmp.Or(a.DoneEmoji, defaultDoneEmoji),
+		failed:  cmp.Or(a.FailedEmoji, defaultFailedEmoji),
 	}
-	if e.done == "" {
-		e.done = defaultDoneEmoji
-	}
-	if e.failed == "" {
-		e.failed = defaultFailedEmoji
-	}
-	return e
 }
 
 // acquireThread reserves the single in-flight turn slot for threadID, returning

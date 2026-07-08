@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -871,6 +872,66 @@ func TestProgress_TextModeConfigured(t *testing.T) {
 	require.Empty(t, fake.pathCalls("reactions.add"), "text mode never adds reactions")
 }
 
+func TestTextMode_EmptyOutputReplacesPlaceholder(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{deltas: []channels.OutboundDelta{{Done: true}}} // no content
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+	a.ProgressMode = "text"
+
+	sendEvent(t, srv, dmEvent("U1", "hi", "777.000"))
+
+	// Placeholder is posted, then replaced by a terminal note (not left as "thinking").
+	fake.waitForPath(t, "chat.update", 1)
+	require.Contains(t, allText(fake.pathCalls("chat.update")), "finished without a reply")
+	require.Empty(t, fake.pathCalls("reactions.add"), "text mode adds no reactions")
+}
+
+// sendInteraction posts a signed block_actions interaction for actionID on
+// threadID (channel D1, user U1) to the interactions endpoint.
+func sendInteraction(t *testing.T, srv *httptest.Server, actionID, threadID string) {
+	t.Helper()
+	inner := map[string]any{
+		"type":      "block_actions",
+		"user":      map[string]any{"id": "U1"},
+		"channel":   map[string]any{"id": "D1"},
+		"container": map[string]any{"message_ts": "prompt.000"},
+		"message":   map[string]any{"thread_ts": threadID},
+		"actions":   []any{map[string]any{"action_id": actionID, "value": threadID}},
+	}
+	data, err := json.Marshal(inner)
+	require.NoError(t, err)
+	body := []byte("payload=" + url.QueryEscape(string(data)))
+	stamp, sig := signBody(t, "signing-secret", body)
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/channels/slack/interactions", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-Slack-Request-Timestamp", stamp)
+	req.Header.Set("X-Slack-Signature", sig)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+}
+
+func TestSerializeResumeWhileTurnInFlight(t *testing.T) {
+	fake := newFakeSlackAPI()
+	hold := make(chan struct{})
+	gw := &stubGateway{hold: hold}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+
+	// A typed turn holds the thread.
+	sendEvent(t, srv, dmEvent("U1", "first", "999.000"))
+	fake.waitForPath(t, "reactions.add", 1)
+
+	// A HITL button click for the same thread must be rejected, not resumed
+	// concurrently, and must not consume the pending task or reach the agent.
+	sendInteraction(t, srv, "hitl_approve", "999.000")
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "still finishing")
+	}, 2*time.Second, 20*time.Millisecond, "expected a busy notice for the concurrent button click")
+	require.Equal(t, 1, gw.resolveCount(), "resume rejected before reaching the agent")
+
+	close(hold)
+}
+
 func TestSerializeTurnsPerThread(t *testing.T) {
 	fake := newFakeSlackAPI()
 	hold := make(chan struct{})
@@ -884,7 +945,7 @@ func TestSerializeTurnsPerThread(t *testing.T) {
 	// Turn B on the same thread while A is in flight -> rejected with a notice.
 	sendEvent(t, srv, dmEvent("U1", "second", "666.000"))
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "still working")
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "still finishing")
 	}, 2*time.Second, 20*time.Millisecond, "expected a busy notice for the second turn")
 
 	require.Equal(t, 1, gw.resolveCount(), "second turn is rejected before reaching the agent")

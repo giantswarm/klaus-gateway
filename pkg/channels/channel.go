@@ -95,6 +95,25 @@ type TurnUsage struct {
 	TotalTokens      int
 }
 
+// ToolActivityKind distinguishes a tool call from its result.
+type ToolActivityKind int
+
+const (
+	ToolCall ToolActivityKind = iota
+	ToolResult
+)
+
+// ToolActivity is the provider-neutral shape of a tool call or its result,
+// surfaced on a DeltaToolActivity. Adapters render it without knowing the
+// upstream (kagent/ADK) metadata layout; the translation lives in hitl_parse.go.
+type ToolActivity struct {
+	Name     string           // tool name
+	Kind     ToolActivityKind // call or result
+	CallID   string           // correlates a call with its response
+	Args     map[string]any   // call arguments; nil for a result
+	Response map[string]any   // result payload; nil for a call
+}
+
 // OutboundDelta is one chunk streamed from an instance back through an
 // adapter. Content may be empty on the terminal delta. Err, when non-nil,
 // signals an upstream or gateway failure; the channel is closed after.
@@ -114,18 +133,17 @@ type OutboundDelta struct {
 	// Usage carries the token counts reported for the turn. Populated on the
 	// terminal delta (and any interim event that reports usage); nil otherwise.
 	Usage *TurnUsage
-	// Meta carries kagent metadata that does not map to a typed field: for a
-	// DeltaToolActivity it holds the tool call/response payload (see
-	// toolActivityDelta); nil otherwise.
-	Meta map[string]any
+	// Tool is populated on DeltaToolActivity deltas with the tool call or result;
+	// nil otherwise.
+	Tool *ToolActivity
 }
 
-// isZero reports whether the delta carries no channel-visible payload. A map
-// field makes OutboundDelta non-comparable, so the mapped-event no-op check
-// cannot use struct equality.
+// isZero reports whether the delta carries no channel-visible payload. Used
+// instead of `delta == OutboundDelta{}` because the struct embeds an error
+// interface, and == panics when the concrete error type is not comparable.
 func (d OutboundDelta) isZero() bool {
 	return d.Kind == DeltaText && d.Content == "" && !d.Done && d.Err == nil &&
-		d.TaskID == "" && d.Prompt == nil && d.Usage == nil && len(d.Meta) == 0
+		d.TaskID == "" && d.Prompt == nil && d.Usage == nil && d.Tool == nil
 }
 
 // Attachment is an inbound file/image payload.

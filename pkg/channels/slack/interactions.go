@@ -134,6 +134,17 @@ func classifyAction(actionID string) (hitlAction, bool) {
 func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, messageTS, slackUser string, act hitlAction) error {
 	client := a.apiClient()
 
+	// Serialize the resume with any concurrent turn on this thread (typed reply
+	// or another click). Acquire before taking the pending task so a rejected
+	// click leaves the task and the button intact for a retry.
+	if !a.acquireThread(threadID) {
+		if _, err := client.postMessage(ctx, slackChannel, busyNotice, threadID); err != nil {
+			a.Logger.Warn("slack: post busy notice failed", "thread", threadID, "error", err)
+		}
+		return nil
+	}
+	defer a.releaseThread(threadID)
+
 	// takePendingTask clears the entry atomically — if the user also typed a
 	// reply the first one wins and the other starts a fresh task.
 	task := a.takePendingTask(threadID)

@@ -120,6 +120,14 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 	}
 }
 
+// wroteContent reports whether any agent text has been flushed to Slack. Used
+// after the run loop to detect a turn that produced no output.
+func (w *batchedWriter) wroteContent() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.flushedLen > 0
+}
+
 func (w *batchedWriter) flush(ctx context.Context) error {
 	w.mu.Lock()
 	// Skip the chat.update when nothing new accumulated since the last flush;

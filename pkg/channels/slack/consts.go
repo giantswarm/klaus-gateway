@@ -46,6 +46,14 @@ const (
 // first agent output and replaced by the answer.
 const thinkingPlaceholder = "_thinking…_"
 
+// busyNotice is posted when a turn is rejected because another turn is already
+// in flight on the same thread (per-thread serialization).
+const busyNotice = "I'm still finishing your previous message in this thread. Give me a moment and try again once I've replied."
+
+// emptyOutputNote replaces the text-mode placeholder when a turn completes
+// without producing any output, so it does not linger as "thinking".
+const emptyOutputNote = "_(the agent finished without a reply)_"
+
 // Slack Web API parameter keys (form-encoded and JSON body).
 const (
 	paramChannel   = "channel"

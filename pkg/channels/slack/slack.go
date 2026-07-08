@@ -480,6 +480,21 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 
 	msg.AgentRef = a.DefaultAgent
 
+	// Serialize turns per thread: a thread maps to one kagent session, and
+	// concurrent turns on one session interleave its event log into incoherent
+	// history. Reject a turn that arrives while another is in flight rather than
+	// queueing it, so a stale follow-up is not answered minutes late. Acquire
+	// before taking the pending task so a rejected turn leaves it for later.
+	if !a.acquireThread(msg.ThreadID) {
+		if respond {
+			if _, perr := a.apiClient().postMessage(ctx, slackChannel, busyNotice, msg.ThreadID); perr != nil {
+				a.Logger.Warn("slack: post busy notice failed", "thread", msg.ThreadID, "error", perr)
+			}
+		}
+		return nil
+	}
+	defer a.releaseThread(msg.ThreadID)
+
 	// Resume a paused input-required task when one exists for this thread.
 	// Map the typed reply to a structured HITL decision so the paused tool
 	// confirmation is actually resolved (a plain text reply would leave the
@@ -522,21 +537,6 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 			return nil
 		}
 	}
-
-	// Serialize turns per thread: a thread maps to one kagent session, and
-	// concurrent turns on one session interleave its event log into incoherent
-	// history. Reject a turn that arrives while another is in flight rather than
-	// queueing it, so a stale follow-up is not answered minutes late.
-	if !a.acquireThread(msg.ThreadID) {
-		if respond {
-			const busy = "I'm still working on your previous message in this thread. I'll get to it once that's done."
-			if _, perr := a.apiClient().postMessage(ctx, slackChannel, busy, msg.ThreadID); perr != nil {
-				a.Logger.Warn("slack: post busy notice failed", "thread", msg.ThreadID, "error", perr)
-			}
-		}
-		return nil
-	}
-	defer a.releaseThread(msg.ThreadID)
 
 	ref, err := a.gw.Resolve(ctx, msg)
 	if err != nil {
@@ -616,6 +616,13 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 		return a.postHitlPrompt(ctx, client, slackChannel, threadID, pd)
 	}
 	prog.done(ctx)
+	// Text mode posts a placeholder up front; if the turn produced no content it
+	// would otherwise linger as "thinking". Replace it with a terminal note.
+	if seedTS != "" && !w.wroteContent() {
+		if err := client.chatUpdateMarkdown(ctx, slackChannel, seedTS, emptyOutputNote); err != nil {
+			a.Logger.Warn("slack: replace empty placeholder failed", "thread", threadID, "error", err)
+		}
+	}
 	return nil
 }
 

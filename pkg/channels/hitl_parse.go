@@ -189,10 +189,9 @@ func parseTurnUsage(md map[string]any) *TurnUsage {
 }
 
 // toolActivityDelta builds a DeltaToolActivity from a DataPart whose metadata
-// marks it a function_call or function_response. Returns a zero delta when the
-// part is not tool activity. Content is a short summary (the tool name); Meta
-// carries the type and the raw data payload (name/args or name/response) for
-// richer downstream rendering.
+// marks it a function_call or function_response, translating the kagent payload
+// into the neutral ToolActivity. Returns a zero delta when the part is not tool
+// activity. Content is a short summary (the tool name).
 func toolActivityDelta(p *a2apkg.Part) OutboundDelta {
 	if p == nil {
 		return OutboundDelta{}
@@ -207,25 +206,24 @@ func toolActivityDelta(p *a2apkg.Part) OutboundDelta {
 		return OutboundDelta{}
 	}
 	data, _ := p.Data().(map[string]any)
-	name, _ := data["name"].(string)
-	return OutboundDelta{
-		Kind:    DeltaToolActivity,
-		Content: name,
-		Meta:    map[string]any{"type": typ, "data": data},
+	tool := &ToolActivity{}
+	tool.Name, _ = data["name"].(string)
+	tool.CallID, _ = data["id"].(string)
+	if typ == mdTypeFunctionResponse {
+		tool.Kind = ToolResult
+		tool.Response, _ = data["response"].(map[string]any)
+	} else {
+		tool.Kind = ToolCall
+		tool.Args, _ = data["args"].(map[string]any)
 	}
+	return OutboundDelta{Kind: DeltaToolActivity, Content: tool.Name, Tool: tool}
 }
 
+// mdInt reads an integer usage field. A2A event metadata is JSON-decoded, so
+// numbers arrive as float64.
 func mdInt(md map[string]any, key string) int {
-	switch v := md[key].(type) {
-	case float64:
-		return int(v)
-	case int:
-		return v
-	case int64:
-		return int(v)
-	default:
-		return 0
-	}
+	f, _ := md[key].(float64)
+	return int(f)
 }
 
 func firstString(md map[string]any, keys ...string) (string, bool) {

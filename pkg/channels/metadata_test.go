@@ -56,7 +56,11 @@ func TestMapA2AEvent_ArtifactTextAndToolActivity(t *testing.T) {
 	require.Equal(t, "here you go", deltas[0].Content)
 	require.Equal(t, DeltaToolActivity, deltas[1].Kind)
 	require.Equal(t, "kubectl_get", deltas[1].Content)
-	require.Equal(t, mdTypeFunctionCall, deltas[1].Meta["type"])
+	require.NotNil(t, deltas[1].Tool)
+	require.Equal(t, ToolCall, deltas[1].Tool.Kind)
+	require.Equal(t, "kubectl_get", deltas[1].Tool.Name)
+	require.Equal(t, "call-1", deltas[1].Tool.CallID)
+	require.Equal(t, "pods", deltas[1].Tool.Args["resource"])
 }
 
 func TestMapA2AEvent_InterimToolActivityAndUsage(t *testing.T) {
@@ -76,7 +80,8 @@ func TestMapA2AEvent_InterimToolActivityAndUsage(t *testing.T) {
 	deltas := mapA2AEvent(ev)
 	require.Len(t, deltas, 2)
 	require.Equal(t, DeltaToolActivity, deltas[0].Kind)
-	require.Equal(t, "kubectl_get", deltas[0].Content)
+	require.Equal(t, ToolResult, deltas[0].Tool.Kind)
+	require.Equal(t, "kubectl_get", deltas[0].Tool.Name)
 	require.NotNil(t, deltas[1].Usage)
 	require.Equal(t, 7, deltas[1].Usage.TotalTokens)
 }
@@ -96,5 +101,5 @@ func TestOutboundDelta_IsZero(t *testing.T) {
 	require.True(t, OutboundDelta{}.isZero())
 	require.False(t, OutboundDelta{Usage: &TurnUsage{}}.isZero())
 	require.False(t, OutboundDelta{Kind: DeltaToolActivity, Content: "x"}.isZero())
-	require.False(t, OutboundDelta{Meta: map[string]any{"a": 1}}.isZero())
+	require.False(t, OutboundDelta{Tool: &ToolActivity{Name: "x"}}.isZero())
 }
