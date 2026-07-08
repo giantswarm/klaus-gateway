@@ -598,9 +598,11 @@ func (a *Adapter) registerTurn(ctx context.Context, threadID string) (context.Co
 // Shared by dispatch (a new turn; triggerTS is the user message) and
 // handleDecision (a button-click resume; empty triggerTS uses text progress).
 func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, deltas <-chan channels.OutboundDelta, msg channels.InboundMessage, slackChannel, threadID, triggerTS, placeholder string) error {
-	prog, seedTS := a.startProgress(ctx, client, slackChannel, threadID, triggerTS, placeholder)
+	// replyTS is the message the streamed answer edits: the text-mode placeholder,
+	// or "" in reactions mode (the writer posts the first answer message lazily).
+	prog, replyTS := a.startProgress(ctx, client, slackChannel, threadID, triggerTS, placeholder)
 
-	w := newBatchedWriterWithClient(client, slackChannel, seedTS, threadID, a.Logger)
+	w := newBatchedWriterWithClient(client, slackChannel, replyTS, threadID, a.Logger)
 	if err := w.run(ctx, deltas); err != nil {
 		prog.failed(ctx)
 		return err
@@ -623,8 +625,8 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 	// the "thinking" placeholder; reactions mode shows only a done emoji with no
 	// reply). Post a terminal note so the user is not left waiting.
 	if !w.wroteContent() {
-		if seedTS != "" {
-			if err := client.chatUpdateMarkdown(ctx, slackChannel, seedTS, emptyOutputNote); err != nil {
+		if replyTS != "" {
+			if err := client.chatUpdateMarkdown(ctx, slackChannel, replyTS, emptyOutputNote); err != nil {
 				a.Logger.Warn("slack: replace empty placeholder failed", "thread", threadID, "error", err)
 			}
 		} else if _, err := client.postMarkdown(ctx, slackChannel, emptyOutputNote, threadID); err != nil {

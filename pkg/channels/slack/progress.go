@@ -49,11 +49,11 @@ func (p *progressState) removeWorking(ctx context.Context) {
 	}
 }
 
-// startProgress begins progress rendering and returns the batched writer's seed
-// ts ("" means post the reply lazily on the first flush). In reactions mode the
-// working reaction is added to triggerTS; on a missing scope in auto mode it
-// caches the downgrade and falls back to a text placeholder. triggerTS == ""
-// (e.g. a button resume) always uses text mode.
+// startProgress begins progress rendering and returns the ts of the reply
+// message the writer edits ("" means post the reply lazily on the first flush).
+// In reactions mode the working reaction is added to triggerTS; on a missing
+// scope in auto mode it caches the downgrade and falls back to a text
+// placeholder. triggerTS == "" (e.g. a button resume) always uses text mode.
 func (a *Adapter) startProgress(ctx context.Context, client *slackAPIClient, channel, threadID, triggerTS, placeholder string) (*progressState, string) {
 	p := &progressState{client: client, channel: channel, emojis: a.progressEmojis(), logger: a.Logger}
 
