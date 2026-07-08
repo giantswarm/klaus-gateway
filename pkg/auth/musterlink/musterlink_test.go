@@ -21,12 +21,13 @@ type musterStub struct {
 	server   *httptest.Server
 	clientID string
 
-	mu          sync.Mutex
-	email       string
-	sub         string
-	failRefresh bool
-	counter     int
-	validAccess map[string]bool
+	mu             sync.Mutex
+	email          string
+	sub            string
+	failRefresh    bool // reject refresh with 400 invalid_grant (dead token)
+	failRefresh5xx bool // reject refresh with a transient 503 (no OAuth error code)
+	counter        int
+	validAccess    map[string]bool
 }
 
 func newMusterStub(t *testing.T, clientID, email, sub string) *musterStub {
@@ -50,6 +51,10 @@ func newMusterStub(t *testing.T, clientID, email, sub string) *musterStub {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
 			_, _ = w.Write([]byte(`{"error":"invalid_grant"}`))
+			return
+		}
+		if r.Form.Get("grant_type") == "refresh_token" && s.failRefresh5xx {
+			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
 		s.counter++
@@ -247,10 +252,29 @@ func TestTokenForInvalidGrantDropsLink(t *testing.T) {
 	store.Put("U1", &Link{RefreshToken: "dead"})
 	l := newTestLinker(t, stub, store, nil)
 
+	// invalid_grant is terminal: the link is dropped and the error surfaces as
+	// ErrNotLinked so the caller prompts sign-in on this same turn.
 	_, err := l.TokenFor(context.Background(), "U1")
-	require.Error(t, err)
+	require.ErrorIs(t, err, ErrNotLinked)
 	_, ok := store.Get("U1")
 	require.False(t, ok, "a hard refresh failure must drop the stale link")
+}
+
+func TestTokenForTransientRefreshErrorKeepsLink(t *testing.T) {
+	stub := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
+	stub.failRefresh5xx = true
+	store := NewMemStore()
+	store.Put("U1", &Link{RefreshToken: "refresh-0"})
+	l := newTestLinker(t, stub, store, nil)
+
+	// A transient token-endpoint failure (5xx, no invalid_grant) is retryable:
+	// the link must survive and the error must not masquerade as ErrNotLinked.
+	_, err := l.TokenFor(context.Background(), "U1")
+	require.Error(t, err)
+	require.NotErrorIs(t, err, ErrNotLinked)
+	got, ok := store.Get("U1")
+	require.True(t, ok, "a transient refresh failure must retain the link")
+	require.Equal(t, "refresh-0", got.RefreshToken)
 }
 
 func TestCallbackStoresLinkOnEmailMatch(t *testing.T) {

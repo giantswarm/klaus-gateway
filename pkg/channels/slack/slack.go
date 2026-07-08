@@ -485,7 +485,7 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 		case err == nil:
 			msg.BearerToken = token
 		case errors.Is(err, musterlink.ErrNotLinked):
-			a.Logger.Debug("slack: user not linked, prompting sign-in", "user", slackUser)
+			a.Logger.Debug("slack: link unavailable (unlinked or refresh token dead), prompting sign-in", "user", slackUser)
 			if respond {
 				a.postSignIn(ctx, slackChannel, msg.ThreadID, slackUser)
 			}
