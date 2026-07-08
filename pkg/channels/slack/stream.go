@@ -529,6 +529,90 @@ func (c *slackAPIClient) postSignInPrompt(ctx context.Context, channel, threadID
 	return err
 }
 
+// postEphemeralText posts a plain in-thread message visible only to user.
+func (c *slackAPIClient) postEphemeralText(ctx context.Context, channel, user, threadTS, text string) error {
+	body := map[string]any{
+		paramChannel: channel,
+		paramUser:    user,
+		paramText:    text,
+	}
+	if threadTS != "" {
+		body[paramThreadTS] = threadTS
+	}
+	_, err := c.postJSON(ctx, "chat.postEphemeral", body)
+	return err
+}
+
+// postAccessConsentPrompt posts the ephemeral (initiator-only) "is <newcomer>
+// allowed?" prompt with Yes/No buttons. Only the initiator receives it, so only
+// the initiator can click. The button value encodes the thread and the newcomer
+// so the interaction handler resolves the right parked request.
+func (c *slackAPIClient) postAccessConsentPrompt(ctx context.Context, channel, threadID, initiator, newcomer string) error {
+	text := fmt.Sprintf("Is <@%s> allowed to instruct the agent to work on your behalf in this thread?", newcomer)
+	value := encodeAccessValue(threadID, newcomer)
+	body := map[string]any{
+		paramChannel:  channel,
+		paramUser:     initiator,
+		paramThreadTS: threadID,
+		paramText:     text,
+		paramBlocks: []any{
+			map[string]any{
+				bkType: bkSection,
+				bkText: map[string]any{bkType: bkMrkdwn, bkText: text},
+			},
+			map[string]any{
+				bkType: bkActions,
+				bkElements: []any{
+					map[string]any{
+						bkType:     bkButton,
+						bkText:     map[string]any{bkType: bkPlainText, bkText: "✅ Yes"},
+						bkStyle:    bkPrimary,
+						bkActionID: accessAllow,
+						bkValue:    value,
+					},
+					map[string]any{
+						bkType:     bkButton,
+						bkText:     map[string]any{bkType: bkPlainText, bkText: "❌ No"},
+						bkStyle:    bkDanger,
+						bkActionID: accessDeny,
+						bkValue:    value,
+					},
+				},
+			},
+		},
+	}
+	_, err := c.postJSON(ctx, "chat.postEphemeral", body)
+	return err
+}
+
+// respondURL replaces a message via a Slack interaction response_url. Ephemeral
+// messages have no addressable ts for chat.update, so the access-consent prompt
+// is updated this way after a click. The response_url is unauthenticated and
+// short-lived; a failure is non-fatal (the decision has already been recorded).
+func respondURL(ctx context.Context, responseURL, text string) error {
+	if responseURL == "" {
+		return nil
+	}
+	body, err := json.Marshal(map[string]any{
+		"replace_original": true,
+		paramText:          text,
+	})
+	if err != nil {
+		return fmt.Errorf("slack respond_url: marshal: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, responseURL, strings.NewReader(string(body)))
+	if err != nil {
+		return fmt.Errorf("slack respond_url: build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json; charset=utf-8")
+	resp, err := http.DefaultClient.Do(req) //nolint:gosec
+	if err != nil {
+		return fmt.Errorf("slack respond_url: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return nil
+}
+
 // truncateButtonLabel keeps a button label within Slack's 75-character limit,
 // counting runes (not bytes) so a multi-byte glyph is never split mid-rune.
 func truncateButtonLabel(s string) string {

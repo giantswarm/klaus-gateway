@@ -13,6 +13,14 @@ const (
 	hitlChoice  = "hitl_choice" // ask_user single-select choice button
 )
 
+// Access-consent Block Kit action IDs. The button value encodes the thread and
+// the newcomer being decided (see encodeAccessValue), since one initiator can
+// have several pending approvals at once.
+const (
+	accessAllow = "access_allow"
+	accessDeny  = "access_deny"
+)
+
 // oboSignIn is the action_id on the OBO "Sign in" URL button. The button opens
 // its url directly; the interaction payload Slack still sends is ignored
 // (classifyAction returns false), so no decision is routed.

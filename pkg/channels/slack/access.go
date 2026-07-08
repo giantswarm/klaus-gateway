@@ -2,92 +2,93 @@ package slack
 
 import "sync"
 
-// BaseMode controls who the agent responds to in a thread.
-type BaseMode int
-
-const (
-	ModeLocked    BaseMode = iota // owner only (default)
-	ModeSelective                 // owner + allowlist
-	ModeOpen                      // everyone
-)
-
-// Access-mode config strings accepted in SlackConfig.DefaultAccessMode.
-const (
-	accessModeLocked  = "locked"
-	accessModeOpen    = "open"
-	accessModeObserve = "observe"
-)
-
-// AccessState is the per-thread access policy. It is seeded once by
-// Adapter.getAccess (owner/mode/allowlist) under the adapter lock, and may
-// then be mutated at runtime by in-thread commands (/open, /lock, /observe).
-// Since command handling and message dispatch can run concurrently, all
-// reads and mutations go through mu.
-type AccessState struct {
-	mu      sync.RWMutex
-	owner   string          // Slack user ID of the thread owner
-	mode    BaseMode        // base response policy
-	observe bool            // ingest all messages but respond only to authorized users
-	allowed map[string]bool // additional authorized users (ModeSelective)
+// AccessPolicy decides who may instruct the agent in a thread. Reading a thread
+// is never gated; the policy governs instructing only. A thread has one
+// initiator (the user whose mention launched it) who may always instruct;
+// additional users are granted on the fly once the initiator approves them.
+//
+// The decision is wrapped in this interface so a platform-backed policy
+// (team-based auto-allow, shared collaborator lists) can replace the in-memory
+// default without touching dispatch.
+type AccessPolicy interface {
+	// SetInitiator records userID as the thread initiator when none is set yet
+	// and returns the effective initiator. Idempotent: a later caller never
+	// displaces the first.
+	SetInitiator(threadID, userID string) string
+	// Initiator returns the thread initiator, or "" when none is set.
+	Initiator(threadID string) string
+	// Allowed reports whether userID may instruct the agent in threadID (the
+	// initiator, or a user granted via Grant).
+	Allowed(threadID, userID string) bool
+	// Grant adds userID to the thread's allowed interactors. Additive.
+	Grant(threadID, userID string)
 }
 
-// Permitted reports whether userID may receive an agent response.
-func (a *AccessState) Permitted(userID string) bool {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	return a.permittedLocked(userID)
+// memoryAccess is the default in-memory AccessPolicy. State is per-thread and
+// lost on restart; the initiator is then re-established by the next interaction
+// (durable state is PR D).
+type memoryAccess struct {
+	mu      sync.Mutex
+	threads map[string]*threadAccess
 }
 
-func (a *AccessState) permittedLocked(userID string) bool {
-	switch a.mode {
-	case ModeOpen:
+type threadAccess struct {
+	initiator string
+	granted   map[string]bool
+}
+
+func newMemoryAccess() *memoryAccess {
+	return &memoryAccess{threads: make(map[string]*threadAccess)}
+}
+
+// thread returns the per-thread record, creating it on first use. Caller holds mu.
+func (m *memoryAccess) thread(threadID string) *threadAccess {
+	t, ok := m.threads[threadID]
+	if !ok {
+		t = &threadAccess{}
+		m.threads[threadID] = t
+	}
+	return t
+}
+
+func (m *memoryAccess) SetInitiator(threadID, userID string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t := m.thread(threadID)
+	if t.initiator == "" {
+		t.initiator = userID
+	}
+	return t.initiator
+}
+
+func (m *memoryAccess) Initiator(threadID string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if t, ok := m.threads[threadID]; ok {
+		return t.initiator
+	}
+	return ""
+}
+
+func (m *memoryAccess) Allowed(threadID, userID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.threads[threadID]
+	if !ok {
+		return false
+	}
+	if userID != "" && userID == t.initiator {
 		return true
-	case ModeSelective:
-		return userID == a.owner || a.allowed[userID]
-	default: // ModeLocked
-		return userID == a.owner
 	}
+	return t.granted[userID]
 }
 
-// Deliver reports whether the message should be forwarded to the agent. In
-// observe mode every message is forwarded for context; whether the user gets
-// a reply is decided separately by Permitted.
-func (a *AccessState) Deliver(userID string) bool {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	if a.observe {
-		return true
+func (m *memoryAccess) Grant(threadID, userID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t := m.thread(threadID)
+	if t.granted == nil {
+		t.granted = make(map[string]bool)
 	}
-	return a.permittedLocked(userID)
-}
-
-// IsOwner reports whether userID is the thread owner.
-func (a *AccessState) IsOwner(userID string) bool {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	return userID == a.owner
-}
-
-// Invite adds the named users to the thread's allowlist and switches to
-// selective mode (owner + allowlist). It is additive: inviting more users
-// keeps the previously invited ones.
-func (a *AccessState) Invite(userIDs ...string) {
-	a.mu.Lock()
-	a.mode = ModeSelective
-	if a.allowed == nil {
-		a.allowed = make(map[string]bool, len(userIDs))
-	}
-	for _, u := range userIDs {
-		a.allowed[u] = true
-	}
-	a.mu.Unlock()
-}
-
-// Lock restricts responses to the thread owner and clears observe/allowlist.
-func (a *AccessState) Lock() {
-	a.mu.Lock()
-	a.mode = ModeLocked
-	a.allowed = nil
-	a.observe = false
-	a.mu.Unlock()
+	t.granted[userID] = true
 }

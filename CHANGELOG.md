@@ -16,6 +16,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Slack `/stop` on a thread paused at an approval prompt resolves the pending tool call as a structured rejection (same as replying "stop"), instead of replying "Stopped." while leaving the prompt armed.
 - Slack posts a "starting fresh" notice when an `@`-mention or DM reply continues a thread this gateway has no in-memory record of (e.g. after a restart) and its kagent session no longer exists, instead of silently losing context. Checked at most once per thread; never blocks the turn.
 - `--a2a-rest-url` flag and `KLAUS_GATEWAY_A2A_REST_URL` env var set the kagent controller REST base URL used by the resume check. When unset it is derived from `--a2a-url`.
+- Slack access control. A thread's initiator (the person whose `@`-mention started it) instructs the agent freely. When someone else tries to instruct it, the gateway prompts them to sign in if it does not yet know them, then asks the initiator, with an ephemeral Yes/No, whether to allow them; on Yes their held message is delivered and they may instruct the agent for the rest of the session. Approvals happen on the fly, per thread, and are additive.
+- Slack read-only tool calls are auto-approved without a human click when a rule-based risk classifier rates them safe, so investigation stays frictionless. Configure with `SLACK_HITL_AUTOAPPROVE` (`green` default, `yellow`, `red`, or `off`) and `SLACK_HITL_ALLOWED_HOSTS`.
+
+### Changed
+
+- Slack `/klaus login` and `/klaus logout` are now `/login` and `/logout`.
+- A message from someone not allowed to instruct the agent in a thread is no longer silently dropped; it prompts sign-in or an initiator approval instead.
+
+### Removed
+
+- Slack `/invite`, `/lock`, and `/quit` commands, the locked/open/observe access modes, and the `SLACK_ALLOWED_USERS` and `SLACK_DEFAULT_ACCESS_MODE` settings, replaced by the initiator-plus-approval access model.
 
 ### Fixed
 
@@ -27,6 +38,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Updated `tests/test-values.yaml`: removed stale `lifecycle.operatorMCPURL` override and bumped `image.tag` from `0.0.44` to `0.1.4`. The old pin ran the binary that rejected `--driver=static` with empty instances, causing CrashLoopBackOff.
 - Slack replies larger than a single Slack message no longer fail the `chat.update` call; the batched writer rolls the overflow over into stable follow-up in-thread messages, and an in-progress (unterminated) code fence is left unformatted instead of being mangled by mrkdwn transforms. The rollover never splits a multi-byte UTF-8 rune when a single line exceeds the message limit.
 - Avoid a potential panic from comparing `OutboundDelta` (which embeds an error interface) against its zero value on the A2A error path.
+- Slack `/details`, `/usage`, and `/stop` now require permission to instruct the agent in the thread, so a channel onlooker can no longer change thread-wide verbosity, read token usage, or cancel a turn (#124).
+- Slack's transient "couldn't refresh your sign-in" message is now ephemeral (visible only to the affected user) instead of posted in-thread.
 - Slack turns are serialized per thread. A message that arrives while the thread's previous turn is still running gets a brief "still working" notice instead of starting a second, overlapping turn; concurrent turns on one thread share a kagent session and would otherwise interleave its event log into incoherent history.
 - A Slack thread's paused input-required task is no longer consumed by a typed reply that then aborts on a transient human-token error. The pending task is taken only once the turn is committed to run, so a later button click can still resume it instead of finding nothing.
 - A rate-limited Slack Web API call (HTTP 429) no longer aborts the turn and discards the agent's work. The call is retried once after honoring `Retry-After`, unless the server asks to wait more than 30s (then it fails fast rather than stalling the writer), and a failed flush keeps its content pending so the next flush re-sends it instead of dropping the delta.

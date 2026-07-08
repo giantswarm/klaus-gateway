@@ -21,9 +21,9 @@ func TestParseCommand(t *testing.T) {
 	}{
 		{input: "/stop", name: "stop", args: nil},
 		{input: "/help", name: "help", args: nil},
-		{input: "/invite <@U123>", name: "invite", args: []string{"<@U123>"}},
-		{input: "/LOCK", name: "lock", args: nil},
-		{input: "  /quit  ", name: "quit", args: nil},
+		{input: "/details on", name: "details", args: []string{"on"}},
+		{input: "/LOGIN", name: "login", args: nil},
+		{input: "  /logout  ", name: "logout", args: nil},
 		{input: "hello /stop", wantNil: true},
 		{input: "!stop", wantNil: true},
 		{input: "", wantNil: true},
@@ -42,15 +42,6 @@ func TestParseCommand(t *testing.T) {
 			require.Equal(t, tc.args, cmd.Args)
 		})
 	}
-}
-
-func TestParseUserIDs(t *testing.T) {
-	require.Equal(t, []string{"U123"}, parseUserIDs([]string{"<@U123>"}))
-	require.Equal(t, []string{"U123", "W456"}, parseUserIDs([]string{"<@U123>", "<@W456>"}))
-	require.Nil(t, parseUserIDs([]string{"@U123"}), "bare @mention is not Slack's encoding")
-	require.Nil(t, parseUserIDs([]string{"U123"}), "a raw id is not a mention token")
-	require.Nil(t, parseUserIDs([]string{"everyone"}), "non-mention tokens are skipped")
-	require.Equal(t, []string{"U123"}, parseUserIDs([]string{"<@U123>", "chatter"}))
 }
 
 // fakeSlackServer records postMessage calls and returns minimal OK responses.
@@ -105,6 +96,7 @@ func TestHandleCommand_Stop_CancelsInFlightTurn(t *testing.T) {
 	a.turns = map[string]*turn{"T001": {cancel: cancel}}
 	a.turnsMu.Unlock()
 
+	// U001 is the first to interact, so becomes the initiator and is permitted.
 	cmd := &slashCommand{Name: "stop"}
 	consumed := a.handleCommand(t.Context(), cmd, "U001", "C001", "T001")
 	require.True(t, consumed)
@@ -122,54 +114,6 @@ func TestHandleCommand_Stop_NoTurnIsNoop(t *testing.T) {
 	consumed := a.handleCommand(t.Context(), cmd, "U001", "C001", "T001")
 	require.True(t, consumed)
 	require.Equal(t, int32(1), srv.posts.Load())
-}
-
-func TestHandleCommand_Quit_OwnerOnly(t *testing.T) {
-	a, srv := newTestAdapter(t)
-	// Prime access state so U001 is owner.
-	_ = a.getAccess("T001", "U001")
-
-	// Non-owner should be refused.
-	cmd := &slashCommand{Name: "quit"}
-	consumed := a.handleCommand(t.Context(), cmd, "U002", "C001", "T001")
-	require.True(t, consumed)
-	require.Equal(t, int32(1), srv.posts.Load()) // rejection message
-
-	// Owner clears the state.
-	_ = a.handleCommand(t.Context(), cmd, "U001", "C001", "T001")
-	require.Equal(t, int32(2), srv.posts.Load())
-
-	a.accessMu.Lock()
-	_, stillExists := a.access["T001"]
-	a.accessMu.Unlock()
-	require.False(t, stillExists, "quit should remove access entry")
-}
-
-func TestHandleCommand_InviteLock_OwnerOnly(t *testing.T) {
-	a, srv := newTestAdapter(t)
-	_ = a.getAccess("T001", "U001")
-	state := a.getAccess("T001", "U001")
-
-	// Non-owner invite must not take effect.
-	consumed := a.handleCommand(t.Context(), &slashCommand{Name: "invite", Args: []string{"<@U002>"}}, "U002", "C001", "T001")
-	require.True(t, consumed)
-	require.Equal(t, ModeLocked, state.mode, "non-owner invite must not take effect")
-
-	// Owner invite grants selective access to the mentioned user.
-	consumed = a.handleCommand(t.Context(), &slashCommand{Name: "invite", Args: []string{"<@U002>"}}, "U001", "C001", "T001")
-	require.True(t, consumed)
-	require.Equal(t, ModeSelective, state.mode)
-	require.True(t, state.Permitted("U001"), "owner stays permitted")
-	require.True(t, state.Permitted("U002"), "invited user is permitted")
-	require.False(t, state.Permitted("U999"), "everyone else stays excluded")
-
-	// Owner lock restricts back to owner only.
-	consumed = a.handleCommand(t.Context(), &slashCommand{Name: "lock"}, "U001", "C001", "T001")
-	require.True(t, consumed)
-	require.Equal(t, ModeLocked, state.mode)
-	require.False(t, state.Permitted("U002"), "lock revokes the invite")
-
-	require.Equal(t, int32(3), srv.posts.Load())
 }
 
 func TestHandleCommand_Details_SetsLevel(t *testing.T) {
@@ -199,15 +143,41 @@ func TestHandleCommand_Usage_Consumed(t *testing.T) {
 	require.Equal(t, int32(1), srv.posts.Load())
 }
 
-func TestHandleCommand_Invite_NoMentionShowsUsage(t *testing.T) {
+// TestHandleCommand_OnlookerRefused verifies #124: once a thread has an
+// initiator, a user who has not been allowed to instruct cannot run the
+// state-changing / info commands.
+func TestHandleCommand_OnlookerRefused(t *testing.T) {
 	a, srv := newTestAdapter(t)
-	_ = a.getAccess("T001", "U001")
-	state := a.getAccess("T001", "U001")
+	a.accessPolicy().SetInitiator("T001", "U001") // U001 initiates
 
-	consumed := a.handleCommand(t.Context(), &slashCommand{Name: "invite"}, "U001", "C001", "T001")
-	require.True(t, consumed)
-	require.Equal(t, ModeLocked, state.mode, "a bare /invite must not change access")
-	require.Equal(t, int32(1), srv.posts.Load(), "a usage hint is posted")
+	for _, name := range []string{"stop", "usage"} {
+		require.True(t, a.handleCommand(t.Context(), &slashCommand{Name: name}, "U002", "C001", "T001"))
+	}
+	require.True(t, a.handleCommand(t.Context(), &slashCommand{Name: "details", Args: []string{"off"}}, "U002", "C001", "T001"))
+	require.Equal(t, detailsOn, a.detailsLevel("T001"), "an onlooker cannot change details")
+	require.Equal(t, int32(3), srv.posts.Load(), "each refusal posts one message")
+}
+
+// TestHandleCommand_GrantedUserAllowed verifies a collaborator the initiator
+// approved may run the gated commands.
+func TestHandleCommand_GrantedUserAllowed(t *testing.T) {
+	a, srv := newTestAdapter(t)
+	a.accessPolicy().SetInitiator("T001", "U001")
+	a.accessPolicy().Grant("T001", "U002")
+
+	require.True(t, a.handleCommand(t.Context(), &slashCommand{Name: "details", Args: []string{"off"}}, "U002", "C001", "T001"))
+	require.Equal(t, detailsOff, a.detailsLevel("T001"), "a granted collaborator can change details")
+	require.Equal(t, int32(1), srv.posts.Load())
+}
+
+// TestHandleCommand_LoginLogout_OBODisabled confirms /login and /logout are
+// open (no permission gate) and report OBO being disabled rather than
+// dispatching to the agent.
+func TestHandleCommand_LoginLogout_OBODisabled(t *testing.T) {
+	a, srv := newTestAdapter(t)
+	require.True(t, a.handleCommand(t.Context(), &slashCommand{Name: "login"}, "U1", "C1", "T1"))
+	require.True(t, a.handleCommand(t.Context(), &slashCommand{Name: "logout"}, "U1", "C1", "T1"))
+	require.Equal(t, int32(2), srv.posts.Load())
 }
 
 // A thread paused on input-required has no in-flight turn; /stop must fall

@@ -31,6 +31,27 @@ func decodeChoiceValue(s string) (choiceValue, bool) {
 	return v, true
 }
 
+// accessValue is encoded into an access-consent button's value so the
+// interaction handler can map a click back to the thread and the newcomer the
+// initiator is deciding on.
+type accessValue struct {
+	Thread string `json:"t"`
+	User   string `json:"u"`
+}
+
+func encodeAccessValue(threadID, userID string) string {
+	b, _ := json.Marshal(accessValue{Thread: threadID, User: userID})
+	return string(b)
+}
+
+func decodeAccessValue(s string) (accessValue, bool) {
+	var v accessValue
+	if err := json.Unmarshal([]byte(s), &v); err != nil || v.Thread == "" || v.User == "" {
+		return accessValue{}, false
+	}
+	return v, true
+}
+
 // postHitlPrompt renders the appropriate Slack prompt for a paused
 // input-required task: per-choice buttons for a simple single-select ask_user
 // question, Approve/Deny for a generic tool approval, and a free-text fallback
@@ -58,6 +79,30 @@ func (a *Adapter) postHitlPrompt(ctx context.Context, client *slackAPIClient, sl
 		text = "_Waiting for approval…_"
 	}
 	return client.postApprovalPrompt(ctx, slackChannel, threadID, text)
+}
+
+// classifierInput synthesizes a command-like string from a structured HITL tool
+// prompt for the rule-based risk classifier, which matches shell/command text.
+// The tool name leads (it carries the verb, e.g. "kubectl_get", "delete_file")
+// with underscores turned into spaces so it reads like a command, followed by
+// the confirmation hint and the argument values.
+func classifierInput(p *channels.HitlPrompt) string {
+	if p == nil {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(strings.ReplaceAll(p.ToolName, "_", " "))
+	if p.Hint != "" {
+		b.WriteByte(' ')
+		b.WriteString(p.Hint)
+	}
+	for _, v := range p.Args {
+		if s := fmt.Sprintf("%v", v); s != "" {
+			b.WriteByte(' ')
+			b.WriteString(s)
+		}
+	}
+	return b.String()
 }
 
 // renderAskUserText renders all questions and their choices as mrkdwn, with an
