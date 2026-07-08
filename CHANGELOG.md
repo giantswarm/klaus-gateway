@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Slack `/details on|off|full` command controls whether the agent's tool activity is shown in a thread. On by default; `off` quiets it, `full` also shows tool results. Rendered as fenced code blocks so Slack collapses long payloads. The setting applies to the whole thread.
 - Slack `/usage` command reports token counts for the last turn and the accumulated session total, on demand.
-- Slack posts a "starting fresh" notice when a reply lands in a thread whose kagent session no longer exists, instead of silently losing context. Checked once per thread, only for replies into an existing thread; never blocks the turn.
+- Slack posts a "starting fresh" notice when an `@`-mention or DM reply continues a thread this gateway has no in-memory record of (e.g. after a restart) and its kagent session no longer exists, instead of silently losing context. Checked at most once per thread; never blocks the turn.
 - `--a2a-rest-url` flag and `KLAUS_GATEWAY_A2A_REST_URL` env var set the kagent controller REST base URL used by the resume check. When unset it is derived from `--a2a-url`.
 
 ### Fixed
