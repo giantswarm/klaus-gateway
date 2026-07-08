@@ -1,8 +1,11 @@
 package slack
 
 import (
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -96,6 +99,46 @@ func TestBatchedWriter_CapsToolActivity(t *testing.T) {
 
 	require.NoError(t, w.run(t.Context(), ch))
 	require.Equal(t, int32(maxToolMessages+1), posts.Load(), "10 tool posts + 1 truncation note")
+}
+
+// TestBatchedWriter_ToolPostsPreserveOrder verifies the async poster keeps tool
+// messages in stream order and drains them all before run() returns.
+func TestBatchedWriter_ToolPostsPreserveOrder(t *testing.T) {
+	var mu sync.Mutex
+	var got []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var v map[string]any
+		_ = json.Unmarshal(body, &v)
+		if text, ok := v["text"].(string); ok {
+			mu.Lock()
+			got = append(got, text)
+			mu.Unlock()
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"ts":"1"}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	w := newBatchedWriterWithClient(&slackAPIClient{baseURL: srv.URL}, "C1", "", "T1", detailsOn, nil)
+
+	names := []string{"alpha", "bravo", "charlie", "delta"}
+	ch := make(chan channels.OutboundDelta, len(names)+1)
+	for _, n := range names {
+		ch <- channels.OutboundDelta{Kind: channels.DeltaToolActivity, Tool: &channels.ToolActivity{Name: n, Kind: channels.ToolCall}}
+	}
+	ch <- channels.OutboundDelta{Done: true}
+	close(ch)
+
+	require.NoError(t, w.run(t.Context(), ch))
+
+	// run() drained the poster before returning: every post is already recorded.
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, got, len(names))
+	for i, n := range names {
+		require.Contains(t, got[i], "`"+n+"`", "tool posts must stay in stream order")
+	}
 }
 
 func TestCompactJSON_TruncatesAndEmpty(t *testing.T) {
