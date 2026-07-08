@@ -47,10 +47,11 @@ type A2AConfig struct {
 	// as Authorization on every outgoing A2A request. Projected SA tokens
 	// refresh automatically; leave empty for unauthenticated in-cluster hops.
 	TokenPath string
-	// RESTURL is the kagent controller root for the REST API (e.g.
-	// http://kagent-controller.kagent.svc.cluster.local:8083), used for the
-	// session resume existence-check. Empty derives it from URL by trimming the
-	// /api/a2a/... suffix.
+	// RESTURL is the base URL for the kagent REST API used by the session resume
+	// existence-check. Normally the same endpoint as URL (agentgateway fronts
+	// both the A2A path and /api/sessions on one host). Empty derives it from URL
+	// by trimming the /api/a2a/... suffix, keeping any gateway path prefix (e.g.
+	// http://agentgateway...:8080/kagent/api/a2a/kagent -> http://agentgateway...:8080/kagent).
 	RESTURL string
 }
 
@@ -234,7 +235,7 @@ func Load(args []string) (Config, error) {
 	fs.StringVar(&cfg.A2A.DefaultAgent, "a2a-default-agent", cfg.A2A.DefaultAgent, "agentRef forwarded to the A2A orchestrator when the channel does not supply one.")
 	fs.StringVar(&cfg.A2A.URL, "a2a-url", cfg.A2A.URL, "Base URL of the A2A orchestrator endpoint, without trailing agent name.")
 	fs.StringVar(&cfg.A2A.TokenPath, "a2a-token-path", cfg.A2A.TokenPath, "Path to a file holding a Bearer token sent as Authorization on every A2A request (e.g. a projected SA token). Empty disables auth.")
-	fs.StringVar(&cfg.A2A.RESTURL, "a2a-rest-url", cfg.A2A.RESTURL, "kagent controller root for the REST API (session resume check). Empty derives it from --a2a-url.")
+	fs.StringVar(&cfg.A2A.RESTURL, "a2a-rest-url", cfg.A2A.RESTURL, "Base URL for the kagent REST API (session resume check); normally the same agentgateway endpoint as --a2a-url. Empty derives it from --a2a-url.")
 	fs.BoolVar(&cfg.OBO.Enabled, "obo-enabled", cfg.OBO.Enabled, "Enable Slack on-behalf-of muster account linking and the /auth/slack/* routes.")
 	fs.StringVar(&cfg.OBO.MusterURL, "obo-muster-url", cfg.OBO.MusterURL, "muster authorization-server base URL (RFC 8414 discovery).")
 	fs.StringVar(&cfg.OBO.ClientID, "obo-client-id", cfg.OBO.ClientID, "Gateway's muster OAuth client ID. Optional: defaults to the self-hosted CIMD document URL (callback base URL + /auth/slack/client.json).")
