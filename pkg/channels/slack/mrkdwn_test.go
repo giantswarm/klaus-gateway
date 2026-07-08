@@ -45,6 +45,24 @@ func TestSplitMarkdown(t *testing.T) {
 	t.Run("empty input", func(t *testing.T) {
 		require.Equal(t, []string{""}, splitMarkdown("", 100))
 	})
+
+	t.Run("long line inside a fence stays fenced and balanced", func(t *testing.T) {
+		// A single line longer than the cap, inside a code fence (e.g. a minified
+		// JSON blob or long log line from a tool). Every chunk must be balanced
+		// and content must stay inside a fence, not leak out as plain text.
+		long := strings.Repeat("A", 60)
+		chunks := splitMarkdown("```go\n"+long+"\n```\n", 24)
+
+		total := 0
+		for i, c := range chunks {
+			require.Equal(t, 0, countFences(c)%2, "chunk %d unbalanced: %q", i, c)
+			if n := strings.Count(c, "A"); n > 0 {
+				require.GreaterOrEqual(t, countFences(c), 2, "content chunk not fenced: %q", c)
+				total += n
+			}
+		}
+		require.Equal(t, 60, total, "all content preserved")
+	})
 }
 
 func countFences(s string) int {

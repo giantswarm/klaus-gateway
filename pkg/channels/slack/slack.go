@@ -616,11 +616,16 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 		return a.postHitlPrompt(ctx, client, slackChannel, threadID, pd)
 	}
 	prog.done(ctx)
-	// Text mode posts a placeholder up front; if the turn produced no content it
-	// would otherwise linger as "thinking". Replace it with a terminal note.
-	if seedTS != "" && !w.wroteContent() {
-		if err := client.chatUpdateMarkdown(ctx, slackChannel, seedTS, emptyOutputNote); err != nil {
-			a.Logger.Warn("slack: replace empty placeholder failed", "thread", threadID, "error", err)
+	// A turn that produced no output would otherwise be silent (text mode leaves
+	// the "thinking" placeholder; reactions mode shows only a done emoji with no
+	// reply). Post a terminal note so the user is not left waiting.
+	if !w.wroteContent() {
+		if seedTS != "" {
+			if err := client.chatUpdateMarkdown(ctx, slackChannel, seedTS, emptyOutputNote); err != nil {
+				a.Logger.Warn("slack: replace empty placeholder failed", "thread", threadID, "error", err)
+			}
+		} else if _, err := client.postMarkdown(ctx, slackChannel, emptyOutputNote, threadID); err != nil {
+			a.Logger.Warn("slack: post empty-output note failed", "thread", threadID, "error", err)
 		}
 	}
 	return nil

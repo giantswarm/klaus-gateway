@@ -886,6 +886,20 @@ func TestTextMode_EmptyOutputReplacesPlaceholder(t *testing.T) {
 	require.Empty(t, fake.pathCalls("reactions.add"), "text mode adds no reactions")
 }
 
+func TestReactionsMode_EmptyOutputPostsNote(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{deltas: []channels.OutboundDelta{{Done: true}}} // no content
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)              // default: auto (reactions)
+
+	sendEvent(t, srv, dmEvent("U1", "hi", "660.000"))
+
+	// Reactions mode has no placeholder, so a zero-output turn must still post a
+	// note rather than leaving only a done emoji.
+	fake.waitForPath(t, "chat.postMessage", 1)
+	require.Contains(t, allText(fake.pathCalls("chat.postMessage")), "finished without a reply")
+	require.Contains(t, fake.reactionNames("reactions.add"), "white_check_mark")
+}
+
 // sendInteraction posts a signed block_actions interaction for actionID on
 // threadID (channel D1, user U1) to the interactions endpoint.
 func sendInteraction(t *testing.T, srv *httptest.Server, actionID, threadID string) {

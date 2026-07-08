@@ -9,37 +9,68 @@ import (
 // markdown blocks, breaking on line boundaries and never inside a fenced code
 // block: when a chunk boundary (or the streaming tail) falls inside an open
 // fence, the fence is closed at the chunk's end and reopened at the next chunk's
-// start, so every chunk is self-contained, balanced Markdown. A single line longer
-// than maxLen is hard-split via splitAtLines.
+// start, so every chunk is self-contained, balanced Markdown. A single line
+// longer than maxLen is hard-split via splitAtLines, with each piece wrapped in
+// the fence while inside one.
 func splitMarkdown(text string, maxLen int) []string {
 	var chunks []string
 	var b strings.Builder
 	inFence := false
 	fenceOpen := "" // the opening fence line (info string + newline) to reopen with
 
+	// closeFence appends the closing ``` to s when a chunk ends mid-fence.
+	closeFence := func(s string) string {
+		if !strings.HasSuffix(s, "\n") {
+			s += "\n"
+		}
+		return s + "```"
+	}
+
+	// emit finalizes the current buffer as a chunk, closing an open fence.
+	// A buffer holding only the reopened fence line (no content) is dropped
+	// rather than emitted as an empty code block; the reopen happens again on the
+	// next content line.
 	emit := func() {
+		if b.Len() == 0 {
+			return
+		}
 		s := b.String()
 		b.Reset()
+		if inFence && s == fenceOpen {
+			return
+		}
 		if inFence {
-			if !strings.HasSuffix(s, "\n") {
-				s += "\n"
-			}
-			s += "```"
-			b.WriteString(fenceOpen) // reopen for the continuation chunk
+			s = closeFence(s)
 		}
 		chunks = append(chunks, s)
 	}
 
 	for line := range strings.Lines(text) {
+		// A single line over the cap cannot share a chunk: flush what we have,
+		// then hard-split it. While inside a fence each piece is wrapped in its
+		// own fenced block so code formatting survives.
+		if len(line) > maxLen {
+			emit()
+			budget := maxLen
+			if inFence {
+				if r := maxLen - len(fenceOpen) - len("\n```"); r > 0 {
+					budget = r
+				}
+			}
+			for _, piece := range splitAtLines(line, budget) {
+				if inFence {
+					chunks = append(chunks, closeFence(fenceOpen+piece))
+				} else {
+					chunks = append(chunks, piece)
+				}
+			}
+			continue
+		}
 		if b.Len() > 0 && b.Len()+len(line) > maxLen {
 			emit()
 		}
-		if len(line) > maxLen {
-			if b.Len() > 0 {
-				emit()
-			}
-			chunks = append(chunks, splitAtLines(line, maxLen)...)
-			continue
+		if inFence && b.Len() == 0 {
+			b.WriteString(fenceOpen) // reopen for the continuation chunk
 		}
 		if strings.HasPrefix(strings.TrimLeft(line, " \t"), "```") {
 			if inFence {
@@ -51,15 +82,9 @@ func splitMarkdown(text string, maxLen int) []string {
 		b.WriteString(line)
 	}
 
-	s := b.String()
-	if inFence {
-		if !strings.HasSuffix(s, "\n") {
-			s += "\n"
-		}
-		s += "```"
-	}
-	if s != "" || len(chunks) == 0 {
-		chunks = append(chunks, s)
+	emit()
+	if len(chunks) == 0 {
+		chunks = append(chunks, "")
 	}
 	return chunks
 }
