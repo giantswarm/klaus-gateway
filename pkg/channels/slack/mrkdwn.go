@@ -1,60 +1,70 @@
 package slack
 
 import (
-	"fmt"
-	"regexp"
 	"strings"
 	"unicode/utf8"
 )
 
-var (
-	reMrkdwnHeading       = regexp.MustCompile(`(?m)^#{1,6}\s+(.+)$`)
-	reMrkdwnBold          = regexp.MustCompile(`\*\*(.+?)\*\*`)
-	reMrkdwnLink          = regexp.MustCompile(`\[([^\]]+)\]\(([^)]+)\)`)
-	reMrkdwnListDash      = regexp.MustCompile(`(?m)^(\s*)[-*]\s+`)
-	reMrkdwnStrikethrough = regexp.MustCompile(`~~(.+?)~~`)
-	reMrkdwnCodeFence     = regexp.MustCompile("(?s)```[a-z]*\\n?.*?```")
-)
+// splitMarkdown splits text into chunks of at most maxLen bytes for Block Kit
+// markdown blocks, breaking on line boundaries and never inside a fenced code
+// block: when a chunk boundary (or the streaming tail) falls inside an open
+// fence, the fence is closed at the chunk's end and reopened at the next chunk's
+// start, so every chunk is self-contained, balanced GFM. A single line longer
+// than maxLen is hard-split via splitAtLines.
+func splitMarkdown(text string, maxLen int) []string {
+	var chunks []string
+	var b strings.Builder
+	inFence := false
+	fenceOpen := "" // the opening fence line (info string + newline) to reopen with
 
-// markdownToMrkdwn converts a Markdown string to Slack mrkdwn format.
-// Code fences are preserved unchanged. Headings become bold lines. Bold,
-// links, lists, and strikethrough are converted to mrkdwn equivalents.
-// Italic (`_x_`) already shares Slack's syntax, so it passes through untouched.
-func markdownToMrkdwn(text string) string {
-	// Preserve code fences first (protect their content from other transforms).
-	type fence struct{ placeholder, original string }
-	var fences []fence
-	text = reMrkdwnCodeFence.ReplaceAllStringFunc(text, func(s string) string {
-		ph := fmt.Sprintf("\x00fence%d\x00", len(fences))
-		fences = append(fences, fence{ph, s})
-		return ph
-	})
-
-	// Protect a trailing, still-unterminated fence too. During streaming the
-	// closing ``` may not have arrived yet; without this its body would be
-	// mangled by the bold/italic/link transforms below until it closes.
-	if idx := strings.Index(text, "```"); idx >= 0 {
-		ph := fmt.Sprintf("\x00fence%d\x00", len(fences))
-		fences = append(fences, fence{ph, text[idx:]})
-		text = text[:idx] + ph
+	emit := func() {
+		s := b.String()
+		b.Reset()
+		if inFence {
+			if !strings.HasSuffix(s, "\n") {
+				s += "\n"
+			}
+			s += "```"
+			b.WriteString(fenceOpen) // reopen for the continuation chunk
+		}
+		chunks = append(chunks, s)
 	}
 
-	// Headings: # Foo → *Foo*
-	text = reMrkdwnHeading.ReplaceAllString(text, "*$1*")
-	// Bold: **x** → *x*
-	text = reMrkdwnBold.ReplaceAllString(text, "*$1*")
-	// Links: [text](url) → <url|text>
-	text = reMrkdwnLink.ReplaceAllString(text, "<$2|$1>")
-	// Unordered lists: - item / * item → • item
-	text = reMrkdwnListDash.ReplaceAllString(text, "${1}• ")
-	// Strikethrough: ~~x~~ → ~x~
-	text = reMrkdwnStrikethrough.ReplaceAllString(text, "~$1~")
-
-	// Restore code fences.
-	for _, f := range fences {
-		text = strings.ReplaceAll(text, f.placeholder, f.original)
+	for _, line := range strings.SplitAfter(text, "\n") {
+		if line == "" { // trailing element from SplitAfter
+			continue
+		}
+		if b.Len() > 0 && b.Len()+len(line) > maxLen {
+			emit()
+		}
+		if len(line) > maxLen {
+			if b.Len() > 0 {
+				emit()
+			}
+			chunks = append(chunks, splitAtLines(line, maxLen)...)
+			continue
+		}
+		if strings.HasPrefix(strings.TrimLeft(line, " \t"), "```") {
+			if inFence {
+				inFence, fenceOpen = false, ""
+			} else {
+				inFence, fenceOpen = true, line
+			}
+		}
+		b.WriteString(line)
 	}
-	return text
+
+	s := b.String()
+	if inFence {
+		if !strings.HasSuffix(s, "\n") {
+			s += "\n"
+		}
+		s += "```"
+	}
+	if s != "" || len(chunks) == 0 {
+		chunks = append(chunks, s)
+	}
+	return chunks
 }
 
 // splitAtLines splits text into chunks of at most maxLen bytes at line boundaries,

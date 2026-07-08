@@ -3,6 +3,7 @@ package slack
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -17,10 +18,10 @@ import (
 const (
 	batchInterval = 250 * time.Millisecond
 	slackAPIBase  = "https://slack.com/api"
-	// slackMaxMessageLen caps a single Slack message body, under the 40 000-char
-	// hard limit with headroom for mrkdwn expansion. A reply that exceeds it is
-	// rolled over into follow-up in-thread messages by flush.
-	slackMaxMessageLen = 39000
+	// slackMarkdownBlockMax caps the text of one Block Kit markdown block. The
+	// margin below Slack's 12 000-char limit absorbs a fence auto-close/reopen at
+	// a chunk boundary without overrunning.
+	slackMarkdownBlockMax = 12000 - 16
 )
 
 // batchedWriter accumulates OutboundDelta content and periodically calls
@@ -78,6 +79,12 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 			if d.Err != nil {
 				return d.Err
 			}
+			if d.Usage != nil {
+				w.logger.Debug("slack: turn usage",
+					"prompt", d.Usage.PromptTokens,
+					"completion", d.Usage.CompletionTokens,
+					"total", d.Usage.TotalTokens)
+			}
 			if d.Done {
 				return w.flush(ctx)
 			}
@@ -89,6 +96,10 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 				w.mu.Lock()
 				w.buf.WriteString(d.Content)
 				w.mu.Unlock()
+			case channels.DeltaToolActivity:
+				// Progress is signalled by the reaction/placeholder; tool activity
+				// is logged, not rendered inline.
+				w.logger.Debug("slack: tool activity", "tool", d.Content)
 			case channels.DeltaPrompt:
 				// Flush partial text so far, then hand off to the caller to post
 				// the interactive approval prompt.
@@ -121,27 +132,33 @@ func (w *batchedWriter) flush(ctx context.Context) error {
 	w.flushedLen = w.buf.Len()
 	w.mu.Unlock()
 
-	// A reply that fits one message is a single chat.update of the main message.
-	// A larger reply rolls over: the head updates the main message and each
-	// subsequent chunk updates (or, the first time, posts) a stable follow-up
-	// message in-thread, so growing replies extend in place without duplicating.
+	// Agent output renders as Block Kit markdown blocks (native GFM). A reply that
+	// fits one block updates the main message; a larger reply rolls over into
+	// stable follow-up messages in-thread. The head message is posted lazily on
+	// the first flush when ts is empty (reactions mode), else updated in place.
 	//
 	// ponytail: a multi-chunk reply makes one API call per chunk every
 	// batchInterval, so a reply spanning N messages costs N calls/flush against
-	// Slack's ~4 updates/sec/channel. Fine while >39 KB replies are rare; revisit
+	// Slack's ~4 updates/sec/channel. Fine while >12 KB replies are rare; revisit
 	// with per-call pacing if they become common.
-	chunks := splitAtLines(markdownToMrkdwn(text), slackMaxMessageLen)
-	if err := w.client.chatUpdate(ctx, w.channel, w.ts, chunks[0]); err != nil {
+	chunks := splitMarkdown(text, slackMarkdownBlockMax)
+	if w.ts == "" {
+		ts, err := w.client.postMarkdown(ctx, w.channel, chunks[0], w.threadTS)
+		if err != nil {
+			return err
+		}
+		w.ts = ts
+	} else if err := w.client.chatUpdateMarkdown(ctx, w.channel, w.ts, chunks[0]); err != nil {
 		return err
 	}
 	for i, chunk := range chunks[1:] {
 		if i < len(w.tailTS) {
-			if err := w.client.chatUpdate(ctx, w.channel, w.tailTS[i], chunk); err != nil {
+			if err := w.client.chatUpdateMarkdown(ctx, w.channel, w.tailTS[i], chunk); err != nil {
 				return err
 			}
 			continue
 		}
-		ts, err := w.client.postMessage(ctx, w.channel, chunk, w.threadTS)
+		ts, err := w.client.postMarkdown(ctx, w.channel, chunk, w.threadTS)
 		if err != nil {
 			return err
 		}
@@ -202,13 +219,61 @@ func (c *slackAPIClient) lookupUserEmail(ctx context.Context, userID string) (st
 	return result.User.Profile.Email, nil
 }
 
-func (c *slackAPIClient) chatUpdate(ctx context.Context, channel, ts, text string) error {
-	params := url.Values{
-		paramChannel: {channel},
-		paramTS:      {ts},
-		paramText:    {text},
+// errReactionsUnsupported reports that the bot cannot manage reactions (the
+// reactions:write scope is missing, or the token type disallows it), so the
+// caller should fall back to text-based progress.
+var errReactionsUnsupported = errors.New("slack: reactions unsupported")
+
+func (c *slackAPIClient) reactionsAdd(ctx context.Context, channel, ts, name string) error {
+	return c.reaction(ctx, "reactions.add", channel, ts, name)
+}
+
+func (c *slackAPIClient) reactionsRemove(ctx context.Context, channel, ts, name string) error {
+	return c.reaction(ctx, "reactions.remove", channel, ts, name)
+}
+
+func (c *slackAPIClient) reaction(ctx context.Context, method, channel, ts, name string) error {
+	_, err := c.post(ctx, method, url.Values{
+		paramChannel:   {channel},
+		paramTimestamp: {ts},
+		paramName:      {name},
+	})
+	if err != nil && (strings.Contains(err.Error(), "missing_scope") ||
+		strings.Contains(err.Error(), "not_allowed_token_type")) {
+		return errReactionsUnsupported
 	}
-	_, err := c.post(ctx, "chat.update", params)
+	return err
+}
+
+// markdownBlocks wraps text in a single Block Kit markdown block, which renders
+// GitHub-flavored Markdown natively (no mrkdwn conversion).
+func markdownBlocks(md string) []any {
+	return []any{map[string]any{bkType: bkMarkdown, bkText: md}}
+}
+
+// postMarkdown posts a new in-thread message rendered as a markdown block. The
+// top-level text is the notification/accessibility fallback.
+func (c *slackAPIClient) postMarkdown(ctx context.Context, channel, md, threadTS string) (string, error) {
+	body := map[string]any{
+		paramChannel: channel,
+		paramText:    md,
+		paramBlocks:  markdownBlocks(md),
+	}
+	if threadTS != "" {
+		body[paramThreadTS] = threadTS
+	}
+	return c.postJSON(ctx, "chat.postMessage", body)
+}
+
+// chatUpdateMarkdown replaces a message's content with a markdown block.
+func (c *slackAPIClient) chatUpdateMarkdown(ctx context.Context, channel, ts, md string) error {
+	body := map[string]any{
+		paramChannel: channel,
+		paramTS:      ts,
+		paramText:    md,
+		paramBlocks:  markdownBlocks(md),
+	}
+	_, err := c.postJSON(ctx, "chat.update", body)
 	return err
 }
 

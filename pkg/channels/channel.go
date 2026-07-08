@@ -48,10 +48,13 @@ type Gateway interface {
 
 // InboundMessage is the normalised shape each adapter hands to the gateway.
 type InboundMessage struct {
-	Channel     string
-	ChannelID   string
-	UserID      string
-	ThreadID    string
+	Channel   string
+	ChannelID string
+	UserID    string
+	ThreadID  string
+	// MessageID is the platform-specific ID of the triggering message (the Slack
+	// message ts). Used as the target for progress reactions. May be empty.
+	MessageID   string
 	Text        string
 	Attachments []Attachment
 	ReplyTo     string
@@ -79,9 +82,18 @@ type InboundMessage struct {
 type DeltaKind int
 
 const (
-	DeltaText   DeltaKind = iota // regular assistant text
-	DeltaPrompt                  // agent is waiting for user input (input-required / auth-required)
+	DeltaText         DeltaKind = iota // regular assistant text
+	DeltaPrompt                        // agent is waiting for user input (input-required / auth-required)
+	DeltaToolActivity                  // agent invoked or received a tool result
 )
+
+// TurnUsage holds the token counts kagent reports for a turn. Any field the
+// model provider does not populate stays zero.
+type TurnUsage struct {
+	PromptTokens     int
+	CompletionTokens int
+	TotalTokens      int
+}
 
 // OutboundDelta is one chunk streamed from an instance back through an
 // adapter. Content may be empty on the terminal delta. Err, when non-nil,
@@ -99,6 +111,21 @@ type OutboundDelta struct {
 	// carried a structured adk_request_confirmation DataPart (tool approval or
 	// ask_user). Nil for a plain-text prompt.
 	Prompt *HitlPrompt
+	// Usage carries the token counts reported for the turn. Populated on the
+	// terminal delta (and any interim event that reports usage); nil otherwise.
+	Usage *TurnUsage
+	// Meta carries kagent metadata that does not map to a typed field: for a
+	// DeltaToolActivity it holds the tool call/response payload (see
+	// toolActivityDelta); nil otherwise.
+	Meta map[string]any
+}
+
+// isZero reports whether the delta carries no channel-visible payload. A map
+// field makes OutboundDelta non-comparable, so the mapped-event no-op check
+// cannot use struct equality.
+func (d OutboundDelta) isZero() bool {
+	return d.Kind == DeltaText && d.Content == "" && !d.Done && d.Err == nil &&
+		d.TaskID == "" && d.Prompt == nil && d.Usage == nil && len(d.Meta) == 0
 }
 
 // Attachment is an inbound file/image payload.

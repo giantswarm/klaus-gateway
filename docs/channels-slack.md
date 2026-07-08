@@ -133,18 +133,32 @@ any string that begins with `Slack bot`, `Slack app-level`, or `Slack user`.
    The same thread always maps to the same contextID, allowing Klaus to resume the conversation.
 6. The gateway forwards the turn through the A2A executor to the instance named by
    `slack.defaultAgent`. The OpenAI `/v1` path is bypassed.
-7. A placeholder `_thinking…_` message is posted to the Slack thread immediately.
-8. Completion deltas are batched and written back via `chat.update` calls as the response
-   accumulates.
+7. Progress is shown by adding a working reaction to the triggering message (swapped to a
+   done or failed reaction when the turn ends). With `SLACK_PROGRESS_MODE=text`, or in `auto`
+   mode when `reactions:write` is unavailable, a `_thinking…_` placeholder message is posted
+   instead.
+8. Completion deltas are batched into a Block Kit `markdown` block and written back via
+   `chat.update` (or an initial `chat.postMessage`) as the response accumulates. Replies over
+   12,000 characters roll over into follow-up in-thread messages on code-fence boundaries.
 
-Instance affinity: assumes `replicas=1` per instance and sequential one-turn-at-a-time
-multiplexing until the operator lands.
+Turns are serialized per thread: a message that arrives while the thread's previous turn is
+still running gets a brief "still working" notice rather than starting an overlapping turn.
+
+### Progress configuration
+
+| Flag | Env var | Default |
+|------|---------|---------|
+| `--slack-progress-mode` | `SLACK_PROGRESS_MODE` | `auto` (`reactions` with a text fallback), or `reactions` / `text` |
+| `--slack-working-emoji` | `SLACK_WORKING_EMOJI` | `eyes` |
+| `--slack-done-emoji` | `SLACK_DONE_EMOJI` | `white_check_mark` |
+| `--slack-failed-emoji` | `SLACK_FAILED_EMOJI` | `x` |
 
 ## Required bot OAuth scopes
 
 | Scope            | Purpose                                               |
 |------------------|-------------------------------------------------------|
 | `chat:write`     | Post messages and update existing messages            |
+| `reactions:write` | Add/remove progress reactions on the triggering message |
 | `im:history`     | Read DMs sent to the bot                              |
 | `channels:history` | Read messages in channels the bot is a member of   |
 | `channels:join`  | Join public channels on invite                        |

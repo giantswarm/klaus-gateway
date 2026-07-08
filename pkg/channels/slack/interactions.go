@@ -177,7 +177,8 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 		return err
 	}
 
-	return a.streamResponse(ctx, client, deltas, msg, slackChannel, threadID, "_continuing…_")
+	// Button resume: no user message to react to, so use text progress.
+	return a.streamResponse(ctx, client, deltas, msg, slackChannel, threadID, "", "_continuing…_")
 }
 
 // buildButtonDecision turns a Block Kit click into a structured HITL decision,

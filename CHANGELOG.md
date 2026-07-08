@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Updated `tests/test-values.yaml`: removed stale `lifecycle.operatorMCPURL` override and bumped `image.tag` from `0.0.44` to `0.1.4`. The old pin ran the binary that rejected `--driver=static` with empty instances, causing CrashLoopBackOff.
 - Slack replies larger than a single Slack message no longer fail the `chat.update` call; the batched writer rolls the overflow over into stable follow-up in-thread messages, and an in-progress (unterminated) code fence is left unformatted instead of being mangled by mrkdwn transforms. The rollover never splits a multi-byte UTF-8 rune when a single line exceeds the message limit.
 - Avoid a potential panic from comparing `OutboundDelta` (which embeds an error interface) against its zero value on the A2A error path.
+- Slack turns are serialized per thread. A message that arrives while the thread's previous turn is still running gets a brief "still working" notice instead of starting a second, overlapping turn; concurrent turns on one thread share a kagent session and would otherwise interleave its event log into incoherent history.
 
 ### Refactored
 
@@ -26,11 +27,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Slack shows turn progress with message reactions on the triggering message (a working emoji, swapped to done or failed when the turn ends) instead of a `_thinking…_` placeholder. `SLACK_PROGRESS_MODE` selects `auto` (default), `reactions`, or `text`; `auto` falls back to a text placeholder when the `reactions:write` scope is unavailable. Requires the new `reactions:write` bot scope.
+- Slack agent replies render as Block Kit `markdown` blocks (native GitHub-flavored Markdown) instead of the lossy mrkdwn conversion, chunked at 12,000 characters with code-fence-aware rollover into follow-up in-thread messages.
 - `--driver=static` no longer requires `--static-instances` to be non-empty. An empty static instance set is valid and acts as a no-op lifecycle manager, allowing A2A-only deployments (Slack/CLI/web → kagent) without any Klaus instance management.
 - `a2a.A2AClient.TokenPath` (string) is replaced by `a2a.A2AClient.TokenSource` (the `a2a.TokenSource` interface). `a2a.FileTokenSource` reproduces the previous per-request file read; `a2a.ForwardedTokenSource` prefers a caller token from the request context and falls back to a `TokenSource`.
 
 ### Added
 
+- `SLACK_WORKING_EMOJI` / `SLACK_DONE_EMOJI` / `SLACK_FAILED_EMOJI` (and the matching `--slack-working-emoji` etc. flags) override the progress reaction emoji names; empty uses `eyes` / `white_check_mark` / `x`.
+- kagent token usage (`kagent_usage_metadata`) and tool-call activity (`kagent_type` function_call/response DataParts) are parsed from A2A events into `OutboundDelta`: a new `Usage *TurnUsage`, `Meta map[string]any`, and `DeltaToolActivity` kind. `mapA2AEvent` now returns `[]OutboundDelta` (an event may carry both text and tool activity).
 - Helm: `obo.persistence` backs the link store with a PersistentVolumeClaim so links survive pod recreation (rollouts, node drains), not just in-process restarts. Disabled by default (emptyDir, unchanged behaviour). When enabled with a single ReadWriteOnce claim the Deployment switches to the `Recreate` strategy and sets `fsGroup` so the non-root runtime user can write the encrypted bolt file. `obo.persistence.existingClaim` reuses a pre-provisioned PVC.
 - Helm: `slack.dmOnly` value renders the `SLACK_DM_ONLY` env, restricting the Slack adapter to direct messages (channel messages and @-mentions are ignored). The binary already honoured `SLACK_DM_ONLY`; this exposes it through the chart.
 - Helm: `slack.botToken` / `slack.signingSecret` / `slack.appToken` values render the `slack.secretName` Secret (keys `bot-token` / `signing-secret` / `app-token`) when supplied — typically SOPS-encrypted via the agentic-platform umbrella. Mirrors the existing `obo` secret rendering. When `botToken` is empty the chart still references an externally-managed Secret of that name, so existing deployments are unaffected.

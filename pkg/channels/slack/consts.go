@@ -27,14 +27,35 @@ const labelApproved = "approved"
 // rendered as text and the user replies free-text in-thread.
 const maxChoiceButtons = 5
 
+// Progress-mode values (Adapter.ProgressMode).
+const (
+	progressModeAuto      = "auto"      // reactions, falling back to text on missing_scope
+	progressModeReactions = "reactions" // reactions only
+	progressModeText      = "text"      // text placeholder only
+)
+
+// Default progress reaction emoji names (no surrounding colons). Overridable
+// via config so a workspace can pick emoji its members recognise.
+const (
+	defaultWorkingEmoji = "eyes"
+	defaultDoneEmoji    = "white_check_mark"
+	defaultFailedEmoji  = "x"
+)
+
+// thinkingPlaceholder is the text-mode progress placeholder, posted before the
+// first agent output and replaced by the answer.
+const thinkingPlaceholder = "_thinking…_"
+
 // Slack Web API parameter keys (form-encoded and JSON body).
 const (
-	paramChannel  = "channel"
-	paramText     = "text"
-	paramTS       = "ts"
-	paramThreadTS = "thread_ts"
-	paramUser     = "user"
-	paramBlocks   = "blocks"
+	paramChannel   = "channel"
+	paramText      = "text"
+	paramTS        = "ts"
+	paramThreadTS  = "thread_ts"
+	paramUser      = "user"
+	paramBlocks    = "blocks"
+	paramTimestamp = "timestamp" // reactions.* target message ts
+	paramName      = "name"      // reactions.* emoji name
 )
 
 // bkURL is the Block Kit button "url" field (opens a link on click).
@@ -56,6 +77,7 @@ const (
 	bkActions   = "actions"
 	bkButton    = "button"
 	bkMrkdwn    = "mrkdwn"
+	bkMarkdown  = "markdown" // top-level markdown block (native GFM)
 	bkPlainText = "plain_text"
 	bkPrimary   = "primary"
 	bkDanger    = "danger"

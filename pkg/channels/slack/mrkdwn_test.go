@@ -8,89 +8,53 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestMarkdownToMrkdwn(t *testing.T) {
-	cases := []struct {
-		name string
-		in   string
-		want string
-	}{
-		{
-			name: "heading h1",
-			in:   "# Heading",
-			want: "*Heading*",
-		},
-		{
-			name: "heading h3",
-			in:   "### Deep heading",
-			want: "*Deep heading*",
-		},
-		{
-			name: "bold",
-			in:   "**bold**",
-			want: "*bold*",
-		},
-		{
-			name: "italic passes through unchanged",
-			in:   "_italic_",
-			want: "_italic_",
-		},
-		{
-			name: "link",
-			in:   "[text](https://example.com)",
-			want: "<https://example.com|text>",
-		},
-		{
-			name: "unordered list dash",
-			in:   "- item",
-			want: "• item",
-		},
-		{
-			name: "unordered list star",
-			in:   "* item",
-			want: "• item",
-		},
-		{
-			name: "strikethrough",
-			in:   "~~strike~~",
-			want: "~strike~",
-		},
-		{
-			name: "code fence preserved",
-			in:   "```go\nfmt.Println(\"hello\")\n```",
-			want: "```go\nfmt.Println(\"hello\")\n```",
-		},
-		{
-			name: "code fence content not transformed",
-			in:   "```go\n**not bold** _not italic_\n```",
-			want: "```go\n**not bold** _not italic_\n```",
-		},
-		{
-			name: "mixed content",
-			in:   "# Title\n**bold** and _italic_ with [link](https://x.com)\n- item1\n- item2",
-			want: "*Title*\n*bold* and _italic_ with <https://x.com|link>\n• item1\n• item2",
-		},
-		{
-			name: "no transformation needed",
-			in:   "plain text",
-			want: "plain text",
-		},
-		{
-			name: "unterminated trailing fence is preserved",
-			in:   "text **bold**\n```go\nfmt.Println",
-			want: "text *bold*\n```go\nfmt.Println",
-		},
-		{
-			name: "empty string",
-			in:   "",
-			want: "",
-		},
-	}
+func TestSplitMarkdown(t *testing.T) {
+	t.Run("fits in one chunk", func(t *testing.T) {
+		require.Equal(t, []string{"hello world"}, splitMarkdown("hello world", 100))
+	})
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want, markdownToMrkdwn(tc.in))
-		})
+	t.Run("rolls over on line boundary", func(t *testing.T) {
+		text := "line one\nline two\nline three\n"
+		chunks := splitMarkdown(text, 12)
+		require.Greater(t, len(chunks), 1)
+		require.Equal(t, text, strings.Join(chunks, ""))
+	})
+
+	t.Run("closes and reopens a fence across a boundary", func(t *testing.T) {
+		// A code fence spanning a chunk boundary must be closed at the end of the
+		// first chunk and reopened at the start of the next, so each chunk is
+		// balanced GFM.
+		text := "```go\n" + strings.Repeat("x := 1\n", 10) + "```\n"
+		chunks := splitMarkdown(text, 24)
+		require.Greater(t, len(chunks), 1)
+		for i, c := range chunks {
+			require.Equal(t, 0, countFences(c)%2, "chunk %d has an unbalanced fence: %q", i, c)
+		}
+		require.True(t, strings.HasPrefix(chunks[1], "```go"), "continuation reopens the fence: %q", chunks[1])
+	})
+
+	t.Run("auto-closes an unterminated trailing fence (mid-stream)", func(t *testing.T) {
+		// During streaming the closing ``` has not arrived yet; the rendered chunk
+		// must still be balanced.
+		chunks := splitMarkdown("text\n```go\nfmt.Println", 100)
+		require.Len(t, chunks, 1)
+		require.Equal(t, 2, countFences(chunks[0]), "trailing fence auto-closed: %q", chunks[0])
+		require.True(t, strings.HasSuffix(chunks[0], "```"))
+	})
+
+	t.Run("empty input", func(t *testing.T) {
+		require.Equal(t, []string{""}, splitMarkdown("", 100))
+	})
+}
+
+func countFences(s string) int {
+	n := 0
+	for line := range strings.SplitSeq(s, "\n") {
+		if strings.HasPrefix(strings.TrimLeft(line, " \t"), "```") {
+			n++
+		}
 	}
+	return n
 }
 
 func TestSplitAtLines(t *testing.T) {

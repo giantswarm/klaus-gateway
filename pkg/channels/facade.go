@@ -100,26 +100,27 @@ func (f *Facade) sendViaA2A(ctx context.Context, msg InboundMessage) (<-chan Out
 		defer close(out)
 		terminated := false
 		for event, err := range f.Executor.Execute(ctx, execCtx) {
-			var delta OutboundDelta
+			var deltas []OutboundDelta
 			if err != nil {
-				delta = OutboundDelta{Err: err}
+				deltas = []OutboundDelta{{Err: err}}
 			} else {
-				// Only the mapped (error-free) path can be a no-op. Skip the
-				// zero-value here rather than after assigning an arbitrary error
-				// to Err: comparing a struct that embeds an error interface
-				// panics if the concrete error type is not comparable.
-				delta = mapA2AEvent(event)
-				if delta == (OutboundDelta{}) {
+				deltas = mapA2AEvent(event)
+			}
+			for _, delta := range deltas {
+				if delta.isZero() {
 					continue
 				}
+				select {
+				case <-ctx.Done():
+					return
+				case out <- delta:
+				}
+				if delta.Err != nil || delta.Done || delta.Kind == DeltaPrompt {
+					terminated = true
+					break
+				}
 			}
-			select {
-			case <-ctx.Done():
-				return
-			case out <- delta:
-			}
-			if delta.Err != nil || delta.Done || delta.Kind == DeltaPrompt {
-				terminated = true
+			if terminated {
 				break
 			}
 		}
@@ -141,25 +142,30 @@ func withChannelAuth(ctx context.Context, msg InboundMessage) context.Context {
 	return ctx
 }
 
-// mapA2AEvent converts a single A2A streaming event to an OutboundDelta.
-// Returns a zero value for events that carry no channel-visible payload.
-// Non-completed terminal states (failed, rejected, canceled) are mapped to an
-// error delta so channels surface them rather than silently closing.
-func mapA2AEvent(event a2apkg.Event) OutboundDelta {
+// mapA2AEvent converts a single A2A streaming event to zero or more
+// OutboundDeltas. A single event may carry both assistant text and tool-call
+// DataParts, so it can expand to several deltas. Non-completed terminal states
+// (failed, rejected, canceled) map to an error delta so channels surface them
+// rather than silently closing.
+//
+// kagent attaches token usage to the event/message metadata (not to a part),
+// with the authoritative total on the terminal completed event; tool activity
+// rides on function_call/function_response DataParts.
+func mapA2AEvent(event a2apkg.Event) []OutboundDelta {
 	switch ev := event.(type) {
 	case *a2apkg.TaskArtifactUpdateEvent:
 		if ev.Artifact == nil {
-			return OutboundDelta{}
+			return nil
 		}
-		text := extractTextFromA2AParts(ev.Artifact.Parts)
-		if text == "" {
-			return OutboundDelta{}
-		}
-		return OutboundDelta{Content: text}
+		return append(textDelta(ev.Artifact.Parts), toolActivityDeltas(ev.Artifact.Parts)...)
 	case *a2apkg.TaskStatusUpdateEvent:
+		usage := parseTurnUsage(ev.Metadata)
+		if usage == nil && ev.Status.Message != nil {
+			usage = parseTurnUsage(ev.Status.Message.Metadata)
+		}
 		switch ev.Status.State {
 		case a2apkg.TaskStateCompleted:
-			return OutboundDelta{Done: true}
+			return []OutboundDelta{{Done: true, Usage: usage}}
 		case a2apkg.TaskStateInputRequired, a2apkg.TaskStateAuthRequired:
 			var hitl *HitlPrompt
 			text := ""
@@ -173,7 +179,7 @@ func mapA2AEvent(event a2apkg.Event) OutboundDelta {
 			if text == "" && hitl != nil {
 				text = hitl.summary()
 			}
-			return OutboundDelta{Kind: DeltaPrompt, Content: text, TaskID: string(ev.TaskID), Prompt: hitl}
+			return []OutboundDelta{{Kind: DeltaPrompt, Content: text, TaskID: string(ev.TaskID), Prompt: hitl, Usage: usage}}
 		default:
 			if ev.Status.State.Terminal() {
 				msg := fmt.Sprintf("a2a: task ended with state %s", ev.Status.State)
@@ -182,11 +188,46 @@ func mapA2AEvent(event a2apkg.Event) OutboundDelta {
 						msg = text
 					}
 				}
-				return OutboundDelta{Err: errors.New(msg)}
+				return []OutboundDelta{{Err: errors.New(msg)}}
 			}
+			// Interim working event: surface any tool activity, and a usage-only
+			// delta when the event reports usage.
+			deltas := toolActivityDeltas(messageParts(ev.Status.Message))
+			if usage != nil {
+				deltas = append(deltas, OutboundDelta{Usage: usage})
+			}
+			return deltas
 		}
 	}
-	return OutboundDelta{}
+	return nil
+}
+
+// textDelta returns a single-element slice with the concatenated text of parts,
+// or nil when there is no text.
+func textDelta(parts a2apkg.ContentParts) []OutboundDelta {
+	if text := extractTextFromA2AParts(parts); text != "" {
+		return []OutboundDelta{{Content: text}}
+	}
+	return nil
+}
+
+// toolActivityDeltas maps each function_call/function_response DataPart to a
+// DeltaToolActivity, skipping parts that are not tool activity.
+func toolActivityDeltas(parts a2apkg.ContentParts) []OutboundDelta {
+	var deltas []OutboundDelta
+	for _, p := range parts {
+		if d := toolActivityDelta(p); !d.isZero() {
+			deltas = append(deltas, d)
+		}
+	}
+	return deltas
+}
+
+func messageParts(msg *a2apkg.Message) a2apkg.ContentParts {
+	if msg == nil {
+		return nil
+	}
+	return msg.Parts
 }
 
 // extractTextFromA2AParts concatenates text from A2A content parts.
