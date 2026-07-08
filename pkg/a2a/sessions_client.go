@@ -13,7 +13,9 @@ import (
 type SessionsClient struct {
 	// HTTPClient is the HTTP client used for requests. Nil uses a default with a 10-second timeout.
 	HTTPClient *http.Client
-	// BaseURL is the kagent controller root, e.g. http://kagent-controller.kagent.svc.cluster.local:8083
+	// BaseURL is the base URL serving the kagent REST API — the agentgateway
+	// endpoint that fronts kagent (e.g. http://agentgateway...:8080/kagent) or
+	// the controller directly. "/api/sessions/{id}" is appended.
 	BaseURL string
 	// TokenSource yields the Bearer token sent as Authorization. It must resolve
 	// to the same principal the A2A turn forwards, because kagent keys a session
