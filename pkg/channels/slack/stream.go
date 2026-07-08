@@ -50,6 +50,12 @@ type batchedWriter struct {
 	// turn does not flood the thread (or hit Slack post rate limits). Only touched
 	// from run()'s goroutine.
 	toolsRendered int
+	// toolPosts carries rendered tool-activity messages to a single poster
+	// goroutine so a slow Slack API does not stall delta draining. Buffered to the
+	// per-turn cap so enqueue never blocks; nil until the first tool post. Drained
+	// before run() returns. toolWorkerDone closes when the poster exits.
+	toolPosts      chan string
+	toolWorkerDone chan struct{}
 
 	mu          sync.Mutex
 	buf         strings.Builder
@@ -78,6 +84,7 @@ func newBatchedWriterWithClient(client *slackAPIClient, channel, ts, threadTS st
 func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelta) error {
 	ticker := time.NewTicker(batchInterval)
 	defer ticker.Stop()
+	defer w.drainToolPosts() // flush any buffered tool-activity posts before returning
 
 	for {
 		select {
@@ -142,10 +149,11 @@ const (
 	maxToolMessages = 10
 )
 
-// renderToolActivity posts a compact record of a tool call (and, at
+// renderToolActivity queues a compact record of a tool call (and, at
 // detailsFull, its result) when details are enabled. Rendered as a fenced code
 // block so Slack collapses long payloads behind "show more". Capped per turn.
-// Best-effort: a post failure is logged and never aborts the turn.
+// The cap decision runs here (in run()'s goroutine); the HTTP post is handed to
+// an async poster so a slow Slack API does not stall delta draining.
 func (w *batchedWriter) renderToolActivity(ctx context.Context, tool *channels.ToolActivity) {
 	if w.details == detailsOff || tool == nil {
 		return
@@ -173,14 +181,47 @@ func (w *batchedWriter) renderToolActivity(ctx context.Context, tool *channels.T
 	w.toolsRendered++
 	switch {
 	case w.toolsRendered > maxToolMessages+1:
-		return // already posted the truncation note
+		return // already queued the truncation note
 	case w.toolsRendered == maxToolMessages+1:
 		md = "_…further tool activity hidden this turn (`/details off` to quiet)._"
 	}
 
-	if _, err := w.client.postMarkdown(ctx, w.channel, md, w.threadTS); err != nil {
-		w.logger.Warn("slack: post tool activity failed", "tool", tool.Name, "error", err)
+	w.enqueueToolPost(ctx, md)
+}
+
+// enqueueToolPost buffers a rendered tool-activity message for the poster,
+// starting it on first use. Called only from run()'s goroutine, so the lazy
+// init is race-free. The buffer is sized to the per-turn cap, so the send never
+// blocks the delta loop.
+func (w *batchedWriter) enqueueToolPost(ctx context.Context, md string) {
+	if w.toolPosts == nil {
+		w.toolPosts = make(chan string, maxToolMessages+1)
+		w.toolWorkerDone = make(chan struct{})
+		go w.toolPoster(ctx)
 	}
+	w.toolPosts <- md
+}
+
+// toolPoster posts queued tool-activity messages in order. Best-effort: a post
+// failure (including a cancelled ctx) is logged and never aborts the turn.
+func (w *batchedWriter) toolPoster(ctx context.Context) {
+	defer close(w.toolWorkerDone)
+	for md := range w.toolPosts {
+		if _, err := w.client.postMarkdown(ctx, w.channel, md, w.threadTS); err != nil {
+			w.logger.Warn("slack: post tool activity failed", "error", err)
+		}
+	}
+}
+
+// drainToolPosts closes the queue and waits for the poster to finish, so all
+// tool activity is flushed before the turn is considered done. No-op when no
+// tool activity was queued.
+func (w *batchedWriter) drainToolPosts() {
+	if w.toolPosts == nil {
+		return
+	}
+	close(w.toolPosts)
+	<-w.toolWorkerDone
 }
 
 // compactJSON marshals a tool payload to a single line, truncated to max runes.
