@@ -24,6 +24,7 @@ import (
 
 	"github.com/giantswarm/klaus-gateway/pkg/auth/musterlink"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
+	"github.com/giantswarm/klaus-gateway/pkg/channels/slack/classifier"
 )
 
 // ChannelName identifies the Slack adapter in routing keys.
@@ -65,12 +66,6 @@ type Adapter struct {
 	// APIBase overrides the Slack Web API base URL. Empty uses the default
 	// (https://slack.com/api). Set in tests to point at a fake server.
 	APIBase string
-	// DefaultAccessMode sets the initial access mode for new threads.
-	// "open" or "observe"; empty/"locked" means ModeLocked (owner-only).
-	DefaultAccessMode string
-	// AllowedUsers is a static allow-list of Slack user IDs seeded into every
-	// new thread's AccessState. The first entry becomes owner when non-empty.
-	AllowedUsers []string
 	// DMOnly restricts the adapter to direct messages (channel_type "im").
 	// When true, channel messages and @-mentions in channels are ignored, so
 	// the bot only ever answers in a 1:1 DM. Default false (channels served).
@@ -108,8 +103,16 @@ type Adapter struct {
 	evHandler http.Handler
 	ixHandler http.Handler // interactions endpoint; nil in socketmode
 
+	// Classifier auto-approves low-risk (read-only) HITL tool prompts so
+	// investigation stays frictionless. Nil disables auto-approval (every prompt
+	// is surfaced to the human).
+	Classifier *classifier.Classifier
+
 	accessMu sync.Mutex
-	access   map[string]*AccessState // keyed by threadID
+	access   AccessPolicy // lazily initialised via accessPolicy()
+
+	pendingAccessMu sync.Mutex
+	pendingAccess   map[string]map[string]*pendingAccessReq // threadID -> userID -> parked request
 
 	turnsMu sync.Mutex
 	turns   map[string]*turn // keyed by threadID; cancels in-flight SendCompletion
@@ -182,6 +185,41 @@ type pendingTask struct {
 	Prompt *channels.HitlPrompt
 }
 
+// pendingAccessReq is a newcomer's message parked while the thread initiator is
+// asked to approve them. It is replayed through dispatch on approval.
+type pendingAccessReq struct {
+	msg          channels.InboundMessage
+	slackChannel string
+}
+
+// NewClassifier builds the HITL auto-approval risk classifier from config.
+// autoApprove is the highest auto-approvable risk: "green" (default; read-only),
+// "yellow", "red", or "off". "off" returns nil, so every tool prompt is surfaced
+// to the human.
+func NewClassifier(autoApprove string, allowedHosts []string) *classifier.Classifier {
+	threshold, ok := parseRiskThreshold(autoApprove)
+	if !ok {
+		return nil
+	}
+	return &classifier.Classifier{Config: classifier.Config{
+		AutoApproveThreshold: threshold,
+		AllowedHosts:         allowedHosts,
+	}}
+}
+
+func parseRiskThreshold(s string) (classifier.Risk, bool) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case argOff, "none", "disabled":
+		return 0, false
+	case "yellow":
+		return classifier.RiskYellow, true
+	case "red":
+		return classifier.RiskRed, true
+	default: // "", "green", or unknown -> read-only only
+		return classifier.RiskGreen, true
+	}
+}
+
 // Name returns the channel name used in routing keys.
 func (a *Adapter) Name() string { return ChannelName }
 
@@ -192,12 +230,6 @@ func (a *Adapter) Start(ctx context.Context, gw channels.Gateway) error {
 	}
 	if a.DefaultAgent == "" {
 		return errors.New("slack: DefaultAgent must be set")
-	}
-	switch a.DefaultAccessMode {
-	case "", accessModeLocked, accessModeOpen, accessModeObserve:
-	default:
-		return fmt.Errorf("slack: unknown DefaultAccessMode %q: want %s, %s, or %s",
-			a.DefaultAccessMode, accessModeLocked, accessModeOpen, accessModeObserve)
 	}
 	switch a.ProgressMode {
 	case "", progressModeAuto, progressModeReactions, progressModeText:
@@ -383,58 +415,72 @@ func (a *Adapter) postSignIn(ctx context.Context, slackChannel, threadID, slackU
 	}
 }
 
-// getAccess returns (or lazily creates) the AccessState for a thread.
-// ownerID is the Slack user ID of the message sender; it becomes the thread
-// owner if this is the first message in the thread.
-func (a *Adapter) getAccess(threadID, ownerID string) *AccessState {
+// postAccessPrompt asks the thread initiator (ephemerally) to approve a newcomer
+// who wants to instruct the agent, and acks the newcomer (ephemerally) that
+// their message is held pending that approval. Both posts are best-effort.
+func (a *Adapter) postAccessPrompt(ctx context.Context, slackChannel, threadID, initiator, newcomer string) {
+	client := a.apiClient()
+	if err := client.postAccessConsentPrompt(ctx, slackChannel, threadID, initiator, newcomer); err != nil {
+		a.Logger.Warn("slack: post access prompt failed", "initiator", initiator, "newcomer", newcomer, "error", err)
+	}
+	const ack = "Your message is waiting for the thread owner to allow you to instruct the agent here."
+	if err := client.postEphemeralText(ctx, slackChannel, newcomer, threadID, ack); err != nil {
+		a.Logger.Warn("slack: post access waiting-ack failed", "newcomer", newcomer, "error", err)
+	}
+}
+
+// accessPolicy returns the adapter's AccessPolicy, lazily installing the
+// in-memory default so direct-construction tests need no wiring.
+func (a *Adapter) accessPolicy() AccessPolicy {
 	a.accessMu.Lock()
 	defer a.accessMu.Unlock()
 	if a.access == nil {
-		a.access = make(map[string]*AccessState)
+		a.access = newMemoryAccess()
 	}
-	if state, ok := a.access[threadID]; ok {
-		return state
-	}
-	state := &AccessState{}
-	switch a.DefaultAccessMode {
-	case accessModeOpen:
-		state.mode = ModeOpen
-	case accessModeObserve:
-		state.mode = ModeLocked
-		state.observe = true
-	default:
-		state.mode = ModeLocked
-	}
-	// A static allow-list overrides first-sender ownership: the first entry
-	// becomes owner, any remaining entries seed the selective allow-list.
-	if len(a.AllowedUsers) > 0 {
-		state.owner = a.AllowedUsers[0]
-		if len(a.AllowedUsers) > 1 {
-			state.allowed = make(map[string]bool, len(a.AllowedUsers)-1)
-			for _, u := range a.AllowedUsers[1:] {
-				state.allowed[u] = true
-			}
-			state.mode = ModeSelective
-		}
-	} else {
-		state.owner = ownerID
-	}
-	a.access[threadID] = state
-	return state
+	return a.access
 }
 
 // isActiveThread reports whether the bot has an active session in threadID —
-// either an access state (meaning it was mentioned at some point) or a pending
+// either a known initiator (it was mentioned at some point) or a pending
 // input-required task. Used to decide whether to route message.channels thread
 // replies without requiring an @-mention.
 func (a *Adapter) isActiveThread(threadID string) bool {
-	a.accessMu.Lock()
-	_, hasAccess := a.access[threadID]
-	a.accessMu.Unlock()
-	if hasAccess {
+	if a.accessPolicy().Initiator(threadID) != "" {
 		return true
 	}
 	return a.hasPendingTask(threadID)
+}
+
+// storePendingAccess parks a newcomer's message while the initiator is asked to
+// approve them. Hold-latest: a repeat before approval overwrites the earlier one.
+func (a *Adapter) storePendingAccess(threadID, userID string, req *pendingAccessReq) {
+	a.pendingAccessMu.Lock()
+	defer a.pendingAccessMu.Unlock()
+	if a.pendingAccess == nil {
+		a.pendingAccess = make(map[string]map[string]*pendingAccessReq)
+	}
+	byUser := a.pendingAccess[threadID]
+	if byUser == nil {
+		byUser = make(map[string]*pendingAccessReq)
+		a.pendingAccess[threadID] = byUser
+	}
+	byUser[userID] = req
+}
+
+// takePendingAccess atomically retrieves and removes a parked request.
+func (a *Adapter) takePendingAccess(threadID, userID string) *pendingAccessReq {
+	a.pendingAccessMu.Lock()
+	defer a.pendingAccessMu.Unlock()
+	byUser := a.pendingAccess[threadID]
+	if byUser == nil {
+		return nil
+	}
+	req := byUser[userID]
+	delete(byUser, userID)
+	if len(byUser) == 0 {
+		delete(a.pendingAccess, threadID)
+	}
+	return req
 }
 
 // storePendingTask records a paused input-required task for a thread.
@@ -509,16 +555,29 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 
 	slackUser := msg.Subject // raw Slack user ID; keys access control
 
-	// Captured before getAccess creates the thread's access entry: true when this
-	// process has no record of the thread, i.e. a reply into a thread it did not
-	// start (typically after a restart): the case the resume check targets.
+	// Captured before the policy records this thread: true when this process has
+	// no record of the thread, i.e. a reply into a thread it did not start
+	// (typically after a restart): the case the resume check targets.
 	firstSight := !a.isActiveThread(msg.ThreadID)
 
-	state := a.getAccess(msg.ThreadID, slackUser)
-	if !state.Deliver(slackUser) {
+	// Access control. The first user to interact becomes the thread initiator and
+	// instructs freely. A different user is gated: authenticate first (unknown
+	// identity -> sign-in), then ask the initiator to approve them (the agent acts
+	// under the initiator's delegated identity, so the initiator must consent).
+	access := a.accessPolicy()
+	initiator := access.SetInitiator(msg.ThreadID, slackUser)
+	if !access.Allowed(msg.ThreadID, slackUser) {
+		if a.OBO != nil && slackUser != "" {
+			if _, err := a.OBO.TokenFor(ctx, slackUser); errors.Is(err, musterlink.ErrNotLinked) {
+				a.Logger.Debug("slack: newcomer not linked, prompting sign-in", "user", slackUser)
+				a.postSignIn(ctx, slackChannel, msg.ThreadID, slackUser)
+				return nil
+			}
+		}
+		a.storePendingAccess(msg.ThreadID, slackUser, &pendingAccessReq{msg: msg, slackChannel: slackChannel})
+		a.postAccessPrompt(ctx, slackChannel, msg.ThreadID, initiator, slackUser)
 		return nil
 	}
-	respond := state.Permitted(slackUser)
 
 	msg.AgentRef = a.DefaultAgent
 
@@ -528,10 +587,8 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 	// queueing it, so a stale follow-up is not answered minutes late. Acquire
 	// before taking the pending task so a rejected turn leaves it for later.
 	if !a.acquireThread(msg.ThreadID) {
-		if respond {
-			if _, perr := a.apiClient().postMessage(ctx, slackChannel, busyNotice, msg.ThreadID); perr != nil {
-				a.Logger.Warn("slack: post busy notice failed", "thread", msg.ThreadID, "error", perr)
-			}
+		if _, perr := a.apiClient().postMessage(ctx, slackChannel, busyNotice, msg.ThreadID); perr != nil {
+			a.Logger.Warn("slack: post busy notice failed", "thread", msg.ThreadID, "error", perr)
 		}
 		return nil
 	}
@@ -542,7 +599,7 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 	// A turn must carry the sending user's human token, never the gateway's
 	// machine identity. Resolve it BEFORE consuming any pending task so an abort
 	// leaves the pending TaskID intact and the reply stays retryable.
-	token, ok := a.humanToken(ctx, slackChannel, msg.ThreadID, slackUser, respond)
+	token, ok := a.humanToken(ctx, slackChannel, msg.ThreadID, slackUser, true)
 	if !ok {
 		return nil
 	}
@@ -551,10 +608,10 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 	// A reply into a thread this process did not start may be resuming a kagent
 	// session that has since been evicted. Announce the "starting fresh"
 	// degradation up front so the user is not surprised by lost context. Only for
-	// replies (not a fresh root mention), only when we would reply, at most once
-	// per thread. Advisory: never aborts the turn, and bounded by a short timeout
-	// so a slow REST endpoint cannot stall the first reply.
-	if respond && firstSight && msg.ThreadID != msg.MessageID {
+	// replies (not a fresh root mention), at most once per thread. Advisory: never
+	// aborts the turn, and bounded by a short timeout so a slow REST endpoint
+	// cannot stall the first reply.
+	if firstSight && msg.ThreadID != msg.MessageID {
 		a.maybeAnnounceResume(ctx, msg, slackChannel)
 	}
 
@@ -581,18 +638,6 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 	deltas, err := a.gw.SendCompletion(turnCtx, ref, msg)
 	if err != nil {
 		return fmt.Errorf("slack: send completion: %w", err)
-	}
-
-	// Observe mode: forward the turn to the agent for context but suppress the
-	// Slack reply. Drain the stream so the producer completes, surfacing any
-	// upstream error in the log rather than discarding it silently.
-	if !respond {
-		for d := range deltas {
-			if d.Err != nil {
-				a.Logger.Warn("slack: observe-mode turn failed", "thread", msg.ThreadID, "error", d.Err)
-			}
-		}
-		return nil
 	}
 
 	return a.streamResponse(ctx, a.apiClient(), deltas, msg, slackChannel, msg.ThreadID, msg.MessageID, thinkingPlaceholder)
@@ -676,23 +721,43 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 	prog, replyTS := a.startProgress(ctx, client, slackChannel, threadID, triggerTS, placeholder)
 
 	w := newBatchedWriterWithClient(client, slackChannel, replyTS, threadID, a.detailsLevel(threadID), a.Logger)
-	if err := w.run(ctx, deltas); err != nil {
-		prog.failed(ctx)
-		// In text mode prog.failed is a no-op (no reaction to swap), so the
-		// placeholder would linger as "thinking" with no failure signal. Replace
-		// it with a terminal note, as the empty-output path does. Skipped when ctx
-		// is already done (/stop, deadline): the cancel is intentional and the post
-		// would fail anyway.
-		if prog.reactTS == "" && ctx.Err() == nil {
-			a.postTerminalNote(ctx, client, slackChannel, threadID, replyTS, failedNote)
-		}
-		return err
-	}
-	a.recordTurnUsage(threadID, slackChannel, w.turnUsage)
 
-	if w.promptDelta != nil {
-		prog.clear(ctx) // paused waiting on the user; drop the working indicator
+	// Drive the turn to completion. A DeltaPrompt pauses the stream: a low-risk
+	// (read-only) tool prompt is auto-approved and the same turn resumes in place
+	// (story 14); anything else is surfaced to the human. The same writer and
+	// progress indicator carry across an auto-approved resume so a multi-step turn
+	// reads as one answer.
+	for {
+		if err := w.run(ctx, deltas); err != nil {
+			prog.failed(ctx)
+			// In text mode prog.failed is a no-op (no reaction to swap), so the
+			// placeholder would linger as "thinking" with no failure signal.
+			// Replace it with a terminal note, as the empty-output path does.
+			// Skipped when ctx is already done (/stop, deadline): the cancel is
+			// intentional and the post would fail anyway.
+			if prog.reactTS == "" && ctx.Err() == nil {
+				a.postTerminalNote(ctx, client, slackChannel, threadID, replyTS, failedNote)
+			}
+			return err
+		}
+		a.recordTurnUsage(threadID, slackChannel, w.turnUsage)
+
 		pd := w.promptDelta
+		if pd == nil {
+			break
+		}
+		w.promptDelta = nil
+
+		if next, ok, err := a.maybeAutoApprove(ctx, pd, msg, threadID); ok {
+			if err != nil {
+				prog.failed(ctx)
+				return err
+			}
+			deltas = next
+			continue
+		}
+
+		prog.clear(ctx) // paused waiting on the user; drop the working indicator
 		a.storePendingTask(threadID, &pendingTask{
 			TaskID:    pd.TaskID,
 			AgentRef:  msg.AgentRef,
@@ -725,6 +790,39 @@ func (a *Adapter) postTerminalNote(ctx context.Context, client *slackAPIClient, 
 	if _, err := client.postMarkdown(ctx, slackChannel, note, threadID); err != nil {
 		a.Logger.Warn("slack: post terminal note failed", "thread", threadID, "error", err)
 	}
+}
+
+// maybeAutoApprove auto-approves a low-risk (read-only) tool prompt by resuming
+// the paused A2A task with an approve decision, returning the resumed delta
+// stream so the turn continues in place. ok is false when the prompt is not
+// eligible (no classifier, an ask_user question, or above the auto-approve
+// threshold), in which case the caller surfaces it to the human. When ok is true
+// and err is non-nil the resume failed and the turn should abort.
+func (a *Adapter) maybeAutoApprove(ctx context.Context, pd *channels.OutboundDelta, msg channels.InboundMessage, threadID string) (deltas <-chan channels.OutboundDelta, ok bool, err error) {
+	if a.Classifier == nil || pd.Prompt == nil || pd.Prompt.IsAskUser() {
+		return nil, false, nil
+	}
+	approved, res := a.Classifier.ShouldAutoApprove(classifierInput(pd.Prompt))
+	if !approved {
+		return nil, false, nil
+	}
+	a.Logger.Debug("slack: auto-approving low-risk tool prompt",
+		"thread", threadID, "tool", pd.Prompt.ToolName, "risk", res.Risk.String())
+
+	resume := msg
+	resume.TaskID = pd.TaskID
+	resume.Text = labelApproved
+	resume.Decision = &channels.HitlDecision{Type: channels.DecisionApprove}
+
+	ref, err := a.gw.Resolve(ctx, resume)
+	if err != nil {
+		return nil, true, fmt.Errorf("slack: resolve auto-approve resume: %w", err)
+	}
+	next, err := a.gw.SendCompletion(ctx, ref, resume)
+	if err != nil {
+		return nil, true, fmt.Errorf("slack: send auto-approve resume: %w", err)
+	}
+	return next, true, nil
 }
 
 // slackInnerEvent is the inner event object present in both Events API

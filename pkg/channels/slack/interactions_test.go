@@ -515,8 +515,8 @@ func TestIsActiveThread(t *testing.T) {
 
 	require.False(t, a.isActiveThread("T001"))
 
-	// Access state makes it active.
-	_ = a.getAccess("T001", "U001")
+	// A known initiator makes it active.
+	a.accessPolicy().SetInitiator("T001", "U001")
 	require.True(t, a.isActiveThread("T001"))
 
 	// Pending task on a different thread.
