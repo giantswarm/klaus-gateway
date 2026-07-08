@@ -182,9 +182,9 @@ func parseTurnUsage(md map[string]any) *TurnUsage {
 		return nil
 	}
 	return &TurnUsage{
-		PromptTokens:     mdInt(raw, usagePromptTokens),
-		CompletionTokens: mdInt(raw, usageCompletionTokens),
-		TotalTokens:      mdInt(raw, usageTotalTokens),
+		InputTokens:  mdInt(raw, usagePromptTokens),
+		OutputTokens: mdInt(raw, usageCompletionTokens),
+		TotalTokens:  mdInt(raw, usageTotalTokens),
 	}
 }
 

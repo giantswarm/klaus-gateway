@@ -35,7 +35,7 @@ func TestMapA2AEvent_CompletedCarriesUsage(t *testing.T) {
 	require.Len(t, deltas, 1)
 	require.True(t, deltas[0].Done)
 	require.NotNil(t, deltas[0].Usage)
-	require.Equal(t, TurnUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}, *deltas[0].Usage)
+	require.Equal(t, TurnUsage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15}, *deltas[0].Usage)
 }
 
 func TestMapA2AEvent_ArtifactTextAndToolActivity(t *testing.T) {

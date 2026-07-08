@@ -81,8 +81,8 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 			}
 			if d.Usage != nil {
 				w.logger.Debug("slack: turn usage",
-					"prompt", d.Usage.PromptTokens,
-					"completion", d.Usage.CompletionTokens,
+					"input", d.Usage.InputTokens,
+					"output", d.Usage.OutputTokens,
 					"total", d.Usage.TotalTokens)
 			}
 			if d.Done {

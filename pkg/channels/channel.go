@@ -87,12 +87,15 @@ const (
 	DeltaToolActivity                  // agent invoked or received a tool result
 )
 
-// TurnUsage holds the token counts kagent reports for a turn. Any field the
-// model provider does not populate stays zero.
+// TurnUsage holds the token counts reported for a turn, in provider-neutral
+// terms aligned with the OpenTelemetry GenAI semantic conventions
+// (gen_ai.usage.input_tokens / gen_ai.usage.output_tokens). Each producer maps
+// its own vocabulary in (kagent/genai candidatesTokenCount, OpenAI
+// completion_tokens, ...). Any field the provider does not report stays zero.
 type TurnUsage struct {
-	PromptTokens     int
-	CompletionTokens int
-	TotalTokens      int
+	InputTokens  int // gen_ai.usage.input_tokens
+	OutputTokens int // gen_ai.usage.output_tokens
+	TotalTokens  int // provider-reported total; no OTel semconv key (usually input+output)
 }
 
 // ToolActivityKind distinguishes a tool call from its result.
