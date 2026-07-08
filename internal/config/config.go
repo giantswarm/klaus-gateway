@@ -62,7 +62,7 @@ func (c A2AConfig) ResolvedRESTURL() string {
 	if c.RESTURL != "" {
 		return c.RESTURL
 	}
-	if root, _, ok := strings.Cut(c.URL, "/api/a2a"); ok {
+	if root, _, ok := strings.Cut(c.URL, "/api/a2a/"); ok {
 		return root
 	}
 	return ""

@@ -185,6 +185,11 @@ func TestA2AConfig_ResolvedRESTURL(t *testing.T) {
 			want: "",
 		},
 		{
+			name: "anchored split does not match a stray /api/a2axyz path",
+			cfg:  config.A2AConfig{URL: "http://agentgateway:8080/api/a2axyz"},
+			want: "",
+		},
+		{
 			name: "both empty",
 			cfg:  config.A2AConfig{},
 			want: "",
