@@ -539,10 +539,13 @@ func (l *Linker) TokenFor(ctx context.Context, slackUserID string) (string, erro
 	tok, err := src.Token()
 	if err != nil {
 		var re *oauth2.RetrieveError
-		if errors.As(err, &re) {
-			// muster rejected the refresh token (e.g. invalid_grant): the link
-			// is dead, drop it so the user is prompted to sign in again.
+		if errors.As(err, &re) && re.ErrorCode == "invalid_grant" {
+			// muster rejected the refresh token: the link is dead. Drop it and
+			// report as unlinked so the caller prompts sign-in on this same turn
+			// rather than a turn later. A non-invalid_grant token-endpoint error
+			// (transient 5xx, network) keeps the link and stays retryable.
 			l.store.Delete(slackUserID)
+			return "", ErrNotLinked
 		}
 		return "", fmt.Errorf("musterlink: refresh token for slack user: %w", err)
 	}
