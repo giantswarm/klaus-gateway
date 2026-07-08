@@ -46,6 +46,10 @@ type batchedWriter struct {
 	// turnUsage accumulates the per-LLM-call usage kagent reports across the
 	// turn into the turn total. Only touched from run()'s goroutine.
 	turnUsage channels.TurnUsage
+	// toolsRendered counts tool-activity messages posted this turn so a tool-heavy
+	// turn does not flood the thread (or hit Slack post rate limits). Only touched
+	// from run()'s goroutine.
+	toolsRendered int
 
 	mu          sync.Mutex
 	buf         strings.Builder
@@ -132,12 +136,16 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 const (
 	toolArgsMax   = 500
 	toolResultMax = 800
+	// maxToolMessages bounds tool-activity posts per turn. Past it, one
+	// truncation note is posted and the rest are silent, so a turn with many
+	// tool calls does not flood the thread or hit Slack post rate limits.
+	maxToolMessages = 10
 )
 
 // renderToolActivity posts a compact record of a tool call (and, at
 // detailsFull, its result) when details are enabled. Rendered as a fenced code
-// block so Slack collapses long payloads behind "show more". Best-effort: a
-// post failure is logged and never aborts the turn.
+// block so Slack collapses long payloads behind "show more". Capped per turn.
+// Best-effort: a post failure is logged and never aborts the turn.
 func (w *batchedWriter) renderToolActivity(ctx context.Context, tool *channels.ToolActivity) {
 	if w.details == detailsOff || tool == nil {
 		return
@@ -161,6 +169,15 @@ func (w *batchedWriter) renderToolActivity(ctx context.Context, tool *channels.T
 	default:
 		return
 	}
+
+	w.toolsRendered++
+	switch {
+	case w.toolsRendered > maxToolMessages+1:
+		return // already posted the truncation note
+	case w.toolsRendered == maxToolMessages+1:
+		md = "_…further tool activity hidden this turn (`/details off` to quiet)._"
+	}
+
 	if _, err := w.client.postMarkdown(ctx, w.channel, md, w.threadTS); err != nil {
 		w.logger.Warn("slack: post tool activity failed", "tool", tool.Name, "error", err)
 	}

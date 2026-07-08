@@ -50,9 +50,22 @@ type A2AConfig struct {
 	// RESTURL is the base URL for the kagent REST API used by the session resume
 	// existence-check. Normally the same endpoint as URL (agentgateway fronts
 	// both the A2A path and /api/sessions on one host). Empty derives it from URL
-	// by trimming the /api/a2a/... suffix, keeping any gateway path prefix (e.g.
-	// http://agentgateway...:8080/kagent/api/a2a/kagent -> http://agentgateway...:8080/kagent).
+	// via ResolvedRESTURL.
 	RESTURL string
+}
+
+// ResolvedRESTURL returns the kagent REST base URL: RESTURL when set, otherwise
+// URL with the /api/a2a/... suffix trimmed so any gateway path prefix is kept
+// (e.g. http://agentgateway...:8080/kagent/api/a2a/kagent ->
+// http://agentgateway...:8080/kagent). Empty when neither is set or derivable.
+func (c A2AConfig) ResolvedRESTURL() string {
+	if c.RESTURL != "" {
+		return c.RESTURL
+	}
+	if root, _, ok := strings.Cut(c.URL, "/api/a2a"); ok {
+		return root
+	}
+	return ""
 }
 
 // CLIConfig holds runtime configuration for the CLI channel adapter.
