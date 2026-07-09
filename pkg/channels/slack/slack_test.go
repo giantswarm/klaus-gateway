@@ -677,6 +677,10 @@ type stubGateway struct {
 	// failSends makes the next N SendCompletion calls return an error, so a test
 	// can drive the resume-failure paths.
 	failSends int
+	// failSendsAfter delays failSends past this many leading successful sends, so
+	// a test can fail an in-turn resume (e.g. an auto-approved continuation) that
+	// follows an initial successful send within the same turn.
+	failSendsAfter int
 }
 
 func (s *stubGateway) resumeCount() int {
@@ -715,7 +719,9 @@ func (s *stubGateway) Resolve(_ context.Context, msg channels.InboundMessage) (c
 
 func (s *stubGateway) SendCompletion(ctx context.Context, _ channels.InstanceRef, _ channels.InboundMessage) (<-chan channels.OutboundDelta, error) {
 	s.mu.Lock()
-	if s.failSends > 0 {
+	if s.failSendsAfter > 0 {
+		s.failSendsAfter--
+	} else if s.failSends > 0 {
 		s.failSends--
 		s.mu.Unlock()
 		return nil, errors.New("stub: send completion failed")

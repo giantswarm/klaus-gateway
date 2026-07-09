@@ -120,6 +120,54 @@ func TestUsage_CarriesAcrossApprovalPause(t *testing.T) {
 		"session total matches the single turn (no double count)")
 }
 
+// An auto-approved read-only prompt whose in-turn resume fails must re-store the
+// pending task, exactly as the typed path does. Otherwise the paused A2A task is
+// stranded and the next reply starts a fresh task with a dangling tool call.
+func TestAutoApproveResume_FailureKeepsPendingTask(t *testing.T) {
+	fake := newFakeSlackAPI()
+	var mu sync.Mutex
+	var resolved []channels.InboundMessage
+	gw := &stubGateway{
+		onResolve: func(msg channels.InboundMessage) {
+			mu.Lock()
+			resolved = append(resolved, msg)
+			mu.Unlock()
+		},
+		// Segment 1 is the read-only prompt; the auto-approved resume consumes
+		// segment 2. failSendsAfter lets the initial send through and fails the
+		// resume send, leaving segment 2 for the retry.
+		failSendsAfter: 1,
+		failSends:      1,
+		sendQueue: [][]channels.OutboundDelta{
+			{greenPrompt("task-1")},
+			{{Content: "done"}, {Done: true}},
+		},
+	}
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+	a.Classifier = slackadapter.NewClassifier("green", nil)
+
+	sendEvent(t, srv, dmEvent("U1", "check pods", "900.000"))
+	// The failed reaction is the last act of the turn before the thread slot is
+	// released (working reaction on start, failed on the resume error), so wait
+	// for it before the retry rather than for resolveCount, which is reached
+	// mid-turn while the slot is still held (the retry would then bounce busy).
+	fake.waitForPath(t, "reactions.add", 2)
+	require.Equal(t, 2, gw.resolveCount(), "initial turn plus the failed auto-approve resume")
+
+	// Retry: the task must still be pending, so this reply resumes task-1 with a
+	// structured decision instead of starting a fresh turn.
+	sendEvent(t, srv, dmThreadEvent("U1", "approve", "901.000", "900.000"))
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "done")
+	}, 2*time.Second, 50*time.Millisecond, "retried resume completes")
+
+	mu.Lock()
+	defer mu.Unlock()
+	last := resolved[len(resolved)-1]
+	require.Equal(t, "task-1", last.TaskID, "retry must resume the restored pending task")
+	require.NotNil(t, last.Decision, "retry must carry the structured approval decision")
+}
+
 // A resume that fails before its stream starts re-stores the pending task, so
 // the paused A2A task is not stranded and a retry still resumes it.
 func TestTypedResume_FailureKeepsPendingTask(t *testing.T) {

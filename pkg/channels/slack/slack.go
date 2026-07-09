@@ -807,7 +807,19 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 		if autoApprovals < maxAutoApprovalsPerTurn {
 			if next, ok, err := a.maybeAutoApprove(ctx, pd, msg, threadID); ok {
 				if err != nil {
-					a.recordTurnUsage(threadID, w.turnUsage)
+					// The task is still paused server-side: re-store it (with the
+					// usage so far) so a retry or button click can resume it
+					// instead of stranding it with a dangling tool call. Usage
+					// travels with the task and is recorded only when the turn
+					// ends, so it is not recorded here.
+					a.storePendingTask(threadID, &pendingTask{
+						TaskID:    pd.TaskID,
+						AgentRef:  msg.AgentRef,
+						Channel:   slackChannel,
+						ChannelID: msg.ChannelID,
+						Prompt:    pd.Prompt,
+						Usage:     w.turnUsage,
+					})
 					cctx, cancel := cleanupCtx()
 					prog.failed(cctx)
 					cancel()
