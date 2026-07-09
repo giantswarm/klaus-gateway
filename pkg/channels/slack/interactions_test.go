@@ -247,6 +247,9 @@ func newDecisionAdapter(t *testing.T, gw channels.Gateway, obo OBOTokenSource) (
 		OBO:          obo,
 	}
 	require.NoError(t, a.Start(t.Context(), gw))
+	// The clicker must be permitted; the first user to interact becomes the
+	// thread initiator.
+	a.accessPolicy().SetInitiator("T001", "U001")
 	a.storePendingTask("T001", &pendingTask{
 		TaskID:    "task-abc",
 		AgentRef:  "worker",
