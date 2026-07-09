@@ -103,7 +103,13 @@ func TestStripMention(t *testing.T) {
 
 // --- Events API handler ---
 
-func newEventsAdapter(t *testing.T, gw channels.Gateway, fakeAPIBase string) (*slackadapter.Adapter, *httptest.Server) {
+// channelMode configures the adapter to serve channels and redirect DMs (the
+// production default). Used by tests that drive the adapter through a channel
+// app_mention. The harness otherwise defaults to DM-only (see newEventsAdapter),
+// since most tests use a 1:1 DM as a single-permitted-user surface.
+func channelMode(a *slackadapter.Adapter) { a.DMOnly = false }
+
+func newEventsAdapter(t *testing.T, gw channels.Gateway, fakeAPIBase string, opts ...func(*slackadapter.Adapter)) (*slackadapter.Adapter, *httptest.Server) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	secrets := slackadapter.Secrets{ //nolint:gosec // G101 dummy values used only in tests
@@ -115,6 +121,12 @@ func newEventsAdapter(t *testing.T, gw channels.Gateway, fakeAPIBase string) (*s
 		Secrets:      secrets,
 		APIBase:      fakeAPIBase,
 		DefaultAgent: "test-agent",
+		// Default to serving DMs: most tests drive the adapter through a 1:1 DM.
+		// Channel-driven tests opt into channelMode.
+		DMOnly: true,
+	}
+	for _, opt := range opts {
+		opt(a)
 	}
 	require.NoError(t, a.Start(ctx, gw))
 	r := chi.NewRouter()
@@ -181,7 +193,7 @@ func TestEventsHandler_AppMentionDispatch(t *testing.T) {
 	}))
 	defer fakeSlack.Close()
 
-	_, srv := newEventsAdapter(t, gw, fakeSlack.URL)
+	_, srv := newEventsAdapter(t, gw, fakeSlack.URL, channelMode)
 
 	payload := `{
 		"type":"event_callback",
@@ -355,7 +367,7 @@ func TestBatchedWriter_FlushesContent(t *testing.T) {
 			{Done: true},
 		},
 	}
-	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
 
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_mention","user":"U123","text":"<@BOT> go","channel":"C1","ts":"111.222"}}`)
 
@@ -480,7 +492,7 @@ func TestDispatch_OBO_UnlinkedUserPromptsSignInAndDoesNotDispatch(t *testing.T) 
 	defer fakeSlack.Close()
 
 	gw := &stubGateway{}
-	a, srv := newEventsAdapter(t, gw, fakeSlack.URL)
+	a, srv := newEventsAdapter(t, gw, fakeSlack.URL, channelMode)
 	a.OBO = &fakeOBO{linkedUser: "U999", token: "x", linkURL: "https://gw.example.com/auth/slack/link?u=xyz"}
 
 	payload := `{"type":"event_callback","event":{"type":"app_mention","user":"U123","text":"<@BOT> hi","channel":"C1","ts":"111.222"}}`
@@ -521,7 +533,7 @@ func TestDispatch_OBO_TokenErrorAbortsTurn(t *testing.T) {
 	defer fakeSlack.Close()
 
 	gw := &stubGateway{}
-	a, srv := newEventsAdapter(t, gw, fakeSlack.URL)
+	a, srv := newEventsAdapter(t, gw, fakeSlack.URL, channelMode)
 	a.OBO = &fakeOBO{linkedUser: "U123", token: "x", tokenErr: errors.New("muster unreachable")}
 
 	payload := `{"type":"event_callback","event":{"type":"app_mention","user":"U123","text":"<@BOT> hi","channel":"C1","ts":"111.222"}}`
@@ -609,7 +621,7 @@ func TestLogout_Unlinks(t *testing.T) {
 
 	obo := &fakeOBO{linkedUser: "U123", token: "human-token"}
 	gw := &stubGateway{}
-	a, srv := newEventsAdapter(t, gw, fakeSlack.URL)
+	a, srv := newEventsAdapter(t, gw, fakeSlack.URL, channelMode)
 	a.OBO = obo
 
 	payload := `{"type":"event_callback","event":{"type":"app_mention","user":"U123","text":"<@BOT> /logout","channel":"C1","ts":"111.222"}}`
@@ -637,7 +649,7 @@ func TestLogin_PostsSignInPrompt(t *testing.T) {
 	defer fakeSlack.Close()
 
 	gw := &stubGateway{}
-	a, srv := newEventsAdapter(t, gw, fakeSlack.URL)
+	a, srv := newEventsAdapter(t, gw, fakeSlack.URL, channelMode)
 	a.OBO = &fakeOBO{linkedUser: "U999", linkURL: "https://gw.example.com/auth/slack/link?u=xyz"}
 
 	payload := `{"type":"event_callback","event":{"type":"app_mention","user":"U123","text":"<@BOT> /login","channel":"C1","ts":"111.222"}}`
@@ -798,14 +810,15 @@ type recordedCall struct {
 // fakeSlackAPI is a structured fake Slack Web API: it records every request by
 // method path with a decoded body and can inject an error code per path.
 type fakeSlackAPI struct {
-	mu       sync.Mutex
-	calls    []recordedCall
-	failWith map[string]string // path (e.g. "reactions.add") -> slack error code
-	seq      int
+	mu        sync.Mutex
+	calls     []recordedCall
+	failWith  map[string]string // path (e.g. "reactions.add") -> slack error code
+	seq       int
+	botUserID string // returned as user_id from auth.test
 }
 
 func newFakeSlackAPI() *fakeSlackAPI {
-	return &fakeSlackAPI{failWith: map[string]string{}}
+	return &fakeSlackAPI{failWith: map[string]string{}, botUserID: "UBOT"}
 }
 
 func (f *fakeSlackAPI) server(t *testing.T) *httptest.Server {
@@ -827,9 +840,14 @@ func (f *fakeSlackAPI) server(t *testing.T) *httptest.Server {
 		code := f.failWith[path]
 		f.seq++
 		ts := fmt.Sprintf("1700000000.%06d", f.seq)
+		botID := f.botUserID
 		f.mu.Unlock()
 
 		w.Header().Set("Content-Type", "application/json")
+		if path == "auth.test" {
+			_, _ = fmt.Fprintf(w, `{"ok":true,"user_id":%q}`, botID)
+			return
+		}
 		if code != "" {
 			_, _ = fmt.Fprintf(w, `{"ok":false,"error":%q}`, code)
 			return

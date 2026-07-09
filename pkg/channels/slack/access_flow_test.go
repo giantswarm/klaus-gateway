@@ -62,7 +62,7 @@ func sendAccessInteraction(t *testing.T, srv *httptest.Server, clicker, actionID
 func TestAccess_UnlinkedNewcomerPromptedToSignIn(t *testing.T) {
 	fake := newFakeSlackAPI()
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "hi", Done: true}}}
-	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
 	a.OBO = &fakeOBO{linkedUser: "U001", token: "tok"} // U001 linked, U999 not
 
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
@@ -82,7 +82,7 @@ func TestAccess_NewcomerApprovedReplaysMessage(t *testing.T) {
 	fakeURL := fake.server(t).URL
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok", Done: true}}}
 	// OBO nil: the newcomer is authenticated, so the flow skips sign-in.
-	_, srv := newEventsAdapter(t, gw, fakeURL)
+	_, srv := newEventsAdapter(t, gw, fakeURL, channelMode)
 
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
 	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
@@ -107,7 +107,7 @@ func TestAccess_NewcomerDeclinedDropsMessage(t *testing.T) {
 	fake := newFakeSlackAPI()
 	fakeURL := fake.server(t).URL
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok", Done: true}}}
-	_, srv := newEventsAdapter(t, gw, fakeURL)
+	_, srv := newEventsAdapter(t, gw, fakeURL, channelMode)
 
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
 	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
@@ -129,7 +129,7 @@ func TestAccess_NonInitiatorCannotGrant(t *testing.T) {
 	fake := newFakeSlackAPI()
 	fakeURL := fake.server(t).URL
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok", Done: true}}}
-	_, srv := newEventsAdapter(t, gw, fakeURL)
+	_, srv := newEventsAdapter(t, gw, fakeURL, channelMode)
 
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
 	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },

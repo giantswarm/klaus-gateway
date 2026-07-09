@@ -39,6 +39,8 @@ oauth_config:
     bot:
       # Send messages and update existing messages (streaming responses).
       - chat:write
+      # Post agent replies under the agent's own name/icon (per-message branding).
+      - chat:write.customize
       # Add/remove progress reactions on the triggering message.
       - reactions:write
       # Read DMs sent to the bot.
@@ -61,6 +63,9 @@ settings:
       # Fires for messages in public channels where the bot is a member.
       # Used to route thread replies to active bot threads without @-mention.
       - message.channels
+      # Fires when a member (including the bot itself) joins a channel.
+      # Used to post the bot's introduction when it is added to a channel.
+      - member_joined_channel
   interactivity:
     is_enabled: true
     # Interactions request URL. Replace with your public hostname.

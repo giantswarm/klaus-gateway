@@ -128,7 +128,7 @@ func (a *Adapter) routeInteraction(ctx context.Context, payload interactionPaylo
 
 // hitlAction is a decoded Block Kit button click.
 type hitlAction struct {
-	kind   string // hitlApprove, hitlDeny, or hitlChoice
+	kind   string // hitlApprove, hitlDeny, hitlChat, or hitlChoice
 	choice choiceValue
 }
 
@@ -139,6 +139,8 @@ func classifyAction(actionID string) (hitlAction, bool) {
 		return hitlAction{kind: hitlApprove}, true
 	case actionID == hitlDeny:
 		return hitlAction{kind: hitlDeny}, true
+	case actionID == hitlChat:
+		return hitlAction{kind: hitlChat}, true
 	case actionID == accessAllow:
 		return hitlAction{kind: accessAllow}, true
 	case actionID == accessDeny:
@@ -235,6 +237,19 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 		return nil
 	}
 
+	// Chat: keep the approval pending and swap the buttons for a reply hint. The
+	// next in-thread reply resolves the task through the normal free-text path
+	// (decisionFromText), which turns a follow-up question into a reject carrying
+	// it as the reason, so the agent answers and asks to confirm again — while a
+	// plain "approve"/"deny" reply still decides directly.
+	if act.kind == hitlChat {
+		a.storePendingTask(threadID, task)
+		if err := client.chatUpdateBlocks(ctx, slackChannel, messageTS, chatModePrompt); err != nil {
+			a.Logger.Warn("slack: update prompt for chat mode failed", "error", err)
+		}
+		return nil
+	}
+
 	decision, resumeText, decisionText := buildButtonDecision(act, task.Prompt)
 
 	// Replace the Block Kit buttons with the decision text.
@@ -276,8 +291,9 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 
 	// Button resume: no user message to react to, so use text progress. The turn
 	// context feeds the stream so /stop cancels it; the paused turn's usage
-	// carries over so /usage reports the whole turn.
-	return a.streamResponse(turnCtx, client, deltas, msg, slackChannel, threadID, "", "_continuing…_", task.Usage)
+	// carries over so /usage reports the whole turn; the reply is branded as the
+	// agent (the answer is the agent's).
+	return a.streamResponse(turnCtx, a.agentClient(ctx, task.AgentRef), deltas, msg, slackChannel, threadID, "", "_continuing…_", task.Usage)
 }
 
 // buildButtonDecision turns a Block Kit click into a structured HITL decision,

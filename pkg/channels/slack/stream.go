@@ -312,6 +312,32 @@ func (w *batchedWriter) flush(ctx context.Context) error {
 type slackAPIClient struct {
 	botToken string
 	baseURL  string
+	// username / iconURL, when set, post under a custom display identity
+	// (chat:write.customize). Applied only to chat.postMessage and
+	// chat.postEphemeral (chat.update keeps the original message's identity).
+	username string
+	iconURL  string
+}
+
+// applyIdentity adds the client's display identity (username/icon_url) via set.
+// It is a no-op unless an identity is configured and the method is one that
+// honours chat:write.customize (a new post, not an edit). Each field is applied
+// only when non-empty: a name without an icon posts under the custom name and
+// the Slack app's own icon (Slack keeps the app icon when icon_url is omitted),
+// which is what we want while the AgentCard exposes a name but no icon.
+func (c *slackAPIClient) applyIdentity(method string, set func(k, v string)) {
+	if c.username == "" && c.iconURL == "" {
+		return
+	}
+	if method != "chat.postMessage" && method != "chat.postEphemeral" {
+		return
+	}
+	if c.username != "" {
+		set(paramUsername, c.username)
+	}
+	if c.iconURL != "" {
+		set(paramIconURL, c.iconURL)
+	}
 }
 
 func (c *slackAPIClient) postMessage(ctx context.Context, channel, text, threadTS string) (string, error) {
@@ -352,6 +378,36 @@ func (c *slackAPIClient) lookupUserEmail(ctx context.Context, userID string) (st
 		return "", fmt.Errorf("slack users.info: %s", result.Err)
 	}
 	return result.User.Profile.Email, nil
+}
+
+// authTest returns the bot's own Slack user ID via auth.test, used to
+// recognise the bot's own channel-join event.
+func (c *slackAPIClient) authTest(ctx context.Context) (string, error) {
+	target := c.baseURL + "/auth.test"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, nil)
+	if err != nil {
+		return "", fmt.Errorf("slack auth.test: build request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.botToken)
+
+	resp, err := http.DefaultClient.Do(req) //nolint:gosec
+	if err != nil {
+		return "", fmt.Errorf("slack auth.test: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	var result struct {
+		OK     bool   `json:"ok"`
+		Err    string `json:"error,omitempty"`
+		UserID string `json:"user_id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("slack auth.test: decode: %w", err)
+	}
+	if !result.OK {
+		return "", fmt.Errorf("slack auth.test: %s", result.Err)
+	}
+	return result.UserID, nil
 }
 
 // errReactionsUnsupported reports that the bot cannot manage reactions (the
@@ -447,6 +503,12 @@ func (c *slackAPIClient) postApprovalPrompt(ctx context.Context, channel, thread
 						bkText:     map[string]any{bkType: bkPlainText, bkText: "❌ Deny"},
 						bkStyle:    bkDanger,
 						bkActionID: hitlDeny,
+						bkValue:    threadID,
+					},
+					map[string]any{
+						bkType:     bkButton,
+						bkText:     map[string]any{bkType: bkPlainText, bkText: "💬 Chat"},
+						bkActionID: hitlChat,
 						bkValue:    threadID,
 					},
 				},
@@ -645,6 +707,13 @@ func (c *slackAPIClient) chatUpdateBlocks(ctx context.Context, channel, ts, text
 }
 
 func (c *slackAPIClient) postJSON(ctx context.Context, method string, body any) (string, error) {
+	if m, ok := body.(map[string]any); ok {
+		c.applyIdentity(method, func(k, v string) {
+			if _, exists := m[k]; !exists {
+				m[k] = v
+			}
+		})
+	}
 	data, err := json.Marshal(body)
 	if err != nil {
 		return "", fmt.Errorf("slack %s: marshal: %w", method, err)
@@ -659,6 +728,7 @@ type slackResponse struct {
 }
 
 func (c *slackAPIClient) post(ctx context.Context, method string, params url.Values) (string, error) {
+	c.applyIdentity(method, params.Set)
 	return c.send(ctx, method, "application/x-www-form-urlencoded", params.Encode())
 }
 

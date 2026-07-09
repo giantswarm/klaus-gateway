@@ -2,14 +2,16 @@ package slack
 
 // Slack event type strings.
 const (
-	evtMessage    = "message"
-	evtAppMention = "app_mention"
+	evtMessage      = "message"
+	evtAppMention   = "app_mention"
+	evtMemberJoined = "member_joined_channel"
 )
 
 // HITL Block Kit action IDs.
 const (
 	hitlApprove = "hitl_approve"
 	hitlDeny    = "hitl_deny"
+	hitlChat    = "hitl_chat"   // reply with a follow-up question instead of yes/no
 	hitlChoice  = "hitl_choice" // ask_user single-select choice button
 )
 
@@ -62,6 +64,11 @@ const busyNotice = "I'm still finishing your previous message in this thread. Gi
 // in the thread clicks an in-thread tool Approve/Deny button.
 const accessDecisionRefusal = "_Only the thread owner (and people they've allowed) can approve or deny this action._"
 
+// chatModePrompt replaces the approval buttons after the user clicks "Chat":
+// the pending tool call is held and the next in-thread reply is sent as the
+// follow-up question.
+const chatModePrompt = "💬 _Ask your question in this thread; I'll answer, then ask you to confirm again._"
+
 // emptyOutputNote replaces the text-mode placeholder when a turn completes
 // without producing any output, so it does not linger as "thinking".
 const emptyOutputNote = "_(the agent finished without a reply)_"
@@ -75,6 +82,14 @@ const failedNote = "_(the turn failed; please try again)_"
 // kagent session no longer exists, so the user is not confused by lost context.
 const resumeStartingFreshNotice = "I couldn't find our earlier conversation in this thread, so I'm starting fresh."
 
+// channelIntro is posted once when the bot is added to a channel, so members
+// know what it is and how to reach it.
+const channelIntro = "👋 Hi, I'm Swarmgeist. Mention me (`@Swarmgeist`) in this channel to start a thread and I'll bring in an agent to help investigate and act on your clusters. I reply in-thread, ask before anything destructive, and run `/help` for the full list of commands."
+
+// dmRedirect is posted when a user DMs the bot while channel mode is active
+// (DMs are not a supported surface), pointing them to a channel instead.
+const dmRedirect = "I work in channels, not direct messages. Invite me to a channel and mention me there (`@Swarmgeist`) to get started."
+
 // Slack Web API parameter keys (form-encoded and JSON body).
 const (
 	paramChannel   = "channel"
@@ -85,6 +100,8 @@ const (
 	paramBlocks    = "blocks"
 	paramTimestamp = "timestamp" // reactions.* target message ts
 	paramName      = "name"      // reactions.* emoji name
+	paramUsername  = "username"  // chat:write.customize display name
+	paramIconURL   = "icon_url"  // chat:write.customize display icon
 )
 
 // bkURL is the Block Kit button "url" field (opens a link on click).

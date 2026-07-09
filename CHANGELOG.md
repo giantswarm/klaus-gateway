@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Slack tool-approval prompts gain a **Chat** button alongside Approve/Deny: it holds the pending tool call and invites a follow-up question in the thread. The reply is routed to the paused task (a question resolves it as a reject carrying the question, so the agent answers and asks to confirm again; a plain approve/deny still decides).
+- Slack agent replies and the agent's own confirmation prompts are posted under the agent's display name (from its A2A AgentCard), distinct from Swarmgeist's own messages (`chat:write.customize`). The card supplies the name; when it exposes no icon the app's own icon is kept. Requires the `chat:write.customize` bot scope.
+- Slack posts a one-time introduction when the bot is added to a channel (`member_joined_channel`), so members know what it is and how to reach it. Requires subscribing to the `member_joined_channel` bot event.
+- Slack posts a short launch announcement when a new channel thread starts, making the hand-off from Swarmgeist to the agent explicit.
+- A direct message to the bot receives a polite redirect to use it in a channel, unless `SLACK_DM_ONLY` is set (which serves DMs).
 - Slack `/details on|off|full` command controls whether the agent's tool activity is shown in a thread. On by default; `off` quiets it, `full` also shows tool results. Rendered as fenced code blocks so Slack collapses long payloads. The setting applies to the whole thread.
 - Slack `/usage` command reports token counts for the last turn and the accumulated session total, on demand. When the kagent REST API exposes the agent's model (declarative agents), the report also names the model and provider; a BYO agent omits the line.
 - Slack `/stop` on a thread paused at an approval prompt resolves the pending tool call as a structured rejection (same as replying "stop"), instead of replying "Stopped." while leaving the prompt armed.
