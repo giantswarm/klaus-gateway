@@ -1,6 +1,7 @@
 package slack
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -48,18 +49,18 @@ func TestParseDetailsLevel(t *testing.T) {
 
 func TestRecordTurnUsage_LastAndSession(t *testing.T) {
 	a := &Adapter{}
-	require.Equal(t, "Token usage not available yet.", a.usageReport("T1"))
+	require.Equal(t, "Token usage not available yet.", a.usageReport(t.Context(), "T1"))
 
 	a.recordTurnUsage("T1", channels.TurnUsage{InputTokens: 100, OutputTokens: 50, TotalTokens: 150})
 	a.recordTurnUsage("T1", channels.TurnUsage{InputTokens: 30, OutputTokens: 20, TotalTokens: 50})
 
-	report := a.usageReport("T1")
+	report := a.usageReport(t.Context(), "T1")
 	require.Contains(t, report, "Last turn — in 30 · out 20 · total 50")
 	require.Contains(t, report, "Session — in 130 · out 70 · total 200")
 
 	// An empty turn must not clobber the last-turn figures.
 	a.recordTurnUsage("T1", channels.TurnUsage{})
-	require.Contains(t, a.usageReport("T1"), "Last turn — in 30 · out 20 · total 50")
+	require.Contains(t, a.usageReport(t.Context(), "T1"), "Last turn — in 30 · out 20 · total 50")
 }
 
 // TestBatchedWriter_SumsUsageAcrossTurn verifies the run loop sums the per-call
@@ -149,4 +150,39 @@ func TestCompactJSON_TruncatesAndEmpty(t *testing.T) {
 	out := compactJSON(map[string]any{"k": "0123456789"}, 8)
 	require.Len(t, []rune(out), 9, "8 runes + ellipsis")
 	require.Contains(t, out, "…")
+}
+
+// fakeModelSource counts lookups and returns a fixed model.
+type fakeModelSource struct {
+	calls    atomic.Int32
+	model    string
+	provider string
+}
+
+func (f *fakeModelSource) AgentModel(_ context.Context, _ string) (string, string, error) {
+	f.calls.Add(1)
+	return f.model, f.provider, nil
+}
+
+func TestUsageReport_IncludesModelLineAndCaches(t *testing.T) {
+	source := &fakeModelSource{model: "gpt-5", provider: "OpenAI"}
+	a := &Adapter{DefaultAgent: "kagent/sre-agent", Models: source}
+	a.recordTurnUsage("T1", channels.TurnUsage{InputTokens: 1, OutputTokens: 2, TotalTokens: 3})
+
+	report := a.usageReport(t.Context(), "T1")
+	require.Contains(t, report, "Model — OpenAI/gpt-5")
+
+	_ = a.usageReport(t.Context(), "T1")
+	require.Equal(t, int32(1), source.calls.Load(), "model lookups must be cached")
+}
+
+// A BYO agent exposes no model; the line is omitted rather than rendered empty.
+func TestUsageReport_OmitsModelLineWhenUnavailable(t *testing.T) {
+	a := &Adapter{DefaultAgent: "kagent/sre-agent", Models: &fakeModelSource{}}
+	a.recordTurnUsage("T1", channels.TurnUsage{TotalTokens: 3})
+	require.NotContains(t, a.usageReport(t.Context(), "T1"), "Model")
+
+	noSource := &Adapter{DefaultAgent: "kagent/sre-agent"}
+	noSource.recordTurnUsage("T1", channels.TurnUsage{TotalTokens: 3})
+	require.NotContains(t, noSource.usageReport(t.Context(), "T1"), "Model")
 }

@@ -163,15 +163,23 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *slashCommand, slackUse
 
 	case cmdStop:
 		a.turnsMu.Lock()
-		if t, ok := a.turns[threadID]; ok {
+		t, running := a.turns[threadID]
+		if running {
 			t.cancel()
 		}
 		a.turnsMu.Unlock()
+		// A thread paused on input-required has no in-flight turn to cancel; the
+		// paused task must be resolved with a rejection or the tool call dangles.
+		// Falling through to dispatch routes "/stop" like a typed "stop" reply,
+		// which decisionFromText maps to a structured reject.
+		if !running && a.hasPendingTask(threadID) {
+			return false
+		}
 		reply("⏹ Stopped.")
 		return true
 
 	case cmdUsage:
-		reply(a.usageReport(threadID))
+		reply(a.usageReport(ctx, threadID))
 		return true
 
 	case cmdDetails:
