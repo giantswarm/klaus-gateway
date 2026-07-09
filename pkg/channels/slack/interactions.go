@@ -257,8 +257,11 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 	// Resolve email for the button-clicking user.
 	a.resolveSubjectEmail(ctx, &msg)
 
+	// A failure before the stream is running re-stores the taken task: the
+	// buttons already show the decision, but a typed reply can still resume it.
 	ref, err := a.gw.Resolve(ctx, msg)
 	if err != nil {
+		a.storePendingTask(threadID, task)
 		return err
 	}
 
@@ -267,11 +270,14 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 
 	deltas, err := a.gw.SendCompletion(turnCtx, ref, msg)
 	if err != nil {
+		a.storePendingTask(threadID, task)
 		return err
 	}
 
-	// Button resume: no user message to react to, so use text progress.
-	return a.streamResponse(ctx, client, deltas, msg, slackChannel, threadID, "", "_continuing…_")
+	// Button resume: no user message to react to, so use text progress. The turn
+	// context feeds the stream so /stop cancels it; the paused turn's usage
+	// carries over so /usage reports the whole turn.
+	return a.streamResponse(turnCtx, client, deltas, msg, slackChannel, threadID, "", "_continuing…_", task.Usage)
 }
 
 // buildButtonDecision turns a Block Kit click into a structured HITL decision,

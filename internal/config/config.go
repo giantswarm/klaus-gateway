@@ -454,7 +454,7 @@ func (c Config) Validate() error {
 	}
 	if c.Slack.Enabled {
 		if _, _, ok := classifier.ParseThreshold(c.Slack.HITLAutoApprove); !ok {
-			return fmt.Errorf("invalid --slack-hitl-autoapprove %q: must be one of green, yellow, red, off", c.Slack.HITLAutoApprove)
+			return fmt.Errorf("invalid SLACK_HITL_AUTOAPPROVE %q: must be one of green, yellow, red, off", c.Slack.HITLAutoApprove)
 		}
 	}
 	return nil
