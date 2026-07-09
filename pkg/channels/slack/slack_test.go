@@ -1133,7 +1133,7 @@ func TestEventsHandler_RetryWithUnseenEventIDProcessed(t *testing.T) {
 	}))
 	defer fakeSlack.Close()
 
-	_, srv := newEventsAdapter(t, gw, fakeSlack.URL)
+	_, srv := newEventsAdapter(t, gw, fakeSlack.URL, channelMode)
 
 	body := []byte(`{
 		"type":"event_callback",
@@ -1173,7 +1173,7 @@ func TestEventsHandler_DuplicateEventIDDropped(t *testing.T) {
 	}))
 	defer fakeSlack.Close()
 
-	_, srv := newEventsAdapter(t, gw, fakeSlack.URL)
+	_, srv := newEventsAdapter(t, gw, fakeSlack.URL, channelMode)
 
 	body := []byte(`{
 		"type":"event_callback",
