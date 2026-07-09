@@ -279,14 +279,28 @@ func (a *Adapter) acceptEvent(inner slackInnerEvent) bool {
 			"channel", inner.Channel, "channel_type", inner.ChannelType)
 		return false
 	}
-	if a.DropStaleEvents && a.startUnix > 0 {
-		if sec := eventUnix(inner.TS); sec > 0 && sec < a.startUnix {
-			a.Logger.Info("slack: dropping stale event from before gateway start",
-				"event_ts", inner.TS, "channel", inner.Channel)
-			return false
-		}
+	return !a.staleEvent(inner)
+}
+
+// staleEvent reports whether the event predates this process and DropStaleEvents
+// is on. Socket Mode redelivers events queued while a consumer was
+// disconnected, so without this a gateway restart replays old events. Uses the
+// message ts, falling back to the envelope event_ts (the only timestamp a
+// member_joined_channel event carries).
+func (a *Adapter) staleEvent(inner slackInnerEvent) bool {
+	if !a.DropStaleEvents || a.startUnix == 0 {
+		return false
 	}
-	return true
+	ts := inner.TS
+	if ts == "" {
+		ts = inner.EventTS
+	}
+	if sec := eventUnix(ts); sec > 0 && sec < a.startUnix {
+		a.Logger.Info("slack: dropping stale event from before gateway start",
+			"event_ts", ts, "channel", inner.Channel)
+		return true
+	}
+	return false
 }
 
 // eventUnix parses the integer second component of a Slack ts ("123.456").
@@ -586,6 +600,38 @@ func (a *Adapter) takePendingTask(threadID string) *pendingTask {
 	return task
 }
 
+// pendingRecoverer is the optional Gateway capability that rebuilds a paused
+// input-required task from the backend task store. The Facade implements it;
+// recovery degrades to "nothing pending" when the gateway does not.
+type pendingRecoverer interface {
+	PendingHITL(ctx context.Context, msg channels.InboundMessage) (taskID string, prompt *channels.HitlPrompt, ok bool)
+}
+
+// recoverPendingTask rebuilds the thread's paused input-required task from the
+// kagent task store, so a HITL prompt posted before a gateway restart stays
+// answerable (typed reply or button click). Returns nil when the gateway
+// cannot list tasks, nothing is pending, or the lookup fails; recovery is
+// advisory and never aborts the turn.
+func (a *Adapter) recoverPendingTask(ctx context.Context, msg channels.InboundMessage) *pendingTask {
+	recoverer, ok := a.gw.(pendingRecoverer)
+	if !ok {
+		return nil
+	}
+	taskID, prompt, ok := recoverer.PendingHITL(ctx, msg)
+	if !ok || taskID == "" {
+		return nil
+	}
+	a.Logger.Info("slack: recovered paused task from the kagent task store",
+		"thread", msg.ThreadID, "task", taskID)
+	return &pendingTask{
+		TaskID:    taskID,
+		AgentRef:  msg.AgentRef,
+		Channel:   msg.ChannelID,
+		ChannelID: msg.ChannelID,
+		Prompt:    prompt,
+	}
+}
+
 // hasPendingTask reports whether a thread has a pending input-required task.
 func (a *Adapter) hasPendingTask(threadID string) bool {
 	a.pendingMu.Lock()
@@ -610,6 +656,9 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 	// acceptEvent: a join carries no text and the DM-only gate must not swallow
 	// it. Only the bot's own join (user == bot ID) triggers the intro.
 	if inner.Type == evtMemberJoined {
+		if a.staleEvent(inner) {
+			return
+		}
 		if inner.User != "" && inner.User == a.botID(ctx) {
 			a.postChannelIntro(ctx, inner.Channel)
 		}
@@ -719,6 +768,13 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 	// resolved (a plain text reply would leave the tool call dangling and corrupt
 	// the model history).
 	task := a.takePendingTask(msg.ThreadID)
+	if task == nil && firstSight {
+		// No in-process pending state for a thread this process did not start: a
+		// prompt posted before a restart may still be paused in the kagent task
+		// store. Rebuild it so the reply resolves the confirmation instead of
+		// starting a turn that dangles the paused tool call.
+		task = a.recoverPendingTask(ctx, msg)
+	}
 	if task != nil {
 		msg.TaskID = task.TaskID
 		msg.Decision = decisionFromText(task.Prompt, msg.Text)
@@ -919,6 +975,9 @@ type slackInnerEvent struct {
 	ChannelType string `json:"channel_type,omitempty"`
 	TS          string `json:"ts"`
 	ThreadTS    string `json:"thread_ts,omitempty"`
+	// EventTS is the event envelope timestamp; the only timestamp a
+	// member_joined_channel event carries.
+	EventTS string `json:"event_ts,omitempty"`
 }
 
 // isDM reports whether the event originated in a 1:1 direct message. Slack sets

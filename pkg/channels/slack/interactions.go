@@ -239,6 +239,17 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 	// reply the first one wins and the other starts a fresh task.
 	task := a.takePendingTask(threadID)
 	if task == nil {
+		// The buttons may come from a prompt posted before a gateway restart; the
+		// task can still be paused in the kagent task store.
+		task = a.recoverPendingTask(ctx, channels.InboundMessage{
+			Channel:     ChannelName,
+			ChannelID:   slackChannel,
+			ThreadID:    threadID,
+			AgentRef:    a.DefaultAgent,
+			BearerToken: token,
+		})
+	}
+	if task == nil {
 		// Nothing pending (already answered). Still tidy up the buttons.
 		_ = client.chatUpdateBlocks(ctx, slackChannel, messageTS, "_Already answered._")
 		return nil

@@ -81,6 +81,40 @@ func (f *Facade) SessionResumable(ctx context.Context, msg InboundMessage) (exis
 // turn's critical path.
 const sessionCheckTimeout = 3 * time.Second
 
+// PendingTaskLister returns the id and input-required status message of a
+// session's paused task from the backend task store. Implemented by
+// pkg/a2a.SessionsClient; an empty taskID with a nil error means nothing is
+// pending.
+type PendingTaskLister interface {
+	PendingTask(ctx context.Context, sessionID string) (taskID string, statusMessage *a2apkg.Message, err error)
+}
+
+// PendingHITL returns the paused input-required task for msg's thread session,
+// rebuilt from the backend task store rather than in-process state, so a
+// prompt posted before a gateway restart stays answerable. ok is false when no
+// task lister is configured, the lookup errored, or nothing is pending. The
+// prompt is nil for a plain-text input-required pause (no structured
+// confirmation), which a free-text reply still resumes. The caller's forwarded
+// token is seeded so the lookup resolves the same principal as the A2A turn.
+func (f *Facade) PendingHITL(ctx context.Context, msg InboundMessage) (taskID string, prompt *HitlPrompt, ok bool) {
+	if f == nil || f.Sessions == nil {
+		return "", nil, false
+	}
+	lister, isLister := f.Sessions.(PendingTaskLister)
+	if !isLister {
+		return "", nil, false
+	}
+	contextID := SynthesizeContextID(msg.Channel, msg.ChannelID, msg.UserID, msg.ThreadID, msg.AgentRef)
+	ctx = withChannelAuth(ctx, msg)
+	ctx, cancel := context.WithTimeout(ctx, sessionCheckTimeout)
+	defer cancel()
+	taskID, statusMessage, err := lister.PendingTask(ctx, contextID)
+	if err != nil || taskID == "" {
+		return "", nil, false
+	}
+	return taskID, parseHitlPrompt(statusMessage), true
+}
+
 // Resolve maps an InboundMessage to a live InstanceRef via the routing
 // table (creating a new instance on miss when the router has auto-create
 // enabled). On the A2A path (Executor set and AgentRef non-empty) routing is

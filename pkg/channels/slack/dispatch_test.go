@@ -48,3 +48,51 @@ func TestDispatch_TransientOBOError_PreservesPendingTask(t *testing.T) {
 
 	require.NotNil(t, a.takePendingTask("T1"), "transient OBO error must not consume the paused task")
 }
+
+// recoveringGateway wraps fakeGateway with the pendingRecoverer capability,
+// simulating a paused task that only exists in the kagent task store.
+type recoveringGateway struct {
+	fakeGateway
+	taskID string
+	prompt *channels.HitlPrompt
+}
+
+func (g *recoveringGateway) PendingHITL(_ context.Context, _ channels.InboundMessage) (string, *channels.HitlPrompt, bool) {
+	if g.taskID == "" {
+		return "", nil, false
+	}
+	return g.taskID, g.prompt, true
+}
+
+// A typed reply into a thread this process did not start (gateway restarted
+// after posting a HITL prompt) must resolve the store-recovered paused task
+// with a structured decision instead of starting a fresh turn.
+func TestDispatch_RecoversPendingTaskAfterRestart(t *testing.T) {
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"ts":"1.2"}`))
+	}))
+	t.Cleanup(fake.Close)
+
+	gw := &recoveringGateway{
+		fakeGateway: fakeGateway{deltas: []channels.OutboundDelta{{Content: "resumed"}, {Done: true}}},
+		taskID:      "task-restored",
+		prompt:      &channels.HitlPrompt{ToolName: "kubectl_delete"},
+	}
+	a := &Adapter{
+		Mode:         ModeEvents,
+		Secrets:      Secrets{BotToken: "b", SigningSecret: "s"}, //nolint:gosec // dummy test creds
+		APIBase:      fake.URL,
+		DefaultAgent: "agent",
+	}
+	require.NoError(t, a.Start(t.Context(), gw))
+
+	msg := channels.InboundMessage{Channel: ChannelName, ChannelID: "D1", ThreadID: "T1", MessageID: "M2", Subject: "U1", Text: "approve"}
+	require.NoError(t, a.dispatch(t.Context(), msg, "D1"))
+
+	sent := gw.sentMessages()
+	require.Len(t, sent, 1)
+	require.Equal(t, "task-restored", sent[0].TaskID, "the recovered task id must resume the paused A2A task")
+	require.NotNil(t, sent[0].Decision)
+	require.Equal(t, channels.DecisionApprove, sent[0].Decision.Type)
+}

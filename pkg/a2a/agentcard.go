@@ -13,8 +13,9 @@ import (
 
 // AgentCardClient fetches and caches an agent's A2A AgentCard from the
 // well-known endpoint {BaseURL}/{agentRef}/.well-known/agent-card.json. The card
-// is the backend-neutral source of an agent's display name (and icon, when the
-// backend populates one; kagent does not yet, so IconURL is typically empty).
+// is the backend-neutral source of an agent's display name and icon (kagent
+// serves iconUrl from the Agent CRD spec since kagent-dev/kagent#2188; a
+// backend that does not populate one yields an empty IconURL).
 type AgentCardClient struct {
 	// HTTPClient is the HTTP client used for requests. Nil uses a default with a 10-second timeout.
 	HTTPClient *http.Client
