@@ -12,7 +12,6 @@ import (
 	"os"
 	"strings"
 	"time"
-
 )
 
 // Store names understood by the routing store factory.

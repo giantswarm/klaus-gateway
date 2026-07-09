@@ -685,8 +685,8 @@ func (a *Adapter) humanToken(ctx context.Context, slackChannel, threadID, slackU
 	default:
 		a.Logger.Warn("slack: human token unavailable, aborting turn", "user", slackUser, "error", err)
 		if respond {
-			const msgText = "I couldn't refresh your Giant Swarm sign-in just now. Please try again in a moment; if it keeps failing, re-link with the `login` command (type it with a leading space)."
-			if _, perr := a.apiClient().postMessage(ctx, slackChannel, msgText, threadID); perr != nil {
+			const msgText = "I couldn't refresh your Giant Swarm sign-in just now. Please try again in a moment; if it keeps failing, re-link with the `/login` command."
+			if perr := a.apiClient().postEphemeralText(ctx, slackChannel, slackUser, threadID, msgText); perr != nil {
 				a.Logger.Warn("slack: post token-error message failed", "user", slackUser, "error", perr)
 			}
 		}
