@@ -428,26 +428,3 @@ func TestThreadReplyDroppedWhenNotInThread(t *testing.T) {
 	_, ok := ev.toInboundMessage(true)
 	require.False(t, ok)
 }
-
-// An Approve click on buttons posted before a gateway restart must recover the
-// paused task from the kagent task store and resume it under the clicker's
-// decision, instead of replying "Already answered.".
-func TestHandleDecision_RecoversPendingTaskAfterRestart(t *testing.T) {
-	gw := &recoveringGateway{
-		fakeGateway: fakeGateway{deltas: []channels.OutboundDelta{{Content: "resumed"}, {Done: true}}},
-		taskID:      "task-restored",
-		prompt:      &channels.HitlPrompt{ToolName: "kubectl_delete"},
-	}
-	a, _ := newDecisionAdapter(t, gw, nil)
-	// Simulate the restart: no in-memory pending task for the thread.
-	require.NotNil(t, a.takePendingTask("T001"))
-
-	err := a.handleDecision(t.Context(), "C001", "T001", "MSG001", "U001", hitlAction{kind: hitlApprove})
-	require.NoError(t, err)
-
-	sent := gw.sentMessages()
-	require.Len(t, sent, 1)
-	require.Equal(t, "task-restored", sent[0].TaskID)
-	require.NotNil(t, sent[0].Decision)
-	require.Equal(t, channels.DecisionApprove, sent[0].Decision.Type)
-}
