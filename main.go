@@ -267,6 +267,12 @@ func run(args []string) error {
 				BaseURL:     restURL,
 				TokenSource: tokenSource,
 			}
+			if slackAdapter != nil {
+				slackAdapter.Models = &pkga2a.AgentsClient{
+					BaseURL:     restURL,
+					TokenSource: tokenSource,
+				}
+			}
 		}
 		logger.Info("a2a adapter enabled",
 			"a2a_url", cfg.A2A.URL,

@@ -84,6 +84,9 @@ type Adapter struct {
 	// users so the agent acts on behalf of the human. Nil disables OBO; turns
 	// then run as the M2M ServiceAccount identity.
 	OBO OBOTokenSource
+	// Models, when set, resolves the default agent's model id for /usage.
+	// Nil omits the model line.
+	Models AgentModelSource
 
 	// ProgressMode selects how turn progress is shown: "auto" (default; reactions
 	// with a text fallback when reactions:write is unavailable), "reactions", or
@@ -143,6 +146,10 @@ type Adapter struct {
 	// this process, so the "starting fresh" notice posts at most once per thread.
 	resumeMu      sync.Mutex
 	resumeChecked map[string]struct{}
+
+	// modelMu guards modelCache, the resolved model labels shown by /usage.
+	modelMu    sync.Mutex
+	modelCache map[string]modelEntry // agentRef -> cached model label
 }
 
 // emailEntry is a cached Slack user email with its expiry.

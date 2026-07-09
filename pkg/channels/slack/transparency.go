@@ -3,6 +3,7 @@ package slack
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 )
@@ -47,19 +48,78 @@ func (a *Adapter) recordTurnUsage(threadID string, turn channels.TurnUsage) {
 }
 
 // usageReport renders the /usage reply for a thread.
-func (a *Adapter) usageReport(threadID string) string {
+func (a *Adapter) usageReport(ctx context.Context, threadID string) string {
 	a.usageMu.Lock()
-	defer a.usageMu.Unlock()
 	last, ok := a.lastTurn[threadID]
+	session := a.sessionTotal[threadID]
+	a.usageMu.Unlock()
 	if !ok {
 		return "Token usage not available yet."
 	}
-	return fmt.Sprintf("*Token usage*\n• Last turn — %s\n• Session — %s",
-		formatUsage(last), formatUsage(a.sessionTotal[threadID]))
+	report := fmt.Sprintf("*Token usage*\n• Last turn — %s\n• Session — %s",
+		formatUsage(last), formatUsage(session))
+	if model := a.agentModelLabel(ctx); model != "" {
+		report += "\n• Model — " + model
+	}
+	return report
 }
 
 func formatUsage(u channels.TurnUsage) string {
 	return fmt.Sprintf("in %d · out %d · total %d", u.InputTokens, u.OutputTokens, u.TotalTokens)
+}
+
+// AgentModelSource resolves the model id and provider behind an agent.
+// Implemented by pkg/a2a.AgentsClient against the kagent REST API; empty
+// strings with a nil error mean the backend does not expose a model for the
+// agent (a BYO runtime).
+type AgentModelSource interface {
+	AgentModel(ctx context.Context, agentRef string) (model, provider string, err error)
+}
+
+// agentModelTTL bounds how long a resolved model label is served from cache.
+// The model comes from the agent's CRD spec, which changes rarely.
+const agentModelTTL = 10 * time.Minute
+
+// agentModelLabel returns "provider/model" (or just the model when the
+// provider is not reported) for the adapter's default agent, or "" when no
+// model source is configured, the agent exposes no model, or the lookup fails.
+// Results are cached so /usage does not hit the kagent REST API on every call.
+func (a *Adapter) agentModelLabel(ctx context.Context) string {
+	if a.Models == nil || a.DefaultAgent == "" {
+		return ""
+	}
+
+	now := time.Now()
+	a.modelMu.Lock()
+	if e, ok := a.modelCache[a.DefaultAgent]; ok && now.Before(e.expires) {
+		a.modelMu.Unlock()
+		return e.label
+	}
+	a.modelMu.Unlock()
+
+	model, provider, err := a.Models.AgentModel(ctx, a.DefaultAgent)
+	if err != nil {
+		a.Logger.Warn("slack: agent model lookup failed", "agent", a.DefaultAgent, "error", err)
+		return ""
+	}
+	label := model
+	if provider != "" && model != "" {
+		label = provider + "/" + model
+	}
+
+	a.modelMu.Lock()
+	if a.modelCache == nil {
+		a.modelCache = make(map[string]modelEntry)
+	}
+	a.modelCache[a.DefaultAgent] = modelEntry{label: label, expires: now.Add(agentModelTTL)}
+	a.modelMu.Unlock()
+	return label
+}
+
+// modelEntry is a cached agent model label with its expiry.
+type modelEntry struct {
+	label   string
+	expires time.Time
 }
 
 // sessionChecker is the optional Gateway capability that reports whether a
