@@ -328,15 +328,17 @@ var sensitivePaths = []string{
 	"/boot/", "/proc/", "/sys/kernel/",
 }
 
+const reasonDatabaseMutation = "database mutation"
+
 var yellowRules = []ruleEntry{
 	{regexp.MustCompile(`\b(write|create|mkdir|touch|append|truncate)\b`), "file write operation"},
 	{regexp.MustCompile(`\b(exec|spawn|popen|subprocess)\b`), "process execution"},
-	{regexp.MustCompile(`\binsert\s+into\b`), "database mutation"},
-	{regexp.MustCompile(`\bdelete\s+from\b`), "database mutation"},
-	{regexp.MustCompile(`\bupdate\s+\S+\s+set\b`), "database mutation"},
-	{regexp.MustCompile(`\bdrop\s+(table|database|index|schema|view)\b`), "database mutation"},
-	{regexp.MustCompile(`\btruncate(\s+table)?\s+\S`), "database mutation"},
-	{regexp.MustCompile(`\balter\s+table\b`), "database mutation"},
+	{regexp.MustCompile(`\binsert\s+into\b`), reasonDatabaseMutation},
+	{regexp.MustCompile(`\bdelete\s+from\b`), reasonDatabaseMutation},
+	{regexp.MustCompile(`\bupdate\s+\S+\s+set\b`), reasonDatabaseMutation},
+	{regexp.MustCompile(`\bdrop\s+(table|database|index|schema|view)\b`), reasonDatabaseMutation},
+	{regexp.MustCompile(`\btruncate(\s+table)?\s+\S`), reasonDatabaseMutation},
+	{regexp.MustCompile(`\balter\s+table\b`), reasonDatabaseMutation},
 	{regexp.MustCompile(`\bgit\s+(push|commit|rebase|reset|branch\s+(-d|--delete))\b`), "git mutation"},
 	{regexp.MustCompile(`\b(kubectl\s+(apply|delete|patch|create))\b`), "kubernetes mutation"},
 	{regexp.MustCompile(`\bhelm\s+(install|upgrade|uninstall)\b`), "helm mutation"},
