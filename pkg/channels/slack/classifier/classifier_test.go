@@ -32,7 +32,7 @@ func TestClassifyTool(t *testing.T) {
 		{"create with get in name", "create_or_get_bucket", map[string]any{"name": "b"}, RiskYellow},
 		{"git push", "git_push", map[string]any{"remote": "origin"}, RiskYellow},
 
-		// Yellow: argument values must never satisfy green — only escalate.
+		// Yellow: argument values must never satisfy green, only escalate.
 		{"mutating tool, read-looking arg", "update_secret", map[string]any{"value": "get-token"}, RiskYellow},
 		{"mutating tool, show in arg", "stop_instance", map[string]any{"note": "show me"}, RiskYellow},
 		{"unknown tool stays unclassified", "frobnicate_widget", map[string]any{"mode": "read list get show"}, RiskYellow},
