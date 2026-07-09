@@ -166,17 +166,18 @@ func run(args []string) error {
 			return fmt.Errorf("slack secrets: %w", err)
 		}
 		slackAdapter = &slackchannel.Adapter{
-			Logger:            logger,
-			Mode:              cfg.Slack.Mode,
-			Secrets:           secrets,
-			DefaultAccessMode: cfg.Slack.DefaultAccessMode,
-			AllowedUsers:      cfg.Slack.AllowedUsers,
-			DMOnly:            cfg.Slack.DMOnly,
-			DropStaleEvents:   cfg.Slack.DropStaleEvents,
-			ProgressMode:      cfg.Slack.ProgressMode,
-			WorkingEmoji:      cfg.Slack.WorkingEmoji,
-			DoneEmoji:         cfg.Slack.DoneEmoji,
-			FailedEmoji:       cfg.Slack.FailedEmoji,
+			Logger:              logger,
+			Mode:                cfg.Slack.Mode,
+			Secrets:             secrets,
+			DefaultAccessMode:   cfg.Slack.DefaultAccessMode,
+			AllowedUsers:        cfg.Slack.AllowedUsers,
+			DMOnly:              cfg.Slack.DMOnly,
+			DropStaleEvents:     cfg.Slack.DropStaleEvents,
+			ProgressMode:        cfg.Slack.ProgressMode,
+			WorkingEmoji:        cfg.Slack.WorkingEmoji,
+			DoneEmoji:           cfg.Slack.DoneEmoji,
+			FailedEmoji:         cfg.Slack.FailedEmoji,
+			ClearReactionOnDone: cfg.Slack.ClearReactionOnDone,
 		}
 		if cfg.A2A.Enabled {
 			slackAdapter.DefaultAgent = cfg.A2A.DefaultAgent

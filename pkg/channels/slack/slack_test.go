@@ -830,6 +830,21 @@ func TestProgress_ReactionsLifecycle(t *testing.T) {
 	require.Equal(t, "222.000", fake.pathCalls("reactions.add")[0].params["timestamp"])
 }
 
+func TestProgress_ClearReactionOnDone(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "done"}, {Done: true}}}
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+	a.ClearReactionOnDone = true
+
+	sendEvent(t, srv, dmEvent("U1", "hi", "222.000"))
+
+	// Working reaction added, then removed on completion with no done reaction.
+	fake.waitForPath(t, "reactions.remove", 1)
+	require.Equal(t, []string{"eyes"}, fake.reactionNames("reactions.add"), "only the working reaction is added")
+	require.Equal(t, []string{"eyes"}, fake.reactionNames("reactions.remove"), "working reaction removed on completion")
+	require.NotContains(t, fake.reactionNames("reactions.add"), "white_check_mark", "no done reaction added")
+}
+
 func TestProgress_FailedReactionOnError(t *testing.T) {
 	fake := newFakeSlackAPI()
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Err: errors.New("boom")}}}

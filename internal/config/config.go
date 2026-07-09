@@ -91,6 +91,11 @@ type SlackConfig struct {
 	WorkingEmoji string
 	DoneEmoji    string
 	FailedEmoji  string
+	// ClearReactionOnDone, when true (the default), removes the working reaction
+	// on a successful turn without adding a done reaction, leaving no residual
+	// emoji. Set SLACK_CLEAR_REACTION_ON_DONE=false to swap in DoneEmoji instead.
+	// The failed reaction is unaffected.
+	ClearReactionOnDone bool
 }
 
 // OBOConfig configures Slack on-behalf-of (OBO) muster account linking. When
@@ -174,9 +179,10 @@ func Defaults() Config {
 		KlausctlBin:   "klausctl",
 		DefaultTTL:    24 * time.Hour,
 		Slack: SlackConfig{
-			Enabled:     false,
-			Mode:        "events",
-			SecretsFile: os.ExpandEnv("$HOME/.config/klausctl/gateway/slack-secrets.yaml"),
+			Enabled:             false,
+			Mode:                "events",
+			SecretsFile:         os.ExpandEnv("$HOME/.config/klausctl/gateway/slack-secrets.yaml"),
+			ClearReactionOnDone: true,
 		},
 		CLI: CLIConfig{
 			Enabled: false,
@@ -216,6 +222,7 @@ func Load(args []string) (Config, error) {
 	fs.StringVar(&cfg.Slack.WorkingEmoji, "slack-working-emoji", cfg.Slack.WorkingEmoji, "Slack reaction emoji name for a turn in progress (no colons). Empty uses the default.")
 	fs.StringVar(&cfg.Slack.DoneEmoji, "slack-done-emoji", cfg.Slack.DoneEmoji, "Slack reaction emoji name for a completed turn (no colons). Empty uses the default.")
 	fs.StringVar(&cfg.Slack.FailedEmoji, "slack-failed-emoji", cfg.Slack.FailedEmoji, "Slack reaction emoji name for a failed turn (no colons). Empty uses the default.")
+	fs.BoolVar(&cfg.Slack.ClearReactionOnDone, "slack-clear-reaction-on-done", cfg.Slack.ClearReactionOnDone, "On a successful turn, remove the working reaction without adding a done reaction (default true). Set false to swap in the done emoji.")
 	fs.BoolVar(&cfg.CLI.Enabled, "cli-enabled", cfg.CLI.Enabled, "Enable the CLI channel adapter at /cli/v1/*.")
 	fs.BoolVar(&cfg.Controller, "controller", cfg.Controller, "Enable the embedded ChannelRoute controller (requires --store=crd).")
 	fs.BoolVar(&cfg.A2A.Enabled, "a2a-enabled", cfg.A2A.Enabled, "Enable the A2A client surface.")
@@ -328,6 +335,9 @@ func applyEnv(cfg *Config) {
 	}
 	if v, ok := lookup("SLACK_FAILED_EMOJI"); ok {
 		cfg.Slack.FailedEmoji = v
+	}
+	if v, ok := lookup("SLACK_CLEAR_REACTION_ON_DONE"); ok {
+		cfg.Slack.ClearReactionOnDone = strings.EqualFold(v, "true") || v == "1"
 	}
 	if v, ok := lookup("CLI_ENABLED"); ok {
 		cfg.CLI.Enabled = strings.EqualFold(v, "true") || v == "1"

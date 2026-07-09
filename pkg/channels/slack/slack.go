@@ -94,6 +94,10 @@ type Adapter struct {
 	WorkingEmoji string
 	DoneEmoji    string
 	FailedEmoji  string
+	// ClearReactionOnDone, when true, removes the working reaction on a
+	// successful turn without adding a done reaction. When false the working
+	// reaction is swapped for DoneEmoji. The failed reaction is unaffected.
+	ClearReactionOnDone bool
 
 	gw        channels.Gateway
 	started   atomic.Bool

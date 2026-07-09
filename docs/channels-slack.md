@@ -133,10 +133,11 @@ any string that begins with `Slack bot`, `Slack app-level`, or `Slack user`.
    The same thread always maps to the same contextID, allowing Klaus to resume the conversation.
 6. The gateway forwards the turn through the A2A executor to the instance named by
    `slack.defaultAgent`. The OpenAI `/v1` path is bypassed.
-7. Progress is shown by adding a working reaction to the triggering message (swapped to a
-   done or failed reaction when the turn ends). With `SLACK_PROGRESS_MODE=text`, or in `auto`
-   mode when `reactions:write` is unavailable, a `_thinking…_` placeholder message is posted
-   instead.
+7. Progress is shown by adding a working reaction to the triggering message. On success the
+   working reaction is removed with no residual emoji (default); set
+   `SLACK_CLEAR_REACTION_ON_DONE=false` to swap in a done reaction instead. A failed turn always
+   swaps in the failed reaction. With `SLACK_PROGRESS_MODE=text`, or in `auto` mode when
+   `reactions:write` is unavailable, a `_thinking…_` placeholder message is posted instead.
 8. Completion deltas are batched into a Block Kit `markdown` block and written back via
    `chat.update` (or an initial `chat.postMessage`) as the response accumulates. Replies over
    12,000 characters roll over into follow-up in-thread messages on code-fence boundaries.
@@ -152,6 +153,7 @@ still running gets a brief "still working" notice rather than starting an overla
 | `--slack-working-emoji` | `SLACK_WORKING_EMOJI` | `eyes` |
 | `--slack-done-emoji` | `SLACK_DONE_EMOJI` | `white_check_mark` |
 | `--slack-failed-emoji` | `SLACK_FAILED_EMOJI` | `x` |
+| `--slack-clear-reaction-on-done` | `SLACK_CLEAR_REACTION_ON_DONE` | `true` (remove the working reaction without adding a done reaction) |
 
 ## Required bot OAuth scopes
 

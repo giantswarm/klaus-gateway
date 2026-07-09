@@ -12,17 +12,28 @@ import (
 // the placeholder message and the streamed answer are the only signal, so the
 // terminal hooks are no-ops.
 type progressState struct {
-	client  *slackAPIClient
-	channel string
-	reactTS string // triggering message ts; "" = text mode
-	working bool   // a working reaction is currently present
-	emojis  progressEmojis
-	logger  *slog.Logger
+	client      *slackAPIClient
+	channel     string
+	reactTS     string // triggering message ts; "" = text mode
+	working     bool   // a working reaction is currently present
+	clearOnDone bool   // on done, just remove the working reaction (no done reaction)
+	emojis      progressEmojis
+	logger      *slog.Logger
 }
 
 type progressEmojis struct{ working, done, failed string }
 
-func (p *progressState) done(ctx context.Context)   { p.swap(ctx, p.emojis.done) }
+// done ends a successful turn. When clearOnDone is set it just removes the
+// working reaction, leaving no residual emoji; otherwise it swaps in the done
+// reaction.
+func (p *progressState) done(ctx context.Context) {
+	if p.clearOnDone {
+		p.removeWorking(ctx)
+		return
+	}
+	p.swap(ctx, p.emojis.done)
+}
+
 func (p *progressState) failed(ctx context.Context) { p.swap(ctx, p.emojis.failed) }
 
 // clear removes the working reaction without adding a terminal one, used when
@@ -55,7 +66,7 @@ func (p *progressState) removeWorking(ctx context.Context) {
 // scope in auto mode it caches the downgrade and falls back to a text
 // placeholder. triggerTS == "" (e.g. a button resume) always uses text mode.
 func (a *Adapter) startProgress(ctx context.Context, client *slackAPIClient, channel, threadID, triggerTS, placeholder string) (*progressState, string) {
-	p := &progressState{client: client, channel: channel, emojis: a.progressEmojis(), logger: a.Logger}
+	p := &progressState{client: client, channel: channel, clearOnDone: a.ClearReactionOnDone, emojis: a.progressEmojis(), logger: a.Logger}
 
 	if triggerTS != "" && a.reactionsMode() {
 		switch err := client.reactionsAdd(ctx, channel, triggerTS, p.emojis.working); {
