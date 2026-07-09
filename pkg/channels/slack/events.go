@@ -53,6 +53,18 @@ func (h *eventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Slack redelivers an event up to 3 times when the ack is slow or fails.
+	// Handling is asynchronous (ack-first), so a redelivery would start a
+	// duplicate turn; drop it and tell Slack not to retry further.
+	if r.Header.Get("X-Slack-Retry-Num") != "" {
+		h.logger.Info("slack: dropping redelivered event",
+			"retry_num", r.Header.Get("X-Slack-Retry-Num"),
+			"retry_reason", r.Header.Get("X-Slack-Retry-Reason"))
+		w.Header().Set("X-Slack-No-Retry", "1")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
 	// Acknowledge immediately; Slack requires a 200 within 3 seconds.
 	w.WriteHeader(http.StatusOK)
 

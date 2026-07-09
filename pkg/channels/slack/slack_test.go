@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -216,6 +217,43 @@ func TestEventsHandler_AppMentionDispatch(t *testing.T) {
 	require.Equal(t, "U123", got.Subject, "Subject carries the raw Slack user ID for access control")
 	require.Equal(t, helloText, got.Text)
 	require.Equal(t, "test-agent", got.AgentRef, "AgentRef must be set to DefaultAgent")
+}
+
+func TestEventsHandler_RedeliveredEventDropped(t *testing.T) {
+	var dispatched atomic.Int32
+	gw := &stubGateway{
+		onResolve: func(channels.InboundMessage) { dispatched.Add(1) },
+	}
+
+	fakeSlack := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"ok":true,"ts":"1234.5678"}`)
+	}))
+	defer fakeSlack.Close()
+
+	_, srv := newEventsAdapter(t, gw, fakeSlack.URL)
+
+	body := []byte(`{
+		"type":"event_callback",
+		"event":{"type":"app_mention","user":"U123","text":"<@BOT> hello","channel":"C456","ts":"1234.5678"}
+	}`)
+	stamp, sig := signBody(t, "signing-secret", body)
+
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/channels/slack/events", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Slack-Request-Timestamp", stamp)
+	req.Header.Set("X-Slack-Signature", sig)
+	req.Header.Set("X-Slack-Retry-Num", "1")
+	req.Header.Set("X-Slack-Retry-Reason", "http_timeout")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Equal(t, "1", resp.Header.Get("X-Slack-No-Retry"))
+
+	time.Sleep(200 * time.Millisecond)
+	require.Zero(t, dispatched.Load(), "redelivered event must not start a duplicate turn")
 }
 
 func TestEventsHandler_LockedMode_NonOwnerDropped(t *testing.T) {

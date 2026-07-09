@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Avoid a potential panic from comparing `OutboundDelta` (which embeds an error interface) against its zero value on the A2A error path.
 - Slack turns are serialized per thread. A message that arrives while the thread's previous turn is still running gets a brief "still working" notice instead of starting a second, overlapping turn; concurrent turns on one thread share a kagent session and would otherwise interleave its event log into incoherent history.
 - A Slack thread's paused input-required task is no longer consumed by a typed reply that then aborts on a transient human-token error. The pending task is taken only once the turn is committed to run, so a later button click can still resume it instead of finding nothing.
+- A rate-limited Slack Web API call (HTTP 429) no longer aborts the turn and discards the agent's work. The call is retried once after honoring `Retry-After` (capped at 30s), and a failed flush keeps its content pending so the next flush re-sends it instead of dropping the delta.
+- Redelivered Slack Events API requests (`X-Slack-Retry-Num` set) are dropped with `X-Slack-No-Retry`, so a slow ack no longer starts a duplicate turn for the same message.
 
 ### Refactored
 

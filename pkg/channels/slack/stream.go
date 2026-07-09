@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -137,7 +138,7 @@ func (w *batchedWriter) flush(ctx context.Context) error {
 		return nil
 	}
 	text := w.buf.String()
-	w.flushedLen = w.buf.Len()
+	flushingLen := w.buf.Len()
 	w.mu.Unlock()
 
 	// Agent output renders as Block Kit markdown blocks. A reply that
@@ -172,6 +173,14 @@ func (w *batchedWriter) flush(ctx context.Context) error {
 		}
 		w.tailTS = append(w.tailTS, ts)
 	}
+	// flushedLen advances only once every chunk landed, so a failed flush leaves
+	// the delta pending and a retried flush re-sends it (chat.update on the head
+	// and already-posted tails is idempotent).
+	w.mu.Lock()
+	if flushingLen > w.flushedLen {
+		w.flushedLen = flushingLen
+	}
+	w.mu.Unlock()
 	return nil
 }
 
@@ -426,28 +435,7 @@ func (c *slackAPIClient) postJSON(ctx context.Context, method string, body any) 
 	if err != nil {
 		return "", fmt.Errorf("slack %s: marshal: %w", method, err)
 	}
-	target := c.baseURL + "/" + method
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, strings.NewReader(string(data)))
-	if err != nil {
-		return "", fmt.Errorf("slack %s: build request: %w", method, err)
-	}
-	req.Header.Set("Content-Type", "application/json; charset=utf-8")
-	req.Header.Set("Authorization", "Bearer "+c.botToken)
-
-	resp, err := http.DefaultClient.Do(req) //nolint:gosec
-	if err != nil {
-		return "", fmt.Errorf("slack %s: %w", method, err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	var result slackResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("slack %s: decode response: %w", method, err)
-	}
-	if !result.OK {
-		return "", fmt.Errorf("slack %s: %s", method, result.Error)
-	}
-	return result.Ts, nil
+	return c.send(ctx, method, "application/json; charset=utf-8", string(data))
 }
 
 type slackResponse struct {
@@ -457,26 +445,63 @@ type slackResponse struct {
 }
 
 func (c *slackAPIClient) post(ctx context.Context, method string, params url.Values) (string, error) {
-	target := c.baseURL + "/" + method
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, strings.NewReader(params.Encode()))
-	if err != nil {
-		return "", fmt.Errorf("slack %s: build request: %w", method, err)
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Authorization", "Bearer "+c.botToken)
+	return c.send(ctx, method, "application/x-www-form-urlencoded", params.Encode())
+}
 
-	resp, err := http.DefaultClient.Do(req) //nolint:gosec
-	if err != nil {
-		return "", fmt.Errorf("slack %s: %w", method, err)
-	}
-	defer func() { _ = resp.Body.Close() }()
+// rateLimitRetryCap bounds how long a Retry-After pause may hold a call;
+// a longer server-requested wait fails the call instead of stalling the writer.
+const rateLimitRetryCap = 30 * time.Second
 
-	var result slackResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("slack %s: decode response: %w", method, err)
+// send executes one Slack Web API call. A 429 is retried once after honoring
+// Retry-After (capped at rateLimitRetryCap) so a throttled progress edit does
+// not abort the turn.
+func (c *slackAPIClient) send(ctx context.Context, method, contentType, payload string) (string, error) {
+	const maxAttempts = 2
+	for attempt := 1; ; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/"+method, strings.NewReader(payload))
+		if err != nil {
+			return "", fmt.Errorf("slack %s: build request: %w", method, err)
+		}
+		req.Header.Set("Content-Type", contentType)
+		req.Header.Set("Authorization", "Bearer "+c.botToken)
+
+		resp, err := http.DefaultClient.Do(req) //nolint:gosec
+		if err != nil {
+			return "", fmt.Errorf("slack %s: %w", method, err)
+		}
+		if resp.StatusCode == http.StatusTooManyRequests {
+			_ = resp.Body.Close()
+			wait := retryAfter(resp.Header)
+			if attempt >= maxAttempts || wait > rateLimitRetryCap {
+				return "", fmt.Errorf("slack %s: rate limited (retry after %s)", method, wait)
+			}
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			case <-time.After(wait):
+			}
+			continue
+		}
+
+		var result slackResponse
+		err = json.NewDecoder(resp.Body).Decode(&result)
+		_ = resp.Body.Close()
+		if err != nil {
+			return "", fmt.Errorf("slack %s: decode response: %w", method, err)
+		}
+		if !result.OK {
+			return "", fmt.Errorf("slack %s: %s", method, result.Error)
+		}
+		return result.Ts, nil
 	}
-	if !result.OK {
-		return "", fmt.Errorf("slack %s: %s", method, result.Error)
+}
+
+// retryAfter reads the Retry-After header of a 429 response, defaulting to 1s
+// when absent or unparsable.
+func retryAfter(header http.Header) time.Duration {
+	seconds, err := strconv.Atoi(header.Get("Retry-After"))
+	if err != nil || seconds < 0 {
+		return time.Second
 	}
-	return result.Ts, nil
+	return time.Duration(seconds) * time.Second
 }
