@@ -594,6 +594,11 @@ func (c *slackAPIClient) postAccessConsentPrompt(ctx context.Context, channel, t
 	return err
 }
 
+// interactionHTTPClient bounds POSTs to a Slack interaction response_url. These
+// run on the adapter's long-lived context (routeInteraction), so without a
+// timeout a hung upstream would park the goroutine until process shutdown.
+var interactionHTTPClient = &http.Client{Timeout: 10 * time.Second}
+
 // respondURL replaces a message via a Slack interaction response_url. Ephemeral
 // messages have no addressable ts for chat.update, so the access-consent prompt
 // is updated this way after a click. The response_url is unauthenticated and
@@ -609,12 +614,14 @@ func respondURL(ctx context.Context, responseURL, text string) error {
 	if err != nil {
 		return fmt.Errorf("slack respond_url: marshal: %w", err)
 	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, responseURL, strings.NewReader(string(body)))
 	if err != nil {
 		return fmt.Errorf("slack respond_url: build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json; charset=utf-8")
-	resp, err := http.DefaultClient.Do(req) //nolint:gosec
+	resp, err := interactionHTTPClient.Do(req) //nolint:gosec
 	if err != nil {
 		return fmt.Errorf("slack respond_url: %w", err)
 	}

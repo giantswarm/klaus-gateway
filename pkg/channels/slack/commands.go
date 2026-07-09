@@ -60,7 +60,7 @@ func parseDetailsLevel(s string) (level detailsLevel, ok bool) {
 
 // slashCommand is a parsed in-thread command.
 type slashCommand struct {
-	Name string   // lower-case command name, e.g. "stop", "open"
+	Name string   // lower-case command name, e.g. "stop", "usage"
 	Args []string // remaining tokens, e.g. ["<@U123456>"]
 }
 

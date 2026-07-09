@@ -21,14 +21,41 @@ const (
 	RiskRed
 )
 
+// Risk-level names, used both for String() and for parsing the threshold config.
+const (
+	riskNameGreen  = "green"
+	riskNameYellow = "yellow"
+	riskNameRed    = "red"
+)
+
 func (r Risk) String() string {
 	switch r {
 	case RiskGreen:
-		return "green"
+		return riskNameGreen
 	case RiskYellow:
-		return "yellow"
+		return riskNameYellow
 	default:
-		return "red"
+		return riskNameRed
+	}
+}
+
+// ParseThreshold parses an auto-approve threshold string into the highest
+// auto-approvable Risk. enabled is false for the disabling values
+// ("off"/"none"/"disabled"); ok is false for any unrecognised value, so callers
+// can reject a typo instead of silently defaulting to a permissive setting.
+// "" and "green" map to read-only auto-approval.
+func ParseThreshold(s string) (threshold Risk, enabled, ok bool) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "off", "none", "disabled":
+		return 0, false, true
+	case "", riskNameGreen:
+		return RiskGreen, true, true
+	case riskNameYellow:
+		return RiskYellow, true, true
+	case riskNameRed:
+		return RiskRed, true, true
+	default:
+		return 0, false, false
 	}
 }
 
@@ -187,6 +214,8 @@ type ruleEntry struct {
 var redRules = []ruleEntry{
 	{regexp.MustCompile(`rm\s+-[a-z]*r[a-z]*\s`), "recursive delete"},
 	{regexp.MustCompile(`\brm\s+--`), "rm with force flags"},
+	{regexp.MustCompile(`\bfind\b.*\s-delete\b`), "find with -delete"},
+	{regexp.MustCompile(`\bfind\b.*\s-exec(dir)?\b`), "find with -exec"},
 	{regexp.MustCompile(`\bmkfs\b`), "filesystem creation"},
 	{regexp.MustCompile(`\bfdisk\b`), "disk partitioning"},
 	{regexp.MustCompile(`\bdd\s+if=`), "raw disk write"},

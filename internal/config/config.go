@@ -12,6 +12,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/giantswarm/klaus-gateway/pkg/channels/slack/classifier"
 )
 
 // Store names understood by the routing store factory.
@@ -448,6 +450,11 @@ func (c Config) Validate() error {
 		}
 		if (c.OBO.StorePath == "") != (c.OBO.StoreKeyFile == "") {
 			return fmt.Errorf("--obo-store-path and --obo-store-key-file must be set together")
+		}
+	}
+	if c.Slack.Enabled {
+		if _, _, ok := classifier.ParseThreshold(c.Slack.HITLAutoApprove); !ok {
+			return fmt.Errorf("invalid --slack-hitl-autoapprove %q: must be one of green, yellow, red, off", c.Slack.HITLAutoApprove)
 		}
 	}
 	return nil

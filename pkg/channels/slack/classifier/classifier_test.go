@@ -30,6 +30,9 @@ func TestClassify(t *testing.T) {
 		// Red: write to sensitive paths
 		{"echo 'bad' > /etc/passwd", RiskRed},
 		{"write config to /root/.bashrc", RiskRed},
+		// Red: destructive find (must beat the read-only find green rule)
+		{"find /workspace -name '*.tmp' -delete", RiskRed},
+		{"find . -type f -exec rm {} ;", RiskRed},
 		// Red: path traversal
 		{"read file: ../../etc/shadow", RiskRed},
 		// Red: sensitive path access
@@ -59,6 +62,39 @@ func TestClassify(t *testing.T) {
 		t.Run(tc.prompt, func(t *testing.T) {
 			got := c.Classify(tc.prompt)
 			require.Equal(t, tc.wantRisk, got.Risk, "prompt %q: got %s, want %s (reason: %s)", tc.prompt, got.Risk, tc.wantRisk, got.Reason)
+		})
+	}
+}
+
+func TestParseThreshold(t *testing.T) {
+	tests := []struct {
+		in            string
+		wantThreshold Risk
+		wantEnabled   bool
+		wantOK        bool
+	}{
+		{"", RiskGreen, true, true},
+		{"green", RiskGreen, true, true},
+		{"GREEN", RiskGreen, true, true},
+		{" yellow ", RiskYellow, true, true},
+		{"red", RiskRed, true, true},
+		{"off", 0, false, true},
+		{"none", 0, false, true},
+		{"disabled", 0, false, true},
+		// Unknown values (incl. typos of the disabling ones) are rejected, not
+		// silently defaulted to a permissive setting.
+		{"greenn", 0, false, false},
+		{"nono", 0, false, false},
+		{"true", 0, false, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.in, func(t *testing.T) {
+			threshold, enabled, ok := ParseThreshold(tc.in)
+			require.Equal(t, tc.wantOK, ok)
+			require.Equal(t, tc.wantEnabled, enabled)
+			if tc.wantEnabled {
+				require.Equal(t, tc.wantThreshold, threshold)
+			}
 		})
 	}
 }

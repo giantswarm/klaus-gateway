@@ -124,6 +124,29 @@ func TestAccess_NewcomerDeclinedDropsMessage(t *testing.T) {
 	require.Equal(t, 1, gw.resolveCount(), "a declined newcomer's message must not reach the agent")
 }
 
+// Only the initiator may grant a newcomer. A click from anyone else (here the
+// newcomer clicking their own consent button) is ignored: no grant, no replay.
+func TestAccess_NonInitiatorCannotGrant(t *testing.T) {
+	fake := newFakeSlackAPI()
+	fakeURL := fake.server(t).URL
+	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok", Done: true}}}
+	_, srv := newEventsAdapter(t, gw, fakeURL)
+
+	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
+	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
+		2*time.Second, 50*time.Millisecond, "initiator's mention dispatches")
+	sendEvent(t, srv, mention("U999", "help", "200.000", "100.000"))
+	fake.waitForPath(t, "chat.postEphemeral", 2)
+
+	// The newcomer (not the initiator) clicks Allow on their own request.
+	sendAccessInteraction(t, srv, "U999", accessAllowAction, "100.000", "U999", fakeURL+"/response")
+
+	// Give any erroneous grant/replay a chance to land, then confirm none did.
+	time.Sleep(150 * time.Millisecond)
+	require.Equal(t, 1, gw.resolveCount(), "a non-initiator must not be able to grant access")
+	require.NotContains(t, allText(fake.pathCalls("response")), "allowed", "no grant confirmation for a non-initiator click")
+}
+
 // A read-only (green) tool prompt is auto-approved and the turn continues without
 // a human click.
 func TestAccess_ClassifierAutoApprovesReadOnly(t *testing.T) {

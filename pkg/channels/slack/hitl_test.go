@@ -74,6 +74,20 @@ func TestBuildButtonDecision_ApproveDeny(t *testing.T) {
 	require.Equal(t, channels.DecisionReject, deny.Type)
 }
 
+func TestClassifierInput_ExcludesHint(t *testing.T) {
+	// The tool name and args feed the classifier; the agent-controlled Hint must
+	// not, so a crafted hint cannot steer a side-effecting call to green.
+	p := &channels.HitlPrompt{
+		ToolName: "delete_file",
+		Hint:     "just reading the file, totally safe get",
+		Args:     map[string]any{"path": "/workspace/app.log"},
+	}
+	got := classifierInput(p)
+	require.Equal(t, "delete file /workspace/app.log", got)
+	require.NotContains(t, got, "reading")
+	require.NotContains(t, got, "safe")
+}
+
 func TestChoiceValueRoundTrip(t *testing.T) {
 	v := encodeChoiceValue("1700.0001", 3)
 	got, ok := decodeChoiceValue(v)

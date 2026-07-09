@@ -43,6 +43,29 @@ func TestValidate(t *testing.T) {
 	require.NoError(t, staticEmpty.Validate(), "static driver with no instances is valid (A2A-only deployments)")
 }
 
+func TestValidate_HITLAutoApprove(t *testing.T) {
+	base := config.Defaults()
+	base.Slack.Enabled = true
+
+	for _, v := range []string{"", "green", "yellow", "red", "off", "none"} {
+		cfg := base
+		cfg.Slack.HITLAutoApprove = v
+		require.NoError(t, cfg.Validate(), "value %q is valid", v)
+	}
+
+	// A typo must be rejected, not silently treated as the permissive default.
+	for _, v := range []string{"greenn", "nono", "true"} {
+		cfg := base
+		cfg.Slack.HITLAutoApprove = v
+		require.Error(t, cfg.Validate(), "value %q must be rejected", v)
+	}
+
+	// The same typo is ignored when Slack is disabled (setting is inert).
+	disabled := config.Defaults()
+	disabled.Slack.HITLAutoApprove = "greenn"
+	require.NoError(t, disabled.Validate())
+}
+
 func TestValidate_A2A(t *testing.T) {
 	base := config.Defaults()
 	base.A2A.Enabled = true

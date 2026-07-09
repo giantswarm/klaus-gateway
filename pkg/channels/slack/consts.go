@@ -61,6 +61,10 @@ const thinkingPlaceholder = "_thinking…_"
 // in flight on the same thread (per-thread serialization).
 const busyNotice = "I'm still finishing your previous message in this thread. Give me a moment and try again once I've replied."
 
+// accessDecisionRefusal is shown (ephemerally) when a user who is not permitted
+// in the thread clicks an in-thread tool Approve/Deny button.
+const accessDecisionRefusal = "_Only the thread owner (and people they've allowed) can approve or deny this action._"
+
 // emptyOutputNote replaces the text-mode placeholder when a turn completes
 // without producing any output, so it does not linger as "thinking".
 const emptyOutputNote = "_(the agent finished without a reply)_"
