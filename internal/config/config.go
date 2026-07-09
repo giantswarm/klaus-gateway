@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/giantswarm/klaus-gateway/pkg/channels/slack/classifier"
 )
 
 // Store names understood by the routing store factory.
@@ -87,14 +86,6 @@ type SlackConfig struct {
 	// and (for socketmode) app_token. Environment variables (SLACK_BOT_TOKEN
 	// etc.) take precedence over file values.
 	SecretsFile string
-	// HITLAutoApprove is the highest tool-call risk auto-approved without a human
-	// click: "green" (default; read-only), "yellow", or "off" (always ask).
-	// Red-classified calls are never auto-approved, so "red" is not accepted.
-	// SLACK_HITL_AUTOAPPROVE
-	HITLAutoApprove string
-	// HITLAllowedHosts are glob patterns for network hosts the risk classifier
-	// treats as safe. SLACK_HITL_ALLOWED_HOSTS (comma-separated).
-	HITLAllowedHosts []string
 	// DMOnly restricts the adapter to direct messages: channel messages and
 	// @-mentions in channels are ignored. SLACK_DM_ONLY=true. Default false.
 	DMOnly bool
@@ -330,16 +321,6 @@ func applyEnv(cfg *Config) {
 	if v, ok := lookup("SLACK_SECRETS_FILE"); ok {
 		cfg.Slack.SecretsFile = v
 	}
-	if v, ok := lookup("SLACK_HITL_AUTOAPPROVE"); ok {
-		cfg.Slack.HITLAutoApprove = v
-	}
-	if v, ok := lookup("SLACK_HITL_ALLOWED_HOSTS"); ok && v != "" {
-		for h := range strings.SplitSeq(v, ",") {
-			if h = strings.TrimSpace(h); h != "" {
-				cfg.Slack.HITLAllowedHosts = append(cfg.Slack.HITLAllowedHosts, h)
-			}
-		}
-	}
 	if v, ok := lookup("SLACK_DM_ONLY"); ok {
 		cfg.Slack.DMOnly = strings.EqualFold(v, "true") || v == "1"
 	}
@@ -451,11 +432,6 @@ func (c Config) Validate() error {
 		}
 		if (c.OBO.StorePath == "") != (c.OBO.StoreKeyFile == "") {
 			return fmt.Errorf("--obo-store-path and --obo-store-key-file must be set together")
-		}
-	}
-	if c.Slack.Enabled {
-		if _, _, ok := classifier.ParseThreshold(c.Slack.HITLAutoApprove); !ok {
-			return fmt.Errorf("invalid SLACK_HITL_AUTOAPPROVE %q: must be one of green, yellow, off (red-classified calls are never auto-approved)", c.Slack.HITLAutoApprove)
 		}
 	}
 	return nil
