@@ -38,9 +38,20 @@ func TestClassifyTool(t *testing.T) {
 		{"unknown tool stays unclassified", "frobnicate_widget", map[string]any{"mode": "read list get show"}, RiskYellow},
 
 		// Yellow: escalation from args on an otherwise green tool.
-		{"green tool, write statement arg", "query_database", map[string]any{"sql": "insert users into accounts"}, RiskYellow},
 		{"green tool, exec arg", "read_config", map[string]any{"post": "spawn a subprocess"}, RiskYellow},
 		{"green tool, plain rm arg", "run_query", map[string]any{"q": "rm /tmp/x"}, RiskYellow},
+
+		// Yellow: SQL mutation statements in argument values.
+		{"sql delete", "query", map[string]any{"sql": "DELETE FROM users"}, RiskYellow},
+		{"sql insert", "query", map[string]any{"sql": "INSERT INTO users VALUES (1)"}, RiskYellow},
+		{"sql update", "query", map[string]any{"sql": "UPDATE users SET admin = 1"}, RiskYellow},
+		{"sql drop table", "query", map[string]any{"sql": "DROP TABLE users"}, RiskYellow},
+		{"sql truncate", "query", map[string]any{"sql": "TRUNCATE users"}, RiskYellow},
+		{"sql alter table", "query", map[string]any{"sql": "ALTER TABLE users ADD COLUMN x int"}, RiskYellow},
+
+		// Yellow: git force branch deletion.
+		{"git branch force delete", "check", map[string]any{"cmd": "git branch -D main"}, RiskYellow},
+		{"git branch delete", "check", map[string]any{"cmd": "git branch -d main"}, RiskYellow},
 
 		// Yellow: network operations.
 		{"network fetch", "fetch_url", map[string]any{"url": "https://unknown-corp.internal/api"}, RiskYellow},
@@ -58,6 +69,10 @@ func TestClassifyTool(t *testing.T) {
 		{"ssh key access", "read_file", map[string]any{"path": "/.ssh/id_rsa"}, RiskRed},
 		{"find -delete", "run_command", map[string]any{"cmd": "find /workspace -name '*.tmp' -delete"}, RiskRed},
 		{"nested arg escalates", "read_file", map[string]any{"opts": map[string]any{"path": "/etc/sudoers"}}, RiskRed},
+		{"double slash sensitive path", "get_file", map[string]any{"path": "/etc//shadow"}, RiskRed},
+		{"IFS shell obfuscation", "list", map[string]any{"cmd": "rm$IFS-rf /"}, RiskRed},
+		{"redis flushall", "show", map[string]any{"redis": "FLUSHALL"}, RiskRed},
+		{"redis flushdb", "show", map[string]any{"redis": "flushdb 0"}, RiskRed},
 	}
 
 	for _, tc := range tests {
@@ -80,7 +95,6 @@ func TestParseThreshold(t *testing.T) {
 		{"green", RiskGreen, true, true},
 		{"GREEN", RiskGreen, true, true},
 		{" yellow ", RiskYellow, true, true},
-		{"red", RiskRed, true, true},
 		{"off", 0, false, true},
 		{"none", 0, false, true},
 		{"disabled", 0, false, true},
@@ -89,6 +103,9 @@ func TestParseThreshold(t *testing.T) {
 		{"greenn", 0, false, false},
 		{"nono", 0, false, false},
 		{"true", 0, false, false},
+		// "red" is not a valid threshold: red classifications are never
+		// auto-approvable, so accepting it would auto-approve everything.
+		{"red", 0, false, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.in, func(t *testing.T) {
@@ -126,6 +143,15 @@ func TestShouldAutoApproveTool_YellowThreshold(t *testing.T) {
 
 	ok, _ = c.ShouldAutoApproveTool("run_command", map[string]any{"cmd": "rm -rf /data"})
 	require.False(t, ok)
+}
+
+func TestShouldAutoApproveTool_RedNeverApproved(t *testing.T) {
+	// Even a threshold set to RiskRed programmatically must not approve a red call.
+	c := &Classifier{Config: Config{AutoApproveThreshold: RiskRed}}
+
+	ok, result := c.ShouldAutoApproveTool("run_command", map[string]any{"cmd": "rm -rf /data"})
+	require.False(t, ok)
+	require.Equal(t, RiskRed, result.Risk)
 }
 
 func TestHostAllowlist(t *testing.T) {
