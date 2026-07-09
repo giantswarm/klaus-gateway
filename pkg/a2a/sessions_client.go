@@ -7,9 +7,16 @@ import (
 	"time"
 )
 
-// SessionsClient reads session state from the kagent controller REST API. It is
-// used to decide whether a Slack thread's session can be resumed: a GET on a
-// missing session returns 404, which the adapter surfaces as "starting fresh".
+// SessionsClient reads session state from the kagent controller REST API to
+// decide whether a Slack thread's session can be resumed: a GET on a missing
+// session returns 404, which the adapter surfaces as "starting fresh".
+//
+// REST is the only session-existence source available. kagent's A2A gateway
+// exposes no task listing over the legacy wire klaus-gateway speaks, and sending
+// A2A-Version: 1.0 does not help: ListTasks is accepted at the v1 router but the
+// gateway's shared passthrough to the v0-pinned agent pod returns
+// ErrUnsupportedOperation. Until kagent answers ListTasks from its task store,
+// GET /api/sessions/{id} is the only way to resolve resumability by contextID.
 type SessionsClient struct {
 	// HTTPClient is the HTTP client used for requests. Nil uses a default with a 10-second timeout.
 	HTTPClient *http.Client
