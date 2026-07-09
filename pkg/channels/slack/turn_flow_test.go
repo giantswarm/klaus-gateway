@@ -71,7 +71,7 @@ func TestStop_CancelsAutoApprovedResume(t *testing.T) {
 	// The resumed turn is cancelled, so the thread slot frees and a new message
 	// dispatches rather than hitting the busy notice. Slot release is
 	// asynchronous to the /stop ack, so keep re-sending until one gets through;
-	// without the cancellation fix the slot never frees and this times out.
+	// if the resumed segment were not cancelled the slot would never free.
 	next := 702
 	require.Eventually(t, func() bool {
 		sendEvent(t, srv, dmThreadEvent("U1", "again", fmt.Sprintf("%d.000", next), "700.000"))
