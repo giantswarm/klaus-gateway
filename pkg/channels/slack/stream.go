@@ -215,13 +215,17 @@ func (w *batchedWriter) toolPoster(ctx context.Context) {
 
 // drainToolPosts closes the queue and waits for the poster to finish, so all
 // tool activity is flushed before the turn is considered done. No-op when no
-// tool activity was queued.
+// tool activity was queued. Idempotent: it clears the queue so a subsequent
+// run() over the same writer (an auto-approved resume segment) starts a fresh
+// poster instead of re-closing a closed channel.
 func (w *batchedWriter) drainToolPosts() {
 	if w.toolPosts == nil {
 		return
 	}
 	close(w.toolPosts)
 	<-w.toolWorkerDone
+	w.toolPosts = nil
+	w.toolWorkerDone = nil
 }
 
 // compactJSON marshals a tool payload to a single line, truncated to max runes.
