@@ -33,7 +33,9 @@ type interactionPayload struct {
 	ResponseURL string `json:"response_url"`
 	Actions     []struct {
 		ActionID string `json:"action_id"`
-		Value    string `json:"value"` // encodes threadID
+		// Value carries the button payload: a raw threadID for approve/deny, or
+		// JSON for choice ({t,c}) and access ({t,u}) buttons.
+		Value string `json:"value"`
 	} `json:"actions"`
 }
 
@@ -101,7 +103,7 @@ func (a *Adapter) routeInteraction(ctx context.Context, payload interactionPaylo
 		if !ok {
 			return
 		}
-		a.handleAccessDecision(ctx, av.Thread, av.User, payload.ResponseURL, act.kind == accessAllow)
+		a.handleAccessDecision(ctx, av.Thread, av.User, payload.User.ID, payload.ResponseURL, act.kind == accessAllow)
 		return
 	}
 
@@ -151,8 +153,19 @@ func classifyAction(actionID string) (hitlAction, bool) {
 // to instruct the agent. On Yes the newcomer is granted (additively) and their
 // held message is replayed through dispatch; on No it is discarded. The
 // ephemeral prompt is updated in place via the interaction response_url.
-func (a *Adapter) handleAccessDecision(ctx context.Context, threadID, userID, responseURL string, allow bool) {
-	req := a.takePendingAccess(threadID, userID)
+//
+// Only the thread initiator may decide. The prompt is ephemeral to the
+// initiator, but the grant authorises another user to act under the initiator's
+// identity, so the clicker's identity is checked here too rather than trusting
+// ephemeral delivery alone (fail closed on any mismatch).
+func (a *Adapter) handleAccessDecision(ctx context.Context, threadID, newcomerID, clickerID, responseURL string, allow bool) {
+	if initiator := a.accessPolicy().Initiator(threadID); initiator == "" || initiator != clickerID {
+		a.Logger.Warn("slack: access decision from non-initiator ignored",
+			"thread", threadID, "clicker", clickerID, "newcomer", newcomerID)
+		return
+	}
+
+	req := a.takePendingAccess(threadID, newcomerID)
 
 	if !allow {
 		if err := respondURL(ctx, responseURL, "🚫 _Declined._"); err != nil {
@@ -161,8 +174,8 @@ func (a *Adapter) handleAccessDecision(ctx context.Context, threadID, userID, re
 		return
 	}
 
-	a.accessPolicy().Grant(threadID, userID)
-	if err := respondURL(ctx, responseURL, fmt.Sprintf("✅ _<@%s> allowed._", userID)); err != nil {
+	a.accessPolicy().Grant(threadID, newcomerID)
+	if err := respondURL(ctx, responseURL, fmt.Sprintf("✅ _<@%s> allowed._", newcomerID)); err != nil {
 		a.Logger.Warn("slack: update access prompt (allowed) failed", "thread", threadID, "error", err)
 	}
 
@@ -172,7 +185,7 @@ func (a *Adapter) handleAccessDecision(ctx context.Context, threadID, userID, re
 		return
 	}
 	if err := a.dispatch(ctx, req.msg, req.slackChannel); err != nil && !errors.Is(err, context.Canceled) {
-		a.Logger.Error("slack: replay after access grant failed", "thread", threadID, "user", userID, "error", err)
+		a.Logger.Error("slack: replay after access grant failed", "thread", threadID, "user", newcomerID, "error", err)
 	}
 }
 
@@ -181,6 +194,17 @@ func (a *Adapter) handleAccessDecision(ctx context.Context, threadID, userID, re
 // structured HITL decision.
 func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, messageTS, slackUser string, act hitlAction) error {
 	client := a.apiClient()
+
+	// The approval buttons are posted in-thread and visible to everyone, but the
+	// tool call runs under the initiator's identity, so only a permitted user (the
+	// initiator or a granted collaborator) may approve or cancel it. An onlooker
+	// click is refused ephemerally and the pending task is left intact.
+	if !a.accessPolicy().Allowed(threadID, slackUser) {
+		if err := client.postEphemeralText(ctx, slackChannel, slackUser, threadID, accessDecisionRefusal); err != nil {
+			a.Logger.Warn("slack: post decision refusal failed", "thread", threadID, "user", slackUser, "error", err)
+		}
+		return nil
+	}
 
 	// Serialize the resume with any concurrent turn on this thread (typed reply
 	// or another click). Acquire before taking the pending task so a rejected

@@ -206,17 +206,15 @@ func NewClassifier(autoApprove string, allowedHosts []string) *classifier.Classi
 	}}
 }
 
+// parseRiskThreshold returns the auto-approve threshold and whether a classifier
+// should be built. An unrecognised value fails closed (no classifier, so every
+// prompt is surfaced); config validation rejects it at startup before this runs.
 func parseRiskThreshold(s string) (classifier.Risk, bool) {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case argOff, "none", "disabled":
+	threshold, enabled, ok := classifier.ParseThreshold(s)
+	if !ok {
 		return 0, false
-	case "yellow":
-		return classifier.RiskYellow, true
-	case "red":
-		return classifier.RiskRed, true
-	default: // "", "green", or unknown -> read-only only
-		return classifier.RiskGreen, true
 	}
+	return threshold, enabled
 }
 
 // Name returns the channel name used in routing keys.

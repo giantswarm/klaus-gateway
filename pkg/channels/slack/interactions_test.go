@@ -143,6 +143,10 @@ func TestInteractionsHandler_Approve(t *testing.T) {
 	}
 	require.NoError(t, a.Start(t.Context(), gw))
 
+	// The clicker must be permitted in the thread (the initiator, here, whose
+	// turn created the pending task) or the decision is refused.
+	a.accessPolicy().SetInitiator("T001", "U001")
+
 	// Seed a pending task.
 	a.storePendingTask("T001", &pendingTask{
 		TaskID:    "task-abc",
@@ -305,6 +309,7 @@ func TestInteractionsHandler_NoPendingTask(t *testing.T) {
 		DefaultAgent: "worker",
 	}
 	require.NoError(t, a.Start(t.Context(), gw))
+	a.accessPolicy().SetInitiator("T_NONE", "U001") // clicker is permitted; exercise the no-pending-task path
 
 	body := slackInteractionPayload(t, "hitl_deny", "T_NONE", "C001", "MSG001", "U001")
 	req := httptest.NewRequest(http.MethodPost, "/channels/slack/interactions", bytes.NewReader(body))
@@ -314,6 +319,66 @@ func TestInteractionsHandler_NoPendingTask(t *testing.T) {
 	rr := httptest.NewRecorder()
 	a.ixHandler.ServeHTTP(rr, req)
 	require.Equal(t, http.StatusOK, rr.Code)
+}
+
+func TestInteractionsHandler_OnlookerCannotDecide(t *testing.T) {
+	const secret = "test-secret"
+
+	var (
+		mu        sync.Mutex
+		ephemeral int
+		resumes   int
+	)
+	apiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/chat.postEphemeral":
+			mu.Lock()
+			ephemeral++
+			mu.Unlock()
+		case "/chat.update", "/chat.postMessage":
+			mu.Lock()
+			resumes++
+			mu.Unlock()
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "ts": "1.1"})
+	}))
+	t.Cleanup(apiSrv.Close)
+
+	gw := &fakeGateway{deltas: []channels.OutboundDelta{{Content: "done"}, {Done: true}}}
+	a := &Adapter{
+		APIBase:      apiSrv.URL,
+		Secrets:      Secrets{BotToken: "test-bot-token", SigningSecret: secret}, //nolint:gosec
+		DefaultAgent: "worker",
+	}
+	require.NoError(t, a.Start(t.Context(), gw))
+
+	// U001 owns the thread; a pending tool call awaits a decision.
+	a.accessPolicy().SetInitiator("T001", "U001")
+	a.storePendingTask("T001", &pendingTask{TaskID: "task-abc", AgentRef: "worker", Channel: "C001", ChannelID: "C001"})
+
+	// An onlooker (U999) clicks Approve.
+	body := slackInteractionPayload(t, "hitl_approve", "T001", "C001", "MSG001", "U999")
+	req := httptest.NewRequest(http.MethodPost, "/channels/slack/interactions", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	signRequest(t, req, body, secret)
+	rr := httptest.NewRecorder()
+	a.ixHandler.ServeHTTP(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code)
+
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return ephemeral > 0
+	}, 2*time.Second, 10*time.Millisecond, "onlooker gets an ephemeral refusal")
+
+	// Give any erroneous resume a chance to land, then confirm none did and the
+	// pending task is intact for the real owner.
+	time.Sleep(150 * time.Millisecond)
+	mu.Lock()
+	require.Zero(t, resumes, "an onlooker click must not resume or cancel the task")
+	mu.Unlock()
+	require.NotNil(t, a.takePendingTask("T001"), "pending task left intact for the owner")
 }
 
 func TestIsActiveThread(t *testing.T) {
