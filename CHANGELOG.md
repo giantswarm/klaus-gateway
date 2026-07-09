@@ -59,6 +59,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `/usage` no longer double-counts a turn that paused for approval: the pre-pause token counts travel with the pending task and the resumed segment adds to them, so both the last-turn and session figures cover the whole turn exactly once.
 - A resume that fails before its stream starts (token mint, gateway resolve, send) re-stores the paused task instead of stranding it, so a retry or button click can still resume the agent.
 - Parked newcomer messages and paused approval tasks are swept after 24 hours, so the per-thread maps no longer grow for the process lifetime.
+- Clicking "Chat" on an approval prompt releases the thread slot before the Slack round-trip that swaps the buttons for the reply hint, so a question typed immediately after the click resumes the held task instead of bouncing off the "still working" notice.
 
 ### Refactored
 

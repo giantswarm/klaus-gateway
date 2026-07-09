@@ -217,7 +217,14 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 		}
 		return nil
 	}
-	defer a.releaseThread(threadID)
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			a.releaseThread(threadID)
+		}
+	}
+	defer release()
 
 	// Resolve the clicker's human token before taking the pending task: a resume
 	// that cannot run (unlinked clicker, token error) must leave the task and the
@@ -244,6 +251,10 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 	// plain "approve"/"deny" reply still decides directly.
 	if act.kind == hitlChat {
 		a.storePendingTask(threadID, task)
+		// Release the slot before the Slack round-trip: the user is invited to
+		// type their question right away, and a reply arriving while the slot is
+		// still held would bounce off the busy notice instead of resuming the task.
+		release()
 		if err := client.chatUpdateBlocks(ctx, slackChannel, messageTS, chatModePrompt); err != nil {
 			a.Logger.Warn("slack: update prompt for chat mode failed", "error", err)
 		}
