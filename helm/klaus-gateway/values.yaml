@@ -244,6 +244,38 @@ slack:
   # dmOnly restricts the adapter to direct messages: channel messages and
   # @-mentions in channels are ignored. Rendered as SLACK_DM_ONLY. Default false.
   dmOnly: false
+  # dropStale ignores Slack events older than the gateway's start time, so a
+  # restart never replays messages queued while it was down. Rendered as
+  # SLACK_DROP_STALE. Default false.
+  dropStale: false
+  # progress configures how a turn's progress is shown in Slack.
+  progress:
+    # mode selects the display: "auto" (reactions, falling back to text on
+    # missing scope), "reactions", or "text". Rendered as SLACK_PROGRESS_MODE.
+    # Empty lets the binary default (auto).
+    mode: ""
+    # emojis override the reaction emoji names (no colons) for a turn that is
+    # working / done / failed. Rendered as SLACK_WORKING_EMOJI, SLACK_DONE_EMOJI,
+    # SLACK_FAILED_EMOJI. Empty lets the binary default (eyes / white_check_mark
+    # / x).
+    emojis:
+      working: ""
+      done: ""
+      failed: ""
+    # clearReactionOnDone: on a successful turn, remove the working reaction
+    # without adding a done reaction; set false to swap in the done emoji
+    # instead. Rendered as SLACK_CLEAR_REACTION_ON_DONE. Leave unset (null) to
+    # use the binary default (true); set true or false to override explicitly.
+    clearReactionOnDone: null
+  # hitl configures human-in-the-loop tool-call approval.
+  hitl:
+    # autoApprove is the highest tool-call risk auto-approved without a human
+    # click: "green" (read-only), "yellow", "red", or "off" (always ask).
+    # Rendered as SLACK_HITL_AUTOAPPROVE. Empty uses the binary default (green).
+    autoApprove: ""
+    # allowedHosts are glob patterns for network hosts the risk classifier
+    # treats as safe. Rendered comma-joined as SLACK_HITL_ALLOWED_HOSTS.
+    allowedHosts: []
   # botToken / signingSecret / appToken: when set (typically SOPS-encrypted via
   # the agentic-platform umbrella), the chart renders the secretName Secret from
   # them. Leave empty to reference an externally-managed Secret of that name.

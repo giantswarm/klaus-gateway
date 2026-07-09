@@ -372,6 +372,94 @@
         }
       }
     },
+    "slack": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "events",
+            "socketmode"
+          ]
+        },
+        "secretName": {
+          "type": "string"
+        },
+        "dmOnly": {
+          "type": "boolean"
+        },
+        "dropStale": {
+          "type": "boolean"
+        },
+        "progress": {
+          "type": "object",
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": [
+                "",
+                "auto",
+                "reactions",
+                "text"
+              ]
+            },
+            "emojis": {
+              "type": "object",
+              "properties": {
+                "working": {
+                  "type": "string"
+                },
+                "done": {
+                  "type": "string"
+                },
+                "failed": {
+                  "type": "string"
+                }
+              }
+            },
+            "clearReactionOnDone": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            }
+          }
+        },
+        "hitl": {
+          "type": "object",
+          "properties": {
+            "autoApprove": {
+              "type": "string",
+              "enum": [
+                "",
+                "green",
+                "yellow",
+                "red",
+                "off"
+              ]
+            },
+            "allowedHosts": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "botToken": {
+          "type": "string"
+        },
+        "signingSecret": {
+          "type": "string"
+        },
+        "appToken": {
+          "type": "string"
+        }
+      }
+    },
     "obo": {
       "type": "object",
       "properties": {

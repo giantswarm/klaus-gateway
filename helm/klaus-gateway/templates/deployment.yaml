@@ -140,6 +140,38 @@ spec:
         - name: KLAUS_GATEWAY_SLACK_DM_ONLY
           value: "true"
         {{- end }}
+        {{- if and .Values.slack.enabled .Values.slack.dropStale }}
+        - name: KLAUS_GATEWAY_SLACK_DROP_STALE
+          value: "true"
+        {{- end }}
+        {{- if and .Values.slack.enabled .Values.slack.progress.mode }}
+        - name: KLAUS_GATEWAY_SLACK_PROGRESS_MODE
+          value: {{ .Values.slack.progress.mode | quote }}
+        {{- end }}
+        {{- if and .Values.slack.enabled .Values.slack.progress.emojis.working }}
+        - name: KLAUS_GATEWAY_SLACK_WORKING_EMOJI
+          value: {{ .Values.slack.progress.emojis.working | quote }}
+        {{- end }}
+        {{- if and .Values.slack.enabled .Values.slack.progress.emojis.done }}
+        - name: KLAUS_GATEWAY_SLACK_DONE_EMOJI
+          value: {{ .Values.slack.progress.emojis.done | quote }}
+        {{- end }}
+        {{- if and .Values.slack.enabled .Values.slack.progress.emojis.failed }}
+        - name: KLAUS_GATEWAY_SLACK_FAILED_EMOJI
+          value: {{ .Values.slack.progress.emojis.failed | quote }}
+        {{- end }}
+        {{- if and .Values.slack.enabled (not (kindIs "invalid" .Values.slack.progress.clearReactionOnDone)) }}
+        - name: KLAUS_GATEWAY_SLACK_CLEAR_REACTION_ON_DONE
+          value: {{ .Values.slack.progress.clearReactionOnDone | quote }}
+        {{- end }}
+        {{- if and .Values.slack.enabled .Values.slack.hitl.autoApprove }}
+        - name: KLAUS_GATEWAY_SLACK_HITL_AUTOAPPROVE
+          value: {{ .Values.slack.hitl.autoApprove | quote }}
+        {{- end }}
+        {{- if and .Values.slack.enabled .Values.slack.hitl.allowedHosts }}
+        - name: KLAUS_GATEWAY_SLACK_HITL_ALLOWED_HOSTS
+          value: {{ join "," .Values.slack.hitl.allowedHosts | quote }}
+        {{- end }}
         {{- if .Values.obo.enabled }}
         # Slack OBO. client_id is auto-derived from the callback base URL (CIMD),
         # so no client-id value is wired here.
