@@ -5,7 +5,9 @@ package classifier
 
 import (
 	"fmt"
+	"maps"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode"
 )
@@ -169,8 +171,8 @@ func flattenArgs(v any) string {
 func appendArg(b *strings.Builder, v any) {
 	switch t := v.(type) {
 	case map[string]any:
-		for _, inner := range t {
-			appendArg(b, inner)
+		for _, key := range slices.Sorted(maps.Keys(t)) {
+			appendArg(b, t[key])
 		}
 	case []any:
 		for _, inner := range t {
