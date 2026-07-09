@@ -13,7 +13,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
-	slackadapter "github.com/giantswarm/klaus-gateway/pkg/channels/slack"
 )
 
 // Access-consent action IDs (mirrors the unexported constants in the adapter).
@@ -147,32 +146,8 @@ func TestAccess_NonInitiatorCannotGrant(t *testing.T) {
 	require.NotContains(t, allText(fake.pathCalls("response")), "allowed", "no grant confirmation for a non-initiator click")
 }
 
-// A read-only (green) tool prompt is auto-approved and the turn continues without
-// a human click.
-func TestAccess_ClassifierAutoApprovesReadOnly(t *testing.T) {
-	fake := newFakeSlackAPI()
-	prompt := channels.OutboundDelta{
-		Kind:   channels.DeltaPrompt,
-		TaskID: "task-1",
-		Prompt: &channels.HitlPrompt{ToolName: "list_pods"},
-	}
-	gw := &stubGateway{sendQueue: [][]channels.OutboundDelta{
-		{prompt},
-		{{Content: "all pods running"}, {Done: true}},
-	}}
-	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
-	a.Classifier = slackadapter.NewClassifier("green", nil)
-
-	sendEvent(t, srv, dmEvent("U1", "how are the pods", "300.000"))
-
-	require.Eventually(t, func() bool { return gw.resolveCount() == 2 },
-		2*time.Second, 50*time.Millisecond, "a green tool prompt is auto-approved and the turn resumes")
-	require.Contains(t, allText(fake.pathCalls("chat.postMessage")), "all pods running")
-	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "Waiting for approval")
-}
-
-// A side-effecting (non-green) tool prompt is surfaced for human approval.
-func TestAccess_ClassifierAsksOnSideEffect(t *testing.T) {
+// A tool-approval prompt is surfaced for human approval and does not auto-resume.
+func TestHITL_ToolPromptSurfacedForApproval(t *testing.T) {
 	fake := newFakeSlackAPI()
 	prompt := channels.OutboundDelta{
 		Kind:   channels.DeltaPrompt,
@@ -180,13 +155,12 @@ func TestAccess_ClassifierAsksOnSideEffect(t *testing.T) {
 		Prompt: &channels.HitlPrompt{ToolName: "kubectl_delete"},
 	}
 	gw := &stubGateway{sendQueue: [][]channels.OutboundDelta{{prompt}}}
-	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
-	a.Classifier = slackadapter.NewClassifier("green", nil)
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
 	sendEvent(t, srv, dmEvent("U1", "clean up", "400.000"))
 
 	fake.waitForPath(t, "chat.postMessage", 1)
 	require.Contains(t, allText(fake.pathCalls("chat.postMessage")), "Waiting for approval",
-		"a side-effecting tool prompt is surfaced for human approval")
-	require.Equal(t, 1, gw.resolveCount(), "no auto-approve resume for a non-green prompt")
+		"a tool prompt is surfaced for human approval")
+	require.Equal(t, 1, gw.resolveCount(), "the prompt is not resumed without a human decision")
 }

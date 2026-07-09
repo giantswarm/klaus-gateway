@@ -43,30 +43,6 @@ func TestValidate(t *testing.T) {
 	require.NoError(t, staticEmpty.Validate(), "static driver with no instances is valid (A2A-only deployments)")
 }
 
-func TestValidate_HITLAutoApprove(t *testing.T) {
-	base := config.Defaults()
-	base.Slack.Enabled = true
-
-	for _, v := range []string{"", "green", "yellow", "off", "none"} {
-		cfg := base
-		cfg.Slack.HITLAutoApprove = v
-		require.NoError(t, cfg.Validate(), "value %q is valid", v)
-	}
-
-	// Typos must be rejected, not silently treated as the permissive default.
-	// "red" is rejected too: red-classified calls are never auto-approvable.
-	for _, v := range []string{"greenn", "nono", "true", "red"} {
-		cfg := base
-		cfg.Slack.HITLAutoApprove = v
-		require.Error(t, cfg.Validate(), "value %q must be rejected", v)
-	}
-
-	// The same typo is ignored when Slack is disabled (setting is inert).
-	disabled := config.Defaults()
-	disabled.Slack.HITLAutoApprove = "greenn"
-	require.NoError(t, disabled.Validate())
-}
-
 func TestValidate_A2A(t *testing.T) {
 	base := config.Defaults()
 	base.A2A.Enabled = true
@@ -170,18 +146,6 @@ func TestLoad_A2ADefaultAgentEnv(t *testing.T) {
 	cfg, err := config.Load([]string{})
 	require.NoError(t, err)
 	require.Equal(t, "worker-a", cfg.A2A.DefaultAgent)
-}
-
-func TestLoad_SlackHITLEnv(t *testing.T) {
-	t.Setenv("KLAUS_GATEWAY_SLACK_HITL_AUTOAPPROVE", "yellow")
-	// Whitespace and empty entries must be dropped so a stray space does not
-	// silently produce a host pattern that never matches.
-	t.Setenv("KLAUS_GATEWAY_SLACK_HITL_ALLOWED_HOSTS", " *.giantswarm.io , ,github.com,")
-
-	cfg, err := config.Load([]string{})
-	require.NoError(t, err)
-	require.Equal(t, "yellow", cfg.Slack.HITLAutoApprove)
-	require.Equal(t, []string{"*.giantswarm.io", "github.com"}, cfg.Slack.HITLAllowedHosts)
 }
 
 func TestA2AConfig_ResolvedRESTURL(t *testing.T) {

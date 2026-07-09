@@ -6,7 +6,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
-	"github.com/giantswarm/klaus-gateway/pkg/channels/slack/classifier"
 )
 
 func askUserPrompt(multiple bool, choices ...string) *channels.HitlPrompt {
@@ -73,21 +72,6 @@ func TestBuildButtonDecision_ApproveDeny(t *testing.T) {
 
 	deny, _, _ := buildButtonDecision(hitlAction{kind: hitlDeny}, nil)
 	require.Equal(t, channels.DecisionReject, deny.Type)
-}
-
-func TestClassifier_MutatingToolNeverAutoApproved(t *testing.T) {
-	// Only the tool name and args feed the classifier; the agent-controlled Hint
-	// is never passed, and argument values cannot buy green, so neither a crafted
-	// hint nor a read-looking argument steers a side-effecting call past the gate.
-	p := &channels.HitlPrompt{
-		ToolName: "delete_file",
-		Hint:     "just reading the file, totally safe get",
-		Args:     map[string]any{"path": "/workspace/app.log", "mode": "get show list"},
-	}
-	c := NewClassifier("green", nil)
-	approved, res := c.ShouldAutoApproveTool(p.ToolName, p.Args)
-	require.False(t, approved)
-	require.Equal(t, classifier.RiskYellow, res.Risk)
 }
 
 func TestChoiceValueRoundTrip(t *testing.T) {

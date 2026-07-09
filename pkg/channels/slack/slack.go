@@ -24,7 +24,6 @@ import (
 
 	"github.com/giantswarm/klaus-gateway/pkg/auth/musterlink"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
-	"github.com/giantswarm/klaus-gateway/pkg/channels/slack/classifier"
 )
 
 // ChannelName identifies the Slack adapter in routing keys.
@@ -102,11 +101,6 @@ type Adapter struct {
 	startUnix int64 // process start; events older than this are dropped on reconnect
 	evHandler http.Handler
 	ixHandler http.Handler // interactions endpoint; nil in socketmode
-
-	// Classifier auto-approves low-risk (read-only) HITL tool prompts so
-	// investigation stays frictionless. Nil disables auto-approval (every prompt
-	// is surfaced to the human).
-	Classifier *classifier.Classifier
 
 	accessMu sync.Mutex
 	access   AccessPolicy // lazily initialised via accessPolicy()
@@ -204,32 +198,6 @@ type pendingAccessReq struct {
 // (the paused A2A task has long been resumable by nobody) and is swept on the
 // next store.
 const pendingTTL = 24 * time.Hour
-
-// NewClassifier builds the HITL auto-approval risk classifier from config.
-// autoApprove is the highest auto-approvable risk: "green" (default; read-only),
-// "yellow", or "off". "off" returns nil, so every tool prompt is surfaced to the
-// human. Red-classified calls are never auto-approvable, so "red" is rejected.
-func NewClassifier(autoApprove string, allowedHosts []string) *classifier.Classifier {
-	threshold, ok := parseRiskThreshold(autoApprove)
-	if !ok {
-		return nil
-	}
-	return &classifier.Classifier{Config: classifier.Config{
-		AutoApproveThreshold: threshold,
-		AllowedHosts:         allowedHosts,
-	}}
-}
-
-// parseRiskThreshold returns the auto-approve threshold and whether a classifier
-// should be built. An unrecognised value fails closed (no classifier, so every
-// prompt is surfaced); config validation rejects it at startup before this runs.
-func parseRiskThreshold(s string) (classifier.Risk, bool) {
-	threshold, enabled, ok := classifier.ParseThreshold(s)
-	if !ok {
-		return 0, false
-	}
-	return threshold, enabled
-}
 
 // Name returns the channel name used in routing keys.
 func (a *Adapter) Name() string { return ChannelName }
@@ -757,12 +725,6 @@ func (a *Adapter) registerTurn(ctx context.Context, threadID string) (context.Co
 	}
 }
 
-// maxAutoApprovalsPerTurn caps consecutive auto-approved resumes within one
-// turn. An agent looping on green-classified prompts would otherwise hold the
-// thread's serialization slot indefinitely; past the cap the prompt is
-// surfaced to the human like any other.
-const maxAutoApprovalsPerTurn = 20
-
 // streamResponse renders turn progress (reactions on triggerTS, or a text
 // placeholder), streams deltas into a Block Kit markdown reply, and, when the
 // agent pauses for input, registers the pending task and posts the HITL prompt.
@@ -784,64 +746,25 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 		return context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	}
 
-	// Drive the turn to completion. A DeltaPrompt pauses the stream: a low-risk
-	// (read-only) tool prompt is auto-approved and the same turn resumes in place
-	// (story 14); anything else is surfaced to the human. The same writer and
-	// progress indicator carry across an auto-approved resume so a multi-step turn
-	// reads as one answer.
-	autoApprovals := 0
-	for {
-		if err := w.run(ctx, deltas); err != nil {
-			a.recordTurnUsage(threadID, slackChannel, w.turnUsage)
-			cctx, cancel := cleanupCtx()
-			prog.failed(cctx)
-			// In text mode prog.failed is a no-op (no reaction to swap), so the
-			// placeholder would linger as "thinking" with no failure signal.
-			// Replace it with a terminal note, as the empty-output path does.
-			// Skipped when the turn was cancelled (/stop): the cancel is intentional.
-			if prog.reactTS == "" && ctx.Err() == nil {
-				a.postTerminalNote(cctx, client, slackChannel, threadID, replyTS, failedNote)
-			}
-			cancel()
-			return err
+	// Drive the turn. A DeltaPrompt pauses the stream waiting on the user: the
+	// turn is not over, so its usage so far travels with the pending task and is
+	// recorded only when the turn actually ends.
+	if err := w.run(ctx, deltas); err != nil {
+		a.recordTurnUsage(threadID, slackChannel, w.turnUsage)
+		cctx, cancel := cleanupCtx()
+		prog.failed(cctx)
+		// In text mode prog.failed is a no-op (no reaction to swap), so the
+		// placeholder would linger as "thinking" with no failure signal.
+		// Replace it with a terminal note, as the empty-output path does.
+		// Skipped when the turn was cancelled (/stop): the cancel is intentional.
+		if prog.reactTS == "" && ctx.Err() == nil {
+			a.postTerminalNote(cctx, client, slackChannel, threadID, replyTS, failedNote)
 		}
+		cancel()
+		return err
+	}
 
-		pd := w.promptDelta
-		if pd == nil {
-			break
-		}
-		w.promptDelta = nil
-
-		if autoApprovals < maxAutoApprovalsPerTurn {
-			if next, ok, err := a.maybeAutoApprove(ctx, pd, msg, threadID); ok {
-				if err != nil {
-					// The task is still paused server-side: re-store it (with the
-					// usage so far) so a retry or button click can resume it
-					// instead of stranding it with a dangling tool call. Usage
-					// travels with the task and is recorded only when the turn
-					// ends, so it is not recorded here.
-					a.storePendingTask(threadID, &pendingTask{
-						TaskID:    pd.TaskID,
-						AgentRef:  msg.AgentRef,
-						Channel:   slackChannel,
-						ChannelID: msg.ChannelID,
-						Prompt:    pd.Prompt,
-						Usage:     w.turnUsage,
-					})
-					cctx, cancel := cleanupCtx()
-					prog.failed(cctx)
-					cancel()
-					return err
-				}
-				autoApprovals++
-				deltas = next
-				continue
-			}
-		}
-
-		// Paused waiting on the user. The turn is not over: its usage so far
-		// travels with the pending task so the resuming turn reports the whole
-		// turn, and is recorded only when the turn actually ends.
+	if pd := w.promptDelta; pd != nil {
 		cctx, cancel := cleanupCtx()
 		defer cancel()
 		prog.clear(cctx) // drop the working indicator
@@ -879,39 +802,6 @@ func (a *Adapter) postTerminalNote(ctx context.Context, client *slackAPIClient, 
 	if _, err := client.postMarkdown(ctx, slackChannel, note, threadID); err != nil {
 		a.Logger.Warn("slack: post terminal note failed", "thread", threadID, "error", err)
 	}
-}
-
-// maybeAutoApprove auto-approves a low-risk (read-only) tool prompt by resuming
-// the paused A2A task with an approve decision, returning the resumed delta
-// stream so the turn continues in place. ok is false when the prompt is not
-// eligible (no classifier, an ask_user question, or above the auto-approve
-// threshold), in which case the caller surfaces it to the human. When ok is true
-// and err is non-nil the resume failed and the turn should abort.
-func (a *Adapter) maybeAutoApprove(ctx context.Context, pd *channels.OutboundDelta, msg channels.InboundMessage, threadID string) (deltas <-chan channels.OutboundDelta, ok bool, err error) {
-	if a.Classifier == nil || pd.Prompt == nil || pd.Prompt.IsAskUser() {
-		return nil, false, nil
-	}
-	approved, res := a.Classifier.ShouldAutoApproveTool(pd.Prompt.ToolName, pd.Prompt.Args)
-	if !approved {
-		return nil, false, nil
-	}
-	a.Logger.Debug("slack: auto-approving low-risk tool prompt",
-		"thread", threadID, "tool", pd.Prompt.ToolName, "risk", res.Risk.String())
-
-	resume := msg
-	resume.TaskID = pd.TaskID
-	resume.Text = labelApproved
-	resume.Decision = &channels.HitlDecision{Type: channels.DecisionApprove}
-
-	ref, err := a.gw.Resolve(ctx, resume)
-	if err != nil {
-		return nil, true, fmt.Errorf("slack: resolve auto-approve resume: %w", err)
-	}
-	next, err := a.gw.SendCompletion(ctx, ref, resume)
-	if err != nil {
-		return nil, true, fmt.Errorf("slack: send auto-approve resume: %w", err)
-	}
-	return next, true, nil
 }
 
 // slackInnerEvent is the inner event object present in both Events API
