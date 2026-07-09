@@ -145,6 +145,15 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 	}
 	defer a.releaseThread(threadID)
 
+	// Resolve the clicker's human token before taking the pending task: a resume
+	// that cannot run (unlinked clicker, token error) must leave the task and the
+	// buttons intact, and an approved tool call must execute under the approver's
+	// identity, never the gateway service account (klaus-gateway#116).
+	token, ok := a.humanToken(ctx, slackChannel, threadID, slackUser, true)
+	if !ok {
+		return nil
+	}
+
 	// takePendingTask clears the entry atomically — if the user also typed a
 	// reply the first one wins and the other starts a fresh task.
 	task := a.takePendingTask(threadID)
@@ -162,14 +171,15 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 	}
 
 	msg := channels.InboundMessage{
-		Channel:   ChannelName,
-		ChannelID: task.ChannelID,
-		ThreadID:  threadID,
-		Subject:   slackUser,
-		AgentRef:  task.AgentRef,
-		TaskID:    task.TaskID,
-		Text:      resumeText,
-		Decision:  decision,
+		Channel:     ChannelName,
+		ChannelID:   task.ChannelID,
+		ThreadID:    threadID,
+		Subject:     slackUser,
+		AgentRef:    task.AgentRef,
+		TaskID:      task.TaskID,
+		Text:        resumeText,
+		Decision:    decision,
+		BearerToken: token,
 	}
 
 	// Resolve email for the button-clicking user.
@@ -203,7 +213,8 @@ func buildButtonDecision(act hitlAction, prompt *channels.HitlPrompt) (*channels
 			Type:           channels.DecisionApprove,
 			AskUserAnswers: [][]string{{label}},
 		}
-		return decision, label, "👉 _" + label + "_"
+		// The label is agent-authored; it re-enters Slack via chat.update text.
+		return decision, label, "👉 _" + escapeMrkdwn(label) + "_"
 	case hitlDeny:
 		return &channels.HitlDecision{Type: channels.DecisionReject}, "denied", "❌ _Denied._"
 	default: // hitlApprove

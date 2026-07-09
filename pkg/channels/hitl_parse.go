@@ -25,6 +25,9 @@ const (
 	mdUsageKagent = "kagent_usage_metadata"
 	mdUsageADK    = "adk_usage_metadata"
 
+	mdPartialKagent = "kagent_partial"
+	mdPartialADK    = "adk_partial"
+
 	usagePromptTokens     = "promptTokenCount"
 	usageCompletionTokens = "candidatesTokenCount"
 	usageTotalTokens      = "totalTokenCount"
@@ -162,6 +165,15 @@ func (p *HitlPrompt) summary() string {
 		return p.Hint
 	}
 	return p.ToolName
+}
+
+// isPartialMeta reports whether metadata marks the event as a partial
+// (streaming) chunk. Partial events mirror the usage metadata of the LLM call
+// they belong to, so counting usage on them would tally the same call multiple
+// times; kagent's own task store filters on the same keys.
+func isPartialMeta(md map[string]any) bool {
+	partial, _ := firstBool(md, mdPartialKagent, mdPartialADK)
+	return partial
 }
 
 // parseTurnUsage reads a kagent usage-metadata object from event or message

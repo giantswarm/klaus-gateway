@@ -54,10 +54,24 @@ func (h *eventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Slack redelivers an event up to 3 times when the ack is slow or fails.
-	// Handling is asynchronous (ack-first), so a redelivery would start a
-	// duplicate turn; drop it and tell Slack not to retry further.
-	if r.Header.Get("X-Slack-Retry-Num") != "" {
-		h.logger.Info("slack: dropping redelivered event",
+	// Handling is asynchronous (ack-first), so a duplicate delivery would start
+	// a duplicate turn. Dedup on event_id rather than dropping every retry: when
+	// the original delivery never reached us (pod restart or ingress failure
+	// mid-request), the retry is the only delivery of that user message and must
+	// be processed. A retry without an event_id cannot be distinguished from an
+	// already-handled delivery, so it is dropped.
+	retry := r.Header.Get("X-Slack-Retry-Num") != ""
+	if env.EventID != "" && h.adapter.seenEvent(env.EventID) {
+		h.logger.Info("slack: dropping duplicate event delivery",
+			"event_id", env.EventID,
+			"retry_num", r.Header.Get("X-Slack-Retry-Num"),
+			"retry_reason", r.Header.Get("X-Slack-Retry-Reason"))
+		w.Header().Set("X-Slack-No-Retry", "1")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if retry && env.EventID == "" {
+		h.logger.Info("slack: dropping redelivered event without event_id",
 			"retry_num", r.Header.Get("X-Slack-Retry-Num"),
 			"retry_reason", r.Header.Get("X-Slack-Retry-Reason"))
 		w.Header().Set("X-Slack-No-Retry", "1")
@@ -108,5 +122,32 @@ func VerifySignature(signingSecret string, header http.Header, body []byte) erro
 type eventEnvelope struct {
 	Type      string           `json:"type"`
 	Challenge string           `json:"challenge,omitempty"`
+	EventID   string           `json:"event_id,omitempty"`
 	Event     *slackInnerEvent `json:"event,omitempty"`
+}
+
+// seenEventTTL bounds how long delivered event IDs are remembered for dedup.
+// Slack redelivers within roughly an hour at most; entries past the TTL are
+// swept opportunistically on insert.
+const seenEventTTL = time.Hour
+
+// seenEvent records eventID as delivered and reports whether it had already
+// been recorded, so duplicate Events API deliveries are processed exactly once.
+func (a *Adapter) seenEvent(eventID string) bool {
+	now := time.Now()
+	a.seenEventsMu.Lock()
+	defer a.seenEventsMu.Unlock()
+	if expiry, ok := a.seenEvents[eventID]; ok && now.Before(expiry) {
+		return true
+	}
+	if a.seenEvents == nil {
+		a.seenEvents = make(map[string]time.Time)
+	}
+	for id, expiry := range a.seenEvents {
+		if now.After(expiry) {
+			delete(a.seenEvents, id)
+		}
+	}
+	a.seenEvents[eventID] = now.Add(seenEventTTL)
+	return false
 }

@@ -51,17 +51,21 @@ func splitMarkdown(text string, maxLen int) []string {
 	}
 
 	for line := range strings.Lines(text) {
-		// A single line over the cap cannot share a chunk: flush what we have,
+		// Inside a fence a chunk carries invisible overhead: the auto-close
+		// appended by emit, plus the reopened fence line when the chunk starts
+		// fresh. Both count against maxLen so no emitted chunk ever exceeds it,
+		// whatever the fence info-string length.
+		budget := maxLen
+		if inFence {
+			if r := maxLen - len(fenceOpen) - len("\n```"); r > 0 {
+				budget = r
+			}
+		}
+		// A single line over the budget cannot share a chunk: flush what we have,
 		// then hard-split it. While inside a fence each piece is wrapped in its
 		// own fenced block so code formatting survives.
-		if len(line) > maxLen {
+		if len(line) > budget {
 			emit()
-			budget := maxLen
-			if inFence {
-				if r := maxLen - len(fenceOpen) - len("\n```"); r > 0 {
-					budget = r
-				}
-			}
 			for _, piece := range splitAtLines(line, budget) {
 				if inFence {
 					chunks = append(chunks, closeFence(fenceOpen+piece))
@@ -71,7 +75,14 @@ func splitMarkdown(text string, maxLen int) []string {
 			}
 			continue
 		}
-		if b.Len() > 0 && b.Len()+len(line) > maxLen {
+		overhead := 0
+		if inFence {
+			overhead = len("\n```")
+			if b.Len() == 0 {
+				overhead += len(fenceOpen)
+			}
+		}
+		if b.Len() > 0 && b.Len()+len(line)+overhead > maxLen {
 			emit()
 		}
 		if inFence && b.Len() == 0 {
@@ -92,6 +103,20 @@ func splitMarkdown(text string, maxLen int) []string {
 		chunks = append(chunks, "")
 	}
 	return chunks
+}
+
+// escapeMrkdwn escapes the three characters Slack's mrkdwn parser treats as
+// control sequences (&, <, >), per the Slack formatting rules. Agent-rendered
+// text must pass through this before entering an mrkdwn context (section
+// blocks, plain chat.postMessage text): otherwise content the agent quotes,
+// such as a log line containing <!channel> or <@U...>, triggers real
+// notifications inside bot-branded messages. Block Kit markdown blocks do not
+// parse these sequences and must not be escaped.
+func escapeMrkdwn(s string) string {
+	s = strings.ReplaceAll(s, "&", "&amp;")
+	s = strings.ReplaceAll(s, "<", "&lt;")
+	s = strings.ReplaceAll(s, ">", "&gt;")
+	return s
 }
 
 // splitAtLines splits text into chunks of at most maxLen bytes at line boundaries,

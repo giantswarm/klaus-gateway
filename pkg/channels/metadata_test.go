@@ -103,3 +103,33 @@ func TestOutboundDelta_IsZero(t *testing.T) {
 	require.False(t, OutboundDelta{Kind: DeltaToolActivity, Content: "x"}.isZero())
 	require.False(t, OutboundDelta{Tool: &ToolActivity{Name: "x"}}.isZero())
 }
+
+// Partial (streaming) events mirror the usage metadata of the LLM call they
+// belong to; counting them would tally one call several times. kagent marks
+// them with adk_partial/kagent_partial.
+func TestMapA2AEvent_PartialEventUsageSkipped(t *testing.T) {
+	for _, key := range []string{mdPartialKagent, mdPartialADK} {
+		t.Run(key, func(t *testing.T) {
+			meta := usageMeta(3, 4, 7)
+			meta[key] = true
+			ev := &a2apkg.TaskStatusUpdateEvent{
+				Metadata: meta,
+				Status:   a2apkg.TaskStatus{State: a2apkg.TaskStateWorking},
+			}
+			require.Empty(t, mapA2AEvent(ev), "partial event must not emit a usage delta")
+		})
+	}
+}
+
+func TestMapA2AEvent_NonPartialWorkingEventEmitsUsage(t *testing.T) {
+	meta := usageMeta(3, 4, 7)
+	meta[mdPartialADK] = false
+	ev := &a2apkg.TaskStatusUpdateEvent{
+		Metadata: meta,
+		Status:   a2apkg.TaskStatus{State: a2apkg.TaskStateWorking},
+	}
+	deltas := mapA2AEvent(ev)
+	require.Len(t, deltas, 1)
+	require.NotNil(t, deltas[0].Usage)
+	require.Equal(t, 7, deltas[0].Usage.TotalTokens)
+}

@@ -120,3 +120,22 @@ func TestSplitAtLines(t *testing.T) {
 		}
 	})
 }
+
+// A chunk boundary inside a fence adds invisible overhead (the auto-close plus
+// the reopened fence line); no emitted chunk may exceed maxLen whatever the
+// fence info-string length.
+func TestSplitMarkdown_FenceOverheadStaysWithinMax(t *testing.T) {
+	const maxLen = 200
+	line := strings.Repeat("x", 180) + "\n"
+	text := "```averylonglanguagename\n" + strings.Repeat(line, 5) + "```\n"
+
+	for _, chunk := range splitMarkdown(text, maxLen) {
+		require.LessOrEqual(t, len(chunk), maxLen, "chunk %q", chunk)
+	}
+}
+
+func TestEscapeMrkdwn(t *testing.T) {
+	require.Equal(t, "&lt;!channel&gt; deploy? a &amp;&amp; b &lt;@U123&gt;",
+		escapeMrkdwn("<!channel> deploy? a && b <@U123>"))
+	require.Equal(t, "plain *bold* _it_", escapeMrkdwn("plain *bold* _it_"))
+}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -19,10 +20,10 @@ import (
 const (
 	batchInterval = 250 * time.Millisecond
 	slackAPIBase  = "https://slack.com/api"
-	// slackMarkdownBlockMax caps the text of one Block Kit markdown block. The
-	// margin below Slack's 12 000-char limit absorbs a fence auto-close/reopen at
-	// a chunk boundary without overrunning.
-	slackMarkdownBlockMax = 12000 - 16
+	// slackMarkdownBlockMax caps the text of one Block Kit markdown block,
+	// Slack's 12 000-char limit. splitMarkdown budgets the fence auto-close and
+	// reopen inside this cap, so emitted chunks never exceed it.
+	slackMarkdownBlockMax = 12000
 )
 
 // batchedWriter accumulates OutboundDelta content and periodically calls
@@ -203,20 +204,14 @@ func (c *slackAPIClient) postMessage(ctx context.Context, channel, text, threadT
 
 // lookupUserEmail returns the email from the user's Slack profile.
 // Falls back to the raw Slack user ID on any error so dispatch is never blocked.
+// users.info is Tier-4 rate-limited, so the call goes through the same
+// 429-retrying transport as every other Web API call.
 func (c *slackAPIClient) lookupUserEmail(ctx context.Context, userID string) (string, error) {
 	params := url.Values{paramUser: {userID}}
-	target := c.baseURL + "/users.info?" + params.Encode()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	body, err := c.call(ctx, "users.info", "application/x-www-form-urlencoded", params.Encode())
 	if err != nil {
-		return "", fmt.Errorf("slack users.info: build request: %w", err)
+		return "", err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.botToken)
-
-	resp, err := http.DefaultClient.Do(req) //nolint:gosec
-	if err != nil {
-		return "", fmt.Errorf("slack users.info: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
 
 	var result struct {
 		OK   bool   `json:"ok"`
@@ -227,7 +222,7 @@ func (c *slackAPIClient) lookupUserEmail(ctx context.Context, userID string) (st
 			} `json:"profile"`
 		} `json:"user"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.Unmarshal(body, &result); err != nil {
 		return "", fmt.Errorf("slack users.info: decode: %w", err)
 	}
 	if !result.OK {
@@ -298,10 +293,12 @@ func (c *slackAPIClient) chatUpdateMarkdown(ctx context.Context, channel, ts, md
 // postApprovalPrompt posts a Block Kit message with ✅/❌ buttons for HITL
 // approval. The button values encode the threadID so the interaction handler
 // can route the response back.
-func (c *slackAPIClient) postApprovalPrompt(ctx context.Context, channel, threadID, promptText, taskID string) error {
+func (c *slackAPIClient) postApprovalPrompt(ctx context.Context, channel, threadID, promptText string) error {
 	text := "_Waiting for approval…_"
 	if promptText != "" {
-		text = promptText
+		// promptText is agent-rendered (tool name, args, hint) and enters an
+		// mrkdwn section block.
+		text = escapeMrkdwn(promptText)
 	}
 	body := map[string]any{
 		paramChannel:  channel,
@@ -341,6 +338,9 @@ func (c *slackAPIClient) postApprovalPrompt(ctx context.Context, channel, thread
 // choice. Each button's value encodes the threadID, question index, and choice
 // index so the interaction handler can resolve the selected answer label.
 func (c *slackAPIClient) postChoicePrompt(ctx context.Context, channel, threadID, question string, choices []string) error {
+	// The question is agent-authored and enters an mrkdwn section block; the
+	// choice labels render as plain_text buttons, which parse nothing.
+	question = escapeMrkdwn(question)
 	elements := make([]any, 0, len(choices))
 	for i, choice := range choices {
 		elements = append(elements, map[string]any{
@@ -452,47 +452,60 @@ func (c *slackAPIClient) post(ctx context.Context, method string, params url.Val
 // a longer server-requested wait fails the call instead of stalling the writer.
 const rateLimitRetryCap = 30 * time.Second
 
-// send executes one Slack Web API call. A 429 is retried once after honoring
-// Retry-After (capped at rateLimitRetryCap) so a throttled progress edit does
-// not abort the turn.
+// send executes one Slack Web API call and returns the ts of the affected
+// message, for methods whose response carries one.
 func (c *slackAPIClient) send(ctx context.Context, method, contentType, payload string) (string, error) {
+	body, err := c.call(ctx, method, contentType, payload)
+	if err != nil {
+		return "", err
+	}
+	var result slackResponse
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", fmt.Errorf("slack %s: decode response: %w", method, err)
+	}
+	if !result.OK {
+		return "", fmt.Errorf("slack %s: %s", method, result.Error)
+	}
+	return result.Ts, nil
+}
+
+// call executes one Slack Web API POST and returns the raw response body. A
+// 429 is retried once after honoring Retry-After (capped at rateLimitRetryCap)
+// so a throttled call does not abort the turn.
+func (c *slackAPIClient) call(ctx context.Context, method, contentType, payload string) ([]byte, error) {
 	const maxAttempts = 2
 	for attempt := 1; ; attempt++ {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/"+method, strings.NewReader(payload))
 		if err != nil {
-			return "", fmt.Errorf("slack %s: build request: %w", method, err)
+			return nil, fmt.Errorf("slack %s: build request: %w", method, err)
 		}
 		req.Header.Set("Content-Type", contentType)
 		req.Header.Set("Authorization", "Bearer "+c.botToken)
 
 		resp, err := http.DefaultClient.Do(req) //nolint:gosec
 		if err != nil {
-			return "", fmt.Errorf("slack %s: %w", method, err)
+			return nil, fmt.Errorf("slack %s: %w", method, err)
 		}
 		if resp.StatusCode == http.StatusTooManyRequests {
 			_ = resp.Body.Close()
 			wait := retryAfter(resp.Header)
 			if attempt >= maxAttempts || wait > rateLimitRetryCap {
-				return "", fmt.Errorf("slack %s: rate limited (retry after %s)", method, wait)
+				return nil, fmt.Errorf("slack %s: rate limited (retry after %s)", method, wait)
 			}
 			select {
 			case <-ctx.Done():
-				return "", ctx.Err()
+				return nil, ctx.Err()
 			case <-time.After(wait):
 			}
 			continue
 		}
 
-		var result slackResponse
-		err = json.NewDecoder(resp.Body).Decode(&result)
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		_ = resp.Body.Close()
 		if err != nil {
-			return "", fmt.Errorf("slack %s: decode response: %w", method, err)
+			return nil, fmt.Errorf("slack %s: read response: %w", method, err)
 		}
-		if !result.OK {
-			return "", fmt.Errorf("slack %s: %s", method, result.Error)
-		}
-		return result.Ts, nil
+		return body, nil
 	}
 }
 

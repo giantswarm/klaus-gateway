@@ -149,8 +149,11 @@ func withChannelAuth(ctx context.Context, msg InboundMessage) context.Context {
 // rather than silently closing.
 //
 // kagent attaches token usage to the event/message metadata (not to a part),
-// with the authoritative total on the terminal completed event; tool activity
-// rides on function_call/function_response DataParts.
+// as per-LLM-call deltas on interim working events; the terminal completed
+// event carries no usage, so consumers sum the interim deltas. Partial
+// (streaming) events mirror their call's usage and are skipped to avoid
+// counting one call several times. Tool activity rides on
+// function_call/function_response DataParts.
 func mapA2AEvent(event a2apkg.Event) []OutboundDelta {
 	switch ev := event.(type) {
 	case *a2apkg.TaskArtifactUpdateEvent:
@@ -159,9 +162,12 @@ func mapA2AEvent(event a2apkg.Event) []OutboundDelta {
 		}
 		return append(textDelta(ev.Artifact.Parts), toolActivityDeltas(ev.Artifact.Parts)...)
 	case *a2apkg.TaskStatusUpdateEvent:
-		usage := parseTurnUsage(ev.Metadata)
-		if usage == nil && ev.Status.Message != nil {
-			usage = parseTurnUsage(ev.Status.Message.Metadata)
+		var usage *TurnUsage
+		if !isPartialMeta(ev.Metadata) {
+			usage = parseTurnUsage(ev.Metadata)
+			if usage == nil && ev.Status.Message != nil {
+				usage = parseTurnUsage(ev.Status.Message.Metadata)
+			}
 		}
 		switch ev.Status.State {
 		case a2apkg.TaskStateCompleted:

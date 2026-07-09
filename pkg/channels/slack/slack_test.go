@@ -88,6 +88,11 @@ func TestStripMention(t *testing.T) {
 		{"<@BOT> hi there", "hi there"},
 		{"no mention here", "no mention here"},
 		{"", ""},
+		// Non-mention angle-bracket tokens are message content, not mention noise.
+		{"<@BOT> <https://grafana.example/alert/123> explain this", "<https://grafana.example/alert/123> explain this"},
+		{"<https://example.com|link> hi", "<https://example.com|link> hi"},
+		{"<#C123|general> hello", "<#C123|general> hello"},
+		{"<@U1><@U2> hi", "hi"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.in, func(t *testing.T) {
@@ -1017,4 +1022,96 @@ func TestSerializeTurnsPerThread(t *testing.T) {
 
 	require.Equal(t, 1, gw.resolveCount(), "second turn is rejected before reaching the agent")
 	close(hold)
+}
+
+// A retried delivery whose original never reached the handler (pod restart,
+// ingress failure) is the only delivery of that user message: it must be
+// processed, not dropped, as long as its event_id is unseen.
+func TestEventsHandler_RetryWithUnseenEventIDProcessed(t *testing.T) {
+	var dispatched atomic.Int32
+	gw := &stubGateway{
+		onResolve: func(channels.InboundMessage) { dispatched.Add(1) },
+	}
+
+	fakeSlack := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"ok":true,"ts":"1234.5678"}`)
+	}))
+	defer fakeSlack.Close()
+
+	_, srv := newEventsAdapter(t, gw, fakeSlack.URL)
+
+	body := []byte(`{
+		"type":"event_callback",
+		"event_id":"Ev-retry-only",
+		"event":{"type":"app_mention","user":"U123","text":"<@BOT> hello","channel":"C456","ts":"1234.5678"}
+	}`)
+	stamp, sig := signBody(t, "signing-secret", body)
+
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/channels/slack/events", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Slack-Request-Timestamp", stamp)
+	req.Header.Set("X-Slack-Signature", sig)
+	req.Header.Set("X-Slack-Retry-Num", "1")
+	req.Header.Set("X-Slack-Retry-Reason", "http_error")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	require.Eventually(t, func() bool { return dispatched.Load() == 1 },
+		2*time.Second, 10*time.Millisecond,
+		"a retry whose original delivery was lost must be processed")
+}
+
+// A second delivery of an already-seen event_id must be dropped so a duplicate
+// delivery never starts a duplicate turn.
+func TestEventsHandler_DuplicateEventIDDropped(t *testing.T) {
+	var dispatched atomic.Int32
+	gw := &stubGateway{
+		onResolve: func(channels.InboundMessage) { dispatched.Add(1) },
+	}
+
+	fakeSlack := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"ok":true,"ts":"1234.5678"}`)
+	}))
+	defer fakeSlack.Close()
+
+	_, srv := newEventsAdapter(t, gw, fakeSlack.URL)
+
+	body := []byte(`{
+		"type":"event_callback",
+		"event_id":"Ev-dup",
+		"event":{"type":"app_mention","user":"U123","text":"<@BOT> hello","channel":"C456","ts":"1234.5678"}
+	}`)
+
+	deliver := func(retryNum string) *http.Response {
+		stamp, sig := signBody(t, "signing-secret", body)
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/channels/slack/events", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Slack-Request-Timestamp", stamp)
+		req.Header.Set("X-Slack-Signature", sig)
+		if retryNum != "" {
+			req.Header.Set("X-Slack-Retry-Num", retryNum)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		return resp
+	}
+
+	first := deliver("")
+	_ = first.Body.Close()
+	require.Equal(t, http.StatusOK, first.StatusCode)
+
+	second := deliver("1")
+	_ = second.Body.Close()
+	require.Equal(t, http.StatusOK, second.StatusCode)
+	require.Equal(t, "1", second.Header.Get("X-Slack-No-Retry"))
+
+	require.Eventually(t, func() bool { return dispatched.Load() >= 1 },
+		2*time.Second, 10*time.Millisecond)
+	time.Sleep(200 * time.Millisecond)
+	require.Equal(t, int32(1), dispatched.Load(), "duplicate delivery must not start a second turn")
 }
