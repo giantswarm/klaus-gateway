@@ -1,6 +1,9 @@
 // Package classifier provides rule-based risk classification of A2A
 // input-required prompts so safe tool calls can be auto-approved without
-// human interaction.
+// human interaction. Calls classify as green (read-only), yellow
+// (side-effecting) or red (destructive or sensitive); the auto-approve
+// threshold can be set to green or yellow, while red calls always require
+// a human decision.
 package classifier
 
 import (
@@ -20,8 +23,9 @@ const (
 	RiskGreen Risk = iota
 	// RiskYellow means the operation is potentially side-effecting; human review is advised.
 	RiskYellow
-	// RiskRed means the operation is destructive or accesses sensitive resources;
-	// auto-approval is never allowed regardless of the threshold setting.
+	// RiskRed means the operation is destructive or accesses sensitive resources.
+	// Auto-approval of red calls is never allowed: "red" is not a valid threshold
+	// value and ShouldAutoApproveTool denies red results unconditionally.
 	RiskRed
 )
 
@@ -47,7 +51,8 @@ func (r Risk) String() string {
 // auto-approvable Risk. enabled is false for the disabling values
 // ("off"/"none"/"disabled"); ok is false for any unrecognised value, so callers
 // can reject a typo instead of silently defaulting to a permissive setting.
-// "" and "green" map to read-only auto-approval.
+// "" and "green" map to read-only auto-approval. "red" is rejected: red
+// classifications are never auto-approvable, so it is not a valid threshold.
 func ParseThreshold(s string) (threshold Risk, enabled, ok bool) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "off", "none", "disabled":
@@ -56,8 +61,6 @@ func ParseThreshold(s string) (threshold Risk, enabled, ok bool) {
 		return RiskGreen, true, true
 	case riskNameYellow:
 		return RiskYellow, true, true
-	case riskNameRed:
-		return RiskRed, true, true
 	default:
 		return 0, false, false
 	}
@@ -108,9 +111,11 @@ func (c *Classifier) ClassifyTool(name string, args map[string]any) Result {
 		return Result{Risk: RiskRed, Reason: "path traversal detected"}
 	}
 
-	// Sensitive absolute paths.
+	// Sensitive absolute paths. Runs of consecutive slashes are collapsed first
+	// so spellings like /etc//shadow resolve to the same path as /etc/shadow.
+	collapsed := reSlashRuns.ReplaceAllString(combined, "/")
 	for _, p := range sensitivePaths {
-		if strings.Contains(combined, p) {
+		if strings.Contains(collapsed, p) {
 			return Result{Risk: RiskRed, Reason: "access to sensitive path: " + p}
 		}
 	}
@@ -154,10 +159,11 @@ func (c *Classifier) ClassifyTool(name string, args map[string]any) Result {
 }
 
 // ShouldAutoApproveTool returns true when the tool call's risk is within the
-// configured threshold.
+// configured threshold. RiskRed results are never auto-approved, whatever the
+// threshold is set to.
 func (c *Classifier) ShouldAutoApproveTool(name string, args map[string]any) (bool, Result) {
 	result := c.ClassifyTool(name, args)
-	return result.Risk <= c.Config.AutoApproveThreshold, result
+	return result.Risk != RiskRed && result.Risk <= c.Config.AutoApproveThreshold, result
 }
 
 // flattenArgs joins all argument values (recursively for nested maps/lists)
@@ -308,7 +314,13 @@ var redRules = []ruleEntry{
 	{regexp.MustCompile(`>\s*/boot/`), "write to /boot/"},
 	{regexp.MustCompile(`>\s*/proc/`), "write to /proc/"},
 	{regexp.MustCompile(`>\s*/sys/`), "write to /sys/"},
+	{regexp.MustCompile(`\$ifs`), "shell obfuscation"},
+	{regexp.MustCompile(`\b(flushall|flushdb)\b`), "redis wipe"},
 }
+
+// reSlashRuns matches runs of consecutive slashes, which the kernel resolves
+// to a single path separator.
+var reSlashRuns = regexp.MustCompile(`/{2,}`)
 
 var sensitivePaths = []string{
 	"/etc/passwd", "/etc/shadow", "/etc/sudoers", "/etc/ssh/",
@@ -319,8 +331,13 @@ var sensitivePaths = []string{
 var yellowRules = []ruleEntry{
 	{regexp.MustCompile(`\b(write|create|mkdir|touch|append|truncate)\b`), "file write operation"},
 	{regexp.MustCompile(`\b(exec|spawn|popen|subprocess)\b`), "process execution"},
-	{regexp.MustCompile(`\b(insert|update|delete)\s+\w+\s+(into|from|set)\b`), "database mutation"},
-	{regexp.MustCompile(`\b(git\s+(push|commit|rebase|reset))\b`), "git mutation"},
+	{regexp.MustCompile(`\binsert\s+into\b`), "database mutation"},
+	{regexp.MustCompile(`\bdelete\s+from\b`), "database mutation"},
+	{regexp.MustCompile(`\bupdate\s+\S+\s+set\b`), "database mutation"},
+	{regexp.MustCompile(`\bdrop\s+(table|database|index|schema|view)\b`), "database mutation"},
+	{regexp.MustCompile(`\btruncate(\s+table)?\s+\S`), "database mutation"},
+	{regexp.MustCompile(`\balter\s+table\b`), "database mutation"},
+	{regexp.MustCompile(`\bgit\s+(push|commit|rebase|reset|branch\s+(-d|--delete))\b`), "git mutation"},
 	{regexp.MustCompile(`\b(kubectl\s+(apply|delete|patch|create))\b`), "kubernetes mutation"},
 	{regexp.MustCompile(`\bhelm\s+(install|upgrade|uninstall)\b`), "helm mutation"},
 	{regexp.MustCompile(`\brm\s`), "file removal"},

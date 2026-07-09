@@ -88,7 +88,8 @@ type SlackConfig struct {
 	// etc.) take precedence over file values.
 	SecretsFile string
 	// HITLAutoApprove is the highest tool-call risk auto-approved without a human
-	// click: "green" (default; read-only), "yellow", "red", or "off" (always ask).
+	// click: "green" (default; read-only), "yellow", or "off" (always ask).
+	// Red-classified calls are never auto-approved, so "red" is not accepted.
 	// SLACK_HITL_AUTOAPPROVE
 	HITLAutoApprove string
 	// HITLAllowedHosts are glob patterns for network hosts the risk classifier
@@ -454,7 +455,7 @@ func (c Config) Validate() error {
 	}
 	if c.Slack.Enabled {
 		if _, _, ok := classifier.ParseThreshold(c.Slack.HITLAutoApprove); !ok {
-			return fmt.Errorf("invalid SLACK_HITL_AUTOAPPROVE %q: must be one of green, yellow, red, off", c.Slack.HITLAutoApprove)
+			return fmt.Errorf("invalid SLACK_HITL_AUTOAPPROVE %q: must be one of green, yellow, off (red-classified calls are never auto-approved)", c.Slack.HITLAutoApprove)
 		}
 	}
 	return nil

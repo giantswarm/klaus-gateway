@@ -47,14 +47,15 @@ func TestValidate_HITLAutoApprove(t *testing.T) {
 	base := config.Defaults()
 	base.Slack.Enabled = true
 
-	for _, v := range []string{"", "green", "yellow", "red", "off", "none"} {
+	for _, v := range []string{"", "green", "yellow", "off", "none"} {
 		cfg := base
 		cfg.Slack.HITLAutoApprove = v
 		require.NoError(t, cfg.Validate(), "value %q is valid", v)
 	}
 
-	// A typo must be rejected, not silently treated as the permissive default.
-	for _, v := range []string{"greenn", "nono", "true"} {
+	// Typos must be rejected, not silently treated as the permissive default.
+	// "red" is rejected too: red-classified calls are never auto-approvable.
+	for _, v := range []string{"greenn", "nono", "true", "red"} {
 		cfg := base
 		cfg.Slack.HITLAutoApprove = v
 		require.Error(t, cfg.Validate(), "value %q must be rejected", v)

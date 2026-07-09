@@ -207,8 +207,8 @@ const pendingTTL = 24 * time.Hour
 
 // NewClassifier builds the HITL auto-approval risk classifier from config.
 // autoApprove is the highest auto-approvable risk: "green" (default; read-only),
-// "yellow", "red", or "off". "off" returns nil, so every tool prompt is surfaced
-// to the human.
+// "yellow", or "off". "off" returns nil, so every tool prompt is surfaced to the
+// human. Red-classified calls are never auto-approvable, so "red" is rejected.
 func NewClassifier(autoApprove string, allowedHosts []string) *classifier.Classifier {
 	threshold, ok := parseRiskThreshold(autoApprove)
 	if !ok {
