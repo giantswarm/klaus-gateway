@@ -674,6 +674,9 @@ type stubGateway struct {
 	// onSessionResumable, when set, backs SessionResumable; nil reports the check
 	// as unavailable (checked=false).
 	onSessionResumable func(channels.InboundMessage) (exists, checked bool)
+	// failSends makes the next N SendCompletion calls return an error, so a test
+	// can drive the resume-failure paths.
+	failSends int
 }
 
 func (s *stubGateway) resumeCount() int {
@@ -712,6 +715,11 @@ func (s *stubGateway) Resolve(_ context.Context, msg channels.InboundMessage) (c
 
 func (s *stubGateway) SendCompletion(ctx context.Context, _ channels.InstanceRef, _ channels.InboundMessage) (<-chan channels.OutboundDelta, error) {
 	s.mu.Lock()
+	if s.failSends > 0 {
+		s.failSends--
+		s.mu.Unlock()
+		return nil, errors.New("stub: send completion failed")
+	}
 	var deltas []channels.OutboundDelta
 	if len(s.sendQueue) > 0 {
 		deltas = s.sendQueue[0]
@@ -890,6 +898,11 @@ func sendEvent(t *testing.T, srv *httptest.Server, eventJSON string) {
 // dmEvent builds a DM message event (sender always permitted) for thread ts.
 func dmEvent(user, text, ts string) string {
 	return fmt.Sprintf(`{"type":"event_callback","event":{"type":"message","channel_type":"im","user":%q,"text":%q,"channel":"D1","ts":%q}}`, user, text, ts)
+}
+
+// dmThreadEvent builds a DM reply into an existing thread.
+func dmThreadEvent(user, text, ts, threadTS string) string {
+	return fmt.Sprintf(`{"type":"event_callback","event":{"type":"message","channel_type":"im","user":%q,"text":%q,"channel":"D1","ts":%q,"thread_ts":%q}}`, user, text, ts, threadTS)
 }
 
 func TestProgress_ReactionsLifecycle(t *testing.T) {

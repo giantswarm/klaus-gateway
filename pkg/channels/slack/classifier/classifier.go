@@ -4,8 +4,10 @@
 package classifier
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 // Risk indicates the danger level of a pending tool call.
@@ -77,39 +79,44 @@ type Config struct {
 	AllowedHosts []string
 }
 
-// Classifier applies risk rules to a plain-text prompt.
+// Classifier applies risk rules to a structured tool call.
 // A zero-value Classifier is valid and uses default rules with a RiskGreen threshold.
 type Classifier struct {
 	Config Config
 }
 
-// Classify returns the risk level for the given prompt text.
-func (c *Classifier) Classify(prompt string) Result {
-	lower := strings.ToLower(prompt)
+// ClassifyTool classifies a pending tool call. RiskGreen comes from the tool
+// NAME alone: every name token must be neutral, none may be a mutation verb,
+// and at least one must be a known read-only verb. Argument values are
+// model-controlled, so they can only escalate risk (red rules, sensitive
+// paths, network hosts, mutation keywords), never reduce it; a crafted
+// argument ("show", "get-token") must not steer a mutating call to green.
+func (c *Classifier) ClassifyTool(name string, args map[string]any) Result {
+	combined := strings.ToLower(name + " " + flattenArgs(args))
 
-	// Red rules — checked first; any match blocks auto-approval entirely.
+	// Red rules block auto-approval entirely, wherever they match.
 	for _, rule := range redRules {
-		if rule.re.MatchString(lower) {
+		if rule.re.MatchString(combined) {
 			return Result{Risk: RiskRed, Reason: rule.reason}
 		}
 	}
 
-	// Path traversal anywhere in the prompt.
-	if strings.Contains(prompt, "../") || strings.Contains(prompt, "..\\") {
+	// Path traversal anywhere in the call.
+	if strings.Contains(combined, "../") || strings.Contains(combined, "..\\") {
 		return Result{Risk: RiskRed, Reason: "path traversal detected"}
 	}
 
 	// Sensitive absolute paths.
 	for _, p := range sensitivePaths {
-		if strings.Contains(lower, p) {
+		if strings.Contains(combined, p) {
 			return Result{Risk: RiskRed, Reason: "access to sensitive path: " + p}
 		}
 	}
 
-	// Yellow: network operations — red only when an allowlist is configured and the host is absent.
-	if reNetwork.MatchString(lower) {
+	// Network operations — red only when an allowlist is configured and the host is absent.
+	if reNetwork.MatchString(combined) {
 		if len(c.Config.AllowedHosts) > 0 {
-			host := extractHost(lower)
+			host := extractHost(combined)
 			if host != "" && !c.hostAllowed(host) {
 				return Result{Risk: RiskRed, Reason: "network access to non-allowlisted host: " + host}
 			}
@@ -117,28 +124,96 @@ func (c *Classifier) Classify(prompt string) Result {
 		return Result{Risk: RiskYellow, Reason: "network operation"}
 	}
 
-	// Yellow: write / mutate operations.
+	// A mutation verb anywhere in the tool name disqualifies green, whatever
+	// else the name contains ("create_or_get" is a mutation).
+	tokens := nameTokens(name)
+	for _, token := range tokens {
+		if mutationVerbs[token] {
+			return Result{Risk: RiskYellow, Reason: "mutating tool verb: " + token}
+		}
+	}
+
+	// Mutation keywords in argument values escalate an otherwise-green tool
+	// (e.g. a generic exec/query tool whose argument is a write statement).
 	for _, rule := range yellowRules {
-		if rule.re.MatchString(lower) {
+		if rule.re.MatchString(combined) {
 			return Result{Risk: RiskYellow, Reason: rule.reason}
 		}
 	}
 
-	// Green: read-only operations.
-	for _, rule := range greenRules {
-		if rule.re.MatchString(lower) {
-			return Result{Risk: RiskGreen, Reason: rule.reason}
+	for _, token := range tokens {
+		if readOnlyVerbs[token] {
+			return Result{Risk: RiskGreen, Reason: "read-only tool verb: " + token}
 		}
 	}
 
 	// Unknown — escalate to be safe.
-	return Result{Risk: RiskYellow, Reason: "unclassified operation"}
+	return Result{Risk: RiskYellow, Reason: "unclassified tool"}
 }
 
-// ShouldAutoApprove returns true when the prompt's risk is within the configured threshold.
-func (c *Classifier) ShouldAutoApprove(prompt string) (bool, Result) {
-	result := c.Classify(prompt)
+// ShouldAutoApproveTool returns true when the tool call's risk is within the
+// configured threshold.
+func (c *Classifier) ShouldAutoApproveTool(name string, args map[string]any) (bool, Result) {
+	result := c.ClassifyTool(name, args)
 	return result.Risk <= c.Config.AutoApproveThreshold, result
+}
+
+// flattenArgs joins all argument values (recursively for nested maps/lists)
+// into one scan string for the escalation rules.
+func flattenArgs(v any) string {
+	var b strings.Builder
+	appendArg(&b, v)
+	return b.String()
+}
+
+func appendArg(b *strings.Builder, v any) {
+	switch t := v.(type) {
+	case map[string]any:
+		for _, inner := range t {
+			appendArg(b, inner)
+		}
+	case []any:
+		for _, inner := range t {
+			appendArg(b, inner)
+		}
+	case nil:
+	default:
+		if b.Len() > 0 {
+			b.WriteByte(' ')
+		}
+		fmt.Fprintf(b, "%v", t)
+	}
+}
+
+// nameTokens splits a tool name into lower-cased word tokens on non-alphanumeric
+// boundaries and camelCase humps, so "kubectl_get", "get-pod", "GetPod" and
+// "getPodLogs" all yield a "get" token.
+func nameTokens(name string) []string {
+	var tokens []string
+	var current strings.Builder
+	flush := func() {
+		if current.Len() > 0 {
+			tokens = append(tokens, strings.ToLower(current.String()))
+			current.Reset()
+		}
+	}
+	var prev rune
+	for _, r := range name {
+		switch {
+		case unicode.IsUpper(r):
+			if prev != 0 && !unicode.IsUpper(prev) {
+				flush()
+			}
+			current.WriteRune(r)
+		case unicode.IsLetter(r) || unicode.IsDigit(r):
+			current.WriteRune(r)
+		default:
+			flush()
+		}
+		prev = r
+	}
+	flush()
+	return tokens
 }
 
 // hostAllowed returns true when host matches one of the configured AllowedHosts globs.
@@ -246,12 +321,40 @@ var yellowRules = []ruleEntry{
 	{regexp.MustCompile(`\b(git\s+(push|commit|rebase|reset))\b`), "git mutation"},
 	{regexp.MustCompile(`\b(kubectl\s+(apply|delete|patch|create))\b`), "kubernetes mutation"},
 	{regexp.MustCompile(`\bhelm\s+(install|upgrade|uninstall)\b`), "helm mutation"},
+	{regexp.MustCompile(`\brm\s`), "file removal"},
+	{regexp.MustCompile(`>\s*/`), "shell redirect"},
 }
 
-var greenRules = []ruleEntry{
-	{regexp.MustCompile(`\b(ls|dir|list|cat|head|tail|grep|find|stat|file)\b`), "read-only file operation"},
-	{regexp.MustCompile(`\b(read|open|load|parse|get|fetch|describe|show|display)\b`), "read operation"},
-	{regexp.MustCompile(`\b(echo|printf|print|log)\b`), "output operation"},
-	{regexp.MustCompile(`\b(git\s+(log|diff|status|show|branch|tag))\b`), "read-only git operation"},
-	{regexp.MustCompile(`\b(kubectl\s+(get|describe|logs|top))\b`), "read-only kubernetes operation"},
+// mutationVerbs disqualify a tool name from RiskGreen: any of these as a name
+// token marks the tool side-effecting regardless of what else the name says.
+var mutationVerbs = toSet(
+	"create", "add", "insert", "append", "write", "put", "post", "set",
+	"update", "edit", "modify", "patch", "apply", "replace", "rename", "move",
+	"copy", "upload", "import", "sync", "migrate", "scale", "restart",
+	"start", "stop", "pause", "resume", "run", "exec", "execute", "invoke",
+	"trigger", "submit", "send", "publish", "notify", "deploy", "install",
+	"uninstall", "upgrade", "rollback", "push", "commit", "merge", "rebase",
+	"reset", "revert", "delete", "remove", "drop", "purge", "destroy",
+	"terminate", "kill", "evict", "drain", "cordon", "uncordon", "truncate",
+	"wipe", "format", "grant", "revoke", "approve", "reject", "cancel",
+	"close", "open", "lock", "unlock", "enable", "disable", "assign",
+	"release", "rotate", "annotate", "label", "tag", "fork", "clone",
+)
+
+// readOnlyVerbs qualify a tool name for RiskGreen when no mutation verb and no
+// escalation rule fires.
+var readOnlyVerbs = toSet(
+	"get", "list", "read", "describe", "show", "view", "search", "find",
+	"query", "lookup", "stat", "status", "check", "inspect", "explain",
+	"watch", "logs", "log", "top", "diff", "count", "cat", "head", "tail",
+	"ls", "grep", "history", "validate", "lint", "preview", "peek", "info",
+	"summarize", "detect",
+)
+
+func toSet(words ...string) map[string]bool {
+	set := make(map[string]bool, len(words))
+	for _, w := range words {
+		set[w] = true
+	}
+	return set
 }

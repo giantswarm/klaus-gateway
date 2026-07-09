@@ -183,6 +183,11 @@ type pendingTask struct {
 	// Prompt is the structured approval request the task is paused on, used to
 	// map a free-text reply or choice click back to a HITL decision.
 	Prompt *channels.HitlPrompt
+	// Usage carries the paused turn's token counts so the resuming turn reports
+	// the whole turn, not just its tail.
+	Usage channels.TurnUsage
+
+	storedAt time.Time // set by storePendingTask; drives the TTL sweep
 }
 
 // pendingAccessReq is a newcomer's message parked while the thread initiator is
@@ -190,7 +195,15 @@ type pendingTask struct {
 type pendingAccessReq struct {
 	msg          channels.InboundMessage
 	slackChannel string
+
+	storedAt time.Time // set by storePendingAccess; drives the TTL sweep
 }
+
+// pendingTTL bounds how long a parked task or access request is kept. Both
+// maps hold user content and grow per thread; an entry this old is abandoned
+// (the paused A2A task has long been resumable by nobody) and is swept on the
+// next store.
+const pendingTTL = 24 * time.Hour
 
 // NewClassifier builds the HITL auto-approval risk classifier from config.
 // autoApprove is the highest auto-approvable risk: "green" (default; read-only),
@@ -462,7 +475,18 @@ func (a *Adapter) storePendingAccess(threadID, userID string, req *pendingAccess
 		byUser = make(map[string]*pendingAccessReq)
 		a.pendingAccess[threadID] = byUser
 	}
+	req.storedAt = time.Now()
 	byUser[userID] = req
+	for thread, users := range a.pendingAccess {
+		for user, r := range users {
+			if time.Since(r.storedAt) > pendingTTL {
+				delete(users, user)
+			}
+		}
+		if len(users) == 0 {
+			delete(a.pendingAccess, thread)
+		}
+	}
 }
 
 // takePendingAccess atomically retrieves and removes a parked request.
@@ -482,13 +506,20 @@ func (a *Adapter) takePendingAccess(threadID, userID string) *pendingAccessReq {
 }
 
 // storePendingTask records a paused input-required task for a thread.
-// Any existing pending task for that thread is replaced.
+// Any existing pending task for that thread is replaced. Abandoned entries are
+// swept opportunistically so the map does not grow for the process lifetime.
 func (a *Adapter) storePendingTask(threadID string, task *pendingTask) {
 	a.pendingMu.Lock()
 	if a.pendingTasks == nil {
 		a.pendingTasks = make(map[string]*pendingTask)
 	}
+	task.storedAt = time.Now()
 	a.pendingTasks[threadID] = task
+	for thread, t := range a.pendingTasks {
+		if time.Since(t.storedAt) > pendingTTL {
+			delete(a.pendingTasks, thread)
+		}
+	}
 	a.pendingMu.Unlock()
 }
 
@@ -620,13 +651,23 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 	// structured HITL decision so the paused tool confirmation is actually
 	// resolved (a plain text reply would leave the tool call dangling and corrupt
 	// the model history).
-	if task := a.takePendingTask(msg.ThreadID); task != nil {
+	task := a.takePendingTask(msg.ThreadID)
+	if task != nil {
 		msg.TaskID = task.TaskID
 		msg.Decision = decisionFromText(task.Prompt, msg.Text)
+	}
+	// A failure between the take and a running stream would otherwise strand the
+	// paused A2A task (the take deleted the only handle to it); put it back so a
+	// retry or button click can still resume it.
+	restoreTask := func() {
+		if task != nil {
+			a.storePendingTask(msg.ThreadID, task)
+		}
 	}
 
 	ref, err := a.gw.Resolve(ctx, msg)
 	if err != nil {
+		restoreTask()
 		return fmt.Errorf("slack: resolve: %w", err)
 	}
 
@@ -635,10 +676,18 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 
 	deltas, err := a.gw.SendCompletion(turnCtx, ref, msg)
 	if err != nil {
+		restoreTask()
 		return fmt.Errorf("slack: send completion: %w", err)
 	}
 
-	return a.streamResponse(ctx, a.apiClient(), deltas, msg, slackChannel, msg.ThreadID, msg.MessageID, thinkingPlaceholder)
+	// The turn context feeds the whole stream (writer, auto-approved resumes) so
+	// /stop cancels a resumed segment too, and an aborted consumer releases the
+	// producer goroutine.
+	var carried channels.TurnUsage
+	if task != nil {
+		carried = task.Usage
+	}
+	return a.streamResponse(turnCtx, a.apiClient(), deltas, msg, slackChannel, msg.ThreadID, msg.MessageID, thinkingPlaceholder, carried)
 }
 
 // humanToken mints the linked Slack user's muster token for a turn. When
@@ -708,37 +757,54 @@ func (a *Adapter) registerTurn(ctx context.Context, threadID string) (context.Co
 	}
 }
 
+// maxAutoApprovalsPerTurn caps consecutive auto-approved resumes within one
+// turn. An agent looping on green-classified prompts would otherwise hold the
+// thread's serialization slot indefinitely; past the cap the prompt is
+// surfaced to the human like any other.
+const maxAutoApprovalsPerTurn = 20
+
 // streamResponse renders turn progress (reactions on triggerTS, or a text
 // placeholder), streams deltas into a Block Kit markdown reply, and, when the
 // agent pauses for input, registers the pending task and posts the HITL prompt.
 // Shared by dispatch (a new turn; triggerTS is the user message) and
 // handleDecision (a button-click resume; empty triggerTS uses text progress).
-func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, deltas <-chan channels.OutboundDelta, msg channels.InboundMessage, slackChannel, threadID, triggerTS, placeholder string) error {
+// ctx is the turn context (/stop cancels it); carried seeds the usage counters
+// when the turn resumes a paused one so /usage reports the whole turn.
+func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, deltas <-chan channels.OutboundDelta, msg channels.InboundMessage, slackChannel, threadID, triggerTS, placeholder string, carried channels.TurnUsage) error {
 	// replyTS is the message the streamed answer edits: the text-mode placeholder,
 	// or "" in reactions mode (the writer posts the first answer message lazily).
 	prog, replyTS := a.startProgress(ctx, client, slackChannel, threadID, triggerTS, placeholder)
 
 	w := newBatchedWriterWithClient(client, slackChannel, replyTS, threadID, a.detailsLevel(threadID), a.Logger)
+	w.turnUsage = carried
+
+	// cleanupCtx survives the turn context so a /stop-cancelled turn still gets
+	// its progress indicator cleared and terminal notes posted.
+	cleanupCtx := func() (context.Context, context.CancelFunc) {
+		return context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	}
 
 	// Drive the turn to completion. A DeltaPrompt pauses the stream: a low-risk
 	// (read-only) tool prompt is auto-approved and the same turn resumes in place
 	// (story 14); anything else is surfaced to the human. The same writer and
 	// progress indicator carry across an auto-approved resume so a multi-step turn
 	// reads as one answer.
+	autoApprovals := 0
 	for {
 		if err := w.run(ctx, deltas); err != nil {
-			prog.failed(ctx)
+			a.recordTurnUsage(threadID, slackChannel, w.turnUsage)
+			cctx, cancel := cleanupCtx()
+			prog.failed(cctx)
 			// In text mode prog.failed is a no-op (no reaction to swap), so the
 			// placeholder would linger as "thinking" with no failure signal.
 			// Replace it with a terminal note, as the empty-output path does.
-			// Skipped when ctx is already done (/stop, deadline): the cancel is
-			// intentional and the post would fail anyway.
+			// Skipped when the turn was cancelled (/stop): the cancel is intentional.
 			if prog.reactTS == "" && ctx.Err() == nil {
-				a.postTerminalNote(ctx, client, slackChannel, threadID, replyTS, failedNote)
+				a.postTerminalNote(cctx, client, slackChannel, threadID, replyTS, failedNote)
 			}
+			cancel()
 			return err
 		}
-		a.recordTurnUsage(threadID, slackChannel, w.turnUsage)
 
 		pd := w.promptDelta
 		if pd == nil {
@@ -746,25 +812,38 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 		}
 		w.promptDelta = nil
 
-		if next, ok, err := a.maybeAutoApprove(ctx, pd, msg, threadID); ok {
-			if err != nil {
-				prog.failed(ctx)
-				return err
+		if autoApprovals < maxAutoApprovalsPerTurn {
+			if next, ok, err := a.maybeAutoApprove(ctx, pd, msg, threadID); ok {
+				if err != nil {
+					a.recordTurnUsage(threadID, slackChannel, w.turnUsage)
+					cctx, cancel := cleanupCtx()
+					prog.failed(cctx)
+					cancel()
+					return err
+				}
+				autoApprovals++
+				deltas = next
+				continue
 			}
-			deltas = next
-			continue
 		}
 
-		prog.clear(ctx) // paused waiting on the user; drop the working indicator
+		// Paused waiting on the user. The turn is not over: its usage so far
+		// travels with the pending task so the resuming turn reports the whole
+		// turn, and is recorded only when the turn actually ends.
+		cctx, cancel := cleanupCtx()
+		defer cancel()
+		prog.clear(cctx) // drop the working indicator
 		a.storePendingTask(threadID, &pendingTask{
 			TaskID:    pd.TaskID,
 			AgentRef:  msg.AgentRef,
 			Channel:   slackChannel,
 			ChannelID: msg.ChannelID,
 			Prompt:    pd.Prompt,
+			Usage:     w.turnUsage,
 		})
-		return a.postHitlPrompt(ctx, client, slackChannel, threadID, pd)
+		return a.postHitlPrompt(cctx, client, slackChannel, threadID, pd)
 	}
+	a.recordTurnUsage(threadID, slackChannel, w.turnUsage)
 	prog.done(ctx)
 	// A turn that produced no output would otherwise be silent (text mode leaves
 	// the "thinking" placeholder; reactions mode shows only a done emoji with no
@@ -800,7 +879,7 @@ func (a *Adapter) maybeAutoApprove(ctx context.Context, pd *channels.OutboundDel
 	if a.Classifier == nil || pd.Prompt == nil || pd.Prompt.IsAskUser() {
 		return nil, false, nil
 	}
-	approved, res := a.Classifier.ShouldAutoApprove(classifierInput(pd.Prompt))
+	approved, res := a.Classifier.ShouldAutoApproveTool(pd.Prompt.ToolName, pd.Prompt.Args)
 	if !approved {
 		return nil, false, nil
 	}

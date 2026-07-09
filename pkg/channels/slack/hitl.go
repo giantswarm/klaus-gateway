@@ -81,29 +81,6 @@ func (a *Adapter) postHitlPrompt(ctx context.Context, client *slackAPIClient, sl
 	return client.postApprovalPrompt(ctx, slackChannel, threadID, text)
 }
 
-// classifierInput synthesizes a command-like string from a structured HITL tool
-// prompt for the rule-based risk classifier, which matches shell/command text.
-// The tool name leads (it carries the verb, e.g. "kubectl_get", "delete_file")
-// with underscores turned into spaces so it reads like a command, followed by
-// the argument values. The agent-supplied Hint is deliberately excluded: it is
-// free-form prose the agent controls, so letting it feed the classifier would
-// let a crafted hint ("just reading the file") steer a side-effecting call to a
-// green auto-approval. Classification stays on the tool name and call arguments.
-func classifierInput(p *channels.HitlPrompt) string {
-	if p == nil {
-		return ""
-	}
-	var b strings.Builder
-	b.WriteString(strings.ReplaceAll(p.ToolName, "_", " "))
-	for _, v := range p.Args {
-		if s := fmt.Sprintf("%v", v); s != "" {
-			b.WriteByte(' ')
-			b.WriteString(s)
-		}
-	}
-	return b.String()
-}
-
 // renderAskUserText renders all questions and their choices as mrkdwn, with an
 // instruction to reply in-thread.
 func renderAskUserText(p *channels.HitlPrompt) string {
