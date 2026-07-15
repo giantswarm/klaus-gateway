@@ -22,15 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Slack `/klaus login` and `/klaus logout` are now `/login` and `/logout`.
 - A message from someone not allowed to instruct the agent in a thread is no longer silently dropped; it prompts sign-in or an initiator approval instead.
+- Per-thread `/details` settings, `/usage` figures, and resume-check marks are dropped after 24 hours of thread inactivity, so a long-lived gateway's memory stays bounded. An active thread refreshes its state on every turn.
+- A reply into a thread the gateway has no record of (e.g. after a restart) establishes the thread root's author (fetched from Slack) as the initiator, instead of whoever posts first, so a reply cannot take over an existing thread. When the root author cannot be determined (fetch failure, bot-authored root), the first poster still becomes the initiator.
+- Slack OBO: the browser-facing sign-in outcomes at `/auth/slack/link` and `/auth/slack/callback` now render a branded, responsive light/dark HTML page (embedded via `//go:embed`), adapted from the platform gateway-api error template. This replaces the bare inline success HTML and the plain-text error responses, so both success and error cases (expired link, email mismatch, sign-in cancelled/failed) share the same Giant Swarm-styled page.
 
 ### Removed
 
 - Slack `/invite`, `/lock`, and `/quit` commands, the locked/open/observe access modes, and the `SLACK_ALLOWED_USERS` and `SLACK_DEFAULT_ACCESS_MODE` settings, replaced by the initiator-plus-approval access model.
-
-### Changed
-
-- Slack OBO: the browser-facing sign-in outcomes at `/auth/slack/link` and `/auth/slack/callback` now render a branded, responsive light/dark HTML page (embedded via `//go:embed`), adapted from the platform gateway-api error template. This replaces the bare inline success HTML and the plain-text error responses, so both success and error cases (expired link, email mismatch, sign-in cancelled/failed) share the same Giant Swarm-styled page.
-- Per-thread `/details` settings, `/usage` figures, and resume-check marks are dropped after 24 hours of thread inactivity, so a long-lived gateway's memory stays bounded. An active thread refreshes its state on every turn.
 
 ### Fixed
 
@@ -59,6 +57,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Token usage is no longer over-counted when the model provider reports usage on streaming chunks: usage deltas skip partial events, which mirror the same LLM call's counts on every chunk.
 - Token usage reported on a failed, rejected, or canceled terminal event is now carried on the error delta and counted before the turn aborts, instead of being discarded so a failed turn's tokens never reached usage accounting.
 - Agent-rendered text is escaped before entering Slack mrkdwn contexts (approval prompts, ask_user questions and choices, decision labels), so quoted content containing `<!channel>`, `<!here>`, or `<@U...>` renders literally instead of triggering notifications.
+- A newcomer's message approved while the thread's current turn is still running is delivered once that turn finishes, instead of being dropped with a busy notice right after the initiator's approval.
+- `/stop` clears the working reaction silently; a stopped turn is no longer marked with the failed reaction.
+- A newcomer whose sign-in hits a transient token failure gets the error immediately (ephemeral), instead of their message being parked for approval and failing after the initiator's consent.
+- A failed update of the access-consent prompt via the interaction `response_url` (non-2xx response) is logged instead of treated as success.
 - `users.info` lookups go through the same 429-retrying Slack transport as every other Web API call.
 - A non-2xx Slack Web API response (other than 429) surfaces as an error carrying the HTTP status code instead of a JSON decode failure on a non-API body.
 - The notification fallback text of agent replies is escaped, so agent output containing `<!channel>`, `<!here>`, or `<@U...>` can no longer trigger notifications through the fallback while the rendered blocks stay literal.

@@ -92,3 +92,24 @@ func TestTypedResume_FailureKeepsPendingTask(t *testing.T) {
 	require.Equal(t, "task-1", last.TaskID, "retry must resume the restored pending task")
 	require.NotNil(t, last.Decision, "retry must carry the structured approval decision")
 }
+
+// /stop is an intentional cancel: the working reaction is cleared silently, with
+// no failed reaction and no failure note.
+func TestStop_CancelClearsWorkingReactionSilently(t *testing.T) {
+	fake := newFakeSlackAPI()
+	hold := make(chan struct{})
+	defer close(hold)
+	gw := &stubGateway{hold: hold}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+
+	sendEvent(t, srv, dmEvent("U1", "long task", "555.000"))
+	fake.waitForPath(t, "reactions.add", 1)
+
+	sendEvent(t, srv, dmThreadEvent("U1", "/stop", "556.000", "555.000"))
+	fake.waitForPath(t, "reactions.remove", 1)
+
+	require.Equal(t, []string{"eyes"}, fake.reactionNames("reactions.remove"), "working reaction cleared")
+	require.Equal(t, []string{"eyes"}, fake.reactionNames("reactions.add"), "no failed reaction after /stop")
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "turn failed",
+		"no failure note for an intentional stop")
+}

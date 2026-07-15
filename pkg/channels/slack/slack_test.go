@@ -798,14 +798,15 @@ type recordedCall struct {
 // fakeSlackAPI is a structured fake Slack Web API: it records every request by
 // method path with a decoded body and can inject an error code per path.
 type fakeSlackAPI struct {
-	mu       sync.Mutex
-	calls    []recordedCall
-	failWith map[string]string // path (e.g. "reactions.add") -> slack error code
-	seq      int
+	mu          sync.Mutex
+	calls       []recordedCall
+	failWith    map[string]string // path (e.g. "reactions.add") -> slack error code
+	respondWith map[string]string // path -> canned JSON response body
+	seq         int
 }
 
 func newFakeSlackAPI() *fakeSlackAPI {
-	return &fakeSlackAPI{failWith: map[string]string{}}
+	return &fakeSlackAPI{failWith: map[string]string{}, respondWith: map[string]string{}}
 }
 
 func (f *fakeSlackAPI) server(t *testing.T) *httptest.Server {
@@ -825,6 +826,7 @@ func (f *fakeSlackAPI) server(t *testing.T) *httptest.Server {
 		f.mu.Lock()
 		f.calls = append(f.calls, recordedCall{path: path, params: params})
 		code := f.failWith[path]
+		canned := f.respondWith[path]
 		f.seq++
 		ts := fmt.Sprintf("1700000000.%06d", f.seq)
 		f.mu.Unlock()
@@ -832,6 +834,10 @@ func (f *fakeSlackAPI) server(t *testing.T) *httptest.Server {
 		w.Header().Set("Content-Type", "application/json")
 		if code != "" {
 			_, _ = fmt.Fprintf(w, `{"ok":false,"error":%q}`, code)
+			return
+		}
+		if canned != "" {
+			_, _ = fmt.Fprint(w, canned)
 			return
 		}
 		_, _ = fmt.Fprintf(w, `{"ok":true,"ts":%q}`, ts)
@@ -843,6 +849,12 @@ func (f *fakeSlackAPI) server(t *testing.T) *httptest.Server {
 func (f *fakeSlackAPI) setFail(path, code string) {
 	f.mu.Lock()
 	f.failWith[path] = code
+	f.mu.Unlock()
+}
+
+func (f *fakeSlackAPI) setResponse(path, body string) {
+	f.mu.Lock()
+	f.respondWith[path] = body
 	f.mu.Unlock()
 }
 

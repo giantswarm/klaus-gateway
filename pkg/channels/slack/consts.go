@@ -61,6 +61,10 @@ const thinkingPlaceholder = "_thinking…_"
 // in flight on the same thread (per-thread serialization).
 const busyNotice = "I'm still finishing your previous message in this thread. Give me a moment and try again once I've replied."
 
+// tokenErrorNotice is shown (ephemerally) when minting a user's muster token
+// fails for a reason other than not being linked (a transient refresh failure).
+const tokenErrorNotice = "I couldn't refresh your Giant Swarm sign-in just now. Please try again in a moment; if it keeps failing, re-link with the `/login` command."
+
 // accessDecisionRefusal is shown (ephemerally) when a user who is not permitted
 // in the thread clicks an in-thread tool Approve/Deny button.
 const accessDecisionRefusal = "_Only the thread owner (and people they've allowed) can approve or deny this action._"

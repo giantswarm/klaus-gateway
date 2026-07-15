@@ -184,9 +184,10 @@ func (a *Adapter) handleAccessDecision(ctx context.Context, threadID, newcomerID
 	if req == nil {
 		return
 	}
-	if err := a.dispatch(ctx, req.msg, req.slackChannel); err != nil && !errors.Is(err, context.Canceled) {
-		a.Logger.Error("slack: replay after access grant failed", "thread", threadID, "user", newcomerID, "error", err)
-	}
+	// replayDispatch (not dispatch) so a thread slot held by an in-flight turn
+	// defers the replay until the slot frees instead of dropping the message
+	// with a busy notice right after the newcomer was told they are allowed.
+	a.replayDispatch(ctx, req.msg, req.slackChannel)
 }
 
 // handleDecision processes a button click: updates the prompt message to show

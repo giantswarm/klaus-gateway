@@ -115,8 +115,9 @@ type Adapter struct {
 	// a reactions.add returns missing_scope, so later turns skip the failed call.
 	reactionsUnsupported atomic.Bool
 
-	inflightMu sync.Mutex
-	inflight   map[string]struct{} // threadIDs with a turn in progress (serialization)
+	inflightMu  sync.Mutex
+	inflight    map[string]struct{} // threadIDs with a turn in progress (serialization)
+	idleWaiters map[string][]func() // deferred replays, run when the thread slot frees
 
 	pendingMu    sync.Mutex
 	pendingTasks map[string]*pendingTask // keyed by threadID
@@ -531,16 +532,73 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 	if threadReplyOnly && !a.isActiveThread(msg.ThreadID) {
 		return
 	}
+	a.seedInitiatorFromRoot(ctx, inner.Channel, msg.ThreadID, msg.MessageID)
 	if cmd := parseCommand(msg.Text); cmd != nil {
 		if a.handleCommand(ctx, cmd, msg.Subject, inner.Channel, msg.ThreadID) {
 			return
 		}
 	}
 	if err := a.dispatch(ctx, msg, inner.Channel); err != nil {
-		if !errors.Is(err, context.Canceled) {
+		switch {
+		case errors.Is(err, errThreadBusy):
+			if _, perr := a.apiClient().postMessage(ctx, inner.Channel, busyNotice, msg.ThreadID); perr != nil {
+				a.Logger.Warn("slack: post busy notice failed", "thread", msg.ThreadID, "error", perr)
+			}
+		case !errors.Is(err, context.Canceled):
 			a.Logger.Error("slack: dispatch error", "channel", inner.Channel, "error", err)
 		}
 	}
+}
+
+// errThreadBusy reports a turn rejected because another turn holds the
+// thread's slot, so the caller chooses between notifying the user and
+// requeueing the message.
+var errThreadBusy = errors.New("slack: thread busy")
+
+// replayDispatch delivers a previously parked message through dispatch. The
+// parked user never knowingly raced anyone, so a held thread slot does not
+// reject the message with the busy notice: the replay is queued and runs when
+// the current turn releases the slot.
+func (a *Adapter) replayDispatch(ctx context.Context, msg channels.InboundMessage, slackChannel string) {
+	a.whenThreadIdle(msg.ThreadID, func() {
+		err := a.dispatch(ctx, msg, slackChannel)
+		switch {
+		case errors.Is(err, errThreadBusy):
+			// Lost the re-acquire race against a concurrently arriving turn; queue
+			// again rather than dropping the message.
+			a.replayDispatch(ctx, msg, slackChannel)
+		case err != nil && !errors.Is(err, context.Canceled):
+			a.Logger.Error("slack: replay dispatch failed", "thread", msg.ThreadID, "user", msg.Subject, "error", err)
+		}
+	})
+}
+
+// rootAuthorLookupTimeout bounds the conversations.replies call that seeds a
+// thread's initiator, so a slow Slack API cannot stall inbound handling.
+const rootAuthorLookupTimeout = 3 * time.Second
+
+// seedInitiatorFromRoot seeds a thread's initiator from the thread root's
+// author. The access policy is process-local, so after a restart the first
+// poster into a pre-existing thread would otherwise take it over as initiator.
+// Only a reply into a thread with no recorded initiator triggers the lookup;
+// when the root author is unavailable (fetch failure, bot-authored root) the
+// first-poster behavior stands.
+func (a *Adapter) seedInitiatorFromRoot(ctx context.Context, slackChannel, threadID, messageID string) {
+	if threadID == "" || threadID == messageID {
+		return
+	}
+	if a.accessPolicy().Initiator(threadID) != "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, rootAuthorLookupTimeout)
+	defer cancel()
+	author, err := a.apiClient().threadRootAuthor(ctx, slackChannel, threadID)
+	if err != nil || author == "" {
+		a.Logger.Debug("slack: thread root author unavailable, first poster becomes initiator",
+			"thread", threadID, "error", err)
+		return
+	}
+	a.accessPolicy().SetInitiator(threadID, author)
 }
 
 // dispatch resolves an inbound Slack message to a Klaus instance, posts a
@@ -565,9 +623,19 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 	initiator := access.SetInitiator(msg.ThreadID, slackUser)
 	if !access.Allowed(msg.ThreadID, slackUser) {
 		if a.OBO != nil && slackUser != "" {
-			if _, err := a.OBO.TokenFor(ctx, slackUser); errors.Is(err, musterlink.ErrNotLinked) {
-				a.Logger.Debug("slack: newcomer not linked, prompting sign-in", "user", slackUser)
-				a.postSignIn(ctx, slackChannel, msg.ThreadID, slackUser)
+			if _, err := a.OBO.TokenFor(ctx, slackUser); err != nil {
+				if errors.Is(err, musterlink.ErrNotLinked) {
+					a.Logger.Debug("slack: newcomer not linked, prompting sign-in", "user", slackUser)
+					a.postSignIn(ctx, slackChannel, msg.ThreadID, slackUser)
+					return nil
+				}
+				// A transient mint failure surfaces to the newcomer now; parking the
+				// message would defer it to a confusing error after the initiator's
+				// consent.
+				a.Logger.Warn("slack: newcomer token unavailable, not parking", "user", slackUser, "error", err)
+				if perr := a.apiClient().postEphemeralText(ctx, slackChannel, slackUser, msg.ThreadID, tokenErrorNotice); perr != nil {
+					a.Logger.Warn("slack: post token-error message failed", "user", slackUser, "error", perr)
+				}
 				return nil
 			}
 		}
@@ -584,10 +652,7 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 	// queueing it, so a stale follow-up is not answered minutes late. Acquire
 	// before taking the pending task so a rejected turn leaves it for later.
 	if !a.acquireThread(msg.ThreadID) {
-		if _, perr := a.apiClient().postMessage(ctx, slackChannel, busyNotice, msg.ThreadID); perr != nil {
-			a.Logger.Warn("slack: post busy notice failed", "thread", msg.ThreadID, "error", perr)
-		}
-		return nil
+		return errThreadBusy
 	}
 	defer a.releaseThread(msg.ThreadID)
 
@@ -693,8 +758,7 @@ func (a *Adapter) humanToken(ctx context.Context, slackChannel, threadID, slackU
 	default:
 		a.Logger.Warn("slack: human token unavailable, aborting turn", "user", slackUser, "error", err)
 		if respond {
-			const msgText = "I couldn't refresh your Giant Swarm sign-in just now. Please try again in a moment; if it keeps failing, re-link with the `/login` command."
-			if perr := a.apiClient().postEphemeralText(ctx, slackChannel, slackUser, threadID, msgText); perr != nil {
+			if perr := a.apiClient().postEphemeralText(ctx, slackChannel, slackUser, threadID, tokenErrorNotice); perr != nil {
 				a.Logger.Warn("slack: post token-error message failed", "user", slackUser, "error", perr)
 			}
 		}
@@ -752,15 +816,20 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 	if err := w.run(ctx, deltas); err != nil {
 		a.recordTurnUsage(threadID, slackChannel, w.turnUsage)
 		cctx, cancel := cleanupCtx()
+		defer cancel()
+		// A cancelled turn context means the stop was intentional (/stop, shutdown):
+		// clear the working indicator silently instead of signalling a failure.
+		if ctx.Err() != nil {
+			prog.clear(cctx)
+			return err
+		}
 		prog.failed(cctx)
 		// In text mode prog.failed is a no-op (no reaction to swap), so the
 		// placeholder would linger as "thinking" with no failure signal.
 		// Replace it with a terminal note, as the empty-output path does.
-		// Skipped when the turn was cancelled (/stop): the cancel is intentional.
-		if prog.reactTS == "" && ctx.Err() == nil {
+		if prog.reactTS == "" {
 			a.postTerminalNote(cctx, client, slackChannel, threadID, replyTS, failedNote)
 		}
-		cancel()
 		return err
 	}
 

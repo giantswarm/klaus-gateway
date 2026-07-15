@@ -354,6 +354,39 @@ func (c *slackAPIClient) lookupUserEmail(ctx context.Context, userID string) (st
 	return result.User.Profile.Email, nil
 }
 
+// threadRootAuthor returns the user ID of a thread's root message author, via
+// conversations.replies with limit 1 (the root is the first message returned).
+// A bot-authored root has no user field and returns "".
+func (c *slackAPIClient) threadRootAuthor(ctx context.Context, channel, threadTS string) (string, error) {
+	params := url.Values{
+		paramChannel: {channel},
+		paramTS:      {threadTS},
+		"limit":      {"1"},
+	}
+	body, err := c.call(ctx, "conversations.replies", "application/x-www-form-urlencoded", params.Encode())
+	if err != nil {
+		return "", err
+	}
+
+	var result struct {
+		OK       bool   `json:"ok"`
+		Err      string `json:"error,omitempty"`
+		Messages []struct {
+			User string `json:"user"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", fmt.Errorf("slack conversations.replies: decode: %w", err)
+	}
+	if !result.OK {
+		return "", fmt.Errorf("slack conversations.replies: %s", result.Err)
+	}
+	if len(result.Messages) == 0 {
+		return "", fmt.Errorf("slack conversations.replies: no messages for thread %s", threadTS)
+	}
+	return result.Messages[0].User, nil
+}
+
 // errReactionsUnsupported reports that the bot cannot manage reactions (the
 // reactions:write scope is missing, or the token type disallows it), so the
 // caller should fall back to text-based progress.
@@ -626,6 +659,9 @@ func respondURL(ctx context.Context, responseURL, text string) error {
 		return fmt.Errorf("slack respond_url: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= http.StatusMultipleChoices {
+		return fmt.Errorf("slack respond_url: http status %d", resp.StatusCode)
+	}
 	return nil
 }
 
