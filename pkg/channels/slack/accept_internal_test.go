@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestAcceptEvent(t *testing.T) {
@@ -34,4 +36,15 @@ func TestAcceptEvent(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestToInboundMessageRejectsEmptyUser(t *testing.T) {
+	event := slackInnerEvent{Type: evtAppMention, Text: "hello", Channel: "C1", TS: "1.2"}
+	_, ok := event.toInboundMessage(false)
+	require.False(t, ok, "an event without a Slack user must never become a turn")
+
+	event.User = "U123"
+	msg, ok := event.toInboundMessage(false)
+	require.True(t, ok)
+	require.Equal(t, "U123", msg.Subject)
 }
