@@ -54,10 +54,13 @@ func (p *progressState) removeWorking(ctx context.Context) {
 	if !p.working {
 		return
 	}
-	p.working = false
 	if err := p.client.reactionsRemove(ctx, p.channel, p.reactTS, p.emojis.working); err != nil {
+		// working stays true so a later terminal hook retries the removal
+		// instead of stranding the reaction after a transient failure.
 		p.logger.Debug("slack: remove working reaction failed", "error", err)
+		return
 	}
+	p.working = false
 }
 
 // startProgress begins progress rendering and returns the ts of the reply

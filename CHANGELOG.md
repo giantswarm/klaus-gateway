@@ -33,6 +33,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Token usage reported on a failed, rejected, or canceled terminal event is now carried on the error delta and counted before the turn aborts, instead of being discarded so a failed turn's tokens never reached usage accounting.
 - Agent-rendered text is escaped before entering Slack mrkdwn contexts (approval prompts, ask_user questions and choices, decision labels), so quoted content containing `<!channel>`, `<!here>`, or `<@U...>` renders literally instead of triggering notifications.
 - `users.info` lookups go through the same 429-retrying Slack transport as every other Web API call.
+- A non-2xx Slack Web API response (other than 429) surfaces as an error carrying the HTTP status code instead of a JSON decode failure on a non-API body.
+- The notification fallback text of agent replies is escaped, so agent output containing `<!channel>`, `<!here>`, or `<@U...>` can no longer trigger notifications through the fallback while the rendered blocks stay literal.
+- HITL approval and choice prompts truncate their text to Slack's 3000-character section limit (rune-safe, with a trailing ellipsis), so an oversized prompt posts instead of being rejected with `invalid_blocks` and stranding the paused task.
+- A transient failure removing the working progress reaction no longer strands it; the removal is retried on the next progress update.
+- A fence info string too long for the chunk budget degrades the continuation to a plain split instead of emitting a block over Slack's limit, and a fence-open line longer than the budget still toggles fence state, so prose after the fence is no longer wrapped in reopened code fences.
 - A Slack turn that ends in error while in text-progress mode replaces its `_thinking…_` placeholder with a failure note instead of leaving it dangling with no signal (reactions mode already swaps in the failed emoji). An intentional `/stop` still cancels silently.
 
 ### Refactored

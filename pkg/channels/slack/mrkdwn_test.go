@@ -134,6 +134,41 @@ func TestSplitMarkdown_FenceOverheadStaysWithinMax(t *testing.T) {
 	}
 }
 
+// A fence-open line that fits the cap but whose reopen overhead (fence line
+// plus auto-close) does not must degrade to a plain split (no reopen), never
+// emit an oversized chunk.
+func TestSplitMarkdown_ReopenOverheadBeyondMaxDegradesToPlainSplit(t *testing.T) {
+	const maxLen = 40
+	fence := "```" + strings.Repeat("l", maxLen-7) + "\n"
+	line := strings.Repeat("x", 30) + "\n"
+	text := fence + strings.Repeat(line, 4) + "```\n"
+
+	chunks := splitMarkdown(text, maxLen)
+	joined := strings.Join(chunks, "")
+	for i, chunk := range chunks {
+		require.LessOrEqual(t, len(chunk), maxLen, "chunk %d: %q", i, chunk)
+	}
+	require.Equal(t, 120, strings.Count(joined, "x"), "all content preserved")
+}
+
+// A fence-open line longer than the budget is hard-split; the fence toggle must
+// still apply so the following close line flips back to prose. Otherwise the
+// close line is mistaken for an open and later prose chunks get wrapped in
+// reopened code fences.
+func TestSplitMarkdown_HardSplitFenceLineStillTogglesFenceState(t *testing.T) {
+	const maxLen = 40
+	fence := "```" + strings.Repeat("l", maxLen) + "\n"
+	text := fence + "code\n" + "```\n" + strings.Repeat("prose words here\n", 6)
+
+	for i, chunk := range splitMarkdown(text, maxLen) {
+		require.LessOrEqual(t, len(chunk), maxLen, "chunk %d: %q", i, chunk)
+		if strings.Contains(chunk, "prose") {
+			require.False(t, strings.HasPrefix(chunk, "```"),
+				"post-fence prose must not be wrapped in a reopened fence: %q", chunk)
+		}
+	}
+}
+
 func TestEscapeMrkdwn(t *testing.T) {
 	require.Equal(t, "&lt;!channel&gt; deploy? a &amp;&amp; b &lt;@U123&gt;",
 		escapeMrkdwn("<!channel> deploy? a && b <@U123>"))

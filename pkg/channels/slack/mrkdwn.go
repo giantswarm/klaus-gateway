@@ -22,6 +22,12 @@ func splitMarkdown(text string, maxLen int) []string {
 	var b strings.Builder
 	inFence := false
 	fenceOpen := "" // the opening fence line (info string + newline) to reopen with
+	// bufHasOpenFence tracks whether the current buffer contains an unclosed
+	// fence opening (original or reopened). When the reopen overhead does not fit
+	// maxLen the continuation is emitted as a plain split with no opening, and
+	// emit must not append a close to it (a stray ``` would open a fence when
+	// rendered).
+	bufHasOpenFence := false
 
 	// closeFence appends the closing ``` to s when a chunk ends mid-fence.
 	closeFence := func(s string) string {
@@ -40,11 +46,13 @@ func splitMarkdown(text string, maxLen int) []string {
 			return
 		}
 		s := b.String()
+		hadOpenFence := bufHasOpenFence
 		b.Reset()
+		bufHasOpenFence = false
 		if inFence && s == fenceOpen {
 			return
 		}
-		if inFence {
+		if inFence && hadOpenFence {
 			s = closeFence(s)
 		}
 		chunks = append(chunks, s)
@@ -53,46 +61,63 @@ func splitMarkdown(text string, maxLen int) []string {
 	for line := range strings.Lines(text) {
 		// Inside a fence a chunk carries invisible overhead: the auto-close
 		// appended by emit, plus the reopened fence line when the chunk starts
-		// fresh. Both count against maxLen so no emitted chunk ever exceeds it,
-		// whatever the fence info-string length.
+		// fresh. Both count against maxLen so no emitted chunk ever exceeds it.
+		// When the reopen itself does not fit (pathologically long fence info
+		// string) the continuation degrades to a plain split: no reopen, no
+		// auto-close, full budget. Losing code formatting beats emitting a chunk
+		// Slack rejects outright.
+		reopenViable := !inFence || len(fenceOpen)+len("\n```") < maxLen
 		budget := maxLen
-		if inFence {
-			if r := maxLen - len(fenceOpen) - len("\n```"); r > 0 {
-				budget = r
-			}
+		if inFence && reopenViable {
+			budget = maxLen - len(fenceOpen) - len("\n```")
 		}
+		isFenceLine := strings.HasPrefix(strings.TrimLeft(line, " \t"), "```")
 		// A single line over the budget cannot share a chunk: flush what we have,
 		// then hard-split it. While inside a fence each piece is wrapped in its
-		// own fenced block so code formatting survives.
+		// own fenced block so code formatting survives. The fence toggle below
+		// still applies to a hard-split fence line, so fence state stays in sync
+		// with the input even though the line never enters the buffer.
 		if len(line) > budget {
 			emit()
 			for _, piece := range splitAtLines(line, budget) {
-				if inFence {
+				if inFence && reopenViable {
 					chunks = append(chunks, closeFence(fenceOpen+piece))
 				} else {
 					chunks = append(chunks, piece)
+				}
+			}
+			if isFenceLine {
+				if inFence {
+					inFence, fenceOpen = false, ""
+				} else {
+					inFence, fenceOpen = true, line
 				}
 			}
 			continue
 		}
 		overhead := 0
 		if inFence {
-			overhead = len("\n```")
-			if b.Len() == 0 {
-				overhead += len(fenceOpen)
+			switch {
+			case bufHasOpenFence:
+				overhead = len("\n```")
+			case b.Len() == 0 && reopenViable:
+				overhead = len(fenceOpen) + len("\n```")
 			}
 		}
 		if b.Len() > 0 && b.Len()+len(line)+overhead > maxLen {
 			emit()
 		}
-		if inFence && b.Len() == 0 {
+		if inFence && b.Len() == 0 && reopenViable {
 			b.WriteString(fenceOpen) // reopen for the continuation chunk
+			bufHasOpenFence = true
 		}
-		if strings.HasPrefix(strings.TrimLeft(line, " \t"), "```") {
+		if isFenceLine {
 			if inFence {
 				inFence, fenceOpen = false, ""
+				bufHasOpenFence = false
 			} else {
 				inFence, fenceOpen = true, line
+				bufHasOpenFence = true
 			}
 		}
 		b.WriteString(line)
