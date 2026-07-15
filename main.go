@@ -215,10 +215,12 @@ func run(args []string) error {
 
 	if cfg.OBO.Enabled {
 		var slackEmail func(context.Context, string) (string, error)
+		var onLinked func(context.Context, string)
 		if slackAdapter != nil {
 			slackEmail = slackAdapter.LookupUserEmail
+			onLinked = slackAdapter.OnUserLinked
 		}
-		linker, closeLinker, err := buildOBOLinker(cfg.OBO, logger, slackEmail)
+		linker, closeLinker, err := buildOBOLinker(cfg.OBO, logger, slackEmail, onLinked)
 		if err != nil {
 			return fmt.Errorf("build obo linker: %w", err)
 		}
@@ -401,6 +403,7 @@ func buildStore(cfg config.Config) (store.Store, error) {
 // CallbackBaseURL by musterlink (CIMD); an explicit cfg.ClientID overrides it.
 func buildOBOLinker(cfg config.OBOConfig, logger *slog.Logger,
 	slackEmail func(context.Context, string) (string, error),
+	onLinked func(context.Context, string),
 ) (*musterlink.Linker, func() error, error) {
 	stateKey, err := os.ReadFile(cfg.StateKeyFile)
 	if err != nil {
@@ -431,6 +434,7 @@ func buildOBOLinker(cfg config.OBOConfig, logger *slog.Logger,
 		StateKey:      stateKey,
 		Store:         store,
 		SlackEmail:    slackEmail,
+		OnLinked:      onLinked,
 		Logger:        logger,
 	})
 	if err != nil {

@@ -230,7 +230,12 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 	// that cannot run (unlinked clicker, token error) must leave the task and the
 	// buttons intact, and an approved tool call must execute under the approver's
 	// identity, never the gateway service account (klaus-gateway#116).
-	token, ok := a.humanToken(ctx, slackChannel, threadID, slackUser, true)
+	token, ok, signIn := a.humanToken(ctx, slackChannel, threadID, slackUser)
+	if signIn {
+		// A button resume has no message to replay, so just prompt; the clicker
+		// signs in and clicks again.
+		a.postSignIn(ctx, slackChannel, threadID, slackUser)
+	}
 	if !ok {
 		return nil
 	}

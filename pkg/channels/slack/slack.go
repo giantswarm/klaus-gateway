@@ -114,6 +114,9 @@ type Adapter struct {
 	pendingAccessMu sync.Mutex
 	pendingAccess   map[string]map[string]*pendingAccessReq // threadID -> userID -> parked request
 
+	pendingLoginMu sync.Mutex
+	pendingLogin   map[string]map[string]*pendingLoginReq // slackUserID -> threadID -> message parked while the user signs in
+
 	turnsMu sync.Mutex
 	turns   map[string]*turn // keyed by threadID; cancels in-flight SendCompletion
 
@@ -199,6 +202,18 @@ type pendingAccessReq struct {
 	slackChannel string
 
 	storedAt time.Time // set by storePendingAccess; drives the TTL sweep
+}
+
+// pendingLoginReq is a message parked while its unlinked sender completes the
+// sign-in flow. It is replayed through dispatch when the user links, so the
+// question they typed is answered without them having to send it again. Parked
+// per (user, thread): a repeat in the same thread before linking overwrites the
+// earlier one, but a message in another thread is kept and replayed too.
+type pendingLoginReq struct {
+	msg          channels.InboundMessage
+	slackChannel string
+
+	storedAt time.Time // set by parkPendingLogin; drives the TTL sweep
 }
 
 // pendingTTL bounds how long a parked task or access request is kept. Both
@@ -572,6 +587,67 @@ func (a *Adapter) takePendingAccess(threadID, userID string) *pendingAccessReq {
 	return req
 }
 
+// parkPendingLogin holds a message while its unlinked sender signs in, so it can
+// be replayed once the link completes. Keyed by (user, thread), hold-latest per
+// thread: a repeat in the same thread overwrites the earlier one. Abandoned
+// entries are swept opportunistically.
+func (a *Adapter) parkPendingLogin(slackUser string, req *pendingLoginReq) {
+	a.pendingLoginMu.Lock()
+	defer a.pendingLoginMu.Unlock()
+	if a.pendingLogin == nil {
+		a.pendingLogin = make(map[string]map[string]*pendingLoginReq)
+	}
+	byThread := a.pendingLogin[slackUser]
+	if byThread == nil {
+		byThread = make(map[string]*pendingLoginReq)
+		a.pendingLogin[slackUser] = byThread
+	}
+	req.storedAt = time.Now()
+	byThread[req.msg.ThreadID] = req
+	for user, threads := range a.pendingLogin {
+		for thread, r := range threads {
+			if time.Since(r.storedAt) > pendingTTL {
+				delete(threads, thread)
+			}
+		}
+		if len(threads) == 0 {
+			delete(a.pendingLogin, user)
+		}
+	}
+}
+
+// takePendingLogin atomically retrieves and removes all of a user's parked
+// messages (one per thread).
+func (a *Adapter) takePendingLogin(slackUser string) []*pendingLoginReq {
+	a.pendingLoginMu.Lock()
+	defer a.pendingLoginMu.Unlock()
+	byThread := a.pendingLogin[slackUser]
+	if len(byThread) == 0 {
+		return nil
+	}
+	reqs := make([]*pendingLoginReq, 0, len(byThread))
+	for _, r := range byThread {
+		reqs = append(reqs, r)
+	}
+	delete(a.pendingLogin, slackUser)
+	return reqs
+}
+
+// OnUserLinked replays the messages the user sent before signing in (one per
+// thread), once their muster identity is linked. Registered as the musterlink
+// OnLinked hook. It runs off the OAuth callback goroutine, so each replay is
+// dispatched asynchronously to keep the callback response prompt; nothing to do
+// when nothing was parked.
+func (a *Adapter) OnUserLinked(ctx context.Context, slackUser string) {
+	for _, req := range a.takePendingLogin(slackUser) {
+		go func() {
+			if err := a.dispatch(ctx, req.msg, req.slackChannel); err != nil && !errors.Is(err, context.Canceled) {
+				a.Logger.Error("slack: replay after sign-in failed", "user", slackUser, "thread", req.msg.ThreadID, "error", err)
+			}
+		}()
+	}
+}
+
 // storePendingTask records a paused input-required task for a thread.
 // Any existing pending task for that thread is replaced. Abandoned entries are
 // swept opportunistically so the map does not grow for the process lifetime.
@@ -686,6 +762,9 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 		if a.OBO != nil && slackUser != "" {
 			if _, err := a.OBO.TokenFor(ctx, slackUser); errors.Is(err, musterlink.ErrNotLinked) {
 				a.Logger.Debug("slack: newcomer not linked, prompting sign-in", "user", slackUser)
+				// Hold the message so signing in resumes it (the replay re-enters
+				// dispatch, now linked, and falls through to the access prompt).
+				a.parkPendingLogin(slackUser, &pendingLoginReq{msg: msg, slackChannel: slackChannel})
 				a.postSignIn(ctx, slackChannel, msg.ThreadID, slackUser)
 				return nil
 			}
@@ -712,7 +791,17 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 
 	a.resolveSubjectEmail(ctx, &msg)
 
-	token, ok := a.humanToken(ctx, slackChannel, msg.ThreadID, slackUser, true)
+	token, ok, signIn := a.humanToken(ctx, slackChannel, msg.ThreadID, slackUser)
+	if signIn {
+		// Hold the message so it is answered after the user signs in, rather than
+		// dropped and re-typed. resolveSubjectEmail above rewrote msg.Subject to the
+		// email; restore the raw Slack user ID so the replay keys access control the
+		// same way this turn did.
+		parked := msg
+		parked.Subject = slackUser
+		a.parkPendingLogin(slackUser, &pendingLoginReq{msg: parked, slackChannel: slackChannel})
+		a.postSignIn(ctx, slackChannel, msg.ThreadID, slackUser)
+	}
 	if !ok {
 		return nil
 	}
@@ -793,32 +882,30 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 //
 // Shared by message dispatch and the button-click resume path, so an approved
 // tool call always runs under the approver's identity. Returns ok=false when
-// the turn must not run; the user is only messaged when respond is true (a DM
-// sender is always permitted; observe-mode onlookers stay silent). When OBO is
-// disabled the token is empty and ok is true.
-func (a *Adapter) humanToken(ctx context.Context, slackChannel, threadID, slackUser string, respond bool) (string, bool) {
+// the turn must not run. When OBO is disabled the token is empty and ok is
+// true.
+// The caller drives the sign-in prompt on signIn=true so the message path can
+// first park the turn for replay after linking, while the button-resume path
+// (which has no message to replay) just prompts. A transient failure is surfaced
+// here and returns ok=false, signIn=false.
+func (a *Adapter) humanToken(ctx context.Context, slackChannel, threadID, slackUser string) (token string, ok, signIn bool) {
 	if a.OBO == nil || slackUser == "" {
-		return "", true
+		return "", true, false
 	}
 	token, err := a.OBO.TokenFor(ctx, slackUser)
 	switch {
 	case err == nil:
-		return token, true
+		return token, true, false
 	case errors.Is(err, musterlink.ErrNotLinked):
 		a.Logger.Debug("slack: link unavailable (unlinked or refresh token dead), prompting sign-in", "user", slackUser)
-		if respond {
-			a.postSignIn(ctx, slackChannel, threadID, slackUser)
-		}
-		return "", false
+		return "", false, true
 	default:
 		a.Logger.Warn("slack: human token unavailable, aborting turn", "user", slackUser, "error", err)
-		if respond {
-			const msgText = "I couldn't refresh your Giant Swarm sign-in just now. Please try again in a moment; if it keeps failing, re-link with the `/login` command."
-			if perr := a.apiClient().postEphemeralText(ctx, slackChannel, slackUser, threadID, msgText); perr != nil {
-				a.Logger.Warn("slack: post token-error message failed", "user", slackUser, "error", perr)
-			}
+		const msgText = "I couldn't refresh your Giant Swarm sign-in just now. Please try again in a moment; if it keeps failing, re-link with the `/login` command."
+		if perr := a.apiClient().postEphemeralText(ctx, slackChannel, slackUser, threadID, msgText); perr != nil {
+			a.Logger.Warn("slack: post token-error message failed", "user", slackUser, "error", perr)
 		}
-		return "", false
+		return "", false, false
 	}
 }
 
