@@ -555,23 +555,28 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 	return a.streamResponse(ctx, a.apiClient(), deltas, msg, slackChannel, msg.ThreadID, msg.MessageID, thinkingPlaceholder)
 }
 
-// humanToken resolves the per-turn human muster token for slackUser under the
-// human-token-forwarding invariant: when linking is enabled, the human's muster
-// token is the only credential we forward; the agent always acts as the human,
-// never as the gateway service account. So a turn without a valid human token
-// must be aborted, not silently degraded to the M2M SA identity, which is
-// confusing, masks failures, and is a privilege risk (klaus-gateway#116):
+// humanToken mints the linked Slack user's muster token for a turn. When
+// linking is disabled (OBO nil) it returns ("", true): there is no human path
+// and the turn proceeds with no per-user credential. When linking is enabled,
+// the human's muster token is the only credential forwarded (the agent always
+// acts as the human, never as the gateway service account), so a turn without
+// a valid one returns ok=false and the caller aborts, not silently degraded to
+// the M2M SA identity, which is confusing, masks failures, and is a privilege
+// risk (klaus-gateway#116):
 //   - unlinked user  -> prompt sign-in and stop;
 //   - transient error -> surface it and stop.
 //
-// Shared by message dispatch and the button-click resume path, so an approved
-// tool call always runs under the approver's identity. Returns ok=false when
-// the turn must not run; the user is only messaged when respond is true (a DM
-// sender is always permitted; observe-mode onlookers stay silent). When OBO is
-// disabled the token is empty and ok is true.
+// Both prompts are posted only when respond is true, so only a user we would
+// actually respond to is messaged (a DM sender is always permitted;
+// observe-mode onlookers stay silent). Shared by the message-dispatch and
+// button-click paths.
 func (a *Adapter) humanToken(ctx context.Context, slackChannel, threadID, slackUser string, respond bool) (string, bool) {
-	if a.OBO == nil || slackUser == "" {
+	if a.OBO == nil {
 		return "", true
+	}
+	if slackUser == "" {
+		a.Logger.Warn("slack: aborting turn without a slack user (no human token possible)")
+		return "", false
 	}
 	token, err := a.OBO.TokenFor(ctx, slackUser)
 	switch {
@@ -582,7 +587,6 @@ func (a *Adapter) humanToken(ctx context.Context, slackChannel, threadID, slackU
 		if respond {
 			a.postSignIn(ctx, slackChannel, threadID, slackUser)
 		}
-		return "", false
 	default:
 		a.Logger.Warn("slack: human token unavailable, aborting turn", "user", slackUser, "error", err)
 		if respond {
@@ -591,8 +595,8 @@ func (a *Adapter) humanToken(ctx context.Context, slackChannel, threadID, slackU
 				a.Logger.Warn("slack: post token-error message failed", "user", slackUser, "error", perr)
 			}
 		}
-		return "", false
 	}
+	return "", false
 }
 
 // registerTurn installs a cancelable in-flight turn for threadID so /stop can
@@ -716,6 +720,11 @@ func (e slackInnerEvent) threadReplyOnly() bool {
 // to route replies to existing bot threads.
 func (e slackInnerEvent) toInboundMessage(threadReplyOnly bool) (channels.InboundMessage, bool) {
 	if e.BotID != "" || e.SubType != "" {
+		return channels.InboundMessage{}, false
+	}
+	// An event without a Slack user has no subject: it cannot be
+	// access-controlled or attributed, so it must never become a turn.
+	if e.User == "" {
 		return channels.InboundMessage{}, false
 	}
 	switch e.Type {

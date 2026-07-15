@@ -379,6 +379,30 @@ func TestCallbackStoresLinkOnEmailMatch(t *testing.T) {
 	require.Equal(t, "muster-sub", jwtSub(t, got.IDToken), "the code exchange seeds the cached dex id_token")
 }
 
+func TestCallbackRejectsMissingIDToken(t *testing.T) {
+	stub := newMusterStub(t, "klaus-gateway", "alice@example.com", "muster-sub")
+	stub.omitIDToken = true
+	store := NewMemStore()
+	l := newTestLinker(t, stub, store, nil)
+
+	// A code exchange whose token response carries no id_token (e.g. openid
+	// scope not granted) must fail the sign-in outright: a stored link without
+	// an id_token would error on every subsequent turn.
+	driveCallback(t, l, "U1", http.StatusBadGateway)
+	_, ok := store.Get("U1")
+	require.False(t, ok, "a link without an id_token must not be stored")
+}
+
+func TestExchangeMissingIDTokenErrors(t *testing.T) {
+	stub := newMusterStub(t, "klaus-gateway", "alice@example.com", "muster-sub")
+	stub.omitIDToken = true
+	l := newTestLinker(t, stub, NewMemStore(), nil)
+
+	_, err := l.Exchange(t.Context(), "auth-code", "verifier")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "id_token")
+}
+
 func TestCallbackRejectsEmailMismatch(t *testing.T) {
 	stub := newMusterStub(t, "klaus-gateway", "alice@example.com", "muster-sub")
 	store := NewMemStore()

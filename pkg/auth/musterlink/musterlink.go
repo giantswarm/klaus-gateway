@@ -455,16 +455,24 @@ func (l *Linker) Exchange(ctx context.Context, code, codeVerifier string) (*Link
 	if tok.RefreshToken == "" {
 		return nil, errors.New("musterlink: token response carried no refresh token (offline_access not granted?)")
 	}
+	// The dex id_token is the credential forwarded downstream; a link without
+	// one can never serve a turn, so fail the sign-in here instead of storing a
+	// link that errors on every message.
+	idToken, _ := tok.Extra("id_token").(string)
+	if idToken == "" {
+		return nil, errors.New("musterlink: token response carried no id_token (openid scope missing or upstream IdP misconfigured?)")
+	}
 	sub, email, err := l.userinfo(ctx, tok.AccessToken)
 	if err != nil {
 		return nil, err
 	}
-	link := &Link{Sub: sub, Email: email, RefreshToken: tok.RefreshToken}
-	if idToken, _ := tok.Extra("id_token").(string); idToken != "" {
-		link.IDToken = idToken
-		link.Expiry = idTokenExpiry(idToken, tok.Expiry)
-	}
-	return link, nil
+	return &Link{
+		Sub:          sub,
+		Email:        email,
+		RefreshToken: tok.RefreshToken,
+		IDToken:      idToken,
+		Expiry:       idTokenExpiry(idToken, tok.Expiry),
+	}, nil
 }
 
 // userinfo fetches the muster identity claims using the access token.
@@ -589,7 +597,10 @@ func validCachedToken(link *Link, now time.Time) string {
 
 // idTokenExpiry reads the exp claim from a JWT id_token without verifying its
 // signature. It falls back to the supplied token expiry when the id_token is
-// not a decodable JWT or carries no exp.
+// not a decodable JWT or carries no exp. The fallback is best-effort: it
+// assumes the dex id_token lives at least as long as the muster access token,
+// so an undecodable id_token is refreshed no later than the access token would
+// be.
 func idTokenExpiry(idToken string, fallback time.Time) time.Time {
 	parts := strings.Split(idToken, ".")
 	if len(parts) != 3 {

@@ -255,8 +255,17 @@ func run(args []string) error {
 		if cfg.A2A.TokenPath != "" {
 			fallback = pkga2a.FileTokenSource{Path: cfg.A2A.TokenPath}
 		}
+		tokenSource := pkga2a.ForwardedTokenSource{Fallback: fallback}
+		// With OBO linking enabled, a Slack turn must carry the human's token:
+		// the ServiceAccount fallback stays available to the web/cli channels
+		// (which may serve anonymous local callers) but is disabled for Slack,
+		// so a turn that reaches the executor without a human token fails
+		// instead of silently running as the machine identity.
+		if cfg.OBO.Enabled {
+			tokenSource.ForwardedOnlyChannels = []string{slackchannel.ChannelName}
+		}
 		facade.Executor = &pkga2a.A2AClient{
-			TokenSource:  pkga2a.ForwardedTokenSource{Fallback: fallback},
+			TokenSource:  tokenSource,
 			BaseURL:      cfg.A2A.URL,
 			DefaultAgent: cfg.A2A.DefaultAgent,
 		}

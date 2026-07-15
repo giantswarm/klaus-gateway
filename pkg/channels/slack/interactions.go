@@ -185,6 +185,14 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 	// Resolve email for the button-clicking user.
 	a.resolveSubjectEmail(ctx, &msg)
 
+	// A button-click resume is a turn like any other: it must carry the
+	// clicking user's human token, never the gateway's machine identity.
+	token, ok = a.humanToken(ctx, slackChannel, threadID, slackUser, true)
+	if !ok {
+		return nil
+	}
+	msg.BearerToken = token
+
 	ref, err := a.gw.Resolve(ctx, msg)
 	if err != nil {
 		return err
