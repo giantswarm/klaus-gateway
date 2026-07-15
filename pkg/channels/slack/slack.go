@@ -442,11 +442,16 @@ func (a *Adapter) hasPendingTask(threadID string) bool {
 }
 
 // handleInbound runs the shared inbound pipeline for one Slack event:
-// accept-gate, normalise, active-thread gate (for channel thread replies),
-// command handling, then dispatch. Both transports (the Events API HTTP
-// handler and the Socket Mode reader) call it so the two behave identically.
-// ctx is the adapter-lifecycle context.
-func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent) {
+// dedup, accept-gate, normalise, active-thread gate (for channel thread
+// replies), command handling, then dispatch. Both transports (the Events API
+// HTTP handler and the Socket Mode reader) call it so the two behave
+// identically, including deduplication. ctx is the adapter-lifecycle context;
+// eventID is the delivery's Slack event_id ("" when the transport carries none).
+func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, eventID string) {
+	if eventID != "" && a.seenEvent(eventID) {
+		a.Logger.Info("slack: dropping duplicate event delivery", "event_id", eventID)
+		return
+	}
 	if !a.acceptEvent(inner) {
 		return
 	}

@@ -55,22 +55,10 @@ func (h *eventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Slack redelivers an event up to 3 times when the ack is slow or fails.
 	// Handling is asynchronous (ack-first), so a duplicate delivery would start
-	// a duplicate turn. Dedup on event_id rather than dropping every retry: when
-	// the original delivery never reached us (pod restart or ingress failure
-	// mid-request), the retry is the only delivery of that user message and must
-	// be processed. A retry without an event_id cannot be distinguished from an
-	// already-handled delivery, so it is dropped.
-	retry := r.Header.Get("X-Slack-Retry-Num") != ""
-	if env.EventID != "" && h.adapter.seenEvent(env.EventID) {
-		h.logger.Info("slack: dropping duplicate event delivery",
-			"event_id", env.EventID,
-			"retry_num", r.Header.Get("X-Slack-Retry-Num"),
-			"retry_reason", r.Header.Get("X-Slack-Retry-Reason"))
-		w.Header().Set("X-Slack-No-Retry", "1")
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-	if retry && env.EventID == "" {
+	// a duplicate turn; handleInbound dedups on event_id for both transports. A
+	// retry without an event_id cannot be deduped there, so it is dropped here:
+	// it cannot be distinguished from an already-handled delivery.
+	if r.Header.Get("X-Slack-Retry-Num") != "" && env.EventID == "" {
 		h.logger.Info("slack: dropping redelivered event without event_id",
 			"retry_num", r.Header.Get("X-Slack-Retry-Num"),
 			"retry_reason", r.Header.Get("X-Slack-Retry-Reason"))
@@ -84,7 +72,7 @@ func (h *eventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if env.Type == "event_callback" && env.Event != nil {
 		ev := *env.Event
-		go h.adapter.handleInbound(h.ctx, ev)
+		go h.adapter.handleInbound(h.ctx, ev, env.EventID)
 	}
 }
 

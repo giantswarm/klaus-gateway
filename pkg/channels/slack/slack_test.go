@@ -1123,8 +1123,10 @@ func TestEventsHandler_DuplicateEventIDDropped(t *testing.T) {
 	second := deliver("1")
 	_ = second.Body.Close()
 	require.Equal(t, http.StatusOK, second.StatusCode)
-	require.Equal(t, "1", second.Header.Get("X-Slack-No-Retry"))
 
+	// Dedup runs in the shared handleInbound pipeline (after the ack), so the
+	// duplicate is dropped there rather than pre-ack: both deliveries return 200,
+	// but only one turn is dispatched.
 	require.Eventually(t, func() bool { return dispatched.Load() >= 1 },
 		2*time.Second, 10*time.Millisecond)
 	time.Sleep(200 * time.Millisecond)
