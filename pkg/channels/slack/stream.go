@@ -265,11 +265,13 @@ func markdownBlocks(md string) []any {
 }
 
 // postMarkdown posts a new in-thread message rendered as a markdown block. The
-// top-level text is the notification/accessibility fallback.
+// top-level text is the notification/accessibility fallback; it is mrkdwn-parsed
+// by Slack, so agent output must be escaped there even though the markdown block
+// itself must not be.
 func (c *slackAPIClient) postMarkdown(ctx context.Context, channel, md, threadTS string) (string, error) {
 	body := map[string]any{
 		paramChannel: channel,
-		paramText:    md,
+		paramText:    escapeMrkdwn(md),
 		paramBlocks:  markdownBlocks(md),
 	}
 	if threadTS != "" {
@@ -278,12 +280,13 @@ func (c *slackAPIClient) postMarkdown(ctx context.Context, channel, md, threadTS
 	return c.postJSON(ctx, "chat.postMessage", body)
 }
 
-// chatUpdateMarkdown replaces a message's content with a markdown block.
+// chatUpdateMarkdown replaces a message's content with a markdown block. The
+// top-level fallback text is escaped for the same reason as in postMarkdown.
 func (c *slackAPIClient) chatUpdateMarkdown(ctx context.Context, channel, ts, md string) error {
 	body := map[string]any{
 		paramChannel: channel,
 		paramTS:      ts,
-		paramText:    md,
+		paramText:    escapeMrkdwn(md),
 		paramBlocks:  markdownBlocks(md),
 	}
 	_, err := c.postJSON(ctx, "chat.update", body)
@@ -298,7 +301,7 @@ func (c *slackAPIClient) postApprovalPrompt(ctx context.Context, channel, thread
 	if promptText != "" {
 		// promptText is agent-rendered (tool name, args, hint) and enters an
 		// mrkdwn section block.
-		text = escapeMrkdwn(promptText)
+		text = truncateRunes(escapeMrkdwn(promptText), slackSectionTextMax)
 	}
 	body := map[string]any{
 		paramChannel:  channel,
@@ -339,8 +342,10 @@ func (c *slackAPIClient) postApprovalPrompt(ctx context.Context, channel, thread
 // index so the interaction handler can resolve the selected answer label.
 func (c *slackAPIClient) postChoicePrompt(ctx context.Context, channel, threadID, question string, choices []string) error {
 	// The question is agent-authored and enters an mrkdwn section block; the
-	// choice labels render as plain_text buttons, which parse nothing.
-	question = escapeMrkdwn(question)
+	// choice labels render as plain_text buttons, which parse nothing. The
+	// section wraps the question in two asterisks, which count against Slack's
+	// 3000-char section limit.
+	question = truncateRunes(escapeMrkdwn(question), slackSectionTextMax-2)
 	elements := make([]any, 0, len(choices))
 	for i, choice := range choices {
 		elements = append(elements, map[string]any{
@@ -406,10 +411,18 @@ func (c *slackAPIClient) postSignInPrompt(ctx context.Context, channel, threadID
 	return err
 }
 
-// truncateButtonLabel keeps a button label within Slack's 75-character limit,
-// counting runes (not bytes) so a multi-byte glyph is never split mid-rune.
+// slackSectionTextMax is Slack's limit on a section block's text object; a
+// longer text gets the whole message rejected with invalid_blocks.
+const slackSectionTextMax = 3000
+
+// truncateButtonLabel keeps a button label within Slack's 75-character limit.
 func truncateButtonLabel(s string) string {
-	const max = 75
+	return truncateRunes(s, 75)
+}
+
+// truncateRunes caps s at max runes, replacing the tail with an ellipsis.
+// Counting runes (not bytes) means a multi-byte glyph is never split mid-rune.
+func truncateRunes(s string, max int) string {
 	r := []rune(s)
 	if len(r) <= max {
 		return s
@@ -472,7 +485,8 @@ func (c *slackAPIClient) send(ctx context.Context, method, contentType, payload 
 // call executes one Slack Web API POST and returns the raw response body. A
 // 429 is retried once after honoring Retry-After, so a brief throttle does not
 // abort the turn; a Retry-After longer than rateLimitRetryCap fails the call
-// immediately rather than waiting it out.
+// immediately rather than waiting it out. Any other non-2xx status is an error
+// carrying the status code, not a JSON decode attempt on a non-API body.
 func (c *slackAPIClient) call(ctx context.Context, method, contentType, payload string) ([]byte, error) {
 	const maxAttempts = 2
 	for attempt := 1; ; attempt++ {
@@ -499,6 +513,10 @@ func (c *slackAPIClient) call(ctx context.Context, method, contentType, payload 
 			case <-time.After(wait):
 			}
 			continue
+		}
+		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+			_ = resp.Body.Close()
+			return nil, fmt.Errorf("slack %s: http status %d", method, resp.StatusCode)
 		}
 
 		body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))

@@ -8,8 +8,10 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/require"
 )
@@ -61,6 +63,33 @@ func TestSend_RateLimitWaitRespectsContext(t *testing.T) {
 	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
 	_, err := client.send(ctx, "chat.update", "application/json", `{}`)
 	require.ErrorIs(t, err, context.Canceled)
+}
+
+func TestSend_SurfacesHTTPStatusError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = fmt.Fprint(w, "<html>gateway error</html>")
+	}))
+	defer srv.Close()
+
+	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
+	_, err := client.send(t.Context(), "chat.update", "application/json", `{}`)
+	require.ErrorContains(t, err, "http status 500")
+}
+
+func TestSend_FailsFastOnHugeRetryAfter(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Retry-After", "3600")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
+	_, err := client.send(t.Context(), "chat.update", "application/json", `{}`)
+	require.ErrorContains(t, err, "rate limited")
+	require.Equal(t, int32(1), calls.Load(), "a wait beyond the cap must not be slept through")
 }
 
 func TestFlush_FailedUpdateIsResentOnNextFlush(t *testing.T) {
@@ -135,6 +164,60 @@ func TestPostApprovalPrompt_EscapesMrkdwn(t *testing.T) {
 	require.Equal(t, "run &lt;!channel&gt; now?", payload.Text)
 }
 
+// The top-level text of a markdown-block message is the notification fallback
+// and is mrkdwn-parsed by Slack, so it must be escaped even though the markdown
+// block itself carries the raw text.
+func TestPostMarkdown_EscapesFallbackText(t *testing.T) {
+	var body atomic.Value
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		body.Store(string(raw))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"ok":true,"ts":"1.2"}`)
+	}))
+	defer srv.Close()
+
+	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
+	_, err := client.postMarkdown(t.Context(), "C1", "ping <!channel> now", "1.0")
+	require.NoError(t, err)
+	payload := decodeBlocksPayload(t, body)
+	require.Equal(t, "ping &lt;!channel&gt; now", payload.Text)
+	require.Equal(t, "ping <!channel> now", payload.Blocks[0].Text, "markdown block keeps the raw text")
+}
+
+func TestChatUpdateMarkdown_EscapesFallbackText(t *testing.T) {
+	var body atomic.Value
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		body.Store(string(raw))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"ok":true,"ts":"1.2"}`)
+	}))
+	defer srv.Close()
+
+	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
+	require.NoError(t, client.chatUpdateMarkdown(t.Context(), "C1", "1.2", "cc <@U123>"))
+	payload := decodeBlocksPayload(t, body)
+	require.Equal(t, "cc &lt;@U123&gt;", payload.Text)
+	require.Equal(t, "cc <@U123>", payload.Blocks[0].Text, "markdown block keeps the raw text")
+}
+
+type blocksPayload struct {
+	Text   string `json:"text"`
+	Blocks []struct {
+		Text string `json:"text"`
+	} `json:"blocks"`
+}
+
+func decodeBlocksPayload(t *testing.T, body atomic.Value) blocksPayload {
+	t.Helper()
+	raw, _ := body.Load().(string)
+	var payload blocksPayload
+	require.NoError(t, json.Unmarshal([]byte(raw), &payload))
+	require.NotEmpty(t, payload.Blocks)
+	return payload
+}
+
 func TestPostChoicePrompt_EscapesQuestion(t *testing.T) {
 	var body atomic.Value
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -153,4 +236,63 @@ func TestPostChoicePrompt_EscapesQuestion(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal([]byte(raw), &payload))
 	require.Equal(t, "notify &lt;!here&gt;?", payload.Text)
+}
+
+// sectionPayload decodes a prompt message far enough to read the section
+// block's mrkdwn text object.
+type sectionPayload struct {
+	Blocks []struct {
+		Type string `json:"type"`
+		Text struct {
+			Text string `json:"text"`
+		} `json:"text"`
+	} `json:"blocks"`
+}
+
+// An oversized prompt must be truncated to Slack's 3000-char section limit;
+// otherwise the whole message is rejected with invalid_blocks and the paused
+// task is stranded with no visible prompt.
+func TestPostApprovalPrompt_TruncatesOversizedSection(t *testing.T) {
+	var body atomic.Value
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		body.Store(string(raw))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"ok":true,"ts":"1.2"}`)
+	}))
+	defer srv.Close()
+
+	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
+	oversized := strings.Repeat("日", 5000)
+	require.NoError(t, client.postApprovalPrompt(t.Context(), "C1", "T1", oversized))
+
+	raw, _ := body.Load().(string)
+	var payload sectionPayload
+	require.NoError(t, json.Unmarshal([]byte(raw), &payload))
+	section := payload.Blocks[0].Text.Text
+	require.LessOrEqual(t, len([]rune(section)), slackSectionTextMax)
+	require.True(t, strings.HasSuffix(section, "…"), "truncation marker expected")
+	require.True(t, utf8.ValidString(section))
+}
+
+func TestPostChoicePrompt_TruncatesOversizedSection(t *testing.T) {
+	var body atomic.Value
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		body.Store(string(raw))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"ok":true,"ts":"1.2"}`)
+	}))
+	defer srv.Close()
+
+	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
+	oversized := strings.Repeat("q", 5000)
+	require.NoError(t, client.postChoicePrompt(t.Context(), "C1", "T1", oversized, []string{"yes"}))
+
+	raw, _ := body.Load().(string)
+	var payload sectionPayload
+	require.NoError(t, json.Unmarshal([]byte(raw), &payload))
+	section := payload.Blocks[0].Text.Text
+	require.LessOrEqual(t, len([]rune(section)), slackSectionTextMax)
+	require.Contains(t, section, "…", "truncation marker expected")
 }
