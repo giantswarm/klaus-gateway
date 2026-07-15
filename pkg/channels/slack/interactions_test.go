@@ -428,3 +428,26 @@ func TestThreadReplyDroppedWhenNotInThread(t *testing.T) {
 	_, ok := ev.toInboundMessage(true)
 	require.False(t, ok)
 }
+
+// TestParkPendingLogin_OrderedAndCappedPerThread verifies the login buffer keeps
+// messages per thread in arrival order, caps each thread's queue (dropping the
+// oldest), and isolates threads from one another.
+func TestParkPendingLogin_OrderedAndCappedPerThread(t *testing.T) {
+	a := &Adapter{}
+	for i := 1; i <= maxPendingLoginPerThread+2; i++ {
+		a.parkPendingLogin("U1", &pendingLoginReq{
+			msg: channels.InboundMessage{ThreadID: "T1", Text: fmt.Sprintf("m%d", i)},
+		})
+	}
+	a.parkPendingLogin("U1", &pendingLoginReq{msg: channels.InboundMessage{ThreadID: "T2", Text: "other"}})
+
+	got := a.takePendingLogin("U1")
+	require.Len(t, got["T1"], maxPendingLoginPerThread, "each thread's queue is capped")
+	var texts []string
+	for _, r := range got["T1"] {
+		texts = append(texts, r.msg.Text)
+	}
+	require.Equal(t, []string{"m3", "m4", "m5", "m6", "m7"}, texts, "oldest dropped past the cap, order preserved")
+	require.Len(t, got["T2"], 1, "other threads are independent")
+	require.Nil(t, a.takePendingLogin("U1"), "take clears the user")
+}
