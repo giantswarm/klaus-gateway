@@ -121,6 +121,23 @@ func TestMapA2AEvent_PartialEventUsageSkipped(t *testing.T) {
 	}
 }
 
+func TestMapA2AEvent_FailedTerminalCarriesUsage(t *testing.T) {
+	for _, state := range []a2apkg.TaskState{a2apkg.TaskStateFailed, a2apkg.TaskStateRejected, a2apkg.TaskStateCanceled} {
+		t.Run(string(state), func(t *testing.T) {
+			ev := &a2apkg.TaskStatusUpdateEvent{
+				Metadata: usageMeta(10, 5, 15),
+				Status:   a2apkg.TaskStatus{State: state},
+			}
+
+			deltas := mapA2AEvent(ev)
+			require.Len(t, deltas, 1)
+			require.Error(t, deltas[0].Err)
+			require.NotNil(t, deltas[0].Usage)
+			require.Equal(t, TurnUsage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15}, *deltas[0].Usage)
+		})
+	}
+}
+
 func TestMapA2AEvent_NonPartialWorkingEventEmitsUsage(t *testing.T) {
 	meta := usageMeta(3, 4, 7)
 	meta[mdPartialADK] = false

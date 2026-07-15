@@ -194,7 +194,7 @@ func mapA2AEvent(event a2apkg.Event) []OutboundDelta {
 						msg = text
 					}
 				}
-				return []OutboundDelta{{Err: errors.New(msg)}}
+				return []OutboundDelta{{Err: errors.New(msg), Usage: usage}}
 			}
 			// Interim working event: surface any tool activity, and a usage-only
 			// delta when the event reports usage.

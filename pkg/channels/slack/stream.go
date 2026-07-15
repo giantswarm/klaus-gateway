@@ -78,14 +78,14 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 			if !ok {
 				return w.flush(ctx)
 			}
-			if d.Err != nil {
-				return d.Err
-			}
 			if d.Usage != nil {
 				w.logger.Debug("slack: turn usage",
 					"input", d.Usage.InputTokens,
 					"output", d.Usage.OutputTokens,
 					"total", d.Usage.TotalTokens)
+			}
+			if d.Err != nil {
+				return d.Err
 			}
 			if d.Done {
 				return w.flush(ctx)
