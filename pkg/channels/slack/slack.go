@@ -103,6 +103,7 @@ type Adapter struct {
 	AgentCards AgentCardResolver
 
 	gw        channels.Gateway
+	baseCtx   context.Context // adapter lifecycle ctx, captured in Start; login-replay dispatch derives from it so shutdown cancels in-flight replays
 	started   atomic.Bool
 	startUnix int64 // process start; events older than this are dropped on reconnect
 	evHandler http.Handler
@@ -248,6 +249,7 @@ func (a *Adapter) Start(ctx context.Context, gw channels.Gateway) error {
 		a.Logger = slog.Default()
 	}
 	a.gw = gw
+	a.baseCtx = ctx
 
 	switch a.Mode {
 	case ModeEvents, "":
@@ -551,7 +553,10 @@ func (a *Adapter) isActiveThread(threadID string) bool {
 
 // storePendingAccess parks a newcomer's message while the initiator is asked to
 // approve them. Hold-latest: a repeat before approval overwrites the earlier one.
-func (a *Adapter) storePendingAccess(threadID, userID string, req *pendingAccessReq) {
+// Returns true when this is the first parked request for the (thread, user), so
+// the caller posts the consent prompt once rather than on every parked message
+// (e.g. a burst replayed after sign-in).
+func (a *Adapter) storePendingAccess(threadID, userID string, req *pendingAccessReq) bool {
 	a.pendingAccessMu.Lock()
 	defer a.pendingAccessMu.Unlock()
 	if a.pendingAccess == nil {
@@ -562,6 +567,7 @@ func (a *Adapter) storePendingAccess(threadID, userID string, req *pendingAccess
 		byUser = make(map[string]*pendingAccessReq)
 		a.pendingAccess[threadID] = byUser
 	}
+	_, existed := byUser[userID]
 	req.storedAt = time.Now()
 	byUser[userID] = req
 	for thread, users := range a.pendingAccess {
@@ -574,6 +580,7 @@ func (a *Adapter) storePendingAccess(threadID, userID string, req *pendingAccess
 			delete(a.pendingAccess, thread)
 		}
 	}
+	return !existed
 }
 
 // takePendingAccess atomically retrieves and removes a parked request.
@@ -652,11 +659,21 @@ func (a *Adapter) takePendingLogin(slackUser string) map[string][]*pendingLoginR
 // keep the callback response prompt. Each thread's queue is replayed in order on
 // its own goroutine (dispatch serializes per thread, so ordering only holds
 // within a sequential drain); threads replay concurrently.
+//
+// Replay runs on the adapter lifecycle context, not the OAuth callback context:
+// the callback context is request-scoped, so a shutdown would not cancel a replay
+// dispatched from it, whereas normal dispatch (on the lifecycle context) is
+// cancelled. Falls back to the passed context when the adapter was constructed
+// without Start (direct-construction tests).
 func (a *Adapter) OnUserLinked(ctx context.Context, slackUser string) {
+	replayCtx := a.baseCtx
+	if replayCtx == nil {
+		replayCtx = ctx
+	}
 	for _, queue := range a.takePendingLogin(slackUser) {
 		go func() {
 			for _, req := range queue {
-				if err := a.dispatch(ctx, req.msg, req.slackChannel); err != nil && !errors.Is(err, context.Canceled) {
+				if err := a.dispatch(replayCtx, req.msg, req.slackChannel); err != nil && !errors.Is(err, context.Canceled) {
 					a.Logger.Error("slack: replay after sign-in failed", "user", slackUser, "thread", req.msg.ThreadID, "error", err)
 				}
 			}
@@ -785,8 +802,9 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 				return nil
 			}
 		}
-		a.storePendingAccess(msg.ThreadID, slackUser, &pendingAccessReq{msg: msg, slackChannel: slackChannel})
-		a.postAccessPrompt(ctx, slackChannel, msg.ThreadID, initiator, slackUser)
+		if a.storePendingAccess(msg.ThreadID, slackUser, &pendingAccessReq{msg: msg, slackChannel: slackChannel}) {
+			a.postAccessPrompt(ctx, slackChannel, msg.ThreadID, initiator, slackUser)
+		}
 		return nil
 	}
 
