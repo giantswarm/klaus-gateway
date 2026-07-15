@@ -24,9 +24,14 @@ const (
 )
 
 // oboSignIn is the action_id on the OBO "Sign in" URL button. The button opens
-// its url directly; the interaction payload Slack still sends is ignored
-// (classifyAction returns false), so no decision is routed.
+// its url directly; the interaction payload Slack still sends routes no
+// decision (classifyAction returns false) but its response_url is kept so the
+// ephemeral prompt can be replaced once the link completes (NotifyLinked).
 const oboSignIn = "obo_sign_in"
+
+// payloadTypeBlockActions is the interaction payload type for Block Kit button
+// clicks; other payload types (view submissions, shortcuts) are not routed.
+const payloadTypeBlockActions = "block_actions"
 
 // labelApproved is the human-readable resume text / approve keyword shared by
 // the button and free-text decision paths.

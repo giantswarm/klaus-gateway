@@ -86,11 +86,20 @@ func (h *interactionsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 // and the Socket Mode interactive-envelope handler (dev mode), so buttons work
 // identically in both deployments.
 func (a *Adapter) routeInteraction(ctx context.Context, payload interactionPayload) {
-	if payload.Type != "block_actions" || len(payload.Actions) == 0 {
+	if payload.Type != payloadTypeBlockActions || len(payload.Actions) == 0 {
 		return
 	}
 
 	action := payload.Actions[0]
+
+	// The sign-in URL button opens its link in the browser; the click payload
+	// carries the response_url that lets NotifyLinked replace the ephemeral
+	// prompt once the account link completes.
+	if action.ActionID == oboSignIn {
+		a.storeSignInPrompt(payload.User.ID, payload.ResponseURL)
+		return
+	}
+
 	act, ok := classifyAction(action.ActionID)
 	if !ok {
 		return

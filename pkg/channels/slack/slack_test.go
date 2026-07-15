@@ -561,7 +561,7 @@ func TestDispatch_OBO_ParksUnlinkedMessageAndReplaysAfterLink(t *testing.T) {
 
 	// The user completes sign-in; the callback hook replays the parked message.
 	obo.completeLink()
-	a.OnUserLinked(context.Background(), "U123")
+	a.OnUserLinked(context.Background(), "U123", "u123@example.com")
 
 	require.Eventually(t, func() bool {
 		mu.Lock()
@@ -650,7 +650,7 @@ func TestDispatch_OBO_NewcomerReplaysToAccessPromptNotAgent(t *testing.T) {
 	// The newcomer signs in; the replay lands at the access-consent prompt, still
 	// not dispatched to the agent.
 	obo.link("U2", "tok2")
-	a.OnUserLinked(context.Background(), "U2")
+	a.OnUserLinked(context.Background(), "U2", "u2@example.com")
 	require.Eventually(t, func() bool {
 		return len(ephemeral()) >= 2
 	}, 2*time.Second, 50*time.Millisecond, "the replayed newcomer message posts the initiator access prompt")

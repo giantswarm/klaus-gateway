@@ -160,7 +160,24 @@ type Adapter struct {
 	// modelMu guards modelCache, the resolved model labels shown by /usage.
 	modelMu    sync.Mutex
 	modelCache map[string]modelEntry // agentRef -> cached model label
+
+	// signInMu guards signInPrompts: the response_url captured from a sign-in
+	// button click, keyed by Slack user ID. An ephemeral message has no
+	// addressable ts, so this URL is the only handle for replacing the prompt
+	// once the link completes.
+	signInMu      sync.Mutex
+	signInPrompts map[string]signInPrompt
 }
+
+// signInPrompt is a clicked sign-in button's response_url with its expiry
+// (Slack response_urls are valid for 30 minutes).
+type signInPrompt struct {
+	responseURL string
+	expires     time.Time
+}
+
+// signInPromptTTL matches the Slack response_url validity window.
+const signInPromptTTL = 30 * time.Minute
 
 // emailEntry is a cached Slack user email with its expiry.
 type emailEntry struct {
@@ -515,6 +532,58 @@ func (a *Adapter) postSignIn(ctx context.Context, slackChannel, threadID, slackU
 	}
 }
 
+// storeSignInPrompt records the response_url of a clicked sign-in button so the
+// ephemeral prompt can be replaced when the link completes. Expired entries are
+// swept opportunistically; a re-click overwrites the previous entry.
+func (a *Adapter) storeSignInPrompt(slackUser, responseURL string) {
+	if slackUser == "" || responseURL == "" {
+		return
+	}
+	now := time.Now()
+	a.signInMu.Lock()
+	defer a.signInMu.Unlock()
+	if a.signInPrompts == nil {
+		a.signInPrompts = make(map[string]signInPrompt)
+	}
+	for user, p := range a.signInPrompts {
+		if now.After(p.expires) {
+			delete(a.signInPrompts, user)
+		}
+	}
+	a.signInPrompts[slackUser] = signInPrompt{responseURL: responseURL, expires: now.Add(signInPromptTTL)}
+}
+
+// takeSignInPrompt returns and clears the stored response_url for slackUser,
+// or "" when none is stored or it has expired.
+func (a *Adapter) takeSignInPrompt(slackUser string) string {
+	a.signInMu.Lock()
+	defer a.signInMu.Unlock()
+	p, ok := a.signInPrompts[slackUser]
+	if !ok {
+		return ""
+	}
+	delete(a.signInPrompts, slackUser)
+	if time.Now().After(p.expires) {
+		return ""
+	}
+	return p.responseURL
+}
+
+// notifyLinked replaces the ephemeral sign-in prompt with a confirmation once
+// the account link completes (via OnUserLinked). A link that did not start from
+// a button click (no stored response_url) is a silent no-op; the ephemeral
+// prompt cannot be reached any other way.
+func (a *Adapter) notifyLinked(ctx context.Context, slackUser, email string) {
+	responseURL := a.takeSignInPrompt(slackUser)
+	if responseURL == "" {
+		return
+	}
+	text := "✅ _Signed in as " + escapeMrkdwn(email) + ". I can act on your behalf now._"
+	if err := respondURL(ctx, responseURL, text); err != nil {
+		a.Logger.Warn("slack: update sign-in prompt after link failed", "user", slackUser, "error", err)
+	}
+}
+
 // postAccessPrompt asks the thread initiator (ephemerally) to approve a newcomer
 // who wants to instruct the agent, and acks the newcomer (ephemerally) that
 // their message is held pending that approval. Both posts are best-effort.
@@ -665,7 +734,9 @@ func (a *Adapter) takePendingLogin(slackUser string) map[string][]*pendingLoginR
 // dispatched from it, whereas normal dispatch (on the lifecycle context) is
 // cancelled. Falls back to the passed context when the adapter was constructed
 // without Start (direct-construction tests).
-func (a *Adapter) OnUserLinked(ctx context.Context, slackUser string) {
+func (a *Adapter) OnUserLinked(ctx context.Context, slackUser, email string) {
+	a.notifyLinked(ctx, slackUser, email)
+
 	replayCtx := a.baseCtx
 	if replayCtx == nil {
 		replayCtx = ctx

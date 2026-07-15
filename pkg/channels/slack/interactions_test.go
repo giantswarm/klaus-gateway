@@ -451,3 +451,77 @@ func TestParkPendingLogin_OrderedAndCappedPerThread(t *testing.T) {
 	require.Len(t, got["T2"], 1, "other threads are independent")
 	require.Nil(t, a.takePendingLogin("U1"), "take clears the user")
 }
+
+func TestSignInClickThenNotifyLinkedReplacesPrompt(t *testing.T) {
+	const secret = "test-secret"
+
+	var (
+		mu    sync.Mutex
+		calls []map[string]any
+	)
+	respSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var v map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&v)
+		mu.Lock()
+		calls = append(calls, v)
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(respSrv.Close)
+
+	a := &Adapter{
+		Secrets:      Secrets{BotToken: "test-bot-token", SigningSecret: secret}, //nolint:gosec
+		DefaultAgent: "worker",
+	}
+	require.NoError(t, a.Start(t.Context(), &fakeGateway{}))
+
+	inner := map[string]any{
+		"type":         "block_actions",
+		"user":         map[string]any{"id": "U001"},
+		"response_url": respSrv.URL,
+		"actions":      []any{map[string]any{"action_id": oboSignIn}},
+	}
+	data, err := json.Marshal(inner)
+	require.NoError(t, err)
+	body := []byte("payload=" + url.QueryEscape(string(data)))
+	req := httptest.NewRequest(http.MethodPost, "/channels/slack/interactions", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	signRequest(t, req, body, secret)
+
+	rr := httptest.NewRecorder()
+	a.ixHandler.ServeHTTP(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code)
+
+	// The click is processed asynchronously; wait for the response_url capture.
+	require.Eventually(t, func() bool {
+		a.signInMu.Lock()
+		defer a.signInMu.Unlock()
+		return len(a.signInPrompts) > 0
+	}, 2*time.Second, 10*time.Millisecond)
+
+	a.notifyLinked(t.Context(), "U001", "alice@example.com")
+
+	mu.Lock()
+	require.Len(t, calls, 1)
+	require.Equal(t, true, calls[0]["replace_original"])
+	require.Contains(t, calls[0]["text"], "alice@example.com")
+	mu.Unlock()
+
+	// The stored response_url is single-use: a second notification is a no-op.
+	a.notifyLinked(t.Context(), "U001", "alice@example.com")
+	mu.Lock()
+	require.Len(t, calls, 1)
+	mu.Unlock()
+}
+
+func TestNotifyLinkedWithoutClickIsNoOp(t *testing.T) {
+	a := &Adapter{}
+	a.notifyLinked(t.Context(), "U-never-clicked", "alice@example.com")
+}
+
+func TestTakeSignInPromptExpired(t *testing.T) {
+	a := &Adapter{signInPrompts: map[string]signInPrompt{
+		"U001": {responseURL: "http://unused.invalid", expires: time.Now().Add(-time.Minute)},
+	}}
+	require.Empty(t, a.takeSignInPrompt("U001"))
+}
