@@ -54,6 +54,11 @@ const busyNotice = "I'm still finishing your previous message in this thread. Gi
 // without producing any output, so it does not linger as "thinking".
 const emptyOutputNote = "_(the agent finished without a reply)_"
 
+// failedNote replaces the text-mode placeholder when a turn ends in error, so it
+// does not linger as "thinking" with no failure signal (reactions mode swaps in
+// the failed emoji instead).
+const failedNote = "_(the turn failed; please try again)_"
+
 // Slack Web API parameter keys (form-encoded and JSON body).
 const (
 	paramChannel   = "channel"

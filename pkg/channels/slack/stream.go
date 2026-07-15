@@ -470,8 +470,9 @@ func (c *slackAPIClient) send(ctx context.Context, method, contentType, payload 
 }
 
 // call executes one Slack Web API POST and returns the raw response body. A
-// 429 is retried once after honoring Retry-After (capped at rateLimitRetryCap)
-// so a throttled call does not abort the turn.
+// 429 is retried once after honoring Retry-After, so a brief throttle does not
+// abort the turn; a Retry-After longer than rateLimitRetryCap fails the call
+// immediately rather than waiting it out.
 func (c *slackAPIClient) call(ctx context.Context, method, contentType, payload string) ([]byte, error) {
 	const maxAttempts = 2
 	for attempt := 1; ; attempt++ {

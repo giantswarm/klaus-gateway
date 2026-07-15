@@ -958,6 +958,21 @@ func TestReactionsMode_EmptyOutputPostsNote(t *testing.T) {
 	require.Contains(t, fake.reactionNames("reactions.add"), "white_check_mark")
 }
 
+func TestTextMode_FailedTurnReplacesPlaceholder(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{deltas: []channels.OutboundDelta{{Err: errors.New("boom")}}}
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+	a.ProgressMode = "text"
+
+	sendEvent(t, srv, dmEvent("U1", "hi", "778.000"))
+
+	// Placeholder is posted, then replaced by a failure note rather than left
+	// dangling as "thinking"; text mode swaps no failed reaction.
+	fake.waitForPath(t, "chat.update", 1)
+	require.Contains(t, allText(fake.pathCalls("chat.update")), "the turn failed")
+	require.Empty(t, fake.pathCalls("reactions.add"), "text mode adds no reactions")
+}
+
 // sendInteraction posts a signed block_actions interaction for actionID on
 // threadID (channel D1, user U1) to the interactions endpoint.
 func sendInteraction(t *testing.T, srv *httptest.Server, actionID, threadID string) {

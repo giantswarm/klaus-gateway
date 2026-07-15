@@ -626,6 +626,14 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 	w := newBatchedWriterWithClient(client, slackChannel, replyTS, threadID, a.Logger)
 	if err := w.run(ctx, deltas); err != nil {
 		prog.failed(ctx)
+		// In text mode prog.failed is a no-op (no reaction to swap), so the
+		// placeholder would linger as "thinking" with no failure signal. Replace
+		// it with a terminal note, as the empty-output path does. Skipped when ctx
+		// is already done (/stop, deadline): the cancel is intentional and the post
+		// would fail anyway.
+		if prog.reactTS == "" && ctx.Err() == nil {
+			a.postTerminalNote(ctx, client, slackChannel, threadID, replyTS, failedNote)
+		}
 		return err
 	}
 
@@ -646,15 +654,24 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 	// the "thinking" placeholder; reactions mode shows only a done emoji with no
 	// reply). Post a terminal note so the user is not left waiting.
 	if !w.wroteContent() {
-		if replyTS != "" {
-			if err := client.chatUpdateMarkdown(ctx, slackChannel, replyTS, emptyOutputNote); err != nil {
-				a.Logger.Warn("slack: replace empty placeholder failed", "thread", threadID, "error", err)
-			}
-		} else if _, err := client.postMarkdown(ctx, slackChannel, emptyOutputNote, threadID); err != nil {
-			a.Logger.Warn("slack: post empty-output note failed", "thread", threadID, "error", err)
-		}
+		a.postTerminalNote(ctx, client, slackChannel, threadID, replyTS, emptyOutputNote)
 	}
 	return nil
+}
+
+// postTerminalNote replaces the text-mode placeholder (replyTS) with note, or
+// posts note as a new in-thread message when no placeholder exists. Best-effort:
+// a failure is logged, not propagated.
+func (a *Adapter) postTerminalNote(ctx context.Context, client *slackAPIClient, slackChannel, threadID, replyTS, note string) {
+	if replyTS != "" {
+		if err := client.chatUpdateMarkdown(ctx, slackChannel, replyTS, note); err != nil {
+			a.Logger.Warn("slack: replace placeholder failed", "thread", threadID, "error", err)
+		}
+		return
+	}
+	if _, err := client.postMarkdown(ctx, slackChannel, note, threadID); err != nil {
+		a.Logger.Warn("slack: post terminal note failed", "thread", threadID, "error", err)
+	}
 }
 
 // slackInnerEvent is the inner event object present in both Events API

@@ -21,7 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Avoid a potential panic from comparing `OutboundDelta` (which embeds an error interface) against its zero value on the A2A error path.
 - Slack turns are serialized per thread. A message that arrives while the thread's previous turn is still running gets a brief "still working" notice instead of starting a second, overlapping turn; concurrent turns on one thread share a kagent session and would otherwise interleave its event log into incoherent history.
 - A Slack thread's paused input-required task is no longer consumed by a typed reply that then aborts on a transient human-token error. The pending task is taken only once the turn is committed to run, so a later button click can still resume it instead of finding nothing.
-- A rate-limited Slack Web API call (HTTP 429) no longer aborts the turn and discards the agent's work. The call is retried once after honoring `Retry-After` (capped at 30s), and a failed flush keeps its content pending so the next flush re-sends it instead of dropping the delta.
+- A rate-limited Slack Web API call (HTTP 429) no longer aborts the turn and discards the agent's work. The call is retried once after honoring `Retry-After`, unless the server asks to wait more than 30s (then it fails fast rather than stalling the writer), and a failed flush keeps its content pending so the next flush re-sends it instead of dropping the delta.
 - Slack Events API deliveries are deduplicated by `event_id`, so a duplicate delivery never starts a second turn while a retry whose original delivery was lost (pod restart, ingress failure mid-request) is still processed. A retry without an `event_id` is dropped as before.
 - Slack HITL button clicks resume the paused task with the clicker's human muster token. Previously the button path skipped the on-behalf-of token resolution, so an approved mutating tool call executed as the gateway service account instead of the approver; an unlinked clicker is now prompted to sign in and the pending prompt stays answerable.
 - Agent replies chunked into Block Kit `markdown` blocks can no longer exceed Slack's 12,000-character block limit when a chunk boundary falls inside a fenced code block with a long info string; the fence close and reopened fence line are budgeted inside the cap, so the flush is never rejected.
@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Token usage is no longer over-counted when the model provider reports usage on streaming chunks: usage deltas skip partial events, which mirror the same LLM call's counts on every chunk.
 - Agent-rendered text is escaped before entering Slack mrkdwn contexts (approval prompts, ask_user questions and choices, decision labels), so quoted content containing `<!channel>`, `<!here>`, or `<@U...>` renders literally instead of triggering notifications.
 - `users.info` lookups go through the same 429-retrying Slack transport as every other Web API call.
+- A Slack turn that ends in error while in text-progress mode replaces its `_thinking…_` placeholder with a failure note instead of leaving it dangling with no signal (reactions mode already swaps in the failed emoji). An intentional `/stop` still cancels silently.
 
 ### Refactored
 
