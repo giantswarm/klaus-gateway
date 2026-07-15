@@ -1236,3 +1236,64 @@ func TestResume_SkippedForRootMessage(t *testing.T) {
 	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "starting fresh")
 	require.Equal(t, 0, gw.resumeCount(), "root messages must not trigger the resume check")
 }
+
+// A top-level /usage in a DM keys a brand-new thread (its own ts, no
+// thread_ts); the reply must still report the DM's usage instead of "not
+// available yet".
+func TestUsage_DMTopLevelReportsSession(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{deltas: []channels.OutboundDelta{
+		{Content: "3 pods running."},
+		{Usage: &channels.TurnUsage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15}},
+		{Done: true},
+	}}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+
+	// A completed DM turn records usage under its thread root ("100.000").
+	sendEvent(t, srv, dmEvent("U1", "count pods", "100.000"))
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "3 pods running.")
+	}, 2*time.Second, 20*time.Millisecond, "the turn must complete before /usage is sent")
+
+	// /usage typed as a new top-level DM message: its own ts is the threadID.
+	sendEvent(t, srv, dmEvent("U1", "/usage", "200.000"))
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Last turn — in 10 · out 5 · total 15")
+	}, 2*time.Second, 20*time.Millisecond, "a top-level DM /usage must report the channel's usage")
+}
+
+// /usage mentioned in a channel thread no turn ever ran in replies with
+// guidance to run it inside the agent's thread, not "not available yet".
+func TestUsage_ChannelFreshThreadGetsGuidance(t *testing.T) {
+	fake := newFakeSlackAPI()
+	_, srv := newEventsAdapter(t, &stubGateway{}, fake.server(t).URL)
+
+	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_mention","user":"U1","text":"<@UBOT> /usage","channel":"C1","ts":"300.000"}}`)
+
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "as a reply inside the agent's thread")
+	}, 2*time.Second, 20*time.Millisecond)
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "not available yet")
+}
+
+// /usage as a reply inside the agent's thread keeps working: the thread-keyed
+// lookup hits directly.
+func TestUsage_InThreadStillWorks(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{deltas: []channels.OutboundDelta{
+		{Content: "done."},
+		{Usage: &channels.TurnUsage{InputTokens: 7, OutputTokens: 3, TotalTokens: 10}},
+		{Done: true},
+	}}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+
+	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_mention","user":"U1","text":"<@UBOT> count pods","channel":"C1","ts":"100.000"}}`)
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "done.")
+	}, 2*time.Second, 20*time.Millisecond, "the turn must complete before /usage is sent")
+
+	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","user":"U1","text":"/usage","channel":"C1","ts":"101.000","thread_ts":"100.000"}}`)
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Last turn — in 7 · out 3 · total 10")
+	}, 2*time.Second, 20*time.Millisecond)
+}

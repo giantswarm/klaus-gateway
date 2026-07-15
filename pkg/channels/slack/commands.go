@@ -179,7 +179,7 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *slashCommand, slackUse
 		return true
 
 	case cmdUsage:
-		reply(a.usageReport(ctx, threadID))
+		reply(a.usageReport(ctx, threadID, slackChannel))
 		return true
 
 	case cmdDetails:

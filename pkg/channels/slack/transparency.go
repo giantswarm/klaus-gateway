@@ -8,56 +8,121 @@ import (
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 )
 
+// threadStateTTL bounds how long per-thread transparency state (details level,
+// usage figures, resume-check marks) is retained. Entries past the TTL are
+// swept opportunistically on insert, so an idle thread's state cannot
+// accumulate forever on a long-lived pod. Active threads refresh their entries
+// on every turn.
+const threadStateTTL = 24 * time.Hour
+
+// ttlEntry pairs a value with its eviction deadline.
+type ttlEntry[V any] struct {
+	value   V
+	expires time.Time
+}
+
+// sweepExpired deletes entries past their deadline. The caller holds the lock
+// guarding entries.
+func sweepExpired[K comparable, V any](entries map[K]ttlEntry[V], now time.Time) {
+	for key, entry := range entries {
+		if now.After(entry.expires) {
+			delete(entries, key)
+		}
+	}
+}
+
 // detailsLevel returns the tool-activity verbosity for a thread. An un-set
 // thread resolves to detailsOn (the MVP default).
 func (a *Adapter) detailsLevel(threadID string) detailsLevel {
 	a.detailsMu.Lock()
 	defer a.detailsMu.Unlock()
-	return a.details[threadID]
+	entry, ok := a.details[threadID]
+	if !ok {
+		return detailsOn
+	}
+	// Reading refreshes the deadline: a thread in active use never reverts to
+	// the default mid-conversation, only idle threads are evicted.
+	entry.expires = time.Now().Add(threadStateTTL)
+	a.details[threadID] = entry
+	return entry.value
 }
 
 // setDetailsLevel records the verbosity for a thread.
 func (a *Adapter) setDetailsLevel(threadID string, level detailsLevel) {
+	now := time.Now()
 	a.detailsMu.Lock()
 	defer a.detailsMu.Unlock()
 	if a.details == nil {
-		a.details = make(map[string]detailsLevel)
+		a.details = make(map[string]ttlEntry[detailsLevel])
 	}
-	a.details[threadID] = level
+	sweepExpired(a.details, now)
+	a.details[threadID] = ttlEntry[detailsLevel]{value: level, expires: now.Add(threadStateTTL)}
+}
+
+// usageTotals is one scope's accumulated token usage: the most recent turn's
+// counts plus the running total across turns.
+type usageTotals struct {
+	lastTurn channels.TurnUsage
+	session  channels.TurnUsage
+}
+
+func (u usageTotals) add(turn channels.TurnUsage) usageTotals {
+	u.lastTurn = turn
+	u.session.InputTokens += turn.InputTokens
+	u.session.OutputTokens += turn.OutputTokens
+	u.session.TotalTokens += turn.TotalTokens
+	return u
 }
 
 // recordTurnUsage stores a turn's summed token counts as the thread's last-turn
-// usage and adds them to the session total. A zero turn (no usage reported) is
-// ignored so it does not clobber a previous turn's figures.
-func (a *Adapter) recordTurnUsage(threadID string, turn channels.TurnUsage) {
+// usage and adds them to the thread's session total. For a DM the counts are
+// additionally aggregated per channel: a top-level `/usage` in a DM keys a
+// brand-new thread (its own ts), so the channel aggregate is what makes the
+// command answerable there. A zero turn (no usage reported) is ignored so it
+// does not clobber a previous turn's figures.
+func (a *Adapter) recordTurnUsage(threadID, channelID string, turn channels.TurnUsage) {
 	if turn == (channels.TurnUsage{}) {
 		return
 	}
+	now := time.Now()
 	a.usageMu.Lock()
 	defer a.usageMu.Unlock()
-	if a.lastTurn == nil {
-		a.lastTurn = make(map[string]channels.TurnUsage)
-		a.sessionTotal = make(map[string]channels.TurnUsage)
+	if a.threadUsage == nil {
+		a.threadUsage = make(map[string]ttlEntry[usageTotals])
+		a.channelUsage = make(map[string]ttlEntry[usageTotals])
 	}
-	a.lastTurn[threadID] = turn
-	total := a.sessionTotal[threadID]
-	total.InputTokens += turn.InputTokens
-	total.OutputTokens += turn.OutputTokens
-	total.TotalTokens += turn.TotalTokens
-	a.sessionTotal[threadID] = total
+	sweepExpired(a.threadUsage, now)
+	sweepExpired(a.channelUsage, now)
+	expires := now.Add(threadStateTTL)
+	a.threadUsage[threadID] = ttlEntry[usageTotals]{value: a.threadUsage[threadID].value.add(turn), expires: expires}
+	if isDMChannelID(channelID) {
+		a.channelUsage[channelID] = ttlEntry[usageTotals]{value: a.channelUsage[channelID].value.add(turn), expires: expires}
+	}
 }
 
-// usageReport renders the /usage reply for a thread.
-func (a *Adapter) usageReport(ctx context.Context, threadID string) string {
+const usageGuidance = "No token usage recorded for this thread yet. Run `/usage` as a reply inside the agent's thread."
+
+// usageReport renders the /usage reply. The lookup is thread-first; a miss in
+// a DM falls back to the channel's aggregated usage, because a top-level DM
+// message carries no thread_ts and so keys a thread no turn ever ran in. A
+// miss in a regular channel means the command was typed outside the agent's
+// thread, so the reply says where to run it instead of claiming no usage
+// exists.
+func (a *Adapter) usageReport(ctx context.Context, threadID, channelID string) string {
 	a.usageMu.Lock()
-	last, ok := a.lastTurn[threadID]
-	session := a.sessionTotal[threadID]
+	entry, ok := a.threadUsage[threadID]
+	if !ok && isDMChannelID(channelID) {
+		entry, ok = a.channelUsage[channelID]
+	}
 	a.usageMu.Unlock()
 	if !ok {
-		return "Token usage not available yet."
+		if isDMChannelID(channelID) {
+			return "Token usage not available yet."
+		}
+		return usageGuidance
 	}
 	report := fmt.Sprintf("*Token usage*\n• Last turn — %s\n• Session — %s",
-		formatUsage(last), formatUsage(session))
+		formatUsage(entry.value.lastTurn), formatUsage(entry.value.session))
 	if model := a.agentModelLabel(ctx); model != "" {
 		report += "\n• Model — " + model
 	}
@@ -129,29 +194,46 @@ type sessionChecker interface {
 	SessionResumable(ctx context.Context, msg channels.InboundMessage) (exists, checked bool)
 }
 
-// maybeAnnounceResume runs the resume existence-check at most once per thread
-// per process. When the session is confirmed gone it posts the "starting fresh"
-// notice; a confirmed-present or indeterminate result stays silent
-// (resume-by-default). The check is advisory and never blocks the turn.
+// maybeAnnounceResume runs the resume existence-check at most once per thread.
+// When the session is confirmed gone it posts the "starting fresh" notice; a
+// confirmed-present result stays silent (resume-by-default). Only a conclusive
+// check marks the thread as checked: an indeterminate result (transport error,
+// REST endpoint unavailable) leaves it unmarked so the next message on the
+// thread retries instead of the notice being suppressed forever. The check is
+// advisory and never blocks the turn. Turns on a thread are serialized, so the
+// check-then-mark window admits no concurrent duplicate.
 func (a *Adapter) maybeAnnounceResume(ctx context.Context, msg channels.InboundMessage, slackChannel string) {
 	sc, ok := a.gw.(sessionChecker)
 	if !ok {
 		return
 	}
 
+	now := time.Now()
 	a.resumeMu.Lock()
-	if a.resumeChecked == nil {
-		a.resumeChecked = make(map[string]struct{})
-	}
-	if _, seen := a.resumeChecked[msg.ThreadID]; seen {
+	if expiry, seen := a.resumeChecked[msg.ThreadID]; seen && now.Before(expiry) {
 		a.resumeMu.Unlock()
 		return
 	}
-	a.resumeChecked[msg.ThreadID] = struct{}{}
 	a.resumeMu.Unlock()
 
 	exists, checked := sc.SessionResumable(ctx, msg)
-	if !checked || exists {
+	if !checked {
+		return
+	}
+
+	a.resumeMu.Lock()
+	if a.resumeChecked == nil {
+		a.resumeChecked = make(map[string]time.Time)
+	}
+	for threadID, expiry := range a.resumeChecked {
+		if now.After(expiry) {
+			delete(a.resumeChecked, threadID)
+		}
+	}
+	a.resumeChecked[msg.ThreadID] = now.Add(threadStateTTL)
+	a.resumeMu.Unlock()
+
+	if exists {
 		return
 	}
 	if _, err := a.apiClient().postMessage(ctx, slackChannel, resumeStartingFreshNotice, msg.ThreadID); err != nil {

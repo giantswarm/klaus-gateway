@@ -131,21 +131,22 @@ type Adapter struct {
 	seenEvents   map[string]time.Time // Slack event_id -> dedup entry expiry
 
 	// detailsMu guards details. Absent thread resolves to detailsOn (the MVP
-	// default). State persists for the thread's lifetime (there is no session
-	// end; resume-by-default).
+	// default). Entries idle past threadStateTTL are evicted.
 	detailsMu sync.Mutex
-	details   map[string]detailsLevel // keyed by threadID
+	details   map[string]ttlEntry[detailsLevel] // keyed by threadID
 
-	// usageMu guards both usage maps. lastTurn holds the most recent turn's
-	// summed token counts; sessionTotal accumulates across the thread's turns.
+	// usageMu guards both usage maps. threadUsage keys usage by the turn's
+	// thread root; channelUsage aggregates DM channels so a top-level /usage in
+	// a DM (which keys a brand-new thread) still has figures to report.
 	usageMu      sync.Mutex
-	lastTurn     map[string]channels.TurnUsage // keyed by threadID
-	sessionTotal map[string]channels.TurnUsage // keyed by threadID
+	threadUsage  map[string]ttlEntry[usageTotals] // keyed by threadID
+	channelUsage map[string]ttlEntry[usageTotals] // keyed by Slack channel ID; DMs only
 
-	// resumeChecked records threadIDs whose resume existence-check already ran
-	// this process, so the "starting fresh" notice posts at most once per thread.
+	// resumeChecked records threads whose resume existence-check ran to a
+	// conclusive result, so the "starting fresh" notice posts at most once per
+	// thread. Values are entry expiries (threadStateTTL).
 	resumeMu      sync.Mutex
-	resumeChecked map[string]struct{}
+	resumeChecked map[string]time.Time
 
 	// modelMu guards modelCache, the resolved model labels shown by /usage.
 	modelMu    sync.Mutex
@@ -687,7 +688,7 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 		}
 		return err
 	}
-	a.recordTurnUsage(threadID, w.turnUsage)
+	a.recordTurnUsage(threadID, slackChannel, w.turnUsage)
 
 	if w.promptDelta != nil {
 		prog.clear(ctx) // paused waiting on the user; drop the working indicator
@@ -743,7 +744,14 @@ type slackInnerEvent struct {
 // isDM reports whether the event originated in a 1:1 direct message. Slack sets
 // channel_type "im" for DMs and uses a "D…" channel ID; either is sufficient.
 func (e slackInnerEvent) isDM() bool {
-	return e.ChannelType == "im" || strings.HasPrefix(e.Channel, "D")
+	return e.ChannelType == "im" || isDMChannelID(e.Channel)
+}
+
+// isDMChannelID reports whether a Slack channel ID names a 1:1 DM
+// conversation ("D…"). Used where only the channel ID is available (no event
+// carrying channel_type).
+func isDMChannelID(channelID string) bool {
+	return strings.HasPrefix(channelID, "D")
 }
 
 // threadReplyOnly reports whether this event may only be handled as a thread
