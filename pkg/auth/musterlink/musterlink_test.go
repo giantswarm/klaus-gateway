@@ -271,6 +271,20 @@ func TestTokenForMissingIDTokenErrors(t *testing.T) {
 	_, err := l.TokenFor(context.Background(), "U1")
 	require.Error(t, err)
 	require.NotErrorIs(t, err, ErrNotLinked)
+
+	// The refresh itself succeeded, so muster rotated the refresh token; the
+	// rotated value must be persisted or the next attempt spends a dead token
+	// and burns the link.
+	link, ok := store.Get("U1")
+	require.True(t, ok, "link must survive a missing id_token")
+	require.Equal(t, "refresh-1", link.RefreshToken)
+	require.Empty(t, link.IDToken)
+
+	// Once the upstream recovers, the same link refreshes successfully.
+	stub.omitIDToken = false
+	tok, err := l.TokenFor(context.Background(), "U1")
+	require.NoError(t, err)
+	require.Equal(t, "muster-sub", jwtSub(t, tok))
 }
 
 func TestTokenForReusesCachedToken(t *testing.T) {

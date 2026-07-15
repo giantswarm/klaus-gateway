@@ -554,13 +554,19 @@ func (l *Linker) TokenFor(ctx context.Context, slackUserID string) (string, erro
 		}
 		return "", fmt.Errorf("musterlink: refresh token for slack user: %w", err)
 	}
-	idToken, _ := tok.Extra("id_token").(string)
-	if idToken == "" {
-		return "", errors.New("musterlink: refresh response carried no id_token")
-	}
+	// The refresh succeeded, so muster has already rotated the refresh token
+	// server-side; persist it even when the response is unusable, or the stored
+	// token is spent and the next refresh burns the link with invalid_grant.
 	updated := *link
 	if tok.RefreshToken != "" {
 		updated.RefreshToken = tok.RefreshToken
+	}
+	idToken, _ := tok.Extra("id_token").(string)
+	if idToken == "" {
+		updated.IDToken = ""
+		updated.Expiry = time.Time{}
+		l.store.Put(slackUserID, &updated)
+		return "", errors.New("musterlink: refresh response carried no id_token")
 	}
 	updated.IDToken = idToken
 	updated.Expiry = idTokenExpiry(idToken, tok.Expiry)
