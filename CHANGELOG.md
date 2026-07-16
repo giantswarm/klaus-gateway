@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Slack OBO: the browser-facing sign-in outcomes at `/auth/slack/link` and `/auth/slack/callback` now render a branded, responsive light/dark HTML page (embedded via `//go:embed`), adapted from the platform gateway-api error template. This replaces the bare inline success HTML and the plain-text error responses, so both success and error cases (expired link, email mismatch, sign-in cancelled/failed) share the same Giant Swarm-styled page.
+
 ### Fixed
 
 - Slack OBO: the gateway forwards the dex id_token on the A2A request instead of muster's opaque access token. kagent's A2A edge validates the caller by decoding the JWT and reading its `sub` claim; the opaque muster token is not a JWT, so it was rejected with 401 and linked users' turns never reached the agent. The id_token is the dex-issued token muster returns alongside its access token; the access token is still used only to read the linked identity from the userinfo endpoint. A token response without an id_token now fails loudly instead of forwarding an unusable credential.
