@@ -586,6 +586,17 @@ func (l *Linker) TokenFor(ctx context.Context, slackUserID string) (string, erro
 	return idToken, nil
 }
 
+// LinkedIdentity returns the muster identity (subject and email) stored for a
+// linked Slack user. ok is false when the user has no link. Read-only: safe
+// without the per-user refresh lock.
+func (l *Linker) LinkedIdentity(slackUserID string) (sub, email string, ok bool) {
+	link, ok := l.store.Get(slackUserID)
+	if !ok {
+		return "", "", false
+	}
+	return link.Sub, link.Email, true
+}
+
 // validCachedToken returns the link's cached id_token when it is present and
 // not within tokenRefreshSkew of expiry, else "". A zero Expiry is treated as
 // unknown and forces a refresh.

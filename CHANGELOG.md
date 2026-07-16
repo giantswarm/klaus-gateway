@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Every dispatched Slack turn emits a structured `turn_dispatch` log record (agent, Slack user, muster subject, channel, thread, message, task, resume flag), the gateway-side anchor for joining a turn to muster's per-call log.
 - The ephemeral "Sign in to Giant Swarm" prompt is replaced with a signed-in confirmation once the account link completes. The button click's `response_url` is captured (requires interactivity enabled in the Slack app manifest) and used when the OAuth callback stores the link; a link that did not start from a button click leaves the prompt untouched.
 - Slack tool-approval prompts gain a **Chat** button alongside Approve/Deny: it holds the pending tool call and invites a follow-up question in the thread. The reply is routed to the paused task (a question resolves it as a reject carrying the question, so the agent answers and asks to confirm again; a plain approve/deny still decides).
 - Slack agent replies and the agent's own confirmation prompts are posted under the agent's display name (from its A2A AgentCard), distinct from Swarmgeist's own messages (`chat:write.customize`). The card supplies the name; when it exposes no icon the app's own icon is kept. Requires the `chat:write.customize` bot scope.

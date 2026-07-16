@@ -961,6 +961,8 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 	turnCtx, done := a.registerTurn(ctx, msg.ThreadID)
 	defer done()
 
+	a.logTurnDispatch(msg, slackUser, task != nil)
+
 	deltas, err := a.gw.SendCompletion(turnCtx, ref, msg)
 	if err != nil {
 		restoreTask()
@@ -974,6 +976,36 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 		carried = task.Usage
 	}
 	return a.streamResponse(turnCtx, a.agentClient(ctx, msg.AgentRef), deltas, msg, slackChannel, msg.ThreadID, msg.MessageID, thinkingPlaceholder, carried)
+}
+
+// linkedIdentitySource is the optional OBOTokenSource extension the dispatch
+// record uses to attach the muster subject. *musterlink.Linker satisfies it;
+// sources without it just log an empty sub.
+type linkedIdentitySource interface {
+	LinkedIdentity(slackUserID string) (sub, email string, ok bool)
+}
+
+// logTurnDispatch emits the per-turn dispatch record: which agent this turn
+// invokes for which Slack user under which muster identity. It is the
+// gateway-side anchor for joining a turn to muster's per-call log. The muster
+// session ID is not derivable client-side from the forwarded token, so the
+// join key is (sub, thread_id, task_id, timestamp).
+func (a *Adapter) logTurnDispatch(msg channels.InboundMessage, slackUser string, resume bool) {
+	var sub string
+	if ident, ok := a.OBO.(linkedIdentitySource); ok {
+		sub, _, _ = ident.LinkedIdentity(slackUser)
+	}
+	a.Logger.Info("slack: dispatching turn",
+		"record", "turn_dispatch",
+		"agent", msg.AgentRef,
+		"slack_user", slackUser,
+		"subject", msg.Subject,
+		"sub", sub,
+		"channel_id", msg.ChannelID,
+		"thread_id", msg.ThreadID,
+		"message_id", msg.MessageID,
+		"task_id", msg.TaskID,
+		"resume", resume)
 }
 
 // humanToken resolves the per-turn human muster token for slackUser under the
