@@ -22,6 +22,9 @@ const oboSignIn = "obo_sign_in"
 // the button and free-text decision paths.
 const labelApproved = "approved"
 
+// wordYes is the plain-affirmative approve keyword.
+const wordYes = "yes"
+
 // maxChoiceButtons caps how many ask_user choices are rendered as buttons.
 // Beyond this (or for multi-select / multi-question prompts) the choices are
 // rendered as text and the user replies free-text in-thread.
