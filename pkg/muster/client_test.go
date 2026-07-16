@@ -23,6 +23,7 @@ type fakeMuster struct {
 	sessions    map[string]bool
 	nextSession int
 	initCalls   int
+	readCalls   int
 	statusJSON  string
 	loginText   string
 	loginIsErr  bool
@@ -86,6 +87,7 @@ func (f *fakeMuster) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	switch req.Method {
 	case "resources/read":
+		f.readCalls++
 		require.Equal(f.t, AuthStatusURI, req.Params.URI)
 		f.respond(w, req.ID, map[string]any{
 			"contents": []map[string]any{{

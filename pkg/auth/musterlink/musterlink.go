@@ -48,6 +48,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -584,6 +585,55 @@ func (l *Linker) TokenFor(ctx context.Context, slackUserID string) (string, erro
 	updated.Expiry = idTokenExpiry(idToken, tok.Expiry)
 	l.store.Put(slackUserID, &updated)
 	return idToken, nil
+}
+
+// DismissConnector records that the user declined to connect the named muster
+// backend, suppressing the connector prompt for it. No-op when unlinked.
+//
+// The mutators take the per-user refresh lock: a dismissal is a
+// read-modify-write of the same record TokenFor rewrites on refresh, and an
+// unlocked write racing a refresh could persist the pre-rotation refresh
+// token, which the next refresh would then spend again and burn the link.
+func (l *Linker) DismissConnector(slackUserID, server string) {
+	if server == "" {
+		return
+	}
+	unlock := l.lockUser(slackUserID)
+	defer unlock()
+	link, ok := l.store.Get(slackUserID)
+	if !ok {
+		return
+	}
+	if slices.Contains(link.DismissedConnectors, server) {
+		return
+	}
+	updated := *link
+	updated.DismissedConnectors = append(slices.Clone(link.DismissedConnectors), server)
+	l.store.Put(slackUserID, &updated)
+}
+
+// ResetConnector removes a dismissal so the connector prompt may show again.
+// No-op when unlinked or not dismissed.
+func (l *Linker) ResetConnector(slackUserID, server string) {
+	unlock := l.lockUser(slackUserID)
+	defer unlock()
+	link, ok := l.store.Get(slackUserID)
+	if !ok || !slices.Contains(link.DismissedConnectors, server) {
+		return
+	}
+	updated := *link
+	updated.DismissedConnectors = slices.DeleteFunc(slices.Clone(link.DismissedConnectors),
+		func(s string) bool { return s == server })
+	l.store.Put(slackUserID, &updated)
+}
+
+// DismissedConnectors returns the backends the user has dismissed. Read-only.
+func (l *Linker) DismissedConnectors(slackUserID string) []string {
+	link, ok := l.store.Get(slackUserID)
+	if !ok {
+		return nil
+	}
+	return slices.Clone(link.DismissedConnectors)
 }
 
 // LinkedIdentity returns the muster identity (subject and email) stored for a

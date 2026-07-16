@@ -469,3 +469,64 @@ func TestLinkedIdentity(t *testing.T) {
 	require.Equal(t, "muster-sub", sub)
 	require.Equal(t, "a@example.com", email)
 }
+
+func TestDismissResetConnector(t *testing.T) {
+	store := NewMemStore()
+	stub := newMusterStub(t, "ignored", "a@example.com", "muster-sub")
+	l := newTestLinker(t, stub, store, nil)
+
+	// Unlinked: everything is a no-op.
+	l.DismissConnector("U1", "pro")
+	require.Empty(t, l.DismissedConnectors("U1"))
+
+	store.Put("U1", &Link{Sub: "muster-sub", RefreshToken: "rt"})
+	l.DismissConnector("U1", "pro")
+	l.DismissConnector("U1", "pro") // idempotent
+	l.DismissConnector("U1", "")    // empty server ignored
+	require.Equal(t, []string{"pro"}, l.DismissedConnectors("U1"))
+
+	l.DismissConnector("U1", "other")
+	require.ElementsMatch(t, []string{"pro", "other"}, l.DismissedConnectors("U1"))
+
+	l.ResetConnector("U1", "pro")
+	require.Equal(t, []string{"other"}, l.DismissedConnectors("U1"))
+	l.ResetConnector("U1", "pro") // idempotent
+
+	// Unlinking clears dismissals with the link.
+	l.Unlink("U1")
+	require.Empty(t, l.DismissedConnectors("U1"))
+}
+
+// A dismissal racing a token refresh must not write back the pre-refresh
+// record: that would persist the already-spent rotating refresh token, and
+// the next refresh would burn the link with invalid_grant. Both writers
+// serialize on the per-user lock; run them concurrently and require the
+// rotated token AND the dismissal to survive, whatever the order.
+func TestDismissConnector_ConcurrentWithRefresh(t *testing.T) {
+	stub := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
+
+	for i := range 20 {
+		store := NewMemStore()
+		l := newTestLinker(t, stub, store, nil)
+		user := fmt.Sprintf("U%d", i)
+		store.Put(user, &Link{Sub: "muster-sub", RefreshToken: "seed"})
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			_, err := l.TokenFor(t.Context(), user)
+			require.NoError(t, err)
+		}()
+		go func() {
+			defer wg.Done()
+			l.DismissConnector(user, "pro")
+		}()
+		wg.Wait()
+
+		link, ok := store.Get(user)
+		require.True(t, ok)
+		require.NotEqual(t, "seed", link.RefreshToken, "rotated refresh token must survive the dismissal write")
+		require.Contains(t, link.DismissedConnectors, "pro", "dismissal must survive the refresh write")
+	}
+}

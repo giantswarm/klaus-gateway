@@ -35,6 +35,10 @@ type Link struct {
 	IDToken string `json:"id_token,omitempty"`
 	// Expiry is when IDToken expires. Zero means unknown -> always refresh.
 	Expiry time.Time `json:"expiry,omitzero"`
+	// DismissedConnectors are muster backend names the user declined to connect
+	// ("Not now"); the connector prompt is suppressed for them until reset via
+	// the /login listing. Scoped to the link on purpose: unlinking clears them.
+	DismissedConnectors []string `json:"dismissed_connectors,omitempty"`
 }
 
 // Store persists Slack-user -> muster Link associations. The interface is
