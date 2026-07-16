@@ -354,14 +354,22 @@ func (c *slackAPIClient) lookupUserEmail(ctx context.Context, userID string) (st
 	return result.User.Profile.Email, nil
 }
 
-// threadRootAuthor returns the user ID of a thread's root message author, via
-// conversations.replies with limit 1 (the root is the first message returned).
-// A bot-authored root has no user field and returns "".
-func (c *slackAPIClient) threadRootAuthor(ctx context.Context, channel, threadTS string) (string, error) {
+// threadInitiatorScanLimit bounds the conversations.replies page scanned for the
+// first human author. A thread that opens with more leading bot messages than
+// this falls back to first-poster seeding.
+const threadInitiatorScanLimit = 50
+
+// threadInitiator returns the user ID of the earliest human (non-bot) author in
+// a thread, via conversations.replies (messages are returned oldest-first). A
+// bot-authored root is skipped: bot messages carry bot_id (and often a user
+// field naming the bot's own user), so they are not a human initiator; the
+// first message without bot_id is the human who effectively started the thread.
+// Returns "" when the thread is empty or its scanned prefix is all bot messages.
+func (c *slackAPIClient) threadInitiator(ctx context.Context, channel, threadTS string) (string, error) {
 	params := url.Values{
 		paramChannel: {channel},
 		paramTS:      {threadTS},
-		"limit":      {"1"},
+		"limit":      {strconv.Itoa(threadInitiatorScanLimit)},
 	}
 	body, err := c.call(ctx, "conversations.replies", "application/x-www-form-urlencoded", params.Encode())
 	if err != nil {
@@ -372,7 +380,8 @@ func (c *slackAPIClient) threadRootAuthor(ctx context.Context, channel, threadTS
 		OK       bool   `json:"ok"`
 		Err      string `json:"error,omitempty"`
 		Messages []struct {
-			User string `json:"user"`
+			User  string `json:"user"`
+			BotID string `json:"bot_id"`
 		} `json:"messages"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
@@ -381,10 +390,12 @@ func (c *slackAPIClient) threadRootAuthor(ctx context.Context, channel, threadTS
 	if !result.OK {
 		return "", fmt.Errorf("slack conversations.replies: %s", result.Err)
 	}
-	if len(result.Messages) == 0 {
-		return "", fmt.Errorf("slack conversations.replies: no messages for thread %s", threadTS)
+	for _, m := range result.Messages {
+		if m.BotID == "" && m.User != "" {
+			return m.User, nil
+		}
 	}
-	return result.Messages[0].User, nil
+	return "", nil
 }
 
 // errReactionsUnsupported reports that the bot cannot manage reactions (the

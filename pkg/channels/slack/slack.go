@@ -577,14 +577,20 @@ func (a *Adapter) replayDispatch(ctx context.Context, msg channels.InboundMessag
 // thread's initiator, so a slow Slack API cannot stall inbound handling.
 const rootAuthorLookupTimeout = 3 * time.Second
 
-// seedInitiatorFromRoot seeds a thread's initiator from the thread root's
-// author. The access policy is process-local, so after a restart the first
-// poster into a pre-existing thread would otherwise take it over as initiator.
-// Only a reply into a thread with no recorded initiator triggers the lookup;
-// when the root author is unavailable (fetch failure, bot-authored root) the
-// first-poster behavior stands.
+// seedInitiatorFromRoot seeds a thread's initiator from its first human author.
+// The access policy is process-local, so after a restart the first poster into
+// a pre-existing thread would otherwise take it over as initiator. Only a reply
+// into a thread with no recorded initiator triggers the lookup; when no human
+// author can be determined (fetch failure, all-bot prefix) the first-poster
+// behavior stands.
 func (a *Adapter) seedInitiatorFromRoot(ctx context.Context, slackChannel, threadID, messageID string) {
 	if threadID == "" || threadID == messageID {
+		return
+	}
+	// A 1:1 DM has a single human, so there is no other participant to evict:
+	// first-poster-becomes-initiator is always correct, and the reseed would
+	// only cost a lookup.
+	if isDMChannelID(slackChannel) {
 		return
 	}
 	if a.accessPolicy().Initiator(threadID) != "" {
@@ -592,9 +598,9 @@ func (a *Adapter) seedInitiatorFromRoot(ctx context.Context, slackChannel, threa
 	}
 	ctx, cancel := context.WithTimeout(ctx, rootAuthorLookupTimeout)
 	defer cancel()
-	author, err := a.apiClient().threadRootAuthor(ctx, slackChannel, threadID)
+	author, err := a.apiClient().threadInitiator(ctx, slackChannel, threadID)
 	if err != nil || author == "" {
-		a.Logger.Debug("slack: thread root author unavailable, first poster becomes initiator",
+		a.Logger.Debug("slack: thread initiator unavailable, first poster becomes initiator",
 			"thread", threadID, "error", err)
 		return
 	}

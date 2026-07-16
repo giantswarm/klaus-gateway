@@ -199,7 +199,7 @@ func TestAccess_RestartSeedsInitiatorFromThreadRoot(t *testing.T) {
 	replies := fake.pathCalls("conversations.replies")[0].params
 	require.Equal(t, "C1", replies["channel"])
 	require.Equal(t, "100.000", replies["ts"])
-	require.Equal(t, "1", replies["limit"])
+	require.Equal(t, "50", replies["limit"])
 
 	// U999 is gated as a newcomer: consent prompt to the root author, no dispatch.
 	fake.waitForPath(t, "chat.postEphemeral", 2)
@@ -227,6 +227,42 @@ func TestAccess_RootAuthorLookupFailureFallsBackToFirstPoster(t *testing.T) {
 	fake.waitForPath(t, "conversations.replies", 1)
 	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
 		2*time.Second, 50*time.Millisecond, "on lookup failure the first poster becomes initiator and dispatches")
+}
+
+// A 1:1 DM has a single human, so the root-author reseed must be skipped
+// entirely: a reply into a pre-existing DM thread dispatches as the sole human
+// rather than being gated against whatever authored the thread root (commonly a
+// bot message, which would otherwise lock the human out of their own DM).
+func TestAccess_DMReplySkipsRootAuthorReseed(t *testing.T) {
+	fake := newFakeSlackAPI()
+	// A different author on the root: were the reseed to run in a DM it would
+	// seed U999 and gate U1. It must not run at all.
+	fake.setResponse("conversations.replies", `{"ok":true,"messages":[{"user":"U999","ts":"100.000"}]}`)
+	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok", Done: true}}}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+
+	sendEvent(t, srv, dmThreadEvent("U1", "hello", "300.000", "100.000"))
+
+	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
+		2*time.Second, 50*time.Millisecond, "the sole human in a DM dispatches without a consent gate")
+	require.Empty(t, fake.pathCalls("conversations.replies"),
+		"a DM has one human; the root-author reseed must be skipped")
+}
+
+// A bot-authored thread root is not a human initiator, so seeding falls back to
+// first-poster instead of installing the bot (which no human could then get
+// consent from).
+func TestAccess_BotAuthoredRootFallsBackToFirstPoster(t *testing.T) {
+	fake := newFakeSlackAPI()
+	fake.setResponse("conversations.replies", `{"ok":true,"messages":[{"bot_id":"B001","user":"UBOT","ts":"100.000"}]}`)
+	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok", Done: true}}}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+
+	sendEvent(t, srv, mention("U999", "hello", "300.000", "100.000"))
+
+	fake.waitForPath(t, "conversations.replies", 1)
+	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
+		2*time.Second, 50*time.Millisecond, "a bot-authored root is not a human initiator; the first poster dispatches")
 }
 
 // A transient token-mint failure for a newcomer is surfaced immediately instead
