@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Slack OBO: the browser-facing sign-in outcomes at `/auth/slack/link` and `/auth/slack/callback` now render a branded, responsive light/dark HTML page (embedded via `//go:embed`), adapted from the platform gateway-api error template. This replaces the bare inline success HTML and the plain-text error responses, so both success and error cases (expired link, email mismatch, sign-in cancelled/failed) share the same Giant Swarm-styled page.
+
 ### Fixed
 
 - Slack OBO: when a linked user's muster refresh token is rejected (`invalid_grant`), the gateway now drops the dead link and prompts sign-in with the Block Kit button on the same turn, instead of posting a "couldn't refresh, try again" message and only showing the button one turn later. A transient token-endpoint failure (5xx, network) still keeps the link and returns the retryable error.

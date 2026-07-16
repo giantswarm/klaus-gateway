@@ -34,14 +34,17 @@
 package musterlink
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/subtle"
+	_ "embed"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html/template"
 	"io"
 	"log/slog"
 	"net/http"
@@ -79,6 +82,43 @@ const accessTokenRefreshSkew = 60 * time.Second
 // ErrNotLinked is returned by TokenFor when no muster link exists for the Slack
 // user. Callers treat it as a signal to prompt the user to sign in.
 var ErrNotLinked = errors.New("musterlink: slack user is not linked to a muster identity")
+
+// pageHTML is the branded shell served for the interactive (browser-facing) link
+// outcomes: the success page and the handful of user-actionable errors. It is the
+// gateway's adaptation of the platform gateway-api error page
+// (giantswarm/shared-configs), reworked from Envoy %RESPONSE_*% substitutions
+// into an html/template, with light/dark support and the Giant Swarm logo.
+//
+//go:embed page.html
+var pageHTML string
+
+// pageTmpl is parsed once at startup; a parse failure is a defect in the
+// embedded asset and should fail fast rather than per request.
+var pageTmpl = template.Must(template.New("page").Parse(pageHTML))
+
+// page is the data rendered into pageHTML. Detail is optional: its box is omitted
+// when empty.
+type page struct {
+	Title   string // browser tab title and bold subtitle line
+	Heading string // large accent heading (e.g. "Signed in" or "Sign-in failed")
+	Message string // explanatory paragraph
+	Detail  string // optional monospace detail (technical hint); omitted when empty
+}
+
+// renderPage writes p as an HTML document with the given status. It renders into
+// a buffer first so a template failure cannot emit a half-written body, falling
+// back to a plain-text status line if rendering fails.
+func (l *Linker) renderPage(w http.ResponseWriter, status int, p page) {
+	var buf bytes.Buffer
+	if err := pageTmpl.Execute(&buf, p); err != nil {
+		l.logger.Error("musterlink: render page", "err", err)
+		http.Error(w, http.StatusText(status), status)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
+	_, _ = w.Write(buf.Bytes())
+}
 
 // Config configures a Linker.
 type Config struct {
@@ -367,12 +407,20 @@ func (l *Linker) HandleLink(w http.ResponseWriter, r *http.Request) {
 	state := r.URL.Query().Get("u")
 	if _, err := l.verifyState(state); err != nil {
 		l.logger.Warn("musterlink: rejected link request", "err", err)
-		http.Error(w, "invalid or expired sign-in link", http.StatusBadRequest)
+		l.renderPage(w, http.StatusBadRequest, page{
+			Heading: "Link expired",
+			Title:   "Sign-in link invalid",
+			Message: "This sign-in link is invalid or has expired. Return to Slack and start the sign-in again.",
+		})
 		return
 	}
 	if err := l.ensureEndpoints(r.Context()); err != nil {
 		l.logger.Error("musterlink: discovery failed", "err", err)
-		http.Error(w, "sign-in is temporarily unavailable", http.StatusBadGateway)
+		l.renderPage(w, http.StatusBadGateway, page{
+			Heading: "Unavailable",
+			Title:   "Sign-in is temporarily unavailable",
+			Message: "The sign-in service could not be reached. Please try again in a moment.",
+		})
 		return
 	}
 	verifier := oauth2.GenerateVerifier()
@@ -389,19 +437,32 @@ func (l *Linker) HandleLink(w http.ResponseWriter, r *http.Request) {
 func (l *Linker) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	if e := q.Get("error"); e != "" {
-		http.Error(w, "sign-in was cancelled or failed: "+e, http.StatusBadRequest)
+		l.renderPage(w, http.StatusBadRequest, page{
+			Heading: "Sign-in cancelled",
+			Title:   "Sign-in was not completed",
+			Message: "The sign-in was cancelled or denied. Return to Slack and try again.",
+			Detail:  e,
+		})
 		return
 	}
 	state := q.Get("state")
 	slackUser, err := l.verifyState(state)
 	if err != nil {
 		l.logger.Warn("musterlink: rejected callback state", "err", err)
-		http.Error(w, "invalid or expired sign-in link", http.StatusBadRequest)
+		l.renderPage(w, http.StatusBadRequest, page{
+			Heading: "Link expired",
+			Title:   "Sign-in link invalid",
+			Message: "This sign-in link is invalid or has expired. Return to Slack and start the sign-in again.",
+		})
 		return
 	}
 	verifier, ok := l.takePending(state)
 	if !ok {
-		http.Error(w, "sign-in expired, please try again", http.StatusBadRequest)
+		l.renderPage(w, http.StatusBadRequest, page{
+			Heading: "Session expired",
+			Title:   "Sign-in expired",
+			Message: "Your sign-in session expired before it could complete. Return to Slack and try again.",
+		})
 		return
 	}
 
@@ -409,7 +470,11 @@ func (l *Linker) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	link, err := l.Exchange(ctx, q.Get("code"), verifier)
 	if err != nil {
 		l.logger.Error("musterlink: code exchange failed", "err", err)
-		http.Error(w, "sign-in failed", http.StatusBadGateway)
+		l.renderPage(w, http.StatusBadGateway, page{
+			Heading: "Sign-in failed",
+			Title:   "Sign-in could not be completed",
+			Message: "Something went wrong while completing your sign-in. Please try again in a moment.",
+		})
 		return
 	}
 
@@ -417,12 +482,20 @@ func (l *Linker) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		want, err := l.slackEmail(ctx, slackUser)
 		if err != nil {
 			l.logger.Error("musterlink: slack email lookup failed", "err", err)
-			http.Error(w, "sign-in failed", http.StatusBadGateway)
+			l.renderPage(w, http.StatusBadGateway, page{
+				Heading: "Sign-in failed",
+				Title:   "Sign-in could not be completed",
+				Message: "Something went wrong while completing your sign-in. Please try again in a moment.",
+			})
 			return
 		}
 		if want == "" || !strings.EqualFold(want, link.Email) {
 			l.logger.Warn("musterlink: email mismatch", "slackUser", slackUser)
-			http.Error(w, "the muster account email does not match your Slack email", http.StatusForbidden)
+			l.renderPage(w, http.StatusForbidden, page{
+				Heading: "Email mismatch",
+				Title:   "Account email does not match",
+				Message: "The Giant Swarm account you signed in with does not match your Slack email. Sign in with the account that matches your Slack email.",
+			})
 			return
 		}
 	}
@@ -431,10 +504,11 @@ func (l *Linker) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	l.store.Put(slackUser, link)
 	l.logger.Info("musterlink: linked slack user to muster identity", "slackUser", slackUser, "email", link.Email)
 
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(`<!doctype html><html><body style="font-family:sans-serif">` +
-		`<h2>Signed in to Giant Swarm</h2>` +
-		`<p>You can close this tab and return to Slack.</p></body></html>`))
+	l.renderPage(w, http.StatusOK, page{
+		Heading: "Success",
+		Title:   "Signed in to Giant Swarm",
+		Message: "You can close this tab and return to Slack.",
+	})
 }
 
 // Exchange trades an authorization code (with its PKCE verifier) for muster
