@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -54,6 +55,24 @@ const (
 	ModeSocketMode = "socketmode"
 )
 
+// DMMode selects how direct messages to the bot are handled.
+type DMMode string
+
+const (
+	DMModeServe    DMMode = "serve"    // answer DMs like any served surface
+	DMModeRedirect DMMode = "redirect" // point the user to channels, do not answer
+	DMModeIgnore   DMMode = "ignore"   // drop DM events silently
+)
+
+// ChannelMode selects which channels the bot serves.
+type ChannelMode string
+
+const (
+	ChannelModeAll       ChannelMode = "all"       // every channel the bot is invited to
+	ChannelModeAllowlist ChannelMode = "allowlist" // only channels in ChannelAllowlist
+	ChannelModeNone      ChannelMode = "none"      // no channels (DM-only deployments)
+)
+
 // Adapter implements channels.ChannelAdapter for the Slack channel.
 type Adapter struct {
 	Logger  *slog.Logger
@@ -65,10 +84,17 @@ type Adapter struct {
 	// APIBase overrides the Slack Web API base URL. Empty uses the default
 	// (https://slack.com/api). Set in tests to point at a fake server.
 	APIBase string
-	// DMOnly restricts the adapter to direct messages (channel_type "im").
-	// When true, channel messages and @-mentions in channels are ignored, so
-	// the bot only ever answers in a 1:1 DM. Default false (channels served).
-	DMOnly bool
+	// DMMode selects how direct messages are handled: DMModeServe (answer
+	// them), DMModeRedirect (point the user to channels), or DMModeIgnore
+	// (drop silently). Empty means DMModeServe.
+	DMMode DMMode
+	// ChannelMode selects which channels are served: ChannelModeAll,
+	// ChannelModeAllowlist (only ChannelAllowlist), or ChannelModeNone.
+	// Empty means ChannelModeAll.
+	ChannelMode ChannelMode
+	// ChannelAllowlist lists the Slack channel IDs (C…) served when
+	// ChannelMode is ChannelModeAllowlist.
+	ChannelAllowlist []string
 	// DropStaleEvents, when true, ignores events whose Slack ts predates this
 	// process. Socket Mode can redeliver events that were queued/unacked while
 	// a consumer was disconnected, so without this a restart replays — and
@@ -156,6 +182,12 @@ type Adapter struct {
 	// redirect within the current dmRedirectTTL window.
 	dmRedirectMu sync.Mutex
 	dmRedirected map[string]ttlEntry[struct{}]
+
+	// notServedMu guards notServedNoticed, the (channel, user) pairs already
+	// given the not-served ephemeral notice within the current window, so
+	// repeated mentions in an unserved channel nudge once.
+	notServedMu      sync.Mutex
+	notServedNoticed map[string]ttlEntry[struct{}]
 
 	// detailsMu guards details. Absent thread resolves to detailsOn (the MVP
 	// default). Entries idle past threadStateTTL are evicted.
@@ -274,6 +306,18 @@ func (a *Adapter) Start(ctx context.Context, gw channels.Gateway) error {
 	if a.DefaultAgent == "" {
 		return errors.New("slack: DefaultAgent must be set")
 	}
+	switch a.DMMode {
+	case "", DMModeServe, DMModeRedirect, DMModeIgnore:
+	default:
+		return fmt.Errorf("slack: unknown DMMode %q: want %s, %s, or %s",
+			a.DMMode, DMModeServe, DMModeRedirect, DMModeIgnore)
+	}
+	switch a.ChannelMode {
+	case "", ChannelModeAll, ChannelModeAllowlist, ChannelModeNone:
+	default:
+		return fmt.Errorf("slack: unknown ChannelMode %q: want %s, %s, or %s",
+			a.ChannelMode, ChannelModeAll, ChannelModeAllowlist, ChannelModeNone)
+	}
 	switch a.ProgressMode {
 	case "", progressModeAuto, progressModeReactions, progressModeText:
 	default:
@@ -321,22 +365,35 @@ func (a *Adapter) Start(ctx context.Context, gw channels.Gateway) error {
 }
 
 // acceptEvent decides whether an inbound Slack event should be processed at
-// all, before any access-control or command handling. It enforces two guards:
-//
-//   - DM-only: when DMOnly is set, anything that is not a direct message
-//     (channel_type "im" / a "D…" channel ID) is dropped, so the bot answers
-//     only in 1:1 DMs and never in a public channel.
-//   - Staleness: events whose Slack ts predates this process are dropped.
-//     Socket Mode redelivers events queued while a consumer was disconnected,
-//     so without this a gateway restart replays — and re-answers — old
-//     messages. New messages (ts >= start) always pass.
+// all, before any access-control or command handling. It drops stale events:
+// events whose Slack ts predates this process. Socket Mode redelivers events
+// queued while a consumer was disconnected, so without this a gateway restart
+// replays — and re-answers — old messages. New messages (ts >= start) always
+// pass. Surface gating (DM mode, channel mode) happens in handleInbound, which
+// has the context needed to post redirect/notice messages.
 func (a *Adapter) acceptEvent(inner slackInnerEvent) bool {
-	if a.DMOnly && inner.ChannelType != "im" && !strings.HasPrefix(inner.Channel, "D") {
-		a.Logger.Debug("slack: ignoring non-DM event (DM-only mode)",
-			"channel", inner.Channel, "channel_type", inner.ChannelType)
+	return !a.staleEvent(inner)
+}
+
+// dmMode returns the effective DM handling mode (empty means serve).
+func (a *Adapter) dmMode() DMMode {
+	if a.DMMode == "" {
+		return DMModeServe
+	}
+	return a.DMMode
+}
+
+// channelServed reports whether the bot serves the given (non-DM) channel
+// under the configured ChannelMode. Unknown modes are rejected by Start.
+func (a *Adapter) channelServed(channel string) bool {
+	switch a.ChannelMode {
+	case "", ChannelModeAll:
+		return true
+	case ChannelModeAllowlist:
+		return slices.Contains(a.ChannelAllowlist, channel)
+	default:
 		return false
 	}
-	return !a.staleEvent(inner)
 }
 
 // staleEvent reports whether the event predates this process and DropStaleEvents
@@ -517,6 +574,30 @@ func (a *Adapter) postDMRedirect(ctx context.Context, slackChannel string) {
 
 	if _, err := a.apiClient().postMessage(ctx, slackChannel, dmRedirect, ""); err != nil {
 		a.Logger.Warn("slack: post DM redirect failed", "channel", slackChannel, "error", err)
+	}
+}
+
+// postChannelNotServed tells a user who mentioned the bot in an unserved
+// channel that the bot is not enabled there. Ephemeral (only the mentioning
+// user sees it), at most once per (channel, user) per dmRedirectTTL window.
+// Best-effort.
+func (a *Adapter) postChannelNotServed(ctx context.Context, slackChannel, userID string) {
+	key := slackChannel + "|" + userID
+	now := time.Now()
+	a.notServedMu.Lock()
+	if a.notServedNoticed == nil {
+		a.notServedNoticed = make(map[string]ttlEntry[struct{}])
+	}
+	sweepExpired(a.notServedNoticed, now)
+	if _, seen := a.notServedNoticed[key]; seen {
+		a.notServedMu.Unlock()
+		return
+	}
+	a.notServedNoticed[key] = ttlEntry[struct{}]{expires: now.Add(dmRedirectTTL)}
+	a.notServedMu.Unlock()
+
+	if err := a.apiClient().postEphemeralText(ctx, slackChannel, userID, "", channelNotServed); err != nil {
+		a.Logger.Warn("slack: post channel-not-served notice failed", "channel", slackChannel, "error", err)
 	}
 }
 
@@ -987,14 +1068,14 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 		a.Logger.Info("slack: dropping duplicate event delivery", "event_id", eventID)
 		return
 	}
-	// The bot being added to a channel -> one-time intro. Handled before
-	// acceptEvent: a join carries no text and the DM-only gate must not swallow
-	// it. Only the bot's own join (user == bot ID) triggers the intro.
+	// The bot being added to a channel -> one-time intro, only where the
+	// channel is actually served. Only the bot's own join (user == bot ID)
+	// triggers the intro.
 	if inner.Type == evtMemberJoined {
 		if a.staleEvent(inner) {
 			return
 		}
-		if inner.User != "" && inner.User == a.botID(ctx) {
+		if inner.User != "" && inner.User == a.botID(ctx) && a.channelServed(inner.Channel) {
 			a.postChannelIntro(ctx, inner.Channel)
 		}
 		return
@@ -1002,11 +1083,24 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 	if !a.acceptEvent(inner) {
 		return
 	}
-	// Channels are the supported surface: when not DM-only, a real user DM gets a
-	// polite redirect instead of being processed. Bot messages and non-message
-	// subtypes are skipped (no reply loop). DM-only mode serves DMs as before.
-	if !a.DMOnly && inner.isDM() && inner.BotID == "" && inner.SubType == "" {
-		a.postDMRedirect(ctx, inner.Channel)
+	if inner.isDM() {
+		switch a.dmMode() {
+		case DMModeRedirect:
+			// Bot messages and non-message subtypes are skipped (no reply loop).
+			if inner.BotID == "" && inner.SubType == "" {
+				a.postDMRedirect(ctx, inner.Channel)
+			}
+			return
+		case DMModeIgnore:
+			return
+		}
+	} else if !a.channelServed(inner.Channel) {
+		// A deliberate mention in an unserved channel gets one ephemeral
+		// notice so the silence does not read as an outage; everything else
+		// is dropped.
+		if inner.Type == evtAppMention && inner.BotID == "" && inner.User != "" {
+			a.postChannelNotServed(ctx, inner.Channel, inner.User)
+		}
 		return
 	}
 	threadReplyOnly := inner.threadReplyOnly()

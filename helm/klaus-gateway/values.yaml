@@ -241,9 +241,19 @@ slack:
   # (keys: bot-token, signing-secret, and app-token for socketmode).
   # Required when slack.enabled is true.
   secretName: ""
-  # dmOnly restricts the adapter to direct messages: channel messages and
-  # @-mentions in channels are ignored. Rendered as SLACK_DM_ONLY. Default false.
-  dmOnly: false
+  # dmMode selects how direct messages are handled: "serve" (answer them, the
+  # default), "redirect" (point the user to channels), or "ignore" (drop
+  # silently). Rendered as SLACK_DM_MODE. Empty lets the binary default (serve).
+  dmMode: ""
+  # channelMode selects which channels are served: "all" (every channel the bot
+  # is invited to, the default), "allowlist" (only channelAllowlist), or "none"
+  # (DM-only deployments). Rendered as SLACK_CHANNEL_MODE. Empty lets the
+  # binary default (all).
+  channelMode: ""
+  # channelAllowlist lists the Slack channel IDs (C…, from the channel's
+  # "About" tab) served when channelMode is "allowlist". Rendered as
+  # SLACK_CHANNEL_ALLOWLIST.
+  channelAllowlist: []
   # dropStale ignores Slack events older than the gateway's start time, so a
   # restart never replays messages queued while it was down. Rendered as
   # SLACK_DROP_STALE. Default false.
