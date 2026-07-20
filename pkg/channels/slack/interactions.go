@@ -167,7 +167,7 @@ func (a *Adapter) handleAccessDecision(ctx context.Context, threadID, newcomerID
 		return
 	}
 
-	req := a.takePendingAccess(threadID, newcomerID)
+	parked := a.takePendingAccess(threadID, newcomerID)
 
 	if !allow {
 		if err := respondURL(ctx, responseURL, "🚫 _Declined._"); err != nil {
@@ -181,15 +181,21 @@ func (a *Adapter) handleAccessDecision(ctx context.Context, threadID, newcomerID
 		a.Logger.Warn("slack: update access prompt (allowed) failed", "thread", threadID, "error", err)
 	}
 
-	// Nothing parked (e.g. the newcomer's message expired or was already handled);
-	// the grant still stands, so their next message routes without a prompt.
-	if req == nil {
-		return
-	}
+	// Nothing parked (e.g. the newcomer's messages expired or were already
+	// handled); the grant still stands, so their next message routes without a
+	// prompt.
+	//
 	// replayDispatch (not dispatch) so a thread slot held by an in-flight turn
-	// defers the replay until the slot frees instead of dropping the message
-	// with a busy notice right after the newcomer was told they are allowed.
-	a.replayDispatch(ctx, req.msg, req.slackChannel)
+	// defers the replay until the slot frees instead of dropping a message with
+	// a busy notice right after the newcomer was told they are allowed. It is
+	// blocking, which keeps a multi-message queue in order; this runs on the
+	// interaction's own goroutine, so waiting here stalls nothing else.
+	for _, req := range parked {
+		if err := a.replayDispatch(ctx, req.msg, req.slackChannel); err != nil && !errors.Is(err, context.Canceled) {
+			a.Logger.Error("slack: replay after access grant failed",
+				"thread", threadID, "user", newcomerID, "error", err)
+		}
+	}
 }
 
 // handleDecision processes a button click: updates the prompt message to show
@@ -237,10 +243,14 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 
 	// A button-click resume is a turn like any other: it must carry the clicking
 	// user's human token, never the gateway's machine identity. Resolve it BEFORE
-	// consuming the task or rewriting the message: on a mint failure humanToken
-	// drives the sign-in (or transient-error) prompt and we return here, leaving
-	// the task and buttons untouched so the click stays retryable.
-	token, ok := a.humanToken(ctx, slackChannel, threadID, slackUser, true)
+	// consuming the task or rewriting the message, so a mint failure leaves the
+	// task and buttons untouched and the click stays retryable.
+	token, ok, signIn := a.humanToken(ctx, slackChannel, threadID, slackUser)
+	if signIn {
+		// A button resume has no message to replay, so just prompt; the clicker
+		// signs in and clicks again.
+		a.postSignIn(ctx, slackChannel, threadID, slackUser)
+	}
 	if !ok {
 		return nil
 	}
