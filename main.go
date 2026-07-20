@@ -215,7 +215,7 @@ func run(args []string) error {
 
 	if cfg.OBO.Enabled {
 		var slackEmail func(context.Context, string) (string, error)
-		var onLinked func(context.Context, string)
+		var onLinked func(context.Context, string, string)
 		if slackAdapter != nil {
 			slackEmail = slackAdapter.LookupUserEmail
 			onLinked = slackAdapter.OnUserLinked
@@ -408,11 +408,13 @@ func buildStore(cfg config.Config) (store.Store, error) {
 // buildOBOLinker constructs the muster account-linking Linker for Slack OBO. It
 // returns a cleanup func that closes the link store (a no-op for the in-memory
 // store). slackEmail is the anti-spoof email lookup; nil skips the email-match
-// check at callback. The OAuth client_id and redirect URI are derived from
-// CallbackBaseURL by musterlink (CIMD); an explicit cfg.ClientID overrides it.
+// check at callback. onLinked is invoked after a successful link (nil to skip);
+// the Slack adapter uses it to replace the sign-in prompt. The OAuth client_id
+// and redirect URI are derived from CallbackBaseURL by musterlink (CIMD); an
+// explicit cfg.ClientID overrides it.
 func buildOBOLinker(cfg config.OBOConfig, logger *slog.Logger,
 	slackEmail func(context.Context, string) (string, error),
-	onLinked func(context.Context, string),
+	onLinked func(ctx context.Context, slackUserID, email string),
 ) (*musterlink.Linker, func() error, error) {
 	stateKey, err := os.ReadFile(cfg.StateKeyFile)
 	if err != nil {

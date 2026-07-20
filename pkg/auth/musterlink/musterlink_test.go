@@ -383,7 +383,7 @@ func TestCallbackFiresOnLinkedHook(t *testing.T) {
 	stub := newMusterStub(t, "klaus-gateway", "alice@example.com", "muster-sub")
 	store := NewMemStore()
 	var mu sync.Mutex
-	var linked []string
+	var linked, emails []string
 	l, err := New(Config{
 		BaseURL:      stub.server.URL,
 		ClientID:     stub.clientID,
@@ -392,9 +392,10 @@ func TestCallbackFiresOnLinkedHook(t *testing.T) {
 		StateKey:     []byte("hmac-state-key"),
 		Store:        store,
 		SlackEmail:   func(context.Context, string) (string, error) { return "alice@example.com", nil },
-		OnLinked: func(_ context.Context, slackUser string) {
+		OnLinked: func(_ context.Context, slackUser, email string) {
 			mu.Lock()
 			linked = append(linked, slackUser)
+			emails = append(emails, email)
 			mu.Unlock()
 		},
 	})
@@ -404,6 +405,7 @@ func TestCallbackFiresOnLinkedHook(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	require.Equal(t, []string{"U1"}, linked, "OnLinked must fire once with the linked Slack user")
+	require.Equal(t, []string{"alice@example.com"}, emails, "OnLinked must carry the linked identity's email")
 }
 
 func TestCallbackDoesNotFireOnLinkedHookOnMismatch(t *testing.T) {
@@ -417,7 +419,7 @@ func TestCallbackDoesNotFireOnLinkedHookOnMismatch(t *testing.T) {
 		StateKey:     []byte("hmac-state-key"),
 		Store:        NewMemStore(),
 		SlackEmail:   func(context.Context, string) (string, error) { return "bob@example.com", nil },
-		OnLinked:     func(context.Context, string) { fired = true },
+		OnLinked:     func(context.Context, string, string) { fired = true },
 	})
 	require.NoError(t, err)
 
