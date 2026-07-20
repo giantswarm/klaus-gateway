@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Slack tool-approval prompts gain a **Chat** button alongside Approve/Deny: it holds the pending tool call and invites a follow-up question in the thread. The reply is routed to the paused task (a question resolves it as a reject carrying the question, so the agent answers and asks to confirm again; a plain approve/deny still decides).
+- Slack agent replies and the agent's own confirmation prompts are posted under the agent's display name (from its A2A AgentCard), distinct from Swarmgeist's own messages (`chat:write.customize`). The card supplies the name; when it exposes no icon the app's own icon is kept. Requires the `chat:write.customize` bot scope.
+- Slack posts a one-time introduction when the bot is added to a channel (`member_joined_channel`), so members know what it is and how to reach it. Requires subscribing to the `member_joined_channel` bot event.
+- Slack posts a short launch announcement when a new channel thread starts, making the hand-off from Swarmgeist to the agent explicit. It is posted only once the agent has resolved, so a failed launch does not announce an agent that never arrives.
+- A direct message to the bot receives a polite redirect to use it in a channel, unless `SLACK_DM_ONLY` is set (which serves DMs). The redirect is posted at most once per conversation per hour, so replying to the redirect does not produce another one.
 - Slack `/details on|off|full` command controls whether the agent's tool activity is shown in a thread. On by default; `off` quiets it, `full` also shows tool results. Rendered as fenced code blocks so Slack collapses long payloads. The setting applies to the whole thread.
 - Slack `/usage` command reports token counts for the last turn and the accumulated session total, on demand. When the kagent REST API exposes the agent's model (declarative agents), the report also names the model and provider; a BYO agent omits the line.
 - Slack `/stop` on a thread paused at an approval prompt resolves the pending tool call as a structured rejection (same as replying "stop"), instead of replying "Stopped." while leaving the prompt armed.
@@ -35,6 +40,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Slack `/usage` sent as a new top-level message in a DM now reports the conversation's token usage. Usage is keyed by the turn's thread root, and a top-level DM message keys a brand-new thread, so the command always answered "Token usage not available yet."; DM usage is now also aggregated per conversation. In a regular channel, `/usage` typed outside the agent's thread replies with guidance to run it as a reply inside the thread.
 - A transient failure of the resume existence-check no longer suppresses the "starting fresh" notice for that thread forever. Only a conclusive result (session present or gone) marks the thread as checked; an indeterminate check is retried on the thread's next message.
 - Slack OBO: the gateway forwards the dex id_token on the A2A request instead of muster's opaque access token. kagent's A2A edge validates the caller by decoding the JWT and reading its `sub` claim; the opaque muster token is not a JWT, so it was rejected with 401 and linked users' turns never reached the agent. The id_token is the dex-issued token muster returns alongside its access token; the access token is still used only to read the linked identity from the userinfo endpoint. A token response without an id_token now fails loudly instead of forwarding an unusable credential.
+- The one-time channel introduction respects the stale-event gate, so a Socket Mode reconnect replaying an old `member_joined_channel` event no longer double-posts it.
+- AgentCard fetch failures are remembered for 45 seconds, so an unreachable card endpoint no longer adds up to two HTTP timeouts of latency to every turn while the agent's display identity is being resolved.
 - Slack OBO: the sign-in callback now fails when muster's token response carries no id_token (missing `openid` scope or upstream IdP misconfiguration), instead of storing a link that reports "Signed in to Giant Swarm" and then errors on every turn. No link is persisted in that case.
 - Slack events without a user ID are ignored; an anonymous event can no longer start a turn.
 - Button-click resumes of paused tool approvals carry the clicking user's human token when linking is enabled, the same as typed replies; a resume without one is aborted instead of running as the gateway service account.
@@ -71,6 +78,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `/usage` no longer double-counts a turn that paused for approval: the pre-pause token counts travel with the pending task and the resumed segment adds to them, so both the last-turn and session figures cover the whole turn exactly once.
 - A resume that fails before its stream starts (token mint, gateway resolve, send) re-stores the paused task instead of stranding it, so a retry or button click can still resume the agent.
 - Parked newcomer messages and paused approval tasks are swept after 24 hours, so the per-thread maps no longer grow for the process lifetime.
+- Clicking "Chat" on an approval prompt releases the thread slot before the Slack round-trip that swaps the buttons for the reply hint, so a question typed immediately after the click resumes the held task instead of bouncing off the "still working" notice.
 
 ### Refactored
 

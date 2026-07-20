@@ -155,15 +155,37 @@ still running gets a brief "still working" notice rather than starting an overla
 | `--slack-failed-emoji` | `SLACK_FAILED_EMOJI` | `x` |
 | `--slack-clear-reaction-on-done` | `SLACK_CLEAR_REACTION_ON_DONE` | `true` (remove the working reaction without adding a done reaction) |
 
+### Identity, HITL, and channel behavior
+
+- **Per-message branding.** Agent replies and the agent's own confirmation prompts are posted
+  under the agent's display name, taken from its A2A AgentCard, so they read as the agent
+  speaking rather than the app. Swarmgeist's own messages (launch announcement, sign-in,
+  errors, the DM redirect, the channel intro) keep the app's default identity. The card
+  supplies the name; when it exposes no icon the app's own icon is kept. Requires
+  `chat:write.customize`.
+- **HITL "Chat".** A tool-approval prompt shows Approve / Deny / **Chat**. Chat holds the
+  pending tool call and invites a follow-up question in the thread; the reply is routed to the
+  paused task. A question resolves it as a reject carrying the question (the agent answers and
+  asks to confirm again); a plain "approve"/"deny" reply still decides.
+- **Channel intro.** When the bot is added to a channel it posts a one-time introduction
+  (requires the `member_joined_channel` bot event).
+- **Launch announcement.** A new channel thread opens with a short Swarmgeist hand-off notice
+  before the agent takes over.
+- **Direct messages.** A DM to the bot receives a polite redirect to a channel, unless
+  `SLACK_DM_ONLY` is set (which serves DMs and suppresses the redirect).
+
 ## Required bot OAuth scopes
 
 | Scope            | Purpose                                               |
 |------------------|-------------------------------------------------------|
 | `chat:write`     | Post messages and update existing messages            |
+| `chat:write.customize` | Post agent replies under the agent's own name/icon |
 | `reactions:write` | Add/remove progress reactions on the triggering message |
 | `im:history`     | Read DMs sent to the bot                              |
 | `channels:history` | Read messages in channels the bot is a member of   |
 | `channels:join`  | Join public channels on invite                        |
+
+The `member_joined_channel` bot event must also be subscribed for the channel intro.
 
 ## Endpoint
 
