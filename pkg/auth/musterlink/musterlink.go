@@ -600,7 +600,7 @@ func (l *Linker) userinfo(ctx context.Context, accessToken string) (sub, email s
 // the link. The cached id_token means those extra calls return without
 // refreshing at all.
 func (l *Linker) TokenFor(ctx context.Context, slackUserID string) (string, error) {
-	// Fast path: a still-valid cached access token avoids a refresh (and the
+	// Fast path: a still-valid cached id_token avoids a refresh (and the
 	// per-user lock) entirely.
 	if link, ok := l.store.Get(slackUserID); ok {
 		if tok := validCachedToken(link, l.now()); tok != "" {

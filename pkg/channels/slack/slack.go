@@ -29,7 +29,7 @@ import (
 // ChannelName identifies the Slack adapter in routing keys.
 const ChannelName = "slack"
 
-// OBOTokenSource mints a fresh per-request human muster access token for a
+// OBOTokenSource mints a fresh per-request human token (the dex id_token) for a
 // linked Slack user and drives the account-linking UX. *musterlink.Linker
 // satisfies it. When the adapter's OBO field is non-nil (linking enabled), the
 // human token is the only credential forwarded to the agent: a turn without one
@@ -38,7 +38,7 @@ const ChannelName = "slack"
 // path and turns run as the M2M ServiceAccount identity (the historical
 // behaviour) via the gateway's ForwardedTokenSource fallback.
 type OBOTokenSource interface {
-	// TokenFor returns a fresh human muster access token for the Slack user,
+	// TokenFor returns a fresh human token (the dex id_token) for the Slack user,
 	// or musterlink.ErrNotLinked when the user has not linked an identity.
 	TokenFor(ctx context.Context, slackUserID string) (string, error)
 	// LinkURL returns the absolute "Sign in to Giant Swarm" URL that starts the
@@ -509,6 +509,9 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 
 	a.resolveSubjectEmail(ctx, &msg)
 
+	// A turn must carry the sending user's human token, never the gateway's
+	// machine identity. Resolve it BEFORE consuming any pending task so an abort
+	// leaves the pending TaskID intact and the reply stays retryable.
 	token, ok := a.humanToken(ctx, slackChannel, msg.ThreadID, slackUser, respond)
 	if !ok {
 		return nil
