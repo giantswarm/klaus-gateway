@@ -2,17 +2,63 @@ package slack
 
 import (
 	"context"
+	"fmt"
 	"strings"
 )
 
 const (
-	cmdHelp   = "help"
-	cmdStop   = "stop"
-	cmdQuit   = "quit"
-	cmdInvite = "invite"
-	cmdLock   = "lock"
-	cmdKlaus  = "klaus" // /klaus login | /klaus logout (OBO account linking)
+	cmdHelp    = "help"
+	cmdStop    = "stop"
+	cmdQuit    = "quit"
+	cmdInvite  = "invite"
+	cmdLock    = "lock"
+	cmdKlaus   = "klaus" // /klaus login | /klaus logout (OBO account linking)
+	cmdUsage   = "usage"
+	cmdDetails = "details"
 )
+
+// detailsLevel controls how much of the agent's tool activity is rendered
+// inline in a thread. The zero value is detailsOn so an un-set thread defaults
+// to showing tool calls (the MVP default).
+type detailsLevel int
+
+const (
+	detailsOn   detailsLevel = iota // show tool calls compactly (default)
+	detailsOff                      // hide tool activity
+	detailsFull                     // show tool calls and result previews
+)
+
+const (
+	argOn   = "on"
+	argOff  = "off"
+	argFull = "full"
+)
+
+func (l detailsLevel) String() string {
+	switch l {
+	case detailsOff:
+		return argOff
+	case detailsFull:
+		return argFull
+	default:
+		return argOn
+	}
+}
+
+// parseDetailsLevel maps a command argument to a level. ok is false for an
+// unrecognised argument.
+func parseDetailsLevel(s string) (level detailsLevel, ok bool) {
+	switch strings.ToLower(s) {
+	case argOn:
+		return detailsOn, true
+	case argOff:
+		return detailsOff, true
+	case argFull:
+		return detailsFull, true
+	default:
+		return detailsOn, false
+	}
+}
 
 // /klaus subcommands.
 const (
@@ -67,6 +113,8 @@ func parseUserIDs(args []string) []string {
 
 const helpText = "*Commands* — mention me first, e.g. `@klaus /stop`.\n" +
 	"• `/stop` — interrupt the current turn\n" +
+	"• `/usage` — show token usage for the last turn and the session\n" +
+	"• `/details on|off|full` — show or hide the agent's tool activity\n" +
 	"• `/quit` — end the session _(owner only)_\n" +
 	"• `/invite @user` — let the mentioned people join this thread _(owner only)_\n" +
 	"• `/lock` — restrict to the owner only _(owner only)_\n" +
@@ -115,11 +163,44 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *slashCommand, slackUse
 
 	case cmdStop:
 		a.turnsMu.Lock()
-		if t, ok := a.turns[threadID]; ok {
+		t, running := a.turns[threadID]
+		if running {
 			t.cancel()
 		}
 		a.turnsMu.Unlock()
+		// A thread paused on input-required has no in-flight turn to cancel; the
+		// paused task must be resolved with a rejection or the tool call dangles.
+		// Falling through to dispatch routes "/stop" like a typed "stop" reply,
+		// which decisionFromText maps to a structured reject.
+		if !running && a.hasPendingTask(threadID) {
+			return false
+		}
 		reply("⏹ Stopped.")
+		return true
+
+	case cmdUsage:
+		reply(a.usageReport(ctx, threadID, slackChannel))
+		return true
+
+	case cmdDetails:
+		if len(cmd.Args) == 0 {
+			reply(fmt.Sprintf("Tool activity is *%s* for this thread. Use `/details on`, `/details off`, or `/details full`.", a.detailsLevel(threadID)))
+			return true
+		}
+		level, ok := parseDetailsLevel(cmd.Args[0])
+		if !ok {
+			reply("_Usage:_ `/details on|off|full`")
+			return true
+		}
+		a.setDetailsLevel(threadID, level)
+		switch level {
+		case detailsOff:
+			reply("🔇 Hiding the agent's tool activity in this thread.")
+		case detailsFull:
+			reply("🔎 Showing the agent's tool calls and results in this thread.")
+		default:
+			reply("🔧 Showing the agent's tool calls in this thread.")
+		}
 		return true
 
 	case cmdQuit:

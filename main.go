@@ -126,7 +126,7 @@ func run(args []string) error {
 	}
 
 	if cfg.Controller {
-		if err := startController(ctx, cfg, manager, logger); err != nil {
+		if err := startController(ctx, manager, logger); err != nil {
 			return fmt.Errorf("start controller: %w", err)
 		}
 	}
@@ -269,8 +269,22 @@ func run(args []string) error {
 			BaseURL:      cfg.A2A.URL,
 			DefaultAgent: cfg.A2A.DefaultAgent,
 		}
+		restURL := cfg.A2A.ResolvedRESTURL()
+		if restURL != "" {
+			facade.Sessions = &pkga2a.SessionsClient{
+				BaseURL:     restURL,
+				TokenSource: tokenSource,
+			}
+			if slackAdapter != nil {
+				slackAdapter.Models = &pkga2a.AgentsClient{
+					BaseURL:     restURL,
+					TokenSource: tokenSource,
+				}
+			}
+		}
 		logger.Info("a2a adapter enabled",
 			"a2a_url", cfg.A2A.URL,
+			"rest_url", restURL,
 			"default_agent", cfg.A2A.DefaultAgent,
 			"token_path", cfg.A2A.TokenPath,
 		)
@@ -301,7 +315,7 @@ func run(args []string) error {
 
 // startController creates and starts the embedded controller-runtime manager in
 // a background goroutine. It returns once the manager's cache is synced.
-func startController(ctx context.Context, cfg config.Config, lm lifecycle.Manager, logger *slog.Logger) error {
+func startController(ctx context.Context, lm lifecycle.Manager, logger *slog.Logger) error {
 	restCfg, err := buildKubeConfig()
 	if err != nil {
 		return fmt.Errorf("kube config: %w", err)

@@ -111,7 +111,7 @@ func TestFlush_FailedUpdateIsResentOnNextFlush(t *testing.T) {
 	defer srv.Close()
 
 	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
-	w := newBatchedWriterWithClient(client, "C1", "1.1", "1.0", slog.Default())
+	w := newBatchedWriterWithClient(client, "C1", "1.1", "1.0", detailsOff, slog.Default())
 	w.buf.WriteString("hello")
 
 	require.Error(t, w.flush(t.Context()))
@@ -140,6 +140,35 @@ func TestLookupUserEmail_RetriesOnceOnRateLimit(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "user@example.com", email)
 	require.Equal(t, int32(2), calls.Load())
+}
+
+// An auto-approved read-only prompt resumes the turn in place by calling run()
+// again on the same writer. run() defers drainToolPosts, so draining must be
+// idempotent and re-init the queue for the resumed segment; otherwise the
+// second drain re-closes a closed channel and panics the whole process.
+func TestDrainToolPosts_IdempotentAcrossRunCycles(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"ok":true,"ts":"1.2"}`)
+	}))
+	defer srv.Close()
+
+	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
+	w := newBatchedWriterWithClient(client, "C1", "1.1", "1.0", detailsOn, slog.Default())
+
+	// First segment queued tool activity and drained (as run()'s defer does).
+	w.enqueueToolPost(t.Context(), "tool one")
+	require.NotPanics(t, w.drainToolPosts)
+
+	// Resumed segment over the same writer: a fresh poster starts and drains
+	// without re-closing the first segment's queue.
+	require.NotPanics(t, func() {
+		w.enqueueToolPost(t.Context(), "tool two")
+		w.drainToolPosts()
+	})
+
+	// Draining with nothing queued stays a no-op.
+	require.NotPanics(t, w.drainToolPosts)
 }
 
 // Agent-rendered text entering an mrkdwn section block must be escaped so

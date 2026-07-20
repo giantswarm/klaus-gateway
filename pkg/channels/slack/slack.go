@@ -84,6 +84,9 @@ type Adapter struct {
 	// users so the agent acts on behalf of the human. Nil disables OBO; turns
 	// then run as the M2M ServiceAccount identity.
 	OBO OBOTokenSource
+	// Models, when set, resolves the default agent's model id for /usage.
+	// Nil omits the model line.
+	Models AgentModelSource
 
 	// ProgressMode selects how turn progress is shown: "auto" (default; reactions
 	// with a text fallback when reactions:write is unavailable), "reactions", or
@@ -125,7 +128,29 @@ type Adapter struct {
 	emailCache map[string]emailEntry // Slack user ID -> resolved email
 
 	seenEventsMu sync.Mutex
-	seenEvents   map[string]time.Time // Events API event_id -> dedup entry expiry
+	seenEvents   map[string]time.Time // Slack event_id -> dedup entry expiry
+
+	// detailsMu guards details. Absent thread resolves to detailsOn (the MVP
+	// default). Entries idle past threadStateTTL are evicted.
+	detailsMu sync.Mutex
+	details   map[string]ttlEntry[detailsLevel] // keyed by threadID
+
+	// usageMu guards both usage maps. threadUsage keys usage by the turn's
+	// thread root; channelUsage aggregates DM channels so a top-level /usage in
+	// a DM (which keys a brand-new thread) still has figures to report.
+	usageMu      sync.Mutex
+	threadUsage  map[string]ttlEntry[usageTotals] // keyed by threadID
+	channelUsage map[string]ttlEntry[usageTotals] // keyed by Slack channel ID; DMs only
+
+	// resumeChecked records threads whose resume existence-check ran to a
+	// conclusive result, so the "starting fresh" notice posts at most once per
+	// thread. Values are entry expiries (threadStateTTL).
+	resumeMu      sync.Mutex
+	resumeChecked map[string]time.Time
+
+	// modelMu guards modelCache, the resolved model labels shown by /usage.
+	modelMu    sync.Mutex
+	modelCache map[string]modelEntry // agentRef -> cached model label
 }
 
 // emailEntry is a cached Slack user email with its expiry.
@@ -484,6 +509,11 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 
 	slackUser := msg.Subject // raw Slack user ID; keys access control
 
+	// Captured before getAccess creates the thread's access entry: true when this
+	// process has no record of the thread, i.e. a reply into a thread it did not
+	// start (typically after a restart): the case the resume check targets.
+	firstSight := !a.isActiveThread(msg.ThreadID)
+
 	state := a.getAccess(msg.ThreadID, slackUser)
 	if !state.Deliver(slackUser) {
 		return nil
@@ -517,6 +547,16 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 		return nil
 	}
 	msg.BearerToken = token
+
+	// A reply into a thread this process did not start may be resuming a kagent
+	// session that has since been evicted. Announce the "starting fresh"
+	// degradation up front so the user is not surprised by lost context. Only for
+	// replies (not a fresh root mention), only when we would reply, at most once
+	// per thread. Advisory: never aborts the turn, and bounded by a short timeout
+	// so a slow REST endpoint cannot stall the first reply.
+	if respond && firstSight && msg.ThreadID != msg.MessageID {
+		a.maybeAnnounceResume(ctx, msg, slackChannel)
+	}
 
 	// Resume a paused input-required task when one exists for this thread. Done
 	// only after the turn is committed to run (thread slot acquired, human token
@@ -635,7 +675,7 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 	// or "" in reactions mode (the writer posts the first answer message lazily).
 	prog, replyTS := a.startProgress(ctx, client, slackChannel, threadID, triggerTS, placeholder)
 
-	w := newBatchedWriterWithClient(client, slackChannel, replyTS, threadID, a.Logger)
+	w := newBatchedWriterWithClient(client, slackChannel, replyTS, threadID, a.detailsLevel(threadID), a.Logger)
 	if err := w.run(ctx, deltas); err != nil {
 		prog.failed(ctx)
 		// In text mode prog.failed is a no-op (no reaction to swap), so the
@@ -648,6 +688,7 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 		}
 		return err
 	}
+	a.recordTurnUsage(threadID, slackChannel, w.turnUsage)
 
 	if w.promptDelta != nil {
 		prog.clear(ctx) // paused waiting on the user; drop the working indicator
@@ -703,7 +744,14 @@ type slackInnerEvent struct {
 // isDM reports whether the event originated in a 1:1 direct message. Slack sets
 // channel_type "im" for DMs and uses a "D…" channel ID; either is sufficient.
 func (e slackInnerEvent) isDM() bool {
-	return e.ChannelType == "im" || strings.HasPrefix(e.Channel, "D")
+	return e.ChannelType == "im" || isDMChannelID(e.Channel)
+}
+
+// isDMChannelID reports whether a Slack channel ID names a 1:1 DM
+// conversation ("D…"). Used where only the channel ID is available (no event
+// carrying channel_type).
+func isDMChannelID(channelID string) bool {
+	return strings.HasPrefix(channelID, "D")
 }
 
 // threadReplyOnly reports whether this event may only be handled as a thread

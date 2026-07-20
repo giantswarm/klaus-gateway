@@ -653,11 +653,32 @@ func TestKlausLogin_PostsSignInPrompt(t *testing.T) {
 type stubGateway struct {
 	mu            sync.Mutex
 	resolveCount_ int
+	resumeCount_  int
 	onResolve     func(channels.InboundMessage)
 	deltas        []channels.OutboundDelta
 	// hold, when non-nil, keeps a turn in flight: SendCompletion streams deltas
 	// then blocks until hold is closed, so a test can hold the per-thread slot.
 	hold chan struct{}
+	// onSessionResumable, when set, backs SessionResumable; nil reports the check
+	// as unavailable (checked=false).
+	onSessionResumable func(channels.InboundMessage) (exists, checked bool)
+}
+
+func (s *stubGateway) resumeCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.resumeCount_
+}
+
+func (s *stubGateway) SessionResumable(_ context.Context, msg channels.InboundMessage) (bool, bool) {
+	s.mu.Lock()
+	s.resumeCount_++
+	cb := s.onSessionResumable
+	s.mu.Unlock()
+	if cb == nil {
+		return false, false
+	}
+	return cb(msg)
 }
 
 func (s *stubGateway) resolveCount() int {
@@ -1131,4 +1152,148 @@ func TestEventsHandler_DuplicateEventIDDropped(t *testing.T) {
 		2*time.Second, 10*time.Millisecond)
 	time.Sleep(200 * time.Millisecond)
 	require.Equal(t, int32(1), dispatched.Load(), "duplicate delivery must not start a second turn")
+}
+
+// toolActivityDeltas is a turn that invokes a tool and then answers.
+func toolActivityDeltas() []channels.OutboundDelta {
+	return []channels.OutboundDelta{
+		{Kind: channels.DeltaToolActivity, Tool: &channels.ToolActivity{
+			Name: "list_pods", Kind: channels.ToolCall,
+			Args: map[string]any{"namespace": "kube-system"},
+		}},
+		{Content: "Found 3 pods."},
+		{Done: true},
+	}
+}
+
+func TestDetails_DefaultOn_RendersToolActivity(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{deltas: toolActivityDeltas()}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+
+	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","channel_type":"im","user":"U1","text":"list pods","channel":"D1","ts":"111.000"}}`)
+
+	require.Eventually(t, func() bool {
+		text := allText(fake.pathCalls("chat.postMessage"))
+		return strings.Contains(text, "list_pods") && strings.Contains(text, "Found 3 pods.")
+	}, 2*time.Second, 20*time.Millisecond, "default-on details should render the tool call and the answer")
+}
+
+func TestDetails_Off_SuppressesToolActivity(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{deltas: toolActivityDeltas()}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+
+	// Quiet the thread first (same thread_ts as the turn below).
+	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","channel_type":"im","user":"U1","text":"/details off","channel":"D1","ts":"100.000","thread_ts":"100.000"}}`)
+	fake.waitForPath(t, "chat.postMessage", 1)
+
+	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","channel_type":"im","user":"U1","text":"list pods","channel":"D1","ts":"101.000","thread_ts":"100.000"}}`)
+
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Found 3 pods.")
+	}, 2*time.Second, 20*time.Millisecond, "the answer should still be posted")
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "list_pods",
+		"details off must not render tool activity")
+}
+
+func TestResume_PostsStartingFreshWhenSessionGone(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{onSessionResumable: func(channels.InboundMessage) (bool, bool) { return false, true }}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+
+	// A reply into a thread this process never started (thread_ts != ts).
+	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","channel_type":"im","user":"U1","text":"hi again","channel":"D1","ts":"201.000","thread_ts":"100.000"}}`)
+
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "starting fresh")
+	}, 2*time.Second, 20*time.Millisecond, "a gone session should trigger the starting-fresh notice")
+	require.Equal(t, 1, gw.resumeCount())
+}
+
+func TestResume_SilentWhenSessionPresent(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{onSessionResumable: func(channels.InboundMessage) (bool, bool) { return true, true }}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+
+	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","channel_type":"im","user":"U1","text":"hi again","channel":"D1","ts":"201.000","thread_ts":"100.000"}}`)
+
+	// Wait for the turn to complete (empty-output note), then assert no notice.
+	fake.waitForPath(t, "chat.postMessage", 1)
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "starting fresh")
+	require.Equal(t, 1, gw.resumeCount())
+}
+
+func TestResume_SkippedForRootMessage(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{onSessionResumable: func(channels.InboundMessage) (bool, bool) { return false, true }}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+
+	// A fresh root message (no thread_ts) starts a new session: no resume check.
+	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","channel_type":"im","user":"U1","text":"brand new","channel":"D1","ts":"300.000"}}`)
+
+	fake.waitForPath(t, "chat.postMessage", 1)
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "starting fresh")
+	require.Equal(t, 0, gw.resumeCount(), "root messages must not trigger the resume check")
+}
+
+// A top-level /usage in a DM keys a brand-new thread (its own ts, no
+// thread_ts); the reply must still report the DM's usage instead of "not
+// available yet".
+func TestUsage_DMTopLevelReportsSession(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{deltas: []channels.OutboundDelta{
+		{Content: "3 pods running."},
+		{Usage: &channels.TurnUsage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15}},
+		{Done: true},
+	}}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+
+	// A completed DM turn records usage under its thread root ("100.000").
+	sendEvent(t, srv, dmEvent("U1", "count pods", "100.000"))
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "3 pods running.")
+	}, 2*time.Second, 20*time.Millisecond, "the turn must complete before /usage is sent")
+
+	// /usage typed as a new top-level DM message: its own ts is the threadID.
+	sendEvent(t, srv, dmEvent("U1", "/usage", "200.000"))
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Last turn — in 10 · out 5 · total 15")
+	}, 2*time.Second, 20*time.Millisecond, "a top-level DM /usage must report the channel's usage")
+}
+
+// /usage mentioned in a channel thread no turn ever ran in replies with
+// guidance to run it inside the agent's thread, not "not available yet".
+func TestUsage_ChannelFreshThreadGetsGuidance(t *testing.T) {
+	fake := newFakeSlackAPI()
+	_, srv := newEventsAdapter(t, &stubGateway{}, fake.server(t).URL)
+
+	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_mention","user":"U1","text":"<@UBOT> /usage","channel":"C1","ts":"300.000"}}`)
+
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "as a reply inside the agent's thread")
+	}, 2*time.Second, 20*time.Millisecond)
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "not available yet")
+}
+
+// /usage as a reply inside the agent's thread keeps working: the thread-keyed
+// lookup hits directly.
+func TestUsage_InThreadStillWorks(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{deltas: []channels.OutboundDelta{
+		{Content: "done."},
+		{Usage: &channels.TurnUsage{InputTokens: 7, OutputTokens: 3, TotalTokens: 10}},
+		{Done: true},
+	}}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+
+	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_mention","user":"U1","text":"<@UBOT> count pods","channel":"C1","ts":"100.000"}}`)
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "done.")
+	}, 2*time.Second, 20*time.Millisecond, "the turn must complete before /usage is sent")
+
+	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","user":"U1","text":"/usage","channel":"C1","ts":"101.000","thread_ts":"100.000"}}`)
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Last turn — in 7 · out 3 · total 10")
+	}, 2*time.Second, 20*time.Millisecond)
 }
