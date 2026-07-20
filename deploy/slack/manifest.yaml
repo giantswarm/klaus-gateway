@@ -39,6 +39,8 @@ oauth_config:
     bot:
       # Send messages and update existing messages (streaming responses).
       - chat:write
+      # Add/remove progress reactions on the triggering message.
+      - reactions:write
       # Read DMs sent to the bot.
       - im:history
       # React to messages in channels the bot is a member of.

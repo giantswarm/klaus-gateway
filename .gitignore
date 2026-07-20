@@ -3,3 +3,6 @@
 
 # graphify knowledge graph (regenerable, rebuilt by the post-commit hook)
 graphify-out/
+
+# local builds
+/klaus-gateway-linux-amd64

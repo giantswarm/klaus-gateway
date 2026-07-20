@@ -134,6 +134,17 @@ func classifyAction(actionID string) (hitlAction, bool) {
 func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, messageTS, slackUser string, act hitlAction) error {
 	client := a.apiClient()
 
+	// Serialize the resume with any concurrent turn on this thread (typed reply
+	// or another click). Acquire before taking the pending task so a rejected
+	// click leaves the task and the button intact for a retry.
+	if !a.acquireThread(threadID) {
+		if _, err := client.postMessage(ctx, slackChannel, busyNotice, threadID); err != nil {
+			a.Logger.Warn("slack: post busy notice failed", "thread", threadID, "error", err)
+		}
+		return nil
+	}
+	defer a.releaseThread(threadID)
+
 	// Peek without consuming: the human-token gate must run before the task is
 	// taken so a failed mint leaves the pending task (and its buttons) intact.
 	if !a.hasPendingTask(threadID) {
@@ -196,7 +207,8 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 		return err
 	}
 
-	return a.streamResponse(ctx, client, deltas, msg, slackChannel, threadID, "_continuing…_")
+	// Button resume: no user message to react to, so use text progress.
+	return a.streamResponse(ctx, client, deltas, msg, slackChannel, threadID, "", "_continuing…_")
 }
 
 // buildButtonDecision turns a Block Kit click into a structured HITL decision,
@@ -210,7 +222,8 @@ func buildButtonDecision(act hitlAction, prompt *channels.HitlPrompt) (*channels
 			Type:           channels.DecisionApprove,
 			AskUserAnswers: [][]string{{label}},
 		}
-		return decision, label, "👉 _" + label + "_"
+		// The label is agent-authored; it re-enters Slack via chat.update text.
+		return decision, label, "👉 _" + escapeMrkdwn(label) + "_"
 	case hitlDeny:
 		return &channels.HitlDecision{Type: channels.DecisionReject}, "denied", "❌ _Denied._"
 	default: // hitlApprove

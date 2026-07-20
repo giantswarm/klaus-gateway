@@ -78,7 +78,8 @@ type smEnvelope struct {
 }
 
 type smEventPayload struct {
-	Event slackInnerEvent `json:"event"`
+	EventID string          `json:"event_id"`
+	Event   slackInnerEvent `json:"event"`
 }
 
 // connect dials the Socket Mode WebSocket and handles events until the
@@ -177,6 +178,6 @@ func (c *socketModeClient) readLoop(ctx context.Context, ws *websocket.Conn) {
 			continue
 		}
 
-		go c.adapter.handleInbound(ctx, payload.Event)
+		go c.adapter.handleInbound(ctx, payload.Event, payload.EventID)
 	}
 }

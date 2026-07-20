@@ -48,10 +48,13 @@ type Gateway interface {
 
 // InboundMessage is the normalised shape each adapter hands to the gateway.
 type InboundMessage struct {
-	Channel     string
-	ChannelID   string
-	UserID      string
-	ThreadID    string
+	Channel   string
+	ChannelID string
+	UserID    string
+	ThreadID  string
+	// MessageID is the platform-specific ID of the triggering message (the Slack
+	// message ts). Used as the target for progress reactions. May be empty.
+	MessageID   string
 	Text        string
 	Attachments []Attachment
 	ReplyTo     string
@@ -79,9 +82,40 @@ type InboundMessage struct {
 type DeltaKind int
 
 const (
-	DeltaText   DeltaKind = iota // regular assistant text
-	DeltaPrompt                  // agent is waiting for user input (input-required / auth-required)
+	DeltaText         DeltaKind = iota // regular assistant text
+	DeltaPrompt                        // agent is waiting for user input (input-required / auth-required)
+	DeltaToolActivity                  // agent invoked or received a tool result
 )
+
+// TurnUsage holds the token counts reported for a turn, in provider-neutral
+// terms aligned with the OpenTelemetry GenAI semantic conventions
+// (gen_ai.usage.input_tokens / gen_ai.usage.output_tokens). Each producer maps
+// its own vocabulary in (kagent/genai candidatesTokenCount, OpenAI
+// completion_tokens, ...). Any field the provider does not report stays zero.
+type TurnUsage struct {
+	InputTokens  int // gen_ai.usage.input_tokens
+	OutputTokens int // gen_ai.usage.output_tokens
+	TotalTokens  int // provider-reported total; no OTel semconv key (usually input+output)
+}
+
+// ToolActivityKind distinguishes a tool call from its result.
+type ToolActivityKind int
+
+const (
+	ToolCall ToolActivityKind = iota
+	ToolResult
+)
+
+// ToolActivity is the provider-neutral shape of a tool call or its result,
+// surfaced on a DeltaToolActivity. Adapters render it without knowing the
+// upstream (kagent/ADK) metadata layout; the translation lives in hitl_parse.go.
+type ToolActivity struct {
+	Name     string           // tool name
+	Kind     ToolActivityKind // call or result
+	CallID   string           // correlates a call with its response
+	Args     map[string]any   // call arguments; nil for a result
+	Response map[string]any   // result payload; nil for a call
+}
 
 // OutboundDelta is one chunk streamed from an instance back through an
 // adapter. Content may be empty on the terminal delta. Err, when non-nil,
@@ -99,6 +133,20 @@ type OutboundDelta struct {
 	// carried a structured adk_request_confirmation DataPart (tool approval or
 	// ask_user). Nil for a plain-text prompt.
 	Prompt *HitlPrompt
+	// Usage carries the token counts reported for the turn. Populated on the
+	// terminal delta (and any interim event that reports usage); nil otherwise.
+	Usage *TurnUsage
+	// Tool is populated on DeltaToolActivity deltas with the tool call or result;
+	// nil otherwise.
+	Tool *ToolActivity
+}
+
+// isZero reports whether the delta carries no channel-visible payload. Used
+// instead of `delta == OutboundDelta{}` because the struct embeds an error
+// interface, and == panics when the concrete error type is not comparable.
+func (d OutboundDelta) isZero() bool {
+	return d.Kind == DeltaText && d.Content == "" && !d.Done && d.Err == nil &&
+		d.TaskID == "" && d.Prompt == nil && d.Usage == nil && d.Tool == nil
 }
 
 // Attachment is an inbound file/image payload.

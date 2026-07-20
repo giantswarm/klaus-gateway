@@ -12,8 +12,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -86,6 +88,11 @@ func TestStripMention(t *testing.T) {
 		{"<@BOT> hi there", "hi there"},
 		{"no mention here", "no mention here"},
 		{"", ""},
+		// Non-mention angle-bracket tokens are message content, not mention noise.
+		{"<@BOT> <https://grafana.example/alert/123> explain this", "<https://grafana.example/alert/123> explain this"},
+		{"<https://example.com|link> hi", "<https://example.com|link> hi"},
+		{"<#C123|general> hello", "<#C123|general> hello"},
+		{"<@U1><@U2> hi", "hi"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.in, func(t *testing.T) {
@@ -217,6 +224,43 @@ func TestEventsHandler_AppMentionDispatch(t *testing.T) {
 	require.Equal(t, "test-agent", got.AgentRef, "AgentRef must be set to DefaultAgent")
 }
 
+func TestEventsHandler_RedeliveredEventDropped(t *testing.T) {
+	var dispatched atomic.Int32
+	gw := &stubGateway{
+		onResolve: func(channels.InboundMessage) { dispatched.Add(1) },
+	}
+
+	fakeSlack := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"ok":true,"ts":"1234.5678"}`)
+	}))
+	defer fakeSlack.Close()
+
+	_, srv := newEventsAdapter(t, gw, fakeSlack.URL)
+
+	body := []byte(`{
+		"type":"event_callback",
+		"event":{"type":"app_mention","user":"U123","text":"<@BOT> hello","channel":"C456","ts":"1234.5678"}
+	}`)
+	stamp, sig := signBody(t, "signing-secret", body)
+
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/channels/slack/events", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Slack-Request-Timestamp", stamp)
+	req.Header.Set("X-Slack-Signature", sig)
+	req.Header.Set("X-Slack-Retry-Num", "1")
+	req.Header.Set("X-Slack-Retry-Reason", "http_timeout")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Equal(t, "1", resp.Header.Get("X-Slack-No-Retry"))
+
+	time.Sleep(200 * time.Millisecond)
+	require.Zero(t, dispatched.Load(), "redelivered event must not start a duplicate turn")
+}
+
 func TestEventsHandler_LockedMode_NonOwnerDropped(t *testing.T) {
 	gw := &stubGateway{}
 
@@ -295,20 +339,7 @@ func TestEventsHandler_BotMessageIgnored(t *testing.T) {
 // --- Batched writer via fake Slack API ---
 
 func TestBatchedWriter_FlushesContent(t *testing.T) {
-	var mu sync.Mutex
-	var updates []string
-
-	fakeSlack := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
-		require.NoError(t, r.ParseForm())
-		mu.Lock()
-		updates = append(updates, r.FormValue("text"))
-		mu.Unlock()
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprintf(w, `{"ok":true,"ts":"1234.5678"}`)
-	}))
-	defer fakeSlack.Close()
-
+	fake := newFakeSlackAPI()
 	gw := &stubGateway{
 		deltas: []channels.OutboundDelta{
 			{Content: helloText},
@@ -316,40 +347,13 @@ func TestBatchedWriter_FlushesContent(t *testing.T) {
 			{Done: true},
 		},
 	}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
-	_, srv := newEventsAdapter(t, gw, fakeSlack.URL)
+	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_mention","user":"U123","text":"<@BOT> go","channel":"C1","ts":"111.222"}}`)
 
-	payload := `{
-		"type":"event_callback",
-		"event":{
-			"type":"app_mention",
-			"user":"U123",
-			"text":"<@BOT> go",
-			"channel":"C1",
-			"ts":"111.222"
-		}
-	}`
-	body := []byte(payload)
-	stamp, sig := signBody(t, "signing-secret", body)
-	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/channels/slack/events", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Slack-Request-Timestamp", stamp)
-	req.Header.Set("X-Slack-Signature", sig)
-	resp, err := http.DefaultClient.Do(req)
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
-
-	// Wait for the batchedWriter to complete and flush.
-	require.Eventually(t, func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		return len(updates) >= 2 // postMessage + at least one chatUpdate
-	}, 2*time.Second, 50*time.Millisecond, "expected chat.update calls")
-
-	mu.Lock()
-	lastUpdate := updates[len(updates)-1]
-	mu.Unlock()
-	require.Contains(t, lastUpdate, "hello world")
+	// Default (auto) mode posts the answer as a Block Kit markdown message.
+	fake.waitForPath(t, "chat.postMessage", 1)
+	require.Contains(t, allText(fake.pathCalls("chat.postMessage")), "hello world")
 }
 
 // --- OBO injection ---
@@ -651,6 +655,9 @@ type stubGateway struct {
 	resolveCount_ int
 	onResolve     func(channels.InboundMessage)
 	deltas        []channels.OutboundDelta
+	// hold, when non-nil, keeps a turn in flight: SendCompletion streams deltas
+	// then blocks until hold is closed, so a test can hold the per-thread slot.
+	hold chan struct{}
 }
 
 func (s *stubGateway) resolveCount() int {
@@ -670,18 +677,31 @@ func (s *stubGateway) Resolve(_ context.Context, msg channels.InboundMessage) (c
 	return channels.InstanceRef{Name: "test-instance"}, nil
 }
 
-func (s *stubGateway) SendCompletion(_ context.Context, _ channels.InstanceRef, _ channels.InboundMessage) (<-chan channels.OutboundDelta, error) {
+func (s *stubGateway) SendCompletion(ctx context.Context, _ channels.InstanceRef, _ channels.InboundMessage) (<-chan channels.OutboundDelta, error) {
 	s.mu.Lock()
 	deltas := s.deltas
+	hold := s.hold
 	s.mu.Unlock()
-	if deltas == nil {
+	if deltas == nil && hold == nil {
 		deltas = []channels.OutboundDelta{{Done: true}}
 	}
-	ch := make(chan channels.OutboundDelta, len(deltas))
-	for _, d := range deltas {
-		ch <- d
-	}
-	close(ch)
+	ch := make(chan channels.OutboundDelta)
+	go func() {
+		defer close(ch)
+		for _, d := range deltas {
+			select {
+			case ch <- d:
+			case <-ctx.Done():
+				return
+			}
+		}
+		if hold != nil {
+			select {
+			case <-hold:
+			case <-ctx.Done():
+			}
+		}
+	}()
 	return ch, nil
 }
 
@@ -694,23 +714,7 @@ var _ channels.Gateway = (*stubGateway)(nil)
 
 // Ensure batchedWriter output is correctly structured.
 func TestBatchedWriter_CombinesDeltas(t *testing.T) {
-	var mu sync.Mutex
-	var texts []string
-
-	fakeSlack := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
-		require.NoError(t, r.ParseForm())
-		text := r.FormValue("text")
-		if strings.Contains(r.URL.Path, "chat.update") {
-			mu.Lock()
-			texts = append(texts, text)
-			mu.Unlock()
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprintf(w, `{"ok":true,"ts":"111.222"}`)
-	}))
-	defer fakeSlack.Close()
-
+	fake := newFakeSlackAPI()
 	gw := &stubGateway{
 		deltas: []channels.OutboundDelta{
 			{Content: "foo"},
@@ -718,12 +722,122 @@ func TestBatchedWriter_CombinesDeltas(t *testing.T) {
 			{Done: true},
 		},
 	}
-	_, srv := newEventsAdapter(t, gw, fakeSlack.URL)
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
-	// Use a DM (channel_type "im"): top-level channel messages are intentionally
-	// dropped now (no #random chatter), so a DM is the right way to exercise the
-	// batched writer end to end.
-	body := []byte(`{"type":"event_callback","event":{"type":"message","channel_type":"im","user":"U1","text":"hi","channel":"D1","ts":"111.000"}}`)
+	// A DM (channel_type "im"): top-level channel messages are intentionally
+	// dropped now, so a DM is the right way to exercise the batched writer.
+	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","channel_type":"im","user":"U1","text":"hi","channel":"D1","ts":"111.000"}}`)
+
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "foobar")
+	}, 2*time.Second, 50*time.Millisecond, "expected foobar in the posted answer")
+}
+
+// --- Progress reactions & serialization (black-box via fake Slack Web API) ---
+
+// recordedCall is one Slack Web API request captured by fakeSlackAPI, with its
+// form or JSON body merged into params.
+type recordedCall struct {
+	path   string
+	params map[string]any
+}
+
+// fakeSlackAPI is a structured fake Slack Web API: it records every request by
+// method path with a decoded body and can inject an error code per path.
+type fakeSlackAPI struct {
+	mu       sync.Mutex
+	calls    []recordedCall
+	failWith map[string]string // path (e.g. "reactions.add") -> slack error code
+	seq      int
+}
+
+func newFakeSlackAPI() *fakeSlackAPI {
+	return &fakeSlackAPI{failWith: map[string]string{}}
+}
+
+func (f *fakeSlackAPI) server(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+		path := strings.TrimPrefix(r.URL.Path, "/")
+		params := map[string]any{}
+		if strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+			_ = json.NewDecoder(r.Body).Decode(&params)
+		} else {
+			_ = r.ParseForm()
+			for k := range r.Form {
+				params[k] = r.Form.Get(k)
+			}
+		}
+		f.mu.Lock()
+		f.calls = append(f.calls, recordedCall{path: path, params: params})
+		code := f.failWith[path]
+		f.seq++
+		ts := fmt.Sprintf("1700000000.%06d", f.seq)
+		f.mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		if code != "" {
+			_, _ = fmt.Fprintf(w, `{"ok":false,"error":%q}`, code)
+			return
+		}
+		_, _ = fmt.Fprintf(w, `{"ok":true,"ts":%q}`, ts)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func (f *fakeSlackAPI) setFail(path, code string) {
+	f.mu.Lock()
+	f.failWith[path] = code
+	f.mu.Unlock()
+}
+
+func (f *fakeSlackAPI) pathCalls(path string) []recordedCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []recordedCall
+	for _, c := range f.calls {
+		if c.path == path {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+func (f *fakeSlackAPI) waitForPath(t *testing.T, path string, n int) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		return len(f.pathCalls(path)) >= n
+	}, 2*time.Second, 20*time.Millisecond, "expected >=%d call(s) to %s", n, path)
+}
+
+// allText concatenates the "text" param of the given calls.
+func allText(calls []recordedCall) string {
+	var b strings.Builder
+	for _, c := range calls {
+		if s, ok := c.params["text"].(string); ok {
+			b.WriteString(s)
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
+}
+
+// reactionNames returns the "name" param of each recorded reactions.* call.
+func (f *fakeSlackAPI) reactionNames(path string) []string {
+	var out []string
+	for _, c := range f.pathCalls(path) {
+		if s, ok := c.params["name"].(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func sendEvent(t *testing.T, srv *httptest.Server, eventJSON string) {
+	t.Helper()
+	body := []byte(eventJSON)
 	stamp, sig := signBody(t, "signing-secret", body)
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/channels/slack/events", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -732,15 +846,289 @@ func TestBatchedWriter_CombinesDeltas(t *testing.T) {
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	_ = resp.Body.Close()
+}
 
+// dmEvent builds a DM message event (sender always permitted) for thread ts.
+func dmEvent(user, text, ts string) string {
+	return fmt.Sprintf(`{"type":"event_callback","event":{"type":"message","channel_type":"im","user":%q,"text":%q,"channel":"D1","ts":%q}}`, user, text, ts)
+}
+
+func TestProgress_ReactionsLifecycle(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "done"}, {Done: true}}}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+
+	sendEvent(t, srv, dmEvent("U1", "hi", "222.000"))
+
+	// working reaction added, then swapped to done (working removed, done added).
+	fake.waitForPath(t, "reactions.remove", 1)
+	fake.waitForPath(t, "reactions.add", 2)
+
+	added := fake.reactionNames("reactions.add")
+	require.Contains(t, added, "eyes", "working reaction added")
+	require.Contains(t, added, "white_check_mark", "done reaction added")
+	require.Equal(t, []string{"eyes"}, fake.reactionNames("reactions.remove"), "working reaction removed on completion")
+
+	// The triggering message (ts 222.000) is the reaction target, not a reply.
+	require.Equal(t, "222.000", fake.pathCalls("reactions.add")[0].params["timestamp"])
+}
+
+func TestProgress_ClearReactionOnDone(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "done"}, {Done: true}}}
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+	a.ClearReactionOnDone = true
+
+	sendEvent(t, srv, dmEvent("U1", "hi", "222.000"))
+
+	// Working reaction added, then removed on completion with no done reaction.
+	fake.waitForPath(t, "reactions.remove", 1)
+	require.Equal(t, []string{"eyes"}, fake.reactionNames("reactions.add"), "only the working reaction is added")
+	require.Equal(t, []string{"eyes"}, fake.reactionNames("reactions.remove"), "working reaction removed on completion")
+	require.NotContains(t, fake.reactionNames("reactions.add"), "white_check_mark", "no done reaction added")
+}
+
+func TestProgress_FailedReactionOnError(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{deltas: []channels.OutboundDelta{{Err: errors.New("boom")}}}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+
+	sendEvent(t, srv, dmEvent("U1", "hi", "333.000"))
+
+	fake.waitForPath(t, "reactions.add", 2)
+	require.Contains(t, fake.reactionNames("reactions.add"), "x", "failed reaction added on error delta")
+}
+
+func TestProgress_TextFallbackOnMissingScope(t *testing.T) {
+	fake := newFakeSlackAPI()
+	fake.setFail("reactions.add", "missing_scope")
+	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "answer"}, {Done: true}}}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+
+	sendEvent(t, srv, dmEvent("U1", "first", "444.000"))
+	// Missing scope -> text mode: a placeholder (chat.postMessage) then the answer
+	// streamed via chat.update.
+	fake.waitForPath(t, "chat.update", 1)
+	require.Contains(t, allText(fake.pathCalls("chat.update")), "answer")
+	require.Contains(t, allText(fake.pathCalls("chat.postMessage")), "_thinking", "text placeholder posted")
+
+	// Second turn must not retry reactions.add (the downgrade is cached).
+	sendEvent(t, srv, dmEvent("U1", "second", "444.000"))
+	fake.waitForPath(t, "chat.update", 2)
+	require.Len(t, fake.pathCalls("reactions.add"), 1, "reactions.add attempted once, then downgraded to text")
+}
+
+func TestProgress_TextModeConfigured(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "hello"}, {Done: true}}}
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+	a.ProgressMode = "text"
+
+	sendEvent(t, srv, dmEvent("U1", "hi", "555.000"))
+	fake.waitForPath(t, "chat.update", 1) // placeholder (postMessage) then answer (update)
+	require.Contains(t, allText(fake.pathCalls("chat.update")), "hello")
+	require.Empty(t, fake.pathCalls("reactions.add"), "text mode never adds reactions")
+}
+
+func TestTextMode_EmptyOutputReplacesPlaceholder(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{deltas: []channels.OutboundDelta{{Done: true}}} // no content
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+	a.ProgressMode = "text"
+
+	sendEvent(t, srv, dmEvent("U1", "hi", "777.000"))
+
+	// Placeholder is posted, then replaced by a terminal note (not left as "thinking").
+	fake.waitForPath(t, "chat.update", 1)
+	require.Contains(t, allText(fake.pathCalls("chat.update")), "finished without a reply")
+	require.Empty(t, fake.pathCalls("reactions.add"), "text mode adds no reactions")
+}
+
+func TestReactionsMode_EmptyOutputPostsNote(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{deltas: []channels.OutboundDelta{{Done: true}}} // no content
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)              // default: auto (reactions)
+
+	sendEvent(t, srv, dmEvent("U1", "hi", "660.000"))
+
+	// Reactions mode has no placeholder, so a zero-output turn must still post a
+	// note rather than leaving only a done emoji.
+	fake.waitForPath(t, "chat.postMessage", 1)
+	require.Contains(t, allText(fake.pathCalls("chat.postMessage")), "finished without a reply")
+	require.Contains(t, fake.reactionNames("reactions.add"), "white_check_mark")
+}
+
+func TestTextMode_FailedTurnReplacesPlaceholder(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{deltas: []channels.OutboundDelta{{Err: errors.New("boom")}}}
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+	a.ProgressMode = "text"
+
+	sendEvent(t, srv, dmEvent("U1", "hi", "778.000"))
+
+	// Placeholder is posted, then replaced by a failure note rather than left
+	// dangling as "thinking"; text mode swaps no failed reaction.
+	fake.waitForPath(t, "chat.update", 1)
+	require.Contains(t, allText(fake.pathCalls("chat.update")), "the turn failed")
+	require.Empty(t, fake.pathCalls("reactions.add"), "text mode adds no reactions")
+}
+
+// sendInteraction posts a signed block_actions interaction for actionID on
+// threadID (channel D1, user U1) to the interactions endpoint.
+func sendInteraction(t *testing.T, srv *httptest.Server, actionID, threadID string) {
+	t.Helper()
+	inner := map[string]any{
+		"type":      "block_actions",
+		"user":      map[string]any{"id": "U1"},
+		"channel":   map[string]any{"id": "D1"},
+		"container": map[string]any{"message_ts": "prompt.000"},
+		"message":   map[string]any{"thread_ts": threadID},
+		"actions":   []any{map[string]any{"action_id": actionID, "value": threadID}},
+	}
+	data, err := json.Marshal(inner)
+	require.NoError(t, err)
+	body := []byte("payload=" + url.QueryEscape(string(data)))
+	stamp, sig := signBody(t, "signing-secret", body)
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/channels/slack/interactions", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-Slack-Request-Timestamp", stamp)
+	req.Header.Set("X-Slack-Signature", sig)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+}
+
+func TestSerializeResumeWhileTurnInFlight(t *testing.T) {
+	fake := newFakeSlackAPI()
+	hold := make(chan struct{})
+	gw := &stubGateway{hold: hold}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+
+	// A typed turn holds the thread.
+	sendEvent(t, srv, dmEvent("U1", "first", "999.000"))
+	fake.waitForPath(t, "reactions.add", 1)
+
+	// A HITL button click for the same thread must be rejected, not resumed
+	// concurrently, and must not consume the pending task or reach the agent.
+	sendInteraction(t, srv, "hitl_approve", "999.000")
 	require.Eventually(t, func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		for _, t := range texts {
-			if strings.Contains(t, "foobar") {
-				return true
-			}
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "still finishing")
+	}, 2*time.Second, 20*time.Millisecond, "expected a busy notice for the concurrent button click")
+	require.Equal(t, 1, gw.resolveCount(), "resume rejected before reaching the agent")
+
+	close(hold)
+}
+
+func TestSerializeTurnsPerThread(t *testing.T) {
+	fake := newFakeSlackAPI()
+	hold := make(chan struct{})
+	gw := &stubGateway{hold: hold}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+
+	// Turn A holds the thread (blocks in SendCompletion until hold closes).
+	sendEvent(t, srv, dmEvent("U1", "first", "666.000"))
+	fake.waitForPath(t, "reactions.add", 1) // A acquired the thread and started
+
+	// Turn B on the same thread while A is in flight -> rejected with a notice.
+	sendEvent(t, srv, dmEvent("U1", "second", "666.000"))
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "still finishing")
+	}, 2*time.Second, 20*time.Millisecond, "expected a busy notice for the second turn")
+
+	require.Equal(t, 1, gw.resolveCount(), "second turn is rejected before reaching the agent")
+	close(hold)
+}
+
+// A retried delivery whose original never reached the handler (pod restart,
+// ingress failure) is the only delivery of that user message: it must be
+// processed, not dropped, as long as its event_id is unseen.
+func TestEventsHandler_RetryWithUnseenEventIDProcessed(t *testing.T) {
+	var dispatched atomic.Int32
+	gw := &stubGateway{
+		onResolve: func(channels.InboundMessage) { dispatched.Add(1) },
+	}
+
+	fakeSlack := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"ok":true,"ts":"1234.5678"}`)
+	}))
+	defer fakeSlack.Close()
+
+	_, srv := newEventsAdapter(t, gw, fakeSlack.URL)
+
+	body := []byte(`{
+		"type":"event_callback",
+		"event_id":"Ev-retry-only",
+		"event":{"type":"app_mention","user":"U123","text":"<@BOT> hello","channel":"C456","ts":"1234.5678"}
+	}`)
+	stamp, sig := signBody(t, "signing-secret", body)
+
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/channels/slack/events", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Slack-Request-Timestamp", stamp)
+	req.Header.Set("X-Slack-Signature", sig)
+	req.Header.Set("X-Slack-Retry-Num", "1")
+	req.Header.Set("X-Slack-Retry-Reason", "http_error")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	require.Eventually(t, func() bool { return dispatched.Load() == 1 },
+		2*time.Second, 10*time.Millisecond,
+		"a retry whose original delivery was lost must be processed")
+}
+
+// A second delivery of an already-seen event_id must be dropped so a duplicate
+// delivery never starts a duplicate turn.
+func TestEventsHandler_DuplicateEventIDDropped(t *testing.T) {
+	var dispatched atomic.Int32
+	gw := &stubGateway{
+		onResolve: func(channels.InboundMessage) { dispatched.Add(1) },
+	}
+
+	fakeSlack := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"ok":true,"ts":"1234.5678"}`)
+	}))
+	defer fakeSlack.Close()
+
+	_, srv := newEventsAdapter(t, gw, fakeSlack.URL)
+
+	body := []byte(`{
+		"type":"event_callback",
+		"event_id":"Ev-dup",
+		"event":{"type":"app_mention","user":"U123","text":"<@BOT> hello","channel":"C456","ts":"1234.5678"}
+	}`)
+
+	deliver := func(retryNum string) *http.Response {
+		stamp, sig := signBody(t, "signing-secret", body)
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/channels/slack/events", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Slack-Request-Timestamp", stamp)
+		req.Header.Set("X-Slack-Signature", sig)
+		if retryNum != "" {
+			req.Header.Set("X-Slack-Retry-Num", retryNum)
 		}
-		return false
-	}, 2*time.Second, 50*time.Millisecond, "expected foobar in a chat.update call")
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		return resp
+	}
+
+	first := deliver("")
+	_ = first.Body.Close()
+	require.Equal(t, http.StatusOK, first.StatusCode)
+
+	second := deliver("1")
+	_ = second.Body.Close()
+	require.Equal(t, http.StatusOK, second.StatusCode)
+
+	// Dedup runs in the shared handleInbound pipeline (after the ack), so the
+	// duplicate is dropped there rather than pre-ack: both deliveries return 200,
+	// but only one turn is dispatched.
+	require.Eventually(t, func() bool { return dispatched.Load() >= 1 },
+		2*time.Second, 10*time.Millisecond)
+	time.Sleep(200 * time.Millisecond)
+	require.Equal(t, int32(1), dispatched.Load(), "duplicate delivery must not start a second turn")
 }

@@ -9,12 +9,28 @@ import (
 // Part metadata keys kagent sets on an adk_request_confirmation DataPart.
 // Both the kagent_ and adk_ prefixes appear in the wild; we accept either.
 const (
-	mdTypeKagent         = "kagent_type"
-	mdTypeADK            = "adk_type"
-	mdLongRunningKagent  = "kagent_is_long_running"
-	mdLongRunningADK     = "adk_is_long_running"
-	mdTypeFunctionCall   = "function_call"
-	confirmationToolName = "adk_request_confirmation"
+	mdTypeKagent           = "kagent_type"
+	mdTypeADK              = "adk_type"
+	mdLongRunningKagent    = "kagent_is_long_running"
+	mdLongRunningADK       = "adk_is_long_running"
+	mdTypeFunctionCall     = "function_call"
+	mdTypeFunctionResponse = "function_response"
+	confirmationToolName   = "adk_request_confirmation"
+)
+
+// Event/message-level metadata keys kagent sets for token usage. Both prefixes
+// appear in the wild; we accept either. The value is a flat object with the
+// camelCase field names below.
+const (
+	mdUsageKagent = "kagent_usage_metadata"
+	mdUsageADK    = "adk_usage_metadata"
+
+	mdPartialKagent = "kagent_partial"
+	mdPartialADK    = "adk_partial"
+
+	usagePromptTokens     = "promptTokenCount"
+	usageCompletionTokens = "candidatesTokenCount"
+	usageTotalTokens      = "totalTokenCount"
 )
 
 // buildInboundParts builds the A2A message parts for an outbound user turn.
@@ -149,6 +165,77 @@ func (p *HitlPrompt) summary() string {
 		return p.Hint
 	}
 	return p.ToolName
+}
+
+// isPartialMeta reports whether metadata marks the event as a partial
+// (streaming) chunk. Partial events mirror the usage metadata of the LLM call
+// they belong to, so counting usage on them would tally the same call multiple
+// times; kagent's own task store filters on the same keys.
+func isPartialMeta(md map[string]any) bool {
+	partial, _ := firstBool(md, mdPartialKagent, mdPartialADK)
+	return partial
+}
+
+// parseTurnUsage reads a kagent usage-metadata object from event or message
+// metadata. Returns nil when no usage object is present. Every field is
+// optional (a provider populates only what it reports).
+func parseTurnUsage(md map[string]any) *TurnUsage {
+	if md == nil {
+		return nil
+	}
+	var raw map[string]any
+	for _, k := range []string{mdUsageKagent, mdUsageADK} {
+		if v, ok := md[k].(map[string]any); ok {
+			raw = v
+			break
+		}
+	}
+	if raw == nil {
+		return nil
+	}
+	return &TurnUsage{
+		InputTokens:  mdInt(raw, usagePromptTokens),
+		OutputTokens: mdInt(raw, usageCompletionTokens),
+		TotalTokens:  mdInt(raw, usageTotalTokens),
+	}
+}
+
+// toolActivityDelta builds a DeltaToolActivity from a DataPart whose metadata
+// marks it a function_call or function_response, translating the kagent payload
+// into the neutral ToolActivity. Returns a zero delta when the part is not tool
+// activity. Content is a short summary (the tool name).
+func toolActivityDelta(p *a2apkg.Part) OutboundDelta {
+	if p == nil {
+		return OutboundDelta{}
+	}
+	typ, ok := firstString(p.Metadata, mdTypeKagent, mdTypeADK)
+	if !ok || (typ != mdTypeFunctionCall && typ != mdTypeFunctionResponse) {
+		return OutboundDelta{}
+	}
+	// A long-running function_call is an adk_request_confirmation (HITL), handled
+	// on the input-required path, not surfaced as tool activity.
+	if typ == mdTypeFunctionCall && isConfirmationPart(p.Metadata) {
+		return OutboundDelta{}
+	}
+	data, _ := p.Data().(map[string]any)
+	tool := &ToolActivity{}
+	tool.Name, _ = data["name"].(string)
+	tool.CallID, _ = data["id"].(string)
+	if typ == mdTypeFunctionResponse {
+		tool.Kind = ToolResult
+		tool.Response, _ = data["response"].(map[string]any)
+	} else {
+		tool.Kind = ToolCall
+		tool.Args, _ = data["args"].(map[string]any)
+	}
+	return OutboundDelta{Kind: DeltaToolActivity, Content: tool.Name, Tool: tool}
+}
+
+// mdInt reads an integer usage field. A2A event metadata is JSON-decoded, so
+// numbers arrive as float64.
+func mdInt(md map[string]any, key string) int {
+	f, _ := md[key].(float64)
+	return int(f)
 }
 
 func firstString(md map[string]any, keys ...string) (string, bool) {

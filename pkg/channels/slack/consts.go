@@ -22,19 +22,56 @@ const oboSignIn = "obo_sign_in"
 // the button and free-text decision paths.
 const labelApproved = "approved"
 
+// wordYes is the plain-affirmative approve keyword.
+const wordYes = "yes"
+
 // maxChoiceButtons caps how many ask_user choices are rendered as buttons.
 // Beyond this (or for multi-select / multi-question prompts) the choices are
 // rendered as text and the user replies free-text in-thread.
 const maxChoiceButtons = 5
 
+// Progress-mode values (Adapter.ProgressMode).
+const (
+	progressModeAuto      = "auto"      // reactions, falling back to text on missing_scope
+	progressModeReactions = "reactions" // reactions only
+	progressModeText      = "text"      // text placeholder only
+)
+
+// Default progress reaction emoji names (no surrounding colons). Overridable
+// via config so a workspace can pick emoji its members recognise.
+const (
+	defaultWorkingEmoji = "eyes"
+	defaultDoneEmoji    = "white_check_mark"
+	defaultFailedEmoji  = "x"
+)
+
+// thinkingPlaceholder is the text-mode progress placeholder, posted before the
+// first agent output and replaced by the answer.
+const thinkingPlaceholder = "_thinking…_"
+
+// busyNotice is posted when a turn is rejected because another turn is already
+// in flight on the same thread (per-thread serialization).
+const busyNotice = "I'm still finishing your previous message in this thread. Give me a moment and try again once I've replied."
+
+// emptyOutputNote replaces the text-mode placeholder when a turn completes
+// without producing any output, so it does not linger as "thinking".
+const emptyOutputNote = "_(the agent finished without a reply)_"
+
+// failedNote replaces the text-mode placeholder when a turn ends in error, so it
+// does not linger as "thinking" with no failure signal (reactions mode swaps in
+// the failed emoji instead).
+const failedNote = "_(the turn failed; please try again)_"
+
 // Slack Web API parameter keys (form-encoded and JSON body).
 const (
-	paramChannel  = "channel"
-	paramText     = "text"
-	paramTS       = "ts"
-	paramThreadTS = "thread_ts"
-	paramUser     = "user"
-	paramBlocks   = "blocks"
+	paramChannel   = "channel"
+	paramText      = "text"
+	paramTS        = "ts"
+	paramThreadTS  = "thread_ts"
+	paramUser      = "user"
+	paramBlocks    = "blocks"
+	paramTimestamp = "timestamp" // reactions.* target message ts
+	paramName      = "name"      // reactions.* emoji name
 )
 
 // bkURL is the Block Kit button "url" field (opens a link on click).
@@ -56,6 +93,7 @@ const (
 	bkActions   = "actions"
 	bkButton    = "button"
 	bkMrkdwn    = "mrkdwn"
+	bkMarkdown  = "markdown" // top-level Slack markdown block
 	bkPlainText = "plain_text"
 	bkPrimary   = "primary"
 	bkDanger    = "danger"

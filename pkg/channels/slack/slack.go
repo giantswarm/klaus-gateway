@@ -85,6 +85,20 @@ type Adapter struct {
 	// then run as the M2M ServiceAccount identity.
 	OBO OBOTokenSource
 
+	// ProgressMode selects how turn progress is shown: "auto" (default; reactions
+	// with a text fallback when reactions:write is unavailable), "reactions", or
+	// "text".
+	ProgressMode string
+	// WorkingEmoji, DoneEmoji, FailedEmoji override the progress reaction emoji
+	// names (no surrounding colons). Empty uses the defaults.
+	WorkingEmoji string
+	DoneEmoji    string
+	FailedEmoji  string
+	// ClearReactionOnDone, when true, removes the working reaction on a
+	// successful turn without adding a done reaction. When false the working
+	// reaction is swapped for DoneEmoji. The failed reaction is unaffected.
+	ClearReactionOnDone bool
+
 	gw        channels.Gateway
 	started   atomic.Bool
 	startUnix int64 // process start; events older than this are dropped on reconnect
@@ -97,11 +111,21 @@ type Adapter struct {
 	turnsMu sync.Mutex
 	turns   map[string]*turn // keyed by threadID; cancels in-flight SendCompletion
 
+	// reactionsUnsupported caches the auto-mode downgrade to text progress after
+	// a reactions.add returns missing_scope, so later turns skip the failed call.
+	reactionsUnsupported atomic.Bool
+
+	inflightMu sync.Mutex
+	inflight   map[string]struct{} // threadIDs with a turn in progress (serialization)
+
 	pendingMu    sync.Mutex
 	pendingTasks map[string]*pendingTask // keyed by threadID
 
 	emailMu    sync.Mutex
 	emailCache map[string]emailEntry // Slack user ID -> resolved email
+
+	seenEventsMu sync.Mutex
+	seenEvents   map[string]time.Time // Events API event_id -> dedup entry expiry
 }
 
 // emailEntry is a cached Slack user email with its expiry.
@@ -116,10 +140,8 @@ type emailEntry struct {
 const userEmailCacheTTL = time.Hour
 
 // turn is an in-flight agent turn. The pointer identity lets dispatch clean up
-// only its own registry entry, even if a later turn on the same thread has
-// already replaced it. Only the most recently started turn per thread is
-// registered, so /stop cancels that one; threads are effectively serialized
-// per conversation, so an older overlapping turn is not the expected case.
+// only its own registry entry. Turns on a thread are serialized (see
+// acquireThread), so /stop cancels the single registered turn.
 type turn struct {
 	cancel context.CancelFunc
 }
@@ -151,6 +173,12 @@ func (a *Adapter) Start(ctx context.Context, gw channels.Gateway) error {
 	default:
 		return fmt.Errorf("slack: unknown DefaultAccessMode %q: want %s, %s, or %s",
 			a.DefaultAccessMode, accessModeLocked, accessModeOpen, accessModeObserve)
+	}
+	switch a.ProgressMode {
+	case "", progressModeAuto, progressModeReactions, progressModeText:
+	default:
+		return fmt.Errorf("slack: unknown ProgressMode %q: want %s, %s, or %s",
+			a.ProgressMode, progressModeAuto, progressModeReactions, progressModeText)
 	}
 	if a.Logger == nil {
 		a.Logger = slog.Default()
@@ -414,11 +442,16 @@ func (a *Adapter) hasPendingTask(threadID string) bool {
 }
 
 // handleInbound runs the shared inbound pipeline for one Slack event:
-// accept-gate, normalise, active-thread gate (for channel thread replies),
-// command handling, then dispatch. Both transports (the Events API HTTP
-// handler and the Socket Mode reader) call it so the two behave identically.
-// ctx is the adapter-lifecycle context.
-func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent) {
+// dedup, accept-gate, normalise, active-thread gate (for channel thread
+// replies), command handling, then dispatch. Both transports (the Events API
+// HTTP handler and the Socket Mode reader) call it so the two behave
+// identically, including deduplication. ctx is the adapter-lifecycle context;
+// eventID is the delivery's Slack event_id ("" when the transport carries none).
+func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, eventID string) {
+	if eventID != "" && a.seenEvent(eventID) {
+		a.Logger.Info("slack: dropping duplicate event delivery", "event_id", eventID)
+		return
+	}
 	if !a.acceptEvent(inner) {
 		return
 	}
@@ -459,6 +492,23 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 
 	msg.AgentRef = a.DefaultAgent
 
+	// Serialize turns per thread: a thread maps to one kagent session, and
+	// concurrent turns on one session interleave its event log into incoherent
+	// history. Reject a turn that arrives while another is in flight rather than
+	// queueing it, so a stale follow-up is not answered minutes late. Acquire
+	// before taking the pending task so a rejected turn leaves it for later.
+	if !a.acquireThread(msg.ThreadID) {
+		if respond {
+			if _, perr := a.apiClient().postMessage(ctx, slackChannel, busyNotice, msg.ThreadID); perr != nil {
+				a.Logger.Warn("slack: post busy notice failed", "thread", msg.ThreadID, "error", perr)
+			}
+		}
+		return nil
+	}
+	defer a.releaseThread(msg.ThreadID)
+
+	a.resolveSubjectEmail(ctx, &msg)
+
 	// A turn must carry the sending user's human token, never the gateway's
 	// machine identity. Resolve it BEFORE consuming any pending task so an abort
 	// leaves the pending TaskID intact and the reply stays retryable.
@@ -468,16 +518,17 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 	}
 	msg.BearerToken = token
 
-	// Resume a paused input-required task when one exists for this thread.
-	// Map the typed reply to a structured HITL decision so the paused tool
-	// confirmation is actually resolved (a plain text reply would leave the
-	// tool call dangling and corrupt the model history).
+	// Resume a paused input-required task when one exists for this thread. Done
+	// only after the turn is committed to run (thread slot acquired, human token
+	// resolved): takePendingTask deletes the entry, so consuming it on a branch
+	// that then aborts would strand the paused A2A task. Map the typed reply to a
+	// structured HITL decision so the paused tool confirmation is actually
+	// resolved (a plain text reply would leave the tool call dangling and corrupt
+	// the model history).
 	if task := a.takePendingTask(msg.ThreadID); task != nil {
 		msg.TaskID = task.TaskID
 		msg.Decision = decisionFromText(task.Prompt, msg.Text)
 	}
-
-	a.resolveSubjectEmail(ctx, &msg)
 
 	ref, err := a.gw.Resolve(ctx, msg)
 	if err != nil {
@@ -504,7 +555,7 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 		return nil
 	}
 
-	return a.streamResponse(ctx, a.apiClient(), deltas, msg, slackChannel, msg.ThreadID, "_thinking…_")
+	return a.streamResponse(ctx, a.apiClient(), deltas, msg, slackChannel, msg.ThreadID, msg.MessageID, thinkingPlaceholder)
 }
 
 // humanToken mints the linked Slack user's muster token for a turn. When
@@ -574,22 +625,32 @@ func (a *Adapter) registerTurn(ctx context.Context, threadID string) (context.Co
 	}
 }
 
-// streamResponse posts a placeholder message, streams deltas into it via
-// batched chat.update calls, and — when the agent pauses for input — registers
-// the pending task and posts the HITL prompt. Shared by dispatch (a new turn)
-// and handleDecision (a button-click resume) so both render identically.
-func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, deltas <-chan channels.OutboundDelta, msg channels.InboundMessage, slackChannel, threadID, placeholder string) error {
-	ts, err := client.postMessage(ctx, slackChannel, placeholder, threadID)
-	if err != nil {
-		return fmt.Errorf("slack: post placeholder: %w", err)
-	}
+// streamResponse renders turn progress (reactions on triggerTS, or a text
+// placeholder), streams deltas into a Block Kit markdown reply, and, when the
+// agent pauses for input, registers the pending task and posts the HITL prompt.
+// Shared by dispatch (a new turn; triggerTS is the user message) and
+// handleDecision (a button-click resume; empty triggerTS uses text progress).
+func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, deltas <-chan channels.OutboundDelta, msg channels.InboundMessage, slackChannel, threadID, triggerTS, placeholder string) error {
+	// replyTS is the message the streamed answer edits: the text-mode placeholder,
+	// or "" in reactions mode (the writer posts the first answer message lazily).
+	prog, replyTS := a.startProgress(ctx, client, slackChannel, threadID, triggerTS, placeholder)
 
-	w := newBatchedWriterWithClient(client, slackChannel, ts, threadID, a.Logger)
+	w := newBatchedWriterWithClient(client, slackChannel, replyTS, threadID, a.Logger)
 	if err := w.run(ctx, deltas); err != nil {
+		prog.failed(ctx)
+		// In text mode prog.failed is a no-op (no reaction to swap), so the
+		// placeholder would linger as "thinking" with no failure signal. Replace
+		// it with a terminal note, as the empty-output path does. Skipped when ctx
+		// is already done (/stop, deadline): the cancel is intentional and the post
+		// would fail anyway.
+		if prog.reactTS == "" && ctx.Err() == nil {
+			a.postTerminalNote(ctx, client, slackChannel, threadID, replyTS, failedNote)
+		}
 		return err
 	}
 
 	if w.promptDelta != nil {
+		prog.clear(ctx) // paused waiting on the user; drop the working indicator
 		pd := w.promptDelta
 		a.storePendingTask(threadID, &pendingTask{
 			TaskID:    pd.TaskID,
@@ -600,7 +661,29 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 		})
 		return a.postHitlPrompt(ctx, client, slackChannel, threadID, pd)
 	}
+	prog.done(ctx)
+	// A turn that produced no output would otherwise be silent (text mode leaves
+	// the "thinking" placeholder; reactions mode shows only a done emoji with no
+	// reply). Post a terminal note so the user is not left waiting.
+	if !w.wroteContent() {
+		a.postTerminalNote(ctx, client, slackChannel, threadID, replyTS, emptyOutputNote)
+	}
 	return nil
+}
+
+// postTerminalNote replaces the text-mode placeholder (replyTS) with note, or
+// posts note as a new in-thread message when no placeholder exists. Best-effort:
+// a failure is logged, not propagated.
+func (a *Adapter) postTerminalNote(ctx context.Context, client *slackAPIClient, slackChannel, threadID, replyTS, note string) {
+	if replyTS != "" {
+		if err := client.chatUpdateMarkdown(ctx, slackChannel, replyTS, note); err != nil {
+			a.Logger.Warn("slack: replace placeholder failed", "thread", threadID, "error", err)
+		}
+		return
+	}
+	if _, err := client.postMarkdown(ctx, slackChannel, note, threadID); err != nil {
+		a.Logger.Warn("slack: post terminal note failed", "thread", threadID, "error", err)
+	}
 }
 
 // slackInnerEvent is the inner event object present in both Events API
@@ -668,6 +751,7 @@ func (e slackInnerEvent) toInboundMessage(threadReplyOnly bool) (channels.Inboun
 		ChannelID: e.Channel,
 		UserID:    "", // thread-scoped session: all participants share one contextID
 		ThreadID:  threadID,
+		MessageID: e.TS, // triggering message; progress-reaction target
 		Text:      text,
 		// Subject carries the raw Slack user ID. It keys per-thread access
 		// control only; mapping it to an email/OAuth sub for downstream
@@ -677,15 +761,14 @@ func (e slackInnerEvent) toInboundMessage(threadReplyOnly bool) (channels.Inboun
 }
 
 // StripMention removes leading <@USERID> tokens that Slack injects into
-// app_mention event text.
+// app_mention event text. Only mention tokens are stripped: other leading
+// angle-bracket constructs (<https://...> links, <#C...> channel refs) are
+// message content and must reach the agent.
 func StripMention(text string) string {
 	s := text
-	for len(s) > 0 && s[0] == '<' {
-		end := 0
-		for end < len(s) && s[end] != '>' {
-			end++
-		}
-		if end >= len(s) {
+	for strings.HasPrefix(s, "<@") {
+		end := strings.IndexByte(s, '>')
+		if end < 0 {
 			break
 		}
 		s = s[end+1:]

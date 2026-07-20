@@ -3,10 +3,13 @@ package slack
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,10 +20,10 @@ import (
 const (
 	batchInterval = 250 * time.Millisecond
 	slackAPIBase  = "https://slack.com/api"
-	// slackMaxMessageLen caps a single Slack message body, under the 40 000-char
-	// hard limit with headroom for mrkdwn expansion. A reply that exceeds it is
-	// rolled over into follow-up in-thread messages by flush.
-	slackMaxMessageLen = 39000
+	// slackMarkdownBlockMax caps the text of one Block Kit markdown block,
+	// Slack's 12 000-char limit. splitMarkdown budgets the fence auto-close and
+	// reopen inside this cap, so emitted chunks never exceed it.
+	slackMarkdownBlockMax = 12000
 )
 
 // batchedWriter accumulates OutboundDelta content and periodically calls
@@ -75,6 +78,12 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 			if !ok {
 				return w.flush(ctx)
 			}
+			if d.Usage != nil {
+				w.logger.Debug("slack: turn usage",
+					"input", d.Usage.InputTokens,
+					"output", d.Usage.OutputTokens,
+					"total", d.Usage.TotalTokens)
+			}
 			if d.Err != nil {
 				return d.Err
 			}
@@ -89,6 +98,10 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 				w.mu.Lock()
 				w.buf.WriteString(d.Content)
 				w.mu.Unlock()
+			case channels.DeltaToolActivity:
+				// Progress is signalled by the reaction/placeholder; tool activity
+				// is logged, not rendered inline.
+				w.logger.Debug("slack: tool activity", "tool", d.Content)
 			case channels.DeltaPrompt:
 				// Flush partial text so far, then hand off to the caller to post
 				// the interactive approval prompt.
@@ -109,6 +122,14 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 	}
 }
 
+// wroteContent reports whether any agent text has been flushed to Slack. Used
+// after the run loop to detect a turn that produced no output.
+func (w *batchedWriter) wroteContent() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.flushedLen > 0
+}
+
 func (w *batchedWriter) flush(ctx context.Context) error {
 	w.mu.Lock()
 	// Skip the chat.update when nothing new accumulated since the last flush;
@@ -118,35 +139,49 @@ func (w *batchedWriter) flush(ctx context.Context) error {
 		return nil
 	}
 	text := w.buf.String()
-	w.flushedLen = w.buf.Len()
+	flushingLen := w.buf.Len()
 	w.mu.Unlock()
 
-	// A reply that fits one message is a single chat.update of the main message.
-	// A larger reply rolls over: the head updates the main message and each
-	// subsequent chunk updates (or, the first time, posts) a stable follow-up
-	// message in-thread, so growing replies extend in place without duplicating.
+	// Agent output renders as Block Kit markdown blocks. A reply that
+	// fits one block updates the main message; a larger reply rolls over into
+	// stable follow-up messages in-thread. The head message is posted lazily on
+	// the first flush when ts is empty (reactions mode), else updated in place.
 	//
 	// ponytail: a multi-chunk reply makes one API call per chunk every
 	// batchInterval, so a reply spanning N messages costs N calls/flush against
-	// Slack's ~4 updates/sec/channel. Fine while >39 KB replies are rare; revisit
+	// Slack's ~4 updates/sec/channel. Fine while >12 KB replies are rare; revisit
 	// with per-call pacing if they become common.
-	chunks := splitAtLines(markdownToMrkdwn(text), slackMaxMessageLen)
-	if err := w.client.chatUpdate(ctx, w.channel, w.ts, chunks[0]); err != nil {
+	chunks := splitMarkdown(text, slackMarkdownBlockMax)
+	if w.ts == "" {
+		ts, err := w.client.postMarkdown(ctx, w.channel, chunks[0], w.threadTS)
+		if err != nil {
+			return err
+		}
+		w.ts = ts
+	} else if err := w.client.chatUpdateMarkdown(ctx, w.channel, w.ts, chunks[0]); err != nil {
 		return err
 	}
 	for i, chunk := range chunks[1:] {
 		if i < len(w.tailTS) {
-			if err := w.client.chatUpdate(ctx, w.channel, w.tailTS[i], chunk); err != nil {
+			if err := w.client.chatUpdateMarkdown(ctx, w.channel, w.tailTS[i], chunk); err != nil {
 				return err
 			}
 			continue
 		}
-		ts, err := w.client.postMessage(ctx, w.channel, chunk, w.threadTS)
+		ts, err := w.client.postMarkdown(ctx, w.channel, chunk, w.threadTS)
 		if err != nil {
 			return err
 		}
 		w.tailTS = append(w.tailTS, ts)
 	}
+	// flushedLen advances only once every chunk landed, so a failed flush leaves
+	// the delta pending and a retried flush re-sends it (chat.update on the head
+	// and already-posted tails is idempotent).
+	w.mu.Lock()
+	if flushingLen > w.flushedLen {
+		w.flushedLen = flushingLen
+	}
+	w.mu.Unlock()
 	return nil
 }
 
@@ -169,20 +204,14 @@ func (c *slackAPIClient) postMessage(ctx context.Context, channel, text, threadT
 
 // lookupUserEmail returns the email from the user's Slack profile.
 // Falls back to the raw Slack user ID on any error so dispatch is never blocked.
+// users.info is Tier-4 rate-limited, so the call goes through the same
+// 429-retrying transport as every other Web API call.
 func (c *slackAPIClient) lookupUserEmail(ctx context.Context, userID string) (string, error) {
 	params := url.Values{paramUser: {userID}}
-	target := c.baseURL + "/users.info?" + params.Encode()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	body, err := c.call(ctx, "users.info", "application/x-www-form-urlencoded", params.Encode())
 	if err != nil {
-		return "", fmt.Errorf("slack users.info: build request: %w", err)
+		return "", err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.botToken)
-
-	resp, err := http.DefaultClient.Do(req) //nolint:gosec
-	if err != nil {
-		return "", fmt.Errorf("slack users.info: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
 
 	var result struct {
 		OK   bool   `json:"ok"`
@@ -193,7 +222,7 @@ func (c *slackAPIClient) lookupUserEmail(ctx context.Context, userID string) (st
 			} `json:"profile"`
 		} `json:"user"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.Unmarshal(body, &result); err != nil {
 		return "", fmt.Errorf("slack users.info: decode: %w", err)
 	}
 	if !result.OK {
@@ -202,23 +231,77 @@ func (c *slackAPIClient) lookupUserEmail(ctx context.Context, userID string) (st
 	return result.User.Profile.Email, nil
 }
 
-func (c *slackAPIClient) chatUpdate(ctx context.Context, channel, ts, text string) error {
-	params := url.Values{
-		paramChannel: {channel},
-		paramTS:      {ts},
-		paramText:    {text},
+// errReactionsUnsupported reports that the bot cannot manage reactions (the
+// reactions:write scope is missing, or the token type disallows it), so the
+// caller should fall back to text-based progress.
+var errReactionsUnsupported = errors.New("slack: reactions unsupported")
+
+func (c *slackAPIClient) reactionsAdd(ctx context.Context, channel, ts, name string) error {
+	return c.reaction(ctx, "reactions.add", channel, ts, name)
+}
+
+func (c *slackAPIClient) reactionsRemove(ctx context.Context, channel, ts, name string) error {
+	return c.reaction(ctx, "reactions.remove", channel, ts, name)
+}
+
+func (c *slackAPIClient) reaction(ctx context.Context, method, channel, ts, name string) error {
+	_, err := c.post(ctx, method, url.Values{
+		paramChannel:   {channel},
+		paramTimestamp: {ts},
+		paramName:      {name},
+	})
+	if err != nil && (strings.Contains(err.Error(), "missing_scope") ||
+		strings.Contains(err.Error(), "not_allowed_token_type")) {
+		return errReactionsUnsupported
 	}
-	_, err := c.post(ctx, "chat.update", params)
+	return err
+}
+
+// markdownBlocks wraps text in a single Block Kit markdown block, which renders
+// Slack's supported Markdown (bold, italic, lists, tables, code blocks, ...)
+// natively, without the mrkdwn conversion.
+func markdownBlocks(md string) []any {
+	return []any{map[string]any{bkType: bkMarkdown, bkText: md}}
+}
+
+// postMarkdown posts a new in-thread message rendered as a markdown block. The
+// top-level text is the notification/accessibility fallback; it is mrkdwn-parsed
+// by Slack, so agent output must be escaped there even though the markdown block
+// itself must not be.
+func (c *slackAPIClient) postMarkdown(ctx context.Context, channel, md, threadTS string) (string, error) {
+	body := map[string]any{
+		paramChannel: channel,
+		paramText:    escapeMrkdwn(md),
+		paramBlocks:  markdownBlocks(md),
+	}
+	if threadTS != "" {
+		body[paramThreadTS] = threadTS
+	}
+	return c.postJSON(ctx, "chat.postMessage", body)
+}
+
+// chatUpdateMarkdown replaces a message's content with a markdown block. The
+// top-level fallback text is escaped for the same reason as in postMarkdown.
+func (c *slackAPIClient) chatUpdateMarkdown(ctx context.Context, channel, ts, md string) error {
+	body := map[string]any{
+		paramChannel: channel,
+		paramTS:      ts,
+		paramText:    escapeMrkdwn(md),
+		paramBlocks:  markdownBlocks(md),
+	}
+	_, err := c.postJSON(ctx, "chat.update", body)
 	return err
 }
 
 // postApprovalPrompt posts a Block Kit message with ✅/❌ buttons for HITL
 // approval. The button values encode the threadID so the interaction handler
 // can route the response back.
-func (c *slackAPIClient) postApprovalPrompt(ctx context.Context, channel, threadID, promptText, taskID string) error {
+func (c *slackAPIClient) postApprovalPrompt(ctx context.Context, channel, threadID, promptText string) error {
 	text := "_Waiting for approval…_"
 	if promptText != "" {
-		text = promptText
+		// promptText is agent-rendered (tool name, args, hint) and enters an
+		// mrkdwn section block.
+		text = truncateRunes(escapeMrkdwn(promptText), slackSectionTextMax)
 	}
 	body := map[string]any{
 		paramChannel:  channel,
@@ -258,6 +341,11 @@ func (c *slackAPIClient) postApprovalPrompt(ctx context.Context, channel, thread
 // choice. Each button's value encodes the threadID, question index, and choice
 // index so the interaction handler can resolve the selected answer label.
 func (c *slackAPIClient) postChoicePrompt(ctx context.Context, channel, threadID, question string, choices []string) error {
+	// The question is agent-authored and enters an mrkdwn section block; the
+	// choice labels render as plain_text buttons, which parse nothing. The
+	// section wraps the question in two asterisks, which count against Slack's
+	// 3000-char section limit.
+	question = truncateRunes(escapeMrkdwn(question), slackSectionTextMax-2)
 	elements := make([]any, 0, len(choices))
 	for i, choice := range choices {
 		elements = append(elements, map[string]any{
@@ -323,10 +411,18 @@ func (c *slackAPIClient) postSignInPrompt(ctx context.Context, channel, threadID
 	return err
 }
 
-// truncateButtonLabel keeps a button label within Slack's 75-character limit,
-// counting runes (not bytes) so a multi-byte glyph is never split mid-rune.
+// slackSectionTextMax is Slack's limit on a section block's text object; a
+// longer text gets the whole message rejected with invalid_blocks.
+const slackSectionTextMax = 3000
+
+// truncateButtonLabel keeps a button label within Slack's 75-character limit.
 func truncateButtonLabel(s string) string {
-	const max = 75
+	return truncateRunes(s, 75)
+}
+
+// truncateRunes caps s at max runes, replacing the tail with an ellipsis.
+// Counting runes (not bytes) means a multi-byte glyph is never split mid-rune.
+func truncateRunes(s string, max int) string {
 	r := []rune(s)
 	if len(r) <= max {
 		return s
@@ -352,28 +448,7 @@ func (c *slackAPIClient) postJSON(ctx context.Context, method string, body any) 
 	if err != nil {
 		return "", fmt.Errorf("slack %s: marshal: %w", method, err)
 	}
-	target := c.baseURL + "/" + method
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, strings.NewReader(string(data)))
-	if err != nil {
-		return "", fmt.Errorf("slack %s: build request: %w", method, err)
-	}
-	req.Header.Set("Content-Type", "application/json; charset=utf-8")
-	req.Header.Set("Authorization", "Bearer "+c.botToken)
-
-	resp, err := http.DefaultClient.Do(req) //nolint:gosec
-	if err != nil {
-		return "", fmt.Errorf("slack %s: %w", method, err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	var result slackResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("slack %s: decode response: %w", method, err)
-	}
-	if !result.OK {
-		return "", fmt.Errorf("slack %s: %s", method, result.Error)
-	}
-	return result.Ts, nil
+	return c.send(ctx, method, "application/json; charset=utf-8", string(data))
 }
 
 type slackResponse struct {
@@ -383,26 +458,82 @@ type slackResponse struct {
 }
 
 func (c *slackAPIClient) post(ctx context.Context, method string, params url.Values) (string, error) {
-	target := c.baseURL + "/" + method
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, strings.NewReader(params.Encode()))
-	if err != nil {
-		return "", fmt.Errorf("slack %s: build request: %w", method, err)
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Authorization", "Bearer "+c.botToken)
+	return c.send(ctx, method, "application/x-www-form-urlencoded", params.Encode())
+}
 
-	resp, err := http.DefaultClient.Do(req) //nolint:gosec
-	if err != nil {
-		return "", fmt.Errorf("slack %s: %w", method, err)
-	}
-	defer func() { _ = resp.Body.Close() }()
+// rateLimitRetryCap bounds how long a Retry-After pause may hold a call;
+// a longer server-requested wait fails the call instead of stalling the writer.
+const rateLimitRetryCap = 30 * time.Second
 
+// send executes one Slack Web API call and returns the ts of the affected
+// message, for methods whose response carries one.
+func (c *slackAPIClient) send(ctx context.Context, method, contentType, payload string) (string, error) {
+	body, err := c.call(ctx, method, contentType, payload)
+	if err != nil {
+		return "", err
+	}
 	var result slackResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.Unmarshal(body, &result); err != nil {
 		return "", fmt.Errorf("slack %s: decode response: %w", method, err)
 	}
 	if !result.OK {
 		return "", fmt.Errorf("slack %s: %s", method, result.Error)
 	}
 	return result.Ts, nil
+}
+
+// call executes one Slack Web API POST and returns the raw response body. A
+// 429 is retried once after honoring Retry-After, so a brief throttle does not
+// abort the turn; a Retry-After longer than rateLimitRetryCap fails the call
+// immediately rather than waiting it out. Any other non-2xx status is an error
+// carrying the status code, not a JSON decode attempt on a non-API body.
+func (c *slackAPIClient) call(ctx context.Context, method, contentType, payload string) ([]byte, error) {
+	const maxAttempts = 2
+	for attempt := 1; ; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/"+method, strings.NewReader(payload))
+		if err != nil {
+			return nil, fmt.Errorf("slack %s: build request: %w", method, err)
+		}
+		req.Header.Set("Content-Type", contentType)
+		req.Header.Set("Authorization", "Bearer "+c.botToken)
+
+		resp, err := http.DefaultClient.Do(req) //nolint:gosec
+		if err != nil {
+			return nil, fmt.Errorf("slack %s: %w", method, err)
+		}
+		if resp.StatusCode == http.StatusTooManyRequests {
+			_ = resp.Body.Close()
+			wait := retryAfter(resp.Header)
+			if attempt >= maxAttempts || wait > rateLimitRetryCap {
+				return nil, fmt.Errorf("slack %s: rate limited (retry after %s)", method, wait)
+			}
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(wait):
+			}
+			continue
+		}
+		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+			_ = resp.Body.Close()
+			return nil, fmt.Errorf("slack %s: http status %d", method, resp.StatusCode)
+		}
+
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		_ = resp.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("slack %s: read response: %w", method, err)
+		}
+		return body, nil
+	}
+}
+
+// retryAfter reads the Retry-After header of a 429 response, defaulting to 1s
+// when absent or unparsable.
+func retryAfter(header http.Header) time.Duration {
+	seconds, err := strconv.Atoi(header.Get("Retry-After"))
+	if err != nil || seconds < 0 {
+		return time.Second
+	}
+	return time.Duration(seconds) * time.Second
 }

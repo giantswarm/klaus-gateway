@@ -62,6 +62,7 @@ type fakeGateway struct {
 	deltas []channels.OutboundDelta
 
 	mu      sync.Mutex
+	sent    []channels.InboundMessage
 	sends   int
 	lastMsg channels.InboundMessage
 }
@@ -71,6 +72,7 @@ func (g *fakeGateway) Resolve(_ context.Context, _ channels.InboundMessage) (cha
 }
 func (g *fakeGateway) SendCompletion(_ context.Context, _ channels.InstanceRef, msg channels.InboundMessage) (<-chan channels.OutboundDelta, error) {
 	g.mu.Lock()
+	g.sent = append(g.sent, msg)
 	g.sends++
 	g.lastMsg = msg
 	g.mu.Unlock()
@@ -80,6 +82,12 @@ func (g *fakeGateway) SendCompletion(_ context.Context, _ channels.InstanceRef, 
 	}
 	close(ch)
 	return ch, nil
+}
+
+func (g *fakeGateway) sentMessages() []channels.InboundMessage {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return append([]channels.InboundMessage(nil), g.sent...)
 }
 func (g *fakeGateway) FetchHistory(_ context.Context, _ channels.InstanceRef) ([]channels.Message, error) {
 	return nil, nil
@@ -186,6 +194,98 @@ func TestInteractionsHandler_Approve(t *testing.T) {
 
 	// Pending task should be cleared.
 	require.Nil(t, a.takePendingTask("T001"))
+}
+
+// linkedOBO returns a fixed token for one linked Slack user and
+// musterlink.ErrNotLinked for everyone else.
+type linkedOBO struct {
+	user  string
+	token string
+}
+
+func (o linkedOBO) TokenFor(_ context.Context, slackUserID string) (string, error) {
+	if slackUserID == o.user {
+		return o.token, nil
+	}
+	return "", musterlink.ErrNotLinked
+}
+func (o linkedOBO) LinkURL(string) string { return "https://gw.example.com/link" }
+func (o linkedOBO) Unlink(string)         {}
+
+// newDecisionAdapter builds an adapter whose Slack API accepts every call,
+// recording request paths, with a pending task seeded on thread T001.
+func newDecisionAdapter(t *testing.T, gw channels.Gateway, obo OBOTokenSource) (*Adapter, func() []string) {
+	t.Helper()
+	var (
+		mu    sync.Mutex
+		paths []string
+	)
+	apiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/users.info" {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok":   true,
+				"user": map[string]any{"profile": map[string]any{"email": "clicker@example.com"}},
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "ts": "1000.0001"})
+	}))
+	t.Cleanup(apiSrv.Close)
+
+	a := &Adapter{
+		APIBase:      apiSrv.URL,
+		Secrets:      Secrets{BotToken: "test-bot-token", SigningSecret: "test-secret"}, //nolint:gosec
+		DefaultAgent: "worker",
+		OBO:          obo,
+	}
+	require.NoError(t, a.Start(t.Context(), gw))
+	a.storePendingTask("T001", &pendingTask{
+		TaskID:    "task-abc",
+		AgentRef:  "worker",
+		Channel:   "C001",
+		ChannelID: "C001",
+	})
+	return a, func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), paths...)
+	}
+}
+
+// A button-click resume must carry the clicker's human muster token: the
+// approved tool call executes under the approver's identity, never the gateway
+// service account (klaus-gateway#116).
+func TestHandleDecision_ForwardsHumanToken(t *testing.T) {
+	gw := &fakeGateway{deltas: []channels.OutboundDelta{{Content: "done"}, {Done: true}}}
+	a, _ := newDecisionAdapter(t, gw, linkedOBO{user: "U001", token: "human-token"})
+
+	err := a.handleDecision(t.Context(), "C001", "T001", "MSG001", "U001", hitlAction{kind: hitlApprove})
+	require.NoError(t, err)
+
+	sent := gw.sentMessages()
+	require.Len(t, sent, 1)
+	require.Equal(t, "human-token", sent[0].BearerToken,
+		"button resume must run under the clicker's human token")
+	require.NotNil(t, sent[0].Decision)
+}
+
+// An unlinked clicker must not resume the task: the pending task stays stored
+// (buttons keep working for a linked user), the gateway sends nothing to the
+// agent, and the clicker gets the sign-in prompt.
+func TestHandleDecision_UnlinkedClicker_PreservesPendingTask(t *testing.T) {
+	gw := &fakeGateway{}
+	a, paths := newDecisionAdapter(t, gw, linkedOBO{user: "U-linked", token: "human-token"})
+
+	err := a.handleDecision(t.Context(), "C001", "T001", "MSG001", "U-unlinked", hitlAction{kind: hitlApprove})
+	require.NoError(t, err)
+
+	require.Empty(t, gw.sentMessages(), "aborted resume must not reach the agent")
+	require.NotNil(t, a.takePendingTask("T001"), "aborted resume must leave the pending task intact")
+	require.Contains(t, paths(), "/chat.postEphemeral", "unlinked clicker must be prompted to sign in")
 }
 
 func TestInteractionsHandler_InvalidSignature(t *testing.T) {

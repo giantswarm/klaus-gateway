@@ -57,7 +57,7 @@ func (a *Adapter) postHitlPrompt(ctx context.Context, client *slackAPIClient, sl
 	if text == "" {
 		text = "_Waiting for approval…_"
 	}
-	return client.postApprovalPrompt(ctx, slackChannel, threadID, text, pd.TaskID)
+	return client.postApprovalPrompt(ctx, slackChannel, threadID, text)
 }
 
 // renderAskUserText renders all questions and their choices as mrkdwn, with an
@@ -69,10 +69,10 @@ func renderAskUserText(p *channels.HitlPrompt) string {
 			b.WriteString("\n\n")
 		}
 		b.WriteString("*")
-		b.WriteString(q.Question)
+		b.WriteString(escapeMrkdwn(q.Question))
 		b.WriteString("*")
 		for j, c := range q.Choices {
-			fmt.Fprintf(&b, "\n  %d. %s", j+1, c)
+			fmt.Fprintf(&b, "\n  %d. %s", j+1, escapeMrkdwn(c))
 		}
 	}
 	if len(p.Questions) > 1 {
@@ -140,7 +140,7 @@ func splitAnswer(s string, multiple bool) []string {
 		return []string{s}
 	}
 	var out []string
-	for _, part := range strings.Split(s, ",") {
+	for part := range strings.SplitSeq(s, ",") {
 		if p := strings.TrimSpace(part); p != "" {
 			out = append(out, p)
 		}
@@ -152,7 +152,7 @@ func splitAnswer(s string, multiple bool) []string {
 }
 
 var approveWords = map[string]bool{
-	"approve": true, labelApproved: true, "yes": true, "y": true, "ok": true,
+	"approve": true, labelApproved: true, wordYes: true, "y": true, "ok": true,
 	"okay": true, "go": true, "proceed": true, "confirm": true, "do it": true,
 }
 
