@@ -90,10 +90,6 @@ spec:
         - --slack-enabled
         - --slack-mode={{ .Values.slack.mode }}
         {{- end }}
-        {{- if .Values.cli.enabled }}
-        - --cli-enabled
-        {{- end }}
-        - --web-enabled={{ .Values.web.enabled }}
         {{- if .Values.a2a.enabled }}
         - --a2a-enabled
         {{- if .Values.a2a.defaultAgent }}
@@ -148,6 +144,12 @@ spec:
         - name: KLAUS_GATEWAY_SLACK_DROP_STALE
           value: "true"
         {{- end }}
+        {{- if .Values.cli.enabled }}
+        - name: KLAUS_GATEWAY_CLI_ENABLED
+          value: "true"
+        {{- end }}
+        - name: KLAUS_GATEWAY_WEB_ENABLED
+          value: {{ .Values.web.enabled | quote }}
         {{- if and .Values.slack.enabled (.Values.slack.progress).mode }}
         - name: KLAUS_GATEWAY_SLACK_PROGRESS_MODE
           value: {{ .Values.slack.progress.mode | quote }}
