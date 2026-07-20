@@ -354,6 +354,50 @@ func (c *slackAPIClient) lookupUserEmail(ctx context.Context, userID string) (st
 	return result.User.Profile.Email, nil
 }
 
+// threadInitiatorScanLimit bounds the conversations.replies page scanned for the
+// first human author. A thread that opens with more leading bot messages than
+// this falls back to first-poster seeding.
+const threadInitiatorScanLimit = 50
+
+// threadInitiator returns the user ID of the earliest human (non-bot) author in
+// a thread, via conversations.replies (messages are returned oldest-first). A
+// bot-authored root is skipped: bot messages carry bot_id (and often a user
+// field naming the bot's own user), so they are not a human initiator; the
+// first message without bot_id is the human who effectively started the thread.
+// Returns "" when the thread is empty or its scanned prefix is all bot messages.
+func (c *slackAPIClient) threadInitiator(ctx context.Context, channel, threadTS string) (string, error) {
+	params := url.Values{
+		paramChannel: {channel},
+		paramTS:      {threadTS},
+		"limit":      {strconv.Itoa(threadInitiatorScanLimit)},
+	}
+	body, err := c.call(ctx, "conversations.replies", "application/x-www-form-urlencoded", params.Encode())
+	if err != nil {
+		return "", err
+	}
+
+	var result struct {
+		OK       bool   `json:"ok"`
+		Err      string `json:"error,omitempty"`
+		Messages []struct {
+			User  string `json:"user"`
+			BotID string `json:"bot_id"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", fmt.Errorf("slack conversations.replies: decode: %w", err)
+	}
+	if !result.OK {
+		return "", fmt.Errorf("slack conversations.replies: %s", result.Err)
+	}
+	for _, m := range result.Messages {
+		if m.BotID == "" && m.User != "" {
+			return m.User, nil
+		}
+	}
+	return "", nil
+}
+
 // errReactionsUnsupported reports that the bot cannot manage reactions (the
 // reactions:write scope is missing, or the token type disallows it), so the
 // caller should fall back to text-based progress.
@@ -537,6 +581,100 @@ func (c *slackAPIClient) postSignInPrompt(ctx context.Context, channel, threadID
 // slackSectionTextMax is Slack's limit on a section block's text object; a
 // longer text gets the whole message rejected with invalid_blocks.
 const slackSectionTextMax = 3000
+
+// postEphemeralText posts a plain in-thread message visible only to user.
+func (c *slackAPIClient) postEphemeralText(ctx context.Context, channel, user, threadTS, text string) error {
+	body := map[string]any{
+		paramChannel: channel,
+		paramUser:    user,
+		paramText:    text,
+	}
+	if threadTS != "" {
+		body[paramThreadTS] = threadTS
+	}
+	_, err := c.postJSON(ctx, "chat.postEphemeral", body)
+	return err
+}
+
+// postAccessConsentPrompt posts the ephemeral (initiator-only) "is <newcomer>
+// allowed?" prompt with Yes/No buttons. Only the initiator receives it, so only
+// the initiator can click. The button value encodes the thread and the newcomer
+// so the interaction handler resolves the right parked request.
+func (c *slackAPIClient) postAccessConsentPrompt(ctx context.Context, channel, threadID, initiator, newcomer string) error {
+	text := fmt.Sprintf("Is <@%s> allowed to instruct the agent to work on your behalf in this thread?", newcomer)
+	value := encodeAccessValue(threadID, newcomer)
+	body := map[string]any{
+		paramChannel:  channel,
+		paramUser:     initiator,
+		paramThreadTS: threadID,
+		paramText:     text,
+		paramBlocks: []any{
+			map[string]any{
+				bkType: bkSection,
+				bkText: map[string]any{bkType: bkMrkdwn, bkText: text},
+			},
+			map[string]any{
+				bkType: bkActions,
+				bkElements: []any{
+					map[string]any{
+						bkType:     bkButton,
+						bkText:     map[string]any{bkType: bkPlainText, bkText: "✅ Yes"},
+						bkStyle:    bkPrimary,
+						bkActionID: accessAllow,
+						bkValue:    value,
+					},
+					map[string]any{
+						bkType:     bkButton,
+						bkText:     map[string]any{bkType: bkPlainText, bkText: "❌ No"},
+						bkStyle:    bkDanger,
+						bkActionID: accessDeny,
+						bkValue:    value,
+					},
+				},
+			},
+		},
+	}
+	_, err := c.postJSON(ctx, "chat.postEphemeral", body)
+	return err
+}
+
+// interactionHTTPClient bounds POSTs to a Slack interaction response_url. These
+// run on the adapter's long-lived context (routeInteraction), so without a
+// timeout a hung upstream would park the goroutine until process shutdown.
+var interactionHTTPClient = &http.Client{Timeout: 10 * time.Second}
+
+// respondURL replaces a message via a Slack interaction response_url. Ephemeral
+// messages have no addressable ts for chat.update, so the access-consent prompt
+// is updated this way after a click. The response_url is unauthenticated and
+// short-lived; a failure is non-fatal (the decision has already been recorded).
+func respondURL(ctx context.Context, responseURL, text string) error {
+	if responseURL == "" {
+		return nil
+	}
+	body, err := json.Marshal(map[string]any{
+		"replace_original": true,
+		paramText:          text,
+	})
+	if err != nil {
+		return fmt.Errorf("slack respond_url: marshal: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, responseURL, strings.NewReader(string(body)))
+	if err != nil {
+		return fmt.Errorf("slack respond_url: build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json; charset=utf-8")
+	resp, err := interactionHTTPClient.Do(req) //nolint:gosec
+	if err != nil {
+		return fmt.Errorf("slack respond_url: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= http.StatusMultipleChoices {
+		return fmt.Errorf("slack respond_url: http status %d", resp.StatusCode)
+	}
+	return nil
+}
 
 // truncateButtonLabel keeps a button label within Slack's 75-character limit.
 func truncateButtonLabel(s string) string {

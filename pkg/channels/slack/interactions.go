@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -27,9 +28,14 @@ type interactionPayload struct {
 	Message struct {
 		ThreadTS string `json:"thread_ts"`
 	} `json:"message"`
-	Actions []struct {
+	// ResponseURL updates the source message. Ephemeral messages (the
+	// access-consent prompt) have no addressable ts, so they are updated this way.
+	ResponseURL string `json:"response_url"`
+	Actions     []struct {
 		ActionID string `json:"action_id"`
-		Value    string `json:"value"` // encodes threadID
+		// Value carries the button payload: a raw threadID for approve/deny, or
+		// JSON for choice ({t,c}) and access ({t,u}) buttons.
+		Value string `json:"value"`
 	} `json:"actions"`
 }
 
@@ -90,6 +96,17 @@ func (a *Adapter) routeInteraction(ctx context.Context, payload interactionPaylo
 		return
 	}
 
+	// Access-consent buttons resolve to a grant decision, not an A2A task. They
+	// carry an encoded thread+newcomer (one initiator may have several pending).
+	if act.kind == accessAllow || act.kind == accessDeny {
+		av, ok := decodeAccessValue(action.Value)
+		if !ok {
+			return
+		}
+		a.handleAccessDecision(ctx, av.Thread, av.User, payload.User.ID, payload.ResponseURL, act.kind == accessAllow)
+		return
+	}
+
 	// The threadID is in the button value. Choice buttons encode it as JSON;
 	// approve/deny buttons carry it raw.
 	threadID := action.Value
@@ -122,10 +139,55 @@ func classifyAction(actionID string) (hitlAction, bool) {
 		return hitlAction{kind: hitlApprove}, true
 	case actionID == hitlDeny:
 		return hitlAction{kind: hitlDeny}, true
+	case actionID == accessAllow:
+		return hitlAction{kind: accessAllow}, true
+	case actionID == accessDeny:
+		return hitlAction{kind: accessDeny}, true
 	case strings.HasPrefix(actionID, hitlChoice):
 		return hitlAction{kind: hitlChoice}, true
 	}
 	return hitlAction{}, false
+}
+
+// handleAccessDecision resolves the initiator's Yes/No on a newcomer's request
+// to instruct the agent. On Yes the newcomer is granted (additively) and their
+// held message is replayed through dispatch; on No it is discarded. The
+// ephemeral prompt is updated in place via the interaction response_url.
+//
+// Only the thread initiator may decide. The prompt is ephemeral to the
+// initiator, but the grant authorises another user to act under the initiator's
+// identity, so the clicker's identity is checked here too rather than trusting
+// ephemeral delivery alone (fail closed on any mismatch).
+func (a *Adapter) handleAccessDecision(ctx context.Context, threadID, newcomerID, clickerID, responseURL string, allow bool) {
+	if initiator := a.accessPolicy().Initiator(threadID); initiator == "" || initiator != clickerID {
+		a.Logger.Warn("slack: access decision from non-initiator ignored",
+			"thread", threadID, "clicker", clickerID, "newcomer", newcomerID)
+		return
+	}
+
+	req := a.takePendingAccess(threadID, newcomerID)
+
+	if !allow {
+		if err := respondURL(ctx, responseURL, "🚫 _Declined._"); err != nil {
+			a.Logger.Warn("slack: update access prompt (declined) failed", "thread", threadID, "error", err)
+		}
+		return
+	}
+
+	a.accessPolicy().Grant(threadID, newcomerID)
+	if err := respondURL(ctx, responseURL, fmt.Sprintf("✅ _<@%s> allowed._", newcomerID)); err != nil {
+		a.Logger.Warn("slack: update access prompt (allowed) failed", "thread", threadID, "error", err)
+	}
+
+	// Nothing parked (e.g. the newcomer's message expired or was already handled);
+	// the grant still stands, so their next message routes without a prompt.
+	if req == nil {
+		return
+	}
+	// replayDispatch (not dispatch) so a thread slot held by an in-flight turn
+	// defers the replay until the slot frees instead of dropping the message
+	// with a busy notice right after the newcomer was told they are allowed.
+	a.replayDispatch(ctx, req.msg, req.slackChannel)
 }
 
 // handleDecision processes a button click: updates the prompt message to show
@@ -133,6 +195,17 @@ func classifyAction(actionID string) (hitlAction, bool) {
 // structured HITL decision.
 func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, messageTS, slackUser string, act hitlAction) error {
 	client := a.apiClient()
+
+	// The approval buttons are posted in-thread and visible to everyone, but the
+	// tool call runs under the initiator's identity, so only a permitted user (the
+	// initiator or a granted collaborator) may approve or cancel it. An onlooker
+	// click is refused ephemerally and the pending task is left intact.
+	if !a.accessPolicy().Allowed(threadID, slackUser) {
+		if err := client.postEphemeralText(ctx, slackChannel, slackUser, threadID, accessDecisionRefusal); err != nil {
+			a.Logger.Warn("slack: post decision refusal failed", "thread", threadID, "user", slackUser, "error", err)
+		}
+		return nil
+	}
 
 	// Serialize the resume with any concurrent turn on this thread (typed reply
 	// or another click). Acquire before taking the pending task so a rejected
@@ -194,8 +267,11 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 	// Resolve email for the button-clicking user.
 	a.resolveSubjectEmail(ctx, &msg)
 
+	// A failure before the stream is running re-stores the taken task: the
+	// buttons already show the decision, but a typed reply can still resume it.
 	ref, err := a.gw.Resolve(ctx, msg)
 	if err != nil {
+		a.storePendingTask(threadID, task)
 		return err
 	}
 
@@ -204,11 +280,14 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 
 	deltas, err := a.gw.SendCompletion(turnCtx, ref, msg)
 	if err != nil {
+		a.storePendingTask(threadID, task)
 		return err
 	}
 
-	// Button resume: no user message to react to, so use text progress.
-	return a.streamResponse(ctx, client, deltas, msg, slackChannel, threadID, "", "_continuing…_")
+	// Button resume: no user message to react to, so use text progress. The turn
+	// context feeds the stream so /stop cancels it; the paused turn's usage
+	// carries over so /usage reports the whole turn.
+	return a.streamResponse(turnCtx, client, deltas, msg, slackChannel, threadID, "", "_continuing…_", task.Usage)
 }
 
 // buildButtonDecision turns a Block Kit click into a structured HITL decision,

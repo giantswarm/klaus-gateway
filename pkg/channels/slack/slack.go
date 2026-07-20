@@ -65,12 +65,6 @@ type Adapter struct {
 	// APIBase overrides the Slack Web API base URL. Empty uses the default
 	// (https://slack.com/api). Set in tests to point at a fake server.
 	APIBase string
-	// DefaultAccessMode sets the initial access mode for new threads.
-	// "open" or "observe"; empty/"locked" means ModeLocked (owner-only).
-	DefaultAccessMode string
-	// AllowedUsers is a static allow-list of Slack user IDs seeded into every
-	// new thread's AccessState. The first entry becomes owner when non-empty.
-	AllowedUsers []string
 	// DMOnly restricts the adapter to direct messages (channel_type "im").
 	// When true, channel messages and @-mentions in channels are ignored, so
 	// the bot only ever answers in a 1:1 DM. Default false (channels served).
@@ -109,7 +103,10 @@ type Adapter struct {
 	ixHandler http.Handler // interactions endpoint; nil in socketmode
 
 	accessMu sync.Mutex
-	access   map[string]*AccessState // keyed by threadID
+	access   AccessPolicy // lazily initialised via accessPolicy()
+
+	pendingAccessMu sync.Mutex
+	pendingAccess   map[string]map[string]*pendingAccessReq // threadID -> userID -> parked request
 
 	turnsMu sync.Mutex
 	turns   map[string]*turn // keyed by threadID; cancels in-flight SendCompletion
@@ -118,8 +115,9 @@ type Adapter struct {
 	// a reactions.add returns missing_scope, so later turns skip the failed call.
 	reactionsUnsupported atomic.Bool
 
-	inflightMu sync.Mutex
-	inflight   map[string]struct{} // threadIDs with a turn in progress (serialization)
+	inflightMu  sync.Mutex
+	inflight    map[string]struct{} // threadIDs with a turn in progress (serialization)
+	idleWaiters map[string][]func() // deferred replays, run when the thread slot frees
 
 	pendingMu    sync.Mutex
 	pendingTasks map[string]*pendingTask // keyed by threadID
@@ -180,7 +178,27 @@ type pendingTask struct {
 	// Prompt is the structured approval request the task is paused on, used to
 	// map a free-text reply or choice click back to a HITL decision.
 	Prompt *channels.HitlPrompt
+	// Usage carries the paused turn's token counts so the resuming turn reports
+	// the whole turn, not just its tail.
+	Usage channels.TurnUsage
+
+	storedAt time.Time // set by storePendingTask; drives the TTL sweep
 }
+
+// pendingAccessReq is a newcomer's message parked while the thread initiator is
+// asked to approve them. It is replayed through dispatch on approval.
+type pendingAccessReq struct {
+	msg          channels.InboundMessage
+	slackChannel string
+
+	storedAt time.Time // set by storePendingAccess; drives the TTL sweep
+}
+
+// pendingTTL bounds how long a parked task or access request is kept. Both
+// maps hold user content and grow per thread; an entry this old is abandoned
+// (the paused A2A task has long been resumable by nobody) and is swept on the
+// next store.
+const pendingTTL = 24 * time.Hour
 
 // Name returns the channel name used in routing keys.
 func (a *Adapter) Name() string { return ChannelName }
@@ -192,12 +210,6 @@ func (a *Adapter) Start(ctx context.Context, gw channels.Gateway) error {
 	}
 	if a.DefaultAgent == "" {
 		return errors.New("slack: DefaultAgent must be set")
-	}
-	switch a.DefaultAccessMode {
-	case "", accessModeLocked, accessModeOpen, accessModeObserve:
-	default:
-		return fmt.Errorf("slack: unknown DefaultAccessMode %q: want %s, %s, or %s",
-			a.DefaultAccessMode, accessModeLocked, accessModeOpen, accessModeObserve)
 	}
 	switch a.ProgressMode {
 	case "", progressModeAuto, progressModeReactions, progressModeText:
@@ -383,68 +395,100 @@ func (a *Adapter) postSignIn(ctx context.Context, slackChannel, threadID, slackU
 	}
 }
 
-// getAccess returns (or lazily creates) the AccessState for a thread.
-// ownerID is the Slack user ID of the message sender; it becomes the thread
-// owner if this is the first message in the thread.
-func (a *Adapter) getAccess(threadID, ownerID string) *AccessState {
+// postAccessPrompt asks the thread initiator (ephemerally) to approve a newcomer
+// who wants to instruct the agent, and acks the newcomer (ephemerally) that
+// their message is held pending that approval. Both posts are best-effort.
+func (a *Adapter) postAccessPrompt(ctx context.Context, slackChannel, threadID, initiator, newcomer string) {
+	client := a.apiClient()
+	if err := client.postAccessConsentPrompt(ctx, slackChannel, threadID, initiator, newcomer); err != nil {
+		a.Logger.Warn("slack: post access prompt failed", "initiator", initiator, "newcomer", newcomer, "error", err)
+	}
+	const ack = "Your message is waiting for the thread owner to allow you to instruct the agent here."
+	if err := client.postEphemeralText(ctx, slackChannel, newcomer, threadID, ack); err != nil {
+		a.Logger.Warn("slack: post access waiting-ack failed", "newcomer", newcomer, "error", err)
+	}
+}
+
+// accessPolicy returns the adapter's AccessPolicy, lazily installing the
+// in-memory default so direct-construction tests need no wiring.
+func (a *Adapter) accessPolicy() AccessPolicy {
 	a.accessMu.Lock()
 	defer a.accessMu.Unlock()
 	if a.access == nil {
-		a.access = make(map[string]*AccessState)
+		a.access = newMemoryAccess()
 	}
-	if state, ok := a.access[threadID]; ok {
-		return state
-	}
-	state := &AccessState{}
-	switch a.DefaultAccessMode {
-	case accessModeOpen:
-		state.mode = ModeOpen
-	case accessModeObserve:
-		state.mode = ModeLocked
-		state.observe = true
-	default:
-		state.mode = ModeLocked
-	}
-	// A static allow-list overrides first-sender ownership: the first entry
-	// becomes owner, any remaining entries seed the selective allow-list.
-	if len(a.AllowedUsers) > 0 {
-		state.owner = a.AllowedUsers[0]
-		if len(a.AllowedUsers) > 1 {
-			state.allowed = make(map[string]bool, len(a.AllowedUsers)-1)
-			for _, u := range a.AllowedUsers[1:] {
-				state.allowed[u] = true
-			}
-			state.mode = ModeSelective
-		}
-	} else {
-		state.owner = ownerID
-	}
-	a.access[threadID] = state
-	return state
+	return a.access
 }
 
 // isActiveThread reports whether the bot has an active session in threadID —
-// either an access state (meaning it was mentioned at some point) or a pending
+// either a known initiator (it was mentioned at some point) or a pending
 // input-required task. Used to decide whether to route message.channels thread
 // replies without requiring an @-mention.
 func (a *Adapter) isActiveThread(threadID string) bool {
-	a.accessMu.Lock()
-	_, hasAccess := a.access[threadID]
-	a.accessMu.Unlock()
-	if hasAccess {
+	if a.accessPolicy().Initiator(threadID) != "" {
 		return true
 	}
 	return a.hasPendingTask(threadID)
 }
 
+// storePendingAccess parks a newcomer's message while the initiator is asked to
+// approve them. Hold-latest: a repeat before approval overwrites the earlier one.
+func (a *Adapter) storePendingAccess(threadID, userID string, req *pendingAccessReq) {
+	a.pendingAccessMu.Lock()
+	defer a.pendingAccessMu.Unlock()
+	if a.pendingAccess == nil {
+		a.pendingAccess = make(map[string]map[string]*pendingAccessReq)
+	}
+	byUser := a.pendingAccess[threadID]
+	if byUser == nil {
+		byUser = make(map[string]*pendingAccessReq)
+		a.pendingAccess[threadID] = byUser
+	}
+	req.storedAt = time.Now()
+	byUser[userID] = req
+	for thread, users := range a.pendingAccess {
+		for user, r := range users {
+			if time.Since(r.storedAt) > pendingTTL {
+				delete(users, user)
+			}
+		}
+		if len(users) == 0 {
+			delete(a.pendingAccess, thread)
+		}
+	}
+}
+
+// takePendingAccess atomically retrieves and removes a parked request.
+func (a *Adapter) takePendingAccess(threadID, userID string) *pendingAccessReq {
+	a.pendingAccessMu.Lock()
+	defer a.pendingAccessMu.Unlock()
+	byUser := a.pendingAccess[threadID]
+	if byUser == nil {
+		return nil
+	}
+	req := byUser[userID]
+	delete(byUser, userID)
+	if len(byUser) == 0 {
+		delete(a.pendingAccess, threadID)
+	}
+	return req
+}
+
 // storePendingTask records a paused input-required task for a thread.
-// Any existing pending task for that thread is replaced.
+// Any existing pending task for that thread is replaced. Abandoned entries are
+// swept opportunistically so the map does not grow for the process lifetime.
 func (a *Adapter) storePendingTask(threadID string, task *pendingTask) {
 	a.pendingMu.Lock()
 	if a.pendingTasks == nil {
 		a.pendingTasks = make(map[string]*pendingTask)
 	}
+	task.storedAt = time.Now()
 	a.pendingTasks[threadID] = task
+	for thread, t := range a.pendingTasks {
+		if time.Since(t.storedAt) > pendingTTL {
+			delete(a.pendingTasks, thread)
+		}
+	}
 	a.pendingMu.Unlock()
 }
 
@@ -488,16 +532,79 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 	if threadReplyOnly && !a.isActiveThread(msg.ThreadID) {
 		return
 	}
+	a.seedInitiatorFromRoot(ctx, inner.Channel, msg.ThreadID, msg.MessageID)
 	if cmd := parseCommand(msg.Text); cmd != nil {
 		if a.handleCommand(ctx, cmd, msg.Subject, inner.Channel, msg.ThreadID) {
 			return
 		}
 	}
 	if err := a.dispatch(ctx, msg, inner.Channel); err != nil {
-		if !errors.Is(err, context.Canceled) {
+		switch {
+		case errors.Is(err, errThreadBusy):
+			if _, perr := a.apiClient().postMessage(ctx, inner.Channel, busyNotice, msg.ThreadID); perr != nil {
+				a.Logger.Warn("slack: post busy notice failed", "thread", msg.ThreadID, "error", perr)
+			}
+		case !errors.Is(err, context.Canceled):
 			a.Logger.Error("slack: dispatch error", "channel", inner.Channel, "error", err)
 		}
 	}
+}
+
+// errThreadBusy reports a turn rejected because another turn holds the
+// thread's slot, so the caller chooses between notifying the user and
+// requeueing the message.
+var errThreadBusy = errors.New("slack: thread busy")
+
+// replayDispatch delivers a previously parked message through dispatch. The
+// parked user never knowingly raced anyone, so a held thread slot does not
+// reject the message with the busy notice: the replay is queued and runs when
+// the current turn releases the slot.
+func (a *Adapter) replayDispatch(ctx context.Context, msg channels.InboundMessage, slackChannel string) {
+	a.whenThreadIdle(msg.ThreadID, func() {
+		err := a.dispatch(ctx, msg, slackChannel)
+		switch {
+		case errors.Is(err, errThreadBusy):
+			// Lost the re-acquire race against a concurrently arriving turn; queue
+			// again rather than dropping the message.
+			a.replayDispatch(ctx, msg, slackChannel)
+		case err != nil && !errors.Is(err, context.Canceled):
+			a.Logger.Error("slack: replay dispatch failed", "thread", msg.ThreadID, "user", msg.Subject, "error", err)
+		}
+	})
+}
+
+// rootAuthorLookupTimeout bounds the conversations.replies call that seeds a
+// thread's initiator, so a slow Slack API cannot stall inbound handling.
+const rootAuthorLookupTimeout = 3 * time.Second
+
+// seedInitiatorFromRoot seeds a thread's initiator from its first human author.
+// The access policy is process-local, so after a restart the first poster into
+// a pre-existing thread would otherwise take it over as initiator. Only a reply
+// into a thread with no recorded initiator triggers the lookup; when no human
+// author can be determined (fetch failure, all-bot prefix) the first-poster
+// behavior stands.
+func (a *Adapter) seedInitiatorFromRoot(ctx context.Context, slackChannel, threadID, messageID string) {
+	if threadID == "" || threadID == messageID {
+		return
+	}
+	// A 1:1 DM has a single human, so there is no other participant to evict:
+	// first-poster-becomes-initiator is always correct, and the reseed would
+	// only cost a lookup.
+	if isDMChannelID(slackChannel) {
+		return
+	}
+	if a.accessPolicy().Initiator(threadID) != "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, rootAuthorLookupTimeout)
+	defer cancel()
+	author, err := a.apiClient().threadInitiator(ctx, slackChannel, threadID)
+	if err != nil || author == "" {
+		a.Logger.Debug("slack: thread initiator unavailable, first poster becomes initiator",
+			"thread", threadID, "error", err)
+		return
+	}
+	a.accessPolicy().SetInitiator(threadID, author)
 }
 
 // dispatch resolves an inbound Slack message to a Klaus instance, posts a
@@ -509,16 +616,39 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 
 	slackUser := msg.Subject // raw Slack user ID; keys access control
 
-	// Captured before getAccess creates the thread's access entry: true when this
-	// process has no record of the thread, i.e. a reply into a thread it did not
-	// start (typically after a restart): the case the resume check targets.
+	// Captured before the policy records this thread: true when this process has
+	// no record of the thread, i.e. a reply into a thread it did not start
+	// (typically after a restart): the case the resume check targets.
 	firstSight := !a.isActiveThread(msg.ThreadID)
 
-	state := a.getAccess(msg.ThreadID, slackUser)
-	if !state.Deliver(slackUser) {
+	// Access control. The first user to interact becomes the thread initiator and
+	// instructs freely. A different user is gated: authenticate first (unknown
+	// identity -> sign-in), then ask the initiator to approve them (the agent acts
+	// under the initiator's delegated identity, so the initiator must consent).
+	access := a.accessPolicy()
+	initiator := access.SetInitiator(msg.ThreadID, slackUser)
+	if !access.Allowed(msg.ThreadID, slackUser) {
+		if a.OBO != nil && slackUser != "" {
+			if _, err := a.OBO.TokenFor(ctx, slackUser); err != nil {
+				if errors.Is(err, musterlink.ErrNotLinked) {
+					a.Logger.Debug("slack: newcomer not linked, prompting sign-in", "user", slackUser)
+					a.postSignIn(ctx, slackChannel, msg.ThreadID, slackUser)
+					return nil
+				}
+				// A transient mint failure surfaces to the newcomer now; parking the
+				// message would defer it to a confusing error after the initiator's
+				// consent.
+				a.Logger.Warn("slack: newcomer token unavailable, not parking", "user", slackUser, "error", err)
+				if perr := a.apiClient().postEphemeralText(ctx, slackChannel, slackUser, msg.ThreadID, tokenErrorNotice); perr != nil {
+					a.Logger.Warn("slack: post token-error message failed", "user", slackUser, "error", perr)
+				}
+				return nil
+			}
+		}
+		a.storePendingAccess(msg.ThreadID, slackUser, &pendingAccessReq{msg: msg, slackChannel: slackChannel})
+		a.postAccessPrompt(ctx, slackChannel, msg.ThreadID, initiator, slackUser)
 		return nil
 	}
-	respond := state.Permitted(slackUser)
 
 	msg.AgentRef = a.DefaultAgent
 
@@ -528,12 +658,7 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 	// queueing it, so a stale follow-up is not answered minutes late. Acquire
 	// before taking the pending task so a rejected turn leaves it for later.
 	if !a.acquireThread(msg.ThreadID) {
-		if respond {
-			if _, perr := a.apiClient().postMessage(ctx, slackChannel, busyNotice, msg.ThreadID); perr != nil {
-				a.Logger.Warn("slack: post busy notice failed", "thread", msg.ThreadID, "error", perr)
-			}
-		}
-		return nil
+		return errThreadBusy
 	}
 	defer a.releaseThread(msg.ThreadID)
 
@@ -542,7 +667,7 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 	// A turn must carry the sending user's human token, never the gateway's
 	// machine identity. Resolve it BEFORE consuming any pending task so an abort
 	// leaves the pending TaskID intact and the reply stays retryable.
-	token, ok := a.humanToken(ctx, slackChannel, msg.ThreadID, slackUser, respond)
+	token, ok := a.humanToken(ctx, slackChannel, msg.ThreadID, slackUser, true)
 	if !ok {
 		return nil
 	}
@@ -551,10 +676,10 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 	// A reply into a thread this process did not start may be resuming a kagent
 	// session that has since been evicted. Announce the "starting fresh"
 	// degradation up front so the user is not surprised by lost context. Only for
-	// replies (not a fresh root mention), only when we would reply, at most once
-	// per thread. Advisory: never aborts the turn, and bounded by a short timeout
-	// so a slow REST endpoint cannot stall the first reply.
-	if respond && firstSight && msg.ThreadID != msg.MessageID {
+	// replies (not a fresh root mention), at most once per thread. Advisory: never
+	// aborts the turn, and bounded by a short timeout so a slow REST endpoint
+	// cannot stall the first reply.
+	if firstSight && msg.ThreadID != msg.MessageID {
 		a.maybeAnnounceResume(ctx, msg, slackChannel)
 	}
 
@@ -565,13 +690,23 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 	// structured HITL decision so the paused tool confirmation is actually
 	// resolved (a plain text reply would leave the tool call dangling and corrupt
 	// the model history).
-	if task := a.takePendingTask(msg.ThreadID); task != nil {
+	task := a.takePendingTask(msg.ThreadID)
+	if task != nil {
 		msg.TaskID = task.TaskID
 		msg.Decision = decisionFromText(task.Prompt, msg.Text)
+	}
+	// A failure between the take and a running stream would otherwise strand the
+	// paused A2A task (the take deleted the only handle to it); put it back so a
+	// retry or button click can still resume it.
+	restoreTask := func() {
+		if task != nil {
+			a.storePendingTask(msg.ThreadID, task)
+		}
 	}
 
 	ref, err := a.gw.Resolve(ctx, msg)
 	if err != nil {
+		restoreTask()
 		return fmt.Errorf("slack: resolve: %w", err)
 	}
 
@@ -580,22 +715,18 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 
 	deltas, err := a.gw.SendCompletion(turnCtx, ref, msg)
 	if err != nil {
+		restoreTask()
 		return fmt.Errorf("slack: send completion: %w", err)
 	}
 
-	// Observe mode: forward the turn to the agent for context but suppress the
-	// Slack reply. Drain the stream so the producer completes, surfacing any
-	// upstream error in the log rather than discarding it silently.
-	if !respond {
-		for d := range deltas {
-			if d.Err != nil {
-				a.Logger.Warn("slack: observe-mode turn failed", "thread", msg.ThreadID, "error", d.Err)
-			}
-		}
-		return nil
+	// The turn context feeds the whole stream (writer, auto-approved resumes) so
+	// /stop cancels a resumed segment too, and an aborted consumer releases the
+	// producer goroutine.
+	var carried channels.TurnUsage
+	if task != nil {
+		carried = task.Usage
 	}
-
-	return a.streamResponse(ctx, a.apiClient(), deltas, msg, slackChannel, msg.ThreadID, msg.MessageID, thinkingPlaceholder)
+	return a.streamResponse(turnCtx, a.apiClient(), deltas, msg, slackChannel, msg.ThreadID, msg.MessageID, thinkingPlaceholder, carried)
 }
 
 // humanToken mints the linked Slack user's muster token for a turn. When
@@ -633,8 +764,7 @@ func (a *Adapter) humanToken(ctx context.Context, slackChannel, threadID, slackU
 	default:
 		a.Logger.Warn("slack: human token unavailable, aborting turn", "user", slackUser, "error", err)
 		if respond {
-			const msgText = "I couldn't refresh your Giant Swarm sign-in just now. Please try again in a moment; if it keeps failing, re-link with the `login` command (type it with a leading space)."
-			if _, perr := a.apiClient().postMessage(ctx, slackChannel, msgText, threadID); perr != nil {
+			if perr := a.apiClient().postEphemeralText(ctx, slackChannel, slackUser, threadID, tokenErrorNotice); perr != nil {
 				a.Logger.Warn("slack: post token-error message failed", "user", slackUser, "error", perr)
 			}
 		}
@@ -670,38 +800,60 @@ func (a *Adapter) registerTurn(ctx context.Context, threadID string) (context.Co
 // agent pauses for input, registers the pending task and posts the HITL prompt.
 // Shared by dispatch (a new turn; triggerTS is the user message) and
 // handleDecision (a button-click resume; empty triggerTS uses text progress).
-func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, deltas <-chan channels.OutboundDelta, msg channels.InboundMessage, slackChannel, threadID, triggerTS, placeholder string) error {
+// ctx is the turn context (/stop cancels it); carried seeds the usage counters
+// when the turn resumes a paused one so /usage reports the whole turn.
+func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, deltas <-chan channels.OutboundDelta, msg channels.InboundMessage, slackChannel, threadID, triggerTS, placeholder string, carried channels.TurnUsage) error {
 	// replyTS is the message the streamed answer edits: the text-mode placeholder,
 	// or "" in reactions mode (the writer posts the first answer message lazily).
 	prog, replyTS := a.startProgress(ctx, client, slackChannel, threadID, triggerTS, placeholder)
 
 	w := newBatchedWriterWithClient(client, slackChannel, replyTS, threadID, a.detailsLevel(threadID), a.Logger)
+	w.turnUsage = carried
+
+	// cleanupCtx survives the turn context so a /stop-cancelled turn still gets
+	// its progress indicator cleared and terminal notes posted.
+	cleanupCtx := func() (context.Context, context.CancelFunc) {
+		return context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	}
+
+	// Drive the turn. A DeltaPrompt pauses the stream waiting on the user: the
+	// turn is not over, so its usage so far travels with the pending task and is
+	// recorded only when the turn actually ends.
 	if err := w.run(ctx, deltas); err != nil {
-		prog.failed(ctx)
+		a.recordTurnUsage(threadID, slackChannel, w.turnUsage)
+		cctx, cancel := cleanupCtx()
+		defer cancel()
+		// A cancelled turn context means the stop was intentional (/stop, shutdown):
+		// clear the working indicator silently instead of signalling a failure.
+		if ctx.Err() != nil {
+			prog.clear(cctx)
+			return err
+		}
+		prog.failed(cctx)
 		// In text mode prog.failed is a no-op (no reaction to swap), so the
-		// placeholder would linger as "thinking" with no failure signal. Replace
-		// it with a terminal note, as the empty-output path does. Skipped when ctx
-		// is already done (/stop, deadline): the cancel is intentional and the post
-		// would fail anyway.
-		if prog.reactTS == "" && ctx.Err() == nil {
-			a.postTerminalNote(ctx, client, slackChannel, threadID, replyTS, failedNote)
+		// placeholder would linger as "thinking" with no failure signal.
+		// Replace it with a terminal note, as the empty-output path does.
+		if prog.reactTS == "" {
+			a.postTerminalNote(cctx, client, slackChannel, threadID, replyTS, failedNote)
 		}
 		return err
 	}
-	a.recordTurnUsage(threadID, slackChannel, w.turnUsage)
 
-	if w.promptDelta != nil {
-		prog.clear(ctx) // paused waiting on the user; drop the working indicator
-		pd := w.promptDelta
+	if pd := w.promptDelta; pd != nil {
+		cctx, cancel := cleanupCtx()
+		defer cancel()
+		prog.clear(cctx) // drop the working indicator
 		a.storePendingTask(threadID, &pendingTask{
 			TaskID:    pd.TaskID,
 			AgentRef:  msg.AgentRef,
 			Channel:   slackChannel,
 			ChannelID: msg.ChannelID,
 			Prompt:    pd.Prompt,
+			Usage:     w.turnUsage,
 		})
-		return a.postHitlPrompt(ctx, client, slackChannel, threadID, pd)
+		return a.postHitlPrompt(cctx, client, slackChannel, threadID, pd)
 	}
+	a.recordTurnUsage(threadID, slackChannel, w.turnUsage)
 	prog.done(ctx)
 	// A turn that produced no output would otherwise be silent (text mode leaves
 	// the "thinking" placeholder; reactions mode shows only a done emoji with no

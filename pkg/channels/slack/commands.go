@@ -9,10 +9,8 @@ import (
 const (
 	cmdHelp    = "help"
 	cmdStop    = "stop"
-	cmdQuit    = "quit"
-	cmdInvite  = "invite"
-	cmdLock    = "lock"
-	cmdKlaus   = "klaus" // /klaus login | /klaus logout (OBO account linking)
+	cmdLogin   = "login"  // OBO account linking: sign in
+	cmdLogout  = "logout" // OBO account linking: sign out
 	cmdUsage   = "usage"
 	cmdDetails = "details"
 )
@@ -60,15 +58,9 @@ func parseDetailsLevel(s string) (level detailsLevel, ok bool) {
 	}
 }
 
-// /klaus subcommands.
-const (
-	subLogin  = "login"
-	subLogout = "logout"
-)
-
 // slashCommand is a parsed in-thread command.
 type slashCommand struct {
-	Name string   // lower-case command name, e.g. "stop", "open"
+	Name string   // lower-case command name, e.g. "stop", "usage"
 	Args []string // remaining tokens, e.g. ["<@U123456>"]
 }
 
@@ -94,36 +86,16 @@ func parseCommand(text string) *slashCommand {
 	return &slashCommand{Name: strings.ToLower(parts[0]), Args: args}
 }
 
-// parseUserIDs extracts the user IDs from "<@U123>" mention tokens in the
-// command args. Slack encodes a user mention in message text as "<@USERID>";
-// any token that is not in that form is ignored.
-func parseUserIDs(args []string) []string {
-	var ids []string
-	for _, a := range args {
-		id, ok := strings.CutPrefix(a, "<@")
-		if !ok {
-			continue
-		}
-		if id, ok := strings.CutSuffix(id, ">"); ok && id != "" {
-			ids = append(ids, id)
-		}
-	}
-	return ids
-}
-
 const helpText = "*Commands* — mention me first, e.g. `@klaus /stop`.\n" +
 	"• `/stop` — interrupt the current turn\n" +
 	"• `/usage` — show token usage for the last turn and the session\n" +
 	"• `/details on|off|full` — show or hide the agent's tool activity\n" +
-	"• `/quit` — end the session _(owner only)_\n" +
-	"• `/invite @user` — let the mentioned people join this thread _(owner only)_\n" +
-	"• `/lock` — restrict to the owner only _(owner only)_\n" +
 	"• `/help` — show this message"
 
 // oboHelpText is appended to helpText when OBO account linking is enabled.
 const oboHelpText = `
-• ` + "`/klaus login`" + ` — sign in to Giant Swarm so I act as you
-• ` + "`/klaus logout`" + ` — sign out (I'll ask you to sign in again before the next turn)`
+• ` + "`/login`" + ` — sign in to Giant Swarm so I act as you
+• ` + "`/logout`" + ` — sign out (I'll ask you to sign in again before the next turn)`
 
 // handleCommand processes a slash command and posts a reply in-thread.
 // Returns true when the command was consumed (caller should not dispatch).
@@ -135,18 +107,20 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *slashCommand, slackUse
 		}
 	}
 
-	// ownerOnly resolves the thread's access state and verifies the caller is
-	// the owner, replying with a refusal otherwise. Resolving lazily keeps the
-	// non-mutating commands (/help, /stop) and unknown commands free of access
-	// side effects. The first user to interact with a thread becomes its owner
-	// (see getAccess).
-	ownerOnly := func() (*AccessState, bool) {
-		state := a.getAccess(threadID, slackUser)
-		if !state.IsOwner(slackUser) {
-			reply("_Only the thread owner can run this command._")
-			return nil, false
+	// permittedOnly verifies the caller may instruct the agent in this thread
+	// (the initiator, or a user the initiator granted), replying with a refusal
+	// otherwise. It gates the state-changing / info commands (#124) so a pure
+	// onlooker cannot flip thread-wide verbosity, read usage, or cancel a turn.
+	// SetInitiator makes the first caller of any interaction the initiator, the
+	// same first-sight rule dispatch uses.
+	permittedOnly := func() bool {
+		access := a.accessPolicy()
+		access.SetInitiator(threadID, slackUser)
+		if !access.Allowed(threadID, slackUser) {
+			reply("_You can read this thread, but only people the thread owner has allowed can instruct the agent (that includes this command). Post a message and the owner can let you in._")
+			return false
 		}
-		return state, true
+		return true
 	}
 
 	switch cmd.Name {
@@ -158,10 +132,16 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *slashCommand, slackUse
 		reply(text)
 		return true
 
-	case cmdKlaus:
-		return a.handleKlausCommand(ctx, cmd, slackUser, slackChannel, threadID, reply)
+	case cmdLogin:
+		return a.handleLoginCommand(ctx, slackUser, slackChannel, threadID, reply)
+
+	case cmdLogout:
+		return a.handleLogoutCommand(slackUser, reply)
 
 	case cmdStop:
+		if !permittedOnly() {
+			return true
+		}
 		a.turnsMu.Lock()
 		t, running := a.turns[threadID]
 		if running {
@@ -179,10 +159,16 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *slashCommand, slackUse
 		return true
 
 	case cmdUsage:
+		if !permittedOnly() {
+			return true
+		}
 		reply(a.usageReport(ctx, threadID, slackChannel))
 		return true
 
 	case cmdDetails:
+		if !permittedOnly() {
+			return true
+		}
 		if len(cmd.Args) == 0 {
 			reply(fmt.Sprintf("Tool activity is *%s* for this thread. Use `/details on`, `/details off`, or `/details full`.", a.detailsLevel(threadID)))
 			return true
@@ -202,54 +188,14 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *slashCommand, slackUse
 			reply("🔧 Showing the agent's tool calls in this thread.")
 		}
 		return true
-
-	case cmdQuit:
-		if _, ok := ownerOnly(); !ok {
-			return true
-		}
-		a.turnsMu.Lock()
-		if t, ok := a.turns[threadID]; ok {
-			t.cancel()
-			delete(a.turns, threadID)
-		}
-		a.turnsMu.Unlock()
-		a.accessMu.Lock()
-		delete(a.access, threadID)
-		a.accessMu.Unlock()
-		reply("👋 Session ended.")
-		return true
-
-	case cmdInvite:
-		state, ok := ownerOnly()
-		if !ok {
-			return true
-		}
-		users := parseUserIDs(cmd.Args)
-		if len(users) == 0 {
-			reply("_Usage:_ `/invite @user` — _mention the people to add to this thread._")
-			return true
-		}
-		state.Invite(users...)
-		reply("✅ Invited the mentioned user(s) to this thread.")
-		return true
-
-	case cmdLock:
-		state, ok := ownerOnly()
-		if !ok {
-			return true
-		}
-		state.Lock()
-		reply("🔒 Thread is now locked.")
-		return true
 	}
 
 	return false
 }
 
-// handleKlausCommand handles `/klaus login` and `/klaus logout` (OBO account
-// linking). It always consumes the command (returns true). When OBO is
-// disabled it says so rather than silently dispatching the text to the agent.
-func (a *Adapter) handleKlausCommand(ctx context.Context, cmd *slashCommand, slackUser, slackChannel, threadID string, reply func(string)) bool {
+// handleLoginCommand handles `/login` (OBO sign-in). It always consumes the
+// command. When OBO is disabled it says so rather than dispatching to the agent.
+func (a *Adapter) handleLoginCommand(ctx context.Context, slackUser, slackChannel, threadID string, reply func(string)) bool {
 	if a.OBO == nil {
 		reply("_On-behalf-of sign-in is not enabled on this gateway._")
 		return true
@@ -258,19 +204,22 @@ func (a *Adapter) handleKlausCommand(ctx context.Context, cmd *slashCommand, sla
 		reply("_Could not determine your Slack user; sign-in is unavailable._")
 		return true
 	}
-	sub := ""
-	if len(cmd.Args) > 0 {
-		sub = strings.ToLower(cmd.Args[0])
+	// Explicit request: post the sign-in prompt without the nudge throttle.
+	a.postSignIn(ctx, slackChannel, threadID, slackUser)
+	return true
+}
+
+// handleLogoutCommand handles `/logout` (OBO sign-out).
+func (a *Adapter) handleLogoutCommand(slackUser string, reply func(string)) bool {
+	if a.OBO == nil {
+		reply("_On-behalf-of sign-in is not enabled on this gateway._")
+		return true
 	}
-	switch sub {
-	case subLogin:
-		// Explicit request: post the sign-in prompt without the nudge throttle.
-		a.postSignIn(ctx, slackChannel, threadID, slackUser)
-	case subLogout:
-		a.OBO.Unlink(slackUser)
-		reply("👋 Signed out. I'll ask you to `/klaus login` again before I can act as you.")
-	default:
-		reply("_Usage:_ `/klaus login` _or_ `/klaus logout`")
+	if slackUser == "" {
+		reply("_Could not determine your Slack user; sign-in is unavailable._")
+		return true
 	}
+	a.OBO.Unlink(slackUser)
+	reply("👋 Signed out. I'll ask you to `/login` again before I can act as you.")
 	return true
 }

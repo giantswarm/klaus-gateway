@@ -136,5 +136,28 @@ func (a *Adapter) acquireThread(threadID string) bool {
 func (a *Adapter) releaseThread(threadID string) {
 	a.inflightMu.Lock()
 	delete(a.inflight, threadID)
+	waiters := a.idleWaiters[threadID]
+	delete(a.idleWaiters, threadID)
 	a.inflightMu.Unlock()
+	for _, waiter := range waiters {
+		go waiter()
+	}
+}
+
+// whenThreadIdle runs fn once threadID's turn slot is free: synchronously when
+// it is free now, otherwise on its own goroutine when the holding turn releases
+// it. fn must re-acquire the slot itself (typically via dispatch) and handle
+// losing that race to a concurrently arriving turn.
+func (a *Adapter) whenThreadIdle(threadID string, fn func()) {
+	a.inflightMu.Lock()
+	if _, busy := a.inflight[threadID]; busy {
+		if a.idleWaiters == nil {
+			a.idleWaiters = make(map[string][]func())
+		}
+		a.idleWaiters[threadID] = append(a.idleWaiters[threadID], fn)
+		a.inflightMu.Unlock()
+		return
+	}
+	a.inflightMu.Unlock()
+	fn()
 }

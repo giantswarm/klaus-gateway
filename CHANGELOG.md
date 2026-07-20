@@ -16,11 +16,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Slack `/stop` on a thread paused at an approval prompt resolves the pending tool call as a structured rejection (same as replying "stop"), instead of replying "Stopped." while leaving the prompt armed.
 - Slack posts a "starting fresh" notice when an `@`-mention or DM reply continues a thread this gateway has no in-memory record of (e.g. after a restart) and its kagent session no longer exists, instead of silently losing context. Checked at most once per thread; never blocks the turn.
 - `--a2a-rest-url` flag and `KLAUS_GATEWAY_A2A_REST_URL` env var set the kagent controller REST base URL used by the resume check. When unset it is derived from `--a2a-url`.
+- Slack access control. A thread's initiator (the person whose `@`-mention started it) instructs the agent freely. When someone else tries to instruct it, the gateway prompts them to sign in if it does not yet know them, then asks the initiator, with an ephemeral Yes/No, whether to allow them; on Yes their held message is delivered and they may instruct the agent for the rest of the session. Approvals happen on the fly, per thread, and are additive. Only the initiator can approve an access request, and only the initiator or an allowed user can approve or deny the agent's tool calls in the thread; an onlooker who clicks a button gets a private "not allowed" note and the turn is unaffected.
 
 ### Changed
 
-- Slack OBO: the browser-facing sign-in outcomes at `/auth/slack/link` and `/auth/slack/callback` now render a branded, responsive light/dark HTML page (embedded via `//go:embed`), adapted from the platform gateway-api error template. This replaces the bare inline success HTML and the plain-text error responses, so both success and error cases (expired link, email mismatch, sign-in cancelled/failed) share the same Giant Swarm-styled page.
+- Slack `/klaus login` and `/klaus logout` are now `/login` and `/logout`.
+- A message from someone not allowed to instruct the agent in a thread is no longer silently dropped; it prompts sign-in or an initiator approval instead.
 - Per-thread `/details` settings, `/usage` figures, and resume-check marks are dropped after 24 hours of thread inactivity, so a long-lived gateway's memory stays bounded. An active thread refreshes its state on every turn.
+- A reply into a channel thread the gateway has no record of (e.g. after a restart) establishes the thread root's author (fetched from Slack) as the initiator, instead of whoever posts first, so a reply cannot take over an existing thread. This applies to multi-participant threads only; in a 1:1 DM the sole human always becomes the initiator. When the root author cannot be determined or the root is bot-authored, the first poster still becomes the initiator.
+- Slack OBO: the browser-facing sign-in outcomes at `/auth/slack/link` and `/auth/slack/callback` now render a branded, responsive light/dark HTML page (embedded via `//go:embed`), adapted from the platform gateway-api error template. This replaces the bare inline success HTML and the plain-text error responses, so both success and error cases (expired link, email mismatch, sign-in cancelled/failed) share the same Giant Swarm-styled page.
+
+### Removed
+
+- Slack `/invite`, `/lock`, and `/quit` commands, the locked/open/observe access modes, and the `SLACK_ALLOWED_USERS` and `SLACK_DEFAULT_ACCESS_MODE` settings, replaced by the initiator-plus-approval access model.
 
 ### Fixed
 
@@ -37,6 +45,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Updated `tests/test-values.yaml`: removed stale `lifecycle.operatorMCPURL` override and bumped `image.tag` from `0.0.44` to `0.1.4`. The old pin ran the binary that rejected `--driver=static` with empty instances, causing CrashLoopBackOff.
 - Slack replies larger than a single Slack message no longer fail the `chat.update` call; the batched writer rolls the overflow over into stable follow-up in-thread messages, and an in-progress (unterminated) code fence is left unformatted instead of being mangled by mrkdwn transforms. The rollover never splits a multi-byte UTF-8 rune when a single line exceeds the message limit.
 - Avoid a potential panic from comparing `OutboundDelta` (which embeds an error interface) against its zero value on the A2A error path.
+- Slack `/details`, `/usage`, and `/stop` now require permission to instruct the agent in the thread, so a channel onlooker can no longer change thread-wide verbosity, read token usage, or cancel a turn (#124).
+- Slack's transient "couldn't refresh your sign-in" message is now ephemeral (visible only to the affected user) instead of posted in-thread.
 - Slack turns are serialized per thread. A message that arrives while the thread's previous turn is still running gets a brief "still working" notice instead of starting a second, overlapping turn; concurrent turns on one thread share a kagent session and would otherwise interleave its event log into incoherent history.
 - A Slack thread's paused input-required task is no longer consumed by a typed reply that then aborts on a transient human-token error. The pending task is taken only once the turn is committed to run, so a later button click can still resume it instead of finding nothing.
 - A rate-limited Slack Web API call (HTTP 429) no longer aborts the turn and discards the agent's work. The call is retried once after honoring `Retry-After`, unless the server asks to wait more than 30s (then it fails fast rather than stalling the writer), and a failed flush keeps its content pending so the next flush re-sends it instead of dropping the delta.
@@ -47,6 +57,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Token usage is no longer over-counted when the model provider reports usage on streaming chunks: usage deltas skip partial events, which mirror the same LLM call's counts on every chunk.
 - Token usage reported on a failed, rejected, or canceled terminal event is now carried on the error delta and counted before the turn aborts, instead of being discarded so a failed turn's tokens never reached usage accounting.
 - Agent-rendered text is escaped before entering Slack mrkdwn contexts (approval prompts, ask_user questions and choices, decision labels), so quoted content containing `<!channel>`, `<!here>`, or `<@U...>` renders literally instead of triggering notifications.
+- A newcomer's message approved while the thread's current turn is still running is delivered once that turn finishes, instead of being dropped with a busy notice right after the initiator's approval.
+- `/stop` clears the working reaction silently; a stopped turn is no longer marked with the failed reaction.
+- A newcomer whose sign-in hits a transient token failure gets the error immediately (ephemeral), instead of their message being parked for approval and failing after the initiator's consent.
+- A failed update of the access-consent prompt via the interaction `response_url` (non-2xx response) is logged instead of treated as success.
 - `users.info` lookups go through the same 429-retrying Slack transport as every other Web API call.
 - A non-2xx Slack Web API response (other than 429) surfaces as an error carrying the HTTP status code instead of a JSON decode failure on a non-API body.
 - The notification fallback text of agent replies is escaped, so agent output containing `<!channel>`, `<!here>`, or `<@U...>` can no longer trigger notifications through the fallback while the rendered blocks stay literal.
@@ -54,6 +68,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A transient failure removing the working progress reaction no longer strands it; the removal is retried on the next progress update.
 - A fence info string too long for the chunk budget degrades the continuation to a plain split instead of emitting a block over Slack's limit, and a fence-open line longer than the budget still toggles fence state, so prose after the fence is no longer wrapped in reopened code fences.
 - A Slack turn that ends in error while in text-progress mode replaces its `_thinking…_` placeholder with a failure note instead of leaving it dangling with no signal (reactions mode already swaps in the failed emoji). An intentional `/stop` still cancels silently.
+- `/usage` no longer double-counts a turn that paused for approval: the pre-pause token counts travel with the pending task and the resumed segment adds to them, so both the last-turn and session figures cover the whole turn exactly once.
+- A resume that fails before its stream starts (token mint, gateway resolve, send) re-stores the paused task instead of stranding it, so a retry or button click can still resume the agent.
+- Parked newcomer messages and paused approval tasks are swept after 24 hours, so the per-thread maps no longer grow for the process lifetime.
 
 ### Refactored
 

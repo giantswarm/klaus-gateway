@@ -261,7 +261,10 @@ func TestEventsHandler_RedeliveredEventDropped(t *testing.T) {
 	require.Zero(t, dispatched.Load(), "redelivered event must not start a duplicate turn")
 }
 
-func TestEventsHandler_LockedMode_NonOwnerDropped(t *testing.T) {
+// A newcomer who posts into a thread that already has an initiator is gated:
+// their message does not reach the agent until the initiator approves them. The
+// initiator's own launching mention dispatches normally.
+func TestEventsHandler_NewcomerGatedAfterInitiator(t *testing.T) {
 	gw := &stubGateway{}
 
 	fakeSlack := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -276,8 +279,6 @@ func TestEventsHandler_LockedMode_NonOwnerDropped(t *testing.T) {
 		Secrets:      slackadapter.Secrets{BotToken: "dummy-bot-token", SigningSecret: "signing-secret"}, //nolint:gosec
 		APIBase:      fakeSlack.URL,
 		DefaultAgent: "test-agent",
-		// Default mode is locked; owner is first sender U001.
-		AllowedUsers: []string{"U001"},
 	}
 	require.NoError(t, a.Start(ctx, gw))
 	r := chi.NewRouter()
@@ -287,20 +288,27 @@ func TestEventsHandler_LockedMode_NonOwnerDropped(t *testing.T) {
 	t.Cleanup(srv.Close)
 	t.Cleanup(func() { _ = a.Stop(context.Background()) })
 
-	// U999 is not U001 — should be silently dropped.
-	payload := `{"type":"event_callback","event":{"type":"app_mention","user":"U999","text":"<@BOT> hi","channel":"C1","ts":"111.222"}}`
-	body := []byte(payload)
-	stamp, sig := signBody(t, "signing-secret", body)
-	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/channels/slack/events", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Slack-Request-Timestamp", stamp)
-	req.Header.Set("X-Slack-Signature", sig)
-	resp, err := http.DefaultClient.Do(req)
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
+	send := func(payload string) {
+		body := []byte(payload)
+		stamp, sig := signBody(t, "signing-secret", body)
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/channels/slack/events", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Slack-Request-Timestamp", stamp)
+		req.Header.Set("X-Slack-Signature", sig)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		require.NoError(t, resp.Body.Close())
+	}
 
+	// U001 launches the thread and becomes its initiator.
+	send(`{"type":"event_callback","event":{"type":"app_mention","user":"U001","text":"<@BOT> hi","channel":"C1","ts":"111.222"}}`)
+	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
+		2*time.Second, 50*time.Millisecond, "the initiator's mention is dispatched")
+
+	// U999 tries to instruct in the same thread: gated, not dispatched.
+	send(`{"type":"event_callback","event":{"type":"app_mention","user":"U999","text":"<@BOT> me too","channel":"C1","ts":"333.444","thread_ts":"111.222"}}`)
 	time.Sleep(150 * time.Millisecond)
-	require.Zero(t, gw.resolveCount(), "non-owner must not trigger resolve")
+	require.Equal(t, 1, gw.resolveCount(), "a newcomer must not trigger resolve until approved")
 }
 
 func TestEventsHandler_BotMessageIgnored(t *testing.T) {
@@ -492,8 +500,8 @@ func TestDispatch_OBO_UnlinkedUserPromptsSignInAndDoesNotDispatch(t *testing.T) 
 	require.Zero(t, gw.resolveCount(), "unlinked turn must not reach the agent (no M2M fallback)")
 }
 
-// A linked user hitting a transient token-mint failure gets a clear error and
-// the turn is aborted — never run as the service account.
+// A linked user hitting a transient token-mint failure gets a clear error
+// (ephemeral to them) and the turn is aborted — never run as the service account.
 func TestDispatch_OBO_TokenErrorAbortsTurn(t *testing.T) {
 	var mu sync.Mutex
 	var messages int
@@ -503,7 +511,7 @@ func TestDispatch_OBO_TokenErrorAbortsTurn(t *testing.T) {
 			_, _ = fmt.Fprintf(w, `{"ok":true,"user":{"profile":{"email":"u@example.com"}}}`)
 			return
 		}
-		if strings.HasSuffix(r.URL.Path, "chat.postMessage") {
+		if strings.HasSuffix(r.URL.Path, "chat.postEphemeral") {
 			mu.Lock()
 			messages++
 			mu.Unlock()
@@ -595,7 +603,7 @@ func captureEphemeral(t *testing.T) (*httptest.Server, func() []map[string]any) 
 	}
 }
 
-func TestKlausLogout_Unlinks(t *testing.T) {
+func TestLogout_Unlinks(t *testing.T) {
 	fakeSlack, _ := captureEphemeral(t)
 	defer fakeSlack.Close()
 
@@ -604,7 +612,7 @@ func TestKlausLogout_Unlinks(t *testing.T) {
 	a, srv := newEventsAdapter(t, gw, fakeSlack.URL)
 	a.OBO = obo
 
-	payload := `{"type":"event_callback","event":{"type":"app_mention","user":"U123","text":"<@BOT> /klaus logout","channel":"C1","ts":"111.222"}}`
+	payload := `{"type":"event_callback","event":{"type":"app_mention","user":"U123","text":"<@BOT> /logout","channel":"C1","ts":"111.222"}}`
 	body := []byte(payload)
 	stamp, sig := signBody(t, "signing-secret", body)
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/channels/slack/events", bytes.NewReader(body))
@@ -619,12 +627,12 @@ func TestKlausLogout_Unlinks(t *testing.T) {
 		obo.mu.Lock()
 		defer obo.mu.Unlock()
 		return len(obo.unlinked) == 1 && obo.unlinked[0] == "U123"
-	}, 2*time.Second, 50*time.Millisecond, "/klaus logout must unlink the Slack user")
+	}, 2*time.Second, 50*time.Millisecond, "/logout must unlink the Slack user")
 
-	require.Zero(t, gw.resolveCount(), "/klaus logout must be consumed, not dispatched to the agent")
+	require.Zero(t, gw.resolveCount(), "/logout must be consumed, not dispatched to the agent")
 }
 
-func TestKlausLogin_PostsSignInPrompt(t *testing.T) {
+func TestLogin_PostsSignInPrompt(t *testing.T) {
 	fakeSlack, ephemeral := captureEphemeral(t)
 	defer fakeSlack.Close()
 
@@ -632,7 +640,7 @@ func TestKlausLogin_PostsSignInPrompt(t *testing.T) {
 	a, srv := newEventsAdapter(t, gw, fakeSlack.URL)
 	a.OBO = &fakeOBO{linkedUser: "U999", linkURL: "https://gw.example.com/auth/slack/link?u=xyz"}
 
-	payload := `{"type":"event_callback","event":{"type":"app_mention","user":"U123","text":"<@BOT> /klaus login","channel":"C1","ts":"111.222"}}`
+	payload := `{"type":"event_callback","event":{"type":"app_mention","user":"U123","text":"<@BOT> /login","channel":"C1","ts":"111.222"}}`
 	body := []byte(payload)
 	stamp, sig := signBody(t, "signing-secret", body)
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/channels/slack/events", bytes.NewReader(body))
@@ -644,8 +652,8 @@ func TestKlausLogin_PostsSignInPrompt(t *testing.T) {
 	require.NoError(t, resp.Body.Close())
 
 	require.Eventually(t, func() bool { return len(ephemeral()) > 0 },
-		2*time.Second, 50*time.Millisecond, "/klaus login must post a sign-in prompt")
-	require.Zero(t, gw.resolveCount(), "/klaus login must be consumed, not dispatched to the agent")
+		2*time.Second, 50*time.Millisecond, "/login must post a sign-in prompt")
+	require.Zero(t, gw.resolveCount(), "/login must be consumed, not dispatched to the agent")
 }
 
 // --- stubGateway ---
@@ -656,12 +664,23 @@ type stubGateway struct {
 	resumeCount_  int
 	onResolve     func(channels.InboundMessage)
 	deltas        []channels.OutboundDelta
+	// sendQueue, when non-empty, supplies a distinct delta set per SendCompletion
+	// call (popped in order), so a test can drive a multi-step turn such as a
+	// prompt followed by its auto-approved continuation. Falls back to deltas.
+	sendQueue [][]channels.OutboundDelta
 	// hold, when non-nil, keeps a turn in flight: SendCompletion streams deltas
 	// then blocks until hold is closed, so a test can hold the per-thread slot.
 	hold chan struct{}
 	// onSessionResumable, when set, backs SessionResumable; nil reports the check
 	// as unavailable (checked=false).
 	onSessionResumable func(channels.InboundMessage) (exists, checked bool)
+	// failSends makes the next N SendCompletion calls return an error, so a test
+	// can drive the resume-failure paths.
+	failSends int
+	// failSendsAfter delays failSends past this many leading successful sends, so
+	// a test can fail an in-turn resume (e.g. an auto-approved continuation) that
+	// follows an initial successful send within the same turn.
+	failSendsAfter int
 }
 
 func (s *stubGateway) resumeCount() int {
@@ -700,7 +719,20 @@ func (s *stubGateway) Resolve(_ context.Context, msg channels.InboundMessage) (c
 
 func (s *stubGateway) SendCompletion(ctx context.Context, _ channels.InstanceRef, _ channels.InboundMessage) (<-chan channels.OutboundDelta, error) {
 	s.mu.Lock()
-	deltas := s.deltas
+	if s.failSendsAfter > 0 {
+		s.failSendsAfter--
+	} else if s.failSends > 0 {
+		s.failSends--
+		s.mu.Unlock()
+		return nil, errors.New("stub: send completion failed")
+	}
+	var deltas []channels.OutboundDelta
+	if len(s.sendQueue) > 0 {
+		deltas = s.sendQueue[0]
+		s.sendQueue = s.sendQueue[1:]
+	} else {
+		deltas = s.deltas
+	}
 	hold := s.hold
 	s.mu.Unlock()
 	if deltas == nil && hold == nil {
@@ -766,14 +798,15 @@ type recordedCall struct {
 // fakeSlackAPI is a structured fake Slack Web API: it records every request by
 // method path with a decoded body and can inject an error code per path.
 type fakeSlackAPI struct {
-	mu       sync.Mutex
-	calls    []recordedCall
-	failWith map[string]string // path (e.g. "reactions.add") -> slack error code
-	seq      int
+	mu          sync.Mutex
+	calls       []recordedCall
+	failWith    map[string]string // path (e.g. "reactions.add") -> slack error code
+	respondWith map[string]string // path -> canned JSON response body
+	seq         int
 }
 
 func newFakeSlackAPI() *fakeSlackAPI {
-	return &fakeSlackAPI{failWith: map[string]string{}}
+	return &fakeSlackAPI{failWith: map[string]string{}, respondWith: map[string]string{}}
 }
 
 func (f *fakeSlackAPI) server(t *testing.T) *httptest.Server {
@@ -793,6 +826,7 @@ func (f *fakeSlackAPI) server(t *testing.T) *httptest.Server {
 		f.mu.Lock()
 		f.calls = append(f.calls, recordedCall{path: path, params: params})
 		code := f.failWith[path]
+		canned := f.respondWith[path]
 		f.seq++
 		ts := fmt.Sprintf("1700000000.%06d", f.seq)
 		f.mu.Unlock()
@@ -800,6 +834,10 @@ func (f *fakeSlackAPI) server(t *testing.T) *httptest.Server {
 		w.Header().Set("Content-Type", "application/json")
 		if code != "" {
 			_, _ = fmt.Fprintf(w, `{"ok":false,"error":%q}`, code)
+			return
+		}
+		if canned != "" {
+			_, _ = fmt.Fprint(w, canned)
 			return
 		}
 		_, _ = fmt.Fprintf(w, `{"ok":true,"ts":%q}`, ts)
@@ -811,6 +849,12 @@ func (f *fakeSlackAPI) server(t *testing.T) *httptest.Server {
 func (f *fakeSlackAPI) setFail(path, code string) {
 	f.mu.Lock()
 	f.failWith[path] = code
+	f.mu.Unlock()
+}
+
+func (f *fakeSlackAPI) setResponse(path, body string) {
+	f.mu.Lock()
+	f.respondWith[path] = body
 	f.mu.Unlock()
 }
 
@@ -872,6 +916,11 @@ func sendEvent(t *testing.T, srv *httptest.Server, eventJSON string) {
 // dmEvent builds a DM message event (sender always permitted) for thread ts.
 func dmEvent(user, text, ts string) string {
 	return fmt.Sprintf(`{"type":"event_callback","event":{"type":"message","channel_type":"im","user":%q,"text":%q,"channel":"D1","ts":%q}}`, user, text, ts)
+}
+
+// dmThreadEvent builds a DM reply into an existing thread.
+func dmThreadEvent(user, text, ts, threadTS string) string {
+	return fmt.Sprintf(`{"type":"event_callback","event":{"type":"message","channel_type":"im","user":%q,"text":%q,"channel":"D1","ts":%q,"thread_ts":%q}}`, user, text, ts, threadTS)
 }
 
 func TestProgress_ReactionsLifecycle(t *testing.T) {

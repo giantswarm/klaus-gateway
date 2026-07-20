@@ -325,3 +325,81 @@ func TestPostChoicePrompt_TruncatesOversizedSection(t *testing.T) {
 	require.LessOrEqual(t, len([]rune(section)), slackSectionTextMax)
 	require.Contains(t, section, "…", "truncation marker expected")
 }
+
+func TestRespondURL_ErrorsOnNonSuccessStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	err := respondURL(t.Context(), srv.URL, "updated")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "http status 500")
+}
+
+func TestRespondURL_SucceedsOn2xx(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	require.NoError(t, respondURL(t.Context(), srv.URL, "updated"))
+}
+
+func TestThreadInitiator_ReturnsFirstHumanAuthor(t *testing.T) {
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotQuery = string(body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"ok":true,"messages":[{"user":"U042","ts":"100.000"},{"user":"U999","ts":"200.000"}]}`)
+	}))
+	defer srv.Close()
+
+	client := &slackAPIClient{botToken: "tok", baseURL: srv.URL}
+	author, err := client.threadInitiator(t.Context(), "C1", "100.000")
+	require.NoError(t, err)
+	require.Equal(t, "U042", author)
+	require.Contains(t, gotQuery, "channel=C1")
+	require.Contains(t, gotQuery, "ts=100.000")
+	require.Contains(t, gotQuery, "limit=50")
+}
+
+func TestThreadInitiator_SkipsBotPrefixToFirstHuman(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"ok":true,"messages":[{"bot_id":"B001","user":"UBOT","ts":"100.000"},{"user":"U042","ts":"200.000"}]}`)
+	}))
+	defer srv.Close()
+
+	client := &slackAPIClient{botToken: "tok", baseURL: srv.URL}
+	author, err := client.threadInitiator(t.Context(), "C1", "100.000")
+	require.NoError(t, err)
+	require.Equal(t, "U042", author, "the first human after a bot-authored root is the initiator")
+}
+
+func TestThreadInitiator_AllBotReturnsEmpty(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"ok":true,"messages":[{"bot_id":"B001","user":"UBOT","ts":"100.000"}]}`)
+	}))
+	defer srv.Close()
+
+	client := &slackAPIClient{botToken: "tok", baseURL: srv.URL}
+	author, err := client.threadInitiator(t.Context(), "C1", "100.000")
+	require.NoError(t, err)
+	require.Empty(t, author, "an all-bot thread prefix has no human initiator")
+}
+
+func TestThreadInitiator_EmptyThreadReturnsEmpty(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"ok":true,"messages":[]}`)
+	}))
+	defer srv.Close()
+
+	client := &slackAPIClient{botToken: "tok", baseURL: srv.URL}
+	author, err := client.threadInitiator(t.Context(), "C1", "100.000")
+	require.NoError(t, err)
+	require.Empty(t, author)
+}

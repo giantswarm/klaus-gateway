@@ -85,14 +85,6 @@ type SlackConfig struct {
 	// and (for socketmode) app_token. Environment variables (SLACK_BOT_TOKEN
 	// etc.) take precedence over file values.
 	SecretsFile string
-	// DefaultAccessMode controls how new threads start.
-	// "locked" = owner-only (default); "open" = anyone; "observe" = locked + forward all.
-	// SLACK_DEFAULT_ACCESS_MODE
-	DefaultAccessMode string
-	// AllowedUsers is a static allow-list of Slack user IDs. When empty and
-	// mode is "locked", the first user to message the bot becomes owner.
-	// SLACK_ALLOWED_USERS (comma-separated)
-	AllowedUsers []string
 	// DMOnly restricts the adapter to direct messages: channel messages and
 	// @-mentions in channels are ignored. SLACK_DM_ONLY=true. Default false.
 	DMOnly bool
@@ -327,16 +319,6 @@ func applyEnv(cfg *Config) {
 	}
 	if v, ok := lookup("SLACK_SECRETS_FILE"); ok {
 		cfg.Slack.SecretsFile = v
-	}
-	if v, ok := lookup("SLACK_DEFAULT_ACCESS_MODE"); ok {
-		cfg.Slack.DefaultAccessMode = v
-	}
-	if v, ok := lookup("SLACK_ALLOWED_USERS"); ok && v != "" {
-		for u := range strings.SplitSeq(v, ",") {
-			if u = strings.TrimSpace(u); u != "" {
-				cfg.Slack.AllowedUsers = append(cfg.Slack.AllowedUsers, u)
-			}
-		}
 	}
 	if v, ok := lookup("SLACK_DM_ONLY"); ok {
 		cfg.Slack.DMOnly = strings.EqualFold(v, "true") || v == "1"

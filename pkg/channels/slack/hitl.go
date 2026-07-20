@@ -31,6 +31,27 @@ func decodeChoiceValue(s string) (choiceValue, bool) {
 	return v, true
 }
 
+// accessValue is encoded into an access-consent button's value so the
+// interaction handler can map a click back to the thread and the newcomer the
+// initiator is deciding on.
+type accessValue struct {
+	Thread string `json:"t"`
+	User   string `json:"u"`
+}
+
+func encodeAccessValue(threadID, userID string) string {
+	b, _ := json.Marshal(accessValue{Thread: threadID, User: userID})
+	return string(b)
+}
+
+func decodeAccessValue(s string) (accessValue, bool) {
+	var v accessValue
+	if err := json.Unmarshal([]byte(s), &v); err != nil || v.Thread == "" || v.User == "" {
+		return accessValue{}, false
+	}
+	return v, true
+}
+
 // postHitlPrompt renders the appropriate Slack prompt for a paused
 // input-required task: per-choice buttons for a simple single-select ask_user
 // question, Approve/Deny for a generic tool approval, and a free-text fallback

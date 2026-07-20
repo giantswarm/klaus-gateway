@@ -148,16 +148,6 @@ func TestLoad_A2ADefaultAgentEnv(t *testing.T) {
 	require.Equal(t, "worker-a", cfg.A2A.DefaultAgent)
 }
 
-func TestLoad_SlackAllowedUsersEnv(t *testing.T) {
-	// Whitespace and empty entries must be dropped: a stray space would make
-	// the owner ID silently never match, disabling access control.
-	t.Setenv("KLAUS_GATEWAY_SLACK_ALLOWED_USERS", " U001 , ,U002,")
-
-	cfg, err := config.Load([]string{})
-	require.NoError(t, err)
-	require.Equal(t, []string{"U001", "U002"}, cfg.Slack.AllowedUsers)
-}
-
 func TestA2AConfig_ResolvedRESTURL(t *testing.T) {
 	for _, tc := range []struct {
 		name string

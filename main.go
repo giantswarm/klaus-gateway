@@ -169,8 +169,6 @@ func run(args []string) error {
 			Logger:              logger,
 			Mode:                cfg.Slack.Mode,
 			Secrets:             secrets,
-			DefaultAccessMode:   cfg.Slack.DefaultAccessMode,
-			AllowedUsers:        cfg.Slack.AllowedUsers,
 			DMOnly:              cfg.Slack.DMOnly,
 			DropStaleEvents:     cfg.Slack.DropStaleEvents,
 			ProgressMode:        cfg.Slack.ProgressMode,
