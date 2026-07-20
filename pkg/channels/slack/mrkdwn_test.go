@@ -134,6 +134,28 @@ func TestSplitMarkdown_FenceOverheadStaysWithinMax(t *testing.T) {
 	}
 }
 
+// A fence opened on a near-full buffer must still fit: the auto-close bytes
+// emit appends when the fence stays open through the flush have to be budgeted
+// before the opening fence line joins the buffer, or the emitted chunk exceeds
+// maxLen and Slack rejects it. Exercises both a bare dangling open on a near-cap
+// buffer and a large in-fence code block opened the same way.
+func TestSplitMarkdown_FenceOpenedOnNearFullBufferStaysWithinMax(t *testing.T) {
+	const maxLen = 12000
+	cases := map[string]string{
+		"dangling open on near-full buffer": strings.Repeat("a", 11995) + "\n```\n",
+		"large in-fence block after near-full buffer": strings.Repeat("a", 11995) +
+			"\n```\n" + strings.Repeat("b", 11990) + "\n```\n",
+	}
+	for name, text := range cases {
+		t.Run(name, func(t *testing.T) {
+			for i, chunk := range splitMarkdown(text, maxLen) {
+				require.LessOrEqual(t, len(chunk), maxLen, "chunk %d: len=%d", i, len(chunk))
+				require.Equal(t, 0, countFences(chunk)%2, "chunk %d has an unbalanced fence: %q", i, chunk)
+			}
+		})
+	}
+}
+
 // A fence-open line that fits the cap but whose reopen overhead (fence line
 // plus auto-close) does not must degrade to a plain split (no reopen), never
 // emit an oversized chunk.

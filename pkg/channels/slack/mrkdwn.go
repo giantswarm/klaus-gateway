@@ -96,13 +96,17 @@ func splitMarkdown(text string, maxLen int) []string {
 			continue
 		}
 		overhead := 0
-		if inFence {
-			switch {
-			case bufHasOpenFence:
-				overhead = len("\n```")
-			case b.Len() == 0 && reopenViable:
-				overhead = len(fenceOpen) + len("\n```")
-			}
+		switch {
+		case inFence && bufHasOpenFence:
+			overhead = len("\n```")
+		case inFence && b.Len() == 0 && reopenViable:
+			overhead = len(fenceOpen) + len("\n```")
+		case !inFence && isFenceLine:
+			// This line opens a fence on the current buffer: once appended the
+			// buffer holds an open fence, so emit auto-closes it. Budget that
+			// close now, else a near-full buffer plus the close bytes overshoots
+			// maxLen and Slack rejects the block.
+			overhead = len("\n```")
 		}
 		if b.Len() > 0 && b.Len()+len(line)+overhead > maxLen {
 			emit()
