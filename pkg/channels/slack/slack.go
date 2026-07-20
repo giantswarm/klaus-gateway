@@ -81,6 +81,10 @@ type Adapter struct {
 	// Models, when set, resolves the default agent's model id for /usage.
 	// Nil omits the model line.
 	Models AgentModelSource
+	// ConnectorPrompts enables the reactive "Connect <backend>" button: when the
+	// agent reports a backend needs the user's sign-in, the adapter renders the
+	// login link it relays as a button. Requires OBO.
+	ConnectorPrompts bool
 
 	// ProgressMode selects how turn progress is shown: "auto" (default; reactions
 	// with a text fallback when reactions:write is unavailable), "reactions", or
@@ -181,6 +185,12 @@ type Adapter struct {
 	// once the link completes.
 	signInMu      sync.Mutex
 	signInPrompts map[string]ttlEntry[string]
+
+	// connectorMu guards connectorPrompted: when the connect prompt last posted
+	// per (user, backend), bounding re-prompts for a backend the user neither
+	// connects nor dismisses.
+	connectorMu       sync.Mutex
+	connectorPrompted map[string]map[string]time.Time
 }
 
 // signInPromptTTL matches the Slack response_url validity window.
@@ -556,6 +566,35 @@ func (a *Adapter) postSignIn(ctx context.Context, slackChannel, threadID, slackU
 	if err := a.apiClient().postSignInPrompt(ctx, slackChannel, threadID, slackUser, url); err != nil {
 		a.Logger.Warn("slack: post sign-in prompt failed", "user", slackUser, "error", err)
 	}
+}
+
+// markConnectorPrompted records a prompt attempt for (user, server) and
+// reports whether one is allowed now (outside the cooldown). Check and set
+// are atomic so concurrent turns post at most one prompt.
+func (a *Adapter) markConnectorPrompted(slackUser, server string) bool {
+	now := time.Now()
+	a.connectorMu.Lock()
+	defer a.connectorMu.Unlock()
+	if last, ok := a.connectorPrompted[slackUser][server]; ok && now.Sub(last) < connectorPromptCooldown {
+		return false
+	}
+	if a.connectorPrompted == nil {
+		a.connectorPrompted = make(map[string]map[string]time.Time)
+	}
+	if a.connectorPrompted[slackUser] == nil {
+		a.connectorPrompted[slackUser] = make(map[string]time.Time)
+	}
+	a.connectorPrompted[slackUser][server] = now
+	return true
+}
+
+// clearConnectorPrompted forgets a prompt attempt (fetch or post failed, the
+// user dismissed, or the backend connected) so the next trigger may prompt
+// again.
+func (a *Adapter) clearConnectorPrompted(slackUser, server string) {
+	a.connectorMu.Lock()
+	defer a.connectorMu.Unlock()
+	delete(a.connectorPrompted[slackUser], server)
 }
 
 // storeSignInPrompt records the response_url of a clicked sign-in button so the
@@ -1187,6 +1226,8 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 	turnCtx, done := a.registerTurn(ctx, msg.ThreadID)
 	defer done()
 
+	a.logTurnDispatch(msg, slackUser, task != nil)
+
 	deltas, err := a.gw.SendCompletion(turnCtx, ref, msg)
 	if err != nil {
 		restoreTask()
@@ -1199,7 +1240,88 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 	if task != nil {
 		carried = task.Usage
 	}
-	return a.streamResponse(turnCtx, a.agentClient(ctx, msg.AgentRef), deltas, msg, slackChannel, msg.ThreadID, msg.MessageID, thinkingPlaceholder, carried)
+	err = a.streamResponse(turnCtx, a.agentClient(ctx, msg.AgentRef), deltas, msg, slackUser, slackChannel, msg.ThreadID, msg.MessageID, thinkingPlaceholder, carried)
+	if isCorruptSessionErr(err) {
+		a.recoverCorruptSession(ctx, msg, slackChannel)
+	}
+	return err
+}
+
+// isCorruptSessionErr reports whether a turn failed because the session's
+// persisted history is invalid: an interrupted earlier turn left a tool call
+// with no result, and the model API rejects the whole history, so every later
+// turn on the session fails identically. The failure arrives as an opaque A2A
+// error string, so it is matched on the model API's wording.
+func isCorruptSessionErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "tool_use") && strings.Contains(s, "tool_result")
+}
+
+// sessionResetter is the optional Gateway capability that deletes a thread's
+// kagent session. The Facade implements it; without it recovery degrades to
+// advising a new thread.
+type sessionResetter interface {
+	ResetSession(ctx context.Context, msg channels.InboundMessage) (bool, error)
+}
+
+// recoverCorruptSession deletes the thread's kagent session after a
+// corrupt-history failure so the next message starts a fresh session instead
+// of failing forever, and tells the user what happened. Best-effort: when the
+// reset is unavailable or fails, the notice advises starting a new thread.
+func (a *Adapter) recoverCorruptSession(ctx context.Context, msg channels.InboundMessage, slackChannel string) {
+	reset := false
+	if sr, ok := a.gw.(sessionResetter); ok {
+		ok, err := sr.ResetSession(ctx, msg)
+		if err != nil {
+			a.Logger.Warn("slack: corrupt-session reset failed", "thread", msg.ThreadID, "error", err)
+		}
+		reset = ok && err == nil
+	}
+	a.Logger.Info("slack: corrupt session detected",
+		"record", "session_corrupt",
+		"thread", msg.ThreadID,
+		"channel_id", msg.ChannelID,
+		"reset", reset)
+	note := corruptSessionResetNotice
+	if !reset {
+		note = corruptSessionStuckNotice
+	}
+	if _, err := a.apiClient().postMessage(ctx, slackChannel, note, msg.ThreadID); err != nil {
+		a.Logger.Warn("slack: post corrupt-session notice failed", "thread", msg.ThreadID, "error", err)
+	}
+}
+
+// linkedIdentitySource is the optional OBOTokenSource extension the dispatch
+// record uses to attach the muster subject. *musterlink.Linker satisfies it;
+// sources without it just log an empty sub.
+type linkedIdentitySource interface {
+	LinkedIdentity(slackUserID string) (sub, email string, ok bool)
+}
+
+// logTurnDispatch emits the per-turn dispatch record: which agent this turn
+// invokes for which Slack user under which muster identity. It is the
+// gateway-side anchor for joining a turn to muster's per-call log. The muster
+// session ID is not derivable client-side from the forwarded token, so the
+// join key is (sub, thread_id, task_id, timestamp).
+func (a *Adapter) logTurnDispatch(msg channels.InboundMessage, slackUser string, resume bool) {
+	var sub string
+	if ident, ok := a.OBO.(linkedIdentitySource); ok {
+		sub, _, _ = ident.LinkedIdentity(slackUser)
+	}
+	a.Logger.Info("slack: dispatching turn",
+		"record", "turn_dispatch",
+		"agent", msg.AgentRef,
+		"slack_user", slackUser,
+		"subject", msg.Subject,
+		"sub", sub,
+		"channel_id", msg.ChannelID,
+		"thread_id", msg.ThreadID,
+		"message_id", msg.MessageID,
+		"task_id", msg.TaskID,
+		"resume", resume)
 }
 
 // humanToken mints the linked Slack user's muster token for a turn. When
@@ -1245,12 +1367,18 @@ func (a *Adapter) humanToken(ctx context.Context, slackChannel, threadID, slackU
 	}
 }
 
+// maxTurnDuration bounds a single turn's stream. The A2A hop has no HTTP
+// client timeout (one would sever long turns mid-stream and corrupt the agent
+// session), so this is the backstop that eventually frees the thread slot when
+// the upstream wedges without closing the connection.
+const maxTurnDuration = 30 * time.Minute
+
 // registerTurn installs a cancelable in-flight turn for threadID so /stop can
 // cancel it, and returns the turn context plus a cleanup func that cancels the
 // turn and removes only this turn's registry entry (even if a later turn on the
 // same thread has already replaced it).
 func (a *Adapter) registerTurn(ctx context.Context, threadID string) (context.Context, func()) {
-	turnCtx, cancel := context.WithCancel(ctx)
+	turnCtx, cancel := context.WithTimeout(ctx, maxTurnDuration)
 	t := &turn{cancel: cancel}
 	a.turnsMu.Lock()
 	if a.turns == nil {
@@ -1275,13 +1403,18 @@ func (a *Adapter) registerTurn(ctx context.Context, threadID string) (context.Co
 // handleDecision (a button-click resume; empty triggerTS uses text progress).
 // ctx is the turn context (/stop cancels it); carried seeds the usage counters
 // when the turn resumes a paused one so /usage reports the whole turn.
-func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, deltas <-chan channels.OutboundDelta, msg channels.InboundMessage, slackChannel, threadID, triggerTS, placeholder string, carried channels.TurnUsage) error {
+// slackUser is the RAW Slack user ID (never the resolved email in msg.Subject),
+// so the ephemeral connector prompt reaches a valid chat.postEphemeral user.
+func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, deltas <-chan channels.OutboundDelta, msg channels.InboundMessage, slackUser, slackChannel, threadID, triggerTS, placeholder string, carried channels.TurnUsage) error {
 	// replyTS is the message the streamed answer edits: the text-mode placeholder,
 	// or "" in reactions mode (the writer posts the first answer message lazily).
 	prog, replyTS := a.startProgress(ctx, client, slackChannel, threadID, triggerTS, placeholder)
 
 	w := newBatchedWriterWithClient(client, slackChannel, replyTS, threadID, a.detailsLevel(threadID), a.Logger)
 	w.turnUsage = carried
+	w.adapter = a
+	w.slackUser = slackUser
+	w.connectorPrompts = a.ConnectorPrompts
 
 	// cleanupCtx survives the turn context so a /stop-cancelled turn still gets
 	// its progress indicator cleared and terminal notes posted.
@@ -1297,8 +1430,10 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 		cctx, cancel := cleanupCtx()
 		defer cancel()
 		// A cancelled turn context means the stop was intentional (/stop, shutdown):
-		// clear the working indicator silently instead of signalling a failure.
-		if ctx.Err() != nil {
+		// clear the working indicator silently instead of signalling a failure. A
+		// deadline expiry (maxTurnDuration backstop) is a failure, not a stop, and
+		// falls through to the failure signalling below.
+		if errors.Is(ctx.Err(), context.Canceled) {
 			prog.clear(cctx)
 			return err
 		}

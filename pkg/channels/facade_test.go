@@ -342,3 +342,43 @@ func TestFacade_SessionResumable(t *testing.T) {
 	_, checked = (&channels.Facade{}).SessionResumable(context.Background(), msg)
 	require.False(t, checked)
 }
+
+type fakeSessionsDeleter struct {
+	fakeSessions
+	deleteErr error
+	deletedID string
+}
+
+func (f *fakeSessionsDeleter) Delete(_ context.Context, id string) error {
+	f.deletedID = id
+	return f.deleteErr
+}
+
+func TestFacade_ResetSession(t *testing.T) {
+	msg := channels.InboundMessage{Channel: "slack", ChannelID: "C1", ThreadID: "T1", AgentRef: "sre"}
+	want := channels.SynthesizeContextID(msg.Channel, msg.ChannelID, msg.UserID, msg.ThreadID, msg.AgentRef)
+
+	fs := &fakeSessionsDeleter{}
+	f := &channels.Facade{Sessions: fs}
+	reset, err := f.ResetSession(context.Background(), msg)
+	require.NoError(t, err)
+	require.True(t, reset)
+	require.Equal(t, want, fs.deletedID, "the synthesized contextID is deleted")
+
+	// A delete failure is reported so the caller can degrade its notice.
+	f = &channels.Facade{Sessions: &fakeSessionsDeleter{deleteErr: errors.New("boom")}}
+	reset, err = f.ResetSession(context.Background(), msg)
+	require.Error(t, err)
+	require.False(t, reset)
+
+	// A session client without Delete -> unavailable, not an error.
+	f = &channels.Facade{Sessions: &fakeSessions{}}
+	reset, err = f.ResetSession(context.Background(), msg)
+	require.NoError(t, err)
+	require.False(t, reset)
+
+	// No session client configured -> unavailable.
+	reset, err = (&channels.Facade{}).ResetSession(context.Background(), msg)
+	require.NoError(t, err)
+	require.False(t, reset)
+}

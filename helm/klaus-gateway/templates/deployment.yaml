@@ -181,6 +181,10 @@ spec:
         - name: KLAUS_GATEWAY_OBO_STORE_KEY_FILE
           value: /etc/klaus-gateway/obo/store-key
         {{- end }}
+        {{- if .Values.obo.connectors.enabled }}
+        - name: KLAUS_GATEWAY_OBO_CONNECTORS_ENABLED
+          value: "true"
+        {{- end }}
         {{- end }}
         livenessProbe:
           httpGet:

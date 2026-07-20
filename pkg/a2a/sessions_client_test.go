@@ -53,3 +53,32 @@ func TestSessionsClient_UnexpectedStatusErrors(t *testing.T) {
 type staticToken string
 
 func (s staticToken) Token(_ context.Context) (string, error) { return string(s), nil }
+
+func TestSessionsClient_Delete(t *testing.T) {
+	var gotMethod, gotPath, gotAuth string
+	status := http.StatusOK
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		w.WriteHeader(status)
+	}))
+	t.Cleanup(srv.Close)
+
+	c := &SessionsClient{
+		BaseURL:     srv.URL,
+		TokenSource: staticToken("tok-123"),
+	}
+
+	require.NoError(t, c.Delete(t.Context(), "sess-1"))
+	require.Equal(t, http.MethodDelete, gotMethod)
+	require.Equal(t, "/api/sessions/sess-1", gotPath)
+	require.Equal(t, "Bearer tok-123", gotAuth, "the caller's token must be forwarded")
+
+	// A missing session is success: it is gone either way.
+	status = http.StatusNotFound
+	require.NoError(t, c.Delete(t.Context(), "sess-1"))
+
+	status = http.StatusInternalServerError
+	require.Error(t, c.Delete(t.Context(), "sess-1"))
+}

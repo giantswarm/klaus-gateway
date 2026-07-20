@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"iter"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -31,10 +32,28 @@ func AgentRefFromContext(ctx context.Context) string {
 	return ref
 }
 
+// defaultStreamClient carries the "message/stream" SSE responses. It has no
+// overall timeout: Client.Timeout covers the entire body read, so any value
+// caps turn duration and severs the stream mid-turn, leaving the agent session
+// with a tool call that never gets its result. Connection establishment is
+// still bounded (dial, TLS, response headers); the stream's lifetime is the
+// caller's ctx.
+var defaultStreamClient = &http.Client{
+	Transport: &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 30 * time.Second,
+		IdleConnTimeout:       90 * time.Second,
+	},
+}
+
 // A2AClient forwards channel turns to a kagent A2A orchestrator endpoint using
 // direct HTTP with the "message/stream" JSON-RPC method.
 type A2AClient struct {
-	// HTTPClient is the HTTP client used for requests. Nil uses a default with a 5-minute timeout.
+	// HTTPClient is the HTTP client used for requests. Nil uses a default with
+	// no overall timeout: the response is a long-lived SSE stream whose lifetime
+	// is bounded by ctx (an http.Client.Timeout would cut a turn mid-stream).
 	HTTPClient *http.Client
 	// BaseURL is the kagent A2A base URL, e.g. http://kagent-controller.kagent.svc.cluster.local:8083/api/a2a/kagent
 	BaseURL string
@@ -90,7 +109,7 @@ func (k *A2AClient) Execute(ctx context.Context, execCtx *a2asrv.ExecutorContext
 
 		httpClient := k.HTTPClient
 		if httpClient == nil {
-			httpClient = &http.Client{Timeout: 5 * time.Minute}
+			httpClient = defaultStreamClient
 		}
 
 		resp, err := httpClient.Do(httpReq)

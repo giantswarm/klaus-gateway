@@ -478,3 +478,18 @@ func driveCallback(t *testing.T, l *Linker, slackUser string, wantStatus int) {
 	l.HandleCallback(crec, httptest.NewRequest(http.MethodGet, CallbackPath+"?"+q.Encode(), nil))
 	require.Equal(t, wantStatus, crec.Code, "callback body: %s", crec.Body.String())
 }
+
+func TestLinkedIdentity(t *testing.T) {
+	store := NewMemStore()
+	stub := newMusterStub(t, "ignored", "a@example.com", "muster-sub")
+	l := newTestLinker(t, stub, store, nil)
+
+	_, _, ok := l.LinkedIdentity("U1")
+	require.False(t, ok, "unlinked user has no identity")
+
+	store.Put("U1", &Link{Sub: "muster-sub", Email: "a@example.com", RefreshToken: "rt"})
+	sub, email, ok := l.LinkedIdentity("U1")
+	require.True(t, ok)
+	require.Equal(t, "muster-sub", sub)
+	require.Equal(t, "a@example.com", email)
+}

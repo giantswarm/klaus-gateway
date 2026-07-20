@@ -75,6 +75,48 @@ func (c *SessionsClient) Exists(ctx context.Context, sessionID string) (bool, er
 	}
 }
 
+// Delete removes the kagent session identified by sessionID for the caller's
+// principal. Used to reset a session whose persisted history the model API
+// rejects (e.g. a tool call left without a result by an interrupted turn), so
+// the conversation can start fresh instead of failing on every later message.
+// A 404 is success: the session is gone either way.
+func (c *SessionsClient) Delete(ctx context.Context, sessionID string) error {
+	endpoint := trimRightSlash(c.BaseURL) + "/api/sessions/" + sessionID
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, endpoint, nil)
+	if err != nil {
+		return fmt.Errorf("kagent sessions: build request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	if c.TokenSource != nil {
+		token, err := c.TokenSource.Token(ctx)
+		if err != nil {
+			return fmt.Errorf("kagent sessions: token: %w", err)
+		}
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+	}
+
+	httpClient := c.HTTPClient
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 10 * time.Second}
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("kagent sessions: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	switch resp.StatusCode {
+	case http.StatusOK, http.StatusNoContent, http.StatusNotFound:
+		return nil
+	default:
+		return fmt.Errorf("kagent sessions: unexpected status %d", resp.StatusCode)
+	}
+}
+
 func trimRightSlash(s string) string {
 	for len(s) > 0 && s[len(s)-1] == '/' {
 		s = s[:len(s)-1]

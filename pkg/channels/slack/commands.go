@@ -95,7 +95,7 @@ const helpText = "*Commands* — mention me first, e.g. `@klaus /stop`.\n" +
 // oboHelpText is appended to helpText when OBO account linking is enabled.
 const oboHelpText = `
 • ` + "`/login`" + ` — sign in to Giant Swarm so I act as you
-• ` + "`/logout`" + ` — sign out (I'll ask you to sign in again before the next turn)`
+• ` + "`/logout`" + ` — sign out`
 
 // handleCommand processes a slash command and posts a reply in-thread.
 // Returns true when the command was consumed (caller should not dispatch).
@@ -193,8 +193,10 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *slashCommand, slackUse
 	return false
 }
 
-// handleLoginCommand handles `/login` (OBO sign-in). It always consumes the
-// command. When OBO is disabled it says so rather than dispatching to the agent.
+// handleLoginCommand handles `/login`. It always consumes the command. When
+// OBO is disabled it says so rather than dispatching to the agent. An unlinked
+// user gets the sign-in prompt; a linked user gets a confirmation of their
+// signed-in identity.
 func (a *Adapter) handleLoginCommand(ctx context.Context, slackUser, slackChannel, threadID string, reply func(string)) bool {
 	if a.OBO == nil {
 		reply("_On-behalf-of sign-in is not enabled on this gateway._")
@@ -204,13 +206,34 @@ func (a *Adapter) handleLoginCommand(ctx context.Context, slackUser, slackChanne
 		reply("_Could not determine your Slack user; sign-in is unavailable._")
 		return true
 	}
-	// Explicit request: post the prompt unconditionally, bypassing the
-	// parked-message throttle (maybePostSignIn).
-	a.postSignIn(ctx, slackChannel, threadID, slackUser)
+	email, linked := a.linkedEmail(ctx, slackUser)
+	if !linked {
+		// Explicit request: post the sign-in prompt without the nudge throttle.
+		a.postSignIn(ctx, slackChannel, threadID, slackUser)
+		return true
+	}
+	if email != "" {
+		reply(fmt.Sprintf("✅ _Signed in as *%s*._", escapeMrkdwn(email)))
+	} else {
+		reply("✅ _Signed in._")
+	}
 	return true
 }
 
-// handleLogoutCommand handles `/logout` (OBO sign-out).
+// linkedEmail reports whether slackUser has a muster link and their linked
+// email. Sources without the LinkedIdentity extension fall back to a token
+// probe (email empty).
+func (a *Adapter) linkedEmail(ctx context.Context, slackUser string) (string, bool) {
+	if ident, ok := a.OBO.(linkedIdentitySource); ok {
+		_, email, linked := ident.LinkedIdentity(slackUser)
+		return email, linked
+	}
+	_, err := a.OBO.TokenFor(ctx, slackUser)
+	return "", err == nil
+}
+
+// handleLogoutCommand handles `/logout`: it signs the user out of their muster
+// link, so the gateway asks them to sign in again before acting as them.
 func (a *Adapter) handleLogoutCommand(slackUser string, reply func(string)) bool {
 	if a.OBO == nil {
 		reply("_On-behalf-of sign-in is not enabled on this gateway._")
@@ -220,6 +243,7 @@ func (a *Adapter) handleLogoutCommand(slackUser string, reply func(string)) bool
 		reply("_Could not determine your Slack user; sign-in is unavailable._")
 		return true
 	}
+
 	a.OBO.Unlink(slackUser)
 	reply("👋 Signed out. I'll ask you to `/login` again before I can act as you.")
 	return true

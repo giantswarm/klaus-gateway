@@ -100,6 +100,16 @@ func (a *Adapter) routeInteraction(ctx context.Context, payload interactionPaylo
 		return
 	}
 
+	switch action.ActionID {
+	case connectorDismiss:
+		a.handleConnectorDismiss(ctx, payload.User.ID, action.Value, payload.ResponseURL)
+		return
+	case connectorConnect:
+		// URL button: the browser opens the consent flow itself, so there is
+		// nothing for the gateway to do on the click.
+		return
+	}
+
 	act, ok := classifyAction(action.ActionID)
 	if !ok {
 		return
@@ -158,6 +168,26 @@ func classifyAction(actionID string) (hitlAction, bool) {
 		return hitlAction{kind: hitlChoice}, true
 	}
 	return hitlAction{}, false
+}
+
+// validConnectorName bounds a backend name arriving in a button value:
+// interaction payloads are attacker-shaped input, so an empty or oversized
+// value is dropped rather than persisted.
+func validConnectorName(server string) bool {
+	return server != "" && len(server) <= maxConnectorNameLen
+}
+
+// handleConnectorDismiss acknowledges a "Not now" click and replaces the
+// ephemeral prompt. The prompt cooldown already suppresses re-prompts for the
+// backend, so no state is cleared here.
+func (a *Adapter) handleConnectorDismiss(ctx context.Context, slackUser, server, responseURL string) {
+	if !validConnectorName(server) {
+		return
+	}
+	text := "_Okay, I won't ask again for a while._"
+	if err := respondURL(ctx, responseURL, text); err != nil {
+		a.Logger.Warn("slack: update connector prompt (dismissed) failed", "user", slackUser, "server", server, "error", err)
+	}
 }
 
 // handleAccessDecision resolves the initiator's Yes/No on a newcomer's request
@@ -323,6 +353,8 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 	turnCtx, done := a.registerTurn(ctx, threadID)
 	defer done()
 
+	a.logTurnDispatch(msg, slackUser, true)
+
 	deltas, err := a.gw.SendCompletion(turnCtx, ref, msg)
 	if err != nil {
 		a.storePendingTask(threadID, task)
@@ -333,7 +365,7 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 	// context feeds the stream so /stop cancels it; the paused turn's usage
 	// carries over so /usage reports the whole turn; the reply is branded as the
 	// agent (the answer is the agent's).
-	return a.streamResponse(turnCtx, a.agentClient(ctx, task.AgentRef), deltas, msg, slackChannel, threadID, "", "_continuing…_", task.Usage)
+	return a.streamResponse(turnCtx, a.agentClient(ctx, task.AgentRef), deltas, msg, slackUser, slackChannel, threadID, "", "_continuing…_", task.Usage)
 }
 
 // buildButtonDecision turns a Block Kit click into a structured HITL decision,

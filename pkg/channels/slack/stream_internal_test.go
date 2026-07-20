@@ -429,3 +429,76 @@ func TestPostJSON_IdentityDoesNotMutateCallerBody(t *testing.T) {
 	require.Equal(t, map[string]any{paramChannel: "C1", paramText: "hello"}, requestBody,
 		"the caller's body map must stay unmodified")
 }
+
+func TestParseAuthChallenge(t *testing.T) {
+	server, loginURL := parseAuthChallenge("Authentication Required\n\nServer: gazelle-mcp-pro\n\n" +
+		"Please sign in:\n\nhttps://pro.example.com/authorize?state=abc\n\nThen retry.")
+	require.Equal(t, "gazelle-mcp-pro", server)
+	require.Equal(t, "https://pro.example.com/authorize?state=abc", loginURL)
+}
+
+func TestParseAuthChallenge_TrimsTrailingPunctuation(t *testing.T) {
+	_, loginURL := parseAuthChallenge("Sign in here: (https://x.example/auth?s=1).")
+	require.Equal(t, "https://x.example/auth?s=1", loginURL)
+}
+
+func TestParseAuthChallenge_NoURL(t *testing.T) {
+	server, loginURL := parseAuthChallenge("Server: pro\nno link present")
+	require.Equal(t, "pro", server)
+	require.Empty(t, loginURL)
+}
+
+func TestParseAuthChallenge_NoServerFallback(t *testing.T) {
+	server, loginURL := parseAuthChallenge("please visit https://x.example/auth")
+	require.Equal(t, "the requested tools", server)
+	require.Equal(t, "https://x.example/auth", loginURL)
+}
+
+func TestParseAuthChallenge_RejectsNonHTTPS(t *testing.T) {
+	// An http:// link is rejected: the Connect button must not open a non-https
+	// URL scraped from agent/tool-controlled text.
+	_, loginURL := parseAuthChallenge("Server: pro\nSign in: http://pro.example.com/authorize")
+	require.Empty(t, loginURL)
+
+	// A URL matching the scheme regex but with no host is rejected.
+	_, loginURL = parseAuthChallenge("Server: pro\nSign in: https://?state=abc")
+	require.Empty(t, loginURL)
+
+	// A malformed (bad percent-escape) https URL is rejected.
+	_, loginURL = parseAuthChallenge("Server: pro\nSign in: https://%zz")
+	require.Empty(t, loginURL)
+}
+
+func TestParseAuthChallengePayload_DirectOutput(t *testing.T) {
+	server, loginURL := parseAuthChallengePayload(map[string]any{
+		"output": "Server: pro\nhttps://x.example/auth",
+	}, 0)
+	require.Equal(t, "pro", server)
+	require.Equal(t, "https://x.example/auth", loginURL)
+}
+
+func TestParseAuthChallengePayload_MCPContentList(t *testing.T) {
+	server, loginURL := parseAuthChallengePayload(map[string]any{
+		"content": []any{map[string]any{"type": "text", "text": "Server: pro\nhttps://x.example/auth"}},
+		"isError": false,
+	}, 0)
+	require.Equal(t, "pro", server)
+	require.Equal(t, "https://x.example/auth", loginURL)
+}
+
+func TestParseAuthChallengePayload_NoURL(t *testing.T) {
+	server, loginURL := parseAuthChallengePayload(map[string]any{
+		"output": "Server 'pro' is already authenticated.",
+	}, 0)
+	require.Empty(t, server)
+	require.Empty(t, loginURL)
+}
+
+func TestParseAuthChallengePayload_DepthBounded(t *testing.T) {
+	nested := any("Server: pro\nhttps://x.example/auth")
+	for range maxChallengePayloadDepth + 2 {
+		nested = map[string]any{"inner": nested}
+	}
+	_, loginURL := parseAuthChallengePayload(nested, 0)
+	require.Empty(t, loginURL)
+}
