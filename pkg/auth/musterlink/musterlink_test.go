@@ -28,6 +28,7 @@ type musterStub struct {
 	sub            string
 	failRefresh    bool // reject refresh with 400 invalid_grant (dead token)
 	failRefresh5xx bool // reject refresh with a transient 503 (no OAuth error code)
+	hangRefresh    bool // never answer a refresh (blackholed endpoint) until the request context ends
 	omitIDToken    bool // omit id_token from the token response (upstream had none)
 	counter        int
 	validAccess    map[string]bool
@@ -48,6 +49,13 @@ func newMusterStub(t *testing.T, clientID, email, sub string) *musterStub {
 	})
 	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
+		s.mu.Lock()
+		hang := s.hangRefresh
+		s.mu.Unlock()
+		if r.Form.Get("grant_type") == "refresh_token" && hang {
+			<-r.Context().Done()
+			return
+		}
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		if r.Form.Get("grant_type") == "refresh_token" && s.failRefresh {
@@ -237,6 +245,40 @@ func TestTokenForRefreshAndRotate(t *testing.T) {
 	got, ok := store.Get("U1")
 	require.True(t, ok)
 	require.Equal(t, "refresh-1", got.RefreshToken)
+}
+
+// A blackholed token endpoint must not wedge the user: the refresh call is
+// bounded by the HTTP client's timeout (routed via oauth2.HTTPClient, which
+// otherwise falls back to the timeout-less http.DefaultClient), so the
+// per-user refresh lock is released and later calls for the same user return
+// instead of queueing forever.
+func TestTokenForBoundedOnHungRefresh(t *testing.T) {
+	stub := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
+	stub.mu.Lock()
+	stub.hangRefresh = true
+	stub.mu.Unlock()
+	store := NewMemStore()
+	store.Put("U1", &Link{Sub: "muster-sub", Email: "a@example.com", RefreshToken: "refresh-0"})
+	l, err := New(Config{
+		BaseURL:      stub.server.URL,
+		ClientID:     stub.clientID,
+		ClientSecret: "secret",
+		RedirectURL:  "https://gw.example.com" + CallbackPath,
+		StateKey:     []byte("hmac-state-key"),
+		Store:        store,
+		HTTPClient:   &http.Client{Timeout: 200 * time.Millisecond},
+	})
+	require.NoError(t, err)
+
+	start := time.Now()
+	_, err = l.TokenFor(context.Background(), "U1")
+	require.Error(t, err, "a hung refresh must fail, not block")
+
+	// The lock was released: a second call for the same user also returns
+	// promptly instead of deadlocking behind the first.
+	_, err = l.TokenFor(context.Background(), "U1")
+	require.Error(t, err)
+	require.Less(t, time.Since(start), 5*time.Second, "both calls must be bounded by the client timeout")
 }
 
 func TestTokenForForwardsDexIDTokenNotAccessToken(t *testing.T) {
