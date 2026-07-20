@@ -37,7 +37,7 @@ func TestLoginReplay_DropsBareAuthUtterances(t *testing.T) {
 	require.Zero(t, gw.resolveCount(), "unlinked messages must be parked, not dispatched")
 
 	obo.completeLink()
-	a.OnUserLinked(t.Context(), "U123")
+	a.OnUserLinked(t.Context(), "U123", "u123@example.com")
 
 	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
 		2*time.Second, 50*time.Millisecond, "the real question replays after linking")
@@ -131,7 +131,7 @@ func TestLoginReplay_WaitsForBusyThread(t *testing.T) {
 
 	// U999's link completes mid-turn: the replay must wait, silently.
 	obo.link("U999", "tok2")
-	a.OnUserLinked(t.Context(), "U999")
+	a.OnUserLinked(t.Context(), "U999", "u999@example.com")
 	time.Sleep(150 * time.Millisecond)
 	require.Equal(t, 2, gw.resolveCount(), "the replay must wait for the running turn")
 	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "still finishing",
