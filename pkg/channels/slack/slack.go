@@ -29,7 +29,7 @@ import (
 // ChannelName identifies the Slack adapter in routing keys.
 const ChannelName = "slack"
 
-// OBOTokenSource mints a fresh per-request human muster access token for a
+// OBOTokenSource mints a fresh per-request human token (the dex id_token) for a
 // linked Slack user and drives the account-linking UX. *musterlink.Linker
 // satisfies it. When the adapter's OBO field is non-nil (linking enabled), the
 // human token is the only credential forwarded to the agent: a turn without one
@@ -38,7 +38,7 @@ const ChannelName = "slack"
 // path and turns run as the M2M ServiceAccount identity (the historical
 // behaviour) via the gateway's ForwardedTokenSource fallback.
 type OBOTokenSource interface {
-	// TokenFor returns a fresh human muster access token for the Slack user,
+	// TokenFor returns a fresh human token (the dex id_token) for the Slack user,
 	// or musterlink.ErrNotLinked when the user has not linked an identity.
 	TokenFor(ctx context.Context, slackUserID string) (string, error)
 	// LinkURL returns the absolute "Sign in to Giant Swarm" URL that starts the
@@ -459,6 +459,15 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 
 	msg.AgentRef = a.DefaultAgent
 
+	// A turn must carry the sending user's human token, never the gateway's
+	// machine identity. Resolve it BEFORE consuming any pending task so an abort
+	// leaves the pending TaskID intact and the reply stays retryable.
+	token, ok := a.humanToken(ctx, slackChannel, msg.ThreadID, slackUser, respond)
+	if !ok {
+		return nil
+	}
+	msg.BearerToken = token
+
 	// Resume a paused input-required task when one exists for this thread.
 	// Map the typed reply to a structured HITL decision so the paused tool
 	// confirmation is actually resolved (a plain text reply would leave the
@@ -469,38 +478,6 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 	}
 
 	a.resolveSubjectEmail(ctx, &msg)
-
-	// Human-token forwarding: when linking is enabled, the human's muster token
-	// is the only credential we forward — the agent always acts as the human,
-	// never as the gateway service account. So a turn without a valid human
-	// token is aborted (not silently degraded to the M2M SA identity, which is
-	// confusing, masks failures, and is a privilege risk — klaus-gateway#116):
-	//   - unlinked user  -> prompt sign-in and stop;
-	//   - transient error -> surface it and stop.
-	// In both cases we only message a user we would actually respond to (a DM
-	// sender is always permitted; observe-mode onlookers stay silent).
-	if a.OBO != nil && slackUser != "" {
-		token, err := a.OBO.TokenFor(ctx, slackUser)
-		switch {
-		case err == nil:
-			msg.BearerToken = token
-		case errors.Is(err, musterlink.ErrNotLinked):
-			a.Logger.Debug("slack: link unavailable (unlinked or refresh token dead), prompting sign-in", "user", slackUser)
-			if respond {
-				a.postSignIn(ctx, slackChannel, msg.ThreadID, slackUser)
-			}
-			return nil
-		default:
-			a.Logger.Warn("slack: human token unavailable, aborting turn", "user", slackUser, "error", err)
-			if respond {
-				const msgText = "I couldn't refresh your Giant Swarm sign-in just now. Please try again in a moment; if it keeps failing, re-link with the `login` command (type it with a leading space)."
-				if _, perr := a.apiClient().postMessage(ctx, slackChannel, msgText, msg.ThreadID); perr != nil {
-					a.Logger.Warn("slack: post token-error message failed", "user", slackUser, "error", perr)
-				}
-			}
-			return nil
-		}
-	}
 
 	ref, err := a.gw.Resolve(ctx, msg)
 	if err != nil {
@@ -528,6 +505,50 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 	}
 
 	return a.streamResponse(ctx, a.apiClient(), deltas, msg, slackChannel, msg.ThreadID, "_thinking…_")
+}
+
+// humanToken mints the linked Slack user's muster token for a turn. When
+// linking is disabled (OBO nil) it returns ("", true): there is no human path
+// and the turn proceeds with no per-user credential. When linking is enabled,
+// the human's muster token is the only credential forwarded (the agent always
+// acts as the human, never as the gateway service account), so a turn without
+// a valid one returns ok=false and the caller aborts, not silently degraded to
+// the M2M SA identity, which is confusing, masks failures, and is a privilege
+// risk (klaus-gateway#116):
+//   - unlinked user  -> prompt sign-in and stop;
+//   - transient error -> surface it and stop.
+//
+// Both prompts are posted only when respond is true, so only a user we would
+// actually respond to is messaged (a DM sender is always permitted;
+// observe-mode onlookers stay silent). Shared by the message-dispatch and
+// button-click paths.
+func (a *Adapter) humanToken(ctx context.Context, slackChannel, threadID, slackUser string, respond bool) (string, bool) {
+	if a.OBO == nil {
+		return "", true
+	}
+	if slackUser == "" {
+		a.Logger.Warn("slack: aborting turn without a slack user (no human token possible)")
+		return "", false
+	}
+	token, err := a.OBO.TokenFor(ctx, slackUser)
+	switch {
+	case err == nil:
+		return token, true
+	case errors.Is(err, musterlink.ErrNotLinked):
+		a.Logger.Debug("slack: link unavailable (unlinked or refresh token dead), prompting sign-in", "user", slackUser)
+		if respond {
+			a.postSignIn(ctx, slackChannel, threadID, slackUser)
+		}
+	default:
+		a.Logger.Warn("slack: human token unavailable, aborting turn", "user", slackUser, "error", err)
+		if respond {
+			const msgText = "I couldn't refresh your Giant Swarm sign-in just now. Please try again in a moment; if it keeps failing, re-link with the `login` command (type it with a leading space)."
+			if _, perr := a.apiClient().postMessage(ctx, slackChannel, msgText, threadID); perr != nil {
+				a.Logger.Warn("slack: post token-error message failed", "user", slackUser, "error", perr)
+			}
+		}
+	}
+	return "", false
 }
 
 // registerTurn installs a cancelable in-flight turn for threadID so /stop can
@@ -619,6 +640,11 @@ func (e slackInnerEvent) threadReplyOnly() bool {
 // to route replies to existing bot threads.
 func (e slackInnerEvent) toInboundMessage(threadReplyOnly bool) (channels.InboundMessage, bool) {
 	if e.BotID != "" || e.SubType != "" {
+		return channels.InboundMessage{}, false
+	}
+	// An event without a Slack user has no subject: it cannot be
+	// access-controlled or attributed, so it must never become a turn.
+	if e.User == "" {
 		return channels.InboundMessage{}, false
 	}
 	switch e.Type {

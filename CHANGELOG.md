@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Slack OBO: the gateway forwards the dex id_token on the A2A request instead of muster's opaque access token. kagent's A2A edge validates the caller by decoding the JWT and reading its `sub` claim; the opaque muster token is not a JWT, so it was rejected with 401 and linked users' turns never reached the agent. The id_token is the dex-issued token muster returns alongside its access token; the access token is still used only to read the linked identity from the userinfo endpoint. A token response without an id_token now fails loudly instead of forwarding an unusable credential.
+- Slack OBO: the sign-in callback now fails when muster's token response carries no id_token (missing `openid` scope or upstream IdP misconfiguration), instead of storing a link that reports "Signed in to Giant Swarm" and then errors on every turn. No link is persisted in that case.
+- Slack events without a user ID are ignored; an anonymous event can no longer start a turn.
+- Button-click resumes of paused tool approvals carry the clicking user's human token when linking is enabled, the same as typed replies; a resume without one is aborted instead of running as the gateway service account.
 - Slack OBO: when a linked user's muster refresh token is rejected (`invalid_grant`), the gateway now drops the dead link and prompts sign-in with the Block Kit button on the same turn, instead of posting a "couldn't refresh, try again" message and only showing the button one turn later. A transient token-endpoint failure (5xx, network) still keeps the link and returns the retryable error.
 - Slack human-token forwarding no longer silently falls back to the M2M service-account identity. When linking is enabled, the human's muster token is the only credential forwarded; a turn without a valid one is aborted instead of degraded — an unlinked user is prompted to sign in, and a linked user hitting a transient token-mint failure gets a clear error in-thread. This removes a confusing, privilege-broadening fallback that also masked real failures (klaus-gateway#116).
 - Link-store key accepts a base64- or hex-encoded 32-byte AES-256 key, not only 32 raw bytes. A SOPS-staged 44-char base64 `obo.storeKey` previously crashed the gateway on boot (`encryption key must be 32 bytes, got 44`), forcing the in-memory store (links lost on every restart). The key is now normalized at startup; a value that does not resolve to exactly 32 bytes still fails loudly.
@@ -31,6 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `--driver=static` no longer requires `--static-instances` to be non-empty. An empty static instance set is valid and acts as a no-op lifecycle manager, allowing A2A-only deployments (Slack/CLI/web → kagent) without any Klaus instance management.
 - `a2a.A2AClient.TokenPath` (string) is replaced by `a2a.A2AClient.TokenSource` (the `a2a.TokenSource` interface). `a2a.FileTokenSource` reproduces the previous per-request file read; `a2a.ForwardedTokenSource` prefers a caller token from the request context and falls back to a `TokenSource`.
+- `a2a.ForwardedTokenSource` gains `ForwardedOnlyChannels`: requests from a listed channel never use the fallback token source, a missing forwarded token is an error. The originating channel travels on the egress context via `a2a.WithChannel` / `a2a.ChannelFromContext`. With OBO linking enabled the gateway lists the Slack channel, so a Slack turn can never fall back to the gateway ServiceAccount identity; the web and cli channels keep the fallback for anonymous callers.
 
 ### Added
 

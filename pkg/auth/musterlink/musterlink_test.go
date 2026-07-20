@@ -2,11 +2,13 @@ package musterlink
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -26,6 +28,7 @@ type musterStub struct {
 	sub            string
 	failRefresh    bool // reject refresh with 400 invalid_grant (dead token)
 	failRefresh5xx bool // reject refresh with a transient 503 (no OAuth error code)
+	omitIDToken    bool // omit id_token from the token response (upstream had none)
 	counter        int
 	validAccess    map[string]bool
 }
@@ -61,12 +64,16 @@ func newMusterStub(t *testing.T, clientID, email, sub string) *musterStub {
 		at := fmt.Sprintf("access-%d", s.counter)
 		rt := fmt.Sprintf("refresh-%d", s.counter)
 		s.validAccess[at] = true
-		writeJSON(w, map[string]any{
+		resp := map[string]any{
 			"access_token":  at,
 			"token_type":    "Bearer",
 			"expires_in":    3600,
 			"refresh_token": rt,
-		})
+		}
+		if !s.omitIDToken {
+			resp["id_token"] = makeIDToken(s.sub, time.Now().Add(time.Hour))
+		}
+		writeJSON(w, resp)
 	})
 	mux.HandleFunc("/userinfo", func(w http.ResponseWriter, r *http.Request) {
 		at := ""
@@ -91,6 +98,35 @@ func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	b, _ := json.Marshal(v)
 	_, _ = w.Write(b)
+}
+
+// makeIDToken builds a JWT-shaped dex id_token (header.payload.signature)
+// carrying sub and exp, mimicking the token muster forwards. The gateway
+// forwards it without verifying the signature, so a placeholder signature
+// segment suffices.
+func makeIDToken(sub string, exp time.Time) string {
+	enc := func(v any) string {
+		b, _ := json.Marshal(v)
+		return base64.RawURLEncoding.EncodeToString(b)
+	}
+	header := enc(map[string]any{"alg": "RS256", "typ": "JWT", "kid": "test"})
+	payload := enc(map[string]any{"sub": sub, "exp": exp.Unix(), "iss": "https://dex.test"})
+	return header + "." + payload + "." + base64.RawURLEncoding.EncodeToString([]byte("sig"))
+}
+
+// jwtSub decodes the sub claim from a JWT without verifying it, asserting the
+// token is a well-formed 3-part JWT (what the kagent trusted-proxy edge needs).
+func jwtSub(t *testing.T, token string) string {
+	t.Helper()
+	parts := strings.Split(token, ".")
+	require.Len(t, parts, 3, "forwarded token must be a 3-part JWT, got %q", token)
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	require.NoError(t, err)
+	var claims struct {
+		Sub string `json:"sub"`
+	}
+	require.NoError(t, json.Unmarshal(payload, &claims))
+	return claims.Sub
 }
 
 func newTestLinker(t *testing.T, stub *musterStub, store Store, slackEmail func(context.Context, string) (string, error)) *Linker {
@@ -195,7 +231,7 @@ func TestTokenForRefreshAndRotate(t *testing.T) {
 
 	tok, err := l.TokenFor(context.Background(), "U1")
 	require.NoError(t, err)
-	require.Equal(t, "access-1", tok)
+	require.Equal(t, "muster-sub", jwtSub(t, tok), "forwards the dex id_token as subject")
 
 	// The stored refresh token was rotated to the value muster returned.
 	got, ok := store.Get("U1")
@@ -203,7 +239,55 @@ func TestTokenForRefreshAndRotate(t *testing.T) {
 	require.Equal(t, "refresh-1", got.RefreshToken)
 }
 
-func TestTokenForReusesCachedAccessToken(t *testing.T) {
+func TestTokenForForwardsDexIDTokenNotAccessToken(t *testing.T) {
+	stub := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
+	store := NewMemStore()
+	store.Put("U1", &Link{Sub: "muster-sub", Email: "a@example.com", RefreshToken: "refresh-0"})
+	l := newTestLinker(t, stub, store, nil)
+
+	tok, err := l.TokenFor(context.Background(), "U1")
+	require.NoError(t, err)
+	// The kagent trusted-proxy edge base64-decodes the JWT payload and reads sub;
+	// the opaque muster access token has neither and is rejected 401. Forward the
+	// dex id_token, never the "access-N" opaque token.
+	require.Equal(t, "muster-sub", jwtSub(t, tok))
+	require.NotContains(t, tok, "access-", "must not forward the opaque access token")
+
+	// The cache holds the id_token, not the access token.
+	got, ok := store.Get("U1")
+	require.True(t, ok)
+	require.Equal(t, tok, got.IDToken)
+}
+
+func TestTokenForMissingIDTokenErrors(t *testing.T) {
+	stub := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
+	stub.omitIDToken = true
+	store := NewMemStore()
+	store.Put("U1", &Link{Sub: "muster-sub", Email: "a@example.com", RefreshToken: "refresh-0"})
+	l := newTestLinker(t, stub, store, nil)
+
+	// Without an id_token there is nothing forwardable: TokenFor must error rather
+	// than fall back to the opaque access token.
+	_, err := l.TokenFor(context.Background(), "U1")
+	require.Error(t, err)
+	require.NotErrorIs(t, err, ErrNotLinked)
+
+	// The refresh itself succeeded, so muster rotated the refresh token; the
+	// rotated value must be persisted or the next attempt spends a dead token
+	// and burns the link.
+	link, ok := store.Get("U1")
+	require.True(t, ok, "link must survive a missing id_token")
+	require.Equal(t, "refresh-1", link.RefreshToken)
+	require.Empty(t, link.IDToken)
+
+	// Once the upstream recovers, the same link refreshes successfully.
+	stub.omitIDToken = false
+	tok, err := l.TokenFor(context.Background(), "U1")
+	require.NoError(t, err)
+	require.Equal(t, "muster-sub", jwtSub(t, tok))
+}
+
+func TestTokenForReusesCachedToken(t *testing.T) {
 	stub := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
 	store := NewMemStore()
 	store.Put("U1", &Link{Sub: "muster-sub", Email: "a@example.com", RefreshToken: "refresh-0"})
@@ -211,14 +295,14 @@ func TestTokenForReusesCachedAccessToken(t *testing.T) {
 
 	tok1, err := l.TokenFor(context.Background(), "U1")
 	require.NoError(t, err)
-	require.Equal(t, "access-1", tok1)
+	require.Equal(t, "muster-sub", jwtSub(t, tok1))
 
-	// A second call within the token's lifetime reuses the cached access token
-	// and must not spend the (rotating) refresh token again -- doing so would
-	// race muster's rotation and burn the link.
+	// A second call within the token's lifetime reuses the cached id_token and
+	// must not spend the (rotating) refresh token again -- doing so would race
+	// muster's rotation and burn the link.
 	tok2, err := l.TokenFor(context.Background(), "U1")
 	require.NoError(t, err)
-	require.Equal(t, "access-1", tok2)
+	require.Equal(t, tok1, tok2)
 
 	stub.mu.Lock()
 	calls := stub.counter
@@ -230,12 +314,13 @@ func TestTokenForRefreshesExpiredCachedToken(t *testing.T) {
 	stub := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
 	store := NewMemStore()
 	// A cached token already past expiry must be discarded and refreshed.
-	store.Put("U1", &Link{RefreshToken: "refresh-0", AccessToken: "stale", Expiry: time.Now().Add(-time.Minute)})
+	store.Put("U1", &Link{RefreshToken: "refresh-0", IDToken: "stale", Expiry: time.Now().Add(-time.Minute)})
 	l := newTestLinker(t, stub, store, nil)
 
 	tok, err := l.TokenFor(context.Background(), "U1")
 	require.NoError(t, err)
-	require.Equal(t, "access-1", tok)
+	require.Equal(t, "muster-sub", jwtSub(t, tok))
+	require.NotEqual(t, "stale", tok)
 }
 
 func TestTokenForNotLinked(t *testing.T) {
@@ -291,6 +376,31 @@ func TestCallbackStoresLinkOnEmailMatch(t *testing.T) {
 	require.Equal(t, "muster-sub", got.Sub)
 	require.NotEmpty(t, got.RefreshToken)
 	require.False(t, got.LinkedAt.IsZero())
+	require.Equal(t, "muster-sub", jwtSub(t, got.IDToken), "the code exchange seeds the cached dex id_token")
+}
+
+func TestCallbackRejectsMissingIDToken(t *testing.T) {
+	stub := newMusterStub(t, "klaus-gateway", "alice@example.com", "muster-sub")
+	stub.omitIDToken = true
+	store := NewMemStore()
+	l := newTestLinker(t, stub, store, nil)
+
+	// A code exchange whose token response carries no id_token (e.g. openid
+	// scope not granted) must fail the sign-in outright: a stored link without
+	// an id_token would error on every subsequent turn.
+	driveCallback(t, l, "U1", http.StatusBadGateway)
+	_, ok := store.Get("U1")
+	require.False(t, ok, "a link without an id_token must not be stored")
+}
+
+func TestExchangeMissingIDTokenErrors(t *testing.T) {
+	stub := newMusterStub(t, "klaus-gateway", "alice@example.com", "muster-sub")
+	stub.omitIDToken = true
+	l := newTestLinker(t, stub, NewMemStore(), nil)
+
+	_, err := l.Exchange(t.Context(), "auth-code", "verifier")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "id_token")
 }
 
 func TestCallbackRejectsEmailMismatch(t *testing.T) {

@@ -5,16 +5,19 @@
 // login` uses; it federates to Dex/Entra internally). The gateway is a muster
 // OAuth client. A Slack user authenticates with muster once via a browser
 // OAuth code flow (PKCE). The gateway stores the resulting muster refresh
-// token (encrypted at rest) keyed by Slack user ID, then silently mints a fresh
-// short-lived human muster token for each message via TokenFor. That token is
-// forwarded onto the A2A request so the downstream agent runs token-exchange
-// with the human as the verifiable subject.
+// token (encrypted at rest) keyed by Slack user ID, then silently obtains a
+// fresh short-lived human token for each message via TokenFor and forwards it
+// onto the A2A request as the human subject.
+//
+// The forwarded token is the upstream dex id_token, which muster returns in the
+// token response alongside its own opaque access token. dex is the sole SSO
+// authority and muster never signs tokens, so the id_token (a dex-issued OIDC
+// JWT) is what a downstream validates the human identity against. The opaque
+// access token is used only to read the linked identity's email from the
+// userinfo endpoint.
 //
 // Discovery uses RFC 8414 OAuth Authorization Server Metadata
-// (/.well-known/oauth-authorization-server) and the linked identity's email is
-// read from the metadata's userinfo endpoint -- muster issues opaque access
-// tokens, so there is no id_token signature to verify here; the gateway trusts
-// the token muster just handed it over TLS (same trust model as the muster CLI).
+// (/.well-known/oauth-authorization-server).
 //
 // The HTTP surface is three handlers mounted on the gateway router:
 //
@@ -74,10 +77,10 @@ const defaultStateTTL = 15 * time.Minute
 // grantTypeRefreshToken is the OAuth grant type advertised in the CIMD document.
 const grantTypeRefreshToken = "refresh_token"
 
-// accessTokenRefreshSkew refreshes a cached muster access token this long
-// before it actually expires, so a token handed to a downstream A2A call is not
-// about to expire mid-request.
-const accessTokenRefreshSkew = 60 * time.Second
+// tokenRefreshSkew refreshes a cached token this long before it actually
+// expires, so a token handed to a downstream A2A call is not about to expire
+// mid-request.
+const tokenRefreshSkew = 60 * time.Second
 
 // ErrNotLinked is returned by TokenFor when no muster link exists for the Slack
 // user. Callers treat it as a signal to prompt the user to sign in.
@@ -526,11 +529,24 @@ func (l *Linker) Exchange(ctx context.Context, code, codeVerifier string) (*Link
 	if tok.RefreshToken == "" {
 		return nil, errors.New("musterlink: token response carried no refresh token (offline_access not granted?)")
 	}
+	// The dex id_token is the credential forwarded downstream; a link without
+	// one can never serve a turn, so fail the sign-in here instead of storing a
+	// link that errors on every message.
+	idToken, _ := tok.Extra("id_token").(string)
+	if idToken == "" {
+		return nil, errors.New("musterlink: token response carried no id_token (openid scope missing or upstream IdP misconfigured?)")
+	}
 	sub, email, err := l.userinfo(ctx, tok.AccessToken)
 	if err != nil {
 		return nil, err
 	}
-	return &Link{Sub: sub, Email: email, RefreshToken: tok.RefreshToken}, nil
+	return &Link{
+		Sub:          sub,
+		Email:        email,
+		RefreshToken: tok.RefreshToken,
+		IDToken:      idToken,
+		Expiry:       idTokenExpiry(idToken, tok.Expiry),
+	}, nil
 }
 
 // userinfo fetches the muster identity claims using the access token.
@@ -569,25 +585,22 @@ func (l *Linker) userinfo(ctx context.Context, accessToken string) (sub, email s
 	return ui.Sub, ui.Email, nil
 }
 
-// TokenFor returns a fresh short-lived human muster access token for the Slack
-// user. It reuses a still-valid cached access token when one is stored, and
-// only when none is valid does it refresh: it spends the stored (rotating)
-// muster refresh token, caches the new access token with its expiry, rotates
-// the stored refresh token, and persists both. It returns ErrNotLinked when no
-// link exists and drops the link on a hard refresh failure (invalid/expired
-// refresh token) so the next attempt prompts a clean re-link.
+// TokenFor returns a fresh short-lived human token (the dex id_token) for the
+// Slack user, to be forwarded as the subject on A2A requests. It reuses a
+// still-valid cached id_token when one is stored, and only when none is valid
+// does it refresh: it spends the stored (rotating) muster refresh token, caches
+// the new id_token with its expiry, rotates the stored refresh token, and
+// persists both. It returns ErrNotLinked when no link exists and drops the link
+// on a hard refresh failure (invalid/expired refresh token) so the next attempt
+// prompts a clean re-link.
 //
 // Refreshes are serialized per user: a Slack turn can drive several TokenFor
 // calls (event retries, concurrent messages), and muster invalidates the old
 // refresh token on rotation, so two simultaneous refreshes would race and burn
-// the link. The cached access token means those extra calls return without
+// the link. The cached id_token means those extra calls return without
 // refreshing at all.
-//
-// ponytail: returns the access token as the forwarded subject token. If the
-// downstream STS leg requires the id_token JWT instead, prefer
-// tok.Extra("id_token") here -- a one-line switch.
 func (l *Linker) TokenFor(ctx context.Context, slackUserID string) (string, error) {
-	// Fast path: a still-valid cached access token avoids a refresh (and the
+	// Fast path: a still-valid cached id_token avoids a refresh (and the
 	// per-user lock) entirely.
 	if link, ok := l.store.Get(slackUserID); ok {
 		if tok := validCachedToken(link, l.now()); tok != "" {
@@ -623,30 +636,61 @@ func (l *Linker) TokenFor(ctx context.Context, slackUserID string) (string, erro
 		}
 		return "", fmt.Errorf("musterlink: refresh token for slack user: %w", err)
 	}
-	if tok.AccessToken == "" {
-		return "", errors.New("musterlink: refresh response carried no access token")
-	}
+	// The refresh succeeded, so muster has already rotated the refresh token
+	// server-side; persist it even when the response is unusable, or the stored
+	// token is spent and the next refresh burns the link with invalid_grant.
 	updated := *link
 	if tok.RefreshToken != "" {
 		updated.RefreshToken = tok.RefreshToken
 	}
-	updated.AccessToken = tok.AccessToken
-	updated.Expiry = tok.Expiry
+	idToken, _ := tok.Extra("id_token").(string)
+	if idToken == "" {
+		updated.IDToken = ""
+		updated.Expiry = time.Time{}
+		l.store.Put(slackUserID, &updated)
+		return "", errors.New("musterlink: refresh response carried no id_token")
+	}
+	updated.IDToken = idToken
+	updated.Expiry = idTokenExpiry(idToken, tok.Expiry)
 	l.store.Put(slackUserID, &updated)
-	return tok.AccessToken, nil
+	return idToken, nil
 }
 
-// validCachedToken returns the link's cached access token when it is present
-// and not within accessTokenRefreshSkew of expiry, else "". A zero Expiry is
-// treated as unknown and forces a refresh.
+// validCachedToken returns the link's cached id_token when it is present and
+// not within tokenRefreshSkew of expiry, else "". A zero Expiry is treated as
+// unknown and forces a refresh.
 func validCachedToken(link *Link, now time.Time) string {
-	if link.AccessToken == "" || link.Expiry.IsZero() {
+	if link.IDToken == "" || link.Expiry.IsZero() {
 		return ""
 	}
-	if now.Add(accessTokenRefreshSkew).Before(link.Expiry) {
-		return link.AccessToken
+	if now.Add(tokenRefreshSkew).Before(link.Expiry) {
+		return link.IDToken
 	}
 	return ""
+}
+
+// idTokenExpiry reads the exp claim from a JWT id_token without verifying its
+// signature. It falls back to the supplied token expiry when the id_token is
+// not a decodable JWT or carries no exp. The fallback is best-effort: it
+// assumes the dex id_token lives at least as long as the muster access token,
+// so an undecodable id_token is refreshed no later than the access token would
+// be.
+func idTokenExpiry(idToken string, fallback time.Time) time.Time {
+	parts := strings.Split(idToken, ".")
+	if len(parts) != 3 {
+		return fallback
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return fallback
+	}
+	var claims struct {
+		Exp int64 `json:"exp"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil || claims.Exp == 0 {
+		return fallback
+	}
+	return time.Unix(claims.Exp, 0)
 }
 
 // lockUser returns the per-user refresh lock, held; the caller defers the

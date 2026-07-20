@@ -26,15 +26,15 @@ type Link struct {
 	Email        string    `json:"email"`
 	RefreshToken string    `json:"refresh_token"`
 	LinkedAt     time.Time `json:"linked_at"`
-	// AccessToken caches the last minted short-lived muster access token so the
-	// gateway reuses it across messages instead of refreshing on every call.
-	// muster rotates refresh tokens, so refreshing per message (and Slack event
-	// retries make that several times per turn) races the rotation: the second
-	// refresh reuses an already-rotated token, fails invalid_grant, and burns
-	// the link. Caching until expiry collapses a turn to at most one refresh.
-	AccessToken string `json:"access_token,omitempty"`
-	// Expiry is when AccessToken expires. Zero means unknown -> always refresh.
-	Expiry time.Time `json:"expiry,omitempty"`
+	// IDToken caches the last dex id_token obtained for this user so the gateway
+	// reuses it across messages instead of refreshing on every call. muster
+	// rotates refresh tokens, so refreshing per message (and Slack event retries
+	// make that several times per turn) races the rotation: the second refresh
+	// reuses an already-rotated token, fails invalid_grant, and burns the link.
+	// Caching until expiry collapses a turn to at most one refresh.
+	IDToken string `json:"id_token,omitempty"`
+	// Expiry is when IDToken expires. Zero means unknown -> always refresh.
+	Expiry time.Time `json:"expiry,omitzero"`
 }
 
 // Store persists Slack-user -> muster Link associations. The interface is

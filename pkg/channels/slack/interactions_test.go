@@ -12,12 +12,14 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/giantswarm/klaus-gateway/pkg/auth/musterlink"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 )
 
@@ -58,12 +60,20 @@ func slackInteractionPayload(t *testing.T, actionID, threadID, channelID, messag
 // fakeGateway captures SendCompletion calls.
 type fakeGateway struct {
 	deltas []channels.OutboundDelta
+
+	mu      sync.Mutex
+	sends   int
+	lastMsg channels.InboundMessage
 }
 
 func (g *fakeGateway) Resolve(_ context.Context, _ channels.InboundMessage) (channels.InstanceRef, error) {
 	return channels.InstanceRef{Name: "i1"}, nil
 }
-func (g *fakeGateway) SendCompletion(_ context.Context, _ channels.InstanceRef, _ channels.InboundMessage) (<-chan channels.OutboundDelta, error) {
+func (g *fakeGateway) SendCompletion(_ context.Context, _ channels.InstanceRef, msg channels.InboundMessage) (<-chan channels.OutboundDelta, error) {
+	g.mu.Lock()
+	g.sends++
+	g.lastMsg = msg
+	g.mu.Unlock()
 	ch := make(chan channels.OutboundDelta, len(g.deltas)+1)
 	for _, d := range g.deltas {
 		ch <- d
@@ -73,6 +83,20 @@ func (g *fakeGateway) SendCompletion(_ context.Context, _ channels.InstanceRef, 
 }
 func (g *fakeGateway) FetchHistory(_ context.Context, _ channels.InstanceRef) ([]channels.Message, error) {
 	return nil, nil
+}
+
+// sendCount reports how many times SendCompletion (a task resume) was called.
+func (g *fakeGateway) sendCount() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.sends
+}
+
+// lastCompletion returns the message of the most recent SendCompletion call.
+func (g *fakeGateway) lastCompletion() channels.InboundMessage {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.lastMsg
 }
 
 func TestInteractionsHandler_Approve(t *testing.T) {
@@ -209,6 +233,181 @@ func TestInteractionsHandler_NoPendingTask(t *testing.T) {
 	rr := httptest.NewRecorder()
 	a.ixHandler.ServeHTTP(rr, req)
 	require.Equal(t, http.StatusOK, rr.Code)
+}
+
+// --- OBO-enabled button-resume (handleDecision) ---
+
+// decisionOBO is a test OBOTokenSource for the button-resume path: it mints
+// token for linkedUser and returns musterlink.ErrNotLinked for anyone else (an
+// unlinked / different clicker), which drives the sign-in prompt.
+type decisionOBO struct {
+	linkedUser string
+	token      string
+}
+
+func (o *decisionOBO) TokenFor(_ context.Context, slackUserID string) (string, error) {
+	if slackUserID == o.linkedUser {
+		return o.token, nil
+	}
+	return "", musterlink.ErrNotLinked
+}
+
+func (o *decisionOBO) LinkURL(slackUserID string) string {
+	return "https://gw.example.com/auth/slack/link?u=signed-" + slackUserID
+}
+
+func (o *decisionOBO) Unlink(string) {}
+
+// ixSink records the Slack Web API calls the interactions path makes.
+type ixSink struct {
+	mu        sync.Mutex
+	posts     []map[string]any
+	updates   []map[string]any
+	ephemeral []map[string]any
+}
+
+func (s *ixSink) counts() (posts, updates, ephemeral int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.posts), len(s.updates), len(s.ephemeral)
+}
+
+func (s *ixSink) updateTexts() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, 0, len(s.updates))
+	for _, u := range s.updates {
+		if t, ok := u["text"].(string); ok {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// newIxSlackServer starts a fake Slack Web API that records chat.postMessage,
+// chat.update, and chat.postEphemeral calls and acks everything.
+func newIxSlackServer(t *testing.T) (*httptest.Server, *ixSink) {
+	t.Helper()
+	s := &ixSink{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		buf := new(bytes.Buffer)
+		buf.ReadFrom(r.Body) //nolint:errcheck,gosec
+		var v map[string]any
+		_ = json.Unmarshal(buf.Bytes(), &v)
+		switch {
+		case strings.HasSuffix(r.URL.Path, "chat.postMessage"):
+			s.mu.Lock()
+			s.posts = append(s.posts, v)
+			s.mu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "ts": "1000.0001"})
+		case strings.HasSuffix(r.URL.Path, "chat.update"):
+			s.mu.Lock()
+			s.updates = append(s.updates, v)
+			s.mu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "ts": "2000.0001"})
+		case strings.HasSuffix(r.URL.Path, "chat.postEphemeral"):
+			s.mu.Lock()
+			s.ephemeral = append(s.ephemeral, v)
+			s.mu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		case strings.HasSuffix(r.URL.Path, "users.info"):
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok":   true,
+				"user": map[string]any{"profile": map[string]any{"email": "clicker@example.com"}},
+			})
+		default:
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv, s
+}
+
+// serveInteraction signs and drives a block_actions payload through the
+// interactions HTTP handler.
+func serveInteraction(t *testing.T, a *Adapter, secret, actionID, threadID, channelID, messageTS, userID string) {
+	t.Helper()
+	body := slackInteractionPayload(t, actionID, threadID, channelID, messageTS, userID)
+	req := httptest.NewRequest(http.MethodPost, "/channels/slack/interactions", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	signRequest(t, req, body, secret)
+	rr := httptest.NewRecorder()
+	a.ixHandler.ServeHTTP(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code)
+}
+
+// A button click whose clicker cannot mint a human token (here: an unlinked /
+// different clicker) must leave the pending task AND its buttons intact and drive
+// the sign-in prompt, so the click stays retryable — never consume the task or
+// rewrite the message to "Approved" before the token gate.
+func TestHandleDecision_OBO_TokenMintFailurePreservesTask(t *testing.T) {
+	const secret = "test-secret"
+	srv, sink := newIxSlackServer(t)
+
+	gw := &fakeGateway{}
+	a := &Adapter{
+		APIBase:      srv.URL,
+		Secrets:      Secrets{BotToken: "test-bot-token", SigningSecret: secret}, //nolint:gosec
+		DefaultAgent: "worker",
+		OBO:          &decisionOBO{linkedUser: "U_LINKED", token: "human-token"},
+	}
+	require.NoError(t, a.Start(t.Context(), gw))
+
+	a.storePendingTask("T001", &pendingTask{
+		TaskID:    "task-abc",
+		AgentRef:  "worker",
+		Channel:   "C001",
+		ChannelID: "C001",
+	})
+
+	serveInteraction(t, a, secret, "hitl_approve", "T001", "C001", "MSG001", "U_OTHER")
+
+	// The sign-in prompt (ephemeral) is the terminal action on the failure path.
+	require.Eventually(t, func() bool {
+		_, _, eph := sink.counts()
+		return eph >= 1
+	}, 2*time.Second, 10*time.Millisecond, "token-mint failure must drive a sign-in prompt")
+
+	posts, updates, _ := sink.counts()
+	require.Zero(t, updates, "buttons must not be rewritten on token-mint failure")
+	require.Zero(t, posts, "no resume placeholder must be posted on token-mint failure")
+	require.True(t, a.hasPendingTask("T001"), "pending task must be preserved for retry")
+	require.Zero(t, gw.sendCount(), "the paused task must not be resumed on token-mint failure")
+}
+
+// On a successful token mint the button-resume path is unchanged: the message is
+// rewritten to the approval text, the task is consumed, and the resume carries
+// the clicker's human token.
+func TestHandleDecision_OBO_SuccessResumes(t *testing.T) {
+	const secret = "test-secret"
+	srv, sink := newIxSlackServer(t)
+
+	gw := &fakeGateway{deltas: []channels.OutboundDelta{{Content: "done"}, {Done: true}}}
+	a := &Adapter{
+		APIBase:      srv.URL,
+		Secrets:      Secrets{BotToken: "test-bot-token", SigningSecret: secret}, //nolint:gosec
+		DefaultAgent: "worker",
+		OBO:          &decisionOBO{linkedUser: "U_LINKED", token: "human-token"},
+	}
+	require.NoError(t, a.Start(t.Context(), gw))
+
+	a.storePendingTask("T001", &pendingTask{
+		TaskID:    "task-abc",
+		AgentRef:  "worker",
+		Channel:   "C001",
+		ChannelID: "C001",
+	})
+
+	serveInteraction(t, a, secret, "hitl_approve", "T001", "C001", "MSG001", "U_LINKED")
+
+	require.Eventually(t, func() bool {
+		return gw.sendCount() >= 1
+	}, 2*time.Second, 10*time.Millisecond, "a linked clicker must resume the paused task")
+
+	require.Contains(t, sink.updateTexts(), "✅ _Approved._", "success path must rewrite the message to the approval text")
+	require.False(t, a.hasPendingTask("T001"), "resumed task must be consumed")
+	require.Equal(t, "human-token", gw.lastCompletion().BearerToken, "the resume must carry the clicker's human token")
 }
 
 func TestIsActiveThread(t *testing.T) {

@@ -133,10 +133,13 @@ func (f *Facade) sendViaA2A(ctx context.Context, msg InboundMessage) (<-chan Out
 	return out, nil
 }
 
-// withChannelAuth seeds ctx with the target agent ref and the caller's
-// forwarded bearer token for the A2A client.
+// withChannelAuth seeds ctx with the target agent ref, the originating channel
+// name, and the caller's forwarded bearer token for the A2A client. The channel
+// name lets the token source enforce per-channel credential policy (e.g. no
+// service-account fallback for Slack when account linking is enabled).
 func withChannelAuth(ctx context.Context, msg InboundMessage) context.Context {
 	ctx = pkga2a.WithAgentRef(ctx, msg.AgentRef)
+	ctx = pkga2a.WithChannel(ctx, msg.Channel)
 	ctx = pkga2a.WithForwardedToken(ctx, msg.BearerToken)
 	return ctx
 }
