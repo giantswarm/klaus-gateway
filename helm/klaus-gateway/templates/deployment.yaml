@@ -144,12 +144,6 @@ spec:
         - name: KLAUS_GATEWAY_SLACK_DROP_STALE
           value: "true"
         {{- end }}
-        {{- if .Values.cli.enabled }}
-        - name: KLAUS_GATEWAY_CLI_ENABLED
-          value: "true"
-        {{- end }}
-        - name: KLAUS_GATEWAY_WEB_ENABLED
-          value: {{ .Values.web.enabled | quote }}
         {{- if and .Values.slack.enabled (.Values.slack.progress).mode }}
         - name: KLAUS_GATEWAY_SLACK_PROGRESS_MODE
           value: {{ .Values.slack.progress.mode | quote }}
@@ -170,6 +164,10 @@ spec:
         - name: KLAUS_GATEWAY_SLACK_CLEAR_REACTION_ON_DONE
           value: {{ .Values.slack.progress.clearReactionOnDone | quote }}
         {{- end }}
+        - name: KLAUS_GATEWAY_CLI_ENABLED
+          value: {{ .Values.cli.enabled | quote }}
+        - name: KLAUS_GATEWAY_WEB_ENABLED
+          value: {{ .Values.web.enabled | quote }}
         {{- if .Values.obo.enabled }}
         # Slack OBO. client_id is auto-derived from the callback base URL (CIMD),
         # so no client-id value is wired here.
