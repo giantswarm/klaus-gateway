@@ -244,6 +244,29 @@ slack:
   # dmOnly restricts the adapter to direct messages: channel messages and
   # @-mentions in channels are ignored. Rendered as SLACK_DM_ONLY. Default false.
   dmOnly: false
+  # dropStale ignores Slack events older than the gateway's start time, so a
+  # restart never replays messages queued while it was down. Rendered as
+  # SLACK_DROP_STALE. Default false.
+  dropStale: false
+  # progress configures how a turn's progress is shown in Slack.
+  progress:
+    # mode selects the display: "auto" (reactions, falling back to text on
+    # missing scope), "reactions", or "text". Rendered as SLACK_PROGRESS_MODE.
+    # Empty lets the binary default (auto).
+    mode: ""
+    # emojis override the reaction emoji names (no colons) for a turn that is
+    # working / done / failed. Rendered as SLACK_WORKING_EMOJI, SLACK_DONE_EMOJI,
+    # SLACK_FAILED_EMOJI. Empty lets the binary default (eyes / white_check_mark
+    # / x).
+    emojis:
+      working: ""
+      done: ""
+      failed: ""
+    # clearReactionOnDone: on a successful turn, remove the working reaction
+    # without adding a done reaction; set false to swap in the done emoji
+    # instead. Rendered as SLACK_CLEAR_REACTION_ON_DONE. Leave unset (null) to
+    # use the binary default (true); set true or false to override explicitly.
+    clearReactionOnDone: null
   # botToken / signingSecret / appToken: when set (typically SOPS-encrypted via
   # the agentic-platform umbrella), the chart renders the secretName Secret from
   # them. Leave empty to reference an externally-managed Secret of that name.
