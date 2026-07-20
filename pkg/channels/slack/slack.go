@@ -96,6 +96,12 @@ type Adapter struct {
 	// reaction is swapped for DoneEmoji. The failed reaction is unaffected.
 	ClearReactionOnDone bool
 
+	// AgentCards resolves an agentRef to its A2A AgentCard display identity
+	// (name/icon), the source of per-message agent branding. Nil disables it
+	// (messages post under the app default). kagent's card carries a name but no
+	// icon yet, so agent messages are named but icon-less until kagent exposes it.
+	AgentCards AgentCardResolver
+
 	gw        channels.Gateway
 	started   atomic.Bool
 	startUnix int64 // process start; events older than this are dropped on reconnect
@@ -127,6 +133,14 @@ type Adapter struct {
 
 	seenEventsMu sync.Mutex
 	seenEvents   map[string]time.Time // Slack event_id -> dedup entry expiry
+
+	botIDMu   sync.Mutex
+	botUserID string // this bot's own Slack user ID (auth.test), cached; "" until resolved
+
+	// dmRedirectMu guards dmRedirected, the IM channels already given the DM
+	// redirect within the current dmRedirectTTL window.
+	dmRedirectMu sync.Mutex
+	dmRedirected map[string]ttlEntry[struct{}]
 
 	// detailsMu guards details. Absent thread resolves to detailsOn (the MVP
 	// default). Entries idle past threadStateTTL are evicted.
@@ -272,14 +286,28 @@ func (a *Adapter) acceptEvent(inner slackInnerEvent) bool {
 			"channel", inner.Channel, "channel_type", inner.ChannelType)
 		return false
 	}
-	if a.DropStaleEvents && a.startUnix > 0 {
-		if sec := eventUnix(inner.TS); sec > 0 && sec < a.startUnix {
-			a.Logger.Info("slack: dropping stale event from before gateway start",
-				"event_ts", inner.TS, "channel", inner.Channel)
-			return false
-		}
+	return !a.staleEvent(inner)
+}
+
+// staleEvent reports whether the event predates this process and DropStaleEvents
+// is on. Socket Mode redelivers events queued while a consumer was
+// disconnected, so without this a gateway restart replays old events. Uses the
+// message ts, falling back to the envelope event_ts (the only timestamp a
+// member_joined_channel event carries).
+func (a *Adapter) staleEvent(inner slackInnerEvent) bool {
+	if !a.DropStaleEvents || a.startUnix == 0 {
+		return false
 	}
-	return true
+	ts := inner.TS
+	if ts == "" {
+		ts = inner.EventTS
+	}
+	if sec := eventUnix(ts); sec > 0 && sec < a.startUnix {
+		a.Logger.Info("slack: dropping stale event from before gateway start",
+			"event_ts", ts, "channel", inner.Channel)
+		return true
+	}
+	return false
 }
 
 // eventUnix parses the integer second component of a Slack ts ("123.456").
@@ -370,14 +398,109 @@ func (a *Adapter) resolveSubjectEmail(ctx context.Context, msg *channels.Inbound
 	}
 }
 
-// apiClient returns a Slack Web API client using the adapter's bot token
-// and the optional test-override base URL.
+// apiClient returns a Slack Web API client using the adapter's bot token and the
+// optional test-override base URL. It posts under the app's default identity
+// (Swarmgeist); agentClient posts under the agent's identity.
 func (a *Adapter) apiClient() *slackAPIClient {
 	base := a.APIBase
 	if base == "" {
 		base = slackAPIBase
 	}
 	return &slackAPIClient{botToken: a.Secrets.BotToken, baseURL: base}
+}
+
+// AgentCardResolver yields an agent's display identity (name/icon) from its A2A
+// AgentCard. Implemented by pkg/a2a.AgentCardClient; nil disables card branding.
+type AgentCardResolver interface {
+	CardIdentity(ctx context.Context, agentRef string) (username, iconURL string)
+}
+
+// botID returns this bot's own Slack user ID (via auth.test), caching it. Used
+// to recognise the bot's own member_joined_channel event. Returns "" on lookup
+// failure (logged); the caller then cannot confirm a self-join and skips the intro.
+func (a *Adapter) botID(ctx context.Context) string {
+	a.botIDMu.Lock()
+	id := a.botUserID
+	a.botIDMu.Unlock()
+	if id != "" {
+		return id
+	}
+	got, err := a.apiClient().authTest(ctx)
+	if err != nil {
+		a.Logger.Warn("slack: auth.test failed, cannot resolve bot user ID", "error", err)
+		return ""
+	}
+	a.botIDMu.Lock()
+	a.botUserID = got
+	a.botIDMu.Unlock()
+	return got
+}
+
+// postChannelIntro posts the one-time Swarmgeist-branded introduction when the
+// bot is added to a channel. Best-effort.
+func (a *Adapter) postChannelIntro(ctx context.Context, slackChannel string) {
+	if _, err := a.apiClient().postMessage(ctx, slackChannel, channelIntro, ""); err != nil {
+		a.Logger.Warn("slack: post channel intro failed", "channel", slackChannel, "error", err)
+	}
+}
+
+// dmRedirectTTL bounds how often the DM redirect is repeated per IM channel,
+// so a user replying to the redirect is not answered with another redirect.
+const dmRedirectTTL = time.Hour
+
+// postDMRedirect points a user who DMs the bot to a channel (DMs are not a
+// supported surface in channel mode). Posted at most once per IM channel per
+// dmRedirectTTL window. Best-effort.
+func (a *Adapter) postDMRedirect(ctx context.Context, slackChannel string) {
+	now := time.Now()
+	a.dmRedirectMu.Lock()
+	if a.dmRedirected == nil {
+		a.dmRedirected = make(map[string]ttlEntry[struct{}])
+	}
+	sweepExpired(a.dmRedirected, now)
+	if _, seen := a.dmRedirected[slackChannel]; seen {
+		a.dmRedirectMu.Unlock()
+		return
+	}
+	a.dmRedirected[slackChannel] = ttlEntry[struct{}]{expires: now.Add(dmRedirectTTL)}
+	a.dmRedirectMu.Unlock()
+
+	if _, err := a.apiClient().postMessage(ctx, slackChannel, dmRedirect, ""); err != nil {
+		a.Logger.Warn("slack: post DM redirect failed", "channel", slackChannel, "error", err)
+	}
+}
+
+// agentClient returns a Slack client that posts under the agent's AgentCard
+// display identity, for the agent's own replies and confirmation prompts.
+// Falls back to the app default when no card resolver is set or the lookup is
+// empty.
+func (a *Adapter) agentClient(ctx context.Context, agentRef string) *slackAPIClient {
+	c := a.apiClient()
+	if a.AgentCards != nil {
+		c.username, c.iconURL = a.AgentCards.CardIdentity(ctx, agentRef)
+	}
+	return c
+}
+
+// agentDisplayName is the agent's human-facing name for Swarmgeist's own
+// messages (e.g. the launch announcement): the AgentCard name, or the agentRef
+// when no card name is known.
+func (a *Adapter) agentDisplayName(ctx context.Context, agentRef string) string {
+	if a.AgentCards != nil {
+		if name, _ := a.AgentCards.CardIdentity(ctx, agentRef); name != "" {
+			return name
+		}
+	}
+	return agentRef
+}
+
+// postLaunchAnnouncement posts the Swarmgeist-branded handoff notice when a new
+// thread starts, making the app-to-agent transition explicit. Best-effort.
+func (a *Adapter) postLaunchAnnouncement(ctx context.Context, slackChannel, threadID, agentRef string) {
+	text := fmt.Sprintf("🚀 Bringing in *%s* to help. Keep the conversation in this thread; mention me followed by `/help` to list what I can do.", a.agentDisplayName(ctx, agentRef))
+	if _, err := a.apiClient().postMessage(ctx, slackChannel, text, threadID); err != nil {
+		a.Logger.Warn("slack: post launch announcement failed", "thread", threadID, "error", err)
+	}
 }
 
 // postSignIn posts the ephemeral "Sign in to Giant Swarm" prompt for the
@@ -511,17 +634,37 @@ func (a *Adapter) hasPendingTask(threadID string) bool {
 }
 
 // handleInbound runs the shared inbound pipeline for one Slack event:
-// dedup, accept-gate, normalise, active-thread gate (for channel thread
-// replies), command handling, then dispatch. Both transports (the Events API
-// HTTP handler and the Socket Mode reader) call it so the two behave
-// identically, including deduplication. ctx is the adapter-lifecycle context;
-// eventID is the delivery's Slack event_id ("" when the transport carries none).
+// dedup, member-join intro, accept-gate, normalise, active-thread gate (for
+// channel thread replies), command handling, then dispatch. Both transports
+// (the Events API HTTP handler and the Socket Mode reader) call it so the two
+// behave identically, including deduplication. ctx is the adapter-lifecycle
+// context; eventID is the delivery's Slack event_id ("" when the transport
+// carries none).
 func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, eventID string) {
 	if eventID != "" && a.seenEvent(eventID) {
 		a.Logger.Info("slack: dropping duplicate event delivery", "event_id", eventID)
 		return
 	}
+	// The bot being added to a channel -> one-time intro. Handled before
+	// acceptEvent: a join carries no text and the DM-only gate must not swallow
+	// it. Only the bot's own join (user == bot ID) triggers the intro.
+	if inner.Type == evtMemberJoined {
+		if a.staleEvent(inner) {
+			return
+		}
+		if inner.User != "" && inner.User == a.botID(ctx) {
+			a.postChannelIntro(ctx, inner.Channel)
+		}
+		return
+	}
 	if !a.acceptEvent(inner) {
+		return
+	}
+	// Channels are the supported surface: when not DM-only, a real user DM gets a
+	// polite redirect instead of being processed. Bot messages and non-message
+	// subtypes are skipped (no reply loop). DM-only mode serves DMs as before.
+	if !a.DMOnly && inner.isDM() && inner.BotID == "" && inner.SubType == "" {
+		a.postDMRedirect(ctx, inner.Channel)
 		return
 	}
 	threadReplyOnly := inner.threadReplyOnly()
@@ -710,6 +853,16 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 		return fmt.Errorf("slack: resolve: %w", err)
 	}
 
+	// New channel thread (a root mention starting a conversation): post the
+	// Swarmgeist handoff notice before the agent takes over, so the app-to-agent
+	// transition is explicit. Posted only once the agent resolved, so a resolve
+	// failure does not announce a launch and then error out. Skipped for thread
+	// replies, resumed tasks, and DMs (a 1:1 DM is the agent conversation
+	// itself, with no channel handoff). Slack DM channel IDs start with "D".
+	if firstSight && msg.ThreadID == msg.MessageID && msg.TaskID == "" && !strings.HasPrefix(slackChannel, "D") {
+		a.postLaunchAnnouncement(ctx, slackChannel, msg.ThreadID, msg.AgentRef)
+	}
+
 	turnCtx, done := a.registerTurn(ctx, msg.ThreadID)
 	defer done()
 
@@ -719,14 +872,13 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 		return fmt.Errorf("slack: send completion: %w", err)
 	}
 
-	// The turn context feeds the whole stream (writer, auto-approved resumes) so
-	// /stop cancels a resumed segment too, and an aborted consumer releases the
-	// producer goroutine.
+	// The turn context feeds the whole stream so /stop cancels the turn, and an
+	// aborted consumer releases the producer goroutine.
 	var carried channels.TurnUsage
 	if task != nil {
 		carried = task.Usage
 	}
-	return a.streamResponse(turnCtx, a.apiClient(), deltas, msg, slackChannel, msg.ThreadID, msg.MessageID, thinkingPlaceholder, carried)
+	return a.streamResponse(turnCtx, a.agentClient(ctx, msg.AgentRef), deltas, msg, slackChannel, msg.ThreadID, msg.MessageID, thinkingPlaceholder, carried)
 }
 
 // humanToken mints the linked Slack user's muster token for a turn. When
@@ -891,6 +1043,9 @@ type slackInnerEvent struct {
 	ChannelType string `json:"channel_type,omitempty"`
 	TS          string `json:"ts"`
 	ThreadTS    string `json:"thread_ts,omitempty"`
+	// EventTS is the event envelope timestamp; the only timestamp a
+	// member_joined_channel event carries.
+	EventTS string `json:"event_ts,omitempty"`
 }
 
 // isDM reports whether the event originated in a 1:1 direct message. Slack sets

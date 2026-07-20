@@ -64,7 +64,7 @@ func sendAccessInteraction(t *testing.T, srv *httptest.Server, clicker, actionID
 func TestAccess_UnlinkedNewcomerPromptedToSignIn(t *testing.T) {
 	fake := newFakeSlackAPI()
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "hi", Done: true}}}
-	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
 	a.OBO = &fakeOBO{linkedUser: "U001", token: "tok"} // U001 linked, U999 not
 
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
@@ -84,7 +84,7 @@ func TestAccess_NewcomerApprovedReplaysMessage(t *testing.T) {
 	fakeURL := fake.server(t).URL
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok", Done: true}}}
 	// OBO nil: the newcomer is authenticated, so the flow skips sign-in.
-	_, srv := newEventsAdapter(t, gw, fakeURL)
+	_, srv := newEventsAdapter(t, gw, fakeURL, channelMode)
 
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
 	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
@@ -109,7 +109,7 @@ func TestAccess_NewcomerDeclinedDropsMessage(t *testing.T) {
 	fake := newFakeSlackAPI()
 	fakeURL := fake.server(t).URL
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok", Done: true}}}
-	_, srv := newEventsAdapter(t, gw, fakeURL)
+	_, srv := newEventsAdapter(t, gw, fakeURL, channelMode)
 
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
 	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
@@ -131,7 +131,7 @@ func TestAccess_NonInitiatorCannotGrant(t *testing.T) {
 	fake := newFakeSlackAPI()
 	fakeURL := fake.server(t).URL
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok", Done: true}}}
-	_, srv := newEventsAdapter(t, gw, fakeURL)
+	_, srv := newEventsAdapter(t, gw, fakeURL, channelMode)
 
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
 	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
@@ -156,7 +156,7 @@ func TestAccess_GrantWhileThreadBusyDeliversAfterRelease(t *testing.T) {
 	fakeURL := fake.server(t).URL
 	hold := make(chan struct{})
 	gw := &stubGateway{hold: hold}
-	_, srv := newEventsAdapter(t, gw, fakeURL)
+	_, srv := newEventsAdapter(t, gw, fakeURL, channelMode)
 
 	// The initiator's mention starts a turn that keeps the thread slot held.
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
@@ -189,7 +189,7 @@ func TestAccess_RestartSeedsInitiatorFromThreadRoot(t *testing.T) {
 	fake := newFakeSlackAPI()
 	fake.setResponse("conversations.replies", `{"ok":true,"messages":[{"user":"U001","ts":"100.000"}]}`)
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok", Done: true}}}
-	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
 
 	// Fresh process: the first event it ever sees is a reply into an existing
 	// thread rooted by U001.
@@ -220,7 +220,7 @@ func TestAccess_RootAuthorLookupFailureFallsBackToFirstPoster(t *testing.T) {
 	fake := newFakeSlackAPI()
 	fake.setFail("conversations.replies", "channel_not_found")
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok", Done: true}}}
-	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
 
 	sendEvent(t, srv, mention("U999", "hello", "300.000", "100.000"))
 
@@ -256,7 +256,7 @@ func TestAccess_BotAuthoredRootFallsBackToFirstPoster(t *testing.T) {
 	fake := newFakeSlackAPI()
 	fake.setResponse("conversations.replies", `{"ok":true,"messages":[{"bot_id":"B001","user":"UBOT","ts":"100.000"}]}`)
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok", Done: true}}}
-	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
 
 	sendEvent(t, srv, mention("U999", "hello", "300.000", "100.000"))
 
@@ -270,7 +270,7 @@ func TestAccess_BotAuthoredRootFallsBackToFirstPoster(t *testing.T) {
 func TestAccess_NewcomerTransientTokenErrorSurfaced(t *testing.T) {
 	fake := newFakeSlackAPI()
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok", Done: true}}}
-	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
 	// U999 is linked but minting fails transiently; U001 (the initiator) is
 	// unlinked, so their own turn aborts at the sign-in prompt after they are
 	// recorded as initiator.

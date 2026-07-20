@@ -403,3 +403,29 @@ func TestThreadInitiator_EmptyThreadReturnsEmpty(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, author)
 }
+
+// postJSON applies the client's display identity to the request without
+// mutating the caller's body map.
+func TestPostJSON_IdentityDoesNotMutateCallerBody(t *testing.T) {
+	var body atomic.Value
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		body.Store(string(raw))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"ok":true,"ts":"1.2"}`)
+	}))
+	defer srv.Close()
+
+	client := &slackAPIClient{botToken: "t", baseURL: srv.URL, username: "SRE agent", iconURL: "https://example.test/icon.png"}
+	requestBody := map[string]any{paramChannel: "C1", paramText: "hello"}
+	_, err := client.postJSON(t.Context(), "chat.postMessage", requestBody)
+	require.NoError(t, err)
+
+	var sent map[string]any
+	require.NoError(t, json.Unmarshal([]byte(body.Load().(string)), &sent))
+	require.Equal(t, "SRE agent", sent[paramUsername], "the request carries the identity")
+	require.Equal(t, "https://example.test/icon.png", sent[paramIconURL])
+
+	require.Equal(t, map[string]any{paramChannel: "C1", paramText: "hello"}, requestBody,
+		"the caller's body map must stay unmodified")
+}
