@@ -389,19 +389,31 @@ type fakeOBO struct {
 	token      string
 	tokenErr   error
 
-	mu       sync.Mutex
-	unlinked []string
-	linkURL  string
+	mu           sync.Mutex
+	unlinked     []string
+	linkURL      string
+	notYetLinked bool // when true, linkedUser is treated as unlinked until completeLink
 }
 
 func (f *fakeOBO) TokenFor(_ context.Context, slackUserID string) (string, error) {
-	if slackUserID == f.linkedUser {
+	f.mu.Lock()
+	notYet := f.notYetLinked
+	f.mu.Unlock()
+	if slackUserID == f.linkedUser && !notYet {
 		if f.tokenErr != nil {
 			return "", f.tokenErr
 		}
 		return f.token, nil
 	}
 	return "", musterlink.ErrNotLinked
+}
+
+// completeLink flips the user from unlinked to linked, simulating a finished
+// sign-in flow.
+func (f *fakeOBO) completeLink() {
+	f.mu.Lock()
+	f.notYetLinked = false
+	f.mu.Unlock()
 }
 
 func (f *fakeOBO) LinkURL(slackUserID string) string {
@@ -513,6 +525,138 @@ func TestDispatch_OBO_UnlinkedUserPromptsSignInAndDoesNotDispatch(t *testing.T) 
 		return len(ephemeral()) >= 1
 	}, 2*time.Second, 50*time.Millisecond, "unlinked user must be prompted to sign in")
 	require.Zero(t, gw.resolveCount(), "unlinked turn must not reach the agent (no M2M fallback)")
+}
+
+// An unlinked user's message is parked while they sign in and replayed through
+// dispatch once linked, so the question is answered without being re-typed.
+func TestDispatch_OBO_ParksUnlinkedMessageAndReplaysAfterLink(t *testing.T) {
+	var mu sync.Mutex
+	var captured []channels.InboundMessage
+	gw := &stubGateway{onResolve: func(msg channels.InboundMessage) {
+		mu.Lock()
+		captured = append(captured, msg)
+		mu.Unlock()
+	}}
+	fakeSlack, ephemeral := captureEphemeral(t)
+	defer fakeSlack.Close()
+	a, srv := newEventsAdapter(t, gw, fakeSlack.URL, channelMode)
+	obo := &fakeOBO{linkedUser: "U123", token: "human-token", notYetLinked: true, linkURL: "https://gw.example.com/link"}
+	a.OBO = obo
+
+	payload := `{"type":"event_callback","event":{"type":"app_mention","user":"U123","text":"<@BOT> what is failing?","channel":"C1","ts":"111.222"}}`
+	body := []byte(payload)
+	stamp, sig := signBody(t, "signing-secret", body)
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/channels/slack/events", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Slack-Request-Timestamp", stamp)
+	req.Header.Set("X-Slack-Signature", sig)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+
+	require.Eventually(t, func() bool {
+		return len(ephemeral()) >= 1
+	}, 2*time.Second, 50*time.Millisecond, "unlinked user must be prompted to sign in")
+	require.Zero(t, gw.resolveCount(), "the message must be parked, not dispatched, before linking")
+
+	// The user completes sign-in; the callback hook replays the parked message.
+	obo.completeLink()
+	a.OnUserLinked(context.Background(), "U123")
+
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(captured) == 1
+	}, 2*time.Second, 50*time.Millisecond, "the parked message must replay after linking")
+	mu.Lock()
+	got := captured[0]
+	mu.Unlock()
+	require.Equal(t, "human-token", got.BearerToken, "the replayed turn carries the human muster token")
+	require.Contains(t, got.Text, "what is failing?")
+}
+
+// multiUserOBO is a test OBOTokenSource with independent per-user link state, so
+// a test can link one user while another stays unlinked.
+type multiUserOBO struct {
+	mu     sync.Mutex
+	linked map[string]string // slackUser -> token
+}
+
+func (o *multiUserOBO) TokenFor(_ context.Context, slackUserID string) (string, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if tok, ok := o.linked[slackUserID]; ok {
+		return tok, nil
+	}
+	return "", musterlink.ErrNotLinked
+}
+
+func (o *multiUserOBO) link(slackUserID, token string) {
+	o.mu.Lock()
+	o.linked[slackUserID] = token
+	o.mu.Unlock()
+}
+
+func (o *multiUserOBO) LinkURL(string) string { return "https://gw.example.com/link" }
+func (o *multiUserOBO) Unlink(string)         {}
+
+// A newcomer who signs in mid-thread has their parked message replayed to the
+// access-consent step, not dispatched to the agent: linking authenticates them,
+// but the initiator must still approve before they can instruct the agent.
+func TestDispatch_OBO_NewcomerReplaysToAccessPromptNotAgent(t *testing.T) {
+	var mu sync.Mutex
+	var captured []channels.InboundMessage
+	gw := &stubGateway{onResolve: func(msg channels.InboundMessage) {
+		mu.Lock()
+		captured = append(captured, msg)
+		mu.Unlock()
+	}}
+	fakeSlack, ephemeral := captureEphemeral(t)
+	defer fakeSlack.Close()
+	a, srv := newEventsAdapter(t, gw, fakeSlack.URL, channelMode)
+	obo := &multiUserOBO{linked: map[string]string{"U1": "tok1"}}
+	a.OBO = obo
+
+	send := func(payload string) {
+		body := []byte(payload)
+		stamp, sig := signBody(t, "signing-secret", body)
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/channels/slack/events", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Slack-Request-Timestamp", stamp)
+		req.Header.Set("X-Slack-Signature", sig)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		require.NoError(t, resp.Body.Close())
+	}
+
+	// The initiator (linked) starts the thread and is dispatched.
+	send(`{"type":"event_callback","event":{"type":"app_mention","user":"U1","text":"<@BOT> hi","channel":"C1","ts":"111.222"}}`)
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(captured) == 1
+	}, 2*time.Second, 50*time.Millisecond, "the initiator's turn is dispatched")
+
+	// A newcomer (unlinked) tries to instruct in the same thread: parked + prompted
+	// to sign in, not dispatched.
+	send(`{"type":"event_callback","event":{"type":"app_mention","user":"U2","text":"<@BOT> me too","channel":"C1","ts":"333.444","thread_ts":"111.222"}}`)
+	require.Eventually(t, func() bool {
+		return len(ephemeral()) >= 1
+	}, 2*time.Second, 50*time.Millisecond, "the newcomer is prompted to sign in")
+	mu.Lock()
+	require.Equal(t, 1, len(captured), "an unlinked newcomer must not reach the agent")
+	mu.Unlock()
+
+	// The newcomer signs in; the replay lands at the access-consent prompt, still
+	// not dispatched to the agent.
+	obo.link("U2", "tok2")
+	a.OnUserLinked(context.Background(), "U2")
+	require.Eventually(t, func() bool {
+		return len(ephemeral()) >= 2
+	}, 2*time.Second, 50*time.Millisecond, "the replayed newcomer message posts the initiator access prompt")
+	mu.Lock()
+	require.Equal(t, 1, len(captured), "a linked-but-unapproved newcomer must not reach the agent on replay")
+	mu.Unlock()
 }
 
 // A linked user hitting a transient token-mint failure gets a clear error

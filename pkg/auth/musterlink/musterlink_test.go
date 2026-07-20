@@ -379,6 +379,52 @@ func TestCallbackStoresLinkOnEmailMatch(t *testing.T) {
 	require.Equal(t, "muster-sub", jwtSub(t, got.IDToken), "the code exchange seeds the cached dex id_token")
 }
 
+func TestCallbackFiresOnLinkedHook(t *testing.T) {
+	stub := newMusterStub(t, "klaus-gateway", "alice@example.com", "muster-sub")
+	store := NewMemStore()
+	var mu sync.Mutex
+	var linked []string
+	l, err := New(Config{
+		BaseURL:      stub.server.URL,
+		ClientID:     stub.clientID,
+		ClientSecret: "secret",
+		RedirectURL:  "https://gw.example.com" + CallbackPath,
+		StateKey:     []byte("hmac-state-key"),
+		Store:        store,
+		SlackEmail:   func(context.Context, string) (string, error) { return "alice@example.com", nil },
+		OnLinked: func(_ context.Context, slackUser string) {
+			mu.Lock()
+			linked = append(linked, slackUser)
+			mu.Unlock()
+		},
+	})
+	require.NoError(t, err)
+
+	driveCallback(t, l, "U1", http.StatusOK)
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, []string{"U1"}, linked, "OnLinked must fire once with the linked Slack user")
+}
+
+func TestCallbackDoesNotFireOnLinkedHookOnMismatch(t *testing.T) {
+	stub := newMusterStub(t, "klaus-gateway", "alice@example.com", "muster-sub")
+	var fired bool
+	l, err := New(Config{
+		BaseURL:      stub.server.URL,
+		ClientID:     stub.clientID,
+		ClientSecret: "secret",
+		RedirectURL:  "https://gw.example.com" + CallbackPath,
+		StateKey:     []byte("hmac-state-key"),
+		Store:        NewMemStore(),
+		SlackEmail:   func(context.Context, string) (string, error) { return "bob@example.com", nil },
+		OnLinked:     func(context.Context, string) { fired = true },
+	})
+	require.NoError(t, err)
+
+	driveCallback(t, l, "U1", http.StatusForbidden)
+	require.False(t, fired, "a rejected link must not fire OnLinked")
+}
+
 func TestCallbackRejectsMissingIDToken(t *testing.T) {
 	stub := newMusterStub(t, "klaus-gateway", "alice@example.com", "muster-sub")
 	stub.omitIDToken = true

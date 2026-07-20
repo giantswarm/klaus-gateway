@@ -204,7 +204,8 @@ func (a *Adapter) handleLoginCommand(ctx context.Context, slackUser, slackChanne
 		reply("_Could not determine your Slack user; sign-in is unavailable._")
 		return true
 	}
-	// Explicit request: post the sign-in prompt without the nudge throttle.
+	// Explicit request: post the prompt unconditionally, bypassing the
+	// parked-message throttle (maybePostSignIn).
 	a.postSignIn(ctx, slackChannel, threadID, slackUser)
 	return true
 }

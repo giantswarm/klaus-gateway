@@ -154,6 +154,11 @@ type Config struct {
 	// Slack user. At callback the muster identity email must equal it, else the
 	// link is rejected (anti-spoof). When nil the check is skipped.
 	SlackEmail func(ctx context.Context, slackUserID string) (string, error)
+	// OnLinked, when set, is invoked after a successful link so a caller can act
+	// on it (e.g. replay a message parked while the user signed in). It must not
+	// block: the callback HTTP response waits on it. The context is detached from
+	// the request, so it stays valid after the handler returns.
+	OnLinked func(ctx context.Context, slackUserID string)
 	// HTTPClient is used for discovery and userinfo calls. Nil uses
 	// http.DefaultClient.
 	HTTPClient *http.Client
@@ -180,6 +185,7 @@ type Linker struct {
 	stateKey      []byte
 	stateTTL      time.Duration
 	slackEmail    func(ctx context.Context, slackUserID string) (string, error)
+	onLinked      func(ctx context.Context, slackUserID string)
 	logger        *slog.Logger
 	now           func() time.Time
 
@@ -277,6 +283,7 @@ func New(cfg Config) (*Linker, error) {
 		stateKey:      cfg.StateKey,
 		stateTTL:      ttl,
 		slackEmail:    cfg.SlackEmail,
+		onLinked:      cfg.OnLinked,
 		logger:        logger,
 		now:           time.Now,
 		pending:       map[string]pendingAuth{},
@@ -506,6 +513,10 @@ func (l *Linker) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	link.LinkedAt = l.now()
 	l.store.Put(slackUser, link)
 	l.logger.Info("musterlink: linked slack user to muster identity", "slackUser", slackUser, "email", link.Email)
+
+	if l.onLinked != nil {
+		l.onLinked(context.WithoutCancel(ctx), slackUser)
+	}
 
 	l.renderPage(w, http.StatusOK, page{
 		Heading: "Success",
