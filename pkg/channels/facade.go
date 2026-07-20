@@ -81,6 +81,34 @@ func (f *Facade) SessionResumable(ctx context.Context, msg InboundMessage) (exis
 // turn's critical path.
 const sessionCheckTimeout = 3 * time.Second
 
+// SessionDeleter is the optional extension of SessionExistsChecker that can
+// remove a session. pkg/a2a.SessionsClient implements it.
+type SessionDeleter interface {
+	Delete(ctx context.Context, sessionID string) error
+}
+
+// ResetSession deletes the kagent session for msg's thread so the next turn
+// starts a fresh one. Used when the session's persisted history has become
+// unusable (the model API rejects it on every turn). Returns false when no
+// session client is configured or it cannot delete.
+func (f *Facade) ResetSession(ctx context.Context, msg InboundMessage) (bool, error) {
+	if f == nil || f.Sessions == nil {
+		return false, nil
+	}
+	deleter, ok := f.Sessions.(SessionDeleter)
+	if !ok {
+		return false, nil
+	}
+	contextID := SynthesizeContextID(msg.Channel, msg.ChannelID, msg.UserID, msg.ThreadID, msg.AgentRef)
+	ctx = withChannelAuth(ctx, msg)
+	ctx, cancel := context.WithTimeout(ctx, sessionCheckTimeout)
+	defer cancel()
+	if err := deleter.Delete(ctx, contextID); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // Resolve maps an InboundMessage to a live InstanceRef via the routing
 // table (creating a new instance on miss when the router has auto-create
 // enabled). On the A2A path (Executor set and AgentRef non-empty) routing is

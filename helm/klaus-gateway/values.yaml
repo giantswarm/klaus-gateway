@@ -326,6 +326,12 @@ obo:
   # storePath is set. Accepts 32 raw bytes or a base64/hex encoding of 32 bytes
   # (a SOPS-staged base64 value works directly). Provide via a SOPS value.
   storeKey: ""
+  # connectors enables the reactive Slack connector UX: the gateway detects a
+  # core_auth_login challenge in the agent's response stream and offers a
+  # "Connect <backend>" button from the login link the agent relays. The
+  # gateway does not call muster.
+  connectors:
+    enabled: false
 
 global:
   podSecurityStandards:

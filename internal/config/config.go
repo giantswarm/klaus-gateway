@@ -140,6 +140,11 @@ type OBOConfig struct {
 	// StateKeyFile holds the HMAC key used to sign link state (CSRF + binding
 	// the link to the requesting Slack user). Required when OBO is enabled.
 	StateKeyFile string
+	// ConnectorsEnabled turns on the reactive Slack "Connect <backend>" UX: the
+	// gateway detects a core_auth_login challenge in the agent's A2A stream and
+	// renders a Connect button from the login link the agent relays. The gateway
+	// does not call muster for this. Requires Enabled.
+	ConnectorsEnabled bool
 }
 
 // Config is the fully resolved runtime configuration.
@@ -249,6 +254,7 @@ func Load(args []string) (Config, error) {
 	fs.StringVar(&cfg.OBO.StorePath, "obo-store-path", cfg.OBO.StorePath, "Path to the encrypted bolt link store. Empty uses an in-memory store.")
 	fs.StringVar(&cfg.OBO.StoreKeyFile, "obo-store-key-file", cfg.OBO.StoreKeyFile, "Path to the 32-byte AES-256 key file for the link store (required with --obo-store-path).")
 	fs.StringVar(&cfg.OBO.StateKeyFile, "obo-state-key-file", cfg.OBO.StateKeyFile, "Path to the HMAC key file used to sign link state (required with --obo-enabled).")
+	fs.BoolVar(&cfg.OBO.ConnectorsEnabled, "obo-connectors-enabled", cfg.OBO.ConnectorsEnabled, "Enable the reactive Slack connector UX: the gateway detects a core_auth_login challenge in the agent's response stream and renders a Connect button from the login link the agent relays. The gateway does not call muster. Requires --obo-enabled.")
 
 	fs.Usage = func() {
 		_, _ = fmt.Fprintf(fs.Output(), "klaus-gateway -- channel and routing gateway in front of klaus instances.\n\n")
@@ -386,6 +392,9 @@ func applyEnv(cfg *Config) {
 	if v, ok := lookup("OBO_STATE_KEY_FILE"); ok {
 		cfg.OBO.StateKeyFile = v
 	}
+	if v, ok := lookup("OBO_CONNECTORS_ENABLED"); ok {
+		cfg.OBO.ConnectorsEnabled = strings.EqualFold(v, "true") || v == "1"
+	}
 }
 
 func lookup(key string) (string, bool) {
@@ -432,6 +441,9 @@ func (c Config) Validate() error {
 		if (c.OBO.StorePath == "") != (c.OBO.StoreKeyFile == "") {
 			return fmt.Errorf("--obo-store-path and --obo-store-key-file must be set together")
 		}
+	}
+	if c.OBO.ConnectorsEnabled && !c.OBO.Enabled {
+		return fmt.Errorf("--obo-enabled is required with --obo-connectors-enabled (the connector UX renders a Connect button for the linked user from the login link the agent relays)")
 	}
 	return nil
 }

@@ -10,6 +10,7 @@ import (
 	"maps"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -43,6 +44,21 @@ type batchedWriter struct {
 	ts       string // main reply message timestamp
 	logger   *slog.Logger
 	details  detailsLevel // tool-activity verbosity snapshotted at turn start
+
+	// adapter, slackUser, and connectorPrompts back the reactive connector
+	// prompt: a core_auth_login tool result in the stream renders a Connect
+	// button to slackUser. slackUser is the RAW Slack user ID ("U…"), never the
+	// resolved email: chat.postEphemeral's user param requires a Slack ID, so an
+	// email would fail with user_not_found. connectorPrompts is false when the UX
+	// is disabled.
+	adapter          *Adapter
+	slackUser        string
+	connectorPrompts bool
+	// callToolInner maps a call_tool invocation's CallID to the inner muster
+	// tool it targets, taken from the call arguments. Result deltas carry no
+	// arguments, so this is how a call_tool result is attributed to
+	// core_auth_login. Only touched from run()'s goroutine.
+	callToolInner map[string]string
 
 	// turnUsage accumulates the per-LLM-call usage kagent reports across the
 	// turn into the turn total. Only touched from run()'s goroutine.
@@ -119,6 +135,7 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 				w.mu.Unlock()
 			case channels.DeltaToolActivity:
 				w.renderToolActivity(ctx, d.Tool)
+				w.maybeConnectorPrompt(d.Tool)
 			case channels.DeltaPrompt:
 				// Flush partial text so far, then hand off to the caller to post
 				// the interactive approval prompt.
@@ -188,6 +205,135 @@ func (w *batchedWriter) renderToolActivity(ctx context.Context, tool *channels.T
 	}
 
 	w.enqueueToolPost(ctx, md)
+}
+
+var (
+	authChallengeURLRe    = regexp.MustCompile(`https?://\S+`)
+	authChallengeServerRe = regexp.MustCompile(`(?m)^\s*Server:\s*(\S+)`)
+)
+
+// maybeConnectorPrompt renders a Connect button when a core_auth_login tool
+// result carries a backend login link. The link reaches the gateway only as
+// free text in the agent's stream, so the URL is parsed out of it. Throttled
+// per (user, backend) by the prompt cooldown; the post runs async on the
+// adapter lifecycle context so a slow Slack API does not stall delta draining.
+func (w *batchedWriter) maybeConnectorPrompt(tool *channels.ToolActivity) {
+	if !w.connectorPrompts || tool == nil {
+		return
+	}
+	if tool.Kind == channels.ToolCall {
+		w.noteCallToolTarget(tool)
+		return
+	}
+	if tool.Kind != channels.ToolResult || w.effectiveToolName(tool) != musterAuthLoginTool {
+		return
+	}
+	server, loginURL := parseAuthChallengePayload(tool.Response, 0)
+	if loginURL == "" {
+		return
+	}
+	if !w.adapter.markConnectorPrompted(w.slackUser, server) {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(w.adapter.baseCtx, connectorCheckTimeout)
+		defer cancel()
+		if err := w.client.postConnectorPrompt(ctx, w.channel, w.threadTS, w.slackUser, server, loginURL); err != nil {
+			w.adapter.clearConnectorPrompted(w.slackUser, server)
+			w.logger.Warn("slack: post connector prompt failed", "user", w.slackUser, "server", server, "error", err)
+		}
+	}()
+}
+
+// noteCallToolTarget records the inner muster tool a call_tool invocation
+// targets, keyed by CallID, so the matching result can be attributed to it.
+func (w *batchedWriter) noteCallToolTarget(tool *channels.ToolActivity) {
+	if tool.Name != musterCallToolMetaTool || tool.CallID == "" {
+		return
+	}
+	inner, _ := tool.Args["name"].(string)
+	if inner == "" {
+		return
+	}
+	if w.callToolInner == nil {
+		w.callToolInner = make(map[string]string)
+	}
+	w.callToolInner[tool.CallID] = inner
+}
+
+// effectiveToolName resolves the muster tool a result belongs to: the stream's
+// tool name directly, or the recorded inner target when the agent went through
+// the call_tool meta-tool.
+func (w *batchedWriter) effectiveToolName(tool *channels.ToolActivity) string {
+	if tool.Name == musterCallToolMetaTool {
+		if inner, ok := w.callToolInner[tool.CallID]; ok {
+			return inner
+		}
+	}
+	return tool.Name
+}
+
+// maxChallengePayloadDepth bounds the walk over a tool result payload; real
+// payloads nest the challenge text at most a few levels down (direct
+// {"output": text}, or an MCP content list under call_tool).
+const maxChallengePayloadDepth = 6
+
+// parseAuthChallengePayload walks a tool result payload's string values and
+// returns the first auth challenge that carries a login URL. The challenge is
+// free text whose nesting differs by call path, so every nested string is a
+// candidate rather than assuming one key. Yields "" when no string carries a
+// URL.
+func parseAuthChallengePayload(v any, depth int) (server, loginURL string) {
+	if depth > maxChallengePayloadDepth {
+		return "", ""
+	}
+	switch t := v.(type) {
+	case string:
+		if s, u := parseAuthChallenge(t); u != "" {
+			return s, u
+		}
+	case map[string]any:
+		for _, e := range t {
+			if s, u := parseAuthChallengePayload(e, depth+1); u != "" {
+				return s, u
+			}
+		}
+	case []any:
+		for _, e := range t {
+			if s, u := parseAuthChallengePayload(e, depth+1); u != "" {
+				return s, u
+			}
+		}
+	}
+	return "", ""
+}
+
+// parseAuthChallenge extracts the backend name and login URL from a
+// core_auth_login result. The URL is the first http(s) link, with trailing
+// punctuation trimmed; the server comes from a "Server: <name>" line, falling
+// back to a generic label. A missing or non-https URL yields "".
+func parseAuthChallenge(output string) (server, loginURL string) {
+	if m := authChallengeURLRe.FindString(output); m != "" {
+		loginURL = validLoginURL(strings.TrimRight(m, ").,]}>\"'"))
+	}
+	if m := authChallengeServerRe.FindStringSubmatch(output); m != nil {
+		server = m[1]
+	} else {
+		server = "the requested tools"
+	}
+	return server, loginURL
+}
+
+// validLoginURL returns raw when it is a well-formed absolute https URL with a
+// host, and "" otherwise. The Connect button opens agent- and tool-controlled
+// text as a browser URL, so anything that is not plainly https (http, a bare
+// scheme, a malformed link) is rejected rather than rendered as a button.
+func validLoginURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || u.Host == "" {
+		return ""
+	}
+	return raw
 }
 
 // enqueueToolPost buffers a rendered tool-activity message for the poster,
@@ -636,6 +782,49 @@ func (c *slackAPIClient) postSignInPrompt(ctx context.Context, channel, threadID
 // slackSectionTextMax is Slack's limit on a section block's text object; a
 // longer text gets the whole message rejected with invalid_blocks.
 const slackSectionTextMax = 3000
+
+// postConnectorPrompt posts an ephemeral (target-user-only) Block Kit message
+// offering to connect a muster backend the agent cannot use for the user yet:
+// a "Connect <server>" URL button opening loginURL plus a "Not now" dismissal.
+// When threadID is set the prompt is posted in-thread.
+func (c *slackAPIClient) postConnectorPrompt(ctx context.Context, channel, threadID, user, server, loginURL string) error {
+	text := fmt.Sprintf("The agent can't use *%s* for you yet. Connect your account once so those tools work.", escapeMrkdwn(server))
+	body := map[string]any{
+		paramChannel: channel,
+		paramUser:    user,
+		paramText:    text,
+		paramBlocks: []any{
+			map[string]any{
+				bkType: bkSection,
+				bkText: map[string]any{bkType: bkMrkdwn, bkText: text},
+			},
+			map[string]any{
+				bkType: bkActions,
+				bkElements: []any{
+					map[string]any{
+						bkType:     bkButton,
+						bkText:     map[string]any{bkType: bkPlainText, bkText: truncateButtonLabel("Connect " + server)},
+						bkStyle:    bkPrimary,
+						bkActionID: connectorConnect,
+						bkValue:    server,
+						bkURL:      loginURL,
+					},
+					map[string]any{
+						bkType:     bkButton,
+						bkText:     map[string]any{bkType: bkPlainText, bkText: "Not now"},
+						bkActionID: connectorDismiss,
+						bkValue:    server,
+					},
+				},
+			},
+		},
+	}
+	if threadID != "" {
+		body[paramThreadTS] = threadID
+	}
+	_, err := c.postJSON(ctx, "chat.postEphemeral", body)
+	return err
+}
 
 // postEphemeralText posts a plain in-thread message visible only to user.
 func (c *slackAPIClient) postEphemeralText(ctx context.Context, channel, user, threadTS, text string) error {

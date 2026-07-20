@@ -1,5 +1,7 @@
 package slack
 
+import "time"
+
 // Slack event type strings.
 const (
 	evtMessage      = "message"
@@ -28,6 +30,38 @@ const (
 // decision (classifyAction returns false) but its response_url is kept so the
 // ephemeral prompt can be replaced once the link completes (NotifyLinked).
 const oboSignIn = "obo_sign_in"
+
+// Connector Block Kit action IDs. The button value carries the backend name.
+// connectorConnect is a URL button (opens the backend's consent flow in the
+// browser); connectorDismiss suppresses the prompt for that backend until the
+// cooldown lapses.
+const (
+	connectorConnect = "connector_connect"
+	connectorDismiss = "connector_dismiss"
+)
+
+// musterAuthLoginTool is the muster tool whose result carries a backend login
+// link; its appearance in the agent's stream drives the Connect prompt.
+const musterAuthLoginTool = "core_auth_login"
+
+// musterCallToolMetaTool is muster's aggregating meta-tool. Agents typically
+// reach core_auth_login through it, so the inner tool name arrives in the
+// call's arguments ({"name": "core_auth_login", ...}) rather than as the
+// stream's tool name.
+const musterCallToolMetaTool = "call_tool"
+
+// connectorPromptCooldown bounds how often the connect prompt re-posts for one
+// (user, backend) while it is neither connected nor dismissed, so an ignored
+// prompt does not repeat on every message.
+const connectorPromptCooldown = time.Hour
+
+// connectorCheckTimeout bounds the async prompt post; it runs on the adapter
+// lifecycle context, off the turn's critical path.
+const connectorCheckTimeout = 10 * time.Second
+
+// maxConnectorNameLen bounds the backend name accepted from a button value
+// (interaction payloads are attacker-shaped input).
+const maxConnectorNameLen = 128
 
 // payloadTypeBlockActions is the interaction payload type for Block Kit button
 // clicks; other payload types (view submissions, shortcuts) are not routed.
@@ -89,6 +123,15 @@ const emptyOutputNote = "_(the agent finished without a reply)_"
 // does not linger as "thinking" with no failure signal (reactions mode swaps in
 // the failed emoji instead).
 const failedNote = "_(the turn failed; please try again)_"
+
+// corruptSessionResetNotice is posted after a corrupt-history failure when the
+// broken kagent session was deleted, so the user knows to resend rather than
+// retry into the same failure.
+const corruptSessionResetNotice = "An earlier interrupted turn corrupted this conversation's history, and the agent could no longer read it. I've reset the session: please resend your message and we'll continue from a clean slate (earlier context in this thread is lost)."
+
+// corruptSessionStuckNotice is posted after a corrupt-history failure when the
+// session could not be deleted; the thread cannot recover.
+const corruptSessionStuckNotice = "An earlier interrupted turn corrupted this conversation's history, and I couldn't reset it automatically. Please start a new thread."
 
 // resumeStartingFreshNotice is posted when a reply lands in a thread whose
 // kagent session no longer exists, so the user is not confused by lost context.

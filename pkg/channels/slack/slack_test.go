@@ -835,6 +835,9 @@ type stubGateway struct {
 	// onSessionResumable, when set, backs SessionResumable; nil reports the check
 	// as unavailable (checked=false).
 	onSessionResumable func(channels.InboundMessage) (exists, checked bool)
+	// onResetSession, when set, backs ResetSession; nil reports the reset as
+	// unavailable (false, nil).
+	onResetSession func(channels.InboundMessage) (bool, error)
 	// failSends makes the next N SendCompletion calls return an error, so a test
 	// can drive the resume-failure paths.
 	failSends int
@@ -848,6 +851,16 @@ func (s *stubGateway) resumeCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.resumeCount_
+}
+
+func (s *stubGateway) ResetSession(_ context.Context, msg channels.InboundMessage) (bool, error) {
+	s.mu.Lock()
+	cb := s.onResetSession
+	s.mu.Unlock()
+	if cb == nil {
+		return false, nil
+	}
+	return cb(msg)
 }
 
 func (s *stubGateway) SessionResumable(_ context.Context, msg channels.InboundMessage) (bool, bool) {

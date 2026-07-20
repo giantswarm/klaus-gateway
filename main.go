@@ -243,6 +243,14 @@ func run(args []string) error {
 			"muster_url", cfg.OBO.MusterURL,
 			"email_match", slackEmail != nil,
 		)
+
+		// Connector UX: when the agent reports a backend needs the user to sign
+		// in, the adapter renders a Connect button from the login link the agent
+		// relays. The gateway does not call muster for this.
+		if cfg.OBO.ConnectorsEnabled && slackAdapter != nil {
+			slackAdapter.ConnectorPrompts = true
+			logger.Info("slack connector prompts enabled")
+		}
 	}
 
 	apiHandler := &api.Handler{
