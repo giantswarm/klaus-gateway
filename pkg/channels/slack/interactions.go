@@ -134,11 +134,29 @@ func classifyAction(actionID string) (hitlAction, bool) {
 func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, messageTS, slackUser string, act hitlAction) error {
 	client := a.apiClient()
 
+	// Peek without consuming: the human-token gate must run before the task is
+	// taken so a failed mint leaves the pending task (and its buttons) intact.
+	if !a.hasPendingTask(threadID) {
+		// Nothing pending (already answered). Still tidy up the buttons.
+		_ = client.chatUpdateBlocks(ctx, slackChannel, messageTS, "_Already answered._")
+		return nil
+	}
+
+	// A button-click resume is a turn like any other: it must carry the clicking
+	// user's human token, never the gateway's machine identity. Resolve it BEFORE
+	// consuming the task or rewriting the message: on a mint failure humanToken
+	// drives the sign-in (or transient-error) prompt and we return here, leaving
+	// the task and buttons untouched so the click stays retryable.
+	token, ok := a.humanToken(ctx, slackChannel, threadID, slackUser, true)
+	if !ok {
+		return nil
+	}
+
 	// takePendingTask clears the entry atomically — if the user also typed a
 	// reply the first one wins and the other starts a fresh task.
 	task := a.takePendingTask(threadID)
 	if task == nil {
-		// Nothing pending (already answered). Still tidy up the buttons.
+		// A concurrent reply consumed it between the peek and here.
 		_ = client.chatUpdateBlocks(ctx, slackChannel, messageTS, "_Already answered._")
 		return nil
 	}
@@ -151,26 +169,19 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 	}
 
 	msg := channels.InboundMessage{
-		Channel:   ChannelName,
-		ChannelID: task.ChannelID,
-		ThreadID:  threadID,
-		Subject:   slackUser,
-		AgentRef:  task.AgentRef,
-		TaskID:    task.TaskID,
-		Text:      resumeText,
-		Decision:  decision,
+		Channel:     ChannelName,
+		ChannelID:   task.ChannelID,
+		ThreadID:    threadID,
+		Subject:     slackUser,
+		AgentRef:    task.AgentRef,
+		TaskID:      task.TaskID,
+		Text:        resumeText,
+		Decision:    decision,
+		BearerToken: token,
 	}
 
 	// Resolve email for the button-clicking user.
 	a.resolveSubjectEmail(ctx, &msg)
-
-	// A button-click resume is a turn like any other: it must carry the
-	// clicking user's human token, never the gateway's machine identity.
-	token, ok := a.humanToken(ctx, slackChannel, threadID, slackUser, true)
-	if !ok {
-		return nil
-	}
-	msg.BearerToken = token
 
 	ref, err := a.gw.Resolve(ctx, msg)
 	if err != nil {
