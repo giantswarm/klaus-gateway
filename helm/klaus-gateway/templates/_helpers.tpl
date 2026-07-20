@@ -1,10 +1,7 @@
 {{/* vim: set filetype=mustache: */}}
 {{- define "name" -}}
-{{- if .Values.fullnameOverride -}}
-{{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" -}}
-{{- else -}}
-{{- .Chart.Name | trunc 63 | trimSuffix "-" -}}
-{{- end -}}
+{{- $name := .Values.fullnameOverride | default .Chart.Name | trunc 63 -}}
+{{- regexReplaceAll "[^a-zA-Z0-9]+$" $name "" -}}
 {{- end -}}
 
 {{- define "chart" -}}
