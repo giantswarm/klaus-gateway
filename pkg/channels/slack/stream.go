@@ -999,12 +999,15 @@ func (c *slackAPIClient) send(ctx context.Context, method, contentType, payload 
 }
 
 // call executes one Slack Web API POST and returns the raw response body. A
-// 429 is retried once after honoring Retry-After, so a brief throttle does not
-// abort the turn; a Retry-After longer than rateLimitRetryCap fails the call
-// immediately rather than waiting it out. Any other non-2xx status is an error
-// carrying the status code, not a JSON decode attempt on a non-API body.
+// 429 is retried honoring Retry-After: rate limiting is a pacing signal, not a
+// turn-fatal error, and a multi-chunk flush plus tool posts can draw several
+// consecutive 429s against chat.postMessage's ~1 msg/sec/channel limit. A
+// Retry-After longer than rateLimitRetryCap, or the attempt budget running
+// out, fails the call rather than waiting it out. Any other non-2xx status is
+// an error carrying the status code, not a JSON decode attempt on a non-API
+// body.
 func (c *slackAPIClient) call(ctx context.Context, method, contentType, payload string) ([]byte, error) {
-	const maxAttempts = 2
+	const maxAttempts = 4
 	for attempt := 1; ; attempt++ {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/"+method, strings.NewReader(payload))
 		if err != nil {

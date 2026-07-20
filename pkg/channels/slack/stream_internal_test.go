@@ -48,7 +48,30 @@ func TestSend_FailsOnPersistentRateLimit(t *testing.T) {
 	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
 	_, err := client.send(t.Context(), "chat.update", "application/json", `{}`)
 	require.ErrorContains(t, err, "rate limited")
-	require.Equal(t, int32(2), calls.Load())
+	require.Equal(t, int32(4), calls.Load(), "consecutive 429s keep pacing up to the attempt budget before failing")
+}
+
+// A burst that clears within the attempt budget succeeds: two consecutive
+// 429s pace the call instead of killing it (the old behaviour failed on the
+// second).
+func TestSend_RecoversAfterConsecutiveRateLimits(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if calls.Add(1) <= 2 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"ok":true,"ts":"1.2"}`)
+	}))
+	defer srv.Close()
+
+	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
+	ts, err := client.send(t.Context(), "chat.update", "application/json", `{}`)
+	require.NoError(t, err)
+	require.Equal(t, "1.2", ts)
+	require.Equal(t, int32(3), calls.Load())
 }
 
 func TestSend_RateLimitWaitRespectsContext(t *testing.T) {

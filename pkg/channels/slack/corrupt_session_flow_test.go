@@ -83,3 +83,32 @@ func TestCorruptSession_OtherErrorsDoNotReset(t *testing.T) {
 	defer mu.Unlock()
 	require.Zero(t, resets, "a non-corrupt failure must not delete the session")
 }
+
+// An error that merely quotes agent output mentioning tool_use/tool_result
+// (no invalid_request_error class) must not trigger the recovery, which
+// irreversibly deletes the session.
+func TestCorruptSession_QuotedToolWordsDoNotReset(t *testing.T) {
+	fake := newFakeSlackAPI()
+	var mu sync.Mutex
+	resets := 0
+	gw := &stubGateway{
+		deltas: []channels.OutboundDelta{{Err: errors.New(`a2a error -32603: upstream failed while agent output discussed "tool_use blocks and tool_result pairing"`)}},
+		onResetSession: func(channels.InboundMessage) (bool, error) {
+			mu.Lock()
+			resets++
+			mu.Unlock()
+			return true, nil
+		},
+	}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+
+	sendEvent(t, srv, dmEvent("U1", "explain tool pairing", "703.000"))
+	require.Eventually(t, func() bool {
+		names := fake.reactionNames("reactions.add")
+		return len(names) > 0 && names[len(names)-1] == "x"
+	}, 2*time.Second, 50*time.Millisecond, "turn signalled as failed")
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Zero(t, resets, "quoted tool_use/tool_result wording alone must not delete the session")
+}

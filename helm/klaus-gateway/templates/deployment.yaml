@@ -90,6 +90,10 @@ spec:
         - --slack-enabled
         - --slack-mode={{ .Values.slack.mode }}
         {{- end }}
+        {{- if .Values.cli.enabled }}
+        - --cli-enabled
+        {{- end }}
+        - --web-enabled={{ .Values.web.enabled }}
         {{- if .Values.a2a.enabled }}
         - --a2a-enabled
         {{- if .Values.a2a.defaultAgent }}

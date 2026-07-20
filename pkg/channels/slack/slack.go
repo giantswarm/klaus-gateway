@@ -1251,13 +1251,17 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 // persisted history is invalid: an interrupted earlier turn left a tool call
 // with no result, and the model API rejects the whole history, so every later
 // turn on the session fails identically. The failure arrives as an opaque A2A
-// error string, so it is matched on the model API's wording.
+// error string, so it is matched on the model API's wording; the
+// invalid_request_error class is required so an error that merely quotes
+// agent output mentioning tool_use/tool_result cannot trigger the recovery
+// (which irreversibly deletes the session).
 func isCorruptSessionErr(err error) bool {
 	if err == nil {
 		return false
 	}
 	s := err.Error()
-	return strings.Contains(s, "tool_use") && strings.Contains(s, "tool_result")
+	return strings.Contains(s, "invalid_request_error") &&
+		strings.Contains(s, "tool_use") && strings.Contains(s, "tool_result")
 }
 
 // sessionResetter is the optional Gateway capability that deletes a thread's
@@ -1440,9 +1444,16 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 		prog.failed(cctx)
 		// In text mode prog.failed is a no-op (no reaction to swap), so the
 		// placeholder would linger as "thinking" with no failure signal.
-		// Replace it with a terminal note, as the empty-output path does.
+		// Replace it with a terminal note, as the empty-output path does —
+		// unless the placeholder already carries streamed answer text, in
+		// which case the note posts as a new message so the delivered
+		// content survives.
 		if prog.reactTS == "" {
-			a.postTerminalNote(cctx, client, slackChannel, threadID, replyTS, failedNote)
+			noteTS := replyTS
+			if w.wroteContent() {
+				noteTS = ""
+			}
+			a.postTerminalNote(cctx, client, slackChannel, threadID, noteTS, failedNote)
 		}
 		return err
 	}

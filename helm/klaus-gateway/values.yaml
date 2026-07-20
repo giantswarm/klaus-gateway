@@ -281,6 +281,13 @@ slack:
 cli:
   enabled: false
 
+# Web channel adapter.
+# Exposes POST /web/messages (SSE completions) for browser front-ends (e.g.
+# lab's chatproxy). Disabled by default in cluster deployments; the binary
+# default is enabled for local development.
+web:
+  enabled: false
+
 # Slack on-behalf-of (OBO) muster account linking.
 # When enabled, the gateway acts as a muster OAuth client: a human links their
 # Slack identity once via a browser PKCE flow, after which the gateway mints a

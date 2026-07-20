@@ -59,6 +59,20 @@ func TestValidate_A2A(t *testing.T) {
 	})
 }
 
+func TestLoad_WebEnabledEnv(t *testing.T) {
+	t.Setenv("KLAUS_GATEWAY_WEB_ENABLED", "false")
+
+	cfg, err := config.Load(nil)
+	require.NoError(t, err)
+	require.False(t, cfg.Web.Enabled)
+}
+
+func TestWebEnabledByDefault(t *testing.T) {
+	cfg, err := config.Load(nil)
+	require.NoError(t, err)
+	require.True(t, cfg.Web.Enabled, "the web adapter stays on by default for local development")
+}
+
 func TestValidate_OBO(t *testing.T) {
 	base := config.Defaults()
 	base.Slack.Enabled = true // OBO links Slack identities, so Slack must be on
