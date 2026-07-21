@@ -136,9 +136,17 @@ spec:
               optional: true
         {{- end }}
         {{- end }}
-        {{- if and .Values.slack.enabled .Values.slack.dmOnly }}
-        - name: KLAUS_GATEWAY_SLACK_DM_ONLY
-          value: "true"
+        {{- if and .Values.slack.enabled .Values.slack.dmMode }}
+        - name: KLAUS_GATEWAY_SLACK_DM_MODE
+          value: {{ .Values.slack.dmMode | quote }}
+        {{- end }}
+        {{- if and .Values.slack.enabled .Values.slack.channelMode }}
+        - name: KLAUS_GATEWAY_SLACK_CHANNEL_MODE
+          value: {{ .Values.slack.channelMode | quote }}
+        {{- end }}
+        {{- if and .Values.slack.enabled .Values.slack.channelAllowlist }}
+        - name: KLAUS_GATEWAY_SLACK_CHANNEL_ALLOWLIST
+          value: {{ join "," .Values.slack.channelAllowlist | quote }}
         {{- end }}
         {{- if and .Values.slack.enabled .Values.slack.dropStale }}
         - name: KLAUS_GATEWAY_SLACK_DROP_STALE

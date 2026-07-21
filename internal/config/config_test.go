@@ -73,6 +73,71 @@ func TestWebEnabledByDefault(t *testing.T) {
 	require.True(t, cfg.Web.Enabled, "the web adapter stays on by default for local development")
 }
 
+func TestValidate_SlackSurfaces(t *testing.T) {
+	base := config.Defaults()
+	base.Slack.Enabled = true
+
+	t.Run("defaults are valid", func(t *testing.T) {
+		require.NoError(t, base.Validate())
+	})
+
+	t.Run("unknown dm mode fails", func(t *testing.T) {
+		cfg := base
+		cfg.Slack.DMMode = "sometimes"
+		require.Error(t, cfg.Validate())
+	})
+
+	t.Run("unknown channel mode fails", func(t *testing.T) {
+		cfg := base
+		cfg.Slack.ChannelMode = "most"
+		require.Error(t, cfg.Validate())
+	})
+
+	t.Run("allowlist mode requires a non-empty list", func(t *testing.T) {
+		cfg := base
+		cfg.Slack.ChannelMode = "allowlist"
+		require.Error(t, cfg.Validate())
+		cfg.Slack.ChannelAllowlist = []string{"C1"}
+		require.NoError(t, cfg.Validate())
+	})
+
+	t.Run("allowlist set without allowlist mode fails", func(t *testing.T) {
+		cfg := base
+		cfg.Slack.ChannelAllowlist = []string{"C1"}
+		require.Error(t, cfg.Validate(), "a half-edited config must not silently ignore the list")
+	})
+
+	t.Run("no served surface fails", func(t *testing.T) {
+		cfg := base
+		cfg.Slack.DMMode = "ignore"
+		cfg.Slack.ChannelMode = "none"
+		require.Error(t, cfg.Validate())
+		cfg.Slack.DMMode = "redirect"
+		require.Error(t, cfg.Validate(), "redirecting DMs to unserved channels is inert")
+		cfg.Slack.DMMode = "serve"
+		require.NoError(t, cfg.Validate(), "DM-only deployments stay valid")
+	})
+
+	t.Run("modes not validated when slack is disabled", func(t *testing.T) {
+		cfg := base
+		cfg.Slack.Enabled = false
+		cfg.Slack.DMMode = "sometimes"
+		require.NoError(t, cfg.Validate())
+	})
+}
+
+func TestLoad_SlackSurfaceEnv(t *testing.T) {
+	t.Setenv("KLAUS_GATEWAY_SLACK_DM_MODE", "redirect")
+	t.Setenv("KLAUS_GATEWAY_SLACK_CHANNEL_MODE", "allowlist")
+	t.Setenv("KLAUS_GATEWAY_SLACK_CHANNEL_ALLOWLIST", "C1, C2,,C3 ")
+
+	cfg, err := config.Load(nil)
+	require.NoError(t, err)
+	require.Equal(t, config.DMModeRedirect, cfg.Slack.DMMode)
+	require.Equal(t, config.ChannelModeAllowlist, cfg.Slack.ChannelMode)
+	require.Equal(t, []string{"C1", "C2", "C3"}, cfg.Slack.ChannelAllowlist)
+}
+
 func TestValidate_OBO(t *testing.T) {
 	base := config.Defaults()
 	base.Slack.Enabled = true // OBO links Slack identities, so Slack must be on

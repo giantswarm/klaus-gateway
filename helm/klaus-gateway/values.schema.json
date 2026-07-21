@@ -388,8 +388,29 @@
         "secretName": {
           "type": "string"
         },
-        "dmOnly": {
-          "type": "boolean"
+        "dmMode": {
+          "type": "string",
+          "enum": [
+            "",
+            "serve",
+            "redirect",
+            "ignore"
+          ]
+        },
+        "channelMode": {
+          "type": "string",
+          "enum": [
+            "",
+            "all",
+            "allowlist",
+            "none"
+          ]
+        },
+        "channelAllowlist": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         },
         "dropStale": {
           "type": "boolean"
