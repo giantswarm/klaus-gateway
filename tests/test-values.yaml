@@ -14,7 +14,7 @@ serviceMonitor:
   enabled: false
 
 image:
-  tag: "0.1.4"
+  tag: "0.19.1"
 
 lifecycle:
   operatorMCPURL: "http://klaus-operator.klaus-operator.svc:8090/mcp"

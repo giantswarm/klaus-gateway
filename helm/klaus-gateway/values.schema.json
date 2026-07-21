@@ -514,6 +514,24 @@
     "fullnameOverride": {
       "type": "string",
       "description": "Override the resource name for all Kubernetes objects. Useful when deploying as a subchart."
+    },
+    "web": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable the web channel adapter at /web/* on the public mux."
+        }
+      }
+    },
+    "cli": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable the CLI channel adapter at /cli/v1/*."
+        }
+      }
     }
   }
 }

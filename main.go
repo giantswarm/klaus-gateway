@@ -149,12 +149,15 @@ func run(args []string) error {
 		Lifecycle: manager,
 	}
 
-	webAdapter := &web.Adapter{Logger: logger}
-	if cfg.A2A.Enabled {
-		webAdapter.DefaultAgent = cfg.A2A.DefaultAgent
-	}
-	if err := webAdapter.Start(ctx, facade); err != nil {
-		return fmt.Errorf("start web adapter: %w", err)
+	var webAdapter *web.Adapter
+	if cfg.Web.Enabled {
+		webAdapter = &web.Adapter{Logger: logger}
+		if cfg.A2A.Enabled {
+			webAdapter.DefaultAgent = cfg.A2A.DefaultAgent
+		}
+		if err := webAdapter.Start(ctx, facade); err != nil {
+			return fmt.Errorf("start web adapter: %w", err)
+		}
 	}
 
 	publicMux := chi.NewRouter()
@@ -311,7 +314,9 @@ func run(args []string) error {
 	}
 
 	apiHandler.Mount(publicMux)
-	webAdapter.Mount(publicMux)
+	if webAdapter != nil {
+		webAdapter.Mount(publicMux)
+	}
 
 	srv := server.New(server.Options{
 		PublicAddress: cfg.ListenAddress,
@@ -323,6 +328,9 @@ func run(args []string) error {
 	})
 
 	defer func() {
+		if webAdapter == nil {
+			return
+		}
 		stopCtx, cancel := context.WithTimeout(context.Background(), server.DefaultShutdownTimeout)
 		defer cancel()
 		if err := webAdapter.Stop(stopCtx); err != nil {
