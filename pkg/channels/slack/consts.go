@@ -119,6 +119,14 @@ const chatModePrompt = "💬 _Ask your question in this thread; I'll answer, the
 // without producing any output, so it does not linger as "thinking".
 const emptyOutputNote = "_(the agent finished without a reply)_"
 
+// stoppedNote replaces the text-mode placeholder when a turn is cancelled
+// before any content streamed, so "thinking" does not linger under "Stopped.".
+const stoppedNote = "_(stopped)_"
+
+// pausedNote replaces the text-mode placeholder when a turn pauses on an
+// input-required prompt before any content streamed.
+const pausedNote = "_(waiting for your input below)_"
+
 // failedNote replaces the text-mode placeholder when a turn ends in error, so it
 // does not linger as "thinking" with no failure signal (reactions mode swaps in
 // the failed emoji instead).

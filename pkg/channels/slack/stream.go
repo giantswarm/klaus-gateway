@@ -247,7 +247,7 @@ func (w *batchedWriter) renderToolActivity(ctx context.Context, tool *channels.T
 	case w.toolsRendered > maxToolMessages+1:
 		return // already queued the truncation note
 	case w.toolsRendered == maxToolMessages+1:
-		md = "_…further tool activity hidden this turn (`/details off` to quiet)._"
+		md = "_…tool-activity limit reached; hiding this turn's remaining tool posts. Details are still on: `/details off` mutes them entirely._"
 	}
 
 	w.enqueueToolPost(ctx, md)
