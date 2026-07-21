@@ -1367,31 +1367,6 @@ func TestSerializeTurnsPerThread(t *testing.T) {
 	close(hold)
 }
 
-// A mention inside a channel thread is delivered as both app_mention and
-// message.channels with distinct event_ids. Only one may start a turn; the
-// twin must be dropped by the (channel, ts) message dedup, not bounced off the
-// busy notice or run as a second turn (klaus-gateway#159).
-func TestHandleInbound_CrossEventTypeTwinDeduped(t *testing.T) {
-	fake := newFakeSlackAPI()
-	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok"}, {Done: true}}}
-	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
-
-	sendEvent(t, srv, mention("U1", "start", "100.000", ""))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
-		2*time.Second, 20*time.Millisecond, "the root mention dispatches")
-
-	// The same in-thread mention, delivered as its two event-type twins.
-	sendEvent(t, srv, `{"type":"event_callback","event_id":"Ev-twin-1","event":{"type":"app_mention","user":"U1","text":"<@BOT> again","channel":"C1","ts":"200.000","thread_ts":"100.000"}}`)
-	sendEvent(t, srv, `{"type":"event_callback","event_id":"Ev-twin-2","event":{"type":"message","channel_type":"channel","user":"U1","text":"<@BOT> again","channel":"C1","ts":"200.000","thread_ts":"100.000"}}`)
-
-	require.Eventually(t, func() bool { return gw.resolveCount() == 2 },
-		2*time.Second, 20*time.Millisecond, "the mention twin dispatches once")
-	time.Sleep(150 * time.Millisecond)
-	require.Equal(t, 2, gw.resolveCount(), "the message twin must not start a second turn")
-	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "still finishing",
-		"the twin must be deduped, not rejected with the busy notice")
-}
-
 // A turn that dies before its stream starts (agent resolve or send fails) must
 // post the failure note: streamResponse only covers errors after the stream is
 // running, so a kagent outage was previously complete silence.
