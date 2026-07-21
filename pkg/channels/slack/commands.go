@@ -106,6 +106,13 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *slashCommand, slackUse
 			a.Logger.Warn("slack: post command reply failed", "error", err)
 		}
 	}
+	// Sign-in state is caller-only information; a shared thread must not see
+	// the linked email, so /login and /logout confirm ephemerally.
+	ephemeralReply := func(text string) {
+		if err := client.postEphemeralText(ctx, slackChannel, slackUser, threadID, text); err != nil {
+			a.Logger.Warn("slack: post ephemeral command reply failed", "error", err)
+		}
+	}
 
 	// permittedOnly verifies the caller may instruct the agent in this thread
 	// (the initiator, or a user the initiator granted), replying with a refusal
@@ -133,10 +140,10 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *slashCommand, slackUse
 		return true
 
 	case cmdLogin:
-		return a.handleLoginCommand(ctx, slackUser, slackChannel, threadID, reply)
+		return a.handleLoginCommand(ctx, slackUser, slackChannel, threadID, ephemeralReply)
 
 	case cmdLogout:
-		return a.handleLogoutCommand(slackUser, reply)
+		return a.handleLogoutCommand(slackUser, ephemeralReply)
 
 	case cmdStop:
 		if !permittedOnly() {
@@ -196,7 +203,8 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *slashCommand, slackUse
 // handleLoginCommand handles `/login`. It always consumes the command. When
 // OBO is disabled it says so rather than dispatching to the agent. An unlinked
 // user gets the sign-in prompt; a linked user gets a confirmation of their
-// signed-in identity.
+// signed-in identity. reply is ephemeral: the identity confirmation carries
+// the caller's email, which a shared thread must not see.
 func (a *Adapter) handleLoginCommand(ctx context.Context, slackUser, slackChannel, threadID string, reply func(string)) bool {
 	if a.OBO == nil {
 		reply("_On-behalf-of sign-in is not enabled on this gateway._")

@@ -310,8 +310,8 @@ func TestConnectorDismissInteraction_InvalidServer(t *testing.T) {
 	require.Empty(t, captured.body)
 }
 
-// A linked user's /login confirms their signed-in identity, with no connector
-// listing or prompt.
+// A linked user's /login confirms their signed-in identity ephemerally (the
+// email is caller-only information), with no connector listing or prompt.
 func TestLoginCommand_LinkedConfirmation(t *testing.T) {
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok"}, {Done: true}}}
 	fake, srv := connectorAdapter(t, gw)
@@ -319,8 +319,10 @@ func TestLoginCommand_LinkedConfirmation(t *testing.T) {
 	sendEvent(t, srv, dmEvent("U1", "/login", "110.000"))
 
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Signed in")
-	}, 2*time.Second, 20*time.Millisecond, "signed-in confirmation is posted")
+		return strings.Contains(ephemeralJSON(fake), "Signed in")
+	}, 2*time.Second, 20*time.Millisecond, "signed-in confirmation is posted ephemerally")
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "Signed in",
+		"the identity confirmation must not be a public message")
 	require.NotContains(t, ephemeralJSON(fake), "connector_connect")
 }
 
