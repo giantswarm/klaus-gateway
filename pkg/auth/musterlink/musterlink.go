@@ -557,7 +557,7 @@ func (l *Linker) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	// bar, and reloading that tab resubmits the consumed code. OAuth 2.1 code
 	// reuse makes the auth server revoke all tokens for this user+client, so
 	// the success page must live at a code-free URL.
-	http.Redirect(w, r, r.URL.Path+"?done=1", http.StatusSeeOther)
+	http.Redirect(w, r, CallbackPath+"?done=1", http.StatusSeeOther)
 }
 
 // Exchange trades an authorization code (with its PKCE verifier) for muster

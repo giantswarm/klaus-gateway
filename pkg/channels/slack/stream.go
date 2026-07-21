@@ -22,6 +22,9 @@ import (
 const (
 	batchInterval = 250 * time.Millisecond
 	slackAPIBase  = "https://slack.com/api"
+	// methodChatPostMessage is the Web API method for new posts; it is special
+	// in two spots (display identity, forced unfurl-off).
+	methodChatPostMessage = "chat.postMessage"
 	// slackMarkdownBlockMax caps the text of one Block Kit markdown block,
 	// Slack's 12 000-char limit. splitMarkdown budgets the fence auto-close and
 	// reopen inside this cap, so emitted chunks never exceed it.
@@ -595,7 +598,7 @@ func (c *slackAPIClient) applyIdentity(method string, set func(k, v string)) {
 	if c.username == "" && c.iconURL == "" {
 		return
 	}
-	if method != "chat.postMessage" && method != "chat.postEphemeral" {
+	if method != methodChatPostMessage && method != "chat.postEphemeral" {
 		return
 	}
 	if c.username != "" {
@@ -614,7 +617,7 @@ func (c *slackAPIClient) postMessage(ctx context.Context, channel, text, threadT
 	if threadTS != "" {
 		params.Set(paramThreadTS, threadTS)
 	}
-	return c.post(ctx, "chat.postMessage", params)
+	return c.post(ctx, methodChatPostMessage, params)
 }
 
 // lookupUserEmail returns the email from the user's Slack profile.
@@ -758,7 +761,7 @@ func (c *slackAPIClient) postMarkdown(ctx context.Context, channel, md, threadTS
 	if threadTS != "" {
 		body[paramThreadTS] = threadTS
 	}
-	return c.postJSON(ctx, "chat.postMessage", body)
+	return c.postJSON(ctx, methodChatPostMessage, body)
 }
 
 // chatUpdateMarkdown replaces a message's content with a markdown block. The
@@ -820,7 +823,7 @@ func (c *slackAPIClient) postApprovalPrompt(ctx context.Context, channel, thread
 			},
 		},
 	}
-	_, err := c.postJSON(ctx, "chat.postMessage", body)
+	_, err := c.postJSON(ctx, methodChatPostMessage, body)
 	return err
 }
 
@@ -857,7 +860,7 @@ func (c *slackAPIClient) postChoicePrompt(ctx context.Context, channel, threadID
 			},
 		},
 	}
-	_, err := c.postJSON(ctx, "chat.postMessage", body)
+	_, err := c.postJSON(ctx, methodChatPostMessage, body)
 	return err
 }
 
@@ -903,7 +906,7 @@ func (c *slackAPIClient) postSignInPrompt(ctx context.Context, channel, threadID
 	if threadID != "" {
 		body[paramThreadTS] = threadID
 	}
-	return c.postJSON(ctx, "chat.postMessage", body)
+	return c.postJSON(ctx, methodChatPostMessage, body)
 }
 
 // slackSectionTextMax is Slack's limit on a section block's text object; a
@@ -1084,7 +1087,7 @@ func (c *slackAPIClient) postJSON(ctx context.Context, method string, body any) 
 				cloned[k] = v
 			}
 		})
-		if method == "chat.postMessage" {
+		if method == methodChatPostMessage {
 			// Bot posts relay agent- and tool-controlled links; an unfurl has
 			// Slack's crawler fetch them, which for single-use auth links can
 			// trip the auth server's replay detection.
@@ -1108,7 +1111,7 @@ type slackResponse struct {
 
 func (c *slackAPIClient) post(ctx context.Context, method string, params url.Values) (string, error) {
 	c.applyIdentity(method, params.Set)
-	if method == "chat.postMessage" {
+	if method == methodChatPostMessage {
 		params.Set(paramUnfurlLinks, "false")
 		params.Set(paramUnfurlMedia, "false")
 	}
