@@ -103,11 +103,14 @@ func TestStripMention(t *testing.T) {
 
 // --- Events API handler ---
 
-// channelMode configures the adapter to serve channels and redirect DMs (the
-// production default). Used by tests that drive the adapter through a channel
-// app_mention. The harness otherwise defaults to DM-only (see newEventsAdapter),
-// since most tests use a 1:1 DM as a single-permitted-user surface.
-func channelMode(a *slackadapter.Adapter) { a.DMOnly = false }
+// channelMode configures the adapter to serve channels and redirect DMs. Used
+// by tests that drive the adapter through a channel app_mention. The harness
+// otherwise defaults to DM-only (see newEventsAdapter), since most tests use a
+// 1:1 DM as a single-permitted-user surface.
+func channelMode(a *slackadapter.Adapter) {
+	a.DMMode = slackadapter.DMModeRedirect
+	a.ChannelMode = slackadapter.ChannelModeAll
+}
 
 func newEventsAdapter(t *testing.T, gw channels.Gateway, fakeAPIBase string, opts ...func(*slackadapter.Adapter)) (*slackadapter.Adapter, *httptest.Server) {
 	t.Helper()
@@ -121,9 +124,10 @@ func newEventsAdapter(t *testing.T, gw channels.Gateway, fakeAPIBase string, opt
 		Secrets:      secrets,
 		APIBase:      fakeAPIBase,
 		DefaultAgent: "test-agent",
-		// Default to serving DMs: most tests drive the adapter through a 1:1 DM.
-		// Channel-driven tests opt into channelMode.
-		DMOnly: true,
+		// Default to serving DMs only: most tests drive the adapter through a
+		// 1:1 DM. Channel-driven tests opt into channelMode.
+		DMMode:      slackadapter.DMModeServe,
+		ChannelMode: slackadapter.ChannelModeNone,
 	}
 	for _, opt := range opts {
 		opt(a)

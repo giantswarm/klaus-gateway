@@ -1,14 +1,14 @@
 {{/* vim: set filetype=mustache: */}}
 {{- define "name" -}}
-{{- if .Values.fullnameOverride -}}
-{{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" -}}
-{{- else -}}
-{{- .Chart.Name | trunc 63 | trimSuffix "-" -}}
-{{- end -}}
+{{- $name := .Values.fullnameOverride | default .Chart.Name | trunc 63 -}}
+{{- regexReplaceAll "[^a-zA-Z0-9]+$" $name "" -}}
 {{- end -}}
 
 {{- define "chart" -}}
-{{- printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" -}}
+{{/* Long dev versions truncate at 63 chars, which can land on a "." or "-";
+     a label value must end alphanumeric, so strip every trailing symbol. */}}
+{{- $chart := printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 -}}
+{{- regexReplaceAll "[^a-zA-Z0-9]+$" $chart "" -}}
 {{- end -}}
 
 {{- define "labels.common" -}}

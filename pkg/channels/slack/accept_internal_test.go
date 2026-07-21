@@ -15,25 +15,43 @@ func TestAcceptEvent(t *testing.T) {
 	oldTS := strconv.FormatInt(now-3600, 10) + ".000100"
 
 	cases := []struct {
-		name   string
-		dmOnly bool
-		ev     slackInnerEvent
-		want   bool
+		name string
+		ev   slackInnerEvent
+		want bool
 	}{
-		{"dm fresh accepted", false, slackInnerEvent{ChannelType: "im", Channel: "D1", TS: newTS}, true},
-		{"channel accepted when not dm-only", false, slackInnerEvent{ChannelType: "channel", Channel: "C1", TS: newTS}, true},
-		{"channel dropped in dm-only", true, slackInnerEvent{ChannelType: "channel", Channel: "C1", TS: newTS}, false},
-		{"dm accepted in dm-only", true, slackInnerEvent{ChannelType: "im", Channel: "D1", TS: newTS}, true},
-		{"dm by channel-id prefix in dm-only", true, slackInnerEvent{Channel: "D2", TS: newTS}, true},
-		{"stale dm dropped", true, slackInnerEvent{ChannelType: "im", Channel: "D1", TS: oldTS}, false},
-		{"missing ts not treated as stale", true, slackInnerEvent{ChannelType: "im", Channel: "D1", TS: ""}, true},
+		{"dm fresh accepted", slackInnerEvent{ChannelType: "im", Channel: "D1", TS: newTS}, true},
+		{"channel fresh accepted", slackInnerEvent{ChannelType: "channel", Channel: "C1", TS: newTS}, true},
+		{"stale dm dropped", slackInnerEvent{ChannelType: "im", Channel: "D1", TS: oldTS}, false},
+		{"missing ts not treated as stale", slackInnerEvent{ChannelType: "im", Channel: "D1", TS: ""}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			a := &Adapter{Logger: slog.Default(), DMOnly: tc.dmOnly, DropStaleEvents: true, startUnix: now}
+			a := &Adapter{Logger: slog.Default(), DropStaleEvents: true, startUnix: now}
 			if got := a.acceptEvent(tc.ev); got != tc.want {
 				t.Fatalf("acceptEvent(%+v) = %v, want %v", tc.ev, got, tc.want)
 			}
+		})
+	}
+}
+
+func TestChannelServed(t *testing.T) {
+	cases := []struct {
+		name      string
+		mode      ChannelMode
+		allowlist []string
+		channel   string
+		want      bool
+	}{
+		{"empty mode serves all", "", nil, "C1", true},
+		{"all serves any channel", ChannelModeAll, nil, "C1", true},
+		{"none serves nothing", ChannelModeNone, nil, "C1", false},
+		{"allowlist hit", ChannelModeAllowlist, []string{"C1", "C2"}, "C2", true},
+		{"allowlist miss", ChannelModeAllowlist, []string{"C1"}, "C9", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := &Adapter{ChannelMode: tc.mode, ChannelAllowlist: tc.allowlist}
+			require.Equal(t, tc.want, a.channelServed(tc.channel))
 		})
 	}
 }

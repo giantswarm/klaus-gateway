@@ -74,6 +74,13 @@ const (
 // human to complete an OAuth consent screen.
 const defaultStateTTL = 15 * time.Minute
 
+// defaultHTTPTimeout bounds every outbound muster call (discovery, userinfo,
+// and the oauth2 token endpoint) when no HTTPClient is supplied. Without it a
+// blackholed endpoint blocks the caller forever; TokenFor holds the per-user
+// refresh lock across the token call, so an unbounded hang there wedges the
+// user until process restart.
+const defaultHTTPTimeout = 30 * time.Second
+
 // grantTypeRefreshToken is the OAuth grant type advertised in the CIMD document.
 const grantTypeRefreshToken = "refresh_token"
 
@@ -160,8 +167,10 @@ type Config struct {
 	// on it. The context is detached from the request, so it stays valid after
 	// the handler returns.
 	OnLinked func(ctx context.Context, slackUserID, email string)
-	// HTTPClient is used for discovery and userinfo calls. Nil uses
-	// http.DefaultClient.
+	// HTTPClient is used for discovery, userinfo, and oauth2 token-endpoint
+	// calls (code exchange and refresh). Nil uses a client with a 30s timeout;
+	// a supplied client should carry its own timeout, since TokenFor holds a
+	// per-user lock across the refresh call.
 	HTTPClient *http.Client
 	// Logger defaults to slog.Default() when nil.
 	Logger *slog.Logger
@@ -256,7 +265,7 @@ func New(cfg Config) (*Linker, error) {
 	}
 	httpClient := cfg.HTTPClient
 	if httpClient == nil {
-		httpClient = http.DefaultClient
+		httpClient = &http.Client{Timeout: defaultHTTPTimeout}
 	}
 	scopes := cfg.Scopes
 	if len(scopes) == 0 {
@@ -290,6 +299,12 @@ func New(cfg Config) (*Linker, error) {
 		pending:       map[string]pendingAuth{},
 		refreshLocks:  map[string]*sync.Mutex{},
 	}, nil
+}
+
+// oauthContext routes the oauth2 package's token-endpoint calls through the
+// Linker's HTTP client (and its timeout) instead of http.DefaultClient.
+func (l *Linker) oauthContext(ctx context.Context) context.Context {
+	return context.WithValue(ctx, oauth2.HTTPClient, l.httpClient)
 }
 
 // ensureEndpoints lazily resolves and caches muster's OAuth endpoints via RFC
@@ -534,7 +549,7 @@ func (l *Linker) Exchange(ctx context.Context, code, codeVerifier string) (*Link
 	if err := l.ensureEndpoints(ctx); err != nil {
 		return nil, err
 	}
-	tok, err := l.oauth.Exchange(ctx, code, oauth2.VerifierOption(codeVerifier))
+	tok, err := l.oauth.Exchange(l.oauthContext(ctx), code, oauth2.VerifierOption(codeVerifier))
 	if err != nil {
 		return nil, fmt.Errorf("musterlink: code exchange: %w", err)
 	}
@@ -634,7 +649,7 @@ func (l *Linker) TokenFor(ctx context.Context, slackUserID string) (string, erro
 	if err := l.ensureEndpoints(ctx); err != nil {
 		return "", fmt.Errorf("musterlink: discover endpoints: %w", err)
 	}
-	src := l.oauth.TokenSource(ctx, &oauth2.Token{RefreshToken: link.RefreshToken})
+	src := l.oauth.TokenSource(l.oauthContext(ctx), &oauth2.Token{RefreshToken: link.RefreshToken})
 	tok, err := src.Token()
 	if err != nil {
 		var re *oauth2.RetrieveError

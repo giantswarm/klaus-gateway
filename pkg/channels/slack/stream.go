@@ -455,6 +455,13 @@ func (w *batchedWriter) flush(ctx context.Context) error {
 	return nil
 }
 
+// slackHTTPClient bounds every Slack Web API call. Without a timeout a
+// blackholed connection blocks the calling goroutine indefinitely; some call
+// sites hold the per-thread slot while calling (e.g. the users.info lookup
+// during dispatch), so an unbounded hang would wedge the thread until process
+// restart.
+var slackHTTPClient = &http.Client{Timeout: 30 * time.Second}
+
 // slackAPIClient is a minimal HTTP client for the Slack Web API.
 type slackAPIClient struct {
 	botToken string
@@ -1095,7 +1102,7 @@ func (c *slackAPIClient) call(ctx context.Context, method, contentType, payload 
 		req.Header.Set("Content-Type", contentType)
 		req.Header.Set("Authorization", "Bearer "+c.botToken)
 
-		resp, err := http.DefaultClient.Do(req) //nolint:gosec
+		resp, err := slackHTTPClient.Do(req) //nolint:gosec
 		if err != nil {
 			return nil, fmt.Errorf("slack %s: %w", method, err)
 		}
