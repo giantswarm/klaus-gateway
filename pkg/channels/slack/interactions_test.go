@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -392,6 +393,18 @@ func (s *ixSink) updateTexts() []string {
 	return out
 }
 
+func (s *ixSink) ephemeralTexts() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, 0, len(s.ephemeral))
+	for _, e := range s.ephemeral {
+		if t, ok := e["text"].(string); ok {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
 // newIxSlackServer starts a fake Slack Web API that records chat.postMessage,
 // chat.update, and chat.postEphemeral calls and acks everything.
 func newIxSlackServer(t *testing.T) (*httptest.Server, *ixSink) {
@@ -728,9 +741,106 @@ func TestHandleDecision_FormIncompleteNudges(t *testing.T) {
 	}, 2*time.Second, 10*time.Millisecond, "incomplete form must nudge the user")
 	require.Zero(t, gw.sendCount(), "incomplete form must not resume the task")
 	require.True(t, a.hasPendingTask("T001"), "incomplete form must leave the task pending")
+	require.Contains(t, sink.ephemeralTexts(), formIncompleteNudge, "partial form must use the answer-every-question nudge")
 	posts, updates, _ := sink.counts()
 	require.Zero(t, posts, "incomplete form must not mint a token or prompt sign-in")
 	require.Zero(t, updates, "incomplete form must not overwrite the form message")
+}
+
+// A multi-question form Submit with nothing selected at all must use the
+// answer-every-question nudge, not the single-question pick-an-option nudge.
+func TestHandleDecision_FormEmptyUsesFormNudge(t *testing.T) {
+	const secret = "test-secret"
+	srv, sink := newIxSlackServer(t)
+
+	gw := &fakeGateway{}
+	a := &Adapter{
+		APIBase:      srv.URL,
+		Secrets:      Secrets{BotToken: "test-bot-token", SigningSecret: secret}, //nolint:gosec
+		DefaultAgent: "worker",
+	}
+	require.NoError(t, a.Start(t.Context(), gw))
+	a.accessPolicy().SetInitiator("T001", "U001")
+	a.storePendingTask("T001", &pendingTask{
+		TaskID: "task-abc", AgentRef: "worker", Channel: "C001", ChannelID: "C001",
+		Prompt: &channels.HitlPrompt{
+			ToolName: channels.AskUserToolName,
+			Questions: []channels.HitlQuestion{
+				{Question: "Database?", Choices: []string{"PostgreSQL", "MySQL"}},
+				{Question: "Features?", Choices: []string{"Auth", "Logging"}},
+			},
+		},
+	})
+
+	// hitl_submit with no state → nothing selected on any question.
+	serveInteraction(t, a, secret, hitlSubmit, "T001", "C001", "MSG001", "U001")
+
+	require.Eventually(t, func() bool {
+		return slices.Contains(sink.ephemeralTexts(), formIncompleteNudge)
+	}, 2*time.Second, 10*time.Millisecond, "empty form must use the answer-every-question nudge")
+	require.Zero(t, gw.sendCount(), "empty form must not resume the task")
+	require.True(t, a.hasPendingTask("T001"), "empty form must leave the task pending")
+}
+
+// A Submit whose selected indices are all out of range for the pending prompt
+// (e.g. a click on a stale form message) must be treated as incomplete and
+// nudged, never resumed with an empty answer slot.
+func TestHandleDecision_FormStaleSelectionNudges(t *testing.T) {
+	const secret = "test-secret"
+	srv, sink := newIxSlackServer(t)
+
+	gw := &fakeGateway{}
+	a := &Adapter{
+		APIBase:      srv.URL,
+		Secrets:      Secrets{BotToken: "test-bot-token", SigningSecret: secret}, //nolint:gosec
+		DefaultAgent: "worker",
+	}
+	require.NoError(t, a.Start(t.Context(), gw))
+	a.accessPolicy().SetInitiator("T001", "U001")
+	a.storePendingTask("T001", &pendingTask{
+		TaskID: "task-abc", AgentRef: "worker", Channel: "C001", ChannelID: "C001",
+		Prompt: &channels.HitlPrompt{
+			ToolName: channels.AskUserToolName,
+			Questions: []channels.HitlQuestion{
+				{Question: "Database?", Choices: []string{"PostgreSQL", "MySQL"}},
+				{Question: "Features?", Choices: []string{"Auth", "Logging"}},
+			},
+		},
+	})
+
+	// Both questions "answered", but every index is out of range for the two
+	// two-choice questions of the current prompt.
+	inner := map[string]any{
+		"type":      "block_actions",
+		"user":      map[string]any{"id": "U001"},
+		"channel":   map[string]any{"id": "C001"},
+		"container": map[string]any{"message_ts": "MSG001"},
+		"message":   map[string]any{"thread_ts": "T001"},
+		"actions":   []any{map[string]any{"action_id": hitlSubmit, "value": "T001"}},
+		"state": map[string]any{"values": map[string]any{
+			hitlQGroupPrefix + "_0": map[string]any{hitlGroup: map[string]any{
+				"selected_option": map[string]any{"value": "5"},
+			}},
+			hitlQGroupPrefix + "_1": map[string]any{hitlGroup: map[string]any{
+				"selected_option": map[string]any{"value": "9"},
+			}},
+		}},
+	}
+	data, err := json.Marshal(inner)
+	require.NoError(t, err)
+	body := []byte("payload=" + url.QueryEscape(string(data)))
+	req := httptest.NewRequest(http.MethodPost, "/channels/slack/interactions", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	signRequest(t, req, body, secret)
+	rr := httptest.NewRecorder()
+	a.ixHandler.ServeHTTP(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code)
+
+	require.Eventually(t, func() bool {
+		return slices.Contains(sink.ephemeralTexts(), formIncompleteNudge)
+	}, 2*time.Second, 10*time.Millisecond, "stale form selection must nudge, not resume")
+	require.Zero(t, gw.sendCount(), "stale form selection must not resume the task")
+	require.True(t, a.hasPendingTask("T001"), "stale form selection must leave the task pending")
 }
 
 // A Submit click on a multi-select ask_user widget resumes the paused task with

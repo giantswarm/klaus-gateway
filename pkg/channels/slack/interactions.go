@@ -220,17 +220,10 @@ func (a *Adapter) routeInteraction(ctx context.Context, payload interactionPaylo
 		act.choice = cv
 	case hitlSubmit:
 		// choices is the flat selection across every widget (used for the
-		// single-question decision and the nothing-selected check); answers keeps
-		// selections grouped per question for a multi-question form.
+		// single-question decision); answers keeps selections grouped per question
+		// for a multi-question form. handleDecision gates completeness once the
+		// pending prompt is known, so the right nudge is chosen per layout.
 		act.choices, act.answers = choiceSelections(payload.State)
-		if len(act.choices) == 0 {
-			// Submit with nothing selected: nudge, leaving the task (and widget)
-			// pending so the user can pick and submit again.
-			if err := a.apiClient().postEphemeralText(ctx, payload.Channel.ID, payload.User.ID, threadID, choiceSelectNudge); err != nil {
-				a.Logger.Warn("slack: post choice-select nudge failed", "thread", threadID, "error", err)
-			}
-			return
-		}
 	}
 
 	if err := a.handleDecision(ctx, payload.Channel.ID, threadID, payload.Container.MessageTS, payload.User.ID, act); err != nil {
@@ -382,13 +375,15 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 		return nil
 	}
 
-	// A multi-question form must be fully answered before it resumes: an
-	// unanswered question would reach the agent as an empty answer slot. Nudge and
-	// leave the form pending, without minting a token or taking the task.
-	if act.kind == hitlSubmit && pending.Prompt != nil && len(pending.Prompt.Questions) > 1 {
-		if unansweredQuestions(pending.Prompt, act.answers) {
-			if err := client.postEphemeralText(ctx, slackChannel, slackUser, threadID, formIncompleteNudge); err != nil {
-				a.Logger.Warn("slack: post form-incomplete nudge failed", "thread", threadID, "error", err)
+	// A Submit must resolve to a complete answer before it resumes: a
+	// multi-question form needs every question answered, a single-question widget
+	// needs at least one selectable choice. Either way an incomplete Submit would
+	// reach the agent as an empty answer slot. Nudge and leave the form pending,
+	// without minting a token or taking the task.
+	if act.kind == hitlSubmit {
+		if nudge := submitIncompleteNudge(pending.Prompt, act); nudge != "" {
+			if err := client.postEphemeralText(ctx, slackChannel, slackUser, threadID, nudge); err != nil {
+				a.Logger.Warn("slack: post submit-incomplete nudge failed", "thread", threadID, "error", err)
 			}
 			return nil
 		}
@@ -551,11 +546,45 @@ func choiceLabels(prompt *channels.HitlPrompt, indices []int) []string {
 	return labels
 }
 
-// unansweredQuestions reports whether any question of a multi-question form has
-// no resolved selection in selected.
+// submitIncompleteNudge returns the ephemeral nudge for a Submit that cannot
+// resolve to a complete answer, or "" when it is complete. A multi-question form
+// needs every question answered (formIncompleteNudge); any other Submit
+// (single-question widget or section) needs at least one selectable choice
+// (choiceSelectNudge).
+func submitIncompleteNudge(prompt *channels.HitlPrompt, act hitlAction) string {
+	if prompt != nil && len(prompt.Questions) > 1 {
+		if unansweredQuestions(prompt, act.answers) {
+			return formIncompleteNudge
+		}
+		return ""
+	}
+	var choices []string
+	if prompt != nil && len(prompt.Questions) > 0 {
+		choices = prompt.Questions[0].Choices
+	}
+	if !hasResolvableChoice(choices, act.choices) {
+		return choiceSelectNudge
+	}
+	return ""
+}
+
+// unansweredQuestions reports whether any question of a multi-question form lacks
+// a selection that resolves to one of its choices. An index out of range for the
+// currently pending prompt (e.g. a Submit on a stale form message) counts as
+// unanswered, so the form is nudged rather than resumed with an empty slot.
 func unansweredQuestions(prompt *channels.HitlPrompt, selected map[int][]int) bool {
-	for qi := range prompt.Questions {
-		if len(selected[qi]) == 0 {
+	for qi, q := range prompt.Questions {
+		if !hasResolvableChoice(q.Choices, selected[qi]) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasResolvableChoice reports whether any index is in range for choices.
+func hasResolvableChoice(choices []string, indices []int) bool {
+	for _, i := range indices {
+		if i >= 0 && i < len(choices) {
 			return true
 		}
 	}
