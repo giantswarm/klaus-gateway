@@ -1136,6 +1136,9 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 		}
 		return
 	}
+	a.Logger.Debug("slack: inbound event", "type", inner.Type, "channel", inner.Channel,
+		"ts", inner.TS, "thread_ts", inner.ThreadTS, "user", inner.User,
+		"subtype", inner.SubType, "from_bot", inner.BotID != "")
 	if !a.acceptEvent(inner) {
 		return
 	}
@@ -1162,6 +1165,8 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 	threadReplyOnly := inner.threadReplyOnly()
 	msg, ok := inner.toInboundMessage(threadReplyOnly)
 	if !ok {
+		a.Logger.Debug("slack: event not routable as a message", "type", inner.Type,
+			"channel", inner.Channel, "ts", inner.TS, "thread_reply_only", threadReplyOnly)
 		return
 	}
 	// The inactive-thread gate runs before the dedup claim: a mention in a
@@ -1169,6 +1174,7 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 	// message copy lands first, having it claim the dedup slot on its way to
 	// being gate-dropped would discard the app_mention copy as a duplicate.
 	if threadReplyOnly && !a.isActiveThread(msg.ThreadID) {
+		a.Logger.Debug("slack: reply in inactive thread ignored", "channel", inner.Channel, "thread", msg.ThreadID)
 		a.hintInactiveThread(ctx, inner.Channel, msg.ThreadID, msg.Subject)
 		return
 	}
@@ -1179,6 +1185,7 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 	a.seedInitiatorFromRoot(ctx, inner.Channel, msg.ThreadID, msg.MessageID)
 	if cmd := parseCommand(msg.Text); cmd != nil {
 		if a.handleCommand(ctx, cmd, msg.Subject, inner.Channel, msg.ThreadID) {
+			a.Logger.Debug("slack: command consumed", "command", cmd.Name, "channel", inner.Channel, "thread", msg.ThreadID)
 			return
 		}
 		if isUnknownCommand(cmd) {
