@@ -230,8 +230,20 @@ func (a *Adapter) handleAccessDecision(ctx context.Context, threadID, newcomerID
 		if err := a.replayDispatch(ctx, req.msg, req.slackChannel); err != nil && !errors.Is(err, context.Canceled) {
 			a.Logger.Error("slack: replay after access grant failed",
 				"thread", threadID, "user", newcomerID, "error", err)
-			a.postReplayFailureNote(ctx, req.slackChannel, req.msg.ThreadID)
 		}
+	}
+}
+
+// postResumeFailureNote tells the thread a button decision could not be
+// delivered to the agent. The task was re-stored, so a typed reply still
+// resumes it; the note is what makes that recovery discoverable. Best-effort.
+func (a *Adapter) postResumeFailureNote(ctx context.Context, client *slackAPIClient, slackChannel, threadID string) {
+	if ctx.Err() != nil {
+		return
+	}
+	const text = "⚠️ _I couldn't deliver your decision to the agent. Reply in this thread to try again._"
+	if _, err := client.postMessage(ctx, slackChannel, text, threadID); err != nil {
+		a.Logger.Warn("slack: post resume failure note failed", "thread", threadID, "error", err)
 	}
 }
 
@@ -342,9 +354,12 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 
 	// A failure before the stream is running re-stores the taken task: the
 	// buttons already show the decision, but a typed reply can still resume it.
+	// The note tells the user so; the updated message alone reads as if the
+	// decision went through.
 	ref, err := a.gw.Resolve(ctx, msg)
 	if err != nil {
 		a.storePendingTask(threadID, task)
+		a.postResumeFailureNote(ctx, client, slackChannel, threadID)
 		return err
 	}
 
@@ -356,6 +371,7 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 	deltas, err := a.gw.SendCompletion(turnCtx, ref, msg)
 	if err != nil {
 		a.storePendingTask(threadID, task)
+		a.postResumeFailureNote(ctx, client, slackChannel, threadID)
 		return err
 	}
 

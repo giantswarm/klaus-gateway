@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -62,6 +63,8 @@ func slackInteractionPayload(t *testing.T, actionID, threadID, channelID, messag
 // fakeGateway captures SendCompletion calls.
 type fakeGateway struct {
 	deltas []channels.OutboundDelta
+	// resolveErr, when set, is returned by every Resolve call.
+	resolveErr error
 
 	mu      sync.Mutex
 	sent    []channels.InboundMessage
@@ -70,6 +73,9 @@ type fakeGateway struct {
 }
 
 func (g *fakeGateway) Resolve(_ context.Context, _ channels.InboundMessage) (channels.InstanceRef, error) {
+	if g.resolveErr != nil {
+		return channels.InstanceRef{}, g.resolveErr
+	}
 	return channels.InstanceRef{Name: "i1"}, nil
 }
 func (g *fakeGateway) SendCompletion(_ context.Context, _ channels.InstanceRef, msg channels.InboundMessage) (<-chan channels.OutboundDelta, error) {
@@ -322,6 +328,19 @@ func TestSignInClickIsBareAck(t *testing.T) {
 	posts, updates, ephemeral := sink.counts()
 	require.Zero(t, posts+updates+ephemeral, "a sign-in click must trigger no Slack call")
 	require.True(t, a.hasPendingTask("T001"), "a sign-in click must not consume the pending task")
+}
+
+// A button decision that fails before the stream starts must tell the thread:
+// the prompt message already shows the decision text, so silence reads as
+// success while the task quietly went nowhere.
+func TestHandleDecision_ResumeFailurePostsNote(t *testing.T) {
+	gw := &fakeGateway{resolveErr: errors.New("kagent down")}
+	a, paths := newDecisionAdapter(t, gw, linkedOBO{user: "U001", token: "human-token"})
+
+	err := a.handleDecision(t.Context(), "C001", "T001", "MSG001", "U001", hitlAction{kind: hitlApprove})
+	require.Error(t, err)
+	require.NotNil(t, a.takePendingTask("T001"), "the task must be re-stored so a typed reply can retry")
+	require.Contains(t, paths(), "/chat.postMessage", "a failure note must reach the thread")
 }
 
 func TestInteractionsHandler_InvalidSignature(t *testing.T) {

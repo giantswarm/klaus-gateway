@@ -70,7 +70,7 @@ func TestLoginReplay_FailurePostsNote(t *testing.T) {
 	a.OnUserLinked(t.Context(), "U123", "u123@example.com")
 
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "couldn't pick your message back up")
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "the turn failed")
 	}, 2*time.Second, 50*time.Millisecond, "a failed replay must post a failure note in-thread")
 }
 

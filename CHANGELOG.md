@@ -48,7 +48,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- A parked Slack message whose replay fails after sign-in or after an access grant now posts a failure note in the thread asking the user to resend, instead of failing silently.
+- A parked Slack message whose replay fails after sign-in or after an access grant now posts the failure note in the thread, instead of failing silently.
 - A failed rewrite of the sign-in prompt after account linking no longer strands a live "Sign in" button: the prompt's anchor is kept and the user's next successful turn retries the rewrite.
 - The sign-in prompt for an unlinked user is now a real threaded message instead of an ephemeral. For a fresh channel mention the previous thread-scoped ephemeral was attached to a thread with no visible messages, so Slack never surfaced it and the bot appeared to ignore the user. The prompt now anchors the reply thread (a threaded reply in channels and in the Slack Assistant DM pane alike) and, once the user signs in, is updated in place to the signed-in confirmation with the agent hand-off folded in, replacing the separate button-click ephemeral replacement.
 - The "email mismatch" sign-in failure page now names the two emails being compared (the OAuth identity's email and the Slack profile email) and hints at the GitHub primary email as the usual cause; the corresponding log line carries both emails too.
