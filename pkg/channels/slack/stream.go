@@ -222,10 +222,14 @@ func (w *batchedWriter) renderToolActivity(ctx context.Context, tool *channels.T
 	if w.details == detailsOff || tool == nil {
 		return
 	}
+	// The tool name is agent- and MCP-server-controlled text rendered inside a
+	// code span; a backtick or newline in it would break out of the span and
+	// inject markdown into the thread.
+	name := codeSpanSafe(tool.Name)
 	var md string
 	switch tool.Kind {
 	case channels.ToolCall:
-		md = "🔧 `" + tool.Name + "`"
+		md = "🔧 `" + name + "`"
 		if summary := compactJSON(tool.Args, toolArgsMax); summary != "" {
 			md += "\n```\n" + summary + "\n```"
 		}
@@ -237,7 +241,7 @@ func (w *batchedWriter) renderToolActivity(ctx context.Context, tool *channels.T
 		if preview == "" {
 			return
 		}
-		md = "↳ `" + tool.Name + "` result\n```\n" + preview + "\n```"
+		md = "↳ `" + name + "` result\n```\n" + preview + "\n```"
 	default:
 		return
 	}
