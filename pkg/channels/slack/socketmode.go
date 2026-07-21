@@ -51,7 +51,7 @@ func (c *socketModeClient) openWSURL(ctx context.Context) (string, error) {
 	req.Header.Set("Authorization", "Bearer "+c.appToken)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	resp, err := http.DefaultClient.Do(req) //nolint:gosec
+	resp, err := slackHTTPClient.Do(req) //nolint:gosec
 	if err != nil {
 		return "", err
 	}
