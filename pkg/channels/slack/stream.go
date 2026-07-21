@@ -765,8 +765,8 @@ func (c *slackAPIClient) postChoicePrompt(ctx context.Context, channel, threadID
 	return err
 }
 
-// postSignInPrompt posts a Block Kit message with a "Sign in to Giant Swarm"
-// button linking to linkURL, and returns the posted message's ts. It is used to
+// postSignInPrompt posts a Block Kit message with a "Sign in" button linking
+// to linkURL, and returns the posted message's ts. It is used to
 // nudge an unlinked Slack user into the OBO account-linking flow. A real
 // threaded message, never an ephemeral: for a root channel mention the prompt
 // is the thread's first visible reply (a thread-scoped ephemeral there is never
@@ -789,7 +789,7 @@ func (c *slackAPIClient) postSignInPrompt(ctx context.Context, channel, threadID
 				bkElements: []any{
 					map[string]any{
 						bkType:     bkButton,
-						bkText:     map[string]any{bkType: bkPlainText, bkText: "Sign in to Giant Swarm"},
+						bkText:     map[string]any{bkType: bkPlainText, bkText: "Sign in"},
 						bkStyle:    bkPrimary,
 						bkActionID: oboSignIn,
 						bkURL:      linkURL,
