@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -247,7 +248,7 @@ func decodeBlocksPayload(t *testing.T, body atomic.Value) blocksPayload {
 	return payload
 }
 
-func TestPostChoicePrompt_EscapesQuestion(t *testing.T) {
+func TestPostChoiceWidgetPrompt_EscapesQuestion(t *testing.T) {
 	var body atomic.Value
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw, _ := io.ReadAll(r.Body)
@@ -258,13 +259,143 @@ func TestPostChoicePrompt_EscapesQuestion(t *testing.T) {
 	defer srv.Close()
 
 	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
-	require.NoError(t, client.postChoicePrompt(t.Context(), "C1", "T1", "notify <!here>?", []string{"yes", "no"}))
+	require.NoError(t, client.postChoiceWidgetPrompt(t.Context(), "C1", "T1", "notify <!here>?", []string{"yes", "no"}, false))
 	raw, _ := body.Load().(string)
 	var payload struct {
 		Text string `json:"text"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(raw), &payload))
 	require.Equal(t, "notify &lt;!here&gt;?", payload.Text)
+}
+
+// choicePayload decodes a choice prompt far enough to inspect the widget
+// element, its options, and the Submit button.
+type choicePayload struct {
+	Blocks []struct {
+		Type     string                `json:"type"`
+		BlockID  string                `json:"block_id"`
+		Text     struct{ Text string } `json:"text"`
+		Elements []struct {
+			Type     string `json:"type"`
+			ActionID string `json:"action_id"`
+			Options  []struct {
+				Value string                `json:"value"`
+				Text  struct{ Text string } `json:"text"`
+			} `json:"options"`
+		} `json:"elements"`
+		Accessory struct {
+			Type     string `json:"type"`
+			ActionID string `json:"action_id"`
+		} `json:"accessory"`
+	} `json:"blocks"`
+}
+
+func decodeChoicePayload(t *testing.T, raw string) choicePayload {
+	t.Helper()
+	var p choicePayload
+	require.NoError(t, json.Unmarshal([]byte(raw), &p))
+	return p
+}
+
+func TestPostChoiceWidgetPrompt_SingleUsesRadioMultiUsesCheckbox(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		multiple bool
+		want     string
+	}{
+		{"single", false, bkRadioButtons},
+		{"multi", true, bkCheckboxes},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var body atomic.Value
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				raw, _ := io.ReadAll(r.Body)
+				body.Store(string(raw))
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprint(w, `{"ok":true,"ts":"1.2"}`)
+			}))
+			defer srv.Close()
+
+			client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
+			choices := []string{"alpha", "beta", "gamma"}
+			require.NoError(t, client.postChoiceWidgetPrompt(t.Context(), "C1", "T1", "pick", choices, tc.multiple))
+
+			p := decodeChoicePayload(t, body.Load().(string))
+			var group, submit bool
+			for _, b := range p.Blocks {
+				if b.BlockID == hitlGroupBlock {
+					require.Len(t, b.Elements, 1)
+					el := b.Elements[0]
+					require.Equal(t, tc.want, el.Type)
+					require.Equal(t, hitlGroup, el.ActionID)
+					require.Len(t, el.Options, len(choices))
+					for i, opt := range el.Options {
+						require.Equal(t, strconv.Itoa(i), opt.Value)
+						require.LessOrEqual(t, len([]rune(opt.Text.Text)), choiceLabelWidgetMax)
+					}
+					group = true
+				}
+				for _, el := range b.Elements {
+					if el.ActionID == hitlSubmit {
+						submit = true
+					}
+				}
+			}
+			require.True(t, group, "radio/checkbox group block present")
+			require.True(t, submit, "Submit button present")
+		})
+	}
+}
+
+func TestPostChoiceWidgetPrompt_TruncatesOversizedQuestion(t *testing.T) {
+	var body atomic.Value
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		body.Store(string(raw))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"ok":true,"ts":"1.2"}`)
+	}))
+	defer srv.Close()
+
+	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
+	oversized := strings.Repeat("q", 5000)
+	require.NoError(t, client.postChoiceWidgetPrompt(t.Context(), "C1", "T1", oversized, []string{"yes"}, false))
+
+	raw, _ := body.Load().(string)
+	var payload sectionPayload
+	require.NoError(t, json.Unmarshal([]byte(raw), &payload))
+	section := payload.Blocks[0].Text.Text
+	require.LessOrEqual(t, len([]rune(section)), slackSectionTextMax)
+	require.Contains(t, section, "…", "truncation marker expected")
+}
+
+// A choice longer than the widget option-text limit must render as a section
+// per choice with the full label intact (no truncation), which is the whole
+// point of the section fallback.
+func TestPostChoiceSectionPrompt_DoesNotTruncateLongChoice(t *testing.T) {
+	var body atomic.Value
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		body.Store(string(raw))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"ok":true,"ts":"1.2"}`)
+	}))
+	defer srv.Close()
+
+	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
+	long := strings.Repeat("a", choiceLabelWidgetMax+50) // > 75 runes, < 3000
+	require.NoError(t, client.postChoiceSectionPrompt(t.Context(), "C1", "T1", "pick", []string{long, "short"}, false))
+
+	p := decodeChoicePayload(t, body.Load().(string))
+	var found bool
+	for _, b := range p.Blocks {
+		if b.Type == bkSection && b.Text.Text == long {
+			require.Equal(t, bkButton, b.Accessory.Type)
+			require.True(t, strings.HasPrefix(b.Accessory.ActionID, hitlChoice))
+			found = true
+		}
+	}
+	require.True(t, found, "long choice rendered untruncated in its own section")
 }
 
 // sectionPayload decodes a prompt message far enough to read the section
@@ -302,28 +433,6 @@ func TestPostApprovalPrompt_TruncatesOversizedSection(t *testing.T) {
 	require.LessOrEqual(t, len([]rune(section)), slackSectionTextMax)
 	require.True(t, strings.HasSuffix(section, "…"), "truncation marker expected")
 	require.True(t, utf8.ValidString(section))
-}
-
-func TestPostChoicePrompt_TruncatesOversizedSection(t *testing.T) {
-	var body atomic.Value
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		raw, _ := io.ReadAll(r.Body)
-		body.Store(string(raw))
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{"ok":true,"ts":"1.2"}`)
-	}))
-	defer srv.Close()
-
-	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
-	oversized := strings.Repeat("q", 5000)
-	require.NoError(t, client.postChoicePrompt(t.Context(), "C1", "T1", oversized, []string{"yes"}))
-
-	raw, _ := body.Load().(string)
-	var payload sectionPayload
-	require.NoError(t, json.Unmarshal([]byte(raw), &payload))
-	section := payload.Blocks[0].Text.Text
-	require.LessOrEqual(t, len([]rune(section)), slackSectionTextMax)
-	require.Contains(t, section, "…", "truncation marker expected")
 }
 
 func TestRespondURL_ErrorsOnNonSuccessStatus(t *testing.T) {

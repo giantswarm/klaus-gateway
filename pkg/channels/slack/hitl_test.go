@@ -66,6 +66,17 @@ func TestBuildButtonDecision_Choice(t *testing.T) {
 	require.Contains(t, display, "Health check")
 }
 
+func TestBuildButtonDecision_Submit(t *testing.T) {
+	prompt := askUserPrompt(true, "Auth", "Logging", "Caching")
+	act := hitlAction{kind: hitlSubmit, choices: []int{0, 2}}
+
+	decision, resume, display := buildButtonDecision(act, prompt)
+	require.Equal(t, channels.DecisionApprove, decision.Type)
+	require.Equal(t, [][]string{{"Auth", "Caching"}}, decision.AskUserAnswers)
+	require.Equal(t, "Auth, Caching", resume)
+	require.Contains(t, display, "Auth, Caching")
+}
+
 func TestBuildButtonDecision_ApproveDeny(t *testing.T) {
 	approve, _, _ := buildButtonDecision(hitlAction{kind: hitlApprove}, nil)
 	require.Equal(t, channels.DecisionApprove, approve.Type)

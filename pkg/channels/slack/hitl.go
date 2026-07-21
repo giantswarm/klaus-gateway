@@ -9,10 +9,11 @@ import (
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 )
 
-// choiceValue is encoded into an ask_user choice button's value so the
+// choiceValue is encoded into a section-accessory choice button's value so the
 // interaction handler can map a click back to the selected option. Only
-// single-question ask_user prompts render as buttons, so no question index is
-// needed.
+// single-question ask_user prompts render interactively, so no question index
+// is needed. The radio/checkbox widget path carries indices in state.values
+// instead and does not use this.
 type choiceValue struct {
 	Thread string `json:"t"`
 	Choice int    `json:"c"`
@@ -52,23 +53,50 @@ func decodeAccessValue(s string) (accessValue, bool) {
 	return v, true
 }
 
+// choiceRender selects how a single ask_user question's choices are presented.
+type choiceRender int
+
+const (
+	renderText    choiceRender = iota // numbered list, reply free-text in-thread
+	renderWidget                      // radio_buttons (single) / checkboxes (multi) + Submit
+	renderSection                     // one section per choice + accessory, for long labels
+)
+
+// chooseChoiceRender picks the render mode for a single ask_user question. A
+// widget carries choice labels of at most choiceLabelWidgetMax runes; a longer
+// label forces the section layout so nothing truncates. More than
+// maxChoiceOptions choices (or none) falls back to text.
+func chooseChoiceRender(q channels.HitlQuestion) choiceRender {
+	if len(q.Choices) == 0 || len(q.Choices) > maxChoiceOptions {
+		return renderText
+	}
+	for _, c := range q.Choices {
+		if len([]rune(c)) > choiceLabelWidgetMax {
+			return renderSection
+		}
+	}
+	return renderWidget
+}
+
 // postHitlPrompt renders the appropriate Slack prompt for a paused
-// input-required task: per-choice buttons for a simple single-select ask_user
-// question, Approve/Deny for a generic tool approval, and a free-text fallback
+// input-required task: an interactive choice widget for a single-question
+// ask_user, Approve/Deny for a generic tool approval, and a free-text fallback
 // for everything else. The user can always answer by replying in-thread.
 func (a *Adapter) postHitlPrompt(ctx context.Context, client *slackAPIClient, slackChannel, threadID string, pd *channels.OutboundDelta) error {
 	p := pd.Prompt
 
-	// Simple single-select ask_user → one button per choice.
-	if p.IsAskUser() && len(p.Questions) == 1 {
-		q := p.Questions[0]
-		if !q.Multiple && len(q.Choices) > 0 && len(q.Choices) <= maxChoiceButtons {
-			return client.postChoicePrompt(ctx, slackChannel, threadID, q.Question, q.Choices)
-		}
-	}
-
-	// ask_user that doesn't fit buttons → render questions as text, answer free-text.
 	if p.IsAskUser() {
+		// Only a single-question prompt renders interactively; multiple questions
+		// need one answer line each, which the text path handles.
+		if len(p.Questions) == 1 {
+			q := p.Questions[0]
+			switch chooseChoiceRender(q) {
+			case renderWidget:
+				return client.postChoiceWidgetPrompt(ctx, slackChannel, threadID, q.Question, q.Choices, q.Multiple)
+			case renderSection:
+				return client.postChoiceSectionPrompt(ctx, slackChannel, threadID, q.Question, q.Choices, q.Multiple)
+			}
+		}
 		_, err := client.postMessage(ctx, slackChannel, renderAskUserText(p), threadID)
 		return err
 	}

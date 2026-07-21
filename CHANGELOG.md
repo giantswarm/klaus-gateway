@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Slack `ask_user` questions now render their choices as a vertical `radio_buttons` (single-select) or `checkboxes` (multi-select) list with a Submit button, instead of a horizontal row of buttons that Slack truncated to about 39 characters. A choice longer than 75 characters renders one per section with its full text intact. Multi-select questions are now answerable by clicking (previously only by typing a comma-separated reply). More than 10 choices, or a prompt with multiple questions, still renders as a numbered list you answer in-thread (klaus-gateway#151).
 - Slack `/klaus login` and `/klaus logout` are now `/login` and `/logout`.
 - A message from someone not allowed to instruct the agent in a thread is no longer silently dropped; it prompts sign-in or an initiator approval instead.
 - Per-thread `/details` settings, `/usage` figures, and resume-check marks are dropped after 24 hours of thread inactivity, so a long-lived gateway's memory stays bounded. An active thread refreshes its state on every turn.
