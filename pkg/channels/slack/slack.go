@@ -642,14 +642,36 @@ func (a *Adapter) postSignIn(ctx context.Context, slackChannel, threadID, slackU
 	url := a.OBO.LinkURL(slackUser)
 	if url == "" {
 		a.Logger.Warn("slack: empty sign-in link URL, skipping prompt", "user", slackUser)
+		a.clearSignInReservation(slackUser, threadID)
 		return
 	}
 	ts, err := a.apiClient().postSignInPrompt(ctx, slackChannel, threadID, url)
 	if err != nil {
 		a.Logger.Warn("slack: post sign-in prompt failed", "user", slackUser, "error", err)
+		a.clearSignInReservation(slackUser, threadID)
 		return
 	}
 	a.recordSignInAnchor(slackUser, threadID, signInAnchor{channel: slackChannel, ts: ts})
+	// The post ran outside any lock, so a link callback may have drained the
+	// anchors while the prompt was in flight; the just-recorded anchor would
+	// then keep a live sign-in button for an already-linked user and suppress
+	// re-prompts for the full window. Re-check and converge.
+	if _, err := a.OBO.TokenFor(ctx, slackUser); err == nil {
+		a.updateSignInAnchors(ctx, slackUser, "", false)
+	}
+}
+
+// clearSignInReservation removes the (user, thread) throttle entry when no
+// prompt message exists for it, so a failed post retries on the next parked
+// message instead of suppressing the nudge for the full window. An entry with
+// a posted anchor is left alone.
+func (a *Adapter) clearSignInReservation(slackUser, threadID string) {
+	key := slackUser + "\x00" + threadID
+	a.signInPromptedMu.Lock()
+	defer a.signInPromptedMu.Unlock()
+	if entry, ok := a.signInPrompted[key]; ok && entry.value.ts == "" {
+		delete(a.signInPrompted, key)
+	}
 }
 
 // recordSignInAnchor stores the posted prompt's coordinates under the (user,
@@ -663,6 +685,7 @@ func (a *Adapter) recordSignInAnchor(slackUser, threadID string, anchor signInAn
 	if a.signInPrompted == nil {
 		a.signInPrompted = make(map[string]ttlEntry[signInAnchor])
 	}
+	sweepExpired(a.signInPrompted, now)
 	a.signInPrompted[key] = ttlEntry[signInAnchor]{value: anchor, expires: now.Add(pendingTTL)}
 }
 
@@ -977,13 +1000,14 @@ func (a *Adapter) OnUserLinked(ctx context.Context, slackUser, email string) {
 		bgCtx = ctx
 	}
 	queues := a.takePendingLogin(slackUser)
-	// The prompt rewrite announces the agent handoff only when a parked message
-	// is actually about to replay; bare auth utterances are satisfied by the
-	// link itself and get the plain confirmation.
+	// The prompt rewrite announces the agent handoff only when a replay will
+	// actually reach the agent: bare auth utterances are satisfied by the link
+	// itself, and a newcomer's replay lands at the initiator's consent prompt
+	// instead, so both keep the plain confirmation.
 	replaying := false
-	for _, queue := range queues {
+	for threadID, queue := range queues {
 		for _, req := range queue {
-			if !isBareAuthUtterance(req.msg.Text) {
+			if !isBareAuthUtterance(req.msg.Text) && a.accessPolicy().Allowed(threadID, slackUser) {
 				replaying = true
 			}
 		}

@@ -26,9 +26,9 @@ const (
 )
 
 // oboSignIn is the action_id on the OBO "Sign in" URL button. The button opens
-// its url directly; the interaction payload Slack still sends routes no
-// decision (classifyAction returns false) but its response_url is kept so the
-// ephemeral prompt can be replaced once the link completes (NotifyLinked).
+// its url directly; the interaction payload Slack still sends is acked without
+// action. The prompt message itself is rewritten in place once the link
+// completes (OnUserLinked), keyed by the recorded anchor, not by the click.
 const oboSignIn = "obo_sign_in"
 
 // Connector Block Kit action IDs. The button value carries the backend name.

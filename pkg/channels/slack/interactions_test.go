@@ -292,7 +292,34 @@ func TestHandleDecision_UnlinkedClicker_PreservesPendingTask(t *testing.T) {
 
 	require.Empty(t, gw.sentMessages(), "aborted resume must not reach the agent")
 	require.NotNil(t, a.takePendingTask("T001"), "aborted resume must leave the pending task intact")
-	require.Contains(t, paths(), "/chat.postEphemeral", "unlinked clicker must be prompted to sign in")
+	// U-unlinked is not allowed on the thread (U-linked would be the
+	// initiator), so the notice hit here is the access refusal, not the
+	// sign-in prompt; the sign-in path is pinned by
+	// TestHandleDecision_OBO_TokenMintFailurePreservesTask.
+	require.Contains(t, paths(), "/chat.postEphemeral", "the clicker must be told why nothing happened")
+}
+
+// The sign-in URL button opens its link in the browser; its block_actions
+// payload is acked without action: no Slack API call, no pending-task
+// consumption.
+func TestSignInClickIsBareAck(t *testing.T) {
+	const secret = "test-secret"
+	srv, sink := newIxSlackServer(t)
+
+	a := &Adapter{
+		APIBase:      srv.URL,
+		Secrets:      Secrets{BotToken: "test-bot-token", SigningSecret: secret}, //nolint:gosec
+		DefaultAgent: "worker",
+	}
+	require.NoError(t, a.Start(t.Context(), &fakeGateway{}))
+	a.storePendingTask("T001", &pendingTask{TaskID: "task-abc", AgentRef: "worker", Channel: "C001", ChannelID: "C001"})
+
+	serveInteraction(t, a, secret, oboSignIn, "T001", "C001", "MSG001", "U001")
+
+	time.Sleep(100 * time.Millisecond)
+	posts, updates, ephemeral := sink.counts()
+	require.Zero(t, posts+updates+ephemeral, "a sign-in click must trigger no Slack call")
+	require.True(t, a.hasPendingTask("T001"), "a sign-in click must not consume the pending task")
 }
 
 func TestInteractionsHandler_InvalidSignature(t *testing.T) {
@@ -718,6 +745,7 @@ func TestOnUserLinkedAnchorAnnouncesHandoffWhenReplaying(t *testing.T) {
 		DefaultAgent: "worker",
 	}
 	require.NoError(t, a.Start(t.Context(), &fakeGateway{}))
+	a.accessPolicy().SetInitiator("T1", "U001") // the parked user owns the thread, so the replay reaches the agent
 	a.recordSignInAnchor("U001", "T1", signInAnchor{channel: "C1", ts: "111.111"})
 	a.parkPendingLogin("U001", &pendingLoginReq{
 		msg:          channels.InboundMessage{Subject: "U001", ThreadID: "T1", MessageID: "T1", Text: "what failed?"},
@@ -730,6 +758,32 @@ func TestOnUserLinkedAnchorAnnouncesHandoffWhenReplaying(t *testing.T) {
 	text, _ := updates()[0]["text"].(string)
 	require.Contains(t, text, "Signed in as alice@example.com")
 	require.Contains(t, text, "worker", "the rewrite announces the agent handoff")
+}
+
+// A newcomer's replay lands at the initiator's consent prompt, not the agent,
+// so their rewritten prompt keeps the plain confirmation.
+func TestOnUserLinkedAnchorPlainForUnapprovedNewcomer(t *testing.T) {
+	srv, updates := captureChatUpdates(t)
+
+	a := &Adapter{
+		Secrets:      Secrets{BotToken: "test-bot-token"}, //nolint:gosec
+		APIBase:      srv.URL,
+		DefaultAgent: "worker",
+	}
+	require.NoError(t, a.Start(t.Context(), &fakeGateway{}))
+	a.accessPolicy().SetInitiator("T1", "U_OWNER") // someone else owns the thread
+	a.recordSignInAnchor("U999", "T1", signInAnchor{channel: "C1", ts: "111.111"})
+	a.parkPendingLogin("U999", &pendingLoginReq{
+		msg:          channels.InboundMessage{Subject: "U999", ThreadID: "T1", MessageID: "222.222", Text: "me too"},
+		slackChannel: "C1",
+	})
+
+	a.OnUserLinked(t.Context(), "U999", "bob@example.com")
+	require.Eventually(t, func() bool { return len(updates()) == 1 },
+		2*time.Second, 10*time.Millisecond)
+	text, _ := updates()[0]["text"].(string)
+	require.Contains(t, text, "Signed in as bob@example.com")
+	require.NotContains(t, text, "Bringing in", "a consent-gated replay must not promise the agent")
 }
 
 // A parked queue that is nothing but bare auth utterances is satisfied by the
