@@ -725,7 +725,8 @@ func TestOnUserLinkedRewritesSignInAnchor(t *testing.T) {
 	require.Equal(t, "C1", call["channel"])
 	require.Equal(t, "111.111", call["ts"])
 	text, _ := call["text"].(string)
-	require.Contains(t, text, "Signed in as alice@example.com")
+	require.Contains(t, text, "Signed in")
+	require.NotContains(t, text, "@", "the in-thread rewrite carries no email; identity is confirmed on the browser page")
 	require.NotContains(t, text, "Bringing in", "no parked replay, no handoff wording")
 
 	// Anchors are drained on first use.
@@ -756,7 +757,8 @@ func TestOnUserLinkedAnchorAnnouncesHandoffWhenReplaying(t *testing.T) {
 	require.Eventually(t, func() bool { return len(updates()) == 1 },
 		2*time.Second, 10*time.Millisecond, "the anchor must be rewritten after linking")
 	text, _ := updates()[0]["text"].(string)
-	require.Contains(t, text, "Signed in as alice@example.com")
+	require.Contains(t, text, "Signed in")
+	require.NotContains(t, text, "@", "the in-thread rewrite carries no email")
 	require.Contains(t, text, "worker", "the rewrite announces the agent handoff")
 }
 
@@ -782,7 +784,8 @@ func TestOnUserLinkedAnchorPlainForUnapprovedNewcomer(t *testing.T) {
 	require.Eventually(t, func() bool { return len(updates()) == 1 },
 		2*time.Second, 10*time.Millisecond)
 	text, _ := updates()[0]["text"].(string)
-	require.Contains(t, text, "Signed in as bob@example.com")
+	require.Contains(t, text, "Signed in")
+	require.NotContains(t, text, "@", "the in-thread rewrite carries no email")
 	require.NotContains(t, text, "Bringing in", "a consent-gated replay must not promise the agent")
 }
 
@@ -893,7 +896,7 @@ func TestTakeSignInAnchorsSkipsExpiredAndUnposted(t *testing.T) {
 		"U1\x00T3": {value: signInAnchor{channel: "C1", ts: "3.3"}, expires: time.Now().Add(time.Hour)},
 		"U2\x00T1": {value: signInAnchor{channel: "C1", ts: "9.9"}, expires: time.Now().Add(time.Hour)},
 	}}
-	require.Equal(t, []signInAnchor{{channel: "C1", ts: "3.3"}}, a.takeSignInAnchors("U1"))
+	require.Equal(t, []signInAnchor{{channel: "C1", ts: "3.3", threadID: "T3"}}, a.takeSignInAnchors("U1"))
 	require.Empty(t, a.takeSignInAnchors("U1"), "take clears the user's entries")
 	require.Len(t, a.takeSignInAnchors("U2"), 1, "other users' entries are untouched")
 }
@@ -902,5 +905,5 @@ func TestRecordSignInAnchorRePromptOverwrites(t *testing.T) {
 	a := &Adapter{}
 	a.recordSignInAnchor("U1", "T1", signInAnchor{channel: "C1", ts: "1.1"})
 	a.recordSignInAnchor("U1", "T1", signInAnchor{channel: "C1", ts: "2.2"})
-	require.Equal(t, []signInAnchor{{channel: "C1", ts: "2.2"}}, a.takeSignInAnchors("U1"))
+	require.Equal(t, []signInAnchor{{channel: "C1", ts: "2.2", threadID: "T1"}}, a.takeSignInAnchors("U1"))
 }

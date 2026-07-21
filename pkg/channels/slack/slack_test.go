@@ -582,11 +582,13 @@ func TestDispatch_OBO_ParksUnlinkedMessageAndReplaysAfterLink(t *testing.T) {
 	require.Contains(t, got.Text, "what is failing?")
 
 	// The prompt message is rewritten in place into the signed-in confirmation
-	// with the agent handoff folded in.
+	// with the agent handoff folded in. The email is not echoed in-thread; it is
+	// confirmed on the private browser success page.
 	fake.waitForPath(t, "chat.update", 1)
 	update := fake.pathCalls("chat.update")[0]
 	text, _ := update.params["text"].(string)
-	require.Contains(t, text, "Signed in as u123@example.com")
+	require.Contains(t, text, "Signed in")
+	require.NotContains(t, text, "@", "the in-thread rewrite carries no email")
 	require.Contains(t, text, "test-agent", "the rewrite announces the agent handoff")
 	require.NotEmpty(t, update.params["ts"], "the rewrite targets the prompt's anchor ts")
 }

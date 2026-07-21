@@ -537,10 +537,14 @@ func (l *Linker) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		l.onLinked(context.WithoutCancel(ctx), slackUser, link.Email)
 	}
 
+	message := "You can close this tab and return to Slack."
+	if link.Email != "" {
+		message = fmt.Sprintf("Signed in as %s. You can close this tab and return to Slack.", link.Email)
+	}
 	l.renderPage(w, http.StatusOK, page{
 		Heading: "Success",
 		Title:   "Signed in to Giant Swarm",
-		Message: "You can close this tab and return to Slack.",
+		Message: message,
 	})
 }
 

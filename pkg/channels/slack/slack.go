@@ -627,10 +627,13 @@ func (a *Adapter) postLaunchAnnouncement(ctx context.Context, slackChannel, thre
 }
 
 // signInAnchor is the message coordinates of a posted sign-in prompt, kept so
-// a completed link can rewrite the prompt in place (chat.update).
+// a completed link can rewrite the prompt in place (chat.update). threadID is
+// filled by takeSignInAnchors from the map key so the rewrite can decide, per
+// thread, whether that thread's replay reaches the agent.
 type signInAnchor struct {
-	channel string
-	ts      string
+	channel  string
+	ts       string
+	threadID string
 }
 
 // postSignIn posts the "Sign in to Giant Swarm" prompt for the account-linking
@@ -657,7 +660,7 @@ func (a *Adapter) postSignIn(ctx context.Context, slackChannel, threadID, slackU
 	// then keep a live sign-in button for an already-linked user and suppress
 	// re-prompts for the full window. Re-check and converge.
 	if _, err := a.OBO.TokenFor(ctx, slackUser); err == nil {
-		a.updateSignInAnchors(ctx, slackUser, "", false)
+		a.updateSignInAnchors(ctx, slackUser, nil)
 	}
 }
 
@@ -734,31 +737,37 @@ func (a *Adapter) takeSignInAnchors(slackUser string) []signInAnchor {
 		}
 		delete(a.signInPrompted, key)
 		if entry.value.ts != "" && now.Before(entry.expires) {
-			anchors = append(anchors, entry.value)
+			anchor := entry.value
+			anchor.threadID = strings.TrimPrefix(key, prefix)
+			anchors = append(anchors, anchor)
 		}
 	}
 	return anchors
 }
 
 // updateSignInAnchors rewrites the user's sign-in prompt messages in place once
-// the account link completes, folding the confirmation and the agent handoff
-// notice into the message the user is already looking at (the URL button is
-// dropped by the rewrite). replaying selects the handoff wording when parked
-// messages are about to re-dispatch.
-func (a *Adapter) updateSignInAnchors(ctx context.Context, slackUser, email string, replaying bool) {
+// the account link completes, folding the confirmation into the message the
+// user is already looking at (the URL button is dropped by the rewrite). The
+// identity the user signed in as is confirmed on the private browser success
+// page, not here, so the in-thread rewrite carries no email. An anchor whose
+// thread is in replayingThreads (a parked message about to reach the agent)
+// gains the handoff notice; the others keep the plain confirmation.
+func (a *Adapter) updateSignInAnchors(ctx context.Context, slackUser string, replayingThreads map[string]bool) {
 	anchors := a.takeSignInAnchors(slackUser)
 	if len(anchors) == 0 {
 		return
 	}
-	text := "✅ Signed in. I can act on your behalf now."
-	if email != "" {
-		text = "✅ Signed in as " + email + ". I can act on your behalf now."
-	}
-	if replaying {
-		text += fmt.Sprintf(" Bringing in **%s** to help.", a.agentDisplayName(ctx, a.DefaultAgent))
+	const base = "✅ Signed in. I can act on your behalf now."
+	var handoff string
+	if len(replayingThreads) > 0 {
+		handoff = fmt.Sprintf(" Bringing in **%s** to help.", a.agentDisplayName(ctx, a.DefaultAgent))
 	}
 	client := a.apiClient()
 	for _, anchor := range anchors {
+		text := base
+		if replayingThreads[anchor.threadID] {
+			text += handoff
+		}
 		if err := client.chatUpdateMarkdown(ctx, anchor.channel, anchor.ts, text); err != nil {
 			a.Logger.Warn("slack: update sign-in prompt after link failed", "user", slackUser, "channel", anchor.channel, "ts", anchor.ts, "error", err)
 		}
@@ -1004,11 +1013,11 @@ func (a *Adapter) OnUserLinked(ctx context.Context, slackUser, email string) {
 	// actually reach the agent: bare auth utterances are satisfied by the link
 	// itself, and a newcomer's replay lands at the initiator's consent prompt
 	// instead, so both keep the plain confirmation.
-	replaying := false
+	replayingThreads := make(map[string]bool)
 	for threadID, queue := range queues {
 		for _, req := range queue {
 			if !isBareAuthUtterance(req.msg.Text) && a.accessPolicy().Allowed(threadID, slackUser) {
-				replaying = true
+				replayingThreads[threadID] = true
 			}
 		}
 	}
@@ -1016,7 +1025,7 @@ func (a *Adapter) OnUserLinked(ctx context.Context, slackUser, email string) {
 	// inline would delay the sign-in success page. Ordering against replay is
 	// immaterial: the prompt and the agent's thread reply are independent
 	// messages.
-	go a.updateSignInAnchors(bgCtx, slackUser, email, replaying)
+	go a.updateSignInAnchors(bgCtx, slackUser, replayingThreads)
 	for _, queue := range queues {
 		go func() {
 			for _, req := range queue {
