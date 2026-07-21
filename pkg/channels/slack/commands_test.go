@@ -1,7 +1,9 @@
 package slack
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -213,6 +215,26 @@ func TestHandleCommand_LoginLinkedConfirmsEphemerally(t *testing.T) {
 	srv.mu.Lock()
 	defer srv.mu.Unlock()
 	require.Contains(t, srv.ephemeralTexts[0], "user@example.test")
+}
+
+// deadLinkOBO reports a linked identity whose tokens no longer work, like a
+// store entry surviving an identity-provider revocation.
+type deadLinkOBO struct{ identOBO }
+
+func (deadLinkOBO) TokenFor(context.Context, string) (string, error) {
+	return "", errors.New("refresh token revoked")
+}
+
+// A stored link is not proof the link works: /login must probe the token and
+// re-prompt sign-in when the provider has revoked it, instead of confirming a
+// sign-in that fails on the next turn.
+func TestHandleCommand_LoginLinkedButDeadTokenRepromptsSignIn(t *testing.T) {
+	a, srv := newTestAdapter(t)
+	a.OBO = deadLinkOBO{}
+
+	require.True(t, a.handleCommand(t.Context(), &slashCommand{Name: "login"}, "U1", "C1", "T1"))
+	require.Equal(t, int32(0), srv.ephemerals.Load(), "no signed-in confirmation for a dead link")
+	require.Equal(t, int32(1), srv.posts.Load(), "the sign-in prompt is posted to the thread")
 }
 
 // /logout confirms ephemerally: sign-in state is caller-only information.

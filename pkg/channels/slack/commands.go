@@ -241,6 +241,16 @@ func (a *Adapter) handleLoginCommand(ctx context.Context, slackUser, slackChanne
 		return true
 	}
 	email, linked := a.linkedEmail(ctx, slackUser)
+	if linked {
+		// The store entry alone does not prove the link works: the identity
+		// provider may have revoked the token family since. An explicit /login
+		// is the moment to probe for real, so a dead link re-prompts instead
+		// of confirming a sign-in that will fail on the next turn.
+		if _, err := a.OBO.TokenFor(ctx, slackUser); err != nil {
+			a.Logger.Info("slack: /login probe failed for linked user, re-prompting sign-in", "user", slackUser, "error", err)
+			linked = false
+		}
+	}
 	if !linked {
 		// Explicit request: post the sign-in prompt without the nudge throttle.
 		a.postSignIn(ctx, slackChannel, threadID, slackUser)
