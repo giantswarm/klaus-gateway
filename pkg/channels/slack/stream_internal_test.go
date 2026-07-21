@@ -15,6 +15,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/giantswarm/klaus-gateway/pkg/channels"
 )
 
 func TestSend_RetriesOnceOnRateLimit(t *testing.T) {
@@ -345,6 +347,58 @@ func TestPostChoiceWidgetPrompt_SingleUsesRadioMultiUsesCheckbox(t *testing.T) {
 			require.True(t, submit, "Submit button present")
 		})
 	}
+}
+
+// A multi-question form posts one widget block per question, block_id-tagged
+// with the question index (radio for single-select, checkbox for multi), with
+// option values as choice indices, plus a single Submit.
+func TestPostChoiceFormPrompt_PerQuestionBlocks(t *testing.T) {
+	var body atomic.Value
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		body.Store(string(raw))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"ok":true,"ts":"1.2"}`)
+	}))
+	defer srv.Close()
+
+	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
+	questions := []channels.HitlQuestion{
+		{Question: "Database?", Choices: []string{"PostgreSQL", "MySQL"}},
+		{Question: "Features?", Multiple: true, Choices: []string{"Auth", "Logging", "Caching"}},
+	}
+	require.NoError(t, client.postChoiceFormPrompt(t.Context(), "C1", "T1", questions))
+
+	p := decodeChoicePayload(t, body.Load().(string))
+	want := map[string]struct {
+		element    string
+		numOptions int
+	}{
+		hitlQGroupPrefix + "_0": {bkRadioButtons, 2},
+		hitlQGroupPrefix + "_1": {bkCheckboxes, 3},
+	}
+	seen := map[string]bool{}
+	var submit bool
+	for _, b := range p.Blocks {
+		if w, ok := want[b.BlockID]; ok {
+			require.Len(t, b.Elements, 1)
+			el := b.Elements[0]
+			require.Equal(t, w.element, el.Type)
+			require.Equal(t, hitlGroup, el.ActionID)
+			require.Len(t, el.Options, w.numOptions)
+			for i, opt := range el.Options {
+				require.Equal(t, strconv.Itoa(i), opt.Value)
+			}
+			seen[b.BlockID] = true
+		}
+		for _, el := range b.Elements {
+			if el.ActionID == hitlSubmit {
+				submit = true
+			}
+		}
+	}
+	require.Len(t, seen, 2, "one widget block per question")
+	require.True(t, submit, "single Submit button present")
 }
 
 func TestPostChoiceWidgetPrompt_TruncatesOversizedQuestion(t *testing.T) {

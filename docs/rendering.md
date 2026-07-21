@@ -69,8 +69,13 @@ When the stream ends on a `DeltaPrompt`, the writer hands the prompt to `postHit
   | 1-10 | true | >75 | section per choice + accessory checkbox (`postChoiceSectionPrompt`) | Submit |
   | >10 | any | any | numbered text + free-text reply (`renderAskUserText`, `hitl.go:113`) | reply |
 
-- **ask_user, multiple questions**: always numbered text + free-text reply (one answer line
-  per question).
+- **ask_user, multiple questions**: if every question is a widget (1-10 choices, each label
+  <=75 runes) and there are at most `maxFormQuestions`, the prompt renders as a single form
+  (`postChoiceFormPrompt`, `stream.go`) — one `radio_buttons`/`checkboxes` group per question,
+  each block_id-tagged with its question index (`hitl_q_<qi>`), committed by one Submit
+  (`formRenderable`, `hitl.go`). Otherwise (any free-text / over-long / over-count question, or
+  too many questions) it falls back to numbered text + free-text reply, one answer line per
+  question.
 
 A choice is a bare `string` end to end: kagent's `ask_user` tool schema is
 `Choices []string` with no per-choice description or header, so there is nothing richer to
@@ -99,9 +104,12 @@ paths ignore the change and act only on Submit.
 click → POST /channels/slack/interactions → routeInteraction (interactions.go:140)
   classifyAction → hitlApprove | hitlDeny | hitlChat | hitlChoice | hitlSubmit
   hitlChoice  : decodeChoiceValue(value) → {thread, index}         (section accessory button)
-  hitlSubmit  : selectedChoiceIndices(payload.State) → []int       (radio/checkbox, read state.values)
+  hitlSubmit  : selectedChoiceIndices(payload.State) → []int       (single-question, read state.values)
+              + selectedChoicesByQuestion(payload.State) → map[qi][]int  (multi-question form, per hitl_q_<qi>)
   handleDecision (interactions.go:309): access check, thread lock, human-token mint
+    form: reject an incomplete multi-question Submit (re-store task + nudge) before deciding
     buildButtonDecision (interactions.go:440): indices → labels → HitlDecision{approve, AskUserAnswers}
+      single question → one answer slot; multi-question form → one slot per question, in order
   chat.update rewrites the prompt to the chosen answer
   gw.SendCompletion resumes the paused task; buildInboundParts (hitl_parse.go:39) emits the DataPart
 ```

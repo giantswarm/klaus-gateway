@@ -24,6 +24,14 @@ const (
 // on Submit; a per-choice checkbox layout appends "_<index>" for a stable id per block.
 const hitlGroupBlock = "hitl_group_block"
 
+// hitlQGroupPrefix prefixes the block_id of one question's widget in a
+// multi-question ask_user form: the full id is hitlQGroupPrefix + "_<question
+// index>". The handler maps each selection back to its question by parsing the
+// index out of the block_id (see selectedChoicesByQuestion). The prefix is
+// distinct from hitlGroupBlock so the single-question and form readers never
+// cross-read one another's state.
+const hitlQGroupPrefix = "hitl_q"
+
 // Access-consent Block Kit action IDs. The button value encodes the thread and
 // the newcomer being decided (see encodeAccessValue), since one initiator can
 // have several pending approvals at once.
@@ -94,6 +102,13 @@ const maxChoiceOptions = 10
 // section-per-choice layout, which carries the full text in a 3000-char section.
 const choiceLabelWidgetMax = 75
 
+// maxFormQuestions caps how many questions a multi-question ask_user prompt
+// renders as a single interactive form. Each question costs a section plus a
+// widget block, and the form adds one Submit (2N+1 blocks), so this keeps a
+// full form under the 50-blocks-per-message limit. A prompt with more questions
+// renders as text.
+const maxFormQuestions = 20
+
 // Progress-mode values (Adapter.ProgressMode).
 const (
 	progressModeAuto      = "auto"      // reactions, falling back to text on missing_scope
@@ -128,6 +143,11 @@ const accessDecisionRefusal = "_Only the thread owner (and people they've allowe
 // choiceSelectNudge is shown (ephemerally) when a user clicks Submit on an
 // ask_user choice widget without selecting anything; the task stays pending.
 const choiceSelectNudge = "_Pick at least one option, then click Submit._"
+
+// formIncompleteNudge is shown (ephemerally) when a user clicks Submit on a
+// multi-question ask_user form with a question still unanswered; the form stays
+// pending so the user can complete it and submit again.
+const formIncompleteNudge = "_Please answer every question, then click Submit._"
 
 // chatModePrompt replaces the approval buttons after the user clicks "Chat":
 // the pending tool call is held and the next in-thread reply is sent as the

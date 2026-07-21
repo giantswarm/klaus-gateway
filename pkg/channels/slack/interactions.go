@@ -91,6 +91,64 @@ func selectedChoiceIndices(state struct {
 	return indices
 }
 
+// questionIndexFromBlockID extracts the question index from a multi-question
+// form widget's block_id (hitlQGroupPrefix + "_<qi>"). It returns false for any
+// block that is not a form group, so the single-question widget/section blocks
+// are ignored.
+func questionIndexFromBlockID(blockID string) (int, bool) {
+	rest, ok := strings.CutPrefix(blockID, hitlQGroupPrefix+"_")
+	if !ok {
+		return 0, false
+	}
+	i, err := strconv.Atoi(rest)
+	if err != nil || i < 0 {
+		return 0, false
+	}
+	return i, true
+}
+
+// selectedChoicesByQuestion gathers, per question, the choice indices selected
+// in a multi-question form. It reads only blocks whose block_id encodes a
+// question index (see questionIndexFromBlockID); each option value is a choice
+// index. Indices are de-duplicated and ordered within each question.
+func selectedChoicesByQuestion(state struct {
+	Values map[string]map[string]blockActionState `json:"values"`
+}) map[int][]int {
+	perQuestion := map[int]map[int]struct{}{}
+	record := func(qi int, v string) {
+		if ci, err := strconv.Atoi(v); err == nil {
+			if perQuestion[qi] == nil {
+				perQuestion[qi] = map[int]struct{}{}
+			}
+			perQuestion[qi][ci] = struct{}{}
+		}
+	}
+	for blockID, actions := range state.Values {
+		qi, ok := questionIndexFromBlockID(blockID)
+		if !ok {
+			continue
+		}
+		for _, st := range actions {
+			if st.SelectedOption != nil {
+				record(qi, st.SelectedOption.Value)
+			}
+			for _, opt := range st.SelectedOptions {
+				record(qi, opt.Value)
+			}
+		}
+	}
+	out := make(map[int][]int, len(perQuestion))
+	for qi, set := range perQuestion {
+		indices := make([]int, 0, len(set))
+		for ci := range set {
+			indices = append(indices, ci)
+		}
+		sort.Ints(indices)
+		out[qi] = indices
+	}
+	return out
+}
+
 // interactionsHandler serves POST /channels/slack/interactions.
 type interactionsHandler struct {
 	signingSecret string
@@ -190,7 +248,11 @@ func (a *Adapter) routeInteraction(ctx context.Context, payload interactionPaylo
 		threadID = cv.Thread
 		act.choice = cv
 	case hitlSubmit:
+		// choices is the flat selection across every widget (used for the
+		// single-question decision and the nothing-selected check); answers keeps
+		// selections grouped per question for a multi-question form.
 		act.choices = selectedChoiceIndices(payload.State)
+		act.answers = selectedChoicesByQuestion(payload.State)
 		if len(act.choices) == 0 {
 			// Submit with nothing selected: nudge, leaving the task (and widget)
 			// pending so the user can pick and submit again.
@@ -212,7 +274,8 @@ func (a *Adapter) routeInteraction(ctx context.Context, payload interactionPaylo
 type hitlAction struct {
 	kind    string // hitlApprove, hitlDeny, hitlChat, hitlChoice, or hitlSubmit
 	choice  choiceValue
-	choices []int // selected choice indices, for hitlSubmit (radio/checkbox commit)
+	choices []int         // selected choice indices, for a single-question hitlSubmit
+	answers map[int][]int // selected choice indices per question, for a multi-question form hitlSubmit
 }
 
 // classifyAction maps a Block Kit action_id to a hitlAction.
@@ -386,6 +449,20 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 		return nil
 	}
 
+	// A multi-question form must be fully answered before it resumes: an
+	// unanswered question would reach the agent as an empty answer slot. Re-store
+	// the task (its form message is not yet overwritten) and nudge so the user
+	// can complete it and submit again.
+	if act.kind == hitlSubmit && task.Prompt != nil && len(task.Prompt.Questions) > 1 {
+		if missing := unansweredQuestions(task.Prompt, act.answers); missing {
+			a.storePendingTask(threadID, task)
+			if err := client.postEphemeralText(ctx, slackChannel, slackUser, threadID, formIncompleteNudge); err != nil {
+				a.Logger.Warn("slack: post form-incomplete nudge failed", "thread", threadID, "error", err)
+			}
+			return nil
+		}
+	}
+
 	decision, resumeText, decisionText := buildButtonDecision(act, task.Prompt)
 
 	// Replace the Block Kit buttons with the decision text.
@@ -448,6 +525,15 @@ func buildButtonDecision(act hitlAction, prompt *channels.HitlPrompt) (*channels
 		// The label is agent-authored; it re-enters Slack via chat.update text.
 		return decision, label, "👉 _" + escapeMrkdwn(label) + "_"
 	case hitlSubmit:
+		if prompt != nil && len(prompt.Questions) > 1 {
+			answers := answersByQuestion(prompt, act.answers)
+			decision := &channels.HitlDecision{
+				Type:           channels.DecisionApprove,
+				AskUserAnswers: answers,
+			}
+			resume, display := formResumeText(prompt, answers)
+			return decision, resume, display
+		}
 		labels := choiceLabels(prompt, act.choices)
 		decision := &channels.HitlDecision{
 			Type:           channels.DecisionApprove,
@@ -492,4 +578,48 @@ func choiceLabels(prompt *channels.HitlPrompt, indices []int) []string {
 		return []string{"selected option"}
 	}
 	return labels
+}
+
+// unansweredQuestions reports whether any question of a multi-question form has
+// no resolved selection in selected.
+func unansweredQuestions(prompt *channels.HitlPrompt, selected map[int][]int) bool {
+	for qi := range prompt.Questions {
+		if len(selected[qi]) == 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// answersByQuestion resolves each question's selected choice indices into option
+// labels, one slot per question in order. Out-of-range indices are dropped; a
+// question with no resolvable selection yields an empty slot.
+func answersByQuestion(prompt *channels.HitlPrompt, selected map[int][]int) [][]string {
+	answers := make([][]string, len(prompt.Questions))
+	for qi, q := range prompt.Questions {
+		labels := make([]string, 0, len(selected[qi]))
+		for _, ci := range selected[qi] {
+			if ci >= 0 && ci < len(q.Choices) {
+				labels = append(labels, q.Choices[ci])
+			}
+		}
+		answers[qi] = labels
+	}
+	return answers
+}
+
+// formResumeText builds the human-readable resume label (msg.Text) and the
+// display text that replaces the form after Submit. Both list each question's
+// answer; question and choice text are agent-authored, so they are escaped.
+func formResumeText(prompt *channels.HitlPrompt, answers [][]string) (resume, display string) {
+	var resumeB, displayB strings.Builder
+	for qi, q := range prompt.Questions {
+		joined := strings.Join(answers[qi], ", ")
+		if qi > 0 {
+			resumeB.WriteString("; ")
+		}
+		resumeB.WriteString(joined)
+		fmt.Fprintf(&displayB, "👉 *%s* _%s_\n", escapeMrkdwn(q.Question), escapeMrkdwn(joined))
+	}
+	return resumeB.String(), strings.TrimRight(displayB.String(), "\n")
 }

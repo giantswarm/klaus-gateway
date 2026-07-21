@@ -589,6 +589,146 @@ func TestSelectedChoiceIndices(t *testing.T) {
 	require.Equal(t, []int{0, 1, 2}, selectedChoiceIndices(state))
 }
 
+func TestSelectedChoicesByQuestion(t *testing.T) {
+	raw := `{"values":{
+		"` + hitlQGroupPrefix + `_0":{"` + hitlGroup + `":{
+			"selected_options":[{"value":"2"},{"value":"0"}]}},
+		"` + hitlQGroupPrefix + `_1":{"` + hitlGroup + `":{
+			"selected_option":{"value":"1"}}},
+		"` + hitlGroupBlock + `":{"` + hitlGroup + `":{"selected_option":{"value":"9"}}},
+		"noise":{"other":{"selected_option":{"value":"3"}}}
+	}}`
+	var state struct {
+		Values map[string]map[string]blockActionState `json:"values"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(raw), &state))
+	got := selectedChoicesByQuestion(state)
+	require.Equal(t, map[int][]int{0: {0, 2}, 1: {1}}, got, "only hitl_q_<qi> blocks are grouped per question")
+}
+
+// A multi-question ask_user form resumes with one answer slot per question, in
+// question order, read out of the per-question state.values blocks.
+func TestHandleDecision_FormResumesWithPerQuestionAnswers(t *testing.T) {
+	const secret = "test-secret"
+	srv, _ := newIxSlackServer(t)
+
+	gw := &fakeGateway{deltas: []channels.OutboundDelta{{Content: "done"}, {Done: true}}}
+	a := &Adapter{
+		APIBase:      srv.URL,
+		Secrets:      Secrets{BotToken: "test-bot-token", SigningSecret: secret}, //nolint:gosec
+		DefaultAgent: "worker",
+	}
+	require.NoError(t, a.Start(t.Context(), gw))
+
+	a.accessPolicy().SetInitiator("T001", "U001")
+	a.storePendingTask("T001", &pendingTask{
+		TaskID:    "task-abc",
+		AgentRef:  "worker",
+		Channel:   "C001",
+		ChannelID: "C001",
+		Prompt: &channels.HitlPrompt{
+			ToolName: channels.AskUserToolName,
+			Questions: []channels.HitlQuestion{
+				{Question: "Database?", Choices: []string{"PostgreSQL", "MySQL"}},
+				{Question: "Features?", Multiple: true, Choices: []string{"Auth", "Logging", "Caching"}},
+			},
+		},
+	})
+
+	inner := map[string]any{
+		"type":      "block_actions",
+		"user":      map[string]any{"id": "U001"},
+		"channel":   map[string]any{"id": "C001"},
+		"container": map[string]any{"message_ts": "MSG001"},
+		"message":   map[string]any{"thread_ts": "T001"},
+		"actions":   []any{map[string]any{"action_id": hitlSubmit, "value": "T001"}},
+		"state": map[string]any{"values": map[string]any{
+			hitlQGroupPrefix + "_0": map[string]any{hitlGroup: map[string]any{
+				"selected_option": map[string]any{"value": "1"},
+			}},
+			hitlQGroupPrefix + "_1": map[string]any{hitlGroup: map[string]any{
+				"selected_options": []any{
+					map[string]any{"value": "0"},
+					map[string]any{"value": "2"},
+				},
+			}},
+		}},
+	}
+	data, err := json.Marshal(inner)
+	require.NoError(t, err)
+	body := []byte("payload=" + url.QueryEscape(string(data)))
+	req := httptest.NewRequest(http.MethodPost, "/channels/slack/interactions", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	signRequest(t, req, body, secret)
+	rr := httptest.NewRecorder()
+	a.ixHandler.ServeHTTP(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code)
+
+	require.Eventually(t, func() bool { return gw.sendCount() >= 1 }, 2*time.Second, 10*time.Millisecond)
+
+	msg := gw.lastCompletion()
+	require.NotNil(t, msg.Decision)
+	require.Equal(t, channels.DecisionApprove, msg.Decision.Type)
+	require.Equal(t, [][]string{{"MySQL"}, {"Auth", "Caching"}}, msg.Decision.AskUserAnswers)
+}
+
+// A Submit on a multi-question form with a question still unanswered must leave
+// the task pending and nudge, not resume with an empty answer slot.
+func TestHandleDecision_FormIncompleteNudges(t *testing.T) {
+	const secret = "test-secret"
+	srv, sink := newIxSlackServer(t)
+
+	gw := &fakeGateway{}
+	a := &Adapter{
+		APIBase:      srv.URL,
+		Secrets:      Secrets{BotToken: "test-bot-token", SigningSecret: secret}, //nolint:gosec
+		DefaultAgent: "worker",
+	}
+	require.NoError(t, a.Start(t.Context(), gw))
+	a.accessPolicy().SetInitiator("T001", "U001")
+	a.storePendingTask("T001", &pendingTask{
+		TaskID: "task-abc", AgentRef: "worker", Channel: "C001", ChannelID: "C001",
+		Prompt: &channels.HitlPrompt{
+			ToolName: channels.AskUserToolName,
+			Questions: []channels.HitlQuestion{
+				{Question: "Database?", Choices: []string{"PostgreSQL", "MySQL"}},
+				{Question: "Features?", Choices: []string{"Auth", "Logging"}},
+			},
+		},
+	})
+
+	// Only the first question is answered.
+	inner := map[string]any{
+		"type":      "block_actions",
+		"user":      map[string]any{"id": "U001"},
+		"channel":   map[string]any{"id": "C001"},
+		"container": map[string]any{"message_ts": "MSG001"},
+		"message":   map[string]any{"thread_ts": "T001"},
+		"actions":   []any{map[string]any{"action_id": hitlSubmit, "value": "T001"}},
+		"state": map[string]any{"values": map[string]any{
+			hitlQGroupPrefix + "_0": map[string]any{hitlGroup: map[string]any{
+				"selected_option": map[string]any{"value": "0"},
+			}},
+		}},
+	}
+	data, err := json.Marshal(inner)
+	require.NoError(t, err)
+	body := []byte("payload=" + url.QueryEscape(string(data)))
+	req := httptest.NewRequest(http.MethodPost, "/channels/slack/interactions", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	signRequest(t, req, body, secret)
+	rr := httptest.NewRecorder()
+	a.ixHandler.ServeHTTP(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code)
+
+	require.Eventually(t, func() bool {
+		_, _, eph := sink.counts()
+		return eph >= 1
+	}, 2*time.Second, 10*time.Millisecond, "incomplete form must nudge the user")
+	require.Zero(t, gw.sendCount(), "incomplete form must not resume the task")
+	require.True(t, a.hasPendingTask("T001"), "incomplete form must leave the task pending")
+}
+
 // A Submit click on a multi-select ask_user widget resumes the paused task with
 // the selected choice labels, read out of state.values.
 func TestHandleDecision_SubmitResumesWithSelectedAnswers(t *testing.T) {
