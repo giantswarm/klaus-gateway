@@ -836,6 +836,9 @@ type stubGateway struct {
 	// hold, when non-nil, keeps a turn in flight: SendCompletion streams deltas
 	// then blocks until hold is closed, so a test can hold the per-thread slot.
 	hold chan struct{}
+	// interDeltaDelay, when set, pauses between streamed deltas so the
+	// writer's batch ticker can flush mid-turn (e.g. content before an error).
+	interDeltaDelay time.Duration
 	// onSessionResumable, when set, backs SessionResumable; nil reports the check
 	// as unavailable (checked=false).
 	onSessionResumable func(channels.InboundMessage) (exists, checked bool)
@@ -923,7 +926,14 @@ func (s *stubGateway) SendCompletion(ctx context.Context, _ channels.InstanceRef
 	ch := make(chan channels.OutboundDelta)
 	go func() {
 		defer close(ch)
-		for _, d := range deltas {
+		for i, d := range deltas {
+			if i > 0 && s.interDeltaDelay > 0 {
+				select {
+				case <-time.After(s.interDeltaDelay):
+				case <-ctx.Done():
+					return
+				}
+			}
 			select {
 			case ch <- d:
 			case <-ctx.Done():
@@ -1229,6 +1239,54 @@ func TestTextMode_FailedTurnReplacesPlaceholder(t *testing.T) {
 	fake.waitForPath(t, "chat.update", 1)
 	require.Contains(t, allText(fake.pathCalls("chat.update")), "the turn failed")
 	require.Empty(t, fake.pathCalls("reactions.add"), "text mode adds no reactions")
+}
+
+// A turn that fails after part of the answer was already streamed must not
+// overwrite the streamed content with the failure note; the note posts as a
+// new message instead.
+func TestTextMode_FailedTurnAfterContentPostsNewNote(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{
+		deltas: []channels.OutboundDelta{{Content: "partial answer"}, {Err: errors.New("boom")}},
+		// Longer than the writer's batch interval so the content flushes into
+		// the placeholder before the error arrives.
+		interDeltaDelay: 600 * time.Millisecond,
+	}
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+	a.ProgressMode = "text"
+
+	sendEvent(t, srv, dmEvent("U1", "hi", "779.000"))
+
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "the turn failed")
+	}, 3*time.Second, 50*time.Millisecond, "the failure note posts as a new message")
+	updates := allText(fake.pathCalls("chat.update"))
+	require.Contains(t, updates, "partial answer", "the streamed content reached the placeholder")
+	require.NotContains(t, updates, "the turn failed", "the note must not overwrite streamed content")
+}
+
+// An error arriving in the same batch window as the text (no tick in between)
+// must still preserve the content: the writer flushes buffered text before
+// surfacing the error, so the note posts as a new message rather than
+// overwriting it.
+func TestTextMode_FailedTurnFlushesBufferedContentBeforeNote(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{
+		deltas: []channels.OutboundDelta{{Content: "partial answer"}, {Err: errors.New("boom")}},
+		// No interDeltaDelay: the error follows the text with no batch tick, so
+		// the content is only surfaced by the flush on the error path.
+	}
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+	a.ProgressMode = "text"
+
+	sendEvent(t, srv, dmEvent("U1", "hi", "780.000"))
+
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "the turn failed")
+	}, 3*time.Second, 50*time.Millisecond, "the failure note posts as a new message")
+	updates := allText(fake.pathCalls("chat.update"))
+	require.Contains(t, updates, "partial answer", "buffered content is flushed before the error")
+	require.NotContains(t, updates, "the turn failed", "the note must not overwrite streamed content")
 }
 
 // sendInteraction posts a signed block_actions interaction for actionID on

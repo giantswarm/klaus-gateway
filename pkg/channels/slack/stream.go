@@ -77,6 +77,7 @@ type batchedWriter struct {
 	mu          sync.Mutex
 	buf         strings.Builder
 	flushedLen  int                     // length of buf at the last chat.update; skips no-op flushes
+	wroteAny    bool                    // set once the head message carries agent text; survives a partial multi-chunk flush
 	promptDelta *channels.OutboundDelta // set when stream ends on DeltaPrompt
 	// tailTS holds the timestamps of overflow messages posted when the reply
 	// outgrows a single Slack message. Only touched from run()'s goroutine.
@@ -120,6 +121,12 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 				w.turnUsage.TotalTokens += d.Usage.TotalTokens
 			}
 			if d.Err != nil {
+				// Flush text buffered since the last tick before surfacing the
+				// error, so wroteContent reflects all delivered content and the
+				// failure note posts as a new message instead of overwriting it.
+				if ferr := w.flush(ctx); ferr != nil {
+					w.logger.Warn("slack: flush before failure note failed", "error", ferr)
+				}
 				return d.Err
 			}
 			if d.Done {
@@ -392,12 +399,15 @@ func compactJSON(v map[string]any, max int) string {
 	return string(rs)
 }
 
-// wroteContent reports whether any agent text has been flushed to Slack. Used
-// after the run loop to detect a turn that produced no output.
+// wroteContent reports whether any agent text has reached Slack. Used after the
+// run loop to decide whether the failure note may overwrite the placeholder.
+// flushedLen only advances once every chunk of a flush lands, so a multi-chunk
+// flush whose head updated the placeholder but whose tail failed leaves it 0;
+// wroteAny captures the head landing so that partial delivery still counts.
 func (w *batchedWriter) wroteContent() bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.flushedLen > 0
+	return w.flushedLen > 0 || w.wroteAny
 }
 
 func (w *batchedWriter) flush(ctx context.Context) error {
@@ -431,6 +441,12 @@ func (w *batchedWriter) flush(ctx context.Context) error {
 	} else if err := w.client.chatUpdateMarkdown(ctx, w.channel, w.ts, chunks[0]); err != nil {
 		return err
 	}
+	// The head now carries agent text; mark it before the tail so a tail failure
+	// (which leaves flushedLen at 0) does not let the failure note overwrite the
+	// delivered head.
+	w.mu.Lock()
+	w.wroteAny = true
+	w.mu.Unlock()
 	for i, chunk := range chunks[1:] {
 		if i < len(w.tailTS) {
 			if err := w.client.chatUpdateMarkdown(ctx, w.channel, w.tailTS[i], chunk); err != nil {
@@ -1088,12 +1104,15 @@ func (c *slackAPIClient) send(ctx context.Context, method, contentType, payload 
 }
 
 // call executes one Slack Web API POST and returns the raw response body. A
-// 429 is retried once after honoring Retry-After, so a brief throttle does not
-// abort the turn; a Retry-After longer than rateLimitRetryCap fails the call
-// immediately rather than waiting it out. Any other non-2xx status is an error
-// carrying the status code, not a JSON decode attempt on a non-API body.
+// 429 is retried honoring Retry-After: rate limiting is a pacing signal, not a
+// turn-fatal error, and a multi-chunk flush plus tool posts can draw several
+// consecutive 429s against chat.postMessage's ~1 msg/sec/channel limit. A
+// Retry-After longer than rateLimitRetryCap, or the attempt budget running
+// out, fails the call rather than waiting it out. Any other non-2xx status is
+// an error carrying the status code, not a JSON decode attempt on a non-API
+// body.
 func (c *slackAPIClient) call(ctx context.Context, method, contentType, payload string) ([]byte, error) {
-	const maxAttempts = 2
+	const maxAttempts = 4
 	for attempt := 1; ; attempt++ {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/"+method, strings.NewReader(payload))
 		if err != nil {

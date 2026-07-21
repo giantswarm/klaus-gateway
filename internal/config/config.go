@@ -94,6 +94,14 @@ type CLIConfig struct {
 	Enabled bool
 }
 
+// WebConfig holds runtime configuration for the web channel adapter.
+type WebConfig struct {
+	// Enabled gates all web behaviour; the adapter is skipped when false.
+	// Defaults to true (local development front door); cluster deployments
+	// disable it through the chart unless a consumer (e.g. lab) needs it.
+	Enabled bool
+}
+
 // SlackConfig holds runtime configuration for the Slack channel adapter.
 type SlackConfig struct {
 	// Enabled gates all Slack behaviour; the adapter is skipped when false.
@@ -204,6 +212,7 @@ type Config struct {
 
 	Slack SlackConfig
 	CLI   CLIConfig
+	Web   WebConfig
 	A2A   A2AConfig
 	OBO   OBOConfig
 
@@ -233,6 +242,9 @@ func Defaults() Config {
 		},
 		CLI: CLIConfig{
 			Enabled: false,
+		},
+		Web: WebConfig{
+			Enabled: true,
 		},
 		A2A: A2AConfig{
 			DefaultAgent: "klaud-coding",
@@ -283,6 +295,7 @@ func Load(args []string) (Config, error) {
 	fs.StringVar(&cfg.Slack.FailedEmoji, "slack-failed-emoji", cfg.Slack.FailedEmoji, "Slack reaction emoji name for a failed turn (no colons). Empty uses the default.")
 	fs.BoolVar(&cfg.Slack.ClearReactionOnDone, "slack-clear-reaction-on-done", cfg.Slack.ClearReactionOnDone, "On a successful turn, remove the working reaction without adding a done reaction (default true). Set false to swap in the done emoji.")
 	fs.BoolVar(&cfg.CLI.Enabled, "cli-enabled", cfg.CLI.Enabled, "Enable the CLI channel adapter at /cli/v1/*.")
+	fs.BoolVar(&cfg.Web.Enabled, "web-enabled", cfg.Web.Enabled, "Enable the web channel adapter at /web/* (default true).")
 	fs.BoolVar(&cfg.Controller, "controller", cfg.Controller, "Enable the embedded ChannelRoute controller (requires --store=crd).")
 	fs.BoolVar(&cfg.A2A.Enabled, "a2a-enabled", cfg.A2A.Enabled, "Enable the A2A client surface.")
 	fs.StringVar(&cfg.A2A.DefaultAgent, "a2a-default-agent", cfg.A2A.DefaultAgent, "agentRef forwarded to the A2A orchestrator when the channel does not supply one.")
@@ -398,6 +411,9 @@ func applyEnv(cfg *Config) {
 	}
 	if v, ok := lookup("CLI_ENABLED"); ok {
 		cfg.CLI.Enabled = strings.EqualFold(v, "true") || v == "1"
+	}
+	if v, ok := lookup("WEB_ENABLED"); ok {
+		cfg.Web.Enabled = strings.EqualFold(v, "true") || v == "1"
 	}
 	if v, ok := lookup("CONTROLLER"); ok {
 		cfg.Controller = strings.EqualFold(v, "true") || v == "1"
