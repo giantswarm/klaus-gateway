@@ -2,6 +2,7 @@ package slack_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -47,6 +48,30 @@ func TestLoginReplay_DropsBareAuthUtterances(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	require.Contains(t, captured[0].Text, "login to grafana fails")
+}
+
+// A parked message whose post-sign-in replay fails must not leave the user in
+// silence: the thread gets a failure note asking them to resend.
+func TestLoginReplay_FailurePostsNote(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{}
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
+	obo := &fakeOBO{linkedUser: "U123", token: "tok", notYetLinked: true}
+	a.OBO = obo
+
+	sendEvent(t, srv, mention("U123", "what failed on prod?", "100.000", ""))
+	fake.waitForPath(t, "chat.postMessage", 1)
+	require.Zero(t, gw.resolveCount(), "the unlinked message must be parked")
+
+	gw.mu.Lock()
+	gw.resolveErr = errors.New("kagent unreachable")
+	gw.mu.Unlock()
+	obo.completeLink()
+	a.OnUserLinked(t.Context(), "U123", "u123@example.com")
+
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "couldn't pick your message back up")
+	}, 2*time.Second, 50*time.Millisecond, "a failed replay must post a failure note in-thread")
 }
 
 // A newcomer who parks several messages before the initiator's grant has all of

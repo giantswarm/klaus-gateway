@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -733,6 +734,32 @@ func TestOnUserLinkedRewritesSignInAnchor(t *testing.T) {
 	a.OnUserLinked(t.Context(), "U001", "alice@example.com")
 	time.Sleep(100 * time.Millisecond)
 	require.Len(t, updates(), 1, "a second link event must not rewrite again")
+}
+
+// A failed anchor rewrite re-records the anchor: the drained entry would
+// otherwise leave a live sign-in button for a linked user forever, with no
+// later pass able to converge it.
+func TestOnUserLinkedFailedRewriteRerecordsAnchor(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":false,"error":"internal_error"}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{
+		Secrets: Secrets{BotToken: "test-bot-token"}, //nolint:gosec
+		APIBase: srv.URL,
+		Logger:  slog.New(slog.DiscardHandler),
+	}
+	a.recordSignInAnchor("U001", "T1", signInAnchor{channel: "C1", ts: "111.111"})
+
+	a.OnUserLinked(t.Context(), "U001", "alice@example.com")
+	require.Eventually(t, func() bool {
+		a.signInPromptedMu.Lock()
+		defer a.signInPromptedMu.Unlock()
+		entry, ok := a.signInPrompted["U001\x00T1"]
+		return ok && entry.value.ts == "111.111"
+	}, 2*time.Second, 10*time.Millisecond, "the anchor must survive a failed rewrite")
 }
 
 // A link that is about to replay a parked question folds the agent handoff

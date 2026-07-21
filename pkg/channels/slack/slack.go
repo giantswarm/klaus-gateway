@@ -770,6 +770,10 @@ func (a *Adapter) updateSignInAnchors(ctx context.Context, slackUser string, rep
 		}
 		if err := client.chatUpdateMarkdown(ctx, anchor.channel, anchor.ts, text); err != nil {
 			a.Logger.Warn("slack: update sign-in prompt after link failed", "user", slackUser, "channel", anchor.channel, "ts", anchor.ts, "error", err)
+			// The anchor was drained before the update; without it the thread
+			// would keep a live sign-in button for a linked user forever.
+			// Re-recording lets the next convergence pass retry the rewrite.
+			a.recordSignInAnchor(slackUser, anchor.threadID, signInAnchor{channel: anchor.channel, ts: anchor.ts})
 		}
 	}
 }
@@ -1038,6 +1042,7 @@ func (a *Adapter) OnUserLinked(ctx context.Context, slackUser, email string) {
 				}
 				if err := a.replayDispatch(bgCtx, req.msg, req.slackChannel); err != nil && !errors.Is(err, context.Canceled) {
 					a.Logger.Error("slack: replay after sign-in failed", "user", slackUser, "thread", req.msg.ThreadID, "error", err)
+					a.postReplayFailureNote(bgCtx, req.slackChannel, req.msg.ThreadID)
 				}
 			}
 		}()
@@ -1172,6 +1177,16 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 		case !errors.Is(err, context.Canceled):
 			a.Logger.Error("slack: dispatch error", "channel", inner.Channel, "error", err)
 		}
+	}
+}
+
+// postReplayFailureNote tells the thread a parked message could not be
+// replayed, so a sign-in or access grant that just promised action does not
+// end in silence. Best-effort: a post failure is only logged.
+func (a *Adapter) postReplayFailureNote(ctx context.Context, slackChannel, threadID string) {
+	const text = "⚠️ _I couldn't pick your message back up. Please resend it._"
+	if _, err := a.apiClient().postMessage(ctx, slackChannel, text, threadID); err != nil {
+		a.Logger.Warn("slack: post replay failure note failed", "thread", threadID, "error", err)
 	}
 }
 
