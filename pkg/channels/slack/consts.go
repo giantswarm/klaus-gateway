@@ -27,7 +27,7 @@ const hitlGroupBlock = "hitl_group_block"
 // hitlQGroupPrefix prefixes the block_id of one question's widget in a
 // multi-question ask_user form: the full id is hitlQGroupPrefix + "_<question
 // index>". The handler maps each selection back to its question by parsing the
-// index out of the block_id (see selectedChoicesByQuestion). The prefix is
+// index out of the block_id (see choiceSelections). The prefix is
 // distinct from hitlGroupBlock so the single-question and form readers never
 // cross-read one another's state.
 const hitlQGroupPrefix = "hitl_q"

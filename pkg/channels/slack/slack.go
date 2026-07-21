@@ -1056,6 +1056,15 @@ func (a *Adapter) hasPendingTask(threadID string) bool {
 	return ok
 }
 
+// peekPendingTask returns a thread's pending task without removing it, or nil
+// when none is pending. A caller that relies on the task still being pending on
+// a later takePendingTask must hold the thread lock across both.
+func (a *Adapter) peekPendingTask(threadID string) *pendingTask {
+	a.pendingMu.Lock()
+	defer a.pendingMu.Unlock()
+	return a.pendingTasks[threadID]
+}
+
 // handleInbound runs the shared inbound pipeline for one Slack event:
 // dedup, member-join intro, accept-gate, normalise, active-thread gate (for
 // channel thread replies), command handling, then dispatch. Both transports

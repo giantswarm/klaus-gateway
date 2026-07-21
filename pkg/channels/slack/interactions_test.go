@@ -586,7 +586,8 @@ func TestSelectedChoiceIndices(t *testing.T) {
 		Values map[string]map[string]blockActionState `json:"values"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(raw), &state))
-	require.Equal(t, []int{0, 1, 2}, selectedChoiceIndices(state))
+	flat, _ := choiceSelections(state)
+	require.Equal(t, []int{0, 1, 2}, flat)
 }
 
 func TestSelectedChoicesByQuestion(t *testing.T) {
@@ -602,8 +603,8 @@ func TestSelectedChoicesByQuestion(t *testing.T) {
 		Values map[string]map[string]blockActionState `json:"values"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(raw), &state))
-	got := selectedChoicesByQuestion(state)
-	require.Equal(t, map[int][]int{0: {0, 2}, 1: {1}}, got, "only hitl_q_<qi> blocks are grouped per question")
+	_, byQuestion := choiceSelections(state)
+	require.Equal(t, map[int][]int{0: {0, 2}, 1: {1}}, byQuestion, "only hitl_q_<qi> blocks are grouped per question")
 }
 
 // A multi-question ask_user form resumes with one answer slot per question, in
@@ -727,6 +728,9 @@ func TestHandleDecision_FormIncompleteNudges(t *testing.T) {
 	}, 2*time.Second, 10*time.Millisecond, "incomplete form must nudge the user")
 	require.Zero(t, gw.sendCount(), "incomplete form must not resume the task")
 	require.True(t, a.hasPendingTask("T001"), "incomplete form must leave the task pending")
+	posts, updates, _ := sink.counts()
+	require.Zero(t, posts, "incomplete form must not mint a token or prompt sign-in")
+	require.Zero(t, updates, "incomplete form must not overwrite the form message")
 }
 
 // A Submit click on a multi-select ask_user widget resumes the paused task with
