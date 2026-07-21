@@ -57,7 +57,7 @@ ask a follow-up before deciding. `value` is the raw thread timestamp.
 }
 ```
 
-> _Screenshot: TODO_
+<img width="727" height="174" alt="image" src="https://github.com/user-attachments/assets/4aced0b9-64f5-49c0-aaab-63798a1956bf" />
 
 ## 2. ask_user — single question, radio buttons (1–10 choices, single-select)
 
@@ -93,7 +93,7 @@ the Submit reads the selection out of `state.values`.
 }
 ```
 
-> _Screenshot: TODO_
+<img width="718" height="270" alt="image" src="https://github.com/user-attachments/assets/8352d69a-b5ce-4e47-9795-5c66f798f2f3" />
 
 ## 3. ask_user — single question, checkboxes (1–10 choices, multi-select)
 
@@ -129,7 +129,7 @@ can be selected before Submit.
 }
 ```
 
-> _Screenshot: TODO_
+<img width="718" height="270" alt="image" src="https://github.com/user-attachments/assets/7655168d-ce47-48ec-86f0-9a4be4a7f952" />
 
 ## 4. ask_user — single question, long labels, single-select (section + button)
 
@@ -156,7 +156,7 @@ is `hitl_choice_<index>` and its `value` is the JSON `{"t":"<thread>","c":<index
 }
 ```
 
-> _Screenshot: TODO_
+<img width="714" height="232" alt="image" src="https://github.com/user-attachments/assets/d89cf37e-37c6-4e73-b5e8-000820102d19" />
 
 ## 5. ask_user — single question, long labels, multi-select (section + checkbox)
 
@@ -190,7 +190,8 @@ by a Submit that gathers the selected rows.
 }
 ```
 
-> _Screenshot: TODO_
+<img width="720" height="336" alt="image" src="https://github.com/user-attachments/assets/fb858be8-0f7a-46df-b90b-6e3ecbf4d406" />
+
 
 ## 6. ask_user — multiple questions, single form
 
@@ -244,7 +245,7 @@ wrapping each question is added by the gateway.
 }
 ```
 
-> _Screenshot: TODO_
+<img width="714" height="359" alt="image" src="https://github.com/user-attachments/assets/21e82e7c-0a78-429c-9e93-a684f527a6a3" />
 
 ## 7. Connector login (agent needs a backend the user hasn't connected)
 
@@ -269,7 +270,7 @@ for the Builder to accept it.
 }
 ```
 
-> _Screenshot: TODO_
+<img width="721" height="159" alt="image" src="https://github.com/user-attachments/assets/64649be1-74d6-4012-86d2-14f8d0998a84" />
 
 ## 8. OBO sign-in (act-as-user account linking)
 
@@ -292,7 +293,7 @@ than running as the gateway identity.
 }
 ```
 
-> _Screenshot: TODO_
+<img width="721" height="159" alt="image" src="https://github.com/user-attachments/assets/1d629999-8f4a-41be-ba10-70d2c3a0fa57" />
 
 ## 9. Access consent (a newcomer wants to instruct the agent in someone's thread)
 
@@ -316,7 +317,7 @@ once.
 }
 ```
 
-> _Screenshot: TODO_
+<img width="721" height="159" alt="image" src="https://github.com/user-attachments/assets/8249895e-3da1-41e6-9e23-1d42bb5a26b2" />
 
 ## Answering: click and reply
 
