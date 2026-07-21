@@ -84,6 +84,10 @@ const defaultHTTPTimeout = 30 * time.Second
 // grantTypeRefreshToken is the OAuth grant type advertised in the CIMD document.
 const grantTypeRefreshToken = "refresh_token"
 
+// responseTypeCode is the OAuth authorization-code response type: advertised
+// in the CIMD document and the name of the callback query parameter.
+const responseTypeCode = "code"
+
 // tokenRefreshSkew refreshes a cached token this long before it actually
 // expires, so a token handed to a downstream A2A call is not about to expire
 // mid-request.
@@ -395,7 +399,7 @@ func (l *Linker) HandleClientMetadata(w http.ResponseWriter, _ *http.Request) {
 		ClientURI:               "https://github.com/giantswarm/klaus-gateway",
 		RedirectURIs:            []string{l.oauth.RedirectURL},
 		GrantTypes:              []string{"authorization_code", grantTypeRefreshToken},
-		ResponseTypes:           []string{"code"},
+		ResponseTypes:           []string{responseTypeCode},
 		TokenEndpointAuthMethod: "none",
 		Scope:                   strings.Join(l.oauth.Scopes, " "),
 	}
@@ -493,7 +497,7 @@ func (l *Linker) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	link, err := l.Exchange(ctx, q.Get("code"), verifier)
+	link, err := l.Exchange(ctx, q.Get(responseTypeCode), verifier)
 	if err != nil {
 		l.logger.Error("musterlink: code exchange failed", "err", err)
 		l.renderPage(w, http.StatusBadGateway, page{
