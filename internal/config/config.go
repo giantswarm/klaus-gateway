@@ -14,6 +14,26 @@ import (
 	"time"
 )
 
+// DMMode selects how Slack direct messages are handled. Mirrors the adapter's
+// slack.DMMode; kept separate so this package stays free of adapter imports.
+type DMMode string
+
+const (
+	DMModeServe    DMMode = "serve"
+	DMModeRedirect DMMode = "redirect"
+	DMModeIgnore   DMMode = "ignore"
+)
+
+// ChannelMode selects which Slack channels are served. Mirrors the adapter's
+// slack.ChannelMode.
+type ChannelMode string
+
+const (
+	ChannelModeAll       ChannelMode = "all"
+	ChannelModeAllowlist ChannelMode = "allowlist"
+	ChannelModeNone      ChannelMode = "none"
+)
+
 // Store names understood by the routing store factory.
 const (
 	StoreMemory    = "memory"
@@ -85,9 +105,18 @@ type SlackConfig struct {
 	// and (for socketmode) app_token. Environment variables (SLACK_BOT_TOKEN
 	// etc.) take precedence over file values.
 	SecretsFile string
-	// DMOnly restricts the adapter to direct messages: channel messages and
-	// @-mentions in channels are ignored. SLACK_DM_ONLY=true. Default false.
-	DMOnly bool
+	// DMMode selects how direct messages are handled: DMModeServe (answer
+	// them, the default), DMModeRedirect (point the user to channels), or
+	// DMModeIgnore (drop silently). SLACK_DM_MODE.
+	DMMode DMMode
+	// ChannelMode selects which channels are served: ChannelModeAll (every
+	// channel the bot is invited to, the default), ChannelModeAllowlist
+	// (only ChannelAllowlist), or ChannelModeNone (DM-only deployments).
+	// SLACK_CHANNEL_MODE.
+	ChannelMode ChannelMode
+	// ChannelAllowlist lists the Slack channel IDs (C…) served when
+	// ChannelMode is "allowlist". SLACK_CHANNEL_ALLOWLIST (comma-separated).
+	ChannelAllowlist []string
 	// DropStaleEvents ignores Slack events older than the gateway's start time,
 	// so a restart never replays messages queued while it was down.
 	// SLACK_DROP_STALE=true. Default false.
@@ -198,6 +227,8 @@ func Defaults() Config {
 			Enabled:             false,
 			Mode:                "events",
 			SecretsFile:         os.ExpandEnv("$HOME/.config/klausctl/gateway/slack-secrets.yaml"),
+			DMMode:              DMModeServe,
+			ChannelMode:         ChannelModeAll,
 			ClearReactionOnDone: true,
 		},
 		CLI: CLIConfig{
@@ -234,6 +265,18 @@ func Load(args []string) (Config, error) {
 	fs.BoolVar(&cfg.Slack.Enabled, "slack-enabled", cfg.Slack.Enabled, "Enable the Slack channel adapter.")
 	fs.StringVar(&cfg.Slack.Mode, "slack-mode", cfg.Slack.Mode, "Slack connection mode: events or socketmode.")
 	fs.StringVar(&cfg.Slack.SecretsFile, "slack-secrets-file", cfg.Slack.SecretsFile, "Path to Slack secrets YAML file.")
+	fs.Func("slack-dm-mode", "Slack DM handling: serve (default), redirect, or ignore.", func(v string) error {
+		cfg.Slack.DMMode = DMMode(v)
+		return nil
+	})
+	fs.Func("slack-channel-mode", "Slack channel handling: all (default), allowlist, or none.", func(v string) error {
+		cfg.Slack.ChannelMode = ChannelMode(v)
+		return nil
+	})
+	fs.Func("slack-channel-allowlist", "Comma-separated Slack channel IDs served when --slack-channel-mode=allowlist.", func(v string) error {
+		cfg.Slack.ChannelAllowlist = splitCommaList(v)
+		return nil
+	})
 	fs.StringVar(&cfg.Slack.ProgressMode, "slack-progress-mode", cfg.Slack.ProgressMode, "Slack turn-progress mode: auto (default), reactions, or text.")
 	fs.StringVar(&cfg.Slack.WorkingEmoji, "slack-working-emoji", cfg.Slack.WorkingEmoji, "Slack reaction emoji name for a turn in progress (no colons). Empty uses the default.")
 	fs.StringVar(&cfg.Slack.DoneEmoji, "slack-done-emoji", cfg.Slack.DoneEmoji, "Slack reaction emoji name for a completed turn (no colons). Empty uses the default.")
@@ -326,8 +369,14 @@ func applyEnv(cfg *Config) {
 	if v, ok := lookup("SLACK_SECRETS_FILE"); ok {
 		cfg.Slack.SecretsFile = v
 	}
-	if v, ok := lookup("SLACK_DM_ONLY"); ok {
-		cfg.Slack.DMOnly = strings.EqualFold(v, "true") || v == "1"
+	if v, ok := lookup("SLACK_DM_MODE"); ok {
+		cfg.Slack.DMMode = DMMode(v)
+	}
+	if v, ok := lookup("SLACK_CHANNEL_MODE"); ok {
+		cfg.Slack.ChannelMode = ChannelMode(v)
+	}
+	if v, ok := lookup("SLACK_CHANNEL_ALLOWLIST"); ok {
+		cfg.Slack.ChannelAllowlist = splitCommaList(v)
 	}
 	if v, ok := lookup("SLACK_DROP_STALE"); ok {
 		cfg.Slack.DropStaleEvents = strings.EqualFold(v, "true") || v == "1"
@@ -425,6 +474,27 @@ func (c Config) Validate() error {
 	if c.A2A.Enabled && c.A2A.URL == "" {
 		return fmt.Errorf("--a2a-url is required with --a2a-enabled")
 	}
+	if c.Slack.Enabled {
+		switch c.Slack.DMMode {
+		case "", DMModeServe, DMModeRedirect, DMModeIgnore:
+		default:
+			return fmt.Errorf("--slack-dm-mode must be serve, redirect, or ignore (got %q)", c.Slack.DMMode)
+		}
+		switch c.Slack.ChannelMode {
+		case "", ChannelModeAll, ChannelModeAllowlist, ChannelModeNone:
+		default:
+			return fmt.Errorf("--slack-channel-mode must be all, allowlist, or none (got %q)", c.Slack.ChannelMode)
+		}
+		if c.Slack.ChannelMode == ChannelModeAllowlist && len(c.Slack.ChannelAllowlist) == 0 {
+			return fmt.Errorf("--slack-channel-allowlist must be non-empty with --slack-channel-mode=allowlist")
+		}
+		if c.Slack.ChannelMode != ChannelModeAllowlist && len(c.Slack.ChannelAllowlist) > 0 {
+			return fmt.Errorf("--slack-channel-allowlist is set but --slack-channel-mode is %q: set it to allowlist or drop the list", c.Slack.ChannelMode)
+		}
+		if c.Slack.ChannelMode == ChannelModeNone && c.Slack.DMMode != DMModeServe && c.Slack.DMMode != "" {
+			return fmt.Errorf("--slack-channel-mode=none requires --slack-dm-mode=serve: with DMs on %q the bot would have no served surface", c.Slack.DMMode)
+		}
+	}
 	if c.OBO.Enabled {
 		if !c.Slack.Enabled {
 			return fmt.Errorf("--slack-enabled is required with --obo-enabled (OBO links Slack identities and enforces the Slack/muster email match)")
@@ -446,4 +516,16 @@ func (c Config) Validate() error {
 		return fmt.Errorf("--obo-enabled is required with --obo-connectors-enabled (the connector UX renders a Connect button for the linked user from the login link the agent relays)")
 	}
 	return nil
+}
+
+// splitCommaList parses a comma-separated value into trimmed, non-empty
+// entries. An empty or all-whitespace input yields nil.
+func splitCommaList(v string) []string {
+	var out []string
+	for part := range strings.SplitSeq(v, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }

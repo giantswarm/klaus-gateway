@@ -141,9 +141,13 @@ const resumeStartingFreshNotice = "I couldn't find our earlier conversation in t
 // know what it is and how to reach it.
 const channelIntro = "👋 Hi, I'm Swarmgeist. Mention me (`@Swarmgeist`) in this channel to start a thread and I'll bring in an agent to help investigate and act on your clusters. I reply in-thread and ask before anything destructive. Mention me with `/help` (as in `@Swarmgeist /help`) for the full list of commands."
 
-// dmRedirect is posted when a user DMs the bot while channel mode is active
-// (DMs are not a supported surface), pointing them to a channel instead.
+// dmRedirect is posted when a user DMs the bot while DMs are in redirect mode,
+// pointing them to a channel instead.
 const dmRedirect = "I work in channels, not direct messages. Invite me to a channel and mention me there (`@Swarmgeist`) to get started."
+
+// channelNotServed is sent ephemerally when a user mentions the bot in a
+// channel outside the configured allowlist.
+const channelNotServed = "I'm not enabled in this channel yet. Ask a platform admin to add it to my channel allowlist."
 
 // Slack Web API parameter keys (form-encoded and JSON body).
 const (

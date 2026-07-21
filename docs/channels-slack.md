@@ -171,8 +171,13 @@ still running gets a brief "still working" notice rather than starting an overla
   (requires the `member_joined_channel` bot event).
 - **Launch announcement.** A new channel thread opens with a short Swarmgeist hand-off notice
   before the agent takes over.
-- **Direct messages.** A DM to the bot receives a polite redirect to a channel, unless
-  `SLACK_DM_ONLY` is set (which serves DMs and suppresses the redirect).
+- **Surfaces.** DMs and channels are controlled independently. `SLACK_DM_MODE` selects the DM
+  behaviour: `serve` (answer DMs, the default), `redirect` (a polite pointer to channels), or
+  `ignore` (drop silently). `SLACK_CHANNEL_MODE` selects the channels served: `all` (every
+  channel the bot is invited to, the default), `allowlist` (only the channel IDs in
+  `SLACK_CHANNEL_ALLOWLIST`, comma-separated), or `none` (DM-only deployments). A mention in a
+  channel outside the allowlist gets a one-time ephemeral notice; the channel intro and all
+  other activity are suppressed there.
 
 ## Required bot OAuth scopes
 
