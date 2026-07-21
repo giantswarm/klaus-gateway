@@ -42,7 +42,7 @@ type OBOTokenSource interface {
 	// TokenFor returns a fresh human token (the dex id_token) for the Slack user,
 	// or musterlink.ErrNotLinked when the user has not linked an identity.
 	TokenFor(ctx context.Context, slackUserID string) (string, error)
-	// LinkURL returns the absolute "Sign in to Giant Swarm" URL that starts the
+	// LinkURL returns the absolute "Sign in" URL that starts the
 	// account-linking flow for the Slack user (signed, single-use state).
 	LinkURL(slackUserID string) string
 	// Unlink removes any stored link for the Slack user (the /klaus logout path).
@@ -634,7 +634,7 @@ func (a *Adapter) postLaunchAnnouncement(ctx context.Context, slackChannel, thre
 	}
 }
 
-// postSignIn posts the ephemeral "Sign in to Giant Swarm" prompt for the
+// postSignIn posts the ephemeral "Sign in" prompt for the
 // account-linking flow. It is driven by the explicit /klaus login command and
 // by an unlinked user's first turn (which is aborted, not run as the SA). A
 // failure to post is logged and swallowed.

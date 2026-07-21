@@ -73,7 +73,7 @@ func TestAccess_UnlinkedNewcomerPromptedToSignIn(t *testing.T) {
 
 	sendEvent(t, srv, mention("U999", "help", "200.000", "100.000"))
 	fake.waitForPath(t, "chat.postEphemeral", 1)
-	require.Contains(t, allText(fake.pathCalls("chat.postEphemeral")), "Sign in to Giant Swarm")
+	require.Contains(t, allText(fake.pathCalls("chat.postEphemeral")), "Sign in so I can act as you")
 	require.Equal(t, 1, gw.resolveCount(), "an unlinked newcomer must not reach the agent")
 }
 

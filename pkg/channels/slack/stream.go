@@ -884,11 +884,11 @@ func (c *slackAPIClient) postChoiceSectionPrompt(ctx context.Context, channel, t
 }
 
 // postSignInPrompt posts an ephemeral (visible only to the target user)
-// Block Kit message with a "Sign in to Giant Swarm" button linking to linkURL.
+// Block Kit message with a "Sign in" button linking to linkURL.
 // It is used to nudge an unlinked Slack user into the OBO account-linking flow.
 // When threadID is set the prompt is posted in-thread.
 func (c *slackAPIClient) postSignInPrompt(ctx context.Context, channel, threadID, user, linkURL string) error {
-	const text = "Sign in to Giant Swarm so I can act as you. " +
+	const text = "Sign in so I can act as you. " +
 		"Until you do, I can't run tools on your behalf."
 	body := map[string]any{
 		paramChannel: channel,
@@ -904,7 +904,7 @@ func (c *slackAPIClient) postSignInPrompt(ctx context.Context, channel, threadID
 				bkElements: []any{
 					map[string]any{
 						bkType:     bkButton,
-						bkText:     map[string]any{bkType: bkPlainText, bkText: "Sign in to Giant Swarm"},
+						bkText:     map[string]any{bkType: bkPlainText, bkText: "Sign in"},
 						bkStyle:    bkPrimary,
 						bkActionID: oboSignIn,
 						bkURL:      linkURL,

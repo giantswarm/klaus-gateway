@@ -276,17 +276,16 @@ for the Builder to accept it.
 Ephemeral. Posted when a turn needs the user's token but they haven't linked their account.
 The button opens the linking flow; once it completes the ephemeral prompt is replaced in
 place. A turn that still has no user token degrades: the tool call fails at the backend rather
-than running as the gateway identity. (The rendered copy currently names "Giant Swarm", the
-identity provider, not the Swarmgeist app.)
+than running as the gateway identity.
 
 ```json
 {
   "blocks": [
-    { "type": "section", "text": { "type": "mrkdwn", "text": "Sign in to Giant Swarm so I can act as you. Until you do, I can't run tools on your behalf." } },
+    { "type": "section", "text": { "type": "mrkdwn", "text": "Sign in so I can act as you. Until you do, I can't run tools on your behalf." } },
     {
       "type": "actions",
       "elements": [
-        { "type": "button", "text": { "type": "plain_text", "text": "Sign in to Giant Swarm" }, "style": "primary", "action_id": "obo_sign_in", "url": "https://example.com/login" }
+        { "type": "button", "text": { "type": "plain_text", "text": "Sign in" }, "style": "primary", "action_id": "obo_sign_in", "url": "https://example.com/login" }
       ]
     }
   ]
