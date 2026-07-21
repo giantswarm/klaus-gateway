@@ -1192,7 +1192,7 @@ func TestProgress_TextFallbackOnMissingScope(t *testing.T) {
 	require.Contains(t, allText(fake.pathCalls("chat.postMessage")), "_thinking", "text placeholder posted")
 
 	// Second turn must not retry reactions.add (the downgrade is cached).
-	sendEvent(t, srv, dmEvent("U1", "second", "444.000"))
+	sendEvent(t, srv, dmEvent("U1", "second", "445.000"))
 	fake.waitForPath(t, "chat.update", 2)
 	require.Len(t, fake.pathCalls("reactions.add"), 1, "reactions.add attempted once, then downgraded to text")
 }
@@ -1357,13 +1357,54 @@ func TestSerializeTurnsPerThread(t *testing.T) {
 	fake.waitForPath(t, "reactions.add", 1) // A acquired the thread and started
 
 	// Turn B on the same thread while A is in flight -> rejected with a notice.
-	sendEvent(t, srv, dmEvent("U1", "second", "666.000"))
+	// A distinct ts: a real second message is never a redelivery of the first.
+	sendEvent(t, srv, dmThreadEvent("U1", "second", "667.000", "666.000"))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "still finishing")
 	}, 2*time.Second, 20*time.Millisecond, "expected a busy notice for the second turn")
 
 	require.Equal(t, 1, gw.resolveCount(), "second turn is rejected before reaching the agent")
 	close(hold)
+}
+
+// A mention inside a channel thread is delivered as both app_mention and
+// message.channels with distinct event_ids. Only one may start a turn; the
+// twin must be dropped by the (channel, ts) message dedup, not bounced off the
+// busy notice or run as a second turn (klaus-gateway#159).
+func TestHandleInbound_CrossEventTypeTwinDeduped(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok"}, {Done: true}}}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
+
+	sendEvent(t, srv, mention("U1", "start", "100.000", ""))
+	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
+		2*time.Second, 20*time.Millisecond, "the root mention dispatches")
+
+	// The same in-thread mention, delivered as its two event-type twins.
+	sendEvent(t, srv, `{"type":"event_callback","event_id":"Ev-twin-1","event":{"type":"app_mention","user":"U1","text":"<@BOT> again","channel":"C1","ts":"200.000","thread_ts":"100.000"}}`)
+	sendEvent(t, srv, `{"type":"event_callback","event_id":"Ev-twin-2","event":{"type":"message","channel_type":"channel","user":"U1","text":"<@BOT> again","channel":"C1","ts":"200.000","thread_ts":"100.000"}}`)
+
+	require.Eventually(t, func() bool { return gw.resolveCount() == 2 },
+		2*time.Second, 20*time.Millisecond, "the mention twin dispatches once")
+	time.Sleep(150 * time.Millisecond)
+	require.Equal(t, 2, gw.resolveCount(), "the message twin must not start a second turn")
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "still finishing",
+		"the twin must be deduped, not rejected with the busy notice")
+}
+
+// A turn that dies before its stream starts (agent resolve or send fails) must
+// post the failure note: streamResponse only covers errors after the stream is
+// running, so a kagent outage was previously complete silence.
+func TestDispatch_PreStreamFailurePostsNote(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{resolveErr: errors.New("kagent unreachable")}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+
+	sendEvent(t, srv, dmEvent("U1", "hi", "100.000"))
+
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "the turn failed")
+	}, 2*time.Second, 20*time.Millisecond, "a pre-stream dispatch failure must post the failure note")
 }
 
 // A retried delivery whose original never reached the handler (pod restart,

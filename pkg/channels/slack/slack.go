@@ -1042,7 +1042,6 @@ func (a *Adapter) OnUserLinked(ctx context.Context, slackUser, email string) {
 				}
 				if err := a.replayDispatch(bgCtx, req.msg, req.slackChannel); err != nil && !errors.Is(err, context.Canceled) {
 					a.Logger.Error("slack: replay after sign-in failed", "user", slackUser, "thread", req.msg.ThreadID, "error", err)
-					a.postReplayFailureNote(bgCtx, req.slackChannel, req.msg.ThreadID)
 				}
 			}
 		}()
@@ -1159,6 +1158,10 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 	if !ok {
 		return
 	}
+	if a.seenMessage(inner.Channel, msg.MessageID) {
+		a.Logger.Info("slack: dropping duplicate message delivery", "channel", inner.Channel, "ts", msg.MessageID)
+		return
+	}
 	if threadReplyOnly && !a.isActiveThread(msg.ThreadID) {
 		return
 	}
@@ -1180,13 +1183,18 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 	}
 }
 
-// postReplayFailureNote tells the thread a parked message could not be
-// replayed, so a sign-in or access grant that just promised action does not
-// end in silence. Best-effort: a post failure is only logged.
-func (a *Adapter) postReplayFailureNote(ctx context.Context, slackChannel, threadID string) {
-	const text = "⚠️ _I couldn't pick your message back up. Please resend it._"
-	if _, err := a.apiClient().postMessage(ctx, slackChannel, text, threadID); err != nil {
-		a.Logger.Warn("slack: post replay failure note failed", "thread", threadID, "error", err)
+// postDispatchFailureNote posts the generic failure note for a turn that died
+// before its stream started (agent resolve or send failed). Errors inside a
+// running stream are surfaced by streamResponse; without this note a
+// pre-stream failure is invisible to the thread. It fires for interactive and
+// replayed turns alike (a replay's caller only logs). Best-effort, and silent
+// on shutdown (a canceled context means nobody is waiting for the note).
+func (a *Adapter) postDispatchFailureNote(ctx context.Context, slackChannel, threadID string) {
+	if ctx.Err() != nil {
+		return
+	}
+	if _, err := a.apiClient().postMessage(ctx, slackChannel, failedNote, threadID); err != nil {
+		a.Logger.Warn("slack: post dispatch failure note failed", "thread", threadID, "error", err)
 	}
 }
 
@@ -1383,6 +1391,7 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 	ref, err := a.gw.Resolve(ctx, msg)
 	if err != nil {
 		restoreTask()
+		a.postDispatchFailureNote(ctx, slackChannel, msg.ThreadID)
 		return fmt.Errorf("slack: resolve: %w", err)
 	}
 
@@ -1404,6 +1413,7 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 	deltas, err := a.gw.SendCompletion(turnCtx, ref, msg)
 	if err != nil {
 		restoreTask()
+		a.postDispatchFailureNote(ctx, slackChannel, msg.ThreadID)
 		return fmt.Errorf("slack: send completion: %w", err)
 	}
 
