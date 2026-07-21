@@ -1167,6 +1167,17 @@ const rootAuthorLookupTimeout = 3 * time.Second
 // into a thread with no recorded initiator triggers the lookup; when no human
 // author can be determined (fetch failure, all-bot prefix) the first-poster
 // behavior stands.
+//
+// The reseed is restart recovery only. A missing initiator has two causes that
+// call for opposite handling: a restart (state lost, restore the root author)
+// and a threadAccessTTL sweep (state deliberately expired, the mentioner
+// re-establishes the thread). They are indistinguishable per-thread, so the
+// reseed is bounded to within threadAccessTTL of process start: no thread can
+// have been swept before the process has run that long, so an unrecorded thread
+// in that window is a pre-restart thread. Past it, an unrecorded thread was
+// expired by the TTL, and reseeding would resurrect the state the TTL cleared —
+// re-installing a stale root author and gating the user whose fresh mention
+// re-engaged the thread.
 func (a *Adapter) seedInitiatorFromRoot(ctx context.Context, slackChannel, threadID, messageID string) {
 	if threadID == "" || threadID == messageID {
 		return
@@ -1175,6 +1186,9 @@ func (a *Adapter) seedInitiatorFromRoot(ctx context.Context, slackChannel, threa
 	// first-poster-becomes-initiator is always correct, and the reseed would
 	// only cost a lookup.
 	if isDMChannelID(slackChannel) {
+		return
+	}
+	if a.startUnix == 0 || time.Now().Unix()-a.startUnix >= int64(threadAccessTTL.Seconds()) {
 		return
 	}
 	if a.accessPolicy().Initiator(threadID) != "" {
