@@ -507,11 +507,10 @@ func TestDispatch_OBO_DisabledLeavesBearerTokenEmpty(t *testing.T) {
 // prompt and never dispatched to the agent — no silent M2M service-account
 // fallback (klaus-gateway#116).
 func TestDispatch_OBO_UnlinkedUserPromptsSignInAndDoesNotDispatch(t *testing.T) {
-	fakeSlack, ephemeral := captureEphemeral(t)
-	defer fakeSlack.Close()
+	fake := newFakeSlackAPI()
 
 	gw := &stubGateway{}
-	a, srv := newEventsAdapter(t, gw, fakeSlack.URL, channelMode)
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
 	a.OBO = &fakeOBO{linkedUser: "U999", token: "x", linkURL: "https://gw.example.com/auth/slack/link?u=xyz"}
 
 	payload := `{"type":"event_callback","event":{"type":"app_mention","user":"U123","text":"<@BOT> hi","channel":"C1","ts":"111.222"}}`
@@ -526,8 +525,13 @@ func TestDispatch_OBO_UnlinkedUserPromptsSignInAndDoesNotDispatch(t *testing.T) 
 	require.NoError(t, resp.Body.Close())
 
 	require.Eventually(t, func() bool {
-		return len(ephemeral()) >= 1
-	}, 2*time.Second, 50*time.Millisecond, "unlinked user must be prompted to sign in")
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Sign in to Giant Swarm")
+	}, 2*time.Second, 50*time.Millisecond, "unlinked user must be prompted to sign in with a real message")
+	// The prompt is a threaded reply under the mention, so it anchors the
+	// thread the agent will answer in (a thread-scoped ephemeral on a fresh
+	// mention is never surfaced by Slack).
+	prompt := fake.pathCalls("chat.postMessage")[0]
+	require.Equal(t, "111.222", prompt.params["thread_ts"])
 	require.Zero(t, gw.resolveCount(), "unlinked turn must not reach the agent (no M2M fallback)")
 }
 
@@ -541,9 +545,8 @@ func TestDispatch_OBO_ParksUnlinkedMessageAndReplaysAfterLink(t *testing.T) {
 		captured = append(captured, msg)
 		mu.Unlock()
 	}}
-	fakeSlack, ephemeral := captureEphemeral(t)
-	defer fakeSlack.Close()
-	a, srv := newEventsAdapter(t, gw, fakeSlack.URL, channelMode)
+	fake := newFakeSlackAPI()
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
 	obo := &fakeOBO{linkedUser: "U123", token: "human-token", notYetLinked: true, linkURL: "https://gw.example.com/link"}
 	a.OBO = obo
 
@@ -559,7 +562,7 @@ func TestDispatch_OBO_ParksUnlinkedMessageAndReplaysAfterLink(t *testing.T) {
 	require.NoError(t, resp.Body.Close())
 
 	require.Eventually(t, func() bool {
-		return len(ephemeral()) >= 1
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Sign in to Giant Swarm")
 	}, 2*time.Second, 50*time.Millisecond, "unlinked user must be prompted to sign in")
 	require.Zero(t, gw.resolveCount(), "the message must be parked, not dispatched, before linking")
 
@@ -577,6 +580,15 @@ func TestDispatch_OBO_ParksUnlinkedMessageAndReplaysAfterLink(t *testing.T) {
 	mu.Unlock()
 	require.Equal(t, "human-token", got.BearerToken, "the replayed turn carries the human muster token")
 	require.Contains(t, got.Text, "what is failing?")
+
+	// The prompt message is rewritten in place into the signed-in confirmation
+	// with the agent handoff folded in.
+	fake.waitForPath(t, "chat.update", 1)
+	update := fake.pathCalls("chat.update")[0]
+	text, _ := update.params["text"].(string)
+	require.Contains(t, text, "Signed in as u123@example.com")
+	require.Contains(t, text, "test-agent", "the rewrite announces the agent handoff")
+	require.NotEmpty(t, update.params["ts"], "the rewrite targets the prompt's anchor ts")
 }
 
 // multiUserOBO is a test OBOTokenSource with independent per-user link state, so
@@ -615,9 +627,8 @@ func TestDispatch_OBO_NewcomerReplaysToAccessPromptNotAgent(t *testing.T) {
 		captured = append(captured, msg)
 		mu.Unlock()
 	}}
-	fakeSlack, ephemeral := captureEphemeral(t)
-	defer fakeSlack.Close()
-	a, srv := newEventsAdapter(t, gw, fakeSlack.URL, channelMode)
+	fake := newFakeSlackAPI()
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
 	obo := &multiUserOBO{linked: map[string]string{"U1": "tok1"}}
 	a.OBO = obo
 
@@ -645,19 +656,17 @@ func TestDispatch_OBO_NewcomerReplaysToAccessPromptNotAgent(t *testing.T) {
 	// to sign in, not dispatched.
 	send(`{"type":"event_callback","event":{"type":"app_mention","user":"U2","text":"<@BOT> me too","channel":"C1","ts":"333.444","thread_ts":"111.222"}}`)
 	require.Eventually(t, func() bool {
-		return len(ephemeral()) >= 1
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Sign in to Giant Swarm")
 	}, 2*time.Second, 50*time.Millisecond, "the newcomer is prompted to sign in")
 	mu.Lock()
 	require.Equal(t, 1, len(captured), "an unlinked newcomer must not reach the agent")
 	mu.Unlock()
 
-	// The newcomer signs in; the replay lands at the access-consent prompt, still
-	// not dispatched to the agent.
+	// The newcomer signs in; the replay lands at the access-consent prompt
+	// (ephemeral to the initiator), still not dispatched to the agent.
 	obo.link("U2", "tok2")
 	a.OnUserLinked(context.Background(), "U2", "u2@example.com")
-	require.Eventually(t, func() bool {
-		return len(ephemeral()) >= 2
-	}, 2*time.Second, 50*time.Millisecond, "the replayed newcomer message posts the initiator access prompt")
+	fake.waitForPath(t, "chat.postEphemeral", 1)
 	mu.Lock()
 	require.Equal(t, 1, len(captured), "a linked-but-unapproved newcomer must not reach the agent on replay")
 	mu.Unlock()
@@ -796,11 +805,10 @@ func TestLogout_Unlinks(t *testing.T) {
 }
 
 func TestLogin_PostsSignInPrompt(t *testing.T) {
-	fakeSlack, ephemeral := captureEphemeral(t)
-	defer fakeSlack.Close()
+	fake := newFakeSlackAPI()
 
 	gw := &stubGateway{}
-	a, srv := newEventsAdapter(t, gw, fakeSlack.URL, channelMode)
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
 	a.OBO = &fakeOBO{linkedUser: "U999", linkURL: "https://gw.example.com/auth/slack/link?u=xyz"}
 
 	payload := `{"type":"event_callback","event":{"type":"app_mention","user":"U123","text":"<@BOT> /login","channel":"C1","ts":"111.222"}}`
@@ -814,8 +822,9 @@ func TestLogin_PostsSignInPrompt(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, resp.Body.Close())
 
-	require.Eventually(t, func() bool { return len(ephemeral()) > 0 },
-		2*time.Second, 50*time.Millisecond, "/login must post a sign-in prompt")
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Sign in to Giant Swarm")
+	}, 2*time.Second, 50*time.Millisecond, "/login must post a sign-in prompt")
 	require.Zero(t, gw.resolveCount(), "/login must be consumed, not dispatched to the agent")
 }
 

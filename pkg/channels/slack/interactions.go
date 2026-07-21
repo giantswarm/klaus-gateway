@@ -92,15 +92,12 @@ func (a *Adapter) routeInteraction(ctx context.Context, payload interactionPaylo
 
 	action := payload.Actions[0]
 
-	// The sign-in URL button opens its link in the browser; the click payload
-	// carries the response_url that lets NotifyLinked replace the ephemeral
-	// prompt once the account link completes.
-	if action.ActionID == oboSignIn {
-		a.storeSignInPrompt(payload.User.ID, payload.ResponseURL)
-		return
-	}
-
 	switch action.ActionID {
+	case oboSignIn:
+		// URL button: the browser opens the link itself, and the prompt message
+		// is rewritten via OnUserLinked once the link completes, so the click
+		// needs no handling beyond the ack.
+		return
 	case connectorDismiss:
 		a.handleConnectorDismiss(ctx, payload.User.ID, action.Value, payload.ResponseURL)
 		return

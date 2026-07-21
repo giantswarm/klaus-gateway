@@ -516,11 +516,14 @@ func (l *Linker) HandleCallback(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if want == "" || !strings.EqualFold(want, link.Email) {
-			l.logger.Warn("musterlink: email mismatch", "slackUser", slackUser)
+			l.logger.Warn("musterlink: email mismatch", "slackUser", slackUser, "slackEmail", want, "identityEmail", link.Email)
 			l.renderPage(w, http.StatusForbidden, page{
 				Heading: "Email mismatch",
 				Title:   "Account email does not match",
-				Message: "The Giant Swarm account you signed in with does not match your Slack email. Sign in with the account that matches your Slack email.",
+				Message: fmt.Sprintf("The account you signed in with reports %s, but your Slack profile email is %s. "+
+					"Sign in with the account whose email matches your Slack email. "+
+					"For GitHub-backed sign-in, the released email is your GitHub primary email; update it if it does not match.",
+					link.Email, want),
 			})
 			return
 		}

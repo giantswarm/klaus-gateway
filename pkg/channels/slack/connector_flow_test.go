@@ -83,6 +83,16 @@ func ephemeralJSON(fake *fakeSlackAPI) string {
 	return b.String()
 }
 
+func postMessageJSON(fake *fakeSlackAPI) string {
+	var b strings.Builder
+	for _, c := range fake.pathCalls("chat.postMessage") {
+		raw, _ := json.Marshal(c.params)
+		b.Write(raw)
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
 // connectorAdapter builds an events adapter for a linked user (U1) with the
 // reactive connector prompt enabled.
 func connectorAdapter(t *testing.T, gw *stubGateway) (*fakeSlackAPI, *httptest.Server) {
@@ -326,7 +336,7 @@ func TestLoginCommand_UnlinkedGetsSignIn(t *testing.T) {
 	sendEvent(t, srv, dmEvent("U1", "/login", "111.000"))
 
 	require.Eventually(t, func() bool {
-		return strings.Contains(ephemeralJSON(fake), "obo_sign_in")
+		return strings.Contains(postMessageJSON(fake), "obo_sign_in")
 	}, 2*time.Second, 20*time.Millisecond)
 }
 

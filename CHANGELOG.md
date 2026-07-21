@@ -38,6 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Per-thread `/details` settings, `/usage` figures, and resume-check marks are dropped after 24 hours of thread inactivity, so a long-lived gateway's memory stays bounded. An active thread refreshes its state on every turn.
 - A reply into a channel thread the gateway has no record of establishes the thread root's author (fetched from Slack) as the initiator, instead of whoever posts first, so a reply cannot take over an existing thread. This is restart recovery: it applies only within the thread-activation window (24h) of process start, so a thread that was instead expired by that window's TTL is re-established by the fresh `@`-mention, not by its stale root author. Multi-participant threads only; in a 1:1 DM the sole human always becomes the initiator. When the root author cannot be determined or the root is bot-authored, the first poster still becomes the initiator.
 - Slack OBO: the browser-facing sign-in outcomes at `/auth/slack/link` and `/auth/slack/callback` now render a branded, responsive light/dark HTML page (embedded via `//go:embed`), adapted from the platform gateway-api error template. This replaces the bare inline success HTML and the plain-text error responses, so both success and error cases (expired link, email mismatch, sign-in cancelled/failed) share the same Giant Swarm-styled page.
+- The unlinked-user sign-in decision and the session resume existence-check outcome are logged at info level (previously debug), so a session that kagent reports missing is visible in default-level logs.
 
 ### Removed
 
@@ -46,6 +47,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The sign-in prompt for an unlinked user is now a real threaded message instead of an ephemeral. For a fresh channel mention the previous thread-scoped ephemeral was attached to a thread with no visible messages, so Slack never surfaced it and the bot appeared to ignore the user. The prompt now anchors the reply thread (a threaded reply in channels and in the Slack Assistant DM pane alike) and, once the user signs in, is updated in place to the signed-in confirmation with the agent hand-off folded in, replacing the separate button-click ephemeral replacement.
+- The "email mismatch" sign-in failure page now names the two emails being compared (the OAuth identity's email and the Slack profile email) and hints at the GitHub primary email as the usual cause; the corresponding log line carries both emails too.
 - A turn that fails after part of the answer was already streamed no longer overwrites that content with the failure note; the note is posted as a new message in the thread instead. The placeholder is still replaced when nothing was streamed yet.
 - Consecutive Slack rate limits no longer kill the turn: a 429 is retried honouring Retry-After for up to 4 attempts (previously a second consecutive 429 failed the call and aborted the stream mid-answer).
 - Corrupt-session recovery (which deletes the kagent session) now requires the model API's `invalid_request_error` class in the failure, so an error that merely quotes agent output mentioning tool_use/tool_result can no longer trigger an irreversible session delete.

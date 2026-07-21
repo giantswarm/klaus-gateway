@@ -171,6 +171,13 @@ still running gets a brief "still working" notice rather than starting an overla
   (requires the `member_joined_channel` bot event).
 - **Launch announcement.** A new channel thread opens with a short Swarmgeist hand-off notice
   before the agent takes over.
+- **Sign-in prompt.** An unlinked user's first message is answered with a "Sign in to Giant
+  Swarm" message posted as a threaded reply (in channels it anchors the conversation thread;
+  in a DM it lands in the Slack Assistant pane). Once the link completes the same message is
+  updated in place to the signed-in confirmation, with the agent hand-off folded in when a
+  held message is about to replay. The sign-in link is per-user and the callback verifies the
+  OAuth identity's email against the Slack profile email, so a prompt visible to the whole
+  thread cannot be completed by someone else.
 - **Surfaces.** DMs and channels are controlled independently. `SLACK_DM_MODE` selects the DM
   behaviour: `serve` (answer DMs, the default), `redirect` (a polite pointer to channels), or
   `ignore` (drop silently). `SLACK_CHANNEL_MODE` selects the channels served: `all` (every

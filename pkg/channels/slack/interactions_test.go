@@ -380,6 +380,18 @@ func (s *ixSink) counts() (posts, updates, ephemeral int) {
 	return len(s.posts), len(s.updates), len(s.ephemeral)
 }
 
+func (s *ixSink) postTexts() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, 0, len(s.posts))
+	for _, p := range s.posts {
+		if t, ok := p["text"].(string); ok {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
 func (s *ixSink) updateTexts() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -472,15 +484,15 @@ func TestHandleDecision_OBO_TokenMintFailurePreservesTask(t *testing.T) {
 
 	serveInteraction(t, a, secret, "hitl_approve", "T001", "C001", "MSG001", "U_OTHER")
 
-	// The sign-in prompt (ephemeral) is the terminal action on the failure path.
+	// The sign-in prompt (a real in-thread message) is the terminal action on
+	// the failure path.
 	require.Eventually(t, func() bool {
-		_, _, eph := sink.counts()
-		return eph >= 1
+		return strings.Contains(strings.Join(sink.postTexts(), "\n"), "Sign in to Giant Swarm")
 	}, 2*time.Second, 10*time.Millisecond, "token-mint failure must drive a sign-in prompt")
 
 	posts, updates, _ := sink.counts()
 	require.Zero(t, updates, "buttons must not be rewritten on token-mint failure")
-	require.Zero(t, posts, "no resume placeholder must be posted on token-mint failure")
+	require.Equal(t, 1, posts, "the sign-in prompt must be the only message posted (no resume placeholder)")
 	require.True(t, a.hasPendingTask("T001"), "pending task must be preserved for retry")
 	require.Zero(t, gw.sendCount(), "the paused task must not be resumed on token-mint failure")
 }
@@ -642,91 +654,137 @@ func TestParkPendingLogin_OrderedAndCappedPerThread(t *testing.T) {
 	require.Nil(t, a.takePendingLogin("U1"), "take clears the user")
 }
 
-func TestSignInClickThenNotifyLinkedReplacesPrompt(t *testing.T) {
-	const secret = "test-secret"
-
-	var (
-		mu    sync.Mutex
-		calls []map[string]any
-	)
-	respSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var v map[string]any
-		_ = json.NewDecoder(r.Body).Decode(&v)
-		mu.Lock()
-		calls = append(calls, v)
-		mu.Unlock()
-		w.WriteHeader(http.StatusOK)
+// captureChatUpdates spins up a fake Slack API that records chat.update JSON
+// bodies and returns ok for everything else.
+func captureChatUpdates(t *testing.T) (*httptest.Server, func() []map[string]any) {
+	t.Helper()
+	var mu sync.Mutex
+	var updates []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "chat.update") {
+			var v map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&v)
+			mu.Lock()
+			updates = append(updates, v)
+			mu.Unlock()
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"ok":true,"ts":"1234.5678"}`)
 	}))
-	t.Cleanup(respSrv.Close)
+	t.Cleanup(srv.Close)
+	return srv, func() []map[string]any {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]map[string]any(nil), updates...)
+	}
+}
+
+// A recorded sign-in prompt is rewritten in place (chat.update on its anchor)
+// once the link completes, and the anchor is drained so a second link event is
+// a no-op.
+func TestOnUserLinkedRewritesSignInAnchor(t *testing.T) {
+	srv, updates := captureChatUpdates(t)
 
 	a := &Adapter{
-		Secrets:      Secrets{BotToken: "test-bot-token", SigningSecret: secret}, //nolint:gosec
+		Secrets: Secrets{BotToken: "test-bot-token"}, //nolint:gosec
+		APIBase: srv.URL,
+	}
+	a.recordSignInAnchor("U001", "T1", signInAnchor{channel: "C1", ts: "111.111"})
+
+	a.OnUserLinked(t.Context(), "U001", "alice@example.com")
+	require.Eventually(t, func() bool { return len(updates()) == 1 },
+		2*time.Second, 10*time.Millisecond, "the anchor must be rewritten after linking")
+	call := updates()[0]
+	require.Equal(t, "C1", call["channel"])
+	require.Equal(t, "111.111", call["ts"])
+	text, _ := call["text"].(string)
+	require.Contains(t, text, "Signed in as alice@example.com")
+	require.NotContains(t, text, "Bringing in", "no parked replay, no handoff wording")
+
+	// Anchors are drained on first use.
+	a.OnUserLinked(t.Context(), "U001", "alice@example.com")
+	time.Sleep(100 * time.Millisecond)
+	require.Len(t, updates(), 1, "a second link event must not rewrite again")
+}
+
+// A link that is about to replay a parked question folds the agent handoff
+// notice into the rewritten prompt.
+func TestOnUserLinkedAnchorAnnouncesHandoffWhenReplaying(t *testing.T) {
+	srv, updates := captureChatUpdates(t)
+
+	a := &Adapter{
+		Secrets:      Secrets{BotToken: "test-bot-token"}, //nolint:gosec
+		APIBase:      srv.URL,
 		DefaultAgent: "worker",
 	}
 	require.NoError(t, a.Start(t.Context(), &fakeGateway{}))
+	a.recordSignInAnchor("U001", "T1", signInAnchor{channel: "C1", ts: "111.111"})
+	a.parkPendingLogin("U001", &pendingLoginReq{
+		msg:          channels.InboundMessage{Subject: "U001", ThreadID: "T1", MessageID: "T1", Text: "what failed?"},
+		slackChannel: "C1",
+	})
 
-	inner := map[string]any{
-		"type":         "block_actions",
-		"user":         map[string]any{"id": "U001"},
-		"response_url": respSrv.URL,
-		"actions":      []any{map[string]any{"action_id": oboSignIn}},
+	a.OnUserLinked(t.Context(), "U001", "alice@example.com")
+	require.Eventually(t, func() bool { return len(updates()) == 1 },
+		2*time.Second, 10*time.Millisecond, "the anchor must be rewritten after linking")
+	text, _ := updates()[0]["text"].(string)
+	require.Contains(t, text, "Signed in as alice@example.com")
+	require.Contains(t, text, "worker", "the rewrite announces the agent handoff")
+}
+
+// A parked queue that is nothing but bare auth utterances is satisfied by the
+// link itself: the rewritten prompt keeps the plain confirmation wording.
+func TestOnUserLinkedAnchorPlainWhenOnlyBareAuthParked(t *testing.T) {
+	srv, updates := captureChatUpdates(t)
+
+	a := &Adapter{
+		Secrets:      Secrets{BotToken: "test-bot-token"}, //nolint:gosec
+		APIBase:      srv.URL,
+		DefaultAgent: "worker",
 	}
-	data, err := json.Marshal(inner)
-	require.NoError(t, err)
-	body := []byte("payload=" + url.QueryEscape(string(data)))
-	req := httptest.NewRequest(http.MethodPost, "/channels/slack/interactions", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	signRequest(t, req, body, secret)
+	require.NoError(t, a.Start(t.Context(), &fakeGateway{}))
+	a.recordSignInAnchor("U001", "T1", signInAnchor{channel: "C1", ts: "111.111"})
+	a.parkPendingLogin("U001", &pendingLoginReq{
+		msg:          channels.InboundMessage{Subject: "U001", ThreadID: "T1", MessageID: "T1", Text: "login"},
+		slackChannel: "C1",
+	})
 
-	rr := httptest.NewRecorder()
-	a.ixHandler.ServeHTTP(rr, req)
-	require.Equal(t, http.StatusOK, rr.Code)
-
-	// The click is processed asynchronously; wait for the response_url capture.
-	require.Eventually(t, func() bool {
-		a.signInMu.Lock()
-		defer a.signInMu.Unlock()
-		return len(a.signInPrompts) > 0
-	}, 2*time.Second, 10*time.Millisecond)
-
-	a.notifyLinked(t.Context(), "U001", "alice@example.com")
-
-	mu.Lock()
-	require.Len(t, calls, 1)
-	require.Equal(t, true, calls[0]["replace_original"])
-	require.Contains(t, calls[0]["text"], "alice@example.com")
-	mu.Unlock()
-
-	// The stored response_url is single-use: a second notification is a no-op.
-	a.notifyLinked(t.Context(), "U001", "alice@example.com")
-	mu.Lock()
-	require.Len(t, calls, 1)
-	mu.Unlock()
+	a.OnUserLinked(t.Context(), "U001", "alice@example.com")
+	require.Eventually(t, func() bool { return len(updates()) == 1 },
+		2*time.Second, 10*time.Millisecond)
+	text, _ := updates()[0]["text"].(string)
+	require.NotContains(t, text, "Bringing in", "a satisfied bare login replays nothing")
 }
 
 // OnUserLinked is the musterlink OnLinked hook, whose contract is that it must
 // not block: HandleCallback renders the "signed in, close this tab" page only
-// after it returns. The confirmation it posts is a Slack round-trip (up to a 10s
+// after it returns. The anchor rewrite is a Slack round-trip (up to a 10s
 // client timeout), so it must run off the callback goroutine — a slow or hung
-// hooks.slack.com must not delay the user's success page.
-func TestOnUserLinkedDoesNotBlockOnConfirmationPOST(t *testing.T) {
+// Slack API must not delay the user's success page.
+func TestOnUserLinkedDoesNotBlockOnAnchorRewrite(t *testing.T) {
 	release := make(chan struct{})
 	hit := make(chan struct{}, 1)
-	respSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		select {
-		case hit <- struct{}{}:
-		default:
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "chat.update") {
+			select {
+			case hit <- struct{}{}:
+			default:
+			}
+			<-release // hold the call open, mimicking a slow Slack API
 		}
-		<-release // hold the POST open, mimicking a slow hooks.slack.com
-		w.WriteHeader(http.StatusOK)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"ok":true,"ts":"1234.5678"}`)
 	}))
 	t.Cleanup(func() {
 		close(release)
-		respSrv.Close()
+		srv.Close()
 	})
 
-	a := &Adapter{}
-	a.storeSignInPrompt("U001", respSrv.URL)
+	a := &Adapter{
+		Secrets: Secrets{BotToken: "test-bot-token"}, //nolint:gosec
+		APIBase: srv.URL,
+	}
+	a.recordSignInAnchor("U001", "T1", signInAnchor{channel: "C1", ts: "111.111"})
 
 	returned := make(chan struct{})
 	go func() {
@@ -737,78 +795,58 @@ func TestOnUserLinkedDoesNotBlockOnConfirmationPOST(t *testing.T) {
 	select {
 	case <-returned:
 	case <-time.After(2 * time.Second):
-		t.Fatal("OnUserLinked blocked on the confirmation POST")
+		t.Fatal("OnUserLinked blocked on the anchor rewrite")
 	}
 
-	// The confirmation still fires, just asynchronously.
+	// The rewrite still fires, just asynchronously.
 	select {
 	case <-hit:
 	case <-time.After(2 * time.Second):
-		t.Fatal("confirmation POST never ran")
+		t.Fatal("anchor rewrite never ran")
 	}
 }
 
-func TestNotifyLinkedWithoutClickIsNoOp(t *testing.T) {
+// A link with no recorded prompt (e.g. the park-after-link race drain) has
+// nothing to rewrite and must not call the Slack API.
+func TestOnUserLinkedWithoutPromptIsNoOp(t *testing.T) {
 	a := &Adapter{}
-	a.notifyLinked(t.Context(), "U-never-clicked", "alice@example.com")
+	a.OnUserLinked(t.Context(), "U-never-prompted", "alice@example.com")
 }
 
 // A link path that cannot resolve the email (the park-after-link re-check)
-// still replaces the prompt, with a generic confirmation.
-func TestNotifyLinkedEmptyEmailUsesGenericText(t *testing.T) {
-	var (
-		mu    sync.Mutex
-		calls []map[string]any
-	)
-	respSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var v map[string]any
-		_ = json.NewDecoder(r.Body).Decode(&v)
-		mu.Lock()
-		calls = append(calls, v)
-		mu.Unlock()
-		w.WriteHeader(http.StatusOK)
-	}))
-	t.Cleanup(respSrv.Close)
+// still rewrites the prompt, with a generic confirmation.
+func TestOnUserLinkedEmptyEmailUsesGenericText(t *testing.T) {
+	srv, updates := captureChatUpdates(t)
 
-	a := &Adapter{}
-	a.storeSignInPrompt("U001", respSrv.URL)
-	a.notifyLinked(t.Context(), "U001", "")
+	a := &Adapter{
+		Secrets: Secrets{BotToken: "test-bot-token"}, //nolint:gosec
+		APIBase: srv.URL,
+	}
+	a.recordSignInAnchor("U001", "T1", signInAnchor{channel: "C1", ts: "111.111"})
+	a.OnUserLinked(t.Context(), "U001", "")
 
-	mu.Lock()
-	defer mu.Unlock()
-	require.Len(t, calls, 1)
-	text, _ := calls[0]["text"].(string)
+	require.Eventually(t, func() bool { return len(updates()) == 1 },
+		2*time.Second, 10*time.Millisecond)
+	text, _ := updates()[0]["text"].(string)
 	require.Contains(t, text, "Signed in")
 	require.NotContains(t, text, "Signed in as")
 }
 
-func TestTakeSignInPromptExpired(t *testing.T) {
-	a := &Adapter{signInPrompts: map[string]ttlEntry[string]{
-		"U001": {value: "http://unused.invalid", expires: time.Now().Add(-time.Minute)},
+func TestTakeSignInAnchorsSkipsExpiredAndUnposted(t *testing.T) {
+	a := &Adapter{signInPrompted: map[string]ttlEntry[signInAnchor]{
+		"U1\x00T1": {value: signInAnchor{channel: "C1", ts: "1.1"}, expires: time.Now().Add(-time.Minute)},
+		"U1\x00T2": {expires: time.Now().Add(time.Hour)}, // reserved but the post failed: no ts
+		"U1\x00T3": {value: signInAnchor{channel: "C1", ts: "3.3"}, expires: time.Now().Add(time.Hour)},
+		"U2\x00T1": {value: signInAnchor{channel: "C1", ts: "9.9"}, expires: time.Now().Add(time.Hour)},
 	}}
-	require.Empty(t, a.takeSignInPrompt("U001"))
+	require.Equal(t, []signInAnchor{{channel: "C1", ts: "3.3"}}, a.takeSignInAnchors("U1"))
+	require.Empty(t, a.takeSignInAnchors("U1"), "take clears the user's entries")
+	require.Len(t, a.takeSignInAnchors("U2"), 1, "other users' entries are untouched")
 }
 
-func TestStoreSignInPromptReClickOverwrites(t *testing.T) {
+func TestRecordSignInAnchorRePromptOverwrites(t *testing.T) {
 	a := &Adapter{}
-	a.storeSignInPrompt("U001", "http://first.invalid")
-	a.storeSignInPrompt("U001", "http://second.invalid")
-	require.Equal(t, "http://second.invalid", a.takeSignInPrompt("U001"))
-	require.Empty(t, a.takeSignInPrompt("U001"))
-}
-
-func TestStoreSignInPromptSweepsExpiredEntries(t *testing.T) {
-	a := &Adapter{}
-	a.storeSignInPrompt("U-old", "http://old.invalid")
-	a.signInMu.Lock()
-	a.signInPrompts["U-old"] = ttlEntry[string]{value: "http://old.invalid", expires: time.Now().Add(-time.Minute)}
-	a.signInMu.Unlock()
-
-	a.storeSignInPrompt("U-new", "http://new.invalid")
-
-	a.signInMu.Lock()
-	_, oldKept := a.signInPrompts["U-old"]
-	a.signInMu.Unlock()
-	require.False(t, oldKept, "expired stored response_url must be swept")
-	require.Equal(t, "http://new.invalid", a.takeSignInPrompt("U-new"))
+	a.recordSignInAnchor("U1", "T1", signInAnchor{channel: "C1", ts: "1.1"})
+	a.recordSignInAnchor("U1", "T1", signInAnchor{channel: "C1", ts: "2.2"})
+	require.Equal(t, []signInAnchor{{channel: "C1", ts: "2.2"}}, a.takeSignInAnchors("U1"))
 }

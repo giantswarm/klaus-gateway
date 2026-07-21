@@ -231,7 +231,7 @@ func TestUsageReport_OmitsModelLineWhenUnavailable(t *testing.T) {
 // thread forever. synctest fakes time.Now inside the bubble.
 func TestThreadState_EvictedAfterTTL(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		a := &Adapter{}
+		a := &Adapter{Logger: slog.New(slog.DiscardHandler)}
 		a.setDetailsLevel("T-old", detailsOff)
 		a.recordTurnUsage("T-old", "D-old", channels.TurnUsage{TotalTokens: 1})
 		a.resumeMu.Lock()
