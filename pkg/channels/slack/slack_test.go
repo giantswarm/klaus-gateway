@@ -1261,6 +1261,30 @@ func TestTextMode_FailedTurnAfterContentPostsNewNote(t *testing.T) {
 	require.NotContains(t, updates, "the turn failed", "the note must not overwrite streamed content")
 }
 
+// An error arriving in the same batch window as the text (no tick in between)
+// must still preserve the content: the writer flushes buffered text before
+// surfacing the error, so the note posts as a new message rather than
+// overwriting it.
+func TestTextMode_FailedTurnFlushesBufferedContentBeforeNote(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{
+		deltas: []channels.OutboundDelta{{Content: "partial answer"}, {Err: errors.New("boom")}},
+		// No interDeltaDelay: the error follows the text with no batch tick, so
+		// the content is only surfaced by the flush on the error path.
+	}
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+	a.ProgressMode = "text"
+
+	sendEvent(t, srv, dmEvent("U1", "hi", "780.000"))
+
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "the turn failed")
+	}, 3*time.Second, 50*time.Millisecond, "the failure note posts as a new message")
+	updates := allText(fake.pathCalls("chat.update"))
+	require.Contains(t, updates, "partial answer", "buffered content is flushed before the error")
+	require.NotContains(t, updates, "the turn failed", "the note must not overwrite streamed content")
+}
+
 // sendInteraction posts a signed block_actions interaction for actionID on
 // threadID (channel D1, user U1) to the interactions endpoint.
 func sendInteraction(t *testing.T, srv *httptest.Server, actionID, threadID string) {

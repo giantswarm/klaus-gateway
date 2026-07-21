@@ -120,6 +120,10 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 				w.turnUsage.TotalTokens += d.Usage.TotalTokens
 			}
 			if d.Err != nil {
+				// Flush text buffered since the last tick before surfacing the
+				// error, so wroteContent reflects all delivered content and the
+				// failure note posts as a new message instead of overwriting it.
+				_ = w.flush(ctx)
 				return d.Err
 			}
 			if d.Done {

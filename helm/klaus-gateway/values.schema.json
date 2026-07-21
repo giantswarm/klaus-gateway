@@ -498,7 +498,8 @@
       "type": "object",
       "properties": {
         "enabled": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "Enable the web channel adapter at /web/* on the public mux."
         }
       }
     },
@@ -506,7 +507,8 @@
       "type": "object",
       "properties": {
         "enabled": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "Enable the CLI channel adapter at /cli/v1/*."
         }
       }
     }

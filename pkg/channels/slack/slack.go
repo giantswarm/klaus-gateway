@@ -1255,6 +1255,11 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 // invalid_request_error class is required so an error that merely quotes
 // agent output mentioning tool_use/tool_result cannot trigger the recovery
 // (which irreversibly deletes the session).
+//
+// The match is coupled to the model API's error envelope: if the upstream ever
+// reshapes it so this wording is absent, recovery stops and the thread fails
+// silently forever again. A typed signal from the A2A layer would remove the
+// coupling; until then TestCorruptSession_ResetAndNotice pins the live shape.
 func isCorruptSessionErr(err error) bool {
 	if err == nil {
 		return false
