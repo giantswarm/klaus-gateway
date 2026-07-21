@@ -32,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Slack `/login` and `/logout` confirmations are ephemeral. The signed-in identity (including the linked email) is visible only to the caller instead of being posted into the shared thread.
 - A Slack thread's active state (initiator and on-the-fly access grants) expires after 24 hours without interaction, so the bot stops consuming un-mentioned replies in abandoned threads on a long-lived pod. Any handled message refreshes the deadline; an expired thread re-engages with a fresh `@`-mention, which re-establishes the initiator.
 - Slack `/klaus login` and `/klaus logout` are now `/login` and `/logout`.
 - A message from someone not allowed to instruct the agent in a thread is no longer silently dropped; it prompts sign-in or an initiator approval instead.
@@ -47,6 +48,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A parked Slack message whose replay fails after sign-in or after an access grant now posts a failure note in the thread asking the user to resend, instead of failing silently.
+- A failed rewrite of the sign-in prompt after account linking no longer strands a live "Sign in" button: the prompt's anchor is kept so a later pass converges it.
 - The sign-in prompt for an unlinked user is now a real threaded message instead of an ephemeral. For a fresh channel mention the previous thread-scoped ephemeral was attached to a thread with no visible messages, so Slack never surfaced it and the bot appeared to ignore the user. The prompt now anchors the reply thread (a threaded reply in channels and in the Slack Assistant DM pane alike) and, once the user signs in, is updated in place to the signed-in confirmation with the agent hand-off folded in, replacing the separate button-click ephemeral replacement.
 - The "email mismatch" sign-in failure page now names the two emails being compared (the OAuth identity's email and the Slack profile email) and hints at the GitHub primary email as the usual cause; the corresponding log line carries both emails too.
 - The sign-in success page confirms which account you signed in as; the in-thread Slack confirmation no longer repeats the email, so a sign-in in a shared channel does not post your address to the whole thread.
