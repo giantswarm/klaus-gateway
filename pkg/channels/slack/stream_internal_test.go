@@ -145,6 +145,39 @@ func TestFlush_FailedUpdateIsResentOnNextFlush(t *testing.T) {
 	require.True(t, w.wroteContent())
 }
 
+// A multi-chunk reply whose head lands but whose tail fails leaves flushedLen at
+// 0, yet the head already replaced the placeholder with agent text. wroteContent
+// must report true so the failure note posts as a new message instead of
+// overwriting the delivered head.
+func TestFlush_PartialMultiChunkStillCountsAsContent(t *testing.T) {
+	var updates, posts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "chat.update"): // head, in place
+			updates.Add(1)
+			_, _ = fmt.Fprint(w, `{"ok":true,"ts":"1.1"}`)
+		case strings.HasSuffix(r.URL.Path, "chat.postMessage"): // tail overflow
+			posts.Add(1)
+			_, _ = fmt.Fprint(w, `{"ok":false,"error":"fatal_error"}`)
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
+	w := newBatchedWriterWithClient(client, "C1", "1.1", "1.0", detailsOff, slog.Default())
+	// One line over the block max hard-splits into a head + tail chunk.
+	w.buf.WriteString(strings.Repeat("a", slackMarkdownBlockMax+500))
+
+	require.Error(t, w.flush(t.Context()), "the tail post fails")
+	require.Equal(t, int32(1), updates.Load(), "the head replaced the placeholder in place")
+	require.Equal(t, int32(1), posts.Load(), "the tail was attempted")
+	require.Equal(t, 0, w.flushedLen, "flushedLen stays 0 because not every chunk landed")
+	require.True(t, w.wroteContent(), "the delivered head must count as written content")
+}
+
 func TestLookupUserEmail_RetriesOnceOnRateLimit(t *testing.T) {
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
