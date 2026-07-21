@@ -1168,15 +1168,19 @@ const rootAuthorLookupTimeout = 3 * time.Second
 // author can be determined (fetch failure, all-bot prefix) the first-poster
 // behavior stands.
 //
-// The reseed is restart recovery only. A missing initiator has two causes that
-// call for opposite handling: a restart (state lost, restore the root author)
-// and a threadAccessTTL sweep (state deliberately expired, the mentioner
-// re-establishes the thread). They are indistinguishable per-thread, so the
-// reseed is bounded to within threadAccessTTL of process start: no thread can
-// have been swept before the process has run that long, so an unrecorded thread
-// in that window is a pre-restart thread. Past it, an unrecorded thread was
-// expired by the TTL, and reseeding would resurrect the state the TTL cleared —
-// re-installing a stale root author and gating the user whose fresh mention
+// The reseed is restart recovery, and faithful only for bot-rooted threads
+// (top-level mention or DM) where the root author is the original initiator;
+// for a thread the bot was invited into as a reply the root author never
+// summoned the bot, so the reseed is best-effort there.
+//
+// A thread with no recorded initiator has three causes: a restart (state lost),
+// a threadAccessTTL sweep (state deliberately expired), or a thread never
+// engaged before. Within threadAccessTTL of process start nothing can yet have
+// been swept, so a missing initiator is pre-restart state loss and restoring
+// the root author is safe. Past that window it is a swept or never-seen thread;
+// in both the summoner of the fresh mention should own the thread, so the reseed
+// is suppressed and dispatch's first-interactor rule stands. Reseeding past the
+// window would resurrect state the TTL cleared and gate the user whose mention
 // re-engaged the thread.
 func (a *Adapter) seedInitiatorFromRoot(ctx context.Context, slackChannel, threadID, messageID string) {
 	if threadID == "" || threadID == messageID {
