@@ -466,6 +466,18 @@ func (l *Linker) HandleLink(w http.ResponseWriter, r *http.Request) {
 // Slack/muster email match, and stores the link.
 func (l *Linker) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
+	if q.Get("done") == "1" {
+		// Post-redirect-GET landing: the code was already exchanged and the
+		// browser's address bar no longer carries it, so a reload stays here
+		// instead of resubmitting the code (the auth server treats a replayed
+		// code as theft and revokes every token issued to this user+client).
+		l.renderPage(w, http.StatusOK, page{
+			Heading: "Success",
+			Title:   "Signed in to Giant Swarm",
+			Message: "You can close this tab and return to Slack.",
+		})
+		return
+	}
 	if e := q.Get("error"); e != "" {
 		l.renderPage(w, http.StatusBadRequest, page{
 			Heading: "Sign-in cancelled",
@@ -541,15 +553,11 @@ func (l *Linker) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		l.onLinked(context.WithoutCancel(ctx), slackUser, link.Email)
 	}
 
-	message := "You can close this tab and return to Slack."
-	if link.Email != "" {
-		message = fmt.Sprintf("Signed in as %s. You can close this tab and return to Slack.", link.Email)
-	}
-	l.renderPage(w, http.StatusOK, page{
-		Heading: "Success",
-		Title:   "Signed in to Giant Swarm",
-		Message: message,
-	})
+	// Redirect rather than render: a 200 here leaves code+state in the address
+	// bar, and reloading that tab resubmits the consumed code. OAuth 2.1 code
+	// reuse makes the auth server revoke all tokens for this user+client, so
+	// the success page must live at a code-free URL.
+	http.Redirect(w, r, r.URL.Path+"?done=1", http.StatusSeeOther)
 }
 
 // Exchange trades an authorization code (with its PKCE verifier) for muster

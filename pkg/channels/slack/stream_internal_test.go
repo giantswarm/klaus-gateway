@@ -564,9 +564,9 @@ func TestParseAuthChallenge_NoURL(t *testing.T) {
 	require.Empty(t, loginURL)
 }
 
-func TestParseAuthChallenge_NoServerFallback(t *testing.T) {
+func TestParseAuthChallenge_NoServerLine(t *testing.T) {
 	server, loginURL := parseAuthChallenge("please visit https://x.example/auth")
-	require.Equal(t, "the requested tools", server)
+	require.Empty(t, server, "no Server: line yields empty; the caller falls back to the call arguments")
 	require.Equal(t, "https://x.example/auth", loginURL)
 }
 
@@ -608,6 +608,40 @@ func TestParseAuthChallengePayload_NoURL(t *testing.T) {
 	}, 0)
 	require.Empty(t, server)
 	require.Empty(t, loginURL)
+}
+
+func TestNoteCallToolTarget_RecordsServerArgument(t *testing.T) {
+	w := &batchedWriter{}
+	w.noteCallToolTarget(&channels.ToolActivity{
+		Kind:   channels.ToolCall,
+		Name:   musterCallToolMetaTool,
+		CallID: "c1",
+		Args: map[string]any{
+			"name":      musterAuthLoginTool,
+			"arguments": map[string]any{"server": "gazelle-mcp-pro"},
+		},
+	})
+	require.Equal(t, callToolTarget{name: musterAuthLoginTool, server: "gazelle-mcp-pro"}, w.callToolInner["c1"])
+}
+
+func TestScrubLoginURLs(t *testing.T) {
+	const loginURL = "https://pro.example/authorize?state=abc&code_challenge=xyz"
+	w := &batchedWriter{loginURLs: []string{loginURL}}
+
+	// Markdown link, Slack mrkdwn link, and a bare occurrence all collapse to
+	// the button pointer; unrelated links survive.
+	in := "Please [sign in](" + loginURL + ") first.\n" +
+		"Or <" + loginURL + "|click here>.\n" +
+		"Raw: " + loginURL + "\n" +
+		"Docs: https://example.com/docs"
+	out := w.scrubLoginURLs(in)
+	require.NotContains(t, out, loginURL)
+	require.Contains(t, out, loginURLNote)
+	require.Contains(t, out, "https://example.com/docs")
+	require.NotContains(t, out, "[sign in]", "no dangling markdown link label")
+
+	// No recorded URLs: text passes through untouched.
+	require.Equal(t, in, (&batchedWriter{}).scrubLoginURLs(in))
 }
 
 func TestParseAuthChallengePayload_DepthBounded(t *testing.T) {
