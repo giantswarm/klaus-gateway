@@ -237,9 +237,11 @@ func (w *batchedWriter) maybeConnectorPrompt(tool *channels.ToolActivity) {
 	}
 	server, loginURL := parseAuthChallengePayload(tool.Response, 0)
 	if loginURL == "" {
+		w.logger.Debug("slack: connector prompt skipped, no https login URL in auth challenge", "user", w.slackUser, "tool", tool.Name)
 		return
 	}
 	if !w.adapter.markConnectorPrompted(w.slackUser, server) {
+		w.logger.Debug("slack: connector prompt skipped, cooldown active", "user", w.slackUser, "server", server)
 		return
 	}
 	go func() {
