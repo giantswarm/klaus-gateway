@@ -1,12 +1,46 @@
 package slack
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 )
+
+func TestChooseChoiceRender(t *testing.T) {
+	shortN := func(n int) []string {
+		s := make([]string, n)
+		for i := range s {
+			s[i] = "x"
+		}
+		return s
+	}
+	// choiceLabelWidgetMax runes of a 2-byte rune: over the byte limit but at
+	// the rune limit, so it must still render as a widget (rune-counted, not bytes).
+	atRuneCap := strings.Repeat("é", choiceLabelWidgetMax)
+	overRuneCap := strings.Repeat("é", choiceLabelWidgetMax+1)
+
+	for _, tc := range []struct {
+		name string
+		q    channels.HitlQuestion
+		want choiceRender
+	}{
+		{"no choices", channels.HitlQuestion{}, renderText},
+		{"single short", channels.HitlQuestion{Choices: []string{"a"}}, renderWidget},
+		{"multi flag does not change mode", channels.HitlQuestion{Choices: []string{"a"}, Multiple: true}, renderWidget},
+		{"at option cap", channels.HitlQuestion{Choices: shortN(maxChoiceOptions)}, renderWidget},
+		{"over option cap", channels.HitlQuestion{Choices: shortN(maxChoiceOptions + 1)}, renderText},
+		{"label at rune cap", channels.HitlQuestion{Choices: []string{atRuneCap}}, renderWidget},
+		{"label over rune cap", channels.HitlQuestion{Choices: []string{overRuneCap}}, renderSection},
+		{"long label wins over short peers", channels.HitlQuestion{Choices: []string{"a", overRuneCap}}, renderSection},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, chooseChoiceRender(tc.q))
+		})
+	}
+}
 
 func askUserPrompt(multiple bool, choices ...string) *channels.HitlPrompt {
 	return &channels.HitlPrompt{
