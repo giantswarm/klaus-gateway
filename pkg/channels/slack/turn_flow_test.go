@@ -1,6 +1,7 @@
 package slack_test
 
 import (
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -79,18 +80,28 @@ func TestTypedResume_FailureKeepsPendingTask(t *testing.T) {
 	require.Eventually(t, func() bool { return gw.resolveCount() == 2 },
 		2*time.Second, 50*time.Millisecond, "failed resume attempted")
 
-	// Retry: the task must still be pending, so this reply resumes task-1 with a
-	// structured decision instead of starting a fresh turn.
-	sendEvent(t, srv, dmThreadEvent("U1", "approve", "902.000", "900.000"))
+	// Retry: the task must still be pending, so a reply resumes task-1 with a
+	// structured decision instead of starting a fresh turn. The reply races the
+	// failed turn's thread-slot release (a too-early one is dropped with a busy
+	// notice), so keep replying with fresh message timestamps until the resumed
+	// turn's output lands. The pending task is restored before the slot frees,
+	// so whichever reply wins the slot resumes it.
+	attempt := 0
 	require.Eventually(t, func() bool {
+		attempt++
+		sendEvent(t, srv, dmThreadEvent("U1", "approve", fmt.Sprintf("902.%03d", attempt), "900.000"))
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "done")
-	}, 2*time.Second, 50*time.Millisecond, "retried resume completes")
+	}, 5*time.Second, 100*time.Millisecond, "retried resume completes")
 
 	mu.Lock()
 	defer mu.Unlock()
-	last := resolved[len(resolved)-1]
-	require.Equal(t, "task-1", last.TaskID, "retry must resume the restored pending task")
-	require.NotNil(t, last.Decision, "retry must carry the structured approval decision")
+	retried := false
+	for _, msg := range resolved {
+		if msg.TaskID == "task-1" && msg.Decision != nil && msg.MessageID != "901.000" {
+			retried = true
+		}
+	}
+	require.True(t, retried, "a retry must resume the restored pending task with the structured approval decision")
 }
 
 // /stop is an intentional cancel: the working reaction is cleared silently, with
