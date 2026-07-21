@@ -74,11 +74,12 @@ type batchedWriter struct {
 	toolPosts      chan string
 	toolWorkerDone chan struct{}
 
-	mu          sync.Mutex
-	buf         strings.Builder
-	flushedLen  int                     // length of buf at the last chat.update; skips no-op flushes
-	wroteAny    bool                    // set once the head message carries agent text; survives a partial multi-chunk flush
-	promptDelta *channels.OutboundDelta // set when stream ends on DeltaPrompt
+	mu            sync.Mutex
+	buf           strings.Builder
+	flushedLen    int                     // length of buf at the last chat.update; skips no-op flushes
+	flushFailures int                     // consecutive failed ticker flushes; reset on success
+	wroteAny      bool                    // set once the head message carries agent text; survives a partial multi-chunk flush
+	promptDelta   *channels.OutboundDelta // set when stream ends on DeltaPrompt
 	// tailTS holds the timestamps of overflow messages posted when the reply
 	// outgrows a single Slack message. Only touched from run()'s goroutine.
 	tailTS []string
@@ -156,12 +157,27 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 			}
 
 		case <-ticker.C:
+			// A ticker flush is retryable: flushedLen only advances on success,
+			// so the next tick re-sends the same content. Aborting on the first
+			// error would discard the rest of a turn the agent completes anyway;
+			// only a persistent failure gives up.
 			if err := w.flush(ctx); err != nil {
-				return err
+				w.flushFailures++
+				if w.flushFailures >= maxFlushFailures {
+					return err
+				}
+				w.logger.Warn("slack: flush failed, retrying next tick", "failures", w.flushFailures, "error", err)
+				continue
 			}
+			w.flushFailures = 0
 		}
 	}
 }
+
+// maxFlushFailures bounds consecutive ticker-flush failures before the turn is
+// aborted. One transient Slack error must not kill a healthy stream; a Slack
+// outage should not keep a doomed turn's thread slot busy either.
+const maxFlushFailures = 3
 
 // tool-activity rendering caps, kept compact so a default-on stream does not
 // overwhelm the thread; Slack additionally collapses long code blocks.

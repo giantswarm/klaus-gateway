@@ -11,8 +11,10 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 	"unicode/utf8"
 
+	"github.com/giantswarm/klaus-gateway/pkg/channels"
 	"github.com/stretchr/testify/require"
 )
 
@@ -113,6 +115,63 @@ func TestSend_FailsFastOnHugeRetryAfter(t *testing.T) {
 	_, err := client.send(t.Context(), "chat.update", "application/json", `{}`)
 	require.ErrorContains(t, err, "rate limited")
 	require.Equal(t, int32(1), calls.Load(), "a wait beyond the cap must not be slept through")
+}
+
+// One transient mid-stream Slack failure must not abort a healthy turn: the
+// ticker retries the flush and the content is still delivered.
+func TestRun_TransientFlushFailureDoesNotAbortTurn(t *testing.T) {
+	var updates atomic.Int32
+	var lastText atomic.Value
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Text string `json:"text"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.Header().Set("Content-Type", "application/json")
+		if updates.Add(1) == 1 {
+			_, _ = fmt.Fprint(w, `{"ok":false,"error":"fatal_error"}`)
+			return
+		}
+		lastText.Store(body.Text)
+		_, _ = fmt.Fprint(w, `{"ok":true,"ts":"1.2"}`)
+	}))
+	defer srv.Close()
+
+	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
+	w := newBatchedWriterWithClient(client, "C1", "1.1", "1.0", detailsOff, slog.Default())
+	ch := make(chan channels.OutboundDelta)
+	done := make(chan error, 1)
+	go func() { done <- w.run(t.Context(), ch) }()
+
+	ch <- channels.OutboundDelta{Kind: channels.DeltaText, Content: "hello"}
+	require.Eventually(t, func() bool { return updates.Load() >= 2 },
+		5*time.Second, 20*time.Millisecond, "the failed flush must be retried on a later tick")
+	close(ch)
+
+	require.NoError(t, <-done, "a single flush failure must not fail the turn")
+	require.Equal(t, "hello", lastText.Load())
+}
+
+// A persistent Slack failure still aborts the turn instead of holding the
+// thread slot until the turn deadline.
+func TestRun_PersistentFlushFailureAbortsTurn(t *testing.T) {
+	var updates atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		updates.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"ok":false,"error":"fatal_error"}`)
+	}))
+	defer srv.Close()
+
+	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
+	w := newBatchedWriterWithClient(client, "C1", "1.1", "1.0", detailsOff, slog.Default())
+	ch := make(chan channels.OutboundDelta)
+	done := make(chan error, 1)
+	go func() { done <- w.run(t.Context(), ch) }()
+
+	ch <- channels.OutboundDelta{Kind: channels.DeltaText, Content: "hello"}
+	require.ErrorContains(t, <-done, "fatal_error")
+	require.GreaterOrEqual(t, updates.Load(), int32(maxFlushFailures))
 }
 
 func TestFlush_FailedUpdateIsResentOnNextFlush(t *testing.T) {
