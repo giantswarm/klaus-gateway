@@ -620,13 +620,16 @@ func TestParseAuthChallenge_JSONEscapedAmpersand(t *testing.T) {
 	require.Equal(t, "https://x.example/auth?a=1&b=2", loginURL)
 }
 
-func TestScrubLoginURLs_JSONEscapedVariant(t *testing.T) {
-	const loginURL = "https://pro.example/authorize?a=1&b=2"
+func TestScrubLoginURLs_ReencodedVariants(t *testing.T) {
+	// The agent re-encodes the recorded URL's query freely: JSON-escaped
+	// ampersands, percent-encoded base64 padding. Prefix matching must catch
+	// every spelling.
+	const loginURL = "https://pro.example/authorize?a=1&state=abc="
 	w := &batchedWriter{loginURLs: []string{loginURL}}
 	escaped := strings.ReplaceAll(loginURL, "&", jsonEscapedAmp)
-	out := w.scrubLoginURLs("raw: " + escaped + " and normalized: [sign in](" + loginURL + ")")
-	require.NotContains(t, out, loginURL)
-	require.NotContains(t, out, escaped)
+	percent := "https://pro.example/authorize?a=1&state=abc%3D"
+	out := w.scrubLoginURLs("raw: " + escaped + "\npercent: <" + percent + "|sign in>\nlink: [sign in](" + loginURL + ")")
+	require.NotContains(t, out, "pro.example")
 	require.Contains(t, out, loginURLNote)
 }
 

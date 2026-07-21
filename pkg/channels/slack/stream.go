@@ -417,23 +417,25 @@ const loginURLNote = "_(login link removed; use the Connect button above)_"
 // from the agent's prose. The URL is a single-use OAuth authorize link:
 // duplicating it in text lets a second click or Slack's unfurl crawler redeem
 // or replay it, which the auth server answers by revoking the user's whole
-// token family. Markdown links carrying the URL are dropped wholesale so no
-// dangling "[label]()" survives; bare occurrences (including Slack's
-// "<url|label>" form) are replaced with a pointer at the button.
+// token family. Matching is by authorize-endpoint prefix (everything up to and
+// including "?"): the agent re-encodes the query string freely (JSON-escaped
+// ampersands, percent-encoded padding), so an exact match cannot be relied on.
+// Markdown links carrying the URL are dropped wholesale so no dangling
+// "[label]()" survives; bare occurrences (including Slack's "<url|label>"
+// form) are replaced with a pointer at the button.
 func (w *batchedWriter) scrubLoginURLs(text string) string {
 	for _, loginURL := range w.loginURLs {
-		// The challenge text the URL was parsed from may carry JSON HTML-safe
-		// escaping; the agent quotes either that raw form or the normalized
-		// one, so both spellings are scrubbed.
-		for _, variant := range []string{loginURL, strings.ReplaceAll(loginURL, "&", jsonEscapedAmp)} {
-			if !strings.Contains(text, variant) {
-				continue
-			}
-			quoted := regexp.QuoteMeta(variant)
-			text = regexp.MustCompile(`\[[^\]]*\]\(`+quoted+`\)`).ReplaceAllString(text, loginURLNote)
-			text = regexp.MustCompile(`<`+quoted+`(\|[^>]*)?>`).ReplaceAllString(text, loginURLNote)
-			text = strings.ReplaceAll(text, variant, loginURLNote)
+		prefix := loginURL
+		if i := strings.IndexByte(prefix, '?'); i >= 0 {
+			prefix = prefix[:i+1]
 		}
+		if !strings.Contains(text, prefix) {
+			continue
+		}
+		quoted := regexp.QuoteMeta(prefix)
+		text = regexp.MustCompile(`\[[^\]]*\]\(`+quoted+`[^)]*\)`).ReplaceAllString(text, loginURLNote)
+		text = regexp.MustCompile(`<`+quoted+`[^>]*>`).ReplaceAllString(text, loginURLNote)
+		text = regexp.MustCompile(quoted+`\S*`).ReplaceAllString(text, loginURLNote)
 	}
 	return text
 }
