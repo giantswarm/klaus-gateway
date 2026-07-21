@@ -398,6 +398,10 @@ func parseAuthChallengePayload(v any, depth int) (server, loginURL string) {
 // recorded call arguments). A missing or non-https URL yields "".
 func parseAuthChallenge(output string) (server, loginURL string) {
 	if m := authChallengeURLRe.FindString(output); m != "" {
+		// Challenge text that embeds a JSON-encoded blob carries Go's HTML-safe
+		// escaping, so each & arrives as the literal six characters \u0026; the
+		// button must open the real URL.
+		m = strings.ReplaceAll(m, jsonEscapedAmp, "&")
 		loginURL = validLoginURL(strings.TrimRight(m, ").,]}>\"'"))
 	}
 	if m := authChallengeServerRe.FindStringSubmatch(output); m != nil {
@@ -418,16 +422,25 @@ const loginURLNote = "_(login link removed; use the Connect button above)_"
 // "<url|label>" form) are replaced with a pointer at the button.
 func (w *batchedWriter) scrubLoginURLs(text string) string {
 	for _, loginURL := range w.loginURLs {
-		if !strings.Contains(text, loginURL) {
-			continue
+		// The challenge text the URL was parsed from may carry JSON HTML-safe
+		// escaping; the agent quotes either that raw form or the normalized
+		// one, so both spellings are scrubbed.
+		for _, variant := range []string{loginURL, strings.ReplaceAll(loginURL, "&", jsonEscapedAmp)} {
+			if !strings.Contains(text, variant) {
+				continue
+			}
+			quoted := regexp.QuoteMeta(variant)
+			text = regexp.MustCompile(`\[[^\]]*\]\(`+quoted+`\)`).ReplaceAllString(text, loginURLNote)
+			text = regexp.MustCompile(`<`+quoted+`(\|[^>]*)?>`).ReplaceAllString(text, loginURLNote)
+			text = strings.ReplaceAll(text, variant, loginURLNote)
 		}
-		quoted := regexp.QuoteMeta(loginURL)
-		text = regexp.MustCompile(`\[[^\]]*\]\(`+quoted+`\)`).ReplaceAllString(text, loginURLNote)
-		text = regexp.MustCompile(`<`+quoted+`(\|[^>]*)?>`).ReplaceAllString(text, loginURLNote)
-		text = strings.ReplaceAll(text, loginURL, loginURLNote)
 	}
 	return text
 }
+
+// jsonEscapedAmp is how Go's HTML-safe JSON encoding spells "&" inside a
+// string value.
+const jsonEscapedAmp = `\u0026`
 
 // validLoginURL returns raw when it is a well-formed absolute https URL with a
 // host, and "" otherwise. The Connect button opens agent- and tool-controlled

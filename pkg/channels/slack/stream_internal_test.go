@@ -610,6 +610,26 @@ func TestParseAuthChallengePayload_NoURL(t *testing.T) {
 	require.Empty(t, loginURL)
 }
 
+func TestParseAuthChallenge_JSONEscapedAmpersand(t *testing.T) {
+	// muster's challenge text embeds a JSON-encoded blob, so Go's HTML-safe
+	// encoding turns each & into a literal escape sequence; the button must
+	// still open the real URL.
+	challenge := "Server: pro\nSign in: https://x.example/auth?a=1" + jsonEscapedAmp + "b=2"
+	server, loginURL := parseAuthChallenge(challenge)
+	require.Equal(t, "pro", server)
+	require.Equal(t, "https://x.example/auth?a=1&b=2", loginURL)
+}
+
+func TestScrubLoginURLs_JSONEscapedVariant(t *testing.T) {
+	const loginURL = "https://pro.example/authorize?a=1&b=2"
+	w := &batchedWriter{loginURLs: []string{loginURL}}
+	escaped := strings.ReplaceAll(loginURL, "&", jsonEscapedAmp)
+	out := w.scrubLoginURLs("raw: " + escaped + " and normalized: [sign in](" + loginURL + ")")
+	require.NotContains(t, out, loginURL)
+	require.NotContains(t, out, escaped)
+	require.Contains(t, out, loginURLNote)
+}
+
 func TestNoteCallToolTarget_RecordsServerArgument(t *testing.T) {
 	w := &batchedWriter{}
 	w.noteCallToolTarget(&channels.ToolActivity{
