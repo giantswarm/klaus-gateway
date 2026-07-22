@@ -22,9 +22,6 @@ type eventsHandler struct {
 	botToken      string
 	adapter       *Adapter
 	logger        *slog.Logger
-	// ctx is the adapter-lifecycle context, used for async dispatch goroutines
-	// so they are not tied to the short-lived HTTP request context.
-	ctx context.Context //nolint:containedctx
 }
 
 func (h *eventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {

@@ -352,7 +352,7 @@ func TestInteractionsHandler_InvalidSignature(t *testing.T) {
 		Secrets:      Secrets{SigningSecret: "correct-secret"},
 		DefaultAgent: "worker",
 	}
-	a.ixHandler = &interactionsHandler{signingSecret: "correct-secret", adapter: a, ctx: t.Context()}
+	a.ixHandler = &interactionsHandler{signingSecret: "correct-secret", adapter: a}
 
 	body := []byte("payload=%7B%7D")
 	req := httptest.NewRequest(http.MethodPost, "/channels/slack/interactions", bytes.NewReader(body))

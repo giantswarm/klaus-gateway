@@ -124,7 +124,6 @@ func choiceSelections(state struct {
 type interactionsHandler struct {
 	signingSecret string
 	adapter       *Adapter
-	ctx           context.Context //nolint:containedctx
 }
 
 func (h *interactionsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {

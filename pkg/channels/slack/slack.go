@@ -368,12 +368,10 @@ func (a *Adapter) Start(ctx context.Context, gw channels.Gateway) error {
 			botToken:      a.Secrets.BotToken,
 			adapter:       a,
 			logger:        a.Logger,
-			ctx:           ctx,
 		}
 		a.ixHandler = &interactionsHandler{
 			signingSecret: a.Secrets.SigningSecret,
 			adapter:       a,
-			ctx:           ctx,
 		}
 	case ModeSocketMode:
 		if a.Secrets.AppToken == "" {
@@ -464,18 +462,16 @@ func eventUnix(ts string) int64 {
 	return sec
 }
 
-// background runs fn on a tracked goroutine derived from the adapter lifecycle
-// context, so Stop can cancel and join it. A call after Stop has begun (or
-// before Start wired the context) is dropped: shutdown is under way and there is
-// nothing left to serve.
+// background runs fn on a tracked goroutine so Stop can cancel and join it. The
+// goroutine derives from the adapter lifecycle context when Started, or
+// context.Background() otherwise (direct-construction tests). A call after Stop
+// has begun is dropped: shutdown is under way and there is nothing left to serve.
 func (a *Adapter) background(fn func(context.Context)) {
 	a.bgMu.Lock()
 	if a.bgStopped {
 		a.bgMu.Unlock()
 		return
 	}
-	// baseCtx is nil when the adapter was never Started; fall back so the
-	// best-effort work still runs (there is no lifecycle context to cancel).
 	ctx := a.baseCtx
 	if ctx == nil {
 		ctx = context.Background()
