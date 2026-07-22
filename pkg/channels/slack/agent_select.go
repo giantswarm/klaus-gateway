@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 	"unicode"
-	"unicode/utf8"
 
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 )
@@ -195,11 +194,11 @@ func (a *Adapter) defaultAgentNamespace() string {
 
 // splitAgentCommand splits "/agent <name> <question…>" into the name token and
 // the question with its original formatting preserved (parseCommand's Fields
-// split would collapse the question's newlines). A double-quoted name —
-// straight or the curly quotes Slack clients auto-substitute — is taken whole,
-// so a pasted multi-word display name stays one token and gets the
-// did-you-mean treatment instead of a mangled parse. The caller has already
-// matched the verb via parseCommand.
+// split would collapse the question's newlines). The name is one whitespace
+// token, full stop: selection is by technical (DNS-1123) name, so there is no
+// quoting grammar — a quoted or multi-word name fails validation and lands on
+// the did-you-mean suggestion, whose normalization strips quotes anyway. The
+// caller has already matched the verb via parseCommand.
 func splitAgentCommand(text string) (name, question string) {
 	rest := strings.TrimSpace(text)
 	// parseCommand tolerates whitespace between the slash and the verb
@@ -210,35 +209,10 @@ func splitAgentCommand(text string) (name, question string) {
 	if rest == "" {
 		return "", ""
 	}
-	if name, question, ok := splitQuotedName(rest); ok {
-		return name, question
-	}
 	if i := strings.IndexFunc(rest, unicode.IsSpace); i >= 0 {
 		return rest[:i], strings.TrimSpace(rest[i:])
 	}
 	return rest, ""
-}
-
-// splitQuotedName handles a leading double-quoted name token. ok is false when
-// s does not start with a double quote or the quote is never closed (the
-// caller then falls back to plain token parsing).
-func splitQuotedName(s string) (name, question string, ok bool) {
-	opener, size := utf8.DecodeRuneInString(s)
-	var closer rune
-	switch opener {
-	case '"':
-		closer = '"'
-	case '“':
-		closer = '”'
-	default:
-		return "", "", false
-	}
-	body := s[size:]
-	end := strings.IndexRune(body, closer)
-	if end < 0 {
-		return "", "", false
-	}
-	return strings.TrimSpace(body[:end]), strings.TrimSpace(body[end+utf8.RuneLen(closer):]), true
 }
 
 // bindThreadAgent records threadID's conversation→agent binding. An empty ref
@@ -391,11 +365,10 @@ func (a *Adapter) threadAgent(ctx context.Context, msg channels.InboundMessage, 
 // prefix never started a conversation, so it binds nothing.
 //
 // The name MUST come from splitAgentCommand — the same splitter the live
-// selection used — never from parseCommand's whitespace-split Args: the two
-// must resolve identically or a restart forks the session. A quoted name is
-// the concrete case: splitAgentCommand strips the quotes, Args[0] would keep
-// them and fail the DNS-1123 check, silently rebinding the conversation to
-// the default agent.
+// selection used — never re-derived with different tokenization: live
+// selection and recovery must resolve identically for every input, or a
+// restart rebinds a conversation to a different agent than the one that
+// answered it (a session fork).
 func (a *Adapter) openingAgentRef(openingText string) string {
 	text := StripMention(openingText)
 	cmd := parseCommand(text)

@@ -22,14 +22,11 @@ func TestSplitAgentCommand(t *testing.T) {
 		{"/AGENT SRE-Agent hi", "SRE-Agent", "hi"},
 		// parseCommand tolerates whitespace after the slash; the splitter must too.
 		{"/ agent sre-agent do things", "sre-agent", "do things"},
-		// A double-quoted name is taken whole (straight or the curly quotes
-		// Slack clients auto-substitute); an unclosed quote falls back to
-		// plain token parsing.
-		{`/agent "SRE Agent" tell a joke`, "SRE Agent", "tell a joke"},
-		{`/agent "sre-agent" tell a joke`, "sre-agent", "tell a joke"},
-		{"/agent “SRE Agent” tell a joke", "SRE Agent", "tell a joke"},
-		{`/agent "SRE Agent"`, "SRE Agent", ""},
-		{`/agent "SRE tell a joke`, `"SRE`, "tell a joke"},
+		// No quoting grammar: selection is by technical name, so quotes are
+		// just characters. The quote-carrying token fails validation and lands
+		// on the did-you-mean suggestion (whose normalization strips quotes).
+		{`/agent "SRE Agent" tell a joke`, `"SRE`, `Agent" tell a joke`},
+		{`/agent "sre-agent" tell a joke`, `"sre-agent"`, "tell a joke"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.in, func(t *testing.T) {
@@ -96,8 +93,9 @@ func TestDidYouMeanSuggestion(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, "Did you mean `/agent sre-agent tell me a joke`?", suggestion)
 
-	// Quoted display name arrives as one token.
-	suggestion, ok = a.didYouMeanSuggestion(t.Context(), "SRE Agent", "tell me a joke")
+	// A quoted display name parses as a quote-carrying token; normalization
+	// strips the quotes so the match still lands.
+	suggestion, ok = a.didYouMeanSuggestion(t.Context(), `"SRE`, `Agent" tell me a joke`)
 	require.True(t, ok)
 	require.Equal(t, "Did you mean `/agent sre-agent tell me a joke`?", suggestion)
 
@@ -123,8 +121,10 @@ func TestOpeningAgentRef(t *testing.T) {
 
 	require.Equal(t, "kagent/sre-agent", a.openingAgentRef("<@UBOT> /agent sre-agent why?"))
 	require.Equal(t, "kagent/sre-agent", a.openingAgentRef("/agent sre-agent why?"))
-	// Same splitter as the live selection: a quoted name recovers identically.
-	require.Equal(t, "kagent/sre-agent", a.openingAgentRef(`/agent "sre-agent" why?`))
+	// Consistent with the live selection: a quoted name fails validation there
+	// (no quoting grammar), so it never bound a conversation — recovery binds
+	// nothing for it either.
+	require.Empty(t, a.openingAgentRef(`/agent "sre-agent" why?`))
 	require.Empty(t, a.openingAgentRef("<@UBOT> plain question"))
 	require.Empty(t, a.openingAgentRef("/agent sre-agent"), "a name-only opener selected nothing")
 	require.Empty(t, a.openingAgentRef("/agent ../../etc oops"), "a malformed name binds nothing")

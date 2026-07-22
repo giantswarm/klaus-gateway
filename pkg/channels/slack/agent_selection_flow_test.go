@@ -501,12 +501,12 @@ func TestAgentSelection_ReplyInheritsBindingFromRootAfterRestart(t *testing.T) {
 		"the binding is recovered from the conversation root")
 }
 
-// A QUOTED selection must recover to the same ref after a restart: the
-// recovery path parses the opening message with the same splitter the live
-// selection used, so `/agent "sre-agent" …` does not silently rebind the
-// conversation to the default agent (the quoted token would fail the
-// DNS-1123 check if parsed by whitespace-splitting alone).
-func TestAgentSelection_QuotedOpenerRecoversAfterRestart(t *testing.T) {
+// Live selection and recovery must agree on every input. A quoted name has no
+// special grammar: the live selection refuses it (fails validation, nothing
+// dispatched, no binding), so recovery from an opening message carrying one
+// binds nothing either — replies resolve to the default, exactly as if the
+// conversation had never been selection-bound (because it never was).
+func TestAgentSelection_QuotedOpenerBindsNothingConsistently(t *testing.T) {
 	fake := newFakeSlackAPI()
 	fake.setResponse("conversations.replies",
 		`{"ok":true,"messages":[{"user":"U1","text":"/agent \"sre-agent\" original question","ts":"100.000"}]}`)
@@ -518,8 +518,8 @@ func TestAgentSelection_QuotedOpenerRecoversAfterRestart(t *testing.T) {
 
 	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
 		2*time.Second, 50*time.Millisecond)
-	require.Equal(t, "kagent/sre-agent", resolved()[0].AgentRef,
-		"a quoted opening prefix recovers to the same binding, not the default")
+	require.Equal(t, "kagent/swarmgeist", resolved()[0].AgentRef,
+		"a quoted opener never bound the conversation, so recovery yields the default")
 }
 
 // Two users' prefixed conversations in one channel are independent: each new
