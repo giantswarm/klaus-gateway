@@ -115,15 +115,16 @@ func TestDidYouMeanSuggestion(t *testing.T) {
 	require.False(t, ok)
 }
 
-// rootAgentRef only binds for a complete "/agent <name> <question>" root: a
-// name-only or malformed prefix never started a conversation.
-func TestRootAgentRef(t *testing.T) {
+// openingAgentRef only binds for a complete "/agent <name> <question>"
+// opening message: a name-only or malformed prefix never started a
+// conversation.
+func TestOpeningAgentRef(t *testing.T) {
 	a := &Adapter{DefaultAgent: "kagent/swarmgeist"}
 
-	require.Equal(t, "kagent/sre-agent", a.rootAgentRef("<@UBOT> /agent sre-agent why?"))
-	require.Equal(t, "kagent/sre-agent", a.rootAgentRef("/agent sre-agent why?"))
-	require.Empty(t, a.rootAgentRef("<@UBOT> plain question"))
-	require.Empty(t, a.rootAgentRef("/agent sre-agent"), "a name-only root selected nothing")
-	require.Empty(t, a.rootAgentRef("/agent ../../etc oops"), "a malformed name binds nothing")
-	require.Empty(t, a.rootAgentRef(""))
+	require.Equal(t, "kagent/sre-agent", a.openingAgentRef("<@UBOT> /agent sre-agent why?"))
+	require.Equal(t, "kagent/sre-agent", a.openingAgentRef("/agent sre-agent why?"))
+	require.Empty(t, a.openingAgentRef("<@UBOT> plain question"))
+	require.Empty(t, a.openingAgentRef("/agent sre-agent"), "a name-only opener selected nothing")
+	require.Empty(t, a.openingAgentRef("/agent ../../etc oops"), "a malformed name binds nothing")
+	require.Empty(t, a.openingAgentRef(""))
 }

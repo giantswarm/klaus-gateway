@@ -732,9 +732,9 @@ func (c *slackAPIClient) threadInitiator(ctx context.Context, channel, threadTS 
 
 // threadRootText returns the text of a thread's root message via
 // conversations.replies (messages are returned oldest-first, so a limit of 1
-// yields exactly the root). It is how a reply's conversation recovers its
-// /agent binding after a restart: the prefix is visible in the root's text.
-// Empty when the thread has no messages.
+// yields exactly the root). It is how a channel reply's conversation recovers
+// its /agent binding after a restart: the prefix is visible in the root
+// mention's text. Empty when the thread has no messages.
 func (c *slackAPIClient) threadRootText(ctx context.Context, channel, threadTS string) (string, error) {
 	params := url.Values{
 		paramChannel: {channel},
@@ -763,6 +763,48 @@ func (c *slackAPIClient) threadRootText(ctx context.Context, channel, threadTS s
 		return "", nil
 	}
 	return result.Messages[0].Text, nil
+}
+
+// threadFirstHumanMessage returns the ts and text of the earliest human
+// (non-bot) message in a thread, via conversations.replies (oldest-first).
+// It is the assistant-pane counterpart of threadRootText: a pane thread roots
+// at a Slack-managed anchor allocated when the chat opens (klaus-gateway#157),
+// so the conversation's opening message — where an /agent prefix lives — is
+// the first HUMAN message, not the root. Empty ts when the scanned prefix has
+// no human message.
+func (c *slackAPIClient) threadFirstHumanMessage(ctx context.Context, channel, threadTS string) (ts, text string, err error) {
+	params := url.Values{
+		paramChannel: {channel},
+		paramTS:      {threadTS},
+		"limit":      {strconv.Itoa(threadInitiatorScanLimit)},
+	}
+	body, err := c.call(ctx, "conversations.replies", "application/x-www-form-urlencoded", params.Encode())
+	if err != nil {
+		return "", "", err
+	}
+
+	var result struct {
+		OK       bool   `json:"ok"`
+		Err      string `json:"error,omitempty"`
+		Messages []struct {
+			User  string `json:"user"`
+			BotID string `json:"bot_id"`
+			TS    string `json:"ts"`
+			Text  string `json:"text"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", "", fmt.Errorf("slack conversations.replies: decode: %w", err)
+	}
+	if !result.OK {
+		return "", "", fmt.Errorf("slack conversations.replies: %s", result.Err)
+	}
+	for _, m := range result.Messages {
+		if m.BotID == "" && m.User != "" {
+			return m.TS, m.Text, nil
+		}
+	}
+	return "", "", nil
 }
 
 // errReactionsUnsupported reports that the bot cannot manage reactions (the

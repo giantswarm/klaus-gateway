@@ -66,6 +66,11 @@ const agentRosterUnavailable = "_I can't list the available agents right now. Pl
 // agentRosterEmpty answers a bare /agent when the controller reports no agents.
 const agentRosterEmpty = "_No agents are installed right now._"
 
+// agentCheckFailedNotice is posted when a DM selection could not be verified
+// as conversation-starting (the thread scan failed). Nothing is dispatched:
+// accepting blindly could rebind an existing conversation and fork its session.
+const agentCheckFailedNotice = "⚠️ _I couldn't check this conversation just now, so I haven't started anything. Please try again._"
+
 // agentValidateTimeout bounds the card fetch that validates an /agent
 // selection before dispatch.
 const agentValidateTimeout = 10 * time.Second
@@ -115,7 +120,12 @@ func (a *Adapter) handleAgentSelection(ctx context.Context, cmd *slashCommand, m
 	// A conversation is bound to its agent for life; selection only rides the
 	// conversation-starting message (a channel mention that starts a reply
 	// thread, or the first message of a new assistant-pane chat).
-	if msg.ThreadID != msg.MessageID {
+	starting, err := a.conversationStarting(ctx, *msg, slackChannel)
+	if err != nil {
+		reply(agentCheckFailedNotice)
+		return false
+	}
+	if !starting {
 		reply(agentSwitchRefusal)
 		return false
 	}
@@ -462,17 +472,54 @@ func (a *Adapter) boundAgentOrDefault(threadID string) string {
 // slow Slack API cannot stall inbound handling.
 const rootAgentLookupTimeout = 3 * time.Second
 
+// conversationStarting reports whether msg starts a new conversation — the
+// only place an /agent prefix binds. In a channel that is a mention rooting
+// its own reply thread. In the assistant pane every message carries a
+// Slack-managed thread anchor as thread_ts, allocated when the chat opens
+// (klaus-gateway#157) — the chat's first message is never its own root — so
+// root equality is meaningless there: a DM message starts the conversation
+// when no conversation state exists in-process and no earlier human message
+// precedes it in the thread (the post-restart check, one bounded API call on
+// the rare prefixed-DM path).
+func (a *Adapter) conversationStarting(ctx context.Context, msg channels.InboundMessage, slackChannel string) (bool, error) {
+	if msg.ThreadID == msg.MessageID {
+		return true, nil
+	}
+	if !isDMChannelID(slackChannel) {
+		return false, nil
+	}
+	if _, found := a.threadAgentBinding(msg.ThreadID); found {
+		return false, nil
+	}
+	if a.isActiveThread(msg.ThreadID) {
+		return false, nil
+	}
+	rctx, cancel := context.WithTimeout(ctx, rootAgentLookupTimeout)
+	defer cancel()
+	firstTS, _, err := a.apiClient().threadFirstHumanMessage(rctx, slackChannel, msg.ThreadID)
+	if err != nil {
+		a.Logger.Warn("slack: conversation-start check failed", "thread", msg.ThreadID, "error", err)
+		return false, err
+	}
+	// No earlier human message (an empty ts means the scan found none — a
+	// fresh chat whose own message hasn't landed in the replies view yet), or
+	// this message IS the first: the conversation starts here.
+	return firstTS == "" || firstTS == msg.MessageID, nil
+}
+
 // threadAgent resolves the agent for a turn that carries no explicit /agent
 // prefix: the conversation's recorded binding, the binding re-derived from the
-// conversation's root message (where any prefix is visible — the recovery path
-// after a restart or TTL sweep), or the configured default. Follow-up
-// inheritance is load-bearing: the session's context id embeds the agent ref,
-// so resolving a reply to a different agent than its conversation would fork
-// the session. When the root cannot be fetched the turn degrades to the
-// default agent — a Slack API flake must not block whole threads, and almost
-// all conversations are default-bound — but the fallback is NOT cached, so the
-// next reply re-derives the real binding instead of the conversation staying
-// mis-bound.
+// conversation's opening message (where any prefix is visible — the recovery
+// path after a restart or TTL sweep), or the configured default. The opening
+// message is the thread root in a channel, but the first HUMAN message in a
+// DM: the assistant pane roots threads at a Slack-managed anchor, not the
+// user's first message. Follow-up inheritance is load-bearing: the session's
+// context id embeds the agent ref, so resolving a reply to a different agent
+// than its conversation would fork the session. When the opening message
+// cannot be fetched the turn degrades to the default agent — a Slack API
+// flake must not block whole threads, and almost all conversations are
+// default-bound — but the fallback is NOT cached, so the next reply
+// re-derives the real binding instead of the conversation staying mis-bound.
 func (a *Adapter) threadAgent(ctx context.Context, msg channels.InboundMessage, slackChannel string) (ref, source string) {
 	if bound, found := a.threadAgentBinding(msg.ThreadID); found {
 		if bound == "" {
@@ -481,20 +528,28 @@ func (a *Adapter) threadAgent(ctx context.Context, msg channels.InboundMessage, 
 		return bound, agentSourceThread
 	}
 	// A conversation-starting message with no prefix: the default, recorded so
-	// replies skip the root fetch.
+	// replies skip the opening-message fetch.
 	if msg.ThreadID == msg.MessageID {
 		a.bindThreadAgent(msg.ThreadID, "")
 		return a.DefaultAgent, agentSourceDefault
 	}
 	rctx, cancel := context.WithTimeout(ctx, rootAgentLookupTimeout)
 	defer cancel()
-	rootText, err := a.apiClient().threadRootText(rctx, slackChannel, msg.ThreadID)
+	var openingText string
+	var err error
+	if isDMChannelID(slackChannel) {
+		_, openingText, err = a.apiClient().threadFirstHumanMessage(rctx, slackChannel, msg.ThreadID)
+	} else {
+		// Channels keep strict root derivation: a refused /agent reply still
+		// exists as thread text, and a human-message scan would resurrect it.
+		openingText, err = a.apiClient().threadRootText(rctx, slackChannel, msg.ThreadID)
+	}
 	if err != nil {
-		a.Logger.Warn("slack: conversation root lookup for agent binding failed, using default agent uncached",
+		a.Logger.Warn("slack: conversation opening-message lookup for agent binding failed, using default agent uncached",
 			"thread", msg.ThreadID, "error", err)
 		return a.DefaultAgent, agentSourceDefault
 	}
-	bound := a.rootAgentRef(rootText)
+	bound := a.openingAgentRef(openingText)
 	a.bindThreadAgent(msg.ThreadID, bound)
 	if bound == "" {
 		return a.DefaultAgent, agentSourceDefault
@@ -502,12 +557,12 @@ func (a *Adapter) threadAgent(ctx context.Context, msg channels.InboundMessage, 
 	return bound, agentSourceThread
 }
 
-// rootAgentRef extracts the agent binding from a conversation root's text: the
-// resolved ref of a complete "/agent <name> <question>" prefix, or "" (default
-// agent) for anything else. A name-only or malformed prefix never started a
-// conversation, so it binds nothing.
-func (a *Adapter) rootAgentRef(rootText string) string {
-	cmd := parseCommand(StripMention(rootText))
+// openingAgentRef extracts the agent binding from a conversation-opening
+// message's text: the resolved ref of a complete "/agent <name> <question>"
+// prefix, or "" (default agent) for anything else. A name-only or malformed
+// prefix never started a conversation, so it binds nothing.
+func (a *Adapter) openingAgentRef(openingText string) string {
+	cmd := parseCommand(StripMention(openingText))
 	if cmd == nil || cmd.Name != cmdAgent || len(cmd.Args) < 2 {
 		return ""
 	}

@@ -346,9 +346,65 @@ func TestAgentSelection_RefusedInsideExistingConversation(t *testing.T) {
 	require.Equal(t, "sre-agent", msgs[1].AgentRef, "the binding is unchanged after a refused switch")
 }
 
+// Assistant-pane semantics: a pane chat's first message arrives with
+// thread_ts set to a Slack-managed anchor allocated at chat-open (it is NOT
+// its own thread root — observed live, klaus-gateway#157). Selection on that
+// first message must bind, replies must inherit, and a mid-chat switch must
+// still be refused.
+func TestAgentSelection_PaneFirstMessageBindsAndInherits(t *testing.T) {
+	fake := newFakeSlackAPI()
+	// The conversation-start check scans the thread: the user's message is its
+	// only human message.
+	fake.setResponse("conversations.replies",
+		`{"ok":true,"messages":[{"user":"U1","text":"/agent sre-agent hello there","ts":"200.000"}]}`)
+	cards := &fakeCards{known: map[string]string{"sre-agent": "SRE Agent", "k8s-agent": "K8s Agent"}}
+	gw, resolved := capturingGateway()
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, withSelection(&fakeRoster{}, cards))
+
+	// First message of a new pane chat: ts 200.000, thread anchor 100.000.
+	sendEvent(t, srv, dmThreadEvent("U1", "/agent sre-agent hello there", "200.000", "100.000"))
+	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
+		2*time.Second, 50*time.Millisecond, "the pane's first message binds and dispatches")
+
+	sendEvent(t, srv, dmThreadEvent("U1", "follow up", "300.000", "100.000"))
+	require.Eventually(t, func() bool { return gw.resolveCount() == 2 },
+		2*time.Second, 50*time.Millisecond)
+
+	msgs := resolved()
+	require.Equal(t, "sre-agent", msgs[0].AgentRef, "the pane conversation binds to the named agent")
+	require.Equal(t, "hello there", msgs[0].Text)
+	require.Equal(t, "sre-agent", msgs[1].AgentRef, "pane replies inherit the binding")
+
+	// A mid-chat switch is still refused: the binding already exists.
+	sendEvent(t, srv, dmThreadEvent("U1", "/agent k8s-agent switch now", "400.000", "100.000"))
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "already has its agent")
+	}, 2*time.Second, 50*time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
+	require.Equal(t, 2, gw.resolveCount(), "the refused switch dispatches nothing")
+}
+
+// A pane selection whose conversation-start check cannot run (thread scan
+// fails) is refused with an honest transient error, not silently accepted:
+// accepting blindly could rebind an existing conversation and fork its session.
+func TestAgentSelection_PaneStartCheckFailure(t *testing.T) {
+	fake := newFakeSlackAPI()
+	fake.setFail("conversations.replies", "internal_error")
+	cards := &fakeCards{known: map[string]string{"sre-agent": "SRE Agent"}}
+	gw, _ := capturingGateway()
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, withSelection(&fakeRoster{}, cards))
+
+	sendEvent(t, srv, dmThreadEvent("U1", "/agent sre-agent hello", "200.000", "100.000"))
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "couldn't check this conversation")
+	}, 2*time.Second, 50*time.Millisecond)
+	require.Zero(t, gw.resolveCount(), "an unverifiable selection dispatches nothing")
+}
+
 // After a restart (no in-memory binding) a reply still inherits its
-// conversation's agent: the binding is re-derived from the conversation's root
-// message, where the prefix is visible.
+// conversation's agent: the binding is re-derived from the conversation's
+// opening message (the thread root in channels; the first human message in
+// the pane), where the prefix is visible.
 func TestAgentSelection_ReplyInheritsBindingFromRootAfterRestart(t *testing.T) {
 	fake := newFakeSlackAPI()
 	// The fresh process has never seen thread 100.000; the root text carries

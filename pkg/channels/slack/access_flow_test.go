@@ -249,14 +249,13 @@ func TestAccess_DMReplySkipsRootAuthorReseed(t *testing.T) {
 
 	sendEvent(t, srv, dmThreadEvent("U1", "hello", "300.000", "100.000"))
 
+	// The reseed's absence is proven behaviorally: the canned root is authored
+	// by U999, so a reseed would install U999 as initiator and consent-gate U1.
+	// U1 dispatching ungated means the reseed did not run. (The agent-binding
+	// recovery also reads conversations.replies in DMs, so the call itself is
+	// expected — it just must not gate anyone.)
 	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
 		2*time.Second, 50*time.Millisecond, "the sole human in a DM dispatches without a consent gate")
-	// The agent-binding recovery may fetch the thread root (limit 1); only the
-	// reseed's author scan (limit 50) must be absent.
-	for _, call := range fake.pathCalls("conversations.replies") {
-		require.NotEqual(t, "50", call.params["limit"],
-			"a DM has one human; the root-author reseed must be skipped")
-	}
 }
 
 // A bot-authored thread root is not a human initiator, so seeding falls back to
