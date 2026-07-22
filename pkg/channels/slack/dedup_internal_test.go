@@ -54,3 +54,26 @@ func TestHandleInbound_CrossEventTypeTwinDeduped(t *testing.T) {
 	a.handleInbound(t.Context(), next, "Ev-next")
 	require.Equal(t, 2, gw.sendCount())
 }
+
+// A mention in a thread arrives as both a message and an app_mention event in
+// arbitrary order. When the message copy lands first and is dropped by the
+// inactive-thread gate, it must not claim the dedup slot, or the app_mention
+// copy is discarded as a duplicate and the mention is silently swallowed.
+func TestHandleInbound_ThreadMentionSurvivesMessageCopyGateDrop(t *testing.T) {
+	a, srv := newTestAdapter(t)
+	a.OBO = identOBO{}
+	a.started.Store(true)
+
+	messageCopy := slackInnerEvent{
+		Type: evtMessage, Channel: "C1", TS: "9.100", ThreadTS: "T9",
+		User: "U1", Text: "<@UBOT> /login",
+	}
+	a.handleInbound(t.Context(), messageCopy, "Ev1")
+
+	mentionCopy := messageCopy
+	mentionCopy.Type = evtAppMention
+	a.handleInbound(t.Context(), mentionCopy, "Ev2")
+
+	require.Equal(t, int32(1), srv.ephemerals.Load(),
+		"the app_mention copy must be handled, not dropped as a duplicate")
+}

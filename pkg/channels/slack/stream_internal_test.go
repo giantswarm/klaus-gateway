@@ -14,8 +14,9 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/giantswarm/klaus-gateway/pkg/channels"
 	"github.com/stretchr/testify/require"
+
+	"github.com/giantswarm/klaus-gateway/pkg/channels"
 )
 
 func TestSend_RetriesOnceOnRateLimit(t *testing.T) {
@@ -616,4 +617,37 @@ func TestParseAuthChallengePayload_DepthBounded(t *testing.T) {
 	}
 	_, loginURL := parseAuthChallengePayload(nested, 0)
 	require.Empty(t, loginURL)
+}
+
+// A transient Slack failure on the final flush must not abort the turn: a
+// short reply that never hits a ticker flush has no later tick to re-send it,
+// so the terminal flush retries in place.
+func TestRun_TransientFinalFlushFailureDoesNotAbortTurn(t *testing.T) {
+	var updates atomic.Int32
+	var lastText atomic.Value
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Text string `json:"text"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.Header().Set("Content-Type", "application/json")
+		if updates.Add(1) == 1 {
+			_, _ = fmt.Fprint(w, `{"ok":false,"error":"fatal_error"}`)
+			return
+		}
+		lastText.Store(body.Text)
+		_, _ = fmt.Fprint(w, `{"ok":true,"ts":"1.2"}`)
+	}))
+	defer srv.Close()
+
+	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
+	w := newBatchedWriterWithClient(client, "C1", "1.1", "1.0", detailsOff, slog.Default())
+	ch := make(chan channels.OutboundDelta, 2)
+	ch <- channels.OutboundDelta{Kind: channels.DeltaText, Content: "hello"}
+	ch <- channels.OutboundDelta{Done: true}
+	close(ch)
+
+	require.NoError(t, w.run(t.Context(), ch), "one transient final-flush failure must not fail the turn")
+	require.Equal(t, int32(2), updates.Load(), "the failed final flush is retried in place")
+	require.Equal(t, "hello", lastText.Load())
 }
