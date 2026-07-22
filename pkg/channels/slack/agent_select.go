@@ -520,25 +520,31 @@ func (a *Adapter) conversationStarting(ctx context.Context, msg channels.Inbound
 // flake must not block whole threads, and almost all conversations are
 // default-bound — but the fallback is NOT cached, so the next reply
 // re-derives the real binding instead of the conversation staying mis-bound.
-func (a *Adapter) threadAgent(ctx context.Context, msg channels.InboundMessage, slackChannel string) (ref, source string) {
+// opener reports whether msg itself opened its conversation: true for a
+// channel root mention, and for a DM whose thread has no earlier human
+// message (the assistant pane's first message is never its own thread root,
+// so root equality cannot tell). Dispatch uses it to skip reply-only work —
+// the resume existence-check must not greet every new pane chat with
+// "starting fresh".
+func (a *Adapter) threadAgent(ctx context.Context, msg channels.InboundMessage, slackChannel string) (ref, source string, opener bool) {
 	if bound, found := a.threadAgentBinding(msg.ThreadID); found {
 		if bound == "" {
-			return a.DefaultAgent, agentSourceDefault
+			return a.DefaultAgent, agentSourceDefault, false
 		}
-		return bound, agentSourceThread
+		return bound, agentSourceThread, false
 	}
 	// A conversation-starting message with no prefix: the default, recorded so
 	// replies skip the opening-message fetch.
 	if msg.ThreadID == msg.MessageID {
 		a.bindThreadAgent(msg.ThreadID, "")
-		return a.DefaultAgent, agentSourceDefault
+		return a.DefaultAgent, agentSourceDefault, true
 	}
 	rctx, cancel := context.WithTimeout(ctx, rootAgentLookupTimeout)
 	defer cancel()
-	var openingText string
+	var openingTS, openingText string
 	var err error
 	if isDMChannelID(slackChannel) {
-		_, openingText, err = a.apiClient().threadFirstHumanMessage(rctx, slackChannel, msg.ThreadID)
+		openingTS, openingText, err = a.apiClient().threadFirstHumanMessage(rctx, slackChannel, msg.ThreadID)
 	} else {
 		// Channels keep strict root derivation: a refused /agent reply still
 		// exists as thread text, and a human-message scan would resurrect it.
@@ -547,14 +553,18 @@ func (a *Adapter) threadAgent(ctx context.Context, msg channels.InboundMessage, 
 	if err != nil {
 		a.Logger.Warn("slack: conversation opening-message lookup for agent binding failed, using default agent uncached",
 			"thread", msg.ThreadID, "error", err)
-		return a.DefaultAgent, agentSourceDefault
+		return a.DefaultAgent, agentSourceDefault, false
 	}
+	// In a DM the scanned opener may be this very message (a new pane chat);
+	// an empty ts means the scan saw no human message at all (the message has
+	// not landed in the replies view yet) — also a fresh conversation.
+	opener = isDMChannelID(slackChannel) && (openingTS == "" || openingTS == msg.MessageID)
 	bound := a.openingAgentRef(openingText)
 	a.bindThreadAgent(msg.ThreadID, bound)
 	if bound == "" {
-		return a.DefaultAgent, agentSourceDefault
+		return a.DefaultAgent, agentSourceDefault, opener
 	}
-	return bound, agentSourceThread
+	return bound, agentSourceThread, opener
 }
 
 // openingAgentRef extracts the agent binding from a conversation-opening

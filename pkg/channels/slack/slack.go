@@ -1475,11 +1475,14 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 	}
 
 	// Resolve the turn's agent. An explicit /agent prefix travels on the
-	// message (handleAgentSelection stamped it); otherwise the conversation's
-	// binding — or the configured default — applies.
-	agentSource := agentSourcePrefix
+	// message (handleAgentSelection stamped it, and only conversation-starting
+	// messages get that far); otherwise the conversation's binding — or the
+	// configured default — applies. opener records whether this message opened
+	// its conversation: root equality cannot tell on the assistant pane, where
+	// every message carries the chat's Slack-created anchor as thread_ts.
+	agentSource, opener := agentSourcePrefix, true
 	if msg.AgentRef == "" {
-		msg.AgentRef, agentSource = a.threadAgent(ctx, msg, slackChannel)
+		msg.AgentRef, agentSource, opener = a.threadAgent(ctx, msg, slackChannel)
 	}
 
 	// Serialize turns per thread: a thread maps to one kagent session, and
@@ -1518,11 +1521,14 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 
 	// A reply into a thread this process did not start may be resuming a kagent
 	// session that has since been evicted. Announce the "starting fresh"
-	// degradation up front so the user is not surprised by lost context. Only for
-	// replies (not a fresh root mention), at most once per thread. Advisory: never
-	// aborts the turn, and bounded by a short timeout so a slow REST endpoint
-	// cannot stall the first reply.
-	if firstSight && msg.ThreadID != msg.MessageID {
+	// degradation up front so the user is not surprised by lost context. Only
+	// for genuine replies — never a conversation-opening message: on the
+	// assistant pane every first message arrives as a thread reply (the chat's
+	// Slack-created anchor is its thread_ts), and greeting each new chat with
+	// "starting fresh" reads as an error. At most once per thread. Advisory:
+	// never aborts the turn, and bounded by a short timeout so a slow REST
+	// endpoint cannot stall the first reply.
+	if firstSight && !opener {
 		a.maybeAnnounceResume(ctx, msg, slackChannel)
 	}
 

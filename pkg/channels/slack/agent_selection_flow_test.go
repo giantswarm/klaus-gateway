@@ -353,10 +353,13 @@ func TestAgentSelection_RefusedInsideExistingConversation(t *testing.T) {
 // still be refused.
 func TestAgentSelection_PaneFirstMessageBindsAndInherits(t *testing.T) {
 	fake := newFakeSlackAPI()
-	// The conversation-start check scans the thread: the user's message is its
-	// only human message.
+	// The conversation-start check scans the thread. The anchor is a REAL
+	// message (subtype assistant_app_thread) authored under the app's user id
+	// with no bot_id — the scan must not mistake it for a human message.
 	fake.setResponse("conversations.replies",
-		`{"ok":true,"messages":[{"user":"U1","text":"/agent sre-agent hello there","ts":"200.000"}]}`)
+		`{"ok":true,"messages":[
+			{"user":"UBOT","subtype":"assistant_app_thread","ts":"100.000","text":"New Assistant Thread"},
+			{"user":"U1","text":"/agent sre-agent hello there","ts":"200.000"}]}`)
 	cards := &fakeCards{known: map[string]string{"sre-agent": "SRE Agent", "k8s-agent": "K8s Agent"}}
 	gw, resolved := capturingGateway()
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, withSelection(&fakeRoster{}, cards))
@@ -382,6 +385,53 @@ func TestAgentSelection_PaneFirstMessageBindsAndInherits(t *testing.T) {
 	}, 2*time.Second, 50*time.Millisecond)
 	time.Sleep(100 * time.Millisecond)
 	require.Equal(t, 2, gw.resolveCount(), "the refused switch dispatches nothing")
+}
+
+// A new pane chat is not greeted with the "starting fresh" resume notice: its
+// first message arrives as a thread reply (the chat's Slack-created anchor is
+// its thread_ts) but it OPENS the conversation — there is no earlier session
+// to resume. A genuine reply into a thread the process does not know still
+// announces when the session is conclusively gone.
+func TestPane_NewChatNotGreetedWithStartingFresh(t *testing.T) {
+	sessionGone := func(channels.InboundMessage) (bool, bool) { return false, true }
+
+	t.Run("first pane message is silent", func(t *testing.T) {
+		fake := newFakeSlackAPI()
+		fake.setResponse("conversations.replies", `{"ok":true,"messages":[
+			{"user":"UBOT","subtype":"assistant_app_thread","ts":"100.000","text":"New Assistant Thread"},
+			{"user":"U1","ts":"200.000","text":"hello"}]}`)
+		gw := &stubGateway{
+			deltas:             []channels.OutboundDelta{{Content: "hi"}, {Done: true}},
+			onSessionResumable: sessionGone,
+		}
+		_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+
+		sendEvent(t, srv, dmThreadEvent("U1", "hello", "200.000", "100.000"))
+		require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
+			2*time.Second, 50*time.Millisecond)
+		time.Sleep(150 * time.Millisecond)
+		require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "starting fresh",
+			"a conversation-opening pane message must not be greeted with the resume notice")
+	})
+
+	t.Run("genuine reply still announces", func(t *testing.T) {
+		fake := newFakeSlackAPI()
+		// The thread's opening human message predates this reply: the process
+		// is resuming a conversation it does not know.
+		fake.setResponse("conversations.replies", `{"ok":true,"messages":[
+			{"user":"UBOT","subtype":"assistant_app_thread","ts":"100.000","text":"New Assistant Thread"},
+			{"user":"U1","ts":"150.000","text":"earlier question"}]}`)
+		gw := &stubGateway{
+			deltas:             []channels.OutboundDelta{{Content: "hi"}, {Done: true}},
+			onSessionResumable: sessionGone,
+		}
+		_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+
+		sendEvent(t, srv, dmThreadEvent("U1", "are you still there?", "300.000", "100.000"))
+		require.Eventually(t, func() bool {
+			return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "starting fresh")
+		}, 2*time.Second, 50*time.Millisecond, "a real resume with a gone session still gets the notice")
+	})
 }
 
 // A pane selection whose conversation-start check cannot run (thread scan

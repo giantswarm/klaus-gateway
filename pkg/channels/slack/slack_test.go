@@ -1594,6 +1594,10 @@ func TestDetails_Off_SuppressesToolActivity(t *testing.T) {
 
 func TestResume_PostsStartingFreshWhenSessionGone(t *testing.T) {
 	fake := newFakeSlackAPI()
+	// The thread visibly predates this reply (an earlier human message): a
+	// genuine resume, not a conversation-opening pane message.
+	fake.setResponse("conversations.replies",
+		`{"ok":true,"messages":[{"user":"U1","ts":"100.000","text":"original question"}]}`)
 	gw := &stubGateway{onSessionResumable: func(channels.InboundMessage) (bool, bool) { return false, true }}
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
@@ -1608,6 +1612,8 @@ func TestResume_PostsStartingFreshWhenSessionGone(t *testing.T) {
 
 func TestResume_SilentWhenSessionPresent(t *testing.T) {
 	fake := newFakeSlackAPI()
+	fake.setResponse("conversations.replies",
+		`{"ok":true,"messages":[{"user":"U1","ts":"100.000","text":"original question"}]}`)
 	gw := &stubGateway{onSessionResumable: func(channels.InboundMessage) (bool, bool) { return true, true }}
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 

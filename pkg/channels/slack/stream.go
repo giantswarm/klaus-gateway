@@ -766,12 +766,16 @@ func (c *slackAPIClient) threadRootText(ctx context.Context, channel, threadTS s
 }
 
 // threadFirstHumanMessage returns the ts and text of the earliest human
-// (non-bot) message in a thread, via conversations.replies (oldest-first).
-// It is the assistant-pane counterpart of threadRootText: a pane thread roots
-// at a Slack-managed anchor allocated when the chat opens (klaus-gateway#157),
-// so the conversation's opening message — where an /agent prefix lives — is
-// the first HUMAN message, not the root. Empty ts when the scanned prefix has
-// no human message.
+// message in a thread, via conversations.replies (oldest-first). It is the
+// assistant-pane counterpart of threadRootText: a pane thread roots at an
+// anchor Slack creates when the chat opens (klaus-gateway#157), so the
+// conversation's opening message — where an /agent prefix lives — is the
+// first HUMAN message, not the root. "Human" mirrors toInboundMessage's
+// routable-message filter (no bot_id, no subtype, a user): the pane anchor is
+// a real message ("New Assistant Thread", subtype assistant_app_thread)
+// authored under the APP'S USER ID with no bot_id, so filtering on bot_id
+// alone would mistake it for a human. Empty ts when the scanned prefix has no
+// human message.
 func (c *slackAPIClient) threadFirstHumanMessage(ctx context.Context, channel, threadTS string) (ts, text string, err error) {
 	params := url.Values{
 		paramChannel: {channel},
@@ -787,10 +791,11 @@ func (c *slackAPIClient) threadFirstHumanMessage(ctx context.Context, channel, t
 		OK       bool   `json:"ok"`
 		Err      string `json:"error,omitempty"`
 		Messages []struct {
-			User  string `json:"user"`
-			BotID string `json:"bot_id"`
-			TS    string `json:"ts"`
-			Text  string `json:"text"`
+			User    string `json:"user"`
+			BotID   string `json:"bot_id"`
+			SubType string `json:"subtype"`
+			TS      string `json:"ts"`
+			Text    string `json:"text"`
 		} `json:"messages"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
@@ -800,7 +805,7 @@ func (c *slackAPIClient) threadFirstHumanMessage(ctx context.Context, channel, t
 		return "", "", fmt.Errorf("slack conversations.replies: %s", result.Err)
 	}
 	for _, m := range result.Messages {
-		if m.BotID == "" && m.User != "" {
+		if m.BotID == "" && m.SubType == "" && m.User != "" {
 			return m.TS, m.Text, nil
 		}
 	}
