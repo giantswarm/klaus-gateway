@@ -19,9 +19,8 @@ type MessagesResponse struct {
 	Messages []Message `json:"messages"`
 }
 
-// Messages fetches the backlog for an instance. This is used by the web
-// channel adapter on page load in the follow-up PR; the call is implemented
-// and tested here so the adapter can depend on it without adding code.
+// Messages fetches the backlog for an instance, used by the channel adapters
+// to render thread history.
 func (c *Client) Messages(ctx context.Context, ref lifecycle.InstanceRef, threadID string) (MessagesResponse, error) {
 	args := map[string]any{}
 	if threadID != "" {

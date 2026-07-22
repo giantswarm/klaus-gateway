@@ -1,10 +1,10 @@
 // Package server wires the public HTTP mux and the admin HTTP mux and manages
 // their lifecycles.
 //
-// The public mux hosts channel adapters and the `/v1/{instance}/...` front
-// door in the follow-up PR. Today it's an empty chi router: requests return
-// 404 cleanly, traces are still emitted, and the middleware stack is already
-// in place.
+// The public mux hosts the caller-supplied handler (channel adapters and the
+// `/v1/{instance}/...` front door) mounted at "/". When none is supplied it
+// serves a 404 catch-all so the middleware stack (request-id, access log, RED
+// metrics) still runs.
 package server
 
 import (

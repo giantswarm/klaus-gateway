@@ -3,8 +3,7 @@
 // by default) within a single namespace. Writes use optimistic concurrency
 // via resourceVersion; on conflict the caller is expected to retry.
 //
-// This is a placeholder for the cluster mode until the ChannelRoute CRD lands.
-// It suits low-write workloads; heavy producers should move to a CRD store.
+// It suits low-write workloads; heavy producers should use the CRD store.
 package configmap
 
 import (
