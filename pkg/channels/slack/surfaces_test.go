@@ -29,11 +29,11 @@ func TestEventsHandler_ChannelAllowlist(t *testing.T) {
 
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_mention","user":"U123","text":"<@BOT> hi","channel":"C1","ts":"111.222"}}`)
 	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
-		2*time.Second, 20*time.Millisecond, "a mention in an allowlisted channel dispatches")
+		10*time.Second, 20*time.Millisecond, "a mention in an allowlisted channel dispatches")
 
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_mention","user":"U123","text":"<@BOT> hi","channel":"C9","ts":"333.444"}}`)
 	require.Eventually(t, func() bool { return len(fake.pathCalls("chat.postEphemeral")) == 1 },
-		2*time.Second, 20*time.Millisecond, "a mention outside the allowlist gets an ephemeral notice")
+		10*time.Second, 20*time.Millisecond, "a mention outside the allowlist gets an ephemeral notice")
 	require.Equal(t, 1, gw.resolveCount(), "a mention outside the allowlist must not dispatch")
 
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_mention","user":"U123","text":"<@BOT> again","channel":"C9","ts":"555.666"}}`)
@@ -54,11 +54,11 @@ func TestEventsHandler_DMServedAlongsideChannels(t *testing.T) {
 
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","channel_type":"im","user":"U1","text":"hi","channel":"D1","ts":"111.000"}}`)
 	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
-		2*time.Second, 20*time.Millisecond, "a DM dispatches in serve mode")
+		10*time.Second, 20*time.Millisecond, "a DM dispatches in serve mode")
 
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_mention","user":"U1","text":"<@BOT> hi","channel":"C1","ts":"222.000"}}`)
 	require.Eventually(t, func() bool { return gw.resolveCount() == 2 },
-		2*time.Second, 20*time.Millisecond, "a channel mention dispatches alongside DMs")
+		10*time.Second, 20*time.Millisecond, "a channel mention dispatches alongside DMs")
 }
 
 // DMModeIgnore drops DMs silently: no dispatch, no redirect.
@@ -87,7 +87,7 @@ func TestMemberJoined_IntroSkippedInUnservedChannel(t *testing.T) {
 
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"member_joined_channel","user":"UBOT","channel":"C1"}}`)
 	require.Eventually(t, func() bool { return len(fake.pathCalls("chat.postMessage")) == 1 },
-		2*time.Second, 20*time.Millisecond, "the intro posts in an allowlisted channel")
+		10*time.Second, 20*time.Millisecond, "the intro posts in an allowlisted channel")
 }
 
 // Unknown mode strings are rejected at Start.

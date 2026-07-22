@@ -125,6 +125,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A resume that fails before its stream starts (token mint, gateway resolve, send) re-stores the paused task instead of stranding it, so a retry or button click can still resume the agent.
 - Parked newcomer messages and paused approval tasks are swept after 24 hours, so the per-thread maps no longer grow for the process lifetime.
 - Clicking "Chat" on an approval prompt releases the thread slot before the Slack round-trip that swaps the buttons for the reply hint, so a question typed immediately after the click resumes the held task instead of bouncing off the "still working" notice.
+- Stopping the Slack adapter cancels its lifecycle context and waits for in-flight background work (inbound dispatch, post-sign-in replay, sign-in prompt rewrites) to finish, bounded by the passed context, instead of returning while those goroutines keep running.
 
 ### Refactored
 

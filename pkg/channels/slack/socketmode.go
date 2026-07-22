@@ -165,7 +165,7 @@ func (c *socketModeClient) readLoop(ctx context.Context, ws *websocket.Conn) {
 			if err := json.Unmarshal(env.Payload, &payload); err != nil {
 				continue
 			}
-			go c.adapter.routeInteraction(ctx, payload)
+			c.adapter.background(func(ctx context.Context) { c.adapter.routeInteraction(ctx, payload) })
 			continue
 		}
 
@@ -178,6 +178,6 @@ func (c *socketModeClient) readLoop(ctx context.Context, ws *websocket.Conn) {
 			continue
 		}
 
-		go c.adapter.handleInbound(ctx, payload.Event, payload.EventID)
+		c.adapter.background(func(ctx context.Context) { c.adapter.handleInbound(ctx, payload.Event, payload.EventID) })
 	}
 }

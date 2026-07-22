@@ -1,6 +1,7 @@
 package slack
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -31,6 +32,7 @@ func TestHandleInbound_CrossEventTypeTwinDeduped(t *testing.T) {
 		Logger:       slog.New(slog.DiscardHandler),
 	}
 	require.NoError(t, a.Start(t.Context(), gw))
+	t.Cleanup(func() { _ = a.Stop(context.Background()) })
 	a.accessPolicy().SetInitiator("100.000", "U1")
 
 	mentionTwin := slackInnerEvent{

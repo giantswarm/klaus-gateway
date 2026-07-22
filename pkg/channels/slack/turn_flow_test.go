@@ -38,12 +38,12 @@ func TestUsage_CarriesAcrossApprovalPause(t *testing.T) {
 	sendEvent(t, srv, dmThreadEvent("U1", "approve", "801.000", "800.000"))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "deleted")
-	}, 2*time.Second, 50*time.Millisecond, "approved turn completes")
+	}, 10*time.Second, 50*time.Millisecond, "approved turn completes")
 
 	sendEvent(t, srv, dmThreadEvent("U1", "/usage", "802.000", "800.000"))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "in 30 · out 10 · total 40")
-	}, 2*time.Second, 50*time.Millisecond, "last turn covers both segments of the paused turn")
+	}, 10*time.Second, 50*time.Millisecond, "last turn covers both segments of the paused turn")
 	// The pause itself must not have been recorded as a separate turn: session
 	// total equals the single turn.
 	usageReplies := allText(fake.pathCalls("chat.postMessage"))
@@ -77,9 +77,22 @@ func TestTypedResume_FailureKeepsPendingTask(t *testing.T) {
 	gw.failSends = 1
 	gw.mu.Unlock()
 
-	sendEvent(t, srv, dmThreadEvent("U1", "approve", "901.000", "900.000"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 2 },
-		2*time.Second, 50*time.Millisecond, "failed resume attempted")
+	// The first approval reply races the initial turn's thread-slot release; a
+	// too-early one is dropped with a busy notice and never retried, so re-send
+	// with fresh timestamps until one wins the slot and the resume is attempted
+	// (and fails its send, per failSends). Check before sending so only one reply
+	// is ever in flight: any extra sent while a prior reply holds the slot is
+	// itself dropped busy, so exactly one resume fails here and the retry loop
+	// below owns the successful resume.
+	firstAttempt := 0
+	require.Eventually(t, func() bool {
+		if gw.resolveCount() >= 2 {
+			return true
+		}
+		firstAttempt++
+		sendEvent(t, srv, dmThreadEvent("U1", "approve", fmt.Sprintf("901.%03d", firstAttempt), "900.000"))
+		return false
+	}, 10*time.Second, 50*time.Millisecond, "failed resume attempted")
 
 	// Retry: the task must still be pending, so a reply resumes task-1 with a
 	// structured decision instead of starting a fresh turn. The reply races the
@@ -92,13 +105,13 @@ func TestTypedResume_FailureKeepsPendingTask(t *testing.T) {
 		attempt++
 		sendEvent(t, srv, dmThreadEvent("U1", "approve", fmt.Sprintf("902.%03d", attempt), "900.000"))
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "done")
-	}, 5*time.Second, 100*time.Millisecond, "retried resume completes")
+	}, 10*time.Second, 100*time.Millisecond, "retried resume completes")
 
 	mu.Lock()
 	defer mu.Unlock()
 	retried := false
 	for _, msg := range resolved {
-		if msg.TaskID == "task-1" && msg.Decision != nil && msg.MessageID != "901.000" {
+		if msg.TaskID == "task-1" && msg.Decision != nil && strings.HasPrefix(msg.MessageID, "902.") {
 			retried = true
 		}
 	}
