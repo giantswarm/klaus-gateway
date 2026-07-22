@@ -190,7 +190,14 @@ func (a *Adapter) routeInteraction(ctx context.Context, payload interactionPaylo
 		act.choices = selectedChoiceIndices(payload.State)
 		if len(act.choices) == 0 {
 			// Submit with nothing selected: nudge, leaving the task (and widget)
-			// pending so the user can pick and submit again.
+			// pending so the user can pick and submit again. Gate first, like
+			// every other HITL action, so an onlooker cannot probe the widget.
+			if !a.accessPolicy().Allowed(threadID, payload.User.ID) {
+				if err := a.apiClient().postEphemeralText(ctx, payload.Channel.ID, payload.User.ID, threadID, accessDecisionRefusal); err != nil {
+					a.Logger.Warn("slack: post decision refusal failed", "thread", threadID, "user", payload.User.ID, "error", err)
+				}
+				return
+			}
 			if err := a.apiClient().postEphemeralText(ctx, payload.Channel.ID, payload.User.ID, threadID, choiceSelectNudge); err != nil {
 				a.Logger.Warn("slack: post choice-select nudge failed", "thread", threadID, "error", err)
 			}

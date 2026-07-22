@@ -452,6 +452,18 @@ func (s *ixSink) updateTexts() []string {
 	return out
 }
 
+func (s *ixSink) ephemeralTexts() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, 0, len(s.ephemeral))
+	for _, e := range s.ephemeral {
+		if t, ok := e["text"].(string); ok {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
 // newIxSlackServer starts a fake Slack Web API that records chat.postMessage,
 // chat.update, and chat.postEphemeral calls and acks everything.
 func newIxSlackServer(t *testing.T) (*httptest.Server, *ixSink) {
@@ -735,6 +747,41 @@ func TestHandleDecision_SubmitWithNoSelectionIsNudged(t *testing.T) {
 	}, 2*time.Second, 10*time.Millisecond, "empty submit must nudge the user")
 	require.Zero(t, gw.sendCount(), "empty submit must not resume the task")
 	require.True(t, a.hasPendingTask("T001"), "empty submit must leave the task pending")
+	require.Contains(t, sink.ephemeralTexts(), choiceSelectNudge, "the owner is nudged to pick an option")
+}
+
+// An onlooker clicking Submit with nothing selected must be refused by the
+// access gate, not handed the choice-select nudge (which would let them probe
+// the pending widget). Mirrors TestInteractionsHandler_OnlookerCannotDecide for
+// the empty-submit path.
+func TestHandleDecision_OnlookerEmptySubmitIsRefused(t *testing.T) {
+	const secret = "test-secret"
+	srv, sink := newIxSlackServer(t)
+
+	gw := &fakeGateway{}
+	a := &Adapter{
+		APIBase:      srv.URL,
+		Secrets:      Secrets{BotToken: "test-bot-token", SigningSecret: secret}, //nolint:gosec
+		DefaultAgent: "worker",
+	}
+	require.NoError(t, a.Start(t.Context(), gw))
+	a.accessPolicy().SetInitiator("T001", "U001")
+	a.storePendingTask("T001", &pendingTask{
+		TaskID: "task-abc", AgentRef: "worker", Channel: "C001", ChannelID: "C001",
+		Prompt: askUserPrompt(false, "A", "B"),
+	})
+
+	// U999 does not own the thread and was never granted access.
+	serveInteraction(t, a, secret, hitlSubmit, "T001", "C001", "MSG001", "U999")
+
+	require.Eventually(t, func() bool {
+		_, _, eph := sink.counts()
+		return eph >= 1
+	}, 2*time.Second, 10*time.Millisecond, "onlooker gets an ephemeral response")
+	require.Contains(t, sink.ephemeralTexts(), accessDecisionRefusal, "onlooker must be refused, not nudged")
+	require.NotContains(t, sink.ephemeralTexts(), choiceSelectNudge, "onlooker must not see the choice-select nudge")
+	require.Zero(t, gw.sendCount(), "onlooker submit must not resume the task")
+	require.True(t, a.hasPendingTask("T001"), "onlooker submit must leave the task pending")
 }
 
 func TestIsActiveThread(t *testing.T) {
