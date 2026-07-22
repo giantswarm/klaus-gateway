@@ -159,7 +159,7 @@ func (h *interactionsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 
 	// Acknowledge immediately so Slack doesn't show a timeout spinner.
 	w.WriteHeader(http.StatusOK)
-	go h.adapter.routeInteraction(h.ctx, payload)
+	h.adapter.background(func(ctx context.Context) { h.adapter.routeInteraction(ctx, payload) })
 }
 
 // routeInteraction dispatches a parsed Slack block_actions payload to the
@@ -422,7 +422,7 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 	if signIn {
 		// A button resume has no message to replay, so just prompt; the clicker
 		// signs in and clicks again.
-		a.postSignIn(ctx, slackChannel, threadID, slackUser)
+		a.postSignIn(ctx, slackChannel, threadID, slackUser, false)
 	}
 	if !ok {
 		return nil

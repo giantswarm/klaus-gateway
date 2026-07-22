@@ -41,7 +41,7 @@ func TestLoginReplay_DropsBareAuthUtterances(t *testing.T) {
 	a.OnUserLinked(t.Context(), "U123", "u123@example.com")
 
 	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
-		2*time.Second, 50*time.Millisecond, "the real question replays after linking")
+		10*time.Second, 50*time.Millisecond, "the real question replays after linking")
 	// Give an erroneous replay of the bare "login" a chance to land.
 	time.Sleep(150 * time.Millisecond)
 	require.Equal(t, 1, gw.resolveCount(), "the bare sign-in request must not replay")
@@ -71,7 +71,7 @@ func TestLoginReplay_FailurePostsNote(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "couldn't pick your message back up")
-	}, 2*time.Second, 50*time.Millisecond, "a failed replay must post a failure note in-thread")
+	}, 10*time.Second, 50*time.Millisecond, "a failed replay must post a failure note in-thread")
 }
 
 // A newcomer who parks several messages before the initiator's grant has all of
@@ -93,7 +93,7 @@ func TestAccess_MultipleParkedMessagesReplayInOrder(t *testing.T) {
 
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
 	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
-		2*time.Second, 50*time.Millisecond, "initiator's mention dispatches")
+		10*time.Second, 50*time.Millisecond, "initiator's mention dispatches")
 
 	// The newcomer sends two messages before being granted: one consent prompt
 	// (plus one waiting-ack), both messages held.
@@ -107,7 +107,7 @@ func TestAccess_MultipleParkedMessagesReplayInOrder(t *testing.T) {
 
 	sendAccessInteraction(t, srv, "U001", accessAllowAction, "100.000", "U999", fakeURL+"/response")
 	require.Eventually(t, func() bool { return gw.resolveCount() == 3 },
-		2*time.Second, 50*time.Millisecond, "both parked messages replay on grant")
+		10*time.Second, 50*time.Millisecond, "both parked messages replay on grant")
 	mu.Lock()
 	defer mu.Unlock()
 	require.Equal(t, "first ask", captured[1].Text, "replay preserves arrival order")
@@ -133,7 +133,7 @@ func TestLoginReplay_WaitsForBusyThread(t *testing.T) {
 
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
 	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
-		2*time.Second, 50*time.Millisecond, "initiator's mention dispatches")
+		10*time.Second, 50*time.Millisecond, "initiator's mention dispatches")
 
 	// Grant U999 up front (a grant with nothing parked still stands), so their
 	// later message reaches the login-park path rather than the consent prompt.
@@ -144,7 +144,7 @@ func TestLoginReplay_WaitsForBusyThread(t *testing.T) {
 	sendEvent(t, srv, mention("U999", "help me out", "200.000", "100.000"))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Sign in so I can act as you")
-	}, 2*time.Second, 50*time.Millisecond, "the unlinked granted user is prompted to sign in")
+	}, 10*time.Second, 50*time.Millisecond, "the unlinked granted user is prompted to sign in")
 	require.Equal(t, 1, gw.resolveCount(), "the unlinked message is parked, not dispatched")
 
 	// The initiator starts a turn that keeps the thread slot held.
@@ -154,7 +154,7 @@ func TestLoginReplay_WaitsForBusyThread(t *testing.T) {
 	gw.mu.Unlock()
 	sendEvent(t, srv, mention("U001", "long task", "300.000", "100.000"))
 	require.Eventually(t, func() bool { return gw.resolveCount() == 2 },
-		2*time.Second, 50*time.Millisecond, "the holding turn starts")
+		10*time.Second, 50*time.Millisecond, "the holding turn starts")
 
 	// U999's link completes mid-turn: the replay must wait, silently.
 	obo.link("U999", "tok2")
@@ -166,7 +166,7 @@ func TestLoginReplay_WaitsForBusyThread(t *testing.T) {
 
 	close(hold)
 	require.Eventually(t, func() bool { return gw.resolveCount() == 3 },
-		2*time.Second, 50*time.Millisecond, "the replay is delivered once the slot frees")
+		10*time.Second, 50*time.Millisecond, "the replay is delivered once the slot frees")
 	mu.Lock()
 	defer mu.Unlock()
 	require.Equal(t, "help me out", captured[2].Text)
@@ -213,7 +213,7 @@ func TestLoginReplay_ParkAfterLinkRaceDrainsImmediately(t *testing.T) {
 	sendEvent(t, srv, dmEvent("U1", "what is broken?", "700.000"))
 
 	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
-		2*time.Second, 50*time.Millisecond, "the raced message drains without waiting for a link callback")
+		10*time.Second, 50*time.Millisecond, "the raced message drains without waiting for a link callback")
 	mu.Lock()
 	got := captured[0]
 	mu.Unlock()

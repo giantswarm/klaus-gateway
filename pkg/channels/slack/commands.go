@@ -253,7 +253,7 @@ func (a *Adapter) handleLoginCommand(ctx context.Context, slackUser, slackChanne
 	}
 	if !linked {
 		// Explicit request: post the sign-in prompt without the nudge throttle.
-		a.postSignIn(ctx, slackChannel, threadID, slackUser)
+		a.postSignIn(ctx, slackChannel, threadID, slackUser, false)
 		return true
 	}
 	if email != "" {

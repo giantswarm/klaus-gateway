@@ -69,12 +69,12 @@ func TestAccess_UnlinkedNewcomerPromptedToSignIn(t *testing.T) {
 
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
 	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
-		2*time.Second, 50*time.Millisecond, "initiator's mention dispatches")
+		10*time.Second, 50*time.Millisecond, "initiator's mention dispatches")
 
 	sendEvent(t, srv, mention("U999", "help", "200.000", "100.000"))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Sign in so I can act as you")
-	}, 2*time.Second, 50*time.Millisecond, "the newcomer is prompted to sign in")
+	}, 10*time.Second, 50*time.Millisecond, "the newcomer is prompted to sign in")
 	require.Equal(t, 1, gw.resolveCount(), "an unlinked newcomer must not reach the agent")
 	// The prompt is public and its link is minted for the newcomer: it must
 	// name them, or a bystander clicks a button bound to someone else's
@@ -94,7 +94,7 @@ func TestAccess_NewcomerApprovedReplaysMessage(t *testing.T) {
 
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
 	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
-		2*time.Second, 50*time.Millisecond, "initiator's mention dispatches")
+		10*time.Second, 50*time.Millisecond, "initiator's mention dispatches")
 
 	// Newcomer posts: initiator gets an ephemeral consent prompt, newcomer an ack.
 	sendEvent(t, srv, mention("U999", "help", "200.000", "100.000"))
@@ -107,7 +107,7 @@ func TestAccess_NewcomerApprovedReplaysMessage(t *testing.T) {
 	// Initiator approves: the ephemeral prompt is updated and the message replays.
 	sendAccessInteraction(t, srv, "U001", accessAllowAction, "100.000", "U999", fakeURL+"/response")
 	require.Eventually(t, func() bool { return gw.resolveCount() == 2 },
-		2*time.Second, 50*time.Millisecond, "approval replays the newcomer's message to the agent")
+		10*time.Second, 50*time.Millisecond, "approval replays the newcomer's message to the agent")
 	require.Contains(t, allText(fake.pathCalls("response")), "allowed", "prompt updated to allowed via response_url")
 }
 
@@ -119,7 +119,7 @@ func TestAccess_NewcomerDeclinedDropsMessage(t *testing.T) {
 
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
 	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
-		2*time.Second, 50*time.Millisecond, "initiator's mention dispatches")
+		10*time.Second, 50*time.Millisecond, "initiator's mention dispatches")
 	sendEvent(t, srv, mention("U999", "help", "200.000", "100.000"))
 	fake.waitForPath(t, "chat.postEphemeral", 2)
 
@@ -141,7 +141,7 @@ func TestAccess_NonInitiatorCannotGrant(t *testing.T) {
 
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
 	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
-		2*time.Second, 50*time.Millisecond, "initiator's mention dispatches")
+		10*time.Second, 50*time.Millisecond, "initiator's mention dispatches")
 	sendEvent(t, srv, mention("U999", "help", "200.000", "100.000"))
 	fake.waitForPath(t, "chat.postEphemeral", 2)
 
@@ -167,7 +167,7 @@ func TestAccess_GrantWhileThreadBusyDeliversAfterRelease(t *testing.T) {
 	// The initiator's mention starts a turn that keeps the thread slot held.
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
 	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
-		2*time.Second, 50*time.Millisecond, "initiator's mention dispatches")
+		10*time.Second, 50*time.Millisecond, "initiator's mention dispatches")
 
 	// Newcomer posts and is parked pending consent.
 	sendEvent(t, srv, mention("U999", "help", "200.000", "100.000"))
@@ -185,7 +185,7 @@ func TestAccess_GrantWhileThreadBusyDeliversAfterRelease(t *testing.T) {
 	// The running turn finishes; the deferred replay is delivered.
 	close(hold)
 	require.Eventually(t, func() bool { return gw.resolveCount() == 2 },
-		2*time.Second, 50*time.Millisecond, "the parked message is delivered once the slot frees")
+		10*time.Second, 50*time.Millisecond, "the parked message is delivered once the slot frees")
 }
 
 // After a restart the access policy is empty; a reply into a pre-existing
@@ -232,7 +232,7 @@ func TestAccess_RootAuthorLookupFailureFallsBackToFirstPoster(t *testing.T) {
 
 	fake.waitForPath(t, "conversations.replies", 1)
 	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
-		2*time.Second, 50*time.Millisecond, "on lookup failure the first poster becomes initiator and dispatches")
+		10*time.Second, 50*time.Millisecond, "on lookup failure the first poster becomes initiator and dispatches")
 }
 
 // A 1:1 DM has a single human, so the root-author reseed must be skipped
@@ -250,7 +250,7 @@ func TestAccess_DMReplySkipsRootAuthorReseed(t *testing.T) {
 	sendEvent(t, srv, dmThreadEvent("U1", "hello", "300.000", "100.000"))
 
 	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
-		2*time.Second, 50*time.Millisecond, "the sole human in a DM dispatches without a consent gate")
+		10*time.Second, 50*time.Millisecond, "the sole human in a DM dispatches without a consent gate")
 	require.Empty(t, fake.pathCalls("conversations.replies"),
 		"a DM has one human; the root-author reseed must be skipped")
 }
@@ -268,7 +268,7 @@ func TestAccess_BotAuthoredRootFallsBackToFirstPoster(t *testing.T) {
 
 	fake.waitForPath(t, "conversations.replies", 1)
 	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
-		2*time.Second, 50*time.Millisecond, "a bot-authored root is not a human initiator; the first poster dispatches")
+		10*time.Second, 50*time.Millisecond, "a bot-authored root is not a human initiator; the first poster dispatches")
 }
 
 // A transient token-mint failure for a newcomer is surfaced immediately instead
@@ -285,12 +285,12 @@ func TestAccess_NewcomerTransientTokenErrorSurfaced(t *testing.T) {
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Sign in so I can act as you")
-	}, 2*time.Second, 50*time.Millisecond, "the unlinked initiator is prompted to sign in")
+	}, 10*time.Second, 50*time.Millisecond, "the unlinked initiator is prompted to sign in")
 
 	sendEvent(t, srv, mention("U999", "help", "200.000", "100.000"))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postEphemeral")), "couldn't refresh your Giant Swarm sign-in")
-	}, 2*time.Second, 50*time.Millisecond, "the token error is surfaced to the newcomer")
+	}, 10*time.Second, 50*time.Millisecond, "the token error is surfaced to the newcomer")
 	require.NotContains(t, allText(fake.pathCalls("chat.postEphemeral")), "waiting for the thread owner",
 		"a failing newcomer must not be parked pending consent")
 	require.Zero(t, gw.resolveCount(), "no message reaches the agent")

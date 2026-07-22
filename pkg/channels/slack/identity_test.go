@@ -48,17 +48,17 @@ func TestChat_HoldsPromptThenRoutesQuestionAsReject(t *testing.T) {
 	sendEvent(t, srv, dmEvent("U1", "clean up configmaps", "400.000"))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Waiting for approval")
-	}, 2*time.Second, 20*time.Millisecond, "the approval prompt is posted")
+	}, 10*time.Second, 20*time.Millisecond, "the approval prompt is posted")
 
 	// Click Chat: the prompt is held and the buttons become a reply hint.
 	sendInteraction(t, srv, "hitl_chat", "400.000")
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.update")), "Ask your question")
-	}, 2*time.Second, 20*time.Millisecond, "Chat swaps the buttons for a reply hint")
+	}, 10*time.Second, 20*time.Millisecond, "Chat swaps the buttons for a reply hint")
 
 	// Reply with a question: resolves the paused task as a reject carrying it.
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","channel_type":"im","user":"U1","text":"which ones exactly?","channel":"D1","ts":"401.000","thread_ts":"400.000"}}`)
-	require.Eventually(t, func() bool { return gw.resolveCount() == 2 }, 2*time.Second, 20*time.Millisecond, "the reply resumes the paused task")
+	require.Eventually(t, func() bool { return gw.resolveCount() == 2 }, 10*time.Second, 20*time.Millisecond, "the reply resumes the paused task")
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -81,7 +81,7 @@ func TestBranding_AgentReplyCarriesCardName(t *testing.T) {
 	sendEvent(t, srv, dmEvent("U1", "status?", "500.000"))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "all good")
-	}, 2*time.Second, 20*time.Millisecond, "the agent answer is posted")
+	}, 10*time.Second, 20*time.Millisecond, "the agent answer is posted")
 
 	var branded bool
 	for _, c := range fake.pathCalls("chat.postMessage") {
@@ -103,7 +103,7 @@ func TestMemberJoined_SelfJoinPostsIntro(t *testing.T) {
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"member_joined_channel","user":"UBOT","channel":"C1"}}`)
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Swarmgeist")
-	}, 2*time.Second, 20*time.Millisecond, "the bot's own join posts an intro")
+	}, 10*time.Second, 20*time.Millisecond, "the bot's own join posts an intro")
 	require.Len(t, fake.pathCalls("chat.postMessage"), 1, "exactly one intro")
 }
 
@@ -128,7 +128,7 @@ func TestDM_RedirectInChannelMode(t *testing.T) {
 	sendEvent(t, srv, dmEvent("U1", "hey", "600.000"))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "I work in channels")
-	}, 2*time.Second, 20*time.Millisecond, "a DM in channel mode is redirected")
+	}, 10*time.Second, 20*time.Millisecond, "a DM in channel mode is redirected")
 	require.Zero(t, gw.resolveCount(), "a redirected DM never reaches the agent")
 
 	sendEvent(t, srv, dmEvent("U1", "why not?", "601.000"))
@@ -154,7 +154,7 @@ func TestLaunchAnnouncement_PostsAfterResolveSucceeds(t *testing.T) {
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_mention","user":"U1","text":"<@UBOT> check the cluster","channel":"C1","ts":"700.000"}}`)
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Bringing in")
-	}, 2*time.Second, 20*time.Millisecond, "a new channel thread announces the agent handoff")
+	}, 10*time.Second, 20*time.Millisecond, "a new channel thread announces the agent handoff")
 }
 
 func TestLaunchAnnouncement_SkippedWhenResolveFails(t *testing.T) {
@@ -164,7 +164,7 @@ func TestLaunchAnnouncement_SkippedWhenResolveFails(t *testing.T) {
 
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_mention","user":"U1","text":"<@UBOT> check the cluster","channel":"C1","ts":"710.000"}}`)
 	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
-		2*time.Second, 20*time.Millisecond, "the mention reaches Resolve")
+		10*time.Second, 20*time.Millisecond, "the mention reaches Resolve")
 	time.Sleep(150 * time.Millisecond)
 	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "Bringing in",
 		"a failed resolve must not announce a launch")

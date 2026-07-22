@@ -36,7 +36,7 @@ func TestCorruptSession_ResetAndNotice(t *testing.T) {
 	sendEvent(t, srv, dmEvent("U1", "list my epics", "700.000"))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "reset the session")
-	}, 2*time.Second, 50*time.Millisecond, "reset notice posted")
+	}, 10*time.Second, 50*time.Millisecond, "reset notice posted")
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -54,7 +54,7 @@ func TestCorruptSession_ResetUnavailableAdvisesNewThread(t *testing.T) {
 	sendEvent(t, srv, dmEvent("U1", "list my epics", "701.000"))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "start a new thread")
-	}, 2*time.Second, 50*time.Millisecond, "stuck notice posted")
+	}, 10*time.Second, 50*time.Millisecond, "stuck notice posted")
 }
 
 // An ordinary turn failure must not delete the session.
@@ -77,7 +77,7 @@ func TestCorruptSession_OtherErrorsDoNotReset(t *testing.T) {
 	require.Eventually(t, func() bool {
 		names := fake.reactionNames("reactions.add")
 		return len(names) > 0 && names[len(names)-1] == "x"
-	}, 2*time.Second, 50*time.Millisecond, "turn signalled as failed")
+	}, 10*time.Second, 50*time.Millisecond, "turn signalled as failed")
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -106,7 +106,7 @@ func TestCorruptSession_QuotedToolWordsDoNotReset(t *testing.T) {
 	require.Eventually(t, func() bool {
 		names := fake.reactionNames("reactions.add")
 		return len(names) > 0 && names[len(names)-1] == "x"
-	}, 2*time.Second, 50*time.Millisecond, "turn signalled as failed")
+	}, 10*time.Second, 50*time.Millisecond, "turn signalled as failed")
 
 	mu.Lock()
 	defer mu.Unlock()

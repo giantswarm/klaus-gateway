@@ -72,7 +72,7 @@ func (h *eventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if env.Type == "event_callback" && env.Event != nil {
 		ev := *env.Event
-		go h.adapter.handleInbound(h.ctx, ev, env.EventID)
+		h.adapter.background(func(ctx context.Context) { h.adapter.handleInbound(ctx, ev, env.EventID) })
 	}
 }
 

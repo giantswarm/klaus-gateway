@@ -117,6 +117,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A resume that fails before its stream starts (token mint, gateway resolve, send) re-stores the paused task instead of stranding it, so a retry or button click can still resume the agent.
 - Parked newcomer messages and paused approval tasks are swept after 24 hours, so the per-thread maps no longer grow for the process lifetime.
 - Clicking "Chat" on an approval prompt releases the thread slot before the Slack round-trip that swaps the buttons for the reply hint, so a question typed immediately after the click resumes the held task instead of bouncing off the "still working" notice.
+- The sign-in confirmation reliably announces the agent hand-off ("Bringing in `<agent>`") when a message parked before sign-in will be replayed to the agent. A race between the confirmation rewrite and the concurrent convergence re-checks could drop the hand-off wording, so the same sign-in nondeterministically showed the plain confirmation instead.
+- A message from a signed-out user that arrives while the thread is briefly busy is parked for sign-in instead of being rejected with a busy notice and dropped. The sign-in gate previously ran after the per-thread turn lock, so the message was lost until the user resent it.
+- Stopping the Slack adapter cancels and waits for its in-flight background work (inbound dispatch, post-sign-in replay, sign-in prompt rewrites) instead of returning while those goroutines keep running.
 
 ### Refactored
 

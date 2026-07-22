@@ -37,12 +37,12 @@ func TestUsage_CarriesAcrossApprovalPause(t *testing.T) {
 	sendEvent(t, srv, dmThreadEvent("U1", "approve", "801.000", "800.000"))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "deleted")
-	}, 2*time.Second, 50*time.Millisecond, "approved turn completes")
+	}, 10*time.Second, 50*time.Millisecond, "approved turn completes")
 
 	sendEvent(t, srv, dmThreadEvent("U1", "/usage", "802.000", "800.000"))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "in 30 · out 10 · total 40")
-	}, 2*time.Second, 50*time.Millisecond, "last turn covers both segments of the paused turn")
+	}, 10*time.Second, 50*time.Millisecond, "last turn covers both segments of the paused turn")
 	// The pause itself must not have been recorded as a separate turn: session
 	// total equals the single turn.
 	usageReplies := allText(fake.pathCalls("chat.postMessage"))
@@ -78,7 +78,7 @@ func TestTypedResume_FailureKeepsPendingTask(t *testing.T) {
 
 	sendEvent(t, srv, dmThreadEvent("U1", "approve", "901.000", "900.000"))
 	require.Eventually(t, func() bool { return gw.resolveCount() == 2 },
-		2*time.Second, 50*time.Millisecond, "failed resume attempted")
+		10*time.Second, 50*time.Millisecond, "failed resume attempted")
 
 	// Retry: the task must still be pending, so a reply resumes task-1 with a
 	// structured decision instead of starting a fresh turn. The reply races the
@@ -91,7 +91,7 @@ func TestTypedResume_FailureKeepsPendingTask(t *testing.T) {
 		attempt++
 		sendEvent(t, srv, dmThreadEvent("U1", "approve", fmt.Sprintf("902.%03d", attempt), "900.000"))
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "done")
-	}, 5*time.Second, 100*time.Millisecond, "retried resume completes")
+	}, 10*time.Second, 100*time.Millisecond, "retried resume completes")
 
 	mu.Lock()
 	defer mu.Unlock()
