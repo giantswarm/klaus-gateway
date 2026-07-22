@@ -173,17 +173,14 @@ func (a *Adapter) routeInteraction(ctx context.Context, payload interactionPaylo
 
 	action := payload.Actions[0]
 
-	// The sign-in URL button opens its link in the browser; the click payload
-	// carries the response_url that lets NotifyLinked replace the ephemeral
-	// prompt once the account link completes.
-	if action.ActionID == oboSignIn {
-		a.storeSignInPrompt(payload.User.ID, payload.ResponseURL)
-		return
-	}
-
 	switch action.ActionID {
+	case oboSignIn:
+		// URL button: the browser opens the link itself, and the prompt message
+		// is rewritten via OnUserLinked once the link completes, so the click
+		// needs no handling beyond the ack.
+		return
 	case connectorDismiss:
-		a.handleConnectorDismiss(ctx, payload.User.ID, action.Value, payload.ResponseURL)
+		a.handleConnectorDismiss(ctx, payload.User.ID, action.Value, payload.Message.ThreadTS, payload.ResponseURL)
 		return
 	case connectorConnect:
 		// URL button: the browser opens the consent flow itself, so there is
@@ -272,12 +269,12 @@ func validConnectorName(server string) bool {
 // handleConnectorDismiss acknowledges a "Not now" click and replaces the
 // ephemeral prompt. The prompt cooldown already suppresses re-prompts for the
 // backend, so no state is cleared here.
-func (a *Adapter) handleConnectorDismiss(ctx context.Context, slackUser, server, responseURL string) {
+func (a *Adapter) handleConnectorDismiss(ctx context.Context, slackUser, server, threadTS, responseURL string) {
 	if !validConnectorName(server) {
 		return
 	}
 	text := "_Okay, I won't ask again for a while._"
-	if err := respondURL(ctx, responseURL, text); err != nil {
+	if err := respondURL(ctx, responseURL, threadTS, text); err != nil {
 		a.Logger.Warn("slack: update connector prompt (dismissed) failed", "user", slackUser, "server", server, "error", err)
 	}
 }
@@ -301,14 +298,14 @@ func (a *Adapter) handleAccessDecision(ctx context.Context, threadID, newcomerID
 	parked := a.takePendingAccess(threadID, newcomerID)
 
 	if !allow {
-		if err := respondURL(ctx, responseURL, "🚫 _Declined._"); err != nil {
+		if err := respondURL(ctx, responseURL, threadID, "🚫 _Declined._"); err != nil {
 			a.Logger.Warn("slack: update access prompt (declined) failed", "thread", threadID, "error", err)
 		}
 		return
 	}
 
 	a.accessPolicy().Grant(threadID, newcomerID)
-	if err := respondURL(ctx, responseURL, fmt.Sprintf("✅ _<@%s> allowed._", newcomerID)); err != nil {
+	if err := respondURL(ctx, responseURL, threadID, fmt.Sprintf("✅ _<@%s> allowed._", newcomerID)); err != nil {
 		a.Logger.Warn("slack: update access prompt (allowed) failed", "thread", threadID, "error", err)
 	}
 
@@ -325,7 +322,21 @@ func (a *Adapter) handleAccessDecision(ctx context.Context, threadID, newcomerID
 		if err := a.replayDispatch(ctx, req.msg, req.slackChannel); err != nil && !errors.Is(err, context.Canceled) {
 			a.Logger.Error("slack: replay after access grant failed",
 				"thread", threadID, "user", newcomerID, "error", err)
+			a.postReplayFailureNote(ctx, req.slackChannel, req.msg.ThreadID)
 		}
+	}
+}
+
+// postResumeFailureNote tells the thread a button decision could not be
+// delivered to the agent. The task was re-stored, so a typed reply still
+// resumes it; the note is what makes that recovery discoverable. Best-effort.
+func (a *Adapter) postResumeFailureNote(ctx context.Context, client *slackAPIClient, slackChannel, threadID string) {
+	if ctx.Err() != nil {
+		return
+	}
+	const text = "⚠️ _I couldn't deliver your decision to the agent. Reply in this thread to try again._"
+	if _, err := client.postMessage(ctx, slackChannel, text, threadID); err != nil {
+		a.Logger.Warn("slack: post resume failure note failed", "thread", threadID, "error", err)
 	}
 }
 
@@ -453,9 +464,12 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 
 	// A failure before the stream is running re-stores the taken task: the
 	// buttons already show the decision, but a typed reply can still resume it.
+	// The note tells the user so; the updated message alone reads as if the
+	// decision went through.
 	ref, err := a.gw.Resolve(ctx, msg)
 	if err != nil {
 		a.storePendingTask(threadID, task)
+		a.postResumeFailureNote(ctx, client, slackChannel, threadID)
 		return err
 	}
 
@@ -467,6 +481,7 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 	deltas, err := a.gw.SendCompletion(turnCtx, ref, msg)
 	if err != nil {
 		a.storePendingTask(threadID, task)
+		a.postResumeFailureNote(ctx, client, slackChannel, threadID)
 		return err
 	}
 

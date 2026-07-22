@@ -41,9 +41,9 @@ const (
 )
 
 // oboSignIn is the action_id on the OBO "Sign in" URL button. The button opens
-// its url directly; the interaction payload Slack still sends routes no
-// decision (classifyAction returns false) but its response_url is kept so the
-// ephemeral prompt can be replaced once the link completes (NotifyLinked).
+// its url directly; the interaction payload Slack still sends is acked without
+// action. The prompt message itself is rewritten in place once the link
+// completes (OnUserLinked), keyed by the recorded anchor, not by the click.
 const oboSignIn = "obo_sign_in"
 
 // Connector Block Kit action IDs. The button value carries the backend name.
@@ -158,6 +158,14 @@ const chatModePrompt = "💬 _Ask your question in this thread; I'll answer, the
 // without producing any output, so it does not linger as "thinking".
 const emptyOutputNote = "_(the agent finished without a reply)_"
 
+// stoppedNote replaces the text-mode placeholder when a turn is cancelled
+// before any content streamed, so "thinking" does not linger under "Stopped.".
+const stoppedNote = "_(stopped)_"
+
+// pausedNote replaces the text-mode placeholder when a turn pauses on an
+// input-required prompt before any content streamed.
+const pausedNote = "_(waiting for your input below)_"
+
 // failedNote replaces the text-mode placeholder when a turn ends in error, so it
 // does not linger as "thinking" with no failure signal (reactions mode swaps in
 // the failed emoji instead).
@@ -200,6 +208,11 @@ const (
 	paramName      = "name"      // reactions.* emoji name
 	paramUsername  = "username"  // chat:write.customize display name
 	paramIconURL   = "icon_url"  // chat:write.customize display icon
+	// unfurl_links / unfurl_media are forced to false on every chat.postMessage:
+	// bot posts relay agent- and tool-controlled links, and an unfurl has
+	// Slack's crawler fetch them (fatal for single-use auth links).
+	paramUnfurlLinks = "unfurl_links"
+	paramUnfurlMedia = "unfurl_media"
 )
 
 // bkURL is the Block Kit button "url" field (opens a link on click).

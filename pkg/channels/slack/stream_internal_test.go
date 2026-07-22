@@ -10,8 +10,10 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/stretchr/testify/require"
@@ -116,6 +118,63 @@ func TestSend_FailsFastOnHugeRetryAfter(t *testing.T) {
 	_, err := client.send(t.Context(), "chat.update", "application/json", `{}`)
 	require.ErrorContains(t, err, "rate limited")
 	require.Equal(t, int32(1), calls.Load(), "a wait beyond the cap must not be slept through")
+}
+
+// One transient mid-stream Slack failure must not abort a healthy turn: the
+// ticker retries the flush and the content is still delivered.
+func TestRun_TransientFlushFailureDoesNotAbortTurn(t *testing.T) {
+	var updates atomic.Int32
+	var lastText atomic.Value
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Text string `json:"text"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.Header().Set("Content-Type", "application/json")
+		if updates.Add(1) == 1 {
+			_, _ = fmt.Fprint(w, `{"ok":false,"error":"fatal_error"}`)
+			return
+		}
+		lastText.Store(body.Text)
+		_, _ = fmt.Fprint(w, `{"ok":true,"ts":"1.2"}`)
+	}))
+	defer srv.Close()
+
+	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
+	w := newBatchedWriterWithClient(client, "C1", "1.1", "1.0", detailsOff, slog.Default())
+	ch := make(chan channels.OutboundDelta)
+	done := make(chan error, 1)
+	go func() { done <- w.run(t.Context(), ch) }()
+
+	ch <- channels.OutboundDelta{Kind: channels.DeltaText, Content: "hello"}
+	require.Eventually(t, func() bool { return updates.Load() >= 2 },
+		5*time.Second, 20*time.Millisecond, "the failed flush must be retried on a later tick")
+	close(ch)
+
+	require.NoError(t, <-done, "a single flush failure must not fail the turn")
+	require.Equal(t, "hello", lastText.Load())
+}
+
+// A persistent Slack failure still aborts the turn instead of holding the
+// thread slot until the turn deadline.
+func TestRun_PersistentFlushFailureAbortsTurn(t *testing.T) {
+	var updates atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		updates.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"ok":false,"error":"fatal_error"}`)
+	}))
+	defer srv.Close()
+
+	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
+	w := newBatchedWriterWithClient(client, "C1", "1.1", "1.0", detailsOff, slog.Default())
+	ch := make(chan channels.OutboundDelta)
+	done := make(chan error, 1)
+	go func() { done <- w.run(t.Context(), ch) }()
+
+	ch <- channels.OutboundDelta{Kind: channels.DeltaText, Content: "hello"}
+	require.ErrorContains(t, <-done, "fatal_error")
+	require.GreaterOrEqual(t, updates.Load(), int32(maxFlushFailures))
 }
 
 func TestFlush_FailedUpdateIsResentOnNextFlush(t *testing.T) {
@@ -551,7 +610,7 @@ func TestRespondURL_ErrorsOnNonSuccessStatus(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	err := respondURL(t.Context(), srv.URL, "updated")
+	err := respondURL(t.Context(), srv.URL, "", "updated")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "http status 500")
 }
@@ -562,7 +621,34 @@ func TestRespondURL_SucceedsOn2xx(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	require.NoError(t, respondURL(t.Context(), srv.URL, "updated"))
+	require.NoError(t, respondURL(t.Context(), srv.URL, "", "updated"))
+}
+
+// A replacement of a thread-scoped ephemeral must carry the source thread_ts,
+// or Slack renders it at channel top level as well as in the thread.
+func TestRespondURL_CarriesThreadTS(t *testing.T) {
+	var mu sync.Mutex
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var v map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&v)
+		mu.Lock()
+		got = v
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	body := func() map[string]any { mu.Lock(); defer mu.Unlock(); return got }
+
+	require.NoError(t, respondURL(t.Context(), srv.URL, "100.000", "✅ allowed"))
+	require.Equal(t, "100.000", body()["thread_ts"])
+	require.Equal(t, true, body()["replace_original"])
+	require.Equal(t, "ephemeral", body()["response_type"])
+
+	// Without a thread the field stays absent (a top-level ephemeral).
+	require.NoError(t, respondURL(t.Context(), srv.URL, "", "✅ allowed"))
+	_, hasThread := body()["thread_ts"]
+	require.False(t, hasThread)
 }
 
 func TestThreadInitiator_ReturnsFirstHumanAuthor(t *testing.T) {
@@ -667,9 +753,9 @@ func TestParseAuthChallenge_NoURL(t *testing.T) {
 	require.Empty(t, loginURL)
 }
 
-func TestParseAuthChallenge_NoServerFallback(t *testing.T) {
+func TestParseAuthChallenge_NoServerLine(t *testing.T) {
 	server, loginURL := parseAuthChallenge("please visit https://x.example/auth")
-	require.Equal(t, "the requested tools", server)
+	require.Empty(t, server, "no Server: line yields empty; the caller falls back to the call arguments")
 	require.Equal(t, "https://x.example/auth", loginURL)
 }
 
@@ -713,6 +799,63 @@ func TestParseAuthChallengePayload_NoURL(t *testing.T) {
 	require.Empty(t, loginURL)
 }
 
+func TestParseAuthChallenge_JSONEscapedAmpersand(t *testing.T) {
+	// muster's challenge text embeds a JSON-encoded blob, so Go's HTML-safe
+	// encoding turns each & into a literal escape sequence; the button must
+	// still open the real URL.
+	challenge := "Server: pro\nSign in: https://x.example/auth?a=1" + jsonEscapedAmp + "b=2"
+	server, loginURL := parseAuthChallenge(challenge)
+	require.Equal(t, "pro", server)
+	require.Equal(t, "https://x.example/auth?a=1&b=2", loginURL)
+}
+
+func TestScrubLoginURLs_ReencodedVariants(t *testing.T) {
+	// The agent re-encodes the recorded URL's query freely: JSON-escaped
+	// ampersands, percent-encoded base64 padding. Prefix matching must catch
+	// every spelling.
+	const loginURL = "https://pro.example/authorize?a=1&state=abc="
+	w := &batchedWriter{loginURLs: []string{loginURL}}
+	escaped := strings.ReplaceAll(loginURL, "&", jsonEscapedAmp)
+	percent := "https://pro.example/authorize?a=1&state=abc%3D"
+	out := w.scrubLoginURLs("raw: " + escaped + "\npercent: <" + percent + "|sign in>\nlink: [sign in](" + loginURL + ")")
+	require.NotContains(t, out, "pro.example")
+	require.Contains(t, out, loginURLNote)
+}
+
+func TestNoteCallToolTarget_RecordsServerArgument(t *testing.T) {
+	w := &batchedWriter{}
+	w.noteCallToolTarget(&channels.ToolActivity{
+		Kind:   channels.ToolCall,
+		Name:   musterCallToolMetaTool,
+		CallID: "c1",
+		Args: map[string]any{
+			"name":      musterAuthLoginTool,
+			"arguments": map[string]any{"server": "gazelle-mcp-pro"},
+		},
+	})
+	require.Equal(t, callToolTarget{name: musterAuthLoginTool, server: "gazelle-mcp-pro"}, w.callToolInner["c1"])
+}
+
+func TestScrubLoginURLs(t *testing.T) {
+	const loginURL = "https://pro.example/authorize?state=abc&code_challenge=xyz"
+	w := &batchedWriter{loginURLs: []string{loginURL}}
+
+	// Markdown link, Slack mrkdwn link, and a bare occurrence all collapse to
+	// the button pointer; unrelated links survive.
+	in := "Please [sign in](" + loginURL + ") first.\n" +
+		"Or <" + loginURL + "|click here>.\n" +
+		"Raw: " + loginURL + "\n" +
+		"Docs: https://example.com/docs"
+	out := w.scrubLoginURLs(in)
+	require.NotContains(t, out, loginURL)
+	require.Contains(t, out, loginURLNote)
+	require.Contains(t, out, "https://example.com/docs")
+	require.NotContains(t, out, "[sign in]", "no dangling markdown link label")
+
+	// No recorded URLs: text passes through untouched.
+	require.Equal(t, in, (&batchedWriter{}).scrubLoginURLs(in))
+}
+
 func TestParseAuthChallengePayload_DepthBounded(t *testing.T) {
 	nested := any("Server: pro\nhttps://x.example/auth")
 	for range maxChallengePayloadDepth + 2 {
@@ -720,4 +863,37 @@ func TestParseAuthChallengePayload_DepthBounded(t *testing.T) {
 	}
 	_, loginURL := parseAuthChallengePayload(nested, 0)
 	require.Empty(t, loginURL)
+}
+
+// A transient Slack failure on the final flush must not abort the turn: a
+// short reply that never hits a ticker flush has no later tick to re-send it,
+// so the terminal flush retries in place.
+func TestRun_TransientFinalFlushFailureDoesNotAbortTurn(t *testing.T) {
+	var updates atomic.Int32
+	var lastText atomic.Value
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Text string `json:"text"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.Header().Set("Content-Type", "application/json")
+		if updates.Add(1) == 1 {
+			_, _ = fmt.Fprint(w, `{"ok":false,"error":"fatal_error"}`)
+			return
+		}
+		lastText.Store(body.Text)
+		_, _ = fmt.Fprint(w, `{"ok":true,"ts":"1.2"}`)
+	}))
+	defer srv.Close()
+
+	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
+	w := newBatchedWriterWithClient(client, "C1", "1.1", "1.0", detailsOff, slog.Default())
+	ch := make(chan channels.OutboundDelta, 2)
+	ch <- channels.OutboundDelta{Kind: channels.DeltaText, Content: "hello"}
+	ch <- channels.OutboundDelta{Done: true}
+	close(ch)
+
+	require.NoError(t, w.run(t.Context(), ch), "one transient final-flush failure must not fail the turn")
+	require.Equal(t, int32(2), updates.Load(), "the failed final flush is retried in place")
+	require.Equal(t, "hello", lastText.Load())
 }

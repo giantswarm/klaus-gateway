@@ -149,6 +149,10 @@
         "tokenPath": {
           "type": "string"
         },
+        "fallbackIconUrlTemplate": {
+          "type": "string",
+          "description": "Fallback agent icon URL used when the AgentCard has no iconUrl. \"{agent}\" is replaced with the agentRef. Empty disables the fallback."
+        },
         "saToken": {
           "type": "object",
           "properties": {

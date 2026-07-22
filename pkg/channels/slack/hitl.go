@@ -103,14 +103,29 @@ func formRenderable(p *channels.HitlPrompt) bool {
 func (a *Adapter) postHitlPrompt(ctx context.Context, client *slackAPIClient, slackChannel, threadID string, pd *channels.OutboundDelta) error {
 	p := pd.Prompt
 
+	// The pending task is already stored when this runs, so a prompt that never
+	// reaches the thread strands the paused task invisibly: the user has no cue
+	// that typing a reply would resume it. A failed Block Kit post therefore
+	// falls back to the plain-text rendering (the free-text reply path resolves
+	// the task either way).
 	if p.IsAskUser() {
 		if len(p.Questions) == 1 {
 			q := p.Questions[0]
+			var err error
+			interactive := true
 			switch chooseChoiceRender(q) {
 			case renderWidget:
-				return client.postChoiceWidgetPrompt(ctx, slackChannel, threadID, q.Question, q.Choices, q.Multiple)
+				err = client.postChoiceWidgetPrompt(ctx, slackChannel, threadID, q.Question, q.Choices, q.Multiple)
 			case renderSection:
-				return client.postChoiceSectionPrompt(ctx, slackChannel, threadID, q.Question, q.Choices, q.Multiple)
+				err = client.postChoiceSectionPrompt(ctx, slackChannel, threadID, q.Question, q.Choices, q.Multiple)
+			default:
+				interactive = false
+			}
+			if interactive {
+				if err == nil {
+					return nil
+				}
+				a.Logger.Warn("slack: choice prompt failed, falling back to text", "thread", threadID, "error", err)
 			}
 		} else if formRenderable(p) {
 			return client.postChoiceFormPrompt(ctx, slackChannel, threadID, p.Questions)
@@ -124,7 +139,13 @@ func (a *Adapter) postHitlPrompt(ctx context.Context, client *slackAPIClient, sl
 	if text == "" {
 		text = "_Waiting for approval…_"
 	}
-	return client.postApprovalPrompt(ctx, slackChannel, threadID, text)
+	err := client.postApprovalPrompt(ctx, slackChannel, threadID, text)
+	if err == nil {
+		return nil
+	}
+	a.Logger.Warn("slack: approval prompt failed, falling back to text", "thread", threadID, "error", err)
+	_, err = client.postMessage(ctx, slackChannel, text+"\n\n_Reply *approve* or *deny* in this thread._", threadID)
+	return err
 }
 
 // renderAskUserText renders all questions and their choices as mrkdwn, with an

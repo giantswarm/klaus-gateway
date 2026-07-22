@@ -150,10 +150,18 @@ type Adapter struct {
 
 	// signInPromptedMu guards signInPrompted, the (user, thread) pairs already
 	// given a parked-message sign-in prompt within the current pendingTTL
-	// window, so a burst of parked messages nudges once. Cleared for a user
-	// when their link completes, so a later /logout re-prompts.
+	// window, so a burst of parked messages nudges once. Entries carry the
+	// posted prompt's message coordinates so a completed link can rewrite the
+	// prompt in place. Drained for a user when their link completes, so a
+	// later /logout re-prompts.
 	signInPromptedMu sync.Mutex
-	signInPrompted   map[string]ttlEntry[struct{}]
+	signInPrompted   map[string]ttlEntry[signInAnchor]
+
+	// inactiveHintedMu guards inactiveHinted, the threads whose poster was
+	// already told the thread is inactive, so a dropped reply hints once per
+	// window instead of once per message.
+	inactiveHintedMu sync.Mutex
+	inactiveHinted   map[string]ttlEntry[struct{}]
 
 	turnsMu sync.Mutex
 	turns   map[string]*turn // keyed by threadID; cancels in-flight SendCompletion
@@ -211,22 +219,21 @@ type Adapter struct {
 	modelMu    sync.Mutex
 	modelCache map[string]modelEntry // agentRef -> cached model label
 
-	// signInMu guards signInPrompts: the response_url captured from a sign-in
-	// button click, keyed by Slack user ID. An ephemeral message has no
-	// addressable ts, so this URL is the only handle for replacing the prompt
-	// once the link completes.
-	signInMu      sync.Mutex
-	signInPrompts map[string]ttlEntry[string]
-
-	// connectorMu guards connectorPrompted: when the connect prompt last posted
-	// per (user, backend), bounding re-prompts for a backend the user neither
-	// connects nor dismisses.
+	// connectorMu guards connectorPrompted: the last connect prompt per
+	// (user, backend), bounding re-prompts for a backend the user neither
+	// connects nor dismisses. Each record keeps the surfaced login URL: a new
+	// challenge mints a new single-use URL and invalidates the old one, so a
+	// changed URL must bypass the cooldown or the only visible button is dead.
 	connectorMu       sync.Mutex
-	connectorPrompted map[string]map[string]time.Time
+	connectorPrompted map[string]map[string]connectorPromptRecord
 }
 
-// signInPromptTTL matches the Slack response_url validity window.
-const signInPromptTTL = 30 * time.Minute
+// connectorPromptRecord is the last connect prompt surfaced for a
+// (user, backend): when it posted and which login URL its button carries.
+type connectorPromptRecord struct {
+	at  time.Time
+	url string
+}
 
 // emailEntry is a cached Slack user email with its expiry.
 type emailEntry struct {
@@ -634,38 +641,93 @@ func (a *Adapter) postLaunchAnnouncement(ctx context.Context, slackChannel, thre
 	}
 }
 
-// postSignIn posts the ephemeral "Sign in" prompt for the
-// account-linking flow. It is driven by the explicit /klaus login command and
-// by an unlinked user's first turn (which is aborted, not run as the SA). A
-// failure to post is logged and swallowed.
+// signInAnchor is the message coordinates of a posted sign-in prompt, kept so
+// a completed link can rewrite the prompt in place (chat.update). threadID is
+// filled by takeSignInAnchors from the map key so the rewrite can decide, per
+// thread, whether that thread's replay reaches the agent.
+type signInAnchor struct {
+	channel  string
+	ts       string
+	threadID string
+}
+
+// postSignIn posts the "Sign in" prompt for the account-linking flow and
+// records its message coordinates so the completed link rewrites it in place.
+// It is driven by the explicit /login command and by an unlinked user's first
+// turn (which is aborted, not run as the SA). A failure to post is logged and
+// swallowed.
 func (a *Adapter) postSignIn(ctx context.Context, slackChannel, threadID, slackUser string) {
 	url := a.OBO.LinkURL(slackUser)
 	if url == "" {
 		a.Logger.Warn("slack: empty sign-in link URL, skipping prompt", "user", slackUser)
+		a.clearSignInReservation(slackUser, threadID)
 		return
 	}
-	if err := a.apiClient().postSignInPrompt(ctx, slackChannel, threadID, slackUser, url); err != nil {
+	ts, err := a.apiClient().postSignInPrompt(ctx, slackChannel, threadID, slackUser, url)
+	if err != nil {
 		a.Logger.Warn("slack: post sign-in prompt failed", "user", slackUser, "error", err)
+		a.clearSignInReservation(slackUser, threadID)
+		return
+	}
+	a.recordSignInAnchor(slackUser, threadID, signInAnchor{channel: slackChannel, ts: ts})
+	// The post ran outside any lock, so a link callback may have drained the
+	// anchors while the prompt was in flight; the just-recorded anchor would
+	// then keep a live sign-in button for an already-linked user and suppress
+	// re-prompts for the full window. Re-check and converge.
+	if _, err := a.OBO.TokenFor(ctx, slackUser); err == nil {
+		a.updateSignInAnchors(ctx, slackUser, nil)
 	}
 }
 
+// clearSignInReservation removes the (user, thread) throttle entry when no
+// prompt message exists for it, so a failed post retries on the next parked
+// message instead of suppressing the nudge for the full window. An entry with
+// a posted anchor is left alone.
+func (a *Adapter) clearSignInReservation(slackUser, threadID string) {
+	key := slackUser + "\x00" + threadID
+	a.signInPromptedMu.Lock()
+	defer a.signInPromptedMu.Unlock()
+	if entry, ok := a.signInPrompted[key]; ok && entry.value.ts == "" {
+		delete(a.signInPrompted, key)
+	}
+}
+
+// recordSignInAnchor stores the posted prompt's coordinates under the (user,
+// thread) key. It also acts as the nudge-throttle entry, so an explicit /login
+// prompt suppresses a redundant parked-message nudge in the same thread.
+func (a *Adapter) recordSignInAnchor(slackUser, threadID string, anchor signInAnchor) {
+	now := time.Now()
+	key := slackUser + "\x00" + threadID
+	a.signInPromptedMu.Lock()
+	defer a.signInPromptedMu.Unlock()
+	if a.signInPrompted == nil {
+		a.signInPrompted = make(map[string]ttlEntry[signInAnchor])
+	}
+	sweepExpired(a.signInPrompted, now)
+	a.signInPrompted[key] = ttlEntry[signInAnchor]{value: anchor, expires: now.Add(pendingTTL)}
+}
+
 // markConnectorPrompted records a prompt attempt for (user, server) and
-// reports whether one is allowed now (outside the cooldown). Check and set
-// are atomic so concurrent turns post at most one prompt.
-func (a *Adapter) markConnectorPrompted(slackUser, server string) bool {
+// reports whether one is allowed now: outside the cooldown, or carrying a
+// login URL different from the last surfaced button (the auth server issued
+// a new single-use URL, so the posted button is dead and must be superseded).
+// Check and set are atomic so concurrent turns post at most one prompt per
+// URL.
+func (a *Adapter) markConnectorPrompted(slackUser, server, loginURL string) bool {
 	now := time.Now()
 	a.connectorMu.Lock()
 	defer a.connectorMu.Unlock()
-	if last, ok := a.connectorPrompted[slackUser][server]; ok && now.Sub(last) < connectorPromptCooldown {
+	if last, ok := a.connectorPrompted[slackUser][server]; ok &&
+		now.Sub(last.at) < connectorPromptCooldown && last.url == loginURL {
 		return false
 	}
 	if a.connectorPrompted == nil {
-		a.connectorPrompted = make(map[string]map[string]time.Time)
+		a.connectorPrompted = make(map[string]map[string]connectorPromptRecord)
 	}
 	if a.connectorPrompted[slackUser] == nil {
-		a.connectorPrompted[slackUser] = make(map[string]time.Time)
+		a.connectorPrompted[slackUser] = make(map[string]connectorPromptRecord)
 	}
-	a.connectorPrompted[slackUser][server] = now
+	a.connectorPrompted[slackUser][server] = connectorPromptRecord{at: now, url: loginURL}
 	return true
 }
 
@@ -678,62 +740,70 @@ func (a *Adapter) clearConnectorPrompted(slackUser, server string) {
 	delete(a.connectorPrompted[slackUser], server)
 }
 
-// storeSignInPrompt records the response_url of a clicked sign-in button so the
-// ephemeral prompt can be replaced when the link completes. Expired entries are
-// swept opportunistically; a re-click overwrites the previous entry.
-func (a *Adapter) storeSignInPrompt(slackUser, responseURL string) {
-	if slackUser == "" || responseURL == "" {
-		return
-	}
+// takeSignInAnchors returns and clears the user's sign-in prompt entries,
+// keeping only anchors that are still addressable (posted successfully and
+// unexpired). Draining doubles as the throttle reset, so becoming unlinked
+// again (e.g. /logout) prompts anew.
+func (a *Adapter) takeSignInAnchors(slackUser string) []signInAnchor {
+	prefix := slackUser + "\x00"
 	now := time.Now()
-	a.signInMu.Lock()
-	defer a.signInMu.Unlock()
-	if a.signInPrompts == nil {
-		a.signInPrompts = make(map[string]ttlEntry[string])
+	a.signInPromptedMu.Lock()
+	defer a.signInPromptedMu.Unlock()
+	var anchors []signInAnchor
+	for key, entry := range a.signInPrompted {
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		delete(a.signInPrompted, key)
+		if entry.value.ts != "" && now.Before(entry.expires) {
+			anchor := entry.value
+			anchor.threadID = strings.TrimPrefix(key, prefix)
+			anchors = append(anchors, anchor)
+		}
 	}
-	sweepExpired(a.signInPrompts, now)
-	a.signInPrompts[slackUser] = ttlEntry[string]{value: responseURL, expires: now.Add(signInPromptTTL)}
+	return anchors
 }
 
-// takeSignInPrompt returns and clears the stored response_url for slackUser,
-// or "" when none is stored or it has expired.
-func (a *Adapter) takeSignInPrompt(slackUser string) string {
-	a.signInMu.Lock()
-	defer a.signInMu.Unlock()
-	entry, ok := a.signInPrompts[slackUser]
-	if !ok {
-		return ""
-	}
-	delete(a.signInPrompts, slackUser)
-	if time.Now().After(entry.expires) {
-		return ""
-	}
-	return entry.value
-}
-
-// notifyLinked replaces the ephemeral sign-in prompt with a confirmation once
-// the account link completes (via OnUserLinked). A link that did not start from
-// a button click (no stored response_url) is a silent no-op; the ephemeral
-// prompt cannot be reached any other way.
-func (a *Adapter) notifyLinked(ctx context.Context, slackUser, email string) {
-	responseURL := a.takeSignInPrompt(slackUser)
-	if responseURL == "" {
+// updateSignInAnchors rewrites the user's sign-in prompt messages in place once
+// the account link completes, folding the confirmation into the message the
+// user is already looking at (the URL button is dropped by the rewrite). The
+// identity the user signed in as is confirmed on the private browser success
+// page, not here, so the in-thread rewrite carries no email. An anchor whose
+// thread is in replayingThreads (a parked message about to reach the agent)
+// gains the handoff notice; the others keep the plain confirmation.
+func (a *Adapter) updateSignInAnchors(ctx context.Context, slackUser string, replayingThreads map[string]bool) {
+	anchors := a.takeSignInAnchors(slackUser)
+	if len(anchors) == 0 {
 		return
 	}
-	text := "✅ _Signed in. I can act on your behalf now._"
-	if email != "" {
-		text = "✅ _Signed in as " + escapeMrkdwn(email) + ". I can act on your behalf now._"
+	const base = "✅ Signed in. I can act on your behalf now."
+	var handoff string
+	if len(replayingThreads) > 0 {
+		handoff = fmt.Sprintf(" Bringing in **%s** to help.", a.agentDisplayName(ctx, a.DefaultAgent))
 	}
-	if err := respondURL(ctx, responseURL, text); err != nil {
-		a.Logger.Warn("slack: update sign-in prompt after link failed", "user", slackUser, "error", err)
+	client := a.apiClient()
+	for _, anchor := range anchors {
+		text := base
+		if replayingThreads[anchor.threadID] {
+			text += handoff
+		}
+		if err := client.chatUpdateMarkdown(ctx, anchor.channel, anchor.ts, text); err != nil {
+			a.Logger.Warn("slack: update sign-in prompt after link failed", "user", slackUser, "channel", anchor.channel, "ts", anchor.ts, "error", err)
+			// The anchor was drained before the update; without it the thread
+			// would keep a live sign-in button for a linked user forever.
+			// Re-recording lets the next convergence pass retry the rewrite.
+			a.recordSignInAnchor(slackUser, anchor.threadID, signInAnchor{channel: anchor.channel, ts: anchor.ts})
+		}
 	}
 }
 
 // maybePostSignIn posts the sign-in prompt unless one was already posted for
 // this (user, thread) within the current pendingTTL window, so a burst of
 // parked messages nudges once instead of once per message. The explicit
-// /login command bypasses it (postSignIn directly); a completed link clears
-// the window (clearSignInPrompted) so a /logout re-prompts.
+// /login command bypasses it (postSignIn directly); a completed link drains
+// the window (takeSignInAnchors) so a /logout re-prompts. The entry is
+// reserved (with no anchor yet) before posting so concurrent parks nudge once;
+// postSignIn overwrites it with the posted message's coordinates.
 func (a *Adapter) maybePostSignIn(ctx context.Context, slackChannel, threadID, slackUser string) {
 	now := time.Now()
 	key := slackUser + "\x00" + threadID
@@ -744,25 +814,12 @@ func (a *Adapter) maybePostSignIn(ctx context.Context, slackChannel, threadID, s
 		return
 	}
 	if a.signInPrompted == nil {
-		a.signInPrompted = make(map[string]ttlEntry[struct{}])
+		a.signInPrompted = make(map[string]ttlEntry[signInAnchor])
 	}
 	sweepExpired(a.signInPrompted, now)
-	a.signInPrompted[key] = ttlEntry[struct{}]{expires: now.Add(pendingTTL)}
+	a.signInPrompted[key] = ttlEntry[signInAnchor]{expires: now.Add(pendingTTL)}
 	a.signInPromptedMu.Unlock()
 	a.postSignIn(ctx, slackChannel, threadID, slackUser)
-}
-
-// clearSignInPrompted forgets the user's prompt-throttle entries once their
-// link completes, so becoming unlinked again (e.g. /logout) prompts anew.
-func (a *Adapter) clearSignInPrompted(slackUser string) {
-	prefix := slackUser + "\x00"
-	a.signInPromptedMu.Lock()
-	defer a.signInPromptedMu.Unlock()
-	for key := range a.signInPrompted {
-		if strings.HasPrefix(key, prefix) {
-			delete(a.signInPrompted, key)
-		}
-	}
 }
 
 // postAccessPrompt asks the thread initiator (ephemerally) to approve a newcomer
@@ -954,11 +1011,11 @@ func (a *Adapter) takePendingLogin(slackUser string) map[string][]*pendingLoginR
 	return byThread
 }
 
-// OnUserLinked replaces the ephemeral sign-in prompt with a confirmation and
+// OnUserLinked rewrites the sign-in prompt message(s) into a confirmation and
 // replays the messages the user sent before signing in, once their muster
 // identity is linked. Registered as the musterlink OnLinked hook, whose contract
 // is that it must not block: HandleCallback renders the "signed in, close this
-// tab" page only after it returns. So both the confirmation POST and the replay
+// tab" page only after it returns. So both the prompt rewrite and the replay
 // are dispatched on their own goroutines and this returns promptly. Each thread's
 // queue is replayed in order on its own goroutine (dispatch serializes per
 // thread, so ordering only holds within a sequential drain); threads replay
@@ -970,17 +1027,29 @@ func (a *Adapter) takePendingLogin(slackUser string) map[string][]*pendingLoginR
 // context) is cancelled. Falls back to the passed context when the adapter was
 // constructed without Start (direct-construction tests).
 func (a *Adapter) OnUserLinked(ctx context.Context, slackUser, email string) {
-	a.clearSignInPrompted(slackUser)
 	bgCtx := a.baseCtx
 	if bgCtx == nil {
 		bgCtx = ctx
 	}
-	// notifyLinked does a blocking response_url POST (a Slack round-trip, up to a
-	// 10s client timeout); running it inline would delay the sign-in success page
-	// by that long. Its ordering against replay is immaterial: the ephemeral
-	// prompt and the agent's thread reply are independent messages.
-	go a.notifyLinked(bgCtx, slackUser, email)
-	for _, queue := range a.takePendingLogin(slackUser) {
+	queues := a.takePendingLogin(slackUser)
+	// The prompt rewrite announces the agent handoff only when a replay will
+	// actually reach the agent: bare auth utterances are satisfied by the link
+	// itself, and a newcomer's replay lands at the initiator's consent prompt
+	// instead, so both keep the plain confirmation.
+	replayingThreads := make(map[string]bool)
+	for threadID, queue := range queues {
+		for _, req := range queue {
+			if !isBareAuthUtterance(req.msg.Text) && a.accessPolicy().Allowed(threadID, slackUser) {
+				replayingThreads[threadID] = true
+			}
+		}
+	}
+	// updateSignInAnchors does blocking chat.update round-trips; running them
+	// inline would delay the sign-in success page. Ordering against replay is
+	// immaterial: the prompt and the agent's thread reply are independent
+	// messages.
+	go a.updateSignInAnchors(bgCtx, slackUser, replayingThreads)
+	for _, queue := range queues {
 		go func() {
 			for _, req := range queue {
 				// A bare "login"-style message asked for the sign-in that just
@@ -992,6 +1061,7 @@ func (a *Adapter) OnUserLinked(ctx context.Context, slackUser, email string) {
 				}
 				if err := a.replayDispatch(bgCtx, req.msg, req.slackChannel); err != nil && !errors.Is(err, context.Canceled) {
 					a.Logger.Error("slack: replay after sign-in failed", "user", slackUser, "thread", req.msg.ThreadID, "error", err)
+					a.postReplayFailureNote(bgCtx, req.slackChannel, req.msg.ThreadID)
 				}
 			}
 		}()
@@ -1089,6 +1159,9 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 		}
 		return
 	}
+	a.Logger.Debug("slack: inbound event", "type", inner.Type, "channel", inner.Channel,
+		"ts", inner.TS, "thread_ts", inner.ThreadTS, "user", inner.User,
+		"subtype", inner.SubType, "from_bot", inner.BotID != "")
 	if !a.acceptEvent(inner) {
 		return
 	}
@@ -1115,14 +1188,34 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 	threadReplyOnly := inner.threadReplyOnly()
 	msg, ok := inner.toInboundMessage(threadReplyOnly)
 	if !ok {
+		a.Logger.Debug("slack: event not routable as a message", "type", inner.Type,
+			"channel", inner.Channel, "ts", inner.TS, "thread_reply_only", threadReplyOnly)
 		return
 	}
+	// The inactive-thread gate runs before the dedup claim: a mention in a
+	// thread arrives as both a message and an app_mention event, and when the
+	// message copy lands first, having it claim the dedup slot on its way to
+	// being gate-dropped would discard the app_mention copy as a duplicate.
 	if threadReplyOnly && !a.isActiveThread(msg.ThreadID) {
+		a.Logger.Debug("slack: reply in inactive thread ignored", "channel", inner.Channel, "thread", msg.ThreadID)
+		a.hintInactiveThread(ctx, inner.Channel, msg.ThreadID, msg.Subject)
+		return
+	}
+	if a.seenMessage(inner.Channel, msg.MessageID) {
+		a.Logger.Info("slack: dropping duplicate message delivery", "channel", inner.Channel, "ts", msg.MessageID)
 		return
 	}
 	a.seedInitiatorFromRoot(ctx, inner.Channel, msg.ThreadID, msg.MessageID)
 	if cmd := parseCommand(msg.Text); cmd != nil {
 		if a.handleCommand(ctx, cmd, msg.Subject, inner.Channel, msg.ThreadID) {
+			a.Logger.Debug("slack: command consumed", "command", cmd.Name, "channel", inner.Channel, "thread", msg.ThreadID)
+			return
+		}
+		if isUnknownCommand(cmd) {
+			text := fmt.Sprintf("_`/%s` is not one of my commands (see `/help`). If it was meant for the agent, resend it without the leading slash._", cmd.Name)
+			if _, err := a.apiClient().postMessage(ctx, inner.Channel, text, msg.ThreadID); err != nil {
+				a.Logger.Warn("slack: post unknown-command notice failed", "error", err)
+			}
 			return
 		}
 	}
@@ -1138,10 +1231,45 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 	}
 }
 
+// postDispatchFailureNote posts the generic failure note for a turn that died
+// before its stream started (agent resolve or send failed). Errors inside a
+// running stream are surfaced by streamResponse; without this note a
+// pre-stream failure is invisible to the thread. Skipped on the replay path,
+// where the caller posts the more specific postReplayFailureNote. Best-effort,
+// and silent on shutdown (a canceled context means nobody is waiting for it).
+func (a *Adapter) postDispatchFailureNote(ctx context.Context, slackChannel, threadID string) {
+	if ctx.Err() != nil || isReplayContext(ctx) {
+		return
+	}
+	if _, err := a.apiClient().postMessage(ctx, slackChannel, failedNote, threadID); err != nil {
+		a.Logger.Warn("slack: post dispatch failure note failed", "thread", threadID, "error", err)
+	}
+}
+
+// postReplayFailureNote tells the thread a parked message could not be
+// replayed, so a sign-in or access grant that just promised action does not
+// end in silence. Best-effort: a post failure is only logged.
+func (a *Adapter) postReplayFailureNote(ctx context.Context, slackChannel, threadID string) {
+	const text = "⚠️ _I couldn't pick your message back up. Please resend it._"
+	if _, err := a.apiClient().postMessage(ctx, slackChannel, text, threadID); err != nil {
+		a.Logger.Warn("slack: post replay failure note failed", "thread", threadID, "error", err)
+	}
+}
+
 // errThreadBusy reports a turn rejected because another turn holds the
 // thread's slot, so the caller chooses between notifying the user and
 // requeueing the message.
 var errThreadBusy = errors.New("slack: thread busy")
+
+// replayContextKey marks a dispatch reached through replayDispatch, so the
+// pre-stream failure note is left to the replay caller's postReplayFailureNote
+// rather than doubled by dispatch's own postDispatchFailureNote.
+type replayContextKey struct{}
+
+func isReplayContext(ctx context.Context) bool {
+	replaying, _ := ctx.Value(replayContextKey{}).(bool)
+	return replaying
+}
 
 // replayDispatch delivers a previously parked message through dispatch. The
 // parked user never knowingly raced anyone, so a held thread slot does not
@@ -1151,6 +1279,7 @@ var errThreadBusy = errors.New("slack: thread busy")
 // dispatch call), which lets a caller drain a queue in order; run it off any
 // latency-sensitive goroutine.
 func (a *Adapter) replayDispatch(ctx context.Context, msg channels.InboundMessage, slackChannel string) error {
+	ctx = context.WithValue(ctx, replayContextKey{}, true)
 	for {
 		err := a.dispatch(ctx, msg, slackChannel)
 		if !errors.Is(err, errThreadBusy) {
@@ -1163,6 +1292,64 @@ func (a *Adapter) replayDispatch(ctx context.Context, msg channels.InboundMessag
 		case <-ctx.Done():
 			return ctx.Err()
 		}
+	}
+}
+
+// threadEngaged reports whether this process holds any trace of the bot
+// having interacted in threadID: a sign-in prompt, a details setting, or
+// recorded usage. The active-thread gate already rules out an initiator or
+// pending task, so these traces are what distinguishes "the bot was here but
+// the thread never activated / expired" from a served channel's unrelated
+// threads. Process-local: after a restart there is no trace and no hint.
+func (a *Adapter) threadEngaged(threadID string) bool {
+	a.detailsMu.Lock()
+	_, hasDetails := a.details[threadID]
+	a.detailsMu.Unlock()
+	if hasDetails {
+		return true
+	}
+	a.usageMu.Lock()
+	_, hasUsage := a.threadUsage[threadID]
+	a.usageMu.Unlock()
+	if hasUsage {
+		return true
+	}
+	suffix := "\x00" + threadID
+	a.signInPromptedMu.Lock()
+	defer a.signInPromptedMu.Unlock()
+	for key := range a.signInPrompted {
+		if strings.HasSuffix(key, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+// hintInactiveThread posts a one-time ephemeral hint to the poster of a
+// non-mention reply the active-thread gate is about to drop, so the bot does
+// not read as deaf in a thread it was part of (a command-only thread never
+// activates; TTL expiry deactivates). Threads with no trace of the bot stay
+// silent: a served channel's unrelated threads must not be pinged. Ephemeral
+// so a shared channel is not spammed; once per thread per pendingTTL window.
+func (a *Adapter) hintInactiveThread(ctx context.Context, slackChannel, threadID, slackUser string) {
+	if slackUser == "" || !a.threadEngaged(threadID) {
+		return
+	}
+	now := time.Now()
+	a.inactiveHintedMu.Lock()
+	if entry, ok := a.inactiveHinted[threadID]; ok && now.Before(entry.expires) {
+		a.inactiveHintedMu.Unlock()
+		return
+	}
+	if a.inactiveHinted == nil {
+		a.inactiveHinted = make(map[string]ttlEntry[struct{}])
+	}
+	sweepExpired(a.inactiveHinted, now)
+	a.inactiveHinted[threadID] = ttlEntry[struct{}]{expires: now.Add(pendingTTL)}
+	a.inactiveHintedMu.Unlock()
+	const text = "_I'm not active in this thread, so I didn't act on your message. Mention me to start._"
+	if err := a.apiClient().postEphemeralText(ctx, slackChannel, slackUser, threadID, text); err != nil {
+		a.Logger.Warn("slack: post inactive-thread hint failed", "thread", threadID, "error", err)
 	}
 }
 
@@ -1242,7 +1429,7 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 		if a.OBO != nil && slackUser != "" {
 			if _, err := a.OBO.TokenFor(ctx, slackUser); err != nil {
 				if errors.Is(err, musterlink.ErrNotLinked) {
-					a.Logger.Debug("slack: newcomer not linked, prompting sign-in", "user", slackUser)
+					a.Logger.Info("slack: newcomer not linked, prompting sign-in", "user", slackUser)
 					// Hold the message so signing in resumes it (the replay re-enters
 					// dispatch, now linked, and falls through to the access prompt).
 					a.parkForLogin(ctx, msg, slackChannel, slackUser)
@@ -1331,6 +1518,7 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 	ref, err := a.gw.Resolve(ctx, msg)
 	if err != nil {
 		restoreTask()
+		a.postDispatchFailureNote(ctx, slackChannel, msg.ThreadID)
 		return fmt.Errorf("slack: resolve: %w", err)
 	}
 
@@ -1352,6 +1540,7 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 	deltas, err := a.gw.SendCompletion(turnCtx, ref, msg)
 	if err != nil {
 		restoreTask()
+		a.postDispatchFailureNote(ctx, slackChannel, msg.ThreadID)
 		return fmt.Errorf("slack: send completion: %w", err)
 	}
 
@@ -1484,9 +1673,13 @@ func (a *Adapter) humanToken(ctx context.Context, slackChannel, threadID, slackU
 	token, err := a.OBO.TokenFor(ctx, slackUser)
 	switch {
 	case err == nil:
+		// A leftover anchor for a user whose token works is a sign-in prompt
+		// whose post-link rewrite failed; converge it now so the thread does
+		// not keep a live "Sign in" button for a linked user.
+		go a.updateSignInAnchors(ctx, slackUser, nil)
 		return token, true, false
 	case errors.Is(err, musterlink.ErrNotLinked):
-		a.Logger.Debug("slack: link unavailable (unlinked or refresh token dead), prompting sign-in", "user", slackUser)
+		a.Logger.Info("slack: link unavailable (unlinked or refresh token dead), prompting sign-in", "user", slackUser)
 		return "", false, true
 	default:
 		a.Logger.Warn("slack: human token unavailable, aborting turn", "user", slackUser, "error", err)
@@ -1565,6 +1758,12 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 		// falls through to the failure signalling below.
 		if errors.Is(ctx.Err(), context.Canceled) {
 			prog.clear(cctx)
+			// prog.clear is a no-op in text mode (no reaction to swap), which
+			// would leave the placeholder as "thinking" forever under the
+			// "Stopped." reply.
+			if prog.reactTS == "" && !w.wroteContent() {
+				a.postTerminalNote(cctx, client, slackChannel, threadID, replyTS, stoppedNote)
+			}
 			return err
 		}
 		prog.failed(cctx)
@@ -1588,6 +1787,11 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 		cctx, cancel := cleanupCtx()
 		defer cancel()
 		prog.clear(cctx) // drop the working indicator
+		// Same text-mode gap as the stop path: without streamed content the
+		// placeholder would sit as "thinking" above the approval prompt.
+		if prog.reactTS == "" && !w.wroteContent() {
+			a.postTerminalNote(cctx, client, slackChannel, threadID, replyTS, pausedNote)
+		}
 		a.storePendingTask(threadID, &pendingTask{
 			TaskID:    pd.TaskID,
 			AgentRef:  msg.AgentRef,

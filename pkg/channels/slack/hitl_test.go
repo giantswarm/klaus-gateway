@@ -1,7 +1,13 @@
 package slack
 
 import (
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -179,4 +185,53 @@ func TestChoiceValueRoundTrip(t *testing.T) {
 
 	_, ok = decodeChoiceValue("not json")
 	require.False(t, ok)
+}
+
+// A Block Kit approval prompt that Slack rejects falls back to a plain-text
+// prompt: the pending task is already stored, so a thread with no visible
+// prompt strands it (nothing tells the user a reply would resume it).
+func TestPostHitlPrompt_FallsBackToTextOnBlockKitFailure(t *testing.T) {
+	var mu sync.Mutex
+	var plainTexts []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(string(body), `"blocks"`) {
+			_, _ = w.Write([]byte(`{"ok":false,"error":"invalid_blocks"}`))
+			return
+		}
+		// postMessage sends form-encoded params (Block Kit posts send JSON).
+		values, _ := url.ParseQuery(string(body))
+		mu.Lock()
+		plainTexts = append(plainTexts, values.Get("text"))
+		mu.Unlock()
+		_, _ = w.Write([]byte(`{"ok":true,"ts":"1.2"}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{
+		APIBase: srv.URL,
+		Secrets: Secrets{BotToken: "test-bot-token"}, //nolint:gosec
+		Logger:  slog.New(slog.DiscardHandler),
+	}
+
+	// Generic tool approval: Approve/Deny buttons fail, plain text lands.
+	err := a.postHitlPrompt(t.Context(), a.apiClient(), "C1", "T1", &channels.OutboundDelta{
+		Content: "Run kubectl delete?",
+		Prompt:  &channels.HitlPrompt{},
+	})
+	require.NoError(t, err)
+
+	// Single-select ask_user: choice buttons fail, text rendering lands.
+	err = a.postHitlPrompt(t.Context(), a.apiClient(), "C1", "T1", &channels.OutboundDelta{
+		Prompt: askUserPrompt(false, "yes", "no"),
+	})
+	require.NoError(t, err)
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, plainTexts, 2)
+	require.Contains(t, plainTexts[0], "Run kubectl delete?")
+	require.Contains(t, plainTexts[0], "approve")
+	require.Contains(t, plainTexts[1], "Reply in this thread")
 }

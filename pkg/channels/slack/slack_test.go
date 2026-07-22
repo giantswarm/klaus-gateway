@@ -507,11 +507,10 @@ func TestDispatch_OBO_DisabledLeavesBearerTokenEmpty(t *testing.T) {
 // prompt and never dispatched to the agent — no silent M2M service-account
 // fallback (klaus-gateway#116).
 func TestDispatch_OBO_UnlinkedUserPromptsSignInAndDoesNotDispatch(t *testing.T) {
-	fakeSlack, ephemeral := captureEphemeral(t)
-	defer fakeSlack.Close()
+	fake := newFakeSlackAPI()
 
 	gw := &stubGateway{}
-	a, srv := newEventsAdapter(t, gw, fakeSlack.URL, channelMode)
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
 	a.OBO = &fakeOBO{linkedUser: "U999", token: "x", linkURL: "https://gw.example.com/auth/slack/link?u=xyz"}
 
 	payload := `{"type":"event_callback","event":{"type":"app_mention","user":"U123","text":"<@BOT> hi","channel":"C1","ts":"111.222"}}`
@@ -526,8 +525,13 @@ func TestDispatch_OBO_UnlinkedUserPromptsSignInAndDoesNotDispatch(t *testing.T) 
 	require.NoError(t, resp.Body.Close())
 
 	require.Eventually(t, func() bool {
-		return len(ephemeral()) >= 1
-	}, 2*time.Second, 50*time.Millisecond, "unlinked user must be prompted to sign in")
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Sign in so I can act as you")
+	}, 2*time.Second, 50*time.Millisecond, "unlinked user must be prompted to sign in with a real message")
+	// The prompt is a threaded reply under the mention, so it anchors the
+	// thread the agent will answer in (a thread-scoped ephemeral on a fresh
+	// mention is never surfaced by Slack).
+	prompt := fake.pathCalls("chat.postMessage")[0]
+	require.Equal(t, "111.222", prompt.params["thread_ts"])
 	require.Zero(t, gw.resolveCount(), "unlinked turn must not reach the agent (no M2M fallback)")
 }
 
@@ -541,9 +545,8 @@ func TestDispatch_OBO_ParksUnlinkedMessageAndReplaysAfterLink(t *testing.T) {
 		captured = append(captured, msg)
 		mu.Unlock()
 	}}
-	fakeSlack, ephemeral := captureEphemeral(t)
-	defer fakeSlack.Close()
-	a, srv := newEventsAdapter(t, gw, fakeSlack.URL, channelMode)
+	fake := newFakeSlackAPI()
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
 	obo := &fakeOBO{linkedUser: "U123", token: "human-token", notYetLinked: true, linkURL: "https://gw.example.com/link"}
 	a.OBO = obo
 
@@ -559,7 +562,7 @@ func TestDispatch_OBO_ParksUnlinkedMessageAndReplaysAfterLink(t *testing.T) {
 	require.NoError(t, resp.Body.Close())
 
 	require.Eventually(t, func() bool {
-		return len(ephemeral()) >= 1
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Sign in so I can act as you")
 	}, 2*time.Second, 50*time.Millisecond, "unlinked user must be prompted to sign in")
 	require.Zero(t, gw.resolveCount(), "the message must be parked, not dispatched, before linking")
 
@@ -577,6 +580,17 @@ func TestDispatch_OBO_ParksUnlinkedMessageAndReplaysAfterLink(t *testing.T) {
 	mu.Unlock()
 	require.Equal(t, "human-token", got.BearerToken, "the replayed turn carries the human muster token")
 	require.Contains(t, got.Text, "what is failing?")
+
+	// The prompt message is rewritten in place into the signed-in confirmation
+	// with the agent handoff folded in. The email is not echoed in-thread; it is
+	// confirmed on the private browser success page.
+	fake.waitForPath(t, "chat.update", 1)
+	update := fake.pathCalls("chat.update")[0]
+	text, _ := update.params["text"].(string)
+	require.Contains(t, text, "Signed in")
+	require.NotContains(t, text, "@", "the in-thread rewrite carries no email")
+	require.Contains(t, text, "test-agent", "the rewrite announces the agent handoff")
+	require.NotEmpty(t, update.params["ts"], "the rewrite targets the prompt's anchor ts")
 }
 
 // multiUserOBO is a test OBOTokenSource with independent per-user link state, so
@@ -615,9 +629,8 @@ func TestDispatch_OBO_NewcomerReplaysToAccessPromptNotAgent(t *testing.T) {
 		captured = append(captured, msg)
 		mu.Unlock()
 	}}
-	fakeSlack, ephemeral := captureEphemeral(t)
-	defer fakeSlack.Close()
-	a, srv := newEventsAdapter(t, gw, fakeSlack.URL, channelMode)
+	fake := newFakeSlackAPI()
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
 	obo := &multiUserOBO{linked: map[string]string{"U1": "tok1"}}
 	a.OBO = obo
 
@@ -645,19 +658,17 @@ func TestDispatch_OBO_NewcomerReplaysToAccessPromptNotAgent(t *testing.T) {
 	// to sign in, not dispatched.
 	send(`{"type":"event_callback","event":{"type":"app_mention","user":"U2","text":"<@BOT> me too","channel":"C1","ts":"333.444","thread_ts":"111.222"}}`)
 	require.Eventually(t, func() bool {
-		return len(ephemeral()) >= 1
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Sign in so I can act as you")
 	}, 2*time.Second, 50*time.Millisecond, "the newcomer is prompted to sign in")
 	mu.Lock()
 	require.Equal(t, 1, len(captured), "an unlinked newcomer must not reach the agent")
 	mu.Unlock()
 
-	// The newcomer signs in; the replay lands at the access-consent prompt, still
-	// not dispatched to the agent.
+	// The newcomer signs in; the replay lands at the access-consent prompt
+	// (ephemeral to the initiator), still not dispatched to the agent.
 	obo.link("U2", "tok2")
 	a.OnUserLinked(context.Background(), "U2", "u2@example.com")
-	require.Eventually(t, func() bool {
-		return len(ephemeral()) >= 2
-	}, 2*time.Second, 50*time.Millisecond, "the replayed newcomer message posts the initiator access prompt")
+	fake.waitForPath(t, "chat.postEphemeral", 1)
 	mu.Lock()
 	require.Equal(t, 1, len(captured), "a linked-but-unapproved newcomer must not reach the agent on replay")
 	mu.Unlock()
@@ -796,11 +807,10 @@ func TestLogout_Unlinks(t *testing.T) {
 }
 
 func TestLogin_PostsSignInPrompt(t *testing.T) {
-	fakeSlack, ephemeral := captureEphemeral(t)
-	defer fakeSlack.Close()
+	fake := newFakeSlackAPI()
 
 	gw := &stubGateway{}
-	a, srv := newEventsAdapter(t, gw, fakeSlack.URL, channelMode)
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
 	a.OBO = &fakeOBO{linkedUser: "U999", linkURL: "https://gw.example.com/auth/slack/link?u=xyz"}
 
 	payload := `{"type":"event_callback","event":{"type":"app_mention","user":"U123","text":"<@BOT> /login","channel":"C1","ts":"111.222"}}`
@@ -814,8 +824,9 @@ func TestLogin_PostsSignInPrompt(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, resp.Body.Close())
 
-	require.Eventually(t, func() bool { return len(ephemeral()) > 0 },
-		2*time.Second, 50*time.Millisecond, "/login must post a sign-in prompt")
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Sign in so I can act as you")
+	}, 2*time.Second, 50*time.Millisecond, "/login must post a sign-in prompt")
 	require.Zero(t, gw.resolveCount(), "/login must be consumed, not dispatched to the agent")
 }
 
@@ -1181,7 +1192,7 @@ func TestProgress_TextFallbackOnMissingScope(t *testing.T) {
 	require.Contains(t, allText(fake.pathCalls("chat.postMessage")), "_thinking", "text placeholder posted")
 
 	// Second turn must not retry reactions.add (the downgrade is cached).
-	sendEvent(t, srv, dmEvent("U1", "second", "444.000"))
+	sendEvent(t, srv, dmEvent("U1", "second", "445.000"))
 	fake.waitForPath(t, "chat.update", 2)
 	require.Len(t, fake.pathCalls("reactions.add"), 1, "reactions.add attempted once, then downgraded to text")
 }
@@ -1346,13 +1357,102 @@ func TestSerializeTurnsPerThread(t *testing.T) {
 	fake.waitForPath(t, "reactions.add", 1) // A acquired the thread and started
 
 	// Turn B on the same thread while A is in flight -> rejected with a notice.
-	sendEvent(t, srv, dmEvent("U1", "second", "666.000"))
+	// A distinct ts: a real second message is never a redelivery of the first.
+	sendEvent(t, srv, dmThreadEvent("U1", "second", "667.000", "666.000"))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "still finishing")
 	}, 2*time.Second, 20*time.Millisecond, "expected a busy notice for the second turn")
 
 	require.Equal(t, 1, gw.resolveCount(), "second turn is rejected before reaching the agent")
 	close(hold)
+}
+
+// A turn that dies before its stream starts (agent resolve or send fails) must
+// post the failure note: streamResponse only covers errors after the stream is
+// running, so a kagent outage was previously complete silence.
+func TestDispatch_PreStreamFailurePostsNote(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{resolveErr: errors.New("kagent unreachable")}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+
+	sendEvent(t, srv, dmEvent("U1", "hi", "100.000"))
+
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "the turn failed")
+	}, 2*time.Second, 20*time.Millisecond, "a pre-stream dispatch failure must post the failure note")
+}
+
+// A slash command the gateway does not own ("/invite", a typo) must not fall
+// through to the agent (a full turn spent explaining Slack commands); it gets
+// a short notice instead. A prompt merely starting with a path still
+// dispatches.
+func TestHandleInbound_UnknownSlashCommandIntercepted(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok"}, {Done: true}}}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
+
+	sendEvent(t, srv, mention("U1", "/invite <@U2>", "100.000", ""))
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "not one of my commands")
+	}, 2*time.Second, 20*time.Millisecond, "an unknown command replies with a notice")
+	require.Zero(t, gw.resolveCount(), "an unknown slash command must not reach the agent")
+
+	sendEvent(t, srv, mention("U1", "/etc/hosts on node X is broken", "101.000", ""))
+	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
+		2*time.Second, 20*time.Millisecond, "a path-shaped prompt still dispatches")
+}
+
+// A plain (non-mention) reply in a thread the bot has no trace of stays fully
+// silent: no dispatch, no hint (a served channel's unrelated threads must not
+// be pinged).
+func TestHandleInbound_UnrelatedThreadReplyStaysSilent(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
+
+	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","channel_type":"channel","user":"U1","text":"lunch anyone?","channel":"C1","ts":"200.000","thread_ts":"100.000"}}`)
+	time.Sleep(150 * time.Millisecond)
+	require.Zero(t, gw.resolveCount())
+	require.Empty(t, fake.pathCalls("chat.postEphemeral"), "no hint for a thread with no bot trace")
+	require.Empty(t, fake.pathCalls("chat.postMessage"))
+}
+
+// /stop before any streamed content in text-progress mode must resolve the
+// "thinking" placeholder instead of leaving it dangling above "Stopped.".
+func TestStop_TextModePlaceholderResolved(t *testing.T) {
+	fake := newFakeSlackAPI()
+	hold := make(chan struct{})
+	gw := &stubGateway{hold: hold}
+	defer close(hold)
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+	a.ProgressMode = "text"
+
+	sendEvent(t, srv, dmEvent("U1", "long task", "100.000"))
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "_thinking")
+	}, 2*time.Second, 20*time.Millisecond, "text placeholder posted")
+
+	sendEvent(t, srv, dmThreadEvent("U1", "/stop", "101.000", "100.000"))
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.update")), "(stopped)")
+	}, 2*time.Second, 20*time.Millisecond, "the placeholder is replaced on stop")
+}
+
+// A turn pausing on an approval prompt before any streamed content in
+// text-progress mode must resolve the placeholder, which otherwise sits as
+// "thinking" above the prompt.
+func TestPrompt_TextModePlaceholderResolved(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{deltas: []channels.OutboundDelta{
+		{Kind: channels.DeltaPrompt, TaskID: "task-1", Prompt: &channels.HitlPrompt{ToolName: "delete_pod"}},
+	}}
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+	a.ProgressMode = "text"
+
+	sendEvent(t, srv, dmEvent("U1", "do it", "100.000"))
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.update")), "(waiting for your input")
+	}, 2*time.Second, 20*time.Millisecond, "the placeholder is replaced when the turn pauses")
 }
 
 // A retried delivery whose original never reached the handler (pod restart,

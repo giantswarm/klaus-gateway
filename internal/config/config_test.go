@@ -57,6 +57,26 @@ func TestValidate_A2A(t *testing.T) {
 		cfg.A2A.URL = ""
 		require.Error(t, cfg.Validate())
 	})
+
+	t.Run("fallback icon template with placeholder is valid", func(t *testing.T) {
+		cfg := base
+		cfg.A2A.FallbackIconURLTemplate = "https://avatars.gazelle.awsprod.gigantic.io/v1/{agent}.png"
+		require.NoError(t, cfg.Validate())
+	})
+
+	t.Run("fallback icon template without placeholder fails", func(t *testing.T) {
+		cfg := base
+		cfg.A2A.FallbackIconURLTemplate = "https://avatars.gazelle.awsprod.gigantic.io/v1/agent.png"
+		require.Error(t, cfg.Validate())
+	})
+}
+
+func TestLoad_A2AFallbackIconURLTemplateEnv(t *testing.T) {
+	t.Setenv("KLAUS_GATEWAY_A2A_FALLBACK_ICON_URL_TEMPLATE", "https://avatars.gazelle.awsprod.gigantic.io/v1/{agent}.png")
+
+	cfg, err := config.Load([]string{"--a2a-fallback-icon-url-template=https://cli.example/{agent}.svg"})
+	require.NoError(t, err)
+	require.Equal(t, "https://cli.example/{agent}.svg", cfg.A2A.FallbackIconURLTemplate, "the flag overrides the env value")
 }
 
 func TestLoad_WebEnabledEnv(t *testing.T) {

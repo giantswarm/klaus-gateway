@@ -52,3 +52,55 @@ func TestCardIdentity_NegativeCachesFetchFailures(t *testing.T) {
 	require.Equal(t, "SRE agent", name)
 	require.EqualValues(t, 2, hits.Load(), "a successful fetch is cached")
 }
+
+func TestCardIdentity_IconFallback(t *testing.T) {
+	const template = "https://avatars.gazelle.awsprod.gigantic.io/v1/{agent}.png"
+
+	t.Run("card icon wins over fallback", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"name":"SRE agent","iconUrl":"https://cards.example/sre.svg"}`))
+		}))
+		t.Cleanup(server.Close)
+
+		client := &AgentCardClient{BaseURL: server.URL, FallbackIconURLTemplate: template}
+		name, iconURL := client.CardIdentity(t.Context(), "sre-agent")
+		require.Equal(t, "SRE agent", name)
+		require.Equal(t, "https://cards.example/sre.svg", iconURL)
+	})
+
+	t.Run("empty card icon falls back to template", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"name":"SRE agent"}`))
+		}))
+		t.Cleanup(server.Close)
+
+		client := &AgentCardClient{BaseURL: server.URL, FallbackIconURLTemplate: template}
+		name, iconURL := client.CardIdentity(t.Context(), "sre-agent")
+		require.Equal(t, "SRE agent", name)
+		require.Equal(t, "https://avatars.gazelle.awsprod.gigantic.io/v1/sre-agent.png", iconURL)
+	})
+
+	t.Run("fetch error still yields the fallback icon with empty name", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusBadGateway)
+		}))
+		t.Cleanup(server.Close)
+
+		client := &AgentCardClient{BaseURL: server.URL, FallbackIconURLTemplate: template}
+		name, iconURL := client.CardIdentity(t.Context(), "sre-agent")
+		require.Empty(t, name)
+		require.Equal(t, "https://avatars.gazelle.awsprod.gigantic.io/v1/sre-agent.png", iconURL)
+	})
+
+	t.Run("no template leaves an empty icon", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"name":"SRE agent"}`))
+		}))
+		t.Cleanup(server.Close)
+
+		client := &AgentCardClient{BaseURL: server.URL}
+		name, iconURL := client.CardIdentity(t.Context(), "sre-agent")
+		require.Equal(t, "SRE agent", name)
+		require.Empty(t, iconURL)
+	})
+}
