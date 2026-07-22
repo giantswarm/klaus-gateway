@@ -20,6 +20,8 @@ func TestSplitAgentCommand(t *testing.T) {
 		// The question keeps its original formatting; Fields would collapse it.
 		{"/agent sre-agent line one\nline two", "sre-agent", "line one\nline two"},
 		{"/AGENT SRE-Agent hi", "SRE-Agent", "hi"},
+		// parseCommand tolerates whitespace after the slash; the splitter must too.
+		{"/ agent sre-agent do things", "sre-agent", "do things"},
 		// A double-quoted name is taken whole (straight or the curly quotes
 		// Slack clients auto-substitute); an unclosed quote falls back to
 		// plain token parsing.

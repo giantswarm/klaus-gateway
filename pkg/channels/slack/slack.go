@@ -795,15 +795,14 @@ func (a *Adapter) updateSignInAnchors(ctx context.Context, slackUser string, rep
 		return
 	}
 	const base = "✅ Signed in. I can act on your behalf now."
-	var handoff string
-	if len(replayingThreads) > 0 {
-		handoff = fmt.Sprintf(" Bringing in **%s** to help.", a.agentDisplayName(ctx, a.DefaultAgent))
-	}
 	client := a.apiClient()
 	for _, anchor := range anchors {
 		text := base
 		if replayingThreads[anchor.threadID] {
-			text += handoff
+			// The replay resolves the thread's bound agent (an /agent-prefixed
+			// message may have been the one parked), so the hand-off must name
+			// that agent, not assume the default.
+			text += fmt.Sprintf(" Bringing in **%s** to help.", a.agentDisplayName(ctx, a.boundAgentOrDefault(anchor.threadID)))
 		}
 		if err := client.chatUpdateMarkdown(ctx, anchor.channel, anchor.ts, text); err != nil {
 			a.Logger.Warn("slack: update sign-in prompt after link failed", "user", slackUser, "channel", anchor.channel, "ts", anchor.ts, "error", err)

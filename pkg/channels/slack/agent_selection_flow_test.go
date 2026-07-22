@@ -156,6 +156,60 @@ func TestAgentSelection_UnknownAgentFailsLoudlyWithRoster(t *testing.T) {
 	require.Zero(t, gw.resolveCount(), "nothing is dispatched for an unknown agent")
 }
 
+// Whitespace between the slash and the verb ("/ agent …") parses like the
+// plain form: parseCommand tolerates it, so the splitter must too.
+func TestAgentSelection_WhitespaceAfterSlash(t *testing.T) {
+	fake := newFakeSlackAPI()
+	cards := &fakeCards{known: map[string]string{"sre-agent": "SRE Agent"}}
+	gw, resolved := capturingGateway()
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, withSelection(&fakeRoster{}, cards))
+
+	sendEvent(t, srv, mention("U1", "/ agent sre-agent do things", "100.000", ""))
+	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
+		2*time.Second, 50*time.Millisecond)
+	msgs := resolved()
+	require.Equal(t, "sre-agent", msgs[0].AgentRef)
+	require.Equal(t, "do things", msgs[0].Text)
+}
+
+// The /agent read-only forms are deliberately ungated, like /help: a
+// non-initiator in someone else's thread can list the roster (global
+// information, not thread state) and gets the switch refusal — neither
+// changes any state or dispatches anything, and the thread's binding and
+// ownership are untouched.
+func TestAgentSelection_OnlookerReadOnlyFormsUngated(t *testing.T) {
+	fake := newFakeSlackAPI()
+	cards := &fakeCards{known: map[string]string{"sre-agent": "SRE Agent", "k8s-agent": "K8s Agent"}}
+	roster := &fakeRoster{agents: []pkga2a.AgentInfo{{Name: "sre-agent"}}}
+	gw, resolved := capturingGateway()
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, withSelection(roster, cards))
+
+	// U1 starts and owns the conversation.
+	sendEvent(t, srv, mention("U1", "/agent sre-agent start here", "100.000", ""))
+	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
+		2*time.Second, 50*time.Millisecond)
+
+	// An onlooker lists the roster in the thread: allowed, dispatches nothing.
+	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","user":"U2","text":"/agent","channel":"C1","ts":"200.000","thread_ts":"100.000"}}`)
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Available agents")
+	}, 2*time.Second, 50*time.Millisecond, "the roster listing is ungated, like /help")
+
+	// An onlooker's switch attempt is refused, changes nothing.
+	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","user":"U2","text":"/agent k8s-agent take over","channel":"C1","ts":"300.000","thread_ts":"100.000"}}`)
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "already has its agent")
+	}, 2*time.Second, 50*time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
+	require.Equal(t, 1, gw.resolveCount(), "neither read-only form dispatches")
+
+	// The initiator's follow-up still resolves the original binding.
+	sendEvent(t, srv, mention("U1", "continue", "400.000", "100.000"))
+	require.Eventually(t, func() bool { return gw.resolveCount() == 2 },
+		2*time.Second, 50*time.Millisecond)
+	require.Equal(t, "sre-agent", resolved()[1].AgentRef, "the binding is untouched by onlooker commands")
+}
+
 // Typing an agent's display name instead of its technical name gets a
 // copy-pasteable "Did you mean" suggestion in the failure reply — quoted or
 // unquoted — while a plain typo gets no guess. Nothing is dispatched either way.

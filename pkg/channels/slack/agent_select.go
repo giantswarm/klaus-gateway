@@ -75,8 +75,8 @@ const agentValidateTimeout = 10 * time.Second
 const rosterListTimeout = 5 * time.Second
 
 // rosterTTL is how long a fetched roster is served from cache. Short, so a
-// newly installed agent becomes selectable without a redeploy while a burst of
-// /agent listings costs one controller call.
+// newly installed agent becomes selectable without a redeploy while repeated
+// /agent listings stay off the controller.
 const rosterTTL = 30 * time.Second
 
 // handleAgentSelection processes the /agent command. Unlike the consumed
@@ -92,7 +92,12 @@ func (a *Adapter) handleAgentSelection(ctx context.Context, cmd *slashCommand, m
 		}
 	}
 
-	// Bare "/agent": list the roster. Discovery works anywhere, like /help.
+	// Bare "/agent": list the roster. Discovery is deliberately ungated, like
+	// /help: the roster is global information, not thread state, so the
+	// permittedOnly gate the state-changing commands use would only swap this
+	// reply for its own in-thread refusal — while making the caller the thread
+	// initiator as a side effect. The refusal and hint branches below are
+	// equally ungated for the same reason: none of them changes any state.
 	if len(cmd.Args) == 0 {
 		if a.Roster == nil {
 			reply(agentSelectionUnavailable)
@@ -283,9 +288,10 @@ func (a *Adapter) rosterListing(ctx context.Context) (string, bool) {
 	return b.String(), true
 }
 
-// rosterAgents returns the roster, served from a brief cache so a burst of
-// listings costs one controller call while a newly installed agent still
-// appears without a redeploy.
+// rosterAgents returns the roster, served from a brief cache so repeated
+// listings stay cheap while a newly installed agent still appears without a
+// redeploy. Concurrent cold-cache callers may fetch in parallel (the endpoint
+// is idempotent; the last result wins) — no single-flight, deliberately.
 func (a *Adapter) rosterAgents(ctx context.Context) ([]pkga2a.AgentInfo, error) {
 	if a.Roster == nil {
 		return nil, fmt.Errorf("slack: no agent roster source configured")
@@ -371,7 +377,10 @@ func (a *Adapter) defaultAgentNamespace() string {
 // matched the verb via parseCommand.
 func splitAgentCommand(text string) (name, question string) {
 	rest := strings.TrimSpace(text)
-	rest = strings.TrimPrefix(rest, "/")
+	// parseCommand tolerates whitespace between the slash and the verb
+	// ("/ agent …" still parses), so trim it here too before slicing the verb
+	// off, or the slice lands mid-word.
+	rest = strings.TrimSpace(strings.TrimPrefix(rest, "/"))
 	rest = strings.TrimSpace(rest[len(cmdAgent):])
 	if rest == "" {
 		return "", ""
@@ -434,6 +443,18 @@ func (a *Adapter) threadAgentBinding(threadID string) (ref string, ok bool) {
 	entry.expires = time.Now().Add(threadStateTTL)
 	a.agentBindings[threadID] = entry
 	return entry.value, true
+}
+
+// boundAgentOrDefault is the agent a thread's turns resolve to, without the
+// root-fetch recovery: the recorded binding, or the default. For display-only
+// callers (the /usage model line, the sign-in hand-off notice) where a
+// post-restart cache miss naming the default for a bound thread is cosmetic,
+// not routing.
+func (a *Adapter) boundAgentOrDefault(threadID string) string {
+	if bound, ok := a.threadAgentBinding(threadID); ok && bound != "" {
+		return bound
+	}
+	return a.DefaultAgent
 }
 
 // rootAgentLookupTimeout bounds the conversations.replies call that recovers a

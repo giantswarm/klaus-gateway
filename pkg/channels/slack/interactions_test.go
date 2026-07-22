@@ -1008,6 +1008,34 @@ func TestOnUserLinkedAnchorAnnouncesHandoffWhenReplaying(t *testing.T) {
 	require.Contains(t, text, "worker", "the rewrite announces the agent handoff")
 }
 
+// In a thread bound to a non-default agent (/agent selection), the sign-in
+// hand-off names the bound agent — the one the replay will actually resolve —
+// not the default.
+func TestOnUserLinkedAnchorHandoffNamesBoundAgent(t *testing.T) {
+	srv, updates := captureChatUpdates(t)
+
+	a := &Adapter{
+		Secrets:      Secrets{BotToken: "test-bot-token"}, //nolint:gosec
+		APIBase:      srv.URL,
+		DefaultAgent: "worker",
+	}
+	require.NoError(t, a.Start(t.Context(), &fakeGateway{}))
+	a.accessPolicy().SetInitiator("T1", "U001")
+	a.bindThreadAgent("T1", "special-agent")
+	a.recordSignInAnchor("U001", "T1", signInAnchor{channel: "C1", ts: "111.111"})
+	a.parkPendingLogin("U001", &pendingLoginReq{
+		msg:          channels.InboundMessage{Subject: "U001", ThreadID: "T1", MessageID: "T1", Text: "what failed?"},
+		slackChannel: "C1",
+	})
+
+	a.OnUserLinked(t.Context(), "U001", "alice@example.com")
+	require.Eventually(t, func() bool { return len(updates()) == 1 },
+		2*time.Second, 10*time.Millisecond, "the anchor must be rewritten after linking")
+	text, _ := updates()[0]["text"].(string)
+	require.Contains(t, text, "special-agent", "the hand-off names the thread's bound agent")
+	require.NotContains(t, text, "worker", "not the default agent")
+}
+
 // A newcomer's replay lands at the initiator's consent prompt, not the agent,
 // so their rewritten prompt keeps the plain confirmation.
 func TestOnUserLinkedAnchorPlainForUnapprovedNewcomer(t *testing.T) {

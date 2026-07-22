@@ -216,6 +216,28 @@ func TestUsageReport_IncludesModelLineAndCaches(t *testing.T) {
 	require.Equal(t, int32(1), source.calls.Load(), "model lookups must be cached")
 }
 
+// perRefModelSource returns a distinct model per agentRef, so a test can tell
+// which agent's model a report resolved.
+type perRefModelSource struct{}
+
+func (perRefModelSource) AgentModel(_ context.Context, agentRef string) (string, string, error) {
+	return "model-of-" + agentRef, "", nil
+}
+
+// In a thread bound to a non-default agent (/agent selection), the /usage
+// model line names the bound agent's model, not the default's.
+func TestUsageReport_ModelLineFollowsThreadBinding(t *testing.T) {
+	a := &Adapter{DefaultAgent: "kagent/default-agent", Models: perRefModelSource{}}
+	a.bindThreadAgent("T1", "kagent/sre-agent")
+	a.recordTurnUsage("T1", "C1", channels.TurnUsage{TotalTokens: 3})
+
+	require.Contains(t, a.usageReport(t.Context(), "T1", "C1"), "Model — model-of-kagent/sre-agent")
+
+	// An unbound thread still reports the default agent's model.
+	a.recordTurnUsage("T2", "C1", channels.TurnUsage{TotalTokens: 3})
+	require.Contains(t, a.usageReport(t.Context(), "T2", "C1"), "Model — model-of-kagent/default-agent")
+}
+
 // A BYO agent exposes no model; the line is omitted rather than rendered empty.
 func TestUsageReport_OmitsModelLineWhenUnavailable(t *testing.T) {
 	a := &Adapter{DefaultAgent: "kagent/sre-agent", Models: &fakeModelSource{}}
