@@ -159,7 +159,7 @@ func (h *interactionsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 
 	// Acknowledge immediately so Slack doesn't show a timeout spinner.
 	w.WriteHeader(http.StatusOK)
-	go h.adapter.routeInteraction(h.ctx, payload)
+	h.adapter.background(func(ctx context.Context) { h.adapter.routeInteraction(ctx, payload) })
 }
 
 // routeInteraction dispatches a parsed Slack block_actions payload to the

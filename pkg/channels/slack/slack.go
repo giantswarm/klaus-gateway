@@ -132,9 +132,18 @@ type Adapter struct {
 	// icon yet, so agent messages are named but icon-less until kagent exposes it.
 	AgentCards AgentCardResolver
 
-	gw        channels.Gateway
-	baseCtx   context.Context // adapter lifecycle ctx, captured in Start; OnUserLinked's background work (login-replay dispatch and the sign-in confirmation POST) derives from it so shutdown cancels it
-	started   atomic.Bool
+	gw      channels.Gateway
+	baseCtx context.Context // adapter lifecycle ctx, captured in Start; OnUserLinked's background work (login-replay dispatch and the sign-in confirmation POST) derives from it so shutdown cancels it
+	started atomic.Bool
+
+	// bgMu guards the background-goroutine lifecycle. cancel cancels baseCtx;
+	// bgWG tracks every goroutine started via background so Stop can join them,
+	// and bgStopped drops late spawns once Stop has begun. Without the join a
+	// goroutine outlives the adapter that spawned it.
+	bgMu      sync.Mutex
+	cancel    context.CancelFunc
+	bgStopped bool
+	bgWG      sync.WaitGroup
 	startUnix int64 // process start; events older than this are dropped on reconnect
 	evHandler http.Handler
 	ixHandler http.Handler // interactions endpoint; nil in socketmode
@@ -345,7 +354,12 @@ func (a *Adapter) Start(ctx context.Context, gw channels.Gateway) error {
 		a.Logger = slog.Default()
 	}
 	a.gw = gw
+	ctx, cancel := context.WithCancel(ctx)
 	a.baseCtx = ctx
+	a.bgMu.Lock()
+	a.cancel = cancel
+	a.bgStopped = false
+	a.bgMu.Unlock()
 
 	switch a.Mode {
 	case ModeEvents, "":
@@ -371,7 +385,7 @@ func (a *Adapter) Start(ctx context.Context, gw channels.Gateway) error {
 			adapter:  a,
 			logger:   a.Logger,
 		}
-		go sm.run(ctx)
+		a.background(func(ctx context.Context) { sm.run(ctx) })
 	default:
 		return fmt.Errorf("slack: unknown mode %q: want %q or %q", a.Mode, ModeEvents, ModeSocketMode)
 	}
@@ -450,11 +464,54 @@ func eventUnix(ts string) int64 {
 	return sec
 }
 
-// Stop marks the adapter as stopped. The context passed to Start is the
-// primary shutdown mechanism for background goroutines.
-func (a *Adapter) Stop(_ context.Context) error {
+// background runs fn on a tracked goroutine derived from the adapter lifecycle
+// context, so Stop can cancel and join it. A call after Stop has begun (or
+// before Start wired the context) is dropped: shutdown is under way and there is
+// nothing left to serve.
+func (a *Adapter) background(fn func(context.Context)) {
+	a.bgMu.Lock()
+	if a.bgStopped {
+		a.bgMu.Unlock()
+		return
+	}
+	// baseCtx is nil when the adapter was never Started; fall back so the
+	// best-effort work still runs (there is no lifecycle context to cancel).
+	ctx := a.baseCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	a.bgWG.Add(1)
+	a.bgMu.Unlock()
+	go func() {
+		defer a.bgWG.Done()
+		fn(ctx)
+	}()
+}
+
+// Stop cancels the adapter lifecycle context and joins every goroutine started
+// via background, so no work outlives the adapter. The join is bounded by ctx:
+// on ctx cancellation Stop returns ctx.Err() with the join still pending, while
+// context.Background() waits unbounded. Idempotent.
+func (a *Adapter) Stop(ctx context.Context) error {
+	a.bgMu.Lock()
+	a.bgStopped = true
+	cancel := a.cancel
+	a.bgMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 	a.started.Store(false)
-	return nil
+	done := make(chan struct{})
+	go func() {
+		a.bgWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // Mount attaches /channels/slack/events and /channels/slack/interactions to r.
@@ -1074,14 +1131,9 @@ func (a *Adapter) takePendingLogin(slackUser string) map[string][]*pendingLoginR
 //
 // The background work runs on the adapter lifecycle context, not the OAuth
 // callback context: the callback context is request-scoped, so a shutdown would
-// not cancel work dispatched from it, whereas normal dispatch (on the lifecycle
-// context) is cancelled. Falls back to the passed context when the adapter was
-// constructed without Start (direct-construction tests).
-func (a *Adapter) OnUserLinked(ctx context.Context, slackUser, email string) {
-	bgCtx := a.baseCtx
-	if bgCtx == nil {
-		bgCtx = ctx
-	}
+// not cancel work dispatched from it, whereas the lifecycle context (via
+// background) is cancelled and joined by Stop.
+func (a *Adapter) OnUserLinked(_ context.Context, slackUser, _ string) {
 	queues := a.takePendingLogin(slackUser)
 	// The prompt rewrite announces the agent handoff only when a replay will
 	// actually reach the agent: bare auth utterances are satisfied by the link
@@ -1099,9 +1151,9 @@ func (a *Adapter) OnUserLinked(ctx context.Context, slackUser, email string) {
 	// inline would delay the sign-in success page. Ordering against replay is
 	// immaterial: the prompt and the agent's thread reply are independent
 	// messages.
-	go a.updateSignInAnchors(bgCtx, slackUser, replayingThreads)
+	a.background(func(ctx context.Context) { a.updateSignInAnchors(ctx, slackUser, replayingThreads) })
 	for _, queue := range queues {
-		go func() {
+		a.background(func(ctx context.Context) {
 			for _, req := range queue {
 				// A bare "login"-style message asked for the sign-in that just
 				// completed; replaying it would send a stale request to the agent.
@@ -1110,12 +1162,12 @@ func (a *Adapter) OnUserLinked(ctx context.Context, slackUser, email string) {
 						"user", slackUser, "thread", req.msg.ThreadID)
 					continue
 				}
-				if err := a.replayDispatch(bgCtx, req.msg, req.slackChannel); err != nil && !errors.Is(err, context.Canceled) {
+				if err := a.replayDispatch(ctx, req.msg, req.slackChannel); err != nil && !errors.Is(err, context.Canceled) {
 					a.Logger.Error("slack: replay after sign-in failed", "user", slackUser, "thread", req.msg.ThreadID, "error", err)
-					a.postReplayFailureNote(bgCtx, req.slackChannel, req.msg.ThreadID)
+					a.postReplayFailureNote(ctx, req.slackChannel, req.msg.ThreadID)
 				}
 			}
-		}()
+		})
 	}
 }
 
@@ -1729,7 +1781,7 @@ func (a *Adapter) humanToken(ctx context.Context, slackChannel, threadID, slackU
 		// A leftover anchor for a user whose token works is a sign-in prompt
 		// whose post-link rewrite failed; converge it now so the thread does
 		// not keep a live "Sign in" button for a linked user.
-		go a.updateSignInAnchors(ctx, slackUser, nil)
+		a.background(func(ctx context.Context) { a.updateSignInAnchors(ctx, slackUser, nil) })
 		return token, true, false
 	case errors.Is(err, musterlink.ErrNotLinked):
 		a.Logger.Info("slack: link unavailable (unlinked or refresh token dead), prompting sign-in", "user", slackUser)

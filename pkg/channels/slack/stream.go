@@ -310,14 +310,14 @@ func (w *batchedWriter) maybeConnectorPrompt(tool *channels.ToolActivity) {
 		w.logger.Debug("slack: connector prompt skipped, cooldown active and URL unchanged", "user", w.slackUser, "server", server)
 		return
 	}
-	go func() {
-		ctx, cancel := context.WithTimeout(w.adapter.baseCtx, connectorCheckTimeout)
+	w.adapter.background(func(bg context.Context) {
+		ctx, cancel := context.WithTimeout(bg, connectorCheckTimeout)
 		defer cancel()
 		if err := w.client.postConnectorPrompt(ctx, w.channel, w.threadTS, w.slackUser, server, loginURL); err != nil {
 			w.adapter.clearConnectorPrompted(w.slackUser, server)
 			w.logger.Warn("slack: post connector prompt failed", "user", w.slackUser, "server", server, "error", err)
 		}
-	}()
+	})
 }
 
 // callToolTarget is the inner muster tool a call_tool invocation addresses:

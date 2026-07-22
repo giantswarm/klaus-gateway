@@ -140,7 +140,7 @@ func (a *Adapter) releaseThread(threadID string) {
 	delete(a.idleWaiters, threadID)
 	a.inflightMu.Unlock()
 	for _, waiter := range waiters {
-		go waiter()
+		a.background(func(_ context.Context) { waiter() })
 	}
 }
 
