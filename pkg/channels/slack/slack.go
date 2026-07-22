@@ -654,8 +654,8 @@ func (a *Adapter) postLaunchAnnouncement(ctx context.Context, slackChannel, thre
 
 // signInAnchor is the message coordinates of a posted sign-in prompt, kept so
 // a completed link can rewrite the prompt in place (chat.update). threadID is
-// filled by takeSignInAnchors from the map key so the rewrite can decide, per
-// thread, whether that thread's replay reaches the agent.
+// filled by takeSignInAnchors from the map key so a failed rewrite can be
+// re-recorded under the same (user, thread) key for a later retry.
 //
 // The entry plays two roles with different lifetimes: as a rewrite anchor it
 // must stay addressable for pendingTTL (a link can complete long after the
@@ -693,7 +693,7 @@ func (a *Adapter) postSignIn(ctx context.Context, slackChannel, threadID, slackU
 	// then keep a live sign-in button for an already-linked user and suppress
 	// re-prompts for the full window. Re-check and converge.
 	if _, err := a.OBO.TokenFor(ctx, slackUser); err == nil {
-		a.updateSignInAnchors(ctx, slackUser, nil)
+		a.updateSignInAnchors(ctx, slackUser)
 	}
 }
 
@@ -788,25 +788,18 @@ func (a *Adapter) takeSignInAnchors(slackUser string) []signInAnchor {
 // the account link completes, folding the confirmation into the message the
 // user is already looking at (the URL button is dropped by the rewrite). The
 // identity the user signed in as is confirmed on the private browser success
-// page, not here, so the in-thread rewrite carries no email. An anchor whose
-// thread is in replayingThreads (a parked message about to reach the agent)
-// gains the handoff notice; the others keep the plain confirmation.
-func (a *Adapter) updateSignInAnchors(ctx context.Context, slackUser string, replayingThreads map[string]bool) {
+// page, not here, so the in-thread rewrite carries no email. The text is the
+// same fixed phrase for every anchor, so all rewrite paths (the link callback
+// and the convergence re-checks) are interchangeable; what happens to a parked
+// message is signalled by the replay itself, not by this confirmation.
+func (a *Adapter) updateSignInAnchors(ctx context.Context, slackUser string) {
 	anchors := a.takeSignInAnchors(slackUser)
 	if len(anchors) == 0 {
 		return
 	}
-	const base = "✅ Signed in. I can act on your behalf now."
-	var handoff string
-	if len(replayingThreads) > 0 {
-		handoff = fmt.Sprintf(" Bringing in **%s** to help.", a.agentDisplayName(ctx, a.DefaultAgent))
-	}
+	const text = "✅ Signed in. I can act on your behalf now."
 	client := a.apiClient()
 	for _, anchor := range anchors {
-		text := base
-		if replayingThreads[anchor.threadID] {
-			text += handoff
-		}
 		if err := client.chatUpdateMarkdown(ctx, anchor.channel, anchor.ts, text); err != nil {
 			a.Logger.Warn("slack: update sign-in prompt after link failed", "user", slackUser, "channel", anchor.channel, "ts", anchor.ts, "error", err)
 			// The anchor was drained before the update; without it the thread
@@ -1092,23 +1085,11 @@ func (a *Adapter) takePendingLogin(slackUser string) map[string][]*pendingLoginR
 // background) is cancelled and joined by Stop.
 func (a *Adapter) OnUserLinked(_ context.Context, slackUser, _ string) {
 	queues := a.takePendingLogin(slackUser)
-	// The prompt rewrite announces the agent handoff only when a replay will
-	// actually reach the agent: bare auth utterances are satisfied by the link
-	// itself, and a newcomer's replay lands at the initiator's consent prompt
-	// instead, so both keep the plain confirmation.
-	replayingThreads := make(map[string]bool)
-	for threadID, queue := range queues {
-		for _, req := range queue {
-			if !isBareAuthUtterance(req.msg.Text) && a.accessPolicy().Allowed(threadID, slackUser) {
-				replayingThreads[threadID] = true
-			}
-		}
-	}
 	// updateSignInAnchors does blocking chat.update round-trips; running them
 	// inline would delay the sign-in success page. Ordering against replay is
 	// immaterial: the prompt and the agent's thread reply are independent
 	// messages.
-	a.background(func(ctx context.Context) { a.updateSignInAnchors(ctx, slackUser, replayingThreads) })
+	a.background(func(ctx context.Context) { a.updateSignInAnchors(ctx, slackUser) })
 	for _, queue := range queues {
 		a.background(func(ctx context.Context) {
 			for _, req := range queue {
@@ -1664,7 +1645,7 @@ func (a *Adapter) humanToken(ctx context.Context, slackChannel, threadID, slackU
 		// A leftover anchor for a user whose token works is a sign-in prompt
 		// whose post-link rewrite failed; converge it now so the thread does
 		// not keep a live "Sign in" button for a linked user.
-		a.background(func(ctx context.Context) { a.updateSignInAnchors(ctx, slackUser, nil) })
+		a.background(func(ctx context.Context) { a.updateSignInAnchors(ctx, slackUser) })
 		return token, true, false
 	case errors.Is(err, musterlink.ErrNotLinked):
 		a.Logger.Info("slack: link unavailable (unlinked or refresh token dead), prompting sign-in", "user", slackUser)

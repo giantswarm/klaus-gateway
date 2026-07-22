@@ -581,15 +581,16 @@ func TestDispatch_OBO_ParksUnlinkedMessageAndReplaysAfterLink(t *testing.T) {
 	require.Equal(t, "human-token", got.BearerToken, "the replayed turn carries the human muster token")
 	require.Contains(t, got.Text, "what is failing?")
 
-	// The prompt message is rewritten in place into the signed-in confirmation
-	// with the agent handoff folded in. The email is not echoed in-thread; it is
-	// confirmed on the private browser success page.
+	// The prompt message is rewritten in place into the signed-in confirmation.
+	// The email is not echoed in-thread; it is confirmed on the private browser
+	// success page. The agent is never named here: the replay's own output is
+	// the handoff signal.
 	fake.waitForPath(t, "chat.update", 1)
 	update := fake.pathCalls("chat.update")[0]
 	text, _ := update.params["text"].(string)
 	require.Contains(t, text, "Signed in")
 	require.NotContains(t, text, "@", "the in-thread rewrite carries no email")
-	require.Contains(t, text, "test-agent", "the rewrite announces the agent handoff")
+	require.NotContains(t, text, "test-agent", "the rewrite must not name the agent")
 	require.NotEmpty(t, update.params["ts"], "the rewrite targets the prompt's anchor ts")
 }
 
