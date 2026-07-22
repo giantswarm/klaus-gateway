@@ -324,7 +324,7 @@ func run(args []string) error {
 		AdminAddress:  cfg.AdminAddress,
 		Logger:        logger,
 		Metrics:       metrics,
-		Ready:         readiness(routeStore, upstreamClient),
+		Ready:         readiness(routeStore),
 		Public:        publicMux,
 	})
 
@@ -512,15 +512,12 @@ func buildScheme() *k8sruntime.Scheme {
 	return s
 }
 
-// readiness returns 200 once the store is responsive. The upstream URL is
-// considered reachable if it parses; a real connect probe lands in the
-// follow-up PR alongside the channel adapters.
-func readiness(s store.Store, up *upstream.Agentgateway) server.ReadinessFunc {
+// readiness returns 200 once the store is responsive.
+func readiness(s store.Store) server.ReadinessFunc {
 	return func(ctx context.Context) error {
 		if _, err := s.List(ctx); err != nil {
 			return fmt.Errorf("store: %w", err)
 		}
-		_ = up
 		return nil
 	}
 }
