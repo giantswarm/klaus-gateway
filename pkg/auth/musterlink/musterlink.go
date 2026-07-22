@@ -70,10 +70,12 @@ const (
 	CIMDPath = "/auth/slack/client.json"
 )
 
-// defaultStateTTL bounds the whole interactive link flow (button click ->
+// DefaultStateTTL bounds the whole interactive link flow (button click ->
 // muster consent -> callback). Short enough to limit replay, long enough for a
-// human to complete an OAuth consent screen.
-const defaultStateTTL = 15 * time.Minute
+// human to complete an OAuth consent screen. Exported so the Slack adapter can
+// re-arm its sign-in nudge on the same lifetime, keeping a posted button no
+// older than its URL.
+const DefaultStateTTL = 15 * time.Minute
 
 // defaultHTTPTimeout bounds every outbound muster call (discovery, userinfo,
 // and the oauth2 token endpoint) when no HTTPClient is supplied. Without it a
@@ -158,7 +160,7 @@ type Config struct {
 	Scopes []string
 	// StateKey is the HMAC key used to sign link state. Must be non-empty.
 	StateKey []byte
-	// StateTTL bounds the link flow lifetime. Zero uses defaultStateTTL.
+	// StateTTL bounds the link flow lifetime. Zero uses DefaultStateTTL.
 	StateTTL time.Duration
 	// Store persists the resulting links. Required.
 	Store Store
@@ -332,7 +334,7 @@ func New(cfg Config) (*Linker, error) {
 	}
 	ttl := cfg.StateTTL
 	if ttl <= 0 {
-		ttl = defaultStateTTL
+		ttl = DefaultStateTTL
 	}
 	logger := cfg.Logger
 	if logger == nil {

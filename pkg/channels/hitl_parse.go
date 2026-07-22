@@ -38,7 +38,7 @@ const (
 // human-readable text label; otherwise a single text part.
 func buildInboundParts(msg InboundMessage) []*a2apkg.Part {
 	if msg.Decision == nil {
-		return []*a2apkg.Part{a2apkg.NewTextPart(msg.Text)}
+		return []*a2apkg.Part{a2apkg.NewTextPart(withAuthor(msg.Author, msg.Text))}
 	}
 
 	data := map[string]any{"decision_type": msg.Decision.Type}
@@ -57,7 +57,17 @@ func buildInboundParts(msg InboundMessage) []*a2apkg.Part {
 	if label == "" {
 		label = msg.Decision.Type
 	}
-	return []*a2apkg.Part{a2apkg.NewDataPart(data), a2apkg.NewTextPart(label)}
+	return []*a2apkg.Part{a2apkg.NewDataPart(data), a2apkg.NewTextPart(withAuthor(msg.Author, label))}
+}
+
+// withAuthor prefixes text with the real author when the turn runs under a
+// delegated identity (a shared thread session acting as its initiator), so the
+// agent sees who actually spoke. Returns text unchanged when author is empty.
+func withAuthor(author, text string) string {
+	if author == "" {
+		return text
+	}
+	return "[message from " + author + "]\n" + text
 }
 
 // parseHitlPrompt extracts a structured approval request from an

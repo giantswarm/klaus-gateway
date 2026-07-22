@@ -55,6 +55,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A Slack turn that pauses for input right as the buffered reply text fails to post no longer loses the pause: the approval stays answerable by a reply or click, and only the buffered prose is lost. Previously the paused task was discarded, the next reply started a fresh turn, and the abandoned task could corrupt the conversation's history.
+- Slack thread replies sent with "Also send to #channel" (`thread_broadcast`) now reach the agent like any other reply instead of being silently dropped.
+- `/stop` sent while a turn is still starting up (before it is cancellable) now actually stops that turn instead of replying "Stopped." and letting it run to completion. `/stop` in a thread with nothing running replies "Nothing is running in this thread." instead of a false "Stopped.".
+- Clicking an access-consent button after the gateway lost the thread's state (restart, 24h expiry) rewrites the prompt to say the approval expired and who should resend their message, instead of doing nothing. A consent click by someone other than the thread owner now gets the "not allowed" note instead of silence.
+- A newcomer whose request the thread owner declines is now told so (ephemerally), instead of waiting forever on the "your message is waiting" ack.
+- When messages held during sign-in or pending approval overflow the 5-per-thread cap, the user is told which ones will not replay and to resend them, instead of the oldest being dropped silently.
+- The "I'm not active in this thread" hint is no longer posted for a message whose `app_mention` twin is acting on it, so a mention is not answered and contradicted at the same time.
+- The sign-in button's link expires after 15 minutes, but the prompt was suppressed for 24 hours: a user returning later was stuck behind a dead button, with new messages parking silently. A message sent after the link expired now posts a fresh prompt and rewrites the stale one.
+- A granted collaborator's turn in a shared Slack thread now runs under the thread initiator's identity instead of the collaborator's, so the thread stays one session: the initiator's token is forwarded on the collaborator's turn (kagent has no per-caller identity within a session), and the real author is attached to the message so the agent still sees who spoke. If the initiator's token cannot be minted, the turn falls back to the sender's own identity rather than the gateway service account.
 - Slack no longer handles the same message twice when it is delivered as both an `app_mention` and a `message` event with distinct event ids. The duplicate could run a second turn against the agent or answer a single message with a busy notice; messages are now deduplicated by channel and timestamp across event types.
 - A turn that fails before its stream starts (agent resolve or send fails) posts the failure note in the thread instead of being logged silently, so a backend outage no longer reads as the bot ignoring people.
 - An approval button click whose resume cannot reach the agent posts a failure note saying a typed reply retries it, instead of leaving the message showing the decision with nothing happening. The pending task stays resumable either way.
@@ -120,6 +129,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A resume that fails before its stream starts (token mint, gateway resolve, send) re-stores the paused task instead of stranding it, so a retry or button click can still resume the agent.
 - Parked newcomer messages and paused approval tasks are swept after 24 hours, so the per-thread maps no longer grow for the process lifetime.
 - Clicking "Chat" on an approval prompt releases the thread slot before the Slack round-trip that swaps the buttons for the reply hint, so a question typed immediately after the click resumes the held task instead of bouncing off the "still working" notice.
+- Stopping the Slack adapter cancels its lifecycle context and waits for in-flight background work (inbound dispatch, post-sign-in replay, sign-in prompt rewrites) to finish, bounded by the passed context, instead of returning while those goroutines keep running.
 
 ### Refactored
 

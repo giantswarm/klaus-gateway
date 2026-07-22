@@ -1417,6 +1417,66 @@ func TestHandleInbound_UnrelatedThreadReplyStaysSilent(t *testing.T) {
 	require.Empty(t, fake.pathCalls("chat.postMessage"))
 }
 
+// A thread_broadcast reply ("also send to #channel") into an active bot
+// thread is a deliberate user message and must reach the agent like any other
+// reply; other subtypes stay rejected.
+func TestHandleInbound_ThreadBroadcastReplyDispatches(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "answer-text"}, {Done: true}}}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
+
+	sendEvent(t, srv, mention("U1", "start", "400.000", ""))
+	// The first turn's answer marks the thread slot as about to free.
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "answer-text")
+	}, 2*time.Second, 50*time.Millisecond, "the mention's turn completes")
+
+	broadcast := `{"type":"event_callback","event":{"type":"message","subtype":"thread_broadcast","user":"U1","text":"and then?","channel":"C1","ts":"401.000","thread_ts":"400.000"}}`
+	seq := 0
+	require.Eventually(t, func() bool {
+		seq++
+		sendEvent(t, srv, strings.Replace(broadcast, "401.000", fmt.Sprintf("401.%03d", seq), 1))
+		return gw.resolveCount() >= 2
+	}, 3*time.Second, 100*time.Millisecond,
+		"a broadcast thread reply must reach the agent like any other reply")
+
+	// Other subtypes must stay rejected: an edit in the same active thread
+	// never starts a turn.
+	time.Sleep(200 * time.Millisecond)
+	before := gw.resolveCount()
+	edited := `{"type":"event_callback","event":{"type":"message","subtype":"message_changed","user":"U1","text":"edited","channel":"C1","ts":"402.000","thread_ts":"400.000"}}`
+	sendEvent(t, srv, edited)
+	time.Sleep(150 * time.Millisecond)
+	require.Equal(t, before, gw.resolveCount(), "a message_changed subtype must not start a turn")
+}
+
+// A mention's message-event twin dropped by the inactive-thread gate must not
+// post the "I'm not active" hint: the app_mention twin acts on it, and the
+// hint would contradict the outcome.
+func TestHandleInbound_NoInactiveHintForMentionTwins(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok", Done: true}}}
+	obo := &fakeOBO{linkedUser: "UX", token: "tok"} // U1 stays unlinked
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
+	a.OBO = obo
+
+	// U1 runs /login as a reply in a human thread: posts the sign-in prompt
+	// (an engagement trace) without activating the thread.
+	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_mention","user":"U1","text":"<@UBOT> /login","channel":"C1","ts":"701.000","thread_ts":"700.000"}}`)
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Sign in so I can act")
+	}, 2*time.Second, 50*time.Millisecond, "the sign-in prompt posts")
+
+	// A new mention in the same thread: the message twin lands first.
+	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","user":"U1","text":"<@UBOT> hello","channel":"C1","ts":"702.000","thread_ts":"700.000"}}`)
+	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_mention","user":"U1","text":"<@UBOT> hello","channel":"C1","ts":"702.000","thread_ts":"700.000"}}`)
+
+	require.Never(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postEphemeral")), "not active in this thread")
+	}, time.Second, 100*time.Millisecond,
+		"the inactive-thread hint must not fire for a message whose mention twin acts")
+}
+
 // /stop before any streamed content in text-progress mode must resolve the
 // "thinking" placeholder instead of leaving it dangling above "Stopped.".
 func TestStop_TextModePlaceholderResolved(t *testing.T) {

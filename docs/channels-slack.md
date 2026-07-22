@@ -48,6 +48,15 @@ applies only to non-Agent deployments.
   from the forwarded token subject. Changing the identity configuration (the
   subject claim, or the Dex connector) changes `user_id` and orphans every
   existing session. kagent sessions have no TTL, so orphaned sessions persist.
+- Because `user_id` follows the forwarded token, the whole thread runs under the
+  **initiator's** identity: a granted collaborator's turn forwards the
+  initiator's token, not the collaborator's, so history and tool calls stay in
+  the one shared session rather than forking per sender. The collaborator's real
+  identity is attached to the message as attribution, so the agent still sees who
+  spoke. If the initiator's token cannot be minted (they are unlinked), the turn
+  falls back to the sender's own identity rather than the gateway service
+  account. kagent v0.9.9 has no per-caller identity within a session; when that
+  lands (kagent#1933, #2181) each caller's own identity replaces this.
 
 ### Two auth layers
 
@@ -177,8 +186,9 @@ any string that begins with `Slack bot`, `Slack app-level`, or `Slack user`.
 
 1. Slack delivers an event to `/channels/slack/events` (Events API) or via WebSocket
    (Socket Mode).
-2. The adapter ignores bot messages and messages with a subtype; it processes `app_mention`
-   and `message.im` events only.
+2. The adapter ignores bot messages and messages with a subtype, with one exception:
+   `thread_broadcast` (a thread reply the author also sent to the channel) is a normal human
+   reply and is routed like one. It processes `app_mention` and `message.im` events only.
 3. The `@mention` prefix is stripped from `app_mention` text before routing.
 4. The routing key is `(channel="slack", channelID=<Slack channel ID>, userID=<Slack user ID>,
    threadID=<thread_ts or ts>)`.
@@ -232,7 +242,16 @@ still running gets a brief "still working" notice rather than starting an overla
   updated in place to the signed-in confirmation, with the agent hand-off folded in when a
   held message is about to replay. The sign-in link is per-user and the callback verifies the
   OAuth identity's email against the Slack profile email, so a prompt visible to the whole
-  thread cannot be completed by someone else.
+  thread cannot be completed by someone else. The link in the button expires after 15
+  minutes; a message sent after that gets a fresh prompt, and the old one is rewritten to
+  say its link expired. Messages sent before signing in are held and replayed after the
+  link completes; only the last 5 per thread are kept, and the user is told when earlier
+  ones are dropped.
+- **One shared session per thread.** A thread maps to a single agent session. On the
+  current kagent (v0.9.9) that session acts under the thread initiator's identity even after
+  others are allowed in; a granted collaborator instructs the agent on the initiator's
+  behalf. Per-user identity within one shared session is a kagent gap (kagent-dev/kagent#1933
+  and #2181); until it lands, actions are attributed to the initiator.
 - **Surfaces.** DMs and channels are controlled independently. `SLACK_DM_MODE` selects the DM
   behaviour: `serve` (answer DMs, the default), `redirect` (a polite pointer to channels), or
   `ignore` (drop silently). `SLACK_CHANNEL_MODE` selects the channels served: `all` (every

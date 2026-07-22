@@ -40,6 +40,7 @@ func TestDispatch_TransientOBOError_PreservesPendingTask(t *testing.T) {
 		OBO:          transientOBO{},
 	}
 	require.NoError(t, a.Start(t.Context(), &fakeGateway{}))
+	t.Cleanup(func() { _ = a.Stop(context.Background()) })
 
 	a.storePendingTask("T1", &pendingTask{TaskID: "task-1", AgentRef: "agent", Channel: "D1", ChannelID: "D1"})
 
