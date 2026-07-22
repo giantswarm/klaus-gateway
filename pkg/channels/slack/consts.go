@@ -1,6 +1,10 @@
 package slack
 
-import "time"
+import (
+	"time"
+
+	"github.com/giantswarm/klaus-gateway/pkg/auth/musterlink"
+)
 
 // Slack event type strings.
 const (
@@ -186,11 +190,10 @@ const promptOwnerOnlyNotice = "_Only <@%s> can answer this prompt (their convers
 const signInLinkExpiredNote = "_This sign-in link expired; use the newer one below._"
 
 // signInNudgeTTL bounds how long a posted sign-in prompt suppresses a fresh
-// nudge for the same (user, thread). It matches the sign-in link's state
-// lifetime (musterlink defaultStateTTL, 15 minutes): past it the posted
-// button's URL is dead, so re-prompting with a fresh URL beats staying silent
-// behind it. Keep the two constants in sync.
-const signInNudgeTTL = 15 * time.Minute
+// nudge for the same (user, thread). It is the sign-in link's state lifetime:
+// past it the posted button's URL is dead, so re-prompting with a fresh URL
+// beats staying silent behind it.
+const signInNudgeTTL = musterlink.DefaultStateTTL
 
 // choiceSelectNudge is shown (ephemerally) when a user clicks Submit on an
 // ask_user choice widget without selecting anything; the task stays pending.

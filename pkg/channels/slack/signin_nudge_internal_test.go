@@ -8,7 +8,7 @@ import (
 )
 
 // The sign-in nudge throttle re-arms on signInNudgeTTL (the link URL's state
-// lifetime, 15 minutes, matching musterlink's defaultStateTTL) while the
+// lifetime, musterlink.DefaultStateTTL) while the
 // throttle entry itself lives pendingTTL (24 hours) in its rewrite-anchor
 // role. Suppressing on the entry's own expiry would leave the user parked
 // behind a button whose URL died 15 minutes in.
