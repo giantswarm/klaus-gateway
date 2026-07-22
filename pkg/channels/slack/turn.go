@@ -10,11 +10,14 @@ import (
 // turnTail carries the per-entrypoint pieces of runTurn, the shared tail of a
 // Slack turn.
 type turnTail struct {
+	// afterIdentity runs once the sender's email is resolved and the turn's
+	// forwarded identity is final, before the pending task is attached, so it
+	// may probe the session under the identity the turn will run as (e.g. the
+	// resume-degradation announcement). nil = nothing.
+	afterIdentity func(msg channels.InboundMessage)
 	// attach binds the pending input-required task this turn resumes to msg,
-	// returning it (nil = a fresh turn). It runs after the sender's identity
-	// is resolved, so it may consult the session under the turn's real
-	// identity. runTurn owns re-storing the returned task when a later
-	// failure would otherwise strand it.
+	// returning it (nil = a fresh turn). runTurn owns re-storing the returned
+	// task when a later failure would otherwise strand it.
 	attach func(msg *channels.InboundMessage) *pendingTask
 	// onResolved runs once the agent resolved, before the completion is sent
 	// (e.g. the launch announcement). nil = nothing.
@@ -39,10 +42,24 @@ type turnTail struct {
 // The caller must hold the thread's slot and pass msg with Subject set to
 // the raw Slack user ID (slackUser) and BearerToken set to the sender's
 // human token.
-func (a *Adapter) runTurn(ctx context.Context, msg channels.InboundMessage, slackChannel, slackUser string, tail turnTail) error {
+func (a *Adapter) runTurn(ctx context.Context, msg channels.InboundMessage, slackChannel, slackUser string, tail turnTail) (err error) {
+	// Corrupt-session recovery lives here, not in the callers: the reset must
+	// present the identity the turn ran under (the initiator's token after the
+	// swap below, since kagent keys the session lookup on the token's
+	// principal), and only this msg copy carries it.
+	defer func() {
+		if isCorruptSessionErr(err) {
+			a.recoverCorruptSession(ctx, msg, slackChannel)
+		}
+	}()
+
 	a.resolveSubjectEmail(ctx, &msg)
 
 	a.applyInitiatorIdentity(ctx, &msg, msg.ThreadID, slackUser)
+
+	if tail.afterIdentity != nil {
+		tail.afterIdentity(msg)
+	}
 
 	task := tail.attach(&msg)
 	// A failure between the take and a running stream would otherwise strand the

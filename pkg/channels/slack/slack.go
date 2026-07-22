@@ -1512,8 +1512,8 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 	}
 	defer a.releaseThread(msg.ThreadID)
 
-	err := a.runTurn(ctx, msg, slackChannel, slackUser, turnTail{
-		attach: func(msg *channels.InboundMessage) *pendingTask {
+	return a.runTurn(ctx, msg, slackChannel, slackUser, turnTail{
+		afterIdentity: func(msg channels.InboundMessage) {
 			// A reply into a thread this process did not start may be resuming a
 			// kagent session that has since been evicted. Announce the "starting
 			// fresh" degradation up front so the user is not surprised by lost
@@ -1521,9 +1521,10 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 			// per thread. Advisory: never aborts the turn, and bounded by a short
 			// timeout so a slow REST endpoint cannot stall the first reply.
 			if firstSight && msg.ThreadID != msg.MessageID {
-				a.maybeAnnounceResume(ctx, *msg, slackChannel)
+				a.maybeAnnounceResume(ctx, msg, slackChannel)
 			}
-
+		},
+		attach: func(msg *channels.InboundMessage) *pendingTask {
 			// Resume a paused input-required task when one exists for this thread.
 			// Done only after the turn is committed to run (thread slot acquired,
 			// human token resolved): takePendingTask deletes the entry, so
@@ -1554,10 +1555,6 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 		triggerTS:   msg.MessageID,
 		placeholder: thinkingPlaceholder,
 	})
-	if isCorruptSessionErr(err) {
-		a.recoverCorruptSession(ctx, msg, slackChannel)
-	}
-	return err
 }
 
 // isCorruptSessionErr reports whether a turn failed because the session's

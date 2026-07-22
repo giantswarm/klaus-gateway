@@ -66,11 +66,21 @@ type fakeGateway struct {
 	deltas []channels.OutboundDelta
 	// resolveErr, when set, is returned by every Resolve call.
 	resolveErr error
+	// onResetSession, when set, backs ResetSession; nil reports the reset as
+	// unavailable (false, nil).
+	onResetSession func(msg channels.InboundMessage) (bool, error)
 
 	mu      sync.Mutex
 	sent    []channels.InboundMessage
 	sends   int
 	lastMsg channels.InboundMessage
+}
+
+func (g *fakeGateway) ResetSession(_ context.Context, msg channels.InboundMessage) (bool, error) {
+	if g.onResetSession == nil {
+		return false, nil
+	}
+	return g.onResetSession(msg)
 }
 
 func (g *fakeGateway) Resolve(_ context.Context, _ channels.InboundMessage) (channels.InstanceRef, error) {
@@ -342,6 +352,41 @@ func TestHandleDecision_CollaboratorClickFallsBackWhenInitiatorUnavailable(t *te
 	require.Equal(t, "tok-collab", sent[0].BearerToken,
 		"fallback runs under the clicker's own token when the initiator's is unavailable")
 	require.Empty(t, sent[0].Author, "fallback turn is not delegated, so no attribution")
+}
+
+// A corrupt-history failure on a button resume resets the session like a
+// typed turn does, and the reset presents the identity the turn ran under
+// (the initiator's token for a collaborator's click, since kagent keys the
+// session lookup on the token's principal), so it deletes the session the
+// turn actually hit.
+func TestHandleDecision_CorruptSessionResetsUnderTurnIdentity(t *testing.T) {
+	corrupt := errors.New("a2a error -32603: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': '`tool_use` ids were found without `tool_result` blocks'}}")
+	var (
+		mu     sync.Mutex
+		resets []channels.InboundMessage
+	)
+	gw := &fakeGateway{
+		deltas: []channels.OutboundDelta{{Err: corrupt}},
+		onResetSession: func(msg channels.InboundMessage) (bool, error) {
+			mu.Lock()
+			resets = append(resets, msg)
+			mu.Unlock()
+			return true, nil
+		},
+	}
+	a, paths := newDecisionAdapter(t, gw, multiUserOBO{"U001": "tok-initiator", "U002": "tok-collab"})
+	a.accessPolicy().Grant("T001", "U002")
+
+	err := a.handleDecision(t.Context(), "C001", "T001", "MSG001", "U002", hitlAction{kind: hitlApprove})
+	require.Error(t, err)
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, resets, 1, "the corrupt session is deleted once")
+	require.Equal(t, "T001", resets[0].ThreadID)
+	require.Equal(t, "tok-initiator", resets[0].BearerToken,
+		"the reset must present the token the turn ran under, not the clicker's own")
+	require.Contains(t, paths(), "/chat.postMessage", "the thread is told the session was reset")
 }
 
 // An unlinked clicker must not resume the task: the pending task stays stored
