@@ -182,8 +182,11 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *slashCommand, slackUse
 		// A thread paused on input-required has no in-flight turn to cancel; the
 		// paused task must be resolved with a rejection or the tool call dangles.
 		// Falling through to dispatch routes "/stop" like a typed "stop" reply,
-		// which decisionFromText maps to a structured reject.
-		if a.hasPendingTask(threadID) {
+		// which decisionFromText maps to a structured reject. Only the prompt's
+		// owner falls through: dispatch refuses anyone else the take, so their
+		// "/stop" would reach the agent as a literal instruction, and nothing of
+		// theirs is running anyway.
+		if pending := a.peekPendingTask(threadID); pending != nil && (pending.SlackUser == "" || pending.SlackUser == slackUser) {
 			return false
 		}
 		reply(stopNothingRunningNotice)
@@ -229,9 +232,9 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *slashCommand, slackUse
 // truth: a turn spends its network-bound start window (user lookup, token
 // mint, resume check, agent resolve) holding the slot before it registers a
 // cancelable turn, and a /stop landing in that window must still stop it. Such
-// a stop is recorded for registerTurn to consume; re-checking the registry
-// afterwards closes the race where the turn registered in between and would
-// otherwise miss the request.
+// a stop is recorded on the slot itself for registerTurn to consume;
+// re-checking the registry afterwards closes the race where the turn
+// registered in between and would otherwise miss the request.
 func (a *Adapter) stopThread(threadID string) bool {
 	cancelRegistered := func() bool {
 		a.turnsMu.Lock()
@@ -245,13 +248,10 @@ func (a *Adapter) stopThread(threadID string) bool {
 	if cancelRegistered() {
 		return true
 	}
-	if !a.threadBusy(threadID) {
+	if !a.requestStopIfBusy(threadID) {
 		return false
 	}
-	a.requestStop(threadID)
-	if cancelRegistered() {
-		a.clearStopRequest(threadID)
-	}
+	cancelRegistered()
 	return true
 }
 

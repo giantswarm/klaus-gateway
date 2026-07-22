@@ -138,10 +138,30 @@ func TestHandleCommand_Stop_NoTurnIsNoop(t *testing.T) {
 	require.Equal(t, int32(1), srv.posts.Load(), `the idle thread gets the "nothing is running" reply`)
 }
 
+// A /stop from a permitted user other than the pending prompt's owner must not
+// fall through to dispatch: the owner-gated take there would leave the literal
+// text "/stop" to run as an agent instruction. The prompt stays pending for
+// its owner, who still falls through so their "/stop" rejects it.
+func TestHandleCommand_Stop_PendingTaskOwnerOnly(t *testing.T) {
+	a, srv := newTestAdapter(t)
+	access := a.accessPolicy()
+	access.SetInitiator("T001", "U001")
+	access.Grant("T001", "U002")
+	a.storePendingTask("T001", &pendingTask{TaskID: "task-1", SlackUser: "U001"})
+
+	consumed := a.handleCommand(t.Context(), &slashCommand{Name: "stop"}, "U002", "C001", "T001")
+	require.True(t, consumed, "a non-owner /stop must not dispatch")
+	require.Equal(t, int32(1), srv.posts.Load(), `the non-owner gets the "nothing is running" reply`)
+	require.NotNil(t, a.peekPendingTask("T001"), "the owner's pending task stays intact")
+
+	require.False(t, a.handleCommand(t.Context(), &slashCommand{Name: "stop"}, "U001", "C001", "T001"),
+		"the owner's /stop falls through to dispatch to reject the pending task")
+}
+
 // A /stop during a turn's start window (thread slot held, turn not yet
-// registered) must stop that turn: the request is recorded, consumed by
-// registerTurn (cancelling the fresh turn), and cleared when the slot frees
-// without a turn registering so it cannot leak into a later turn.
+// registered) must stop that turn: the request is recorded on the slot,
+// consumed by registerTurn (cancelling the fresh turn), and dies with the
+// slot when the turn never registers, so it cannot leak into a later turn.
 func TestStopThread_StartWindow(t *testing.T) {
 	a := &Adapter{Logger: slog.New(slog.DiscardHandler)}
 	require.False(t, a.stopThread("T1"), "an idle thread has nothing to stop")
@@ -158,9 +178,16 @@ func TestStopThread_StartWindow(t *testing.T) {
 	a.releaseThread("T1") // the turn aborted before registering
 	require.True(t, a.acquireThread("T1"))
 	turnCtx2, done2 := a.registerTurn(t.Context(), "T1")
-	require.NoError(t, turnCtx2.Err(), "a stop cleared with its slot must not cancel a later turn")
+	require.NoError(t, turnCtx2.Err(), "a stop that died with its slot must not cancel a later turn")
 	done2()
 	a.releaseThread("T1")
+
+	require.False(t, a.requestStopIfBusy("T2"), "a stop cannot be recorded against an idle thread")
+	require.True(t, a.acquireThread("T2"))
+	turnCtx3, done3 := a.registerTurn(t.Context(), "T2")
+	require.NoError(t, turnCtx3.Err(), "an idle-thread stop attempt leaves nothing behind")
+	done3()
+	a.releaseThread("T2")
 }
 
 func TestHandleCommand_Details_SetsLevel(t *testing.T) {

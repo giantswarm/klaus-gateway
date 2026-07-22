@@ -192,13 +192,6 @@ const signInLinkExpiredNote = "_This sign-in link expired; use the newer one bel
 // behind it. Keep the two constants in sync.
 const signInNudgeTTL = 15 * time.Minute
 
-// stopRequestTTL bounds how long a /stop issued during a turn's start window
-// (thread slot held, turn not yet registered) stays armed. registerTurn
-// consumes the request; releaseThread clears it when the turn never registers,
-// so this is only a backstop against a leaked entry cancelling a much later
-// turn.
-const stopRequestTTL = time.Minute
-
 // choiceSelectNudge is shown (ephemerally) when a user clicks Submit on an
 // ask_user choice widget without selecting anything; the task stays pending.
 const choiceSelectNudge = "_Pick at least one option, then click Submit._"

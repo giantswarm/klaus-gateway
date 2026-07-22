@@ -166,14 +166,6 @@ type Adapter struct {
 	turnsMu sync.Mutex
 	turns   map[string]*turn // keyed by threadID; cancels in-flight SendCompletion
 
-	// stopRequestedMu guards stopRequested: threads whose /stop arrived while a
-	// turn held the inflight slot but had not yet registered a cancelable turn
-	// (the network-bound start window). registerTurn consumes an entry by
-	// cancelling the fresh turn immediately; releaseThread clears it when the
-	// turn aborts before registering.
-	stopRequestedMu sync.Mutex
-	stopRequested   map[string]ttlEntry[struct{}]
-
 	// parkedDropNoticedMu guards parkedDropNoticed, the (user, thread) pairs
 	// already told that parked messages past the cap were dropped within the
 	// current window.
@@ -190,8 +182,12 @@ type Adapter struct {
 	// a reactions.add returns missing_scope, so later turns skip the failed call.
 	reactionsUnsupported atomic.Bool
 
+	// inflight serializes turns per thread: an entry means a turn holds the
+	// thread's slot; a true value records a /stop that arrived during the
+	// turn's start window (before it registered a cancelable turn), consumed
+	// by registerTurn and dying with the slot on release.
 	inflightMu  sync.Mutex
-	inflight    map[string]struct{} // threadIDs with a turn in progress (serialization)
+	inflight    map[string]bool
 	idleWaiters map[string][]func() // deferred replays, run when the thread slot frees
 
 	pendingMu    sync.Mutex
@@ -1795,42 +1791,6 @@ func (a *Adapter) humanToken(ctx context.Context, slackChannel, threadID, slackU
 // session), so this is the backstop that eventually frees the thread slot when
 // the upstream wedges without closing the connection.
 const maxTurnDuration = 30 * time.Minute
-
-// requestStop records a /stop for a turn that holds the thread slot but has
-// not yet registered a cancelable turn, so registerTurn cancels it on
-// registration instead of the stop confirming and doing nothing.
-func (a *Adapter) requestStop(threadID string) {
-	now := time.Now()
-	a.stopRequestedMu.Lock()
-	defer a.stopRequestedMu.Unlock()
-	if a.stopRequested == nil {
-		a.stopRequested = make(map[string]ttlEntry[struct{}])
-	}
-	sweepExpired(a.stopRequested, now)
-	a.stopRequested[threadID] = ttlEntry[struct{}]{expires: now.Add(stopRequestTTL)}
-}
-
-// takeStopRequest consumes a pending stop request for threadID, reporting
-// whether a live one existed.
-func (a *Adapter) takeStopRequest(threadID string) bool {
-	a.stopRequestedMu.Lock()
-	defer a.stopRequestedMu.Unlock()
-	entry, ok := a.stopRequested[threadID]
-	if !ok {
-		return false
-	}
-	delete(a.stopRequested, threadID)
-	return time.Now().Before(entry.expires)
-}
-
-// clearStopRequest drops a pending stop request without acting on it. Called
-// when the thread slot frees: whatever the stop was aimed at is over, and a
-// leftover entry would cancel an unrelated later turn.
-func (a *Adapter) clearStopRequest(threadID string) {
-	a.stopRequestedMu.Lock()
-	defer a.stopRequestedMu.Unlock()
-	delete(a.stopRequested, threadID)
-}
 
 // registerTurn installs a cancelable in-flight turn for threadID so /stop can
 // cancel it, and returns the turn context plus a cleanup func that cancels the
