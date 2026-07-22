@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -760,6 +761,55 @@ func TestOnUserLinkedFailedRewriteRerecordsAnchor(t *testing.T) {
 		entry, ok := a.signInPrompted["U001\x00T1"]
 		return ok && entry.value.ts == "111.111"
 	}, 2*time.Second, 10*time.Millisecond, "the anchor must survive a failed rewrite")
+}
+
+// An anchor re-recorded after a failed rewrite is converged by the user's next
+// successful token use, so the stale "Sign in" button does not outlive the
+// transient Slack error that stranded it.
+func TestTokenUseConvergesFailedAnchorRewrite(t *testing.T) {
+	var updates atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "chat.update") && updates.Add(1) == 1 {
+			_, _ = w.Write([]byte(`{"ok":false,"error":"internal_error"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"ok":true,"ts":"1234.5678"}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{
+		Secrets: Secrets{BotToken: "test-bot-token"}, //nolint:gosec
+		APIBase: srv.URL,
+		Logger:  slog.New(slog.DiscardHandler),
+		OBO:     linkedOBO{user: "U001", token: "human-token"},
+	}
+	a.recordSignInAnchor("U001", "T1", signInAnchor{channel: "C1", ts: "111.111"})
+
+	a.OnUserLinked(t.Context(), "U001", "alice@example.com")
+	// updates==1 proves the link-time rewrite drained the anchor and failed;
+	// an entry present after that is therefore the re-record, not the original.
+	require.Eventually(t, func() bool {
+		if updates.Load() != 1 {
+			return false
+		}
+		a.signInPromptedMu.Lock()
+		defer a.signInPromptedMu.Unlock()
+		entry, ok := a.signInPrompted["U001\x00T1"]
+		return ok && entry.value.ts == "111.111"
+	}, 2*time.Second, 10*time.Millisecond, "the first rewrite fails and re-records the anchor")
+
+	_, ok, _ := a.humanToken(t.Context(), "C1", "T1", "U001")
+	require.True(t, ok)
+	require.Eventually(t, func() bool {
+		if updates.Load() != 2 {
+			return false
+		}
+		a.signInPromptedMu.Lock()
+		defer a.signInPromptedMu.Unlock()
+		_, stillThere := a.signInPrompted["U001\x00T1"]
+		return !stillThere
+	}, 2*time.Second, 10*time.Millisecond, "a successful token use must retry the rewrite and drain the anchor")
 }
 
 // A link that is about to replay a parked question folds the agent handoff

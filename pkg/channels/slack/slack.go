@@ -1536,6 +1536,10 @@ func (a *Adapter) humanToken(ctx context.Context, slackChannel, threadID, slackU
 	token, err := a.OBO.TokenFor(ctx, slackUser)
 	switch {
 	case err == nil:
+		// A leftover anchor for a user whose token works is a sign-in prompt
+		// whose post-link rewrite failed; converge it now so the thread does
+		// not keep a live "Sign in" button for a linked user.
+		go a.updateSignInAnchors(ctx, slackUser, nil)
 		return token, true, false
 	case errors.Is(err, musterlink.ErrNotLinked):
 		a.Logger.Info("slack: link unavailable (unlinked or refresh token dead), prompting sign-in", "user", slackUser)
