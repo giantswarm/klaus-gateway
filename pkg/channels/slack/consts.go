@@ -174,16 +174,6 @@ const parkedDropNoticeTTL = time.Hour
 // turn and no pending prompt, instead of falsely confirming a stop.
 const stopNothingRunningNotice = "_Nothing is running in this thread._"
 
-// contextForkNotice is shown (ephemerally) to a granted collaborator on their
-// first turn in a thread: each user's turns run in their own agent session, so
-// their conversation does not share the thread owner's history.
-const contextForkNotice = "_You have your own conversation context with the agent in this thread; it doesn't share the thread owner's history._"
-
-// promptOwnerOnlyNotice is shown (ephemerally) when someone other than the
-// user whose turn paused on a prompt tries to answer it. %s is the owner's
-// Slack user ID.
-const promptOwnerOnlyNotice = "_Only <@%s> can answer this prompt (their conversation context is paused on it)._"
-
 // signInLinkExpiredNote replaces a sign-in prompt whose link outlived its
 // state TTL once a fresh prompt is posted, so the dead button cannot be
 // mistaken for the live one.

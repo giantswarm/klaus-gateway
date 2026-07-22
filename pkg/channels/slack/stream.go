@@ -1113,10 +1113,11 @@ func (c *slackAPIClient) postEphemeralText(ctx context.Context, channel, user, t
 // the initiator can click. The button value encodes the thread and the newcomer
 // so the interaction handler resolves the right parked request.
 func (c *slackAPIClient) postAccessConsentPrompt(ctx context.Context, channel, threadID, initiator, newcomer string) error {
-	// The grant lets the newcomer instruct the agent under their own identity
-	// and session; it does not delegate the initiator's, so the wording must
-	// not promise "on your behalf".
-	text := fmt.Sprintf("Is <@%s> allowed to instruct the agent in this thread?", newcomer)
+	// A thread is one shared session that, on kagent v0.9.9, acts under the
+	// initiator's identity even after others are allowed in (per-user identity
+	// is the kagent-dev/kagent#1933 + #2181 fix). So the grant does let the
+	// newcomer drive the agent on the initiator's behalf; the wording says so.
+	text := fmt.Sprintf("Is <@%s> allowed to instruct the agent to work on your behalf in this thread?", newcomer)
 	value := encodeAccessValue(threadID, newcomer)
 	body := map[string]any{
 		paramChannel:  channel,

@@ -238,11 +238,11 @@ still running gets a brief "still working" notice rather than starting an overla
   say its link expired. Messages sent before signing in are held and replayed after the
   link completes; only the last 5 per thread are kept, and the user is told when earlier
   ones are dropped.
-- **Per-user conversation context.** Every user's turns run under their own identity, and
-  the agent keeps a separate conversation context per user, even inside one thread. A
-  collaborator the thread owner allows gets a one-time notice that their context does not
-  share the owner's history, and a prompt the agent asks during someone's turn can only be
-  answered by that user.
+- **One shared session per thread.** A thread maps to a single agent session. On the
+  current kagent (v0.9.9) that session acts under the thread initiator's identity even after
+  others are allowed in; a granted collaborator instructs the agent on the initiator's
+  behalf. Per-user identity within one shared session is a kagent gap (kagent-dev/kagent#1933
+  and #2181); until it lands, actions are attributed to the initiator.
 - **Surfaces.** DMs and channels are controlled independently. `SLACK_DM_MODE` selects the DM
   behaviour: `serve` (answer DMs, the default), `redirect` (a polite pointer to channels), or
   `ignore` (drop silently). `SLACK_CHANNEL_MODE` selects the channels served: `all` (every

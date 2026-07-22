@@ -30,11 +30,8 @@ A single ask_user question picks its layout by choice count, select mode, and la
 Generic (non-`ask_user`) tool approvals always render as Approve / Deny / Chat buttons.
 Any prompt can also be answered by replying in-thread; a reply resolves the paused task the
 same way a click does. Only a permitted user (the thread initiator or a granted collaborator)
-may decide; an onlooker click is refused ephemerally. Beyond that, a prompt belongs to the
-user whose turn raised it: each user has their own conversation context with the agent, so
-a click by anyone else (even a granted collaborator) is refused with a pointer at the
-owner, and another user's typed reply runs as a normal turn of their own instead of
-answering the owner's prompt.
+may decide; an onlooker click is refused ephemerally. A thread is one shared session, so any
+permitted user may answer a prompt it raised.
 
 ## 1. Tool approval
 
@@ -315,7 +312,7 @@ approvals at once.
 ```json
 {
   "blocks": [
-    { "type": "section", "text": { "type": "mrkdwn", "text": "Is <@U0NEWCOMER> allowed to instruct the agent in this thread?" } },
+    { "type": "section", "text": { "type": "mrkdwn", "text": "Is <@U0NEWCOMER> allowed to instruct the agent to work on your behalf in this thread?" } },
     {
       "type": "actions",
       "elements": [

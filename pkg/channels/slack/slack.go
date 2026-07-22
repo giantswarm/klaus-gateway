@@ -172,12 +172,6 @@ type Adapter struct {
 	parkedDropNoticedMu sync.Mutex
 	parkedDropNoticed   map[string]ttlEntry[struct{}]
 
-	// forkNoticedMu guards forkNoticed, the (thread, user) pairs already told
-	// that their turns run in their own agent session, separate from the thread
-	// owner's.
-	forkNoticedMu sync.Mutex
-	forkNoticed   map[string]ttlEntry[struct{}]
-
 	// reactionsUnsupported caches the auto-mode downgrade to text progress after
 	// a reactions.add returns missing_scope, so later turns skip the failed call.
 	reactionsUnsupported atomic.Bool
@@ -275,11 +269,6 @@ type pendingTask struct {
 	AgentRef  string
 	Channel   string // Slack channel ID for posting the resumed response
 	ChannelID string // logical channel ID used in the routing key
-	// SlackUser is the user whose turn paused on this task. Only they may
-	// resolve it: the resume runs under the answering user's token, and the
-	// paused task lives in its owner's agent session, so an answer from anyone
-	// else would land in the wrong session. Empty skips the check.
-	SlackUser string
 	// Prompt is the structured approval request the task is paused on, used to
 	// map a free-text reply or choice click back to a HITL decision.
 	Prompt *channels.HitlPrompt
@@ -874,19 +863,6 @@ func (a *Adapter) postAccessPrompt(ctx context.Context, slackChannel, threadID, 
 	const ack = "Your message is waiting for the thread owner to allow you to instruct the agent here."
 	if err := client.postEphemeralText(ctx, slackChannel, newcomer, threadID, ack); err != nil {
 		a.Logger.Warn("slack: post access waiting-ack failed", "newcomer", newcomer, "error", err)
-	}
-}
-
-// maybePostContextForkNotice tells a granted collaborator (ephemerally, once
-// per (thread, user) per window) that their turns run in their own agent
-// session, separate from the thread owner's history. Best-effort.
-func (a *Adapter) maybePostContextForkNotice(ctx context.Context, slackChannel, threadID, slackUser string) {
-	key := threadID + "\x00" + slackUser
-	if !markOnce(&a.forkNoticedMu, &a.forkNoticed, key, threadStateTTL) {
-		return
-	}
-	if err := a.apiClient().postEphemeralText(ctx, slackChannel, slackUser, threadID, contextForkNotice); err != nil {
-		a.Logger.Warn("slack: post context-fork notice failed", "user", slackUser, "thread", threadID, "error", err)
 	}
 }
 
@@ -1561,17 +1537,6 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 	}
 	msg.BearerToken = token
 
-	// Each user's turns run under their own token, and the agent backend keys
-	// sessions per user: a granted collaborator gets a separate conversation
-	// context, not the initiator's history. Say so once on their first turn,
-	// or the out-of-context answers read as the agent forgetting the thread.
-	// Remove only once kagent carries per-caller identity through a shared
-	// session: both session sharing (kagent-dev/kagent#1933) and the STS token
-	// cache keying (kagent-dev/kagent#2181) must land.
-	if initiator != "" && slackUser != initiator {
-		a.maybePostContextForkNotice(ctx, slackChannel, msg.ThreadID, slackUser)
-	}
-
 	// A reply into a thread this process did not start may be resuming a kagent
 	// session that has since been evicted. Announce the "starting fresh"
 	// degradation up front so the user is not surprised by lost context. Only for
@@ -1589,19 +1554,7 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 	// structured HITL decision so the paused tool confirmation is actually
 	// resolved (a plain text reply would leave the tool call dangling and corrupt
 	// the model history).
-	//
-	// Only the user whose turn created the pause may resolve it: the resume runs
-	// under the sender's token, and the paused task lives in its owner's agent
-	// session, so another user's reply runs as a normal turn of their own
-	// instead. The peek-then-take is safe under the held thread slot. Remove the
-	// owner restriction only once kagent carries per-caller identity through a
-	// shared session: both session sharing (kagent-dev/kagent#1933) and the STS
-	// token cache keying (kagent-dev/kagent#2181) must land, or a resumed tool
-	// call runs as the wrong user.
-	var task *pendingTask
-	if pending := a.peekPendingTask(msg.ThreadID); pending != nil && (pending.SlackUser == "" || pending.SlackUser == slackUser) {
-		task = a.takePendingTask(msg.ThreadID)
-	}
+	task := a.takePendingTask(msg.ThreadID)
 	if task != nil {
 		msg.TaskID = task.TaskID
 		msg.Decision = decisionFromText(task.Prompt, msg.Text)
@@ -1902,7 +1855,6 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 			AgentRef:  msg.AgentRef,
 			Channel:   slackChannel,
 			ChannelID: msg.ChannelID,
-			SlackUser: slackUser,
 			Prompt:    pd.Prompt,
 			Usage:     w.turnUsage,
 		})

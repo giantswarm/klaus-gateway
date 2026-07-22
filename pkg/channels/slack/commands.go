@@ -175,11 +175,6 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *slashCommand, slackUse
 		if !permittedOnly() {
 			return true
 		}
-		// Cancelling an in-flight turn is permitted-level (initiator or a granted
-		// collaborator): a /stop carries no identity and only halts, so it needs
-		// no owner gate, and it is the only lever on a thread whose slot is held
-		// by someone else's turn. Resolving a paused prompt is owner-only, gated
-		// below, because that delivers a decision into the owner's session.
 		if a.stopThread(threadID) {
 			reply("⏹ Stopped.")
 			return true
@@ -187,11 +182,8 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *slashCommand, slackUse
 		// A thread paused on input-required has no in-flight turn to cancel; the
 		// paused task must be resolved with a rejection or the tool call dangles.
 		// Falling through to dispatch routes "/stop" like a typed "stop" reply,
-		// which decisionFromText maps to a structured reject. Only the prompt's
-		// owner falls through: dispatch refuses anyone else the take, so their
-		// "/stop" would reach the agent as a literal instruction, and nothing of
-		// theirs is running anyway.
-		if pending := a.peekPendingTask(threadID); pending != nil && (pending.SlackUser == "" || pending.SlackUser == slackUser) {
+		// which decisionFromText maps to a structured reject.
+		if a.hasPendingTask(threadID) {
 			return false
 		}
 		reply(stopNothingRunningNotice)

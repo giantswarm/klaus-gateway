@@ -8,9 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -102,7 +100,7 @@ func TestAccess_NewcomerApprovedReplaysMessage(t *testing.T) {
 	sendEvent(t, srv, mention("U999", "help", "200.000", "100.000"))
 	fake.waitForPath(t, "chat.postEphemeral", 2)
 	ephemeral := allText(fake.pathCalls("chat.postEphemeral"))
-	require.Contains(t, ephemeral, "allowed to instruct the agent in this thread")
+	require.Contains(t, ephemeral, "allowed to instruct the agent to work on your behalf")
 	require.Contains(t, ephemeral, "waiting for the thread owner")
 	require.Equal(t, 1, gw.resolveCount(), "held newcomer message must not reach the agent yet")
 
@@ -366,148 +364,4 @@ func TestAccess_DeniedNewcomerNotified(t *testing.T) {
 		return false
 	}, 2*time.Second, 50*time.Millisecond,
 		"the denied newcomer must get a visible outcome, not wait forever")
-}
-
-// A granted collaborator's turns run in their own agent session, not the
-// initiator's: their first dispatched turn carries a one-time heads-up so the
-// out-of-context answers do not read as the agent forgetting the thread.
-func TestAccess_GrantedCollaboratorToldAboutOwnContext(t *testing.T) {
-	fake := newFakeSlackAPI()
-	fakeURL := fake.server(t).URL
-	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok", Done: true}}}
-	_, srv := newEventsAdapter(t, gw, fakeURL, channelMode)
-
-	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
-		2*time.Second, 50*time.Millisecond, "initiator dispatches")
-
-	sendEvent(t, srv, mention("U999", "help", "200.000", "100.000"))
-	fake.waitForPath(t, "chat.postEphemeral", 2)
-	sendAccessInteraction(t, srv, "U001", accessAllowAction, "100.000", "U999", fakeURL+"/response")
-	require.Eventually(t, func() bool { return gw.resolveCount() == 2 },
-		2*time.Second, 50*time.Millisecond, "the granted message replays")
-
-	forkNotices := func() int {
-		n := 0
-		for _, c := range fake.pathCalls("chat.postEphemeral") {
-			user, _ := c.params["user"].(string)
-			text, _ := c.params["text"].(string)
-			if user == "U999" && strings.Contains(text, "own conversation context") {
-				n++
-			}
-		}
-		return n
-	}
-	require.Eventually(t, func() bool { return forkNotices() == 1 },
-		2*time.Second, 50*time.Millisecond, "the collaborator's first turn carries the notice")
-
-	// A later turn by the same collaborator must not repeat it.
-	seq := 0
-	require.Eventually(t, func() bool {
-		seq++
-		sendEvent(t, srv, mention("U999", "more", fmt.Sprintf("201.%03d", seq), "100.000"))
-		return gw.resolveCount() >= 3
-	}, 3*time.Second, 100*time.Millisecond, "the collaborator's second turn dispatches")
-	time.Sleep(150 * time.Millisecond)
-	require.Equal(t, 1, forkNotices(), "the notice posts once per (thread, user) window")
-}
-
-// sendHitlInteraction posts a signed block_actions HITL click (approve/deny/
-// submit family) from clicker in channel C1.
-func sendHitlInteraction(t *testing.T, srv *httptest.Server, clicker, actionID, value, threadID string) {
-	t.Helper()
-	inner := map[string]any{
-		"type":      "block_actions",
-		"user":      map[string]any{"id": clicker},
-		"channel":   map[string]any{"id": "C1"},
-		"container": map[string]any{"message_ts": "prompt.000"},
-		"message":   map[string]any{"thread_ts": threadID},
-		"actions":   []any{map[string]any{"action_id": actionID, "value": value}},
-	}
-	data, err := json.Marshal(inner)
-	require.NoError(t, err)
-	body := []byte("payload=" + url.QueryEscape(string(data)))
-	stamp, sig := signBody(t, "signing-secret", body)
-	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/channels/slack/interactions", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("X-Slack-Request-Timestamp", stamp)
-	req.Header.Set("X-Slack-Signature", sig)
-	resp, err := http.DefaultClient.Do(req)
-	require.NoError(t, err)
-	_ = resp.Body.Close()
-}
-
-// A pending prompt belongs to the user whose turn paused on it: a granted
-// collaborator's click is refused (their token would resume the task in the
-// wrong agent session), and their typed reply runs as a normal turn of their
-// own instead of consuming the pause. The owner's reply still resumes it.
-func TestHITL_ResumeIsPromptOwnerOnly(t *testing.T) {
-	fake := newFakeSlackAPI()
-	fakeURL := fake.server(t).URL
-	var mu sync.Mutex
-	var captured []channels.InboundMessage
-	gw := &stubGateway{
-		onResolve: func(msg channels.InboundMessage) {
-			mu.Lock()
-			captured = append(captured, msg)
-			mu.Unlock()
-		},
-		sendQueue: [][]channels.OutboundDelta{
-			{{Kind: channels.DeltaPrompt, TaskID: "task-1", Prompt: &channels.HitlPrompt{ToolName: "kubectl_delete"}}},
-			{{Content: "collab answer"}, {Done: true}},
-			{{Content: "resumed"}, {Done: true}},
-		},
-	}
-	_, srv := newEventsAdapter(t, gw, fakeURL, channelMode)
-
-	// U001's turn pauses on the approval prompt; the pending task is theirs.
-	sendEvent(t, srv, mention("U001", "delete it", "100.000", ""))
-	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Waiting for approval")
-	}, 2*time.Second, 50*time.Millisecond, "the approval prompt posts")
-
-	// U999 parks, is granted, and their message replays: it must run as a
-	// normal turn, not resolve U001's pause.
-	sendEvent(t, srv, mention("U999", "approve", "200.000", "100.000"))
-	fake.waitForPath(t, "chat.postEphemeral", 2)
-	sendAccessInteraction(t, srv, "U001", accessAllowAction, "100.000", "U999", fakeURL+"/response")
-	require.Eventually(t, func() bool { return gw.resolveCount() == 2 },
-		2*time.Second, 50*time.Millisecond, "the granted message replays")
-	mu.Lock()
-	replayed := captured[1]
-	mu.Unlock()
-	require.Empty(t, replayed.TaskID, "a non-owner reply must not consume the owner's pause")
-	// The replayed turn must release the thread slot before the click, or the
-	// click bounces off the busy notice instead of reaching the owner check.
-	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "collab answer")
-	}, 2*time.Second, 50*time.Millisecond, "the replayed turn completes")
-	time.Sleep(150 * time.Millisecond)
-
-	// U999's click on the owner's prompt is refused with a pointer at the owner.
-	sendHitlInteraction(t, srv, "U999", "hitl_approve", `{"t":"100.000","id":"task-1"}`, "100.000")
-	require.Eventually(t, func() bool {
-		for _, c := range fake.pathCalls("chat.postEphemeral") {
-			user, _ := c.params["user"].(string)
-			text, _ := c.params["text"].(string)
-			if user == "U999" && strings.Contains(text, "<@U001> can answer this prompt") {
-				return true
-			}
-		}
-		return false
-	}, 2*time.Second, 50*time.Millisecond, "the non-owner click gets the owner-only refusal")
-	require.Equal(t, 2, gw.resolveCount(), "the refused click must not reach the agent")
-
-	// The owner's typed reply still resumes the pause. Extra replies losing
-	// the timing race run as fresh turns, so any resume counts.
-	seq := 0
-	require.Eventually(t, func() bool {
-		seq++
-		sendEvent(t, srv, mention("U001", "approve", fmt.Sprintf("300.%03d", seq), "100.000"))
-		mu.Lock()
-		defer mu.Unlock()
-		return slices.ContainsFunc(captured, func(msg channels.InboundMessage) bool {
-			return msg.TaskID == "task-1"
-		})
-	}, 3*time.Second, 100*time.Millisecond, "the owner's reply resumes the pending task")
 }
