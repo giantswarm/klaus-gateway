@@ -10,6 +10,59 @@ Two connection modes are supported:
 | Events API   | `events`    | Production. Requires a public HTTPS webhook URL.      |
 | Socket Mode  | `socketmode`| Development. No public URL required.                  |
 
+## How it fits together: surfaces, sessions, sign-in
+
+Three separate concepts decide where a message appears, which agent session it
+lands in, and whether the gateway will act as the user. They are easy to
+conflate, so they are described here in one place; the operational sections
+below assume this model.
+
+### Surfaces
+
+DMs and channels are two independent surfaces, gated separately:
+
+- `SLACK_DM_MODE` gates the DM surface (`message.im`, in the `D…` channel):
+  `serve` (answer, the default), `redirect` (point the user at channels), or
+  `ignore` (drop silently).
+- `SLACK_CHANNEL_MODE` gates channels: `all` (every channel the bot is invited
+  to, the default), `allowlist` (only the IDs in `SLACK_CHANNEL_ALLOWLIST`), or
+  `none` (DM-only deployments).
+
+For an **Agent-type Slack app** the DM surface *is* the assistant pane: Slack
+replaces the top-level DM composer, so every user message arrives threaded
+(`thread_ts` is always set) and plain top-level DMs do not occur. The
+per-message-thread DM path (and the channel `/usage` fallback that goes with it)
+applies only to non-Agent deployments.
+
+### Threads and sessions
+
+- `threadID` is `thread_ts` if set, otherwise the message `ts`.
+- The A2A `contextID` is a hash of `(channel, channelID, "", threadID,
+  agentRef)`. The user slot is deliberately empty: a thread is **thread-scoped**,
+  so every participant in it shares one `contextID` and therefore one kagent
+  session.
+- One assistant thread (or one channel thread) maps to one stable `contextID`
+  for its whole life. A "New chat" in the assistant pane is a new thread, and
+  therefore a new session, by design.
+- kagent looks sessions up by `(contextID, user_id)`, where `user_id` derives
+  from the forwarded token subject. Changing the identity configuration (the
+  subject claim, or the Dex connector) changes `user_id` and orphans every
+  existing session. kagent sessions have no TTL, so orphaned sessions persist.
+
+### Two auth layers
+
+These are independent; a user can have completed one and not the other.
+
+1. **The gateway's account link** (`/login`, musterlink): binds a Slack user to
+   a Giant Swarm identity. The callback enforces an email match between the
+   OAuth identity and the Slack profile email. GitHub-backed sign-in releases
+   the GitHub *primary* email, which is the usual mismatch cause. This is what
+   the "Sign in to Giant Swarm" prompt starts.
+2. **The agent's own per-backend connector OAuth**, brokered by muster
+   (`core_auth_login`): authorizes the agent to call a specific backend as the
+   user. It is separate from layer 1 and is triggered by the agent, not the
+   sign-in prompt.
+
 ## Slack app setup
 
 Use `deploy/slack/manifest.yaml` to create and configure the Slack app in one step:
@@ -129,8 +182,10 @@ any string that begins with `Slack bot`, `Slack app-level`, or `Slack user`.
 3. The `@mention` prefix is stripped from `app_mention` text before routing.
 4. The routing key is `(channel="slack", channelID=<Slack channel ID>, userID=<Slack user ID>,
    threadID=<thread_ts or ts>)`.
-5. A stable A2A contextID is derived from `(channel, channelID, userID, threadID, agentRef)`.
-   The same thread always maps to the same contextID, allowing Klaus to resume the conversation.
+5. A stable A2A contextID is derived from `(channel, channelID, "", threadID, agentRef)` with
+   an empty user slot, so the same thread always maps to the same contextID for every
+   participant, allowing Klaus to resume the conversation. See
+   [Threads and sessions](#threads-and-sessions).
 6. The gateway forwards the turn through the A2A executor to the instance named by
    `slack.defaultAgent`. The OpenAI `/v1` path is bypassed.
 7. Progress is shown by adding a working reaction to the triggering message. On success the
