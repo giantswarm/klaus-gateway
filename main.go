@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/go-chi/chi/v5"
@@ -291,6 +292,16 @@ func run(args []string) error {
 			}
 			facade.Sessions = kagentClient
 			if slackAdapter != nil {
+				// Agent selection needs a namespace-qualified default: bare-name
+				// selections complete with the default's namespace, so a bare
+				// default keys the default route and an explicit selection of
+				// the same agent under two different sessions. The adapter's
+				// Start has the same guard, but it runs before this wiring and
+				// cannot see the roster — enforce it here, where both facts are
+				// known.
+				if !strings.Contains(cfg.A2A.DefaultAgent, "/") {
+					return fmt.Errorf("slack agent selection requires a namespace-qualified a2a default agent (namespace/name), got %q", cfg.A2A.DefaultAgent)
+				}
 				slackAdapter.Models = kagentClient
 				slackAdapter.Roster = kagentClient
 			}

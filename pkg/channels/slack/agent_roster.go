@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-	"unicode"
 
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 )
@@ -111,89 +110,4 @@ func (a *Adapter) rosterSelector(ag pkga2a.AgentInfo) (selector, ref string) {
 		}
 	}
 	return selector, ref
-}
-
-// didYouMeanSuggestion returns a corrected, copy-pasteable command when the
-// typed name — extended word by word into the question, covering display
-// names typed unquoted ("SRE" + "Agent") — matches a roster agent's display or
-// technical name after normalization. Exact-after-normalization only, no
-// fuzzy matching, so a suggestion is never a guess; and it only decorates the
-// error reply — the dispatch decision stays with the AgentCard validation.
-func (a *Adapter) didYouMeanSuggestion(ctx context.Context, name, question string) (string, bool) {
-	agents, err := a.rosterAgents(ctx)
-	if err != nil || len(agents) == 0 {
-		return "", false
-	}
-	ctx, cancel := context.WithTimeout(ctx, rosterListTimeout)
-	defer cancel()
-
-	// Candidate typed names, longest first so "SRE Agent" wins over "SRE":
-	// the name token alone, then extended with up to two leading question words.
-	type candidate struct {
-		norm string // normalized typed name
-		rest string // question left over after the consumed words
-	}
-	candidates := []candidate{{norm: normalizeAgentName(name), rest: question}}
-	typed, rest := name, question
-	for range 2 {
-		if rest == "" {
-			break
-		}
-		var word string
-		word, rest = splitWord(rest)
-		typed += " " + word
-		candidates = append(candidates, candidate{norm: normalizeAgentName(typed), rest: rest})
-	}
-
-	for i := len(candidates) - 1; i >= 0; i-- {
-		c := candidates[i]
-		if c.norm == "" {
-			continue
-		}
-		for _, ag := range agents {
-			selector, ref := a.rosterSelector(ag)
-			match := c.norm == normalizeAgentName(ag.Name) || c.norm == normalizeAgentName(selector)
-			if !match && a.AgentCards != nil {
-				if display, _ := a.AgentCards.CardIdentity(ctx, ref); display != "" {
-					match = c.norm == normalizeAgentName(display)
-				}
-			}
-			if !match {
-				continue
-			}
-			// Collapse the remainder to one line so the suggestion renders as a
-			// single code span; a leftover question keeps the command runnable.
-			restText := strings.ReplaceAll(strings.Join(strings.Fields(c.rest), " "), "`", "'")
-			if restText == "" {
-				restText = "<question>"
-			}
-			return fmt.Sprintf("Did you mean `/agent %s %s`?", selector, restText), true
-		}
-	}
-	return "", false
-}
-
-// normalizeAgentName lowercases and strips everything but letters and digits,
-// so "SRE Agent", "sre-agent", and "sre_agent" compare equal. That also makes
-// separator-only siblings ("sre-agent" vs "sreagent") collide, so a suggestion
-// can name the wrong one — acceptable because a suggestion never dispatches;
-// the user's actual selection is still validated against its AgentCard.
-func normalizeAgentName(s string) string {
-	var b strings.Builder
-	for _, r := range strings.ToLower(s) {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
-}
-
-// splitWord cuts the first whitespace-delimited word off s, preserving the
-// remainder's formatting.
-func splitWord(s string) (word, rest string) {
-	s = strings.TrimSpace(s)
-	if i := strings.IndexFunc(s, unicode.IsSpace); i >= 0 {
-		return s[:i], strings.TrimSpace(s[i:])
-	}
-	return s, ""
 }

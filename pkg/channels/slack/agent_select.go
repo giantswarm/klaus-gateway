@@ -117,7 +117,7 @@ func (a *Adapter) handleAgentSelection(ctx context.Context, cmd *slashCommand, m
 		return false
 	}
 	if !validName {
-		reply(a.agentUnavailableReply(ctx, name, question))
+		reply(a.agentUnavailableReply(ctx, name))
 		return false
 	}
 
@@ -130,7 +130,7 @@ func (a *Adapter) handleAgentSelection(ctx context.Context, cmd *slashCommand, m
 	defer cancel()
 	if _, _, err := checker.CardInfo(vctx, ref); err != nil {
 		a.Logger.Info("slack: agent selection failed validation", "agent", ref, "thread", msg.ThreadID, "error", err)
-		reply(a.agentUnavailableReply(ctx, name, question))
+		reply(a.agentUnavailableReply(ctx, name))
 		return false
 	}
 
@@ -140,14 +140,10 @@ func (a *Adapter) handleAgentSelection(ctx context.Context, cmd *slashCommand, m
 	return true
 }
 
-// agentUnavailableReply renders the loud selection failure: a did-you-mean
-// suggestion when the typed name looks like an agent's display name, and the
+// agentUnavailableReply renders the loud selection failure, including the
 // current roster when it can be fetched so the user can pick a real name.
-func (a *Adapter) agentUnavailableReply(ctx context.Context, name, question string) string {
+func (a *Adapter) agentUnavailableReply(ctx context.Context, name string) string {
 	text := fmt.Sprintf(agentUnavailableNotice, strings.ReplaceAll(name, "`", "'"))
-	if suggestion, ok := a.didYouMeanSuggestion(ctx, name, question); ok {
-		text += "\n" + suggestion
-	}
 	if listing, ok := a.rosterListing(ctx); ok {
 		text += "\n\n" + listing
 	}
