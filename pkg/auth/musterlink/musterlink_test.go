@@ -441,15 +441,27 @@ func TestCallbackRedirectsToCodeFreeSuccessPage(t *testing.T) {
 	l.HandleCallback(crec, httptest.NewRequest(http.MethodGet, CallbackPath+"?"+q.Encode(), nil))
 	require.Equal(t, http.StatusSeeOther, crec.Code)
 	location := crec.Header().Get("Location")
-	require.Equal(t, CallbackPath+"?done=1", location)
+	require.True(t, strings.HasPrefix(location, CallbackPath+"?done="), location)
 	require.NotContains(t, location, "code=")
+	require.NotContains(t, location, "alice", "the email must not ride in the URL")
 
-	// The landing the browser is sent to renders the success page and survives
-	// reloads without touching the token endpoint.
+	// The landing the browser is sent to confirms which account linked (the
+	// one-time nonce resolves the email; the in-thread rewrite carries none).
 	drec := httptest.NewRecorder()
 	l.HandleCallback(drec, httptest.NewRequest(http.MethodGet, location, nil))
 	require.Equal(t, http.StatusOK, drec.Code)
 	require.Contains(t, drec.Body.String(), "Signed in to Giant Swarm")
+	require.Contains(t, drec.Body.String(), "alice@example.com",
+		"the private success page confirms which account linked")
+
+	// A reload of the landing survives without touching the token endpoint;
+	// the consumed nonce degrades it to the generic success text.
+	rrec := httptest.NewRecorder()
+	l.HandleCallback(rrec, httptest.NewRequest(http.MethodGet, location, nil))
+	require.Equal(t, http.StatusOK, rrec.Code)
+	require.Contains(t, rrec.Body.String(), "Signed in to Giant Swarm")
+	require.NotContains(t, rrec.Body.String(), "alice@example.com",
+		"a reload must not replay the identity confirmation")
 }
 
 func TestCallbackFiresOnLinkedHook(t *testing.T) {
