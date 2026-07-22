@@ -33,6 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Slack `ask_user` questions now render their choices as a vertical `radio_buttons` (single-select) or `checkboxes` (multi-select) list with a Submit button, instead of a horizontal row of buttons that Slack truncated to about 39 characters. A choice longer than 75 characters renders one per section with its full text intact. Multi-select questions are now answerable by clicking (previously only by typing a comma-separated reply). More than 10 choices, or a prompt with multiple questions, still renders as a numbered list you answer in-thread (klaus-gateway#151).
 - Slack `/login` and `/logout` confirmations are ephemeral. The signed-in identity (including the linked email) is visible only to the caller instead of being posted into the shared thread.
 - The tool-activity truncation notice no longer reads as if details were off; it now says the per-turn limit was reached, that details are still on, and that `/details off` mutes tool posts entirely.
 - A Slack thread's active state (initiator and on-the-fly access grants) expires after 24 hours without interaction, so the bot stops consuming un-mentioned replies in abandoned threads on a long-lived pod. Any handled message refreshes the deadline; an expired thread re-engages with a fresh `@`-mention, which re-establishes the initiator.

@@ -15,6 +15,39 @@ import (
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 )
 
+func TestChooseChoiceRender(t *testing.T) {
+	shortN := func(n int) []string {
+		s := make([]string, n)
+		for i := range s {
+			s[i] = "x"
+		}
+		return s
+	}
+	// choiceLabelWidgetMax runes of a 2-byte rune: over the byte limit but at
+	// the rune limit, so it must still render as a widget (rune-counted, not bytes).
+	atRuneCap := strings.Repeat("é", choiceLabelWidgetMax)
+	overRuneCap := strings.Repeat("é", choiceLabelWidgetMax+1)
+
+	for _, tc := range []struct {
+		name string
+		q    channels.HitlQuestion
+		want choiceRender
+	}{
+		{"no choices", channels.HitlQuestion{}, renderText},
+		{"single short", channels.HitlQuestion{Choices: []string{"a"}}, renderWidget},
+		{"multi flag does not change mode", channels.HitlQuestion{Choices: []string{"a"}, Multiple: true}, renderWidget},
+		{"at option cap", channels.HitlQuestion{Choices: shortN(maxChoiceOptions)}, renderWidget},
+		{"over option cap", channels.HitlQuestion{Choices: shortN(maxChoiceOptions + 1)}, renderText},
+		{"label at rune cap", channels.HitlQuestion{Choices: []string{atRuneCap}}, renderWidget},
+		{"label over rune cap", channels.HitlQuestion{Choices: []string{overRuneCap}}, renderSection},
+		{"long label wins over short peers", channels.HitlQuestion{Choices: []string{"a", overRuneCap}}, renderSection},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, chooseChoiceRender(tc.q))
+		})
+	}
+}
+
 func askUserPrompt(multiple bool, choices ...string) *channels.HitlPrompt {
 	return &channels.HitlPrompt{
 		ToolName:  channels.AskUserToolName,
@@ -71,6 +104,17 @@ func TestBuildButtonDecision_Choice(t *testing.T) {
 	require.Equal(t, [][]string{{"Health check"}}, decision.AskUserAnswers)
 	require.Equal(t, "Health check", resume)
 	require.Contains(t, display, "Health check")
+}
+
+func TestBuildButtonDecision_Submit(t *testing.T) {
+	prompt := askUserPrompt(true, "Auth", "Logging", "Caching")
+	act := hitlAction{kind: hitlSubmit, choices: []int{0, 2}}
+
+	decision, resume, display := buildButtonDecision(act, prompt)
+	require.Equal(t, channels.DecisionApprove, decision.Type)
+	require.Equal(t, [][]string{{"Auth", "Caching"}}, decision.AskUserAnswers)
+	require.Equal(t, "Auth, Caching", resume)
+	require.Contains(t, display, "Auth, Caching")
 }
 
 func TestBuildButtonDecision_ApproveDeny(t *testing.T) {

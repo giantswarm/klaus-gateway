@@ -842,40 +842,122 @@ func (c *slackAPIClient) postApprovalPrompt(ctx context.Context, channel, thread
 	return err
 }
 
-// postChoicePrompt posts an ask_user question with one Block Kit button per
-// choice. Each button's value encodes the threadID, question index, and choice
-// index so the interaction handler can resolve the selected answer label.
-func (c *slackAPIClient) postChoicePrompt(ctx context.Context, channel, threadID, question string, choices []string) error {
-	// The question is agent-authored and enters an mrkdwn section block; the
-	// choice labels render as plain_text buttons, which parse nothing. The
-	// section wraps the question in two asterisks, which count against Slack's
-	// 3000-char section limit.
+// questionSection renders an ask_user question as a bold mrkdwn section block.
+// The question is agent-authored; the two asterisks count against Slack's
+// 3000-char section limit.
+func questionSection(question string) map[string]any {
 	question = truncateRunes(escapeMrkdwn(question), slackSectionTextMax-2)
-	elements := make([]any, 0, len(choices))
+	return map[string]any{
+		bkType: bkSection,
+		bkText: map[string]any{bkType: bkMrkdwn, bkText: "*" + question + "*"},
+	}
+}
+
+// submitActions renders the Submit button that commits a widget selection. Its
+// value is the raw threadID so the interaction handler can route the response.
+func submitActions(threadID string) map[string]any {
+	return map[string]any{
+		bkType: bkActions,
+		bkElements: []any{
+			map[string]any{
+				bkType:     bkButton,
+				bkText:     map[string]any{bkType: bkPlainText, bkText: "Submit"},
+				bkStyle:    bkPrimary,
+				bkActionID: hitlSubmit,
+				bkValue:    threadID,
+			},
+		},
+	}
+}
+
+// postChoiceWidgetPrompt posts an ask_user question as a vertical
+// radio_buttons (single-select) or checkboxes (multi-select) widget plus a
+// Submit button. Each option's value is its choice index; the interaction
+// handler reads the selection out of state.values on Submit. Choice labels are
+// capped at the option-text limit (the caller routes longer labels to the
+// section layout, so truncation never bites in practice).
+func (c *slackAPIClient) postChoiceWidgetPrompt(ctx context.Context, channel, threadID, question string, choices []string, multiple bool) error {
+	options := make([]any, 0, len(choices))
 	for i, choice := range choices {
-		elements = append(elements, map[string]any{
-			bkType:     bkButton,
-			bkText:     map[string]any{bkType: bkPlainText, bkText: truncateButtonLabel(choice)},
-			bkActionID: fmt.Sprintf("%s_%d", hitlChoice, i),
-			bkValue:    encodeChoiceValue(threadID, i),
+		options = append(options, map[string]any{
+			bkText:  map[string]any{bkType: bkPlainText, bkText: truncateRunes(choice, choiceLabelWidgetMax)},
+			bkValue: strconv.Itoa(i),
 		})
+	}
+	elementType := bkRadioButtons
+	if multiple {
+		elementType = bkCheckboxes
 	}
 	body := map[string]any{
 		paramChannel:  channel,
 		paramThreadTS: threadID,
-		paramText:     question,
+		paramText:     truncateRunes(escapeMrkdwn(question), slackSectionTextMax),
 		paramBlocks: []any{
+			questionSection(question),
 			map[string]any{
-				bkType: bkSection,
-				bkText: map[string]any{bkType: bkMrkdwn, bkText: "*" + question + "*"},
+				bkType:    bkActions,
+				bkBlockID: hitlGroupBlock,
+				bkElements: []any{
+					map[string]any{
+						bkType:     elementType,
+						bkActionID: hitlGroup,
+						bkOptions:  options,
+					},
+				},
 			},
-			map[string]any{
-				bkType:     bkActions,
-				bkElements: elements,
-			},
+			submitActions(threadID),
 		},
 	}
 	_, err := c.postJSON(ctx, methodChatPostMessage, body)
+	return err
+}
+
+// postChoiceSectionPrompt posts an ask_user question whose choices are too long
+// for a widget option's 75-rune text: one section block per choice carries the
+// full label (up to Slack's 3000-char section limit) with a selection control.
+// Single-select uses an accessory button per row (a click commits, since one
+// choice per row is unambiguous); multi-select uses an accessory single-option
+// checkbox per row plus a Submit button, and the handler gathers the selected
+// rows out of state.values.
+func (c *slackAPIClient) postChoiceSectionPrompt(ctx context.Context, channel, threadID, question string, choices []string, multiple bool) error {
+	blocks := []any{questionSection(question)}
+	for i, choice := range choices {
+		section := map[string]any{
+			bkType: bkSection,
+			bkText: map[string]any{bkType: bkMrkdwn, bkText: truncateRunes(escapeMrkdwn(choice), slackSectionTextMax)},
+		}
+		if multiple {
+			section[bkBlockID] = fmt.Sprintf("%s_%d", hitlGroupBlock, i)
+			section[bkAccessory] = map[string]any{
+				bkType:     bkCheckboxes,
+				bkActionID: hitlGroup,
+				bkOptions: []any{
+					map[string]any{
+						bkText:  map[string]any{bkType: bkPlainText, bkText: "Select"},
+						bkValue: strconv.Itoa(i),
+					},
+				},
+			}
+		} else {
+			section[bkAccessory] = map[string]any{
+				bkType:     bkButton,
+				bkText:     map[string]any{bkType: bkPlainText, bkText: "Select"},
+				bkActionID: fmt.Sprintf("%s_%d", hitlChoice, i),
+				bkValue:    encodeChoiceValue(threadID, i),
+			}
+		}
+		blocks = append(blocks, section)
+	}
+	if multiple {
+		blocks = append(blocks, submitActions(threadID))
+	}
+	body := map[string]any{
+		paramChannel:  channel,
+		paramThreadTS: threadID,
+		paramText:     truncateRunes(escapeMrkdwn(question), slackSectionTextMax),
+		paramBlocks:   blocks,
+	}
+	_, err := c.postJSON(ctx, "chat.postMessage", body)
 	return err
 }
 
