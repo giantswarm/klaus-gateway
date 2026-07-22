@@ -8,10 +8,25 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 )
+
+// slackOption is one selected option in a radio_buttons/checkboxes state entry.
+type slackOption struct {
+	Value string `json:"value"`
+}
+
+// blockActionState is the state of one action inside a block, as reported under
+// state.values on a block_actions payload. selected_option is set for a
+// radio_buttons group; selected_options for a checkboxes group.
+type blockActionState struct {
+	SelectedOption  *slackOption  `json:"selected_option"`
+	SelectedOptions []slackOption `json:"selected_options"`
+}
 
 // interactionPayload is the subset of the Slack interactions payload we need.
 type interactionPayload struct {
@@ -33,10 +48,47 @@ type interactionPayload struct {
 	ResponseURL string `json:"response_url"`
 	Actions     []struct {
 		ActionID string `json:"action_id"`
-		// Value carries the button payload: a raw threadID for approve/deny, or
-		// JSON for choice ({t,c}) and access ({t,u}) buttons.
+		// Value carries the button payload: a raw threadID for approve/deny/submit,
+		// or JSON for choice ({t,c}) and access ({t,u}) buttons.
 		Value string `json:"value"`
 	} `json:"actions"`
+	// State carries the current selection of stateful widgets (radio/checkbox),
+	// keyed state.values[block_id][action_id]. Read on a Submit click.
+	State struct {
+		Values map[string]map[string]blockActionState `json:"values"`
+	} `json:"state"`
+}
+
+// selectedChoiceIndices gathers the choice indices selected across every
+// radio/checkbox block in a block_actions state. Option values are choice
+// indices (see postChoiceWidgetPrompt/postChoiceSectionPrompt); a value that is
+// not an index is ignored. The section multi-select layout spreads one checkbox
+// per block, so every block is scanned. Indices are de-duplicated and ordered.
+func selectedChoiceIndices(state struct {
+	Values map[string]map[string]blockActionState `json:"values"`
+}) []int {
+	seen := map[int]struct{}{}
+	add := func(v string) {
+		if i, err := strconv.Atoi(v); err == nil {
+			seen[i] = struct{}{}
+		}
+	}
+	for _, actions := range state.Values {
+		for _, st := range actions {
+			if st.SelectedOption != nil {
+				add(st.SelectedOption.Value)
+			}
+			for _, opt := range st.SelectedOptions {
+				add(opt.Value)
+			}
+		}
+	}
+	indices := make([]int, 0, len(seen))
+	for i := range seen {
+		indices = append(indices, i)
+	}
+	sort.Ints(indices)
+	return indices
 }
 
 // interactionsHandler serves POST /channels/slack/interactions.
@@ -124,15 +176,33 @@ func (a *Adapter) routeInteraction(ctx context.Context, payload interactionPaylo
 	}
 
 	// The threadID is in the button value. Choice buttons encode it as JSON;
-	// approve/deny buttons carry it raw.
+	// approve/deny/submit buttons carry it raw.
 	threadID := action.Value
-	if act.kind == hitlChoice {
+	switch act.kind {
+	case hitlChoice:
 		cv, ok := decodeChoiceValue(action.Value)
 		if !ok {
 			return
 		}
 		threadID = cv.Thread
 		act.choice = cv
+	case hitlSubmit:
+		act.choices = selectedChoiceIndices(payload.State)
+		if len(act.choices) == 0 {
+			// Submit with nothing selected: nudge, leaving the task (and widget)
+			// pending so the user can pick and submit again. Gate first, like
+			// every other HITL action, so an onlooker cannot probe the widget.
+			if !a.accessPolicy().Allowed(threadID, payload.User.ID) {
+				if err := a.apiClient().postEphemeralText(ctx, payload.Channel.ID, payload.User.ID, threadID, accessDecisionRefusal); err != nil {
+					a.Logger.Warn("slack: post decision refusal failed", "thread", threadID, "user", payload.User.ID, "error", err)
+				}
+				return
+			}
+			if err := a.apiClient().postEphemeralText(ctx, payload.Channel.ID, payload.User.ID, threadID, choiceSelectNudge); err != nil {
+				a.Logger.Warn("slack: post choice-select nudge failed", "thread", threadID, "error", err)
+			}
+			return
+		}
 	}
 
 	if err := a.handleDecision(ctx, payload.Channel.ID, threadID, payload.Container.MessageTS, payload.User.ID, act); err != nil {
@@ -144,8 +214,9 @@ func (a *Adapter) routeInteraction(ctx context.Context, payload interactionPaylo
 
 // hitlAction is a decoded Block Kit button click.
 type hitlAction struct {
-	kind   string // hitlApprove, hitlDeny, hitlChat, or hitlChoice
-	choice choiceValue
+	kind    string // hitlApprove, hitlDeny, hitlChat, hitlChoice, or hitlSubmit
+	choice  choiceValue
+	choices []int // selected choice indices, for hitlSubmit (radio/checkbox commit)
 }
 
 // classifyAction maps a Block Kit action_id to a hitlAction.
@@ -157,6 +228,8 @@ func classifyAction(actionID string) (hitlAction, bool) {
 		return hitlAction{kind: hitlDeny}, true
 	case actionID == hitlChat:
 		return hitlAction{kind: hitlChat}, true
+	case actionID == hitlSubmit:
+		return hitlAction{kind: hitlSubmit}, true
 	case actionID == accessAllow:
 		return hitlAction{kind: accessAllow}, true
 	case actionID == accessDeny:
@@ -396,6 +469,14 @@ func buildButtonDecision(act hitlAction, prompt *channels.HitlPrompt) (*channels
 		}
 		// The label is agent-authored; it re-enters Slack via chat.update text.
 		return decision, label, "👉 _" + escapeMrkdwn(label) + "_"
+	case hitlSubmit:
+		labels := choiceLabels(prompt, act.choices)
+		decision := &channels.HitlDecision{
+			Type:           channels.DecisionApprove,
+			AskUserAnswers: [][]string{labels},
+		}
+		joined := strings.Join(labels, ", ")
+		return decision, joined, "👉 _" + escapeMrkdwn(joined) + "_"
 	case hitlDeny:
 		return &channels.HitlDecision{Type: channels.DecisionReject}, "denied", "❌ _Denied._"
 	default: // hitlApprove
@@ -413,4 +494,24 @@ func choiceLabel(prompt *channels.HitlPrompt, cv choiceValue) string {
 		}
 	}
 	return "selected option"
+}
+
+// choiceLabels resolves the option labels for a set of selected choice indices
+// against the stored prompt's single question, dropping out-of-range indices.
+// Falls back to a generic label when no index resolves.
+func choiceLabels(prompt *channels.HitlPrompt, indices []int) []string {
+	var choices []string
+	if prompt != nil && len(prompt.Questions) > 0 {
+		choices = prompt.Questions[0].Choices
+	}
+	labels := make([]string, 0, len(indices))
+	for _, i := range indices {
+		if i >= 0 && i < len(choices) {
+			labels = append(labels, choices[i])
+		}
+	}
+	if len(labels) == 0 {
+		return []string{"selected option"}
+	}
+	return labels
 }

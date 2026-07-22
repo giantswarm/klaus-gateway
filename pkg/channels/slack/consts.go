@@ -14,8 +14,15 @@ const (
 	hitlApprove = "hitl_approve"
 	hitlDeny    = "hitl_deny"
 	hitlChat    = "hitl_chat"   // reply with a follow-up question instead of yes/no
-	hitlChoice  = "hitl_choice" // ask_user single-select choice button
+	hitlChoice  = "hitl_choice" // ask_user single long-text choice (section accessory button, per index)
+	hitlSubmit  = "hitl_submit" // ask_user radio/checkbox Submit button
+	hitlGroup   = "hitl_group"  // ask_user radio_buttons/checkboxes element action_id
 )
+
+// hitlGroupBlock is the block_id of an ask_user radio/checkbox block. The
+// interaction handler reads the selection out of state.values[block_id][action_id]
+// on Submit; a per-choice checkbox layout appends "_<index>" for a stable id per block.
+const hitlGroupBlock = "hitl_group_block"
 
 // Access-consent Block Kit action IDs. The button value encodes the thread and
 // the newcomer being decided (see encodeAccessValue), since one initiator can
@@ -74,10 +81,18 @@ const labelApproved = "approved"
 // wordYes is the plain-affirmative approve keyword.
 const wordYes = "yes"
 
-// maxChoiceButtons caps how many ask_user choices are rendered as buttons.
-// Beyond this (or for multi-select / multi-question prompts) the choices are
-// rendered as text and the user replies free-text in-thread.
-const maxChoiceButtons = 5
+// maxChoiceOptions caps how many ask_user choices render as an interactive
+// widget (radio_buttons/checkboxes cap at 10 options; the section-per-choice
+// long-text layout stays under the 50-blocks-per-message limit). Beyond this,
+// or for multi-question prompts, choices render as text and the user replies
+// free-text in-thread.
+const maxChoiceOptions = 10
+
+// choiceLabelWidgetMax is the Block Kit option-object text limit (75 runes for
+// select/overflow and radio/checkbox alike). A choice longer than this cannot
+// render in a widget without truncation, so the renderer falls back to the
+// section-per-choice layout, which carries the full text in a 3000-char section.
+const choiceLabelWidgetMax = 75
 
 // Progress-mode values (Adapter.ProgressMode).
 const (
@@ -109,6 +124,10 @@ const tokenErrorNotice = "I couldn't refresh your Giant Swarm sign-in just now. 
 // accessDecisionRefusal is shown (ephemerally) when a user who is not permitted
 // in the thread clicks an in-thread tool Approve/Deny button.
 const accessDecisionRefusal = "_Only the thread owner (and people they've allowed) can approve or deny this action._"
+
+// choiceSelectNudge is shown (ephemerally) when a user clicks Submit on an
+// ask_user choice widget without selecting anything; the task stays pending.
+const choiceSelectNudge = "_Pick at least one option, then click Submit._"
 
 // chatModePrompt replaces the approval buttons after the user clicks "Chat":
 // the pending tool call is held and the next in-thread reply is sent as the
@@ -181,22 +200,27 @@ const bkURL = "url"
 
 // Block Kit JSON field keys.
 const (
-	bkType     = "type"
-	bkText     = "text"
-	bkActionID = "action_id"
-	bkValue    = "value"
-	bkStyle    = "style"
-	bkElements = "elements"
+	bkType      = "type"
+	bkText      = "text"
+	bkActionID  = "action_id"
+	bkValue     = "value"
+	bkStyle     = "style"
+	bkElements  = "elements"
+	bkOptions   = "options"
+	bkBlockID   = "block_id"
+	bkAccessory = "accessory"
 )
 
 // Block Kit type values.
 const (
-	bkSection   = "section"
-	bkActions   = "actions"
-	bkButton    = "button"
-	bkMrkdwn    = "mrkdwn"
-	bkMarkdown  = "markdown" // top-level Slack markdown block
-	bkPlainText = "plain_text"
-	bkPrimary   = "primary"
-	bkDanger    = "danger"
+	bkSection      = "section"
+	bkActions      = "actions"
+	bkButton       = "button"
+	bkRadioButtons = "radio_buttons"
+	bkCheckboxes   = "checkboxes"
+	bkMrkdwn       = "mrkdwn"
+	bkMarkdown     = "markdown" // top-level Slack markdown block
+	bkPlainText    = "plain_text"
+	bkPrimary      = "primary"
+	bkDanger       = "danger"
 )
