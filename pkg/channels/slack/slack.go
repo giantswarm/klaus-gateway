@@ -1554,6 +1554,30 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 
 	msg.AgentRef = a.DefaultAgent
 
+	// A turn must carry a human token, never the gateway's machine identity.
+	// Resolve the sending user's token before the thread slot is taken, so a
+	// signed-out user's message is parked for sign-in even while another turn
+	// holds the thread, instead of being rejected busy and lost. Every
+	// participant must be signed in, including a collaborator whose token is
+	// not the one ultimately forwarded, so their identity is known for
+	// attribution. Resolved BEFORE consuming any pending task so an abort
+	// leaves the pending TaskID intact and the reply stays retryable.
+	token, ok, signIn := a.humanToken(ctx, slackChannel, msg.ThreadID, slackUser)
+	if signIn {
+		// Hold the message so it is answered after the user signs in, rather than
+		// dropped and re-typed. msg.Subject still carries the raw Slack user ID
+		// at this point; pin it on the parked copy so the replay keys access
+		// control the same way this dispatch did. An immediate drain
+		// (already-linked race) replays once the thread slot is free.
+		parked := msg
+		parked.Subject = slackUser
+		a.parkForLogin(ctx, parked, slackChannel, slackUser)
+	}
+	if !ok {
+		return nil
+	}
+	msg.BearerToken = token
+
 	// Serialize turns per thread: a thread maps to one kagent session, and
 	// concurrent turns on one session interleave its event log into incoherent
 	// history. Reject a turn that arrives while another is in flight rather than
@@ -1565,28 +1589,6 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 	defer a.releaseThread(msg.ThreadID)
 
 	a.resolveSubjectEmail(ctx, &msg)
-
-	// A turn must carry a human token, never the gateway's machine identity.
-	// Resolve the sending user's token first: every participant must be signed
-	// in (parked and prompted here if not), including a collaborator whose token
-	// is not the one ultimately forwarded, so their identity is known for
-	// attribution. Resolve it BEFORE consuming any pending task so an abort
-	// leaves the pending TaskID intact and the reply stays retryable.
-	token, ok, signIn := a.humanToken(ctx, slackChannel, msg.ThreadID, slackUser)
-	if signIn {
-		// Hold the message so it is answered after the user signs in, rather than
-		// dropped and re-typed. resolveSubjectEmail above rewrote msg.Subject to the
-		// email; restore the raw Slack user ID so the replay keys access control the
-		// same way this turn did. An immediate drain (already-linked race) replays
-		// once this dispatch releases the thread slot.
-		parked := msg
-		parked.Subject = slackUser
-		a.parkForLogin(ctx, parked, slackChannel, slackUser)
-	}
-	if !ok {
-		return nil
-	}
-	msg.BearerToken = token
 
 	a.applyInitiatorIdentity(ctx, &msg, msg.ThreadID, slackUser)
 
