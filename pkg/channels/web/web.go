@@ -15,7 +15,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -107,21 +106,21 @@ func (a *Adapter) postMessages(w http.ResponseWriter, r *http.Request) {
 
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxInboundBytes+1))
 	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, "read body: "+err.Error())
+		channels.WriteJSONError(w, http.StatusBadRequest, "read body: "+err.Error())
 		return
 	}
 	if int64(len(body)) > maxInboundBytes {
-		writeJSONError(w, http.StatusRequestEntityTooLarge, "request body exceeds limit")
+		channels.WriteJSONError(w, http.StatusRequestEntityTooLarge, "request body exceeds limit")
 		return
 	}
 
 	var in inboundRequest
 	if err := json.Unmarshal(body, &in); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "parse body: "+err.Error())
+		channels.WriteJSONError(w, http.StatusBadRequest, "parse body: "+err.Error())
 		return
 	}
 	if in.ChannelID == "" || in.UserID == "" || in.ThreadID == "" || in.Text == "" {
-		writeJSONError(w, http.StatusBadRequest, "channelId, userId, threadId, text are all required")
+		channels.WriteJSONError(w, http.StatusBadRequest, "channelId, userId, threadId, text are all required")
 		return
 	}
 
@@ -156,46 +155,21 @@ func (a *Adapter) postMessages(w http.ResponseWriter, r *http.Request) {
 
 	deltas, err := a.gw.SendCompletion(r.Context(), ref, msg)
 	if err != nil {
-		writeJSONError(w, http.StatusBadGateway, "send completion: "+err.Error())
+		channels.WriteJSONError(w, http.StatusBadGateway, "send completion: "+err.Error())
 		return
 	}
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		writeJSONError(w, http.StatusInternalServerError, "response writer does not support streaming")
+		channels.WriteJSONError(w, http.StatusInternalServerError, "response writer does not support streaming")
 		return
 	}
-	setSSEHeaders(w.Header())
+	channels.SetSSEHeaders(w.Header())
 	w.Header().Set("X-Klaus-Instance", ref.Name)
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
-	enc := json.NewEncoder(w)
-	for d := range deltas {
-		if d.Err != nil {
-			writeSSEError(w, flusher, d.Err)
-			return
-		}
-		if d.Done {
-			_, _ = fmt.Fprintf(w, "event: done\ndata: {}\n\n")
-			flusher.Flush()
-			continue
-		}
-		if d.Content == "" {
-			continue
-		}
-		if _, err := io.WriteString(w, "data: "); err != nil {
-			return
-		}
-		if err := enc.Encode(map[string]string{"content": d.Content}); err != nil {
-			return
-		}
-		// enc.Encode writes a trailing newline; SSE needs the blank line after.
-		if _, err := io.WriteString(w, "\n"); err != nil {
-			return
-		}
-		flusher.Flush()
-	}
+	channels.StreamDeltasSSE(w, flusher, deltas)
 }
 
 func (a *Adapter) getMessages(w http.ResponseWriter, r *http.Request) {
@@ -209,7 +183,7 @@ func (a *Adapter) getMessages(w http.ResponseWriter, r *http.Request) {
 	userID := q.Get("userId")
 	threadID := q.Get("threadId")
 	if channelID == "" || userID == "" || threadID == "" {
-		writeJSONError(w, http.StatusBadRequest, "channelId, userId, threadId are all required")
+		channels.WriteJSONError(w, http.StatusBadRequest, "channelId, userId, threadId are all required")
 		return
 	}
 
@@ -226,7 +200,7 @@ func (a *Adapter) getMessages(w http.ResponseWriter, r *http.Request) {
 
 	history, err := a.gw.FetchHistory(r.Context(), ref)
 	if err != nil {
-		writeJSONError(w, http.StatusBadGateway, "fetch history: "+err.Error())
+		channels.WriteJSONError(w, http.StatusBadGateway, "fetch history: "+err.Error())
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -235,29 +209,9 @@ func (a *Adapter) getMessages(w http.ResponseWriter, r *http.Request) {
 
 func (a *Adapter) resolveError(w http.ResponseWriter, err error) {
 	if errors.Is(err, routing.ErrRouteNotFound) {
-		writeJSONError(w, http.StatusNotFound, "no instance bound to this thread and auto-create is disabled")
+		channels.WriteJSONError(w, http.StatusNotFound, "no instance bound to this thread and auto-create is disabled")
 		return
 	}
 	a.Logger.Error("web: resolve failed", "error", err)
-	writeJSONError(w, http.StatusBadGateway, "resolve: "+err.Error())
-}
-
-func setSSEHeaders(h http.Header) {
-	h.Set("Content-Type", "text/event-stream")
-	h.Set("Cache-Control", "no-cache")
-	h.Set("Connection", "keep-alive")
-	h.Set("X-Accel-Buffering", "no")
-}
-
-func writeSSEError(w http.ResponseWriter, flusher http.Flusher, err error) {
-	_, _ = fmt.Fprintf(w, "event: error\ndata: %q\n\n", err.Error())
-	flusher.Flush()
-}
-
-func writeJSONError(w http.ResponseWriter, code int, msg string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"error": map[string]any{"message": msg, "type": http.StatusText(code)},
-	})
+	channels.WriteJSONError(w, http.StatusBadGateway, "resolve: "+err.Error())
 }
