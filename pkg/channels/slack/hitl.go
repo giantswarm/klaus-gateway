@@ -17,10 +17,12 @@ import (
 type choiceValue struct {
 	Thread string `json:"t"`
 	Choice int    `json:"c"`
+	// Task is the A2A task the prompt was rendered for; see hitlValue.Task.
+	Task string `json:"id,omitempty"`
 }
 
-func encodeChoiceValue(threadID string, c int) string {
-	b, _ := json.Marshal(choiceValue{Thread: threadID, Choice: c})
+func encodeChoiceValue(threadID, taskID string, c int) string {
+	b, _ := json.Marshal(choiceValue{Thread: threadID, Choice: c, Task: taskID})
 	return string(b)
 }
 
@@ -30,6 +32,32 @@ func decodeChoiceValue(s string) (choiceValue, bool) {
 		return choiceValue{}, false
 	}
 	return v, true
+}
+
+// hitlValue is encoded into the approve/deny/chat/submit button values. Thread
+// routes the click; Task pins the prompt to the A2A task it was rendered for,
+// so a click on a superseded prompt message (its task already resumed, the
+// thread paused again on a different prompt) is refused instead of answering
+// the newer prompt with selections the user never saw.
+type hitlValue struct {
+	Thread string `json:"t"`
+	Task   string `json:"id,omitempty"`
+}
+
+func encodeHitlValue(threadID, taskID string) string {
+	b, _ := json.Marshal(hitlValue{Thread: threadID, Task: taskID})
+	return string(b)
+}
+
+// decodeHitlValue parses a button value into its thread and task. Prompt
+// messages posted by older gateway versions carry the raw threadID; those
+// decode with an empty Task, which skips the staleness check.
+func decodeHitlValue(s string) hitlValue {
+	var v hitlValue
+	if err := json.Unmarshal([]byte(s), &v); err == nil && v.Thread != "" {
+		return v
+	}
+	return hitlValue{Thread: s}
 }
 
 // accessValue is encoded into an access-consent button's value so the
@@ -78,10 +106,28 @@ func chooseChoiceRender(q channels.HitlQuestion) choiceRender {
 	return renderWidget
 }
 
+// formRenderable reports whether a multi-question ask_user prompt can render as
+// a single interactive form: every question must be a radio/checkbox widget
+// (1..maxChoiceOptions choices, each label within choiceLabelWidgetMax runes),
+// and the question count must stay within the per-message block budget. A prompt
+// with any free-text, over-long, or over-count question renders as text instead.
+func formRenderable(p *channels.HitlPrompt) bool {
+	if len(p.Questions) < 2 || len(p.Questions) > maxFormQuestions {
+		return false
+	}
+	for _, q := range p.Questions {
+		if chooseChoiceRender(q) != renderWidget {
+			return false
+		}
+	}
+	return true
+}
+
 // postHitlPrompt renders the appropriate Slack prompt for a paused
 // input-required task: an interactive choice widget for a single-question
-// ask_user, Approve/Deny for a generic tool approval, and a free-text fallback
-// for everything else. The user can always answer by replying in-thread.
+// ask_user, a form for a multi-question ask_user whose questions all fit a
+// widget, Approve/Deny for a generic tool approval, and a free-text fallback for
+// everything else. The user can always answer by replying in-thread.
 func (a *Adapter) postHitlPrompt(ctx context.Context, client *slackAPIClient, slackChannel, threadID string, pd *channels.OutboundDelta) error {
 	p := pd.Prompt
 
@@ -91,17 +137,15 @@ func (a *Adapter) postHitlPrompt(ctx context.Context, client *slackAPIClient, sl
 	// falls back to the plain-text rendering (the free-text reply path resolves
 	// the task either way).
 	if p.IsAskUser() {
-		// Only a single-question prompt renders interactively; multiple questions
-		// need one answer line each, which the text path handles.
 		if len(p.Questions) == 1 {
 			q := p.Questions[0]
 			var err error
 			interactive := true
 			switch chooseChoiceRender(q) {
 			case renderWidget:
-				err = client.postChoiceWidgetPrompt(ctx, slackChannel, threadID, q.Question, q.Choices, q.Multiple)
+				err = client.postChoiceWidgetPrompt(ctx, slackChannel, threadID, pd.TaskID, q.Question, q.Choices, q.Multiple)
 			case renderSection:
-				err = client.postChoiceSectionPrompt(ctx, slackChannel, threadID, q.Question, q.Choices, q.Multiple)
+				err = client.postChoiceSectionPrompt(ctx, slackChannel, threadID, pd.TaskID, q.Question, q.Choices, q.Multiple)
 			default:
 				interactive = false
 			}
@@ -111,6 +155,12 @@ func (a *Adapter) postHitlPrompt(ctx context.Context, client *slackAPIClient, sl
 				}
 				a.Logger.Warn("slack: choice prompt failed, falling back to text", "thread", threadID, "error", err)
 			}
+		} else if formRenderable(p) {
+			err := client.postChoiceFormPrompt(ctx, slackChannel, threadID, pd.TaskID, p.Questions)
+			if err == nil {
+				return nil
+			}
+			a.Logger.Warn("slack: form prompt failed, falling back to text", "thread", threadID, "error", err)
 		}
 		_, err := client.postMessage(ctx, slackChannel, renderAskUserText(p), threadID)
 		return err
@@ -121,7 +171,7 @@ func (a *Adapter) postHitlPrompt(ctx context.Context, client *slackAPIClient, sl
 	if text == "" {
 		text = "_Waiting for approval…_"
 	}
-	err := client.postApprovalPrompt(ctx, slackChannel, threadID, text)
+	err := client.postApprovalPrompt(ctx, slackChannel, threadID, pd.TaskID, text)
 	if err == nil {
 		return nil
 	}

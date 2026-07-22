@@ -143,7 +143,7 @@ func TestLoginReplay_WaitsForBusyThread(t *testing.T) {
 	// U999 (granted, unlinked) posts while the thread is idle: parked for login.
 	sendEvent(t, srv, mention("U999", "help me out", "200.000", "100.000"))
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Sign in to Giant Swarm")
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Sign in so I can act as you")
 	}, 2*time.Second, 50*time.Millisecond, "the unlinked granted user is prompted to sign in")
 	require.Equal(t, 1, gw.resolveCount(), "the unlinked message is parked, not dispatched")
 
