@@ -3,6 +3,7 @@ package slack
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -58,6 +59,31 @@ func parseDetailsLevel(s string) (level detailsLevel, ok bool) {
 	}
 }
 
+// knownCommands is the verb set handleCommand owns.
+var knownCommands = map[string]struct{}{
+	cmdHelp:    {},
+	cmdStop:    {},
+	cmdLogin:   {},
+	cmdLogout:  {},
+	cmdUsage:   {},
+	cmdDetails: {},
+}
+
+// commandShapeRe matches a verb that reads as a command word. A path or URL
+// fragment ("/etc/hosts", "/api/v1/pods") contains characters outside it, so a
+// real prompt that happens to start with "/" still reaches the agent.
+var commandShapeRe = regexp.MustCompile(`^[a-z][a-z0-9_-]*$`)
+
+// isUnknownCommand reports whether cmd carries a command-shaped verb the
+// gateway does not own (a Slack built-in like /invite, or a typo). Dispatching
+// such a message burns a full agent turn on explaining slash commands.
+func isUnknownCommand(cmd *slashCommand) bool {
+	if _, ok := knownCommands[cmd.Name]; ok {
+		return false
+	}
+	return commandShapeRe.MatchString(cmd.Name)
+}
+
 // slashCommand is a parsed in-thread command.
 type slashCommand struct {
 	Name string   // lower-case command name, e.g. "stop", "usage"
@@ -106,6 +132,13 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *slashCommand, slackUse
 			a.Logger.Warn("slack: post command reply failed", "error", err)
 		}
 	}
+	// Sign-in state is caller-only information; a shared thread must not see
+	// the linked email, so /login and /logout confirm ephemerally.
+	ephemeralReply := func(text string) {
+		if err := client.postEphemeralText(ctx, slackChannel, slackUser, threadID, text); err != nil {
+			a.Logger.Warn("slack: post ephemeral command reply failed", "error", err)
+		}
+	}
 
 	// permittedOnly verifies the caller may instruct the agent in this thread
 	// (the initiator, or a user the initiator granted), replying with a refusal
@@ -133,10 +166,10 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *slashCommand, slackUse
 		return true
 
 	case cmdLogin:
-		return a.handleLoginCommand(ctx, slackUser, slackChannel, threadID, reply)
+		return a.handleLoginCommand(ctx, slackUser, slackChannel, threadID, ephemeralReply)
 
 	case cmdLogout:
-		return a.handleLogoutCommand(slackUser, reply)
+		return a.handleLogoutCommand(slackUser, ephemeralReply)
 
 	case cmdStop:
 		if !permittedOnly() {
@@ -196,7 +229,8 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *slashCommand, slackUse
 // handleLoginCommand handles `/login`. It always consumes the command. When
 // OBO is disabled it says so rather than dispatching to the agent. An unlinked
 // user gets the sign-in prompt; a linked user gets a confirmation of their
-// signed-in identity.
+// signed-in identity. reply is ephemeral: the identity confirmation carries
+// the caller's email, which a shared thread must not see.
 func (a *Adapter) handleLoginCommand(ctx context.Context, slackUser, slackChannel, threadID string, reply func(string)) bool {
 	if a.OBO == nil {
 		reply("_On-behalf-of sign-in is not enabled on this gateway._")
@@ -207,6 +241,16 @@ func (a *Adapter) handleLoginCommand(ctx context.Context, slackUser, slackChanne
 		return true
 	}
 	email, linked := a.linkedEmail(ctx, slackUser)
+	if linked {
+		// The store entry alone does not prove the link works: the identity
+		// provider may have revoked the token family since. An explicit /login
+		// is the moment to probe for real, so a dead link re-prompts instead
+		// of confirming a sign-in that will fail on the next turn.
+		if _, err := a.OBO.TokenFor(ctx, slackUser); err != nil {
+			a.Logger.Info("slack: /login probe failed for linked user, re-prompting sign-in", "user", slackUser, "error", err)
+			linked = false
+		}
+	}
 	if !linked {
 		// Explicit request: post the sign-in prompt without the nudge throttle.
 		a.postSignIn(ctx, slackChannel, threadID, slackUser)

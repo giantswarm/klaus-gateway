@@ -139,3 +139,12 @@ func (a *Adapter) seenEvent(eventID string) bool {
 	a.seenEvents[eventID] = now.Add(seenEventTTL)
 	return false
 }
+
+// seenMessage dedups a message across its event-type twins: a mention inside a
+// channel thread is delivered as both app_mention and message.channels with
+// distinct event_ids, so event_id dedup alone would run the same message
+// twice. Keyed by (channel, ts), which both twins share; the prefix keeps the
+// keys out of the event_id namespace.
+func (a *Adapter) seenMessage(channel, ts string) bool {
+	return a.seenEvent("msg\x00" + channel + "\x00" + ts)
+}

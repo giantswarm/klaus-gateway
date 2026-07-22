@@ -51,6 +51,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -83,6 +84,10 @@ const defaultHTTPTimeout = 30 * time.Second
 
 // grantTypeRefreshToken is the OAuth grant type advertised in the CIMD document.
 const grantTypeRefreshToken = "refresh_token"
+
+// responseTypeCode is the OAuth authorization-code response type: advertised
+// in the CIMD document and the name of the callback query parameter.
+const responseTypeCode = "code"
 
 // tokenRefreshSkew refreshes a cached token this long before it actually
 // expires, so a token handed to a downstream A2A call is not about to expire
@@ -209,6 +214,13 @@ type Linker struct {
 	mu      sync.Mutex
 	pending map[string]pendingAuth // state -> PKCE verifier
 
+	// doneMu guards done, the one-time nonces carrying the linked email from
+	// the callback to its post-redirect success landing, so the landing can
+	// confirm which account linked without the email (PII) riding in the URL.
+	// In memory only: a lost entry degrades the landing to the generic text.
+	doneMu sync.Mutex
+	done   map[string]doneNotice
+
 	// refreshMu guards refreshLocks; each per-user lock serializes that user's
 	// token refreshes so concurrent messages (e.g. Slack event retries) don't
 	// both spend the rotating refresh token and invalidate the link.
@@ -226,6 +238,53 @@ type Linker struct {
 type pendingAuth struct {
 	verifier string
 	expires  time.Time
+}
+
+// doneNotice is the linked email held for the success landing behind a
+// one-time nonce. The TTL only needs to outlive the browser following one
+// redirect.
+type doneNotice struct {
+	email   string
+	expires time.Time
+}
+
+// doneTTL bounds how long a success landing can claim its linked email. The
+// redirect is followed immediately; anything later (a reload, a shared link)
+// gets the generic success text.
+const doneTTL = 2 * time.Minute
+
+// putDone mints a one-time nonce for the success landing and stores the
+// linked email under it.
+func (l *Linker) putDone(email string) string {
+	nonce := oauth2.GenerateVerifier() // random, URL-safe
+	now := l.now()
+	l.doneMu.Lock()
+	defer l.doneMu.Unlock()
+	if l.done == nil {
+		l.done = make(map[string]doneNotice)
+	}
+	for k, d := range l.done { // opportunistic prune
+		if now.After(d.expires) {
+			delete(l.done, k)
+		}
+	}
+	l.done[nonce] = doneNotice{email: email, expires: now.Add(doneTTL)}
+	return nonce
+}
+
+// takeDone returns and consumes the email stored under nonce, if any.
+func (l *Linker) takeDone(nonce string) (string, bool) {
+	l.doneMu.Lock()
+	defer l.doneMu.Unlock()
+	d, ok := l.done[nonce]
+	if !ok {
+		return "", false
+	}
+	delete(l.done, nonce)
+	if l.now().After(d.expires) {
+		return "", false
+	}
+	return d.email, true
 }
 
 // New builds a Linker. muster's OAuth endpoints are discovered lazily (RFC 8414)
@@ -395,7 +454,7 @@ func (l *Linker) HandleClientMetadata(w http.ResponseWriter, _ *http.Request) {
 		ClientURI:               "https://github.com/giantswarm/klaus-gateway",
 		RedirectURIs:            []string{l.oauth.RedirectURL},
 		GrantTypes:              []string{"authorization_code", grantTypeRefreshToken},
-		ResponseTypes:           []string{"code"},
+		ResponseTypes:           []string{responseTypeCode},
 		TokenEndpointAuthMethod: "none",
 		Scope:                   strings.Join(l.oauth.Scopes, " "),
 	}
@@ -462,6 +521,25 @@ func (l *Linker) HandleLink(w http.ResponseWriter, r *http.Request) {
 // Slack/muster email match, and stores the link.
 func (l *Linker) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
+	if nonce := q.Get("done"); nonce != "" {
+		// Post-redirect-GET landing: the code was already exchanged and the
+		// browser's address bar no longer carries it, so a reload stays here
+		// instead of resubmitting the code (the auth server treats a replayed
+		// code as theft and revokes every token issued to this user+client).
+		// The one-time nonce resolves the linked email so the first render
+		// confirms which account linked (the in-thread Slack rewrite carries
+		// no email); a reload or stale nonce gets the generic text.
+		message := "You can close this tab and return to Slack."
+		if email, ok := l.takeDone(nonce); ok && email != "" {
+			message = fmt.Sprintf("Signed in as %s. You can close this tab and return to Slack.", email)
+		}
+		l.renderPage(w, http.StatusOK, page{
+			Heading: "Success",
+			Title:   "Signed in to Giant Swarm",
+			Message: message,
+		})
+		return
+	}
 	if e := q.Get("error"); e != "" {
 		l.renderPage(w, http.StatusBadRequest, page{
 			Heading: "Sign-in cancelled",
@@ -493,7 +571,7 @@ func (l *Linker) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	link, err := l.Exchange(ctx, q.Get("code"), verifier)
+	link, err := l.Exchange(ctx, q.Get(responseTypeCode), verifier)
 	if err != nil {
 		l.logger.Error("musterlink: code exchange failed", "err", err)
 		l.renderPage(w, http.StatusBadGateway, page{
@@ -516,11 +594,14 @@ func (l *Linker) HandleCallback(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if want == "" || !strings.EqualFold(want, link.Email) {
-			l.logger.Warn("musterlink: email mismatch", "slackUser", slackUser)
+			l.logger.Warn("musterlink: email mismatch", "slackUser", slackUser, "slackEmail", want, "identityEmail", link.Email)
 			l.renderPage(w, http.StatusForbidden, page{
 				Heading: "Email mismatch",
 				Title:   "Account email does not match",
-				Message: "The Giant Swarm account you signed in with does not match your Slack email. Sign in with the account that matches your Slack email.",
+				Message: fmt.Sprintf("The account you signed in with reports %s, but your Slack profile email is %s. "+
+					"Sign in with the account whose email matches your Slack email. "+
+					"For GitHub-backed sign-in, the released email is your GitHub primary email; update it if it does not match.",
+					link.Email, want),
 			})
 			return
 		}
@@ -534,11 +615,12 @@ func (l *Linker) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		l.onLinked(context.WithoutCancel(ctx), slackUser, link.Email)
 	}
 
-	l.renderPage(w, http.StatusOK, page{
-		Heading: "Success",
-		Title:   "Signed in to Giant Swarm",
-		Message: "You can close this tab and return to Slack.",
-	})
+	// Redirect rather than render: a 200 here leaves code+state in the address
+	// bar, and reloading that tab resubmits the consumed code. OAuth 2.1 code
+	// reuse makes the auth server revoke all tokens for this user+client, so
+	// the success page must live at a code-free URL. The one-time nonce lets
+	// that landing name the linked account without the email riding in the URL.
+	http.Redirect(w, r, CallbackPath+"?done="+url.QueryEscape(l.putDone(link.Email)), http.StatusSeeOther)
 }
 
 // Exchange trades an authorization code (with its PKCE verifier) for muster

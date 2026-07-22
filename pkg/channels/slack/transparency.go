@@ -220,6 +220,12 @@ func (a *Adapter) maybeAnnounceResume(ctx context.Context, msg channels.InboundM
 	if !checked {
 		return
 	}
+	// A miss here for a thread that visibly has history means the kagent-side
+	// session is gone or is keyed under a different identity (kagent scopes
+	// sessions by (contextID, user_id) where user_id derives from the forwarded
+	// token subject), so surface the conclusive outcome at info.
+	a.Logger.Info("slack: session resume check", "record", "resume_check",
+		"thread", msg.ThreadID, "channel_id", msg.ChannelID, "subject", msg.Subject, "exists", exists)
 
 	a.resumeMu.Lock()
 	if a.resumeChecked == nil {

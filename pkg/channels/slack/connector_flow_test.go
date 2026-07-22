@@ -3,6 +3,7 @@ package slack_test
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -76,6 +77,16 @@ func callToolLoginTurn(output string) []channels.OutboundDelta {
 func ephemeralJSON(fake *fakeSlackAPI) string {
 	var b strings.Builder
 	for _, c := range fake.pathCalls("chat.postEphemeral") {
+		raw, _ := json.Marshal(c.params)
+		b.Write(raw)
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+func postMessageJSON(fake *fakeSlackAPI) string {
+	var b strings.Builder
+	for _, c := range fake.pathCalls("chat.postMessage") {
 		raw, _ := json.Marshal(c.params)
 		b.Write(raw)
 		b.WriteString("\n")
@@ -168,13 +179,29 @@ func TestConnectorPrompt_Cooldown(t *testing.T) {
 		return strings.Count(ephemeralJSON(fake), "connector_connect") == 1
 	}, 2*time.Second, 20*time.Millisecond, "first turn posts the prompt")
 
-	sendEvent(t, srv, dmThreadEvent("U1", "two", "103.000", "102.000"))
-	require.Eventually(t, func() bool {
-		return gw.resolveCount() == 2
-	}, 2*time.Second, 20*time.Millisecond, "second turn ran")
+	dispatchTurn(t, srv, gw, 2, "two", "102.000")
 	time.Sleep(100 * time.Millisecond)
 	require.Equal(t, 1, strings.Count(ephemeralJSON(fake), "connector_connect"),
-		"second turn within the cooldown must not re-prompt")
+		"a repeat challenge with the same URL within the cooldown must not re-prompt")
+}
+
+// dispatchTurn delivers a follow-up message until it actually starts a turn.
+// The thread slot is released a beat after the previous turn's stream
+// completes, so an event racing that release is answered with a busy notice
+// and dropped; retrying with a fresh ts converges, as a real user would.
+func dispatchTurn(t *testing.T, srv *httptest.Server, gw *stubGateway, wantResolves int, text, threadTS string) {
+	t.Helper()
+	for i := 0; ; i++ {
+		require.Less(t, i, 20, "turn never dispatched past the busy thread slot")
+		sendEvent(t, srv, dmThreadEvent("U1", text, fmt.Sprintf("777.%03d", i), threadTS))
+		deadline := time.Now().Add(250 * time.Millisecond)
+		for time.Now().Before(deadline) {
+			if gw.resolveCount() >= wantResolves {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
 }
 
 // A result without a login URL yields no prompt.
@@ -300,8 +327,8 @@ func TestConnectorDismissInteraction_InvalidServer(t *testing.T) {
 	require.Empty(t, captured.body)
 }
 
-// A linked user's /login confirms their signed-in identity, with no connector
-// listing or prompt.
+// A linked user's /login confirms their signed-in identity ephemerally (the
+// email is caller-only information), with no connector listing or prompt.
 func TestLoginCommand_LinkedConfirmation(t *testing.T) {
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok"}, {Done: true}}}
 	fake, srv := connectorAdapter(t, gw)
@@ -309,8 +336,10 @@ func TestLoginCommand_LinkedConfirmation(t *testing.T) {
 	sendEvent(t, srv, dmEvent("U1", "/login", "110.000"))
 
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Signed in")
-	}, 2*time.Second, 20*time.Millisecond, "signed-in confirmation is posted")
+		return strings.Contains(ephemeralJSON(fake), "Signed in")
+	}, 2*time.Second, 20*time.Millisecond, "signed-in confirmation is posted ephemerally")
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "Signed in",
+		"the identity confirmation must not be a public message")
 	require.NotContains(t, ephemeralJSON(fake), "connector_connect")
 }
 
@@ -326,7 +355,7 @@ func TestLoginCommand_UnlinkedGetsSignIn(t *testing.T) {
 	sendEvent(t, srv, dmEvent("U1", "/login", "111.000"))
 
 	require.Eventually(t, func() bool {
-		return strings.Contains(ephemeralJSON(fake), "obo_sign_in")
+		return strings.Contains(postMessageJSON(fake), "obo_sign_in")
 	}, 2*time.Second, 20*time.Millisecond)
 }
 
@@ -355,4 +384,35 @@ func sendConnectorInteractionURL(t *testing.T, srv *httptest.Server, actionID, s
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	_ = resp.Body.Close()
+}
+
+// A second auth challenge carries a NEW single-use login URL: the auth server
+// invalidated the old one, so the cooldown must not suppress the fresh button
+// (observed live: the scrubbed prose said "use the Connect button above" while
+// the only button carried a dead auth session).
+func TestConnectorPrompt_NewURLSupersedesCooldown(t *testing.T) {
+	secondChallenge := strings.ReplaceAll(authChallengeOutput, "state=abc", "state=def")
+	gw := &stubGateway{deltas: []channels.OutboundDelta{
+		authLoginResult(authChallengeOutput),
+		{Content: "ok"}, {Done: true},
+	}}
+	fake, srv := connectorAdapter(t, gw)
+
+	sendEvent(t, srv, dmEvent("U1", "one", "102.000"))
+	require.Eventually(t, func() bool {
+		return strings.Count(ephemeralJSON(fake), "connector_connect") == 1
+	}, 2*time.Second, 20*time.Millisecond, "first turn posts the prompt")
+
+	gw.mu.Lock()
+	gw.deltas = []channels.OutboundDelta{
+		authLoginResult(secondChallenge),
+		{Content: "ok"}, {Done: true},
+	}
+	gw.mu.Unlock()
+
+	dispatchTurn(t, srv, gw, 2, "two", "102.000")
+	require.Eventually(t, func() bool {
+		return strings.Count(ephemeralJSON(fake), "connector_connect") >= 2
+	}, 2*time.Second, 20*time.Millisecond, "a challenge with a new URL must post a fresh button")
+	require.Contains(t, ephemeralJSON(fake), "state=def", "the fresh button carries the new URL")
 }
