@@ -1512,77 +1512,48 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 	}
 	defer a.releaseThread(msg.ThreadID)
 
-	a.resolveSubjectEmail(ctx, &msg)
+	err := a.runTurn(ctx, msg, slackChannel, slackUser, turnTail{
+		attach: func(msg *channels.InboundMessage) *pendingTask {
+			// A reply into a thread this process did not start may be resuming a
+			// kagent session that has since been evicted. Announce the "starting
+			// fresh" degradation up front so the user is not surprised by lost
+			// context. Only for replies (not a fresh root mention), at most once
+			// per thread. Advisory: never aborts the turn, and bounded by a short
+			// timeout so a slow REST endpoint cannot stall the first reply.
+			if firstSight && msg.ThreadID != msg.MessageID {
+				a.maybeAnnounceResume(ctx, *msg, slackChannel)
+			}
 
-	a.applyInitiatorIdentity(ctx, &msg, msg.ThreadID, slackUser)
-
-	// A reply into a thread this process did not start may be resuming a kagent
-	// session that has since been evicted. Announce the "starting fresh"
-	// degradation up front so the user is not surprised by lost context. Only for
-	// replies (not a fresh root mention), at most once per thread. Advisory: never
-	// aborts the turn, and bounded by a short timeout so a slow REST endpoint
-	// cannot stall the first reply.
-	if firstSight && msg.ThreadID != msg.MessageID {
-		a.maybeAnnounceResume(ctx, msg, slackChannel)
-	}
-
-	// Resume a paused input-required task when one exists for this thread. Done
-	// only after the turn is committed to run (thread slot acquired, human token
-	// resolved): takePendingTask deletes the entry, so consuming it on a branch
-	// that then aborts would strand the paused A2A task. Map the typed reply to a
-	// structured HITL decision so the paused tool confirmation is actually
-	// resolved (a plain text reply would leave the tool call dangling and corrupt
-	// the model history).
-	task := a.takePendingTask(msg.ThreadID)
-	if task != nil {
-		msg.TaskID = task.TaskID
-		msg.Decision = decisionFromText(task.Prompt, msg.Text)
-	}
-	// A failure between the take and a running stream would otherwise strand the
-	// paused A2A task (the take deleted the only handle to it); put it back so a
-	// retry or button click can still resume it.
-	restoreTask := func() {
-		if task != nil {
-			a.storePendingTask(msg.ThreadID, task)
-		}
-	}
-
-	ref, err := a.gw.Resolve(ctx, msg)
-	if err != nil {
-		restoreTask()
-		a.postDispatchFailureNote(ctx, slackChannel, msg.ThreadID)
-		return fmt.Errorf("slack: resolve: %w", err)
-	}
-
-	// New channel thread (a root mention starting a conversation): post the
-	// Swarmgeist handoff notice before the agent takes over, so the app-to-agent
-	// transition is explicit. Posted only once the agent resolved, so a resolve
-	// failure does not announce a launch and then error out. Skipped for thread
-	// replies, resumed tasks, and DMs (a 1:1 DM is the agent conversation
-	// itself, with no channel handoff). Slack DM channel IDs start with "D".
-	if firstSight && msg.ThreadID == msg.MessageID && msg.TaskID == "" && !strings.HasPrefix(slackChannel, "D") {
-		a.postLaunchAnnouncement(ctx, slackChannel, msg.ThreadID, msg.AgentRef)
-	}
-
-	turnCtx, done := a.registerTurn(ctx, msg.ThreadID)
-	defer done()
-
-	a.logTurnDispatch(msg, slackUser, task != nil)
-
-	deltas, err := a.gw.SendCompletion(turnCtx, ref, msg)
-	if err != nil {
-		restoreTask()
-		a.postDispatchFailureNote(ctx, slackChannel, msg.ThreadID)
-		return fmt.Errorf("slack: send completion: %w", err)
-	}
-
-	// The turn context feeds the whole stream so /stop cancels the turn, and an
-	// aborted consumer releases the producer goroutine.
-	var carried channels.TurnUsage
-	if task != nil {
-		carried = task.Usage
-	}
-	err = a.streamResponse(turnCtx, a.agentClient(ctx, msg.AgentRef), deltas, msg, slackUser, slackChannel, msg.ThreadID, msg.MessageID, thinkingPlaceholder, carried)
+			// Resume a paused input-required task when one exists for this thread.
+			// Done only after the turn is committed to run (thread slot acquired,
+			// human token resolved): takePendingTask deletes the entry, so
+			// consuming it on a branch that then aborts would strand the paused
+			// A2A task. Map the typed reply to a structured HITL decision so the
+			// paused tool confirmation is actually resolved (a plain text reply
+			// would leave the tool call dangling and corrupt the model history).
+			task := a.takePendingTask(msg.ThreadID)
+			if task != nil {
+				msg.TaskID = task.TaskID
+				msg.Decision = decisionFromText(task.Prompt, msg.Text)
+			}
+			return task
+		},
+		onResolved: func(msg channels.InboundMessage) {
+			// New channel thread (a root mention starting a conversation): post the
+			// Swarmgeist handoff notice before the agent takes over, so the
+			// app-to-agent transition is explicit. Posted only once the agent
+			// resolved, so a resolve failure does not announce a launch and then
+			// error out. Skipped for thread replies, resumed tasks, and DMs (a 1:1
+			// DM is the agent conversation itself, with no channel handoff). Slack
+			// DM channel IDs start with "D".
+			if firstSight && msg.ThreadID == msg.MessageID && msg.TaskID == "" && !strings.HasPrefix(slackChannel, "D") {
+				a.postLaunchAnnouncement(ctx, slackChannel, msg.ThreadID, msg.AgentRef)
+			}
+		},
+		failureNote: func() { a.postDispatchFailureNote(ctx, slackChannel, msg.ThreadID) },
+		triggerTS:   msg.MessageID,
+		placeholder: thinkingPlaceholder,
+	})
 	if isCorruptSessionErr(err) {
 		a.recoverCorruptSession(ctx, msg, slackChannel)
 	}
