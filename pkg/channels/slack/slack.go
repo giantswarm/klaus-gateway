@@ -6,6 +6,26 @@
 //
 // The adapter is disabled by default; set --slack-enabled (or
 // KLAUS_GATEWAY_SLACK_ENABLED=true) to activate it.
+//
+// # Vocabulary
+//
+//   - thread: one Slack thread (threadID is the root message's ts; in a DM,
+//     the message's own ts). A thread maps 1:1 to one kagent session, which
+//     is why turns on a thread are serialized.
+//   - turn: one inbound trigger (a typed message or a button click) and the
+//     completion streamed back for it. At most one turn runs per thread at a
+//     time (the thread's turn slot); a concurrent trigger is rejected busy.
+//   - task: an A2A task. A turn that pauses at input-required leaves a
+//     pending task on the thread; a later turn (a typed reply or a button
+//     click) resumes it. A task can span several turns; a turn serves at
+//     most one task. Turn and task are distinct on purpose: renaming one
+//     into the other would erase the pause/resume relationship.
+//   - initiator: the first user to interact in a thread. Collaborators need
+//     the initiator's consent, and every turn on the thread is forwarded
+//     under the initiator's identity, so the shared session sees a single
+//     principal.
+//   - collaborator: a user the initiator granted. Their turns are attributed
+//     to them (msg.Author) but run under the initiator's token.
 package slack
 
 import (
@@ -1512,8 +1532,8 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 	}
 	defer a.releaseThread(msg.ThreadID)
 
-	return a.runTurn(ctx, msg, slackChannel, slackUser, turnTail{
-		afterIdentity: func(msg channels.InboundMessage) {
+	return a.runTurn(ctx, msg, slackChannel, turnTail{
+		onIdentityResolved: func(msg channels.InboundMessage) {
 			// A reply into a thread this process did not start may be resuming a
 			// kagent session that has since been evicted. Announce the "starting
 			// fresh" degradation up front so the user is not surprised by lost
@@ -1524,7 +1544,7 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 				a.maybeAnnounceResume(ctx, msg, slackChannel)
 			}
 		},
-		attach: func(msg *channels.InboundMessage) *pendingTask {
+		attachTask: func(msg *channels.InboundMessage) *pendingTask {
 			// Resume a paused input-required task when one exists for this thread.
 			// Done only after the turn is committed to run (thread slot acquired,
 			// human token resolved): takePendingTask deletes the entry, so
@@ -1539,7 +1559,7 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 			}
 			return task
 		},
-		onResolved: func(msg channels.InboundMessage) {
+		onAgentResolved: func(msg channels.InboundMessage) {
 			// New channel thread (a root mention starting a conversation): post the
 			// Swarmgeist handoff notice before the agent takes over, so the
 			// app-to-agent transition is explicit. Posted only once the agent
@@ -1551,7 +1571,7 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 				a.postLaunchAnnouncement(ctx, slackChannel, msg.ThreadID, msg.AgentRef)
 			}
 		},
-		failureNote: func() { a.postDispatchFailureNote(ctx, slackChannel, msg.ThreadID) },
+		onFailure:   func() { a.postDispatchFailureNote(ctx, slackChannel, msg.ThreadID) },
 		triggerTS:   msg.MessageID,
 		placeholder: thinkingPlaceholder,
 	})

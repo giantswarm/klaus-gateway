@@ -92,9 +92,14 @@ func TestAccess_MultipleParkedMessagesReplayInOrder(t *testing.T) {
 	}
 	_, srv := newEventsAdapter(t, gw, fakeURL, channelMode)
 
+	// Wait for the opening turn to complete (done reaction), not just to
+	// dispatch: a later mention must not race it for the thread slot.
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
-		2*time.Second, 50*time.Millisecond, "initiator's mention dispatches")
+	require.Eventually(t, func() bool {
+		names := fake.reactionNames("reactions.add")
+		return len(names) > 0 && names[len(names)-1] == "white_check_mark"
+	}, 2*time.Second, 50*time.Millisecond, "the initiator's opening turn completes")
+	require.Equal(t, 1, gw.resolveCount(), "initiator's mention dispatches")
 
 	// The newcomer sends two messages before being granted: one consent prompt
 	// (plus one waiting-ack), both messages held.
@@ -132,9 +137,14 @@ func TestLoginReplay_WaitsForBusyThread(t *testing.T) {
 	obo := &multiUserOBO{linked: map[string]string{"U001": "tok1"}}
 	a.OBO = obo
 
+	// Wait for the opening turn to complete (done reaction), not just to
+	// dispatch: a later mention must not race it for the thread slot.
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
-		2*time.Second, 50*time.Millisecond, "initiator's mention dispatches")
+	require.Eventually(t, func() bool {
+		names := fake.reactionNames("reactions.add")
+		return len(names) > 0 && names[len(names)-1] == "white_check_mark"
+	}, 2*time.Second, 50*time.Millisecond, "the initiator's opening turn completes")
+	require.Equal(t, 1, gw.resolveCount(), "initiator's mention dispatches")
 
 	// Grant U999 up front (a grant with nothing parked still stands), so their
 	// later message reaches the login-park path rather than the consent prompt.
@@ -193,9 +203,14 @@ func TestSignInPark_BusyThreadParksInsteadOfDropping(t *testing.T) {
 	obo := &multiUserOBO{linked: map[string]string{"U001": "tok1"}}
 	a.OBO = obo
 
+	// Wait for the opening turn to complete (done reaction), not just to
+	// dispatch: a later mention must not race it for the thread slot.
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
-		2*time.Second, 50*time.Millisecond, "initiator's mention dispatches")
+	require.Eventually(t, func() bool {
+		names := fake.reactionNames("reactions.add")
+		return len(names) > 0 && names[len(names)-1] == "white_check_mark"
+	}, 2*time.Second, 50*time.Millisecond, "the initiator's opening turn completes")
+	require.Equal(t, 1, gw.resolveCount(), "initiator's mention dispatches")
 
 	// Grant U999 up front (a grant with nothing parked still stands), so their
 	// later message reaches the login-park path rather than the consent prompt.

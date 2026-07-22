@@ -388,7 +388,10 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 
 	// Serialize the resume with any concurrent turn on this thread (typed reply
 	// or another click). Acquire before taking the pending task so a rejected
-	// click leaves the task and the button intact for a retry.
+	// click leaves the task and the button intact for a retry. Unlike dispatch,
+	// the clicker's token is minted AFTER the slot: the peek/take pair below
+	// must run under it, and a click has no message to park, so nothing is
+	// gained by mirroring dispatch's mint-before-slot ordering here.
 	if !a.acquireThread(threadID) {
 		if _, err := client.postMessage(ctx, slackChannel, busyNotice, threadID); err != nil {
 			a.Logger.Warn("slack: post busy notice failed", "thread", threadID, "error", err)
@@ -505,9 +508,9 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 	// decision, so the failure note tells the user a typed reply can still
 	// resume it. Text progress: a button resume has no user message to react
 	// to.
-	return a.runTurn(ctx, msg, slackChannel, slackUser, turnTail{
-		attach:      func(*channels.InboundMessage) *pendingTask { return task },
-		failureNote: func() { a.postResumeFailureNote(ctx, client, slackChannel, threadID) },
+	return a.runTurn(ctx, msg, slackChannel, turnTail{
+		attachTask:  func(*channels.InboundMessage) *pendingTask { return task },
+		onFailure:   func() { a.postResumeFailureNote(ctx, client, slackChannel, threadID) },
 		placeholder: "_continuing…_",
 	})
 }
