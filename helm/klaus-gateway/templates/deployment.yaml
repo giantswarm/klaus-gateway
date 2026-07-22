@@ -103,6 +103,9 @@ spec:
         {{- else if .Values.a2a.tokenPath }}
         - --a2a-token-path={{ .Values.a2a.tokenPath }}
         {{- end }}
+        {{- if .Values.a2a.fallbackIconUrlTemplate }}
+        - --a2a-fallback-icon-url-template={{ .Values.a2a.fallbackIconUrlTemplate }}
+        {{- end }}
         {{- end }}
         ports:
         - name: http

@@ -215,6 +215,11 @@ a2a:
   # Authorization on every outgoing A2A request. Leave empty for unauthenticated
   # in-cluster hops. When saToken.enabled is true this is auto-set.
   tokenPath: ""
+  # fallbackIconUrlTemplate is used only when an agent's AgentCard has no iconUrl;
+  # the card's own iconUrl always wins. "{agent}" is replaced with the agentRef.
+  # Empty disables the fallback (the channel uses its own default icon).
+  # Example: https://avatars.gazelle.awsprod.gigantic.io/v1/{agent}.png
+  fallbackIconUrlTemplate: ""
   # saToken controls a projected ServiceAccount token mounted on the gateway pod
   # and forwarded to the A2A orchestrator as a Bearer token.
   saToken:

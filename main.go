@@ -297,12 +297,13 @@ func run(args []string) error {
 			}
 		}
 		// Card-derived agent branding for Slack: the AgentCard supplies the
-		// agent's display name (its icon is empty from kagent today, so config
-		// fills it). Same base and token as the executor.
+		// agent's display name and icon. Cards without an iconUrl fall back to
+		// the configured template. Same base and token as the executor.
 		if slackAdapter != nil {
 			slackAdapter.AgentCards = &pkga2a.AgentCardClient{
-				BaseURL:     cfg.A2A.URL,
-				TokenSource: tokenSource,
+				BaseURL:                 cfg.A2A.URL,
+				TokenSource:             tokenSource,
+				FallbackIconURLTemplate: cfg.A2A.FallbackIconURLTemplate,
 			}
 		}
 		logger.Info("a2a adapter enabled",

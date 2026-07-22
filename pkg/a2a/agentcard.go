@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,8 +15,8 @@ import (
 // AgentCardClient fetches and caches an agent's A2A AgentCard from the
 // well-known endpoint {BaseURL}/{agentRef}/.well-known/agent-card.json. The card
 // is the backend-neutral source of an agent's display name and icon (kagent
-// serves iconUrl from the Agent CRD spec since kagent-dev/kagent#2188; a
-// backend that does not populate one yields an empty IconURL).
+// serves iconUrl from the Agent CRD spec since kagent-dev/kagent#2188). A card
+// without an iconUrl falls back to FallbackIconURLTemplate.
 type AgentCardClient struct {
 	// HTTPClient is the HTTP client used for requests. Nil uses a default with a 10-second timeout.
 	HTTPClient *http.Client
@@ -24,6 +25,10 @@ type AgentCardClient struct {
 	BaseURL string
 	// TokenSource yields the Bearer token for the card request. Nil sends none.
 	TokenSource TokenSource
+	// FallbackIconURLTemplate supplies an icon URL when the card carries no
+	// iconUrl or cannot be fetched. "{agent}" is replaced with the agentRef.
+	// Empty leaves the icon empty so the channel uses its own default.
+	FallbackIconURLTemplate string
 
 	mu    sync.Mutex
 	cache map[string]*a2a.AgentCard
@@ -39,14 +44,18 @@ type AgentCardClient struct {
 const cardFailureTTL = 45 * time.Second
 
 // CardIdentity returns the agentRef's card display name and icon URL, fetching
-// and caching the card on first use. Any error yields empty strings, so the
-// caller falls back to config or the app default; branding never blocks a turn.
+// and caching the card on first use. When the card carries no iconUrl or cannot
+// be fetched, the icon falls back to FallbackIconURLTemplate with "{agent}"
+// replaced by agentRef; the name stays empty on a fetch error. Branding never
+// blocks a turn.
 func (c *AgentCardClient) CardIdentity(ctx context.Context, agentRef string) (username, iconURL string) {
-	card, err := c.card(ctx, agentRef)
-	if err != nil || card == nil {
-		return "", ""
+	if card, err := c.card(ctx, agentRef); err == nil && card != nil {
+		username, iconURL = card.Name, card.IconURL
 	}
-	return card.Name, card.IconURL
+	if iconURL == "" && c.FallbackIconURLTemplate != "" {
+		iconURL = strings.ReplaceAll(c.FallbackIconURLTemplate, "{agent}", agentRef)
+	}
+	return username, iconURL
 }
 
 func (c *AgentCardClient) card(ctx context.Context, agentRef string) (*a2a.AgentCard, error) {
