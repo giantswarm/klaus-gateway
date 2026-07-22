@@ -132,9 +132,9 @@ type Adapter struct {
 	// icon yet, so agent messages are named but icon-less until kagent exposes it.
 	AgentCards AgentCardResolver
 
-	gw        channels.Gateway
-	baseCtx   context.Context // adapter lifecycle ctx, captured in Start; OnUserLinked's background work (login-replay dispatch and the sign-in confirmation POST) derives from it so shutdown cancels it
-	started   atomic.Bool
+	gw      channels.Gateway
+	baseCtx context.Context // adapter lifecycle ctx, captured in Start; OnUserLinked's background work (login-replay dispatch and the sign-in confirmation POST) derives from it so shutdown cancels it
+	started atomic.Bool
 
 	// bgMu guards the background-goroutine lifecycle. cancel cancels baseCtx;
 	// bgWG tracks every goroutine started via background so Stop can join them,
@@ -479,8 +479,10 @@ func (a *Adapter) background(fn func(context.Context)) {
 }
 
 // Stop cancels the adapter lifecycle context and joins every goroutine started
-// via background, so no work outlives the adapter. Idempotent.
-func (a *Adapter) Stop(_ context.Context) error {
+// via background, so no work outlives the adapter. The join is bounded by ctx:
+// if it expires before the goroutines drain, Stop returns ctx.Err() rather than
+// blocking forever on a goroutine that missed the cancellation. Idempotent.
+func (a *Adapter) Stop(ctx context.Context) error {
 	a.bgMu.Lock()
 	a.bgStopped = true
 	cancel := a.cancel
@@ -488,9 +490,18 @@ func (a *Adapter) Stop(_ context.Context) error {
 	if cancel != nil {
 		cancel()
 	}
-	a.bgWG.Wait()
 	a.started.Store(false)
-	return nil
+	done := make(chan struct{})
+	go func() {
+		a.bgWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // Mount attaches /channels/slack/events and /channels/slack/interactions to r.

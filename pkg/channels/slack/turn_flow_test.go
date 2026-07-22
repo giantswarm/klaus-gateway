@@ -76,14 +76,22 @@ func TestTypedResume_FailureKeepsPendingTask(t *testing.T) {
 	gw.failSends = 1
 	gw.mu.Unlock()
 
-	sendEvent(t, srv, dmThreadEvent("U1", "approve", "901.000", "900.000"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 2 },
-		10*time.Second, 50*time.Millisecond, "failed resume attempted")
+	// The approval reply races the paused turn's thread-slot release: the HITL
+	// prompt the test waited for is posted while dispatch still holds the slot,
+	// which frees only as dispatch returns. A reply that arrives inside that
+	// window is dropped with a busy notice, so send with fresh timestamps until
+	// one wins the slot and attempts the resume (failSends=1 fails this first
+	// attempt, which re-stores the task).
+	failAttempt := 0
+	require.Eventually(t, func() bool {
+		failAttempt++
+		sendEvent(t, srv, dmThreadEvent("U1", "approve", fmt.Sprintf("901.%03d", failAttempt), "900.000"))
+		return gw.resolveCount() >= 2
+	}, 10*time.Second, 100*time.Millisecond, "failed resume attempted")
 
 	// Retry: the task must still be pending, so a reply resumes task-1 with a
-	// structured decision instead of starting a fresh turn. The reply races the
-	// failed turn's thread-slot release (a too-early one is dropped with a busy
-	// notice), so keep replying with fresh message timestamps until the resumed
+	// structured decision instead of starting a fresh turn. Same slot-release
+	// race, so keep replying with fresh message timestamps until the resumed
 	// turn's output lands. The pending task is restored before the slot frees,
 	// so whichever reply wins the slot resumes it.
 	attempt := 0
@@ -97,7 +105,8 @@ func TestTypedResume_FailureKeepsPendingTask(t *testing.T) {
 	defer mu.Unlock()
 	retried := false
 	for _, msg := range resolved {
-		if msg.TaskID == "task-1" && msg.Decision != nil && msg.MessageID != "901.000" {
+		// 902.* are the retry attempts; 901.* are the first, failed attempt.
+		if msg.TaskID == "task-1" && msg.Decision != nil && strings.HasPrefix(msg.MessageID, "902.") {
 			retried = true
 		}
 	}
