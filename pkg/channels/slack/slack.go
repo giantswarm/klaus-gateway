@@ -1566,8 +1566,11 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 
 	a.resolveSubjectEmail(ctx, &msg)
 
-	// A turn must carry the sending user's human token, never the gateway's
-	// machine identity. Resolve it BEFORE consuming any pending task so an abort
+	// A turn must carry a human token, never the gateway's machine identity.
+	// Resolve the sending user's token first: every participant must be signed
+	// in (parked and prompted here if not), including a collaborator whose token
+	// is not the one ultimately forwarded, so their identity is known for
+	// attribution. Resolve it BEFORE consuming any pending task so an abort
 	// leaves the pending TaskID intact and the reply stays retryable.
 	token, ok, signIn := a.humanToken(ctx, slackChannel, msg.ThreadID, slackUser)
 	if signIn {
@@ -1584,6 +1587,22 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 		return nil
 	}
 	msg.BearerToken = token
+
+	// The thread is one shared kagent session with no per-caller identity
+	// (user_id and the STS token cache are session-scoped), so a granted
+	// collaborator's turn runs under the initiator: forward the initiator's
+	// token instead of the sender's and record the sender as attribution. If the
+	// initiator's token is unavailable, keep the sender's own token (they are
+	// signed in) rather than the gateway machine identity.
+	if initiator != "" && initiator != slackUser && a.OBO != nil {
+		if initiatorToken, err := a.OBO.TokenFor(ctx, initiator); err == nil && initiatorToken != "" {
+			msg.BearerToken = initiatorToken
+			msg.Author = msg.Subject
+		} else {
+			a.Logger.Info("slack: initiator token unavailable, running turn under sender identity",
+				"initiator", initiator, "sender", slackUser)
+		}
+	}
 
 	// A reply into a thread this process did not start may be resuming a kagent
 	// session that has since been evicted. Announce the "starting fresh"
