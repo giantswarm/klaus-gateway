@@ -440,7 +440,7 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 	turnCtx, done := a.registerTurn(ctx, threadID)
 	defer done()
 
-	a.logTurnDispatch(msg, slackUser, true)
+	a.logTurnDispatch(msg, slackUser, true, agentSourceTask)
 
 	deltas, err := a.gw.SendCompletion(turnCtx, ref, msg)
 	if err != nil {

@@ -89,6 +89,63 @@ func TestDispatch_EmitsTurnDispatchRecord(t *testing.T) {
 	require.Equal(t, "T1", rec["thread_id"])
 	require.Equal(t, "M1", rec["message_id"])
 	require.Equal(t, false, rec["resume"])
+	require.Equal(t, agentSourceDefault, rec["agent_source"])
+}
+
+// The agent_source field marks how the turn's agent was chosen: a message
+// carrying an /agent prefix logs "prefix", a reply inheriting its
+// conversation's binding logs "thread", everything else "default".
+func TestDispatch_TurnDispatchRecord_AgentSource(t *testing.T) {
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"ts":"1.2"}`))
+	}))
+	t.Cleanup(fake.Close)
+
+	newRecorded := func(t *testing.T) (*Adapter, *recordingHandler) {
+		h := &recordingHandler{}
+		a := &Adapter{
+			Logger:       slog.New(h),
+			Mode:         ModeEvents,
+			Secrets:      Secrets{BotToken: "b", SigningSecret: "s"}, //nolint:gosec // dummy test creds
+			APIBase:      fake.URL,
+			DefaultAgent: "agent-1",
+		}
+		require.NoError(t, a.Start(t.Context(), &fakeGateway{}))
+		return a, h
+	}
+
+	t.Run("prefix", func(t *testing.T) {
+		a, h := newRecorded(t)
+		// handleAgentSelection stamps the ref before dispatch.
+		msg := channels.InboundMessage{Channel: ChannelName, ChannelID: "C1", ThreadID: "T1", MessageID: "T1", Subject: "U1", Text: "hi", AgentRef: "sre-agent"}
+		require.NoError(t, a.dispatch(t.Context(), msg, "C1"))
+		rec := h.find("record", "turn_dispatch")
+		require.NotNil(t, rec)
+		require.Equal(t, agentSourcePrefix, rec["agent_source"])
+		require.Equal(t, "sre-agent", rec["agent"])
+	})
+
+	t.Run("thread", func(t *testing.T) {
+		a, h := newRecorded(t)
+		a.bindThreadAgent("T2", "sre-agent")
+		msg := channels.InboundMessage{Channel: ChannelName, ChannelID: "C1", ThreadID: "T2", MessageID: "M2", Subject: "U1", Text: "reply"}
+		require.NoError(t, a.dispatch(t.Context(), msg, "C1"))
+		rec := h.find("record", "turn_dispatch")
+		require.NotNil(t, rec)
+		require.Equal(t, agentSourceThread, rec["agent_source"])
+		require.Equal(t, "sre-agent", rec["agent"])
+	})
+
+	t.Run("default", func(t *testing.T) {
+		a, h := newRecorded(t)
+		msg := channels.InboundMessage{Channel: ChannelName, ChannelID: "C1", ThreadID: "T3", MessageID: "T3", Subject: "U1", Text: "hi"}
+		require.NoError(t, a.dispatch(t.Context(), msg, "C1"))
+		rec := h.find("record", "turn_dispatch")
+		require.NotNil(t, rec)
+		require.Equal(t, agentSourceDefault, rec["agent_source"])
+		require.Equal(t, "agent-1", rec["agent"])
+	})
 }
 
 // An OBO source without the LinkedIdentity extension (or OBO disabled) still

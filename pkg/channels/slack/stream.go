@@ -730,6 +730,41 @@ func (c *slackAPIClient) threadInitiator(ctx context.Context, channel, threadTS 
 	return "", nil
 }
 
+// threadRootText returns the text of a thread's root message via
+// conversations.replies (messages are returned oldest-first, so a limit of 1
+// yields exactly the root). It is how a reply's conversation recovers its
+// /agent binding after a restart: the prefix is visible in the root's text.
+// Empty when the thread has no messages.
+func (c *slackAPIClient) threadRootText(ctx context.Context, channel, threadTS string) (string, error) {
+	params := url.Values{
+		paramChannel: {channel},
+		paramTS:      {threadTS},
+		"limit":      {"1"},
+	}
+	body, err := c.call(ctx, "conversations.replies", "application/x-www-form-urlencoded", params.Encode())
+	if err != nil {
+		return "", err
+	}
+
+	var result struct {
+		OK       bool   `json:"ok"`
+		Err      string `json:"error,omitempty"`
+		Messages []struct {
+			Text string `json:"text"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", fmt.Errorf("slack conversations.replies: decode: %w", err)
+	}
+	if !result.OK {
+		return "", fmt.Errorf("slack conversations.replies: %s", result.Err)
+	}
+	if len(result.Messages) == 0 {
+		return "", nil
+	}
+	return result.Messages[0].Text, nil
+}
+
 // errReactionsUnsupported reports that the bot cannot manage reactions (the
 // reactions:write scope is missing, or the token type disallows it), so the
 // caller should fall back to text-based progress.

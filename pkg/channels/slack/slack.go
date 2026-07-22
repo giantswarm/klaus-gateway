@@ -23,6 +23,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 	"github.com/giantswarm/klaus-gateway/pkg/auth/musterlink"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 )
@@ -130,7 +131,12 @@ type Adapter struct {
 	// (name/icon), the source of per-message agent branding. Nil disables it
 	// (messages post under the app default). kagent's card carries a name but no
 	// icon yet, so agent messages are named but icon-less until kagent exposes it.
+	// When it also implements the card-info lookup (pkg/a2a.AgentCardClient
+	// does), it validates /agent selections; otherwise selection is unavailable.
 	AgentCards AgentCardResolver
+	// Roster lists the agents selectable via the /agent command, discovered
+	// from the kagent controller. Nil disables the roster listing.
+	Roster AgentRosterSource
 
 	gw        channels.Gateway
 	baseCtx   context.Context // adapter lifecycle ctx, captured in Start; OnUserLinked's background work (login-replay dispatch and the sign-in confirmation POST) derives from it so shutdown cancels it
@@ -226,6 +232,18 @@ type Adapter struct {
 	// changed URL must bypass the cooldown or the only visible button is dead.
 	connectorMu       sync.Mutex
 	connectorPrompted map[string]map[string]connectorPromptRecord
+
+	// bindingMu guards agentBindings: conversation→agent bindings derived from
+	// the /agent prefix on each conversation's root message. "" records a
+	// checked root with no prefix (default agent). Entries idle past
+	// threadStateTTL are evicted.
+	bindingMu     sync.Mutex
+	agentBindings map[string]ttlEntry[string] // keyed by threadID
+
+	// rosterMu guards the briefly-cached /agent roster (see rosterAgents).
+	rosterMu      sync.Mutex
+	rosterCached  []pkga2a.AgentInfo
+	rosterExpires time.Time
 }
 
 // connectorPromptRecord is the last connect prompt surfaced for a
@@ -1198,11 +1216,17 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 	}
 	a.seedInitiatorFromRoot(ctx, inner.Channel, msg.ThreadID, msg.MessageID)
 	if cmd := parseCommand(msg.Text); cmd != nil {
-		if a.handleCommand(ctx, cmd, msg.Subject, inner.Channel, msg.ThreadID) {
+		// /agent is not a consumed command: the select form mutates msg (agent
+		// ref stamped, prefix stripped) and continues into dispatch as the
+		// conversation's first turn.
+		if cmd.Name == cmdAgent {
+			if !a.handleAgentSelection(ctx, cmd, &msg, inner.Channel) {
+				return
+			}
+		} else if a.handleCommand(ctx, cmd, msg.Subject, inner.Channel, msg.ThreadID) {
 			a.Logger.Debug("slack: command consumed", "command", cmd.Name, "channel", inner.Channel, "thread", msg.ThreadID)
 			return
-		}
-		if isUnknownCommand(cmd) {
+		} else if isUnknownCommand(cmd) {
 			text := fmt.Sprintf("_`/%s` is not one of my commands (see `/help`). If it was meant for the agent, resend it without the leading slash._", cmd.Name)
 			if _, err := a.apiClient().postMessage(ctx, inner.Channel, text, msg.ThreadID); err != nil {
 				a.Logger.Warn("slack: post unknown-command notice failed", "error", err)
@@ -1442,7 +1466,13 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 		return nil
 	}
 
-	msg.AgentRef = a.DefaultAgent
+	// Resolve the turn's agent. An explicit /agent prefix travels on the
+	// message (handleAgentSelection stamped it); otherwise the conversation's
+	// binding — or the configured default — applies.
+	agentSource := agentSourcePrefix
+	if msg.AgentRef == "" {
+		msg.AgentRef, agentSource = a.threadAgent(ctx, msg, slackChannel)
+	}
 
 	// Serialize turns per thread: a thread maps to one kagent session, and
 	// concurrent turns on one session interleave its event log into incoherent
@@ -1464,10 +1494,13 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 		// Hold the message so it is answered after the user signs in, rather than
 		// dropped and re-typed. resolveSubjectEmail above rewrote msg.Subject to the
 		// email; restore the raw Slack user ID so the replay keys access control the
-		// same way this turn did. An immediate drain (already-linked race) replays
-		// once this dispatch releases the thread slot.
+		// same way this turn did. The resolved agent ref is cleared so the replay
+		// re-resolves it (the conversation binding is recorded above) and the
+		// dispatch record marks its true source. An immediate drain
+		// (already-linked race) replays once this dispatch releases the thread slot.
 		parked := msg
 		parked.Subject = slackUser
+		parked.AgentRef = ""
 		a.parkForLogin(ctx, parked, slackChannel, slackUser)
 	}
 	if !ok {
@@ -1526,7 +1559,7 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 	turnCtx, done := a.registerTurn(ctx, msg.ThreadID)
 	defer done()
 
-	a.logTurnDispatch(msg, slackUser, task != nil)
+	a.logTurnDispatch(msg, slackUser, task != nil, agentSource)
 
 	deltas, err := a.gw.SendCompletion(turnCtx, ref, msg)
 	if err != nil {
@@ -1615,8 +1648,10 @@ type linkedIdentitySource interface {
 // invokes for which Slack user under which muster identity. It is the
 // gateway-side anchor for joining a turn to muster's per-call log. The muster
 // session ID is not derivable client-side from the forwarded token, so the
-// join key is (sub, thread_id, task_id, timestamp).
-func (a *Adapter) logTurnDispatch(msg channels.InboundMessage, slackUser string, resume bool) {
+// join key is (sub, thread_id, task_id, timestamp). agentSource marks how the
+// agent was chosen (see the agentSource* constants), making /agent routing
+// observable.
+func (a *Adapter) logTurnDispatch(msg channels.InboundMessage, slackUser string, resume bool, agentSource string) {
 	var sub string
 	if ident, ok := a.OBO.(linkedIdentitySource); ok {
 		sub, _, _ = ident.LinkedIdentity(slackUser)
@@ -1624,6 +1659,7 @@ func (a *Adapter) logTurnDispatch(msg channels.InboundMessage, slackUser string,
 	a.Logger.Info("slack: dispatching turn",
 		"record", "turn_dispatch",
 		"agent", msg.AgentRef,
+		"agent_source", agentSource,
 		"slack_user", slackUser,
 		"subject", msg.Subject,
 		"sub", sub,

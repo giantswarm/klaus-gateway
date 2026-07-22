@@ -251,8 +251,12 @@ func TestAccess_DMReplySkipsRootAuthorReseed(t *testing.T) {
 
 	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
 		2*time.Second, 50*time.Millisecond, "the sole human in a DM dispatches without a consent gate")
-	require.Empty(t, fake.pathCalls("conversations.replies"),
-		"a DM has one human; the root-author reseed must be skipped")
+	// The agent-binding recovery may fetch the thread root (limit 1); only the
+	// reseed's author scan (limit 50) must be absent.
+	for _, call := range fake.pathCalls("conversations.replies") {
+		require.NotEqual(t, "50", call.params["limit"],
+			"a DM has one human; the root-author reseed must be skipped")
+	}
 }
 
 // A bot-authored thread root is not a human initiator, so seeding falls back to

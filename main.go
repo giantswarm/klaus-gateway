@@ -290,10 +290,13 @@ func run(args []string) error {
 				TokenSource: tokenSource,
 			}
 			if slackAdapter != nil {
-				slackAdapter.Models = &pkga2a.AgentsClient{
+				agentsClient := &pkga2a.AgentsClient{
 					BaseURL:     restURL,
 					TokenSource: tokenSource,
 				}
+				slackAdapter.Models = agentsClient
+				// The same client backs the /agent roster listing.
+				slackAdapter.Roster = agentsClient
 			}
 		}
 		// Card-derived agent branding for Slack: the AgentCard supplies the

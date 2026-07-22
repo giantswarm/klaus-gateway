@@ -58,6 +58,19 @@ func (c *AgentCardClient) CardIdentity(ctx context.Context, agentRef string) (us
 	return username, iconURL
 }
 
+// CardInfo returns the agentRef's card display name and description, fetching
+// and caching the card on first use. Unlike CardIdentity it surfaces the fetch
+// error, so a caller can verify an agent exists and is reachable before
+// dispatching to it (the Slack /agent selection validates names this way). A
+// recent failure is served from the negative cache without a re-fetch.
+func (c *AgentCardClient) CardInfo(ctx context.Context, agentRef string) (name, description string, err error) {
+	card, err := c.card(ctx, agentRef)
+	if err != nil {
+		return "", "", err
+	}
+	return card.Name, card.Description, nil
+}
+
 func (c *AgentCardClient) card(ctx context.Context, agentRef string) (*a2a.AgentCard, error) {
 	c.mu.Lock()
 	if card, ok := c.cache[agentRef]; ok {
