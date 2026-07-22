@@ -64,6 +64,11 @@ type InboundMessage struct {
 	// A2A egress request so kagent sees the end-user identity. Empty for
 	// channels without a per-user token (e.g. Slack).
 	BearerToken string
+	// Author, when non-empty, is the real end-user who wrote this turn in a
+	// shared session that runs under a different (delegated) identity, such as a
+	// Slack thread acting under its initiator. Surfaced to the agent as
+	// attribution; BearerToken remains the acting identity.
+	Author string
 	// AgentRef is the target agent name. When set, SendCompletion routes
 	// through the A2A executor instead of the OpenAI /v1 path.
 	AgentRef string

@@ -1566,8 +1566,11 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 
 	a.resolveSubjectEmail(ctx, &msg)
 
-	// A turn must carry the sending user's human token, never the gateway's
-	// machine identity. Resolve it BEFORE consuming any pending task so an abort
+	// A turn must carry a human token, never the gateway's machine identity.
+	// Resolve the sending user's token first: every participant must be signed
+	// in (parked and prompted here if not), including a collaborator whose token
+	// is not the one ultimately forwarded, so their identity is known for
+	// attribution. Resolve it BEFORE consuming any pending task so an abort
 	// leaves the pending TaskID intact and the reply stays retryable.
 	token, ok, signIn := a.humanToken(ctx, slackChannel, msg.ThreadID, slackUser)
 	if signIn {
@@ -1584,6 +1587,8 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 		return nil
 	}
 	msg.BearerToken = token
+
+	a.applyInitiatorIdentity(ctx, &msg, msg.ThreadID, slackUser)
 
 	// A reply into a thread this process did not start may be resuming a kagent
 	// session that has since been evicted. Announce the "starting fresh"
@@ -1789,6 +1794,33 @@ func (a *Adapter) humanToken(ctx context.Context, slackChannel, threadID, slackU
 		}
 		return "", false, false
 	}
+}
+
+// applyInitiatorIdentity makes a granted collaborator's turn run under the
+// thread initiator's identity. The thread is one shared kagent session with no
+// per-caller identity (user_id and the STS token cache are both session-scoped),
+// so every turn must forward the same principal or the session forks per sender.
+// It swaps in the initiator's token and records the sender (msg.Subject,
+// best-effort resolved to an email) as attribution. The initiator's own turns,
+// and turns where the initiator's token cannot be minted, keep the sender's own
+// token (they are signed in) rather than the gateway machine identity. Call
+// after the sender's token and email are resolved.
+func (a *Adapter) applyInitiatorIdentity(ctx context.Context, msg *channels.InboundMessage, threadID, slackUser string) {
+	if a.OBO == nil {
+		return
+	}
+	initiator := a.accessPolicy().Initiator(threadID)
+	if initiator == "" || initiator == slackUser {
+		return
+	}
+	initiatorToken, err := a.OBO.TokenFor(ctx, initiator)
+	if err != nil || initiatorToken == "" {
+		a.Logger.Info("slack: initiator token unavailable, running turn under sender identity",
+			"initiator", initiator, "sender", slackUser)
+		return
+	}
+	msg.BearerToken = initiatorToken
+	msg.Author = msg.Subject
 }
 
 // maxTurnDuration bounds a single turn's stream. The A2A hop has no HTTP

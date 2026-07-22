@@ -291,6 +291,59 @@ func TestHandleDecision_ForwardsHumanToken(t *testing.T) {
 	require.NotNil(t, sent[0].Decision)
 }
 
+// multiUserOBO mints a distinct token per Slack user; a user absent from the
+// map is treated as not linked.
+type multiUserOBO map[string]string
+
+func (o multiUserOBO) TokenFor(_ context.Context, slackUserID string) (string, error) {
+	if tok, ok := o[slackUserID]; ok {
+		return tok, nil
+	}
+	return "", musterlink.ErrNotLinked
+}
+func (multiUserOBO) LinkURL(string) string { return "https://gw.example.com/link" }
+func (multiUserOBO) Unlink(string)         {}
+
+// A granted collaborator's button decision resumes the shared session under the
+// thread initiator's token, not the clicker's, with the clicker attached as
+// attribution — matching the typed-turn path in dispatch so a click and a typed
+// "approve" reply cannot fork the session differently.
+func TestHandleDecision_CollaboratorClickForwardsInitiatorToken(t *testing.T) {
+	gw := &fakeGateway{deltas: []channels.OutboundDelta{{Content: "done"}, {Done: true}}}
+	// newDecisionAdapter makes U001 the initiator; U002 is a granted collaborator.
+	a, _ := newDecisionAdapter(t, gw, multiUserOBO{"U001": "tok-initiator", "U002": "tok-collab"})
+	a.accessPolicy().Grant("T001", "U002")
+
+	err := a.handleDecision(t.Context(), "C001", "T001", "MSG001", "U002", hitlAction{kind: hitlApprove})
+	require.NoError(t, err)
+
+	sent := gw.sentMessages()
+	require.Len(t, sent, 1)
+	require.Equal(t, "tok-initiator", sent[0].BearerToken,
+		"collaborator's click must run under the initiator's token, not the clicker's")
+	require.Equal(t, "clicker@example.com", sent[0].Author,
+		"the real clicker is attached as attribution")
+}
+
+// When the initiator's token cannot be minted (unlinked), a granted
+// collaborator's click falls back to the clicker's own identity rather than the
+// gateway service account, and carries no attribution.
+func TestHandleDecision_CollaboratorClickFallsBackWhenInitiatorUnavailable(t *testing.T) {
+	gw := &fakeGateway{deltas: []channels.OutboundDelta{{Content: "done"}, {Done: true}}}
+	// U001 is the initiator but unlinked; U002 is a granted, linked collaborator.
+	a, _ := newDecisionAdapter(t, gw, multiUserOBO{"U002": "tok-collab"})
+	a.accessPolicy().Grant("T001", "U002")
+
+	err := a.handleDecision(t.Context(), "C001", "T001", "MSG001", "U002", hitlAction{kind: hitlApprove})
+	require.NoError(t, err)
+
+	sent := gw.sentMessages()
+	require.Len(t, sent, 1)
+	require.Equal(t, "tok-collab", sent[0].BearerToken,
+		"fallback runs under the clicker's own token when the initiator's is unavailable")
+	require.Empty(t, sent[0].Author, "fallback turn is not delegated, so no attribution")
+}
+
 // An unlinked clicker must not resume the task: the pending task stays stored
 // (buttons keep working for a linked user), the gateway sends nothing to the
 // agent, and the clicker gets the sign-in prompt.

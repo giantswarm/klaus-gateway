@@ -48,6 +48,15 @@ applies only to non-Agent deployments.
   from the forwarded token subject. Changing the identity configuration (the
   subject claim, or the Dex connector) changes `user_id` and orphans every
   existing session. kagent sessions have no TTL, so orphaned sessions persist.
+- Because `user_id` follows the forwarded token, the whole thread runs under the
+  **initiator's** identity: a granted collaborator's turn forwards the
+  initiator's token, not the collaborator's, so history and tool calls stay in
+  the one shared session rather than forking per sender. The collaborator's real
+  identity is attached to the message as attribution, so the agent still sees who
+  spoke. If the initiator's token cannot be minted (they are unlinked), the turn
+  falls back to the sender's own identity rather than the gateway service
+  account. kagent v0.9.9 has no per-caller identity within a session; when that
+  lands (kagent#1933, #2181) each caller's own identity replaces this.
 
 ### Two auth layers
 

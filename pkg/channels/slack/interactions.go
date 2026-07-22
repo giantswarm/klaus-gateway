@@ -501,6 +501,10 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 	// Resolve email for the button-clicking user.
 	a.resolveSubjectEmail(ctx, &msg)
 
+	// A granted collaborator's decision resumes the one shared session, so it
+	// runs under the initiator's identity just like a typed turn does.
+	a.applyInitiatorIdentity(ctx, &msg, threadID, slackUser)
+
 	// A failure before the stream is running re-stores the taken task: the
 	// buttons already show the decision, but a typed reply can still resume it.
 	// The note tells the user so; the updated message alone reads as if the

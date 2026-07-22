@@ -171,7 +171,9 @@ func TestLoginReplay_WaitsForBusyThread(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	require.Equal(t, "help me out", captured[2].Text)
-	require.Equal(t, "tok2", captured[2].BearerToken, "the replayed turn carries the newly linked token")
+	require.Equal(t, "tok1", captured[2].BearerToken,
+		"the replayed collaborator turn runs under the initiator's token, not the sender's")
+	require.NotEmpty(t, captured[2].Author, "the real sender is attached as attribution")
 }
 
 // raceLinkOBO reports the user unlinked exactly once and linked from then on,
