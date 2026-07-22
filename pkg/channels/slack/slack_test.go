@@ -1192,7 +1192,7 @@ func TestProgress_TextFallbackOnMissingScope(t *testing.T) {
 	require.Contains(t, allText(fake.pathCalls("chat.postMessage")), "_thinking", "text placeholder posted")
 
 	// Second turn must not retry reactions.add (the downgrade is cached).
-	sendEvent(t, srv, dmEvent("U1", "second", "444.000"))
+	sendEvent(t, srv, dmEvent("U1", "second", "445.000"))
 	fake.waitForPath(t, "chat.update", 2)
 	require.Len(t, fake.pathCalls("reactions.add"), 1, "reactions.add attempted once, then downgraded to text")
 }
@@ -1357,13 +1357,29 @@ func TestSerializeTurnsPerThread(t *testing.T) {
 	fake.waitForPath(t, "reactions.add", 1) // A acquired the thread and started
 
 	// Turn B on the same thread while A is in flight -> rejected with a notice.
-	sendEvent(t, srv, dmEvent("U1", "second", "666.000"))
+	// A distinct ts: a real second message is never a redelivery of the first.
+	sendEvent(t, srv, dmThreadEvent("U1", "second", "667.000", "666.000"))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "still finishing")
 	}, 2*time.Second, 20*time.Millisecond, "expected a busy notice for the second turn")
 
 	require.Equal(t, 1, gw.resolveCount(), "second turn is rejected before reaching the agent")
 	close(hold)
+}
+
+// A turn that dies before its stream starts (agent resolve or send fails) must
+// post the failure note: streamResponse only covers errors after the stream is
+// running, so a kagent outage was previously complete silence.
+func TestDispatch_PreStreamFailurePostsNote(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{resolveErr: errors.New("kagent unreachable")}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+
+	sendEvent(t, srv, dmEvent("U1", "hi", "100.000"))
+
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "the turn failed")
+	}, 2*time.Second, 20*time.Millisecond, "a pre-stream dispatch failure must post the failure note")
 }
 
 // A retried delivery whose original never reached the handler (pod restart,
