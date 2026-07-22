@@ -501,17 +501,15 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 		BearerToken: token,
 	}
 
-	// The shared tail resolves the clicker's email, applies the initiator's
-	// identity (a collaborator's decision resumes the one shared session, so
-	// it runs under the initiator just like a typed turn), and re-stores the
-	// taken task on a pre-stream failure: the buttons already show the
-	// decision, so the failure note tells the user a typed reply can still
-	// resume it. Text progress: a button resume has no user message to react
-	// to.
-	return a.runTurn(ctx, msg, slackChannel, turnTail{
-		attachTask:  func(*channels.InboundMessage) *pendingTask { return task },
-		onFailure:   func() { a.postResumeFailureNote(ctx, client, slackChannel, threadID) },
-		placeholder: "_continuing…_",
+	// runTurn resolves the clicker's email, applies the initiator's identity
+	// (a collaborator's decision resumes the one shared session, so it runs
+	// under the initiator just like a typed turn), and re-stores the taken
+	// task on a pre-stream failure: the buttons already show the decision, so
+	// the failure note tells the user a typed reply can still resume it. The
+	// empty triggerTS selects text progress: a button resume has no user
+	// message to react to.
+	return a.runTurn(ctx, msg, slackChannel, "", "_continuing…_", task, turnHooks{
+		onFailure: func() { a.postResumeFailureNote(ctx, client, slackChannel, threadID) },
 	})
 }
 

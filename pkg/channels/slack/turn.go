@@ -7,19 +7,14 @@ import (
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 )
 
-// turnTail carries the per-entrypoint pieces of runTurn, the shared tail of a
-// Slack turn. The on* fields are notification hooks (nil = nothing);
-// attachTask is a provider, so it does not share the prefix.
-type turnTail struct {
+// turnHooks are the per-entrypoint notification hooks of runTurn, the shared
+// tail of a Slack turn. Every field is optional (nil = nothing).
+type turnHooks struct {
 	// onIdentityResolved runs once the sender's email is resolved and the
-	// turn's forwarded identity is final, before the pending task is
-	// attached, so it may probe the session under the identity the turn will
-	// run as (e.g. the resume-degradation announcement).
+	// turn's forwarded identity is final, so it may probe the session under
+	// the identity the turn will run as (e.g. the resume-degradation
+	// announcement).
 	onIdentityResolved func(msg channels.InboundMessage)
-	// attachTask binds the pending input-required task this turn resumes to
-	// msg, returning it (nil = a fresh turn). runTurn owns re-storing the
-	// returned task when a later failure would otherwise strand it.
-	attachTask func(msg *channels.InboundMessage) *pendingTask
 	// onAgentResolved runs once the agent resolved, before the completion is
 	// sent (e.g. the launch announcement).
 	onAgentResolved func(msg channels.InboundMessage)
@@ -28,23 +23,26 @@ type turnTail struct {
 	// called for a corrupt-session failure, where the recovery notice speaks
 	// instead (a "retry" invitation would retry into the deleted session).
 	onFailure func()
-	// triggerTS is the user message the progress reaction lands on; "" uses
-	// text progress (a button resume has no user message to react to).
-	triggerTS   string
-	placeholder string
 }
 
-// runTurn is the shared tail of a Slack turn, converged on by dispatch (a
-// typed message) and handleDecision (a button click) after their own
-// admission: it resolves the sender's email, applies the initiator's identity
-// for a shared thread, attaches the pending task, resolves the agent, and
-// streams the completion. It owns the restore-on-failure guard: a failure
-// after the pending task was taken and before the stream runs re-stores it,
-// so a retry or button click can still resume the paused A2A task.
+// runTurn is the shared tail of a Slack turn: the part that runs the same
+// way no matter which entrypoint admitted it. dispatch (a typed message) and
+// handleDecision (a button click) converge here after their own admission
+// (gates, token, thread slot); runTurn then resolves the sender's email,
+// applies the initiator's identity for a shared thread, resolves the agent,
+// and streams the completion.
+//
+// task is the pending input-required task this turn resumes (nil = a fresh
+// turn); the caller has already taken it and set msg.TaskID and msg.Decision
+// from it. runTurn owns the restore-on-failure guard: a failure before the
+// stream runs re-stores the task, so a retry or button click can still
+// resume it.
 //
 // The caller must hold the thread's slot and pass msg with Subject set to
 // the raw Slack user ID and BearerToken set to the sender's human token.
-func (a *Adapter) runTurn(ctx context.Context, msg channels.InboundMessage, slackChannel string, tail turnTail) (err error) {
+// triggerTS is the user message the progress reaction lands on; "" uses text
+// progress (a button resume has no user message to react to).
+func (a *Adapter) runTurn(ctx context.Context, msg channels.InboundMessage, slackChannel, triggerTS, placeholder string, task *pendingTask, hooks turnHooks) (err error) {
 	// Subject is rewritten to the resolved email below; the raw ID keys access
 	// control and progress surfaces throughout.
 	slackUser := msg.Subject
@@ -68,14 +66,10 @@ func (a *Adapter) runTurn(ctx context.Context, msg channels.InboundMessage, slac
 
 	a.applyInitiatorIdentity(ctx, &msg, msg.ThreadID, slackUser)
 
-	if tail.onIdentityResolved != nil {
-		tail.onIdentityResolved(msg)
+	if hooks.onIdentityResolved != nil {
+		hooks.onIdentityResolved(msg)
 	}
 
-	var task *pendingTask
-	if tail.attachTask != nil {
-		task = tail.attachTask(&msg)
-	}
 	// A failure between the take and a running stream would otherwise strand the
 	// paused A2A task (the take deleted the only handle to it); put it back so a
 	// retry or button click can still resume it.
@@ -88,14 +82,14 @@ func (a *Adapter) runTurn(ctx context.Context, msg channels.InboundMessage, slac
 	ref, err := a.gw.Resolve(ctx, msg)
 	if err != nil {
 		restoreTask()
-		if tail.onFailure != nil && !isCorruptSessionErr(err) {
-			tail.onFailure()
+		if hooks.onFailure != nil && !isCorruptSessionErr(err) {
+			hooks.onFailure()
 		}
 		return fmt.Errorf("slack: resolve: %w", err)
 	}
 
-	if tail.onAgentResolved != nil {
-		tail.onAgentResolved(msg)
+	if hooks.onAgentResolved != nil {
+		hooks.onAgentResolved(msg)
 	}
 
 	turnCtx, done := a.registerTurn(ctx, msg.ThreadID)
@@ -106,8 +100,8 @@ func (a *Adapter) runTurn(ctx context.Context, msg channels.InboundMessage, slac
 	deltas, err := a.gw.SendCompletion(turnCtx, ref, msg)
 	if err != nil {
 		restoreTask()
-		if tail.onFailure != nil && !isCorruptSessionErr(err) {
-			tail.onFailure()
+		if hooks.onFailure != nil && !isCorruptSessionErr(err) {
+			hooks.onFailure()
 		}
 		return fmt.Errorf("slack: send completion: %w", err)
 	}
@@ -118,5 +112,5 @@ func (a *Adapter) runTurn(ctx context.Context, msg channels.InboundMessage, slac
 	if task != nil {
 		carried = task.Usage
 	}
-	return a.streamResponse(turnCtx, a.agentClient(ctx, msg.AgentRef), deltas, msg, slackUser, slackChannel, msg.ThreadID, tail.triggerTS, tail.placeholder, carried)
+	return a.streamResponse(turnCtx, a.agentClient(ctx, msg.AgentRef), deltas, msg, slackUser, slackChannel, msg.ThreadID, triggerTS, placeholder, carried)
 }
