@@ -230,6 +230,7 @@ func (a *Adapter) handleAccessDecision(ctx context.Context, threadID, newcomerID
 		if err := a.replayDispatch(ctx, req.msg, req.slackChannel); err != nil && !errors.Is(err, context.Canceled) {
 			a.Logger.Error("slack: replay after access grant failed",
 				"thread", threadID, "user", newcomerID, "error", err)
+			a.postReplayFailureNote(ctx, req.slackChannel, req.msg.ThreadID)
 		}
 	}
 }
