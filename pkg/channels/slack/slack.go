@@ -172,9 +172,6 @@ type Adapter struct {
 	inactiveHintedMu sync.Mutex
 	inactiveHinted   map[string]ttlEntry[struct{}]
 
-	turnsMu sync.Mutex
-	turns   map[string]*turn // keyed by threadID; cancels in-flight SendCompletion
-
 	// parkedDropNoticedMu guards parkedDropNoticed, the (user, thread) pairs
 	// already told that parked messages past the cap were dropped within the
 	// current window.
@@ -185,16 +182,11 @@ type Adapter struct {
 	// a reactions.add returns missing_scope, so later turns skip the failed call.
 	reactionsUnsupported atomic.Bool
 
-	// inflight serializes turns per thread: an entry means a turn holds the
-	// thread's slot; a true value records a /stop that arrived during the
-	// turn's start window (before it registered a cancelable turn), consumed
-	// by registerTurn and dying with the slot on release.
-	inflightMu  sync.Mutex
-	inflight    map[string]bool
-	idleWaiters map[string][]func() // deferred replays, run when the thread slot frees
-
-	pendingMu    sync.Mutex
-	pendingTasks map[string]*pendingTask // keyed by threadID
+	// threadsMu guards threads, each thread's whole turn lifecycle (in-flight
+	// slot, pending task, idle waiters). Accessed via withThread (thread.go),
+	// which owns entry creation and removal.
+	threadsMu sync.Mutex
+	threads   map[string]*threadState // keyed by threadID
 
 	emailMu    sync.Mutex
 	emailCache map[string]emailEntry // Slack user ID -> resolved email
@@ -264,29 +256,6 @@ type emailEntry struct {
 // effectively static, so a long TTL keeps users.info (a Tier-4 rate-limited
 // endpoint) off the per-turn hot path while still picking up the rare change.
 const userEmailCacheTTL = time.Hour
-
-// turn is an in-flight agent turn. The pointer identity lets dispatch clean up
-// only its own registry entry. Turns on a thread are serialized (see
-// acquireThread), so /stop cancels the single registered turn.
-type turn struct {
-	cancel context.CancelFunc
-}
-
-// pendingTask records the A2A task paused at input-required for a thread.
-type pendingTask struct {
-	TaskID    string
-	AgentRef  string
-	Channel   string // Slack channel ID for posting the resumed response
-	ChannelID string // logical channel ID used in the routing key
-	// Prompt is the structured approval request the task is paused on, used to
-	// map a free-text reply or choice click back to a HITL decision.
-	Prompt *channels.HitlPrompt
-	// Usage carries the paused turn's token counts so the resuming turn reports
-	// the whole turn, not just its tail.
-	Usage channels.TurnUsage
-
-	storedAt time.Time // set by storePendingTask; drives the TTL sweep
-}
 
 // pendingAccessReq is a newcomer's message parked while the thread initiator is
 // asked to approve them. Parked per (thread, user) as an ordered queue and
@@ -1189,51 +1158,6 @@ func isBareAuthUtterance(text string) bool {
 	return ok
 }
 
-// storePendingTask records a paused input-required task for a thread.
-// Any existing pending task for that thread is replaced. Abandoned entries are
-// swept opportunistically so the map does not grow for the process lifetime.
-func (a *Adapter) storePendingTask(threadID string, task *pendingTask) {
-	a.pendingMu.Lock()
-	if a.pendingTasks == nil {
-		a.pendingTasks = make(map[string]*pendingTask)
-	}
-	task.storedAt = time.Now()
-	a.pendingTasks[threadID] = task
-	for thread, t := range a.pendingTasks {
-		if time.Since(t.storedAt) > pendingTTL {
-			delete(a.pendingTasks, thread)
-		}
-	}
-	a.pendingMu.Unlock()
-}
-
-// takePendingTask atomically retrieves and removes a pending task for a thread.
-// Returns nil when no task is pending.
-func (a *Adapter) takePendingTask(threadID string) *pendingTask {
-	a.pendingMu.Lock()
-	defer a.pendingMu.Unlock()
-	task := a.pendingTasks[threadID]
-	delete(a.pendingTasks, threadID)
-	return task
-}
-
-// hasPendingTask reports whether a thread has a pending input-required task.
-func (a *Adapter) hasPendingTask(threadID string) bool {
-	a.pendingMu.Lock()
-	defer a.pendingMu.Unlock()
-	_, ok := a.pendingTasks[threadID]
-	return ok
-}
-
-// peekPendingTask returns a thread's pending task without removing it, or nil
-// when none is pending. A caller that relies on the task still being pending on
-// a later takePendingTask must hold the thread lock across both.
-func (a *Adapter) peekPendingTask(threadID string) *pendingTask {
-	a.pendingMu.Lock()
-	defer a.pendingMu.Unlock()
-	return a.pendingTasks[threadID]
-}
-
 // handleInbound runs the shared inbound pipeline for one Slack event:
 // dedup, member-join intro, accept-gate, normalise, active-thread gate (for
 // channel thread replies), command handling, then dispatch. Both transports
@@ -1823,40 +1747,6 @@ func (a *Adapter) applyInitiatorIdentity(ctx context.Context, msg *channels.Inbo
 	}
 	msg.BearerToken = initiatorToken
 	msg.Author = msg.Subject
-}
-
-// maxTurnDuration bounds a single turn's stream. The A2A hop has no HTTP
-// client timeout (one would sever long turns mid-stream and corrupt the agent
-// session), so this is the backstop that eventually frees the thread slot when
-// the upstream wedges without closing the connection.
-const maxTurnDuration = 30 * time.Minute
-
-// registerTurn installs a cancelable in-flight turn for threadID so /stop can
-// cancel it, and returns the turn context plus a cleanup func that cancels the
-// turn and removes only this turn's registry entry (even if a later turn on the
-// same thread has already replaced it). A /stop that arrived during the turn's
-// start window (before this registration) is honoured by cancelling the turn
-// immediately.
-func (a *Adapter) registerTurn(ctx context.Context, threadID string) (context.Context, func()) {
-	turnCtx, cancel := context.WithTimeout(ctx, maxTurnDuration)
-	t := &turn{cancel: cancel}
-	a.turnsMu.Lock()
-	if a.turns == nil {
-		a.turns = make(map[string]*turn)
-	}
-	a.turns[threadID] = t
-	a.turnsMu.Unlock()
-	if a.takeStopRequest(threadID) {
-		cancel()
-	}
-	return turnCtx, func() {
-		cancel()
-		a.turnsMu.Lock()
-		if a.turns[threadID] == t {
-			delete(a.turns, threadID)
-		}
-		a.turnsMu.Unlock()
-	}
 }
 
 // streamResponse renders turn progress (reactions on triggerTS, or a text

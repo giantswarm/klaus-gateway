@@ -114,9 +114,9 @@ func TestHandleCommand_Stop_CancelsInFlightTurn(t *testing.T) {
 	cancelled := make(chan struct{})
 	cancel := func() { close(cancelled) }
 
-	a.turnsMu.Lock()
-	a.turns = map[string]*turn{"T001": {cancel: cancel}}
-	a.turnsMu.Unlock()
+	a.threadsMu.Lock()
+	a.threads = map[string]*threadState{"T001": {slot: &turnSlot{turn: &turn{cancel: cancel}}}}
+	a.threadsMu.Unlock()
 
 	// U001 is the first to interact, so becomes the initiator and is permitted.
 	cmd := &slashCommand{Name: "stop"}
@@ -299,9 +299,9 @@ func TestHandleCommand_Stop_RunningTurnStillCancels(t *testing.T) {
 	a.storePendingTask("T001", &pendingTask{TaskID: "task-1", AgentRef: "worker", ChannelID: "C001"})
 
 	cancelled := make(chan struct{})
-	a.turnsMu.Lock()
-	a.turns = map[string]*turn{"T001": {cancel: func() { close(cancelled) }}}
-	a.turnsMu.Unlock()
+	a.threadsMu.Lock()
+	a.threads["T001"].slot = &turnSlot{turn: &turn{cancel: func() { close(cancelled) }}}
+	a.threadsMu.Unlock()
 
 	cmd := &slashCommand{Name: "stop"}
 	require.True(t, a.handleCommand(t.Context(), cmd, "U001", "C001", "T001"))
