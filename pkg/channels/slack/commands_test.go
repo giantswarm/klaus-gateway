@@ -162,7 +162,7 @@ func TestStopThread_StartWindow(t *testing.T) {
 	done2()
 	a.releaseThread("T1")
 
-	require.False(t, a.requestStopIfBusy("T2"), "a stop cannot be recorded against an idle thread")
+	require.False(t, a.stopThread("T2"), "a stop cannot be recorded against an idle thread")
 	require.True(t, a.acquireThread("T2"))
 	turnCtx3, done3 := a.registerTurn(t.Context(), "T2")
 	require.NoError(t, turnCtx3.Err(), "an idle-thread stop attempt leaves nothing behind")

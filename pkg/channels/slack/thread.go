@@ -60,22 +60,26 @@ type pendingTask struct {
 
 // withThread runs fn with threadID's state under threadsMu, creating the
 // entry on demand and dropping it when fn leaves it empty, so the map stays
-// bounded by live threads. fn must not call other thread methods: threadsMu
-// is not reentrant.
+// bounded by live threads and read-only calls on untracked threads never
+// touch it. fn must not call other thread methods: threadsMu is not
+// reentrant. storePendingTask open-codes this lock to also sweep expired
+// entries map-wide.
 func (a *Adapter) withThread(threadID string, fn func(st *threadState)) {
 	a.threadsMu.Lock()
 	defer a.threadsMu.Unlock()
-	st := a.threads[threadID]
-	if st == nil {
+	st, tracked := a.threads[threadID]
+	if !tracked {
 		st = &threadState{}
+	}
+	fn(st)
+	switch {
+	case tracked && st.empty():
+		delete(a.threads, threadID)
+	case !tracked && !st.empty():
 		if a.threads == nil {
 			a.threads = make(map[string]*threadState)
 		}
 		a.threads[threadID] = st
-	}
-	fn(st)
-	if st.empty() {
-		delete(a.threads, threadID)
 	}
 }
 
@@ -104,21 +108,6 @@ func (a *Adapter) releaseThread(threadID string) {
 	for _, waiter := range waiters {
 		a.background(func(_ context.Context) { waiter() })
 	}
-}
-
-// requestStopIfBusy records a /stop against the turn holding threadID's slot,
-// reporting whether one was there to stop. The flag lives on the slot itself,
-// so a stop can never outlive the turn it targeted and cancel a later one.
-// registerTurn consumes it.
-func (a *Adapter) requestStopIfBusy(threadID string) bool {
-	recorded := false
-	a.withThread(threadID, func(st *threadState) {
-		if st.slot != nil {
-			st.slot.stopPending = true
-			recorded = true
-		}
-	})
-	return recorded
 }
 
 // stopThread cancels the thread's in-flight turn, reporting whether there was
