@@ -134,7 +134,7 @@ func formatUsage(u channels.TurnUsage) string {
 }
 
 // AgentModelSource resolves the model id and provider behind an agent.
-// Implemented by pkg/a2a.AgentsClient against the kagent REST API; empty
+// Implemented by pkg/a2a.KagentClient against the kagent REST API; empty
 // strings with a nil error mean the backend does not expose a model for the
 // agent (a BYO runtime).
 type AgentModelSource interface {

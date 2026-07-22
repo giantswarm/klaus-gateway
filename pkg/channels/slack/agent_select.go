@@ -15,7 +15,7 @@ import (
 
 // AgentRosterSource lists the agents selectable from Slack, discovered
 // dynamically from the kagent controller (never a static gateway config list).
-// Implemented by pkg/a2a.AgentsClient; nil disables the roster listing.
+// Implemented by pkg/a2a.KagentClient; nil disables the roster listing.
 type AgentRosterSource interface {
 	ListAgents(ctx context.Context) ([]pkga2a.AgentInfo, error)
 }
