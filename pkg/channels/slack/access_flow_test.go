@@ -314,3 +314,54 @@ func TestHITL_ToolPromptSurfacedForApproval(t *testing.T) {
 		"a tool prompt is surfaced for human approval")
 	require.Equal(t, 1, gw.resolveCount(), "the prompt is not resumed without a human decision")
 }
+
+// An access-consent click for a thread this process has no initiator for (pod
+// restart, TTL sweep) must give the clicker visible feedback instead of
+// leaving a live-looking button that does nothing.
+func TestAccess_StaleConsentClickGetsFeedback(t *testing.T) {
+	fake := newFakeSlackAPI()
+	fakeURL := fake.server(t).URL
+	gw := &stubGateway{}
+	_, srv := newEventsAdapter(t, gw, fakeURL, channelMode)
+
+	// No prior state: simulates the pod restarting after the prompt was posted.
+	sendAccessInteraction(t, srv, "U1", accessAllowAction, "900.000", "U2", fakeURL+"/response")
+
+	fake.waitForPath(t, "response", 1)
+	response := allText(fake.pathCalls("response"))
+	require.Contains(t, response, "approval expired", "the prompt is rewritten to say it expired")
+	require.Contains(t, response, "<@U2>", "the rewrite says whose message to resend")
+	require.Zero(t, gw.resolveCount(), "no grant and no replay from a stale click")
+}
+
+// When the initiator denies a newcomer, the newcomer (who was told their
+// message is waiting) must be told the outcome instead of waiting forever.
+func TestAccess_DeniedNewcomerNotified(t *testing.T) {
+	fake := newFakeSlackAPI()
+	fakeURL := fake.server(t).URL
+	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "hi", Done: true}}}
+	_, srv := newEventsAdapter(t, gw, fakeURL, channelMode)
+
+	sendEvent(t, srv, mention("U001", "start", "500.000", ""))
+	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
+		2*time.Second, 50*time.Millisecond, "initiator dispatches")
+
+	sendEvent(t, srv, mention("U999", "can I help", "501.000", "500.000"))
+	fake.waitForPath(t, "chat.postEphemeral", 2) // consent prompt + waiting ack
+
+	before := len(fake.pathCalls("chat.postEphemeral"))
+	sendAccessInteraction(t, srv, "U001", accessDenyAction, "500.000", "U999", fakeURL+"/response")
+
+	require.Eventually(t, func() bool {
+		calls := fake.pathCalls("chat.postEphemeral")
+		for _, c := range calls[before:] {
+			user, _ := c.params["user"].(string)
+			text, _ := c.params["text"].(string)
+			if user == "U999" && strings.Contains(text, "declined") {
+				return true
+			}
+		}
+		return false
+	}, 2*time.Second, 50*time.Millisecond,
+		"the denied newcomer must get a visible outcome, not wait forever")
+}

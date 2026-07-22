@@ -1392,7 +1392,11 @@ func TestRecordSignInAnchorRePromptOverwrites(t *testing.T) {
 	a := &Adapter{}
 	a.recordSignInAnchor("U1", "T1", signInAnchor{channel: "C1", ts: "1.1"})
 	a.recordSignInAnchor("U1", "T1", signInAnchor{channel: "C1", ts: "2.2"})
-	require.Equal(t, []signInAnchor{{channel: "C1", ts: "2.2", threadID: "T1"}}, a.takeSignInAnchors("U1"))
+	anchors := a.takeSignInAnchors("U1")
+	require.Len(t, anchors, 1)
+	require.False(t, anchors[0].nudgedAt.IsZero(), "recording arms the nudge throttle")
+	anchors[0].nudgedAt = time.Time{}
+	require.Equal(t, []signInAnchor{{channel: "C1", ts: "2.2", threadID: "T1"}}, anchors)
 }
 
 // A click on a prompt message whose task was already resumed (the thread

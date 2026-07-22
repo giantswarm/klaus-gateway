@@ -3,6 +3,7 @@ package slack_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -245,4 +246,54 @@ func TestSignInPrompt_ThrottledPerThreadUser(t *testing.T) {
 	require.Len(t, fake.pathCalls("chat.postMessage"), 1,
 		"a second parked message within the window must not re-prompt")
 	require.Zero(t, gw.resolveCount(), "both messages stay parked")
+}
+
+// Parked messages past the per-thread cap are dropped oldest-first; the drop
+// must be visible to the user, who was implicitly promised everything was
+// held while they signed in.
+func TestLoginPark_QueueCapDropIsVisible(t *testing.T) {
+	fake := newFakeSlackAPI()
+	var mu sync.Mutex
+	var texts []string
+	gw := &stubGateway{
+		deltas: []channels.OutboundDelta{{Content: "ok", Done: true}},
+		onResolve: func(msg channels.InboundMessage) {
+			mu.Lock()
+			texts = append(texts, msg.Text)
+			mu.Unlock()
+		},
+	}
+	obo := &fakeOBO{linkedUser: "U1", token: "tok", notYetLinked: true}
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+	a.OBO = obo
+
+	// Sends are spaced out so each park completes before the next event, and
+	// none of the drops below can be blamed on the thread-busy rejection.
+	sendEvent(t, srv, dmEvent("U1", "q1", "600.000"))
+	time.Sleep(150 * time.Millisecond)
+	for i := 2; i <= 6; i++ {
+		sendEvent(t, srv, dmThreadEvent("U1", fmt.Sprintf("q%d", i), fmt.Sprintf("600.%03d", i), "600.000"))
+		time.Sleep(150 * time.Millisecond)
+	}
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "still finishing",
+		"test setup: no message may be lost to the busy rejection")
+
+	// The sixth park overflows the cap of five: the user is told, once.
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postEphemeral")), "I can only hold your last")
+	}, 2*time.Second, 50*time.Millisecond,
+		"messages dropped past the parked-queue cap must be surfaced, not lost silently")
+
+	obo.completeLink()
+	a.OnUserLinked(t.Context(), "U1", "u1@example.com")
+
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(texts) == 5
+	}, 3*time.Second, 50*time.Millisecond, "the capped queue replays after sign-in")
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, []string{"q2", "q3", "q4", "q5", "q6"}, texts,
+		"the oldest message is the one dropped; order is preserved")
 }

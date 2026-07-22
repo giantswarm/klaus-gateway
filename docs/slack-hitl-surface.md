@@ -30,7 +30,8 @@ A single ask_user question picks its layout by choice count, select mode, and la
 Generic (non-`ask_user`) tool approvals always render as Approve / Deny / Chat buttons.
 Any prompt can also be answered by replying in-thread; a reply resolves the paused task the
 same way a click does. Only a permitted user (the thread initiator or a granted collaborator)
-may decide; an onlooker click is refused ephemerally.
+may decide; an onlooker click is refused ephemerally. A thread is one shared session, so any
+permitted user may answer a prompt it raised.
 
 ## 1. Tool approval
 
@@ -276,10 +277,12 @@ for the Builder to accept it.
 
 ## 8. OBO sign-in (act-as-user account linking)
 
-Ephemeral. Posted when a turn needs the user's token but they haven't linked their account.
-The button opens the linking flow; once it completes the ephemeral prompt is replaced in
-place. A turn that still has no user token degrades: the tool call fails at the backend rather
-than running as the gateway identity.
+A threaded message addressed to the user, posted when a turn needs their token but they
+haven't linked their account. The button opens the linking flow; once it completes the
+prompt is rewritten in place to the signed-in confirmation. The link expires after 15
+minutes; a later message posts a fresh prompt and the stale one is rewritten to say its
+link expired. A turn that still has no user token is aborted rather than run as the
+gateway identity.
 
 ```json
 {
@@ -300,9 +303,11 @@ than running as the gateway identity.
 ## 9. Access consent (a newcomer wants to instruct the agent in someone's thread)
 
 Ephemeral, shown only to the thread initiator. Yes grants the newcomer (additively) and
-replays their held message; No discards it. Each button's `value` is the JSON
-`{"t":"<thread>","u":"<newcomer>"}`, since one initiator can have several pending approvals at
-once.
+replays their held message; No discards it and tells the newcomer (ephemerally) that the
+owner declined. A click on a prompt whose thread state the gateway no longer holds (pod
+restart, expiry) rewrites the prompt to say the approval expired. Each button's `value` is
+the JSON `{"t":"<thread>","u":"<newcomer>"}`, since one initiator can have several pending
+approvals at once.
 
 ```json
 {
