@@ -73,7 +73,7 @@ func TestAccess_UnlinkedNewcomerPromptedToSignIn(t *testing.T) {
 
 	sendEvent(t, srv, mention("U999", "help", "200.000", "100.000"))
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Sign in to Giant Swarm")
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Sign in so I can act as you")
 	}, 2*time.Second, 50*time.Millisecond, "the newcomer is prompted to sign in")
 	require.Equal(t, 1, gw.resolveCount(), "an unlinked newcomer must not reach the agent")
 	// The prompt is public and its link is minted for the newcomer: it must
@@ -288,7 +288,7 @@ func TestAccess_NewcomerTransientTokenErrorSurfaced(t *testing.T) {
 
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Sign in to Giant Swarm")
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Sign in so I can act as you")
 	}, 2*time.Second, 50*time.Millisecond, "the unlinked initiator is prompted to sign in")
 
 	sendEvent(t, srv, mention("U999", "help", "200.000", "100.000"))

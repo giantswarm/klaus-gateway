@@ -828,9 +828,9 @@ func (c *slackAPIClient) chatUpdateMarkdown(ctx context.Context, channel, ts, md
 }
 
 // postApprovalPrompt posts a Block Kit message with ✅/❌ buttons for HITL
-// approval. The button values encode the threadID so the interaction handler
-// can route the response back.
-func (c *slackAPIClient) postApprovalPrompt(ctx context.Context, channel, threadID, promptText string) error {
+// approval. The button values encode the thread (routing) and the task the
+// prompt renders (staleness check).
+func (c *slackAPIClient) postApprovalPrompt(ctx context.Context, channel, threadID, taskID, promptText string) error {
 	text := "_Waiting for approval…_"
 	if promptText != "" {
 		// promptText is agent-rendered (tool name, args, hint) and enters an
@@ -854,20 +854,20 @@ func (c *slackAPIClient) postApprovalPrompt(ctx context.Context, channel, thread
 						bkText:     map[string]any{bkType: bkPlainText, bkText: "✅ Approve"},
 						bkStyle:    bkPrimary,
 						bkActionID: hitlApprove,
-						bkValue:    threadID,
+						bkValue:    encodeHitlValue(threadID, taskID),
 					},
 					map[string]any{
 						bkType:     bkButton,
 						bkText:     map[string]any{bkType: bkPlainText, bkText: "❌ Deny"},
 						bkStyle:    bkDanger,
 						bkActionID: hitlDeny,
-						bkValue:    threadID,
+						bkValue:    encodeHitlValue(threadID, taskID),
 					},
 					map[string]any{
 						bkType:     bkButton,
 						bkText:     map[string]any{bkType: bkPlainText, bkText: "💬 Chat"},
 						bkActionID: hitlChat,
-						bkValue:    threadID,
+						bkValue:    encodeHitlValue(threadID, taskID),
 					},
 				},
 			},
@@ -889,8 +889,9 @@ func questionSection(question string) map[string]any {
 }
 
 // submitActions renders the Submit button that commits a widget selection. Its
-// value is the raw threadID so the interaction handler can route the response.
-func submitActions(threadID string) map[string]any {
+// value encodes the thread (routing) and the task the prompt renders
+// (staleness check).
+func submitActions(threadID, taskID string) map[string]any {
 	return map[string]any{
 		bkType: bkActions,
 		bkElements: []any{
@@ -899,7 +900,44 @@ func submitActions(threadID string) map[string]any {
 				bkText:     map[string]any{bkType: bkPlainText, bkText: "Submit"},
 				bkStyle:    bkPrimary,
 				bkActionID: hitlSubmit,
-				bkValue:    threadID,
+				bkValue:    encodeHitlValue(threadID, taskID),
+			},
+		},
+	}
+}
+
+// choiceOptions builds the Block Kit option objects for a question's choices,
+// each valued by its choice index. Labels are capped at the option-text limit;
+// the caller routes longer labels to the section layout, so truncation never
+// bites in practice.
+func choiceOptions(choices []string) []any {
+	options := make([]any, 0, len(choices))
+	for i, choice := range choices {
+		options = append(options, map[string]any{
+			bkText:  map[string]any{bkType: bkPlainText, bkText: truncateRunes(choice, choiceLabelWidgetMax)},
+			bkValue: strconv.Itoa(i),
+		})
+	}
+	return options
+}
+
+// choiceWidgetBlock builds a radio_buttons (single-select) or checkboxes
+// (multi-select) actions block for one question's choices. blockID lets the
+// interaction handler locate the selection under state.values; every widget
+// shares the hitlGroup action_id.
+func choiceWidgetBlock(blockID string, choices []string, multiple bool) map[string]any {
+	elementType := bkRadioButtons
+	if multiple {
+		elementType = bkCheckboxes
+	}
+	return map[string]any{
+		bkType:    bkActions,
+		bkBlockID: blockID,
+		bkElements: []any{
+			map[string]any{
+				bkType:     elementType,
+				bkActionID: hitlGroup,
+				bkOptions:  choiceOptions(choices),
 			},
 		},
 	}
@@ -908,42 +946,41 @@ func submitActions(threadID string) map[string]any {
 // postChoiceWidgetPrompt posts an ask_user question as a vertical
 // radio_buttons (single-select) or checkboxes (multi-select) widget plus a
 // Submit button. Each option's value is its choice index; the interaction
-// handler reads the selection out of state.values on Submit. Choice labels are
-// capped at the option-text limit (the caller routes longer labels to the
-// section layout, so truncation never bites in practice).
-func (c *slackAPIClient) postChoiceWidgetPrompt(ctx context.Context, channel, threadID, question string, choices []string, multiple bool) error {
-	options := make([]any, 0, len(choices))
-	for i, choice := range choices {
-		options = append(options, map[string]any{
-			bkText:  map[string]any{bkType: bkPlainText, bkText: truncateRunes(choice, choiceLabelWidgetMax)},
-			bkValue: strconv.Itoa(i),
-		})
-	}
-	elementType := bkRadioButtons
-	if multiple {
-		elementType = bkCheckboxes
-	}
+// handler reads the selection out of state.values on Submit.
+func (c *slackAPIClient) postChoiceWidgetPrompt(ctx context.Context, channel, threadID, taskID, question string, choices []string, multiple bool) error {
 	body := map[string]any{
 		paramChannel:  channel,
 		paramThreadTS: threadID,
 		paramText:     truncateRunes(escapeMrkdwn(question), slackSectionTextMax),
 		paramBlocks: []any{
 			questionSection(question),
-			map[string]any{
-				bkType:    bkActions,
-				bkBlockID: hitlGroupBlock,
-				bkElements: []any{
-					map[string]any{
-						bkType:     elementType,
-						bkActionID: hitlGroup,
-						bkOptions:  options,
-					},
-				},
-			},
-			submitActions(threadID),
+			choiceWidgetBlock(hitlGroupBlock, choices, multiple),
+			submitActions(threadID, taskID),
 		},
 	}
 	_, err := c.postJSON(ctx, methodChatPostMessage, body)
+	return err
+}
+
+// postChoiceFormPrompt posts a multi-question ask_user prompt as a single form:
+// a question section plus a radio/checkbox widget per question, all committed by
+// one Submit. Each question's widget block_id encodes its question index
+// (hitlQGroupPrefix + "_<qi>") so the handler maps each selection back to its
+// question. The caller (formRenderable) guarantees every question is widgetable.
+func (c *slackAPIClient) postChoiceFormPrompt(ctx context.Context, channel, threadID, taskID string, questions []channels.HitlQuestion) error {
+	blocks := make([]any, 0, 2*len(questions)+1)
+	for qi, q := range questions {
+		blocks = append(blocks, questionSection(q.Question))
+		blocks = append(blocks, choiceWidgetBlock(fmt.Sprintf("%s_%d", hitlQGroupPrefix, qi), q.Choices, q.Multiple))
+	}
+	blocks = append(blocks, submitActions(threadID, taskID))
+	body := map[string]any{
+		paramChannel:  channel,
+		paramThreadTS: threadID,
+		paramText:     "Please answer the questions below.",
+		paramBlocks:   blocks,
+	}
+	_, err := c.postJSON(ctx, "chat.postMessage", body)
 	return err
 }
 
@@ -954,7 +991,7 @@ func (c *slackAPIClient) postChoiceWidgetPrompt(ctx context.Context, channel, th
 // choice per row is unambiguous); multi-select uses an accessory single-option
 // checkbox per row plus a Submit button, and the handler gathers the selected
 // rows out of state.values.
-func (c *slackAPIClient) postChoiceSectionPrompt(ctx context.Context, channel, threadID, question string, choices []string, multiple bool) error {
+func (c *slackAPIClient) postChoiceSectionPrompt(ctx context.Context, channel, threadID, taskID, question string, choices []string, multiple bool) error {
 	blocks := []any{questionSection(question)}
 	for i, choice := range choices {
 		section := map[string]any{
@@ -978,13 +1015,13 @@ func (c *slackAPIClient) postChoiceSectionPrompt(ctx context.Context, channel, t
 				bkType:     bkButton,
 				bkText:     map[string]any{bkType: bkPlainText, bkText: "Select"},
 				bkActionID: fmt.Sprintf("%s_%d", hitlChoice, i),
-				bkValue:    encodeChoiceValue(threadID, i),
+				bkValue:    encodeChoiceValue(threadID, taskID, i),
 			}
 		}
 		blocks = append(blocks, section)
 	}
 	if multiple {
-		blocks = append(blocks, submitActions(threadID))
+		blocks = append(blocks, submitActions(threadID, taskID))
 	}
 	body := map[string]any{
 		paramChannel:  channel,
@@ -1008,7 +1045,7 @@ func (c *slackAPIClient) postSignInPrompt(ctx context.Context, channel, threadID
 	// The prompt is a public thread message and its link is minted for one
 	// user: address it, or a bystander clicks a button bound to someone else's
 	// identity and lands on the email-mismatch page.
-	text := "Sign in to Giant Swarm so I can act as you. " +
+	text := "Sign in so I can act as you. " +
 		"Until you do, I can't run tools on your behalf."
 	if user != "" {
 		text = "<@" + user + "> " + text

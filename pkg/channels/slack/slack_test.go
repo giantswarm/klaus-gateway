@@ -525,7 +525,7 @@ func TestDispatch_OBO_UnlinkedUserPromptsSignInAndDoesNotDispatch(t *testing.T) 
 	require.NoError(t, resp.Body.Close())
 
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Sign in to Giant Swarm")
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Sign in so I can act as you")
 	}, 2*time.Second, 50*time.Millisecond, "unlinked user must be prompted to sign in with a real message")
 	// The prompt is a threaded reply under the mention, so it anchors the
 	// thread the agent will answer in (a thread-scoped ephemeral on a fresh
@@ -562,7 +562,7 @@ func TestDispatch_OBO_ParksUnlinkedMessageAndReplaysAfterLink(t *testing.T) {
 	require.NoError(t, resp.Body.Close())
 
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Sign in to Giant Swarm")
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Sign in so I can act as you")
 	}, 2*time.Second, 50*time.Millisecond, "unlinked user must be prompted to sign in")
 	require.Zero(t, gw.resolveCount(), "the message must be parked, not dispatched, before linking")
 
@@ -658,7 +658,7 @@ func TestDispatch_OBO_NewcomerReplaysToAccessPromptNotAgent(t *testing.T) {
 	// to sign in, not dispatched.
 	send(`{"type":"event_callback","event":{"type":"app_mention","user":"U2","text":"<@BOT> me too","channel":"C1","ts":"333.444","thread_ts":"111.222"}}`)
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Sign in to Giant Swarm")
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Sign in so I can act as you")
 	}, 2*time.Second, 50*time.Millisecond, "the newcomer is prompted to sign in")
 	mu.Lock()
 	require.Equal(t, 1, len(captured), "an unlinked newcomer must not reach the agent")
@@ -825,7 +825,7 @@ func TestLogin_PostsSignInPrompt(t *testing.T) {
 	require.NoError(t, resp.Body.Close())
 
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Sign in to Giant Swarm")
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Sign in so I can act as you")
 	}, 2*time.Second, 50*time.Millisecond, "/login must post a sign-in prompt")
 	require.Zero(t, gw.resolveCount(), "/login must be consumed, not dispatched to the agent")
 }

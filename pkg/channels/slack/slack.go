@@ -43,7 +43,7 @@ type OBOTokenSource interface {
 	// TokenFor returns a fresh human token (the dex id_token) for the Slack user,
 	// or musterlink.ErrNotLinked when the user has not linked an identity.
 	TokenFor(ctx context.Context, slackUserID string) (string, error)
-	// LinkURL returns the absolute "Sign in to Giant Swarm" URL that starts the
+	// LinkURL returns the absolute "Sign in" URL that starts the
 	// account-linking flow for the Slack user (signed, single-use state).
 	LinkURL(slackUserID string) string
 	// Unlink removes any stored link for the Slack user (the /klaus logout path).
@@ -669,11 +669,11 @@ type signInAnchor struct {
 	threadID string
 }
 
-// postSignIn posts the "Sign in to Giant Swarm" prompt for the account-linking
-// flow and records its message coordinates so the completed link rewrites it in
-// place. It is driven by the explicit /login command and by an unlinked
-// user's first turn (which is aborted, not run as the SA). A failure to post is
-// logged and swallowed.
+// postSignIn posts the "Sign in" prompt for the account-linking flow and
+// records its message coordinates so the completed link rewrites it in place.
+// It is driven by the explicit /login command and by an unlinked user's first
+// turn (which is aborted, not run as the SA). A failure to post is logged and
+// swallowed.
 func (a *Adapter) postSignIn(ctx context.Context, slackChannel, threadID, slackUser string) {
 	url := a.OBO.LinkURL(slackUser)
 	if url == "" {
@@ -1141,6 +1141,15 @@ func (a *Adapter) hasPendingTask(threadID string) bool {
 	defer a.pendingMu.Unlock()
 	_, ok := a.pendingTasks[threadID]
 	return ok
+}
+
+// peekPendingTask returns a thread's pending task without removing it, or nil
+// when none is pending. A caller that relies on the task still being pending on
+// a later takePendingTask must hold the thread lock across both.
+func (a *Adapter) peekPendingTask(threadID string) *pendingTask {
+	a.pendingMu.Lock()
+	defer a.pendingMu.Unlock()
+	return a.pendingTasks[threadID]
 }
 
 // handleInbound runs the shared inbound pipeline for one Slack event:
