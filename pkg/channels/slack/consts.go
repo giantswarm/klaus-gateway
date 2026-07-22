@@ -9,6 +9,13 @@ const (
 	evtMemberJoined = "member_joined_channel"
 )
 
+// subtypeThreadBroadcast marks a thread reply the author asked Slack to also
+// send to the channel. It is a normal human reply (its payload carries user,
+// text, ts, and thread_ts) and is the only message subtype the adapter routes;
+// every other subtype (message_changed, message_deleted, bot_message, …) is
+// not a new user instruction.
+const subtypeThreadBroadcast = "thread_broadcast"
+
 // HITL Block Kit action IDs.
 const (
 	hitlApprove = "hitl_approve"
@@ -139,6 +146,58 @@ const tokenErrorNotice = "I couldn't refresh your Giant Swarm sign-in just now. 
 // accessDecisionRefusal is shown (ephemerally) when a user who is not permitted
 // in the thread clicks an in-thread tool Approve/Deny button.
 const accessDecisionRefusal = "_Only the thread owner (and people they've allowed) can approve or deny this action._"
+
+// accessPromptExpiredNotice replaces an access-consent prompt whose thread
+// state this process no longer holds (restart or TTL sweep), so the clicker is
+// not left with a button that silently does nothing.
+const accessPromptExpiredNotice = "_This approval expired (I lost the thread state). Ask <@%s> to resend their message._"
+
+// accessDeniedNewcomerNotice is shown (ephemerally) to a parked newcomer when
+// the thread owner declines them, closing the loop opened by the waiting ack.
+const accessDeniedNewcomerNotice = "_The thread owner declined, so I won't act on your messages in this thread. Mention me in a new thread to start your own._"
+
+// parkedDropNotice is shown (ephemerally) to a user whose parked messages
+// overflowed the per-thread cap, so the drop is visible and the user knows to
+// resend. %d is maxParkedPerThread.
+const parkedDropNotice = "_I can only hold your last %d messages here; earlier ones were dropped, please resend them once I can act on your messages._"
+
+// parkedDropNoticeTTL bounds how often the parked-drop notice repeats per
+// (user, thread), so a long burst past the cap nudges once instead of once per
+// dropped message.
+const parkedDropNoticeTTL = time.Hour
+
+// stopNothingRunningNotice replies to a /stop in a thread with no in-flight
+// turn and no pending prompt, instead of falsely confirming a stop.
+const stopNothingRunningNotice = "_Nothing is running in this thread._"
+
+// contextForkNotice is shown (ephemerally) to a granted collaborator on their
+// first turn in a thread: each user's turns run in their own agent session, so
+// their conversation does not share the thread owner's history.
+const contextForkNotice = "_You have your own conversation context with the agent in this thread; it doesn't share the thread owner's history._"
+
+// promptOwnerOnlyNotice is shown (ephemerally) when someone other than the
+// user whose turn paused on a prompt tries to answer it. %s is the owner's
+// Slack user ID.
+const promptOwnerOnlyNotice = "_Only <@%s> can answer this prompt (their conversation context is paused on it)._"
+
+// signInLinkExpiredNote replaces a sign-in prompt whose link outlived its
+// state TTL once a fresh prompt is posted, so the dead button cannot be
+// mistaken for the live one.
+const signInLinkExpiredNote = "_This sign-in link expired; use the newer one below._"
+
+// signInNudgeTTL bounds how long a posted sign-in prompt suppresses a fresh
+// nudge for the same (user, thread). It matches the sign-in link's state
+// lifetime (musterlink defaultStateTTL, 15 minutes): past it the posted
+// button's URL is dead, so re-prompting with a fresh URL beats staying silent
+// behind it. Keep the two constants in sync.
+const signInNudgeTTL = 15 * time.Minute
+
+// stopRequestTTL bounds how long a /stop issued during a turn's start window
+// (thread slot held, turn not yet registered) stays armed. registerTurn
+// consumes the request; releaseThread clears it when the turn never registers,
+// so this is only a backstop against a leaked entry cancelling a much later
+// turn.
+const stopRequestTTL = time.Minute
 
 // choiceSelectNudge is shown (ephemerally) when a user clicks Submit on an
 // ask_user choice widget without selecting anything; the task stays pending.

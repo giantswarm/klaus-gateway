@@ -156,9 +156,13 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 				w.maybeConnectorPrompt(d.Tool)
 			case channels.DeltaPrompt:
 				// Flush partial text so far, then hand off to the caller to post
-				// the interactive approval prompt.
+				// the interactive approval prompt. A flush failure here is
+				// non-fatal: the pending-task store and the prompt post do not
+				// depend on the buffered prose, and failing the turn instead
+				// would discard the paused task's only handle, leaving the A2A
+				// task unresumable with a dangling tool call.
 				if err := w.finalFlush(ctx); err != nil {
-					return err
+					w.logger.Warn("slack: flush at prompt handoff failed, buffered text lost", "error", err)
 				}
 				w.mu.Lock()
 				w.promptDelta = &d
@@ -1109,7 +1113,10 @@ func (c *slackAPIClient) postEphemeralText(ctx context.Context, channel, user, t
 // the initiator can click. The button value encodes the thread and the newcomer
 // so the interaction handler resolves the right parked request.
 func (c *slackAPIClient) postAccessConsentPrompt(ctx context.Context, channel, threadID, initiator, newcomer string) error {
-	text := fmt.Sprintf("Is <@%s> allowed to instruct the agent to work on your behalf in this thread?", newcomer)
+	// The grant lets the newcomer instruct the agent under their own identity
+	// and session; it does not delegate the initiator's, so the wording must
+	// not promise "on your behalf".
+	text := fmt.Sprintf("Is <@%s> allowed to instruct the agent in this thread?", newcomer)
 	value := encodeAccessValue(threadID, newcomer)
 	body := map[string]any{
 		paramChannel:  channel,

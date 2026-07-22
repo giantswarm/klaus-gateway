@@ -200,7 +200,7 @@ func (a *Adapter) routeInteraction(ctx context.Context, payload interactionPaylo
 		if !ok {
 			return
 		}
-		a.handleAccessDecision(ctx, av.Thread, av.User, payload.User.ID, payload.ResponseURL, act.kind == accessAllow)
+		a.handleAccessDecision(ctx, payload.Channel.ID, av.Thread, av.User, payload.User.ID, payload.ResponseURL, act.kind == accessAllow)
 		return
 	}
 
@@ -289,13 +289,28 @@ func (a *Adapter) handleConnectorDismiss(ctx context.Context, slackUser, server,
 // ephemeral prompt is updated in place via the interaction response_url.
 //
 // Only the thread initiator may decide. The prompt is ephemeral to the
-// initiator, but the grant authorises another user to act under the initiator's
-// identity, so the clicker's identity is checked here too rather than trusting
-// ephemeral delivery alone (fail closed on any mismatch).
-func (a *Adapter) handleAccessDecision(ctx context.Context, threadID, newcomerID, clickerID, responseURL string, allow bool) {
-	if initiator := a.accessPolicy().Initiator(threadID); initiator == "" || initiator != clickerID {
+// initiator, but the grant authorises another user to instruct the agent in
+// the initiator's thread, so the clicker's identity is checked here too rather
+// than trusting ephemeral delivery alone (fail closed on any mismatch). A
+// thread with no recorded initiator (restart, TTL sweep) cannot honour the
+// click; the prompt is rewritten so the clicker is not left with a dead
+// button.
+func (a *Adapter) handleAccessDecision(ctx context.Context, slackChannel, threadID, newcomerID, clickerID, responseURL string, allow bool) {
+	initiator := a.accessPolicy().Initiator(threadID)
+	if initiator == "" {
+		a.Logger.Info("slack: access decision for a thread with no initiator, prompt expired",
+			"thread", threadID, "clicker", clickerID, "newcomer", newcomerID)
+		if err := respondURL(ctx, responseURL, threadID, fmt.Sprintf(accessPromptExpiredNotice, newcomerID)); err != nil {
+			a.Logger.Warn("slack: update access prompt (expired) failed", "thread", threadID, "error", err)
+		}
+		return
+	}
+	if initiator != clickerID {
 		a.Logger.Warn("slack: access decision from non-initiator ignored",
 			"thread", threadID, "clicker", clickerID, "newcomer", newcomerID)
+		if err := a.apiClient().postEphemeralText(ctx, slackChannel, clickerID, threadID, accessDecisionRefusal); err != nil {
+			a.Logger.Warn("slack: post access decision refusal failed", "thread", threadID, "error", err)
+		}
 		return
 	}
 
@@ -304,6 +319,17 @@ func (a *Adapter) handleAccessDecision(ctx context.Context, threadID, newcomerID
 	if !allow {
 		if err := respondURL(ctx, responseURL, threadID, "🚫 _Declined._"); err != nil {
 			a.Logger.Warn("slack: update access prompt (declined) failed", "thread", threadID, "error", err)
+		}
+		// The newcomer was told their message is waiting; without this the
+		// decline is invisible to them and they wait forever.
+		noticeChannel := slackChannel
+		if noticeChannel == "" && len(parked) > 0 {
+			noticeChannel = parked[0].slackChannel
+		}
+		if noticeChannel != "" {
+			if err := a.apiClient().postEphemeralText(ctx, noticeChannel, newcomerID, threadID, accessDeniedNewcomerNotice); err != nil {
+				a.Logger.Warn("slack: post access denied notice failed", "thread", threadID, "newcomer", newcomerID, "error", err)
+			}
 		}
 		return
 	}
@@ -397,6 +423,20 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 	// never saw. Refuse the stale message and leave the pending task intact.
 	if act.taskID != "" && act.taskID != pending.TaskID {
 		_ = client.chatUpdateBlocks(ctx, slackChannel, messageTS, promptSupersededNotice)
+		return nil
+	}
+
+	// Only the user whose turn paused on this task may answer it: the resume
+	// runs under the clicking user's token, and the paused task lives in its
+	// owner's agent session, so another permitted user's click would deliver
+	// the decision into the wrong session. Checked before the token mint so
+	// the refusal costs no round-trips and the task stays intact. Remove once
+	// kagent session sharing (kagent-dev/kagent#1933) is adopted.
+	if pending.SlackUser != "" && slackUser != pending.SlackUser {
+		text := fmt.Sprintf(promptOwnerOnlyNotice, pending.SlackUser)
+		if err := client.postEphemeralText(ctx, slackChannel, slackUser, threadID, text); err != nil {
+			a.Logger.Warn("slack: post prompt-owner refusal failed", "thread", threadID, "user", slackUser, "error", err)
+		}
 		return nil
 	}
 

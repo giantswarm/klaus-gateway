@@ -72,7 +72,9 @@ const (
 
 // defaultStateTTL bounds the whole interactive link flow (button click ->
 // muster consent -> callback). Short enough to limit replay, long enough for a
-// human to complete an OAuth consent screen.
+// human to complete an OAuth consent screen. The Slack adapter re-arms its
+// sign-in nudge on the same lifetime (signInNudgeTTL in pkg/channels/slack) so
+// a posted button is never older than its URL; keep the two in sync.
 const defaultStateTTL = 15 * time.Minute
 
 // defaultHTTPTimeout bounds every outbound muster call (discovery, userinfo,

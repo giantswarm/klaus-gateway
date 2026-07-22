@@ -139,9 +139,20 @@ func (a *Adapter) releaseThread(threadID string) {
 	waiters := a.idleWaiters[threadID]
 	delete(a.idleWaiters, threadID)
 	a.inflightMu.Unlock()
+	// A stop request not consumed by registerTurn targeted a turn that aborted
+	// during its start window; the slot is free, so nothing is left to stop.
+	a.clearStopRequest(threadID)
 	for _, waiter := range waiters {
 		go waiter()
 	}
+}
+
+// threadBusy reports whether a turn currently holds threadID's inflight slot.
+func (a *Adapter) threadBusy(threadID string) bool {
+	a.inflightMu.Lock()
+	defer a.inflightMu.Unlock()
+	_, busy := a.inflight[threadID]
+	return busy
 }
 
 // whenThreadIdle runs fn once threadID's turn slot is free: synchronously when

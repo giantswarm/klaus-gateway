@@ -40,13 +40,13 @@ func TestStorePendingAccess_SweepsExpiredEntries(t *testing.T) {
 // user), so a burst replayed after sign-in posts the consent prompt once.
 func TestStorePendingAccess_ReportsNewOnlyOnce(t *testing.T) {
 	a := &Adapter{}
-	first := a.storePendingAccess("t1", "U1", &pendingAccessReq{msg: channels.InboundMessage{Text: "m1"}})
+	first, _ := a.storePendingAccess("t1", "U1", &pendingAccessReq{msg: channels.InboundMessage{Text: "m1"}})
 	require.True(t, first, "first parked request for a (thread, user) is new")
 
-	second := a.storePendingAccess("t1", "U1", &pendingAccessReq{msg: channels.InboundMessage{Text: "m2"}})
+	second, _ := a.storePendingAccess("t1", "U1", &pendingAccessReq{msg: channels.InboundMessage{Text: "m2"}})
 	require.False(t, second, "a repeat before approval must not re-prompt")
 
-	other := a.storePendingAccess("t1", "U2", &pendingAccessReq{msg: channels.InboundMessage{Text: "m3"}})
+	other, _ := a.storePendingAccess("t1", "U2", &pendingAccessReq{msg: channels.InboundMessage{Text: "m3"}})
 	require.True(t, other, "a different user in the same thread is prompted independently")
 }
 
@@ -55,7 +55,8 @@ func TestStorePendingAccess_ReportsNewOnlyOnce(t *testing.T) {
 func TestStorePendingAccess_QueueOrderAndCap(t *testing.T) {
 	a := &Adapter{}
 	for i := 1; i <= maxParkedPerThread+2; i++ {
-		a.storePendingAccess("t1", "U1", &pendingAccessReq{msg: channels.InboundMessage{Text: fmt.Sprintf("m%d", i)}})
+		_, dropped := a.storePendingAccess("t1", "U1", &pendingAccessReq{msg: channels.InboundMessage{Text: fmt.Sprintf("m%d", i)}})
+		require.Equal(t, i > maxParkedPerThread, dropped, "an eviction is reported exactly when the cap overflows (message %d)", i)
 	}
 
 	got := a.takePendingAccess("t1", "U1")
