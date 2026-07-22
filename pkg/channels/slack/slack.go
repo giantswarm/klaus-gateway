@@ -1061,6 +1061,7 @@ func (a *Adapter) OnUserLinked(ctx context.Context, slackUser, email string) {
 				}
 				if err := a.replayDispatch(bgCtx, req.msg, req.slackChannel); err != nil && !errors.Is(err, context.Canceled) {
 					a.Logger.Error("slack: replay after sign-in failed", "user", slackUser, "thread", req.msg.ThreadID, "error", err)
+					a.postReplayFailureNote(bgCtx, req.slackChannel, req.msg.ThreadID)
 				}
 			}
 		}()
@@ -1224,11 +1225,11 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 // postDispatchFailureNote posts the generic failure note for a turn that died
 // before its stream started (agent resolve or send failed). Errors inside a
 // running stream are surfaced by streamResponse; without this note a
-// pre-stream failure is invisible to the thread. It fires for interactive and
-// replayed turns alike (a replay's caller only logs). Best-effort, and silent
-// on shutdown (a canceled context means nobody is waiting for the note).
+// pre-stream failure is invisible to the thread. Skipped on the replay path,
+// where the caller posts the more specific postReplayFailureNote. Best-effort,
+// and silent on shutdown (a canceled context means nobody is waiting for it).
 func (a *Adapter) postDispatchFailureNote(ctx context.Context, slackChannel, threadID string) {
-	if ctx.Err() != nil {
+	if ctx.Err() != nil || isReplayContext(ctx) {
 		return
 	}
 	if _, err := a.apiClient().postMessage(ctx, slackChannel, failedNote, threadID); err != nil {
@@ -1236,10 +1237,30 @@ func (a *Adapter) postDispatchFailureNote(ctx context.Context, slackChannel, thr
 	}
 }
 
+// postReplayFailureNote tells the thread a parked message could not be
+// replayed, so a sign-in or access grant that just promised action does not
+// end in silence. Best-effort: a post failure is only logged.
+func (a *Adapter) postReplayFailureNote(ctx context.Context, slackChannel, threadID string) {
+	const text = "⚠️ _I couldn't pick your message back up. Please resend it._"
+	if _, err := a.apiClient().postMessage(ctx, slackChannel, text, threadID); err != nil {
+		a.Logger.Warn("slack: post replay failure note failed", "thread", threadID, "error", err)
+	}
+}
+
 // errThreadBusy reports a turn rejected because another turn holds the
 // thread's slot, so the caller chooses between notifying the user and
 // requeueing the message.
 var errThreadBusy = errors.New("slack: thread busy")
+
+// replayContextKey marks a dispatch reached through replayDispatch, so the
+// pre-stream failure note is left to the replay caller's postReplayFailureNote
+// rather than doubled by dispatch's own postDispatchFailureNote.
+type replayContextKey struct{}
+
+func isReplayContext(ctx context.Context) bool {
+	replaying, _ := ctx.Value(replayContextKey{}).(bool)
+	return replaying
+}
 
 // replayDispatch delivers a previously parked message through dispatch. The
 // parked user never knowingly raced anyone, so a held thread slot does not
@@ -1249,6 +1270,7 @@ var errThreadBusy = errors.New("slack: thread busy")
 // dispatch call), which lets a caller drain a queue in order; run it off any
 // latency-sensitive goroutine.
 func (a *Adapter) replayDispatch(ctx context.Context, msg channels.InboundMessage, slackChannel string) error {
+	ctx = context.WithValue(ctx, replayContextKey{}, true)
 	for {
 		err := a.dispatch(ctx, msg, slackChannel)
 		if !errors.Is(err, errThreadBusy) {
