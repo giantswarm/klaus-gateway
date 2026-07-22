@@ -178,10 +178,10 @@ func TestBuildButtonDecision_ApproveDeny(t *testing.T) {
 }
 
 func TestChoiceValueRoundTrip(t *testing.T) {
-	v := encodeChoiceValue("1700.0001", 3)
+	v := encodeChoiceValue("1700.0001", "task-1", 3)
 	got, ok := decodeChoiceValue(v)
 	require.True(t, ok)
-	require.Equal(t, choiceValue{Thread: "1700.0001", Choice: 3}, got)
+	require.Equal(t, choiceValue{Thread: "1700.0001", Choice: 3, Task: "task-1"}, got)
 
 	_, ok = decodeChoiceValue("not json")
 	require.False(t, ok)
@@ -228,10 +228,24 @@ func TestPostHitlPrompt_FallsBackToTextOnBlockKitFailure(t *testing.T) {
 	})
 	require.NoError(t, err)
 
+	// Multi-question form: the form post fails, text rendering lands.
+	err = a.postHitlPrompt(t.Context(), a.apiClient(), "C1", "T1", &channels.OutboundDelta{
+		Prompt: &channels.HitlPrompt{
+			ToolName: channels.AskUserToolName,
+			Questions: []channels.HitlQuestion{
+				{Question: "Database?", Choices: []string{"PostgreSQL", "MySQL"}},
+				{Question: "Cache?", Choices: []string{"Redis", "None"}},
+			},
+		},
+	})
+	require.NoError(t, err)
+
 	mu.Lock()
 	defer mu.Unlock()
-	require.Len(t, plainTexts, 2)
+	require.Len(t, plainTexts, 3)
 	require.Contains(t, plainTexts[0], "Run kubectl delete?")
 	require.Contains(t, plainTexts[0], "approve")
 	require.Contains(t, plainTexts[1], "Reply in this thread")
+	require.Contains(t, plainTexts[2], "Database?")
+	require.Contains(t, plainTexts[2], "one line per question")
 }

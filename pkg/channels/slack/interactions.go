@@ -204,9 +204,11 @@ func (a *Adapter) routeInteraction(ctx context.Context, payload interactionPaylo
 		return
 	}
 
-	// The threadID is in the button value. Choice buttons encode it as JSON;
-	// approve/deny/submit buttons carry it raw.
-	threadID := action.Value
+	// The button value carries the thread (routing) and the task the prompt
+	// renders (staleness check). Choice buttons add the choice index.
+	hv := decodeHitlValue(action.Value)
+	threadID := hv.Thread
+	act.taskID = hv.Task
 	switch act.kind {
 	case hitlChoice:
 		cv, ok := decodeChoiceValue(action.Value)
@@ -214,6 +216,7 @@ func (a *Adapter) routeInteraction(ctx context.Context, payload interactionPaylo
 			return
 		}
 		threadID = cv.Thread
+		act.taskID = cv.Task
 		act.choice = cv
 	case hitlSubmit:
 		// choices is the flat selection across every widget (used for the
@@ -233,6 +236,7 @@ func (a *Adapter) routeInteraction(ctx context.Context, payload interactionPaylo
 // hitlAction is a decoded Block Kit button click.
 type hitlAction struct {
 	kind    string // hitlApprove, hitlDeny, hitlChat, hitlChoice, or hitlSubmit
+	taskID  string // task the clicked prompt renders; "" on legacy buttons (no check)
 	choice  choiceValue
 	choices []int         // selected choice indices, for a single-question hitlSubmit
 	answers map[int][]int // selected choice indices per question, for a multi-question form hitlSubmit
@@ -383,6 +387,16 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 	if pending == nil {
 		// Nothing pending (already answered). Still tidy up the buttons.
 		_ = client.chatUpdateBlocks(ctx, slackChannel, messageTS, "_Already answered._")
+		return nil
+	}
+
+	// A click routes to the thread's CURRENT pending task, but the clicked
+	// message may render an earlier prompt (its task was resumed another way
+	// and the thread paused again on a new one). Selections are raw indices,
+	// so answering the newer prompt with them would deliver choices the user
+	// never saw. Refuse the stale message and leave the pending task intact.
+	if act.taskID != "" && act.taskID != pending.TaskID {
+		_ = client.chatUpdateBlocks(ctx, slackChannel, messageTS, promptSupersededNotice)
 		return nil
 	}
 

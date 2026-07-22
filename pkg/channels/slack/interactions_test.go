@@ -1394,3 +1394,96 @@ func TestRecordSignInAnchorRePromptOverwrites(t *testing.T) {
 	a.recordSignInAnchor("U1", "T1", signInAnchor{channel: "C1", ts: "2.2"})
 	require.Equal(t, []signInAnchor{{channel: "C1", ts: "2.2", threadID: "T1"}}, a.takeSignInAnchors("U1"))
 }
+
+// A click on a prompt message whose task was already resumed (the thread
+// paused again on a different prompt) must be refused as superseded: its raw
+// selection indices would otherwise map onto the newer prompt's choices and
+// deliver answers the user never saw.
+func TestHandleDecision_StaleSubmitRefusedAsSuperseded(t *testing.T) {
+	const secret = "test-secret"
+	srv, sink := newIxSlackServer(t)
+
+	gw := &fakeGateway{}
+	a := &Adapter{
+		APIBase:      srv.URL,
+		Secrets:      Secrets{BotToken: "test-bot-token", SigningSecret: secret}, //nolint:gosec
+		DefaultAgent: "worker",
+	}
+	require.NoError(t, a.Start(t.Context(), gw))
+
+	a.accessPolicy().SetInitiator("T001", "U001")
+	// The thread's CURRENT pending prompt (task-B): one question, choices x/y.
+	a.storePendingTask("T001", &pendingTask{
+		TaskID:    "task-B",
+		AgentRef:  "worker",
+		Channel:   "C001",
+		ChannelID: "C001",
+		Prompt: &channels.HitlPrompt{
+			ToolName:  channels.AskUserToolName,
+			Questions: []channels.HitlQuestion{{Question: "Proceed how?", Choices: []string{"x-fast", "y-safe"}}},
+		},
+	})
+
+	// Submit clicked on the OLD form message rendered for task-A, with an
+	// in-range selection that would resolve against task-B's choices.
+	inner := map[string]any{
+		"type":      "block_actions",
+		"user":      map[string]any{"id": "U001"},
+		"channel":   map[string]any{"id": "C001"},
+		"container": map[string]any{"message_ts": "MSG-OLD-FORM"},
+		"message":   map[string]any{"thread_ts": "T001"},
+		"actions":   []any{map[string]any{"action_id": hitlSubmit, "value": encodeHitlValue("T001", "task-A")}},
+		"state": map[string]any{"values": map[string]any{
+			hitlQGroupPrefix + "_0": map[string]any{hitlGroup: map[string]any{
+				"selected_option": map[string]any{"value": "0"},
+			}},
+		}},
+	}
+	data, err := json.Marshal(inner)
+	require.NoError(t, err)
+	body := []byte("payload=" + url.QueryEscape(string(data)))
+	req := httptest.NewRequest(http.MethodPost, "/channels/slack/interactions", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	signRequest(t, req, body, secret)
+	rr := httptest.NewRecorder()
+	a.ixHandler.ServeHTTP(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code)
+
+	require.Eventually(t, func() bool {
+		for _, text := range sink.updateTexts() {
+			if strings.Contains(text, "superseded") {
+				return true
+			}
+		}
+		return false
+	}, 2*time.Second, 10*time.Millisecond, "the stale prompt message is rewritten as superseded")
+	require.Zero(t, gw.sendCount(), "a stale click must not resume the newer pending task")
+	require.True(t, a.hasPendingTask("T001"), "the pending task stays resumable")
+}
+
+// A legacy button value (raw threadID, no task binding) still routes: the
+// staleness check is skipped, not failed closed, so buttons posted by older
+// gateway versions keep working across a deploy.
+func TestHandleDecision_LegacyRawValueStillRoutes(t *testing.T) {
+	const secret = "test-secret"
+	srv, _ := newIxSlackServer(t)
+
+	gw := &fakeGateway{}
+	a := &Adapter{
+		APIBase:      srv.URL,
+		Secrets:      Secrets{BotToken: "test-bot-token", SigningSecret: secret}, //nolint:gosec
+		DefaultAgent: "worker",
+	}
+	require.NoError(t, a.Start(t.Context(), gw))
+
+	a.accessPolicy().SetInitiator("T001", "U001")
+	a.storePendingTask("T001", &pendingTask{
+		TaskID: "task-abc", AgentRef: "worker", Channel: "C001", ChannelID: "C001",
+	})
+
+	serveInteraction(t, a, secret, hitlApprove, "T001", "C001", "MSG001", "U001")
+
+	require.Eventually(t, func() bool { return gw.sendCount() == 1 },
+		2*time.Second, 10*time.Millisecond, "the legacy approve click resumes the task")
+	require.Equal(t, "task-abc", gw.lastCompletion().TaskID)
+}

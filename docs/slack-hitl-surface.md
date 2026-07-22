@@ -36,7 +36,9 @@ may decide; an onlooker click is refused ephemerally.
 
 The agent paused on a tool call that needs approval (`ToolName` is not `ask_user`). Approve
 runs the call, Deny rejects it, Chat holds the task and swaps in a reply hint so the user can
-ask a follow-up before deciding. `value` is the raw thread timestamp.
+ask a follow-up before deciding. `value` is the JSON `{"t":"<thread>","id":"<task>"}`;
+the task binds the buttons to the prompt they render, so a click on a superseded
+prompt is refused instead of answering a newer one.
 
 ```json
 {
@@ -48,9 +50,9 @@ ask a follow-up before deciding. `value` is the raw thread timestamp.
     {
       "type": "actions",
       "elements": [
-        { "type": "button", "text": { "type": "plain_text", "text": "✅ Approve" }, "style": "primary", "action_id": "hitl_approve", "value": "THREAD_TS" },
-        { "type": "button", "text": { "type": "plain_text", "text": "❌ Deny" }, "style": "danger", "action_id": "hitl_deny", "value": "THREAD_TS" },
-        { "type": "button", "text": { "type": "plain_text", "text": "💬 Chat" }, "action_id": "hitl_chat", "value": "THREAD_TS" }
+        { "type": "button", "text": { "type": "plain_text", "text": "✅ Approve" }, "style": "primary", "action_id": "hitl_approve", "value": "{\"t\":\"THREAD_TS\",\"id\":\"TASK_ID\"}" },
+        { "type": "button", "text": { "type": "plain_text", "text": "❌ Deny" }, "style": "danger", "action_id": "hitl_deny", "value": "{\"t\":\"THREAD_TS\",\"id\":\"TASK_ID\"}" },
+        { "type": "button", "text": { "type": "plain_text", "text": "💬 Chat" }, "action_id": "hitl_chat", "value": "{\"t\":\"THREAD_TS\",\"id\":\"TASK_ID\"}" }
       ]
     }
   ]
@@ -86,7 +88,7 @@ the Submit reads the selection out of `state.values`.
     {
       "type": "actions",
       "elements": [
-        { "type": "button", "text": { "type": "plain_text", "text": "Submit" }, "style": "primary", "action_id": "hitl_submit", "value": "THREAD_TS" }
+        { "type": "button", "text": { "type": "plain_text", "text": "Submit" }, "style": "primary", "action_id": "hitl_submit", "value": "{\"t\":\"THREAD_TS\",\"id\":\"TASK_ID\"}" }
       ]
     }
   ]
@@ -122,7 +124,7 @@ can be selected before Submit.
     {
       "type": "actions",
       "elements": [
-        { "type": "button", "text": { "type": "plain_text", "text": "Submit" }, "style": "primary", "action_id": "hitl_submit", "value": "THREAD_TS" }
+        { "type": "button", "text": { "type": "plain_text", "text": "Submit" }, "style": "primary", "action_id": "hitl_submit", "value": "{\"t\":\"THREAD_TS\",\"id\":\"TASK_ID\"}" }
       ]
     }
   ]
@@ -136,7 +138,7 @@ can be selected before Submit.
 When a choice label exceeds 75 runes it can't fit a widget option, so each choice becomes a
 section carrying the full label (up to 3000 chars) with an accessory **button**. One choice
 per row is unambiguous, so a click commits immediately — no Submit. Each button's `action_id`
-is `hitl_choice_<index>` and its `value` is the JSON `{"t":"<thread>","c":<index>}`.
+is `hitl_choice_<index>` and its `value` is the JSON `{"t":"<thread>","c":<index>,"id":"<task>"}`.
 
 ```json
 {
@@ -145,12 +147,12 @@ is `hitl_choice_<index>` and its `value` is the JSON `{"t":"<thread>","c":<index
     {
       "type": "section",
       "text": { "type": "mrkdwn", "text": "Blue/green: stand up a parallel cluster, cut over DNS once healthy, keep the old one for fast rollback." },
-      "accessory": { "type": "button", "text": { "type": "plain_text", "text": "Select" }, "action_id": "hitl_choice_0", "value": "{\"t\":\"THREAD_TS\",\"c\":0}" }
+      "accessory": { "type": "button", "text": { "type": "plain_text", "text": "Select" }, "action_id": "hitl_choice_0", "value": "{\"t\":\"THREAD_TS\",\"c\":0,\"id\":\"TASK_ID\"}" }
     },
     {
       "type": "section",
       "text": { "type": "mrkdwn", "text": "In-place: drain and upgrade nodes one at a time; lower cost, longer window, no parallel capacity." },
-      "accessory": { "type": "button", "text": { "type": "plain_text", "text": "Select" }, "action_id": "hitl_choice_1", "value": "{\"t\":\"THREAD_TS\",\"c\":1}" }
+      "accessory": { "type": "button", "text": { "type": "plain_text", "text": "Select" }, "action_id": "hitl_choice_1", "value": "{\"t\":\"THREAD_TS\",\"c\":1,\"id\":\"TASK_ID\"}" }
     }
   ]
 }
@@ -183,7 +185,7 @@ by a Submit that gathers the selected rows.
     {
       "type": "actions",
       "elements": [
-        { "type": "button", "text": { "type": "plain_text", "text": "Submit" }, "style": "primary", "action_id": "hitl_submit", "value": "THREAD_TS" }
+        { "type": "button", "text": { "type": "plain_text", "text": "Submit" }, "style": "primary", "action_id": "hitl_submit", "value": "{\"t\":\"THREAD_TS\",\"id\":\"TASK_ID\"}" }
       ]
     }
   ]
@@ -238,7 +240,7 @@ wrapping each question is added by the gateway.
     {
       "type": "actions",
       "elements": [
-        { "type": "button", "text": { "type": "plain_text", "text": "Submit" }, "style": "primary", "action_id": "hitl_submit", "value": "THREAD_TS" }
+        { "type": "button", "text": { "type": "plain_text", "text": "Submit" }, "style": "primary", "action_id": "hitl_submit", "value": "{\"t\":\"THREAD_TS\",\"id\":\"TASK_ID\"}" }
       ]
     }
   ]

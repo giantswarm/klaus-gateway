@@ -302,7 +302,7 @@ func TestPostApprovalPrompt_EscapesMrkdwn(t *testing.T) {
 	defer srv.Close()
 
 	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
-	require.NoError(t, client.postApprovalPrompt(t.Context(), "C1", "T1", "run <!channel> now?"))
+	require.NoError(t, client.postApprovalPrompt(t.Context(), "C1", "T1", "task-1", "run <!channel> now?"))
 	raw, _ := body.Load().(string)
 	var payload struct {
 		Text string `json:"text"`
@@ -376,7 +376,7 @@ func TestPostChoiceWidgetPrompt_EscapesQuestion(t *testing.T) {
 	defer srv.Close()
 
 	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
-	require.NoError(t, client.postChoiceWidgetPrompt(t.Context(), "C1", "T1", "notify <!here>?", []string{"yes", "no"}, false))
+	require.NoError(t, client.postChoiceWidgetPrompt(t.Context(), "C1", "T1", "task-1", "notify <!here>?", []string{"yes", "no"}, false))
 	raw, _ := body.Load().(string)
 	var payload struct {
 		Text string `json:"text"`
@@ -435,7 +435,7 @@ func TestPostChoiceWidgetPrompt_SingleUsesRadioMultiUsesCheckbox(t *testing.T) {
 
 			client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
 			choices := []string{"alpha", "beta", "gamma"}
-			require.NoError(t, client.postChoiceWidgetPrompt(t.Context(), "C1", "T1", "pick", choices, tc.multiple))
+			require.NoError(t, client.postChoiceWidgetPrompt(t.Context(), "C1", "T1", "task-1", "pick", choices, tc.multiple))
 
 			p := decodeChoicePayload(t, body.Load().(string))
 			var group, submit bool
@@ -482,7 +482,7 @@ func TestPostChoiceFormPrompt_PerQuestionBlocks(t *testing.T) {
 		{Question: "Database?", Choices: []string{"PostgreSQL", "MySQL"}},
 		{Question: "Features?", Multiple: true, Choices: []string{"Auth", "Logging", "Caching"}},
 	}
-	require.NoError(t, client.postChoiceFormPrompt(t.Context(), "C1", "T1", questions))
+	require.NoError(t, client.postChoiceFormPrompt(t.Context(), "C1", "T1", "task-1", questions))
 
 	p := decodeChoicePayload(t, body.Load().(string))
 	want := map[string]struct {
@@ -528,7 +528,7 @@ func TestPostChoiceWidgetPrompt_TruncatesOversizedQuestion(t *testing.T) {
 
 	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
 	oversized := strings.Repeat("q", 5000)
-	require.NoError(t, client.postChoiceWidgetPrompt(t.Context(), "C1", "T1", oversized, []string{"yes"}, false))
+	require.NoError(t, client.postChoiceWidgetPrompt(t.Context(), "C1", "T1", "task-1", oversized, []string{"yes"}, false))
 
 	raw, _ := body.Load().(string)
 	var payload sectionPayload
@@ -553,7 +553,7 @@ func TestPostChoiceSectionPrompt_DoesNotTruncateLongChoice(t *testing.T) {
 
 	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
 	long := strings.Repeat("a", choiceLabelWidgetMax+50) // > 75 runes, < 3000
-	require.NoError(t, client.postChoiceSectionPrompt(t.Context(), "C1", "T1", "pick", []string{long, "short"}, false))
+	require.NoError(t, client.postChoiceSectionPrompt(t.Context(), "C1", "T1", "task-1", "pick", []string{long, "short"}, false))
 
 	p := decodeChoicePayload(t, body.Load().(string))
 	var found bool
@@ -593,7 +593,7 @@ func TestPostApprovalPrompt_TruncatesOversizedSection(t *testing.T) {
 
 	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
 	oversized := strings.Repeat("日", 5000)
-	require.NoError(t, client.postApprovalPrompt(t.Context(), "C1", "T1", oversized))
+	require.NoError(t, client.postApprovalPrompt(t.Context(), "C1", "T1", "task-1", oversized))
 
 	raw, _ := body.Load().(string)
 	var payload sectionPayload

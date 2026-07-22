@@ -144,6 +144,11 @@ const accessDecisionRefusal = "_Only the thread owner (and people they've allowe
 // ask_user choice widget without selecting anything; the task stays pending.
 const choiceSelectNudge = "_Pick at least one option, then click Submit._"
 
+// promptSupersededNotice replaces a prompt message whose button was clicked
+// after its task was already resumed and the thread paused on a newer prompt,
+// so the click cannot deliver answers the user never saw.
+const promptSupersededNotice = "_This prompt was superseded; please answer the latest one in this thread._"
+
 // formIncompleteNudge is shown (ephemerally) when a user clicks Submit on a
 // multi-question ask_user form with a question still unanswered; the form stays
 // pending so the user can complete it and submit again.
