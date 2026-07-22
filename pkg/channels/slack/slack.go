@@ -331,6 +331,15 @@ func (a *Adapter) Start(ctx context.Context, gw channels.Gateway) error {
 	if a.DefaultAgent == "" {
 		return errors.New("slack: DefaultAgent must be set")
 	}
+	// Agent selection needs a namespace-qualified default: bare-name selections
+	// complete with the default's namespace, and the roster renders selectors
+	// relative to it. With a bare default, the default route and an explicit
+	// selection of the same agent would produce two different refs — and two
+	// different sessions. Refuse at boot instead of leaving the incoherence
+	// latent. Bare refs stay valid for roster-less setups (the compose harness).
+	if a.Roster != nil && a.defaultAgentNamespace() == "" {
+		return fmt.Errorf("slack: agent selection (Roster) requires a namespace-qualified DefaultAgent (namespace/name), got %q", a.DefaultAgent)
+	}
 	switch a.DMMode {
 	case "", DMModeServe, DMModeRedirect, DMModeIgnore:
 	default:

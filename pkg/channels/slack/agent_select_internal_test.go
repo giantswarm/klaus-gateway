@@ -123,6 +123,8 @@ func TestOpeningAgentRef(t *testing.T) {
 
 	require.Equal(t, "kagent/sre-agent", a.openingAgentRef("<@UBOT> /agent sre-agent why?"))
 	require.Equal(t, "kagent/sre-agent", a.openingAgentRef("/agent sre-agent why?"))
+	// Same splitter as the live selection: a quoted name recovers identically.
+	require.Equal(t, "kagent/sre-agent", a.openingAgentRef(`/agent "sre-agent" why?`))
 	require.Empty(t, a.openingAgentRef("<@UBOT> plain question"))
 	require.Empty(t, a.openingAgentRef("/agent sre-agent"), "a name-only opener selected nothing")
 	require.Empty(t, a.openingAgentRef("/agent ../../etc oops"), "a malformed name binds nothing")
