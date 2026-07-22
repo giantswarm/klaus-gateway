@@ -172,8 +172,8 @@ still running gets a brief "still working" notice rather than starting an overla
 - **Launch announcement.** A new channel thread opens with a short Swarmgeist hand-off notice
   before the agent takes over.
 - **Sign-in prompt.** An unlinked user's first message is answered with a "Sign in to Giant
-  Swarm" message posted as a threaded reply (in channels it anchors the conversation thread;
-  in a DM it lands in the Slack Assistant pane). Once the link completes the same message is
+  Swarm" message posted as a threaded reply, addressed to that user (in channels it anchors
+  the conversation thread; in a DM it lands in the Slack Assistant pane). Once the link completes the same message is
   updated in place to the signed-in confirmation, with the agent hand-off folded in when a
   held message is about to replay. The sign-in link is per-user and the callback verifies the
   OAuth identity's email against the Slack profile email, so a prompt visible to the whole

@@ -648,7 +648,7 @@ func (a *Adapter) postSignIn(ctx context.Context, slackChannel, threadID, slackU
 		a.clearSignInReservation(slackUser, threadID)
 		return
 	}
-	ts, err := a.apiClient().postSignInPrompt(ctx, slackChannel, threadID, url)
+	ts, err := a.apiClient().postSignInPrompt(ctx, slackChannel, threadID, slackUser, url)
 	if err != nil {
 		a.Logger.Warn("slack: post sign-in prompt failed", "user", slackUser, "error", err)
 		a.clearSignInReservation(slackUser, threadID)

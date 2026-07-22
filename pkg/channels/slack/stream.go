@@ -775,9 +775,15 @@ func (c *slackAPIClient) postChoicePrompt(ctx context.Context, channel, threadID
 // surfaced by Slack), in an assistant DM only thread replies render in the
 // assistant pane, and the returned ts lets the prompt be rewritten in place
 // once the link completes.
-func (c *slackAPIClient) postSignInPrompt(ctx context.Context, channel, threadID, linkURL string) (string, error) {
-	const text = "Sign in to Giant Swarm so I can act as you. " +
+func (c *slackAPIClient) postSignInPrompt(ctx context.Context, channel, threadID, user, linkURL string) (string, error) {
+	// The prompt is a public thread message and its link is minted for one
+	// user: address it, or a bystander clicks a button bound to someone else's
+	// identity and lands on the email-mismatch page.
+	text := "Sign in to Giant Swarm so I can act as you. " +
 		"Until you do, I can't run tools on your behalf."
+	if user != "" {
+		text = "<@" + user + "> " + text
+	}
 	body := map[string]any{
 		paramChannel: channel,
 		paramText:    text,

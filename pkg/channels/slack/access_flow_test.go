@@ -76,6 +76,11 @@ func TestAccess_UnlinkedNewcomerPromptedToSignIn(t *testing.T) {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Sign in to Giant Swarm")
 	}, 2*time.Second, 50*time.Millisecond, "the newcomer is prompted to sign in")
 	require.Equal(t, 1, gw.resolveCount(), "an unlinked newcomer must not reach the agent")
+	// The prompt is public and its link is minted for the newcomer: it must
+	// name them, or a bystander clicks a button bound to someone else's
+	// identity and lands on the email-mismatch page.
+	require.Contains(t, allText(fake.pathCalls("chat.postMessage")), "<@U999>",
+		"the sign-in prompt must address its target user")
 }
 
 // A known newcomer is held pending the initiator's consent; on Yes their held
