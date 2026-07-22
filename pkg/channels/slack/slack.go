@@ -1158,11 +1158,15 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 	if !ok {
 		return
 	}
-	if a.seenMessage(inner.Channel, msg.MessageID) {
-		a.Logger.Info("slack: dropping duplicate message delivery", "channel", inner.Channel, "ts", msg.MessageID)
+	// The inactive-thread gate runs before the dedup claim: a mention in a
+	// thread arrives as both a message and an app_mention event, and when the
+	// message copy lands first, having it claim the dedup slot on its way to
+	// being gate-dropped would discard the app_mention copy as a duplicate.
+	if threadReplyOnly && !a.isActiveThread(msg.ThreadID) {
 		return
 	}
-	if threadReplyOnly && !a.isActiveThread(msg.ThreadID) {
+	if a.seenMessage(inner.Channel, msg.MessageID) {
+		a.Logger.Info("slack: dropping duplicate message delivery", "channel", inner.Channel, "ts", msg.MessageID)
 		return
 	}
 	a.seedInitiatorFromRoot(ctx, inner.Channel, msg.ThreadID, msg.MessageID)

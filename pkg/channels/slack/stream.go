@@ -112,7 +112,7 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 
 		case d, ok := <-ch:
 			if !ok {
-				return w.flush(ctx)
+				return w.finalFlush(ctx)
 			}
 			if d.Usage != nil {
 				// kagent reports usage per LLM call, so sum across the turn for
@@ -125,13 +125,13 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 				// Flush text buffered since the last tick before surfacing the
 				// error, so wroteContent reflects all delivered content and the
 				// failure note posts as a new message instead of overwriting it.
-				if ferr := w.flush(ctx); ferr != nil {
+				if ferr := w.finalFlush(ctx); ferr != nil {
 					w.logger.Warn("slack: flush before failure note failed", "error", ferr)
 				}
 				return d.Err
 			}
 			if d.Done {
-				return w.flush(ctx)
+				return w.finalFlush(ctx)
 			}
 			switch d.Kind {
 			case channels.DeltaText:
@@ -147,7 +147,7 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 			case channels.DeltaPrompt:
 				// Flush partial text so far, then hand off to the caller to post
 				// the interactive approval prompt.
-				if err := w.flush(ctx); err != nil {
+				if err := w.finalFlush(ctx); err != nil {
 					return err
 				}
 				w.mu.Lock()
@@ -178,6 +178,29 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 // aborted. One transient Slack error must not kill a healthy stream; a Slack
 // outage should not keep a doomed turn's thread slot busy either.
 const maxFlushFailures = 3
+
+// finalFlush retries a terminal flush (stream done, error, or prompt handoff)
+// up to maxFlushFailures attempts. No later tick will re-send the buffered
+// tail, so a single transient Slack error here would discard it even though
+// the turn completed server-side; a short reply that never hits a ticker
+// flush would otherwise be killable by one such error.
+func (w *batchedWriter) finalFlush(ctx context.Context) error {
+	var err error
+	for attempt := 1; ; attempt++ {
+		if err = w.flush(ctx); err == nil {
+			return nil
+		}
+		if attempt >= maxFlushFailures || ctx.Err() != nil {
+			return err
+		}
+		w.logger.Warn("slack: final flush failed, retrying", "attempt", attempt, "error", err)
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(batchInterval):
+		}
+	}
+}
 
 // tool-activity rendering caps, kept compact so a default-on stream does not
 // overwhelm the thread; Slack additionally collapses long code blocks.
