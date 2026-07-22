@@ -48,6 +48,39 @@ func TestChooseChoiceRender(t *testing.T) {
 	}
 }
 
+func TestFormRenderable(t *testing.T) {
+	q := func(multiple bool, choices ...string) channels.HitlQuestion {
+		return channels.HitlQuestion{Question: "q?", Multiple: multiple, Choices: choices}
+	}
+	longLabel := strings.Repeat("a", choiceLabelWidgetMax+1)
+	manyChoices := make([]string, maxChoiceOptions+1)
+	for i := range manyChoices {
+		manyChoices[i] = "x"
+	}
+	manyQuestions := make([]channels.HitlQuestion, maxFormQuestions+1)
+	for i := range manyQuestions {
+		manyQuestions[i] = q(false, "a", "b")
+	}
+
+	for _, tc := range []struct {
+		name string
+		qs   []channels.HitlQuestion
+		want bool
+	}{
+		{"two widgetable questions", []channels.HitlQuestion{q(false, "a", "b"), q(true, "c", "d")}, true},
+		{"single question is not a form", []channels.HitlQuestion{q(false, "a", "b")}, false},
+		{"a free-text question blocks the form", []channels.HitlQuestion{q(false, "a", "b"), q(false)}, false},
+		{"an over-long label blocks the form", []channels.HitlQuestion{q(false, "a"), q(false, longLabel)}, false},
+		{"an over-count question blocks the form", []channels.HitlQuestion{q(false, "a", "b"), q(false, manyChoices...)}, false},
+		{"too many questions falls back to text", manyQuestions, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &channels.HitlPrompt{ToolName: channels.AskUserToolName, Questions: tc.qs}
+			require.Equal(t, tc.want, formRenderable(p))
+		})
+	}
+}
+
 func askUserPrompt(multiple bool, choices ...string) *channels.HitlPrompt {
 	return &channels.HitlPrompt{
 		ToolName:  channels.AskUserToolName,
@@ -117,6 +150,25 @@ func TestBuildButtonDecision_Submit(t *testing.T) {
 	require.Contains(t, display, "Auth, Caching")
 }
 
+func TestBuildButtonDecision_SubmitForm(t *testing.T) {
+	prompt := &channels.HitlPrompt{
+		ToolName: channels.AskUserToolName,
+		Questions: []channels.HitlQuestion{
+			{Question: "Database?", Choices: []string{"PostgreSQL", "MySQL"}},
+			{Question: "Features?", Multiple: true, Choices: []string{"Auth", "Logging", "Caching"}},
+		},
+	}
+	act := hitlAction{kind: hitlSubmit, answers: map[int][]int{0: {1}, 1: {0, 2}}}
+
+	decision, resume, display := buildButtonDecision(act, prompt)
+	require.Equal(t, channels.DecisionApprove, decision.Type)
+	require.Equal(t, [][]string{{"MySQL"}, {"Auth", "Caching"}}, decision.AskUserAnswers)
+	require.Equal(t, "MySQL; Auth, Caching", resume)
+	require.Contains(t, display, "Database?")
+	require.Contains(t, display, "MySQL")
+	require.Contains(t, display, "Auth, Caching")
+}
+
 func TestBuildButtonDecision_ApproveDeny(t *testing.T) {
 	approve, _, _ := buildButtonDecision(hitlAction{kind: hitlApprove}, nil)
 	require.Equal(t, channels.DecisionApprove, approve.Type)
@@ -126,10 +178,10 @@ func TestBuildButtonDecision_ApproveDeny(t *testing.T) {
 }
 
 func TestChoiceValueRoundTrip(t *testing.T) {
-	v := encodeChoiceValue("1700.0001", 3)
+	v := encodeChoiceValue("1700.0001", "task-1", 3)
 	got, ok := decodeChoiceValue(v)
 	require.True(t, ok)
-	require.Equal(t, choiceValue{Thread: "1700.0001", Choice: 3}, got)
+	require.Equal(t, choiceValue{Thread: "1700.0001", Choice: 3, Task: "task-1"}, got)
 
 	_, ok = decodeChoiceValue("not json")
 	require.False(t, ok)
@@ -176,10 +228,24 @@ func TestPostHitlPrompt_FallsBackToTextOnBlockKitFailure(t *testing.T) {
 	})
 	require.NoError(t, err)
 
+	// Multi-question form: the form post fails, text rendering lands.
+	err = a.postHitlPrompt(t.Context(), a.apiClient(), "C1", "T1", &channels.OutboundDelta{
+		Prompt: &channels.HitlPrompt{
+			ToolName: channels.AskUserToolName,
+			Questions: []channels.HitlQuestion{
+				{Question: "Database?", Choices: []string{"PostgreSQL", "MySQL"}},
+				{Question: "Cache?", Choices: []string{"Redis", "None"}},
+			},
+		},
+	})
+	require.NoError(t, err)
+
 	mu.Lock()
 	defer mu.Unlock()
-	require.Len(t, plainTexts, 2)
+	require.Len(t, plainTexts, 3)
 	require.Contains(t, plainTexts[0], "Run kubectl delete?")
 	require.Contains(t, plainTexts[0], "approve")
 	require.Contains(t, plainTexts[1], "Reply in this thread")
+	require.Contains(t, plainTexts[2], "Database?")
+	require.Contains(t, plainTexts[2], "one line per question")
 }
