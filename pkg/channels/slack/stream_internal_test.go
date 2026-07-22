@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -448,7 +449,7 @@ func TestRespondURL_ErrorsOnNonSuccessStatus(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	err := respondURL(t.Context(), srv.URL, "updated")
+	err := respondURL(t.Context(), srv.URL, "", "updated")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "http status 500")
 }
@@ -459,7 +460,34 @@ func TestRespondURL_SucceedsOn2xx(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	require.NoError(t, respondURL(t.Context(), srv.URL, "updated"))
+	require.NoError(t, respondURL(t.Context(), srv.URL, "", "updated"))
+}
+
+// A replacement of a thread-scoped ephemeral must carry the source thread_ts,
+// or Slack renders it at channel top level as well as in the thread.
+func TestRespondURL_CarriesThreadTS(t *testing.T) {
+	var mu sync.Mutex
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var v map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&v)
+		mu.Lock()
+		got = v
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	body := func() map[string]any { mu.Lock(); defer mu.Unlock(); return got }
+
+	require.NoError(t, respondURL(t.Context(), srv.URL, "100.000", "✅ allowed"))
+	require.Equal(t, "100.000", body()["thread_ts"])
+	require.Equal(t, true, body()["replace_original"])
+	require.Equal(t, "ephemeral", body()["response_type"])
+
+	// Without a thread the field stays absent (a top-level ephemeral).
+	require.NoError(t, respondURL(t.Context(), srv.URL, "", "✅ allowed"))
+	_, hasThread := body()["thread_ts"]
+	require.False(t, hasThread)
 }
 
 func TestThreadInitiator_ReturnsFirstHumanAuthor(t *testing.T) {

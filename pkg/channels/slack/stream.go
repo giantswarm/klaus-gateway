@@ -302,8 +302,8 @@ func (w *batchedWriter) maybeConnectorPrompt(tool *channels.ToolActivity) {
 	if server == "" {
 		server = "the requested tools"
 	}
-	if !w.adapter.markConnectorPrompted(w.slackUser, server) {
-		w.logger.Debug("slack: connector prompt skipped, cooldown active", "user", w.slackUser, "server", server)
+	if !w.adapter.markConnectorPrompted(w.slackUser, server, loginURL) {
+		w.logger.Debug("slack: connector prompt skipped, cooldown active and URL unchanged", "user", w.slackUser, "server", server)
 		return
 	}
 	go func() {
@@ -1036,14 +1036,22 @@ var interactionHTTPClient = &http.Client{Timeout: 10 * time.Second}
 // messages have no addressable ts for chat.update, so the access-consent prompt
 // is updated this way after a click. The response_url is unauthenticated and
 // short-lived; a failure is non-fatal (the decision has already been recorded).
-func respondURL(ctx context.Context, responseURL, text string) error {
+func respondURL(ctx context.Context, responseURL, threadTS, text string) error {
 	if responseURL == "" {
 		return nil
 	}
-	body, err := json.Marshal(map[string]any{
+	payload := map[string]any{
 		"replace_original": true,
+		"response_type":    "ephemeral",
 		paramText:          text,
-	})
+	}
+	// A response_url replacement of a thread-scoped ephemeral must carry the
+	// thread_ts of the source, or Slack renders the replacement at channel
+	// top level as well as in the thread.
+	if threadTS != "" {
+		payload[paramThreadTS] = threadTS
+	}
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("slack respond_url: marshal: %w", err)
 	}

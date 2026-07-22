@@ -219,11 +219,20 @@ type Adapter struct {
 	modelMu    sync.Mutex
 	modelCache map[string]modelEntry // agentRef -> cached model label
 
-	// connectorMu guards connectorPrompted: when the connect prompt last posted
-	// per (user, backend), bounding re-prompts for a backend the user neither
-	// connects nor dismisses.
+	// connectorMu guards connectorPrompted: the last connect prompt per
+	// (user, backend), bounding re-prompts for a backend the user neither
+	// connects nor dismisses. Each record keeps the surfaced login URL: a new
+	// challenge mints a new single-use URL and invalidates the old one, so a
+	// changed URL must bypass the cooldown or the only visible button is dead.
 	connectorMu       sync.Mutex
-	connectorPrompted map[string]map[string]time.Time
+	connectorPrompted map[string]map[string]connectorPromptRecord
+}
+
+// connectorPromptRecord is the last connect prompt surfaced for a
+// (user, backend): when it posted and which login URL its button carries.
+type connectorPromptRecord struct {
+	at  time.Time
+	url string
 }
 
 // emailEntry is a cached Slack user email with its expiry.
@@ -699,22 +708,26 @@ func (a *Adapter) recordSignInAnchor(slackUser, threadID string, anchor signInAn
 }
 
 // markConnectorPrompted records a prompt attempt for (user, server) and
-// reports whether one is allowed now (outside the cooldown). Check and set
-// are atomic so concurrent turns post at most one prompt.
-func (a *Adapter) markConnectorPrompted(slackUser, server string) bool {
+// reports whether one is allowed now: outside the cooldown, or carrying a
+// login URL different from the last surfaced button (the auth server issued
+// a new single-use URL, so the posted button is dead and must be superseded).
+// Check and set are atomic so concurrent turns post at most one prompt per
+// URL.
+func (a *Adapter) markConnectorPrompted(slackUser, server, loginURL string) bool {
 	now := time.Now()
 	a.connectorMu.Lock()
 	defer a.connectorMu.Unlock()
-	if last, ok := a.connectorPrompted[slackUser][server]; ok && now.Sub(last) < connectorPromptCooldown {
+	if last, ok := a.connectorPrompted[slackUser][server]; ok &&
+		now.Sub(last.at) < connectorPromptCooldown && last.url == loginURL {
 		return false
 	}
 	if a.connectorPrompted == nil {
-		a.connectorPrompted = make(map[string]map[string]time.Time)
+		a.connectorPrompted = make(map[string]map[string]connectorPromptRecord)
 	}
 	if a.connectorPrompted[slackUser] == nil {
-		a.connectorPrompted[slackUser] = make(map[string]time.Time)
+		a.connectorPrompted[slackUser] = make(map[string]connectorPromptRecord)
 	}
-	a.connectorPrompted[slackUser][server] = now
+	a.connectorPrompted[slackUser][server] = connectorPromptRecord{at: now, url: loginURL}
 	return true
 }
 

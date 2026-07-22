@@ -99,7 +99,7 @@ func (a *Adapter) routeInteraction(ctx context.Context, payload interactionPaylo
 		// needs no handling beyond the ack.
 		return
 	case connectorDismiss:
-		a.handleConnectorDismiss(ctx, payload.User.ID, action.Value, payload.ResponseURL)
+		a.handleConnectorDismiss(ctx, payload.User.ID, action.Value, payload.Message.ThreadTS, payload.ResponseURL)
 		return
 	case connectorConnect:
 		// URL button: the browser opens the consent flow itself, so there is
@@ -177,12 +177,12 @@ func validConnectorName(server string) bool {
 // handleConnectorDismiss acknowledges a "Not now" click and replaces the
 // ephemeral prompt. The prompt cooldown already suppresses re-prompts for the
 // backend, so no state is cleared here.
-func (a *Adapter) handleConnectorDismiss(ctx context.Context, slackUser, server, responseURL string) {
+func (a *Adapter) handleConnectorDismiss(ctx context.Context, slackUser, server, threadTS, responseURL string) {
 	if !validConnectorName(server) {
 		return
 	}
 	text := "_Okay, I won't ask again for a while._"
-	if err := respondURL(ctx, responseURL, text); err != nil {
+	if err := respondURL(ctx, responseURL, threadTS, text); err != nil {
 		a.Logger.Warn("slack: update connector prompt (dismissed) failed", "user", slackUser, "server", server, "error", err)
 	}
 }
@@ -206,14 +206,14 @@ func (a *Adapter) handleAccessDecision(ctx context.Context, threadID, newcomerID
 	parked := a.takePendingAccess(threadID, newcomerID)
 
 	if !allow {
-		if err := respondURL(ctx, responseURL, "🚫 _Declined._"); err != nil {
+		if err := respondURL(ctx, responseURL, threadID, "🚫 _Declined._"); err != nil {
 			a.Logger.Warn("slack: update access prompt (declined) failed", "thread", threadID, "error", err)
 		}
 		return
 	}
 
 	a.accessPolicy().Grant(threadID, newcomerID)
-	if err := respondURL(ctx, responseURL, fmt.Sprintf("✅ _<@%s> allowed._", newcomerID)); err != nil {
+	if err := respondURL(ctx, responseURL, threadID, fmt.Sprintf("✅ _<@%s> allowed._", newcomerID)); err != nil {
 		a.Logger.Warn("slack: update access prompt (allowed) failed", "thread", threadID, "error", err)
 	}
 
