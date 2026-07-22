@@ -156,6 +156,43 @@ func TestAgentSelection_UnknownAgentFailsLoudlyWithRoster(t *testing.T) {
 	require.Zero(t, gw.resolveCount(), "nothing is dispatched for an unknown agent")
 }
 
+// Typing an agent's display name instead of its technical name gets a
+// copy-pasteable "Did you mean" suggestion in the failure reply — quoted or
+// unquoted — while a plain typo gets no guess. Nothing is dispatched either way.
+func TestAgentSelection_DisplayNameGetsDidYouMean(t *testing.T) {
+	cases := []struct {
+		name, text, want string
+		wantSuggestion   bool
+	}{
+		{"unquoted display name", "/agent SRE Agent tell me a joke",
+			"Did you mean `/agent sre-agent tell me a joke`?", true},
+		{"quoted display name", `/agent "SRE Agent" tell me a joke`,
+			"Did you mean `/agent sre-agent tell me a joke`?", true},
+		{"plain typo gets no guess", "/agent sre-agnt tell me a joke", "Did you mean", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := newFakeSlackAPI()
+			cards := &fakeCards{known: map[string]string{"sre-agent": "SRE Agent"}}
+			roster := &fakeRoster{agents: []pkga2a.AgentInfo{{Name: "sre-agent", Description: "Investigates infra issues"}}}
+			gw, _ := capturingGateway()
+			_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, withSelection(roster, cards))
+
+			sendEvent(t, srv, mention("U1", tc.text, "100.000", ""))
+
+			require.Eventually(t, func() bool {
+				return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "I don't know an agent named")
+			}, 2*time.Second, 50*time.Millisecond, "the selection fails loudly")
+			if tc.wantSuggestion {
+				require.Contains(t, allText(fake.pathCalls("chat.postMessage")), tc.want)
+			} else {
+				require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), tc.want)
+			}
+			require.Zero(t, gw.resolveCount(), "a suggestion never dispatches anything")
+		})
+	}
+}
+
 // "/agent <name>" with no question selects nothing: the hint says so, and the
 // user's next unprefixed message goes to the DEFAULT agent (no binding was
 // created).

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
@@ -125,7 +126,7 @@ func (a *Adapter) handleAgentSelection(ctx context.Context, cmd *slashCommand, m
 		return false
 	}
 	if !validName {
-		reply(a.agentUnavailableReply(ctx, name))
+		reply(a.agentUnavailableReply(ctx, name, question))
 		return false
 	}
 
@@ -138,7 +139,7 @@ func (a *Adapter) handleAgentSelection(ctx context.Context, cmd *slashCommand, m
 	defer cancel()
 	if _, _, err := checker.CardInfo(vctx, ref); err != nil {
 		a.Logger.Info("slack: agent selection failed validation", "agent", ref, "thread", msg.ThreadID, "error", err)
-		reply(a.agentUnavailableReply(ctx, name))
+		reply(a.agentUnavailableReply(ctx, name, question))
 		return false
 	}
 
@@ -148,14 +149,100 @@ func (a *Adapter) handleAgentSelection(ctx context.Context, cmd *slashCommand, m
 	return true
 }
 
-// agentUnavailableReply renders the loud selection failure, including the
+// agentUnavailableReply renders the loud selection failure: a did-you-mean
+// suggestion when the typed name looks like an agent's display name, and the
 // current roster when it can be fetched so the user can pick a real name.
-func (a *Adapter) agentUnavailableReply(ctx context.Context, name string) string {
+func (a *Adapter) agentUnavailableReply(ctx context.Context, name, question string) string {
 	text := fmt.Sprintf(agentUnavailableNotice, strings.ReplaceAll(name, "`", "'"))
+	if suggestion, ok := a.didYouMeanSuggestion(ctx, name, question); ok {
+		text += "\n" + suggestion
+	}
 	if listing, ok := a.rosterListing(ctx); ok {
 		text += "\n\n" + listing
 	}
 	return text
+}
+
+// didYouMeanSuggestion returns a corrected, copy-pasteable command when the
+// typed name — extended word by word into the question, covering display
+// names typed unquoted ("SRE" + "Agent") — matches a roster agent's display or
+// technical name after normalization. Exact-after-normalization only, no
+// fuzzy matching, so a suggestion is never a guess; and it only decorates the
+// error reply — the dispatch decision stays with the AgentCard validation.
+func (a *Adapter) didYouMeanSuggestion(ctx context.Context, name, question string) (string, bool) {
+	agents, err := a.rosterAgents(ctx)
+	if err != nil || len(agents) == 0 {
+		return "", false
+	}
+	ctx, cancel := context.WithTimeout(ctx, rosterListTimeout)
+	defer cancel()
+
+	// Candidate typed names, longest first so "SRE Agent" wins over "SRE":
+	// the name token alone, then extended with up to two leading question words.
+	type candidate struct {
+		norm string // normalized typed name
+		rest string // question left over after the consumed words
+	}
+	candidates := []candidate{{norm: normalizeAgentName(name), rest: question}}
+	typed, rest := name, question
+	for range 2 {
+		if rest == "" {
+			break
+		}
+		var word string
+		word, rest = splitWord(rest)
+		typed += " " + word
+		candidates = append(candidates, candidate{norm: normalizeAgentName(typed), rest: rest})
+	}
+
+	for i := len(candidates) - 1; i >= 0; i-- {
+		c := candidates[i]
+		if c.norm == "" {
+			continue
+		}
+		for _, ag := range agents {
+			selector, ref := a.rosterSelector(ag)
+			match := c.norm == normalizeAgentName(ag.Name) || c.norm == normalizeAgentName(selector)
+			if !match && a.AgentCards != nil {
+				if display, _ := a.AgentCards.CardIdentity(ctx, ref); display != "" {
+					match = c.norm == normalizeAgentName(display)
+				}
+			}
+			if !match {
+				continue
+			}
+			// Collapse the remainder to one line so the suggestion renders as a
+			// single code span; a leftover question keeps the command runnable.
+			restText := strings.ReplaceAll(strings.Join(strings.Fields(c.rest), " "), "`", "'")
+			if restText == "" {
+				restText = "<question>"
+			}
+			return fmt.Sprintf("Did you mean `/agent %s %s`?", selector, restText), true
+		}
+	}
+	return "", false
+}
+
+// normalizeAgentName lowercases and strips everything but letters and digits,
+// so "SRE Agent", "sre-agent", and "sre_agent" compare equal.
+func normalizeAgentName(s string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(s) {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// splitWord cuts the first whitespace-delimited word off s, preserving the
+// remainder's formatting.
+func splitWord(s string) (word, rest string) {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexFunc(s, unicode.IsSpace); i >= 0 {
+		return s[:i], strings.TrimSpace(s[i:])
+	}
+	return s, ""
 }
 
 // rosterListing renders the selectable-agent roster: display names from the
@@ -179,16 +266,7 @@ func (a *Adapter) rosterListing(ctx context.Context) (string, bool) {
 	var b strings.Builder
 	b.WriteString("*Available agents* — start a new conversation with `/agent <name> <question>`:")
 	for _, ag := range agents {
-		selector := ag.Name
-		ref := ag.Name
-		if ag.Namespace != "" {
-			ref = ag.Namespace + "/" + ag.Name
-			// A bare name resolves in the default agent's namespace; agents
-			// elsewhere are selected by their full ref.
-			if ag.Namespace != a.defaultAgentNamespace() {
-				selector = ref
-			}
-		}
+		selector, ref := a.rosterSelector(ag)
 		display := ""
 		if a.AgentCards != nil {
 			display, _ = a.AgentCards.CardIdentity(ctx, ref)
@@ -233,6 +311,20 @@ func (a *Adapter) rosterAgents(ctx context.Context) ([]pkga2a.AgentInfo, error) 
 	return agents, nil
 }
 
+// rosterSelector is the name a user types to select ag — bare in the default
+// agent's namespace, namespace-qualified elsewhere — and the full ref used
+// for card lookups.
+func (a *Adapter) rosterSelector(ag pkga2a.AgentInfo) (selector, ref string) {
+	selector, ref = ag.Name, ag.Name
+	if ag.Namespace != "" {
+		ref = ag.Namespace + "/" + ag.Name
+		if ag.Namespace != a.defaultAgentNamespace() {
+			selector = ref
+		}
+	}
+	return selector, ref
+}
+
 // agentNamePartRe matches one DNS-1123 label, the shape of kagent agent names
 // and namespaces. Anything else is rejected before it can reach a URL path.
 var agentNamePartRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
@@ -272,7 +364,10 @@ func (a *Adapter) defaultAgentNamespace() string {
 
 // splitAgentCommand splits "/agent <name> <question…>" into the name token and
 // the question with its original formatting preserved (parseCommand's Fields
-// split would collapse the question's newlines). The caller has already
+// split would collapse the question's newlines). A double-quoted name —
+// straight or the curly quotes Slack clients auto-substitute — is taken whole,
+// so a pasted multi-word display name stays one token and gets the
+// did-you-mean treatment instead of a mangled parse. The caller has already
 // matched the verb via parseCommand.
 func splitAgentCommand(text string) (name, question string) {
 	rest := strings.TrimSpace(text)
@@ -281,10 +376,35 @@ func splitAgentCommand(text string) (name, question string) {
 	if rest == "" {
 		return "", ""
 	}
+	if name, question, ok := splitQuotedName(rest); ok {
+		return name, question
+	}
 	if i := strings.IndexFunc(rest, unicode.IsSpace); i >= 0 {
 		return rest[:i], strings.TrimSpace(rest[i:])
 	}
 	return rest, ""
+}
+
+// splitQuotedName handles a leading double-quoted name token. ok is false when
+// s does not start with a double quote or the quote is never closed (the
+// caller then falls back to plain token parsing).
+func splitQuotedName(s string) (name, question string, ok bool) {
+	opener, size := utf8.DecodeRuneInString(s)
+	var closer rune
+	switch opener {
+	case '"':
+		closer = '"'
+	case '“':
+		closer = '”'
+	default:
+		return "", "", false
+	}
+	body := s[size:]
+	end := strings.IndexRune(body, closer)
+	if end < 0 {
+		return "", "", false
+	}
+	return strings.TrimSpace(body[:end]), strings.TrimSpace(body[end+utf8.RuneLen(closer):]), true
 }
 
 // bindThreadAgent records threadID's conversation→agent binding. An empty ref
