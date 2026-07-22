@@ -2,8 +2,10 @@ package slack
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -44,9 +46,14 @@ func TestParseCommand(t *testing.T) {
 	}
 }
 
-// fakeSlackServer records postMessage calls and returns minimal OK responses.
+// fakeSlackServer records postMessage and postEphemeral calls and returns
+// minimal OK responses.
 type fakeSlackServer struct {
-	posts atomic.Int32
+	posts      atomic.Int32
+	ephemerals atomic.Int32
+
+	mu             sync.Mutex
+	ephemeralTexts []string
 }
 
 func (f *fakeSlackServer) handler() http.Handler {
@@ -55,6 +62,18 @@ func (f *fakeSlackServer) handler() http.Handler {
 		f.posts.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "ts": "1234.5678"})
+	})
+	mux.HandleFunc("/chat.postEphemeral", func(w http.ResponseWriter, r *http.Request) {
+		f.ephemerals.Add(1)
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if text, _ := body["text"].(string); text != "" {
+			f.mu.Lock()
+			f.ephemeralTexts = append(f.ephemeralTexts, text)
+			f.mu.Unlock()
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
 	})
 	return mux
 }
@@ -67,6 +86,7 @@ func newTestAdapter(t *testing.T) (*Adapter, *fakeSlackServer) {
 	a := &Adapter{
 		APIBase: ts.URL,
 		Secrets: Secrets{BotToken: "test-bot-token"}, //nolint:gosec
+		Logger:  slog.New(slog.DiscardHandler),
 	}
 	return a, srv
 }
@@ -177,7 +197,32 @@ func TestHandleCommand_LoginLogout_OBODisabled(t *testing.T) {
 	a, srv := newTestAdapter(t)
 	require.True(t, a.handleCommand(t.Context(), &slashCommand{Name: "login"}, "U1", "C1", "T1"))
 	require.True(t, a.handleCommand(t.Context(), &slashCommand{Name: "logout"}, "U1", "C1", "T1"))
-	require.Equal(t, int32(2), srv.posts.Load())
+	require.Equal(t, int32(2), srv.ephemerals.Load())
+	require.Equal(t, int32(0), srv.posts.Load())
+}
+
+// A linked user's /login confirms their identity ephemerally: the linked email
+// must never land as a regular message in a shared thread.
+func TestHandleCommand_LoginLinkedConfirmsEphemerally(t *testing.T) {
+	a, srv := newTestAdapter(t)
+	a.OBO = identOBO{}
+
+	require.True(t, a.handleCommand(t.Context(), &slashCommand{Name: "login"}, "U1", "C1", "T1"))
+	require.Equal(t, int32(0), srv.posts.Load(), "the identity confirmation must not be a public message")
+	require.Equal(t, int32(1), srv.ephemerals.Load())
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	require.Contains(t, srv.ephemeralTexts[0], "user@example.test")
+}
+
+// /logout confirms ephemerally: sign-in state is caller-only information.
+func TestHandleCommand_LogoutConfirmsEphemerally(t *testing.T) {
+	a, srv := newTestAdapter(t)
+	a.OBO = identOBO{}
+
+	require.True(t, a.handleCommand(t.Context(), &slashCommand{Name: "logout"}, "U1", "C1", "T1"))
+	require.Equal(t, int32(0), srv.posts.Load())
+	require.Equal(t, int32(1), srv.ephemerals.Load())
 }
 
 // A thread paused on input-required has no in-flight turn; /stop must fall

@@ -84,6 +84,10 @@ const defaultHTTPTimeout = 30 * time.Second
 // grantTypeRefreshToken is the OAuth grant type advertised in the CIMD document.
 const grantTypeRefreshToken = "refresh_token"
 
+// responseTypeCode is the OAuth authorization-code response type: advertised
+// in the CIMD document and the name of the callback query parameter.
+const responseTypeCode = "code"
+
 // tokenRefreshSkew refreshes a cached token this long before it actually
 // expires, so a token handed to a downstream A2A call is not about to expire
 // mid-request.
@@ -395,7 +399,7 @@ func (l *Linker) HandleClientMetadata(w http.ResponseWriter, _ *http.Request) {
 		ClientURI:               "https://github.com/giantswarm/klaus-gateway",
 		RedirectURIs:            []string{l.oauth.RedirectURL},
 		GrantTypes:              []string{"authorization_code", grantTypeRefreshToken},
-		ResponseTypes:           []string{"code"},
+		ResponseTypes:           []string{responseTypeCode},
 		TokenEndpointAuthMethod: "none",
 		Scope:                   strings.Join(l.oauth.Scopes, " "),
 	}
@@ -493,7 +497,7 @@ func (l *Linker) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	link, err := l.Exchange(ctx, q.Get("code"), verifier)
+	link, err := l.Exchange(ctx, q.Get(responseTypeCode), verifier)
 	if err != nil {
 		l.logger.Error("musterlink: code exchange failed", "err", err)
 		l.renderPage(w, http.StatusBadGateway, page{
@@ -516,11 +520,14 @@ func (l *Linker) HandleCallback(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if want == "" || !strings.EqualFold(want, link.Email) {
-			l.logger.Warn("musterlink: email mismatch", "slackUser", slackUser)
+			l.logger.Warn("musterlink: email mismatch", "slackUser", slackUser, "slackEmail", want, "identityEmail", link.Email)
 			l.renderPage(w, http.StatusForbidden, page{
 				Heading: "Email mismatch",
 				Title:   "Account email does not match",
-				Message: "The Giant Swarm account you signed in with does not match your Slack email. Sign in with the account that matches your Slack email.",
+				Message: fmt.Sprintf("The account you signed in with reports %s, but your Slack profile email is %s. "+
+					"Sign in with the account whose email matches your Slack email. "+
+					"For GitHub-backed sign-in, the released email is your GitHub primary email; update it if it does not match.",
+					link.Email, want),
 			})
 			return
 		}
@@ -534,10 +541,14 @@ func (l *Linker) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		l.onLinked(context.WithoutCancel(ctx), slackUser, link.Email)
 	}
 
+	message := "You can close this tab and return to Slack."
+	if link.Email != "" {
+		message = fmt.Sprintf("Signed in as %s. You can close this tab and return to Slack.", link.Email)
+	}
 	l.renderPage(w, http.StatusOK, page{
 		Heading: "Success",
 		Title:   "Signed in to Giant Swarm",
-		Message: "You can close this tab and return to Slack.",
+		Message: message,
 	})
 }
 

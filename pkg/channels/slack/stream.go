@@ -237,9 +237,11 @@ func (w *batchedWriter) maybeConnectorPrompt(tool *channels.ToolActivity) {
 	}
 	server, loginURL := parseAuthChallengePayload(tool.Response, 0)
 	if loginURL == "" {
+		w.logger.Debug("slack: connector prompt skipped, no https login URL in auth challenge", "user", w.slackUser, "tool", tool.Name)
 		return
 	}
 	if !w.adapter.markConnectorPrompted(w.slackUser, server) {
+		w.logger.Debug("slack: connector prompt skipped, cooldown active", "user", w.slackUser, "server", server)
 		return
 	}
 	go func() {
@@ -765,16 +767,19 @@ func (c *slackAPIClient) postChoicePrompt(ctx context.Context, channel, threadID
 	return err
 }
 
-// postSignInPrompt posts an ephemeral (visible only to the target user)
-// Block Kit message with a "Sign in to Giant Swarm" button linking to linkURL.
-// It is used to nudge an unlinked Slack user into the OBO account-linking flow.
-// When threadID is set the prompt is posted in-thread.
-func (c *slackAPIClient) postSignInPrompt(ctx context.Context, channel, threadID, user, linkURL string) error {
+// postSignInPrompt posts a Block Kit message with a "Sign in" button linking
+// to linkURL, and returns the posted message's ts. It is used to
+// nudge an unlinked Slack user into the OBO account-linking flow. A real
+// threaded message, never an ephemeral: for a root channel mention the prompt
+// is the thread's first visible reply (a thread-scoped ephemeral there is never
+// surfaced by Slack), in an assistant DM only thread replies render in the
+// assistant pane, and the returned ts lets the prompt be rewritten in place
+// once the link completes.
+func (c *slackAPIClient) postSignInPrompt(ctx context.Context, channel, threadID, linkURL string) (string, error) {
 	const text = "Sign in to Giant Swarm so I can act as you. " +
 		"Until you do, I can't run tools on your behalf."
 	body := map[string]any{
 		paramChannel: channel,
-		paramUser:    user,
 		paramText:    text,
 		paramBlocks: []any{
 			map[string]any{
@@ -786,7 +791,7 @@ func (c *slackAPIClient) postSignInPrompt(ctx context.Context, channel, threadID
 				bkElements: []any{
 					map[string]any{
 						bkType:     bkButton,
-						bkText:     map[string]any{bkType: bkPlainText, bkText: "Sign in to Giant Swarm"},
+						bkText:     map[string]any{bkType: bkPlainText, bkText: "Sign in"},
 						bkStyle:    bkPrimary,
 						bkActionID: oboSignIn,
 						bkURL:      linkURL,
@@ -798,8 +803,7 @@ func (c *slackAPIClient) postSignInPrompt(ctx context.Context, channel, threadID
 	if threadID != "" {
 		body[paramThreadTS] = threadID
 	}
-	_, err := c.postJSON(ctx, "chat.postEphemeral", body)
-	return err
+	return c.postJSON(ctx, "chat.postMessage", body)
 }
 
 // slackSectionTextMax is Slack's limit on a section block's text object; a

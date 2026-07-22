@@ -421,6 +421,27 @@ func TestCallbackStoresLinkOnEmailMatch(t *testing.T) {
 	require.Equal(t, "muster-sub", jwtSub(t, got.IDToken), "the code exchange seeds the cached dex id_token")
 }
 
+// The browser success page confirms which identity linked, so the in-thread
+// Slack confirmation does not have to echo the email to a public channel.
+func TestCallbackSuccessPageNamesIdentity(t *testing.T) {
+	stub := newMusterStub(t, "klaus-gateway", "alice@example.com", "muster-sub")
+	l := newTestLinker(t, stub, NewMemStore(), func(context.Context, string) (string, error) {
+		return "alice@example.com", nil
+	})
+
+	state := l.SignState("U1")
+	lrec := httptest.NewRecorder()
+	l.HandleLink(lrec, httptest.NewRequest(http.MethodGet, LinkPath+"?u="+url.QueryEscape(state), nil))
+	require.Equal(t, http.StatusFound, lrec.Code)
+
+	crec := httptest.NewRecorder()
+	q := url.Values{"state": {state}, "code": {"auth-code"}}
+	l.HandleCallback(crec, httptest.NewRequest(http.MethodGet, CallbackPath+"?"+q.Encode(), nil))
+	require.Equal(t, http.StatusOK, crec.Code)
+	require.Contains(t, crec.Body.String(), "alice@example.com",
+		"the private success page confirms which account linked")
+}
+
 func TestCallbackFiresOnLinkedHook(t *testing.T) {
 	stub := newMusterStub(t, "klaus-gateway", "alice@example.com", "muster-sub")
 	store := NewMemStore()

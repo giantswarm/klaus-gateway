@@ -72,8 +72,9 @@ func TestAccess_UnlinkedNewcomerPromptedToSignIn(t *testing.T) {
 		2*time.Second, 50*time.Millisecond, "initiator's mention dispatches")
 
 	sendEvent(t, srv, mention("U999", "help", "200.000", "100.000"))
-	fake.waitForPath(t, "chat.postEphemeral", 1)
-	require.Contains(t, allText(fake.pathCalls("chat.postEphemeral")), "Sign in to Giant Swarm")
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Sign in to Giant Swarm")
+	}, 2*time.Second, 50*time.Millisecond, "the newcomer is prompted to sign in")
 	require.Equal(t, 1, gw.resolveCount(), "an unlinked newcomer must not reach the agent")
 }
 
@@ -277,7 +278,9 @@ func TestAccess_NewcomerTransientTokenErrorSurfaced(t *testing.T) {
 	a.OBO = &fakeOBO{linkedUser: "U999", token: "tok", tokenErr: errors.New("refresh failed")}
 
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
-	fake.waitForPath(t, "chat.postEphemeral", 1)
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Sign in to Giant Swarm")
+	}, 2*time.Second, 50*time.Millisecond, "the unlinked initiator is prompted to sign in")
 
 	sendEvent(t, srv, mention("U999", "help", "200.000", "100.000"))
 	require.Eventually(t, func() bool {

@@ -2,6 +2,7 @@ package slack_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -31,7 +32,7 @@ func TestLoginReplay_DropsBareAuthUtterances(t *testing.T) {
 
 	// Both messages are parked while U123 is unlinked.
 	sendEvent(t, srv, mention("U123", "login", "100.000", ""))
-	fake.waitForPath(t, "chat.postEphemeral", 1)
+	fake.waitForPath(t, "chat.postMessage", 1)
 	sendEvent(t, srv, mention("U123", "login to grafana fails", "101.000", "100.000"))
 	time.Sleep(100 * time.Millisecond)
 	require.Zero(t, gw.resolveCount(), "unlinked messages must be parked, not dispatched")
@@ -47,6 +48,30 @@ func TestLoginReplay_DropsBareAuthUtterances(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	require.Contains(t, captured[0].Text, "login to grafana fails")
+}
+
+// A parked message whose post-sign-in replay fails must not leave the user in
+// silence: the thread gets a failure note asking them to resend.
+func TestLoginReplay_FailurePostsNote(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{}
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
+	obo := &fakeOBO{linkedUser: "U123", token: "tok", notYetLinked: true}
+	a.OBO = obo
+
+	sendEvent(t, srv, mention("U123", "what failed on prod?", "100.000", ""))
+	fake.waitForPath(t, "chat.postMessage", 1)
+	require.Zero(t, gw.resolveCount(), "the unlinked message must be parked")
+
+	gw.mu.Lock()
+	gw.resolveErr = errors.New("kagent unreachable")
+	gw.mu.Unlock()
+	obo.completeLink()
+	a.OnUserLinked(t.Context(), "U123", "u123@example.com")
+
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "couldn't pick your message back up")
+	}, 2*time.Second, 50*time.Millisecond, "a failed replay must post a failure note in-thread")
 }
 
 // A newcomer who parks several messages before the initiator's grant has all of
@@ -117,7 +142,9 @@ func TestLoginReplay_WaitsForBusyThread(t *testing.T) {
 
 	// U999 (granted, unlinked) posts while the thread is idle: parked for login.
 	sendEvent(t, srv, mention("U999", "help me out", "200.000", "100.000"))
-	fake.waitForPath(t, "chat.postEphemeral", 1)
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Sign in to Giant Swarm")
+	}, 2*time.Second, 50*time.Millisecond, "the unlinked granted user is prompted to sign in")
 	require.Equal(t, 1, gw.resolveCount(), "the unlinked message is parked, not dispatched")
 
 	// The initiator starts a turn that keeps the thread slot held.
@@ -192,7 +219,7 @@ func TestLoginReplay_ParkAfterLinkRaceDrainsImmediately(t *testing.T) {
 	mu.Unlock()
 	require.Contains(t, got.Text, "what is broken?")
 	require.Equal(t, "raced-token", got.BearerToken)
-	for _, call := range fake.pathCalls("chat.postEphemeral") {
+	for _, call := range fake.pathCalls("chat.postMessage") {
 		text, _ := call.params["text"].(string)
 		require.NotContains(t, strings.ToLower(text), "sign in",
 			"no sign-in prompt for a user who turned out to be linked")
@@ -208,11 +235,14 @@ func TestSignInPrompt_ThrottledPerThreadUser(t *testing.T) {
 	a.OBO = &fakeOBO{linkedUser: "U123", token: "tok", notYetLinked: true}
 
 	sendEvent(t, srv, mention("U123", "first question", "100.000", ""))
-	fake.waitForPath(t, "chat.postEphemeral", 1)
+	fake.waitForPath(t, "chat.postMessage", 1)
+	// The prompt is a real threaded reply anchoring the mention's thread.
+	prompt := fake.pathCalls("chat.postMessage")[0]
+	require.Equal(t, "100.000", prompt.params["thread_ts"])
 	sendEvent(t, srv, mention("U123", "second question", "101.000", "100.000"))
 
 	time.Sleep(200 * time.Millisecond)
-	require.Len(t, fake.pathCalls("chat.postEphemeral"), 1,
+	require.Len(t, fake.pathCalls("chat.postMessage"), 1,
 		"a second parked message within the window must not re-prompt")
 	require.Zero(t, gw.resolveCount(), "both messages stay parked")
 }
