@@ -701,7 +701,7 @@ func (c *slackAPIClient) threadInitiator(ctx context.Context, channel, threadTS 
 	params := url.Values{
 		paramChannel: {channel},
 		paramTS:      {threadTS},
-		"limit":      {strconv.Itoa(threadInitiatorScanLimit)},
+		paramLimit:   {strconv.Itoa(threadInitiatorScanLimit)},
 	}
 	body, err := c.call(ctx, "conversations.replies", "application/x-www-form-urlencoded", params.Encode())
 	if err != nil {
@@ -739,7 +739,7 @@ func (c *slackAPIClient) threadRootText(ctx context.Context, channel, threadTS s
 	params := url.Values{
 		paramChannel: {channel},
 		paramTS:      {threadTS},
-		"limit":      {"1"},
+		paramLimit:   {"1"},
 	}
 	body, err := c.call(ctx, "conversations.replies", "application/x-www-form-urlencoded", params.Encode())
 	if err != nil {
@@ -780,7 +780,7 @@ func (c *slackAPIClient) threadFirstHumanMessage(ctx context.Context, channel, t
 	params := url.Values{
 		paramChannel: {channel},
 		paramTS:      {threadTS},
-		"limit":      {strconv.Itoa(threadInitiatorScanLimit)},
+		paramLimit:   {strconv.Itoa(threadInitiatorScanLimit)},
 	}
 	body, err := c.call(ctx, "conversations.replies", "application/x-www-form-urlencoded", params.Encode())
 	if err != nil {
