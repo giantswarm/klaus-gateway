@@ -175,6 +175,11 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *slashCommand, slackUse
 		if !permittedOnly() {
 			return true
 		}
+		// Cancelling an in-flight turn is permitted-level (initiator or a granted
+		// collaborator): a /stop carries no identity and only halts, so it needs
+		// no owner gate, and it is the only lever on a thread whose slot is held
+		// by someone else's turn. Resolving a paused prompt is owner-only, gated
+		// below, because that delivers a decision into the owner's session.
 		if a.stopThread(threadID) {
 			reply("⏹ Stopped.")
 			return true

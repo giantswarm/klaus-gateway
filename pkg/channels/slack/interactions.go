@@ -430,8 +430,10 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 	// runs under the clicking user's token, and the paused task lives in its
 	// owner's agent session, so another permitted user's click would deliver
 	// the decision into the wrong session. Checked before the token mint so
-	// the refusal costs no round-trips and the task stays intact. Remove once
-	// kagent session sharing (kagent-dev/kagent#1933) is adopted.
+	// the refusal costs no round-trips and the task stays intact. Remove only
+	// once kagent carries per-caller identity through a shared session: both
+	// session sharing (kagent-dev/kagent#1933) and the STS token cache keying
+	// (kagent-dev/kagent#2181) must land, or tool calls run as the wrong user.
 	if pending.SlackUser != "" && slackUser != pending.SlackUser {
 		text := fmt.Sprintf(promptOwnerOnlyNotice, pending.SlackUser)
 		if err := client.postEphemeralText(ctx, slackChannel, slackUser, threadID, text); err != nil {

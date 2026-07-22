@@ -1565,7 +1565,9 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 	// sessions per user: a granted collaborator gets a separate conversation
 	// context, not the initiator's history. Say so once on their first turn,
 	// or the out-of-context answers read as the agent forgetting the thread.
-	// Remove once kagent session sharing (kagent-dev/kagent#1933) is adopted.
+	// Remove only once kagent carries per-caller identity through a shared
+	// session: both session sharing (kagent-dev/kagent#1933) and the STS token
+	// cache keying (kagent-dev/kagent#2181) must land.
 	if initiator != "" && slackUser != initiator {
 		a.maybePostContextForkNotice(ctx, slackChannel, msg.ThreadID, slackUser)
 	}
@@ -1592,8 +1594,10 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 	// under the sender's token, and the paused task lives in its owner's agent
 	// session, so another user's reply runs as a normal turn of their own
 	// instead. The peek-then-take is safe under the held thread slot. Remove the
-	// owner restriction once kagent session sharing (kagent-dev/kagent#1933) is
-	// adopted.
+	// owner restriction only once kagent carries per-caller identity through a
+	// shared session: both session sharing (kagent-dev/kagent#1933) and the STS
+	// token cache keying (kagent-dev/kagent#2181) must land, or a resumed tool
+	// call runs as the wrong user.
 	var task *pendingTask
 	if pending := a.peekPendingTask(msg.ThreadID); pending != nil && (pending.SlackUser == "" || pending.SlackUser == slackUser) {
 		task = a.takePendingTask(msg.ThreadID)
