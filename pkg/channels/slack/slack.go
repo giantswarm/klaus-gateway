@@ -194,6 +194,12 @@ type Adapter struct {
 	dmRedirectMu sync.Mutex
 	dmRedirected map[string]ttlEntry[struct{}]
 
+	// homeGreetedMu guards homeGreeted, the users already given the assistant
+	// pane greeting within the current homeGreetingTTL window, so reopening
+	// the pane does not re-greet.
+	homeGreetedMu sync.Mutex
+	homeGreeted   map[string]ttlEntry[struct{}]
+
 	// notServedMu guards notServedNoticed, the (channel, user) pairs already
 	// given the not-served ephemeral notice within the current window, so
 	// repeated mentions in an unserved channel nudge once.
@@ -603,6 +609,24 @@ func (a *Adapter) postDMRedirect(ctx context.Context, slackChannel string) {
 	if _, err := a.apiClient().postMessage(ctx, slackChannel, dmRedirect, ""); err != nil {
 		a.Logger.Warn("slack: post DM redirect failed", "channel", slackChannel, "error", err)
 	}
+}
+
+// greetAssistantUser posts the assistant-pane greeting and pins the suggested
+// prompts, at most once per user per homeGreetingTTL window (app_home_opened
+// fires on every pane open). Runs off the event handler's path. Best-effort.
+func (a *Adapter) greetAssistantUser(userID, imChannel string) {
+	if !markOnce(&a.homeGreetedMu, &a.homeGreeted, userID, homeGreetingTTL) {
+		return
+	}
+	a.background(func(ctx context.Context) {
+		client := a.apiClient()
+		if _, err := client.postMessage(ctx, imChannel, assistantGreeting, ""); err != nil {
+			a.Logger.Warn("slack: post assistant greeting failed", "channel", imChannel, "error", err)
+		}
+		if err := client.setSuggestedPrompts(ctx, imChannel, assistantPromptsTitle, assistantPrompts); err != nil {
+			a.Logger.Warn("slack: set suggested prompts failed", "channel", imChannel, "error", err)
+		}
+	})
 }
 
 // postChannelNotServed tells a user who mentioned the bot in an unserved
@@ -1153,6 +1177,25 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 		if inner.User != "" && inner.User == a.botID(ctx) && a.channelServed(inner.Channel) {
 			a.postChannelIntro(ctx, inner.Channel)
 		}
+		return
+	}
+	// Assistant-surface lifecycle events (Agent view). Slack's current Agent
+	// view no longer sends assistant_thread_started; these two are its
+	// replacements (docs.slack.dev/ai/developing-ai-apps).
+	if inner.Type == evtAppHomeOpened {
+		if a.staleEvent(inner) || inner.Tab != tabMessages || inner.User == "" || inner.Channel == "" {
+			return
+		}
+		if a.dmMode() == DMModeServe {
+			a.greetAssistantUser(inner.User, inner.Channel)
+		}
+		return
+	}
+	if inner.Type == evtAppContextChanged {
+		// Log-only: the event body carries no user, so the context cannot be
+		// attributed to a conversation; the per-turn context arrives on
+		// message.im instead.
+		a.Logger.Debug("slack: assistant context changed", "channel", inner.contextChannel())
 		return
 	}
 	a.Logger.Debug("slack: inbound event", "type", inner.Type, "channel", inner.Channel,
@@ -1810,6 +1853,34 @@ type slackInnerEvent struct {
 	// EventTS is the event envelope timestamp; the only timestamp a
 	// member_joined_channel event carries.
 	EventTS string `json:"event_ts,omitempty"`
+	// Tab is the App Home tab an app_home_opened event targets ("messages"
+	// for the assistant pane).
+	Tab string `json:"tab,omitempty"`
+	// Context carries an app_context_changed event's entity list. Slack sends
+	// an empty object when the new context has no entities.
+	Context *slackEventContext `json:"context,omitempty"`
+}
+
+// slackEventContext is the context object of an app_context_changed event.
+type slackEventContext struct {
+	// Entities the user is viewing, ordered by relevance.
+	Entities []slackContextEntity `json:"entities,omitempty"`
+}
+
+// slackContextEntity is one entity in an app_context_changed context.
+type slackContextEntity struct {
+	Type   string `json:"type,omitempty"`  // e.g. "slack#/types/channel_id"
+	Value  string `json:"value,omitempty"` // the entity's ID (channel ID for channel entities)
+	TeamID string `json:"team_id,omitempty"`
+}
+
+// contextChannel returns the ID of the most relevant entity in an
+// app_context_changed payload, "" when the context is empty.
+func (e slackInnerEvent) contextChannel() string {
+	if e.Context == nil || len(e.Context.Entities) == 0 {
+		return ""
+	}
+	return e.Context.Entities[0].Value
 }
 
 // isDM reports whether the event originated in a 1:1 direct message. Slack sets
