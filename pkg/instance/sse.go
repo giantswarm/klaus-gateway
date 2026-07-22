@@ -40,13 +40,9 @@ func ProxySSE(ctx context.Context, w http.ResponseWriter, src io.Reader) error {
 			if _, werr := w.Write(line); werr != nil {
 				return werr
 			}
-			// An SSE event ends with a blank line; flush at that boundary and
-			// also at every other line so consumers see chunks promptly.
-			if len(line) == 1 || (len(line) == 2 && line[0] == '\r') {
-				flusher.Flush()
-			} else {
-				flusher.Flush()
-			}
+			// Flush after every line so consumers see chunks promptly, not only
+			// at the blank line that ends an SSE event.
+			flusher.Flush()
 		}
 		if err != nil {
 			if errors.Is(err, io.EOF) {
