@@ -3,6 +3,7 @@ package slack
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -56,6 +57,31 @@ func parseDetailsLevel(s string) (level detailsLevel, ok bool) {
 	default:
 		return detailsOn, false
 	}
+}
+
+// knownCommands is the verb set handleCommand owns.
+var knownCommands = map[string]struct{}{
+	cmdHelp:    {},
+	cmdStop:    {},
+	cmdLogin:   {},
+	cmdLogout:  {},
+	cmdUsage:   {},
+	cmdDetails: {},
+}
+
+// commandShapeRe matches a verb that reads as a command word. A path or URL
+// fragment ("/etc/hosts", "/api/v1/pods") contains characters outside it, so a
+// real prompt that happens to start with "/" still reaches the agent.
+var commandShapeRe = regexp.MustCompile(`^[a-z][a-z0-9_-]*$`)
+
+// isUnknownCommand reports whether cmd carries a command-shaped verb the
+// gateway does not own (a Slack built-in like /invite, or a typo). Dispatching
+// such a message burns a full agent turn on explaining slash commands.
+func isUnknownCommand(cmd *slashCommand) bool {
+	if _, ok := knownCommands[cmd.Name]; ok {
+		return false
+	}
+	return commandShapeRe.MatchString(cmd.Name)
 }
 
 // slashCommand is a parsed in-thread command.
@@ -215,6 +241,16 @@ func (a *Adapter) handleLoginCommand(ctx context.Context, slackUser, slackChanne
 		return true
 	}
 	email, linked := a.linkedEmail(ctx, slackUser)
+	if linked {
+		// The store entry alone does not prove the link works: the identity
+		// provider may have revoked the token family since. An explicit /login
+		// is the moment to probe for real, so a dead link re-prompts instead
+		// of confirming a sign-in that will fail on the next turn.
+		if _, err := a.OBO.TokenFor(ctx, slackUser); err != nil {
+			a.Logger.Info("slack: /login probe failed for linked user, re-prompting sign-in", "user", slackUser, "error", err)
+			linked = false
+		}
+	}
 	if !linked {
 		// Explicit request: post the sign-in prompt without the nudge throttle.
 		a.postSignIn(ctx, slackChannel, threadID, slackUser)

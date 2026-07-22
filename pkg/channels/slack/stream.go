@@ -22,6 +22,9 @@ import (
 const (
 	batchInterval = 250 * time.Millisecond
 	slackAPIBase  = "https://slack.com/api"
+	// methodChatPostMessage is the Web API method for new posts; it is special
+	// in two spots (display identity, forced unfurl-off).
+	methodChatPostMessage = "chat.postMessage"
 	// slackMarkdownBlockMax caps the text of one Block Kit markdown block,
 	// Slack's 12 000-char limit. splitMarkdown budgets the fence auto-close and
 	// reopen inside this cap, so emitted chunks never exceed it.
@@ -58,7 +61,14 @@ type batchedWriter struct {
 	// tool it targets, taken from the call arguments. Result deltas carry no
 	// arguments, so this is how a call_tool result is attributed to
 	// core_auth_login. Only touched from run()'s goroutine.
-	callToolInner map[string]string
+	callToolInner map[string]callToolTarget
+	// loginURLs collects the backend login URLs surfaced as Connect buttons
+	// this turn. flush scrubs them out of the agent's prose: the URL is a
+	// single-use OAuth authorize link, and a second surface (or Slack's unfurl
+	// crawler following it) can trip the auth server's reuse detection, which
+	// revokes the user's whole token family. Only touched from run()'s
+	// goroutine.
+	loginURLs []string
 
 	// turnUsage accumulates the per-LLM-call usage kagent reports across the
 	// turn into the turn total. Only touched from run()'s goroutine.
@@ -222,10 +232,14 @@ func (w *batchedWriter) renderToolActivity(ctx context.Context, tool *channels.T
 	if w.details == detailsOff || tool == nil {
 		return
 	}
+	// The tool name is agent- and MCP-server-controlled text rendered inside a
+	// code span; a backtick or newline in it would break out of the span and
+	// inject markdown into the thread.
+	name := codeSpanSafe(tool.Name)
 	var md string
 	switch tool.Kind {
 	case channels.ToolCall:
-		md = "🔧 `" + tool.Name + "`"
+		md = "🔧 `" + name + "`"
 		if summary := compactJSON(tool.Args, toolArgsMax); summary != "" {
 			md += "\n```\n" + summary + "\n```"
 		}
@@ -237,7 +251,7 @@ func (w *batchedWriter) renderToolActivity(ctx context.Context, tool *channels.T
 		if preview == "" {
 			return
 		}
-		md = "↳ `" + tool.Name + "` result\n```\n" + preview + "\n```"
+		md = "↳ `" + name + "` result\n```\n" + preview + "\n```"
 	default:
 		return
 	}
@@ -247,7 +261,7 @@ func (w *batchedWriter) renderToolActivity(ctx context.Context, tool *channels.T
 	case w.toolsRendered > maxToolMessages+1:
 		return // already queued the truncation note
 	case w.toolsRendered == maxToolMessages+1:
-		md = "_…further tool activity hidden this turn (`/details off` to quiet)._"
+		md = "_…tool-activity limit reached; hiding this turn's remaining tool posts. Details are still on: `/details off` mutes them entirely._"
 	}
 
 	w.enqueueToolPost(ctx, md)
@@ -279,8 +293,17 @@ func (w *batchedWriter) maybeConnectorPrompt(tool *channels.ToolActivity) {
 		w.logger.Debug("slack: connector prompt skipped, no https login URL in auth challenge", "user", w.slackUser, "tool", tool.Name)
 		return
 	}
-	if !w.adapter.markConnectorPrompted(w.slackUser, server) {
-		w.logger.Debug("slack: connector prompt skipped, cooldown active", "user", w.slackUser, "server", server)
+	w.loginURLs = append(w.loginURLs, loginURL)
+	if server == "" {
+		// The challenge text carries no "Server:" line; the call arguments
+		// recorded for this CallID name the backend exactly.
+		server = w.callToolInner[tool.CallID].server
+	}
+	if server == "" {
+		server = "the requested tools"
+	}
+	if !w.adapter.markConnectorPrompted(w.slackUser, server, loginURL) {
+		w.logger.Debug("slack: connector prompt skipped, cooldown active and URL unchanged", "user", w.slackUser, "server", server)
 		return
 	}
 	go func() {
@@ -293,6 +316,14 @@ func (w *batchedWriter) maybeConnectorPrompt(tool *channels.ToolActivity) {
 	}()
 }
 
+// callToolTarget is the inner muster tool a call_tool invocation addresses:
+// the tool name, and the backend server for tools that take one (such as
+// core_auth_login, whose result text does not always name the server).
+type callToolTarget struct {
+	name   string
+	server string
+}
+
 // noteCallToolTarget records the inner muster tool a call_tool invocation
 // targets, keyed by CallID, so the matching result can be attributed to it.
 func (w *batchedWriter) noteCallToolTarget(tool *channels.ToolActivity) {
@@ -303,10 +334,14 @@ func (w *batchedWriter) noteCallToolTarget(tool *channels.ToolActivity) {
 	if inner == "" {
 		return
 	}
-	if w.callToolInner == nil {
-		w.callToolInner = make(map[string]string)
+	target := callToolTarget{name: inner}
+	if arguments, ok := tool.Args["arguments"].(map[string]any); ok {
+		target.server, _ = arguments["server"].(string)
 	}
-	w.callToolInner[tool.CallID] = inner
+	if w.callToolInner == nil {
+		w.callToolInner = make(map[string]callToolTarget)
+	}
+	w.callToolInner[tool.CallID] = target
 }
 
 // effectiveToolName resolves the muster tool a result belongs to: the stream's
@@ -314,8 +349,8 @@ func (w *batchedWriter) noteCallToolTarget(tool *channels.ToolActivity) {
 // the call_tool meta-tool.
 func (w *batchedWriter) effectiveToolName(tool *channels.ToolActivity) string {
 	if tool.Name == musterCallToolMetaTool {
-		if inner, ok := w.callToolInner[tool.CallID]; ok {
-			return inner
+		if target, ok := w.callToolInner[tool.CallID]; ok {
+			return target.name
 		}
 	}
 	return tool.Name
@@ -358,19 +393,56 @@ func parseAuthChallengePayload(v any, depth int) (server, loginURL string) {
 
 // parseAuthChallenge extracts the backend name and login URL from a
 // core_auth_login result. The URL is the first http(s) link, with trailing
-// punctuation trimmed; the server comes from a "Server: <name>" line, falling
-// back to a generic label. A missing or non-https URL yields "".
+// punctuation trimmed; the server comes from a "Server: <name>" line and is
+// empty when the challenge does not name one (the caller falls back to the
+// recorded call arguments). A missing or non-https URL yields "".
 func parseAuthChallenge(output string) (server, loginURL string) {
 	if m := authChallengeURLRe.FindString(output); m != "" {
+		// Challenge text that embeds a JSON-encoded blob carries Go's HTML-safe
+		// escaping, so each & arrives as the literal six characters \u0026; the
+		// button must open the real URL.
+		m = strings.ReplaceAll(m, jsonEscapedAmp, "&")
 		loginURL = validLoginURL(strings.TrimRight(m, ").,]}>\"'"))
 	}
 	if m := authChallengeServerRe.FindStringSubmatch(output); m != nil {
 		server = m[1]
-	} else {
-		server = "the requested tools"
 	}
 	return server, loginURL
 }
+
+// loginURLNote replaces a scrubbed login URL in the agent's prose.
+const loginURLNote = "_(login link removed; use the Connect button above)_"
+
+// scrubLoginURLs removes every login URL already surfaced as a Connect button
+// from the agent's prose. The URL is a single-use OAuth authorize link:
+// duplicating it in text lets a second click or Slack's unfurl crawler redeem
+// or replay it, which the auth server answers by revoking the user's whole
+// token family. Matching is by authorize-endpoint prefix (everything up to and
+// including "?"): the agent re-encodes the query string freely (JSON-escaped
+// ampersands, percent-encoded padding), so an exact match cannot be relied on.
+// Markdown links carrying the URL are dropped wholesale so no dangling
+// "[label]()" survives; bare occurrences (including Slack's "<url|label>"
+// form) are replaced with a pointer at the button.
+func (w *batchedWriter) scrubLoginURLs(text string) string {
+	for _, loginURL := range w.loginURLs {
+		prefix := loginURL
+		if i := strings.IndexByte(prefix, '?'); i >= 0 {
+			prefix = prefix[:i+1]
+		}
+		if !strings.Contains(text, prefix) {
+			continue
+		}
+		quoted := regexp.QuoteMeta(prefix)
+		text = regexp.MustCompile(`\[[^\]]*\]\(`+quoted+`[^)]*\)`).ReplaceAllString(text, loginURLNote)
+		text = regexp.MustCompile(`<`+quoted+`[^>]*>`).ReplaceAllString(text, loginURLNote)
+		text = regexp.MustCompile(quoted+`\S*`).ReplaceAllString(text, loginURLNote)
+	}
+	return text
+}
+
+// jsonEscapedAmp is how Go's HTML-safe JSON encoding spells "&" inside a
+// string value.
+const jsonEscapedAmp = `\u0026`
 
 // validLoginURL returns raw when it is a well-formed absolute https URL with a
 // host, and "" otherwise. The Connect button opens agent- and tool-controlled
@@ -462,6 +534,7 @@ func (w *batchedWriter) flush(ctx context.Context) error {
 	text := w.buf.String()
 	flushingLen := w.buf.Len()
 	w.mu.Unlock()
+	text = w.scrubLoginURLs(text)
 
 	// Agent output renders as Block Kit markdown blocks. A reply that
 	// fits one block updates the main message; a larger reply rolls over into
@@ -540,7 +613,7 @@ func (c *slackAPIClient) applyIdentity(method string, set func(k, v string)) {
 	if c.username == "" && c.iconURL == "" {
 		return
 	}
-	if method != "chat.postMessage" && method != "chat.postEphemeral" {
+	if method != methodChatPostMessage && method != "chat.postEphemeral" {
 		return
 	}
 	if c.username != "" {
@@ -559,7 +632,7 @@ func (c *slackAPIClient) postMessage(ctx context.Context, channel, text, threadT
 	if threadTS != "" {
 		params.Set(paramThreadTS, threadTS)
 	}
-	return c.post(ctx, "chat.postMessage", params)
+	return c.post(ctx, methodChatPostMessage, params)
 }
 
 // lookupUserEmail returns the email from the user's Slack profile.
@@ -703,7 +776,7 @@ func (c *slackAPIClient) postMarkdown(ctx context.Context, channel, md, threadTS
 	if threadTS != "" {
 		body[paramThreadTS] = threadTS
 	}
-	return c.postJSON(ctx, "chat.postMessage", body)
+	return c.postJSON(ctx, methodChatPostMessage, body)
 }
 
 // chatUpdateMarkdown replaces a message's content with a markdown block. The
@@ -765,7 +838,7 @@ func (c *slackAPIClient) postApprovalPrompt(ctx context.Context, channel, thread
 			},
 		},
 	}
-	_, err := c.postJSON(ctx, "chat.postMessage", body)
+	_, err := c.postJSON(ctx, methodChatPostMessage, body)
 	return err
 }
 
@@ -802,7 +875,7 @@ func (c *slackAPIClient) postChoicePrompt(ctx context.Context, channel, threadID
 			},
 		},
 	}
-	_, err := c.postJSON(ctx, "chat.postMessage", body)
+	_, err := c.postJSON(ctx, methodChatPostMessage, body)
 	return err
 }
 
@@ -814,9 +887,15 @@ func (c *slackAPIClient) postChoicePrompt(ctx context.Context, channel, threadID
 // surfaced by Slack), in an assistant DM only thread replies render in the
 // assistant pane, and the returned ts lets the prompt be rewritten in place
 // once the link completes.
-func (c *slackAPIClient) postSignInPrompt(ctx context.Context, channel, threadID, linkURL string) (string, error) {
-	const text = "Sign in to Giant Swarm so I can act as you. " +
+func (c *slackAPIClient) postSignInPrompt(ctx context.Context, channel, threadID, user, linkURL string) (string, error) {
+	// The prompt is a public thread message and its link is minted for one
+	// user: address it, or a bystander clicks a button bound to someone else's
+	// identity and lands on the email-mismatch page.
+	text := "Sign in to Giant Swarm so I can act as you. " +
 		"Until you do, I can't run tools on your behalf."
+	if user != "" {
+		text = "<@" + user + "> " + text
+	}
 	body := map[string]any{
 		paramChannel: channel,
 		paramText:    text,
@@ -842,7 +921,7 @@ func (c *slackAPIClient) postSignInPrompt(ctx context.Context, channel, threadID
 	if threadID != "" {
 		body[paramThreadTS] = threadID
 	}
-	return c.postJSON(ctx, "chat.postMessage", body)
+	return c.postJSON(ctx, methodChatPostMessage, body)
 }
 
 // slackSectionTextMax is Slack's limit on a section block's text object; a
@@ -957,14 +1036,22 @@ var interactionHTTPClient = &http.Client{Timeout: 10 * time.Second}
 // messages have no addressable ts for chat.update, so the access-consent prompt
 // is updated this way after a click. The response_url is unauthenticated and
 // short-lived; a failure is non-fatal (the decision has already been recorded).
-func respondURL(ctx context.Context, responseURL, text string) error {
+func respondURL(ctx context.Context, responseURL, threadTS, text string) error {
 	if responseURL == "" {
 		return nil
 	}
-	body, err := json.Marshal(map[string]any{
+	payload := map[string]any{
 		"replace_original": true,
+		"response_type":    "ephemeral",
 		paramText:          text,
-	})
+	}
+	// A response_url replacement of a thread-scoped ephemeral must carry the
+	// thread_ts of the source, or Slack renders the replacement at channel
+	// top level as well as in the thread.
+	if threadTS != "" {
+		payload[paramThreadTS] = threadTS
+	}
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("slack respond_url: marshal: %w", err)
 	}
@@ -1023,6 +1110,13 @@ func (c *slackAPIClient) postJSON(ctx context.Context, method string, body any) 
 				cloned[k] = v
 			}
 		})
+		if method == methodChatPostMessage {
+			// Bot posts relay agent- and tool-controlled links; an unfurl has
+			// Slack's crawler fetch them, which for single-use auth links can
+			// trip the auth server's replay detection.
+			cloned[paramUnfurlLinks] = false
+			cloned[paramUnfurlMedia] = false
+		}
 		body = cloned
 	}
 	data, err := json.Marshal(body)
@@ -1040,6 +1134,10 @@ type slackResponse struct {
 
 func (c *slackAPIClient) post(ctx context.Context, method string, params url.Values) (string, error) {
 	c.applyIdentity(method, params.Set)
+	if method == methodChatPostMessage {
+		params.Set(paramUnfurlLinks, "false")
+		params.Set(paramUnfurlMedia, "false")
+	}
 	return c.send(ctx, method, "application/x-www-form-urlencoded", params.Encode())
 }
 

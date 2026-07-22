@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -448,7 +449,7 @@ func TestRespondURL_ErrorsOnNonSuccessStatus(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	err := respondURL(t.Context(), srv.URL, "updated")
+	err := respondURL(t.Context(), srv.URL, "", "updated")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "http status 500")
 }
@@ -459,7 +460,34 @@ func TestRespondURL_SucceedsOn2xx(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	require.NoError(t, respondURL(t.Context(), srv.URL, "updated"))
+	require.NoError(t, respondURL(t.Context(), srv.URL, "", "updated"))
+}
+
+// A replacement of a thread-scoped ephemeral must carry the source thread_ts,
+// or Slack renders it at channel top level as well as in the thread.
+func TestRespondURL_CarriesThreadTS(t *testing.T) {
+	var mu sync.Mutex
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var v map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&v)
+		mu.Lock()
+		got = v
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	body := func() map[string]any { mu.Lock(); defer mu.Unlock(); return got }
+
+	require.NoError(t, respondURL(t.Context(), srv.URL, "100.000", "✅ allowed"))
+	require.Equal(t, "100.000", body()["thread_ts"])
+	require.Equal(t, true, body()["replace_original"])
+	require.Equal(t, "ephemeral", body()["response_type"])
+
+	// Without a thread the field stays absent (a top-level ephemeral).
+	require.NoError(t, respondURL(t.Context(), srv.URL, "", "✅ allowed"))
+	_, hasThread := body()["thread_ts"]
+	require.False(t, hasThread)
 }
 
 func TestThreadInitiator_ReturnsFirstHumanAuthor(t *testing.T) {
@@ -564,9 +592,9 @@ func TestParseAuthChallenge_NoURL(t *testing.T) {
 	require.Empty(t, loginURL)
 }
 
-func TestParseAuthChallenge_NoServerFallback(t *testing.T) {
+func TestParseAuthChallenge_NoServerLine(t *testing.T) {
 	server, loginURL := parseAuthChallenge("please visit https://x.example/auth")
-	require.Equal(t, "the requested tools", server)
+	require.Empty(t, server, "no Server: line yields empty; the caller falls back to the call arguments")
 	require.Equal(t, "https://x.example/auth", loginURL)
 }
 
@@ -608,6 +636,63 @@ func TestParseAuthChallengePayload_NoURL(t *testing.T) {
 	}, 0)
 	require.Empty(t, server)
 	require.Empty(t, loginURL)
+}
+
+func TestParseAuthChallenge_JSONEscapedAmpersand(t *testing.T) {
+	// muster's challenge text embeds a JSON-encoded blob, so Go's HTML-safe
+	// encoding turns each & into a literal escape sequence; the button must
+	// still open the real URL.
+	challenge := "Server: pro\nSign in: https://x.example/auth?a=1" + jsonEscapedAmp + "b=2"
+	server, loginURL := parseAuthChallenge(challenge)
+	require.Equal(t, "pro", server)
+	require.Equal(t, "https://x.example/auth?a=1&b=2", loginURL)
+}
+
+func TestScrubLoginURLs_ReencodedVariants(t *testing.T) {
+	// The agent re-encodes the recorded URL's query freely: JSON-escaped
+	// ampersands, percent-encoded base64 padding. Prefix matching must catch
+	// every spelling.
+	const loginURL = "https://pro.example/authorize?a=1&state=abc="
+	w := &batchedWriter{loginURLs: []string{loginURL}}
+	escaped := strings.ReplaceAll(loginURL, "&", jsonEscapedAmp)
+	percent := "https://pro.example/authorize?a=1&state=abc%3D"
+	out := w.scrubLoginURLs("raw: " + escaped + "\npercent: <" + percent + "|sign in>\nlink: [sign in](" + loginURL + ")")
+	require.NotContains(t, out, "pro.example")
+	require.Contains(t, out, loginURLNote)
+}
+
+func TestNoteCallToolTarget_RecordsServerArgument(t *testing.T) {
+	w := &batchedWriter{}
+	w.noteCallToolTarget(&channels.ToolActivity{
+		Kind:   channels.ToolCall,
+		Name:   musterCallToolMetaTool,
+		CallID: "c1",
+		Args: map[string]any{
+			"name":      musterAuthLoginTool,
+			"arguments": map[string]any{"server": "gazelle-mcp-pro"},
+		},
+	})
+	require.Equal(t, callToolTarget{name: musterAuthLoginTool, server: "gazelle-mcp-pro"}, w.callToolInner["c1"])
+}
+
+func TestScrubLoginURLs(t *testing.T) {
+	const loginURL = "https://pro.example/authorize?state=abc&code_challenge=xyz"
+	w := &batchedWriter{loginURLs: []string{loginURL}}
+
+	// Markdown link, Slack mrkdwn link, and a bare occurrence all collapse to
+	// the button pointer; unrelated links survive.
+	in := "Please [sign in](" + loginURL + ") first.\n" +
+		"Or <" + loginURL + "|click here>.\n" +
+		"Raw: " + loginURL + "\n" +
+		"Docs: https://example.com/docs"
+	out := w.scrubLoginURLs(in)
+	require.NotContains(t, out, loginURL)
+	require.Contains(t, out, loginURLNote)
+	require.Contains(t, out, "https://example.com/docs")
+	require.NotContains(t, out, "[sign in]", "no dangling markdown link label")
+
+	// No recorded URLs: text passes through untouched.
+	require.Equal(t, in, (&batchedWriter{}).scrubLoginURLs(in))
 }
 
 func TestParseAuthChallengePayload_DepthBounded(t *testing.T) {

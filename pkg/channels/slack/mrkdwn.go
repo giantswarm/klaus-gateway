@@ -148,6 +148,15 @@ func escapeMrkdwn(s string) string {
 	return s
 }
 
+// codeSpanSafe makes untrusted text safe to embed in a `code span`: backticks
+// would terminate the span and newlines would carry injected markdown onto
+// their own line, so both are replaced.
+func codeSpanSafe(s string) string {
+	s = strings.ReplaceAll(s, "`", "'")
+	s = strings.ReplaceAll(s, "\n", " ")
+	return s
+}
+
 // splitAtLines splits text into chunks of at most maxLen bytes at line boundaries,
 // staying within Slack's 40 000-character message limit.
 //

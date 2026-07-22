@@ -411,7 +411,7 @@ func TestCallbackStoresLinkOnEmailMatch(t *testing.T) {
 		return "alice@example.com", nil
 	})
 
-	driveCallback(t, l, "U1", http.StatusOK)
+	driveCallback(t, l, "U1", http.StatusSeeOther)
 	got, ok := store.Get("U1")
 	require.True(t, ok)
 	require.Equal(t, "alice@example.com", got.Email)
@@ -421,9 +421,11 @@ func TestCallbackStoresLinkOnEmailMatch(t *testing.T) {
 	require.Equal(t, "muster-sub", jwtSub(t, got.IDToken), "the code exchange seeds the cached dex id_token")
 }
 
-// The browser success page confirms which identity linked, so the in-thread
-// Slack confirmation does not have to echo the email to a public channel.
-func TestCallbackSuccessPageNamesIdentity(t *testing.T) {
+// A successful callback must not answer 200 with code+state still in the
+// address bar: reloading that tab would resubmit the consumed code, and the
+// auth server answers OAuth 2.1 code reuse by revoking every token for the
+// user+client. The success page lives behind a redirect to a code-free URL.
+func TestCallbackRedirectsToCodeFreeSuccessPage(t *testing.T) {
 	stub := newMusterStub(t, "klaus-gateway", "alice@example.com", "muster-sub")
 	l := newTestLinker(t, stub, NewMemStore(), func(context.Context, string) (string, error) {
 		return "alice@example.com", nil
@@ -437,9 +439,29 @@ func TestCallbackSuccessPageNamesIdentity(t *testing.T) {
 	crec := httptest.NewRecorder()
 	q := url.Values{"state": {state}, "code": {"auth-code"}}
 	l.HandleCallback(crec, httptest.NewRequest(http.MethodGet, CallbackPath+"?"+q.Encode(), nil))
-	require.Equal(t, http.StatusOK, crec.Code)
-	require.Contains(t, crec.Body.String(), "alice@example.com",
+	require.Equal(t, http.StatusSeeOther, crec.Code)
+	location := crec.Header().Get("Location")
+	require.True(t, strings.HasPrefix(location, CallbackPath+"?done="), location)
+	require.NotContains(t, location, "code=")
+	require.NotContains(t, location, "alice", "the email must not ride in the URL")
+
+	// The landing the browser is sent to confirms which account linked (the
+	// one-time nonce resolves the email; the in-thread rewrite carries none).
+	drec := httptest.NewRecorder()
+	l.HandleCallback(drec, httptest.NewRequest(http.MethodGet, location, nil))
+	require.Equal(t, http.StatusOK, drec.Code)
+	require.Contains(t, drec.Body.String(), "Signed in to Giant Swarm")
+	require.Contains(t, drec.Body.String(), "alice@example.com",
 		"the private success page confirms which account linked")
+
+	// A reload of the landing survives without touching the token endpoint;
+	// the consumed nonce degrades it to the generic success text.
+	rrec := httptest.NewRecorder()
+	l.HandleCallback(rrec, httptest.NewRequest(http.MethodGet, location, nil))
+	require.Equal(t, http.StatusOK, rrec.Code)
+	require.Contains(t, rrec.Body.String(), "Signed in to Giant Swarm")
+	require.NotContains(t, rrec.Body.String(), "alice@example.com",
+		"a reload must not replay the identity confirmation")
 }
 
 func TestCallbackFiresOnLinkedHook(t *testing.T) {
@@ -464,7 +486,7 @@ func TestCallbackFiresOnLinkedHook(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	driveCallback(t, l, "U1", http.StatusOK)
+	driveCallback(t, l, "U1", http.StatusSeeOther)
 	mu.Lock()
 	defer mu.Unlock()
 	require.Equal(t, []string{"U1"}, linked, "OnLinked must fire once with the linked Slack user")
@@ -527,7 +549,8 @@ func TestCallbackRejectsEmailMismatch(t *testing.T) {
 }
 
 // driveCallback runs HandleLink (to seed PKCE pending state) then HandleCallback
-// for slackUser, asserting the callback's HTTP status.
+// for slackUser, asserting the callback's HTTP status. A successful callback is
+// a redirect to the code-free ?done=1 landing, not a direct 200.
 func driveCallback(t *testing.T, l *Linker, slackUser string, wantStatus int) {
 	t.Helper()
 	state := l.SignState(slackUser)

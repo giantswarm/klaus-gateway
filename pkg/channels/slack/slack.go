@@ -157,6 +157,12 @@ type Adapter struct {
 	signInPromptedMu sync.Mutex
 	signInPrompted   map[string]ttlEntry[signInAnchor]
 
+	// inactiveHintedMu guards inactiveHinted, the threads whose poster was
+	// already told the thread is inactive, so a dropped reply hints once per
+	// window instead of once per message.
+	inactiveHintedMu sync.Mutex
+	inactiveHinted   map[string]ttlEntry[struct{}]
+
 	turnsMu sync.Mutex
 	turns   map[string]*turn // keyed by threadID; cancels in-flight SendCompletion
 
@@ -213,11 +219,20 @@ type Adapter struct {
 	modelMu    sync.Mutex
 	modelCache map[string]modelEntry // agentRef -> cached model label
 
-	// connectorMu guards connectorPrompted: when the connect prompt last posted
-	// per (user, backend), bounding re-prompts for a backend the user neither
-	// connects nor dismisses.
+	// connectorMu guards connectorPrompted: the last connect prompt per
+	// (user, backend), bounding re-prompts for a backend the user neither
+	// connects nor dismisses. Each record keeps the surfaced login URL: a new
+	// challenge mints a new single-use URL and invalidates the old one, so a
+	// changed URL must bypass the cooldown or the only visible button is dead.
 	connectorMu       sync.Mutex
-	connectorPrompted map[string]map[string]time.Time
+	connectorPrompted map[string]map[string]connectorPromptRecord
+}
+
+// connectorPromptRecord is the last connect prompt surfaced for a
+// (user, backend): when it posted and which login URL its button carries.
+type connectorPromptRecord struct {
+	at  time.Time
+	url string
 }
 
 // emailEntry is a cached Slack user email with its expiry.
@@ -648,7 +663,7 @@ func (a *Adapter) postSignIn(ctx context.Context, slackChannel, threadID, slackU
 		a.clearSignInReservation(slackUser, threadID)
 		return
 	}
-	ts, err := a.apiClient().postSignInPrompt(ctx, slackChannel, threadID, url)
+	ts, err := a.apiClient().postSignInPrompt(ctx, slackChannel, threadID, slackUser, url)
 	if err != nil {
 		a.Logger.Warn("slack: post sign-in prompt failed", "user", slackUser, "error", err)
 		a.clearSignInReservation(slackUser, threadID)
@@ -693,22 +708,26 @@ func (a *Adapter) recordSignInAnchor(slackUser, threadID string, anchor signInAn
 }
 
 // markConnectorPrompted records a prompt attempt for (user, server) and
-// reports whether one is allowed now (outside the cooldown). Check and set
-// are atomic so concurrent turns post at most one prompt.
-func (a *Adapter) markConnectorPrompted(slackUser, server string) bool {
+// reports whether one is allowed now: outside the cooldown, or carrying a
+// login URL different from the last surfaced button (the auth server issued
+// a new single-use URL, so the posted button is dead and must be superseded).
+// Check and set are atomic so concurrent turns post at most one prompt per
+// URL.
+func (a *Adapter) markConnectorPrompted(slackUser, server, loginURL string) bool {
 	now := time.Now()
 	a.connectorMu.Lock()
 	defer a.connectorMu.Unlock()
-	if last, ok := a.connectorPrompted[slackUser][server]; ok && now.Sub(last) < connectorPromptCooldown {
+	if last, ok := a.connectorPrompted[slackUser][server]; ok &&
+		now.Sub(last.at) < connectorPromptCooldown && last.url == loginURL {
 		return false
 	}
 	if a.connectorPrompted == nil {
-		a.connectorPrompted = make(map[string]map[string]time.Time)
+		a.connectorPrompted = make(map[string]map[string]connectorPromptRecord)
 	}
 	if a.connectorPrompted[slackUser] == nil {
-		a.connectorPrompted[slackUser] = make(map[string]time.Time)
+		a.connectorPrompted[slackUser] = make(map[string]connectorPromptRecord)
 	}
-	a.connectorPrompted[slackUser][server] = now
+	a.connectorPrompted[slackUser][server] = connectorPromptRecord{at: now, url: loginURL}
 	return true
 }
 
@@ -1131,6 +1150,9 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 		}
 		return
 	}
+	a.Logger.Debug("slack: inbound event", "type", inner.Type, "channel", inner.Channel,
+		"ts", inner.TS, "thread_ts", inner.ThreadTS, "user", inner.User,
+		"subtype", inner.SubType, "from_bot", inner.BotID != "")
 	if !a.acceptEvent(inner) {
 		return
 	}
@@ -1157,6 +1179,8 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 	threadReplyOnly := inner.threadReplyOnly()
 	msg, ok := inner.toInboundMessage(threadReplyOnly)
 	if !ok {
+		a.Logger.Debug("slack: event not routable as a message", "type", inner.Type,
+			"channel", inner.Channel, "ts", inner.TS, "thread_reply_only", threadReplyOnly)
 		return
 	}
 	// The inactive-thread gate runs before the dedup claim: a mention in a
@@ -1164,6 +1188,8 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 	// message copy lands first, having it claim the dedup slot on its way to
 	// being gate-dropped would discard the app_mention copy as a duplicate.
 	if threadReplyOnly && !a.isActiveThread(msg.ThreadID) {
+		a.Logger.Debug("slack: reply in inactive thread ignored", "channel", inner.Channel, "thread", msg.ThreadID)
+		a.hintInactiveThread(ctx, inner.Channel, msg.ThreadID, msg.Subject)
 		return
 	}
 	if a.seenMessage(inner.Channel, msg.MessageID) {
@@ -1173,6 +1199,14 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 	a.seedInitiatorFromRoot(ctx, inner.Channel, msg.ThreadID, msg.MessageID)
 	if cmd := parseCommand(msg.Text); cmd != nil {
 		if a.handleCommand(ctx, cmd, msg.Subject, inner.Channel, msg.ThreadID) {
+			a.Logger.Debug("slack: command consumed", "command", cmd.Name, "channel", inner.Channel, "thread", msg.ThreadID)
+			return
+		}
+		if isUnknownCommand(cmd) {
+			text := fmt.Sprintf("_`/%s` is not one of my commands (see `/help`). If it was meant for the agent, resend it without the leading slash._", cmd.Name)
+			if _, err := a.apiClient().postMessage(ctx, inner.Channel, text, msg.ThreadID); err != nil {
+				a.Logger.Warn("slack: post unknown-command notice failed", "error", err)
+			}
 			return
 		}
 	}
@@ -1249,6 +1283,64 @@ func (a *Adapter) replayDispatch(ctx context.Context, msg channels.InboundMessag
 		case <-ctx.Done():
 			return ctx.Err()
 		}
+	}
+}
+
+// threadEngaged reports whether this process holds any trace of the bot
+// having interacted in threadID: a sign-in prompt, a details setting, or
+// recorded usage. The active-thread gate already rules out an initiator or
+// pending task, so these traces are what distinguishes "the bot was here but
+// the thread never activated / expired" from a served channel's unrelated
+// threads. Process-local: after a restart there is no trace and no hint.
+func (a *Adapter) threadEngaged(threadID string) bool {
+	a.detailsMu.Lock()
+	_, hasDetails := a.details[threadID]
+	a.detailsMu.Unlock()
+	if hasDetails {
+		return true
+	}
+	a.usageMu.Lock()
+	_, hasUsage := a.threadUsage[threadID]
+	a.usageMu.Unlock()
+	if hasUsage {
+		return true
+	}
+	suffix := "\x00" + threadID
+	a.signInPromptedMu.Lock()
+	defer a.signInPromptedMu.Unlock()
+	for key := range a.signInPrompted {
+		if strings.HasSuffix(key, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+// hintInactiveThread posts a one-time ephemeral hint to the poster of a
+// non-mention reply the active-thread gate is about to drop, so the bot does
+// not read as deaf in a thread it was part of (a command-only thread never
+// activates; TTL expiry deactivates). Threads with no trace of the bot stay
+// silent: a served channel's unrelated threads must not be pinged. Ephemeral
+// so a shared channel is not spammed; once per thread per pendingTTL window.
+func (a *Adapter) hintInactiveThread(ctx context.Context, slackChannel, threadID, slackUser string) {
+	if slackUser == "" || !a.threadEngaged(threadID) {
+		return
+	}
+	now := time.Now()
+	a.inactiveHintedMu.Lock()
+	if entry, ok := a.inactiveHinted[threadID]; ok && now.Before(entry.expires) {
+		a.inactiveHintedMu.Unlock()
+		return
+	}
+	if a.inactiveHinted == nil {
+		a.inactiveHinted = make(map[string]ttlEntry[struct{}])
+	}
+	sweepExpired(a.inactiveHinted, now)
+	a.inactiveHinted[threadID] = ttlEntry[struct{}]{expires: now.Add(pendingTTL)}
+	a.inactiveHintedMu.Unlock()
+	const text = "_I'm not active in this thread, so I didn't act on your message. Mention me to start._"
+	if err := a.apiClient().postEphemeralText(ctx, slackChannel, slackUser, threadID, text); err != nil {
+		a.Logger.Warn("slack: post inactive-thread hint failed", "thread", threadID, "error", err)
 	}
 }
 
@@ -1657,6 +1749,12 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 		// falls through to the failure signalling below.
 		if errors.Is(ctx.Err(), context.Canceled) {
 			prog.clear(cctx)
+			// prog.clear is a no-op in text mode (no reaction to swap), which
+			// would leave the placeholder as "thinking" forever under the
+			// "Stopped." reply.
+			if prog.reactTS == "" && !w.wroteContent() {
+				a.postTerminalNote(cctx, client, slackChannel, threadID, replyTS, stoppedNote)
+			}
 			return err
 		}
 		prog.failed(cctx)
@@ -1680,6 +1778,11 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 		cctx, cancel := cleanupCtx()
 		defer cancel()
 		prog.clear(cctx) // drop the working indicator
+		// Same text-mode gap as the stop path: without streamed content the
+		// placeholder would sit as "thinking" above the approval prompt.
+		if prog.reactTS == "" && !w.wroteContent() {
+			a.postTerminalNote(cctx, client, slackChannel, threadID, replyTS, pausedNote)
+		}
 		a.storePendingTask(threadID, &pendingTask{
 			TaskID:    pd.TaskID,
 			AgentRef:  msg.AgentRef,

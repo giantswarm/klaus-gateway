@@ -196,3 +196,9 @@ func TestEscapeMrkdwn(t *testing.T) {
 		escapeMrkdwn("<!channel> deploy? a && b <@U123>"))
 	require.Equal(t, "plain *bold* _it_", escapeMrkdwn("plain *bold* _it_"))
 }
+
+func TestCodeSpanSafe(t *testing.T) {
+	require.Equal(t, "x_tool", codeSpanSafe("x_tool"))
+	require.Equal(t, "'*bold*' evil", codeSpanSafe("`*bold*` evil"))
+	require.Equal(t, "a b", codeSpanSafe("a\nb"))
+}

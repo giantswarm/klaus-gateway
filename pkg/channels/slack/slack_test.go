@@ -1382,6 +1382,79 @@ func TestDispatch_PreStreamFailurePostsNote(t *testing.T) {
 	}, 2*time.Second, 20*time.Millisecond, "a pre-stream dispatch failure must post the failure note")
 }
 
+// A slash command the gateway does not own ("/invite", a typo) must not fall
+// through to the agent (a full turn spent explaining Slack commands); it gets
+// a short notice instead. A prompt merely starting with a path still
+// dispatches.
+func TestHandleInbound_UnknownSlashCommandIntercepted(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok"}, {Done: true}}}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
+
+	sendEvent(t, srv, mention("U1", "/invite <@U2>", "100.000", ""))
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "not one of my commands")
+	}, 2*time.Second, 20*time.Millisecond, "an unknown command replies with a notice")
+	require.Zero(t, gw.resolveCount(), "an unknown slash command must not reach the agent")
+
+	sendEvent(t, srv, mention("U1", "/etc/hosts on node X is broken", "101.000", ""))
+	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
+		2*time.Second, 20*time.Millisecond, "a path-shaped prompt still dispatches")
+}
+
+// A plain (non-mention) reply in a thread the bot has no trace of stays fully
+// silent: no dispatch, no hint (a served channel's unrelated threads must not
+// be pinged).
+func TestHandleInbound_UnrelatedThreadReplyStaysSilent(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
+
+	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","channel_type":"channel","user":"U1","text":"lunch anyone?","channel":"C1","ts":"200.000","thread_ts":"100.000"}}`)
+	time.Sleep(150 * time.Millisecond)
+	require.Zero(t, gw.resolveCount())
+	require.Empty(t, fake.pathCalls("chat.postEphemeral"), "no hint for a thread with no bot trace")
+	require.Empty(t, fake.pathCalls("chat.postMessage"))
+}
+
+// /stop before any streamed content in text-progress mode must resolve the
+// "thinking" placeholder instead of leaving it dangling above "Stopped.".
+func TestStop_TextModePlaceholderResolved(t *testing.T) {
+	fake := newFakeSlackAPI()
+	hold := make(chan struct{})
+	gw := &stubGateway{hold: hold}
+	defer close(hold)
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+	a.ProgressMode = "text"
+
+	sendEvent(t, srv, dmEvent("U1", "long task", "100.000"))
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "_thinking")
+	}, 2*time.Second, 20*time.Millisecond, "text placeholder posted")
+
+	sendEvent(t, srv, dmThreadEvent("U1", "/stop", "101.000", "100.000"))
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.update")), "(stopped)")
+	}, 2*time.Second, 20*time.Millisecond, "the placeholder is replaced on stop")
+}
+
+// A turn pausing on an approval prompt before any streamed content in
+// text-progress mode must resolve the placeholder, which otherwise sits as
+// "thinking" above the prompt.
+func TestPrompt_TextModePlaceholderResolved(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{deltas: []channels.OutboundDelta{
+		{Kind: channels.DeltaPrompt, TaskID: "task-1", Prompt: &channels.HitlPrompt{ToolName: "delete_pod"}},
+	}}
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+	a.ProgressMode = "text"
+
+	sendEvent(t, srv, dmEvent("U1", "do it", "100.000"))
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.update")), "(waiting for your input")
+	}, 2*time.Second, 20*time.Millisecond, "the placeholder is replaced when the turn pauses")
+}
+
 // A retried delivery whose original never reached the handler (pod restart,
 // ingress failure) is the only delivery of that user message: it must be
 // processed, not dropped, as long as its event_id is unseen.
