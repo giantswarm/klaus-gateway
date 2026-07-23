@@ -210,7 +210,7 @@ func (a *Adapter) agentUnavailableReply(ctx context.Context, name string) string
 // technical selectors that disambiguate.
 func agentAmbiguousReply(name string, refs []string) string {
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf(agentAmbiguousNotice, escapeMrkdwn(name)))
+	fmt.Fprintf(&b, agentAmbiguousNotice, escapeMrkdwn(name))
 	for _, ref := range refs {
 		b.WriteString("\n• `/agent " + ref + " <question>`")
 	}
