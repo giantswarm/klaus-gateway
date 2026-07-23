@@ -158,12 +158,19 @@ func (d OutboundDelta) isZero() bool {
 type Attachment struct {
 	Filename    string
 	ContentType string
-	Bytes       []byte
+	// SourceURL is where the raw bytes are fetched from when they are not
+	// inlined at parse time (e.g. a Slack url_private needing the bot token).
+	// A channel adapter downloads it and fills Bytes before the turn dispatches.
+	SourceURL string
+	// Size is the source's declared byte size, 0 when unknown. It bounds the
+	// download as a memory guard; it is not a product limit.
+	Size  int
+	Bytes []byte
 }
 
 // Message is a single stored turn returned by FetchHistory.
 type Message struct {
 	Role    string    `json:"role"`
 	Content string    `json:"content"`
-	SentAt  time.Time `json:"sent_at,omitempty"`
+	SentAt  time.Time `json:"sent_at,omitzero"`
 }

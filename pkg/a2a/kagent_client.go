@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"iter"
@@ -17,6 +19,21 @@ import (
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
 	"github.com/google/uuid"
 )
+
+// partKind is the discriminator key in kagent's spec-lowercase part encoding.
+const partKind = "kind"
+
+// partKindFile is the spec file-part discriminator value, which doubles as the
+// key carrying the FilePart payload.
+const partKindFile = "file"
+
+// ErrPayloadTooLarge is returned when kagent rejects a turn because its request
+// body exceeds the agent's configured A2A_MAX_CONTENT_LENGTH (HTTP 413). The
+// body may be over the cap because of attachments or a large accumulated
+// history; the cause is not distinguished here. Channels match it with errors.Is
+// to render an actionable "too large" notice instead of the generic turn-failed
+// message.
+var ErrPayloadTooLarge = errors.New("a2a: request payload too large")
 
 // agentRefKey is the context key for the target agentRef.
 type agentRefKey struct{}
@@ -120,6 +137,10 @@ func (k *A2AClient) Execute(ctx context.Context, execCtx *a2asrv.ExecutorContext
 		defer func() { _ = resp.Body.Close() }()
 
 		if resp.StatusCode != http.StatusOK {
+			if resp.StatusCode == http.StatusRequestEntityTooLarge {
+				yield(nil, fmt.Errorf("%w: %s", ErrPayloadTooLarge, resp.Status))
+				return
+			}
 			yield(nil, fmt.Errorf("unexpected HTTP status: %s", resp.Status))
 			return
 		}
@@ -194,14 +215,27 @@ func buildKagentParams(execCtx *a2asrv.ExecutorContext) map[string]any {
 			continue
 		}
 		if text := p.Text(); text != "" {
-			parts = append(parts, map[string]any{"kind": "text", "text": text})
+			parts = append(parts, map[string]any{partKind: "text", "text": text})
 			continue
 		}
 		// Structured data parts carry HITL decisions (decision_type,
 		// ask_user_answers). kagent resolves the paused confirmation only from
 		// a DataPart, so these must survive serialization.
 		if d := p.Data(); d != nil {
-			parts = append(parts, map[string]any{"kind": "data", "data": d})
+			parts = append(parts, map[string]any{partKind: "data", "data": d})
+			continue
+		}
+		// Raw parts are file attachments; kagent expects the spec FilePart shape
+		// with base64-encoded bytes.
+		if raw := p.Raw(); raw != nil {
+			parts = append(parts, map[string]any{
+				partKind: partKindFile,
+				partKindFile: map[string]any{
+					"name":     p.Filename,
+					"mimeType": p.MediaType,
+					"bytes":    base64.StdEncoding.EncodeToString(raw),
+				},
+			})
 		}
 	}
 
@@ -270,7 +304,7 @@ func parseKagentSSEStream(body io.Reader) iter.Seq2[a2apkg.Event, error] {
 			}
 
 			var result kagentStreamResult
-			if err := json.Unmarshal(wrapper.Result, &result); err != nil {
+			if err := json.Unmarshal(stripFileParts(wrapper.Result), &result); err != nil {
 				if !yield(nil, fmt.Errorf("parse a2a result: %w", err)) {
 					return
 				}
@@ -314,4 +348,106 @@ func parseKagentSSEStream(body io.Reader) iter.Seq2[a2apkg.Event, error] {
 			yield(nil, fmt.Errorf("sse stream: %w", err))
 		}
 	}
+}
+
+// stripFileParts removes file parts (kind:"file") from any "parts" array in a
+// kagent result before it reaches the a2a-go decoder. kagent echoes an uploaded
+// attachment back inside the turn's status message (and may emit file
+// artifacts), but a2apkg.Part only understands text/data/url/raw parts and
+// fails the whole result decode with "unknown part content type: [kind file]".
+// Response file parts are never rendered to a channel, so dropping them is
+// lossless for current behaviour and keeps the turn alive. Retained fields are
+// copied verbatim as raw JSON, so numeric precision is preserved.
+func stripFileParts(raw json.RawMessage) json.RawMessage {
+	// Fast path: the common turn carries no file parts at all. The "file" key
+	// only appears in a spec file part; a false positive (e.g. the word in text)
+	// costs one extra decode that finds nothing to strip and returns raw.
+	if !bytes.Contains(raw, []byte(`"file"`)) {
+		return raw
+	}
+	cleaned, changed := walkStripFileParts(raw, "")
+	if !changed {
+		return raw
+	}
+	return cleaned
+}
+
+// walkStripFileParts recurses through the JSON value, dropping file parts from
+// any array reached via a "parts" key. key is the object key this value was
+// found under. It returns the (possibly rewritten) value and whether anything
+// changed; on any decode error it reports no change so the typed decode surfaces
+// the original error.
+func walkStripFileParts(raw json.RawMessage, key string) (json.RawMessage, bool) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return raw, false
+	}
+	switch trimmed[0] {
+	case '{':
+		var obj map[string]json.RawMessage
+		if err := json.Unmarshal(trimmed, &obj); err != nil {
+			return raw, false
+		}
+		changed := false
+		for k, v := range obj {
+			nv, ch := walkStripFileParts(v, k)
+			if ch {
+				obj[k] = nv
+				changed = true
+			}
+		}
+		if !changed {
+			return raw, false
+		}
+		out, err := json.Marshal(obj)
+		if err != nil {
+			return raw, false
+		}
+		return out, true
+	case '[':
+		var arr []json.RawMessage
+		if err := json.Unmarshal(trimmed, &arr); err != nil {
+			return raw, false
+		}
+		changed := false
+		if key == "parts" {
+			kept := make([]json.RawMessage, 0, len(arr))
+			for _, e := range arr {
+				if isFilePart(e) {
+					changed = true
+					continue
+				}
+				kept = append(kept, e)
+			}
+			arr = kept
+		}
+		for i, e := range arr {
+			ne, ch := walkStripFileParts(e, "")
+			if ch {
+				arr[i] = ne
+				changed = true
+			}
+		}
+		if !changed {
+			return raw, false
+		}
+		out, err := json.Marshal(arr)
+		if err != nil {
+			return raw, false
+		}
+		return out, true
+	default:
+		return raw, false
+	}
+}
+
+// isFilePart reports whether a parts-array element is a spec file part.
+func isFilePart(raw json.RawMessage) bool {
+	var p struct {
+		Kind string `json:"kind"`
+	}
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return false
+	}
+	return p.Kind == partKindFile
 }

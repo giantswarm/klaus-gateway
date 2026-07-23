@@ -35,10 +35,22 @@ const (
 
 // buildInboundParts builds the A2A message parts for an outbound user turn.
 // When msg.Decision is set it emits a structured HITL decision DataPart plus a
-// human-readable text label; otherwise a single text part.
+// human-readable text label; otherwise a text part (when there is text) plus
+// one part per downloaded attachment, falling back to a single empty text part
+// so the A2A message stays well-formed.
 func buildInboundParts(msg InboundMessage) []*a2apkg.Part {
 	if msg.Decision == nil {
-		return []*a2apkg.Part{a2apkg.NewTextPart(withAuthor(msg.Author, msg.Text))}
+		var parts []*a2apkg.Part
+		if text := withAuthor(msg.Author, msg.Text); text != "" {
+			parts = append(parts, a2apkg.NewTextPart(text))
+		}
+		parts = append(parts, attachmentParts(msg.Attachments)...)
+		if len(parts) == 0 {
+			// An attachment-only message whose downloads all failed leaves no
+			// content; an empty text part keeps the A2A message well-formed.
+			parts = append(parts, a2apkg.NewTextPart(""))
+		}
+		return parts
 	}
 
 	data := map[string]any{"decision_type": msg.Decision.Type}
@@ -58,6 +70,88 @@ func buildInboundParts(msg InboundMessage) []*a2apkg.Part {
 		label = msg.Decision.Type
 	}
 	return []*a2apkg.Part{a2apkg.NewDataPart(data), a2apkg.NewTextPart(withAuthor(msg.Author, label))}
+}
+
+// attachmentParts builds an A2A part per attachment that has downloaded bytes.
+// A text attachment (yaml, json, source, …) becomes a text part carrying its
+// content: model backends reject a text/* binary blob ("Not supported yet:
+// inline_data=Blob(… mime_type='text/plain')"), and a text file is only useful
+// to the agent as readable text anyway. Binary attachments (images, PDFs) stay
+// as file parts for a vision-capable model. Attachments without bytes (a failed
+// download) are skipped.
+func attachmentParts(attachments []Attachment) []*a2apkg.Part {
+	parts := make([]*a2apkg.Part, 0, len(attachments))
+	for _, att := range attachments {
+		if len(att.Bytes) == 0 {
+			continue
+		}
+		if isTextualMediaType(att.ContentType) {
+			parts = append(parts, a2apkg.NewTextPart(textAttachment(att)))
+			continue
+		}
+		part := a2apkg.NewRawPart(att.Bytes)
+		part.Filename = att.Filename
+		part.MediaType = att.ContentType
+		parts = append(parts, part)
+	}
+	return parts
+}
+
+// textAttachment renders a text attachment as a labeled, fenced block so the
+// agent sees both the filename and the file's content as readable text. The
+// fence is one backtick longer than the longest backtick run in the content,
+// so a file that itself contains ``` fences (any markdown with code blocks)
+// cannot close the block early and leak its remainder outside the quoted
+// context.
+func textAttachment(att Attachment) string {
+	name := att.Filename
+	if name == "" {
+		name = "attachment"
+	}
+	fence := strings.Repeat("`", max(3, longestBacktickRun(att.Bytes)+1))
+	return "Attached file `" + name + "`:\n" + fence + "\n" + string(att.Bytes) + "\n" + fence
+}
+
+// longestBacktickRun returns the length of the longest consecutive run of
+// backticks in b.
+func longestBacktickRun(b []byte) int {
+	longest, run := 0, 0
+	for _, c := range b {
+		if c != '`' {
+			run = 0
+			continue
+		}
+		if run++; run > longest {
+			longest = run
+		}
+	}
+	return longest
+}
+
+// mediaTypeJSON is the JSON media type, named because the literal recurs
+// across the textual-type switch and its tests.
+const mediaTypeJSON = "application/json"
+
+// isTextualMediaType reports whether a media type is human-readable text that
+// should reach the agent as a text part rather than a binary file blob. It
+// ignores any charset parameter and matches text/*, the common structured text
+// types, and the +json/+xml/+yaml structured suffixes.
+func isTextualMediaType(mediaType string) bool {
+	mt := strings.ToLower(strings.TrimSpace(mediaType))
+	if i := strings.IndexByte(mt, ';'); i >= 0 {
+		mt = strings.TrimSpace(mt[:i])
+	}
+	if strings.HasPrefix(mt, "text/") {
+		return true
+	}
+	switch mt {
+	case mediaTypeJSON, "application/xml", "application/yaml",
+		"application/x-yaml", "application/x-yml", "application/toml",
+		"application/x-sh", "application/javascript", "application/x-ndjson",
+		"application/csv":
+		return true
+	}
+	return strings.HasSuffix(mt, "+json") || strings.HasSuffix(mt, "+xml") || strings.HasSuffix(mt, "+yaml")
 }
 
 // withAuthor prefixes text with the real author when the turn runs under a

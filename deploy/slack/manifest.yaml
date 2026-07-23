@@ -61,6 +61,10 @@ oauth_config:
       - im:history
       # React to messages in channels the bot is a member of.
       - channels:history
+      # Download message attachments (url_private) so they can be forwarded to
+      # the agent. Without this the token is unauthorized and Slack serves an
+      # HTML sign-in page instead of the file bytes.
+      - files:read
       # Join public channels on invite (app_mention works without this, but
       # history lookup requires membership).
       - channels:join

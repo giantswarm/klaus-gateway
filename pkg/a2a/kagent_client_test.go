@@ -2,6 +2,7 @@ package a2a_test
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -121,6 +122,87 @@ func TestKagentClient_Execute_SerializesDataPart(t *testing.T) {
 	require.Equal(t, "approved", gotParts[1]["text"])
 }
 
+func TestKagentClient_Execute_SerializesFilePart(t *testing.T) {
+	const agentName = "klaud-vision"
+
+	var gotParts []map[string]any
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/a2a/kagent/"+agentName+"/a2a", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Params struct {
+				Message struct {
+					Parts []map[string]any `json:"parts"`
+				} `json:"message"`
+			} `json:"params"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		gotParts = body.Params.Message.Parts
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		writeSSEResult(w, flusher, map[string]any{
+			"kind": "status-update", "taskId": "t", "final": true,
+			"status": map[string]any{"state": "completed"},
+		})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	kc := &pkga2a.A2AClient{BaseURL: srv.URL + "/api/a2a/kagent", DefaultAgent: agentName}
+
+	raw := []byte{0x89, 0x50, 0x4e, 0x47}
+	filePart := a2a.NewRawPart(raw)
+	filePart.Filename = "shot.png"
+	filePart.MediaType = "image/png"
+
+	execCtx := &a2asrv.ExecutorContext{
+		ContextID: "ctx",
+		TaskID:    a2a.NewTaskID(),
+		Message:   a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("look"), filePart),
+	}
+	for _, err := range kc.Execute(t.Context(), execCtx) {
+		require.NoError(t, err)
+	}
+
+	require.Len(t, gotParts, 2)
+	require.Equal(t, "text", gotParts[0]["kind"])
+	require.Equal(t, "file", gotParts[1]["kind"])
+	file, ok := gotParts[1]["file"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "shot.png", file["name"])
+	require.Equal(t, "image/png", file["mimeType"])
+	decoded, err := base64.StdEncoding.DecodeString(file["bytes"].(string))
+	require.NoError(t, err)
+	require.Equal(t, raw, decoded)
+}
+
+func TestKagentClient_Execute_PayloadTooLarge(t *testing.T) {
+	const agentName = "klaud-vision"
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/a2a/kagent/"+agentName+"/a2a", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusRequestEntityTooLarge)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	kc := &pkga2a.A2AClient{BaseURL: srv.URL + "/api/a2a/kagent", DefaultAgent: agentName}
+	execCtx := &a2asrv.ExecutorContext{
+		ContextID: "ctx",
+		TaskID:    a2a.NewTaskID(),
+		Message:   a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("big")),
+	}
+
+	var gotErr error
+	for _, err := range kc.Execute(t.Context(), execCtx) {
+		if err != nil {
+			gotErr = err
+		}
+	}
+	require.ErrorIs(t, gotErr, pkga2a.ErrPayloadTooLarge)
+}
+
 func TestKagentClient_Execute_ForwardsEvents(t *testing.T) {
 	const agentName = "sre-agent"
 	srv := startFakeKagent(t, agentName)
@@ -157,6 +239,85 @@ func TestKagentClient_Execute_ForwardsEvents(t *testing.T) {
 		}
 	}
 	require.True(t, artifactSeen, "expected at least one artifact event")
+}
+
+// TestKagentClient_Execute_ToleratesEchoedFileParts covers the case where
+// kagent echoes an uploaded attachment back as a spec file part (kind:"file")
+// inside a status message and an artifact. a2apkg.Part cannot decode file parts,
+// so without stripping them the whole result decode fails ("unknown part content
+// type: [kind file]") and the turn errors. The stream must parse cleanly and the
+// text alongside the file part must survive.
+func TestKagentClient_Execute_ToleratesEchoedFileParts(t *testing.T) {
+	const agentName = "sre-agent"
+	filePart := map[string]any{
+		"kind": "file",
+		"file": map[string]any{
+			"name":     "diagram.png",
+			"mimeType": "image/png",
+			"bytes":    base64.StdEncoding.EncodeToString([]byte("PNGDATA")),
+		},
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/a2a/kagent/"+agentName+"/a2a", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher := w.(http.Flusher)
+		// Status message echoes the user's file part alongside a caption.
+		writeSSEResult(w, flusher, map[string]any{
+			"kind": "status-update", "contextId": "c", "taskId": "t", "final": false,
+			"status": map[string]any{
+				"state": "submitted",
+				"message": map[string]any{
+					"messageId": "m1", "role": "user",
+					"parts": []any{filePart, map[string]any{"kind": "text", "text": "look at this"}},
+				},
+			},
+		})
+		// Artifact mixes a file part with the agent's text answer.
+		writeSSEResult(w, flusher, map[string]any{
+			"kind": "artifact-update", "contextId": "c", "taskId": "t", "lastChunk": true,
+			"artifact": map[string]any{
+				"artifactId": "a1",
+				"parts":      []any{filePart, map[string]any{"kind": "text", "text": "pong"}},
+			},
+		})
+		writeSSEResult(w, flusher, map[string]any{
+			"kind": "status-update", "contextId": "c", "taskId": "t", "final": true,
+			"status": map[string]any{"state": "completed"},
+		})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	kc := &pkga2a.A2AClient{BaseURL: srv.URL + "/api/a2a/kagent", DefaultAgent: agentName}
+	execCtx := &a2asrv.ExecutorContext{
+		ContextID: "c",
+		TaskID:    a2a.NewTaskID(),
+		Message:   a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("ping")),
+	}
+
+	var events []a2a.Event
+	for event, err := range kc.Execute(t.Context(), execCtx) {
+		require.NoError(t, err)
+		events = append(events, event)
+	}
+
+	require.NotEmpty(t, events)
+	var artifactText, statusText string
+	for _, ev := range events {
+		switch e := ev.(type) {
+		case *a2a.TaskArtifactUpdateEvent:
+			require.Len(t, e.Artifact.Parts, 1, "file part should be dropped, text kept")
+			artifactText = e.Artifact.Parts[0].Text()
+		case *a2a.TaskStatusUpdateEvent:
+			if e.Status.Message != nil {
+				statusText = e.Status.Message.Parts[0].Text()
+			}
+		}
+	}
+	require.Equal(t, "pong", artifactText)
+	require.Equal(t, "look at this", statusText)
 }
 
 func TestKagentClient_Execute_UsesAgentRefFromContext(t *testing.T) {
