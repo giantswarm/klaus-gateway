@@ -43,7 +43,7 @@ type connectorCompletion struct {
 // and in the redirect's s parameter; everything else stays server-side.
 func (a *Adapter) mintConnectorCompletion(slackUser, server, channel, threadTS string) string {
 	raw := make([]byte, 16)
-	// rand.Read never fails on supported platforms (it panics instead).
+	// crypto/rand.Read never returns an error (Go 1.24+).
 	_, _ = rand.Read(raw)
 	stateID := base64.RawURLEncoding.EncodeToString(raw)
 

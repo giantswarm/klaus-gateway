@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- The Slack "Connect <backend>" button no longer opens a broken login link when the agent's sign-in challenge arrives as an undecoded JSON string. The parsed login URL was capturing the trailing instructions (`\n\n...`), producing a mangled `state` that muster rejected as an expired session; the URL is now cut at the first JSON whitespace or quote escape.
+- The Slack "Connect <backend>" button no longer opens a broken login link when the agent's sign-in challenge arrives as an undecoded JSON string.
 
 ### Changed
 
