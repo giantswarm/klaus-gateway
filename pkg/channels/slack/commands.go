@@ -93,7 +93,7 @@ type slashCommand struct {
 }
 
 // parseCommand extracts a leading /command from text. Commands are always
-// mention-prefixed in use ("@klaus /stop"); StripMention removes the mention
+// mention-prefixed in use ("@bot /stop"); StripMention removes the mention
 // before this runs, leaving the leading "/" intact. Addressing the bot also
 // keeps Slack from intercepting the message as a native slash command, so the
 // same form works in channels and DMs. Returns nil when the text does not
@@ -114,19 +114,31 @@ func parseCommand(text string) *slashCommand {
 	return &slashCommand{Name: strings.ToLower(parts[0]), Args: args}
 }
 
-const helpText = "*Commands* — mention me first, e.g. `@klaus /stop`.\n" +
-	"• `/stop` — interrupt the current turn\n" +
+const helpCommands = "• `/stop` — interrupt the current turn\n" +
 	"• `/usage` — show token usage for the last turn and the session\n" +
 	"• `/details on|off|full` — show or hide the agent's tool activity\n" +
 	"• `/help` — show this message"
 
-// agentHelpText is appended to helpText when agent selection is available.
+// agentHelpText is appended to the help reply when agent selection is available.
 const agentHelpText = "\n• `/agent \"<name>\" <question>` — start a new conversation with the named agent; `/agent` alone lists the available agents"
 
-// oboHelpText is appended to helpText when OBO account linking is enabled.
+// oboHelpText is appended to the help reply when OBO account linking is enabled.
 const oboHelpText = `
 • ` + "`/login`" + ` — sign in to Giant Swarm so I act as you
 • ` + "`/logout`" + ` — sign out`
+
+// helpText builds the /help reply. botName is the bot's own display name; when
+// known the mention example names it ("@Swarmgeist /stop"), otherwise the
+// example drops the name rather than hardcoding one.
+func helpText(botName string) string {
+	var header string
+	if botName != "" {
+		header = fmt.Sprintf("*Commands* — mention me first, e.g. `@%s /stop`.\n", botName)
+	} else {
+		header = "*Commands* — mention me first, then the command, e.g. `/stop`.\n"
+	}
+	return header + helpCommands
+}
 
 // handleCommand processes a slash command and posts a reply in-thread.
 // Returns true when the command was consumed (caller should not dispatch).
@@ -163,7 +175,7 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *slashCommand, slackUse
 
 	switch cmd.Name {
 	case cmdHelp:
-		text := helpText
+		text := helpText(a.botName(ctx))
 		if _, ok := a.AgentCards.(agentCardChecker); ok {
 			text += agentHelpText
 		}
