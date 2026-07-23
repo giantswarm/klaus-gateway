@@ -16,6 +16,20 @@ import (
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 )
 
+func TestHelpText(t *testing.T) {
+	named := helpText("swarmgeist")
+	require.Contains(t, named, "`@swarmgeist /stop`")
+	require.NotContains(t, named, "@klaus")
+
+	unnamed := helpText("")
+	require.NotContains(t, unnamed, "@")
+	require.Contains(t, unnamed, "`/stop`")
+
+	// The command list is shared regardless of naming.
+	require.Contains(t, named, "`/help`")
+	require.Contains(t, unnamed, "`/help`")
+}
+
 func TestParseCommand(t *testing.T) {
 	tests := []struct {
 		input   string

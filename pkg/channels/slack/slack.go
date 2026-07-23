@@ -186,8 +186,10 @@ type Adapter struct {
 	seenEventsMu sync.Mutex
 	seenEvents   map[string]time.Time // Slack event_id -> dedup entry expiry
 
-	botIDMu   sync.Mutex
-	botUserID string // this bot's own Slack user ID (auth.test), cached; "" until resolved
+	botIDMu     sync.Mutex
+	botUserID   string // this bot's own Slack user ID (auth.test), cached; "" until resolved
+	botUsername string // this bot's own human-facing name (users.info display name, or auth.test username), cached
+	botResolved bool   // true once the identity lookup has succeeded once
 
 	// dmRedirectMu guards dmRedirected, the IM channels already given the DM
 	// redirect within the current dmRedirectTTL window.
@@ -563,21 +565,53 @@ type AgentCardResolver interface {
 // to recognise the bot's own member_joined_channel event. Returns "" on lookup
 // failure (logged); the caller then cannot confirm a self-join and skips the intro.
 func (a *Adapter) botID(ctx context.Context) string {
+	id, _ := a.resolveIdentity(ctx)
+	return id
+}
+
+// botName returns this bot's own human-facing Slack name, caching it. It is the
+// profile display name (what people see in Slack, e.g. "Swarmgeist"), falling
+// back to the auth.test username when the profile carries no name. Used to name
+// the bot in help text. Returns "" when the lookup fails; callers then fall back
+// to name-free phrasing.
+func (a *Adapter) botName(ctx context.Context) string {
+	_, name := a.resolveIdentity(ctx)
+	return name
+}
+
+// resolveIdentity returns the bot's cached (user ID, display name), fetching
+// them once: auth.test for the ID and username, then users.info for the profile
+// display name. Both are empty on auth.test failure (logged); a users.info
+// failure falls back to the auth.test username.
+func (a *Adapter) resolveIdentity(ctx context.Context) (id, name string) {
 	a.botIDMu.Lock()
-	id := a.botUserID
-	a.botIDMu.Unlock()
-	if id != "" {
-		return id
+	if a.botResolved {
+		id, name = a.botUserID, a.botUsername
+		a.botIDMu.Unlock()
+		return id, name
 	}
-	got, err := a.apiClient().authTest(ctx)
+	a.botIDMu.Unlock()
+
+	client := a.apiClient()
+	gotID, username, err := client.authTest(ctx)
 	if err != nil {
-		a.Logger.Warn("slack: auth.test failed, cannot resolve bot user ID", "error", err)
-		return ""
+		a.Logger.Warn("slack: auth.test failed, cannot resolve bot identity", "error", err)
+		return "", ""
+	}
+	displayName := username
+	if gotID != "" {
+		if dn, err := client.lookupUserDisplayName(ctx, gotID); err != nil {
+			a.Logger.Warn("slack: users.info failed for bot, using auth.test username", "error", err)
+		} else if dn != "" {
+			displayName = dn
+		}
 	}
 	a.botIDMu.Lock()
-	a.botUserID = got
+	a.botUserID = gotID
+	a.botUsername = displayName
+	a.botResolved = true
 	a.botIDMu.Unlock()
-	return got
+	return gotID, displayName
 }
 
 // mentionsBot reports whether text contains a mention of this bot. Returns

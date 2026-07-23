@@ -60,6 +60,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The Slack `/help` reply no longer shows a hardcoded `@klaus` mention. It uses the bot's own display name resolved at runtime (e.g. `@Swarmgeist`), falling back to a name-free example when the name cannot be resolved (klaus-gateway#182).
 - A Slack message from a signed-out user that arrives while the thread is briefly busy is parked for sign-in instead of being rejected with a busy notice and dropped. The sign-in gate previously ran after the per-thread turn lock, so the message was lost until the user resent it.
 - A button-click resume that fails on corrupt session history now resets the session and tells the thread, the same recovery a typed message gets, instead of leaving the thread failing forever.
 - A Slack turn that pauses for input right as the buffered reply text fails to post no longer loses the pause: the approval stays answerable by a reply or click, and only the buffered prose is lost. Previously the paused task was discarded, the next reply started a fresh turn, and the abandoned task could corrupt the conversation's history.
