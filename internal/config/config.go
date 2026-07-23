@@ -79,14 +79,19 @@ type A2AConfig struct {
 }
 
 // ResolvedRESTURL returns the kagent REST base URL: RESTURL when set, otherwise
-// URL with the /api/a2a/... suffix trimmed so any gateway path prefix is kept
-// (e.g. http://agentgateway...:8080/kagent/api/a2a/kagent ->
-// http://agentgateway...:8080/kagent). Empty when neither is set or derivable.
+// URL with the /api/a2a... suffix trimmed so any gateway path prefix is kept.
+// Both A2A base shapes derive: namespace-in-URL
+// (http://agentgateway...:8080/kagent/api/a2a/kagent) and namespace-less
+// (http://agentgateway...:8080/kagent/api/a2a) yield
+// http://agentgateway...:8080/kagent. Empty when neither is set or derivable.
 func (c A2AConfig) ResolvedRESTURL() string {
 	if c.RESTURL != "" {
 		return c.RESTURL
 	}
 	if root, _, ok := strings.Cut(c.URL, "/api/a2a/"); ok {
+		return root
+	}
+	if root, ok := strings.CutSuffix(strings.TrimRight(c.URL, "/"), "/api/a2a"); ok {
 		return root
 	}
 	return ""

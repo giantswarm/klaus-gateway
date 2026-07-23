@@ -144,7 +144,7 @@ func (a *Adapter) usageReport(ctx context.Context, threadID, channelID string) s
 	}
 	report := fmt.Sprintf("*Token usage*\n• Last turn — %s\n• Session — %s",
 		formatUsage(entry.value.lastTurn), formatUsage(entry.value.session))
-	if model := a.agentModelLabel(ctx); model != "" {
+	if model := a.agentModelLabel(ctx, a.boundAgentOrDefault(threadID)); model != "" {
 		report += "\n• Model — " + model
 	}
 	return report
@@ -155,7 +155,7 @@ func formatUsage(u channels.TurnUsage) string {
 }
 
 // AgentModelSource resolves the model id and provider behind an agent.
-// Implemented by pkg/a2a.AgentsClient against the kagent REST API; empty
+// Implemented by pkg/a2a.KagentClient against the kagent REST API; empty
 // strings with a nil error mean the backend does not expose a model for the
 // agent (a BYO runtime).
 type AgentModelSource interface {
@@ -167,25 +167,26 @@ type AgentModelSource interface {
 const agentModelTTL = 10 * time.Minute
 
 // agentModelLabel returns "provider/model" (or just the model when the
-// provider is not reported) for the adapter's default agent, or "" when no
-// model source is configured, the agent exposes no model, or the lookup fails.
-// Results are cached so /usage does not hit the kagent REST API on every call.
-func (a *Adapter) agentModelLabel(ctx context.Context) string {
-	if a.Models == nil || a.DefaultAgent == "" {
+// provider is not reported) for agentRef — the thread's bound agent, or the
+// default — or "" when no model source is configured, the agent exposes no
+// model, or the lookup fails. Results are cached per agent so /usage does not
+// hit the kagent REST API on every call.
+func (a *Adapter) agentModelLabel(ctx context.Context, agentRef string) string {
+	if a.Models == nil || agentRef == "" {
 		return ""
 	}
 
 	now := time.Now()
 	a.modelMu.Lock()
-	if e, ok := a.modelCache[a.DefaultAgent]; ok && now.Before(e.expires) {
+	if e, ok := a.modelCache[agentRef]; ok && now.Before(e.expires) {
 		a.modelMu.Unlock()
 		return e.label
 	}
 	a.modelMu.Unlock()
 
-	model, provider, err := a.Models.AgentModel(ctx, a.DefaultAgent)
+	model, provider, err := a.Models.AgentModel(ctx, agentRef)
 	if err != nil {
-		a.Logger.Warn("slack: agent model lookup failed", "agent", a.DefaultAgent, "error", err)
+		a.Logger.Warn("slack: agent model lookup failed", "agent", agentRef, "error", err)
 		return ""
 	}
 	label := model
@@ -197,7 +198,7 @@ func (a *Adapter) agentModelLabel(ctx context.Context) string {
 	if a.modelCache == nil {
 		a.modelCache = make(map[string]modelEntry)
 	}
-	a.modelCache[a.DefaultAgent] = modelEntry{label: label, expires: now.Add(agentModelTTL)}
+	a.modelCache[agentRef] = modelEntry{label: label, expires: now.Add(agentModelTTL)}
 	a.modelMu.Unlock()
 	return label
 }

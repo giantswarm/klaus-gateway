@@ -289,15 +289,14 @@ func run(args []string) error {
 		}
 		restURL := cfg.A2A.ResolvedRESTURL()
 		if restURL != "" {
-			facade.Sessions = &pkga2a.SessionsClient{
+			kagentClient := &pkga2a.KagentClient{
 				BaseURL:     restURL,
 				TokenSource: tokenSource,
 			}
+			facade.Sessions = kagentClient
 			if slackAdapter != nil {
-				slackAdapter.Models = &pkga2a.AgentsClient{
-					BaseURL:     restURL,
-					TokenSource: tokenSource,
-				}
+				slackAdapter.Models = kagentClient
+				slackAdapter.Roster = kagentClient
 			}
 		}
 		// Card-derived agent branding for Slack: the AgentCard supplies the
