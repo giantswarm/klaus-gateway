@@ -106,10 +106,17 @@ func (c *KagentClient) AgentModel(ctx context.Context, agentRef string) (model, 
 	return payload.Data.Model, payload.Data.ModelProvider, nil
 }
 
+// displayNameAnnotation is the Agent CR annotation carrying the human-facing
+// name Giant Swarm UIs show for an agent.
+const displayNameAnnotation = "ui.giantswarm.io/display-name"
+
 // AgentInfo describes one agent installed on the kagent controller.
 type AgentInfo struct {
-	Name        string
-	Namespace   string
+	Name      string
+	Namespace string
+	// DisplayName is the human-facing name from the ui.giantswarm.io/display-name
+	// annotation; empty when the Agent CR carries none.
+	DisplayName string
 	Description string
 }
 
@@ -121,8 +128,9 @@ func (c *KagentClient) ListAgents(ctx context.Context) ([]AgentInfo, error) {
 		Data []struct {
 			Agent struct {
 				Metadata struct {
-					Name      string `json:"name"`
-					Namespace string `json:"namespace"`
+					Name        string            `json:"name"`
+					Namespace   string            `json:"namespace"`
+					Annotations map[string]string `json:"annotations"`
 				} `json:"metadata"`
 				Spec struct {
 					Description string `json:"description"`
@@ -141,6 +149,7 @@ func (c *KagentClient) ListAgents(ctx context.Context) ([]AgentInfo, error) {
 		agents = append(agents, AgentInfo{
 			Name:        item.Agent.Metadata.Name,
 			Namespace:   item.Agent.Metadata.Namespace,
+			DisplayName: item.Agent.Metadata.Annotations[displayNameAnnotation],
 			Description: item.Agent.Spec.Description,
 		})
 	}

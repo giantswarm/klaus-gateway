@@ -22,8 +22,8 @@ const agentRosterUnavailable = "_I can't list the available agents right now. Pl
 // agentRosterEmpty answers a bare /agent when the controller reports no agents.
 const agentRosterEmpty = "_No agents are installed right now._"
 
-// rosterListTimeout bounds a roster rendering pass: the list-agents call plus
-// the per-agent card lookups joined into it.
+// rosterListTimeout bounds the list-agents call behind a roster listing or a
+// selector resolution.
 const rosterListTimeout = 5 * time.Second
 
 // rosterTTL is how long a fetched roster is served from cache. Short, so a
@@ -31,9 +31,12 @@ const rosterListTimeout = 5 * time.Second
 // /agent listings stay off the controller.
 const rosterTTL = 30 * time.Second
 
-// rosterListing renders the selectable-agent roster: display names from the
-// AgentCards, technical names, and the Agent CRs' descriptions. ok is false
-// when no roster source is configured or the fetch failed.
+// rosterListing renders the selectable-agent roster: display names (the
+// display-name annotation on the Agent CR, falling back to the technical
+// name) and the Agent CRs' descriptions. Namespaces are deliberately absent —
+// which namespace serves a selection is deployment configuration, not
+// something a Slack user picks. ok is false when no roster source is
+// configured or the fetch failed.
 func (a *Adapter) rosterListing(ctx context.Context) (string, bool) {
 	agents, err := a.rosterAgents(ctx)
 	if err != nil {
@@ -42,31 +45,24 @@ func (a *Adapter) rosterListing(ctx context.Context) (string, bool) {
 	if len(agents) == 0 {
 		return agentRosterEmpty, true
 	}
-
-	// One deadline for the whole pass: the per-agent card lookups are cached,
-	// but a cold cache against an unreachable card endpoint must not stack up
-	// full HTTP timeouts.
-	ctx, cancel := context.WithTimeout(ctx, rosterListTimeout)
-	defer cancel()
-
 	var b strings.Builder
-	b.WriteString("*Available agents* — start a new conversation with `/agent <name> <question>`:")
+	b.WriteString("*Available agents* — start a new conversation with `/agent \"<name>\" <question>`:")
 	for _, ag := range agents {
-		selector, ref := a.rosterSelector(ag)
-		display := ""
-		if a.AgentCards != nil {
-			display, _ = a.AgentCards.CardIdentity(ctx, ref)
-		}
-		if display != "" && !strings.EqualFold(display, ag.Name) {
-			b.WriteString("\n• *" + escapeMrkdwn(display) + "* (`" + selector + "`)")
-		} else {
-			b.WriteString("\n• `" + selector + "`")
-		}
+		b.WriteString("\n• *" + escapeMrkdwn(agentDisplayName(ag)) + "*")
 		if ag.Description != "" {
 			b.WriteString(" — " + escapeMrkdwn(ag.Description))
 		}
 	}
 	return b.String(), true
+}
+
+// agentDisplayName is the roster label for ag: the display-name annotation
+// when the Agent CR carries one, the technical name otherwise.
+func agentDisplayName(ag pkga2a.AgentInfo) string {
+	if ag.DisplayName != "" {
+		return ag.DisplayName
+	}
+	return ag.Name
 }
 
 // rosterAgents returns the roster, served from a brief cache so repeated
@@ -98,16 +94,49 @@ func (a *Adapter) rosterAgents(ctx context.Context) ([]pkga2a.AgentInfo, error) 
 	return agents, nil
 }
 
-// rosterSelector is the name a user types to select ag — bare in the default
-// agent's namespace, namespace-qualified elsewhere — and the full ref used
-// for card lookups.
-func (a *Adapter) rosterSelector(ag pkga2a.AgentInfo) (selector, ref string) {
-	selector, ref = ag.Name, ag.Name
-	if ag.Namespace != "" {
-		ref = ag.Namespace + "/" + ag.Name
-		if ag.Namespace != a.defaultAgentNamespace() {
-			selector = ref
+// agentRefsForSelector resolves a quoted /agent selector against the roster,
+// matching display names and technical names case-insensitively with
+// whitespace runs collapsed. Both kinds match in one pass — no precedence — so
+// a selector naming two different agents is reported as ambiguous (fail-stop)
+// instead of quietly resolved by a tie-break rule that a later cluster change
+// could flip to a different agent. Refs are deduped: matching one agent by
+// both its display and technical name is a single match.
+func (a *Adapter) agentRefsForSelector(ctx context.Context, selector string) ([]string, error) {
+	want := foldAgentSelector(selector)
+	if want == "" {
+		return nil, nil
+	}
+	agents, err := a.rosterAgents(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var refs []string
+	seen := make(map[string]bool)
+	for _, ag := range agents {
+		if foldAgentSelector(ag.DisplayName) != want && foldAgentSelector(ag.Name) != want {
+			continue
+		}
+		ref := a.agentInfoRef(ag)
+		if !seen[ref] {
+			seen[ref] = true
+			refs = append(refs, ref)
 		}
 	}
-	return selector, ref
+	return refs, nil
+}
+
+// agentInfoRef is the A2A ref for ag under the deployment's ref shape: bare
+// when the default agent is bare (the namespace already lives in the
+// configured A2A base URL), namespace-qualified when the default is qualified.
+func (a *Adapter) agentInfoRef(ag pkga2a.AgentInfo) string {
+	if a.defaultAgentNamespace() == "" || ag.Namespace == "" {
+		return ag.Name
+	}
+	return ag.Namespace + "/" + ag.Name
+}
+
+// foldAgentSelector normalizes a selector or agent name for matching:
+// lowercased, outer whitespace dropped, internal runs collapsed to one space.
+func foldAgentSelector(s string) string {
+	return strings.ToLower(strings.Join(strings.Fields(s), " "))
 }

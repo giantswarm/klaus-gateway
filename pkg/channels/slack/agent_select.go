@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 )
@@ -34,7 +35,7 @@ const (
 // agentSwitchRefusal answers an /agent prefix inside an existing conversation.
 // The session's context id embeds the agent ref, so a mid-conversation switch
 // would silently start an empty session; refusing is kinder than that.
-const agentSwitchRefusal = "_This conversation already has its agent, and switching mid-conversation would lose its context. Start a new conversation — a fresh mention, or a new chat — with_ `/agent <name> <question>`."
+const agentSwitchRefusal = "_This conversation already has its agent, and switching mid-conversation would lose its context. Start a new conversation — a fresh mention, or a new chat — with_ `/agent \"<name>\" <question>`."
 
 // agentNothingSelectedHint answers a name-only "/agent <name>": with no
 // question there is nothing to dispatch, so no conversation starts and no
@@ -55,6 +56,27 @@ const agentSelectionUnavailable = "_Agent selection isn't available on this gate
 // as conversation-starting (the thread scan failed). Nothing is dispatched:
 // accepting blindly could rebind an existing conversation and fork its session.
 const agentCheckFailedNotice = "⚠️ _I couldn't check this conversation just now, so I haven't started anything. Please try again._"
+
+// agentResolveCheckFailedNotice is posted when a quoted selection could not be
+// resolved because the roster fetch failed. Nothing is dispatched: guessing an
+// agent would violate loud-never-substituted.
+const agentResolveCheckFailedNotice = "⚠️ _I couldn't check the available agents just now, so I haven't started anything. Please try again._"
+
+// agentAmbiguousNotice reports a quoted selection matching more than one
+// agent. The technical names disambiguate, so they are listed here even though
+// the roster itself shows display names only.
+const agentAmbiguousNotice = "⚠️ *%s* matches more than one agent, so I haven't started anything. Pick one by its technical name:"
+
+// agentRecoveryGoneNotice is posted when a conversation's opening message
+// selected an agent by display name that no longer resolves to exactly one
+// agent (renamed, removed, or now ambiguous). The turn is NOT dispatched:
+// routing it to any other agent would silently fork the session.
+const agentRecoveryGoneNotice = "⚠️ _This conversation was started with `/agent \"%s\"`, but that name doesn't match exactly one agent anymore, so I haven't sent your message. Start a new conversation to continue._"
+
+// agentRecoveryCheckFailedNotice is posted when re-deriving a conversation's
+// display-name binding failed transiently (roster unreachable). Nothing is
+// cached, so the next message retries.
+const agentRecoveryCheckFailedNotice = "⚠️ _I couldn't check which agent this conversation uses just now, so I haven't sent your message. Please try again._"
 
 // agentValidateTimeout bounds the card fetch that validates an /agent
 // selection before dispatch.
@@ -106,19 +128,53 @@ func (a *Adapter) handleAgentSelection(ctx context.Context, cmd *slashCommand, m
 		return false
 	}
 
-	name, question := splitAgentCommand(msg.Text)
-	ref, validName := a.agentRefFromName(name)
+	name, quoted, question := splitAgentCommand(msg.Text)
 	if question == "" {
 		hintName := "<name>"
-		if validName {
-			hintName = strings.ToLower(name)
+		switch {
+		case quoted && name != "":
+			hintName = `"` + name + `"`
+		case !quoted:
+			if _, ok := a.agentRefFromName(name); ok {
+				hintName = strings.ToLower(name)
+			}
 		}
 		reply(fmt.Sprintf(agentNothingSelectedHint, hintName))
 		return false
 	}
-	if !validName {
-		reply(a.agentUnavailableReply(ctx, name))
-		return false
+
+	// A quoted name selects by display name (or technical name), resolved
+	// against the live roster; an unquoted name is the technical form, built
+	// syntactically and validated by the card fetch below.
+	var ref string
+	if quoted {
+		if a.Roster == nil {
+			reply(agentSelectionUnavailable)
+			return false
+		}
+		refs, err := a.agentRefsForSelector(ctx, name)
+		if err != nil {
+			a.Logger.Warn("slack: agent selector resolution failed", "selector", name, "thread", msg.ThreadID, "error", err)
+			reply(agentResolveCheckFailedNotice)
+			return false
+		}
+		switch len(refs) {
+		case 0:
+			reply(a.agentUnavailableReply(ctx, name))
+			return false
+		case 1:
+			ref = refs[0]
+		default:
+			reply(agentAmbiguousReply(name, refs))
+			return false
+		}
+	} else {
+		var validName bool
+		ref, validName = a.agentRefFromName(name)
+		if !validName {
+			reply(a.agentUnavailableReply(ctx, name))
+			return false
+		}
 	}
 
 	checker, ok := a.AgentCards.(agentCardChecker)
@@ -148,6 +204,17 @@ func (a *Adapter) agentUnavailableReply(ctx context.Context, name string) string
 		text += "\n\n" + listing
 	}
 	return text
+}
+
+// agentAmbiguousReply renders the loud ambiguous-selection failure with the
+// technical selectors that disambiguate.
+func agentAmbiguousReply(name string, refs []string) string {
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf(agentAmbiguousNotice, escapeMrkdwn(name)))
+	for _, ref := range refs {
+		b.WriteString("\n• `/agent " + ref + " <question>`")
+	}
+	return b.String()
 }
 
 // agentNamePartRe matches one DNS-1123 label, the shape of kagent agent names
@@ -188,14 +255,20 @@ func (a *Adapter) defaultAgentNamespace() string {
 	return namespace
 }
 
-// splitAgentCommand splits "/agent <name> <question…>" into the name token and
-// the question with its original formatting preserved (parseCommand's Fields
-// split would collapse the question's newlines). The name is one whitespace
-// token, full stop: selection is by technical (DNS-1123) name, so there is no
-// quoting grammar — a quoted or multi-word name fails validation and lands on
-// the did-you-mean suggestion, whose normalization strips quotes anyway. The
-// caller has already matched the verb via parseCommand.
-func splitAgentCommand(text string) (name, question string) {
+// agentQuotePairs maps an opening quote to its closing partner. Curly quotes
+// are included because Slack clients autoformat straight quotes as the user
+// types.
+var agentQuotePairs = map[rune]rune{'"': '"', '“': '”', '\'': '\'', '‘': '’'}
+
+// splitAgentCommand splits "/agent <name> <question…>" into the name, whether
+// it was quoted, and the question with its original formatting preserved
+// (parseCommand's Fields split would collapse the question's newlines). A
+// quoted name — straight or Slack smart quotes — may contain spaces and
+// selects by display name; an unquoted name is one whitespace token, the
+// technical (DNS-1123) form. An unterminated quote falls back to the token
+// split, which fails resolution loudly instead of guessing where the name
+// ends. The caller has already matched the verb via parseCommand.
+func splitAgentCommand(text string) (name string, quoted bool, question string) {
 	rest := strings.TrimSpace(text)
 	// parseCommand tolerates whitespace between the slash and the verb
 	// ("/ agent …" still parses), so trim it here too before slicing the verb
@@ -203,12 +276,20 @@ func splitAgentCommand(text string) (name, question string) {
 	rest = strings.TrimSpace(strings.TrimPrefix(rest, "/"))
 	rest = strings.TrimSpace(rest[len(cmdAgent):])
 	if rest == "" {
-		return "", ""
+		return "", false, ""
+	}
+	if open, width := utf8.DecodeRuneInString(rest); width > 0 {
+		if closing, ok := agentQuotePairs[open]; ok {
+			body := rest[width:]
+			if i := strings.IndexRune(body, closing); i >= 0 {
+				return strings.TrimSpace(body[:i]), true, strings.TrimSpace(body[i+utf8.RuneLen(closing):])
+			}
+		}
 	}
 	if i := strings.IndexFunc(rest, unicode.IsSpace); i >= 0 {
-		return rest[:i], strings.TrimSpace(rest[i:])
+		return rest[:i], false, strings.TrimSpace(rest[i:])
 	}
-	return rest, ""
+	return rest, false, ""
 }
 
 // bindThreadAgent records threadID's conversation→agent binding. An empty ref
@@ -314,18 +395,23 @@ func (a *Adapter) conversationStarting(ctx context.Context, msg channels.Inbound
 // so root equality cannot tell). Dispatch uses it to skip reply-only work —
 // the resume existence-check must not greet every new pane chat with
 // "starting fresh".
-func (a *Adapter) threadAgent(ctx context.Context, msg channels.InboundMessage, slackChannel string) (ref, source string, opener bool) {
+//
+// A non-empty refusal means the turn must not be dispatched at all: the
+// opening message selected an agent by display name that no longer resolves
+// (or the roster check failed), and routing the turn anywhere else would fork
+// the session. The caller posts refusal in-thread instead of dispatching.
+func (a *Adapter) threadAgent(ctx context.Context, msg channels.InboundMessage, slackChannel string) (ref, source string, opener bool, refusal string) {
 	if bound, found := a.threadAgentBinding(msg.ThreadID); found {
 		if bound == "" {
-			return a.DefaultAgent, agentSourceDefault, false
+			return a.DefaultAgent, agentSourceDefault, false, ""
 		}
-		return bound, agentSourceThread, false
+		return bound, agentSourceThread, false, ""
 	}
 	// A conversation-starting message with no prefix: the default, recorded so
 	// replies skip the opening-message fetch.
 	if msg.ThreadID == msg.MessageID {
 		a.bindThreadAgent(msg.ThreadID, "")
-		return a.DefaultAgent, agentSourceDefault, true
+		return a.DefaultAgent, agentSourceDefault, true, ""
 	}
 	rctx, cancel := context.WithTimeout(ctx, rootAgentLookupTimeout)
 	defer cancel()
@@ -341,18 +427,22 @@ func (a *Adapter) threadAgent(ctx context.Context, msg channels.InboundMessage, 
 	if err != nil {
 		a.Logger.Warn("slack: conversation opening-message lookup for agent binding failed, using default agent uncached",
 			"thread", msg.ThreadID, "error", err)
-		return a.DefaultAgent, agentSourceDefault, false
+		return a.DefaultAgent, agentSourceDefault, false, ""
 	}
 	// In a DM the scanned opener may be this very message (a new pane chat);
 	// an empty ts means the scan saw no human message at all (the message has
 	// not landed in the replies view yet) — also a fresh conversation.
 	opener = isDMChannelID(slackChannel) && (openingTS == "" || openingTS == msg.MessageID)
-	bound := a.openingAgentRef(openingText)
+	var bound string
+	bound, refusal = a.openingAgentRef(ctx, openingText)
+	if refusal != "" {
+		return "", "", false, refusal
+	}
 	a.bindThreadAgent(msg.ThreadID, bound)
 	if bound == "" {
-		return a.DefaultAgent, agentSourceDefault, opener
+		return a.DefaultAgent, agentSourceDefault, opener, ""
 	}
-	return bound, agentSourceThread, opener
+	return bound, agentSourceThread, opener, ""
 }
 
 // openingAgentRef extracts the agent binding from a conversation-opening
@@ -365,19 +455,42 @@ func (a *Adapter) threadAgent(ctx context.Context, msg channels.InboundMessage, 
 // selection and recovery must resolve identically for every input, or a
 // restart rebinds a conversation to a different agent than the one that
 // answered it (a session fork).
-func (a *Adapter) openingAgentRef(openingText string) string {
+//
+// A quoted (display-name) opener re-resolves against the live roster. When
+// that fails — the agent was renamed or removed, the name is now ambiguous, or
+// the roster is unreachable — refusal is the non-empty user-facing notice and
+// the turn must not be dispatched: any substitute agent would fork the
+// session. Failures are never cached, so a later message re-resolves.
+func (a *Adapter) openingAgentRef(ctx context.Context, openingText string) (ref, refusal string) {
 	text := StripMention(openingText)
 	cmd := parseCommand(text)
 	if cmd == nil || cmd.Name != cmdAgent {
-		return ""
+		return "", ""
 	}
-	name, question := splitAgentCommand(text)
+	name, quoted, question := splitAgentCommand(text)
 	if name == "" || question == "" {
-		return ""
+		return "", ""
 	}
-	ref, ok := a.agentRefFromName(name)
-	if !ok {
-		return ""
+	if !quoted {
+		r, ok := a.agentRefFromName(name)
+		if !ok {
+			return "", ""
+		}
+		return r, ""
 	}
-	return ref
+	// Without a roster a quoted selection could never have bound live (it gets
+	// the selection-unavailable reply and dispatches nothing), so recovery
+	// binds nothing for it either.
+	if a.Roster == nil {
+		return "", ""
+	}
+	refs, err := a.agentRefsForSelector(ctx, name)
+	if err != nil {
+		a.Logger.Warn("slack: opening-message agent selector resolution failed", "selector", name, "error", err)
+		return "", agentRecoveryCheckFailedNotice
+	}
+	if len(refs) != 1 {
+		return "", fmt.Sprintf(agentRecoveryGoneNotice, strings.ReplaceAll(name, "`", "'"))
+	}
+	return refs[0], ""
 }

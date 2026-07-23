@@ -134,7 +134,7 @@ func TestKagentClient_ListAgents(t *testing.T) {
 		require.Equal(t, "Bearer tok", r.Header.Get("Authorization"))
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"error":false,"data":[
-			{"id":"1","agent":{"metadata":{"name":"sre-agent","namespace":"kagent"},"spec":{"description":"Investigates infra issues"}}},
+			{"id":"1","agent":{"metadata":{"name":"sre-agent","namespace":"kagent","annotations":{"ui.giantswarm.io/display-name":"SRE Agent"}},"spec":{"description":"Investigates infra issues"}}},
 			{"id":"2","agent":{"metadata":{"name":"k8s-agent","namespace":"kagent"},"spec":{}}},
 			{"id":"3","agent":{"metadata":{}}}
 		]}`))
@@ -146,7 +146,7 @@ func TestKagentClient_ListAgents(t *testing.T) {
 	require.NoError(t, err)
 	// The nameless third entry is skipped: it cannot be selected or displayed.
 	require.Equal(t, []AgentInfo{
-		{Name: "sre-agent", Namespace: "kagent", Description: "Investigates infra issues"},
+		{Name: "sre-agent", Namespace: "kagent", DisplayName: "SRE Agent", Description: "Investigates infra issues"},
 		{Name: "k8s-agent", Namespace: "kagent"},
 	}, agents)
 }

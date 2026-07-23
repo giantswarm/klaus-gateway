@@ -350,15 +350,6 @@ func (a *Adapter) Start(ctx context.Context, gw channels.Gateway) error {
 	if a.DefaultAgent == "" {
 		return errors.New("slack: DefaultAgent must be set")
 	}
-	// Agent selection needs a namespace-qualified default: bare-name selections
-	// complete with the default's namespace, and the roster renders selectors
-	// relative to it. With a bare default, the default route and an explicit
-	// selection of the same agent would produce two different refs — and two
-	// different sessions. Refuse at boot instead of leaving the incoherence
-	// latent. Bare refs stay valid for roster-less setups (the compose harness).
-	if a.Roster != nil && a.defaultAgentNamespace() == "" {
-		return fmt.Errorf("slack: agent selection (Roster) requires a namespace-qualified DefaultAgent (namespace/name), got %q", a.DefaultAgent)
-	}
 	switch a.DMMode {
 	case "", DMModeServe, DMModeRedirect, DMModeIgnore:
 	default:
@@ -1590,9 +1581,18 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 	// configured default — applies. opener records whether this message opened
 	// its conversation: root equality cannot tell on the assistant pane, where
 	// every message carries the chat's Slack-created anchor as thread_ts.
+	// A refusal means the conversation's display-name binding no longer
+	// resolves; the turn is answered with the notice, never re-routed.
 	agentSource, opener := agentSourcePrefix, true
 	if msg.AgentRef == "" {
-		msg.AgentRef, agentSource, opener = a.threadAgent(ctx, msg, slackChannel)
+		var refusal string
+		msg.AgentRef, agentSource, opener, refusal = a.threadAgent(ctx, msg, slackChannel)
+		if refusal != "" {
+			if _, err := a.apiClient().postMessage(ctx, slackChannel, refusal, msg.ThreadID); err != nil {
+				a.Logger.Warn("slack: post agent-recovery refusal failed", "thread", msg.ThreadID, "error", err)
+			}
+			return nil
+		}
 	}
 
 	// Serialize turns per thread: a thread maps to one kagent session, and

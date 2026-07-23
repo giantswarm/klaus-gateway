@@ -121,7 +121,7 @@ const helpText = "*Commands* — mention me first, e.g. `@klaus /stop`.\n" +
 	"• `/help` — show this message"
 
 // agentHelpText is appended to helpText when agent selection is available.
-const agentHelpText = "\n• `/agent <name> <question>` — start a new conversation with the named agent; `/agent` alone lists the available agents"
+const agentHelpText = "\n• `/agent \"<name>\" <question>` — start a new conversation with the named agent; `/agent` alone lists the available agents"
 
 // oboHelpText is appended to helpText when OBO account linking is enabled.
 const oboHelpText = `
