@@ -221,6 +221,10 @@ const pausedNote = "_(waiting for your input below)_"
 // the failed emoji instead).
 const failedNote = "_(the turn failed; please try again)_"
 
+// attachmentsUnavailableNote is posted when a message carried only attachments
+// and none of them could be downloaded, so there is nothing to send the agent.
+const attachmentsUnavailableNote = "I couldn't download the attachment(s) you shared, so there was nothing to send to the agent. Please try again."
+
 // corruptSessionResetNotice is posted after a corrupt-history failure when the
 // broken kagent session was deleted, so the user knows to resend rather than
 // retry into the same failure.

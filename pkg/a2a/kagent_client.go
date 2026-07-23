@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"iter"
@@ -17,6 +19,15 @@ import (
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
 	"github.com/google/uuid"
 )
+
+// partKind is the discriminator key in kagent's spec-lowercase part encoding.
+const partKind = "kind"
+
+// ErrAttachmentPayloadTooLarge is returned when kagent rejects a turn because
+// its request body exceeds the agent's configured A2A_MAX_CONTENT_LENGTH
+// (HTTP 413). Channels match it with errors.Is to render a size-specific notice
+// instead of the generic turn-failed message.
+var ErrAttachmentPayloadTooLarge = errors.New("a2a: attachment payload too large")
 
 // agentRefKey is the context key for the target agentRef.
 type agentRefKey struct{}
@@ -120,6 +131,10 @@ func (k *A2AClient) Execute(ctx context.Context, execCtx *a2asrv.ExecutorContext
 		defer func() { _ = resp.Body.Close() }()
 
 		if resp.StatusCode != http.StatusOK {
+			if resp.StatusCode == http.StatusRequestEntityTooLarge {
+				yield(nil, fmt.Errorf("%w: %s", ErrAttachmentPayloadTooLarge, resp.Status))
+				return
+			}
 			yield(nil, fmt.Errorf("unexpected HTTP status: %s", resp.Status))
 			return
 		}
@@ -194,14 +209,27 @@ func buildKagentParams(execCtx *a2asrv.ExecutorContext) map[string]any {
 			continue
 		}
 		if text := p.Text(); text != "" {
-			parts = append(parts, map[string]any{"kind": "text", "text": text})
+			parts = append(parts, map[string]any{partKind: "text", "text": text})
 			continue
 		}
 		// Structured data parts carry HITL decisions (decision_type,
 		// ask_user_answers). kagent resolves the paused confirmation only from
 		// a DataPart, so these must survive serialization.
 		if d := p.Data(); d != nil {
-			parts = append(parts, map[string]any{"kind": "data", "data": d})
+			parts = append(parts, map[string]any{partKind: "data", "data": d})
+			continue
+		}
+		// Raw parts are file attachments; kagent expects the spec FilePart shape
+		// with base64-encoded bytes.
+		if raw := p.Raw(); raw != nil {
+			parts = append(parts, map[string]any{
+				partKind: "file",
+				"file": map[string]any{
+					"name":     p.Filename,
+					"mimeType": p.MediaType,
+					"bytes":    base64.StdEncoding.EncodeToString(raw),
+				},
+			})
 		}
 	}
 

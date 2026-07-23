@@ -22,6 +22,10 @@ import (
 const (
 	batchInterval = 250 * time.Millisecond
 	slackAPIBase  = "https://slack.com/api"
+	// downloadSizeMargin is the headroom over Slack's declared file size that a
+	// download body may reach before it is rejected as an out-of-memory guard.
+	downloadSizeMargin = 1 << 20
+
 	// methodChatPostMessage is the Web API method for new posts; it is special
 	// in two spots (display identity, forced unfurl-off).
 	methodChatPostMessage = "chat.postMessage"
@@ -1402,6 +1406,38 @@ func (c *slackAPIClient) call(ctx context.Context, method, contentType, payload 
 		}
 		return body, nil
 	}
+}
+
+// downloadFile fetches a Slack file's bytes from an authenticated url_private.
+// sizeHint is Slack's declared file size; the body read is bounded to it plus a
+// small margin purely as an out-of-memory guard against a mismatched or hostile
+// response, not as a product limit on attachment size.
+func (c *slackAPIClient) downloadFile(ctx context.Context, fileURL string, sizeHint int) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fileURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("slack download: build request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.botToken)
+
+	resp, err := slackHTTPClient.Do(req) //nolint:gosec
+	if err != nil {
+		return nil, fmt.Errorf("slack download: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("slack download: http status %d", resp.StatusCode)
+	}
+
+	limit := int64(sizeHint) + downloadSizeMargin
+	body, err := io.ReadAll(io.LimitReader(resp.Body, limit))
+	if err != nil {
+		return nil, fmt.Errorf("slack download: read body: %w", err)
+	}
+	if int64(len(body)) >= limit {
+		return nil, fmt.Errorf("slack download: body exceeds %d bytes", limit)
+	}
+	return body, nil
 }
 
 // retryAfter reads the Retry-After header of a 429 response, defaulting to 1s

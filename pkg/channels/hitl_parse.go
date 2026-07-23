@@ -38,7 +38,17 @@ const (
 // human-readable text label; otherwise a single text part.
 func buildInboundParts(msg InboundMessage) []*a2apkg.Part {
 	if msg.Decision == nil {
-		return []*a2apkg.Part{a2apkg.NewTextPart(withAuthor(msg.Author, msg.Text))}
+		var parts []*a2apkg.Part
+		if text := withAuthor(msg.Author, msg.Text); text != "" {
+			parts = append(parts, a2apkg.NewTextPart(text))
+		}
+		parts = append(parts, attachmentParts(msg.Attachments)...)
+		if len(parts) == 0 {
+			// An attachment-only message whose downloads all failed leaves no
+			// content; an empty text part keeps the A2A message well-formed.
+			parts = append(parts, a2apkg.NewTextPart(""))
+		}
+		return parts
 	}
 
 	data := map[string]any{"decision_type": msg.Decision.Type}
@@ -58,6 +68,23 @@ func buildInboundParts(msg InboundMessage) []*a2apkg.Part {
 		label = msg.Decision.Type
 	}
 	return []*a2apkg.Part{a2apkg.NewDataPart(data), a2apkg.NewTextPart(withAuthor(msg.Author, label))}
+}
+
+// attachmentParts builds one A2A file part per attachment that has downloaded
+// bytes, carrying its filename and media type. Attachments without bytes (a
+// failed download) are skipped.
+func attachmentParts(attachments []Attachment) []*a2apkg.Part {
+	parts := make([]*a2apkg.Part, 0, len(attachments))
+	for _, att := range attachments {
+		if len(att.Bytes) == 0 {
+			continue
+		}
+		part := a2apkg.NewRawPart(att.Bytes)
+		part.Filename = att.Filename
+		part.MediaType = att.ContentType
+		parts = append(parts, part)
+	}
+	return parts
 }
 
 // withAuthor prefixes text with the real author when the turn runs under a

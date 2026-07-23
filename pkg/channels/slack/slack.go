@@ -15,6 +15,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/giantswarm/klaus-gateway/pkg/a2a"
 	"github.com/giantswarm/klaus-gateway/pkg/auth/musterlink"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 )
@@ -1517,6 +1518,21 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 		msg.Decision = decisionFromText(task.Prompt, msg.Text)
 	}
 
+	// Fetch attachment bytes now that the turn is committed to run (thread slot
+	// held, sender authorised): a denied or busy-rejected message never
+	// downloads. The bot token, not the human token, authorises the file GET.
+	a.fetchAttachments(ctx, &msg)
+
+	// An attachment-only message whose downloads all failed has nothing to send;
+	// tell the user rather than dispatching an empty turn. A HITL reply (Decision
+	// set) always carries the decision, so it is exempt.
+	if msg.Decision == nil && msg.Text == "" && len(msg.Attachments) == 0 {
+		if _, err := a.apiClient().postMessage(ctx, slackChannel, attachmentsUnavailableNote, msg.ThreadID); err != nil {
+			a.Logger.Warn("slack: post attachment-unavailable note failed", "thread", msg.ThreadID, "error", err)
+		}
+		return nil
+	}
+
 	return a.runTurn(ctx, msg, slackChannel, msg.MessageID, thinkingPlaceholder, task, turnHooks{
 		onIdentityResolved: func(msg channels.InboundMessage) {
 			// A reply into a thread this process did not start may be resuming a
@@ -1543,6 +1559,45 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 		},
 		onFailure: func() { a.postDispatchFailureNote(ctx, slackChannel, msg.ThreadID) },
 	})
+}
+
+// fetchAttachments downloads each attachment's bytes in place using the bot
+// token. A file that fails to download is dropped (with a warning) rather than
+// failing the whole turn, so the text and the other attachments still reach the
+// agent. The kagent payload cap is not enforced here: an oversize batch is
+// caught from kagent's rejection and surfaced by the turn's error path.
+func (a *Adapter) fetchAttachments(ctx context.Context, msg *channels.InboundMessage) {
+	if len(msg.Attachments) == 0 {
+		return
+	}
+	client := a.apiClient()
+	kept := msg.Attachments[:0]
+	for _, att := range msg.Attachments {
+		if att.SourceURL == "" {
+			continue
+		}
+		bytes, err := client.downloadFile(ctx, att.SourceURL, att.Size)
+		if err != nil {
+			a.Logger.Warn("slack: attachment download failed, dropping",
+				"filename", att.Filename, "error", err)
+			continue
+		}
+		att.Bytes = bytes
+		kept = append(kept, att)
+	}
+	msg.Attachments = kept
+}
+
+// attachmentsTooLargeNote renders the notice posted when kagent rejects a turn
+// because its attachments exceed the agent's payload cap. It quotes the total
+// downloaded size (which we know locally) without naming the cap, which the
+// agent owns and may change.
+func attachmentsTooLargeNote(attachments []channels.Attachment) string {
+	var total int
+	for _, att := range attachments {
+		total += len(att.Bytes)
+	}
+	return fmt.Sprintf("Those attachments (%.1f MB total) were too large for the agent to accept, so I couldn't process them. Please try again with smaller files.", float64(total)/(1<<20))
 }
 
 // isCorruptSessionErr reports whether a turn failed because the session's
@@ -1753,18 +1808,27 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 			return err
 		}
 		prog.failed(cctx)
-		// In text mode prog.failed is a no-op (no reaction to swap), so the
-		// placeholder would linger as "thinking" with no failure signal.
-		// Replace it with a terminal note, as the empty-output path does —
-		// unless the placeholder already carries streamed answer text, in
-		// which case the note posts as a new message so the delivered
-		// content survives.
+		// An oversize-payload rejection is actionable (the user can send a
+		// smaller file), so it always gets its own explanatory note, in both
+		// reactions and text mode. Every other error keeps the generic note and
+		// posts it only in text mode, where the placeholder would otherwise
+		// linger as "thinking".
+		oversize := errors.Is(err, a2a.ErrAttachmentPayloadTooLarge)
+		note := failedNote
+		if oversize {
+			note = attachmentsTooLargeNote(msg.Attachments)
+		}
 		if prog.reactTS == "" {
+			// Replace the placeholder in place, unless it already carries streamed
+			// answer text, in which case the note posts as a new message so the
+			// delivered content survives.
 			noteTS := replyTS
 			if w.wroteContent() {
 				noteTS = ""
 			}
-			a.postTerminalNote(cctx, client, slackChannel, threadID, noteTS, failedNote)
+			a.postTerminalNote(cctx, client, slackChannel, threadID, noteTS, note)
+		} else if oversize {
+			a.postTerminalNote(cctx, client, slackChannel, threadID, "", note)
 		}
 		return err
 	}
@@ -1829,6 +1893,29 @@ type slackInnerEvent struct {
 	// EventTS is the event envelope timestamp; the only timestamp a
 	// member_joined_channel event carries.
 	EventTS string `json:"event_ts,omitempty"`
+	// Files are attachments shared with the message. Slack sends metadata only;
+	// the bytes live behind an authenticated url_private.
+	Files []slackFile `json:"files,omitempty"`
+}
+
+// slackFile is one entry in a message event's files array.
+type slackFile struct {
+	ID                 string `json:"id"`
+	Name               string `json:"name"`
+	Mimetype           string `json:"mimetype"`
+	Filetype           string `json:"filetype"`
+	URLPrivate         string `json:"url_private"`
+	URLPrivateDownload string `json:"url_private_download"`
+	Size               int    `json:"size"`
+}
+
+// downloadURL is the authenticated URL the bytes are fetched from, preferring
+// the download variant Slack marks for programmatic retrieval.
+func (f slackFile) downloadURL() string {
+	if f.URLPrivateDownload != "" {
+		return f.URLPrivateDownload
+	}
+	return f.URLPrivate
 }
 
 // isDM reports whether the event originated in a 1:1 direct message. Slack sets
@@ -1884,21 +1971,48 @@ func (e slackInnerEvent) toInboundMessage(threadReplyOnly bool) (channels.Inboun
 		return channels.InboundMessage{}, false
 	}
 	text := StripMention(e.Text)
-	if text == "" {
+	attachments := e.attachments()
+	// An image with no caption has empty text; it is still a turn as long as it
+	// carries at least one attachment.
+	if text == "" && len(attachments) == 0 {
 		return channels.InboundMessage{}, false
 	}
 	return channels.InboundMessage{
-		Channel:   ChannelName,
-		ChannelID: e.Channel,
-		UserID:    "", // thread-scoped session: all participants share one contextID
-		ThreadID:  threadID,
-		MessageID: e.TS, // triggering message; progress-reaction target
-		Text:      text,
+		Channel:     ChannelName,
+		ChannelID:   e.Channel,
+		UserID:      "", // thread-scoped session: all participants share one contextID
+		ThreadID:    threadID,
+		MessageID:   e.TS, // triggering message; progress-reaction target
+		Text:        text,
+		Attachments: attachments,
 		// Subject carries the raw Slack user ID. It keys per-thread access
 		// control only; mapping it to an email/OAuth sub for downstream
 		// identity is deferred to the auth phase that actually consumes it.
 		Subject: e.User,
 	}, true
+}
+
+// attachments maps the event's files to normalised attachments carrying the
+// authenticated download URL. Bytes are fetched later, in dispatch, once the
+// turn is committed to run. Files without a usable URL are skipped.
+func (e slackInnerEvent) attachments() []channels.Attachment {
+	if len(e.Files) == 0 {
+		return nil
+	}
+	out := make([]channels.Attachment, 0, len(e.Files))
+	for _, f := range e.Files {
+		url := f.downloadURL()
+		if url == "" {
+			continue
+		}
+		out = append(out, channels.Attachment{
+			Filename:    f.Name,
+			ContentType: f.Mimetype,
+			SourceURL:   url,
+			Size:        f.Size,
+		})
+	}
+	return out
 }
 
 // StripMention removes leading <@USERID> tokens that Slack injects into

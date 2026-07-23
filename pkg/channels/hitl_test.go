@@ -97,3 +97,41 @@ func TestBuildInboundParts_PlainTextWithoutDecision(t *testing.T) {
 	require.Len(t, parts, 1)
 	require.Equal(t, "hello", parts[0].Text())
 }
+
+func TestBuildInboundParts_TextAndAttachment(t *testing.T) {
+	msg := InboundMessage{
+		Text: "look at this",
+		Attachments: []Attachment{
+			{Filename: "shot.png", ContentType: "image/png", Bytes: []byte{0x89, 0x50}},
+		},
+	}
+	parts := buildInboundParts(msg)
+	require.Len(t, parts, 2)
+	require.Equal(t, "look at this", parts[0].Text())
+	require.Equal(t, []byte{0x89, 0x50}, parts[1].Raw())
+	require.Equal(t, "shot.png", parts[1].Filename)
+	require.Equal(t, "image/png", parts[1].MediaType)
+}
+
+func TestBuildInboundParts_AttachmentOnly_NoEmptyTextPart(t *testing.T) {
+	msg := InboundMessage{
+		Attachments: []Attachment{
+			{Filename: "shot.png", ContentType: "image/png", Bytes: []byte{0x1}},
+		},
+	}
+	parts := buildInboundParts(msg)
+	require.Len(t, parts, 1)
+	require.Equal(t, []byte{0x1}, parts[0].Raw())
+}
+
+func TestBuildInboundParts_SkipsAttachmentWithoutBytes(t *testing.T) {
+	msg := InboundMessage{
+		Text: "caption",
+		Attachments: []Attachment{
+			{Filename: "failed.png", ContentType: "image/png"}, // no Bytes: download failed
+		},
+	}
+	parts := buildInboundParts(msg)
+	require.Len(t, parts, 1)
+	require.Equal(t, "caption", parts[0].Text())
+}
