@@ -57,7 +57,7 @@ type A2AConfig struct {
 	// Enabled gates all A2A behaviour.
 	Enabled bool
 	// DefaultAgent is the agentRef forwarded to the A2A orchestrator when none
-	// is supplied by the inbound channel. Defaults to "klaud-coding".
+	// is supplied by the inbound channel. Defaults to "sre-agent".
 	DefaultAgent string
 	// URL is the base URL of the A2A orchestrator endpoint, without a trailing
 	// agent name segment (e.g.
@@ -256,7 +256,7 @@ func Defaults() Config {
 			Enabled: true,
 		},
 		A2A: A2AConfig{
-			DefaultAgent: "klaud-coding",
+			DefaultAgent: "sre-agent",
 		},
 	}
 }

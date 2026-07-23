@@ -683,11 +683,14 @@ func (a *Adapter) agentDisplayName(ctx context.Context, agentRef string) string 
 	return agentRef
 }
 
-// postLaunchAnnouncement posts the Swarmgeist-branded handoff notice when a new
-// thread starts, making the app-to-agent transition explicit. Best-effort.
+// postLaunchAnnouncement posts the handoff notice when a new thread starts,
+// making the app-to-agent transition explicit. It posts under the agent's
+// identity (not the app default) so it and the agent's replies share one
+// authoring bot, collapsing the channel thread face pile to a single avatar.
+// Best-effort.
 func (a *Adapter) postLaunchAnnouncement(ctx context.Context, slackChannel, threadID, agentRef string) {
 	text := fmt.Sprintf("🚀 Bringing in *%s* to help. Keep the conversation in this thread; mention me followed by `/help` to list what I can do.", a.agentDisplayName(ctx, agentRef))
-	if _, err := a.apiClient().postMessage(ctx, slackChannel, text, threadID); err != nil {
+	if _, err := a.agentClient(ctx, agentRef).postMessage(ctx, slackChannel, text, threadID); err != nil {
 		a.Logger.Warn("slack: post launch announcement failed", "thread", threadID, "error", err)
 	}
 }

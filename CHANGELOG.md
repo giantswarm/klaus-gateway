@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The default agent (binary default and Helm `a2a.defaultAgent`) is now `sre-agent` instead of `klaud-coding`.
+
 ### Added
 
 - Slack `/agent` command: `/agent "<name>" <question>` starts a new conversation bound to the named agent, selected by its display name — the `ui.giantswarm.io/display-name` annotation on the Agent CR — in quotes (straight or smart), or by its unquoted technical name (`@swarmgeist /agent "SRE Agent" <question>` in channels; in a DM start the message with a space so Slack does not intercept the leading slash). A bare `/agent` lists the selectable agents by display name and description — no namespaces or technical names — discovered from the kagent controller. An unknown, ambiguous, or unreachable agent fails the turn loudly (with the roster, or the technical names that disambiguate) — never a silent substitute, including when a display name no longer resolves after a gateway restart. Replies inherit the conversation's agent; switching mid-conversation is refused, but listing the roster with a bare `/agent` (or any other command) in a fresh chat doesn't claim the conversation — selecting an agent right after still works. The `turn_dispatch` log record gains an `agent_source` field.
@@ -22,7 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Slack tool-approval prompts gain a **Chat** button alongside Approve/Deny: it holds the pending tool call and invites a follow-up question in the thread. The reply is routed to the paused task (a question resolves it as a reject carrying the question, so the agent answers and asks to confirm again; a plain approve/deny still decides).
 - Slack agent replies and the agent's own confirmation prompts are posted under the agent's display name (from its A2A AgentCard), distinct from Swarmgeist's own messages (`chat:write.customize`). The card supplies the name; when it exposes no icon the app's own icon is kept. Requires the `chat:write.customize` bot scope.
 - Slack posts a one-time introduction when the bot is added to a channel (`member_joined_channel`), so members know what it is and how to reach it. Requires subscribing to the `member_joined_channel` bot event.
-- Slack posts a short launch announcement when a new channel thread starts, making the hand-off from Swarmgeist to the agent explicit. It is posted only once the agent has resolved, so a failed launch does not announce an agent that never arrives.
+- Slack posts a short launch announcement when a new channel thread starts, making the hand-off from Swarmgeist to the agent explicit. It is posted under the agent's display identity (same as the agent's replies), so the channel thread face pile shows one avatar instead of two. It is posted only once the agent has resolved, so a failed launch does not announce an agent that never arrives.
 - A direct message to the bot receives a polite redirect to use it in a channel, unless `SLACK_DM_ONLY` is set (which serves DMs). The redirect is posted at most once per conversation per hour, so replying to the redirect does not produce another one.
 - Slack `/details on|off|full` command controls whether the agent's tool activity is shown in a thread. On by default; `off` quiets it, `full` also shows tool results. Rendered as fenced code blocks so Slack collapses long payloads. The setting applies to the whole thread.
 - Slack `/usage` command reports token counts for the last turn and the accumulated session total, on demand. When the kagent REST API exposes the agent's model (declarative agents), the report also names the model and provider; a BYO agent omits the line.
