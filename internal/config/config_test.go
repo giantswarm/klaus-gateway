@@ -269,6 +269,16 @@ func TestA2AConfig_ResolvedRESTURL(t *testing.T) {
 			want: "http://kagent-controller.kagent.svc.cluster.local:8083",
 		},
 		{
+			name: "derive from a namespace-less base",
+			cfg:  config.A2AConfig{URL: "http://agentgateway.agentic-platform.svc.cluster.local:8080/kagent/api/a2a"},
+			want: "http://agentgateway.agentic-platform.svc.cluster.local:8080/kagent",
+		},
+		{
+			name: "derive from a namespace-less base with trailing slash",
+			cfg:  config.A2AConfig{URL: "http://agentgateway:8080/kagent/api/a2a/"},
+			want: "http://agentgateway:8080/kagent",
+		},
+		{
 			name: "no /api/a2a in URL is not derivable",
 			cfg:  config.A2AConfig{URL: "http://agentgateway:8080/kagent"},
 			want: "",

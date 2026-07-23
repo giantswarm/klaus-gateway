@@ -41,8 +41,10 @@ type turnHooks struct {
 // The caller must hold the thread's slot and pass msg with Subject set to
 // the raw Slack user ID and BearerToken set to the sender's human token.
 // triggerTS is the user message the progress reaction lands on; "" uses text
-// progress (a button resume has no user message to react to).
-func (a *Adapter) runTurn(ctx context.Context, msg channels.InboundMessage, slackChannel, triggerTS, placeholder string, task *pendingTask, hooks turnHooks) (err error) {
+// progress (a button resume has no user message to react to). agentSource
+// marks how the turn's agent was chosen (the agentSource* constants) on the
+// turn_dispatch record.
+func (a *Adapter) runTurn(ctx context.Context, msg channels.InboundMessage, slackChannel, triggerTS, placeholder string, task *pendingTask, agentSource string, hooks turnHooks) (err error) {
 	// Subject is rewritten to the resolved email below; the raw ID keys access
 	// control and progress surfaces throughout.
 	slackUser := msg.Subject
@@ -95,7 +97,7 @@ func (a *Adapter) runTurn(ctx context.Context, msg channels.InboundMessage, slac
 	turnCtx, done := a.registerTurn(ctx, msg.ThreadID)
 	defer done()
 
-	a.logTurnDispatch(msg, slackUser, task != nil)
+	a.logTurnDispatch(msg, slackUser, task != nil, agentSource)
 
 	deltas, err := a.gw.SendCompletion(turnCtx, ref, msg)
 	if err != nil {

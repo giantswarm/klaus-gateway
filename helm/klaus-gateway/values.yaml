@@ -216,7 +216,10 @@ a2a:
   # in-cluster hops. When saToken.enabled is true this is auto-set.
   tokenPath: ""
   # fallbackIconUrlTemplate is used only when an agent's AgentCard has no iconUrl;
-  # the card's own iconUrl always wins. "{agent}" is replaced with the agentRef.
+  # the card's own iconUrl always wins. "{agent}" is replaced with the agentRef
+  # verbatim: on deployments with a namespace-qualified defaultAgent the ref is
+  # "namespace/name", so the slash lands mid-URL; make sure the serving endpoint
+  # accepts that path shape.
   # Empty disables the fallback (the channel uses its own default icon).
   # Example: https://avatars.gazelle.awsprod.gigantic.io/v1/{agent}.png
   fallbackIconUrlTemplate: ""

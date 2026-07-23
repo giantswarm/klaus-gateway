@@ -16,7 +16,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/giantswarm/klaus-gateway/pkg/a2a"
+	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 	"github.com/giantswarm/klaus-gateway/pkg/auth/musterlink"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 )
@@ -129,7 +129,12 @@ type Adapter struct {
 	// (name/icon), the source of per-message agent branding. Nil disables it
 	// (messages post under the app default). kagent's card carries a name but no
 	// icon yet, so agent messages are named but icon-less until kagent exposes it.
+	// When it also implements the card-info lookup (pkg/a2a.AgentCardClient
+	// does), it validates /agent selections; otherwise selection is unavailable.
 	AgentCards AgentCardResolver
+	// Roster lists the agents selectable via the /agent command, discovered
+	// from the kagent controller. Nil disables the roster listing.
+	Roster AgentRosterSource
 
 	gw      channels.Gateway
 	baseCtx context.Context // adapter lifecycle ctx, captured in Start; OnUserLinked's background work (login-replay dispatch and the sign-in confirmation POST) derives from it so shutdown cancels it
@@ -244,6 +249,18 @@ type Adapter struct {
 	// changed URL must bypass the cooldown or the only visible button is dead.
 	connectorMu       sync.Mutex
 	connectorPrompted map[string]map[string]connectorPromptRecord
+
+	// bindingMu guards agentBindings: conversation→agent bindings derived from
+	// the /agent prefix on each conversation's root message. "" records a
+	// checked root with no prefix (default agent). Entries idle past
+	// threadStateTTL are evicted.
+	bindingMu     sync.Mutex
+	agentBindings map[string]ttlEntry[string] // keyed by threadID
+
+	// rosterMu guards the briefly-cached /agent roster (see rosterAgents).
+	rosterMu      sync.Mutex
+	rosterCached  []pkga2a.AgentInfo
+	rosterExpires time.Time
 
 	// connectorCompletionsMu guards connectorCompletions: short-lived state
 	// minted when a Connect button is decorated with a post-login redirect,
@@ -1321,11 +1338,17 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 	}
 	a.seedInitiatorFromRoot(ctx, inner.Channel, msg.ThreadID, msg.MessageID)
 	if cmd := parseCommand(msg.Text); cmd != nil {
-		if a.handleCommand(ctx, cmd, msg.Subject, inner.Channel, msg.ThreadID) {
+		// /agent is not a consumed command: the select form mutates msg (agent
+		// ref stamped, prefix stripped) and continues into dispatch as the
+		// conversation's first turn.
+		if cmd.Name == cmdAgent {
+			if !a.handleAgentSelection(ctx, cmd, &msg, inner.Channel) {
+				return
+			}
+		} else if a.handleCommand(ctx, cmd, msg.Subject, inner.Channel, msg.ThreadID) {
 			a.Logger.Debug("slack: command consumed", "command", cmd.Name, "channel", inner.Channel, "thread", msg.ThreadID)
 			return
-		}
-		if isUnknownCommand(cmd) {
+		} else if isUnknownCommand(cmd) {
 			text := fmt.Sprintf("_`/%s` is not one of my commands (see `/help`). If it was meant for the agent, resend it without the leading slash._", cmd.Name)
 			if _, err := a.apiClient().postMessage(ctx, inner.Channel, text, msg.ThreadID); err != nil {
 				a.Logger.Warn("slack: post unknown-command notice failed", "error", err)
@@ -1560,7 +1583,25 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 		return nil
 	}
 
-	msg.AgentRef = a.DefaultAgent
+	// Resolve the turn's agent. An explicit /agent prefix travels on the
+	// message (handleAgentSelection stamped it, and only conversation-starting
+	// messages get that far); otherwise the conversation's binding — or the
+	// configured default — applies. opener records whether this message opened
+	// its conversation: root equality cannot tell on the assistant pane, where
+	// every message carries the chat's Slack-created anchor as thread_ts.
+	// A refusal means the conversation's display-name binding no longer
+	// resolves; the turn is answered with the notice, never re-routed.
+	agentSource, opener := agentSourcePrefix, true
+	if msg.AgentRef == "" {
+		var refusal string
+		msg.AgentRef, agentSource, opener, refusal = a.threadAgent(ctx, msg, slackChannel)
+		if refusal != "" {
+			if _, err := a.apiClient().postMessage(ctx, slackChannel, refusal, msg.ThreadID); err != nil {
+				a.Logger.Warn("slack: post agent-recovery refusal failed", "thread", msg.ThreadID, "error", err)
+			}
+			return nil
+		}
+	}
 
 	// A turn must carry a human token, never the gateway's machine identity.
 	// Resolve the sending user's token before the thread slot is taken, so a
@@ -1575,10 +1616,14 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 		// Hold the message so it is answered after the user signs in, rather than
 		// dropped and re-typed. msg.Subject still carries the raw Slack user ID
 		// at this point; pin it on the parked copy so the replay keys access
-		// control the same way this dispatch did. An immediate drain
-		// (already-linked race) replays once the thread slot is free.
+		// control the same way this dispatch did. The resolved agent ref is
+		// cleared so the replay re-resolves it (the conversation binding is
+		// recorded above) and the dispatch record marks its true source. An
+		// immediate drain (already-linked race) replays once the thread slot is
+		// free.
 		parked := msg
 		parked.Subject = slackUser
+		parked.AgentRef = ""
 		a.parkForLogin(ctx, parked, slackChannel, slackUser)
 	}
 	if !ok {
@@ -1660,15 +1705,19 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 		}
 	}
 
-	return a.runTurn(ctx, msg, slackChannel, msg.MessageID, thinkingPlaceholder, task, turnHooks{
+	return a.runTurn(ctx, msg, slackChannel, msg.MessageID, thinkingPlaceholder, task, agentSource, turnHooks{
 		onIdentityResolved: func(msg channels.InboundMessage) {
 			// A reply into a thread this process did not start may be resuming a
 			// kagent session that has since been evicted. Announce the "starting
 			// fresh" degradation up front so the user is not surprised by lost
-			// context. Only for replies (not a fresh root mention), at most once
-			// per thread. Advisory: never aborts the turn, and bounded by a short
-			// timeout so a slow REST endpoint cannot stall the first reply.
-			if firstSight && msg.ThreadID != msg.MessageID {
+			// context. Only for genuine replies — never a conversation-opening
+			// message: on the assistant pane every first message arrives as a
+			// thread reply (the chat's Slack-created anchor is its thread_ts),
+			// and greeting each new chat with "starting fresh" reads as an
+			// error, so the opener flag decides, not root equality. At most once
+			// per thread. Advisory: never aborts the turn, and bounded by a
+			// short timeout so a slow REST endpoint cannot stall the first reply.
+			if firstSight && !opener {
 				a.maybeAnnounceResume(ctx, msg, slackChannel)
 			}
 		},
@@ -1839,8 +1888,10 @@ type linkedIdentitySource interface {
 // invokes for which Slack user under which muster identity. It is the
 // gateway-side anchor for joining a turn to muster's per-call log. The muster
 // session ID is not derivable client-side from the forwarded token, so the
-// join key is (sub, thread_id, task_id, timestamp).
-func (a *Adapter) logTurnDispatch(msg channels.InboundMessage, slackUser string, resume bool) {
+// join key is (sub, thread_id, task_id, timestamp). agentSource marks how the
+// agent was chosen (see the agentSource* constants), making /agent routing
+// observable.
+func (a *Adapter) logTurnDispatch(msg channels.InboundMessage, slackUser string, resume bool, agentSource string) {
 	var sub string
 	if ident, ok := a.OBO.(linkedIdentitySource); ok {
 		sub, _, _ = ident.LinkedIdentity(slackUser)
@@ -1848,6 +1899,7 @@ func (a *Adapter) logTurnDispatch(msg channels.InboundMessage, slackUser string,
 	a.Logger.Info("slack: dispatching turn",
 		"record", "turn_dispatch",
 		"agent", msg.AgentRef,
+		"agent_source", agentSource,
 		"slack_user", slackUser,
 		"subject", msg.Subject,
 		"sub", sub,
@@ -1987,7 +2039,7 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 		// otherwise linger as "thinking". The note names attachments only when the
 		// message actually carried some; a text/history-only overflow gets the
 		// generic size notice instead.
-		oversize := errors.Is(err, a2a.ErrPayloadTooLarge)
+		oversize := errors.Is(err, pkga2a.ErrPayloadTooLarge)
 		note := failedNote
 		if oversize {
 			note = payloadTooLargeNote

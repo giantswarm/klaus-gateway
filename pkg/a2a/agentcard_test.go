@@ -53,6 +53,31 @@ func TestCardIdentity_NegativeCachesFetchFailures(t *testing.T) {
 	require.EqualValues(t, 2, hits.Load(), "a successful fetch is cached")
 }
 
+// CardInfo surfaces the card's name and description on success and the fetch
+// error on failure (unlike CardIdentity, which swallows it), so /agent name
+// validation can fail loudly.
+func TestCardInfo(t *testing.T) {
+	var fail atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if fail.Load() {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write([]byte(`{"name":"SRE agent","description":"Investigates infra issues"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	client := &AgentCardClient{BaseURL: server.URL}
+	name, description, err := client.CardInfo(t.Context(), "kagent/sre-agent")
+	require.NoError(t, err)
+	require.Equal(t, "SRE agent", name)
+	require.Equal(t, "Investigates infra issues", description)
+
+	fail.Store(true)
+	_, _, err = client.CardInfo(t.Context(), "kagent/missing-agent")
+	require.ErrorContains(t, err, "unexpected status 404")
+}
+
 func TestCardIdentity_IconFallback(t *testing.T) {
 	const template = "https://avatars.gazelle.awsprod.gigantic.io/v1/{agent}.png"
 

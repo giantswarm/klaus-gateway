@@ -14,6 +14,7 @@ const (
 	cmdLogout  = "logout" // OBO account linking: sign out
 	cmdUsage   = "usage"
 	cmdDetails = "details"
+	cmdAgent   = "agent" // agent selection; handled by handleAgentSelection, not handleCommand
 )
 
 // detailsLevel controls how much of the agent's tool activity is rendered
@@ -59,7 +60,7 @@ func parseDetailsLevel(s string) (level detailsLevel, ok bool) {
 	}
 }
 
-// knownCommands is the verb set handleCommand owns.
+// knownCommands is the verb set the gateway owns.
 var knownCommands = map[string]struct{}{
 	cmdHelp:    {},
 	cmdStop:    {},
@@ -67,6 +68,7 @@ var knownCommands = map[string]struct{}{
 	cmdLogout:  {},
 	cmdUsage:   {},
 	cmdDetails: {},
+	cmdAgent:   {},
 }
 
 // commandShapeRe matches a verb that reads as a command word. A path or URL
@@ -116,6 +118,9 @@ const helpCommands = "• `/stop` — interrupt the current turn\n" +
 	"• `/usage` — show token usage for the last turn and the session\n" +
 	"• `/details on|off|full` — show or hide the agent's tool activity\n" +
 	"• `/help` — show this message"
+
+// agentHelpText is appended to the help reply when agent selection is available.
+const agentHelpText = "\n• `/agent \"<name>\" <question>` — start a new conversation with the named agent; `/agent` alone lists the available agents"
 
 // oboHelpText is appended to the help reply when OBO account linking is enabled.
 const oboHelpText = `
@@ -171,6 +176,9 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *slashCommand, slackUse
 	switch cmd.Name {
 	case cmdHelp:
 		text := helpText(a.botName(ctx))
+		if _, ok := a.AgentCards.(agentCardChecker); ok {
+			text += agentHelpText
+		}
 		if a.OBO != nil {
 			text += oboHelpText
 		}
