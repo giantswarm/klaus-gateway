@@ -236,24 +236,22 @@ func (w *batchedWriter) renderToolActivity(ctx context.Context, tool *channels.T
 	if w.details == detailsOff || tool == nil {
 		return
 	}
-	// The tool name is agent- and MCP-server-controlled text rendered inside a
-	// code span; a backtick or newline in it would break out of the span and
-	// inject markdown into the thread.
-	name := codeSpanSafe(tool.Name)
 	var md string
 	switch tool.Kind {
 	case channels.ToolCall:
-		label := "*`" + name + "`*"
+		displayName, viaMuster := tool.Name, false
 		args := tool.Args
 		if inner, innerArgs, ok := unwrapCallTool(tool); ok {
 			// Record the call→inner mapping so a detailsFull result (which
 			// carries no Args) can resolve the inner name via effectiveToolName,
 			// independent of whether connector prompts are enabled.
 			w.noteCallToolTarget(tool)
-			label = "*`" + codeSpanSafe(inner) + "`* (via muster)"
-			args = innerArgs
+			displayName, viaMuster, args = inner, true, innerArgs
 		}
-		md = "🔧 " + label
+		md = "🔧 " + toolLabel(displayName)
+		if viaMuster {
+			md += " (via muster)"
+		}
 		if summary := compactJSON(args, toolArgsMax); summary != "" {
 			md += "\n```\n" + summary + "\n```"
 		}
@@ -262,7 +260,7 @@ func (w *batchedWriter) renderToolActivity(ctx context.Context, tool *channels.T
 			return
 		}
 		resultName := w.effectiveToolName(tool)
-		md = "↳ *`" + codeSpanSafe(resultName) + "`* result"
+		md = "↳ " + toolLabel(resultName) + " result"
 		if tool.Name == musterCallToolMetaTool && resultName != tool.Name {
 			md += " (via muster)"
 		}
@@ -341,6 +339,13 @@ func (w *batchedWriter) maybeConnectorPrompt(tool *channels.ToolActivity) {
 type callToolTarget struct {
 	name   string
 	server string
+}
+
+// toolLabel renders a tool name as a bold code span. The name is agent- and
+// MCP-server-controlled text: a backtick or newline would break out of the code
+// span and inject markdown into the thread, so it is sanitised here.
+func toolLabel(name string) string {
+	return "*`" + codeSpanSafe(name) + "`*"
 }
 
 // unwrapCallTool returns the inner muster tool name and arguments a call_tool
