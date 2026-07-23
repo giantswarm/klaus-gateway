@@ -897,3 +897,138 @@ func TestRun_TransientFinalFlushFailureDoesNotAbortTurn(t *testing.T) {
 	require.Equal(t, int32(2), updates.Load(), "the failed final flush is retried in place")
 	require.Equal(t, "hello", lastText.Load())
 }
+
+func TestUnwrapCallTool(t *testing.T) {
+	for _, tc := range []struct {
+		desc     string
+		tool     *channels.ToolActivity
+		wantName string
+		wantOK   bool
+	}{
+		{
+			desc: "call_tool with inner name and arguments",
+			tool: &channels.ToolActivity{Name: musterCallToolMetaTool, Args: map[string]any{
+				"name":      "x_kubernetes_get",
+				"arguments": map[string]any{"namespace": "flux-giantswarm"},
+			}},
+			wantName: "x_kubernetes_get",
+			wantOK:   true,
+		},
+		{
+			desc: "direct tool is not unwrapped",
+			tool: &channels.ToolActivity{Name: "x_kubernetes_get", Args: map[string]any{"namespace": "flux"}},
+		},
+		{
+			desc: "call_tool missing arguments falls back",
+			tool: &channels.ToolActivity{Name: musterCallToolMetaTool, Args: map[string]any{"name": "x_kubernetes_get"}},
+		},
+		{
+			desc: "call_tool with empty inner name falls back",
+			tool: &channels.ToolActivity{Name: musterCallToolMetaTool, Args: map[string]any{
+				"name":      "",
+				"arguments": map[string]any{"namespace": "flux"},
+			}},
+		},
+	} {
+		t.Run(tc.desc, func(t *testing.T) {
+			name, args, ok := unwrapCallTool(tc.tool)
+			require.Equal(t, tc.wantOK, ok)
+			if tc.wantOK {
+				require.Equal(t, tc.wantName, name)
+				require.NotNil(t, args)
+			}
+		})
+	}
+}
+
+func TestSpaceStructuralJSON(t *testing.T) {
+	require.Equal(t, `{"a": "b", "c": "d"}`, spaceStructuralJSON([]byte(`{"a":"b","c":"d"}`)))
+	// ':' and ',' inside a string value stay untouched.
+	require.Equal(t, `{"k": "a,b:c"}`, spaceStructuralJSON([]byte(`{"k":"a,b:c"}`)))
+	// An escaped quote does not end the string, so its trailing ',' is left alone.
+	require.Equal(t, `{"k": "a\"b,c"}`, spaceStructuralJSON([]byte(`{"k":"a\"b,c"}`)))
+}
+
+// captureToolPostBlocks drives run() over deltas (plus a terminal Done) against a
+// fake Slack server and returns the raw markdown of each posted block, in order.
+func captureToolPostBlocks(t *testing.T, details detailsLevel, deltas ...channels.OutboundDelta) []string {
+	t.Helper()
+	var mu sync.Mutex
+	var got []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Blocks []struct {
+				Text string `json:"text"`
+			} `json:"blocks"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if len(body.Blocks) > 0 {
+			mu.Lock()
+			got = append(got, body.Blocks[0].Text)
+			mu.Unlock()
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"ok":true,"ts":"1"}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
+	w := newBatchedWriterWithClient(client, "C1", "1.1", "1.0", details, slog.Default())
+	ch := make(chan channels.OutboundDelta, len(deltas)+1)
+	for _, d := range deltas {
+		ch <- d
+	}
+	ch <- channels.OutboundDelta{Done: true}
+	close(ch)
+	require.NoError(t, w.run(t.Context(), ch))
+
+	mu.Lock()
+	defer mu.Unlock()
+	return append([]string(nil), got...)
+}
+
+func TestRenderToolActivity_UnwrapsCallTool(t *testing.T) {
+	posts := captureToolPostBlocks(t, detailsOn, channels.OutboundDelta{
+		Kind: channels.DeltaToolActivity,
+		Tool: &channels.ToolActivity{
+			Kind:   channels.ToolCall,
+			Name:   musterCallToolMetaTool,
+			CallID: "c1",
+			Args: map[string]any{
+				"name":      "x_kubernetes_get",
+				"arguments": map[string]any{"namespace": "flux-giantswarm", "resourceType": "helmreleases"},
+			},
+		},
+	})
+	require.Len(t, posts, 1)
+	require.Contains(t, posts[0], "🔧 *`x_kubernetes_get`* (via muster)")
+	require.Contains(t, posts[0], `{"namespace": "flux-giantswarm", "resourceType": "helmreleases"}`)
+	require.NotContains(t, posts[0], "call_tool")
+}
+
+func TestRenderToolActivity_DirectToolUnchanged(t *testing.T) {
+	posts := captureToolPostBlocks(t, detailsOn, channels.OutboundDelta{
+		Kind: channels.DeltaToolActivity,
+		Tool: &channels.ToolActivity{Kind: channels.ToolCall, Name: "list_pods"},
+	})
+	require.Len(t, posts, 1)
+	require.Contains(t, posts[0], "🔧 *`list_pods`*")
+	require.NotContains(t, posts[0], "via muster")
+}
+
+func TestRenderToolActivity_UnwrapsCallToolResult(t *testing.T) {
+	posts := captureToolPostBlocks(t, detailsFull,
+		channels.OutboundDelta{Kind: channels.DeltaToolActivity, Tool: &channels.ToolActivity{
+			Kind: channels.ToolCall, Name: musterCallToolMetaTool, CallID: "c1",
+			Args: map[string]any{"name": "x_kubernetes_get", "arguments": map[string]any{"namespace": "flux"}},
+		}},
+		channels.OutboundDelta{Kind: channels.DeltaToolActivity, Tool: &channels.ToolActivity{
+			Kind: channels.ToolResult, Name: musterCallToolMetaTool, CallID: "c1",
+			Response: map[string]any{"output": "ok"},
+		}},
+	)
+	require.Len(t, posts, 2)
+	require.Contains(t, posts[0], "🔧 *`x_kubernetes_get`* (via muster)")
+	require.Contains(t, posts[1], "↳ *`x_kubernetes_get`* result (via muster)")
+	require.Contains(t, posts[1], `{"output": "ok"}`)
+}
