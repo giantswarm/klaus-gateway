@@ -84,7 +84,7 @@ lifecycle:
   # Bearer token for the operator MCP endpoint; empty disables auth.
   operatorMCPToken: ""
   # staticInstances is a comma-separated list of name=baseURL pairs used when
-  # driver is "static" (e.g. "klaud-coding=http://klaud-coding.kagent.svc:8080").
+  # driver is "static" (e.g. "sre-agent=http://sre-agent.kagent.svc:8080").
   staticInstances: ""
 
 # Upstream wiring for the OpenAI-compat direct proxy path (pkg/api).
