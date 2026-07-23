@@ -1546,6 +1546,18 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 	}
 	defer a.releaseThread(msg.ThreadID)
 
+	// An attachment-only reply into a thread with a paused confirmation cannot
+	// express a decision: decisionFromText on empty text would silently reject
+	// a generic prompt (or approve an ask_user one with empty answers). Leave
+	// the task pending — peek, not take; the held thread slot keeps it from
+	// being consumed elsewhere — and ask for a text reply instead.
+	if strings.TrimSpace(msg.Text) == "" && a.peekPendingTask(msg.ThreadID) != nil {
+		if _, err := a.apiClient().postMessage(ctx, slackChannel, hitlTextReplyNeededNote, msg.ThreadID); err != nil {
+			a.Logger.Warn("slack: post text-reply-needed note failed", "thread", msg.ThreadID, "error", err)
+		}
+		return nil
+	}
+
 	// Resume a paused input-required task when one exists for this thread.
 	// Taken only once the turn is committed to run (thread slot acquired,
 	// human token resolved): takePendingTask deletes the entry, so consuming
@@ -1563,10 +1575,20 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 	// held, sender authorised): a denied or busy-rejected message never
 	// downloads. The bot token, not the human token, authorises the file GET. A
 	// HITL reply forwards only its decision, never a new file, so skip the
-	// download rather than fetching bytes nothing will send.
+	// download — but say so, like every other drop path, instead of letting the
+	// file vanish silently.
 	var dropped []string
 	if msg.Decision == nil {
 		dropped = a.fetchAttachments(ctx, &msg)
+	} else if len(msg.Attachments) > 0 {
+		names := make([]string, 0, len(msg.Attachments))
+		for _, att := range msg.Attachments {
+			names = append(names, att.Filename)
+		}
+		msg.Attachments = nil
+		if _, err := a.apiClient().postMessage(ctx, slackChannel, hitlAttachmentsNotForwardedNote(names), msg.ThreadID); err != nil {
+			a.Logger.Warn("slack: post decision-attachment note failed", "thread", msg.ThreadID, "error", err)
+		}
 	}
 
 	// An attachment-only message whose downloads all failed has nothing to send;
@@ -1620,29 +1642,54 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 // token. A file that fails to download is dropped (with a warning) rather than
 // failing the whole turn, so the text and the other attachments still reach the
 // agent. It returns the filenames of the dropped attachments so the caller can
-// tell the user which files the agent did not see. The kagent payload cap is not
+// tell the user which files the agent did not see. Files download concurrently
+// under an overall time budget: the per-thread slot is held throughout, so a
+// multi-file message against a slow files.slack.com must not serialize into
+// minutes of every other reply bouncing busy. The kagent payload cap is not
 // enforced here: an oversize batch is caught from kagent's rejection and
 // surfaced by the turn's error path.
 func (a *Adapter) fetchAttachments(ctx context.Context, msg *channels.InboundMessage) []string {
 	if len(msg.Attachments) == 0 {
 		return nil
 	}
+	ctx, cancel := context.WithTimeout(ctx, attachmentDownloadBudget)
+	defer cancel()
 	client := a.apiClient()
+	type result struct {
+		bytes []byte
+		err   error
+	}
+	results := make([]result, len(msg.Attachments))
+	sem := make(chan struct{}, attachmentDownloadConcurrency)
+	var wg sync.WaitGroup
+	for i, att := range msg.Attachments {
+		if att.SourceURL == "" {
+			continue
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			bytes, err := client.downloadFile(ctx, att.SourceURL, att.ContentType, att.Size)
+			results[i] = result{bytes: bytes, err: err}
+		}()
+	}
+	wg.Wait()
 	var dropped []string
 	kept := msg.Attachments[:0]
-	for _, att := range msg.Attachments {
+	for i, att := range msg.Attachments {
 		if att.SourceURL == "" {
 			dropped = append(dropped, att.Filename)
 			continue
 		}
-		bytes, err := client.downloadFile(ctx, att.SourceURL, att.ContentType, att.Size)
-		if err != nil {
+		if results[i].err != nil {
 			a.Logger.Warn("slack: attachment download failed, dropping",
-				"filename", att.Filename, "error", err)
+				"filename", att.Filename, "error", results[i].err)
 			dropped = append(dropped, att.Filename)
 			continue
 		}
-		att.Bytes = bytes
+		att.Bytes = results[i].bytes
 		kept = append(kept, att)
 	}
 	msg.Attachments = kept
@@ -1654,6 +1701,13 @@ func (a *Adapter) fetchAttachments(ctx context.Context, msg *channels.InboundMes
 // knows which files the agent did not receive.
 func droppedAttachmentsNote(names []string) string {
 	return fmt.Sprintf("I couldn't download these attachments, so the agent didn't receive them: %s. The rest of your message went through.", strings.Join(names, ", "))
+}
+
+// hitlAttachmentsNotForwardedNote renders the notice posted when a file rides
+// on a confirmation reply: the reply forwards only the decision, so the agent
+// never receives the file and the user must re-share it afterwards.
+func hitlAttachmentsNotForwardedNote(names []string) string {
+	return fmt.Sprintf("A confirmation reply carries only your decision, so the agent didn't receive: %s. Share the file(s) again once this step completes.", strings.Join(names, ", "))
 }
 
 // attachmentsTooLargeNote renders the notice posted when kagent rejects a turn
@@ -2094,9 +2148,11 @@ func (e slackInnerEvent) toInboundMessage(threadReplyOnly bool) (channels.Inboun
 
 // attachments maps the event's files to normalised attachments carrying the
 // authenticated download URL. Bytes are fetched later, in dispatch, once the
-// turn is committed to run. Files whose URL is missing or not a Slack https host
-// are skipped: the bot token is later sent as a bearer credential to that URL,
-// so a non-Slack origin must never reach the downloader.
+// turn is committed to run. A file whose URL is missing or not a Slack https
+// host keeps its entry but loses the URL: the bot token is later sent as a
+// bearer credential to that URL, so a non-Slack origin must never reach the
+// downloader — but the file must still be named in the dropped-attachments
+// notice (fetchAttachments drops URL-less entries) rather than vanish silently.
 func (e slackInnerEvent) attachments() []channels.Attachment {
 	if len(e.Files) == 0 {
 		return nil
@@ -2105,7 +2161,7 @@ func (e slackInnerEvent) attachments() []channels.Attachment {
 	for _, f := range e.Files {
 		fileURL := f.downloadURL()
 		if !isSlackFileURL(fileURL) {
-			continue
+			fileURL = ""
 		}
 		out = append(out, channels.Attachment{
 			Filename:    f.Name,

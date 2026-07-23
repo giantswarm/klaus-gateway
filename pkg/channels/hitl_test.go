@@ -1,6 +1,7 @@
 package channels
 
 import (
+	"strings"
 	"testing"
 
 	a2apkg "github.com/a2aproject/a2a-go/v2/a2a"
@@ -172,4 +173,20 @@ func TestBuildInboundParts_SkipsAttachmentWithoutBytes(t *testing.T) {
 	parts := buildInboundParts(msg)
 	require.Len(t, parts, 1)
 	require.Equal(t, "caption", parts[0].Text())
+}
+
+// TestTextAttachment_FenceOutgrowsContentFences pins the anti-breakout fence:
+// a file whose content itself contains ``` fences must stay fully inside the
+// quoted block, so the wrapper fence is always longer than any run inside.
+func TestTextAttachment_FenceOutgrowsContentFences(t *testing.T) {
+	content := "# readme\n```go\ncode\n```\nrest"
+	got := textAttachment(Attachment{Filename: "README.md", Bytes: []byte(content)})
+	require.True(t, strings.HasPrefix(got, "Attached file `README.md`:\n````\n"), got)
+	require.True(t, strings.HasSuffix(got, "\n````"), got)
+	require.Contains(t, got, content)
+}
+
+func TestTextAttachment_PlainContentUsesMinimalFence(t *testing.T) {
+	got := textAttachment(Attachment{Filename: "a.txt", Bytes: []byte("plain")})
+	require.Equal(t, "Attached file `a.txt`:\n```\nplain\n```", got)
 }

@@ -96,13 +96,34 @@ func attachmentParts(attachments []Attachment) []*a2apkg.Part {
 }
 
 // textAttachment renders a text attachment as a labeled, fenced block so the
-// agent sees both the filename and the file's content as readable text.
+// agent sees both the filename and the file's content as readable text. The
+// fence is one backtick longer than the longest backtick run in the content,
+// so a file that itself contains ``` fences (any markdown with code blocks)
+// cannot close the block early and leak its remainder outside the quoted
+// context.
 func textAttachment(att Attachment) string {
 	name := att.Filename
 	if name == "" {
 		name = "attachment"
 	}
-	return "Attached file `" + name + "`:\n```\n" + string(att.Bytes) + "\n```"
+	fence := strings.Repeat("`", max(3, longestBacktickRun(att.Bytes)+1))
+	return "Attached file `" + name + "`:\n" + fence + "\n" + string(att.Bytes) + "\n" + fence
+}
+
+// longestBacktickRun returns the length of the longest consecutive run of
+// backticks in b.
+func longestBacktickRun(b []byte) int {
+	longest, run := 0, 0
+	for _, c := range b {
+		if c != '`' {
+			run = 0
+			continue
+		}
+		if run++; run > longest {
+			longest = run
+		}
+	}
+	return longest
 }
 
 // isTextualMediaType reports whether a media type is human-readable text that

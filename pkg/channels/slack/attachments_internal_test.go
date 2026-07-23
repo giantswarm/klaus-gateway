@@ -1,9 +1,11 @@
 package slack
 
 import (
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -58,7 +60,7 @@ func TestToInboundMessage_EmptyAndNoFilesDropped(t *testing.T) {
 	require.False(t, ok, "an empty message with no files is not a turn")
 }
 
-func TestSlackFileAttachments_SkipsFileWithoutURL(t *testing.T) {
+func TestSlackFileAttachments_KeepsFileWithoutURLForNotice(t *testing.T) {
 	event := slackInnerEvent{
 		Files: []slackFile{
 			{Name: "no-url.png", Mimetype: "image/png"},
@@ -66,8 +68,11 @@ func TestSlackFileAttachments_SkipsFileWithoutURL(t *testing.T) {
 		},
 	}
 	atts := event.attachments()
-	require.Len(t, atts, 1)
-	require.Equal(t, "ok.png", atts[0].Filename)
+	require.Len(t, atts, 2, "a URL-less file stays listed so the dropped-attachments notice can name it")
+	require.Equal(t, "no-url.png", atts[0].Filename)
+	require.Empty(t, atts[0].SourceURL)
+	require.Equal(t, "ok.png", atts[1].Filename)
+	require.Equal(t, "https://files.slack.com/ok.png", atts[1].SourceURL)
 }
 
 func TestDownloadFile_SendsBearerAndReturnsBytes(t *testing.T) {
@@ -132,9 +137,10 @@ func TestDownloadFile_RejectsSignInPage(t *testing.T) {
 }
 
 // TestDownloadFile_AllowsGenuineHTMLFile ensures a real .html upload is still
-// accepted: the sign-in guard keys on Slack's page markers, not on HTML alone.
+// accepted: the sign-in guard keys on Slack-specific page markers, not on HTML
+// alone and not on a generic sign-in link in the user's own page.
 func TestDownloadFile_AllowsGenuineHTMLFile(t *testing.T) {
-	payload := []byte("<html><body>real upload without slack markers</body></html>")
+	payload := []byte(`<html><body>real upload, even with <a href="/signin">its own signin link</a></body></html>`)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		_, _ = w.Write(payload)
@@ -204,7 +210,7 @@ func TestIsSlackFileURL(t *testing.T) {
 	}
 }
 
-func TestSlackFileAttachments_SkipsNonSlackURL(t *testing.T) {
+func TestSlackFileAttachments_ClearsNonSlackURL(t *testing.T) {
 	event := slackInnerEvent{
 		Files: []slackFile{
 			{Name: "evil.png", Mimetype: "image/png", URLPrivate: "https://evil.example/steal.png"},
@@ -212,8 +218,9 @@ func TestSlackFileAttachments_SkipsNonSlackURL(t *testing.T) {
 		},
 	}
 	atts := event.attachments()
-	require.Len(t, atts, 1)
-	require.Equal(t, "ok.png", atts[0].Filename)
+	require.Len(t, atts, 2)
+	require.Empty(t, atts[0].SourceURL, "a non-Slack URL must never reach the downloader, which sends the bot token")
+	require.Equal(t, "https://files.slack.com/ok.png", atts[1].SourceURL)
 }
 
 func TestDroppedAttachmentsNote_NamesFiles(t *testing.T) {
@@ -225,4 +232,65 @@ func TestDroppedAttachmentsNote_NamesFiles(t *testing.T) {
 func TestPayloadTooLargeNote_DistinctNotices(t *testing.T) {
 	require.NotEqual(t, failedNote, payloadTooLargeNote)
 	require.NotEqual(t, attachmentsUnavailableNote, payloadTooLargeNote)
+}
+
+func TestDownloadFile_RefusesDeclaredOversizeWithoutFetching(t *testing.T) {
+	var requests atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+	}))
+	defer srv.Close()
+
+	client := &slackAPIClient{botToken: "t"}
+	_, err := client.downloadFile(t.Context(), srv.URL, "video/mp4", maxAttachmentDownload+1)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "ceiling")
+	require.Zero(t, requests.Load(), "an oversize file is refused before any bytes are fetched")
+}
+
+// TestDownloadFile_RejectsSignInPageByTitle covers a sign-in page variant that
+// carries none of the asset markers, only the page title.
+func TestDownloadFile_RejectsSignInPageByTitle(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte(`<html><head><title>Sign in to Slack</title></head><body></body></html>`))
+	}))
+	defer srv.Close()
+
+	client := &slackAPIClient{botToken: "t"}
+	_, err := client.downloadFile(t.Context(), srv.URL, "image/png", 1024)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "sign-in page")
+}
+
+// TestFetchAttachments_KeepsOrderAndDropsFailures pins the assembly semantics
+// of the concurrent download path: attachment order is preserved, a failed or
+// URL-less file is dropped by name, and the rest carry their bytes.
+func TestFetchAttachments_KeepsOrderAndDropsFailures(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/a":
+			_, _ = w.Write([]byte("AAA"))
+		case "/fail":
+			w.WriteHeader(http.StatusForbidden)
+		case "/c":
+			_, _ = w.Write([]byte("CCC"))
+		}
+	}))
+	defer srv.Close()
+
+	a := &Adapter{Logger: slog.Default()}
+	msg := channels.InboundMessage{Attachments: []channels.Attachment{
+		{Filename: "a.txt", SourceURL: srv.URL + "/a"},
+		{Filename: "external.png"}, // URL cleared at intake (non-Slack host)
+		{Filename: "fail.png", SourceURL: srv.URL + "/fail"},
+		{Filename: "c.txt", SourceURL: srv.URL + "/c"},
+	}}
+	dropped := a.fetchAttachments(t.Context(), &msg)
+	require.Equal(t, []string{"external.png", "fail.png"}, dropped)
+	require.Len(t, msg.Attachments, 2)
+	require.Equal(t, "a.txt", msg.Attachments[0].Filename)
+	require.Equal(t, []byte("AAA"), msg.Attachments[0].Bytes)
+	require.Equal(t, "c.txt", msg.Attachments[1].Filename)
+	require.Equal(t, []byte("CCC"), msg.Attachments[1].Bytes)
 }

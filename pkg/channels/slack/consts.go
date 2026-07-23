@@ -234,6 +234,12 @@ const failedNote = "_(the turn failed; please try again)_"
 // and none of them could be downloaded, so there is nothing to send the agent.
 const attachmentsUnavailableNote = "I couldn't download the attachment(s) you shared, so there was nothing to send to the agent. Please try again."
 
+// hitlTextReplyNeededNote is posted when a reply into a thread with a paused
+// confirmation carries no text (attachment only): no decision can be read from
+// an empty reply, so the task stays pending and the user is asked to answer in
+// words.
+const hitlTextReplyNeededNote = "This thread is waiting on the pending confirmation above, and I can't read a decision from an attachment alone. Reply with text (e.g. `approve` or `deny`) — I didn't forward the file(s)."
+
 // payloadTooLargeNote is posted when the agent rejects a turn as too large and
 // the message carried no attachments, so the size is the text/history rather
 // than a file the user can shrink.

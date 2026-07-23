@@ -30,6 +30,20 @@ const (
 	// and would reject a legitimate larger file; this fixed ceiling is a pure
 	// out-of-memory guard for that case, not a product limit.
 	unknownSizeDownloadLimit = 16 << 20
+	// maxAttachmentDownload is a hard per-file ceiling on attachment bytes. The
+	// declared-size-plus-margin bound alone is defeated by an honestly declared
+	// huge file (Slack allows uploads up to 1 GB), which would be fully buffered
+	// — then base64-inflated in the A2A payload — only for the agent to reject
+	// it. A file declared above this ceiling is refused before the GET is sent.
+	maxAttachmentDownload = 32 << 20
+	// attachmentDownloadConcurrency bounds parallel per-file downloads within
+	// one message, so a multi-file message is not serialized behind one slow
+	// fetch while the thread slot is held.
+	attachmentDownloadConcurrency = 4
+	// attachmentDownloadBudget bounds the total time one message's attachment
+	// downloads may hold the thread slot; files still in flight when it expires
+	// are dropped (with a notice), not retried.
+	attachmentDownloadBudget = 2 * time.Minute
 
 	// methodChatPostMessage is the Web API method for new posts; it is special
 	// in two spots (display identity, forced unfurl-off).
@@ -1437,9 +1451,13 @@ func (c *slackAPIClient) call(ctx context.Context, method, contentType, payload 
 
 // downloadFile fetches a Slack file's bytes from an authenticated url_private.
 // sizeHint is Slack's declared file size; the body read is bounded to it plus a
-// small margin purely as an out-of-memory guard against a mismatched or hostile
-// response, not as a product limit on attachment size.
+// small margin as an out-of-memory guard against a mismatched or hostile
+// response, and to maxAttachmentDownload overall so an honestly declared huge
+// file is refused up front instead of buffered whole.
 func (c *slackAPIClient) downloadFile(ctx context.Context, fileURL, declaredType string, sizeHint int) ([]byte, error) {
+	if sizeHint > maxAttachmentDownload {
+		return nil, fmt.Errorf("slack download: declared size %d exceeds the %d-byte attachment ceiling", sizeHint, maxAttachmentDownload)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fileURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("slack download: build request: %w", err)
@@ -1507,7 +1525,9 @@ func (c *slackAPIClient) logDownload(msg, fileURL string, resp *http.Response, d
 // looksLikeSlackSignIn reports whether body is Slack's web sign-in / redirect
 // page rather than real file bytes. Slack serves this page (HTTP 200) for an
 // unauthorized url_private download; its markers are stable across the
-// Content-Type variants Slack uses for it.
+// Content-Type variants Slack uses for it. Every marker is Slack-specific: a
+// bare "signin" substring would misclassify a user's own HTML upload that
+// merely links to its own sign-in route.
 func looksLikeSlackSignIn(body []byte) bool {
 	const sniff = 1024
 	head := body
@@ -1518,7 +1538,10 @@ func looksLikeSlackSignIn(body []byte) bool {
 	if !strings.HasPrefix(strings.TrimSpace(lower), "<!doctype html") && !strings.HasPrefix(strings.TrimSpace(lower), "<html") {
 		return false
 	}
-	return strings.Contains(lower, "slack-edge.com") || strings.Contains(lower, "data-primer") || strings.Contains(lower, "signin")
+	return strings.Contains(lower, "slack-edge.com") ||
+		strings.Contains(lower, "data-primer") ||
+		strings.Contains(lower, "slack.com/signin") ||
+		strings.Contains(lower, "sign in to slack")
 }
 
 // retryAfter reads the Retry-After header of a 429 response, defaulting to 1s
