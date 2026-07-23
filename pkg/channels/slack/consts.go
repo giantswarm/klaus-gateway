@@ -6,12 +6,21 @@ import (
 	"github.com/giantswarm/klaus-gateway/pkg/auth/musterlink"
 )
 
-// Slack event type strings.
+// Slack event type strings. Slack's current Agent view no longer sends
+// assistant_thread_started; app_home_opened (tab "messages") and
+// app_context_changed are its replacement lifecycle events
+// (docs.slack.dev/ai/developing-ai-apps).
 const (
-	evtMessage      = "message"
-	evtAppMention   = "app_mention"
-	evtMemberJoined = "member_joined_channel"
+	evtMessage           = "message"
+	evtAppMention        = "app_mention"
+	evtMemberJoined      = "member_joined_channel"
+	evtAppHomeOpened     = "app_home_opened"
+	evtAppContextChanged = "app_context_changed"
 )
+
+// tabMessages is the app_home_opened tab value for the assistant Messages tab;
+// the home and about tabs are not surfaces the adapter serves.
+const tabMessages = "messages"
 
 // subtypeThreadBroadcast marks a thread reply the author asked Slack to also
 // send to the channel. It is a normal human reply (its payload carries user,
@@ -237,6 +246,15 @@ const resumeStartingFreshNotice = "I couldn't find our earlier conversation in t
 // channelIntro is posted once when the bot is added to a channel, so members
 // know what it is and how to reach it.
 const channelIntro = "👋 Hi, I'm Swarmgeist. Mention me (`@Swarmgeist`) in this channel to start a thread and I'll bring in an agent to help investigate and act on your clusters. I reply in-thread and ask before anything destructive. Mention me with `/help` (as in `@Swarmgeist /help`) for the full list of commands."
+
+// assistantGreeting is posted into a user's assistant pane the first time they
+// open it (app_home_opened, Messages tab), so a new assistant thread does not
+// open bare.
+const assistantGreeting = "👋 Hi, I'm Swarmgeist. Ask me here about your clusters and platform and I'll bring in an agent to help investigate and act. I ask before anything destructive. Send `/help` for the full list of commands."
+
+// homeGreetingTTL bounds how often the assistant-pane greeting repeats per
+// user: app_home_opened fires on every pane open, not once per thread.
+const homeGreetingTTL = 24 * time.Hour
 
 // dmRedirect is posted when a user DMs the bot while DMs are in redirect mode,
 // pointing them to a channel instead.
