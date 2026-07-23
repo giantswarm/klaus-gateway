@@ -185,7 +185,7 @@ func TestBatchedWriter_ToolPostsPreserveOrder(t *testing.T) {
 func TestCompactJSON_TruncatesAndEmpty(t *testing.T) {
 	require.Equal(t, "", compactJSON(nil, 100))
 	require.Equal(t, "", compactJSON(map[string]any{}, 100))
-	require.Equal(t, `{"a":"b"}`, compactJSON(map[string]any{"a": "b"}, 100))
+	require.Equal(t, `{"a": "b"}`, compactJSON(map[string]any{"a": "b"}, 100))
 
 	out := compactJSON(map[string]any{"k": "0123456789"}, 8)
 	require.Len(t, []rune(out), 9, "8 runes + ellipsis")
