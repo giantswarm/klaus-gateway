@@ -113,6 +113,44 @@ func TestBuildInboundParts_TextAndAttachment(t *testing.T) {
 	require.Equal(t, "image/png", parts[1].MediaType)
 }
 
+func TestBuildInboundParts_TextAttachmentBecomesTextPart(t *testing.T) {
+	// A text/* attachment must be forwarded as a text part, not a binary file
+	// part: the model backend rejects a text/plain inline_data blob.
+	msg := InboundMessage{
+		Text: "review this",
+		Attachments: []Attachment{
+			{Filename: "ingress.yaml", ContentType: "text/plain", Bytes: []byte("kind: Ingress")},
+		},
+	}
+	parts := buildInboundParts(msg)
+	require.Len(t, parts, 2)
+	require.Equal(t, "review this", parts[0].Text())
+	require.Nil(t, parts[1].Raw(), "text attachment must not be a raw/file part")
+	require.Contains(t, parts[1].Text(), "ingress.yaml")
+	require.Contains(t, parts[1].Text(), "kind: Ingress")
+}
+
+func TestBuildInboundParts_StructuredTextAttachment(t *testing.T) {
+	msg := InboundMessage{
+		Attachments: []Attachment{
+			{Filename: "data.json", ContentType: "application/json", Bytes: []byte(`{"a":1}`)},
+		},
+	}
+	parts := buildInboundParts(msg)
+	require.Len(t, parts, 1)
+	require.Nil(t, parts[0].Raw())
+	require.Contains(t, parts[0].Text(), `{"a":1}`)
+}
+
+func TestIsTextualMediaType(t *testing.T) {
+	for _, mt := range []string{"text/plain", "text/plain; charset=utf-8", "text/yaml", "application/json", "application/x-yaml", "application/vnd.api+json"} {
+		require.True(t, isTextualMediaType(mt), mt)
+	}
+	for _, mt := range []string{"image/png", "application/pdf", "application/octet-stream", ""} {
+		require.False(t, isTextualMediaType(mt), mt)
+	}
+}
+
 func TestBuildInboundParts_AttachmentOnly_NoEmptyTextPart(t *testing.T) {
 	msg := InboundMessage{
 		Attachments: []Attachment{

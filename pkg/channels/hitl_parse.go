@@ -70,13 +70,21 @@ func buildInboundParts(msg InboundMessage) []*a2apkg.Part {
 	return []*a2apkg.Part{a2apkg.NewDataPart(data), a2apkg.NewTextPart(withAuthor(msg.Author, label))}
 }
 
-// attachmentParts builds one A2A file part per attachment that has downloaded
-// bytes, carrying its filename and media type. Attachments without bytes (a
-// failed download) are skipped.
+// attachmentParts builds an A2A part per attachment that has downloaded bytes.
+// A text attachment (yaml, json, source, …) becomes a text part carrying its
+// content: model backends reject a text/* binary blob ("Not supported yet:
+// inline_data=Blob(… mime_type='text/plain')"), and a text file is only useful
+// to the agent as readable text anyway. Binary attachments (images, PDFs) stay
+// as file parts for a vision-capable model. Attachments without bytes (a failed
+// download) are skipped.
 func attachmentParts(attachments []Attachment) []*a2apkg.Part {
 	parts := make([]*a2apkg.Part, 0, len(attachments))
 	for _, att := range attachments {
 		if len(att.Bytes) == 0 {
+			continue
+		}
+		if isTextualMediaType(att.ContentType) {
+			parts = append(parts, a2apkg.NewTextPart(textAttachment(att)))
 			continue
 		}
 		part := a2apkg.NewRawPart(att.Bytes)
@@ -85,6 +93,38 @@ func attachmentParts(attachments []Attachment) []*a2apkg.Part {
 		parts = append(parts, part)
 	}
 	return parts
+}
+
+// textAttachment renders a text attachment as a labeled, fenced block so the
+// agent sees both the filename and the file's content as readable text.
+func textAttachment(att Attachment) string {
+	name := att.Filename
+	if name == "" {
+		name = "attachment"
+	}
+	return "Attached file `" + name + "`:\n```\n" + string(att.Bytes) + "\n```"
+}
+
+// isTextualMediaType reports whether a media type is human-readable text that
+// should reach the agent as a text part rather than a binary file blob. It
+// ignores any charset parameter and matches text/*, the common structured text
+// types, and the +json/+xml/+yaml structured suffixes.
+func isTextualMediaType(mediaType string) bool {
+	mt := strings.ToLower(strings.TrimSpace(mediaType))
+	if i := strings.IndexByte(mt, ';'); i >= 0 {
+		mt = strings.TrimSpace(mt[:i])
+	}
+	if strings.HasPrefix(mt, "text/") {
+		return true
+	}
+	switch mt {
+	case "application/json", "application/xml", "application/yaml",
+		"application/x-yaml", "application/x-yml", "application/toml",
+		"application/x-sh", "application/javascript", "application/x-ndjson",
+		"application/csv":
+		return true
+	}
+	return strings.HasSuffix(mt, "+json") || strings.HasSuffix(mt, "+xml") || strings.HasSuffix(mt, "+yaml")
 }
 
 // withAuthor prefixes text with the real author when the turn runs under a
