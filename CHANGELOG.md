@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The default agent (binary default and Helm `a2a.defaultAgent`) is now `sre-agent` instead of `klaud-coding`.
+
 ### Added
 
 - Slack assistant-surface (Agent view) lifecycle events are handled: opening the assistant pane (`app_home_opened` on the Messages tab) posts a one-time greeting when DMs are served, or the channel-redirect notice when DMs are in redirect mode, and switching the active assistant context no longer produces not-routable warning logs. The app manifest gains the `agent_view` feature block with declared suggested prompts, the `assistant:write` bot scope, and subscriptions to both events (klaus-gateway#158).
