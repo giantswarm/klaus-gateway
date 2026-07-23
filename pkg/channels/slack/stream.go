@@ -680,6 +680,9 @@ type slackAPIClient struct {
 	// chat.postEphemeral (chat.update keeps the original message's identity).
 	username string
 	iconURL  string
+	// logger, when set, records download diagnostics at debug level. Nil in
+	// tests and in call sites that never download.
+	logger *slog.Logger
 }
 
 // applyIdentity adds the client's display identity (username/icon_url) via set.
@@ -1423,6 +1426,9 @@ func (c *slackAPIClient) downloadFile(ctx context.Context, fileURL, declaredType
 		return nil, fmt.Errorf("slack download: build request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+c.botToken)
+	// Signal a raw-file (not browser) fetch. A request Slack reads as a browser
+	// navigation is bounced to the web sign-in page instead of the bytes.
+	req.Header.Set("Accept", "*/*")
 
 	resp, err := slackHTTPClient.Do(req) //nolint:gosec
 	if err != nil {
@@ -1432,15 +1438,6 @@ func (c *slackAPIClient) downloadFile(ctx context.Context, fileURL, declaredType
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return nil, fmt.Errorf("slack download: http status %d", resp.StatusCode)
-	}
-
-	// Slack answers an unauthorized url_private with HTTP 200 and an HTML sign-in
-	// page rather than an error status; the usual cause is a bot token without the
-	// files:read scope. An HTML response for a file whose metadata says it is not
-	// HTML means we fetched the login page, not the file, so fail here instead of
-	// base64-forwarding the page to the agent as if it were the attachment.
-	if isHTMLContentType(resp.Header.Get("Content-Type")) && !isHTMLContentType(declaredType) {
-		return nil, fmt.Errorf("slack download: got HTML sign-in page instead of file bytes (is the files:read scope granted?)")
 	}
 
 	limit := int64(sizeHint) + downloadSizeMargin
@@ -1454,13 +1451,55 @@ func (c *slackAPIClient) downloadFile(ctx context.Context, fileURL, declaredType
 	if int64(len(body)) >= limit {
 		return nil, fmt.Errorf("slack download: body exceeds %d bytes", limit)
 	}
+
+	// An unauthorized url_private is answered with the Slack web sign-in page, not
+	// an error status, and the Content-Type varies (text/html on a bare redirect,
+	// but application/force-download or text/plain when the download path is hit
+	// with a rejected token). Detect it by body so every variant is caught, and
+	// fail rather than base64-forwarding the login page to the agent.
+	if looksLikeSlackSignIn(body) {
+		c.logDownload("slack: attachment download returned sign-in page, not file bytes", fileURL, resp, declaredType, len(body))
+		return nil, fmt.Errorf("slack download: got the Slack sign-in page instead of file bytes (download reached files.slack.com unauthenticated)")
+	}
+
+	c.logDownload("slack: attachment download ok", fileURL, resp, declaredType, len(body))
 	return body, nil
 }
 
-// isHTMLContentType reports whether a MIME type is text/html, ignoring any
-// charset parameter and surrounding whitespace or case.
-func isHTMLContentType(ct string) bool {
-	return strings.HasPrefix(strings.TrimSpace(strings.ToLower(ct)), "text/html")
+// logDownload records download diagnostics at debug level: the response status
+// and Content-Type, the declared file type, whether the request was redirected
+// (final URL differs from the requested one — the stdlib drops Authorization on
+// a cross-host redirect, a common cause of an unauthenticated landing), and
+// whether a bearer token was attached. The token itself is never logged.
+func (c *slackAPIClient) logDownload(msg, fileURL string, resp *http.Response, declaredType string, bodyLen int) {
+	if c.logger == nil {
+		return
+	}
+	c.logger.Debug(msg,
+		"status", resp.StatusCode,
+		"response_type", resp.Header.Get("Content-Type"),
+		"declared_type", declaredType,
+		"redirected", resp.Request.URL.String() != fileURL,
+		"final_host", resp.Request.URL.Hostname(),
+		"auth_attached", c.botToken != "",
+		"body_len", bodyLen)
+}
+
+// looksLikeSlackSignIn reports whether body is Slack's web sign-in / redirect
+// page rather than real file bytes. Slack serves this page (HTTP 200) for an
+// unauthorized url_private download; its markers are stable across the
+// Content-Type variants Slack uses for it.
+func looksLikeSlackSignIn(body []byte) bool {
+	const sniff = 1024
+	head := body
+	if len(head) > sniff {
+		head = head[:sniff]
+	}
+	lower := strings.ToLower(string(head))
+	if !strings.HasPrefix(strings.TrimSpace(lower), "<!doctype html") && !strings.HasPrefix(strings.TrimSpace(lower), "<html") {
+		return false
+	}
+	return strings.Contains(lower, "slack-edge.com") || strings.Contains(lower, "data-primer") || strings.Contains(lower, "signin")
 }
 
 // retryAfter reads the Retry-After header of a 429 response, defaulting to 1s

@@ -112,28 +112,29 @@ func TestDownloadFile_ErrorsOnNon2xx(t *testing.T) {
 	require.Contains(t, err.Error(), "403")
 }
 
-// TestDownloadFile_RejectsHTMLSignInPage covers Slack answering an unauthorized
-// url_private (e.g. a token missing files:read) with HTTP 200 and an HTML
-// sign-in page. The download must fail so the login page is never forwarded to
-// the agent as file bytes.
-func TestDownloadFile_RejectsHTMLSignInPage(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = w.Write([]byte(`<!DOCTYPE html><html lang="en-US" data-cdn="https://a.slack-edge.com/"><head></head></html>`))
-	}))
-	defer srv.Close()
-
-	client := &slackAPIClient{botToken: "t"}
-	_, err := client.downloadFile(t.Context(), srv.URL, "image/png", 1024)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "files:read")
+// TestDownloadFile_RejectsSignInPage covers Slack answering an unauthorized
+// url_private with HTTP 200 and its web sign-in page. Detection is by body (the
+// Content-Type varies), so the login page is never forwarded as file bytes.
+func TestDownloadFile_RejectsSignInPage(t *testing.T) {
+	// Served with a non-HTML Content-Type, as the download path does in practice,
+	// to prove detection does not rely on the Content-Type header.
+	for _, ct := range []string{"text/html; charset=utf-8", "application/force-download", "text/plain"} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", ct)
+			_, _ = w.Write([]byte(`<!DOCTYPE html><html lang="en-US" class="" data-primer data-cdn="https://a.slack-edge.com/"><head></head></html>`))
+		}))
+		client := &slackAPIClient{botToken: "t"}
+		_, err := client.downloadFile(t.Context(), srv.URL, "image/png", 1024)
+		srv.Close()
+		require.Error(t, err, "content-type %q", ct)
+		require.Contains(t, err.Error(), "sign-in page")
+	}
 }
 
-// TestDownloadFile_AllowsGenuineHTMLFile ensures a real .html upload (declared
-// text/html) is still accepted: the HTML guard only fires when the response is
-// HTML but the file's declared type is not.
+// TestDownloadFile_AllowsGenuineHTMLFile ensures a real .html upload is still
+// accepted: the sign-in guard keys on Slack's page markers, not on HTML alone.
 func TestDownloadFile_AllowsGenuineHTMLFile(t *testing.T) {
-	payload := []byte("<html><body>real upload</body></html>")
+	payload := []byte("<html><body>real upload without slack markers</body></html>")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		_, _ = w.Write(payload)
