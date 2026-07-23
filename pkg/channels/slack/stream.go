@@ -844,9 +844,11 @@ func (c *slackAPIClient) threadRootText(ctx context.Context, channel, threadTS s
 // routable-message filter (no bot_id, no subtype, a user): the pane anchor is
 // a real message ("New Assistant Thread", subtype assistant_app_thread)
 // authored under the APP'S USER ID with no bot_id, so filtering on bot_id
-// alone would mistake it for a human. Empty ts when the scanned prefix has no
-// human message.
-func (c *slackAPIClient) threadFirstHumanMessage(ctx context.Context, channel, threadTS string) (ts, text string, err error) {
+// alone would mistake it for a human. A non-nil skip additionally drops human
+// messages the caller considers non-opening (consumed commands like a bare
+// /agent: they replied and stopped, so the conversation did not start there).
+// Empty ts when the scanned prefix has no matching human message.
+func (c *slackAPIClient) threadFirstHumanMessage(ctx context.Context, channel, threadTS string, skip func(text string) bool) (ts, text string, err error) {
 	params := url.Values{
 		paramChannel: {channel},
 		paramTS:      {threadTS},
@@ -875,9 +877,13 @@ func (c *slackAPIClient) threadFirstHumanMessage(ctx context.Context, channel, t
 		return "", "", fmt.Errorf("slack conversations.replies: %s", result.Err)
 	}
 	for _, m := range result.Messages {
-		if m.BotID == "" && m.SubType == "" && m.User != "" {
-			return m.TS, m.Text, nil
+		if m.BotID != "" || m.SubType != "" || m.User == "" {
+			continue
 		}
+		if skip != nil && skip(m.Text) {
+			continue
+		}
+		return m.TS, m.Text, nil
 	}
 	return "", "", nil
 }

@@ -332,6 +332,64 @@ func TestAgentSelection_RefusedInsideExistingConversation(t *testing.T) {
 	require.Equal(t, "kagent/sre-agent", msgs[1].AgentRef, "the binding is unchanged after a refused switch")
 }
 
+// The discovery flow in a fresh pane chat: a bare /agent lists the roster,
+// and the follow-up quoted selection in the SAME chat still binds — the
+// consumed roster request never started a conversation, so it must not turn
+// the selection into a refused mid-conversation switch.
+func TestAgentSelection_PaneRosterThenSelectBinds(t *testing.T) {
+	fake := newFakeSlackAPI()
+	// The thread as Slack reports it: the pane anchor, the consumed roster
+	// request, and the selection message itself.
+	fake.setResponse("conversations.replies",
+		`{"ok":true,"messages":[
+			{"user":"UBOT","subtype":"assistant_app_thread","ts":"100.000","text":"New Assistant Thread"},
+			{"user":"U1","text":"/agent","ts":"200.000"},
+			{"user":"U1","text":"/agent \"SRE Agent\" check crashing pods in gazelle","ts":"300.000"}]}`)
+	roster := &fakeRoster{agents: []pkga2a.AgentInfo{
+		{Name: "sre-agent", Namespace: "kagent", DisplayName: "SRE Agent"},
+	}}
+	cards := &fakeCards{known: map[string]string{"kagent/sre-agent": "SRE Agent"}}
+	gw, resolved := capturingGateway()
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, withSelection(roster, cards))
+
+	sendEvent(t, srv, dmThreadEvent("U1", "/agent", "200.000", "100.000"))
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Available agents")
+	}, 2*time.Second, 50*time.Millisecond, "the roster listing posts")
+
+	sendEvent(t, srv, dmThreadEvent("U1", `/agent "SRE Agent" check crashing pods in gazelle`, "300.000", "100.000"))
+	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
+		2*time.Second, 50*time.Millisecond, "the selection after the roster listing dispatches")
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "already has its agent",
+		"a consumed roster request must not make the selection a refused switch")
+	require.Equal(t, "kagent/sre-agent", resolved()[0].AgentRef)
+	require.Equal(t, "check crashing pods in gazelle", resolved()[0].Text)
+}
+
+// The same conversation shape survives a restart: recovery derives the
+// binding from the first DISPATCHED human message, skipping the consumed
+// roster request that precedes it.
+func TestAgentSelection_RecoverySkipsConsumedCommands(t *testing.T) {
+	fake := newFakeSlackAPI()
+	fake.setResponse("conversations.replies",
+		`{"ok":true,"messages":[
+			{"user":"UBOT","subtype":"assistant_app_thread","ts":"100.000","text":"New Assistant Thread"},
+			{"user":"U1","text":"/agent","ts":"200.000"},
+			{"user":"U1","text":"/agent \"SRE Agent\" original question","ts":"300.000"}]}`)
+	roster := &fakeRoster{agents: []pkga2a.AgentInfo{
+		{Name: "sre-agent", Namespace: "kagent", DisplayName: "SRE Agent"},
+	}}
+	cards := &fakeCards{known: map[string]string{"kagent/sre-agent": "SRE Agent"}}
+	gw, resolved := capturingGateway()
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, withSelection(roster, cards))
+
+	sendEvent(t, srv, dmThreadEvent("U1", "still there?", "400.000", "100.000"))
+	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
+		2*time.Second, 50*time.Millisecond)
+	require.Equal(t, "kagent/sre-agent", resolved()[0].AgentRef,
+		"recovery skips the consumed roster request and finds the real opener")
+}
+
 // Assistant-pane semantics: a pane chat's first message arrives with
 // thread_ts set to a Slack-managed anchor allocated at chat-open (it is NOT
 // its own thread root — observed live, klaus-gateway#157). Selection on that

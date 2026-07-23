@@ -50,6 +50,34 @@ func TestSplitAgentCommand(t *testing.T) {
 	}
 }
 
+// consumedCommandText decides which thread messages the opening-message scans
+// skip: consumed commands never opened a conversation.
+func TestConsumedCommandText(t *testing.T) {
+	cases := []struct {
+		in       string
+		consumed bool
+	}{
+		{"/agent", true},
+		{"<@UBOT> /agent", true},
+		{"/agent sre-agent", true},           // name-only: the hint replied, nothing dispatched
+		{`/agent "SRE Agent"`, true},         // quoted name-only: same
+		{"/agent sre-agent question", false}, // complete selection dispatches
+		{`/agent "SRE Agent" question`, false},
+		{"/help", true},
+		{"/usage", true},
+		{"/stop", true},
+		{"/frobnicate", true},      // unknown but command-shaped: the notice replied
+		{"/tmp/foo is bad", false}, // not command-shaped: dispatched as a turn
+		{"plain question", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			require.Equal(t, tc.consumed, consumedCommandText(tc.in))
+		})
+	}
+}
+
 func TestAgentRefFromName(t *testing.T) {
 	withNS := &Adapter{DefaultAgent: "kagent/swarmgeist"}
 	bare := &Adapter{DefaultAgent: "test-agent"}

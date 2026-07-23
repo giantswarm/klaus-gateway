@@ -341,15 +341,46 @@ func (a *Adapter) boundAgentOrDefault(threadID string) string {
 // slow Slack API cannot stall inbound handling.
 const rootAgentLookupTimeout = 3 * time.Second
 
+// consumedCommandText reports whether a message's text is consumed as an
+// in-thread command rather than dispatched as a turn: the known commands
+// reply in-thread and stop, a command-shaped unknown verb gets the
+// not-a-command notice, and only the complete "/agent <name> <question>"
+// selection falls through into dispatch. The DM opening-message scans skip
+// consumed texts: a roster listing or help request never started a
+// conversation, so it must not block a later /agent selection in the same
+// pane chat, nor masquerade as the conversation's opener after a restart.
+//
+// Deliberately approximate at two edges, both of which read as openers here:
+// a complete /agent form that failed live validation (its conversation's
+// replies get the loud recovery refusal, same as before this predicate), and
+// a /stop that resolved a paused task (only possible mid-conversation, where
+// an earlier real opener exists for the scan to find).
+func consumedCommandText(text string) bool {
+	cmd := parseCommand(StripMention(text))
+	if cmd == nil {
+		return false
+	}
+	if cmd.Name == cmdAgent {
+		name, _, question := splitAgentCommand(StripMention(text))
+		return name == "" || question == ""
+	}
+	if _, known := knownCommands[cmd.Name]; known {
+		return true
+	}
+	return isUnknownCommand(cmd)
+}
+
 // conversationStarting reports whether msg starts a new conversation — the
 // only place an /agent prefix binds. In a channel that is a mention rooting
 // its own reply thread. In the assistant pane every message carries a
 // Slack-managed thread anchor as thread_ts, allocated when the chat opens
 // (klaus-gateway#157) — the chat's first message is never its own root — so
 // root equality is meaningless there: a DM message starts the conversation
-// when no conversation state exists in-process and no earlier human message
-// precedes it in the thread (the post-restart check, one bounded API call on
-// the rare prefixed-DM path).
+// when no conversation state exists in-process and no earlier DISPATCHED
+// human message precedes it in the thread (the post-restart check, one
+// bounded API call on the rare prefixed-DM path). Consumed commands don't
+// count: listing the roster with a bare /agent and then selecting is a new
+// conversation, not a switch.
 func (a *Adapter) conversationStarting(ctx context.Context, msg channels.InboundMessage, slackChannel string) (bool, error) {
 	if msg.ThreadID == msg.MessageID {
 		return true, nil
@@ -365,7 +396,7 @@ func (a *Adapter) conversationStarting(ctx context.Context, msg channels.Inbound
 	}
 	rctx, cancel := context.WithTimeout(ctx, rootAgentLookupTimeout)
 	defer cancel()
-	firstTS, _, err := a.apiClient().threadFirstHumanMessage(rctx, slackChannel, msg.ThreadID)
+	firstTS, _, err := a.apiClient().threadFirstHumanMessage(rctx, slackChannel, msg.ThreadID, consumedCommandText)
 	if err != nil {
 		a.Logger.Warn("slack: conversation-start check failed", "thread", msg.ThreadID, "error", err)
 		return false, err
@@ -380,9 +411,10 @@ func (a *Adapter) conversationStarting(ctx context.Context, msg channels.Inbound
 // prefix: the conversation's recorded binding, the binding re-derived from the
 // conversation's opening message (where any prefix is visible — the recovery
 // path after a restart or TTL sweep), or the configured default. The opening
-// message is the thread root in a channel, but the first HUMAN message in a
-// DM: the assistant pane roots threads at a Slack-managed anchor, not the
-// user's first message. Follow-up inheritance is load-bearing: the session's
+// message is the thread root in a channel, but the first dispatched HUMAN
+// message in a DM: the assistant pane roots threads at a Slack-managed
+// anchor, not the user's first message, and consumed commands (a bare /agent
+// roster listing, /help) never opened a conversation. Follow-up inheritance is load-bearing: the session's
 // context id embeds the agent ref, so resolving a reply to a different agent
 // than its conversation would fork the session. When the opening message
 // cannot be fetched the turn degrades to the default agent — a Slack API
@@ -418,7 +450,7 @@ func (a *Adapter) threadAgent(ctx context.Context, msg channels.InboundMessage, 
 	var openingTS, openingText string
 	var err error
 	if isDMChannelID(slackChannel) {
-		openingTS, openingText, err = a.apiClient().threadFirstHumanMessage(rctx, slackChannel, msg.ThreadID)
+		openingTS, openingText, err = a.apiClient().threadFirstHumanMessage(rctx, slackChannel, msg.ThreadID, consumedCommandText)
 	} else {
 		// Channels keep strict root derivation: a refused /agent reply still
 		// exists as thread text, and a human-message scan would resurrect it.
