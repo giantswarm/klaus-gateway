@@ -23,11 +23,13 @@ import (
 // partKind is the discriminator key in kagent's spec-lowercase part encoding.
 const partKind = "kind"
 
-// ErrAttachmentPayloadTooLarge is returned when kagent rejects a turn because
-// its request body exceeds the agent's configured A2A_MAX_CONTENT_LENGTH
-// (HTTP 413). Channels match it with errors.Is to render a size-specific notice
-// instead of the generic turn-failed message.
-var ErrAttachmentPayloadTooLarge = errors.New("a2a: attachment payload too large")
+// ErrPayloadTooLarge is returned when kagent rejects a turn because its request
+// body exceeds the agent's configured A2A_MAX_CONTENT_LENGTH (HTTP 413). The
+// body may be over the cap because of attachments or a large accumulated
+// history; the cause is not distinguished here. Channels match it with errors.Is
+// to render an actionable "too large" notice instead of the generic turn-failed
+// message.
+var ErrPayloadTooLarge = errors.New("a2a: request payload too large")
 
 // agentRefKey is the context key for the target agentRef.
 type agentRefKey struct{}
@@ -132,7 +134,7 @@ func (k *A2AClient) Execute(ctx context.Context, execCtx *a2asrv.ExecutorContext
 
 		if resp.StatusCode != http.StatusOK {
 			if resp.StatusCode == http.StatusRequestEntityTooLarge {
-				yield(nil, fmt.Errorf("%w: %s", ErrAttachmentPayloadTooLarge, resp.Status))
+				yield(nil, fmt.Errorf("%w: %s", ErrPayloadTooLarge, resp.Status))
 				return
 			}
 			yield(nil, fmt.Errorf("unexpected HTTP status: %s", resp.Status))

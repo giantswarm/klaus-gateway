@@ -200,7 +200,7 @@ func TestKagentClient_Execute_PayloadTooLarge(t *testing.T) {
 			gotErr = err
 		}
 	}
-	require.ErrorIs(t, gotErr, pkga2a.ErrAttachmentPayloadTooLarge)
+	require.ErrorIs(t, gotErr, pkga2a.ErrPayloadTooLarge)
 }
 
 func TestKagentClient_Execute_ForwardsEvents(t *testing.T) {

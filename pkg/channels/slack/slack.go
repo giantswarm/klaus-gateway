@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -1520,8 +1521,13 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 
 	// Fetch attachment bytes now that the turn is committed to run (thread slot
 	// held, sender authorised): a denied or busy-rejected message never
-	// downloads. The bot token, not the human token, authorises the file GET.
-	a.fetchAttachments(ctx, &msg)
+	// downloads. The bot token, not the human token, authorises the file GET. A
+	// HITL reply forwards only its decision, never a new file, so skip the
+	// download rather than fetching bytes nothing will send.
+	var dropped []string
+	if msg.Decision == nil {
+		dropped = a.fetchAttachments(ctx, &msg)
+	}
 
 	// An attachment-only message whose downloads all failed has nothing to send;
 	// tell the user rather than dispatching an empty turn. A HITL reply (Decision
@@ -1531,6 +1537,15 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 			a.Logger.Warn("slack: post attachment-unavailable note failed", "thread", msg.ThreadID, "error", err)
 		}
 		return nil
+	}
+
+	// Some attachments failed to download but the turn still has content to run
+	// on. Name the dropped files so an answer computed from partial input is not
+	// silently misleading.
+	if len(dropped) > 0 {
+		if _, err := a.apiClient().postMessage(ctx, slackChannel, droppedAttachmentsNote(dropped), msg.ThreadID); err != nil {
+			a.Logger.Warn("slack: post dropped-attachment note failed", "thread", msg.ThreadID, "error", err)
+		}
 	}
 
 	return a.runTurn(ctx, msg, slackChannel, msg.MessageID, thinkingPlaceholder, task, turnHooks{
@@ -1564,28 +1579,41 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 // fetchAttachments downloads each attachment's bytes in place using the bot
 // token. A file that fails to download is dropped (with a warning) rather than
 // failing the whole turn, so the text and the other attachments still reach the
-// agent. The kagent payload cap is not enforced here: an oversize batch is
-// caught from kagent's rejection and surfaced by the turn's error path.
-func (a *Adapter) fetchAttachments(ctx context.Context, msg *channels.InboundMessage) {
+// agent. It returns the filenames of the dropped attachments so the caller can
+// tell the user which files the agent did not see. The kagent payload cap is not
+// enforced here: an oversize batch is caught from kagent's rejection and
+// surfaced by the turn's error path.
+func (a *Adapter) fetchAttachments(ctx context.Context, msg *channels.InboundMessage) []string {
 	if len(msg.Attachments) == 0 {
-		return
+		return nil
 	}
 	client := a.apiClient()
+	var dropped []string
 	kept := msg.Attachments[:0]
 	for _, att := range msg.Attachments {
 		if att.SourceURL == "" {
+			dropped = append(dropped, att.Filename)
 			continue
 		}
 		bytes, err := client.downloadFile(ctx, att.SourceURL, att.Size)
 		if err != nil {
 			a.Logger.Warn("slack: attachment download failed, dropping",
 				"filename", att.Filename, "error", err)
+			dropped = append(dropped, att.Filename)
 			continue
 		}
 		att.Bytes = bytes
 		kept = append(kept, att)
 	}
 	msg.Attachments = kept
+	return dropped
+}
+
+// droppedAttachmentsNote renders the notice posted when some (but not all)
+// attachments failed to download and the turn runs on the rest, so the user
+// knows which files the agent did not receive.
+func droppedAttachmentsNote(names []string) string {
+	return fmt.Sprintf("I couldn't download these attachments, so the agent didn't receive them: %s. The rest of your message went through.", strings.Join(names, ", "))
 }
 
 // attachmentsTooLargeNote renders the notice posted when kagent rejects a turn
@@ -1809,14 +1837,19 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 		}
 		prog.failed(cctx)
 		// An oversize-payload rejection is actionable (the user can send a
-		// smaller file), so it always gets its own explanatory note, in both
-		// reactions and text mode. Every other error keeps the generic note and
-		// posts it only in text mode, where the placeholder would otherwise
-		// linger as "thinking".
-		oversize := errors.Is(err, a2a.ErrAttachmentPayloadTooLarge)
+		// smaller file or shorter message), so it always gets its own explanatory
+		// note, in both reactions and text mode. Every other error keeps the
+		// generic note and posts it only in text mode, where the placeholder would
+		// otherwise linger as "thinking". The note names attachments only when the
+		// message actually carried some; a text/history-only overflow gets the
+		// generic size notice instead.
+		oversize := errors.Is(err, a2a.ErrPayloadTooLarge)
 		note := failedNote
 		if oversize {
-			note = attachmentsTooLargeNote(msg.Attachments)
+			note = payloadTooLargeNote
+			if len(msg.Attachments) > 0 {
+				note = attachmentsTooLargeNote(msg.Attachments)
+			}
 		}
 		if prog.reactTS == "" {
 			// Replace the placeholder in place, unless it already carries streamed
@@ -1994,25 +2027,40 @@ func (e slackInnerEvent) toInboundMessage(threadReplyOnly bool) (channels.Inboun
 
 // attachments maps the event's files to normalised attachments carrying the
 // authenticated download URL. Bytes are fetched later, in dispatch, once the
-// turn is committed to run. Files without a usable URL are skipped.
+// turn is committed to run. Files whose URL is missing or not a Slack https host
+// are skipped: the bot token is later sent as a bearer credential to that URL,
+// so a non-Slack origin must never reach the downloader.
 func (e slackInnerEvent) attachments() []channels.Attachment {
 	if len(e.Files) == 0 {
 		return nil
 	}
 	out := make([]channels.Attachment, 0, len(e.Files))
 	for _, f := range e.Files {
-		url := f.downloadURL()
-		if url == "" {
+		fileURL := f.downloadURL()
+		if !isSlackFileURL(fileURL) {
 			continue
 		}
 		out = append(out, channels.Attachment{
 			Filename:    f.Name,
 			ContentType: f.Mimetype,
-			SourceURL:   url,
+			SourceURL:   fileURL,
 			Size:        f.Size,
 		})
 	}
 	return out
+}
+
+// isSlackFileURL reports whether raw is an https URL on slack.com or one of its
+// subdomains. The bot token is sent as a bearer credential when downloading this
+// URL, so a url_private that is not plainly a Slack host is refused rather than
+// leaking the token to an arbitrary origin.
+func isSlackFileURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	return host == "slack.com" || strings.HasSuffix(host, ".slack.com")
 }
 
 // StripMention removes leading <@USERID> tokens that Slack injects into

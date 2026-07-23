@@ -225,6 +225,11 @@ const failedNote = "_(the turn failed; please try again)_"
 // and none of them could be downloaded, so there is nothing to send the agent.
 const attachmentsUnavailableNote = "I couldn't download the attachment(s) you shared, so there was nothing to send to the agent. Please try again."
 
+// payloadTooLargeNote is posted when the agent rejects a turn as too large and
+// the message carried no attachments, so the size is the text/history rather
+// than a file the user can shrink.
+const payloadTooLargeNote = "That was too large for the agent to accept, so I couldn't process it. Please try a shorter message or start a new thread."
+
 // corruptSessionResetNotice is posted after a corrupt-history failure when the
 // broken kagent session was deleted, so the user knows to resend rather than
 // retry into the same failure.

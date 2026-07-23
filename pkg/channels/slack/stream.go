@@ -25,6 +25,11 @@ const (
 	// downloadSizeMargin is the headroom over Slack's declared file size that a
 	// download body may reach before it is rejected as an out-of-memory guard.
 	downloadSizeMargin = 1 << 20
+	// unknownSizeDownloadLimit caps a download whose declared size is unknown (0).
+	// Without a baseline the size-plus-margin bound collapses to the margin alone
+	// and would reject a legitimate larger file; this fixed ceiling is a pure
+	// out-of-memory guard for that case, not a product limit.
+	unknownSizeDownloadLimit = 16 << 20
 
 	// methodChatPostMessage is the Web API method for new posts; it is special
 	// in two spots (display identity, forced unfurl-off).
@@ -1430,6 +1435,9 @@ func (c *slackAPIClient) downloadFile(ctx context.Context, fileURL string, sizeH
 	}
 
 	limit := int64(sizeHint) + downloadSizeMargin
+	if sizeHint <= 0 {
+		limit = unknownSizeDownloadLimit
+	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, limit))
 	if err != nil {
 		return nil, fmt.Errorf("slack download: read body: %w", err)

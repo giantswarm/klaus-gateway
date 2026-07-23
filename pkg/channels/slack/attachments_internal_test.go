@@ -121,3 +121,73 @@ func TestAttachmentsTooLargeNote_QuotesTotalSize(t *testing.T) {
 	require.Contains(t, note, "too large")
 	require.NotEqual(t, failedNote, note)
 }
+
+func TestDownloadFile_UnknownSize_AllowsBeyondMargin(t *testing.T) {
+	// A file whose declared size is unknown (0) is not capped at the margin
+	// alone: a body larger than the margin but under the ceiling is accepted.
+	payload := strings.Repeat("x", downloadSizeMargin+4096)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(payload))
+	}))
+	defer srv.Close()
+
+	client := &slackAPIClient{botToken: "t"}
+	got, err := client.downloadFile(t.Context(), srv.URL, 0)
+	require.NoError(t, err)
+	require.Len(t, got, len(payload))
+}
+
+func TestDownloadFile_UnknownSize_RejectsBeyondCeiling(t *testing.T) {
+	big := strings.Repeat("x", unknownSizeDownloadLimit+downloadSizeMargin)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(big))
+	}))
+	defer srv.Close()
+
+	client := &slackAPIClient{botToken: "t"}
+	_, err := client.downloadFile(t.Context(), srv.URL, 0)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "exceeds")
+}
+
+func TestIsSlackFileURL(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{"files subdomain", "https://files.slack.com/x.png", true},
+		{"apex host", "https://slack.com/x.png", true},
+		{"http rejected", "http://files.slack.com/x.png", false},
+		{"foreign host", "https://evil.example/x.png", false},
+		{"suffix spoof", "https://files.slack.com.evil.example/x.png", false},
+		{"empty", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, isSlackFileURL(tc.raw))
+		})
+	}
+}
+
+func TestSlackFileAttachments_SkipsNonSlackURL(t *testing.T) {
+	event := slackInnerEvent{
+		Files: []slackFile{
+			{Name: "evil.png", Mimetype: "image/png", URLPrivate: "https://evil.example/steal.png"},
+			{Name: "ok.png", Mimetype: "image/png", URLPrivate: "https://files.slack.com/ok.png"},
+		},
+	}
+	atts := event.attachments()
+	require.Len(t, atts, 1)
+	require.Equal(t, "ok.png", atts[0].Filename)
+}
+
+func TestDroppedAttachmentsNote_NamesFiles(t *testing.T) {
+	note := droppedAttachmentsNote([]string{"a.png", "b.pdf"})
+	require.Contains(t, note, "a.png")
+	require.Contains(t, note, "b.pdf")
+}
+
+func TestPayloadTooLargeNote_DistinctNotices(t *testing.T) {
+	require.NotEqual(t, failedNote, payloadTooLargeNote)
+	require.NotEqual(t, attachmentsUnavailableNote, payloadTooLargeNote)
+}
