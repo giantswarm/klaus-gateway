@@ -395,8 +395,8 @@ func (a *Adapter) channelServed(channel string) bool {
 // staleEvent reports whether the event predates this process and DropStaleEvents
 // is on. Socket Mode redelivers events queued while a consumer was
 // disconnected, so without this a gateway restart replays old events. Uses the
-// message ts, falling back to the envelope event_ts (the only timestamp a
-// member_joined_channel event carries).
+// message ts, falling back to the envelope event_ts (the only timestamp
+// events like member_joined_channel and app_home_opened carry).
 func (a *Adapter) staleEvent(inner slackInnerEvent) bool {
 	if !a.DropStaleEvents || a.startUnix == 0 {
 		return false
@@ -1863,8 +1863,8 @@ type slackInnerEvent struct {
 	ChannelType string `json:"channel_type,omitempty"`
 	TS          string `json:"ts"`
 	ThreadTS    string `json:"thread_ts,omitempty"`
-	// EventTS is the event envelope timestamp; the only timestamp a
-	// member_joined_channel event carries.
+	// EventTS is the event envelope timestamp; for events like
+	// member_joined_channel and app_home_opened it is the only timestamp carried.
 	EventTS string `json:"event_ts,omitempty"`
 	// Tab is the App Home tab an app_home_opened event targets ("messages"
 	// for the assistant pane).
