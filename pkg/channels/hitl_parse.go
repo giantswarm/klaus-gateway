@@ -35,7 +35,9 @@ const (
 
 // buildInboundParts builds the A2A message parts for an outbound user turn.
 // When msg.Decision is set it emits a structured HITL decision DataPart plus a
-// human-readable text label; otherwise a single text part.
+// human-readable text label; otherwise a text part (when there is text) plus
+// one part per downloaded attachment, falling back to a single empty text part
+// so the A2A message stays well-formed.
 func buildInboundParts(msg InboundMessage) []*a2apkg.Part {
 	if msg.Decision == nil {
 		var parts []*a2apkg.Part
