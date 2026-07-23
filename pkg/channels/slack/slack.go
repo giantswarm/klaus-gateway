@@ -2126,7 +2126,12 @@ func isSlackFileURL(raw string) bool {
 	if err != nil || u.Scheme != "https" {
 		return false
 	}
-	host := strings.ToLower(u.Hostname())
+	return isSlackHostname(u.Hostname())
+}
+
+// isSlackHostname reports whether host is slack.com or one of its subdomains.
+func isSlackHostname(host string) bool {
+	host = strings.ToLower(host)
 	return host == "slack.com" || strings.HasSuffix(host, ".slack.com")
 }
 

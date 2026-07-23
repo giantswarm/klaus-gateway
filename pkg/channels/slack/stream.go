@@ -671,6 +671,25 @@ func (w *batchedWriter) flush(ctx context.Context) error {
 // restart.
 var slackHTTPClient = &http.Client{Timeout: 30 * time.Second}
 
+// slackDownloadClient fetches file bytes from url_private. It re-attaches the
+// bearer token that net/http strips on a cross-host redirect, but only when the
+// redirect target is a Slack host, so the token never leaks to a foreign origin.
+// files.slack.com can 302 to a sibling slack.com host; without re-attaching, the
+// followed request is unauthenticated and lands on the web sign-in page instead
+// of the file. The longer timeout covers large attachments.
+var slackDownloadClient = &http.Client{
+	Timeout: 60 * time.Second,
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return fmt.Errorf("slack download: stopped after 10 redirects")
+		}
+		if auth := via[0].Header.Get("Authorization"); auth != "" && isSlackHostname(req.URL.Hostname()) {
+			req.Header.Set("Authorization", auth)
+		}
+		return nil
+	},
+}
+
 // slackAPIClient is a minimal HTTP client for the Slack Web API.
 type slackAPIClient struct {
 	botToken string
@@ -1430,7 +1449,7 @@ func (c *slackAPIClient) downloadFile(ctx context.Context, fileURL, declaredType
 	// navigation is bounced to the web sign-in page instead of the bytes.
 	req.Header.Set("Accept", "*/*")
 
-	resp, err := slackHTTPClient.Do(req) //nolint:gosec
+	resp, err := slackDownloadClient.Do(req) //nolint:gosec
 	if err != nil {
 		return nil, fmt.Errorf("slack download: %w", err)
 	}
