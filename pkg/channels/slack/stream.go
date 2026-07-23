@@ -490,31 +490,75 @@ func parseAuthChallenge(output string) (server, loginURL string) {
 // loginURLNote replaces a scrubbed login URL in the agent's prose.
 const loginURLNote = "_(login link removed; use the Connect button above)_"
 
-// scrubLoginURLs removes every login URL already surfaced as a Connect button
-// from the agent's prose. The URL is a single-use OAuth authorize link:
-// duplicating it in text lets a second click or Slack's unfurl crawler redeem
-// or replay it, which the auth server answers by revoking the user's whole
-// token family. Matching is by authorize-endpoint prefix (everything up to and
-// including "?"): the agent re-encodes the query string freely (JSON-escaped
-// ampersands, percent-encoded padding), so an exact match cannot be relied on.
-// Markdown links carrying the URL are dropped wholesale so no dangling
-// "[label]()" survives; bare occurrences (including Slack's "<url|label>"
-// form) are replaced with a pointer at the button.
+// scrubLoginURLs removes the login link the Connect button already carries from
+// the agent's prose. The URL is a single-use OAuth authorize link: duplicating
+// it in text lets a second click or Slack's unfurl crawler redeem or replay it,
+// which the auth server answers by revoking the user's whole token family.
+//
+// The whole line carrying the link is dropped, not just the URL token: agents
+// present the link on its own line (a bullet, an emoji, a markdown link), so
+// stripping only the URL leaves dangling scaffolding ("here is the link:" then
+// nothing). A single line that just introduces the link (ends with ":") is
+// dropped with it. The removed block collapses to one note pointing at the
+// button, so the user knows the link was withheld rather than lost.
+//
+// Matching is by authorize-endpoint prefix (everything up to and including
+// "?"): the agent re-encodes the query string freely (JSON-escaped ampersands,
+// percent-encoded padding), so an exact match cannot be relied on. The prefix
+// stops before the first "?", so query re-encoding never affects the match.
 func (w *batchedWriter) scrubLoginURLs(text string) string {
+	if len(w.loginURLs) == 0 {
+		return text
+	}
+	prefixes := make([]string, 0, len(w.loginURLs))
 	for _, loginURL := range w.loginURLs {
 		prefix := loginURL
 		if i := strings.IndexByte(prefix, '?'); i >= 0 {
 			prefix = prefix[:i+1]
 		}
-		if !strings.Contains(text, prefix) {
+		prefixes = append(prefixes, prefix)
+	}
+
+	lines := strings.Split(text, "\n")
+	kept := make([]string, 0, len(lines))
+	noteInserted := false
+	for _, line := range lines {
+		if !lineHasAnyPrefix(line, prefixes) {
+			kept = append(kept, line)
 			continue
 		}
-		quoted := regexp.QuoteMeta(prefix)
-		text = regexp.MustCompile(`\[[^\]]*\]\(`+quoted+`[^)]*\)`).ReplaceAllString(text, loginURLNote)
-		text = regexp.MustCompile(`<`+quoted+`[^>]*>`).ReplaceAllString(text, loginURLNote)
-		text = regexp.MustCompile(quoted+`\S*`).ReplaceAllString(text, loginURLNote)
+		// Drop a lead-in line whose only purpose was to introduce the link.
+		if n := len(kept); n > 0 {
+			if prev := strings.TrimSpace(kept[n-1]); strings.HasSuffix(prev, ":") {
+				kept = kept[:n-1]
+			}
+		}
+		if !noteInserted {
+			kept = append(kept, loginURLNote)
+			noteInserted = true
+		}
 	}
-	return text
+	return collapseBlankLines(strings.Join(kept, "\n"))
+}
+
+// lineHasAnyPrefix reports whether line carries any of the authorize-endpoint
+// prefixes in any spelling (bare, markdown link, Slack "<url|label>").
+func lineHasAnyPrefix(line string, prefixes []string) bool {
+	for _, prefix := range prefixes {
+		if strings.Contains(line, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// multiBlankLineRe matches a run of two or more blank lines.
+var multiBlankLineRe = regexp.MustCompile(`\n[ \t]*\n([ \t]*\n)+`)
+
+// collapseBlankLines trims a run of blank lines left by a removal to a single
+// blank, and strips leading and trailing blank lines.
+func collapseBlankLines(text string) string {
+	return strings.Trim(multiBlankLineRe.ReplaceAllString(text, "\n\n"), "\n")
 }
 
 // jsonEscapedAmp is how Go's HTML-safe JSON encoding spells "&" inside a

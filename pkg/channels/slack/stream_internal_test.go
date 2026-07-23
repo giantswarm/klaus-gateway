@@ -882,6 +882,32 @@ func TestScrubLoginURLs(t *testing.T) {
 	require.Equal(t, in, (&batchedWriter{}).scrubLoginURLs(in))
 }
 
+func TestScrubLoginURLs_DropsLinkLineAndLeadIn(t *testing.T) {
+	const loginURL = "https://pro.example/authorize?state=abc"
+	w := &batchedWriter{loginURLs: []string{loginURL}}
+
+	// The agent presents the link on its own line after a lead-in ending in ":".
+	// Both go; only the note is left, so no dangling "visit the link:" scaffolding.
+	in := "To list your issues, I need to authenticate first. Please visit the following link to sign in:\n" +
+		":point_right: " + loginURL
+	require.Equal(t, loginURLNote, w.scrubLoginURLs(in))
+}
+
+func TestScrubLoginURLs_KeepsSurroundingContent(t *testing.T) {
+	const loginURL = "https://pro.example/authorize?state=abc"
+	w := &batchedWriter{loginURLs: []string{loginURL}}
+
+	// A real intro line that does not end in ":" survives; only the link line and
+	// the "here is the link:" lead-in are removed, and an outro is preserved.
+	in := "Here is what I found.\n" +
+		"Sign in here:\n" +
+		loginURL + "\n" +
+		"Then I'll continue."
+	out := w.scrubLoginURLs(in)
+	require.Equal(t, "Here is what I found.\n"+loginURLNote+"\nThen I'll continue.", out)
+	require.NotContains(t, out, "Sign in here:")
+}
+
 func TestParseAuthChallengePayload_DepthBounded(t *testing.T) {
 	nested := any("Server: pro\nhttps://x.example/auth")
 	for range maxChallengePayloadDepth + 2 {
