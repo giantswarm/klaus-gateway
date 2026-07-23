@@ -105,6 +105,11 @@ type Adapter struct {
 	// agent reports a backend needs the user's sign-in, the adapter renders the
 	// login link it relays as a button. Requires OBO.
 	ConnectorPrompts bool
+	// PublicBaseURL is the gateway's public, externally reachable base URL (the
+	// OBO callback base). When set, connector login URLs gain a redirect back to
+	// ConnectorCompletePath so the browser lands on the gateway after sign-in
+	// (prompt rewrite plus auto-resume). Empty keeps the plain-link behavior.
+	PublicBaseURL string
 
 	// ProgressMode selects how turn progress is shown: "auto" (default; reactions
 	// with a text fallback when reactions:write is unavailable), "reactions", or
@@ -254,6 +259,14 @@ type Adapter struct {
 	rosterMu      sync.Mutex
 	rosterCached  []pkga2a.AgentInfo
 	rosterExpires time.Time
+
+	// connectorCompletionsMu guards connectorCompletions: short-lived state
+	// minted when a Connect button is decorated with a post-login redirect,
+	// keyed by the opaque ID carried in the redirect's s parameter and in the
+	// button value. The click records the prompt's response_url under it; the
+	// browser landing marks it completed and fires the one-shot resume.
+	connectorCompletionsMu sync.Mutex
+	connectorCompletions   map[string]ttlEntry[connectorCompletion]
 }
 
 // connectorPromptRecord is the last connect prompt surfaced for a
@@ -496,9 +509,12 @@ func (a *Adapter) Stop(ctx context.Context) error {
 	}
 }
 
-// Mount attaches /channels/slack/events and /channels/slack/interactions to r.
-// No-op in socketmode (no HTTP handlers needed).
+// Mount attaches /channels/slack/events and /channels/slack/interactions to r,
+// plus the browser-facing connector sign-in landing. In socketmode only the
+// landing is mounted (no Slack HTTP handlers needed, but muster still
+// redirects the browser here after a connector sign-in).
 func (a *Adapter) Mount(r chi.Router) {
+	r.Get(ConnectorCompletePath, a.handleConnectorComplete)
 	if a.evHandler == nil {
 		return
 	}

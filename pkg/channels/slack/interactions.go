@@ -182,8 +182,10 @@ func (a *Adapter) routeInteraction(ctx context.Context, payload interactionPaylo
 		a.handleConnectorDismiss(ctx, payload.User.ID, action.Value, payload.Message.ThreadTS, payload.ResponseURL)
 		return
 	case connectorConnect:
-		// URL button: the browser opens the consent flow itself, so there is
-		// nothing for the gateway to do on the click.
+		// URL button: the browser opens the consent flow itself. The click's
+		// response_url is the only handle that can rewrite the ephemeral
+		// prompt later, so it is recorded under the button's completion state.
+		a.handleConnectorConnect(ctx, payload.User.ID, action.Value, payload.ResponseURL)
 		return
 	}
 
@@ -267,6 +269,25 @@ func classifyAction(actionID string) (hitlAction, bool) {
 // value is dropped rather than persisted.
 func validConnectorName(server string) bool {
 	return server != "" && len(server) <= maxConnectorNameLen
+}
+
+// handleConnectorConnect records a Connect click's response_url under the
+// button's completion state, so the post-login landing can rewrite the
+// ephemeral prompt. A value that resolves to no state (a button without a
+// post-login redirect carries the server name instead, and state expires) or a
+// clicker other than the prompted user is a no-op.
+// When the browser landing already completed (the redirect raced ahead of
+// Slack's interaction delivery), the click owns the pending rewrite.
+func (a *Adapter) handleConnectorConnect(ctx context.Context, slackUser, stateID, responseURL string) {
+	entry, rewriteNow, ok := a.recordConnectorConnectClick(slackUser, stateID, responseURL)
+	if !ok {
+		return
+	}
+	if rewriteNow {
+		if err := respondURL(ctx, responseURL, entry.threadTS, connectorSignedInNotice(entry.server)); err != nil {
+			a.Logger.Warn("slack: rewrite connector prompt after sign-in failed", "user", slackUser, "server", entry.server, "error", err)
+		}
+	}
 }
 
 // handleConnectorDismiss acknowledges a "Not now" click and replaces the

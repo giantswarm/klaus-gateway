@@ -113,28 +113,37 @@ var pageHTML string
 // embedded asset and should fail fast rather than per request.
 var pageTmpl = template.Must(template.New("page").Parse(pageHTML))
 
-// page is the data rendered into pageHTML. Detail is optional: its box is omitted
+// Page is the data rendered into pageHTML. Detail is optional: its box is omitted
 // when empty.
-type page struct {
+type Page struct {
 	Title   string // browser tab title and bold subtitle line
 	Heading string // large accent heading (e.g. "Signed in" or "Sign-in failed")
 	Message string // explanatory paragraph
 	Detail  string // optional monospace detail (technical hint); omitted when empty
 }
 
-// renderPage writes p as an HTML document with the given status. It renders into
-// a buffer first so a template failure cannot emit a half-written body, falling
-// back to a plain-text status line if rendering fails.
-func (l *Linker) renderPage(w http.ResponseWriter, status int, p page) {
+// RenderPage writes p as an HTML document with the given status, using the
+// shared branded page shell. It renders into a buffer first so a template
+// failure cannot emit a half-written body, falling back to a plain-text status
+// line if rendering fails.
+func RenderPage(w http.ResponseWriter, status int, p Page) {
+	renderPageWith(slog.Default(), w, status, p)
+}
+
+func renderPageWith(logger *slog.Logger, w http.ResponseWriter, status int, p Page) {
 	var buf bytes.Buffer
 	if err := pageTmpl.Execute(&buf, p); err != nil {
-		l.logger.Error("musterlink: render page", "err", err)
+		logger.Error("musterlink: render page", "err", err)
 		http.Error(w, http.StatusText(status), status)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
 	_, _ = w.Write(buf.Bytes())
+}
+
+func (l *Linker) renderPage(w http.ResponseWriter, status int, p Page) {
+	renderPageWith(l.logger, w, status, p)
 }
 
 // Config configures a Linker.
@@ -494,7 +503,7 @@ func (l *Linker) HandleLink(w http.ResponseWriter, r *http.Request) {
 	state := r.URL.Query().Get("u")
 	if _, err := l.verifyState(state); err != nil {
 		l.logger.Warn("musterlink: rejected link request", "err", err)
-		l.renderPage(w, http.StatusBadRequest, page{
+		l.renderPage(w, http.StatusBadRequest, Page{
 			Heading: "Link expired",
 			Title:   "Sign-in link invalid",
 			Message: "This sign-in link is invalid or has expired. Return to Slack and start the sign-in again.",
@@ -503,7 +512,7 @@ func (l *Linker) HandleLink(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := l.ensureEndpoints(r.Context()); err != nil {
 		l.logger.Error("musterlink: discovery failed", "err", err)
-		l.renderPage(w, http.StatusBadGateway, page{
+		l.renderPage(w, http.StatusBadGateway, Page{
 			Heading: "Unavailable",
 			Title:   "Sign-in is temporarily unavailable",
 			Message: "The sign-in service could not be reached. Please try again in a moment.",
@@ -535,7 +544,7 @@ func (l *Linker) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		if email, ok := l.takeDone(nonce); ok && email != "" {
 			message = fmt.Sprintf("Signed in as %s. You can close this tab and return to Slack.", email)
 		}
-		l.renderPage(w, http.StatusOK, page{
+		l.renderPage(w, http.StatusOK, Page{
 			Heading: "Success",
 			Title:   "Signed in to Giant Swarm",
 			Message: message,
@@ -543,7 +552,7 @@ func (l *Linker) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if e := q.Get("error"); e != "" {
-		l.renderPage(w, http.StatusBadRequest, page{
+		l.renderPage(w, http.StatusBadRequest, Page{
 			Heading: "Sign-in cancelled",
 			Title:   "Sign-in was not completed",
 			Message: "The sign-in was cancelled or denied. Return to Slack and try again.",
@@ -555,7 +564,7 @@ func (l *Linker) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	slackUser, err := l.verifyState(state)
 	if err != nil {
 		l.logger.Warn("musterlink: rejected callback state", "err", err)
-		l.renderPage(w, http.StatusBadRequest, page{
+		l.renderPage(w, http.StatusBadRequest, Page{
 			Heading: "Link expired",
 			Title:   "Sign-in link invalid",
 			Message: "This sign-in link is invalid or has expired. Return to Slack and start the sign-in again.",
@@ -564,7 +573,7 @@ func (l *Linker) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	verifier, ok := l.takePending(state)
 	if !ok {
-		l.renderPage(w, http.StatusBadRequest, page{
+		l.renderPage(w, http.StatusBadRequest, Page{
 			Heading: "Session expired",
 			Title:   "Sign-in expired",
 			Message: "Your sign-in session expired before it could complete. Return to Slack and try again.",
@@ -576,7 +585,7 @@ func (l *Linker) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	link, err := l.Exchange(ctx, q.Get(responseTypeCode), verifier)
 	if err != nil {
 		l.logger.Error("musterlink: code exchange failed", "err", err)
-		l.renderPage(w, http.StatusBadGateway, page{
+		l.renderPage(w, http.StatusBadGateway, Page{
 			Heading: "Sign-in failed",
 			Title:   "Sign-in could not be completed",
 			Message: "Something went wrong while completing your sign-in. Please try again in a moment.",
@@ -588,7 +597,7 @@ func (l *Linker) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		want, err := l.slackEmail(ctx, slackUser)
 		if err != nil {
 			l.logger.Error("musterlink: slack email lookup failed", "err", err)
-			l.renderPage(w, http.StatusBadGateway, page{
+			l.renderPage(w, http.StatusBadGateway, Page{
 				Heading: "Sign-in failed",
 				Title:   "Sign-in could not be completed",
 				Message: "Something went wrong while completing your sign-in. Please try again in a moment.",
@@ -597,7 +606,7 @@ func (l *Linker) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		}
 		if want == "" || !strings.EqualFold(want, link.Email) {
 			l.logger.Warn("musterlink: email mismatch", "slackUser", slackUser, "slackEmail", want, "identityEmail", link.Email)
-			l.renderPage(w, http.StatusForbidden, page{
+			l.renderPage(w, http.StatusForbidden, Page{
 				Heading: "Email mismatch",
 				Title:   "Account email does not match",
 				Message: fmt.Sprintf("The account you signed in with reports %s, but your Slack profile email is %s. "+

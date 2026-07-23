@@ -98,6 +98,17 @@ const connectorCheckTimeout = 10 * time.Second
 // (interaction payloads are attacker-shaped input).
 const maxConnectorNameLen = 128
 
+// connectorCompletionTTL bounds a connector completion state: the window
+// between the Connect prompt posting and the browser landing back on the
+// gateway. Matched to the login link's own lifetime; past it the landing
+// renders the expired page and no resume fires.
+const connectorCompletionTTL = musterlink.DefaultStateTTL
+
+// connectorResumeText is the synthetic message dispatched into the thread
+// after a connector sign-in completes, so the agent retries the blocked tools
+// without the user retyping; %s is the backend name.
+const connectorResumeText = "I've signed in to %s, continue"
+
 // payloadTypeBlockActions is the interaction payload type for Block Kit button
 // clicks; other payload types (view submissions, shortcuts) are not routed.
 const payloadTypeBlockActions = "block_actions"
