@@ -310,10 +310,21 @@ func (w *batchedWriter) maybeConnectorPrompt(tool *channels.ToolActivity) {
 		w.logger.Debug("slack: connector prompt skipped, cooldown active and URL unchanged", "user", w.slackUser, "server", server)
 		return
 	}
+	// The cooldown above is keyed on the raw URL so a re-challenge with the
+	// same link stays deduplicated; the posted button carries the decorated one.
+	promptURL, connectValue := loginURL, server
+	if base := w.adapter.PublicBaseURL; base != "" {
+		stateID := w.adapter.mintConnectorCompletion(w.slackUser, server, w.channel, w.threadTS)
+		if decorated, err := decorateConnectorLoginURL(loginURL, base, stateID); err != nil {
+			w.logger.Warn("slack: connector login URL decoration failed, posting plain link", "server", server, "error", err)
+		} else {
+			promptURL, connectValue = decorated, stateID
+		}
+	}
 	w.adapter.background(func(bg context.Context) {
 		ctx, cancel := context.WithTimeout(bg, connectorCheckTimeout)
 		defer cancel()
-		if err := w.client.postConnectorPrompt(ctx, w.channel, w.threadTS, w.slackUser, server, loginURL); err != nil {
+		if err := w.client.postConnectorPrompt(ctx, w.channel, w.threadTS, w.slackUser, server, promptURL, connectValue); err != nil {
 			w.adapter.clearConnectorPrompted(w.slackUser, server)
 			w.logger.Warn("slack: post connector prompt failed", "user", w.slackUser, "server", server, "error", err)
 		}
@@ -1054,8 +1065,10 @@ const slackSectionTextMax = 3000
 // postConnectorPrompt posts an ephemeral (target-user-only) Block Kit message
 // offering to connect a muster backend the agent cannot use for the user yet:
 // a "Connect <server>" URL button opening loginURL plus a "Not now" dismissal.
-// When threadID is set the prompt is posted in-thread.
-func (c *slackAPIClient) postConnectorPrompt(ctx context.Context, channel, threadID, user, server, loginURL string) error {
+// When threadID is set the prompt is posted in-thread. connectValue is the
+// Connect button's value: the completion-state ID when the login URL carries a
+// post-login redirect, else the server name (the click stays a no-op then).
+func (c *slackAPIClient) postConnectorPrompt(ctx context.Context, channel, threadID, user, server, loginURL, connectValue string) error {
 	text := fmt.Sprintf("The agent can't use *%s* for you yet. Connect your account once so those tools work.", escapeMrkdwn(server))
 	body := map[string]any{
 		paramChannel: channel,
@@ -1074,7 +1087,7 @@ func (c *slackAPIClient) postConnectorPrompt(ctx context.Context, channel, threa
 						bkText:     map[string]any{bkType: bkPlainText, bkText: truncateButtonLabel("Connect " + server)},
 						bkStyle:    bkPrimary,
 						bkActionID: connectorConnect,
-						bkValue:    server,
+						bkValue:    connectValue,
 						bkURL:      loginURL,
 					},
 					map[string]any{
