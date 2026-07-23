@@ -80,7 +80,7 @@ func TestDownloadFile_SendsBearerAndReturnsBytes(t *testing.T) {
 	defer srv.Close()
 
 	client := &slackAPIClient{botToken: "secret"}
-	got, err := client.downloadFile(t.Context(), srv.URL, len(payload))
+	got, err := client.downloadFile(t.Context(), srv.URL, "image/png", len(payload))
 	require.NoError(t, err)
 	require.Equal(t, "Bearer secret", gotAuth)
 	require.Equal(t, payload, got)
@@ -95,7 +95,7 @@ func TestDownloadFile_RejectsBodyBeyondLimit(t *testing.T) {
 	defer srv.Close()
 
 	client := &slackAPIClient{botToken: "t"}
-	_, err := client.downloadFile(t.Context(), srv.URL, 1024) // declared 1KB, body is huge
+	_, err := client.downloadFile(t.Context(), srv.URL, "image/png", 1024) // declared 1KB, body is huge
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "exceeds")
 }
@@ -107,9 +107,43 @@ func TestDownloadFile_ErrorsOnNon2xx(t *testing.T) {
 	defer srv.Close()
 
 	client := &slackAPIClient{botToken: "t"}
-	_, err := client.downloadFile(t.Context(), srv.URL, 10)
+	_, err := client.downloadFile(t.Context(), srv.URL, "image/png", 10)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "403")
+}
+
+// TestDownloadFile_RejectsHTMLSignInPage covers Slack answering an unauthorized
+// url_private (e.g. a token missing files:read) with HTTP 200 and an HTML
+// sign-in page. The download must fail so the login page is never forwarded to
+// the agent as file bytes.
+func TestDownloadFile_RejectsHTMLSignInPage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(`<!DOCTYPE html><html lang="en-US" data-cdn="https://a.slack-edge.com/"><head></head></html>`))
+	}))
+	defer srv.Close()
+
+	client := &slackAPIClient{botToken: "t"}
+	_, err := client.downloadFile(t.Context(), srv.URL, "image/png", 1024)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "files:read")
+}
+
+// TestDownloadFile_AllowsGenuineHTMLFile ensures a real .html upload (declared
+// text/html) is still accepted: the HTML guard only fires when the response is
+// HTML but the file's declared type is not.
+func TestDownloadFile_AllowsGenuineHTMLFile(t *testing.T) {
+	payload := []byte("<html><body>real upload</body></html>")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write(payload)
+	}))
+	defer srv.Close()
+
+	client := &slackAPIClient{botToken: "t"}
+	got, err := client.downloadFile(t.Context(), srv.URL, "text/html", len(payload))
+	require.NoError(t, err)
+	require.Equal(t, payload, got)
 }
 
 func TestAttachmentsTooLargeNote_QuotesTotalSize(t *testing.T) {
@@ -132,7 +166,7 @@ func TestDownloadFile_UnknownSize_AllowsBeyondMargin(t *testing.T) {
 	defer srv.Close()
 
 	client := &slackAPIClient{botToken: "t"}
-	got, err := client.downloadFile(t.Context(), srv.URL, 0)
+	got, err := client.downloadFile(t.Context(), srv.URL, "image/png", 0)
 	require.NoError(t, err)
 	require.Len(t, got, len(payload))
 }
@@ -145,7 +179,7 @@ func TestDownloadFile_UnknownSize_RejectsBeyondCeiling(t *testing.T) {
 	defer srv.Close()
 
 	client := &slackAPIClient{botToken: "t"}
-	_, err := client.downloadFile(t.Context(), srv.URL, 0)
+	_, err := client.downloadFile(t.Context(), srv.URL, "image/png", 0)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "exceeds")
 }

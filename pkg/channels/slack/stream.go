@@ -1417,7 +1417,7 @@ func (c *slackAPIClient) call(ctx context.Context, method, contentType, payload 
 // sizeHint is Slack's declared file size; the body read is bounded to it plus a
 // small margin purely as an out-of-memory guard against a mismatched or hostile
 // response, not as a product limit on attachment size.
-func (c *slackAPIClient) downloadFile(ctx context.Context, fileURL string, sizeHint int) ([]byte, error) {
+func (c *slackAPIClient) downloadFile(ctx context.Context, fileURL, declaredType string, sizeHint int) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fileURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("slack download: build request: %w", err)
@@ -1434,6 +1434,15 @@ func (c *slackAPIClient) downloadFile(ctx context.Context, fileURL string, sizeH
 		return nil, fmt.Errorf("slack download: http status %d", resp.StatusCode)
 	}
 
+	// Slack answers an unauthorized url_private with HTTP 200 and an HTML sign-in
+	// page rather than an error status; the usual cause is a bot token without the
+	// files:read scope. An HTML response for a file whose metadata says it is not
+	// HTML means we fetched the login page, not the file, so fail here instead of
+	// base64-forwarding the page to the agent as if it were the attachment.
+	if isHTMLContentType(resp.Header.Get("Content-Type")) && !isHTMLContentType(declaredType) {
+		return nil, fmt.Errorf("slack download: got HTML sign-in page instead of file bytes (is the files:read scope granted?)")
+	}
+
 	limit := int64(sizeHint) + downloadSizeMargin
 	if sizeHint <= 0 {
 		limit = unknownSizeDownloadLimit
@@ -1446,6 +1455,12 @@ func (c *slackAPIClient) downloadFile(ctx context.Context, fileURL string, sizeH
 		return nil, fmt.Errorf("slack download: body exceeds %d bytes", limit)
 	}
 	return body, nil
+}
+
+// isHTMLContentType reports whether a MIME type is text/html, ignoring any
+// charset parameter and surrounding whitespace or case.
+func isHTMLContentType(ct string) bool {
+	return strings.HasPrefix(strings.TrimSpace(strings.ToLower(ct)), "text/html")
 }
 
 // retryAfter reads the Retry-After header of a 429 response, defaulting to 1s

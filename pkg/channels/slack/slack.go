@@ -1635,7 +1635,7 @@ func (a *Adapter) fetchAttachments(ctx context.Context, msg *channels.InboundMes
 			dropped = append(dropped, att.Filename)
 			continue
 		}
-		bytes, err := client.downloadFile(ctx, att.SourceURL, att.Size)
+		bytes, err := client.downloadFile(ctx, att.SourceURL, att.ContentType, att.Size)
 		if err != nil {
 			a.Logger.Warn("slack: attachment download failed, dropping",
 				"filename", att.Filename, "error", err)
