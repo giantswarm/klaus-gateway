@@ -450,6 +450,11 @@ func parseAuthChallenge(output string) (server, loginURL string) {
 		// Challenge text that embeds a JSON-encoded blob carries Go's HTML-safe
 		// escaping, so each & arrives as the literal six characters \u0026; the
 		// button must open the real URL.
+		// The challenge often reaches here as an undecoded JSON string, so the
+		// whitespace ending the URL is a literal two-character escape (\n, \t)
+		// rather than a byte \S+ stops at, and the match runs on into the
+		// following prose. Cut at the first such escape before decoding the URL.
+		m = cutAtLoginURLTerminator(m)
 		m = strings.ReplaceAll(m, jsonEscapedAmp, "&")
 		loginURL = validLoginURL(strings.TrimRight(m, ").,]}>\"'"))
 	}
@@ -492,6 +497,23 @@ func (w *batchedWriter) scrubLoginURLs(text string) string {
 // jsonEscapedAmp is how Go's HTML-safe JSON encoding spells "&" inside a
 // string value.
 const jsonEscapedAmp = `\u0026`
+
+// loginURLTerminators are the JSON string escapes that end a login URL embedded
+// in an undecoded challenge payload: the escape's backslash and letter are
+// non-whitespace, so the URL regex swallows them and the prose that follows.
+// jsonEscapedAmp is decoded separately and is deliberately not listed.
+var loginURLTerminators = []string{`\n`, `\r`, `\t`, `\f`, `\"`}
+
+// cutAtLoginURLTerminator returns s truncated at the first login-URL terminator.
+func cutAtLoginURLTerminator(s string) string {
+	cut := len(s)
+	for _, esc := range loginURLTerminators {
+		if i := strings.Index(s, esc); i >= 0 && i < cut {
+			cut = i
+		}
+	}
+	return s[:cut]
+}
 
 // validLoginURL returns raw when it is a well-formed absolute https URL with a
 // host, and "" otherwise. The Connect button opens agent- and tool-controlled
