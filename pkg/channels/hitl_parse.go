@@ -128,6 +128,10 @@ func longestBacktickRun(b []byte) int {
 	return longest
 }
 
+// mediaTypeJSON is the JSON media type, named because the literal recurs
+// across the textual-type switch and its tests.
+const mediaTypeJSON = "application/json"
+
 // isTextualMediaType reports whether a media type is human-readable text that
 // should reach the agent as a text part rather than a binary file blob. It
 // ignores any charset parameter and matches text/*, the common structured text
@@ -141,7 +145,7 @@ func isTextualMediaType(mediaType string) bool {
 		return true
 	}
 	switch mt {
-	case "application/json", "application/xml", "application/yaml",
+	case mediaTypeJSON, "application/xml", "application/yaml",
 		"application/x-yaml", "application/x-yml", "application/toml",
 		"application/x-sh", "application/javascript", "application/x-ndjson",
 		"application/csv":

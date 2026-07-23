@@ -134,7 +134,7 @@ func TestBuildInboundParts_TextAttachmentBecomesTextPart(t *testing.T) {
 func TestBuildInboundParts_StructuredTextAttachment(t *testing.T) {
 	msg := InboundMessage{
 		Attachments: []Attachment{
-			{Filename: "data.json", ContentType: "application/json", Bytes: []byte(`{"a":1}`)},
+			{Filename: "data.json", ContentType: mediaTypeJSON, Bytes: []byte(`{"a":1}`)},
 		},
 	}
 	parts := buildInboundParts(msg)
@@ -144,7 +144,7 @@ func TestBuildInboundParts_StructuredTextAttachment(t *testing.T) {
 }
 
 func TestIsTextualMediaType(t *testing.T) {
-	for _, mt := range []string{"text/plain", "text/plain; charset=utf-8", "text/yaml", "application/json", "application/x-yaml", "application/vnd.api+json"} {
+	for _, mt := range []string{"text/plain", "text/plain; charset=utf-8", "text/yaml", mediaTypeJSON, "application/x-yaml", "application/vnd.api+json"} {
 		require.True(t, isTextualMediaType(mt), mt)
 	}
 	for _, mt := range []string{"image/png", "application/pdf", "application/octet-stream", ""} {

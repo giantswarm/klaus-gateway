@@ -23,6 +23,10 @@ import (
 // partKind is the discriminator key in kagent's spec-lowercase part encoding.
 const partKind = "kind"
 
+// partKindFile is the spec file-part discriminator value, which doubles as the
+// key carrying the FilePart payload.
+const partKindFile = "file"
+
 // ErrPayloadTooLarge is returned when kagent rejects a turn because its request
 // body exceeds the agent's configured A2A_MAX_CONTENT_LENGTH (HTTP 413). The
 // body may be over the cap because of attachments or a large accumulated
@@ -225,8 +229,8 @@ func buildKagentParams(execCtx *a2asrv.ExecutorContext) map[string]any {
 		// with base64-encoded bytes.
 		if raw := p.Raw(); raw != nil {
 			parts = append(parts, map[string]any{
-				partKind: "file",
-				"file": map[string]any{
+				partKind: partKindFile,
+				partKindFile: map[string]any{
 					"name":     p.Filename,
 					"mimeType": p.MediaType,
 					"bytes":    base64.StdEncoding.EncodeToString(raw),
@@ -445,5 +449,5 @@ func isFilePart(raw json.RawMessage) bool {
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return false
 	}
-	return p.Kind == "file"
+	return p.Kind == partKindFile
 }
