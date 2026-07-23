@@ -32,7 +32,7 @@ workflows:
     - architect/push-to-registries:
         context: architect
         name: build-image
-        push: false
+        push: true
         requires:
         - go-build
         filters:
