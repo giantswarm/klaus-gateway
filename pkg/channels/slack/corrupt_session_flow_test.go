@@ -44,6 +44,56 @@ func TestCorruptSession_ResetAndNotice(t *testing.T) {
 	require.Equal(t, "700.000", resetMsgs[0].ThreadID)
 }
 
+// A granted collaborator's turn on a shared thread runs under the initiator's
+// token; when it fails on corrupt session history, the reset must present that
+// same token, or kagent resolves a different principal and the delete misses
+// the corrupt session.
+func TestCorruptSession_CollaboratorTurnResetsUnderInitiatorToken(t *testing.T) {
+	fake := newFakeSlackAPI()
+	fakeURL := fake.server(t).URL
+	var mu sync.Mutex
+	var resets []channels.InboundMessage
+	gw := &stubGateway{
+		// First send: the initiator's opening turn succeeds. Second send: the
+		// collaborator's turn fails on corrupt history.
+		sendQueue: [][]channels.OutboundDelta{
+			{{Done: true}},
+			{{Err: errCorruptHistory}},
+		},
+		onResetSession: func(msg channels.InboundMessage) (bool, error) {
+			mu.Lock()
+			resets = append(resets, msg)
+			mu.Unlock()
+			return true, nil
+		},
+	}
+	a, srv := newEventsAdapter(t, gw, fakeURL, channelMode)
+	a.OBO = &multiUserOBO{linked: map[string]string{"U001": "tok1", "U999": "tok2"}}
+
+	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
+	require.Eventually(t, func() bool {
+		names := fake.reactionNames("reactions.add")
+		return len(names) > 0 && names[len(names)-1] == "white_check_mark"
+	}, 2*time.Second, 50*time.Millisecond, "the initiator's turn completes and frees the thread slot")
+
+	// Grant U999 so their reply dispatches instead of parking for consent.
+	sendAccessInteraction(t, srv, "U001", accessAllowAction, "100.000", "U999", fakeURL+"/response")
+	fake.waitForPath(t, "response", 1)
+
+	sendEvent(t, srv, mention("U999", "continue", "200.000", "100.000"))
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(resets) == 1
+	}, 2*time.Second, 50*time.Millisecond, "the corrupt session is deleted")
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, "100.000", resets[0].ThreadID)
+	require.Equal(t, "tok1", resets[0].BearerToken,
+		"the reset must present the initiator's token the turn ran under, not the collaborator's")
+}
+
 // When the session cannot be deleted, the notice advises a new thread rather
 // than promising a reset that did not happen.
 func TestCorruptSession_ResetUnavailableAdvisesNewThread(t *testing.T) {

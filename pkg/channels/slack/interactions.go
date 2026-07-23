@@ -388,7 +388,10 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 
 	// Serialize the resume with any concurrent turn on this thread (typed reply
 	// or another click). Acquire before taking the pending task so a rejected
-	// click leaves the task and the button intact for a retry.
+	// click leaves the task and the button intact for a retry. Unlike dispatch,
+	// the clicker's token is minted AFTER the slot: the peek/take pair below
+	// must run under it, and a click has no message to park, so nothing is
+	// gained by mirroring dispatch's mint-before-slot ordering here.
 	if !a.acquireThread(threadID) {
 		if _, err := client.postMessage(ctx, slackChannel, busyNotice, threadID); err != nil {
 			a.Logger.Warn("slack: post busy notice failed", "thread", threadID, "error", err)
@@ -498,41 +501,16 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 		BearerToken: token,
 	}
 
-	// Resolve email for the button-clicking user.
-	a.resolveSubjectEmail(ctx, &msg)
-
-	// A granted collaborator's decision resumes the one shared session, so it
-	// runs under the initiator's identity just like a typed turn does.
-	a.applyInitiatorIdentity(ctx, &msg, threadID, slackUser)
-
-	// A failure before the stream is running re-stores the taken task: the
-	// buttons already show the decision, but a typed reply can still resume it.
-	// The note tells the user so; the updated message alone reads as if the
-	// decision went through.
-	ref, err := a.gw.Resolve(ctx, msg)
-	if err != nil {
-		a.storePendingTask(threadID, task)
-		a.postResumeFailureNote(ctx, client, slackChannel, threadID)
-		return err
-	}
-
-	turnCtx, done := a.registerTurn(ctx, threadID)
-	defer done()
-
-	a.logTurnDispatch(msg, slackUser, true, agentSourceTask)
-
-	deltas, err := a.gw.SendCompletion(turnCtx, ref, msg)
-	if err != nil {
-		a.storePendingTask(threadID, task)
-		a.postResumeFailureNote(ctx, client, slackChannel, threadID)
-		return err
-	}
-
-	// Button resume: no user message to react to, so use text progress. The turn
-	// context feeds the stream so /stop cancels it; the paused turn's usage
-	// carries over so /usage reports the whole turn; the reply is branded as the
-	// agent (the answer is the agent's).
-	return a.streamResponse(turnCtx, a.agentClient(ctx, task.AgentRef), deltas, msg, slackUser, slackChannel, threadID, "", "_continuing…_", task.Usage)
+	// runTurn resolves the clicker's email, applies the initiator's identity
+	// (a collaborator's decision resumes the one shared session, so it runs
+	// under the initiator just like a typed turn), and re-stores the taken
+	// task on a pre-stream failure: the buttons already show the decision, so
+	// the failure note tells the user a typed reply can still resume it. The
+	// empty triggerTS selects text progress: a button resume has no user
+	// message to react to.
+	return a.runTurn(ctx, msg, slackChannel, "", "_continuing…_", task, agentSourceTask, turnHooks{
+		onFailure: func() { a.postResumeFailureNote(ctx, client, slackChannel, threadID) },
+	})
 }
 
 // buildButtonDecision turns a Block Kit click into a structured HITL decision,

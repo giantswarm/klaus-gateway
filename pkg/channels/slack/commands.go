@@ -232,34 +232,6 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *slashCommand, slackUse
 	return false
 }
 
-// stopThread cancels the thread's in-flight turn, reporting whether there was
-// one to stop. The inflight slot, not the turns registry, is the source of
-// truth: a turn spends its network-bound start window (user lookup, token
-// mint, resume check, agent resolve) holding the slot before it registers a
-// cancelable turn, and a /stop landing in that window must still stop it. Such
-// a stop is recorded on the slot itself for registerTurn to consume;
-// re-checking the registry afterwards closes the race where the turn
-// registered in between and would otherwise miss the request.
-func (a *Adapter) stopThread(threadID string) bool {
-	cancelRegistered := func() bool {
-		a.turnsMu.Lock()
-		defer a.turnsMu.Unlock()
-		t, running := a.turns[threadID]
-		if running {
-			t.cancel()
-		}
-		return running
-	}
-	if cancelRegistered() {
-		return true
-	}
-	if !a.requestStopIfBusy(threadID) {
-		return false
-	}
-	cancelRegistered()
-	return true
-}
-
 // handleLoginCommand handles `/login`. It always consumes the command. When
 // OBO is disabled it says so rather than dispatching to the agent. An unlinked
 // user gets the sign-in prompt; a linked user gets a confirmation of their

@@ -49,3 +49,29 @@ func TestDispatch_TransientOBOError_PreservesPendingTask(t *testing.T) {
 
 	require.NotNil(t, a.takePendingTask("T1"), "transient OBO error must not consume the paused task")
 }
+
+// A message arriving while another turn holds the thread slot pays the
+// sender's token mint before the slot check, so a transient mint failure on a
+// busy thread surfaces as the token error (ephemeral to the sender), not as
+// the busy notice a signed-in sender would get.
+func TestDispatch_BusyThread_TransientTokenErrorSurfaces(t *testing.T) {
+	a, srv := newTestAdapter(t)
+	a.Mode = ModeEvents
+	a.DefaultAgent = "agent"
+	a.OBO = transientOBO{}
+	require.NoError(t, a.Start(t.Context(), &fakeGateway{}))
+	t.Cleanup(func() { _ = a.Stop(context.Background()) })
+
+	require.True(t, a.acquireThread("T1"))
+	t.Cleanup(func() { a.releaseThread("T1") })
+
+	msg := channels.InboundMessage{Channel: ChannelName, ChannelID: "C1", ThreadID: "T1", MessageID: "M2", Subject: "U1", Text: "follow-up"}
+	err := a.dispatch(t.Context(), msg, "C1")
+	require.NoError(t, err, "the turn aborts on the token error; it must not surface as thread-busy")
+
+	require.Equal(t, int32(0), srv.posts.Load(), "no busy notice for a turn that never reached the slot")
+	require.Equal(t, int32(1), srv.ephemerals.Load())
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	require.Equal(t, tokenErrorNotice, srv.ephemeralTexts[0])
+}
