@@ -386,6 +386,235 @@ func sendConnectorInteractionURL(t *testing.T, srv *httptest.Server, actionID, s
 	_ = resp.Body.Close()
 }
 
+// decoratedConnectorAdapter is connectorAdapter with a public base URL, so
+// Connect buttons carry the post-login redirect and completion state. Kept
+// separate: q.Encode() reorders query params, so tests asserting the raw
+// login URL stay on the undecorated adapter.
+func decoratedConnectorAdapter(t *testing.T, gw *stubGateway) (*fakeSlackAPI, *httptest.Server) {
+	t.Helper()
+	fake := newFakeSlackAPI()
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, func(a *slackadapter.Adapter) {
+		a.OBO = &fakeOBO{linkedUser: "U1", token: "tok"}
+		a.ConnectorPrompts = true
+		a.PublicBaseURL = "https://gw.example"
+	})
+	return fake, srv
+}
+
+// connectButton walks the recorded ephemeral posts for the Connect button and
+// returns its url and value.
+func connectButton(fake *fakeSlackAPI) (buttonURL, buttonValue string, ok bool) {
+	for _, call := range fake.pathCalls("chat.postEphemeral") {
+		blocks, _ := call.params["blocks"].([]any)
+		for _, block := range blocks {
+			blockMap, _ := block.(map[string]any)
+			elements, _ := blockMap["elements"].([]any)
+			for _, element := range elements {
+				button, _ := element.(map[string]any)
+				if button["action_id"] == "connector_connect" {
+					buttonURL, _ = button["url"].(string)
+					buttonValue, _ = button["value"].(string)
+					return buttonURL, buttonValue, true
+				}
+			}
+		}
+	}
+	return "", "", false
+}
+
+// promptConnector drives one auth-challenge turn on a decorated adapter and
+// returns the posted Connect button's url and completion-state value.
+func promptConnector(t *testing.T, fake *fakeSlackAPI, srv *httptest.Server, ts string) (buttonURL, stateID string) {
+	t.Helper()
+	sendEvent(t, srv, dmEvent("U1", "use the pro tools", ts))
+	var ok bool
+	require.Eventually(t, func() bool {
+		buttonURL, stateID, ok = connectButton(fake)
+		return ok
+	}, 2*time.Second, 20*time.Millisecond, "connect prompt is posted")
+	return buttonURL, stateID
+}
+
+// newResponseURLCapture returns a server standing in for a Slack interaction
+// response_url, and an accessor for everything POSTed to it.
+func newResponseURLCapture(t *testing.T) (*httptest.Server, func() string) {
+	t.Helper()
+	var mu sync.Mutex
+	var body string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		body += string(raw)
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return body
+	}
+}
+
+// A decorated Connect button carries the post-login redirect back to the
+// gateway landing, keyed by the completion state in the button value, while
+// the login URL's own query params survive.
+func TestConnectorPrompt_DecoratedURLAndStateValue(t *testing.T) {
+	gw := &stubGateway{deltas: []channels.OutboundDelta{
+		authLoginResult(authChallengeOutput),
+		{Content: "ok"}, {Done: true},
+	}}
+	fake, srv := decoratedConnectorAdapter(t, gw)
+
+	buttonURL, stateID := promptConnector(t, fake, srv, "130.000")
+
+	require.NotEqual(t, "gazelle-mcp-pro", stateID, "the button value is the state ID, not the server name")
+	parsed, err := url.Parse(buttonURL)
+	require.NoError(t, err)
+	require.Equal(t, "abc", parsed.Query().Get("state"), "the login URL's own params survive decoration")
+	require.Equal(t, "https://gw.example/connectors/complete?s="+stateID, parsed.Query().Get("redirect"))
+}
+
+// The full completion flow: click records the response_url, the browser lands
+// on /connectors/complete, the ephemeral prompt is rewritten to the signed-in
+// confirmation, and a synthetic continuation turn is dispatched into the
+// thread.
+func TestConnectorComplete_RewritesPromptAndResumes(t *testing.T) {
+	var dispatched struct {
+		mu    sync.Mutex
+		texts []string
+	}
+	gw := &stubGateway{deltas: []channels.OutboundDelta{
+		authLoginResult(authChallengeOutput),
+		{Content: "ok"}, {Done: true},
+	}}
+	gw.onResolve = func(msg channels.InboundMessage) {
+		dispatched.mu.Lock()
+		dispatched.texts = append(dispatched.texts, msg.Text)
+		dispatched.mu.Unlock()
+	}
+	fake, srv := decoratedConnectorAdapter(t, gw)
+	responseSrv, capturedBody := newResponseURLCapture(t)
+
+	_, stateID := promptConnector(t, fake, srv, "131.000")
+	sendConnectorInteractionURL(t, srv, "connector_connect", stateID, responseSrv.URL)
+
+	resp, err := http.Get(srv.URL + "/connectors/complete?s=" + url.QueryEscape(stateID) + "&server=gazelle-mcp-pro")
+	require.NoError(t, err)
+	page, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Contains(t, string(page), "Signed in to gazelle-mcp-pro")
+
+	require.Eventually(t, func() bool {
+		return strings.Contains(capturedBody(), "Signed in to gazelle-mcp-pro")
+	}, 2*time.Second, 20*time.Millisecond, "the ephemeral prompt is rewritten via the response_url")
+	require.Eventually(t, func() bool {
+		dispatched.mu.Lock()
+		defer dispatched.mu.Unlock()
+		for _, text := range dispatched.texts {
+			if strings.Contains(text, "I've signed in to gazelle-mcp-pro, continue") {
+				return true
+			}
+		}
+		return false
+	}, 2*time.Second, 20*time.Millisecond, "the synthetic continuation is dispatched into the thread")
+}
+
+// The completion redirect can outrun Slack's interaction delivery: the landing
+// still resumes the turn, and the late click performs the prompt rewrite.
+func TestConnectorComplete_LandingBeforeClick(t *testing.T) {
+	gw := &stubGateway{deltas: []channels.OutboundDelta{
+		authLoginResult(authChallengeOutput),
+		{Content: "ok"}, {Done: true},
+	}}
+	fake, srv := decoratedConnectorAdapter(t, gw)
+	responseSrv, capturedBody := newResponseURLCapture(t)
+
+	_, stateID := promptConnector(t, fake, srv, "132.000")
+
+	resp, err := http.Get(srv.URL + "/connectors/complete?s=" + url.QueryEscape(stateID))
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Eventually(t, func() bool { return gw.resolveCount() >= 2 },
+		2*time.Second, 20*time.Millisecond, "the landing resumes even before the click is delivered")
+
+	sendConnectorInteractionURL(t, srv, "connector_connect", stateID, responseSrv.URL)
+	require.Eventually(t, func() bool {
+		return strings.Contains(capturedBody(), "Signed in to gazelle-mcp-pro")
+	}, 2*time.Second, 20*time.Millisecond, "the late click owns the prompt rewrite")
+}
+
+// An unknown or expired state renders the graceful expired page and dispatches
+// nothing.
+func TestConnectorComplete_UnknownState(t *testing.T) {
+	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok"}, {Done: true}}}
+	_, srv := decoratedConnectorAdapter(t, gw)
+
+	resp, err := http.Get(srv.URL + "/connectors/complete?s=bogus")
+	require.NoError(t, err)
+	page, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	require.Equal(t, http.StatusNotFound, resp.StatusCode)
+	require.Contains(t, string(page), "Link expired")
+
+	time.Sleep(100 * time.Millisecond)
+	require.Zero(t, gw.resolveCount(), "nothing is dispatched for an unknown state")
+}
+
+// Reloading the landing page must not re-dispatch the continuation.
+func TestConnectorComplete_ReloadIdempotent(t *testing.T) {
+	var resumes struct {
+		mu    sync.Mutex
+		count int
+	}
+	gw := &stubGateway{deltas: []channels.OutboundDelta{
+		authLoginResult(authChallengeOutput),
+		{Content: "ok"}, {Done: true},
+	}}
+	gw.onResolve = func(msg channels.InboundMessage) {
+		if strings.Contains(msg.Text, "I've signed in") {
+			resumes.mu.Lock()
+			resumes.count++
+			resumes.mu.Unlock()
+		}
+	}
+	fake, srv := decoratedConnectorAdapter(t, gw)
+
+	_, stateID := promptConnector(t, fake, srv, "133.000")
+
+	for range 2 {
+		resp, err := http.Get(srv.URL + "/connectors/complete?s=" + url.QueryEscape(stateID))
+		require.NoError(t, err)
+		_ = resp.Body.Close()
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+	}
+
+	require.Eventually(t, func() bool {
+		resumes.mu.Lock()
+		defer resumes.mu.Unlock()
+		return resumes.count >= 1
+	}, 2*time.Second, 20*time.Millisecond)
+	time.Sleep(200 * time.Millisecond)
+	resumes.mu.Lock()
+	defer resumes.mu.Unlock()
+	require.Equal(t, 1, resumes.count, "a reload must not dispatch a second continuation")
+}
+
+// A Connect click whose value is a plain server name (a button posted without
+// a post-login redirect) stays a no-op.
+func TestConnectorConnect_LegacyValueNoOp(t *testing.T) {
+	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok"}, {Done: true}}}
+	_, srv := connectorAdapter(t, gw)
+	responseSrv, capturedBody := newResponseURLCapture(t)
+
+	sendConnectorInteractionURL(t, srv, "connector_connect", "gazelle-mcp-pro", responseSrv.URL)
+
+	time.Sleep(100 * time.Millisecond)
+	require.Empty(t, capturedBody(), "a legacy Connect click must not touch the response_url")
+}
+
 // A second auth challenge carries a NEW single-use login URL: the auth server
 // invalidated the old one, so the cooldown must not suppress the fresh button
 // (observed live: the scrubbed prose said "use the Connect button above" while

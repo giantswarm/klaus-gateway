@@ -346,10 +346,21 @@ func (w *batchedWriter) maybeConnectorPrompt(tool *channels.ToolActivity) {
 		w.logger.Debug("slack: connector prompt skipped, cooldown active and URL unchanged", "user", w.slackUser, "server", server)
 		return
 	}
+	// The cooldown above is keyed on the raw URL so a re-challenge with the
+	// same link stays deduplicated; the posted button carries the decorated one.
+	promptURL, connectValue := loginURL, server
+	if base := w.adapter.PublicBaseURL; base != "" {
+		stateID := w.adapter.mintConnectorCompletion(w.slackUser, server, w.channel, w.threadTS)
+		if decorated, err := decorateConnectorLoginURL(loginURL, base, stateID); err != nil {
+			w.logger.Warn("slack: connector login URL decoration failed, posting plain link", "server", server, "error", err)
+		} else {
+			promptURL, connectValue = decorated, stateID
+		}
+	}
 	w.adapter.background(func(bg context.Context) {
 		ctx, cancel := context.WithTimeout(bg, connectorCheckTimeout)
 		defer cancel()
-		if err := w.client.postConnectorPrompt(ctx, w.channel, w.threadTS, w.slackUser, server, loginURL); err != nil {
+		if err := w.client.postConnectorPrompt(ctx, w.channel, w.threadTS, w.slackUser, server, promptURL, connectValue); err != nil {
 			w.adapter.clearConnectorPrompted(w.slackUser, server)
 			w.logger.Warn("slack: post connector prompt failed", "user", w.slackUser, "server", server, "error", err)
 		}
@@ -462,6 +473,11 @@ func parseAuthChallenge(output string) (server, loginURL string) {
 		// Challenge text that embeds a JSON-encoded blob carries Go's HTML-safe
 		// escaping, so each & arrives as the literal six characters \u0026; the
 		// button must open the real URL.
+		// The challenge often reaches here as an undecoded JSON string, so the
+		// whitespace ending the URL is a literal two-character escape (\n, \t)
+		// rather than a byte \S+ stops at, and the match runs on into the
+		// following prose. Cut at the first such escape before decoding the URL.
+		m = cutAtLoginURLTerminator(m)
 		m = strings.ReplaceAll(m, jsonEscapedAmp, "&")
 		loginURL = validLoginURL(strings.TrimRight(m, ").,]}>\"'"))
 	}
@@ -504,6 +520,23 @@ func (w *batchedWriter) scrubLoginURLs(text string) string {
 // jsonEscapedAmp is how Go's HTML-safe JSON encoding spells "&" inside a
 // string value.
 const jsonEscapedAmp = `\u0026`
+
+// loginURLTerminators are the JSON string escapes that end a login URL embedded
+// in an undecoded challenge payload: the escape's backslash and letter are
+// non-whitespace, so the URL regex swallows them and the prose that follows.
+// jsonEscapedAmp is decoded separately and is deliberately not listed.
+var loginURLTerminators = []string{`\n`, `\r`, `\t`, `\f`, `\"`}
+
+// cutAtLoginURLTerminator returns s truncated at the first login-URL terminator.
+func cutAtLoginURLTerminator(s string) string {
+	cut := len(s)
+	for _, esc := range loginURLTerminators {
+		if i := strings.Index(s, esc); i >= 0 && i < cut {
+			cut = i
+		}
+	}
+	return s[:cut]
+}
 
 // validLoginURL returns raw when it is a well-formed absolute https URL with a
 // host, and "" otherwise. The Connect button opens agent- and tool-controlled
@@ -1165,8 +1198,10 @@ const slackSectionTextMax = 3000
 // postConnectorPrompt posts an ephemeral (target-user-only) Block Kit message
 // offering to connect a muster backend the agent cannot use for the user yet:
 // a "Connect <server>" URL button opening loginURL plus a "Not now" dismissal.
-// When threadID is set the prompt is posted in-thread.
-func (c *slackAPIClient) postConnectorPrompt(ctx context.Context, channel, threadID, user, server, loginURL string) error {
+// When threadID is set the prompt is posted in-thread. connectValue is the
+// Connect button's value: the completion-state ID when the login URL carries a
+// post-login redirect, else the server name (the click stays a no-op then).
+func (c *slackAPIClient) postConnectorPrompt(ctx context.Context, channel, threadID, user, server, loginURL, connectValue string) error {
 	text := fmt.Sprintf("The agent can't use *%s* for you yet. Connect your account once so those tools work.", escapeMrkdwn(server))
 	body := map[string]any{
 		paramChannel: channel,
@@ -1185,7 +1220,7 @@ func (c *slackAPIClient) postConnectorPrompt(ctx context.Context, channel, threa
 						bkText:     map[string]any{bkType: bkPlainText, bkText: truncateButtonLabel("Connect " + server)},
 						bkStyle:    bkPrimary,
 						bkActionID: connectorConnect,
-						bkValue:    server,
+						bkValue:    connectValue,
 						bkURL:      loginURL,
 					},
 					map[string]any{

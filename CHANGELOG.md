@@ -9,12 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The Slack "Connect <backend>" button no longer opens a broken login link when the agent's sign-in challenge arrives as an undecoded JSON string.
+
 ### Changed
 
 - The default agent (binary default and Helm `a2a.defaultAgent`) is now `sre-agent` instead of `klaud-coding`.
 
 ### Added
 
+- Completing a backend sign-in started from the Slack "Connect <backend>" button now lands the browser back on the gateway (`GET /connectors/complete`): the ephemeral prompt is rewritten into a signed-in confirmation and the agent automatically continues in the thread with "I've signed in to <backend>, continue", so the blocked tools are retried without re-typing. Requires muster's `oauth.mcpClient.postLoginRedirectAllowlist` to include `https://<gateway-host>/connectors/complete`; without it (or without the OBO callback base URL) the Connect button keeps the previous plain-link behavior.
 - Files attached to a Slack message are forwarded to the agent, so a vision-capable model can use images as input. Image and other binary files are sent as A2A file parts; text files (yaml, json, source, …) are sent as a text part carrying their content, since model backends reject a `text/*` binary blob and a text file is only useful to the agent as readable text. A message carrying only an attachment (no caption) now starts a turn instead of being dropped. When the agent rejects a turn because its attachments exceed the agent's payload limit, the thread gets a size-specific notice rather than the generic failure message. File parts echoed back by the agent (e.g. the uploaded attachment in the turn's status message) are tolerated in the response stream instead of failing the turn. Forwarding requires the `files:read` bot scope; the download sends an `Accept` header and keeps its bearer token across `*.slack.com` redirects so Slack returns the file rather than its HTML sign-in page, and a sign-in page that slips through is detected and the attachment dropped rather than forwarded as garbage bytes.
 - Slack assistant-surface (Agent view) lifecycle events are handled: opening the assistant pane (`app_home_opened` on the Messages tab) posts a one-time greeting when DMs are served, or the channel-redirect notice when DMs are in redirect mode, and switching the active assistant context no longer produces not-routable warning logs. The app manifest gains the `agent_view` feature block with declared suggested prompts, the `assistant:write` bot scope, and subscriptions to both events (klaus-gateway#158).
 - `--web-enabled` flag / `KLAUS_GATEWAY_WEB_ENABLED` env / Helm `web.enabled` value gate the web channel adapter, which previously always started. The binary default stays true (local development); the chart default is false, matching `cli.enabled`. The chart now also actually renders `KLAUS_GATEWAY_CLI_ENABLED` from `cli.enabled`, which was previously a dead value.
