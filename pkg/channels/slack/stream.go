@@ -22,6 +22,29 @@ import (
 const (
 	batchInterval = 250 * time.Millisecond
 	slackAPIBase  = "https://slack.com/api"
+	// downloadSizeMargin is the headroom over Slack's declared file size that a
+	// download body may reach before it is rejected as an out-of-memory guard.
+	downloadSizeMargin = 1 << 20
+	// unknownSizeDownloadLimit caps a download whose declared size is unknown (0).
+	// Without a baseline the size-plus-margin bound collapses to the margin alone
+	// and would reject a legitimate larger file; this fixed ceiling is a pure
+	// out-of-memory guard for that case, not a product limit.
+	unknownSizeDownloadLimit = 16 << 20
+	// maxAttachmentDownload is a hard per-file ceiling on attachment bytes. The
+	// declared-size-plus-margin bound alone is defeated by an honestly declared
+	// huge file (Slack allows uploads up to 1 GB), which would be fully buffered
+	// — then base64-inflated in the A2A payload — only for the agent to reject
+	// it. A file declared above this ceiling is refused before the GET is sent.
+	maxAttachmentDownload = 32 << 20
+	// attachmentDownloadConcurrency bounds parallel per-file downloads within
+	// one message, so a multi-file message is not serialized behind one slow
+	// fetch while the thread slot is held.
+	attachmentDownloadConcurrency = 4
+	// attachmentDownloadBudget bounds the total time one message's attachment
+	// downloads may hold the thread slot; files still in flight when it expires
+	// are dropped (with a notice), not retried.
+	attachmentDownloadBudget = 2 * time.Minute
+
 	// methodChatPostMessage is the Web API method for new posts; it is special
 	// in two spots (display identity, forced unfurl-off).
 	methodChatPostMessage = "chat.postMessage"
@@ -662,6 +685,25 @@ func (w *batchedWriter) flush(ctx context.Context) error {
 // restart.
 var slackHTTPClient = &http.Client{Timeout: 30 * time.Second}
 
+// slackDownloadClient fetches file bytes from url_private. It re-attaches the
+// bearer token that net/http strips on a cross-host redirect, but only when the
+// redirect target is a Slack host, so the token never leaks to a foreign origin.
+// files.slack.com can 302 to a sibling slack.com host; without re-attaching, the
+// followed request is unauthenticated and lands on the web sign-in page instead
+// of the file. The longer timeout covers large attachments.
+var slackDownloadClient = &http.Client{
+	Timeout: 60 * time.Second,
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return fmt.Errorf("slack download: stopped after 10 redirects")
+		}
+		if auth := via[0].Header.Get("Authorization"); auth != "" && isSlackHostname(req.URL.Hostname()) {
+			req.Header.Set("Authorization", auth)
+		}
+		return nil
+	},
+}
+
 // slackAPIClient is a minimal HTTP client for the Slack Web API.
 type slackAPIClient struct {
 	botToken string
@@ -671,6 +713,9 @@ type slackAPIClient struct {
 	// chat.postEphemeral (chat.update keeps the original message's identity).
 	username string
 	iconURL  string
+	// logger, when set, records download diagnostics at debug level. Nil in
+	// tests and in call sites that never download.
+	logger *slog.Logger
 }
 
 // applyIdentity adds the client's display identity (username/icon_url) via set.
@@ -1490,6 +1535,101 @@ func (c *slackAPIClient) call(ctx context.Context, method, contentType, payload 
 		}
 		return body, nil
 	}
+}
+
+// downloadFile fetches a Slack file's bytes from an authenticated url_private.
+// sizeHint is Slack's declared file size; the body read is bounded to it plus a
+// small margin as an out-of-memory guard against a mismatched or hostile
+// response, and to maxAttachmentDownload overall so an honestly declared huge
+// file is refused up front instead of buffered whole.
+func (c *slackAPIClient) downloadFile(ctx context.Context, fileURL, declaredType string, sizeHint int) ([]byte, error) {
+	if sizeHint > maxAttachmentDownload {
+		return nil, fmt.Errorf("slack download: declared size %d exceeds the %d-byte attachment ceiling", sizeHint, maxAttachmentDownload)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fileURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("slack download: build request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.botToken)
+	// Signal a raw-file (not browser) fetch. A request Slack reads as a browser
+	// navigation is bounced to the web sign-in page instead of the bytes.
+	req.Header.Set("Accept", "*/*")
+
+	resp, err := slackDownloadClient.Do(req) //nolint:gosec
+	if err != nil {
+		return nil, fmt.Errorf("slack download: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("slack download: http status %d", resp.StatusCode)
+	}
+
+	limit := int64(sizeHint) + downloadSizeMargin
+	if sizeHint <= 0 {
+		limit = unknownSizeDownloadLimit
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, limit))
+	if err != nil {
+		return nil, fmt.Errorf("slack download: read body: %w", err)
+	}
+	if int64(len(body)) >= limit {
+		return nil, fmt.Errorf("slack download: body exceeds %d bytes", limit)
+	}
+
+	// An unauthorized url_private is answered with the Slack web sign-in page, not
+	// an error status, and the Content-Type varies (text/html on a bare redirect,
+	// but application/force-download or text/plain when the download path is hit
+	// with a rejected token). Detect it by body so every variant is caught, and
+	// fail rather than base64-forwarding the login page to the agent.
+	if looksLikeSlackSignIn(body) {
+		c.logDownload("slack: attachment download returned sign-in page, not file bytes", fileURL, resp, declaredType, len(body))
+		return nil, fmt.Errorf("slack download: got the Slack sign-in page instead of file bytes (download reached files.slack.com unauthenticated)")
+	}
+
+	c.logDownload("slack: attachment download ok", fileURL, resp, declaredType, len(body))
+	return body, nil
+}
+
+// logDownload records download diagnostics at debug level: the response status
+// and Content-Type, the declared file type, whether the request was redirected
+// (final URL differs from the requested one — the stdlib drops Authorization on
+// a cross-host redirect, a common cause of an unauthenticated landing), and
+// whether a bearer token was attached. The token itself is never logged.
+func (c *slackAPIClient) logDownload(msg, fileURL string, resp *http.Response, declaredType string, bodyLen int) {
+	if c.logger == nil {
+		return
+	}
+	c.logger.Debug(msg,
+		"status", resp.StatusCode,
+		"response_type", resp.Header.Get("Content-Type"),
+		"declared_type", declaredType,
+		"redirected", resp.Request.URL.String() != fileURL,
+		"final_host", resp.Request.URL.Hostname(),
+		"auth_attached", c.botToken != "",
+		"body_len", bodyLen)
+}
+
+// looksLikeSlackSignIn reports whether body is Slack's web sign-in / redirect
+// page rather than real file bytes. Slack serves this page (HTTP 200) for an
+// unauthorized url_private download; its markers are stable across the
+// Content-Type variants Slack uses for it. Every marker is Slack-specific: a
+// bare "signin" substring would misclassify a user's own HTML upload that
+// merely links to its own sign-in route.
+func looksLikeSlackSignIn(body []byte) bool {
+	const sniff = 1024
+	head := body
+	if len(head) > sniff {
+		head = head[:sniff]
+	}
+	lower := strings.ToLower(string(head))
+	if !strings.HasPrefix(strings.TrimSpace(lower), "<!doctype html") && !strings.HasPrefix(strings.TrimSpace(lower), "<html") {
+		return false
+	}
+	return strings.Contains(lower, "slack-edge.com") ||
+		strings.Contains(lower, "data-primer") ||
+		strings.Contains(lower, "slack.com/signin") ||
+		strings.Contains(lower, "sign in to slack")
 }
 
 // retryAfter reads the Retry-After header of a 429 response, defaulting to 1s

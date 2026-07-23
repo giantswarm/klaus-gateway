@@ -272,6 +272,7 @@ they link and the running turn finishes.
 | `im:history`     | Read DMs sent to the bot                              |
 | `channels:history` | Read messages in channels the bot is a member of   |
 | `channels:join`  | Join public channels on invite                        |
+| `files:read`     | Download message attachments (`url_private`) to forward to the agent |
 
 The `member_joined_channel` bot event must also be subscribed for the channel intro.
 

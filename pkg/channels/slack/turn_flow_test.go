@@ -250,3 +250,104 @@ func TestStop_CancelClearsWorkingReactionSilently(t *testing.T) {
 	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "turn failed",
 		"no failure note for an intentional stop")
 }
+
+// An attachment-only reply into a thread with a paused confirmation must not
+// become a decision (empty text would silently reject a generic prompt or
+// blank-approve an ask_user one): the task stays pending, the user is asked
+// for a text reply, and a later typed approval still resumes the original task.
+func TestAttachmentOnlyReply_LeavesPendingTaskAndAsksForText(t *testing.T) {
+	fake := newFakeSlackAPI()
+	var mu sync.Mutex
+	var resolved []channels.InboundMessage
+	gw := &stubGateway{
+		onResolve: func(msg channels.InboundMessage) {
+			mu.Lock()
+			resolved = append(resolved, msg)
+			mu.Unlock()
+		},
+		sendQueue: [][]channels.OutboundDelta{
+			{{Kind: channels.DeltaPrompt, TaskID: "task-1", Prompt: &channels.HitlPrompt{ToolName: "kubectl_delete"}}},
+			{{Content: "done"}, {Done: true}},
+		},
+	}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+
+	sendEvent(t, srv, dmEvent("U1", "clean up", "910.000"))
+	fake.waitForPath(t, "chat.postMessage", 1) // approval prompt surfaced
+
+	// The reply races the initial turn's thread-slot release (a too-early one
+	// bounces busy), so re-send with fresh timestamps until the needs-text note
+	// lands.
+	attempt := 0
+	require.Eventually(t, func() bool {
+		attempt++
+		sendEvent(t, srv, dmThreadFileEvent("U1", "", fmt.Sprintf("911.%03d", attempt), "910.000", "shot.png"))
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "waiting on the pending confirmation")
+	}, 10*time.Second, 100*time.Millisecond, "needs-text note posted")
+
+	// The task must still be pending: a typed approval resumes task-1.
+	attempt = 0
+	require.Eventually(t, func() bool {
+		attempt++
+		sendEvent(t, srv, dmThreadEvent("U1", "approve", fmt.Sprintf("912.%03d", attempt), "910.000"))
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "done")
+	}, 10*time.Second, 100*time.Millisecond, "typed approval still resumes the task")
+
+	mu.Lock()
+	defer mu.Unlock()
+	resumed := false
+	for _, msg := range resolved {
+		require.False(t, strings.HasPrefix(msg.MessageID, "911."),
+			"the attachment-only reply must never reach the gateway as a turn")
+		if msg.TaskID == "task-1" && msg.Decision != nil && msg.Decision.Type == channels.DecisionApprove {
+			resumed = true
+		}
+	}
+	require.True(t, resumed, "the pending task resumes with the structured approval")
+}
+
+// A file riding on a typed confirmation reply is not forwarded — the reply
+// carries only the decision — and the user is told so instead of the file
+// silently vanishing.
+func TestDecisionReplyWithAttachment_PostsNotForwardedNote(t *testing.T) {
+	fake := newFakeSlackAPI()
+	var mu sync.Mutex
+	var resolved []channels.InboundMessage
+	gw := &stubGateway{
+		onResolve: func(msg channels.InboundMessage) {
+			mu.Lock()
+			resolved = append(resolved, msg)
+			mu.Unlock()
+		},
+		sendQueue: [][]channels.OutboundDelta{
+			{{Kind: channels.DeltaPrompt, TaskID: "task-1", Prompt: &channels.HitlPrompt{ToolName: "kubectl_delete"}}},
+			{{Content: "done"}, {Done: true}},
+		},
+	}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+
+	sendEvent(t, srv, dmEvent("U1", "clean up", "920.000"))
+	fake.waitForPath(t, "chat.postMessage", 1) // approval prompt surfaced
+
+	attempt := 0
+	require.Eventually(t, func() bool {
+		attempt++
+		sendEvent(t, srv, dmThreadFileEvent("U1", "approve", fmt.Sprintf("921.%03d", attempt), "920.000", "error.log"))
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "done")
+	}, 10*time.Second, 100*time.Millisecond, "decision reply completes")
+
+	posts := allText(fake.pathCalls("chat.postMessage"))
+	require.Contains(t, posts, "carries only your decision", "the not-forwarded note is posted")
+	require.Contains(t, posts, "error.log", "the note names the file")
+
+	mu.Lock()
+	defer mu.Unlock()
+	found := false
+	for _, msg := range resolved {
+		if msg.TaskID == "task-1" && msg.Decision != nil {
+			found = true
+			require.Empty(t, msg.Attachments, "no attachment travels with a decision")
+		}
+	}
+	require.True(t, found, "the decision resumes the pending task")
+}

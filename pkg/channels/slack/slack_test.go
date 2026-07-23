@@ -1133,6 +1133,11 @@ func dmThreadEvent(user, text, ts, threadTS string) string {
 	return fmt.Sprintf(`{"type":"event_callback","event":{"type":"message","channel_type":"im","user":%q,"text":%q,"channel":"D1","ts":%q,"thread_ts":%q}}`, user, text, ts, threadTS)
 }
 
+// dmThreadFileEvent builds a DM thread reply carrying one file attachment.
+func dmThreadFileEvent(user, text, ts, threadTS, filename string) string {
+	return fmt.Sprintf(`{"type":"event_callback","event":{"type":"message","channel_type":"im","user":%q,"text":%q,"channel":"D1","ts":%q,"thread_ts":%q,"files":[{"name":%q,"mimetype":"image/png","url_private":"https://files.slack.com/f.png","size":10}]}}`, user, text, ts, threadTS, filename)
+}
+
 func TestProgress_ReactionsLifecycle(t *testing.T) {
 	fake := newFakeSlackAPI()
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "done"}, {Done: true}}}
