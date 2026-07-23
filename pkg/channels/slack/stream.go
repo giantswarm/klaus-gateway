@@ -92,6 +92,11 @@ type batchedWriter struct {
 	// revokes the user's whole token family. Only touched from run()'s
 	// goroutine.
 	loginURLs []string
+	// connectorManualSignIn is set when a connector prompt this turn could not
+	// wire the auto-resume callback (no public base URL, or decoration failed),
+	// so the agent's sign-in narration must survive: the user has to sign in and
+	// say so by hand. Only touched from run()'s goroutine.
+	connectorManualSignIn bool
 
 	// turnUsage accumulates the per-LLM-call usage kagent reports across the
 	// turn into the turn total. Only touched from run()'s goroutine.
@@ -349,13 +354,21 @@ func (w *batchedWriter) maybeConnectorPrompt(tool *channels.ToolActivity) {
 	// The cooldown above is keyed on the raw URL so a re-challenge with the
 	// same link stays deduplicated; the posted button carries the decorated one.
 	promptURL, connectValue := loginURL, server
+	autoResume := false
 	if base := w.adapter.PublicBaseURL; base != "" {
 		stateID := w.adapter.mintConnectorCompletion(w.slackUser, server, w.channel, w.threadTS)
 		if decorated, err := decorateConnectorLoginURL(loginURL, base, stateID); err != nil {
 			w.logger.Warn("slack: connector login URL decoration failed, posting plain link", "server", server, "error", err)
 		} else {
-			promptURL, connectValue = decorated, stateID
+			promptURL, connectValue, autoResume = decorated, stateID, true
 		}
+	}
+	// A button without a post-login redirect is a no-op: no landing fires, so the
+	// turn does not auto-resume and the user must sign in and say so. Keep the
+	// agent's sign-in narration in that case; only a resumable prompt makes it
+	// redundant enough to retract.
+	if !autoResume {
+		w.connectorManualSignIn = true
 	}
 	w.adapter.background(func(bg context.Context) {
 		ctx, cancel := context.WithTimeout(bg, connectorCheckTimeout)
@@ -487,34 +500,71 @@ func parseAuthChallenge(output string) (server, loginURL string) {
 	return server, loginURL
 }
 
-// loginURLNote replaces a scrubbed login URL in the agent's prose.
-const loginURLNote = "_(login link removed; use the Connect button above)_"
-
-// scrubLoginURLs removes every login URL already surfaced as a Connect button
-// from the agent's prose. The URL is a single-use OAuth authorize link:
-// duplicating it in text lets a second click or Slack's unfurl crawler redeem
-// or replay it, which the auth server answers by revoking the user's whole
-// token family. Matching is by authorize-endpoint prefix (everything up to and
-// including "?"): the agent re-encodes the query string freely (JSON-escaped
-// ampersands, percent-encoded padding), so an exact match cannot be relied on.
-// Markdown links carrying the URL are dropped wholesale so no dangling
-// "[label]()" survives; bare occurrences (including Slack's "<url|label>"
-// form) are replaced with a pointer at the button.
+// scrubLoginURLs removes the login link the Connect button already carries from
+// the agent's prose. The URL is a single-use OAuth authorize link: duplicating
+// it in text lets a second click or Slack's unfurl crawler redeem or replay it,
+// which the auth server answers by revoking the user's whole token family.
+//
+// The whole line carrying the link is dropped, not just the URL token: agents
+// present the link on its own line (a bullet, an emoji, a markdown link), so
+// stripping only the URL leaves dangling scaffolding ("here is the link:" then
+// nothing). A single line that just introduces the link (ends with ":") is
+// dropped with it. Nothing is left in its place: the Connect button prompt
+// already tells the user how to sign in, and any surrounding prose the agent
+// wrote (such as "tell me once you're signed in") is kept.
+//
+// Matching is by authorize-endpoint prefix (everything up to and including
+// "?"): the agent re-encodes the query string freely (JSON-escaped ampersands,
+// percent-encoded padding), so an exact match cannot be relied on. The prefix
+// stops before the first "?", so query re-encoding never affects the match.
 func (w *batchedWriter) scrubLoginURLs(text string) string {
+	if len(w.loginURLs) == 0 {
+		return text
+	}
+	prefixes := make([]string, 0, len(w.loginURLs))
 	for _, loginURL := range w.loginURLs {
 		prefix := loginURL
 		if i := strings.IndexByte(prefix, '?'); i >= 0 {
 			prefix = prefix[:i+1]
 		}
-		if !strings.Contains(text, prefix) {
+		prefixes = append(prefixes, prefix)
+	}
+
+	lines := strings.Split(text, "\n")
+	kept := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if !lineHasAnyPrefix(line, prefixes) {
+			kept = append(kept, line)
 			continue
 		}
-		quoted := regexp.QuoteMeta(prefix)
-		text = regexp.MustCompile(`\[[^\]]*\]\(`+quoted+`[^)]*\)`).ReplaceAllString(text, loginURLNote)
-		text = regexp.MustCompile(`<`+quoted+`[^>]*>`).ReplaceAllString(text, loginURLNote)
-		text = regexp.MustCompile(quoted+`\S*`).ReplaceAllString(text, loginURLNote)
+		// Drop a lead-in line whose only purpose was to introduce the link.
+		if n := len(kept); n > 0 {
+			if prev := strings.TrimSpace(kept[n-1]); strings.HasSuffix(prev, ":") {
+				kept = kept[:n-1]
+			}
+		}
 	}
-	return text
+	return collapseBlankLines(strings.Join(kept, "\n"))
+}
+
+// lineHasAnyPrefix reports whether line carries any of the authorize-endpoint
+// prefixes in any spelling (bare, markdown link, Slack "<url|label>").
+func lineHasAnyPrefix(line string, prefixes []string) bool {
+	for _, prefix := range prefixes {
+		if strings.Contains(line, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// multiBlankLineRe matches a run of two or more blank lines.
+var multiBlankLineRe = regexp.MustCompile(`\n[ \t]*\n([ \t]*\n)+`)
+
+// collapseBlankLines trims a run of blank lines left by a removal to a single
+// blank, and strips leading and trailing blank lines.
+func collapseBlankLines(text string) string {
+	return strings.Trim(multiBlankLineRe.ReplaceAllString(text, "\n\n"), "\n")
 }
 
 // jsonEscapedAmp is how Go's HTML-safe JSON encoding spells "&" inside a
@@ -649,6 +699,37 @@ func (w *batchedWriter) wroteContent() bool {
 	return w.flushedLen > 0 || w.wroteAny
 }
 
+// connectorReplyRetractable reports whether this turn's visible reply was only
+// a connector sign-in prompt whose button auto-resumes: the ephemeral prompt
+// and the post-login resume are the whole exchange, so the streamed agent
+// narration is redundant and can be retracted. False when no connector prompt
+// was surfaced, or when one was but without a working callback (the user still
+// needs the "sign in, then tell me" narration).
+func (w *batchedWriter) connectorReplyRetractable() bool {
+	return len(w.loginURLs) > 0 && !w.connectorManualSignIn
+}
+
+// retractRendered deletes the streamed agent messages (head and any overflow
+// tails), leaving the thread to the connector prompt alone. Best-effort: a
+// delete failure is logged, not propagated. The run loop has finished, so no
+// concurrent flush touches these fields.
+func (w *batchedWriter) retractRendered(ctx context.Context) {
+	tails := w.tailTS
+	head := w.ts
+	w.ts, w.tailTS = "", nil
+	w.wroteAny, w.flushedLen = false, 0
+	for _, ts := range tails {
+		if err := w.client.deleteMessage(ctx, w.channel, ts); err != nil {
+			w.logger.Warn("slack: retract connector reply tail failed", "ts", ts, "error", err)
+		}
+	}
+	if head != "" {
+		if err := w.client.deleteMessage(ctx, w.channel, head); err != nil {
+			w.logger.Warn("slack: retract connector reply head failed", "ts", head, "error", err)
+		}
+	}
+}
+
 func (w *batchedWriter) flush(ctx context.Context) error {
 	w.mu.Lock()
 	// Skip the chat.update when nothing new accumulated since the last flush;
@@ -661,6 +742,18 @@ func (w *batchedWriter) flush(ctx context.Context) error {
 	flushingLen := w.buf.Len()
 	w.mu.Unlock()
 	text = w.scrubLoginURLs(text)
+
+	// Scrubbing a pure sign-in message can empty the buffer. Nothing to post, but
+	// advance flushedLen so the tick does not re-run on the same buffer; a later
+	// delta re-enters here with new content appended.
+	if strings.TrimSpace(text) == "" {
+		w.mu.Lock()
+		if flushingLen > w.flushedLen {
+			w.flushedLen = flushingLen
+		}
+		w.mu.Unlock()
+		return nil
+	}
 
 	// Agent output renders as Block Kit markdown blocks. A reply that
 	// fits one block updates the main message; a larger reply rolls over into
@@ -1060,6 +1153,17 @@ func (c *slackAPIClient) chatUpdateMarkdown(ctx context.Context, channel, ts, md
 		paramBlocks:  markdownBlocks(md),
 	}
 	_, err := c.postJSON(ctx, "chat.update", body)
+	return err
+}
+
+// deleteMessage removes a message the gateway posted (chat.delete). Used to
+// retract the streamed agent bubble when a turn's only reply was a connector
+// sign-in prompt whose button carries a working auto-resume callback.
+func (c *slackAPIClient) deleteMessage(ctx context.Context, channel, ts string) error {
+	_, err := c.postJSON(ctx, "chat.delete", map[string]any{
+		paramChannel: channel,
+		paramTS:      ts,
+	})
 	return err
 }
 

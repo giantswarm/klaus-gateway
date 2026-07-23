@@ -2092,6 +2092,14 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 	}
 	a.recordTurnUsage(threadID, slackChannel, w.turnUsage)
 	prog.done(ctx)
+	// The turn's only reply was a connector sign-in prompt that auto-resumes on
+	// callback: the ephemeral prompt plus the post-login resume are the whole
+	// exchange, so retract the streamed narration ("visit this link", "tell me
+	// once you're signed in") rather than leave it contradicting the button.
+	if w.connectorReplyRetractable() {
+		w.retractRendered(ctx)
+		return nil
+	}
 	// A turn that produced no output would otherwise be silent (text mode leaves
 	// the "thinking" placeholder; reactions mode shows only a done emoji with no
 	// reply). Post a terminal note so the user is not left waiting.
