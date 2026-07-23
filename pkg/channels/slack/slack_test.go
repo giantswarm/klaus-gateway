@@ -1008,10 +1008,11 @@ type fakeSlackAPI struct {
 	respondWith map[string]string // path -> canned JSON response body
 	seq         int
 	botUserID   string // returned as user_id from auth.test
+	botUsername string // returned as user from auth.test
 }
 
 func newFakeSlackAPI() *fakeSlackAPI {
-	return &fakeSlackAPI{failWith: map[string]string{}, respondWith: map[string]string{}, botUserID: "UBOT"}
+	return &fakeSlackAPI{failWith: map[string]string{}, respondWith: map[string]string{}, botUserID: "UBOT", botUsername: "swarmgeist"}
 }
 
 func (f *fakeSlackAPI) server(t *testing.T) *httptest.Server {
@@ -1035,11 +1036,12 @@ func (f *fakeSlackAPI) server(t *testing.T) *httptest.Server {
 		f.seq++
 		ts := fmt.Sprintf("1700000000.%06d", f.seq)
 		botID := f.botUserID
+		botName := f.botUsername
 		f.mu.Unlock()
 
 		w.Header().Set("Content-Type", "application/json")
 		if path == "auth.test" {
-			_, _ = fmt.Fprintf(w, `{"ok":true,"user_id":%q}`, botID)
+			_, _ = fmt.Fprintf(w, `{"ok":true,"user_id":%q,"user":%q}`, botID, botName)
 			return
 		}
 		if code != "" {

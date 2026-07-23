@@ -16,6 +16,61 @@ import (
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 )
 
+func TestHelpText(t *testing.T) {
+	named := helpText("swarmgeist")
+	require.Contains(t, named, "`@swarmgeist /stop`")
+	require.NotContains(t, named, "@klaus")
+
+	unnamed := helpText("")
+	require.NotContains(t, unnamed, "@")
+	require.Contains(t, unnamed, "`/stop`")
+
+	// The command list is shared regardless of naming.
+	require.Contains(t, named, "`/help`")
+	require.Contains(t, unnamed, "`/help`")
+}
+
+// A transient users.info failure must not be cached: the guarantee is
+// "resolve once", not "attempt once". The next call retries the name lookup
+// (without repeating auth.test) and picks up the profile display name.
+func TestResolveIdentity_RetriesNameLookupAfterTransientFailure(t *testing.T) {
+	var authTestCalls, usersInfoCalls atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/auth.test", func(w http.ResponseWriter, _ *http.Request) {
+		authTestCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"user_id":"UBOT","user":"klaus_bot"}`))
+	})
+	mux.HandleFunc("/users.info", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if usersInfoCalls.Add(1) == 1 {
+			_, _ = w.Write([]byte(`{"ok":false,"error":"internal_error"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"ok":true,"user":{"profile":{"display_name":"Swarmgeist"}}}`))
+	})
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+	a := &Adapter{
+		APIBase: ts.URL,
+		Secrets: Secrets{BotToken: "test-bot-token"}, //nolint:gosec
+		Logger:  slog.New(slog.DiscardHandler),
+	}
+
+	id, name := a.resolveIdentity(t.Context())
+	require.Equal(t, "UBOT", id)
+	require.Equal(t, "klaus_bot", name, "the failed lookup falls back to the auth.test username")
+
+	id, name = a.resolveIdentity(t.Context())
+	require.Equal(t, "UBOT", id)
+	require.Equal(t, "Swarmgeist", name, "the failed lookup is retried, not cached")
+	require.Equal(t, int32(1), authTestCalls.Load(), "the ID from auth.test is kept across the retry")
+
+	_, name = a.resolveIdentity(t.Context())
+	require.Equal(t, "Swarmgeist", name)
+	require.Equal(t, int32(2), usersInfoCalls.Load(), "the resolved identity is cached")
+}
+
 func TestParseCommand(t *testing.T) {
 	tests := []struct {
 		input   string

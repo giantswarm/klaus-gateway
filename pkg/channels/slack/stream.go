@@ -812,26 +812,61 @@ func (c *slackAPIClient) lookupUserEmail(ctx context.Context, userID string) (st
 	return result.User.Profile.Email, nil
 }
 
-// authTest returns the bot's own Slack user ID via auth.test, used to
-// recognise the bot's own channel-join event.
-func (c *slackAPIClient) authTest(ctx context.Context) (string, error) {
-	body, err := c.call(ctx, "auth.test", "application/x-www-form-urlencoded", "")
+// lookupUserDisplayName returns the human-facing name from the user's Slack
+// profile, preferring the display name and falling back to the real name. Used
+// to name the bot itself in help text so the example matches what people see in
+// Slack. Returns "" (no error) when the profile carries no name.
+func (c *slackAPIClient) lookupUserDisplayName(ctx context.Context, userID string) (string, error) {
+	params := url.Values{paramUser: {userID}}
+	body, err := c.call(ctx, "users.info", "application/x-www-form-urlencoded", params.Encode())
 	if err != nil {
 		return "", err
+	}
+
+	var result struct {
+		OK   bool   `json:"ok"`
+		Err  string `json:"error,omitempty"`
+		User struct {
+			Profile struct {
+				DisplayName string `json:"display_name"`
+				RealName    string `json:"real_name"`
+			} `json:"profile"`
+		} `json:"user"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", fmt.Errorf("slack users.info: decode: %w", err)
+	}
+	if !result.OK {
+		return "", fmt.Errorf("slack users.info: %s", result.Err)
+	}
+	if result.User.Profile.DisplayName != "" {
+		return result.User.Profile.DisplayName, nil
+	}
+	return result.User.Profile.RealName, nil
+}
+
+// authTest returns the bot's own Slack user ID and username via auth.test, used
+// to recognise the bot's own channel-join event and to name the bot in help
+// text. The username may be empty when Slack omits it.
+func (c *slackAPIClient) authTest(ctx context.Context) (userID, username string, err error) {
+	body, err := c.call(ctx, "auth.test", "application/x-www-form-urlencoded", "")
+	if err != nil {
+		return "", "", err
 	}
 
 	var result struct {
 		OK     bool   `json:"ok"`
 		Err    string `json:"error,omitempty"`
 		UserID string `json:"user_id"`
+		User   string `json:"user"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
-		return "", fmt.Errorf("slack auth.test: decode: %w", err)
+		return "", "", fmt.Errorf("slack auth.test: decode: %w", err)
 	}
 	if !result.OK {
-		return "", fmt.Errorf("slack auth.test: %s", result.Err)
+		return "", "", fmt.Errorf("slack auth.test: %s", result.Err)
 	}
-	return result.UserID, nil
+	return result.UserID, result.User, nil
 }
 
 // threadInitiatorScanLimit bounds the conversations.replies page scanned for the
