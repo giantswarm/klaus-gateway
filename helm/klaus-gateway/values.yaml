@@ -206,7 +206,7 @@ agentgateway:
 a2a:
   enabled: false
   # defaultAgent is the agentRef forwarded to the orchestrator when the channel does not supply one.
-  defaultAgent: "klaud-coding"
+  defaultAgent: "sre-agent"
   # url is the base URL of the A2A orchestrator endpoint, without a trailing
   # agent name (required when a2a.enabled is true).
   # Example: http://kagent-controller.kagent.svc.cluster.local:8083/api/a2a/kagent

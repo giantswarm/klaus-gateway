@@ -236,7 +236,7 @@ func TestLoad_OBOEnv(t *testing.T) {
 
 func TestA2ADefaults(t *testing.T) {
 	cfg := config.Defaults()
-	require.Equal(t, "klaud-coding", cfg.A2A.DefaultAgent)
+	require.Equal(t, "sre-agent", cfg.A2A.DefaultAgent)
 }
 
 func TestLoad_A2ADefaultAgentEnv(t *testing.T) {
