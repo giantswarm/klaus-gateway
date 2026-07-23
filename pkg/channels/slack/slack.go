@@ -200,6 +200,12 @@ type Adapter struct {
 	dmRedirectMu sync.Mutex
 	dmRedirected map[string]ttlEntry[struct{}]
 
+	// homeGreetedMu guards homeGreeted, the users already given the assistant
+	// pane greeting within the current homeGreetingTTL window, so reopening
+	// the pane does not re-greet.
+	homeGreetedMu sync.Mutex
+	homeGreeted   map[string]ttlEntry[struct{}]
+
 	// notServedMu guards notServedNoticed, the (channel, user) pairs already
 	// given the not-served ephemeral notice within the current window, so
 	// repeated mentions in an unserved channel nudge once.
@@ -407,8 +413,8 @@ func (a *Adapter) channelServed(channel string) bool {
 // staleEvent reports whether the event predates this process and DropStaleEvents
 // is on. Socket Mode redelivers events queued while a consumer was
 // disconnected, so without this a gateway restart replays old events. Uses the
-// message ts, falling back to the envelope event_ts (the only timestamp a
-// member_joined_channel event carries).
+// message ts, falling back to the envelope event_ts (the only timestamp
+// events like member_joined_channel and app_home_opened carry).
 func (a *Adapter) staleEvent(inner slackInnerEvent) bool {
 	if !a.DropStaleEvents || a.startUnix == 0 {
 		return false
@@ -623,6 +629,22 @@ func (a *Adapter) postDMRedirect(ctx context.Context, slackChannel string) {
 	}
 }
 
+// greetAssistantUser posts the assistant-pane greeting, at most once per user
+// per homeGreetingTTL window (app_home_opened fires on every pane open). The
+// suggested prompts alongside it are declared in the app manifest
+// (features.agent_view.suggested_prompts), not set at runtime. Runs off the
+// event handler's path. Best-effort.
+func (a *Adapter) greetAssistantUser(userID, imChannel string) {
+	if !markOnce(&a.homeGreetedMu, &a.homeGreeted, userID, homeGreetingTTL) {
+		return
+	}
+	a.background(func(ctx context.Context) {
+		if _, err := a.apiClient().postMessage(ctx, imChannel, assistantGreeting, ""); err != nil {
+			a.Logger.Warn("slack: post assistant greeting failed", "channel", imChannel, "error", err)
+		}
+	})
+}
+
 // postChannelNotServed tells a user who mentioned the bot in an unserved
 // channel that the bot is not enabled there. Ephemeral (only the mentioning
 // user sees it), at most once per (channel, user) per dmRedirectTTL window.
@@ -672,8 +694,8 @@ func (a *Adapter) postLaunchAnnouncement(ctx context.Context, slackChannel, thre
 
 // signInAnchor is the message coordinates of a posted sign-in prompt, kept so
 // a completed link can rewrite the prompt in place (chat.update). threadID is
-// filled by takeSignInAnchors from the map key so the rewrite can decide, per
-// thread, whether that thread's replay reaches the agent.
+// filled by takeSignInAnchors from the map key so a failed rewrite can be
+// re-recorded under the same (user, thread) key for a later retry.
 //
 // The entry plays two roles with different lifetimes: as a rewrite anchor it
 // must stay addressable for pendingTTL (a link can complete long after the
@@ -711,7 +733,7 @@ func (a *Adapter) postSignIn(ctx context.Context, slackChannel, threadID, slackU
 	// then keep a live sign-in button for an already-linked user and suppress
 	// re-prompts for the full window. Re-check and converge.
 	if _, err := a.OBO.TokenFor(ctx, slackUser); err == nil {
-		a.updateSignInAnchors(ctx, slackUser, nil)
+		a.updateSignInAnchors(ctx, slackUser)
 	}
 }
 
@@ -806,24 +828,18 @@ func (a *Adapter) takeSignInAnchors(slackUser string) []signInAnchor {
 // the account link completes, folding the confirmation into the message the
 // user is already looking at (the URL button is dropped by the rewrite). The
 // identity the user signed in as is confirmed on the private browser success
-// page, not here, so the in-thread rewrite carries no email. An anchor whose
-// thread is in replayingThreads (a parked message about to reach the agent)
-// gains the handoff notice; the others keep the plain confirmation.
-func (a *Adapter) updateSignInAnchors(ctx context.Context, slackUser string, replayingThreads map[string]bool) {
+// page, not here, so the in-thread rewrite carries no email. The text is the
+// same fixed phrase for every anchor, so all rewrite paths (the link callback
+// and the convergence re-checks) are interchangeable; what happens to a parked
+// message is signalled by the replay itself, not by this confirmation.
+func (a *Adapter) updateSignInAnchors(ctx context.Context, slackUser string) {
 	anchors := a.takeSignInAnchors(slackUser)
 	if len(anchors) == 0 {
 		return
 	}
-	const base = "✅ Signed in. I can act on your behalf now."
+	const text = "✅ Signed in. I can act on your behalf now."
 	client := a.apiClient()
 	for _, anchor := range anchors {
-		text := base
-		if replayingThreads[anchor.threadID] {
-			// The replay resolves the thread's bound agent (an /agent-prefixed
-			// message may have been the one parked), so the hand-off must name
-			// that agent, not assume the default.
-			text += fmt.Sprintf(" Bringing in **%s** to help.", a.agentDisplayName(ctx, a.boundAgentOrDefault(anchor.threadID)))
-		}
 		if err := client.chatUpdateMarkdown(ctx, anchor.channel, anchor.ts, text); err != nil {
 			a.Logger.Warn("slack: update sign-in prompt after link failed", "user", slackUser, "channel", anchor.channel, "ts", anchor.ts, "error", err)
 			// The anchor was drained before the update; without it the thread
@@ -1109,23 +1125,11 @@ func (a *Adapter) takePendingLogin(slackUser string) map[string][]*pendingLoginR
 // background) is cancelled and joined by Stop.
 func (a *Adapter) OnUserLinked(_ context.Context, slackUser, _ string) {
 	queues := a.takePendingLogin(slackUser)
-	// The prompt rewrite announces the agent handoff only when a replay will
-	// actually reach the agent: bare auth utterances are satisfied by the link
-	// itself, and a newcomer's replay lands at the initiator's consent prompt
-	// instead, so both keep the plain confirmation.
-	replayingThreads := make(map[string]bool)
-	for threadID, queue := range queues {
-		for _, req := range queue {
-			if !isBareAuthUtterance(req.msg.Text) && a.accessPolicy().Allowed(threadID, slackUser) {
-				replayingThreads[threadID] = true
-			}
-		}
-	}
 	// updateSignInAnchors does blocking chat.update round-trips; running them
 	// inline would delay the sign-in success page. Ordering against replay is
 	// immaterial: the prompt and the agent's thread reply are independent
 	// messages.
-	a.background(func(ctx context.Context) { a.updateSignInAnchors(ctx, slackUser, replayingThreads) })
+	a.background(func(ctx context.Context) { a.updateSignInAnchors(ctx, slackUser) })
 	for _, queue := range queues {
 		a.background(func(ctx context.Context) {
 			for _, req := range queue {
@@ -1167,6 +1171,41 @@ func isBareAuthUtterance(text string) bool {
 	return ok
 }
 
+// handleMemberJoined posts the one-time channel intro when the bot itself is
+// added to a served channel. Only the bot's own join (user == bot ID) triggers
+// the intro.
+func (a *Adapter) handleMemberJoined(ctx context.Context, inner slackInnerEvent) {
+	if a.staleEvent(inner) {
+		return
+	}
+	if inner.User != "" && inner.User == a.botID(ctx) && a.channelServed(inner.Channel) {
+		a.postChannelIntro(ctx, inner.Channel)
+	}
+}
+
+// handleHomeOpened reacts to the assistant Messages tab being opened (see the
+// event constants for the Agent-view lifecycle): greet when DMs are served,
+// point at channels when DMs redirect, stay silent when DMs are ignored.
+func (a *Adapter) handleHomeOpened(ctx context.Context, inner slackInnerEvent) {
+	if a.staleEvent(inner) || inner.Tab != tabMessages || inner.User == "" || inner.Channel == "" {
+		return
+	}
+	switch a.dmMode() {
+	case DMModeServe:
+		a.greetAssistantUser(inner.User, inner.Channel)
+	case DMModeRedirect:
+		a.postDMRedirect(ctx, inner.Channel)
+	}
+}
+
+// handleContextChanged consumes an assistant context change. Log-only: the
+// event body carries no user, so the context cannot be attributed to a
+// conversation; the per-turn context arrives on message.im instead.
+func (a *Adapter) handleContextChanged(inner slackInnerEvent) {
+	entity := inner.contextEntity()
+	a.Logger.Debug("slack: assistant context changed", "entity_type", entity.Type, "entity", entity.Value)
+}
+
 // handleInbound runs the shared inbound pipeline for one Slack event:
 // dedup, member-join intro, accept-gate, normalise, active-thread gate (for
 // channel thread replies), command handling, then dispatch. Both transports
@@ -1179,16 +1218,15 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 		a.Logger.Info("slack: dropping duplicate event delivery", "event_id", eventID)
 		return
 	}
-	// The bot being added to a channel -> one-time intro, only where the
-	// channel is actually served. Only the bot's own join (user == bot ID)
-	// triggers the intro.
-	if inner.Type == evtMemberJoined {
-		if a.staleEvent(inner) {
-			return
-		}
-		if inner.User != "" && inner.User == a.botID(ctx) && a.channelServed(inner.Channel) {
-			a.postChannelIntro(ctx, inner.Channel)
-		}
+	switch inner.Type {
+	case evtMemberJoined:
+		a.handleMemberJoined(ctx, inner)
+		return
+	case evtAppHomeOpened:
+		a.handleHomeOpened(ctx, inner)
+		return
+	case evtAppContextChanged:
+		a.handleContextChanged(inner)
 		return
 	}
 	a.Logger.Debug("slack: inbound event", "type", inner.Type, "channel", inner.Channel,
@@ -1716,7 +1754,7 @@ func (a *Adapter) humanToken(ctx context.Context, slackChannel, threadID, slackU
 		// A leftover anchor for a user whose token works is a sign-in prompt
 		// whose post-link rewrite failed; converge it now so the thread does
 		// not keep a live "Sign in" button for a linked user.
-		a.background(func(ctx context.Context) { a.updateSignInAnchors(ctx, slackUser, nil) })
+		a.background(func(ctx context.Context) { a.updateSignInAnchors(ctx, slackUser) })
 		return token, true, false
 	case errors.Is(err, musterlink.ErrNotLinked):
 		a.Logger.Info("slack: link unavailable (unlinked or refresh token dead), prompting sign-in", "user", slackUser)
@@ -1878,9 +1916,36 @@ type slackInnerEvent struct {
 	ChannelType string `json:"channel_type,omitempty"`
 	TS          string `json:"ts"`
 	ThreadTS    string `json:"thread_ts,omitempty"`
-	// EventTS is the event envelope timestamp; the only timestamp a
-	// member_joined_channel event carries.
+	// EventTS is the event envelope timestamp; for events like
+	// member_joined_channel and app_home_opened it is the only timestamp carried.
 	EventTS string `json:"event_ts,omitempty"`
+	// Tab is the App Home tab an app_home_opened event targets ("messages"
+	// for the assistant pane).
+	Tab string `json:"tab,omitempty"`
+	// Context carries an app_context_changed event's entity list. Slack sends
+	// an empty object when the new context has no entities.
+	Context *slackEventContext `json:"context,omitempty"`
+}
+
+// slackEventContext is the context object of an app_context_changed event.
+type slackEventContext struct {
+	// Entities the user is viewing, ordered by relevance.
+	Entities []slackContextEntity `json:"entities,omitempty"`
+}
+
+// slackContextEntity is one entity in an app_context_changed context.
+type slackContextEntity struct {
+	Type  string `json:"type,omitempty"`  // e.g. "slack#/types/channel_id"
+	Value string `json:"value,omitempty"` // the entity's ID (channel ID for channel entities)
+}
+
+// contextEntity returns the most relevant entity of an app_context_changed
+// payload, the zero value when the context is empty.
+func (e slackInnerEvent) contextEntity() slackContextEntity {
+	if e.Context == nil || len(e.Context.Entities) == 0 {
+		return slackContextEntity{}
+	}
+	return e.Context.Entities[0]
 }
 
 // isDM reports whether the event originated in a 1:1 direct message. Slack sets
