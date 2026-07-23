@@ -9,28 +9,22 @@ import (
 	slackadapter "github.com/giantswarm/klaus-gateway/pkg/channels/slack"
 )
 
-const pathSetSuggestedPrompts = "assistant.threads.setSuggestedPrompts"
-
-// Opening the assistant Messages tab greets the user once and pins the
-// suggested prompts; reopening the pane does not re-greet.
+// Opening the assistant Messages tab greets the user once; reopening the pane
+// does not re-greet. Suggested prompts are manifest-declared, so no
+// assistant.threads.* call is made.
 func TestAssistantSurface_HomeOpenedGreetsOnce(t *testing.T) {
 	fake := newFakeSlackAPI()
 	_, srv := newEventsAdapter(t, &stubGateway{}, fake.server(t).URL)
 
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_home_opened","user":"U1","channel":"D1","tab":"messages","event_ts":"111.000"}}`)
 	fake.waitForPath(t, "chat.postMessage", 1)
-	fake.waitForPath(t, pathSetSuggestedPrompts, 1)
 	greeting := fake.pathCalls("chat.postMessage")[0]
 	require.Equal(t, "D1", greeting.params["channel"])
 	require.Contains(t, greeting.params["text"], "Swarmgeist")
-	prompts := fake.pathCalls(pathSetSuggestedPrompts)[0]
-	require.Equal(t, "D1", prompts.params["channel_id"])
-	require.NotEmpty(t, prompts.params["prompts"])
 
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_home_opened","user":"U1","channel":"D1","tab":"messages","event_ts":"112.000"}}`)
 	time.Sleep(150 * time.Millisecond)
 	require.Len(t, fake.pathCalls("chat.postMessage"), 1, "reopening the pane must not re-greet")
-	require.Len(t, fake.pathCalls(pathSetSuggestedPrompts), 1)
 }
 
 // app_home_opened for a tab other than the assistant Messages tab is ignored.
@@ -41,11 +35,10 @@ func TestAssistantSurface_HomeOpenedOtherTabIgnored(t *testing.T) {
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_home_opened","user":"U1","channel":"D1","tab":"home","event_ts":"111.000"}}`)
 	time.Sleep(150 * time.Millisecond)
 	require.Empty(t, fake.pathCalls("chat.postMessage"))
-	require.Empty(t, fake.pathCalls(pathSetSuggestedPrompts))
 }
 
-// With DMs not served there is no assistant surface to greet on.
-func TestAssistantSurface_HomeOpenedRespectsDMMode(t *testing.T) {
+// With DMs ignored the assistant pane stays silent.
+func TestAssistantSurface_HomeOpenedDMModeIgnoreSilent(t *testing.T) {
 	fake := newFakeSlackAPI()
 	_, srv := newEventsAdapter(t, &stubGateway{}, fake.server(t).URL, func(a *slackadapter.Adapter) {
 		a.DMMode = slackadapter.DMModeIgnore
@@ -54,7 +47,21 @@ func TestAssistantSurface_HomeOpenedRespectsDMMode(t *testing.T) {
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_home_opened","user":"U1","channel":"D1","tab":"messages","event_ts":"111.000"}}`)
 	time.Sleep(150 * time.Millisecond)
 	require.Empty(t, fake.pathCalls("chat.postMessage"))
-	require.Empty(t, fake.pathCalls(pathSetSuggestedPrompts))
+}
+
+// With DMs in redirect mode, opening the assistant pane points the user to
+// channels instead of greeting.
+func TestAssistantSurface_HomeOpenedDMModeRedirects(t *testing.T) {
+	fake := newFakeSlackAPI()
+	_, srv := newEventsAdapter(t, &stubGateway{}, fake.server(t).URL, func(a *slackadapter.Adapter) {
+		a.DMMode = slackadapter.DMModeRedirect
+	})
+
+	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_home_opened","user":"U1","channel":"D1","tab":"messages","event_ts":"111.000"}}`)
+	fake.waitForPath(t, "chat.postMessage", 1)
+	redirect := fake.pathCalls("chat.postMessage")[0]
+	require.Equal(t, "D1", redirect.params["channel"])
+	require.Contains(t, redirect.params["text"], "channels, not direct messages")
 }
 
 // app_context_changed is consumed cleanly (with and without entities): no API

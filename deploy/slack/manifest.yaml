@@ -34,11 +34,19 @@ features:
     messages_tab_enabled: true
     messages_tab_read_only_enabled: false
   # Agent view (assistant surface). Required for the app_home_opened /
-  # app_context_changed lifecycle events and the assistant.threads.* API.
-  # Note: per Slack, adopting agent_view is one-way (no downgrade to the
-  # legacy assistant_view).
+  # app_context_changed lifecycle events. Note: per Slack, adopting agent_view
+  # is one-way (no downgrade to the legacy assistant_view).
   agent_view:
     agent_description: AI assistant powered by Klaus, routed through Klaus Gateway
+    # Pinned at the top of the assistant Messages tab; clicking one sends its
+    # message as a normal DM turn.
+    suggested_prompts:
+      - title: Check cluster health
+        message: How are my clusters doing right now?
+      - title: Investigate an alert
+        message: Help me investigate a firing alert.
+      - title: See what I can do
+        message: /help
 
 oauth_config:
   scopes:
@@ -56,7 +64,7 @@ oauth_config:
       # Join public channels on invite (app_mention works without this, but
       # history lookup requires membership).
       - channels:join
-      # Set suggested prompts on the assistant surface (agent_view).
+      # Assistant surface (agent_view); Slack adds this scope with the feature.
       - assistant:write
 
 settings:
@@ -76,8 +84,8 @@ settings:
       - member_joined_channel
       # Assistant-surface lifecycle (Agent view). Slack's current Agent view
       # no longer sends assistant_thread_started; these two replace it.
-      # app_home_opened (tab "messages") drives the greeting and suggested
-      # prompts; app_context_changed reports the user's active context.
+      # app_home_opened (tab "messages") drives the greeting;
+      # app_context_changed reports the user's active context.
       - app_home_opened
       - app_context_changed
   interactivity:

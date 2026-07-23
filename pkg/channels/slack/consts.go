@@ -252,18 +252,6 @@ const channelIntro = "👋 Hi, I'm Swarmgeist. Mention me (`@Swarmgeist`) in thi
 // open bare.
 const assistantGreeting = "👋 Hi, I'm Swarmgeist. Ask me here about your clusters and platform and I'll bring in an agent to help investigate and act. I ask before anything destructive. Send `/help` for the full list of commands."
 
-// assistantPromptsTitle labels the suggested prompts pinned to the top of the
-// assistant Messages tab.
-const assistantPromptsTitle = "Try one of these"
-
-// assistantPrompts are the suggested prompts pinned alongside the greeting.
-// Clicking one sends its message as a normal DM turn.
-var assistantPrompts = []suggestedPrompt{
-	{Title: "Check cluster health", Message: "How are my clusters doing right now?"},
-	{Title: "Investigate an alert", Message: "Help me investigate a firing alert."},
-	{Title: "See what I can do", Message: "/help"},
-}
-
 // homeGreetingTTL bounds how often the assistant-pane greeting repeats per
 // user: app_home_opened fires on every pane open, not once per thread.
 const homeGreetingTTL = 24 * time.Hour

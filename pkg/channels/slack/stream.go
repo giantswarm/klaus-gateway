@@ -25,10 +25,6 @@ const (
 	// methodChatPostMessage is the Web API method for new posts; it is special
 	// in two spots (display identity, forced unfurl-off).
 	methodChatPostMessage = "chat.postMessage"
-	// methodSetSuggestedPrompts pins suggested prompts to the top of the
-	// assistant Messages tab (Agent view; thread_ts is not required there).
-	// Requires the assistant:write scope.
-	methodSetSuggestedPrompts = "assistant.threads.setSuggestedPrompts"
 	// slackMarkdownBlockMax caps the text of one Block Kit markdown block,
 	// Slack's 12 000-char limit. splitMarkdown budgets the fence auto-close and
 	// reopen inside this cap, so emitted chunks never exceed it.
@@ -641,27 +637,6 @@ func (c *slackAPIClient) postMessage(ctx context.Context, channel, text, threadT
 		params.Set(paramThreadTS, threadTS)
 	}
 	return c.post(ctx, methodChatPostMessage, params)
-}
-
-// suggestedPrompt is one assistant suggested prompt; clicking it sends Message
-// as the user's next message.
-type suggestedPrompt struct {
-	Title   string `json:"title"`
-	Message string `json:"message"`
-}
-
-// setSuggestedPrompts pins the given prompts to the top of a user's assistant
-// Messages tab (Agent view).
-func (c *slackAPIClient) setSuggestedPrompts(ctx context.Context, channelID, title string, prompts []suggestedPrompt) error {
-	body := map[string]any{
-		"channel_id": channelID,
-		"prompts":    prompts,
-	}
-	if title != "" {
-		body["title"] = title
-	}
-	_, err := c.postJSON(ctx, methodSetSuggestedPrompts, body)
-	return err
 }
 
 // lookupUserEmail returns the email from the user's Slack profile.
