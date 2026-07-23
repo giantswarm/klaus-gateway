@@ -92,6 +92,11 @@ type batchedWriter struct {
 	// revokes the user's whole token family. Only touched from run()'s
 	// goroutine.
 	loginURLs []string
+	// connectorManualSignIn is set when a connector prompt this turn could not
+	// wire the auto-resume callback (no public base URL, or decoration failed),
+	// so the agent's sign-in narration must survive: the user has to sign in and
+	// say so by hand. Only touched from run()'s goroutine.
+	connectorManualSignIn bool
 
 	// turnUsage accumulates the per-LLM-call usage kagent reports across the
 	// turn into the turn total. Only touched from run()'s goroutine.
@@ -349,13 +354,21 @@ func (w *batchedWriter) maybeConnectorPrompt(tool *channels.ToolActivity) {
 	// The cooldown above is keyed on the raw URL so a re-challenge with the
 	// same link stays deduplicated; the posted button carries the decorated one.
 	promptURL, connectValue := loginURL, server
+	autoResume := false
 	if base := w.adapter.PublicBaseURL; base != "" {
 		stateID := w.adapter.mintConnectorCompletion(w.slackUser, server, w.channel, w.threadTS)
 		if decorated, err := decorateConnectorLoginURL(loginURL, base, stateID); err != nil {
 			w.logger.Warn("slack: connector login URL decoration failed, posting plain link", "server", server, "error", err)
 		} else {
-			promptURL, connectValue = decorated, stateID
+			promptURL, connectValue, autoResume = decorated, stateID, true
 		}
+	}
+	// A button without a post-login redirect is a no-op: no landing fires, so the
+	// turn does not auto-resume and the user must sign in and say so. Keep the
+	// agent's sign-in narration in that case; only a resumable prompt makes it
+	// redundant enough to retract.
+	if !autoResume {
+		w.connectorManualSignIn = true
 	}
 	w.adapter.background(func(bg context.Context) {
 		ctx, cancel := context.WithTimeout(bg, connectorCheckTimeout)
@@ -693,6 +706,37 @@ func (w *batchedWriter) wroteContent() bool {
 	return w.flushedLen > 0 || w.wroteAny
 }
 
+// connectorReplyRetractable reports whether this turn's visible reply was only
+// a connector sign-in prompt whose button auto-resumes: the ephemeral prompt
+// and the post-login resume are the whole exchange, so the streamed agent
+// narration is redundant and can be retracted. False when no connector prompt
+// was surfaced, or when one was but without a working callback (the user still
+// needs the "sign in, then tell me" narration).
+func (w *batchedWriter) connectorReplyRetractable() bool {
+	return len(w.loginURLs) > 0 && !w.connectorManualSignIn
+}
+
+// retractRendered deletes the streamed agent messages (head and any overflow
+// tails), leaving the thread to the connector prompt alone. Best-effort: a
+// delete failure is logged, not propagated. The run loop has finished, so no
+// concurrent flush touches these fields.
+func (w *batchedWriter) retractRendered(ctx context.Context) {
+	tails := w.tailTS
+	head := w.ts
+	w.ts, w.tailTS = "", nil
+	w.wroteAny, w.flushedLen = false, 0
+	for _, ts := range tails {
+		if err := w.client.deleteMessage(ctx, w.channel, ts); err != nil {
+			w.logger.Warn("slack: retract connector reply tail failed", "ts", ts, "error", err)
+		}
+	}
+	if head != "" {
+		if err := w.client.deleteMessage(ctx, w.channel, head); err != nil {
+			w.logger.Warn("slack: retract connector reply head failed", "ts", head, "error", err)
+		}
+	}
+}
+
 func (w *batchedWriter) flush(ctx context.Context) error {
 	w.mu.Lock()
 	// Skip the chat.update when nothing new accumulated since the last flush;
@@ -981,6 +1025,17 @@ func (c *slackAPIClient) chatUpdateMarkdown(ctx context.Context, channel, ts, md
 		paramBlocks:  markdownBlocks(md),
 	}
 	_, err := c.postJSON(ctx, "chat.update", body)
+	return err
+}
+
+// deleteMessage removes a message the gateway posted (chat.delete). Used to
+// retract the streamed agent bubble when a turn's only reply was a connector
+// sign-in prompt whose button carries a working auto-resume callback.
+func (c *slackAPIClient) deleteMessage(ctx context.Context, channel, ts string) error {
+	_, err := c.postJSON(ctx, "chat.delete", map[string]any{
+		paramChannel: channel,
+		paramTS:      ts,
+	})
 	return err
 }
 

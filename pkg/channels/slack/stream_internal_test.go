@@ -908,6 +908,46 @@ func TestScrubLoginURLs_KeepsSurroundingContent(t *testing.T) {
 	require.NotContains(t, out, "Sign in here:")
 }
 
+func TestConnectorReplyRetractable(t *testing.T) {
+	// No connector prompt this turn: nothing to retract.
+	require.False(t, (&batchedWriter{}).connectorReplyRetractable())
+
+	// A prompt with a working auto-resume callback: the narration is redundant.
+	require.True(t, (&batchedWriter{loginURLs: []string{"https://x/authorize"}}).connectorReplyRetractable())
+
+	// A prompt without a callback (no-op button): keep the narration so the user
+	// knows to sign in and say so.
+	manual := &batchedWriter{loginURLs: []string{"https://x/authorize"}, connectorManualSignIn: true}
+	require.False(t, manual.connectorReplyRetractable())
+}
+
+func TestRetractRendered_DeletesHeadAndTails(t *testing.T) {
+	var deleted []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "chat.delete") {
+			var body struct {
+				TS string `json:"ts"`
+			}
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			deleted = append(deleted, body.TS)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	w := newBatchedWriterWithClient(&slackAPIClient{baseURL: srv.URL}, "C1", "head-ts", "T1", detailsOff, nil)
+	w.tailTS = []string{"tail-1", "tail-2"}
+	w.wroteAny = true
+
+	w.retractRendered(t.Context())
+
+	require.ElementsMatch(t, []string{"head-ts", "tail-1", "tail-2"}, deleted)
+	require.Empty(t, w.ts)
+	require.Empty(t, w.tailTS)
+	require.False(t, w.wroteContent())
+}
+
 func TestParseAuthChallengePayload_DepthBounded(t *testing.T) {
 	nested := any("Server: pro\nhttps://x.example/auth")
 	for range maxChallengePayloadDepth + 2 {
