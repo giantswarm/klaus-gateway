@@ -18,12 +18,9 @@ import (
 // task list carries the status message of a paused input-required task, from
 // which a pending HITL prompt can be rebuilt after a gateway restart.
 //
-// REST is the only session/task source available. kagent's A2A gateway exposes
-// no task listing over the legacy wire klaus-gateway speaks, and sending
-// A2A-Version: 1.0 does not help: ListTasks is accepted at the v1 router but
-// the gateway's shared passthrough to the v0-pinned agent pod returns
-// ErrUnsupportedOperation (kagent-dev/kagent#2187 would serve it from the task
-// store instead).
+// REST is the only session/task source available: kagent's A2A gateway
+// exposes no task listing over the wire klaus-gateway speaks
+// (kagent-dev/kagent#2187 tracks serving it from the task store).
 //
 // Agents (AgentModel, ListAgents): the per-agent model and the
 // installed-agents roster. kagent resolves the model from the agent's
