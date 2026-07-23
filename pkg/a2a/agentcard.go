@@ -103,7 +103,7 @@ func (c *AgentCardClient) card(ctx context.Context, agentRef string) (*a2a.Agent
 }
 
 func (c *AgentCardClient) fetchCard(ctx context.Context, agentRef string) (*a2a.AgentCard, error) {
-	endpoint := trimRightSlash(c.BaseURL) + "/" + agentRef + "/.well-known/agent-card.json"
+	endpoint := strings.TrimRight(c.BaseURL, "/") + "/" + agentRef + "/.well-known/agent-card.json"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, fmt.Errorf("agent card: build request: %w", err)

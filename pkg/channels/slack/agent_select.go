@@ -143,38 +143,9 @@ func (a *Adapter) handleAgentSelection(ctx context.Context, cmd *slashCommand, m
 		return false
 	}
 
-	// A quoted name selects by display name (or technical name), resolved
-	// against the live roster; an unquoted name is the technical form, built
-	// syntactically and validated by the card fetch below.
-	var ref string
-	if quoted {
-		if a.Roster == nil {
-			reply(agentSelectionUnavailable)
-			return false
-		}
-		refs, err := a.agentRefsForSelector(ctx, name)
-		if err != nil {
-			a.Logger.Warn("slack: agent selector resolution failed", "selector", name, "thread", msg.ThreadID, "error", err)
-			reply(agentResolveCheckFailedNotice)
-			return false
-		}
-		switch len(refs) {
-		case 0:
-			reply(a.agentUnavailableReply(ctx, name))
-			return false
-		case 1:
-			ref = refs[0]
-		default:
-			reply(agentAmbiguousReply(name, refs))
-			return false
-		}
-	} else {
-		var validName bool
-		ref, validName = a.agentRefFromName(name)
-		if !validName {
-			reply(a.agentUnavailableReply(ctx, name))
-			return false
-		}
+	ref, resolved := a.resolveSelection(ctx, reply, name, quoted, msg.ThreadID)
+	if !resolved {
+		return false
 	}
 
 	checker, ok := a.AgentCards.(agentCardChecker)
@@ -194,6 +165,44 @@ func (a *Adapter) handleAgentSelection(ctx context.Context, cmd *slashCommand, m
 	msg.AgentRef = ref
 	msg.Text = question
 	return true
+}
+
+// resolveSelection maps a parsed /agent selector to the ref to dispatch to. A
+// quoted name selects by display name (or technical name), resolved against
+// the live roster; an unquoted name is the technical form, built syntactically
+// (the caller validates it against the agent card). ok is false when the
+// selection failed — the failure has already been replied in-thread, loudly:
+// no match, an ambiguous name, and an unreachable roster all consume the
+// message rather than substitute an agent.
+func (a *Adapter) resolveSelection(ctx context.Context, reply func(string), name string, quoted bool, threadID string) (ref string, ok bool) {
+	if !quoted {
+		ref, validName := a.agentRefFromName(name)
+		if !validName {
+			reply(a.agentUnavailableReply(ctx, name))
+			return "", false
+		}
+		return ref, true
+	}
+	if a.Roster == nil {
+		reply(agentSelectionUnavailable)
+		return "", false
+	}
+	refs, err := a.agentRefsForSelector(ctx, name)
+	if err != nil {
+		a.Logger.Warn("slack: agent selector resolution failed", "selector", name, "thread", threadID, "error", err)
+		reply(agentResolveCheckFailedNotice)
+		return "", false
+	}
+	switch len(refs) {
+	case 0:
+		reply(a.agentUnavailableReply(ctx, name))
+		return "", false
+	case 1:
+		return refs[0], true
+	default:
+		reply(agentAmbiguousReply(name, refs))
+		return "", false
+	}
 }
 
 // agentUnavailableReply renders the loud selection failure, including the

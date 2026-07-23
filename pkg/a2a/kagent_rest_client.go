@@ -177,7 +177,7 @@ func (c *KagentClient) getJSON(ctx context.Context, path string, out any) error 
 // header and Bearer token set. The caller owns the response body and wraps
 // errors with its own prefix.
 func (c *KagentClient) do(ctx context.Context, method, path string) (*http.Response, error) {
-	endpoint := trimRightSlash(c.BaseURL) + path
+	endpoint := strings.TrimRight(c.BaseURL, "/") + path
 
 	req, err := http.NewRequestWithContext(ctx, method, endpoint, nil)
 	if err != nil {
@@ -200,11 +200,4 @@ func (c *KagentClient) do(ctx context.Context, method, path string) (*http.Respo
 	}
 
 	return httpClient.Do(req)
-}
-
-func trimRightSlash(s string) string {
-	for len(s) > 0 && s[len(s)-1] == '/' {
-		s = s[:len(s)-1]
-	}
-	return s
 }
