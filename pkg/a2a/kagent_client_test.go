@@ -204,7 +204,7 @@ func TestKagentClient_Execute_PayloadTooLarge(t *testing.T) {
 }
 
 func TestKagentClient_Execute_ForwardsEvents(t *testing.T) {
-	const agentName = "klaud-coding"
+	const agentName = "sre-agent"
 	srv := startFakeKagent(t, agentName)
 
 	kc := &pkga2a.A2AClient{
@@ -266,7 +266,7 @@ func TestKagentClient_Execute_UsesAgentRefFromContext(t *testing.T) {
 }
 
 func TestKagentClient_Execute_ForwardsBearerToken(t *testing.T) {
-	const agentName = "klaud-coding"
+	const agentName = "sre-agent"
 
 	var gotAuth string
 	mux := http.NewServeMux()

@@ -157,6 +157,33 @@ func TestLaunchAnnouncement_PostsAfterResolveSucceeds(t *testing.T) {
 	}, 2*time.Second, 20*time.Millisecond, "a new channel thread announces the agent handoff")
 }
 
+// The launch announcement posts under the agent's identity, not the app
+// default, so it shares one authoring bot with the agent's replies and the
+// channel thread face pile collapses to a single avatar instead of two.
+func TestLaunchAnnouncement_CarriesAgentIdentity(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "on it"}, {Done: true}}}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, func(a *slackadapter.Adapter) {
+		a.AgentCards = stubCards{username: "SRE agent", iconURL: "https://example.test/sre.png"}
+	})
+
+	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_mention","user":"U1","text":"<@UBOT> check the cluster","channel":"C1","ts":"720.000"}}`)
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Bringing in")
+	}, 2*time.Second, 20*time.Millisecond, "a new channel thread announces the agent handoff")
+
+	var announced bool
+	for _, c := range fake.pathCalls("chat.postMessage") {
+		if text, _ := c.params["text"].(string); !strings.Contains(text, "Bringing in") {
+			continue
+		}
+		announced = true
+		require.Equal(t, "SRE agent", c.params["username"], "the announcement posts under the agent name")
+		require.Equal(t, "https://example.test/sre.png", c.params["icon_url"], "the announcement carries the agent icon")
+	}
+	require.True(t, announced, "the launch announcement was posted")
+}
+
 func TestLaunchAnnouncement_SkippedWhenResolveFails(t *testing.T) {
 	fake := newFakeSlackAPI()
 	gw := &stubGateway{resolveErr: errors.New("stub: resolve failed")}
