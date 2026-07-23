@@ -236,26 +236,39 @@ func (w *batchedWriter) renderToolActivity(ctx context.Context, tool *channels.T
 	if w.details == detailsOff || tool == nil {
 		return
 	}
-	// The tool name is agent- and MCP-server-controlled text rendered inside a
-	// code span; a backtick or newline in it would break out of the span and
-	// inject markdown into the thread.
-	name := codeSpanSafe(tool.Name)
 	var md string
 	switch tool.Kind {
 	case channels.ToolCall:
-		md = "🔧 `" + name + "`"
-		if summary := compactJSON(tool.Args, toolArgsMax); summary != "" {
+		displayName, viaMuster := tool.Name, false
+		args := tool.Args
+		if inner, innerArgs, ok := unwrapCallTool(tool); ok {
+			// Record the call→inner mapping so a detailsFull result (which
+			// carries no Args) can resolve the inner name via effectiveToolName,
+			// independent of whether connector prompts are enabled.
+			w.noteCallToolTarget(tool)
+			displayName, viaMuster, args = inner, true, innerArgs
+		}
+		md = "🔧 " + toolLabel(displayName)
+		if viaMuster {
+			md += " (via muster)"
+		}
+		if summary := compactJSON(args, toolArgsMax); summary != "" {
 			md += "\n```\n" + summary + "\n```"
 		}
 	case channels.ToolResult:
 		if w.details != detailsFull {
 			return
 		}
+		resultName := w.effectiveToolName(tool)
+		md = "↳ " + toolLabel(resultName) + " result"
+		if tool.Name == musterCallToolMetaTool && resultName != tool.Name {
+			md += " (via muster)"
+		}
 		preview := compactJSON(tool.Response, toolResultMax)
 		if preview == "" {
 			return
 		}
-		md = "↳ `" + name + "` result\n```\n" + preview + "\n```"
+		md += "\n```\n" + preview + "\n```"
 	default:
 		return
 	}
@@ -339,20 +352,41 @@ type callToolTarget struct {
 	server string
 }
 
+// toolLabel renders a tool name as a bold code span. The name is agent- and
+// MCP-server-controlled text: a backtick or newline would break out of the code
+// span and inject markdown into the thread, so it is sanitised here.
+func toolLabel(name string) string {
+	return "*`" + codeSpanSafe(name) + "`*"
+}
+
+// unwrapCallTool returns the inner muster tool name and arguments a call_tool
+// invocation targets. ok is false unless the tool is call_tool and both the
+// inner name and an arguments map are present, so callers fall back to the raw
+// wrapped call.
+func unwrapCallTool(tool *channels.ToolActivity) (name string, args map[string]any, ok bool) {
+	if tool.Name != musterCallToolMetaTool {
+		return "", nil, false
+	}
+	name, _ = tool.Args["name"].(string)
+	args, hasArgs := tool.Args["arguments"].(map[string]any)
+	if name == "" || !hasArgs {
+		return "", nil, false
+	}
+	return name, args, true
+}
+
 // noteCallToolTarget records the inner muster tool a call_tool invocation
 // targets, keyed by CallID, so the matching result can be attributed to it.
 func (w *batchedWriter) noteCallToolTarget(tool *channels.ToolActivity) {
-	if tool.Name != musterCallToolMetaTool || tool.CallID == "" {
+	if tool.CallID == "" {
 		return
 	}
-	inner, _ := tool.Args["name"].(string)
-	if inner == "" {
+	inner, args, ok := unwrapCallTool(tool)
+	if !ok {
 		return
 	}
 	target := callToolTarget{name: inner}
-	if arguments, ok := tool.Args["arguments"].(map[string]any); ok {
-		target.server, _ = arguments["server"].(string)
-	}
+	target.server, _ = args["server"].(string)
 	if w.callToolInner == nil {
 		w.callToolInner = make(map[string]callToolTarget)
 	}
@@ -510,7 +544,8 @@ func (w *batchedWriter) drainToolPosts() {
 	w.toolWorkerDone = nil
 }
 
-// compactJSON marshals a tool payload to a single line, truncated to max runes.
+// compactJSON marshals a tool payload to a single readable line: one space after
+// each structural ':' and ',' (outside string literals), truncated to max runes.
 // Returns "" for an empty or unmarshalable payload.
 func compactJSON(v map[string]any, max int) string {
 	if len(v) == 0 {
@@ -520,11 +555,42 @@ func compactJSON(v map[string]any, max int) string {
 	if err != nil {
 		return ""
 	}
-	rs := []rune(string(b))
+	rs := []rune(spaceStructuralJSON(b))
 	if len(rs) > max {
 		return string(rs[:max]) + "…"
 	}
 	return string(rs)
+}
+
+// spaceStructuralJSON inserts one space after ':' and ',' that fall outside
+// string literals in compact JSON, yielding a readable single line without
+// indentation. String contents (which may themselves contain ':', ',' or
+// escaped quotes) are left untouched.
+func spaceStructuralJSON(b []byte) string {
+	var out strings.Builder
+	out.Grow(len(b) + len(b)/8)
+	inString, escaped := false, false
+	for _, c := range b {
+		out.WriteByte(c)
+		if inString {
+			switch {
+			case escaped:
+				escaped = false
+			case c == '\\':
+				escaped = true
+			case c == '"':
+				inString = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inString = true
+		case ':', ',':
+			out.WriteByte(' ')
+		}
+	}
+	return out.String()
 }
 
 // wroteContent reports whether any agent text has reached Slack. Used after the
