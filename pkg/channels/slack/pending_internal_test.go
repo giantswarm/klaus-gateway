@@ -13,9 +13,9 @@ import (
 func TestStorePendingTask_SweepsExpiredEntries(t *testing.T) {
 	a := &Adapter{}
 	a.storePendingTask("t-old", &pendingTask{TaskID: "old"})
-	a.pendingMu.Lock()
-	a.pendingTasks["t-old"].storedAt = time.Now().Add(-pendingTTL - time.Minute)
-	a.pendingMu.Unlock()
+	a.threadsMu.Lock()
+	a.threads["t-old"].pending.storedAt = time.Now().Add(-pendingTTL - time.Minute)
+	a.threadsMu.Unlock()
 
 	a.storePendingTask("t-new", &pendingTask{TaskID: "new"})
 

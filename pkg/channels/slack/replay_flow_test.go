@@ -92,9 +92,14 @@ func TestAccess_MultipleParkedMessagesReplayInOrder(t *testing.T) {
 	}
 	_, srv := newEventsAdapter(t, gw, fakeURL, channelMode)
 
+	// Wait for the opening turn to complete (done reaction), not just to
+	// dispatch: a later mention must not race it for the thread slot.
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
-		2*time.Second, 50*time.Millisecond, "initiator's mention dispatches")
+	require.Eventually(t, func() bool {
+		names := fake.reactionNames("reactions.add")
+		return len(names) > 0 && names[len(names)-1] == "white_check_mark"
+	}, 2*time.Second, 50*time.Millisecond, "the initiator's opening turn completes")
+	require.Equal(t, 1, gw.resolveCount(), "initiator's mention dispatches")
 
 	// The newcomer sends two messages before being granted: one consent prompt
 	// (plus one waiting-ack), both messages held.
@@ -132,9 +137,14 @@ func TestLoginReplay_WaitsForBusyThread(t *testing.T) {
 	obo := &multiUserOBO{linked: map[string]string{"U001": "tok1"}}
 	a.OBO = obo
 
+	// Wait for the opening turn to complete (done reaction), not just to
+	// dispatch: a later mention must not race it for the thread slot.
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
-		2*time.Second, 50*time.Millisecond, "initiator's mention dispatches")
+	require.Eventually(t, func() bool {
+		names := fake.reactionNames("reactions.add")
+		return len(names) > 0 && names[len(names)-1] == "white_check_mark"
+	}, 2*time.Second, 50*time.Millisecond, "the initiator's opening turn completes")
+	require.Equal(t, 1, gw.resolveCount(), "initiator's mention dispatches")
 
 	// Grant U999 up front (a grant with nothing parked still stands), so their
 	// later message reaches the login-park path rather than the consent prompt.
@@ -174,6 +184,72 @@ func TestLoginReplay_WaitsForBusyThread(t *testing.T) {
 	require.Equal(t, "tok1", captured[2].BearerToken,
 		"the replayed collaborator turn runs under the initiator's token, not the sender's")
 	require.NotEmpty(t, captured[2].Author, "the real sender is attached as attribution")
+}
+
+// A message from a signed-out user that arrives while another turn holds the
+// thread slot is parked for sign-in, not rejected with a busy notice and
+// dropped: the sign-in gate runs before the per-thread turn lock.
+func TestSignInPark_BusyThreadParksInsteadOfDropping(t *testing.T) {
+	fake := newFakeSlackAPI()
+	fakeURL := fake.server(t).URL
+	var mu sync.Mutex
+	var captured []channels.InboundMessage
+	gw := &stubGateway{onResolve: func(msg channels.InboundMessage) {
+		mu.Lock()
+		captured = append(captured, msg)
+		mu.Unlock()
+	}}
+	a, srv := newEventsAdapter(t, gw, fakeURL, channelMode)
+	obo := &multiUserOBO{linked: map[string]string{"U001": "tok1"}}
+	a.OBO = obo
+
+	// Wait for the opening turn to complete (done reaction), not just to
+	// dispatch: a later mention must not race it for the thread slot.
+	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
+	require.Eventually(t, func() bool {
+		names := fake.reactionNames("reactions.add")
+		return len(names) > 0 && names[len(names)-1] == "white_check_mark"
+	}, 2*time.Second, 50*time.Millisecond, "the initiator's opening turn completes")
+	require.Equal(t, 1, gw.resolveCount(), "initiator's mention dispatches")
+
+	// Grant U999 up front (a grant with nothing parked still stands), so their
+	// later message reaches the login-park path rather than the consent prompt.
+	sendAccessInteraction(t, srv, "U001", accessAllowAction, "100.000", "U999", fakeURL+"/response")
+	fake.waitForPath(t, "response", 1)
+
+	// The initiator starts a turn that keeps the thread slot held.
+	hold := make(chan struct{})
+	gw.mu.Lock()
+	gw.hold = hold
+	gw.mu.Unlock()
+	sendEvent(t, srv, mention("U001", "long task", "200.000", "100.000"))
+	require.Eventually(t, func() bool { return gw.resolveCount() == 2 },
+		2*time.Second, 50*time.Millisecond, "the holding turn starts")
+
+	// U999 (granted, unlinked) posts into the busy thread: parked for sign-in,
+	// no busy notice, nothing dispatched.
+	sendEvent(t, srv, mention("U999", "help me out", "300.000", "100.000"))
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Sign in so I can act as you")
+	}, 2*time.Second, 50*time.Millisecond, "the signed-out user is prompted to sign in despite the busy thread")
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "still finishing",
+		"a sign-in park must not post the busy notice")
+	require.Equal(t, 2, gw.resolveCount(), "the parked message must not be dispatched")
+
+	// The link completes mid-turn; the replay still waits for the slot.
+	obo.link("U999", "tok2")
+	a.OnUserLinked(t.Context(), "U999", "u999@example.com")
+	time.Sleep(150 * time.Millisecond)
+	require.Equal(t, 2, gw.resolveCount(), "the replay must wait for the running turn")
+
+	close(hold)
+	require.Eventually(t, func() bool { return gw.resolveCount() == 3 },
+		2*time.Second, 50*time.Millisecond, "the parked message replays once the slot frees")
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, "help me out", captured[2].Text)
+	require.Equal(t, "tok1", captured[2].BearerToken,
+		"the replayed collaborator turn runs under the initiator's token, not the sender's")
 }
 
 // raceLinkOBO reports the user unlinked exactly once and linked from then on,

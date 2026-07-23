@@ -209,6 +209,8 @@ any string that begins with `Slack bot`, `Slack app-level`, or `Slack user`.
 
 Turns are serialized per thread: a message that arrives while the thread's previous turn is
 still running gets a brief "still working" notice rather than starting an overlapping turn.
+A signed-out sender's message is held for sign-in instead (no busy notice) and replays once
+they link and the running turn finishes.
 
 ### Progress configuration
 
