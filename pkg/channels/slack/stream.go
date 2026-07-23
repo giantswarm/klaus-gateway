@@ -500,9 +500,6 @@ func parseAuthChallenge(output string) (server, loginURL string) {
 	return server, loginURL
 }
 
-// loginURLNote replaces a scrubbed login URL in the agent's prose.
-const loginURLNote = "_(login link removed; use the Connect button above)_"
-
 // scrubLoginURLs removes the login link the Connect button already carries from
 // the agent's prose. The URL is a single-use OAuth authorize link: duplicating
 // it in text lets a second click or Slack's unfurl crawler redeem or replay it,
@@ -512,8 +509,9 @@ const loginURLNote = "_(login link removed; use the Connect button above)_"
 // present the link on its own line (a bullet, an emoji, a markdown link), so
 // stripping only the URL leaves dangling scaffolding ("here is the link:" then
 // nothing). A single line that just introduces the link (ends with ":") is
-// dropped with it. The removed block collapses to one note pointing at the
-// button, so the user knows the link was withheld rather than lost.
+// dropped with it. Nothing is left in its place: the Connect button prompt
+// already tells the user how to sign in, and any surrounding prose the agent
+// wrote (such as "tell me once you're signed in") is kept.
 //
 // Matching is by authorize-endpoint prefix (everything up to and including
 // "?"): the agent re-encodes the query string freely (JSON-escaped ampersands,
@@ -534,7 +532,6 @@ func (w *batchedWriter) scrubLoginURLs(text string) string {
 
 	lines := strings.Split(text, "\n")
 	kept := make([]string, 0, len(lines))
-	noteInserted := false
 	for _, line := range lines {
 		if !lineHasAnyPrefix(line, prefixes) {
 			kept = append(kept, line)
@@ -545,10 +542,6 @@ func (w *batchedWriter) scrubLoginURLs(text string) string {
 			if prev := strings.TrimSpace(kept[n-1]); strings.HasSuffix(prev, ":") {
 				kept = kept[:n-1]
 			}
-		}
-		if !noteInserted {
-			kept = append(kept, loginURLNote)
-			noteInserted = true
 		}
 	}
 	return collapseBlankLines(strings.Join(kept, "\n"))
@@ -749,6 +742,18 @@ func (w *batchedWriter) flush(ctx context.Context) error {
 	flushingLen := w.buf.Len()
 	w.mu.Unlock()
 	text = w.scrubLoginURLs(text)
+
+	// Scrubbing a pure sign-in message can empty the buffer. Nothing to post, but
+	// advance flushedLen so the tick does not re-run on the same buffer; a later
+	// delta re-enters here with new content appended.
+	if strings.TrimSpace(text) == "" {
+		w.mu.Lock()
+		if flushingLen > w.flushedLen {
+			w.flushedLen = flushingLen
+		}
+		w.mu.Unlock()
+		return nil
+	}
 
 	// Agent output renders as Block Kit markdown blocks. A reply that
 	// fits one block updates the main message; a larger reply rolls over into

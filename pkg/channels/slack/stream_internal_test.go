@@ -845,7 +845,7 @@ func TestScrubLoginURLs_ReencodedVariants(t *testing.T) {
 	percent := "https://pro.example/authorize?a=1&state=abc%3D"
 	out := w.scrubLoginURLs("raw: " + escaped + "\npercent: <" + percent + "|sign in>\nlink: [sign in](" + loginURL + ")")
 	require.NotContains(t, out, "pro.example")
-	require.Contains(t, out, loginURLNote)
+	require.Empty(t, out, "every line carried the link, so nothing is left")
 }
 
 func TestNoteCallToolTarget_RecordsServerArgument(t *testing.T) {
@@ -866,16 +866,15 @@ func TestScrubLoginURLs(t *testing.T) {
 	const loginURL = "https://pro.example/authorize?state=abc&code_challenge=xyz"
 	w := &batchedWriter{loginURLs: []string{loginURL}}
 
-	// Markdown link, Slack mrkdwn link, and a bare occurrence all collapse to
-	// the button pointer; unrelated links survive.
+	// Markdown link, Slack mrkdwn link, and a bare occurrence are all removed with
+	// their lines; unrelated links survive. Nothing is left in their place.
 	in := "Please [sign in](" + loginURL + ") first.\n" +
 		"Or <" + loginURL + "|click here>.\n" +
 		"Raw: " + loginURL + "\n" +
 		"Docs: https://example.com/docs"
 	out := w.scrubLoginURLs(in)
 	require.NotContains(t, out, loginURL)
-	require.Contains(t, out, loginURLNote)
-	require.Contains(t, out, "https://example.com/docs")
+	require.Equal(t, "Docs: https://example.com/docs", out)
 	require.NotContains(t, out, "[sign in]", "no dangling markdown link label")
 
 	// No recorded URLs: text passes through untouched.
@@ -886,11 +885,11 @@ func TestScrubLoginURLs_DropsLinkLineAndLeadIn(t *testing.T) {
 	const loginURL = "https://pro.example/authorize?state=abc"
 	w := &batchedWriter{loginURLs: []string{loginURL}}
 
-	// The agent presents the link on its own line after a lead-in ending in ":".
-	// Both go; only the note is left, so no dangling "visit the link:" scaffolding.
+	// The link sits on its own line after a lead-in ending in ":". Both go; the
+	// Connect button prompt is the only sign-in affordance the user needs.
 	in := "To list your issues, I need to authenticate first. Please visit the following link to sign in:\n" +
 		":point_right: " + loginURL
-	require.Equal(t, loginURLNote, w.scrubLoginURLs(in))
+	require.Empty(t, w.scrubLoginURLs(in))
 }
 
 func TestScrubLoginURLs_KeepsSurroundingContent(t *testing.T) {
@@ -898,13 +897,14 @@ func TestScrubLoginURLs_KeepsSurroundingContent(t *testing.T) {
 	w := &batchedWriter{loginURLs: []string{loginURL}}
 
 	// A real intro line that does not end in ":" survives; only the link line and
-	// the "here is the link:" lead-in are removed, and an outro is preserved.
+	// the "here is the link:" lead-in are removed. The actionable outro ("tell me
+	// once you're signed in") is preserved for the no-auto-resume case.
 	in := "Here is what I found.\n" +
 		"Sign in here:\n" +
 		loginURL + "\n" +
-		"Then I'll continue."
+		"Once you've signed in, let me know."
 	out := w.scrubLoginURLs(in)
-	require.Equal(t, "Here is what I found.\n"+loginURLNote+"\nThen I'll continue.", out)
+	require.Equal(t, "Here is what I found.\nOnce you've signed in, let me know.", out)
 	require.NotContains(t, out, "Sign in here:")
 }
 
