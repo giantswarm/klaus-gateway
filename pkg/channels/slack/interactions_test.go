@@ -1401,9 +1401,11 @@ func TestTokenUseConvergesFailedAnchorRewrite(t *testing.T) {
 	}, 10*time.Second, 10*time.Millisecond, "a successful token use must retry the rewrite and drain the anchor")
 }
 
-// A link that is about to replay a parked question folds the agent handoff
-// notice into the rewritten prompt.
-func TestOnUserLinkedAnchorAnnouncesHandoffWhenReplaying(t *testing.T) {
+// The rewritten confirmation is one fixed phrase: even a link that is about to
+// replay a parked question to the agent must not name the agent. The replay's
+// own output is the handoff signal, so every rewrite path (the link callback
+// and the convergence re-checks) produces identical text.
+func TestOnUserLinkedAnchorNeverNamesAgent(t *testing.T) {
 	srv, updates := captureChatUpdates(t)
 
 	a := &Adapter{
@@ -1426,60 +1428,8 @@ func TestOnUserLinkedAnchorAnnouncesHandoffWhenReplaying(t *testing.T) {
 	text, _ := updates()[0]["text"].(string)
 	require.Contains(t, text, "Signed in")
 	require.NotContains(t, text, "@", "the in-thread rewrite carries no email")
-	require.Contains(t, text, "worker", "the rewrite announces the agent handoff")
-}
-
-// A newcomer's replay lands at the initiator's consent prompt, not the agent,
-// so their rewritten prompt keeps the plain confirmation.
-func TestOnUserLinkedAnchorPlainForUnapprovedNewcomer(t *testing.T) {
-	srv, updates := captureChatUpdates(t)
-
-	a := &Adapter{
-		Secrets:      Secrets{BotToken: "test-bot-token"}, //nolint:gosec
-		APIBase:      srv.URL,
-		DefaultAgent: "worker",
-	}
-	require.NoError(t, a.Start(t.Context(), &fakeGateway{}))
-	t.Cleanup(func() { _ = a.Stop(context.Background()) })
-	a.accessPolicy().SetInitiator("T1", "U_OWNER") // someone else owns the thread
-	a.recordSignInAnchor("U999", "T1", signInAnchor{channel: "C1", ts: "111.111"})
-	a.parkPendingLogin("U999", &pendingLoginReq{
-		msg:          channels.InboundMessage{Subject: "U999", ThreadID: "T1", MessageID: "222.222", Text: "me too"},
-		slackChannel: "C1",
-	})
-
-	a.OnUserLinked(t.Context(), "U999", "bob@example.com")
-	require.Eventually(t, func() bool { return len(updates()) == 1 },
-		10*time.Second, 10*time.Millisecond)
-	text, _ := updates()[0]["text"].(string)
-	require.Contains(t, text, "Signed in")
-	require.NotContains(t, text, "@", "the in-thread rewrite carries no email")
-	require.NotContains(t, text, "Bringing in", "a consent-gated replay must not promise the agent")
-}
-
-// A parked queue that is nothing but bare auth utterances is satisfied by the
-// link itself: the rewritten prompt keeps the plain confirmation wording.
-func TestOnUserLinkedAnchorPlainWhenOnlyBareAuthParked(t *testing.T) {
-	srv, updates := captureChatUpdates(t)
-
-	a := &Adapter{
-		Secrets:      Secrets{BotToken: "test-bot-token"}, //nolint:gosec
-		APIBase:      srv.URL,
-		DefaultAgent: "worker",
-	}
-	require.NoError(t, a.Start(t.Context(), &fakeGateway{}))
-	t.Cleanup(func() { _ = a.Stop(context.Background()) })
-	a.recordSignInAnchor("U001", "T1", signInAnchor{channel: "C1", ts: "111.111"})
-	a.parkPendingLogin("U001", &pendingLoginReq{
-		msg:          channels.InboundMessage{Subject: "U001", ThreadID: "T1", MessageID: "T1", Text: "login"},
-		slackChannel: "C1",
-	})
-
-	a.OnUserLinked(t.Context(), "U001", "alice@example.com")
-	require.Eventually(t, func() bool { return len(updates()) == 1 },
-		10*time.Second, 10*time.Millisecond)
-	text, _ := updates()[0]["text"].(string)
-	require.NotContains(t, text, "Bringing in", "a satisfied bare login replays nothing")
+	require.NotContains(t, text, "worker", "the rewrite must not name the agent")
+	require.NotContains(t, text, "Bringing in", "the rewrite must not announce a handoff")
 }
 
 // OnUserLinked is the musterlink OnLinked hook, whose contract is that it must
