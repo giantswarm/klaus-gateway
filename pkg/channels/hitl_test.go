@@ -1,6 +1,7 @@
 package channels
 
 import (
+	"strings"
 	"testing"
 
 	a2apkg "github.com/a2aproject/a2a-go/v2/a2a"
@@ -96,4 +97,96 @@ func TestBuildInboundParts_PlainTextWithoutDecision(t *testing.T) {
 	parts := buildInboundParts(InboundMessage{Text: "hello"})
 	require.Len(t, parts, 1)
 	require.Equal(t, "hello", parts[0].Text())
+}
+
+func TestBuildInboundParts_TextAndAttachment(t *testing.T) {
+	msg := InboundMessage{
+		Text: "look at this",
+		Attachments: []Attachment{
+			{Filename: "shot.png", ContentType: "image/png", Bytes: []byte{0x89, 0x50}},
+		},
+	}
+	parts := buildInboundParts(msg)
+	require.Len(t, parts, 2)
+	require.Equal(t, "look at this", parts[0].Text())
+	require.Equal(t, []byte{0x89, 0x50}, parts[1].Raw())
+	require.Equal(t, "shot.png", parts[1].Filename)
+	require.Equal(t, "image/png", parts[1].MediaType)
+}
+
+func TestBuildInboundParts_TextAttachmentBecomesTextPart(t *testing.T) {
+	// A text/* attachment must be forwarded as a text part, not a binary file
+	// part: the model backend rejects a text/plain inline_data blob.
+	msg := InboundMessage{
+		Text: "review this",
+		Attachments: []Attachment{
+			{Filename: "ingress.yaml", ContentType: "text/plain", Bytes: []byte("kind: Ingress")},
+		},
+	}
+	parts := buildInboundParts(msg)
+	require.Len(t, parts, 2)
+	require.Equal(t, "review this", parts[0].Text())
+	require.Nil(t, parts[1].Raw(), "text attachment must not be a raw/file part")
+	require.Contains(t, parts[1].Text(), "ingress.yaml")
+	require.Contains(t, parts[1].Text(), "kind: Ingress")
+}
+
+func TestBuildInboundParts_StructuredTextAttachment(t *testing.T) {
+	msg := InboundMessage{
+		Attachments: []Attachment{
+			{Filename: "data.json", ContentType: mediaTypeJSON, Bytes: []byte(`{"a":1}`)},
+		},
+	}
+	parts := buildInboundParts(msg)
+	require.Len(t, parts, 1)
+	require.Nil(t, parts[0].Raw())
+	require.Contains(t, parts[0].Text(), `{"a":1}`)
+}
+
+func TestIsTextualMediaType(t *testing.T) {
+	for _, mt := range []string{"text/plain", "text/plain; charset=utf-8", "text/yaml", mediaTypeJSON, "application/x-yaml", "application/vnd.api+json"} {
+		require.True(t, isTextualMediaType(mt), mt)
+	}
+	for _, mt := range []string{"image/png", "application/pdf", "application/octet-stream", ""} {
+		require.False(t, isTextualMediaType(mt), mt)
+	}
+}
+
+func TestBuildInboundParts_AttachmentOnly_NoEmptyTextPart(t *testing.T) {
+	msg := InboundMessage{
+		Attachments: []Attachment{
+			{Filename: "shot.png", ContentType: "image/png", Bytes: []byte{0x1}},
+		},
+	}
+	parts := buildInboundParts(msg)
+	require.Len(t, parts, 1)
+	require.Equal(t, []byte{0x1}, parts[0].Raw())
+}
+
+func TestBuildInboundParts_SkipsAttachmentWithoutBytes(t *testing.T) {
+	msg := InboundMessage{
+		Text: "caption",
+		Attachments: []Attachment{
+			{Filename: "failed.png", ContentType: "image/png"}, // no Bytes: download failed
+		},
+	}
+	parts := buildInboundParts(msg)
+	require.Len(t, parts, 1)
+	require.Equal(t, "caption", parts[0].Text())
+}
+
+// TestTextAttachment_FenceOutgrowsContentFences pins the anti-breakout fence:
+// a file whose content itself contains ``` fences must stay fully inside the
+// quoted block, so the wrapper fence is always longer than any run inside.
+func TestTextAttachment_FenceOutgrowsContentFences(t *testing.T) {
+	content := "# readme\n```go\ncode\n```\nrest"
+	got := textAttachment(Attachment{Filename: "README.md", Bytes: []byte(content)})
+	require.True(t, strings.HasPrefix(got, "Attached file `README.md`:\n````\n"), got)
+	require.True(t, strings.HasSuffix(got, "\n````"), got)
+	require.Contains(t, got, content)
+}
+
+func TestTextAttachment_PlainContentUsesMinimalFence(t *testing.T) {
+	got := textAttachment(Attachment{Filename: "a.txt", Bytes: []byte("plain")})
+	require.Equal(t, "Attached file `a.txt`:\n```\nplain\n```", got)
 }

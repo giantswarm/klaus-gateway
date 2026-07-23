@@ -809,6 +809,32 @@ func TestParseAuthChallenge_JSONEscapedAmpersand(t *testing.T) {
 	require.Equal(t, "https://x.example/auth?a=1&b=2", loginURL)
 }
 
+func TestParseAuthChallenge_TerminatesAtJSONEscapedWhitespace(t *testing.T) {
+	// muster's core_auth_login result reaches the gateway as an undecoded JSON
+	// string, so the newline separating the URL from the trailing instructions
+	// is the literal escape `\n`, which \S+ does not stop at. Without cutting
+	// there, the parsed URL carries `\n\nAfter...`; decorating it with the
+	// completion redirect then re-encodes the garbage into the state query and
+	// muster rejects the mangled state as "session expired".
+	challenge := `Authentication is required for gazelle-mcp-pro.\n\n` +
+		`https://muster.gazelle.awsprod.gigantic.io/oauth/proxy/start?state=abc123\n\nAfter you've signed in, let me know.`
+	_, loginURL := parseAuthChallenge(challenge)
+	require.Equal(t, "https://muster.gazelle.awsprod.gigantic.io/oauth/proxy/start?state=abc123", loginURL)
+}
+
+func TestParseAuthChallenge_TerminatesBeforeJSONQuote(t *testing.T) {
+	// A URL that ends at the closing quote of its JSON string value.
+	_, loginURL := parseAuthChallenge(`{"login":"https://x.example/auth?s=1"}`)
+	require.Equal(t, "https://x.example/auth?s=1", loginURL)
+}
+
+func TestParseAuthChallenge_JSONEscapedAmpersandBeforeTerminator(t *testing.T) {
+	// The & inside the query survives while the trailing escaped newline is cut.
+	challenge := `https://x.example/auth?a=1` + jsonEscapedAmp + `b=2\nthen retry`
+	_, loginURL := parseAuthChallenge(challenge)
+	require.Equal(t, "https://x.example/auth?a=1&b=2", loginURL)
+}
+
 func TestScrubLoginURLs_ReencodedVariants(t *testing.T) {
 	// The agent re-encodes the recorded URL's query freely: JSON-escaped
 	// ampersands, percent-encoded base64 padding. Prefix matching must catch

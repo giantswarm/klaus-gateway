@@ -98,6 +98,17 @@ const connectorCheckTimeout = 10 * time.Second
 // (interaction payloads are attacker-shaped input).
 const maxConnectorNameLen = 128
 
+// connectorCompletionTTL bounds a connector completion state: the window
+// between the Connect prompt posting and the browser landing back on the
+// gateway. Matched to the login link's own lifetime; past it the landing
+// renders the expired page and no resume fires.
+const connectorCompletionTTL = musterlink.DefaultStateTTL
+
+// connectorResumeText is the synthetic message dispatched into the thread
+// after a connector sign-in completes, so the agent retries the blocked tools
+// without the user retyping; %s is the backend name.
+const connectorResumeText = "I've signed in to %s, continue"
+
 // payloadTypeBlockActions is the interaction payload type for Block Kit button
 // clicks; other payload types (view submissions, shortcuts) are not routed.
 const payloadTypeBlockActions = "block_actions"
@@ -229,6 +240,21 @@ const pausedNote = "_(waiting for your input below)_"
 // does not linger as "thinking" with no failure signal (reactions mode swaps in
 // the failed emoji instead).
 const failedNote = "_(the turn failed; please try again)_"
+
+// attachmentsUnavailableNote is posted when a message carried only attachments
+// and none of them could be downloaded, so there is nothing to send the agent.
+const attachmentsUnavailableNote = "I couldn't download the attachment(s) you shared, so there was nothing to send to the agent. Please try again."
+
+// hitlTextReplyNeededNote is posted when a reply into a thread with a paused
+// confirmation carries no text (attachment only): no decision can be read from
+// an empty reply, so the task stays pending and the user is asked to answer in
+// words.
+const hitlTextReplyNeededNote = "This thread is waiting on the pending confirmation above, and I can't read a decision from an attachment alone. Reply with text (e.g. `approve` or `deny`) — I didn't forward the file(s)."
+
+// payloadTooLargeNote is posted when the agent rejects a turn as too large and
+// the message carried no attachments, so the size is the text/history rather
+// than a file the user can shrink.
+const payloadTooLargeNote = "That was too large for the agent to accept, so I couldn't process it. Please try a shorter message or start a new thread."
 
 // corruptSessionResetNotice is posted after a corrupt-history failure when the
 // broken kagent session was deleted, so the user knows to resend rather than
