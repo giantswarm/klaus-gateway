@@ -34,7 +34,7 @@ type ChannelExecutor interface {
 }
 
 // SessionExistsChecker reports whether a kagent session exists, keyed by the
-// synthesized contextID. Implemented by pkg/a2a.SessionsClient; nil disables
+// synthesized contextID. Implemented by pkg/a2a.KagentClient; nil disables
 // the resume existence-check.
 type SessionExistsChecker interface {
 	Exists(ctx context.Context, sessionID string) (bool, error)
@@ -82,7 +82,7 @@ func (f *Facade) SessionResumable(ctx context.Context, msg InboundMessage) (exis
 const sessionCheckTimeout = 3 * time.Second
 
 // SessionDeleter is the optional extension of SessionExistsChecker that can
-// remove a session. pkg/a2a.SessionsClient implements it.
+// remove a session. pkg/a2a.KagentClient implements it.
 type SessionDeleter interface {
 	Delete(ctx context.Context, sessionID string) error
 }

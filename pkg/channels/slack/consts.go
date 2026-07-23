@@ -296,6 +296,7 @@ const (
 	paramText      = "text"
 	paramTS        = "ts"
 	paramThreadTS  = "thread_ts"
+	paramLimit     = "limit" // conversations.replies page size
 	paramUser      = "user"
 	paramBlocks    = "blocks"
 	paramTimestamp = "timestamp" // reactions.* target message ts
