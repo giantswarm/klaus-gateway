@@ -614,10 +614,13 @@ func (a *Adapter) botName(ctx context.Context) string {
 	return name
 }
 
-// resolveIdentity returns the bot's cached (user ID, display name), fetching
-// them once: auth.test for the ID and username, then users.info for the profile
-// display name. Both are empty on auth.test failure (logged); a users.info
-// failure falls back to the auth.test username.
+// resolveIdentity returns the bot's cached (user ID, display name): auth.test
+// for the ID and username, then users.info for the profile display name. The
+// pair is cached once fully resolved. A users.info failure falls back to the
+// auth.test username for that call only and is not cached — the ID is kept and
+// the name lookup retried next call — so a transient failure cannot pin the
+// fallback name for the process lifetime. Both are empty on auth.test failure
+// (logged).
 func (a *Adapter) resolveIdentity(ctx context.Context) (id, name string) {
 	a.botIDMu.Lock()
 	if a.botResolved {
@@ -625,18 +628,24 @@ func (a *Adapter) resolveIdentity(ctx context.Context) (id, name string) {
 		a.botIDMu.Unlock()
 		return id, name
 	}
+	gotID, username := a.botUserID, a.botUsername
 	a.botIDMu.Unlock()
 
 	client := a.apiClient()
-	gotID, username, err := client.authTest(ctx)
-	if err != nil {
-		a.Logger.Warn("slack: auth.test failed, cannot resolve bot identity", "error", err)
-		return "", ""
+	if gotID == "" {
+		var err error
+		gotID, username, err = client.authTest(ctx)
+		if err != nil {
+			a.Logger.Warn("slack: auth.test failed, cannot resolve bot identity", "error", err)
+			return "", ""
+		}
 	}
 	displayName := username
+	resolved := true
 	if gotID != "" {
 		if dn, err := client.lookupUserDisplayName(ctx, gotID); err != nil {
 			a.Logger.Warn("slack: users.info failed for bot, using auth.test username", "error", err)
+			resolved = false
 		} else if dn != "" {
 			displayName = dn
 		}
@@ -644,7 +653,7 @@ func (a *Adapter) resolveIdentity(ctx context.Context) (id, name string) {
 	a.botIDMu.Lock()
 	a.botUserID = gotID
 	a.botUsername = displayName
-	a.botResolved = true
+	a.botResolved = resolved
 	a.botIDMu.Unlock()
 	return gotID, displayName
 }
