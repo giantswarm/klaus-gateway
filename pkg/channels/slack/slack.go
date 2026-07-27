@@ -596,8 +596,10 @@ func (a *Adapter) apiClient() *slackAPIClient {
 	return &slackAPIClient{botToken: a.Secrets.BotToken, baseURL: base, logger: a.Logger}
 }
 
-// AgentCardResolver yields an agent's display identity (name/icon) from its A2A
-// AgentCard. Implemented by pkg/a2a.AgentCardClient; nil disables card branding.
+// AgentCardResolver yields an agent's display identity from its A2A AgentCard.
+// Only the icon is used: the name on a Slack message comes from agentNameFor, so
+// a nil resolver leaves messages icon-less rather than unbranded. Implemented by
+// pkg/a2a.AgentCardClient.
 type AgentCardResolver interface {
 	CardIdentity(ctx context.Context, agentRef string) (username, iconURL string)
 }
@@ -730,8 +732,16 @@ func (a *Adapter) postChannelNotServed(ctx context.Context, slackChannel, userID
 // comes from agentNameFor; the icon still comes from the AgentCard, so a
 // display rename relabels an agent without changing how it looks.
 func (a *Adapter) agentClient(ctx context.Context, agentRef string) *slackAPIClient {
+	return a.agentClientNamed(ctx, agentRef, a.agentNameFor(ctx, agentRef))
+}
+
+// agentClientNamed is agentClient for a caller that has already resolved the
+// name and also renders it into the message text: passing the resolved name in
+// keeps one lookup per message, so the text and the username carrying it cannot
+// disagree across a roster cache expiry.
+func (a *Adapter) agentClientNamed(ctx context.Context, agentRef, username string) *slackAPIClient {
 	c := a.apiClient()
-	c.username = a.agentNameFor(ctx, agentRef)
+	c.username = username
 	if a.AgentCards != nil {
 		_, c.iconURL = a.AgentCards.CardIdentity(ctx, agentRef)
 	}
@@ -744,13 +754,16 @@ func (a *Adapter) agentClient(ctx context.Context, agentRef string) *slackAPICli
 // authoring bot, collapsing the channel thread face pile to a single avatar.
 // Best-effort.
 func (a *Adapter) postLaunchAnnouncement(ctx context.Context, slackChannel, threadID, agentRef string) {
-	// The name is escaped: it comes from an Agent CR annotation, so it can carry
-	// mrkdwn metacharacters, and this text lands in a plain chat.postMessage
-	// which Slack parses as mrkdwn (a display name containing <!channel> would
-	// otherwise ping the channel from inside a bot-branded message). The
-	// username param needs no escaping — Slack does not parse it as mrkdwn.
-	text := fmt.Sprintf("🚀 Bringing in *%s* to help. Keep the conversation in this thread; mention me followed by `/help` to list what I can do.", escapeMrkdwn(a.agentNameFor(ctx, agentRef)))
-	if _, err := a.agentClient(ctx, agentRef).postMessage(ctx, slackChannel, text, threadID); err != nil {
+	// Resolved once and passed to both the text and the client, so the announced
+	// name and the username carrying it cannot disagree. In the text it is
+	// escaped: it comes from an Agent CR annotation, so it can carry mrkdwn
+	// metacharacters, and this lands in a plain chat.postMessage which Slack
+	// parses as mrkdwn (a display name containing <!channel> would otherwise ping
+	// the channel from inside a bot-branded message). The username param needs no
+	// escaping — Slack does not parse it as mrkdwn.
+	name := a.agentNameFor(ctx, agentRef)
+	text := fmt.Sprintf("🚀 Bringing in *%s* to help. Keep the conversation in this thread; mention me followed by `/help` to list what I can do.", escapeMrkdwn(name))
+	if _, err := a.agentClientNamed(ctx, agentRef, name).postMessage(ctx, slackChannel, text, threadID); err != nil {
 		a.Logger.Warn("slack: post launch announcement failed", "thread", threadID, "error", err)
 	}
 }
