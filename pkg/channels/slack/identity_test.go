@@ -182,6 +182,38 @@ func TestBranding_NoRosterStillNamesTheAgent(t *testing.T) {
 		"the technical name is used when no roster is configured")
 }
 
+// A display name is an arbitrary Agent CR annotation, so it can carry mrkdwn
+// metacharacters. The announcement text is mrkdwn-parsed by Slack, so the name
+// must be escaped there: an agent named "<!channel> …" must not ping the channel
+// from inside a bot-branded message. The username param is not mrkdwn-parsed and
+// is deliberately left verbatim.
+func TestLaunchAnnouncement_EscapesDisplayNameInText(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "on it"}, {Done: true}}}
+	roster := &fakeRoster{agents: []pkga2a.AgentInfo{
+		{Name: "test-agent", DisplayName: "<!channel> the SRE bot"},
+	}}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, func(a *slackadapter.Adapter) {
+		a.Roster = roster
+	})
+
+	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_mention","user":"U1","text":"<@UBOT> check the cluster","channel":"C1","ts":"730.000"}}`)
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Bringing in")
+	}, 2*time.Second, 20*time.Millisecond, "a new channel thread announces the agent handoff")
+
+	for _, c := range fake.pathCalls("chat.postMessage") {
+		text, _ := c.params["text"].(string)
+		if !strings.Contains(text, "Bringing in") {
+			continue
+		}
+		require.NotContains(t, text, "<!channel>", "a raw broadcast mention would ping the channel")
+		require.Contains(t, text, "&lt;!channel&gt; the SRE bot", "the display name is mrkdwn-escaped")
+		require.Equal(t, "<!channel> the SRE bot", c.params["username"],
+			"the username is not mrkdwn-parsed, so it stays verbatim")
+	}
+}
+
 // A roster failure costs the nice name, never the reply — and it is remembered,
 // so a later turn falls straight through instead of paying the timeout again.
 func TestBranding_RosterFailureDeliversReplyAndIsNotRetried(t *testing.T) {

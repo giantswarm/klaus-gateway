@@ -125,15 +125,18 @@ type Adapter struct {
 	// reaction is swapped for DoneEmoji. The failed reaction is unaffected.
 	ClearReactionOnDone bool
 
-	// AgentCards resolves an agentRef to its A2A AgentCard display identity
-	// (name/icon), the source of per-message agent branding. Nil disables it
-	// (messages post under the app default). kagent's card carries a name but no
-	// icon yet, so agent messages are named but icon-less until kagent exposes it.
-	// When it also implements the card-info lookup (pkg/a2a.AgentCardClient
-	// does), it validates /agent selections; otherwise selection is unavailable.
+	// AgentCards resolves an agentRef to its A2A AgentCard, the source of the
+	// icon on per-message agent branding. Nil leaves messages icon-less (they
+	// are still named — see agentNameFor); the card's own name is deliberately
+	// not used, since kagent derives it from the resource name with hyphens
+	// replaced by underscores. When it also implements the card-info lookup
+	// (pkg/a2a.AgentCardClient does), it validates /agent selections; otherwise
+	// selection is unavailable.
 	AgentCards AgentCardResolver
 	// Roster lists the agents selectable via the /agent command, discovered
-	// from the kagent controller. Nil disables the roster listing.
+	// from the kagent controller. It is also the source of the display name on
+	// per-message agent branding. Nil disables the roster listing and leaves
+	// branding to fall back to the technical name.
 	Roster AgentRosterSource
 
 	gw      channels.Gateway
@@ -741,7 +744,12 @@ func (a *Adapter) agentClient(ctx context.Context, agentRef string) *slackAPICli
 // authoring bot, collapsing the channel thread face pile to a single avatar.
 // Best-effort.
 func (a *Adapter) postLaunchAnnouncement(ctx context.Context, slackChannel, threadID, agentRef string) {
-	text := fmt.Sprintf("🚀 Bringing in *%s* to help. Keep the conversation in this thread; mention me followed by `/help` to list what I can do.", a.agentNameFor(ctx, agentRef))
+	// The name is escaped: it comes from an Agent CR annotation, so it can carry
+	// mrkdwn metacharacters, and this text lands in a plain chat.postMessage
+	// which Slack parses as mrkdwn (a display name containing <!channel> would
+	// otherwise ping the channel from inside a bot-branded message). The
+	// username param needs no escaping — Slack does not parse it as mrkdwn.
+	text := fmt.Sprintf("🚀 Bringing in *%s* to help. Keep the conversation in this thread; mention me followed by `/help` to list what I can do.", escapeMrkdwn(a.agentNameFor(ctx, agentRef)))
 	if _, err := a.agentClient(ctx, agentRef).postMessage(ctx, slackChannel, text, threadID); err != nil {
 		a.Logger.Warn("slack: post launch announcement failed", "thread", threadID, "error", err)
 	}

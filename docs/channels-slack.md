@@ -224,12 +224,15 @@ they link and the running turn finishes.
 
 ### Identity, HITL, and channel behavior
 
-- **Per-message branding.** Agent replies and the agent's own confirmation prompts are posted
-  under the agent's display name, taken from its A2A AgentCard, so they read as the agent
-  speaking rather than the app. Swarmgeist's own messages (launch announcement, sign-in,
-  errors, the DM redirect, the channel intro) keep the app's default identity. The card
-  supplies the name; when it exposes no icon the app's own icon is kept. Requires
-  `chat:write.customize`.
+- **Per-message branding.** Agent replies, the agent's own confirmation prompts, and the launch
+  announcement are posted under the agent's display name, so they read as the agent speaking
+  rather than the app. The name is the `Agent` CR's `ui.giantswarm.io/display-name` annotation
+  (as reported by the roster), falling back to the resource's own name — `sre-agent`, not the
+  underscored `sre_agent` the AgentCard publishes. The AgentCard supplies only the icon, which
+  therefore stays keyed to the technical name: renaming an agent relabels it without changing
+  how it looks. When no icon is available the app's own icon is kept. Swarmgeist's other
+  messages (sign-in, errors, the DM redirect, the channel intro) keep the app's default
+  identity. Requires `chat:write.customize`.
 - **HITL "Chat".** A tool-approval prompt shows Approve / Deny / **Chat**. Chat holds the
   pending tool call and invites a follow-up question in the thread; the reply is routed to the
   paused task. A question resolves it as a reject carrying the question (the agent answers and
