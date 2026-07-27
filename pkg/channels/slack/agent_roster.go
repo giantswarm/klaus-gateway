@@ -31,6 +31,18 @@ const rosterListTimeout = 5 * time.Second
 // /agent listings stay off the controller.
 const rosterTTL = 30 * time.Second
 
+// rosterFailureTTL is how long a failed roster fetch is remembered before the
+// controller is asked again. It mirrors the AgentCard client's cardFailureTTL
+// and exists for the same reason: the roster is resolved synchronously on the
+// dispatch path to brand every turn's first message, so without it every turn
+// against an unreachable controller pays the full rosterListTimeout.
+//
+// Only rosterAgentsBestEffort honours it. Callers whose failure is user-facing
+// and blocks the turn — /agent selection and opener re-resolution — keep
+// re-attempting, because refusing several messages in a row over one blip is
+// worse than paying the timeout.
+const rosterFailureTTL = 45 * time.Second
+
 // rosterListing renders the selectable-agent roster: display names (the
 // display-name annotation on the Agent CR, falling back to the technical
 // name) and the Agent CRs' descriptions. Namespaces are deliberately absent —
@@ -57,18 +69,73 @@ func (a *Adapter) rosterListing(ctx context.Context) (string, bool) {
 }
 
 // agentDisplayName is the roster label for ag: the display-name annotation
-// when the Agent CR carries one, the technical name otherwise.
+// when the Agent CR carries one, the technical name otherwise. The annotation
+// is trimmed and an all-whitespace value counts as absent; beyond that it is
+// used verbatim, because the chart that renders it owns its length and charset
+// (a name that reads badly is fixable where it was authored, and truncating
+// here would show a name nobody chose).
 func agentDisplayName(ag pkga2a.AgentInfo) string {
-	if ag.DisplayName != "" {
-		return ag.DisplayName
+	if name := strings.TrimSpace(ag.DisplayName); name != "" {
+		return name
 	}
 	return ag.Name
+}
+
+// agentNameFor is the agent's human-facing name on every Slack surface that
+// shows one: the username on its own messages and the launch announcement text
+// alike, so the two can never disagree. It is the display name the roster
+// reports, or agentRef's bare technical name when the roster has nothing for it.
+//
+// The AgentCard name is deliberately not consulted. kagent generates it from the
+// resource name with hyphens replaced by underscores, so it renders a spelling
+// that appears in no other surface and that /agent will not accept.
+func (a *Adapter) agentNameFor(ctx context.Context, agentRef string) string {
+	if name := a.rosterDisplayName(ctx, agentRef); name != "" {
+		return name
+	}
+	return bareAgentName(agentRef)
+}
+
+// rosterDisplayName returns the roster's label for agentRef, or "" when no
+// roster is configured, the fetch fails, or the roster does not know the ref.
+// Branding must never block or fail a turn, so every one of those is a silent
+// fall-through to the technical name.
+func (a *Adapter) rosterDisplayName(ctx context.Context, agentRef string) string {
+	if agentRef == "" {
+		return ""
+	}
+	agents, err := a.rosterAgentsBestEffort(ctx)
+	if err != nil {
+		return ""
+	}
+	for _, ag := range agents {
+		if a.agentInfoRef(ag) == agentRef {
+			return agentDisplayName(ag)
+		}
+	}
+	return ""
+}
+
+// bareAgentName drops a "namespace/" qualifier from agentRef, leaving the Agent
+// resource's own name — the spelling the CR carries and /agent accepts. Refs
+// bound from a selection are DNS-1123 validated, so this is that name exactly;
+// a deployment's configured default agent is not shape-checked, so a
+// misconfigured default is shown as configured.
+func bareAgentName(agentRef string) string {
+	if _, name, ok := strings.Cut(agentRef, "/"); ok {
+		return name
+	}
+	return agentRef
 }
 
 // rosterAgents returns the roster, served from a brief cache so repeated
 // listings stay cheap while a newly installed agent still appears without a
 // redeploy. Concurrent cold-cache callers may fetch in parallel (the endpoint
 // is idempotent; the last result wins) — no single-flight, deliberately.
+//
+// A failure is recorded for rosterFailureTTL but not acted on here: this call
+// always re-attempts, so a user-facing selection is never refused on the
+// strength of an earlier blip. Branding uses rosterAgentsBestEffort instead.
 func (a *Adapter) rosterAgents(ctx context.Context) ([]pkga2a.AgentInfo, error) {
 	if a.Roster == nil {
 		return nil, fmt.Errorf("slack: no agent roster source configured")
@@ -86,12 +153,31 @@ func (a *Adapter) rosterAgents(ctx context.Context) ([]pkga2a.AgentInfo, error) 
 	defer cancel()
 	agents, err := a.Roster.ListAgents(lctx)
 	if err != nil {
+		a.rosterMu.Lock()
+		a.rosterFailedUntil = time.Now().Add(rosterFailureTTL)
+		a.rosterMu.Unlock()
 		return nil, err
 	}
 	a.rosterMu.Lock()
 	a.rosterCached, a.rosterExpires = agents, time.Now().Add(rosterTTL)
+	a.rosterFailedUntil = time.Time{}
 	a.rosterMu.Unlock()
 	return agents, nil
+}
+
+// rosterAgentsBestEffort is rosterAgents for callers that only want a nicer
+// label and can fall back silently — branding, which runs on every turn's first
+// message. It honours the negative cache, so an unreachable controller costs one
+// rosterListTimeout rather than one per turn.
+func (a *Adapter) rosterAgentsBestEffort(ctx context.Context) ([]pkga2a.AgentInfo, error) {
+	a.rosterMu.Lock()
+	failedUntil := a.rosterFailedUntil
+	stale := a.rosterCached == nil || !time.Now().Before(a.rosterExpires)
+	a.rosterMu.Unlock()
+	if stale && time.Now().Before(failedUntil) {
+		return nil, fmt.Errorf("slack: recent roster fetch failure, not retrying before %s", failedUntil.Format(time.RFC3339))
+	}
+	return a.rosterAgents(ctx)
 }
 
 // agentRefsForSelector resolves a quoted /agent selector against the roster,

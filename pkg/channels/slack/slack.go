@@ -261,6 +261,9 @@ type Adapter struct {
 	rosterMu      sync.Mutex
 	rosterCached  []pkga2a.AgentInfo
 	rosterExpires time.Time
+	// rosterFailedUntil is the negative cache deadline honoured only by
+	// rosterAgentsBestEffort; see rosterFailureTTL.
+	rosterFailedUntil time.Time
 
 	// connectorCompletionsMu guards connectorCompletions: short-lived state
 	// minted when a Connect button is decorated with a post-login redirect,
@@ -719,28 +722,17 @@ func (a *Adapter) postChannelNotServed(ctx context.Context, slackChannel, userID
 	}
 }
 
-// agentClient returns a Slack client that posts under the agent's AgentCard
-// display identity, for the agent's own replies and confirmation prompts.
-// Falls back to the app default when no card resolver is set or the lookup is
-// empty.
+// agentClient returns a Slack client that posts under the agent's display
+// identity, for the agent's own replies and confirmation prompts. The name
+// comes from agentNameFor; the icon still comes from the AgentCard, so a
+// display rename relabels an agent without changing how it looks.
 func (a *Adapter) agentClient(ctx context.Context, agentRef string) *slackAPIClient {
 	c := a.apiClient()
+	c.username = a.agentNameFor(ctx, agentRef)
 	if a.AgentCards != nil {
-		c.username, c.iconURL = a.AgentCards.CardIdentity(ctx, agentRef)
+		_, c.iconURL = a.AgentCards.CardIdentity(ctx, agentRef)
 	}
 	return c
-}
-
-// agentDisplayName is the agent's human-facing name for Swarmgeist's own
-// messages (e.g. the launch announcement): the AgentCard name, or the agentRef
-// when no card name is known.
-func (a *Adapter) agentDisplayName(ctx context.Context, agentRef string) string {
-	if a.AgentCards != nil {
-		if name, _ := a.AgentCards.CardIdentity(ctx, agentRef); name != "" {
-			return name
-		}
-	}
-	return agentRef
 }
 
 // postLaunchAnnouncement posts the handoff notice when a new thread starts,
@@ -749,7 +741,7 @@ func (a *Adapter) agentDisplayName(ctx context.Context, agentRef string) string 
 // authoring bot, collapsing the channel thread face pile to a single avatar.
 // Best-effort.
 func (a *Adapter) postLaunchAnnouncement(ctx context.Context, slackChannel, threadID, agentRef string) {
-	text := fmt.Sprintf("🚀 Bringing in *%s* to help. Keep the conversation in this thread; mention me followed by `/help` to list what I can do.", a.agentDisplayName(ctx, agentRef))
+	text := fmt.Sprintf("🚀 Bringing in *%s* to help. Keep the conversation in this thread; mention me followed by `/help` to list what I can do.", a.agentNameFor(ctx, agentRef))
 	if _, err := a.agentClient(ctx, agentRef).postMessage(ctx, slackChannel, text, threadID); err != nil {
 		a.Logger.Warn("slack: post launch announcement failed", "thread", threadID, "error", err)
 	}
