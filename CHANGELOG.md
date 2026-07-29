@@ -11,10 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A Slack workspace whose app install predates the `chat:write.customize` scope now receives agent replies under the app's own identity instead of failed posts: a branded post rejected for a scope or username problem is retried unbranded, and the downgrade is remembered for the rest of the process.
 - The Slack "Connect <backend>" button no longer opens a broken login link when the agent's sign-in challenge arrives as an undecoded JSON string.
 
 ### Changed
 
+- Agent messages in Slack (replies, confirmation prompts, and the launch announcement) are named by the `Agent` CR's `ui.giantswarm.io/display-name` annotation — `SRE Assistant` — instead of the underscored `sre_agent` the A2A AgentCard publishes. Without the annotation the name is the resource's own spelling, `sre-agent`, which is what `/agent` accepts. The agent's icon still follows the technical name, so renaming an agent relabels it without changing how it looks.
 - The Slack connector sign-in turn renders more cleanly. When the Connect button carries a working post-login auto-resume, the agent's now-redundant sign-in narration ("visit this link…, then tell me") is removed after the turn, leaving only the sign-in prompt; the conversation continues by itself once the user signs in. When auto-resume is not available, the sign-in narration is kept but the login-link line (and its lead-in) is dropped cleanly — the "(login link removed; use the Connect button above)" placeholder note is gone. Requires muster ≥ 1.3.1 with `oauth.mcpClient.postLoginRedirectAllowlist` pointing at the gateway's `/connectors/complete` landing for the auto-resume path.
 - The default agent (binary default and Helm `a2a.defaultAgent`) is now `sre-agent` instead of `klaud-coding`.
 

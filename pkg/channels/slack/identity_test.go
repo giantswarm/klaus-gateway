@@ -3,6 +3,7 @@ package slack_test
 import (
 	"context"
 	"errors"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 	slackadapter "github.com/giantswarm/klaus-gateway/pkg/channels/slack"
 )
@@ -69,30 +71,254 @@ func TestChat_HoldsPromptThenRoutesQuestionAsReject(t *testing.T) {
 	require.Contains(t, last.RejectionReason, "which ones exactly?")
 }
 
-// The agent's reply posts under the AgentCard display name, and without an
-// icon_url (so Slack keeps the app's own icon) when the card exposes no icon.
-func TestBranding_AgentReplyCarriesCardName(t *testing.T) {
-	fake := newFakeSlackAPI()
-	gw := &stubGateway{sendQueue: [][]channels.OutboundDelta{{{Content: "all good"}, {Done: true}}}}
-	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, func(a *slackadapter.Adapter) {
-		a.AgentCards = stubCards{username: "SRE agent"}
-	})
+// usernamesOf returns the username each recorded chat.postMessage carried.
+func usernamesOf(calls []recordedCall) []string {
+	out := make([]string, 0, len(calls))
+	for _, c := range calls {
+		u, _ := c.params["username"].(string)
+		out = append(out, u)
+	}
+	return out
+}
 
-	sendEvent(t, srv, dmEvent("U1", "status?", "500.000"))
+// awaitAgentReply drives one DM turn and waits for the agent's answer to be posted.
+func awaitAgentReply(t *testing.T, srv *httptest.Server, fake *fakeSlackAPI, ts string) {
+	t.Helper()
+	sendEvent(t, srv, dmEvent("U1", "status?", ts))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "all good")
 	}, 2*time.Second, 20*time.Millisecond, "the agent answer is posted")
+}
 
-	var branded bool
+func replyGateway() *stubGateway {
+	return &stubGateway{sendQueue: [][]channels.OutboundDelta{{{Content: "all good"}, {Done: true}}}}
+}
+
+// The agent's reply posts under the display-name annotation the roster reports —
+// never under the AgentCard name, which kagent generates with underscores. The
+// card is still consulted for the icon, and omitting icon_url when it has none
+// keeps the app's own icon.
+func TestBranding_AgentReplyCarriesDisplayName(t *testing.T) {
+	fake := newFakeSlackAPI()
+	roster := &fakeRoster{agents: []pkga2a.AgentInfo{
+		{Name: "test-agent", DisplayName: "SRE Assistant"},
+	}}
+	_, srv := newEventsAdapter(t, replyGateway(), fake.server(t).URL, func(a *slackadapter.Adapter) {
+		a.Roster = roster
+		a.AgentCards = stubCards{username: "test_agent"}
+	})
+
+	awaitAgentReply(t, srv, fake, "500.000")
+
+	names := usernamesOf(fake.pathCalls("chat.postMessage"))
+	require.Contains(t, names, "SRE Assistant", "the reply carries the display-name annotation")
+	require.NotContains(t, names, "test_agent", "the AgentCard name is never shown")
 	for _, c := range fake.pathCalls("chat.postMessage") {
-		if u, _ := c.params["username"].(string); u != "SRE agent" {
+		if u, _ := c.params["username"].(string); u == "SRE Assistant" {
+			_, hasIcon := c.params["icon_url"]
+			require.False(t, hasIcon, "no card icon means the app icon is kept (icon_url omitted)")
+		}
+	}
+}
+
+// Without a display-name annotation the reply carries the Agent resource's own
+// spelling — the hyphenated technical name, which is what /agent accepts — and
+// specifically not the card's underscored form.
+func TestBranding_NoAnnotationFallsBackToTechnicalName(t *testing.T) {
+	fake := newFakeSlackAPI()
+	roster := &fakeRoster{agents: []pkga2a.AgentInfo{{Name: "test-agent"}}}
+	_, srv := newEventsAdapter(t, replyGateway(), fake.server(t).URL, func(a *slackadapter.Adapter) {
+		a.Roster = roster
+		a.AgentCards = stubCards{username: "test_agent"}
+	})
+
+	awaitAgentReply(t, srv, fake, "501.000")
+
+	names := usernamesOf(fake.pathCalls("chat.postMessage"))
+	require.Contains(t, names, "test-agent", "the hyphenated resource name is used")
+	require.NotContains(t, names, "test_agent", "the AgentCard name is never shown")
+}
+
+// An all-whitespace annotation counts as absent rather than posting a blank name.
+func TestBranding_WhitespaceAnnotationCountsAsAbsent(t *testing.T) {
+	fake := newFakeSlackAPI()
+	roster := &fakeRoster{agents: []pkga2a.AgentInfo{
+		{Name: "test-agent", DisplayName: "   "},
+	}}
+	_, srv := newEventsAdapter(t, replyGateway(), fake.server(t).URL, func(a *slackadapter.Adapter) {
+		a.Roster = roster
+	})
+
+	awaitAgentReply(t, srv, fake, "502.000")
+
+	require.Contains(t, usernamesOf(fake.pathCalls("chat.postMessage")), "test-agent",
+		"a blank annotation falls through to the technical name")
+}
+
+// A namespace-qualified ref posts under the bare resource name: the namespace is
+// deployment configuration, not something a Slack reader should see.
+func TestBranding_QualifiedRefPostsBareName(t *testing.T) {
+	fake := newFakeSlackAPI()
+	_, srv := newEventsAdapter(t, replyGateway(), fake.server(t).URL, func(a *slackadapter.Adapter) {
+		a.DefaultAgent = "kagent/test-agent"
+	})
+
+	awaitAgentReply(t, srv, fake, "503.000")
+
+	names := usernamesOf(fake.pathCalls("chat.postMessage"))
+	require.Contains(t, names, "test-agent", "the namespace qualifier is stripped")
+	require.NotContains(t, names, "kagent/test-agent", "no namespace reaches Slack")
+}
+
+// With no roster wired at all, branding still names the agent rather than
+// falling back to the app's own identity.
+func TestBranding_NoRosterStillNamesTheAgent(t *testing.T) {
+	fake := newFakeSlackAPI()
+	_, srv := newEventsAdapter(t, replyGateway(), fake.server(t).URL)
+
+	awaitAgentReply(t, srv, fake, "504.000")
+
+	require.Contains(t, usernamesOf(fake.pathCalls("chat.postMessage")), "test-agent",
+		"the technical name is used when no roster is configured")
+}
+
+// A display name is an arbitrary Agent CR annotation, so it can carry mrkdwn
+// metacharacters. The announcement text is mrkdwn-parsed by Slack, so the name
+// must be escaped there: an agent named "<!channel> …" must not ping the channel
+// from inside a bot-branded message. The username param is not mrkdwn-parsed and
+// is deliberately left verbatim.
+func TestLaunchAnnouncement_EscapesDisplayNameInText(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "on it"}, {Done: true}}}
+	roster := &fakeRoster{agents: []pkga2a.AgentInfo{
+		{Name: "test-agent", DisplayName: "<!channel> the SRE bot"},
+	}}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, func(a *slackadapter.Adapter) {
+		a.Roster = roster
+	})
+
+	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_mention","user":"U1","text":"<@UBOT> check the cluster","channel":"C1","ts":"730.000"}}`)
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Bringing in")
+	}, 2*time.Second, 20*time.Millisecond, "a new channel thread announces the agent handoff")
+
+	for _, c := range fake.pathCalls("chat.postMessage") {
+		text, _ := c.params["text"].(string)
+		if !strings.Contains(text, "Bringing in") {
 			continue
 		}
-		branded = true
-		_, hasIcon := c.params["icon_url"]
-		require.False(t, hasIcon, "no card icon means the app icon is kept (icon_url omitted)")
+		require.NotContains(t, text, "<!channel>", "a raw broadcast mention would ping the channel")
+		require.Contains(t, text, "&lt;!channel&gt; the SRE bot", "the display name is mrkdwn-escaped")
+		require.Equal(t, "<!channel> the SRE bot", c.params["username"],
+			"the username is not mrkdwn-parsed, so it stays verbatim")
 	}
-	require.True(t, branded, "the agent reply carries the AgentCard username")
+}
+
+// A workspace whose install predates chat:write.customize rejects branded posts
+// with missing_scope. The reply must still arrive — retried under the app
+// identity — and the downgrade latches so later turns skip the doomed branded
+// attempt entirely. Same auto-downgrade shape as reactions.
+func TestBranding_MissingScopeFallsBackToAppIdentity(t *testing.T) {
+	fake := newFakeSlackAPI()
+	fake.failIf = func(path string, params map[string]any) string {
+		if u, _ := params["username"].(string); path == "chat.postMessage" && u != "" {
+			return "missing_scope"
+		}
+		return ""
+	}
+	roster := &fakeRoster{agents: []pkga2a.AgentInfo{
+		{Name: "test-agent", DisplayName: "SRE Assistant"},
+	}}
+	gw := &stubGateway{sendQueue: [][]channels.OutboundDelta{
+		{{Content: "all good"}, {Done: true}},
+		{{Content: "all good"}, {Done: true}},
+	}}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, func(a *slackadapter.Adapter) {
+		a.Roster = roster
+	})
+
+	awaitAgentReply(t, srv, fake, "600.000")
+
+	branded := 0
+	for _, u := range usernamesOf(fake.pathCalls("chat.postMessage")) {
+		if u != "" {
+			branded++
+		}
+	}
+	require.Positive(t, branded, "the first post attempts branding")
+	var delivered bool
+	for _, c := range fake.pathCalls("chat.postMessage") {
+		text, _ := c.params["text"].(string)
+		u, _ := c.params["username"].(string)
+		if strings.Contains(text, "all good") && u == "" {
+			delivered = true
+		}
+	}
+	require.True(t, delivered, "the reply arrives under the app identity")
+
+	// Second turn: the latched downgrade skips the branded attempt entirely.
+	sendEvent(t, srv, dmEvent("U1", "status?", "601.000"))
+	require.Eventually(t, func() bool {
+		n := 0
+		for _, c := range fake.pathCalls("chat.postMessage") {
+			if text, _ := c.params["text"].(string); strings.Contains(text, "all good") {
+				n++
+			}
+		}
+		return n >= 2
+	}, 2*time.Second, 20*time.Millisecond, "the second reply arrives too")
+	after := 0
+	for _, u := range usernamesOf(fake.pathCalls("chat.postMessage")) {
+		if u != "" {
+			after++
+		}
+	}
+	require.Equal(t, branded, after, "no further branded attempts after the downgrade latched")
+}
+
+// The display name is sanitized on its way to the username param: a multi-line
+// annotation is legal Kubernetes, but control characters must cost the label's
+// shape, never the post carrying it.
+func TestBranding_DisplayNameIsSanitized(t *testing.T) {
+	fake := newFakeSlackAPI()
+	roster := &fakeRoster{agents: []pkga2a.AgentInfo{
+		{Name: "test-agent", DisplayName: "SRE\nAssistant\x07 (on-call)"},
+	}}
+	_, srv := newEventsAdapter(t, replyGateway(), fake.server(t).URL, func(a *slackadapter.Adapter) {
+		a.Roster = roster
+	})
+
+	awaitAgentReply(t, srv, fake, "602.000")
+
+	require.Contains(t, usernamesOf(fake.pathCalls("chat.postMessage")), "SRE Assistant (on-call)",
+		"control characters become spaces and runs collapse")
+}
+
+// A roster failure costs the nice name, never the reply — and it is remembered,
+// so a later turn falls straight through instead of paying the timeout again.
+func TestBranding_RosterFailureDeliversReplyAndIsNotRetried(t *testing.T) {
+	fake := newFakeSlackAPI()
+	roster := &fakeRoster{err: errors.New("controller unreachable")}
+	gw := &stubGateway{sendQueue: [][]channels.OutboundDelta{
+		{{Content: "all good"}, {Done: true}},
+		{{Content: "all good"}, {Done: true}},
+	}}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, func(a *slackadapter.Adapter) {
+		a.Roster = roster
+	})
+
+	awaitAgentReply(t, srv, fake, "505.000")
+	require.Contains(t, usernamesOf(fake.pathCalls("chat.postMessage")), "test-agent",
+		"a failed lookup degrades to the technical name, the reply still arrives")
+
+	after := roster.listCalls()
+	require.Positive(t, after, "branding did consult the roster, so the next assertion is not vacuous")
+	sendEvent(t, srv, dmEvent("U1", "status?", "506.000"))
+	require.Eventually(t, func() bool {
+		return len(fake.pathCalls("chat.postMessage")) > 1
+	}, 2*time.Second, 20*time.Millisecond, "the second turn is answered too")
+	require.Equal(t, after, roster.listCalls(),
+		"the failure is cached, so branding does not re-ask the controller")
 }
 
 // The bot being added to a channel posts exactly one Swarmgeist intro.
@@ -159,12 +385,18 @@ func TestLaunchAnnouncement_PostsAfterResolveSucceeds(t *testing.T) {
 
 // The launch announcement posts under the agent's identity, not the app
 // default, so it shares one authoring bot with the agent's replies and the
-// channel thread face pile collapses to a single avatar instead of two.
+// channel thread face pile collapses to a single avatar instead of two. Its
+// name comes from the display-name annotation and its icon from the card, so
+// the announcement text and the username that carries it always agree.
 func TestLaunchAnnouncement_CarriesAgentIdentity(t *testing.T) {
 	fake := newFakeSlackAPI()
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "on it"}, {Done: true}}}
+	roster := &fakeRoster{agents: []pkga2a.AgentInfo{
+		{Name: "test-agent", DisplayName: "SRE Assistant"},
+	}}
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, func(a *slackadapter.Adapter) {
-		a.AgentCards = stubCards{username: "SRE agent", iconURL: "https://example.test/sre.png"}
+		a.Roster = roster
+		a.AgentCards = stubCards{username: "test_agent", iconURL: "https://example.test/sre.png"}
 	})
 
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_mention","user":"U1","text":"<@UBOT> check the cluster","channel":"C1","ts":"720.000"}}`)
@@ -178,7 +410,8 @@ func TestLaunchAnnouncement_CarriesAgentIdentity(t *testing.T) {
 			continue
 		}
 		announced = true
-		require.Equal(t, "SRE agent", c.params["username"], "the announcement posts under the agent name")
+		require.Contains(t, c.params["text"], "SRE Assistant", "the announcement names the agent by display name")
+		require.Equal(t, "SRE Assistant", c.params["username"], "the announcement posts under the agent name")
 		require.Equal(t, "https://example.test/sre.png", c.params["icon_url"], "the announcement carries the agent icon")
 	}
 	require.True(t, announced, "the launch announcement was posted")

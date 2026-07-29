@@ -125,15 +125,18 @@ type Adapter struct {
 	// reaction is swapped for DoneEmoji. The failed reaction is unaffected.
 	ClearReactionOnDone bool
 
-	// AgentCards resolves an agentRef to its A2A AgentCard display identity
-	// (name/icon), the source of per-message agent branding. Nil disables it
-	// (messages post under the app default). kagent's card carries a name but no
-	// icon yet, so agent messages are named but icon-less until kagent exposes it.
-	// When it also implements the card-info lookup (pkg/a2a.AgentCardClient
-	// does), it validates /agent selections; otherwise selection is unavailable.
+	// AgentCards resolves an agentRef to its A2A AgentCard, the source of the
+	// icon on per-message agent branding. Nil leaves messages icon-less (they
+	// are still named — see agentNameFor); the card's own name is deliberately
+	// not used, since kagent derives it from the resource name with hyphens
+	// replaced by underscores. When it also implements the card-info lookup
+	// (pkg/a2a.AgentCardClient does), it validates /agent selections; otherwise
+	// selection is unavailable.
 	AgentCards AgentCardResolver
 	// Roster lists the agents selectable via the /agent command, discovered
-	// from the kagent controller. Nil disables the roster listing.
+	// from the kagent controller. It is also the source of the display name on
+	// per-message agent branding. Nil disables the roster listing and leaves
+	// branding to fall back to the technical name.
 	Roster AgentRosterSource
 
 	gw      channels.Gateway
@@ -261,6 +264,18 @@ type Adapter struct {
 	rosterMu      sync.Mutex
 	rosterCached  []pkga2a.AgentInfo
 	rosterExpires time.Time
+	// rosterFailedUntil is the negative cache deadline honoured only by
+	// rosterAgentsBestEffort; see rosterFailureTTL.
+	rosterFailedUntil time.Time
+	// rosterRefreshing guards the single background refresh
+	// rosterAgentsBestEffort keeps in flight while serving a stale roster.
+	rosterRefreshing bool
+
+	// customizeUnsupported records that a branded post was rejected with
+	// missing_scope (the workspace's install predates chat:write.customize), so
+	// later posts skip the doomed branded attempt and go straight to the app
+	// identity. Same auto-downgrade shape as reactionsUnsupported.
+	customizeUnsupported atomic.Bool
 
 	// connectorCompletionsMu guards connectorCompletions: short-lived state
 	// minted when a Connect button is decorated with a post-login redirect,
@@ -587,11 +602,13 @@ func (a *Adapter) apiClient() *slackAPIClient {
 	if base == "" {
 		base = slackAPIBase
 	}
-	return &slackAPIClient{botToken: a.Secrets.BotToken, baseURL: base, logger: a.Logger}
+	return &slackAPIClient{botToken: a.Secrets.BotToken, baseURL: base, logger: a.Logger, customizeUnsupported: &a.customizeUnsupported}
 }
 
-// AgentCardResolver yields an agent's display identity (name/icon) from its A2A
-// AgentCard. Implemented by pkg/a2a.AgentCardClient; nil disables card branding.
+// AgentCardResolver yields an agent's display identity from its A2A AgentCard.
+// Only the icon is used: the name on a Slack message comes from agentNameFor, so
+// a nil resolver leaves messages icon-less rather than unbranded. Implemented by
+// pkg/a2a.AgentCardClient.
 type AgentCardResolver interface {
 	CardIdentity(ctx context.Context, agentRef string) (username, iconURL string)
 }
@@ -719,28 +736,30 @@ func (a *Adapter) postChannelNotServed(ctx context.Context, slackChannel, userID
 	}
 }
 
-// agentClient returns a Slack client that posts under the agent's AgentCard
-// display identity, for the agent's own replies and confirmation prompts.
-// Falls back to the app default when no card resolver is set or the lookup is
-// empty.
+// agentClient returns a Slack client that posts under the agent's display
+// identity, for the agent's own replies and confirmation prompts. The name
+// comes from agentNameFor; the icon still comes from the AgentCard, so a
+// display rename relabels an agent without changing how it looks.
 func (a *Adapter) agentClient(ctx context.Context, agentRef string) *slackAPIClient {
-	c := a.apiClient()
-	if a.AgentCards != nil {
-		c.username, c.iconURL = a.AgentCards.CardIdentity(ctx, agentRef)
-	}
-	return c
+	return a.agentClientNamed(ctx, agentRef, a.agentNameFor(ctx, agentRef))
 }
 
-// agentDisplayName is the agent's human-facing name for Swarmgeist's own
-// messages (e.g. the launch announcement): the AgentCard name, or the agentRef
-// when no card name is known.
-func (a *Adapter) agentDisplayName(ctx context.Context, agentRef string) string {
-	if a.AgentCards != nil {
-		if name, _ := a.AgentCards.CardIdentity(ctx, agentRef); name != "" {
-			return name
-		}
+// agentClientNamed is agentClient for a caller that has already resolved the
+// name and also renders it into the message text: passing the resolved name in
+// keeps one lookup per message, so the text and the username carrying it cannot
+// disagree across a roster cache expiry. When a branded post has been rejected
+// with missing_scope, branding is skipped entirely and the agent posts under
+// the app identity — unbranded but delivered.
+func (a *Adapter) agentClientNamed(ctx context.Context, agentRef, username string) *slackAPIClient {
+	c := a.apiClient()
+	if a.customizeUnsupported.Load() {
+		return c
 	}
-	return agentRef
+	c.username = username
+	if a.AgentCards != nil {
+		_, c.iconURL = a.AgentCards.CardIdentity(ctx, agentRef)
+	}
+	return c
 }
 
 // postLaunchAnnouncement posts the handoff notice when a new thread starts,
@@ -749,8 +768,18 @@ func (a *Adapter) agentDisplayName(ctx context.Context, agentRef string) string 
 // authoring bot, collapsing the channel thread face pile to a single avatar.
 // Best-effort.
 func (a *Adapter) postLaunchAnnouncement(ctx context.Context, slackChannel, threadID, agentRef string) {
-	text := fmt.Sprintf("🚀 Bringing in *%s* to help. Keep the conversation in this thread; mention me followed by `/help` to list what I can do.", a.agentDisplayName(ctx, agentRef))
-	if _, err := a.agentClient(ctx, agentRef).postMessage(ctx, slackChannel, text, threadID); err != nil {
+	// Resolved once and passed to both the text and the client, so the announced
+	// name and the username carrying it cannot disagree. In the text it is
+	// escaped: it comes from an Agent CR annotation, so it can carry mrkdwn
+	// metacharacters, and this lands in a plain chat.postMessage which Slack
+	// parses as mrkdwn (a display name containing <!channel> would otherwise ping
+	// the channel from inside a bot-branded message). Escaping covers mentions
+	// and links only — emphasis characters (* _) pass through, so a name
+	// containing them can mangle the surrounding bold span; cosmetic, accepted.
+	// The username param needs no escaping — Slack does not parse it as mrkdwn.
+	name := a.agentNameFor(ctx, agentRef)
+	text := fmt.Sprintf("🚀 Bringing in *%s* to help. Keep the conversation in this thread; mention me followed by `/help` to list what I can do.", escapeMrkdwn(name))
+	if _, err := a.agentClientNamed(ctx, agentRef, name).postMessage(ctx, slackChannel, text, threadID); err != nil {
 		a.Logger.Warn("slack: post launch announcement failed", "thread", threadID, "error", err)
 	}
 }
