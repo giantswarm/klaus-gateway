@@ -24,10 +24,16 @@ const tabMessages = "messages"
 
 // subtypeThreadBroadcast marks a thread reply the author asked Slack to also
 // send to the channel. It is a normal human reply (its payload carries user,
-// text, ts, and thread_ts) and is the only message subtype the adapter routes;
-// every other subtype (message_changed, message_deleted, bot_message, …) is
-// not a new user instruction.
+// text, ts, and thread_ts); every subtype other than it and subtypeFileShare
+// (message_changed, message_deleted, bot_message, …) is not a new user
+// instruction and is never routed.
 const subtypeThreadBroadcast = "thread_broadcast"
+
+// subtypeFileShare marks a message carrying an uploaded file. Slack sets it on
+// every human message with an attachment, so it must route like a plain
+// message: without it, an image sent as a bare thread reply or a DM (no
+// app_mention twin to carry the files) never reaches the agent.
+const subtypeFileShare = "file_share"
 
 // HITL Block Kit action IDs.
 const (

@@ -61,6 +61,22 @@ func TestEventsHandler_DMServedAlongsideChannels(t *testing.T) {
 		10*time.Second, 20*time.Millisecond, "a channel mention dispatches alongside DMs")
 }
 
+// An image-only DM in redirect mode gets the redirect notice like a text DM:
+// it arrives with subtype file_share, which must not read as a non-human event.
+func TestEventsHandler_DMRedirectCoversFileShare(t *testing.T) {
+	gw := &stubGateway{}
+	fake := newFakeSlackAPI()
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, func(a *slackadapter.Adapter) {
+		a.DMMode = slackadapter.DMModeRedirect
+		a.ChannelMode = slackadapter.ChannelModeAll
+	})
+
+	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","subtype":"file_share","channel_type":"im","user":"U1","channel":"D1","ts":"111.000","files":[{"name":"shot.png","mimetype":"image/png","size":10}]}}`)
+	require.Eventually(t, func() bool { return len(fake.pathCalls("chat.postMessage")) == 1 },
+		10*time.Second, 20*time.Millisecond, "an image-only DM gets the redirect notice")
+	require.Zero(t, gw.resolveCount(), "a redirected DM must not dispatch")
+}
+
 // DMModeIgnore drops DMs silently: no dispatch, no redirect.
 func TestEventsHandler_DMIgnored(t *testing.T) {
 	gw := &stubGateway{}

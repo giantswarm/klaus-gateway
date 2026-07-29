@@ -1144,8 +1144,10 @@ func dmThreadEvent(user, text, ts, threadTS string) string {
 }
 
 // dmThreadFileEvent builds a DM thread reply carrying one file attachment.
+// Slack sets subtype file_share on every human message with an upload, so the
+// fixture carries it too.
 func dmThreadFileEvent(user, text, ts, threadTS, filename string) string {
-	return fmt.Sprintf(`{"type":"event_callback","event":{"type":"message","channel_type":"im","user":%q,"text":%q,"channel":"D1","ts":%q,"thread_ts":%q,"files":[{"name":%q,"mimetype":"image/png","url_private":"https://files.slack.com/f.png","size":10}]}}`, user, text, ts, threadTS, filename)
+	return fmt.Sprintf(`{"type":"event_callback","event":{"type":"message","subtype":"file_share","channel_type":"im","user":%q,"text":%q,"channel":"D1","ts":%q,"thread_ts":%q,"files":[{"name":%q,"mimetype":"image/png","url_private":"https://files.slack.com/f.png","size":10}]}}`, user, text, ts, threadTS, filename)
 }
 
 func TestProgress_ReactionsLifecycle(t *testing.T) {
@@ -1464,6 +1466,39 @@ func TestHandleInbound_ThreadBroadcastReplyDispatches(t *testing.T) {
 	sendEvent(t, srv, edited)
 	time.Sleep(150 * time.Millisecond)
 	require.Equal(t, before, gw.resolveCount(), "a message_changed subtype must not start a turn")
+}
+
+// A file_share reply (an upload without a bot mention) into an active bot
+// thread is a deliberate user message and must reach the agent like any other
+// reply. Slack sets subtype file_share on every human message carrying a file,
+// and such a reply has no app_mention twin to route it.
+func TestHandleInbound_FileShareReplyDispatches(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "answer-text"}, {Done: true}}}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
+
+	sendEvent(t, srv, mention("U1", "start", "500.000", ""))
+	// The first turn's answer marks the thread slot as about to free.
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "answer-text")
+	}, 2*time.Second, 50*time.Millisecond, "the mention's turn completes")
+
+	// The file has no url_private, so dispatch drops it by name (posting the
+	// dropped-attachments notice) without touching the network; the caption
+	// still runs the turn. Routing, not downloading, is under test here.
+	reply := `{"type":"event_callback","event":{"type":"message","subtype":"file_share","user":"U1","text":"look at this","channel":"C1","ts":"501.000","thread_ts":"500.000","files":[{"name":"shot.png","mimetype":"image/png","size":10}]}}`
+	seq := 0
+	require.Eventually(t, func() bool {
+		seq++
+		sendEvent(t, srv, strings.Replace(reply, "501.000", fmt.Sprintf("501.%03d", seq), 1))
+		return gw.resolveCount() >= 2
+	}, 3*time.Second, 100*time.Millisecond,
+		"a file_share thread reply must reach the agent like any other reply")
+
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "shot.png")
+	}, 2*time.Second, 50*time.Millisecond,
+		"the attachment metadata travelled into dispatch (named in the dropped-attachments notice)")
 }
 
 // A mention's message-event twin dropped by the inactive-thread gate must not

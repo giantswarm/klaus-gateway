@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Slack file attachments now reach the agent when the message does not mention the bot: an image sent as a plain thread reply or as a DM (Slack marks these with the `file_share` message subtype, which was previously filtered out) starts a turn like any other reply. Previously only files attached to an `@`-mention were forwarded. An image-only DM in redirect mode now also receives the channel-redirect notice instead of silence.
 - A Slack workspace whose app install predates the `chat:write.customize` scope now receives agent replies under the app's own identity instead of failed posts: a branded post rejected for a scope or username problem is retried unbranded, and the downgrade is remembered for the rest of the process.
 - The Slack "Connect <backend>" button no longer opens a broken login link when the agent's sign-in challenge arrives as an undecoded JSON string.
 

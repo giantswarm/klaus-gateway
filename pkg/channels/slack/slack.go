@@ -1330,8 +1330,10 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 	if inner.isDM() {
 		switch a.dmMode() {
 		case DMModeRedirect:
-			// Bot messages and non-message subtypes are skipped (no reply loop).
-			if inner.BotID == "" && inner.SubType == "" {
+			// Bot messages and non-message subtypes are skipped (no reply
+			// loop); a file_share is a human message, so an image-only DM
+			// still gets the redirect instead of silence.
+			if inner.BotID == "" && routableSubtype(inner.SubType) {
 				a.postDMRedirect(ctx, inner.Channel)
 			}
 			return
@@ -2243,6 +2245,17 @@ func (e slackInnerEvent) threadReplyOnly() bool {
 	return e.Type == evtMessage && !e.isDM()
 }
 
+// routableSubtype reports whether a message subtype is a genuine new human
+// message. Deny by default: an unknown subtype Slack adds later must not start
+// a turn.
+func routableSubtype(subtype string) bool {
+	switch subtype {
+	case "", subtypeThreadBroadcast, subtypeFileShare:
+		return true
+	}
+	return false
+}
+
 // toInboundMessage maps a Slack inner event to the normalised InboundMessage.
 // Returns false when the event should be ignored (bot message, empty text, …).
 // threadReplyOnly, when true, accepts only thread reply messages (thread_ts set
@@ -2250,9 +2263,10 @@ func (e slackInnerEvent) threadReplyOnly() bool {
 // to route replies to existing bot threads.
 func (e slackInnerEvent) toInboundMessage(threadReplyOnly bool) (channels.InboundMessage, bool) {
 	// A thread_broadcast is a human reply the author asked Slack to mirror to
-	// the channel, so it routes like a plain reply; every other subtype
-	// (message_changed, message_deleted, …) is not a new user instruction.
-	if e.BotID != "" || (e.SubType != "" && e.SubType != subtypeThreadBroadcast) {
+	// the channel, and a file_share is a human message carrying an upload; both
+	// route like a plain reply. Every other subtype (message_changed,
+	// message_deleted, …) is not a new user instruction.
+	if e.BotID != "" || !routableSubtype(e.SubType) {
 		return channels.InboundMessage{}, false
 	}
 	// An event without a Slack user has no subject: it cannot be
