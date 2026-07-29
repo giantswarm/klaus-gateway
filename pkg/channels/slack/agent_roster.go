@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 )
@@ -68,14 +69,38 @@ func (a *Adapter) rosterListing(ctx context.Context) (string, bool) {
 	return b.String(), true
 }
 
+// displayNameMaxRunes caps a display name at the Slack boundary. Slack
+// documents no username limit, so the cap is defensive: the annotation can
+// bypass the chart's 63-character schema (a hand-annotated Agent CR, another
+// chart), and an over-long value must cost the branding, never the reply.
+const displayNameMaxRunes = 80
+
+// sanitizeDisplayName makes an annotation value usable as a Slack username:
+// control characters become spaces (a multi-line annotation is legal
+// Kubernetes), whitespace runs collapse, and the result is capped at
+// displayNameMaxRunes. Returns "" when nothing displayable remains, which
+// callers treat as an absent annotation.
+func sanitizeDisplayName(s string) string {
+	s = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, s)
+	s = strings.Join(strings.Fields(s), " ")
+	if runes := []rune(s); len(runes) > displayNameMaxRunes {
+		s = strings.TrimSpace(string(runes[:displayNameMaxRunes]))
+	}
+	return s
+}
+
 // agentDisplayName is the roster label for ag: the display-name annotation
 // when the Agent CR carries one, the technical name otherwise. The annotation
-// is trimmed and an all-whitespace value counts as absent; beyond that it is
-// used verbatim, because the chart that renders it owns its length and charset
-// (a name that reads badly is fixable where it was authored, and truncating
-// here would show a name nobody chose).
+// is sanitized here — the one place that knows the value is about to become a
+// Slack API parameter — so a hostile or malformed annotation degrades the
+// label instead of the message carrying it.
 func agentDisplayName(ag pkga2a.AgentInfo) string {
-	if name := strings.TrimSpace(ag.DisplayName); name != "" {
+	if name := sanitizeDisplayName(ag.DisplayName); name != "" {
 		return name
 	}
 	return ag.Name
@@ -116,14 +141,14 @@ func (a *Adapter) rosterDisplayName(ctx context.Context, agentRef string) string
 	return ""
 }
 
-// bareAgentName drops a "namespace/" qualifier from agentRef, leaving the Agent
-// resource's own name — the spelling the CR carries and /agent accepts. Refs
-// bound from a selection are DNS-1123 validated, so this is that name exactly;
-// a deployment's configured default agent is not shape-checked, so a
-// misconfigured default is shown as configured.
+// bareAgentName drops any qualifier from agentRef, leaving the Agent
+// resource's own name — the spelling the CR carries and /agent accepts. The
+// last path segment is taken, so the result never contains a slash whatever
+// shape an unvalidated ref arrives in. Refs bound from a selection are
+// DNS-1123 validated, so this is that name exactly.
 func bareAgentName(agentRef string) string {
-	if _, name, ok := strings.Cut(agentRef, "/"); ok {
-		return name
+	if i := strings.LastIndex(agentRef, "/"); i >= 0 {
+		return agentRef[i+1:]
 	}
 	return agentRef
 }
@@ -167,14 +192,43 @@ func (a *Adapter) rosterAgents(ctx context.Context) ([]pkga2a.AgentInfo, error) 
 
 // rosterAgentsBestEffort is rosterAgents for callers that only want a nicer
 // label and can fall back silently — branding, which runs on every turn's first
-// message. It honours the negative cache, so an unreachable controller costs one
-// rosterListTimeout rather than one per turn.
+// message. Unlike rosterAgents it never waits once a roster has ever been
+// fetched: a stale cache is served as the last known good roster and refreshed
+// in the background (one refresh in flight at a time), so branding is not
+// latency-bearing and a transient fetch failure cannot flap an agent's name
+// mid-conversation. The negative cache gates only the cold path and the
+// background refresh, so an unreachable controller costs one rosterListTimeout
+// per rosterFailureTTL rather than one per turn.
 func (a *Adapter) rosterAgentsBestEffort(ctx context.Context) ([]pkga2a.AgentInfo, error) {
+	if a.Roster == nil {
+		return nil, fmt.Errorf("slack: no agent roster source configured")
+	}
+	now := time.Now()
 	a.rosterMu.Lock()
+	cached := a.rosterCached
+	if cached != nil {
+		refresh := !now.Before(a.rosterExpires) && !a.rosterRefreshing && !now.Before(a.rosterFailedUntil)
+		if refresh {
+			a.rosterRefreshing = true
+		}
+		a.rosterMu.Unlock()
+		if refresh {
+			a.background(func(bctx context.Context) {
+				defer func() {
+					a.rosterMu.Lock()
+					a.rosterRefreshing = false
+					a.rosterMu.Unlock()
+				}()
+				if _, err := a.rosterAgents(bctx); err != nil {
+					a.Logger.Warn("slack: background roster refresh failed, branding keeps the last known roster", "error", err)
+				}
+			})
+		}
+		return cached, nil
+	}
 	failedUntil := a.rosterFailedUntil
-	stale := a.rosterCached == nil || !time.Now().Before(a.rosterExpires)
 	a.rosterMu.Unlock()
-	if stale && time.Now().Before(failedUntil) {
+	if now.Before(failedUntil) {
 		return nil, fmt.Errorf("slack: recent roster fetch failure, not retrying before %s", failedUntil.Format(time.RFC3339))
 	}
 	return a.rosterAgents(ctx)

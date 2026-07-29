@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
@@ -842,6 +843,34 @@ type slackAPIClient struct {
 	// logger, when set, records download diagnostics at debug level. Nil in
 	// tests and in call sites that never download.
 	logger *slog.Logger
+	// customizeUnsupported, when set, is latched on a missing_scope rejection of
+	// a branded post so the adapter skips branding on later posts (the
+	// workspace's install predates chat:write.customize). Nil in tests that
+	// construct the client directly.
+	customizeUnsupported *atomic.Bool
+}
+
+// identityRejectedErr reports whether err is Slack rejecting a post because of
+// its display identity: missing_scope (no chat:write.customize) or
+// invalid_arguments (a username Slack will not accept). Both are retried
+// unbranded — branding must cost the label, never the reply.
+func identityRejectedErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "missing_scope") || strings.Contains(s, "invalid_arguments")
+}
+
+// noteIdentityRejected logs the unbranded retry and, on missing_scope, latches
+// the adapter-wide downgrade so later posts skip the doomed branded attempt.
+func (c *slackAPIClient) noteIdentityRejected(err error) {
+	if c.logger != nil {
+		c.logger.Warn("slack: branded post rejected, retrying under the app identity", "error", err)
+	}
+	if c.customizeUnsupported != nil && strings.Contains(err.Error(), "missing_scope") {
+		c.customizeUnsupported.Store(true)
+	}
 }
 
 // applyIdentity adds the client's display identity (username/icon_url) via set.
@@ -1602,14 +1631,23 @@ func (c *slackAPIClient) chatUpdateBlocks(ctx context.Context, channel, ts, text
 }
 
 func (c *slackAPIClient) postJSON(ctx context.Context, method string, body any) (string, error) {
-	// The identity fields go onto a clone so the caller's map stays untouched.
-	if m, ok := body.(map[string]any); ok {
+	// The identity fields go onto a clone so the caller's map stays untouched —
+	// which also keeps the original available for the unbranded retry below.
+	m, isMap := body.(map[string]any)
+	build := func(withIdentity bool) (any, bool) {
+		if !isMap {
+			return body, false
+		}
 		cloned := maps.Clone(m)
-		c.applyIdentity(method, func(k, v string) {
-			if _, exists := cloned[k]; !exists {
-				cloned[k] = v
-			}
-		})
+		branded := false
+		if withIdentity {
+			c.applyIdentity(method, func(k, v string) {
+				if _, exists := cloned[k]; !exists {
+					cloned[k] = v
+					branded = true
+				}
+			})
+		}
 		if method == methodChatPostMessage {
 			// Bot posts relay agent- and tool-controlled links; an unfurl has
 			// Slack's crawler fetch them, which for single-use auth links can
@@ -1617,13 +1655,22 @@ func (c *slackAPIClient) postJSON(ctx context.Context, method string, body any) 
 			cloned[paramUnfurlLinks] = false
 			cloned[paramUnfurlMedia] = false
 		}
-		body = cloned
+		return cloned, branded
 	}
-	data, err := json.Marshal(body)
+	payload, branded := build(true)
+	data, err := json.Marshal(payload)
 	if err != nil {
 		return "", fmt.Errorf("slack %s: marshal: %w", method, err)
 	}
-	return c.send(ctx, method, "application/json; charset=utf-8", string(data))
+	ts, err := c.send(ctx, method, "application/json; charset=utf-8", string(data))
+	if branded && identityRejectedErr(err) {
+		c.noteIdentityRejected(err)
+		payload, _ = build(false)
+		if data, merr := json.Marshal(payload); merr == nil {
+			return c.send(ctx, method, "application/json; charset=utf-8", string(data))
+		}
+	}
+	return ts, err
 }
 
 type slackResponse struct {
@@ -1633,12 +1680,23 @@ type slackResponse struct {
 }
 
 func (c *slackAPIClient) post(ctx context.Context, method string, params url.Values) (string, error) {
-	c.applyIdentity(method, params.Set)
+	branded := false
+	c.applyIdentity(method, func(k, v string) {
+		params.Set(k, v)
+		branded = true
+	})
 	if method == methodChatPostMessage {
 		params.Set(paramUnfurlLinks, "false")
 		params.Set(paramUnfurlMedia, "false")
 	}
-	return c.send(ctx, method, "application/x-www-form-urlencoded", params.Encode())
+	ts, err := c.send(ctx, method, "application/x-www-form-urlencoded", params.Encode())
+	if branded && identityRejectedErr(err) {
+		c.noteIdentityRejected(err)
+		params.Del(paramUsername)
+		params.Del(paramIconURL)
+		return c.send(ctx, method, "application/x-www-form-urlencoded", params.Encode())
+	}
+	return ts, err
 }
 
 // rateLimitRetryCap bounds how long a Retry-After pause may hold a call;

@@ -1006,6 +1006,11 @@ type fakeSlackAPI struct {
 	calls       []recordedCall
 	failWith    map[string]string // path (e.g. "reactions.add") -> slack error code
 	respondWith map[string]string // path -> canned JSON response body
+	// failIf, when set, is consulted per call with the parsed params; a
+	// non-empty return fails that call with the given slack error code. For
+	// conditional failures failWith cannot express (e.g. reject only branded
+	// posts).
+	failIf      func(path string, params map[string]any) string
 	seq         int
 	botUserID   string // returned as user_id from auth.test
 	botUsername string // returned as user from auth.test
@@ -1032,6 +1037,9 @@ func (f *fakeSlackAPI) server(t *testing.T) *httptest.Server {
 		f.mu.Lock()
 		f.calls = append(f.calls, recordedCall{path: path, params: params})
 		code := f.failWith[path]
+		if code == "" && f.failIf != nil {
+			code = f.failIf(path, params)
+		}
 		canned := f.respondWith[path]
 		f.seq++
 		ts := fmt.Sprintf("1700000000.%06d", f.seq)

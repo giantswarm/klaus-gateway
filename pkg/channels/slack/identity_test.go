@@ -214,6 +214,86 @@ func TestLaunchAnnouncement_EscapesDisplayNameInText(t *testing.T) {
 	}
 }
 
+// A workspace whose install predates chat:write.customize rejects branded posts
+// with missing_scope. The reply must still arrive — retried under the app
+// identity — and the downgrade latches so later turns skip the doomed branded
+// attempt entirely. Same auto-downgrade shape as reactions.
+func TestBranding_MissingScopeFallsBackToAppIdentity(t *testing.T) {
+	fake := newFakeSlackAPI()
+	fake.failIf = func(path string, params map[string]any) string {
+		if u, _ := params["username"].(string); path == "chat.postMessage" && u != "" {
+			return "missing_scope"
+		}
+		return ""
+	}
+	roster := &fakeRoster{agents: []pkga2a.AgentInfo{
+		{Name: "test-agent", DisplayName: "SRE Assistant"},
+	}}
+	gw := &stubGateway{sendQueue: [][]channels.OutboundDelta{
+		{{Content: "all good"}, {Done: true}},
+		{{Content: "all good"}, {Done: true}},
+	}}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, func(a *slackadapter.Adapter) {
+		a.Roster = roster
+	})
+
+	awaitAgentReply(t, srv, fake, "600.000")
+
+	branded := 0
+	for _, u := range usernamesOf(fake.pathCalls("chat.postMessage")) {
+		if u != "" {
+			branded++
+		}
+	}
+	require.Positive(t, branded, "the first post attempts branding")
+	var delivered bool
+	for _, c := range fake.pathCalls("chat.postMessage") {
+		text, _ := c.params["text"].(string)
+		u, _ := c.params["username"].(string)
+		if strings.Contains(text, "all good") && u == "" {
+			delivered = true
+		}
+	}
+	require.True(t, delivered, "the reply arrives under the app identity")
+
+	// Second turn: the latched downgrade skips the branded attempt entirely.
+	sendEvent(t, srv, dmEvent("U1", "status?", "601.000"))
+	require.Eventually(t, func() bool {
+		n := 0
+		for _, c := range fake.pathCalls("chat.postMessage") {
+			if text, _ := c.params["text"].(string); strings.Contains(text, "all good") {
+				n++
+			}
+		}
+		return n >= 2
+	}, 2*time.Second, 20*time.Millisecond, "the second reply arrives too")
+	after := 0
+	for _, u := range usernamesOf(fake.pathCalls("chat.postMessage")) {
+		if u != "" {
+			after++
+		}
+	}
+	require.Equal(t, branded, after, "no further branded attempts after the downgrade latched")
+}
+
+// The display name is sanitized on its way to the username param: a multi-line
+// annotation is legal Kubernetes, but control characters must cost the label's
+// shape, never the post carrying it.
+func TestBranding_DisplayNameIsSanitized(t *testing.T) {
+	fake := newFakeSlackAPI()
+	roster := &fakeRoster{agents: []pkga2a.AgentInfo{
+		{Name: "test-agent", DisplayName: "SRE\nAssistant\x07 (on-call)"},
+	}}
+	_, srv := newEventsAdapter(t, replyGateway(), fake.server(t).URL, func(a *slackadapter.Adapter) {
+		a.Roster = roster
+	})
+
+	awaitAgentReply(t, srv, fake, "602.000")
+
+	require.Contains(t, usernamesOf(fake.pathCalls("chat.postMessage")), "SRE Assistant (on-call)",
+		"control characters become spaces and runs collapse")
+}
+
 // A roster failure costs the nice name, never the reply — and it is remembered,
 // so a later turn falls straight through instead of paying the timeout again.
 func TestBranding_RosterFailureDeliversReplyAndIsNotRetried(t *testing.T) {
