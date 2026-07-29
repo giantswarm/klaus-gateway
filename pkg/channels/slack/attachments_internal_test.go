@@ -54,6 +54,33 @@ func TestToInboundMessage_PrefersDownloadURL(t *testing.T) {
 	require.Equal(t, "https://files.slack.com/download", msg.Attachments[0].SourceURL)
 }
 
+// A message with an upload arrives with subtype file_share; it is a human
+// message and must route, unlike every other subtype — even one carrying files.
+func TestToInboundMessage_FileShareSubtypeRoutes(t *testing.T) {
+	event := slackInnerEvent{
+		Type:     evtMessage,
+		SubType:  subtypeFileShare,
+		User:     "U1",
+		Channel:  "C1",
+		TS:       "2.2",
+		ThreadTS: "1.1",
+		Files: []slackFile{{
+			Name:       "diagram.png",
+			Mimetype:   "image/png",
+			URLPrivate: "https://files.slack.com/diagram.png",
+			Size:       4096,
+		}},
+	}
+	msg, ok := event.toInboundMessage(true)
+	require.True(t, ok, "a file_share thread reply must become a turn")
+	require.Len(t, msg.Attachments, 1)
+	require.Equal(t, "diagram.png", msg.Attachments[0].Filename)
+
+	event.SubType = "message_changed"
+	_, ok = event.toInboundMessage(true)
+	require.False(t, ok, "other subtypes stay rejected even when they carry files")
+}
+
 func TestToInboundMessage_EmptyAndNoFilesDropped(t *testing.T) {
 	event := slackInnerEvent{Type: evtAppMention, User: "U1", Channel: "C1", TS: "1.2"}
 	_, ok := event.toInboundMessage(false)
