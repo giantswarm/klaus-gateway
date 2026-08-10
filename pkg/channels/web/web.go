@@ -187,7 +187,7 @@ func (a *Adapter) postMessages(w http.ResponseWriter, r *http.Request) {
 		if _, err := io.WriteString(w, "data: "); err != nil {
 			return
 		}
-		if err := enc.Encode(map[string]string{"content": d.Content}); err != nil {
+		if err := enc.Encode(map[string]string{"content": d.StreamText()}); err != nil {
 			return
 		}
 		// enc.Encode writes a trailing newline; SSE needs the blank line after.

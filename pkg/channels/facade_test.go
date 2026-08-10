@@ -196,6 +196,79 @@ func TestFacade_SendCompletionViaA2A_ArtifactEvents(t *testing.T) {
 	require.True(t, done)
 }
 
+// kagentPart builds a kagent function_call/function_response DataPart the way
+// the wire format spells it.
+func kagentPart(kagentType, name, id string) *a2apkg.Part {
+	p := a2apkg.NewDataPart(map[string]any{"name": name, "id": id})
+	p.Metadata = map[string]any{"kagent_type": kagentType}
+	return p
+}
+
+// The issue's turn: three rounds of "narrate, then call tools", then the final
+// answer, which kagent sends twice — as a text-only working event and as the
+// artifact. Every narration must arrive exactly once, and the answer must not be
+// duplicated (klaus-gateway#197).
+func TestFacade_SendCompletionViaA2A_NarrationDeliveredOnceWithFinalAnswer(t *testing.T) {
+	execCtx := &a2asrv.ExecutorContext{
+		ContextID: "ctx",
+		TaskID:    a2apkg.NewTaskID(),
+		Message:   a2apkg.NewMessage(a2apkg.MessageRoleUser, a2apkg.NewTextPart("compare both clusters")),
+	}
+	const (
+		narration1 = "Let me pull the HelmRelease from both clusters simultaneously."
+		narration2 = "Both HelmReleases share the same chart version — the differences will be in the ConfigMaps."
+		answer     = "Here is the focused diff on the klausGateway section:"
+	)
+	working := func(parts ...*a2apkg.Part) a2apkg.Event {
+		msg := a2apkg.NewMessage(a2apkg.MessageRoleAgent, parts...)
+		return a2apkg.NewStatusUpdateEvent(execCtx, a2apkg.TaskStateWorking, msg)
+	}
+	call := func(id string) *a2apkg.Part { return kagentPart("function_call", "kubectl_get", id) }
+	resp := func(id string) *a2apkg.Part { return kagentPart("function_response", "kubectl_get", id) }
+
+	exec := &fakeChannelExecutor{events: []a2apkg.Event{
+		// kagent echoes the user's own message back as the submitted event.
+		a2apkg.NewStatusUpdateEvent(execCtx, a2apkg.TaskStateSubmitted, execCtx.Message),
+		working(a2apkg.NewTextPart(narration1), call("c1"), call("c2")),
+		working(resp("c1"), resp("c2")),
+		working(a2apkg.NewTextPart(narration2), call("c3")),
+		working(resp("c3")),
+		working(a2apkg.NewTextPart(answer)), // the mirror of the final answer
+		a2apkg.NewArtifactEvent(execCtx, a2apkg.NewTextPart(answer)),
+		a2apkg.NewStatusUpdateEvent(execCtx, a2apkg.TaskStateCompleted, nil),
+	}}
+	f := &channels.Facade{Executor: exec}
+
+	ch, err := f.SendCompletion(t.Context(), channels.InstanceRef{}, channels.InboundMessage{
+		Channel:  "slack",
+		AgentRef: "worker",
+		Text:     "compare both clusters",
+	})
+	require.NoError(t, err)
+
+	var narrations, texts []string
+	var tools int
+	var done bool
+	for d := range ch {
+		require.NoError(t, d.Err)
+		switch {
+		case d.Done:
+			done = true
+		case d.Kind == channels.DeltaNarration:
+			narrations = append(narrations, d.Content)
+		case d.Kind == channels.DeltaToolActivity:
+			tools++
+		case d.Content != "":
+			texts = append(texts, d.Content)
+		}
+	}
+
+	require.True(t, done)
+	require.Equal(t, []string{narration1, narration2}, narrations)
+	require.Equal(t, []string{answer}, texts, "the answer arrives once, from the artifact")
+	require.Equal(t, 6, tools)
+}
+
 func TestFacade_SendCompletionViaA2A_ForwardsBearerToken(t *testing.T) {
 	terminal := a2apkg.NewStatusUpdateEvent(&a2asrv.ExecutorContext{
 		ContextID: "ctx",

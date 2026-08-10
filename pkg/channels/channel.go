@@ -90,6 +90,7 @@ const (
 	DeltaText         DeltaKind = iota // regular assistant text
 	DeltaPrompt                        // agent is waiting for user input (input-required / auth-required)
 	DeltaToolActivity                  // agent invoked or received a tool result
+	DeltaNarration                     // interim prose the agent wrote before firing its tool calls
 )
 
 // TurnUsage holds the token counts reported for a turn, in provider-neutral
@@ -144,6 +145,17 @@ type OutboundDelta struct {
 	// Tool is populated on DeltaToolActivity deltas with the tool call or result;
 	// nil otherwise.
 	Tool *ToolActivity
+}
+
+// StreamText is the delta's content as a plain-text stream renders it. Adapters
+// that concatenate every chunk into one reply (web, cli) have no side-message
+// concept, so narration is closed with a paragraph break instead of running into
+// the answer that follows it.
+func (d OutboundDelta) StreamText() string {
+	if d.Kind == DeltaNarration && d.Content != "" {
+		return d.Content + "\n\n"
+	}
+	return d.Content
 }
 
 // isZero reports whether the delta carries no channel-visible payload. Used

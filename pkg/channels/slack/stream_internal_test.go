@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path"
 	"strconv"
 	"strings"
 	"sync"
@@ -261,10 +262,10 @@ func TestLookupUserEmail_RetriesOnceOnRateLimit(t *testing.T) {
 }
 
 // An auto-approved read-only prompt resumes the turn in place by calling run()
-// again on the same writer. run() defers drainToolPosts, so draining must be
+// again on the same writer. run() defers drainThreadPosts, so draining must be
 // idempotent and re-init the queue for the resumed segment; otherwise the
 // second drain re-closes a closed channel and panics the whole process.
-func TestDrainToolPosts_IdempotentAcrossRunCycles(t *testing.T) {
+func TestDrainThreadPosts_IdempotentAcrossRunCycles(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprint(w, `{"ok":true,"ts":"1.2"}`)
@@ -275,18 +276,21 @@ func TestDrainToolPosts_IdempotentAcrossRunCycles(t *testing.T) {
 	w := newBatchedWriterWithClient(client, "C1", "1.1", "1.0", detailsOn, slog.Default())
 
 	// First segment queued tool activity and drained (as run()'s defer does).
-	w.enqueueToolPost(t.Context(), "tool one")
-	require.NotPanics(t, w.drainToolPosts)
+	w.enqueueThreadPost(t.Context(), threadPost{md: "tool one"})
+	require.NotPanics(t, w.drainThreadPosts)
 
 	// Resumed segment over the same writer: a fresh poster starts and drains
-	// without re-closing the first segment's queue.
+	// without re-closing the first segment's queue. Narration shares the queue and
+	// carries its per-turn count across cycles.
 	require.NotPanics(t, func() {
-		w.enqueueToolPost(t.Context(), "tool two")
-		w.drainToolPosts()
+		w.enqueueThreadPost(t.Context(), threadPost{md: "tool two"})
+		w.renderNarration(t.Context(), "and now the second step")
+		w.drainThreadPosts()
 	})
+	require.Equal(t, 1, w.narrationsRendered)
 
 	// Draining with nothing queued stays a no-op.
-	require.NotPanics(t, w.drainToolPosts)
+	require.NotPanics(t, w.drainThreadPosts)
 }
 
 // Agent-rendered text entering an mrkdwn section block must be escaped so
@@ -1041,12 +1045,21 @@ func TestSpaceStructuralJSON(t *testing.T) {
 	require.Equal(t, `{"k": "a\"b,c"}`, spaceStructuralJSON([]byte(`{"k":"a\"b,c"}`)))
 }
 
-// captureToolPostBlocks drives run() over deltas (plus a terminal Done) against a
-// fake Slack server and returns the raw markdown of each posted block, in order.
-func captureToolPostBlocks(t *testing.T, details detailsLevel, deltas ...channels.OutboundDelta) []string {
+// capturedPost is one Slack write recorded by capturePosts: the API method and
+// the markdown of its first block.
+type capturedPost struct {
+	method string
+	md     string
+}
+
+// capturePosts drives run() over deltas (plus a terminal Done) against a fake
+// Slack server and returns each write in order, together with the writer. headTS
+// empty is reactions mode, where the main reply is posted lazily on the first
+// flush; a non-empty headTS is text mode, where it is updated in place.
+func capturePosts(t *testing.T, details detailsLevel, headTS string, deltas ...channels.OutboundDelta) ([]capturedPost, *batchedWriter) {
 	t.Helper()
 	var mu sync.Mutex
-	var got []string
+	var got []capturedPost
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Blocks []struct {
@@ -1056,7 +1069,7 @@ func captureToolPostBlocks(t *testing.T, details detailsLevel, deltas ...channel
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		if len(body.Blocks) > 0 {
 			mu.Lock()
-			got = append(got, body.Blocks[0].Text)
+			got = append(got, capturedPost{method: path.Base(r.URL.Path), md: body.Blocks[0].Text})
 			mu.Unlock()
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -1065,7 +1078,7 @@ func captureToolPostBlocks(t *testing.T, details detailsLevel, deltas ...channel
 	t.Cleanup(srv.Close)
 
 	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
-	w := newBatchedWriterWithClient(client, "C1", "1.1", "1.0", details, slog.Default())
+	w := newBatchedWriterWithClient(client, "C1", headTS, "1.0", details, slog.Default())
 	ch := make(chan channels.OutboundDelta, len(deltas)+1)
 	for _, d := range deltas {
 		ch <- d
@@ -1076,7 +1089,238 @@ func captureToolPostBlocks(t *testing.T, details detailsLevel, deltas ...channel
 
 	mu.Lock()
 	defer mu.Unlock()
-	return append([]string(nil), got...)
+	return append([]capturedPost(nil), got...), w
+}
+
+// captureToolPostBlocks returns just the markdown of each write, in text mode.
+func captureToolPostBlocks(t *testing.T, details detailsLevel, deltas ...channels.OutboundDelta) []string {
+	t.Helper()
+	posts, _ := capturePosts(t, details, "1.1", deltas...)
+	md := make([]string, 0, len(posts))
+	for _, p := range posts {
+		md = append(md, p.md)
+	}
+	return md
+}
+
+func narrationDelta(text string) channels.OutboundDelta {
+	return channels.OutboundDelta{Kind: channels.DeltaNarration, Content: text}
+}
+
+func toolCallDelta(name string) channels.OutboundDelta {
+	return channels.OutboundDelta{
+		Kind: channels.DeltaToolActivity,
+		Tool: &channels.ToolActivity{Kind: channels.ToolCall, Name: name},
+	}
+}
+
+// The agent's narration reads in order with the tool posts it introduces, and the
+// answer still lands last (klaus-gateway#197).
+func TestRenderNarration_PostsOwnMessageBeforeToolPostsAndAnswer(t *testing.T) {
+	posts, w := capturePosts(t, detailsOn, "",
+		narrationDelta("Let me pull the HelmRelease from both clusters."),
+		toolCallDelta("x_kubernetes_get"),
+		toolCallDelta("x_kubernetes_get"),
+		narrationDelta("Both share the same chart version."),
+		toolCallDelta("x_kubernetes_get"),
+		channels.OutboundDelta{Kind: channels.DeltaText, Content: "here is the diff"},
+	)
+
+	require.Len(t, posts, 6)
+	for _, p := range posts {
+		require.Equal(t, "chat.postMessage", p.method, "reactions mode posts every message, including the reply")
+	}
+	require.Equal(t, "Let me pull the HelmRelease from both clusters.", posts[0].md)
+	require.Contains(t, posts[1].md, "🔧 *`x_kubernetes_get`*")
+	require.Contains(t, posts[2].md, "🔧 *`x_kubernetes_get`*")
+	require.Equal(t, "Both share the same chart version.", posts[3].md)
+	require.Contains(t, posts[4].md, "🔧 *`x_kubernetes_get`*")
+	require.Equal(t, "here is the diff", posts[5].md, "the answer is the turn's last message")
+	require.True(t, w.wroteContent())
+}
+
+// Narration is the agent talking, not tool transparency, so /details off mutes
+// the tool post and keeps the prose.
+func TestRenderNarration_ShownWithDetailsOff(t *testing.T) {
+	posts, _ := capturePosts(t, detailsOff, "",
+		narrationDelta("Let me look that up."),
+		toolCallDelta("x_kubernetes_get"),
+	)
+
+	require.Len(t, posts, 1)
+	require.Equal(t, "Let me look that up.", posts[0].md)
+}
+
+// Narration must stay out of the main reply buffer: the reply is posted lazily on
+// the first flush, and seeding it early would put the answer above the narration
+// and tool posts it followed. It also must not count as delivered content, or a
+// turn that only narrated would leave its "thinking" placeholder in place.
+func TestRenderNarration_DoesNotTouchMainReply(t *testing.T) {
+	posts, w := capturePosts(t, detailsOn, "", narrationDelta("Let me look that up."))
+
+	require.Len(t, posts, 1)
+	require.Empty(t, w.ts, "no main reply was posted")
+	require.False(t, w.wroteContent())
+}
+
+// Dropping the agent's prose without saying so is the bug this rendering fixes,
+// so the per-turn cap ends in a visible note.
+func TestRenderNarration_CapsWithOneNote(t *testing.T) {
+	deltas := make([]channels.OutboundDelta, 0, maxNarrationMessages+5)
+	for i := range maxNarrationMessages + 5 {
+		deltas = append(deltas, narrationDelta(fmt.Sprintf("step %d", i)))
+	}
+	deltas = append(deltas, toolCallDelta("x_kubernetes_get"))
+	posts, _ := capturePosts(t, detailsOn, "", deltas...)
+
+	require.Len(t, posts, maxNarrationMessages+2, "capped narration, its note, and the tool post")
+	require.Equal(t, narrationLimitNote, posts[maxNarrationMessages].md)
+	require.Contains(t, posts[maxNarrationMessages+1].md, "🔧 *`x_kubernetes_get`*", "tool activity keeps its own budget")
+}
+
+// Slack rejects a markdown block over slackMarkdownBlockMax outright, so an
+// outsized narration must be split rather than dropped.
+func TestRenderNarration_SplitsOversizedNarration(t *testing.T) {
+	long := strings.Repeat("plan step. ", slackMarkdownBlockMax/5) // ~2.4x the block cap
+	posts, _ := capturePosts(t, detailsOn, "", narrationDelta(long))
+
+	require.Len(t, posts, 3)
+	var joined strings.Builder
+	for _, p := range posts {
+		require.LessOrEqual(t, len(p.md), slackMarkdownBlockMax)
+		joined.WriteString(p.md)
+	}
+	require.Equal(t, len(strings.TrimSpace(long)), len(strings.TrimSpace(joined.String())), "no prose is dropped")
+}
+
+// Chunks share the per-turn budget, so one enormous narration cannot flood the
+// thread and still ends in the visible note.
+func TestRenderNarration_SplitChunksShareTheBudget(t *testing.T) {
+	long := strings.Repeat("plan step. ", slackMarkdownBlockMax) // far past the cap
+	posts, _ := capturePosts(t, detailsOn, "", narrationDelta(long))
+
+	require.Len(t, posts, maxNarrationMessages+1)
+	require.Equal(t, narrationLimitNote, posts[maxNarrationMessages].md)
+}
+
+// A single-use login link must not be duplicated next to the Connect button, in
+// narration any more than in the main reply. Narration that is nothing but the
+// link posts nothing and keeps its budget.
+func TestRenderNarration_ScrubsLoginURL(t *testing.T) {
+	const loginURL = "https://auth.example/authorize?client_id=x"
+	var posted []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Blocks []struct {
+				Text string `json:"text"`
+			} `json:"blocks"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if len(body.Blocks) > 0 {
+			posted = append(posted, body.Blocks[0].Text)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"ok":true,"ts":"1"}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "C1", "", "1.0", detailsOn, slog.Default())
+	w.loginURLs = []string{loginURL}
+	w.renderNarration(t.Context(), loginURL)
+	w.renderNarration(t.Context(), "Sign in here:\n"+loginURL+"\nThen tell me once you are done.")
+	w.drainThreadPosts()
+
+	require.Equal(t, 1, w.narrationsRendered, "a link-only narration keeps its budget")
+	require.Len(t, posted, 1)
+	require.NotContains(t, posted[0], "auth.example")
+	require.NotContains(t, posted[0], "Sign in here:")
+	require.Contains(t, posted[0], "Then tell me once you are done.")
+}
+
+// The retract exists for sign-in prose the Connect button contradicts. Narration
+// from before the challenge explains tool posts that stay, so only what follows
+// the challenge is marked for retraction.
+func TestRenderNarration_OnlyPostChallengeNarrationIsRetractable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"ok":true,"ts":"1"}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "C1", "", "1.0", detailsOn, slog.Default())
+	w.renderNarration(t.Context(), "Let me pull the HelmRelease from both clusters.")
+	w.loginURLs = append(w.loginURLs, "https://auth.example/authorize?x=1") // challenge seen
+	w.renderNarration(t.Context(), "You need to sign in before I can continue.")
+	w.drainThreadPosts()
+
+	require.Len(t, w.narrationTS, 1, "only the sign-in narration is retractable")
+}
+
+// Narration that followed the challenge is the same sign-in prose the retract
+// exists for, so it goes with the reply when the button takes the turn over.
+func TestRetractRendered_DeletesNarrationPosts(t *testing.T) {
+	var deleted []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "chat.delete") {
+			var body struct {
+				TS string `json:"ts"`
+			}
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			deleted = append(deleted, body.TS)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	w := newBatchedWriterWithClient(&slackAPIClient{baseURL: srv.URL}, "C1", "head-ts", "T1", detailsOff, nil)
+	w.tailTS = []string{"tail-1"}
+	w.narrationTS = []string{"narr-1", "narr-2"}
+
+	w.retractRendered(t.Context())
+
+	require.ElementsMatch(t, []string{"head-ts", "tail-1", "narr-1", "narr-2"}, deleted)
+	require.Empty(t, w.narrationTS)
+}
+
+// The queued in-thread posts all precede the reply, so the terminal flush drains
+// the poster before posting it — otherwise a slow Slack API leaves the answer
+// above the narration that led to it.
+func TestFinalFlush_DrainsThreadPostsBeforeReply(t *testing.T) {
+	var mu sync.Mutex
+	var posted []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Blocks []struct {
+				Text string `json:"text"`
+			} `json:"blocks"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if len(body.Blocks) > 0 && strings.HasPrefix(body.Blocks[0].Text, "slow") {
+			time.Sleep(100 * time.Millisecond)
+		}
+		mu.Lock()
+		if len(body.Blocks) > 0 {
+			posted = append(posted, body.Blocks[0].Text)
+		}
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"ok":true,"ts":"1"}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
+	w := newBatchedWriterWithClient(client, "C1", "", "1.0", detailsOn, slog.Default())
+	ch := make(chan channels.OutboundDelta, 3)
+	ch <- narrationDelta("slow narration")
+	ch <- channels.OutboundDelta{Kind: channels.DeltaText, Content: "the answer"}
+	ch <- channels.OutboundDelta{Done: true}
+	close(ch)
+	require.NoError(t, w.run(t.Context(), ch))
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, []string{"slow narration", "the answer"}, posted)
 }
 
 func TestRenderToolActivity_UnwrapsCallTool(t *testing.T) {
