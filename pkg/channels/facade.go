@@ -295,9 +295,12 @@ func textDelta(parts a2apkg.ContentParts) []OutboundDelta {
 // kagent's other text-bearing working events — the text-only mirror of the final
 // answer (rendered from the artifact, so this would duplicate it), the echo of
 // the user's own message, and partial streaming chunks. It also keeps narration
-// off function_response messages, whose tool payload is what teaches the writer
-// which login URLs to scrub. A message also asking for confirmation is left to
-// the input-required path, which renders the same text as the prompt body.
+// off function_response messages, whose payload records the login URLs a channel
+// scrubs out of prose: narration is emitted first, so a message mixing a call
+// with a response would post an unscrubbed link. Only ADK emitting tool results
+// as their own data-only events rules that shape out — preserve the exclusion if
+// widening this gate. A message also asking for confirmation is left to the
+// input-required path, which renders the same text as the prompt body.
 func narrationDeltas(ev *a2apkg.TaskStatusUpdateEvent, parts a2apkg.ContentParts) []OutboundDelta {
 	if !hasFunctionCallPart(parts) || isPartialStatusUpdate(ev) || hasConfirmationPart(parts) {
 		return nil
