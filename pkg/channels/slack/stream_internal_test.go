@@ -1178,6 +1178,31 @@ func TestRenderNarration_CapsWithOneNote(t *testing.T) {
 	require.Contains(t, posts[maxNarrationMessages+1].md, "🔧 *`x_kubernetes_get`*", "tool activity keeps its own budget")
 }
 
+// Slack rejects a markdown block over slackMarkdownBlockMax outright, so an
+// outsized narration must be split rather than dropped.
+func TestRenderNarration_SplitsOversizedNarration(t *testing.T) {
+	long := strings.Repeat("plan step. ", slackMarkdownBlockMax/5) // ~2.4x the block cap
+	posts, _ := capturePosts(t, detailsOn, "", narrationDelta(long))
+
+	require.Len(t, posts, 3)
+	var joined strings.Builder
+	for _, p := range posts {
+		require.LessOrEqual(t, len(p.md), slackMarkdownBlockMax)
+		joined.WriteString(p.md)
+	}
+	require.Equal(t, len(strings.TrimSpace(long)), len(strings.TrimSpace(joined.String())), "no prose is dropped")
+}
+
+// Chunks share the per-turn budget, so one enormous narration cannot flood the
+// thread and still ends in the visible note.
+func TestRenderNarration_SplitChunksShareTheBudget(t *testing.T) {
+	long := strings.Repeat("plan step. ", slackMarkdownBlockMax) // far past the cap
+	posts, _ := capturePosts(t, detailsOn, "", narrationDelta(long))
+
+	require.Len(t, posts, maxNarrationMessages+1)
+	require.Equal(t, narrationLimitNote, posts[maxNarrationMessages].md)
+}
+
 // A single-use login link must not be duplicated next to the Connect button, in
 // narration any more than in the main reply. Narration that is nothing but the
 // link posts nothing and keeps its budget.
@@ -1212,8 +1237,27 @@ func TestRenderNarration_ScrubsLoginURL(t *testing.T) {
 	require.Contains(t, posted[0], "Then tell me once you are done.")
 }
 
-// Narration is the same sign-in prose the retract exists for, so it goes with the
-// reply when an auto-resuming Connect button takes the turn over.
+// The retract exists for sign-in prose the Connect button contradicts. Narration
+// from before the challenge explains tool posts that stay, so only what follows
+// the challenge is marked for retraction.
+func TestRenderNarration_OnlyPostChallengeNarrationIsRetractable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"ok":true,"ts":"1"}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "C1", "", "1.0", detailsOn, slog.Default())
+	w.renderNarration(t.Context(), "Let me pull the HelmRelease from both clusters.")
+	w.loginURLs = append(w.loginURLs, "https://auth.example/authorize?x=1") // challenge seen
+	w.renderNarration(t.Context(), "You need to sign in before I can continue.")
+	w.drainThreadPosts()
+
+	require.Len(t, w.narrationTS, 1, "only the sign-in narration is retractable")
+}
+
+// Narration that followed the challenge is the same sign-in prose the retract
+// exists for, so it goes with the reply when the button takes the turn over.
 func TestRetractRendered_DeletesNarrationPosts(t *testing.T) {
 	var deleted []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

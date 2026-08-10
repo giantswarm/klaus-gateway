@@ -147,6 +147,17 @@ type OutboundDelta struct {
 	Tool *ToolActivity
 }
 
+// StreamText is the delta's content as a plain-text stream renders it. Adapters
+// that concatenate every chunk into one reply (web, cli) have no side-message
+// concept, so narration is closed with a paragraph break instead of running into
+// the answer that follows it.
+func (d OutboundDelta) StreamText() string {
+	if d.Kind == DeltaNarration && d.Content != "" {
+		return d.Content + "\n\n"
+	}
+	return d.Content
+}
+
 // isZero reports whether the delta carries no channel-visible payload. Used
 // instead of `delta == OutboundDelta{}` because the struct embeds an error
 // interface, and == panics when the concrete error type is not comparable.

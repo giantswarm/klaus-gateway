@@ -129,9 +129,9 @@ type batchedWriter struct {
 	// tailTS holds the timestamps of overflow messages posted when the reply
 	// outgrows a single Slack message. Only touched from run()'s goroutine.
 	tailTS []string
-	// narrationTS holds the timestamps of the narration messages posted this
-	// turn, so a connector prompt taking over the turn can retract them with the
-	// reply. Written by the poster goroutine.
+	// narrationTS holds the timestamps of the narration posted after a login
+	// challenge this turn, so a connector prompt taking over can retract that
+	// sign-in prose with the reply. Written by the poster goroutine.
 	narrationTS []string
 }
 
@@ -352,19 +352,29 @@ func (w *batchedWriter) renderToolActivity(ctx context.Context, tool *channels.T
 // details level: this is the agent talking, not tool transparency. It stays out
 // of the main reply buffer, which is posted lazily on the first flush, so the
 // answer keeps landing after the narration that led to it.
+//
+// Narration is unbounded agent prose, so it is split like the main reply: Slack
+// rejects a whole post whose markdown block exceeds slackMarkdownBlockMax, which
+// would drop the text this rendering exists to deliver. Chunks share the
+// per-turn budget, so an outsized narration ends in the same limit note.
 func (w *batchedWriter) renderNarration(ctx context.Context, text string) {
-	md := strings.TrimSpace(w.scrubLoginURLs(text))
-	if md == "" {
+	scrubbed := strings.TrimSpace(w.scrubLoginURLs(text))
+	if scrubbed == "" {
 		return
 	}
-	w.narrationsRendered++
-	switch {
-	case w.narrationsRendered > maxNarrationMessages+1:
-		return // already queued the truncation note
-	case w.narrationsRendered == maxNarrationMessages+1:
-		md = narrationLimitNote
+	for _, md := range splitMarkdown(scrubbed, slackMarkdownBlockMax) {
+		w.narrationsRendered++
+		switch {
+		case w.narrationsRendered > maxNarrationMessages+1:
+			return // already queued the truncation note
+		case w.narrationsRendered == maxNarrationMessages+1:
+			md = narrationLimitNote
+		}
+		// Only narration from the point a login challenge was seen is sign-in prose
+		// the Connect button contradicts; earlier narration explains tool posts that
+		// stay, so it is kept when the prompt takes the turn over.
+		w.enqueueThreadPost(ctx, threadPost{md: md, retract: len(w.loginURLs) > 0})
 	}
-	w.enqueueThreadPost(ctx, threadPost{md: md, retract: true})
 }
 
 var (
@@ -778,9 +788,11 @@ func (w *batchedWriter) connectorReplyRetractable() bool {
 }
 
 // retractRendered deletes the streamed agent messages (head, any overflow
-// tails, and the narration posts), leaving the thread to the connector prompt
-// alone. Tool activity stays: it is a transparency record, not sign-in prose the
-// button contradicts. Best-effort: a delete failure is logged, not propagated.
+// tails, and the narration that followed the login challenge), leaving the
+// thread to the connector prompt alone. Tool activity stays: it is a
+// transparency record, not sign-in prose the button contradicts, and so does the
+// narration that explains it from before the challenge. Best-effort: a delete
+// failure is logged, not propagated.
 // The run loop has finished and drained the poster, so narrationTS is complete;
 // it is still read under the lock because the poster wrote it.
 func (w *batchedWriter) retractRendered(ctx context.Context) {

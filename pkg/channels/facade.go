@@ -232,7 +232,7 @@ func mapA2AEvent(event a2apkg.Event) []OutboundDelta {
 		return append(textDelta(ev.Artifact.Parts), toolActivityDeltas(ev.Artifact.Parts)...)
 	case *a2apkg.TaskStatusUpdateEvent:
 		var usage *TurnUsage
-		if !isPartialMeta(ev.Metadata) {
+		if !isPartialStatusUpdate(ev) {
 			usage = parseTurnUsage(ev.Metadata)
 			if usage == nil && ev.Status.Message != nil {
 				usage = parseTurnUsage(ev.Status.Message.Metadata)
@@ -269,9 +269,8 @@ func mapA2AEvent(event a2apkg.Event) []OutboundDelta {
 			// tool calls the same message carries, the tool activity itself, and a
 			// usage-only delta when the event reports usage.
 			parts := messageParts(ev.Status.Message)
-			tools := toolActivityDeltas(parts)
-			deltas := narrationDeltas(ev, parts, tools)
-			deltas = append(deltas, tools...)
+			deltas := narrationDeltas(ev, parts)
+			deltas = append(deltas, toolActivityDeltas(parts)...)
 			if usage != nil {
 				deltas = append(deltas, OutboundDelta{Usage: usage})
 			}
@@ -292,14 +291,15 @@ func textDelta(parts a2apkg.ContentParts) []OutboundDelta {
 
 // narrationDeltas returns the agent's interim narration for a working status
 // message: the text it wrote just before the tool calls the same message
-// carries. Requiring tool activity is what separates narration from kagent's
-// other text-bearing working events — the text-only mirror of the final answer
-// (rendered from the artifact, so this would duplicate it), the echo of the
-// user's own message, and partial streaming chunks. A message also asking for
-// confirmation is left to the input-required path, which renders the same text
-// as the prompt body.
-func narrationDeltas(ev *a2apkg.TaskStatusUpdateEvent, parts a2apkg.ContentParts, tools []OutboundDelta) []OutboundDelta {
-	if len(tools) == 0 || isPartialStatusUpdate(ev) || hasConfirmationPart(parts) {
+// carries. Requiring a function_call part is what separates narration from
+// kagent's other text-bearing working events — the text-only mirror of the final
+// answer (rendered from the artifact, so this would duplicate it), the echo of
+// the user's own message, and partial streaming chunks. It also keeps narration
+// off function_response messages, whose tool payload is what teaches the writer
+// which login URLs to scrub. A message also asking for confirmation is left to
+// the input-required path, which renders the same text as the prompt body.
+func narrationDeltas(ev *a2apkg.TaskStatusUpdateEvent, parts a2apkg.ContentParts) []OutboundDelta {
+	if !hasFunctionCallPart(parts) || isPartialStatusUpdate(ev) || hasConfirmationPart(parts) {
 		return nil
 	}
 	text := extractTextFromA2AParts(parts)

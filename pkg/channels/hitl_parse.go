@@ -228,6 +228,19 @@ func hasConfirmationPart(parts a2apkg.ContentParts) bool {
 	return false
 }
 
+// hasFunctionCallPart reports whether any of parts is a function_call DataPart.
+func hasFunctionCallPart(parts a2apkg.ContentParts) bool {
+	for _, p := range parts {
+		if p == nil {
+			continue
+		}
+		if typ, _ := firstString(p.Metadata, mdTypeKagent, mdTypeADK); typ == mdTypeFunctionCall {
+			return true
+		}
+	}
+	return false
+}
+
 // parseAskUserQuestions extracts the questions array from ask_user args.
 func parseAskUserQuestions(args map[string]any) []HitlQuestion {
 	raw, ok := args["questions"].([]any)

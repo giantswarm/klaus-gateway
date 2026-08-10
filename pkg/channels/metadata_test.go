@@ -174,6 +174,45 @@ func TestMapA2AEvent_PartialNarrationSkipped(t *testing.T) {
 	}
 }
 
+// Tool results arrive as their own data-only events, so text beside a
+// function_response is not narration. Keeping it out also keeps narration from
+// being rendered before the same message's tool payload has taught the writer
+// which login URLs to scrub.
+func TestMapA2AEvent_TextBesideToolResultEmitsNoNarration(t *testing.T) {
+	resp := dataPart(t, mdTypeFunctionResponse, map[string]any{
+		"name":     "core_auth_login",
+		"id":       "call-1",
+		"response": map[string]any{"output": "Server: pro\nhttps://auth.example/authorize?x=1"},
+	})
+	ev := &a2apkg.TaskStatusUpdateEvent{
+		Status: a2apkg.TaskStatus{
+			State: a2apkg.TaskStateWorking,
+			Message: a2apkg.NewMessage(a2apkg.MessageRoleAgent,
+				a2apkg.NewTextPart("sign in at https://auth.example/authorize?x=1"), resp),
+		},
+	}
+
+	deltas := mapA2AEvent(ev)
+	require.Len(t, deltas, 1)
+	require.Equal(t, DeltaToolActivity, deltas[0].Kind)
+}
+
+// A partial chunk mirrors the usage of the LLM call it belongs to, wherever
+// kagent stamped the flag; counting it would tally one call several times.
+func TestMapA2AEvent_MessagePartialUsageSkipped(t *testing.T) {
+	for _, key := range []string{mdPartialKagent, mdPartialADK} {
+		t.Run(key, func(t *testing.T) {
+			msg := a2apkg.NewMessage(a2apkg.MessageRoleAgent, a2apkg.NewTextPart("thinking"))
+			msg.Metadata = usageMeta(3, 4, 7)
+			msg.Metadata[key] = true
+			ev := &a2apkg.TaskStatusUpdateEvent{
+				Status: a2apkg.TaskStatus{State: a2apkg.TaskStateWorking, Message: msg},
+			}
+			require.Empty(t, mapA2AEvent(ev), "usage on a partial message must not be counted")
+		})
+	}
+}
+
 // A message asking for confirmation is rendered by the input-required path, which
 // uses the same text as the prompt body; narrating it too would duplicate it.
 func TestMapA2AEvent_ConfirmationBesideToolCallEmitsNoNarration(t *testing.T) {
@@ -198,6 +237,14 @@ func TestOutboundDelta_IsZero(t *testing.T) {
 	require.False(t, OutboundDelta{Usage: &TurnUsage{}}.isZero())
 	require.False(t, OutboundDelta{Kind: DeltaToolActivity, Content: "x"}.isZero())
 	require.False(t, OutboundDelta{Tool: &ToolActivity{Name: "x"}}.isZero())
+}
+
+// An adapter that concatenates chunks into one reply must not glue narration to
+// the answer that follows it.
+func TestOutboundDelta_StreamText(t *testing.T) {
+	require.Equal(t, "let me look\n\n", OutboundDelta{Kind: DeltaNarration, Content: "let me look"}.StreamText())
+	require.Equal(t, "the answer", OutboundDelta{Content: "the answer"}.StreamText())
+	require.Empty(t, OutboundDelta{Kind: DeltaNarration}.StreamText())
 }
 
 // Partial (streaming) events mirror the usage metadata of the LLM call they
