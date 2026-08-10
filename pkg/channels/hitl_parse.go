@@ -217,6 +217,17 @@ func isConfirmationPart(md map[string]any) bool {
 	return lr
 }
 
+// hasConfirmationPart reports whether any of parts is an
+// adk_request_confirmation.
+func hasConfirmationPart(parts a2apkg.ContentParts) bool {
+	for _, p := range parts {
+		if p != nil && isConfirmationPart(p.Metadata) {
+			return true
+		}
+	}
+	return false
+}
+
 // parseAskUserQuestions extracts the questions array from ask_user args.
 func parseAskUserQuestions(args map[string]any) []HitlQuestion {
 	raw, ok := args["questions"].([]any)

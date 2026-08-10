@@ -265,9 +265,13 @@ func mapA2AEvent(event a2apkg.Event) []OutboundDelta {
 				}
 				return []OutboundDelta{{Err: errors.New(msg), Usage: usage}}
 			}
-			// Interim working event: surface any tool activity, and a usage-only
-			// delta when the event reports usage.
-			deltas := toolActivityDeltas(messageParts(ev.Status.Message))
+			// Interim working event: surface the narration the agent wrote for the
+			// tool calls the same message carries, the tool activity itself, and a
+			// usage-only delta when the event reports usage.
+			parts := messageParts(ev.Status.Message)
+			tools := toolActivityDeltas(parts)
+			deltas := narrationDeltas(ev, parts, tools)
+			deltas = append(deltas, tools...)
 			if usage != nil {
 				deltas = append(deltas, OutboundDelta{Usage: usage})
 			}
@@ -284,6 +288,35 @@ func textDelta(parts a2apkg.ContentParts) []OutboundDelta {
 		return []OutboundDelta{{Content: text}}
 	}
 	return nil
+}
+
+// narrationDeltas returns the agent's interim narration for a working status
+// message: the text it wrote just before the tool calls the same message
+// carries. Requiring tool activity is what separates narration from kagent's
+// other text-bearing working events — the text-only mirror of the final answer
+// (rendered from the artifact, so this would duplicate it), the echo of the
+// user's own message, and partial streaming chunks. A message also asking for
+// confirmation is left to the input-required path, which renders the same text
+// as the prompt body.
+func narrationDeltas(ev *a2apkg.TaskStatusUpdateEvent, parts a2apkg.ContentParts, tools []OutboundDelta) []OutboundDelta {
+	if len(tools) == 0 || isPartialStatusUpdate(ev) || hasConfirmationPart(parts) {
+		return nil
+	}
+	text := extractTextFromA2AParts(parts)
+	if text == "" {
+		return nil
+	}
+	return []OutboundDelta{{Kind: DeltaNarration, Content: text}}
+}
+
+// isPartialStatusUpdate reports whether a status update is a streaming chunk.
+// kagent stamps the flag on the event, on its status message, or on both,
+// depending on the emitting runtime.
+func isPartialStatusUpdate(ev *a2apkg.TaskStatusUpdateEvent) bool {
+	if isPartialMeta(ev.Metadata) {
+		return true
+	}
+	return ev.Status.Message != nil && isPartialMeta(ev.Status.Message.Metadata)
 }
 
 // toolActivityDeltas maps each function_call/function_response DataPart to a

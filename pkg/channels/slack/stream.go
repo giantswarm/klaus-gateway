@@ -58,8 +58,10 @@ const (
 // batchedWriter accumulates OutboundDelta content and periodically calls
 // chat.update to stay within Slack's rate limits (~4 updates/sec/channel).
 //
-// Two Slack messages are managed:
-//   - ts (the main reply): accumulates DeltaText content.
+// The main reply (ts) accumulates DeltaText content. Tool activity and the
+// agent's interim narration are posted as their own in-thread messages instead,
+// so they read in the order the agent produced them; the main reply is posted
+// lazily on the first flush and therefore lands last.
 //
 // When the stream ends on a DeltaPrompt, run() captures it in promptDelta
 // (flushing the main buffer first) and returns nil. The caller is responsible
@@ -106,12 +108,17 @@ type batchedWriter struct {
 	// turn does not flood the thread (or hit Slack post rate limits). Only touched
 	// from run()'s goroutine.
 	toolsRendered int
-	// toolPosts carries rendered tool-activity messages to a single poster
-	// goroutine so a slow Slack API does not stall delta draining. Buffered to the
-	// per-turn cap so enqueue never blocks; nil until the first tool post. Drained
-	// before run() returns. toolWorkerDone closes when the poster exits.
-	toolPosts      chan string
-	toolWorkerDone chan struct{}
+	// narrationsRendered counts narration messages posted this turn, capped like
+	// tool activity so a long tool-calling loop does not flood the thread. Only
+	// touched from run()'s goroutine.
+	narrationsRendered int
+	// threadPosts carries rendered in-thread messages (tool activity and
+	// narration) to a single poster goroutine so a slow Slack API does not stall
+	// delta draining. Buffered to the per-turn caps so enqueue never blocks; nil
+	// until the first post. Drained before the main reply lands.
+	// threadPosterDone closes when the poster exits.
+	threadPosts      chan threadPost
+	threadPosterDone chan struct{}
 
 	mu            sync.Mutex
 	buf           strings.Builder
@@ -122,6 +129,18 @@ type batchedWriter struct {
 	// tailTS holds the timestamps of overflow messages posted when the reply
 	// outgrows a single Slack message. Only touched from run()'s goroutine.
 	tailTS []string
+	// narrationTS holds the timestamps of the narration messages posted this
+	// turn, so a connector prompt taking over the turn can retract them with the
+	// reply. Written by the poster goroutine.
+	narrationTS []string
+}
+
+// threadPost is one rendered message posted on its own in-thread rather than
+// into the main reply. retract marks the ones a connector prompt taking over the
+// turn deletes along with the reply.
+type threadPost struct {
+	md      string
+	retract bool
 }
 
 func newBatchedWriterWithClient(client *slackAPIClient, channel, ts, threadTS string, details detailsLevel, logger *slog.Logger) *batchedWriter {
@@ -142,7 +161,7 @@ func newBatchedWriterWithClient(client *slackAPIClient, channel, ts, threadTS st
 func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelta) error {
 	ticker := time.NewTicker(batchInterval)
 	defer ticker.Stop()
-	defer w.drainToolPosts() // flush any buffered tool-activity posts before returning
+	defer w.drainThreadPosts() // backstop for the ctx.Done() exit; finalFlush drains first
 
 	for {
 		select {
@@ -183,6 +202,8 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 			case channels.DeltaToolActivity:
 				w.renderToolActivity(ctx, d.Tool)
 				w.maybeConnectorPrompt(d.Tool)
+			case channels.DeltaNarration:
+				w.renderNarration(ctx, d.Content)
 			case channels.DeltaPrompt:
 				// Flush partial text so far, then hand off to the caller to post
 				// the interactive approval prompt. A flush failure here is
@@ -228,6 +249,10 @@ const maxFlushFailures = 3
 // the turn completed server-side; a short reply that never hits a ticker
 // flush would otherwise be killable by one such error.
 func (w *batchedWriter) finalFlush(ctx context.Context) error {
+	// Every queued in-thread post precedes the reply this flush lands, and in
+	// reactions mode the reply is posted right here, so drain the poster first to
+	// keep the answer the turn's last message.
+	w.drainThreadPosts()
 	var err error
 	for attempt := 1; ; attempt++ {
 		if err = w.flush(ctx); err == nil {
@@ -254,7 +279,15 @@ const (
 	// truncation note is posted and the rest are silent, so a turn with many
 	// tool calls does not flood the thread or hit Slack post rate limits.
 	maxToolMessages = 10
+	// maxNarrationMessages bounds narration posts per turn, on its own budget so
+	// muted tool activity does not buy extra narration. Past it one truncation
+	// note is posted: dropping the agent's prose without saying so is the bug this
+	// rendering fixes.
+	maxNarrationMessages = 10
 )
+
+// narrationLimitNote replaces the narration past the per-turn cap.
+const narrationLimitNote = "_…narration limit reached; hiding this turn's remaining step-by-step notes. The answer still follows._"
 
 // renderToolActivity queues a compact record of a tool call (and, at
 // detailsFull, its result) when details are enabled. Rendered as a fenced code
@@ -310,7 +343,28 @@ func (w *batchedWriter) renderToolActivity(ctx context.Context, tool *channels.T
 		md = "_…tool-activity limit reached; hiding this turn's remaining tool posts. Details are still on: `/details off` mutes them entirely._"
 	}
 
-	w.enqueueToolPost(ctx, md)
+	w.enqueueThreadPost(ctx, threadPost{md: md})
+}
+
+// renderNarration queues the agent's interim narration — the prose it writes
+// just before firing tool calls — as its own in-thread message, so it reads in
+// order with the tool posts it introduces. Unlike tool activity it ignores the
+// details level: this is the agent talking, not tool transparency. It stays out
+// of the main reply buffer, which is posted lazily on the first flush, so the
+// answer keeps landing after the narration that led to it.
+func (w *batchedWriter) renderNarration(ctx context.Context, text string) {
+	md := strings.TrimSpace(w.scrubLoginURLs(text))
+	if md == "" {
+		return
+	}
+	w.narrationsRendered++
+	switch {
+	case w.narrationsRendered > maxNarrationMessages+1:
+		return // already queued the truncation note
+	case w.narrationsRendered == maxNarrationMessages+1:
+		md = narrationLimitNote
+	}
+	w.enqueueThreadPost(ctx, threadPost{md: md, retract: true})
 }
 
 var (
@@ -601,43 +655,53 @@ func validLoginURL(raw string) string {
 	return raw
 }
 
-// enqueueToolPost buffers a rendered tool-activity message for the poster,
+// threadPostQueueSize buffers a whole turn's in-thread posts: both producers cap
+// themselves before enqueueing, so the send never blocks the delta loop.
+const threadPostQueueSize = maxToolMessages + maxNarrationMessages + 2
+
+// enqueueThreadPost buffers a rendered in-thread message for the poster,
 // starting it on first use. Called only from run()'s goroutine, so the lazy
-// init is race-free. The buffer is sized to the per-turn cap, so the send never
-// blocks the delta loop.
-func (w *batchedWriter) enqueueToolPost(ctx context.Context, md string) {
-	if w.toolPosts == nil {
-		w.toolPosts = make(chan string, maxToolMessages+1)
-		w.toolWorkerDone = make(chan struct{})
-		go w.toolPoster(ctx)
+// init is race-free.
+func (w *batchedWriter) enqueueThreadPost(ctx context.Context, p threadPost) {
+	if w.threadPosts == nil {
+		w.threadPosts = make(chan threadPost, threadPostQueueSize)
+		w.threadPosterDone = make(chan struct{})
+		go w.threadPoster(ctx)
 	}
-	w.toolPosts <- md
+	w.threadPosts <- p
 }
 
-// toolPoster posts queued tool-activity messages in order. Best-effort: a post
+// threadPoster posts queued in-thread messages in order. Best-effort: a post
 // failure (including a cancelled ctx) is logged and never aborts the turn.
-func (w *batchedWriter) toolPoster(ctx context.Context) {
-	defer close(w.toolWorkerDone)
-	for md := range w.toolPosts {
-		if _, err := w.client.postMarkdown(ctx, w.channel, md, w.threadTS); err != nil {
-			w.logger.Warn("slack: post tool activity failed", "error", err)
+func (w *batchedWriter) threadPoster(ctx context.Context) {
+	defer close(w.threadPosterDone)
+	for p := range w.threadPosts {
+		ts, err := w.client.postMarkdown(ctx, w.channel, p.md, w.threadTS)
+		if err != nil {
+			w.logger.Warn("slack: post in-thread message failed", "error", err)
+			continue
+		}
+		if p.retract {
+			w.mu.Lock()
+			w.narrationTS = append(w.narrationTS, ts)
+			w.mu.Unlock()
 		}
 	}
 }
 
-// drainToolPosts closes the queue and waits for the poster to finish, so all
-// tool activity is flushed before the turn is considered done. No-op when no
-// tool activity was queued. Idempotent: it clears the queue so a subsequent
-// run() over the same writer (an auto-approved resume segment) starts a fresh
-// poster instead of re-closing a closed channel.
-func (w *batchedWriter) drainToolPosts() {
-	if w.toolPosts == nil {
+// drainThreadPosts closes the queue and waits for the poster to finish, so every
+// in-thread post lands before the main reply. No-op when nothing was queued.
+// Idempotent: it clears the queue so a subsequent run() over the same writer (an
+// auto-approved resume segment) starts a fresh poster instead of re-closing a
+// closed channel.
+func (w *batchedWriter) drainThreadPosts() {
+	if w.threadPosts == nil {
 		return
 	}
-	close(w.toolPosts)
-	<-w.toolWorkerDone
-	w.toolPosts = nil
-	w.toolWorkerDone = nil
+	close(w.threadPosts)
+	<-w.threadPosterDone
+	w.threadPosts = nil
+	w.threadPosterDone = nil
 }
 
 // compactJSON marshals a tool payload to a single readable line: one space after
@@ -689,8 +753,11 @@ func spaceStructuralJSON(b []byte) string {
 	return out.String()
 }
 
-// wroteContent reports whether any agent text has reached Slack. Used after the
-// run loop to decide whether the failure note may overwrite the placeholder.
+// wroteContent reports whether the head message carries agent text. Used after
+// the run loop to decide whether a terminal note may overwrite the placeholder,
+// so narration and tool activity deliberately do not count: they are separate
+// messages, and a turn that only narrated must still have its "thinking"
+// placeholder replaced by the note.
 // flushedLen only advances once every chunk of a flush lands, so a multi-chunk
 // flush whose head updated the placeholder but whose tail failed leaves it 0;
 // wroteAny captures the head landing so that partial delivery still counts.
@@ -710,11 +777,22 @@ func (w *batchedWriter) connectorReplyRetractable() bool {
 	return len(w.loginURLs) > 0 && !w.connectorManualSignIn
 }
 
-// retractRendered deletes the streamed agent messages (head and any overflow
-// tails), leaving the thread to the connector prompt alone. Best-effort: a
-// delete failure is logged, not propagated. The run loop has finished, so no
-// concurrent flush touches these fields.
+// retractRendered deletes the streamed agent messages (head, any overflow
+// tails, and the narration posts), leaving the thread to the connector prompt
+// alone. Tool activity stays: it is a transparency record, not sign-in prose the
+// button contradicts. Best-effort: a delete failure is logged, not propagated.
+// The run loop has finished and drained the poster, so narrationTS is complete;
+// it is still read under the lock because the poster wrote it.
 func (w *batchedWriter) retractRendered(ctx context.Context) {
+	w.mu.Lock()
+	narration := w.narrationTS
+	w.narrationTS = nil
+	w.mu.Unlock()
+	for _, ts := range narration {
+		if err := w.client.deleteMessage(ctx, w.channel, ts); err != nil {
+			w.logger.Warn("slack: retract narration message failed", "ts", ts, "error", err)
+		}
+	}
 	tails := w.tailTS
 	head := w.ts
 	w.ts, w.tailTS = "", nil

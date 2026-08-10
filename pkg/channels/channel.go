@@ -90,6 +90,7 @@ const (
 	DeltaText         DeltaKind = iota // regular assistant text
 	DeltaPrompt                        // agent is waiting for user input (input-required / auth-required)
 	DeltaToolActivity                  // agent invoked or received a tool result
+	DeltaNarration                     // interim prose the agent wrote before firing its tool calls
 )
 
 // TurnUsage holds the token counts reported for a turn, in provider-neutral
