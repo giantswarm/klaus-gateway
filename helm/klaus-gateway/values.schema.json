@@ -638,7 +638,10 @@
                     "additionalProperties": false,
                     "properties": {
                         "clearReactionOnDone": {
-                            "type": "string"
+                            "type": [
+                                "boolean",
+                                "null"
+                            ]
                         },
                         "emojis": {
                             "type": "object",
