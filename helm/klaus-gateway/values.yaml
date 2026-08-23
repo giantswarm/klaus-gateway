@@ -284,6 +284,7 @@ slack:
     # without adding a done reaction; set false to swap in the done emoji
     # instead. Rendered as SLACK_CLEAR_REACTION_ON_DONE. Leave unset (null) to
     # use the binary default (true); set true or false to override explicitly.
+    # @schema type:[boolean, null]
     clearReactionOnDone: null
   # botToken / signingSecret / appToken: when set (typically SOPS-encrypted via
   # the agentic-platform umbrella), the chart renders the secretName Secret from
