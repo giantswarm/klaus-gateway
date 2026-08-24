@@ -272,6 +272,10 @@
                 }
             }
         },
+        "agentgatewayRoute": {
+            "type": "object",
+            "additionalProperties": true
+        },
         "cli": {
             "type": "object",
             "additionalProperties": false,
@@ -299,12 +303,15 @@
                 }
             }
         },
+        "enabled": {
+            "type": "boolean"
+        },
         "fullnameOverride": {
             "type": "string"
         },
         "global": {
             "type": "object",
-            "additionalProperties": false,
+            "additionalProperties": true,
             "properties": {
                 "podSecurityStandards": {
                     "type": "object",
@@ -678,6 +685,9 @@
             "type": "object",
             "additionalProperties": false,
             "properties": {
+                "agentgatewayURL": {
+                    "type": "string"
+                },
                 "url": {
                     "type": "string"
                 }
