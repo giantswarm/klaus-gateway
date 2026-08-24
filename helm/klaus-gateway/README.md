@@ -18,6 +18,8 @@ Channel and routing gateway in front of klaus instances; uses agentgateway as th
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
+| enabled | bool | `true` |  |
+| agentgatewayRoute | object | `{}` |  |
 | name | string | `"klaus-gateway"` |  |
 | serviceType | string | `"managed"` |  |
 | fullnameOverride | string | `""` |  |
@@ -53,6 +55,7 @@ Channel and routing gateway in front of klaus instances; uses agentgateway as th
 | lifecycle.operatorMCPToken | string | `""` |  |
 | lifecycle.staticInstances | string | `""` |  |
 | upstream.url | string | `""` |  |
+| upstream.agentgatewayURL | string | `""` |  |
 | observability.otlpEndpoint | string | `""` |  |
 | podLabels | object | `{}` |  |
 | podSecurityContext.seccompProfile.type | string | `"RuntimeDefault"` |  |
