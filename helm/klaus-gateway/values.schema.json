@@ -276,6 +276,21 @@
             "type": "object",
             "additionalProperties": true
         },
+        "baseDomain": {
+            "type": "string"
+        },
+        "bootstrapMode": {
+            "type": "object",
+            "additionalProperties": true
+        },
+        "chartOperator": {
+            "type": "object",
+            "additionalProperties": true
+        },
+        "ciliumNetworkPolicy": {
+            "type": "object",
+            "additionalProperties": true
+        },
         "cli": {
             "type": "object",
             "additionalProperties": false,
@@ -284,6 +299,22 @@
                     "type": "boolean"
                 }
             }
+        },
+        "cluster": {
+            "type": "object",
+            "additionalProperties": true
+        },
+        "clusterCA": {
+            "type": "string"
+        },
+        "clusterCIDR": {
+            "type": "string"
+        },
+        "clusterDNSIP": {
+            "type": "string"
+        },
+        "clusterID": {
+            "type": "string"
         },
         "controller": {
             "type": "object",
@@ -307,6 +338,9 @@
             "type": "boolean"
         },
         "fullnameOverride": {
+            "type": "string"
+        },
+        "gcpProject": {
             "type": "string"
         },
         "global": {
@@ -487,6 +521,9 @@
                     }
                 }
             }
+        },
+        "provider": {
+            "type": "string"
         },
         "replicaCount": {
             "type": "integer"
@@ -677,6 +714,9 @@
                     "type": "string"
                 }
             }
+        },
+        "subscriptionID": {
+            "type": "string"
         },
         "tolerations": {
             "type": "array"
