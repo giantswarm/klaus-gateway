@@ -4,7 +4,7 @@
 # `gsoci.azurecr.io`, which requires giantswarm credentials. This variant
 # uses the public Docker Hub Alpine so the compose build works on any
 # CI runner (CircleCI machine executors included).
-FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.26-bookworm AS builder
+FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.27-bookworm AS builder
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
