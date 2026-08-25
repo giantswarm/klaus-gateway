@@ -66,7 +66,8 @@ func (r *ChannelRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	if err := r.Status().Update(ctx, &cr); err != nil {
 		if apierrors.IsConflict(err) {
-			return ctrl.Result{Requeue: true}, nil
+			// Re-queue promptly to retry the status update with a fresh object.
+			return ctrl.Result{RequeueAfter: time.Second}, nil
 		}
 		return ctrl.Result{}, err
 	}

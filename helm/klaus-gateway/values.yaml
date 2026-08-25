@@ -1,5 +1,11 @@
 # Default values for klaus-gateway.
 
+# Umbrella-chart keys. The agent-platform app-of-apps forwards its klausGateway
+# values block verbatim to this chart, including its own control keys below.
+# The chart ignores them; they exist so the values schema accepts the block.
+enabled: true
+agentgatewayRoute: {}  # @schema additionalProperties: true
+
 name: klaus-gateway
 serviceType: managed
 
@@ -94,6 +100,9 @@ lifecycle:
 # Not used for A2A channel traffic; A2A routes through a2a.url instead.
 upstream:
   url: ""
+  # Deprecated alias for url, still forwarded by the agent-platform umbrella.
+  # Ignored by the chart.
+  agentgatewayURL: ""
 
 observability:
   # OTLP gRPC endpoint for traces (e.g. tempo.observability.svc:4317).
@@ -284,6 +293,7 @@ slack:
     # without adding a done reaction; set false to swap in the done emoji
     # instead. Rendered as SLACK_CLEAR_REACTION_ON_DONE. Leave unset (null) to
     # use the binary default (true); set true or false to override explicitly.
+    # @schema type:[boolean, null]
     clearReactionOnDone: null
   # botToken / signingSecret / appToken: when set (typically SOPS-encrypted via
   # the agentic-platform umbrella), the chart renders the secretName Secret from
@@ -358,7 +368,7 @@ obo:
   connectors:
     enabled: false
 
-global:
+global:  # @schema additionalProperties: true
   podSecurityStandards:
     enforced: false
 
