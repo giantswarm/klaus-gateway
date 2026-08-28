@@ -65,8 +65,10 @@ These are independent; a user can have completed one and not the other.
 1. **The gateway's account link** (`/login`, musterlink): binds a Slack user to
    a Giant Swarm identity. The callback enforces an email match between the
    OAuth identity and the Slack profile email. GitHub-backed sign-in releases
-   the GitHub *primary* email, which is the usual mismatch cause. This is what
-   the "Sign in to Giant Swarm" prompt starts.
+   the GitHub *primary* email by default, which is the usual mismatch cause;
+   dex deployments can set `preferredEmailDomain` on the GitHub connector
+   (supported since dex v2.36.0) so a verified email on the work domain wins
+   over the primary. This is what the "Sign in to Giant Swarm" prompt starts.
 2. **The agent's own per-backend connector OAuth**, brokered by muster
    (`core_auth_login`): authorizes the agent to call a specific backend as the
    user. It is separate from layer 1 and is triggered by the agent, not the

@@ -611,8 +611,9 @@ func (l *Linker) HandleCallback(w http.ResponseWriter, r *http.Request) {
 				Title:   "Account email does not match",
 				Message: fmt.Sprintf("The account you signed in with reports %s, but your Slack profile email is %s. "+
 					"Sign in with the account whose email matches your Slack email. "+
-					"For GitHub-backed sign-in, the released email is your GitHub primary email; update it if it does not match.",
-					link.Email, want),
+					"For GitHub-backed sign-in, add %s to your GitHub account (Settings > Emails), verify it, and try again; "+
+					"if sign-in still fails, this deployment releases only the GitHub primary email — make %s your primary email.",
+					link.Email, want, want, want),
 			})
 			return
 		}
