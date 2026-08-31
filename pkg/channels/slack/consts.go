@@ -335,6 +335,7 @@ const (
 // Block Kit type values.
 const (
 	bkSection      = "section"
+	bkContext      = "context" // small muted text; carries the tool-activity entries
 	bkActions      = "actions"
 	bkButton       = "button"
 	bkRadioButtons = "radio_buttons"

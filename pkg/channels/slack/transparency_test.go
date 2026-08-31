@@ -2,13 +2,10 @@ package slack
 
 import (
 	"context"
-	"encoding/json"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -118,47 +115,43 @@ func TestBatchedWriter_SumsUsageAcrossTurn(t *testing.T) {
 	require.Equal(t, channels.TurnUsage{InputTokens: 130, OutputTokens: 70, TotalTokens: 200}, w.turnUsage)
 }
 
-// TestBatchedWriter_CapsToolActivity verifies a tool-heavy turn does not flood
-// the thread: at most maxToolMessages tool posts plus one truncation note.
+// TestBatchedWriter_CapsToolActivity verifies a tool-heavy turn stays bounded:
+// at most maxToolEntries entries plus one truncation note, aggregated into
+// activity messages that respect the per-message block budget instead of one
+// post per call.
 func TestBatchedWriter_CapsToolActivity(t *testing.T) {
-	var posts atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		posts.Add(1)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"ok":true,"ts":"1"}`))
-	}))
+	ft := &fakeThread{}
+	srv := httptest.NewServer(ft.handler())
 	t.Cleanup(srv.Close)
 
 	w := newBatchedWriterWithClient(&slackAPIClient{baseURL: srv.URL}, "C1", "", "T1", detailsOn, nil)
 
-	ch := make(chan channels.OutboundDelta, 20)
-	for range 15 {
+	ch := make(chan channels.OutboundDelta, maxToolEntries+6)
+	for range maxToolEntries + 5 {
 		ch <- channels.OutboundDelta{Kind: channels.DeltaToolActivity, Tool: &channels.ToolActivity{Name: "list_pods", Kind: channels.ToolCall}}
 	}
 	ch <- channels.OutboundDelta{Done: true}
 	close(ch)
 
 	require.NoError(t, w.run(t.Context(), ch))
-	require.Equal(t, int32(maxToolMessages+1), posts.Load(), "10 tool posts + 1 truncation note")
+
+	msgs := ft.finalMessages()
+	var entries []string
+	for _, m := range msgs {
+		require.LessOrEqual(t, len(m), maxActivityBlocks, "one activity message stays within the block budget")
+		entries = append(entries, m...)
+	}
+	require.Len(t, entries, maxToolEntries+1, "capped entries plus the truncation note")
+	require.Equal(t, toolLimitNote, entries[maxToolEntries])
+	require.Len(t, msgs, 2, "entries aggregate into activity messages, rolling over past the block budget")
 }
 
 // TestBatchedWriter_ToolPostsPreserveOrder verifies the async poster keeps tool
-// messages in stream order and drains them all before run() returns.
+// entries in stream order, aggregated into one activity message, and delivers
+// them all before run() returns.
 func TestBatchedWriter_ToolPostsPreserveOrder(t *testing.T) {
-	var mu sync.Mutex
-	var got []string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		var v map[string]any
-		_ = json.Unmarshal(body, &v)
-		if text, ok := v["text"].(string); ok {
-			mu.Lock()
-			got = append(got, text)
-			mu.Unlock()
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"ok":true,"ts":"1"}`))
-	}))
+	ft := &fakeThread{}
+	srv := httptest.NewServer(ft.handler())
 	t.Cleanup(srv.Close)
 
 	w := newBatchedWriterWithClient(&slackAPIClient{baseURL: srv.URL}, "C1", "", "T1", detailsOn, nil)
@@ -173,12 +166,12 @@ func TestBatchedWriter_ToolPostsPreserveOrder(t *testing.T) {
 
 	require.NoError(t, w.run(t.Context(), ch))
 
-	// run() drained the poster before returning: every post is already recorded.
-	mu.Lock()
-	defer mu.Unlock()
-	require.Len(t, got, len(names))
+	// run() drained the poster before returning: every entry is already delivered.
+	msgs := ft.finalMessages()
+	require.Len(t, msgs, 1, "consecutive tool calls share one activity message")
+	require.Len(t, msgs[0], len(names))
 	for i, n := range names {
-		require.Contains(t, got[i], "`"+n+"`", "tool posts must stay in stream order")
+		require.Contains(t, msgs[0][i], "`"+n+"`", "tool entries must stay in stream order")
 	}
 }
 
