@@ -1109,6 +1109,25 @@ func allText(calls []recordedCall) string {
 	return b.String()
 }
 
+// allBlockText concatenates the fallback text and the raw blocks JSON of the
+// given calls, so assertions can find content wherever a renderer put it
+// (fallback text, markdown block, or context element).
+func allBlockText(calls []recordedCall) string {
+	var b strings.Builder
+	for _, c := range calls {
+		if s, ok := c.params["text"].(string); ok {
+			b.WriteString(s)
+			b.WriteString("\n")
+		}
+		if blocks, ok := c.params["blocks"]; ok {
+			raw, _ := json.Marshal(blocks)
+			b.Write(raw)
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
+}
+
 // reactionNames returns the "name" param of each recorded reactions.* call.
 func (f *fakeSlackAPI) reactionNames(path string) []string {
 	var out []string
@@ -1680,7 +1699,7 @@ func TestDetails_DefaultOn_RendersToolActivity(t *testing.T) {
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","channel_type":"im","user":"U1","text":"list pods","channel":"D1","ts":"111.000"}}`)
 
 	require.Eventually(t, func() bool {
-		text := allText(fake.pathCalls("chat.postMessage"))
+		text := allBlockText(fake.pathCalls("chat.postMessage"))
 		return strings.Contains(text, "list_pods") && strings.Contains(text, "Found 3 pods.")
 	}, 2*time.Second, 20*time.Millisecond, "default-on details should render the tool call and the answer")
 }
@@ -1697,9 +1716,9 @@ func TestDetails_Off_SuppressesToolActivity(t *testing.T) {
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","channel_type":"im","user":"U1","text":"list pods","channel":"D1","ts":"101.000","thread_ts":"100.000"}}`)
 
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Found 3 pods.")
+		return strings.Contains(allBlockText(fake.pathCalls("chat.postMessage")), "Found 3 pods.")
 	}, 2*time.Second, 20*time.Millisecond, "the answer should still be posted")
-	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "list_pods",
+	require.NotContains(t, allBlockText(fake.pathCalls("chat.postMessage")), "list_pods",
 		"details off must not render tool activity")
 }
 

@@ -58,10 +58,11 @@ const (
 // batchedWriter accumulates OutboundDelta content and periodically calls
 // chat.update to stay within Slack's rate limits (~4 updates/sec/channel).
 //
-// The main reply (ts) accumulates DeltaText content. Tool activity and the
-// agent's interim narration are posted as their own in-thread messages instead,
-// so they read in the order the agent produced them; the main reply is posted
-// lazily on the first flush and therefore lands last.
+// The main reply (ts) accumulates DeltaText content. The agent's interim
+// narration posts as its own in-thread messages, and tool activity aggregates
+// into muted in-thread activity messages (one context block per entry, updated
+// in place), so both read in the order the agent produced them; the main reply
+// is posted lazily on the first flush and therefore lands last.
 //
 // When the stream ends on a DeltaPrompt, run() captures it in promptDelta
 // (flushing the main buffer first) and returns nil. The caller is responsible
@@ -135,10 +136,22 @@ type batchedWriter struct {
 	narrationTS []string
 }
 
-// threadPost is one rendered message posted on its own in-thread rather than
-// into the main reply. retract marks the ones a connector prompt taking over the
-// turn deletes along with the reply.
+// threadPostKind selects how the poster lands one queued item: narration is its
+// own full-weight message; a tool entry is one context block appended to the
+// running activity message. The zero value is narration so the retract
+// bookkeeping (which only narration uses) matches the zero-value struct.
+type threadPostKind int
+
+const (
+	postNarration threadPostKind = iota
+	postToolEntry
+)
+
+// threadPost is one rendered in-thread item, posted outside the main reply.
+// retract marks the narration a connector prompt taking over the turn deletes
+// along with the reply.
 type threadPost struct {
+	kind    threadPostKind
 	md      string
 	retract bool
 }
@@ -271,14 +284,19 @@ func (w *batchedWriter) finalFlush(ctx context.Context) error {
 }
 
 // tool-activity rendering caps, kept compact so a default-on stream does not
-// overwhelm the thread; Slack additionally collapses long code blocks.
+// overwhelm the thread.
 const (
 	toolArgsMax   = 500
 	toolResultMax = 800
-	// maxToolMessages bounds tool-activity posts per turn. Past it, one
-	// truncation note is posted and the rest are silent, so a turn with many
-	// tool calls does not flood the thread or hit Slack post rate limits.
-	maxToolMessages = 10
+	// maxToolEntries bounds tool-activity entries per turn. Entries aggregate
+	// into shared activity messages, so the cap guards the per-entry chat.update
+	// calls (rate limits) rather than thread flooding; past it, one truncation
+	// note is rendered and the rest are silent.
+	maxToolEntries = 30
+	// maxActivityBlocks bounds the context blocks of one activity message,
+	// comfortably under Slack's 50-blocks-per-message limit; further entries
+	// roll over into a new activity message.
+	maxActivityBlocks = 24
 	// maxNarrationMessages bounds narration posts per turn, on its own budget so
 	// muted tool activity does not buy extra narration. Past it one truncation
 	// note is posted: dropping the agent's prose without saying so is the bug this
@@ -289,11 +307,15 @@ const (
 // narrationLimitNote replaces the narration past the per-turn cap.
 const narrationLimitNote = "_…narration limit reached; hiding this turn's remaining step-by-step notes. The answer still follows._"
 
+// toolLimitNote replaces the tool entry past the per-turn cap.
+const toolLimitNote = "_…tool-activity limit reached; hiding this turn's remaining tool calls. Details are still on: `/details off` mutes them entirely._"
+
 // renderToolActivity queues a compact record of a tool call (and, at
-// detailsFull, its result) when details are enabled. Rendered as a fenced code
-// block so Slack collapses long payloads behind "show more". Capped per turn.
-// The cap decision runs here (in run()'s goroutine); the HTTP post is handed to
-// an async poster so a slow Slack API does not stall delta draining.
+// detailsFull, its result) when details are enabled. Each entry renders as one
+// muted context block; the poster aggregates consecutive entries into a shared
+// activity message so tool-heavy turns do not flood the thread. Capped per
+// turn. The cap decision runs here (in run()'s goroutine); the HTTP post is
+// handed to an async poster so a slow Slack API does not stall delta draining.
 func (w *batchedWriter) renderToolActivity(ctx context.Context, tool *channels.ToolActivity) {
 	if w.details == detailsOff || tool == nil {
 		return
@@ -315,7 +337,7 @@ func (w *batchedWriter) renderToolActivity(ctx context.Context, tool *channels.T
 			md += " (via muster)"
 		}
 		if summary := compactJSON(args, toolArgsMax); summary != "" {
-			md += "\n```\n" + summary + "\n```"
+			md += "\n" + inlineCode(summary)
 		}
 	case channels.ToolResult:
 		if w.details != detailsFull {
@@ -330,20 +352,20 @@ func (w *batchedWriter) renderToolActivity(ctx context.Context, tool *channels.T
 		if preview == "" {
 			return
 		}
-		md += "\n```\n" + preview + "\n```"
+		md += "\n" + inlineCode(preview)
 	default:
 		return
 	}
 
 	w.toolsRendered++
 	switch {
-	case w.toolsRendered > maxToolMessages+1:
+	case w.toolsRendered > maxToolEntries+1:
 		return // already queued the truncation note
-	case w.toolsRendered == maxToolMessages+1:
-		md = "_…tool-activity limit reached; hiding this turn's remaining tool posts. Details are still on: `/details off` mutes them entirely._"
+	case w.toolsRendered == maxToolEntries+1:
+		md = toolLimitNote
 	}
 
-	w.enqueueThreadPost(ctx, threadPost{md: md})
+	w.enqueueThreadPost(ctx, threadPost{kind: postToolEntry, md: md})
 }
 
 // renderNarration queues the agent's interim narration — the prose it writes
@@ -373,7 +395,7 @@ func (w *batchedWriter) renderNarration(ctx context.Context, text string) {
 		// Only narration from the point a login challenge was seen is sign-in prose
 		// the Connect button contradicts; earlier narration explains tool posts that
 		// stay, so it is kept when the prompt takes the turn over.
-		w.enqueueThreadPost(ctx, threadPost{md: md, retract: len(w.loginURLs) > 0})
+		w.enqueueThreadPost(ctx, threadPost{kind: postNarration, md: md, retract: len(w.loginURLs) > 0})
 	}
 }
 
@@ -454,10 +476,17 @@ type callToolTarget struct {
 }
 
 // toolLabel renders a tool name as a bold code span. The name is agent- and
-// MCP-server-controlled text: a backtick or newline would break out of the code
-// span and inject markdown into the thread, so it is sanitised here.
+// MCP-server-controlled text entering an mrkdwn context block: &, <, > must be
+// escaped so quoted content cannot trigger notifications, and a backtick or
+// newline would break out of the code span and inject markdown into the thread.
 func toolLabel(name string) string {
-	return "*`" + codeSpanSafe(name) + "`*"
+	return "*`" + codeSpanSafe(escapeMrkdwn(name)) + "`*"
+}
+
+// inlineCode renders an untrusted single-line payload preview as an mrkdwn code
+// span, escaped and sanitised like toolLabel.
+func inlineCode(s string) string {
+	return "`" + codeSpanSafe(escapeMrkdwn(s)) + "`"
 }
 
 // unwrapCallTool returns the inner muster tool name and arguments a call_tool
@@ -667,7 +696,7 @@ func validLoginURL(raw string) string {
 
 // threadPostQueueSize buffers a whole turn's in-thread posts: both producers cap
 // themselves before enqueueing, so the send never blocks the delta loop.
-const threadPostQueueSize = maxToolMessages + maxNarrationMessages + 2
+const threadPostQueueSize = maxToolEntries + maxNarrationMessages + 2
 
 // enqueueThreadPost buffers a rendered in-thread message for the poster,
 // starting it on first use. Called only from run()'s goroutine, so the lazy
@@ -681,22 +710,101 @@ func (w *batchedWriter) enqueueThreadPost(ctx context.Context, p threadPost) {
 	w.threadPosts <- p
 }
 
-// threadPoster posts queued in-thread messages in order. Best-effort: a post
-// failure (including a cancelled ctx) is logged and never aborts the turn.
+// activitySegment is the open tool-activity message: consecutive tool entries
+// accumulate here as context blocks and land in one message that is updated in
+// place, instead of one full-weight message per tool call. dirty marks blocks
+// not yet delivered, so a transient post/update failure retries on the next
+// flush with everything accumulated since.
+type activitySegment struct {
+	ts     string
+	blocks []any
+	dirty  bool
+}
+
+// threadPoster lands queued in-thread items in order: narration as its own
+// message, tool entries appended to the running activity segment. A narration
+// closes the segment so the thread keeps reading in stream order (narration →
+// tool batch → narration → …). Best-effort: a post failure (including a
+// cancelled ctx) is logged and never aborts the turn.
 func (w *batchedWriter) threadPoster(ctx context.Context) {
 	defer close(w.threadPosterDone)
+	var seg activitySegment
 	for p := range w.threadPosts {
-		ts, err := w.client.postMarkdown(ctx, w.channel, p.md, w.threadTS)
-		if err != nil {
-			w.logger.Warn("slack: post in-thread message failed", "error", err)
-			continue
+		// Coalesce everything already queued into this iteration, so a burst of
+		// tool entries (a call and its result usually arrive together) costs one
+		// API call instead of one per entry.
+		for _, q := range w.collectPending(p) {
+			if q.kind == postToolEntry {
+				w.appendActivity(ctx, &seg, q.md)
+				continue
+			}
+			// The open segment precedes this narration in the stream, so deliver
+			// it first and start a fresh message for later entries: appending
+			// them to the closed one would render them above the narration.
+			w.flushActivity(ctx, &seg)
+			seg = activitySegment{}
+			ts, err := w.client.postMarkdown(ctx, w.channel, q.md, w.threadTS)
+			if err != nil {
+				w.logger.Warn("slack: post in-thread message failed", "error", err)
+				continue
+			}
+			if q.retract {
+				w.mu.Lock()
+				w.narrationTS = append(w.narrationTS, ts)
+				w.mu.Unlock()
+			}
 		}
-		if p.retract {
-			w.mu.Lock()
-			w.narrationTS = append(w.narrationTS, ts)
-			w.mu.Unlock()
+		w.flushActivity(ctx, &seg)
+	}
+}
+
+// collectPending returns p plus every item already queued, without blocking.
+func (w *batchedWriter) collectPending(p threadPost) []threadPost {
+	batch := []threadPost{p}
+	for {
+		select {
+		case q, ok := <-w.threadPosts:
+			if !ok {
+				return batch
+			}
+			batch = append(batch, q)
+		default:
+			return batch
 		}
 	}
+}
+
+// appendActivity adds one tool entry to the segment, rolling over into a fresh
+// message when the per-message block budget is exhausted.
+func (w *batchedWriter) appendActivity(ctx context.Context, seg *activitySegment, md string) {
+	if len(seg.blocks) >= maxActivityBlocks {
+		w.flushActivity(ctx, seg)
+		*seg = activitySegment{}
+	}
+	seg.blocks = append(seg.blocks, contextBlock(md))
+	seg.dirty = true
+}
+
+// flushActivity delivers the segment's undelivered blocks: the first flush
+// posts the activity message, later ones replace it in full (chat.update). On
+// failure the segment stays dirty so the next flush retries; the entry caps
+// bound how often that can happen.
+func (w *batchedWriter) flushActivity(ctx context.Context, seg *activitySegment) {
+	if !seg.dirty {
+		return
+	}
+	if seg.ts == "" {
+		ts, err := w.client.postActivity(ctx, w.channel, w.threadTS, seg.blocks)
+		if err != nil {
+			w.logger.Warn("slack: post tool-activity message failed", "error", err)
+			return
+		}
+		seg.ts = ts
+	} else if err := w.client.updateActivity(ctx, w.channel, seg.ts, seg.blocks); err != nil {
+		w.logger.Warn("slack: update tool-activity message failed", "error", err)
+		return
+	}
+	seg.dirty = false
 }
 
 // drainThreadPosts closes the queue and waits for the poster to finish, so every
@@ -1260,6 +1368,45 @@ func (c *slackAPIClient) postMarkdown(ctx context.Context, channel, md, threadTS
 		body[paramThreadTS] = threadTS
 	}
 	return c.postJSON(ctx, methodChatPostMessage, body)
+}
+
+// activityFallbackText is the notification/accessibility fallback of a
+// tool-activity message; the context blocks carry the real content.
+const activityFallbackText = "Tool activity"
+
+// contextBlock wraps one rendered tool entry in a Block Kit context block,
+// which Slack renders as small muted text — visually subordinate to the
+// agent's prose, which is what tool transparency should be.
+func contextBlock(md string) map[string]any {
+	return map[string]any{
+		bkType:     bkContext,
+		bkElements: []any{map[string]any{bkType: bkMrkdwn, bkText: md}},
+	}
+}
+
+// postActivity posts a new in-thread tool-activity message carrying blocks.
+func (c *slackAPIClient) postActivity(ctx context.Context, channel, threadTS string, blocks []any) (string, error) {
+	body := map[string]any{
+		paramChannel: channel,
+		paramText:    activityFallbackText,
+		paramBlocks:  blocks,
+	}
+	if threadTS != "" {
+		body[paramThreadTS] = threadTS
+	}
+	return c.postJSON(ctx, methodChatPostMessage, body)
+}
+
+// updateActivity replaces a tool-activity message's blocks in full; chat.update
+// carries no partial-append, so every delivered entry is resent.
+func (c *slackAPIClient) updateActivity(ctx context.Context, channel, ts string, blocks []any) error {
+	_, err := c.postJSON(ctx, "chat.update", map[string]any{
+		paramChannel: channel,
+		paramTS:      ts,
+		paramText:    activityFallbackText,
+		paramBlocks:  blocks,
+	})
+	return err
 }
 
 // chatUpdateMarkdown replaces a message's content with a markdown block. The
