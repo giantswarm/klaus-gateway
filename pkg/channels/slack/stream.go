@@ -59,10 +59,12 @@ const (
 // chat.update to stay within Slack's rate limits (~4 updates/sec/channel).
 //
 // The main reply (ts) accumulates DeltaText content. The agent's interim
-// narration posts as its own in-thread messages, and tool activity aggregates
-// into muted in-thread activity messages (one context block per entry, updated
-// in place), so both read in the order the agent produced them; the main reply
-// is posted lazily on the first flush and therefore lands last.
+// narration posts as its own in-thread messages. Tool activity is a live
+// status ticker at the default details level — one muted line that updates in
+// place while the agent works and collapses to a one-line receipt when the
+// turn ends — and, at detailsFull, additionally an aggregated audit message of
+// per-call context-block entries. The main reply is posted lazily on the first
+// flush and therefore lands last.
 //
 // When the stream ends on a DeltaPrompt, run() captures it in promptDelta
 // (flushing the main buffer first) and returns nil. The caller is responsible
@@ -105,9 +107,9 @@ type batchedWriter struct {
 	// turnUsage accumulates the per-LLM-call usage kagent reports across the
 	// turn into the turn total. Only touched from run()'s goroutine.
 	turnUsage channels.TurnUsage
-	// toolsRendered counts tool-activity messages posted this turn so a tool-heavy
-	// turn does not flood the thread (or hit Slack post rate limits). Only touched
-	// from run()'s goroutine.
+	// toolsRendered counts detailsFull tool-activity entries this turn so a
+	// tool-heavy turn does not flood the thread (or hit Slack post rate limits).
+	// Only touched from run()'s goroutine.
 	toolsRendered int
 	// narrationsRendered counts narration messages posted this turn, capped like
 	// tool activity so a long tool-calling loop does not flood the thread. Only
@@ -134,17 +136,29 @@ type batchedWriter struct {
 	// challenge this turn, so a connector prompt taking over can retract that
 	// sign-in prose with the reply. Written by the poster goroutine.
 	narrationTS []string
+
+	// Tool-status ticker state (the detailsOn rendering): written under mu on
+	// run()'s goroutine as tool calls stream, read by the poster to render the
+	// live ticker and the final receipt. Kept outside the poster so a dropped
+	// ticker kick never loses a step: the next render always sees exact counts.
+	toolSteps   int
+	toolCurrent string         // display name of the most recent call
+	toolOrder   []string       // distinct display names in first-use order
+	toolCounts  map[string]int // calls per display name
 }
 
 // threadPostKind selects how the poster lands one queued item: narration is its
-// own full-weight message; a tool entry is one context block appended to the
-// running activity message. The zero value is narration so the retract
-// bookkeeping (which only narration uses) matches the zero-value struct.
+// own full-weight message; a tool entry (detailsFull) is one context block
+// appended to the running activity message; a status kick (detailsOn) refreshes
+// the live ticker from the writer's counters. The zero value is narration so
+// the retract bookkeeping (which only narration uses) matches the zero-value
+// struct.
 type threadPostKind int
 
 const (
 	postNarration threadPostKind = iota
 	postToolEntry
+	postToolStatusKick
 )
 
 // threadPost is one rendered in-thread item, posted outside the main reply.
@@ -310,21 +324,21 @@ const narrationLimitNote = "_…narration limit reached; hiding this turn's rema
 // toolLimitNote replaces the tool entry past the per-turn cap.
 const toolLimitNote = "_…tool-activity limit reached; hiding this turn's remaining tool calls. Details are still on: `/details off` mutes them entirely._"
 
-// renderToolActivity queues a compact record of a tool call (and, at
-// detailsFull, its result) when details are enabled. Each entry renders as one
-// muted context block; the poster aggregates consecutive entries into a shared
-// activity message so tool-heavy turns do not flood the thread. Capped per
-// turn. The cap decision runs here (in run()'s goroutine); the HTTP post is
+// renderToolActivity renders a tool call for the thread. At the default level
+// (detailsOn) it feeds the live status ticker: one muted line per turn that
+// updates in place while the agent works and collapses to a one-line receipt
+// when the turn ends — no payloads, no per-call messages. At detailsFull each
+// call (and its result) additionally renders as a context-block entry with its
+// JSON payload, aggregated into a shared activity message: the audit view.
+// The rendering decision runs here (in run()'s goroutine); the HTTP post is
 // handed to an async poster so a slow Slack API does not stall delta draining.
 func (w *batchedWriter) renderToolActivity(ctx context.Context, tool *channels.ToolActivity) {
 	if w.details == detailsOff || tool == nil {
 		return
 	}
-	var md string
-	switch tool.Kind {
-	case channels.ToolCall:
-		displayName, viaMuster := tool.Name, false
-		args := tool.Args
+	displayName, viaMuster := tool.Name, false
+	args := tool.Args
+	if tool.Kind == channels.ToolCall {
 		if inner, innerArgs, ok := unwrapCallTool(tool); ok {
 			// Record the call→inner mapping so a detailsFull result (which
 			// carries no Args) can resolve the inner name via effectiveToolName,
@@ -332,6 +346,20 @@ func (w *batchedWriter) renderToolActivity(ctx context.Context, tool *channels.T
 			w.noteCallToolTarget(tool)
 			displayName, viaMuster, args = inner, true, innerArgs
 		}
+	}
+
+	if w.details != detailsFull {
+		if tool.Kind != channels.ToolCall {
+			return
+		}
+		w.recordToolStep(displayName)
+		w.kickToolStatus(ctx)
+		return
+	}
+
+	var md string
+	switch tool.Kind {
+	case channels.ToolCall:
 		md = "🔧 " + toolLabel(displayName)
 		if viaMuster {
 			md += " (via muster)"
@@ -340,9 +368,6 @@ func (w *batchedWriter) renderToolActivity(ctx context.Context, tool *channels.T
 			md += "\n" + inlineCode(summary)
 		}
 	case channels.ToolResult:
-		if w.details != detailsFull {
-			return
-		}
 		resultName := w.effectiveToolName(tool)
 		md = "↳ " + toolLabel(resultName) + " result"
 		if tool.Name == musterCallToolMetaTool && resultName != tool.Name {
@@ -366,6 +391,93 @@ func (w *batchedWriter) renderToolActivity(ctx context.Context, tool *channels.T
 	}
 
 	w.enqueueThreadPost(ctx, threadPost{kind: postToolEntry, md: md})
+}
+
+// recordToolStep counts one tool call into the turn's ticker state.
+func (w *batchedWriter) recordToolStep(displayName string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.toolSteps++
+	w.toolCurrent = displayName
+	if w.toolCounts == nil {
+		w.toolCounts = make(map[string]int)
+	}
+	if _, seen := w.toolCounts[displayName]; !seen {
+		w.toolOrder = append(w.toolOrder, displayName)
+	}
+	w.toolCounts[displayName]++
+}
+
+// kickToolStatus nudges the poster to re-render the status ticker. The kick is
+// lossy on purpose (a full queue drops it rather than stalling delta draining):
+// the ticker always renders from the exact counters, and the poster's final
+// receipt pass runs unconditionally, so a dropped kick costs at most one
+// intermediate refresh.
+func (w *batchedWriter) kickToolStatus(ctx context.Context) {
+	if w.threadPosts == nil {
+		w.enqueueThreadPost(ctx, threadPost{kind: postToolStatusKick})
+		return
+	}
+	select {
+	case w.threadPosts <- threadPost{kind: postToolStatusKick}:
+	default:
+	}
+}
+
+// toolStatusSnapshot returns the ticker counters for rendering.
+func (w *batchedWriter) toolStatusSnapshot() (steps int, current string, order []string, counts map[string]int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.toolSteps, w.toolCurrent, append([]string(nil), w.toolOrder...), maps.Clone(w.toolCounts)
+}
+
+// resetToolStatus clears the ticker counters so a resumed run() segment over
+// the same writer (an auto-approved prompt) starts a fresh ticker instead of
+// double-counting the collapsed one.
+func (w *batchedWriter) resetToolStatus() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.toolSteps, w.toolCurrent, w.toolOrder, w.toolCounts = 0, "", nil, nil
+}
+
+// statusName renders a tool name for the ticker and receipt: plain muted text,
+// no code chips. The name is agent-controlled, so mrkdwn control sequences are
+// escaped and newlines flattened; emphasis glyphs are cosmetic and left alone.
+func statusName(name string) string {
+	return strings.ReplaceAll(escapeMrkdwn(name), "\n", " ")
+}
+
+// renderToolTicker is the live one-liner shown while the agent works.
+func renderToolTicker(steps int, current string) string {
+	md := "⏳ " + statusName(current) + "…"
+	if steps > 1 {
+		md += fmt.Sprintf(" · step %d", steps)
+	}
+	return md
+}
+
+// receiptNameMax bounds how many distinct tool names the receipt lists.
+const receiptNameMax = 8
+
+// renderToolReceipt is the one-line summary the ticker collapses into when the
+// turn ends: step count plus the tools used, deduplicated in first-use order.
+func renderToolReceipt(steps int, order []string, counts map[string]int) string {
+	label := "steps"
+	if steps == 1 {
+		label = "step"
+	}
+	md := fmt.Sprintf("🛠️ %d %s", steps, label)
+	for i, name := range order {
+		if i == receiptNameMax {
+			md += fmt.Sprintf(" · +%d more", len(order)-receiptNameMax)
+			break
+		}
+		md += " · " + statusName(name)
+		if n := counts[name]; n > 1 {
+			md += fmt.Sprintf(" ×%d", n)
+		}
+	}
+	return md
 }
 
 // renderNarration queues the agent's interim narration — the prose it writes
@@ -722,40 +834,90 @@ type activitySegment struct {
 }
 
 // threadPoster lands queued in-thread items in order: narration as its own
-// message, tool entries appended to the running activity segment. A narration
-// closes the segment so the thread keeps reading in stream order (narration →
-// tool batch → narration → …). Best-effort: a post failure (including a
-// cancelled ctx) is logged and never aborts the turn.
+// message, detailsFull tool entries appended to the running activity segment,
+// and status kicks refreshed onto the live ticker. A narration closes the
+// segment so the thread keeps reading in stream order (narration → tool batch →
+// narration → …). When the queue closes the ticker collapses into its receipt.
+// Best-effort: a post failure (including a cancelled ctx) is logged and never
+// aborts the turn.
 func (w *batchedWriter) threadPoster(ctx context.Context) {
 	defer close(w.threadPosterDone)
 	var seg activitySegment
+	statusTS := ""
+	kicked := false
+	// renderTicker refreshes the live status line from the current counters.
+	// Consecutive kicks coalesce into one render, so a burst of tool calls
+	// costs a single API call.
+	renderTicker := func() {
+		if !kicked {
+			return
+		}
+		kicked = false
+		steps, current, _, _ := w.toolStatusSnapshot()
+		if steps > 0 {
+			statusTS = w.upsertStatus(ctx, statusTS, renderToolTicker(steps, current))
+		}
+	}
 	for p := range w.threadPosts {
 		// Coalesce everything already queued into this iteration, so a burst of
 		// tool entries (a call and its result usually arrive together) costs one
 		// API call instead of one per entry.
 		for _, q := range w.collectPending(p) {
-			if q.kind == postToolEntry {
+			switch q.kind {
+			case postToolEntry:
 				w.appendActivity(ctx, &seg, q.md)
-				continue
-			}
-			// The open segment precedes this narration in the stream, so deliver
-			// it first and start a fresh message for later entries: appending
-			// them to the closed one would render them above the narration.
-			w.flushActivity(ctx, &seg)
-			seg = activitySegment{}
-			ts, err := w.client.postMarkdown(ctx, w.channel, q.md, w.threadTS)
-			if err != nil {
-				w.logger.Warn("slack: post in-thread message failed", "error", err)
-				continue
-			}
-			if q.retract {
-				w.mu.Lock()
-				w.narrationTS = append(w.narrationTS, ts)
-				w.mu.Unlock()
+			case postToolStatusKick:
+				kicked = true
+			default:
+				// The open segment and any pending ticker refresh precede this
+				// narration in the stream, so deliver them first (the segment
+				// also starts fresh: appending later entries to the closed one
+				// would render them above the narration).
+				w.flushActivity(ctx, &seg)
+				seg = activitySegment{}
+				renderTicker()
+				ts, err := w.client.postMarkdown(ctx, w.channel, q.md, w.threadTS)
+				if err != nil {
+					w.logger.Warn("slack: post in-thread message failed", "error", err)
+					continue
+				}
+				if q.retract {
+					w.mu.Lock()
+					w.narrationTS = append(w.narrationTS, ts)
+					w.mu.Unlock()
+				}
 			}
 		}
 		w.flushActivity(ctx, &seg)
+		renderTicker()
 	}
+	// The turn is over (or pausing on a prompt): collapse the ticker into the
+	// one-line receipt, before the answer lands (finalFlush drains this poster
+	// first). A ticker whose post failed earlier still gets its receipt posted.
+	steps, _, order, counts := w.toolStatusSnapshot()
+	if steps > 0 {
+		w.upsertStatus(ctx, statusTS, renderToolReceipt(steps, order, counts))
+		w.resetToolStatus()
+	}
+}
+
+// upsertStatus posts the status line on first use and updates it in place
+// afterwards, returning its ts. On failure the current ts is returned
+// unchanged ("" keeps the next render retrying the post).
+func (w *batchedWriter) upsertStatus(ctx context.Context, statusTS, md string) string {
+	blocks := []any{contextBlock(md)}
+	if statusTS == "" {
+		ts, err := w.client.postActivity(ctx, w.channel, w.threadTS, blocks)
+		if err != nil {
+			w.logger.Warn("slack: post tool-status message failed", "error", err)
+			return statusTS
+		}
+		return ts
+	}
+	if err := w.client.updateActivity(ctx, w.channel, statusTS, blocks); err != nil {
+		w.logger.Warn("slack: update tool-status message failed", "error", err)
+	}
+	return statusTS
 }
 
 // collectPending returns p plus every item already queued, without blocking.

@@ -1104,6 +1104,13 @@ func (f *fakeThread) finalMessages() []capturedMessage {
 	return out
 }
 
+// postCount returns how many chat.postMessage calls the thread received.
+func (f *fakeThread) postCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.posts
+}
+
 // blockTexts flattens a message's blocks into their text strings: markdown
 // blocks carry the text directly, context blocks carry mrkdwn elements, and
 // section blocks a text object.
@@ -1187,11 +1194,12 @@ func toolCallDelta(name string) channels.OutboundDelta {
 	}
 }
 
-// The agent's narration reads in order with the tool activity it introduces,
-// and the answer still lands last (klaus-gateway#197). Consecutive tool calls
-// share one activity message; a narration closes the running segment so the
-// next call starts a new one.
-func TestRenderNarration_PostsOwnMessageBeforeToolPostsAndAnswer(t *testing.T) {
+// The agent's narration reads in order with the status ticker it introduces,
+// and the answer still lands last (klaus-gateway#197). At the default level
+// the whole turn's tool activity is ONE muted line: the ticker posts at the
+// first tool call, updates in place for later ones, and collapses into the
+// receipt when the turn ends.
+func TestRenderNarration_PostsOwnMessageBeforeToolStatusAndAnswer(t *testing.T) {
 	msgs, w := capturePosts(t, detailsOn, "",
 		narrationDelta("Let me pull the HelmRelease from both clusters."),
 		toolCallDelta("x_kubernetes_get"),
@@ -1201,15 +1209,12 @@ func TestRenderNarration_PostsOwnMessageBeforeToolPostsAndAnswer(t *testing.T) {
 		channels.OutboundDelta{Kind: channels.DeltaText, Content: "here is the diff"},
 	)
 
-	require.Len(t, msgs, 5)
+	require.Len(t, msgs, 4)
 	require.Equal(t, capturedMessage{"Let me pull the HelmRelease from both clusters."}, msgs[0])
-	require.Len(t, msgs[1], 2, "consecutive tool calls aggregate into one activity message")
-	require.Contains(t, msgs[1][0], "🔧 *`x_kubernetes_get`*")
-	require.Contains(t, msgs[1][1], "🔧 *`x_kubernetes_get`*")
+	require.Equal(t, capturedMessage{"🛠️ 3 steps · x_kubernetes_get ×3"}, msgs[1],
+		"the ticker sits where tools started and ends as the receipt")
 	require.Equal(t, capturedMessage{"Both share the same chart version."}, msgs[2])
-	require.Len(t, msgs[3], 1, "narration closed the segment, so the next call starts a new activity message")
-	require.Contains(t, msgs[3][0], "🔧 *`x_kubernetes_get`*")
-	require.Equal(t, capturedMessage{"here is the diff"}, msgs[4], "the answer is the turn's last message")
+	require.Equal(t, capturedMessage{"here is the diff"}, msgs[3], "the answer is the turn's last message")
 	require.True(t, w.wroteContent())
 }
 
@@ -1247,9 +1252,9 @@ func TestRenderNarration_CapsWithOneNote(t *testing.T) {
 	deltas = append(deltas, toolCallDelta("x_kubernetes_get"))
 	msgs, _ := capturePosts(t, detailsOn, "", deltas...)
 
-	require.Len(t, msgs, maxNarrationMessages+2, "capped narration, its note, and the activity message")
+	require.Len(t, msgs, maxNarrationMessages+2, "capped narration, its note, and the tool receipt")
 	require.Equal(t, capturedMessage{narrationLimitNote}, msgs[maxNarrationMessages])
-	require.Contains(t, msgs[maxNarrationMessages+1][0], "🔧 *`x_kubernetes_get`*", "tool activity keeps its own budget")
+	require.Contains(t, msgs[maxNarrationMessages+1][0], "x_kubernetes_get", "tool activity keeps its own budget")
 }
 
 // Slack rejects a markdown block over slackMarkdownBlockMax outright, so an
@@ -1399,7 +1404,7 @@ func TestFinalFlush_DrainsThreadPostsBeforeReply(t *testing.T) {
 }
 
 func TestRenderToolActivity_UnwrapsCallTool(t *testing.T) {
-	posts := captureToolPostBlocks(t, detailsOn, channels.OutboundDelta{
+	posts := captureToolPostBlocks(t, detailsFull, channels.OutboundDelta{
 		Kind: channels.DeltaToolActivity,
 		Tool: &channels.ToolActivity{
 			Kind:   channels.ToolCall,
@@ -1418,13 +1423,78 @@ func TestRenderToolActivity_UnwrapsCallTool(t *testing.T) {
 }
 
 func TestRenderToolActivity_DirectToolUnchanged(t *testing.T) {
-	posts := captureToolPostBlocks(t, detailsOn, channels.OutboundDelta{
+	posts := captureToolPostBlocks(t, detailsFull, channels.OutboundDelta{
 		Kind: channels.DeltaToolActivity,
 		Tool: &channels.ToolActivity{Kind: channels.ToolCall, Name: "list_pods"},
 	})
 	require.Len(t, posts, 1)
 	require.Contains(t, posts[0], "🔧 *`list_pods`*")
 	require.NotContains(t, posts[0], "via muster")
+}
+
+// The default level is a status experience, not an audit log: the whole turn
+// collapses into one receipt line with no payloads, and the call_tool wrapper
+// is unwrapped so the receipt names the real tools.
+func TestToolStatus_CollapsesToReceiptWithoutPayloads(t *testing.T) {
+	msgs, _ := capturePosts(t, detailsOn, "",
+		channels.OutboundDelta{Kind: channels.DeltaToolActivity, Tool: &channels.ToolActivity{
+			Kind: channels.ToolCall, Name: musterCallToolMetaTool, CallID: "c1",
+			Args: map[string]any{"name": "x_kubernetes_get", "arguments": map[string]any{"namespace": "flux"}},
+		}},
+		toolCallDelta("x_kubernetes_get"),
+		toolCallDelta("ask_user"),
+		channels.OutboundDelta{Kind: channels.DeltaText, Content: "done"},
+	)
+
+	require.Len(t, msgs, 2, "one receipt line plus the answer")
+	require.Equal(t, capturedMessage{"🛠️ 3 steps · x_kubernetes_get ×2 · ask_user"}, msgs[0])
+	require.Equal(t, capturedMessage{"done"}, msgs[1])
+}
+
+// Tool results carry no extra signal at the default level; only calls count as
+// steps, so a call+result pair is one step, not two.
+func TestToolStatus_ResultsDoNotCountAsSteps(t *testing.T) {
+	msgs, _ := capturePosts(t, detailsOn, "",
+		toolCallDelta("list_pods"),
+		channels.OutboundDelta{Kind: channels.DeltaToolActivity, Tool: &channels.ToolActivity{
+			Kind: channels.ToolResult, Name: "list_pods", Response: map[string]any{"output": "ok"},
+		}},
+	)
+
+	require.Len(t, msgs, 1)
+	require.Equal(t, capturedMessage{"🛠️ 1 step · list_pods"}, msgs[0])
+}
+
+// Receipt and ticker text is agent-controlled: mrkdwn control sequences must
+// arrive escaped so a quoted <!channel> in a tool name cannot notify.
+func TestToolStatus_EscapesMrkdwn(t *testing.T) {
+	msgs, _ := capturePosts(t, detailsOn, "",
+		toolCallDelta("notify <!channel>"),
+	)
+
+	require.Len(t, msgs, 1)
+	require.NotContains(t, msgs[0][0], "<!channel>")
+	require.Contains(t, msgs[0][0], "&lt;!channel&gt;")
+}
+
+func TestRenderToolTickerAndReceipt(t *testing.T) {
+	require.Equal(t, "⏳ skills…", renderToolTicker(1, "skills"))
+	require.Equal(t, "⏳ ask_user… · step 4", renderToolTicker(4, "ask_user"))
+
+	require.Equal(t, "🛠️ 1 step · skills", renderToolReceipt(1, []string{"skills"}, map[string]int{"skills": 1}))
+	require.Equal(t, "🛠️ 3 steps · skills ×2 · ask_user",
+		renderToolReceipt(3, []string{"skills", "ask_user"}, map[string]int{"skills": 2, "ask_user": 1}))
+
+	// Past the name cap the receipt summarises instead of growing unbounded.
+	order := make([]string, receiptNameMax+3)
+	counts := map[string]int{}
+	for i := range order {
+		order[i] = fmt.Sprintf("tool_%d", i)
+		counts[order[i]] = 1
+	}
+	got := renderToolReceipt(len(order), order, counts)
+	require.Contains(t, got, "+3 more")
+	require.NotContains(t, got, order[receiptNameMax])
 }
 
 func TestRenderToolActivity_UnwrapsCallToolResult(t *testing.T) {
@@ -1449,7 +1519,7 @@ func TestRenderToolActivity_UnwrapsCallToolResult(t *testing.T) {
 // escaped so a quoted <!channel> cannot notify, and backticks cannot break out
 // of the code span.
 func TestRenderToolActivity_EscapesMrkdwnAndCodeSpans(t *testing.T) {
-	entries := captureToolPostBlocks(t, detailsOn, channels.OutboundDelta{
+	entries := captureToolPostBlocks(t, detailsFull, channels.OutboundDelta{
 		Kind: channels.DeltaToolActivity,
 		Tool: &channels.ToolActivity{
 			Kind: channels.ToolCall,
