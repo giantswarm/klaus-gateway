@@ -32,9 +32,12 @@ const (
 	agentSourceTask    = "task"
 )
 
-// agentSwitchRefusal answers an /agent prefix inside an existing conversation.
-// The session's context id embeds the agent ref, so a mid-conversation switch
-// would silently start an empty session; refusing is kinder than that.
+// agentSwitchRefusal answers an /agent prefix inside an existing conversation
+// that names a DIFFERENT agent (or one that cannot be resolved). The session's
+// context id embeds the agent ref, so a mid-conversation switch would silently
+// start an empty session; refusing is kinder than that. Re-selecting the
+// conversation's own agent is no switch at all and dispatches normally (see
+// handleAgentReselection).
 const agentSwitchRefusal = "_This conversation already has its agent, and switching mid-conversation would lose its context. Start a new conversation — a fresh mention, or a new chat — with_ `/agent \"<name>\" <question>`."
 
 // agentNothingSelectedHint answers a name-only "/agent <name>": with no
@@ -124,8 +127,7 @@ func (a *Adapter) handleAgentSelection(ctx context.Context, cmd *slashCommand, m
 		return false
 	}
 	if !starting {
-		reply(agentSwitchRefusal)
-		return false
+		return a.handleAgentReselection(ctx, reply, msg, slackChannel)
 	}
 
 	name, quoted, question := splitAgentCommand(msg.Text)
@@ -162,6 +164,43 @@ func (a *Adapter) handleAgentSelection(ctx context.Context, cmd *slashCommand, m
 	}
 
 	a.bindThreadAgent(msg.ThreadID, ref)
+	msg.AgentRef = ref
+	msg.Text = question
+	return true
+}
+
+// handleAgentReselection handles an /agent prefix inside an existing
+// conversation. Naming the conversation's OWN agent is a no-op re-selection,
+// not a switch — users repeat the prefix out of muscle memory or copy-paste —
+// so the turn dispatches like an unprefixed reply: same agent, same session,
+// nothing re-announced. Everything else keeps the switch refusal: a different
+// agent (the session's context id embeds the agent ref, so an actual switch
+// would silently start an empty session), a name-only form, and a selector
+// that does not resolve (unknown, ambiguous, or roster unreachable — without a
+// confirmed match to the current agent, dispatching would risk exactly that
+// switch). Resolution failures stay quiet here — no roster listing lands
+// mid-thread, because nothing mid-conversation can select anyway.
+func (a *Adapter) handleAgentReselection(ctx context.Context, reply func(string), msg *channels.InboundMessage, slackChannel string) (dispatch bool) {
+	name, quoted, question := splitAgentCommand(msg.Text)
+	if question == "" {
+		reply(agentSwitchRefusal)
+		return false
+	}
+	ref, ok := a.resolveSelection(ctx, func(string) {}, name, quoted, msg.ThreadID)
+	if !ok {
+		reply(agentSwitchRefusal)
+		return false
+	}
+	// The conversation's current agent, recovered from the opening message when
+	// the in-memory binding was evicted (threadAgent caches what it derives). A
+	// recovery refusal means the turn could not dispatch anywhere; the switch
+	// refusal is answer enough — the next unprefixed reply re-derives and gets
+	// the specific notice.
+	current, _, _, refusal := a.threadAgent(ctx, *msg, slackChannel)
+	if refusal != "" || current != ref {
+		reply(agentSwitchRefusal)
+		return false
+	}
 	msg.AgentRef = ref
 	msg.Text = question
 	return true

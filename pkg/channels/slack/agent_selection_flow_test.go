@@ -765,3 +765,131 @@ func TestAgentSelection_UnavailableWithoutCards(t *testing.T) {
 	}, 2*time.Second, 50*time.Millisecond)
 	require.Zero(t, gw.resolveCount())
 }
+
+// Re-selecting the conversation's OWN agent mid-thread is a no-op, not a
+// switch: the turn dispatches like an unprefixed reply — with the prefix
+// stripped — and the launch intro is not re-posted, because it informs
+// nobody: the thread already opened with it. Covers both selector forms
+// (technical name and quoted display name).
+func TestAgentSelection_SameAgentReselectionDispatchesQuietly(t *testing.T) {
+	fake := newFakeSlackAPI()
+	cards := &fakeCards{known: map[string]string{"kagent/sre-agent": "SRE Agent"}}
+	roster := &fakeRoster{agents: []pkga2a.AgentInfo{
+		{Name: "sre-agent", Namespace: "kagent", DisplayName: "SRE Agent"},
+	}}
+	gw, resolved := capturingGateway()
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, withSelection(roster, cards))
+
+	sendEvent(t, srv, mention("U1", "/agent sre-agent why are pods crashlooping?", "100.000", ""))
+	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
+		2*time.Second, 50*time.Millisecond, "the opener dispatches")
+	require.Eventually(t, func() bool {
+		return strings.Count(allText(fake.pathCalls("chat.postMessage")), "Bringing in") == 1
+	}, 2*time.Second, 50*time.Millisecond, "the new thread announces its agent once")
+
+	// The same agent re-selected in-thread, technical form: dispatches.
+	sendEvent(t, srv, mention("U1", "/agent sre-agent and the nodes?", "200.000", "100.000"))
+	require.Eventually(t, func() bool { return gw.resolveCount() == 2 },
+		2*time.Second, 50*time.Millisecond, "the same-agent re-selection dispatches")
+
+	// And by quoted display name: still the same agent, still dispatches.
+	// (The brief sleep lets the previous turn's stream release the per-thread
+	// slot, so the follow-up is not rejected busy.)
+	time.Sleep(150 * time.Millisecond)
+	sendEvent(t, srv, mention("U1", `/agent "SRE Agent" anything else?`, "300.000", "100.000"))
+	require.Eventually(t, func() bool { return gw.resolveCount() == 3 },
+		2*time.Second, 50*time.Millisecond, "the quoted same-agent re-selection dispatches")
+
+	msgs := resolved()
+	require.Equal(t, "kagent/sre-agent", msgs[1].AgentRef)
+	require.Equal(t, "and the nodes?", msgs[1].Text, "the prefix is stripped from the re-selection turn")
+	require.Equal(t, "kagent/sre-agent", msgs[2].AgentRef)
+	require.Equal(t, "anything else?", msgs[2].Text)
+
+	time.Sleep(150 * time.Millisecond)
+	all := allText(fake.pathCalls("chat.postMessage"))
+	require.NotContains(t, all, "already has its agent", "a same-agent re-selection is not refused")
+	require.Equal(t, 1, strings.Count(all, "Bringing in"),
+		"repeated turns with the same agent must not re-post the intro")
+}
+
+// The default-bound case: a conversation opened WITHOUT a prefix runs on the
+// default agent, and an in-thread /agent naming that same default agent is
+// equally a no-op re-selection — dispatched, not refused, nothing re-posted.
+func TestAgentSelection_DefaultAgentReselectionDispatchesQuietly(t *testing.T) {
+	fake := newFakeSlackAPI()
+	cards := &fakeCards{known: map[string]string{"kagent/swarmgeist": "Swarmgeist"}}
+	gw, resolved := capturingGateway()
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, withSelection(&fakeRoster{}, cards))
+
+	sendEvent(t, srv, mention("U1", "check the cluster", "100.000", ""))
+	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
+		2*time.Second, 50*time.Millisecond, "the unprefixed opener dispatches on the default agent")
+
+	sendEvent(t, srv, mention("U1", "/agent swarmgeist and the nodes?", "200.000", "100.000"))
+	require.Eventually(t, func() bool { return gw.resolveCount() == 2 },
+		2*time.Second, 50*time.Millisecond, "re-selecting the default agent dispatches")
+
+	msgs := resolved()
+	require.Equal(t, "kagent/swarmgeist", msgs[1].AgentRef)
+	require.Equal(t, "and the nodes?", msgs[1].Text)
+
+	time.Sleep(150 * time.Millisecond)
+	all := allText(fake.pathCalls("chat.postMessage"))
+	require.NotContains(t, all, "already has its agent")
+	require.Equal(t, 1, strings.Count(all, "Bringing in"),
+		"the intro posted once, on the thread's first turn only")
+}
+
+// The same-agent re-selection survives a restart: with no in-memory binding
+// the conversation's agent is recovered from the opening message and compared
+// there — the turn dispatches, nothing is re-announced mid-thread, and a
+// DIFFERENT agent is still refused on the same recovered binding.
+func TestAgentSelection_SameAgentReselectionAfterRestart(t *testing.T) {
+	fake := newFakeSlackAPI()
+	// The fresh process has never seen thread 100.000; the root text carries
+	// the original prefix (with the mention token Slack includes).
+	fake.setResponse("conversations.replies",
+		`{"ok":true,"messages":[{"user":"U1","text":"<@UBOT> /agent sre-agent original question","ts":"100.000"}]}`)
+	cards := &fakeCards{known: map[string]string{"kagent/sre-agent": "SRE Agent"}}
+	gw, resolved := capturingGateway()
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, withSelection(&fakeRoster{}, cards))
+
+	sendEvent(t, srv, mention("U1", "/agent sre-agent still there?", "300.000", "100.000"))
+	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
+		2*time.Second, 50*time.Millisecond, "the re-selection dispatches after recovery")
+	require.Equal(t, "kagent/sre-agent", resolved()[0].AgentRef,
+		"the recovered binding matches the re-selected agent")
+	require.Equal(t, "still there?", resolved()[0].Text)
+
+	// A switch attempt against the recovered binding is still refused.
+	sendEvent(t, srv, mention("U1", "/agent k8s-agent take over", "400.000", "100.000"))
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "already has its agent")
+	}, 2*time.Second, 50*time.Millisecond, "a different agent is refused")
+	time.Sleep(100 * time.Millisecond)
+	require.Equal(t, 1, gw.resolveCount(), "the refused switch dispatches nothing")
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "Bringing in",
+		"a reply into an unseen thread never posts the intro mid-conversation")
+}
+
+// A plain (unprefixed) reply into a thread this process has never seen — a
+// restart, or the announce record TTL-evicted — does not post the launch
+// intro either: mid-thread it informs nobody. Only a thread's first turn, or
+// an actual agent change, announces.
+func TestLaunchAnnouncement_NotPostedForReplyIntoUnseenThread(t *testing.T) {
+	fake := newFakeSlackAPI()
+	fake.setResponse("conversations.replies",
+		`{"ok":true,"messages":[{"user":"U1","text":"<@UBOT> /agent sre-agent original question","ts":"100.000"}]}`)
+	cards := &fakeCards{known: map[string]string{"kagent/sre-agent": "SRE Agent"}}
+	gw, resolved := capturingGateway()
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, withSelection(&fakeRoster{}, cards))
+
+	sendEvent(t, srv, mention("U1", "are you still there?", "300.000", "100.000"))
+	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
+		2*time.Second, 50*time.Millisecond, "the reply dispatches")
+	require.Equal(t, "kagent/sre-agent", resolved()[0].AgentRef, "the binding recovers from the root")
+	time.Sleep(150 * time.Millisecond)
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "Bringing in",
+		"a reply must not post the intro mid-conversation")
+}
