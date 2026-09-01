@@ -33,6 +33,16 @@ features:
     home_tab_enabled: false
     messages_tab_enabled: true
     messages_tab_read_only_enabled: false
+  # Message shortcut (⋯ menu → Apps on any message). Delivered as a
+  # message_action interaction payload to the interactivity request URL; the
+  # gateway replies with an ephemeral rendering of the thread's retained
+  # tool-call log. Changing this section requires re-syncing the app config
+  # at api.slack.com/apps (manifests are not applied automatically).
+  shortcuts:
+    - name: Inspect agent steps
+      type: message
+      callback_id: inspect_agent_steps
+      description: Show the tool calls behind the agent's recent turns in this thread (only visible to you)
   # Agent view (assistant surface). Required for the app_home_opened /
   # app_context_changed lifecycle events. Note: per Slack, adopting agent_view
   # is one-way (no downgrade to the legacy assistant_view).

@@ -123,6 +123,10 @@ type batchedWriter struct {
 	// a long tool-calling loop does not flood the thread. Only touched from
 	// run()'s goroutine.
 	narrationsRendered int
+	// toolLogTurn is this turn's ordinal in the adapter's per-thread tool log
+	// (see inspect.go), opened lazily on the first recorded entry; 0 until
+	// then. Only touched from run()'s goroutine.
+	toolLogTurn int
 	// threadPosts carries rendered in-thread messages (tool activity and
 	// narration) to a single poster goroutine so a slow Slack API does not stall
 	// delta draining. Buffered to the per-turn caps so enqueue never blocks; nil
@@ -360,6 +364,9 @@ const toolLimitNote = "_…tool-activity limit reached; hiding this turn's remai
 // per-call messages. At detailsFull each
 // call (and its result) additionally renders as a context-block entry with its
 // JSON payload, aggregated into a shared activity message: the audit view.
+// At every level except off the entry is also retained in the adapter's
+// per-thread tool log, so the "Inspect agent steps" shortcut can show the
+// payloads retroactively; off stays a private mode and records nothing.
 // The rendering decision runs here (in run()'s goroutine); the HTTP post is
 // handed to an async poster so a slow Slack API does not stall delta draining.
 func (w *batchedWriter) renderToolActivity(ctx context.Context, tool *channels.ToolActivity) {
@@ -378,6 +385,11 @@ func (w *batchedWriter) renderToolActivity(ctx context.Context, tool *channels.T
 		}
 	}
 
+	md, ok := w.toolEntryMarkdown(tool, displayName, viaMuster, args)
+	if ok {
+		w.recordToolLog(md)
+	}
+
 	if w.details != detailsFull {
 		if tool.Kind != channels.ToolCall {
 			return
@@ -386,29 +398,7 @@ func (w *batchedWriter) renderToolActivity(ctx context.Context, tool *channels.T
 		w.kickToolStatus(ctx)
 		return
 	}
-
-	var md string
-	switch tool.Kind {
-	case channels.ToolCall:
-		md = "🔧 " + toolLabel(displayName)
-		if viaMuster {
-			md += " (via muster)"
-		}
-		if summary := compactJSON(args, toolArgsMax); summary != "" {
-			md += "\n" + inlineCode(summary)
-		}
-	case channels.ToolResult:
-		resultName := w.effectiveToolName(tool)
-		md = "↳ " + toolLabel(resultName) + " result"
-		if tool.Name == musterCallToolMetaTool && resultName != tool.Name {
-			md += " (via muster)"
-		}
-		preview := compactJSON(tool.Response, toolResultMax)
-		if preview == "" {
-			return
-		}
-		md += "\n" + inlineCode(preview)
-	default:
+	if !ok {
 		return
 	}
 
@@ -421,6 +411,54 @@ func (w *batchedWriter) renderToolActivity(ctx context.Context, tool *channels.T
 	}
 
 	w.enqueueThreadPost(ctx, threadPost{kind: postToolEntry, md: md})
+}
+
+// toolEntryMarkdown renders one tool call or result as the detailsFull entry:
+// "🔧 name" with an args code span, or "↳ name result" with a payload preview.
+// Name, args, and result are agent- and MCP-controlled, so everything is
+// escaped for the mrkdwn context block it lands in. ok is false when there is
+// nothing to render (a result with no preview, or an unknown kind).
+func (w *batchedWriter) toolEntryMarkdown(tool *channels.ToolActivity, displayName string, viaMuster bool, args map[string]any) (md string, ok bool) {
+	switch tool.Kind {
+	case channels.ToolCall:
+		md = "🔧 " + toolLabel(displayName)
+		if viaMuster {
+			md += " (via muster)"
+		}
+		if summary := compactJSON(args, toolArgsMax); summary != "" {
+			md += "\n" + inlineCode(summary)
+		}
+		return md, true
+	case channels.ToolResult:
+		resultName := w.effectiveToolName(tool)
+		md = "↳ " + toolLabel(resultName) + " result"
+		if tool.Name == musterCallToolMetaTool && resultName != tool.Name {
+			md += " (via muster)"
+		}
+		preview := compactJSON(tool.Response, toolResultMax)
+		if preview == "" {
+			return "", false
+		}
+		return md + "\n" + inlineCode(preview), true
+	default:
+		return "", false
+	}
+}
+
+// recordToolLog retains one rendered entry in the adapter's per-thread tool
+// log, opening the turn's log slot on first use. w.threadTS is the thread root,
+// the same key the shortcut resolves. Only called from run()'s goroutine, so
+// toolLogTurn needs no lock; a resumed run() segment over the same writer (an
+// auto-approved prompt) keeps recording into the same turn. Nil adapter means
+// a direct-writer test; nothing to record into.
+func (w *batchedWriter) recordToolLog(md string) {
+	if w.adapter == nil || w.threadTS == "" {
+		return
+	}
+	if w.toolLogTurn == 0 {
+		w.toolLogTurn = w.adapter.beginToolLogTurn(w.threadTS)
+	}
+	w.adapter.appendToolLog(w.threadTS, w.toolLogTurn, md)
 }
 
 // recordToolStep counts one tool call into the current segment's ticker state.

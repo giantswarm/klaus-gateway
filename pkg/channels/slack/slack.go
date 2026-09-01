@@ -241,6 +241,12 @@ type Adapter struct {
 	resumeMu      sync.Mutex
 	resumeChecked map[string]time.Time
 
+	// toolLogMu guards toolLogs: the per-thread retained tool-call log behind
+	// the "Inspect agent steps" message shortcut (see inspect.go). Entries are
+	// hard-capped per thread and idle threads are evicted past threadStateTTL.
+	toolLogMu sync.Mutex
+	toolLogs  map[string]ttlEntry[*threadToolLog] // keyed by threadID
+
 	// modelMu guards modelCache, the resolved model labels shown by /usage.
 	modelMu    sync.Mutex
 	modelCache map[string]modelEntry // agentRef -> cached model label

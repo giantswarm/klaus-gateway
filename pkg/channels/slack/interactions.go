@@ -32,7 +32,9 @@ type blockActionState struct {
 // interactionPayload is the subset of the Slack interactions payload we need.
 type interactionPayload struct {
 	Type string `json:"type"`
-	User struct {
+	// CallbackID identifies a shortcut on a message_action payload.
+	CallbackID string `json:"callback_id"`
+	User       struct {
 		ID string `json:"id"`
 	} `json:"user"`
 	Channel struct {
@@ -41,7 +43,11 @@ type interactionPayload struct {
 	Container struct {
 		MessageTS string `json:"message_ts"`
 	} `json:"container"`
+	// Message carries the source message of a block_actions click or a
+	// message_action shortcut. TS is set on message_action payloads; ThreadTS
+	// only when the message sits in a thread.
 	Message struct {
+		TS       string `json:"ts"`
 		ThreadTS string `json:"thread_ts"`
 	} `json:"message"`
 	// ResponseURL updates the source message. Ephemeral messages (the
@@ -161,11 +167,17 @@ func (h *interactionsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	h.adapter.background(func(ctx context.Context) { h.adapter.routeInteraction(ctx, payload) })
 }
 
-// routeInteraction dispatches a parsed Slack block_actions payload to the
-// pending HITL task. Shared by the HTTP interactions endpoint (Events API mode)
-// and the Socket Mode interactive-envelope handler (dev mode), so buttons work
-// identically in both deployments.
+// routeInteraction dispatches a parsed Slack interaction payload: a
+// message_action (the "Inspect agent steps" shortcut) to the inspection
+// renderer, a block_actions click to the pending HITL task. Shared by the HTTP
+// interactions endpoint (Events API mode) and the Socket Mode
+// interactive-envelope handler (dev mode), so both work identically in both
+// deployments.
 func (a *Adapter) routeInteraction(ctx context.Context, payload interactionPayload) {
+	if payload.Type == payloadTypeMessageAction {
+		a.handleMessageAction(ctx, payload)
+		return
+	}
 	if payload.Type != payloadTypeBlockActions || len(payload.Actions) == 0 {
 		return
 	}

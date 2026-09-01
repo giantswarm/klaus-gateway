@@ -116,8 +116,19 @@ const connectorCompletionTTL = musterlink.DefaultStateTTL
 const connectorResumeText = "I've signed in to %s, continue"
 
 // payloadTypeBlockActions is the interaction payload type for Block Kit button
-// clicks; other payload types (view submissions, shortcuts) are not routed.
-const payloadTypeBlockActions = "block_actions"
+// clicks; payloadTypeMessageAction is the type for message shortcuts (the ⋯ →
+// Apps menu). Other payload types (view submissions, global shortcuts) are not
+// routed.
+const (
+	payloadTypeBlockActions  = "block_actions"
+	payloadTypeMessageAction = "message_action"
+)
+
+// inspectShortcutCallbackID is the callback_id of the "Inspect agent steps"
+// message shortcut registered in deploy/slack/manifest.yaml. Invoked from any
+// message in a thread, it replies with an ephemeral rendering of the thread's
+// retained tool-call log (see inspect.go).
+const inspectShortcutCallbackID = "inspect_agent_steps"
 
 // labelApproved is the human-readable resume text / approve keyword shared by
 // the button and free-text decision paths.

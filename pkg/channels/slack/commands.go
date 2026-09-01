@@ -117,6 +117,7 @@ func parseCommand(text string) *slashCommand {
 const helpCommands = "• `/stop` — interrupt the current turn\n" +
 	"• `/usage` — show token usage for the last turn and the session\n" +
 	"• `/details on|off|full` — show or hide the agent's tool activity\n" +
+	"• *Inspect agent steps* (message shortcut: ⋯ menu → Apps, on any message in the thread) — see the tool calls and results behind recent turns, visible only to you\n" +
 	"• `/help` — show this message"
 
 // agentHelpText is appended to the help reply when agent selection is available.
