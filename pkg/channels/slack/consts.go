@@ -316,10 +316,12 @@ const (
 	paramLimit     = "limit" // conversations.replies page size
 	paramUser      = "user"
 	paramBlocks    = "blocks"
-	paramTimestamp = "timestamp" // reactions.* target message ts
-	paramName      = "name"      // reactions.* emoji name
-	paramUsername  = "username"  // chat:write.customize display name
-	paramIconURL   = "icon_url"  // chat:write.customize display icon
+	paramTimestamp = "timestamp"  // reactions.* target message ts
+	paramName      = "name"       // reactions.* emoji name
+	paramUsername  = "username"   // chat:write.customize display name
+	paramIconURL   = "icon_url"   // chat:write.customize display icon
+	paramChannelID = "channel_id" // assistant.threads.setStatus channel
+	paramStatus    = "status"     // assistant.threads.setStatus text ("" clears)
 	// unfurl_links / unfurl_media are forced to false on every chat.postMessage:
 	// bot posts relay agent- and tool-controlled links, and an unfurl has
 	// Slack's crawler fetch them (fatal for single-use auth links).

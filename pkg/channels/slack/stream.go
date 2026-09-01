@@ -63,7 +63,12 @@ const (
 // status ticker at the default details level — one muted line that updates in
 // place while the agent works and collapses to a one-line receipt — and, at
 // detailsFull, additionally an aggregated audit message of per-call
-// context-block entries. The ticker is per-segment: narration closes the live
+// context-block entries. In the assistant pane (the DM surface of an
+// Agent-type app) the live line renders as Slack's native status indicator
+// under the composer (assistant.threads.setStatus) instead of a message, so
+// the receipt is the segment's only in-thread ticker artifact; installs where
+// setStatus is unavailable latch a process-wide downgrade back to the message
+// ticker (paneTickerStatus). The ticker is per-segment: narration closes the live
 // ticker into its receipt at its position (counting only that segment's
 // steps), and the next tool call opens a fresh ticker message below the
 // narration, so a long turn reads narration → receipt → narration → receipt in
@@ -533,6 +538,48 @@ func renderToolTicker(steps int, current string) string {
 	return md
 }
 
+// paneTickerStatus renders the live ticker as the assistant pane's native
+// status line — the indicator Slack shows under the composer — and reports
+// whether it landed, in which case no ticker message is needed. False means
+// fall back to the message ticker: the surface is a channel (setStatus does
+// not exist there), a previous rejection latched the process-wide downgrade,
+// or this call failed. Only an unsupported-class rejection latches — it means
+// the install can never set the status, which no retry fixes within this
+// process; any other failure falls back for this render only, so the next
+// kick tries the native line again.
+func (w *batchedWriter) paneTickerStatus(ctx context.Context, status string) bool {
+	if w.adapter == nil || !isDMChannelID(w.channel) || w.adapter.assistantStatusUnsupported.Load() {
+		return false
+	}
+	err := w.client.setAssistantStatus(ctx, w.channel, w.threadTS, status)
+	if err == nil {
+		return true
+	}
+	if errors.Is(err, errAssistantStatusUnsupported) {
+		w.adapter.assistantStatusUnsupported.Store(true)
+		w.logger.Warn("slack: native assistant status unavailable, falling back to the message ticker", "error", err)
+	} else {
+		w.logger.Warn("slack: set assistant status failed, using the message ticker for this render", "error", err)
+	}
+	return false
+}
+
+// paneStatusClearTimeout bounds the detached clear of the native status line.
+const paneStatusClearTimeout = 10 * time.Second
+
+// clearPaneStatus removes the native status line so a turn that ends, fails,
+// or pauses on a prompt never strands "working…" under the composer. It runs
+// detached from the turn context on purpose: the clear matters most when the
+// turn was just cancelled or errored. Best-effort — Slack also auto-clears
+// the line on the app's next in-thread post and after a two-minute timeout.
+func (w *batchedWriter) clearPaneStatus(ctx context.Context) {
+	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), paneStatusClearTimeout)
+	defer cancel()
+	if err := w.client.setAssistantStatus(cctx, w.channel, w.threadTS, ""); err != nil {
+		w.logger.Warn("slack: clear assistant status failed", "error", err)
+	}
+}
+
 // receiptNameMax bounds how many distinct tool names the receipt lists.
 const receiptNameMax = 8
 
@@ -974,7 +1021,8 @@ type statusMessage struct {
 // threadPoster lands queued in-thread items in order: narration as its own
 // message (or, when short and its segment's ticker is not live yet, folded
 // into the segment's status message), detailsFull tool entries appended to the
-// running activity segment, and status kicks refreshed onto the live ticker.
+// running activity segment, and status kicks refreshed onto the live ticker —
+// the pane's native status line where available, the message ticker otherwise.
 // A narration message closes the ticker segment: the status message collapses
 // into the receipt it carries — at its position, with only that segment's
 // counts — and the next tool call opens a fresh status message below the
@@ -992,6 +1040,11 @@ func (w *batchedWriter) threadPoster(ctx context.Context) {
 	// receipt counts: later renders keep retrying them.
 	var undelivered []statusMessage
 	kicked := false
+	// paneStatusSet records that the live ticker rendered as the pane's native
+	// status line at least once this poster cycle, so the tail clears it: Slack
+	// auto-clears on the app's next in-thread post, but a turn that errors or
+	// pauses without posting again would strand "working…" under the composer.
+	paneStatusSet := false
 	retryUndelivered := func() {
 		kept := undelivered[:0]
 		for i := range undelivered {
@@ -1026,8 +1079,19 @@ func (w *batchedWriter) threadPoster(ctx context.Context) {
 		if kicked {
 			kicked = false
 			if steps, current := w.toolStatusSnapshot(); steps > 0 {
-				status.ticker = renderToolTicker(steps, current)
-				status.dirty = true
+				line := renderToolTicker(steps, current)
+				// In the assistant pane the live line renders as the native
+				// status indicator, not message content, so the segment's only
+				// in-thread artifact is its receipt. A segment whose message
+				// already carries a ticker line (native delivery failed earlier
+				// in the segment) keeps the message rendering, so one segment
+				// never shows the live line in both places.
+				if status.ticker == "" && w.paneTickerStatus(ctx, line) {
+					paneStatusSet = true
+				} else {
+					status.ticker = line
+					status.dirty = true
+				}
 			}
 		}
 		w.upsertStatus(ctx, &status)
@@ -1102,6 +1166,11 @@ func (w *batchedWriter) threadPoster(ctx context.Context) {
 		status.dirty = true
 	}
 	w.upsertStatus(ctx, &status)
+	// Every exit drains this poster — turn end, error, and the prompt pause —
+	// so this one clear covers them all.
+	if paneStatusSet {
+		w.clearPaneStatus(ctx)
+	}
 }
 
 // upsertStatus delivers the status message's blocks — folded narration above
@@ -1704,6 +1773,35 @@ func (c *slackAPIClient) threadFirstHumanMessage(ctx context.Context, channel, t
 // reactions:write scope is missing, or the token type disallows it), so the
 // caller should fall back to text-based progress.
 var errReactionsUnsupported = errors.New("slack: reactions unsupported")
+
+// errAssistantStatusUnsupported reports that the native assistant status line
+// is unavailable on this install (the assistant:write scope is missing, the
+// token type disallows it, or the app is not an Agent-type app, so the DM is
+// a plain conversation rather than the assistant pane), so the caller should
+// latch the process-wide downgrade to the message ticker.
+var errAssistantStatusUnsupported = errors.New("slack: assistant status unsupported")
+
+// setAssistantStatus sets the native "working…" status line under the
+// assistant-pane composer (assistant.threads.setStatus); an empty status
+// clears it. Slack also clears the line on its own when the app posts its
+// next message into the thread, and after two minutes without one. Rejections
+// that mean the install can never set it are returned as
+// errAssistantStatusUnsupported; anything else (an invalid thread, a
+// transient failure) is surfaced as-is so the caller falls back for this call
+// without writing off the whole process.
+func (c *slackAPIClient) setAssistantStatus(ctx context.Context, channelID, threadTS, status string) error {
+	_, err := c.postJSON(ctx, "assistant.threads.setStatus", map[string]any{
+		paramChannelID: channelID,
+		paramThreadTS:  threadTS,
+		paramStatus:    status,
+	})
+	if err != nil && (strings.Contains(err.Error(), "missing_scope") ||
+		strings.Contains(err.Error(), "not_allowed_token_type") ||
+		strings.Contains(err.Error(), "method_not_supported_for_channel_type")) {
+		return errAssistantStatusUnsupported
+	}
+	return err
+}
 
 func (c *slackAPIClient) reactionsAdd(ctx context.Context, channel, ts, name string) error {
 	return c.reaction(ctx, "reactions.add", channel, ts, name)

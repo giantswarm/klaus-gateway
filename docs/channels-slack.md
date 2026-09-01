@@ -34,6 +34,19 @@ replaces the top-level DM composer, so every user message arrives threaded
 per-message-thread DM path (and the channel `/usage` fallback that goes with it)
 applies only to non-Agent deployments.
 
+In pane threads the live tool ticker (`⏳ tool… · step N`) renders as Slack's
+**native status indicator** under the composer (`assistant.threads.setStatus`,
+requires the `assistant:write` scope from the manifest) instead of a message,
+so while the agent works the user sees the native "working…" line and the only
+ticker artifact left in the thread is the collapsed receipt (`🛠️ N steps · …`)
+posted when a segment closes or the turn ends. The status is cleared explicitly
+on turn end, error, and prompt pause (Slack also auto-clears it on the app's
+next in-thread post and after two idle minutes). Installs where `setStatus` is
+unavailable — the scope missing from the bot token, or a non-Agent app whose
+DMs are plain conversations — downgrade automatically to the message ticker for
+the rest of the process lifetime. Channels always use the message ticker:
+`setStatus` does not exist there.
+
 ### Threads and sessions
 
 - `threadID` is `thread_ts` if set, otherwise the message `ts`.
