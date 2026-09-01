@@ -235,6 +235,17 @@ they link and the running turn finishes.
   how it looks. When no icon is available the app's own icon is kept. Swarmgeist's other
   messages (sign-in, errors, the DM redirect, the channel intro) keep the app's default
   identity. Requires `chat:write.customize`.
+- **Inspect agent steps.** By default a turn shows only a compact status ticker and a
+  one-line tool receipt. To see the actual tool calls after the fact, invoke the
+  **Inspect agent steps** message shortcut (⋯ menu → Apps) on any message in the thread:
+  the gateway replies with an ephemeral, invoker-only rendering of the retained tool-call
+  log — per call, the tool name with its arguments and a result preview, grouped per turn
+  (the same content `/details full` streams live). The log is in-memory and bounded: the
+  last 100 calls per thread, kept for up to 24 hours and not surviving a gateway restart;
+  nothing is recorded while the thread is set to `/details off`. When nothing is retained
+  the reply says so and points at `/details full` for live debugging. The shortcut is
+  registered in `deploy/slack/manifest.yaml`; changing the manifest requires re-syncing
+  the app config at api.slack.com/apps.
 - **HITL "Chat".** A tool-approval prompt shows Approve / Deny / **Chat**. Chat holds the
   pending tool call and invites a follow-up question in the thread; the reply is routed to the
   paused task. A question resolves it as a reject carrying the question (the agent answers and
