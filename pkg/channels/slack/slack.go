@@ -260,6 +260,16 @@ type Adapter struct {
 	bindingMu     sync.Mutex
 	agentBindings map[string]ttlEntry[string] // keyed by threadID
 
+	// announceMu guards launchAnnounced: the agent last announced with the
+	// "Bringing in …" launch notice, per thread. The intro posts only when it
+	// informs — a thread's first turn, or a change of its bound agent — so
+	// repeated turns carrying the same /agent prefix stay quiet. Entries idle
+	// past threadStateTTL are evicted; the record is in-memory only, so after
+	// an eviction or restart a root turn may announce again — acceptable,
+	// where never announcing is not.
+	announceMu      sync.Mutex
+	launchAnnounced map[string]ttlEntry[string] // threadID -> announced agent ref
+
 	// rosterMu guards the briefly-cached /agent roster (see rosterAgents).
 	rosterMu      sync.Mutex
 	rosterCached  []pkga2a.AgentInfo
@@ -760,6 +770,52 @@ func (a *Adapter) agentClientNamed(ctx context.Context, agentRef, username strin
 		_, c.iconURL = a.AgentCards.CardIdentity(ctx, agentRef)
 	}
 	return c
+}
+
+// maybeAnnounceLaunch posts the launch announcement when it actually informs:
+// the first turn of a thread, or a turn that changes the thread's bound
+// agent. A repeated turn naming the conversation's own agent (a re-mention
+// carrying the same /agent prefix) stays quiet — the intro is thread
+// furniture, not a per-turn banner. Keyed on in-memory per-thread state (like
+// the details level): after a TTL eviction or restart the record is gone, so
+// a reply into an unrecorded thread also stays quiet — mid-conversation the
+// intro would land out of place, and the thread saw it when it started.
+// Skipped for resumed tasks (the conversation is visibly underway) and for
+// DMs (a 1:1 DM is the agent conversation itself, with no channel handoff;
+// Slack DM channel IDs start with "D").
+func (a *Adapter) maybeAnnounceLaunch(ctx context.Context, slackChannel string, msg channels.InboundMessage) {
+	if msg.TaskID != "" || isDMChannelID(slackChannel) {
+		return
+	}
+	if !a.claimLaunchAnnounce(msg.ThreadID, msg.AgentRef, msg.ThreadID == msg.MessageID) {
+		return
+	}
+	a.postLaunchAnnouncement(ctx, slackChannel, msg.ThreadID, msg.AgentRef)
+}
+
+// claimLaunchAnnounce records agentRef as threadID's announced agent and
+// reports whether the intro should post: yes for a thread root with no live
+// record (the thread's first turn) and for a recorded agent that differs (the
+// binding changed); no for an unchanged agent and for a non-root turn with no
+// record. Every call re-records and refreshes the deadline, so a thread in
+// active use never re-announces its own agent, only idle ones are evicted.
+// Check and set are atomic under announceMu, and the claim is recorded before
+// the post: a post that then fails is not retried on later turns (they carry
+// nothing new to announce), matching the post's best-effort contract.
+func (a *Adapter) claimLaunchAnnounce(threadID, agentRef string, root bool) bool {
+	now := time.Now()
+	a.announceMu.Lock()
+	defer a.announceMu.Unlock()
+	if a.launchAnnounced == nil {
+		a.launchAnnounced = make(map[string]ttlEntry[string])
+	}
+	sweepExpired(a.launchAnnounced, now)
+	entry, found := a.launchAnnounced[threadID]
+	a.launchAnnounced[threadID] = ttlEntry[string]{value: agentRef, expires: now.Add(threadStateTTL)}
+	if found {
+		return entry.value != agentRef
+	}
+	return root
 }
 
 // postLaunchAnnouncement posts the handoff notice when a new thread starts,
@@ -1762,16 +1818,13 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 			}
 		},
 		onAgentResolved: func(msg channels.InboundMessage) {
-			// New channel thread (a root mention starting a conversation): post the
-			// Swarmgeist handoff notice before the agent takes over, so the
-			// app-to-agent transition is explicit. Posted only once the agent
-			// resolved, so a resolve failure does not announce a launch and then
-			// error out. Skipped for thread replies, resumed tasks, and DMs (a 1:1
-			// DM is the agent conversation itself, with no channel handoff). Slack
-			// DM channel IDs start with "D".
-			if firstSight && msg.ThreadID == msg.MessageID && msg.TaskID == "" && !strings.HasPrefix(slackChannel, "D") {
-				a.postLaunchAnnouncement(ctx, slackChannel, msg.ThreadID, msg.AgentRef)
-			}
+			// Post the Swarmgeist handoff notice before the agent takes over, so
+			// the app-to-agent transition is explicit — but only when it informs:
+			// a new channel thread, or a changed binding; repeated turns with the
+			// same agent stay quiet (suppression and the task/DM guards live in
+			// maybeAnnounceLaunch). Posted only once the agent resolved, so a
+			// resolve failure does not announce a launch and then error out.
+			a.maybeAnnounceLaunch(ctx, slackChannel, msg)
 		},
 		onFailure: func() { a.postDispatchFailureNote(ctx, slackChannel, msg.ThreadID) },
 	})
