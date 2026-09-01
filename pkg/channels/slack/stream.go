@@ -1350,13 +1350,18 @@ func toolResultPreview(resp map[string]any, max int) (preview string, isErr bool
 // whether the payload is a recognized text carrier: an MCP tool-result
 // envelope ({"content": [{"type": "text", "text": ...}, ...], "isError": ...}),
 // whose text items are joined and whose non-text items render as a [type]
-// placeholder, or kagent's {"output": text} wrap around a plain tool output.
-// Any other shape yields ok false so the caller keeps the raw JSON rendering.
+// placeholder, or the ADK/kagent single-key wrap around a plain tool output
+// ({"output": text} or {"result": text}, depending on the tool type). Any
+// other shape yields ok false so the caller keeps the raw JSON rendering.
 func toolResultText(v map[string]any) (text string, isErr, ok bool) {
 	items, isEnvelope := v["content"].([]any)
 	if !isEnvelope {
-		if out, isOutput := v["output"].(string); isOutput && len(v) == 1 {
-			return out, false, true
+		if len(v) == 1 {
+			for _, key := range []string{"output", "result"} {
+				if out, isText := v[key].(string); isText {
+					return out, false, true
+				}
+			}
 		}
 		return "", false, false
 	}
