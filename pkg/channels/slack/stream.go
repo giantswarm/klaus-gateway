@@ -420,9 +420,12 @@ func (w *batchedWriter) renderToolActivity(ctx context.Context, tool *channels.T
 
 // toolEntryMarkdown renders one tool call or result as the detailsFull entry:
 // "🔧 name" with an args code span, or "↳ name result" with a payload preview.
-// Name, args, and result are agent- and MCP-controlled, so everything is
-// escaped for the mrkdwn context block it lands in. ok is false when there is
-// nothing to render (a result with no preview, or an unknown kind).
+// The result preview is the innermost readable payload (MCP envelopes and
+// muster's serialized re-wraps are unwrapped first), with ⚠️ marking a result
+// the tool reported as an error. Name, args, and result are agent- and
+// MCP-controlled, so everything is escaped for the mrkdwn context block it
+// lands in. ok is false when there is nothing to render (a result with no
+// preview, or an unknown kind).
 func (w *batchedWriter) toolEntryMarkdown(tool *channels.ToolActivity, displayName string, viaMuster bool, args map[string]any) (md string, ok bool) {
 	switch tool.Kind {
 	case channels.ToolCall:
@@ -436,11 +439,15 @@ func (w *batchedWriter) toolEntryMarkdown(tool *channels.ToolActivity, displayNa
 		return md, true
 	case channels.ToolResult:
 		resultName := w.effectiveToolName(tool)
-		md = "↳ " + toolLabel(resultName) + " result"
+		preview, isErr := toolResultPreview(tool.Response, toolResultMax)
+		md = "↳ "
+		if isErr {
+			md += "⚠️ "
+		}
+		md += toolLabel(resultName) + " result"
 		if tool.Name == musterCallToolMetaTool && resultName != tool.Name {
 			md += " (via muster)"
 		}
-		preview := compactJSON(tool.Response, toolResultMax)
 		if preview == "" {
 			return "", false
 		}
@@ -1277,6 +1284,12 @@ func compactJSON(v map[string]any, max int) string {
 	if len(v) == 0 {
 		return ""
 	}
+	return compactJSONValue(v, max)
+}
+
+// compactJSONValue is compactJSON over any JSON value, so unwrapped payloads
+// that are arrays render the same single readable line as objects.
+func compactJSONValue(v any, max int) string {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return ""
@@ -1286,6 +1299,99 @@ func compactJSON(v map[string]any, max int) string {
 		return string(rs[:max]) + "…"
 	}
 	return string(rs)
+}
+
+// maxMCPResultUnwrapDepth bounds the unwrapping of nested serialized MCP
+// results. muster's call_tool serializes the inner tool's whole result as the
+// outer envelope's text, so real payloads arrive double-wrapped (and the inner
+// text is often itself a JSON document); anything deeper is hostile or broken
+// input, rendered as-is.
+const maxMCPResultUnwrapDepth = 4
+
+// toolResultPreview renders a tool result payload as a single readable line,
+// spending the max budget on the innermost actual payload instead of envelope
+// boilerplate. An MCP result envelope ({"content": [...], "isError": ...}) or
+// kagent's plain-output wrap ({"output": text}) is reduced to its text; text
+// that is itself a serialized JSON document (muster's call_tool re-wrap) is
+// decoded and unwrapped again up to maxMCPResultUnwrapDepth. The innermost
+// payload renders as compact JSON when it is a JSON document and as
+// whitespace-collapsed plain text otherwise. isErr reports whether any
+// unwrapped envelope flagged the result as an error. Payloads with any other
+// shape render unchanged via compactJSON.
+func toolResultPreview(resp map[string]any, max int) (preview string, isErr bool) {
+	text, isErr, ok := toolResultText(resp)
+	if !ok {
+		return compactJSON(resp, max), false
+	}
+	for depth := 0; depth < maxMCPResultUnwrapDepth; depth++ {
+		v, isJSON := decodeJSONDocument(text)
+		if !isJSON {
+			break
+		}
+		if m, isMap := v.(map[string]any); isMap {
+			if inner, innerErr, isEnvelope := toolResultText(m); isEnvelope {
+				text = inner
+				isErr = isErr || innerErr
+				continue
+			}
+		}
+		return compactJSONValue(v, max), isErr
+	}
+	text = strings.Join(strings.Fields(text), " ")
+	if text == "" {
+		// An envelope with no text content (empty content list, non-text items
+		// only): fall back to the raw payload so the entry still shows something.
+		return compactJSON(resp, max), isErr
+	}
+	return truncateRunes(text, max), isErr
+}
+
+// toolResultText extracts the text a tool result payload carries. ok reports
+// whether the payload is a recognized text carrier: an MCP tool-result
+// envelope ({"content": [{"type": "text", "text": ...}, ...], "isError": ...}),
+// whose text items are joined and whose non-text items render as a [type]
+// placeholder, or kagent's {"output": text} wrap around a plain tool output.
+// Any other shape yields ok false so the caller keeps the raw JSON rendering.
+func toolResultText(v map[string]any) (text string, isErr, ok bool) {
+	items, isEnvelope := v["content"].([]any)
+	if !isEnvelope {
+		if out, isOutput := v["output"].(string); isOutput && len(v) == 1 {
+			return out, false, true
+		}
+		return "", false, false
+	}
+	parts := make([]string, 0, len(items))
+	for _, item := range items {
+		m, isMap := item.(map[string]any)
+		if !isMap {
+			return "", false, false
+		}
+		if s, hasText := m["text"].(string); hasText {
+			parts = append(parts, s)
+			continue
+		}
+		typ, hasType := m["type"].(string)
+		if !hasType {
+			return "", false, false
+		}
+		parts = append(parts, "["+typ+"]")
+	}
+	isErr, _ = v["isError"].(bool)
+	return strings.Join(parts, "\n"), isErr, true
+}
+
+// decodeJSONDocument parses text as a JSON object or array. Scalars are
+// deliberately not decoded: a bare string or number is already the readable
+// payload, and decoding it would strip nothing but its quotes.
+func decodeJSONDocument(text string) (v any, ok bool) {
+	t := strings.TrimSpace(text)
+	if !strings.HasPrefix(t, "{") && !strings.HasPrefix(t, "[") {
+		return nil, false
+	}
+	if err := json.Unmarshal([]byte(t), &v); err != nil {
+		return nil, false
+	}
+	return v, true
 }
 
 // spaceStructuralJSON inserts one space after ':' and ',' that fall outside

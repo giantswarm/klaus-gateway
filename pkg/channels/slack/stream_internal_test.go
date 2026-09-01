@@ -1815,7 +1815,191 @@ func TestRenderToolActivity_UnwrapsCallToolResult(t *testing.T) {
 	require.Len(t, posts, 2)
 	require.Contains(t, posts[0], "🔧 *`x_kubernetes_get`* (via muster)")
 	require.Contains(t, posts[1], "↳ *`x_kubernetes_get`* result (via muster)")
-	require.Contains(t, posts[1], `{"output": "ok"}`)
+	require.Contains(t, posts[1], "`ok`", "the output wrap is unwrapped to the bare payload")
+	require.NotContains(t, posts[1], `{"output"`)
+}
+
+// mcpEnvelope builds an MCP tool-result envelope carrying one text item, the
+// shape MCP servers (and muster's call_tool) return results in.
+func mcpEnvelope(text string, isErr bool) map[string]any {
+	return map[string]any{
+		"content": []any{map[string]any{"type": "text", "text": text}},
+		"isError": isErr,
+	}
+}
+
+// serialize marshals an envelope the way muster's call_tool re-wraps the inner
+// tool's result into the outer envelope's text.
+func serialize(t *testing.T, v map[string]any) string {
+	t.Helper()
+	b, err := json.Marshal(v)
+	require.NoError(t, err)
+	return string(b)
+}
+
+func TestToolResultPreview(t *testing.T) {
+	clusters := `{"clusters":["alpha","beta"]}`
+
+	t.Run("non-envelope payloads keep the raw JSON rendering", func(t *testing.T) {
+		preview, isErr := toolResultPreview(map[string]any{"items": "3 pods"}, 100)
+		require.Equal(t, `{"items": "3 pods"}`, preview)
+		require.False(t, isErr)
+	})
+
+	t.Run("output wrap with extra keys is not a text carrier", func(t *testing.T) {
+		preview, _ := toolResultPreview(map[string]any{"output": "x", "status": "ok"}, 100)
+		require.Equal(t, `{"output": "x", "status": "ok"}`, preview)
+	})
+
+	t.Run("output wrap unwraps to the bare text", func(t *testing.T) {
+		preview, isErr := toolResultPreview(map[string]any{"output": "all fine"}, 100)
+		require.Equal(t, "all fine", preview)
+		require.False(t, isErr)
+	})
+
+	t.Run("envelope text renders without the content boilerplate", func(t *testing.T) {
+		preview, isErr := toolResultPreview(mcpEnvelope("Server: pro\nStatus: ok", false), 100)
+		require.Equal(t, "Server: pro Status: ok", preview, "newlines collapse deliberately")
+		require.False(t, isErr)
+	})
+
+	t.Run("JSON text decodes to compact JSON with real quotes", func(t *testing.T) {
+		preview, _ := toolResultPreview(mcpEnvelope("{\n  \"filters\": {\n    \"query\": \"list clusters\"\n  }\n}", false), 100)
+		require.Equal(t, `{"filters": {"query": "list clusters"}}`, preview)
+	})
+
+	t.Run("muster double wrap unwraps to the innermost payload", func(t *testing.T) {
+		resp := mcpEnvelope(serialize(t, mcpEnvelope(clusters, false)), false)
+		preview, isErr := toolResultPreview(resp, 100)
+		require.Equal(t, `{"clusters": ["alpha", "beta"]}`, preview)
+		require.False(t, isErr)
+	})
+
+	t.Run("triple wrap unwraps too", func(t *testing.T) {
+		resp := mcpEnvelope(serialize(t, mcpEnvelope(serialize(t, mcpEnvelope(clusters, false)), false)), false)
+		preview, _ := toolResultPreview(resp, 100)
+		require.Equal(t, `{"clusters": ["alpha", "beta"]}`, preview)
+	})
+
+	t.Run("inner isError surfaces through the wrap", func(t *testing.T) {
+		resp := mcpEnvelope(serialize(t, mcpEnvelope("tool exploded", true)), false)
+		preview, isErr := toolResultPreview(resp, 100)
+		require.Equal(t, "tool exploded", preview)
+		require.True(t, isErr)
+	})
+
+	t.Run("outer isError surfaces on a plain envelope", func(t *testing.T) {
+		_, isErr := toolResultPreview(mcpEnvelope("denied", true), 100)
+		require.True(t, isErr)
+	})
+
+	t.Run("unwrapping stops at the depth cap", func(t *testing.T) {
+		text := clusters
+		for i := 0; i < maxMCPResultUnwrapDepth+2; i++ {
+			text = serialize(t, mcpEnvelope(text, false))
+		}
+		var resp map[string]any
+		require.NoError(t, json.Unmarshal([]byte(text), &resp))
+		preview, _ := toolResultPreview(resp, 2000)
+		require.Contains(t, preview, "content", "past the cap the remaining wrap renders as-is")
+	})
+
+	t.Run("truncation spends the budget on the unwrapped payload", func(t *testing.T) {
+		long := strings.Repeat("cluster alpha ", 50)
+		preview, _ := toolResultPreview(mcpEnvelope(long, false), 20)
+		require.LessOrEqual(t, len([]rune(preview)), 20)
+		require.True(t, strings.HasPrefix(preview, "cluster alpha"), "budget goes to payload, not envelope: %q", preview)
+		require.Contains(t, preview, "…")
+	})
+
+	t.Run("non-text content items render as type placeholders", func(t *testing.T) {
+		resp := map[string]any{"content": []any{
+			map[string]any{"type": "image", "data": "AAAA"},
+			map[string]any{"type": "text", "text": "a caption"},
+		}}
+		preview, _ := toolResultPreview(resp, 100)
+		require.Equal(t, "[image] a caption", preview)
+	})
+
+	t.Run("empty content falls back to the raw payload", func(t *testing.T) {
+		preview, isErr := toolResultPreview(map[string]any{"content": []any{}, "isError": true}, 100)
+		require.Equal(t, `{"content": [], "isError": true}`, preview)
+		require.True(t, isErr)
+	})
+
+	t.Run("malformed content items keep the raw rendering", func(t *testing.T) {
+		preview, _ := toolResultPreview(map[string]any{"content": []any{"not a map"}}, 100)
+		require.Equal(t, `{"content": ["not a map"]}`, preview)
+	})
+}
+
+// A direct MCP tool result (the filter_tools case) renders the payload the
+// envelope carries, not the envelope itself.
+func TestRenderToolActivity_UnwrapsMCPResultEnvelope(t *testing.T) {
+	posts := captureToolPostBlocks(t, detailsFull,
+		toolCallDelta("filter_tools"),
+		channels.OutboundDelta{Kind: channels.DeltaToolActivity, Tool: &channels.ToolActivity{
+			Kind: channels.ToolResult, Name: "filter_tools",
+			Response: mcpEnvelope("{\n  \"filters\": {\n    \"query\": \"list clusters\"\n  }\n}", false),
+		}},
+	)
+	require.Len(t, posts, 2)
+	require.Contains(t, posts[1], "↳ *`filter_tools`* result")
+	require.Contains(t, posts[1], `{"filters": {"query": "list clusters"}}`)
+	require.NotContains(t, posts[1], "content", "no envelope boilerplate in the preview")
+	require.NotContains(t, posts[1], `\n`, "no literal escape sequences in the preview")
+}
+
+// A muster call_tool result is an envelope whose text is the serialized inner
+// result: the entry names the inner tool and previews the innermost payload.
+func TestRenderToolActivity_UnwrapsMusterDoubleWrappedResult(t *testing.T) {
+	inner := serialize(t, mcpEnvelope(`{"clusters":["alpha","beta"]}`, false))
+	posts := captureToolPostBlocks(t, detailsFull,
+		channels.OutboundDelta{Kind: channels.DeltaToolActivity, Tool: &channels.ToolActivity{
+			Kind: channels.ToolCall, Name: musterCallToolMetaTool, CallID: "c1",
+			Args: map[string]any{"name": "x_kubernetes_capi_list_clusters", "arguments": map[string]any{"management_cluster": "gazelle"}},
+		}},
+		channels.OutboundDelta{Kind: channels.DeltaToolActivity, Tool: &channels.ToolActivity{
+			Kind: channels.ToolResult, Name: musterCallToolMetaTool, CallID: "c1",
+			Response: mcpEnvelope(inner, false),
+		}},
+	)
+	require.Len(t, posts, 2)
+	require.Contains(t, posts[1], "↳ *`x_kubernetes_capi_list_clusters`* result (via muster)")
+	require.Contains(t, posts[1], `{"clusters": ["alpha", "beta"]}`)
+	require.NotContains(t, posts[1], `\"`, "no double-escaped quotes in the preview")
+}
+
+// A result the tool flagged as an error is marked visibly.
+func TestRenderToolActivity_FlagsErrorResults(t *testing.T) {
+	posts := captureToolPostBlocks(t, detailsFull,
+		toolCallDelta("kube_get"),
+		channels.OutboundDelta{Kind: channels.DeltaToolActivity, Tool: &channels.ToolActivity{
+			Kind: channels.ToolResult, Name: "kube_get",
+			Response: mcpEnvelope("forbidden: access denied", true),
+		}},
+	)
+	require.Len(t, posts, 2)
+	require.Contains(t, posts[1], "↳ ⚠️ *`kube_get`* result")
+	require.Contains(t, posts[1], "forbidden: access denied")
+}
+
+// Unwrapped result text is MCP-server-controlled and no longer neutralised by
+// JSON marshaling: the mrkdwn escaping must hold on the plain-text path.
+func TestRenderToolActivity_UnwrappedResultEscapesHostileText(t *testing.T) {
+	posts := captureToolPostBlocks(t, detailsFull,
+		toolCallDelta("kube_get"),
+		channels.OutboundDelta{Kind: channels.DeltaToolActivity, Tool: &channels.ToolActivity{
+			Kind: channels.ToolResult, Name: "kube_get",
+			Response: mcpEnvelope("ping <!channel> then `break`\nout <@U1>", false),
+		}},
+	)
+	require.Len(t, posts, 2)
+	require.NotContains(t, posts[1], "<!channel>")
+	require.NotContains(t, posts[1], "<@U1>")
+	require.Contains(t, posts[1], "&lt;!channel&gt;")
+	require.NotContains(t, posts[1], "`break`", "backticks must not terminate the code span")
+	require.NotContains(t, posts[1], "\nout", "newlines must not carry content out of the span")
 }
 
 // Tool names and payload previews are agent- and MCP-server-controlled text
