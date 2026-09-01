@@ -1196,10 +1196,11 @@ func toolCallDelta(name string) channels.OutboundDelta {
 
 // The agent's narration reads in order with the status ticker it introduces,
 // and the answer still lands last (klaus-gateway#197). At the default level
-// the whole turn's tool activity is ONE muted line: the ticker posts at the
-// first tool call, updates in place for later ones, and collapses into the
-// receipt when the turn ends.
-func TestRenderNarration_PostsOwnMessageBeforeToolStatusAndAnswer(t *testing.T) {
+// the whole turn's tool activity is ONE muted line, and a short pre-tool
+// narration folds into that same status message as a block above the ticker;
+// narration arriving while the ticker is already live keeps its own message
+// below it, so folding never reorders the prose.
+func TestRenderNarration_FoldsIntoStatusMessageAndAnswerLandsLast(t *testing.T) {
 	msgs, w := capturePosts(t, detailsOn, "",
 		narrationDelta("Let me pull the HelmRelease from both clusters."),
 		toolCallDelta("x_kubernetes_get"),
@@ -1209,13 +1210,151 @@ func TestRenderNarration_PostsOwnMessageBeforeToolStatusAndAnswer(t *testing.T) 
 		channels.OutboundDelta{Kind: channels.DeltaText, Content: "here is the diff"},
 	)
 
-	require.Len(t, msgs, 4)
-	require.Equal(t, capturedMessage{"Let me pull the HelmRelease from both clusters."}, msgs[0])
-	require.Equal(t, capturedMessage{"🛠️ 3 steps · x_kubernetes_get ×3"}, msgs[1],
-		"the ticker sits where tools started and ends as the receipt")
-	require.Equal(t, capturedMessage{"Both share the same chart version."}, msgs[2])
-	require.Equal(t, capturedMessage{"here is the diff"}, msgs[3], "the answer is the turn's last message")
+	require.Len(t, msgs, 3)
+	require.Equal(t, capturedMessage{
+		"Let me pull the HelmRelease from both clusters.",
+		"🛠️ 3 steps · x_kubernetes_get ×3",
+	}, msgs[0], "pre-tool narration folds above the ticker, which ends as the receipt")
+	require.Equal(t, capturedMessage{"Both share the same chart version."}, msgs[1],
+		"narration while the ticker is live keeps its own message")
+	require.Equal(t, capturedMessage{"here is the diff"}, msgs[2], "the answer is the turn's last message")
 	require.True(t, w.wroteContent())
+}
+
+// The typical turn — one short narration, a few tool calls, the answer —
+// renders as exactly one status message plus the answer: the narration block
+// kept above the collapsed receipt, with no full-weight narration message.
+func TestNarrationFold_SingleStatusMessagePlusAnswer(t *testing.T) {
+	msgs, _ := capturePosts(t, detailsOn, "",
+		narrationDelta("Sure! I'll call the skills tool right away."),
+		toolCallDelta("skills"),
+		toolCallDelta("skills"),
+		toolCallDelta("skills"),
+		channels.OutboundDelta{Kind: channels.DeltaText, Content: "the answer"},
+	)
+
+	require.Len(t, msgs, 2, "one status message plus the answer")
+	require.Equal(t, capturedMessage{
+		"Sure! I'll call the skills tool right away.",
+		"🛠️ 3 steps · skills ×3",
+	}, msgs[0])
+	require.Equal(t, capturedMessage{"the answer"}, msgs[1])
+}
+
+// Folding is only for narration that is safely short: long prose keeps the
+// own-message rendering (a markdown block, not a muted context block).
+func TestNarrationFold_LongNarrationKeepsOwnMessage(t *testing.T) {
+	long := strings.TrimSpace(strings.Repeat("I will inspect the cluster state next. ", 10)) // > foldedNarrationMaxChars
+	msgs, _ := capturePosts(t, detailsOn, "",
+		narrationDelta(long),
+		toolCallDelta("skills"),
+	)
+
+	require.Len(t, msgs, 2)
+	require.Equal(t, capturedMessage{long}, msgs[0])
+	require.Equal(t, capturedMessage{"🛠️ 1 step · skills"}, msgs[1])
+}
+
+// A narration over the fold's line budget keeps its own message even when it
+// is short by character count.
+func TestNarrationFold_MultilineNarrationKeepsOwnMessage(t *testing.T) {
+	msgs, _ := capturePosts(t, detailsOn, "",
+		narrationDelta("one\ntwo\nthree"),
+		toolCallDelta("skills"),
+	)
+
+	require.Len(t, msgs, 2)
+	require.Equal(t, capturedMessage{"one\ntwo\nthree"}, msgs[0])
+	require.Equal(t, capturedMessage{"🛠️ 1 step · skills"}, msgs[1])
+}
+
+// A fallback (own-message) narration posted before any tool call closes the
+// ticker-less status message, so the ticker opens a fresh one below it and the
+// thread keeps reading in stream order.
+func TestNarrationFold_FallbackBeforeTickerKeepsStreamOrder(t *testing.T) {
+	msgs, _ := capturePosts(t, detailsOn, "",
+		narrationDelta("Short intro."),
+		narrationDelta("one\ntwo\nthree"),
+		toolCallDelta("skills"),
+	)
+
+	require.Len(t, msgs, 3)
+	require.Equal(t, capturedMessage{"Short intro."}, msgs[0], "the folded narration stays in the first status message")
+	require.Equal(t, capturedMessage{"one\ntwo\nthree"}, msgs[1])
+	require.Equal(t, capturedMessage{"🛠️ 1 step · skills"}, msgs[2],
+		"the ticker opens below the fallback narration, in stream order")
+}
+
+// Folded narration enters an mrkdwn context block, so mrkdwn control sequences
+// must arrive escaped: a quoted <!channel> cannot notify from the status
+// message any more than from a tool name. (Own-message narration renders as a
+// Block Kit markdown block, which does not parse these sequences.)
+func TestNarrationFold_EscapesMrkdwn(t *testing.T) {
+	msgs, _ := capturePosts(t, detailsOn, "",
+		narrationDelta("Pinging <!channel> & <@U1>"),
+		toolCallDelta("skills"),
+	)
+
+	require.Len(t, msgs, 1)
+	require.Equal(t, capturedMessage{
+		"Pinging &lt;!channel&gt; &amp; &lt;@U1&gt;",
+		"🛠️ 1 step · skills",
+	}, msgs[0])
+}
+
+// Post-login-challenge narration is retractable, and retraction deletes whole
+// messages by ts — it cannot delete one block inside the shared status message
+// — so it must keep the own-message rendering however short it is.
+func TestNarrationFold_RetractableKeepsOwnMessageAndRetracts(t *testing.T) {
+	var mu sync.Mutex
+	var deleted []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			TS string `json:"ts"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if path.Base(r.URL.Path) == "chat.delete" {
+			mu.Lock()
+			deleted = append(deleted, body.TS)
+			mu.Unlock()
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"ok":true,"ts":"narr-1"}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "C1", "", "1.0", detailsOn, slog.Default())
+	w.loginURLs = []string{"https://auth.example/authorize?x=1"} // challenge seen
+	w.renderNarration(t.Context(), "Sign in, then tell me once you are done.")
+	w.drainThreadPosts()
+
+	require.Equal(t, []string{"narr-1"}, w.narrationTS,
+		"short post-challenge narration keeps its own message so it stays retractable")
+	w.retractRendered(t.Context())
+	mu.Lock()
+	defer mu.Unlock()
+	require.Contains(t, deleted, "narr-1")
+}
+
+// Narration never folds at detailsFull: there is no status ticker there, and
+// narration separates the aggregated tool-activity segments instead.
+func TestNarrationFold_DetailsFullKeepsOwnMessage(t *testing.T) {
+	msgs, _ := capturePosts(t, detailsFull, "",
+		narrationDelta("Short intro."),
+		toolCallDelta("skills"),
+	)
+
+	require.Len(t, msgs, 2)
+	require.Equal(t, capturedMessage{"Short intro."}, msgs[0])
+	require.Contains(t, msgs[1][0], "skills")
+}
+
+func TestFoldableNarration(t *testing.T) {
+	require.True(t, foldableNarration("one line"))
+	require.True(t, foldableNarration("one\ntwo"))
+	require.False(t, foldableNarration("one\ntwo\nthree"), "over the line budget")
+	require.False(t, foldableNarration(strings.Repeat("x", foldedNarrationMaxChars+1)), "over the char budget")
+	require.True(t, foldableNarration(strings.Repeat("ä", foldedNarrationMaxChars)), "the budget counts runes, not bytes")
 }
 
 // Narration is the agent talking, not tool transparency, so /details off mutes
@@ -1238,6 +1377,8 @@ func TestRenderNarration_DoesNotTouchMainReply(t *testing.T) {
 	msgs, w := capturePosts(t, detailsOn, "", narrationDelta("Let me look that up."))
 
 	require.Len(t, msgs, 1)
+	require.Equal(t, capturedMessage{"Let me look that up."}, msgs[0],
+		"a folded narration still renders when no tool call ever follows")
 	require.Empty(t, w.ts, "no main reply was posted")
 	require.False(t, w.wroteContent())
 }
@@ -1252,9 +1393,10 @@ func TestRenderNarration_CapsWithOneNote(t *testing.T) {
 	deltas = append(deltas, toolCallDelta("x_kubernetes_get"))
 	msgs, _ := capturePosts(t, detailsOn, "", deltas...)
 
-	require.Len(t, msgs, maxNarrationMessages+2, "capped narration, its note, and the tool receipt")
-	require.Equal(t, capturedMessage{narrationLimitNote}, msgs[maxNarrationMessages])
-	require.Contains(t, msgs[maxNarrationMessages+1][0], "x_kubernetes_get", "tool activity keeps its own budget")
+	require.Len(t, msgs, 3, "the folded narration, its note, and the tool receipt")
+	require.Len(t, msgs[0], maxNarrationMessages, "short narration folds and shares the per-turn budget")
+	require.Equal(t, capturedMessage{narrationLimitNote}, msgs[1], "the note stays a visible message of its own")
+	require.Contains(t, msgs[2][0], "x_kubernetes_get", "tool activity keeps its own budget")
 }
 
 // Slack rejects a markdown block over slackMarkdownBlockMax outright, so an
@@ -1392,7 +1534,9 @@ func TestFinalFlush_DrainsThreadPostsBeforeReply(t *testing.T) {
 	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
 	w := newBatchedWriterWithClient(client, "C1", "", "1.0", detailsOn, slog.Default())
 	ch := make(chan channels.OutboundDelta, 3)
-	ch <- narrationDelta("slow narration")
+	// Three lines keep the narration out of the fold, so it posts as its own
+	// (slow) message ahead of the answer.
+	ch <- narrationDelta("slow narration\nsecond line\nthird line")
 	ch <- channels.OutboundDelta{Kind: channels.DeltaText, Content: "the answer"}
 	ch <- channels.OutboundDelta{Done: true}
 	close(ch)
@@ -1400,7 +1544,7 @@ func TestFinalFlush_DrainsThreadPostsBeforeReply(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	require.Equal(t, []string{"slow narration", "the answer"}, posted)
+	require.Equal(t, []string{"slow narration\nsecond line\nthird line", "the answer"}, posted)
 }
 
 func TestRenderToolActivity_UnwrapsCallTool(t *testing.T) {
