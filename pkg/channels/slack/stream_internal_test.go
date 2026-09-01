@@ -1195,12 +1195,12 @@ func toolCallDelta(name string) channels.OutboundDelta {
 }
 
 // The agent's narration reads in order with the status ticker it introduces,
-// and the answer still lands last (klaus-gateway#197). At the default level
-// the whole turn's tool activity is ONE muted line, and a short pre-tool
-// narration folds into that same status message as a block above the ticker;
-// narration arriving while the ticker is already live keeps its own message
-// below it, so folding never reorders the prose.
-func TestRenderNarration_FoldsIntoStatusMessageAndAnswerLandsLast(t *testing.T) {
+// and the answer still lands last (klaus-gateway#197). The ticker is
+// per-segment: narration closes the live ticker into its receipt at its
+// position — counting only that segment's steps — and a short narration folds
+// into the NEXT segment's status message, so each narrate-then-call group is
+// one compact message and the thread reads in stream order.
+func TestRenderNarration_PerSegmentReceiptsInStreamOrder(t *testing.T) {
 	msgs, w := capturePosts(t, detailsOn, "",
 		narrationDelta("Let me pull the HelmRelease from both clusters."),
 		toolCallDelta("x_kubernetes_get"),
@@ -1213,12 +1213,91 @@ func TestRenderNarration_FoldsIntoStatusMessageAndAnswerLandsLast(t *testing.T) 
 	require.Len(t, msgs, 3)
 	require.Equal(t, capturedMessage{
 		"Let me pull the HelmRelease from both clusters.",
-		"🛠️ 3 steps · x_kubernetes_get ×3",
-	}, msgs[0], "pre-tool narration folds above the ticker, which ends as the receipt")
-	require.Equal(t, capturedMessage{"Both share the same chart version."}, msgs[1],
-		"narration while the ticker is live keeps its own message")
+		"🛠️ 2 steps · x_kubernetes_get ×2",
+	}, msgs[0], "the first segment's receipt counts only the steps before the next narration")
+	require.Equal(t, capturedMessage{
+		"Both share the same chart version.",
+		"🛠️ 1 step · x_kubernetes_get",
+	}, msgs[1], "mid-turn narration closes the segment and folds into the next one")
 	require.Equal(t, capturedMessage{"here is the diff"}, msgs[2], "the answer is the turn's last message")
 	require.True(t, w.wroteContent())
+}
+
+// A full-weight (non-foldable) narration between tool batches collapses the
+// live ticker into its receipt AT ITS POSITION, and the next tool call opens a
+// fresh ticker message below the narration — the thread reads like the stream:
+// receipt → narration → receipt → answer.
+func TestToolStatus_OwnMessageNarrationSplitsSegments(t *testing.T) {
+	msgs, _ := capturePosts(t, detailsOn, "",
+		toolCallDelta("x_kubernetes_get"),
+		toolCallDelta("x_kubernetes_list"),
+		narrationDelta("one\ntwo\nthree"), // multi-line keeps its own message
+		toolCallDelta("skills"),
+		channels.OutboundDelta{Kind: channels.DeltaText, Content: "the answer"},
+	)
+
+	require.Len(t, msgs, 4)
+	require.Equal(t, capturedMessage{"🛠️ 2 steps · x_kubernetes_get · x_kubernetes_list"}, msgs[0],
+		"the first segment's receipt stays above the narration that closed it")
+	require.Equal(t, capturedMessage{"one\ntwo\nthree"}, msgs[1])
+	require.Equal(t, capturedMessage{"🛠️ 1 step · skills"}, msgs[2],
+		"the next segment opens a fresh status message below the narration")
+	require.Equal(t, capturedMessage{"the answer"}, msgs[3])
+}
+
+// Each segment's receipt lists tools in ITS OWN first-use order and counts,
+// independent of earlier segments.
+func TestToolStatus_SegmentReceiptsUseSegmentLocalOrderAndCounts(t *testing.T) {
+	msgs, _ := capturePosts(t, detailsOn, "",
+		toolCallDelta("alpha"),
+		toolCallDelta("beta"),
+		narrationDelta("one\ntwo\nthree"),
+		toolCallDelta("beta"),
+		toolCallDelta("beta"),
+		toolCallDelta("alpha"),
+	)
+
+	require.Len(t, msgs, 3)
+	require.Equal(t, capturedMessage{"🛠️ 2 steps · alpha · beta"}, msgs[0])
+	require.Equal(t, capturedMessage{"one\ntwo\nthree"}, msgs[1])
+	require.Equal(t, capturedMessage{"🛠️ 3 steps · beta ×2 · alpha"}, msgs[2],
+		"the second segment counts and orders its own calls only")
+}
+
+// A turn ending mid-segment (tool calls after the last narration, then done)
+// still collapses the open segment into its receipt before the answer.
+func TestToolStatus_TurnEndingMidSegmentCollapsesLastSegment(t *testing.T) {
+	msgs, _ := capturePosts(t, detailsOn, "",
+		toolCallDelta("alpha"),
+		narrationDelta("one\ntwo\nthree"),
+		toolCallDelta("beta"),
+	)
+
+	require.Len(t, msgs, 3)
+	require.Equal(t, capturedMessage{"🛠️ 1 step · alpha"}, msgs[0])
+	require.Equal(t, capturedMessage{"one\ntwo\nthree"}, msgs[1])
+	require.Equal(t, capturedMessage{"🛠️ 1 step · beta"}, msgs[2],
+		"the open segment collapses at turn end")
+}
+
+// Consecutive foldable narrations with no tool calls between them share one
+// status message instead of each opening a segment: an empty segment has no
+// receipt to collapse.
+func TestToolStatus_ConsecutiveFoldedNarrationsShareOneMessage(t *testing.T) {
+	msgs, _ := capturePosts(t, detailsOn, "",
+		toolCallDelta("alpha"),
+		narrationDelta("First thought."),
+		narrationDelta("Second thought."),
+		toolCallDelta("beta"),
+	)
+
+	require.Len(t, msgs, 2)
+	require.Equal(t, capturedMessage{"🛠️ 1 step · alpha"}, msgs[0])
+	require.Equal(t, capturedMessage{
+		"First thought.",
+		"Second thought.",
+		"🛠️ 1 step · beta",
+	}, msgs[1], "a stepless narration does not close the fresh segment")
 }
 
 // The typical turn — one short narration, a few tool calls, the answer —
