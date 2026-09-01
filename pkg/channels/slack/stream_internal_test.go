@@ -1857,6 +1857,17 @@ func TestToolResultPreview(t *testing.T) {
 		require.False(t, isErr)
 	})
 
+	t.Run("result wrap unwraps to the bare text", func(t *testing.T) {
+		preview, isErr := toolResultPreview(map[string]any{"result": "<command-message>skill loading</command-message>\n\nBase directory: /skills"}, 100)
+		require.Equal(t, "<command-message>skill loading</command-message> Base directory: /skills", preview)
+		require.False(t, isErr)
+	})
+
+	t.Run("result wrap with extra keys is not a text carrier", func(t *testing.T) {
+		preview, _ := toolResultPreview(map[string]any{"result": "x", "status": "ok"}, 100)
+		require.Equal(t, `{"result": "x", "status": "ok"}`, preview)
+	})
+
 	t.Run("envelope text renders without the content boilerplate", func(t *testing.T) {
 		preview, isErr := toolResultPreview(mcpEnvelope("Server: pro\nStatus: ok", false), 100)
 		require.Equal(t, "Server: pro Status: ok", preview, "newlines collapse deliberately")
