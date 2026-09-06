@@ -133,6 +133,7 @@ Channel and routing gateway in front of klaus instances; uses agentgateway as th
 | obo.persistence.accessMode | string | `"ReadWriteOnce"` |  |
 | obo.persistence.storageClass | string | `""` |  |
 | obo.persistence.existingClaim | string | `""` |  |
+| obo.existingSecret | string | `""` |  |
 | obo.stateKey | string | `""` |  |
 | obo.storeKey | string | `""` |  |
 | obo.connectors.enabled | bool | `false` |  |
