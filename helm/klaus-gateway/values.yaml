@@ -295,9 +295,10 @@ slack:
     # use the binary default (true); set true or false to override explicitly.
     # @schema type:[boolean, null]
     clearReactionOnDone: null
-  # botToken / signingSecret / appToken: when set (typically SOPS-encrypted via
-  # the agentic-platform umbrella), the chart renders the secretName Secret from
-  # them. Leave empty to reference an externally-managed Secret of that name.
+  # botToken / signingSecret / appToken: when set, the chart renders the
+  # secretName Secret from them, which copies the credentials into the release
+  # manifest (and, under an umbrella, into its HelmRelease values). Prefer
+  # leaving them empty and pre-creating the secretName Secret out of band.
   botToken: ""
   signingSecret: ""
   appToken: ""
@@ -353,13 +354,22 @@ obo:
     # create the PVC; set it to reuse a pre-provisioned claim.
     storageClass: ""
     existingClaim: ""
+  # existingSecret names a pre-created Secret in the release namespace that
+  # holds the OBO keys: `state-key` (the HMAC key signing link state) and, when
+  # storePath is set, `store-key` (the AES-256 link-store key). When set, the
+  # chart renders no Secret of its own and mounts this one, so the keys never
+  # pass through Helm values or the release manifest; stateKey and storeKey
+  # below are ignored. One of existingSecret or stateKey is required when
+  # obo.enabled is true (the render fails otherwise).
+  existingSecret: ""
   # stateKey is the HMAC key used to sign link state (CSRF + Slack-user binding).
-  # Required when obo.enabled is true. Provide via a SOPS-encrypted value; the
-  # chart renders it into a Secret and mounts it as a file.
+  # Required when obo.enabled is true and existingSecret is empty; the chart then
+  # renders it into the <release>-obo Secret and mounts it as a file. Prefer
+  # existingSecret: a value set here is copied into the release manifest.
   stateKey: ""
   # storeKey is the AES-256 key for the encrypted link store, required only when
-  # storePath is set. Accepts 32 raw bytes or a base64/hex encoding of 32 bytes
-  # (a SOPS-staged base64 value works directly). Provide via a SOPS value.
+  # storePath is set and existingSecret is empty. Accepts 32 raw bytes or a
+  # base64/hex encoding of 32 bytes (a SOPS-staged base64 value works directly).
   storeKey: ""
   # connectors enables the reactive Slack connector UX: the gateway detects a
   # core_auth_login challenge in the agent's response stream and offers a

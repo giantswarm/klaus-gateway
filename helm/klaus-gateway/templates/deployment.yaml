@@ -250,7 +250,7 @@ spec:
       {{- if .Values.obo.enabled }}
       - name: obo-keys
         secret:
-          secretName: {{ include "resource.default.name" . }}-obo
+          secretName: {{ .Values.obo.existingSecret | default (printf "%s-obo" (include "resource.default.name" .)) }}
       {{- if .Values.obo.storePath }}
       - name: obo-store
         {{- if .Values.obo.persistence.enabled }}
