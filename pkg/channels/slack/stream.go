@@ -1662,16 +1662,21 @@ func (c *slackAPIClient) postMessage(ctx context.Context, channel, text, threadT
 	return c.post(ctx, methodChatPostMessage, params)
 }
 
-// postMessageWithMetadata posts a top-level message carrying the gateway's
-// conversation metadata (see conversationMetadata). JSON body: metadata is a
-// nested object, which the form encoding cannot carry.
-func (c *slackAPIClient) postMessageWithMetadata(ctx context.Context, channel, text string, meta conversationMetadata) (string, error) {
+// postConversationRoot posts the root of a conversation the gateway opens
+// itself: a Block Kit section rendering text, whose block_id carries the
+// conversation marker (see conversationMarker). text doubles as the
+// notification fallback. Slack keeps block_ids with the message and returns
+// them from conversations.replies, which is what makes the marker durable.
+func (c *slackAPIClient) postConversationRoot(ctx context.Context, channel, text string, marker conversationMarker) (string, error) {
 	body := map[string]any{
 		paramChannel: channel,
 		paramText:    text,
-		paramMetadata: map[string]any{
-			"event_type":    conversationMetadataEventType,
-			"event_payload": meta,
+		paramBlocks: []any{
+			map[string]any{
+				bkType:    bkSection,
+				bkBlockID: marker.encode(),
+				bkText:    map[string]any{bkType: bkMrkdwn, bkText: truncateRunes(text, sectionTextMax)},
+			},
 		},
 	}
 	return c.postJSON(ctx, methodChatPostMessage, body)
@@ -1815,16 +1820,15 @@ const threadInitiatorScanLimit = 50
 // bot-authored root is skipped: bot messages carry bot_id (and often a user
 // field naming the bot's own user), so they are not a human initiator; the
 // first message without bot_id is the human who effectively started the thread.
-// A root the gateway posted itself names its initiator in message metadata
-// (conversationMetadata), and that wins: the first human reply in such a
+// A root the gateway posted itself names its initiator in its conversation
+// marker (conversationMarker), and that wins: the first human reply in such a
 // thread may be anyone. Returns "" when the thread is empty or its scanned
 // prefix is all bot messages.
 func (c *slackAPIClient) threadInitiator(ctx context.Context, channel, threadTS string) (string, error) {
 	params := url.Values{
-		paramChannel:            {channel},
-		paramTS:                 {threadTS},
-		paramLimit:              {strconv.Itoa(threadInitiatorScanLimit)},
-		paramIncludeAllMetadata: {"true"},
+		paramChannel: {channel},
+		paramTS:      {threadTS},
+		paramLimit:   {strconv.Itoa(threadInitiatorScanLimit)},
 	}
 	body, err := c.call(ctx, "conversations.replies", "application/x-www-form-urlencoded", params.Encode())
 	if err != nil {
@@ -1835,9 +1839,9 @@ func (c *slackAPIClient) threadInitiator(ctx context.Context, channel, threadTS 
 		OK       bool   `json:"ok"`
 		Err      string `json:"error,omitempty"`
 		Messages []struct {
-			User     string          `json:"user"`
-			BotID    string          `json:"bot_id"`
-			Metadata messageMetadata `json:"metadata"`
+			User   string         `json:"user"`
+			BotID  string         `json:"bot_id"`
+			Blocks []messageBlock `json:"blocks"`
 		} `json:"messages"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
@@ -1847,8 +1851,8 @@ func (c *slackAPIClient) threadInitiator(ctx context.Context, channel, threadTS 
 		return "", fmt.Errorf("slack conversations.replies: %s", result.Err)
 	}
 	if len(result.Messages) > 0 {
-		if meta := result.Messages[0].Metadata.conversation(); meta != nil && meta.Initiator != "" {
-			return meta.Initiator, nil
+		if marker := conversationMarkerFromBlocks(result.Messages[0].Blocks); marker != nil && marker.Initiator != "" {
+			return marker.Initiator, nil
 		}
 	}
 	for _, m := range result.Messages {
@@ -1859,44 +1863,41 @@ func (c *slackAPIClient) threadInitiator(ctx context.Context, channel, threadTS 
 	return "", nil
 }
 
-// messageMetadata is the metadata object Slack returns on a message when the
-// caller asks for include_all_metadata. Only the gateway's own event type is
-// decoded; anything else leaves conversation() nil.
-type messageMetadata struct {
-	EventType    string          `json:"event_type"`
-	EventPayload json.RawMessage `json:"event_payload"`
+// messageBlock is the slice of a Block Kit block that conversations.replies
+// returns which the marker lives in.
+type messageBlock struct {
+	BlockID string `json:"block_id"`
 }
 
-func (m messageMetadata) conversation() *conversationMetadata {
-	if m.EventType != conversationMetadataEventType || len(m.EventPayload) == 0 {
-		return nil
+// conversationMarkerFromBlocks finds the gateway's conversation marker among
+// a message's blocks, or nil when the message carries none.
+func conversationMarkerFromBlocks(blocks []messageBlock) *conversationMarker {
+	for _, b := range blocks {
+		if m := decodeConversationMarker(b.BlockID); m != nil {
+			return m
+		}
 	}
-	var meta conversationMetadata
-	if err := json.Unmarshal(m.EventPayload, &meta); err != nil {
-		return nil
-	}
-	return &meta
+	return nil
 }
 
 // rootMessage is a thread root as threadRoot returns it: its text, and the
-// gateway's conversation metadata when the root carries it.
+// gateway's conversation marker when the root carries one.
 type rootMessage struct {
-	Text string
-	Meta *conversationMetadata
+	Text   string
+	Marker *conversationMarker
 }
 
 // threadRoot returns a thread's root message via conversations.replies
 // (messages are returned oldest-first, so a limit of 1 yields exactly the
 // root). It is how a channel reply's conversation recovers its /agent binding
 // after a restart: the prefix is visible in the root mention's text, or — for
-// a root the gateway posted itself — the binding is in the root's message
-// metadata. Zero value when the thread has no messages.
+// a root the gateway posted itself — the binding is in the root's conversation
+// marker. Zero value when the thread has no messages.
 func (c *slackAPIClient) threadRoot(ctx context.Context, channel, threadTS string) (rootMessage, error) {
 	params := url.Values{
-		paramChannel:            {channel},
-		paramTS:                 {threadTS},
-		paramLimit:              {"1"},
-		paramIncludeAllMetadata: {"true"},
+		paramChannel: {channel},
+		paramTS:      {threadTS},
+		paramLimit:   {"1"},
 	}
 	body, err := c.call(ctx, "conversations.replies", "application/x-www-form-urlencoded", params.Encode())
 	if err != nil {
@@ -1907,8 +1908,8 @@ func (c *slackAPIClient) threadRoot(ctx context.Context, channel, threadTS strin
 		OK       bool   `json:"ok"`
 		Err      string `json:"error,omitempty"`
 		Messages []struct {
-			Text     string          `json:"text"`
-			Metadata messageMetadata `json:"metadata"`
+			Text   string         `json:"text"`
+			Blocks []messageBlock `json:"blocks"`
 		} `json:"messages"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
@@ -1920,7 +1921,7 @@ func (c *slackAPIClient) threadRoot(ctx context.Context, channel, threadTS strin
 	if len(result.Messages) == 0 {
 		return rootMessage{}, nil
 	}
-	return rootMessage{Text: result.Messages[0].Text, Meta: result.Messages[0].Metadata.conversation()}, nil
+	return rootMessage{Text: result.Messages[0].Text, Marker: conversationMarkerFromBlocks(result.Messages[0].Blocks)}, nil
 }
 
 // threadFirstHumanMessage returns the ts and text of the earliest human

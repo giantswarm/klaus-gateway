@@ -128,26 +128,3 @@ settings:
   org_deploy_enabled: false
   socket_mode_enabled: false
   token_rotation_enabled: false
-
-# Message metadata schema. The gateway stamps the root of every conversation
-# it opens itself (the slash command's picker) with this event type, carrying
-# the agent and the initiator, and reads it back to restore the thread's
-# binding after a restart. Slack drops metadata whose event type is not
-# declared here (https://docs.slack.dev/messaging/message-metadata/; the
-# manifest key is documented at https://docs.slack.dev/reference/app-manifest).
-# The event name must match conversationMetadataEventType in pkg/channels/slack.
-metadata_events:
-  klaus_gateway.agent_conversation:
-    title: Agent conversation
-    description: Root of a conversation the gateway opened; carries the agent and the initiator.
-    type: object
-    properties:
-      agent_ref:
-        type: string
-      initiator_user_id:
-        type: string
-      entry_point:
-        type: string
-    required:
-      - agent_ref
-      - initiator_user_id

@@ -90,6 +90,28 @@ func openedView(t *testing.T, fake *fakeSlackAPI) map[string]any {
 	return view
 }
 
+// rootWithMarker returns the posted conversation root (the chat.postMessage
+// call carrying blocks) and the decoded JSON of its marker block_id.
+func rootWithMarker(t *testing.T, fake *fakeSlackAPI) (recordedCall, map[string]any) {
+	t.Helper()
+	for _, c := range fake.pathCalls("chat.postMessage") {
+		blocks, ok := c.params["blocks"].([]any)
+		if !ok || len(blocks) == 0 {
+			continue
+		}
+		id, _ := blocks[0].(map[string]any)["block_id"].(string)
+		const prefix = "klaus_gateway.agent_conversation:"
+		if !strings.HasPrefix(id, prefix) {
+			continue
+		}
+		var marker map[string]any
+		require.NoError(t, json.Unmarshal([]byte(strings.TrimPrefix(id, prefix)), &marker))
+		return c, marker
+	}
+	require.FailNow(t, "no conversation root with a marker block was posted")
+	return recordedCall{}, nil
+}
+
 // responseURLTexts returns the texts posted through the slash command's
 // response_url (the fake serves it at /response_url).
 func responseURLTexts(fake *fakeSlackAPI) string {
@@ -232,27 +254,17 @@ func TestAskAgentSubmission_OpensConversation(t *testing.T) {
 		2*time.Second, 50*time.Millisecond, "the submission dispatches the first turn")
 
 	// The root: branded as the agent, naming who asked and quoting the question,
-	// carrying the binding and the initiator as message metadata.
-	var root recordedCall
-	for _, c := range fake.pathCalls("chat.postMessage") {
-		if _, ok := c.params["metadata"]; ok {
-			root = c
-			break
-		}
-	}
-	require.NotNil(t, root.params, "a root message with metadata is posted")
+	// carrying the binding and the initiator as a marker in its block_id.
+	root, marker := rootWithMarker(t, fake)
 	require.Equal(t, "C1", root.params["channel"])
 	require.Nil(t, root.params["thread_ts"], "the root is a top-level message")
 	require.Equal(t, "SRE Agent", root.params["username"], "posted under the agent's identity")
 	rootText := root.params["text"].(string)
 	require.Contains(t, rootText, "<@U1> asked *SRE Agent*")
 	require.Contains(t, rootText, "> why are pods crashlooping?")
-	meta := root.params["metadata"].(map[string]any)
-	require.Equal(t, "klaus_gateway.agent_conversation", meta["event_type"])
-	payload := meta["event_payload"].(map[string]any)
-	require.Equal(t, "kagent/sre-agent", payload["agent_ref"])
-	require.Equal(t, "U1", payload["initiator_user_id"])
-	require.Equal(t, "slash_command", payload["entry_point"])
+	require.Equal(t, "kagent/sre-agent", marker["a"])
+	require.Equal(t, "U1", marker["u"])
+	require.Equal(t, "slash_command", marker["e"])
 	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "Bringing in", "the root already names the agent; no launch intro")
 
 	msgs := resolved()
@@ -314,7 +326,7 @@ func TestAskAgentSubmission_JoinsPublicChannelOnNotInChannel(t *testing.T) {
 			joined.Store(true)
 			return ""
 		}
-		if path == "chat.postMessage" && params["metadata"] != nil && !joined.Load() {
+		if path == "chat.postMessage" && params["blocks"] != nil && !joined.Load() {
 			return "not_in_channel"
 		}
 		return ""
@@ -352,15 +364,15 @@ func TestAskAgentSubmission_PrivateChannelAsksForInvite(t *testing.T) {
 }
 
 // After a restart the in-memory binding and initiator are gone. A bot-rooted
-// conversation has no /agent prefix to re-derive from; its root metadata
+// conversation has no /agent prefix to re-derive from; its root marker
 // restores both: the reply reaches the picked agent (not the default), and the
 // submitter — not the first human to reply — is the initiator.
-func TestAskAgentRecovery_RootMetadataRestoresAgentAndInitiator(t *testing.T) {
+func TestAskAgentRecovery_RootMarkerRestoresAgentAndInitiator(t *testing.T) {
 	fake := newFakeSlackAPI()
 	api := fake.server(t)
 	fake.setResponse("conversations.replies", `{"ok":true,"messages":[
 		{"type":"message","user":"UBOT","bot_id":"B1","ts":"100.000","text":"💬 <@U1> asked *SRE Agent*:\n> hello",
-		 "metadata":{"event_type":"klaus_gateway.agent_conversation","event_payload":{"agent_ref":"kagent/sre-agent","initiator_user_id":"U1","entry_point":"slash_command"}}},
+		 "blocks":[{"type":"section","block_id":"klaus_gateway.agent_conversation:{\"a\":\"kagent/sre-agent\",\"u\":\"U1\",\"e\":\"slash_command\"}","text":{"type":"mrkdwn","text":"hello"}}]},
 		{"type":"message","user":"U2","ts":"150.000","text":"<@UBOT> what about me"}
 	]}`)
 	gw, resolved := capturingGateway()
@@ -370,7 +382,7 @@ func TestAskAgentRecovery_RootMetadataRestoresAgentAndInitiator(t *testing.T) {
 	sendEvent(t, srv, mention("U1", "any update?", "200.000", "100.000"))
 	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
 		2*time.Second, 50*time.Millisecond, "the submitter's reply dispatches")
-	require.Equal(t, "kagent/sre-agent", resolved()[0].AgentRef, "the agent comes from the root metadata, not the default")
+	require.Equal(t, "kagent/sre-agent", resolved()[0].AgentRef, "the agent comes from the root marker, not the default")
 
 	// U2 replied earlier in the thread, but the metadata names U1 as initiator,
 	// so U2 is a newcomer waiting on U1's consent.
@@ -382,7 +394,7 @@ func TestAskAgentRecovery_RootMetadataRestoresAgentAndInitiator(t *testing.T) {
 			}
 		}
 		return false
-	}, 2*time.Second, 50*time.Millisecond, "the consent prompt goes to the initiator from the metadata")
+	}, 2*time.Second, 50*time.Millisecond, "the consent prompt goes to the initiator from the marker")
 	require.Equal(t, 1, gw.resolveCount(), "the newcomer's reply waits")
 }
 

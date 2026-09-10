@@ -94,19 +94,23 @@ func TestSlashCommandPayload_DecodesSocketModeEnvelope(t *testing.T) {
 	require.Equal(t, slashCommandPayload{Command: "/swarmgeist", Text: "hi there", UserID: "U1", ChannelID: "C1", TriggerID: "1.2.abc", ResponseURL: "https://hooks.slack.com/commands/T/1/x"}, p)
 }
 
-// Only the gateway's own metadata event type is decoded; a foreign type or a
-// malformed payload yields nil rather than a half-filled binding.
-func TestMessageMetadata_ConversationDecodesOwnTypeOnly(t *testing.T) {
-	own := messageMetadata{EventType: conversationMetadataEventType, EventPayload: json.RawMessage(`{"agent_ref":"kagent/sre","initiator_user_id":"U1"}`)}
-	require.Equal(t, &conversationMetadata{AgentRef: "kagent/sre", Initiator: "U1"}, own.conversation())
+// The conversation marker round-trips through a block_id; anything without
+// the prefix, malformed, or naming no agent yields nil rather than a
+// half-filled binding.
+func TestConversationMarker_EncodeDecode(t *testing.T) {
+	m := conversationMarker{AgentRef: "kagent/sre", Initiator: "U1", EntryPoint: entryPointSlashCommand}
+	id := m.encode()
+	require.True(t, strings.HasPrefix(id, conversationMarkerPrefix))
+	require.LessOrEqual(t, len(id), 255, "block_id cap")
+	require.Equal(t, &m, decodeConversationMarker(id))
 
-	foreign := messageMetadata{EventType: "other.event", EventPayload: json.RawMessage(`{"agent_ref":"kagent/sre"}`)}
-	require.Nil(t, foreign.conversation())
+	require.Nil(t, decodeConversationMarker(`{"a":"kagent/sre","u":"U1"}`), "no prefix: not ours")
+	require.Nil(t, decodeConversationMarker(conversationMarkerPrefix+`{"a":`), "malformed")
+	require.Nil(t, decodeConversationMarker(conversationMarkerPrefix+`{"u":"U1"}`), "no agent")
+	require.Nil(t, decodeConversationMarker(""))
 
-	broken := messageMetadata{EventType: conversationMetadataEventType, EventPayload: json.RawMessage(`{"agent_ref":`)}
-	require.Nil(t, broken.conversation())
-
-	require.Nil(t, messageMetadata{}.conversation())
+	require.Equal(t, &m, conversationMarkerFromBlocks([]messageBlock{{BlockID: "other"}, {BlockID: id}}))
+	require.Nil(t, conversationMarkerFromBlocks(nil))
 }
 
 func TestQuoteMrkdwn_PrefixesEveryLine(t *testing.T) {

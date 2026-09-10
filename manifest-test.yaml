@@ -1,0 +1,79 @@
+display_information:
+  name: test-swarmgeist-graveler
+  description: swarmgeist test app for graveler (sre-agent; DMs + Bumblebee test channels)
+  background_color: "#737373"
+features:
+  bot_user:
+    display_name: test-swarmgeist-graveler
+    always_online: true
+  shortcuts:
+    - name: Inspect agent steps
+      type: message
+      callback_id: inspect_agent_steps
+      description: Show the tool calls behind the agent's recent turns in this thread (only visible to you)
+  slash_commands:
+    - command: /swarmgeist-test
+      description: Start a conversation with an agent
+      usage_hint: "[question]"
+      url: https://agentgateway.graveler.gaws2.gigantic.io/channels/slack/commands
+      should_escape: false
+  assistant_view:
+    assistant_description: AI assistant for Giant Swarm operations
+    suggested_prompts:
+      - title: What's the cluster status?
+        message: What is the current status of all clusters?
+oauth_config:
+  scopes:
+    bot:
+      - app_mentions:read
+      - assistant:write
+      - channels:history
+      - channels:join
+      - channels:read
+      - chat:write
+      - chat:write.customize
+      - commands
+      - files:read
+      - im:history
+      - im:read
+      - im:write
+      - reactions:read
+      - reactions:write
+      - users.profile:read
+      - users:read
+      - users:read.email
+      - groups:read
+      - mpim:read
+  pkce_enabled: false
+settings:
+  event_subscriptions:
+    request_url: https://agentgateway.graveler.gaws2.gigantic.io/channels/slack/events
+    bot_events:
+      - app_mention
+      - assistant_thread_context_changed
+      - assistant_thread_started
+      - member_joined_channel
+      - message.channels
+      - message.im
+  interactivity:
+    is_enabled: true
+    request_url: https://agentgateway.graveler.gaws2.gigantic.io/channels/slack/interactions
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false
+  is_mcp_enabled: false
+metadata_events:
+  klaus_gateway.agent_conversation:
+    title: Agent conversation
+    description: Root of a conversation the gateway opened; carries the agent and the initiator.
+    type: object
+    properties:
+      agent_ref:
+        type: string
+      initiator_user_id:
+        type: string
+      entry_point:
+        type: string
+    required:
+      - agent_ref
+      - initiator_user_id

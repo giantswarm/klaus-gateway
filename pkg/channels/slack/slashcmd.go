@@ -22,8 +22,8 @@ import (
 // and dispatches the question as the thread's first turn. The root is a bot
 // message, so the conversation's agent and initiator cannot be re-derived
 // from human text after a restart the way a prefixed mention's can; they are
-// stamped on the root as Slack message metadata instead (see
-// conversationMetadata), which threadAgent and threadInitiator read first.
+// carried on the root as a conversation marker instead (see
+// conversationMarker), which threadAgent and threadInitiator read first.
 //
 // The gateway never depends on the command's name: Slack routes the payload by
 // the URL, so each app manifest may call it what it likes. Slack does not
@@ -95,18 +95,40 @@ type askAgentPrivateMetadata struct {
 	ResponseURL string `json:"r"`
 }
 
-// conversationMetadata is the event_payload of the message metadata stamped on
-// a conversation root the gateway posts. It is the durable record of the
-// conversation's agent and initiator: a bot-authored root has no /agent prefix
-// to re-derive the binding from, and the earliest human in the thread is
-// whoever replied first, not who opened it. Slack keeps the metadata with the
-// message and returns it from conversations.replies with
-// include_all_metadata=true. The event_type must be declared under
-// metadata_events in the app manifest or Slack drops it.
-type conversationMetadata struct {
-	AgentRef   string `json:"agent_ref"`
-	Initiator  string `json:"initiator_user_id"`
-	EntryPoint string `json:"entry_point,omitempty"`
+// conversationMarker is the durable record of a conversation the gateway
+// opened itself: its agent and its initiator. A bot-authored root has no
+// /agent prefix to re-derive the binding from, and the earliest human in the
+// thread is whoever replied first, not who opened it. The marker rides in the
+// block_id of the root's Block Kit section (conversationMarkerPrefix + JSON):
+// invisible to users, stored by Slack with the message, and returned by
+// conversations.replies. Slack message metadata would be the purpose-built
+// carrier, but Slack drops custom metadata unless its schema is declared in
+// the manifest, and the manifest of a classic Slack app has no place for
+// that (only Deno automation apps do) — verified 2026-09-10. JSON keys are
+// short to stay well inside the 255-char block_id cap.
+type conversationMarker struct {
+	AgentRef   string `json:"a"`
+	Initiator  string `json:"u"`
+	EntryPoint string `json:"e,omitempty"`
+}
+
+func (m conversationMarker) encode() string {
+	b, _ := json.Marshal(m)
+	return conversationMarkerPrefix + string(b)
+}
+
+// decodeConversationMarker parses a block_id; nil when it is not a marker or
+// the marker names no agent.
+func decodeConversationMarker(blockID string) *conversationMarker {
+	raw, ok := strings.CutPrefix(blockID, conversationMarkerPrefix)
+	if !ok {
+		return nil
+	}
+	var m conversationMarker
+	if err := json.Unmarshal([]byte(raw), &m); err != nil || m.AgentRef == "" {
+		return nil
+	}
+	return &m
 }
 
 // handleSlashCommand opens the agent picker modal for a slash command, or
@@ -270,9 +292,9 @@ func (a *Adapter) handleAskAgentSubmission(ctx context.Context, payload interact
 
 	name := a.agentNameFor(ctx, ref)
 	rootText := fmt.Sprintf(askAgentRootText, user, escapeMrkdwn(name), quoteMrkdwn(escapeMrkdwn(question)))
-	meta := conversationMetadata{AgentRef: ref, Initiator: user, EntryPoint: entryPointSlashCommand}
+	marker := conversationMarker{AgentRef: ref, Initiator: user, EntryPoint: entryPointSlashCommand}
 	client := a.agentClientNamed(ctx, ref, name)
-	rootTS, err := client.postMessageWithMetadata(ctx, pm.Channel, rootText, meta)
+	rootTS, err := client.postConversationRoot(ctx, pm.Channel, rootText, marker)
 	if err != nil && isNotInChannelErr(err) {
 		// A public channel the bot was never invited to: join (channels:join)
 		// and retry once. A private channel refuses the join, and the user is
@@ -282,7 +304,7 @@ func (a *Adapter) handleAskAgentSubmission(ctx context.Context, payload interact
 			notify(askAgentInviteNotice)
 			return
 		}
-		rootTS, err = client.postMessageWithMetadata(ctx, pm.Channel, rootText, meta)
+		rootTS, err = client.postConversationRoot(ctx, pm.Channel, rootText, marker)
 	}
 	if err != nil {
 		a.Logger.Warn("slack: ask-agent root post failed", "channel", pm.Channel, "error", err)

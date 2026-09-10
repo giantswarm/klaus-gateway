@@ -504,13 +504,13 @@ func (a *Adapter) threadAgent(ctx context.Context, msg channels.InboundMessage, 
 		// Channels keep strict root derivation: a refused /agent reply still
 		// exists as thread text, and a human-message scan would resurrect it.
 		// A root the gateway posted itself (the slash command's picker) has no
-		// prefix but carries the binding as message metadata, which wins: it
-		// is the resolved ref, so no roster re-resolution can drift it.
+		// prefix but carries the binding in its conversation marker, which
+		// wins: it is the resolved ref, so no roster re-resolution can drift it.
 		var root rootMessage
 		root, err = a.apiClient().threadRoot(rctx, slackChannel, msg.ThreadID)
-		if err == nil && root.Meta != nil && root.Meta.AgentRef != "" {
-			a.bindThreadAgent(msg.ThreadID, root.Meta.AgentRef)
-			return root.Meta.AgentRef, agentSourceThread, false, ""
+		if err == nil && root.Marker != nil {
+			a.bindThreadAgent(msg.ThreadID, root.Marker.AgentRef)
+			return root.Marker.AgentRef, agentSourceThread, false, ""
 		}
 		openingText = root.Text
 	}

@@ -105,11 +105,9 @@ The app subscribes to two bot events:
 - `message.im` — fires for direct messages to the bot
 
 The manifest also declares a slash command (`/swarmgeist` by default; the name is per app and the
-gateway does not depend on it), the `commands` scope it needs, and a message metadata schema
-(`klaus_gateway.agent_conversation`) that the gateway stamps on conversation roots it posts itself.
-Slack drops metadata whose event type is not registered, so keep the schema in sync with
-`conversationMetadataEventType` in `pkg/channels/slack`. Manifest changes are applied by hand at
-api.slack.com/apps; adding the `commands` scope to an install that lacks it requires a reinstall.
+gateway does not depend on it) and the `commands` scope it needs. Manifest changes are applied by
+hand at api.slack.com/apps; adding the `commands` scope to an install that lacks it requires a
+reinstall.
 
 ## Agent routing
 
@@ -129,9 +127,13 @@ agent when it opens, through one of two entry points, and keeps it for life:
   served) are reported privately to the invoking user.
 
 After a restart the in-memory binding is re-derived: from the `/agent` prefix in the opening
-message for mention-started threads, and from the message metadata on the root for slash-started
-threads (the root is a bot message with no prefix). The metadata also names the initiator, so the
-submitter — not the first person to reply — owns the thread after a restart.
+message for mention-started threads, and from a conversation marker on the root for slash-started
+threads (the root is a bot message with no prefix). The marker is the `block_id` of the root's
+Block Kit section — invisible to users, stored by Slack with the message, returned by
+`conversations.replies` — and it also names the initiator, so the submitter, not the first person
+to reply, owns the thread after a restart. Slack message metadata would be the purpose-built
+carrier, but Slack drops custom metadata unless its schema is declared in the manifest, and the
+manifest of a classic Slack app has no place for that.
 
 | Flag | Env var | Required |
 |------|---------|---------|

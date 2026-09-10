@@ -159,14 +159,17 @@ const (
 	askAgentPostFailedNotice     = "⚠️ _I couldn't post your question in this channel just now. Please try again._"
 )
 
-// conversationMetadataEventType is the message metadata event_type stamped on
-// conversation roots the gateway posts (see conversationMetadata). It must be
-// declared under metadata_events in deploy/slack/manifest.yaml.
-const conversationMetadataEventType = "klaus_gateway.agent_conversation"
+// conversationMarkerPrefix prefixes the block_id that carries a
+// conversationMarker on a conversation root the gateway posts, so a marker
+// is never mistaken for another block_id that happens to hold JSON.
+const conversationMarkerPrefix = "klaus_gateway.agent_conversation:"
 
-// entryPointSlashCommand is the conversationMetadata.EntryPoint value for a
+// entryPointSlashCommand is the conversationMarker.EntryPoint value for a
 // conversation opened by the slash command's picker.
 const entryPointSlashCommand = "slash_command"
+
+// sectionTextMax is Slack's cap on a section block's text.
+const sectionTextMax = 3000
 
 // inspectShortcutCallbackID is the callback_id of the "Inspect agent steps"
 // message shortcut registered in deploy/slack/manifest.yaml. Invoked from any
@@ -372,10 +375,8 @@ const (
 	paramUnfurlLinks = "unfurl_links"
 	paramUnfurlMedia = "unfurl_media"
 
-	paramMetadata           = "metadata"             // chat.postMessage message metadata
-	paramIncludeAllMetadata = "include_all_metadata" // conversations.replies: return message metadata
-	paramTriggerID          = "trigger_id"           // views.open
-	paramView               = "view"                 // views.open
+	paramTriggerID = "trigger_id" // views.open
+	paramView      = "view"       // views.open
 )
 
 // bkURL is the Block Kit button "url" field (opens a link on click).
