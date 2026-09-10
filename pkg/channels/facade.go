@@ -210,6 +210,8 @@ func (f *Facade) instanceFor(ctx context.Context, msg InboundMessage) (string, e
 	if err := f.Routes.Put(ctx, key, store.Entry{AgentInstanceID: inst.ID, CreatedAt: now, LastSeen: now}); err != nil {
 		return "", fmt.Errorf("channels: store instance binding: %w", err)
 	}
+	slog.Info("channels: thread bound to agent instance", "record", "instance_bound",
+		"channel", msg.Channel, "channel_id", msg.ChannelID, "thread", msg.ThreadID, "agent", msg.AgentRef, "instance", inst.ID)
 	return inst.ID, nil
 }
 
