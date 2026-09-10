@@ -6,7 +6,8 @@ import (
 )
 
 // ChannelRouteSpec defines the routing rule: it maps a conversation key
-// (channel, channelID, userID, threadID[, agent]) to a named Klaus instance.
+// (channel, channelID, userID, threadID[, agent]) to a named Klaus instance or
+// to a kagent AgentInstance.
 type ChannelRouteSpec struct {
 	// Channel identifies the adapter type (web, slack, cli, a2a).
 	Channel string `json:"channel"`
@@ -20,7 +21,11 @@ type ChannelRouteSpec struct {
 	// Empty for all other channels.
 	Agent string `json:"agent,omitempty"`
 	// Instance is the name of the Klaus instance that owns this conversation.
-	Instance string `json:"instance"`
+	// Empty for a kagent conversation.
+	Instance string `json:"instance,omitempty"`
+	// AgentInstanceID is the kagent AgentInstance the conversation's A2A turns
+	// are routed to. Empty for a Klaus conversation.
+	AgentInstanceID string `json:"agentInstanceID,omitempty"`
 	// CreatedAt is when the route was first written.
 	CreatedAt metav1.Time `json:"createdAt"`
 	// LastSeen is refreshed on every message routed through this entry.
@@ -44,12 +49,14 @@ type ChannelRouteStatus struct {
 // +kubebuilder:resource:scope=Namespaced,shortName=cr
 // +kubebuilder:printcolumn:name="Channel",type=string,JSONPath=".spec.channel"
 // +kubebuilder:printcolumn:name="Instance",type=string,JSONPath=".spec.instance"
+// +kubebuilder:printcolumn:name="AgentInstance",type=string,JSONPath=".spec.agentInstanceID"
 // +kubebuilder:printcolumn:name="LastSeen",type=date,JSONPath=".spec.lastSeen"
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=".metadata.creationTimestamp"
 
-// ChannelRoute maps a conversation key to the Klaus instance that owns it.
-// One CR per active conversation; the embedded controller reconciles instance
-// liveness and updates status conditions.
+// ChannelRoute maps a conversation key to the Klaus instance that owns it or
+// to the kagent AgentInstance it is routed to. One CR per active conversation;
+// the embedded controller reconciles Klaus instance liveness and updates status
+// conditions.
 type ChannelRoute struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

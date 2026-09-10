@@ -1,7 +1,7 @@
 // Package controller contains the embedded controller-runtime reconciler for
 // ChannelRoute CRs. It runs in-process inside the gateway when --controller=true
 // and updates status conditions to reflect whether the referenced Klaus instance
-// is reachable.
+// is reachable; a route bound to a kagent AgentInstance is reported as bound.
 package controller
 
 import (
@@ -49,7 +49,7 @@ func (r *ChannelRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, err
 	}
 
-	condStatus, reason, message := r.instanceCondition(ctx, cr.Spec.Instance)
+	condStatus, reason, message := r.routeCondition(ctx, cr.Spec)
 	if condStatus == metav1.ConditionFalse {
 		logger.Info("instance unreachable for ChannelRoute",
 			"route", req.NamespacedName, "instance", cr.Spec.Instance)
@@ -82,8 +82,14 @@ func (r *ChannelRouteReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-func (r *ChannelRouteReconciler) instanceCondition(ctx context.Context, name string) (metav1.ConditionStatus, string, string) {
-	ref, err := r.Lifecycle.Get(ctx, name)
+// routeCondition derives the Ready condition. A kagent route binds the
+// conversation to an AgentInstance the controller does not manage, so it is
+// reported as-is; a Klaus route is checked against the lifecycle driver.
+func (r *ChannelRouteReconciler) routeCondition(ctx context.Context, spec v1alpha1.ChannelRouteSpec) (metav1.ConditionStatus, string, string) {
+	if spec.Instance == "" && spec.AgentInstanceID != "" {
+		return metav1.ConditionTrue, "AgentInstanceBound", spec.AgentInstanceID
+	}
+	ref, err := r.Lifecycle.Get(ctx, spec.Instance)
 	if err != nil {
 		return metav1.ConditionFalse, "InstanceNotFound", err.Error()
 	}

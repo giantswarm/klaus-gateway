@@ -1,38 +1,49 @@
 package channels
 
+import pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
+
 // Human-in-the-loop (HITL) types shared between the A2A facade and channel
 // adapters.
 //
 // kagent surfaces a tool that requires approval (or the built-in ask_user
-// tool) as an A2A task in the input-required state. The status message carries
-// a structured DataPart (not text) describing an adk_request_confirmation:
+// tool) as an A2A task in the input-required state. With the HITL extension
+// requested on the call, the status message carries a typed request payload
+// under the extension URI in its metadata — a tool_approval_request naming the
+// tool calls to decide on, or an ask_user_request with the questions — and its
+// text part carries the agent's hint.
 //
-//	{"name":"adk_request_confirmation",
-//	 "args":{"originalFunctionCall":{"name":...,"args":...,"id":...},
-//	         "toolConfirmation":{"hint":...,"confirmed":false}}}
-//
-// with part metadata kagent_type=function_call and kagent_is_long_running=true.
-//
-// The decision is returned as a DataPart on a user message that MUST carry the
-// paused taskId. kagent only resolves the pending confirmation from a DataPart
-// — a plain text reply leaves the tool call dangling, which corrupts the model
-// history (tool_use without tool_result). See kagent
-// docs/architecture/human-in-the-loop.md for the wire contract.
+// The decision travels back as the matching typed response payload on a user
+// message that MUST carry the paused task's id, so the paused task resumes in
+// place. The facade builds that payload against the request the task is
+// paused on; channels only produce a HitlDecision.
 
-// HitlPrompt is the structured approval request parsed from an input-required
-// A2A status message. It is attached to a DeltaPrompt.
+// HitlPrompt is the structured request parsed from an input-required A2A
+// status message. It is attached to a DeltaPrompt.
 type HitlPrompt struct {
-	// ToolName is the originalFunctionCall name, e.g. "ask_user" or "delete_file".
+	// ToolName is the name of the tool awaiting approval — the first one when
+	// several calls are decided together — or "ask_user" for a question.
 	ToolName string
-	// Hint is the human-readable toolConfirmation hint.
+	// Hint is the agent's human-readable hint for a tool approval.
 	Hint string
-	// OriginalCallID is the originalFunctionCall id, used as the key for batch
-	// decisions.
+	// OriginalCallID is the model's call id of the first tool awaiting approval.
 	OriginalCallID string
-	// Args is the originalFunctionCall args, for rendering generic approval tools.
+	// Args is the arguments of the first tool awaiting approval, for rendering.
 	Args map[string]any
+	// Tools lists every tool call the decision covers; a decision approves or
+	// rejects all of them together.
+	Tools []HitlTool
 	// Questions is populated only when ToolName == "ask_user".
 	Questions []HitlQuestion
+}
+
+// HitlTool is one tool call awaiting approval.
+type HitlTool struct {
+	// ID is the approval id the decision answers with.
+	ID string
+	// CallID is the model's call id.
+	CallID string
+	Name   string
+	Args   map[string]any
 }
 
 // IsAskUser reports whether this prompt is the built-in ask_user question tool.
@@ -41,7 +52,7 @@ func (p *HitlPrompt) IsAskUser() bool {
 }
 
 // AskUserToolName is the kagent built-in question tool name.
-const AskUserToolName = "ask_user"
+const AskUserToolName = pkga2a.AskUserToolName
 
 // HitlQuestion is a single question in an ask_user call.
 type HitlQuestion struct {
@@ -50,8 +61,8 @@ type HitlQuestion struct {
 	Multiple bool // true = multi-select allowed
 }
 
-// HitlDecision is the user's structured answer to a HitlPrompt, sent back as an
-// A2A DataPart to resume the paused task.
+// HitlDecision is the user's structured answer to a HitlPrompt, sent back as
+// the HITL response payload on the message that resumes the paused task.
 type HitlDecision struct {
 	// Type is "approve" or "reject".
 	Type string
@@ -63,8 +74,33 @@ type HitlDecision struct {
 	RejectionReason string
 }
 
-// HITL decision type constants matching the kagent wire protocol.
+// HITL decision types.
 const (
 	DecisionApprove = "approve"
 	DecisionReject  = "reject"
 )
+
+// hitlResponse builds the typed HITL response payload for a decision on the
+// request a task is paused on: one approval per requested tool (all approved
+// or all rejected together, the reason on a rejection), or the positional
+// answers of an ask_user request under its correlation id.
+func hitlResponse(request *pkga2a.HITLRequest, decision *HitlDecision) any {
+	if request.AskUser != nil {
+		answers := make([]pkga2a.AskUserAnswer, 0, len(decision.AskUserAnswers))
+		for _, a := range decision.AskUserAnswers {
+			answers = append(answers, pkga2a.AskUserAnswer{Answer: a})
+		}
+		return pkga2a.AskUserResponse{Type: pkga2a.HITLTypeAskUserResponse, ID: request.AskUser.ResponseID(), Answers: answers}
+	}
+	approved := decision.Type == DecisionApprove
+	tools := request.ToolApproval.DecidedTools()
+	approvals := make([]pkga2a.ToolApproval, 0, len(tools))
+	for _, tool := range tools {
+		approval := pkga2a.ToolApproval{ID: tool.ID, Approved: approved}
+		if !approved {
+			approval.RejectionReason = decision.RejectionReason
+		}
+		approvals = append(approvals, approval)
+	}
+	return pkga2a.ToolApprovalResponse{Type: pkga2a.HITLTypeToolApprovalResponse, Approvals: approvals}
+}
