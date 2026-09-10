@@ -101,8 +101,8 @@ type askAgentPrivateMetadata struct {
 // to re-derive the binding from, and the earliest human in the thread is
 // whoever replied first, not who opened it. Slack keeps the metadata with the
 // message and returns it from conversations.replies with
-// include_all_metadata=true. The event_type must be registered under
-// metadata.event_subscriptions in the app manifest or Slack drops it.
+// include_all_metadata=true. The event_type must be declared under
+// metadata_events in the app manifest or Slack drops it.
 type conversationMetadata struct {
 	AgentRef   string `json:"agent_ref"`
 	Initiator  string `json:"initiator_user_id"`

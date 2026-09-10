@@ -161,7 +161,7 @@ const (
 
 // conversationMetadataEventType is the message metadata event_type stamped on
 // conversation roots the gateway posts (see conversationMetadata). It must be
-// registered under metadata.event_subscriptions in deploy/slack/manifest.yaml.
+// declared under metadata_events in deploy/slack/manifest.yaml.
 const conversationMetadataEventType = "klaus_gateway.agent_conversation"
 
 // entryPointSlashCommand is the conversationMetadata.EntryPoint value for a
