@@ -30,6 +30,7 @@ const (
 	agentSourceThread  = "thread"
 	agentSourceDefault = "default"
 	agentSourceTask    = "task"
+	agentSourceCommand = "command" // chosen in the slash command's agent picker
 )
 
 // agentSwitchRefusal answers an /agent prefix inside an existing conversation
@@ -502,7 +503,16 @@ func (a *Adapter) threadAgent(ctx context.Context, msg channels.InboundMessage, 
 	} else {
 		// Channels keep strict root derivation: a refused /agent reply still
 		// exists as thread text, and a human-message scan would resurrect it.
-		openingText, err = a.apiClient().threadRootText(rctx, slackChannel, msg.ThreadID)
+		// A root the gateway posted itself (the slash command's picker) has no
+		// prefix but carries the binding as message metadata, which wins: it
+		// is the resolved ref, so no roster re-resolution can drift it.
+		var root rootMessage
+		root, err = a.apiClient().threadRoot(rctx, slackChannel, msg.ThreadID)
+		if err == nil && root.Meta != nil && root.Meta.AgentRef != "" {
+			a.bindThreadAgent(msg.ThreadID, root.Meta.AgentRef)
+			return root.Meta.AgentRef, agentSourceThread, false, ""
+		}
+		openingText = root.Text
 	}
 	if err != nil {
 		a.Logger.Warn("slack: conversation opening-message lookup for agent binding failed, using default agent uncached",

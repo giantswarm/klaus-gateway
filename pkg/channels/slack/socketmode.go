@@ -16,6 +16,7 @@ const (
 	appsConnectionsOpen = "https://slack.com/api/apps.connections.open"
 	smReconnectDelay    = 5 * time.Second
 	smTypeHello         = "hello"
+	smTypeSlashCommands = "slash_commands"
 )
 
 // socketModeClient connects to Slack Socket Mode and forwards events to the
@@ -166,6 +167,18 @@ func (c *socketModeClient) readLoop(ctx context.Context, ws *websocket.Conn) {
 				continue
 			}
 			c.adapter.background(func(ctx context.Context) { c.adapter.routeInteraction(ctx, payload) })
+			continue
+		}
+
+		// Slash commands arrive as their own envelope type; the payload carries
+		// the same fields as the HTTP form (command, text, user_id, channel_id,
+		// trigger_id, response_url).
+		if env.Type == smTypeSlashCommands {
+			var payload slashCommandPayload
+			if err := json.Unmarshal(env.Payload, &payload); err != nil || payload.TriggerID == "" || payload.UserID == "" {
+				continue
+			}
+			c.adapter.background(func(ctx context.Context) { c.adapter.handleSlashCommand(ctx, payload) })
 			continue
 		}
 

@@ -1662,6 +1662,63 @@ func (c *slackAPIClient) postMessage(ctx context.Context, channel, text, threadT
 	return c.post(ctx, methodChatPostMessage, params)
 }
 
+// postMessageWithMetadata posts a top-level message carrying the gateway's
+// conversation metadata (see conversationMetadata). JSON body: metadata is a
+// nested object, which the form encoding cannot carry.
+func (c *slackAPIClient) postMessageWithMetadata(ctx context.Context, channel, text string, meta conversationMetadata) (string, error) {
+	body := map[string]any{
+		paramChannel: channel,
+		paramText:    text,
+		paramMetadata: map[string]any{
+			"event_type":    conversationMetadataEventType,
+			"event_payload": meta,
+		},
+	}
+	return c.postJSON(ctx, methodChatPostMessage, body)
+}
+
+// viewsOpen opens a modal for the user who produced triggerID. The trigger
+// expires 3 seconds after Slack issued it, so callers must not block on slow
+// lookups before calling this.
+func (c *slackAPIClient) viewsOpen(ctx context.Context, triggerID string, view map[string]any) error {
+	_, err := c.postJSON(ctx, "views.open", map[string]any{paramTriggerID: triggerID, paramView: view})
+	return err
+}
+
+// conversationsJoin joins a public channel (channels:join). Private channels
+// refuse it; the caller falls back to asking for an invite.
+func (c *slackAPIClient) conversationsJoin(ctx context.Context, channel string) error {
+	_, err := c.post(ctx, "conversations.join", url.Values{paramChannel: {channel}})
+	return err
+}
+
+// respondToURL posts an ephemeral text reply through a slash command's
+// response_url (usable five times within 30 minutes). The URL is a Slack
+// webhook, not a Web API method: no bot token, no envelope.
+func (c *slackAPIClient) respondToURL(ctx context.Context, responseURL, text string) error {
+	if responseURL == "" {
+		return errors.New("slack: no response_url")
+	}
+	data, err := json.Marshal(map[string]any{"response_type": "ephemeral", paramText: text})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, responseURL, strings.NewReader(string(data)))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json; charset=utf-8")
+	resp, err := slackHTTPClient.Do(req) //nolint:gosec
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return fmt.Errorf("slack response_url: status %d", resp.StatusCode)
+	}
+	return nil
+}
+
 // lookupUserEmail returns the email from the user's Slack profile.
 // Falls back to the raw Slack user ID on any error so dispatch is never blocked.
 // users.info is Tier-4 rate-limited, so the call goes through the same
@@ -1758,12 +1815,16 @@ const threadInitiatorScanLimit = 50
 // bot-authored root is skipped: bot messages carry bot_id (and often a user
 // field naming the bot's own user), so they are not a human initiator; the
 // first message without bot_id is the human who effectively started the thread.
-// Returns "" when the thread is empty or its scanned prefix is all bot messages.
+// A root the gateway posted itself names its initiator in message metadata
+// (conversationMetadata), and that wins: the first human reply in such a
+// thread may be anyone. Returns "" when the thread is empty or its scanned
+// prefix is all bot messages.
 func (c *slackAPIClient) threadInitiator(ctx context.Context, channel, threadTS string) (string, error) {
 	params := url.Values{
-		paramChannel: {channel},
-		paramTS:      {threadTS},
-		paramLimit:   {strconv.Itoa(threadInitiatorScanLimit)},
+		paramChannel:            {channel},
+		paramTS:                 {threadTS},
+		paramLimit:              {strconv.Itoa(threadInitiatorScanLimit)},
+		paramIncludeAllMetadata: {"true"},
 	}
 	body, err := c.call(ctx, "conversations.replies", "application/x-www-form-urlencoded", params.Encode())
 	if err != nil {
@@ -1774,8 +1835,9 @@ func (c *slackAPIClient) threadInitiator(ctx context.Context, channel, threadTS 
 		OK       bool   `json:"ok"`
 		Err      string `json:"error,omitempty"`
 		Messages []struct {
-			User  string `json:"user"`
-			BotID string `json:"bot_id"`
+			User     string          `json:"user"`
+			BotID    string          `json:"bot_id"`
+			Metadata messageMetadata `json:"metadata"`
 		} `json:"messages"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
@@ -1783,6 +1845,11 @@ func (c *slackAPIClient) threadInitiator(ctx context.Context, channel, threadTS 
 	}
 	if !result.OK {
 		return "", fmt.Errorf("slack conversations.replies: %s", result.Err)
+	}
+	if len(result.Messages) > 0 {
+		if meta := result.Messages[0].Metadata.conversation(); meta != nil && meta.Initiator != "" {
+			return meta.Initiator, nil
+		}
 	}
 	for _, m := range result.Messages {
 		if m.BotID == "" && m.User != "" {
@@ -1792,44 +1859,73 @@ func (c *slackAPIClient) threadInitiator(ctx context.Context, channel, threadTS 
 	return "", nil
 }
 
-// threadRootText returns the text of a thread's root message via
-// conversations.replies (messages are returned oldest-first, so a limit of 1
-// yields exactly the root). It is how a channel reply's conversation recovers
-// its /agent binding after a restart: the prefix is visible in the root
-// mention's text. Empty when the thread has no messages.
-func (c *slackAPIClient) threadRootText(ctx context.Context, channel, threadTS string) (string, error) {
+// messageMetadata is the metadata object Slack returns on a message when the
+// caller asks for include_all_metadata. Only the gateway's own event type is
+// decoded; anything else leaves conversation() nil.
+type messageMetadata struct {
+	EventType    string          `json:"event_type"`
+	EventPayload json.RawMessage `json:"event_payload"`
+}
+
+func (m messageMetadata) conversation() *conversationMetadata {
+	if m.EventType != conversationMetadataEventType || len(m.EventPayload) == 0 {
+		return nil
+	}
+	var meta conversationMetadata
+	if err := json.Unmarshal(m.EventPayload, &meta); err != nil {
+		return nil
+	}
+	return &meta
+}
+
+// rootMessage is a thread root as threadRoot returns it: its text, and the
+// gateway's conversation metadata when the root carries it.
+type rootMessage struct {
+	Text string
+	Meta *conversationMetadata
+}
+
+// threadRoot returns a thread's root message via conversations.replies
+// (messages are returned oldest-first, so a limit of 1 yields exactly the
+// root). It is how a channel reply's conversation recovers its /agent binding
+// after a restart: the prefix is visible in the root mention's text, or — for
+// a root the gateway posted itself — the binding is in the root's message
+// metadata. Zero value when the thread has no messages.
+func (c *slackAPIClient) threadRoot(ctx context.Context, channel, threadTS string) (rootMessage, error) {
 	params := url.Values{
-		paramChannel: {channel},
-		paramTS:      {threadTS},
-		paramLimit:   {"1"},
+		paramChannel:            {channel},
+		paramTS:                 {threadTS},
+		paramLimit:              {"1"},
+		paramIncludeAllMetadata: {"true"},
 	}
 	body, err := c.call(ctx, "conversations.replies", "application/x-www-form-urlencoded", params.Encode())
 	if err != nil {
-		return "", err
+		return rootMessage{}, err
 	}
 
 	var result struct {
 		OK       bool   `json:"ok"`
 		Err      string `json:"error,omitempty"`
 		Messages []struct {
-			Text string `json:"text"`
+			Text     string          `json:"text"`
+			Metadata messageMetadata `json:"metadata"`
 		} `json:"messages"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
-		return "", fmt.Errorf("slack conversations.replies: decode: %w", err)
+		return rootMessage{}, fmt.Errorf("slack conversations.replies: decode: %w", err)
 	}
 	if !result.OK {
-		return "", fmt.Errorf("slack conversations.replies: %s", result.Err)
+		return rootMessage{}, fmt.Errorf("slack conversations.replies: %s", result.Err)
 	}
 	if len(result.Messages) == 0 {
-		return "", nil
+		return rootMessage{}, nil
 	}
-	return result.Messages[0].Text, nil
+	return rootMessage{Text: result.Messages[0].Text, Meta: result.Messages[0].Metadata.conversation()}, nil
 }
 
 // threadFirstHumanMessage returns the ts and text of the earliest human
 // message in a thread, via conversations.replies (oldest-first). It is the
-// assistant-pane counterpart of threadRootText: a pane thread roots at an
+// assistant-pane counterpart of threadRoot: a pane thread roots at an
 // anchor Slack creates when the chat opens (klaus-gateway#157), so the
 // conversation's opening message — where an /agent prefix lives — is the
 // first HUMAN message, not the root. "Human" mirrors toInboundMessage's
