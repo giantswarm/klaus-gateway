@@ -99,6 +99,8 @@ pkg/routing/            routing table + pluggable store backends
 pkg/routing/store/      Store interface + memory / bolt / configmap / crd backends
 pkg/server/             http.Server wiring, middleware, admin mux
 pkg/upstream/           agentgateway upstream URL rewriter
+pkg/a2a/                kagent API v2 client (A2A v1 gRPC, AgentTemplates, AgentInstances, HITL)
+pkg/kagent/gen/         generated kagent.api.v1alpha1 stubs (`make generate-kagent`)
 pkg/observability/      OTel traces + Prometheus metrics
 internal/config/        env-var + flag config (KLAUS_GATEWAY_* prefix)
 internal/controller/    ChannelRoute controller-runtime reconciler

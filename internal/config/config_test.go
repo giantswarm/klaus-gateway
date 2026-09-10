@@ -46,7 +46,7 @@ func TestValidate(t *testing.T) {
 func TestValidate_A2A(t *testing.T) {
 	base := config.Defaults()
 	base.A2A.Enabled = true
-	base.A2A.URL = "http://kagent-controller.kagent.svc.cluster.local:8083/api/a2a/kagent"
+	base.A2A.URL = "grpc://agentgateway.agent-platform.svc.cluster.local:8080"
 
 	t.Run("enabled with url is valid", func(t *testing.T) {
 		require.NoError(t, base.Validate())
@@ -55,6 +55,34 @@ func TestValidate_A2A(t *testing.T) {
 	t.Run("enabled without url fails", func(t *testing.T) {
 		cfg := base
 		cfg.A2A.URL = ""
+		require.Error(t, cfg.Validate())
+	})
+
+	t.Run("tls target is valid", func(t *testing.T) {
+		cfg := base
+		cfg.A2A.URL = "grpcs://kagent.example.com:443"
+		require.NoError(t, cfg.Validate())
+	})
+
+	t.Run("http url is refused", func(t *testing.T) {
+		// The 0.x REST/JSON-RPC shape: the controller serves gRPC only.
+		cfg := base
+		cfg.A2A.URL = "http://kagent-controller.kagent.svc.cluster.local:8083/api/a2a/kagent"
+		require.ErrorContains(t, cfg.Validate(), "grpc://")
+	})
+
+	t.Run("target with a path or without a port is refused", func(t *testing.T) {
+		cfg := base
+		cfg.A2A.URL = "grpc://agentgateway.agent-platform.svc.cluster.local:8080/kagent"
+		require.Error(t, cfg.Validate())
+		cfg.A2A.URL = "grpcs://kagent.example.com"
+		require.Error(t, cfg.Validate())
+	})
+
+	t.Run("namespace defaults to kagent and is required", func(t *testing.T) {
+		require.Equal(t, "kagent", base.A2A.Namespace)
+		cfg := base
+		cfg.A2A.Namespace = ""
 		require.Error(t, cfg.Validate())
 	})
 
@@ -247,55 +275,12 @@ func TestLoad_A2ADefaultAgentEnv(t *testing.T) {
 	require.Equal(t, "worker-a", cfg.A2A.DefaultAgent)
 }
 
-func TestA2AConfig_ResolvedRESTURL(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		cfg  config.A2AConfig
-		want string
-	}{
-		{
-			name: "explicit RESTURL wins",
-			cfg:  config.A2AConfig{RESTURL: "http://rest.example", URL: "http://a2a.example/api/a2a/kagent"},
-			want: "http://rest.example",
-		},
-		{
-			name: "derive through agentgateway keeps the path prefix",
-			cfg:  config.A2AConfig{URL: "http://agentgateway.agentic-platform.svc.cluster.local:8080/kagent/api/a2a/kagent"},
-			want: "http://agentgateway.agentic-platform.svc.cluster.local:8080/kagent",
-		},
-		{
-			name: "derive direct to controller",
-			cfg:  config.A2AConfig{URL: "http://kagent-controller.kagent.svc.cluster.local:8083/api/a2a/kagent"},
-			want: "http://kagent-controller.kagent.svc.cluster.local:8083",
-		},
-		{
-			name: "derive from a namespace-less base",
-			cfg:  config.A2AConfig{URL: "http://agentgateway.agentic-platform.svc.cluster.local:8080/kagent/api/a2a"},
-			want: "http://agentgateway.agentic-platform.svc.cluster.local:8080/kagent",
-		},
-		{
-			name: "derive from a namespace-less base with trailing slash",
-			cfg:  config.A2AConfig{URL: "http://agentgateway:8080/kagent/api/a2a/"},
-			want: "http://agentgateway:8080/kagent",
-		},
-		{
-			name: "no /api/a2a in URL is not derivable",
-			cfg:  config.A2AConfig{URL: "http://agentgateway:8080/kagent"},
-			want: "",
-		},
-		{
-			name: "anchored split does not match a stray /api/a2axyz path",
-			cfg:  config.A2AConfig{URL: "http://agentgateway:8080/api/a2axyz"},
-			want: "",
-		},
-		{
-			name: "both empty",
-			cfg:  config.A2AConfig{},
-			want: "",
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want, tc.cfg.ResolvedRESTURL())
-		})
-	}
+func TestLoad_A2ANamespaceAndCAFile(t *testing.T) {
+	t.Setenv("KLAUS_GATEWAY_A2A_NAMESPACE", "agents")
+	t.Setenv("KLAUS_GATEWAY_A2A_CA_FILE", "/etc/klaus-gateway/a2a/ca.crt")
+
+	cfg, err := config.Load([]string{"--a2a-namespace=team-a"})
+	require.NoError(t, err)
+	require.Equal(t, "team-a", cfg.A2A.Namespace, "the flag overrides the env value")
+	require.Equal(t, "/etc/klaus-gateway/a2a/ca.crt", cfg.A2A.CAFile)
 }

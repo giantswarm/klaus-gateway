@@ -28,6 +28,8 @@ reading or writing code:
 
 ```
 main.go                 entrypoint; wires stores, lifecycle drivers, adapters, server
+pkg/a2a/                kagent API v2 client: A2A v1 over gRPC turns, AgentTemplate roster, AgentInstance per thread, HITL payloads
+pkg/kagent/gen/         generated kagent.api.v1alpha1 gRPC stubs (make generate-kagent; pin in its README)
 pkg/api/                OpenAI-compat front door (/v1/{instance}/...)
 pkg/api/v1alpha1/       ChannelRoute CRD types (routing.giantswarm.io/v1alpha1)
 pkg/channels/           ChannelAdapter interface + Gateway facade

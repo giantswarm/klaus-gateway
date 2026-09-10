@@ -210,7 +210,7 @@ func transportCredentials(useTLS bool, hostPort, caFile string) (credentials.Tra
 	}
 	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
 	if caFile != "" {
-		pem, err := os.ReadFile(caFile)
+		pem, err := os.ReadFile(caFile) //nolint:gosec // G304: the CA bundle path is operator configuration (a chart value), not user input
 		if err != nil {
 			return nil, fmt.Errorf("a2a: read CA bundle: %w", err)
 		}
@@ -258,8 +258,8 @@ func (c *Client) a2aCtx(ctx context.Context, instanceID string) (context.Context
 		return nil, err
 	}
 	return a2aclient.AttachServiceParams(ctx, a2aclient.ServiceParams{
-		"authorization":          {"Bearer " + token},
-		InstanceIDHeader:         {instanceID},
+		"authorization":           {"Bearer " + token},
+		InstanceIDHeader:          {instanceID},
 		a2apkg.SvcParamExtensions: {HITLExtensionURI},
 	}), nil
 }
@@ -364,13 +364,14 @@ func (c *Client) storeRoster(agents []AgentInfo) {
 }
 
 // refreshRosterInBackground refreshes a stale roster under the caller's token
-// without blocking the call that carried it. One refresh runs at a time.
+// without blocking the call that carried it. One refresh runs at a time. The
+// refresh keeps the call's identity but not its cancellation: a turn that ends
+// early must not leave the roster stale.
 func (c *Client) refreshRosterInBackground(ctx context.Context) {
 	if _, cached, fresh := c.cachedRoster(); cached && fresh {
 		return
 	}
-	token, err := c.bearer(ctx)
-	if err != nil {
+	if _, err := c.bearer(ctx); err != nil {
 		return
 	}
 	c.roster.mu.Lock()
@@ -380,14 +381,14 @@ func (c *Client) refreshRosterInBackground(ctx context.Context) {
 	}
 	c.roster.refreshing = true
 	c.roster.mu.Unlock()
+	bctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rosterRefreshTimeout)
 	go func() {
+		defer cancel()
 		defer func() {
 			c.roster.mu.Lock()
 			c.roster.refreshing = false
 			c.roster.mu.Unlock()
 		}()
-		bctx, cancel := context.WithTimeout(WithForwardedToken(context.Background(), token), rosterRefreshTimeout)
-		defer cancel()
 		if _, err := c.fetchTemplates(bctx); err != nil {
 			c.logger.Warn("a2a: background roster refresh failed", "error", err)
 		}

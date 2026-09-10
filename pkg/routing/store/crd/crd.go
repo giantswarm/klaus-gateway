@@ -120,16 +120,16 @@ func buildCR(namespace, name string, k store.Key, e store.Entry) v1alpha1.Channe
 
 func specFromKeyEntry(k store.Key, e store.Entry) v1alpha1.ChannelRouteSpec {
 	return v1alpha1.ChannelRouteSpec{
-		Channel:    k.Channel,
-		ChannelID:  k.ChannelID,
-		UserID:     k.UserID,
-		ThreadID:   k.ThreadID,
+		Channel:         k.Channel,
+		ChannelID:       k.ChannelID,
+		UserID:          k.UserID,
+		ThreadID:        k.ThreadID,
 		Agent:           k.Agent,
 		Instance:        e.Instance,
 		AgentInstanceID: e.AgentInstanceID,
 		CreatedAt:       metav1.NewTime(e.CreatedAt),
-		LastSeen:   metav1.NewTime(e.LastSeen),
-		TTLSeconds: int64(e.TTL.Seconds()),
+		LastSeen:        metav1.NewTime(e.LastSeen),
+		TTLSeconds:      int64(e.TTL.Seconds()),
 	}
 }
 
