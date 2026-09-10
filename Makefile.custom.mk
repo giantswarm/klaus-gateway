@@ -13,6 +13,8 @@ generate-kagent: ## Refresh the kagent protos from KAGENT_PROTO_COMMIT and regen
 	  && git -C $$tmp checkout -q $(KAGENT_PROTO_COMMIT) -- proto/kagent/api/v1alpha1 proto/buf.lock \
 	  && for f in $(KAGENT_PROTO_FILES); do cp $$tmp/proto/kagent/api/v1alpha1/$$f.proto hack/kagent-proto/kagent/api/v1alpha1/; done \
 	  && rm -rf $$tmp
-	go run google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.12 --version >/dev/null
 	cd hack/kagent-proto && PATH="$$(go env GOPATH)/bin:$$PATH" buf generate
+	# The repo's CI checks every Go file with goimports; protoc-gen-go groups
+	# imports differently, so the generated files are formatted once here.
+	go run golang.org/x/tools/cmd/goimports@v0.50.0 -local github.com/giantswarm/klaus-gateway -w pkg/kagent/gen
 	sed -i 's/^KAGENT_PROTO_COMMIT: .*/KAGENT_PROTO_COMMIT: $(KAGENT_PROTO_COMMIT)/' pkg/kagent/gen/README.md

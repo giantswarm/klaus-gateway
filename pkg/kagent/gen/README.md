@@ -10,6 +10,7 @@ klaus-gateway uses the stubs `github.com/a2aproject/a2a-go/v2/a2apb/v1` ships.
 
 Do not edit the generated files. To move the pin, set `KAGENT_PROTO_COMMIT` in
 `Makefile.custom.mk` and run `make generate-kagent` (needs `buf`, `protoc-gen-go` and
-`protoc-gen-go-grpc` on the PATH).
+`protoc-gen-go-grpc` on the PATH); the target runs `goimports` over the output because the
+repository's CI formats every Go file with it.
 
 KAGENT_PROTO_COMMIT: 0ac524031db451634359df3081d7d5d08cea4c93
