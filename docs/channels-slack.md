@@ -268,16 +268,19 @@ they link and the running turn finishes.
 - **Launch announcement.** A new channel thread opens with a short Swarmgeist hand-off notice
   before the agent takes over.
 - **Sign-in prompt.** An unlinked user's first message is answered with a "Sign in to Giant
-  Swarm" message posted as a threaded reply, addressed to that user (in channels it anchors
-  the conversation thread; in a DM it lands in the Slack Assistant pane). Once the link completes the same message is
-  updated in place to the signed-in confirmation, with the agent hand-off folded in when a
-  held message is about to replay. The sign-in link is per-user and the callback verifies the
-  OAuth identity's email against the Slack profile email, so a prompt visible to the whole
-  thread cannot be completed by someone else. The link in the button expires after 15
-  minutes; a message sent after that gets a fresh prompt, and the old one is rewritten to
-  say its link expired. Messages sent before signing in are held and replayed after the
-  link completes; only the last 5 per thread are kept, and the user is told when earlier
-  ones are dropped.
+  Swarm" prompt. In a channel the prompt is ephemeral, so only that user sees the link; a
+  short notice in the thread says the agent is waiting for a sign-in, names nobody and
+  carries no link, and gives the ephemeral something to render against. A re-prompt reuses
+  that notice. In a DM the prompt is a real threaded message and lands in the Slack
+  Assistant pane. Once the link completes, a DM prompt is rewritten in place to the
+  signed-in confirmation, with the agent hand-off folded in when a held message is about to
+  replay; a channel prompt cannot be rewritten (an ephemeral has no message id), so the
+  confirmation is a fresh ephemeral to the same user. The sign-in link is per-user and the
+  callback also verifies the OAuth identity's email against the Slack profile email. The
+  link in the button expires after 15 minutes; a message sent after that gets a fresh
+  prompt, and a DM prompt is rewritten to say its link expired. Messages sent before
+  signing in are held and replayed after the link completes; only the last 5 per thread are
+  kept, and the user is told when earlier ones are dropped.
 - **One shared session per thread.** A thread maps to a single agent session. On the
   current kagent (v0.9.9) that session acts under the thread initiator's identity even after
   others are allowed in; a granted collaborator instructs the agent on the initiator's

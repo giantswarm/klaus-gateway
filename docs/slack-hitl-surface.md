@@ -277,12 +277,13 @@ for the Builder to accept it.
 
 ## 8. OBO sign-in (act-as-user account linking)
 
-A threaded message addressed to the user, posted when a turn needs their token but they
-haven't linked their account. The button opens the linking flow; once it completes the
-prompt is rewritten in place to the signed-in confirmation. The link expires after 15
-minutes; a later message posts a fresh prompt and the stale one is rewritten to say its
-link expired. A turn that still has no user token is aborted rather than run as the
-gateway identity.
+Posted when a turn needs the user's token but they haven't linked their account. In a
+channel it is ephemeral to that user, anchored by a thread notice that names nobody and
+carries no link; in a DM it is a threaded message. The button opens the linking flow. Once
+the link completes, a DM prompt is rewritten in place to the signed-in confirmation and a
+channel prompt is confirmed with a fresh ephemeral. The link expires after 15 minutes; a
+later message posts a fresh prompt, and a DM prompt is rewritten to say its link expired. A
+turn that still has no user token is aborted rather than run as the gateway identity.
 
 ```json
 {
