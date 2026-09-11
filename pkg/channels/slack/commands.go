@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 )
 
 const (
@@ -214,7 +216,9 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *slashCommand, slackUse
 		if !permittedOnly() {
 			return true
 		}
-		reply(a.usageReport(ctx, threadID, slackChannel))
+		// The model line is read from the kagent controller as the caller: the
+		// controller serves nothing to the gateway's own identity.
+		reply(a.usageReport(a.withCallerToken(ctx, slackUser), threadID, slackChannel))
 		return true
 
 	case cmdDetails:
@@ -310,4 +314,19 @@ func (a *Adapter) handleLogoutCommand(slackUser string, reply func(string)) bool
 	a.OBO.Unlink(slackUser)
 	reply("👋 Signed out. I'll ask you to `/login` again before I can act as you.")
 	return true
+}
+
+// withCallerToken seeds ctx with the caller's human token when one can be
+// minted, so a read-only lookup at the kagent controller runs as the caller.
+// Best-effort: an unlinked caller keeps the plain ctx and the lookup degrades
+// the way the reader documents (a cached or omitted value).
+func (a *Adapter) withCallerToken(ctx context.Context, slackUser string) context.Context {
+	if a.OBO == nil || slackUser == "" {
+		return ctx
+	}
+	token, err := a.OBO.TokenFor(ctx, slackUser)
+	if err != nil {
+		return ctx
+	}
+	return pkga2a.WithForwardedToken(ctx, token)
 }

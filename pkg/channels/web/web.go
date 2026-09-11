@@ -1,14 +1,16 @@
-// Package web is the HTTP channel adapter that the lab webapp (and any
-// other bytes-in / SSE-out consumer) calls into.
+// Package web is the HTTP channel adapter that browser front-ends and
+// headless drivers (the lab's proofs) call into.
 //
 // Surface:
 //
-//	POST /web/messages     -- send one user message, receive deltas as SSE
+//	POST /web/messages     -- send one user message (or a HITL decision), receive deltas as SSE
 //	GET  /web/messages     -- fetch history for (channelId, userId, threadId)
+//	GET  /web/agents       -- list the agents a message may name
 //	GET  /web/healthz      -- 200 once Start has run
 //
 // The adapter is channel-agnostic on the wire: it normalises requests into
-// channels.InboundMessage and hands off to the Gateway facade.
+// channels.InboundMessage and hands off to the Gateway facade. The caller's
+// bearer token is forwarded as the identity of the turn.
 package web
 
 import (
@@ -23,6 +25,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 	"github.com/giantswarm/klaus-gateway/pkg/routing"
 )
@@ -67,7 +70,14 @@ func (a *Adapter) Mount(r chi.Router) {
 		r.Get("/healthz", a.healthz)
 		r.Post("/messages", a.postMessages)
 		r.Get("/messages", a.getMessages)
+		r.Get("/agents", a.getAgents)
 	})
+}
+
+// agentLister is the optional Gateway capability that lists the selectable
+// agents. The Facade implements it when a kagent client is configured.
+type agentLister interface {
+	ListAgents(ctx context.Context) ([]pkga2a.AgentInfo, error)
 }
 
 const maxInboundBytes = 4 << 20 // 4 MiB, attachments included.
@@ -81,6 +91,60 @@ type inboundRequest struct {
 	Subject     string                 `json:"subject,omitempty"`
 	ReplyTo     string                 `json:"replyTo,omitempty"`
 	Attachments []attachmentDescriptor `json:"attachments,omitempty"`
+	// TaskID resumes the task a previous turn paused on (the taskId of its
+	// prompt event) instead of starting a new one.
+	TaskID string `json:"taskId,omitempty"`
+	// Decision answers the prompt of TaskID: "approve" or "reject" for a tool
+	// approval (rejectionReason optional), the positional askUserAnswers for an
+	// ask_user question. Text is kept as the decision's readable label.
+	Decision *decisionDescriptor `json:"decision,omitempty"`
+}
+
+type decisionDescriptor struct {
+	Type            string     `json:"type"`
+	AskUserAnswers  [][]string `json:"askUserAnswers,omitempty"`
+	RejectionReason string     `json:"rejectionReason,omitempty"`
+}
+
+// promptEvent is the SSE payload of a turn paused on a prompt: the task to
+// resume with a decision and what is being asked.
+type promptEvent struct {
+	TaskID string            `json:"taskId"`
+	Text   string            `json:"text"`
+	Prompt *promptDescriptor `json:"prompt,omitempty"`
+}
+
+type promptDescriptor struct {
+	ToolName  string                  `json:"toolName"`
+	Hint      string                  `json:"hint,omitempty"`
+	Tools     []promptTool            `json:"tools,omitempty"`
+	Questions []channels.HitlQuestion `json:"questions,omitempty"`
+}
+
+type promptTool struct {
+	ID   string         `json:"id"`
+	Name string         `json:"name"`
+	Args map[string]any `json:"args,omitempty"`
+}
+
+func describePrompt(p *channels.HitlPrompt) *promptDescriptor {
+	if p == nil {
+		return nil
+	}
+	d := &promptDescriptor{ToolName: p.ToolName, Hint: p.Hint, Questions: p.Questions}
+	for _, t := range p.Tools {
+		d.Tools = append(d.Tools, promptTool{ID: t.ID, Name: t.Name, Args: t.Args})
+	}
+	return d
+}
+
+// agentDescriptor is one entry of GET /web/agents.
+type agentDescriptor struct {
+	Name        string `json:"name"`
+	Namespace   string `json:"namespace"`
+	DisplayName string `json:"displayName,omitempty"`
+	IconURL     string `json:"iconUrl,omitempty"`
+	Description string `json:"description,omitempty"`
 }
 
 type attachmentDescriptor struct {
@@ -120,8 +184,12 @@ func (a *Adapter) postMessages(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "parse body: "+err.Error())
 		return
 	}
-	if in.ChannelID == "" || in.UserID == "" || in.ThreadID == "" || in.Text == "" {
+	if in.ChannelID == "" || in.UserID == "" || in.ThreadID == "" || (in.Text == "" && in.Decision == nil) {
 		writeJSONError(w, http.StatusBadRequest, "channelId, userId, threadId, text are all required")
+		return
+	}
+	if in.Decision != nil && in.TaskID == "" {
+		writeJSONError(w, http.StatusBadRequest, "a decision needs the taskId of the prompt it answers")
 		return
 	}
 
@@ -134,6 +202,10 @@ func (a *Adapter) postMessages(w http.ResponseWriter, r *http.Request) {
 		ReplyTo:     in.ReplyTo,
 		Subject:     in.Subject,
 		BearerToken: channels.BearerToken(r),
+		TaskID:      in.TaskID,
+	}
+	if in.Decision != nil {
+		msg.Decision = &channels.HitlDecision{Type: in.Decision.Type, AskUserAnswers: in.Decision.AskUserAnswers, RejectionReason: in.Decision.RejectionReason}
 	}
 	if in.AgentRef != "" {
 		msg.AgentRef = in.AgentRef
@@ -178,6 +250,15 @@ func (a *Adapter) postMessages(w http.ResponseWriter, r *http.Request) {
 		}
 		if d.Done {
 			_, _ = fmt.Fprintf(w, "event: done\ndata: {}\n\n")
+			flusher.Flush()
+			continue
+		}
+		if d.Kind == channels.DeltaPrompt {
+			// The turn pauses here; the client resumes it with a decision on
+			// the task. Nothing else follows on this stream.
+			_, _ = io.WriteString(w, "event: prompt\ndata: ")
+			_ = enc.Encode(promptEvent{TaskID: d.TaskID, Text: d.Content, Prompt: describePrompt(d.Prompt)})
+			_, _ = io.WriteString(w, "\n")
 			flusher.Flush()
 			continue
 		}
@@ -231,6 +312,33 @@ func (a *Adapter) getMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"messages": history})
+}
+
+// getAgents lists the agents a message may name, read from the kagent
+// controller as the caller (the bearer token is forwarded).
+func (a *Adapter) getAgents(w http.ResponseWriter, r *http.Request) {
+	if !a.started.Load() {
+		http.Error(w, "web adapter not started", http.StatusServiceUnavailable)
+		return
+	}
+	lister, ok := a.gw.(agentLister)
+	if !ok {
+		writeJSONError(w, http.StatusNotFound, "agent discovery is not configured on this gateway")
+		return
+	}
+	ctx := pkga2a.WithChannel(r.Context(), ChannelName)
+	ctx = pkga2a.WithForwardedToken(ctx, channels.BearerToken(r))
+	agents, err := lister.ListAgents(ctx)
+	if err != nil {
+		writeJSONError(w, http.StatusBadGateway, "list agents: "+err.Error())
+		return
+	}
+	out := make([]agentDescriptor, 0, len(agents))
+	for _, ag := range agents {
+		out = append(out, agentDescriptor{Name: ag.Name, Namespace: ag.Namespace, DisplayName: ag.DisplayName, IconURL: ag.IconURL, Description: ag.Description})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"agents": out})
 }
 
 func (a *Adapter) resolveError(w http.ResponseWriter, err error) {

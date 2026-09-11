@@ -98,6 +98,14 @@ spec:
         {{- if .Values.a2a.url }}
         - --a2a-url={{ .Values.a2a.url }}
         {{- end }}
+        {{- if .Values.a2a.namespace }}
+        - --a2a-namespace={{ .Values.a2a.namespace }}
+        {{- end }}
+        {{- if .Values.a2a.caSecret }}
+        - --a2a-ca-file=/etc/klaus-gateway/a2a/ca.crt
+        {{- else if .Values.a2a.caFile }}
+        - --a2a-ca-file={{ .Values.a2a.caFile }}
+        {{- end }}
         {{- if .Values.a2a.saToken.enabled }}
         - --a2a-token-path={{ .Values.a2a.saToken.mountPath }}
         {{- else if .Values.a2a.tokenPath }}
@@ -219,11 +227,16 @@ spec:
           {{- with .Values.securityContext }}
             {{- . | toYaml | nindent 10 }}
           {{- end }}
-        {{- if or .Values.a2a.saToken.enabled .Values.obo.enabled }}
+        {{- if or .Values.a2a.saToken.enabled .Values.a2a.caSecret .Values.obo.enabled }}
         volumeMounts:
         {{- if .Values.a2a.saToken.enabled }}
         - name: kagent-sa-token
           mountPath: {{ dir .Values.a2a.saToken.mountPath }}
+          readOnly: true
+        {{- end }}
+        {{- if .Values.a2a.caSecret }}
+        - name: kagent-ca
+          mountPath: /etc/klaus-gateway/a2a
           readOnly: true
         {{- end }}
         {{- if .Values.obo.enabled }}
@@ -236,7 +249,7 @@ spec:
         {{- end }}
         {{- end }}
         {{- end }}
-      {{- if or .Values.a2a.saToken.enabled .Values.obo.enabled }}
+      {{- if or .Values.a2a.saToken.enabled .Values.a2a.caSecret .Values.obo.enabled }}
       volumes:
       {{- if .Values.a2a.saToken.enabled }}
       - name: kagent-sa-token
@@ -246,6 +259,14 @@ spec:
               path: {{ base .Values.a2a.saToken.mountPath }}
               audience: {{ .Values.a2a.saToken.audience }}
               expirationSeconds: {{ .Values.a2a.saToken.expirationSeconds }}
+      {{- end }}
+      {{- if .Values.a2a.caSecret }}
+      - name: kagent-ca
+        secret:
+          secretName: {{ .Values.a2a.caSecret }}
+          items:
+          - key: ca.crt
+            path: ca.crt
       {{- end }}
       {{- if .Values.obo.enabled }}
       - name: obo-keys

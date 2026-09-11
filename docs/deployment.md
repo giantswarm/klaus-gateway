@@ -154,10 +154,35 @@ modes are supported:
 Cedar is **not** part of agentgateway v1.1.0. Once upstream lands Cedar, the chart will
 grow a `policy.cedar` block and a `templates/agentgateway-cedar-policy.yaml` ConfigMap.
 
+## kagent (agent conversations)
+
+With `a2a.enabled: true` the gateway runs channel turns on a kagent API v2 controller through
+the platform's agentgateway: A2A v1 over gRPC, the AgentTemplate roster over kagent's gRPC
+services, one AgentInstance per thread. The full model is in [kagent-a2a.md](kagent-a2a.md).
+
+```yaml
+a2a:
+  enabled: true
+  # in-cluster: plaintext h2c to the agentgateway Service
+  url: grpc://agentgateway.agent-platform.svc.cluster.local:8080
+  # or public: TLS to the kagent hostname (add caSecret for a private CA)
+  # url: grpcs://agentgateway.<domain>:443
+  # caSecret: kagent-ca        # Secret with key ca.crt
+  namespace: kagent            # the AgentTemplates served
+  defaultAgent: sre-agent
+```
+
+The gateway speaks to the controller only as the person behind the turn (their Dex id_token),
+so the route's JWT policy validates one issuer and no ServiceAccount token is presented to it.
+The route must carry native gRPC over HTTP/2 and preserve the `authorization` and
+`x-kagent-agent-instance-id` metadata. Thread bindings live in the routing store, so a
+persistent store (`bolt`, `configmap`, `crd`) keeps conversations across restarts.
+
 ## Routing store
 
-The routing table maps `(channel, channelID, userID, threadID)` to a Klaus instance name.
-Choose the backend that matches your deployment:
+The routing table maps `(channel, channelID, userID, threadID)` to a Klaus instance name, or a
+thread to the kagent AgentInstance that holds its conversation (`agentInstanceID` on a
+`ChannelRoute`). Choose the backend that matches your deployment:
 
 | Store       | Helm value         | Persistent | Cluster-backed | Notes                              |
 |-------------|-------------------|------------|----------------|------------------------------------|

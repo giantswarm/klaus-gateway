@@ -64,7 +64,9 @@ POST /v1/test-instance/chat/messages?thread_id=t1 HTTP/1.1
 
 ## Web channel adapter
 
-Mounted at `/web/*`. This is the surface the lab webapp (and future UIs) call into.
+Mounted at `/web/*`. This is the surface browser UIs and headless drivers call into. The full
+contract, including the `prompt` event and HITL decisions and `GET /web/agents`, is in
+[channels-web.md](channels-web.md).
 
 ### `POST /web/messages`
 

@@ -12,6 +12,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/require"
 
+	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 	"github.com/giantswarm/klaus-gateway/pkg/channels/web"
 	"github.com/giantswarm/klaus-gateway/pkg/routing"
@@ -223,4 +224,88 @@ func TestPostMessages_NoAgentRefFallsBackToOpenAIPath(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	require.Equal(t, "", gw.sendInbound.AgentRef)
+}
+
+// A turn paused on a prompt ends the stream with a prompt event carrying the
+// task to resume and what is asked; the decision comes back on the task.
+func TestPostMessages_PromptEventAndDecision(t *testing.T) {
+	gw := &stubGateway{deltas: []channels.OutboundDelta{{
+		Kind: channels.DeltaPrompt, Content: "Delete the pod?", TaskID: "task-7",
+		Prompt: &channels.HitlPrompt{ToolName: "kubectl_delete", Hint: "Delete the pod?", Tools: []channels.HitlTool{{ID: "approval-1", Name: "kubectl_delete", Args: map[string]any{"pod": "web-1"}}}},
+	}}}
+	ts := newServer(t, gw)
+
+	body := `{"channelId":"c1","userId":"u1","threadId":"t1","text":"delete web-1"}`
+	resp, err := http.Post(ts.URL+"/web/messages", "application/json", strings.NewReader(body))
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	buf, _ := io.ReadAll(resp.Body)
+	raw := string(buf)
+	require.Contains(t, raw, "event: prompt\n")
+	require.Contains(t, raw, `"taskId":"task-7"`)
+	require.Contains(t, raw, `"toolName":"kubectl_delete"`)
+	require.Contains(t, raw, `"id":"approval-1"`)
+	require.NotContains(t, raw, "event: done", "a paused turn is not done")
+
+	gw.deltas = []channels.OutboundDelta{{Content: "deleted"}, {Done: true}}
+	body = `{"channelId":"c1","userId":"u1","threadId":"t1","text":"approve","taskId":"task-7","decision":{"type":"approve"}}`
+	resp2, err := http.Post(ts.URL+"/web/messages", "application/json", strings.NewReader(body))
+	require.NoError(t, err)
+	defer func() { _ = resp2.Body.Close() }()
+	require.Equal(t, http.StatusOK, resp2.StatusCode)
+	require.Equal(t, "task-7", gw.sendInbound.TaskID, "the decision resumes the paused task")
+	require.NotNil(t, gw.sendInbound.Decision)
+	require.Equal(t, channels.DecisionApprove, gw.sendInbound.Decision.Type)
+
+	// An ask_user answer travels positionally; a decision needs its task.
+	body = `{"channelId":"c1","userId":"u1","threadId":"t1","taskId":"task-8","decision":{"type":"approve","askUserAnswers":[["Health check"]]}}`
+	resp3, err := http.Post(ts.URL+"/web/messages", "application/json", strings.NewReader(body))
+	require.NoError(t, err)
+	defer func() { _ = resp3.Body.Close() }()
+	require.Equal(t, http.StatusOK, resp3.StatusCode, "a decision without text is a complete message")
+	require.Equal(t, [][]string{{"Health check"}}, gw.sendInbound.Decision.AskUserAnswers)
+
+	body = `{"channelId":"c1","userId":"u1","threadId":"t1","decision":{"type":"approve"}}`
+	resp4, err := http.Post(ts.URL+"/web/messages", "application/json", strings.NewReader(body))
+	require.NoError(t, err)
+	defer func() { _ = resp4.Body.Close() }()
+	require.Equal(t, http.StatusBadRequest, resp4.StatusCode)
+}
+
+type listingGateway struct {
+	stubGateway
+	agents []pkga2a.AgentInfo
+	gotCtx context.Context
+}
+
+func (g *listingGateway) ListAgents(ctx context.Context) ([]pkga2a.AgentInfo, error) {
+	g.gotCtx = ctx
+	return g.agents, nil
+}
+
+func TestGetAgents(t *testing.T) {
+	gw := &listingGateway{agents: []pkga2a.AgentInfo{{Name: "sre-agent", Namespace: "kagent", DisplayName: "SRE Agent", IconURL: "https://icons/sre.png", Description: "Investigates"}}}
+	ts := newServer(t, gw)
+
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/web/agents", nil)
+	req.Header.Set("Authorization", "Bearer user-jwt")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	var got struct {
+		Agents []map[string]any `json:"agents"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+	require.Len(t, got.Agents, 1)
+	require.Equal(t, "SRE Agent", got.Agents[0]["displayName"])
+	require.Equal(t, "https://icons/sre.png", got.Agents[0]["iconUrl"])
+	require.Equal(t, "user-jwt", pkga2a.ForwardedTokenFromContext(gw.gotCtx), "the roster is read as the caller")
+
+	// A gateway without discovery says so.
+	plain := newServer(t, &stubGateway{})
+	resp2, err := http.Get(plain.URL + "/web/agents")
+	require.NoError(t, err)
+	defer func() { _ = resp2.Body.Close() }()
+	require.Equal(t, http.StatusNotFound, resp2.StatusCode)
 }

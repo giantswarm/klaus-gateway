@@ -12,7 +12,7 @@ import (
 
 // AgentRosterSource lists the agents selectable from Slack, discovered
 // dynamically from the kagent controller (never a static gateway config list).
-// Implemented by pkg/a2a.KagentClient; nil disables the roster listing.
+// Implemented by pkg/a2a.Client; nil disables the roster listing.
 type AgentRosterSource interface {
 	ListAgents(ctx context.Context) ([]pkga2a.AgentInfo, error)
 }
@@ -33,8 +33,7 @@ const rosterListTimeout = 5 * time.Second
 const rosterTTL = 30 * time.Second
 
 // rosterFailureTTL is how long a failed roster fetch is remembered before the
-// controller is asked again. It mirrors the AgentCard client's cardFailureTTL
-// and exists for the same reason: the roster is resolved synchronously on the
+// controller is asked again. The roster is resolved synchronously on the
 // dispatch path to brand every turn's first message, so without it every turn
 // against an unreachable controller pays the full rosterListTimeout.
 //
@@ -45,8 +44,8 @@ const rosterTTL = 30 * time.Second
 const rosterFailureTTL = 45 * time.Second
 
 // rosterListing renders the selectable-agent roster: display names (the
-// display-name annotation on the Agent CR, falling back to the technical
-// name) and the Agent CRs' descriptions. Namespaces are deliberately absent —
+// display-name annotation on the AgentTemplate, falling back to the technical
+// name) and the templates' descriptions. Namespaces are deliberately absent —
 // which namespace serves a selection is deployment configuration, not
 // something a Slack user picks. ok is false when no roster source is
 // configured or the fetch failed.
@@ -71,8 +70,8 @@ func (a *Adapter) rosterListing(ctx context.Context) (string, bool) {
 
 // displayNameMaxRunes caps a display name at the Slack boundary. Slack
 // documents no username limit, so the cap is defensive: the annotation can
-// bypass the chart's 63-character schema (a hand-annotated Agent CR, another
-// chart), and an over-long value must cost the branding, never the reply.
+// bypass the chart's 63-character schema (a hand-annotated AgentTemplate,
+// another chart), and an over-long value must cost the branding, never the reply.
 const displayNameMaxRunes = 80
 
 // sanitizeDisplayName makes an annotation value usable as a Slack username:
@@ -95,7 +94,7 @@ func sanitizeDisplayName(s string) string {
 }
 
 // agentDisplayName is the roster label for ag: the display-name annotation
-// when the Agent CR carries one, the technical name otherwise. The annotation
+// when the AgentTemplate carries one, the technical name otherwise. The annotation
 // is sanitized here — the one place that knows the value is about to become a
 // Slack API parameter — so a hostile or malformed annotation degrades the
 // label instead of the message carrying it.
@@ -111,9 +110,9 @@ func agentDisplayName(ag pkga2a.AgentInfo) string {
 // alike, so the two can never disagree. It is the display name the roster
 // reports, or agentRef's bare technical name when the roster has nothing for it.
 //
-// The AgentCard name is deliberately not consulted. kagent generates it from the
-// resource name with hyphens replaced by underscores, so it renders a spelling
-// that appears in no other surface and that /agent will not accept.
+// The name is the AgentTemplate's display-name annotation — the same source the
+// roster lists and /agent accepts — so no surface ever shows a spelling another
+// one refuses.
 func (a *Adapter) agentNameFor(ctx context.Context, agentRef string) string {
 	if name := a.rosterDisplayName(ctx, agentRef); name != "" {
 		return name

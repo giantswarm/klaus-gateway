@@ -1,15 +1,20 @@
 # Web channel adapter
 
-The web channel adapter is the HTTP surface the lab webapp — and any other browser-based UI —
-calls into. It is mounted at `/web/*` and is always enabled (no configuration flag required).
+The web channel adapter is the HTTP surface browser-based UIs and headless drivers (the lab's
+proofs) call into. It is mounted at `/web/*`; the binary enables it by default, the chart
+behind `web.enabled`.
 
 ## Endpoints
 
-| Method | Path                   | Description                                     |
-|--------|------------------------|-------------------------------------------------|
-| `POST` | `/web/messages`        | Send a user message; receive LLM deltas as SSE  |
-| `GET`  | `/web/messages`        | Fetch conversation history                      |
-| `GET`  | `/web/healthz`         | Liveness check; 200 once the adapter is started |
+| Method | Path                   | Description                                                   |
+|--------|------------------------|---------------------------------------------------------------|
+| `POST` | `/web/messages`        | Send a user message (or a HITL decision); receive deltas as SSE |
+| `GET`  | `/web/messages`        | Fetch conversation history                                    |
+| `GET`  | `/web/agents`          | List the agents a message may name                            |
+| `GET`  | `/web/healthz`         | Liveness check; 200 once the adapter is started               |
+
+The caller's `Authorization: Bearer <token>` is forwarded as the identity of the turn: on the
+kagent path it is the person the agent acts as, and a request without one is refused.
 
 ## POST /web/messages
 
@@ -32,8 +37,10 @@ Content-Type: application/json
 }
 ```
 
-All four fields `channelId`, `userId`, `threadId`, and `text` are required. `subject` and
-`replyTo` are optional. `attachments` is an array of base64-encoded file objects:
+All four fields `channelId`, `userId`, `threadId`, and `text` are required (a HITL decision may
+omit `text`, see below). `subject`, `replyTo` and `agentRef` are optional; `agentRef` names the
+agent of a new conversation (default: the gateway's `a2a.defaultAgent`). `attachments` is an
+array of base64-encoded file objects:
 
 ```json
 {
@@ -70,12 +77,42 @@ data: "upstream timed out"
 
 ```
 
+### Prompts and decisions (human-in-the-loop)
+
+When the agent pauses on a tool approval or a question, the stream ends with a `prompt` event
+instead of `done`:
+
+```
+event: prompt
+data: {"taskId":"0192…","text":"Delete the pod?","prompt":{"toolName":"kubectl_delete","hint":"Delete the pod?","tools":[{"id":"approval-1","name":"kubectl_delete","args":{"pod":"web-1"}}]}}
+
+```
+
+An `ask_user` prompt carries `questions` (`question`, `choices`, `multiple`) instead of `tools`.
+The client answers with a new `POST /web/messages` on the same thread that names the paused
+task and the decision; the response streams the resumed turn:
+
+```json
+{"channelId":"web-1","userId":"alice","threadId":"thread-7","text":"approve",
+ "taskId":"0192…","decision":{"type":"approve"}}
+```
+
+`decision.type` is `approve` or `reject` (`rejectionReason` optional); an `ask_user` answer
+carries `askUserAnswers`, one list of selected labels per question in order:
+`{"type":"approve","askUserAnswers":[["Health check"]]}`. `text` is optional on a decision and
+kept as its readable label. A decision without `taskId` is a 400.
+
+Closing the stream mid-turn stops the turn: the gateway cancels the running task at the agent
+controller.
+
 ### Routing
 
-The gateway resolves `(channel="web", channelID, userID, threadID)` to a Klaus instance
-using the routing table. If no entry exists and `--auto-create` is enabled, a new instance
-is created via the lifecycle driver. If no entry exists and auto-create is disabled, the
-request returns HTTP 404.
+On the kagent path (`a2a.enabled`) the thread `(channel="web", channelID, threadID, agentRef)`
+is bound to one AgentInstance created on its first turn; see [kagent-a2a.md](kagent-a2a.md).
+Otherwise the gateway resolves `(channel="web", channelID, userID, threadID)` to a Klaus
+instance using the routing table. If no entry exists and `--auto-create` is enabled, a new
+instance is created via the lifecycle driver. If no entry exists and auto-create is disabled,
+the request returns HTTP 404.
 
 ## GET /web/messages
 
@@ -99,6 +136,23 @@ All three query parameters are required.
   ]
 }
 ```
+
+## GET /web/agents
+
+Lists the agents a message's `agentRef` may name, read from the kagent controller as the
+caller (the bearer token is forwarded). Only agents that can start a conversation are listed.
+
+```json
+{
+  "agents": [
+    {"name": "sre-agent", "namespace": "kagent", "displayName": "SRE Agent",
+     "iconUrl": "https://…/sre-agent.png", "description": "Investigates infrastructure issues"}
+  ]
+}
+```
+
+Returns `404` on a gateway without the kagent client configured and `502` when the controller
+cannot be reached (or refuses the caller).
 
 ## GET /web/healthz
 
