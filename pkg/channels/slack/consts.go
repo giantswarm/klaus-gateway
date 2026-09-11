@@ -68,8 +68,8 @@ const (
 
 // oboSignIn is the action_id on the OBO "Sign in" URL button. The button opens
 // its url directly; the interaction payload Slack still sends is acked without
-// action. The prompt message itself is rewritten in place once the link
-// completes (OnUserLinked), keyed by the recorded anchor, not by the click.
+// action. The completed link is confirmed by OnUserLinked from the recorded
+// anchor, not by the click.
 const oboSignIn = "obo_sign_in"
 
 // Connector Block Kit action IDs. The button value carries the backend name.
@@ -213,8 +213,21 @@ const stopNothingRunningNotice = "_Nothing is running in this thread._"
 
 // signInLinkExpiredNote replaces a sign-in prompt whose link outlived its
 // state TTL once a fresh prompt is posted, so the dead button cannot be
-// mistaken for the live one.
+// mistaken for the live one. Only a DM prompt is rewritten this way; a channel
+// prompt is ephemeral and has no addressable ts.
 const signInLinkExpiredNote = "_This sign-in link expired; use the newer one below._"
+
+// signInThreadNotice anchors a channel thread whose first reply would
+// otherwise be the sign-in prompt. The prompt is ephemeral and Slack does not
+// surface a thread-scoped ephemeral in a thread with no messages
+// (klaus-gateway#156), so the thread needs one real reply — and it must name
+// nobody and carry no link, since everyone in the channel can read it
+// (klaus-gateway#185).
+const signInThreadNotice = "🔒 I need a sign-in before I can act here. I've posted the link privately to whoever asked."
+
+// signedInNotice confirms a completed account link. It names no identity: the
+// email the user signed in as is shown on the private browser success page.
+const signedInNotice = "✅ Signed in. I can act on your behalf now."
 
 // signInNudgeTTL bounds how long a posted sign-in prompt suppresses a fresh
 // nudge for the same (user, thread). It is the sign-in link's state lifetime:

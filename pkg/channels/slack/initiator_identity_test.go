@@ -2,7 +2,6 @@ package slack_test
 
 import (
 	"context"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -102,7 +101,7 @@ func TestInitiator_FallsBackToSenderWhenTokenUnavailable(t *testing.T) {
 	// for that prompt so U001 is the recorded initiator before U002 posts.
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Sign in so I can act as you")
+		return signInPrompted(fake)
 	}, 10*time.Second, 50*time.Millisecond, "the unlinked initiator is prompted to sign in")
 
 	// Collaborator posts, held pending consent; the initiator approves.

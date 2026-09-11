@@ -2227,30 +2227,22 @@ func (c *slackAPIClient) postChoiceSectionPrompt(ctx context.Context, channel, t
 	return err
 }
 
-// postSignInPrompt posts a Block Kit message with a "Sign in" button linking
-// to linkURL, and returns the posted message's ts. It is used to
-// nudge an unlinked Slack user into the OBO account-linking flow. A real
-// threaded message, never an ephemeral: for a root channel mention the prompt
-// is the thread's first visible reply (a thread-scoped ephemeral there is never
-// surfaced by Slack), in an assistant DM only thread replies render in the
-// assistant pane, and the returned ts lets the prompt be rewritten in place
-// once the link completes.
-func (c *slackAPIClient) postSignInPrompt(ctx context.Context, channel, threadID, user, linkURL string) (string, error) {
-	// The prompt is a public thread message and its link is minted for one
-	// user: address it, or a bystander clicks a button bound to someone else's
-	// identity and lands on the email-mismatch page.
-	text := "Sign in so I can act as you. " +
-		"Until you do, I can't run tools on your behalf."
-	if user != "" {
-		text = "<@" + user + "> " + text
-	}
+// signInPromptText is the sign-in prompt's body. It names no one: the prompt
+// reaches its user through the message's audience (an ephemeral in a channel,
+// a DM thread otherwise), never through an @-mention a whole thread can read
+// (klaus-gateway#185).
+const signInPromptText = "Sign in so I can act as you. Until you do, I can't run tools on your behalf."
+
+// signInPromptBody builds the sign-in prompt's Slack post body: a section with
+// the prompt text plus a "Sign in" URL button opening linkURL.
+func signInPromptBody(channel, threadID, linkURL string) map[string]any {
 	body := map[string]any{
 		paramChannel: channel,
-		paramText:    text,
+		paramText:    signInPromptText,
 		paramBlocks: []any{
 			map[string]any{
 				bkType: bkSection,
-				bkText: map[string]any{bkType: bkMrkdwn, bkText: text},
+				bkText: map[string]any{bkType: bkMrkdwn, bkText: signInPromptText},
 			},
 			map[string]any{
 				bkType: bkActions,
@@ -2269,7 +2261,30 @@ func (c *slackAPIClient) postSignInPrompt(ctx context.Context, channel, threadID
 	if threadID != "" {
 		body[paramThreadTS] = threadID
 	}
-	return c.postJSON(ctx, methodChatPostMessage, body)
+	return body
+}
+
+// postSignInPrompt posts the sign-in prompt as a real threaded message and
+// returns its ts. It is the DM form of the prompt: a DM thread has one reader,
+// so nothing is hidden by making it ephemeral, and only thread replies render
+// in the assistant pane. The returned ts lets the prompt be rewritten in place
+// once the link completes.
+func (c *slackAPIClient) postSignInPrompt(ctx context.Context, channel, threadID, linkURL string) (string, error) {
+	return c.postJSON(ctx, methodChatPostMessage, signInPromptBody(channel, threadID, linkURL))
+}
+
+// postSignInPromptEphemeral posts the sign-in prompt visible to user only. It
+// is the channel form: the link is minted for one identity, so a thread full
+// of bystanders must not see it (klaus-gateway#185). An ephemeral has no
+// addressable ts, so it cannot be rewritten later; the caller confirms the
+// completed link with a fresh ephemeral instead. Slack only surfaces a
+// thread-scoped ephemeral in a thread that already shows a message, which is
+// why the caller anchors a fresh mention first (klaus-gateway#156).
+func (c *slackAPIClient) postSignInPromptEphemeral(ctx context.Context, channel, threadID, user, linkURL string) error {
+	body := signInPromptBody(channel, threadID, linkURL)
+	body[paramUser] = user
+	_, err := c.postJSON(ctx, "chat.postEphemeral", body)
+	return err
 }
 
 // slackSectionTextMax is Slack's limit on a section block's text object; a
