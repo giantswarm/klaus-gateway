@@ -108,9 +108,11 @@ func TestParseCommand(t *testing.T) {
 type fakeSlackServer struct {
 	posts      atomic.Int32
 	ephemerals atomic.Int32
+	updates    atomic.Int32
 
 	mu             sync.Mutex
 	postTexts      []string
+	postBodies     []string
 	ephemeralTexts []string
 }
 
@@ -119,6 +121,9 @@ func (f *fakeSlackServer) handler() http.Handler {
 	mux.HandleFunc("/chat.postMessage", func(w http.ResponseWriter, r *http.Request) {
 		f.posts.Add(1)
 		_ = r.ParseForm()
+		f.mu.Lock()
+		f.postBodies = append(f.postBodies, r.PostForm.Encode())
+		f.mu.Unlock()
 		if text := r.PostFormValue("text"); text != "" {
 			f.mu.Lock()
 			f.postTexts = append(f.postTexts, text)
@@ -138,6 +143,11 @@ func (f *fakeSlackServer) handler() http.Handler {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	})
+	mux.HandleFunc("/chat.update", func(w http.ResponseWriter, _ *http.Request) {
+		f.updates.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "ts": "1234.5678"})
 	})
 	return mux
 }
@@ -372,8 +382,12 @@ func TestHandleCommand_LoginLinkedButDeadTokenRepromptsSignIn(t *testing.T) {
 	a.OBO = deadLinkOBO{}
 
 	require.True(t, a.handleCommand(t.Context(), &slashCommand{Name: "login"}, "U1", "C1", "T1"))
-	require.Equal(t, int32(0), srv.ephemerals.Load(), "no signed-in confirmation for a dead link")
-	require.Equal(t, int32(1), srv.posts.Load(), "the sign-in prompt is posted to the thread")
+	require.Equal(t, int32(1), srv.ephemerals.Load(), "the sign-in prompt reaches the caller only")
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	require.Contains(t, srv.ephemeralTexts[0], "Sign in so I can act as you",
+		"a dead link re-prompts instead of confirming a sign-in")
+	require.Equal(t, int32(1), srv.posts.Load(), "the thread notice anchors the ephemeral prompt")
 }
 
 // /logout confirms ephemerally: sign-in state is caller-only information.

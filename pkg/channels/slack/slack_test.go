@@ -525,13 +525,19 @@ func TestDispatch_OBO_UnlinkedUserPromptsSignInAndDoesNotDispatch(t *testing.T) 
 	require.NoError(t, resp.Body.Close())
 
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Sign in so I can act as you")
+		return signInPrompted(fake)
 	}, 2*time.Second, 50*time.Millisecond, "unlinked user must be prompted to sign in with a real message")
-	// The prompt is a threaded reply under the mention, so it anchors the
-	// thread the agent will answer in (a thread-scoped ephemeral on a fresh
-	// mention is never surfaced by Slack).
-	prompt := fake.pathCalls("chat.postMessage")[0]
+	// In a channel the prompt is ephemeral to its user and carries the link;
+	// the public thread notice anchors it (a thread-scoped ephemeral in a
+	// thread that shows no message is never surfaced by Slack) and carries
+	// neither the link nor a mention (klaus-gateway#185).
+	prompt := fake.pathCalls("chat.postEphemeral")[0]
 	require.Equal(t, "111.222", prompt.params["thread_ts"])
+	require.Equal(t, "U123", prompt.params["user"])
+	notice := fake.pathCalls("chat.postMessage")[0]
+	require.Equal(t, "111.222", notice.params["thread_ts"])
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "U123")
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "http")
 	require.Zero(t, gw.resolveCount(), "unlinked turn must not reach the agent (no M2M fallback)")
 }
 
@@ -562,7 +568,7 @@ func TestDispatch_OBO_ParksUnlinkedMessageAndReplaysAfterLink(t *testing.T) {
 	require.NoError(t, resp.Body.Close())
 
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Sign in so I can act as you")
+		return signInPrompted(fake)
 	}, 2*time.Second, 50*time.Millisecond, "unlinked user must be prompted to sign in")
 	require.Zero(t, gw.resolveCount(), "the message must be parked, not dispatched, before linking")
 
@@ -581,17 +587,23 @@ func TestDispatch_OBO_ParksUnlinkedMessageAndReplaysAfterLink(t *testing.T) {
 	require.Equal(t, "human-token", got.BearerToken, "the replayed turn carries the human muster token")
 	require.Contains(t, got.Text, "what is failing?")
 
-	// The prompt message is rewritten in place into the signed-in confirmation.
-	// The email is not echoed in-thread; it is confirmed on the private browser
-	// success page. The agent is never named here: the replay's own output is
-	// the handoff signal.
-	fake.waitForPath(t, "chat.update", 1)
-	update := fake.pathCalls("chat.update")[0]
-	text, _ := update.params["text"].(string)
-	require.Contains(t, text, "Signed in")
-	require.NotContains(t, text, "@", "the in-thread rewrite carries no email")
-	require.NotContains(t, text, "test-agent", "the rewrite must not name the agent")
-	require.NotEmpty(t, update.params["ts"], "the rewrite targets the prompt's anchor ts")
+	// A channel prompt is ephemeral, so the completed link is confirmed with a
+	// fresh ephemeral to the same user. The email is not echoed in-thread; it is
+	// confirmed on the private browser success page. The agent is never named
+	// here: the replay's own output is the handoff signal.
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postEphemeral")), "Signed in")
+	}, 2*time.Second, 50*time.Millisecond, "the link completion is confirmed to the user")
+	var confirm recordedCall
+	for _, call := range fake.pathCalls("chat.postEphemeral") {
+		if text, _ := call.params["text"].(string); strings.Contains(text, "Signed in") {
+			confirm = call
+		}
+	}
+	text, _ := confirm.params["text"].(string)
+	require.Equal(t, "U123", confirm.params["user"], "the confirmation reaches the linked user only")
+	require.NotContains(t, text, "@", "the confirmation carries no email")
+	require.NotContains(t, text, "test-agent", "the confirmation must not name the agent")
 }
 
 // multiUserOBO is a test OBOTokenSource with independent per-user link state, so
@@ -659,7 +671,7 @@ func TestDispatch_OBO_NewcomerReplaysToAccessPromptNotAgent(t *testing.T) {
 	// to sign in, not dispatched.
 	send(`{"type":"event_callback","event":{"type":"app_mention","user":"U2","text":"<@BOT> me too","channel":"C1","ts":"333.444","thread_ts":"111.222"}}`)
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Sign in so I can act as you")
+		return signInPrompted(fake)
 	}, 2*time.Second, 50*time.Millisecond, "the newcomer is prompted to sign in")
 	mu.Lock()
 	require.Equal(t, 1, len(captured), "an unlinked newcomer must not reach the agent")
@@ -826,7 +838,7 @@ func TestLogin_PostsSignInPrompt(t *testing.T) {
 	require.NoError(t, resp.Body.Close())
 
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Sign in so I can act as you")
+		return signInPrompted(fake)
 	}, 2*time.Second, 50*time.Millisecond, "/login must post a sign-in prompt")
 	require.Zero(t, gw.resolveCount(), "/login must be consumed, not dispatched to the agent")
 }
@@ -1095,6 +1107,17 @@ func (f *fakeSlackAPI) waitForPath(t *testing.T, path string, n int) {
 	require.Eventually(t, func() bool {
 		return len(f.pathCalls(path)) >= n
 	}, 2*time.Second, 20*time.Millisecond, "expected >=%d call(s) to %s", n, path)
+}
+
+// signInPromptText is the wording of the sign-in prompt, asserted on whichever
+// surface carries it.
+const signInPromptText = "Sign in so I can act as you"
+
+// signInPrompted reports whether the sign-in prompt reached its user: an
+// ephemeral in a channel (klaus-gateway#185), a real threaded message in a DM.
+func signInPrompted(fake *fakeSlackAPI) bool {
+	return strings.Contains(allText(fake.pathCalls("chat.postEphemeral")), signInPromptText) ||
+		strings.Contains(allText(fake.pathCalls("chat.postMessage")), signInPromptText)
 }
 
 // allText concatenates the "text" param of the given calls.
@@ -1534,7 +1557,7 @@ func TestHandleInbound_NoInactiveHintForMentionTwins(t *testing.T) {
 	// (an engagement trace) without activating the thread.
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_mention","user":"U1","text":"<@UBOT> /login","channel":"C1","ts":"701.000","thread_ts":"700.000"}}`)
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Sign in so I can act")
+		return signInPrompted(fake)
 	}, 2*time.Second, 50*time.Millisecond, "the sign-in prompt posts")
 
 	// A new mention in the same thread: the message twin lands first.
