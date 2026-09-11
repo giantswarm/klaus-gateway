@@ -104,10 +104,36 @@ The app subscribes to two bot events:
 - `app_mention` — fires when a user `@`-mentions the bot in any channel
 - `message.im` — fires for direct messages to the bot
 
+The manifest also declares a slash command (`/swarmgeist` by default; the name is per app and the
+gateway does not depend on it) and the `commands` scope it needs. Manifest changes are applied by
+hand at api.slack.com/apps; adding the `commands` scope to an install that lacks it requires a
+reinstall.
+
 ## Agent routing
 
-Every Slack thread is routed to a single Klaus instance via the A2A executor. The target
-agent is fixed at startup using `slack.defaultAgent`.
+Every Slack thread is routed to a single agent via the A2A executor. A conversation picks its
+agent when it opens, through one of two entry points, and keeps it for life:
+
+- **Mention with a prefix**: `@bot /agent "<display name>" <question>` or
+  `@bot /agent <technical-name> <question>` on a conversation-starting message. Without a prefix
+  the conversation goes to the default agent (`slack.defaultAgent`).
+- **Slash command**: `/swarmgeist [question]` in a channel opens a modal with an agent select over
+  the live roster (the default agent preselected) and a question box. On submit the gateway posts
+  the conversation root itself, under the agent's identity ("💬 @user asked *Agent*: …"), makes
+  the submitter the thread initiator, and runs the question as the first turn. Slack hides
+  developer slash commands in threads and in the agent pane, so the command only opens channel
+  conversations; in a channel the bot is not a member of, the gateway joins public channels and
+  asks for an invite to private ones. Failures (unknown agent, roster unavailable, channel not
+  served) are reported privately to the invoking user.
+
+After a restart the in-memory binding is re-derived: from the `/agent` prefix in the opening
+message for mention-started threads, and from a conversation marker on the root for slash-started
+threads (the root is a bot message with no prefix). The marker is the `block_id` of the root's
+Block Kit section — invisible to users, stored by Slack with the message, returned by
+`conversations.replies` — and it also names the initiator, so the submitter, not the first person
+to reply, owns the thread after a restart. Slack message metadata would be the purpose-built
+carrier, but Slack drops custom metadata unless its schema is declared in the manifest, and the
+manifest of a classic Slack app has no place for that.
 
 | Flag | Env var | Required |
 |------|---------|---------|
@@ -305,15 +331,17 @@ they link and the running turn finishes.
 
 The `member_joined_channel` bot event must also be subscribed for the channel intro.
 
-## Endpoint
+## Endpoints
 
-The adapter mounts a single route:
+The adapter mounts three routes in events mode (none in socketmode, where the same payloads
+arrive as Socket Mode envelopes):
 
 ```
-POST /channels/slack/events    Events API webhook (events mode only; no-op in socketmode)
+POST /channels/slack/events        Events API webhook
+POST /channels/slack/interactions  Block Kit clicks, the message shortcut, the agent picker's view_submission
+POST /channels/slack/commands      the slash command
 ```
 
-The endpoint:
-- Verifies the `x-slack-signature` HMAC header using the signing secret.
-- Responds to `url_verification` challenges with the `challenge` value.
-- Dispatches `event_callback` payloads to the Klaus instance asynchronously.
+Every endpoint verifies the `x-slack-signature` HMAC header using the signing secret and acks
+within Slack's 3-second window before doing any work. The events endpoint also answers
+`url_verification` challenges with the `challenge` value.

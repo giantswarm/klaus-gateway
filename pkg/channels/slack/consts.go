@@ -117,12 +117,59 @@ const connectorResumeText = "I've signed in to %s, continue"
 
 // payloadTypeBlockActions is the interaction payload type for Block Kit button
 // clicks; payloadTypeMessageAction is the type for message shortcuts (the ⋯ →
-// Apps menu). Other payload types (view submissions, global shortcuts) are not
-// routed.
+// Apps menu); payloadTypeViewSubmission is the type for a submitted modal (the
+// agent picker). Other payload types (global shortcuts) are not routed.
 const (
-	payloadTypeBlockActions  = "block_actions"
-	payloadTypeMessageAction = "message_action"
+	payloadTypeBlockActions   = "block_actions"
+	payloadTypeMessageAction  = "message_action"
+	payloadTypeViewSubmission = "view_submission"
 )
+
+// Agent picker modal (slashcmd.go): callback and block/action ids, labels,
+// and the notices its two steps post through the slash command's response_url.
+const (
+	askAgentCallbackID       = "ask_agent"
+	askAgentAgentBlockID     = "ask_agent_agent"
+	askAgentAgentActionID    = "agent"
+	askAgentQuestionBlockID  = "ask_agent_question"
+	askAgentQuestionActionID = "question"
+
+	askAgentModalTitle          = "Ask an agent" // modal titles are capped at 24 chars
+	askAgentSubmitLabel         = "Ask"
+	askAgentCloseLabel          = "Cancel"
+	askAgentAgentLabel          = "Agent"
+	askAgentAgentPlaceholder    = "Pick an agent"
+	askAgentQuestionLabel       = "Question"
+	askAgentQuestionPlaceholder = "What do you want to ask?"
+
+	// modalMaxAgents is Slack's static_select option cap; modalOptionLabelMax
+	// its option label cap; modalQuestionMax the plain_text_input max_length.
+	modalMaxAgents      = 100
+	modalOptionLabelMax = 75
+	modalQuestionMax    = 3000
+
+	// askAgentRootText is the conversation root the gateway posts on submit:
+	// who asked, which agent (bold display name), and the question quoted.
+	askAgentRootText = "💬 <@%s> asked *%s*:\n%s"
+
+	slashCommandDMNotice         = "_This command opens a conversation in a channel. In a direct message, just type your question._"
+	slashCommandOpenFailedNotice = "⚠️ _I couldn't open the agent picker just now. Please try again._"
+	askAgentIncompleteNotice     = "⚠️ _Pick an agent and type a question, then submit again._"
+	askAgentInviteNotice         = "⚠️ _I'm not a member of this channel, so I couldn't start the conversation. Invite me to the channel and try again._"
+	askAgentPostFailedNotice     = "⚠️ _I couldn't post your question in this channel just now. Please try again._"
+)
+
+// conversationMarkerPrefix prefixes the block_id that carries a
+// conversationMarker on a conversation root the gateway posts, so a marker
+// is never mistaken for another block_id that happens to hold JSON.
+const conversationMarkerPrefix = "klaus_gateway.agent_conversation:"
+
+// entryPointSlashCommand is the conversationMarker.EntryPoint value for a
+// conversation opened by the slash command's picker.
+const entryPointSlashCommand = "slash_command"
+
+// sectionTextMax is Slack's cap on a section block's text.
+const sectionTextMax = 3000
 
 // inspectShortcutCallbackID is the callback_id of the "Inspect agent steps"
 // message shortcut registered in deploy/slack/manifest.yaml. Invoked from any
@@ -327,6 +374,9 @@ const (
 	// Slack's crawler fetch them (fatal for single-use auth links).
 	paramUnfurlLinks = "unfurl_links"
 	paramUnfurlMedia = "unfurl_media"
+
+	paramTriggerID = "trigger_id" // views.open
+	paramView      = "view"       // views.open
 )
 
 // bkURL is the Block Kit button "url" field (opens a link on click).
@@ -343,19 +393,38 @@ const (
 	bkOptions   = "options"
 	bkBlockID   = "block_id"
 	bkAccessory = "accessory"
+
+	// Modal / input block keys (the agent picker).
+	bkCallbackID      = "callback_id"
+	bkPrivateMetadata = "private_metadata"
+	bkTitle           = "title"
+	bkSubmit          = "submit"
+	bkClose           = "close"
+	bkBlocks          = "blocks"
+	bkLabel           = "label"
+	bkElement         = "element"
+	bkPlaceholder     = "placeholder"
+	bkInitialOption   = "initial_option"
+	bkInitialValue    = "initial_value"
+	bkMultiline       = "multiline"
+	bkMaxLength       = "max_length"
 )
 
 // Block Kit type values.
 const (
-	bkSection      = "section"
-	bkContext      = "context" // small muted text; carries the tool-activity entries
-	bkActions      = "actions"
-	bkButton       = "button"
-	bkRadioButtons = "radio_buttons"
-	bkCheckboxes   = "checkboxes"
-	bkMrkdwn       = "mrkdwn"
-	bkMarkdown     = "markdown" // top-level Slack markdown block
-	bkPlainText    = "plain_text"
-	bkPrimary      = "primary"
-	bkDanger       = "danger"
+	bkSection        = "section"
+	bkContext        = "context" // small muted text; carries the tool-activity entries
+	bkActions        = "actions"
+	bkButton         = "button"
+	bkRadioButtons   = "radio_buttons"
+	bkCheckboxes     = "checkboxes"
+	bkModal          = "modal"
+	bkInput          = "input"
+	bkStaticSelect   = "static_select"
+	bkPlainTextInput = "plain_text_input"
+	bkMrkdwn         = "mrkdwn"
+	bkMarkdown       = "markdown" // top-level Slack markdown block
+	bkPlainText      = "plain_text"
+	bkPrimary        = "primary"
+	bkDanger         = "danger"
 )

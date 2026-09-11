@@ -27,6 +27,8 @@ type slackOption struct {
 type blockActionState struct {
 	SelectedOption  *slackOption  `json:"selected_option"`
 	SelectedOptions []slackOption `json:"selected_options"`
+	// Value is the text of a plain_text_input, reported on a view_submission.
+	Value string `json:"value"`
 }
 
 // interactionPayload is the subset of the Slack interactions payload we need.
@@ -64,6 +66,17 @@ type interactionPayload struct {
 	State struct {
 		Values map[string]map[string]blockActionState `json:"values"`
 	} `json:"state"`
+	// View is the submitted modal on a view_submission payload: its callback_id
+	// names the form, private_metadata carries what the opener stashed, and
+	// state.values holds every input, keyed like State above.
+	View struct {
+		ID              string `json:"id"`
+		CallbackID      string `json:"callback_id"`
+		PrivateMetadata string `json:"private_metadata"`
+		State           struct {
+			Values map[string]map[string]blockActionState `json:"values"`
+		} `json:"state"`
+	} `json:"view"`
 }
 
 // questionIndexFromBlockID extracts the question index from a multi-question
@@ -169,13 +182,20 @@ func (h *interactionsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 
 // routeInteraction dispatches a parsed Slack interaction payload: a
 // message_action (the "Inspect agent steps" shortcut) to the inspection
-// renderer, a block_actions click to the pending HITL task. Shared by the HTTP
+// renderer, a view_submission of the agent picker to the conversation opener,
+// a block_actions click to the pending HITL task. Shared by the HTTP
 // interactions endpoint (Events API mode) and the Socket Mode
 // interactive-envelope handler (dev mode), so both work identically in both
 // deployments.
 func (a *Adapter) routeInteraction(ctx context.Context, payload interactionPayload) {
 	if payload.Type == payloadTypeMessageAction {
 		a.handleMessageAction(ctx, payload)
+		return
+	}
+	if payload.Type == payloadTypeViewSubmission {
+		if payload.View.CallbackID == askAgentCallbackID {
+			a.handleAskAgentSubmission(ctx, payload)
+		}
 		return
 	}
 	if payload.Type != payloadTypeBlockActions || len(payload.Actions) == 0 {
