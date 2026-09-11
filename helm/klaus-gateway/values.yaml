@@ -230,7 +230,7 @@ a2a:
   #   grpcs://host:port -- TLS, the public kagent hostname
   # Examples:
   #   grpc://agentgateway.agent-platform.svc.cluster.local:8080
-  #   grpcs://kagent.<baseDomain>:443
+  #   grpcs://agentgateway.<domain>:443   (the controller route's public hostname; a lab: grpcs://agentgateway.127.0.0.1.nip.io:8445)
   url: ""
   # namespace is the namespace whose AgentTemplates are served; defaultAgent
   # and bare agent names resolve in it.

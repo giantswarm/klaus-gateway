@@ -166,7 +166,7 @@ a2a:
   # in-cluster: plaintext h2c to the agentgateway Service
   url: grpc://agentgateway.agent-platform.svc.cluster.local:8080
   # or public: TLS to the kagent hostname (add caSecret for a private CA)
-  # url: grpcs://kagent.<baseDomain>:443
+  # url: grpcs://agentgateway.<domain>:443
   # caSecret: kagent-ca        # Secret with key ca.crt
   namespace: kagent            # the AgentTemplates served
   defaultAgent: sre-agent

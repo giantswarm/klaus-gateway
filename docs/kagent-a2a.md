@@ -18,7 +18,7 @@ gateway authenticates. The channel guides ([Slack](channels-slack.md), [Web](cha
 All of it goes to one gRPC target, `a2a.url`, reached through the platform's agentgateway:
 `grpc://host:port` for plaintext h2c (the in-cluster agentgateway Service, e.g.
 `grpc://agentgateway.agent-platform.svc.cluster.local:8080`) or `grpcs://host:port` for TLS
-(the public kagent hostname, e.g. `grpcs://kagent.<baseDomain>:443`, with `a2a.caSecret` or
+(the controller route's public hostname, e.g. `grpcs://agentgateway.<domain>:443`, with `a2a.caSecret` or
 `a2a.caFile` for a private CA). The route in front of the controller must carry native gRPC
 over HTTP/2 and preserve the `authorization` and `x-kagent-agent-instance-id` metadata.
 
