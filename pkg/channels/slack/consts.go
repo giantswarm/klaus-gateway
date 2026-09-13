@@ -153,6 +153,7 @@ const (
 	askAgentRootText = "💬 <@%s> asked *%s*:\n%s"
 
 	slashCommandDMNotice         = "_This command opens a conversation in a channel. In a direct message, just type your question._"
+	slashCommandSignInNotice     = "_I need to know who you are before I can list the agents. Mention me with_ `/login` _in a channel, sign in, then run the command again._"
 	slashCommandOpenFailedNotice = "⚠️ _I couldn't open the agent picker just now. Please try again._"
 	askAgentIncompleteNotice     = "⚠️ _Pick an agent and type a question, then submit again._"
 	askAgentInviteNotice         = "⚠️ _I'm not a member of this channel, so I couldn't start the conversation. Invite me to the channel and try again._"

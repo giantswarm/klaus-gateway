@@ -2,6 +2,7 @@ package slack_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -17,6 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
+	"github.com/giantswarm/klaus-gateway/pkg/auth/musterlink"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 	slackadapter "github.com/giantswarm/klaus-gateway/pkg/channels/slack"
 )
@@ -218,6 +220,79 @@ func TestSlashCommand_RosterUnavailableIsLoud(t *testing.T) {
 
 	fake.waitForPath(t, "response_url", 1)
 	require.Contains(t, responseURLTexts(fake), "can't list the available agents")
+	require.Empty(t, fake.pathCalls("views.open"))
+}
+
+// tokenRoster records the caller token the roster read carried, so a test
+// can assert the picker lists agents as the invoking user.
+type tokenRoster struct {
+	mu     sync.Mutex
+	agents []pkga2a.AgentInfo
+	tokens []string
+}
+
+func (r *tokenRoster) ListAgents(ctx context.Context) ([]pkga2a.AgentInfo, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.tokens = append(r.tokens, pkga2a.ForwardedTokenFromContext(ctx))
+	return r.agents, nil
+}
+
+func (r *tokenRoster) seen() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.tokens...)
+}
+
+// oneUserOBO mints a fixed token for one linked Slack user and reports everyone
+// else as not linked.
+type oneUserOBO struct {
+	user  string
+	token string
+}
+
+func (o oneUserOBO) TokenFor(_ context.Context, slackUserID string) (string, error) {
+	if slackUserID == o.user {
+		return o.token, nil
+	}
+	return "", musterlink.ErrNotLinked
+}
+func (o oneUserOBO) LinkURL(string) string { return "https://gw.example.com/link" }
+func (o oneUserOBO) Unlink(string)         {}
+
+// The kagent controller lists AgentTemplates to a human identity, so the
+// picker's roster read runs as the invoking user: their linked token travels
+// on the context.
+func TestSlashCommand_ListsRosterAsCaller(t *testing.T) {
+	fake := newFakeSlackAPI()
+	api := fake.server(t)
+	roster := &tokenRoster{agents: pickerRoster().agents}
+	_, srv := newEventsAdapter(t, &stubGateway{}, api.URL, channelMode, func(a *slackadapter.Adapter) {
+		a.DefaultAgent = "kagent/swarmgeist"
+		a.Roster = roster
+		a.AgentCards = pickerCards()
+		a.OBO = oneUserOBO{user: "U1", token: "tok-u1"}
+	})
+
+	sendSlashCommand(t, srv, "C1", "U1", "", api.URL+"/response_url")
+
+	openedView(t, fake)
+	require.Equal(t, []string{"tok-u1"}, roster.seen(), "the roster is listed with the caller's token")
+}
+
+// Without a caller identity and with a cold roster cache, the controller
+// refuses the listing; the user is told to sign in rather than that the
+// roster is down.
+func TestSlashCommand_UnlinkedCallerIsAskedToSignIn(t *testing.T) {
+	fake := newFakeSlackAPI()
+	api := fake.server(t)
+	roster := &fakeRoster{err: pkga2a.ErrNoIdentity}
+	_, srv := newEventsAdapter(t, &stubGateway{}, api.URL, channelMode, withSelection(roster, pickerCards()))
+
+	sendSlashCommand(t, srv, "C1", "U1", "", api.URL+"/response_url")
+
+	fake.waitForPath(t, "response_url", 1)
+	require.Contains(t, responseURLTexts(fake), "`/login`")
 	require.Empty(t, fake.pathCalls("views.open"))
 }
 

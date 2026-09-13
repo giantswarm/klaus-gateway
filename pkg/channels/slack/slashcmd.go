@@ -157,10 +157,18 @@ func (a *Adapter) handleSlashCommand(ctx context.Context, p slashCommandPayload)
 		notify(agentSelectionUnavailable)
 		return
 	}
+	// The roster is listed as the caller: the kagent controller serves
+	// AgentTemplates to a human identity, and without one only a warm cache
+	// answers. An unlinked caller on a cold cache is told to sign in.
+	ctx = a.withCallerToken(ctx, p.UserID)
 	agents, err := a.rosterAgentsBestEffort(ctx)
 	if err != nil {
-		a.Logger.Warn("slack: slash command roster unavailable", "error", err)
-		notify(agentRosterUnavailable)
+		a.Logger.Warn("slack: slash command roster unavailable", "user", p.UserID, "error", err)
+		if errors.Is(err, pkga2a.ErrNoIdentity) {
+			notify(slashCommandSignInNotice)
+		} else {
+			notify(agentRosterUnavailable)
+		}
 		return
 	}
 	if len(agents) == 0 {
@@ -282,6 +290,9 @@ func (a *Adapter) handleAskAgentSubmission(ctx context.Context, payload interact
 		notify(agentSelectionUnavailable)
 		return
 	}
+	// Validation and branding read the controller as the submitter, like the
+	// roster did when the picker opened.
+	ctx = a.withCallerToken(ctx, user)
 	vctx, cancel := context.WithTimeout(ctx, agentValidateTimeout)
 	defer cancel()
 	if _, _, err := checker.CardInfo(vctx, ref); err != nil {
