@@ -38,6 +38,7 @@ Full design: [architecture doc](https://github.com/teemow/klaus-lab/blob/main/ar
 - [Development guide](docs/development.md) — build, test, compose harness, adding adapters
 - [Deployment guide](docs/deployment.md) — Helm chart, agentgateway wiring, channel configuration
 - [API reference](docs/api.md) — HTTP surface reference for all adapters
+- [kagent integration](docs/kagent-a2a.md) — A2A v1 over gRPC, the AgentTemplate roster, one AgentInstance per thread, HITL and stop
 - Channel guides: [Web](docs/channels-web.md) · [Slack](docs/channels-slack.md) · [CLI](docs/channels-cli.md)
 
 ## Quick start
@@ -61,7 +62,7 @@ For day-to-day development the preferred path is `klausctl gateway start`, which
 
 ```
 cmd/                # binary entrypoint
-pkg/                # channel adapters, routing, lifecycle, server, upstream
+pkg/                # channel adapters, routing, lifecycle, server, upstream, kagent (a2a) client
 internal/           # config, controller, version
 helm/klaus-gateway/ # Helm chart
 deploy/             # docker-compose smoke harness + agentgateway config

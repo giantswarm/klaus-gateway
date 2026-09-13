@@ -87,9 +87,9 @@ func TestMapA2AEvent_InterimToolActivityAndUsage(t *testing.T) {
 }
 
 func TestMapA2AEvent_ConfirmationPartIsNotToolActivity(t *testing.T) {
-	// A long-running function_call is an adk_request_confirmation (HITL), routed
-	// via input-required, not surfaced as tool activity.
-	confirm := a2apkg.NewDataPart(map[string]any{"name": confirmationToolName})
+	// A long-running function_call is the runtime's confirmation bookkeeping
+	// (HITL), routed via input-required, not surfaced as tool activity.
+	confirm := a2apkg.NewDataPart(map[string]any{"name": "adk_request_confirmation"})
 	confirm.Metadata = map[string]any{mdTypeKagent: mdTypeFunctionCall, mdLongRunningKagent: true}
 	ev := &a2apkg.TaskArtifactUpdateEvent{
 		Artifact: &a2apkg.Artifact{Parts: a2apkg.ContentParts{confirm}},
@@ -213,23 +213,33 @@ func TestMapA2AEvent_MessagePartialUsageSkipped(t *testing.T) {
 	}
 }
 
-// A message asking for confirmation is rendered by the input-required path, which
-// uses the same text as the prompt body; narrating it too would duplicate it.
-func TestMapA2AEvent_ConfirmationBesideToolCallEmitsNoNarration(t *testing.T) {
-	confirm := a2apkg.NewDataPart(map[string]any{"name": confirmationToolName})
-	confirm.Metadata = map[string]any{mdTypeKagent: mdTypeFunctionCall, mdLongRunningKagent: true}
-	call := dataPart(t, mdTypeFunctionCall, map[string]any{"name": "kubectl_delete", "id": "call-1"})
-	ev := &a2apkg.TaskStatusUpdateEvent{
-		Status: a2apkg.TaskStatus{
-			State: a2apkg.TaskStateWorking,
-			Message: a2apkg.NewMessage(a2apkg.MessageRoleAgent,
-				a2apkg.NewTextPart("I need your approval to delete this."), call, confirm),
-		},
-	}
+// A whole task arrives as the first event of a stream (the submitted snapshot)
+// and as the controller's answer from its store; only a quiescent state renders.
+func TestMapA2AEvent_TaskSnapshots(t *testing.T) {
+	submitted := &a2apkg.Task{ID: "t1", Status: a2apkg.TaskStatus{State: a2apkg.TaskStateSubmitted}}
+	require.Empty(t, mapA2AEvent(submitted), "the submitted snapshot is the turn starting, nothing to render")
 
-	deltas := mapA2AEvent(ev)
+	paused := &a2apkg.Task{ID: "t1", Status: a2apkg.TaskStatus{
+		State:   a2apkg.TaskStateInputRequired,
+		Message: a2apkg.NewMessage(a2apkg.MessageRoleAgent, a2apkg.NewTextPart("approve?")),
+	}}
+	deltas := mapA2AEvent(paused)
 	require.Len(t, deltas, 1)
-	require.Equal(t, DeltaToolActivity, deltas[0].Kind)
+	require.Equal(t, DeltaPrompt, deltas[0].Kind)
+	require.Equal(t, "t1", deltas[0].TaskID)
+
+	canceled := &a2apkg.Task{ID: "t1", Status: a2apkg.TaskStatus{State: a2apkg.TaskStateCanceled}}
+	deltas = mapA2AEvent(canceled)
+	require.Len(t, deltas, 1)
+	require.ErrorContains(t, deltas[0].Err, "TASK_STATE_CANCELED")
+}
+
+// A bare agent message is a complete reply without a task wrapper.
+func TestMapA2AEvent_MessageIsACompleteReply(t *testing.T) {
+	deltas := mapA2AEvent(a2apkg.NewMessage(a2apkg.MessageRoleAgent, a2apkg.NewTextPart("done")))
+	require.Len(t, deltas, 2)
+	require.Equal(t, "done", deltas[0].Content)
+	require.True(t, deltas[1].Done)
 }
 
 func TestOutboundDelta_IsZero(t *testing.T) {

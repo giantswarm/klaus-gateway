@@ -1,8 +1,9 @@
 // Package store defines the interface for the klaus-gateway routing table.
 //
-// A routing entry maps (channel, channel-id, user, thread) to the klaus
-// instance that owns the conversation. Stores persist this mapping across
-// restarts where possible (bolt, configmap) or keep it in memory.
+// A routing entry maps (channel, channel-id, user, thread[, agent]) to the
+// klaus instance that owns the conversation, or to the kagent AgentInstance the
+// thread's turns are routed to. Stores persist this mapping across restarts
+// where possible (bolt, configmap, crd) or keep it in memory.
 package store
 
 import (
@@ -76,12 +77,19 @@ func unescape(s string) string {
 	return strings.ReplaceAll(s, `\\`, `\`)
 }
 
-// Entry records an instance assignment.
+// Entry records what a conversation is bound to: the Klaus instance that
+// owns it (Instance) or, on the kagent path, the AgentInstance the thread's
+// turns are routed to (AgentInstanceID). Exactly one of the two is set.
 type Entry struct {
-	Instance  string        `json:"instance"`
-	CreatedAt time.Time     `json:"created_at"`
-	LastSeen  time.Time     `json:"last_seen"`
-	TTL       time.Duration `json:"ttl"`
+	// Instance is the name of the Klaus instance that owns the conversation.
+	// Empty for a kagent conversation.
+	Instance string `json:"instance,omitempty"`
+	// AgentInstanceID is the kagent AgentInstance (a controller-assigned UUID)
+	// the conversation's A2A turns are routed to. Empty for a Klaus conversation.
+	AgentInstanceID string        `json:"agent_instance_id,omitempty"`
+	CreatedAt       time.Time     `json:"created_at"`
+	LastSeen        time.Time     `json:"last_seen"`
+	TTL             time.Duration `json:"ttl"`
 }
 
 // Expired reports whether the entry has aged past its TTL relative to now.

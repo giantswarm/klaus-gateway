@@ -7,6 +7,12 @@
             "type": "object",
             "additionalProperties": false,
             "properties": {
+                "caFile": {
+                    "type": "string"
+                },
+                "caSecret": {
+                    "type": "string"
+                },
                 "defaultAgent": {
                     "type": "string"
                 },
@@ -14,6 +20,9 @@
                     "type": "boolean"
                 },
                 "fallbackIconUrlTemplate": {
+                    "type": "string"
+                },
+                "namespace": {
                     "type": "string"
                 },
                 "saToken": {

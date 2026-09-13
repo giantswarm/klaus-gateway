@@ -4,10 +4,14 @@ import (
 	"strings"
 
 	a2apkg "github.com/a2aproject/a2a-go/v2/a2a"
+
+	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 )
 
-// Part metadata keys kagent sets on an adk_request_confirmation DataPart.
-// Both the kagent_ and adk_ prefixes appear in the wild; we accept either.
+// Part metadata keys kagent sets on the DataParts of tool activity. Both the
+// kagent_ and adk_ prefixes appear in the wild; we accept either. A
+// long-running function_call is the runtime's own confirmation bookkeeping,
+// never tool activity to show.
 const (
 	mdTypeKagent           = "kagent_type"
 	mdTypeADK              = "adk_type"
@@ -15,7 +19,6 @@ const (
 	mdLongRunningADK       = "adk_is_long_running"
 	mdTypeFunctionCall     = "function_call"
 	mdTypeFunctionResponse = "function_response"
-	confirmationToolName   = "adk_request_confirmation"
 )
 
 // Event/message-level metadata keys kagent sets for token usage. Both prefixes
@@ -33,43 +36,31 @@ const (
 	usageTotalTokens      = "totalTokenCount"
 )
 
-// buildInboundParts builds the A2A message parts for an outbound user turn.
-// When msg.Decision is set it emits a structured HITL decision DataPart plus a
-// human-readable text label; otherwise a text part (when there is text) plus
-// one part per downloaded attachment, falling back to a single empty text part
-// so the A2A message stays well-formed.
+// buildInboundParts builds the A2A message parts for an outbound user turn: a
+// text part (when there is text) plus one part per downloaded attachment,
+// falling back to a single empty text part so the A2A message stays
+// well-formed. A HITL decision is carried by the message's extension payload,
+// not by a part; its parts are a human-readable label of the decision, so the
+// conversation's history reads as a dialogue.
 func buildInboundParts(msg InboundMessage) []*a2apkg.Part {
-	if msg.Decision == nil {
-		var parts []*a2apkg.Part
-		if text := withAuthor(msg.Author, msg.Text); text != "" {
-			parts = append(parts, a2apkg.NewTextPart(text))
+	if msg.Decision != nil {
+		label := msg.Text
+		if label == "" {
+			label = msg.Decision.Type
 		}
-		parts = append(parts, attachmentParts(msg.Attachments)...)
-		if len(parts) == 0 {
-			// An attachment-only message whose downloads all failed leaves no
-			// content; an empty text part keeps the A2A message well-formed.
-			parts = append(parts, a2apkg.NewTextPart(""))
-		}
-		return parts
+		return []*a2apkg.Part{a2apkg.NewTextPart(withAuthor(msg.Author, label))}
 	}
-
-	data := map[string]any{"decision_type": msg.Decision.Type}
-	if len(msg.Decision.AskUserAnswers) > 0 {
-		answers := make([]map[string]any, 0, len(msg.Decision.AskUserAnswers))
-		for _, a := range msg.Decision.AskUserAnswers {
-			answers = append(answers, map[string]any{"answer": a})
-		}
-		data["ask_user_answers"] = answers
+	var parts []*a2apkg.Part
+	if text := withAuthor(msg.Author, msg.Text); text != "" {
+		parts = append(parts, a2apkg.NewTextPart(text))
 	}
-	if msg.Decision.Type == DecisionReject && msg.Decision.RejectionReason != "" {
-		data["rejection_reason"] = msg.Decision.RejectionReason
+	parts = append(parts, attachmentParts(msg.Attachments)...)
+	if len(parts) == 0 {
+		// An attachment-only message whose downloads all failed leaves no
+		// content; an empty text part keeps the A2A message well-formed.
+		parts = append(parts, a2apkg.NewTextPart(""))
 	}
-
-	label := msg.Text
-	if label == "" {
-		label = msg.Decision.Type
-	}
-	return []*a2apkg.Part{a2apkg.NewDataPart(data), a2apkg.NewTextPart(withAuthor(msg.Author, label))}
+	return parts
 }
 
 // attachmentParts builds an A2A part per attachment that has downloaded bytes.
@@ -164,47 +155,37 @@ func withAuthor(author, text string) string {
 	return "[message from " + author + "]\n" + text
 }
 
-// parseHitlPrompt extracts a structured approval request from an
-// input-required A2A status message. Returns nil when the message carries no
-// adk_request_confirmation DataPart (e.g. a plain-text input-required prompt).
+// parseHitlPrompt extracts the structured request from an input-required A2A
+// status message: the HITL extension payload kagent attaches when the client
+// requested the extension. Returns nil when the message carries none (a
+// plain-text prompt, or a malformed payload — the text is still rendered).
 func parseHitlPrompt(msg *a2apkg.Message) *HitlPrompt {
-	if msg == nil {
+	request, err := pkga2a.ParseHITLRequest(msg)
+	if err != nil || request == nil {
 		return nil
 	}
-	for _, p := range msg.Parts {
-		if p == nil || !isConfirmationPart(p.Metadata) {
-			continue
-		}
-		data, ok := p.Data().(map[string]any)
-		if !ok {
-			continue
-		}
-		if name, _ := data["name"].(string); name != confirmationToolName {
-			continue
-		}
-		args, _ := data["args"].(map[string]any)
-		ofc, _ := args["originalFunctionCall"].(map[string]any)
-		if ofc == nil {
-			continue
-		}
-
-		prompt := &HitlPrompt{}
-		prompt.ToolName, _ = ofc["name"].(string)
-		prompt.OriginalCallID, _ = ofc["id"].(string)
-		prompt.Args, _ = ofc["args"].(map[string]any)
-		if tc, ok := args["toolConfirmation"].(map[string]any); ok {
-			prompt.Hint, _ = tc["hint"].(string)
-		}
-		if prompt.ToolName == AskUserToolName {
-			prompt.Questions = parseAskUserQuestions(prompt.Args)
+	if ask := request.AskUser; ask != nil {
+		prompt := &HitlPrompt{ToolName: AskUserToolName, OriginalCallID: ask.ResponseID()}
+		for _, q := range ask.Questions {
+			prompt.Questions = append(prompt.Questions, HitlQuestion{Question: q.Question, Choices: q.Choices, Multiple: q.Multiple})
 		}
 		return prompt
 	}
-	return nil
+	approval := request.ToolApproval
+	prompt := &HitlPrompt{Hint: approval.Hint}
+	for _, tool := range approval.DecidedTools() {
+		prompt.Tools = append(prompt.Tools, HitlTool{ID: tool.ID, CallID: tool.CallID, Name: tool.Name, Args: tool.Args})
+	}
+	if len(prompt.Tools) > 0 {
+		first := prompt.Tools[0]
+		prompt.ToolName, prompt.OriginalCallID, prompt.Args = first.Name, first.CallID, first.Args
+	}
+	return prompt
 }
 
 // isConfirmationPart reports whether a DataPart's metadata marks it as a
-// long-running function_call (i.e. an adk_request_confirmation).
+// long-running function_call: the runtime's confirmation bookkeeping, which
+// is surfaced through the input-required prompt rather than as tool activity.
 func isConfirmationPart(md map[string]any) bool {
 	if md == nil {
 		return false
@@ -215,17 +196,6 @@ func isConfirmationPart(md map[string]any) bool {
 	}
 	lr, _ := firstBool(md, mdLongRunningKagent, mdLongRunningADK)
 	return lr
-}
-
-// hasConfirmationPart reports whether any of parts is an
-// adk_request_confirmation.
-func hasConfirmationPart(parts a2apkg.ContentParts) bool {
-	for _, p := range parts {
-		if p != nil && isConfirmationPart(p.Metadata) {
-			return true
-		}
-	}
-	return false
 }
 
 // hasFunctionCallPart reports whether any of parts is a function_call DataPart.
@@ -239,33 +209,6 @@ func hasFunctionCallPart(parts a2apkg.ContentParts) bool {
 		}
 	}
 	return false
-}
-
-// parseAskUserQuestions extracts the questions array from ask_user args.
-func parseAskUserQuestions(args map[string]any) []HitlQuestion {
-	raw, ok := args["questions"].([]any)
-	if !ok {
-		return nil
-	}
-	var out []HitlQuestion
-	for _, q := range raw {
-		qm, ok := q.(map[string]any)
-		if !ok {
-			continue
-		}
-		hq := HitlQuestion{}
-		hq.Question, _ = qm["question"].(string)
-		hq.Multiple, _ = qm["multiple"].(bool)
-		if choices, ok := qm["choices"].([]any); ok {
-			for _, c := range choices {
-				if s, ok := c.(string); ok {
-					hq.Choices = append(hq.Choices, s)
-				}
-			}
-		}
-		out = append(out, hq)
-	}
-	return out
 }
 
 // summary renders a short plain-text description of the prompt, used as a
@@ -291,6 +234,13 @@ func (p *HitlPrompt) summary() string {
 	}
 	if p.Hint != "" {
 		return p.Hint
+	}
+	if len(p.Tools) > 1 {
+		names := make([]string, 0, len(p.Tools))
+		for _, t := range p.Tools {
+			names = append(names, t.Name)
+		}
+		return strings.Join(names, ", ")
 	}
 	return p.ToolName
 }

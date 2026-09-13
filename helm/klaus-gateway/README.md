@@ -101,6 +101,9 @@ Channel and routing gateway in front of klaus instances; uses agentgateway as th
 | a2a.enabled | bool | `false` |  |
 | a2a.defaultAgent | string | `"sre-agent"` |  |
 | a2a.url | string | `""` |  |
+| a2a.namespace | string | `"kagent"` |  |
+| a2a.caSecret | string | `""` |  |
+| a2a.caFile | string | `""` |  |
 | a2a.tokenPath | string | `""` |  |
 | a2a.fallbackIconUrlTemplate | string | `""` |  |
 | a2a.saToken.enabled | bool | `false` |  |

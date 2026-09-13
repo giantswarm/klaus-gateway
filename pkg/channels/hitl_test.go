@@ -6,46 +6,64 @@ import (
 
 	a2apkg "github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/stretchr/testify/require"
+
+	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 )
 
-// askUserConfirmationPart builds the DataPart kagent emits for an ask_user
-// input-required prompt, mirroring the real wire payload.
-func askUserConfirmationPart() *a2apkg.Part {
-	p := a2apkg.NewDataPart(map[string]any{
-		"name": "adk_request_confirmation",
-		"id":   "adk-123",
-		"args": map[string]any{
-			"originalFunctionCall": map[string]any{
-				"name": "ask_user",
-				"id":   "toolu_abc",
-				"args": map[string]any{
-					"questions": []any{
-						map[string]any{
-							"question": "How would you like me to proceed?",
-							"multiple": false,
-							"choices":  []any{"Investigate an issue", "Health check", "Explore tools"},
-						},
-					},
-				},
-			},
-			"toolConfirmation": map[string]any{"confirmed": false, "hint": "How would you like me to proceed?"},
+// askUserPrompt builds the input-required status message kagent emits for an
+// ask_user question with the HITL extension activated: the agent's hint as
+// text, the typed request as the extension payload.
+func askUserPrompt(t *testing.T) *a2apkg.Message {
+	t.Helper()
+	msg := a2apkg.NewMessage(a2apkg.MessageRoleAgent, a2apkg.NewTextPart("How would you like me to proceed?"))
+	require.NoError(t, pkga2a.AttachHITL(msg, pkga2a.AskUserRequest{
+		Type: pkga2a.HITLTypeAskUserRequest,
+		ID:   "adk-123",
+		Questions: []pkga2a.HITLQuestion{{
+			Question: "How would you like me to proceed?",
+			Choices:  []string{"Investigate an issue", "Health check", "Explore tools"},
+		}},
+	}))
+	return msg
+}
+
+// approvalPrompt builds the input-required status message for two tool calls
+// awaiting approval together.
+func approvalPrompt(t *testing.T) *a2apkg.Message {
+	t.Helper()
+	msg := a2apkg.NewMessage(a2apkg.MessageRoleAgent, a2apkg.NewTextPart("Delete the pod?"))
+	require.NoError(t, pkga2a.AttachHITL(msg, pkga2a.ToolApprovalRequest{
+		Type: pkga2a.HITLTypeToolApprovalRequest,
+		Hint: "Delete the pod?",
+		Tools: []pkga2a.HITLTool{
+			{ID: "approval-1", CallID: "toolu_1", Name: "kubectl_delete", Args: map[string]any{"pod": "web-1"}},
+			{ID: "approval-2", CallID: "toolu_2", Name: "kubectl_delete", Args: map[string]any{"pod": "web-2"}},
 		},
-	})
-	p.Metadata = map[string]any{"kagent_type": "function_call", "kagent_is_long_running": true}
-	return p
+	}))
+	return msg
 }
 
 func TestParseHitlPrompt_AskUser(t *testing.T) {
-	msg := a2apkg.NewMessage(a2apkg.MessageRoleAgent, askUserConfirmationPart())
-
-	got := parseHitlPrompt(msg)
+	got := parseHitlPrompt(askUserPrompt(t))
 	require.NotNil(t, got)
 	require.True(t, got.IsAskUser())
-	require.Equal(t, "toolu_abc", got.OriginalCallID)
+	require.Equal(t, "adk-123", got.OriginalCallID)
 	require.Len(t, got.Questions, 1)
 	require.Equal(t, "How would you like me to proceed?", got.Questions[0].Question)
 	require.False(t, got.Questions[0].Multiple)
 	require.Equal(t, []string{"Investigate an issue", "Health check", "Explore tools"}, got.Questions[0].Choices)
+}
+
+func TestParseHitlPrompt_ToolApproval(t *testing.T) {
+	got := parseHitlPrompt(approvalPrompt(t))
+	require.NotNil(t, got)
+	require.False(t, got.IsAskUser())
+	require.Equal(t, "kubectl_delete", got.ToolName)
+	require.Equal(t, "toolu_1", got.OriginalCallID)
+	require.Equal(t, "Delete the pod?", got.Hint)
+	require.Equal(t, map[string]any{"pod": "web-1"}, got.Args)
+	require.Len(t, got.Tools, 2, "every call the decision covers is kept")
+	require.Equal(t, "approval-2", got.Tools[1].ID)
 }
 
 func TestParseHitlPrompt_IgnoresPlainText(t *testing.T) {
@@ -53,44 +71,71 @@ func TestParseHitlPrompt_IgnoresPlainText(t *testing.T) {
 	require.Nil(t, parseHitlPrompt(msg))
 }
 
-func TestParseHitlPrompt_IgnoresNonLongRunningDataPart(t *testing.T) {
-	p := a2apkg.NewDataPart(map[string]any{"name": "adk_request_confirmation"})
-	p.Metadata = map[string]any{"kagent_type": "function_call"} // missing is_long_running
-	msg := a2apkg.NewMessage(a2apkg.MessageRoleAgent, p)
+func TestParseHitlPrompt_IgnoresUndeclaredPayload(t *testing.T) {
+	// The payload sits in the metadata but the message does not declare the
+	// extension: not a HITL request.
+	msg := a2apkg.NewMessage(a2apkg.MessageRoleAgent, a2apkg.NewTextPart("approve?"))
+	msg.SetMeta(pkga2a.HITLExtensionURI, map[string]any{"type": pkga2a.HITLTypeToolApprovalRequest, "tools": []any{map[string]any{"id": "x"}}})
 	require.Nil(t, parseHitlPrompt(msg))
 }
 
-func TestBuildInboundParts_AskUserAnswers(t *testing.T) {
-	msg := InboundMessage{
-		Text: "Health check",
-		Decision: &HitlDecision{
-			Type:           DecisionApprove,
-			AskUserAnswers: [][]string{{"Health check"}},
-		},
-	}
-	parts := buildInboundParts(msg)
-	require.Len(t, parts, 2)
-
-	data, ok := parts[0].Data().(map[string]any)
+// The decision's response payload is built against the request the task is
+// paused on, so the ids the runtime correlates with come from the request,
+// never from the channel.
+func TestHitlResponse_AskUserAnswers(t *testing.T) {
+	request, err := pkga2a.ParseHITLRequest(askUserPrompt(t))
+	require.NoError(t, err)
+	got, ok := hitlResponse(request, &HitlDecision{Type: DecisionApprove, AskUserAnswers: [][]string{{"Health check"}}}).(pkga2a.AskUserResponse)
 	require.True(t, ok)
-	require.Equal(t, "approve", data["decision_type"])
-	answers, ok := data["ask_user_answers"].([]map[string]any)
-	require.True(t, ok)
-	require.Len(t, answers, 1)
-	require.Equal(t, []string{"Health check"}, answers[0]["answer"])
-
-	require.Equal(t, "Health check", parts[1].Text())
+	require.Equal(t, pkga2a.HITLTypeAskUserResponse, got.Type)
+	require.Equal(t, "adk-123", got.ID, "the answer correlates with the request id")
+	require.Equal(t, []pkga2a.AskUserAnswer{{Answer: []string{"Health check"}}}, got.Answers)
 }
 
-func TestBuildInboundParts_RejectWithReason(t *testing.T) {
-	msg := InboundMessage{
-		Decision: &HitlDecision{Type: DecisionReject, RejectionReason: "too risky"},
-	}
-	parts := buildInboundParts(msg)
-	data, ok := parts[0].Data().(map[string]any)
+func TestHitlResponse_ApprovalCoversEveryTool(t *testing.T) {
+	request, err := pkga2a.ParseHITLRequest(approvalPrompt(t))
+	require.NoError(t, err)
+
+	approved, ok := hitlResponse(request, &HitlDecision{Type: DecisionApprove}).(pkga2a.ToolApprovalResponse)
 	require.True(t, ok)
-	require.Equal(t, "reject", data["decision_type"])
-	require.Equal(t, "too risky", data["rejection_reason"])
+	require.Equal(t, pkga2a.HITLTypeToolApprovalResponse, approved.Type)
+	require.Equal(t, []pkga2a.ToolApproval{{ID: "approval-1", Approved: true}, {ID: "approval-2", Approved: true}}, approved.Approvals)
+
+	rejected, _ := hitlResponse(request, &HitlDecision{Type: DecisionReject, RejectionReason: "too risky"}).(pkga2a.ToolApprovalResponse)
+	require.Equal(t, []pkga2a.ToolApproval{
+		{ID: "approval-1", Approved: false, RejectionReason: "too risky"},
+		{ID: "approval-2", Approved: false, RejectionReason: "too risky"},
+	}, rejected.Approvals)
+}
+
+// A nested request (propagated from a sub-agent) is decided on the child's
+// tools, under the child's ids.
+func TestHitlResponse_NestedRequestDecidesTheChildTools(t *testing.T) {
+	msg := a2apkg.NewMessage(a2apkg.MessageRoleAgent, a2apkg.NewTextPart("child asks"))
+	require.NoError(t, pkga2a.AttachHITL(msg, pkga2a.ToolApprovalRequest{
+		Type:  pkga2a.HITLTypeToolApprovalRequest,
+		Tools: []pkga2a.HITLTool{{ID: "parent-1", Name: "sub_agent"}},
+		Nested: &pkga2a.NestedHITLRequest{SubagentName: "child", TaskID: "ct", Tools: []pkga2a.HITLTool{
+			{ID: "child-1", Name: "rm"},
+		}},
+	}))
+	request, err := pkga2a.ParseHITLRequest(msg)
+	require.NoError(t, err)
+	got, _ := hitlResponse(request, &HitlDecision{Type: DecisionApprove}).(pkga2a.ToolApprovalResponse)
+	require.Equal(t, []pkga2a.ToolApproval{{ID: "child-1", Approved: true}}, got.Approvals)
+	require.Equal(t, "rm", parseHitlPrompt(msg).ToolName, "the prompt shows the child's tool")
+}
+
+// A decision travels as the extension payload; its parts are only the
+// human-readable label.
+func TestBuildInboundParts_DecisionIsLabelOnly(t *testing.T) {
+	parts := buildInboundParts(InboundMessage{Text: "Health check", Decision: &HitlDecision{Type: DecisionApprove}})
+	require.Len(t, parts, 1)
+	require.Equal(t, "Health check", parts[0].Text())
+
+	parts = buildInboundParts(InboundMessage{Decision: &HitlDecision{Type: DecisionReject, RejectionReason: "too risky"}})
+	require.Len(t, parts, 1)
+	require.Equal(t, "reject", parts[0].Text(), "a decision without text is labelled by its type")
 }
 
 func TestBuildInboundParts_PlainTextWithoutDecision(t *testing.T) {

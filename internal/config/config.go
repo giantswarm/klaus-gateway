@@ -9,6 +9,7 @@ package config
 import (
 	"flag"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -52,49 +53,47 @@ const (
 	DriverStatic = "static"
 )
 
-// A2AConfig holds runtime configuration for the A2A client surface.
+// A2AConfig holds runtime configuration for the kagent (A2A) client surface.
 type A2AConfig struct {
 	// Enabled gates all A2A behaviour.
 	Enabled bool
-	// DefaultAgent is the agentRef forwarded to the A2A orchestrator when none
-	// is supplied by the inbound channel. Defaults to "sre-agent".
+	// DefaultAgent is the AgentTemplate a channel turn runs on when the channel
+	// names none: a bare name in Namespace, or "namespace/name". Defaults to
+	// "sre-agent".
 	DefaultAgent string
-	// URL is the base URL of the A2A orchestrator endpoint, without a trailing
-	// agent name segment (e.g.
-	// http://kagent-controller.kagent.svc.cluster.local:8083/api/a2a/kagent).
+	// URL is the kagent controller's gRPC target, reached through agentgateway:
+	// grpc://host:port (plaintext h2c, the in-cluster agentgateway Service) or
+	// grpcs://host:port (TLS, the public hostname).
 	URL string
-	// TokenPath is an optional path to a file holding a Bearer token injected
-	// as Authorization on every outgoing A2A request. Projected SA tokens
-	// refresh automatically; leave empty for unauthenticated in-cluster hops.
+	// CAFile optionally names a PEM bundle trusted for a grpcs:// URL in
+	// addition to the system roots.
+	CAFile string
+	// Namespace is the namespace whose AgentTemplates are served. Defaults to
+	// "kagent".
+	Namespace string
+	// TokenPath is an optional path to a file holding a Bearer token for the
+	// Klaus-instance paths. It is never presented to the kagent controller,
+	// which is spoken to as the person behind the turn only.
 	TokenPath string
-	// RESTURL is the base URL for the kagent REST API used by the session resume
-	// existence-check. Normally the same endpoint as URL (agentgateway fronts
-	// both the A2A path and /api/sessions on one host). Empty derives it from URL
-	// via ResolvedRESTURL.
-	RESTURL string
-	// FallbackIconURLTemplate is used only when an agent's AgentCard carries no
-	// iconUrl (or the card can't be fetched); the card's own iconUrl always wins.
-	// "{agent}" is replaced with the agentRef. Empty disables the fallback.
+	// FallbackIconURLTemplate is used when an AgentTemplate carries no icon-URL
+	// annotation. "{agent}" is replaced with the agent's technical name. Empty
+	// disables the fallback.
 	FallbackIconURLTemplate string
 }
 
-// ResolvedRESTURL returns the kagent REST base URL: RESTURL when set, otherwise
-// URL with the /api/a2a... suffix trimmed so any gateway path prefix is kept.
-// Both A2A base shapes derive: namespace-in-URL
-// (http://agentgateway...:8080/kagent/api/a2a/kagent) and namespace-less
-// (http://agentgateway...:8080/kagent/api/a2a) yield
-// http://agentgateway...:8080/kagent. Empty when neither is set or derivable.
-func (c A2AConfig) ResolvedRESTURL() string {
-	if c.RESTURL != "" {
-		return c.RESTURL
+// ValidateURL checks the gRPC target shape of URL.
+func (c A2AConfig) ValidateURL() error {
+	u, err := url.Parse(c.URL)
+	if err != nil {
+		return fmt.Errorf("--a2a-url %q: %w", c.URL, err)
 	}
-	if root, _, ok := strings.Cut(c.URL, "/api/a2a/"); ok {
-		return root
+	if u.Scheme != "grpc" && u.Scheme != "grpcs" {
+		return fmt.Errorf("--a2a-url %q must use the grpc:// (h2c) or grpcs:// (TLS) scheme", c.URL)
 	}
-	if root, ok := strings.CutSuffix(strings.TrimRight(c.URL, "/"), "/api/a2a"); ok {
-		return root
+	if u.Hostname() == "" || u.Port() == "" || u.Path != "" || u.RawQuery != "" {
+		return fmt.Errorf("--a2a-url %q must be %s://host:port with no path", c.URL, u.Scheme)
 	}
-	return ""
+	return nil
 }
 
 // CLIConfig holds runtime configuration for the CLI channel adapter.
@@ -257,6 +256,7 @@ func Defaults() Config {
 		},
 		A2A: A2AConfig{
 			DefaultAgent: "sre-agent",
+			Namespace:    "kagent",
 		},
 	}
 }
@@ -307,11 +307,12 @@ func Load(args []string) (Config, error) {
 	fs.BoolVar(&cfg.Web.Enabled, "web-enabled", cfg.Web.Enabled, "Enable the web channel adapter at /web/* (default true).")
 	fs.BoolVar(&cfg.Controller, "controller", cfg.Controller, "Enable the embedded ChannelRoute controller (requires --store=crd).")
 	fs.BoolVar(&cfg.A2A.Enabled, "a2a-enabled", cfg.A2A.Enabled, "Enable the A2A client surface.")
-	fs.StringVar(&cfg.A2A.DefaultAgent, "a2a-default-agent", cfg.A2A.DefaultAgent, "agentRef forwarded to the A2A orchestrator when the channel does not supply one.")
-	fs.StringVar(&cfg.A2A.URL, "a2a-url", cfg.A2A.URL, "Base URL of the A2A orchestrator endpoint, without trailing agent name.")
-	fs.StringVar(&cfg.A2A.TokenPath, "a2a-token-path", cfg.A2A.TokenPath, "Path to a file holding a Bearer token sent as Authorization on every A2A request (e.g. a projected SA token). Empty disables auth.")
-	fs.StringVar(&cfg.A2A.RESTURL, "a2a-rest-url", cfg.A2A.RESTURL, "Base URL for the kagent REST API (session resume check); normally the same agentgateway endpoint as --a2a-url. Empty derives it from --a2a-url.")
-	fs.StringVar(&cfg.A2A.FallbackIconURLTemplate, "a2a-fallback-icon-url-template", cfg.A2A.FallbackIconURLTemplate, "Fallback agent icon URL used when the AgentCard has no iconUrl. \"{agent}\" is replaced with the agentRef. Empty disables the fallback.")
+	fs.StringVar(&cfg.A2A.DefaultAgent, "a2a-default-agent", cfg.A2A.DefaultAgent, "AgentTemplate a turn runs on when the channel names none: a bare name in --a2a-namespace, or namespace/name.")
+	fs.StringVar(&cfg.A2A.URL, "a2a-url", cfg.A2A.URL, "kagent controller gRPC target through agentgateway: grpc://host:port (h2c) or grpcs://host:port (TLS).")
+	fs.StringVar(&cfg.A2A.CAFile, "a2a-ca-file", cfg.A2A.CAFile, "PEM bundle trusted for a grpcs:// --a2a-url in addition to the system roots. Empty uses the system roots only.")
+	fs.StringVar(&cfg.A2A.Namespace, "a2a-namespace", cfg.A2A.Namespace, "Namespace whose AgentTemplates are served.")
+	fs.StringVar(&cfg.A2A.TokenPath, "a2a-token-path", cfg.A2A.TokenPath, "Path to a file holding a Bearer token for the Klaus-instance paths (e.g. a projected SA token). Never presented to the kagent controller.")
+	fs.StringVar(&cfg.A2A.FallbackIconURLTemplate, "a2a-fallback-icon-url-template", cfg.A2A.FallbackIconURLTemplate, "Fallback agent icon URL used when the AgentTemplate has no icon-URL annotation. \"{agent}\" is replaced with the agent's technical name. Empty disables the fallback.")
 	fs.BoolVar(&cfg.OBO.Enabled, "obo-enabled", cfg.OBO.Enabled, "Enable Slack on-behalf-of muster account linking and the /auth/slack/* routes.")
 	fs.StringVar(&cfg.OBO.MusterURL, "obo-muster-url", cfg.OBO.MusterURL, "muster authorization-server base URL (RFC 8414 discovery).")
 	fs.StringVar(&cfg.OBO.ClientID, "obo-client-id", cfg.OBO.ClientID, "Gateway's muster OAuth client ID. Optional: defaults to the self-hosted CIMD document URL (callback base URL + /auth/slack/client.json).")
@@ -437,11 +438,14 @@ func applyEnv(cfg *Config) {
 	if v, ok := lookup("A2A_URL"); ok {
 		cfg.A2A.URL = v
 	}
+	if v, ok := lookup("A2A_CA_FILE"); ok {
+		cfg.A2A.CAFile = v
+	}
+	if v, ok := lookup("A2A_NAMESPACE"); ok {
+		cfg.A2A.Namespace = v
+	}
 	if v, ok := lookup("A2A_TOKEN_PATH"); ok {
 		cfg.A2A.TokenPath = v
-	}
-	if v, ok := lookup("A2A_REST_URL"); ok {
-		cfg.A2A.RESTURL = v
 	}
 	if v, ok := lookup("A2A_FALLBACK_ICON_URL_TEMPLATE"); ok {
 		cfg.A2A.FallbackIconURLTemplate = v
@@ -500,8 +504,16 @@ func (c Config) Validate() error {
 	if c.Driver == DriverOperator && c.OperatorMCPURL == "" {
 		return fmt.Errorf("--operator-mcp-url is required with --driver=operator")
 	}
-	if c.A2A.Enabled && c.A2A.URL == "" {
-		return fmt.Errorf("--a2a-url is required with --a2a-enabled")
+	if c.A2A.Enabled {
+		if c.A2A.URL == "" {
+			return fmt.Errorf("--a2a-url is required with --a2a-enabled")
+		}
+		if err := c.A2A.ValidateURL(); err != nil {
+			return err
+		}
+		if c.A2A.Namespace == "" {
+			return fmt.Errorf("--a2a-namespace is required with --a2a-enabled")
+		}
 	}
 	if c.A2A.FallbackIconURLTemplate != "" && !strings.Contains(c.A2A.FallbackIconURLTemplate, "{agent}") {
 		return fmt.Errorf("--a2a-fallback-icon-url-template must contain the \"{agent}\" placeholder")

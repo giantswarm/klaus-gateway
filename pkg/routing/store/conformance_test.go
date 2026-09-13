@@ -76,6 +76,29 @@ func runConformance(t *testing.T, factory func(t *testing.T) store.Store) {
 		require.Equal(t, "inst", got.Instance)
 	})
 
+	t.Run("agent-instance-round-trip", func(t *testing.T) {
+		// A kagent conversation binds the thread to an AgentInstance instead of a
+		// Klaus instance; the id must survive the backend's serialisation with
+		// the Klaus instance name left empty.
+		s := factory(t)
+		ctx := context.Background()
+		k := store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700000000.000100", Agent: "kagent/sre-agent"}
+		e := store.Entry{AgentInstanceID: "0192f1c2-7d1e-7a3b-9c4d-5e6f7a8b9c0d", CreatedAt: time.Now(), LastSeen: time.Now()}
+
+		require.NoError(t, s.Put(ctx, k, e))
+		got, ok, err := s.Get(ctx, k)
+		require.NoError(t, err)
+		require.True(t, ok)
+		require.Equal(t, e.AgentInstanceID, got.AgentInstanceID)
+		require.Empty(t, got.Instance)
+
+		entries, err := s.List(ctx)
+		require.NoError(t, err)
+		require.Len(t, entries, 1)
+		require.Equal(t, k, entries[0].Key)
+		require.Equal(t, e.AgentInstanceID, entries[0].Entry.AgentInstanceID)
+	})
+
 	t.Run("ttl-expired-filtered", func(t *testing.T) {
 		s := factory(t)
 		ctx := context.Background()

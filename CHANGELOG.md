@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** the gateway speaks kagent API v2. Agent turns travel as A2A v1 over gRPC through agentgateway (`a2a.url` is now a gRPC target: `grpc://host:port` for the in-cluster agentgateway Service, `grpcs://host:port` for the public hostname, with `a2a.caSecret`/`a2a.caFile` for a private CA), the `/agent` roster comes from `AgentTemplateService.ListAgentTemplates` of the served namespace (new `a2a.namespace`, default `kagent`; display name and icon from the `ui.giantswarm.io/display-name` and `ui.giantswarm.io/icon-url` annotations, readiness from `status.harnesses[]` — a template no Harness admits, or whose revision is not ready, is not offered and is refused by name), the `/usage` model line comes from `ModelService.GetModelConfig`, and every thread is bound to one `AgentInstance` created on its first turn (`CreateAgentInstance` keyed by the synthesized context id, so a retried first turn creates no second instance) and persisted as `agentInstanceID` on the thread's routing-store entry across the bolt, ConfigMap and CRD stores. Tool approvals and `ask_user` questions use kagent's HITL extension (`https://kagent.dev/extensions/hitl/v1`, requested on every call): the typed request is parsed from the paused task and the decision travels as the typed response on a message carrying the paused task's id, so the task resumes in place. `/stop` cancels the running task at the controller (`CancelTask`) before cancelling the client stream. The controller is spoken to only as the person behind the turn; the ServiceAccount token is never presented to it. **Requires a kagent API v2 controller behind a gRPC-capable route** (`kagent.dev/v1alpha3`); the 0.10 JSON-RPC/REST surface, the `/api/sessions` and `/api/agents` calls, the `/.well-known` AgentCard fetch, `--a2a-rest-url` and `ResolvedRESTURL` are gone. **Conversations from before the cut-over are not migrated**: the first reply in such a thread gets the starting-fresh notice and starts a new instance (klaus-gateway#234). Documented in `docs/kagent-a2a.md`.
+- The `ChannelRoute` CRD gains `spec.agentInstanceID` and no longer requires `spec.instance`; the embedded controller reports a kagent-bound route as `Ready` with reason `AgentInstanceBound`.
+
+### Added
+
+- Web channel: a turn paused on a tool approval or question ends its stream with an `event: prompt` (task id, hint, tools or questions); `POST /web/messages` accepts `taskId` and `decision` to resume it; `GET /web/agents` lists the selectable agents as the caller.
+
 ### Fixed
 
 - The sign-in "Email mismatch" page now tells the user the actual fix — add the Slack email to their GitHub account (Settings > Emails) and verify it, falling back to making it the primary email on deployments whose dex GitHub connector does not set `preferredEmailDomain` — instead of only suggesting to change the GitHub primary email (giantswarm/giantswarm#37543).

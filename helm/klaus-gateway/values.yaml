@@ -210,30 +210,50 @@ agentgateway:
       host: klaus-instance-example.default.svc.cluster.local
       port: 8080
 
-# A2A client surface. When enabled, the gateway forwards channel turns to an
-# A2A orchestrator endpoint. No A2A server is started on the gateway.
+# kagent client surface. When enabled, the gateway runs channel turns on a
+# kagent API v2 controller: the AgentTemplate roster is discovered over
+# kagent's gRPC services, every thread is bound to one AgentInstance, and the
+# turns travel as A2A v1 over gRPC. No A2A server is started on the gateway.
+#
+# Every call to the controller is made as the person behind the turn: their
+# Dex id_token (the Slack account link, or the bearer a web/cli caller sends)
+# is the only credential presented. The gateway never speaks to the controller
+# as its own ServiceAccount, so the route's JWT policy needs no second issuer.
 a2a:
   enabled: false
-  # defaultAgent is the agentRef forwarded to the orchestrator when the channel does not supply one.
+  # defaultAgent is the AgentTemplate a turn runs on when the channel names
+  # none: a bare name in a2a.namespace, or "namespace/name".
   defaultAgent: "sre-agent"
-  # url is the base URL of the A2A orchestrator endpoint, without a trailing
-  # agent name (required when a2a.enabled is true).
-  # Example: http://kagent-controller.kagent.svc.cluster.local:8083/api/a2a/kagent
+  # url is the controller's gRPC target, reached through agentgateway
+  # (required when a2a.enabled is true). Two shapes:
+  #   grpc://host:port  -- plaintext h2c, the in-cluster agentgateway Service
+  #   grpcs://host:port -- TLS, the public kagent hostname
+  # Examples:
+  #   grpc://agentgateway.agent-platform.svc.cluster.local:8080
+  #   grpcs://agentgateway.<domain>:443   (the controller route's public hostname; a lab: grpcs://agentgateway.127.0.0.1.nip.io:8445)
   url: ""
-  # tokenPath is an optional path to a file holding a Bearer token injected as
-  # Authorization on every outgoing A2A request. Leave empty for unauthenticated
-  # in-cluster hops. When saToken.enabled is true this is auto-set.
+  # namespace is the namespace whose AgentTemplates are served; defaultAgent
+  # and bare agent names resolve in it.
+  namespace: "kagent"
+  # caSecret names a Secret (key ca.crt) with a CA bundle trusted for a
+  # grpcs:// url in addition to the system roots, e.g. a private PKI's root.
+  # Empty trusts the system roots only.
+  caSecret: ""
+  # caFile is a path inside the container to a CA bundle for a grpcs:// url,
+  # for images or mounts that already carry one. caSecret takes precedence.
+  caFile: ""
+  # tokenPath is an optional path to a file holding a Bearer token for the
+  # Klaus-instance paths. It is never presented to the kagent controller. When
+  # saToken.enabled is true this is auto-set.
   tokenPath: ""
-  # fallbackIconUrlTemplate is used only when an agent's AgentCard has no iconUrl;
-  # the card's own iconUrl always wins. "{agent}" is replaced with the agentRef
-  # verbatim: on deployments with a namespace-qualified defaultAgent the ref is
-  # "namespace/name", so the slash lands mid-URL; make sure the serving endpoint
-  # accepts that path shape.
-  # Empty disables the fallback (the channel uses its own default icon).
-  # Example: https://avatars.gazelle.awsprod.gigantic.io/v1/{agent}.png
+  # fallbackIconUrlTemplate is used when an AgentTemplate carries no
+  # ui.giantswarm.io/icon-url annotation. "{agent}" is replaced with the
+  # agent's technical name. Empty disables the fallback (the channel uses its
+  # own default icon).
+  # Example: https://avatars.example.com/v1/{agent}.png
   fallbackIconUrlTemplate: ""
   # saToken controls a projected ServiceAccount token mounted on the gateway pod
-  # and forwarded to the A2A orchestrator as a Bearer token.
+  # for the Klaus-instance paths. It is not used toward the kagent controller.
   saToken:
     enabled: false
     audience: "kagent"

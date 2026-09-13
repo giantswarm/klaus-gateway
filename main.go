@@ -269,51 +269,40 @@ func run(args []string) error {
 	}
 
 	if cfg.A2A.Enabled {
-		var fallback pkga2a.TokenSource
-		if cfg.A2A.TokenPath != "" {
-			fallback = pkga2a.FileTokenSource{Path: cfg.A2A.TokenPath}
+		// The controller is spoken to as the person behind the turn only: the
+		// forwarded Dex id_token is the sole credential, on every channel. A turn
+		// without one is refused instead of running as the gateway's machine
+		// identity (the ServiceAccount token, when mounted, serves the
+		// Klaus-instance paths only).
+		tokenSource := pkga2a.ForwardedTokenSource{ForwardedOnlyChannels: []string{slackchannel.ChannelName, web.ChannelName, cliachannel.ChannelName}}
+		kagentClient, err := pkga2a.Dial(pkga2a.Config{
+			Target:                  cfg.A2A.URL,
+			CAFile:                  cfg.A2A.CAFile,
+			Namespace:               cfg.A2A.Namespace,
+			TokenSource:             tokenSource,
+			FallbackIconURLTemplate: cfg.A2A.FallbackIconURLTemplate,
+			Logger:                  logger,
+		})
+		if err != nil {
+			return fmt.Errorf("kagent client: %w", err)
 		}
-		tokenSource := pkga2a.ForwardedTokenSource{Fallback: fallback}
-		// With OBO linking enabled, a Slack turn must carry the human's token:
-		// the ServiceAccount fallback stays available to the web/cli channels
-		// (which may serve anonymous local callers) but is disabled for Slack,
-		// so a turn that reaches the executor without a human token fails
-		// instead of silently running as the machine identity.
-		if cfg.OBO.Enabled {
-			tokenSource.ForwardedOnlyChannels = []string{slackchannel.ChannelName}
-		}
-		facade.Executor = &pkga2a.A2AClient{
-			TokenSource:  tokenSource,
-			BaseURL:      cfg.A2A.URL,
-			DefaultAgent: cfg.A2A.DefaultAgent,
-		}
-		restURL := cfg.A2A.ResolvedRESTURL()
-		if restURL != "" {
-			kagentClient := &pkga2a.KagentClient{
-				BaseURL:     restURL,
-				TokenSource: tokenSource,
+		defer func() {
+			if err := kagentClient.Close(); err != nil {
+				logger.Warn("kagent client close", "error", err)
 			}
-			facade.Sessions = kagentClient
-			if slackAdapter != nil {
-				slackAdapter.Models = kagentClient
-				slackAdapter.Roster = kagentClient
-			}
-		}
-		// Card-derived agent branding for Slack: the AgentCard supplies the
-		// agent's display name and icon. Cards without an iconUrl fall back to
-		// the configured template. Same base and token as the executor.
+		}()
+		facade.Agent = kagentClient
+		facade.Routes = routeStore
 		if slackAdapter != nil {
-			slackAdapter.AgentCards = &pkga2a.AgentCardClient{
-				BaseURL:                 cfg.A2A.URL,
-				TokenSource:             tokenSource,
-				FallbackIconURLTemplate: cfg.A2A.FallbackIconURLTemplate,
-			}
+			slackAdapter.Models = kagentClient
+			slackAdapter.Roster = kagentClient
+			slackAdapter.AgentCards = kagentClient
 		}
-		logger.Info("a2a adapter enabled",
+		logger.Info("kagent client enabled",
 			"a2a_url", cfg.A2A.URL,
-			"rest_url", restURL,
+			"namespace", cfg.A2A.Namespace,
 			"default_agent", cfg.A2A.DefaultAgent,
-			"token_path", cfg.A2A.TokenPath,
+			"ca_file", cfg.A2A.CAFile,
 		)
 	}
 

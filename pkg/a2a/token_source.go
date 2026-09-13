@@ -11,6 +11,20 @@ import (
 // forwardedTokenKey is the context key for a caller-forwarded bearer token.
 type forwardedTokenKey struct{}
 
+// agentRefKey is the context key for the target agentRef.
+type agentRefKey struct{}
+
+// WithAgentRef stores agentRef in ctx.
+func WithAgentRef(ctx context.Context, agentRef string) context.Context {
+	return context.WithValue(ctx, agentRefKey{}, agentRef)
+}
+
+// AgentRefFromContext returns the agentRef stored by WithAgentRef, or empty string.
+func AgentRefFromContext(ctx context.Context) string {
+	ref, _ := ctx.Value(agentRefKey{}).(string)
+	return ref
+}
+
 // channelKey is the context key for the originating channel name.
 type channelKey struct{}
 

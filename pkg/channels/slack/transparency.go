@@ -155,22 +155,21 @@ func formatUsage(u channels.TurnUsage) string {
 }
 
 // AgentModelSource resolves the model id and provider behind an agent.
-// Implemented by pkg/a2a.KagentClient against the kagent REST API; empty
-// strings with a nil error mean the backend does not expose a model for the
-// agent (a BYO runtime).
+// Implemented by pkg/a2a.Client from the AgentTemplate's ModelConfig; empty
+// strings with a nil error mean the template names no model.
 type AgentModelSource interface {
 	AgentModel(ctx context.Context, agentRef string) (model, provider string, err error)
 }
 
 // agentModelTTL bounds how long a resolved model label is served from cache.
-// The model comes from the agent's CRD spec, which changes rarely.
+// The model comes from the template's ModelConfig, which changes rarely.
 const agentModelTTL = 10 * time.Minute
 
 // agentModelLabel returns "provider/model" (or just the model when the
 // provider is not reported) for agentRef — the thread's bound agent, or the
 // default — or "" when no model source is configured, the agent exposes no
 // model, or the lookup fails. Results are cached per agent so /usage does not
-// hit the kagent REST API on every call.
+// hit the kagent controller on every call.
 func (a *Adapter) agentModelLabel(ctx context.Context, agentRef string) string {
 	if a.Models == nil || agentRef == "" {
 		return ""
@@ -210,8 +209,9 @@ type modelEntry struct {
 }
 
 // sessionChecker is the optional Gateway capability that reports whether a
-// thread's kagent session already exists (so a reply resumes it). The Facade
-// implements it; adapters degrade gracefully when the gateway does not.
+// thread's conversation (its AgentInstance) still exists at the kagent
+// controller, so a reply resumes it. The Facade implements it; adapters degrade
+// gracefully when the gateway does not.
 type sessionChecker interface {
 	SessionResumable(ctx context.Context, msg channels.InboundMessage) (exists, checked bool)
 }
@@ -242,10 +242,9 @@ func (a *Adapter) maybeAnnounceResume(ctx context.Context, msg channels.InboundM
 	if !checked {
 		return
 	}
-	// A miss here for a thread that visibly has history means the kagent-side
-	// session is gone or is keyed under a different identity (kagent scopes
-	// sessions by (contextID, user_id) where user_id derives from the forwarded
-	// token subject), so surface the conclusive outcome at info.
+	// A miss here for a thread that visibly has history means the thread has no
+	// AgentInstance binding (a conversation from before the cut-over, or one
+	// whose instance was deleted), so surface the conclusive outcome at info.
 	a.Logger.Info("slack: session resume check", "record", "resume_check",
 		"thread", msg.ThreadID, "channel_id", msg.ChannelID, "subject", msg.Subject, "exists", exists)
 
