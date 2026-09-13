@@ -1,0 +1,31 @@
+{{- $pdb := .Values.podDisruptionBudget }}
+{{- if $pdb.enabled }}
+{{- $hasMin := not (empty $pdb.minAvailable) }}
+{{- $hasMax := not (empty $pdb.maxUnavailable) }}
+{{- if and $hasMin $hasMax }}
+{{- fail "podDisruptionBudget: minAvailable and maxUnavailable are mutually exclusive; set exactly one" }}
+{{- end }}
+{{- if not (or $hasMin $hasMax) }}
+{{- fail "podDisruptionBudget.enabled is true but neither minAvailable nor maxUnavailable is set; set exactly one" }}
+{{- end }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "resource.default.name" . }}
+  namespace: {{ include "resource.default.namespace" . }}
+  labels:
+    {{- include "labels.common" . | nindent 4 }}
+spec:
+  {{- if $hasMin }}
+  minAvailable: {{ $pdb.minAvailable }}
+  {{- else }}
+  maxUnavailable: {{ $pdb.maxUnavailable }}
+  {{- end }}
+  {{- with $pdb.unhealthyPodEvictionPolicy }}
+  unhealthyPodEvictionPolicy: {{ . }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- /* The Deployment's own selector, so the budget can never drift from the pods it guards. */}}
+      {{- include "labels.selector" . | nindent 6 }}
+{{- end }}
