@@ -7,9 +7,11 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -41,8 +43,8 @@ type Link struct {
 // intentionally error-free so the per-message Slack dispatch path stays simple;
 // backends surface failures through their injected logger and degrade to a
 // cache miss (Get -> false), which the caller treats as "not linked" and
-// re-prompts. The interface is kept narrow so the bolt backend can later be
-// swapped for Valkey or a Kubernetes Secret without touching callers.
+// re-prompts. The interface is kept narrow so backends (bolt file, Kubernetes
+// Secret, in-memory) are interchangeable without touching callers.
 type Store interface {
 	Get(slackUserID string) (*Link, bool)
 	Put(slackUserID string, link *Link)
@@ -84,25 +86,15 @@ func (s *MemStore) Delete(slackUserID string) {
 	delete(s.m, slackUserID)
 }
 
-var linkBucket = []byte("musterlinks")
-
-// BoltStore is a bbolt-backed Store that encrypts each Link with AES-256-GCM
-// before writing it to disk, so a leaked database file does not leak refresh
-// tokens. The encryption key comes from a mounted secret.
-//
-// ponytail: single bolt file, no horizontal sharing. A multi-replica gateway
-// needs a shared backend (Valkey / Secret); the Store interface is the seam.
-type BoltStore struct {
-	db     *bolt.DB
-	gcm    cipher.AEAD
-	logger *slog.Logger
+// linkCipher turns a Link into an AES-256-GCM sealed record and back. Both
+// persistent backends share it, so a record the bolt store wrote decrypts in
+// the Secret store under the same key -- the one-time import relies on that.
+type linkCipher struct {
+	gcm cipher.AEAD
 }
 
-// OpenBoltStore opens or creates an encrypted link store at path. key must
-// resolve to a 32-byte AES-256 key: it is used verbatim when it is exactly 32
-// raw bytes, otherwise it is base64- or hex-decoded (see normalizeStoreKey).
-// A nil logger defaults to slog.Default().
-func OpenBoltStore(path string, key []byte, logger *slog.Logger) (*BoltStore, error) {
+// newLinkCipher resolves key with normalizeStoreKey and builds the AEAD.
+func newLinkCipher(key []byte) (*linkCipher, error) {
 	key, err := normalizeStoreKey(key)
 	if err != nil {
 		return nil, err
@@ -111,30 +103,113 @@ func OpenBoltStore(path string, key []byte, logger *slog.Logger) (*BoltStore, er
 	if err != nil {
 		return nil, err
 	}
-	db, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: 5 * time.Second})
+	return &linkCipher{gcm: gcm}, nil
+}
+
+// sealLink marshals and encrypts link; the record is nonce || ciphertext.
+func (c *linkCipher) sealLink(link *Link) ([]byte, error) {
+	// G117: the marshaled link (incl. the refresh token) is encrypted with
+	// AES-256-GCM before it is ever handed to a backend.
+	plaintext, err := json.Marshal(link) //nolint:gosec
+	if err != nil {
+		return nil, fmt.Errorf("marshal link: %w", err)
+	}
+	nonce := make([]byte, c.gcm.NonceSize())
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return nil, fmt.Errorf("nonce: %w", err)
+	}
+	return c.gcm.Seal(nonce, nonce, plaintext, nil), nil
+}
+
+// openLink decrypts and unmarshals a record written by sealLink.
+func (c *linkCipher) openLink(record []byte) (*Link, error) {
+	ns := c.gcm.NonceSize()
+	if len(record) < ns {
+		return nil, errors.New("record shorter than nonce")
+	}
+	plaintext, err := c.gcm.Open(nil, record[:ns], record[ns:], nil)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt link: %w", err)
+	}
+	var l Link
+	if err := json.Unmarshal(plaintext, &l); err != nil {
+		return nil, fmt.Errorf("unmarshal link: %w", err)
+	}
+	return &l, nil
+}
+
+var linkBucket = []byte("musterlinks")
+
+// BoltStore is a bbolt-backed Store that encrypts each Link with AES-256-GCM
+// before writing it to disk, so a leaked database file does not leak refresh
+// tokens. The encryption key comes from a mounted secret.
+//
+// A bolt file is node-bound (one ReadWriteOnce volume, one pod): a gateway
+// that must survive node loss or run more than one replica uses SecretStore.
+type BoltStore struct {
+	db     *bolt.DB
+	cipher *linkCipher
+	logger *slog.Logger
+}
+
+// OpenBoltStore opens or creates an encrypted link store at path. key must
+// resolve to a 32-byte AES-256 key: it is used verbatim when it is exactly 32
+// raw bytes, otherwise it is base64- or hex-decoded (see normalizeStoreKey).
+// A nil logger defaults to slog.Default().
+func OpenBoltStore(path string, key []byte, logger *slog.Logger) (*BoltStore, error) {
+	return openBoltStore(path, key, logger, false)
+}
+
+// OpenBoltStoreReadOnly opens an existing link store without taking bolt's
+// write lock and without writing to the file, not even to create the bucket.
+// A store opened this way serves Get and Each; Put and Delete fail and are
+// logged. It is the import's way of reading a file it must leave untouched.
+func OpenBoltStoreReadOnly(path string, key []byte, logger *slog.Logger) (*BoltStore, error) {
+	return openBoltStore(path, key, logger, true)
+}
+
+func openBoltStore(path string, key []byte, logger *slog.Logger, readOnly bool) (*BoltStore, error) {
+	c, err := newLinkCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	if readOnly {
+		// bolt refuses to open a missing file read-only only after creating it;
+		// check first so a read-only open never leaves an empty database behind.
+		if _, err := os.Stat(path); err != nil {
+			return nil, fmt.Errorf("musterlink: open bolt %s: %w", path, err)
+		}
+	}
+	db, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: 5 * time.Second, ReadOnly: readOnly})
 	if err != nil {
 		return nil, fmt.Errorf("musterlink: open bolt %s: %w", path, err)
 	}
-	if err := db.Update(func(tx *bolt.Tx) error {
-		_, err := tx.CreateBucketIfNotExists(linkBucket)
-		return err
-	}); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("musterlink: create bucket: %w", err)
+	if !readOnly {
+		if err := db.Update(func(tx *bolt.Tx) error {
+			_, err := tx.CreateBucketIfNotExists(linkBucket)
+			return err
+		}); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("musterlink: create bucket: %w", err)
+		}
 	}
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &BoltStore{db: db, gcm: gcm, logger: logger}, nil
+	return &BoltStore{db: db, cipher: c, logger: logger}, nil
 }
 
 // Get decrypts and returns the link for slackUserID, or (nil, false) when
 // absent or on any decode/decrypt error (logged).
 func (s *BoltStore) Get(slackUserID string) (*Link, bool) {
-	var ciphertext []byte
+	var record []byte
 	err := s.db.View(func(tx *bolt.Tx) error {
-		if v := tx.Bucket(linkBucket).Get([]byte(slackUserID)); v != nil {
-			ciphertext = append([]byte(nil), v...)
+		b := tx.Bucket(linkBucket)
+		if b == nil {
+			return nil
+		}
+		if v := b.Get([]byte(slackUserID)); v != nil {
+			record = append([]byte(nil), v...)
 		}
 		return nil
 	})
@@ -142,39 +217,27 @@ func (s *BoltStore) Get(slackUserID string) (*Link, bool) {
 		s.logger.Error("musterlink: bolt read failed", "err", err)
 		return nil, false
 	}
-	if ciphertext == nil {
+	if record == nil {
 		return nil, false
 	}
-	plaintext, err := s.open(ciphertext)
+	link, err := s.cipher.openLink(record)
 	if err != nil {
-		s.logger.Error("musterlink: decrypt link failed", "err", err)
+		s.logger.Error("musterlink: decode link failed", "err", err)
 		return nil, false
 	}
-	var l Link
-	if err := json.Unmarshal(plaintext, &l); err != nil {
-		s.logger.Error("musterlink: unmarshal link failed", "err", err)
-		return nil, false
-	}
-	return &l, true
+	return link, true
 }
 
 // Put encrypts and stores link. Errors are logged; a failed Put means the next
 // refresh sees the stale token and the user re-links.
 func (s *BoltStore) Put(slackUserID string, link *Link) {
-	// G117: the marshaled link (incl. the refresh token) is encrypted with
-	// AES-256-GCM by seal before it is ever written to disk.
-	plaintext, err := json.Marshal(link) //nolint:gosec
-	if err != nil {
-		s.logger.Error("musterlink: marshal link failed", "err", err)
-		return
-	}
-	ciphertext, err := s.seal(plaintext)
+	record, err := s.cipher.sealLink(link)
 	if err != nil {
 		s.logger.Error("musterlink: encrypt link failed", "err", err)
 		return
 	}
 	if err := s.db.Update(func(tx *bolt.Tx) error {
-		return tx.Bucket(linkBucket).Put([]byte(slackUserID), ciphertext)
+		return tx.Bucket(linkBucket).Put([]byte(slackUserID), record)
 	}); err != nil {
 		s.logger.Error("musterlink: bolt write failed", "err", err)
 	}
@@ -189,24 +252,28 @@ func (s *BoltStore) Delete(slackUserID string) {
 	}
 }
 
+// Each calls fn for every link in the store. A record that does not decrypt
+// (written under another key, or corrupt) is logged and skipped so one bad
+// entry never blocks an import. fn's error stops the iteration and is returned.
+func (s *BoltStore) Each(fn func(slackUserID string, link *Link) error) error {
+	return s.db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(linkBucket)
+		if b == nil {
+			return nil
+		}
+		return b.ForEach(func(k, v []byte) error {
+			link, err := s.cipher.openLink(v)
+			if err != nil {
+				s.logger.Error("musterlink: skipping undecodable link record", "slackUser", string(k), "err", err)
+				return nil
+			}
+			return fn(string(k), link)
+		})
+	})
+}
+
 // Close closes the underlying database.
 func (s *BoltStore) Close() error { return s.db.Close() }
-
-func (s *BoltStore) seal(plaintext []byte) ([]byte, error) {
-	nonce := make([]byte, s.gcm.NonceSize())
-	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return nil, err
-	}
-	return s.gcm.Seal(nonce, nonce, plaintext, nil), nil
-}
-
-func (s *BoltStore) open(ciphertext []byte) ([]byte, error) {
-	ns := s.gcm.NonceSize()
-	if len(ciphertext) < ns {
-		return nil, fmt.Errorf("ciphertext shorter than nonce")
-	}
-	return s.gcm.Open(nil, ciphertext[:ns], ciphertext[ns:], nil)
-}
 
 // normalizeStoreKey resolves the configured link-store key to the raw 32-byte
 // AES-256 key. A 32-byte input is raw key material and used as-is. Anything else
