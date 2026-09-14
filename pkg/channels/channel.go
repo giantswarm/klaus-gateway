@@ -9,12 +9,21 @@ package channels
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/giantswarm/klaus-gateway/pkg/lifecycle"
 )
+
+// ErrShutdown is the cancellation cause of a turn the gateway's own shutdown
+// cut short. A channel adapter cancels its lifecycle context with it (see
+// context.WithCancelCause), so everything downstream can tell a restart from a
+// user's /stop: the facade leaves such a task running at the controller — its
+// result is delivered after the restart — where a plain cancellation cancels
+// the task server-side.
+var ErrShutdown = errors.New("channels: the gateway is shutting down")
 
 // BearerToken returns the raw value of an `Authorization: Bearer` header, or
 // an empty string when absent.
@@ -80,6 +89,20 @@ type InboundMessage struct {
 	// HITL answer (approve/reject or ask_user answers) sent as an A2A DataPart.
 	// When nil the Text is sent as a plain text part.
 	Decision *HitlDecision
+	// Resume is what the adapter needs to deliver this turn's result should the
+	// gateway restart while the turn runs: channel-private keys (the Slack
+	// channel and user, the message to react on) the facade stores next to the
+	// thread's binding and hands back on InFlightTurn.
+	Resume map[string]string
+}
+
+// InFlightTurn is a turn a previous gateway process left running at its
+// controller: the task to resubscribe to and the thread it belongs to. Msg
+// carries the thread's identity (Channel, ChannelID, ThreadID, AgentRef) and
+// the Resume data the turn was dispatched with.
+type InFlightTurn struct {
+	Msg    InboundMessage
+	TaskID string
 }
 
 // DeltaKind classifies the content of an OutboundDelta. The zero value is

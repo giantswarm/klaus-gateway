@@ -148,7 +148,14 @@ func run(args []string) error {
 		Router:    router,
 		Client:    instanceClient,
 		Lifecycle: manager,
+		// A turn a shutdown cuts short is delivered after the restart only when
+		// the thread's record of it outlives the process.
+		Durable: cfg.Store != config.StoreMemory,
 	}
+
+	// Adapters are stopped in reverse start order once the servers have
+	// drained, and before the clients they use are closed (see stopAdapters).
+	var adapters []channels.ChannelAdapter
 
 	var webAdapter *web.Adapter
 	if cfg.Web.Enabled {
@@ -159,6 +166,7 @@ func run(args []string) error {
 		if err := webAdapter.Start(ctx, facade); err != nil {
 			return fmt.Errorf("start web adapter: %w", err)
 		}
+		adapters = append(adapters, webAdapter)
 	}
 
 	publicMux := chi.NewRouter()
@@ -173,6 +181,7 @@ func run(args []string) error {
 			Logger:              logger,
 			Mode:                cfg.Slack.Mode,
 			Secrets:             secrets,
+			APIBase:             cfg.Slack.APIBase,
 			DMMode:              slackchannel.DMMode(cfg.Slack.DMMode),
 			ChannelMode:         slackchannel.ChannelMode(cfg.Slack.ChannelMode),
 			ChannelAllowlist:    cfg.Slack.ChannelAllowlist,
@@ -190,13 +199,7 @@ func run(args []string) error {
 			return fmt.Errorf("start slack adapter: %w", err)
 		}
 		slackAdapter.Mount(publicMux)
-		defer func() {
-			stopCtx, cancel := context.WithTimeout(context.Background(), server.DefaultShutdownTimeout)
-			defer cancel()
-			if err := slackAdapter.Stop(stopCtx); err != nil {
-				logger.Warn("slack adapter stop", "error", err)
-			}
-		}()
+		adapters = append(adapters, slackAdapter)
 		logger.Info("slack adapter started", "mode", cfg.Slack.Mode)
 	}
 
@@ -209,13 +212,7 @@ func run(args []string) error {
 			return fmt.Errorf("start cli adapter: %w", err)
 		}
 		cliAdapter.Mount(publicMux)
-		defer func() {
-			stopCtx, cancel := context.WithTimeout(context.Background(), server.DefaultShutdownTimeout)
-			defer cancel()
-			if err := cliAdapter.Stop(stopCtx); err != nil {
-				logger.Warn("cli adapter stop", "error", err)
-			}
-		}()
+		adapters = append(adapters, cliAdapter)
 		logger.Info("cli adapter started")
 	}
 
@@ -311,6 +308,11 @@ func run(args []string) error {
 	if webAdapter != nil {
 		webAdapter.Mount(publicMux)
 	}
+	// Everything a resubscription needs is wired now: the turns the previous
+	// process left running are picked up from here.
+	if slackAdapter != nil {
+		slackAdapter.RecoverTurns()
+	}
 
 	srv := server.New(server.Options{
 		PublicAddress: cfg.ListenAddress,
@@ -321,18 +323,25 @@ func run(args []string) error {
 		Public:        publicMux,
 	})
 
-	defer func() {
-		if webAdapter == nil {
-			return
-		}
-		stopCtx, cancel := context.WithTimeout(context.Background(), server.DefaultShutdownTimeout)
-		defer cancel()
-		if err := webAdapter.Stop(stopCtx); err != nil {
-			logger.Warn("web adapter stop", "error", err)
-		}
-	}()
+	err = srv.Run(ctx)
+	stopAdapters(adapters, logger)
+	return err
+}
 
-	return srv.Run(ctx)
+// stopAdapters stops the channel adapters in reverse start order, once the
+// servers have drained and before the deferred closes take the kagent client,
+// the link store and the routing store away: a Slack turn the shutdown cuts
+// short still posts its notice, and a /stop-issued cancel still reaches the
+// controller. All adapters share one budget, so the pod's termination grace
+// has to cover the server drain plus this stop (both DefaultShutdownTimeout).
+func stopAdapters(adapters []channels.ChannelAdapter, logger *slog.Logger) {
+	stopCtx, cancel := context.WithTimeout(context.Background(), server.DefaultShutdownTimeout)
+	defer cancel()
+	for i := len(adapters) - 1; i >= 0; i-- {
+		if err := adapters[i].Stop(stopCtx); err != nil {
+			logger.Warn("adapter stop", "adapter", adapters[i].Name(), "error", err)
+		}
+	}
 }
 
 // startController creates and starts the embedded controller-runtime manager in

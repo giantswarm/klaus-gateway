@@ -260,6 +260,34 @@ still running gets a brief "still working" notice rather than starting an overla
 A signed-out sender's message is held for sign-in instead (no busy notice) and replays once
 they link and the running turn finishes.
 
+### Restarts and `/stop`
+
+A turn ends early for one of two reasons, and the thread can tell them apart:
+
+- **`/stop`** is the user's decision. The working reaction is cleared, the status ticker
+  collapses into its receipt, nothing else is posted in reactions mode (`_(stopped)_` replaces
+  the placeholder in text mode), and the task is cancelled at the controller so the agent
+  stops working.
+- **A gateway restart** (a pod restart, a node loss with a grace period) is nobody's decision.
+  The thread gets a one-line notice — `⚠️ I was restarted while **<agent>** was working. It
+  keeps going — the result is in the Dev Portal, and I post it here when it is done.` — the
+  working reaction is cleared, the ticker collapses into its receipt, and the task is **left
+  running** at the controller. The new gateway process resubscribes to it on start (A2A
+  `SubscribeToTask` on the thread's AgentInstance, under the same user's freshly minted
+  token) and streams what is left — or, when the task finished in between, posts the whole
+  answer — into the thread, with the working reaction back on the original message while it
+  does. A turn the start-up recovery cannot reach (its user signed out, the controller not up
+  yet after three tries ten seconds apart) is delivered by the thread's next reply, ahead of
+  that reply's own answer; a task the controller no longer has gets a short note instead.
+
+The recovery rides on the thread's routing-store binding, which records the task in flight
+while a turn runs. It therefore needs a routing store that outlives the process
+(`routing.store: configmap`, `bolt` or `crd`); with `memory` the record dies with the pod and
+the notice says so ("I cannot bring it into this thread"). The pod's
+`terminationGracePeriodSeconds` must leave room for the notice: the shutdown drains the HTTP
+servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s more), see
+[deployment.md](deployment.md#shutdown-and-restarts).
+
 ### Progress configuration
 
 | Flag | Env var | Default |

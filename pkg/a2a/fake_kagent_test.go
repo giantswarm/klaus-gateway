@@ -205,6 +205,40 @@ func (f *fakeKagent) GetTask(ctx context.Context, req *a2apb.GetTaskRequest) (*a
 	return pbconv.ToProtoTask(task)
 }
 
+// SubscribeToTask serves a stored quiescent task whole, as the controller does,
+// and plays the configured events for one still running.
+func (f *fakeKagent) SubscribeToTask(req *a2apb.SubscribeToTaskRequest, stream grpc.ServerStreamingServer[a2apb.StreamResponse]) error {
+	ctx := stream.Context()
+	f.record(ctx, "SubscribeToTask")
+	if _, err := f.routedInstance(ctx); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	task, ok := f.tasks[req.GetId()]
+	events := f.events
+	f.mu.Unlock()
+	if !ok {
+		return status.Error(codes.NotFound, "task not found")
+	}
+	if task.Status.State.Terminal() || task.Status.State == a2apkg.TaskStateInputRequired {
+		resp, err := pbconv.ToProtoStreamResponse(task)
+		if err != nil {
+			return err
+		}
+		return stream.Send(resp)
+	}
+	for _, ev := range events {
+		resp, err := pbconv.ToProtoStreamResponse(ev)
+		if err != nil {
+			return err
+		}
+		if err := stream.Send(resp); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (f *fakeKagent) CancelTask(ctx context.Context, req *a2apb.CancelTaskRequest) (*a2apb.Task, error) {
 	f.record(ctx, "CancelTask")
 	if _, err := f.routedInstance(ctx); err != nil {

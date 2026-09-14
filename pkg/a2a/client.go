@@ -297,6 +297,29 @@ func (c *Client) Stream(ctx context.Context, instanceID string, msg *a2apkg.Mess
 	}
 }
 
+// Subscribe attaches to a task the AgentInstance is already running and yields
+// its events from here on: a task that has since quiesced arrives whole, as its
+// one and only event. This is how a restarted gateway picks up the turns its
+// predecessor left running.
+func (c *Client) Subscribe(ctx context.Context, instanceID string, taskID a2apkg.TaskID) iter.Seq2[a2apkg.Event, error] {
+	return func(yield func(a2apkg.Event, error) bool) {
+		callCtx, err := c.a2aCtx(ctx, instanceID)
+		if err != nil {
+			yield(nil, err)
+			return
+		}
+		for event, err := range c.a2a.SubscribeToTask(callCtx, &a2apkg.SubscribeToTaskRequest{ID: taskID}) {
+			if err != nil {
+				yield(nil, mapA2AError(err))
+				return
+			}
+			if !yield(event, nil) {
+				return
+			}
+		}
+	}
+}
+
 // GetTask returns a task of the AgentInstance.
 func (c *Client) GetTask(ctx context.Context, instanceID string, taskID a2apkg.TaskID) (*a2apkg.Task, error) {
 	callCtx, err := c.a2aCtx(ctx, instanceID)

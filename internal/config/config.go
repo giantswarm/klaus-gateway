@@ -116,6 +116,10 @@ type SlackConfig struct {
 	// and (for socketmode) app_token. Environment variables (SLACK_BOT_TOKEN
 	// etc.) take precedence over file values.
 	SecretsFile string
+	// APIBase overrides the Slack Web API base URL (default
+	// https://slack.com/api). A development knob: it points the adapter at a
+	// fake Slack for headless proofs of the channel. SLACK_API_BASE.
+	APIBase string
 	// DMMode selects how direct messages are handled: DMModeServe (answer
 	// them, the default), DMModeRedirect (point the user to channels), or
 	// DMModeIgnore (drop silently). SLACK_DM_MODE.
@@ -315,6 +319,7 @@ func Load(args []string) (Config, error) {
 	fs.BoolVar(&cfg.Slack.Enabled, "slack-enabled", cfg.Slack.Enabled, "Enable the Slack channel adapter.")
 	fs.StringVar(&cfg.Slack.Mode, "slack-mode", cfg.Slack.Mode, "Slack connection mode: events or socketmode.")
 	fs.StringVar(&cfg.Slack.SecretsFile, "slack-secrets-file", cfg.Slack.SecretsFile, "Path to Slack secrets YAML file.")
+	fs.StringVar(&cfg.Slack.APIBase, "slack-api-base", cfg.Slack.APIBase, "Slack Web API base URL override (development: a fake Slack for headless proofs).")
 	fs.Func("slack-dm-mode", "Slack DM handling: serve (default), redirect, or ignore.", func(v string) error {
 		cfg.Slack.DMMode = DMMode(v)
 		return nil
@@ -424,6 +429,9 @@ func applyEnv(cfg *Config) {
 	}
 	if v, ok := lookup("SLACK_SECRETS_FILE"); ok {
 		cfg.Slack.SecretsFile = v
+	}
+	if v, ok := lookup("SLACK_API_BASE"); ok {
+		cfg.Slack.APIBase = v
 	}
 	if v, ok := lookup("SLACK_DM_MODE"); ok {
 		cfg.Slack.DMMode = DMMode(v)

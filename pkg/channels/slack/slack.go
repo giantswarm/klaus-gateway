@@ -143,12 +143,13 @@ type Adapter struct {
 	baseCtx context.Context // adapter lifecycle ctx, captured in Start; OnUserLinked's background work (login-replay dispatch and the sign-in confirmation POST) derives from it so shutdown cancels it
 	started atomic.Bool
 
-	// bgMu guards the background-goroutine lifecycle. cancel cancels baseCtx;
-	// bgWG tracks every goroutine started via background so Stop can join them,
-	// and bgStopped drops late spawns once Stop has begun. Without the join a
-	// goroutine outlives the adapter that spawned it.
+	// bgMu guards the background-goroutine lifecycle. cancel cancels baseCtx,
+	// naming channels.ErrShutdown as the cause so a turn cut short can tell the
+	// restart from a /stop; bgWG tracks every goroutine started via background
+	// so Stop can join them, and bgStopped drops late spawns once Stop has
+	// begun. Without the join a goroutine outlives the adapter that spawned it.
 	bgMu       sync.Mutex
-	cancel     context.CancelFunc
+	cancel     context.CancelCauseFunc
 	bgStopped  bool
 	bgWG       sync.WaitGroup
 	startUnix  int64 // process start; events older than this are dropped on reconnect
@@ -404,7 +405,12 @@ func (a *Adapter) Start(ctx context.Context, gw channels.Gateway) error {
 		a.Logger = slog.Default()
 	}
 	a.gw = gw
-	ctx, cancel := context.WithCancel(ctx)
+	// The lifecycle context is detached from ctx's own cancellation: the
+	// process signal must not reach the turns before Stop has named the cause.
+	// Stop cancels with channels.ErrShutdown, which is how a turn's stop branch
+	// (a notice instead of silence) and the facade (the task is left running,
+	// not cancelled) tell a restart from a /stop. ctx's values are kept.
+	ctx, cancel := context.WithCancelCause(context.WithoutCancel(ctx))
 	a.baseCtx = ctx
 	a.bgMu.Lock()
 	a.cancel = cancel
@@ -538,17 +544,19 @@ func (a *Adapter) background(fn func(context.Context)) {
 	}()
 }
 
-// Stop cancels the adapter lifecycle context and joins every goroutine started
-// via background, so no work outlives the adapter. The join is bounded by ctx:
-// on ctx cancellation Stop returns ctx.Err() with the join still pending, while
-// context.Background() waits unbounded. Idempotent.
+// Stop cancels the adapter lifecycle context with channels.ErrShutdown as the
+// cause and joins every goroutine started via background, so no work outlives
+// the adapter: an in-flight turn posts its restart notice on the way out and
+// leaves its task running for the next process to resubscribe to. The join is
+// bounded by ctx: on ctx cancellation Stop returns ctx.Err() with the join
+// still pending, while context.Background() waits unbounded. Idempotent.
 func (a *Adapter) Stop(ctx context.Context) error {
 	a.bgMu.Lock()
 	a.bgStopped = true
 	cancel := a.cancel
 	a.bgMu.Unlock()
 	if cancel != nil {
-		cancel()
+		cancel(channels.ErrShutdown)
 	}
 	a.started.Store(false)
 	done := make(chan struct{})
@@ -1884,6 +1892,15 @@ func (a *Adapter) dispatchFrom(ctx context.Context, msg channels.InboundMessage,
 	}
 	defer a.releaseThread(msg.ThreadID)
 
+	// A reply into a thread this process has no record of may find a turn a
+	// previous process left running, whose result the recovery at start could
+	// not deliver (no token for its user then, the controller unreachable).
+	// Deliver it first, on the slot just taken, so the thread reads in order;
+	// the reply then runs as usual.
+	if firstSight {
+		a.deliverLeftoverTurn(ctx, msg, slackChannel, slackUser)
+	}
+
 	// An attachment-only reply into a thread with a paused confirmation cannot
 	// express a decision: decisionFromText on empty text would silently reject
 	// a generic prompt (or approve an ask_user one with empty answers). Leave
@@ -2205,23 +2222,25 @@ func (a *Adapter) humanToken(ctx context.Context, slackChannel, threadID, slackU
 // best-effort resolved to an email) as attribution. The initiator's own turns,
 // and turns where the initiator's token cannot be minted, keep the sender's own
 // token (they are signed in) rather than the gateway machine identity. Call
-// after the sender's token and email are resolved.
-func (a *Adapter) applyInitiatorIdentity(ctx context.Context, msg *channels.InboundMessage, threadID, slackUser string) {
+// after the sender's token and email are resolved. It returns the Slack user
+// whose identity the turn runs under.
+func (a *Adapter) applyInitiatorIdentity(ctx context.Context, msg *channels.InboundMessage, threadID, slackUser string) string {
 	if a.OBO == nil {
-		return
+		return slackUser
 	}
 	initiator := a.accessPolicy().Initiator(threadID)
 	if initiator == "" || initiator == slackUser {
-		return
+		return slackUser
 	}
 	initiatorToken, err := a.OBO.TokenFor(ctx, initiator)
 	if err != nil || initiatorToken == "" {
 		a.Logger.Info("slack: initiator token unavailable, running turn under sender identity",
 			"initiator", initiator, "sender", slackUser)
-		return
+		return slackUser
 	}
 	msg.BearerToken = initiatorToken
 	msg.Author = msg.Subject
+	return initiator
 }
 
 // streamResponse renders turn progress (reactions on triggerTS, or a text
@@ -2274,11 +2293,29 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 			return nil
 		}
 		// A cancelled turn context means the stop was intentional (/stop, shutdown):
-		// clear the working indicator silently instead of signalling a failure. A
+		// clear the working indicator instead of signalling a failure. A
 		// deadline expiry (maxTurnDuration backstop) is a failure, not a stop, and
 		// falls through to the failure signalling below.
 		if errors.Is(ctx.Err(), context.Canceled) {
 			prog.clear(cctx)
+			// The gateway is shutting down mid-turn. Nobody asked for this, so
+			// the thread is told — in reactions mode too, where a /stop leaves
+			// no note — and told what becomes of the answer. The note replaces
+			// the text-mode placeholder unless streamed content already did.
+			if errors.Is(context.Cause(ctx), channels.ErrShutdown) {
+				// Land the text still buffered first: the next process continues
+				// from where the stream was cut, so what this one holds back would
+				// be missing from the thread.
+				if ferr := w.finalFlush(cctx); ferr != nil {
+					a.Logger.Warn("slack: flush before the restart notice failed", "thread", threadID, "error", ferr)
+				}
+				noteTS := replyTS
+				if w.wroteContent() {
+					noteTS = ""
+				}
+				a.postTerminalNote(cctx, client, slackChannel, threadID, noteTS, a.restartedNotice(cctx, msg.AgentRef))
+				return err
+			}
 			// prog.clear is a no-op in text mode (no reaction to swap), which
 			// would leave the placeholder as "thinking" forever under the
 			// "Stopped." reply.

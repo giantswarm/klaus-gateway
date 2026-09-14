@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	a2apkg "github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/require"
 
@@ -876,6 +877,103 @@ type stubGateway struct {
 	// a test can fail an in-turn resume (e.g. an auto-approved continuation) that
 	// follows an initial successful send within the same turn.
 	failSendsAfter int
+	// sendCauses records, per SendCompletion whose context ended before the
+	// deltas were consumed, the context cause it ended with (a shutdown names
+	// channels.ErrShutdown; a /stop is a plain cancellation).
+	sendCauses []error
+	// resumes, when set, backs the restart-recovery capability (InFlightTurns,
+	// InFlightTurn, ResumeTurn); nil reports no turns left running.
+	resumes *stubResumes
+}
+
+// stubResumes is the stubGateway's record of turns a previous process left
+// running: the turns InFlightTurns lists (and InFlightTurn finds by thread),
+// the deltas ResumeTurn streams for each task, and what was resumed.
+type stubResumes struct {
+	turns        []channels.InFlightTurn
+	deltas       map[string][]channels.OutboundDelta // task id -> deltas
+	resumeErr    error
+	durable      bool
+	resumed      []channels.InboundMessage
+	resumedTasks []string
+}
+
+func (s *stubGateway) ResumesTurns() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.resumes != nil && s.resumes.durable
+}
+
+func (s *stubGateway) InFlightTurns(_ context.Context, channel string) ([]channels.InFlightTurn, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.resumes == nil {
+		return nil, nil
+	}
+	var out []channels.InFlightTurn
+	for _, t := range s.resumes.turns {
+		if t.Msg.Channel == channel {
+			out = append(out, t)
+		}
+	}
+	return out, nil
+}
+
+func (s *stubGateway) InFlightTurn(_ context.Context, msg channels.InboundMessage) (channels.InFlightTurn, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.resumes == nil {
+		return channels.InFlightTurn{}, false, nil
+	}
+	for _, t := range s.resumes.turns {
+		if t.Msg.Channel == msg.Channel && t.Msg.ChannelID == msg.ChannelID && t.Msg.ThreadID == msg.ThreadID {
+			return t, true, nil
+		}
+	}
+	return channels.InFlightTurn{}, false, nil
+}
+
+func (s *stubGateway) ResumeTurn(ctx context.Context, msg channels.InboundMessage, taskID string) (<-chan channels.OutboundDelta, error) {
+	s.mu.Lock()
+	if s.resumes == nil {
+		s.mu.Unlock()
+		return nil, errors.New("stub: no resumes configured")
+	}
+	if err := s.resumes.resumeErr; err != nil {
+		s.mu.Unlock()
+		return nil, err
+	}
+	s.resumes.resumed = append(s.resumes.resumed, msg)
+	s.resumes.resumedTasks = append(s.resumes.resumedTasks, taskID)
+	deltas := s.resumes.deltas[taskID]
+	// The record is consumed: a later lookup finds no turn left running.
+	kept := s.resumes.turns[:0]
+	for _, t := range s.resumes.turns {
+		if t.TaskID != taskID {
+			kept = append(kept, t)
+		}
+	}
+	s.resumes.turns = kept
+	s.mu.Unlock()
+	ch := make(chan channels.OutboundDelta)
+	go func() {
+		defer close(ch)
+		for _, d := range deltas {
+			select {
+			case ch <- d:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return ch, nil
+}
+
+// sendCauseList returns the recorded context causes of the ended sends.
+func (s *stubGateway) sendCauseList() []error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]error(nil), s.sendCauses...)
 }
 
 func (s *stubGateway) resumeCount() int {
@@ -948,6 +1046,11 @@ func (s *stubGateway) SendCompletion(ctx context.Context, _ channels.InstanceRef
 		deltas = []channels.OutboundDelta{{Done: true}}
 	}
 	ch := make(chan channels.OutboundDelta)
+	recordCause := func() {
+		s.mu.Lock()
+		s.sendCauses = append(s.sendCauses, context.Cause(ctx))
+		s.mu.Unlock()
+	}
 	go func() {
 		defer close(ch)
 		for i, d := range deltas {
@@ -955,12 +1058,14 @@ func (s *stubGateway) SendCompletion(ctx context.Context, _ channels.InstanceRef
 				select {
 				case <-time.After(s.interDeltaDelay):
 				case <-ctx.Done():
+					recordCause()
 					return
 				}
 			}
 			select {
 			case ch <- d:
 			case <-ctx.Done():
+				recordCause()
 				return
 			}
 		}
@@ -968,6 +1073,7 @@ func (s *stubGateway) SendCompletion(ctx context.Context, _ channels.InstanceRef
 			select {
 			case <-hold:
 			case <-ctx.Done():
+				recordCause()
 			}
 		}
 	}()
@@ -1883,3 +1989,7 @@ func TestTurn_RenderFailureAfterCompletionIsNotAFailedTurn(t *testing.T) {
 	require.Equal(t, []string{"eyes", "x"}, fake.reactionNames("reactions.add"), "the failed reaction marks the incomplete reply")
 	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "turn failed", "a completed turn is not reported as failed")
 }
+
+// errTaskGone is the controller's answer for a task it no longer has, as the
+// a2a package surfaces it.
+var errTaskGone = a2apkg.ErrTaskNotFound

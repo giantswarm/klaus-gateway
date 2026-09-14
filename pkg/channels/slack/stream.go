@@ -258,6 +258,12 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 
 		case d, ok := <-ch:
 			if !ok {
+				// The producer closes without a terminal delta when the turn
+				// context ended under it; both cases are ready then, so the
+				// cancellation must win over a flush that would read as success.
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
 				return w.finish(ctx)
 			}
 			if d.Usage != nil {
@@ -1225,7 +1231,15 @@ func (w *batchedWriter) threadPoster(ctx context.Context) {
 	// The turn is over (or pausing on a prompt): collapse the last open
 	// segment's ticker into its one-line receipt, before the answer lands
 	// (finalFlush drains this poster first). A status message whose post failed
-	// earlier still gets its receipt and folded narration posted.
+	// earlier still gets its receipt and folded narration posted. A cancelled
+	// turn (a /stop, the gateway's shutdown) gets its receipt too: the tail runs
+	// on a context that outlives the cancellation, briefly, so the ticker is
+	// not left frozen mid-step.
+	if ctx.Err() != nil {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(context.WithoutCancel(ctx), posterTailTimeout)
+		defer cancel()
+	}
 	retryUndelivered()
 	if r := w.takeToolStatus(); r != nil {
 		status.ticker = renderToolReceipt(r.steps, r.order, r.counts)
@@ -1238,6 +1252,10 @@ func (w *batchedWriter) threadPoster(ctx context.Context) {
 		w.clearPaneStatus(ctx)
 	}
 }
+
+// posterTailTimeout bounds the thread poster's closing receipt once the turn
+// context is gone.
+const posterTailTimeout = 5 * time.Second
 
 // upsertStatus delivers the status message's blocks — folded narration above
 // the ticker line — posting on first use and updating in place afterwards. On
