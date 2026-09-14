@@ -2093,9 +2093,9 @@ func TestSessionStatus_ActiveOnStreamError(t *testing.T) {
 	require.Equal(t, []string{"processing", "active"}, ft.statuses())
 }
 
-// A turn pausing on an approval prompt goes idle too: the app posts nothing
-// further into the thread until the user decides.
-func TestSessionStatus_ActiveOnPromptPause(t *testing.T) {
+// A turn pausing on a HITL prompt is not idle: the agent waits on the user, so
+// the session goes suspended and Slack renders the thread as waiting for them.
+func TestSessionStatus_SuspendedOnPromptPause(t *testing.T) {
 	ft := &fakeThread{}
 	_, w, err := runSurfaceWriter(t, ft, "D1",
 		toolCallDelta("alpha"),
@@ -2103,7 +2103,25 @@ func TestSessionStatus_ActiveOnPromptPause(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.NotNil(t, w.promptDelta)
-	require.Equal(t, []string{"processing", "active"}, ft.statuses())
+	require.Equal(t, []string{"processing", "suspended"}, ft.statuses())
+}
+
+// The user's answer starts the next turn on the same thread, which sends
+// processing on its own: the resume needs no status call of its own, and the
+// turn that ends after it hands the session back as idle.
+func TestSessionStatus_ProcessingAgainWhenTheAnswerResumesTheTurn(t *testing.T) {
+	ft := &fakeThread{}
+	_, _, err := runSurfaceWriter(t, ft, "D1",
+		channels.OutboundDelta{Kind: channels.DeltaPrompt, TaskID: "task-1"},
+	)
+	require.NoError(t, err)
+
+	_, _, err = runSurfaceWriter(t, ft, "D1",
+		channels.OutboundDelta{Kind: channels.DeltaText, Content: "approved, done"},
+		doneDelta(),
+	)
+	require.NoError(t, err)
+	require.Equal(t, []string{"processing", "suspended", "processing", "active"}, ft.statuses())
 }
 
 // A /stop cancels the turn context; the status call is detached from it, so

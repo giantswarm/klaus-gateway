@@ -37,8 +37,12 @@ applies only to non-Agent deployments.
 While a turn runs, the thread carries Slack's **native working indicator**. It
 is driven by the agent session's lifecycle status
 (`agents.sessions.setStatus`, granular bot token with `chat:write`), which the
-adapter sets to `processing` when the turn starts and back to `active` on every
-exit: normal end, stream error, `/stop`, and the pause on an approval prompt.
+adapter sets to `processing` when the turn starts and back to `active` on exit:
+normal end, stream error, `/stop`. A turn that pauses on a HITL prompt — an
+approval, an `ask_user` question, a form — ends in `suspended` instead, which
+Slack renders as *waiting for you*, so a conversation that needs an answer is
+told apart from a finished one at a glance. The user's answer starts the next
+turn, which sets `processing` again.
 The explicit idle state is mandatory — unlike the legacy assistant status, this
 one does **not** clear itself when the app posts, and a session left in
 `processing` keeps spinning for up to an hour. Both surfaces get it: DM threads

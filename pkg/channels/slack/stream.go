@@ -228,13 +228,13 @@ func newBatchedWriterWithClient(client *slackAPIClient, channel, ts, threadTS st
 func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelta) error {
 	ticker := time.NewTicker(batchInterval)
 	defer ticker.Stop()
-	// The session goes idle on EVERY exit — stream done, stream error, /stop,
-	// and the HITL prompt pause. Slack's agent loading UX does not clear itself
-	// when the app posts any more, so a missing "active" leaves the thread
-	// spinning for up to an hour. Registered before the drain so it lands after
-	// the turn's last in-thread post.
+	// The session leaves "processing" on EVERY exit — stream done, stream error,
+	// /stop, and the HITL prompt pause. Slack's agent loading UX does not clear
+	// itself when the app posts any more, so a missing exit status leaves the
+	// thread spinning for up to an hour. Registered before the drain so it lands
+	// after the turn's last in-thread post.
 	w.setSessionStatus(ctx, sessionProcessing)
-	defer w.setSessionStatus(ctx, sessionActive)
+	defer func() { w.setSessionStatus(ctx, w.exitSessionStatus()) }()
 	defer w.drainThreadPosts() // backstop for the ctx.Done() exit; finalFlush drains first
 
 	for {
@@ -552,6 +552,21 @@ func renderToolTicker(steps int, current string) string {
 		md += fmt.Sprintf(" · step %d", steps)
 	}
 	return md
+}
+
+// exitSessionStatus is the state the session lands in when run() returns:
+// suspended when the turn paused on a HITL prompt — an approval, an ask_user
+// question, a form — which Slack renders as "waiting for you", so the user can
+// tell the conversations needing an answer from the finished ones; active on
+// every other exit. The answer starts the next turn, which sends processing
+// again, so the resume needs nothing of its own.
+func (w *batchedWriter) exitSessionStatus() sessionStatus {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.promptDelta != nil {
+		return sessionSuspended
+	}
+	return sessionActive
 }
 
 // sessionStatusTimeout bounds one detached agent-session status call.
