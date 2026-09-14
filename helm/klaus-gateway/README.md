@@ -57,7 +57,9 @@ Channel and routing gateway in front of klaus instances; uses agentgateway as th
 | upstream.url | string | `""` |  |
 | upstream.agentgatewayURL | string | `""` |  |
 | observability.otlpEndpoint | string | `""` |  |
-| podLabels | object | `{}` |  |
+| podAnnotations | object | `{}` | Annotations on the pod template (merged over the chart's own). The agent platform sets `karpenter.sh/do-not-disrupt: "true"` here so Karpenter's consolidation works around the pod that holds the channel connections and the in-flight A2A streams instead of evicting it. |
+| podLabels | object | `{}` | Labels on the pod template. |
+| podDisruptionBudget | object | `{"enabled":false,"maxUnavailable":null,"minAvailable":1,"unhealthyPodEvictionPolicy":""}` | PodDisruptionBudget on the gateway pods. Off by default: with `replicaCount: 1` a `minAvailable: 1` budget refuses every voluntary eviction (node drains wait for the drain timeout), which is the intended guard for a single replica that carries live Slack/CLI/web turns, but a deliberate choice. Set exactly one of `minAvailable` / `maxUnavailable` (int or percentage); `unhealthyPodEvictionPolicy: AlwaysAllow` lets a pod that is not Ready be evicted regardless, so a crash-looping gateway never wedges a drain. |
 | podSecurityContext.seccompProfile.type | string | `"RuntimeDefault"` |  |
 | securityContext.allowPrivilegeEscalation | bool | `false` |  |
 | securityContext.readOnlyRootFilesystem | bool | `true` |  |
