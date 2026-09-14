@@ -62,7 +62,7 @@
         },
         "affinity": {
             "type": "object",
-            "additionalProperties": false
+            "additionalProperties": true
         },
         "agentgateway": {
             "type": "object",
@@ -423,7 +423,7 @@
         },
         "nodeSelector": {
             "type": "object",
-            "additionalProperties": false
+            "additionalProperties": true
         },
         "obo": {
             "type": "object",
@@ -474,10 +474,20 @@
                 "stateKey": {
                     "type": "string"
                 },
+                "store": {
+                    "type": "string",
+                    "enum": [
+                        "bolt",
+                        "secret"
+                    ]
+                },
                 "storeKey": {
                     "type": "string"
                 },
                 "storePath": {
+                    "type": "string"
+                },
+                "storeSecretName": {
                     "type": "string"
                 }
             }
@@ -622,7 +632,53 @@
                     "type": "string"
                 },
                 "store": {
-                    "type": "string"
+                    "type": "string",
+                    "enum": [
+                        "memory",
+                        "valkey",
+                        "crd",
+                        "bolt",
+                        "configmap"
+                    ]
+                },
+                "valkey": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "db": {
+                            "type": "integer"
+                        },
+                        "existingSecret": {
+                            "type": "string"
+                        },
+                        "keyPrefix": {
+                            "type": "string"
+                        },
+                        "passwordKey": {
+                            "type": "string"
+                        },
+                        "timeout": {
+                            "type": "string"
+                        },
+                        "tls": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                                "enabled": {
+                                    "type": "boolean"
+                                },
+                                "serverName": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "url": {
+                            "type": "string"
+                        },
+                        "username": {
+                            "type": "string"
+                        }
+                    }
                 }
             }
         },
@@ -767,6 +823,10 @@
         },
         "subscriptionID": {
             "type": "string"
+        },
+        "terminationGracePeriodSeconds": {
+            "type": "integer",
+            "description": "Seconds the kubelet gives the pod to stop before it is killed. The shutdown drains the HTTP servers (up to 15 s), then stops the channel adapters (up to 15 s more), which is when a Slack turn cut short posts its restart notice and clears its progress reaction; the rest is margin for the client and store closes. Lower than the drain plus the stop and a turn interrupted by a restart ends in silence."
         },
         "tolerations": {
             "type": "array"

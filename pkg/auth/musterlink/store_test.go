@@ -24,15 +24,15 @@ func TestBoltStoreRoundTripAndPersistence(t *testing.T) {
 	require.NoError(t, err)
 
 	link := &Link{Sub: "muster-1", Email: "a@example.com", RefreshToken: "rt-secret", LinkedAt: time.Now().UTC().Truncate(time.Second)}
-	s.Put("U1", link)
+	require.NoError(t, s.Put("U1", link))
 
-	got, ok := s.Get("U1")
-	require.True(t, ok)
+	got, err := s.Get("U1")
+	require.NoError(t, err)
 	require.Equal(t, link.Sub, got.Sub)
 	require.Equal(t, link.RefreshToken, got.RefreshToken)
 
-	_, ok = s.Get("missing")
-	require.False(t, ok)
+	_, err = s.Get("missing")
+	require.ErrorIs(t, err, ErrNotLinked)
 
 	require.NoError(t, s.Close())
 
@@ -40,20 +40,20 @@ func TestBoltStoreRoundTripAndPersistence(t *testing.T) {
 	s2, err := OpenBoltStore(path, key32(), nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = s2.Close() })
-	got2, ok := s2.Get("U1")
-	require.True(t, ok)
+	got2, err := s2.Get("U1")
+	require.NoError(t, err)
 	require.Equal(t, "rt-secret", got2.RefreshToken)
 
-	s2.Delete("U1")
-	_, ok = s2.Get("U1")
-	require.False(t, ok)
+	require.NoError(t, s2.Delete("U1"))
+	_, err = s2.Get("U1")
+	require.ErrorIs(t, err, ErrNotLinked)
 }
 
 func TestBoltStoreEncryptedAtRest(t *testing.T) {
 	path := t.TempDir() + "/links.bolt"
 	s, err := OpenBoltStore(path, key32(), nil)
 	require.NoError(t, err)
-	s.Put("U1", &Link{RefreshToken: "topsecret-refresh-token"})
+	require.NoError(t, s.Put("U1", &Link{RefreshToken: "topsecret-refresh-token"}))
 	require.NoError(t, s.Close())
 
 	raw, err := os.ReadFile(path) //nolint:gosec // G304: test reads a file it just created under t.TempDir()
@@ -65,7 +65,7 @@ func TestBoltStoreWrongKeyFailsClosed(t *testing.T) {
 	path := t.TempDir() + "/links.bolt"
 	s, err := OpenBoltStore(path, key32(), nil)
 	require.NoError(t, err)
-	s.Put("U1", &Link{RefreshToken: "rt"})
+	require.NoError(t, s.Put("U1", &Link{RefreshToken: "rt"}))
 	require.NoError(t, s.Close())
 
 	wrong := key32()
@@ -73,8 +73,35 @@ func TestBoltStoreWrongKeyFailsClosed(t *testing.T) {
 	s2, err := OpenBoltStore(path, wrong, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = s2.Close() })
-	_, ok := s2.Get("U1") // GCM auth tag fails -> miss, not a panic or garbage
-	require.False(t, ok)
+	// GCM auth tag fails -> reported as unlinked (a re-link overwrites the
+	// record), not a panic, garbage, or a failed store.
+	_, err = s2.Get("U1")
+	require.ErrorIs(t, err, ErrNotLinked)
+}
+
+// A write the file cannot take is an error the caller sees and acts on (it
+// keeps the link and retries), not a logged miss that loses a rotated token.
+func TestBoltStoreReadOnlyRefusesWrites(t *testing.T) {
+	path := t.TempDir() + "/links.bolt"
+	s, err := OpenBoltStore(path, key32(), nil)
+	require.NoError(t, err)
+	require.NoError(t, s.Put("U1", &Link{RefreshToken: "rt"}))
+	require.NoError(t, s.Close())
+
+	ro, err := OpenBoltStoreReadOnly(path, key32(), nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ro.Close() })
+	got, err := ro.Get("U1")
+	require.NoError(t, err)
+	require.Equal(t, "rt", got.RefreshToken)
+
+	err = ro.Put("U1", &Link{RefreshToken: "rt-2"})
+	require.Error(t, err)
+	require.NotErrorIs(t, err, ErrNotLinked, "a refused write is a store failure, not an absent link")
+	require.Error(t, ro.Delete("U1"))
+	got, err = ro.Get("U1")
+	require.NoError(t, err)
+	require.Equal(t, "rt", got.RefreshToken, "the refused write left the record as it was")
 }
 
 func TestNewGCMRejectsBadKeyLength(t *testing.T) {
@@ -123,7 +150,7 @@ func TestBoltStoreAcceptsBase64Key(t *testing.T) {
 
 	s, err := OpenBoltStore(path, encKey, nil)
 	require.NoError(t, err)
-	s.Put("U1", &Link{RefreshToken: "rt"})
+	require.NoError(t, s.Put("U1", &Link{RefreshToken: "rt"}))
 	require.NoError(t, s.Close())
 
 	// Reopen with the raw form of the same key: it must decrypt what the
@@ -131,24 +158,25 @@ func TestBoltStoreAcceptsBase64Key(t *testing.T) {
 	s2, err := OpenBoltStore(path, key32(), nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = s2.Close() })
-	got, ok := s2.Get("U1")
-	require.True(t, ok)
+	got, err := s2.Get("U1")
+	require.NoError(t, err)
 	require.Equal(t, "rt", got.RefreshToken)
 }
 
 func TestMemStore(t *testing.T) {
 	s := NewMemStore()
-	_, ok := s.Get("U1")
-	require.False(t, ok)
-	s.Put("U1", &Link{RefreshToken: "rt"})
-	got, ok := s.Get("U1")
-	require.True(t, ok)
+	_, err := s.Get("U1")
+	require.ErrorIs(t, err, ErrNotLinked)
+	require.NoError(t, s.Put("U1", &Link{RefreshToken: "rt"}))
+	got, err := s.Get("U1")
+	require.NoError(t, err)
 	require.Equal(t, "rt", got.RefreshToken)
 	// Returned value is a copy: mutating it must not affect the store.
 	got.RefreshToken = "mutated"
-	again, _ := s.Get("U1")
+	again, err := s.Get("U1")
+	require.NoError(t, err)
 	require.Equal(t, "rt", again.RefreshToken)
-	s.Delete("U1")
-	_, ok = s.Get("U1")
-	require.False(t, ok)
+	require.NoError(t, s.Delete("U1"))
+	_, err = s.Get("U1")
+	require.ErrorIs(t, err, ErrNotLinked)
 }

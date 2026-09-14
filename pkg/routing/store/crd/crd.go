@@ -127,6 +127,8 @@ func specFromKeyEntry(k store.Key, e store.Entry) v1alpha1.ChannelRouteSpec {
 		Agent:           k.Agent,
 		Instance:        e.Instance,
 		AgentInstanceID: e.AgentInstanceID,
+		TaskID:          e.TaskID,
+		Resume:          e.Resume,
 		CreatedAt:       metav1.NewTime(e.CreatedAt),
 		LastSeen:        metav1.NewTime(e.LastSeen),
 		TTLSeconds:      int64(e.TTL.Seconds()),
@@ -137,6 +139,8 @@ func entryFromCR(cr *v1alpha1.ChannelRoute) store.Entry {
 	return store.Entry{
 		Instance:        cr.Spec.Instance,
 		AgentInstanceID: cr.Spec.AgentInstanceID,
+		TaskID:          cr.Spec.TaskID,
+		Resume:          cr.Spec.Resume,
 		CreatedAt:       cr.Spec.CreatedAt.Time,
 		LastSeen:        cr.Spec.LastSeen.Time,
 		TTL:             time.Duration(cr.Spec.TTLSeconds) * time.Second,

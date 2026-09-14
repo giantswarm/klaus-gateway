@@ -32,11 +32,16 @@ type musterStub struct {
 	omitIDToken    bool // omit id_token from the token response (upstream had none)
 	counter        int
 	validAccess    map[string]bool
+	// spent holds every refresh token already presented: muster rotates on each
+	// refresh and rejects a spent token with invalid_grant, and so does the stub.
+	// lastRefresh is the refresh token presented most recently.
+	spent       map[string]bool
+	lastRefresh string
 }
 
 func newMusterStub(t *testing.T, clientID, email, sub string) *musterStub {
 	t.Helper()
-	s := &musterStub{clientID: clientID, email: email, sub: sub, validAccess: map[string]bool{}}
+	s := &musterStub{clientID: clientID, email: email, sub: sub, validAccess: map[string]bool{}, spent: map[string]bool{}}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, _ *http.Request) {
@@ -67,6 +72,17 @@ func newMusterStub(t *testing.T, clientID, email, sub string) *musterStub {
 		if r.Form.Get("grant_type") == "refresh_token" && s.failRefresh5xx {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
+		}
+		if r.Form.Get("grant_type") == "refresh_token" {
+			rt := r.Form.Get("refresh_token")
+			if s.spent[rt] {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"error":"invalid_grant"}`))
+				return
+			}
+			s.spent[rt] = true
+			s.lastRefresh = rt
 		}
 		s.counter++
 		at := fmt.Sprintf("access-%d", s.counter)
@@ -234,7 +250,7 @@ func TestSignVerifyState(t *testing.T) {
 func TestTokenForRefreshAndRotate(t *testing.T) {
 	stub := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
 	store := NewMemStore()
-	store.Put("U1", &Link{Sub: "muster-sub", Email: "a@example.com", RefreshToken: "refresh-0"})
+	require.NoError(t, store.Put("U1", &Link{Sub: "muster-sub", Email: "a@example.com", RefreshToken: "refresh-0"}))
 	l := newTestLinker(t, stub, store, nil)
 
 	tok, err := l.TokenFor(context.Background(), "U1")
@@ -242,8 +258,8 @@ func TestTokenForRefreshAndRotate(t *testing.T) {
 	require.Equal(t, "muster-sub", jwtSub(t, tok), "forwards the dex id_token as subject")
 
 	// The stored refresh token was rotated to the value muster returned.
-	got, ok := store.Get("U1")
-	require.True(t, ok)
+	got, err := store.Get("U1")
+	require.NoError(t, err)
 	require.Equal(t, "refresh-1", got.RefreshToken)
 }
 
@@ -258,7 +274,7 @@ func TestTokenForBoundedOnHungRefresh(t *testing.T) {
 	stub.hangRefresh = true
 	stub.mu.Unlock()
 	store := NewMemStore()
-	store.Put("U1", &Link{Sub: "muster-sub", Email: "a@example.com", RefreshToken: "refresh-0"})
+	require.NoError(t, store.Put("U1", &Link{Sub: "muster-sub", Email: "a@example.com", RefreshToken: "refresh-0"}))
 	l, err := New(Config{
 		BaseURL:      stub.server.URL,
 		ClientID:     stub.clientID,
@@ -284,7 +300,7 @@ func TestTokenForBoundedOnHungRefresh(t *testing.T) {
 func TestTokenForForwardsDexIDTokenNotAccessToken(t *testing.T) {
 	stub := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
 	store := NewMemStore()
-	store.Put("U1", &Link{Sub: "muster-sub", Email: "a@example.com", RefreshToken: "refresh-0"})
+	require.NoError(t, store.Put("U1", &Link{Sub: "muster-sub", Email: "a@example.com", RefreshToken: "refresh-0"}))
 	l := newTestLinker(t, stub, store, nil)
 
 	tok, err := l.TokenFor(context.Background(), "U1")
@@ -296,8 +312,8 @@ func TestTokenForForwardsDexIDTokenNotAccessToken(t *testing.T) {
 	require.NotContains(t, tok, "access-", "must not forward the opaque access token")
 
 	// The cache holds the id_token, not the access token.
-	got, ok := store.Get("U1")
-	require.True(t, ok)
+	got, err := store.Get("U1")
+	require.NoError(t, err)
 	require.Equal(t, tok, got.IDToken)
 }
 
@@ -305,7 +321,7 @@ func TestTokenForMissingIDTokenErrors(t *testing.T) {
 	stub := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
 	stub.omitIDToken = true
 	store := NewMemStore()
-	store.Put("U1", &Link{Sub: "muster-sub", Email: "a@example.com", RefreshToken: "refresh-0"})
+	require.NoError(t, store.Put("U1", &Link{Sub: "muster-sub", Email: "a@example.com", RefreshToken: "refresh-0"}))
 	l := newTestLinker(t, stub, store, nil)
 
 	// Without an id_token there is nothing forwardable: TokenFor must error rather
@@ -317,8 +333,8 @@ func TestTokenForMissingIDTokenErrors(t *testing.T) {
 	// The refresh itself succeeded, so muster rotated the refresh token; the
 	// rotated value must be persisted or the next attempt spends a dead token
 	// and burns the link.
-	link, ok := store.Get("U1")
-	require.True(t, ok, "link must survive a missing id_token")
+	link, err := store.Get("U1")
+	require.NoError(t, err, "link must survive a missing id_token")
 	require.Equal(t, "refresh-1", link.RefreshToken)
 	require.Empty(t, link.IDToken)
 
@@ -332,7 +348,7 @@ func TestTokenForMissingIDTokenErrors(t *testing.T) {
 func TestTokenForReusesCachedToken(t *testing.T) {
 	stub := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
 	store := NewMemStore()
-	store.Put("U1", &Link{Sub: "muster-sub", Email: "a@example.com", RefreshToken: "refresh-0"})
+	require.NoError(t, store.Put("U1", &Link{Sub: "muster-sub", Email: "a@example.com", RefreshToken: "refresh-0"}))
 	l := newTestLinker(t, stub, store, nil)
 
 	tok1, err := l.TokenFor(context.Background(), "U1")
@@ -356,7 +372,7 @@ func TestTokenForRefreshesExpiredCachedToken(t *testing.T) {
 	stub := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
 	store := NewMemStore()
 	// A cached token already past expiry must be discarded and refreshed.
-	store.Put("U1", &Link{RefreshToken: "refresh-0", IDToken: "stale", Expiry: time.Now().Add(-time.Minute)})
+	require.NoError(t, store.Put("U1", &Link{RefreshToken: "refresh-0", IDToken: "stale", Expiry: time.Now().Add(-time.Minute)}))
 	l := newTestLinker(t, stub, store, nil)
 
 	tok, err := l.TokenFor(context.Background(), "U1")
@@ -376,22 +392,22 @@ func TestTokenForInvalidGrantDropsLink(t *testing.T) {
 	stub := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
 	stub.failRefresh = true
 	store := NewMemStore()
-	store.Put("U1", &Link{RefreshToken: "dead"})
+	require.NoError(t, store.Put("U1", &Link{RefreshToken: "dead"}))
 	l := newTestLinker(t, stub, store, nil)
 
 	// invalid_grant is terminal: the link is dropped and the error surfaces as
 	// ErrNotLinked so the caller prompts sign-in on this same turn.
 	_, err := l.TokenFor(context.Background(), "U1")
 	require.ErrorIs(t, err, ErrNotLinked)
-	_, ok := store.Get("U1")
-	require.False(t, ok, "a hard refresh failure must drop the stale link")
+	_, gerr := store.Get("U1")
+	require.ErrorIs(t, gerr, ErrNotLinked, "a hard refresh failure must drop the stale link")
 }
 
 func TestTokenForTransientRefreshErrorKeepsLink(t *testing.T) {
 	stub := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
 	stub.failRefresh5xx = true
 	store := NewMemStore()
-	store.Put("U1", &Link{RefreshToken: "refresh-0"})
+	require.NoError(t, store.Put("U1", &Link{RefreshToken: "refresh-0"}))
 	l := newTestLinker(t, stub, store, nil)
 
 	// A transient token-endpoint failure (5xx, no invalid_grant) is retryable:
@@ -399,8 +415,8 @@ func TestTokenForTransientRefreshErrorKeepsLink(t *testing.T) {
 	_, err := l.TokenFor(context.Background(), "U1")
 	require.Error(t, err)
 	require.NotErrorIs(t, err, ErrNotLinked)
-	got, ok := store.Get("U1")
-	require.True(t, ok, "a transient refresh failure must retain the link")
+	got, err := store.Get("U1")
+	require.NoError(t, err, "a transient refresh failure must retain the link")
 	require.Equal(t, "refresh-0", got.RefreshToken)
 }
 
@@ -412,8 +428,8 @@ func TestCallbackStoresLinkOnEmailMatch(t *testing.T) {
 	})
 
 	driveCallback(t, l, "U1", http.StatusSeeOther)
-	got, ok := store.Get("U1")
-	require.True(t, ok)
+	got, err := store.Get("U1")
+	require.NoError(t, err)
 	require.Equal(t, "alice@example.com", got.Email)
 	require.Equal(t, "muster-sub", got.Sub)
 	require.NotEmpty(t, got.RefreshToken)
@@ -522,8 +538,8 @@ func TestCallbackRejectsMissingIDToken(t *testing.T) {
 	// scope not granted) must fail the sign-in outright: a stored link without
 	// an id_token would error on every subsequent turn.
 	driveCallback(t, l, "U1", http.StatusBadGateway)
-	_, ok := store.Get("U1")
-	require.False(t, ok, "a link without an id_token must not be stored")
+	_, gerr := store.Get("U1")
+	require.ErrorIs(t, gerr, ErrNotLinked, "a link without an id_token must not be stored")
 }
 
 func TestExchangeMissingIDTokenErrors(t *testing.T) {
@@ -544,8 +560,8 @@ func TestCallbackRejectsEmailMismatch(t *testing.T) {
 	})
 
 	driveCallback(t, l, "U1", http.StatusForbidden)
-	_, ok := store.Get("U1")
-	require.False(t, ok, "a spoofed email must not create a link")
+	_, gerr := store.Get("U1")
+	require.ErrorIs(t, gerr, ErrNotLinked, "a spoofed email must not create a link")
 }
 
 // driveCallback runs HandleLink (to seed PKCE pending state) then HandleCallback
@@ -573,7 +589,7 @@ func TestLinkedIdentity(t *testing.T) {
 	_, _, ok := l.LinkedIdentity("U1")
 	require.False(t, ok, "unlinked user has no identity")
 
-	store.Put("U1", &Link{Sub: "muster-sub", Email: "a@example.com", RefreshToken: "rt"})
+	require.NoError(t, store.Put("U1", &Link{Sub: "muster-sub", Email: "a@example.com", RefreshToken: "rt"}))
 	sub, email, ok := l.LinkedIdentity("U1")
 	require.True(t, ok)
 	require.Equal(t, "muster-sub", sub)

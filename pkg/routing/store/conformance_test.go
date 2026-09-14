@@ -2,9 +2,11 @@ package store_test
 
 import (
 	"context"
+	"os"
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/stretchr/testify/require"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -17,6 +19,7 @@ import (
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store/configmap"
 	crdstore "github.com/giantswarm/klaus-gateway/pkg/routing/store/crd"
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store/memory"
+	valkeystore "github.com/giantswarm/klaus-gateway/pkg/routing/store/valkey"
 )
 
 const channelWeb = "web"
@@ -160,6 +163,49 @@ func TestCRDStore_Conformance(t *testing.T) {
 			Build()
 		s := crdstore.New(fakeClient, "default")
 		t.Cleanup(func() { _ = s.Close() })
+		return s
+	})
+}
+
+// The Valkey store is exercised against a server speaking the real protocol
+// over TCP (miniredis), not a fake client: a fake validates nothing, which is
+// how the ConfigMap store shipped with a data key the API server rejects.
+func TestValkeyStore_Conformance(t *testing.T) {
+	runConformance(t, func(t *testing.T) store.Store {
+		m := miniredis.RunT(t)
+		s, err := valkeystore.New(valkeystore.Options{URL: m.Addr(), Timeout: time.Second})
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = s.Close() })
+		return s
+	})
+}
+
+// TestValkeyStore_ConformanceReal runs the same contract against a real Valkey
+// named by KLAUS_GATEWAY_TEST_VALKEY_URL (host:port; password in
+// KLAUS_GATEWAY_TEST_VALKEY_PASSWORD), for the cases where miniredis and the
+// server diverge. Every run uses its own key prefix and cleans up after itself.
+func TestValkeyStore_ConformanceReal(t *testing.T) {
+	url := os.Getenv("KLAUS_GATEWAY_TEST_VALKEY_URL")
+	if url == "" {
+		t.Skip("KLAUS_GATEWAY_TEST_VALKEY_URL not set")
+	}
+	runConformance(t, func(t *testing.T) store.Store {
+		s, err := valkeystore.New(valkeystore.Options{
+			URL:       url,
+			Password:  os.Getenv("KLAUS_GATEWAY_TEST_VALKEY_PASSWORD"),
+			KeyPrefix: "klaus-gateway-test:" + t.Name() + ":" + time.Now().Format("150405.000") + ":",
+			Timeout:   2 * time.Second,
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() {
+			ctx := context.Background()
+			entries, err := s.List(ctx)
+			require.NoError(t, err)
+			for _, ke := range entries {
+				require.NoError(t, s.Delete(ctx, ke.Key))
+			}
+			_ = s.Close()
+		})
 		return s
 	})
 }

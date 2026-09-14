@@ -47,6 +47,15 @@ Channel and routing gateway in front of klaus instances; uses agentgateway as th
 | routing.boltPath | string | `"/var/lib/klaus-gateway/routes.bolt"` |  |
 | routing.defaultTTL | string | `"24h"` |  |
 | routing.autoCreate | bool | `false` |  |
+| routing.valkey.url | string | `""` |  |
+| routing.valkey.username | string | `""` |  |
+| routing.valkey.existingSecret | string | `""` |  |
+| routing.valkey.passwordKey | string | `"valkey-password"` |  |
+| routing.valkey.db | int | `0` |  |
+| routing.valkey.tls.enabled | bool | `false` |  |
+| routing.valkey.tls.serverName | string | `""` |  |
+| routing.valkey.keyPrefix | string | `""` |  |
+| routing.valkey.timeout | string | `"2s"` |  |
 | crd.install | bool | `true` |  |
 | controller.enabled | bool | `false` |  |
 | lifecycle.driver | string | `"operator"` |  |
@@ -60,6 +69,7 @@ Channel and routing gateway in front of klaus instances; uses agentgateway as th
 | podAnnotations | object | `{}` | Annotations on the pod template (merged over the chart's own). The agent platform sets `karpenter.sh/do-not-disrupt: "true"` here so Karpenter's consolidation works around the pod that holds the channel connections and the in-flight A2A streams instead of evicting it. |
 | podLabels | object | `{}` | Labels on the pod template. |
 | podDisruptionBudget | object | `{"enabled":false,"maxUnavailable":null,"minAvailable":1,"unhealthyPodEvictionPolicy":""}` | PodDisruptionBudget on the gateway pods. Off by default: with `replicaCount: 1` a `minAvailable: 1` budget refuses every voluntary eviction (node drains wait for the drain timeout), which is the intended guard for a single replica that carries live Slack/CLI/web turns, but a deliberate choice. Set exactly one of `minAvailable` / `maxUnavailable` (int or percentage); `unhealthyPodEvictionPolicy: AlwaysAllow` lets a pod that is not Ready be evicted regardless, so a crash-looping gateway never wedges a drain. |
+| terminationGracePeriodSeconds | int | `45` | Seconds the kubelet gives the pod to stop before it is killed. The shutdown drains the HTTP servers (up to 15 s), then stops the channel adapters (up to 15 s more), which is when a Slack turn cut short posts its restart notice and clears its progress reaction; the rest is margin for the client and store closes. Lower than the drain plus the stop and a turn interrupted by a restart ends in silence. |
 | podSecurityContext.seccompProfile.type | string | `"RuntimeDefault"` |  |
 | securityContext.allowPrivilegeEscalation | bool | `false` |  |
 | securityContext.readOnlyRootFilesystem | bool | `true` |  |
@@ -132,6 +142,8 @@ Channel and routing gateway in front of klaus instances; uses agentgateway as th
 | obo.enabled | bool | `false` |  |
 | obo.musterUrl | string | `""` |  |
 | obo.callbackBaseUrl | string | `""` |  |
+| obo.store | string | `"bolt"` |  |
+| obo.storeSecretName | string | `""` |  |
 | obo.storePath | string | `""` |  |
 | obo.persistence.enabled | bool | `false` |  |
 | obo.persistence.size | string | `"64Mi"` |  |

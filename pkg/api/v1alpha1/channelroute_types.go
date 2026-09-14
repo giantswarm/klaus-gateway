@@ -26,6 +26,12 @@ type ChannelRouteSpec struct {
 	// AgentInstanceID is the kagent AgentInstance the conversation's A2A turns
 	// are routed to. Empty for a Klaus conversation.
 	AgentInstanceID string `json:"agentInstanceID,omitempty"`
+	// TaskID is the A2A task in flight on AgentInstanceID, cleared when the
+	// turn ends; a restarted gateway resubscribes to it.
+	TaskID string `json:"taskID,omitempty"`
+	// Resume is the channel-private data needed to deliver TaskID's result
+	// after a restart.
+	Resume map[string]string `json:"resume,omitempty"`
 	// CreatedAt is when the route was first written.
 	CreatedAt metav1.Time `json:"createdAt"`
 	// LastSeen is refreshed on every message routed through this entry.

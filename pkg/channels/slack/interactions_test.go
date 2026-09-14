@@ -239,7 +239,7 @@ func (o linkedOBO) TokenFor(_ context.Context, slackUserID string) (string, erro
 	return "", musterlink.ErrNotLinked
 }
 func (o linkedOBO) LinkURL(string) string { return "https://gw.example.com/link" }
-func (o linkedOBO) Unlink(string)         {}
+func (o linkedOBO) Unlink(string) error   { return nil }
 
 // newDecisionAdapter builds an adapter whose Slack API accepts every call,
 // recording request paths, with a pending task seeded on thread T001.
@@ -317,7 +317,7 @@ func (o multiUserOBO) TokenFor(_ context.Context, slackUserID string) (string, e
 	return "", musterlink.ErrNotLinked
 }
 func (multiUserOBO) LinkURL(string) string { return "https://gw.example.com/link" }
-func (multiUserOBO) Unlink(string)         {}
+func (multiUserOBO) Unlink(string) error   { return nil }
 
 // A granted collaborator's button decision resumes the shared session under the
 // thread initiator's token, not the clicker's, with the clicker attached as
@@ -586,7 +586,7 @@ func (o *decisionOBO) LinkURL(slackUserID string) string {
 	return "https://gw.example.com/auth/slack/link?u=signed-" + slackUserID
 }
 
-func (o *decisionOBO) Unlink(string) {}
+func (o *decisionOBO) Unlink(string) error { return nil }
 
 // ixSink records the Slack Web API calls the interactions path makes.
 type ixSink struct {
@@ -600,18 +600,6 @@ func (s *ixSink) counts() (posts, updates, ephemeral int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.posts), len(s.updates), len(s.ephemeral)
-}
-
-func (s *ixSink) postTexts() []string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make([]string, 0, len(s.posts))
-	for _, p := range s.posts {
-		if t, ok := p["text"].(string); ok {
-			out = append(out, t)
-		}
-	}
-	return out
 }
 
 func (s *ixSink) updateTexts() []string {
@@ -719,15 +707,15 @@ func TestHandleDecision_OBO_TokenMintFailurePreservesTask(t *testing.T) {
 
 	serveInteraction(t, a, secret, "hitl_approve", "T001", "C001", "MSG001", "U_OTHER")
 
-	// The sign-in prompt (a real in-thread message) is the terminal action on
-	// the failure path.
+	// The sign-in prompt (ephemeral to the clicker, anchored by a thread
+	// notice) is the terminal action on the failure path.
 	require.Eventually(t, func() bool {
-		return strings.Contains(strings.Join(sink.postTexts(), "\n"), "Sign in so I can act as you")
+		return strings.Contains(strings.Join(sink.ephemeralTexts(), "\n"), signInPromptText)
 	}, 10*time.Second, 10*time.Millisecond, "token-mint failure must drive a sign-in prompt")
 
 	posts, updates, _ := sink.counts()
 	require.Zero(t, updates, "buttons must not be rewritten on token-mint failure")
-	require.Equal(t, 1, posts, "the sign-in prompt must be the only message posted (no resume placeholder)")
+	require.Equal(t, 1, posts, "the thread notice must be the only message posted (no resume placeholder)")
 	require.True(t, a.hasPendingTask("T001"), "pending task must be preserved for retry")
 	require.Zero(t, gw.sendCount(), "the paused task must not be resumed on token-mint failure")
 }
