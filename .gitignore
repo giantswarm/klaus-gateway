@@ -4,5 +4,11 @@
 # graphify knowledge graph (regenerable, rebuilt by the post-commit hook)
 graphify-out/
 
-# local builds
-/klaus-gateway-linux-amd64
+# Binaries the devctl Makefile and the architect go-build job write next to the
+# sources, and the CI scratch files (.ldflags from go-test, .platforms from
+# go-build). Untracked they flip Go's VCS stamp to vcs.modified=true and
+# pkg/project's build-info fallback reports vX.Y.Z+dirty.
+/klaus-gateway
+/klaus-gateway-*
+.ldflags
+.platforms
