@@ -199,7 +199,7 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *slashCommand, slackUse
 			return true
 		}
 		if a.stopThread(threadID) {
-			reply("⏹ Stopped.")
+			reply(stopStoppedNotice)
 			return true
 		}
 		// A thread paused on input-required has no in-flight turn to cancel; the

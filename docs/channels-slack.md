@@ -54,6 +54,16 @@ agent messaging disabled for the workspace — drop the native indicator for the
 rest of the process lifetime and keep the message ticker. A `not_authorized`
 rejection (the bot is not a member of that one channel) only costs that call.
 
+The indicator also carries Slack's **native stop button**, but only for an app
+subscribed to the `agent_session_stopped` bot event — the subscription is what
+draws the button, so an existing Slack app must have it added by hand (Event
+Subscriptions → Subscribe to bot events) before users see it. Pressing it is
+equivalent to `/stop`: the adapter cancels the thread's in-flight turn and
+confirms with `⏹ Stopped.` in the thread. Slack does not move the session out
+of `processing` by itself, so a press that finds nothing running (a stranded
+indicator, or one racing the turn's last exit) sets `active` directly instead
+of posting anything.
+
 ### Threads and sessions
 
 - `threadID` is `thread_ts` if set, otherwise the message `ts`.

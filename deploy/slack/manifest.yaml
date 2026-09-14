@@ -102,6 +102,10 @@ settings:
       # app_context_changed reports the user's active context.
       - app_home_opened
       - app_context_changed
+      # Fires when a user presses the stop button on the native working
+      # indicator. Slack only draws that button for apps subscribed here, so
+      # this subscription is what gives users the stop button at all.
+      - agent_session_stopped
   interactivity:
     is_enabled: true
     # Interactions request URL. Replace with your public hostname.

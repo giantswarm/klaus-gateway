@@ -1369,6 +1369,57 @@ func (a *Adapter) handleContextChanged(inner slackInnerEvent) {
 	a.Logger.Debug("slack: assistant context changed", "entity_type", entity.Type, "entity", entity.Value)
 }
 
+// handleSessionStopped reacts to the user pressing the stop button Slack
+// renders on the native working indicator. It is the /stop command by another
+// route, so it takes the same path: cancel the thread's in-flight turn and
+// confirm the interruption in the thread.
+//
+// Slack never moves the session out of processing on its own. A click that
+// cancels a turn gets the idle status from that turn's own exit path, but a
+// click that finds nothing running (a stale indicator, a click racing the
+// turn's last exit) has no exit path left to ride, so it sends the idle status
+// here — otherwise the indicator spins on for up to an hour.
+//
+// Stale-event dropping deliberately does not apply: a click older than this
+// process is exactly the stranded indicator this handler exists to clear.
+func (a *Adapter) handleSessionStopped(ctx context.Context, inner slackInnerEvent) {
+	if inner.Channel == "" || inner.ThreadTS == "" {
+		a.Logger.Debug("slack: agent session stopped without a channel and thread",
+			"channel", inner.Channel, "thread", inner.ThreadTS)
+		return
+	}
+	if !a.stopThread(inner.ThreadTS) {
+		a.Logger.Debug("slack: stop button pressed with nothing running, clearing the indicator",
+			"channel", inner.Channel, "thread", inner.ThreadTS, "user", inner.User)
+		a.setSessionStatus(ctx, inner.Channel, inner.ThreadTS, sessionActive)
+		return
+	}
+	if _, err := a.apiClient().postMessage(ctx, inner.Channel, stopStoppedNotice, inner.ThreadTS); err != nil {
+		a.Logger.Warn("slack: post stop-button notice failed", "error", err)
+	}
+}
+
+// setSessionStatus drives a thread's agent session status from outside a turn,
+// where there is no batchedWriter to own it. Same best-effort contract as the
+// writer's: detached from the caller's context, and only an unsupported-class
+// rejection latches the process-wide downgrade.
+func (a *Adapter) setSessionStatus(ctx context.Context, channel, threadTS string, status sessionStatus) {
+	if a.sessionStatusUnsupported.Load() {
+		return
+	}
+	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), sessionStatusTimeout)
+	defer cancel()
+	err := a.apiClient().setSessionStatus(cctx, channel, threadTS, status)
+	switch {
+	case err == nil:
+	case errors.Is(err, errSessionStatusUnsupported):
+		a.sessionStatusUnsupported.Store(true)
+		a.Logger.Warn("slack: agent session status unavailable, dropping the native working indicator", "error", err)
+	default:
+		a.Logger.Warn("slack: set agent session status failed", "status", string(status), "error", err)
+	}
+}
+
 // handleInbound runs the shared inbound pipeline for one Slack event:
 // dedup, member-join intro, accept-gate, normalise, active-thread gate (for
 // channel thread replies), command handling, then dispatch. Both transports
@@ -1390,6 +1441,9 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 		return
 	case evtAppContextChanged:
 		a.handleContextChanged(inner)
+		return
+	case evtAgentSessionStopped:
+		a.handleSessionStopped(ctx, inner)
 		return
 	}
 	a.Logger.Debug("slack: inbound event", "type", inner.Type, "channel", inner.Channel,
@@ -2247,6 +2301,10 @@ type slackInnerEvent struct {
 	// Context carries an app_context_changed event's entity list. Slack sends
 	// an empty object when the new context has no entities.
 	Context *slackEventContext `json:"context,omitempty"`
+	// StreamingMessageTS lists the chat.startStream streams Slack halted on an
+	// agent_session_stopped click. Decoded and ignored: this adapter posts with
+	// chat.postMessage, so it never has a stream of its own to close.
+	StreamingMessageTS []string `json:"streaming_message_ts,omitempty"`
 }
 
 // slackFile is one entry in a message event's files array.

@@ -16,6 +16,10 @@ const (
 	evtMemberJoined      = "member_joined_channel"
 	evtAppHomeOpened     = "app_home_opened"
 	evtAppContextChanged = "app_context_changed"
+	// evtAgentSessionStopped is the user clicking the stop button Slack renders
+	// on the native working indicator. Slack only offers that button to apps
+	// subscribed to this event, so the subscription is what creates the button.
+	evtAgentSessionStopped = "agent_session_stopped"
 )
 
 // tabMessages is the app_home_opened tab value for the assistant Messages tab;
@@ -210,6 +214,10 @@ const parkedDropNoticeTTL = time.Hour
 // stopNothingRunningNotice replies to a /stop in a thread with no in-flight
 // turn and no pending prompt, instead of falsely confirming a stop.
 const stopNothingRunningNotice = "_Nothing is running in this thread._"
+
+// stopStoppedNotice confirms an interrupted turn. Shared by /stop and the
+// native stop button so an interruption reads the same however it was asked for.
+const stopStoppedNotice = "⏹ Stopped."
 
 // signInLinkExpiredNote replaces a sign-in prompt whose link outlived its
 // state TTL once a fresh prompt is posted, so the dead button cannot be

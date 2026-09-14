@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Slack: the working indicator now carries Slack's native stop button. Pressing it interrupts the running turn and confirms with `⏹ Stopped.` in the thread, exactly like `/stop`; a press with nothing left to stop clears the indicator instead of spinning on. The app must subscribe to the `agent_session_stopped` bot event — that subscription is what draws the button — which `deploy/slack/manifest.yaml` now does; an already-created app needs it added by hand under Event Subscriptions.
 - Chart: `podAnnotations` (merged onto the pod template) and a `podDisruptionBudget` knob (`enabled`, exactly one of `minAvailable` / `maxUnavailable`, optional `unhealthyPodEvictionPolicy`; off by default). The agent platform uses them to keep Karpenter's consolidation away from the pod that carries live channel turns (`karpenter.sh/do-not-disrupt`) and to refuse voluntary evictions of the single replica (giantswarm/agent-platform#431).
 
 ### Changed
