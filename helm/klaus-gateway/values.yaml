@@ -444,8 +444,11 @@ global:  # @schema additionalProperties: true
   podSecurityStandards:
     enforced: false
 
-nodeSelector: {}
+# Scheduling of the gateway pod. Free-form maps: the generated values schema
+# takes any node label / any affinity term (without the annotation it refused
+# every key — `additional properties 'karpenter.sh/capacity-type' not allowed`).
+nodeSelector: {}  # @schema additionalProperties: true
 
 tolerations: []
 
-affinity: {}
+affinity: {}  # @schema additionalProperties: true
