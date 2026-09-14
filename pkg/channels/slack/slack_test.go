@@ -1851,3 +1851,35 @@ func TestUsage_InThreadStillWorks(t *testing.T) {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Last turn — in 7 · out 3 · total 10")
 	}, 2*time.Second, 20*time.Millisecond)
 }
+
+// Slack refusing the reply's rendering does not fail a turn the agent
+// completed: the thread gets the failed reaction and a note that the reply is
+// incomplete, not the generic failure note, and the dispatch succeeds — so the
+// completed task is not cancelled server-side (klaus-gateway#242).
+func TestTurn_RenderFailureAfterCompletionIsNotAFailedTurn(t *testing.T) {
+	fake := newFakeSlackAPI()
+	// Every rendering of the reply is refused; other posts (the note) land.
+	fake.failIf = func(path string, params map[string]any) string {
+		if path == "chat.update" || (path == "chat.postMessage" && strings.Contains(fmt.Sprint(params["blocks"]), "half of the answer")) {
+			return "msg_too_long"
+		}
+		return ""
+	}
+	gw := &stubGateway{
+		deltas: []channels.OutboundDelta{
+			{Kind: channels.DeltaText, Content: "first half of the answer"},
+			{Kind: channels.DeltaText, Content: ", second half of the answer"},
+			{Done: true},
+		},
+		interDeltaDelay: 400 * time.Millisecond,
+	}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+
+	sendEvent(t, srv, dmEvent("U1", "how many nodes?", "555.000"))
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Slack refused the rest of the reply: msg_too_long")
+	}, 10*time.Second, 20*time.Millisecond, "the thread is told the reply is incomplete")
+
+	require.Equal(t, []string{"eyes", "x"}, fake.reactionNames("reactions.add"), "the failed reaction marks the incomplete reply")
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "turn failed", "a completed turn is not reported as failed")
+}

@@ -246,7 +246,14 @@ any string that begins with `Slack bot`, `Slack app-level`, or `Slack user`.
    `reactions:write` is unavailable, a `_thinking…_` placeholder message is posted instead.
 8. Completion deltas are batched into a Block Kit `markdown` block and written back via
    `chat.update` (or an initial `chat.postMessage`) as the response accumulates. Replies over
-   12,000 characters roll over into follow-up in-thread messages on code-fence boundaries.
+   12,000 characters roll over into follow-up in-thread messages on code-fence boundaries; the
+   message's notification fallback text is cut to Slack's 4,000-character limit for that field.
+   Each streamed text run is rendered once — the A2A artifact update's append/replace semantics
+   are honoured, so the Go ADK's re-send of a finished run does not duplicate it — and runs
+   separated by tool calls are separated by a paragraph. A Slack refusal while rendering never
+   fails the turn: flushes keep retrying until the agent finishes, a message refused as too long
+   is re-split smaller, and only a final flush that still fails is reported in the thread (the
+   reply is incomplete, with the failed reaction) while the turn still counts as completed.
 
 Turns are serialized per thread: a message that arrives while the thread's previous turn is
 still running gets a brief "still working" notice rather than starting an overlapping turn.

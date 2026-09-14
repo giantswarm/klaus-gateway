@@ -726,3 +726,97 @@ func TestFacade_ListAgents(t *testing.T) {
 	_, err = (&channels.Facade{}).ListAgents(t.Context())
 	require.Error(t, err)
 }
+
+// The Go ADK's wire shape for two text runs around a tool call: every run is
+// streamed as appended artifact chunks and then re-sent whole on the same
+// artifact (klaus-gateway#242). Each run reaches the channel once, the runs
+// are separated by a paragraph, and the tool activity is unaffected.
+func TestFacade_SendCompletionViaA2A_StreamedRunsRenderOnce(t *testing.T) {
+	const (
+		run1a, run1b = "I'll look for the right tools. ", "Let me first discover what's available."
+		run2         = "7 nodes, all Ready, v1.35.8 on every node."
+	)
+	stream := func(id a2apkg.ArtifactID, first bool, text string) a2apkg.Event {
+		if first {
+			ev := a2apkg.NewArtifactEvent(taskInfo, a2apkg.NewTextPart(text))
+			ev.Artifact.ID = id
+			return ev
+		}
+		return a2apkg.NewArtifactUpdateEvent(taskInfo, id, a2apkg.NewTextPart(text))
+	}
+	finished := func(id a2apkg.ArtifactID, parts ...*a2apkg.Part) a2apkg.Event {
+		ev := a2apkg.NewArtifactUpdateEvent(taskInfo, id, parts...)
+		ev.Append, ev.LastChunk = false, true
+		return ev
+	}
+	toolArtifact := func(part *a2apkg.Part) a2apkg.Event {
+		ev := a2apkg.NewArtifactEvent(taskInfo, part)
+		ev.LastChunk = true
+		return ev
+	}
+
+	agent := newFakeAgent(
+		&a2apkg.Task{ID: taskInfo.TaskID, ContextID: taskInfo.ContextID, Status: a2apkg.TaskStatus{State: a2apkg.TaskStateSubmitted}},
+		a2apkg.NewStatusUpdateEvent(taskInfo, a2apkg.TaskStateWorking, nil),
+		stream("run-1", true, run1a),
+		stream("run-1", false, run1b),
+		finished("run-1", a2apkg.NewTextPart(run1a+run1b), kagentPart("function_call", "x_kubernetes_cluster_health", "c1")),
+		toolArtifact(kagentPart("function_response", "x_kubernetes_cluster_health", "c1")),
+		stream("run-2", true, run2),
+		finished("run-2", a2apkg.NewTextPart(run2)),
+		a2apkg.NewStatusUpdateEvent(taskInfo, a2apkg.TaskStateCompleted, nil),
+	)
+	f, _ := newA2AFacade(agent)
+
+	ch, err := f.SendCompletion(t.Context(), channels.InstanceRef{}, slackMsg("how many nodes?"))
+	require.NoError(t, err)
+
+	var text strings.Builder
+	var tools int
+	var done bool
+	for _, d := range drain(t, ch) {
+		require.NoError(t, d.Err)
+		switch {
+		case d.Done:
+			done = true
+		case d.Kind == channels.DeltaToolActivity:
+			tools++
+		case d.Kind == channels.DeltaText:
+			text.WriteString(d.Content)
+		}
+	}
+	require.True(t, done)
+	require.Equal(t, run1a+run1b+"\n\n"+run2, text.String(), "each run once, runs separated by a paragraph")
+	require.Equal(t, 2, tools)
+	require.Empty(t, agent.canceled, "a completed turn is never cancelled")
+}
+
+// A channel that stops listening after the task already completed must not
+// have the task cancelled: the agent is done, and a cancel would record the
+// finished turn as canceled (klaus-gateway#242). The channel's buffer is
+// filled so the completed event is seen by the producer while the channel is
+// already gone.
+func TestFacade_CompletedTurnIsNotCancelledWhenTheChannelLeavesLate(t *testing.T) {
+	events := []a2apkg.Event{
+		&a2apkg.Task{ID: taskInfo.TaskID, ContextID: taskInfo.ContextID, Status: a2apkg.TaskStatus{State: a2apkg.TaskStateSubmitted}},
+	}
+	// Exactly as many text deltas as the channel buffers, so the producer sees
+	// the completed event and blocks on delivering it.
+	for i := range 16 {
+		events = append(events, a2apkg.NewArtifactEvent(taskInfo, a2apkg.NewTextPart(fmt.Sprintf("chunk %d ", i))))
+	}
+	events = append(events, a2apkg.NewStatusUpdateEvent(taskInfo, a2apkg.TaskStateCompleted, nil))
+	agent := newFakeAgent(events...)
+	f, _ := newA2AFacade(agent)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	ch, err := f.SendCompletion(ctx, channels.InstanceRef{}, slackMsg("long answer"))
+	require.NoError(t, err)
+	// Nothing is read: the producer fills the channel's buffer, then blocks on
+	// the completed event until the channel goes away.
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	drain(t, ch)
+
+	require.Empty(t, agent.canceled, "the task had completed before the channel left")
+}
