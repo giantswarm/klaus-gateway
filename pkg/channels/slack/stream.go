@@ -557,6 +557,15 @@ func renderToolTicker(steps int, current string) string {
 // sessionStatusTimeout bounds one detached agent-session status call.
 const sessionStatusTimeout = 10 * time.Second
 
+// sessionStatusIdleAttempts and sessionStatusRetryBackoff bound the retries of
+// the idle call on a transport failure: a session left in processing keeps
+// spinning for up to an hour and nothing but the next turn would repair it, so
+// the exit is worth a couple more tries (1s, then 2s apart).
+const (
+	sessionStatusIdleAttempts = 3
+	sessionStatusRetryBackoff = time.Second
+)
+
 // setSessionStatus drives the thread's agent session state, which is what
 // Slack renders as the native working indicator — in channel threads as well
 // as in DMs. It is best-effort and always detached from the turn context: the
@@ -565,15 +574,25 @@ const sessionStatusTimeout = 10 * time.Second
 //
 // Only an unsupported-class rejection latches the process-wide downgrade — it
 // means this install can never set the status, which no retry fixes within
-// this process. Everything else (the bot not being a member of THIS channel, a
-// transient error) costs one indicator and is retried by the next turn.
+// this process. A Slack-side rejection of THIS call (the bot not being a
+// member of the channel) costs one indicator and is retried by the next turn.
+// A transport failure on the idle call is retried a few times here, because
+// the working indicator does not clear itself.
 func (w *batchedWriter) setSessionStatus(ctx context.Context, status sessionStatus) {
 	if w.adapter == nil || w.adapter.sessionStatusUnsupported.Load() {
 		return
 	}
-	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), sessionStatusTimeout)
-	defer cancel()
-	err := w.client.setSessionStatus(cctx, w.channel, w.threadTS, status)
+	base := context.WithoutCancel(ctx)
+	var err error
+	for attempt := 1; ; attempt++ {
+		cctx, cancel := context.WithTimeout(base, sessionStatusTimeout)
+		err = w.client.setSessionStatus(cctx, w.channel, w.threadTS, status)
+		cancel()
+		if status != sessionActive || attempt >= sessionStatusIdleAttempts || !errors.Is(err, errSessionStatusTransient) {
+			break
+		}
+		time.Sleep(sessionStatusRetryBackoff * time.Duration(attempt))
+	}
 	switch {
 	case err == nil:
 	case errors.Is(err, errSessionStatusUnsupported):
@@ -1885,6 +1904,11 @@ const (
 // channel, which tells us nothing about the next one.
 var errSessionStatusUnsupported = errors.New("slack: agent session status unsupported")
 
+// errSessionStatusTransient marks a status call that never got a Slack API
+// verdict (network error, timeout, non-2xx, rate-limit budget exhausted). It is
+// the only class the idle call retries: a Slack-side rejection would repeat.
+var errSessionStatusTransient = errors.New("slack: agent session status transport failure")
+
 // sessionStatusResponse is the agents.sessions.setStatus reply. The warning
 // fields are decoded rather than dropped: until the app subscribes to
 // agent_session_stopped Slack answers an otherwise successful call with a
@@ -1919,7 +1943,7 @@ func (c *slackAPIClient) setSessionStatus(ctx context.Context, channelID, thread
 	}
 	body, err := c.call(ctx, methodSetSessionStatus, "application/json; charset=utf-8", string(payload))
 	if err != nil {
-		return sessionStatusErr(err)
+		return fmt.Errorf("%w: %w", errSessionStatusTransient, err)
 	}
 	var result sessionStatusResponse
 	if err := json.Unmarshal(body, &result); err != nil {

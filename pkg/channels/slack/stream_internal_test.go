@@ -1077,6 +1077,10 @@ type fakeThread struct {
 	// failStatus, when set, makes agents.sessions.setStatus respond with
 	// this Slack error instead of ok.
 	failStatus string
+	// failIdleHTTP makes that many idle (active) agents.sessions.setStatus
+	// calls answer HTTP 500 (a transport failure, no Slack verdict) before
+	// succeeding.
+	failIdleHTTP int
 }
 
 func (f *fakeThread) handler() http.HandlerFunc {
@@ -1092,6 +1096,7 @@ func (f *fakeThread) handler() http.HandlerFunc {
 		texts := blockTexts(body.Blocks)
 		ts := body.TS
 		statusErr := ""
+		statusHTTP := 0
 		f.mu.Lock()
 		if f.messages == nil {
 			f.messages = map[string]capturedMessage{}
@@ -1113,8 +1118,16 @@ func (f *fakeThread) handler() http.HandlerFunc {
 		case "agents.sessions.setStatus":
 			f.statusCalls = append(f.statusCalls, statusCall{channelID: body.ChannelID, threadTS: body.ThreadTS, status: body.Status})
 			statusErr = f.failStatus
+			if body.Status == string(sessionActive) && f.failIdleHTTP > 0 {
+				f.failIdleHTTP--
+				statusHTTP = http.StatusInternalServerError
+			}
 		}
 		f.mu.Unlock()
+		if statusHTTP != 0 {
+			w.WriteHeader(statusHTTP)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		if statusErr != "" {
 			_, _ = fmt.Fprintf(w, `{"ok":false,"error":%q}`, statusErr)
@@ -2156,6 +2169,22 @@ func TestSessionStatus_NotAuthorizedDoesNotLatch(t *testing.T) {
 
 	require.False(t, w.adapter.sessionStatusUnsupported.Load())
 	require.Equal(t, []string{"processing", "active"}, ft.statuses())
+}
+
+// A transport failure on the idle call is retried: the indicator does not
+// clear itself, so one HTTP 500 must not leave the thread spinning. Only the
+// idle call retries; a Slack-side rejection (not_authorized above) is not
+// retried because it would repeat.
+func TestSessionStatus_ActiveRetriesTransportFailure(t *testing.T) {
+	ft := &fakeThread{failIdleHTTP: 1}
+	_, w, err := runSurfaceWriter(t, ft, "C1",
+		channels.OutboundDelta{Kind: channels.DeltaText, Content: "done"},
+		doneDelta(),
+	)
+	require.NoError(t, err)
+
+	require.False(t, w.adapter.sessionStatusUnsupported.Load())
+	require.Equal(t, []string{"processing", "active", "active"}, ft.statuses(), "the first active hit a 500 and was retried")
 }
 
 // setSessionStatus maps the unsupported-class rejections to
