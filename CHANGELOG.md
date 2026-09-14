@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The OBO link store can live in a Kubernetes Secret instead of a bolt file on a ReadWriteOnce volume (`obo.store: secret`, `--obo-store=secret`): one entry per linked Slack user, sealed with `store-key` as before, written with `resourceVersion` optimistic concurrency so a second replica can share it. The chart renders the Secret (`<release>-obo-links`, `helm.sh/resource-policy: keep`) and a Role/RoleBinding granting the ServiceAccount `get`/`update`/`patch` on exactly that Secret, mounts no volume and drops the `Recreate` strategy once `obo.persistence` is off, so a pod that dies with its node is replaced on any node within seconds instead of waiting four minutes on a `Multi-Attach` error. On the first start with the Secret backend an existing bolt file (`obo.storePath`, mounted read-only) is imported without a sign-in for anyone; the file is left untouched and only counts are logged. `UPGRADE.md` describes the two-step switch (klaus-gateway#245).
 - Chart: `podAnnotations` (merged onto the pod template) and a `podDisruptionBudget` knob (`enabled`, exactly one of `minAvailable` / `maxUnavailable`, optional `unhealthyPodEvictionPolicy`; off by default). The agent platform uses them to keep Karpenter's consolidation away from the pod that carries live channel turns (`karpenter.sh/do-not-disrupt`) and to refuse voluntary evictions of the single replica (giantswarm/agent-platform#431).
 
 ### Changed

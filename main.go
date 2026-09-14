@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/go-chi/chi/v5"
@@ -432,20 +433,9 @@ func buildOBOLinker(cfg config.OBOConfig, logger *slog.Logger,
 		return nil, nil, fmt.Errorf("read obo state key: %w", err)
 	}
 
-	var store musterlink.Store
-	cleanup := func() error { return nil }
-	if cfg.StorePath != "" {
-		key, err := os.ReadFile(cfg.StoreKeyFile)
-		if err != nil {
-			return nil, nil, fmt.Errorf("read obo store key: %w", err)
-		}
-		bs, err := musterlink.OpenBoltStore(cfg.StorePath, key, logger)
-		if err != nil {
-			return nil, nil, err
-		}
-		store, cleanup = bs, bs.Close
-	} else {
-		store = musterlink.NewMemStore()
+	store, cleanup, err := buildOBOStore(cfg, logger)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	linker, err := musterlink.New(musterlink.Config{
@@ -464,6 +454,93 @@ func buildOBOLinker(cfg config.OBOConfig, logger *slog.Logger,
 		return nil, nil, err
 	}
 	return linker, cleanup, nil
+}
+
+// buildOBOStore opens the link store cfg selects (see config.OBOConfig.Store)
+// and returns it with its close func. The Secret backend is checked once here
+// so a missing Secret or Role fails the start instead of leaving every user
+// unlinked; when a bolt file is configured next to it, its links are imported
+// first (the file is read, never written) so nobody signs in again after the
+// move off the volume.
+func buildOBOStore(cfg config.OBOConfig, logger *slog.Logger) (musterlink.Store, func() error, error) {
+	noop := func() error { return nil }
+	switch backend := cfg.ResolvedStore(); backend {
+	case config.OBOStoreMemory:
+		return musterlink.NewMemStore(), noop, nil
+	case config.OBOStoreBolt:
+		key, err := os.ReadFile(cfg.StoreKeyFile)
+		if err != nil {
+			return nil, nil, fmt.Errorf("read obo store key: %w", err)
+		}
+		bs, err := musterlink.OpenBoltStore(cfg.StorePath, key, logger)
+		if err != nil {
+			return nil, nil, err
+		}
+		return bs, bs.Close, nil
+	case config.OBOStoreSecret:
+		key, err := os.ReadFile(cfg.StoreKeyFile)
+		if err != nil {
+			return nil, nil, fmt.Errorf("read obo store key: %w", err)
+		}
+		restCfg, err := buildKubeConfig()
+		if err != nil {
+			return nil, nil, fmt.Errorf("obo secret store: %w", err)
+		}
+		kclient, err := kubernetes.NewForConfig(restCfg)
+		if err != nil {
+			return nil, nil, fmt.Errorf("obo secret store: %w", err)
+		}
+		namespace := cfg.StoreSecretNamespace
+		if namespace == "" {
+			namespace = podNamespace()
+		}
+		ss, err := musterlink.NewSecretStore(kclient, key, musterlink.SecretStoreOptions{Namespace: namespace, Name: cfg.StoreSecretName}, logger)
+		if err != nil {
+			return nil, nil, err
+		}
+		if _, err := ss.Check(); err != nil {
+			return nil, nil, fmt.Errorf("obo secret store: %w (the chart renders the Secret and a Role granting get/update/patch on it)", err)
+		}
+		importBoltLinks(cfg.StorePath, key, ss, logger)
+		links, err := ss.Check()
+		if err != nil {
+			return nil, nil, fmt.Errorf("obo secret store: %w", err)
+		}
+		logger.Info("obo link store ready", "backend", backend, "secret", ss.Ref(), "links", links)
+		return ss, noop, nil
+	default:
+		return nil, nil, fmt.Errorf("unknown obo store %q", backend)
+	}
+}
+
+// importBoltLinks runs the one-time bolt -> Secret import when a bolt file is
+// configured and present. A failure is logged, not fatal: the Secret backend
+// works without it and the file stays for the next start to try again.
+func importBoltLinks(path string, key []byte, dst *musterlink.SecretStore, logger *slog.Logger) {
+	if path == "" {
+		return
+	}
+	if _, err := os.Stat(path); err != nil {
+		logger.Info("obo link store: no bolt file to import", "path", path)
+		return
+	}
+	added, total, err := musterlink.ImportBoltFile(path, key, dst, logger)
+	if err != nil {
+		logger.Error("obo link store: bolt import failed", "path", path, "err", err)
+		return
+	}
+	logger.Info("obo link store: imported links from bolt file", "path", path, "imported", added, "total", total, "secret", dst.Ref())
+}
+
+// podNamespace is the namespace this pod runs in per the mounted ServiceAccount
+// token, or "default" outside a cluster.
+func podNamespace() string {
+	if ns, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/namespace"); err == nil {
+		if v := strings.TrimSpace(string(ns)); v != "" {
+			return v
+		}
+	}
+	return "default"
 }
 
 func buildLifecycle(cfg config.Config) (lifecycle.Manager, error) {

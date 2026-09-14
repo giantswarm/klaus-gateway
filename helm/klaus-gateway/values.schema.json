@@ -474,10 +474,20 @@
                 "stateKey": {
                     "type": "string"
                 },
+                "store": {
+                    "type": "string",
+                    "enum": [
+                        "bolt",
+                        "secret"
+                    ]
+                },
                 "storeKey": {
                     "type": "string"
                 },
                 "storePath": {
+                    "type": "string"
+                },
+                "storeSecretName": {
                     "type": "string"
                 }
             }

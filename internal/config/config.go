@@ -176,12 +176,24 @@ type OBOConfig struct {
 	// (e.g. https://gateway.example.com). The muster redirect URI is this base
 	// joined with the callback path.
 	CallbackBaseURL string
+	// Store selects the link-store backend: OBOStoreMemory, OBOStoreBolt or
+	// OBOStoreSecret. Empty resolves to bolt when StorePath is set and to
+	// memory otherwise (Load does that), so older deployments keep their
+	// behaviour without naming a backend.
+	Store string
 	// StorePath is the bolt link-store file (AES-256-GCM encrypted at rest).
-	// Empty uses an in-memory store that loses links on restart.
+	// Required by the bolt backend. With the Secret backend it is optional and
+	// names the bolt file to import links from on start (the migration off the
+	// volume); a path that does not exist is skipped.
 	StorePath string
 	// StoreKeyFile holds the 32-byte AES-256 key for the link store. Required
-	// when StorePath is set.
+	// by the bolt and Secret backends.
 	StoreKeyFile string
+	// StoreSecretName and StoreSecretNamespace locate the Secret of the Secret
+	// backend. The name defaults to klaus-gateway-obo-links; an empty namespace
+	// means the pod's own namespace.
+	StoreSecretName      string
+	StoreSecretNamespace string
 	// StateKeyFile holds the HMAC key used to sign link state (CSRF + binding
 	// the link to the requesting Slack user). Required when OBO is enabled.
 	StateKeyFile string
@@ -190,6 +202,25 @@ type OBOConfig struct {
 	// renders a Connect button from the login link the agent relays. The gateway
 	// does not call muster for this. Requires Enabled.
 	ConnectorsEnabled bool
+}
+
+// OBO link-store backends (OBOConfig.Store).
+const (
+	OBOStoreMemory = "memory"
+	OBOStoreBolt   = "bolt"
+	OBOStoreSecret = "secret"
+)
+
+// ResolvedStore returns the link-store backend to run: Store when it is set,
+// otherwise bolt when StorePath is set and memory when it is not.
+func (o OBOConfig) ResolvedStore() string {
+	if o.Store != "" {
+		return o.Store
+	}
+	if o.StorePath != "" {
+		return OBOStoreBolt
+	}
+	return OBOStoreMemory
 }
 
 // Config is the fully resolved runtime configuration.
@@ -258,6 +289,9 @@ func Defaults() Config {
 			DefaultAgent: "sre-agent",
 			Namespace:    "kagent",
 		},
+		OBO: OBOConfig{
+			StoreSecretName: "klaus-gateway-obo-links",
+		},
 	}
 }
 
@@ -318,8 +352,11 @@ func Load(args []string) (Config, error) {
 	fs.StringVar(&cfg.OBO.ClientID, "obo-client-id", cfg.OBO.ClientID, "Gateway's muster OAuth client ID. Optional: defaults to the self-hosted CIMD document URL (callback base URL + /auth/slack/client.json).")
 	fs.StringVar(&cfg.OBO.ClientSecret, "obo-client-secret", cfg.OBO.ClientSecret, "Gateway's muster OAuth client secret. Empty for a public PKCE client.")
 	fs.StringVar(&cfg.OBO.CallbackBaseURL, "obo-callback-base-url", cfg.OBO.CallbackBaseURL, "Gateway's public base URL; the muster redirect URI is this joined with /auth/slack/callback.")
-	fs.StringVar(&cfg.OBO.StorePath, "obo-store-path", cfg.OBO.StorePath, "Path to the encrypted bolt link store. Empty uses an in-memory store.")
-	fs.StringVar(&cfg.OBO.StoreKeyFile, "obo-store-key-file", cfg.OBO.StoreKeyFile, "Path to the 32-byte AES-256 key file for the link store (required with --obo-store-path).")
+	fs.StringVar(&cfg.OBO.Store, "obo-store", cfg.OBO.Store, "Link-store backend: memory, bolt (a file at --obo-store-path) or secret (one Kubernetes Secret, --obo-store-secret). Empty means bolt when --obo-store-path is set, memory otherwise.")
+	fs.StringVar(&cfg.OBO.StorePath, "obo-store-path", cfg.OBO.StorePath, "Path to the encrypted bolt link store (bolt backend). With --obo-store=secret: an existing bolt file to import links from on start.")
+	fs.StringVar(&cfg.OBO.StoreKeyFile, "obo-store-key-file", cfg.OBO.StoreKeyFile, "Path to the 32-byte AES-256 key file for the link store (required with the bolt and secret backends).")
+	fs.StringVar(&cfg.OBO.StoreSecretName, "obo-store-secret", cfg.OBO.StoreSecretName, "Name of the Secret holding the links (secret backend).")
+	fs.StringVar(&cfg.OBO.StoreSecretNamespace, "obo-store-secret-namespace", cfg.OBO.StoreSecretNamespace, "Namespace of the link Secret (secret backend). Empty means the pod's own namespace.")
 	fs.StringVar(&cfg.OBO.StateKeyFile, "obo-state-key-file", cfg.OBO.StateKeyFile, "Path to the HMAC key file used to sign link state (required with --obo-enabled).")
 	fs.BoolVar(&cfg.OBO.ConnectorsEnabled, "obo-connectors-enabled", cfg.OBO.ConnectorsEnabled, "Enable the reactive Slack connector UX: the gateway detects a core_auth_login challenge in the agent's response stream and renders a Connect button from the login link the agent relays. The gateway does not call muster. Requires --obo-enabled.")
 
@@ -465,8 +502,17 @@ func applyEnv(cfg *Config) {
 	if v, ok := lookup("OBO_CALLBACK_BASE_URL"); ok {
 		cfg.OBO.CallbackBaseURL = v
 	}
+	if v, ok := lookup("OBO_STORE"); ok {
+		cfg.OBO.Store = v
+	}
 	if v, ok := lookup("OBO_STORE_PATH"); ok {
 		cfg.OBO.StorePath = v
+	}
+	if v, ok := lookup("OBO_STORE_SECRET"); ok {
+		cfg.OBO.StoreSecretName = v
+	}
+	if v, ok := lookup("OBO_STORE_SECRET_NAMESPACE"); ok {
+		cfg.OBO.StoreSecretNamespace = v
 	}
 	if v, ok := lookup("OBO_STORE_KEY_FILE"); ok {
 		cfg.OBO.StoreKeyFile = v
@@ -552,8 +598,21 @@ func (c Config) Validate() error {
 		if c.OBO.StateKeyFile == "" {
 			return fmt.Errorf("--obo-state-key-file is required with --obo-enabled")
 		}
-		if (c.OBO.StorePath == "") != (c.OBO.StoreKeyFile == "") {
-			return fmt.Errorf("--obo-store-path and --obo-store-key-file must be set together")
+		switch c.OBO.ResolvedStore() {
+		case OBOStoreMemory:
+		case OBOStoreBolt:
+			if c.OBO.StorePath == "" || c.OBO.StoreKeyFile == "" {
+				return fmt.Errorf("--obo-store-path and --obo-store-key-file are required with --obo-store=bolt")
+			}
+		case OBOStoreSecret:
+			if c.OBO.StoreKeyFile == "" {
+				return fmt.Errorf("--obo-store-key-file is required with --obo-store=secret")
+			}
+			if c.OBO.StoreSecretName == "" {
+				return fmt.Errorf("--obo-store-secret is required with --obo-store=secret")
+			}
+		default:
+			return fmt.Errorf("invalid --obo-store %q: must be one of memory, bolt, secret", c.OBO.Store)
 		}
 	}
 	if c.OBO.ConnectorsEnabled && !c.OBO.Enabled {
