@@ -7,10 +7,12 @@ metadata:
     {{- include "labels.common" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
-  {{- if and .Values.obo.enabled .Values.obo.storePath .Values.obo.persistence.enabled }}
+  {{- if include "obo.boltVolume" . }}
   # A single ReadWriteOnce link-store PVC cannot be mounted by two pods at once,
   # so a rolling update would deadlock (new pod pending on a volume the old pod
   # still holds). Recreate releases the volume before the replacement starts.
+  # The Secret backend without persistence mounts no volume and keeps the
+  # default RollingUpdate.
   strategy:
     type: Recreate
   {{- end }}
@@ -36,7 +38,7 @@ spec:
         runAsNonRoot: true
         runAsUser: {{ .Values.pod.user.id }}
         runAsGroup: {{ .Values.pod.group.id }}
-        {{- if and .Values.obo.enabled .Values.obo.storePath .Values.obo.persistence.enabled }}
+        {{- if include "obo.boltVolume" . }}
         # Make the link-store PVC group-owned and group-writable by the non-root
         # runtime user so the encrypted bolt file can be created.
         fsGroup: {{ .Values.pod.group.id }}
@@ -58,6 +60,29 @@ spec:
         {{- end }}
         {{- if or (eq .Values.routing.store "configmap") (eq .Values.routing.store "crd") }}
         - --namespace=$(POD_NAMESPACE)
+        {{- end }}
+        {{- if eq .Values.routing.store "valkey" }}
+        {{- with .Values.routing.valkey }}
+        - --valkey-url={{ required "routing.valkey.url is required with routing.store: valkey" .url }}
+        {{- if .username }}
+        - --valkey-username={{ .username }}
+        {{- end }}
+        {{- if .db }}
+        - --valkey-db={{ .db }}
+        {{- end }}
+        {{- if .tls.enabled }}
+        - --valkey-tls
+        {{- if .tls.serverName }}
+        - --valkey-tls-server-name={{ .tls.serverName }}
+        {{- end }}
+        {{- end }}
+        {{- if .keyPrefix }}
+        - --valkey-key-prefix={{ .keyPrefix }}
+        {{- end }}
+        {{- if .timeout }}
+        - --valkey-timeout={{ .timeout }}
+        {{- end }}
+        {{- end }}
         {{- end }}
         {{- if .Values.controller.enabled }}
         - --controller=true
@@ -130,6 +155,13 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: metadata.namespace
+        {{- if and (eq .Values.routing.store "valkey") .Values.routing.valkey.existingSecret }}
+        - name: KLAUS_GATEWAY_VALKEY_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.routing.valkey.existingSecret }}
+              key: {{ .Values.routing.valkey.passwordKey }}
+        {{- end }}
         {{- if and .Values.slack.enabled .Values.slack.secretName }}
         - name: SLACK_BOT_TOKEN
           valueFrom:
@@ -201,9 +233,21 @@ spec:
           value: {{ .Values.obo.callbackBaseUrl | quote }}
         - name: KLAUS_GATEWAY_OBO_STATE_KEY_FILE
           value: /etc/klaus-gateway/obo/state-key
+        {{- if include "obo.secretStore" . }}
+        - name: KLAUS_GATEWAY_OBO_STORE
+          value: secret
+        - name: KLAUS_GATEWAY_OBO_STORE_SECRET
+          value: {{ include "obo.linksSecretName" . | quote }}
+        - name: KLAUS_GATEWAY_OBO_STORE_SECRET_NAMESPACE
+          value: $(POD_NAMESPACE)
+        {{- end }}
         {{- if .Values.obo.storePath }}
+        # With the Secret backend this is the bolt file to import links from on
+        # start (skipped when no volume carries it).
         - name: KLAUS_GATEWAY_OBO_STORE_PATH
           value: {{ .Values.obo.storePath | quote }}
+        {{- end }}
+        {{- if or .Values.obo.storePath (include "obo.secretStore" .) }}
         - name: KLAUS_GATEWAY_OBO_STORE_KEY_FILE
           value: /etc/klaus-gateway/obo/store-key
         {{- end }}
@@ -246,9 +290,13 @@ spec:
         - name: obo-keys
           mountPath: /etc/klaus-gateway/obo
           readOnly: true
-        {{- if .Values.obo.storePath }}
+        {{- if include "obo.storeVolume" . }}
         - name: obo-store
           mountPath: {{ dir .Values.obo.storePath }}
+          {{- if include "obo.secretStore" . }}
+          # Import source only: the gateway reads the bolt file and never writes it.
+          readOnly: true
+          {{- end }}
         {{- end }}
         {{- end }}
         {{- end }}
@@ -275,7 +323,7 @@ spec:
       - name: obo-keys
         secret:
           secretName: {{ .Values.obo.existingSecret | default (printf "%s-obo" (include "resource.default.name" .)) }}
-      {{- if .Values.obo.storePath }}
+      {{- if include "obo.storeVolume" . }}
       - name: obo-store
         {{- if .Values.obo.persistence.enabled }}
         persistentVolumeClaim:
@@ -286,7 +334,7 @@ spec:
       {{- end }}
       {{- end }}
       {{- end }}
-      terminationGracePeriodSeconds: 10
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

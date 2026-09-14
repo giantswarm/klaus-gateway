@@ -5,7 +5,7 @@ This directory holds the **CI / contributor smoke harness** for klaus-gateway. I
 - **Developer path:** `klausctl gateway start` spins up a local klaus-gateway + agentgateway + one klaus instance with full LLM access.
 - **User path:** the Helm chart in `../helm/klaus-gateway/` running on a management cluster, fronted by an ingress.
 
-The compose stack here exists so every PR gets a cheap, reproducible end-to-end check that a POST against the OpenAI-compat front door reaches a klaus instance (a stub in CI) and streams SSE back. `make e2e-local` drives it.
+The compose stack here exists so every PR gets a cheap, reproducible end-to-end check that a POST against the OpenAI-compat front door reaches a klaus instance (a stub in CI) and streams SSE back. The four commands under [Run it](#run-it) drive it.
 
 ## Layout
 
@@ -17,12 +17,6 @@ deploy/
 ```
 
 ## Run it
-
-```bash
-make e2e-local
-```
-
-Behind the scenes:
 
 ```bash
 docker compose -f deploy/docker-compose.yml up -d --build

@@ -38,6 +38,13 @@ func (in *ChannelRoute) DeepCopyInto(out *ChannelRoute) {
 // DeepCopyInto copies all fields of this ChannelRouteSpec into out.
 func (in *ChannelRouteSpec) DeepCopyInto(out *ChannelRouteSpec) {
 	*out = *in
+	if in.Resume != nil {
+		in, out := &in.Resume, &out.Resume
+		*out = make(map[string]string, len(*in))
+		for key, val := range *in {
+			(*out)[key] = val
+		}
+	}
 	in.CreatedAt.DeepCopyInto(&out.CreatedAt)
 	in.LastSeen.DeepCopyInto(&out.LastSeen)
 }

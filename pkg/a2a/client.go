@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"iter"
 	"log/slog"
+	"net"
 	"net/url"
 	"os"
 	"strings"
@@ -128,10 +129,18 @@ func ParseTarget(target string) (hostPort string, useTLS bool, err error) {
 	default:
 		return "", false, fmt.Errorf("a2a: target %q must use the %s:// or %s:// scheme", target, SchemePlaintext, SchemeTLS)
 	}
-	if u.Host == "" || u.Port() == "" || u.Path != "" || u.RawQuery != "" {
-		return "", false, fmt.Errorf("a2a: target %q must be %s://host:port with no path", target, u.Scheme)
+	if u.Host == "" || u.Path != "" || u.RawQuery != "" {
+		return "", false, fmt.Errorf("a2a: target %q must be %s://host[:port] with no path", target, u.Scheme)
 	}
-	return u.Host, useTLS, nil
+	if u.Port() != "" {
+		return u.Host, useTLS, nil
+	}
+	// A TLS target without a port is the edge on 443, the way an https URL is;
+	// plaintext gRPC has no conventional port, so it must name one.
+	if !useTLS {
+		return "", false, fmt.Errorf("a2a: target %q must name a port", target)
+	}
+	return net.JoinHostPort(u.Hostname(), "443"), useTLS, nil
 }
 
 // Dial builds a Client for cfg.Target. The connection is established lazily
@@ -277,6 +286,29 @@ func (c *Client) Stream(ctx context.Context, instanceID string, msg *a2apkg.Mess
 		}
 		c.refreshRosterInBackground(ctx)
 		for event, err := range c.a2a.SendStreamingMessage(callCtx, &a2apkg.SendMessageRequest{Message: msg}) {
+			if err != nil {
+				yield(nil, mapA2AError(err))
+				return
+			}
+			if !yield(event, nil) {
+				return
+			}
+		}
+	}
+}
+
+// Subscribe attaches to a task the AgentInstance is already running and yields
+// its events from here on: a task that has since quiesced arrives whole, as its
+// one and only event. This is how a restarted gateway picks up the turns its
+// predecessor left running.
+func (c *Client) Subscribe(ctx context.Context, instanceID string, taskID a2apkg.TaskID) iter.Seq2[a2apkg.Event, error] {
+	return func(yield func(a2apkg.Event, error) bool) {
+		callCtx, err := c.a2aCtx(ctx, instanceID)
+		if err != nil {
+			yield(nil, err)
+			return
+		}
+		for event, err := range c.a2a.SubscribeToTask(callCtx, &a2apkg.SubscribeToTaskRequest{ID: taskID}) {
 			if err != nil {
 				yield(nil, mapA2AError(err))
 				return

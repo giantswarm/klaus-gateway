@@ -1,0 +1,49 @@
+{{- if include "obo.secretStore" . }}
+{{- if not .Values.obo.storeSecretName }}
+# The link store of the Secret backend: one entry per linked Slack user, each
+# sealed with store-key before the gateway writes it. The chart creates the
+# Secret empty; the gateway only updates it (the Role below grants no create).
+# resource-policy keep: the entries are people's sign-ins, not chart state, so
+# an uninstall or a reinstall of the release leaves them in place.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "obo.linksSecretName" . }}
+  namespace: {{ include "resource.default.namespace" . }}
+  labels:
+    {{- include "labels.common" . | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
+type: Opaque
+---
+{{- end }}
+# get/update/patch on exactly the link Secret, nothing else in the namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "resource.default.name" . }}-obo-links
+  namespace: {{ include "resource.default.namespace" . }}
+  labels:
+    {{- include "labels.common" . | nindent 4 }}
+rules:
+- apiGroups: [""]
+  resources: ["secrets"]
+  resourceNames: [{{ include "obo.linksSecretName" . | quote }}]
+  verbs: ["get", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "resource.default.name" . }}-obo-links
+  namespace: {{ include "resource.default.namespace" . }}
+  labels:
+    {{- include "labels.common" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "resource.default.name" . }}-obo-links
+subjects:
+- kind: ServiceAccount
+  name: {{ include "resource.default.name" . }}
+  namespace: {{ include "resource.default.namespace" . }}
+{{- end }}

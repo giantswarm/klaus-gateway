@@ -12,7 +12,7 @@
 go build ./...
 go test -race ./...
 make lint        # golangci-lint with gosec + goconst
-make helm-test   # helm lint + render assertions
+./hack/helm-template-tests   # chart render check with agentgateway off and on
 ```
 
 ## Developer path
@@ -28,9 +28,10 @@ not the developer path. It exists so every PR gets a cheap end-to-end check with
 requiring `klausctl` or a real LLM key.
 
 ```bash
-make e2e-local        # bring up, run smoke, tear down
-make e2e-local-up     # bring up in the background only
-make e2e-local-down   # tear down and remove volumes
+docker compose -f deploy/docker-compose.yml up -d --build   # bring up
+./hack/wait-for http://127.0.0.1:8080/healthz              # wait for the gateway
+./hack/smoke-completion                                     # run the smoke test
+docker compose -f deploy/docker-compose.yml down -v         # tear down and remove volumes
 ```
 
 This brings up three services:
@@ -38,8 +39,8 @@ This brings up three services:
 | Service               | Image / build                                                  | Role                                |
 |-----------------------|----------------------------------------------------------------|-------------------------------------|
 | `klaus-gateway`       | built from this repo                                           | gateway under test                  |
-| `agentgateway`        | `ghcr.io/agentgateway/agentgateway:v1.1.0`                    | LLM/MCP data plane                  |
-| `klaus-instance-stub` | built from `deploy/klaus-instance-stub/`                       | tiny HTTP stub mimicking Klaus      |
+| `agentgateway`        | `ghcr.io/agentgateway/agentgateway` (tag pinned in the compose file) | LLM/MCP data plane                  |
+| `klaus-instance`      | built from `deploy/klaus-instance-stub/`                       | tiny HTTP stub mimicking Klaus      |
 
 The gateway is configured with the `static` driver (`KLAUS_GATEWAY_DRIVER=static`), so it
 maps `test-instance` to the stub without needing `klausctl` or `Klaus Operator`.
@@ -97,6 +98,7 @@ pkg/instance/           HTTP client for Klaus instances + SSE helpers
 pkg/lifecycle/          lifecycle.Manager interface + drivers (klausctl, operator, static)
 pkg/routing/            routing table + pluggable store backends
 pkg/routing/store/      Store interface + memory / bolt / configmap / crd backends
+pkg/auth/musterlink/    Slack OBO: muster account linking + the link Store (memory, bolt file, Kubernetes Secret)
 pkg/server/             http.Server wiring, middleware, admin mux
 pkg/upstream/           agentgateway upstream URL rewriter
 pkg/a2a/                kagent API v2 client (A2A v1 gRPC, AgentTemplates, AgentInstances, HITL)

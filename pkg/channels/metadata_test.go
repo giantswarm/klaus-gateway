@@ -31,7 +31,7 @@ func TestMapA2AEvent_CompletedCarriesUsage(t *testing.T) {
 		Status:   a2apkg.TaskStatus{State: a2apkg.TaskStateCompleted},
 	}
 
-	deltas := mapA2AEvent(ev)
+	deltas := newEventMapper().deltas(ev)
 	require.Len(t, deltas, 1)
 	require.True(t, deltas[0].Done)
 	require.NotNil(t, deltas[0].Usage)
@@ -50,7 +50,7 @@ func TestMapA2AEvent_ArtifactTextAndToolActivity(t *testing.T) {
 		},
 	}
 
-	deltas := mapA2AEvent(ev)
+	deltas := newEventMapper().deltas(ev)
 	require.Len(t, deltas, 2)
 	require.Equal(t, DeltaText, deltas[0].Kind)
 	require.Equal(t, "here you go", deltas[0].Content)
@@ -77,7 +77,7 @@ func TestMapA2AEvent_InterimToolActivityAndUsage(t *testing.T) {
 		},
 	}
 
-	deltas := mapA2AEvent(ev)
+	deltas := newEventMapper().deltas(ev)
 	require.Len(t, deltas, 2)
 	require.Equal(t, DeltaToolActivity, deltas[0].Kind)
 	require.Equal(t, ToolResult, deltas[0].Tool.Kind)
@@ -94,7 +94,7 @@ func TestMapA2AEvent_ConfirmationPartIsNotToolActivity(t *testing.T) {
 	ev := &a2apkg.TaskArtifactUpdateEvent{
 		Artifact: &a2apkg.Artifact{Parts: a2apkg.ContentParts{confirm}},
 	}
-	require.Empty(t, mapA2AEvent(ev))
+	require.Empty(t, newEventMapper().deltas(ev))
 }
 
 // The prose the agent writes before firing its tool calls rides on the same
@@ -114,7 +114,7 @@ func TestMapA2AEvent_NarrationPrecedesToolActivity(t *testing.T) {
 		},
 	}
 
-	deltas := mapA2AEvent(ev)
+	deltas := newEventMapper().deltas(ev)
 	require.Len(t, deltas, 4)
 	require.Equal(t, DeltaNarration, deltas[0].Kind)
 	require.Equal(t, "Let me pull the HelmRelease from both clusters simultaneously.", deltas[0].Content)
@@ -135,7 +135,7 @@ func TestMapA2AEvent_TextOnlyWorkingEventEmitsNoNarration(t *testing.T) {
 			Message: a2apkg.NewMessage(a2apkg.MessageRoleAgent, a2apkg.NewTextPart("here is the diff")),
 		},
 	}
-	require.Empty(t, mapA2AEvent(ev))
+	require.Empty(t, newEventMapper().deltas(ev))
 }
 
 // kagent echoes the inbound user message as the submitted event of a new task.
@@ -146,7 +146,7 @@ func TestMapA2AEvent_UserEchoEmitsNothing(t *testing.T) {
 			Message: a2apkg.NewMessage(a2apkg.MessageRoleUser, a2apkg.NewTextPart("compare both clusters")),
 		},
 	}
-	require.Empty(t, mapA2AEvent(ev))
+	require.Empty(t, newEventMapper().deltas(ev))
 }
 
 // A streaming chunk is repeated in full by the non-partial event that follows it,
@@ -166,7 +166,7 @@ func TestMapA2AEvent_PartialNarrationSkipped(t *testing.T) {
 					msg.Metadata = map[string]any{key: true}
 				}
 
-				deltas := mapA2AEvent(ev)
+				deltas := newEventMapper().deltas(ev)
 				require.Len(t, deltas, 1)
 				require.Equal(t, DeltaToolActivity, deltas[0].Kind)
 			})
@@ -192,7 +192,7 @@ func TestMapA2AEvent_TextBesideToolResultEmitsNoNarration(t *testing.T) {
 		},
 	}
 
-	deltas := mapA2AEvent(ev)
+	deltas := newEventMapper().deltas(ev)
 	require.Len(t, deltas, 1)
 	require.Equal(t, DeltaToolActivity, deltas[0].Kind)
 }
@@ -208,7 +208,7 @@ func TestMapA2AEvent_MessagePartialUsageSkipped(t *testing.T) {
 			ev := &a2apkg.TaskStatusUpdateEvent{
 				Status: a2apkg.TaskStatus{State: a2apkg.TaskStateWorking, Message: msg},
 			}
-			require.Empty(t, mapA2AEvent(ev), "usage on a partial message must not be counted")
+			require.Empty(t, newEventMapper().deltas(ev), "usage on a partial message must not be counted")
 		})
 	}
 }
@@ -217,26 +217,26 @@ func TestMapA2AEvent_MessagePartialUsageSkipped(t *testing.T) {
 // and as the controller's answer from its store; only a quiescent state renders.
 func TestMapA2AEvent_TaskSnapshots(t *testing.T) {
 	submitted := &a2apkg.Task{ID: "t1", Status: a2apkg.TaskStatus{State: a2apkg.TaskStateSubmitted}}
-	require.Empty(t, mapA2AEvent(submitted), "the submitted snapshot is the turn starting, nothing to render")
+	require.Empty(t, newEventMapper().deltas(submitted), "the submitted snapshot is the turn starting, nothing to render")
 
 	paused := &a2apkg.Task{ID: "t1", Status: a2apkg.TaskStatus{
 		State:   a2apkg.TaskStateInputRequired,
 		Message: a2apkg.NewMessage(a2apkg.MessageRoleAgent, a2apkg.NewTextPart("approve?")),
 	}}
-	deltas := mapA2AEvent(paused)
+	deltas := newEventMapper().deltas(paused)
 	require.Len(t, deltas, 1)
 	require.Equal(t, DeltaPrompt, deltas[0].Kind)
 	require.Equal(t, "t1", deltas[0].TaskID)
 
 	canceled := &a2apkg.Task{ID: "t1", Status: a2apkg.TaskStatus{State: a2apkg.TaskStateCanceled}}
-	deltas = mapA2AEvent(canceled)
+	deltas = newEventMapper().deltas(canceled)
 	require.Len(t, deltas, 1)
 	require.ErrorContains(t, deltas[0].Err, "TASK_STATE_CANCELED")
 }
 
 // A bare agent message is a complete reply without a task wrapper.
 func TestMapA2AEvent_MessageIsACompleteReply(t *testing.T) {
-	deltas := mapA2AEvent(a2apkg.NewMessage(a2apkg.MessageRoleAgent, a2apkg.NewTextPart("done")))
+	deltas := newEventMapper().deltas(a2apkg.NewMessage(a2apkg.MessageRoleAgent, a2apkg.NewTextPart("done")))
 	require.Len(t, deltas, 2)
 	require.Equal(t, "done", deltas[0].Content)
 	require.True(t, deltas[1].Done)
@@ -269,7 +269,7 @@ func TestMapA2AEvent_PartialEventUsageSkipped(t *testing.T) {
 				Metadata: meta,
 				Status:   a2apkg.TaskStatus{State: a2apkg.TaskStateWorking},
 			}
-			require.Empty(t, mapA2AEvent(ev), "partial event must not emit a usage delta")
+			require.Empty(t, newEventMapper().deltas(ev), "partial event must not emit a usage delta")
 		})
 	}
 }
@@ -282,7 +282,7 @@ func TestMapA2AEvent_FailedTerminalCarriesUsage(t *testing.T) {
 				Status:   a2apkg.TaskStatus{State: state},
 			}
 
-			deltas := mapA2AEvent(ev)
+			deltas := newEventMapper().deltas(ev)
 			require.Len(t, deltas, 1)
 			require.Error(t, deltas[0].Err)
 			require.NotNil(t, deltas[0].Usage)
@@ -298,8 +298,111 @@ func TestMapA2AEvent_NonPartialWorkingEventEmitsUsage(t *testing.T) {
 		Metadata: meta,
 		Status:   a2apkg.TaskStatus{State: a2apkg.TaskStateWorking},
 	}
-	deltas := mapA2AEvent(ev)
+	deltas := newEventMapper().deltas(ev)
 	require.Len(t, deltas, 1)
 	require.NotNil(t, deltas[0].Usage)
 	require.Equal(t, 7, deltas[0].Usage.TotalTokens)
+}
+
+func artifactUpdate(id a2apkg.ArtifactID, appendTo, last bool, parts ...*a2apkg.Part) *a2apkg.TaskArtifactUpdateEvent {
+	return &a2apkg.TaskArtifactUpdateEvent{
+		TaskID:    "task-1",
+		Append:    appendTo,
+		LastChunk: last,
+		Artifact:  &a2apkg.Artifact{ID: id, Parts: parts},
+	}
+}
+
+// texts renders the events through one mapper and returns the text deltas.
+func texts(t *testing.T, m *eventMapper, events ...a2apkg.Event) []string {
+	t.Helper()
+	var out []string
+	for _, ev := range events {
+		for _, d := range m.deltas(ev) {
+			if d.Kind == DeltaText && d.Content != "" {
+				out = append(out, d.Content)
+			}
+		}
+	}
+	return out
+}
+
+// The Go ADK streams a text run as appended chunks and then re-sends the run
+// whole on the same artifact (append false, lastChunk true). Rendered as
+// appends, every run appeared twice (klaus-gateway#242); the replace renders
+// only what the artifact has not delivered yet — nothing, when the run was
+// streamed in full.
+func TestEventMapper_ArtifactReplaceRendersTheRunOnce(t *testing.T) {
+	got := texts(t, newEventMapper(),
+		artifactUpdate("a", false, false, a2apkg.NewTextPart("I'll look for ")),
+		artifactUpdate("a", true, false, a2apkg.NewTextPart("the right tools.")),
+		artifactUpdate("a", false, true, a2apkg.NewTextPart("I'll look for the right tools.")),
+	)
+	require.Equal(t, []string{"I'll look for ", "the right tools."}, got)
+}
+
+// The finished run's replace carries the tool calls the run ended in; those
+// still render as tool activity even though the text adds nothing.
+func TestEventMapper_ArtifactReplaceKeepsToolActivity(t *testing.T) {
+	m := newEventMapper()
+	require.Len(t, texts(t, m, artifactUpdate("a", false, false, a2apkg.NewTextPart("Let me check."))), 1)
+	call := dataPart(t, mdTypeFunctionCall, map[string]any{"name": "kubectl_get", "id": "call-1"})
+	deltas := m.deltas(artifactUpdate("a", false, true, a2apkg.NewTextPart("Let me check."), call))
+	require.Len(t, deltas, 1)
+	require.Equal(t, DeltaToolActivity, deltas[0].Kind)
+	require.Equal(t, "call-1", deltas[0].Tool.CallID)
+}
+
+// A run that was streamed short of its final text renders the remainder, and
+// a replacement diverging from what was streamed renders what lies past the
+// common prefix, so no text is lost either way.
+func TestEventMapper_ArtifactReplaceRendersTheRemainder(t *testing.T) {
+	got := texts(t, newEventMapper(),
+		artifactUpdate("a", false, false, a2apkg.NewTextPart("7 nodes, all Re")),
+		artifactUpdate("a", false, true, a2apkg.NewTextPart("7 nodes, all Ready.")),
+	)
+	require.Equal(t, []string{"7 nodes, all Re", "ady."}, got)
+
+	got = texts(t, newEventMapper(),
+		artifactUpdate("a", false, false, a2apkg.NewTextPart("Hello wörld")),
+		artifactUpdate("a", false, true, a2apkg.NewTextPart("Hello wörd!")),
+	)
+	require.Equal(t, []string{"Hello wörld", "d!"}, got)
+}
+
+// Text runs come on separate artifacts (a tool call closes a run); they are
+// separated by a paragraph so the runs do not run into each other. A run that
+// already ends its paragraph gets no extra newline.
+func TestEventMapper_NewArtifactOpensAParagraph(t *testing.T) {
+	got := texts(t, newEventMapper(),
+		artifactUpdate("a", false, false, a2apkg.NewTextPart("Let me first discover what's available.")),
+		artifactUpdate("a", false, true, a2apkg.NewTextPart("Let me first discover what's available.")),
+		artifactUpdate("b", false, true, a2apkg.NewTextPart("`x_kubernetes_cluster_health` looks ideal.\n")),
+		artifactUpdate("c", false, true, a2apkg.NewTextPart("7 nodes, all Ready.")),
+	)
+	require.Equal(t, []string{
+		"Let me first discover what's available.",
+		"\n\n`x_kubernetes_cluster_health` looks ideal.\n",
+		"\n7 nodes, all Ready.",
+	}, got)
+}
+
+// An artifact without an ID cannot be reconciled and renders as sent; an
+// append to an artifact never seen renders as sent too.
+func TestEventMapper_UnaddressableArtifactsRenderAsSent(t *testing.T) {
+	got := texts(t, newEventMapper(),
+		artifactUpdate("", false, false, a2apkg.NewTextPart("one")),
+		artifactUpdate("", false, true, a2apkg.NewTextPart("one")),
+		artifactUpdate("z", true, false, a2apkg.NewTextPart(" two")),
+	)
+	require.Equal(t, []string{"one", "one", "\n\n two"}, got)
+}
+
+func TestCommonPrefixLen(t *testing.T) {
+	require.Equal(t, 0, commonPrefixLen("", "abc"))
+	require.Equal(t, 3, commonPrefixLen("abc", "abcdef"))
+	require.Equal(t, 3, commonPrefixLen("abcdef", "abc"))
+	require.Equal(t, 2, commonPrefixLen("abX", "abY"))
+	// ö is 2 bytes; a divergence inside it backs off to the rune start.
+	require.Equal(t, 1, commonPrefixLen("aö", "aü"))
 }

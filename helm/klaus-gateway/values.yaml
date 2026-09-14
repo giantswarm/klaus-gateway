@@ -63,13 +63,62 @@ serviceMonitor:
 #   bolt      -- persistent local file; requires a writable mount at boltPath.
 #   configmap -- cluster-backed; one ConfigMap "klaus-gateway-routes" per namespace.
 #   crd       -- cluster-backed; one ChannelRoute CR per conversation (requires controller.enabled).
+# Routing table: the binding of every thread to its agent instance and, while a
+# turn runs, the record of the task in flight (delivered after a restart). The
+# store decides whether either outlives the pod.
+#
+#   memory    -- the default. Nothing outlives the pod: after a restart every
+#                thread starts a fresh conversation and a turn cut by the
+#                restart is lost. For development and single-pod trials.
+#   valkey    -- for installations. One key per thread in a Valkey (or Redis
+#                compatible) server, no volume, no API-server access, shared
+#                by replicas. The agent platform runs one for muster's token
+#                store; point routing.valkey at it (see below).
+#   crd       -- for installations without a Valkey. One ChannelRoute custom
+#                resource per thread; needs controller.enabled: true and the
+#                cluster-scoped RBAC the chart renders for it. Never shrinks
+#                on its own.
+#   bolt      -- a file at boltPath. Durable only when boltPath lies inside a
+#                mounted volume; the chart mounts none, so with the defaults it
+#                lives on the container filesystem and a pod recreation loses
+#                it (the gateway still treats it as durable and promises
+#                delivery after a restart). Development only.
+#   configmap -- not for installations: one ConfigMap holds the whole table
+#                (1 MiB cap, a read-modify-write of everything on every turn)
+#                and the chart renders no RBAC for it.
 routing:
-  store: memory
+  store: memory  # @schema enum: [memory, valkey, crd, bolt, configmap]
   boltPath: /var/lib/klaus-gateway/routes.bolt
   # Default TTL for route entries (e.g. "24h"). Zero means never expire.
   defaultTTL: "24h"
   # Create instances on demand when a route key has no entry.
   autoCreate: false
+  # The Valkey server of store: valkey.
+  valkey:
+    # url is the server as host:port, e.g. muster-valkey:6379 for the agent
+    # platform's Valkey in the same namespace. Required with store: valkey.
+    url: ""
+    # username is the ACL user; empty means the server's default user.
+    username: ""
+    # existingSecret names a Secret in the release namespace holding the
+    # password under passwordKey; the chart passes it to the pod as
+    # KLAUS_GATEWAY_VALKEY_PASSWORD. Empty connects without a password.
+    existingSecret: ""
+    passwordKey: valkey-password
+    # db is the logical database to SELECT.
+    db: 0
+    tls:
+      enabled: false
+      # serverName overrides the name the server certificate is verified
+      # against when it differs from url's host.
+      serverName: ""
+    # keyPrefix namespaces the routing keys. Empty means klaus-gateway:route:.
+    # Set it when two gateways share one server.
+    keyPrefix: ""
+    # timeout bounds the dial and every command. A Valkey outage fails the
+    # turn after this long, with a clear error in the thread, instead of
+    # hanging it; readiness fails with it and recovers with the server.
+    timeout: "2s"
 
 # CRD installation. Renders the ChannelRoute CustomResourceDefinition when true.
 # Set to false if you manage the CRD lifecycle externally (e.g. via GitOps).
@@ -129,6 +178,14 @@ podDisruptionBudget:
   minAvailable: 1  # @schema type: [integer, string, null]
   maxUnavailable:  # @schema type: [integer, string, null]
   unhealthyPodEvictionPolicy: ""  # @schema enum: ["", IfHealthyBudget, AlwaysAllow]
+
+# -- Seconds the kubelet gives the pod to stop before it is killed. The
+# shutdown drains the HTTP servers (up to 15 s), then stops the channel
+# adapters (up to 15 s more), which is when a Slack turn cut short posts its
+# restart notice and clears its progress reaction; the rest is margin for the
+# client and store closes. Lower than the drain plus the stop and a turn
+# interrupted by a restart ends in silence.
+terminationGracePeriodSeconds: 45
 
 podSecurityContext:
   seccompProfile:
@@ -376,15 +433,38 @@ obo:
   # (e.g. https://agentgateway.example.com). The muster redirect URI and the
   # CIMD client_id are derived from it.
   callbackBaseUrl: ""
-  # storePath is the encrypted bolt link-store path. Empty uses an in-memory
-  # store (links lost on restart). When set, persistence (below) decides whether
-  # the directory is backed by an emptyDir (pod-ephemeral) or a PVC (durable).
+  # store selects where the Slack<->muster links live. Records are sealed with
+  # store-key (AES-256-GCM) in either backend.
+  #   bolt   -- an encrypted file at storePath on the pod's volume (persistence
+  #             below). One ReadWriteOnce claim binds the pod to a node: when the
+  #             node dies, the replacement waits for the volume (Multi-Attach) and
+  #             a second replica is impossible.
+  #   secret -- one Kubernetes Secret in the release namespace (storeSecretName;
+  #             default <release>-obo-links, created empty by the chart with
+  #             helm.sh/resource-policy: keep). No volume, so a replacement pod is
+  #             Ready on any node the moment it is scheduled and replicas can
+  #             share the links (resourceVersion optimistic concurrency). The
+  #             chart grants the ServiceAccount get/update/patch on exactly that
+  #             Secret (Role + RoleBinding). Recommended; see UPGRADE.md for the
+  #             move off the volume.
+  store: bolt  # @schema enum: [bolt, secret]
+  # storeSecretName names the link Secret of the secret backend. Empty lets the
+  # chart create <release>-obo-links; set it to use a Secret you manage (the
+  # chart then renders only the Role and RoleBinding for it).
+  storeSecretName: ""
+  # storePath is the encrypted bolt link-store path. With store: bolt, empty
+  # uses an in-memory store (links lost on restart); when set, persistence
+  # (below) decides whether the directory is backed by an emptyDir
+  # (pod-ephemeral) or a PVC (durable). With store: secret it is the bolt file
+  # to import links from on start: keep it (and persistence) for the first
+  # start on the secret backend, then drop persistence to release the volume.
   storePath: ""
   # persistence backs storePath's directory. Disabled -> emptyDir: links survive
   # in-process restarts but not pod reschedules (rollouts, node drains). Enabled
-  # -> a ReadWriteOnce PVC so links survive pod recreation; recommended for
-  # multi-user use. With a single RWO claim the Deployment uses the Recreate
-  # strategy (the old pod must release the volume before the new one mounts it).
+  # -> a ReadWriteOnce PVC so links survive pod recreation. With a single RWO
+  # claim mounted the Deployment uses the Recreate strategy (the old pod must
+  # release the volume before the new one mounts it), whichever backend reads
+  # it; the secret backend without persistence mounts nothing and rolls.
   persistence:
     enabled: false
     size: 64Mi
@@ -394,8 +474,8 @@ obo:
     storageClass: ""
     existingClaim: ""
   # existingSecret names a pre-created Secret in the release namespace that
-  # holds the OBO keys: `state-key` (the HMAC key signing link state) and, when
-  # storePath is set, `store-key` (the AES-256 link-store key). When set, the
+  # holds the OBO keys: `state-key` (the HMAC key signing link state) and, with
+  # store: secret or a storePath, `store-key` (the AES-256 link-store key). When set, the
   # chart renders no Secret of its own and mounts this one, so the keys never
   # pass through Helm values or the release manifest; stateKey and storeKey
   # below are ignored. One of existingSecret or stateKey is required when
@@ -406,8 +486,8 @@ obo:
   # renders it into the <release>-obo Secret and mounts it as a file. Prefer
   # existingSecret: a value set here is copied into the release manifest.
   stateKey: ""
-  # storeKey is the AES-256 key for the encrypted link store, required only when
-  # storePath is set and existingSecret is empty. Accepts 32 raw bytes or a
+  # storeKey is the AES-256 key for the encrypted link store, required when the
+  # store is secret or storePath is set, and existingSecret is empty. Accepts 32 raw bytes or a
   # base64/hex encoding of 32 bytes (a SOPS-staged base64 value works directly).
   storeKey: ""
   # connectors enables the reactive Slack connector UX: the gateway detects a
@@ -421,8 +501,11 @@ global:  # @schema additionalProperties: true
   podSecurityStandards:
     enforced: false
 
-nodeSelector: {}
+# Scheduling of the gateway pod. Free-form maps: the generated values schema
+# takes any node label / any affinity term (without the annotation it refused
+# every key — `additional properties 'karpenter.sh/capacity-type' not allowed`).
+nodeSelector: {}  # @schema additionalProperties: true
 
 tolerations: []
 
-affinity: {}
+affinity: {}  # @schema additionalProperties: true

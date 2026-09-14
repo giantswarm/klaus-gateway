@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	a2apkg "github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/require"
 
@@ -427,10 +428,11 @@ func (f *fakeOBO) LinkURL(slackUserID string) string {
 	return "https://gw.example.com/auth/slack/link?u=signed-" + slackUserID
 }
 
-func (f *fakeOBO) Unlink(slackUserID string) {
+func (f *fakeOBO) Unlink(slackUserID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.unlinked = append(f.unlinked, slackUserID)
+	return nil
 }
 
 // dispatchAndCaptureOBO posts an app_mention from slackUser and returns the
@@ -525,13 +527,19 @@ func TestDispatch_OBO_UnlinkedUserPromptsSignInAndDoesNotDispatch(t *testing.T) 
 	require.NoError(t, resp.Body.Close())
 
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Sign in so I can act as you")
+		return signInPrompted(fake)
 	}, 2*time.Second, 50*time.Millisecond, "unlinked user must be prompted to sign in with a real message")
-	// The prompt is a threaded reply under the mention, so it anchors the
-	// thread the agent will answer in (a thread-scoped ephemeral on a fresh
-	// mention is never surfaced by Slack).
-	prompt := fake.pathCalls("chat.postMessage")[0]
+	// In a channel the prompt is ephemeral to its user and carries the link;
+	// the public thread notice anchors it (a thread-scoped ephemeral in a
+	// thread that shows no message is never surfaced by Slack) and carries
+	// neither the link nor a mention (klaus-gateway#185).
+	prompt := fake.pathCalls("chat.postEphemeral")[0]
 	require.Equal(t, "111.222", prompt.params["thread_ts"])
+	require.Equal(t, "U123", prompt.params["user"])
+	notice := fake.pathCalls("chat.postMessage")[0]
+	require.Equal(t, "111.222", notice.params["thread_ts"])
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "U123")
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "http")
 	require.Zero(t, gw.resolveCount(), "unlinked turn must not reach the agent (no M2M fallback)")
 }
 
@@ -562,7 +570,7 @@ func TestDispatch_OBO_ParksUnlinkedMessageAndReplaysAfterLink(t *testing.T) {
 	require.NoError(t, resp.Body.Close())
 
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Sign in so I can act as you")
+		return signInPrompted(fake)
 	}, 2*time.Second, 50*time.Millisecond, "unlinked user must be prompted to sign in")
 	require.Zero(t, gw.resolveCount(), "the message must be parked, not dispatched, before linking")
 
@@ -581,17 +589,23 @@ func TestDispatch_OBO_ParksUnlinkedMessageAndReplaysAfterLink(t *testing.T) {
 	require.Equal(t, "human-token", got.BearerToken, "the replayed turn carries the human muster token")
 	require.Contains(t, got.Text, "what is failing?")
 
-	// The prompt message is rewritten in place into the signed-in confirmation.
-	// The email is not echoed in-thread; it is confirmed on the private browser
-	// success page. The agent is never named here: the replay's own output is
-	// the handoff signal.
-	fake.waitForPath(t, "chat.update", 1)
-	update := fake.pathCalls("chat.update")[0]
-	text, _ := update.params["text"].(string)
-	require.Contains(t, text, "Signed in")
-	require.NotContains(t, text, "@", "the in-thread rewrite carries no email")
-	require.NotContains(t, text, "test-agent", "the rewrite must not name the agent")
-	require.NotEmpty(t, update.params["ts"], "the rewrite targets the prompt's anchor ts")
+	// A channel prompt is ephemeral, so the completed link is confirmed with a
+	// fresh ephemeral to the same user. The email is not echoed in-thread; it is
+	// confirmed on the private browser success page. The agent is never named
+	// here: the replay's own output is the handoff signal.
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postEphemeral")), "Signed in")
+	}, 2*time.Second, 50*time.Millisecond, "the link completion is confirmed to the user")
+	var confirm recordedCall
+	for _, call := range fake.pathCalls("chat.postEphemeral") {
+		if text, _ := call.params["text"].(string); strings.Contains(text, "Signed in") {
+			confirm = call
+		}
+	}
+	text, _ := confirm.params["text"].(string)
+	require.Equal(t, "U123", confirm.params["user"], "the confirmation reaches the linked user only")
+	require.NotContains(t, text, "@", "the confirmation carries no email")
+	require.NotContains(t, text, "test-agent", "the confirmation must not name the agent")
 }
 
 // multiUserOBO is a test OBOTokenSource with independent per-user link state, so
@@ -617,7 +631,7 @@ func (o *multiUserOBO) link(slackUserID, token string) {
 }
 
 func (o *multiUserOBO) LinkURL(string) string { return "https://gw.example.com/link" }
-func (o *multiUserOBO) Unlink(string)         {}
+func (o *multiUserOBO) Unlink(string) error   { return nil }
 
 // A newcomer who signs in mid-thread has their parked message replayed to the
 // access-consent step, not dispatched to the agent: linking authenticates them,
@@ -659,7 +673,7 @@ func TestDispatch_OBO_NewcomerReplaysToAccessPromptNotAgent(t *testing.T) {
 	// to sign in, not dispatched.
 	send(`{"type":"event_callback","event":{"type":"app_mention","user":"U2","text":"<@BOT> me too","channel":"C1","ts":"333.444","thread_ts":"111.222"}}`)
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Sign in so I can act as you")
+		return signInPrompted(fake)
 	}, 2*time.Second, 50*time.Millisecond, "the newcomer is prompted to sign in")
 	mu.Lock()
 	require.Equal(t, 1, len(captured), "an unlinked newcomer must not reach the agent")
@@ -826,7 +840,7 @@ func TestLogin_PostsSignInPrompt(t *testing.T) {
 	require.NoError(t, resp.Body.Close())
 
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Sign in so I can act as you")
+		return signInPrompted(fake)
 	}, 2*time.Second, 50*time.Millisecond, "/login must post a sign-in prompt")
 	require.Zero(t, gw.resolveCount(), "/login must be consumed, not dispatched to the agent")
 }
@@ -864,6 +878,103 @@ type stubGateway struct {
 	// a test can fail an in-turn resume (e.g. an auto-approved continuation) that
 	// follows an initial successful send within the same turn.
 	failSendsAfter int
+	// sendCauses records, per SendCompletion whose context ended before the
+	// deltas were consumed, the context cause it ended with (a shutdown names
+	// channels.ErrShutdown; a /stop is a plain cancellation).
+	sendCauses []error
+	// resumes, when set, backs the restart-recovery capability (InFlightTurns,
+	// InFlightTurn, ResumeTurn); nil reports no turns left running.
+	resumes *stubResumes
+}
+
+// stubResumes is the stubGateway's record of turns a previous process left
+// running: the turns InFlightTurns lists (and InFlightTurn finds by thread),
+// the deltas ResumeTurn streams for each task, and what was resumed.
+type stubResumes struct {
+	turns        []channels.InFlightTurn
+	deltas       map[string][]channels.OutboundDelta // task id -> deltas
+	resumeErr    error
+	durable      bool
+	resumed      []channels.InboundMessage
+	resumedTasks []string
+}
+
+func (s *stubGateway) ResumesTurns() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.resumes != nil && s.resumes.durable
+}
+
+func (s *stubGateway) InFlightTurns(_ context.Context, channel string) ([]channels.InFlightTurn, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.resumes == nil {
+		return nil, nil
+	}
+	var out []channels.InFlightTurn
+	for _, t := range s.resumes.turns {
+		if t.Msg.Channel == channel {
+			out = append(out, t)
+		}
+	}
+	return out, nil
+}
+
+func (s *stubGateway) InFlightTurn(_ context.Context, msg channels.InboundMessage) (channels.InFlightTurn, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.resumes == nil {
+		return channels.InFlightTurn{}, false, nil
+	}
+	for _, t := range s.resumes.turns {
+		if t.Msg.Channel == msg.Channel && t.Msg.ChannelID == msg.ChannelID && t.Msg.ThreadID == msg.ThreadID {
+			return t, true, nil
+		}
+	}
+	return channels.InFlightTurn{}, false, nil
+}
+
+func (s *stubGateway) ResumeTurn(ctx context.Context, msg channels.InboundMessage, taskID string) (<-chan channels.OutboundDelta, error) {
+	s.mu.Lock()
+	if s.resumes == nil {
+		s.mu.Unlock()
+		return nil, errors.New("stub: no resumes configured")
+	}
+	if err := s.resumes.resumeErr; err != nil {
+		s.mu.Unlock()
+		return nil, err
+	}
+	s.resumes.resumed = append(s.resumes.resumed, msg)
+	s.resumes.resumedTasks = append(s.resumes.resumedTasks, taskID)
+	deltas := s.resumes.deltas[taskID]
+	// The record is consumed: a later lookup finds no turn left running.
+	kept := s.resumes.turns[:0]
+	for _, t := range s.resumes.turns {
+		if t.TaskID != taskID {
+			kept = append(kept, t)
+		}
+	}
+	s.resumes.turns = kept
+	s.mu.Unlock()
+	ch := make(chan channels.OutboundDelta)
+	go func() {
+		defer close(ch)
+		for _, d := range deltas {
+			select {
+			case ch <- d:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return ch, nil
+}
+
+// sendCauseList returns the recorded context causes of the ended sends.
+func (s *stubGateway) sendCauseList() []error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]error(nil), s.sendCauses...)
 }
 
 func (s *stubGateway) resumeCount() int {
@@ -936,6 +1047,11 @@ func (s *stubGateway) SendCompletion(ctx context.Context, _ channels.InstanceRef
 		deltas = []channels.OutboundDelta{{Done: true}}
 	}
 	ch := make(chan channels.OutboundDelta)
+	recordCause := func() {
+		s.mu.Lock()
+		s.sendCauses = append(s.sendCauses, context.Cause(ctx))
+		s.mu.Unlock()
+	}
 	go func() {
 		defer close(ch)
 		for i, d := range deltas {
@@ -943,12 +1059,14 @@ func (s *stubGateway) SendCompletion(ctx context.Context, _ channels.InstanceRef
 				select {
 				case <-time.After(s.interDeltaDelay):
 				case <-ctx.Done():
+					recordCause()
 					return
 				}
 			}
 			select {
 			case ch <- d:
 			case <-ctx.Done():
+				recordCause()
 				return
 			}
 		}
@@ -956,6 +1074,7 @@ func (s *stubGateway) SendCompletion(ctx context.Context, _ channels.InstanceRef
 			select {
 			case <-hold:
 			case <-ctx.Done():
+				recordCause()
 			}
 		}
 	}()
@@ -1095,6 +1214,17 @@ func (f *fakeSlackAPI) waitForPath(t *testing.T, path string, n int) {
 	require.Eventually(t, func() bool {
 		return len(f.pathCalls(path)) >= n
 	}, 2*time.Second, 20*time.Millisecond, "expected >=%d call(s) to %s", n, path)
+}
+
+// signInPromptPrefix is the opening of the sign-in prompt, asserted on whichever
+// surface carries it.
+const signInPromptPrefix = "Sign in so I can act as you"
+
+// signInPrompted reports whether the sign-in prompt reached its user: an
+// ephemeral in a channel (klaus-gateway#185), a real threaded message in a DM.
+func signInPrompted(fake *fakeSlackAPI) bool {
+	return strings.Contains(allText(fake.pathCalls("chat.postEphemeral")), signInPromptPrefix) ||
+		strings.Contains(allText(fake.pathCalls("chat.postMessage")), signInPromptPrefix)
 }
 
 // allText concatenates the "text" param of the given calls.
@@ -1534,7 +1664,7 @@ func TestHandleInbound_NoInactiveHintForMentionTwins(t *testing.T) {
 	// (an engagement trace) without activating the thread.
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_mention","user":"U1","text":"<@UBOT> /login","channel":"C1","ts":"701.000","thread_ts":"700.000"}}`)
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Sign in so I can act")
+		return signInPrompted(fake)
 	}, 2*time.Second, 50*time.Millisecond, "the sign-in prompt posts")
 
 	// A new mention in the same thread: the message twin lands first.
@@ -1828,3 +1958,39 @@ func TestUsage_InThreadStillWorks(t *testing.T) {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Last turn — in 7 · out 3 · total 10")
 	}, 2*time.Second, 20*time.Millisecond)
 }
+
+// Slack refusing the reply's rendering does not fail a turn the agent
+// completed: the thread gets the failed reaction and a note that the reply is
+// incomplete, not the generic failure note, and the dispatch succeeds — so the
+// completed task is not cancelled server-side (klaus-gateway#242).
+func TestTurn_RenderFailureAfterCompletionIsNotAFailedTurn(t *testing.T) {
+	fake := newFakeSlackAPI()
+	// Every rendering of the reply is refused; other posts (the note) land.
+	fake.failIf = func(path string, params map[string]any) string {
+		if path == "chat.update" || (path == "chat.postMessage" && strings.Contains(fmt.Sprint(params["blocks"]), "half of the answer")) {
+			return "msg_too_long"
+		}
+		return ""
+	}
+	gw := &stubGateway{
+		deltas: []channels.OutboundDelta{
+			{Kind: channels.DeltaText, Content: "first half of the answer"},
+			{Kind: channels.DeltaText, Content: ", second half of the answer"},
+			{Done: true},
+		},
+		interDeltaDelay: 400 * time.Millisecond,
+	}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+
+	sendEvent(t, srv, dmEvent("U1", "how many nodes?", "555.000"))
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Slack refused the rest of the reply: msg_too_long")
+	}, 10*time.Second, 20*time.Millisecond, "the thread is told the reply is incomplete")
+
+	require.Equal(t, []string{"eyes", "x"}, fake.reactionNames("reactions.add"), "the failed reaction marks the incomplete reply")
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "turn failed", "a completed turn is not reported as failed")
+}
+
+// errTaskGone is the controller's answer for a task it no longer has, as the
+// a2a package surfaces it.
+var errTaskGone = a2apkg.ErrTaskNotFound

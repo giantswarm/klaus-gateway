@@ -2,6 +2,7 @@ package config_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -71,12 +72,18 @@ func TestValidate_A2A(t *testing.T) {
 		require.ErrorContains(t, cfg.Validate(), "grpc://")
 	})
 
-	t.Run("target with a path or without a port is refused", func(t *testing.T) {
+	t.Run("target with a path or a plaintext target without a port is refused", func(t *testing.T) {
 		cfg := base
 		cfg.A2A.URL = "grpc://agentgateway.agent-platform.svc.cluster.local:8080/kagent"
 		require.Error(t, cfg.Validate())
-		cfg.A2A.URL = "grpcs://kagent.example.com"
+		cfg.A2A.URL = "grpc://kagent.example.com"
 		require.Error(t, cfg.Validate())
+	})
+
+	t.Run("tls target without a port is the edge on 443", func(t *testing.T) {
+		cfg := base
+		cfg.A2A.URL = "grpcs://agentgateway.127.0.0.1.nip.io"
+		require.NoError(t, cfg.Validate())
 	})
 
 	t.Run("namespace defaults to kagent and is required", func(t *testing.T) {
@@ -241,6 +248,47 @@ func TestValidate_OBO(t *testing.T) {
 		cfg.OBO.StorePath = "/var/lib/obo/links.bolt"
 		cfg.OBO.StoreKeyFile = "/etc/obo/store.key"
 		require.NoError(t, cfg.Validate())
+		require.Equal(t, config.OBOStoreBolt, cfg.OBO.ResolvedStore(), "a store path alone still means the bolt backend")
+	})
+
+	t.Run("no store path means the memory backend", func(t *testing.T) {
+		require.Equal(t, config.OBOStoreMemory, base.OBO.ResolvedStore())
+	})
+
+	t.Run("secret backend needs the store key", func(t *testing.T) {
+		cfg := base
+		cfg.OBO.Store = config.OBOStoreSecret
+		require.Error(t, cfg.Validate())
+	})
+
+	t.Run("secret backend with key is valid without a path", func(t *testing.T) {
+		cfg := base
+		cfg.OBO.Store = config.OBOStoreSecret
+		cfg.OBO.StoreKeyFile = "/etc/obo/store.key"
+		cfg.OBO.StoreSecretName = config.Defaults().OBO.StoreSecretName
+		require.Equal(t, "klaus-gateway-obo-links", cfg.OBO.StoreSecretName, "the Secret name has a default")
+		require.NoError(t, cfg.Validate())
+	})
+
+	t.Run("secret backend needs a secret name", func(t *testing.T) {
+		cfg := base
+		cfg.OBO.Store = config.OBOStoreSecret
+		cfg.OBO.StoreKeyFile = "/etc/obo/store.key"
+		cfg.OBO.StoreSecretName = ""
+		require.Error(t, cfg.Validate())
+	})
+
+	t.Run("bolt backend named explicitly needs the path", func(t *testing.T) {
+		cfg := base
+		cfg.OBO.Store = config.OBOStoreBolt
+		cfg.OBO.StoreKeyFile = "/etc/obo/store.key"
+		require.Error(t, cfg.Validate())
+	})
+
+	t.Run("unknown backend fails", func(t *testing.T) {
+		cfg := base
+		cfg.OBO.Store = "valkey"
+		require.Error(t, cfg.Validate())
 	})
 
 	t.Run("disabled skips all obo checks", func(t *testing.T) {
@@ -253,6 +301,9 @@ func TestLoad_OBOEnv(t *testing.T) {
 	t.Setenv("KLAUS_GATEWAY_OBO_ENABLED", "true")
 	t.Setenv("KLAUS_GATEWAY_OBO_MUSTER_URL", "https://muster.example.com")
 	t.Setenv("KLAUS_GATEWAY_OBO_CLIENT_ID", "klaus-gateway")
+	t.Setenv("KLAUS_GATEWAY_OBO_STORE", "secret")
+	t.Setenv("KLAUS_GATEWAY_OBO_STORE_SECRET", "links")
+	t.Setenv("KLAUS_GATEWAY_OBO_STORE_SECRET_NAMESPACE", "agent-platform")
 
 	cfg, err := config.Load([]string{"--obo-callback-base-url", "https://gateway.example.com"})
 	require.NoError(t, err)
@@ -260,6 +311,9 @@ func TestLoad_OBOEnv(t *testing.T) {
 	require.Equal(t, "https://muster.example.com", cfg.OBO.MusterURL)
 	require.Equal(t, "klaus-gateway", cfg.OBO.ClientID)
 	require.Equal(t, "https://gateway.example.com", cfg.OBO.CallbackBaseURL, "flag sets callback base url")
+	require.Equal(t, config.OBOStoreSecret, cfg.OBO.Store)
+	require.Equal(t, "links", cfg.OBO.StoreSecretName)
+	require.Equal(t, "agent-platform", cfg.OBO.StoreSecretNamespace)
 }
 
 func TestA2ADefaults(t *testing.T) {
@@ -283,4 +337,43 @@ func TestLoad_A2ANamespaceAndCAFile(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "team-a", cfg.A2A.Namespace, "the flag overrides the env value")
 	require.Equal(t, "/etc/klaus-gateway/a2a/ca.crt", cfg.A2A.CAFile)
+}
+
+func TestValkeyStoreConfig(t *testing.T) {
+	t.Run("url required", func(t *testing.T) {
+		cfg := config.Defaults()
+		cfg.Store = config.StoreValkey
+		require.Error(t, cfg.Validate())
+		cfg.Valkey.URL = "muster-valkey:6379"
+		require.NoError(t, cfg.Validate())
+		cfg.Valkey.Timeout = 0
+		require.Error(t, cfg.Validate(), "the timeout is what keeps an outage from hanging a turn")
+	})
+
+	t.Run("flags and env", func(t *testing.T) {
+		t.Setenv("KLAUS_GATEWAY_VALKEY_PASSWORD", "from-env")
+		t.Setenv("KLAUS_GATEWAY_VALKEY_TLS", "true")
+		cfg, err := config.Load([]string{
+			"--store", "valkey", "--valkey-url", "muster-valkey:6379", "--valkey-username", "gateway",
+			"--valkey-key-prefix", "gw:", "--valkey-timeout", "750ms", "--valkey-db", "2",
+			"--valkey-tls-server-name", "muster-valkey.agent-platform.svc",
+		})
+		require.NoError(t, err)
+		require.NoError(t, cfg.Validate())
+		require.Equal(t, config.StoreValkey, cfg.Store)
+		require.Equal(t, "muster-valkey:6379", cfg.Valkey.URL)
+		require.Equal(t, "gateway", cfg.Valkey.Username)
+		require.Equal(t, "from-env", cfg.Valkey.Password, "the password has no flag")
+		require.Equal(t, "gw:", cfg.Valkey.KeyPrefix)
+		require.Equal(t, 750*time.Millisecond, cfg.Valkey.Timeout)
+		require.Equal(t, 2, cfg.Valkey.DB)
+		require.True(t, cfg.Valkey.TLS)
+		require.Equal(t, "muster-valkey.agent-platform.svc", cfg.Valkey.TLSServerName)
+	})
+
+	t.Run("defaults", func(t *testing.T) {
+		cfg := config.Defaults()
+		require.Equal(t, 2*time.Second, cfg.Valkey.Timeout)
+		require.Empty(t, cfg.Valkey.KeyPrefix, "the store applies its own default prefix")
+	})
 }
