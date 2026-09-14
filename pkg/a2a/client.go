@@ -10,7 +10,6 @@
 package a2a
 
 import (
-	"net"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -18,6 +17,7 @@ import (
 	"fmt"
 	"iter"
 	"log/slog"
+	"net"
 	"net/url"
 	"os"
 	"strings"
