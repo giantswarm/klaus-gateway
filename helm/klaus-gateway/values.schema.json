@@ -632,7 +632,53 @@
                     "type": "string"
                 },
                 "store": {
-                    "type": "string"
+                    "type": "string",
+                    "enum": [
+                        "memory",
+                        "valkey",
+                        "crd",
+                        "bolt",
+                        "configmap"
+                    ]
+                },
+                "valkey": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "db": {
+                            "type": "integer"
+                        },
+                        "existingSecret": {
+                            "type": "string"
+                        },
+                        "keyPrefix": {
+                            "type": "string"
+                        },
+                        "passwordKey": {
+                            "type": "string"
+                        },
+                        "timeout": {
+                            "type": "string"
+                        },
+                        "tls": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                                "enabled": {
+                                    "type": "boolean"
+                                },
+                                "serverName": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "url": {
+                            "type": "string"
+                        },
+                        "username": {
+                            "type": "string"
+                        }
+                    }
                 }
             }
         },

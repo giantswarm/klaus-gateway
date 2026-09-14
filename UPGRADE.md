@@ -4,6 +4,39 @@ Breaking or operator-visible changes between releases, newest first. The
 `CHANGELOG.md` lists every change; this file covers what an operator has to
 do or decide.
 
+## 1.6.0 — a routing store for installations (`routing.store: valkey`)
+
+Every installation so far ran `routing.store: memory`: a gateway restart
+dropped every thread's binding to its agent instance (the next reply started
+a fresh conversation) and, since 1.5.0, the record of the turn in flight
+whose result the restarted gateway would otherwise deliver. The chart's
+cluster-backed stores were not a way out — `configmap` holds the whole table
+in one object the chart grants no access to, `crd` needs the embedded
+controller and cluster-scoped RBAC.
+
+1.6.0 adds Valkey as a routing store: one key per thread, the entry's TTL as
+the key's expiry, no volume, no API-server access. The agent platform already
+runs a Valkey for muster's token store, so the switch is a values change:
+
+```yaml
+routing:
+  store: valkey
+  valkey:
+    url: muster-valkey:6379
+    existingSecret: agent-platform-secrets   # holds valkey-password
+```
+
+The gateway pod needs egress to the Valkey pods on 6379; on a Cilium
+installation that is a connectivity-chart rule, not a gateway value. Every
+Valkey call is bounded by `routing.valkey.timeout` (2 s): an outage fails the
+turn with an error in the thread and fails readiness, both recover with the
+server. Existing bindings are not migrated — the first reply in each thread
+after the switch starts a fresh conversation once, as every restart did before.
+
+`values.yaml` now states which stores are meant for installations (`valkey`,
+`crd`) and what `bolt` needs to be durable (a mounted volume, which the chart
+does not provide).
+
 ## 1.3.0 — the OBO link store moves off the volume (`obo.store: secret`)
 
 The Slack on-behalf-of link store (`obo.storePath`, the encrypted bolt file)

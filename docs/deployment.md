@@ -176,7 +176,7 @@ The gateway speaks to the controller only as the person behind the turn (their D
 so the route's JWT policy validates one issuer and no ServiceAccount token is presented to it.
 The route must carry native gRPC over HTTP/2 and preserve the `authorization` and
 `x-kagent-agent-instance-id` metadata. Thread bindings live in the routing store, so a
-persistent store (`bolt`, `configmap`, `crd`) keeps conversations across restarts — and lets a
+persistent store (`valkey`, `crd`) keeps conversations across restarts — and lets a
 restarted gateway pick up the turns its predecessor left running, see
 [Shutdown and restarts](#shutdown-and-restarts).
 
@@ -216,15 +216,45 @@ failure never costs a person their sign-in:
 ## Routing store
 
 The routing table maps `(channel, channelID, userID, threadID)` to a Klaus instance name, or a
-thread to the kagent AgentInstance that holds its conversation (`agentInstanceID` on a
-`ChannelRoute`). Choose the backend that matches your deployment:
+thread to the kagent AgentInstance that holds its conversation, together with the record of the
+task in flight on that thread (delivered after a restart, see
+[Shutdown and restarts](#shutdown-and-restarts)). Choose the backend that matches your deployment:
 
 | Store       | Helm value         | Persistent | Cluster-backed | Notes                              |
 |-------------|-------------------|------------|----------------|------------------------------------|
 | `memory`    | `routing.store: memory`    | no  | no  | Default; state lost on restart     |
-| `bolt`      | `routing.store: bolt`      | yes | no  | Local file; set `routing.boltPath` |
-| `configmap` | `routing.store: configmap` | yes | yes | One ConfigMap per namespace        |
-| `crd`       | `routing.store: crd`       | yes | yes | One `ChannelRoute` CR per conversation; requires `controller.enabled` |
+| `valkey`    | `routing.store: valkey`    | yes | yes | For installations. One key per thread in a Valkey server; set `routing.valkey.url` and the password Secret |
+| `crd`       | `routing.store: crd`       | yes | yes | For installations without a Valkey. One `ChannelRoute` CR per conversation; requires `controller.enabled` |
+| `bolt`      | `routing.store: bolt`      | file | no | Local file; set `routing.boltPath`. Durable only inside a mounted volume, which the chart does not provide |
+| `configmap` | `routing.store: configmap` | yes | yes | Not for installations: one ConfigMap holds the whole table (1 MiB cap, a read-modify-write of everything on every turn) and the chart renders no RBAC for it |
+
+### Valkey
+
+`routing.store: valkey` keeps one key per thread (`klaus-gateway:route:` + the serialised routing
+key, so a channel's entries share a prefix) with the JSON entry as its value; an entry with a TTL
+expires server-side. The gateway needs no volume and no API-server access, and replicas can
+share the table. The agent platform runs a Valkey for muster's token store (`muster-valkey:6379`,
+password under `valkey-password` in the platform Secret), which the gateway can share:
+
+```yaml
+routing:
+  store: valkey
+  valkey:
+    url: muster-valkey:6379
+    existingSecret: agent-platform-secrets   # the platform's shared Secret
+    passwordKey: valkey-password
+    # username: ""        # ACL user; empty is the default user
+    # tls: {enabled: false, serverName: ""}
+    # keyPrefix: ""       # klaus-gateway:route: — set it when two gateways share one server
+    # timeout: "2s"
+```
+
+The chart passes the password to the pod as `KLAUS_GATEWAY_VALKEY_PASSWORD` from the Secret; the
+binary also takes `--valkey-password-file` for a mounted file. Every dial and command is bounded by
+`routing.valkey.timeout` (default 2 s): while Valkey is unreachable a turn fails after that long
+with a clear error in the thread, the pod's readiness probe (a `PING`) fails, and both recover with
+the server — no restart. Under a Cilium network policy the gateway pod needs egress to the Valkey
+pods on 6379 (the agent platform's connectivity chart renders it).
 
 ### ChannelRoute CRD
 
@@ -326,8 +356,9 @@ resubscribe to it and deliver the answer ([channels-slack.md](channels-slack.md#
 the closes; below the drain plus the stop, the kubelet kills the pod before the notice goes
 out and the thread is left with a frozen ticker. The recovery of left-running turns needs a
 routing store that outlives the pod: `routing.store: memory` (the chart default) forgets the
-binding and the task with it. Installations with a Slack channel should run `configmap`
-(cluster-backed, no volume) or `crd`; `bolt` works too where a volume is acceptable.
+binding and the task with it. Installations with a Slack channel should run `valkey` (see
+[Valkey](#valkey)), or `crd` where no Valkey is available; `bolt` only counts when `routing.boltPath`
+lies inside a mounted volume.
 
 ## Values reference
 

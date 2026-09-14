@@ -42,7 +42,7 @@ pkg/lifecycle/klausctl/ calls klausctl CLI (local dev)
 pkg/lifecycle/operator/ calls Klaus Operator MCP tools (cluster)
 pkg/lifecycle/static/   fixed instance map (compose harness / CI)
 pkg/routing/            routing table
-pkg/routing/store/      Store interface + four backends (memory, bolt, configmap, crd)
+pkg/routing/store/      Store interface + five backends (memory, valkey, crd, bolt, configmap)
 pkg/auth/musterlink/    Slack OBO: muster account linking + the link Store (memory, bolt file, Kubernetes Secret)
 pkg/server/             http.Server wiring, middleware, admin mux
 pkg/upstream/           agentgateway upstream URL rewriter
@@ -65,14 +65,15 @@ deploy/slack/manifest.yaml    Slack app manifest
 
 ## Routing stores
 
-Four backends are supported (set via `--store` / `KLAUS_GATEWAY_STORE`):
+Five backends are supported (set via `--store` / `KLAUS_GATEWAY_STORE`):
 
 | Store       | Value        | Persistent | Cluster-backed | Notes                                       |
 |-------------|-------------|------------|----------------|---------------------------------------------|
 | Memory      | `memory`    | no         | no             | Default; state lost on restart              |
-| Bolt        | `bolt`      | yes        | no             | Local file; path via `--bolt-path`          |
-| ConfigMap   | `configmap` | yes        | yes            | One `ConfigMap` per namespace               |
+| Valkey      | `valkey`    | yes        | yes            | For installations. One key per entry in Valkey (`--valkey-url`, password from `KLAUS_GATEWAY_VALKEY_PASSWORD` or `--valkey-password-file`); TTL as key expiry; every call bounded by `--valkey-timeout` |
 | CRD         | `crd`       | yes        | yes            | One `ChannelRoute` CR per conversation; requires `--controller` |
+| Bolt        | `bolt`      | yes        | no             | Local file; path via `--bolt-path`          |
+| ConfigMap   | `configmap` | yes        | yes            | Not for installations: one `ConfigMap` holds the whole table |
 
 When `--store=crd --controller=true` the embedded `controller-runtime` manager is started
 in-process and watches `ChannelRoute` CRs to update their status conditions.

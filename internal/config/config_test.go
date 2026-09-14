@@ -2,6 +2,7 @@ package config_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -336,4 +337,43 @@ func TestLoad_A2ANamespaceAndCAFile(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "team-a", cfg.A2A.Namespace, "the flag overrides the env value")
 	require.Equal(t, "/etc/klaus-gateway/a2a/ca.crt", cfg.A2A.CAFile)
+}
+
+func TestValkeyStoreConfig(t *testing.T) {
+	t.Run("url required", func(t *testing.T) {
+		cfg := config.Defaults()
+		cfg.Store = config.StoreValkey
+		require.Error(t, cfg.Validate())
+		cfg.Valkey.URL = "muster-valkey:6379"
+		require.NoError(t, cfg.Validate())
+		cfg.Valkey.Timeout = 0
+		require.Error(t, cfg.Validate(), "the timeout is what keeps an outage from hanging a turn")
+	})
+
+	t.Run("flags and env", func(t *testing.T) {
+		t.Setenv("KLAUS_GATEWAY_VALKEY_PASSWORD", "from-env")
+		t.Setenv("KLAUS_GATEWAY_VALKEY_TLS", "true")
+		cfg, err := config.Load([]string{
+			"--store", "valkey", "--valkey-url", "muster-valkey:6379", "--valkey-username", "gateway",
+			"--valkey-key-prefix", "gw:", "--valkey-timeout", "750ms", "--valkey-db", "2",
+			"--valkey-tls-server-name", "muster-valkey.agent-platform.svc",
+		})
+		require.NoError(t, err)
+		require.NoError(t, cfg.Validate())
+		require.Equal(t, config.StoreValkey, cfg.Store)
+		require.Equal(t, "muster-valkey:6379", cfg.Valkey.URL)
+		require.Equal(t, "gateway", cfg.Valkey.Username)
+		require.Equal(t, "from-env", cfg.Valkey.Password, "the password has no flag")
+		require.Equal(t, "gw:", cfg.Valkey.KeyPrefix)
+		require.Equal(t, 750*time.Millisecond, cfg.Valkey.Timeout)
+		require.Equal(t, 2, cfg.Valkey.DB)
+		require.True(t, cfg.Valkey.TLS)
+		require.Equal(t, "muster-valkey.agent-platform.svc", cfg.Valkey.TLSServerName)
+	})
+
+	t.Run("defaults", func(t *testing.T) {
+		cfg := config.Defaults()
+		require.Equal(t, 2*time.Second, cfg.Valkey.Timeout)
+		require.Empty(t, cfg.Valkey.KeyPrefix, "the store applies its own default prefix")
+	})
 }
