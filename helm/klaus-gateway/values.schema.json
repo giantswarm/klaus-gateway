@@ -62,7 +62,7 @@
         },
         "affinity": {
             "type": "object",
-            "additionalProperties": false
+            "additionalProperties": true
         },
         "agentgateway": {
             "type": "object",
@@ -423,7 +423,7 @@
         },
         "nodeSelector": {
             "type": "object",
-            "additionalProperties": false
+            "additionalProperties": true
         },
         "obo": {
             "type": "object",
