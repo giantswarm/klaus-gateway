@@ -2111,6 +2111,7 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 	w.adapter = a
 	w.slackUser = slackUser
 	w.connectorPrompts = a.ConnectorPrompts
+	w.sessionTitle = sessionTitleFor(msg)
 
 	// cleanupCtx survives the turn context so a /stop-cancelled turn still gets
 	// its progress indicator cleared and terminal notes posted.

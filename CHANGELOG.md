@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Chart: `podAnnotations` (merged onto the pod template) and a `podDisruptionBudget` knob (`enabled`, exactly one of `minAvailable` / `maxUnavailable`, optional `unhealthyPodEvictionPolicy`; off by default). The agent platform uses them to keep Karpenter's consolidation away from the pod that carries live channel turns (`karpenter.sh/do-not-disrupt`) and to refuse voluntary evictions of the single replica (giantswarm/agent-platform#431).
+- Slack conversations are now named in the Messages tab timeline, so the list reads "Investigate CPU alert on gazelle" instead of untitled entries. The name is the thread's first message with the bot mention, an `/agent "<name>"` selector and any other leading slash verb stripped, whitespace collapsed, and a word-boundary cut at Slack's 200-character limit. It is set when the conversation's session is created, so renaming a conversation by hand in Slack sticks.
 
 ### Changed
 

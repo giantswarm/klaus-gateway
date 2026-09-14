@@ -54,6 +54,19 @@ agent messaging disabled for the workspace — drop the native indicator for the
 rest of the process lifetime and keep the message ticker. A `not_authorized`
 rejection (the bot is not a member of that one channel) only costs that call.
 
+The same call **names the session**, so the Messages tab timeline lists
+conversations as "Investigate CPU alert on gazelle" rather than untitled. The
+title is the thread's first human message, normalised: the bot mention, an
+`/agent "<name>"` selector and any other leading slash verb are stripped (they
+address the bot, they do not describe the conversation), whitespace collapses
+to single spaces, and the result is cut at a word boundary to Slack's
+200-character limit with a trailing `…`. It is sent only on the turn whose
+message is the thread root, because Slack applies a title when the call
+*creates* the session and ignores it afterwards — which is also what keeps a
+title a user renamed by hand from being overwritten. A first message that
+normalises to nothing (a bare command, an upload with no caption) sends no
+title and leaves Slack to name the session.
+
 ### Threads and sessions
 
 - `threadID` is `thread_ts` if set, otherwise the message `ts`.
