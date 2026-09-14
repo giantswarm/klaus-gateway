@@ -277,6 +277,11 @@ const stopNothingRunningNotice = "_Nothing is running in this thread._"
 // native stop button so an interruption reads the same however it was asked for.
 const stopStoppedNotice = "⏹ Stopped."
 
+// notPermittedNotice refuses a caller who may read the thread but was never let
+// in to instruct the agent there. Shared by the gated commands and the native
+// stop button, which enforce the same per-thread rule.
+const notPermittedNotice = "_You can read this thread, but only people the thread owner has allowed can instruct the agent (that includes this command). Post a message and the owner can let you in._"
+
 // signInLinkExpiredNote replaces a sign-in prompt whose link outlived its
 // state TTL once a fresh prompt is posted, so the dead button cannot be
 // mistaken for the live one. Only a DM prompt is rewritten this way; a channel

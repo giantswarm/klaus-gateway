@@ -1495,21 +1495,39 @@ func (a *Adapter) handleContextChanged(inner slackInnerEvent) {
 
 // handleSessionStopped reacts to the user pressing the stop button Slack
 // renders on the native working indicator. It is the /stop command by another
-// route, so it takes the same path: cancel the thread's in-flight turn and
-// confirm the interruption in the thread.
+// route, so it takes the same path: the same per-thread access rule, then
+// cancel the thread's in-flight turn and confirm the interruption in the thread.
 //
-// Slack never moves the session out of processing on its own. A click that
+// The refusal is ephemeral, unlike /stop's: the presser typed nothing visible,
+// so a reply in the thread would be an answer to a question nobody there saw
+// being asked. A refused press sends no status — the session stays in
+// processing because the turn really is still running, which is correct.
+//
+// Slack never moves the session out of processing on its own. A press that
 // cancels a turn gets the idle status from that turn's own exit path, but a
-// click that finds nothing running (a stale indicator, a click racing the
+// press that finds nothing running (a stale indicator, a press racing the
 // turn's last exit) has no exit path left to ride, so it sends the idle status
 // here — otherwise the indicator spins on for up to an hour.
 //
-// Stale-event dropping deliberately does not apply: a click older than this
+// Stale-event dropping deliberately does not apply: a press older than this
 // process is exactly the stranded indicator this handler exists to clear.
 func (a *Adapter) handleSessionStopped(ctx context.Context, inner slackInnerEvent) {
 	if inner.Channel == "" || inner.ThreadTS == "" {
 		a.Logger.Debug("slack: agent session stopped without a channel and thread",
 			"channel", inner.Channel, "thread", inner.ThreadTS)
+		return
+	}
+	// Same first-sight rule /stop uses: the first caller of any interaction
+	// becomes the thread's initiator, and only they (or someone they let in)
+	// may interrupt the agent there.
+	access := a.accessPolicy()
+	access.SetInitiator(inner.ThreadTS, inner.User)
+	if !access.Allowed(inner.ThreadTS, inner.User) {
+		a.Logger.Debug("slack: stop button press refused, presser not permitted in this thread",
+			"channel", inner.Channel, "thread", inner.ThreadTS, "user", inner.User)
+		if err := a.apiClient().postEphemeralText(ctx, inner.Channel, inner.User, inner.ThreadTS, notPermittedNotice); err != nil {
+			a.Logger.Warn("slack: post stop-button refusal failed", "error", err)
+		}
 		return
 	}
 	if !a.stopThread(inner.ThreadTS) {

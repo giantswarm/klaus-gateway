@@ -39,12 +39,18 @@ const sessionStoppedEvent = `{
 	}
 }`
 
-// stopAPIRecorder is a fake Slack Web API recording the two calls the stop
-// path can make: the in-thread notice and the session status.
+// stopEventUser is the presser in the recorded payload.
+const stopEventUser = "U123ABC456"
+
+// stopAPIRecorder is a fake Slack Web API recording the three calls the stop
+// path can make: the in-thread notice, the ephemeral refusal, and the session
+// status.
 type stopAPIRecorder struct {
-	mu        sync.Mutex
-	postTexts []string
-	statuses  []string
+	mu             sync.Mutex
+	postTexts      []string
+	ephemeralTexts []string
+	ephemeralUsers []string
+	statuses       []string
 }
 
 func (r *stopAPIRecorder) handler() http.Handler {
@@ -56,6 +62,18 @@ func (r *stopAPIRecorder) handler() http.Handler {
 		r.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "ts": "1234.5678"})
+	})
+	mux.HandleFunc("/chat.postEphemeral", func(w http.ResponseWriter, req *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(req.Body).Decode(&body)
+		text, _ := body[paramText].(string)
+		user, _ := body[paramUser].(string)
+		r.mu.Lock()
+		r.ephemeralTexts = append(r.ephemeralTexts, text)
+		r.ephemeralUsers = append(r.ephemeralUsers, user)
+		r.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
 	})
 	mux.HandleFunc("/"+methodSetSessionStatus, func(w http.ResponseWriter, req *http.Request) {
 		var body map[string]any
@@ -70,10 +88,12 @@ func (r *stopAPIRecorder) handler() http.Handler {
 	return mux
 }
 
-func (r *stopAPIRecorder) snapshot() (posts, statuses []string) {
+func (r *stopAPIRecorder) snapshot() (posts, ephemerals, statuses []string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return append([]string(nil), r.postTexts...), append([]string(nil), r.statuses...)
+	return append([]string(nil), r.postTexts...),
+		append([]string(nil), r.ephemeralTexts...),
+		append([]string(nil), r.statuses...)
 }
 
 // deliverStopEvent drives the recorded payload through the Events API handler,
@@ -134,12 +154,13 @@ func TestSessionStopped_CancelsRunningTurn(t *testing.T) {
 		t.Fatal("expected the stop button to cancel the in-flight turn")
 	}
 	require.Eventually(t, func() bool {
-		posts, _ := rec.snapshot()
+		posts, _, _ := rec.snapshot()
 		return len(posts) == 1
 	}, 2*time.Second, 10*time.Millisecond, "expected the stopped notice in the thread")
 
-	posts, statuses := rec.snapshot()
+	posts, ephemerals, statuses := rec.snapshot()
 	require.Equal(t, []string{stopStoppedNotice}, posts)
+	require.Empty(t, ephemerals)
 	require.Empty(t, statuses, "the cancelled turn's exit path owns the idle status")
 }
 
@@ -152,13 +173,52 @@ func TestSessionStopped_NoRunningTurnSetsActive(t *testing.T) {
 	deliverStopEvent(t, a)
 
 	require.Eventually(t, func() bool {
-		_, statuses := rec.snapshot()
+		_, _, statuses := rec.snapshot()
 		return len(statuses) == 1
 	}, 2*time.Second, 10*time.Millisecond, "expected the session to be set back to active")
 
-	posts, statuses := rec.snapshot()
+	posts, ephemerals, statuses := rec.snapshot()
 	require.Equal(t, []string{string(sessionActive)}, statuses)
 	require.Empty(t, posts, "nothing was running, so nothing is confirmed stopped")
+	require.Empty(t, ephemerals)
+}
+
+// The button carries the per-thread access rule /stop carries: an onlooker the
+// thread owner never let in cannot interrupt the agent. The refusal is
+// ephemeral to the presser, and no status is sent — the session stays in
+// processing because the turn really is still running.
+func TestSessionStopped_NotPermittedUserIsRefused(t *testing.T) {
+	a, rec := newStopTestAdapter(t)
+
+	// Someone else owns the thread, so the presser is a mere onlooker.
+	a.accessPolicy().SetInitiator(stopEventThreadTS, "U-owner")
+
+	cancelled := make(chan struct{})
+	a.threadsMu.Lock()
+	a.threads = map[string]*threadState{
+		stopEventThreadTS: {slot: &turnSlot{turn: &turn{cancel: func() { close(cancelled) }}}},
+	}
+	a.threadsMu.Unlock()
+
+	deliverStopEvent(t, a)
+
+	require.Eventually(t, func() bool {
+		_, ephemerals, _ := rec.snapshot()
+		return len(ephemerals) == 1
+	}, 2*time.Second, 10*time.Millisecond, "expected the refusal to reach the presser")
+
+	posts, ephemerals, statuses := rec.snapshot()
+	require.Equal(t, []string{notPermittedNotice}, ephemerals)
+	rec.mu.Lock()
+	require.Equal(t, []string{stopEventUser}, rec.ephemeralUsers, "the refusal goes to the presser")
+	rec.mu.Unlock()
+	require.Empty(t, posts, "the refusal stays private to the presser")
+	require.Empty(t, statuses, "a refused press leaves the running turn's status alone")
+	select {
+	case <-cancelled:
+		t.Fatal("an onlooker's press must not cancel the turn")
+	default:
+	}
 }
 
 // Socket Mode delivers the event in an events_api payload carrying the same
