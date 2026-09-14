@@ -147,13 +147,14 @@ type Adapter struct {
 	// bgWG tracks every goroutine started via background so Stop can join them,
 	// and bgStopped drops late spawns once Stop has begun. Without the join a
 	// goroutine outlives the adapter that spawned it.
-	bgMu      sync.Mutex
-	cancel    context.CancelFunc
-	bgStopped bool
-	bgWG      sync.WaitGroup
-	startUnix int64 // process start; events older than this are dropped on reconnect
-	evHandler http.Handler
-	ixHandler http.Handler // interactions endpoint; nil in socketmode
+	bgMu       sync.Mutex
+	cancel     context.CancelFunc
+	bgStopped  bool
+	bgWG       sync.WaitGroup
+	startUnix  int64 // process start; events older than this are dropped on reconnect
+	evHandler  http.Handler
+	ixHandler  http.Handler // interactions endpoint; nil in socketmode
+	cmdHandler http.Handler // slash commands endpoint; nil in socketmode
 
 	accessMu sync.Mutex
 	access   AccessPolicy // lazily initialised via accessPolicy()
@@ -422,6 +423,10 @@ func (a *Adapter) Start(ctx context.Context, gw channels.Gateway) error {
 			signingSecret: a.Secrets.SigningSecret,
 			adapter:       a,
 		}
+		a.cmdHandler = &commandsHandler{
+			signingSecret: a.Secrets.SigningSecret,
+			adapter:       a,
+		}
 	case ModeSocketMode:
 		if a.Secrets.AppToken == "" {
 			return errors.New("slack: app_token is required in socketmode")
@@ -559,10 +564,11 @@ func (a *Adapter) Stop(ctx context.Context) error {
 	}
 }
 
-// Mount attaches /channels/slack/events and /channels/slack/interactions to r,
-// plus the browser-facing connector sign-in landing. In socketmode only the
-// landing is mounted (no Slack HTTP handlers needed, but muster still
-// redirects the browser here after a connector sign-in).
+// Mount attaches /channels/slack/events, /channels/slack/interactions and
+// /channels/slack/commands to r, plus the browser-facing connector sign-in
+// landing. In socketmode only the landing is mounted (no Slack HTTP handlers
+// needed, but muster still redirects the browser here after a connector
+// sign-in).
 func (a *Adapter) Mount(r chi.Router) {
 	r.Get(ConnectorCompletePath, a.handleConnectorComplete)
 	if a.evHandler == nil {
@@ -572,6 +578,9 @@ func (a *Adapter) Mount(r chi.Router) {
 		r.Handle("/events", a.evHandler)
 		if a.ixHandler != nil {
 			r.Handle("/interactions", a.ixHandler)
+		}
+		if a.cmdHandler != nil {
+			r.Handle("/commands", a.cmdHandler)
 		}
 	})
 }
@@ -1558,8 +1567,11 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 		// /agent is not a consumed command: the select form mutates msg (agent
 		// ref stamped, prefix stripped) and continues into dispatch as the
 		// conversation's first turn.
+		// Selection reads the agent catalogue (roster, card) at the kagent
+		// controller, which serves it to a human identity; run those reads as
+		// the caller so a cold roster cache does not refuse a valid pick.
 		if cmd.Name == cmdAgent {
-			if !a.handleAgentSelection(ctx, cmd, &msg, inner.Channel) {
+			if !a.handleAgentSelection(a.withCallerToken(ctx, msg.Subject), cmd, &msg, inner.Channel) {
 				return
 			}
 		} else if a.handleCommand(ctx, cmd, msg.Subject, inner.Channel, msg.ThreadID) {
@@ -1753,6 +1765,15 @@ func (a *Adapter) seedInitiatorFromRoot(ctx context.Context, slackChannel, threa
 // dispatch resolves an inbound Slack message to a Klaus instance, posts a
 // placeholder reply in-thread, and streams the completion back via chat.update batches.
 func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, slackChannel string) error {
+	return a.dispatchFrom(ctx, msg, slackChannel, agentSourcePrefix)
+}
+
+// dispatchFrom is dispatch for a message whose AgentRef the caller already
+// stamped; explicitSource is the agent_source the dispatch record carries for
+// it (agentSourcePrefix for an /agent prefix, agentSourceCommand for the slash
+// command's picker). Ignored when AgentRef is empty: the conversation binding
+// or the default decides, and names its own source.
+func (a *Adapter) dispatchFrom(ctx context.Context, msg channels.InboundMessage, slackChannel, explicitSource string) error {
 	if !a.started.Load() {
 		return errors.New("slack: adapter not started")
 	}
@@ -1808,7 +1829,12 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 	// every message carries the chat's Slack-created anchor as thread_ts.
 	// A refusal means the conversation's display-name binding no longer
 	// resolves; the turn is answered with the notice, never re-routed.
-	agentSource, opener := agentSourcePrefix, true
+	// From here on the catalogue reads (binding recovery, branding) run as the
+	// caller: the controller serves the roster to a human identity, and a
+	// plain context only gets a warm cache. Best-effort — an unlinked caller
+	// keeps the plain context, and the turn itself still mints its own token.
+	ctx = a.withCallerToken(ctx, slackUser)
+	agentSource, opener := explicitSource, true
 	if msg.AgentRef == "" {
 		var refusal string
 		msg.AgentRef, agentSource, opener, refusal = a.threadAgent(ctx, msg, slackChannel)

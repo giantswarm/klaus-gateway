@@ -43,6 +43,20 @@ features:
       type: message
       callback_id: inspect_agent_steps
       description: Show the tool calls behind the agent's recent turns in this thread (only visible to you)
+  # Native slash command: opens the agent picker modal (agent select over the
+  # live roster + question box); submitting it posts the conversation root in
+  # the channel and runs the question as the thread's first turn. The gateway
+  # does not depend on the command's name, so rename it per app if you like;
+  # names are workspace-global (avoid /agent: it collides with Slack's built-in
+  # /agents). Slack hides developer slash commands in threads and in the agent
+  # pane, so this only opens channel conversations. Set the url to your public
+  # hostname, like the request URLs below.
+  slash_commands:
+    - command: /swarmgeist
+      description: Start a conversation with an agent
+      usage_hint: "[question]"
+      url: https://example.com/channels/slack/commands
+      should_escape: false
   # Agent view (assistant surface). Required for the app_home_opened /
   # app_context_changed lifecycle events. Note: per Slack, adopting agent_view
   # is one-way (no downgrade to the legacy assistant_view).
@@ -80,6 +94,10 @@ oauth_config:
       - channels:join
       # Assistant surface (agent_view); Slack adds this scope with the feature.
       - assistant:write
+      # Slash commands and shortcuts. Already granted on installs that carry the
+      # message shortcut (Slack adds it with the feature); listed so a fresh
+      # install gets it.
+      - commands
 
 settings:
   event_subscriptions:
@@ -104,7 +122,8 @@ settings:
       - app_context_changed
   interactivity:
     is_enabled: true
-    # Interactions request URL. Replace with your public hostname.
+    # Interactions request URL (Block Kit clicks, the message shortcut, the
+    # agent picker's view_submission). Replace with your public hostname.
     request_url: https://example.com/channels/slack/interactions
   org_deploy_enabled: false
   socket_mode_enabled: false
