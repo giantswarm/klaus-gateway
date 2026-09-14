@@ -1460,8 +1460,11 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 		// /agent is not a consumed command: the select form mutates msg (agent
 		// ref stamped, prefix stripped) and continues into dispatch as the
 		// conversation's first turn.
+		// Selection reads the agent catalogue (roster, card) at the kagent
+		// controller, which serves it to a human identity; run those reads as
+		// the caller so a cold roster cache does not refuse a valid pick.
 		if cmd.Name == cmdAgent {
-			if !a.handleAgentSelection(ctx, cmd, &msg, inner.Channel) {
+			if !a.handleAgentSelection(a.withCallerToken(ctx, msg.Subject), cmd, &msg, inner.Channel) {
 				return
 			}
 		} else if a.handleCommand(ctx, cmd, msg.Subject, inner.Channel, msg.ThreadID) {
@@ -1719,6 +1722,11 @@ func (a *Adapter) dispatchFrom(ctx context.Context, msg channels.InboundMessage,
 	// every message carries the chat's Slack-created anchor as thread_ts.
 	// A refusal means the conversation's display-name binding no longer
 	// resolves; the turn is answered with the notice, never re-routed.
+	// From here on the catalogue reads (binding recovery, branding) run as the
+	// caller: the controller serves the roster to a human identity, and a
+	// plain context only gets a warm cache. Best-effort — an unlinked caller
+	// keeps the plain context, and the turn itself still mints its own token.
+	ctx = a.withCallerToken(ctx, slackUser)
 	agentSource, opener := explicitSource, true
 	if msg.AgentRef == "" {
 		var refusal string
