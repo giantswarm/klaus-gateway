@@ -9,10 +9,11 @@ package config
 import (
 	"flag"
 	"fmt"
-	"net/url"
 	"os"
 	"strings"
 	"time"
+
+	"github.com/giantswarm/klaus-gateway/pkg/a2a"
 )
 
 // DMMode selects how Slack direct messages are handled. Mirrors the adapter's
@@ -63,7 +64,7 @@ type A2AConfig struct {
 	DefaultAgent string
 	// URL is the kagent controller's gRPC target, reached through agentgateway:
 	// grpc://host:port (plaintext h2c, the in-cluster agentgateway Service) or
-	// grpcs://host:port (TLS, the public hostname).
+	// grpcs://host[:port] (TLS, the public hostname; 443 when no port is named).
 	URL string
 	// CAFile optionally names a PEM bundle trusted for a grpcs:// URL in
 	// addition to the system roots.
@@ -81,17 +82,11 @@ type A2AConfig struct {
 	FallbackIconURLTemplate string
 }
 
-// ValidateURL checks the gRPC target shape of URL.
+// ValidateURL checks the gRPC target shape of URL, the way the client parses
+// it: grpc://host:port or grpcs://host[:port], no path.
 func (c A2AConfig) ValidateURL() error {
-	u, err := url.Parse(c.URL)
-	if err != nil {
-		return fmt.Errorf("--a2a-url %q: %w", c.URL, err)
-	}
-	if u.Scheme != "grpc" && u.Scheme != "grpcs" {
-		return fmt.Errorf("--a2a-url %q must use the grpc:// (h2c) or grpcs:// (TLS) scheme", c.URL)
-	}
-	if u.Hostname() == "" || u.Port() == "" || u.Path != "" || u.RawQuery != "" {
-		return fmt.Errorf("--a2a-url %q must be %s://host:port with no path", c.URL, u.Scheme)
+	if _, _, err := a2a.ParseTarget(c.URL); err != nil {
+		return fmt.Errorf("--a2a-url: %w", err)
 	}
 	return nil
 }
@@ -342,7 +337,7 @@ func Load(args []string) (Config, error) {
 	fs.BoolVar(&cfg.Controller, "controller", cfg.Controller, "Enable the embedded ChannelRoute controller (requires --store=crd).")
 	fs.BoolVar(&cfg.A2A.Enabled, "a2a-enabled", cfg.A2A.Enabled, "Enable the A2A client surface.")
 	fs.StringVar(&cfg.A2A.DefaultAgent, "a2a-default-agent", cfg.A2A.DefaultAgent, "AgentTemplate a turn runs on when the channel names none: a bare name in --a2a-namespace, or namespace/name.")
-	fs.StringVar(&cfg.A2A.URL, "a2a-url", cfg.A2A.URL, "kagent controller gRPC target through agentgateway: grpc://host:port (h2c) or grpcs://host:port (TLS).")
+	fs.StringVar(&cfg.A2A.URL, "a2a-url", cfg.A2A.URL, "kagent controller gRPC target through agentgateway: grpc://host:port (h2c) or grpcs://host[:port] (TLS, 443 by default).")
 	fs.StringVar(&cfg.A2A.CAFile, "a2a-ca-file", cfg.A2A.CAFile, "PEM bundle trusted for a grpcs:// --a2a-url in addition to the system roots. Empty uses the system roots only.")
 	fs.StringVar(&cfg.A2A.Namespace, "a2a-namespace", cfg.A2A.Namespace, "Namespace whose AgentTemplates are served.")
 	fs.StringVar(&cfg.A2A.TokenPath, "a2a-token-path", cfg.A2A.TokenPath, "Path to a file holding a Bearer token for the Klaus-instance paths (e.g. a projected SA token). Never presented to the kagent controller.")

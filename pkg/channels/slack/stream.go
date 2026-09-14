@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -54,6 +55,22 @@ const (
 	// Slack's 12 000-char limit. splitMarkdown budgets the fence auto-close and
 	// reopen inside this cap, so emitted chunks never exceed it.
 	slackMarkdownBlockMax = 12000
+	// minMarkdownBlockMax is the floor the per-message budget shrinks to when
+	// Slack refuses a message as too long regardless (a limit the documented
+	// block cap does not describe).
+	minMarkdownBlockMax = 1000
+	// slackFallbackTextMax caps a message's top-level text: chat.update refuses
+	// a text field over 4 000 characters (msg_too_long). On a markdown-block
+	// message that field is only the notification and accessibility fallback of
+	// the block carrying the reply, so the fallback is cut, never the reply.
+	slackFallbackTextMax = 4000
+
+	// Slack Web API error codes the adapter reacts to.
+	errCodeMsgTooLong                       = "msg_too_long"
+	errCodeMissingScope                     = "missing_scope"
+	errCodeInvalidArguments                 = "invalid_arguments"
+	errCodeNotAllowedTokenType              = "not_allowed_token_type"
+	errCodeMethodNotSupportedForChannelType = "method_not_supported_for_channel_type"
 )
 
 // batchedWriter accumulates OutboundDelta content and periodically calls
@@ -142,10 +159,15 @@ type batchedWriter struct {
 
 	mu            sync.Mutex
 	buf           strings.Builder
-	flushedLen    int                     // length of buf at the last chat.update; skips no-op flushes
-	flushFailures int                     // consecutive failed ticker flushes; reset on success
-	wroteAny      bool                    // set once the head message carries agent text; survives a partial multi-chunk flush
-	promptDelta   *channels.OutboundDelta // set when stream ends on DeltaPrompt
+	flushedLen    int       // length of buf at the last chat.update; skips no-op flushes
+	flushFailures int       // consecutive failed ticker flushes; reset on success
+	flushRetryAt  time.Time // ticker flushes wait until here once they keep failing
+	// chunkMax is the per-message budget of the reply's markdown blocks. It
+	// starts at Slack's documented block limit and shrinks when Slack refuses a
+	// message as too long regardless. Only touched from run()'s goroutine.
+	chunkMax    int
+	wroteAny    bool                    // set once the head message carries agent text; survives a partial multi-chunk flush
+	promptDelta *channels.OutboundDelta // set when stream ends on DeltaPrompt
 	// tailTS holds the timestamps of overflow messages posted when the reply
 	// outgrows a single Slack message. Only touched from run()'s goroutine.
 	tailTS []string
@@ -219,6 +241,7 @@ func newBatchedWriterWithClient(client *slackAPIClient, channel, ts, threadTS st
 		threadTS: threadTS,
 		details:  details,
 		logger:   logger,
+		chunkMax: slackMarkdownBlockMax,
 	}
 }
 
@@ -235,7 +258,7 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 
 		case d, ok := <-ch:
 			if !ok {
-				return w.finalFlush(ctx)
+				return w.finish(ctx)
 			}
 			if d.Usage != nil {
 				// kagent reports usage per LLM call, so sum across the turn for
@@ -254,7 +277,7 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 				return d.Err
 			}
 			if d.Done {
-				return w.finalFlush(ctx)
+				return w.finish(ctx)
 			}
 			switch d.Kind {
 			case channels.DeltaText:
@@ -285,17 +308,12 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 				return nil
 			}
 
-		case <-ticker.C:
-			// A ticker flush is retryable: flushedLen only advances on success,
-			// so the next tick re-sends the same content. Aborting on the first
-			// error would discard the rest of a turn the agent completes anyway;
-			// only a persistent failure gives up.
+		case now := <-ticker.C:
+			if now.Before(w.flushRetryAt) {
+				continue
+			}
 			if err := w.flush(ctx); err != nil {
-				w.flushFailures++
-				if w.flushFailures >= maxFlushFailures {
-					return err
-				}
-				w.logger.Warn("slack: flush failed, retrying next tick", "failures", w.flushFailures, "error", err)
+				w.noteFlushFailure(now, err)
 				continue
 			}
 			w.flushFailures = 0
@@ -303,10 +321,51 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 	}
 }
 
-// maxFlushFailures bounds consecutive ticker-flush failures before the turn is
-// aborted. One transient Slack error must not kill a healthy stream; a Slack
-// outage should not keep a doomed turn's thread slot busy either.
+// maxFlushFailures is the number of attempts a terminal flush gets, and the
+// number of consecutive ticker-flush failures after which the retries slow
+// down.
 const maxFlushFailures = 3
+
+// flushRetryBackoff spaces the ticker flushes once they keep failing, so a
+// Slack outage is not hammered every tick for the rest of the turn.
+const flushRetryBackoff = 5 * time.Second
+
+// noteFlushFailure records a failed ticker flush. flushedLen only advances on
+// success, so a later flush re-sends the same content: a Slack failure is never
+// fatal to the turn — the agent keeps working, the reply lands once Slack
+// accepts it again, and only the final flush's failure is reported (as a
+// renderError). Aborting the turn here instead used to cancel the task
+// server-side over a rendering problem (klaus-gateway#242).
+func (w *batchedWriter) noteFlushFailure(now time.Time, err error) {
+	w.flushFailures++
+	if w.flushFailures < maxFlushFailures {
+		w.logger.Warn("slack: flush failed, retrying next tick", "failures", w.flushFailures, "error", err)
+		return
+	}
+	if w.flushFailures == maxFlushFailures {
+		w.logger.Warn("slack: flush keeps failing, retrying until the turn ends", "every", flushRetryBackoff, "error", err)
+	}
+	w.flushRetryAt = now.Add(flushRetryBackoff)
+}
+
+// finish lands the reply once the stream has ended. A final flush that fails
+// after its retries is reported as a renderError: the agent completed the turn,
+// only its rendering did not.
+func (w *batchedWriter) finish(ctx context.Context) error {
+	if err := w.finalFlush(ctx); err != nil {
+		return &renderError{err: err}
+	}
+	return nil
+}
+
+// renderError is a turn the agent completed whose reply could not be delivered
+// to Slack in full. It is distinct from a turn failure so the adapter can tell
+// the thread what happened without failing — and cancelling — a turn that
+// succeeded server-side.
+type renderError struct{ err error }
+
+func (e *renderError) Error() string { return "slack: reply rendering failed: " + e.err.Error() }
+func (e *renderError) Unwrap() error { return e.err }
 
 // finalFlush retries a terminal flush (stream done, error, or prompt handoff)
 // up to maxFlushFailures attempts. No later tick will re-send the buffered
@@ -649,7 +708,7 @@ func (w *batchedWriter) renderNarration(ctx context.Context, text string) {
 	retract := len(w.loginURLs) > 0
 	fold := w.details == detailsOn && !retract && foldableNarration(scrubbed)
 	segmentClosed := false
-	for _, md := range splitMarkdown(scrubbed, slackMarkdownBlockMax) {
+	for _, md := range splitMarkdown(scrubbed, w.chunkMax) {
 		w.narrationsRendered++
 		switch {
 		case w.narrationsRendered > maxNarrationMessages+1:
@@ -1513,16 +1572,41 @@ func (w *batchedWriter) flush(ctx context.Context) error {
 		return nil
 	}
 
-	// Agent output renders as Block Kit markdown blocks. A reply that
-	// fits one block updates the main message; a larger reply rolls over into
-	// stable follow-up messages in-thread. The head message is posted lazily on
-	// the first flush when ts is empty (reactions mode), else updated in place.
-	//
-	// ponytail: a multi-chunk reply makes one API call per chunk every
-	// batchInterval, so a reply spanning N messages costs N calls/flush against
-	// Slack's ~4 updates/sec/channel. Fine while >12 KB replies are rare; revisit
-	// with per-call pacing if they become common.
-	chunks := splitMarkdown(text, slackMarkdownBlockMax)
+	// A message Slack refuses as too long despite the block budget is re-split
+	// under a smaller one right away, instead of being re-sent identical on
+	// every tick until the turn ends.
+	for {
+		err := w.deliver(ctx, text)
+		if err == nil {
+			break
+		}
+		if apiErrorCode(err) != errCodeMsgTooLong || !w.shrinkChunks() {
+			return err
+		}
+		w.logger.Warn("slack: reply refused as too long, re-splitting into smaller messages", "chunk_max", w.chunkMax, "error", err)
+	}
+	// flushedLen advances only once every chunk landed, so a failed flush leaves
+	// the delta pending and a retried flush re-sends it (chat.update on the head
+	// and already-posted tails is idempotent).
+	w.mu.Lock()
+	if flushingLen > w.flushedLen {
+		w.flushedLen = flushingLen
+	}
+	w.mu.Unlock()
+	return nil
+}
+
+// deliver renders text as Block Kit markdown blocks: a reply that fits one
+// block updates the main message; a larger one rolls over into stable
+// follow-up messages in-thread. The head message is posted lazily on the first
+// flush when ts is empty (reactions mode), else updated in place.
+//
+// ponytail: a multi-chunk reply makes one API call per chunk every
+// batchInterval, so a reply spanning N messages costs N calls/flush against
+// Slack's ~4 updates/sec/channel. Fine while >12 KB replies are rare; revisit
+// with per-call pacing if they become common.
+func (w *batchedWriter) deliver(ctx context.Context, text string) error {
+	chunks := splitMarkdown(text, w.chunkMax)
 	if w.ts == "" {
 		ts, err := w.client.postMarkdown(ctx, w.channel, chunks[0], w.threadTS)
 		if err != nil {
@@ -1551,15 +1635,19 @@ func (w *batchedWriter) flush(ctx context.Context) error {
 		}
 		w.tailTS = append(w.tailTS, ts)
 	}
-	// flushedLen advances only once every chunk landed, so a failed flush leaves
-	// the delta pending and a retried flush re-sends it (chat.update on the head
-	// and already-posted tails is idempotent).
-	w.mu.Lock()
-	if flushingLen > w.flushedLen {
-		w.flushedLen = flushingLen
-	}
-	w.mu.Unlock()
 	return nil
+}
+
+// shrinkChunks halves the per-message budget after Slack refused a message as
+// too long, down to minMarkdownBlockMax, and reports whether a smaller budget
+// is left to try. Tails already posted are rewritten with the shifted content
+// on the next deliver; a budget change is a one-off, not the norm.
+func (w *batchedWriter) shrinkChunks() bool {
+	if w.chunkMax <= minMarkdownBlockMax {
+		return false
+	}
+	w.chunkMax = max(w.chunkMax/2, minMarkdownBlockMax)
+	return true
 }
 
 // slackHTTPClient bounds every Slack Web API call. Without a timeout a
@@ -1612,11 +1700,7 @@ type slackAPIClient struct {
 // invalid_arguments (a username Slack will not accept). Both are retried
 // unbranded — branding must cost the label, never the reply.
 func identityRejectedErr(err error) bool {
-	if err == nil {
-		return false
-	}
-	s := err.Error()
-	return strings.Contains(s, "missing_scope") || strings.Contains(s, "invalid_arguments")
+	return hasErrorCode(err, errCodeMissingScope, errCodeInvalidArguments)
 }
 
 // noteIdentityRejected logs the unbranded retry and, on missing_scope, latches
@@ -1625,7 +1709,7 @@ func (c *slackAPIClient) noteIdentityRejected(err error) {
 	if c.logger != nil {
 		c.logger.Warn("slack: branded post rejected, retrying under the app identity", "error", err)
 	}
-	if c.customizeUnsupported != nil && strings.Contains(err.Error(), "missing_scope") {
+	if c.customizeUnsupported != nil && hasErrorCode(err, errCodeMissingScope) {
 		c.customizeUnsupported.Store(true)
 	}
 }
@@ -2003,9 +2087,7 @@ func (c *slackAPIClient) setAssistantStatus(ctx context.Context, channelID, thre
 		paramThreadTS:  threadTS,
 		paramStatus:    status,
 	})
-	if err != nil && (strings.Contains(err.Error(), "missing_scope") ||
-		strings.Contains(err.Error(), "not_allowed_token_type") ||
-		strings.Contains(err.Error(), "method_not_supported_for_channel_type")) {
+	if hasErrorCode(err, errCodeMissingScope, errCodeNotAllowedTokenType, errCodeMethodNotSupportedForChannelType) {
 		return errAssistantStatusUnsupported
 	}
 	return err
@@ -2025,8 +2107,7 @@ func (c *slackAPIClient) reaction(ctx context.Context, method, channel, ts, name
 		paramTimestamp: {ts},
 		paramName:      {name},
 	})
-	if err != nil && (strings.Contains(err.Error(), "missing_scope") ||
-		strings.Contains(err.Error(), "not_allowed_token_type")) {
+	if hasErrorCode(err, errCodeMissingScope, errCodeNotAllowedTokenType) {
 		return errReactionsUnsupported
 	}
 	return err
@@ -2039,14 +2120,28 @@ func markdownBlocks(md string) []any {
 	return []any{map[string]any{bkType: bkMarkdown, bkText: md}}
 }
 
-// postMarkdown posts a new in-thread message rendered as a markdown block. The
-// top-level text is the notification/accessibility fallback; it is mrkdwn-parsed
-// by Slack, so agent output must be escaped there even though the markdown block
-// itself must not be.
+// fallbackText is the top-level text of a markdown-block message: the
+// notification and accessibility fallback. It is mrkdwn-parsed by Slack, so
+// agent output is escaped there even though the markdown block itself must not
+// be, and it is cut to slackFallbackTextMax so chat.update never refuses the
+// message for it. The cut never leaves a half entity (`&amp;` cut to `&am`).
+func fallbackText(md string) string {
+	s := escapeMrkdwn(md)
+	if utf8.RuneCountInString(s) <= slackFallbackTextMax {
+		return s
+	}
+	cut := string([]rune(s)[:slackFallbackTextMax-1])
+	if i := strings.LastIndexByte(cut, '&'); i >= 0 && !strings.Contains(cut[i:], ";") {
+		cut = cut[:i]
+	}
+	return cut + "…"
+}
+
+// postMarkdown posts a new in-thread message rendered as a markdown block.
 func (c *slackAPIClient) postMarkdown(ctx context.Context, channel, md, threadTS string) (string, error) {
 	body := map[string]any{
 		paramChannel: channel,
-		paramText:    escapeMrkdwn(md),
+		paramText:    fallbackText(md),
 		paramBlocks:  markdownBlocks(md),
 	}
 	if threadTS != "" {
@@ -2094,13 +2189,12 @@ func (c *slackAPIClient) updateActivity(ctx context.Context, channel, ts string,
 	return err
 }
 
-// chatUpdateMarkdown replaces a message's content with a markdown block. The
-// top-level fallback text is escaped for the same reason as in postMarkdown.
+// chatUpdateMarkdown replaces a message's content with a markdown block.
 func (c *slackAPIClient) chatUpdateMarkdown(ctx context.Context, channel, ts, md string) error {
 	body := map[string]any{
 		paramChannel: channel,
 		paramTS:      ts,
-		paramText:    escapeMrkdwn(md),
+		paramText:    fallbackText(md),
 		paramBlocks:  markdownBlocks(md),
 	}
 	_, err := c.postJSON(ctx, "chat.update", body)
@@ -2658,9 +2752,35 @@ func (c *slackAPIClient) send(ctx context.Context, method, contentType, payload 
 		return "", fmt.Errorf("slack %s: decode response: %w", method, err)
 	}
 	if !result.OK {
-		return "", fmt.Errorf("slack %s: %s", method, result.Error)
+		return "", &apiError{method: method, code: result.Error}
 	}
 	return result.Ts, nil
+}
+
+// apiError is a Slack Web API refusal (`ok: false`) carrying the error code
+// Slack named, so callers react to a code (msg_too_long, missing_scope) rather
+// than to an error string.
+type apiError struct {
+	method string
+	code   string
+}
+
+func (e *apiError) Error() string { return fmt.Sprintf("slack %s: %s", e.method, e.code) }
+
+// apiErrorCode returns the Slack error code err carries, or "" when err is not
+// a Slack API refusal.
+func apiErrorCode(err error) string {
+	var e *apiError
+	if errors.As(err, &e) {
+		return e.code
+	}
+	return ""
+}
+
+// hasErrorCode reports whether err is a Slack API refusal with one of codes.
+func hasErrorCode(err error, codes ...string) bool {
+	code := apiErrorCode(err)
+	return code != "" && slices.Contains(codes, code)
 }
 
 // call executes one Slack Web API POST and returns the raw response body. A

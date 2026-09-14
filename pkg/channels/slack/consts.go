@@ -1,6 +1,7 @@
 package slack
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/giantswarm/klaus-gateway/pkg/auth/musterlink"
@@ -333,6 +334,18 @@ const pausedNote = "_(waiting for your input below)_"
 // does not linger as "thinking" with no failure signal (reactions mode swaps in
 // the failed emoji instead).
 const failedNote = "_(the turn failed; please try again)_"
+
+// renderFailedNote is posted when the agent completed its turn but Slack kept
+// refusing the reply's final rendering, so the thread knows the text above is
+// incomplete rather than the whole answer. It names Slack's error code when
+// there is one.
+func renderFailedNote(err error) string {
+	reason := apiErrorCode(err)
+	if reason == "" {
+		reason = err.Error()
+	}
+	return fmt.Sprintf("_(the agent finished, but Slack refused the rest of the reply: %s)_", reason)
+}
 
 // attachmentsUnavailableNote is posted when a message carried only attachments
 // and none of them could be downloaded, so there is nothing to send the agent.

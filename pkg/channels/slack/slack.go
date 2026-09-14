@@ -2257,6 +2257,22 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 		a.recordTurnUsage(threadID, slackChannel, w.turnUsage)
 		cctx, cancel := cleanupCtx()
 		defer cancel()
+		// The agent finished; only Slack refused (part of) the reply. Tell the
+		// thread instead of failing a turn that succeeded server-side — a
+		// failure here would also cancel the completed task, recording the
+		// person's turn as canceled (klaus-gateway#242). What did land stays;
+		// the note explains that the reply is incomplete.
+		var rerr *renderError
+		if errors.As(err, &rerr) {
+			a.Logger.Error("slack: reply could not be delivered in full", "channel", slackChannel, "thread", threadID, "error", rerr.err)
+			prog.failed(cctx)
+			noteTS := replyTS
+			if w.wroteContent() {
+				noteTS = ""
+			}
+			a.postTerminalNote(cctx, client, slackChannel, threadID, noteTS, renderFailedNote(rerr.err))
+			return nil
+		}
 		// A cancelled turn context means the stop was intentional (/stop, shutdown):
 		// clear the working indicator silently instead of signalling a failure. A
 		// deadline expiry (maxTurnDuration backstop) is a failure, not a stop, and

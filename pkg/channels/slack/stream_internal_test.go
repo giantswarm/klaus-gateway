@@ -157,9 +157,12 @@ func TestRun_TransientFlushFailureDoesNotAbortTurn(t *testing.T) {
 	require.Equal(t, "hello", lastText.Load())
 }
 
-// A persistent Slack failure still aborts the turn instead of holding the
-// thread slot until the turn deadline.
-func TestRun_PersistentFlushFailureAbortsTurn(t *testing.T) {
+// A persistent Slack failure does not abort the turn: the agent keeps working
+// and the stream is consumed to its end while every flush is retried. Only the
+// final flush's failure is reported, as a renderError, so the adapter tells the
+// thread the reply is incomplete without failing — and cancelling — the
+// completed turn (klaus-gateway#242).
+func TestRun_PersistentFlushFailureDoesNotAbortTurn(t *testing.T) {
 	var updates atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		updates.Add(1)
@@ -175,8 +178,154 @@ func TestRun_PersistentFlushFailureAbortsTurn(t *testing.T) {
 	go func() { done <- w.run(t.Context(), ch) }()
 
 	ch <- channels.OutboundDelta{Kind: channels.DeltaText, Content: "hello"}
-	require.ErrorContains(t, <-done, "fatal_error")
-	require.GreaterOrEqual(t, updates.Load(), int32(maxFlushFailures))
+	require.Eventually(t, func() bool { return updates.Load() >= int32(maxFlushFailures) },
+		10*time.Second, 20*time.Millisecond)
+	select {
+	case err := <-done:
+		t.Fatalf("the turn was aborted on repeated flush failures: %v", err)
+	default:
+	}
+	// The stream is still consumed while Slack keeps refusing.
+	ch <- channels.OutboundDelta{Kind: channels.DeltaText, Content: " world"}
+	close(ch)
+
+	err := <-done
+	var rerr *renderError
+	require.ErrorAs(t, err, &rerr, "the final flush's failure is a rendering failure, not a turn failure")
+	require.Equal(t, "fatal_error", apiErrorCode(err))
+}
+
+// recordingSlack is a fake Slack API that keeps the latest markdown block of
+// every message the writer posted or updated, in post order, plus every
+// fallback text it was sent. refuse, when set, rejects a block over that many
+// bytes as msg_too_long — a limit the documented block cap does not describe.
+type recordingSlack struct {
+	mu        sync.Mutex
+	seq       int
+	order     []string
+	texts     map[string]string
+	fallbacks []string
+	refuse    int
+}
+
+func newRecordingSlack(t *testing.T, refuse int) (*recordingSlack, *slackAPIClient) {
+	t.Helper()
+	rec := &recordingSlack{texts: map[string]string{}, refuse: refuse}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			TS     string `json:"ts"`
+			Text   string `json:"text"`
+			Blocks []struct {
+				Text string `json:"text"`
+			} `json:"blocks"`
+		}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		require.Len(t, body.Blocks, 1)
+		w.Header().Set("Content-Type", "application/json")
+		if rec.refuse > 0 && len(body.Blocks[0].Text) > rec.refuse {
+			_, _ = fmt.Fprint(w, `{"ok":false,"error":"msg_too_long"}`)
+			return
+		}
+		rec.mu.Lock()
+		defer rec.mu.Unlock()
+		ts := body.TS
+		if strings.HasSuffix(r.URL.Path, "chat.postMessage") {
+			rec.seq++
+			ts = fmt.Sprintf("1.%d", rec.seq)
+			rec.order = append(rec.order, ts)
+		}
+		rec.texts[ts] = body.Blocks[0].Text
+		rec.fallbacks = append(rec.fallbacks, body.Text)
+		_, _ = fmt.Fprintf(w, `{"ok":true,"ts":%q}`, ts)
+	}))
+	t.Cleanup(srv.Close)
+	return rec, &slackAPIClient{botToken: "t", baseURL: srv.URL}
+}
+
+// delivered returns the messages' current texts concatenated in post order,
+// asserting each block within budget.
+func (r *recordingSlack) delivered(t *testing.T, budget int) string {
+	t.Helper()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var b strings.Builder
+	for _, ts := range r.order {
+		require.LessOrEqual(t, len(r.texts[ts]), budget)
+		b.WriteString(r.texts[ts])
+	}
+	for _, fb := range r.fallbacks {
+		require.LessOrEqual(t, utf8.RuneCountInString(fb), slackFallbackTextMax, "the fallback text stays within chat.update's limit")
+	}
+	return b.String()
+}
+
+// A long streamed reply rolls over into follow-up messages across several
+// flushes; every message stays within the block budget and the fallback text
+// within Slack's 4 000-character limit, and the turn completes with the whole
+// text delivered in order (klaus-gateway#242).
+func TestRun_LongMultiChunkStreamIsDeliveredInFull(t *testing.T) {
+	rec, client := newRecordingSlack(t, 0)
+	w := newBatchedWriterWithClient(client, "C1", "", "1.0", detailsOff, slog.Default())
+	ch := make(chan channels.OutboundDelta)
+	done := make(chan error, 1)
+	go func() { done <- w.run(t.Context(), ch) }()
+
+	var want strings.Builder
+	for i := range 30 {
+		line := fmt.Sprintf("%03d %s\n", i, strings.Repeat("x", 995))
+		want.WriteString(line)
+		ch <- channels.OutboundDelta{Kind: channels.DeltaText, Content: line}
+		if i%10 == 9 {
+			time.Sleep(2 * batchInterval) // let the ticker flush mid-stream, so the tails grow across flushes
+		}
+	}
+	close(ch)
+	require.NoError(t, <-done)
+
+	require.Equal(t, want.String(), rec.delivered(t, slackMarkdownBlockMax), "the whole reply, across the messages")
+	require.Len(t, rec.order, 3, "30 000 characters roll over into three messages")
+}
+
+// Slack refusing a message as too long despite the documented block budget
+// re-splits the reply under a smaller budget right away, instead of re-sending
+// the same message every tick until the turn ends.
+func TestFlush_MsgTooLongShrinksTheChunks(t *testing.T) {
+	rec, client := newRecordingSlack(t, 5000)
+	w := newBatchedWriterWithClient(client, "C1", "", "1.0", detailsOff, slog.Default())
+	var want strings.Builder
+	for i := range 90 {
+		fmt.Fprintf(&want, "%02d %s\n", i, strings.Repeat("y", 96))
+	}
+	w.buf.WriteString(want.String())
+
+	require.NoError(t, w.flush(t.Context()))
+	require.Equal(t, 3000, w.chunkMax, "12 000 → 6 000 → 3 000, until Slack accepted")
+	require.Equal(t, want.String(), rec.delivered(t, 3000))
+	require.True(t, w.wroteContent())
+	require.Equal(t, want.Len(), w.flushedLen)
+}
+
+func TestShrinkChunks_StopsAtTheFloor(t *testing.T) {
+	w := &batchedWriter{chunkMax: 1500}
+	require.True(t, w.shrinkChunks())
+	require.Equal(t, minMarkdownBlockMax, w.chunkMax)
+	require.False(t, w.shrinkChunks(), "at the floor a msg_too_long is surfaced, not retried")
+}
+
+// The message's top-level text is only the notification fallback of the
+// markdown block; chat.update refuses it over 4 000 characters, so it is cut
+// there while the block keeps the whole reply. The cut never splits an entity.
+func TestFallbackText_IsBoundedAndKeepsEntitiesWhole(t *testing.T) {
+	long := strings.Repeat("a", 10000)
+	require.Equal(t, long, markdownBlocks(long)[0].(map[string]any)[bkText], "the block carries the whole text")
+	fb := fallbackText(long)
+	require.Equal(t, slackFallbackTextMax, utf8.RuneCountInString(fb))
+	require.True(t, strings.HasSuffix(fb, "…"))
+
+	// Escaped, the cut would land inside the &amp; entity.
+	md := strings.Repeat("a", slackFallbackTextMax-3) + "&" + strings.Repeat("b", 10)
+	require.Equal(t, strings.Repeat("a", slackFallbackTextMax-3)+"…", fallbackText(md))
+	require.Equal(t, "a &amp; b", fallbackText("a & b"), "short text is escaped, not cut")
 }
 
 func TestFlush_FailedUpdateIsResentOnNextFlush(t *testing.T) {

@@ -9,7 +9,9 @@ import (
 	"io"
 	"iter"
 	"log/slog"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	a2apkg "github.com/a2aproject/a2a-go/v2/a2a"
 
@@ -252,30 +254,37 @@ func (f *Facade) sendViaA2A(ctx context.Context, msg InboundMessage) (<-chan Out
 		defer close(out)
 		defer stop()
 		var taskID a2apkg.TaskID
-		terminated := false
+		mapper := newEventMapper()
+		// terminal is set once the task reached a terminal or waiting state: the
+		// agent is not working any more, whether or not the channel is still
+		// listening. delivered is set once the channel received that state or
+		// the stream's failure.
+		terminal, delivered := false, false
 		event, streamErr := first, error(nil)
 		for {
 			if streamErr != nil {
-				terminated = f.emit(ctx, out, OutboundDelta{Err: streamErr})
+				delivered = f.emit(ctx, out, OutboundDelta{Err: streamErr})
 				break
 			}
 			if info, ok := event.(a2apkg.TaskInfoProvider); ok && info.TaskInfo().TaskID != "" {
 				taskID = info.TaskInfo().TaskID
 			}
-			for _, delta := range mapA2AEvent(event) {
+			for _, delta := range mapper.deltas(event) {
 				if delta.isZero() {
 					continue
 				}
+				if delta.Err != nil || delta.Done || delta.Kind == DeltaPrompt {
+					terminal = true
+				}
 				if !f.emit(ctx, out, delta) {
-					terminated = true
 					break
 				}
-				if delta.Err != nil || delta.Done || delta.Kind == DeltaPrompt {
-					terminated = true
+				if terminal {
+					delivered = true
 					break
 				}
 			}
-			if terminated {
+			if terminal || ctx.Err() != nil {
 				break
 			}
 			var more bool
@@ -284,11 +293,18 @@ func (f *Facade) sendViaA2A(ctx context.Context, msg InboundMessage) (<-chan Out
 				break
 			}
 		}
-		if ctx.Err() != nil && taskID != "" {
-			f.cancelTask(ctx, instanceID, taskID)
+		if ctx.Err() != nil {
+			// The channel stopped listening (/stop, a closed web stream,
+			// shutdown). A task still running is cancelled server-side so the
+			// agent does not work on unobserved; one that already finished or
+			// paused on a prompt is left alone — cancelling it would record a
+			// completed turn as canceled (klaus-gateway#242).
+			if taskID != "" && !terminal {
+				f.cancelTask(ctx, instanceID, taskID)
+			}
 			return
 		}
-		if !terminated {
+		if !delivered {
 			f.emit(ctx, out, OutboundDelta{Err: errors.New("a2a: stream ended without terminal status")})
 		}
 	}()
@@ -366,11 +382,22 @@ func withChannelAuth(ctx context.Context, msg InboundMessage) context.Context {
 	return ctx
 }
 
-// mapA2AEvent converts a single A2A streaming event to zero or more
-// OutboundDeltas. A single event may carry both assistant text and tool-call
-// DataParts, so it can expand to several deltas. Non-completed terminal states
-// (failed, rejected, canceled) map to an error delta so channels surface them
-// rather than silently closing.
+// eventMapper converts a task's A2A streaming events to OutboundDeltas. It
+// keeps the per-stream state the conversion needs: the text each artifact has
+// delivered so far, so an artifact update renders as what it adds.
+type eventMapper struct {
+	artifacts artifactText
+}
+
+func newEventMapper() *eventMapper {
+	return &eventMapper{artifacts: newArtifactText()}
+}
+
+// deltas converts a single A2A streaming event to zero or more OutboundDeltas.
+// A single event may carry both assistant text and tool-call DataParts, so it
+// can expand to several deltas. Non-completed terminal states (failed,
+// rejected, canceled) map to an error delta so channels surface them rather
+// than silently closing.
 //
 // kagent attaches token usage to the event/message metadata (not to a part),
 // as per-LLM-call deltas on interim working events; the terminal completed
@@ -379,13 +406,13 @@ func withChannelAuth(ctx context.Context, msg InboundMessage) context.Context {
 // counting one call several times. Tool activity rides on
 // function_call/function_response DataParts. A paused task's prompt rides on
 // the input-required status message as the HITL extension payload.
-func mapA2AEvent(event a2apkg.Event) []OutboundDelta {
+func (m *eventMapper) deltas(event a2apkg.Event) []OutboundDelta {
 	switch ev := event.(type) {
 	case *a2apkg.TaskArtifactUpdateEvent:
 		if ev.Artifact == nil {
 			return nil
 		}
-		return append(textDelta(ev.Artifact.Parts), toolActivityDeltas(ev.Artifact.Parts)...)
+		return append(textDeltaOf(m.artifacts.delta(ev)), toolActivityDeltas(ev.Artifact.Parts)...)
 	case *a2apkg.TaskStatusUpdateEvent:
 		var usage *TurnUsage
 		if !isPartialStatusUpdate(ev) {
@@ -459,10 +486,95 @@ func mapTaskStatus(taskID a2apkg.TaskID, status a2apkg.TaskStatus, usage *TurnUs
 // textDelta returns a single-element slice with the concatenated text of parts,
 // or nil when there is no text.
 func textDelta(parts a2apkg.ContentParts) []OutboundDelta {
-	if text := extractTextFromA2AParts(parts); text != "" {
-		return []OutboundDelta{{Content: text}}
+	return textDeltaOf(extractTextFromA2AParts(parts))
+}
+
+// textDeltaOf wraps text in a single-element slice, or nil when it is empty.
+func textDeltaOf(text string) []OutboundDelta {
+	if text == "" {
+		return nil
 	}
-	return nil
+	return []OutboundDelta{{Content: text}}
+}
+
+// artifactText reconciles a task's artifact updates into the text a channel
+// renders, honouring the A2A update semantics: Append marks parts that extend
+// the artifact sent earlier under the same ID, its absence parts that are the
+// artifact's whole content. The Go ADK streams every text run that way — each
+// chunk appended, then the finished run re-sent whole (Append false, LastChunk
+// true) on the same artifact — so rendering every update as an append showed
+// each run twice (klaus-gateway#242). A replace renders as what lies past the
+// text the artifact already delivered; should the replacement diverge from
+// what was streamed, the part past the common prefix is rendered so no text is
+// lost. A new artifact opens a paragraph: producers start a fresh artifact for
+// each text run between tool calls, and the runs would otherwise run into one
+// another.
+type artifactText struct {
+	delivered map[a2apkg.ArtifactID]string
+	// last is the artifact the most recent rendered text came from; tail is how
+	// that text ends, for the paragraph break.
+	last a2apkg.ArtifactID
+	tail string
+}
+
+func newArtifactText() artifactText {
+	return artifactText{delivered: map[a2apkg.ArtifactID]string{}}
+}
+
+// delta returns the text ev adds to what the channel has rendered.
+func (a *artifactText) delta(ev *a2apkg.TaskArtifactUpdateEvent) string {
+	text := extractTextFromA2AParts(ev.Artifact.Parts)
+	id := ev.Artifact.ID
+	if id == "" {
+		// Not addressable: nothing to reconcile against, render as sent.
+		return a.render(id, text)
+	}
+	previous := a.delivered[id]
+	if ev.Append {
+		a.delivered[id] = previous + text
+		return a.render(id, text)
+	}
+	a.delivered[id] = text
+	return a.render(id, text[commonPrefixLen(previous, text):])
+}
+
+// render prefixes a paragraph break when text opens a new artifact after
+// rendered text, and remembers how the rendered stream ends.
+func (a *artifactText) render(id a2apkg.ArtifactID, text string) string {
+	if text == "" {
+		return ""
+	}
+	if a.tail != "" && id != a.last {
+		text = paragraphBreak(a.tail) + text
+	}
+	a.last, a.tail = id, text[max(0, len(text)-2):]
+	return text
+}
+
+// paragraphBreak returns the newlines that separate a paragraph from rendered
+// text ending in tail.
+func paragraphBreak(tail string) string {
+	switch {
+	case strings.HasSuffix(tail, "\n\n"):
+		return ""
+	case strings.HasSuffix(tail, "\n"):
+		return "\n"
+	}
+	return "\n\n"
+}
+
+// commonPrefixLen returns the length in bytes of the longest common prefix of
+// a and b, backed off to a rune boundary of b.
+func commonPrefixLen(a, b string) int {
+	n := min(len(a), len(b))
+	i := 0
+	for i < n && a[i] == b[i] {
+		i++
+	}
+	for i > 0 && i < len(b) && !utf8.RuneStart(b[i]) {
+		i--
+	}
+	return i
 }
 
 // narrationDeltas returns the agent's interim narration for a working status
