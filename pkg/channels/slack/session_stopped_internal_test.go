@@ -159,7 +159,8 @@ func TestSessionStopped_CancelsRunningTurn(t *testing.T) {
 	}, 2*time.Second, 10*time.Millisecond, "expected the stopped notice in the thread")
 
 	posts, ephemerals, statuses := rec.snapshot()
-	require.Equal(t, []string{stopStoppedNotice}, posts)
+	require.Equal(t, []string{fmt.Sprintf(stopStoppedByNotice, stopEventUser)}, posts,
+		"the press leaves no message of its own, so the notice names the presser")
 	require.Empty(t, ephemerals)
 	require.Empty(t, statuses, "the cancelled turn's exit path owns the idle status")
 }
@@ -181,6 +182,30 @@ func TestSessionStopped_NoRunningTurnSetsActive(t *testing.T) {
 	require.Equal(t, []string{string(sessionActive)}, statuses)
 	require.Empty(t, posts, "nothing was running, so nothing is confirmed stopped")
 	require.Empty(t, ephemerals)
+}
+
+// A thread waiting on an approval prompt must be left exactly as it is. The
+// button cannot normally reach one — Slack draws it only while the session is
+// processing — but a turn that pauses as the press lands has already released
+// its slot, so stopThread reports nothing to stop. Writing active there would
+// erase the suspended state the exit path just wrote and claim the thread is
+// idle while a tool call waits on the user's answer.
+func TestSessionStopped_PendingTaskLeavesStatusAlone(t *testing.T) {
+	a, rec := newStopTestAdapter(t)
+
+	a.storePendingTask(stopEventThreadTS, &pendingTask{
+		TaskID: "task-1", AgentRef: "worker", ChannelID: stopEventChannel,
+	})
+
+	deliverStopEvent(t, a)
+
+	// The handler acts on its own goroutine; give it room to do the wrong thing.
+	require.Never(t, func() bool {
+		posts, ephemerals, statuses := rec.snapshot()
+		return len(posts)+len(ephemerals)+len(statuses) > 0
+	}, 500*time.Millisecond, 25*time.Millisecond,
+		"a thread waiting on a prompt must be left untouched")
+	require.True(t, a.hasPendingTask(stopEventThreadTS), "the prompt is still waiting for an answer")
 }
 
 // The button carries the per-thread access rule /stop carries: an onlooker the

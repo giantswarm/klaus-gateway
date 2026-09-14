@@ -1496,7 +1496,10 @@ func (a *Adapter) handleContextChanged(inner slackInnerEvent) {
 // handleSessionStopped reacts to the user pressing the stop button Slack
 // renders on the native working indicator. It is the /stop command by another
 // route, so it takes the same path: the same per-thread access rule, then
-// cancel the thread's in-flight turn and confirm the interruption in the thread.
+// cancel the thread's in-flight turn and confirm the interruption in the
+// thread. The confirmation names the presser, which /stop's does not need to:
+// a press leaves no message of its own, so without the name the thread would
+// show a turn stopping with no record of who stopped it.
 //
 // The refusal is ephemeral, unlike /stop's: the presser typed nothing visible,
 // so a reply in the thread would be an answer to a question nobody there saw
@@ -1508,6 +1511,18 @@ func (a *Adapter) handleContextChanged(inner slackInnerEvent) {
 // press that finds nothing running (a stale indicator, a press racing the
 // turn's last exit) has no exit path left to ride, so it sends the idle status
 // here — otherwise the indicator spins on for up to an hour.
+//
+// A thread waiting on an approval prompt is the one case that takes neither
+// branch. /stop answers such a thread by falling through to dispatch, which
+// rejects the paused task; the button does not, because it cannot normally
+// reach a paused thread at all — Slack draws the button only while the session
+// is processing, and a paused thread is suspended (#249) or active. The one way
+// in is a race: the turn pauses as the press lands, so run() has already
+// released the slot and stopThread reports nothing to stop. Writing active
+// there would erase the suspended state the exit path just wrote and tell the
+// user the thread is idle while a tool call waits on their answer. So a pending
+// task means: touch nothing. The prompt is still on screen, and the user
+// answers it or types /stop, which does have the reject path.
 //
 // Stale-event dropping deliberately does not apply: a press older than this
 // process is exactly the stranded indicator this handler exists to clear.
@@ -1531,12 +1546,18 @@ func (a *Adapter) handleSessionStopped(ctx context.Context, inner slackInnerEven
 		return
 	}
 	if !a.stopThread(inner.ThreadTS) {
+		if a.hasPendingTask(inner.ThreadTS) {
+			a.Logger.Debug("slack: stop button pressed on a thread waiting on a prompt, leaving its status alone",
+				"channel", inner.Channel, "thread", inner.ThreadTS, "user", inner.User)
+			return
+		}
 		a.Logger.Debug("slack: stop button pressed with nothing running, clearing the indicator",
 			"channel", inner.Channel, "thread", inner.ThreadTS, "user", inner.User)
 		a.setSessionStatus(ctx, inner.Channel, inner.ThreadTS, sessionActive)
 		return
 	}
-	if _, err := a.apiClient().postMessage(ctx, inner.Channel, stopStoppedNotice, inner.ThreadTS); err != nil {
+	notice := fmt.Sprintf(stopStoppedByNotice, inner.User)
+	if _, err := a.apiClient().postMessage(ctx, inner.Channel, notice, inner.ThreadTS); err != nil {
 		a.Logger.Warn("slack: post stop-button notice failed", "error", err)
 	}
 }

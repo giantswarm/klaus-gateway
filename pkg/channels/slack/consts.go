@@ -273,9 +273,15 @@ const parkedDropNoticeTTL = time.Hour
 // turn and no pending prompt, instead of falsely confirming a stop.
 const stopNothingRunningNotice = "_Nothing is running in this thread._"
 
-// stopStoppedNotice confirms an interrupted turn. Shared by /stop and the
-// native stop button so an interruption reads the same however it was asked for.
+// stopStoppedNotice confirms a turn interrupted by the /stop command. The
+// command's own message is in the thread above it, so the thread can already
+// see who asked.
 const stopStoppedNotice = "⏹ Stopped."
+
+// stopStoppedByNotice confirms a turn interrupted with the native stop button.
+// %s is the presser's Slack user ID. The press leaves no message of its own, so
+// unlike /stop this notice is the thread's only record of who stopped the turn.
+const stopStoppedByNotice = "⏹ Stopped by <@%s>."
 
 // notPermittedNotice refuses a caller who may read the thread but was never let
 // in to instruct the agent there. Shared by the gated commands and the native
