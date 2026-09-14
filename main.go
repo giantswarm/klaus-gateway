@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
@@ -47,6 +48,7 @@ import (
 	configmapstore "github.com/giantswarm/klaus-gateway/pkg/routing/store/configmap"
 	crdstore "github.com/giantswarm/klaus-gateway/pkg/routing/store/crd"
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store/memory"
+	valkeystore "github.com/giantswarm/klaus-gateway/pkg/routing/store/valkey"
 	"github.com/giantswarm/klaus-gateway/pkg/server"
 	"github.com/giantswarm/klaus-gateway/pkg/upstream"
 )
@@ -421,9 +423,40 @@ func buildStore(cfg config.Config) (store.Store, error) {
 			return nil, fmt.Errorf("crd store: %w", err)
 		}
 		return crdstore.New(c, cfg.Namespace), nil
+	case config.StoreValkey:
+		password, err := valkeyPassword(cfg.Valkey)
+		if err != nil {
+			return nil, fmt.Errorf("valkey store: %w", err)
+		}
+		var tlsCfg *tls.Config
+		if cfg.Valkey.TLS {
+			tlsCfg = &tls.Config{MinVersion: tls.VersionTLS12, ServerName: cfg.Valkey.TLSServerName}
+		}
+		return valkeystore.New(valkeystore.Options{
+			URL:       cfg.Valkey.URL,
+			Username:  cfg.Valkey.Username,
+			Password:  password,
+			DB:        cfg.Valkey.DB,
+			TLS:       tlsCfg,
+			KeyPrefix: cfg.Valkey.KeyPrefix,
+			Timeout:   cfg.Valkey.Timeout,
+		})
 	default:
 		return nil, fmt.Errorf("unknown store %q", cfg.Store)
 	}
+}
+
+// valkeyPassword is the store's password: the file when one is named (a Secret
+// mount; surrounding whitespace trimmed), otherwise the environment's value.
+func valkeyPassword(cfg config.ValkeyConfig) (string, error) {
+	if cfg.PasswordFile == "" {
+		return cfg.Password, nil
+	}
+	raw, err := os.ReadFile(cfg.PasswordFile)
+	if err != nil {
+		return "", fmt.Errorf("read password file: %w", err)
+	}
+	return strings.TrimSpace(string(raw)), nil
 }
 
 // buildOBOLinker constructs the muster account-linking Linker for Slack OBO. It
@@ -462,7 +495,14 @@ func buildOBOLinker(cfg config.OBOConfig, logger *slog.Logger,
 		_ = cleanup()
 		return nil, nil, err
 	}
-	return linker, cleanup, nil
+	closeAll := func() error {
+		// Write the links the store has not taken yet before the store closes.
+		if err := linker.Close(); err != nil {
+			logger.Warn("obo: closing linker", "err", err)
+		}
+		return cleanup()
+	}
+	return linker, closeAll, nil
 }
 
 // buildOBOStore opens the link store cfg selects (see config.OBOConfig.Store)
@@ -590,11 +630,19 @@ func buildScheme() *k8sruntime.Scheme {
 	return s
 }
 
-// readiness returns 200 once the store is responsive. The upstream URL is
+// readiness returns 200 once the store is responsive: a store that can ping
+// its server (valkey) is pinged, any other is listed. The upstream URL is
 // considered reachable if it parses; a real connect probe lands in the
 // follow-up PR alongside the channel adapters.
 func readiness(s store.Store, up *upstream.Agentgateway) server.ReadinessFunc {
 	return func(ctx context.Context) error {
+		if p, ok := s.(interface{ Ping(context.Context) error }); ok {
+			if err := p.Ping(ctx); err != nil {
+				return fmt.Errorf("store: %w", err)
+			}
+			_ = up
+			return nil
+		}
 		if _, err := s.List(ctx); err != nil {
 			return fmt.Errorf("store: %w", err)
 		}

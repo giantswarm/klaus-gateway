@@ -9,8 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- A Valkey-backed routing store for installations (`routing.store: valkey`, `--store=valkey`): one key per thread (`klaus-gateway:route:` + the routing key) holding the JSON entry, the entry's TTL as the key's expiry, `SCAN` by prefix for the start-up resubscription and a `PING` for readiness. No volume, no API-server access, shared by replicas; the agent platform's `muster-valkey` serves it. Every dial and command is bounded by `--valkey-timeout` (2 s), so a Valkey outage fails the turn with a clear error and fails readiness instead of hanging the thread, and both recover with the server. The chart takes `routing.valkey.*` (`url`, `existingSecret`/`passwordKey` passed as `KLAUS_GATEWAY_VALKEY_PASSWORD`, `username`, `db`, `tls`, `keyPrefix`, `timeout`) and documents which stores are meant for installations; the store's conformance test runs against a server speaking the real protocol (miniredis) and, with `KLAUS_GATEWAY_TEST_VALKEY_URL`, a real Valkey (klaus-gateway#252).
+
 ### Fixed
 
+- The OBO link store no longer turns a failed read or write into a silent cache miss. `Store.Get`/`Put`/`Delete` report their errors, and the gateway keeps a process-local copy of every link it has read or written: a refresh token muster has already rotated is kept in memory when the store (the Kubernetes Secret on an apiserver hiccup, the bolt file on a full disk) refuses the write, the write is retried in the background and once more on shutdown, and the next refresh uses the rotated token instead of failing `invalid_grant` and signing the person out — the same for the link a sign-in has just created. A store that fails to read serves the link the gateway already knows; a person it has never seen gets the transient "couldn't refresh your sign-in" notice in Slack instead of the sign-in prompt (their message is not parked), and `/login` answers the same way. `/logout` reports a sign-out the store refused instead of confirming it. Before dropping a link on `invalid_grant` the gateway re-reads the store, so a token rotated by another writer (a second replica, the import) is retried rather than burned. Reads are served from the copy for 30 s, so a Slack turn costs one Secret read rather than two or three (klaus-gateway#256).
 - The chart's `nodeSelector` and `affinity` take arbitrary keys again: the generated values schema declared both maps with `additionalProperties: false`, so any node label (`karpenter.sh/capacity-type: on-demand`, a zone) or affinity term failed the release with `additional properties … not allowed` — the knobs were unusable. Both are annotated free-form like `podAnnotations`.
 
 ### Added

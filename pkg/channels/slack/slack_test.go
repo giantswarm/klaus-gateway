@@ -428,10 +428,11 @@ func (f *fakeOBO) LinkURL(slackUserID string) string {
 	return "https://gw.example.com/auth/slack/link?u=signed-" + slackUserID
 }
 
-func (f *fakeOBO) Unlink(slackUserID string) {
+func (f *fakeOBO) Unlink(slackUserID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.unlinked = append(f.unlinked, slackUserID)
+	return nil
 }
 
 // dispatchAndCaptureOBO posts an app_mention from slackUser and returns the
@@ -630,7 +631,7 @@ func (o *multiUserOBO) link(slackUserID, token string) {
 }
 
 func (o *multiUserOBO) LinkURL(string) string { return "https://gw.example.com/link" }
-func (o *multiUserOBO) Unlink(string)         {}
+func (o *multiUserOBO) Unlink(string) error   { return nil }
 
 // A newcomer who signs in mid-thread has their parked message replayed to the
 // access-consent step, not dispatched to the agent: linking authenticates them,

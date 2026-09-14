@@ -97,7 +97,10 @@ const responseTypeCode = "code"
 const tokenRefreshSkew = 60 * time.Second
 
 // ErrNotLinked is returned by TokenFor when no muster link exists for the Slack
-// user. Callers treat it as a signal to prompt the user to sign in.
+// user, and by Store.Get when none is stored. Callers treat it as a signal to
+// prompt the user to sign in. Any other error from TokenFor is transient -- a
+// store or token endpoint that did not answer -- and the link may well exist:
+// callers report it as such rather than prompting a sign-in.
 var ErrNotLinked = errors.New("musterlink: slack user is not linked to a muster identity")
 
 // pageHTML is the branded shell served for the interactive (browser-facing) link
@@ -233,10 +236,27 @@ type Linker struct {
 	done   map[string]doneNotice
 
 	// refreshMu guards refreshLocks; each per-user lock serializes that user's
-	// token refreshes so concurrent messages (e.g. Slack event retries) don't
-	// both spend the rotating refresh token and invalidate the link.
+	// token refreshes -- and every write of that user's link -- so concurrent
+	// messages (e.g. Slack event retries) don't both spend the rotating refresh
+	// token and invalidate the link.
 	refreshMu    sync.Mutex
 	refreshLocks map[string]*sync.Mutex
+
+	// links is the process-local copy of the store (see links.go): every link
+	// this process read or wrote, so a store that fails to read still serves
+	// the people it knows and a refresh token muster has already rotated is
+	// never lost when the store fails to take the write. linksMu guards it;
+	// cacheTTL is how long a read is served from it before the store is asked
+	// again; retryDelay is the first delay before a failed write is retried
+	// (doubling up to maxRetryDelay), nextDelay the current one, flushTimer the
+	// pending retry. closed stops the retries.
+	linksMu    sync.Mutex
+	links      map[string]*cachedLink
+	cacheTTL   time.Duration
+	retryDelay time.Duration
+	nextDelay  time.Duration
+	flushTimer *time.Timer
+	closed     bool
 }
 
 // pendingAuth holds the PKCE code verifier between the authorize redirect and
@@ -368,6 +388,10 @@ func New(cfg Config) (*Linker, error) {
 		now:           time.Now,
 		pending:       map[string]pendingAuth{},
 		refreshLocks:  map[string]*sync.Mutex{},
+		links:         map[string]*cachedLink{},
+		cacheTTL:      linkCacheTTL,
+		retryDelay:    writeRetryDelay,
+		nextDelay:     writeRetryDelay,
 	}, nil
 }
 
@@ -494,8 +518,15 @@ func (l *Linker) LinkURL(slackUserID string) string {
 	return l.publicBaseURL + LinkPath + "?u=" + l.SignState(slackUserID)
 }
 
-// Unlink removes any stored link for the Slack user (e.g. /klaus logout).
-func (l *Linker) Unlink(slackUserID string) { l.store.Delete(slackUserID) }
+// Unlink removes the Slack user's link (e.g. /klaus logout). The process-local
+// copy is dropped either way; the store's error is returned when the link
+// could not be deleted there, so the caller can report a sign-out that did not
+// happen instead of confirming it.
+func (l *Linker) Unlink(slackUserID string) error {
+	unlock := l.lockUser(slackUserID)
+	defer unlock()
+	return l.drop(slackUserID)
+}
 
 // HandleLink verifies the signed state, generates a PKCE verifier, and
 // redirects the browser to the muster authorization endpoint.
@@ -619,8 +650,14 @@ func (l *Linker) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// The link is this process's from here on, whether or not the store takes
+	// the write right away (save keeps it and retries): muster has issued the
+	// refresh token, and a store that is briefly away must not make the person
+	// sign in twice.
 	link.LinkedAt = l.now()
-	l.store.Put(slackUser, link)
+	unlock := l.lockUser(slackUser)
+	l.save(slackUser, link)
+	unlock()
 	l.logger.Info("musterlink: linked slack user to muster identity", "slackUser", slackUser, "email", link.Email)
 
 	if l.onLinked != nil {
@@ -713,7 +750,17 @@ func (l *Linker) userinfo(ctx context.Context, accessToken string) (sub, email s
 // the new id_token with its expiry, rotates the stored refresh token, and
 // persists both. It returns ErrNotLinked when no link exists and drops the link
 // on a hard refresh failure (invalid/expired refresh token) so the next attempt
-// prompts a clean re-link.
+// prompts a clean re-link. Any other error is transient: a store that could
+// not be read and holds a link this process has not seen, or a token endpoint
+// that did not answer; the link, if any, is kept and the next call retries.
+//
+// The link is read through the process-local copy (load) and written through
+// it (save): a store that fails to read serves the link this process knows, and
+// a rotated refresh token the store fails to take is kept and written later
+// rather than lost -- lost, the next refresh would fail invalid_grant and sign
+// the person out. Before a link is dropped on invalid_grant the store is
+// re-read: a token rotated by another writer meanwhile (a second replica, the
+// import) is retried, not burned.
 //
 // Refreshes are serialized per user: a Slack turn can drive several TokenFor
 // calls (event retries, concurrent messages), and muster invalidates the old
@@ -723,7 +770,7 @@ func (l *Linker) userinfo(ctx context.Context, accessToken string) (sub, email s
 func (l *Linker) TokenFor(ctx context.Context, slackUserID string) (string, error) {
 	// Fast path: a still-valid cached id_token avoids a refresh (and the
 	// per-user lock) entirely.
-	if link, ok := l.store.Get(slackUserID); ok {
+	if link, err := l.load(slackUserID); err == nil {
 		if tok := validCachedToken(link, l.now()); tok != "" {
 			return tok, nil
 		}
@@ -732,9 +779,9 @@ func (l *Linker) TokenFor(ctx context.Context, slackUserID string) (string, erro
 	unlock := l.lockUser(slackUserID)
 	defer unlock()
 
-	link, ok := l.store.Get(slackUserID)
-	if !ok {
-		return "", ErrNotLinked
+	link, err := l.load(slackUserID)
+	if err != nil {
+		return "", err
 	}
 	// Re-check under the lock: a concurrent caller may have just refreshed.
 	if tok := validCachedToken(link, l.now()); tok != "" {
@@ -743,18 +790,25 @@ func (l *Linker) TokenFor(ctx context.Context, slackUserID string) (string, erro
 	if err := l.ensureEndpoints(ctx); err != nil {
 		return "", fmt.Errorf("musterlink: discover endpoints: %w", err)
 	}
-	src := l.oauth.TokenSource(l.oauthContext(ctx), &oauth2.Token{RefreshToken: link.RefreshToken})
-	tok, err := src.Token()
-	if err != nil {
-		var re *oauth2.RetrieveError
-		if errors.As(err, &re) && re.ErrorCode == "invalid_grant" {
-			// muster rejected the refresh token: the link is dead. Drop it and
-			// report as unlinked so the caller prompts sign-in on this same turn
-			// rather than a turn later. A non-invalid_grant token-endpoint error
-			// (transient 5xx, network) keeps the link and stays retryable.
-			l.store.Delete(slackUserID)
-			return "", ErrNotLinked
+	tok, err := l.refresh(ctx, link.RefreshToken)
+	if isInvalidGrant(err) {
+		// muster rejected the refresh token. Before declaring the link dead, ask
+		// the store past the process-local copy: another writer may have rotated
+		// the token since this process last read it, and then the stored one is
+		// the live one.
+		stored, serr := l.reload(slackUserID)
+		if serr != nil || stored.RefreshToken == link.RefreshToken {
+			return "", l.dropDead(slackUserID)
 		}
+		l.logger.Info("musterlink: refresh token rotated by another writer, retrying with the stored one", "slackUser", slackUserID)
+		link = stored
+		if tok, err = l.refresh(ctx, link.RefreshToken); isInvalidGrant(err) {
+			return "", l.dropDead(slackUserID)
+		}
+	}
+	if err != nil {
+		// A non-invalid_grant token-endpoint error (transient 5xx, network)
+		// keeps the link and stays retryable.
 		return "", fmt.Errorf("musterlink: refresh token for slack user: %w", err)
 	}
 	// The refresh succeeded, so muster has already rotated the refresh token
@@ -768,21 +822,47 @@ func (l *Linker) TokenFor(ctx context.Context, slackUserID string) (string, erro
 	if idToken == "" {
 		updated.IDToken = ""
 		updated.Expiry = time.Time{}
-		l.store.Put(slackUserID, &updated)
+		l.save(slackUserID, &updated)
 		return "", errors.New("musterlink: refresh response carried no id_token")
 	}
 	updated.IDToken = idToken
 	updated.Expiry = idTokenExpiry(idToken, tok.Expiry)
-	l.store.Put(slackUserID, &updated)
+	l.save(slackUserID, &updated)
 	return idToken, nil
 }
 
+// refresh spends refreshToken at muster's token endpoint and returns the new
+// token set.
+func (l *Linker) refresh(ctx context.Context, refreshToken string) (*oauth2.Token, error) {
+	src := l.oauth.TokenSource(l.oauthContext(ctx), &oauth2.Token{RefreshToken: refreshToken})
+	return src.Token()
+}
+
+// isInvalidGrant reports whether err is muster rejecting the refresh token
+// itself (spent, revoked, expired) rather than failing to answer.
+func isInvalidGrant(err error) bool {
+	var re *oauth2.RetrieveError
+	return errors.As(err, &re) && re.ErrorCode == "invalid_grant"
+}
+
+// dropDead removes a link whose refresh token muster rejected and returns
+// ErrNotLinked, so the caller prompts sign-in on this same turn rather than a
+// turn later. A store that refuses the delete is logged: the next read finds
+// the dead link again and lands here again, which is harmless.
+func (l *Linker) dropDead(slackUserID string) error {
+	if err := l.drop(slackUserID); err != nil {
+		l.logger.Warn("musterlink: dropping a dead link from the store failed", "slackUser", slackUserID, "err", err)
+	}
+	return ErrNotLinked
+}
+
 // LinkedIdentity returns the muster identity (subject and email) stored for a
-// linked Slack user. ok is false when the user has no link. Read-only: safe
-// without the per-user refresh lock.
+// linked Slack user. ok is false when the user has no link or the store could
+// not be read and this process has not seen the link. Read-only: safe without
+// the per-user refresh lock.
 func (l *Linker) LinkedIdentity(slackUserID string) (sub, email string, ok bool) {
-	link, ok := l.store.Get(slackUserID)
-	if !ok {
+	link, err := l.load(slackUserID)
+	if err != nil {
 		return "", "", false
 	}
 	return link.Sub, link.Email, true

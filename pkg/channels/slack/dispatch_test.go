@@ -20,7 +20,7 @@ func (transientOBO) TokenFor(context.Context, string) (string, error) {
 	return "", errors.New("transient token-mint failure")
 }
 func (transientOBO) LinkURL(string) string { return "" }
-func (transientOBO) Unlink(string)         {}
+func (transientOBO) Unlink(string) error   { return nil }
 
 // A typed reply that aborts on a transient OBO token error must not consume the
 // thread's paused input-required task, or the pending A2A task would dangle

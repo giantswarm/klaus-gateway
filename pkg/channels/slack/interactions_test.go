@@ -239,7 +239,7 @@ func (o linkedOBO) TokenFor(_ context.Context, slackUserID string) (string, erro
 	return "", musterlink.ErrNotLinked
 }
 func (o linkedOBO) LinkURL(string) string { return "https://gw.example.com/link" }
-func (o linkedOBO) Unlink(string)         {}
+func (o linkedOBO) Unlink(string) error   { return nil }
 
 // newDecisionAdapter builds an adapter whose Slack API accepts every call,
 // recording request paths, with a pending task seeded on thread T001.
@@ -317,7 +317,7 @@ func (o multiUserOBO) TokenFor(_ context.Context, slackUserID string) (string, e
 	return "", musterlink.ErrNotLinked
 }
 func (multiUserOBO) LinkURL(string) string { return "https://gw.example.com/link" }
-func (multiUserOBO) Unlink(string)         {}
+func (multiUserOBO) Unlink(string) error   { return nil }
 
 // A granted collaborator's button decision resumes the shared session under the
 // thread initiator's token, not the clicker's, with the clicker attached as
@@ -586,7 +586,7 @@ func (o *decisionOBO) LinkURL(slackUserID string) string {
 	return "https://gw.example.com/auth/slack/link?u=signed-" + slackUserID
 }
 
-func (o *decisionOBO) Unlink(string) {}
+func (o *decisionOBO) Unlink(string) error { return nil }
 
 // ixSink records the Slack Web API calls the interactions path makes.
 type ixSink struct {

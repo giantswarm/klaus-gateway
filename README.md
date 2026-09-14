@@ -31,7 +31,7 @@ External consumers                  Gateway layer                        Platfor
                                    +---------------------------+
 ```
 
-Full design: [architecture doc](https://github.com/teemow/klaus-lab/blob/main/architecture/klaus-gateway.md) · [agentgateway ADR](https://github.com/teemow/klaus-lab/blob/main/decisions/2026-04-20-1100-adr-agentgateway-as-data-plane.md)
+The chart and the agentgateway wiring are described in [docs/deployment.md](docs/deployment.md), the agent carrier under every channel in [docs/kagent-a2a.md](docs/kagent-a2a.md).
 
 ## Documentation
 
@@ -39,19 +39,24 @@ Full design: [architecture doc](https://github.com/teemow/klaus-lab/blob/main/ar
 - [Deployment guide](docs/deployment.md) — Helm chart, agentgateway wiring, channel configuration
 - [API reference](docs/api.md) — HTTP surface reference for all adapters
 - [kagent integration](docs/kagent-a2a.md) — A2A v1 over gRPC, the AgentTemplate roster, one AgentInstance per thread, HITL and stop
-- Channel guides: [Web](docs/channels-web.md) · [Slack](docs/channels-slack.md) · [CLI](docs/channels-cli.md)
+- Channel guides: [Web](docs/channels-web.md) · [Slack](docs/channels-slack.md) ([interactive surface](docs/slack-hitl-surface.md)) · [CLI](docs/channels-cli.md)
+- [Upgrade notes](UPGRADE.md) — what an operator has to do or decide between releases
 
 ## Quick start
 
 ```bash
-# Run the compose smoke harness (builds + end-to-end test)
-make e2e-local
-
-# Build binary
+# Build and test
 go build ./...
+make test
 
-# Build container image
-docker build -t klaus-gateway:dev .
+# Compose smoke harness: gateway + agentgateway + a Klaus stub, end to end
+docker compose -f deploy/docker-compose.yml up -d --build
+./hack/wait-for http://127.0.0.1:8080/healthz
+./hack/smoke-completion
+docker compose -f deploy/docker-compose.yml down -v
+
+# Container image (copies the prebuilt binary)
+CGO_ENABLED=0 go build -o klaus-gateway-linux-amd64 . && docker build -t klaus-gateway:dev .
 ```
 
 For day-to-day development the preferred path is `klausctl gateway start`, which spins up
@@ -61,11 +66,13 @@ For day-to-day development the preferred path is `klausctl gateway start`, which
 ## Layout
 
 ```
-cmd/                # binary entrypoint
-pkg/                # channel adapters, routing, lifecycle, server, upstream, kagent (a2a) client
+main.go             # binary entrypoint
+pkg/                # channel adapters, routing, lifecycle, server, upstream, kagent (a2a) client, OBO link store
 internal/           # config, controller, version
 helm/klaus-gateway/ # Helm chart
 deploy/             # docker-compose smoke harness + agentgateway config
+hack/               # kagent proto sync, chart render check, smoke-harness scripts
+tests/              # chart tests CI runs on kind (app-test-suite)
 docs/               # development, deployment, API, and channel guides
 ```
 

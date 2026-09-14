@@ -61,6 +61,29 @@ spec:
         {{- if or (eq .Values.routing.store "configmap") (eq .Values.routing.store "crd") }}
         - --namespace=$(POD_NAMESPACE)
         {{- end }}
+        {{- if eq .Values.routing.store "valkey" }}
+        {{- with .Values.routing.valkey }}
+        - --valkey-url={{ required "routing.valkey.url is required with routing.store: valkey" .url }}
+        {{- if .username }}
+        - --valkey-username={{ .username }}
+        {{- end }}
+        {{- if .db }}
+        - --valkey-db={{ .db }}
+        {{- end }}
+        {{- if .tls.enabled }}
+        - --valkey-tls
+        {{- if .tls.serverName }}
+        - --valkey-tls-server-name={{ .tls.serverName }}
+        {{- end }}
+        {{- end }}
+        {{- if .keyPrefix }}
+        - --valkey-key-prefix={{ .keyPrefix }}
+        {{- end }}
+        {{- if .timeout }}
+        - --valkey-timeout={{ .timeout }}
+        {{- end }}
+        {{- end }}
+        {{- end }}
         {{- if .Values.controller.enabled }}
         - --controller=true
         {{- end }}
@@ -132,6 +155,13 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: metadata.namespace
+        {{- if and (eq .Values.routing.store "valkey") .Values.routing.valkey.existingSecret }}
+        - name: KLAUS_GATEWAY_VALKEY_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.routing.valkey.existingSecret }}
+              key: {{ .Values.routing.valkey.passwordKey }}
+        {{- end }}
         {{- if and .Values.slack.enabled .Values.slack.secretName }}
         - name: SLACK_BOT_TOKEN
           valueFrom:

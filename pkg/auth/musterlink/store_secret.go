@@ -105,45 +105,49 @@ func (s *SecretStore) Check() (int, error) {
 }
 
 // Get decrypts and returns the link for slackUserID, or (nil, false) when
-// absent or on any read/decode error (logged).
-func (s *SecretStore) Get(slackUserID string) (*Link, bool) {
+// absent, and the API error when the Secret could not be read. A record that
+// does not decode (written under another key, or corrupt) is logged and
+// reported as ErrNotLinked: a re-link overwrites it, which heals it.
+func (s *SecretStore) Get(slackUserID string) (*Link, error) {
 	ctx, cancel := s.context()
 	defer cancel()
 	sec, err := s.get(ctx)
 	if err != nil {
-		s.logger.Error("musterlink: secret read failed", "secret", s.Ref(), "err", err)
-		return nil, false
+		return nil, fmt.Errorf("musterlink: read secret %s: %w", s.Ref(), err)
 	}
 	record, ok := sec.Data[slackUserID]
 	if !ok {
-		return nil, false
+		return nil, ErrNotLinked
 	}
 	link, err := s.cipher.openLink(record)
 	if err != nil {
-		s.logger.Error("musterlink: decode link failed", "err", err)
-		return nil, false
+		s.logger.Error("musterlink: decode link failed, treating the user as unlinked", "err", err)
+		return nil, ErrNotLinked
 	}
-	return link, true
+	return link, nil
 }
 
-// Put encrypts and stores link. Errors are logged; a failed Put means the next
-// refresh sees the stale token and the user re-links.
-func (s *SecretStore) Put(slackUserID string, link *Link) {
+// Put encrypts and stores link. It returns the API error when the write did
+// not go through (the Secret missing, the ServiceAccount not allowed to update
+// it, the conflict retries exhausted, the apiserver away): the Secret then
+// still holds the previous record.
+func (s *SecretStore) Put(slackUserID string, link *Link) error {
 	record, err := s.cipher.sealLink(link)
 	if err != nil {
-		s.logger.Error("musterlink: encrypt link failed", "err", err)
-		return
+		return err
 	}
 	if err := s.mutate(func(data map[string][]byte) bool {
 		data[slackUserID] = record
 		return true
 	}); err != nil {
-		s.logger.Error("musterlink: secret write failed", "secret", s.Ref(), "err", err)
+		return fmt.Errorf("musterlink: write secret %s: %w", s.Ref(), err)
 	}
+	return nil
 }
 
-// Delete removes a link; missing keys are a no-op. Errors are logged.
-func (s *SecretStore) Delete(slackUserID string) {
+// Delete removes a link; missing keys are a no-op. It returns the API error
+// when the write did not go through.
+func (s *SecretStore) Delete(slackUserID string) error {
 	if err := s.mutate(func(data map[string][]byte) bool {
 		if _, ok := data[slackUserID]; !ok {
 			return false
@@ -151,8 +155,9 @@ func (s *SecretStore) Delete(slackUserID string) {
 		delete(data, slackUserID)
 		return true
 	}); err != nil {
-		s.logger.Error("musterlink: secret delete failed", "secret", s.Ref(), "err", err)
+		return fmt.Errorf("musterlink: delete from secret %s: %w", s.Ref(), err)
 	}
+	return nil
 }
 
 // Import adds every link in links that the Secret does not hold yet, in one

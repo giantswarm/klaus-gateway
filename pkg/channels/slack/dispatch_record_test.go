@@ -53,7 +53,7 @@ type identOBO struct{}
 
 func (identOBO) TokenFor(context.Context, string) (string, error) { return "tok-abc", nil }
 func (identOBO) LinkURL(string) string                            { return "https://example.test/link" }
-func (identOBO) Unlink(string)                                    {}
+func (identOBO) Unlink(string) error                              { return nil }
 func (identOBO) LinkedIdentity(string) (string, string, bool) {
 	return "sub-123", "user@example.test", true
 }

@@ -258,7 +258,7 @@ func (o oneUserOBO) TokenFor(_ context.Context, slackUserID string) (string, err
 	return "", musterlink.ErrNotLinked
 }
 func (o oneUserOBO) LinkURL(string) string { return "https://gw.example.com/link" }
-func (o oneUserOBO) Unlink(string)         {}
+func (o oneUserOBO) Unlink(string) error   { return nil }
 
 // The kagent controller lists AgentTemplates to a human identity, so the
 // picker's roster read runs as the invoking user: their linked token travels
