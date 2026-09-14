@@ -353,9 +353,10 @@ const stoppedNote = "_(stopped)_"
 // input-required prompt before any content streamed.
 const pausedNote = "_(waiting for your input below)_"
 
-// failedNote replaces the text-mode placeholder when a turn ends in error, so it
-// does not linger as "thinking" with no failure signal (reactions mode swaps in
-// the failed emoji instead).
+// failedNote is posted when a turn ends in error before any answer text: it
+// replaces the text-mode placeholder (so it does not linger as "thinking"),
+// and in reactions mode it is posted into the thread next to the failed emoji,
+// which alone would leave the user guessing whether a retry helps.
 const failedNote = "_(the turn failed; please try again)_"
 
 // renderFailedNote is posted when the agent completed its turn but Slack kept

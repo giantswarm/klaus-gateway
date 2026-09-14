@@ -321,6 +321,12 @@ A turn ends early for one of two reasons, and the thread can tell them apart:
   collapses into its receipt, nothing else is posted in reactions mode (`_(stopped)_` replaces
   the placeholder in text mode), and the task is cancelled at the controller so the agent
   stops working.
+- **An error** before any answer text (an agent that did not start in time, a controller
+  refusal) marks the triggering message with the failed reaction and posts
+  `_(the turn failed; please try again)_` in the thread, in reactions mode too — the emoji
+  alone does not say whether a retry helps, and for a conversation the gateway opened itself it
+  sits on the bot's own root message. Once answer text has streamed, only the reaction marks
+  the incomplete reply.
 - **A gateway restart** (a pod restart, a node loss with a grace period) is nobody's decision.
   The thread gets a one-line notice — `⚠️ I was restarted while **<agent>** was working. It
   keeps going — the result is in the Dev Portal, and I post it here when it is done.` — the

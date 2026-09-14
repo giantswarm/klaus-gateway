@@ -37,6 +37,10 @@ func TestCorruptSession_ResetAndNotice(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "reset the session")
 	}, 10*time.Second, 50*time.Millisecond, "reset notice posted")
+	// The recovery notice is the only note: the generic "turn failed, try
+	// again" (posted for other errors in reactions mode) would contradict it.
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "the turn failed",
+		"no generic retry note in front of the recovery notice")
 
 	mu.Lock()
 	defer mu.Unlock()
