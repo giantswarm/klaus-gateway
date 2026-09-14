@@ -80,6 +80,26 @@ approval prompt is left exactly as it is: the button cannot normally reach one,
 and in the race where it does, the prompt is still on screen and the user
 answers it or types `/stop`.
 
+The `processing` call of a conversation's first turn also **names the
+session** (`agents.sessions.setStatus` takes a `title`), so the Messages tab
+timeline lists conversations as "Investigate CPU alert on gazelle" rather than
+untitled. The title is the conversation's opening message, normalised: the bot
+mention, an `/agent "<name>"` selector and any other leading slash verb are
+stripped (they address the bot, they do not describe the conversation),
+whitespace collapses to single spaces, and the result is cut at a word boundary
+to Slack's 200-character limit with a trailing `…`. It is sent only with the
+turn that opens the conversation — a channel mention rooting its own thread, the
+first message of a new assistant-pane chat (which is never its own thread root:
+the pane's thread anchor is Slack's), or the slash command's question — because
+Slack applies a title when the call *creates* the session and ignores it
+afterwards, which is also what keeps a title a user renamed by hand from being
+overwritten. The title is derived when the message is dispatched and sent by the
+turn that eventually runs, so an opening message held for sign-in still names
+the session once it replays. A first message that normalises to nothing (a bare
+command, an upload with no caption) sends no title and leaves Slack to name the
+session. Should Slack refuse the titled call, the status is sent again without
+the title, so a refused title never costs the turn its indicator.
+
 ### Threads and sessions
 
 - `threadID` is `thread_ts` if set, otherwise the message `ts`.

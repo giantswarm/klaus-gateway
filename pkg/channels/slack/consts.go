@@ -435,6 +435,7 @@ const (
 	paramIconURL   = "icon_url"   // chat:write.customize display icon
 	paramChannelID = "channel_id" // agents.sessions.setStatus channel
 	paramStatus    = "status"     // agents.sessions.setStatus lifecycle state
+	paramTitle     = "title"      // agents.sessions.setStatus session name (create only)
 	// unfurl_links / unfurl_media are forced to false on every chat.postMessage:
 	// bot posts relay agent- and tool-controlled links, and an unfurl has
 	// Slack's crawler fetch them (fatal for single-use auth links).
