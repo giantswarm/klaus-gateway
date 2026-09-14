@@ -10,6 +10,7 @@
 package a2a
 
 import (
+	"net"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -128,10 +129,18 @@ func ParseTarget(target string) (hostPort string, useTLS bool, err error) {
 	default:
 		return "", false, fmt.Errorf("a2a: target %q must use the %s:// or %s:// scheme", target, SchemePlaintext, SchemeTLS)
 	}
-	if u.Host == "" || u.Port() == "" || u.Path != "" || u.RawQuery != "" {
-		return "", false, fmt.Errorf("a2a: target %q must be %s://host:port with no path", target, u.Scheme)
+	if u.Host == "" || u.Path != "" || u.RawQuery != "" {
+		return "", false, fmt.Errorf("a2a: target %q must be %s://host[:port] with no path", target, u.Scheme)
 	}
-	return u.Host, useTLS, nil
+	if u.Port() != "" {
+		return u.Host, useTLS, nil
+	}
+	// A TLS target without a port is the edge on 443, the way an https URL is;
+	// plaintext gRPC has no conventional port, so it must name one.
+	if !useTLS {
+		return "", false, fmt.Errorf("a2a: target %q must name a port", target)
+	}
+	return net.JoinHostPort(u.Hostname(), "443"), useTLS, nil
 }
 
 // Dial builds a Client for cfg.Target. The connection is established lazily
