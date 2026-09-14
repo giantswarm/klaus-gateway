@@ -251,13 +251,13 @@ func newBatchedWriterWithClient(client *slackAPIClient, channel, ts, threadTS st
 func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelta) error {
 	ticker := time.NewTicker(batchInterval)
 	defer ticker.Stop()
-	// The session goes idle on EVERY exit — stream done, stream error, /stop,
-	// and the HITL prompt pause. Slack's agent loading UX does not clear itself
-	// when the app posts any more, so a missing "active" leaves the thread
-	// spinning for up to an hour. Registered before the drain so it lands after
-	// the turn's last in-thread post.
+	// The session leaves "processing" on EVERY exit — stream done, stream error,
+	// /stop, and the HITL prompt pause. Slack's agent loading UX does not clear
+	// itself when the app posts any more, so a missing exit status leaves the
+	// thread spinning for up to an hour. Registered before the drain so it lands
+	// after the turn's last in-thread post.
 	w.setSessionStatus(ctx, sessionProcessing)
-	defer w.setSessionStatus(ctx, sessionActive)
+	defer func() { w.setSessionStatus(ctx, w.exitSessionStatus()) }()
 	defer w.drainThreadPosts() // backstop for the ctx.Done() exit; finalFlush drains first
 
 	for {
@@ -619,13 +619,29 @@ func renderToolTicker(steps int, current string) string {
 	return md
 }
 
+// exitSessionStatus is the state the session lands in when run() returns:
+// suspended when the turn paused on a HITL prompt — an approval, an ask_user
+// question, a form — which Slack renders as "waiting for you", so the user can
+// tell the conversations needing an answer from the finished ones; active on
+// every other exit. The answer starts the next turn, which sends processing
+// again, so the resume needs nothing of its own.
+func (w *batchedWriter) exitSessionStatus() sessionStatus {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.promptDelta != nil {
+		return sessionSuspended
+	}
+	return sessionActive
+}
+
 // sessionStatusTimeout bounds one detached agent-session status call.
 const sessionStatusTimeout = 10 * time.Second
 
 // sessionStatusIdleAttempts and sessionStatusRetryBackoff bound the retries of
-// the idle call on a transport failure: a session left in processing keeps
-// spinning for up to an hour and nothing but the next turn would repair it, so
-// the exit is worth a couple more tries (1s, then 2s apart).
+// the exit call (active, or suspended on a prompt pause) on a transport
+// failure: a session left in processing keeps spinning for up to an hour and
+// nothing but the next turn would repair it, so the exit is worth a couple
+// more tries (1s, then 2s apart).
 const (
 	sessionStatusIdleAttempts = 3
 	sessionStatusRetryBackoff = time.Second
@@ -641,7 +657,7 @@ const (
 // means this install can never set the status, which no retry fixes within
 // this process. A Slack-side rejection of THIS call (the bot not being a
 // member of the channel) costs one indicator and is retried by the next turn.
-// A transport failure on the idle call is retried a few times here, because
+// A transport failure on the exit call is retried a few times here, because
 // the working indicator does not clear itself.
 func (w *batchedWriter) setSessionStatus(ctx context.Context, status sessionStatus) {
 	if w.adapter == nil || w.adapter.sessionStatusUnsupported.Load() {
@@ -653,7 +669,7 @@ func (w *batchedWriter) setSessionStatus(ctx context.Context, status sessionStat
 		cctx, cancel := context.WithTimeout(base, sessionStatusTimeout)
 		err = w.client.setSessionStatus(cctx, w.channel, w.threadTS, status)
 		cancel()
-		if status != sessionActive || attempt >= sessionStatusIdleAttempts || !errors.Is(err, errSessionStatusTransient) {
+		if status == sessionProcessing || attempt >= sessionStatusIdleAttempts || !errors.Is(err, errSessionStatusTransient) {
 			break
 		}
 		time.Sleep(sessionStatusRetryBackoff * time.Duration(attempt))

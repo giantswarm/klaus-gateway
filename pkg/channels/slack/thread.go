@@ -183,12 +183,18 @@ func (a *Adapter) registerTurn(ctx context.Context, threadID string) (context.Co
 	}
 }
 
+// sweptPrompt names a thread whose pending prompt the TTL sweep dropped. Its
+// session is still suspended ("waiting for you") while its buttons now lead
+// nowhere, and no next turn will correct that on a thread nobody answered, so
+// the sweep hands the session back as idle.
+type sweptPrompt struct{ channel, thread string }
+
 // storePendingTask records a paused input-required task for a thread.
 // Any existing pending task for that thread is replaced. Abandoned entries are
 // swept opportunistically so the map does not grow for the process lifetime.
 func (a *Adapter) storePendingTask(threadID string, task *pendingTask) {
+	var swept []sweptPrompt
 	a.threadsMu.Lock()
-	defer a.threadsMu.Unlock()
 	st := a.threads[threadID]
 	if st == nil {
 		st = &threadState{}
@@ -201,11 +207,23 @@ func (a *Adapter) storePendingTask(threadID string, task *pendingTask) {
 	st.pending = task
 	for thread, other := range a.threads {
 		if other.pending != nil && time.Since(other.pending.storedAt) > pendingTTL {
+			if other.pending.Channel != "" {
+				swept = append(swept, sweptPrompt{channel: other.pending.Channel, thread: thread})
+			}
 			other.pending = nil
 			if other.empty() {
 				delete(a.threads, thread)
 			}
 		}
+	}
+	a.threadsMu.Unlock()
+
+	// Outside the lock: a status call must never run under threadsMu, and it
+	// belongs to no turn, so it goes on the adapter's background context.
+	for _, s := range swept {
+		a.background(func(bg context.Context) {
+			a.setSessionStatus(bg, s.channel, s.thread, sessionActive)
+		})
 	}
 }
 
