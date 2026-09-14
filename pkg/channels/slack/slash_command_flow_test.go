@@ -296,6 +296,48 @@ func TestSlashCommand_UnlinkedCallerIsAskedToSignIn(t *testing.T) {
 	require.Empty(t, fake.pathCalls("views.open"))
 }
 
+// slowThenFastRoster stalls its first listing until the caller gives up, then
+// answers normally: the cold-cache read that outlives the trigger_id budget.
+type slowThenFastRoster struct {
+	mu     sync.Mutex
+	calls  int
+	agents []pkga2a.AgentInfo
+}
+
+func (r *slowThenFastRoster) ListAgents(ctx context.Context) ([]pkga2a.AgentInfo, error) {
+	r.mu.Lock()
+	r.calls++
+	first := r.calls == 1
+	r.mu.Unlock()
+	if first {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return r.agents, nil
+}
+
+// A roster read that outlives the trigger_id budget tells the user to retry,
+// and does not poison the roster's negative cache: the retry lists again and
+// opens the picker.
+func TestSlashCommand_SlowRosterTellsUserToRetry(t *testing.T) {
+	fake := newFakeSlackAPI()
+	api := fake.server(t)
+	roster := &slowThenFastRoster{agents: pickerRoster().agents}
+	_, srv := newEventsAdapter(t, &stubGateway{}, api.URL, channelMode, func(a *slackadapter.Adapter) {
+		a.DefaultAgent = "kagent/swarmgeist"
+		a.Roster = roster
+		a.AgentCards = pickerCards()
+	})
+
+	sendSlashCommand(t, srv, "C1", "U1", "", api.URL+"/response_url")
+	require.Eventually(t, func() bool { return strings.Contains(responseURLTexts(fake), "took too long") },
+		6*time.Second, 50*time.Millisecond, "the budget expires and the user is told to retry")
+	require.Empty(t, fake.pathCalls("views.open"), "no picker after the budget")
+
+	sendSlashCommand(t, srv, "C1", "U1", "", api.URL+"/response_url")
+	openedView(t, fake)
+}
+
 func TestSlashCommand_InvalidSignatureRejected(t *testing.T) {
 	_, srv := newEventsAdapter(t, &stubGateway{}, "", channelMode)
 
@@ -471,6 +513,38 @@ func TestAskAgentRecovery_RootMarkerRestoresAgentAndInitiator(t *testing.T) {
 		return false
 	}, 2*time.Second, 50*time.Millisecond, "the consent prompt goes to the initiator from the marker")
 	require.Equal(t, 1, gw.resolveCount(), "the newcomer's reply waits")
+}
+
+// goneCards reports every agent as no longer existing, the way the kagent
+// client does for a deleted AgentTemplate.
+type goneCards struct{}
+
+func (goneCards) CardIdentity(context.Context, string) (string, string) { return "", "" }
+func (goneCards) CardInfo(_ context.Context, ref string) (string, string, error) {
+	return "", "", fmt.Errorf("%w: no AgentTemplate %s", pkga2a.ErrAgentUnknown, ref)
+}
+
+// A marker naming an agent that no longer exists refuses the recovery loudly
+// instead of dispatching to a dead ref or substituting the default.
+func TestAskAgentRecovery_MarkerAgentGoneRefusesLoudly(t *testing.T) {
+	fake := newFakeSlackAPI()
+	api := fake.server(t)
+	fake.setResponse("conversations.replies", `{"ok":true,"messages":[
+		{"type":"message","user":"UBOT","bot_id":"B1","ts":"100.000","text":"root",
+		 "blocks":[{"type":"section","block_id":"klaus_gateway.agent_conversation:{\"a\":\"kagent/gone-agent\",\"u\":\"U1\",\"e\":\"slash_command\"}","text":{"type":"mrkdwn","text":"root"}}]}
+	]}`)
+	gw, _ := capturingGateway()
+	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, func(a *slackadapter.Adapter) {
+		a.DefaultAgent = "kagent/swarmgeist"
+		a.Roster = pickerRoster()
+		a.AgentCards = goneCards{}
+	})
+
+	sendEvent(t, srv, mention("U1", "still there?", "200.000", "100.000"))
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "isn't available anymore")
+	}, 2*time.Second, 50*time.Millisecond, "the recovery is refused loudly")
+	require.Equal(t, 0, gw.resolveCount(), "nothing is dispatched")
 }
 
 // The turn's dispatch record names the picker as the agent's source.

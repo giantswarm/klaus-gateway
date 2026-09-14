@@ -21,7 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Web channel: a turn paused on a tool approval or question ends its stream with an `event: prompt` (task id, hint, tools or questions); `POST /web/messages` accepts `taskId` and `decision` to resume it; `GET /web/agents` lists the selectable agents as the caller.
-- Slack slash command (`/swarmgeist` in the manifest; the name is per app) opens an agent picker modal: a select over the live roster with the default agent preselected, and a question box prefilled with any text typed after the command. Submitting it posts the conversation root in the channel under the chosen agent's identity, makes the submitter the thread initiator, and runs the question as the first turn; replies work as in any conversation, also after a gateway restart. The gateway joins a public channel it is not yet in, and asks the user to invite it to a private one. Unknown agents, an unavailable roster and unserved channels are reported privately to the user. Requires the `commands` scope and the `slash_commands` entry from the updated Slack app manifest.
+- Slack slash command (`/swarmgeist` in the manifest; the name is per app): opens an agent picker modal — a select over the live roster, the default agent preselected, and a question box prefilled with any text after the command — and, on submit, starts a conversation in the channel with the chosen agent: a root message under the agent's identity, the submitter as thread initiator, the question as the first turn, and replies that keep working after a gateway restart. Requires the `commands` scope and the `slash_commands` entry from the updated Slack app manifest.
 
 ### Fixed
 

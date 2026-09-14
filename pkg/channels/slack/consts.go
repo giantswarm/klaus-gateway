@@ -154,6 +154,7 @@ const (
 
 	slashCommandDMNotice         = "_This command opens a conversation in a channel. In a direct message, just type your question._"
 	slashCommandSignInNotice     = "_I need to know who you are before I can list the agents. Mention me with_ `/login` _in a channel, sign in, then run the command again._"
+	slashCommandSlowNotice       = "_Listing the agents took too long for Slack's picker. Please run the command again._"
 	slashCommandOpenFailedNotice = "⚠️ _I couldn't open the agent picker just now. Please try again._"
 	askAgentIncompleteNotice     = "⚠️ _Pick an agent and type a question, then submit again._"
 	askAgentInviteNotice         = "⚠️ _I'm not a member of this channel, so I couldn't start the conversation. Invite me to the channel and try again._"
@@ -169,8 +170,16 @@ const conversationMarkerPrefix = "klaus_gateway.agent_conversation:"
 // conversation opened by the slash command's picker.
 const entryPointSlashCommand = "slash_command"
 
-// sectionTextMax is Slack's cap on a section block's text.
-const sectionTextMax = 3000
+// sectionTextMax is Slack's cap on a section block's text; blockIDMax its cap
+// on a block_id.
+const (
+	sectionTextMax = 3000
+	blockIDMax     = 255
+)
+
+// pickerOpenBudget bounds the work between a slash command arriving and
+// views.open: Slack invalidates the trigger_id after 3 seconds.
+const pickerOpenBudget = 2500 * time.Millisecond
 
 // inspectShortcutCallbackID is the callback_id of the "Inspect agent steps"
 // message shortcut registered in deploy/slack/manifest.yaml. Invoked from any

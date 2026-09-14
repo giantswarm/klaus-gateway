@@ -137,6 +137,9 @@ func decodeConversationMarker(blockID string) *conversationMarker {
 // 30s cache (rosterAgentsBestEffort) because the trigger_id expires 3 seconds
 // after Slack issued it.
 func (a *Adapter) handleSlashCommand(ctx context.Context, p slashCommandPayload) {
+	if !a.started.Load() {
+		return
+	}
 	notify := func(text string) {
 		if err := a.apiClient().respondToURL(ctx, p.ResponseURL, text); err != nil {
 			a.Logger.Warn("slack: slash command notice failed", "user", p.UserID, "error", err)
@@ -158,16 +161,26 @@ func (a *Adapter) handleSlashCommand(ctx context.Context, p slashCommandPayload)
 		notify(agentSelectionUnavailable)
 		return
 	}
+	// Everything before views.open shares one budget: Slack invalidates the
+	// trigger_id 3 seconds after issuing it, and on a cold roster cache the
+	// token mint and the controller list both go to the network. Past the
+	// budget the user is told to retry (the next attempt finds the cache warm
+	// or the roster read still in flight), not that the picker is broken.
+	pctx, cancel := context.WithTimeout(ctx, pickerOpenBudget)
+	defer cancel()
 	// The roster is listed as the caller: the kagent controller serves
 	// AgentTemplates to a human identity, and without one only a warm cache
 	// answers. An unlinked caller on a cold cache is told to sign in.
-	ctx = a.withCallerToken(ctx, p.UserID)
-	agents, err := a.rosterAgentsBestEffort(ctx)
+	pctx = a.withCallerToken(pctx, p.UserID)
+	agents, err := a.rosterAgentsBestEffort(pctx)
 	if err != nil {
 		a.Logger.Warn("slack: slash command roster unavailable", "user", p.UserID, "error", err)
-		if errors.Is(err, pkga2a.ErrNoIdentity) {
+		switch {
+		case errors.Is(err, pkga2a.ErrNoIdentity):
 			notify(slashCommandSignInNotice)
-		} else {
+		case pctx.Err() != nil:
+			notify(slashCommandSlowNotice)
+		default:
 			notify(agentRosterUnavailable)
 		}
 		return
@@ -182,9 +195,13 @@ func (a *Adapter) handleSlashCommand(ctx context.Context, p slashCommandPayload)
 		notify(slashCommandOpenFailedNotice)
 		return
 	}
-	if err := a.apiClient().viewsOpen(ctx, p.TriggerID, view); err != nil {
+	if err := a.apiClient().viewsOpen(pctx, p.TriggerID, view); err != nil {
 		a.Logger.Warn("slack: views.open failed", "user", p.UserID, "channel", p.ChannelID, "error", err)
-		notify(slashCommandOpenFailedNotice)
+		if pctx.Err() != nil || strings.Contains(err.Error(), "expired_trigger_id") {
+			notify(slashCommandSlowNotice)
+		} else {
+			notify(slashCommandOpenFailedNotice)
+		}
 	}
 }
 
@@ -200,6 +217,7 @@ func (a *Adapter) askAgentModal(agents []pkga2a.AgentInfo, p slashCommandPayload
 	}
 	options := make([]any, 0, len(agents))
 	var initial map[string]any
+	defaultIdx := -1
 	seen := make(map[string]bool, len(agents))
 	for _, ag := range agents {
 		ref := a.agentInfoRef(ag)
@@ -207,19 +225,25 @@ func (a *Adapter) askAgentModal(agents []pkga2a.AgentInfo, p slashCommandPayload
 			continue
 		}
 		seen[ref] = true
-		if len(options) == modalMaxAgents {
-			a.Logger.Warn("slack: roster exceeds the modal option cap, list cut", "cap", modalMaxAgents, "roster", len(agents))
-			break
-		}
 		label := sanitizeDisplayName(ag.DisplayName)
 		if label == "" {
 			label = ag.Name
 		}
 		opt := map[string]any{bkText: plainTextObj(truncateRunes(label, modalOptionLabelMax)), bkValue: ref}
 		if ref == a.DefaultAgent {
-			initial = opt
+			initial, defaultIdx = opt, len(options)
 		}
 		options = append(options, opt)
+	}
+	if len(options) > modalMaxAgents {
+		// The cut must never drop the preselected default: move it to the
+		// front so it stays on the list whatever the roster order.
+		if defaultIdx >= modalMaxAgents {
+			def := options[defaultIdx]
+			options = append([]any{def}, append(options[:defaultIdx:defaultIdx], options[defaultIdx+1:]...)...)
+		}
+		a.Logger.Warn("slack: roster exceeds the modal option cap, list cut", "cap", modalMaxAgents, "roster", len(options))
+		options = options[:modalMaxAgents]
 	}
 	agentSelect := map[string]any{
 		bkType:        bkStaticSelect,
@@ -278,6 +302,8 @@ func (a *Adapter) handleAskAgentSubmission(ctx context.Context, payload interact
 	}
 	ref := payload.View.State.Values[askAgentAgentBlockID][askAgentAgentActionID].selectedValue()
 	question := strings.TrimSpace(payload.View.State.Values[askAgentQuestionBlockID][askAgentQuestionActionID].Value)
+	// Both inputs are required in the modal, so Slack refuses an empty
+	// submission itself; this only guards a malformed payload.
 	if ref == "" || question == "" {
 		notify(askAgentIncompleteNotice)
 		return
@@ -308,6 +334,14 @@ func (a *Adapter) handleAskAgentSubmission(ctx context.Context, payload interact
 	name := a.agentNameFor(ctx, ref)
 	rootText := fmt.Sprintf(askAgentRootText, user, escapeMrkdwn(name), quoteMrkdwn(escapeMrkdwn(question)))
 	marker := conversationMarker{AgentRef: ref, Initiator: user, EntryPoint: entryPointSlashCommand}
+	if id := marker.encode(); len(id) > blockIDMax {
+		// Unreachable for DNS-1123 refs (namespace/name is at most 127 bytes),
+		// but a marker Slack would reject must fail here, named, not as an
+		// opaque invalid_blocks on the post.
+		a.Logger.Error("slack: conversation marker exceeds Slack's block_id cap", "agent", ref, "len", len(id), "cap", blockIDMax)
+		notify(askAgentPostFailedNotice)
+		return
+	}
 	client := a.agentClientNamed(ctx, ref, name)
 	rootTS, err := client.postConversationRoot(ctx, pm.Channel, rootText, marker)
 	if err != nil && isNotInChannelErr(err) {

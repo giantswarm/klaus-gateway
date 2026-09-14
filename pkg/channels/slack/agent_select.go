@@ -2,12 +2,15 @@ package slack
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 )
@@ -78,6 +81,11 @@ const agentAmbiguousNotice = "⚠️ *%s* matches more than one agent, so I have
 // agent (renamed, removed, or now ambiguous). The turn is NOT dispatched:
 // routing it to any other agent would silently fork the session.
 const agentRecoveryGoneNotice = "⚠️ _This conversation was started with `/agent \"%s\"`, but that name doesn't match exactly one agent anymore, so I haven't sent your message. Start a new conversation to continue._"
+
+// agentRecoveryMarkerGoneNotice is posted when a slash-started conversation's
+// marker names an agent that no longer exists or is not selectable. The turn
+// is NOT dispatched: routing it anywhere else would silently fork the session.
+const agentRecoveryMarkerGoneNotice = "⚠️ _This conversation was started with the agent `%s`, but that agent isn't available anymore, so I haven't sent your message. Start a new conversation to continue._"
 
 // agentRecoveryCheckFailedNotice is posted when re-deriving a conversation's
 // display-name binding failed transiently (roster unreachable). Nothing is
@@ -509,9 +517,14 @@ func (a *Adapter) threadAgent(ctx context.Context, msg channels.InboundMessage, 
 		// A root the gateway posted itself (the slash command's picker) has no
 		// prefix but carries the binding in its conversation marker, which
 		// wins: it is the resolved ref, so no roster re-resolution can drift it.
+		// The agent may be gone by now, though — same as a renamed quoted
+		// opener — so it is checked before the thread is rebound.
 		var root rootMessage
 		root, err = a.apiClient().threadRoot(rctx, slackChannel, msg.ThreadID)
 		if err == nil && root.Marker != nil {
+			if refusal := a.markerAgentRefusal(ctx, root.Marker.AgentRef); refusal != "" {
+				return "", "", false, refusal
+			}
 			a.bindThreadAgent(msg.ThreadID, root.Marker.AgentRef)
 			return root.Marker.AgentRef, agentSourceThread, false, ""
 		}
@@ -536,6 +549,32 @@ func (a *Adapter) threadAgent(ctx context.Context, msg channels.InboundMessage, 
 		return a.DefaultAgent, agentSourceDefault, opener, ""
 	}
 	return bound, agentSourceThread, opener, ""
+}
+
+// markerAgentRefusal checks that the agent a conversation marker names still
+// exists and is selectable. A gone or unavailable agent yields the refusal to
+// post instead of dispatching to a dead ref; a transient check failure yields
+// "" and the turn proceeds on the marker — the ref is known, and a truly
+// missing agent still fails the turn loudly downstream. No card checker (A2A
+// not configured) skips the check.
+func (a *Adapter) markerAgentRefusal(ctx context.Context, ref string) string {
+	checker, ok := a.AgentCards.(agentCardChecker)
+	if !ok {
+		return ""
+	}
+	vctx, cancel := context.WithTimeout(ctx, agentValidateTimeout)
+	defer cancel()
+	_, _, err := checker.CardInfo(vctx, ref)
+	switch {
+	case err == nil:
+		return ""
+	case errors.Is(err, pkga2a.ErrAgentUnknown), errors.Is(err, pkga2a.ErrAgentUnavailable):
+		a.Logger.Info("slack: marker agent no longer selectable, refusing recovery", "agent", ref, "error", err)
+		return fmt.Sprintf(agentRecoveryMarkerGoneNotice, strings.ReplaceAll(ref, "`", "'"))
+	default:
+		a.Logger.Warn("slack: marker agent check failed, proceeding on the marker", "agent", ref, "error", err)
+		return ""
+	}
 }
 
 // openingAgentRef extracts the agent binding from a conversation-opening

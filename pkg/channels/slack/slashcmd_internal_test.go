@@ -117,3 +117,28 @@ func TestQuoteMrkdwn_PrefixesEveryLine(t *testing.T) {
 	require.Equal(t, "> one\n> two", quoteMrkdwn("one\ntwo"))
 	require.Equal(t, "> single", quoteMrkdwn("single"))
 }
+
+// A default agent past the option cap is moved to the front of the list, so
+// the cut never drops the preselected option.
+func TestAskAgentModal_DefaultPastCapIsKept(t *testing.T) {
+	a := pickerAdapter("kagent/a-102")
+	agents := make([]pkga2a.AgentInfo, 0, modalMaxAgents+3)
+	for i := 0; i < modalMaxAgents+3; i++ {
+		agents = append(agents, pkga2a.AgentInfo{Name: fmt.Sprintf("a-%03d", i), Namespace: "kagent"})
+	}
+	view, err := a.askAgentModal(agents, slashCommandPayload{ChannelID: "C1", UserID: "U1"})
+	require.NoError(t, err)
+	_, values, initial := modalOptions(t, view)
+	require.Len(t, values, modalMaxAgents)
+	require.Equal(t, "kagent/a-102", initial, "the default stays preselected")
+	require.Equal(t, "kagent/a-102", values[0], "the default is moved to the front of the cut list")
+	require.Equal(t, "kagent/a-000", values[1], "the rest keeps its order")
+}
+
+// The longest marker a DNS-1123 ref and a Slack user id can produce fits the
+// block_id cap with room to spare.
+func TestConversationMarker_WorstCaseFitsBlockID(t *testing.T) {
+	ref := strings.Repeat("n", 63) + "/" + strings.Repeat("m", 63)
+	m := conversationMarker{AgentRef: ref, Initiator: strings.Repeat("U", 12), EntryPoint: entryPointSlashCommand}
+	require.LessOrEqual(t, len(m.encode()), blockIDMax)
+}
