@@ -71,12 +71,18 @@ func TestValidate_A2A(t *testing.T) {
 		require.ErrorContains(t, cfg.Validate(), "grpc://")
 	})
 
-	t.Run("target with a path or without a port is refused", func(t *testing.T) {
+	t.Run("target with a path or a plaintext target without a port is refused", func(t *testing.T) {
 		cfg := base
 		cfg.A2A.URL = "grpc://agentgateway.agent-platform.svc.cluster.local:8080/kagent"
 		require.Error(t, cfg.Validate())
-		cfg.A2A.URL = "grpcs://kagent.example.com"
+		cfg.A2A.URL = "grpc://kagent.example.com"
 		require.Error(t, cfg.Validate())
+	})
+
+	t.Run("tls target without a port is the edge on 443", func(t *testing.T) {
+		cfg := base
+		cfg.A2A.URL = "grpcs://agentgateway.127.0.0.1.nip.io"
+		require.NoError(t, cfg.Validate())
 	})
 
 	t.Run("namespace defaults to kagent and is required", func(t *testing.T) {
