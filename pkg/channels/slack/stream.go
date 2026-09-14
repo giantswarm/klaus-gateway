@@ -117,6 +117,11 @@ type batchedWriter struct {
 	adapter          *Adapter
 	slackUser        string
 	connectorPrompts bool
+	// sessionTitle names the agent session in Slack's Messages tab. It is set
+	// only on the turn that opens the conversation — Slack applies a title when
+	// the status call creates the session and ignores it afterwards — so on
+	// every later turn it is empty and no title is sent.
+	sessionTitle string
 	// callToolInner maps a call_tool invocation's CallID to the inner muster
 	// tool it targets, taken from the call arguments. Result deltas carry no
 	// arguments, so this is how a call_tool result is attributed to
@@ -663,16 +668,32 @@ func (w *batchedWriter) setSessionStatus(ctx context.Context, status sessionStat
 	if w.adapter == nil || w.adapter.sessionStatusUnsupported.Load() {
 		return
 	}
+	// The title rides on the processing call alone: it is the only one that can
+	// create the session, and Slack ignores a title on an existing one.
+	title := ""
+	if status == sessionProcessing {
+		title = w.sessionTitle
+	}
 	base := context.WithoutCancel(ctx)
 	var err error
 	for attempt := 1; ; attempt++ {
 		cctx, cancel := context.WithTimeout(base, sessionStatusTimeout)
-		err = w.client.setSessionStatus(cctx, w.channel, w.threadTS, status)
+		err = w.client.setSessionStatus(cctx, w.channel, w.threadTS, status, title)
 		cancel()
 		if status == sessionProcessing || attempt >= sessionStatusIdleAttempts || !errors.Is(err, errSessionStatusTransient) {
 			break
 		}
 		time.Sleep(sessionStatusRetryBackoff * time.Duration(attempt))
+	}
+	// Slack gave a verdict against the titled call. The title is decoration;
+	// the status is what keeps the indicator honest, so send it once more bare
+	// rather than lose this turn's indicator to a title Slack will not take.
+	if err != nil && title != "" && !errors.Is(err, errSessionStatusTransient) && !errors.Is(err, errSessionStatusUnsupported) {
+		w.logger.Warn("slack: agent session title rejected, setting the status untitled",
+			"title_runes", utf8.RuneCountInString(title), "error", err)
+		cctx, cancel := context.WithTimeout(base, sessionStatusTimeout)
+		err = w.client.setSessionStatus(cctx, w.channel, w.threadTS, status, "")
+		cancel()
 	}
 	switch {
 	case err == nil:
@@ -2137,22 +2158,113 @@ type sessionStatusResponse struct {
 	} `json:"response_metadata,omitempty"`
 }
 
+// sessionTitleMax is Slack's cap on an agent session title, in characters.
+const sessionTitleMax = 200
+
+// storeSessionTitle parks the title threadID's agent session is created with,
+// derived from the conversation's opening message. Only that message's turn
+// can create the session — Slack applies a title on creation and ignores it
+// afterwards, which is also what keeps a title a user edited by hand from
+// being overwritten — so a reply, and a button resume, park nothing.
+//
+// The title is parked on the thread instead of handed to the turn because the
+// opening message does not always run as a turn on its first dispatch: a
+// sender who has not signed in yet has it held and replayed, and the replay
+// re-enters dispatch with the conversation already bound, where it no longer
+// reads as the opener. The turn that finally sends the processing status
+// takes the title. An empty title (a bare command, an upload with no caption)
+// parks nothing, so Slack names that session itself.
+func (a *Adapter) storeSessionTitle(threadID, title string) {
+	if title == "" {
+		return
+	}
+	now := time.Now()
+	a.sessionTitleMu.Lock()
+	defer a.sessionTitleMu.Unlock()
+	if a.sessionTitles == nil {
+		a.sessionTitles = make(map[string]ttlEntry[string])
+	}
+	sweepExpired(a.sessionTitles, now)
+	a.sessionTitles[threadID] = ttlEntry[string]{value: title, expires: now.Add(threadStateTTL)}
+}
+
+// takeSessionTitle returns and clears threadID's parked session title, or ""
+// when this turn is not the conversation's first.
+func (a *Adapter) takeSessionTitle(threadID string) string {
+	a.sessionTitleMu.Lock()
+	defer a.sessionTitleMu.Unlock()
+	entry, ok := a.sessionTitles[threadID]
+	if !ok {
+		return ""
+	}
+	delete(a.sessionTitles, threadID)
+	if time.Now().After(entry.expires) {
+		return ""
+	}
+	return entry.value
+}
+
+// sessionTitleFrom derives a session title from the first human message of a
+// thread — the line the Messages tab timeline lists the conversation under,
+// where an untitled session reads as nothing at all.
+//
+// The command scaffolding a user types to address the bot says nothing about
+// the conversation, so the mention and a leading slash verb (the /agent
+// selector, or any other command-shaped verb) are dropped and only the
+// question survives. Whitespace collapses because the title renders on one
+// line: a pasted question's newlines and indentation would eat the budget
+// without adding words. Returns "" when nothing survives, in which case no
+// title is sent and Slack names the session itself.
+func sessionTitleFrom(text string) string {
+	s := StripMention(strings.TrimSpace(text))
+	if cmd := parseCommand(s); cmd != nil && commandShapeRe.MatchString(cmd.Name) {
+		if cmd.Name == cmdAgent {
+			_, _, s = splitAgentCommand(s)
+		} else {
+			s = strings.Join(cmd.Args, " ")
+		}
+	}
+	s = strings.Join(strings.Fields(s), " ")
+	if utf8.RuneCountInString(s) <= sessionTitleMax {
+		return s
+	}
+	// Cut a rune short of the cap so the ellipsis marking the cut fits inside
+	// it. Whitespace is collapsed by now, so the last space in that budget is
+	// the last word boundary; a single word longer than the budget has none and
+	// takes the hard cut.
+	head := string([]rune(s)[:sessionTitleMax-1])
+	if i := strings.LastIndexByte(head, ' '); i > 0 {
+		return head[:i] + "…"
+	}
+	return truncateRunes(s, sessionTitleMax)
+}
+
 // setSessionStatus sets the thread's agent session status, creating the
 // session if it does not exist yet. channel_id and thread_ts are always sent:
 // the session is thread-based on every surface we serve. Unlike the legacy
 // assistant status this never clears itself when the app posts, so the caller
 // owns sending the idle state on every exit path.
 //
+// title names the session in the Messages tab timeline. Slack applies it only
+// when this call CREATES the session, so it is sent on the turn that opens the
+// conversation and ignored (harmlessly) on any later one; a session a user
+// renamed by hand therefore keeps its name. An empty title is omitted rather
+// than sent blank.
+//
 // The call goes out unbranded on purpose: the display-identity fields would
 // need chat:write.customize, and its missing_scope rejection is
 // indistinguishable from the one that latches this method off for the whole
 // process.
-func (c *slackAPIClient) setSessionStatus(ctx context.Context, channelID, threadTS string, status sessionStatus) error {
-	payload, err := json.Marshal(map[string]any{
+func (c *slackAPIClient) setSessionStatus(ctx context.Context, channelID, threadTS string, status sessionStatus, title string) error {
+	params := map[string]any{
 		paramChannelID: channelID,
 		paramThreadTS:  threadTS,
 		paramStatus:    string(status),
-	})
+	}
+	if title != "" {
+		params[paramTitle] = title
+	}
+	payload, err := json.Marshal(params)
 	if err != nil {
 		return fmt.Errorf("slack %s: marshal: %w", methodSetSessionStatus, err)
 	}

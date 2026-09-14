@@ -1205,6 +1205,7 @@ type statusCall struct {
 	channelID string
 	threadTS  string
 	status    string
+	title     string
 }
 
 // fakeThread models a Slack thread: chat.postMessage appends a message with a
@@ -1240,6 +1241,7 @@ func (f *fakeThread) handler() http.HandlerFunc {
 			ChannelID string            `json:"channel_id"`
 			ThreadTS  string            `json:"thread_ts"`
 			Status    string            `json:"status"`
+			Title     string            `json:"title"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		texts := blockTexts(body.Blocks)
@@ -1265,7 +1267,7 @@ func (f *fakeThread) handler() http.HandlerFunc {
 			f.messages[ts] = texts
 			f.history = append(f.history, texts)
 		case "agents.sessions.setStatus":
-			f.statusCalls = append(f.statusCalls, statusCall{channelID: body.ChannelID, threadTS: body.ThreadTS, status: body.Status})
+			f.statusCalls = append(f.statusCalls, statusCall{channelID: body.ChannelID, threadTS: body.ThreadTS, status: body.Status, title: body.Title})
 			statusErr = f.failStatus
 			if body.Status == string(sessionActive) && f.failIdleHTTP > 0 {
 				f.failIdleHTTP--
@@ -2242,6 +2244,145 @@ func TestSessionStatus_ChannelThreadGetsTheIndicator(t *testing.T) {
 	require.True(t, ft.sawText("⏳"), "the live line still renders as a message ticker")
 }
 
+// The turn that opens a conversation names the session, so the Messages tab
+// timeline lists it by its question. The title rides on the processing call —
+// the only one that can create the session — and never on the exit one.
+func TestSessionTitle_SentOnTheOpeningTurn(t *testing.T) {
+	ft := &fakeThread{}
+	srv := httptest.NewServer(ft.handler())
+	t.Cleanup(srv.Close)
+
+	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "C1", "", "1.0", detailsOn, slog.Default())
+	w.adapter = &Adapter{}
+	w.sessionTitle = "Investigate CPU alert on gazelle"
+	ch := make(chan channels.OutboundDelta, 1)
+	ch <- doneDelta()
+	close(ch)
+	require.NoError(t, w.run(t.Context(), ch))
+
+	require.Equal(t, []string{"processing", "active"}, ft.statuses())
+	require.Equal(t, "Investigate CPU alert on gazelle", ft.statusCalls[0].title)
+	require.Empty(t, ft.statusCalls[1].title)
+}
+
+// A later turn in the same thread carries no title: the session already
+// exists, so Slack would ignore one anyway, and the field is left off the
+// payload rather than sent blank.
+func TestSessionTitle_AbsentOnLaterTurns(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		_, _ = fmt.Fprint(w, `{"ok":true}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	c := &slackAPIClient{botToken: "t", baseURL: srv.URL, logger: slog.Default()}
+	require.NoError(t, c.setSessionStatus(t.Context(), "C1", "1.0", sessionProcessing, ""))
+	require.NotContains(t, body, "title")
+}
+
+// The parked title is taken by exactly one turn, the first to send the
+// processing status; a later turn in the thread takes nothing. A message that
+// normalises to no title parks nothing, so Slack names that session itself.
+func TestSessionTitle_StoreAndTake(t *testing.T) {
+	a := &Adapter{}
+	a.storeSessionTitle("1.0", "")
+	require.Empty(t, a.takeSessionTitle("1.0"))
+
+	a.storeSessionTitle("1.0", "why is the node down")
+	require.Equal(t, "why is the node down", a.takeSessionTitle("1.0"))
+	require.Empty(t, a.takeSessionTitle("1.0"), "a later turn in the thread takes nothing")
+}
+
+// A title Slack will not take must not cost the turn its working indicator:
+// the processing status is sent again without the title, and a rejection of
+// the title alone never latches the status off for the process.
+func TestSessionTitle_RejectedTitleFallsBackToUntitledStatus(t *testing.T) {
+	var mu sync.Mutex
+	var bodies []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
+		bodies = append(bodies, body)
+		mu.Unlock()
+		if _, titled := body["title"]; titled {
+			_, _ = fmt.Fprint(w, `{"ok":false,"error":"invalid_arguments"}`)
+			return
+		}
+		_, _ = fmt.Fprint(w, `{"ok":true}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "C1", "", "1.0", detailsOn, slog.Default())
+	w.adapter = &Adapter{}
+	w.sessionTitle = "Investigate CPU alert on gazelle"
+	ch := make(chan channels.OutboundDelta, 1)
+	ch <- doneDelta()
+	close(ch)
+	require.NoError(t, w.run(t.Context(), ch))
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, bodies, 3, "titled processing (rejected), untitled processing, active")
+	require.Equal(t, "processing", bodies[0]["status"])
+	require.Contains(t, bodies[0], "title")
+	require.Equal(t, "processing", bodies[1]["status"])
+	require.NotContains(t, bodies[1], "title")
+	require.Equal(t, "active", bodies[2]["status"])
+	require.False(t, w.adapter.sessionStatusUnsupported.Load(), "a title rejection is not an unsupported install")
+}
+
+// The title is the user's own question: the scaffolding they type to address
+// the bot is not part of what the conversation is about.
+func TestSessionTitleFrom(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		text string
+		want string
+	}{
+		{"plain question", "why is gazelle paging", "why is gazelle paging"},
+		{"leading mention", "<@U123> investigate the CPU alert", "investigate the CPU alert"},
+		{"agent selector", `/agent "Swarm Helper" investigate the CPU alert`, "investigate the CPU alert"},
+		{"unquoted agent selector", "/agent helper check the disk", "check the disk"},
+		{"mention and agent selector", `<@U123> /agent "Helper" check the disk`, "check the disk"},
+		{"other slash verb", "/details full and then look at the logs", "full and then look at the logs"},
+		{"bare slash verb", "/help", ""},
+		{"selector with no question", `/agent "Helper"`, ""},
+		{"a path is not a command", "/etc/hosts is missing an entry", "/etc/hosts is missing an entry"},
+		{"collapsed whitespace", "why is\n\n  gazelle   paging?\n", "why is gazelle paging?"},
+		{"empty", "   ", ""},
+		{"multi-byte runes survive", "¿por qué está caído el nodo 🇪🇸?", "¿por qué está caído el nodo 🇪🇸?"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, sessionTitleFrom(tc.text))
+		})
+	}
+}
+
+// A long first message is cut at a word boundary and marked, and the result
+// still fits Slack's 200-character cap — counted in runes, so a multi-byte
+// message is never cut mid-glyph and never overshoots.
+func TestSessionTitleFrom_Truncation(t *testing.T) {
+	long := strings.TrimSpace(strings.Repeat("alerta ", 40)) // 279 runes
+	got := sessionTitleFrom(long)
+	require.LessOrEqual(t, utf8.RuneCountInString(got), sessionTitleMax)
+	require.True(t, strings.HasSuffix(got, "…"))
+	require.False(t, strings.HasSuffix(got, " …"), "the cut lands on a word boundary, not mid-space")
+	require.True(t, strings.HasSuffix(strings.TrimSuffix(got, "…"), "alerta"), "no half word survives the cut")
+
+	// A multi-byte word repeated past the cap: the byte length far exceeds 200,
+	// the rune count must not.
+	wide := strings.TrimSpace(strings.Repeat("café ", 60))
+	got = sessionTitleFrom(wide)
+	require.LessOrEqual(t, utf8.RuneCountInString(got), sessionTitleMax)
+	require.True(t, strings.HasSuffix(got, "café…"))
+
+	// A single word longer than the cap has no boundary to fall back to.
+	got = sessionTitleFrom(strings.Repeat("z", 300))
+	require.Equal(t, strings.Repeat("z", sessionTitleMax-1)+"…", got)
+}
+
 // A turn ending on a stream error still goes idle: Slack no longer clears the
 // loading UX on its own, so a missing "active" would spin for an hour.
 func TestSessionStatus_ActiveOnStreamError(t *testing.T) {
@@ -2376,7 +2517,7 @@ func TestSetSessionStatus_ErrorClassification(t *testing.T) {
 			}))
 			t.Cleanup(srv.Close)
 			c := &slackAPIClient{botToken: "t", baseURL: srv.URL}
-			err := c.setSessionStatus(t.Context(), "C1", "1.0", sessionProcessing)
+			err := c.setSessionStatus(t.Context(), "C1", "1.0", sessionProcessing, "")
 			require.Error(t, err)
 			require.Equal(t, tc.latches, errors.Is(err, errSessionStatusUnsupported))
 		})
@@ -2395,6 +2536,6 @@ func TestSetSessionStatus_WarningIsNotAnError(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	c := &slackAPIClient{botToken: "t", baseURL: srv.URL, logger: slog.Default()}
-	require.NoError(t, c.setSessionStatus(t.Context(), "C1", "1.0", sessionProcessing))
+	require.NoError(t, c.setSessionStatus(t.Context(), "C1", "1.0", sessionProcessing, ""))
 	require.Equal(t, map[string]any{"channel_id": "C1", "thread_ts": "1.0", "status": "processing"}, body)
 }
