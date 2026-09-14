@@ -172,7 +172,7 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *slashCommand, slackUse
 		access := a.accessPolicy()
 		access.SetInitiator(threadID, slackUser)
 		if !access.Allowed(threadID, slackUser) {
-			reply("_You can read this thread, but only people the thread owner has allowed can instruct the agent (that includes this command). Post a message and the owner can let you in._")
+			reply(notPermittedNotice)
 			return false
 		}
 		return true
@@ -201,7 +201,7 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *slashCommand, slackUse
 			return true
 		}
 		if a.stopThread(threadID) {
-			reply("⏹ Stopped.")
+			reply(stopStoppedNotice)
 			return true
 		}
 		// A thread paused on input-required has no in-flight turn to cancel; the

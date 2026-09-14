@@ -1495,6 +1495,85 @@ func (a *Adapter) handleContextChanged(inner slackInnerEvent) {
 	a.Logger.Debug("slack: assistant context changed", "entity_type", entity.Type, "entity", entity.Value)
 }
 
+// handleSessionStopped reacts to the user pressing the stop button Slack
+// renders on the native working indicator. It is the /stop command by another
+// route, so it takes the same path: the same per-thread access rule, then
+// cancel the thread's in-flight turn and confirm the interruption in the
+// thread. The confirmation names the presser, which /stop's does not need to:
+// a press leaves no message of its own, so without the name the thread would
+// show a turn stopping with no record of who stopped it.
+//
+// The refusal is ephemeral, unlike /stop's: the presser typed nothing visible,
+// so a reply in the thread would be an answer to a question nobody there saw
+// being asked. A refused press sends no status — the session stays in
+// processing because the turn really is still running, which is correct.
+//
+// Slack never moves the session out of processing on its own. A press that
+// cancels a turn gets the idle status from that turn's own exit path, but a
+// press that finds nothing running (a stale indicator, a press racing the
+// turn's last exit) has no exit path left to ride, so it sends the idle status
+// here — otherwise the indicator spins on for up to an hour.
+//
+// A thread waiting on an approval prompt is the one case that takes neither
+// branch. /stop answers such a thread by falling through to dispatch, which
+// rejects the paused task; the button does not, because it cannot normally
+// reach a paused thread at all — Slack draws the button only while the session
+// is processing, and a paused thread is suspended (#249) or active. The one way
+// in is a race: the turn pauses as the press lands, so run() has already
+// released the slot and stopThread reports nothing to stop. Writing active
+// there would erase the suspended state the exit path just wrote and tell the
+// user the thread is idle while a tool call waits on their answer. So a pending
+// task means: touch nothing. The prompt is still on screen, and the user
+// answers it or types /stop, which does have the reject path.
+//
+// Stale-event dropping deliberately does not apply: a press older than this
+// process is exactly the stranded indicator this handler exists to clear.
+func (a *Adapter) handleSessionStopped(ctx context.Context, inner slackInnerEvent) {
+	if inner.Channel == "" || inner.ThreadTS == "" {
+		a.Logger.Debug("slack: agent session stopped without a channel and thread",
+			"channel", inner.Channel, "thread", inner.ThreadTS)
+		return
+	}
+	// Same first-sight rule /stop uses: the first caller of any interaction
+	// becomes the thread's initiator, and only they (or someone they let in)
+	// may interrupt the agent there.
+	access := a.accessPolicy()
+	access.SetInitiator(inner.ThreadTS, inner.User)
+	if !access.Allowed(inner.ThreadTS, inner.User) {
+		a.Logger.Debug("slack: stop button press refused, presser not permitted in this thread",
+			"channel", inner.Channel, "thread", inner.ThreadTS, "user", inner.User)
+		if err := a.apiClient().postEphemeralText(ctx, inner.Channel, inner.User, inner.ThreadTS, notPermittedNotice); err != nil {
+			a.Logger.Warn("slack: post stop-button refusal failed", "error", err)
+		}
+		return
+	}
+	if !a.stopThread(inner.ThreadTS) {
+		if a.hasPendingTask(inner.ThreadTS) {
+			a.Logger.Debug("slack: stop button pressed on a thread waiting on a prompt, leaving its status alone",
+				"channel", inner.Channel, "thread", inner.ThreadTS, "user", inner.User)
+			return
+		}
+		a.Logger.Debug("slack: stop button pressed with nothing running, clearing the indicator",
+			"channel", inner.Channel, "thread", inner.ThreadTS, "user", inner.User)
+		a.setSessionStatus(ctx, inner.Channel, inner.ThreadTS, sessionActive)
+		return
+	}
+	notice := fmt.Sprintf(stopStoppedByNotice, inner.User)
+	if _, err := a.apiClient().postMessage(ctx, inner.Channel, notice, inner.ThreadTS); err != nil {
+		a.Logger.Warn("slack: post stop-button notice failed", "error", err)
+	}
+}
+
+// setSessionStatus drives a thread's agent session status from outside a turn,
+// where no batchedWriter exists to own it. It borrows a writer that will never
+// write so the downgrade latch, the idle retry and the log lines stay in one
+// place — the status call needs nothing of a writer but its channel and thread.
+func (a *Adapter) setSessionStatus(ctx context.Context, channel, threadTS string, status sessionStatus) {
+	w := newBatchedWriterWithClient(a.apiClient(), channel, "", threadTS, detailsOff, a.Logger)
+	w.adapter = a
+	w.setSessionStatus(ctx, status)
+}
+
 // handleInbound runs the shared inbound pipeline for one Slack event:
 // dedup, member-join intro, accept-gate, normalise, active-thread gate (for
 // channel thread replies), command handling, then dispatch. Both transports
@@ -1516,6 +1595,9 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 		return
 	case evtAppContextChanged:
 		a.handleContextChanged(inner)
+		return
+	case evtAgentSessionStopped:
+		a.handleSessionStopped(ctx, inner)
 		return
 	}
 	a.Logger.Debug("slack: inbound event", "type", inner.Type, "channel", inner.Channel,
@@ -2435,6 +2517,10 @@ type slackInnerEvent struct {
 	// Context carries an app_context_changed event's entity list. Slack sends
 	// an empty object when the new context has no entities.
 	Context *slackEventContext `json:"context,omitempty"`
+	// StreamingMessageTS lists the chat.startStream streams Slack halted on an
+	// agent_session_stopped click. Decoded and ignored: this adapter posts with
+	// chat.postMessage, so it never has a stream of its own to close.
+	StreamingMessageTS []string `json:"streaming_message_ts,omitempty"`
 }
 
 // slackFile is one entry in a message event's files array.

@@ -17,6 +17,10 @@ const (
 	evtMemberJoined      = "member_joined_channel"
 	evtAppHomeOpened     = "app_home_opened"
 	evtAppContextChanged = "app_context_changed"
+	// evtAgentSessionStopped is the user clicking the stop button Slack renders
+	// on the native working indicator. Slack only offers that button to apps
+	// subscribed to this event, so the subscription is what creates the button.
+	evtAgentSessionStopped = "agent_session_stopped"
 )
 
 // tabMessages is the app_home_opened tab value for the assistant Messages tab;
@@ -272,6 +276,21 @@ const parkedDropNoticeTTL = time.Hour
 // stopNothingRunningNotice replies to a /stop in a thread with no in-flight
 // turn and no pending prompt, instead of falsely confirming a stop.
 const stopNothingRunningNotice = "_Nothing is running in this thread._"
+
+// stopStoppedNotice confirms a turn interrupted by the /stop command. The
+// command's own message is in the thread above it, so the thread can already
+// see who asked.
+const stopStoppedNotice = "⏹ Stopped."
+
+// stopStoppedByNotice confirms a turn interrupted with the native stop button.
+// %s is the presser's Slack user ID. The press leaves no message of its own, so
+// unlike /stop this notice is the thread's only record of who stopped the turn.
+const stopStoppedByNotice = "⏹ Stopped by <@%s>."
+
+// notPermittedNotice refuses a caller who may read the thread but was never let
+// in to instruct the agent there. Shared by the gated commands and the native
+// stop button, which enforce the same per-thread rule.
+const notPermittedNotice = "_You can read this thread, but only people the thread owner has allowed can instruct the agent (that includes this command). Post a message and the owner can let you in._"
 
 // signInLinkExpiredNote replaces a sign-in prompt whose link outlived its
 // state TTL once a fresh prompt is posted, so the dead button cannot be
