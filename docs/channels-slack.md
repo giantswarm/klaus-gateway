@@ -121,10 +121,36 @@ The app subscribes to two bot events:
 - `app_mention` — fires when a user `@`-mentions the bot in any channel
 - `message.im` — fires for direct messages to the bot
 
+The manifest also declares a slash command (`/swarmgeist` by default; the name is per app and the
+gateway does not depend on it) and the `commands` scope it needs. Manifest changes are applied by
+hand at api.slack.com/apps; adding the `commands` scope to an install that lacks it requires a
+reinstall.
+
 ## Agent routing
 
-Every Slack thread is routed to a single Klaus instance via the A2A executor. The target
-agent is fixed at startup using `slack.defaultAgent`.
+Every Slack thread is routed to a single agent via the A2A executor. A conversation picks its
+agent when it opens, through one of two entry points, and keeps it for life:
+
+- **Mention with a prefix**: `@bot /agent "<display name>" <question>` or
+  `@bot /agent <technical-name> <question>` on a conversation-starting message. Without a prefix
+  the conversation goes to the default agent (`slack.defaultAgent`).
+- **Slash command**: `/swarmgeist [question]` in a channel opens a modal with an agent select over
+  the live roster (the default agent preselected) and a question box. On submit the gateway posts
+  the conversation root itself, under the agent's identity ("💬 @user asked *Agent*: …"), makes
+  the submitter the thread initiator, and runs the question as the first turn. Slack hides
+  developer slash commands in threads and in the agent pane, so the command only opens channel
+  conversations; in a channel the bot is not a member of, the gateway joins public channels and
+  asks for an invite to private ones. Failures (unknown agent, roster unavailable, channel not
+  served) are reported privately to the invoking user.
+
+After a restart the in-memory binding is re-derived: from the `/agent` prefix in the opening
+message for mention-started threads, and from a conversation marker on the root for slash-started
+threads (the root is a bot message with no prefix). The marker is the `block_id` of the root's
+Block Kit section — invisible to users, stored by Slack with the message, returned by
+`conversations.replies` — and it also names the initiator, so the submitter, not the first person
+to reply, owns the thread after a restart. Slack message metadata would be the purpose-built
+carrier, but Slack drops custom metadata unless its schema is declared in the manifest, and the
+manifest of a classic Slack app has no place for that.
 
 | Flag | Env var | Required |
 |------|---------|---------|
@@ -237,12 +263,47 @@ any string that begins with `Slack bot`, `Slack app-level`, or `Slack user`.
    `reactions:write` is unavailable, a `_thinking…_` placeholder message is posted instead.
 8. Completion deltas are batched into a Block Kit `markdown` block and written back via
    `chat.update` (or an initial `chat.postMessage`) as the response accumulates. Replies over
-   12,000 characters roll over into follow-up in-thread messages on code-fence boundaries.
+   12,000 characters roll over into follow-up in-thread messages on code-fence boundaries; the
+   message's notification fallback text is cut to Slack's 4,000-character limit for that field.
+   Each streamed text run is rendered once — the A2A artifact update's append/replace semantics
+   are honoured, so the Go ADK's re-send of a finished run does not duplicate it — and runs
+   separated by tool calls are separated by a paragraph. A Slack refusal while rendering never
+   fails the turn: flushes keep retrying until the agent finishes, a message refused as too long
+   is re-split smaller, and only a final flush that still fails is reported in the thread (the
+   reply is incomplete, with the failed reaction) while the turn still counts as completed.
 
 Turns are serialized per thread: a message that arrives while the thread's previous turn is
 still running gets a brief "still working" notice rather than starting an overlapping turn.
 A signed-out sender's message is held for sign-in instead (no busy notice) and replays once
 they link and the running turn finishes.
+
+### Restarts and `/stop`
+
+A turn ends early for one of two reasons, and the thread can tell them apart:
+
+- **`/stop`** is the user's decision. The working reaction is cleared, the status ticker
+  collapses into its receipt, nothing else is posted in reactions mode (`_(stopped)_` replaces
+  the placeholder in text mode), and the task is cancelled at the controller so the agent
+  stops working.
+- **A gateway restart** (a pod restart, a node loss with a grace period) is nobody's decision.
+  The thread gets a one-line notice — `⚠️ I was restarted while **<agent>** was working. It
+  keeps going — the result is in the Dev Portal, and I post it here when it is done.` — the
+  working reaction is cleared, the ticker collapses into its receipt, and the task is **left
+  running** at the controller. The new gateway process resubscribes to it on start (A2A
+  `SubscribeToTask` on the thread's AgentInstance, under the same user's freshly minted
+  token) and streams what is left — or, when the task finished in between, posts the whole
+  answer — into the thread, with the working reaction back on the original message while it
+  does. A turn the start-up recovery cannot reach (its user signed out, the controller not up
+  yet after three tries ten seconds apart) is delivered by the thread's next reply, ahead of
+  that reply's own answer; a task the controller no longer has gets a short note instead.
+
+The recovery rides on the thread's routing-store binding, which records the task in flight
+while a turn runs. It therefore needs a routing store that outlives the process
+(`routing.store: configmap`, `bolt` or `crd`); with `memory` the record dies with the pod and
+the notice says so ("I cannot bring it into this thread"). The pod's
+`terminationGracePeriodSeconds` must leave room for the notice: the shutdown drains the HTTP
+servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s more), see
+[deployment.md](deployment.md#shutdown-and-restarts).
 
 ### Progress configuration
 
@@ -285,16 +346,22 @@ they link and the running turn finishes.
 - **Launch announcement.** A new channel thread opens with a short Swarmgeist hand-off notice
   before the agent takes over.
 - **Sign-in prompt.** An unlinked user's first message is answered with a "Sign in to Giant
-  Swarm" message posted as a threaded reply, addressed to that user (in channels it anchors
-  the conversation thread; in a DM it lands in the Slack Assistant pane). Once the link completes the same message is
-  updated in place to the signed-in confirmation, with the agent hand-off folded in when a
-  held message is about to replay. The sign-in link is per-user and the callback verifies the
-  OAuth identity's email against the Slack profile email, so a prompt visible to the whole
-  thread cannot be completed by someone else. The link in the button expires after 15
-  minutes; a message sent after that gets a fresh prompt, and the old one is rewritten to
-  say its link expired. Messages sent before signing in are held and replayed after the
-  link completes; only the last 5 per thread are kept, and the user is told when earlier
-  ones are dropped.
+  Swarm" prompt. In a channel the prompt is ephemeral, so only that user sees the link; a
+  short notice in the thread says the agent is waiting for a sign-in, names nobody and
+  carries no link, and gives the ephemeral something to render against. The notice is
+  posted once per thread and serves every unlinked user in it. In a DM the prompt is a
+  real threaded message and lands in the Slack
+  Assistant pane. Once the link completes, a DM prompt is rewritten in place to the
+  signed-in confirmation, with the agent hand-off folded in when a held message is about to
+  replay; a channel prompt cannot be rewritten (an ephemeral has no message id), so the
+  confirmation is a fresh ephemeral to the same user. The sign-in link is per-user and the
+  callback also verifies the OAuth identity's email against the Slack profile email. The
+  link in the button expires after 15 minutes; a message sent after that gets a fresh
+  prompt. A DM prompt is rewritten to say its link expired; a channel prompt cannot be
+  rewritten, so the fresh ephemeral says the earlier link expired instead. Messages sent
+  before
+  signing in are held and replayed after the link completes; only the last 5 per thread are
+  kept, and the user is told when earlier ones are dropped.
 - **One shared session per thread.** A thread maps to a single agent session. On the
   current kagent (v0.9.9) that session acts under the thread initiator's identity even after
   others are allowed in; a granted collaborator instructs the agent on the initiator's
@@ -322,15 +389,17 @@ they link and the running turn finishes.
 
 The `member_joined_channel` bot event must also be subscribed for the channel intro.
 
-## Endpoint
+## Endpoints
 
-The adapter mounts a single route:
+The adapter mounts three routes in events mode (none in socketmode, where the same payloads
+arrive as Socket Mode envelopes):
 
 ```
-POST /channels/slack/events    Events API webhook (events mode only; no-op in socketmode)
+POST /channels/slack/events        Events API webhook
+POST /channels/slack/interactions  Block Kit clicks, the message shortcut, the agent picker's view_submission
+POST /channels/slack/commands      the slash command
 ```
 
-The endpoint:
-- Verifies the `x-slack-signature` HMAC header using the signing secret.
-- Responds to `url_verification` challenges with the `challenge` value.
-- Dispatches `event_callback` payloads to the Klaus instance asynchronously.
+Every endpoint verifies the `x-slack-signature` HMAC header using the signing secret and acks
+within Slack's 3-second window before doing any work. The events endpoint also answers
+`url_verification` challenges with the `challenge` value.

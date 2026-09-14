@@ -46,9 +46,16 @@ func TestParseTarget(t *testing.T) {
 	require.Equal(t, "kagent.example.com:443", host)
 	require.True(t, tls)
 
+	// A TLS target without a port is the edge on 443, as an https URL would be
+	// (agentlab's klaus-gateway proof passes the edge that way).
+	host, tls, err = pkga2a.ParseTarget("grpcs://agentgateway.127.0.0.1.nip.io")
+	require.NoError(t, err)
+	require.Equal(t, "agentgateway.127.0.0.1.nip.io:443", host)
+	require.True(t, tls)
+
 	for _, bad := range []string{
 		"http://kagent-controller.kagent.svc.cluster.local:8083/api/a2a/kagent", // the 0.x REST shape
-		"grpc://kagent.example.com",             // no port
+		"grpc://kagent.example.com",             // no port: plaintext gRPC has no conventional one
 		"grpc://kagent.example.com:8080/kagent", // a path
 		"kagent.example.com:8080",               // no scheme
 	} {
@@ -340,4 +347,36 @@ func TestAttachAndParseHITL_RoundTrip(t *testing.T) {
 	request, err = pkga2a.ParseHITLRequest(nested)
 	require.NoError(t, err)
 	require.Equal(t, "child-q-1", request.AskUser.ResponseID(), "a propagated question is answered under the child's id")
+}
+
+// Subscribe resubscribes to a task on the instance: the controller serves a
+// task that has quiesced whole, as the only event, and the call rides the same
+// instance route and caller identity as every other A2A call.
+func TestClient_Subscribe_ServesAQuiescentTaskWhole(t *testing.T) {
+	f := readyFake(t)
+	f.tasks["task-1"] = &a2apkg.Task{
+		ID: "task-1", ContextID: "ctx-1",
+		Status:    a2apkg.TaskStatus{State: a2apkg.TaskStateCompleted},
+		Artifacts: []*a2apkg.Artifact{{ID: "a1", Parts: a2apkg.ContentParts{a2apkg.NewTextPart("done")}}},
+	}
+	client := f.serve(t, pkga2a.Config{})
+	ctx := asUser(t.Context(), userToken)
+
+	var events []a2apkg.Event
+	for event, err := range client.Subscribe(ctx, instanceID, "task-1") {
+		require.NoError(t, err)
+		events = append(events, event)
+	}
+	require.Len(t, events, 1)
+	task, ok := events[0].(*a2apkg.Task)
+	require.True(t, ok, "a quiescent task arrives whole")
+	require.Equal(t, a2apkg.TaskStateCompleted, task.Status.State)
+	require.Len(t, task.Artifacts, 1)
+	require.Equal(t, "done", task.Artifacts[0].Parts[0].Text(), "the artifacts survive the proto round trip")
+	require.Equal(t, []string{instanceID}, f.lastMD("SubscribeToTask").Get(pkga2a.InstanceIDHeader))
+	require.Equal(t, []string{"Bearer " + userToken}, f.lastMD("SubscribeToTask").Get("authorization"))
+
+	for _, err := range client.Subscribe(ctx, instanceID, "no-such-task") {
+		require.ErrorIs(t, err, a2apkg.ErrTaskNotFound)
+	}
 }

@@ -130,6 +130,14 @@ podDisruptionBudget:
   maxUnavailable:  # @schema type: [integer, string, null]
   unhealthyPodEvictionPolicy: ""  # @schema enum: ["", IfHealthyBudget, AlwaysAllow]
 
+# -- Seconds the kubelet gives the pod to stop before it is killed. The
+# shutdown drains the HTTP servers (up to 15 s), then stops the channel
+# adapters (up to 15 s more), which is when a Slack turn cut short posts its
+# restart notice and clears its progress reaction; the rest is margin for the
+# client and store closes. Lower than the drain plus the stop and a turn
+# interrupted by a restart ends in silence.
+terminationGracePeriodSeconds: 45
+
 podSecurityContext:
   seccompProfile:
     type: RuntimeDefault
@@ -376,15 +384,38 @@ obo:
   # (e.g. https://agentgateway.example.com). The muster redirect URI and the
   # CIMD client_id are derived from it.
   callbackBaseUrl: ""
-  # storePath is the encrypted bolt link-store path. Empty uses an in-memory
-  # store (links lost on restart). When set, persistence (below) decides whether
-  # the directory is backed by an emptyDir (pod-ephemeral) or a PVC (durable).
+  # store selects where the Slack<->muster links live. Records are sealed with
+  # store-key (AES-256-GCM) in either backend.
+  #   bolt   -- an encrypted file at storePath on the pod's volume (persistence
+  #             below). One ReadWriteOnce claim binds the pod to a node: when the
+  #             node dies, the replacement waits for the volume (Multi-Attach) and
+  #             a second replica is impossible.
+  #   secret -- one Kubernetes Secret in the release namespace (storeSecretName;
+  #             default <release>-obo-links, created empty by the chart with
+  #             helm.sh/resource-policy: keep). No volume, so a replacement pod is
+  #             Ready on any node the moment it is scheduled and replicas can
+  #             share the links (resourceVersion optimistic concurrency). The
+  #             chart grants the ServiceAccount get/update/patch on exactly that
+  #             Secret (Role + RoleBinding). Recommended; see UPGRADE.md for the
+  #             move off the volume.
+  store: bolt  # @schema enum: [bolt, secret]
+  # storeSecretName names the link Secret of the secret backend. Empty lets the
+  # chart create <release>-obo-links; set it to use a Secret you manage (the
+  # chart then renders only the Role and RoleBinding for it).
+  storeSecretName: ""
+  # storePath is the encrypted bolt link-store path. With store: bolt, empty
+  # uses an in-memory store (links lost on restart); when set, persistence
+  # (below) decides whether the directory is backed by an emptyDir
+  # (pod-ephemeral) or a PVC (durable). With store: secret it is the bolt file
+  # to import links from on start: keep it (and persistence) for the first
+  # start on the secret backend, then drop persistence to release the volume.
   storePath: ""
   # persistence backs storePath's directory. Disabled -> emptyDir: links survive
   # in-process restarts but not pod reschedules (rollouts, node drains). Enabled
-  # -> a ReadWriteOnce PVC so links survive pod recreation; recommended for
-  # multi-user use. With a single RWO claim the Deployment uses the Recreate
-  # strategy (the old pod must release the volume before the new one mounts it).
+  # -> a ReadWriteOnce PVC so links survive pod recreation. With a single RWO
+  # claim mounted the Deployment uses the Recreate strategy (the old pod must
+  # release the volume before the new one mounts it), whichever backend reads
+  # it; the secret backend without persistence mounts nothing and rolls.
   persistence:
     enabled: false
     size: 64Mi
@@ -394,8 +425,8 @@ obo:
     storageClass: ""
     existingClaim: ""
   # existingSecret names a pre-created Secret in the release namespace that
-  # holds the OBO keys: `state-key` (the HMAC key signing link state) and, when
-  # storePath is set, `store-key` (the AES-256 link-store key). When set, the
+  # holds the OBO keys: `state-key` (the HMAC key signing link state) and, with
+  # store: secret or a storePath, `store-key` (the AES-256 link-store key). When set, the
   # chart renders no Secret of its own and mounts this one, so the keys never
   # pass through Helm values or the release manifest; stateKey and storeKey
   # below are ignored. One of existingSecret or stateKey is required when
@@ -406,8 +437,8 @@ obo:
   # renders it into the <release>-obo Secret and mounts it as a file. Prefer
   # existingSecret: a value set here is copied into the release manifest.
   stateKey: ""
-  # storeKey is the AES-256 key for the encrypted link store, required only when
-  # storePath is set and existingSecret is empty. Accepts 32 raw bytes or a
+  # storeKey is the AES-256 key for the encrypted link store, required when the
+  # store is secret or storePath is set, and existingSecret is empty. Accepts 32 raw bytes or a
   # base64/hex encoding of 32 bytes (a SOPS-staged base64 value works directly).
   storeKey: ""
   # connectors enables the reactive Slack connector UX: the gateway detects a
@@ -421,8 +452,11 @@ global:  # @schema additionalProperties: true
   podSecurityStandards:
     enforced: false
 
-nodeSelector: {}
+# Scheduling of the gateway pod. Free-form maps: the generated values schema
+# takes any node label / any affinity term (without the annotation it refused
+# every key — `additional properties 'karpenter.sh/capacity-type' not allowed`).
+nodeSelector: {}  # @schema additionalProperties: true
 
 tolerations: []
 
-affinity: {}
+affinity: {}  # @schema additionalProperties: true

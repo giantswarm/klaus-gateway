@@ -86,10 +86,17 @@ type Entry struct {
 	Instance string `json:"instance,omitempty"`
 	// AgentInstanceID is the kagent AgentInstance (a controller-assigned UUID)
 	// the conversation's A2A turns are routed to. Empty for a Klaus conversation.
-	AgentInstanceID string        `json:"agent_instance_id,omitempty"`
-	CreatedAt       time.Time     `json:"created_at"`
-	LastSeen        time.Time     `json:"last_seen"`
-	TTL             time.Duration `json:"ttl"`
+	AgentInstanceID string `json:"agent_instance_id,omitempty"`
+	// TaskID is the A2A task running on AgentInstanceID while a turn is in
+	// flight, cleared when the turn ends. A gateway that restarts mid-turn finds
+	// here the tasks it has to resubscribe to.
+	TaskID string `json:"task_id,omitempty"`
+	// Resume is the channel-private data needed to deliver TaskID's result
+	// after a restart (the channel adapter owns its keys). Set with TaskID.
+	Resume    map[string]string `json:"resume,omitempty"`
+	CreatedAt time.Time         `json:"created_at"`
+	LastSeen  time.Time         `json:"last_seen"`
+	TTL       time.Duration     `json:"ttl"`
 }
 
 // Expired reports whether the entry has aged past its TTL relative to now.

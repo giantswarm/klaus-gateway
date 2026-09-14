@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/go-chi/chi/v5"
@@ -147,7 +148,14 @@ func run(args []string) error {
 		Router:    router,
 		Client:    instanceClient,
 		Lifecycle: manager,
+		// A turn a shutdown cuts short is delivered after the restart only when
+		// the thread's record of it outlives the process.
+		Durable: cfg.Store != config.StoreMemory,
 	}
+
+	// Adapters are stopped in reverse start order once the servers have
+	// drained, and before the clients they use are closed (see stopAdapters).
+	var adapters []channels.ChannelAdapter
 
 	var webAdapter *web.Adapter
 	if cfg.Web.Enabled {
@@ -158,6 +166,7 @@ func run(args []string) error {
 		if err := webAdapter.Start(ctx, facade); err != nil {
 			return fmt.Errorf("start web adapter: %w", err)
 		}
+		adapters = append(adapters, webAdapter)
 	}
 
 	publicMux := chi.NewRouter()
@@ -172,6 +181,7 @@ func run(args []string) error {
 			Logger:              logger,
 			Mode:                cfg.Slack.Mode,
 			Secrets:             secrets,
+			APIBase:             cfg.Slack.APIBase,
 			DMMode:              slackchannel.DMMode(cfg.Slack.DMMode),
 			ChannelMode:         slackchannel.ChannelMode(cfg.Slack.ChannelMode),
 			ChannelAllowlist:    cfg.Slack.ChannelAllowlist,
@@ -189,13 +199,7 @@ func run(args []string) error {
 			return fmt.Errorf("start slack adapter: %w", err)
 		}
 		slackAdapter.Mount(publicMux)
-		defer func() {
-			stopCtx, cancel := context.WithTimeout(context.Background(), server.DefaultShutdownTimeout)
-			defer cancel()
-			if err := slackAdapter.Stop(stopCtx); err != nil {
-				logger.Warn("slack adapter stop", "error", err)
-			}
-		}()
+		adapters = append(adapters, slackAdapter)
 		logger.Info("slack adapter started", "mode", cfg.Slack.Mode)
 	}
 
@@ -208,13 +212,7 @@ func run(args []string) error {
 			return fmt.Errorf("start cli adapter: %w", err)
 		}
 		cliAdapter.Mount(publicMux)
-		defer func() {
-			stopCtx, cancel := context.WithTimeout(context.Background(), server.DefaultShutdownTimeout)
-			defer cancel()
-			if err := cliAdapter.Stop(stopCtx); err != nil {
-				logger.Warn("cli adapter stop", "error", err)
-			}
-		}()
+		adapters = append(adapters, cliAdapter)
 		logger.Info("cli adapter started")
 	}
 
@@ -310,6 +308,11 @@ func run(args []string) error {
 	if webAdapter != nil {
 		webAdapter.Mount(publicMux)
 	}
+	// Everything a resubscription needs is wired now: the turns the previous
+	// process left running are picked up from here.
+	if slackAdapter != nil {
+		slackAdapter.RecoverTurns()
+	}
 
 	srv := server.New(server.Options{
 		PublicAddress: cfg.ListenAddress,
@@ -320,18 +323,25 @@ func run(args []string) error {
 		Public:        publicMux,
 	})
 
-	defer func() {
-		if webAdapter == nil {
-			return
-		}
-		stopCtx, cancel := context.WithTimeout(context.Background(), server.DefaultShutdownTimeout)
-		defer cancel()
-		if err := webAdapter.Stop(stopCtx); err != nil {
-			logger.Warn("web adapter stop", "error", err)
-		}
-	}()
+	err = srv.Run(ctx)
+	stopAdapters(adapters, logger)
+	return err
+}
 
-	return srv.Run(ctx)
+// stopAdapters stops the channel adapters in reverse start order, once the
+// servers have drained and before the deferred closes take the kagent client,
+// the link store and the routing store away: a Slack turn the shutdown cuts
+// short still posts its notice, and a /stop-issued cancel still reaches the
+// controller. All adapters share one budget, so the pod's termination grace
+// has to cover the server drain plus this stop (both DefaultShutdownTimeout).
+func stopAdapters(adapters []channels.ChannelAdapter, logger *slog.Logger) {
+	stopCtx, cancel := context.WithTimeout(context.Background(), server.DefaultShutdownTimeout)
+	defer cancel()
+	for i := len(adapters) - 1; i >= 0; i-- {
+		if err := adapters[i].Stop(stopCtx); err != nil {
+			logger.Warn("adapter stop", "adapter", adapters[i].Name(), "error", err)
+		}
+	}
 }
 
 // startController creates and starts the embedded controller-runtime manager in
@@ -432,20 +442,9 @@ func buildOBOLinker(cfg config.OBOConfig, logger *slog.Logger,
 		return nil, nil, fmt.Errorf("read obo state key: %w", err)
 	}
 
-	var store musterlink.Store
-	cleanup := func() error { return nil }
-	if cfg.StorePath != "" {
-		key, err := os.ReadFile(cfg.StoreKeyFile)
-		if err != nil {
-			return nil, nil, fmt.Errorf("read obo store key: %w", err)
-		}
-		bs, err := musterlink.OpenBoltStore(cfg.StorePath, key, logger)
-		if err != nil {
-			return nil, nil, err
-		}
-		store, cleanup = bs, bs.Close
-	} else {
-		store = musterlink.NewMemStore()
+	store, cleanup, err := buildOBOStore(cfg, logger)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	linker, err := musterlink.New(musterlink.Config{
@@ -464,6 +463,93 @@ func buildOBOLinker(cfg config.OBOConfig, logger *slog.Logger,
 		return nil, nil, err
 	}
 	return linker, cleanup, nil
+}
+
+// buildOBOStore opens the link store cfg selects (see config.OBOConfig.Store)
+// and returns it with its close func. The Secret backend is checked once here
+// so a missing Secret or Role fails the start instead of leaving every user
+// unlinked; when a bolt file is configured next to it, its links are imported
+// first (the file is read, never written) so nobody signs in again after the
+// move off the volume.
+func buildOBOStore(cfg config.OBOConfig, logger *slog.Logger) (musterlink.Store, func() error, error) {
+	noop := func() error { return nil }
+	switch backend := cfg.ResolvedStore(); backend {
+	case config.OBOStoreMemory:
+		return musterlink.NewMemStore(), noop, nil
+	case config.OBOStoreBolt:
+		key, err := os.ReadFile(cfg.StoreKeyFile)
+		if err != nil {
+			return nil, nil, fmt.Errorf("read obo store key: %w", err)
+		}
+		bs, err := musterlink.OpenBoltStore(cfg.StorePath, key, logger)
+		if err != nil {
+			return nil, nil, err
+		}
+		return bs, bs.Close, nil
+	case config.OBOStoreSecret:
+		key, err := os.ReadFile(cfg.StoreKeyFile)
+		if err != nil {
+			return nil, nil, fmt.Errorf("read obo store key: %w", err)
+		}
+		restCfg, err := buildKubeConfig()
+		if err != nil {
+			return nil, nil, fmt.Errorf("obo secret store: %w", err)
+		}
+		kclient, err := kubernetes.NewForConfig(restCfg)
+		if err != nil {
+			return nil, nil, fmt.Errorf("obo secret store: %w", err)
+		}
+		namespace := cfg.StoreSecretNamespace
+		if namespace == "" {
+			namespace = podNamespace()
+		}
+		ss, err := musterlink.NewSecretStore(kclient, key, musterlink.SecretStoreOptions{Namespace: namespace, Name: cfg.StoreSecretName}, logger)
+		if err != nil {
+			return nil, nil, err
+		}
+		if _, err := ss.Check(); err != nil {
+			return nil, nil, fmt.Errorf("obo secret store: %w (the chart renders the Secret and a Role granting get/update/patch on it)", err)
+		}
+		importBoltLinks(cfg.StorePath, key, ss, logger)
+		links, err := ss.Check()
+		if err != nil {
+			return nil, nil, fmt.Errorf("obo secret store: %w", err)
+		}
+		logger.Info("obo link store ready", "backend", backend, "secret", ss.Ref(), "links", links)
+		return ss, noop, nil
+	default:
+		return nil, nil, fmt.Errorf("unknown obo store %q", backend)
+	}
+}
+
+// importBoltLinks runs the one-time bolt -> Secret import when a bolt file is
+// configured and present. A failure is logged, not fatal: the Secret backend
+// works without it and the file stays for the next start to try again.
+func importBoltLinks(path string, key []byte, dst *musterlink.SecretStore, logger *slog.Logger) {
+	if path == "" {
+		return
+	}
+	if _, err := os.Stat(path); err != nil {
+		logger.Info("obo link store: no bolt file to import", "path", path)
+		return
+	}
+	added, total, err := musterlink.ImportBoltFile(path, key, dst, logger)
+	if err != nil {
+		logger.Error("obo link store: bolt import failed", "path", path, "err", err)
+		return
+	}
+	logger.Info("obo link store: imported links from bolt file", "path", path, "imported", added, "total", total, "secret", dst.Ref())
+}
+
+// podNamespace is the namespace this pod runs in per the mounted ServiceAccount
+// token, or "default" outside a cluster.
+func podNamespace() string {
+	if ns, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/namespace"); err == nil {
+		if v := strings.TrimSpace(string(ns)); v != "" {
+			return v
+		}
+	}
+	return "default"
 }
 
 func buildLifecycle(cfg config.Config) (lifecycle.Manager, error) {

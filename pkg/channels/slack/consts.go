@@ -1,6 +1,7 @@
 package slack
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/giantswarm/klaus-gateway/pkg/auth/musterlink"
@@ -72,8 +73,8 @@ const (
 
 // oboSignIn is the action_id on the OBO "Sign in" URL button. The button opens
 // its url directly; the interaction payload Slack still sends is acked without
-// action. The prompt message itself is rewritten in place once the link
-// completes (OnUserLinked), keyed by the recorded anchor, not by the click.
+// action. The completed link is confirmed by OnUserLinked from the recorded
+// anchor, not by the click.
 const oboSignIn = "obo_sign_in"
 
 // Connector Block Kit action IDs. The button value carries the backend name.
@@ -121,12 +122,69 @@ const connectorResumeText = "I've signed in to %s, continue"
 
 // payloadTypeBlockActions is the interaction payload type for Block Kit button
 // clicks; payloadTypeMessageAction is the type for message shortcuts (the ⋯ →
-// Apps menu). Other payload types (view submissions, global shortcuts) are not
-// routed.
+// Apps menu); payloadTypeViewSubmission is the type for a submitted modal (the
+// agent picker). Other payload types (global shortcuts) are not routed.
 const (
-	payloadTypeBlockActions  = "block_actions"
-	payloadTypeMessageAction = "message_action"
+	payloadTypeBlockActions   = "block_actions"
+	payloadTypeMessageAction  = "message_action"
+	payloadTypeViewSubmission = "view_submission"
 )
+
+// Agent picker modal (slashcmd.go): callback and block/action ids, labels,
+// and the notices its two steps post through the slash command's response_url.
+const (
+	askAgentCallbackID       = "ask_agent"
+	askAgentAgentBlockID     = "ask_agent_agent"
+	askAgentAgentActionID    = "agent"
+	askAgentQuestionBlockID  = "ask_agent_question"
+	askAgentQuestionActionID = "question"
+
+	askAgentModalTitle          = "Ask an agent" // modal titles are capped at 24 chars
+	askAgentSubmitLabel         = "Ask"
+	askAgentCloseLabel          = "Cancel"
+	askAgentAgentLabel          = "Agent"
+	askAgentAgentPlaceholder    = "Pick an agent"
+	askAgentQuestionLabel       = "Question"
+	askAgentQuestionPlaceholder = "What do you want to ask?"
+
+	// modalMaxAgents is Slack's static_select option cap; modalOptionLabelMax
+	// its option label cap; modalQuestionMax the plain_text_input max_length.
+	modalMaxAgents      = 100
+	modalOptionLabelMax = 75
+	modalQuestionMax    = 3000
+
+	// askAgentRootText is the conversation root the gateway posts on submit:
+	// who asked, which agent (bold display name), and the question quoted.
+	askAgentRootText = "💬 <@%s> asked *%s*:\n%s"
+
+	slashCommandDMNotice         = "_This command opens a conversation in a channel. In a direct message, just type your question._"
+	slashCommandSignInNotice     = "_I need to know who you are before I can list the agents. Mention me with_ `/login` _in a channel, sign in, then run the command again._"
+	slashCommandSlowNotice       = "_Listing the agents took too long for Slack's picker. Please run the command again._"
+	slashCommandOpenFailedNotice = "⚠️ _I couldn't open the agent picker just now. Please try again._"
+	askAgentIncompleteNotice     = "⚠️ _Pick an agent and type a question, then submit again._"
+	askAgentInviteNotice         = "⚠️ _I'm not a member of this channel, so I couldn't start the conversation. Invite me to the channel and try again._"
+	askAgentPostFailedNotice     = "⚠️ _I couldn't post your question in this channel just now. Please try again._"
+)
+
+// conversationMarkerPrefix prefixes the block_id that carries a
+// conversationMarker on a conversation root the gateway posts, so a marker
+// is never mistaken for another block_id that happens to hold JSON.
+const conversationMarkerPrefix = "klaus_gateway.agent_conversation:"
+
+// entryPointSlashCommand is the conversationMarker.EntryPoint value for a
+// conversation opened by the slash command's picker.
+const entryPointSlashCommand = "slash_command"
+
+// sectionTextMax is Slack's cap on a section block's text; blockIDMax its cap
+// on a block_id.
+const (
+	sectionTextMax = 3000
+	blockIDMax     = 255
+)
+
+// pickerOpenBudget bounds the work between a slash command arriving and
+// views.open: Slack invalidates the trigger_id after 3 seconds.
+const pickerOpenBudget = 2500 * time.Millisecond
 
 // inspectShortcutCallbackID is the callback_id of the "Inspect agent steps"
 // message shortcut registered in deploy/slack/manifest.yaml. Invoked from any
@@ -221,8 +279,27 @@ const stopStoppedNotice = "⏹ Stopped."
 
 // signInLinkExpiredNote replaces a sign-in prompt whose link outlived its
 // state TTL once a fresh prompt is posted, so the dead button cannot be
-// mistaken for the live one.
+// mistaken for the live one. Only a DM prompt is rewritten this way; a channel
+// prompt is ephemeral and has no addressable ts.
 const signInLinkExpiredNote = "_This sign-in link expired; use the newer one below._"
+
+// signInLinkSupersededNote leads a channel sign-in prompt that replaces one
+// whose link expired. Slack cannot rewrite or delete an ephemeral, so the dead
+// button stays on the user's screen until their client reloads; the fresh
+// prompt carries the warning that a DM's predecessor is rewritten to carry.
+const signInLinkSupersededNote = "_An earlier sign-in link in this thread expired; use the button below._"
+
+// signInThreadNotice anchors a channel thread whose first reply would
+// otherwise be the sign-in prompt. The prompt is ephemeral and Slack does not
+// surface a thread-scoped ephemeral in a thread with no messages
+// (klaus-gateway#156), so the thread needs one real reply — and it must name
+// nobody and carry no link, since everyone in the channel can read it
+// (klaus-gateway#185).
+const signInThreadNotice = "🔒 I need a sign-in before I can act here. I've posted the link privately to whoever asked."
+
+// signedInNotice confirms a completed account link. It names no identity: the
+// email the user signed in as is shown on the private browser success page.
+const signedInNotice = "✅ Signed in. I can act on your behalf now."
 
 // signInNudgeTTL bounds how long a posted sign-in prompt suppresses a fresh
 // nudge for the same (user, thread). It is the sign-in link's state lifetime:
@@ -265,6 +342,18 @@ const pausedNote = "_(waiting for your input below)_"
 // does not linger as "thinking" with no failure signal (reactions mode swaps in
 // the failed emoji instead).
 const failedNote = "_(the turn failed; please try again)_"
+
+// renderFailedNote is posted when the agent completed its turn but Slack kept
+// refusing the reply's final rendering, so the thread knows the text above is
+// incomplete rather than the whole answer. It names Slack's error code when
+// there is one.
+func renderFailedNote(err error) string {
+	reason := apiErrorCode(err)
+	if reason == "" {
+		reason = err.Error()
+	}
+	return fmt.Sprintf("_(the agent finished, but Slack refused the rest of the reply: %s)_", reason)
+}
 
 // attachmentsUnavailableNote is posted when a message carried only attachments
 // and none of them could be downloaded, so there is nothing to send the agent.
@@ -311,8 +400,9 @@ const homeGreetingTTL = 24 * time.Hour
 // pointing them to a channel instead.
 const dmRedirect = "I work in channels, not direct messages. Invite me to a channel and mention me there (`@Swarmgeist`) to get started."
 
-// channelNotServed is sent ephemerally when a user mentions the bot in a
-// channel outside the configured allowlist.
+// channelNotServed tells a user the channel is outside the configured
+// allowlist: ephemerally on a mention, through the response_url on a slash
+// command.
 const channelNotServed = "I'm not enabled in this channel yet. Ask a platform admin to add it to my channel allowlist."
 
 // Slack Web API parameter keys (form-encoded and JSON body).
@@ -335,6 +425,9 @@ const (
 	// Slack's crawler fetch them (fatal for single-use auth links).
 	paramUnfurlLinks = "unfurl_links"
 	paramUnfurlMedia = "unfurl_media"
+
+	paramTriggerID = "trigger_id" // views.open
+	paramView      = "view"       // views.open
 )
 
 // bkURL is the Block Kit button "url" field (opens a link on click).
@@ -351,19 +444,38 @@ const (
 	bkOptions   = "options"
 	bkBlockID   = "block_id"
 	bkAccessory = "accessory"
+
+	// Modal / input block keys (the agent picker).
+	bkCallbackID      = "callback_id"
+	bkPrivateMetadata = "private_metadata"
+	bkTitle           = "title"
+	bkSubmit          = "submit"
+	bkClose           = "close"
+	bkBlocks          = "blocks"
+	bkLabel           = "label"
+	bkElement         = "element"
+	bkPlaceholder     = "placeholder"
+	bkInitialOption   = "initial_option"
+	bkInitialValue    = "initial_value"
+	bkMultiline       = "multiline"
+	bkMaxLength       = "max_length"
 )
 
 // Block Kit type values.
 const (
-	bkSection      = "section"
-	bkContext      = "context" // small muted text; carries the tool-activity entries
-	bkActions      = "actions"
-	bkButton       = "button"
-	bkRadioButtons = "radio_buttons"
-	bkCheckboxes   = "checkboxes"
-	bkMrkdwn       = "mrkdwn"
-	bkMarkdown     = "markdown" // top-level Slack markdown block
-	bkPlainText    = "plain_text"
-	bkPrimary      = "primary"
-	bkDanger       = "danger"
+	bkSection        = "section"
+	bkContext        = "context" // small muted text; carries the tool-activity entries
+	bkActions        = "actions"
+	bkButton         = "button"
+	bkRadioButtons   = "radio_buttons"
+	bkCheckboxes     = "checkboxes"
+	bkModal          = "modal"
+	bkInput          = "input"
+	bkStaticSelect   = "static_select"
+	bkPlainTextInput = "plain_text_input"
+	bkMrkdwn         = "mrkdwn"
+	bkMarkdown       = "markdown" // top-level Slack markdown block
+	bkPlainText      = "plain_text"
+	bkPrimary        = "primary"
+	bkDanger         = "danger"
 )

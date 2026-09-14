@@ -29,3 +29,29 @@ app.kubernetes.io/instance: {{ .Release.Name | quote }}
 {{- define "image.tag" -}}
 {{- .Values.image.tag | default .Chart.AppVersion -}}
 {{- end -}}
+
+{{/* obo.secretStore renders "true" when the OBO link store is the Kubernetes
+     Secret backend (obo.store: secret); empty otherwise, so it works in `if`. */}}
+{{- define "obo.secretStore" -}}
+{{- if and .Values.obo.enabled (eq .Values.obo.store "secret") -}}true{{- end -}}
+{{- end -}}
+
+{{/* obo.boltVolume renders "true" when the bolt link store lives on a
+     PersistentVolumeClaim mounted into the pod: the bolt backend on a durable
+     volume, or the Secret backend still reading that volume for the import.
+     A mounted ReadWriteOnce claim is what forces the Recreate strategy. */}}
+{{- define "obo.boltVolume" -}}
+{{- if and .Values.obo.enabled .Values.obo.storePath .Values.obo.persistence.enabled -}}true{{- end -}}
+{{- end -}}
+
+{{/* obo.storeVolume renders "true" when a volume is mounted at the bolt path at
+     all: always for the bolt backend (PVC or emptyDir), only the PVC for the
+     Secret backend (there is nothing to import from an emptyDir). */}}
+{{- define "obo.storeVolume" -}}
+{{- if and .Values.obo.enabled .Values.obo.storePath (or .Values.obo.persistence.enabled (not (include "obo.secretStore" .))) -}}true{{- end -}}
+{{- end -}}
+
+{{/* obo.linksSecretName is the Secret the Secret backend keeps the links in. */}}
+{{- define "obo.linksSecretName" -}}
+{{- .Values.obo.storeSecretName | default (printf "%s-obo-links" (include "resource.default.name" .)) -}}
+{{- end -}}

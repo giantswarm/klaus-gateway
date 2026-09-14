@@ -71,12 +71,18 @@ func TestValidate_A2A(t *testing.T) {
 		require.ErrorContains(t, cfg.Validate(), "grpc://")
 	})
 
-	t.Run("target with a path or without a port is refused", func(t *testing.T) {
+	t.Run("target with a path or a plaintext target without a port is refused", func(t *testing.T) {
 		cfg := base
 		cfg.A2A.URL = "grpc://agentgateway.agent-platform.svc.cluster.local:8080/kagent"
 		require.Error(t, cfg.Validate())
-		cfg.A2A.URL = "grpcs://kagent.example.com"
+		cfg.A2A.URL = "grpc://kagent.example.com"
 		require.Error(t, cfg.Validate())
+	})
+
+	t.Run("tls target without a port is the edge on 443", func(t *testing.T) {
+		cfg := base
+		cfg.A2A.URL = "grpcs://agentgateway.127.0.0.1.nip.io"
+		require.NoError(t, cfg.Validate())
 	})
 
 	t.Run("namespace defaults to kagent and is required", func(t *testing.T) {
@@ -241,6 +247,47 @@ func TestValidate_OBO(t *testing.T) {
 		cfg.OBO.StorePath = "/var/lib/obo/links.bolt"
 		cfg.OBO.StoreKeyFile = "/etc/obo/store.key"
 		require.NoError(t, cfg.Validate())
+		require.Equal(t, config.OBOStoreBolt, cfg.OBO.ResolvedStore(), "a store path alone still means the bolt backend")
+	})
+
+	t.Run("no store path means the memory backend", func(t *testing.T) {
+		require.Equal(t, config.OBOStoreMemory, base.OBO.ResolvedStore())
+	})
+
+	t.Run("secret backend needs the store key", func(t *testing.T) {
+		cfg := base
+		cfg.OBO.Store = config.OBOStoreSecret
+		require.Error(t, cfg.Validate())
+	})
+
+	t.Run("secret backend with key is valid without a path", func(t *testing.T) {
+		cfg := base
+		cfg.OBO.Store = config.OBOStoreSecret
+		cfg.OBO.StoreKeyFile = "/etc/obo/store.key"
+		cfg.OBO.StoreSecretName = config.Defaults().OBO.StoreSecretName
+		require.Equal(t, "klaus-gateway-obo-links", cfg.OBO.StoreSecretName, "the Secret name has a default")
+		require.NoError(t, cfg.Validate())
+	})
+
+	t.Run("secret backend needs a secret name", func(t *testing.T) {
+		cfg := base
+		cfg.OBO.Store = config.OBOStoreSecret
+		cfg.OBO.StoreKeyFile = "/etc/obo/store.key"
+		cfg.OBO.StoreSecretName = ""
+		require.Error(t, cfg.Validate())
+	})
+
+	t.Run("bolt backend named explicitly needs the path", func(t *testing.T) {
+		cfg := base
+		cfg.OBO.Store = config.OBOStoreBolt
+		cfg.OBO.StoreKeyFile = "/etc/obo/store.key"
+		require.Error(t, cfg.Validate())
+	})
+
+	t.Run("unknown backend fails", func(t *testing.T) {
+		cfg := base
+		cfg.OBO.Store = "valkey"
+		require.Error(t, cfg.Validate())
 	})
 
 	t.Run("disabled skips all obo checks", func(t *testing.T) {
@@ -253,6 +300,9 @@ func TestLoad_OBOEnv(t *testing.T) {
 	t.Setenv("KLAUS_GATEWAY_OBO_ENABLED", "true")
 	t.Setenv("KLAUS_GATEWAY_OBO_MUSTER_URL", "https://muster.example.com")
 	t.Setenv("KLAUS_GATEWAY_OBO_CLIENT_ID", "klaus-gateway")
+	t.Setenv("KLAUS_GATEWAY_OBO_STORE", "secret")
+	t.Setenv("KLAUS_GATEWAY_OBO_STORE_SECRET", "links")
+	t.Setenv("KLAUS_GATEWAY_OBO_STORE_SECRET_NAMESPACE", "agent-platform")
 
 	cfg, err := config.Load([]string{"--obo-callback-base-url", "https://gateway.example.com"})
 	require.NoError(t, err)
@@ -260,6 +310,9 @@ func TestLoad_OBOEnv(t *testing.T) {
 	require.Equal(t, "https://muster.example.com", cfg.OBO.MusterURL)
 	require.Equal(t, "klaus-gateway", cfg.OBO.ClientID)
 	require.Equal(t, "https://gateway.example.com", cfg.OBO.CallbackBaseURL, "flag sets callback base url")
+	require.Equal(t, config.OBOStoreSecret, cfg.OBO.Store)
+	require.Equal(t, "links", cfg.OBO.StoreSecretName)
+	require.Equal(t, "agent-platform", cfg.OBO.StoreSecretNamespace)
 }
 
 func TestA2ADefaults(t *testing.T) {

@@ -893,3 +893,71 @@ func TestLaunchAnnouncement_NotPostedForReplyIntoUnseenThread(t *testing.T) {
 	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "Bringing in",
 		"a reply must not post the intro mid-conversation")
 }
+
+// tokenCards records the caller token each card lookup carried, on top of
+// fakeCards' resolution.
+type tokenCards struct {
+	*fakeCards
+	mu     sync.Mutex
+	tokens []string
+}
+
+func (c *tokenCards) CardInfo(ctx context.Context, ref string) (string, string, error) {
+	c.mu.Lock()
+	c.tokens = append(c.tokens, pkga2a.ForwardedTokenFromContext(ctx))
+	c.mu.Unlock()
+	return c.fakeCards.CardInfo(ctx, ref)
+}
+
+func (c *tokenCards) seen() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.tokens...)
+}
+
+// The /agent text path reads the catalogue as the caller: the bare listing
+// and the technical-name validation carry the caller's linked token, so a
+// cold roster cache on a fresh pod refuses nothing a linked user may pick.
+func TestAgentSelection_TextPathReadsCatalogueAsCaller(t *testing.T) {
+	fake := newFakeSlackAPI()
+	roster := &tokenRoster{agents: []pkga2a.AgentInfo{{Name: "sre-agent", Namespace: "kagent", DisplayName: "SRE Agent"}}}
+	cards := &tokenCards{fakeCards: &fakeCards{known: map[string]string{"kagent/sre-agent": "SRE Agent"}}}
+	gw, _ := capturingGateway()
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, func(a *slackadapter.Adapter) {
+		a.DefaultAgent = "kagent/swarmgeist"
+		a.Roster = roster
+		a.AgentCards = cards
+		a.OBO = oneUserOBO{user: "U1", token: "tok-u1"}
+	})
+
+	sendEvent(t, srv, mention("U1", "/agent", "100.000", ""))
+	require.Eventually(t, func() bool { return len(roster.seen()) == 1 },
+		2*time.Second, 50*time.Millisecond, "the bare listing reads the roster")
+	require.Equal(t, []string{"tok-u1"}, roster.seen(), "the listing runs as the caller")
+
+	sendEvent(t, srv, mention("U1", "/agent sre-agent why?", "200.000", ""))
+	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
+		2*time.Second, 50*time.Millisecond, "the selection dispatches")
+	require.Equal(t, []string{"tok-u1"}, cards.seen(), "the validation runs as the caller")
+}
+
+// Recovery of a quoted opener re-resolves the display name against the roster;
+// after a restart that read runs as the replying user too.
+func TestAgentSelection_RecoveryReadsRosterAsCaller(t *testing.T) {
+	fake := newFakeSlackAPI()
+	fake.setResponse("conversations.replies", `{"ok":true,"messages":[{"type":"message","user":"U1","ts":"100.000","text":"<@UBOT> /agent \"SRE Agent\" hello"}]}`)
+	roster := &tokenRoster{agents: []pkga2a.AgentInfo{{Name: "sre-agent", Namespace: "kagent", DisplayName: "SRE Agent"}}}
+	gw, resolved := capturingGateway()
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, func(a *slackadapter.Adapter) {
+		a.DefaultAgent = "kagent/swarmgeist"
+		a.Roster = roster
+		a.AgentCards = &fakeCards{known: map[string]string{"kagent/sre-agent": "SRE Agent"}}
+		a.OBO = oneUserOBO{user: "U1", token: "tok-u1"}
+	})
+
+	sendEvent(t, srv, mention("U1", "and now?", "200.000", "100.000"))
+	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
+		2*time.Second, 50*time.Millisecond, "the reply dispatches after recovery")
+	require.Equal(t, "kagent/sre-agent", resolved()[0].AgentRef)
+	require.Contains(t, roster.seen(), "tok-u1", "the recovery re-resolution runs as the caller")
+}
