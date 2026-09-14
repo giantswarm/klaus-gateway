@@ -47,7 +47,7 @@ pkg/auth/musterlink/    Slack OBO: muster account linking + the link Store (memo
 pkg/server/             http.Server wiring, middleware, admin mux
 pkg/upstream/           agentgateway upstream URL rewriter
 pkg/observability/      OTel traces + Prometheus metrics
-pkg/project/            ldflags target for version, git SHA and build timestamp
+pkg/project/            build identifiers: ldflags target for version, git SHA and build timestamp; version falls back to the Go build info
 internal/config/        env-var + flag config (KLAUS_GATEWAY_* prefix)
 internal/controller/    ChannelRoute controller-runtime reconciler
 internal/version/       re-exports pkg/project for the rest of the code
