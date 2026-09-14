@@ -189,13 +189,14 @@ type Adapter struct {
 	// a reactions.add returns missing_scope, so later turns skip the failed call.
 	reactionsUnsupported atomic.Bool
 
-	// assistantStatusUnsupported caches the downgrade from the native
-	// assistant-pane status line (assistant.threads.setStatus) to the message
-	// ticker after Slack rejects the call as unavailable on this install (the
-	// assistant:write scope is missing, or the app is not an Agent-type app —
-	// plain DMs on non-Agent deployments land here), so later pane turns skip
-	// the doomed call. Same auto-downgrade shape as reactionsUnsupported.
-	assistantStatusUnsupported atomic.Bool
+	// sessionStatusUnsupported caches the downgrade away from the native
+	// working indicator (agents.sessions.setStatus) after Slack rejects the
+	// call as unavailable on this install (the chat:write scope is missing, the
+	// token type disallows it, or agent messaging is disabled for the
+	// workspace), so later turns skip the doomed call. The message ticker
+	// carries the progress either way. Same auto-downgrade shape as
+	// reactionsUnsupported.
+	sessionStatusUnsupported atomic.Bool
 
 	// threadsMu guards threads, each thread's whole turn lifecycle (in-flight
 	// slot, pending task, idle waiters). Accessed via withThread (thread.go),

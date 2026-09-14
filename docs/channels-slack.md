@@ -34,18 +34,25 @@ replaces the top-level DM composer, so every user message arrives threaded
 per-message-thread DM path (and the channel `/usage` fallback that goes with it)
 applies only to non-Agent deployments.
 
-In pane threads the live tool ticker (`⏳ tool… · step N`) renders as Slack's
-**native status indicator** under the composer (`assistant.threads.setStatus`,
-requires the `assistant:write` scope from the manifest) instead of a message,
-so while the agent works the user sees the native "working…" line and the only
-ticker artifact left in the thread is the collapsed receipt (`🛠️ N steps · …`)
-posted when a segment closes or the turn ends. The status is cleared explicitly
-on turn end, error, and prompt pause (Slack also auto-clears it on the app's
-next in-thread post and after two idle minutes). Installs where `setStatus` is
-unavailable — the scope missing from the bot token, or a non-Agent app whose
-DMs are plain conversations — downgrade automatically to the message ticker for
-the rest of the process lifetime. Channels always use the message ticker:
-`setStatus` does not exist there.
+While a turn runs, the thread carries Slack's **native working indicator**. It
+is driven by the agent session's lifecycle status
+(`agents.sessions.setStatus`, granular bot token with `chat:write`), which the
+adapter sets to `processing` when the turn starts and back to `active` on every
+exit: normal end, stream error, `/stop`, and the pause on an approval prompt.
+The explicit idle state is mandatory — unlike the legacy assistant status, this
+one does **not** clear itself when the app posts, and a session left in
+`processing` keeps spinning for up to an hour. Both surfaces get it: DM threads
+and channel threads alike, because `channel_id` and `thread_ts` are always sent
+(the bot must be a member of the channel).
+
+The indicator carries no text of its own, so the live tool ticker
+(`⏳ tool… · step N`) stays a message on every surface: it is what says *what*
+the agent is working on, and it collapses into the receipt (`🛠️ N steps · …`)
+when a segment closes or the turn ends. Installs where the method is
+unavailable — the scope missing from the bot token, the wrong token type, or
+agent messaging disabled for the workspace — drop the native indicator for the
+rest of the process lifetime and keep the message ticker. A `not_authorized`
+rejection (the bot is not a member of that one channel) only costs that call.
 
 ### Threads and sessions
 
