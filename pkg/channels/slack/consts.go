@@ -351,8 +351,9 @@ const homeGreetingTTL = 24 * time.Hour
 // pointing them to a channel instead.
 const dmRedirect = "I work in channels, not direct messages. Invite me to a channel and mention me there (`@Swarmgeist`) to get started."
 
-// channelNotServed is sent ephemerally when a user mentions the bot in a
-// channel outside the configured allowlist.
+// channelNotServed tells a user the channel is outside the configured
+// allowlist: ephemerally on a mention, through the response_url on a slash
+// command.
 const channelNotServed = "I'm not enabled in this channel yet. Ask a platform admin to add it to my channel allowlist."
 
 // Slack Web API parameter keys (form-encoded and JSON body).

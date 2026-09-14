@@ -55,8 +55,9 @@ func slashCommandFromForm(form url.Values) slashCommandPayload {
 
 // commandsHandler serves POST /channels/slack/commands in Events API mode.
 // Like the events and interactions handlers it acks immediately — Slack
-// requires a 200 within 3 seconds — and does the work in the background; every
-// user-visible outcome goes through the payload's response_url.
+// requires a 200 within 3 seconds — and does the work in the background.
+// Success opens the picker modal with the payload's trigger_id; every failure
+// notice goes through its response_url.
 type commandsHandler struct {
 	signingSecret string
 	adapter       *Adapter
@@ -301,6 +302,9 @@ func (a *Adapter) handleAskAgentSubmission(ctx context.Context, payload interact
 		return
 	}
 
+	// Escaped like the launch announcement's name: it comes from an Agent CR
+	// annotation. Emphasis characters (* _) pass through and can mangle the
+	// bold span — cosmetic, accepted (see postLaunchAnnouncement).
 	name := a.agentNameFor(ctx, ref)
 	rootText := fmt.Sprintf(askAgentRootText, user, escapeMrkdwn(name), quoteMrkdwn(escapeMrkdwn(question)))
 	marker := conversationMarker{AgentRef: ref, Initiator: user, EntryPoint: entryPointSlashCommand}

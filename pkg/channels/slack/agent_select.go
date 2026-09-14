@@ -13,7 +13,8 @@ import (
 )
 
 // agentCardChecker is the optional AgentCardResolver extension that validates
-// an /agent selection: unlike CardIdentity it surfaces the card fetch error,
+// a selected agent (the /agent prefix or the slash command's picker): unlike
+// CardIdentity it surfaces the card fetch error,
 // so an unknown or unreachable agent fails loudly before anything is
 // dispatched — never a silent substitute. pkg/a2a.AgentCardClient implements it.
 type agentCardChecker interface {
@@ -52,8 +53,9 @@ const agentNothingSelectedHint = "Nothing was selected — include your question
 // caller appends the current roster when it is available.
 const agentUnavailableNotice = "⚠️ I don't know an agent named `%s` (or it isn't reachable right now), so I haven't started anything."
 
-// agentSelectionUnavailable answers /agent on a gateway with no agent-card
-// client to validate names against (A2A not configured).
+// agentSelectionUnavailable answers /agent and the slash command's picker on a
+// gateway with no agent-card client to validate names against (A2A not
+// configured).
 const agentSelectionUnavailable = "_Agent selection isn't available on this gateway._"
 
 // agentCheckFailedNotice is posted when a DM selection could not be verified
@@ -82,8 +84,8 @@ const agentRecoveryGoneNotice = "⚠️ _This conversation was started with `/ag
 // cached, so the next message retries.
 const agentRecoveryCheckFailedNotice = "⚠️ _I couldn't check which agent this conversation uses just now, so I haven't sent your message. Please try again._"
 
-// agentValidateTimeout bounds the card fetch that validates an /agent
-// selection before dispatch.
+// agentValidateTimeout bounds the card fetch that validates a selected agent
+// (/agent prefix or picker) before dispatch.
 const agentValidateTimeout = 10 * time.Second
 
 // handleAgentSelection processes the /agent command. Unlike the consumed
@@ -458,8 +460,9 @@ func (a *Adapter) conversationStarting(ctx context.Context, msg channels.Inbound
 
 // threadAgent resolves the agent for a turn that carries no explicit /agent
 // prefix: the conversation's recorded binding, the binding re-derived from the
-// conversation's opening message (where any prefix is visible — the recovery
-// path after a restart or TTL sweep), or the configured default. The opening
+// conversation's opening message (the recovery path after a restart or TTL
+// sweep: the conversation marker of a root the gateway posted itself, else any
+// prefix visible in the text), or the configured default. The opening
 // message is the thread root in a channel, but the first dispatched HUMAN
 // message in a DM: the assistant pane roots threads at a Slack-managed
 // anchor, not the user's first message, and consumed commands (a bare /agent
