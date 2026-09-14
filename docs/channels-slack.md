@@ -42,7 +42,11 @@ normal end, stream error, `/stop`. A turn that pauses on a HITL prompt — an
 approval, an `ask_user` question, a form — ends in `suspended` instead, which
 Slack renders as *waiting for you*, so a conversation that needs an answer is
 told apart from a finished one at a glance. The user's answer starts the next
-turn, which sets `processing` again.
+turn, which sets `processing` again. Nothing leaves `suspended` on its own, so
+the two moments a prompt dies do it explicitly: the 24-hour sweep of pending
+tasks releases the sessions of the prompts it drops, and a click on a prompt
+the gateway no longer holds (a restart loses them all) releases that thread's
+session as it replaces the buttons with `_Already answered._`.
 The explicit idle state is mandatory — unlike the legacy assistant status, this
 one does **not** clear itself when the app posts, and a session left in
 `processing` keeps spinning for up to an hour. Both surfaces get it: DM threads

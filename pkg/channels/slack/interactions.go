@@ -466,8 +466,13 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 	// task cannot be consumed between this peek and takePendingTask below.
 	pending := a.peekPendingTask(threadID)
 	if pending == nil {
-		// Nothing pending (already answered). Still tidy up the buttons.
+		// Nothing pending: already answered, the TTL dropped it, or a restart
+		// lost it. Tidy up the buttons, and hand the session back as idle —
+		// this click is the only moment the gateway learns of a thread whose
+		// prompt died with the task, and its session would otherwise keep
+		// saying "waiting for you" over a prompt nobody can answer.
 		_ = client.chatUpdateBlocks(ctx, slackChannel, messageTS, "_Already answered._")
+		a.setSessionStatus(ctx, slackChannel, threadID, sessionActive)
 		return nil
 	}
 
