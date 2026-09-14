@@ -51,6 +51,9 @@ const (
 	// methodChatPostMessage is the Web API method for new posts; it is special
 	// in two spots (display identity, forced unfurl-off).
 	methodChatPostMessage = "chat.postMessage"
+	// methodSetSessionStatus is the agent-messaging method that drives the
+	// session lifecycle (and creates the session when it does not exist yet).
+	methodSetSessionStatus = "agents.sessions.setStatus"
 	// slackMarkdownBlockMax caps the text of one Block Kit markdown block,
 	// Slack's 12 000-char limit. splitMarkdown budgets the fence auto-close and
 	// reopen inside this cap, so emitted chunks never exceed it.
@@ -66,11 +69,11 @@ const (
 	slackFallbackTextMax = 4000
 
 	// Slack Web API error codes the adapter reacts to.
-	errCodeMsgTooLong                       = "msg_too_long"
-	errCodeMissingScope                     = "missing_scope"
-	errCodeInvalidArguments                 = "invalid_arguments"
-	errCodeNotAllowedTokenType              = "not_allowed_token_type"
-	errCodeMethodNotSupportedForChannelType = "method_not_supported_for_channel_type"
+	errCodeMsgTooLong          = "msg_too_long"
+	errCodeMissingScope        = "missing_scope"
+	errCodeInvalidArguments    = "invalid_arguments"
+	errCodeNotAllowedTokenType = "not_allowed_token_type"
+	errCodeFeatureDisabled     = "feature_disabled"
 )
 
 // batchedWriter accumulates OutboundDelta content and periodically calls
@@ -80,12 +83,11 @@ const (
 // status ticker at the default details level — one muted line that updates in
 // place while the agent works and collapses to a one-line receipt — and, at
 // detailsFull, additionally an aggregated audit message of per-call
-// context-block entries. In the assistant pane (the DM surface of an
-// Agent-type app) the live line renders as Slack's native status indicator
-// under the composer (assistant.threads.setStatus) instead of a message, so
-// the receipt is the segment's only in-thread ticker artifact; installs where
-// setStatus is unavailable latch a process-wide downgrade back to the message
-// ticker (paneTickerStatus). The ticker is per-segment: narration closes the live
+// context-block entries. The live line is a message on every surface: Slack's
+// native working indicator (the agent session status, setSessionStatus) says
+// only THAT the agent is working — the method carries no free text — so the
+// ticker message stays as the detail carrier saying what it is working on.
+// The ticker is per-segment: narration closes the live
 // ticker into its receipt at its position (counting only that segment's
 // steps), and the next tool call opens a fresh ticker message below the
 // narration, so a long turn reads narration → receipt → narration → receipt in
@@ -249,6 +251,13 @@ func newBatchedWriterWithClient(client *slackAPIClient, channel, ts, threadTS st
 func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelta) error {
 	ticker := time.NewTicker(batchInterval)
 	defer ticker.Stop()
+	// The session goes idle on EVERY exit — stream done, stream error, /stop,
+	// and the HITL prompt pause. Slack's agent loading UX does not clear itself
+	// when the app posts any more, so a missing "active" leaves the thread
+	// spinning for up to an hour. Registered before the drain so it lands after
+	// the turn's last in-thread post.
+	w.setSessionStatus(ctx, sessionProcessing)
+	defer w.setSessionStatus(ctx, sessionActive)
 	defer w.drainThreadPosts() // backstop for the ctx.Done() exit; finalFlush drains first
 
 	for {
@@ -610,45 +619,52 @@ func renderToolTicker(steps int, current string) string {
 	return md
 }
 
-// paneTickerStatus renders the live ticker as the assistant pane's native
-// status line — the indicator Slack shows under the composer — and reports
-// whether it landed, in which case no ticker message is needed. False means
-// fall back to the message ticker: the surface is a channel (setStatus does
-// not exist there), a previous rejection latched the process-wide downgrade,
-// or this call failed. Only an unsupported-class rejection latches — it means
-// the install can never set the status, which no retry fixes within this
-// process; any other failure falls back for this render only, so the next
-// kick tries the native line again.
-func (w *batchedWriter) paneTickerStatus(ctx context.Context, status string) bool {
-	if w.adapter == nil || !isDMChannelID(w.channel) || w.adapter.assistantStatusUnsupported.Load() {
-		return false
-	}
-	err := w.client.setAssistantStatus(ctx, w.channel, w.threadTS, status)
-	if err == nil {
-		return true
-	}
-	if errors.Is(err, errAssistantStatusUnsupported) {
-		w.adapter.assistantStatusUnsupported.Store(true)
-		w.logger.Warn("slack: native assistant status unavailable, falling back to the message ticker", "error", err)
-	} else {
-		w.logger.Warn("slack: set assistant status failed, using the message ticker for this render", "error", err)
-	}
-	return false
-}
+// sessionStatusTimeout bounds one detached agent-session status call.
+const sessionStatusTimeout = 10 * time.Second
 
-// paneStatusClearTimeout bounds the detached clear of the native status line.
-const paneStatusClearTimeout = 10 * time.Second
+// sessionStatusIdleAttempts and sessionStatusRetryBackoff bound the retries of
+// the idle call on a transport failure: a session left in processing keeps
+// spinning for up to an hour and nothing but the next turn would repair it, so
+// the exit is worth a couple more tries (1s, then 2s apart).
+const (
+	sessionStatusIdleAttempts = 3
+	sessionStatusRetryBackoff = time.Second
+)
 
-// clearPaneStatus removes the native status line so a turn that ends, fails,
-// or pauses on a prompt never strands "working…" under the composer. It runs
-// detached from the turn context on purpose: the clear matters most when the
-// turn was just cancelled or errored. Best-effort — Slack also auto-clears
-// the line on the app's next in-thread post and after a two-minute timeout.
-func (w *batchedWriter) clearPaneStatus(ctx context.Context) {
-	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), paneStatusClearTimeout)
-	defer cancel()
-	if err := w.client.setAssistantStatus(cctx, w.channel, w.threadTS, ""); err != nil {
-		w.logger.Warn("slack: clear assistant status failed", "error", err)
+// setSessionStatus drives the thread's agent session state, which is what
+// Slack renders as the native working indicator — in channel threads as well
+// as in DMs. It is best-effort and always detached from the turn context: the
+// idle status matters most exactly when the turn was cancelled or errored, and
+// a status call must never fail a turn.
+//
+// Only an unsupported-class rejection latches the process-wide downgrade — it
+// means this install can never set the status, which no retry fixes within
+// this process. A Slack-side rejection of THIS call (the bot not being a
+// member of the channel) costs one indicator and is retried by the next turn.
+// A transport failure on the idle call is retried a few times here, because
+// the working indicator does not clear itself.
+func (w *batchedWriter) setSessionStatus(ctx context.Context, status sessionStatus) {
+	if w.adapter == nil || w.adapter.sessionStatusUnsupported.Load() {
+		return
+	}
+	base := context.WithoutCancel(ctx)
+	var err error
+	for attempt := 1; ; attempt++ {
+		cctx, cancel := context.WithTimeout(base, sessionStatusTimeout)
+		err = w.client.setSessionStatus(cctx, w.channel, w.threadTS, status)
+		cancel()
+		if status != sessionActive || attempt >= sessionStatusIdleAttempts || !errors.Is(err, errSessionStatusTransient) {
+			break
+		}
+		time.Sleep(sessionStatusRetryBackoff * time.Duration(attempt))
+	}
+	switch {
+	case err == nil:
+	case errors.Is(err, errSessionStatusUnsupported):
+		w.adapter.sessionStatusUnsupported.Store(true)
+		w.logger.Warn("slack: agent session status unavailable, dropping the native working indicator", "error", err)
+	default:
+		w.logger.Warn("slack: set agent session status failed", "status", string(status), "error", err)
 	}
 }
 
@@ -1093,9 +1109,8 @@ type statusMessage struct {
 // threadPoster lands queued in-thread items in order: narration as its own
 // message (or, when short and its segment's ticker is not live yet, folded
 // into the segment's status message), detailsFull tool entries appended to the
-// running activity segment, and status kicks refreshed onto the live ticker —
-// the pane's native status line where available, the message ticker otherwise.
-// A narration message closes the ticker segment: the status message collapses
+// running activity segment, and status kicks refreshed onto the live message
+// ticker. A narration message closes the ticker segment: the status message collapses
 // into the receipt it carries — at its position, with only that segment's
 // counts — and the next tool call opens a fresh status message below the
 // narration, so the thread keeps reading in stream order (narration → receipt
@@ -1112,11 +1127,6 @@ func (w *batchedWriter) threadPoster(ctx context.Context) {
 	// receipt counts: later renders keep retrying them.
 	var undelivered []statusMessage
 	kicked := false
-	// paneStatusSet records that the live ticker rendered as the pane's native
-	// status line at least once this poster cycle, so the tail clears it: Slack
-	// auto-clears on the app's next in-thread post, but a turn that errors or
-	// pauses without posting again would strand "working…" under the composer.
-	paneStatusSet := false
 	retryUndelivered := func() {
 		kept := undelivered[:0]
 		for i := range undelivered {
@@ -1151,19 +1161,12 @@ func (w *batchedWriter) threadPoster(ctx context.Context) {
 		if kicked {
 			kicked = false
 			if steps, current := w.toolStatusSnapshot(); steps > 0 {
-				line := renderToolTicker(steps, current)
-				// In the assistant pane the live line renders as the native
-				// status indicator, not message content, so the segment's only
-				// in-thread artifact is its receipt. A segment whose message
-				// already carries a ticker line (native delivery failed earlier
-				// in the segment) keeps the message rendering, so one segment
-				// never shows the live line in both places.
-				if status.ticker == "" && w.paneTickerStatus(ctx, line) {
-					paneStatusSet = true
-				} else {
-					status.ticker = line
-					status.dirty = true
-				}
+				// The live line stays in the message body on every surface: the
+				// agent session status carries no free text, so the native
+				// indicator says only that the agent is working and this line is
+				// the one that says what it is working on.
+				status.ticker = renderToolTicker(steps, current)
+				status.dirty = true
 			}
 		}
 		w.upsertStatus(ctx, &status)
@@ -1246,11 +1249,6 @@ func (w *batchedWriter) threadPoster(ctx context.Context) {
 		status.dirty = true
 	}
 	w.upsertStatus(ctx, &status)
-	// Every exit drains this poster — turn end, error, and the prompt pause —
-	// so this one clear covers them all.
-	if paneStatusSet {
-		w.clearPaneStatus(ctx)
-	}
 }
 
 // posterTailTimeout bounds the thread poster's closing receipt once the turn
@@ -2084,31 +2082,108 @@ func (c *slackAPIClient) threadFirstHumanMessage(ctx context.Context, channel, t
 // caller should fall back to text-based progress.
 var errReactionsUnsupported = errors.New("slack: reactions unsupported")
 
-// errAssistantStatusUnsupported reports that the native assistant status line
-// is unavailable on this install (the assistant:write scope is missing, the
-// token type disallows it, or the app is not an Agent-type app, so the DM is
-// a plain conversation rather than the assistant pane), so the caller should
-// latch the process-wide downgrade to the message ticker.
-var errAssistantStatusUnsupported = errors.New("slack: assistant status unsupported")
+// sessionStatus is a Slack agent session's lifecycle state, the enum
+// agents.sessions.setStatus accepts. processing shows the native working
+// indicator (and the stop button), active is idle/ready, suspended waits on
+// the user, and closed ends the session.
+type sessionStatus string
 
-// setAssistantStatus sets the native "working…" status line under the
-// assistant-pane composer (assistant.threads.setStatus); an empty status
-// clears it. Slack also clears the line on its own when the app posts its
-// next message into the thread, and after two minutes without one. Rejections
-// that mean the install can never set it are returned as
-// errAssistantStatusUnsupported; anything else (an invalid thread, a
-// transient failure) is surfaced as-is so the caller falls back for this call
-// without writing off the whole process.
-func (c *slackAPIClient) setAssistantStatus(ctx context.Context, channelID, threadTS, status string) error {
-	_, err := c.postJSON(ctx, "assistant.threads.setStatus", map[string]any{
+const (
+	sessionProcessing sessionStatus = "processing"
+	sessionActive     sessionStatus = "active"
+	sessionSuspended  sessionStatus = "suspended"
+	sessionClosed     sessionStatus = "closed"
+)
+
+// errSessionStatusUnsupported reports that this install can never set the
+// agent session status (the chat:write scope is missing, the token type
+// disallows it, or agent messaging is disabled for the workspace), so the
+// caller should latch the process-wide downgrade. not_authorized is
+// deliberately NOT in this class: it says the bot is not a member of THIS
+// channel, which tells us nothing about the next one.
+var errSessionStatusUnsupported = errors.New("slack: agent session status unsupported")
+
+// errSessionStatusTransient marks a status call that never got a Slack API
+// verdict (network error, timeout, non-2xx, rate-limit budget exhausted). It is
+// the only class the idle call retries: a Slack-side rejection would repeat.
+var errSessionStatusTransient = errors.New("slack: agent session status transport failure")
+
+// sessionStatusResponse is the agents.sessions.setStatus reply. The warning
+// fields are decoded rather than dropped: until the app subscribes to
+// agent_session_stopped Slack answers an otherwise successful call with a
+// warning, which is informational and must not read as a failure.
+type sessionStatusResponse struct {
+	OK               bool   `json:"ok"`
+	Error            string `json:"error,omitempty"`
+	Warning          string `json:"warning,omitempty"`
+	ResponseMetadata struct {
+		Warnings []string `json:"warnings,omitempty"`
+	} `json:"response_metadata,omitempty"`
+}
+
+// setSessionStatus sets the thread's agent session status, creating the
+// session if it does not exist yet. channel_id and thread_ts are always sent:
+// the session is thread-based on every surface we serve. Unlike the legacy
+// assistant status this never clears itself when the app posts, so the caller
+// owns sending the idle state on every exit path.
+//
+// The call goes out unbranded on purpose: the display-identity fields would
+// need chat:write.customize, and its missing_scope rejection is
+// indistinguishable from the one that latches this method off for the whole
+// process.
+func (c *slackAPIClient) setSessionStatus(ctx context.Context, channelID, threadTS string, status sessionStatus) error {
+	payload, err := json.Marshal(map[string]any{
 		paramChannelID: channelID,
 		paramThreadTS:  threadTS,
-		paramStatus:    status,
+		paramStatus:    string(status),
 	})
-	if hasErrorCode(err, errCodeMissingScope, errCodeNotAllowedTokenType, errCodeMethodNotSupportedForChannelType) {
-		return errAssistantStatusUnsupported
+	if err != nil {
+		return fmt.Errorf("slack %s: marshal: %w", methodSetSessionStatus, err)
+	}
+	body, err := c.call(ctx, methodSetSessionStatus, "application/json; charset=utf-8", string(payload))
+	if err != nil {
+		return fmt.Errorf("%w: %w", errSessionStatusTransient, err)
+	}
+	var result sessionStatusResponse
+	if err := json.Unmarshal(body, &result); err != nil {
+		return fmt.Errorf("slack %s: decode response: %w", methodSetSessionStatus, err)
+	}
+	if !result.OK {
+		return sessionStatusErr(&apiError{method: methodSetSessionStatus, code: result.Error})
+	}
+	c.noteSessionStatusWarnings(result)
+	return nil
+}
+
+// sessionStatusErr maps the rejections that mean the install can never set the
+// status to errSessionStatusUnsupported (the latch signal) and surfaces
+// everything else as-is.
+func sessionStatusErr(err error) error {
+	if hasErrorCode(err, errCodeMissingScope, errCodeNotAllowedTokenType, errCodeFeatureDisabled) {
+		return errSessionStatusUnsupported
 	}
 	return err
+}
+
+// sessionStatusWarnOnce keeps the session warning to one debug line per
+// process: Slack repeats it on every call until the app subscribes to
+// agent_session_stopped, so logging each one would be pure noise.
+var sessionStatusWarnOnce sync.Once
+
+func (c *slackAPIClient) noteSessionStatusWarnings(r sessionStatusResponse) {
+	if c.logger == nil {
+		return
+	}
+	warnings := r.ResponseMetadata.Warnings
+	if r.Warning != "" {
+		warnings = append(warnings, r.Warning)
+	}
+	if len(warnings) == 0 {
+		return
+	}
+	sessionStatusWarnOnce.Do(func() {
+		c.logger.Debug("slack: agent session status warning", "warnings", warnings)
+	})
 }
 
 func (c *slackAPIClient) reactionsAdd(ctx context.Context, channel, ts, name string) error {

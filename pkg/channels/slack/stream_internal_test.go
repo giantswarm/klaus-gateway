@@ -1199,7 +1199,7 @@ func TestSpaceStructuralJSON(t *testing.T) {
 // its blocks (context elements flattened), after all in-place updates.
 type capturedMessage []string
 
-// statusCall is one assistant.threads.setStatus invocation the fake thread
+// statusCall is one agents.sessions.setStatus invocation the fake thread
 // received.
 type statusCall struct {
 	channelID string
@@ -1211,7 +1211,7 @@ type statusCall struct {
 // fresh ts, chat.update replaces the content at its ts (upserting an unknown
 // ts, e.g. the text-mode placeholder posted before the writer existed), so
 // assertions run against the thread a user would actually see.
-// assistant.threads.setStatus calls are recorded separately (failStatus makes
+// agents.sessions.setStatus calls are recorded separately (failStatus makes
 // them fail), and history keeps every message revision so tests can assert
 // content that never survives to the final state, like the live ticker line.
 type fakeThread struct {
@@ -1221,11 +1221,15 @@ type fakeThread struct {
 	nextTS   int
 	posts    int
 	history  []capturedMessage
-	// statusCalls records assistant.threads.setStatus invocations in order.
+	// statusCalls records agents.sessions.setStatus invocations in order.
 	statusCalls []statusCall
-	// failStatus, when set, makes assistant.threads.setStatus respond with
+	// failStatus, when set, makes agents.sessions.setStatus respond with
 	// this Slack error instead of ok.
 	failStatus string
+	// failIdleHTTP makes that many idle (active) agents.sessions.setStatus
+	// calls answer HTTP 500 (a transport failure, no Slack verdict) before
+	// succeeding.
+	failIdleHTTP int
 }
 
 func (f *fakeThread) handler() http.HandlerFunc {
@@ -1241,6 +1245,7 @@ func (f *fakeThread) handler() http.HandlerFunc {
 		texts := blockTexts(body.Blocks)
 		ts := body.TS
 		statusErr := ""
+		statusHTTP := 0
 		f.mu.Lock()
 		if f.messages == nil {
 			f.messages = map[string]capturedMessage{}
@@ -1259,11 +1264,19 @@ func (f *fakeThread) handler() http.HandlerFunc {
 			}
 			f.messages[ts] = texts
 			f.history = append(f.history, texts)
-		case "assistant.threads.setStatus":
+		case "agents.sessions.setStatus":
 			f.statusCalls = append(f.statusCalls, statusCall{channelID: body.ChannelID, threadTS: body.ThreadTS, status: body.Status})
 			statusErr = f.failStatus
+			if body.Status == string(sessionActive) && f.failIdleHTTP > 0 {
+				f.failIdleHTTP--
+				statusHTTP = http.StatusInternalServerError
+			}
 		}
 		f.mu.Unlock()
+		if statusHTTP != 0 {
+			w.WriteHeader(statusHTTP)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		if statusErr != "" {
 			_, _ = fmt.Fprintf(w, `{"ok":false,"error":%q}`, statusErr)
@@ -2182,11 +2195,11 @@ func TestRenderToolActivity_EscapesMrkdwnAndCodeSpans(t *testing.T) {
 	require.Contains(t, entries[0], "no'tify", "backticks in the name must not terminate the code span")
 }
 
-// In the assistant pane the live ticker renders as the native status line
-// under the composer (assistant.threads.setStatus), never as message content:
-// the segment's only in-thread artifact is the collapsed receipt, and the turn
-// end clears the status explicitly so nothing strands "working…".
-func TestPaneToolStatus_NativeTickerLeavesOnlyReceipt(t *testing.T) {
+// The agent session drives the native working indicator: processing at the
+// start of the turn, active on the way out. The tool ticker stays in the
+// message body — the session status carries no free text — so the thread still
+// shows the live line and collapses it into the receipt.
+func TestSessionStatus_DMThreadProcessingThenActive(t *testing.T) {
 	ft := &fakeThread{}
 	msgs, _, err := runSurfaceWriter(t, ft, "D1",
 		toolCallDelta("alpha"),
@@ -2196,30 +2209,21 @@ func TestPaneToolStatus_NativeTickerLeavesOnlyReceipt(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	require.Len(t, msgs, 2)
-	require.Equal(t, capturedMessage{"🛠️ 2 steps · alpha · beta"}, msgs[0],
-		"the receipt is the only ticker artifact left in the thread")
-	require.Equal(t, capturedMessage{"the answer"}, msgs[1])
-	require.False(t, ft.sawText("⏳"), "no message revision ever carried the live ticker line")
-
-	statuses := ft.statuses()
-	require.NotEmpty(t, statuses)
-	require.Equal(t, "", statuses[len(statuses)-1], "turn end clears the native status")
-	live := statuses[:len(statuses)-1]
-	require.NotEmpty(t, live)
-	require.Equal(t, "⏳ beta… · step 2", live[len(live)-1])
-	for _, s := range live {
-		require.True(t, strings.HasPrefix(s, "⏳ "), "live status %q renders the ticker line", s)
-	}
+	require.Equal(t, []string{"processing", "active"}, ft.statuses())
 	for _, c := range ft.statusCalls {
-		require.Equal(t, "D1", c.channelID)
-		require.Equal(t, "1.0", c.threadTS)
+		require.Equal(t, "D1", c.channelID, "channel_id is always sent")
+		require.Equal(t, "1.0", c.threadTS, "thread_ts is always sent")
 	}
+
+	require.Len(t, msgs, 2)
+	require.Equal(t, capturedMessage{"🛠️ 2 steps · alpha · beta"}, msgs[0])
+	require.Equal(t, capturedMessage{"the answer"}, msgs[1])
+	require.True(t, ft.sawText("⏳"), "the message ticker carries the detail on every surface")
 }
 
-// A channel thread has no assistant pane: the ticker stays a message and
-// assistant.threads.setStatus is never attempted.
-func TestChannelToolStatus_NeverCallsSetStatus(t *testing.T) {
+// A channel thread gets the same native indicator: agents.sessions.setStatus
+// supports channels, so the DM-only guard is gone.
+func TestSessionStatus_ChannelThreadGetsTheIndicator(t *testing.T) {
 	ft := &fakeThread{}
 	msgs, _, err := runSurfaceWriter(t, ft, "C1",
 		toolCallDelta("alpha"),
@@ -2228,62 +2232,32 @@ func TestChannelToolStatus_NeverCallsSetStatus(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	require.Empty(t, ft.statuses())
+	require.Equal(t, []string{"processing", "active"}, ft.statuses())
+	for _, c := range ft.statusCalls {
+		require.Equal(t, "C1", c.channelID)
+		require.Equal(t, "1.0", c.threadTS)
+	}
 	require.Len(t, msgs, 2)
 	require.Equal(t, capturedMessage{"🛠️ 1 step · alpha"}, msgs[0])
-	require.True(t, ft.sawText("⏳"), "the live line renders as a message ticker in channels")
+	require.True(t, ft.sawText("⏳"), "the live line still renders as a message ticker")
 }
 
-// missing_scope means the install cannot set the native status at all (no
-// assistant:write, or not an Agent-type app — every plain-DM deployment lands
-// here): one rejection latches the process-wide downgrade, the message ticker
-// takes over, and no further setStatus calls are made — including the trailing
-// clear, which has nothing to clear.
-func TestPaneToolStatus_MissingScopeLatchesMessageTicker(t *testing.T) {
-	ft := &fakeThread{failStatus: "missing_scope"}
-	msgs, w, err := runSurfaceWriter(t, ft, "D1",
+// A turn ending on a stream error still goes idle: Slack no longer clears the
+// loading UX on its own, so a missing "active" would spin for an hour.
+func TestSessionStatus_ActiveOnStreamError(t *testing.T) {
+	errStream := errors.New("stream failed")
+	ft := &fakeThread{}
+	_, _, err := runSurfaceWriter(t, ft, "C1",
 		toolCallDelta("alpha"),
-		narrationDelta("one\ntwo\nthree"), // own-message narration forces a second render cycle
-		toolCallDelta("beta"),
-		channels.OutboundDelta{Kind: channels.DeltaText, Content: "done"},
-		doneDelta(),
+		channels.OutboundDelta{Err: errStream},
 	)
-	require.NoError(t, err)
-
-	require.True(t, w.adapter.assistantStatusUnsupported.Load())
-	require.Len(t, ft.statuses(), 1, "the downgrade latches on the first rejection")
-	require.True(t, ft.sawText("⏳"), "the message ticker took over")
-	require.Len(t, msgs, 4)
-	require.Equal(t, capturedMessage{"🛠️ 1 step · alpha"}, msgs[0])
-	require.Equal(t, capturedMessage{"one\ntwo\nthree"}, msgs[1])
-	require.Equal(t, capturedMessage{"🛠️ 1 step · beta"}, msgs[2])
-	require.Equal(t, capturedMessage{"done"}, msgs[3])
+	require.ErrorIs(t, err, errStream)
+	require.Equal(t, []string{"processing", "active"}, ft.statuses())
 }
 
-// A transient setStatus failure falls back to the message ticker for that
-// render without writing off the whole process: the latch stays unset so a
-// later segment tries the native line again.
-func TestPaneToolStatus_TransientFailureDoesNotLatch(t *testing.T) {
-	ft := &fakeThread{failStatus: "fatal_error"}
-	msgs, w, err := runSurfaceWriter(t, ft, "D1",
-		toolCallDelta("alpha"),
-		channels.OutboundDelta{Kind: channels.DeltaText, Content: "done"},
-		doneDelta(),
-	)
-	require.NoError(t, err)
-
-	require.False(t, w.adapter.assistantStatusUnsupported.Load())
-	require.True(t, ft.sawText("⏳"), "the render fell back to the message ticker")
-	require.Equal(t, capturedMessage{"🛠️ 1 step · alpha"}, msgs[0])
-	for _, s := range ft.statuses() {
-		require.NotEqual(t, "", s, "no clear is sent when the native line never landed")
-	}
-}
-
-// A turn pausing on an approval prompt clears the native status: the app posts
-// nothing further into the thread until the user decides, so without the
-// explicit clear "working…" would sit under the composer while the agent waits.
-func TestPaneToolStatus_ClearsOnPromptPause(t *testing.T) {
+// A turn pausing on an approval prompt goes idle too: the app posts nothing
+// further into the thread until the user decides.
+func TestSessionStatus_ActiveOnPromptPause(t *testing.T) {
 	ft := &fakeThread{}
 	_, w, err := runSurfaceWriter(t, ft, "D1",
 		toolCallDelta("alpha"),
@@ -2291,41 +2265,92 @@ func TestPaneToolStatus_ClearsOnPromptPause(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.NotNil(t, w.promptDelta)
-
-	statuses := ft.statuses()
-	require.NotEmpty(t, statuses)
-	require.Equal(t, "", statuses[len(statuses)-1], "the prompt pause clears the native status")
+	require.Equal(t, []string{"processing", "active"}, ft.statuses())
 }
 
-// A turn ending on a stream error clears the native status so the failure does
-// not strand "working…" under the composer.
-func TestPaneToolStatus_ClearsOnStreamError(t *testing.T) {
-	errStream := errors.New("stream failed")
+// A /stop cancels the turn context; the status call is detached from it, so
+// the stopped turn still hands the session back as idle.
+func TestSessionStatus_ActiveOnCancelledTurn(t *testing.T) {
 	ft := &fakeThread{}
-	_, _, err := runSurfaceWriter(t, ft, "D1",
-		toolCallDelta("alpha"),
-		channels.OutboundDelta{Err: errStream},
-	)
-	require.ErrorIs(t, err, errStream)
+	srv := httptest.NewServer(ft.handler())
+	t.Cleanup(srv.Close)
 
-	statuses := ft.statuses()
-	require.NotEmpty(t, statuses)
-	require.Equal(t, "", statuses[len(statuses)-1], "the failed turn clears the native status")
+	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
+	w := newBatchedWriterWithClient(client, "C1", "", "1.0", detailsOn, slog.Default())
+	w.adapter = &Adapter{}
+	ctx, cancel := context.WithCancel(t.Context())
+	ch := make(chan channels.OutboundDelta)
+	cancel()
+	require.ErrorIs(t, w.run(ctx, ch), context.Canceled)
+
+	require.Equal(t, []string{"processing", "active"}, ft.statuses())
 }
 
-// setAssistantStatus maps the unsupported-class rejections to
-// errAssistantStatusUnsupported (the latch signal) and surfaces everything
-// else as-is.
-func TestSetAssistantStatus_ErrorClassification(t *testing.T) {
+// missing_scope means the install can never set the status: one rejection
+// latches the process-wide downgrade, so the exit call is skipped and the
+// thread falls back to the message ticker alone.
+func TestSessionStatus_MissingScopeLatchesOff(t *testing.T) {
+	ft := &fakeThread{failStatus: "missing_scope"}
+	msgs, w, err := runSurfaceWriter(t, ft, "C1",
+		toolCallDelta("alpha"),
+		channels.OutboundDelta{Kind: channels.DeltaText, Content: "done"},
+		doneDelta(),
+	)
+	require.NoError(t, err)
+
+	require.True(t, w.adapter.sessionStatusUnsupported.Load())
+	require.Equal(t, []string{"processing"}, ft.statuses(), "the latch skips the exit call")
+	require.True(t, ft.sawText("⏳"), "the message ticker still carries the progress")
+	require.Equal(t, capturedMessage{"🛠️ 1 step · alpha"}, msgs[0])
+}
+
+// not_authorized means the bot is not a member of THIS channel, which says
+// nothing about the next one: the call fails softly and the latch stays unset,
+// so both ends of the turn are still attempted.
+func TestSessionStatus_NotAuthorizedDoesNotLatch(t *testing.T) {
+	ft := &fakeThread{failStatus: "not_authorized"}
+	_, w, err := runSurfaceWriter(t, ft, "C1",
+		toolCallDelta("alpha"),
+		channels.OutboundDelta{Kind: channels.DeltaText, Content: "done"},
+		doneDelta(),
+	)
+	require.NoError(t, err)
+
+	require.False(t, w.adapter.sessionStatusUnsupported.Load())
+	require.Equal(t, []string{"processing", "active"}, ft.statuses())
+}
+
+// A transport failure on the idle call is retried: the indicator does not
+// clear itself, so one HTTP 500 must not leave the thread spinning. Only the
+// idle call retries; a Slack-side rejection (not_authorized above) is not
+// retried because it would repeat.
+func TestSessionStatus_ActiveRetriesTransportFailure(t *testing.T) {
+	ft := &fakeThread{failIdleHTTP: 1}
+	_, w, err := runSurfaceWriter(t, ft, "C1",
+		channels.OutboundDelta{Kind: channels.DeltaText, Content: "done"},
+		doneDelta(),
+	)
+	require.NoError(t, err)
+
+	require.False(t, w.adapter.sessionStatusUnsupported.Load())
+	require.Equal(t, []string{"processing", "active", "active"}, ft.statuses(), "the first active hit a 500 and was retried")
+}
+
+// setSessionStatus maps the unsupported-class rejections to
+// errSessionStatusUnsupported (the latch signal) and surfaces everything else
+// as-is.
+func TestSetSessionStatus_ErrorClassification(t *testing.T) {
 	for _, tc := range []struct {
 		slackErr string
 		latches  bool
 	}{
 		{"missing_scope", true},
 		{"not_allowed_token_type", true},
-		{"method_not_supported_for_channel_type", true},
+		{"feature_disabled", true},
+		{"not_authorized", false},
+		{"thread_ts_required", false},
+		{"invalid_status", false},
 		{"fatal_error", false},
-		{"invalid_thread_ts", false},
 	} {
 		t.Run(tc.slackErr, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -2333,9 +2358,25 @@ func TestSetAssistantStatus_ErrorClassification(t *testing.T) {
 			}))
 			t.Cleanup(srv.Close)
 			c := &slackAPIClient{botToken: "t", baseURL: srv.URL}
-			err := c.setAssistantStatus(t.Context(), "D1", "1.0", "⏳ x…")
+			err := c.setSessionStatus(t.Context(), "C1", "1.0", sessionProcessing)
 			require.Error(t, err)
-			require.Equal(t, tc.latches, errors.Is(err, errAssistantStatusUnsupported))
+			require.Equal(t, tc.latches, errors.Is(err, errSessionStatusUnsupported))
 		})
 	}
+}
+
+// Slack warns on an otherwise successful call until the app subscribes to
+// agent_session_stopped. The warning is informational: the call succeeded.
+func TestSetSessionStatus_WarningIsNotAnError(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		_, _ = fmt.Fprint(w, `{"ok":true,"status":"processing","warning":"missing_stopped_subscription",`+
+			`"response_metadata":{"warnings":["missing_stopped_subscription"]}}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	c := &slackAPIClient{botToken: "t", baseURL: srv.URL, logger: slog.Default()}
+	require.NoError(t, c.setSessionStatus(t.Context(), "C1", "1.0", sessionProcessing))
+	require.Equal(t, map[string]any{"channel_id": "C1", "thread_ts": "1.0", "status": "processing"}, body)
 }
