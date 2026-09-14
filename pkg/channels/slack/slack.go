@@ -39,8 +39,10 @@ type OBOTokenSource interface {
 	// LinkURL returns the absolute "Sign in" URL that starts the
 	// account-linking flow for the Slack user (signed, single-use state).
 	LinkURL(slackUserID string) string
-	// Unlink removes any stored link for the Slack user (the /klaus logout path).
-	Unlink(slackUserID string)
+	// Unlink removes any stored link for the Slack user (the /klaus logout
+	// path). It returns an error when the link store could not delete the
+	// link, so the person is told the sign-out did not happen.
+	Unlink(slackUserID string) error
 }
 
 // Mode constants for the Slack connection method.

@@ -31,7 +31,7 @@ func (o perUserOBO) TokenFor(_ context.Context, slackUserID string) (string, err
 }
 
 func (perUserOBO) LinkURL(string) string { return "https://gw.example/link" }
-func (perUserOBO) Unlink(string)         {}
+func (perUserOBO) Unlink(string) error   { return nil }
 
 // A granted collaborator's turn runs under the thread initiator's token (one
 // shared session), and the real author is attached as attribution. The

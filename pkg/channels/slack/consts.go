@@ -242,6 +242,10 @@ const busyNotice = "I'm still finishing your previous message in this thread. Gi
 // fails for a reason other than not being linked (a transient refresh failure).
 const tokenErrorNotice = "I couldn't refresh your Giant Swarm sign-in just now. Please try again in a moment; if it keeps failing, re-link with the `/login` command."
 
+// logoutFailedNotice is shown (ephemerally) when /logout could not remove the
+// link from the store, so the person does not believe they are signed out.
+const logoutFailedNotice = "I couldn't sign you out just now: your sign-in could not be removed. Please try `/logout` again in a moment."
+
 // accessDecisionRefusal is shown (ephemerally) when a user who is not permitted
 // in the thread clicks an in-thread tool Approve/Deny button.
 const accessDecisionRefusal = "_Only the thread owner (and people they've allowed) can approve or deny this action._"

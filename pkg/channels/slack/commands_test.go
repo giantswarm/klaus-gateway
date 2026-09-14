@@ -13,6 +13,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/giantswarm/klaus-gateway/pkg/auth/musterlink"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 )
 
@@ -256,7 +257,7 @@ func (o *blockingOBO) TokenFor(context.Context, string) (string, error) {
 	return "", errors.New("transient token-mint failure")
 }
 func (o *blockingOBO) LinkURL(string) string { return "" }
-func (o *blockingOBO) Unlink(string)         {}
+func (o *blockingOBO) Unlink(string) error   { return nil }
 
 // A /stop landing while the sender's own token mint is still running finds
 // the thread slot untaken (the mint runs before the slot so a signed-out
@@ -367,11 +368,24 @@ func TestHandleCommand_LoginLinkedConfirmsEphemerally(t *testing.T) {
 }
 
 // deadLinkOBO reports a linked identity whose tokens no longer work, like a
-// store entry surviving an identity-provider revocation.
+// store entry surviving an identity-provider revocation: the linker drops the
+// link on invalid_grant and reports ErrNotLinked.
 type deadLinkOBO struct{ identOBO }
 
 func (deadLinkOBO) TokenFor(context.Context, string) (string, error) {
-	return "", errors.New("refresh token revoked")
+	return "", musterlink.ErrNotLinked
+}
+
+// storeDownOBO is a linked identity behind a link store that is not answering:
+// the token cannot be minted right now, but the person is signed in.
+type storeDownOBO struct{ identOBO }
+
+func (storeDownOBO) TokenFor(context.Context, string) (string, error) {
+	return "", errors.New("musterlink: read link: connection refused")
+}
+
+func (storeDownOBO) Unlink(string) error {
+	return errors.New("musterlink: delete link: connection refused")
 }
 
 // A stored link is not proof the link works: /login must probe the token and
@@ -398,6 +412,37 @@ func TestHandleCommand_LogoutConfirmsEphemerally(t *testing.T) {
 	require.True(t, a.handleCommand(t.Context(), &slashCommand{Name: "logout"}, "U1", "C1", "T1"))
 	require.Equal(t, int32(0), srv.posts.Load())
 	require.Equal(t, int32(1), srv.ephemerals.Load())
+}
+
+// A link store that is briefly away is not a dead link: /login must tell the
+// person to retry instead of sending a signed-in person through a new sign-in
+// (whose result the same store could not take either).
+func TestHandleCommand_LoginStoreDownRepliesTransientNotice(t *testing.T) {
+	a, srv := newTestAdapter(t)
+	a.OBO = storeDownOBO{}
+
+	require.True(t, a.handleCommand(t.Context(), &slashCommand{Name: "login"}, "U1", "C1", "T1"))
+	require.Equal(t, int32(0), srv.posts.Load(), "no sign-in prompt anchor: the person is not asked to sign in")
+	require.Equal(t, int32(1), srv.ephemerals.Load())
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	require.Contains(t, srv.ephemeralTexts[0], tokenErrorNotice)
+	require.NotContains(t, srv.ephemeralTexts[0], "Sign in so I can act as you")
+}
+
+// A sign-out the store refused is reported as such: confirming it would leave
+// the person believing their refresh token is gone while the store keeps it.
+func TestHandleCommand_LogoutStoreDownReportsFailure(t *testing.T) {
+	a, srv := newTestAdapter(t)
+	a.OBO = storeDownOBO{}
+
+	require.True(t, a.handleCommand(t.Context(), &slashCommand{Name: "logout"}, "U1", "C1", "T1"))
+	require.Equal(t, int32(0), srv.posts.Load())
+	require.Equal(t, int32(1), srv.ephemerals.Load())
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	require.Contains(t, srv.ephemeralTexts[0], logoutFailedNotice)
+	require.NotContains(t, srv.ephemeralTexts[0], "Signed out")
 }
 
 // A thread paused on input-required has no in-flight turn; /stop must fall

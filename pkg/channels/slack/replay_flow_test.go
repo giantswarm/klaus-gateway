@@ -272,7 +272,7 @@ func (o *raceLinkOBO) TokenFor(context.Context, string) (string, error) {
 }
 
 func (o *raceLinkOBO) LinkURL(string) string { return "https://gw.example.com/link" }
-func (o *raceLinkOBO) Unlink(string)         {}
+func (o *raceLinkOBO) Unlink(string) error   { return nil }
 
 // A link that completes between the TokenFor miss and the park must not strand
 // the parked message until the TTL sweep: the post-park re-check drains it
