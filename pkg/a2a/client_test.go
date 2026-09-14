@@ -46,9 +46,16 @@ func TestParseTarget(t *testing.T) {
 	require.Equal(t, "kagent.example.com:443", host)
 	require.True(t, tls)
 
+	// A TLS target without a port is the edge on 443, as an https URL would be
+	// (agentlab's klaus-gateway proof passes the edge that way).
+	host, tls, err = pkga2a.ParseTarget("grpcs://agentgateway.127.0.0.1.nip.io")
+	require.NoError(t, err)
+	require.Equal(t, "agentgateway.127.0.0.1.nip.io:443", host)
+	require.True(t, tls)
+
 	for _, bad := range []string{
 		"http://kagent-controller.kagent.svc.cluster.local:8083/api/a2a/kagent", // the 0.x REST shape
-		"grpc://kagent.example.com",             // no port
+		"grpc://kagent.example.com",             // no port: plaintext gRPC has no conventional one
 		"grpc://kagent.example.com:8080/kagent", // a path
 		"kagent.example.com:8080",               // no scheme
 	} {

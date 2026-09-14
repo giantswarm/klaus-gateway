@@ -177,9 +177,14 @@ func (a *Adapter) rosterAgents(ctx context.Context) ([]pkga2a.AgentInfo, error) 
 	defer cancel()
 	agents, err := a.Roster.ListAgents(lctx)
 	if err != nil {
-		a.rosterMu.Lock()
-		a.rosterFailedUntil = time.Now().Add(rosterFailureTTL)
-		a.rosterMu.Unlock()
+		// A caller that ran out of its own time (the picker's trigger_id
+		// budget) says nothing about the roster's health; only a failure
+		// with the caller still waiting is recorded against it.
+		if ctx.Err() == nil {
+			a.rosterMu.Lock()
+			a.rosterFailedUntil = time.Now().Add(rosterFailureTTL)
+			a.rosterMu.Unlock()
+		}
 		return nil, err
 	}
 	a.rosterMu.Lock()

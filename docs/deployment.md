@@ -178,6 +178,19 @@ The route must carry native gRPC over HTTP/2 and preserve the `authorization` an
 `x-kagent-agent-instance-id` metadata. Thread bindings live in the routing store, so a
 persistent store (`bolt`, `configmap`, `crd`) keeps conversations across restarts.
 
+## OBO link store
+
+With Slack on-behalf-of linking (`obo.enabled`), the gateway keeps one record per linked Slack
+user (muster identity, the encrypted refresh token, the cached id_token). `obo.store` selects
+where those records live; both backends seal every record with `store-key` (AES-256-GCM):
+
+| Store    | Helm value            | Volume | Node-bound | Notes                                                            |
+|----------|-----------------------|--------|------------|------------------------------------------------------------------|
+| `bolt`   | `obo.store: bolt`     | yes    | yes        | Default. File at `obo.storePath`; `obo.persistence` picks emptyDir or a RWO PVC (then `Recreate`) |
+| `secret` | `obo.store: secret`   | no     | no         | One Secret `<release>-obo-links`; Role/RoleBinding rendered; replicas can share it; imports the bolt file on first start |
+
+`UPGRADE.md` describes the move from the volume to the Secret.
+
 ## Routing store
 
 The routing table maps `(channel, channelID, userID, threadID)` to a Klaus instance name, or a

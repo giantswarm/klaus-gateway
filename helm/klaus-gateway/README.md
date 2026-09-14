@@ -132,6 +132,8 @@ Channel and routing gateway in front of klaus instances; uses agentgateway as th
 | obo.enabled | bool | `false` |  |
 | obo.musterUrl | string | `""` |  |
 | obo.callbackBaseUrl | string | `""` |  |
+| obo.store | string | `"bolt"` |  |
+| obo.storeSecretName | string | `""` |  |
 | obo.storePath | string | `""` |  |
 | obo.persistence.enabled | bool | `false` |  |
 | obo.persistence.size | string | `"64Mi"` |  |

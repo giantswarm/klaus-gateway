@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -57,6 +58,22 @@ const (
 	// Slack's 12 000-char limit. splitMarkdown budgets the fence auto-close and
 	// reopen inside this cap, so emitted chunks never exceed it.
 	slackMarkdownBlockMax = 12000
+	// minMarkdownBlockMax is the floor the per-message budget shrinks to when
+	// Slack refuses a message as too long regardless (a limit the documented
+	// block cap does not describe).
+	minMarkdownBlockMax = 1000
+	// slackFallbackTextMax caps a message's top-level text: chat.update refuses
+	// a text field over 4 000 characters (msg_too_long). On a markdown-block
+	// message that field is only the notification and accessibility fallback of
+	// the block carrying the reply, so the fallback is cut, never the reply.
+	slackFallbackTextMax = 4000
+
+	// Slack Web API error codes the adapter reacts to.
+	errCodeMsgTooLong          = "msg_too_long"
+	errCodeMissingScope        = "missing_scope"
+	errCodeInvalidArguments    = "invalid_arguments"
+	errCodeNotAllowedTokenType = "not_allowed_token_type"
+	errCodeFeatureDisabled     = "feature_disabled"
 )
 
 // batchedWriter accumulates OutboundDelta content and periodically calls
@@ -144,10 +161,15 @@ type batchedWriter struct {
 
 	mu            sync.Mutex
 	buf           strings.Builder
-	flushedLen    int                     // length of buf at the last chat.update; skips no-op flushes
-	flushFailures int                     // consecutive failed ticker flushes; reset on success
-	wroteAny      bool                    // set once the head message carries agent text; survives a partial multi-chunk flush
-	promptDelta   *channels.OutboundDelta // set when stream ends on DeltaPrompt
+	flushedLen    int       // length of buf at the last chat.update; skips no-op flushes
+	flushFailures int       // consecutive failed ticker flushes; reset on success
+	flushRetryAt  time.Time // ticker flushes wait until here once they keep failing
+	// chunkMax is the per-message budget of the reply's markdown blocks. It
+	// starts at Slack's documented block limit and shrinks when Slack refuses a
+	// message as too long regardless. Only touched from run()'s goroutine.
+	chunkMax    int
+	wroteAny    bool                    // set once the head message carries agent text; survives a partial multi-chunk flush
+	promptDelta *channels.OutboundDelta // set when stream ends on DeltaPrompt
 	// tailTS holds the timestamps of overflow messages posted when the reply
 	// outgrows a single Slack message. Only touched from run()'s goroutine.
 	tailTS []string
@@ -221,6 +243,7 @@ func newBatchedWriterWithClient(client *slackAPIClient, channel, ts, threadTS st
 		threadTS: threadTS,
 		details:  details,
 		logger:   logger,
+		chunkMax: slackMarkdownBlockMax,
 	}
 }
 
@@ -244,7 +267,7 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 
 		case d, ok := <-ch:
 			if !ok {
-				return w.finalFlush(ctx)
+				return w.finish(ctx)
 			}
 			if d.Usage != nil {
 				// kagent reports usage per LLM call, so sum across the turn for
@@ -263,7 +286,7 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 				return d.Err
 			}
 			if d.Done {
-				return w.finalFlush(ctx)
+				return w.finish(ctx)
 			}
 			switch d.Kind {
 			case channels.DeltaText:
@@ -294,17 +317,12 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 				return nil
 			}
 
-		case <-ticker.C:
-			// A ticker flush is retryable: flushedLen only advances on success,
-			// so the next tick re-sends the same content. Aborting on the first
-			// error would discard the rest of a turn the agent completes anyway;
-			// only a persistent failure gives up.
+		case now := <-ticker.C:
+			if now.Before(w.flushRetryAt) {
+				continue
+			}
 			if err := w.flush(ctx); err != nil {
-				w.flushFailures++
-				if w.flushFailures >= maxFlushFailures {
-					return err
-				}
-				w.logger.Warn("slack: flush failed, retrying next tick", "failures", w.flushFailures, "error", err)
+				w.noteFlushFailure(now, err)
 				continue
 			}
 			w.flushFailures = 0
@@ -312,10 +330,51 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 	}
 }
 
-// maxFlushFailures bounds consecutive ticker-flush failures before the turn is
-// aborted. One transient Slack error must not kill a healthy stream; a Slack
-// outage should not keep a doomed turn's thread slot busy either.
+// maxFlushFailures is the number of attempts a terminal flush gets, and the
+// number of consecutive ticker-flush failures after which the retries slow
+// down.
 const maxFlushFailures = 3
+
+// flushRetryBackoff spaces the ticker flushes once they keep failing, so a
+// Slack outage is not hammered every tick for the rest of the turn.
+const flushRetryBackoff = 5 * time.Second
+
+// noteFlushFailure records a failed ticker flush. flushedLen only advances on
+// success, so a later flush re-sends the same content: a Slack failure is never
+// fatal to the turn — the agent keeps working, the reply lands once Slack
+// accepts it again, and only the final flush's failure is reported (as a
+// renderError). Aborting the turn here instead used to cancel the task
+// server-side over a rendering problem (klaus-gateway#242).
+func (w *batchedWriter) noteFlushFailure(now time.Time, err error) {
+	w.flushFailures++
+	if w.flushFailures < maxFlushFailures {
+		w.logger.Warn("slack: flush failed, retrying next tick", "failures", w.flushFailures, "error", err)
+		return
+	}
+	if w.flushFailures == maxFlushFailures {
+		w.logger.Warn("slack: flush keeps failing, retrying until the turn ends", "every", flushRetryBackoff, "error", err)
+	}
+	w.flushRetryAt = now.Add(flushRetryBackoff)
+}
+
+// finish lands the reply once the stream has ended. A final flush that fails
+// after its retries is reported as a renderError: the agent completed the turn,
+// only its rendering did not.
+func (w *batchedWriter) finish(ctx context.Context) error {
+	if err := w.finalFlush(ctx); err != nil {
+		return &renderError{err: err}
+	}
+	return nil
+}
+
+// renderError is a turn the agent completed whose reply could not be delivered
+// to Slack in full. It is distinct from a turn failure so the adapter can tell
+// the thread what happened without failing — and cancelling — a turn that
+// succeeded server-side.
+type renderError struct{ err error }
+
+func (e *renderError) Error() string { return "slack: reply rendering failed: " + e.err.Error() }
+func (e *renderError) Unwrap() error { return e.err }
 
 // finalFlush retries a terminal flush (stream done, error, or prompt handoff)
 // up to maxFlushFailures attempts. No later tick will re-send the buffered
@@ -665,7 +724,7 @@ func (w *batchedWriter) renderNarration(ctx context.Context, text string) {
 	retract := len(w.loginURLs) > 0
 	fold := w.details == detailsOn && !retract && foldableNarration(scrubbed)
 	segmentClosed := false
-	for _, md := range splitMarkdown(scrubbed, slackMarkdownBlockMax) {
+	for _, md := range splitMarkdown(scrubbed, w.chunkMax) {
 		w.narrationsRendered++
 		switch {
 		case w.narrationsRendered > maxNarrationMessages+1:
@@ -1511,16 +1570,41 @@ func (w *batchedWriter) flush(ctx context.Context) error {
 		return nil
 	}
 
-	// Agent output renders as Block Kit markdown blocks. A reply that
-	// fits one block updates the main message; a larger reply rolls over into
-	// stable follow-up messages in-thread. The head message is posted lazily on
-	// the first flush when ts is empty (reactions mode), else updated in place.
-	//
-	// ponytail: a multi-chunk reply makes one API call per chunk every
-	// batchInterval, so a reply spanning N messages costs N calls/flush against
-	// Slack's ~4 updates/sec/channel. Fine while >12 KB replies are rare; revisit
-	// with per-call pacing if they become common.
-	chunks := splitMarkdown(text, slackMarkdownBlockMax)
+	// A message Slack refuses as too long despite the block budget is re-split
+	// under a smaller one right away, instead of being re-sent identical on
+	// every tick until the turn ends.
+	for {
+		err := w.deliver(ctx, text)
+		if err == nil {
+			break
+		}
+		if apiErrorCode(err) != errCodeMsgTooLong || !w.shrinkChunks() {
+			return err
+		}
+		w.logger.Warn("slack: reply refused as too long, re-splitting into smaller messages", "chunk_max", w.chunkMax, "error", err)
+	}
+	// flushedLen advances only once every chunk landed, so a failed flush leaves
+	// the delta pending and a retried flush re-sends it (chat.update on the head
+	// and already-posted tails is idempotent).
+	w.mu.Lock()
+	if flushingLen > w.flushedLen {
+		w.flushedLen = flushingLen
+	}
+	w.mu.Unlock()
+	return nil
+}
+
+// deliver renders text as Block Kit markdown blocks: a reply that fits one
+// block updates the main message; a larger one rolls over into stable
+// follow-up messages in-thread. The head message is posted lazily on the first
+// flush when ts is empty (reactions mode), else updated in place.
+//
+// ponytail: a multi-chunk reply makes one API call per chunk every
+// batchInterval, so a reply spanning N messages costs N calls/flush against
+// Slack's ~4 updates/sec/channel. Fine while >12 KB replies are rare; revisit
+// with per-call pacing if they become common.
+func (w *batchedWriter) deliver(ctx context.Context, text string) error {
+	chunks := splitMarkdown(text, w.chunkMax)
 	if w.ts == "" {
 		ts, err := w.client.postMarkdown(ctx, w.channel, chunks[0], w.threadTS)
 		if err != nil {
@@ -1549,15 +1633,19 @@ func (w *batchedWriter) flush(ctx context.Context) error {
 		}
 		w.tailTS = append(w.tailTS, ts)
 	}
-	// flushedLen advances only once every chunk landed, so a failed flush leaves
-	// the delta pending and a retried flush re-sends it (chat.update on the head
-	// and already-posted tails is idempotent).
-	w.mu.Lock()
-	if flushingLen > w.flushedLen {
-		w.flushedLen = flushingLen
-	}
-	w.mu.Unlock()
 	return nil
+}
+
+// shrinkChunks halves the per-message budget after Slack refused a message as
+// too long, down to minMarkdownBlockMax, and reports whether a smaller budget
+// is left to try. Tails already posted are rewritten with the shifted content
+// on the next deliver; a budget change is a one-off, not the norm.
+func (w *batchedWriter) shrinkChunks() bool {
+	if w.chunkMax <= minMarkdownBlockMax {
+		return false
+	}
+	w.chunkMax = max(w.chunkMax/2, minMarkdownBlockMax)
+	return true
 }
 
 // slackHTTPClient bounds every Slack Web API call. Without a timeout a
@@ -1610,11 +1698,7 @@ type slackAPIClient struct {
 // invalid_arguments (a username Slack will not accept). Both are retried
 // unbranded — branding must cost the label, never the reply.
 func identityRejectedErr(err error) bool {
-	if err == nil {
-		return false
-	}
-	s := err.Error()
-	return strings.Contains(s, "missing_scope") || strings.Contains(s, "invalid_arguments")
+	return hasErrorCode(err, errCodeMissingScope, errCodeInvalidArguments)
 }
 
 // noteIdentityRejected logs the unbranded retry and, on missing_scope, latches
@@ -1623,7 +1707,7 @@ func (c *slackAPIClient) noteIdentityRejected(err error) {
 	if c.logger != nil {
 		c.logger.Warn("slack: branded post rejected, retrying under the app identity", "error", err)
 	}
-	if c.customizeUnsupported != nil && strings.Contains(err.Error(), "missing_scope") {
+	if c.customizeUnsupported != nil && hasErrorCode(err, errCodeMissingScope) {
 		c.customizeUnsupported.Store(true)
 	}
 }
@@ -1658,6 +1742,68 @@ func (c *slackAPIClient) postMessage(ctx context.Context, channel, text, threadT
 		params.Set(paramThreadTS, threadTS)
 	}
 	return c.post(ctx, methodChatPostMessage, params)
+}
+
+// postConversationRoot posts the root of a conversation the gateway opens
+// itself: a Block Kit section rendering text, whose block_id carries the
+// conversation marker (see conversationMarker). text doubles as the
+// notification fallback. Slack keeps block_ids with the message and returns
+// them from conversations.replies, which is what makes the marker durable.
+func (c *slackAPIClient) postConversationRoot(ctx context.Context, channel, text string, marker conversationMarker) (string, error) {
+	body := map[string]any{
+		paramChannel: channel,
+		paramText:    text,
+		paramBlocks: []any{
+			map[string]any{
+				bkType:    bkSection,
+				bkBlockID: marker.encode(),
+				bkText:    map[string]any{bkType: bkMrkdwn, bkText: truncateRunes(text, sectionTextMax)},
+			},
+		},
+	}
+	return c.postJSON(ctx, methodChatPostMessage, body)
+}
+
+// viewsOpen opens a modal for the user who produced triggerID. The trigger
+// expires 3 seconds after Slack issued it, so callers must not block on slow
+// lookups before calling this.
+func (c *slackAPIClient) viewsOpen(ctx context.Context, triggerID string, view map[string]any) error {
+	_, err := c.postJSON(ctx, "views.open", map[string]any{paramTriggerID: triggerID, paramView: view})
+	return err
+}
+
+// conversationsJoin joins a public channel (channels:join). Private channels
+// refuse it; the caller falls back to asking for an invite.
+func (c *slackAPIClient) conversationsJoin(ctx context.Context, channel string) error {
+	_, err := c.post(ctx, "conversations.join", url.Values{paramChannel: {channel}})
+	return err
+}
+
+// respondToURL posts an ephemeral text reply through a slash command's
+// response_url (usable five times within 30 minutes). The URL is a Slack
+// webhook, not a Web API method: no bot token, no envelope.
+func (c *slackAPIClient) respondToURL(ctx context.Context, responseURL, text string) error {
+	if responseURL == "" {
+		return errors.New("slack: no response_url")
+	}
+	data, err := json.Marshal(map[string]any{"response_type": "ephemeral", paramText: text})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, responseURL, strings.NewReader(string(data)))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json; charset=utf-8")
+	resp, err := slackHTTPClient.Do(req) //nolint:gosec
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return fmt.Errorf("slack response_url: status %d", resp.StatusCode)
+	}
+	return nil
 }
 
 // lookupUserEmail returns the email from the user's Slack profile.
@@ -1756,7 +1902,10 @@ const threadInitiatorScanLimit = 50
 // bot-authored root is skipped: bot messages carry bot_id (and often a user
 // field naming the bot's own user), so they are not a human initiator; the
 // first message without bot_id is the human who effectively started the thread.
-// Returns "" when the thread is empty or its scanned prefix is all bot messages.
+// A root the gateway posted itself names its initiator in its conversation
+// marker (conversationMarker), and that wins: the first human reply in such a
+// thread may be anyone. Returns "" when the thread is empty or its scanned
+// prefix is all bot messages.
 func (c *slackAPIClient) threadInitiator(ctx context.Context, channel, threadTS string) (string, error) {
 	params := url.Values{
 		paramChannel: {channel},
@@ -1772,8 +1921,9 @@ func (c *slackAPIClient) threadInitiator(ctx context.Context, channel, threadTS 
 		OK       bool   `json:"ok"`
 		Err      string `json:"error,omitempty"`
 		Messages []struct {
-			User  string `json:"user"`
-			BotID string `json:"bot_id"`
+			User   string         `json:"user"`
+			BotID  string         `json:"bot_id"`
+			Blocks []messageBlock `json:"blocks"`
 		} `json:"messages"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
@@ -1781,6 +1931,11 @@ func (c *slackAPIClient) threadInitiator(ctx context.Context, channel, threadTS 
 	}
 	if !result.OK {
 		return "", fmt.Errorf("slack conversations.replies: %s", result.Err)
+	}
+	if len(result.Messages) > 0 {
+		if marker := conversationMarkerFromBlocks(result.Messages[0].Blocks); marker != nil && marker.Initiator != "" {
+			return marker.Initiator, nil
+		}
 	}
 	for _, m := range result.Messages {
 		if m.BotID == "" && m.User != "" {
@@ -1790,12 +1945,37 @@ func (c *slackAPIClient) threadInitiator(ctx context.Context, channel, threadTS 
 	return "", nil
 }
 
-// threadRootText returns the text of a thread's root message via
-// conversations.replies (messages are returned oldest-first, so a limit of 1
-// yields exactly the root). It is how a channel reply's conversation recovers
-// its /agent binding after a restart: the prefix is visible in the root
-// mention's text. Empty when the thread has no messages.
-func (c *slackAPIClient) threadRootText(ctx context.Context, channel, threadTS string) (string, error) {
+// messageBlock is the slice of a Block Kit block that conversations.replies
+// returns which the marker lives in.
+type messageBlock struct {
+	BlockID string `json:"block_id"`
+}
+
+// conversationMarkerFromBlocks finds the gateway's conversation marker among
+// a message's blocks, or nil when the message carries none.
+func conversationMarkerFromBlocks(blocks []messageBlock) *conversationMarker {
+	for _, b := range blocks {
+		if m := decodeConversationMarker(b.BlockID); m != nil {
+			return m
+		}
+	}
+	return nil
+}
+
+// rootMessage is a thread root as threadRoot returns it: its text, and the
+// gateway's conversation marker when the root carries one.
+type rootMessage struct {
+	Text   string
+	Marker *conversationMarker
+}
+
+// threadRoot returns a thread's root message via conversations.replies
+// (messages are returned oldest-first, so a limit of 1 yields exactly the
+// root). It is how a channel reply's conversation recovers its /agent binding
+// after a restart: the prefix is visible in the root mention's text, or — for
+// a root the gateway posted itself — the binding is in the root's conversation
+// marker. Zero value when the thread has no messages.
+func (c *slackAPIClient) threadRoot(ctx context.Context, channel, threadTS string) (rootMessage, error) {
 	params := url.Values{
 		paramChannel: {channel},
 		paramTS:      {threadTS},
@@ -1803,31 +1983,32 @@ func (c *slackAPIClient) threadRootText(ctx context.Context, channel, threadTS s
 	}
 	body, err := c.call(ctx, "conversations.replies", "application/x-www-form-urlencoded", params.Encode())
 	if err != nil {
-		return "", err
+		return rootMessage{}, err
 	}
 
 	var result struct {
 		OK       bool   `json:"ok"`
 		Err      string `json:"error,omitempty"`
 		Messages []struct {
-			Text string `json:"text"`
+			Text   string         `json:"text"`
+			Blocks []messageBlock `json:"blocks"`
 		} `json:"messages"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
-		return "", fmt.Errorf("slack conversations.replies: decode: %w", err)
+		return rootMessage{}, fmt.Errorf("slack conversations.replies: decode: %w", err)
 	}
 	if !result.OK {
-		return "", fmt.Errorf("slack conversations.replies: %s", result.Err)
+		return rootMessage{}, fmt.Errorf("slack conversations.replies: %s", result.Err)
 	}
 	if len(result.Messages) == 0 {
-		return "", nil
+		return rootMessage{}, nil
 	}
-	return result.Messages[0].Text, nil
+	return rootMessage{Text: result.Messages[0].Text, Marker: conversationMarkerFromBlocks(result.Messages[0].Blocks)}, nil
 }
 
 // threadFirstHumanMessage returns the ts and text of the earliest human
 // message in a thread, via conversations.replies (oldest-first). It is the
-// assistant-pane counterpart of threadRootText: a pane thread roots at an
+// assistant-pane counterpart of threadRoot: a pane thread roots at an
 // anchor Slack creates when the chat opens (klaus-gateway#157), so the
 // conversation's opening message — where an /agent prefix lives — is the
 // first HUMAN message, not the root. "Human" mirrors toInboundMessage's
@@ -1950,7 +2131,7 @@ func (c *slackAPIClient) setSessionStatus(ctx context.Context, channelID, thread
 		return fmt.Errorf("slack %s: decode response: %w", methodSetSessionStatus, err)
 	}
 	if !result.OK {
-		return sessionStatusErr(fmt.Errorf("slack %s: %s", methodSetSessionStatus, result.Error))
+		return sessionStatusErr(&apiError{method: methodSetSessionStatus, code: result.Error})
 	}
 	c.noteSessionStatusWarnings(result)
 	return nil
@@ -1960,13 +2141,7 @@ func (c *slackAPIClient) setSessionStatus(ctx context.Context, channelID, thread
 // status to errSessionStatusUnsupported (the latch signal) and surfaces
 // everything else as-is.
 func sessionStatusErr(err error) error {
-	if err == nil {
-		return nil
-	}
-	s := err.Error()
-	if strings.Contains(s, "missing_scope") ||
-		strings.Contains(s, "not_allowed_token_type") ||
-		strings.Contains(s, "feature_disabled") {
+	if hasErrorCode(err, errCodeMissingScope, errCodeNotAllowedTokenType, errCodeFeatureDisabled) {
 		return errSessionStatusUnsupported
 	}
 	return err
@@ -2007,8 +2182,7 @@ func (c *slackAPIClient) reaction(ctx context.Context, method, channel, ts, name
 		paramTimestamp: {ts},
 		paramName:      {name},
 	})
-	if err != nil && (strings.Contains(err.Error(), "missing_scope") ||
-		strings.Contains(err.Error(), "not_allowed_token_type")) {
+	if hasErrorCode(err, errCodeMissingScope, errCodeNotAllowedTokenType) {
 		return errReactionsUnsupported
 	}
 	return err
@@ -2021,14 +2195,28 @@ func markdownBlocks(md string) []any {
 	return []any{map[string]any{bkType: bkMarkdown, bkText: md}}
 }
 
-// postMarkdown posts a new in-thread message rendered as a markdown block. The
-// top-level text is the notification/accessibility fallback; it is mrkdwn-parsed
-// by Slack, so agent output must be escaped there even though the markdown block
-// itself must not be.
+// fallbackText is the top-level text of a markdown-block message: the
+// notification and accessibility fallback. It is mrkdwn-parsed by Slack, so
+// agent output is escaped there even though the markdown block itself must not
+// be, and it is cut to slackFallbackTextMax so chat.update never refuses the
+// message for it. The cut never leaves a half entity (`&amp;` cut to `&am`).
+func fallbackText(md string) string {
+	s := escapeMrkdwn(md)
+	if utf8.RuneCountInString(s) <= slackFallbackTextMax {
+		return s
+	}
+	cut := string([]rune(s)[:slackFallbackTextMax-1])
+	if i := strings.LastIndexByte(cut, '&'); i >= 0 && !strings.Contains(cut[i:], ";") {
+		cut = cut[:i]
+	}
+	return cut + "…"
+}
+
+// postMarkdown posts a new in-thread message rendered as a markdown block.
 func (c *slackAPIClient) postMarkdown(ctx context.Context, channel, md, threadTS string) (string, error) {
 	body := map[string]any{
 		paramChannel: channel,
-		paramText:    escapeMrkdwn(md),
+		paramText:    fallbackText(md),
 		paramBlocks:  markdownBlocks(md),
 	}
 	if threadTS != "" {
@@ -2076,13 +2264,12 @@ func (c *slackAPIClient) updateActivity(ctx context.Context, channel, ts string,
 	return err
 }
 
-// chatUpdateMarkdown replaces a message's content with a markdown block. The
-// top-level fallback text is escaped for the same reason as in postMarkdown.
+// chatUpdateMarkdown replaces a message's content with a markdown block.
 func (c *slackAPIClient) chatUpdateMarkdown(ctx context.Context, channel, ts, md string) error {
 	body := map[string]any{
 		paramChannel: channel,
 		paramTS:      ts,
-		paramText:    escapeMrkdwn(md),
+		paramText:    fallbackText(md),
 		paramBlocks:  markdownBlocks(md),
 	}
 	_, err := c.postJSON(ctx, "chat.update", body)
@@ -2306,22 +2493,19 @@ func (c *slackAPIClient) postChoiceSectionPrompt(ctx context.Context, channel, t
 	return err
 }
 
-// postSignInPrompt posts a Block Kit message with a "Sign in" button linking
-// to linkURL, and returns the posted message's ts. It is used to
-// nudge an unlinked Slack user into the OBO account-linking flow. A real
-// threaded message, never an ephemeral: for a root channel mention the prompt
-// is the thread's first visible reply (a thread-scoped ephemeral there is never
-// surfaced by Slack), in an assistant DM only thread replies render in the
-// assistant pane, and the returned ts lets the prompt be rewritten in place
-// once the link completes.
-func (c *slackAPIClient) postSignInPrompt(ctx context.Context, channel, threadID, user, linkURL string) (string, error) {
-	// The prompt is a public thread message and its link is minted for one
-	// user: address it, or a bystander clicks a button bound to someone else's
-	// identity and lands on the email-mismatch page.
-	text := "Sign in so I can act as you. " +
-		"Until you do, I can't run tools on your behalf."
-	if user != "" {
-		text = "<@" + user + "> " + text
+// signInPromptText is the sign-in prompt's body. It names no one: the prompt
+// reaches its user through the message's audience (an ephemeral in a channel,
+// a DM thread otherwise), never through an @-mention a whole thread can read
+// (klaus-gateway#185).
+const signInPromptText = "Sign in so I can act as you. Until you do, I can't run tools on your behalf."
+
+// signInPromptBody builds the sign-in prompt's Slack post body: a section with
+// the prompt text plus a "Sign in" URL button opening linkURL. A non-empty lead
+// is put on its own line above the prompt text.
+func signInPromptBody(channel, threadID, linkURL, lead string) map[string]any {
+	text := signInPromptText
+	if lead != "" {
+		text = lead + "\n" + text
 	}
 	body := map[string]any{
 		paramChannel: channel,
@@ -2348,7 +2532,31 @@ func (c *slackAPIClient) postSignInPrompt(ctx context.Context, channel, threadID
 	if threadID != "" {
 		body[paramThreadTS] = threadID
 	}
-	return c.postJSON(ctx, methodChatPostMessage, body)
+	return body
+}
+
+// postSignInPrompt posts the sign-in prompt as a real threaded message and
+// returns its ts. It is the DM form of the prompt: a DM thread has one reader,
+// so nothing is hidden by making it ephemeral, and only thread replies render
+// in the assistant pane. The returned ts lets the prompt be rewritten in place
+// once the link completes.
+func (c *slackAPIClient) postSignInPrompt(ctx context.Context, channel, threadID, linkURL string) (string, error) {
+	return c.postJSON(ctx, methodChatPostMessage, signInPromptBody(channel, threadID, linkURL, ""))
+}
+
+// postSignInPromptEphemeral posts the sign-in prompt visible to user only. It
+// is the channel form: the link is minted for one identity, so a thread full
+// of bystanders must not see it (klaus-gateway#185). An ephemeral has no
+// addressable ts, so it cannot be rewritten later; the caller confirms the
+// completed link with a fresh ephemeral instead. Slack only surfaces a
+// thread-scoped ephemeral in a thread that already shows a message, which is
+// why the caller anchors a fresh mention first (klaus-gateway#156). lead is put
+// above the prompt text when this prompt replaces one whose link expired.
+func (c *slackAPIClient) postSignInPromptEphemeral(ctx context.Context, channel, threadID, user, linkURL, lead string) error {
+	body := signInPromptBody(channel, threadID, linkURL, lead)
+	body[paramUser] = user
+	_, err := c.postJSON(ctx, "chat.postEphemeral", body)
+	return err
 }
 
 // slackSectionTextMax is Slack's limit on a section block's text object; a
@@ -2619,9 +2827,35 @@ func (c *slackAPIClient) send(ctx context.Context, method, contentType, payload 
 		return "", fmt.Errorf("slack %s: decode response: %w", method, err)
 	}
 	if !result.OK {
-		return "", fmt.Errorf("slack %s: %s", method, result.Error)
+		return "", &apiError{method: method, code: result.Error}
 	}
 	return result.Ts, nil
+}
+
+// apiError is a Slack Web API refusal (`ok: false`) carrying the error code
+// Slack named, so callers react to a code (msg_too_long, missing_scope) rather
+// than to an error string.
+type apiError struct {
+	method string
+	code   string
+}
+
+func (e *apiError) Error() string { return fmt.Sprintf("slack %s: %s", e.method, e.code) }
+
+// apiErrorCode returns the Slack error code err carries, or "" when err is not
+// a Slack API refusal.
+func apiErrorCode(err error) string {
+	var e *apiError
+	if errors.As(err, &e) {
+		return e.code
+	}
+	return ""
+}
+
+// hasErrorCode reports whether err is a Slack API refusal with one of codes.
+func hasErrorCode(err error, codes ...string) bool {
+	code := apiErrorCode(err)
+	return code != "" && slices.Contains(codes, code)
 }
 
 // call executes one Slack Web API POST and returns the raw response body. A

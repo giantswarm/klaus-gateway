@@ -43,6 +43,7 @@ pkg/lifecycle/operator/ calls Klaus Operator MCP tools (cluster)
 pkg/lifecycle/static/   fixed instance map (compose harness / CI)
 pkg/routing/            routing table
 pkg/routing/store/      Store interface + four backends (memory, bolt, configmap, crd)
+pkg/auth/musterlink/    Slack OBO: muster account linking + the link Store (memory, bolt file, Kubernetes Secret)
 pkg/server/             http.Server wiring, middleware, admin mux
 pkg/upstream/           agentgateway upstream URL rewriter
 pkg/observability/      OTel traces + Prometheus metrics
@@ -128,7 +129,7 @@ go build ./...
 go test ./...
 docker build -t klaus-gateway:dev .
 make lint        # golangci-lint with gosec + goconst
-make helm-test   # helm lint + template render assertions
+helm lint helm/klaus-gateway && helm template kg helm/klaus-gateway   # chart render check; ATS runs the chart on kind in CI
 ```
 
 ## CI
