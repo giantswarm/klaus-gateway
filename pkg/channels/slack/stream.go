@@ -2234,15 +2234,20 @@ func (c *slackAPIClient) postChoiceSectionPrompt(ctx context.Context, channel, t
 const signInPromptText = "Sign in so I can act as you. Until you do, I can't run tools on your behalf."
 
 // signInPromptBody builds the sign-in prompt's Slack post body: a section with
-// the prompt text plus a "Sign in" URL button opening linkURL.
-func signInPromptBody(channel, threadID, linkURL string) map[string]any {
+// the prompt text plus a "Sign in" URL button opening linkURL. A non-empty lead
+// is put on its own line above the prompt text.
+func signInPromptBody(channel, threadID, linkURL, lead string) map[string]any {
+	text := signInPromptText
+	if lead != "" {
+		text = lead + "\n" + text
+	}
 	body := map[string]any{
 		paramChannel: channel,
-		paramText:    signInPromptText,
+		paramText:    text,
 		paramBlocks: []any{
 			map[string]any{
 				bkType: bkSection,
-				bkText: map[string]any{bkType: bkMrkdwn, bkText: signInPromptText},
+				bkText: map[string]any{bkType: bkMrkdwn, bkText: text},
 			},
 			map[string]any{
 				bkType: bkActions,
@@ -2270,7 +2275,7 @@ func signInPromptBody(channel, threadID, linkURL string) map[string]any {
 // in the assistant pane. The returned ts lets the prompt be rewritten in place
 // once the link completes.
 func (c *slackAPIClient) postSignInPrompt(ctx context.Context, channel, threadID, linkURL string) (string, error) {
-	return c.postJSON(ctx, methodChatPostMessage, signInPromptBody(channel, threadID, linkURL))
+	return c.postJSON(ctx, methodChatPostMessage, signInPromptBody(channel, threadID, linkURL, ""))
 }
 
 // postSignInPromptEphemeral posts the sign-in prompt visible to user only. It
@@ -2279,9 +2284,10 @@ func (c *slackAPIClient) postSignInPrompt(ctx context.Context, channel, threadID
 // addressable ts, so it cannot be rewritten later; the caller confirms the
 // completed link with a fresh ephemeral instead. Slack only surfaces a
 // thread-scoped ephemeral in a thread that already shows a message, which is
-// why the caller anchors a fresh mention first (klaus-gateway#156).
-func (c *slackAPIClient) postSignInPromptEphemeral(ctx context.Context, channel, threadID, user, linkURL string) error {
-	body := signInPromptBody(channel, threadID, linkURL)
+// why the caller anchors a fresh mention first (klaus-gateway#156). lead is put
+// above the prompt text when this prompt replaces one whose link expired.
+func (c *slackAPIClient) postSignInPromptEphemeral(ctx context.Context, channel, threadID, user, linkURL, lead string) error {
+	body := signInPromptBody(channel, threadID, linkURL, lead)
 	body[paramUser] = user
 	_, err := c.postJSON(ctx, "chat.postEphemeral", body)
 	return err

@@ -173,6 +173,15 @@ type Adapter struct {
 	signInPromptedMu sync.Mutex
 	signInPrompted   map[string]ttlEntry[signInAnchor]
 
+	// signInNoticesMu guards signInNotices, the ts of the thread notice that
+	// anchors a channel's ephemeral sign-in prompts, keyed by (channel,
+	// thread). The notice names nobody, so one serves every unlinked user in
+	// the thread; its lifetime is the thread's, not any one prompt's, which is
+	// why it does not live in signInAnchor (a drained anchor would take it
+	// with it and the next prompt would post a duplicate).
+	signInNoticesMu sync.Mutex
+	signInNotices   map[string]ttlEntry[string]
+
 	// inactiveHintedMu guards inactiveHinted, the threads whose poster was
 	// already told the thread is inactive, so a dropped reply hints once per
 	// window instead of once per message.
@@ -862,8 +871,8 @@ func (a *Adapter) postLaunchAnnouncement(ctx context.Context, slackChannel, thre
 // The two surfaces fill different fields. A DM prompt is a real message: ts
 // addresses it and the completed link rewrites it in place (chat.update). A
 // channel prompt is ephemeral and has no addressable ts: it is marked by
-// ephemeral, and noticeTS addresses the thread notice posted alongside it,
-// which anchors the ephemeral (klaus-gateway#156) and is reused by a re-nudge.
+// ephemeral, and the thread notice that anchors it (klaus-gateway#156) is
+// tracked per thread in signInNotices, not here.
 //
 // The entry plays two roles with different lifetimes: as a rewrite anchor it
 // must stay addressable for pendingTTL (a link can complete long after the
@@ -873,7 +882,6 @@ func (a *Adapter) postLaunchAnnouncement(ctx context.Context, slackChannel, thre
 type signInAnchor struct {
 	channel   string
 	ts        string
-	noticeTS  string
 	threadID  string
 	ephemeral bool
 	nudgedAt  time.Time // when the prompt for this (user, thread) last posted
@@ -888,14 +896,19 @@ func (s signInAnchor) addressable() bool { return s.ts != "" || s.ephemeral }
 // where the prompt was shown. It is driven by the explicit /login command and
 // by an unlinked user's first turn (which is aborted, not run as the SA). A
 // failure to post is logged and swallowed.
-func (a *Adapter) postSignIn(ctx context.Context, slackChannel, threadID, slackUser string) {
+//
+// supersedes marks a prompt that replaces an ephemeral one whose link expired.
+// Slack cannot rewrite or delete an ephemeral, so the dead button stays on the
+// user's screen until their client reloads; the fresh prompt says so itself
+// instead, the way a DM prompt's predecessor is rewritten to say it.
+func (a *Adapter) postSignIn(ctx context.Context, slackChannel, threadID, slackUser string, supersedes bool) {
 	url := a.OBO.LinkURL(slackUser)
 	if url == "" {
 		a.Logger.Warn("slack: empty sign-in link URL, skipping prompt", "user", slackUser)
 		a.clearSignInReservation(slackUser, threadID)
 		return
 	}
-	anchor, err := a.postSignInPrompt(ctx, slackChannel, threadID, slackUser, url)
+	anchor, err := a.postSignInPrompt(ctx, slackChannel, threadID, slackUser, url, supersedes)
 	if err != nil {
 		a.Logger.Warn("slack: post sign-in prompt failed", "user", slackUser, "error", err)
 		a.clearSignInReservation(slackUser, threadID)
@@ -922,10 +935,10 @@ func (a *Adapter) postSignIn(ctx context.Context, slackChannel, threadID, slackU
 // and the thread's bystanders never see it (klaus-gateway#185). Slack does not
 // surface a thread-scoped ephemeral in a thread that shows no message, so a
 // notice that names nobody and carries no link is posted first
-// (klaus-gateway#156). A re-nudge reuses the notice already in the thread. A
-// prompt outside a thread needs no notice: Slack shows a channel-scoped
-// ephemeral on its own.
-func (a *Adapter) postSignInPrompt(ctx context.Context, slackChannel, threadID, slackUser, url string) (signInAnchor, error) {
+// (klaus-gateway#156). The notice names nobody, so one serves the whole thread:
+// every unlinked user's prompt reuses it. A prompt outside a thread needs no
+// notice: Slack shows a channel-scoped ephemeral on its own.
+func (a *Adapter) postSignInPrompt(ctx context.Context, slackChannel, threadID, slackUser, url string, supersedes bool) (signInAnchor, error) {
 	client := a.apiClient()
 	if isDMChannelID(slackChannel) {
 		ts, err := client.postSignInPrompt(ctx, slackChannel, threadID, url)
@@ -934,27 +947,47 @@ func (a *Adapter) postSignInPrompt(ctx context.Context, slackChannel, threadID, 
 		}
 		return signInAnchor{channel: slackChannel, ts: ts}, nil
 	}
-	notice := a.signInNoticeTS(slackUser, threadID)
-	if notice == "" && threadID != "" {
-		ts, err := client.postMessage(ctx, slackChannel, signInThreadNotice, threadID)
-		if err != nil {
+	if threadID != "" {
+		if err := a.ensureSignInNotice(ctx, client, slackChannel, threadID); err != nil {
 			return signInAnchor{}, err
 		}
-		notice = ts
 	}
-	if err := client.postSignInPromptEphemeral(ctx, slackChannel, threadID, slackUser, url); err != nil {
+	var lead string
+	if supersedes {
+		lead = signInLinkSupersededNote
+	}
+	if err := client.postSignInPromptEphemeral(ctx, slackChannel, threadID, slackUser, url, lead); err != nil {
 		return signInAnchor{}, err
 	}
-	return signInAnchor{channel: slackChannel, noticeTS: notice, ephemeral: true}, nil
+	return signInAnchor{channel: slackChannel, ephemeral: true}, nil
 }
 
-// signInNoticeTS returns the thread notice already posted for this (user,
-// thread), or "" when there is none.
-func (a *Adapter) signInNoticeTS(slackUser, threadID string) string {
-	key := slackUser + "\x00" + threadID
-	a.signInPromptedMu.Lock()
-	defer a.signInPromptedMu.Unlock()
-	return a.signInPrompted[key].value.noticeTS
+// ensureSignInNotice posts the thread notice that anchors this thread's
+// ephemeral sign-in prompts, unless one is already in the thread. It is kept
+// per thread rather than per prompt: the notice outlives any one prompt, and
+// re-posting it for a second unlinked user, or after a completed link drained
+// that user's anchor, would repeat the same text in the thread.
+func (a *Adapter) ensureSignInNotice(ctx context.Context, client *slackAPIClient, slackChannel, threadID string) error {
+	key := slackChannel + "\x00" + threadID
+	now := time.Now()
+	a.signInNoticesMu.Lock()
+	entry, ok := a.signInNotices[key]
+	a.signInNoticesMu.Unlock()
+	if ok && now.Before(entry.expires) {
+		return nil
+	}
+	ts, err := client.postMessage(ctx, slackChannel, signInThreadNotice, threadID)
+	if err != nil {
+		return err
+	}
+	a.signInNoticesMu.Lock()
+	defer a.signInNoticesMu.Unlock()
+	if a.signInNotices == nil {
+		a.signInNotices = make(map[string]ttlEntry[string])
+	}
+	sweepExpired(a.signInNotices, now)
+	a.signInNotices[key] = ttlEntry[string]{value: ts, expires: now.Add(pendingTTL)}
+	return nil
 }
 
 // clearSignInReservation removes the (user, thread) throttle entry when no
@@ -1064,8 +1097,10 @@ func (a *Adapter) updateSignInAnchors(ctx context.Context, slackUser string) {
 	client := a.apiClient()
 	for _, anchor := range anchors {
 		if anchor.ts == "" {
-			// Nothing to re-record on failure: an ephemeral prompt dies with
-			// its link and leaves no live button behind.
+			// A failed confirmation is not re-recorded: the anchor exists to
+			// address a message, and an ephemeral has none. The user is
+			// already linked, so the worst a retry would buy back is the
+			// wording; the next turn simply runs.
 			if err := client.postEphemeralText(ctx, anchor.channel, slackUser, anchor.threadID, signedInNotice); err != nil {
 				a.Logger.Warn("slack: confirm sign-in to user failed", "user", slackUser, "channel", anchor.channel, "error", err)
 			}
@@ -1120,16 +1155,17 @@ func (a *Adapter) maybePostSignIn(ctx context.Context, slackChannel, threadID, s
 		a.signInPrompted = make(map[string]ttlEntry[signInAnchor])
 	}
 	sweepExpired(a.signInPrompted, now)
-	// The reservation keeps the thread notice of the prompt it replaces, so the
-	// fresh channel prompt re-anchors on it instead of posting a second notice.
-	a.signInPrompted[key] = ttlEntry[signInAnchor]{value: signInAnchor{channel: expired.channel, noticeTS: expired.noticeTS, nudgedAt: now}, expires: now.Add(pendingTTL)}
+	a.signInPrompted[key] = ttlEntry[signInAnchor]{value: signInAnchor{nudgedAt: now}, expires: now.Add(pendingTTL)}
 	a.signInPromptedMu.Unlock()
+	// A DM prompt is rewritten so its dead button cannot be mistaken for the
+	// live one. An ephemeral cannot be rewritten, so the fresh prompt carries
+	// that warning itself.
 	if expired.ts != "" {
 		if err := a.apiClient().chatUpdateMarkdown(ctx, expired.channel, expired.ts, signInLinkExpiredNote); err != nil {
 			a.Logger.Warn("slack: rewrite expired sign-in prompt failed", "user", slackUser, "thread", threadID, "error", err)
 		}
 	}
-	a.postSignIn(ctx, slackChannel, threadID, slackUser)
+	a.postSignIn(ctx, slackChannel, threadID, slackUser, expired.ephemeral)
 }
 
 // postAccessPrompt asks the thread initiator (ephemerally) to approve a newcomer

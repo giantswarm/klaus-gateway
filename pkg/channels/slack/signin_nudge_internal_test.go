@@ -79,7 +79,7 @@ func TestPostSignIn_ChannelPromptStaysPrivate(t *testing.T) {
 	a, srv := newTestAdapter(t)
 	a.OBO = deadLinkOBO{} // still unlinked: the convergence check must not drain the anchor
 
-	a.postSignIn(t.Context(), "C1", "T1", "U1")
+	a.postSignIn(t.Context(), "C1", "T1", "U1", false)
 
 	require.Equal(t, int32(1), srv.ephemerals.Load(), "the prompt reaches its user ephemerally")
 	require.Equal(t, int32(1), srv.posts.Load(), "one thread notice anchors the ephemeral")
@@ -91,7 +91,7 @@ func TestPostSignIn_ChannelPromptStaysPrivate(t *testing.T) {
 	require.NotContains(t, bodies, "example.test/link", "the link must not reach a public message")
 	require.Contains(t, prompt, signInPromptText)
 
-	a.postSignIn(t.Context(), "C1", "T1", "U1")
+	a.postSignIn(t.Context(), "C1", "T1", "U1", false)
 	require.Equal(t, int32(1), srv.posts.Load(), "a re-prompt reuses the notice already in the thread")
 	require.Equal(t, int32(2), srv.ephemerals.Load(), "each re-prompt posts a fresh ephemeral")
 }
@@ -103,7 +103,7 @@ func TestPostSignIn_DMPromptStaysAddressable(t *testing.T) {
 	a, srv := newTestAdapter(t)
 	a.OBO = deadLinkOBO{}
 
-	a.postSignIn(t.Context(), "D1", "T1", "U1")
+	a.postSignIn(t.Context(), "D1", "T1", "U1", false)
 
 	require.Equal(t, int32(1), srv.posts.Load(), "the DM prompt is a real message")
 	require.Zero(t, srv.ephemerals.Load(), "nothing is hidden in a DM")
@@ -118,7 +118,7 @@ func TestPostSignIn_DMPromptStaysAddressable(t *testing.T) {
 func TestUpdateSignInAnchors_ConfirmsPerSurface(t *testing.T) {
 	a, srv := newTestAdapter(t)
 
-	a.recordSignInAnchor("U1", "T1", signInAnchor{channel: "C1", noticeTS: "n.000", ephemeral: true})
+	a.recordSignInAnchor("U1", "T1", signInAnchor{channel: "C1", ephemeral: true})
 	a.updateSignInAnchors(t.Context(), "U1")
 	require.Equal(t, int32(1), srv.ephemerals.Load(), "a channel prompt is confirmed privately")
 	require.Zero(t, srv.updates.Load(), "an ephemeral prompt has no message to rewrite")
@@ -130,4 +130,51 @@ func TestUpdateSignInAnchors_ConfirmsPerSurface(t *testing.T) {
 	a.updateSignInAnchors(t.Context(), "U2")
 	require.Equal(t, int32(1), srv.updates.Load(), "a DM prompt is rewritten in place")
 	require.Equal(t, int32(1), srv.ephemerals.Load(), "the DM rewrite posts nothing new")
+}
+
+// The thread notice names nobody, so one serves the whole thread: a second
+// unlinked user's prompt reuses it instead of repeating it, and so does a
+// prompt posted after a completed link drained the first user's anchor.
+func TestPostSignIn_ThreadNoticeIsPostedOncePerThread(t *testing.T) {
+	a, srv := newTestAdapter(t)
+	a.OBO = deadLinkOBO{}
+
+	a.postSignIn(t.Context(), "C1", "T1", "U1", false)
+	a.postSignIn(t.Context(), "C1", "T1", "U2", false)
+	require.Equal(t, int32(1), srv.posts.Load(), "a second unlinked user reuses the thread's notice")
+
+	a.takeSignInAnchors("U1") // the link completes and drains U1's anchor
+	a.postSignIn(t.Context(), "C1", "T1", "U1", false)
+	require.Equal(t, int32(1), srv.posts.Load(), "a drained anchor does not take the notice with it")
+
+	a.postSignIn(t.Context(), "C2", "T2", "U1", false)
+	require.Equal(t, int32(2), srv.posts.Load(), "a different thread gets its own notice")
+}
+
+// Slack cannot rewrite or delete an ephemeral, so a channel prompt that
+// replaces one whose link expired says so itself; the DM path rewrites the
+// dead prompt instead and its fresh prompt stays clean.
+func TestMaybePostSignIn_SupersededChannelPromptWarnsOnTheFreshOne(t *testing.T) {
+	a, srv := newTestAdapter(t)
+	a.OBO = deadLinkOBO{}
+
+	staleAt := time.Now().Add(-signInNudgeTTL - time.Minute)
+	a.signInPromptedMu.Lock()
+	a.signInPrompted = map[string]ttlEntry[signInAnchor]{
+		"U1\x00T1": {
+			value:   signInAnchor{channel: "C1", ephemeral: true, nudgedAt: staleAt},
+			expires: time.Now().Add(pendingTTL),
+		},
+	}
+	a.signInPromptedMu.Unlock()
+
+	a.maybePostSignIn(t.Context(), "C1", "T1", "U1")
+
+	require.Zero(t, srv.updates.Load(), "an ephemeral prompt has no message to rewrite")
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	require.Len(t, srv.ephemeralTexts, 1)
+	require.Contains(t, srv.ephemeralTexts[0], signInLinkSupersededNote,
+		"the fresh prompt tells the user which button is live")
+	require.Contains(t, srv.ephemeralTexts[0], signInPromptText)
 }

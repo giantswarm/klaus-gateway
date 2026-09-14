@@ -1109,15 +1109,15 @@ func (f *fakeSlackAPI) waitForPath(t *testing.T, path string, n int) {
 	}, 2*time.Second, 20*time.Millisecond, "expected >=%d call(s) to %s", n, path)
 }
 
-// signInPromptText is the wording of the sign-in prompt, asserted on whichever
+// signInPromptPrefix is the opening of the sign-in prompt, asserted on whichever
 // surface carries it.
-const signInPromptText = "Sign in so I can act as you"
+const signInPromptPrefix = "Sign in so I can act as you"
 
 // signInPrompted reports whether the sign-in prompt reached its user: an
 // ephemeral in a channel (klaus-gateway#185), a real threaded message in a DM.
 func signInPrompted(fake *fakeSlackAPI) bool {
-	return strings.Contains(allText(fake.pathCalls("chat.postEphemeral")), signInPromptText) ||
-		strings.Contains(allText(fake.pathCalls("chat.postMessage")), signInPromptText)
+	return strings.Contains(allText(fake.pathCalls("chat.postEphemeral")), signInPromptPrefix) ||
+		strings.Contains(allText(fake.pathCalls("chat.postMessage")), signInPromptPrefix)
 }
 
 // allText concatenates the "text" param of the given calls.

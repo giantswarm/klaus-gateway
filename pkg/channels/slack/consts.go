@@ -217,6 +217,12 @@ const stopNothingRunningNotice = "_Nothing is running in this thread._"
 // prompt is ephemeral and has no addressable ts.
 const signInLinkExpiredNote = "_This sign-in link expired; use the newer one below._"
 
+// signInLinkSupersededNote leads a channel sign-in prompt that replaces one
+// whose link expired. Slack cannot rewrite or delete an ephemeral, so the dead
+// button stays on the user's screen until their client reloads; the fresh
+// prompt carries the warning that a DM's predecessor is rewritten to carry.
+const signInLinkSupersededNote = "_An earlier sign-in link in this thread expired; use the button below._"
+
 // signInThreadNotice anchors a channel thread whose first reply would
 // otherwise be the sign-in prompt. The prompt is ephemeral and Slack does not
 // surface a thread-scoped ephemeral in a thread with no messages
