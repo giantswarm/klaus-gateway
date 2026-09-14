@@ -36,6 +36,9 @@ type InstanceClient interface {
 type AgentClient interface {
 	// Stream sends msg to the instance and yields the task's events.
 	Stream(ctx context.Context, instanceID string, msg *a2apkg.Message) iter.Seq2[a2apkg.Event, error]
+	// Subscribe attaches to a task already running on the instance and yields
+	// its events; a task that has quiesced arrives whole, as the only event.
+	Subscribe(ctx context.Context, instanceID string, taskID a2apkg.TaskID) iter.Seq2[a2apkg.Event, error]
 	// GetTask returns one task of the instance.
 	GetTask(ctx context.Context, instanceID string, taskID a2apkg.TaskID) (*a2apkg.Task, error)
 	// CancelTask cancels a running task server-side.
@@ -63,6 +66,11 @@ type Facade struct {
 	// Routes persists the thread -> AgentInstance binding across restarts.
 	// Required when Agent is set.
 	Routes store.Store
+	// Durable reports whether Routes outlives the process. A turn a shutdown
+	// cuts short is delivered afterwards only when its record survives; when it
+	// cannot, channels tell the user where the result is instead of promising
+	// to post it.
+	Durable bool
 }
 
 // ListAgents lists the agents a channel may select. Unavailable when no
@@ -221,6 +229,11 @@ func (f *Facade) instanceFor(ctx context.Context, msg InboundMessage) (string, e
 // was stopped.
 const cancelTimeout = 10 * time.Second
 
+// bindingWriteTimeout bounds the routing-store writes that track a thread's
+// in-flight task. They run detached from the turn's cancellation, so a stopped
+// turn still clears its record.
+const bindingWriteTimeout = 5 * time.Second
+
 // sendViaA2A runs the turn on the thread's AgentInstance and maps the task's
 // events to OutboundDeltas. The controller's refusal of a turn (an unknown or
 // unavailable agent, an instance still working on a previous message, a
@@ -237,8 +250,115 @@ func (f *Facade) sendViaA2A(ctx context.Context, msg InboundMessage) (<-chan Out
 	if err != nil {
 		return nil, err
 	}
+	// The task id is learned from the first event, also on a HITL resume: the
+	// paused task's record was dropped with the prompt, so the resumed segment
+	// is recorded afresh.
+	return f.streamTask(ctx, instanceKey(msg), instanceID, "", msg.Resume, f.Agent.Stream(ctx, instanceID, message))
+}
 
-	next, stop := iter.Pull2(f.Agent.Stream(ctx, instanceID, message))
+// ResumesTurns reports whether a turn this gateway leaves running at its
+// shutdown is delivered into its thread after the restart, which takes the
+// kagent client and a routing store that outlives the process.
+func (f *Facade) ResumesTurns() bool {
+	return f != nil && f.Agent != nil && f.Routes != nil && f.Durable
+}
+
+// InFlightTurns lists the turns a previous process left running for channel:
+// every binding of that channel that still records a task. A channel adapter
+// calls it once at start to resubscribe to each and deliver the result.
+func (f *Facade) InFlightTurns(ctx context.Context, channel string) ([]InFlightTurn, error) {
+	if f == nil || f.Agent == nil || f.Routes == nil {
+		return nil, nil
+	}
+	entries, err := f.Routes.List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("channels: list in-flight turns: %w", err)
+	}
+	var turns []InFlightTurn
+	for _, ke := range entries {
+		if ke.Key.Channel != channel || ke.Entry.TaskID == "" || ke.Entry.AgentInstanceID == "" {
+			continue
+		}
+		turns = append(turns, inFlightTurn(ke.Key, ke.Entry))
+	}
+	return turns, nil
+}
+
+// InFlightTurn returns the turn a previous process left running on msg's
+// thread, when the binding records one. It lets a reply into the thread
+// deliver the result before it is handled, for a turn the resubscription at
+// start could not reach (no token for its user at the time, the controller
+// unreachable).
+func (f *Facade) InFlightTurn(ctx context.Context, msg InboundMessage) (InFlightTurn, bool, error) {
+	if f == nil || f.Agent == nil || f.Routes == nil {
+		return InFlightTurn{}, false, nil
+	}
+	key := instanceKey(msg)
+	entry, ok, err := f.Routes.Get(ctx, key)
+	if err != nil {
+		return InFlightTurn{}, false, fmt.Errorf("channels: read in-flight turn: %w", err)
+	}
+	if !ok || entry.TaskID == "" || entry.AgentInstanceID == "" {
+		return InFlightTurn{}, false, nil
+	}
+	return inFlightTurn(key, entry), true, nil
+}
+
+func inFlightTurn(key store.Key, entry store.Entry) InFlightTurn {
+	return InFlightTurn{
+		Msg:    InboundMessage{Channel: key.Channel, ChannelID: key.ChannelID, ThreadID: key.ThreadID, AgentRef: key.Agent, Resume: entry.Resume},
+		TaskID: entry.TaskID,
+	}
+}
+
+// ResumeTurn resubscribes to taskID on msg's thread and streams what is left
+// of it — for a task that finished meanwhile, its result — as OutboundDeltas
+// under msg's identity. The record of the in-flight turn goes when the task
+// quiesces, and at once when the controller no longer knows the task or the
+// instance (nothing is left to deliver); any other failure keeps it for a
+// later attempt.
+func (f *Facade) ResumeTurn(ctx context.Context, msg InboundMessage, taskID string) (<-chan OutboundDelta, error) {
+	if f == nil || f.Agent == nil || f.Routes == nil {
+		return nil, errors.New("channels: no agent client configured")
+	}
+	ctx = withChannelAuth(ctx, msg)
+	key := instanceKey(msg)
+	entry, ok, err := f.Routes.Get(ctx, key)
+	if err != nil {
+		return nil, fmt.Errorf("channels: read instance binding: %w", err)
+	}
+	if !ok || entry.AgentInstanceID == "" {
+		return nil, fmt.Errorf("channels: thread %s has no agent instance to resume task %s on", msg.ThreadID, taskID)
+	}
+	id := a2apkg.TaskID(taskID)
+	out, err := f.streamTask(ctx, key, entry.AgentInstanceID, id, nil, f.Agent.Subscribe(ctx, entry.AgentInstanceID, id))
+	if err != nil {
+		if errors.Is(err, a2apkg.ErrTaskNotFound) || pkga2a.IsNotFound(err) {
+			f.forgetTask(ctx, key)
+		}
+		return nil, err
+	}
+	return out, nil
+}
+
+// streamTask drives a task's events into OutboundDeltas. The first event is
+// pulled synchronously, so the controller's refusal of the call is the
+// returned error; the rest is pumped on a goroutine that also keeps the
+// thread's record of its in-flight task: written once the controller has
+// named the task (a fresh turn learns the id from its first event; known is
+// the id a resubscription already has, whose record exists), cleared when the
+// task quiesces or the turn is stopped. A resubscription joins the stream
+// wherever it is, and whatever the agent wrote between the previous process's
+// end and this one's subscription is not replayed — so its answer text is not
+// streamed but posted whole when the task completes, read back from the
+// controller; tool activity and narration still stream live. A consumer that goes away before a
+// terminal delta stopped the turn: the gateway's shutdown (context cause
+// ErrShutdown) leaves the task running and its record in place for the next
+// process to resubscribe to, a plain cancellation (/stop) cancels the task at
+// the controller. A context cancelled after the terminal delta is the turn
+// being torn down and touches the task not at all.
+func (f *Facade) streamTask(ctx context.Context, key store.Key, instanceID string, known a2apkg.TaskID, resume map[string]string, events iter.Seq2[a2apkg.Event, error]) (<-chan OutboundDelta, error) {
+	next, stop := iter.Pull2(events)
 	first, err, ok := next()
 	if err != nil {
 		stop()
@@ -253,7 +373,9 @@ func (f *Facade) sendViaA2A(ctx context.Context, msg InboundMessage) (<-chan Out
 	go func() {
 		defer close(out)
 		defer stop()
-		var taskID a2apkg.TaskID
+		taskID := known
+		recorded := known != ""
+		resumed := known != ""
 		mapper := newEventMapper()
 		// terminal is set once the task reached a terminal or waiting state: the
 		// agent is not working any more, whether or not the channel is still
@@ -269,12 +391,25 @@ func (f *Facade) sendViaA2A(ctx context.Context, msg InboundMessage) (<-chan Out
 			if info, ok := event.(a2apkg.TaskInfoProvider); ok && info.TaskInfo().TaskID != "" {
 				taskID = info.TaskInfo().TaskID
 			}
+			if !recorded && taskID != "" {
+				recorded = true
+				f.rememberTask(ctx, key, taskID, resume)
+			}
+			_, whole := event.(*a2apkg.Task) // a quiesced task arriving whole already carries its full answer
 			for _, delta := range mapper.deltas(event) {
 				if delta.isZero() {
 					continue
 				}
+				if resumed && !whole && delta.Kind == DeltaText && delta.Content != "" {
+					continue // the tail that streams is not the answer; it is read back at completion
+				}
 				if delta.Err != nil || delta.Done || delta.Kind == DeltaPrompt {
 					terminal = true
+				}
+				if resumed && !whole && delta.Done {
+					if text := f.finalText(ctx, instanceID, taskID); text != "" && !f.emit(ctx, out, OutboundDelta{Content: text}) {
+						break
+					}
 				}
 				if !f.emit(ctx, out, delta) {
 					break
@@ -294,21 +429,91 @@ func (f *Facade) sendViaA2A(ctx context.Context, msg InboundMessage) (<-chan Out
 			}
 		}
 		if ctx.Err() != nil {
-			// The channel stopped listening (/stop, a closed web stream,
-			// shutdown). A task still running is cancelled server-side so the
-			// agent does not work on unobserved; one that already finished or
+			// The channel stopped listening (/stop, a closed web stream, the
+			// gateway's shutdown). A task still running is cancelled server-side
+			// so the agent does not work on unobserved — unless the shutdown is
+			// what stopped the channel: then the task runs on and its record stays
+			// for the next process to resubscribe to. One that already finished or
 			// paused on a prompt is left alone — cancelling it would record a
 			// completed turn as canceled (klaus-gateway#242).
 			if taskID != "" && !terminal {
+				if errors.Is(context.Cause(ctx), ErrShutdown) {
+					slog.Info("a2a: task left running through the shutdown", "record", "task_left_running",
+						"instance", instanceID, "task", taskID, "channel", key.Channel, "thread", key.ThreadID)
+					return
+				}
+				f.forgetTask(ctx, key)
 				f.cancelTask(ctx, instanceID, taskID)
+				return
+			}
+			if recorded {
+				f.forgetTask(ctx, key)
 			}
 			return
+		}
+		if recorded {
+			f.forgetTask(ctx, key)
 		}
 		if !delivered {
 			f.emit(ctx, out, OutboundDelta{Err: errors.New("a2a: stream ended without terminal status")})
 		}
 	}()
 	return out, nil
+}
+
+// finalText reads a completed task back from the controller and returns its
+// answer, for a resubscribed turn whose streamed text is not trusted to be
+// whole. A failed read is logged and yields nothing: the terminal delta still
+// closes the turn.
+func (f *Facade) finalText(ctx context.Context, instanceID string, taskID a2apkg.TaskID) string {
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), bindingWriteTimeout)
+	defer cancel()
+	task, err := f.Agent.GetTask(rctx, instanceID, taskID)
+	if err != nil {
+		slog.Warn("a2a: read the completed task's answer failed", "instance", instanceID, "task", taskID, "error", err)
+		return ""
+	}
+	return taskResultText(task)
+}
+
+// rememberTask records taskID as the task in flight on key's thread, with the
+// channel's resume data, so a restart can resubscribe to it.
+func (f *Facade) rememberTask(ctx context.Context, key store.Key, taskID a2apkg.TaskID, resume map[string]string) {
+	f.updateBinding(ctx, key, func(e *store.Entry) bool {
+		e.TaskID, e.Resume = string(taskID), resume
+		return true
+	})
+}
+
+// forgetTask clears the thread's in-flight task record.
+func (f *Facade) forgetTask(ctx context.Context, key store.Key) {
+	f.updateBinding(ctx, key, func(e *store.Entry) bool {
+		if e.TaskID == "" && e.Resume == nil {
+			return false
+		}
+		e.TaskID, e.Resume = "", nil
+		return true
+	})
+}
+
+// updateBinding applies mutate to the thread's binding when it exists and
+// writes it back when mutate reports a change. Best effort and detached from
+// the turn's cancellation: the binding itself is never at stake here, only the
+// bookkeeping of its in-flight task.
+func (f *Facade) updateBinding(ctx context.Context, key store.Key, mutate func(*store.Entry) bool) {
+	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), bindingWriteTimeout)
+	defer cancel()
+	entry, ok, err := f.Routes.Get(wctx, key)
+	if err != nil {
+		slog.Warn("channels: read binding for the in-flight task record failed", "thread", key.ThreadID, "error", err)
+		return
+	}
+	if !ok || !mutate(&entry) {
+		return
+	}
+	if err := f.Routes.Put(wctx, key, entry); err != nil {
+		slog.Warn("channels: write in-flight task record failed", "thread", key.ThreadID, "error", err)
+	}
 }
 
 // emit delivers delta unless ctx is done; it reports whether the delta was
@@ -435,13 +640,21 @@ func (m *eventMapper) deltas(event a2apkg.Event) []OutboundDelta {
 		})
 	case *a2apkg.Task:
 		// A whole task arrives as the first event of a stream (the submitted
-		// task the controller stored) and as the reply to a message the
-		// controller answered from its store. Only a quiescent state carries
-		// something to render; the submitted snapshot is the turn starting.
+		// task the controller stored), as the reply to a message the controller
+		// answered from its store, and as the only event of a resubscription to
+		// a task that quiesced meanwhile. Only a quiescent state carries
+		// something to render; the submitted snapshot is the turn starting. A
+		// completed task carries its whole answer, rendered ahead of the
+		// terminal delta so a result produced while no gateway was listening
+		// still reaches the thread.
 		if ev.Status.State == a2apkg.TaskStateSubmitted || ev.Status.State == a2apkg.TaskStateWorking {
 			return nil
 		}
-		return mapTaskStatus(ev.ID, ev.Status, parseTurnUsage(ev.Metadata), func() []OutboundDelta { return nil })
+		deltas := mapTaskStatus(ev.ID, ev.Status, parseTurnUsage(ev.Metadata), func() []OutboundDelta { return nil })
+		if ev.Status.State == a2apkg.TaskStateCompleted {
+			deltas = append(m.taskResultDeltas(ev), deltas...)
+		}
+		return deltas
 	case *a2apkg.Message:
 		// A bare agent message is a complete reply without a task wrapper.
 		return append(textDelta(ev.Parts), OutboundDelta{Done: true})
@@ -481,6 +694,52 @@ func mapTaskStatus(taskID a2apkg.TaskID, status a2apkg.TaskStatus, usage *TurnUs
 		}
 		return interim()
 	}
+}
+
+// taskResultDeltas renders a completed task's answer as what the stream has
+// not delivered yet: each artifact goes through the tracker as a full replace,
+// so a task arriving whole after its chunks streamed adds nothing, and one
+// arriving as the only event (a resubscription to a task that finished in
+// between) renders in full. A runtime that records the reply in the history
+// alone yields the last agent message.
+func (m *eventMapper) taskResultDeltas(task *a2apkg.Task) []OutboundDelta {
+	var deltas []OutboundDelta
+	for _, artifact := range task.Artifacts {
+		if artifact != nil {
+			deltas = append(deltas, textDeltaOf(m.artifacts.delta(&a2apkg.TaskArtifactUpdateEvent{Artifact: artifact}))...)
+		}
+	}
+	if len(task.Artifacts) > 0 {
+		return deltas
+	}
+	return textDeltaOf(lastAgentText(task.History))
+}
+
+// taskResultText is the whole answer of a completed task: the text of its
+// artifacts, or — for a runtime that records the reply in the history only —
+// the last agent message. Used where nothing of the task has been rendered
+// yet, so nothing needs reconciling.
+func taskResultText(task *a2apkg.Task) string {
+	var sb bytes.Buffer
+	for _, artifact := range task.Artifacts {
+		if artifact != nil {
+			sb.WriteString(extractTextFromA2AParts(artifact.Parts))
+		}
+	}
+	if sb.Len() > 0 {
+		return sb.String()
+	}
+	return lastAgentText(task.History)
+}
+
+// lastAgentText is the text of the last agent message in history.
+func lastAgentText(history []*a2apkg.Message) string {
+	for i := len(history) - 1; i >= 0; i-- {
+		if m := history[i]; m != nil && m.Role == a2apkg.MessageRoleAgent {
+			return extractTextFromA2AParts(m.Parts)
+		}
+	}
+	return ""
 }
 
 // textDelta returns a single-element slice with the concatenated text of parts,

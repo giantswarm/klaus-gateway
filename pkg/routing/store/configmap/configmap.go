@@ -9,6 +9,7 @@ package configmap
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"sync"
@@ -24,6 +25,24 @@ import (
 
 // DefaultConfigMapName is the ConfigMap used when no name is specified.
 const DefaultConfigMapName = "klaus-gateway-routes"
+
+// dataKey is the ConfigMap data key of a routing key. A ConfigMap data key may
+// only hold [-._a-zA-Z0-9], while the routing key's serialised form is
+// pipe-separated and carries whatever a channel puts in its ids, so it is
+// stored base64url-encoded without padding: that alphabet fits, and List
+// reverses it.
+func dataKey(k store.Key) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(k.String()))
+}
+
+// routingKey inverts dataKey.
+func routingKey(data string) (store.Key, error) {
+	raw, err := base64.RawURLEncoding.DecodeString(data)
+	if err != nil {
+		return store.Key{}, fmt.Errorf("configmap: data key %q is not an encoded routing key: %w", data, err)
+	}
+	return store.ParseKey(string(raw))
+}
 
 // Store persists routes in a single ConfigMap.
 type Store struct {
@@ -70,7 +89,7 @@ func (s *Store) Get(ctx context.Context, k store.Key) (store.Entry, bool, error)
 		}
 		return store.Entry{}, false, err
 	}
-	raw, ok := cm.Data[k.String()]
+	raw, ok := cm.Data[dataKey(k)]
 	if !ok {
 		return store.Entry{}, false, nil
 	}
@@ -96,7 +115,7 @@ func (s *Store) Put(ctx context.Context, k store.Key, e store.Entry) error {
 		if cm.Data == nil {
 			cm.Data = map[string]string{}
 		}
-		cm.Data[k.String()] = string(buf)
+		cm.Data[dataKey(k)] = string(buf)
 	})
 }
 
@@ -105,7 +124,7 @@ func (s *Store) Delete(ctx context.Context, k store.Key) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.mutate(ctx, func(cm *corev1.ConfigMap) {
-		delete(cm.Data, k.String())
+		delete(cm.Data, dataKey(k))
 	})
 }
 
@@ -121,7 +140,7 @@ func (s *Store) List(ctx context.Context) ([]store.KeyEntry, error) {
 	out := make([]store.KeyEntry, 0, len(cm.Data))
 	now := time.Now()
 	for ks, raw := range cm.Data {
-		k, err := store.ParseKey(ks)
+		k, err := routingKey(ks)
 		if err != nil {
 			return nil, err
 		}

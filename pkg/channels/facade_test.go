@@ -163,6 +163,13 @@ type fakeAgent struct {
 	agents    []pkga2a.AgentInfo
 	tasks     map[a2apkg.TaskID]*a2apkg.Task
 
+	// subscribeEvents are played back by Subscribe; subscribeErr is yielded as
+	// its first item instead.
+	subscribeEvents []a2apkg.Event
+	subscribeErr    error
+	subscribed      []a2apkg.TaskID
+	subscribedOn    []string
+
 	streamCtx       context.Context
 	streamed        []*a2apkg.Message
 	streamedOn      []string
@@ -210,6 +217,33 @@ func (a *fakeAgent) Stream(ctx context.Context, instanceID string, msg *a2apkg.M
 		}
 		if tailErr != nil {
 			yield(nil, tailErr)
+		}
+	}
+}
+
+func (a *fakeAgent) Subscribe(ctx context.Context, instanceID string, taskID a2apkg.TaskID) iter.Seq2[a2apkg.Event, error] {
+	return func(yield func(a2apkg.Event, error) bool) {
+		a.mu.Lock()
+		a.streamCtx = ctx
+		a.subscribed = append(a.subscribed, taskID)
+		a.subscribedOn = append(a.subscribedOn, instanceID)
+		events, streamErr, hold := a.subscribeEvents, a.subscribeErr, a.hold
+		a.mu.Unlock()
+		if streamErr != nil {
+			yield(nil, streamErr)
+			return
+		}
+		for _, ev := range events {
+			if !yield(ev, nil) {
+				return
+			}
+		}
+		if hold != nil {
+			select {
+			case <-hold:
+			case <-ctx.Done():
+				yield(nil, ctx.Err())
+			}
 		}
 	}
 }
@@ -819,4 +853,241 @@ func TestFacade_CompletedTurnIsNotCancelledWhenTheChannelLeavesLate(t *testing.T
 	drain(t, ch)
 
 	require.Empty(t, agent.canceled, "the task had completed before the channel left")
+}
+
+// A shutdown mid-turn (context cause channels.ErrShutdown) leaves the task
+// running at the controller and its record in the routing store, for the next
+// process to resubscribe to; a /stop (a plain cancellation) cancels the task
+// and drops the record.
+func TestFacade_ShutdownLeavesTheTaskRunningAndRecorded(t *testing.T) {
+	key := store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700.0001", Agent: "kagent/worker"}
+	// run starts a turn, waits for its record, ends the turn context with
+	// cause, and drains the stream so the pump's bookkeeping has completed.
+	run := func(t *testing.T, cause error) (*fakeAgent, store.Store) {
+		agent := newFakeAgent(
+			&a2apkg.Task{ID: taskInfo.TaskID, ContextID: taskInfo.ContextID, Status: a2apkg.TaskStatus{State: a2apkg.TaskStateSubmitted}},
+			a2apkg.NewStatusUpdateEvent(taskInfo, a2apkg.TaskStateWorking, nil),
+		)
+		agent.hold = make(chan struct{})
+		f, routes := newA2AFacade(agent)
+		ctx, cancel := context.WithCancelCause(t.Context())
+		defer cancel(nil)
+		msg := slackMsg("long task")
+		msg.Resume = map[string]string{"slack_user": "U1", "message_ts": "1700.0001"}
+		ch, err := f.SendCompletion(ctx, channels.InstanceRef{}, msg)
+		require.NoError(t, err)
+		// The record is written once the controller has named the task.
+		require.Eventually(t, func() bool {
+			entry, ok, err := routes.Get(t.Context(), key)
+			return err == nil && ok && entry.TaskID == string(taskInfo.TaskID)
+		}, 2*time.Second, 10*time.Millisecond, "the in-flight task is recorded on the thread's binding")
+		cancel(cause)
+		drain(t, ch)
+		return agent, routes
+	}
+
+	t.Run("shutdown", func(t *testing.T) {
+		agent, routes := run(t, channels.ErrShutdown)
+
+		agent.mu.Lock()
+		defer agent.mu.Unlock()
+		require.Empty(t, agent.canceled, "a shutdown leaves the task running")
+		entry, ok, err := routes.Get(t.Context(), key)
+		require.NoError(t, err)
+		require.True(t, ok)
+		require.Equal(t, string(taskInfo.TaskID), entry.TaskID, "the record survives for the next process")
+		require.Equal(t, "U1", entry.Resume["slack_user"], "with the channel's resume data")
+	})
+
+	t.Run("stop", func(t *testing.T) {
+		agent, routes := run(t, nil)
+
+		agent.mu.Lock()
+		defer agent.mu.Unlock()
+		require.Equal(t, []a2apkg.TaskID{taskInfo.TaskID}, agent.canceled, "a /stop cancels the task at the controller")
+		entry, ok, err := routes.Get(t.Context(), key)
+		require.NoError(t, err)
+		require.True(t, ok, "the thread's binding stays")
+		require.Empty(t, entry.TaskID, "the in-flight record is dropped")
+		require.Nil(t, entry.Resume)
+	})
+}
+
+// A turn that ran to completion clears its record; a context cancelled after
+// the terminal delta (the channel tearing the turn down) does not cancel the
+// completed task.
+func TestFacade_CompletedTurnClearsTheRecordAndIsNotCanceled(t *testing.T) {
+	agent := newFakeAgent(
+		&a2apkg.Task{ID: taskInfo.TaskID, ContextID: taskInfo.ContextID, Status: a2apkg.TaskStatus{State: a2apkg.TaskStateSubmitted}},
+		a2apkg.NewArtifactEvent(taskInfo, a2apkg.NewTextPart("done")),
+		a2apkg.NewStatusUpdateEvent(taskInfo, a2apkg.TaskStateCompleted, nil),
+	)
+	f, routes := newA2AFacade(agent)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	ch, err := f.SendCompletion(ctx, channels.InstanceRef{}, slackMsg("quick"))
+	require.NoError(t, err)
+	var deltas []channels.OutboundDelta
+	for d := range ch {
+		deltas = append(deltas, d)
+		if d.Done {
+			cancel() // the channel adapter's turn teardown
+		}
+	}
+	require.True(t, deltas[len(deltas)-1].Done)
+
+	agent.mu.Lock()
+	defer agent.mu.Unlock()
+	require.Empty(t, agent.canceled, "a completed task is never cancelled by the teardown")
+	key := store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700.0001", Agent: "kagent/worker"}
+	entry, ok, err := routes.Get(t.Context(), key)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Empty(t, entry.TaskID)
+}
+
+// ResumeTurn resubscribes to a turn a previous process left running and
+// delivers its result: a task that finished meanwhile arrives whole and its
+// artifacts are rendered as the answer; the record is cleared afterwards.
+func TestFacade_ResumeTurnDeliversAFinishedTask(t *testing.T) {
+	key := store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700.0001", Agent: "kagent/worker"}
+	seed := func(t *testing.T, agent *fakeAgent) (*channels.Facade, store.Store) {
+		f, routes := newA2AFacade(agent)
+		require.NoError(t, routes.Put(t.Context(), key, store.Entry{
+			AgentInstanceID: "inst-1", TaskID: "task-7",
+			Resume:    map[string]string{"slack_user": "U1"},
+			CreatedAt: time.Now(), LastSeen: time.Now(),
+		}))
+		return f, routes
+	}
+
+	t.Run("artifacts", func(t *testing.T) {
+		agent := newFakeAgent()
+		agent.subscribeEvents = []a2apkg.Event{&a2apkg.Task{
+			ID: "task-7", ContextID: "ctx-1",
+			Status:    a2apkg.TaskStatus{State: a2apkg.TaskStateCompleted},
+			Artifacts: []*a2apkg.Artifact{{ID: "a1", Parts: a2apkg.ContentParts{a2apkg.NewTextPart("the answer")}}},
+		}}
+		f, routes := seed(t, agent)
+
+		turns, err := f.InFlightTurns(t.Context(), "slack")
+		require.NoError(t, err)
+		require.Len(t, turns, 1)
+		require.Equal(t, "task-7", turns[0].TaskID)
+		require.Equal(t, "U1", turns[0].Msg.Resume["slack_user"])
+		require.Equal(t, "1700.0001", turns[0].Msg.ThreadID)
+		require.Equal(t, "kagent/worker", turns[0].Msg.AgentRef)
+		none, err := f.InFlightTurns(t.Context(), "web")
+		require.NoError(t, err)
+		require.Empty(t, none, "other channels' bindings are not listed")
+
+		turn, ok, err := f.InFlightTurn(t.Context(), slackMsg("and then?"))
+		require.NoError(t, err)
+		require.True(t, ok)
+		msg := turn.Msg
+		msg.BearerToken = "user-jwt"
+		ch, err := f.ResumeTurn(t.Context(), msg, turn.TaskID)
+		require.NoError(t, err)
+		deltas := drain(t, ch)
+		require.Equal(t, []channels.OutboundDelta{{Content: "the answer"}, {Done: true}}, deltas)
+
+		agent.mu.Lock()
+		require.Equal(t, []a2apkg.TaskID{"task-7"}, agent.subscribed)
+		require.Equal(t, []string{"inst-1"}, agent.subscribedOn, "the resubscription goes to the thread's instance")
+		agent.mu.Unlock()
+		entry, ok, err := routes.Get(t.Context(), key)
+		require.NoError(t, err)
+		require.True(t, ok)
+		require.Equal(t, "inst-1", entry.AgentInstanceID, "the binding stays")
+		require.Empty(t, entry.TaskID, "the delivered turn is no longer in flight")
+		_, ok, err = f.InFlightTurn(t.Context(), slackMsg("again?"))
+		require.NoError(t, err)
+		require.False(t, ok)
+	})
+
+	t.Run("history fallback", func(t *testing.T) {
+		agent := newFakeAgent()
+		agent.subscribeEvents = []a2apkg.Event{&a2apkg.Task{
+			ID: "task-7", ContextID: "ctx-1",
+			Status:  a2apkg.TaskStatus{State: a2apkg.TaskStateCompleted},
+			History: []*a2apkg.Message{a2apkg.NewMessage(a2apkg.MessageRoleUser, a2apkg.NewTextPart("q")), a2apkg.NewMessage(a2apkg.MessageRoleAgent, a2apkg.NewTextPart("from history"))},
+		}}
+		f, _ := seed(t, agent)
+		msg := slackMsg("")
+		ch, err := f.ResumeTurn(t.Context(), msg, "task-7")
+		require.NoError(t, err)
+		require.Equal(t, []channels.OutboundDelta{{Content: "from history"}, {Done: true}}, drain(t, ch))
+	})
+
+	// A task still running when the resubscription attaches: the text chunks
+	// streamed from here on are not the whole answer (what the agent wrote in
+	// between is not replayed), so the answer is read back whole at completion;
+	// tool activity still streams.
+	t.Run("still running", func(t *testing.T) {
+		agent := newFakeAgent()
+		info := a2apkg.TaskInfo{TaskID: "task-7", ContextID: "ctx-1"}
+		call := a2apkg.NewDataPart(map[string]any{"id": "c1", "name": "kubectl_get", "args": map[string]any{"kind": "pods"}})
+		call.Metadata = map[string]any{"kagent_type": "function_call"}
+		agent.subscribeEvents = []a2apkg.Event{
+			&a2apkg.Task{ID: "task-7", ContextID: "ctx-1", Status: a2apkg.TaskStatus{State: a2apkg.TaskStateWorking}},
+			a2apkg.NewStatusUpdateEvent(info, a2apkg.TaskStateWorking, a2apkg.NewMessage(a2apkg.MessageRoleAgent, call)),
+			a2apkg.NewArtifactEvent(info, a2apkg.NewTextPart("ucky by the superstitious.")),
+			a2apkg.NewStatusUpdateEvent(info, a2apkg.TaskStateCompleted, nil),
+		}
+		agent.tasks["task-7"] = &a2apkg.Task{
+			ID: "task-7", ContextID: "ctx-1", Status: a2apkg.TaskStatus{State: a2apkg.TaskStateCompleted},
+			Artifacts: []*a2apkg.Artifact{{ID: "a1", Parts: a2apkg.ContentParts{a2apkg.NewTextPart("13 is considered unlucky by the superstitious.")}}},
+		}
+		f, _ := seed(t, agent)
+		ch, err := f.ResumeTurn(t.Context(), slackMsg(""), "task-7")
+		require.NoError(t, err)
+		deltas := drain(t, ch)
+		var texts []string
+		tools := 0
+		for _, d := range deltas {
+			if d.Kind == channels.DeltaToolActivity {
+				tools++
+			}
+			if d.Kind == channels.DeltaText && d.Content != "" {
+				texts = append(texts, d.Content)
+			}
+		}
+		require.Equal(t, 1, tools, "tool activity streams live")
+		require.Equal(t, []string{"13 is considered unlucky by the superstitious."}, texts, "the answer is the completed task's, whole, not the tail that streamed")
+		require.True(t, deltas[len(deltas)-1].Done)
+		agent.mu.Lock()
+		defer agent.mu.Unlock()
+		require.Equal(t, []a2apkg.TaskID{"task-7"}, agent.gotTasks, "the answer is read back once the task completed")
+	})
+
+	t.Run("gone at the controller", func(t *testing.T) {
+		agent := newFakeAgent()
+		agent.subscribeErr = a2apkg.ErrTaskNotFound
+		f, routes := seed(t, agent)
+		_, err := f.ResumeTurn(t.Context(), slackMsg(""), "task-7")
+		require.ErrorIs(t, err, a2apkg.ErrTaskNotFound)
+		entry, _, err := routes.Get(t.Context(), key)
+		require.NoError(t, err)
+		require.Empty(t, entry.TaskID, "nothing is left to deliver, so the record goes")
+		require.Equal(t, "inst-1", entry.AgentInstanceID)
+	})
+
+	t.Run("transient failure keeps the record", func(t *testing.T) {
+		agent := newFakeAgent()
+		agent.subscribeErr = errors.New("controller unavailable")
+		f, routes := seed(t, agent)
+		_, err := f.ResumeTurn(t.Context(), slackMsg(""), "task-7")
+		require.Error(t, err)
+		entry, _, err := routes.Get(t.Context(), key)
+		require.NoError(t, err)
+		require.Equal(t, "task-7", entry.TaskID, "a later attempt can still deliver it")
+	})
+}
+
+func TestFacade_ResumesTurns(t *testing.T) {
+	f, _ := newA2AFacade(newFakeAgent())
+	require.False(t, f.ResumesTurns(), "a store that dies with the process cannot deliver after a restart")
+	f.Durable = true
+	require.True(t, f.ResumesTurns())
+	require.False(t, (&channels.Facade{Durable: true}).ResumesTurns(), "no kagent client, no resubscription")
 }

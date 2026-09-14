@@ -67,7 +67,10 @@ func (a *Adapter) runTurn(ctx context.Context, msg channels.InboundMessage, slac
 
 	a.resolveSubjectEmail(ctx, &msg)
 
-	a.applyInitiatorIdentity(ctx, &msg, msg.ThreadID, slackUser)
+	actor := a.applyInitiatorIdentity(ctx, &msg, msg.ThreadID, slackUser)
+	// Should the gateway restart mid-turn, the next process delivers the result
+	// under the acting identity, reacting on the triggering message.
+	msg.Resume = resumeData(actor, triggerTS)
 
 	if hooks.onIdentityResolved != nil {
 		hooks.onIdentityResolved(msg)

@@ -81,6 +81,14 @@ spec:
               agentInstanceID:
                 type: string
                 description: AgentInstanceID is the kagent AgentInstance the conversation's A2A turns are routed to. Empty for a Klaus conversation.
+              taskID:
+                type: string
+                description: TaskID is the A2A task in flight on agentInstanceID, cleared when the turn ends; a restarted gateway resubscribes to it.
+              resume:
+                type: object
+                additionalProperties:
+                  type: string
+                description: Resume is the channel-private data needed to deliver taskID's result after a restart.
               createdAt:
                 type: string
                 format: date-time
