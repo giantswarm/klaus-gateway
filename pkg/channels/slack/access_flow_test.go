@@ -73,14 +73,16 @@ func TestAccess_UnlinkedNewcomerPromptedToSignIn(t *testing.T) {
 
 	sendEvent(t, srv, mention("U999", "help", "200.000", "100.000"))
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Sign in so I can act as you")
+		return signInPrompted(fake)
 	}, 2*time.Second, 50*time.Millisecond, "the newcomer is prompted to sign in")
 	require.Equal(t, 1, gw.resolveCount(), "an unlinked newcomer must not reach the agent")
-	// The prompt is public and its link is minted for the newcomer: it must
-	// name them, or a bystander clicks a button bound to someone else's
-	// identity and lands on the email-mismatch page.
-	require.Contains(t, allText(fake.pathCalls("chat.postMessage")), "<@U999>",
-		"the sign-in prompt must address its target user")
+	// The link is minted for the newcomer, so only they may see it: the prompt
+	// is ephemeral to them and the thread's other readers get a notice that
+	// names nobody (klaus-gateway#185).
+	prompt := fake.pathCalls("chat.postEphemeral")[0]
+	require.Equal(t, "U999", prompt.params["user"], "the sign-in prompt must reach its target user only")
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "U999",
+		"no public message may name the prompted user")
 }
 
 // A known newcomer is held pending the initiator's consent; on Yes their held
@@ -287,7 +289,7 @@ func TestAccess_NewcomerTransientTokenErrorSurfaced(t *testing.T) {
 
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Sign in so I can act as you")
+		return signInPrompted(fake)
 	}, 2*time.Second, 50*time.Millisecond, "the unlinked initiator is prompted to sign in")
 
 	sendEvent(t, srv, mention("U999", "help", "200.000", "100.000"))
