@@ -2,11 +2,13 @@ package slack
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
 
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
+	"github.com/giantswarm/klaus-gateway/pkg/auth/musterlink"
 )
 
 const (
@@ -263,23 +265,23 @@ func (a *Adapter) handleLoginCommand(ctx context.Context, slackUser, slackChanne
 		reply("_Could not determine your Slack user; sign-in is unavailable._")
 		return true
 	}
-	email, linked := a.linkedEmail(ctx, slackUser)
-	if linked {
-		// The store entry alone does not prove the link works: the identity
-		// provider may have revoked the token family since. An explicit /login
-		// is the moment to probe for real, so a dead link re-prompts instead
-		// of confirming a sign-in that will fail on the next turn.
-		if _, err := a.OBO.TokenFor(ctx, slackUser); err != nil {
-			a.Logger.Info("slack: /login probe failed for linked user, re-prompting sign-in", "user", slackUser, "error", err)
-			linked = false
+	// Probe the link for real rather than trusting a store entry: the identity
+	// provider may have revoked the token family since (the linker reports that
+	// as ErrNotLinked once it has dropped the link), so a dead link re-prompts
+	// instead of confirming a sign-in that fails on the next turn. A link store
+	// or token endpoint that is briefly away is neither: the person is most
+	// likely signed in and is told to retry, not sent through a new sign-in.
+	if _, err := a.OBO.TokenFor(ctx, slackUser); err != nil {
+		if !errors.Is(err, musterlink.ErrNotLinked) {
+			a.Logger.Warn("slack: /login probe failed", "user", slackUser, "error", err)
+			reply(tokenErrorNotice)
+			return true
 		}
-	}
-	if !linked {
 		// Explicit request: post the sign-in prompt without the nudge throttle.
 		a.postSignIn(ctx, slackChannel, threadID, slackUser, false)
 		return true
 	}
-	if email != "" {
+	if email := a.linkedEmail(slackUser); email != "" {
 		reply(fmt.Sprintf("✅ _Signed in as *%s*._", escapeMrkdwn(email)))
 	} else {
 		reply("✅ _Signed in._")
@@ -287,16 +289,14 @@ func (a *Adapter) handleLoginCommand(ctx context.Context, slackUser, slackChanne
 	return true
 }
 
-// linkedEmail reports whether slackUser has a muster link and their linked
-// email. Sources without the LinkedIdentity extension fall back to a token
-// probe (email empty).
-func (a *Adapter) linkedEmail(ctx context.Context, slackUser string) (string, bool) {
+// linkedEmail is the linked email of slackUser when the OBO source exposes
+// identities, else "".
+func (a *Adapter) linkedEmail(slackUser string) string {
 	if ident, ok := a.OBO.(linkedIdentitySource); ok {
-		_, email, linked := ident.LinkedIdentity(slackUser)
-		return email, linked
+		_, email, _ := ident.LinkedIdentity(slackUser)
+		return email
 	}
-	_, err := a.OBO.TokenFor(ctx, slackUser)
-	return "", err == nil
+	return ""
 }
 
 // handleLogoutCommand handles `/logout`: it signs the user out of their muster
@@ -311,7 +311,11 @@ func (a *Adapter) handleLogoutCommand(slackUser string, reply func(string)) bool
 		return true
 	}
 
-	a.OBO.Unlink(slackUser)
+	if err := a.OBO.Unlink(slackUser); err != nil {
+		a.Logger.Warn("slack: /logout could not remove the link", "user", slackUser, "error", err)
+		reply(logoutFailedNotice)
+		return true
+	}
 	reply("👋 Signed out. I'll ask you to `/login` again before I can act as you.")
 	return true
 }

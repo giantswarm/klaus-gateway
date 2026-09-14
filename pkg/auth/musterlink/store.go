@@ -39,16 +39,18 @@ type Link struct {
 	Expiry time.Time `json:"expiry,omitzero"`
 }
 
-// Store persists Slack-user -> muster Link associations. The interface is
-// intentionally error-free so the per-message Slack dispatch path stays simple;
-// backends surface failures through their injected logger and degrade to a
-// cache miss (Get -> false), which the caller treats as "not linked" and
-// re-prompts. The interface is kept narrow so backends (bolt file, Kubernetes
-// Secret, in-memory) are interchangeable without touching callers.
+// Store persists Slack-user -> muster Link associations. Backends only
+// report: Get returns ErrNotLinked when no link is stored for the user and any
+// other error when the backend failed to answer (a Kubernetes API call that did
+// not go through, a bolt file that cannot be read), and Put and Delete return
+// the backend's error. What a failure means -- a link served from memory, a
+// write retried, a transient error to the person -- is the Linker's call. The
+// interface is kept narrow so backends (bolt file, Kubernetes Secret,
+// in-memory) are interchangeable without touching callers.
 type Store interface {
-	Get(slackUserID string) (*Link, bool)
-	Put(slackUserID string, link *Link)
-	Delete(slackUserID string)
+	Get(slackUserID string) (*Link, error)
+	Put(slackUserID string, link *Link) error
+	Delete(slackUserID string) error
 }
 
 // MemStore is an in-memory Store. It loses all links on restart, forcing every
@@ -61,29 +63,31 @@ type MemStore struct {
 // NewMemStore returns an empty in-memory store.
 func NewMemStore() *MemStore { return &MemStore{m: map[string]Link{}} }
 
-// Get returns a copy of the stored link, or (nil, false) when absent.
-func (s *MemStore) Get(slackUserID string) (*Link, bool) {
+// Get returns a copy of the stored link, or ErrNotLinked when absent.
+func (s *MemStore) Get(slackUserID string) (*Link, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	l, ok := s.m[slackUserID]
 	if !ok {
-		return nil, false
+		return nil, ErrNotLinked
 	}
-	return &l, true
+	return &l, nil
 }
 
 // Put upserts a copy of link.
-func (s *MemStore) Put(slackUserID string, link *Link) {
+func (s *MemStore) Put(slackUserID string, link *Link) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.m[slackUserID] = *link
+	return nil
 }
 
 // Delete removes a link; missing keys are a no-op.
-func (s *MemStore) Delete(slackUserID string) {
+func (s *MemStore) Delete(slackUserID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.m, slackUserID)
+	return nil
 }
 
 // linkCipher turns a Link into an AES-256-GCM sealed record and back. Both
@@ -162,8 +166,9 @@ func OpenBoltStore(path string, key []byte, logger *slog.Logger) (*BoltStore, er
 
 // OpenBoltStoreReadOnly opens an existing link store without taking bolt's
 // write lock and without writing to the file, not even to create the bucket.
-// A store opened this way serves Get and Each; Put and Delete fail and are
-// logged. It is the import's way of reading a file it must leave untouched.
+// A store opened this way serves Get and Each; Put and Delete return bolt's
+// read-only error. It is the import's way of reading a file it must leave
+// untouched.
 func OpenBoltStoreReadOnly(path string, key []byte, logger *slog.Logger) (*BoltStore, error) {
 	return openBoltStore(path, key, logger, true)
 }
@@ -199,9 +204,11 @@ func openBoltStore(path string, key []byte, logger *slog.Logger, readOnly bool) 
 	return &BoltStore{db: db, cipher: c, logger: logger}, nil
 }
 
-// Get decrypts and returns the link for slackUserID, or (nil, false) when
-// absent or on any decode/decrypt error (logged).
-func (s *BoltStore) Get(slackUserID string) (*Link, bool) {
+// Get decrypts and returns the link for slackUserID, ErrNotLinked when absent,
+// and bolt's error when the file could not be read. A record that does not
+// decode (written under another key, or corrupt) is logged and reported as
+// ErrNotLinked: a re-link overwrites it, which heals it.
+func (s *BoltStore) Get(slackUserID string) (*Link, error) {
 	var record []byte
 	err := s.db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket(linkBucket)
@@ -214,42 +221,44 @@ func (s *BoltStore) Get(slackUserID string) (*Link, bool) {
 		return nil
 	})
 	if err != nil {
-		s.logger.Error("musterlink: bolt read failed", "err", err)
-		return nil, false
+		return nil, fmt.Errorf("musterlink: bolt read: %w", err)
 	}
 	if record == nil {
-		return nil, false
+		return nil, ErrNotLinked
 	}
 	link, err := s.cipher.openLink(record)
 	if err != nil {
-		s.logger.Error("musterlink: decode link failed", "err", err)
-		return nil, false
+		s.logger.Error("musterlink: decode link failed, treating the user as unlinked", "err", err)
+		return nil, ErrNotLinked
 	}
-	return link, true
+	return link, nil
 }
 
-// Put encrypts and stores link. Errors are logged; a failed Put means the next
-// refresh sees the stale token and the user re-links.
-func (s *BoltStore) Put(slackUserID string, link *Link) {
+// Put encrypts and stores link. It returns bolt's error when the write did not
+// go through (a full disk, a read-only store): the file then still holds the
+// previous record.
+func (s *BoltStore) Put(slackUserID string, link *Link) error {
 	record, err := s.cipher.sealLink(link)
 	if err != nil {
-		s.logger.Error("musterlink: encrypt link failed", "err", err)
-		return
+		return err
 	}
 	if err := s.db.Update(func(tx *bolt.Tx) error {
 		return tx.Bucket(linkBucket).Put([]byte(slackUserID), record)
 	}); err != nil {
-		s.logger.Error("musterlink: bolt write failed", "err", err)
+		return fmt.Errorf("musterlink: bolt write: %w", err)
 	}
+	return nil
 }
 
-// Delete removes a link; missing keys are a no-op. Errors are logged.
-func (s *BoltStore) Delete(slackUserID string) {
+// Delete removes a link; missing keys are a no-op. It returns bolt's error
+// when the write did not go through.
+func (s *BoltStore) Delete(slackUserID string) error {
 	if err := s.db.Update(func(tx *bolt.Tx) error {
 		return tx.Bucket(linkBucket).Delete([]byte(slackUserID))
 	}); err != nil {
-		s.logger.Error("musterlink: bolt delete failed", "err", err)
+		return fmt.Errorf("musterlink: bolt delete: %w", err)
 	}
+	return nil
 }
 
 // Each calls fn for every link in the store. A record that does not decrypt

@@ -352,6 +352,14 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
   before
   signing in are held and replayed after the link completes; only the last 5 per thread are
   kept, and the user is told when earlier ones are dropped.
+- **Transient sign-in failures.** When a linked person's token cannot be minted right now —
+  muster's token endpoint or the gateway's link store not answering — they get an ephemeral
+  "I couldn't refresh your Giant Swarm sign-in just now" notice and their message is not held;
+  the sign-in prompt is reserved for people with no link. `/login` answers the same way, and
+  `/logout` reports a sign-out the link store refused instead of confirming it. The gateway
+  keeps a process-local copy of every link it has served, so a store outage does not reach the
+  people it already knows and a refresh token the store failed to take is written later rather
+  than lost (see `deployment.md`, "OBO link store").
 - **One shared session per thread.** A thread maps to a single agent session. On the
   current kagent (v0.9.9) that session acts under the thread initiator's identity even after
   others are allowed in; a granted collaborator instructs the agent on the initiator's

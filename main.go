@@ -462,7 +462,14 @@ func buildOBOLinker(cfg config.OBOConfig, logger *slog.Logger,
 		_ = cleanup()
 		return nil, nil, err
 	}
-	return linker, cleanup, nil
+	closeAll := func() error {
+		// Write the links the store has not taken yet before the store closes.
+		if err := linker.Close(); err != nil {
+			logger.Warn("obo: closing linker", "err", err)
+		}
+		return cleanup()
+	}
+	return linker, closeAll, nil
 }
 
 // buildOBOStore opens the link store cfg selects (see config.OBOConfig.Store)

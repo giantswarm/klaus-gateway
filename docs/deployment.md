@@ -193,6 +193,26 @@ where those records live; both backends seal every record with `store-key` (AES-
 
 `UPGRADE.md` describes the move from the volume to the Secret.
 
+Both backends can fail a call — the Secret backend on any apiserver hiccup (a restart, a
+`resourceVersion` conflict past the retries, the 10 s call timeout), the bolt file on a full
+disk — and the gateway keeps a process-local copy of every link it has read or written so a
+failure never costs a person their sign-in:
+
+- A refresh token muster has already rotated is kept in memory when the store refuses the
+  write, the write is retried in the background (2 s, doubling to 30 s) and once more on
+  shutdown, and the next refresh uses the rotated token. The log line
+  `link store write failed, keeping the link in memory and retrying` marks the failure,
+  `link store write retry succeeded` the recovery; only a pod that dies before the retry lands
+  loses the rotation, and that person signs in again.
+- A store that fails to read serves the link the gateway already knows (`link store read
+  failed, serving the link this process knows`). A person it has never seen is not treated as
+  unlinked: in Slack they get the transient "couldn't refresh your sign-in" notice, not the
+  sign-in prompt, and `/login` answers the same way. `/logout` reports a sign-out the store
+  refused instead of confirming it.
+- Reads are served from the copy for 30 s, so a Slack turn costs one Secret read rather than
+  one per lookup. Before a link is dropped on `invalid_grant` the store is re-read, so a token
+  rotated by another writer (a second replica, the import) is retried rather than burned.
+
 ## Routing store
 
 The routing table maps `(channel, channelID, userID, threadID)` to a Klaus instance name, or a
