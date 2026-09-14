@@ -1363,8 +1363,10 @@ func TestProgress_FailedReactionOnError(t *testing.T) {
 func TestProgress_FailureAfterContentPostsNoNote(t *testing.T) {
 	fake := newFakeSlackAPI()
 	gw := &stubGateway{
-		deltas:          []channels.OutboundDelta{{Content: "partial answer"}, {Err: errors.New("boom")}},
-		interDeltaDelay: 400 * time.Millisecond,
+		deltas: []channels.OutboundDelta{{Content: "partial answer"}, {Err: errors.New("boom")}},
+		// Well past the writer's batch interval, so the content is flushed
+		// before the error arrives even on a slow runner under the race detector.
+		interDeltaDelay: time.Second,
 	}
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
