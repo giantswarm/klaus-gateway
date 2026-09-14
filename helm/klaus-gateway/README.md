@@ -47,6 +47,15 @@ Channel and routing gateway in front of klaus instances; uses agentgateway as th
 | routing.boltPath | string | `"/var/lib/klaus-gateway/routes.bolt"` |  |
 | routing.defaultTTL | string | `"24h"` |  |
 | routing.autoCreate | bool | `false` |  |
+| routing.valkey.url | string | `""` |  |
+| routing.valkey.username | string | `""` |  |
+| routing.valkey.existingSecret | string | `""` |  |
+| routing.valkey.passwordKey | string | `"valkey-password"` |  |
+| routing.valkey.db | int | `0` |  |
+| routing.valkey.tls.enabled | bool | `false` |  |
+| routing.valkey.tls.serverName | string | `""` |  |
+| routing.valkey.keyPrefix | string | `""` |  |
+| routing.valkey.timeout | string | `"2s"` |  |
 | crd.install | bool | `true` |  |
 | controller.enabled | bool | `false` |  |
 | lifecycle.driver | string | `"operator"` |  |

@@ -10,6 +10,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -42,6 +43,7 @@ const (
 	StoreBolt      = "bolt"
 	StoreConfigMap = "configmap"
 	StoreCRD       = "crd"
+	StoreValkey    = "valkey"
 )
 
 // Driver names understood by the lifecycle manager factory.
@@ -231,6 +233,7 @@ type Config struct {
 	Store     string
 	BoltPath  string
 	Namespace string
+	Valkey    ValkeyConfig
 
 	Driver           string
 	KlausctlBin      string
@@ -258,6 +261,32 @@ type Config struct {
 	Controller bool
 }
 
+// ValkeyConfig locates the Valkey server of the valkey routing store
+// (StoreValkey): one key per routing entry under KeyPrefix, the entry's TTL as
+// the key's expiry. The password comes from PasswordFile when set, otherwise
+// from Password (KLAUS_GATEWAY_VALKEY_PASSWORD); it has no flag, so it never
+// shows in the process arguments.
+type ValkeyConfig struct {
+	// URL is the server address as host:port.
+	URL string
+	// Username is the ACL user; empty means the server's default user.
+	Username     string
+	Password     string
+	PasswordFile string
+	// DB is the logical database to SELECT.
+	DB int
+	// TLS enables TLS to the server; TLSServerName overrides the name the
+	// certificate is verified against when it differs from URL's host.
+	TLS           bool
+	TLSServerName string
+	// KeyPrefix namespaces the store's keys; empty means the store's default
+	// (klaus-gateway:route:).
+	KeyPrefix string
+	// Timeout bounds the dial and every command, so a Valkey outage fails a
+	// turn within seconds instead of hanging the thread.
+	Timeout time.Duration
+}
+
 // Defaults returns a Config populated with hard-coded defaults.
 func Defaults() Config {
 	return Config{
@@ -267,6 +296,7 @@ func Defaults() Config {
 		Store:         StoreMemory,
 		BoltPath:      "/var/lib/klaus-gateway/routes.bolt",
 		Namespace:     "default",
+		Valkey:        ValkeyConfig{Timeout: 2 * time.Second},
 		Driver:        DriverKlausctl,
 		KlausctlBin:   "klausctl",
 		DefaultTTL:    24 * time.Hour,
@@ -303,9 +333,17 @@ func Load(args []string) (Config, error) {
 	fs.StringVar(&cfg.ListenAddress, "listen-address", cfg.ListenAddress, "Address the public HTTP server binds to.")
 	fs.StringVar(&cfg.AdminAddress, "admin-address", cfg.AdminAddress, "Address for /healthz, /readyz, /metrics.")
 	fs.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "Log level: debug, info, warn, error.")
-	fs.StringVar(&cfg.Store, "store", cfg.Store, "Routing store: memory, bolt, configmap.")
+	fs.StringVar(&cfg.Store, "store", cfg.Store, "Routing store: memory, bolt, configmap, crd, valkey.")
 	fs.StringVar(&cfg.BoltPath, "bolt-path", cfg.BoltPath, "Path to the bolt database (bolt store only).")
-	fs.StringVar(&cfg.Namespace, "namespace", cfg.Namespace, "Namespace for the configmap store.")
+	fs.StringVar(&cfg.Namespace, "namespace", cfg.Namespace, "Namespace for the configmap and crd stores.")
+	fs.StringVar(&cfg.Valkey.URL, "valkey-url", cfg.Valkey.URL, "Valkey server as host:port (valkey store only).")
+	fs.StringVar(&cfg.Valkey.Username, "valkey-username", cfg.Valkey.Username, "Valkey ACL user; empty means the default user. The password comes from --valkey-password-file or KLAUS_GATEWAY_VALKEY_PASSWORD.")
+	fs.StringVar(&cfg.Valkey.PasswordFile, "valkey-password-file", cfg.Valkey.PasswordFile, "File holding the Valkey password; wins over KLAUS_GATEWAY_VALKEY_PASSWORD.")
+	fs.IntVar(&cfg.Valkey.DB, "valkey-db", cfg.Valkey.DB, "Valkey logical database.")
+	fs.BoolVar(&cfg.Valkey.TLS, "valkey-tls", cfg.Valkey.TLS, "Connect to Valkey over TLS.")
+	fs.StringVar(&cfg.Valkey.TLSServerName, "valkey-tls-server-name", cfg.Valkey.TLSServerName, "Server name the Valkey certificate is verified against when it differs from the URL's host.")
+	fs.StringVar(&cfg.Valkey.KeyPrefix, "valkey-key-prefix", cfg.Valkey.KeyPrefix, "Prefix of the routing keys in Valkey; empty means klaus-gateway:route:.")
+	fs.DurationVar(&cfg.Valkey.Timeout, "valkey-timeout", cfg.Valkey.Timeout, "Bound on the Valkey dial and on every command.")
 	fs.StringVar(&cfg.Driver, "driver", cfg.Driver, "Lifecycle driver: klausctl, operator, static.")
 	fs.StringVar(&cfg.KlausctlBin, "klausctl-bin", cfg.KlausctlBin, "Path to the klausctl binary (klausctl driver only).")
 	fs.StringVar(&cfg.OperatorMCPURL, "operator-mcp-url", cfg.OperatorMCPURL, "klaus-operator MCP endpoint (operator driver only).")
@@ -391,6 +429,37 @@ func applyEnv(cfg *Config) {
 	}
 	if v, ok := lookup("NAMESPACE"); ok {
 		cfg.Namespace = v
+	}
+	if v, ok := lookup("VALKEY_URL"); ok {
+		cfg.Valkey.URL = v
+	}
+	if v, ok := lookup("VALKEY_USERNAME"); ok {
+		cfg.Valkey.Username = v
+	}
+	if v, ok := lookup("VALKEY_PASSWORD"); ok {
+		cfg.Valkey.Password = v
+	}
+	if v, ok := lookup("VALKEY_PASSWORD_FILE"); ok {
+		cfg.Valkey.PasswordFile = v
+	}
+	if v, ok := lookup("VALKEY_DB"); ok {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Valkey.DB = n
+		}
+	}
+	if v, ok := lookup("VALKEY_TLS"); ok {
+		cfg.Valkey.TLS = v == "true"
+	}
+	if v, ok := lookup("VALKEY_TLS_SERVER_NAME"); ok {
+		cfg.Valkey.TLSServerName = v
+	}
+	if v, ok := lookup("VALKEY_KEY_PREFIX"); ok {
+		cfg.Valkey.KeyPrefix = v
+	}
+	if v, ok := lookup("VALKEY_TIMEOUT"); ok {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.Valkey.Timeout = d
+		}
 	}
 	if v, ok := lookup("DRIVER"); ok {
 		cfg.Driver = v
@@ -535,9 +604,9 @@ func lookup(key string) (string, bool) {
 // Validate checks that the config is internally consistent.
 func (c Config) Validate() error {
 	switch c.Store {
-	case StoreMemory, StoreBolt, StoreConfigMap, StoreCRD:
+	case StoreMemory, StoreBolt, StoreConfigMap, StoreCRD, StoreValkey:
 	default:
-		return fmt.Errorf("invalid --store %q: must be one of memory, bolt, configmap, crd", c.Store)
+		return fmt.Errorf("invalid --store %q: must be one of memory, bolt, configmap, crd, valkey", c.Store)
 	}
 	if c.Controller && c.Store != StoreCRD {
 		return fmt.Errorf("--controller=true requires --store=crd")
@@ -549,6 +618,14 @@ func (c Config) Validate() error {
 	}
 	if c.Store == StoreBolt && c.BoltPath == "" {
 		return fmt.Errorf("--bolt-path is required with --store=bolt")
+	}
+	if c.Store == StoreValkey {
+		if c.Valkey.URL == "" {
+			return fmt.Errorf("--valkey-url is required with --store=valkey")
+		}
+		if c.Valkey.Timeout <= 0 {
+			return fmt.Errorf("--valkey-timeout must be positive")
+		}
 	}
 	if c.Driver == DriverOperator && c.OperatorMCPURL == "" {
 		return fmt.Errorf("--operator-mcp-url is required with --driver=operator")

@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- A Valkey-backed routing store for installations (`routing.store: valkey`, `--store=valkey`): one key per thread (`klaus-gateway:route:` + the routing key) holding the JSON entry, the entry's TTL as the key's expiry, `SCAN` by prefix for the start-up resubscription and a `PING` for readiness. No volume, no API-server access, shared by replicas; the agent platform's `muster-valkey` serves it. Every dial and command is bounded by `--valkey-timeout` (2 s), so a Valkey outage fails the turn with a clear error and fails readiness instead of hanging the thread, and both recover with the server. The chart takes `routing.valkey.*` (`url`, `existingSecret`/`passwordKey` passed as `KLAUS_GATEWAY_VALKEY_PASSWORD`, `username`, `db`, `tls`, `keyPrefix`, `timeout`) and documents which stores are meant for installations; the store's conformance test runs against a server speaking the real protocol (miniredis) and, with `KLAUS_GATEWAY_TEST_VALKEY_URL`, a real Valkey (klaus-gateway#252).
+
 ### Fixed
 
 - The chart's `nodeSelector` and `affinity` take arbitrary keys again: the generated values schema declared both maps with `additionalProperties: false`, so any node label (`karpenter.sh/capacity-type: on-demand`, a zone) or affinity term failed the release with `additional properties … not allowed` — the knobs were unusable. Both are annotated free-form like `podAnnotations`.
