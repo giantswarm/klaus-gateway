@@ -685,6 +685,16 @@ func (w *batchedWriter) setSessionStatus(ctx context.Context, status sessionStat
 		}
 		time.Sleep(sessionStatusRetryBackoff * time.Duration(attempt))
 	}
+	// Slack gave a verdict against the titled call. The title is decoration;
+	// the status is what keeps the indicator honest, so send it once more bare
+	// rather than lose this turn's indicator to a title Slack will not take.
+	if err != nil && title != "" && !errors.Is(err, errSessionStatusTransient) && !errors.Is(err, errSessionStatusUnsupported) {
+		w.logger.Warn("slack: agent session title rejected, setting the status untitled",
+			"title_runes", utf8.RuneCountInString(title), "error", err)
+		cctx, cancel := context.WithTimeout(base, sessionStatusTimeout)
+		err = w.client.setSessionStatus(cctx, w.channel, w.threadTS, status, "")
+		cancel()
+	}
 	switch {
 	case err == nil:
 	case errors.Is(err, errSessionStatusUnsupported):
@@ -2151,19 +2161,47 @@ type sessionStatusResponse struct {
 // sessionTitleMax is Slack's cap on an agent session title, in characters.
 const sessionTitleMax = 200
 
-// sessionTitleFor returns the title a turn's status call should name the agent
-// session with, or "" to send none.
+// storeSessionTitle parks the title threadID's agent session is created with,
+// derived from the conversation's opening message. Only that message's turn
+// can create the session — Slack applies a title on creation and ignores it
+// afterwards, which is also what keeps a title a user edited by hand from
+// being overwritten — so a reply, and a button resume, park nothing.
 //
-// Only the turn whose own message IS the thread root opens the conversation,
-// and only that turn's status call can create the session — Slack applies a
-// title on creation and ignores it afterwards, which is also what keeps a
-// title a user edited by hand from being overwritten. So a reply, and a button
-// resume (which has no message of its own), title nothing.
-func sessionTitleFor(msg channels.InboundMessage) string {
-	if msg.MessageID == "" || msg.MessageID != msg.ThreadID {
+// The title is parked on the thread instead of handed to the turn because the
+// opening message does not always run as a turn on its first dispatch: a
+// sender who has not signed in yet has it held and replayed, and the replay
+// re-enters dispatch with the conversation already bound, where it no longer
+// reads as the opener. The turn that finally sends the processing status
+// takes the title. An empty title (a bare command, an upload with no caption)
+// parks nothing, so Slack names that session itself.
+func (a *Adapter) storeSessionTitle(threadID, title string) {
+	if title == "" {
+		return
+	}
+	now := time.Now()
+	a.sessionTitleMu.Lock()
+	defer a.sessionTitleMu.Unlock()
+	if a.sessionTitles == nil {
+		a.sessionTitles = make(map[string]ttlEntry[string])
+	}
+	sweepExpired(a.sessionTitles, now)
+	a.sessionTitles[threadID] = ttlEntry[string]{value: title, expires: now.Add(threadStateTTL)}
+}
+
+// takeSessionTitle returns and clears threadID's parked session title, or ""
+// when this turn is not the conversation's first.
+func (a *Adapter) takeSessionTitle(threadID string) string {
+	a.sessionTitleMu.Lock()
+	defer a.sessionTitleMu.Unlock()
+	entry, ok := a.sessionTitles[threadID]
+	if !ok {
 		return ""
 	}
-	return sessionTitleFrom(msg.Text)
+	delete(a.sessionTitles, threadID)
+	if time.Now().After(entry.expires) {
+		return ""
+	}
+	return entry.value
 }
 
 // sessionTitleFrom derives a session title from the first human message of a
@@ -2211,7 +2249,7 @@ func sessionTitleFrom(text string) string {
 // when this call CREATES the session, so it is sent on the turn that opens the
 // conversation and ignored (harmlessly) on any later one; a session a user
 // renamed by hand therefore keeps its name. An empty title is omitted rather
-// than sent blank, which Slack rejects as invalid_name.
+// than sent blank.
 //
 // The call goes out unbranded on purpose: the display-identity fields would
 // need chat:write.customize, and its missing_scope rejection is

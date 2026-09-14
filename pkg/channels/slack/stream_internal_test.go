@@ -2267,7 +2267,7 @@ func TestSessionTitle_SentOnTheOpeningTurn(t *testing.T) {
 
 // A later turn in the same thread carries no title: the session already
 // exists, so Slack would ignore one anyway, and the field is left off the
-// payload rather than sent blank (which Slack rejects as invalid_name).
+// payload rather than sent blank.
 func TestSessionTitle_AbsentOnLaterTurns(t *testing.T) {
 	var body map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2281,34 +2281,56 @@ func TestSessionTitle_AbsentOnLaterTurns(t *testing.T) {
 	require.NotContains(t, body, "title")
 }
 
-// sessionTitleFor titles the conversation's opening message only: a reply
-// cannot create the session, and a button resume carries no message at all.
-func TestSessionTitleFor_OnlyTheThreadRoot(t *testing.T) {
-	root := channels.InboundMessage{MessageID: "1.0", ThreadID: "1.0", Text: "why is the node down"}
-	require.Equal(t, "why is the node down", sessionTitleFor(root))
+// The parked title is taken by exactly one turn, the first to send the
+// processing status; a later turn in the thread takes nothing. A message that
+// normalises to no title parks nothing, so Slack names that session itself.
+func TestSessionTitle_StoreAndTake(t *testing.T) {
+	a := &Adapter{}
+	a.storeSessionTitle("1.0", "")
+	require.Empty(t, a.takeSessionTitle("1.0"))
 
-	reply := channels.InboundMessage{MessageID: "1.5", ThreadID: "1.0", Text: "and the disk?"}
-	require.Empty(t, sessionTitleFor(reply))
-
-	resume := channels.InboundMessage{ThreadID: "1.0", Text: "approved"}
-	require.Empty(t, sessionTitleFor(resume))
+	a.storeSessionTitle("1.0", "why is the node down")
+	require.Equal(t, "why is the node down", a.takeSessionTitle("1.0"))
+	require.Empty(t, a.takeSessionTitle("1.0"), "a later turn in the thread takes nothing")
 }
 
-// A conversation started from the slash-command modal is titled too. Its root
-// message is the bot's, so the turn carries the modal's question with the root
-// ts as BOTH the thread and the message id (the dispatch in slashcmd.go) —
-// which is exactly the thread-root shape the gate looks for.
-func TestSessionTitleFor_ModalStartedConversation(t *testing.T) {
-	msg := channels.InboundMessage{
-		Channel:   ChannelName,
-		ChannelID: "C1",
-		ThreadID:  "1700000000.000100",
-		MessageID: "1700000000.000100",
-		Text:      "why did   the CPU alert\nfire on gazelle",
-		Subject:   "U1",
-		AgentRef:  "kagent/helper",
-	}
-	require.Equal(t, "why did the CPU alert fire on gazelle", sessionTitleFor(msg))
+// A title Slack will not take must not cost the turn its working indicator:
+// the processing status is sent again without the title, and a rejection of
+// the title alone never latches the status off for the process.
+func TestSessionTitle_RejectedTitleFallsBackToUntitledStatus(t *testing.T) {
+	var mu sync.Mutex
+	var bodies []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
+		bodies = append(bodies, body)
+		mu.Unlock()
+		if _, titled := body["title"]; titled {
+			_, _ = fmt.Fprint(w, `{"ok":false,"error":"invalid_arguments"}`)
+			return
+		}
+		_, _ = fmt.Fprint(w, `{"ok":true}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "C1", "", "1.0", detailsOn, slog.Default())
+	w.adapter = &Adapter{}
+	w.sessionTitle = "Investigate CPU alert on gazelle"
+	ch := make(chan channels.OutboundDelta, 1)
+	ch <- doneDelta()
+	close(ch)
+	require.NoError(t, w.run(t.Context(), ch))
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, bodies, 3, "titled processing (rejected), untitled processing, active")
+	require.Equal(t, "processing", bodies[0]["status"])
+	require.Contains(t, bodies[0], "title")
+	require.Equal(t, "processing", bodies[1]["status"])
+	require.NotContains(t, bodies[1], "title")
+	require.Equal(t, "active", bodies[2]["status"])
+	require.False(t, w.adapter.sessionStatusUnsupported.Load(), "a title rejection is not an unsupported install")
 }
 
 // The title is the user's own question: the scaffolding they type to address

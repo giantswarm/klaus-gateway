@@ -288,6 +288,14 @@ type Adapter struct {
 	bindingMu     sync.Mutex
 	agentBindings map[string]ttlEntry[string] // keyed by threadID
 
+	// sessionTitleMu guards sessionTitles: per thread, the title the
+	// conversation's first turn creates its agent session with. Dispatch parks
+	// it on the opening message and the turn that sends the processing status
+	// takes it (storeSessionTitle explains why it is not simply handed to the
+	// turn). Entries idle past threadStateTTL are evicted.
+	sessionTitleMu sync.Mutex
+	sessionTitles  map[string]ttlEntry[string] // keyed by threadID
+
 	// announceMu guards launchAnnounced: the agent last announced with the
 	// "Bringing in …" launch notice, per thread. The intro posts only when it
 	// informs — a thread's first turn, or a change of its bound agent — so
@@ -1939,6 +1947,15 @@ func (a *Adapter) dispatchFrom(ctx context.Context, msg channels.InboundMessage,
 		}
 	}
 
+	// The opening message names the agent session. Root equality rides along
+	// with opener because a channel root parked for sign-in replays after its
+	// binding is recorded, where threadAgent no longer reports it as the
+	// opener; on the assistant pane only opener can tell, the first message of
+	// a chat never being its own thread root.
+	if opener || msg.ThreadID == msg.MessageID {
+		a.storeSessionTitle(msg.ThreadID, sessionTitleFrom(msg.Text))
+	}
+
 	// A turn must carry a human token, never the gateway's machine identity.
 	// Resolve the sending user's token before the thread slot is taken, so a
 	// signed-out user's message is parked for sign-in even while another turn
@@ -2347,7 +2364,7 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 	w.adapter = a
 	w.slackUser = slackUser
 	w.connectorPrompts = a.ConnectorPrompts
-	w.sessionTitle = sessionTitleFor(msg)
+	w.sessionTitle = a.takeSessionTitle(threadID)
 
 	// cleanupCtx survives the turn context so a /stop-cancelled turn still gets
 	// its progress indicator cleared and terminal notes posted.
