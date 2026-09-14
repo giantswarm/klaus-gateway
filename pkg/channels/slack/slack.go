@@ -2434,7 +2434,13 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 				noteTS = ""
 			}
 			a.postTerminalNote(cctx, client, slackChannel, threadID, noteTS, note)
-		} else if oversize {
+		} else if oversize || !w.wroteContent() {
+			// Reactions mode. The failed emoji alone says nothing about what to
+			// do, and it lands on the triggering message — for a conversation the
+			// gateway opened itself that is the bot's own root, which nobody
+			// watches for reactions. With no answer text in the thread the note
+			// goes there too; once content streamed, the emoji on a visibly
+			// incomplete reply is signal enough.
 			a.postTerminalNote(cctx, client, slackChannel, threadID, "", note)
 		}
 		return err

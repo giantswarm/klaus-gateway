@@ -1334,6 +1334,10 @@ func TestProgress_ClearReactionOnDone(t *testing.T) {
 	require.NotContains(t, fake.reactionNames("reactions.add"), "white_check_mark", "no done reaction added")
 }
 
+// A turn that fails before any answer text gets the failed reaction AND the
+// retry note in the thread: the emoji alone does not tell the user what to do,
+// and on a conversation the gateway opened itself it sits on the bot's own
+// root message where nobody looks for it.
 func TestProgress_FailedReactionOnError(t *testing.T) {
 	fake := newFakeSlackAPI()
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Err: errors.New("boom")}}}
@@ -1343,6 +1347,35 @@ func TestProgress_FailedReactionOnError(t *testing.T) {
 
 	fake.waitForPath(t, "reactions.add", 2)
 	require.Contains(t, fake.reactionNames("reactions.add"), "x", "failed reaction added on error delta")
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "the turn failed")
+	}, 2*time.Second, 20*time.Millisecond, "the retry note is posted in the thread")
+	for _, c := range fake.pathCalls("chat.postMessage") {
+		if strings.Contains(fmt.Sprint(c.params["text"]), "the turn failed") {
+			require.Equal(t, "333.000", c.params["thread_ts"], "the note lands in the turn's thread")
+		}
+	}
+}
+
+// Once answer text has streamed, a failure keeps today's behaviour in
+// reactions mode: the failed emoji marks the incomplete reply and no generic
+// note is added under it.
+func TestProgress_FailureAfterContentPostsNoNote(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{
+		deltas:          []channels.OutboundDelta{{Content: "partial answer"}, {Err: errors.New("boom")}},
+		interDeltaDelay: 400 * time.Millisecond,
+	}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+
+	sendEvent(t, srv, dmEvent("U1", "hi", "444.000"))
+
+	fake.waitForPath(t, "reactions.add", 2)
+	require.Equal(t, []string{"eyes", "x"}, fake.reactionNames("reactions.add"))
+	require.Eventually(t, func() bool {
+		return strings.Contains(allBlockText(fake.pathCalls("chat.postMessage")), "partial answer")
+	}, 2*time.Second, 20*time.Millisecond, "the streamed content reached the thread")
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "the turn failed", "no generic note under streamed content")
 }
 
 func TestProgress_TextFallbackOnMissingScope(t *testing.T) {
