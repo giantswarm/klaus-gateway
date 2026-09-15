@@ -76,7 +76,7 @@ func (a *Adapter) startProgress(ctx context.Context, client *slackAPIClient, cha
 		case err == nil:
 			p.reactTS = triggerTS
 			p.working = true
-			return p, "" // reactions mode: reply is posted lazily on first flush
+			return p, "" // reactions mode: the answer opens its own streamed message
 		case errors.Is(err, errReactionsUnsupported):
 			if a.ProgressMode == "" || a.ProgressMode == progressModeAuto {
 				a.reactionsUnsupported.Store(true)

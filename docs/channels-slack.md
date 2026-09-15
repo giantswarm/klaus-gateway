@@ -38,7 +38,11 @@ While a turn runs, the thread carries Slack's **native working indicator**. It
 is driven by the agent session's lifecycle status
 (`agents.sessions.setStatus`, granular bot token with `chat:write`), which the
 adapter sets to `processing` when the turn starts and back to `active` on exit:
-normal end, stream error, `/stop`. A turn that pauses on a HITL prompt — an
+normal end, stream error, `/stop`. A turn that streamed an answer hands that
+exit status over on the `chat.stopStream` that closes it (the method carries a
+`session_status`), so the last words of the answer and the cleared indicator
+land together; a turn that streamed nothing, and a stop Slack refused, use the
+status call. A turn that pauses on a HITL prompt — an
 approval, an `ask_user` question, a form — ends in `suspended` instead, which
 Slack renders as *waiting for you*, so a conversation that needs an answer is
 told apart from a finished one at a glance. The user's answer starts the next
@@ -297,16 +301,24 @@ any string that begins with `Slack bot`, `Slack app-level`, or `Slack user`.
    `SLACK_CLEAR_REACTION_ON_DONE=false` to swap in a done reaction instead. A failed turn always
    swaps in the failed reaction. With `SLACK_PROGRESS_MODE=text`, or in `auto` mode when
    `reactions:write` is unavailable, a `_thinking…_` placeholder message is posted instead.
-8. Completion deltas are batched into a Block Kit `markdown` block and written back via
-   `chat.update` (or an initial `chat.postMessage`) as the response accumulates. Replies over
-   12,000 characters roll over into follow-up in-thread messages on code-fence boundaries; the
-   message's notification fallback text is cut to Slack's 4,000-character limit for that field.
-   Each streamed text run is rendered once — the A2A artifact update's append/replace semantics
-   are honoured, so the Go ADK's re-send of a finished run does not duplicate it — and runs
-   separated by tool calls are separated by a paragraph. A Slack refusal while rendering never
-   fails the turn: flushes keep retrying until the agent finishes, a message refused as too long
-   is re-split smaller, and only a final flush that still fails is reported in the thread (the
-   reply is incomplete, with the failed reaction) while the turn still counts as completed.
+8. The answer is streamed into one Slack message with the streaming API:
+   `chat.startStream` opens it on the turn's first text, `chat.appendStream` adds what has
+   accumulated since the last tick (one second), and `chat.stopStream` closes it with the
+   answer's last words. Slack animates the message while the stream is open. Each append
+   carries only the new text, and text is sent up to the last whitespace boundary — an
+   unfinished word waits for the next append, so nothing is ever half-written. Replies over
+   12,000 characters roll over into a further streamed message on code-fence boundaries. Each
+   streamed text run is rendered once — the A2A artifact update's append/replace semantics are
+   honoured, so the Go ADK's re-send of a finished run does not duplicate it — and runs
+   separated by tool calls are separated by a paragraph. In text-progress mode the
+   `_thinking…_` placeholder is removed once the streamed message exists (a stream cannot take
+   over an existing message). A Slack refusal while rendering never fails the turn: flushes
+   keep retrying until the agent finishes, and only a final flush that still fails is reported
+   in the thread (the reply is incomplete, with the failed reaction) while the turn still
+   counts as completed. Pressing Slack's stop button ends the stream on Slack's side: the
+   adapter learns it from the `stopped_by_user` its next call is answered with and stops
+   writing — quietly, since the button's own "Stopped by @user" notice already tells the
+   thread.
 
 Turns are serialized per thread: a message that arrives while the thread's previous turn is
 still running gets a brief "still working" notice rather than starting an overlapping turn.
@@ -462,7 +474,7 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
 
 | Scope            | Purpose                                               |
 |------------------|-------------------------------------------------------|
-| `chat:write`     | Post messages and update existing messages            |
+| `chat:write`     | Post messages, update them, and stream agent replies  |
 | `chat:write.customize` | Post agent replies under the agent's own name/icon |
 | `reactions:write` | Add/remove progress reactions on the triggering message |
 | `im:history`     | Read DMs sent to the bot                              |

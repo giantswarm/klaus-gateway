@@ -145,6 +145,10 @@ type Adapter struct {
 	// Prometheus turn counter and phase histograms). Nil records nothing; the
 	// turn_complete log record is written either way.
 	Turns channels.TurnRecorder
+	// Streams counts the lifecycle of the streamed replies (started, stopped,
+	// stopped by the user, recovered), which is how the streaming API's tier-2
+	// budget on start and stop is watched. Nil records nothing.
+	Streams StreamRecorder
 
 	gw      channels.Gateway
 	baseCtx context.Context // adapter lifecycle ctx, captured in Start; OnUserLinked's background work (login-replay dispatch and the sign-in confirmation POST) derives from it so shutdown cancels it
@@ -231,6 +235,7 @@ type Adapter struct {
 	botIDMu     sync.Mutex
 	botUserID   string // this bot's own Slack user ID (auth.test), cached; "" until resolved
 	botUsername string // this bot's own human-facing name (users.info display name, or auth.test username), cached
+	botTeamID   string // the workspace the bot is installed in (auth.test), cached
 	botResolved bool   // true once the identity lookup has succeeded once
 
 	// dmRedirectMu guards dmRedirected, the IM channels already given the DM
@@ -711,13 +716,13 @@ func (a *Adapter) resolveIdentity(ctx context.Context) (id, name string) {
 		a.botIDMu.Unlock()
 		return id, name
 	}
-	gotID, username := a.botUserID, a.botUsername
+	gotID, username, teamID := a.botUserID, a.botUsername, a.botTeamID
 	a.botIDMu.Unlock()
 
 	client := a.apiClient()
 	if gotID == "" {
 		var err error
-		gotID, username, err = client.authTest(ctx)
+		gotID, username, teamID, err = client.authTest(ctx)
 		if err != nil {
 			a.Logger.Warn("slack: auth.test failed, cannot resolve bot identity", "error", err)
 			return "", ""
@@ -736,9 +741,21 @@ func (a *Adapter) resolveIdentity(ctx context.Context) (id, name string) {
 	a.botIDMu.Lock()
 	a.botUserID = gotID
 	a.botUsername = displayName
+	a.botTeamID = teamID
 	a.botResolved = resolved
 	a.botIDMu.Unlock()
 	return gotID, displayName
+}
+
+// botTeam is the workspace the bot is installed in, cached with the rest of the
+// bot identity. A streamed reply in a channel must name the team the recipient
+// belongs to; "" when the identity cannot be resolved, in which case the
+// recipient is left off and Slack decides.
+func (a *Adapter) botTeam(ctx context.Context) string {
+	a.resolveIdentity(ctx)
+	a.botIDMu.Lock()
+	defer a.botIDMu.Unlock()
+	return a.botTeamID
 }
 
 // mentionsBot reports whether text contains a mention of this bot. Returns
@@ -1547,6 +1564,8 @@ func (a *Adapter) handleSessionStopped(ctx context.Context, inner slackInnerEven
 			"channel", inner.Channel, "thread", inner.ThreadTS)
 		return
 	}
+	a.Logger.Debug("slack: agent session stopped", "channel", inner.Channel, "thread", inner.ThreadTS,
+		"user", inner.User, "streaming_message_ts", inner.StreamingMessageTS)
 	// Same first-sight rule /stop uses: the first caller of any interaction
 	// becomes the thread's initiator, and only they (or someone they let in)
 	// may interrupt the agent there.
@@ -1869,7 +1888,8 @@ func (a *Adapter) seedInitiatorFromRoot(ctx context.Context, slackChannel, threa
 }
 
 // dispatch resolves an inbound Slack message to a Klaus instance, posts a
-// placeholder reply in-thread, and streams the completion back via chat.update batches.
+// placeholder reply in-thread, and streams the completion into a streamed
+// message in the thread.
 func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, slackChannel string) error {
 	return a.dispatchFrom(ctx, msg, slackChannel, agentSourcePrefix)
 }
@@ -2430,6 +2450,11 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 	w.slackUser = slackUser
 	w.connectorPrompts = a.ConnectorPrompts
 	w.sessionTitle = a.takeSessionTitle(threadID)
+	// A stream in a channel names the person it answers; a DM stream must not,
+	// so the team lookup (cached after the first turn) is skipped there.
+	if !isDMChannelID(slackChannel) {
+		w.recipientTeam = a.botTeam(ctx)
+	}
 
 	// cleanupCtx survives the turn context so a /stop-cancelled turn still gets
 	// its progress indicator cleared and terminal notes posted.
@@ -2620,9 +2645,10 @@ type slackInnerEvent struct {
 	// Context carries an app_context_changed event's entity list. Slack sends
 	// an empty object when the new context has no entities.
 	Context *slackEventContext `json:"context,omitempty"`
-	// StreamingMessageTS lists the chat.startStream streams Slack halted on an
-	// agent_session_stopped click. Decoded and ignored: this adapter posts with
-	// chat.postMessage, so it never has a stream of its own to close.
+	// StreamingMessageTS lists the streams Slack halted on an
+	// agent_session_stopped click. Logged, not acted on: the writer learns the
+	// same thing from the stopped_by_user its next call is answered with, which
+	// also covers the streams of a process this event never reaches.
 	StreamingMessageTS []string `json:"streaming_message_ts,omitempty"`
 
 	// receivedAt is when the gateway received the event (the events POST, the

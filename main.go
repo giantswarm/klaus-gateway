@@ -205,6 +205,7 @@ func run(args []string) error {
 			FailedEmoji:         cfg.Slack.FailedEmoji,
 			ClearReactionOnDone: cfg.Slack.ClearReactionOnDone,
 			Turns:               metrics,
+			Streams:             metrics,
 		}
 		if cfg.A2A.Enabled {
 			slackAdapter.DefaultAgent = cfg.A2A.DefaultAgent

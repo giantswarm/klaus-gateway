@@ -20,6 +20,7 @@ const (
 	labelChannel = "channel"
 	labelOutcome = "outcome"
 	labelPhase   = "phase"
+	labelEvent   = "event"
 )
 
 // turnPhaseBuckets spans a turn's phases: a cache hit in single-digit
@@ -37,6 +38,12 @@ type Metrics struct {
 	// RecordTurn when a turn ends.
 	TurnsTotal *prometheus.CounterVec
 	TurnPhase  *prometheus.HistogramVec
+	// SlackStreamsTotal counts the lifecycle events of Slack's streamed
+	// replies, fed by RecordSlackStream. chat.startStream and chat.stopStream
+	// are tier-2 methods (about 20 calls a minute for the whole app), so the
+	// started/stopped rates are what says how close a workspace is to that
+	// ceiling.
+	SlackStreamsTotal *prometheus.CounterVec
 }
 
 // NewMetrics builds and registers the default set of collectors.
@@ -73,9 +80,22 @@ func NewMetrics() *Metrics {
 		Buckets:   turnPhaseBuckets,
 	}, []string{labelChannel, labelPhase})
 
-	reg.MustRegister(reqs, dur, turns, phase)
+	streams := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: metricNamespace,
+		Name:      "slack_stream_total",
+		Help:      "Slack streamed replies, labelled by lifecycle event (started, stopped, stopped_by_user, recovered).",
+	}, []string{labelEvent})
 
-	return &Metrics{Registry: reg, RequestsTotal: reqs, RequestDuration: dur, TurnsTotal: turns, TurnPhase: phase}
+	reg.MustRegister(reqs, dur, turns, phase, streams)
+
+	return &Metrics{
+		Registry:          reg,
+		RequestsTotal:     reqs,
+		RequestDuration:   dur,
+		TurnsTotal:        turns,
+		TurnPhase:         phase,
+		SlackStreamsTotal: streams,
+	}
 }
 
 // RecordTurn counts a finished turn under its outcome and observes each of
@@ -85,6 +105,12 @@ func (m *Metrics) RecordTurn(channel, outcome string, phases map[string]time.Dur
 	for phase, d := range phases {
 		m.TurnPhase.WithLabelValues(channel, phase).Observe(d.Seconds())
 	}
+}
+
+// RecordSlackStream counts one lifecycle event of a Slack streamed reply. It
+// implements the Slack adapter's StreamRecorder.
+func (m *Metrics) RecordSlackStream(event string) {
+	m.SlackStreamsTotal.WithLabelValues(event).Inc()
 }
 
 // Handler exposes the Prometheus /metrics endpoint.
