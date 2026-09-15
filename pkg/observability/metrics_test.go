@@ -34,6 +34,19 @@ func TestMetrics_RecordTurn(t *testing.T) {
 	require.True(t, names["klaus_gateway_turn_phase_seconds"])
 }
 
+// RecordSlackStream counts each streamed reply under its lifecycle event, on
+// the registry /metrics serves.
+func TestMetrics_RecordSlackStream(t *testing.T) {
+	m := NewMetrics()
+	m.RecordSlackStream("started")
+	m.RecordSlackStream("started")
+	m.RecordSlackStream("stopped_by_user")
+
+	require.Equal(t, float64(2), testutil.ToFloat64(m.SlackStreamsTotal.WithLabelValues("started")))
+	require.Equal(t, float64(1), testutil.ToFloat64(m.SlackStreamsTotal.WithLabelValues("stopped_by_user")))
+	require.Equal(t, 2, testutil.CollectAndCount(m.SlackStreamsTotal, "klaus_gateway_slack_stream_total"))
+}
+
 // ParseHeaders reads the OTEL_EXPORTER_OTLP_HEADERS form and refuses an entry
 // that is not key=value.
 func TestParseHeaders(t *testing.T) {
