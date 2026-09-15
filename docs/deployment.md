@@ -360,6 +360,59 @@ binding and the task with it. Installations with a Slack channel should run `val
 [Valkey](#valkey)), or `crd` where no Valkey is available; `bolt` only counts when `routing.boltPath`
 lies inside a mounted volume.
 
+## Observability
+
+The admin port serves `GET /metrics` (Prometheus; `serviceMonitor.enabled` renders the
+ServiceMonitor). Beside the public mux's `klaus_gateway_requests_total` /
+`klaus_gateway_request_duration_seconds`, every channel turn (Slack, web, CLI) feeds:
+
+- `klaus_gateway_turn_total{channel, outcome}` -- turns that ended, by outcome: `completed`,
+  `input_required` (paused on a prompt), `canceled` (`/stop`, the stop button, a closed stream),
+  `shutdown` (the gateway's restart cut it short), `timeout` (the 30-minute turn deadline),
+  `failed` (the task failed or the stream broke), `render_failed` (the task completed but the
+  channel refused part of the answer), `resolve_failed` / `send_failed` (the turn died before it
+  was sent).
+- `klaus_gateway_turn_phase_seconds{channel, phase}` -- one histogram per phase of the turn's
+  timeline, measured from the moment the channel received the message: the marks `dispatch`
+  (admission, identity and agent resolved), `first_event` (the controller's first A2A event),
+  `first_text` (the first text of the answer), `task_done` (the task's terminal state),
+  `stream_end` (the A2A stream closed), `final_flush` (the last edit of the answer in the
+  channel) and `total`; and the durations of the steps `token_mint` (the person's muster token,
+  ~0 on a cache hit, a round trip to muster on a refresh), `roster` (agent resolution),
+  `intro_post` (the launch announcement of a new conversation) and `create_instance` (the
+  controller's `CreateAgentInstance` on a thread's first turn). Buckets run from 5 ms to 5 min.
+  "Message received → answer landed" is `phase="final_flush"`; p50/p95 of it is the panel to
+  watch.
+
+The same numbers are on the `turn_complete` log record every turn ends with (see
+[channels-slack.md](channels-slack.md#records)), as `<phase>_ms` fields next to the outcome, the
+task id, the tool-call count and the streamed characters, so a single turn can be read from the
+log while the histograms show the population.
+
+Traces: every turn is one trace. The gateway opens a `<channel>.turn` span when the message
+arrives; the A2A calls to the kagent controller (`otelgrpc`), the Slack Web API calls
+(`slack.<method>`) and a muster token refresh (`musterlink.<endpoint>`) are client spans under it,
+and the A2A call carries the W3C `traceparent`, so the controller's own `SendStreamingMessage`
+trace -- and, under it, the actor's spans -- continues the gateway's instead of starting a new
+one. The `turn_dispatch` and `turn_complete` records carry the `trace_id`. Export is off until
+`observability.otlpEndpoint` names an OTLP gRPC collector (a URL whose scheme decides TLS, such
+as `http://otlp-gateway.kube-system.svc:4317`, or a bare `host:port` in plaintext);
+`observability.otlpHeaders` adds headers to every export, such as the tenant of a multi-tenant
+gateway:
+
+```yaml
+observability:
+  otlpEndpoint: http://otlp-gateway.kube-system.svc:4317
+  otlpHeaders:
+    X-Scope-OrgID: giantswarm
+```
+
+The agent platform's meta chart sets both by default (following its observability answer, the
+way kagent's exporters do) and renders the gateway's egress rule to the collector. Without an
+endpoint spans are still created -- the trace ids in the records are real and the `traceparent`
+still reaches the controller -- but nothing is exported. Sampling is `ParentBased(AlwaysSample)`:
+every turn is exported; the traffic is turns, not requests.
+
 ## Values reference
 
 See `helm/klaus-gateway/values.yaml` for the full set. The agentgateway block is validated by

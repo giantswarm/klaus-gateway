@@ -10,6 +10,7 @@ import (
 	"maps"
 	"net/http"
 	"net/url"
+	"path"
 	"regexp"
 	"slices"
 	"strconv"
@@ -18,6 +19,8 @@ import (
 	"sync/atomic"
 	"time"
 	"unicode/utf8"
+
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 )
@@ -143,6 +146,10 @@ type batchedWriter struct {
 	// turnUsage accumulates the per-LLM-call usage kagent reports across the
 	// turn into the turn total. Only touched from run()'s goroutine.
 	turnUsage channels.TurnUsage
+	// timer is the turn's timeline (from run's context; nil-safe): the first
+	// text delta, the characters streamed and the tool calls are recorded on
+	// it as the deltas arrive.
+	timer *channels.TurnTimer
 	// toolsRendered counts detailsFull tool-activity entries this turn so a
 	// tool-heavy turn does not flood the thread (or hit Slack post rate limits).
 	// Only touched from run()'s goroutine.
@@ -254,6 +261,7 @@ func newBatchedWriterWithClient(client *slackAPIClient, channel, ts, threadTS st
 
 // run drains deltas from ch, batching chat.update calls at batchInterval.
 func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelta) error {
+	w.timer = channels.TurnTimerFromContext(ctx)
 	ticker := time.NewTicker(batchInterval)
 	defer ticker.Stop()
 	// The session leaves "processing" on EVERY exit — stream done, stream error,
@@ -304,13 +312,19 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 				if d.Content == "" {
 					continue
 				}
+				w.timer.Mark(channels.PhaseFirstText)
+				w.timer.AddChars(len(d.Content))
 				w.mu.Lock()
 				w.buf.WriteString(d.Content)
 				w.mu.Unlock()
 			case channels.DeltaToolActivity:
+				if d.Tool != nil && d.Tool.Kind == channels.ToolCall {
+					w.timer.AddToolCall()
+				}
 				w.renderToolActivity(ctx, d.Tool)
 				w.maybeConnectorPrompt(d.Tool)
 			case channels.DeltaNarration:
+				w.timer.AddChars(len(d.Content))
 				w.renderNarration(ctx, d.Content)
 			case channels.DeltaPrompt:
 				// Flush partial text so far, then hand off to the caller to post
@@ -1707,8 +1721,18 @@ func (w *batchedWriter) shrinkChunks() bool {
 // blackholed connection blocks the calling goroutine indefinitely; some call
 // sites hold the per-thread slot while calling (e.g. the users.info lookup
 // during dispatch), so an unbounded hang would wedge the thread until process
-// restart.
-var slackHTTPClient = &http.Client{Timeout: 30 * time.Second}
+// restart. Every call is a client span under the turn's, named after the Web
+// API method (`slack.chat.update`), so a trace shows where the reply's edits
+// sit against the A2A stream.
+var slackHTTPClient = &http.Client{Timeout: 30 * time.Second, Transport: tracedTransport(http.DefaultTransport)}
+
+// tracedTransport wraps rt so each request runs as a client span named
+// `slack.<method>` under the span on the request's context.
+func tracedTransport(rt http.RoundTripper) http.RoundTripper {
+	return otelhttp.NewTransport(rt, otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
+		return "slack." + path.Base(r.URL.Path)
+	}))
+}
 
 // slackDownloadClient fetches file bytes from url_private. It re-attaches the
 // bearer token that net/http strips on a cross-host redirect, but only when the
@@ -2817,7 +2841,7 @@ func (c *slackAPIClient) postAccessConsentPrompt(ctx context.Context, channel, t
 // interactionHTTPClient bounds POSTs to a Slack interaction response_url. These
 // run on the adapter's long-lived context (routeInteraction), so without a
 // timeout a hung upstream would park the goroutine until process shutdown.
-var interactionHTTPClient = &http.Client{Timeout: 10 * time.Second}
+var interactionHTTPClient = &http.Client{Timeout: 10 * time.Second, Transport: tracedTransport(http.DefaultTransport)}
 
 // respondURL replaces a message via a Slack interaction response_url. Ephemeral
 // messages have no addressable ts for chat.update, so the access-consent prompt

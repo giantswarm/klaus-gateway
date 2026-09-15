@@ -47,6 +47,7 @@ type cachedLink struct {
 	link    Link
 	checked time.Time // when the store was last consulted for this user
 	dirty   bool      // the store does not hold this version yet (a Put failed)
+	served  time.Time // when TokenFor last handed this user's token to a turn
 }
 
 // load returns the link for slackUserID: from the process-local copy when it
@@ -222,10 +223,11 @@ func (l *Linker) scheduleFlush() {
 	})
 }
 
-// Close stops the background write retries and flushes the links the store
-// has not taken yet, once. It returns an error naming how many links the store
-// still does not hold. Call it before closing the store.
+// Close stops the background refresher and the write retries, then flushes
+// the links the store has not taken yet, once. It returns an error naming how
+// many links the store still does not hold. Call it before closing the store.
 func (l *Linker) Close() error {
+	l.stopRefresher()
 	l.linksMu.Lock()
 	l.closed = true
 	if l.flushTimer != nil {

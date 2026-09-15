@@ -99,9 +99,20 @@ func run(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	shutdownTraces, err := observability.SetupTracing(ctx, cfg.OTLPEndpoint, version.Version())
+	otlpHeaders, err := observability.ParseHeaders(cfg.OTLPHeaders)
 	if err != nil {
 		return fmt.Errorf("setup tracing: %w", err)
+	}
+	shutdownTraces, err := observability.SetupTracing(ctx, observability.TracingConfig{
+		Endpoint:       cfg.OTLPEndpoint,
+		Headers:        otlpHeaders,
+		ServiceVersion: version.Version(),
+	})
+	if err != nil {
+		return fmt.Errorf("setup tracing: %w", err)
+	}
+	if cfg.OTLPEndpoint != "" {
+		logger.Info("trace export enabled", "otlp_endpoint", cfg.OTLPEndpoint, "otlp_header_count", len(otlpHeaders))
 	}
 	defer func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), server.DefaultShutdownTimeout)
@@ -161,7 +172,7 @@ func run(args []string) error {
 
 	var webAdapter *web.Adapter
 	if cfg.Web.Enabled {
-		webAdapter = &web.Adapter{Logger: logger}
+		webAdapter = &web.Adapter{Logger: logger, Turns: metrics}
 		if cfg.A2A.Enabled {
 			webAdapter.DefaultAgent = cfg.A2A.DefaultAgent
 		}
@@ -193,6 +204,7 @@ func run(args []string) error {
 			DoneEmoji:           cfg.Slack.DoneEmoji,
 			FailedEmoji:         cfg.Slack.FailedEmoji,
 			ClearReactionOnDone: cfg.Slack.ClearReactionOnDone,
+			Turns:               metrics,
 		}
 		if cfg.A2A.Enabled {
 			slackAdapter.DefaultAgent = cfg.A2A.DefaultAgent
@@ -206,7 +218,7 @@ func run(args []string) error {
 	}
 
 	if cfg.CLI.Enabled {
-		cliAdapter := &cliachannel.Adapter{Logger: logger}
+		cliAdapter := &cliachannel.Adapter{Logger: logger, Turns: metrics}
 		if cfg.A2A.Enabled {
 			cliAdapter.DefaultAgent = cfg.A2A.DefaultAgent
 		}

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"go.opentelemetry.io/otel/attribute"
 
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 	"github.com/giantswarm/klaus-gateway/pkg/auth/musterlink"
@@ -140,6 +141,10 @@ type Adapter struct {
 	// per-message agent branding. Nil disables the roster listing and leaves
 	// branding to fall back to the technical name.
 	Roster AgentRosterSource
+	// Turns takes every finished turn's outcome and phase durations (the
+	// Prometheus turn counter and phase histograms). Nil records nothing; the
+	// turn_complete log record is written either way.
+	Turns channels.TurnRecorder
 
 	gw      channels.Gateway
 	baseCtx context.Context // adapter lifecycle ctx, captured in Start; OnUserLinked's background work (login-replay dispatch and the sign-in confirmation POST) derives from it so shutdown cancels it
@@ -1881,6 +1886,12 @@ func (a *Adapter) dispatchFrom(ctx context.Context, msg channels.InboundMessage,
 
 	slackUser := msg.Subject // raw Slack user ID; keys access control
 
+	// The turn's timeline starts when Slack's event arrived, and its root span
+	// is the parent of every call the turn makes. A message that never becomes
+	// a turn (parked for a sign-in, bounced busy, refused) leaves no record.
+	ctx, _ = a.beginTurn(ctx, msg.ReceivedAt, msg.ChannelID, msg.ThreadID, slackUser)
+	defer channels.AbandonTurn(ctx, "not_dispatched")
+
 	// Captured before the policy records this thread: true when this process has
 	// no record of the thread, i.e. a reply into a thread it did not start
 	// (typically after a restart): the case the resume check targets.
@@ -1938,7 +1949,9 @@ func (a *Adapter) dispatchFrom(ctx context.Context, msg channels.InboundMessage,
 	agentSource, opener := explicitSource, true
 	if msg.AgentRef == "" {
 		var refusal string
+		roster := channels.TurnTimerFromContext(ctx).Span(channels.PhaseRoster)
 		msg.AgentRef, agentSource, opener, refusal = a.threadAgent(ctx, msg, slackChannel)
+		roster()
 		if refusal != "" {
 			if _, err := a.apiClient().postMessage(ctx, slackChannel, refusal, msg.ThreadID); err != nil {
 				a.Logger.Warn("slack: post agent-recovery refusal failed", "thread", msg.ThreadID, "error", err)
@@ -2090,6 +2103,7 @@ func (a *Adapter) dispatchFrom(ctx context.Context, msg channels.InboundMessage,
 			// same agent stay quiet (suppression and the task/DM guards live in
 			// maybeAnnounceLaunch). Posted only once the agent resolved, so a
 			// resolve failure does not announce a launch and then error out.
+			defer channels.TurnTimerFromContext(ctx).Span(channels.PhaseIntroPost)()
 			a.maybeAnnounceLaunch(ctx, slackChannel, msg)
 		},
 		onFailure: func() { a.postDispatchFailureNote(ctx, slackChannel, msg.ThreadID) },
@@ -2250,12 +2264,14 @@ type linkedIdentitySource interface {
 // join key is (sub, thread_id, task_id, timestamp). agentSource marks how the
 // agent was chosen (see the agentSource* constants), making /agent routing
 // observable.
-func (a *Adapter) logTurnDispatch(msg channels.InboundMessage, slackUser string, resume bool, agentSource string) {
+func (a *Adapter) logTurnDispatch(ctx context.Context, msg channels.InboundMessage, slackUser string, resume bool, agentSource string) {
 	var sub string
 	if ident, ok := a.OBO.(linkedIdentitySource); ok {
 		sub, _, _ = ident.LinkedIdentity(slackUser)
 	}
-	a.Logger.Info("slack: dispatching turn",
+	timer := channels.TurnTimerFromContext(ctx)
+	timer.Mark(channels.PhaseDispatch)
+	fields := []any{
 		"record", "turn_dispatch",
 		"agent", msg.AgentRef,
 		"agent_source", agentSource,
@@ -2266,7 +2282,41 @@ func (a *Adapter) logTurnDispatch(msg channels.InboundMessage, slackUser string,
 		"thread_id", msg.ThreadID,
 		"message_id", msg.MessageID,
 		"task_id", msg.TaskID,
-		"resume", resume)
+		"resume", resume,
+	}
+	if id := timer.TraceID(); id != "" {
+		fields = append(fields, "trace_id", id)
+	}
+	if d, ok := timer.Phase(channels.PhaseDispatch); ok {
+		fields = append(fields, "dispatch_ms", d.Milliseconds())
+	}
+	a.Logger.Info("slack: dispatching turn", fields...)
+}
+
+// beginTurn opens the telemetry of a turn on this thread: the timeline from
+// receivedAt (zero = now) and the root span every call of the turn hangs off
+// (channels.BeginTurn). The turn ends with completeTurn or, for a message that
+// never became a turn, channels.AbandonTurn.
+func (a *Adapter) beginTurn(ctx context.Context, receivedAt time.Time, slackChannel, threadID, slackUser string) (context.Context, *channels.TurnTimer) {
+	return channels.BeginTurn(ctx, ChannelName, receivedAt,
+		attribute.String("slack.channel_id", slackChannel),
+		attribute.String("slack.thread_id", threadID),
+		attribute.String("slack.user", slackUser),
+	)
+}
+
+// completeTurn writes the turn_complete record of the turn on ctx — the
+// audit-join fields of turn_dispatch, the outcome, the task and the phase
+// durations — feeds the turn metrics and ends the turn's span.
+func (a *Adapter) completeTurn(ctx context.Context, msg channels.InboundMessage, slackUser, outcome string, err error) {
+	channels.CompleteTurn(ctx, a.Logger, a.Turns, ChannelName, outcome, err,
+		"agent", msg.AgentRef,
+		"slack_user", slackUser,
+		"subject", msg.Subject,
+		"channel_id", msg.ChannelID,
+		"thread_id", msg.ThreadID,
+		"message_id", msg.MessageID,
+	)
 }
 
 // humanToken mints the linked Slack user's muster token for a turn. When
@@ -2296,7 +2346,9 @@ func (a *Adapter) humanToken(ctx context.Context, slackChannel, threadID, slackU
 		a.Logger.Warn("slack: aborting turn without a slack user (no human token possible)")
 		return "", false, false
 	}
+	mint := channels.TurnTimerFromContext(ctx).Span(channels.PhaseTokenMint)
 	token, err := a.OBO.TokenFor(ctx, slackUser)
+	mint()
 	switch {
 	case err == nil:
 		// A leftover anchor for a user whose token works is a sign-in prompt
@@ -2334,7 +2386,9 @@ func (a *Adapter) applyInitiatorIdentity(ctx context.Context, msg *channels.Inbo
 	if initiator == "" || initiator == slackUser {
 		return slackUser
 	}
+	mint := channels.TurnTimerFromContext(ctx).Span(channels.PhaseTokenMint)
 	initiatorToken, err := a.OBO.TokenFor(ctx, initiator)
+	mint()
 	if err != nil || initiatorToken == "" {
 		a.Logger.Info("slack: initiator token unavailable, running turn under sender identity",
 			"initiator", initiator, "sender", slackUser)
@@ -2354,7 +2408,18 @@ func (a *Adapter) applyInitiatorIdentity(ctx context.Context, msg *channels.Inbo
 // when the turn resumes a paused one so /usage reports the whole turn.
 // slackUser is the RAW Slack user ID (never the resolved email in msg.Subject),
 // so the ephemeral connector prompt reaches a valid chat.postEphemeral user.
-func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, deltas <-chan channels.OutboundDelta, msg channels.InboundMessage, slackUser, slackChannel, threadID, triggerTS, placeholder string, carried channels.TurnUsage) error {
+func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, deltas <-chan channels.OutboundDelta, msg channels.InboundMessage, slackUser, slackChannel, threadID, triggerTS, placeholder string, carried channels.TurnUsage) (err error) {
+	// A turn dispatched here carries its timeline from the events POST on; the
+	// delivery of a turn a previous process left running (deliverInFlight) has
+	// none yet and gets one from here, so it leaves a turn_complete record too.
+	timer := channels.TurnTimerFromContext(ctx)
+	if timer == nil {
+		ctx, timer = a.beginTurn(ctx, time.Time{}, slackChannel, threadID, slackUser)
+	}
+	// Every exit below names the outcome; the record and the metrics follow.
+	outcome := channels.OutcomeCompleted
+	defer func() { a.completeTurn(ctx, msg, slackUser, outcome, err) }()
+
 	// replyTS is the message the streamed answer edits: the text-mode placeholder,
 	// or "" in reactions mode (the writer posts the first answer message lazily).
 	prog, replyTS := a.startProgress(ctx, client, slackChannel, threadID, triggerTS, placeholder)
@@ -2376,6 +2441,7 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 	// turn is not over, so its usage so far travels with the pending task and is
 	// recorded only when the turn actually ends.
 	if err := w.run(ctx, deltas); err != nil {
+		timer.Mark(channels.PhaseFinalFlush)
 		a.recordTurnUsage(threadID, slackChannel, w.turnUsage)
 		cctx, cancel := cleanupCtx()
 		defer cancel()
@@ -2386,6 +2452,7 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 		// the note explains that the reply is incomplete.
 		var rerr *renderError
 		if errors.As(err, &rerr) {
+			outcome = channels.OutcomeRenderFailed
 			a.Logger.Error("slack: reply could not be delivered in full", "channel", slackChannel, "thread", threadID, "error", rerr.err)
 			prog.failed(cctx)
 			noteTS := replyTS
@@ -2400,12 +2467,14 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 		// deadline expiry (maxTurnDuration backstop) is a failure, not a stop, and
 		// falls through to the failure signalling below.
 		if errors.Is(ctx.Err(), context.Canceled) {
+			outcome = channels.OutcomeCanceled
 			prog.clear(cctx)
 			// The gateway is shutting down mid-turn. Nobody asked for this, so
 			// the thread is told — in reactions mode too, where a /stop leaves
 			// no note — and told what becomes of the answer. The note replaces
 			// the text-mode placeholder unless streamed content already did.
 			if errors.Is(context.Cause(ctx), channels.ErrShutdown) {
+				outcome = channels.OutcomeShutdown
 				// Land the text still buffered first: the next process continues
 				// from where the stream was cut, so what this one holds back would
 				// be missing from the thread.
@@ -2426,6 +2495,10 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 				a.postTerminalNote(cctx, client, slackChannel, threadID, replyTS, stoppedNote)
 			}
 			return err
+		}
+		outcome = channels.OutcomeFailed
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			outcome = channels.OutcomeTimeout
 		}
 		prog.failed(cctx)
 		// An oversize-payload rejection is actionable (the user can send a
@@ -2467,8 +2540,10 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 		}
 		return err
 	}
+	timer.Mark(channels.PhaseFinalFlush)
 
 	if pd := w.promptDelta; pd != nil {
+		outcome = channels.OutcomeInputRequired
 		cctx, cancel := cleanupCtx()
 		defer cancel()
 		prog.clear(cctx) // drop the working indicator
@@ -2549,6 +2624,10 @@ type slackInnerEvent struct {
 	// agent_session_stopped click. Decoded and ignored: this adapter posts with
 	// chat.postMessage, so it never has a stream of its own to close.
 	StreamingMessageTS []string `json:"streaming_message_ts,omitempty"`
+
+	// receivedAt is when the gateway received the event (the events POST, the
+	// Socket Mode frame): the start of the turn's timeline.
+	receivedAt time.Time
 }
 
 // slackFile is one entry in a message event's files array.
@@ -2674,7 +2753,8 @@ func (e slackInnerEvent) toInboundMessage(threadReplyOnly bool) (channels.Inboun
 		// Subject carries the raw Slack user ID. It keys per-thread access
 		// control only; mapping it to an email/OAuth sub for downstream
 		// identity is deferred to the auth phase that actually consumes it.
-		Subject: e.User,
+		Subject:    e.User,
+		ReceivedAt: e.receivedAt,
 	}, true
 }
 

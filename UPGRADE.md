@@ -4,6 +4,34 @@ Breaking or operator-visible changes between releases, newest first. The
 `CHANGELOG.md` lists every change; this file covers what an operator has to
 do or decide.
 
+## 1.10.0 — turn records, turn metrics, one trace per turn, the token refresh off the turn
+
+Nothing to do for the metrics and the records: `/metrics` gains
+`klaus_gateway_turn_total` and `klaus_gateway_turn_phase_seconds` (a handful
+of series per channel; a ServiceMonitor already scraping the admin port picks
+them up), and every turn logs a `turn_complete` record next to the
+`turn_dispatch` it already logged.
+
+Traces are exported when `observability.otlpEndpoint` is set, as before —
+but the shape of a trace changed: the gateway's `<channel>.turn` span is now
+the root and the kagent controller's `SendStreamingMessage` trace continues
+it, so a Tempo search for `service.name=klaus-gateway` finds the whole turn
+down to the actor. Two knobs are new: the endpoint may be a URL (its scheme
+decides TLS; a bare `host:port` stays plaintext as before) and
+`observability.otlpHeaders` adds headers to every export. On the agent
+platform the meta chart sets both to the platform's OTLP gateway and its
+tenant header by default, following its observability answer the way
+kagent's exporters do; an installation that must not export sets
+`klausGateway.observability.enabled: false` there.
+
+The proactive token refresh changes the gateway's traffic to muster: one
+`POST /oauth/token` per linked person who spoke in the last 48 hours, per
+id_token lifetime, a few minutes before expiry — instead of the same call on
+that person's first message after expiry. The count is the same, the
+timing moves off the person's turn. A gateway that is restarted forgets whom
+it served; the first message after a restart refreshes on the turn once, as
+before.
+
 ## 1.6.0 — a routing store for installations (`routing.store: valkey`)
 
 Every installation so far ran `routing.store: memory`: a gateway restart

@@ -313,6 +313,39 @@ still running gets a brief "still working" notice rather than starting an overla
 A signed-out sender's message is held for sign-in instead (no busy notice) and replays once
 they link and the running turn finishes.
 
+### Records
+
+Three structured log records (`record=…`, JSON fields) tell a turn's story; join them on
+`thread_id` (the Slack `thread_ts`) and `trace_id`:
+
+- `turn_dispatch` -- the turn is admitted and about to be sent: `agent`, `agent_source`
+  (`prefix`, `command`, `thread`, `default`, `task`), `slack_user`, `subject` (the resolved
+  e-mail), `sub` (the linked muster identity), `channel_id`, `thread_id`, `message_id`,
+  `task_id` (on a resume), `resume`, `trace_id`, `dispatch_ms` (since the event arrived).
+- `turn_complete` -- one per turn, whatever its end: `outcome` (see
+  [deployment.md](deployment.md#observability) for the values), `agent`, `slack_user`,
+  `subject`, `channel_id`, `thread_id`, `message_id`, `task_id` (the A2A task the controller
+  named), `tool_calls`, `streamed_chars`, `trace_id`, `error` on a failure, and the phases as
+  milliseconds since the events POST (or the Socket Mode frame) arrived: `token_mint_ms`,
+  `roster_ms`, `intro_post_ms`, `dispatch_ms`, `create_instance_ms`, `first_event_ms`,
+  `first_text_ms`, `task_done_ms`, `stream_end_ms`, `final_flush_ms`, `total_ms`. A phase that
+  did not happen (no instance created on a follow-up, no intro on a reply) is absent. A turn a
+  previous process left running and this one delivered after a restart gets a record too, its
+  timeline starting at the delivery.
+- `token_refresh` -- the person's muster id_token was refreshed: `trigger` (`ahead` for the
+  background refresher, `turn` for a refresh on the turn's path), `slackUser`, `duration_ms`,
+  `expires_in_s`, or `error`. The refresher keeps the tokens of the people whose token a turn
+  asked for in the last 48 hours fresh -- every minute it refreshes those within five minutes of
+  expiry, under the same per-user lock and through the same store write as a turn's refresh, so
+  the rotating refresh token is never raced -- and a turn's `token_mint_ms` stays at a cache hit.
+  When the refresher could not reach muster in time the turn refreshes as before; a refresh
+  muster refuses drops the link like a turn's would, and the person is asked to sign in on their
+  next message.
+
+The same phases feed the `klaus_gateway_turn_phase_seconds` histograms and the outcome the
+`klaus_gateway_turn_total` counter; the trace the records name spans the gateway, the kagent
+controller and the actor when `observability.otlpEndpoint` is set.
+
 ### Restarts and `/stop`
 
 A turn ends early for one of two reasons, and the thread can tell them apart:

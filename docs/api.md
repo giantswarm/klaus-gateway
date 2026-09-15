@@ -115,4 +115,6 @@ Served on the admin port (default `:8081`):
 
 - `GET /healthz` -- liveness
 - `GET /readyz`  -- readiness (probes the routing store)
-- `GET /metrics` -- Prometheus scrape endpoint
+- `GET /metrics` -- Prometheus scrape endpoint: the public mux's request counter and latency,
+  `klaus_gateway_turn_total{channel,outcome}` and `klaus_gateway_turn_phase_seconds{channel,phase}`
+  for the channel turns (see [deployment.md](deployment.md#observability))

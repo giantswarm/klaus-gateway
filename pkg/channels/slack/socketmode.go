@@ -191,6 +191,8 @@ func (c *socketModeClient) readLoop(ctx context.Context, ws *websocket.Conn) {
 			continue
 		}
 
-		c.adapter.background(func(ctx context.Context) { c.adapter.handleInbound(ctx, payload.Event, payload.EventID) })
+		ev := payload.Event
+		ev.receivedAt = time.Now()
+		c.adapter.background(func(ctx context.Context) { c.adapter.handleInbound(ctx, ev, payload.EventID) })
 	}
 }

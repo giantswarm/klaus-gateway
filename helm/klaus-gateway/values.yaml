@@ -154,9 +154,16 @@ upstream:
   agentgatewayURL: ""
 
 observability:
-  # OTLP gRPC endpoint for traces (e.g. tempo.observability.svc:4317).
-  # Empty disables trace export; in-process spans are still created.
+  # OTLP gRPC collector traces are exported to: a URL whose scheme decides TLS
+  # (http://otlp-gateway.kube-system.svc:4317) or a bare host:port (plaintext).
+  # Empty exports nothing; spans are still created, so every turn's log records
+  # carry a trace id and the A2A calls a traceparent. Each channel turn is one
+  # trace: the gateway's `<channel>.turn` span parents the kagent controller's
+  # SendStreamingMessage, the Slack API calls and any token refresh.
   otlpEndpoint: ""
+  # -- Headers sent with every trace export, e.g. the tenant of a multi-tenant
+  # gateway: `X-Scope-OrgID: giantswarm`. Rendered as --otel-otlp-headers.
+  otlpHeaders: {}  # @schema additionalProperties: true
 
 # -- Annotations on the pod template (merged over the chart's own). The
 # agent platform sets `karpenter.sh/do-not-disrupt: "true"` here so Karpenter's
