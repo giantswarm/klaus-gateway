@@ -11,9 +11,25 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 )
+
+// installTracer gives the test a recording tracer provider, the way
+// observability.SetupTracing does for the gateway: spans have real ids even
+// with no exporter, so the records carry a trace_id.
+func installTracer(t *testing.T) {
+	t.Helper()
+	tp := sdktrace.NewTracerProvider()
+	prev := otel.GetTracerProvider()
+	otel.SetTracerProvider(tp)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(prev)
+		_ = tp.Shutdown(context.Background())
+	})
+}
 
 // fakeTurnRecorder keeps what the adapter reports to the turn metrics.
 type fakeTurnRecorder struct {
@@ -43,6 +59,7 @@ func (r *fakeTurnRecorder) last() (string, string, map[string]time.Duration) {
 
 func newRecordedAdapter(t *testing.T, gw channels.Gateway) (*Adapter, *recordingHandler, *fakeTurnRecorder) {
 	t.Helper()
+	installTracer(t)
 	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"ok":true,"ts":"1.2"}`))
@@ -94,8 +111,8 @@ func TestDispatch_EmitsTurnCompleteRecord(t *testing.T) {
 	require.Equal(t, "D1", r["channel_id"])
 	require.Equal(t, "T1", r["thread_id"])
 	require.Equal(t, "M1", r["message_id"])
-	require.Equal(t, 1, r["tool_calls"], "a call counts, its result does not")
-	require.Equal(t, 5, r["streamed_chars"])
+	require.Equal(t, int64(1), r["tool_calls"], "a call counts, its result does not")
+	require.Equal(t, int64(5), r["streamed_chars"])
 	for _, phase := range []string{"token_mint_ms", "roster_ms", "dispatch_ms", "first_text_ms", "final_flush_ms", "total_ms"} {
 		require.Contains(t, r, phase, "phase %s missing from the record", phase)
 	}
