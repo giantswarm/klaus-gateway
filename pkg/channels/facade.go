@@ -213,7 +213,9 @@ func (f *Facade) instanceFor(ctx context.Context, msg InboundMessage) (string, e
 		return entry.AgentInstanceID, nil
 	}
 	requestID := SynthesizeContextID(msg.Channel, msg.ChannelID, "", msg.ThreadID, msg.AgentRef)
+	created := TurnTimerFromContext(ctx).Span(PhaseCreateInstance)
 	inst, err := f.Agent.CreateInstance(ctx, msg.AgentRef, requestID)
+	created()
 	if err != nil {
 		return "", err
 	}
@@ -368,11 +370,14 @@ func (f *Facade) streamTask(ctx context.Context, key store.Key, instanceID strin
 		stop()
 		return nil, errors.New("a2a: stream ended without events")
 	}
+	timer := TurnTimerFromContext(ctx)
+	timer.Mark(PhaseFirstEvent)
 
 	out := make(chan OutboundDelta, 16)
 	go func() {
 		defer close(out)
 		defer stop()
+		defer timer.Mark(PhaseStreamEnd)
 		taskID := known
 		recorded := known != ""
 		resumed := known != ""
@@ -393,6 +398,7 @@ func (f *Facade) streamTask(ctx context.Context, key store.Key, instanceID strin
 			}
 			if !recorded && taskID != "" {
 				recorded = true
+				timer.SetTaskID(string(taskID))
 				f.rememberTask(ctx, key, taskID, resume)
 			}
 			_, whole := event.(*a2apkg.Task) // a quiesced task arriving whole already carries its full answer
@@ -405,6 +411,7 @@ func (f *Facade) streamTask(ctx context.Context, key store.Key, instanceID strin
 				}
 				if delta.Err != nil || delta.Done || delta.Kind == DeltaPrompt {
 					terminal = true
+					timer.Mark(PhaseTaskDone)
 				}
 				if resumed && !whole && delta.Done {
 					if text := f.finalText(ctx, instanceID, taskID); text != "" && !f.emit(ctx, out, OutboundDelta{Content: text}) {

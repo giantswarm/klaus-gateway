@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 )
@@ -438,6 +439,12 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 		}
 		return nil
 	}
+
+	// A click that resumes the task is a turn: its timeline starts here, its
+	// span parents the resumed stream. A click that resumes nothing (busy,
+	// already answered, an incomplete form) leaves no record.
+	ctx, _ = a.beginTurn(ctx, time.Time{}, slackChannel, threadID, slackUser)
+	defer channels.AbandonTurn(ctx, "not_resumed")
 
 	// Serialize the resume with any concurrent turn on this thread (typed reply
 	// or another click). Acquire before taking the pending task so a rejected

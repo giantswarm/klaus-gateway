@@ -28,6 +28,7 @@ import (
 	"github.com/a2aproject/a2a-go/v2/a2aclient"
 	a2agrpc "github.com/a2aproject/a2a-go/v2/a2agrpc/v1"
 	a2apb "github.com/a2aproject/a2a-go/v2/a2apb/v1"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
@@ -154,7 +155,11 @@ func Dial(cfg Config) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	conn, err := grpc.NewClient(hostPort, grpc.WithTransportCredentials(creds))
+	// Every call is a client span under the caller's (the channel turn's)
+	// span, and carries its trace context to the controller as traceparent,
+	// so the controller's own SendStreamingMessage trace continues the
+	// gateway's instead of starting a new one.
+	conn, err := grpc.NewClient(hostPort, grpc.WithTransportCredentials(creds), grpc.WithStatsHandler(otelgrpc.NewClientHandler()))
 	if err != nil {
 		return nil, fmt.Errorf("a2a: dial %s: %w", cfg.Target, err)
 	}

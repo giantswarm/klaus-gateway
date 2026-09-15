@@ -52,11 +52,13 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"path"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"golang.org/x/oauth2"
 )
 
@@ -257,6 +259,11 @@ type Linker struct {
 	nextDelay  time.Duration
 	flushTimer *time.Timer
 	closed     bool
+
+	// refreshStop ends the background refresher (refresh.go); refreshDone
+	// closes when it has exited.
+	refreshStop chan struct{}
+	refreshDone chan struct{}
 }
 
 // pendingAuth holds the PKCE code verifier between the authorize redirect and
@@ -355,7 +362,10 @@ func New(cfg Config) (*Linker, error) {
 	}
 	httpClient := cfg.HTTPClient
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: defaultHTTPTimeout}
+		// A refresh that runs on a turn's path shows up in the turn's trace as
+		// `musterlink.<endpoint>` (the token endpoint, discovery, userinfo).
+		httpClient = &http.Client{Timeout: defaultHTTPTimeout, Transport: otelhttp.NewTransport(http.DefaultTransport,
+			otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string { return "musterlink." + path.Base(r.URL.Path) }))}
 	}
 	scopes := cfg.Scopes
 	if len(scopes) == 0 {
@@ -369,7 +379,7 @@ func New(cfg Config) (*Linker, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Linker{
+	l := &Linker{
 		oauth: &oauth2.Config{
 			ClientID:     clientID,
 			ClientSecret: cfg.ClientSecret,
@@ -392,7 +402,11 @@ func New(cfg Config) (*Linker, error) {
 		cacheTTL:      linkCacheTTL,
 		retryDelay:    writeRetryDelay,
 		nextDelay:     writeRetryDelay,
-	}, nil
+		refreshStop:   make(chan struct{}),
+		refreshDone:   make(chan struct{}),
+	}
+	go l.runRefresher()
+	return l, nil
 }
 
 // oauthContext routes the oauth2 package's token-endpoint calls through the
@@ -772,6 +786,7 @@ func (l *Linker) TokenFor(ctx context.Context, slackUserID string) (string, erro
 	// per-user lock) entirely.
 	if link, err := l.load(slackUserID); err == nil {
 		if tok := validCachedToken(link, l.now()); tok != "" {
+			l.noteServed(slackUserID)
 			return tok, nil
 		}
 	}
@@ -785,10 +800,37 @@ func (l *Linker) TokenFor(ctx context.Context, slackUserID string) (string, erro
 	}
 	// Re-check under the lock: a concurrent caller may have just refreshed.
 	if tok := validCachedToken(link, l.now()); tok != "" {
+		l.noteServed(slackUserID)
 		return tok, nil
 	}
+	// The refresh runs on the turn's path: the person waits for it. The
+	// background refresher (refresh.go) exists so this branch stays rare.
+	idToken, _, err := l.refreshLink(ctx, slackUserID, link, refreshTriggerTurn)
+	if err != nil {
+		return "", err
+	}
+	l.noteServed(slackUserID)
+	return idToken, nil
+}
+
+// refreshLink spends link's refresh token at muster's token endpoint, caches
+// the new id_token with its expiry, rotates the stored refresh token and
+// persists both through save. It returns ErrNotLinked (the link dropped) on a
+// hard refusal, a retryable error on a transient one, and logs one
+// token_refresh record either way with the trigger that ran it. The caller
+// holds the user's lock.
+func (l *Linker) refreshLink(ctx context.Context, slackUserID string, link *Link, trigger string) (idToken string, expiry time.Time, err error) {
+	began := l.now()
+	defer func() {
+		fields := []any{"record", recordTokenRefresh, "trigger", trigger, "slackUser", slackUserID, "duration_ms", l.now().Sub(began).Milliseconds()}
+		if err != nil {
+			l.logger.Warn("musterlink: id_token refresh failed", append(fields, "error", err.Error())...)
+			return
+		}
+		l.logger.Info("musterlink: id_token refreshed", append(fields, "expires_in_s", int64(expiry.Sub(l.now()).Seconds()))...)
+	}()
 	if err := l.ensureEndpoints(ctx); err != nil {
-		return "", fmt.Errorf("musterlink: discover endpoints: %w", err)
+		return "", time.Time{}, fmt.Errorf("musterlink: discover endpoints: %w", err)
 	}
 	tok, err := l.refresh(ctx, link.RefreshToken)
 	if isInvalidGrant(err) {
@@ -798,18 +840,18 @@ func (l *Linker) TokenFor(ctx context.Context, slackUserID string) (string, erro
 		// the live one.
 		stored, serr := l.reload(slackUserID)
 		if serr != nil || stored.RefreshToken == link.RefreshToken {
-			return "", l.dropDead(slackUserID)
+			return "", time.Time{}, l.dropDead(slackUserID)
 		}
 		l.logger.Info("musterlink: refresh token rotated by another writer, retrying with the stored one", "slackUser", slackUserID)
 		link = stored
 		if tok, err = l.refresh(ctx, link.RefreshToken); isInvalidGrant(err) {
-			return "", l.dropDead(slackUserID)
+			return "", time.Time{}, l.dropDead(slackUserID)
 		}
 	}
 	if err != nil {
 		// A non-invalid_grant token-endpoint error (transient 5xx, network)
 		// keeps the link and stays retryable.
-		return "", fmt.Errorf("musterlink: refresh token for slack user: %w", err)
+		return "", time.Time{}, fmt.Errorf("musterlink: refresh token for slack user: %w", err)
 	}
 	// The refresh succeeded, so muster has already rotated the refresh token
 	// server-side; persist it even when the response is unusable, or the stored
@@ -818,17 +860,17 @@ func (l *Linker) TokenFor(ctx context.Context, slackUserID string) (string, erro
 	if tok.RefreshToken != "" {
 		updated.RefreshToken = tok.RefreshToken
 	}
-	idToken, _ := tok.Extra("id_token").(string)
+	idToken, _ = tok.Extra("id_token").(string)
 	if idToken == "" {
 		updated.IDToken = ""
 		updated.Expiry = time.Time{}
 		l.save(slackUserID, &updated)
-		return "", errors.New("musterlink: refresh response carried no id_token")
+		return "", time.Time{}, errors.New("musterlink: refresh response carried no id_token")
 	}
 	updated.IDToken = idToken
 	updated.Expiry = idTokenExpiry(idToken, tok.Expiry)
 	l.save(slackUserID, &updated)
-	return idToken, nil
+	return idToken, updated.Expiry, nil
 }
 
 // refresh spends refreshToken at muster's token endpoint and returns the new

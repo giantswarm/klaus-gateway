@@ -245,7 +245,12 @@ type Config struct {
 
 	AgentgatewayURL string
 
+	// OTLPEndpoint is the OTLP gRPC collector traces are exported to: a URL
+	// (its scheme decides TLS) or a bare host:port (plaintext). Empty exports
+	// nothing. OTLPHeaders ride on every export (`key=value,key=value`; the
+	// tenant header of a multi-tenant gateway).
 	OTLPEndpoint string
+	OTLPHeaders  string
 
 	AutoCreate  bool
 	DefaultTTL  time.Duration
@@ -350,7 +355,8 @@ func Load(args []string) (Config, error) {
 	fs.StringVar(&cfg.OperatorMCPToken, "operator-mcp-token", cfg.OperatorMCPToken, "Bearer token for the operator MCP endpoint.")
 	fs.StringVar(&cfg.StaticInstances, "static-instances", cfg.StaticInstances, "Static driver instances: name=baseURL[,name=baseURL ...].")
 	fs.StringVar(&cfg.AgentgatewayURL, "agentgateway-url", cfg.AgentgatewayURL, "Upstream agentgateway base URL. Empty means direct-to-instance bypass mode.")
-	fs.StringVar(&cfg.OTLPEndpoint, "otel-otlp-endpoint", cfg.OTLPEndpoint, "OTLP gRPC endpoint for traces. Empty disables OTel.")
+	fs.StringVar(&cfg.OTLPEndpoint, "otel-otlp-endpoint", cfg.OTLPEndpoint, "OTLP gRPC endpoint for traces: a URL (http:// plaintext, https:// TLS) or host:port (plaintext). Empty exports no traces.")
+	fs.StringVar(&cfg.OTLPHeaders, "otel-otlp-headers", cfg.OTLPHeaders, "Headers sent with every trace export, as key=value,key=value (e.g. X-Scope-OrgID=giantswarm).")
 	fs.BoolVar(&cfg.AutoCreate, "auto-create", cfg.AutoCreate, "Create instances on route miss.")
 	fs.DurationVar(&cfg.DefaultTTL, "default-ttl", cfg.DefaultTTL, "Default TTL for route entries.")
 	fs.BoolVar(&cfg.ShowVersion, "version", false, "Print version information and exit.")
@@ -481,6 +487,9 @@ func applyEnv(cfg *Config) {
 	}
 	if v, ok := os.LookupEnv("OTEL_EXPORTER_OTLP_ENDPOINT"); ok {
 		cfg.OTLPEndpoint = v
+	}
+	if v, ok := os.LookupEnv("OTEL_EXPORTER_OTLP_HEADERS"); ok {
+		cfg.OTLPHeaders = v
 	}
 	if v, ok := lookup("AUTO_CREATE"); ok {
 		cfg.AutoCreate = strings.EqualFold(v, "true") || v == "1"

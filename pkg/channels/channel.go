@@ -94,6 +94,10 @@ type InboundMessage struct {
 	// channel and user, the message to react on) the facade stores next to the
 	// thread's binding and hands back on InFlightTurn.
 	Resume map[string]string
+	// ReceivedAt is when the channel received the message (the events POST,
+	// the Socket Mode frame, the HTTP request): the start of the turn's
+	// timeline (TurnTimer). Zero means "when the turn began".
+	ReceivedAt time.Time
 }
 
 // InFlightTurn is a turn a previous gateway process left running at its

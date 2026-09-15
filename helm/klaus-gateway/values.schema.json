@@ -498,6 +498,11 @@
             "properties": {
                 "otlpEndpoint": {
                     "type": "string"
+                },
+                "otlpHeaders": {
+                    "type": "object",
+                    "description": "Headers sent with every trace export, e.g. the tenant of a multi-tenant",
+                    "additionalProperties": true
                 }
             }
         },

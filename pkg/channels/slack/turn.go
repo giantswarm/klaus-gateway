@@ -91,6 +91,7 @@ func (a *Adapter) runTurn(ctx context.Context, msg channels.InboundMessage, slac
 		if hooks.onFailure != nil && !isCorruptSessionErr(err) {
 			hooks.onFailure()
 		}
+		a.completeTurn(ctx, msg, slackUser, channels.OutcomeResolveFailed, err)
 		return fmt.Errorf("slack: resolve: %w", err)
 	}
 
@@ -101,7 +102,7 @@ func (a *Adapter) runTurn(ctx context.Context, msg channels.InboundMessage, slac
 	turnCtx, done := a.registerTurn(ctx, msg.ThreadID)
 	defer done()
 
-	a.logTurnDispatch(msg, slackUser, task != nil, agentSource)
+	a.logTurnDispatch(ctx, msg, slackUser, task != nil, agentSource)
 
 	deltas, err := a.gw.SendCompletion(turnCtx, ref, msg)
 	if err != nil {
@@ -109,6 +110,7 @@ func (a *Adapter) runTurn(ctx context.Context, msg channels.InboundMessage, slac
 		if hooks.onFailure != nil && !isCorruptSessionErr(err) {
 			hooks.onFailure()
 		}
+		a.completeTurn(ctx, msg, slackUser, channels.OutcomeSendFailed, err)
 		return fmt.Errorf("slack: send completion: %w", err)
 	}
 

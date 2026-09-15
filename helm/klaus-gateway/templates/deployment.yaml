@@ -113,6 +113,13 @@ spec:
         {{- end }}
         {{- if .Values.observability.otlpEndpoint }}
         - --otel-otlp-endpoint={{ .Values.observability.otlpEndpoint }}
+        {{- $headers := list }}
+        {{- range $key, $value := .Values.observability.otlpHeaders }}
+        {{- $headers = append $headers (printf "%s=%s" $key $value) }}
+        {{- end }}
+        {{- if $headers }}
+        - --otel-otlp-headers={{ join "," $headers }}
+        {{- end }}
         {{- end }}
         {{- if .Values.slack.enabled }}
         - --slack-enabled

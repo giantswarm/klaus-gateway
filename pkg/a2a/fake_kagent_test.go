@@ -11,6 +11,7 @@ import (
 	a2apb "github.com/a2aproject/a2a-go/v2/a2apb/v1"
 	"github.com/a2aproject/a2a-go/v2/a2apb/v1/pbconv"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -76,9 +77,12 @@ func (f *fakeKagent) serve(t *testing.T, cfg pkga2a.Config) *pkga2a.Client {
 	go func() { _ = srv.Serve(lis) }()
 	t.Cleanup(srv.Stop)
 
+	// The stats handler is the one Dial installs: the wire the tests assert is
+	// the wire an installation sees, trace context included.
 	conn, err := grpc.NewClient("passthrough:///bufnet",
 		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return lis.Dial() }),
-		grpc.WithTransportCredentials(insecure.NewCredentials()))
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithStatsHandler(otelgrpc.NewClientHandler()))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close() })
 

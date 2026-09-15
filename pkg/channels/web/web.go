@@ -22,8 +22,10 @@ import (
 	"log/slog"
 	"net/http"
 	"sync/atomic"
+	"time"
 
 	"github.com/go-chi/chi/v5"
+	"go.opentelemetry.io/otel/attribute"
 
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
@@ -37,6 +39,10 @@ const ChannelName = "web"
 type Adapter struct {
 	Logger       *slog.Logger
 	DefaultAgent string
+	// Turns takes every finished turn's outcome and phase durations (the
+	// Prometheus turn counter and phase histograms). Nil records nothing; the
+	// turn_complete log record is written either way.
+	Turns channels.TurnRecorder
 
 	gw      channels.Gateway
 	started atomic.Bool
@@ -168,6 +174,7 @@ func (a *Adapter) postMessages(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "web adapter not started", http.StatusServiceUnavailable)
 		return
 	}
+	received := time.Now()
 
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxInboundBytes+1))
 	if err != nil {
@@ -220,20 +227,33 @@ func (a *Adapter) postMessages(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	ref, err := a.gw.Resolve(r.Context(), msg)
+	// The turn's timeline runs from the request's arrival to the last SSE
+	// frame; its span parents the A2A stream. Every exit names the outcome.
+	ctx, timer := channels.BeginTurn(r.Context(), ChannelName, received,
+		attribute.String("web.channel_id", msg.ChannelID), attribute.String("web.thread_id", msg.ThreadID))
+	outcome, turnErr := "", error(nil)
+	defer func() {
+		channels.CompleteTurn(ctx, a.Logger, a.Turns, ChannelName, outcome, turnErr,
+			"agent", msg.AgentRef, "channel_id", msg.ChannelID, "thread_id", msg.ThreadID, "subject", msg.Subject)
+	}()
+
+	ref, err := a.gw.Resolve(ctx, msg)
 	if err != nil {
+		outcome, turnErr = channels.OutcomeResolveFailed, err
 		a.resolveError(w, err)
 		return
 	}
 
-	deltas, err := a.gw.SendCompletion(r.Context(), ref, msg)
+	deltas, err := a.gw.SendCompletion(ctx, ref, msg)
 	if err != nil {
+		outcome, turnErr = channels.OutcomeSendFailed, err
 		writeJSONError(w, http.StatusBadGateway, "send completion: "+err.Error())
 		return
 	}
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
+		outcome, turnErr = channels.OutcomeRenderFailed, errors.New("response writer does not support streaming")
 		writeJSONError(w, http.StatusInternalServerError, "response writer does not support streaming")
 		return
 	}
@@ -242,13 +262,29 @@ func (a *Adapter) postMessages(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
+	// The stream's exit sets the outcome; a producer that closed without a
+	// terminal delta ended with the request (a closed browser) or broke.
+	defer func() {
+		timer.Mark(channels.PhaseFinalFlush)
+		if outcome != "" {
+			return
+		}
+		if ctx.Err() != nil {
+			outcome = channels.OutcomeCanceled
+			return
+		}
+		outcome, turnErr = channels.OutcomeFailed, errors.New("stream ended without a terminal delta")
+	}()
+
 	enc := json.NewEncoder(w)
 	for d := range deltas {
 		if d.Err != nil {
+			outcome, turnErr = channels.OutcomeFailed, d.Err
 			writeSSEError(w, flusher, d.Err)
 			return
 		}
 		if d.Done {
+			outcome = channels.OutcomeCompleted
 			_, _ = fmt.Fprintf(w, "event: done\ndata: {}\n\n")
 			flusher.Flush()
 			continue
@@ -256,23 +292,34 @@ func (a *Adapter) postMessages(w http.ResponseWriter, r *http.Request) {
 		if d.Kind == channels.DeltaPrompt {
 			// The turn pauses here; the client resumes it with a decision on
 			// the task. Nothing else follows on this stream.
+			outcome = channels.OutcomeInputRequired
 			_, _ = io.WriteString(w, "event: prompt\ndata: ")
 			_ = enc.Encode(promptEvent{TaskID: d.TaskID, Text: d.Content, Prompt: describePrompt(d.Prompt)})
 			_, _ = io.WriteString(w, "\n")
 			flusher.Flush()
 			continue
 		}
+		if d.Kind == channels.DeltaToolActivity && d.Tool != nil && d.Tool.Kind == channels.ToolCall {
+			timer.AddToolCall()
+		}
 		if d.Content == "" {
 			continue
 		}
+		if d.Kind == channels.DeltaText {
+			timer.Mark(channels.PhaseFirstText)
+		}
+		timer.AddChars(len(d.Content))
 		if _, err := io.WriteString(w, "data: "); err != nil {
+			outcome, turnErr = channels.OutcomeRenderFailed, err
 			return
 		}
 		if err := enc.Encode(map[string]string{"content": d.StreamText()}); err != nil {
+			outcome, turnErr = channels.OutcomeRenderFailed, err
 			return
 		}
 		// enc.Encode writes a trailing newline; SSE needs the blank line after.
 		if _, err := io.WriteString(w, "\n"); err != nil {
+			outcome, turnErr = channels.OutcomeRenderFailed, err
 			return
 		}
 		flusher.Flush()
