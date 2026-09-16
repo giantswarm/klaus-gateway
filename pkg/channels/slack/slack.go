@@ -199,12 +199,6 @@ type Adapter struct {
 	signInNoticesMu sync.Mutex
 	signInNotices   map[string]ttlEntry[string]
 
-	// inactiveHintedMu guards inactiveHinted, the threads whose poster was
-	// already told the thread is inactive, so a dropped reply hints once per
-	// window instead of once per message.
-	inactiveHintedMu sync.Mutex
-	inactiveHinted   map[string]ttlEntry[struct{}]
-
 	// seenThreadsMu guards seenThreads, the threads this process has handled a
 	// turn in. Deliberately in-memory: "first sight" means first sight by THIS
 	// process, which is what the post-restart checks (a leftover turn to
@@ -738,13 +732,6 @@ func (a *Adapter) resolveIdentity(ctx context.Context) (id, name string) {
 	a.botResolved = resolved
 	a.botIDMu.Unlock()
 	return gotID, displayName
-}
-
-// mentionsBot reports whether text contains a mention of this bot. Returns
-// false when the bot's own user ID cannot be resolved.
-func (a *Adapter) mentionsBot(ctx context.Context, text string) bool {
-	id := a.botID(ctx)
-	return id != "" && strings.Contains(text, "<@"+id+">")
 }
 
 // postChannelIntro posts the one-time Swarmgeist-branded introduction when the
@@ -1614,16 +1601,12 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 	// thread arrives as both a message and an app_mention event, and when the
 	// message copy lands first, having it claim the dedup slot on its way to
 	// being gate-dropped would discard the app_mention copy as a duplicate.
+	// Dropped silently: a thread with no record is either one the bot never
+	// joined (a served channel's unrelated threads must not be pinged) or one
+	// forgotten after --thread-ttl of silence, and nothing durable tells the
+	// two apart. A mention re-opens the conversation either way.
 	if threadReplyOnly && !a.isActiveThread(ctx, inner.Channel, msg.ThreadID) {
 		a.Logger.Debug("slack: reply in inactive thread ignored", "channel", inner.Channel, "thread", msg.ThreadID)
-		// A mention arrives as message + app_mention twins; the app_mention twin
-		// acts on it (dispatch, park, or answer), so hinting on the gate-dropped
-		// message twin would contradict the outcome. When the bot ID cannot be
-		// resolved the mention cannot be recognised, and hinting is the safer
-		// default.
-		if !a.mentionsBot(ctx, inner.Text) {
-			a.hintInactiveThread(ctx, inner.Channel, msg.ThreadID, msg.Subject)
-		}
 		return
 	}
 	if a.seenMessage(inner.Channel, msg.MessageID) {
@@ -1756,25 +1739,6 @@ func (a *Adapter) threadEngaged(threadID string) bool {
 		}
 	}
 	return false
-}
-
-// hintInactiveThread posts a one-time ephemeral hint to the poster of a
-// non-mention reply the active-thread gate is about to drop, so the bot does
-// not read as deaf in a thread it was part of (a command-only thread never
-// activates; TTL expiry deactivates). Threads with no trace of the bot stay
-// silent: a served channel's unrelated threads must not be pinged. Ephemeral
-// so a shared channel is not spammed; once per thread per pendingTTL window.
-func (a *Adapter) hintInactiveThread(ctx context.Context, slackChannel, threadID, slackUser string) {
-	if slackUser == "" || !a.threadEngaged(threadID) {
-		return
-	}
-	if !markOnce(&a.inactiveHintedMu, &a.inactiveHinted, threadID, pendingTTL) {
-		return
-	}
-	const text = "_I'm not active in this thread, so I didn't act on your message. Mention me to start._"
-	if err := a.apiClient().postEphemeralText(ctx, slackChannel, slackUser, threadID, text); err != nil {
-		a.Logger.Warn("slack: post inactive-thread hint failed", "thread", threadID, "error", err)
-	}
 }
 
 // dispatch resolves an inbound Slack message to a Klaus instance, posts a

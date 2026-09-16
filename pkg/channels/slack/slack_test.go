@@ -1707,33 +1707,6 @@ func TestHandleInbound_FileShareReplyDispatches(t *testing.T) {
 		"the attachment metadata travelled into dispatch (named in the dropped-attachments notice)")
 }
 
-// A mention's message-event twin dropped by the inactive-thread gate must not
-// post the "I'm not active" hint: the app_mention twin acts on it, and the
-// hint would contradict the outcome.
-func TestHandleInbound_NoInactiveHintForMentionTwins(t *testing.T) {
-	fake := newFakeSlackAPI()
-	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok", Done: true}}}
-	obo := &fakeOBO{linkedUser: "UX", token: "tok"} // U1 stays unlinked
-	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
-	a.OBO = obo
-
-	// U1 runs /login as a reply in a human thread: posts the sign-in prompt
-	// (an engagement trace) without activating the thread.
-	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_mention","user":"U1","text":"<@UBOT> /login","channel":"C1","ts":"701.000","thread_ts":"700.000"}}`)
-	require.Eventually(t, func() bool {
-		return signInPrompted(fake)
-	}, 2*time.Second, 50*time.Millisecond, "the sign-in prompt posts")
-
-	// A new mention in the same thread: the message twin lands first.
-	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","user":"U1","text":"<@UBOT> hello","channel":"C1","ts":"702.000","thread_ts":"700.000"}}`)
-	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_mention","user":"U1","text":"<@UBOT> hello","channel":"C1","ts":"702.000","thread_ts":"700.000"}}`)
-
-	require.Never(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postEphemeral")), "not active in this thread")
-	}, time.Second, 100*time.Millisecond,
-		"the inactive-thread hint must not fire for a message whose mention twin acts")
-}
-
 // /stop before any streamed content in text-progress mode must resolve the
 // "thinking" placeholder instead of leaving it dangling above "Stopped.".
 func TestStop_TextModePlaceholderResolved(t *testing.T) {

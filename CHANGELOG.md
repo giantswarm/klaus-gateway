@@ -222,7 +222,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Slack `/invite`, `/lock`, and `/quit` commands, the locked/open/observe access modes, and the `SLACK_ALLOWED_USERS` and `SLACK_DEFAULT_ACCESS_MODE` settings, replaced by the initiator-plus-approval access model.
 - **Breaking:** the `crd` and `configmap` routing stores, the `ChannelRoute` CRD and type, the embedded controller (`controller.enabled`, `--controller`) and the `--namespace` flag. The chart's values schema refuses `crd.*` and `controller.*`, so a values file that still sets them fails the upgrade; see `UPGRADE.md`. Installations run `routing.store: valkey`; `memory` and `bolt` remain for local development.
 - The gateway no longer recovers a thread's agent from the root message or its initiator from the first human author after a restart, and the slash-command root no longer carries a hidden conversation marker. On `routing.store: memory` that state is lost on restart, and the gateway logs a warning at start.
-- The 24-hour access window: the initiator and the people they allowed no longer have to mention the bot again after a day of silence, and grants no longer lapse; a thread's state lives for `routing.threadTTL`.
+- The 24-hour access window: the initiator and the people they allowed no longer have to mention the bot again after a day of silence, and grants no longer lapse; a thread's state lives for `routing.threadTTL`. The ephemeral "I'm not active in this thread" hint goes with it: a reply in a thread the bot has no record of is dropped silently.
 
 ### Refactored
 
