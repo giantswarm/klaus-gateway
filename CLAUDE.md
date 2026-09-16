@@ -71,7 +71,8 @@ Three backends are supported (set via `--store` / `KLAUS_GATEWAY_STORE`):
 | Bolt        | `bolt`      | yes        | no             | Local file; path via `--bolt-path`          |
 
 Next to each conversation's instance binding, the store also holds a Slack thread's record
-(agent, initiator, grants), with its own 30-day sliding TTL.
+(agent, initiator, grants), sharing one sliding lifetime with the instance binding
+(`routing.threadTTL`, default 90 days).
 
 ## Lifecycle drivers
 

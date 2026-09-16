@@ -220,10 +220,13 @@ thread to the kagent AgentInstance that holds its conversation, together with th
 task in flight on that thread (delivered after a restart, see
 [Shutdown and restarts](#shutdown-and-restarts)). For the Slack channel, the same store also
 holds each thread's record — its agent, its initiator, and the collaborators the initiator
-allowed — next to its AgentInstance binding. The record has a 30-day sliding TTL, refreshed on
-every handled message; the AgentInstance binding never expires. On `routing.store: memory` this
-Slack thread state, like everything else in the table, is lost on every restart. Choose the
-backend that matches your deployment:
+allowed — next to its AgentInstance binding. Record and binding share one sliding lifetime,
+`routing.threadTTL` (`--thread-ttl`, 90 days by default; `0` never expires), refreshed on every
+handled message: while the thread lives, the initiator and the people they allowed reply without
+mentioning the bot again, and after that long of silence the thread is forgotten and the next
+mention starts a fresh conversation. On `routing.store: memory` this Slack thread state, like
+everything else in the table, is lost on every restart. Choose the backend that matches your
+deployment:
 
 | Store       | Helm value         | Persistent | Cluster-backed | Notes                              |
 |-------------|-------------------|------------|----------------|------------------------------------|
@@ -344,8 +347,9 @@ routing store that outlives the pod: `routing.store: memory` (the chart default)
 binding and the task with it. Installations with a Slack channel should run `valkey` (see
 [Valkey](#valkey)); `bolt` only counts when `routing.boltPath`
 lies inside a mounted volume. On a persistent store a restarted gateway also keeps each Slack
-thread's agent, initiator and grants; on `memory` the thread starts fresh, and the first person
-to mention the bot becomes its initiator.
+thread's agent, initiator and grants — for `routing.threadTTL` (90 days by default) of silence,
+after which the thread is forgotten on every store; on `memory` the thread starts fresh at each
+restart, and the first person to mention the bot becomes its initiator.
 
 ## Observability
 

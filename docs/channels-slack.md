@@ -127,14 +127,13 @@ the title, so a refused title never costs the turn its indicator.
   initiator allowed — lives in a thread record in the routing store, at the thread's plain
   key (`slack|<channelID>||<threadID>`, the user and agent slots empty) next to its
   AgentInstance binding (the same key with the agent ref appended). It is the only carrier:
-  the gateway never reads Slack history to recover any of it. The record slides a 30-day TTL
-  on every handled message; the AgentInstance binding beside it never expires. A 24-hour
-  access window — who may instruct the agent without the initiator's approval — is computed
-  from the record's last-seen time: after 24 hours of silence the initiator and any grants are
-  void and the next person to mention the bot becomes the new initiator, while the agent
-  binding itself is untouched. A thread whose record has expired after 30 idle days but whose
-  AgentInstance binding still exists keeps running on that bound agent — the gateway looks the
-  binding up directly instead of starting over.
+  the gateway never reads Slack history to recover any of it. The record and the binding share
+  one sliding lifetime — `routing.threadTTL` (`--thread-ttl`), 90 days by default, `0` never
+  expires — refreshed by every handled message. While the thread lives, the initiator and the
+  collaborators they allowed instruct the agent without mentioning the bot again and their
+  grants hold. After that long without a message the gateway has forgotten the thread, record
+  and binding together: an un-mentioned reply is ignored, and the next mention starts a fresh
+  conversation whose initiator is whoever sent it.
 
 ### Two auth layers
 
@@ -204,7 +203,9 @@ agent, same initiator, same grants. The gateway never reads Slack history — no
 `conversations.replies`, no re-parsing the opening message or the slash command's root — to
 recover any of it; the routing-store record is the only carrier. On `routing.store: memory` a
 restart loses this state exactly as it loses the instance bindings, and every thread starts
-fresh from its next message.
+fresh from its next message. On any store a thread nobody has written in for
+`routing.threadTTL` is forgotten, agent and all, and its next mention starts a fresh
+conversation.
 
 The turn that opens a conversation — the first one, root or reply, that finds no agent
 recorded — also posts the "🚀 Bringing in *Agent* to help…" launch announcement, once, in that

@@ -10,10 +10,15 @@ Every Slack thread now has a record in the routing store (its agent, its initiat
 collaborators the initiator allowed), next to its AgentInstance binding. Run
 `routing.store: valkey` (see 1.6.0): on `memory` the state is lost on every restart and the
 gateway logs a warning at start. Nothing is migrated: a thread that exists at the upgrade gets one
-fresh start on its next reply, and its initiator is whoever replies first. The record expires
-after 30 idle days; the instance binding keeps its lifetime. `/agent <name> <question>` now also
-opens a conversation as a reply inside an existing thread, and the launch announcement posts
-there too.
+fresh start on its next reply, and its initiator is whoever replies first. The record and the
+instance binding next to it share one sliding lifetime, `routing.threadTTL` (`--thread-ttl`),
+90 days by default and `0` to never expire, refreshed by every handled message; after it the
+thread is forgotten and the next mention starts a fresh conversation. Decide whether 90 days
+suits your workspace before upgrading. The 24-hour access window is gone with it: while a
+thread lives, the initiator and the people they allowed keep replying without mentioning the
+bot again, and their grants no longer lapse after a day of silence.
+`/agent <name> <question>` now also opens a conversation as a reply inside an existing thread,
+and the launch announcement posts there too.
 
 ## Next — the crd and configmap routing stores are gone
 
