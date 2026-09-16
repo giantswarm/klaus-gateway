@@ -139,6 +139,7 @@ func run(args []string) error {
 		Router:    router,
 		Client:    instanceClient,
 		Lifecycle: manager,
+		Routes:    routeStore,
 		// A turn a shutdown cuts short is delivered after the restart only when
 		// the thread's record of it outlives the process.
 		Durable: cfg.Store != config.StoreMemory,
@@ -282,7 +283,6 @@ func run(args []string) error {
 			}
 		}()
 		facade.Agent = kagentClient
-		facade.Routes = routeStore
 		if slackAdapter != nil {
 			slackAdapter.Models = kagentClient
 			slackAdapter.Roster = kagentClient
