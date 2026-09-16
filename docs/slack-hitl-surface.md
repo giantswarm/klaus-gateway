@@ -31,7 +31,8 @@ Generic (non-`ask_user`) tool approvals always render as Approve / Deny / Chat b
 Any prompt can also be answered by replying in-thread; a reply resolves the paused task the
 same way a click does. Only a permitted user (the thread initiator or a granted collaborator)
 may decide; an onlooker click is refused ephemerally. A thread is one shared session, so any
-permitted user may answer a prompt it raised.
+permitted user may answer a prompt it raised. The team review (section 10) is the exception:
+it has no initiator, and any linked member of its team may decide.
 
 ## 1. Tool approval
 
@@ -334,10 +335,65 @@ collaborator's real identity rides along as attribution. See
 
 <img width="721" height="159" alt="image" src="https://github.com/user-attachments/assets/8249895e-3da1-41e6-9e23-1d42bb5a26b2" />
 
+## 10. Team review (a manager's ask to a team)
+
+Posted into a team's channel — not into a thread — by a manager through
+[`POST /reviews`](api.md#team-review-endpoint): the change spelled out (what, which repository,
+the giving and the receiving team for a transfer), an *Approve* button and an *Open PR* URL button
+for anything else. It has **no initiator**; the decision rule is the team's:
+
+- **Any linked member may decide.** The clicker needs a linked identity (the OBO sign-in). An
+  unlinked clicker is asked to sign in; the review stays open.
+- **The click calls the review's tool as that member.** The gateway calls the named muster tool
+  (giantswarm-repo-manager's `approve_change`) with the clicking member's own token, so the
+  manager acts under that person's GitHub grant and checks their membership of the named team
+  there. A refusal — not a member, or anything else the manager will not do — is shown to the
+  clicker alone (ephemerally, in the message's thread) and the review stays open for another
+  member; so does a manager the gateway could not reach.
+- **One approval closes it.** A second click is refused with who decided (or whose approval is in
+  flight); the message is rewritten to the outcome, the decider and what the tool answered.
+
+The Approve button's `value` is the JSON `{"r":"<review id>"}`; the id is what
+`POST /reviews` returned.
+
+```json
+{
+  "blocks": [
+    { "type": "section", "text": { "type": "mrkdwn", "text": "*Review for team-bumblebee*\n*Archive* `giantswarm/old-thing`, owned by team-bumblebee." } },
+    {
+      "type": "actions",
+      "elements": [
+        { "type": "button", "text": { "type": "plain_text", "text": "✅ Approve" }, "style": "primary", "action_id": "team_review_approve", "value": "{\"r\":\"REVIEW_ID\"}" },
+        { "type": "button", "text": { "type": "plain_text", "text": "Open PR" }, "action_id": "team_review_open", "url": "https://github.com/giantswarm/github/pull/4711", "value": "{\"r\":\"REVIEW_ID\"}" }
+      ]
+    }
+  ]
+}
+```
+
+After the approval the message reads `✅ *Approved* by <@U…> for team-bumblebee.`, then the ask,
+then the tool's answer in italics. A click on a review the gateway no longer holds (restart, seven
+days passed) rewrites the message to say it expired.
+
+## 11. Team notice (no decision)
+
+The variant without buttons, through [`POST /notices`](api.md#post-notices): a completion
+message, or the giving team's notice of a transfer. The link, when given, is a context line.
+
+```json
+{
+  "blocks": [
+    { "type": "section", "text": { "type": "mrkdwn", "text": "*For team-honeybadger*\n`giantswarm/old-thing` moved to team-bumblebee." } },
+    { "type": "context", "elements": [ { "type": "mrkdwn", "text": "<https://github.com/giantswarm/github/pull/4711|Open PR>" } ] }
+  ]
+}
+```
+
 ## Answering: click and reply
 
 On a click, Slack POSTs a `block_actions` payload to `/channels/slack/interactions`. The
-handler checks the clicking user is permitted, then routes by `action_id`: approve/deny/chat
+handler checks the clicking user is permitted, then routes by `action_id` (a
+`team_review_approve` click is resolved against the review record instead, see section 10): approve/deny/chat
 decide the tool call directly; a `hitl_choice_<i>` button commits that one choice; a
 `hitl_submit` reads the selection(s) out of `state.values` (grouped per question for a form)
 and resumes the paused task with one answer slot per question. An incomplete Submit is nudged

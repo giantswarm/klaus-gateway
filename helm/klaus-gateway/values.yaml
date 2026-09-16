@@ -481,6 +481,24 @@ obo:
   connectors:
     enabled: false
 
+# Team reviews: the inbound endpoint (POST /reviews, POST /notices) through
+# which a manager posts an ask or a notice into a team's Slack channel. The
+# caller authenticates as its own Kubernetes ServiceAccount: it sends the
+# projected token it already has, the gateway verifies it through the
+# TokenReview API for `audience`, and only the ServiceAccounts listed in
+# `allowedCallers` may post -- no personal token, no shared secret. Requires
+# slack.enabled and obo.enabled: the Approve click runs the manager's tool as
+# the linked person. While on, the chart grants the ServiceAccount `create` on
+# tokenreviews (ClusterRole + ClusterRoleBinding).
+reviews:
+  enabled: false
+  # audience is the token audience the API server checks; the caller projects
+  # its ServiceAccount token for it.
+  audience: klaus-gateway
+  # allowedCallers lists the ServiceAccounts that may post, as
+  # system:serviceaccount:<namespace>:<name>.
+  allowedCallers: []
+
 global:  # @schema additionalProperties: true
   podSecurityStandards:
     enforced: false

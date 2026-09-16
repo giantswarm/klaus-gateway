@@ -106,6 +106,9 @@ type Adapter struct {
 	// users so the agent acts on behalf of the human. Nil disables OBO; turns
 	// then run as the M2M ServiceAccount identity.
 	OBO OBOTokenSource
+	// Tools calls a muster tool as a linked person; the team-review Approve
+	// click runs the review's tool through it. Nil disables team reviews.
+	Tools ToolCaller
 	// Models, when set, resolves the default agent's model id for /usage.
 	// Nil omits the model line.
 	Models AgentModelSource
@@ -226,6 +229,11 @@ type Adapter struct {
 	// which owns entry creation and removal.
 	threadsMu sync.Mutex
 	threads   map[string]*threadState // keyed by threadID
+
+	// teamReviews are the team-review asks posted through PostTeamReview and
+	// not yet past their TTL, keyed by review id (see teamreview.go).
+	teamReviewsMu sync.Mutex
+	teamReviews   map[string]*teamReview
 
 	emailMu    sync.Mutex
 	emailCache map[string]emailEntry // Slack user ID -> resolved email

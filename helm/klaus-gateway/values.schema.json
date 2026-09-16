@@ -605,6 +605,21 @@
                 }
             }
         },
+        "reviews": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "allowedCallers": {
+                    "type": "array"
+                },
+                "audience": {
+                    "type": "string"
+                },
+                "enabled": {
+                    "type": "boolean"
+                }
+            }
+        },
         "routing": {
             "type": "object",
             "additionalProperties": false,

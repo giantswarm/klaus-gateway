@@ -1,0 +1,30 @@
+{{- if .Values.reviews.enabled }}
+# The team-review endpoint verifies its callers' ServiceAccount tokens through
+# the TokenReview API. That is the one cluster-scoped verb it needs; the
+# ClusterRole is named per release namespace so two releases do not collide.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "resource.default.name" . }}-{{ include "resource.default.namespace" . }}-tokenreviews
+  labels:
+    {{- include "labels.common" . | nindent 4 }}
+rules:
+- apiGroups: ["authentication.k8s.io"]
+  resources: ["tokenreviews"]
+  verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "resource.default.name" . }}-{{ include "resource.default.namespace" . }}-tokenreviews
+  labels:
+    {{- include "labels.common" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "resource.default.name" . }}-{{ include "resource.default.namespace" . }}-tokenreviews
+subjects:
+- kind: ServiceAccount
+  name: {{ include "resource.default.name" . }}
+  namespace: {{ include "resource.default.namespace" . }}
+{{- end }}
