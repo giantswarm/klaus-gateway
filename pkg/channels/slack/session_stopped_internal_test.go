@@ -216,7 +216,7 @@ func TestSessionStopped_NotPermittedUserIsRefused(t *testing.T) {
 	a, rec := newStopTestAdapter(t)
 
 	// Someone else owns the thread, so the presser is a mere onlooker.
-	a.accessPolicy().SetInitiator(stopEventThreadTS, "U-owner")
+	a.accessPolicy().SetInitiator(t.Context(), stopEventChannel, stopEventThreadTS, "U-owner")
 
 	cancelled := make(chan struct{})
 	a.threadsMu.Lock()

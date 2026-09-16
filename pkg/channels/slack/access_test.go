@@ -1,44 +1,107 @@
 package slack
 
 import (
+	"context"
 	"testing"
+	"time"
 
-	"github.com/stretchr/testify/require"
+	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
 )
 
-func TestMemoryAccess_InitiatorSetOnce(t *testing.T) {
-	m := newMemoryAccess()
-	require.Equal(t, "U001", m.SetInitiator("T001", "U001"), "first caller becomes initiator")
-	require.Equal(t, "U001", m.SetInitiator("T001", "U002"), "later caller does not displace the initiator")
-	require.Equal(t, "U001", m.Initiator("T001"))
-	require.Equal(t, "", m.Initiator("T999"), "unknown thread has no initiator")
-}
-
-func TestMemoryAccess_InitiatorInstructsFreely(t *testing.T) {
-	m := newMemoryAccess()
-	m.SetInitiator("T001", "U001")
-	require.True(t, m.Allowed("T001", "U001"), "initiator is allowed")
-	require.False(t, m.Allowed("T001", "U002"), "newcomer is not allowed until granted")
-}
-
-func TestMemoryAccess_GrantIsAdditive(t *testing.T) {
-	m := newMemoryAccess()
-	m.SetInitiator("T001", "U001")
-	m.Grant("T001", "U002")
-	m.Grant("T001", "U003")
-	require.True(t, m.Allowed("T001", "U002"))
-	require.True(t, m.Allowed("T001", "U003"), "grant does not evict earlier grants")
-	require.True(t, m.Allowed("T001", "U001"), "initiator stays allowed")
-	require.False(t, m.Allowed("T001", "U004"))
-}
-
-func TestMemoryAccess_UnknownThreadDeniesAll(t *testing.T) {
-	m := newMemoryAccess()
-	require.False(t, m.Allowed("T999", "U001"))
-}
-
-func TestAccessPolicy_LazyDefault(t *testing.T) {
+func newRecordAccessForTest(now *time.Time) (*recordAccess, *memoryRecorder) {
+	rec := newMemoryRecorder()
+	rec.now = func() time.Time { return *now }
 	a := &Adapter{}
-	require.Equal(t, "U001", a.accessPolicy().SetInitiator("T001", "U001"))
-	require.True(t, a.accessPolicy().Allowed("T001", "U001"))
+	p := &recordAccess{rec: rec, channel: ChannelName, now: rec.now, lock: a.recordLock}
+	return p, rec
+}
+
+func TestRecordAccess_InitiatorSetOnce(t *testing.T) {
+	now := time.Now()
+	p, _ := newRecordAccessForTest(&now)
+	ctx := context.Background()
+	if got := p.SetInitiator(ctx, "C1", "T1", "U1"); got != "U1" {
+		t.Fatalf("first SetInitiator = %q", got)
+	}
+	if got := p.SetInitiator(ctx, "C1", "T1", "U2"); got != "U1" {
+		t.Fatalf("second SetInitiator displaced the initiator: %q", got)
+	}
+	if !p.Allowed(ctx, "C1", "T1", "U1") || p.Allowed(ctx, "C1", "T1", "U2") {
+		t.Fatal("initiator must instruct, onlooker must not")
+	}
+	if p.Allowed(ctx, "C1", "T9", "U1") {
+		t.Fatal("an unknown thread denies everyone")
+	}
+}
+
+func TestRecordAccess_GrantIsAdditiveAndSurvivesAnotherAdapter(t *testing.T) {
+	now := time.Now()
+	p, rec := newRecordAccessForTest(&now)
+	ctx := context.Background()
+	p.SetInitiator(ctx, "C1", "T1", "U1")
+	p.Grant(ctx, "C1", "T1", "U2")
+	p.Grant(ctx, "C1", "T1", "U3")
+	p.Grant(ctx, "C1", "T1", "U2") // idempotent
+	// A second policy over the same recorder is what a restarted gateway sees.
+	b := &Adapter{}
+	q := &recordAccess{rec: rec, channel: ChannelName, now: rec.now, lock: b.recordLock}
+	for _, u := range []string{"U1", "U2", "U3"} {
+		if !q.Allowed(ctx, "C1", "T1", u) {
+			t.Fatalf("%s must be allowed after the restart", u)
+		}
+	}
+	if q.Allowed(ctx, "C1", "T1", "U9") {
+		t.Fatal("unknown user allowed")
+	}
+	r, _, _ := rec.ThreadRecord(ctx, ChannelName, "C1", "T1")
+	if len(r.Granted) != 2 {
+		t.Fatalf("grants must be a set, got %v", r.Granted)
+	}
+}
+
+func TestRecordAccess_IdleWindowClosesButAgentStays(t *testing.T) {
+	now := time.Now()
+	p, rec := newRecordAccessForTest(&now)
+	ctx := context.Background()
+	_ = rec.SaveThreadRecord(ctx, ChannelName, "C1", "T1", store.Thread{AgentRef: "issue-agent"})
+	p.SetInitiator(ctx, "C1", "T1", "U1")
+	p.Grant(ctx, "C1", "T1", "U2")
+	now = now.Add(threadAccessTTL + time.Minute)
+	if p.Allowed(ctx, "C1", "T1", "U1") || p.Initiator(ctx, "C1", "T1") != "" {
+		t.Fatal("past the window nobody instructs and the thread has no initiator")
+	}
+	if got := p.SetInitiator(ctx, "C1", "T1", "U5"); got != "U5" {
+		t.Fatalf("after the idle window the mentioner must become initiator, got %q", got)
+	}
+	if p.Allowed(ctx, "C1", "T1", "U2") {
+		t.Fatal("grants must be cleared with the window")
+	}
+	r, _, _ := rec.ThreadRecord(ctx, ChannelName, "C1", "T1")
+	if r.AgentRef != "issue-agent" {
+		t.Fatalf("agent binding must survive the access window, got %q", r.AgentRef)
+	}
+}
+
+func TestRecordAccess_ActivityRefreshesTheWindow(t *testing.T) {
+	now := time.Now()
+	p, _ := newRecordAccessForTest(&now)
+	ctx := context.Background()
+	p.SetInitiator(ctx, "C1", "T1", "U1")
+	now = now.Add(threadAccessTTL - time.Hour)
+	p.SetInitiator(ctx, "C1", "T1", "U1") // a handled message refreshes LastSeen
+	now = now.Add(threadAccessTTL - time.Hour)
+	if !p.Allowed(ctx, "C1", "T1", "U1") {
+		t.Fatal("activity inside the window must keep the thread active")
+	}
+}
+
+func TestAccessPolicy_InProcessFallback(t *testing.T) {
+	a := &Adapter{}
+	ctx := context.Background()
+	if got := a.accessPolicy().SetInitiator(ctx, "C1", "T001", "U001"); got != "U001" {
+		t.Fatalf("SetInitiator over the in-process fallback = %q", got)
+	}
+	if !a.accessPolicy().Allowed(ctx, "C1", "T001", "U001") {
+		t.Fatal("the in-process fallback must remember the initiator")
+	}
 }

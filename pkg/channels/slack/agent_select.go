@@ -450,7 +450,7 @@ func (a *Adapter) conversationStarting(ctx context.Context, msg channels.Inbound
 	if _, found := a.threadAgentBinding(msg.ThreadID); found {
 		return false, nil
 	}
-	if a.isActiveThread(msg.ThreadID) {
+	if a.isActiveThread(ctx, slackChannel, msg.ThreadID) {
 		return false, nil
 	}
 	rctx, cancel := context.WithTimeout(ctx, rootAgentLookupTimeout)

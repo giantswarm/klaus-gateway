@@ -170,8 +170,8 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *slashCommand, slackUse
 	// same first-sight rule dispatch uses.
 	permittedOnly := func() bool {
 		access := a.accessPolicy()
-		access.SetInitiator(threadID, slackUser)
-		if !access.Allowed(threadID, slackUser) {
+		access.SetInitiator(ctx, slackChannel, threadID, slackUser)
+		if !access.Allowed(ctx, slackChannel, threadID, slackUser) {
 			reply(notPermittedNotice)
 			return false
 		}

@@ -33,7 +33,7 @@ func TestHandleInbound_CrossEventTypeTwinDeduped(t *testing.T) {
 	}
 	require.NoError(t, a.Start(t.Context(), gw))
 	t.Cleanup(func() { _ = a.Stop(context.Background()) })
-	a.accessPolicy().SetInitiator("100.000", "U1")
+	a.accessPolicy().SetInitiator(t.Context(), "C1", "100.000", "U1")
 
 	mentionTwin := slackInnerEvent{
 		Type: evtAppMention, User: "U1", Text: "<@BOT> again",

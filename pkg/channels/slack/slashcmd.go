@@ -365,7 +365,7 @@ func (a *Adapter) handleAskAgentSubmission(ctx context.Context, payload interact
 	// the root message is recorded here: the submitter owns the thread, the
 	// thread is bound to the chosen agent, and the launch intro is pre-claimed
 	// (the root already names the agent).
-	a.accessPolicy().SetInitiator(rootTS, user)
+	a.accessPolicy().SetInitiator(ctx, pm.Channel, rootTS, user)
 	a.bindThreadAgent(rootTS, ref)
 	a.claimLaunchAnnounce(rootTS, ref, true)
 

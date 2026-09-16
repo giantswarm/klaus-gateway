@@ -189,7 +189,7 @@ func TestInteractionsHandler_Approve(t *testing.T) {
 
 	// The clicker must be permitted in the thread (the initiator, here, whose
 	// turn created the pending task) or the decision is refused.
-	a.accessPolicy().SetInitiator("T001", "U001")
+	a.accessPolicy().SetInitiator(t.Context(), "C001", "T001", "U001")
 
 	// Seed a pending task.
 	a.storePendingTask("T001", &pendingTask{
@@ -275,7 +275,7 @@ func newDecisionAdapter(t *testing.T, gw channels.Gateway, obo OBOTokenSource) (
 	t.Cleanup(func() { _ = a.Stop(context.Background()) })
 	// The clicker must be permitted; the first user to interact becomes the
 	// thread initiator.
-	a.accessPolicy().SetInitiator("T001", "U001")
+	a.accessPolicy().SetInitiator(t.Context(), "C001", "T001", "U001")
 	a.storePendingTask("T001", &pendingTask{
 		TaskID:    "task-abc",
 		AgentRef:  "worker",
@@ -327,7 +327,7 @@ func TestHandleDecision_CollaboratorClickForwardsInitiatorToken(t *testing.T) {
 	gw := &fakeGateway{deltas: []channels.OutboundDelta{{Content: "done"}, {Done: true}}}
 	// newDecisionAdapter makes U001 the initiator; U002 is a granted collaborator.
 	a, _ := newDecisionAdapter(t, gw, multiUserOBO{"U001": "tok-initiator", "U002": "tok-collab"})
-	a.accessPolicy().Grant("T001", "U002")
+	a.accessPolicy().Grant(t.Context(), "C001", "T001", "U002")
 
 	err := a.handleDecision(t.Context(), "C001", "T001", "MSG001", "U002", hitlAction{kind: hitlApprove})
 	require.NoError(t, err)
@@ -347,7 +347,7 @@ func TestHandleDecision_CollaboratorClickFallsBackWhenInitiatorUnavailable(t *te
 	gw := &fakeGateway{deltas: []channels.OutboundDelta{{Content: "done"}, {Done: true}}}
 	// U001 is the initiator but unlinked; U002 is a granted, linked collaborator.
 	a, _ := newDecisionAdapter(t, gw, multiUserOBO{"U002": "tok-collab"})
-	a.accessPolicy().Grant("T001", "U002")
+	a.accessPolicy().Grant(t.Context(), "C001", "T001", "U002")
 
 	err := a.handleDecision(t.Context(), "C001", "T001", "MSG001", "U002", hitlAction{kind: hitlApprove})
 	require.NoError(t, err)
@@ -391,7 +391,7 @@ func newCorruptDecisionAdapter(t *testing.T, gw channels.Gateway, obo OBOTokenSo
 	}
 	require.NoError(t, a.Start(t.Context(), gw))
 	t.Cleanup(func() { _ = a.Stop(context.Background()) })
-	a.accessPolicy().SetInitiator("T001", "U001")
+	a.accessPolicy().SetInitiator(t.Context(), "C001", "T001", "U001")
 	a.storePendingTask("T001", &pendingTask{TaskID: "task-abc", AgentRef: "worker", Channel: "C001", ChannelID: "C001"})
 	return a, func() []string {
 		mu.Lock()
@@ -420,7 +420,7 @@ func TestHandleDecision_CorruptSessionResetsUnderTurnIdentity(t *testing.T) {
 		},
 	}
 	a, posts := newCorruptDecisionAdapter(t, gw, multiUserOBO{"U001": "tok-initiator", "U002": "tok-collab"})
-	a.accessPolicy().Grant("T001", "U002")
+	a.accessPolicy().Grant(t.Context(), "C001", "T001", "U002")
 
 	err := a.handleDecision(t.Context(), "C001", "T001", "MSG001", "U002", hitlAction{kind: hitlApprove})
 	require.Error(t, err)
@@ -553,7 +553,7 @@ func TestInteractionsHandler_NoPendingTask(t *testing.T) {
 	}
 	require.NoError(t, a.Start(t.Context(), gw))
 	t.Cleanup(func() { _ = a.Stop(context.Background()) })
-	a.accessPolicy().SetInitiator("T_NONE", "U001") // clicker is permitted; exercise the no-pending-task path
+	a.accessPolicy().SetInitiator(t.Context(), "C001", "T_NONE", "U001") // clicker is permitted; exercise the no-pending-task path
 
 	body := slackInteractionPayload(t, "hitl_deny", "T_NONE", "C001", "MSG001", "U001")
 	req := httptest.NewRequest(http.MethodPost, "/channels/slack/interactions", bytes.NewReader(body))
@@ -697,7 +697,7 @@ func TestHandleDecision_OBO_TokenMintFailurePreservesTask(t *testing.T) {
 	require.NoError(t, a.Start(t.Context(), gw))
 	t.Cleanup(func() { _ = a.Stop(context.Background()) })
 
-	a.accessPolicy().SetInitiator("T001", "U_OTHER") // clicker owns the thread; isolate the token gate
+	a.accessPolicy().SetInitiator(t.Context(), "C001", "T001", "U_OTHER") // clicker owns the thread; isolate the token gate
 	a.storePendingTask("T001", &pendingTask{
 		TaskID:    "task-abc",
 		AgentRef:  "worker",
@@ -737,7 +737,7 @@ func TestHandleDecision_OBO_SuccessResumes(t *testing.T) {
 	require.NoError(t, a.Start(t.Context(), gw))
 	t.Cleanup(func() { _ = a.Stop(context.Background()) })
 
-	a.accessPolicy().SetInitiator("T001", "U_LINKED") // clicker owns the thread
+	a.accessPolicy().SetInitiator(t.Context(), "C001", "T001", "U_LINKED") // clicker owns the thread
 	a.storePendingTask("T001", &pendingTask{
 		TaskID:    "task-abc",
 		AgentRef:  "worker",
@@ -790,7 +790,7 @@ func TestInteractionsHandler_OnlookerCannotDecide(t *testing.T) {
 	t.Cleanup(func() { _ = a.Stop(context.Background()) })
 
 	// U001 owns the thread; a pending tool call awaits a decision.
-	a.accessPolicy().SetInitiator("T001", "U001")
+	a.accessPolicy().SetInitiator(t.Context(), "C001", "T001", "U001")
 	a.storePendingTask("T001", &pendingTask{TaskID: "task-abc", AgentRef: "worker", Channel: "C001", ChannelID: "C001"})
 
 	// An onlooker (U999) clicks Approve.
@@ -858,7 +858,7 @@ func TestHandleDecision_FormResumesWithPerQuestionAnswers(t *testing.T) {
 	}
 	require.NoError(t, a.Start(t.Context(), gw))
 
-	a.accessPolicy().SetInitiator("T001", "U001")
+	a.accessPolicy().SetInitiator(t.Context(), "C001", "T001", "U001")
 	a.storePendingTask("T001", &pendingTask{
 		TaskID:    "task-abc",
 		AgentRef:  "worker",
@@ -923,7 +923,7 @@ func TestHandleDecision_FormIncompleteNudges(t *testing.T) {
 		DefaultAgent: "worker",
 	}
 	require.NoError(t, a.Start(t.Context(), gw))
-	a.accessPolicy().SetInitiator("T001", "U001")
+	a.accessPolicy().SetInitiator(t.Context(), "C001", "T001", "U001")
 	a.storePendingTask("T001", &pendingTask{
 		TaskID: "task-abc", AgentRef: "worker", Channel: "C001", ChannelID: "C001",
 		Prompt: &channels.HitlPrompt{
@@ -984,7 +984,7 @@ func TestHandleDecision_FormEmptyUsesFormNudge(t *testing.T) {
 		DefaultAgent: "worker",
 	}
 	require.NoError(t, a.Start(t.Context(), gw))
-	a.accessPolicy().SetInitiator("T001", "U001")
+	a.accessPolicy().SetInitiator(t.Context(), "C001", "T001", "U001")
 	a.storePendingTask("T001", &pendingTask{
 		TaskID: "task-abc", AgentRef: "worker", Channel: "C001", ChannelID: "C001",
 		Prompt: &channels.HitlPrompt{
@@ -1020,7 +1020,7 @@ func TestHandleDecision_FormStaleSelectionNudges(t *testing.T) {
 		DefaultAgent: "worker",
 	}
 	require.NoError(t, a.Start(t.Context(), gw))
-	a.accessPolicy().SetInitiator("T001", "U001")
+	a.accessPolicy().SetInitiator(t.Context(), "C001", "T001", "U001")
 	a.storePendingTask("T001", &pendingTask{
 		TaskID: "task-abc", AgentRef: "worker", Channel: "C001", ChannelID: "C001",
 		Prompt: &channels.HitlPrompt{
@@ -1082,7 +1082,7 @@ func TestHandleDecision_SubmitResumesWithSelectedAnswers(t *testing.T) {
 	require.NoError(t, a.Start(t.Context(), gw))
 	t.Cleanup(func() { _ = a.Stop(context.Background()) })
 
-	a.accessPolicy().SetInitiator("T001", "U001")
+	a.accessPolicy().SetInitiator(t.Context(), "C001", "T001", "U001")
 	a.storePendingTask("T001", &pendingTask{
 		TaskID:    "task-abc",
 		AgentRef:  "worker",
@@ -1140,7 +1140,7 @@ func TestHandleDecision_SubmitWithNoSelectionIsNudged(t *testing.T) {
 	}
 	require.NoError(t, a.Start(t.Context(), gw))
 	t.Cleanup(func() { _ = a.Stop(context.Background()) })
-	a.accessPolicy().SetInitiator("T001", "U001")
+	a.accessPolicy().SetInitiator(t.Context(), "C001", "T001", "U001")
 	a.storePendingTask("T001", &pendingTask{
 		TaskID: "task-abc", AgentRef: "worker", Channel: "C001", ChannelID: "C001",
 		Prompt: askUserPrompt(false, "A", "B"),
@@ -1173,7 +1173,7 @@ func TestHandleDecision_OnlookerEmptySubmitIsRefused(t *testing.T) {
 	}
 	require.NoError(t, a.Start(t.Context(), gw))
 	t.Cleanup(func() { _ = a.Stop(context.Background()) })
-	a.accessPolicy().SetInitiator("T001", "U001")
+	a.accessPolicy().SetInitiator(t.Context(), "C001", "T001", "U001")
 	a.storePendingTask("T001", &pendingTask{
 		TaskID: "task-abc", AgentRef: "worker", Channel: "C001", ChannelID: "C001",
 		Prompt: askUserPrompt(false, "A", "B"),
@@ -1195,16 +1195,16 @@ func TestHandleDecision_OnlookerEmptySubmitIsRefused(t *testing.T) {
 func TestIsActiveThread(t *testing.T) {
 	a := &Adapter{}
 
-	require.False(t, a.isActiveThread("T001"))
+	require.False(t, a.isActiveThread(t.Context(), "C001", "T001"))
 
 	// A known initiator makes it active.
-	a.accessPolicy().SetInitiator("T001", "U001")
-	require.True(t, a.isActiveThread("T001"))
+	a.accessPolicy().SetInitiator(t.Context(), "C001", "T001", "U001")
+	require.True(t, a.isActiveThread(t.Context(), "C001", "T001"))
 
 	// Pending task on a different thread.
 	a.storePendingTask("T002", &pendingTask{TaskID: "x"})
-	require.True(t, a.isActiveThread("T002"))
-	require.False(t, a.isActiveThread("T003"))
+	require.True(t, a.isActiveThread(t.Context(), "C001", "T002"))
+	require.False(t, a.isActiveThread(t.Context(), "C001", "T003"))
 }
 
 func TestThreadReplyRoutedWithoutMention(t *testing.T) {
@@ -1403,7 +1403,7 @@ func TestOnUserLinkedAnchorNeverNamesAgent(t *testing.T) {
 	}
 	require.NoError(t, a.Start(t.Context(), &fakeGateway{}))
 	t.Cleanup(func() { _ = a.Stop(context.Background()) })
-	a.accessPolicy().SetInitiator("T1", "U001") // the parked user owns the thread, so the replay reaches the agent
+	a.accessPolicy().SetInitiator(t.Context(), "C1", "T1", "U001") // the parked user owns the thread, so the replay reaches the agent
 	a.recordSignInAnchor("U001", "T1", signInAnchor{channel: "C1", ts: "111.111"})
 	a.parkPendingLogin("U001", &pendingLoginReq{
 		msg:          channels.InboundMessage{Subject: "U001", ThreadID: "T1", MessageID: "T1", Text: "what failed?"},
@@ -1535,7 +1535,7 @@ func TestHandleDecision_StaleSubmitRefusedAsSuperseded(t *testing.T) {
 	}
 	require.NoError(t, a.Start(t.Context(), gw))
 
-	a.accessPolicy().SetInitiator("T001", "U001")
+	a.accessPolicy().SetInitiator(t.Context(), "C001", "T001", "U001")
 	// The thread's CURRENT pending prompt (task-B): one question, choices x/y.
 	a.storePendingTask("T001", &pendingTask{
 		TaskID:    "task-B",
@@ -1600,7 +1600,7 @@ func TestHandleDecision_LegacyRawValueStillRoutes(t *testing.T) {
 	}
 	require.NoError(t, a.Start(t.Context(), gw))
 
-	a.accessPolicy().SetInitiator("T001", "U001")
+	a.accessPolicy().SetInitiator(t.Context(), "C001", "T001", "U001")
 	a.storePendingTask("T001", &pendingTask{
 		TaskID: "task-abc", AgentRef: "worker", Channel: "C001", ChannelID: "C001",
 	})

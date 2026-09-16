@@ -85,7 +85,7 @@ func TestStorePendingTask_SweptPromptReleasesTheSession(t *testing.T) {
 // so it is where the session is handed back as idle.
 func TestHandleDecision_DeadPromptReleasesTheSession(t *testing.T) {
 	a, rec := newSuspendTestAdapter(t)
-	a.accessPolicy().SetInitiator("1.0", "U1")
+	a.accessPolicy().SetInitiator(t.Context(), "C1", "1.0", "U1")
 
 	require.NoError(t, a.handleDecision(t.Context(), "C1", "1.0", "msg-1", "U1", hitlAction{kind: hitlApprove}))
 
@@ -97,7 +97,7 @@ func TestHandleDecision_DeadPromptReleasesTheSession(t *testing.T) {
 // suspended.
 func TestHandleDecision_SupersededPromptKeepsTheSession(t *testing.T) {
 	a, rec := newSuspendTestAdapter(t)
-	a.accessPolicy().SetInitiator("1.0", "U1")
+	a.accessPolicy().SetInitiator(t.Context(), "C1", "1.0", "U1")
 	a.storePendingTask("1.0", &pendingTask{TaskID: "task-2", Channel: "C1"})
 
 	require.NoError(t, a.handleDecision(t.Context(), "C1", "1.0", "msg-1", "U1",

@@ -1,122 +1,111 @@
 package slack
 
 import (
+	"context"
+	"log/slog"
+	"slices"
 	"sync"
 	"time"
+
+	"github.com/giantswarm/klaus-gateway/pkg/channels"
+	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
 )
 
 // AccessPolicy decides who may instruct the agent in a thread. Reading a thread
 // is never gated; the policy governs instructing only. A thread has one
 // initiator (the user whose mention launched it) who may always instruct;
 // additional users are granted on the fly once the initiator approves them.
-//
-// The decision is wrapped in this interface so a platform-backed policy
-// (team-based auto-allow, shared collaborator lists) can replace the in-memory
-// default without touching dispatch.
+// The state lives in the thread's record in the routing store, so on a
+// persistent store it survives a gateway restart.
 type AccessPolicy interface {
-	// SetInitiator records userID as the thread initiator when none is set yet
-	// and returns the effective initiator. Idempotent: a later caller never
-	// displaces the first.
-	SetInitiator(threadID, userID string) string
-	// Initiator returns the thread initiator, or "" when none is set.
-	Initiator(threadID string) string
-	// Allowed reports whether userID may instruct the agent in threadID (the
-	// initiator, or a user granted via Grant).
-	Allowed(threadID, userID string) bool
+	// SetInitiator records userID as the thread initiator when none is set (or
+	// the access window closed) and returns the effective initiator. A later
+	// caller inside the window never displaces the first.
+	SetInitiator(ctx context.Context, channelID, threadID, userID string) string
+	// Initiator returns the thread initiator, or "" when none is set or the
+	// access window closed.
+	Initiator(ctx context.Context, channelID, threadID string) string
+	// Allowed reports whether userID may instruct the agent in the thread (the
+	// initiator, or a user granted via Grant), inside the access window.
+	Allowed(ctx context.Context, channelID, threadID, userID string) bool
 	// Grant adds userID to the thread's allowed interactors. Additive.
-	Grant(threadID, userID string)
+	Grant(ctx context.Context, channelID, threadID, userID string)
 }
 
 // threadAccessTTL bounds how long a thread stays "active" (initiator and
 // grants retained) without any interaction. A thread past the TTL needs a
 // fresh @-mention to re-engage the bot, so a long-lived pod does not keep
-// consuming un-mentioned replies in abandoned threads. Sliding: every handled
-// message refreshes the deadline via SetInitiator.
+// consuming un-mentioned replies in abandoned threads. Sliding: the window is
+// computed from the record's LastSeen, which every handled message refreshes
+// via SetInitiator.
 const threadAccessTTL = 24 * time.Hour
 
-// memoryAccess is the default in-memory AccessPolicy. State is per-thread and
-// lost on restart; the initiator is then re-established by the next interaction
-// (durable state is PR D).
-type memoryAccess struct {
-	mu      sync.Mutex
-	threads map[string]*threadAccess
+// recordAccess is AccessPolicy over the thread record. The access window is
+// computed from the record's LastSeen: past threadAccessTTL of silence the
+// initiator and the grants are void and the next author takes the thread
+// over; the agent binding in the same record stays.
+type recordAccess struct {
+	rec     threadRecorder
+	channel string
+	now     func() time.Time
+	lock    func(channelID, threadID string) *sync.Mutex
 }
 
-type threadAccess struct {
-	initiator string
-	granted   map[string]bool
-	expires   time.Time
+func (p *recordAccess) open(r channels.ThreadRecord) bool {
+	return r.Initiator != "" && p.now().Sub(r.LastSeen) <= threadAccessTTL
 }
 
-func newMemoryAccess() *memoryAccess {
-	return &memoryAccess{threads: make(map[string]*threadAccess)}
-}
-
-// thread returns the per-thread record, creating it on first use and
-// refreshing its eviction deadline. Expired siblings are swept
-// opportunistically. Caller holds mu.
-func (m *memoryAccess) thread(threadID string, now time.Time) *threadAccess {
-	for id, t := range m.threads {
-		if now.After(t.expires) {
-			delete(m.threads, id)
+func (p *recordAccess) SetInitiator(ctx context.Context, channelID, threadID, userID string) string {
+	mu := p.lock(channelID, threadID)
+	mu.Lock()
+	defer mu.Unlock()
+	r, ok, err := p.rec.ThreadRecord(ctx, p.channel, channelID, threadID)
+	if err != nil {
+		slog.Warn("slack: read thread record failed, treating the author as initiator", "thread", threadID, "error", err)
+		return userID
+	}
+	if !ok || !p.open(r) {
+		t := store.Thread{AgentRef: r.AgentRef, Initiator: userID}
+		if err := p.rec.SaveThreadRecord(ctx, p.channel, channelID, threadID, t); err != nil {
+			slog.Warn("slack: write thread record failed", "thread", threadID, "error", err)
 		}
+		return userID
 	}
-	t, ok := m.threads[threadID]
-	if !ok {
-		t = &threadAccess{}
-		m.threads[threadID] = t
+	// A handled message refreshes LastSeen: the window slides.
+	if err := p.rec.SaveThreadRecord(ctx, p.channel, channelID, threadID, r.Thread); err != nil {
+		slog.Warn("slack: refresh thread record failed", "thread", threadID, "error", err)
 	}
-	t.expires = now.Add(threadAccessTTL)
-	return t
+	return r.Initiator
 }
 
-// live returns the thread record if present and not expired. Caller holds mu.
-func (m *memoryAccess) live(threadID string, now time.Time) (*threadAccess, bool) {
-	t, ok := m.threads[threadID]
-	if !ok || now.After(t.expires) {
-		return nil, false
+func (p *recordAccess) Initiator(ctx context.Context, channelID, threadID string) string {
+	r, ok, err := p.rec.ThreadRecord(ctx, p.channel, channelID, threadID)
+	if err != nil || !ok || !p.open(r) {
+		return ""
 	}
-	return t, true
+	return r.Initiator
 }
 
-func (m *memoryAccess) SetInitiator(threadID, userID string) string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	t := m.thread(threadID, time.Now())
-	if t.initiator == "" {
-		t.initiator = userID
-	}
-	return t.initiator
-}
-
-func (m *memoryAccess) Initiator(threadID string) string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if t, ok := m.live(threadID, time.Now()); ok {
-		return t.initiator
-	}
-	return ""
-}
-
-func (m *memoryAccess) Allowed(threadID, userID string) bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	t, ok := m.live(threadID, time.Now())
-	if !ok {
+func (p *recordAccess) Allowed(ctx context.Context, channelID, threadID, userID string) bool {
+	r, ok, err := p.rec.ThreadRecord(ctx, p.channel, channelID, threadID)
+	if err != nil || !ok || !p.open(r) {
 		return false
 	}
-	if userID != "" && userID == t.initiator {
-		return true
-	}
-	return t.granted[userID]
+	return r.Initiator == userID || slices.Contains(r.Granted, userID)
 }
 
-func (m *memoryAccess) Grant(threadID, userID string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	t := m.thread(threadID, time.Now())
-	if t.granted == nil {
-		t.granted = make(map[string]bool)
+func (p *recordAccess) Grant(ctx context.Context, channelID, threadID, userID string) {
+	mu := p.lock(channelID, threadID)
+	mu.Lock()
+	defer mu.Unlock()
+	r, ok, err := p.rec.ThreadRecord(ctx, p.channel, channelID, threadID)
+	if err != nil || !ok {
+		return
 	}
-	t.granted[userID] = true
+	if !slices.Contains(r.Granted, userID) {
+		r.Granted = append(r.Granted, userID)
+	}
+	if err := p.rec.SaveThreadRecord(ctx, p.channel, channelID, threadID, r.Thread); err != nil {
+		slog.Warn("slack: write grant failed", "thread", threadID, "user", userID, "error", err)
+	}
 }

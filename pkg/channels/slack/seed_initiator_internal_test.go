@@ -33,7 +33,7 @@ func TestSeedInitiatorFromRoot_RestartWindowRestoresRootAuthor(t *testing.T) {
 
 	a.seedInitiatorFromRoot(t.Context(), "C1", "100.000", "200.000")
 
-	require.Equal(t, "U_ROOT", a.accessPolicy().Initiator("100.000"),
+	require.Equal(t, "U_ROOT", a.accessPolicy().Initiator(t.Context(), "C1", "100.000"),
 		"within threadAccessTTL of start, an unrecorded thread is a restart and the root author is restored")
 }
 
@@ -50,11 +50,11 @@ func TestSeedInitiatorFromRoot_PastTTLLeavesMentionerToWin(t *testing.T) {
 
 	a.seedInitiatorFromRoot(t.Context(), "C1", "100.000", "200.000")
 
-	require.Empty(t, a.accessPolicy().Initiator("100.000"),
+	require.Empty(t, a.accessPolicy().Initiator(t.Context(), "C1", "100.000"),
 		"past threadAccessTTL the reseed is suppressed so the fresh mention re-establishes the initiator")
 
 	// Dispatch's SetInitiator then installs the mentioner, not the stale root.
-	require.Equal(t, "U_MENTIONER", a.accessPolicy().SetInitiator("100.000", "U_MENTIONER"))
+	require.Equal(t, "U_MENTIONER", a.accessPolicy().SetInitiator(t.Context(), "C1", "100.000", "U_MENTIONER"))
 }
 
 func TestSeedInitiatorFromRoot_UnstartedAdapterSkipsReseed(t *testing.T) {
@@ -68,5 +68,5 @@ func TestSeedInitiatorFromRoot_UnstartedAdapterSkipsReseed(t *testing.T) {
 
 	a.seedInitiatorFromRoot(t.Context(), "C1", "100.000", "200.000")
 
-	require.Empty(t, a.accessPolicy().Initiator("100.000"))
+	require.Empty(t, a.accessPolicy().Initiator(t.Context(), "C1", "100.000"))
 }

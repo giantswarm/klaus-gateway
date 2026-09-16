@@ -164,8 +164,11 @@ type Adapter struct {
 	ixHandler  http.Handler // interactions endpoint; nil in socketmode
 	cmdHandler http.Handler // slash commands endpoint; nil in socketmode
 
-	accessMu sync.Mutex
-	access   AccessPolicy // lazily initialised via accessPolicy()
+	// recordsMu guards memRecords, the in-process thread recorder used when the
+	// gateway has no routing store (tests, the Klaus-instance path).
+	recordsMu   sync.Mutex
+	memRecords  *memoryRecorder
+	recordLocks [64]sync.Mutex
 
 	pendingAccessMu sync.Mutex
 	pendingAccess   map[string]map[string][]*pendingAccessReq // threadID -> userID -> messages parked (in order) while the initiator decides
@@ -1215,23 +1218,17 @@ func (a *Adapter) postAccessPrompt(ctx context.Context, slackChannel, threadID, 
 	}
 }
 
-// accessPolicy returns the adapter's AccessPolicy, lazily installing the
-// in-memory default so direct-construction tests need no wiring.
+// accessPolicy returns the adapter's AccessPolicy over the thread record.
 func (a *Adapter) accessPolicy() AccessPolicy {
-	a.accessMu.Lock()
-	defer a.accessMu.Unlock()
-	if a.access == nil {
-		a.access = newMemoryAccess()
-	}
-	return a.access
+	return &recordAccess{rec: a.records(), channel: ChannelName, now: time.Now, lock: a.recordLock}
 }
 
 // isActiveThread reports whether the bot has an active session in threadID —
 // either a known initiator (it was mentioned at some point) or a pending
 // input-required task. Used to decide whether to route message.channels thread
 // replies without requiring an @-mention.
-func (a *Adapter) isActiveThread(threadID string) bool {
-	if a.accessPolicy().Initiator(threadID) != "" {
+func (a *Adapter) isActiveThread(ctx context.Context, channelID, threadID string) bool {
+	if a.accessPolicy().Initiator(ctx, channelID, threadID) != "" {
 		return true
 	}
 	return a.hasPendingTask(threadID)
@@ -1551,8 +1548,8 @@ func (a *Adapter) handleSessionStopped(ctx context.Context, inner slackInnerEven
 	// becomes the thread's initiator, and only they (or someone they let in)
 	// may interrupt the agent there.
 	access := a.accessPolicy()
-	access.SetInitiator(inner.ThreadTS, inner.User)
-	if !access.Allowed(inner.ThreadTS, inner.User) {
+	access.SetInitiator(ctx, inner.Channel, inner.ThreadTS, inner.User)
+	if !access.Allowed(ctx, inner.Channel, inner.ThreadTS, inner.User) {
 		a.Logger.Debug("slack: stop button press refused, presser not permitted in this thread",
 			"channel", inner.Channel, "thread", inner.ThreadTS, "user", inner.User)
 		if err := a.apiClient().postEphemeralText(ctx, inner.Channel, inner.User, inner.ThreadTS, notPermittedNotice); err != nil {
@@ -1652,7 +1649,7 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 	// thread arrives as both a message and an app_mention event, and when the
 	// message copy lands first, having it claim the dedup slot on its way to
 	// being gate-dropped would discard the app_mention copy as a duplicate.
-	if threadReplyOnly && !a.isActiveThread(msg.ThreadID) {
+	if threadReplyOnly && !a.isActiveThread(ctx, inner.Channel, msg.ThreadID) {
 		a.Logger.Debug("slack: reply in inactive thread ignored", "channel", inner.Channel, "thread", msg.ThreadID)
 		// A mention arrives as message + app_mention twins; the app_mention twin
 		// acts on it (dispatch, park, or answer), so hinting on the gate-dropped
@@ -1854,7 +1851,7 @@ func (a *Adapter) seedInitiatorFromRoot(ctx context.Context, slackChannel, threa
 	if a.startUnix == 0 || time.Now().Unix()-a.startUnix >= int64(threadAccessTTL.Seconds()) {
 		return
 	}
-	if a.accessPolicy().Initiator(threadID) != "" {
+	if a.accessPolicy().Initiator(ctx, slackChannel, threadID) != "" {
 		return
 	}
 	ctx, cancel := context.WithTimeout(ctx, rootAuthorLookupTimeout)
@@ -1865,7 +1862,7 @@ func (a *Adapter) seedInitiatorFromRoot(ctx context.Context, slackChannel, threa
 			"thread", threadID, "error", err)
 		return
 	}
-	a.accessPolicy().SetInitiator(threadID, author)
+	a.accessPolicy().SetInitiator(ctx, slackChannel, threadID, author)
 }
 
 // dispatch resolves an inbound Slack message to a Klaus instance, posts a
@@ -1895,15 +1892,15 @@ func (a *Adapter) dispatchFrom(ctx context.Context, msg channels.InboundMessage,
 	// Captured before the policy records this thread: true when this process has
 	// no record of the thread, i.e. a reply into a thread it did not start
 	// (typically after a restart): the case the resume check targets.
-	firstSight := !a.isActiveThread(msg.ThreadID)
+	firstSight := !a.isActiveThread(ctx, slackChannel, msg.ThreadID)
 
 	// Access control. The first user to interact becomes the thread initiator and
 	// instructs freely. A different user is gated: authenticate first (unknown
 	// identity -> sign-in), then ask the initiator to approve them (the agent acts
 	// under the initiator's delegated identity, so the initiator must consent).
 	access := a.accessPolicy()
-	initiator := access.SetInitiator(msg.ThreadID, slackUser)
-	if !access.Allowed(msg.ThreadID, slackUser) {
+	initiator := access.SetInitiator(ctx, slackChannel, msg.ThreadID, slackUser)
+	if !access.Allowed(ctx, slackChannel, msg.ThreadID, slackUser) {
 		if a.OBO != nil && slackUser != "" {
 			if _, err := a.OBO.TokenFor(ctx, slackUser); err != nil {
 				if errors.Is(err, musterlink.ErrNotLinked) {
@@ -2382,7 +2379,7 @@ func (a *Adapter) applyInitiatorIdentity(ctx context.Context, msg *channels.Inbo
 	if a.OBO == nil {
 		return slackUser
 	}
-	initiator := a.accessPolicy().Initiator(threadID)
+	initiator := a.accessPolicy().Initiator(ctx, msg.ChannelID, threadID)
 	if initiator == "" || initiator == slackUser {
 		return slackUser
 	}
