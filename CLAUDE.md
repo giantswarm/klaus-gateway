@@ -21,7 +21,6 @@ reading or writing code:
 - HTTP: `net/http` + `chi` router (`github.com/go-chi/chi/v5`)
 - Logging: `log/slog`
 - OTel: `go.opentelemetry.io/otel` (OTLP gRPC)
-- CRD controller: `sigs.k8s.io/controller-runtime`
 - CI: giantswarm `architect` orb. Multi-arch (amd64+arm64) Docker images.
 
 ## Package layout
@@ -31,7 +30,6 @@ main.go                 entrypoint; wires stores, lifecycle drivers, adapters, s
 pkg/a2a/                kagent API v2 client: A2A v1 over gRPC turns, AgentTemplate roster, AgentInstance per thread, HITL payloads
 pkg/kagent/gen/         generated kagent.api.v1alpha1 gRPC stubs (make generate-kagent; pin in its README)
 pkg/api/                OpenAI-compat front door (/v1/{instance}/...)
-pkg/api/v1alpha1/       ChannelRoute CRD types (routing.giantswarm.io/v1alpha1)
 pkg/channels/           ChannelAdapter interface + Gateway facade
 pkg/channels/web/       web channel adapter (/web/*)
 pkg/channels/slack/     Slack channel adapter (/channels/slack/*); Events API + Socket Mode
@@ -42,14 +40,13 @@ pkg/lifecycle/klausctl/ calls klausctl CLI (local dev)
 pkg/lifecycle/operator/ calls Klaus Operator MCP tools (cluster)
 pkg/lifecycle/static/   fixed instance map (compose harness / CI)
 pkg/routing/            routing table
-pkg/routing/store/      Store interface + five backends (memory, valkey, crd, bolt, configmap)
+pkg/routing/store/      Store interface + three backends (memory, valkey, bolt)
 pkg/auth/musterlink/    Slack OBO: muster account linking + the link Store (memory, bolt file, Kubernetes Secret)
 pkg/server/             http.Server wiring, middleware, admin mux
 pkg/upstream/           agentgateway upstream URL rewriter
 pkg/observability/      OTel traces + Prometheus metrics
 pkg/project/            build identifiers: ldflags target for version, git SHA and build timestamp; version falls back to the Go build info
 internal/config/        env-var + flag config (KLAUS_GATEWAY_* prefix)
-internal/controller/    ChannelRoute controller-runtime reconciler
 internal/version/       re-exports pkg/project for the rest of the code
 helm/klaus-gateway/     Helm chart
 hack/kagent-proto/      kagent protos copied from giantswarm/kagent-upstream; input of make generate-kagent
@@ -65,18 +62,13 @@ deploy/slack/manifest.yaml    Slack app manifest
 
 ## Routing stores
 
-Five backends are supported (set via `--store` / `KLAUS_GATEWAY_STORE`):
+Three backends are supported (set via `--store` / `KLAUS_GATEWAY_STORE`):
 
 | Store       | Value        | Persistent | Cluster-backed | Notes                                       |
 |-------------|-------------|------------|----------------|---------------------------------------------|
 | Memory      | `memory`    | no         | no             | Default; state lost on restart              |
 | Valkey      | `valkey`    | yes        | yes            | For installations. One key per entry in Valkey (`--valkey-url`, password from `KLAUS_GATEWAY_VALKEY_PASSWORD` or `--valkey-password-file`); TTL as key expiry; every call bounded by `--valkey-timeout` |
-| CRD         | `crd`       | yes        | yes            | One `ChannelRoute` CR per conversation; requires `--controller` |
 | Bolt        | `bolt`      | yes        | no             | Local file; path via `--bolt-path`          |
-| ConfigMap   | `configmap` | yes        | yes            | Not for installations: one `ConfigMap` holds the whole table |
-
-When `--store=crd --controller=true` the embedded `controller-runtime` manager is started
-in-process and watches `ChannelRoute` CRs to update their status conditions.
 
 ## Lifecycle drivers
 

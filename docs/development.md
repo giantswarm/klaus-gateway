@@ -89,7 +89,6 @@ The `/v1/{instance}/...` shape lets any OpenAI SDK work by setting
 ```
 main.go                 entrypoint; wires stores, lifecycle drivers, adapters, server
 pkg/api/                OpenAI-compat front door (/v1/{instance}/...)
-pkg/api/v1alpha1/       ChannelRoute CRD types (routing.giantswarm.io/v1alpha1)
 pkg/channels/           ChannelAdapter interface + Gateway facade
 pkg/channels/web/       web channel adapter (/web/*)
 pkg/channels/slack/     Slack channel adapter (/channels/slack/*)
@@ -97,7 +96,7 @@ pkg/channels/cli/       CLI channel adapter (/cli/v1/*)
 pkg/instance/           HTTP client for Klaus instances + SSE helpers
 pkg/lifecycle/          lifecycle.Manager interface + drivers (klausctl, operator, static)
 pkg/routing/            routing table + pluggable store backends
-pkg/routing/store/      Store interface + memory / bolt / configmap / crd backends
+pkg/routing/store/      Store interface + memory / bolt / valkey backends
 pkg/auth/musterlink/    Slack OBO: muster account linking + the link Store (memory, bolt file, Kubernetes Secret)
 pkg/server/             http.Server wiring, middleware, admin mux
 pkg/upstream/           agentgateway upstream URL rewriter
@@ -105,7 +104,6 @@ pkg/a2a/                kagent API v2 client (A2A v1 gRPC, AgentTemplates, Agent
 pkg/kagent/gen/         generated kagent.api.v1alpha1 stubs (`make generate-kagent`)
 pkg/observability/      OTel traces + Prometheus metrics
 internal/config/        env-var + flag config (KLAUS_GATEWAY_* prefix)
-internal/controller/    ChannelRoute controller-runtime reconciler
 internal/version/       ldflags-injected version metadata
 ```
 

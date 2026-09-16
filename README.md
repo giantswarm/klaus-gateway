@@ -68,7 +68,7 @@ For day-to-day development the preferred path is `klausctl gateway start`, which
 ```
 main.go             # binary entrypoint
 pkg/                # channel adapters, routing, lifecycle, server, upstream, kagent (a2a) client, OBO link store
-internal/           # config, controller, version
+internal/           # config, version
 helm/klaus-gateway/ # Helm chart
 deploy/             # docker-compose smoke harness + agentgateway config
 hack/               # kagent proto sync, chart render check, smoke-harness scripts

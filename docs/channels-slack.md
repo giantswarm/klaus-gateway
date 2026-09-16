@@ -374,7 +374,7 @@ A turn ends early for one of two reasons, and the thread can tell them apart:
 
 The recovery rides on the thread's routing-store binding, which records the task in flight
 while a turn runs. It therefore needs a routing store that outlives the process
-(`routing.store: configmap`, `bolt` or `crd`); with `memory` the record dies with the pod and
+(`routing.store: valkey` or `bolt`); with `memory` the record dies with the pod and
 the notice says so ("I cannot bring it into this thread"). The pod's
 `terminationGracePeriodSeconds` must leave room for the notice: the shutdown drains the HTTP
 servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s more), see

@@ -176,7 +176,7 @@ The gateway speaks to the controller only as the person behind the turn (their D
 so the route's JWT policy validates one issuer and no ServiceAccount token is presented to it.
 The route must carry native gRPC over HTTP/2 and preserve the `authorization` and
 `x-kagent-agent-instance-id` metadata. Thread bindings live in the routing store, so a
-persistent store (`valkey`, `crd`) keeps conversations across restarts — and lets a
+persistent store (`valkey`) keeps conversations across restarts — and lets a
 restarted gateway pick up the turns its predecessor left running, see
 [Shutdown and restarts](#shutdown-and-restarts).
 
@@ -224,9 +224,7 @@ task in flight on that thread (delivered after a restart, see
 |-------------|-------------------|------------|----------------|------------------------------------|
 | `memory`    | `routing.store: memory`    | no  | no  | Default; state lost on restart     |
 | `valkey`    | `routing.store: valkey`    | yes | yes | For installations. One key per thread in a Valkey server; set `routing.valkey.url` and the password Secret |
-| `crd`       | `routing.store: crd`       | yes | yes | For installations without a Valkey. One `ChannelRoute` CR per conversation; requires `controller.enabled` |
 | `bolt`      | `routing.store: bolt`      | file | no | Local file; set `routing.boltPath`. Durable only inside a mounted volume, which the chart does not provide |
-| `configmap` | `routing.store: configmap` | yes | yes | Not for installations: one ConfigMap holds the whole table (1 MiB cap, a read-modify-write of everything on every turn) and the chart renders no RBAC for it |
 
 ### Valkey
 
@@ -255,24 +253,6 @@ binary also takes `--valkey-password-file` for a mounted file. Every dial and co
 with a clear error in the thread, the pod's readiness probe (a `PING`) fails, and both recover with
 the server — no restart. Under a Cilium network policy the gateway pod needs egress to the Valkey
 pods on 6379 (the agent platform's connectivity chart renders it).
-
-### ChannelRoute CRD
-
-When `routing.store: crd`, the gateway reads and writes `ChannelRoute` custom resources
-(`routing.giantswarm.io/v1alpha1`). The CRD is rendered by the chart when `crd.install: true`
-(default).
-
-Enable the embedded controller to watch `ChannelRoute` CRs and update their status conditions:
-
-```yaml
-routing:
-  store: crd
-controller:
-  enabled: true
-```
-
-The controller requires cluster-scoped RBAC to list/watch/patch `ChannelRoute` resources; the
-chart's `templates/rbac.yaml` grants this when `controller.enabled: true`.
 
 ## Lifecycle driver
 
@@ -357,7 +337,7 @@ the closes; below the drain plus the stop, the kubelet kills the pod before the 
 out and the thread is left with a frozen ticker. The recovery of left-running turns needs a
 routing store that outlives the pod: `routing.store: memory` (the chart default) forgets the
 binding and the task with it. Installations with a Slack channel should run `valkey` (see
-[Valkey](#valkey)), or `crd` where no Valkey is available; `bolt` only counts when `routing.boltPath`
+[Valkey](#valkey)); `bolt` only counts when `routing.boltPath`
 lies inside a mounted volume.
 
 ## Observability
