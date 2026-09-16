@@ -269,14 +269,30 @@ func (a *Adapter) agentRefsForSelector(ctx context.Context, selector string) ([]
 	return refs, nil
 }
 
-// agentInfoRef is the A2A ref for ag under the deployment's ref shape: bare
-// when the default agent is bare (the namespace already lives in the
-// configured A2A base URL), namespace-qualified when the default is qualified.
-func (a *Adapter) agentInfoRef(ag pkga2a.AgentInfo) string {
-	if a.defaultAgentNamespace() == "" || ag.Namespace == "" {
-		return ag.Name
+// refShape renders (namespace, name) in the deployment's ref shape: bare when
+// the default agent is bare and the namespace is the served one, "namespace/name"
+// otherwise. served says the caller knows the namespace is the served one (a
+// roster entry always is; a typed name only when it matches Namespace or names
+// none). Every ref the adapter binds, compares or persists goes through here,
+// so one template has one spelling (#269).
+func (a *Adapter) refShape(namespace, name string, served bool) string {
+	defaultNS := a.defaultAgentNamespace()
+	if defaultNS == "" && (namespace == "" || served) {
+		return name
 	}
-	return ag.Namespace + "/" + ag.Name
+	if namespace == "" {
+		namespace = defaultNS
+	}
+	if namespace == "" {
+		return name
+	}
+	return namespace + "/" + name
+}
+
+// agentInfoRef is the A2A ref for ag in the deployment's ref shape. The roster
+// lists the served namespace only, so its namespace is served by construction.
+func (a *Adapter) agentInfoRef(ag pkga2a.AgentInfo) string {
+	return a.refShape(ag.Namespace, ag.Name, true)
 }
 
 // foldAgentSelector normalizes a selector or agent name for matching:

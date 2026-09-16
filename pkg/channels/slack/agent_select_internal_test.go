@@ -246,3 +246,39 @@ func TestOpeningAgentRefRefusals(t *testing.T) {
 	require.Empty(t, ref)
 	require.Equal(t, agentRecoveryCheckFailedNotice, refusal)
 }
+
+func TestAgentRefFromName_FollowsDeploymentRefShape(t *testing.T) {
+	cases := []struct {
+		name, defaultAgent, namespace, input, want string
+	}{
+		{"bare default, bare name", "sre-agent", "kagent", "sre-agent", "sre-agent"},
+		{"bare default, served namespace collapses", "sre-agent", "kagent", "kagent/sre-agent", "sre-agent"},
+		{"bare default, foreign namespace kept", "sre-agent", "kagent", "other/sre-agent", "other/sre-agent"},
+		{"qualified default, bare name gets the namespace", "kagent/sre-agent", "kagent", "sre-agent", "kagent/sre-agent"},
+		{"qualified default, qualified name kept", "kagent/sre-agent", "kagent", "kagent/sre-agent", "kagent/sre-agent"},
+		{"namespace unknown to the adapter: typed namespace kept", "sre-agent", "", "kagent/sre-agent", "kagent/sre-agent"},
+		{"uppercase folded", "sre-agent", "kagent", "Kagent/SRE-Agent", "sre-agent"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := &Adapter{DefaultAgent: tc.defaultAgent, Namespace: tc.namespace}
+			got, ok := a.agentRefFromName(tc.input)
+			if !ok {
+				t.Fatalf("agentRefFromName(%q) rejected the name", tc.input)
+			}
+			if got != tc.want {
+				t.Fatalf("agentRefFromName(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAgentInfoRef_FollowsDeploymentRefShape(t *testing.T) {
+	ag := pkga2a.AgentInfo{Name: "sre-agent", Namespace: "kagent"}
+	if got := (&Adapter{DefaultAgent: "sre-agent", Namespace: "kagent"}).agentInfoRef(ag); got != "sre-agent" {
+		t.Fatalf("bare default: got %q, want sre-agent", got)
+	}
+	if got := (&Adapter{DefaultAgent: "kagent/sre-agent", Namespace: "kagent"}).agentInfoRef(ag); got != "kagent/sre-agent" {
+		t.Fatalf("qualified default: got %q, want kagent/sre-agent", got)
+	}
+}
