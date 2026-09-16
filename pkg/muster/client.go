@@ -61,7 +61,7 @@ func (c *Client) CallTool(ctx context.Context, bearer, tool string, args map[str
 	if _, err := s.request(ctx, 1, "initialize", map[string]any{
 		"protocolVersion": protocolVersion,
 		"capabilities":    map[string]any{},
-		"clientInfo":      map[string]any{"name": "klaus-gateway", "version": "team-review"},
+		"clientInfo":      map[string]any{nameKey: "klaus-gateway", "version": "team-review"},
 	}); err != nil {
 		return Result{}, fmt.Errorf("muster: initialize: %w", err)
 	}
@@ -75,8 +75,8 @@ func (c *Client) CallTool(ctx context.Context, bearer, tool string, args map[str
 	// target's result comes back serialised in the meta-tool's text content,
 	// its isError verdict inside.
 	raw, err := s.request(ctx, 2, "tools/call", map[string]any{
-		"name":      metaCallTool,
-		"arguments": map[string]any{"name": tool, "arguments": args},
+		nameKey:      metaCallTool,
+		argumentsKey: map[string]any{nameKey: tool, argumentsKey: args},
 	})
 	if err != nil {
 		return Result{}, fmt.Errorf("muster: call %s: %w", tool, err)
@@ -94,8 +94,13 @@ func (c *Client) CallTool(ctx context.Context, bearer, tool string, args map[str
 	return outer, nil
 }
 
-// metaCallTool is muster's meta-tool that runs any aggregated or core tool.
-const metaCallTool = "call_tool"
+// metaCallTool is muster's meta-tool that runs any aggregated or core tool;
+// nameKey and argumentsKey are the tools/call parameter names it mirrors.
+const (
+	metaCallTool = "call_tool"
+	nameKey      = "name"
+	argumentsKey = "arguments"
+)
 
 // toolResult is the shape of an MCP tools/call result and of the envelope
 // call_tool serialises the target's result into.
