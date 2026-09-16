@@ -83,6 +83,7 @@ spec:
         {{- end }}
         {{- if .Values.routing.defaultTTL }}
         - --default-ttl={{ .Values.routing.defaultTTL }}
+        - --thread-ttl={{ .Values.routing.threadTTL }}
         {{- end }}
         {{- if or .Values.routing.autoCreate .Values.a2a.enabled }}
         - --auto-create

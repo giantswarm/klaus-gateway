@@ -140,6 +140,7 @@ func run(args []string) error {
 		Client:    instanceClient,
 		Lifecycle: manager,
 		Routes:    routeStore,
+		ThreadTTL: cfg.ThreadTTL,
 		// A turn a shutdown cuts short is delivered after the restart only when
 		// the thread's record of it outlives the process.
 		Durable: cfg.Store != config.StoreMemory,

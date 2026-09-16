@@ -63,7 +63,7 @@ func (m *memoryRecorder) ThreadRecord(_ context.Context, channel, channelID, thr
 	defer m.mu.Unlock()
 	k := recKey(channel, channelID, threadID)
 	r, ok := m.recs[k]
-	if ok && m.now().Sub(r.LastSeen) > channels.ThreadRecordTTL {
+	if ok && m.now().Sub(r.LastSeen) > channels.DefaultThreadTTL {
 		delete(m.recs, k)
 		return channels.ThreadRecord{}, false, nil
 	}

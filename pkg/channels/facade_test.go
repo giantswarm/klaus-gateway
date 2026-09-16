@@ -322,7 +322,7 @@ func (a *fakeAgent) lastStreamed() *a2apkg.Message {
 // newA2AFacade wires a facade on the fake with a memory store.
 func newA2AFacade(agent *fakeAgent) (*channels.Facade, store.Store) {
 	s := memory.New()
-	return &channels.Facade{Agent: agent, Routes: s}, s
+	return &channels.Facade{Agent: agent, Routes: s, ThreadTTL: channels.DefaultThreadTTL}, s
 }
 
 // taskInfo is the identity of the fake turn's task, as the controller's events
@@ -376,6 +376,7 @@ func TestFacade_SendCompletionViaA2A_FirstTurnCreatesTheInstance(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, ok)
 	require.Equal(t, "inst-kagent/worker-1", entry.AgentInstanceID)
+	require.Equal(t, channels.DefaultThreadTTL, entry.TTL, "the binding slides with the thread's lifetime")
 	require.Empty(t, entry.Instance)
 
 	sent := agent.lastStreamed()

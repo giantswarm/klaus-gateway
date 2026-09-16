@@ -9,10 +9,11 @@ import (
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
 )
 
-// ThreadRecordTTL is the sliding lifetime of a thread record: refreshed on
-// every handled message, an idle thread's record expires after it and the
-// next message starts a conversation. The instance binding keeps no TTL.
-const ThreadRecordTTL = 30 * 24 * time.Hour
+// DefaultThreadTTL is the default of --thread-ttl: the sliding lifetime of a
+// thread's state, its record and its AgentInstance binding alike. Every
+// handled message refreshes it; after it the thread is forgotten and the next
+// mention starts a fresh conversation.
+const DefaultThreadTTL = 90 * 24 * time.Hour
 
 // ThreadRecord is a store.Thread with the timestamps of its entry.
 type ThreadRecord struct {
@@ -43,7 +44,7 @@ func (f *Facade) ThreadRecord(ctx context.Context, channel, channelID, threadID 
 }
 
 // SaveThreadRecord writes t as the thread's record with LastSeen = now and the
-// sliding ThreadRecordTTL. It merges into the entry at the thread key rather
+// facade's sliding ThreadTTL. It merges into the entry at the thread key rather
 // than replacing it: on the Klaus-instance path the router keeps the thread's
 // instance route at this same key (Slack's user slot is empty), so the
 // instance name, an existing CreatedAt and a TTL the router set are kept.
@@ -63,37 +64,10 @@ func (f *Facade) SaveThreadRecord(ctx context.Context, channel, channelID, threa
 		e.CreatedAt = now
 	}
 	if e.TTL <= 0 {
-		e.TTL = ThreadRecordTTL
+		e.TTL = f.ThreadTTL
 	}
 	if err := f.Routes.Put(ctx, key, e); err != nil {
 		return fmt.Errorf("channels: write thread record: %w", err)
 	}
 	return nil
-}
-
-// FindThreadBinding reports the agent of an instance binding the thread
-// already has, for a thread whose record is gone (expired after
-// ThreadRecordTTL of silence) while its binding, which never expires, is not.
-// The newest binding wins when several exist. A full List is acceptable: this
-// runs only for a thread with no record.
-func (f *Facade) FindThreadBinding(ctx context.Context, channel, channelID, threadID string) (string, bool, error) {
-	if f == nil || f.Routes == nil {
-		return "", false, errNoThreadStore
-	}
-	entries, err := f.Routes.List(ctx)
-	if err != nil {
-		return "", false, fmt.Errorf("channels: list bindings: %w", err)
-	}
-	var ref string
-	var seen time.Time
-	for _, ke := range entries {
-		k := ke.Key
-		if k.Channel != channel || k.ChannelID != channelID || k.ThreadID != threadID || k.Agent == "" || ke.Entry.AgentInstanceID == "" {
-			continue
-		}
-		if ref == "" || ke.Entry.LastSeen.After(seen) {
-			ref, seen = k.Agent, ke.Entry.LastSeen
-		}
-	}
-	return ref, ref != "", nil
 }

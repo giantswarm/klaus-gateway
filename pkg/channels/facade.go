@@ -71,6 +71,11 @@ type Facade struct {
 	// cannot, channels tell the user where the result is instead of promising
 	// to post it.
 	Durable bool
+	// ThreadTTL is the sliding lifetime of a thread's record and of its
+	// AgentInstance binding: every handled message refreshes it, and after it
+	// the store has forgotten the thread — the next mention starts a fresh
+	// conversation. 0 never expires. main.go sets it from --thread-ttl.
+	ThreadTTL time.Duration
 }
 
 // ListAgents lists the agents a channel may select. Unavailable when no
@@ -193,8 +198,9 @@ func instanceKey(msg InboundMessage) store.Key {
 // instanceFor returns the AgentInstance id msg's thread is bound to, creating
 // the instance on the thread's first turn. The create is keyed by the
 // synthesized context id, so a retried first turn does not create a second
-// instance. The binding never expires on its own: the instance is the
-// conversation, and the controller keeps it until it is deleted.
+// instance. The binding slides with the thread's lifetime: every turn
+// refreshes it, the store expires it after ThreadTTL of silence, and the next
+// mention creates a new instance for the fresh conversation.
 func (f *Facade) instanceFor(ctx context.Context, msg InboundMessage) (string, error) {
 	if f.Routes == nil {
 		return "", errors.New("channels: no routing store for the agent instance binding")
@@ -207,6 +213,11 @@ func (f *Facade) instanceFor(ctx context.Context, msg InboundMessage) (string, e
 	}
 	if ok && entry.AgentInstanceID != "" {
 		entry.LastSeen = now
+		// A binding written before the thread lifetime existed carries no TTL;
+		// it adopts the lifetime on its next turn.
+		if entry.TTL <= 0 && f.ThreadTTL > 0 {
+			entry.TTL = f.ThreadTTL
+		}
 		if err := f.Routes.Put(ctx, key, entry); err != nil {
 			return "", fmt.Errorf("channels: refresh instance binding: %w", err)
 		}
@@ -219,7 +230,7 @@ func (f *Facade) instanceFor(ctx context.Context, msg InboundMessage) (string, e
 	if err != nil {
 		return "", err
 	}
-	if err := f.Routes.Put(ctx, key, store.Entry{AgentInstanceID: inst.ID, CreatedAt: now, LastSeen: now}); err != nil {
+	if err := f.Routes.Put(ctx, key, store.Entry{AgentInstanceID: inst.ID, CreatedAt: now, LastSeen: now, TTL: f.ThreadTTL}); err != nil {
 		return "", fmt.Errorf("channels: store instance binding: %w", err)
 	}
 	slog.Info("channels: thread bound to agent instance", "record", "instance_bound",
