@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
+	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
 )
 
 // agentCardChecker is the optional AgentCardResolver extension that validates
@@ -321,31 +322,26 @@ func splitAgentCommand(text string) (name string, quoted bool, question string) 
 	return rest, false, ""
 }
 
-// bindThreadAgent records ref as the thread's agent in its thread record.
+// bindThreadAgent records ref as the thread's agent on its row.
 func (a *Adapter) bindThreadAgent(ctx context.Context, channelID, threadID, ref string) {
-	mu := a.recordLock(channelID, threadID)
-	mu.Lock()
-	defer mu.Unlock()
-	rec := a.records()
-	r, _, err := rec.ThreadRecord(ctx, ChannelName, channelID, threadID)
+	err := a.records().UpdateThreadRecord(ctx, ChannelName, channelID, threadID, func(e *store.Entry, _ bool) bool {
+		e.AgentRef = ref
+		return true
+	})
 	if err != nil {
-		a.Logger.Warn("slack: read thread record for binding failed", "thread", threadID, "error", err)
-	}
-	r.AgentRef = ref
-	if err := rec.SaveThreadRecord(ctx, ChannelName, channelID, threadID, r.Thread); err != nil {
 		a.Logger.Warn("slack: write agent binding failed", "thread", threadID, "agent", ref, "error", err)
 	}
 }
 
-// threadAgentBinding is the thread's recorded agent, when its record exists
-// and names one.
+// threadAgentBinding is the thread's recorded agent, when its row exists and
+// names one.
 func (a *Adapter) threadAgentBinding(ctx context.Context, channelID, threadID string) (string, bool) {
-	r, ok, err := a.records().ThreadRecord(ctx, ChannelName, channelID, threadID)
+	e, ok, err := a.records().ThreadRecord(ctx, ChannelName, channelID, threadID)
 	if err != nil {
 		a.Logger.Warn("slack: read thread record failed", "thread", threadID, "error", err)
 		return "", false
 	}
-	return r.AgentRef, ok && r.AgentRef != ""
+	return e.AgentRef, ok && e.AgentRef != ""
 }
 
 // boundAgentOrDefault is the recorded agent, or the default. For display-only

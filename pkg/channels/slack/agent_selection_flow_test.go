@@ -426,7 +426,10 @@ func TestPane_NewChatNotGreetedWithStartingFresh(t *testing.T) {
 		}
 		// The conversation exists — the thread's record names an agent — while
 		// nobody has instructed in it yet: a resume, not an opener.
-		require.NoError(t, gw.rec().SaveThreadRecord(context.Background(), "slack", "D1", "100.000", store.Thread{AgentRef: "test-agent"}))
+		require.NoError(t, gw.rec().UpdateThreadRecord(context.Background(), "slack", "D1", "100.000", func(e *store.Entry, _ bool) bool {
+			e.AgentRef = "test-agent"
+			return true
+		}))
 		_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
 		sendEvent(t, srv, dmThreadEvent("U1", "are you still there?", "300.000", "100.000"))

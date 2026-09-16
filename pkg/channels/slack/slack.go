@@ -171,9 +171,8 @@ type Adapter struct {
 
 	// recordsMu guards memRecords, the in-process thread recorder used when the
 	// gateway has no routing store (tests, the Klaus-instance path).
-	recordsMu   sync.Mutex
-	memRecords  *memoryRecorder
-	recordLocks [64]sync.Mutex
+	recordsMu  sync.Mutex
+	memRecords *memoryRecorder
 
 	pendingAccessMu sync.Mutex
 	pendingAccess   map[string]map[string][]*pendingAccessReq // threadID -> userID -> messages parked (in order) while the initiator decides
@@ -1170,9 +1169,9 @@ func (a *Adapter) postAccessPrompt(ctx context.Context, slackChannel, threadID, 
 	}
 }
 
-// accessPolicy returns the adapter's AccessPolicy over the thread record.
+// accessPolicy returns the adapter's AccessPolicy over the thread's row.
 func (a *Adapter) accessPolicy() AccessPolicy {
-	return &recordAccess{rec: a.records(), channel: ChannelName, lock: a.recordLock}
+	return &recordAccess{rec: a.records(), channel: ChannelName}
 }
 
 // isActiveThread reports whether the bot has an active session in threadID —

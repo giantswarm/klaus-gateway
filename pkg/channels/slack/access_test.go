@@ -11,9 +11,7 @@ import (
 func newRecordAccessForTest(now *time.Time) (*recordAccess, *memoryRecorder) {
 	rec := newMemoryRecorder()
 	rec.now = func() time.Time { return *now }
-	a := &Adapter{}
-	p := &recordAccess{rec: rec, channel: ChannelName, lock: a.recordLock}
-	return p, rec
+	return &recordAccess{rec: rec, channel: ChannelName}, rec
 }
 
 func TestRecordAccess_InitiatorSetOnce(t *testing.T) {
@@ -43,8 +41,7 @@ func TestRecordAccess_GrantIsAdditiveAndSurvivesAnotherAdapter(t *testing.T) {
 	p.Grant(ctx, "C1", "T1", "U3")
 	p.Grant(ctx, "C1", "T1", "U2") // idempotent
 	// A second policy over the same recorder is what a restarted gateway sees.
-	b := &Adapter{}
-	q := &recordAccess{rec: rec, channel: ChannelName, lock: b.recordLock}
+	q := &recordAccess{rec: rec, channel: ChannelName}
 	for _, u := range []string{"U1", "U2", "U3"} {
 		if !q.Allowed(ctx, "C1", "T1", u) {
 			t.Fatalf("%s must be allowed after the restart", u)
@@ -53,9 +50,9 @@ func TestRecordAccess_GrantIsAdditiveAndSurvivesAnotherAdapter(t *testing.T) {
 	if q.Allowed(ctx, "C1", "T1", "U9") {
 		t.Fatal("unknown user allowed")
 	}
-	r, _, _ := rec.ThreadRecord(ctx, ChannelName, "C1", "T1")
-	if len(r.Granted) != 2 {
-		t.Fatalf("grants must be a set, got %v", r.Granted)
+	e, _, _ := rec.ThreadRecord(ctx, ChannelName, "C1", "T1")
+	if len(e.Granted) != 2 {
+		t.Fatalf("grants must be a set, got %v", e.Granted)
 	}
 }
 
@@ -66,7 +63,10 @@ func TestRecordAccess_ForgottenThreadStartsOver(t *testing.T) {
 	p, rec := newRecordAccessForTest(&now)
 	rec.SetTTL(48 * time.Hour)
 	ctx := context.Background()
-	_ = rec.SaveThreadRecord(ctx, ChannelName, "C1", "T1", store.Thread{AgentRef: "issue-agent"})
+	_ = rec.UpdateThreadRecord(ctx, ChannelName, "C1", "T1", func(e *store.Entry, _ bool) bool {
+		e.AgentRef = "issue-agent"
+		return true
+	})
 	p.SetInitiator(ctx, "C1", "T1", "U1")
 	p.Grant(ctx, "C1", "T1", "U2")
 	now = now.Add(49 * time.Hour)
@@ -79,9 +79,9 @@ func TestRecordAccess_ForgottenThreadStartsOver(t *testing.T) {
 	if got := p.SetInitiator(ctx, "C1", "T1", "U5"); got != "U5" {
 		t.Fatalf("the next mentioner must become initiator, got %q", got)
 	}
-	r, _, _ := rec.ThreadRecord(ctx, ChannelName, "C1", "T1")
-	if r.Initiator != "U5" || len(r.Granted) != 0 || r.AgentRef != "" {
-		t.Fatalf("the thread was forgotten, not reset: %+v", r.Thread)
+	e, _, _ := rec.ThreadRecord(ctx, ChannelName, "C1", "T1")
+	if e.Initiator != "U5" || len(e.Granted) != 0 || e.AgentRef != "" {
+		t.Fatalf("the thread was forgotten, not reset: %+v", e)
 	}
 }
 

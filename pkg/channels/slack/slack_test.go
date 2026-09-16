@@ -901,12 +901,12 @@ func (s *stubGateway) rec() *slackadapter.MemoryRecorder {
 	return s.records
 }
 
-func (s *stubGateway) ThreadRecord(ctx context.Context, ch, cid, tid string) (channels.ThreadRecord, bool, error) {
+func (s *stubGateway) ThreadRecord(ctx context.Context, ch, cid, tid string) (store.Entry, bool, error) {
 	return s.rec().ThreadRecord(ctx, ch, cid, tid)
 }
 
-func (s *stubGateway) SaveThreadRecord(ctx context.Context, ch, cid, tid string, t store.Thread) error {
-	return s.rec().SaveThreadRecord(ctx, ch, cid, tid, t)
+func (s *stubGateway) UpdateThreadRecord(ctx context.Context, ch, cid, tid string, mutate func(e *store.Entry, found bool) bool) error {
+	return s.rec().UpdateThreadRecord(ctx, ch, cid, tid, mutate)
 }
 
 // stubResumes is the stubGateway's record of turns a previous process left
@@ -1887,7 +1887,10 @@ func TestResume_PostsStartingFreshWhenSessionGone(t *testing.T) {
 	gw := &stubGateway{onSessionResumable: func(channels.InboundMessage) (bool, bool) { return false, true }}
 	// The thread is already bound to an agent: this reply continues a
 	// conversation, it does not open one.
-	require.NoError(t, gw.rec().SaveThreadRecord(context.Background(), "slack", "D1", "100.000", store.Thread{AgentRef: "test-agent"}))
+	require.NoError(t, gw.rec().UpdateThreadRecord(context.Background(), "slack", "D1", "100.000", func(e *store.Entry, _ bool) bool {
+		e.AgentRef = "test-agent"
+		return true
+	}))
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
 	// A reply into a thread this process never started (thread_ts != ts).
@@ -1902,7 +1905,10 @@ func TestResume_PostsStartingFreshWhenSessionGone(t *testing.T) {
 func TestResume_SilentWhenSessionPresent(t *testing.T) {
 	fake := newFakeSlackAPI()
 	gw := &stubGateway{onSessionResumable: func(channels.InboundMessage) (bool, bool) { return true, true }}
-	require.NoError(t, gw.rec().SaveThreadRecord(context.Background(), "slack", "D1", "100.000", store.Thread{AgentRef: "test-agent"}))
+	require.NoError(t, gw.rec().UpdateThreadRecord(context.Background(), "slack", "D1", "100.000", func(e *store.Entry, _ bool) bool {
+		e.AgentRef = "test-agent"
+		return true
+	}))
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","channel_type":"im","user":"U1","text":"hi again","channel":"D1","ts":"201.000","thread_ts":"100.000"}}`)
