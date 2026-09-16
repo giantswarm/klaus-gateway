@@ -298,9 +298,12 @@ func (a *Adapter) agentRefFromName(raw string) (ref string, ok bool) {
 	if !agentNamePartRe.MatchString(name) {
 		return "", false
 	}
-	// A typed namespace is the served one only when it matches Namespace; a
-	// foreign one stays as typed so the controller refuses it.
-	return a.refShape(namespace, name, namespace == "" || namespace == a.Namespace), true
+	// A typed namespace that is the served one is the same as none; a foreign
+	// one stays as typed so the controller refuses it.
+	if namespace == a.Namespace {
+		namespace = ""
+	}
+	return a.refShape(namespace, name), true
 }
 
 // defaultAgentNamespace is the namespace of the configured default agent, or

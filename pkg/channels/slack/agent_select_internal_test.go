@@ -263,22 +263,16 @@ func TestAgentRefFromName_FollowsDeploymentRefShape(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			a := &Adapter{DefaultAgent: tc.defaultAgent, Namespace: tc.namespace}
 			got, ok := a.agentRefFromName(tc.input)
-			if !ok {
-				t.Fatalf("agentRefFromName(%q) rejected the name", tc.input)
-			}
-			if got != tc.want {
-				t.Fatalf("agentRefFromName(%q) = %q, want %q", tc.input, got, tc.want)
-			}
+			require.True(t, ok, "agentRefFromName(%q) rejected the name", tc.input)
+			require.Equal(t, tc.want, got, "agentRefFromName(%q)", tc.input)
 		})
 	}
 }
 
 func TestAgentInfoRef_FollowsDeploymentRefShape(t *testing.T) {
 	ag := pkga2a.AgentInfo{Name: "sre-agent", Namespace: "kagent"}
-	if got := (&Adapter{DefaultAgent: "sre-agent", Namespace: "kagent"}).agentInfoRef(ag); got != "sre-agent" {
-		t.Fatalf("bare default: got %q, want sre-agent", got)
-	}
-	if got := (&Adapter{DefaultAgent: "kagent/sre-agent", Namespace: "kagent"}).agentInfoRef(ag); got != "kagent/sre-agent" {
-		t.Fatalf("qualified default: got %q, want kagent/sre-agent", got)
-	}
+	bare := &Adapter{DefaultAgent: "sre-agent", Namespace: "kagent"}
+	require.Equal(t, "sre-agent", bare.agentInfoRef(ag), "bare default")
+	qualified := &Adapter{DefaultAgent: "kagent/sre-agent", Namespace: "kagent"}
+	require.Equal(t, "kagent/sre-agent", qualified.agentInfoRef(ag), "qualified default")
 }
