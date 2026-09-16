@@ -43,18 +43,28 @@ func (f *Facade) ThreadRecord(ctx context.Context, channel, channelID, threadID 
 }
 
 // SaveThreadRecord writes t as the thread's record with LastSeen = now and the
-// sliding ThreadRecordTTL, keeping the CreatedAt of an existing record.
+// sliding ThreadRecordTTL. It merges into the entry at the thread key rather
+// than replacing it: on the Klaus-instance path the router keeps the thread's
+// instance route at this same key (Slack's user slot is empty), so the
+// instance name, an existing CreatedAt and a TTL the router set are kept.
 func (f *Facade) SaveThreadRecord(ctx context.Context, channel, channelID, threadID string, t store.Thread) error {
 	if f == nil || f.Routes == nil {
 		return errNoThreadStore
 	}
 	key := threadKey(channel, channelID, threadID)
 	now := time.Now()
-	created := now
-	if old, ok, err := f.Routes.Get(ctx, key); err == nil && ok && !old.CreatedAt.IsZero() {
-		created = old.CreatedAt
+	e, ok, err := f.Routes.Get(ctx, key)
+	if err != nil || !ok {
+		e = store.Entry{}
 	}
-	e := store.Entry{Thread: &t, CreatedAt: created, LastSeen: now, TTL: ThreadRecordTTL}
+	e.Thread = &t
+	e.LastSeen = now
+	if e.CreatedAt.IsZero() {
+		e.CreatedAt = now
+	}
+	if e.TTL <= 0 {
+		e.TTL = ThreadRecordTTL
+	}
 	if err := f.Routes.Put(ctx, key, e); err != nil {
 		return fmt.Errorf("channels: write thread record: %w", err)
 	}
