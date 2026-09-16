@@ -31,48 +31,46 @@ func TestNew_RequiresURL(t *testing.T) {
 
 // The key layout is the contract the issue fixes: prefix + Key.String(), so a
 // channel's entries share one prefix (klaus-gateway:route:slack|…) and the
-// value is the same JSON the other stores hold.
+// value is the same JSON the other stores hold: one row per thread, with the
+// agent it is bound to, its AgentInstance, the task in flight and the
+// channel's initiator and grants.
 func TestKeyLayout(t *testing.T) {
 	m := miniredis.RunT(t)
 	s := newStore(t, m.Addr())
 	ctx := context.Background()
 
-	k := store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700000000.000100", Agent: "kagent/sre-agent"}
+	k := store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700000000.000100"}
 	now := time.Now().Truncate(time.Second)
-	e := store.Entry{AgentInstanceID: "0192f1c2-7d1e-7a3b-9c4d-5e6f7a8b9c0d", TaskID: "task-1",
-		Resume: map[string]string{"slack_user": "U1", "message_ts": "1700000000.000200"}, CreatedAt: now, LastSeen: now}
+	e := store.Entry{
+		AgentRef: "kagent/sre-agent", AgentInstanceID: "0192f1c2-7d1e-7a3b-9c4d-5e6f7a8b9c0d", TaskID: "task-1",
+		Resume:    map[string]string{"slack_user": "U1", "message_ts": "1700000000.000200"},
+		Initiator: "U1", Granted: []string{"U2"},
+		CreatedAt: now, LastSeen: now,
+	}
 	require.NoError(t, s.Put(ctx, k, e))
 
-	require.Equal(t, []string{"klaus-gateway:route:slack|C1||1700000000.000100|kagent/sre-agent"}, m.Keys())
-	raw, err := m.Get("klaus-gateway:route:slack|C1||1700000000.000100|kagent/sre-agent")
+	require.Equal(t, []string{"klaus-gateway:route:slack|C1||1700000000.000100"}, m.Keys())
+	raw, err := m.Get("klaus-gateway:route:slack|C1||1700000000.000100")
 	require.NoError(t, err)
 	var got map[string]any
 	require.NoError(t, json.Unmarshal([]byte(raw), &got))
+	require.Equal(t, e.AgentRef, got["agent_ref"])
 	require.Equal(t, e.AgentInstanceID, got["agent_instance_id"])
 	require.Equal(t, "task-1", got["task_id"])
 	require.Equal(t, map[string]any{"slack_user": "U1", "message_ts": "1700000000.000200"}, got["resume"])
+	require.Equal(t, "U1", got["initiator"])
+	require.Equal(t, []any{"U2"}, got["granted"])
+	require.NotContains(t, got, "thread", "the thread's fields are the row's own, not a nested record")
 	require.NotContains(t, got, "instance", "an empty Klaus instance is omitted, as in the other stores")
-	require.Zero(t, m.TTL(got0(m)), "a binding without TTL never expires")
+	require.Zero(t, m.TTL(got0(m)), "a row without TTL never expires")
 
 	back, ok, err := s.Get(ctx, k)
 	require.NoError(t, err)
 	require.True(t, ok)
 	require.Equal(t, e.TaskID, back.TaskID)
 	require.Equal(t, e.Resume, back.Resume)
+	require.Equal(t, e.Granted, back.Granted)
 	require.True(t, e.LastSeen.Equal(back.LastSeen))
-
-	// A thread record lives at the 4-part key (no Agent), sharing the same
-	// channel prefix; its raw value carries "thread" where the instance
-	// binding's, read above, does not.
-	tk := store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700000000.000100"}
-	require.NoError(t, s.Put(ctx, tk, store.Entry{
-		Thread: &store.Thread{AgentRef: "sre-agent", Initiator: "U1"}, CreatedAt: now, LastSeen: now,
-	}))
-	traw, err := m.Get("klaus-gateway:route:slack|C1||1700000000.000100")
-	require.NoError(t, err)
-	require.Contains(t, traw, "thread")
-	require.Contains(t, traw, "agent_ref")
-	require.NotContains(t, raw, "thread", "the instance binding's value has no thread record")
 }
 
 func got0(m *miniredis.Miniredis) string { return m.Keys()[0] }

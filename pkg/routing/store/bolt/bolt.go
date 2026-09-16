@@ -93,6 +93,34 @@ func (s *Store) Put(_ context.Context, k store.Key, e store.Entry) error {
 	})
 }
 
+// Update applies mutate to the entry at k inside one write transaction, so two
+// writers of the same row cannot lose each other's fields. An expired entry is
+// presented as absent.
+func (s *Store) Update(_ context.Context, k store.Key, mutate func(e *store.Entry, found bool) bool) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketName)
+		var e store.Entry
+		found := false
+		if v := b.Get([]byte(k.String())); v != nil {
+			if err := json.Unmarshal(v, &e); err != nil {
+				return err
+			}
+			found = !e.Expired(s.now())
+		}
+		if !found {
+			e = store.Entry{}
+		}
+		if !mutate(&e, found) {
+			return nil
+		}
+		buf, err := json.Marshal(e)
+		if err != nil {
+			return err
+		}
+		return b.Put([]byte(k.String()), buf)
+	})
+}
+
 // Delete removes an entry; missing keys are not an error.
 func (s *Store) Delete(_ context.Context, k store.Key) error {
 	return s.db.Update(func(tx *bolt.Tx) error {
@@ -116,7 +144,7 @@ func (s *Store) List(_ context.Context) ([]store.KeyEntry, error) {
 			}
 			key, err := store.ParseKey(string(k))
 			if err != nil {
-				return err
+				return nil // a key of an older layout: not this table's any more
 			}
 			out = append(out, store.KeyEntry{Key: key, Entry: e})
 			return nil

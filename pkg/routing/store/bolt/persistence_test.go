@@ -44,9 +44,9 @@ func TestPersistence_InFlightTask(t *testing.T) {
 
 	s1, err := boltstore.Open(path)
 	require.NoError(t, err)
-	k := store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700.0001", Agent: "sre"}
+	k := store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700.0001"}
 	require.NoError(t, s1.Put(ctx, k, store.Entry{
-		AgentInstanceID: "inst-1", TaskID: "task-7",
+		AgentRef: "sre", AgentInstanceID: "inst-1", TaskID: "task-7",
 		Resume:    map[string]string{"slack_user": "U1", "message_ts": "1700.0001"},
 		CreatedAt: time.Now(), LastSeen: time.Now(),
 	}))
@@ -59,6 +59,7 @@ func TestPersistence_InFlightTask(t *testing.T) {
 	got, ok, err := s2.Get(ctx, k)
 	require.NoError(t, err)
 	require.True(t, ok)
+	require.Equal(t, "sre", got.AgentRef)
 	require.Equal(t, "inst-1", got.AgentInstanceID)
 	require.Equal(t, "task-7", got.TaskID)
 	require.Equal(t, map[string]string{"slack_user": "U1", "message_ts": "1700.0001"}, got.Resume)

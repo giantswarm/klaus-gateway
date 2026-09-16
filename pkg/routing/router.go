@@ -21,10 +21,6 @@ type InboundMessage struct {
 	ChannelID string
 	UserID    string
 	ThreadID  string
-	// Agent is the agentRef discriminator for A2A multi-agent routing.
-	// Empty for all non-A2A channels; when set it is included in the store key
-	// so different agents sharing a contextID route to separate instances.
-	Agent string
 	// NameHint is used as the instance name if auto-create fires. When empty
 	// the router synthesises a deterministic name from the key.
 	NameHint string
@@ -38,7 +34,6 @@ func (m InboundMessage) Key() store.Key {
 		ChannelID: m.ChannelID,
 		UserID:    m.UserID,
 		ThreadID:  m.ThreadID,
-		Agent:     m.Agent,
 	}
 }
 
@@ -67,17 +62,26 @@ func New(s store.Store, lm lifecycle.Manager, autoCreate bool, ttl time.Duration
 func (r *Router) SetNowFunc(f func() time.Time) { r.now = f }
 
 // Resolve returns the instance for msg, creating one on miss when AutoCreate
-// is enabled. On hit the entry's LastSeen is refreshed.
+// is enabled. On hit the entry's LastSeen is refreshed. The row is the
+// thread's own and other writers (a channel's grants, a kagent binding) keep
+// their fields on it, so both reads and writes go through the store's
+// per-key update rather than replacing the row.
 func (r *Router) Resolve(ctx context.Context, msg InboundMessage) (lifecycle.InstanceRef, error) {
 	k := msg.Key()
 	entry, ok, err := r.Store.Get(ctx, k)
 	if err != nil {
 		return lifecycle.InstanceRef{}, fmt.Errorf("store get: %w", err)
 	}
-	if ok {
-		entry.LastSeen = r.now()
-		if err := r.Store.Put(ctx, k, entry); err != nil {
-			return lifecycle.InstanceRef{}, fmt.Errorf("store put: %w", err)
+	// A row that carries only the thread's own fields is not a route.
+	if ok && entry.Instance != "" {
+		if err := r.Store.Update(ctx, k, func(e *store.Entry, found bool) bool {
+			if !found {
+				return false
+			}
+			e.LastSeen = r.now()
+			return true
+		}); err != nil {
+			return lifecycle.InstanceRef{}, fmt.Errorf("store update: %w", err)
 		}
 		ref, err := r.Lifecycle.Get(ctx, entry.Instance)
 		if err != nil {
@@ -115,13 +119,18 @@ func (r *Router) Resolve(ctx context.Context, msg InboundMessage) (lifecycle.Ins
 		return lifecycle.InstanceRef{}, fmt.Errorf("lifecycle create: %w", err)
 	}
 	now := r.now()
-	if err := r.Store.Put(ctx, k, store.Entry{
-		Instance:  ref.Name,
-		CreatedAt: now,
-		LastSeen:  now,
-		TTL:       r.DefaultTTL,
+	if err := r.Store.Update(ctx, k, func(e *store.Entry, _ bool) bool {
+		e.Instance = ref.Name
+		e.LastSeen = now
+		if e.CreatedAt.IsZero() {
+			e.CreatedAt = now
+		}
+		if e.TTL <= 0 {
+			e.TTL = r.DefaultTTL
+		}
+		return true
 	}); err != nil {
-		return lifecycle.InstanceRef{}, fmt.Errorf("store put: %w", err)
+		return lifecycle.InstanceRef{}, fmt.Errorf("store update: %w", err)
 	}
 	return ref, nil
 }

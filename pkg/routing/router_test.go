@@ -102,3 +102,32 @@ func TestRouter_CacheMiss_NoAutoCreate(t *testing.T) {
 	_, err := r.Resolve(ctx, routing.InboundMessage{Channel: channelWeb, ChannelID: "c1"})
 	require.ErrorIs(t, err, routing.ErrRouteNotFound)
 }
+
+// The thread's row is shared: a channel adapter may already have written the
+// thread's initiator on it before the first turn creates the instance.
+func TestRouter_AutoCreateKeepsTheThreadsOwnFields(t *testing.T) {
+	ctx := context.Background()
+	s := memory.New()
+	t.Cleanup(func() { _ = s.Close() })
+
+	k := store.Key{Channel: channelWeb, ChannelID: "c1", UserID: "u1", ThreadID: "t1"}
+	require.NoError(t, s.Put(ctx, k, store.Entry{Initiator: "U1", LastSeen: time.Now()}))
+
+	mgr := &stubLifecycle{
+		createFn: func(_ context.Context, spec lifecycle.CreateSpec) (lifecycle.InstanceRef, error) {
+			return lifecycle.InstanceRef{Name: spec.Name, BaseURL: "http://new"}, nil
+		},
+	}
+	r := routing.New(s, mgr, true, time.Hour)
+	ref, err := r.Resolve(ctx, routing.InboundMessage{
+		Channel: channelWeb, ChannelID: "c1", UserID: "u1", ThreadID: "t1", NameHint: "klaus-abc",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "klaus-abc", ref.Name)
+
+	got, ok, err := s.Get(ctx, k)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, "klaus-abc", got.Instance)
+	require.Equal(t, "U1", got.Initiator, "the channel's own field survives the route write")
+}
