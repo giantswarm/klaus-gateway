@@ -219,7 +219,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `SLACK_DM_ONLY` and the Helm `slack.dmOnly` value, replaced by `SLACK_DM_MODE` and `SLACK_CHANNEL_MODE`. `dmOnly: true` maps to `dmMode: serve` + `channelMode: none`; the old `dmOnly: false` behaviour (channels served, DMs redirected) maps to `dmMode: redirect` + `channelMode: all`. A leftover `slack.dmOnly` in Helm values is ignored.
 - Slack `/invite`, `/lock`, and `/quit` commands, the locked/open/observe access modes, and the `SLACK_ALLOWED_USERS` and `SLACK_DEFAULT_ACCESS_MODE` settings, replaced by the initiator-plus-approval access model.
-- The `crd` and `configmap` routing stores, the `ChannelRoute` CRD and type, the embedded controller (`controller.enabled`, `--controller`) and the `--namespace` flag. Installations run `routing.store: valkey`; `memory` and `bolt` remain for local development.
+- **Breaking:** the `crd` and `configmap` routing stores, the `ChannelRoute` CRD and type, the embedded controller (`controller.enabled`, `--controller`) and the `--namespace` flag. The chart's values schema refuses `crd.*` and `controller.*`, so a values file that still sets them fails the upgrade; see `UPGRADE.md`. Installations run `routing.store: valkey`; `memory` and `bolt` remain for local development.
 
 ### Refactored
 

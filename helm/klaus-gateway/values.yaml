@@ -58,9 +58,6 @@ serviceMonitor:
   interval: "60s"
   scrapeTimeout: "45s"
 
-# Routing table backend.
-#   memory    -- process-local; state lost on restart.
-#   bolt      -- persistent local file; requires a writable mount at boltPath.
 # Routing table: the binding of every thread to its agent instance and, while a
 # turn runs, the record of the task in flight (delivered after a restart). The
 # store decides whether either outlives the pod.
