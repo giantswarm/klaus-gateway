@@ -34,6 +34,13 @@
 //     principal.
 //   - collaborator: a user the initiator granted. Their turns are attributed
 //     to them (msg.Author) but run under the initiator's token.
+//   - thread record: the thread's durable state in the routing store — its
+//     agent binding, its initiator and their grants. It is the only carrier:
+//     Slack history is never read to recover any of them, so on a persistent
+//     store a thread survives a restart and on a memory store it does not.
+//   - opener: the turn that starts a thread's conversation, root or reply —
+//     the one that finds no agent recorded and records it. The launch
+//     announcement and the session title key on it.
 //
 // # Turn flow
 //

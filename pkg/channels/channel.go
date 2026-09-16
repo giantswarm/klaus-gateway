@@ -81,6 +81,10 @@ type InboundMessage struct {
 	// AgentRef is the target agent name. When set, SendCompletion routes
 	// through the A2A executor instead of the OpenAI /v1 path.
 	AgentRef string
+	// Opener is set by a channel adapter when this message starts its
+	// thread's conversation (no agent recorded for the thread before it): the
+	// launch announcement and the session title key on it.
+	Opener bool
 	// TaskID, when set, continues an existing A2A task rather than starting a
 	// new one. Populated by the Slack adapter when a pending input-required task
 	// exists for the thread.

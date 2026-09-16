@@ -129,7 +129,7 @@ func TestDispatch_TurnDispatchRecord_AgentSource(t *testing.T) {
 
 	t.Run("thread", func(t *testing.T) {
 		a, h := newRecorded(t)
-		a.bindThreadAgent("T2", "sre-agent")
+		a.bindThreadAgent(t.Context(), "C1", "T2", "sre-agent")
 		msg := channels.InboundMessage{Channel: ChannelName, ChannelID: "C1", ThreadID: "T2", MessageID: "M2", Subject: "U1", Text: "reply"}
 		require.NoError(t, a.dispatch(t.Context(), msg, "C1"))
 		rec := h.find("record", "turn_dispatch")

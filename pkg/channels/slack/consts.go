@@ -166,22 +166,6 @@ const (
 	askAgentPostFailedNotice     = "⚠️ _I couldn't post your question in this channel just now. Please try again._"
 )
 
-// conversationMarkerPrefix prefixes the block_id that carries a
-// conversationMarker on a conversation root the gateway posts, so a marker
-// is never mistaken for another block_id that happens to hold JSON.
-const conversationMarkerPrefix = "klaus_gateway.agent_conversation:"
-
-// entryPointSlashCommand is the conversationMarker.EntryPoint value for a
-// conversation opened by the slash command's picker.
-const entryPointSlashCommand = "slash_command"
-
-// sectionTextMax is Slack's cap on a section block's text; blockIDMax its cap
-// on a block_id.
-const (
-	sectionTextMax = 3000
-	blockIDMax     = 255
-)
-
 // pickerOpenBudget bounds the work between a slash command arriving and
 // views.open: Slack invalidates the trigger_id after 3 seconds.
 const pickerOpenBudget = 2500 * time.Millisecond
@@ -427,7 +411,6 @@ const (
 	paramText      = "text"
 	paramTS        = "ts"
 	paramThreadTS  = "thread_ts"
-	paramLimit     = "limit" // conversations.replies page size
 	paramUser      = "user"
 	paramBlocks    = "blocks"
 	paramTimestamp = "timestamp"  // reactions.* target message ts

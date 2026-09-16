@@ -26,6 +26,7 @@ import (
 	"github.com/giantswarm/klaus-gateway/pkg/auth/musterlink"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 	slackadapter "github.com/giantswarm/klaus-gateway/pkg/channels/slack"
+	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
 )
 
 const helloText = "hello"
@@ -885,6 +886,41 @@ type stubGateway struct {
 	// resumes, when set, backs the restart-recovery capability (InFlightTurns,
 	// InFlightTurn, ResumeTurn); nil reports no turns left running.
 	resumes *stubResumes
+	// records backs the thread-record capability. Two adapters sharing one
+	// recorder simulate a restart with a surviving routing store.
+	records *slackadapter.MemoryRecorder
+	// findErr, when set, fails every FindThreadBinding call, the way an
+	// unreachable routing store does.
+	findErr error
+}
+
+// rec is the stub's thread recorder, created on first use.
+func (s *stubGateway) rec() *slackadapter.MemoryRecorder {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.records == nil {
+		s.records = slackadapter.NewMemoryRecorder()
+	}
+	return s.records
+}
+
+func (s *stubGateway) ThreadRecord(ctx context.Context, ch, cid, tid string) (channels.ThreadRecord, bool, error) {
+	return s.rec().ThreadRecord(ctx, ch, cid, tid)
+}
+
+func (s *stubGateway) SaveThreadRecord(ctx context.Context, ch, cid, tid string, t store.Thread) error {
+	return s.rec().SaveThreadRecord(ctx, ch, cid, tid, t)
+}
+
+func (s *stubGateway) FindThreadBinding(ctx context.Context, ch, cid, tid string) (string, bool, error) {
+	rec := s.rec()
+	s.mu.Lock()
+	err := s.findErr
+	s.mu.Unlock()
+	if err != nil {
+		return "", false, err
+	}
+	return rec.FindThreadBinding(ctx, ch, cid, tid)
 }
 
 // stubResumes is the stubGateway's record of turns a previous process left
@@ -1889,11 +1925,10 @@ func TestDetails_Off_SuppressesToolActivity(t *testing.T) {
 
 func TestResume_PostsStartingFreshWhenSessionGone(t *testing.T) {
 	fake := newFakeSlackAPI()
-	// The thread visibly predates this reply (an earlier human message): a
-	// genuine resume, not a conversation-opening pane message.
-	fake.setResponse("conversations.replies",
-		`{"ok":true,"messages":[{"user":"U1","ts":"100.000","text":"original question"}]}`)
 	gw := &stubGateway{onSessionResumable: func(channels.InboundMessage) (bool, bool) { return false, true }}
+	// The thread is already bound to an agent: this reply continues a
+	// conversation, it does not open one.
+	gw.rec().SetBinding("slack", "D1", "100.000", "test-agent")
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
 	// A reply into a thread this process never started (thread_ts != ts).
@@ -1907,9 +1942,8 @@ func TestResume_PostsStartingFreshWhenSessionGone(t *testing.T) {
 
 func TestResume_SilentWhenSessionPresent(t *testing.T) {
 	fake := newFakeSlackAPI()
-	fake.setResponse("conversations.replies",
-		`{"ok":true,"messages":[{"user":"U1","ts":"100.000","text":"original question"}]}`)
 	gw := &stubGateway{onSessionResumable: func(channels.InboundMessage) (bool, bool) { return true, true }}
+	gw.rec().SetBinding("slack", "D1", "100.000", "test-agent")
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","channel_type":"im","user":"U1","text":"hi again","channel":"D1","ts":"201.000","thread_ts":"100.000"}}`)
