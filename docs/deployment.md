@@ -369,8 +369,8 @@ ServiceMonitor). Beside the public mux's `klaus_gateway_requests_total` /
   `first_text` (the first text of the answer), `task_done` (the task's terminal state),
   `stream_end` (the A2A stream closed), `final_flush` (the last edit of the answer in the
   channel) and `total`; and the durations of the steps `token_mint` (the person's muster token,
-  ~0 on a cache hit, a round trip to muster on a refresh), `roster` (agent resolution),
-  `intro_post` (the launch announcement of a new conversation) and `create_instance` (the
+  ~0 on a cache hit, a round trip to muster on a refresh), `roster` (agent resolution) and
+  `create_instance` (the
   controller's `CreateAgentInstance` on a thread's first turn). Buckets run from 5 ms to 5 min.
   "Message received → answer landed" is `phase="final_flush"`; p50/p95 of it is the panel to
   watch.

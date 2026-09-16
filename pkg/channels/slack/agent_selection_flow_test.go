@@ -626,9 +626,8 @@ func TestAgentSelection_UnavailableWithoutCards(t *testing.T) {
 
 // Re-selecting the conversation's OWN agent mid-thread is a no-op, not a
 // switch: the turn dispatches like an unprefixed reply — with the prefix
-// stripped — and the launch intro is not re-posted, because it informs
-// nobody: the thread already opened with it. Covers both selector forms
-// (technical name and quoted display name).
+// stripped. Covers both selector forms (technical name and quoted display
+// name).
 func TestAgentSelection_SameAgentReselectionDispatchesQuietly(t *testing.T) {
 	fake := newFakeSlackAPI()
 	cards := &fakeCards{known: map[string]string{"kagent/sre-agent": "SRE Agent"}}
@@ -641,9 +640,6 @@ func TestAgentSelection_SameAgentReselectionDispatchesQuietly(t *testing.T) {
 	sendEvent(t, srv, mention("U1", "/agent sre-agent why are pods crashlooping?", "100.000", ""))
 	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
 		2*time.Second, 50*time.Millisecond, "the opener dispatches")
-	require.Eventually(t, func() bool {
-		return strings.Count(allText(fake.pathCalls("chat.postMessage")), "Bringing in") == 1
-	}, 2*time.Second, 50*time.Millisecond, "the new thread announces its agent once")
 
 	// The same agent re-selected in-thread, technical form: dispatches.
 	sendEvent(t, srv, mention("U1", "/agent sre-agent and the nodes?", "200.000", "100.000"))
@@ -665,15 +661,13 @@ func TestAgentSelection_SameAgentReselectionDispatchesQuietly(t *testing.T) {
 	require.Equal(t, "anything else?", msgs[2].Text)
 
 	time.Sleep(150 * time.Millisecond)
-	all := allText(fake.pathCalls("chat.postMessage"))
-	require.NotContains(t, all, "already has its agent", "a same-agent re-selection is not refused")
-	require.Equal(t, 1, strings.Count(all, "Bringing in"),
-		"repeated turns with the same agent must not re-post the intro")
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "already has its agent",
+		"a same-agent re-selection is not refused")
 }
 
 // The default-bound case: a conversation opened WITHOUT a prefix runs on the
 // default agent, and an in-thread /agent naming that same default agent is
-// equally a no-op re-selection — dispatched, not refused, nothing re-posted.
+// equally a no-op re-selection — dispatched, not refused.
 func TestAgentSelection_DefaultAgentReselectionDispatchesQuietly(t *testing.T) {
 	fake := newFakeSlackAPI()
 	cards := &fakeCards{known: map[string]string{"kagent/swarmgeist": "Swarmgeist"}}
@@ -693,10 +687,7 @@ func TestAgentSelection_DefaultAgentReselectionDispatchesQuietly(t *testing.T) {
 	require.Equal(t, "and the nodes?", msgs[1].Text)
 
 	time.Sleep(150 * time.Millisecond)
-	all := allText(fake.pathCalls("chat.postMessage"))
-	require.NotContains(t, all, "already has its agent")
-	require.Equal(t, 1, strings.Count(all, "Bringing in"),
-		"the intro posted once, on the thread's first turn only")
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "already has its agent")
 }
 
 // tokenCards records the caller token each card lookup carried, on top of

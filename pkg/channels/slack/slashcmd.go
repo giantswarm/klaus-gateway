@@ -291,7 +291,7 @@ func (a *Adapter) handleAskAgentSubmission(ctx context.Context, payload interact
 		return
 	}
 
-	// Escaped like the launch announcement's name: it comes from an Agent CR
+	// Escaped: it comes from an Agent CR
 	// annotation. Emphasis characters (* _) pass through and can mangle the
 	// bold span — cosmetic, accepted (see postLaunchAnnouncement).
 	name := a.agentNameFor(ctx, ref)

@@ -17,8 +17,11 @@ fresh conversation. Decide whether 90 days suits your workspace before upgrading
 access window is gone with it: while a thread lives, the initiator and the people they allowed
 keep replying without mentioning the bot again, and their grants no longer lapse after a day of
 silence.
-`/agent <name> <question>` now also opens a conversation as a reply inside an existing thread,
-and the launch announcement posts there too.
+`/agent <name> <question>` now also opens a conversation as a reply inside an existing thread.
+The "🚀 Bringing in *Agent* to help…" launch announcement is gone: it was posted under the
+agent's own name and read as the agent introducing itself. The agent's first reply, under the
+agent's name, is now the first message of a conversation; the progress reaction or the working
+indicator still shows at once that the message was heard.
 
 The AgentInstance itself is unaffected by any of this: the kagent request id is derived from the
 channel, the thread and the agent, never from the store key, so a thread that exists at the

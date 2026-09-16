@@ -182,38 +182,6 @@ func TestBranding_NoRosterStillNamesTheAgent(t *testing.T) {
 		"the technical name is used when no roster is configured")
 }
 
-// A display name is an arbitrary Agent CR annotation, so it can carry mrkdwn
-// metacharacters. The announcement text is mrkdwn-parsed by Slack, so the name
-// must be escaped there: an agent named "<!channel> …" must not ping the channel
-// from inside a bot-branded message. The username param is not mrkdwn-parsed and
-// is deliberately left verbatim.
-func TestLaunchAnnouncement_EscapesDisplayNameInText(t *testing.T) {
-	fake := newFakeSlackAPI()
-	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "on it"}, {Done: true}}}
-	roster := &fakeRoster{agents: []pkga2a.AgentInfo{
-		{Name: "test-agent", DisplayName: "<!channel> the SRE bot"},
-	}}
-	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, func(a *slackadapter.Adapter) {
-		a.Roster = roster
-	})
-
-	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_mention","user":"U1","text":"<@UBOT> check the cluster","channel":"C1","ts":"730.000"}}`)
-	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Bringing in")
-	}, 2*time.Second, 20*time.Millisecond, "a new channel thread announces the agent handoff")
-
-	for _, c := range fake.pathCalls("chat.postMessage") {
-		text, _ := c.params["text"].(string)
-		if !strings.Contains(text, "Bringing in") {
-			continue
-		}
-		require.NotContains(t, text, "<!channel>", "a raw broadcast mention would ping the channel")
-		require.Contains(t, text, "&lt;!channel&gt; the SRE bot", "the display name is mrkdwn-escaped")
-		require.Equal(t, "<!channel> the SRE bot", c.params["username"],
-			"the username is not mrkdwn-parsed, so it stays verbatim")
-	}
-}
-
 // A workspace whose install predates chat:write.customize rejects branded posts
 // with missing_scope. The reply must still arrive — retried under the app
 // identity — and the downgrade latches so later turns skip the doomed branded
@@ -367,65 +335,4 @@ func TestDM_RedirectInChannelMode(t *testing.T) {
 	}
 	require.Equal(t, 1, redirects, "a second DM within the guard window must not post another redirect")
 	require.Zero(t, gw.resolveCount())
-}
-
-// The launch announcement posts only after the agent resolves: a channel root
-// mention announces the handoff, while a resolve failure stays silent instead
-// of announcing an agent that never arrives.
-func TestLaunchAnnouncement_PostsAfterResolveSucceeds(t *testing.T) {
-	fake := newFakeSlackAPI()
-	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "on it"}, {Done: true}}}
-	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
-
-	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_mention","user":"U1","text":"<@UBOT> check the cluster","channel":"C1","ts":"700.000"}}`)
-	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Bringing in")
-	}, 2*time.Second, 20*time.Millisecond, "a new channel thread announces the agent handoff")
-}
-
-// The launch announcement posts under the agent's identity, not the app
-// default, so it shares one authoring bot with the agent's replies and the
-// channel thread face pile collapses to a single avatar instead of two. Its
-// name comes from the display-name annotation and its icon from the card, so
-// the announcement text and the username that carries it always agree.
-func TestLaunchAnnouncement_CarriesAgentIdentity(t *testing.T) {
-	fake := newFakeSlackAPI()
-	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "on it"}, {Done: true}}}
-	roster := &fakeRoster{agents: []pkga2a.AgentInfo{
-		{Name: "test-agent", DisplayName: "SRE Assistant"},
-	}}
-	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, func(a *slackadapter.Adapter) {
-		a.Roster = roster
-		a.AgentCards = stubCards{username: "test_agent", iconURL: "https://example.test/sre.png"}
-	})
-
-	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_mention","user":"U1","text":"<@UBOT> check the cluster","channel":"C1","ts":"720.000"}}`)
-	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Bringing in")
-	}, 2*time.Second, 20*time.Millisecond, "a new channel thread announces the agent handoff")
-
-	var announced bool
-	for _, c := range fake.pathCalls("chat.postMessage") {
-		if text, _ := c.params["text"].(string); !strings.Contains(text, "Bringing in") {
-			continue
-		}
-		announced = true
-		require.Contains(t, c.params["text"], "SRE Assistant", "the announcement names the agent by display name")
-		require.Equal(t, "SRE Assistant", c.params["username"], "the announcement posts under the agent name")
-		require.Equal(t, "https://example.test/sre.png", c.params["icon_url"], "the announcement carries the agent icon")
-	}
-	require.True(t, announced, "the launch announcement was posted")
-}
-
-func TestLaunchAnnouncement_SkippedWhenResolveFails(t *testing.T) {
-	fake := newFakeSlackAPI()
-	gw := &stubGateway{resolveErr: errors.New("stub: resolve failed")}
-	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
-
-	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_mention","user":"U1","text":"<@UBOT> check the cluster","channel":"C1","ts":"710.000"}}`)
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
-		2*time.Second, 20*time.Millisecond, "the mention reaches Resolve")
-	time.Sleep(150 * time.Millisecond)
-	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "Bringing in",
-		"a failed resolve must not announce a launch")
 }

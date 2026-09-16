@@ -813,43 +813,6 @@ func (a *Adapter) agentClientNamed(ctx context.Context, agentRef, username strin
 	return c
 }
 
-// maybeAnnounceLaunch posts the launch announcement on the turn that opens a
-// conversation — the turn that recorded the thread's agent, root or reply —
-// and never again: the intro is thread furniture, not a per-turn banner, and
-// the thread record decides, so a restart cannot re-announce it. Skipped for
-// resumed tasks (the conversation is visibly underway), for DMs (a 1:1 DM is
-// the agent conversation itself, with no channel handoff; Slack DM channel IDs
-// start with "D"), and for the slash command, whose branded root already names
-// the agent.
-func (a *Adapter) maybeAnnounceLaunch(ctx context.Context, slackChannel string, msg channels.InboundMessage, explicitSource string) {
-	if !msg.Opener || msg.TaskID != "" || isDMChannelID(slackChannel) || explicitSource == agentSourceCommand {
-		return
-	}
-	a.postLaunchAnnouncement(ctx, slackChannel, msg.ThreadID, msg.AgentRef)
-}
-
-// postLaunchAnnouncement posts the handoff notice when a new thread starts,
-// making the app-to-agent transition explicit. It posts under the agent's
-// identity (not the app default) so it and the agent's replies share one
-// authoring bot, collapsing the channel thread face pile to a single avatar.
-// Best-effort.
-func (a *Adapter) postLaunchAnnouncement(ctx context.Context, slackChannel, threadID, agentRef string) {
-	// Resolved once and passed to both the text and the client, so the announced
-	// name and the username carrying it cannot disagree. In the text it is
-	// escaped: it comes from an Agent CR annotation, so it can carry mrkdwn
-	// metacharacters, and this lands in a plain chat.postMessage which Slack
-	// parses as mrkdwn (a display name containing <!channel> would otherwise ping
-	// the channel from inside a bot-branded message). Escaping covers mentions
-	// and links only — emphasis characters (* _) pass through, so a name
-	// containing them can mangle the surrounding bold span; cosmetic, accepted.
-	// The username param needs no escaping — Slack does not parse it as mrkdwn.
-	name := a.agentNameFor(ctx, agentRef)
-	text := fmt.Sprintf("🚀 Bringing in *%s* to help. Keep the conversation in this thread; mention me followed by `/help` to list what I can do.", escapeMrkdwn(name))
-	if _, err := a.agentClientNamed(ctx, agentRef, name).postMessage(ctx, slackChannel, text, threadID); err != nil {
-		a.Logger.Warn("slack: post launch announcement failed", "thread", threadID, "error", err)
-	}
-}
-
 // signInAnchor is the message coordinates of a posted sign-in prompt, kept so
 // a completed link can confirm on the surface that carries the prompt. threadID
 // is filled by takeSignInAnchors from the map key so a failed rewrite can be
@@ -1961,16 +1924,6 @@ func (a *Adapter) dispatchFrom(ctx context.Context, msg channels.InboundMessage,
 			if firstSight && !opener {
 				a.maybeAnnounceResume(ctx, msg, slackChannel)
 			}
-		},
-		onAgentResolved: func(msg channels.InboundMessage) {
-			// Post the Swarmgeist handoff notice before the agent takes over, so
-			// the app-to-agent transition is explicit — but only on the turn that
-			// opens the conversation; later turns stay quiet (the opener rule and
-			// the task/DM/slash-command guards live in maybeAnnounceLaunch).
-			// Posted only once the agent resolved, so a resolve failure does not
-			// announce a launch and then error out.
-			defer channels.TurnTimerFromContext(ctx).Span(channels.PhaseIntroPost)()
-			a.maybeAnnounceLaunch(ctx, slackChannel, msg, explicitSource)
 		},
 		onFailure: func() { a.postDispatchFailureNote(ctx, slackChannel, msg.ThreadID) },
 	})

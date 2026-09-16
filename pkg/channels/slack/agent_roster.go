@@ -106,7 +106,7 @@ func agentDisplayName(ag pkga2a.AgentInfo) string {
 }
 
 // agentNameFor is the agent's human-facing name on every Slack surface that
-// shows one: the username on its own messages and the launch announcement text
+// shows one: the username on its own messages and the slash command's root text
 // alike, so the two can never disagree. It is the display name the roster
 // reports, or agentRef's bare technical name when the roster has nothing for it.
 //

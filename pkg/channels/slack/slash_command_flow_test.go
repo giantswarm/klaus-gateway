@@ -357,7 +357,6 @@ func TestAskAgentSubmission_OpensConversation(t *testing.T) {
 	rootText := root.params["text"].(string)
 	require.Contains(t, rootText, "<@U1> asked *SRE Agent*")
 	require.Contains(t, rootText, "> why are pods crashlooping?")
-	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "Bringing in", "the root already names the agent; no launch intro")
 
 	msgs := resolved()
 	require.Equal(t, "kagent/sre-agent", msgs[0].AgentRef)

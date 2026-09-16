@@ -26,9 +26,6 @@ const (
 	// PhaseRoster is the time spent resolving the turn's agent: the roster
 	// lookup and the conversation's binding. A span.
 	PhaseRoster = "roster"
-	// PhaseIntroPost is the time spent posting the launch announcement of a
-	// new conversation. A span; absent when nothing was posted.
-	PhaseIntroPost = "intro_post"
 	// PhaseCreateInstance is the controller's CreateAgentInstance on a
 	// thread's first turn. A span; absent on a follow-up.
 	PhaseCreateInstance = "create_instance"

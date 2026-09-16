@@ -205,10 +205,10 @@ restart loses this state, and every thread starts fresh from its next message. O
 thread nobody has written in for `routing.threadTTL` is forgotten, agent and all, and its next
 mention starts a fresh conversation.
 
-The turn that opens a conversation — the first one, root or reply, that finds no agent
-recorded — also posts the "🚀 Bringing in *Agent* to help…" launch announcement, once, in that
-thread. A later turn never repeats it; neither does a DM, or the slash command's own branded
-root, which already names the agent.
+The turn that opens a conversation posts no notice of its own: the agent's first reply, under
+the agent's name, is the first sign of which agent joined the thread. The slash command's
+branded root names the agent up front, because there the picker chose it before any message
+existed.
 
 | Flag | Env var | Required |
 |------|---------|---------|
@@ -349,9 +349,9 @@ Three structured log records (`record=…`, JSON fields) tell a turn's story; jo
   `subject`, `channel_id`, `thread_id`, `message_id`, `task_id` (the A2A task the controller
   named), `tool_calls`, `streamed_chars`, `trace_id`, `error` on a failure, and the phases as
   milliseconds since the events POST (or the Socket Mode frame) arrived: `token_mint_ms`,
-  `roster_ms`, `intro_post_ms`, `dispatch_ms`, `create_instance_ms`, `first_event_ms`,
+  `roster_ms`, `dispatch_ms`, `create_instance_ms`, `first_event_ms`,
   `first_text_ms`, `task_done_ms`, `stream_end_ms`, `final_flush_ms`, `total_ms`. A phase that
-  did not happen (no instance created on a follow-up, no intro on a reply) is absent. A turn a
+  did not happen (no instance created on a follow-up) is absent. A turn a
   previous process left running and this one delivered after a restart gets a record too, its
   timeline starting at the delivery.
 - `token_refresh` -- the person's muster id_token was refreshed: `trigger` (`ahead` for the
@@ -414,8 +414,8 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
 
 ### Identity, HITL, and channel behavior
 
-- **Per-message branding.** Agent replies, the agent's own confirmation prompts, and the launch
-  announcement are posted under the agent's display name, so they read as the agent speaking
+- **Per-message branding.** Agent replies and the agent's own confirmation prompts are posted
+  under the agent's display name, so they read as the agent speaking
   rather than the app. The name is the `Agent` CR's `ui.giantswarm.io/display-name` annotation
   (as reported by the roster), falling back to the resource's own name — `sre-agent`, not the
   underscored `sre_agent` the AgentCard publishes. The AgentCard supplies only the icon, which
@@ -440,8 +440,6 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
   asks to confirm again); a plain "approve"/"deny" reply still decides.
 - **Channel intro.** When the bot is added to a channel it posts a one-time introduction
   (requires the `member_joined_channel` bot event).
-- **Launch announcement.** A new channel thread opens with a short Swarmgeist hand-off notice
-  before the agent takes over.
 - **Sign-in prompt.** An unlinked user's first message is answered with a "Sign in to Giant
   Swarm" prompt. In a channel the prompt is ephemeral, so only that user sees the link; a
   short notice in the thread says the agent is waiting for a sign-in, names nobody and

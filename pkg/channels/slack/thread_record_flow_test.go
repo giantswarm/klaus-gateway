@@ -1,7 +1,6 @@
 package slack_test
 
 import (
-	"strings"
 	"testing"
 	"time"
 
@@ -44,25 +43,4 @@ func TestThreadRecord_AgentInitiatorAndGrantSurviveRestart(t *testing.T) {
 	require.NotContains(t, allText(fake.pathCalls("chat.postEphemeral")), "waiting for the thread owner",
 		"the grant survived: no consent prompt")
 	require.Empty(t, fake.pathCalls("conversations.replies"), "no Slack history read")
-}
-
-// The launch announcement posts on the first turn inside an existing thread,
-// not on the second.
-func TestLaunchAnnouncement_PostsOnFirstTurnInsideExistingThread(t *testing.T) {
-	fake := newFakeSlackAPI()
-	gw, _ := capturingGateway()
-	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode,
-		withSelection(&fakeRoster{}, &fakeCards{known: map[string]string{"sre-agent": "SRE Agent"}}),
-		func(a *slackadapter.Adapter) { a.DefaultAgent = "sre-agent" })
-
-	sendEvent(t, srv, mention("U1", "help", "900.2", "900.1"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, 2*time.Second, 50*time.Millisecond)
-	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Bringing in")
-	}, 2*time.Second, 50*time.Millisecond)
-
-	sendEvent(t, srv, mention("U1", "more", "900.3", "900.1"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 2 }, 2*time.Second, 50*time.Millisecond)
-	time.Sleep(150 * time.Millisecond)
-	require.Equal(t, 1, strings.Count(allText(fake.pathCalls("chat.postMessage")), "Bringing in"))
 }

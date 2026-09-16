@@ -377,9 +377,8 @@ func TestBatchedWriter_FlushesContent(t *testing.T) {
 
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_mention","user":"U123","text":"<@BOT> go","channel":"C1","ts":"111.222"}}`)
 
-	// Default (auto) mode posts the answer as a Block Kit markdown message. The
-	// channel launch announcement also posts here, so wait for the answer text
-	// rather than the first postMessage call.
+	// Default (auto) mode posts the answer as a Block Kit markdown message;
+	// wait for the answer text rather than the first postMessage call.
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "hello world")
 	}, 2*time.Second, 20*time.Millisecond, "streamed answer is posted")
