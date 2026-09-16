@@ -77,9 +77,23 @@ func unescape(s string) string {
 	return strings.ReplaceAll(s, `\\`, `\`)
 }
 
-// Entry records what a conversation is bound to: the Klaus instance that
-// owns it (Instance) or, on the kagent path, the AgentInstance the thread's
-// turns are routed to (AgentInstanceID). Exactly one of the two is set.
+// Thread is the channel-owned record of a conversation thread, stored at the
+// thread's 4-part key (agent slot empty) next to the thread's AgentInstance
+// bindings. It holds the facts a channel must not lose across a restart and
+// cannot recover from the channel itself: the agent the thread is bound to
+// (the resolved ref, never "" for the default — a changed default must not
+// fork the session), the initiator, and the users the initiator allowed.
+type Thread struct {
+	AgentRef  string   `json:"agent_ref"`
+	Initiator string   `json:"initiator,omitempty"`
+	Granted   []string `json:"granted,omitempty"`
+}
+
+// Entry records what a conversation is bound to: an instance binding — the
+// Klaus instance that owns it (Instance) or, on the kagent path, the
+// AgentInstance the thread's turns are routed to (AgentInstanceID) — or a
+// thread record (Thread). Exactly one of Instance/AgentInstanceID and Thread
+// is set.
 type Entry struct {
 	// Instance is the name of the Klaus instance that owns the conversation.
 	// Empty for a kagent conversation.
@@ -93,10 +107,12 @@ type Entry struct {
 	TaskID string `json:"task_id,omitempty"`
 	// Resume is the channel-private data needed to deliver TaskID's result
 	// after a restart (the channel adapter owns its keys). Set with TaskID.
-	Resume    map[string]string `json:"resume,omitempty"`
-	CreatedAt time.Time         `json:"created_at"`
-	LastSeen  time.Time         `json:"last_seen"`
-	TTL       time.Duration     `json:"ttl"`
+	Resume map[string]string `json:"resume,omitempty"`
+	// Thread is set on a thread record and nil on an instance binding.
+	Thread    *Thread       `json:"thread,omitempty"`
+	CreatedAt time.Time     `json:"created_at"`
+	LastSeen  time.Time     `json:"last_seen"`
+	TTL       time.Duration `json:"ttl"`
 }
 
 // Expired reports whether the entry has aged past its TTL relative to now.

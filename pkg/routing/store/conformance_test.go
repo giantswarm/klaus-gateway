@@ -95,6 +95,38 @@ func runConformance(t *testing.T, factory func(t *testing.T) store.Store) {
 		require.Equal(t, e.AgentInstanceID, entries[0].Entry.AgentInstanceID)
 	})
 
+	t.Run("thread-record-round-trip", func(t *testing.T) {
+		s := factory(t)
+		ctx := context.Background()
+		k := store.Key{Channel: channelWeb, ChannelID: "C1", ThreadID: "1700000000.000100"}
+		now := time.Now().UTC().Truncate(time.Second)
+		in := store.Entry{
+			Thread:    &store.Thread{AgentRef: "kagent/sre-agent", Initiator: "U1", Granted: []string{"U2", "U3"}},
+			CreatedAt: now, LastSeen: now, TTL: 30 * 24 * time.Hour,
+		}
+		require.NoError(t, s.Put(ctx, k, in))
+		got, ok, err := s.Get(ctx, k)
+		require.NoError(t, err)
+		require.True(t, ok)
+		require.NotNil(t, got.Thread)
+		require.Equal(t, in.Thread.AgentRef, got.Thread.AgentRef)
+		require.Equal(t, in.Thread.Initiator, got.Thread.Initiator)
+		require.Equal(t, in.Thread.Granted, got.Thread.Granted)
+		require.Empty(t, got.AgentInstanceID)
+		// The thread record and an instance binding of the same thread are two keys.
+		bound := store.Key{Channel: channelWeb, ChannelID: "C1", ThreadID: "1700000000.000100", Agent: "kagent/sre-agent"}
+		require.NoError(t, s.Put(ctx, bound, store.Entry{AgentInstanceID: "i-1", CreatedAt: now, LastSeen: now}))
+		got, ok, err = s.Get(ctx, k)
+		require.NoError(t, err)
+		require.True(t, ok)
+		require.NotNil(t, got.Thread, "thread record must not be overwritten by the binding")
+		b, ok, err := s.Get(ctx, bound)
+		require.NoError(t, err)
+		require.True(t, ok)
+		require.Nil(t, b.Thread)
+		require.Equal(t, "i-1", b.AgentInstanceID)
+	})
+
 	t.Run("ttl-expired-filtered", func(t *testing.T) {
 		s := factory(t)
 		ctx := context.Background()

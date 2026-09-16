@@ -60,6 +60,19 @@ func TestKeyLayout(t *testing.T) {
 	require.Equal(t, e.TaskID, back.TaskID)
 	require.Equal(t, e.Resume, back.Resume)
 	require.True(t, e.LastSeen.Equal(back.LastSeen))
+
+	// A thread record lives at the 4-part key (no Agent), sharing the same
+	// channel prefix; its raw value carries "thread" where the instance
+	// binding's, read above, does not.
+	tk := store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700000000.000100"}
+	require.NoError(t, s.Put(ctx, tk, store.Entry{
+		Thread: &store.Thread{AgentRef: "sre-agent", Initiator: "U1"}, CreatedAt: now, LastSeen: now,
+	}))
+	traw, err := m.Get("klaus-gateway:route:slack|C1||1700000000.000100")
+	require.NoError(t, err)
+	require.Contains(t, traw, "thread")
+	require.Contains(t, traw, "agent_ref")
+	require.NotContains(t, raw, "thread", "the instance binding's value has no thread record")
 }
 
 func got0(m *miniredis.Miniredis) string { return m.Keys()[0] }
