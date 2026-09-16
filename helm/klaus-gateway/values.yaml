@@ -61,8 +61,6 @@ serviceMonitor:
 # Routing table backend.
 #   memory    -- process-local; state lost on restart.
 #   bolt      -- persistent local file; requires a writable mount at boltPath.
-#   configmap -- cluster-backed; one ConfigMap "klaus-gateway-routes" per namespace.
-#   crd       -- cluster-backed; one ChannelRoute CR per conversation (requires controller.enabled).
 # Routing table: the binding of every thread to its agent instance and, while a
 # turn runs, the record of the task in flight (delivered after a restart). The
 # store decides whether either outlives the pod.
@@ -74,20 +72,13 @@ serviceMonitor:
 #                compatible) server, no volume, no API-server access, shared
 #                by replicas. The agent platform runs one for muster's token
 #                store; point routing.valkey at it (see below).
-#   crd       -- for installations without a Valkey. One ChannelRoute custom
-#                resource per thread; needs controller.enabled: true and the
-#                cluster-scoped RBAC the chart renders for it. Never shrinks
-#                on its own.
 #   bolt      -- a file at boltPath. Durable only when boltPath lies inside a
 #                mounted volume; the chart mounts none, so with the defaults it
 #                lives on the container filesystem and a pod recreation loses
 #                it (the gateway still treats it as durable and promises
 #                delivery after a restart). Development only.
-#   configmap -- not for installations: one ConfigMap holds the whole table
-#                (1 MiB cap, a read-modify-write of everything on every turn)
-#                and the chart renders no RBAC for it.
 routing:
-  store: memory  # @schema enum: [memory, valkey, crd, bolt, configmap]
+  store: memory  # @schema enum: [memory, valkey, bolt]
   boltPath: /var/lib/klaus-gateway/routes.bolt
   # Default TTL for route entries (e.g. "24h"). Zero means never expire.
   defaultTTL: "24h"
@@ -119,17 +110,6 @@ routing:
     # turn after this long, with a clear error in the thread, instead of
     # hanging it; readiness fails with it and recovers with the server.
     timeout: "2s"
-
-# CRD installation. Renders the ChannelRoute CustomResourceDefinition when true.
-# Set to false if you manage the CRD lifecycle externally (e.g. via GitOps).
-crd:
-  install: true
-
-# Embedded ChannelRoute controller. Requires --store=crd. When enabled, the
-# gateway runs an in-process controller-runtime manager that watches ChannelRoute
-# CRs and updates their status conditions to reflect instance liveness.
-controller:
-  enabled: false
 
 # Lifecycle driver: klausctl (local), operator (MCP to klaus-operator), or static (no-op when staticInstances is empty).
 lifecycle:

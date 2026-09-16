@@ -325,24 +325,6 @@
         "clusterID": {
             "type": "string"
         },
-        "controller": {
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-                "enabled": {
-                    "type": "boolean"
-                }
-            }
-        },
-        "crd": {
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-                "install": {
-                    "type": "boolean"
-                }
-            }
-        },
         "enabled": {
             "type": "boolean"
         },
@@ -641,9 +623,7 @@
                     "enum": [
                         "memory",
                         "valkey",
-                        "crd",
-                        "bolt",
-                        "configmap"
+                        "bolt"
                     ]
                 },
                 "valkey": {
