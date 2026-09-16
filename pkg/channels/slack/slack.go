@@ -200,6 +200,14 @@ type Adapter struct {
 	inactiveHintedMu sync.Mutex
 	inactiveHinted   map[string]ttlEntry[struct{}]
 
+	// seenThreadsMu guards seenThreads, the threads this process has handled a
+	// turn in. Deliberately in-memory: "first sight" means first sight by THIS
+	// process, which is what the post-restart checks (a leftover turn to
+	// deliver, an instance to confirm) are about — the thread record in the
+	// store survives the restart and cannot tell.
+	seenThreadsMu sync.Mutex
+	seenThreads   map[string]ttlEntry[struct{}]
+
 	// parkedDropNoticedMu guards parkedDropNoticed, the (user, thread) pairs
 	// already told that parked messages past the cap were dropped within the
 	// current window.
@@ -1788,10 +1796,12 @@ func (a *Adapter) dispatchFrom(ctx context.Context, msg channels.InboundMessage,
 	ctx, _ = a.beginTurn(ctx, msg.ReceivedAt, msg.ChannelID, msg.ThreadID, slackUser)
 	defer channels.AbandonTurn(ctx, "not_dispatched")
 
-	// Captured before the policy records this thread: true when this process has
-	// no record of the thread, i.e. a reply into a thread it did not start
-	// (typically after a restart): the case the resume check targets.
-	firstSight := !a.isActiveThread(ctx, slackChannel, msg.ThreadID)
+	// True the first time THIS process handles a turn in the thread (typically a
+	// reply after a restart): the case the leftover-turn delivery and the resume
+	// check target. Kept in memory on purpose — the thread record in the store
+	// survives the restart, so it cannot tell a restarted process from a running
+	// one; the pending-task check keeps a paused HITL thread from counting as new.
+	firstSight := markOnce(&a.seenThreadsMu, &a.seenThreads, msg.ThreadID, threadStateTTL) && !a.hasPendingTask(msg.ThreadID)
 
 	// Access control. The first user to interact becomes the thread initiator and
 	// instructs freely. A different user is gated: authenticate first (unknown
