@@ -3,7 +3,7 @@
 // A routing entry maps (channel, channel-id, user, thread[, agent]) to the
 // klaus instance that owns the conversation, or to the kagent AgentInstance the
 // thread's turns are routed to. Stores persist this mapping across restarts
-// where possible (bolt, configmap, crd) or keep it in memory.
+// where possible (bolt, valkey) or keep it in memory.
 package store
 
 import (

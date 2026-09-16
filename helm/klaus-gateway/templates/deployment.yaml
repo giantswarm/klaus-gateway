@@ -58,9 +58,6 @@ spec:
         {{- if eq .Values.routing.store "bolt" }}
         - --bolt-path={{ .Values.routing.boltPath }}
         {{- end }}
-        {{- if or (eq .Values.routing.store "configmap") (eq .Values.routing.store "crd") }}
-        - --namespace=$(POD_NAMESPACE)
-        {{- end }}
         {{- if eq .Values.routing.store "valkey" }}
         {{- with .Values.routing.valkey }}
         - --valkey-url={{ required "routing.valkey.url is required with routing.store: valkey" .url }}
@@ -83,9 +80,6 @@ spec:
         - --valkey-timeout={{ .timeout }}
         {{- end }}
         {{- end }}
-        {{- end }}
-        {{- if .Values.controller.enabled }}
-        - --controller=true
         {{- end }}
         {{- if .Values.routing.defaultTTL }}
         - --default-ttl={{ .Values.routing.defaultTTL }}

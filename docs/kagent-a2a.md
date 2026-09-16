@@ -72,9 +72,9 @@ channel thread to exactly one instance:
    written, the process died in between — gets the same instance back instead of a second one.
    The call returns once the instance is READY.
 2. The instance id is persisted in the routing store as the thread's entry
-   (`store.Entry.AgentInstanceID`, the `agentInstanceID` field of a `ChannelRoute` CR; key
+   (`store.Entry.AgentInstanceID`; key
    `channel|channelID||threadID|agentRef`, user slot empty because the thread is shared by its
-   participants). It survives a gateway restart on the bolt, ConfigMap and CRD stores and never
+   participants). It survives a gateway restart on the bolt and Valkey stores and never
    expires on its own: the instance *is* the conversation, and the controller keeps it until
    it is deleted.
 3. Every later turn of the thread routes to that instance: the id rides as the

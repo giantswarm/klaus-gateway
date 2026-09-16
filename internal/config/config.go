@@ -39,11 +39,9 @@ const (
 
 // Store names understood by the routing store factory.
 const (
-	StoreMemory    = "memory"
-	StoreBolt      = "bolt"
-	StoreConfigMap = "configmap"
-	StoreCRD       = "crd"
-	StoreValkey    = "valkey"
+	StoreMemory = "memory"
+	StoreBolt   = "bolt"
+	StoreValkey = "valkey"
 )
 
 // Driver names understood by the lifecycle manager factory.
@@ -230,10 +228,9 @@ type Config struct {
 	AdminAddress  string
 	LogLevel      string
 
-	Store     string
-	BoltPath  string
-	Namespace string
-	Valkey    ValkeyConfig
+	Store    string
+	BoltPath string
+	Valkey   ValkeyConfig
 
 	Driver           string
 	KlausctlBin      string
@@ -261,9 +258,6 @@ type Config struct {
 	Web   WebConfig
 	A2A   A2AConfig
 	OBO   OBOConfig
-
-	// Controller enables the embedded ChannelRoute controller-runtime manager.
-	Controller bool
 }
 
 // ValkeyConfig locates the Valkey server of the valkey routing store
@@ -300,7 +294,6 @@ func Defaults() Config {
 		LogLevel:      "info",
 		Store:         StoreMemory,
 		BoltPath:      "/var/lib/klaus-gateway/routes.bolt",
-		Namespace:     "default",
 		Valkey:        ValkeyConfig{Timeout: 2 * time.Second},
 		Driver:        DriverKlausctl,
 		KlausctlBin:   "klausctl",
@@ -338,9 +331,8 @@ func Load(args []string) (Config, error) {
 	fs.StringVar(&cfg.ListenAddress, "listen-address", cfg.ListenAddress, "Address the public HTTP server binds to.")
 	fs.StringVar(&cfg.AdminAddress, "admin-address", cfg.AdminAddress, "Address for /healthz, /readyz, /metrics.")
 	fs.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "Log level: debug, info, warn, error.")
-	fs.StringVar(&cfg.Store, "store", cfg.Store, "Routing store: memory, bolt, configmap, crd, valkey.")
+	fs.StringVar(&cfg.Store, "store", cfg.Store, "Routing store: memory, bolt, valkey.")
 	fs.StringVar(&cfg.BoltPath, "bolt-path", cfg.BoltPath, "Path to the bolt database (bolt store only).")
-	fs.StringVar(&cfg.Namespace, "namespace", cfg.Namespace, "Namespace for the configmap and crd stores.")
 	fs.StringVar(&cfg.Valkey.URL, "valkey-url", cfg.Valkey.URL, "Valkey server as host:port (valkey store only).")
 	fs.StringVar(&cfg.Valkey.Username, "valkey-username", cfg.Valkey.Username, "Valkey ACL user; empty means the default user. The password comes from --valkey-password-file or KLAUS_GATEWAY_VALKEY_PASSWORD.")
 	fs.StringVar(&cfg.Valkey.PasswordFile, "valkey-password-file", cfg.Valkey.PasswordFile, "File holding the Valkey password; wins over KLAUS_GATEWAY_VALKEY_PASSWORD.")
@@ -383,7 +375,6 @@ func Load(args []string) (Config, error) {
 	fs.BoolVar(&cfg.Slack.ClearReactionOnDone, "slack-clear-reaction-on-done", cfg.Slack.ClearReactionOnDone, "On a successful turn, remove the working reaction without adding a done reaction (default true). Set false to swap in the done emoji.")
 	fs.BoolVar(&cfg.CLI.Enabled, "cli-enabled", cfg.CLI.Enabled, "Enable the CLI channel adapter at /cli/v1/*.")
 	fs.BoolVar(&cfg.Web.Enabled, "web-enabled", cfg.Web.Enabled, "Enable the web channel adapter at /web/* (default true).")
-	fs.BoolVar(&cfg.Controller, "controller", cfg.Controller, "Enable the embedded ChannelRoute controller (requires --store=crd).")
 	fs.BoolVar(&cfg.A2A.Enabled, "a2a-enabled", cfg.A2A.Enabled, "Enable the A2A client surface.")
 	fs.StringVar(&cfg.A2A.DefaultAgent, "a2a-default-agent", cfg.A2A.DefaultAgent, "AgentTemplate a turn runs on when the channel names none: a bare name in --a2a-namespace, or namespace/name.")
 	fs.StringVar(&cfg.A2A.URL, "a2a-url", cfg.A2A.URL, "kagent controller gRPC target through agentgateway: grpc://host:port (h2c) or grpcs://host[:port] (TLS, 443 by default).")
@@ -432,9 +423,6 @@ func applyEnv(cfg *Config) {
 	}
 	if v, ok := lookup("BOLT_PATH"); ok {
 		cfg.BoltPath = v
-	}
-	if v, ok := lookup("NAMESPACE"); ok {
-		cfg.Namespace = v
 	}
 	if v, ok := lookup("VALKEY_URL"); ok {
 		cfg.Valkey.URL = v
@@ -544,9 +532,6 @@ func applyEnv(cfg *Config) {
 	if v, ok := lookup("WEB_ENABLED"); ok {
 		cfg.Web.Enabled = strings.EqualFold(v, "true") || v == "1"
 	}
-	if v, ok := lookup("CONTROLLER"); ok {
-		cfg.Controller = strings.EqualFold(v, "true") || v == "1"
-	}
 	if v, ok := lookup("A2A_ENABLED"); ok {
 		cfg.A2A.Enabled = strings.EqualFold(v, "true") || v == "1"
 	}
@@ -613,12 +598,9 @@ func lookup(key string) (string, bool) {
 // Validate checks that the config is internally consistent.
 func (c Config) Validate() error {
 	switch c.Store {
-	case StoreMemory, StoreBolt, StoreConfigMap, StoreCRD, StoreValkey:
+	case StoreMemory, StoreBolt, StoreValkey:
 	default:
-		return fmt.Errorf("invalid --store %q: must be one of memory, bolt, configmap, crd, valkey", c.Store)
-	}
-	if c.Controller && c.Store != StoreCRD {
-		return fmt.Errorf("--controller=true requires --store=crd")
+		return fmt.Errorf("invalid --store %q: must be one of memory, bolt, valkey", c.Store)
 	}
 	switch c.Driver {
 	case DriverKlausctl, DriverOperator, DriverStatic:

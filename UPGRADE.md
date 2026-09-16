@@ -4,6 +4,14 @@ Breaking or operator-visible changes between releases, newest first. The
 `CHANGELOG.md` lists every change; this file covers what an operator has to
 do or decide.
 
+## Next — the crd and configmap routing stores are gone
+
+`routing.store: crd` and `routing.store: configmap` no longer exist; the gateway refuses to start
+with `invalid --store`. The `controller.enabled` and `crd.install` values are gone too; a values
+file that still sets them fails the chart's schema. Switch to `routing.store: valkey` (see 1.6.0)
+before upgrading. The ChannelRoute CRD was a chart template: the upgrade deletes the
+CustomResourceDefinition and with it every `ChannelRoute` object. No installation ran these stores.
+
 ## 1.10.0 — turn records, turn metrics, one trace per turn, the token refresh off the turn
 
 Nothing to do for the metrics and the records: `/metrics` gains
@@ -138,5 +146,5 @@ it was; after step 2 the file is gone with the claim and users link again.
 
 Writers use the Secret's `resourceVersion` for optimistic concurrency, so a
 second replica can share the link store. The routing store still has to be
-cluster-backed too (`routing.store: configmap` or `crd`) before
+cluster-backed too (`routing.store: valkey`) before
 `replicaCount` goes above one.

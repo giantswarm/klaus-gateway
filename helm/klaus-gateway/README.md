@@ -56,8 +56,6 @@ Channel and routing gateway in front of klaus instances; uses agentgateway as th
 | routing.valkey.tls.serverName | string | `""` |  |
 | routing.valkey.keyPrefix | string | `""` |  |
 | routing.valkey.timeout | string | `"2s"` |  |
-| crd.install | bool | `true` |  |
-| controller.enabled | bool | `false` |  |
 | lifecycle.driver | string | `"operator"` |  |
 | lifecycle.klausctlBin | string | `""` |  |
 | lifecycle.operatorMCPURL | string | `""` |  |
