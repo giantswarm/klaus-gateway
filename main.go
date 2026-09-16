@@ -14,23 +14,14 @@ import (
 	"syscall"
 
 	"github.com/go-chi/chi/v5"
-	k8sruntime "k8s.io/apimachinery/pkg/runtime"
-	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
-	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
-	ctrlzap "sigs.k8s.io/controller-runtime/pkg/log/zap"
-	ctrlmetricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	"github.com/giantswarm/klaus-gateway/internal/config"
-	"github.com/giantswarm/klaus-gateway/internal/controller"
 	"github.com/giantswarm/klaus-gateway/internal/version"
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 	"github.com/giantswarm/klaus-gateway/pkg/api"
-	v1alpha1 "github.com/giantswarm/klaus-gateway/pkg/api/v1alpha1"
 	"github.com/giantswarm/klaus-gateway/pkg/auth/musterlink"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 	cliachannel "github.com/giantswarm/klaus-gateway/pkg/channels/cli"
@@ -45,8 +36,6 @@ import (
 	"github.com/giantswarm/klaus-gateway/pkg/routing"
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
 	boltstore "github.com/giantswarm/klaus-gateway/pkg/routing/store/bolt"
-	configmapstore "github.com/giantswarm/klaus-gateway/pkg/routing/store/configmap"
-	crdstore "github.com/giantswarm/klaus-gateway/pkg/routing/store/crd"
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store/memory"
 	valkeystore "github.com/giantswarm/klaus-gateway/pkg/routing/store/valkey"
 	"github.com/giantswarm/klaus-gateway/pkg/server"
@@ -81,10 +70,6 @@ func run(args []string) error {
 	logger := newLogger(cfg.LogLevel)
 	slog.SetDefault(logger)
 
-	// Wire controller-runtime logger to slog so all reconciler output goes to
-	// the same structured logger.
-	ctrllog.SetLogger(ctrlzap.New(ctrlzap.UseDevMode(cfg.LogLevel == "debug")))
-
 	logger.Info("klaus-gateway starting",
 		"version", version.Version(),
 		"git_sha", version.GitSHA(),
@@ -93,7 +78,6 @@ func run(args []string) error {
 		"store", cfg.Store,
 		"driver", cfg.Driver,
 		"agentgateway_url", cfg.AgentgatewayURL,
-		"controller", cfg.Controller,
 	)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -137,12 +121,6 @@ func run(args []string) error {
 	manager, err := buildLifecycle(cfg)
 	if err != nil {
 		return fmt.Errorf("build lifecycle: %w", err)
-	}
-
-	if cfg.Controller {
-		if err := startController(ctx, manager, logger); err != nil {
-			return fmt.Errorf("start controller: %w", err)
-		}
 	}
 
 	upstreamClient, err := upstream.Parse(cfg.AgentgatewayURL)
@@ -358,42 +336,6 @@ func stopAdapters(adapters []channels.ChannelAdapter, logger *slog.Logger) {
 	}
 }
 
-// startController creates and starts the embedded controller-runtime manager in
-// a background goroutine. It returns once the manager's cache is synced.
-func startController(ctx context.Context, lm lifecycle.Manager, logger *slog.Logger) error {
-	restCfg, err := buildKubeConfig()
-	if err != nil {
-		return fmt.Errorf("kube config: %w", err)
-	}
-
-	scheme := buildScheme()
-	mgr, err := ctrl.NewManager(restCfg, ctrl.Options{
-		Scheme:                 scheme,
-		LeaderElection:         false,
-		Metrics:                ctrlmetricsserver.Options{BindAddress: "0"},
-		HealthProbeBindAddress: "0",
-	})
-	if err != nil {
-		return fmt.Errorf("new manager: %w", err)
-	}
-
-	if err := (&controller.ChannelRouteReconciler{
-		Client:    mgr.GetClient(),
-		Lifecycle: lm,
-	}).SetupWithManager(mgr); err != nil {
-		return fmt.Errorf("setup reconciler: %w", err)
-	}
-
-	go func() {
-		if err := mgr.Start(ctx); err != nil {
-			logger.Error("controller manager stopped", "error", err)
-		}
-	}()
-
-	logger.Info("ChannelRoute controller started")
-	return nil
-}
-
 func newLogger(level string) *slog.Logger {
 	var l slog.Level
 	switch level {
@@ -415,26 +357,6 @@ func buildStore(cfg config.Config) (store.Store, error) {
 		return memory.New(), nil
 	case config.StoreBolt:
 		return boltstore.Open(cfg.BoltPath)
-	case config.StoreConfigMap:
-		restCfg, err := buildKubeConfig()
-		if err != nil {
-			return nil, fmt.Errorf("configmap store: %w", err)
-		}
-		kclient, err := kubernetes.NewForConfig(restCfg)
-		if err != nil {
-			return nil, fmt.Errorf("configmap store: %w", err)
-		}
-		return configmapstore.New(kclient, configmapstore.Options{Namespace: cfg.Namespace}), nil
-	case config.StoreCRD:
-		restCfg, err := buildKubeConfig()
-		if err != nil {
-			return nil, fmt.Errorf("crd store: %w", err)
-		}
-		c, err := client.New(restCfg, client.Options{Scheme: buildScheme()})
-		if err != nil {
-			return nil, fmt.Errorf("crd store: %w", err)
-		}
-		return crdstore.New(c, cfg.Namespace), nil
 	case config.StoreValkey:
 		password, err := valkeyPassword(cfg.Valkey)
 		if err != nil {
@@ -633,13 +555,6 @@ func buildKubeConfig() (*rest.Config, error) {
 		}
 	}
 	return cfg, nil
-}
-
-// buildScheme returns a runtime.Scheme with v1alpha1 types registered.
-func buildScheme() *k8sruntime.Scheme {
-	s := k8sruntime.NewScheme()
-	utilruntime.Must(v1alpha1.AddToScheme(s))
-	return s
 }
 
 // readiness returns 200 once the store is responsive: a store that can ping

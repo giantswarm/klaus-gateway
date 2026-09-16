@@ -8,16 +8,9 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/stretchr/testify/require"
-	k8sruntime "k8s.io/apimachinery/pkg/runtime"
-	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
-	"k8s.io/client-go/kubernetes/fake"
-	ctrlfake "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	v1alpha1 "github.com/giantswarm/klaus-gateway/pkg/api/v1alpha1"
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
 	boltstore "github.com/giantswarm/klaus-gateway/pkg/routing/store/bolt"
-	"github.com/giantswarm/klaus-gateway/pkg/routing/store/configmap"
-	crdstore "github.com/giantswarm/klaus-gateway/pkg/routing/store/crd"
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store/memory"
 	valkeystore "github.com/giantswarm/klaus-gateway/pkg/routing/store/valkey"
 )
@@ -143,33 +136,9 @@ func TestBoltStore_Conformance(t *testing.T) {
 	})
 }
 
-func TestConfigMapStore_Conformance(t *testing.T) {
-	runConformance(t, func(t *testing.T) store.Store {
-		client := fake.NewSimpleClientset()
-		s := configmap.New(client, configmap.Options{Namespace: "default"})
-		t.Cleanup(func() { _ = s.Close() })
-		return s
-	})
-}
-
-func TestCRDStore_Conformance(t *testing.T) {
-	scheme := k8sruntime.NewScheme()
-	utilruntime.Must(v1alpha1.AddToScheme(scheme))
-
-	runConformance(t, func(t *testing.T) store.Store {
-		fakeClient := ctrlfake.NewClientBuilder().
-			WithScheme(scheme).
-			WithStatusSubresource(&v1alpha1.ChannelRoute{}).
-			Build()
-		s := crdstore.New(fakeClient, "default")
-		t.Cleanup(func() { _ = s.Close() })
-		return s
-	})
-}
-
 // The Valkey store is exercised against a server speaking the real protocol
-// over TCP (miniredis), not a fake client: a fake validates nothing, which is
-// how the ConfigMap store shipped with a data key the API server rejects.
+// over TCP (miniredis), not a fake client: a fake validates nothing about the
+// wire format.
 func TestValkeyStore_Conformance(t *testing.T) {
 	runConformance(t, func(t *testing.T) store.Store {
 		m := miniredis.RunT(t)

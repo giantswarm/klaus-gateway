@@ -377,3 +377,13 @@ func TestValkeyStoreConfig(t *testing.T) {
 		require.Empty(t, cfg.Valkey.KeyPrefix, "the store applies its own default prefix")
 	})
 }
+
+func TestValidate_RejectsRemovedStores(t *testing.T) {
+	for _, s := range []string{"crd", "configmap"} {
+		cfg := config.Defaults()
+		cfg.Store = s
+		if err := cfg.Validate(); err == nil {
+			t.Fatalf("store %q must be rejected", s)
+		}
+	}
+}
