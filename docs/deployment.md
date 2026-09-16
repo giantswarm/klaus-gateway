@@ -218,7 +218,12 @@ failure never costs a person their sign-in:
 The routing table maps `(channel, channelID, userID, threadID)` to a Klaus instance name, or a
 thread to the kagent AgentInstance that holds its conversation, together with the record of the
 task in flight on that thread (delivered after a restart, see
-[Shutdown and restarts](#shutdown-and-restarts)). Choose the backend that matches your deployment:
+[Shutdown and restarts](#shutdown-and-restarts)). For the Slack channel, the same store also
+holds each thread's record — its agent, its initiator, and the collaborators the initiator
+allowed — next to its AgentInstance binding. The record has a 30-day sliding TTL, refreshed on
+every handled message; the AgentInstance binding never expires. On `routing.store: memory` this
+Slack thread state, like everything else in the table, is lost on every restart. Choose the
+backend that matches your deployment:
 
 | Store       | Helm value         | Persistent | Cluster-backed | Notes                              |
 |-------------|-------------------|------------|----------------|------------------------------------|
@@ -338,7 +343,9 @@ out and the thread is left with a frozen ticker. The recovery of left-running tu
 routing store that outlives the pod: `routing.store: memory` (the chart default) forgets the
 binding and the task with it. Installations with a Slack channel should run `valkey` (see
 [Valkey](#valkey)); `bolt` only counts when `routing.boltPath`
-lies inside a mounted volume.
+lies inside a mounted volume. On a persistent store a restarted gateway also keeps each Slack
+thread's agent, initiator and grants; on `memory` the thread starts fresh, and the first person
+to mention the bot becomes its initiator.
 
 ## Observability
 

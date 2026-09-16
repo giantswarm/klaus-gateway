@@ -123,6 +123,18 @@ the title, so a refused title never costs the turn its indicator.
   falls back to the sender's own identity rather than the gateway service
   account. kagent v0.9.9 has no per-caller identity within a session; when that
   lands (kagent#1933, #2181) each caller's own identity replaces this.
+- Each thread's durable state — its agent, its initiator, and the collaborators the
+  initiator allowed — lives in a thread record in the routing store, at the thread's plain
+  key (`slack|<channelID>||<threadID>`, the user and agent slots empty) next to its
+  AgentInstance binding (the same key with the agent ref appended). It is the only carrier:
+  the gateway never reads Slack history to recover any of it. The record slides a 30-day TTL
+  on every handled message; the AgentInstance binding beside it never expires. A 24-hour
+  access window — who may instruct the agent without the initiator's approval — is computed
+  from the record's last-seen time: after 24 hours of silence the initiator and any grants are
+  void and the next person to mention the bot becomes the new initiator, while the agent
+  binding itself is untouched. A thread whose record has expired after 30 idle days but whose
+  AgentInstance binding still exists keeps running on that bound agent — the gateway looks the
+  binding up directly instead of starting over.
 
 ### Two auth layers
 
@@ -168,8 +180,13 @@ Every Slack thread is routed to a single agent via the A2A executor. A conversat
 agent when it opens, through one of two entry points, and keeps it for life:
 
 - **Mention with a prefix**: `@bot /agent "<display name>" <question>` or
-  `@bot /agent <technical-name> <question>` on a conversation-starting message. Without a prefix
-  the conversation goes to the default agent (`slack.defaultAgent`).
+  `@bot /agent <technical-name> <question>` starts a conversation in any thread with no agent
+  recorded yet — a root `@`-mention, or a reply inside an existing thread that has none of its
+  own (an alert another app posted, say). Without a prefix the conversation goes to the default
+  agent (`slack.defaultAgent`). Inside a thread that already has a conversation, naming its own
+  agent again is a no-op — the turn dispatches as a normal reply — and naming a different agent
+  is refused: the session's identity is tied to the first agent, and a mid-conversation switch
+  would silently start an empty one.
 - **Slash command**: `/swarmgeist [question]` in a channel opens a modal with an agent select over
   the live roster (the default agent preselected) and a question box. On submit the gateway posts
   the conversation root itself, under the agent's identity ("💬 @user asked *Agent*: …"), makes
@@ -179,14 +196,19 @@ agent when it opens, through one of two entry points, and keeps it for life:
   asks for an invite to private ones. Failures (unknown agent, roster unavailable, channel not
   served) are reported privately to the invoking user.
 
-After a restart the in-memory binding is re-derived: from the `/agent` prefix in the opening
-message for mention-started threads, and from a conversation marker on the root for slash-started
-threads (the root is a bot message with no prefix). The marker is the `block_id` of the root's
-Block Kit section — invisible to users, stored by Slack with the message, returned by
-`conversations.replies` — and it also names the initiator, so the submitter, not the first person
-to reply, owns the thread after a restart. Slack message metadata would be the purpose-built
-carrier, but Slack drops custom metadata unless its schema is declared in the manifest, and the
-manifest of a classic Slack app has no place for that.
+A thread's agent binding is not re-derived after a restart — it does not need to be. It lives
+in the thread's record in the routing store (see [Threads and sessions](#threads-and-sessions)),
+so on a persistent store (`routing.store: valkey` or `bolt`) a restart changes nothing: same
+agent, same initiator, same grants. The gateway never reads Slack history — no
+`conversations.replies`, no re-parsing the opening message or the slash command's root — to
+recover any of it; the routing-store record is the only carrier. On `routing.store: memory` a
+restart loses this state exactly as it loses the instance bindings, and every thread starts
+fresh from its next message.
+
+The turn that opens a conversation — the first one, root or reply, that finds no agent
+recorded — also posts the "🚀 Bringing in *Agent* to help…" launch announcement, once, in that
+thread. A later turn never repeats it; neither does a DM, or the slash command's own branded
+root, which already names the agent.
 
 | Flag | Env var | Required |
 |------|---------|---------|
@@ -466,7 +488,7 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
 | `chat:write.customize` | Post agent replies under the agent's own name/icon |
 | `reactions:write` | Add/remove progress reactions on the triggering message |
 | `im:history`     | Read DMs sent to the bot                              |
-| `channels:history` | Read messages in channels the bot is a member of   |
+| `channels:history` | Required for Slack to deliver `message.channels` events (channel messages) to the bot; the gateway does not read channel history |
 | `channels:join`  | Join public channels on invite                        |
 | `files:read`     | Download message attachments (`url_private`) to forward to the agent |
 

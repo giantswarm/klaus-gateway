@@ -70,6 +70,9 @@ Three backends are supported (set via `--store` / `KLAUS_GATEWAY_STORE`):
 | Valkey      | `valkey`    | yes        | yes            | For installations. One key per entry in Valkey (`--valkey-url`, password from `KLAUS_GATEWAY_VALKEY_PASSWORD` or `--valkey-password-file`); TTL as key expiry; every call bounded by `--valkey-timeout` |
 | Bolt        | `bolt`      | yes        | no             | Local file; path via `--bolt-path`          |
 
+Next to each conversation's instance binding, the store also holds a Slack thread's record
+(agent, initiator, grants), with its own 30-day sliding TTL.
+
 ## Lifecycle drivers
 
 Three drivers are supported (set via `--driver` / `KLAUS_GATEWAY_DRIVER`):

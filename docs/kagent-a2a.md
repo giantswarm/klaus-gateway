@@ -36,10 +36,10 @@ a turn without a person's token is refused instead of running as a machine ident
 
 Discovery is a person's call too. The roster is fetched as the caller and cached briefly
 (`ListAgentTemplates` of `a2a.namespace`); reads that happen where no person's token is at hand
-— branding a reply with the agent's display name and icon, recovering a thread's agent after a
-restart — are served from that cache, which every authenticated call refreshes once it is
-older than 30 seconds. Right after a start, before any turn has run, a roster listing without
-a token reports the roster as unavailable until a turn has warmed the cache.
+— branding a reply with the agent's display name and icon — are served from that cache, which
+every authenticated call refreshes once it is older than 30 seconds. Right after a start,
+before any turn has run, a roster listing without a token reports the roster as unavailable
+until a turn has warmed the cache.
 
 ## Agents: the AgentTemplate roster
 
