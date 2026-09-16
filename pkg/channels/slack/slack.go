@@ -78,6 +78,11 @@ type Adapter struct {
 	// DefaultAgent is the agentRef every Slack thread routes to. Must be
 	// non-empty; Start returns an error when it is unset.
 	DefaultAgent string
+	// Namespace is the namespace whose AgentTemplates the A2A client serves
+	// (--a2a-namespace). A typed "<namespace>/<name>" selector that names it
+	// collapses to the deployment's ref shape; any other namespace is left as
+	// typed so the controller refuses it.
+	Namespace string
 	// APIBase overrides the Slack Web API base URL. Empty uses the default
 	// (https://slack.com/api). Set in tests to point at a fake server.
 	APIBase string
