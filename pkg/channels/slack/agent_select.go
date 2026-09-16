@@ -58,12 +58,6 @@ const agentUnavailableNotice = "⚠️ I don't know an agent named `%s` (or it i
 // configured).
 const agentSelectionUnavailable = "_Agent selection isn't available on this gateway._"
 
-// agentCheckFailedNotice is posted when a selection could not be verified as
-// conversation-starting (the thread-record lookup failed). Nothing is
-// dispatched: accepting blindly could rebind an existing conversation and fork
-// its session.
-const agentCheckFailedNotice = "⚠️ _I couldn't check this conversation just now, so I haven't started anything. Please try again._"
-
 // agentResolveCheckFailedNotice is posted when a quoted selection could not be
 // resolved because the roster fetch failed. Nothing is dispatched: guessing an
 // agent would violate loud-never-substituted.
@@ -113,11 +107,7 @@ func (a *Adapter) handleAgentSelection(ctx context.Context, cmd *slashCommand, m
 
 	// A conversation is bound to its agent for life; selection only rides the
 	// message that opens one — in any thread, root or reply.
-	starting, err := a.conversationStarting(ctx, *msg, slackChannel)
-	if err != nil {
-		reply(agentCheckFailedNotice)
-		return false
-	}
+	starting := a.conversationStarting(ctx, *msg, slackChannel)
 	if !starting {
 		return a.handleAgentReselection(ctx, reply, msg, slackChannel)
 	}
@@ -368,44 +358,25 @@ func (a *Adapter) boundAgentOrDefault(ctx context.Context, channelID, threadID s
 }
 
 // conversationStarting reports whether msg opens a conversation in its thread:
-// no record names an agent, and no instance binding of the thread exists (a
-// record expired after ThreadRecordTTL of silence while the binding, which
-// never expires, did not — the bound agent then continues). Only a starting
-// message may carry /agent; a re-selection of the thread's own agent is a
-// no-op, anything else a refused switch.
-func (a *Adapter) conversationStarting(ctx context.Context, msg channels.InboundMessage, slackChannel string) (bool, error) {
-	if _, ok := a.threadAgentBinding(ctx, slackChannel, msg.ThreadID); ok {
-		return false, nil
-	}
-	ref, found, err := a.records().FindThreadBinding(ctx, ChannelName, slackChannel, msg.ThreadID)
-	if err != nil {
-		return false, err
-	}
-	if found {
-		a.bindThreadAgent(ctx, slackChannel, msg.ThreadID, ref)
-		return false, nil
-	}
-	return true, nil
+// no record names an agent, because the thread is new or because the gateway
+// has forgotten it after its lifetime of silence and it starts over. Only a
+// starting message may carry /agent; a re-selection of the thread's own agent
+// is a no-op, anything else a refused switch.
+func (a *Adapter) conversationStarting(ctx context.Context, msg channels.InboundMessage, slackChannel string) bool {
+	_, bound := a.threadAgentBinding(ctx, slackChannel, msg.ThreadID)
+	return !bound
 }
 
 // threadAgent resolves the agent of a turn that carries no explicit prefix:
-// the recorded binding; else the agent of an instance binding the thread
-// already has; else the default, which opens the conversation (opener).
-// Inheritance is load-bearing: the session's context id embeds the agent ref,
-// so resolving a reply to a different agent than its conversation would fork
-// the session.
+// the thread's recorded agent; else the default, which opens the conversation
+// (opener) and is recorded for the replies that follow. Inheritance is
+// load-bearing: the session's context id embeds the agent ref, so resolving a
+// reply to a different agent than its conversation would fork the session. A
+// thread the gateway has forgotten has no record, so it starts over on the
+// default like any new one.
 func (a *Adapter) threadAgent(ctx context.Context, msg channels.InboundMessage, slackChannel string) (ref, source string, opener bool) {
 	if bound, ok := a.threadAgentBinding(ctx, slackChannel, msg.ThreadID); ok {
 		return bound, agentSourceThread, false
-	}
-	found, ok, err := a.records().FindThreadBinding(ctx, ChannelName, slackChannel, msg.ThreadID)
-	if err != nil {
-		a.Logger.Warn("slack: binding lookup failed, using the default agent uncached", "thread", msg.ThreadID, "error", err)
-		return a.DefaultAgent, agentSourceDefault, false
-	}
-	if ok {
-		a.bindThreadAgent(ctx, slackChannel, msg.ThreadID, found)
-		return found, agentSourceThread, false
 	}
 	a.bindThreadAgent(ctx, slackChannel, msg.ThreadID, a.DefaultAgent)
 	return a.DefaultAgent, agentSourceDefault, true

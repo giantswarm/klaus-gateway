@@ -889,9 +889,6 @@ type stubGateway struct {
 	// records backs the thread-record capability. Two adapters sharing one
 	// recorder simulate a restart with a surviving routing store.
 	records *slackadapter.MemoryRecorder
-	// findErr, when set, fails every FindThreadBinding call, the way an
-	// unreachable routing store does.
-	findErr error
 }
 
 // rec is the stub's thread recorder, created on first use.
@@ -910,17 +907,6 @@ func (s *stubGateway) ThreadRecord(ctx context.Context, ch, cid, tid string) (ch
 
 func (s *stubGateway) SaveThreadRecord(ctx context.Context, ch, cid, tid string, t store.Thread) error {
 	return s.rec().SaveThreadRecord(ctx, ch, cid, tid, t)
-}
-
-func (s *stubGateway) FindThreadBinding(ctx context.Context, ch, cid, tid string) (string, bool, error) {
-	rec := s.rec()
-	s.mu.Lock()
-	err := s.findErr
-	s.mu.Unlock()
-	if err != nil {
-		return "", false, err
-	}
-	return rec.FindThreadBinding(ctx, ch, cid, tid)
 }
 
 // stubResumes is the stubGateway's record of turns a previous process left
@@ -1928,7 +1914,7 @@ func TestResume_PostsStartingFreshWhenSessionGone(t *testing.T) {
 	gw := &stubGateway{onSessionResumable: func(channels.InboundMessage) (bool, bool) { return false, true }}
 	// The thread is already bound to an agent: this reply continues a
 	// conversation, it does not open one.
-	gw.rec().SetBinding("slack", "D1", "100.000", "test-agent")
+	require.NoError(t, gw.rec().SaveThreadRecord(context.Background(), "slack", "D1", "100.000", store.Thread{AgentRef: "test-agent"}))
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
 	// A reply into a thread this process never started (thread_ts != ts).
@@ -1943,7 +1929,7 @@ func TestResume_PostsStartingFreshWhenSessionGone(t *testing.T) {
 func TestResume_SilentWhenSessionPresent(t *testing.T) {
 	fake := newFakeSlackAPI()
 	gw := &stubGateway{onSessionResumable: func(channels.InboundMessage) (bool, bool) { return true, true }}
-	gw.rec().SetBinding("slack", "D1", "100.000", "test-agent")
+	require.NoError(t, gw.rec().SaveThreadRecord(context.Background(), "slack", "D1", "100.000", store.Thread{AgentRef: "test-agent"}))
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","channel_type":"im","user":"U1","text":"hi again","channel":"D1","ts":"201.000","thread_ts":"100.000"}}`)

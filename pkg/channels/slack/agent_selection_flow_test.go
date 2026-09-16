@@ -13,6 +13,7 @@ import (
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 	slackadapter "github.com/giantswarm/klaus-gateway/pkg/channels/slack"
+	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
 )
 
 // fakeCards is an AgentCardResolver with the card-info extension: known refs
@@ -423,9 +424,9 @@ func TestPane_NewChatNotGreetedWithStartingFresh(t *testing.T) {
 			deltas:             []channels.OutboundDelta{{Content: "hi"}, {Done: true}},
 			onSessionResumable: sessionGone,
 		}
-		// The conversation exists — the thread is bound to an agent — while this
-		// process holds no access record for it: a resume, not an opener.
-		gw.rec().SetBinding("slack", "D1", "100.000", "test-agent")
+		// The conversation exists — the thread's record names an agent — while
+		// nobody has instructed in it yet: a resume, not an opener.
+		require.NoError(t, gw.rec().SaveThreadRecord(context.Background(), "slack", "D1", "100.000", store.Thread{AgentRef: "test-agent"}))
 		_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
 		sendEvent(t, srv, dmThreadEvent("U1", "are you still there?", "300.000", "100.000"))
@@ -433,24 +434,6 @@ func TestPane_NewChatNotGreetedWithStartingFresh(t *testing.T) {
 			return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "starting fresh")
 		}, 2*time.Second, 50*time.Millisecond, "a real resume with a gone session still gets the notice")
 	})
-}
-
-// A selection whose conversation-start check cannot run (the routing store is
-// unreachable) is refused with an honest transient error, not silently
-// accepted: accepting blindly could rebind an existing conversation and fork
-// its session.
-func TestAgentSelection_PaneStartCheckFailure(t *testing.T) {
-	fake := newFakeSlackAPI()
-	cards := &fakeCards{known: map[string]string{"kagent/sre-agent": "SRE Agent"}}
-	gw, _ := capturingGateway()
-	gw.findErr = errors.New("routing store: unreachable")
-	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, withSelection(&fakeRoster{}, cards))
-
-	sendEvent(t, srv, dmThreadEvent("U1", "/agent sre-agent hello", "200.000", "100.000"))
-	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "couldn't check this conversation")
-	}, 2*time.Second, 50*time.Millisecond)
-	require.Zero(t, gw.resolveCount(), "an unverifiable selection dispatches nothing")
 }
 
 // A quoted display name selects the agent: the roster resolves it to the

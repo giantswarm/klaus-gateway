@@ -1,5 +1,7 @@
 package slack
 
+import "time"
+
 // Test hooks: the external test package builds adapters around a shared
 // in-process recorder to simulate a restart with a surviving store.
 
@@ -7,6 +9,10 @@ type MemoryRecorder = memoryRecorder
 
 func NewMemoryRecorder() *MemoryRecorder { return newMemoryRecorder() }
 
-func (m *MemoryRecorder) SetBinding(channel, channelID, threadID, ref string) {
-	m.setBinding(channel, channelID, threadID, ref)
+// SetTTL shortens the recorder's thread lifetime so a test can let a thread
+// be forgotten without waiting for the default.
+func (m *MemoryRecorder) SetTTL(d time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ttl = d
 }

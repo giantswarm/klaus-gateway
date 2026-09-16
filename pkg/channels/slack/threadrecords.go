@@ -17,7 +17,6 @@ import (
 type threadRecorder interface {
 	ThreadRecord(ctx context.Context, channel, channelID, threadID string) (channels.ThreadRecord, bool, error)
 	SaveThreadRecord(ctx context.Context, channel, channelID, threadID string, t store.Thread) error
-	FindThreadBinding(ctx context.Context, channel, channelID, threadID string) (string, bool, error)
 }
 
 // records returns the gateway's thread recorder, or the in-process fallback.
@@ -42,16 +41,17 @@ func (a *Adapter) recordLock(channelID, threadID string) *sync.Mutex {
 }
 
 // memoryRecorder is threadRecorder over a map. Tests share one between two
-// adapters to simulate a restart with a surviving store.
+// adapters to simulate a restart with a surviving store. Like --store=memory
+// it expires a record after ttl of silence; ttl 0 never expires.
 type memoryRecorder struct {
 	mu   sync.Mutex
 	recs map[string]channels.ThreadRecord
-	bind map[string]string // channel|channelID|threadID -> agent ref, for FindThreadBinding
+	ttl  time.Duration
 	now  func() time.Time
 }
 
 func newMemoryRecorder() *memoryRecorder {
-	return &memoryRecorder{recs: map[string]channels.ThreadRecord{}, bind: map[string]string{}, now: time.Now}
+	return &memoryRecorder{recs: map[string]channels.ThreadRecord{}, ttl: channels.DefaultThreadTTL, now: time.Now}
 }
 
 func recKey(channel, channelID, threadID string) string {
@@ -63,7 +63,7 @@ func (m *memoryRecorder) ThreadRecord(_ context.Context, channel, channelID, thr
 	defer m.mu.Unlock()
 	k := recKey(channel, channelID, threadID)
 	r, ok := m.recs[k]
-	if ok && m.now().Sub(r.LastSeen) > channels.DefaultThreadTTL {
+	if ok && m.ttl > 0 && m.now().Sub(r.LastSeen) > m.ttl {
 		delete(m.recs, k)
 		return channels.ThreadRecord{}, false, nil
 	}
@@ -81,19 +81,4 @@ func (m *memoryRecorder) SaveThreadRecord(_ context.Context, channel, channelID,
 	}
 	m.recs[k] = channels.ThreadRecord{Thread: t, CreatedAt: created, LastSeen: now}
 	return nil
-}
-
-func (m *memoryRecorder) FindThreadBinding(_ context.Context, channel, channelID, threadID string) (string, bool, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	ref, ok := m.bind[recKey(channel, channelID, threadID)]
-	return ref, ok, nil
-}
-
-// setBinding records an instance binding of the thread for FindThreadBinding
-// (test-only shape of what the store holds at the 5-part key).
-func (m *memoryRecorder) setBinding(channel, channelID, threadID, ref string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.bind[recKey(channel, channelID, threadID)] = ref
 }

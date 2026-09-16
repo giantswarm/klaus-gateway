@@ -1185,7 +1185,7 @@ func (a *Adapter) postAccessPrompt(ctx context.Context, slackChannel, threadID, 
 
 // accessPolicy returns the adapter's AccessPolicy over the thread record.
 func (a *Adapter) accessPolicy() AccessPolicy {
-	return &recordAccess{rec: a.records(), channel: ChannelName, now: time.Now, lock: a.recordLock}
+	return &recordAccess{rec: a.records(), channel: ChannelName, lock: a.recordLock}
 }
 
 // isActiveThread reports whether the bot has an active session in threadID —

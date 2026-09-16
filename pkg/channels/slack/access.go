@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"slices"
 	"sync"
-	"time"
 
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
@@ -18,41 +17,32 @@ import (
 // The state lives in the thread's record in the routing store, so on a
 // persistent store it survives a gateway restart.
 type AccessPolicy interface {
-	// SetInitiator records userID as the thread initiator when none is set (or
-	// the access window closed) and returns the effective initiator. A later
-	// caller inside the window never displaces the first.
+	// SetInitiator records userID as the thread initiator when the thread has
+	// none — a new thread, or one the store has forgotten — and returns the
+	// effective initiator. A later caller never displaces the first.
 	SetInitiator(ctx context.Context, channelID, threadID, userID string) string
-	// Initiator returns the thread initiator, or "" when none is set or the
-	// access window closed.
+	// Initiator returns the thread initiator, or "" when the thread has none.
 	Initiator(ctx context.Context, channelID, threadID string) string
-	// Allowed reports whether userID may instruct the agent in the thread (the
-	// initiator, or a user granted via Grant), inside the access window.
+	// Allowed reports whether userID may instruct the agent in the thread: the
+	// initiator, or a user granted via Grant.
 	Allowed(ctx context.Context, channelID, threadID, userID string) bool
 	// Grant adds userID to the thread's allowed interactors. Additive.
 	Grant(ctx context.Context, channelID, threadID, userID string)
 }
 
-// threadAccessTTL bounds how long a thread stays "active" (initiator and
-// grants retained) without any interaction. A thread past the TTL needs a
-// fresh @-mention to re-engage the bot, so a long-lived pod does not keep
-// consuming un-mentioned replies in abandoned threads. Sliding: the window is
-// computed from the record's LastSeen, which every handled message refreshes
-// via SetInitiator.
-const threadAccessTTL = 24 * time.Hour
-
-// recordAccess is AccessPolicy over the thread record. The access window is
-// computed from the record's LastSeen: past threadAccessTTL of silence the
-// initiator and the grants are void and the next author takes the thread
-// over; the agent binding in the same record stays.
+// recordAccess is AccessPolicy over the thread record. The initiator and the
+// grants live exactly as long as the record does: its lifetime is the store's
+// (--thread-ttl), refreshed by every handled message. A thread the gateway has
+// forgotten has no record at all, so the next mentioner becomes its initiator.
 type recordAccess struct {
 	rec     threadRecorder
 	channel string
-	now     func() time.Time
 	lock    func(channelID, threadID string) *sync.Mutex
 }
 
-func (p *recordAccess) open(r channels.ThreadRecord) bool {
-	return r.Initiator != "" && p.now().Sub(r.LastSeen) <= threadAccessTTL
+// active reports whether the thread has an initiator to answer to.
+func (p *recordAccess) active(r channels.ThreadRecord) bool {
+	return r.Initiator != ""
 }
 
 func (p *recordAccess) SetInitiator(ctx context.Context, channelID, threadID, userID string) string {
@@ -64,14 +54,14 @@ func (p *recordAccess) SetInitiator(ctx context.Context, channelID, threadID, us
 		slog.Warn("slack: read thread record failed, treating the author as initiator", "thread", threadID, "error", err)
 		return userID
 	}
-	if !ok || !p.open(r) {
+	if !ok || r.Initiator == "" {
 		t := store.Thread{AgentRef: r.AgentRef, Initiator: userID}
 		if err := p.rec.SaveThreadRecord(ctx, p.channel, channelID, threadID, t); err != nil {
 			slog.Warn("slack: write thread record failed", "thread", threadID, "error", err)
 		}
 		return userID
 	}
-	// A handled message refreshes LastSeen: the window slides.
+	// A handled message refreshes LastSeen: the thread's lifetime slides.
 	if err := p.rec.SaveThreadRecord(ctx, p.channel, channelID, threadID, r.Thread); err != nil {
 		slog.Warn("slack: refresh thread record failed", "thread", threadID, "error", err)
 	}
@@ -80,7 +70,7 @@ func (p *recordAccess) SetInitiator(ctx context.Context, channelID, threadID, us
 
 func (p *recordAccess) Initiator(ctx context.Context, channelID, threadID string) string {
 	r, ok, err := p.rec.ThreadRecord(ctx, p.channel, channelID, threadID)
-	if err != nil || !ok || !p.open(r) {
+	if err != nil || !ok || !p.active(r) {
 		return ""
 	}
 	return r.Initiator
@@ -88,7 +78,7 @@ func (p *recordAccess) Initiator(ctx context.Context, channelID, threadID string
 
 func (p *recordAccess) Allowed(ctx context.Context, channelID, threadID, userID string) bool {
 	r, ok, err := p.rec.ThreadRecord(ctx, p.channel, channelID, threadID)
-	if err != nil || !ok || !p.open(r) {
+	if err != nil || !ok || !p.active(r) {
 		return false
 	}
 	return r.Initiator == userID || slices.Contains(r.Granted, userID)

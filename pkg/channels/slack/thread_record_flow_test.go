@@ -46,24 +46,6 @@ func TestThreadRecord_AgentInitiatorAndGrantSurviveRestart(t *testing.T) {
 	require.Empty(t, fake.pathCalls("conversations.replies"), "no Slack history read")
 }
 
-// A thread whose record expired after 30 idle days but whose instance binding
-// (never expires) names an agent: the reply continues on that agent, not the
-// default.
-func TestThreadRecord_ExpiredRecordContinuesOnTheBoundAgent(t *testing.T) {
-	shared := slackadapter.NewMemoryRecorder()
-	shared.SetBinding("slack", "C1", "900.1", "issue-agent")
-	fake := newFakeSlackAPI()
-	gw, resolved := capturingGateway()
-	gw.records = shared
-	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode,
-		withSelection(&fakeRoster{}, &fakeCards{known: map[string]string{"sre-agent": "SRE Agent", "issue-agent": "Issue Agent"}}),
-		func(a *slackadapter.Adapter) { a.DefaultAgent = "sre-agent" })
-
-	sendEvent(t, srv, mention("U7", "still there?", "900.9", "900.1"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, 2*time.Second, 50*time.Millisecond)
-	require.Equal(t, "issue-agent", resolved()[0].AgentRef)
-}
-
 // The launch announcement posts on the first turn inside an existing thread,
 // not on the second.
 func TestLaunchAnnouncement_PostsOnFirstTurnInsideExistingThread(t *testing.T) {
