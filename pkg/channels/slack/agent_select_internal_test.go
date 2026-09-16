@@ -153,3 +153,33 @@ func TestAgentRefsForSelectorBareDefault(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []string{"sre-agent"}, refs)
 }
+
+func TestAgentRefFromName_FollowsDeploymentRefShape(t *testing.T) {
+	cases := []struct {
+		name, defaultAgent, namespace, input, want string
+	}{
+		{"bare default, bare name", "sre-agent", "kagent", "sre-agent", "sre-agent"},
+		{"bare default, served namespace collapses", "sre-agent", "kagent", "kagent/sre-agent", "sre-agent"},
+		{"bare default, foreign namespace kept", "sre-agent", "kagent", "other/sre-agent", "other/sre-agent"},
+		{"qualified default, bare name gets the namespace", "kagent/sre-agent", "kagent", "sre-agent", "kagent/sre-agent"},
+		{"qualified default, qualified name kept", "kagent/sre-agent", "kagent", "kagent/sre-agent", "kagent/sre-agent"},
+		{"namespace unknown to the adapter: typed namespace kept", "sre-agent", "", "kagent/sre-agent", "kagent/sre-agent"},
+		{"uppercase folded", "sre-agent", "kagent", "Kagent/SRE-Agent", "sre-agent"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := &Adapter{DefaultAgent: tc.defaultAgent, Namespace: tc.namespace}
+			got, ok := a.agentRefFromName(tc.input)
+			require.True(t, ok, "agentRefFromName(%q) rejected the name", tc.input)
+			require.Equal(t, tc.want, got, "agentRefFromName(%q)", tc.input)
+		})
+	}
+}
+
+func TestAgentInfoRef_FollowsDeploymentRefShape(t *testing.T) {
+	ag := pkga2a.AgentInfo{Name: "sre-agent", Namespace: "kagent"}
+	bare := &Adapter{DefaultAgent: "sre-agent", Namespace: "kagent"}
+	require.Equal(t, "sre-agent", bare.agentInfoRef(ag), "bare default")
+	qualified := &Adapter{DefaultAgent: "kagent/sre-agent", Namespace: "kagent"}
+	require.Equal(t, "kagent/sre-agent", qualified.agentInfoRef(ag), "qualified default")
+}

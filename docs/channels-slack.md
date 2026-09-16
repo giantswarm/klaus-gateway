@@ -182,7 +182,8 @@ agent when it opens, through one of two entry points, and keeps it for life:
 - **Mention with a prefix**: `@bot /agent "<display name>" <question>` or
   `@bot /agent <technical-name> <question>` starts a conversation in any thread with no agent
   recorded yet — a root `@`-mention, or a reply inside an existing thread that has none of its
-  own (an alert another app posted, say). Without a prefix the conversation goes to the default
+  own (an alert another app posted, say). The technical name may carry the served
+  namespace (`kagent/sre-agent`); it names the same agent as the bare name. Without a prefix the conversation goes to the default
   agent (`slack.defaultAgent`). Inside a thread that already has a conversation, naming its own
   agent again is a no-op — the turn dispatches as a normal reply — and naming a different agent
   is refused: the session's identity is tied to the first agent, and a mid-conversation switch

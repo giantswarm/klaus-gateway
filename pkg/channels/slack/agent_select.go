@@ -259,12 +259,13 @@ var agentNamePartRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 
 // agentRefFromName resolves a user-typed agent name to the agentRef the A2A
 // clients use. Matching is on the technical (DNS-1123) name, case-insensitive.
-// A bare name is completed with the default agent's namespace; an explicit
+// The result follows the deployment's ref shape (refShape): a bare name, or
+// one naming the served namespace, renders in that shape; any other
 // "namespace/name" is used as typed. ok is false for anything that is not a
 // well-formed name.
 func (a *Adapter) agentRefFromName(raw string) (ref string, ok bool) {
 	name := strings.ToLower(strings.TrimSpace(raw))
-	namespace := a.defaultAgentNamespace()
+	namespace := ""
 	if ns, rest, found := strings.Cut(name, "/"); found {
 		namespace, name = ns, rest
 		if !agentNamePartRe.MatchString(namespace) {
@@ -274,10 +275,12 @@ func (a *Adapter) agentRefFromName(raw string) (ref string, ok bool) {
 	if !agentNamePartRe.MatchString(name) {
 		return "", false
 	}
-	if namespace == "" {
-		return name, true
+	// A typed namespace that is the served one is the same as none; a foreign
+	// one stays as typed so the controller refuses it.
+	if namespace == a.Namespace {
+		namespace = ""
 	}
-	return namespace + "/" + name, true
+	return a.refShape(namespace, name), true
 }
 
 // defaultAgentNamespace is the namespace of the configured default agent, or

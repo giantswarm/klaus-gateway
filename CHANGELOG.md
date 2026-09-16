@@ -215,11 +215,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `image.tag`) pointing at the non-existent `:0.1.0` image. The same flag is
   used by `klaus` and `mcp-prometheus`.
 
+- `/agent <namespace>/<name>` with the served namespace now names the same agent as `/agent <name>`: repeating it inside a thread bound to that agent is a re-selection, not a refused switch, and both spellings persist one routing key (klaus-gateway#269).
 ### Removed
 
 - `SLACK_DM_ONLY` and the Helm `slack.dmOnly` value, replaced by `SLACK_DM_MODE` and `SLACK_CHANNEL_MODE`. `dmOnly: true` maps to `dmMode: serve` + `channelMode: none`; the old `dmOnly: false` behaviour (channels served, DMs redirected) maps to `dmMode: redirect` + `channelMode: all`. A leftover `slack.dmOnly` in Helm values is ignored.
 - Slack `/invite`, `/lock`, and `/quit` commands, the locked/open/observe access modes, and the `SLACK_ALLOWED_USERS` and `SLACK_DEFAULT_ACCESS_MODE` settings, replaced by the initiator-plus-approval access model.
-- The `crd` and `configmap` routing stores, the `ChannelRoute` CRD and type, the embedded controller (`controller.enabled`, `--controller`) and the `--namespace` flag. Installations run `routing.store: valkey`; `memory` and `bolt` remain for local development.
+- **Breaking:** the `crd` and `configmap` routing stores, the `ChannelRoute` CRD and type, the embedded controller (`controller.enabled`, `--controller`) and the `--namespace` flag. The chart's values schema refuses `crd.*` and `controller.*`, so a values file that still sets them fails the upgrade; see `UPGRADE.md`. Installations run `routing.store: valkey`; `memory` and `bolt` remain for local development.
 - The gateway no longer recovers a thread's agent from the root message or its initiator from the first human author after a restart, and the slash-command root no longer carries a hidden conversation marker. On `routing.store: memory` that state is lost on restart, and the gateway logs a warning at start.
 
 ### Refactored

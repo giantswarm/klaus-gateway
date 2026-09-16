@@ -380,10 +380,10 @@ func TestValkeyStoreConfig(t *testing.T) {
 
 func TestValidate_RejectsRemovedStores(t *testing.T) {
 	for _, s := range []string{"crd", "configmap"} {
-		cfg := config.Defaults()
-		cfg.Store = s
-		if err := cfg.Validate(); err == nil {
-			t.Fatalf("store %q must be rejected", s)
-		}
+		t.Run(s, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Store = s
+			require.Error(t, cfg.Validate())
+		})
 	}
 }

@@ -759,3 +759,37 @@ func TestAgentSelection_TextPathReadsCatalogueAsCaller(t *testing.T) {
 		2*time.Second, 50*time.Millisecond, "the selection dispatches")
 	require.Equal(t, []string{"tok-u1"}, cards.seen(), "the validation runs as the caller")
 }
+
+// A bound conversation's agent named by its QUALIFIED technical name (the
+// served namespace + name) is the same agent as the bare ref a bare default
+// binds to: naming it in-thread is a re-selection, not a switch, even though
+// the selector carries a namespace the bound ref does not (klaus-gateway#269).
+func TestAgentSelection_QualifiedNameOfBoundAgentIsNotASwitch(t *testing.T) {
+	fake := newFakeSlackAPI()
+	cards := &fakeCards{known: map[string]string{"sre-agent": "SRE Agent"}}
+	gw, resolved := capturingGateway()
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, withSelection(&fakeRoster{}, cards),
+		func(a *slackadapter.Adapter) {
+			a.DefaultAgent = "sre-agent"
+			a.Namespace = "kagent"
+		})
+
+	// The root mention carries no prefix: the thread binds to the bare default.
+	sendEvent(t, srv, mention("U1", "why are pods crashlooping?", "100.000", ""))
+	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
+		2*time.Second, 50*time.Millisecond, "the unprefixed opener dispatches on the default agent")
+
+	// A reply names the bound agent by its qualified technical name.
+	sendEvent(t, srv, mention("U1", "/agent kagent/sre-agent again", "200.000", "100.000"))
+	require.Eventually(t, func() bool { return gw.resolveCount() == 2 },
+		2*time.Second, 50*time.Millisecond, "the qualified name of the bound agent dispatches, not refused")
+
+	msgs := resolved()
+	require.Equal(t, "sre-agent", msgs[0].AgentRef, "the bare default binds the thread")
+	require.Equal(t, "sre-agent", msgs[1].AgentRef, "the qualified selector resolves to the same bare ref")
+	require.Equal(t, "again", msgs[1].Text, "the prefix is stripped from the re-selection turn")
+
+	time.Sleep(150 * time.Millisecond)
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "already has its agent",
+		"naming the bound agent by its qualified technical name must not be refused as a switch")
+}

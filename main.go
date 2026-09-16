@@ -187,6 +187,7 @@ func run(args []string) error {
 		}
 		if cfg.A2A.Enabled {
 			slackAdapter.DefaultAgent = cfg.A2A.DefaultAgent
+			slackAdapter.Namespace = cfg.A2A.Namespace
 		}
 		if cfg.Store == config.StoreMemory {
 			logger.Warn("slack: the routing store is memory, so every thread's agent, initiator, grants and instance binding are lost on a restart; installations run routing.store: valkey")
