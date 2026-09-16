@@ -219,14 +219,14 @@ The routing table maps `(channel, channelID, userID, threadID)` to a Klaus insta
 thread to the kagent AgentInstance that holds its conversation, together with the record of the
 task in flight on that thread (delivered after a restart, see
 [Shutdown and restarts](#shutdown-and-restarts)). For the Slack channel, the same store also
-holds each thread's record — its agent, its initiator, and the collaborators the initiator
-allowed — next to its AgentInstance binding. Record and binding share one sliding lifetime,
-`routing.threadTTL` (`--thread-ttl`, 90 days by default; `0` never expires), refreshed on every
-handled message: while the thread lives, the initiator and the people they allowed reply without
-mentioning the bot again, and after that long of silence the thread is forgotten and the next
-mention starts a fresh conversation. On `routing.store: memory` this Slack thread state, like
-everything else in the table, is lost on every restart. Choose the backend that matches your
-deployment:
+holds the thread's agent, its initiator, and the collaborators the initiator allowed: agent,
+initiator, grants, the AgentInstance and its in-flight task are one row, with one sliding
+lifetime — `routing.threadTTL` (`--thread-ttl`, 90 days by default; `0` never expires) —
+refreshed on every handled message. While the thread lives, the initiator and the people they
+allowed reply without mentioning the bot again, and after that long of silence the thread is
+forgotten and the next mention starts a fresh conversation. On `routing.store: memory` this Slack
+thread state, like everything else in the table, is lost on every restart. Choose the backend that
+matches your deployment:
 
 | Store       | Helm value         | Persistent | Cluster-backed | Notes                              |
 |-------------|-------------------|------------|----------------|------------------------------------|

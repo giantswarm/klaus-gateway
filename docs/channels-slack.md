@@ -123,17 +123,16 @@ the title, so a refused title never costs the turn its indicator.
   falls back to the sender's own identity rather than the gateway service
   account. kagent v0.9.9 has no per-caller identity within a session; when that
   lands (kagent#1933, #2181) each caller's own identity replaces this.
-- Each thread's durable state — its agent, its initiator, and the collaborators the
-  initiator allowed — lives in a thread record in the routing store, at the thread's plain
-  key (`slack|<channelID>||<threadID>`, the user and agent slots empty) next to its
-  AgentInstance binding (the same key with the agent ref appended). It is the only carrier:
-  the gateway never reads Slack history to recover any of it. The record and the binding share
-  one sliding lifetime — `routing.threadTTL` (`--thread-ttl`), 90 days by default, `0` never
-  expires — refreshed by every handled message. While the thread lives, the initiator and the
+- Each thread's durable state — its agent, its initiator, the collaborators the initiator
+  allowed, and its AgentInstance binding — lives in one row in the routing store, at the
+  thread's plain key (`slack|<channelID>||<threadID>`, the user slot empty). It is the only
+  carrier: the gateway never reads Slack history to recover any of it. The row has one sliding
+  lifetime — `routing.threadTTL` (`--thread-ttl`), 90 days by default, `0` never expires —
+  refreshed by every handled message. While the thread lives, the initiator and the
   collaborators they allowed instruct the agent without mentioning the bot again and their
-  grants hold. After that long without a message the gateway has forgotten the thread, record
-  and binding together: an un-mentioned reply is ignored, and the next mention starts a fresh
-  conversation whose initiator is whoever sent it.
+  grants hold. After that long without a message the gateway has forgotten the thread: an
+  un-mentioned reply is ignored, and the next mention starts a fresh conversation whose
+  initiator is whoever sent it.
 
 ### Two auth layers
 
@@ -197,15 +196,14 @@ agent when it opens, through one of two entry points, and keeps it for life:
   served) are reported privately to the invoking user.
 
 A thread's agent binding is not re-derived after a restart — it does not need to be. It lives
-in the thread's record in the routing store (see [Threads and sessions](#threads-and-sessions)),
+in the thread's row in the routing store (see [Threads and sessions](#threads-and-sessions)),
 so on a persistent store (`routing.store: valkey` or `bolt`) a restart changes nothing: same
 agent, same initiator, same grants. The gateway never reads Slack history — no
 `conversations.replies`, no re-parsing the opening message or the slash command's root — to
-recover any of it; the routing-store record is the only carrier. On `routing.store: memory` a
-restart loses this state exactly as it loses the instance bindings, and every thread starts
-fresh from its next message. On any store a thread nobody has written in for
-`routing.threadTTL` is forgotten, agent and all, and its next mention starts a fresh
-conversation.
+recover any of it; the routing-store row is the only carrier. On `routing.store: memory` a
+restart loses this state, and every thread starts fresh from its next message. On any store a
+thread nobody has written in for `routing.threadTTL` is forgotten, agent and all, and its next
+mention starts a fresh conversation.
 
 The turn that opens a conversation — the first one, root or reply, that finds no agent
 recorded — also posts the "🚀 Bringing in *Agent* to help…" launch announcement, once, in that
