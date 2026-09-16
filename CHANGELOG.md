@@ -213,6 +213,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which left the published chart's `appVersion` (and thus the default
   `image.tag`) pointing at the non-existent `:0.1.0` image. The same flag is
   used by `klaus` and `mcp-prometheus`.
+- `/agent <namespace>/<name>` with the served namespace now names the same agent as `/agent <name>`: repeating it inside a thread bound to that agent is a re-selection, not a refused switch, and both spellings persist one routing key (klaus-gateway#269).
 
 ### Removed
 

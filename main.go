@@ -186,6 +186,7 @@ func run(args []string) error {
 		}
 		if cfg.A2A.Enabled {
 			slackAdapter.DefaultAgent = cfg.A2A.DefaultAgent
+			slackAdapter.Namespace = cfg.A2A.Namespace
 		}
 		if err := slackAdapter.Start(ctx, facade); err != nil {
 			return fmt.Errorf("start slack adapter: %w", err)

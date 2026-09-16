@@ -168,8 +168,9 @@ Every Slack thread is routed to a single agent via the A2A executor. A conversat
 agent when it opens, through one of two entry points, and keeps it for life:
 
 - **Mention with a prefix**: `@bot /agent "<display name>" <question>` or
-  `@bot /agent <technical-name> <question>` on a conversation-starting message. Without a prefix
-  the conversation goes to the default agent (`slack.defaultAgent`).
+  `@bot /agent <technical-name> <question>` on a conversation-starting message. The technical name
+  may carry the served namespace (`kagent/sre-agent`); it names the same agent as the bare name.
+  Without a prefix the conversation goes to the default agent (`slack.defaultAgent`).
 - **Slash command**: `/swarmgeist [question]` in a channel opens a modal with an agent select over
   the live roster (the default agent preselected) and a question box. On submit the gateway posts
   the conversation root itself, under the agent's identity ("💬 @user asked *Agent*: …"), makes
