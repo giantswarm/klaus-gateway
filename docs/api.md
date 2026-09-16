@@ -173,6 +173,9 @@ volumes:
   not cover. Optional.
 - `approve.tool`, `approve.arguments` — the muster tool a member's click calls, verbatim, under
   that member's identity (their own token; muster and the tool see the person). `tool` required.
+  The gateway reaches it through muster's `call_tool` meta-tool — the way every aggregated
+  `x_<server>_<tool>` is exposed — and reads the tool's own `isError` verdict out of the envelope
+  the meta-tool returns.
 
 Unknown fields are refused. Response `201`:
 

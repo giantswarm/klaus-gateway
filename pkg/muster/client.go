@@ -70,27 +70,68 @@ func (c *Client) CallTool(ctx context.Context, bearer, tool string, args map[str
 		return Result{}, fmt.Errorf("muster: initialized: %w", err)
 	}
 
-	raw, err := s.request(ctx, 2, "tools/call", map[string]any{"name": tool, "arguments": args})
+	// muster exposes every aggregated server tool (x_<server>_<tool>) and every
+	// core tool through its call_tool meta-tool, not under its own name: the
+	// target's result comes back serialised in the meta-tool's text content,
+	// its isError verdict inside.
+	raw, err := s.request(ctx, 2, "tools/call", map[string]any{
+		"name":      metaCallTool,
+		"arguments": map[string]any{"name": tool, "arguments": args},
+	})
 	if err != nil {
 		return Result{}, fmt.Errorf("muster: call %s: %w", tool, err)
 	}
-	var result struct {
-		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
-		IsError bool `json:"isError"`
-	}
-	if err := json.Unmarshal(raw, &result); err != nil {
+	outer, err := decodeResult(raw)
+	if err != nil {
 		return Result{}, fmt.Errorf("muster: call %s: decode result: %w", tool, err)
 	}
+	if inner, ok := unwrapEnvelope(outer); ok {
+		return inner, nil
+	}
+	// call_tool's own refusal — an unknown tool, one outside the caller's
+	// toolset — is plain text with the meta-tool's isError set; a result that
+	// is no envelope is handed back as it is.
+	return outer, nil
+}
+
+// metaCallTool is muster's meta-tool that runs any aggregated or core tool.
+const metaCallTool = "call_tool"
+
+// toolResult is the shape of an MCP tools/call result and of the envelope
+// call_tool serialises the target's result into.
+type toolResult struct {
+	Content []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"content"`
+	IsError bool `json:"isError"`
+}
+
+func decodeResult(raw json.RawMessage) (Result, error) {
+	var result toolResult
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return Result{}, err
+	}
+	return result.flatten(), nil
+}
+
+// unwrapEnvelope reads the target tool's own result out of call_tool's text.
+func unwrapEnvelope(outer Result) (Result, bool) {
+	var env toolResult
+	if err := json.Unmarshal([]byte(outer.Text), &env); err != nil || len(env.Content) == 0 {
+		return Result{}, false
+	}
+	return env.flatten(), true
+}
+
+func (r toolResult) flatten() Result {
 	var texts []string
-	for _, part := range result.Content {
+	for _, part := range r.Content {
 		if part.Type == "text" && part.Text != "" {
 			texts = append(texts, part.Text)
 		}
 	}
-	return Result{Text: strings.Join(texts, "\n"), IsError: result.IsError}, nil
+	return Result{Text: strings.Join(texts, "\n"), IsError: r.IsError}
 }
 
 // session is one streamable-HTTP exchange: the session id muster hands out at

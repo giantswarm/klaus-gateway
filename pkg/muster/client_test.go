@@ -85,7 +85,14 @@ func (f *fakeMuster) reply(w http.ResponseWriter, id, result any) {
 }
 
 func approved() map[string]any {
-	return map[string]any{"content": []any{map[string]any{"type": "text", "text": "review submitted"}}}
+	return envelope(map[string]any{"isError": false, "content": []any{map[string]any{"type": "text", "text": "review submitted"}}}, false)
+}
+
+// envelope wraps a target tool's result the way muster's call_tool returns
+// it: serialised into the meta-tool's text content, isError mirrored when set.
+func envelope(inner map[string]any, isError bool) map[string]any {
+	text, _ := json.Marshal(inner)
+	return map[string]any{"isError": isError, "content": []any{map[string]any{"type": "text", "text": string(text)}}}
 }
 
 func TestCallTool_RunsAsThePersonAndClosesTheSession(t *testing.T) {
@@ -102,8 +109,8 @@ func TestCallTool_RunsAsThePersonAndClosesTheSession(t *testing.T) {
 			fake.mu.Lock()
 			defer fake.mu.Unlock()
 			require.Len(t, fake.calls, 1)
-			require.Equal(t, "x_repo_approve_change", fake.calls[0]["name"])
-			require.Equal(t, map[string]any{"pr": float64(7)}, fake.calls[0]["arguments"])
+			require.Equal(t, "call_tool", fake.calls[0]["name"], "every tool is reached through muster's meta-tool")
+			require.Equal(t, map[string]any{"name": "x_repo_approve_change", "arguments": map[string]any{"pr": float64(7)}}, fake.calls[0]["arguments"])
 			for _, b := range fake.bearers {
 				require.Equal(t, "Bearer id-token-alice", b, "every request carries the person's token")
 			}
@@ -113,10 +120,10 @@ func TestCallTool_RunsAsThePersonAndClosesTheSession(t *testing.T) {
 }
 
 func TestCallTool_ToolRefusalIsAResultNotAnError(t *testing.T) {
-	fake := &fakeMuster{callResult: map[string]any{
+	fake := &fakeMuster{callResult: envelope(map[string]any{
 		"isError": true,
 		"content": []any{map[string]any{"type": "text", "text": "alice is not a member of team-bumblebee"}},
-	}}
+	}, true)}
 	srv := httptest.NewServer(fake.handler())
 	defer srv.Close()
 
@@ -124,6 +131,21 @@ func TestCallTool_ToolRefusalIsAResultNotAnError(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, res.IsError)
 	require.Equal(t, "alice is not a member of team-bumblebee", res.Text)
+}
+
+// muster's own refusal (an unknown tool, one outside the caller's toolset)
+// is call_tool's plain-text error result, no inner envelope: still a result.
+func TestCallTool_MetaToolRefusalIsAResultNotAnError(t *testing.T) {
+	fake := &fakeMuster{callResult: map[string]any{
+		"isError": true,
+		"content": []any{map[string]any{"type": "text", "text": "tool 'x_repo_approve_change' not found"}},
+	}}
+	srv := httptest.NewServer(fake.handler())
+	defer srv.Close()
+
+	res, err := NewClient(srv.URL).CallTool(context.Background(), "id-token-alice", "x_repo_approve_change", nil)
+	require.NoError(t, err)
+	require.Equal(t, Result{Text: "tool 'x_repo_approve_change' not found", IsError: true}, res)
 }
 
 func TestCallTool_RefusedTokenIsAnHTTPError(t *testing.T) {
