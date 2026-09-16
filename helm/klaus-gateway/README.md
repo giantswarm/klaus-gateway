@@ -46,7 +46,7 @@ Channel and routing gateway in front of klaus instances; uses agentgateway as th
 | routing.store | string | `"memory"` |  |
 | routing.boltPath | string | `"/var/lib/klaus-gateway/routes.bolt"` |  |
 | routing.defaultTTL | string | `"24h"` |  |
-| routing.threadTTL | string | `"2160h"` |  |
+| routing.threadTTL | string | `""` |  |
 | routing.autoCreate | bool | `false` |  |
 | routing.valkey.url | string | `""` |  |
 | routing.valkey.username | string | `""` |  |
