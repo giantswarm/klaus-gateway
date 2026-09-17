@@ -222,9 +222,11 @@ task in flight on that thread (delivered after a restart, see
 holds the thread's agent, its initiator, and the collaborators the initiator allowed: agent,
 initiator, grants, the AgentInstance and its in-flight task are one row, with one sliding
 lifetime — `routing.threadTTL` (`--thread-ttl`, 90 days by default; `0` never expires) —
-refreshed on every handled message. While the thread lives, the initiator and the people they
-allowed reply without mentioning the bot again, and after that long of silence the thread is
-forgotten and the next mention starts a fresh conversation. On `routing.store: memory` this Slack
+refreshed on every turn. While the thread lives, the initiator and the people they allowed reply
+without mentioning the bot again, and after that long of silence the thread is forgotten: the
+next mention starts it over with a new initiator and no grants (what the agent still remembers is
+the controller's call, see [channels-slack.md](channels-slack.md#threads-and-sessions)). On
+`routing.store: memory` this Slack
 thread state, like everything else in the table, is lost on every restart. Choose the backend that
 matches your deployment:
 

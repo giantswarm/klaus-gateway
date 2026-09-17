@@ -12,8 +12,11 @@ collaborators the initiator allowed, its AgentInstance binding, and the task in 
 gateway logs a warning at start. Nothing is migrated: a thread that exists at the upgrade gets one
 fresh start on its next reply, and its initiator is whoever replies first. The row has one sliding
 lifetime, `routing.threadTTL` (`--thread-ttl`), 90 days by default and `0` to never expire,
-refreshed by every handled message; after it the thread is forgotten and the next mention starts a
-fresh conversation. Decide whether 90 days suits your workspace before upgrading. The 24-hour
+refreshed by every turn; after it the thread is forgotten and the next mention starts it over:
+its author becomes the initiator and no grant carries over. The agent's session is the
+controller's: its create is idempotent per person and thread, so the same person may get the
+earlier session back while the controller still holds it. Decide whether 90 days suits your
+workspace before upgrading. The 24-hour
 access window is gone with it: while a thread lives, the initiator and the people they allowed
 keep replying without mentioning the bot again, and their grants no longer lapse after a day of
 silence.

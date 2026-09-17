@@ -128,11 +128,13 @@ the title, so a refused title never costs the turn its indicator.
   thread's plain key (`slack|<channelID>||<threadID>`, the user slot empty). It is the only
   carrier: the gateway never reads Slack history to recover any of it. The row has one sliding
   lifetime — `routing.threadTTL` (`--thread-ttl`), 90 days by default, `0` never expires —
-  refreshed by every handled message. While the thread lives, the initiator and the
-  collaborators they allowed instruct the agent without mentioning the bot again and their
-  grants hold. After that long without a message the gateway has forgotten the thread: an
-  un-mentioned reply is ignored, and the next mention starts a fresh conversation whose
-  initiator is whoever sent it.
+  refreshed by every turn. While the thread lives, the initiator and the collaborators they
+  allowed instruct the agent without mentioning the bot again and their grants hold. After that
+  long without a message the gateway has forgotten the thread: an un-mentioned reply is ignored,
+  and the next mention starts the thread over — its author becomes the initiator and no grant
+  carries over. Whether the agent remembers is the controller's call: its create is idempotent
+  per person and thread, so the same person gets the earlier session back while the controller
+  still holds it, and another person gets a new one.
 
 ### Two auth layers
 
@@ -203,7 +205,8 @@ agent, same initiator, same grants. The gateway never reads Slack history — no
 recover any of it; the routing-store row is the only carrier. On `routing.store: memory` a
 restart loses this state, and every thread starts fresh from its next message. On any store a
 thread nobody has written in for `routing.threadTTL` is forgotten, agent and all, and its next
-mention starts a fresh conversation.
+mention starts it over (see [Threads and sessions](#threads-and-sessions) for what the agent may
+still remember).
 
 The turn that opens a conversation posts no notice of its own: the agent's first reply, under
 the agent's name, is the first sign of which agent joined the thread. The slash command's

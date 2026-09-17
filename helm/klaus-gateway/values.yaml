@@ -80,9 +80,9 @@ routing:
   # Default TTL for route entries (e.g. "24h"). Zero means never expire.
   defaultTTL: "24h"
   # Sliding lifetime of a channel thread's state: its agent, initiator, grants
-  # and AgentInstance binding, refreshed on every handled message. After this
-  # long without a message the thread is forgotten and the next mention starts
-  # a fresh conversation. Empty leaves the gateway's default, 2160h (90 days).
+  # and AgentInstance binding, refreshed on every turn. After this long without
+  # a message the thread is forgotten and the next mention starts it over (new
+  # initiator, no grants). Empty leaves the gateway's default, 2160h (90 days).
   # "0" never expires (the keys are then never evictable in a Valkey that runs
   # as a cache).
   threadTTL: ""
