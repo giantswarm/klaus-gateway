@@ -316,7 +316,7 @@ approvals at once.
 A granted collaborator's turns run under the initiator's identity ("on your behalf"): the
 gateway forwards the initiator's token so the thread stays one shared session, and the
 collaborator's real identity rides along as attribution. See
-[Threads and sessions](channels-slack.md#threads-and-sessions).
+[Threads and conversations](channels-slack.md#threads-and-conversations).
 
 ```json
 {

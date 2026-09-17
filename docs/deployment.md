@@ -225,7 +225,7 @@ lifetime — `routing.threadTTL` (`--thread-ttl`, 90 days by default; `0` never 
 refreshed on every turn. While the thread lives, the initiator and the people they allowed reply
 without mentioning the bot again, and after that long of silence the thread is forgotten: the
 next mention starts it over with a new initiator and no grants (what the agent still remembers is
-the controller's call, see [channels-slack.md](channels-slack.md#threads-and-sessions)). On
+the controller's call, see [channels-slack.md](channels-slack.md#threads-and-conversations)). On
 `routing.store: memory` this Slack
 thread state, like everything else in the table, is lost on every restart. Choose the backend that
 matches your deployment:

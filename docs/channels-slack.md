@@ -100,7 +100,7 @@ command, an upload with no caption) sends no title and leaves Slack to name the
 session. Should Slack refuse the titled call, the status is sent again without
 the title, so a refused title never costs the turn its indicator.
 
-### Threads and sessions
+### Threads and conversations
 
 - `threadID` is `thread_ts` if set, otherwise the message `ts`.
 - A thread is bound to exactly one agent and exactly one **AgentInstance** — the
@@ -110,8 +110,8 @@ the title, so a refused title never costs the turn its indicator.
   thread, so a retried first turn — the binding was not written, the process died
   in between — gets the same instance back instead of a second one. The instance
   id and the agent ref are written into the thread's row, every later turn of the
-  thread is addressed to that instance, and a gateway restart keeps the mapping
-  because the row in the routing store carries it, not the process.
+  thread is addressed to that instance, and a gateway restart keeps the mapping on a
+  persistent store (`valkey` or `bolt`), because the row carries it, not the process.
 - In a DM every top-level message opens its own thread and therefore its own
   instance; a "New chat" in the assistant pane likewise.
 - A turn runs under the thread **initiator's** identity. For a granted
@@ -123,13 +123,15 @@ the title, so a refused title never costs the turn its indicator.
   the initiator's token cannot be minted, use the sender's own token rather than
   the gateway service account (`applyInitiatorIdentity` in
   `pkg/channels/slack/slack.go`).
-- **When the instance is gone.** A thread whose row still exists but whose
-  instance the controller no longer has, and a `ResetSession` after a corrupt
-  history, clear only the binding fields of the row. The thread keeps its agent,
-  its initiator and its grants; the next turn creates a fresh instance and the
-  channel posts the starting-fresh notice ("I couldn't find our earlier
-  conversation in this thread, so I'm starting fresh."). A thread from before the
-  cut-over to kagent API v2 saw the same once.
+- **When the instance is gone.** Two cases clear only the binding fields of the row;
+  the thread keeps its agent, its initiator and its grants, and the next turn creates
+  a fresh instance. An instance the controller no longer has is found by the resume
+  check that runs on the first reply this process sees in a thread: that reply gets
+  the starting-fresh notice ("I couldn't find our earlier conversation in this thread,
+  so I'm starting fresh."), and a loss found in the middle of a conversation posts no
+  notice. A `ResetSession` after a corrupt history posts the corrupt-session notice
+  instead — "An earlier interrupted turn corrupted this conversation's history … I've
+  reset the session: please resend your message …" — so the person knows to resend.
 - Each thread's durable state — its agent, its initiator, the collaborators the initiator
   allowed, and its AgentInstance binding — lives in one row in the routing store, at the
   thread's plain key (`slack|<channelID>||<threadID>`, the user slot empty). It is the only
@@ -140,7 +142,7 @@ the title, so a refused title never costs the turn its indicator.
   long without a message the gateway has forgotten the thread: an un-mentioned reply is ignored,
   and the next mention starts the thread over — its author becomes the initiator and no grant
   carries over. Whether the agent remembers is the controller's call: its create is idempotent
-  per person and thread, so the same person gets the earlier session back while the controller
+  per person and thread, so the same person gets the earlier instance back while the controller
   still holds it, and another person gets a new one.
 
 ### Two auth layers
@@ -221,14 +223,14 @@ agent when it opens, through one of three entry points, and keeps it for life:
   served.
 
 A thread's agent binding is not re-derived after a restart — it does not need to be. It lives
-in the thread's row in the routing store (see [Threads and sessions](#threads-and-sessions)),
+in the thread's row in the routing store (see [Threads and conversations](#threads-and-conversations)),
 so on a persistent store (`routing.store: valkey` or `bolt`) a restart changes nothing: same
 agent, same initiator, same grants. The gateway never reads Slack history — no
 `conversations.replies`, no re-parsing the opening message or the slash command's root — to
 recover any of it; the routing-store row is the only carrier. On `routing.store: memory` a
 restart loses this state, and every thread starts fresh from its next message. On any store a
 thread nobody has written in for `routing.threadTTL` is forgotten, agent and all, and its next
-mention starts it over (see [Threads and sessions](#threads-and-sessions) for what the agent may
+mention starts it over (see [Threads and conversations](#threads-and-conversations) for what the agent may
 still remember).
 
 The turn that opens a conversation posts no notice of its own: the agent's first reply, under
@@ -337,9 +339,10 @@ any string that begins with `Slack bot`, `Slack app-level`, or `Slack user`.
 5. The thread's row in the routing store names its agent and its AgentInstance. The thread's
    first turn creates that instance and records it; every later turn is addressed to it, so
    every participant in the thread talks to the one conversation. See
-   [Threads and sessions](#threads-and-sessions).
-6. The gateway forwards the turn through the A2A executor to the instance named by
-   `slack.defaultAgent`. The OpenAI `/v1` path is bypassed.
+   [Threads and conversations](#threads-and-conversations).
+6. The gateway forwards the turn through the A2A executor to the thread's AgentInstance — the
+   agent the row names, which is the default agent when nothing selected another one. The
+   OpenAI `/v1` path is bypassed.
 7. Progress is shown by adding a working reaction to the triggering message. On success the
    working reaction is removed with no residual emoji (default); set
    `SLACK_CLEAR_REACTION_ON_DONE=false` to swap in a done reaction instead. A failed turn always
@@ -501,7 +504,7 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
   every turn in it runs under the thread initiator's identity even after others are allowed
   in; a granted collaborator instructs the agent on the initiator's behalf, with their own
   identity attached as attribution. Actions are therefore attributed to the initiator (see
-  [Threads and sessions](#threads-and-sessions)).
+  [Threads and conversations](#threads-and-conversations)).
 - **Surfaces.** DMs and channels are controlled independently. `SLACK_DM_MODE` selects the DM
   behaviour: `serve` (answer DMs, the default), `redirect` (a polite pointer to channels), or
   `ignore` (drop silently). `SLACK_CHANNEL_MODE` selects the channels served: `all` (every
