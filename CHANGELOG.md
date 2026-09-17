@@ -217,6 +217,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   used by `klaus` and `mcp-prometheus`.
 - `/agent <namespace>/<name>` with the served namespace now names the same agent as `/agent <name>`: repeating it inside a thread bound to that agent is a re-selection, not a refused switch, and both spellings persist one routing key (klaus-gateway#269).
 - Valkey routing store: a command whose connection was closed by a Valkey restart or failover is retried once inside the same `--valkey-timeout`, so the first turn after the restart no longer fails with `valkey: get: EOF`. The store holds one connection, so the readiness check proves the connection the next command uses and the retry is deterministic. An outage still fails within the timeout (klaus-gateway#261).
+- Slack: a bare `/agent` from a person who has not signed in now asks them to sign in with `/login`, instead of answering "I can't list the available agents right now" and inviting a retry that could not succeed.
 
 ### Removed
 

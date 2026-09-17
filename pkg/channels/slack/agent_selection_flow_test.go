@@ -770,3 +770,20 @@ func TestAgentSelection_QualifiedNameOfBoundAgentIsNotASwitch(t *testing.T) {
 	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "already has its agent",
 		"naming the bound agent by its qualified technical name must not be refused as a switch")
 }
+
+// A bare /agent from a caller the gateway cannot identify asks them to sign
+// in: the controller serves the roster to a human identity, and "try again in
+// a moment" would send an unlinked person in circles.
+func TestAgentSelection_UnlinkedListingAsksToSignIn(t *testing.T) {
+	fake := newFakeSlackAPI()
+	roster := &fakeRoster{err: pkga2a.ErrNoIdentity}
+	gw, _ := capturingGateway()
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, withSelection(roster, &fakeCards{}))
+
+	sendEvent(t, srv, mention("U1", "/agent", "100.000", ""))
+
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "I need to know who you are")
+	}, 2*time.Second, 50*time.Millisecond, "the unlinked caller is told to sign in")
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "can't list the available agents")
+}

@@ -2,6 +2,7 @@ package slack
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
 )
@@ -97,12 +99,17 @@ func (a *Adapter) handleAgentSelection(ctx context.Context, cmd *slashCommand, m
 			reply(agentSelectionUnavailable)
 			return false
 		}
-		listing, ok := a.rosterListing(ctx)
-		if !ok {
+		listing, err := a.rosterListing(ctx)
+		switch {
+		case errors.Is(err, pkga2a.ErrNoIdentity):
+			// The controller serves the roster to a human identity; an unlinked
+			// caller needs to sign in, and a retry would not help them.
+			reply(agentRosterSignIn)
+		case err != nil:
 			reply(agentRosterUnavailable)
-			return false
+		default:
+			reply(listing)
 		}
-		reply(listing)
 		return false
 	}
 
@@ -229,7 +236,7 @@ func (a *Adapter) resolveSelection(ctx context.Context, reply func(string), name
 // current roster when it can be fetched so the user can pick a real name.
 func (a *Adapter) agentUnavailableReply(ctx context.Context, name string) string {
 	text := fmt.Sprintf(agentUnavailableNotice, strings.ReplaceAll(name, "`", "'"))
-	if listing, ok := a.rosterListing(ctx); ok {
+	if listing, err := a.rosterListing(ctx); err == nil {
 		text += "\n\n" + listing
 	}
 	return text
