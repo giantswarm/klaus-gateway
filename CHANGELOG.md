@@ -216,7 +216,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `image.tag`) pointing at the non-existent `:0.1.0` image. The same flag is
   used by `klaus` and `mcp-prometheus`.
 - `/agent <namespace>/<name>` with the served namespace now names the same agent as `/agent <name>`: repeating it inside a thread bound to that agent is a re-selection, not a refused switch, and both spellings persist one routing key (klaus-gateway#269).
-- Valkey routing store: a command that fails because its connection was closed is retried once inside the same `--valkey-timeout` deadline. After a Valkey restart or failover the client re-dials its connections lazily, so the first command on a stale one failed with `valkey: get: EOF` although the server was back and readiness reported ready — a user-visible turn failure per connection after every Valkey restart, and the ~10 % flake of `TestOutageFailsFastAndRecovers` that also failed the v1.12.0 release build. An outage still fails within the timeout (klaus-gateway#261).
+- Valkey routing store: a command whose connection was closed by a Valkey restart or failover is retried once inside the same `--valkey-timeout`, so the first turn after the restart no longer fails with `valkey: get: EOF`. The store holds one connection, so the readiness check proves the connection the next command uses and the retry is deterministic. An outage still fails within the timeout (klaus-gateway#261).
 
 ### Removed
 

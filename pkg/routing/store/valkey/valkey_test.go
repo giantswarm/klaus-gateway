@@ -3,6 +3,7 @@ package valkey_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"testing"
 	"time"
@@ -219,4 +220,27 @@ func TestClosedStoreRefuses(t *testing.T) {
 	_, _, err := s.Get(context.Background(), store.Key{Channel: "web", ChannelID: "c", UserID: "u", ThreadID: "t"})
 	require.Error(t, err)
 	require.NoError(t, s.Close(), "Close is idempotent")
+}
+
+// A restart with every pipe of the client dialed: the readiness PING heals
+// only the pipe it runs on, so a keyed command must not fail on another pipe
+// that still holds a dead connection (klaus-gateway#261).
+func TestRestartWithEveryPipeDialed(t *testing.T) {
+	m := miniredis.RunT(t)
+	s := newStore(t, m.Addr())
+	ctx := context.Background()
+	key := func(i int) store.Key {
+		return store.Key{Channel: "web", ChannelID: "c", UserID: "u", ThreadID: fmt.Sprint(i)}
+	}
+	for i := 0; i < 40; i++ {
+		require.NoError(t, s.Put(ctx, key(i), store.Entry{Instance: "i", LastSeen: time.Now()}))
+	}
+	m.Close()
+	require.NoError(t, m.Restart())
+	require.Eventually(t, func() bool { return s.Ping(ctx) == nil }, 5*time.Second, 50*time.Millisecond)
+	for i := 0; i < 20; i++ {
+		_, ok, err := s.Get(ctx, key(i))
+		require.NoError(t, err)
+		require.True(t, ok)
+	}
 }
