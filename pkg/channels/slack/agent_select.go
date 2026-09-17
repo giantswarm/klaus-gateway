@@ -25,14 +25,16 @@ type agentCardChecker interface {
 // agent_source values on the turn_dispatch record: how the turn's agent was
 // chosen. "prefix" is an /agent prefix on the dispatched message itself,
 // "thread" the agent recorded for the thread,
-// "default" the configured default agent, and "task" the agent replayed from a
-// paused task on a button-click resume.
+// "default" the configured default agent, "task" the agent replayed from a
+// paused task on a button-click resume, and "command"/"shortcut" the agent
+// picked in the modal the slash command and the message shortcut open.
 const (
-	agentSourcePrefix  = "prefix"
-	agentSourceThread  = "thread"
-	agentSourceDefault = "default"
-	agentSourceTask    = "task"
-	agentSourceCommand = "command" // chosen in the slash command's agent picker
+	agentSourcePrefix   = "prefix"
+	agentSourceThread   = "thread"
+	agentSourceDefault  = "default"
+	agentSourceTask     = "task"
+	agentSourceCommand  = "command"  // chosen in the slash command's agent picker
+	agentSourceShortcut = "shortcut" // chosen in the message shortcut's agent picker
 )
 
 // agentSwitchRefusal answers an /agent prefix inside an existing conversation

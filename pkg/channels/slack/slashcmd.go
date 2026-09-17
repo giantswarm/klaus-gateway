@@ -26,8 +26,12 @@ import (
 //
 // The gateway never depends on the command's name: Slack routes the payload by
 // the URL, so each app manifest may call it what it likes. Slack does not
-// offer developer slash commands inside threads or in the agent pane, so the
-// command only ever opens a channel conversation.
+// offer developer slash commands inside threads or in the agent pane, and
+// sends no thread with one, so the command only ever opens a channel
+// conversation on a fresh root. The "Ask an agent here" message shortcut
+// (inspect.go routes it) opens the same picker where a thread does exist: its
+// message_action payload carries the message, so the conversation starts
+// inside that message's thread.
 
 // slashCommandPayload is the subset of Slack's slash command payload the
 // gateway uses. The HTTP form and the Socket Mode JSON payload carry the same
@@ -87,27 +91,41 @@ func (h *commandsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // askAgentPrivateMetadata travels inside the modal (private_metadata, invisible
-// to the user) so the submission knows where the command was typed and how to
+// to the user) so the submission knows where the picker was opened and how to
 // answer the user privately. Keys are short: the field is capped at 3000 chars.
 type askAgentPrivateMetadata struct {
 	Channel     string `json:"c"`
 	User        string `json:"u"`
 	ResponseURL string `json:"r"`
+	// Thread is the thread the conversation starts in, set by the message
+	// shortcut. Empty for the slash command, whose submission posts a new root
+	// and opens the thread under it.
+	Thread string `json:"t,omitempty"`
+}
+
+// askAgentRequest is one request to open the picker, whatever asked for it:
+// where the conversation goes, who asked, how to answer them privately, the
+// trigger the modal opens on, and — for the message shortcut — the thread it
+// starts in. Prefill is the question box's initial value (the text after the
+// slash command; the shortcut has none).
+type askAgentRequest struct {
+	Channel     string
+	User        string
+	ResponseURL string
+	TriggerID   string
+	Thread      string
+	Prefill     string
 }
 
 // handleSlashCommand opens the agent picker modal for a slash command, or
-// tells the invoking user privately why it cannot. The roster comes from the
-// 30s cache (rosterAgentsBestEffort) because the trigger_id expires 3 seconds
-// after Slack issued it.
+// tells the invoking user privately why it cannot. Slack sends no thread with
+// a command, so its conversation always starts on a fresh root.
 func (a *Adapter) handleSlashCommand(ctx context.Context, p slashCommandPayload) {
 	if !a.started.Load() {
 		return
 	}
-	notify := func(text string) {
-		if err := a.apiClient().respondToURL(ctx, p.ResponseURL, text); err != nil {
-			a.Logger.Warn("slack: slash command notice failed", "user", p.UserID, "error", err)
-		}
-	}
+	req := askAgentRequest{Channel: p.ChannelID, User: p.UserID, ResponseURL: p.ResponseURL, TriggerID: p.TriggerID, Prefill: p.Text}
+	notify := a.askAgentNotifier(ctx, req, "slash command")
 	if isDMChannelID(p.ChannelID) {
 		notify(slashCommandDMNotice)
 		return
@@ -116,14 +134,76 @@ func (a *Adapter) handleSlashCommand(ctx context.Context, p slashCommandPayload)
 		notify(channelNotServed)
 		return
 	}
+	if !a.agentSelectionReady() {
+		notify(agentSelectionUnavailable)
+		return
+	}
+	a.openAgentPicker(ctx, req, notify)
+}
+
+// handleAskAgentShortcut opens the agent picker for the "Ask an agent here"
+// message shortcut. Unlike the slash command it carries a thread — the one the
+// invoked message sits in, or the one that message roots — so the conversation
+// starts inside an alert's thread or a discussion instead of a new root
+// message. A thread that already talks to an agent is refused: the picker
+// opens conversations, and the thread's record is what every later turn reads.
+func (a *Adapter) handleAskAgentShortcut(ctx context.Context, payload interactionPayload, threadID string) {
+	if !a.started.Load() {
+		return
+	}
+	req := askAgentRequest{
+		Channel:     payload.Channel.ID,
+		User:        payload.User.ID,
+		ResponseURL: payload.ResponseURL,
+		TriggerID:   payload.TriggerID,
+		Thread:      threadID,
+	}
+	notify := a.askAgentNotifier(ctx, req, "ask-agent shortcut")
+	if isDMChannelID(req.Channel) {
+		if a.dmMode() != DMModeServe {
+			notify(dmRedirect)
+			return
+		}
+	} else if !a.channelServed(req.Channel) {
+		notify(channelNotServed)
+		return
+	}
+	if !a.agentSelectionReady() {
+		notify(agentSelectionUnavailable)
+		return
+	}
+	if ref, bound := a.threadAgentBinding(ctx, req.Channel, req.Thread); bound {
+		notify(fmt.Sprintf(askAgentThreadBoundNotice, escapeMrkdwn(a.agentNameFor(ctx, ref))))
+		return
+	}
+	a.openAgentPicker(ctx, req, notify)
+}
+
+// askAgentNotifier answers the picker's invoker privately through the
+// interaction's response_url; surface names the entry point in the log.
+func (a *Adapter) askAgentNotifier(ctx context.Context, req askAgentRequest, surface string) func(string) {
+	return func(text string) {
+		if err := a.apiClient().respondToURL(ctx, req.ResponseURL, text); err != nil {
+			a.Logger.Warn("slack: "+surface+" notice failed", "user", req.User, "error", err)
+		}
+	}
+}
+
+// agentSelectionReady reports whether this gateway can offer a picker at all:
+// a roster to list and a card client to validate the pick against.
+func (a *Adapter) agentSelectionReady() bool {
 	if a.Roster == nil {
-		notify(agentSelectionUnavailable)
-		return
+		return false
 	}
-	if _, ok := a.AgentCards.(agentCardChecker); !ok {
-		notify(agentSelectionUnavailable)
-		return
-	}
+	_, ok := a.AgentCards.(agentCardChecker)
+	return ok
+}
+
+// openAgentPicker lists the roster as the caller and opens the picker modal —
+// the half both entry points share. The roster comes from the 30s cache
+// (rosterAgentsBestEffort) because the trigger_id expires 3 seconds after
+// Slack issued it. Every failure is reported through notify.
+func (a *Adapter) openAgentPicker(ctx context.Context, req askAgentRequest, notify func(string)) {
 	// Everything before views.open shares one budget: Slack invalidates the
 	// trigger_id 3 seconds after issuing it, and on a cold roster cache the
 	// token mint and the controller list both go to the network. Past the
@@ -134,10 +214,10 @@ func (a *Adapter) handleSlashCommand(ctx context.Context, p slashCommandPayload)
 	// The roster is listed as the caller: the kagent controller serves
 	// AgentTemplates to a human identity, and without one only a warm cache
 	// answers. An unlinked caller on a cold cache is told to sign in.
-	pctx = a.withCallerToken(pctx, p.UserID)
+	pctx = a.withCallerToken(pctx, req.User)
 	agents, err := a.rosterAgentsBestEffort(pctx)
 	if err != nil {
-		a.Logger.Warn("slack: slash command roster unavailable", "user", p.UserID, "error", err)
+		a.Logger.Warn("slack: agent picker roster unavailable", "user", req.User, "error", err)
 		switch {
 		case errors.Is(err, pkga2a.ErrNoIdentity):
 			notify(slashCommandSignInNotice)
@@ -152,14 +232,14 @@ func (a *Adapter) handleSlashCommand(ctx context.Context, p slashCommandPayload)
 		notify(agentRosterEmpty)
 		return
 	}
-	view, err := a.askAgentModal(agents, p)
+	view, err := a.askAgentModal(agents, req)
 	if err != nil {
 		a.Logger.Warn("slack: build agent picker modal failed", "error", err)
 		notify(slashCommandOpenFailedNotice)
 		return
 	}
-	if err := a.apiClient().viewsOpen(pctx, p.TriggerID, view); err != nil {
-		a.Logger.Warn("slack: views.open failed", "user", p.UserID, "channel", p.ChannelID, "error", err)
+	if err := a.apiClient().viewsOpen(pctx, req.TriggerID, view); err != nil {
+		a.Logger.Warn("slack: views.open failed", "user", req.User, "channel", req.Channel, "error", err)
 		if pctx.Err() != nil || strings.Contains(err.Error(), "expired_trigger_id") {
 			notify(slashCommandSlowNotice)
 		} else {
@@ -170,11 +250,11 @@ func (a *Adapter) handleSlashCommand(ctx context.Context, p slashCommandPayload)
 
 // askAgentModal renders the picker: a static_select over the roster (display
 // name as label, agent ref as value, the default agent preselected) and a
-// multiline question box prefilled with whatever followed the command. A
+// multiline question box prefilled with the request's text, if any. A
 // static_select holds at most modalMaxAgents options; a larger roster is cut,
 // with a warning, rather than refused.
-func (a *Adapter) askAgentModal(agents []pkga2a.AgentInfo, p slashCommandPayload) (map[string]any, error) {
-	pm, err := json.Marshal(askAgentPrivateMetadata{Channel: p.ChannelID, User: p.UserID, ResponseURL: p.ResponseURL})
+func (a *Adapter) askAgentModal(agents []pkga2a.AgentInfo, req askAgentRequest) (map[string]any, error) {
+	pm, err := json.Marshal(askAgentPrivateMetadata{Channel: req.Channel, User: req.User, ResponseURL: req.ResponseURL, Thread: req.Thread})
 	if err != nil {
 		return nil, err
 	}
@@ -224,7 +304,7 @@ func (a *Adapter) askAgentModal(agents []pkga2a.AgentInfo, p slashCommandPayload
 		bkMaxLength:   modalQuestionMax,
 		bkPlaceholder: plainTextObj(askAgentQuestionPlaceholder),
 	}
-	if text := truncateRunes(strings.TrimSpace(p.Text), modalQuestionMax); text != "" {
+	if text := truncateRunes(strings.TrimSpace(req.Prefill), modalQuestionMax); text != "" {
 		question[bkInitialValue] = text
 	}
 	return map[string]any{
@@ -243,11 +323,13 @@ func (a *Adapter) askAgentModal(agents []pkga2a.AgentInfo, p slashCommandPayload
 
 // handleAskAgentSubmission opens the conversation a submitted picker
 // describes: validate the agent (loud failure, never a substitute), post the
-// root under the agent's identity with the conversation metadata, make the
+// echo under the agent's identity with the conversation metadata, make the
 // submitter the initiator, bind the thread, and dispatch the question as the
-// first turn through the same path a mention takes. Slack has already closed
-// the modal (the interactions handler acked), so failures reach the user
-// through the slash command's response_url.
+// first turn through the same path a mention takes. The slash command's echo
+// is a new root and its ts is the thread; the shortcut's is a reply in the
+// thread the picker was opened on. Slack has already closed the modal (the
+// interactions handler acked), so failures reach the user through the
+// response_url the picker travelled with.
 func (a *Adapter) handleAskAgentSubmission(ctx context.Context, payload interactionPayload) {
 	var pm askAgentPrivateMetadata
 	if err := json.Unmarshal([]byte(payload.View.PrivateMetadata), &pm); err != nil || pm.Channel == "" || pm.User == "" {
@@ -283,6 +365,14 @@ func (a *Adapter) handleAskAgentSubmission(ctx context.Context, payload interact
 	// Validation and branding read the controller as the submitter, like the
 	// roster did when the picker opened.
 	ctx = a.withCallerToken(ctx, user)
+	// The shortcut's thread was free when the picker opened; someone may have
+	// started a conversation in it since. The record decides, as everywhere.
+	if pm.Thread != "" {
+		if bound, ok := a.threadAgentBinding(ctx, pm.Channel, pm.Thread); ok {
+			notify(fmt.Sprintf(askAgentThreadBoundNotice, escapeMrkdwn(a.agentNameFor(ctx, bound))))
+			return
+		}
+	}
 	vctx, cancel := context.WithTimeout(ctx, agentValidateTimeout)
 	defer cancel()
 	if _, _, err := checker.CardInfo(vctx, ref); err != nil {
@@ -295,9 +385,9 @@ func (a *Adapter) handleAskAgentSubmission(ctx context.Context, payload interact
 	// lands in a mrkdwn-parsed message. Emphasis characters (* _) pass through
 	// and can mangle the bold span — cosmetic, accepted.
 	name := a.agentNameFor(ctx, ref)
-	rootText := fmt.Sprintf(askAgentRootText, user, escapeMrkdwn(name), quoteMrkdwn(escapeMrkdwn(question)))
+	echoText := fmt.Sprintf(askAgentRootText, user, escapeMrkdwn(name), quoteMrkdwn(escapeMrkdwn(question)))
 	client := a.agentClientNamed(ctx, ref, name)
-	rootTS, err := client.postMessage(ctx, pm.Channel, rootText, "")
+	echoTS, err := client.postMessage(ctx, pm.Channel, echoText, pm.Thread)
 	if err != nil && isNotInChannelErr(err) {
 		// A public channel the bot was never invited to: join (channels:join)
 		// and retry once. A private channel refuses the join, and the user is
@@ -307,25 +397,32 @@ func (a *Adapter) handleAskAgentSubmission(ctx context.Context, payload interact
 			notify(askAgentInviteNotice)
 			return
 		}
-		rootTS, err = client.postMessage(ctx, pm.Channel, rootText, "")
+		echoTS, err = client.postMessage(ctx, pm.Channel, echoText, pm.Thread)
 	}
 	if err != nil {
-		a.Logger.Warn("slack: ask-agent root post failed", "channel", pm.Channel, "error", err)
+		a.Logger.Warn("slack: ask-agent echo post failed", "channel", pm.Channel, "error", err)
 		notify(askAgentPostFailedNotice)
 		return
 	}
 
-	// The root is the bot's, so the thread state a mention would carry on its
-	// own opening message is written to the thread record here: the submitter
+	// The shortcut starts the conversation in the thread it was invoked on;
+	// the slash command's own echo is the root, so it is the thread.
+	threadTS, source := pm.Thread, agentSourceShortcut
+	if threadTS == "" {
+		threadTS, source = echoTS, agentSourceCommand
+	}
+
+	// The opening message is the bot's, so the thread state a mention would
+	// carry on its own is written to the thread record here: the submitter
 	// owns the thread, and the thread is bound to the chosen agent.
-	a.accessPolicy().SetInitiator(ctx, pm.Channel, rootTS, user)
-	a.bindThreadAgent(ctx, pm.Channel, rootTS, ref)
+	a.accessPolicy().SetInitiator(ctx, pm.Channel, threadTS, user)
+	a.bindThreadAgent(ctx, pm.Channel, threadTS, ref)
 
 	msg := channels.InboundMessage{
 		Channel:   ChannelName,
 		ChannelID: pm.Channel,
-		ThreadID:  rootTS,
-		MessageID: rootTS,
+		ThreadID:  threadTS,
+		MessageID: echoTS,
 		Text:      question,
 		Subject:   user,
 		AgentRef:  ref,
@@ -333,8 +430,8 @@ func (a *Adapter) handleAskAgentSubmission(ctx context.Context, payload interact
 		// the session title keys on it.
 		Opener: true,
 	}
-	if err := a.dispatchFrom(ctx, msg, pm.Channel, agentSourceCommand); err != nil && !errors.Is(err, context.Canceled) {
-		a.Logger.Error("slack: ask-agent dispatch error", "thread", rootTS, "error", err)
+	if err := a.dispatchFrom(ctx, msg, pm.Channel, source); err != nil && !errors.Is(err, context.Canceled) {
+		a.Logger.Error("slack: ask-agent dispatch error", "thread", threadTS, "error", err)
 	}
 }
 

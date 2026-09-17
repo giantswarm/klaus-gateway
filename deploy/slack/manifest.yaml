@@ -33,16 +33,25 @@ features:
     home_tab_enabled: false
     messages_tab_enabled: true
     messages_tab_read_only_enabled: false
-  # Message shortcut (⋯ menu → Apps on any message). Delivered as a
-  # message_action interaction payload to the interactivity request URL; the
-  # gateway replies with an ephemeral rendering of the thread's retained
-  # tool-call log. Changing this section requires re-syncing the app config
-  # at api.slack.com/apps (manifests are not applied automatically).
+  # Message shortcuts (⋯ menu → Apps on any message). Delivered as
+  # message_action interaction payloads to the interactivity request URL:
+  # "Inspect agent steps" replies with an ephemeral rendering of the thread's
+  # retained tool-call log, "Ask an agent here" opens the agent picker and
+  # starts the conversation in that message's thread. The display names are
+  # per app — rename them if you like; the gateway routes on the callback_id
+  # alone. Slack lists a shortcut under "Connect to apps" in the ⋯ menu only
+  # after a person has used it once; the first time it sits behind
+  # "More message shortcuts…". Changing this section requires re-syncing the
+  # app config at api.slack.com/apps (manifests are not applied automatically).
   shortcuts:
     - name: Inspect agent steps
       type: message
       callback_id: inspect_agent_steps
       description: Show the tool calls behind the agent's recent turns in this thread (only visible to you)
+    - name: Ask an agent here
+      type: message
+      callback_id: ask_agent_here
+      description: Start a conversation with an agent in this message's thread
   # Native slash command: opens the agent picker modal (agent select over the
   # live roster + question box); submitting it posts the conversation root in
   # the channel and runs the question as the thread's first turn. The gateway
@@ -126,7 +135,7 @@ settings:
       - agent_session_stopped
   interactivity:
     is_enabled: true
-    # Interactions request URL (Block Kit clicks, the message shortcut, the
+    # Interactions request URL (Block Kit clicks, the message shortcuts, the
     # agent picker's view_submission). Replace with your public hostname.
     request_url: https://example.com/channels/slack/interactions
   org_deploy_enabled: false

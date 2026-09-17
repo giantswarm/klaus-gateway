@@ -162,8 +162,12 @@ const (
 	slashCommandSlowNotice       = "_Listing the agents took too long for Slack's picker. Please run the command again._"
 	slashCommandOpenFailedNotice = "⚠️ _I couldn't open the agent picker just now. Please try again._"
 	askAgentIncompleteNotice     = "⚠️ _Pick an agent and type a question, then submit again._"
-	askAgentInviteNotice         = "⚠️ _I'm not a member of this channel, so I couldn't start the conversation. Invite me to the channel and try again._"
-	askAgentPostFailedNotice     = "⚠️ _I couldn't post your question in this channel just now. Please try again._"
+	// askAgentThreadBoundNotice refuses the shortcut in a thread that already
+	// talks to an agent: the picker opens conversations, and a second one in
+	// the same thread would fork it. %s is the bound agent's display name.
+	askAgentThreadBoundNotice = "_This thread already talks to *%s*. Reply in the thread to ask it — the picker starts conversations in threads that have none yet._"
+	askAgentInviteNotice      = "⚠️ _I'm not a member of this channel, so I couldn't start the conversation. Invite me to the channel and try again._"
+	askAgentPostFailedNotice  = "⚠️ _I couldn't post your question in this channel just now. Please try again._"
 )
 
 // pickerOpenBudget bounds the work between a slash command arriving and
@@ -175,6 +179,13 @@ const pickerOpenBudget = 2500 * time.Millisecond
 // message in a thread, it replies with an ephemeral rendering of the thread's
 // retained tool-call log (see inspect.go).
 const inspectShortcutCallbackID = "inspect_agent_steps"
+
+// askAgentShortcutCallbackID is the callback_id of the "Ask an agent here"
+// message shortcut registered in deploy/slack/manifest.yaml. Invoked on any
+// message, it opens the agent picker and starts the conversation inside that
+// message's thread — the one thing the slash command cannot do, since Slack
+// sends no thread with it (see slashcmd.go).
+const askAgentShortcutCallbackID = "ask_agent_here"
 
 // labelApproved is the human-readable resume text / approve keyword shared by
 // the button and free-text decision paths.
