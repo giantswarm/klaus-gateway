@@ -5,7 +5,7 @@
 # workflow in .circleci/config.yml merges into this file at pipeline runtime.
 version: 2.1
 orbs:
-  architect: giantswarm/architect@10.4.1
+  architect: giantswarm/architect@10.5.0
 
 workflows:
   build:
@@ -25,14 +25,13 @@ workflows:
           tags:
             only: /^v.*/
 
-    # Branches: validate the image build without pushing anything (push: false
-    # keeps the buildx result in the BuildKit cache). Same hadolint lint and
-    # multi-arch build as the release job, so Dockerfile regressions surface
-    # on the PR instead of at tag time.
+    # Branch builds (opt-in): amd64 dev image to gsoci for PR validation,
+    # coupled with the branch chart push below. v9's push-to-registries always
+    # uses buildx; platforms is pinned to amd64 to keep branch builds fast.
     - architect/push-to-registries:
         context: architect
-        name: build-image
-        push: false
+        name: push-to-registries
+        platforms: linux/amd64
         requires:
         - go-build
         filters:
@@ -96,7 +95,11 @@ workflows:
     # deploys the chart, which pulls that image from gsoci, and gating on the
     # push avoids an ImagePullBackOff race. The architect context carries the
     # registry credentials the job hands to its kind node, so the chart can pull
-    # private images (gsociprivate) without imagePullSecrets.
+    # private images (gsociprivate) without imagePullSecrets. The kind cluster
+    # the job creates takes its configuration (feature gates, runtime config,
+    # patches, extra nodes) from .ats/kind-config.yaml when the repo carries one
+    # -- repo-owned, like .ats/main.yaml -- and its resource class from
+    # gen.ci.atsResourceClass in giantswarm/github (the orb default is medium).
     - architect/run-tests-with-ats:
         name: execute-chart-tests
         context: architect
@@ -106,6 +109,24 @@ workflows:
         create_kind_cluster: true
         requires:
         - build-chart
+        - push-to-registries
+        filters:
+          branches:
+            ignore:
+            - main
+
+    # Branch chart push (opt-in): publish the dev chart after tests + the amd64
+    # branch image, coupled with push-to-registries above.
+    - architect/push-to-app-catalog:
+        executor: app-build-suite
+        context: architect
+        name: push-chart
+        app_catalog: giantswarm-catalog
+        app_catalog_test: giantswarm-test-catalog
+        chart: klaus-gateway
+        requires:
+        - execute-chart-tests
+        - push-to-registries
         filters:
           branches:
             ignore:
