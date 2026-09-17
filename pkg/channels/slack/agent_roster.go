@@ -2,6 +2,7 @@ package slack
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -179,8 +180,11 @@ func (a *Adapter) rosterAgents(ctx context.Context) ([]pkga2a.AgentInfo, error) 
 	if err != nil {
 		// A caller that ran out of its own time (the picker's trigger_id
 		// budget) says nothing about the roster's health; only a failure
-		// with the caller still waiting is recorded against it.
-		if ctx.Err() == nil {
+		// with the caller still waiting is recorded against it. Neither does a
+		// caller without an identity: the controller was never asked, and
+		// remembering it would refuse the same person for rosterFailureTTL
+		// right after they signed in — the slash command's cold path.
+		if ctx.Err() == nil && !errors.Is(err, pkga2a.ErrNoIdentity) {
 			a.rosterMu.Lock()
 			a.rosterFailedUntil = time.Now().Add(rosterFailureTTL)
 			a.rosterMu.Unlock()

@@ -120,3 +120,78 @@ func TestRosterBestEffort_ColdWithArmedNegativeCacheRefuses(t *testing.T) {
 	require.Error(t, err)
 	require.Zero(t, roster.calls, "no fetch while the failure is remembered")
 }
+
+// rosterNoIdentityThenAgents answers ErrNoIdentity until linked is set: an
+// unlinked caller, then the same caller right after signing in.
+type rosterNoIdentityThenAgents struct {
+	mu     sync.Mutex
+	linked bool
+	agents []pkga2a.AgentInfo
+}
+
+func (r *rosterNoIdentityThenAgents) ListAgents(context.Context) ([]pkga2a.AgentInfo, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.linked {
+		return nil, pkga2a.ErrNoIdentity
+	}
+	return r.agents, nil
+}
+
+// A caller without an identity says nothing about the roster's health, so it
+// must not arm the negative cache: the same person, signed in seconds later,
+// gets the roster instead of "not retrying before …" (the slash command's
+// cold path after /login).
+func TestRosterAgents_NoIdentityDoesNotArmTheNegativeCache(t *testing.T) {
+	roster := &rosterNoIdentityThenAgents{agents: []pkga2a.AgentInfo{{Name: "sre-agent", DisplayName: "SRE Agent"}}}
+	a := testAdapterWithRoster(roster)
+	ctx := context.Background()
+
+	_, err := a.rosterAgentsBestEffort(ctx)
+	require.ErrorIs(t, err, pkga2a.ErrNoIdentity, "the unlinked caller is told to sign in")
+	a.rosterMu.Lock()
+	armed := !a.rosterFailedUntil.IsZero()
+	a.rosterMu.Unlock()
+	require.False(t, armed, "an identity failure must not be remembered against the roster")
+
+	roster.mu.Lock()
+	roster.linked = true
+	roster.mu.Unlock()
+	got, err := a.rosterAgentsBestEffort(ctx)
+	require.NoError(t, err, "the signed-in caller is served at once")
+	require.Equal(t, "SRE Agent", got[0].DisplayName)
+}
+
+// rosterFails answers every listing with err.
+type rosterFails struct{ err error }
+
+func (r rosterFails) ListAgents(context.Context) ([]pkga2a.AgentInfo, error) { return nil, r.err }
+
+// The three outcomes of a failed fetch: a controller failure arms the negative
+// cache; a caller without an identity and a caller whose own context ended
+// say nothing about the roster and leave it unarmed.
+func TestRosterAgents_WhichFailuresArmTheNegativeCache(t *testing.T) {
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	cases := []struct {
+		name  string
+		err   error
+		ctx   context.Context
+		armed bool
+	}{
+		{"controller failure", errors.New("controller unreachable"), context.Background(), true},
+		{"no caller identity", pkga2a.ErrNoIdentity, context.Background(), false},
+		{"caller ran out of time", errors.New("rpc error: context canceled"), cancelled, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := testAdapterWithRoster(rosterFails{err: tc.err})
+			_, err := a.rosterAgents(tc.ctx)
+			require.Error(t, err)
+			a.rosterMu.Lock()
+			armed := !a.rosterFailedUntil.IsZero()
+			a.rosterMu.Unlock()
+			require.Equal(t, tc.armed, armed)
+		})
+	}
+}
