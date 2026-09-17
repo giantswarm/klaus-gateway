@@ -9,12 +9,10 @@ import (
 	slackadapter "github.com/giantswarm/klaus-gateway/pkg/channels/slack"
 )
 
-// flowWait is the budget a flow test gives the adapter to reach a dispatch or
-// a post. The work is spread over goroutines and a fake HTTP server, so on a
-// loaded runner (CI, or the package running more than once in one process) a
-// short budget expires before slow scheduling, not because the adapter is
-// wrong. Waits that assert a timeout behaviour set their own budget.
-const flowWait = 10 * time.Second
+// flowWait is the budget of every wait for a dispatch or a post; it is defined
+// once, next to the adapter (flowwait_internal_test.go), and re-exported for
+// this package by export_test.go.
+const flowWait = slackadapter.FlowWait
 
 // waitThreadIdle blocks until the adapter's turn slot for threadID is free.
 // The adapter runs one turn per thread and refuses a turn that arrives while
@@ -27,13 +25,15 @@ func waitThreadIdle(t *testing.T, a *slackadapter.Adapter, threadID string) {
 		"the previous turn in thread %s released the thread slot", threadID)
 }
 
-// waitTurnStreaming blocks until the turn is draining its stream. The fake
-// records the working reaction when the request arrives, while the adapter
-// notes the reaction only once the response is back, so a stop or a shutdown
-// sent on the reaction alone can find nothing to clear. Marking the session
-// "processing" is the writer's first act after that bookkeeping, so it is the
-// signal that the turn is fully under way.
-func waitTurnStreaming(t *testing.T, fake *fakeSlackAPI) {
+// waitTurnStreaming blocks until the turn'th turn of the thread is draining its
+// stream (turn is 1-based). The fake records the working reaction when the
+// request arrives, while the adapter notes the reaction only once the response
+// is back, so a stop or a shutdown sent on the reaction alone can find nothing
+// to clear. Marking the session "processing" is the writer's first act after
+// that bookkeeping, and every turn sets the session status twice (processing on
+// the way in, its exit status on the way out), which is what makes the turn'th
+// processing call the (2*turn-1)'th status call.
+func waitTurnStreaming(t *testing.T, fake *fakeSlackAPI, turn int) {
 	t.Helper()
-	fake.waitForPath(t, "agents.sessions.setStatus", 1)
+	fake.waitForPath(t, "agents.sessions.setStatus", 2*turn-1)
 }

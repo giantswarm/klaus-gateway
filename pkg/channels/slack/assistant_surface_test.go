@@ -79,5 +79,5 @@ func TestAssistantSurface_ContextChangedNoOp(t *testing.T) {
 
 	sendEvent(t, srv, dmEvent("U1", "hello", "113.000"))
 	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
-		10*time.Second, 20*time.Millisecond, "a DM after context changes still dispatches")
+		flowWait, 20*time.Millisecond, "a DM after context changes still dispatches")
 }

@@ -33,6 +33,12 @@ func TestThreadRecord_AgentInitiatorAndGrantSurviveRestart(t *testing.T) {
 	require.Eventually(t, func() bool { return gw1.resolveCount() == 1 }, flowWait, 50*time.Millisecond)
 	require.Equal(t, "issue-agent", resolved1()[0].AgentRef)
 	sendAccessInteraction(t, srv1, "U1", accessAllowAction, "900.1", "U2", api.URL+"/response")
+	// The click is acknowledged before the grant is written: the handler runs on
+	// its own goroutine and rewrites the prompt through the response URL right
+	// after granting, so that rewrite is the proof the grant landed. Without it
+	// U2's reply below can reach the second adapter first and be parked in its
+	// own pendingAccess map, which nothing drains.
+	fake.waitForPath(t, "response", 1)
 
 	gw2, resolved2 := capturingGateway()
 	gw2.records = shared

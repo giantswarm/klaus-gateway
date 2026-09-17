@@ -29,11 +29,11 @@ func TestEventsHandler_ChannelAllowlist(t *testing.T) {
 
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_mention","user":"U123","text":"<@BOT> hi","channel":"C1","ts":"111.222"}}`)
 	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
-		10*time.Second, 20*time.Millisecond, "a mention in an allowlisted channel dispatches")
+		flowWait, 20*time.Millisecond, "a mention in an allowlisted channel dispatches")
 
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_mention","user":"U123","text":"<@BOT> hi","channel":"C9","ts":"333.444"}}`)
 	require.Eventually(t, func() bool { return len(fake.pathCalls("chat.postEphemeral")) == 1 },
-		10*time.Second, 20*time.Millisecond, "a mention outside the allowlist gets an ephemeral notice")
+		flowWait, 20*time.Millisecond, "a mention outside the allowlist gets an ephemeral notice")
 	require.Equal(t, 1, gw.resolveCount(), "a mention outside the allowlist must not dispatch")
 
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_mention","user":"U123","text":"<@BOT> again","channel":"C9","ts":"555.666"}}`)
@@ -54,11 +54,11 @@ func TestEventsHandler_DMServedAlongsideChannels(t *testing.T) {
 
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","channel_type":"im","user":"U1","text":"hi","channel":"D1","ts":"111.000"}}`)
 	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
-		10*time.Second, 20*time.Millisecond, "a DM dispatches in serve mode")
+		flowWait, 20*time.Millisecond, "a DM dispatches in serve mode")
 
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_mention","user":"U1","text":"<@BOT> hi","channel":"C1","ts":"222.000"}}`)
 	require.Eventually(t, func() bool { return gw.resolveCount() == 2 },
-		10*time.Second, 20*time.Millisecond, "a channel mention dispatches alongside DMs")
+		flowWait, 20*time.Millisecond, "a channel mention dispatches alongside DMs")
 }
 
 // An image-only DM in redirect mode gets the redirect notice like a text DM:
@@ -73,7 +73,7 @@ func TestEventsHandler_DMRedirectCoversFileShare(t *testing.T) {
 
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","subtype":"file_share","channel_type":"im","user":"U1","channel":"D1","ts":"111.000","files":[{"name":"shot.png","mimetype":"image/png","size":10}]}}`)
 	require.Eventually(t, func() bool { return len(fake.pathCalls("chat.postMessage")) == 1 },
-		10*time.Second, 20*time.Millisecond, "an image-only DM gets the redirect notice")
+		flowWait, 20*time.Millisecond, "an image-only DM gets the redirect notice")
 	require.Zero(t, gw.resolveCount(), "a redirected DM must not dispatch")
 }
 
@@ -103,7 +103,7 @@ func TestMemberJoined_IntroSkippedInUnservedChannel(t *testing.T) {
 
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"member_joined_channel","user":"UBOT","channel":"C1"}}`)
 	require.Eventually(t, func() bool { return len(fake.pathCalls("chat.postMessage")) == 1 },
-		10*time.Second, 20*time.Millisecond, "the intro posts in an allowlisted channel")
+		flowWait, 20*time.Millisecond, "the intro posts in an allowlisted channel")
 }
 
 // Unknown mode strings are rejected at Start.

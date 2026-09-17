@@ -369,7 +369,7 @@ func TestLoginPark_QueueCapDropIsVisible(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		return len(texts) == 5
-	}, 3*time.Second, 50*time.Millisecond, "the capped queue replays after sign-in")
+	}, flowWait, 50*time.Millisecond, "the capped queue replays after sign-in")
 	mu.Lock()
 	defer mu.Unlock()
 	require.Equal(t, []string{"q2", "q3", "q4", "q5", "q6"}, texts,

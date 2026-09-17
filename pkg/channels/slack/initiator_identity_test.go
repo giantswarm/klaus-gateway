@@ -53,14 +53,17 @@ func TestInitiator_CollaboratorTurnForwardsInitiatorToken(t *testing.T) {
 	// Initiator starts the thread; their turn runs under their own token.
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
 	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
-		10*time.Second, 50*time.Millisecond, "initiator's mention dispatches")
+		flowWait, 50*time.Millisecond, "initiator's mention dispatches")
 
 	// Collaborator posts: held pending consent, then approved by the initiator.
 	sendEvent(t, srv, mention("U002", "help", "200.000", "100.000"))
 	fake.waitForPath(t, "chat.postEphemeral", 1)
 	sendAccessInteraction(t, srv, "U001", accessAllowAction, "100.000", "U002", fakeURL+"/response")
+	// The click is acknowledged before the grant is written; the prompt rewrite
+	// that follows the grant is the proof it landed.
+	fake.waitForPath(t, "response", 1)
 	require.Eventually(t, func() bool { return gw.resolveCount() == 2 },
-		10*time.Second, 50*time.Millisecond, "approval replays the collaborator's message")
+		flowWait, 50*time.Millisecond, "approval replays the collaborator's message")
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -102,14 +105,17 @@ func TestInitiator_FallsBackToSenderWhenTokenUnavailable(t *testing.T) {
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
 	require.Eventually(t, func() bool {
 		return signInPrompted(fake)
-	}, 10*time.Second, 50*time.Millisecond, "the unlinked initiator is prompted to sign in")
+	}, flowWait, 50*time.Millisecond, "the unlinked initiator is prompted to sign in")
 
 	// Collaborator posts, held pending consent; the initiator approves.
 	sendEvent(t, srv, mention("U002", "help", "200.000", "100.000"))
 	fake.waitForPath(t, "chat.postEphemeral", 1)
 	sendAccessInteraction(t, srv, "U001", accessAllowAction, "100.000", "U002", fakeURL+"/response")
+	// The click is acknowledged before the grant is written; the prompt rewrite
+	// that follows the grant is the proof it landed.
+	fake.waitForPath(t, "response", 1)
 	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
-		10*time.Second, 50*time.Millisecond, "the collaborator's message reaches the agent")
+		flowWait, 50*time.Millisecond, "the collaborator's message reaches the agent")
 
 	mu.Lock()
 	defer mu.Unlock()
