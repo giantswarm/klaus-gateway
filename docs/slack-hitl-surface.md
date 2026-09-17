@@ -389,6 +389,66 @@ message, or the giving team's notice of a transfer. The link, when given, is a c
 }
 ```
 
+## 12. Agent picker (starting a conversation)
+
+The one modal the gateway opens, and the only prompt here that no agent raised: the user asked
+to start a conversation. Two entry points open the same view (`callback_id: ask_agent`) — the
+slash command (`/swarmgeist [question]`, whose text prefills the question box) and the **Ask an
+agent here** message shortcut (⋯ menu → Apps, `callback_id: ask_agent_here`). The select lists
+the live roster as the caller, the default agent preselected; `private_metadata` carries where
+the picker was opened, how to answer the user privately, and — for the shortcut — the thread the
+conversation starts in.
+
+```json
+{
+  "type": "modal",
+  "callback_id": "ask_agent",
+  "private_metadata": "{\"c\":\"C123\",\"u\":\"U123\",\"r\":\"https://hooks.slack.com/actions/…\",\"t\":\"1699999999.000100\"}",
+  "title": { "type": "plain_text", "text": "Ask an agent" },
+  "submit": { "type": "plain_text", "text": "Ask" },
+  "close": { "type": "plain_text", "text": "Cancel" },
+  "blocks": [
+    {
+      "type": "input",
+      "block_id": "ask_agent_agent",
+      "label": { "type": "plain_text", "text": "Agent" },
+      "element": {
+        "type": "static_select",
+        "action_id": "agent",
+        "placeholder": { "type": "plain_text", "text": "Pick an agent" },
+        "options": [ { "text": { "type": "plain_text", "text": "SRE Agent" }, "value": "kagent/sre-agent" } ],
+        "initial_option": { "text": { "type": "plain_text", "text": "SRE Agent" }, "value": "kagent/sre-agent" }
+      }
+    },
+    {
+      "type": "input",
+      "block_id": "ask_agent_question",
+      "label": { "type": "plain_text", "text": "Question" },
+      "element": { "type": "plain_text_input", "action_id": "question", "multiline": true, "max_length": 3000 }
+    }
+  ]
+}
+```
+
+Submitting posts the echo `💬 <@U123> asked *SRE Agent*:` with the question quoted, under the
+agent's identity — a new root message for the slash command, a reply in the carried thread for
+the shortcut — and runs the question as the thread's first turn.
+
+Everything the picker cannot do is said privately to the invoker, through the interaction's
+`response_url`, and nothing is posted in the channel:
+
+| when | notice |
+|---|---|
+| the shortcut, in a thread that already talks to an agent | "This thread already talks to *Agent*. Reply in the thread to ask it…" |
+| the shortcut, in a DM while DMs are not served | the DM redirect |
+| the slash command, in a DM | "This command opens a conversation in a channel…" |
+| the channel is not served | "I'm not enabled in this channel yet…" |
+| the caller is not signed in | "I need to know who you are before I can list the agents…" (`/login`) |
+| the roster took longer than the trigger's 3-second life | "Listing the agents took too long for Slack's picker…" |
+| the roster is unreachable, or empty | "I can't list the available agents right now…" / "No agents are installed right now." |
+| on submit: the picked agent no longer validates | "I don't know an agent named `…`", with the current roster |
+| on submit: the bot is not in the channel and cannot join | "Invite me to the channel and try again." |
+
 ## Answering: click and reply
 
 On a click, Slack POSTs a `block_actions` payload to `/channels/slack/interactions`. The

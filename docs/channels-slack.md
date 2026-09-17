@@ -170,14 +170,16 @@ The app subscribes to two bot events:
 - `message.im` — fires for direct messages to the bot
 
 The manifest also declares a slash command (`/swarmgeist` by default; the name is per app and the
-gateway does not depend on it) and the `commands` scope it needs. Manifest changes are applied by
+gateway does not depend on it), two message shortcuts (**Inspect agent steps** and **Ask an agent
+here**; their display names are per app too, the gateway routes on the callback id) and the
+`commands` scope they need. Manifest changes are applied by
 hand at api.slack.com/apps; adding the `commands` scope to an install that lacks it requires a
 reinstall.
 
 ## Agent routing
 
 Every Slack thread is routed to a single agent via the A2A executor. A conversation picks its
-agent when it opens, through one of two entry points, and keeps it for life:
+agent when it opens, through one of three entry points, and keeps it for life:
 
 - **Mention with a prefix**: `@bot /agent "<display name>" <question>` or
   `@bot /agent <technical-name> <question>` starts a conversation in any thread with no agent
@@ -196,6 +198,16 @@ agent when it opens, through one of two entry points, and keeps it for life:
   conversations; in a channel the bot is not a member of, the gateway joins public channels and
   asks for an invite to private ones. Failures (unknown agent, roster unavailable, channel not
   served) are reported privately to the invoking user.
+- **"Ask an agent here" message shortcut** (⋯ menu → Apps on any message): opens the same picker
+  where the command cannot reach — inside an existing thread. The conversation starts in the
+  thread of the message the shortcut was invoked on (or in the thread that message roots, when it
+  is a top-level one), so an alert another app posted or a running discussion is handed to a
+  chosen agent without leaving it. On submit the gateway posts the same "💬 @user asked *Agent*:
+  …" echo as a **reply** in that thread, makes the submitter the thread initiator, and runs the
+  question as the first turn. A thread that already talks to an agent is refused — reply in it to
+  ask that agent — because a second conversation would fork the one it has. Refusals and failures
+  are private to the invoker, like the command's. The shortcut works in DMs too when DMs are
+  served.
 
 A thread's agent binding is not re-derived after a restart — it does not need to be. It lives
 in the thread's row in the routing store (see [Threads and sessions](#threads-and-sessions)),
@@ -209,9 +221,9 @@ mention starts it over (see [Threads and sessions](#threads-and-sessions) for wh
 still remember).
 
 The turn that opens a conversation posts no notice of its own: the agent's first reply, under
-the agent's name, is the first sign of which agent joined the thread. The slash command's
-branded root names the agent up front, because there the picker chose it before any message
-existed.
+the agent's name, is the first sign of which agent joined the thread. The picker's branded echo
+(the slash command's root, the shortcut's reply) names the agent up front, because there the
+agent was chosen before any message existed.
 
 | Flag | Env var | Required |
 |------|---------|---------|
@@ -344,7 +356,7 @@ Three structured log records (`record=…`, JSON fields) tell a turn's story; jo
 `thread_id` (the Slack `thread_ts`) and `trace_id`:
 
 - `turn_dispatch` -- the turn is admitted and about to be sent: `agent`, `agent_source`
-  (`prefix`, `command`, `thread`, `default`, `task`), `slack_user`, `subject` (the resolved
+  (`prefix`, `command`, `shortcut`, `thread`, `default`, `task`), `slack_user`, `subject` (the resolved
   e-mail), `sub` (the linked muster identity), `channel_id`, `thread_id`, `message_id`,
   `task_id` (on a resume), `resume`, `trace_id`, `dispatch_ms` (since the event arrived).
 - `turn_complete` -- one per turn, whatever its end: `outcome` (see
@@ -435,8 +447,11 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
   last 100 calls per thread, kept for up to 24 hours and not surviving a gateway restart;
   nothing is recorded while the thread is set to `/details off`. When nothing is retained
   the reply says so and points at `/details full` for live debugging. The shortcut is
-  registered in `deploy/slack/manifest.yaml`; changing the manifest requires re-syncing
-  the app config at api.slack.com/apps.
+  registered in `deploy/slack/manifest.yaml`, next to **Ask an agent here** (which starts a
+  conversation in the message's thread, see [Agent routing](#agent-routing)); changing the
+  manifest requires re-syncing the app config at api.slack.com/apps. Slack lists a shortcut
+  under "Connect to apps" in the ⋯ menu only once a person has used it; the first time it is
+  behind "More message shortcuts…".
 - **HITL "Chat".** A tool-approval prompt shows Approve / Deny / **Chat**. Chat holds the
   pending tool call and invites a follow-up question in the thread; the reply is routed to the
   paused task. A question resolves it as a reject carrying the question (the agent answers and
@@ -502,7 +517,7 @@ arrive as Socket Mode envelopes):
 
 ```
 POST /channels/slack/events        Events API webhook
-POST /channels/slack/interactions  Block Kit clicks, the message shortcut, the agent picker's view_submission
+POST /channels/slack/interactions  Block Kit clicks, the message shortcuts, the agent picker's view_submission
 POST /channels/slack/commands      the slash command
 ```
 
