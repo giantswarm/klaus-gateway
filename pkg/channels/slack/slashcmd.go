@@ -343,15 +343,18 @@ func (a *Adapter) askAgentModal(agents []pkga2a.AgentInfo, req askAgentRequest) 
 
 // threadContextBlock is the checkbox that decides whether the agent is given
 // the messages the target thread already holds. It is offered whenever the
-// picker was opened on a message — there is then always at least that thread's
-// root to include — and is checked by default: the person starting the session
-// is a member of that thread and does it in the open, but a thread whose
-// earlier part is noise or private banter is theirs to leave out with one
-// click. It names no count: counting would mean reading the thread before
-// views.open, and Slack invalidates the trigger after three seconds. The input
-// is optional, or Slack would refuse a submission with the box cleared.
+// picker was opened on a message in a channel — there is then always at least
+// that thread's root to include — and is checked by default: the person
+// starting the session is a member of that thread and does it in the open, but
+// a thread whose earlier part is noise or private banter is theirs to leave
+// out with one click. A DM is not offered it: the shortcut works there when
+// DMs are served, and the only messages before the opener are the person's own
+// and the bot's, which the agent either wrote or is about to. It names no
+// count: counting would mean reading the thread before views.open, and Slack
+// invalidates the trigger after three seconds. The input is optional, or Slack
+// would refuse a submission with the box cleared.
 func threadContextBlock(req askAgentRequest) (map[string]any, bool) {
-	if req.Thread == "" {
+	if req.Thread == "" || isDMChannelID(req.Channel) {
 		return nil, false
 	}
 	option := map[string]any{bkText: plainTextObj(askAgentContextOption), bkValue: askAgentContextValue}
@@ -501,9 +504,11 @@ func (a *Adapter) handleAskAgentSubmission(ctx context.Context, payload interact
 	// The thread the picker was opened on is read now, with the echo as the
 	// opener: it was just posted, so only the messages that were already there
 	// — everyone else's — land in the transcript. A thread the submission
-	// rooted itself (the slash command) has nothing earlier to read.
+	// rooted itself (the slash command) has nothing earlier to read, and a DM
+	// is never read at all — the same rule the typed entry points follow
+	// (attachThreadContext), and the reason no checkbox was offered there.
 	var threadContext string
-	if pm.Thread != "" && includeContext {
+	if pm.Thread != "" && includeContext && !isDMChannelID(pm.Channel) {
 		threadContext = a.threadContext(ctx, pm.Channel, threadTS, echoTS, user)
 	}
 

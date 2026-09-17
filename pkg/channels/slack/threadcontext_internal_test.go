@@ -279,3 +279,23 @@ func TestDisplayName_PastTheBudgetIsTheUserID(t *testing.T) {
 	require.Equal(t, "U9", a.displayName(ctx, "U9"))
 	require.Zero(t, calls.Load(), "and nothing is asked of Slack")
 }
+
+// A name this process already holds costs no call, so the budget running out
+// does not throw it away.
+func TestDisplayName_CachedNameSurvivesTheBudget(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"ok":true,"user":{"profile":{"display_name":"Marta"}}}`)
+	}))
+	defer srv.Close()
+	a := &Adapter{APIBase: srv.URL, Secrets: Secrets{BotToken: "t"}, Logger: slog.New(slog.DiscardHandler)} //nolint:gosec // dummy test creds
+
+	require.Equal(t, "Marta", a.displayName(t.Context(), "U9"))
+
+	done, cancel := context.WithCancel(t.Context())
+	cancel()
+	require.Equal(t, "Marta", a.displayName(done, "U9"), "the cached name is used past the budget")
+	require.Equal(t, int32(1), calls.Load(), "and asks Slack nothing more")
+}

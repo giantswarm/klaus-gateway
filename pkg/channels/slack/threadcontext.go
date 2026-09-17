@@ -120,6 +120,14 @@ func (a *Adapter) threadContext(ctx context.Context, channelID, threadID, opener
 		}
 		return ""
 	}
+	if read.Err != nil {
+		// The read has messages, so the turn gets a partial transcript and the
+		// label says so — but an operator must be able to tell a read the page
+		// bound stopped from one Slack cut short.
+		a.Logger.Warn("slack: thread context read stopped early, the turn gets part of the thread",
+			"channel_id", channelID, "thread_id", threadID, "slack_user", initiator,
+			"reason", threadContextFailureReason(rctx, read.Err), "messages", len(read.Messages), "error", read.Err)
+	}
 	name := func(userID string) string { return a.displayName(rctx, userID) }
 	return renderThreadContext(read, openerTS, botUserID, name(initiator), name)
 }
@@ -202,29 +210,32 @@ func thousands(n int) string {
 	return b.String()
 }
 
-// capThreadContext drops the oldest lines until the transcript fits the
-// character cap, always keeping the first — the root message, which is the
-// alert the thread is about. A root that is itself over the cap is cut rather
-// than dropped.
+// capThreadContext keeps the root and the newest lines that fit the character
+// cap under it, dropping the oldest — the root is the alert the thread is
+// about, and stays whatever it costs; a root that is itself over the cap is
+// cut rather than dropped. The lines are measured once, from the newest
+// backwards, because a thread read can bring several hundred of them.
 func capThreadContext(lines []string) []string {
-	for len(lines) > 1 && transcriptLen(lines) > threadContextMaxChars {
-		lines = append(lines[:1:1], lines[2:]...)
-	}
 	if len(lines) == 1 {
 		lines[0] = truncateRunes(lines[0], threadContextMaxChars)
+		return lines
 	}
-	return lines
-}
-
-// transcriptLen is the length of the joined transcript in characters, newlines
-// included: the cap is a character cap, and truncateRunes cuts on the same
-// unit, so a transcript of non-ASCII text is measured the way it is documented.
-func transcriptLen(lines []string) int {
-	n := len(lines) - 1
-	for _, l := range lines {
-		n += utf8.RuneCountInString(l)
+	// The joined transcript costs the root plus, for every other line, its own
+	// length and the newline before it.
+	budget := threadContextMaxChars - utf8.RuneCountInString(lines[0])
+	first := len(lines)
+	for i := len(lines) - 1; i >= 1; i-- {
+		cost := utf8.RuneCountInString(lines[i]) + 1
+		if cost > budget {
+			break
+		}
+		budget -= cost
+		first = i
 	}
-	return n
+	if first == len(lines) {
+		return []string{truncateRunes(lines[0], threadContextMaxChars)}
+	}
+	return append(lines[:1:1], lines[first:]...)
 }
 
 // renderThreadMessage renders one message as "YYYY-MM-DD HH:MM author: text"
@@ -389,12 +400,6 @@ func (a *Adapter) displayName(ctx context.Context, userID string) string {
 	if userID == "" {
 		return ""
 	}
-	// Past the read's budget every remaining author is named by their ID: the
-	// fallback is already the contract, and one more rate-limited users.info
-	// would hold the turn for a line nobody is waiting for.
-	if ctx.Err() != nil {
-		return userID
-	}
 	now := time.Now()
 	a.displayNameMu.Lock()
 	if e, ok := a.displayNames[userID]; ok && now.Before(e.expires) {
@@ -402,6 +407,14 @@ func (a *Adapter) displayName(ctx context.Context, userID string) string {
 		return e.value
 	}
 	a.displayNameMu.Unlock()
+
+	// Past the read's budget every author this process does not already know
+	// is named by their ID: the fallback is already the contract, and one more
+	// rate-limited users.info would hold the turn for a line nobody is waiting
+	// for. A name already in hand costs nothing, so it is used either way.
+	if ctx.Err() != nil {
+		return userID
+	}
 
 	name, err := a.apiClient().lookupUserDisplayName(ctx, userID)
 	if err != nil {

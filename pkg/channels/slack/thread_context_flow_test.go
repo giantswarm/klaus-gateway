@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	slackadapter "github.com/giantswarm/klaus-gateway/pkg/channels/slack"
 )
 
 // A conversation that opens inside a thread other people wrote hands the agent
@@ -512,4 +514,61 @@ func userLookups(fake *fakeSlackAPI, user string) int {
 		}
 	}
 	return n
+}
+
+// The shortcut works in a DM when DMs are served, and there the thread is the
+// chat itself: the only messages before the opener are the person's own and
+// the bot's. Nothing is offered and nothing is read — the same rule the typed
+// entry points follow.
+func TestThreadContext_ShortcutInADMOffersNothingAndReadsNothing(t *testing.T) {
+	fake := newFakeSlackAPI()
+	fake.withThread(alertThread(), 50)
+	api := fake.server(t)
+	gw, resolved := capturingGateway()
+	// DMs served and channels served: the shipped default, and the only shape
+	// in which the shortcut reaches a DM at all.
+	_, srv := newEventsAdapter(t, gw, api.URL, withSelection(pickerRoster(), pickerCards()),
+		func(a *slackadapter.Adapter) { a.ChannelMode = slackadapter.ChannelModeAll })
+
+	sendAskAgentShortcut(t, srv, "D1", "U1", "103.000", "100.000", api.URL+"/response_url")
+
+	view := openedView(t, fake)
+	require.Len(t, view["blocks"].([]any), 2, "no context checkbox in a DM")
+
+	sendAskAgentSubmissionWithContext(t, srv, "U1", view["private_metadata"].(string), "kagent/sre-agent", "what happened?", true)
+	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, flowWait, 50*time.Millisecond)
+
+	require.Empty(t, resolved()[0].Context)
+	require.Empty(t, fake.pathCalls("conversations.replies"), "a DM chat has no thread that predates it")
+}
+
+// A page failing in the middle of a read leaves the turn with what was read,
+// labelled as partial — and the reason in the log, so a rate limit is not
+// mistaken for the read's own page bound.
+func TestThreadContext_PageFailureMidReadKeepsWhatWasRead(t *testing.T) {
+	var msgs []replyMsg
+	for i := range 120 {
+		msgs = append(msgs, replyMsg{TS: fmt.Sprintf("%d.000", 1000+i), User: "U2", Text: fmt.Sprintf("line %d", i)})
+	}
+	fake := newFakeSlackAPI()
+	fake.withThread(msgs, 50)
+	fake.withUserNames(map[string]string{"U1": "Jose", "U2": "Marta"}, nil)
+	// Everything past the first page is refused.
+	fake.failIf = func(path string, params map[string]any) string {
+		if path == "conversations.replies" && params["cursor"] != nil && params["cursor"] != "" {
+			return "ratelimited"
+		}
+		return ""
+	}
+	api := fake.server(t)
+	gw, resolved := capturingGateway()
+	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
+
+	sendEvent(t, srv, mention("U1", "what happened here?", "9000.000", "1000.000"))
+	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, flowWait, 50*time.Millisecond)
+
+	got := resolved()[0].Context
+	require.Contains(t, got, "50 of 120 earlier messages read (the read stopped early)")
+	require.Contains(t, got, "line 0", "what was read is kept")
+	require.Empty(t, allText(fake.pathCalls("chat.postEphemeral")), "a partial read is not a failed one: nobody is told")
 }

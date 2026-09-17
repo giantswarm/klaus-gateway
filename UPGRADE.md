@@ -10,12 +10,12 @@ A conversation that opens inside an existing thread now hands that thread's earl
 the agent, which means reading the thread: `channels:history` (already granted) covers public
 channels, and the two new scopes in `deploy/slack/manifest.yaml` — `groups:history` and
 `mpim:history` — private channels and group DMs. A 1:1 DM is never read this way, so nothing
-changes for the assistant pane. Slack applies added scopes to an existing install only on re-install, so **re-install the
-three Swarmgeist apps** (api.slack.com/apps → the app → OAuth & Permissions, or re-import the
-manifest and then Install App) once this release is out. Nothing breaks in the meantime: a thread
-in a private channel or a group DM answers `missing_scope`, the conversation opens and runs as
-before, and the person who opened it gets one ephemeral saying the agent only sees their question.
-Public channels need no re-install.
+changes for the assistant pane. Slack applies added scopes to an existing install only on
+re-install, so **re-install the three Swarmgeist apps** (api.slack.com/apps → the app → OAuth &
+Permissions, or re-import the manifest and then Install App) once this release is out. Nothing
+breaks in the meantime: a thread in a private channel or a group DM answers `missing_scope`, the
+conversation opens and runs as before, and the person who opened it gets one ephemeral saying the
+agent only sees their question. Public channels need no re-install.
 
 There is no opt-out per channel. The person starting the session decides: the picker's checkbox is
 ticked by default and one click clears it, the transcript is labelled with who shared it, and the

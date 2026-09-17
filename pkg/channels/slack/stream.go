@@ -1909,12 +1909,15 @@ const threadContextMaxPages = 10
 
 // threadRead is one context read: the messages it paged over (oldest first,
 // the thread's root first of all), how many messages the thread holds
-// according to the root's reply count (0 when Slack did not report one), and
-// whether the read reached the end of the thread.
+// according to the root's reply count (0 when Slack did not report one),
+// whether the read reached the end of the thread, and — when a page after the
+// first one failed — what Slack said, so the log can tell a read the page
+// bound stopped from one a rate limit or an outage cut short.
 type threadRead struct {
 	Messages []threadMessage
 	Total    int
 	Complete bool
+	Err      error
 }
 
 // threadReplies reads a thread through conversations.replies, oldest first,
@@ -1942,6 +1945,7 @@ func (c *slackAPIClient) threadReplies(ctx context.Context, channel, threadTS st
 			if len(read.Messages) == 0 {
 				return threadRead{}, err
 			}
+			read.Err = err
 			return read, nil
 		}
 		read.Messages = append(read.Messages, result.Messages...)
