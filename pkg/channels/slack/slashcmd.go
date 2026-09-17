@@ -172,10 +172,8 @@ func (a *Adapter) handleAskAgentShortcut(ctx context.Context, payload interactio
 		notify(agentSelectionUnavailable)
 		return
 	}
-	if ref, bound := a.threadAgentBinding(ctx, req.Channel, req.Thread); bound {
-		notify(fmt.Sprintf(askAgentThreadBoundNotice, escapeMrkdwn(a.agentNameFor(ctx, ref))))
-		return
-	}
+	// The thread-bound check runs inside openAgentPicker, under the trigger
+	// budget and as the caller.
 	a.openAgentPicker(ctx, req, notify)
 }
 
@@ -215,6 +213,17 @@ func (a *Adapter) openAgentPicker(ctx context.Context, req askAgentRequest, noti
 	// AgentTemplates to a human identity, and without one only a warm cache
 	// answers. An unlinked caller on a cold cache is told to sign in.
 	pctx = a.withCallerToken(pctx, req.User)
+	// A shortcut targets an existing thread: one that already talks to an
+	// agent is refused, because a second conversation would fork it. The read
+	// spends the same budget as everything else before views.open, and the
+	// agent's name resolves as the caller — the way the submit-time re-check
+	// names it, so both refusals agree.
+	if req.Thread != "" {
+		if ref, bound := a.threadAgentBinding(pctx, req.Channel, req.Thread); bound {
+			notify(fmt.Sprintf(askAgentThreadBoundNotice, escapeMrkdwn(a.agentNameFor(pctx, ref))))
+			return
+		}
+	}
 	agents, err := a.rosterAgentsBestEffort(pctx)
 	if err != nil {
 		a.Logger.Warn("slack: agent picker roster unavailable", "user", req.User, "error", err)
@@ -414,8 +423,14 @@ func (a *Adapter) handleAskAgentSubmission(ctx context.Context, payload interact
 
 	// The opening message is the bot's, so the thread state a mention would
 	// carry on its own is written to the thread record here: the submitter
-	// owns the thread, and the thread is bound to the chosen agent.
-	a.accessPolicy().SetInitiator(ctx, pm.Channel, threadTS, user)
+	// owns the thread, and the thread is bound to the chosen agent. An
+	// existing thread can already have an owner without an agent — a /usage or
+	// /stop typed there wrote one — and SetInitiator keeps the first owner. The
+	// submitter opened this conversation and must be able to continue it, so
+	// in that case they are granted instead.
+	if owner := a.accessPolicy().SetInitiator(ctx, pm.Channel, threadTS, user); owner != user {
+		a.accessPolicy().Grant(ctx, pm.Channel, threadTS, user)
+	}
 	a.bindThreadAgent(ctx, pm.Channel, threadTS, ref)
 
 	msg := channels.InboundMessage{

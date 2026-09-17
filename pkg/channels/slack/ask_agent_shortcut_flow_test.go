@@ -155,3 +155,58 @@ func TestAskAgentShortcut_UnlinkedCallerIsAskedToSignIn(t *testing.T) {
 	require.Contains(t, responseURLTexts(fake), "`/login`")
 	require.Empty(t, fake.pathCalls("views.open"))
 }
+
+// A thread can already have an owner and no agent — someone typed /usage or
+// /stop there before any conversation. The owner stays (SetInitiator writes
+// once), and the submitter, who opened this conversation, is granted so the
+// turn runs for them instead of parking behind a consent prompt to the owner.
+func TestAskAgentShortcut_ExistingOwnerIsKeptAndSubmitterGranted(t *testing.T) {
+	fake := newFakeSlackAPI()
+	api := fake.server(t)
+	gw, resolved := capturingGateway()
+	require.NoError(t, gw.rec().UpdateThreadRecord(context.Background(), "slack", "C1", "100.000", func(e *store.Entry, _ bool) bool {
+		e.Initiator = "UA"
+		return true
+	}))
+	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
+
+	sendAskAgentShortcut(t, srv, "C1", "UB", "200.000", "100.000", api.URL+"/response_url")
+	pmRaw := openedView(t, fake)["private_metadata"].(string)
+	sendAskAgentSubmission(t, srv, "UB", pmRaw, "kagent/sre-agent", "what is going on?")
+	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
+		2*time.Second, 50*time.Millisecond, "the submitter's own question runs")
+	require.Equal(t, "UB", resolved()[0].Subject)
+	require.NotContains(t, allText(fake.pathCalls("chat.postEphemeral")), "allowed to instruct",
+		"no consent prompt goes to the earlier owner")
+
+	entry, ok, err := gw.rec().ThreadRecord(context.Background(), "slack", "C1", "100.000")
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, "UA", entry.Initiator, "the first owner is kept")
+	require.Contains(t, entry.Granted, "UB", "the submitter is granted")
+	require.Equal(t, "kagent/sre-agent", entry.AgentRef)
+}
+
+// The thread was free when the picker opened and someone bound it before the
+// submit: the submission is refused, nothing is echoed and nothing runs, so
+// one thread never ends up with two conversations.
+func TestAskAgentShortcut_BoundBetweenOpenAndSubmitIsRefused(t *testing.T) {
+	fake := newFakeSlackAPI()
+	api := fake.server(t)
+	gw, _ := capturingGateway()
+	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
+
+	sendAskAgentShortcut(t, srv, "C1", "U1", "200.000", "100.000", api.URL+"/response_url")
+	pmRaw := openedView(t, fake)["private_metadata"].(string)
+	require.NoError(t, gw.rec().UpdateThreadRecord(context.Background(), "slack", "C1", "100.000", func(e *store.Entry, _ bool) bool {
+		e.AgentRef = "kagent/sre-agent"
+		return true
+	}))
+
+	sendAskAgentSubmission(t, srv, "U1", pmRaw, "kagent/sre-agent", "why are pods crashlooping?")
+	fake.waitForPath(t, "response_url", 1)
+	require.Contains(t, responseURLTexts(fake), "already talks to *SRE Agent*")
+	time.Sleep(150 * time.Millisecond)
+	require.Empty(t, fake.pathCalls("chat.postMessage"), "no echo is posted")
+	require.Equal(t, 0, gw.resolveCount(), "nothing runs")
+}
