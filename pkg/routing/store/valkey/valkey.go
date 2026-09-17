@@ -18,9 +18,11 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"io"
 	"net"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	valkeygo "github.com/valkey-io/valkey-go"
@@ -290,10 +292,38 @@ func (s *Store) conn() (valkeygo.Client, error) {
 }
 
 // do runs cmd under the store's timeout (tighter of ctx and Options.Timeout).
+//
+// A command that fails because its connection was closed is retried once,
+// inside the same deadline. The client multiplexes several pipes and re-dials
+// a pipe lazily, so after a server restart or failover the first command on a
+// pipe that still holds the dead connection fails with EOF although the server
+// is back and Ping succeeded on another pipe (klaus-gateway#261). The retry
+// makes the recovered server transparent; an outage still fails within the
+// timeout, because the second attempt shares the first one's deadline. The
+// client's own retry covers read-only commands only, so it stays disabled and
+// this covers SET and DEL too.
 func (s *Store) do(ctx context.Context, c valkeygo.Client, cmd valkeygo.Completed) valkeygo.ValkeyResult {
 	ctx, cancel := context.WithTimeout(ctx, s.opts.Timeout)
 	defer cancel()
-	return c.Do(ctx, cmd)
+	// The client recycles a command's buffers after Do; a command that may be
+	// sent twice must be pinned.
+	cmd = cmd.Pin()
+	res := c.Do(ctx, cmd)
+	if connectionClosed(res.Error()) && ctx.Err() == nil {
+		res = c.Do(ctx, cmd)
+	}
+	return res
+}
+
+// connectionClosed reports whether err is the failure of a command whose
+// connection went away — not a timeout, not a server reply.
+func connectionClosed(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, net.ErrClosed) || errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, syscall.EPIPE) || errors.Is(err, valkeygo.ErrClosing)
 }
 
 // scan collects the keys under the prefix. SCAN may repeat a key across
