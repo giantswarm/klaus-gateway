@@ -100,7 +100,12 @@ func (a *Adapter) handleAgentSelection(ctx context.Context, cmd *slashCommand, m
 			return false
 		}
 		listing, err := a.rosterListing(ctx)
-		if err != nil {
+		switch {
+		case err == nil:
+		case errors.Is(err, pkga2a.ErrNoIdentity):
+			// A normal state of a caller, not a fault of the roster.
+			a.Logger.Info("slack: roster listing needs a signed-in caller", "user", msg.Subject, "thread", msg.ThreadID)
+		default:
 			a.Logger.Warn("slack: roster listing unavailable", "user", msg.Subject, "thread", msg.ThreadID, "error", err)
 		}
 		switch {
@@ -152,6 +157,13 @@ func (a *Adapter) handleAgentSelection(ctx context.Context, cmd *slashCommand, m
 	defer cancel()
 	if _, _, err := checker.CardInfo(vctx, ref); err != nil {
 		a.Logger.Info("slack: agent selection failed validation", "agent", ref, "thread", msg.ThreadID, "error", err)
+		if errors.Is(err, pkga2a.ErrNoIdentity) {
+			// The card is read as the caller too: an unlinked caller is not an
+			// unknown agent, and "I don't know an agent named …" would name the
+			// wrong cause.
+			reply(agentRosterSignIn)
+			return false
+		}
 		reply(a.agentUnavailableReply(ctx, name))
 		return false
 	}

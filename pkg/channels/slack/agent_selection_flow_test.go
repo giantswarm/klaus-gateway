@@ -805,3 +805,34 @@ func TestAgentSelection_QuotedUnlinkedAsksToSignIn(t *testing.T) {
 	require.Zero(t, gw.resolveCount(), "nothing is dispatched")
 	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "couldn't check the available agents")
 }
+
+// unlinkedCards is a card client that cannot identify the caller: every card
+// read fails with ErrNoIdentity, as it does for an unlinked person on a cold
+// cache.
+type unlinkedCards struct{}
+
+func (unlinkedCards) CardIdentity(context.Context, string) (string, string) { return "", "" }
+func (unlinkedCards) CardInfo(context.Context, string) (string, string, error) {
+	return "", "", pkga2a.ErrNoIdentity
+}
+
+// The unquoted form skips the roster, but the agent check that follows reads
+// it as the caller. An unlinked person is not an unknown agent: they are asked
+// to sign in, not told the agent does not exist.
+func TestAgentSelection_UnquotedUnlinkedAsksToSignIn(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw, _ := capturingGateway()
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, func(a *slackadapter.Adapter) {
+		a.DefaultAgent = "kagent/swarmgeist"
+		a.Roster = &fakeRoster{}
+		a.AgentCards = unlinkedCards{}
+	})
+
+	sendEvent(t, srv, mention("U1", "/agent sre-agent do things", "100.000", ""))
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "I need to know who you are")
+	}, 2*time.Second, 50*time.Millisecond, "the unlinked caller is told to sign in")
+	time.Sleep(100 * time.Millisecond)
+	require.Zero(t, gw.resolveCount(), "nothing is dispatched")
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "I don't know an agent named")
+}
