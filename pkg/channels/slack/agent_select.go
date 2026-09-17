@@ -2,6 +2,7 @@ package slack
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
 )
@@ -99,12 +101,25 @@ func (a *Adapter) handleAgentSelection(ctx context.Context, cmd *slashCommand, m
 			reply(agentSelectionUnavailable)
 			return false
 		}
-		listing, ok := a.rosterListing(ctx)
-		if !ok {
-			reply(agentRosterUnavailable)
-			return false
+		listing, err := a.rosterListing(ctx)
+		switch {
+		case err == nil:
+		case errors.Is(err, pkga2a.ErrNoIdentity):
+			// A normal state of a caller, not a fault of the roster.
+			a.Logger.Info("slack: roster listing needs a signed-in caller", "user", msg.Subject, "thread", msg.ThreadID)
+		default:
+			a.Logger.Warn("slack: roster listing unavailable", "user", msg.Subject, "thread", msg.ThreadID, "error", err)
 		}
-		reply(listing)
+		switch {
+		case errors.Is(err, pkga2a.ErrNoIdentity):
+			// The controller serves the roster to a human identity; an unlinked
+			// caller needs to sign in, and a retry would not help them.
+			reply(agentRosterSignIn)
+		case err != nil:
+			reply(agentRosterUnavailable)
+		default:
+			reply(listing)
+		}
 		return false
 	}
 
@@ -144,6 +159,13 @@ func (a *Adapter) handleAgentSelection(ctx context.Context, cmd *slashCommand, m
 	defer cancel()
 	if _, _, err := checker.CardInfo(vctx, ref); err != nil {
 		a.Logger.Info("slack: agent selection failed validation", "agent", ref, "thread", msg.ThreadID, "error", err)
+		if errors.Is(err, pkga2a.ErrNoIdentity) {
+			// The card is read as the caller too: an unlinked caller is not an
+			// unknown agent, and "I don't know an agent named …" would name the
+			// wrong cause.
+			reply(agentRosterSignIn)
+			return false
+		}
 		reply(a.agentUnavailableReply(ctx, name))
 		return false
 	}
@@ -212,7 +234,13 @@ func (a *Adapter) resolveSelection(ctx context.Context, reply func(string), name
 	refs, err := a.agentRefsForSelector(ctx, name)
 	if err != nil {
 		a.Logger.Warn("slack: agent selector resolution failed", "selector", name, "thread", threadID, "error", err)
-		reply(agentResolveCheckFailedNotice)
+		if errors.Is(err, pkga2a.ErrNoIdentity) {
+			// The roster is read as the caller; an unlinked one cannot be
+			// helped by a retry, only by signing in.
+			reply(agentRosterSignIn)
+		} else {
+			reply(agentResolveCheckFailedNotice)
+		}
 		return "", false
 	}
 	switch len(refs) {
@@ -231,7 +259,7 @@ func (a *Adapter) resolveSelection(ctx context.Context, reply func(string), name
 // current roster when it can be fetched so the user can pick a real name.
 func (a *Adapter) agentUnavailableReply(ctx context.Context, name string) string {
 	text := fmt.Sprintf(agentUnavailableNotice, strings.ReplaceAll(name, "`", "'"))
-	if listing, ok := a.rosterListing(ctx); ok {
+	if listing, err := a.rosterListing(ctx); err == nil {
 		text += "\n\n" + listing
 	}
 	return text

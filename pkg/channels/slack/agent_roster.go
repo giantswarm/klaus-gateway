@@ -21,6 +21,17 @@ type AgentRosterSource interface {
 // agentRosterUnavailable answers a bare /agent when the roster fetch failed.
 const agentRosterUnavailable = "_I can't list the available agents right now. Please try again in a moment._"
 
+// rosterSignInLead opens every notice that sends an unidentified caller to
+// sign in before the roster can be listed: the controller serves the roster to
+// a human identity, so a retry cannot help them. Each surface appends its own
+// tail (the slash command's slashCommandSignInNotice, /agent's
+// agentRosterSignIn), so a wording change lands on all of them.
+const rosterSignInLead = "_I need to know who you are before I can list the agents. Mention me with_ `/login`"
+
+// agentRosterSignIn answers a bare or quoted /agent from a caller the gateway
+// cannot identify.
+const agentRosterSignIn = rosterSignInLead + ", _sign in, then try_ `/agent` _again._"
+
 // agentRosterEmpty answers a bare /agent when the controller reports no agents.
 const agentRosterEmpty = "_No agents are installed right now._"
 
@@ -48,15 +59,15 @@ const rosterFailureTTL = 45 * time.Second
 // display-name annotation on the AgentTemplate, falling back to the technical
 // name) and the templates' descriptions. Namespaces are deliberately absent —
 // which namespace serves a selection is deployment configuration, not
-// something a Slack user picks. ok is false when no roster source is
-// configured or the fetch failed.
-func (a *Adapter) rosterListing(ctx context.Context) (string, bool) {
+// something a Slack user picks. The error is the fetch's own, so a caller can
+// tell a missing identity (pkga2a.ErrNoIdentity) from a roster failure.
+func (a *Adapter) rosterListing(ctx context.Context) (string, error) {
 	agents, err := a.rosterAgents(ctx)
 	if err != nil {
-		return "", false
+		return "", err
 	}
 	if len(agents) == 0 {
-		return agentRosterEmpty, true
+		return agentRosterEmpty, nil
 	}
 	var b strings.Builder
 	b.WriteString("*Available agents* — start a new conversation with `/agent \"<name>\" <question>`:")
@@ -66,7 +77,7 @@ func (a *Adapter) rosterListing(ctx context.Context) (string, bool) {
 			b.WriteString(" — " + escapeMrkdwn(ag.Description))
 		}
 	}
-	return b.String(), true
+	return b.String(), nil
 }
 
 // displayNameMaxRunes caps a display name at the Slack boundary. Slack
