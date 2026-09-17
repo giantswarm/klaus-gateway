@@ -100,29 +100,38 @@ command, an upload with no caption) sends no title and leaves Slack to name the
 session. Should Slack refuse the titled call, the status is sent again without
 the title, so a refused title never costs the turn its indicator.
 
-### Threads and sessions
+### Threads and conversations
 
 - `threadID` is `thread_ts` if set, otherwise the message `ts`.
-- The A2A `contextID` is a hash of `(channel, channelID, "", threadID,
-  agentRef)`. The user slot is deliberately empty: a thread is **thread-scoped**,
-  so every participant in it shares one `contextID` and therefore one kagent
-  session.
-- One assistant thread (or one channel thread) maps to one stable `contextID`
-  for its whole life. A "New chat" in the assistant pane is a new thread, and
-  therefore a new session, by design.
-- kagent looks sessions up by `(contextID, user_id)`, where `user_id` derives
-  from the forwarded token subject. Changing the identity configuration (the
-  subject claim, or the Dex connector) changes `user_id` and orphans every
-  existing session. kagent sessions have no TTL, so orphaned sessions persist.
-- Because `user_id` follows the forwarded token, the whole thread runs under the
-  **initiator's** identity: a granted collaborator's turn forwards the
-  initiator's token, not the collaborator's, so history and tool calls stay in
-  the one shared session rather than forking per sender. The collaborator's real
-  identity is attached to the message as attribution, so the agent still sees who
-  spoke. If the initiator's token cannot be minted (they are unlinked), the turn
-  falls back to the sender's own identity rather than the gateway service
-  account. kagent v0.9.9 has no per-caller identity within a session; when that
-  lands (kagent#1933, #2181) each caller's own identity replaces this.
+- A thread is bound to exactly one agent and exactly one **AgentInstance** — the
+  running conversation the kagent controller creates and owns, which holds the
+  agent's memory of that thread (see [kagent A2A](kagent-a2a.md)). The thread's
+  first turn creates the instance; the create is idempotent per person and
+  thread, so a retried first turn — the binding was not written, the process died
+  in between — gets the same instance back instead of a second one. The instance
+  id and the agent ref are written into the thread's row, every later turn of the
+  thread is addressed to that instance, and a gateway restart keeps the mapping on a
+  persistent store (`valkey` or `bolt`), because the row carries it, not the process.
+- In a DM every top-level message opens its own thread and therefore its own
+  instance; a "New chat" in the assistant pane likewise.
+- A turn runs under the thread **initiator's** identity. For a granted
+  collaborator's turn the gateway forwards the initiator's token and attaches the
+  collaborator as attribution, so the instance is created and addressed by one
+  principal and the agent still sees who spoke while acting with the initiator's
+  rights. That is why a newcomer needs the initiator's consent — the access
+  prompt — before their message runs. The initiator's own turns, and turns where
+  the initiator's token cannot be minted, use the sender's own token rather than
+  the gateway service account (`applyInitiatorIdentity` in
+  `pkg/channels/slack/slack.go`).
+- **When the instance is gone.** Two cases clear only the binding fields of the row;
+  the thread keeps its agent, its initiator and its grants, and the next turn creates
+  a fresh instance. An instance the controller no longer has is found by the resume
+  check that runs on the first reply this process sees in a thread: that reply gets
+  the starting-fresh notice ("I couldn't find our earlier conversation in this thread,
+  so I'm starting fresh."), and a loss found in the middle of a conversation posts no
+  notice. A `ResetSession` after a corrupt history posts the corrupt-session notice
+  instead — "An earlier interrupted turn corrupted this conversation's history … I've
+  reset the session: please resend your message …" — so the person knows to resend.
 - Each thread's durable state — its agent, its initiator, the collaborators the initiator
   allowed, and its AgentInstance binding — lives in one row in the routing store, at the
   thread's plain key (`slack|<channelID>||<threadID>`, the user slot empty). It is the only
@@ -133,7 +142,7 @@ the title, so a refused title never costs the turn its indicator.
   long without a message the gateway has forgotten the thread: an un-mentioned reply is ignored,
   and the next mention starts the thread over — its author becomes the initiator and no grant
   carries over. Whether the agent remembers is the controller's call: its create is idempotent
-  per person and thread, so the same person gets the earlier session back while the controller
+  per person and thread, so the same person gets the earlier instance back while the controller
   still holds it, and another person gets a new one.
 
 ### Two auth layers
@@ -188,8 +197,9 @@ agent when it opens, through one of three entry points, and keeps it for life:
   namespace (`kagent/sre-agent`); it names the same agent as the bare name. Without a prefix the conversation goes to the default
   agent (`slack.defaultAgent`). Inside a thread that already has a conversation, naming its own
   agent again is a no-op — the turn dispatches as a normal reply — and naming a different agent
-  is refused: the session's identity is tied to the first agent, and a mid-conversation switch
-  would silently start an empty one.
+  is refused: the thread's row binds one agent and one AgentInstance, and a different agent
+  would need a different instance, so the switch is refused rather than forking the
+  conversation.
 - **Slash command**: `/swarmgeist [question]` in a channel opens a modal with an agent select over
   the live roster (the default agent preselected) and a question box. On submit the gateway posts
   the conversation root itself, under the agent's identity ("💬 @user asked *Agent*: …"), makes
@@ -213,14 +223,14 @@ agent when it opens, through one of three entry points, and keeps it for life:
   served.
 
 A thread's agent binding is not re-derived after a restart — it does not need to be. It lives
-in the thread's row in the routing store (see [Threads and sessions](#threads-and-sessions)),
+in the thread's row in the routing store (see [Threads and conversations](#threads-and-conversations)),
 so on a persistent store (`routing.store: valkey` or `bolt`) a restart changes nothing: same
 agent, same initiator, same grants. The gateway never reads Slack history — no
 `conversations.replies`, no re-parsing the opening message or the slash command's root — to
 recover any of it; the routing-store row is the only carrier. On `routing.store: memory` a
 restart loses this state, and every thread starts fresh from its next message. On any store a
 thread nobody has written in for `routing.threadTTL` is forgotten, agent and all, and its next
-mention starts it over (see [Threads and sessions](#threads-and-sessions) for what the agent may
+mention starts it over (see [Threads and conversations](#threads-and-conversations) for what the agent may
 still remember).
 
 The turn that opens a conversation posts no notice of its own: the agent's first reply, under
@@ -326,12 +336,13 @@ any string that begins with `Slack bot`, `Slack app-level`, or `Slack user`.
 3. The `@mention` prefix is stripped from `app_mention` text before routing.
 4. The routing key is `(channel="slack", channelID=<Slack channel ID>, userID=<Slack user ID>,
    threadID=<thread_ts or ts>)`.
-5. A stable A2A contextID is derived from `(channel, channelID, "", threadID, agentRef)` with
-   an empty user slot, so the same thread always maps to the same contextID for every
-   participant, allowing Klaus to resume the conversation. See
-   [Threads and sessions](#threads-and-sessions).
-6. The gateway forwards the turn through the A2A executor to the instance named by
-   `slack.defaultAgent`. The OpenAI `/v1` path is bypassed.
+5. The thread's row in the routing store names its agent and its AgentInstance. The thread's
+   first turn creates that instance and records it; every later turn is addressed to it, so
+   every participant in the thread talks to the one conversation. See
+   [Threads and conversations](#threads-and-conversations).
+6. The gateway forwards the turn through the A2A executor to the thread's AgentInstance — the
+   agent the row names, which is the default agent when nothing selected another one. The
+   OpenAI `/v1` path is bypassed.
 7. Progress is shown by adding a working reaction to the triggering message. On success the
    working reaction is removed with no residual emoji (default); set
    `SLACK_CLEAR_REACTION_ON_DONE=false` to swap in a done reaction instead. A failed turn always
@@ -489,11 +500,11 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
   keeps a process-local copy of every link it has served, so a store outage does not reach the
   people it already knows and a refresh token the store failed to take is written later rather
   than lost (see `deployment.md`, "OBO link store").
-- **One shared session per thread.** A thread maps to a single agent session. On the
-  current kagent (v0.9.9) that session acts under the thread initiator's identity even after
-  others are allowed in; a granted collaborator instructs the agent on the initiator's
-  behalf. Per-user identity within one shared session is a kagent gap (kagent-dev/kagent#1933
-  and #2181); until it lands, actions are attributed to the initiator.
+- **One conversation per thread.** A thread is bound to one agent and one AgentInstance, and
+  every turn in it runs under the thread initiator's identity even after others are allowed
+  in; a granted collaborator instructs the agent on the initiator's behalf, with their own
+  identity attached as attribution. Actions are therefore attributed to the initiator (see
+  [Threads and conversations](#threads-and-conversations)).
 - **Surfaces.** DMs and channels are controlled independently. `SLACK_DM_MODE` selects the DM
   behaviour: `serve` (answer DMs, the default), `redirect` (a polite pointer to channels), or
   `ignore` (drop silently). `SLACK_CHANNEL_MODE` selects the channels served: `all` (every
