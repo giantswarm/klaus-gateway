@@ -300,17 +300,13 @@ func (s *Store) conn() (valkeygo.Client, error) {
 // do runs cmd under the store's timeout (tighter of ctx and Options.Timeout).
 //
 // A command that fails because its connection was closed is retried once,
-// inside the same deadline. The store holds one connection (PipelineMultiplex
-// -1 in conn), and the client learns that the server closed it only when the
-// next command fails on it: after a Valkey restart or failover that first
-// command fails with EOF although the server is back. The client drops the
-// dead connection on that failure and re-dials on the retry, so the retry
-// succeeds deterministically. With several multiplexed pipes the readiness
-// PING would heal only its own pipe and the retry could land on another dead
-// one (klaus-gateway#261). An outage still fails within the timeout, because
-// the second attempt shares the first one's deadline. The client's own retry
-// covers read-only commands only, so it stays disabled and this covers SET and
-// DEL too.
+// inside the same deadline: the client drops the dead connection on that
+// failure and re-dials it on the retry, so after a Valkey restart or failover
+// the first command no longer fails with EOF once the server is back
+// (klaus-gateway#261; the store holds one connection, see conn). An outage
+// still fails within the timeout, because the second attempt shares the first
+// one's deadline. The client's own retry covers read-only commands only, so it
+// stays disabled and this covers SET and DEL too.
 func (s *Store) do(ctx context.Context, c valkeygo.Client, cmd valkeygo.Completed) valkeygo.ValkeyResult {
 	ctx, cancel := context.WithTimeout(ctx, s.opts.Timeout)
 	defer cancel()

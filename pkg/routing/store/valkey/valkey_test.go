@@ -224,7 +224,7 @@ func TestClosedStoreRefuses(t *testing.T) {
 
 // A restart with every pipe of the client dialed: the readiness PING heals
 // only the pipe it runs on, so a keyed command must not fail on another pipe
-// that still holds a dead connection (klaus-gateway#261, review of #275).
+// that still holds a dead connection (klaus-gateway#261).
 func TestRestartWithEveryPipeDialed(t *testing.T) {
 	m := miniredis.RunT(t)
 	s := newStore(t, m.Addr())
