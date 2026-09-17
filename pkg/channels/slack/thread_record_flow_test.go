@@ -1,6 +1,8 @@
 package slack_test
 
 import (
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -43,4 +45,23 @@ func TestThreadRecord_AgentInitiatorAndGrantSurviveRestart(t *testing.T) {
 	require.NotContains(t, allText(fake.pathCalls("chat.postEphemeral")), "waiting for the thread owner",
 		"the grant survived: no consent prompt")
 	require.Empty(t, fake.pathCalls("conversations.replies"), "no Slack history read")
+}
+
+// When the routing store is down the access policy cannot record the
+// initiator. The turn must stop with a notice to its author — not park the
+// message and ask that same author to approve themself.
+func TestThreadRecord_StoreOutageStopsTheTurn(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw, _ := capturingGateway()
+	gw.recordsErr = errors.New("valkey: connection refused")
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
+
+	sendEvent(t, srv, mention("U1", "check the cluster", "910.1", ""))
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postEphemeral")), "thread memory")
+	}, 2*time.Second, 50*time.Millisecond, "the author gets the store-unavailable notice")
+	time.Sleep(150 * time.Millisecond)
+	require.Zero(t, gw.resolveCount(), "no turn runs without a thread record")
+	require.NotContains(t, allText(fake.pathCalls("chat.postEphemeral")), "allowed to instruct",
+		"no consent prompt is posted about the author to the author")
 }

@@ -888,6 +888,9 @@ type stubGateway struct {
 	// records backs the thread-record capability. Two adapters sharing one
 	// recorder simulate a restart with a surviving routing store.
 	records *slackadapter.MemoryRecorder
+	// recordsErr, when set, fails every thread-record read and write: a
+	// routing store that is down.
+	recordsErr error
 }
 
 // rec is the stub's thread recorder, created on first use.
@@ -901,10 +904,16 @@ func (s *stubGateway) rec() *slackadapter.MemoryRecorder {
 }
 
 func (s *stubGateway) ThreadRecord(ctx context.Context, ch, cid, tid string) (store.Entry, bool, error) {
+	if s.recordsErr != nil {
+		return store.Entry{}, false, s.recordsErr
+	}
 	return s.rec().ThreadRecord(ctx, ch, cid, tid)
 }
 
 func (s *stubGateway) UpdateThreadRecord(ctx context.Context, ch, cid, tid string, mutate func(e *store.Entry, found bool) bool) error {
+	if s.recordsErr != nil {
+		return s.recordsErr
+	}
 	return s.rec().UpdateThreadRecord(ctx, ch, cid, tid, mutate)
 }
 

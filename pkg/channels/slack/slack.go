@@ -172,7 +172,7 @@ type Adapter struct {
 	// recordsMu guards memRecords, the in-process thread recorder used when the
 	// gateway has no routing store (tests, the Klaus-instance path).
 	recordsMu  sync.Mutex
-	memRecords *memoryRecorder
+	memRecords *channels.Facade
 
 	pendingAccessMu sync.Mutex
 	pendingAccess   map[string]map[string][]*pendingAccessReq // threadID -> userID -> messages parked (in order) while the initiator decides
@@ -1741,6 +1741,16 @@ func (a *Adapter) dispatchFrom(ctx context.Context, msg channels.InboundMessage,
 	access := a.accessPolicy()
 	initiator := access.SetInitiator(ctx, slackChannel, msg.ThreadID, slackUser)
 	if !access.Allowed(ctx, slackChannel, msg.ThreadID, slackUser) {
+		if initiator == slackUser {
+			// The policy names the author as initiator yet does not allow them:
+			// only a store that could not be written or read does that. Parking
+			// would ask the author to approve themself, so stop the turn instead.
+			a.Logger.Warn("slack: thread record unavailable, turn not handled", "thread", msg.ThreadID, "user", slackUser)
+			if perr := a.apiClient().postEphemeralText(ctx, slackChannel, slackUser, msg.ThreadID, storeUnavailableNotice); perr != nil {
+				a.Logger.Warn("slack: post store-unavailable notice failed", "user", slackUser, "error", perr)
+			}
+			return nil
+		}
 		if a.OBO != nil && slackUser != "" {
 			if _, err := a.OBO.TokenFor(ctx, slackUser); err != nil {
 				if errors.Is(err, musterlink.ErrNotLinked) {

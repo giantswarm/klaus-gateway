@@ -5,18 +5,44 @@ import (
 	"testing"
 	"time"
 
+	"github.com/giantswarm/klaus-gateway/pkg/channels"
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
+	"github.com/giantswarm/klaus-gateway/pkg/routing/store/memory"
 )
 
-func newRecordAccessForTest(now *time.Time) (*recordAccess, *memoryRecorder) {
-	rec := newMemoryRecorder()
-	rec.now = func() time.Time { return *now }
-	return &recordAccess{rec: rec, channel: ChannelName}, rec
+// countingStore counts the updates that wrote a row, so a test can tell a
+// refresh from a no-op.
+type countingStore struct {
+	store.Store
+	writes int
+}
+
+func (c *countingStore) Update(ctx context.Context, k store.Key, mutate func(e *store.Entry, found bool) bool) error {
+	return c.Store.Update(ctx, k, func(e *store.Entry, found bool) bool {
+		changed := mutate(e, found)
+		if changed {
+			c.writes++
+		}
+		return changed
+	})
+}
+
+// newRecordAccessForTest builds the policy over the in-process fallback with
+// one controllable clock on the store and the facade: advancing *now ages the
+// rows past ttl.
+func newRecordAccessForTest(now *time.Time, ttl time.Duration) (*recordAccess, *channels.Facade, *countingStore) {
+	clock := func() time.Time { return *now }
+	ms := memory.New()
+	ms.SetNowFunc(clock)
+	cs := &countingStore{Store: ms}
+	rec := &channels.Facade{Routes: cs, ThreadTTL: ttl}
+	rec.SetNowFunc(clock)
+	return &recordAccess{rec: rec, channel: ChannelName}, rec, cs
 }
 
 func TestRecordAccess_InitiatorSetOnce(t *testing.T) {
 	now := time.Now()
-	p, _ := newRecordAccessForTest(&now)
+	p, _, _ := newRecordAccessForTest(&now, channels.DefaultThreadTTL)
 	ctx := context.Background()
 	if got := p.SetInitiator(ctx, "C1", "T1", "U1"); got != "U1" {
 		t.Fatalf("first SetInitiator = %q", got)
@@ -34,7 +60,7 @@ func TestRecordAccess_InitiatorSetOnce(t *testing.T) {
 
 func TestRecordAccess_GrantIsAdditiveAndSurvivesAnotherAdapter(t *testing.T) {
 	now := time.Now()
-	p, rec := newRecordAccessForTest(&now)
+	p, rec, _ := newRecordAccessForTest(&now, channels.DefaultThreadTTL)
 	ctx := context.Background()
 	p.SetInitiator(ctx, "C1", "T1", "U1")
 	p.Grant(ctx, "C1", "T1", "U2")
@@ -57,11 +83,10 @@ func TestRecordAccess_GrantIsAdditiveAndSurvivesAnotherAdapter(t *testing.T) {
 }
 
 // Past its lifetime the thread is forgotten whole — initiator, grants and the
-// agent it was bound to — and the next mentioner opens a fresh conversation.
+// agent it was bound to — and the next mentioner starts it over.
 func TestRecordAccess_ForgottenThreadStartsOver(t *testing.T) {
 	now := time.Now()
-	p, rec := newRecordAccessForTest(&now)
-	rec.SetTTL(48 * time.Hour)
+	p, rec, _ := newRecordAccessForTest(&now, 48*time.Hour)
 	ctx := context.Background()
 	_ = rec.UpdateThreadRecord(ctx, ChannelName, "C1", "T1", func(e *store.Entry, _ bool) bool {
 		e.AgentRef = "issue-agent"
@@ -85,17 +110,25 @@ func TestRecordAccess_ForgottenThreadStartsOver(t *testing.T) {
 	}
 }
 
-func TestRecordAccess_ActivityRefreshesTheLifetime(t *testing.T) {
+// SetInitiator writes the row once, when it sets the initiator. A later
+// message — the initiator's own, or a stranger's that ends up parked — writes
+// nothing: the turn refreshes the lifetime, a parked message must not.
+func TestRecordAccess_SetInitiatorWritesOnce(t *testing.T) {
 	now := time.Now()
-	p, rec := newRecordAccessForTest(&now)
-	rec.SetTTL(48 * time.Hour)
+	p, _, cs := newRecordAccessForTest(&now, 48*time.Hour)
 	ctx := context.Background()
 	p.SetInitiator(ctx, "C1", "T1", "U1")
-	now = now.Add(40 * time.Hour)
-	p.SetInitiator(ctx, "C1", "T1", "U1") // a handled message refreshes LastSeen
-	now = now.Add(40 * time.Hour)
-	if !p.Allowed(ctx, "C1", "T1", "U1") {
-		t.Fatal("activity inside the lifetime must keep the thread alive")
+	if cs.writes != 1 {
+		t.Fatalf("setting the initiator must write once, got %d", cs.writes)
+	}
+	p.SetInitiator(ctx, "C1", "T1", "U1")
+	p.SetInitiator(ctx, "C1", "T1", "U2")
+	if cs.writes != 1 {
+		t.Fatalf("later messages must not write the row, got %d writes", cs.writes)
+	}
+	p.Grant(ctx, "C1", "T1", "U2")
+	if cs.writes != 2 {
+		t.Fatalf("a grant writes the row, got %d writes", cs.writes)
 	}
 	now = now.Add(49 * time.Hour)
 	if p.Allowed(ctx, "C1", "T1", "U1") {

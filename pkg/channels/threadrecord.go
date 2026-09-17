@@ -11,8 +11,8 @@ import (
 
 // DefaultThreadTTL is the default of --thread-ttl: the sliding lifetime of a
 // thread's row, its channel record and its AgentInstance binding alike. Every
-// handled message refreshes it; after it the thread is forgotten and the next
-// mention starts a fresh conversation.
+// turn refreshes it; after it the thread is forgotten and the next mention
+// starts it over.
 const DefaultThreadTTL = 90 * 24 * time.Hour
 
 // threadKey is the routing-store key of a thread's row. The user slot is empty
@@ -47,7 +47,7 @@ func (f *Facade) UpdateThreadRecord(ctx context.Context, channel, channelID, thr
 	if f == nil || f.Routes == nil {
 		return errNoThreadStore
 	}
-	now := time.Now()
+	now := f.clock()
 	err := f.Routes.Update(ctx, threadKey(channel, channelID, threadID), func(e *store.Entry, found bool) bool {
 		if !mutate(e, found) {
 			return false

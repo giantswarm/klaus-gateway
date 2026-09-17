@@ -72,10 +72,24 @@ type Facade struct {
 	// to post it.
 	Durable bool
 	// ThreadTTL is the sliding lifetime of a thread's record and of its
-	// AgentInstance binding: every handled message refreshes it, and after it
-	// the store has forgotten the thread — the next mention starts a fresh
-	// conversation. 0 never expires. main.go sets it from --thread-ttl.
+	// AgentInstance binding: every turn refreshes it, and after it the store
+	// has forgotten the thread — the next mention starts it over. 0 never
+	// expires. main.go sets it from --thread-ttl.
 	ThreadTTL time.Duration
+
+	// now is the clock the facade stamps rows with; nil means time.Now.
+	now func() time.Time
+}
+
+// SetNowFunc is a test hook: the clock the facade stamps rows with, so a test
+// that ages a store's rows moves the facade's clock along with the store's.
+func (f *Facade) SetNowFunc(fn func() time.Time) { f.now = fn }
+
+func (f *Facade) clock() time.Time {
+	if f.now != nil {
+		return f.now()
+	}
+	return time.Now()
 }
 
 // ListAgents lists the agents a channel may select. Unavailable when no
@@ -205,14 +219,15 @@ func clearBinding(e *store.Entry, found bool) bool {
 // instance goes with it. The create is keyed by the synthesized context id, so
 // a retried first turn does not create a second instance. The binding slides
 // with the thread's lifetime: every turn refreshes it, the store expires the
-// row after ThreadTTL of silence, and the next mention creates a new instance
-// for the fresh conversation.
+// row after ThreadTTL of silence, and the next mention asks the controller for
+// an instance again — the idempotent create hands the same person the earlier
+// one back while the controller still holds it.
 func (f *Facade) instanceFor(ctx context.Context, msg InboundMessage) (string, error) {
 	if f.Routes == nil {
 		return "", errors.New("channels: no routing store for the agent instance binding")
 	}
 	key := threadKey(msg.Channel, msg.ChannelID, msg.ThreadID)
-	now := time.Now()
+	now := f.clock()
 	entry, ok, err := f.Routes.Get(ctx, key)
 	if err != nil {
 		return "", fmt.Errorf("channels: read instance binding: %w", err)

@@ -291,9 +291,9 @@ func (a *Adapter) handleAskAgentSubmission(ctx context.Context, payload interact
 		return
 	}
 
-	// Escaped: it comes from an Agent CR
-	// annotation. Emphasis characters (* _) pass through and can mangle the
-	// bold span — cosmetic, accepted (see postLaunchAnnouncement).
+	// Escaped: the display name comes from an Agent CR annotation and this
+	// lands in a mrkdwn-parsed message. Emphasis characters (* _) pass through
+	// and can mangle the bold span — cosmetic, accepted.
 	name := a.agentNameFor(ctx, ref)
 	rootText := fmt.Sprintf(askAgentRootText, user, escapeMrkdwn(name), quoteMrkdwn(escapeMrkdwn(question)))
 	client := a.agentClientNamed(ctx, ref, name)
@@ -329,9 +329,8 @@ func (a *Adapter) handleAskAgentSubmission(ctx context.Context, payload interact
 		Text:      question,
 		Subject:   user,
 		AgentRef:  ref,
-		// The question opens the conversation: it names the agent session. The
-		// launch intro is suppressed by agentSourceCommand — the branded root
-		// already names the agent.
+		// The question opens the conversation: it names the agent session and
+		// the session title keys on it.
 		Opener: true,
 	}
 	if err := a.dispatchFrom(ctx, msg, pm.Channel, agentSourceCommand); err != nil && !errors.Is(err, context.Canceled) {

@@ -228,6 +228,10 @@ const busyNotice = "I'm still finishing your previous message in this thread. Gi
 
 // tokenErrorNotice is shown (ephemerally) when minting a user's muster token
 // fails for a reason other than not being linked (a transient refresh failure).
+// storeUnavailableNotice tells the author of a message that the routing store
+// could not record the thread, so the turn was not run. Ephemeral, in-thread.
+const storeUnavailableNotice = "_I couldn't reach my thread memory just now, so I didn't act on your message. Please try again in a moment._"
+
 const tokenErrorNotice = "I couldn't refresh your Giant Swarm sign-in just now. Please try again in a moment; if it keeps failing, re-link with the `/login` command."
 
 // logoutFailedNotice is shown (ephemerally) when /logout could not remove the

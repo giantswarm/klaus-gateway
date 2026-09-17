@@ -39,8 +39,8 @@
 //     Slack history is never read to recover any of them, so on a persistent
 //     store a thread survives a restart and on a memory store it does not.
 //   - opener: the turn that starts a thread's conversation, root or reply —
-//     the one that finds no agent recorded and records it. The launch
-//     announcement and the session title key on it.
+//     the one that finds no agent recorded and records it. The session title
+//     keys on it.
 //
 // # Turn flow
 //

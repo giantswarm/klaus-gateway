@@ -175,8 +175,10 @@ func (a *Adapter) handleAgentReselection(ctx context.Context, reply func(string)
 		reply(agentSwitchRefusal)
 		return false
 	}
-	current, _, _ := a.threadAgent(ctx, *msg, slackChannel)
-	if current != ref {
+	// Read the binding only: threadAgent would bind the default agent to a
+	// thread that has none, and a re-selection must never write a binding.
+	current, bound := a.threadAgentBinding(ctx, slackChannel, msg.ThreadID)
+	if !bound || current != ref {
 		reply(agentSwitchRefusal)
 		return false
 	}

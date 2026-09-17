@@ -30,10 +30,10 @@ type AccessPolicy interface {
 
 // recordAccess is AccessPolicy over the thread's row in the routing store. The
 // initiator and the grants live exactly as long as the row does: its lifetime
-// is the store's (--thread-ttl), refreshed by every handled message. A thread
-// the gateway has forgotten has no row at all, so the next mentioner becomes
-// its initiator. Every write goes through the store's per-key update, so a
-// grant does not erase what the turn wrote on the same row.
+// is the store's (--thread-ttl), refreshed by every turn. A thread the gateway
+// has forgotten has no row at all, so the next mentioner becomes its initiator.
+// Every write goes through the store's per-key update, so a grant does not
+// erase what the turn wrote on the same row.
 type recordAccess struct {
 	rec     threadRecorder
 	channel string
@@ -44,13 +44,18 @@ func (p *recordAccess) SetInitiator(ctx context.Context, channelID, threadID, us
 	err := p.rec.UpdateThreadRecord(ctx, p.channel, channelID, threadID, func(e *store.Entry, _ bool) bool {
 		if e.Initiator == "" {
 			e.Initiator = userID
+			return true
 		}
+		// Nothing to write: the turn that follows refreshes the row's lifetime,
+		// so a stranger's parked message costs no write and keeps nothing alive.
 		initiator = e.Initiator
-		// A handled message refreshes LastSeen: the thread's lifetime slides.
-		return true
+		return false
 	})
 	if err != nil {
-		slog.Warn("slack: write thread record failed, treating the author as initiator", "thread", threadID, "error", err)
+		// The author comes back as initiator while Allowed, reading the same
+		// failing store, denies them: the dispatcher reads that pair as a store
+		// outage and stops the turn with a notice instead of parking it.
+		slog.Warn("slack: write thread record failed", "thread", threadID, "error", err)
 		return userID
 	}
 	return initiator
