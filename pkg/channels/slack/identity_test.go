@@ -44,23 +44,24 @@ func TestChat_HoldsPromptThenRoutesQuestionAsReject(t *testing.T) {
 			mu.Unlock()
 		},
 	}
-	_, srv := newEventsAdapter(t, gw, fake.server(t).URL) // DM-only default
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL) // DM-only default
 
 	// Turn 1: the tool prompt surfaces for approval.
 	sendEvent(t, srv, dmEvent("U1", "clean up configmaps", "400.000"))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Waiting for approval")
-	}, 2*time.Second, 20*time.Millisecond, "the approval prompt is posted")
+	}, flowWait, 20*time.Millisecond, "the approval prompt is posted")
 
 	// Click Chat: the prompt is held and the buttons become a reply hint.
 	sendInteraction(t, srv, "hitl_chat", "400.000")
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.update")), "Ask your question")
-	}, 2*time.Second, 20*time.Millisecond, "Chat swaps the buttons for a reply hint")
+	}, flowWait, 20*time.Millisecond, "Chat swaps the buttons for a reply hint")
 
 	// Reply with a question: resolves the paused task as a reject carrying it.
+	waitThreadIdle(t, a, "400.000")
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","channel_type":"im","user":"U1","text":"which ones exactly?","channel":"D1","ts":"401.000","thread_ts":"400.000"}}`)
-	require.Eventually(t, func() bool { return gw.resolveCount() == 2 }, 2*time.Second, 20*time.Millisecond, "the reply resumes the paused task")
+	require.Eventually(t, func() bool { return gw.resolveCount() == 2 }, flowWait, 20*time.Millisecond, "the reply resumes the paused task")
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -87,7 +88,7 @@ func awaitAgentReply(t *testing.T, srv *httptest.Server, fake *fakeSlackAPI, ts 
 	sendEvent(t, srv, dmEvent("U1", "status?", ts))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "all good")
-	}, 2*time.Second, 20*time.Millisecond, "the agent answer is posted")
+	}, flowWait, 20*time.Millisecond, "the agent answer is posted")
 }
 
 func replyGateway() *stubGateway {
@@ -214,15 +215,18 @@ func TestBranding_MissingScopeFallsBackToAppIdentity(t *testing.T) {
 		}
 	}
 	require.Positive(t, branded, "the first post attempts branding")
-	var delivered bool
-	for _, c := range fake.pathCalls("chat.postMessage") {
-		text, _ := c.params["text"].(string)
-		u, _ := c.params["username"].(string)
-		if strings.Contains(text, "all good") && u == "" {
-			delivered = true
+	// awaitAgentReply is satisfied by the refused branded post, which carries
+	// the same text, so the unbranded retry is still on its way: wait for it.
+	require.Eventually(t, func() bool {
+		for _, c := range fake.pathCalls("chat.postMessage") {
+			text, _ := c.params["text"].(string)
+			u, _ := c.params["username"].(string)
+			if strings.Contains(text, "all good") && u == "" {
+				return true
+			}
 		}
-	}
-	require.True(t, delivered, "the reply arrives under the app identity")
+		return false
+	}, flowWait, 20*time.Millisecond, "the reply arrives under the app identity")
 
 	// Second turn: the latched downgrade skips the branded attempt entirely.
 	sendEvent(t, srv, dmEvent("U1", "status?", "601.000"))
@@ -234,7 +238,7 @@ func TestBranding_MissingScopeFallsBackToAppIdentity(t *testing.T) {
 			}
 		}
 		return n >= 2
-	}, 2*time.Second, 20*time.Millisecond, "the second reply arrives too")
+	}, flowWait, 20*time.Millisecond, "the second reply arrives too")
 	after := 0
 	for _, u := range usernamesOf(fake.pathCalls("chat.postMessage")) {
 		if u != "" {
@@ -284,7 +288,7 @@ func TestBranding_RosterFailureDeliversReplyAndIsNotRetried(t *testing.T) {
 	sendEvent(t, srv, dmEvent("U1", "status?", "506.000"))
 	require.Eventually(t, func() bool {
 		return len(fake.pathCalls("chat.postMessage")) > 1
-	}, 2*time.Second, 20*time.Millisecond, "the second turn is answered too")
+	}, flowWait, 20*time.Millisecond, "the second turn is answered too")
 	require.Equal(t, after, roster.listCalls(),
 		"the failure is cached, so branding does not re-ask the controller")
 }
@@ -353,7 +357,7 @@ func TestBranding_NamesakeCheckAsksUsersInfoOnceWithoutScope(t *testing.T) {
 	sendEvent(t, srv, dmEvent("U1", "status?", "509.000"))
 	require.Eventually(t, func() bool {
 		return strings.Count(allText(fake.pathCalls("chat.postMessage")), "all good") >= 2
-	}, 2*time.Second, 20*time.Millisecond, "the second reply arrives too")
+	}, flowWait, 20*time.Millisecond, "the second reply arrives too")
 
 	for _, u := range usernamesOf(fake.pathCalls("chat.postMessage")) {
 		require.Empty(t, u, "the namesake agent posts as the app on the auth.test handle alone")
@@ -375,7 +379,7 @@ func TestMemberJoined_SelfJoinPostsIntro(t *testing.T) {
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"member_joined_channel","user":"UBOT","channel":"C1"}}`)
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Swarmgeist")
-	}, 2*time.Second, 20*time.Millisecond, "the bot's own join posts an intro")
+	}, flowWait, 20*time.Millisecond, "the bot's own join posts an intro")
 	require.Len(t, fake.pathCalls("chat.postMessage"), 1, "exactly one intro")
 }
 
@@ -400,7 +404,7 @@ func TestDM_RedirectInChannelMode(t *testing.T) {
 	sendEvent(t, srv, dmEvent("U1", "hey", "600.000"))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "I work in channels")
-	}, 2*time.Second, 20*time.Millisecond, "a DM in channel mode is redirected")
+	}, flowWait, 20*time.Millisecond, "a DM in channel mode is redirected")
 	require.Zero(t, gw.resolveCount(), "a redirected DM never reaches the agent")
 
 	sendEvent(t, srv, dmEvent("U1", "why not?", "601.000"))

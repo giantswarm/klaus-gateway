@@ -16,7 +16,7 @@ import (
 func TestSessionTitle_AssistantPaneOpenerNamesTheSession(t *testing.T) {
 	fake := newFakeSlackAPI()
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok", Done: true}}}
-	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
 	sendEvent(t, srv, dmThreadEvent("U1", "why did   the CPU alert\nfire on gazelle", "300.000", "100.000"))
 
@@ -27,6 +27,7 @@ func TestSessionTitle_AssistantPaneOpenerNamesTheSession(t *testing.T) {
 	require.Equal(t, "active", calls[1].params["status"])
 	require.NotContains(t, calls[1].params, "title")
 
+	waitThreadIdle(t, a, "100.000")
 	sendEvent(t, srv, dmThreadEvent("U1", "and the disk?", "301.000", "100.000"))
 
 	fake.waitForPath(t, "agents.sessions.setStatus", 4)
@@ -48,7 +49,7 @@ func TestSessionTitle_SurvivesSignInReplay(t *testing.T) {
 	sendEvent(t, srv, dmThreadEvent("U1", "why did the CPU alert fire on gazelle", "300.000", "100.000"))
 	require.Eventually(t, func() bool {
 		return len(fake.pathCalls("chat.postMessage"))+len(fake.pathCalls("chat.postEphemeral")) > 0
-	}, 2*time.Second, 50*time.Millisecond, "the unlinked opener gets the sign-in prompt")
+	}, flowWait, 50*time.Millisecond, "the unlinked opener gets the sign-in prompt")
 	require.Zero(t, gw.resolveCount(), "the unlinked opener must be held, not dispatched")
 	require.Empty(t, fake.pathCalls("agents.sessions.setStatus"), "no turn ran, so no session was created")
 

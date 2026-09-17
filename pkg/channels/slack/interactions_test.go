@@ -213,7 +213,7 @@ func TestInteractionsHandler_Approve(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		return len(updateCalls) > 0
-	}, 10*time.Second, 10*time.Millisecond)
+	}, flowWait, 10*time.Millisecond)
 
 	// chat.update should have replaced buttons with approval text.
 	mu.Lock()
@@ -711,7 +711,7 @@ func TestHandleDecision_OBO_TokenMintFailurePreservesTask(t *testing.T) {
 	// notice) is the terminal action on the failure path.
 	require.Eventually(t, func() bool {
 		return strings.Contains(strings.Join(sink.ephemeralTexts(), "\n"), signInPromptText)
-	}, 10*time.Second, 10*time.Millisecond, "token-mint failure must drive a sign-in prompt")
+	}, flowWait, 10*time.Millisecond, "token-mint failure must drive a sign-in prompt")
 
 	posts, updates, _ := sink.counts()
 	require.Zero(t, updates, "buttons must not be rewritten on token-mint failure")
@@ -749,7 +749,7 @@ func TestHandleDecision_OBO_SuccessResumes(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		return gw.sendCount() >= 1
-	}, 10*time.Second, 10*time.Millisecond, "a linked clicker must resume the paused task")
+	}, flowWait, 10*time.Millisecond, "a linked clicker must resume the paused task")
 
 	require.Contains(t, sink.updateTexts(), "✅ _Approved._", "success path must rewrite the message to the approval text")
 	require.False(t, a.hasPendingTask("T001"), "resumed task must be consumed")
@@ -800,7 +800,7 @@ func TestInteractionsHandler_OnlookerCannotDecide(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		return ephemeral > 0
-	}, 10*time.Second, 10*time.Millisecond, "onlooker gets an ephemeral refusal")
+	}, flowWait, 10*time.Millisecond, "onlooker gets an ephemeral refusal")
 
 	// Give any erroneous resume a chance to land, then confirm none did and the
 	// pending task is intact for the real owner.
@@ -902,7 +902,7 @@ func TestHandleDecision_FormResumesWithPerQuestionAnswers(t *testing.T) {
 	a.ixHandler.ServeHTTP(rr, req)
 	require.Equal(t, http.StatusOK, rr.Code)
 
-	require.Eventually(t, func() bool { return gw.sendCount() >= 1 }, 10*time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool { return gw.sendCount() >= 1 }, flowWait, 10*time.Millisecond)
 
 	msg := gw.lastCompletion()
 	require.NotNil(t, msg.Decision)
@@ -962,7 +962,7 @@ func TestHandleDecision_FormIncompleteNudges(t *testing.T) {
 	require.Eventually(t, func() bool {
 		_, _, eph := sink.counts()
 		return eph >= 1
-	}, 10*time.Second, 10*time.Millisecond, "incomplete form must nudge the user")
+	}, flowWait, 10*time.Millisecond, "incomplete form must nudge the user")
 	require.Zero(t, gw.sendCount(), "incomplete form must not resume the task")
 	require.True(t, a.hasPendingTask("T001"), "incomplete form must leave the task pending")
 	require.Contains(t, sink.ephemeralTexts(), formIncompleteNudge, "partial form must use the answer-every-question nudge")
@@ -1001,7 +1001,7 @@ func TestHandleDecision_FormEmptyUsesFormNudge(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		return slices.Contains(sink.ephemeralTexts(), formIncompleteNudge)
-	}, 10*time.Second, 10*time.Millisecond, "empty form must use the answer-every-question nudge")
+	}, flowWait, 10*time.Millisecond, "empty form must use the answer-every-question nudge")
 	require.Zero(t, gw.sendCount(), "empty form must not resume the task")
 	require.True(t, a.hasPendingTask("T001"), "empty form must leave the task pending")
 }
@@ -1062,7 +1062,7 @@ func TestHandleDecision_FormStaleSelectionNudges(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		return slices.Contains(sink.ephemeralTexts(), formIncompleteNudge)
-	}, 10*time.Second, 10*time.Millisecond, "stale form selection must nudge, not resume")
+	}, flowWait, 10*time.Millisecond, "stale form selection must nudge, not resume")
 	require.Zero(t, gw.sendCount(), "stale form selection must not resume the task")
 	require.True(t, a.hasPendingTask("T001"), "stale form selection must leave the task pending")
 }
@@ -1117,7 +1117,7 @@ func TestHandleDecision_SubmitResumesWithSelectedAnswers(t *testing.T) {
 	a.ixHandler.ServeHTTP(rr, req)
 	require.Equal(t, http.StatusOK, rr.Code)
 
-	require.Eventually(t, func() bool { return gw.sendCount() >= 1 }, 10*time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool { return gw.sendCount() >= 1 }, flowWait, 10*time.Millisecond)
 
 	msg := gw.lastCompletion()
 	require.NotNil(t, msg.Decision)
@@ -1152,7 +1152,7 @@ func TestHandleDecision_SubmitWithNoSelectionIsNudged(t *testing.T) {
 	require.Eventually(t, func() bool {
 		_, _, eph := sink.counts()
 		return eph >= 1
-	}, 10*time.Second, 10*time.Millisecond, "empty submit must nudge the user")
+	}, flowWait, 10*time.Millisecond, "empty submit must nudge the user")
 	require.Zero(t, gw.sendCount(), "empty submit must not resume the task")
 	require.True(t, a.hasPendingTask("T001"), "empty submit must leave the task pending")
 }
@@ -1185,7 +1185,7 @@ func TestHandleDecision_OnlookerEmptySubmitIsRefused(t *testing.T) {
 	require.Eventually(t, func() bool {
 		_, _, eph := sink.counts()
 		return eph >= 1
-	}, 10*time.Second, 10*time.Millisecond, "onlooker gets an ephemeral response")
+	}, flowWait, 10*time.Millisecond, "onlooker gets an ephemeral response")
 	require.Contains(t, sink.ephemeralTexts(), accessDecisionRefusal, "onlooker must be refused, not nudged")
 	require.NotContains(t, sink.ephemeralTexts(), choiceSelectNudge, "onlooker must not see the choice-select nudge")
 	require.Zero(t, gw.sendCount(), "onlooker submit must not resume the task")
@@ -1299,7 +1299,7 @@ func TestOnUserLinkedRewritesSignInAnchor(t *testing.T) {
 
 	a.OnUserLinked(t.Context(), "U001", "alice@example.com")
 	require.Eventually(t, func() bool { return len(updates()) == 1 },
-		10*time.Second, 10*time.Millisecond, "the anchor must be rewritten after linking")
+		flowWait, 10*time.Millisecond, "the anchor must be rewritten after linking")
 	call := updates()[0]
 	require.Equal(t, "C1", call["channel"])
 	require.Equal(t, "111.111", call["ts"])
@@ -1337,7 +1337,7 @@ func TestOnUserLinkedFailedRewriteRerecordsAnchor(t *testing.T) {
 		defer a.signInPromptedMu.Unlock()
 		entry, ok := a.signInPrompted["U001\x00T1"]
 		return ok && entry.value.ts == "111.111"
-	}, 10*time.Second, 10*time.Millisecond, "the anchor must survive a failed rewrite")
+	}, flowWait, 10*time.Millisecond, "the anchor must survive a failed rewrite")
 }
 
 // An anchor re-recorded after a failed rewrite is converged by the user's next
@@ -1374,7 +1374,7 @@ func TestTokenUseConvergesFailedAnchorRewrite(t *testing.T) {
 		defer a.signInPromptedMu.Unlock()
 		entry, ok := a.signInPrompted["U001\x00T1"]
 		return ok && entry.value.ts == "111.111"
-	}, 10*time.Second, 10*time.Millisecond, "the first rewrite fails and re-records the anchor")
+	}, flowWait, 10*time.Millisecond, "the first rewrite fails and re-records the anchor")
 
 	_, ok, _ := a.humanToken(t.Context(), "C1", "T1", "U001")
 	require.True(t, ok)
@@ -1386,7 +1386,7 @@ func TestTokenUseConvergesFailedAnchorRewrite(t *testing.T) {
 		defer a.signInPromptedMu.Unlock()
 		_, stillThere := a.signInPrompted["U001\x00T1"]
 		return !stillThere
-	}, 10*time.Second, 10*time.Millisecond, "a successful token use must retry the rewrite and drain the anchor")
+	}, flowWait, 10*time.Millisecond, "a successful token use must retry the rewrite and drain the anchor")
 }
 
 // The rewritten confirmation is one fixed phrase: even a link that is about to
@@ -1412,7 +1412,7 @@ func TestOnUserLinkedAnchorNeverNamesAgent(t *testing.T) {
 
 	a.OnUserLinked(t.Context(), "U001", "alice@example.com")
 	require.Eventually(t, func() bool { return len(updates()) == 1 },
-		10*time.Second, 10*time.Millisecond, "the anchor must be rewritten after linking")
+		flowWait, 10*time.Millisecond, "the anchor must be rewritten after linking")
 	text, _ := updates()[0]["text"].(string)
 	require.Contains(t, text, "Signed in")
 	require.NotContains(t, text, "@", "the in-thread rewrite carries no email")
@@ -1490,7 +1490,7 @@ func TestOnUserLinkedEmptyEmailUsesGenericText(t *testing.T) {
 	a.OnUserLinked(t.Context(), "U001", "")
 
 	require.Eventually(t, func() bool { return len(updates()) == 1 },
-		10*time.Second, 10*time.Millisecond)
+		flowWait, 10*time.Millisecond)
 	text, _ := updates()[0]["text"].(string)
 	require.Contains(t, text, "Signed in")
 	require.NotContains(t, text, "Signed in as")
@@ -1580,7 +1580,7 @@ func TestHandleDecision_StaleSubmitRefusedAsSuperseded(t *testing.T) {
 			}
 		}
 		return false
-	}, 10*time.Second, 10*time.Millisecond, "the stale prompt message is rewritten as superseded")
+	}, flowWait, 10*time.Millisecond, "the stale prompt message is rewritten as superseded")
 	require.Zero(t, gw.sendCount(), "a stale click must not resume the newer pending task")
 	require.True(t, a.hasPendingTask("T001"), "the pending task stays resumable")
 }
@@ -1608,6 +1608,6 @@ func TestHandleDecision_LegacyRawValueStillRoutes(t *testing.T) {
 	serveInteraction(t, a, secret, hitlApprove, "T001", "C001", "MSG001", "U001")
 
 	require.Eventually(t, func() bool { return gw.sendCount() == 1 },
-		10*time.Second, 10*time.Millisecond, "the legacy approve click resumes the task")
+		flowWait, 10*time.Millisecond, "the legacy approve click resumes the task")
 	require.Equal(t, "task-abc", gw.lastCompletion().TaskID)
 }

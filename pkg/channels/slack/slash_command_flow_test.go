@@ -339,14 +339,14 @@ func TestAskAgentSubmission_OpensConversation(t *testing.T) {
 	fake := newFakeSlackAPI()
 	api := fake.server(t)
 	gw, resolved := capturingGateway()
-	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
+	a, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
 
 	sendSlashCommand(t, srv, "C1", "U1", "", api.URL+"/response_url")
 	pm := openedView(t, fake)["private_metadata"].(string)
 
 	sendAskAgentSubmission(t, srv, "U1", pm, "kagent/sre-agent", "why are pods crashlooping?")
 	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
-		2*time.Second, 50*time.Millisecond, "the submission dispatches the first turn")
+		flowWait, 50*time.Millisecond, "the submission dispatches the first turn")
 
 	// The root: a plain branded message naming who asked and quoting the
 	// question. The binding and the initiator live in the thread record.
@@ -368,13 +368,15 @@ func TestAskAgentSubmission_OpensConversation(t *testing.T) {
 	rootTS := msgs[0].ThreadID
 
 	// The submitter's reply inherits the agent without re-selecting.
+	waitThreadIdle(t, a, rootTS)
 	sendEvent(t, srv, mention("U1", "and the nodes?", "200.000", rootTS))
 	require.Eventually(t, func() bool { return gw.resolveCount() == 2 },
-		2*time.Second, 50*time.Millisecond, "the reply dispatches")
+		flowWait, 50*time.Millisecond, "the reply dispatches")
 	require.Equal(t, "kagent/sre-agent", resolved()[1].AgentRef, "replies inherit the conversation's agent")
 
 	// A newcomer is gated on the submitter's consent: nothing dispatches, the
 	// submitter gets the consent prompt.
+	waitThreadIdle(t, a, rootTS)
 	sendEvent(t, srv, mention("U2", "me too", "300.000", rootTS))
 	require.Eventually(t, func() bool {
 		for _, c := range fake.pathCalls("chat.postEphemeral") {
@@ -383,7 +385,7 @@ func TestAskAgentSubmission_OpensConversation(t *testing.T) {
 			}
 		}
 		return false
-	}, 2*time.Second, 50*time.Millisecond, "the consent prompt goes to the submitter, the initiator")
+	}, flowWait, 50*time.Millisecond, "the consent prompt goes to the submitter, the initiator")
 	require.Equal(t, 2, gw.resolveCount(), "the newcomer's message waits")
 	require.Empty(t, fake.pathCalls("response_url"), "a clean submission needs no private notice")
 }
@@ -431,7 +433,7 @@ func TestAskAgentSubmission_JoinsPublicChannelOnNotInChannel(t *testing.T) {
 	sendAskAgentSubmission(t, srv, "U1", pm, "kagent/sre-agent", "hello")
 
 	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
-		2*time.Second, 50*time.Millisecond, "the retried root post opens the conversation")
+		flowWait, 50*time.Millisecond, "the retried root post opens the conversation")
 	require.Len(t, fake.pathCalls("conversations.join"), 1)
 	require.Equal(t, "C1", fake.pathCalls("conversations.join")[0].params["channel"])
 }
@@ -467,11 +469,11 @@ func TestAskAgentSubmission_DispatchRecordNamesCommandSource(t *testing.T) {
 	sendSlashCommand(t, srv, "C1", "U1", "", api.URL+"/response_url")
 	pm := openedView(t, fake)["private_metadata"].(string)
 	sendAskAgentSubmission(t, srv, "U1", pm, "kagent/sre-agent", "hello")
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, 2*time.Second, 50*time.Millisecond)
+	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, flowWait, 50*time.Millisecond)
 
 	require.Eventually(t, func() bool {
 		return strings.Contains(logs.String(), "agent_source=command")
-	}, 2*time.Second, 50*time.Millisecond, "turn_dispatch records agent_source=command")
+	}, flowWait, 50*time.Millisecond, "turn_dispatch records agent_source=command")
 }
 
 // syncBuffer is a goroutine-safe strings.Builder for capturing adapter logs.

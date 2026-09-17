@@ -150,7 +150,7 @@ func TestRun_TransientFlushFailureDoesNotAbortTurn(t *testing.T) {
 
 	ch <- channels.OutboundDelta{Kind: channels.DeltaText, Content: "hello"}
 	require.Eventually(t, func() bool { return updates.Load() >= 2 },
-		10*time.Second, 20*time.Millisecond, "the failed flush must be retried on a later tick")
+		flowWait, 20*time.Millisecond, "the failed flush must be retried on a later tick")
 	close(ch)
 
 	require.NoError(t, <-done, "a single flush failure must not fail the turn")
@@ -179,7 +179,7 @@ func TestRun_PersistentFlushFailureDoesNotAbortTurn(t *testing.T) {
 
 	ch <- channels.OutboundDelta{Kind: channels.DeltaText, Content: "hello"}
 	require.Eventually(t, func() bool { return updates.Load() >= int32(maxFlushFailures) },
-		10*time.Second, 20*time.Millisecond)
+		flowWait, 20*time.Millisecond)
 	select {
 	case err := <-done:
 		t.Fatalf("the turn was aborted on repeated flush failures: %v", err)

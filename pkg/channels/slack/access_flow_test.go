@@ -69,12 +69,12 @@ func TestAccess_UnlinkedNewcomerPromptedToSignIn(t *testing.T) {
 
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
 	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
-		2*time.Second, 50*time.Millisecond, "initiator's mention dispatches")
+		flowWait, 50*time.Millisecond, "initiator's mention dispatches")
 
 	sendEvent(t, srv, mention("U999", "help", "200.000", "100.000"))
 	require.Eventually(t, func() bool {
 		return signInPrompted(fake)
-	}, 2*time.Second, 50*time.Millisecond, "the newcomer is prompted to sign in")
+	}, flowWait, 50*time.Millisecond, "the newcomer is prompted to sign in")
 	require.Equal(t, 1, gw.resolveCount(), "an unlinked newcomer must not reach the agent")
 	// The link is minted for the newcomer, so only they may see it: the prompt
 	// is ephemeral to them and the thread's other readers get a notice that
@@ -96,7 +96,7 @@ func TestAccess_NewcomerApprovedReplaysMessage(t *testing.T) {
 
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
 	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
-		2*time.Second, 50*time.Millisecond, "initiator's mention dispatches")
+		flowWait, 50*time.Millisecond, "initiator's mention dispatches")
 
 	// Newcomer posts: initiator gets an ephemeral consent prompt, newcomer an ack.
 	sendEvent(t, srv, mention("U999", "help", "200.000", "100.000"))
@@ -109,7 +109,7 @@ func TestAccess_NewcomerApprovedReplaysMessage(t *testing.T) {
 	// Initiator approves: the ephemeral prompt is updated and the message replays.
 	sendAccessInteraction(t, srv, "U001", accessAllowAction, "100.000", "U999", fakeURL+"/response")
 	require.Eventually(t, func() bool { return gw.resolveCount() == 2 },
-		2*time.Second, 50*time.Millisecond, "approval replays the newcomer's message to the agent")
+		flowWait, 50*time.Millisecond, "approval replays the newcomer's message to the agent")
 	require.Contains(t, allText(fake.pathCalls("response")), "allowed", "prompt updated to allowed via response_url")
 }
 
@@ -121,7 +121,7 @@ func TestAccess_NewcomerDeclinedDropsMessage(t *testing.T) {
 
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
 	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
-		2*time.Second, 50*time.Millisecond, "initiator's mention dispatches")
+		flowWait, 50*time.Millisecond, "initiator's mention dispatches")
 	sendEvent(t, srv, mention("U999", "help", "200.000", "100.000"))
 	fake.waitForPath(t, "chat.postEphemeral", 2)
 
@@ -143,7 +143,7 @@ func TestAccess_NonInitiatorCannotGrant(t *testing.T) {
 
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
 	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
-		2*time.Second, 50*time.Millisecond, "initiator's mention dispatches")
+		flowWait, 50*time.Millisecond, "initiator's mention dispatches")
 	sendEvent(t, srv, mention("U999", "help", "200.000", "100.000"))
 	fake.waitForPath(t, "chat.postEphemeral", 2)
 
@@ -169,7 +169,7 @@ func TestAccess_GrantWhileThreadBusyDeliversAfterRelease(t *testing.T) {
 	// The initiator's mention starts a turn that keeps the thread slot held.
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
 	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
-		2*time.Second, 50*time.Millisecond, "initiator's mention dispatches")
+		flowWait, 50*time.Millisecond, "initiator's mention dispatches")
 
 	// Newcomer posts and is parked pending consent.
 	sendEvent(t, srv, mention("U999", "help", "200.000", "100.000"))
@@ -187,7 +187,7 @@ func TestAccess_GrantWhileThreadBusyDeliversAfterRelease(t *testing.T) {
 	// The running turn finishes; the deferred replay is delivered.
 	close(hold)
 	require.Eventually(t, func() bool { return gw.resolveCount() == 2 },
-		2*time.Second, 50*time.Millisecond, "the parked message is delivered once the slot frees")
+		flowWait, 50*time.Millisecond, "the parked message is delivered once the slot frees")
 }
 
 // A transient token-mint failure for a newcomer is surfaced immediately instead
@@ -204,12 +204,12 @@ func TestAccess_NewcomerTransientTokenErrorSurfaced(t *testing.T) {
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
 	require.Eventually(t, func() bool {
 		return signInPrompted(fake)
-	}, 2*time.Second, 50*time.Millisecond, "the unlinked initiator is prompted to sign in")
+	}, flowWait, 50*time.Millisecond, "the unlinked initiator is prompted to sign in")
 
 	sendEvent(t, srv, mention("U999", "help", "200.000", "100.000"))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postEphemeral")), "couldn't refresh your Giant Swarm sign-in")
-	}, 2*time.Second, 50*time.Millisecond, "the token error is surfaced to the newcomer")
+	}, flowWait, 50*time.Millisecond, "the token error is surfaced to the newcomer")
 	require.NotContains(t, allText(fake.pathCalls("chat.postEphemeral")), "waiting for the thread owner",
 		"a failing newcomer must not be parked pending consent")
 	require.Zero(t, gw.resolveCount(), "no message reaches the agent")
@@ -263,7 +263,7 @@ func TestAccess_DeniedNewcomerNotified(t *testing.T) {
 
 	sendEvent(t, srv, mention("U001", "start", "500.000", ""))
 	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
-		2*time.Second, 50*time.Millisecond, "initiator dispatches")
+		flowWait, 50*time.Millisecond, "initiator dispatches")
 
 	sendEvent(t, srv, mention("U999", "can I help", "501.000", "500.000"))
 	fake.waitForPath(t, "chat.postEphemeral", 2) // consent prompt + waiting ack
@@ -281,6 +281,6 @@ func TestAccess_DeniedNewcomerNotified(t *testing.T) {
 			}
 		}
 		return false
-	}, 2*time.Second, 50*time.Millisecond,
+	}, flowWait, 50*time.Millisecond,
 		"the denied newcomer must get a visible outcome, not wait forever")
 }

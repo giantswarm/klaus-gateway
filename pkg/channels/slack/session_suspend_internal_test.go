@@ -75,7 +75,7 @@ func TestStorePendingTask_SweptPromptReleasesTheSession(t *testing.T) {
 	a.storePendingTask("2.0", &pendingTask{TaskID: "new", Channel: "C-new"})
 
 	require.Eventually(t, func() bool { return len(rec.snapshot()) == 1 },
-		2*time.Second, 10*time.Millisecond, "expected the swept thread's session to be released")
+		flowWait, 10*time.Millisecond, "expected the swept thread's session to be released")
 	require.Equal(t, []statusCall{{channelID: "C-old", threadTS: "1.0", status: string(sessionActive)}}, rec.snapshot(),
 		"only the swept thread is released; the thread that just paused stays suspended")
 }

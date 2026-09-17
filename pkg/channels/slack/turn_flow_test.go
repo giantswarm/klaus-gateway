@@ -29,21 +29,22 @@ func TestUsage_CarriesAcrossApprovalPause(t *testing.T) {
 			{Done: true},
 		},
 	}}
-	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
 	sendEvent(t, srv, dmEvent("U1", "clean up", "800.000"))
 	fake.waitForPath(t, "chat.postMessage", 1) // approval prompt surfaced
 
 	// Typed approval resumes the paused task in the same thread.
+	waitThreadIdle(t, a, "800.000")
 	sendEvent(t, srv, dmThreadEvent("U1", "approve", "801.000", "800.000"))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "deleted")
-	}, 10*time.Second, 50*time.Millisecond, "approved turn completes")
+	}, flowWait, 50*time.Millisecond, "approved turn completes")
 
 	sendEvent(t, srv, dmThreadEvent("U1", "/usage", "802.000", "800.000"))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "in 30 · out 10 · total 40")
-	}, 10*time.Second, 50*time.Millisecond, "last turn covers both segments of the paused turn")
+	}, flowWait, 50*time.Millisecond, "last turn covers both segments of the paused turn")
 	// The pause itself must not have been recorded as a separate turn: session
 	// total equals the single turn.
 	usageReplies := allText(fake.pathCalls("chat.postMessage"))
@@ -92,7 +93,7 @@ func TestTypedResume_FailureKeepsPendingTask(t *testing.T) {
 		firstAttempt++
 		sendEvent(t, srv, dmThreadEvent("U1", "approve", fmt.Sprintf("901.%03d", firstAttempt), "900.000"))
 		return false
-	}, 10*time.Second, 50*time.Millisecond, "failed resume attempted")
+	}, flowWait, 50*time.Millisecond, "failed resume attempted")
 
 	// Retry: the task must still be pending, so a reply resumes task-1 with a
 	// structured decision instead of starting a fresh turn. The reply races the
@@ -105,7 +106,7 @@ func TestTypedResume_FailureKeepsPendingTask(t *testing.T) {
 		attempt++
 		sendEvent(t, srv, dmThreadEvent("U1", "approve", fmt.Sprintf("902.%03d", attempt), "900.000"))
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "done")
-	}, 10*time.Second, 100*time.Millisecond, "retried resume completes")
+	}, flowWait, 100*time.Millisecond, "retried resume completes")
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -166,7 +167,7 @@ func TestPromptFlushFailure_KeepsPendingTask(t *testing.T) {
 		seq++
 		sendEvent(t, srv, dmThreadEvent("U1", "approve", fmt.Sprintf("112.%03d", seq), "111.000"))
 		return resumedTask()
-	}, 3*time.Second, 100*time.Millisecond,
+	}, flowWait, 100*time.Millisecond,
 		"a flush failure at the prompt handoff must not strand the paused task")
 }
 
@@ -198,7 +199,7 @@ func TestStop_DuringTurnStartWindow(t *testing.T) {
 	sendEvent(t, srv, dmThreadEvent("U1", "/stop", "301.000", "300.000"))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Stopped")
-	}, 2*time.Second, 50*time.Millisecond, "/stop replies")
+	}, flowWait, 50*time.Millisecond, "/stop replies")
 
 	close(releaseResolve)
 
@@ -225,7 +226,7 @@ func TestStop_IdleThreadSaysNothingRunning(t *testing.T) {
 	sendEvent(t, srv, dmThreadEvent("U1", "/stop", "401.000", "400.000"))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Nothing is running in this thread")
-	}, 2*time.Second, 50*time.Millisecond, "an idle /stop says so")
+	}, flowWait, 50*time.Millisecond, "an idle /stop says so")
 	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "Stopped",
 		"an idle /stop must not claim it stopped anything")
 }
@@ -241,6 +242,7 @@ func TestStop_CancelClearsWorkingReactionSilently(t *testing.T) {
 
 	sendEvent(t, srv, dmEvent("U1", "long task", "555.000"))
 	fake.waitForPath(t, "reactions.add", 1)
+	waitTurnStreaming(t, fake, 1)
 
 	sendEvent(t, srv, dmThreadEvent("U1", "/stop", "556.000", "555.000"))
 	fake.waitForPath(t, "reactions.remove", 1)
@@ -283,7 +285,7 @@ func TestAttachmentOnlyReply_LeavesPendingTaskAndAsksForText(t *testing.T) {
 		attempt++
 		sendEvent(t, srv, dmThreadFileEvent("U1", "", fmt.Sprintf("911.%03d", attempt), "910.000", "shot.png"))
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "waiting on the pending confirmation")
-	}, 10*time.Second, 100*time.Millisecond, "needs-text note posted")
+	}, flowWait, 100*time.Millisecond, "needs-text note posted")
 
 	// The task must still be pending: a typed approval resumes task-1.
 	attempt = 0
@@ -291,7 +293,7 @@ func TestAttachmentOnlyReply_LeavesPendingTaskAndAsksForText(t *testing.T) {
 		attempt++
 		sendEvent(t, srv, dmThreadEvent("U1", "approve", fmt.Sprintf("912.%03d", attempt), "910.000"))
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "done")
-	}, 10*time.Second, 100*time.Millisecond, "typed approval still resumes the task")
+	}, flowWait, 100*time.Millisecond, "typed approval still resumes the task")
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -334,7 +336,7 @@ func TestDecisionReplyWithAttachment_PostsNotForwardedNote(t *testing.T) {
 		attempt++
 		sendEvent(t, srv, dmThreadFileEvent("U1", "approve", fmt.Sprintf("921.%03d", attempt), "920.000", "error.log"))
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "done")
-	}, 10*time.Second, 100*time.Millisecond, "decision reply completes")
+	}, flowWait, 100*time.Millisecond, "decision reply completes")
 
 	posts := allText(fake.pathCalls("chat.postMessage"))
 	require.Contains(t, posts, "carries only your decision", "the not-forwarded note is posted")

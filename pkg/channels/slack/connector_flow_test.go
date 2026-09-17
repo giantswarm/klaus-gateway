@@ -119,7 +119,7 @@ func TestConnectorPrompt_PostedFromToolResult(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		return strings.Contains(ephemeralJSON(fake), "connector_connect")
-	}, 2*time.Second, 20*time.Millisecond, "connect prompt is posted")
+	}, flowWait, 20*time.Millisecond, "connect prompt is posted")
 
 	blob := ephemeralJSON(fake)
 	require.Contains(t, blob, "gazelle-mcp-pro")
@@ -141,7 +141,7 @@ func TestConnectorPrompt_PostedFromCallToolResult(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		return strings.Contains(ephemeralJSON(fake), "connector_connect")
-	}, 2*time.Second, 20*time.Millisecond, "connect prompt is posted")
+	}, flowWait, 20*time.Millisecond, "connect prompt is posted")
 
 	blob := ephemeralJSON(fake)
 	require.Contains(t, blob, "gazelle-mcp-pro")
@@ -160,7 +160,7 @@ func TestConnectorPrompt_CallToolOtherToolNoPrompt(t *testing.T) {
 
 	sendEvent(t, srv, dmEvent("U1", "hi", "105.000"))
 	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
-		2*time.Second, 20*time.Millisecond)
+		flowWait, 20*time.Millisecond)
 	time.Sleep(100 * time.Millisecond)
 	require.NotContains(t, ephemeralJSON(fake), "connector_connect")
 }
@@ -177,7 +177,7 @@ func TestConnectorPrompt_Cooldown(t *testing.T) {
 	sendEvent(t, srv, dmEvent("U1", "one", "102.000"))
 	require.Eventually(t, func() bool {
 		return strings.Count(ephemeralJSON(fake), "connector_connect") == 1
-	}, 2*time.Second, 20*time.Millisecond, "first turn posts the prompt")
+	}, flowWait, 20*time.Millisecond, "first turn posts the prompt")
 
 	dispatchTurn(t, srv, gw, 2, "two", "102.000")
 	time.Sleep(100 * time.Millisecond)
@@ -214,7 +214,7 @@ func TestConnectorPrompt_NoURLNoPrompt(t *testing.T) {
 
 	sendEvent(t, srv, dmEvent("U1", "hi", "104.000"))
 	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
-		2*time.Second, 20*time.Millisecond)
+		flowWait, 20*time.Millisecond)
 	time.Sleep(100 * time.Millisecond)
 	require.NotContains(t, ephemeralJSON(fake), "connector_connect")
 }
@@ -249,7 +249,7 @@ func TestConnectorPrompt_AddressedToRawSlackUserID(t *testing.T) {
 			}
 		}
 		return false
-	}, 2*time.Second, 20*time.Millisecond, "connect prompt is posted")
+	}, flowWait, 20*time.Millisecond, "connect prompt is posted")
 
 	require.Equal(t, "U1", connect.params["user"], "prompt must target the raw Slack user ID")
 	require.NotEqual(t, "u1@example.com", connect.params["user"], "the resolved email must not be used as the ephemeral user")
@@ -267,7 +267,7 @@ func TestConnectorPrompt_NonHTTPSNoPrompt(t *testing.T) {
 
 	sendEvent(t, srv, dmEvent("U1", "hi", "106.000"))
 	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
-		2*time.Second, 20*time.Millisecond)
+		flowWait, 20*time.Millisecond)
 	time.Sleep(100 * time.Millisecond)
 	require.NotContains(t, ephemeralJSON(fake), "connector_connect")
 }
@@ -296,7 +296,7 @@ func TestConnectorDismissInteraction(t *testing.T) {
 		captured.mu.Lock()
 		defer captured.mu.Unlock()
 		return strings.Contains(captured.body, "won't ask again")
-	}, 2*time.Second, 20*time.Millisecond, "the prompt is replaced with an acknowledgement")
+	}, flowWait, 20*time.Millisecond, "the prompt is replaced with an acknowledgement")
 }
 
 // An oversized or empty backend name in the button value is dropped (no
@@ -337,7 +337,7 @@ func TestLoginCommand_LinkedConfirmation(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		return strings.Contains(ephemeralJSON(fake), "Signed in")
-	}, 2*time.Second, 20*time.Millisecond, "signed-in confirmation is posted ephemerally")
+	}, flowWait, 20*time.Millisecond, "signed-in confirmation is posted ephemerally")
 	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "Signed in",
 		"the identity confirmation must not be a public message")
 	require.NotContains(t, ephemeralJSON(fake), "connector_connect")
@@ -356,7 +356,7 @@ func TestLoginCommand_UnlinkedGetsSignIn(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		return strings.Contains(postMessageJSON(fake), "obo_sign_in")
-	}, 2*time.Second, 20*time.Millisecond)
+	}, flowWait, 20*time.Millisecond)
 }
 
 // sendConnectorInteractionURL posts a signed block_actions interaction (user
@@ -431,7 +431,7 @@ func promptConnector(t *testing.T, fake *fakeSlackAPI, srv *httptest.Server, ts 
 	require.Eventually(t, func() bool {
 		buttonURL, stateID, ok = connectButton(fake)
 		return ok
-	}, 2*time.Second, 20*time.Millisecond, "connect prompt is posted")
+	}, flowWait, 20*time.Millisecond, "connect prompt is posted")
 	return buttonURL, stateID
 }
 
@@ -508,7 +508,7 @@ func TestConnectorComplete_RewritesPromptAndResumes(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		return strings.Contains(capturedBody(), "Signed in to gazelle-mcp-pro")
-	}, 2*time.Second, 20*time.Millisecond, "the ephemeral prompt is rewritten via the response_url")
+	}, flowWait, 20*time.Millisecond, "the ephemeral prompt is rewritten via the response_url")
 	require.Eventually(t, func() bool {
 		dispatched.mu.Lock()
 		defer dispatched.mu.Unlock()
@@ -518,7 +518,7 @@ func TestConnectorComplete_RewritesPromptAndResumes(t *testing.T) {
 			}
 		}
 		return false
-	}, 2*time.Second, 20*time.Millisecond, "the synthetic continuation is dispatched into the thread")
+	}, flowWait, 20*time.Millisecond, "the synthetic continuation is dispatched into the thread")
 }
 
 // The completion redirect can outrun Slack's interaction delivery: the landing
@@ -538,12 +538,12 @@ func TestConnectorComplete_LandingBeforeClick(t *testing.T) {
 	_ = resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	require.Eventually(t, func() bool { return gw.resolveCount() >= 2 },
-		2*time.Second, 20*time.Millisecond, "the landing resumes even before the click is delivered")
+		flowWait, 20*time.Millisecond, "the landing resumes even before the click is delivered")
 
 	sendConnectorInteractionURL(t, srv, "connector_connect", stateID, responseSrv.URL)
 	require.Eventually(t, func() bool {
 		return strings.Contains(capturedBody(), "Signed in to gazelle-mcp-pro")
-	}, 2*time.Second, 20*time.Millisecond, "the late click owns the prompt rewrite")
+	}, flowWait, 20*time.Millisecond, "the late click owns the prompt rewrite")
 }
 
 // An unknown or expired state renders the graceful expired page and dispatches
@@ -595,7 +595,7 @@ func TestConnectorComplete_ReloadIdempotent(t *testing.T) {
 		resumes.mu.Lock()
 		defer resumes.mu.Unlock()
 		return resumes.count >= 1
-	}, 2*time.Second, 20*time.Millisecond)
+	}, flowWait, 20*time.Millisecond)
 	time.Sleep(200 * time.Millisecond)
 	resumes.mu.Lock()
 	defer resumes.mu.Unlock()
@@ -630,7 +630,7 @@ func TestConnectorPrompt_NewURLSupersedesCooldown(t *testing.T) {
 	sendEvent(t, srv, dmEvent("U1", "one", "102.000"))
 	require.Eventually(t, func() bool {
 		return strings.Count(ephemeralJSON(fake), "connector_connect") == 1
-	}, 2*time.Second, 20*time.Millisecond, "first turn posts the prompt")
+	}, flowWait, 20*time.Millisecond, "first turn posts the prompt")
 
 	gw.mu.Lock()
 	gw.deltas = []channels.OutboundDelta{
@@ -642,6 +642,6 @@ func TestConnectorPrompt_NewURLSupersedesCooldown(t *testing.T) {
 	dispatchTurn(t, srv, gw, 2, "two", "102.000")
 	require.Eventually(t, func() bool {
 		return strings.Count(ephemeralJSON(fake), "connector_connect") >= 2
-	}, 2*time.Second, 20*time.Millisecond, "a challenge with a new URL must post a fresh button")
+	}, flowWait, 20*time.Millisecond, "a challenge with a new URL must post a fresh button")
 	require.Contains(t, ephemeralJSON(fake), "state=def", "the fresh button carries the new URL")
 }
