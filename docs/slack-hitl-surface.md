@@ -398,9 +398,9 @@ agent here** message shortcut (⋯ menu → Apps, `callback_id: ask_agent_here`)
 the live roster as the caller, the default agent preselected; `private_metadata` carries where
 the picker was opened, how to answer the user privately, and — for the shortcut — the thread the
 conversation starts in. The shortcut's view carries a third block: a checkbox, ticked, offering the
-thread's earlier messages to the agent (the count comes from a `conversations.replies` call made
-while the modal is built, and is left out when that call does not land in time). The input is
-`optional`, so clearing the box still submits.
+thread's earlier messages to the agent. It names no count — counting would mean reading the thread
+before `views.open`, and Slack invalidates the trigger three seconds after issuing it — and the
+input is `optional`, so clearing the box still submits.
 
 ```json
 {
@@ -437,8 +437,8 @@ while the modal is built, and is left out when that call does not land in time).
       "element": {
         "type": "checkboxes",
         "action_id": "context",
-        "options": [ { "text": { "type": "plain_text", "text": "Include the 3 earlier messages in this thread" }, "value": "include" } ],
-        "initial_options": [ { "text": { "type": "plain_text", "text": "Include the 3 earlier messages in this thread" }, "value": "include" } ]
+        "options": [ { "text": { "type": "plain_text", "text": "Include the earlier messages in this thread" }, "value": "include" } ],
+        "initial_options": [ { "text": { "type": "plain_text", "text": "Include the earlier messages in this thread" }, "value": "include" } ]
       }
     }
   ]

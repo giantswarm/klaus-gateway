@@ -115,10 +115,6 @@ type askAgentRequest struct {
 	TriggerID   string
 	Thread      string
 	Prefill     string
-	// ThreadSize is how many messages the target thread already holds, 0 when
-	// there is no thread or the count could not be read in time. It only names
-	// the context checkbox; the transcript itself is read on submit.
-	ThreadSize int
 }
 
 // handleSlashCommand opens the agent picker modal for a slash command, or
@@ -234,16 +230,6 @@ func (a *Adapter) openAgentPicker(ctx context.Context, req askAgentRequest, noti
 			notify(fmt.Sprintf(askAgentThreadOwnedNotice, owner))
 			return
 		}
-		// How many messages the thread holds, for the context checkbox. One
-		// limit=1 page reads the root's reply_count and nothing else, and it
-		// spends the same trigger budget as everything above: a count that
-		// does not arrive leaves the checkbox unnumbered, never unopened.
-		if size, err := a.apiClient().threadSize(pctx, req.Channel, req.Thread); err != nil {
-			a.Logger.Info("slack: thread size unavailable, offering the context checkbox without a count",
-				"channel_id", req.Channel, "thread_id", req.Thread, "error", err)
-		} else {
-			req.ThreadSize = size
-		}
 	}
 	agents, err := a.rosterAgentsBestEffort(pctx)
 	if err != nil {
@@ -356,24 +342,19 @@ func (a *Adapter) askAgentModal(agents []pkga2a.AgentInfo, req askAgentRequest) 
 }
 
 // threadContextBlock is the checkbox that decides whether the agent is given
-// the messages the target thread already holds. It is offered only where there
-// is a thread to read — the shortcut — and is checked by default: the person
-// starting the session is a member of that thread and does it in the open, but
-// a thread whose earlier part is noise or private banter is theirs to leave
-// out with one click. The input is optional, or Slack would refuse a
-// submission with the box cleared.
+// the messages the target thread already holds. It is offered whenever the
+// picker was opened on a message — there is then always at least that thread's
+// root to include — and is checked by default: the person starting the session
+// is a member of that thread and does it in the open, but a thread whose
+// earlier part is noise or private banter is theirs to leave out with one
+// click. It names no count: counting would mean reading the thread before
+// views.open, and Slack invalidates the trigger after three seconds. The input
+// is optional, or Slack would refuse a submission with the box cleared.
 func threadContextBlock(req askAgentRequest) (map[string]any, bool) {
 	if req.Thread == "" {
 		return nil, false
 	}
-	label := askAgentContextOptionNoCount
-	switch {
-	case req.ThreadSize == 1:
-		label = askAgentContextOptionOne
-	case req.ThreadSize > 1:
-		label = fmt.Sprintf(askAgentContextOption, req.ThreadSize)
-	}
-	option := map[string]any{bkText: plainTextObj(label), bkValue: askAgentContextValue}
+	option := map[string]any{bkText: plainTextObj(askAgentContextOption), bkValue: askAgentContextValue}
 	return map[string]any{
 		bkType:     bkInput,
 		bkBlockID:  askAgentContextBlockID,

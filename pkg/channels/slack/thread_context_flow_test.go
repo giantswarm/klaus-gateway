@@ -36,18 +36,13 @@ type replyMsg struct {
 }
 
 // withThread makes the fake serve msgs (oldest first) as the thread's
-// conversations.replies view: a limit=1 call answers with the root alone,
-// carrying the reply_count the picker's checkbox counts; every other call
-// answers with pages of pageSize, following next_cursor.
+// conversations.replies view: pages of pageSize followed by next_cursor, with
+// the thread's reply_count on the root of the first page, the way Slack
+// reports it.
 func (f *fakeSlackAPI) withThread(msgs []replyMsg, pageSize int) {
 	f.setResponder("conversations.replies", func(params map[string]any) string {
 		if len(msgs) == 0 {
 			return `{"ok":true,"messages":[]}`
-		}
-		if params["limit"] == "1" {
-			root := msgs[0]
-			root.ReplyCount = len(msgs) - 1
-			return repliesJSON([]replyMsg{root}, "")
 		}
 		start := 0
 		if c, ok := params["cursor"].(string); ok && c != "" {
@@ -58,7 +53,13 @@ func (f *fakeSlackAPI) withThread(msgs []replyMsg, pageSize int) {
 		if end < len(msgs) {
 			next = strconv.Itoa(end)
 		}
-		return repliesJSON(msgs[start:end], next)
+		page := append([]replyMsg(nil), msgs[start:end]...)
+		if start == 0 && len(page) > 0 {
+			// Slack reports the thread's reply count on its root, which is how
+			// a read that stops early knows how much it did not reach.
+			page[0].ReplyCount = len(msgs) - 1
+		}
+		return repliesJSON(page, next)
 	})
 }
 
@@ -190,11 +191,12 @@ func TestThreadContext_ShortcutCheckboxOffSharesNothing(t *testing.T) {
 	require.Len(t, fake.pathCalls("conversations.replies"), countCalls, "the thread is not read on submit")
 }
 
-// The picker counts the thread it was opened on and says so on the checkbox,
-// ticked by default.
+// The picker offers the thread's messages with a checkbox, ticked, and opens
+// without reading anything: the trigger it opens on dies after three seconds,
+// so nothing that can be slow runs before views.open.
 func TestThreadContext_PickerOffersTheCheckbox(t *testing.T) {
 	fake := newFakeSlackAPI()
-	fake.withThread(alertThread(), 200)
+	fake.withThread(alertThread(), 50)
 	api := fake.server(t)
 	gw, _ := capturingGateway()
 	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
@@ -209,8 +211,9 @@ func TestThreadContext_PickerOffersTheCheckbox(t *testing.T) {
 	element := block["element"].(map[string]any)
 	require.Equal(t, "checkboxes", element["type"])
 	option := element["options"].([]any)[0].(map[string]any)["text"].(map[string]any)["text"]
-	require.Equal(t, "Include the 4 earlier messages in this thread", option)
+	require.Equal(t, "Include the earlier messages in this thread", option)
 	require.Len(t, element["initial_options"], 1, "checked by default")
+	require.Empty(t, fake.pathCalls("conversations.replies"), "the picker reads no thread to open")
 }
 
 // The slash command roots its own thread, so there is nothing earlier to
@@ -292,15 +295,15 @@ func TestThreadContext_LaterRepliesDoNotReadAgain(t *testing.T) {
 	require.Len(t, fake.pathCalls("conversations.replies"), reads, "and reads nothing")
 }
 
-// A thread longer than the cap keeps its newest messages and, always, its root:
-// the root is the alert the thread is about.
-func TestThreadContext_LongThreadIsCappedAndKeepsTheRoot(t *testing.T) {
+// There is no message cap: a thread of seventy short messages is handed over
+// whole, because it fits the only cap there is.
+func TestThreadContext_ManyShortMessagesAllFit(t *testing.T) {
 	msgs := []replyMsg{{TS: "100.000", User: "U2", Text: "the alert that started it"}}
 	for i := 1; i < 70; i++ {
 		msgs = append(msgs, replyMsg{TS: fmt.Sprintf("%d.000", 100+i), User: "U2", Text: fmt.Sprintf("line %d", i)})
 	}
 	fake := newFakeSlackAPI()
-	fake.withThread(msgs, 200)
+	fake.withThread(msgs, 50)
 	fake.withUserNames(map[string]string{"U1": "Jose", "U2": "Marta"}, nil)
 	api := fake.server(t)
 	gw, resolved := capturingGateway()
@@ -311,11 +314,36 @@ func TestThreadContext_LongThreadIsCappedAndKeepsTheRoot(t *testing.T) {
 
 	got := resolved()[0].Context
 	lines := strings.Split(got, "\n")
-	require.Equal(t, "[thread context shared by Jose: 70 earlier messages in this thread, the last 40 shown, oldest first]", lines[0])
-	require.Len(t, lines, 41, "the label and 40 messages")
-	require.Contains(t, lines[1], "the alert that started it", "the root is always kept")
-	require.Contains(t, got, "line 69", "the newest are the ones kept")
-	require.NotContains(t, got, "line 1 ")
+	require.Equal(t, "[thread context shared by Jose: 70 earlier messages in this thread, oldest first]", lines[0])
+	require.Len(t, lines, 71)
+	require.Contains(t, got, "the alert that started it")
+	require.Contains(t, got, "line 69")
+}
+
+// A thread of long messages is cut to the character cap: the oldest go and the
+// root stays, because the root is the alert the thread is about.
+func TestThreadContext_LongMessagesAreCutFromTheOldest(t *testing.T) {
+	long := strings.Repeat("x", 3000)
+	msgs := []replyMsg{{TS: "100.000", User: "U2", Text: "the alert that started it " + long}}
+	for i := 1; i < 8; i++ {
+		msgs = append(msgs, replyMsg{TS: fmt.Sprintf("%d.000", 100+i), User: "U2", Text: fmt.Sprintf("line %d ", i) + long})
+	}
+	fake := newFakeSlackAPI()
+	fake.withThread(msgs, 50)
+	fake.withUserNames(map[string]string{"U1": "Jose", "U2": "Marta"}, nil)
+	api := fake.server(t)
+	gw, resolved := capturingGateway()
+	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
+
+	sendEvent(t, srv, mention("U1", "what happened here?", "900.000", "100.000"))
+	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, flowWait, 50*time.Millisecond)
+
+	got := resolved()[0].Context
+	lines := strings.Split(got, "\n")
+	require.Equal(t, "[thread context shared by Jose: 8 earlier messages in this thread, the most recent 12,000 characters shown]", lines[0])
+	require.Contains(t, got, "the alert that started it", "the root is always kept")
+	require.Contains(t, got, "line 7 ", "the newest are the ones kept")
+	require.NotContains(t, got, "line 1 ", "the oldest are the ones dropped")
 }
 
 // A thread whose replies span several pages is read to the end, not to the
@@ -375,4 +403,113 @@ func TestThreadContext_UnresolvableAuthorFallsBackToTheID(t *testing.T) {
 	got := resolved()[0].Context
 	require.Contains(t, got, "U2: the pod restarts every 40 s", "the unreadable author keeps their ID")
 	require.Contains(t, got, "Piotr: logs say", "the others still resolve")
+}
+
+// The whole transcript costs one budget, the name lookups included: a
+// users.info that never answers ends with the budget, and the authors it could
+// not name keep their IDs.
+func TestThreadContext_HangingNameLookupEndsWithTheBudget(t *testing.T) {
+	fake := newFakeSlackAPI()
+	fake.withThread(alertThread(), 50)
+	// The two authors of the thread never get a name: only a context that ends
+	// releases their lookup. Every other users.info (the bot's own identity,
+	// the sender's email) answers at once, as Slack would.
+	fake.setDelayIf(func(path string, params map[string]any) time.Duration {
+		if path == "users.info" && (params["user"] == "U2" || params["user"] == "U3") {
+			return time.Minute
+		}
+		return 0
+	})
+	api := fake.server(t)
+	gw, resolved := capturingGateway()
+	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
+
+	sendEvent(t, srv, mention("U1", "what happened here?", "104.000", "100.000"))
+	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, flowWait, 50*time.Millisecond,
+		"the turn runs once the read's budget ends, not once Slack answers")
+
+	got := resolved()[0].Context
+	require.Contains(t, got, "U2: the pod restarts every 40 s", "an author nobody could name keeps their ID")
+	require.Contains(t, got, "U3: logs say")
+	require.Positive(t, userLookups(fake, "U2"), "the first author's lookup is what runs the budget out")
+	require.Zero(t, userLookups(fake, "U3"), "every author after it is named by their ID without asking Slack")
+}
+
+// A thread longer than the read may page through is handed over as what it is:
+// part of a longer thread, with how far the read got and how long the thread
+// is, never as its newest messages.
+func TestThreadContext_ThreadTooLongToReadIsLabelledPartial(t *testing.T) {
+	var msgs []replyMsg
+	for i := range 1300 {
+		msgs = append(msgs, replyMsg{TS: fmt.Sprintf("%d.000", 1000+i), User: "U2", Text: fmt.Sprintf("line %d", i)})
+	}
+	fake := newFakeSlackAPI()
+	fake.withThread(msgs, 50) // 26 pages; the read stops at 10
+	fake.withUserNames(map[string]string{"U1": "Jose", "U2": "Marta"}, nil)
+	api := fake.server(t)
+	gw, resolved := capturingGateway()
+	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
+
+	sendEvent(t, srv, mention("U1", "what happened here?", "9000.000", "1000.000"))
+	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, flowWait, 50*time.Millisecond)
+
+	got := resolved()[0].Context
+	lines := strings.Split(got, "\n")
+	require.Equal(t, "[thread context shared by Jose: 500 of 1,300 earlier messages read (the read stopped early), "+
+		"the most recent 12,000 characters shown]", lines[0])
+	require.Contains(t, lines[1], "line 0", "the root is kept whatever the read reached")
+	require.Len(t, fake.pathCalls("conversations.replies"), 10, "paging is bounded")
+}
+
+// A thread the read CAN reach the end of counts the whole thread, and its
+// newest messages are the ones the character cap keeps.
+func TestThreadContext_LongButReadableThreadIsCountedInFull(t *testing.T) {
+	var msgs []replyMsg
+	for i := range 300 {
+		msgs = append(msgs, replyMsg{TS: fmt.Sprintf("%d.000", 1000+i), User: "U2", Text: fmt.Sprintf("line %d ", i) + strings.Repeat("y", 60)})
+	}
+	fake := newFakeSlackAPI()
+	fake.withThread(msgs, 50)
+	fake.withUserNames(map[string]string{"U1": "Jose", "U2": "Marta"}, nil)
+	api := fake.server(t)
+	gw, resolved := capturingGateway()
+	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
+
+	sendEvent(t, srv, mention("U1", "what happened here?", "9000.000", "1000.000"))
+	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, flowWait, 50*time.Millisecond)
+
+	got := resolved()[0].Context
+	require.Contains(t, got, "300 earlier messages in this thread, the most recent 12,000 characters shown")
+	require.Contains(t, got, "line 299 ", "the newest are the ones kept")
+	require.Contains(t, got, "line 0 ", "the root is always kept")
+	require.NotContains(t, got, "line 5 ")
+}
+
+// The assistant pane roots every chat at an anchor of Slack's own, so the
+// first message of a chat is never its own thread root — and reading that
+// thread would only hand the person their own words back. Nothing is read.
+func TestThreadContext_AssistantPaneIsNotRead(t *testing.T) {
+	fake := newFakeSlackAPI()
+	fake.withThread(alertThread(), 50)
+	api := fake.server(t)
+	gw, resolved := capturingGateway()
+	_, srv := newEventsAdapter(t, gw, api.URL)
+
+	sendEvent(t, srv, dmThreadEvent("U1", "what can you do?", "300.000", "100.000"))
+	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, flowWait, 50*time.Millisecond)
+
+	require.True(t, resolved()[0].Opener)
+	require.Empty(t, resolved()[0].Context)
+	require.Empty(t, fake.pathCalls("conversations.replies"), "a DM chat has no thread that predates it")
+}
+
+// userLookups counts the users.info calls made for one Slack user.
+func userLookups(fake *fakeSlackAPI, user string) int {
+	n := 0
+	for _, c := range fake.pathCalls("users.info") {
+		if c.params["user"] == user {
+			n++
+		}
+	}
+	return n
 }

@@ -1182,7 +1182,12 @@ type fakeSlackAPI struct {
 	// respondFn, when set for a path, builds that call's response from its
 	// params. It serves what one canned body cannot: a paged
 	// conversations.replies, or a users.info answering per user.
-	respondFn   map[string]func(params map[string]any) string
+	respondFn map[string]func(params map[string]any) string
+	// delayIf, when set, holds a call's answer back for as long as it returns,
+	// so a test can watch a caller's budget run out: one user's users.info,
+	// say, while every other lookup answers at once. The wait ends early when
+	// the caller gives up.
+	delayIf     func(path string, params map[string]any) time.Duration
 	seq         int
 	botUserID   string // returned as user_id from auth.test
 	botUsername string // returned as user from auth.test
@@ -1226,7 +1231,19 @@ func (f *fakeSlackAPI) server(t *testing.T) *httptest.Server {
 		ts := fmt.Sprintf("1700000000.%06d", f.seq)
 		botID := f.botUserID
 		botName := f.botUsername
+		var delay time.Duration
+		if f.delayIf != nil {
+			delay = f.delayIf(path, params)
+		}
 		f.mu.Unlock()
+
+		if delay > 0 {
+			select {
+			case <-time.After(delay):
+			case <-r.Context().Done():
+				return
+			}
+		}
 
 		w.Header().Set("Content-Type", "application/json")
 		if path == "auth.test" {
@@ -1256,6 +1273,13 @@ func (f *fakeSlackAPI) setFail(path, code string) {
 func (f *fakeSlackAPI) setResponse(path, body string) {
 	f.mu.Lock()
 	f.respondWith[path] = body
+	f.mu.Unlock()
+}
+
+// setDelayIf holds back only the calls fn picks, by path and parsed params.
+func (f *fakeSlackAPI) setDelayIf(fn func(path string, params map[string]any) time.Duration) {
+	f.mu.Lock()
+	f.delayIf = fn
 	f.mu.Unlock()
 }
 

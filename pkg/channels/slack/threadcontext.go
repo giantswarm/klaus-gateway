@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 )
@@ -24,22 +25,40 @@ import (
 // is ever written back.
 
 const (
-	// threadContextMaxMessages and threadContextMaxChars cap the transcript.
-	// An incident thread of a few dozen messages fits; a day-long war room
-	// does not, and should not — the oldest messages go first and the root,
-	// which is the alert, always stays. Constants, not configuration.
-	threadContextMaxMessages = 40
-	threadContextMaxChars    = 12000
+	// threadContextMaxChars caps the transcript. An incident thread of a few
+	// dozen messages fits; a day-long war room does not, and should not — the
+	// oldest messages go first and the root, which is the alert, always stays.
+	// Characters, counted as characters and not as bytes, so an accented
+	// transcript is not cut a third of the way early. A constant, not
+	// configuration.
+	threadContextMaxChars = 12000
 
-	// threadContextReadTimeout bounds the whole read. Past it the turn runs
-	// without the transcript rather than making the person wait for it.
+	// threadContextReadTimeout bounds every call the transcript costs: the
+	// paged thread read AND the display-name lookups behind it. Past it the
+	// turn runs with what was rendered — authors named by their ID, or no
+	// transcript at all — rather than making the person wait for it.
 	threadContextReadTimeout = 5 * time.Second
 
 	// threadContextLabel introduces the transcript and names who shared it:
 	// the messages are other people's, and the agent must never read them as
-	// the initiator's own words. %s is the initiator, %d the number of earlier
-	// messages, %s the ", the last N shown" note when the cap dropped some.
-	threadContextLabel = "[thread context shared by %s: %d earlier %s in this thread%s, oldest first]"
+	// the initiator's own words. %s are the initiator, what was shared, and
+	// how it was shortened.
+	threadContextLabel = "[thread context shared by %s: %s%s]"
+
+	// threadContextRead names a complete read, threadContextPartial one the
+	// page bound stopped before the end of the thread — with the thread's own
+	// message count when the root reported one, and without it when it did
+	// not. A partial read must never read as "the latest N messages": its
+	// lines are neither the oldest nor the newest, and an agent told otherwise
+	// would take stale messages for the state of play.
+	threadContextRead         = "%s earlier %s in this thread"
+	threadContextPartial      = "%s of %s earlier messages read (the read stopped early)"
+	threadContextPartialShort = "%s earlier messages read (the read stopped early)"
+
+	// threadContextOldestFirst ends a label whose transcript is whole;
+	// threadContextTrimmed ends one the character cap shortened.
+	threadContextOldestFirst = ", oldest first"
+	threadContextTrimmed     = ", the most recent %s characters shown"
 )
 
 // mentionRe matches a Slack user mention, with or without the "|label" form
@@ -61,8 +80,16 @@ var contentfulSubtypes = map[string]bool{
 // when msg opens a conversation inside a thread that existed before it. A
 // message that roots its own thread has nothing earlier to read, and a turn in
 // a conversation that is already running is not an opener.
+//
+// A DM is skipped whatever its thread looks like: the assistant pane roots
+// every chat at an anchor Slack creates when the chat opens, so the opener is
+// never its own thread root there and the read would only ever return the
+// person's own words back to them — one Slack call per new chat for nothing.
 func (a *Adapter) attachThreadContext(ctx context.Context, msg *channels.InboundMessage, slackChannel, initiator string) {
 	if !msg.Opener || msg.Context != "" || msg.ThreadID == "" || msg.ThreadID == msg.MessageID {
+		return
+	}
+	if isDMChannelID(slackChannel) {
 		return
 	}
 	msg.Context = a.threadContext(ctx, slackChannel, msg.ThreadID, msg.MessageID, initiator)
@@ -77,7 +104,13 @@ func (a *Adapter) threadContext(ctx context.Context, channelID, threadID, opener
 	rctx, cancel := context.WithTimeout(ctx, threadContextReadTimeout)
 	defer cancel()
 
-	messages, err := a.apiClient().threadReplies(rctx, channelID, threadID)
+	// Every lookup the transcript needs runs on rctx, not on the turn's own
+	// context: the thread read, this one, and the name of each author. Slack's
+	// 429 wait honours the context it was given, so a rate-limited users.info
+	// cannot hold the first reply past the budget — past it an author is named
+	// by their ID, which is the fallback anyway.
+	botUserID := a.botID(rctx)
+	read, err := a.apiClient().threadReplies(rctx, channelID, threadID)
 	if err != nil {
 		reason := threadContextFailureReason(rctx, err)
 		a.Logger.Warn("slack: thread context read failed, the turn runs without it",
@@ -87,9 +120,8 @@ func (a *Adapter) threadContext(ctx context.Context, channelID, threadID, opener
 		}
 		return ""
 	}
-	return renderThreadContext(messages, openerTS, a.botID(ctx), a.displayName(ctx, initiator), func(userID string) string {
-		return a.displayName(ctx, userID)
-	})
+	name := func(userID string) string { return a.displayName(rctx, userID) }
+	return renderThreadContext(read, openerTS, botUserID, name(initiator), name)
 }
 
 // threadContextFailureReason names the failure the way the notice and the log
@@ -105,13 +137,13 @@ func threadContextFailureReason(ctx context.Context, err error) string {
 }
 
 // renderThreadContext renders the messages of a thread that precede openerTS
-// as the transcript handed to the agent, or "" when there are none. Messages
-// arrive oldest first (conversations.replies order); botUserID is the
+// as the transcript handed to the agent, or "" when there are none. The read
+// holds them oldest first (conversations.replies order); botUserID is the
 // gateway's own Slack user, whose posts are left out — the agent wrote or is
 // about to write them. name resolves a Slack user ID to a display name.
-func renderThreadContext(messages []threadMessage, openerTS, botUserID, initiator string, name func(string) string) string {
+func renderThreadContext(read threadRead, openerTS, botUserID, initiator string, name func(string) string) string {
 	var lines []string
-	for _, m := range messages {
+	for _, m := range read.Messages {
 		if !earlierThan(m.TS, openerTS) || !contentfulSubtypes[m.SubType] {
 			continue
 		}
@@ -127,31 +159,54 @@ func renderThreadContext(messages []threadMessage, openerTS, botUserID, initiato
 	}
 	total := len(lines)
 	lines = capThreadContext(lines)
+	if initiator == "" {
+		initiator = "the person who started this conversation"
+	}
 
-	shown := ""
+	shortened := threadContextOldestFirst
 	if len(lines) < total {
-		shown = fmt.Sprintf(", the last %d shown", len(lines))
+		shortened = fmt.Sprintf(threadContextTrimmed, thousands(threadContextMaxChars))
+	}
+	return fmt.Sprintf(threadContextLabel, initiator, threadContextShared(read, total), shortened) +
+		"\n" + strings.Join(lines, "\n")
+}
+
+// threadContextShared says how much of the thread the transcript stands for: a
+// count of what the thread holds when the read reached its end, and how far
+// the read got out of how long the thread is when it did not.
+func threadContextShared(read threadRead, total int) string {
+	if !read.Complete {
+		if read.Total > 0 {
+			return fmt.Sprintf(threadContextPartial, thousands(len(read.Messages)), thousands(read.Total))
+		}
+		return fmt.Sprintf(threadContextPartialShort, thousands(len(read.Messages)))
 	}
 	noun := "messages"
 	if total == 1 {
 		noun = "message"
 	}
-	if initiator == "" {
-		initiator = "the person who started this conversation"
-	}
-	return fmt.Sprintf(threadContextLabel, initiator, total, noun, shown) + "\n" + strings.Join(lines, "\n")
+	return fmt.Sprintf(threadContextRead, thousands(total), noun)
 }
 
-// capThreadContext drops the oldest lines until the transcript fits both caps,
-// always keeping the first — the root message, which is the alert the thread
-// is about. A root that is itself over the character cap is cut rather than
-// dropped.
-func capThreadContext(lines []string) []string {
-	if len(lines) > threadContextMaxMessages {
-		kept := make([]string, 0, threadContextMaxMessages)
-		kept = append(kept, lines[0])
-		lines = append(kept, lines[len(lines)-threadContextMaxMessages+1:]...)
+// thousands renders a count with thousands separators, so a four-digit message
+// count in the label reads at a glance.
+func thousands(n int) string {
+	digits := strconv.Itoa(n)
+	var b strings.Builder
+	for i, d := range digits {
+		if i > 0 && (len(digits)-i)%3 == 0 {
+			b.WriteByte(',')
+		}
+		b.WriteRune(d)
 	}
+	return b.String()
+}
+
+// capThreadContext drops the oldest lines until the transcript fits the
+// character cap, always keeping the first — the root message, which is the
+// alert the thread is about. A root that is itself over the cap is cut rather
+// than dropped.
+func capThreadContext(lines []string) []string {
 	for len(lines) > 1 && transcriptLen(lines) > threadContextMaxChars {
 		lines = append(lines[:1:1], lines[2:]...)
 	}
@@ -161,11 +216,13 @@ func capThreadContext(lines []string) []string {
 	return lines
 }
 
-// transcriptLen is the length of the joined transcript, newlines included.
+// transcriptLen is the length of the joined transcript in characters, newlines
+// included: the cap is a character cap, and truncateRunes cuts on the same
+// unit, so a transcript of non-ASCII text is measured the way it is documented.
 func transcriptLen(lines []string) int {
 	n := len(lines) - 1
 	for _, l := range lines {
-		n += len(l)
+		n += utf8.RuneCountInString(l)
 	}
 	return n
 }
@@ -331,6 +388,12 @@ func replaceMentions(text string, name func(string) string) string {
 func (a *Adapter) displayName(ctx context.Context, userID string) string {
 	if userID == "" {
 		return ""
+	}
+	// Past the read's budget every remaining author is named by their ID: the
+	// fallback is already the contract, and one more rate-limited users.info
+	// would hold the turn for a line nobody is waiting for.
+	if ctx.Err() != nil {
+		return userID
 	}
 	now := time.Now()
 	a.displayNameMu.Lock()

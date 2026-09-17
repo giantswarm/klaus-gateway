@@ -1892,25 +1892,43 @@ type threadBlockElem struct {
 	Elements []threadBlockElem `json:"elements"`
 }
 
-// threadRepliesPageSize is the page size of a context read. Slack caps
-// conversations.replies at 1000 per page; 200 keeps one response small while
-// reading the usual incident thread in a single call.
-const threadRepliesPageSize = 200
+// threadRepliesPageSize is the page size of a context read. The shared call
+// helper reads at most 1 MiB of a response and cannot tell a truncated body
+// from a complete one, and one alert message with its blocks and attachments
+// is easily several kilobytes, so a page stays well under that ceiling: a page
+// too large would decode to nothing and lose the whole transcript.
+const threadRepliesPageSize = 50
 
-// threadRepliesMaxPages bounds a context read, so a war room of thousands of
-// messages cannot spend the whole budget being paged through for a transcript
-// that keeps its last few dozen lines anyway.
-const threadRepliesMaxPages = 5
+// threadContextMaxPages bounds what one transcript may cost Slack: ten pages,
+// about 500 messages. A thread longer than that is read as far as this and
+// handed over labelled as a partial read, never as its newest messages. It
+// also bounds the read's memory by construction, so nothing needs to be
+// discarded while paging — the character cap that shapes the transcript needs
+// the rendered lines, which only the renderer has.
+const threadContextMaxPages = 10
+
+// threadRead is one context read: the messages it paged over (oldest first,
+// the thread's root first of all), how many messages the thread holds
+// according to the root's reply count (0 when Slack did not report one), and
+// whether the read reached the end of the thread.
+type threadRead struct {
+	Messages []threadMessage
+	Total    int
+	Complete bool
+}
 
 // threadReplies reads a thread through conversations.replies, oldest first,
 // following the cursor across pages. It is NOT a routing-state read — the
 // thread record in the store stays the only carrier of a thread's agent,
 // initiator and grants; this reads the words people wrote, once, to hand them
-// to the agent a conversation pulls into the thread (see threadcontext.go).
-func (c *slackAPIClient) threadReplies(ctx context.Context, channel, threadTS string) ([]threadMessage, error) {
-	var all []threadMessage
+// to the agent a conversation pulls into the thread (see threadcontext.go). A
+// page that fails after the first one yields what was read so far, marked
+// incomplete: part of a thread is worth more to the agent than none, as long
+// as the transcript does not claim to be the newest part.
+func (c *slackAPIClient) threadReplies(ctx context.Context, channel, threadTS string) (threadRead, error) {
+	read := threadRead{}
 	cursor := ""
-	for page := 0; page < threadRepliesMaxPages; page++ {
+	for page := 0; page < threadContextMaxPages; page++ {
 		params := url.Values{
 			paramChannel: {channel},
 			paramTS:      {threadTS},
@@ -1921,34 +1939,24 @@ func (c *slackAPIClient) threadReplies(ctx context.Context, channel, threadTS st
 		}
 		result, err := c.repliesPage(ctx, params)
 		if err != nil {
-			return nil, err
+			if len(read.Messages) == 0 {
+				return threadRead{}, err
+			}
+			return read, nil
 		}
-		all = append(all, result.Messages...)
+		read.Messages = append(read.Messages, result.Messages...)
+		// The root carries the thread's reply count, which is how a partial
+		// read can say how much of the thread it did not reach.
+		if page == 0 && len(result.Messages) > 0 && result.Messages[0].ReplyCount > 0 {
+			read.Total = result.Messages[0].ReplyCount + 1
+		}
 		cursor = result.ResponseMetadata.NextCursor
 		if cursor == "" {
+			read.Complete = true
 			break
 		}
 	}
-	return all, nil
-}
-
-// threadSize returns how many messages a thread holds — its root plus the
-// replies Slack counts on it — without reading them. It is what the picker's
-// checkbox names, so a single limit=1 page is enough. Zero when the thread has
-// no root (it was deleted between the click and the read).
-func (c *slackAPIClient) threadSize(ctx context.Context, channel, threadTS string) (int, error) {
-	result, err := c.repliesPage(ctx, url.Values{
-		paramChannel: {channel},
-		paramTS:      {threadTS},
-		paramLimit:   {"1"},
-	})
-	if err != nil {
-		return 0, err
-	}
-	if len(result.Messages) == 0 {
-		return 0, nil
-	}
-	return result.Messages[0].ReplyCount + 1, nil
+	return read, nil
 }
 
 // repliesResponse is one conversations.replies page.

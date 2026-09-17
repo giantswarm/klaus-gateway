@@ -149,14 +149,12 @@ const (
 	askAgentAgentPlaceholder    = "Pick an agent"
 	askAgentQuestionLabel       = "Question"
 	askAgentQuestionPlaceholder = "What do you want to ask?"
-	// askAgentContextLabel titles the thread-context checkbox; the two option
-	// texts name the messages it shares, with the count when the thread could
-	// be measured while the modal was being built and without it when that
-	// read failed (the transcript is still attempted on submit).
-	askAgentContextLabel         = "Thread context"
-	askAgentContextOption        = "Include the %d earlier messages in this thread"
-	askAgentContextOptionOne     = "Include the 1 earlier message in this thread"
-	askAgentContextOptionNoCount = "Include the earlier messages in this thread"
+	// askAgentContextLabel titles the thread-context checkbox and
+	// askAgentContextOption is its one option. Deliberately without a count:
+	// counting the thread would mean reading it before views.open, and the
+	// trigger the modal opens on dies three seconds after Slack issued it.
+	askAgentContextLabel  = "Thread context"
+	askAgentContextOption = "Include the earlier messages in this thread"
 
 	// modalMaxAgents is Slack's static_select option cap; modalOptionLabelMax
 	// its option label cap; modalQuestionMax the plain_text_input max_length.
