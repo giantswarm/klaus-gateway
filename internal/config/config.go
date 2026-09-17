@@ -222,6 +222,34 @@ func (o OBOConfig) ResolvedStore() string {
 	return OBOStoreMemory
 }
 
+// ReviewsConfig configures the inbound team-review endpoint (POST /reviews,
+// POST /notices): a manager posts an ask or a notice into a team's channel as
+// its own Kubernetes ServiceAccount, verified through the TokenReview API.
+type ReviewsConfig struct {
+	// Enabled mounts the endpoint. Requires Slack and OBO: the ask is a Slack
+	// message and the Approve click runs as the linked person.
+	Enabled bool
+	// Audience is the token audience the API server checks (TokenReview
+	// spec.audiences); the caller projects its token for it. Empty resolves to
+	// DefaultReviewsAudience.
+	Audience string
+	// AllowedCallers lists the ServiceAccounts
+	// (system:serviceaccount:<namespace>:<name>) that may post. Nobody else may.
+	AllowedCallers []string
+}
+
+// DefaultReviewsAudience is the token audience of the team-review endpoint
+// when none is configured.
+const DefaultReviewsAudience = "klaus-gateway"
+
+// ResolvedAudience returns Audience, or DefaultReviewsAudience when unset.
+func (r ReviewsConfig) ResolvedAudience() string {
+	if r.Audience != "" {
+		return r.Audience
+	}
+	return DefaultReviewsAudience
+}
+
 // Config is the fully resolved runtime configuration.
 type Config struct {
 	ListenAddress string
@@ -254,11 +282,12 @@ type Config struct {
 	ThreadTTL   time.Duration
 	ShowVersion bool
 
-	Slack SlackConfig
-	CLI   CLIConfig
-	Web   WebConfig
-	A2A   A2AConfig
-	OBO   OBOConfig
+	Slack   SlackConfig
+	CLI     CLIConfig
+	Web     WebConfig
+	A2A     A2AConfig
+	OBO     OBOConfig
+	Reviews ReviewsConfig
 }
 
 // ValkeyConfig locates the Valkey server of the valkey routing store
@@ -397,6 +426,12 @@ func Load(args []string) (Config, error) {
 	fs.StringVar(&cfg.OBO.StoreSecretNamespace, "obo-store-secret-namespace", cfg.OBO.StoreSecretNamespace, "Namespace of the link Secret (secret backend). Empty means the pod's own namespace.")
 	fs.StringVar(&cfg.OBO.StateKeyFile, "obo-state-key-file", cfg.OBO.StateKeyFile, "Path to the HMAC key file used to sign link state (required with --obo-enabled).")
 	fs.BoolVar(&cfg.OBO.ConnectorsEnabled, "obo-connectors-enabled", cfg.OBO.ConnectorsEnabled, "Enable the reactive Slack connector UX: the gateway detects a core_auth_login challenge in the agent's response stream and renders a Connect button from the login link the agent relays. The gateway does not call muster. Requires --obo-enabled.")
+	fs.BoolVar(&cfg.Reviews.Enabled, "reviews-enabled", cfg.Reviews.Enabled, "Enable the team-review endpoint (POST /reviews, POST /notices) for managers authenticated as a Kubernetes ServiceAccount. Requires --slack-enabled and --obo-enabled.")
+	fs.StringVar(&cfg.Reviews.Audience, "reviews-audience", cfg.Reviews.Audience, "Token audience the API server checks for the team-review endpoint (default klaus-gateway).")
+	fs.Func("reviews-allowed-callers", "Comma-separated ServiceAccounts (system:serviceaccount:<namespace>:<name>) that may post team reviews.", func(v string) error {
+		cfg.Reviews.AllowedCallers = splitCommaList(v)
+		return nil
+	})
 
 	fs.Usage = func() {
 		_, _ = fmt.Fprintf(fs.Output(), "klaus-gateway -- channel and routing gateway in front of klaus instances.\n\n")
@@ -567,6 +602,15 @@ func applyEnv(cfg *Config) {
 	if v, ok := lookup("OBO_MUSTER_URL"); ok {
 		cfg.OBO.MusterURL = v
 	}
+	if v, ok := lookup("REVIEWS_ENABLED"); ok {
+		cfg.Reviews.Enabled = strings.EqualFold(v, "true") || v == "1"
+	}
+	if v, ok := lookup("REVIEWS_AUDIENCE"); ok {
+		cfg.Reviews.Audience = v
+	}
+	if v, ok := lookup("REVIEWS_ALLOWED_CALLERS"); ok {
+		cfg.Reviews.AllowedCallers = splitCommaList(v)
+	}
 	if v, ok := lookup("OBO_CLIENT_ID"); ok {
 		cfg.OBO.ClientID = v
 	}
@@ -695,6 +739,14 @@ func (c Config) Validate() error {
 			}
 		default:
 			return fmt.Errorf("invalid --obo-store %q: must be one of memory, bolt, secret", c.OBO.Store)
+		}
+	}
+	if c.Reviews.Enabled {
+		if !c.Slack.Enabled || !c.OBO.Enabled {
+			return fmt.Errorf("--slack-enabled and --obo-enabled are required with --reviews-enabled (a team review is a Slack message whose Approve click runs as the linked person)")
+		}
+		if len(c.Reviews.AllowedCallers) == 0 {
+			return fmt.Errorf("--reviews-allowed-callers is required with --reviews-enabled (the ServiceAccounts that may post, system:serviceaccount:<namespace>:<name>)")
 		}
 	}
 	if c.OBO.ConnectorsEnabled && !c.OBO.Enabled {

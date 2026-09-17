@@ -220,6 +220,14 @@ func (a *Adapter) routeInteraction(ctx context.Context, payload interactionPaylo
 		// prompt later, so it is recorded under the button's completion state.
 		a.handleConnectorConnect(ctx, payload.User.ID, action.Value, payload.ResponseURL)
 		return
+	case teamReviewOpen:
+		// URL button: the browser opens the link itself.
+		return
+	case teamReviewApprove:
+		// A team review has no thread and no initiator: the decision rule is
+		// the team's, resolved against the review record, not the thread.
+		a.handleTeamReviewDecision(ctx, payload.Channel.ID, payload.Container.MessageTS, payload.User.ID, action.Value)
+		return
 	}
 
 	act, ok := classifyAction(action.ActionID)

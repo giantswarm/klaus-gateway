@@ -23,6 +23,7 @@ import (
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 	"github.com/giantswarm/klaus-gateway/pkg/api"
 	"github.com/giantswarm/klaus-gateway/pkg/auth/musterlink"
+	"github.com/giantswarm/klaus-gateway/pkg/auth/satoken"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 	cliachannel "github.com/giantswarm/klaus-gateway/pkg/channels/cli"
 	slackchannel "github.com/giantswarm/klaus-gateway/pkg/channels/slack"
@@ -32,7 +33,9 @@ import (
 	"github.com/giantswarm/klaus-gateway/pkg/lifecycle/klausctl"
 	"github.com/giantswarm/klaus-gateway/pkg/lifecycle/operator"
 	"github.com/giantswarm/klaus-gateway/pkg/lifecycle/static"
+	"github.com/giantswarm/klaus-gateway/pkg/muster"
 	"github.com/giantswarm/klaus-gateway/pkg/observability"
+	"github.com/giantswarm/klaus-gateway/pkg/reviews"
 	"github.com/giantswarm/klaus-gateway/pkg/routing"
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
 	boltstore "github.com/giantswarm/klaus-gateway/pkg/routing/store/bolt"
@@ -256,6 +259,33 @@ func run(args []string) error {
 			slackAdapter.PublicBaseURL = cfg.OBO.CallbackBaseURL
 			logger.Info("slack connector prompts enabled")
 		}
+	}
+
+	if cfg.Reviews.Enabled {
+		// The team-review endpoint: a manager posts an ask as its own
+		// ServiceAccount (verified through TokenReview); the Approve click calls
+		// the manager's tool through muster as the clicking, linked member.
+		restCfg, err := buildKubeConfig()
+		if err != nil {
+			return fmt.Errorf("team reviews: %w", err)
+		}
+		kclient, err := kubernetes.NewForConfig(restCfg)
+		if err != nil {
+			return fmt.Errorf("team reviews: %w", err)
+		}
+		slackAdapter.Tools = muster.NewClient(cfg.OBO.MusterURL)
+		reviewsHandler := &reviews.Handler{
+			Logger:         logger,
+			Auth:           &satoken.Authenticator{Reviews: kclient.AuthenticationV1().TokenReviews(), Audiences: []string{cfg.Reviews.ResolvedAudience()}},
+			AllowedCallers: cfg.Reviews.AllowedCallers,
+			Poster:         slackAdapter,
+		}
+		reviewsHandler.Mount(publicMux)
+		logger.Info("team-review endpoint mounted",
+			"audience", cfg.Reviews.ResolvedAudience(),
+			"allowed_callers", cfg.Reviews.AllowedCallers,
+			"muster_url", cfg.OBO.MusterURL,
+		)
 	}
 
 	apiHandler := &api.Handler{

@@ -154,6 +154,9 @@ Channel and routing gateway in front of klaus instances; uses agentgateway as th
 | obo.stateKey | string | `""` |  |
 | obo.storeKey | string | `""` |  |
 | obo.connectors.enabled | bool | `false` |  |
+| reviews.enabled | bool | `false` |  |
+| reviews.audience | string | `"klaus-gateway"` |  |
+| reviews.allowedCallers | list | `[]` |  |
 | global.podSecurityStandards.enforced | bool | `false` |  |
 | nodeSelector | object | `{}` |  |
 | tolerations | list | `[]` |  |
