@@ -18,3 +18,7 @@ func (a *Adapter) ThreadIdle(threadID string) bool {
 	a.withThread(threadID, func(st *threadState) { idle = st.slot == nil })
 	return idle
 }
+
+// FlowWait re-exports the flow tests' wait budget for the external test
+// package, so the value and its rationale live in one place.
+const FlowWait = flowWait

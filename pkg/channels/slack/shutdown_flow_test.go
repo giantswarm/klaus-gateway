@@ -25,7 +25,7 @@ func TestShutdown_PostsRestartNoticeAndLeavesTheTurnRunning(t *testing.T) {
 
 	sendEvent(t, srv, dmEvent("U1", "long task", "555.000"))
 	fake.waitForPath(t, "reactions.add", 1)
-	waitTurnStreaming(t, fake)
+	waitTurnStreaming(t, fake, 1)
 
 	require.NoError(t, a.Stop(context.Background()))
 
@@ -53,7 +53,7 @@ func TestShutdown_NoticeWithoutDurableStoreMakesNoPromise(t *testing.T) {
 
 	sendEvent(t, srv, dmEvent("U1", "long task", "555.000"))
 	fake.waitForPath(t, "reactions.add", 1)
-	waitTurnStreaming(t, fake)
+	waitTurnStreaming(t, fake, 1)
 
 	require.NoError(t, a.Stop(context.Background()))
 
@@ -94,7 +94,7 @@ func TestStop_IsAPlainCancellationNotAShutdown(t *testing.T) {
 
 	sendEvent(t, srv, dmEvent("U1", "long task", "555.000"))
 	fake.waitForPath(t, "reactions.add", 1)
-	waitTurnStreaming(t, fake)
+	waitTurnStreaming(t, fake, 1)
 
 	sendEvent(t, srv, dmThreadEvent("U1", "/stop", "556.000", "555.000"))
 	fake.waitForPath(t, "reactions.remove", 1)
@@ -135,7 +135,7 @@ func TestRecoverTurns_DeliversTheAnswerIntoTheThread(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		return strings.Contains(allBlockText(fake.pathCalls("chat.postMessage")), "recovered answer")
-	}, 5*time.Second, 20*time.Millisecond, "the finished answer is posted into the thread")
+	}, flowWait, 20*time.Millisecond, "the finished answer is posted into the thread")
 	fake.waitForPath(t, "reactions.add", 2)
 
 	posts := fake.pathCalls("chat.postMessage")
@@ -169,7 +169,7 @@ func TestReply_DeliversTheLeftoverTurnBeforeItself(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		return strings.Contains(allBlockText(fake.pathCalls("chat.postMessage")), "reply answer")
-	}, 5*time.Second, 20*time.Millisecond, "the reply is answered")
+	}, flowWait, 20*time.Millisecond, "the reply is answered")
 	posted := allBlockText(fake.pathCalls("chat.postMessage"))
 	recovered, reply := strings.Index(posted, "recovered answer"), strings.Index(posted, "reply answer")
 	require.GreaterOrEqual(t, recovered, 0, "the leftover turn's answer is delivered")
@@ -196,7 +196,7 @@ func TestRecoverTurns_GoneTaskPostsANote(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		return strings.Contains(allBlockText(fake.pathCalls("chat.postMessage")), "couldn't recover the result")
-	}, 5*time.Second, 20*time.Millisecond, "the thread is told the result is gone")
+	}, flowWait, 20*time.Millisecond, "the thread is told the result is gone")
 }
 
 // Text the writer still holds when the shutdown hits lands before the notice:
@@ -211,7 +211,7 @@ func TestShutdown_FlushesBufferedTextBeforeTheNotice(t *testing.T) {
 
 	sendEvent(t, srv, dmEvent("U1", "count", "555.000"))
 	fake.waitForPath(t, "reactions.add", 1)
-	waitTurnStreaming(t, fake)
+	waitTurnStreaming(t, fake, 1)
 	// The turn is resolved before its first delta is read: wait for the text to
 	// have reached the writer, or the shutdown below flushes an empty buffer.
 	require.Eventually(t, func() bool { return len(gw.sendCauseList()) == 0 && gw.deliveredDeltas() == 1 }, flowWait, 20*time.Millisecond)

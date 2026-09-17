@@ -1541,7 +1541,7 @@ func TestTextMode_FailedTurnAfterContentPostsNewNote(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "the turn failed")
-	}, 3*time.Second, 50*time.Millisecond, "the failure note posts as a new message")
+	}, flowWait, 50*time.Millisecond, "the failure note posts as a new message")
 	updates := allText(fake.pathCalls("chat.update"))
 	require.Contains(t, updates, "partial answer", "the streamed content reached the placeholder")
 	require.NotContains(t, updates, "the turn failed", "the note must not overwrite streamed content")
@@ -1565,7 +1565,7 @@ func TestTextMode_FailedTurnFlushesBufferedContentBeforeNote(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "the turn failed")
-	}, 3*time.Second, 50*time.Millisecond, "the failure note posts as a new message")
+	}, flowWait, 50*time.Millisecond, "the failure note posts as a new message")
 	updates := allText(fake.pathCalls("chat.update"))
 	require.Contains(t, updates, "partial answer", "buffered content is flushed before the error")
 	require.NotContains(t, updates, "the turn failed", "the note must not overwrite streamed content")
@@ -1694,26 +1694,23 @@ func TestHandleInbound_UnrelatedThreadReplyStaysSilent(t *testing.T) {
 func TestHandleInbound_ThreadBroadcastReplyDispatches(t *testing.T) {
 	fake := newFakeSlackAPI()
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "answer-text"}, {Done: true}}}
-	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
 
 	sendEvent(t, srv, mention("U1", "start", "400.000", ""))
-	// The first turn's answer marks the thread slot as about to free.
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "answer-text")
 	}, flowWait, 50*time.Millisecond, "the mention's turn completes")
 
 	broadcast := `{"type":"event_callback","event":{"type":"message","subtype":"thread_broadcast","user":"U1","text":"and then?","channel":"C1","ts":"401.000","thread_ts":"400.000"}}`
-	seq := 0
-	require.Eventually(t, func() bool {
-		seq++
-		sendEvent(t, srv, strings.Replace(broadcast, "401.000", fmt.Sprintf("401.%03d", seq), 1))
-		return gw.resolveCount() >= 2
-	}, 3*time.Second, 100*time.Millisecond,
+	waitThreadIdle(t, a, "400.000")
+	sendEvent(t, srv, broadcast)
+	require.Eventually(t, func() bool { return gw.resolveCount() >= 2 },
+		flowWait, 50*time.Millisecond,
 		"a broadcast thread reply must reach the agent like any other reply")
 
 	// Other subtypes must stay rejected: an edit in the same active thread
 	// never starts a turn.
-	time.Sleep(200 * time.Millisecond)
+	waitThreadIdle(t, a, "400.000")
 	before := gw.resolveCount()
 	edited := `{"type":"event_callback","event":{"type":"message","subtype":"message_changed","user":"U1","text":"edited","channel":"C1","ts":"402.000","thread_ts":"400.000"}}`
 	sendEvent(t, srv, edited)
@@ -1728,10 +1725,9 @@ func TestHandleInbound_ThreadBroadcastReplyDispatches(t *testing.T) {
 func TestHandleInbound_FileShareReplyDispatches(t *testing.T) {
 	fake := newFakeSlackAPI()
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "answer-text"}, {Done: true}}}
-	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
 
 	sendEvent(t, srv, mention("U1", "start", "500.000", ""))
-	// The first turn's answer marks the thread slot as about to free.
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "answer-text")
 	}, flowWait, 50*time.Millisecond, "the mention's turn completes")
@@ -1740,12 +1736,10 @@ func TestHandleInbound_FileShareReplyDispatches(t *testing.T) {
 	// dropped-attachments notice) without touching the network; the caption
 	// still runs the turn. Routing, not downloading, is under test here.
 	reply := `{"type":"event_callback","event":{"type":"message","subtype":"file_share","user":"U1","text":"look at this","channel":"C1","ts":"501.000","thread_ts":"500.000","files":[{"name":"shot.png","mimetype":"image/png","size":10}]}}`
-	seq := 0
-	require.Eventually(t, func() bool {
-		seq++
-		sendEvent(t, srv, strings.Replace(reply, "501.000", fmt.Sprintf("501.%03d", seq), 1))
-		return gw.resolveCount() >= 2
-	}, 3*time.Second, 100*time.Millisecond,
+	waitThreadIdle(t, a, "500.000")
+	sendEvent(t, srv, reply)
+	require.Eventually(t, func() bool { return gw.resolveCount() >= 2 },
+		flowWait, 50*time.Millisecond,
 		"a file_share thread reply must reach the agent like any other reply")
 
 	require.Eventually(t, func() bool {
@@ -2066,7 +2060,7 @@ func TestTurn_RenderFailureAfterCompletionIsNotAFailedTurn(t *testing.T) {
 	sendEvent(t, srv, dmEvent("U1", "how many nodes?", "555.000"))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Slack refused the rest of the reply: msg_too_long")
-	}, 10*time.Second, 20*time.Millisecond, "the thread is told the reply is incomplete")
+	}, flowWait, 20*time.Millisecond, "the thread is told the reply is incomplete")
 
 	require.Equal(t, []string{"eyes", "x"}, fake.reactionNames("reactions.add"), "the failed reaction marks the incomplete reply")
 	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "turn failed", "a completed turn is not reported as failed")

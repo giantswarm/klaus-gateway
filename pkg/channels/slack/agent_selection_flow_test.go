@@ -654,9 +654,6 @@ func TestAgentSelection_SameAgentReselectionDispatchesQuietly(t *testing.T) {
 		flowWait, 50*time.Millisecond, "the same-agent re-selection dispatches")
 
 	// And by quoted display name: still the same agent, still dispatches.
-	// (The brief sleep lets the previous turn's stream release the per-thread
-	// slot, so the follow-up is not rejected busy.)
-	time.Sleep(150 * time.Millisecond)
 	waitThreadIdle(t, a, "100.000")
 	sendEvent(t, srv, mention("U1", `/agent "SRE Agent" anything else?`, "300.000", "100.000"))
 	require.Eventually(t, func() bool { return gw.resolveCount() == 3 },
