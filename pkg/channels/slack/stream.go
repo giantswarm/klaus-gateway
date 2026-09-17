@@ -1838,6 +1838,147 @@ func (c *slackAPIClient) conversationsJoin(ctx context.Context, channel string) 
 	return err
 }
 
+// threadMessage is one message of a thread as the context read needs it: who
+// wrote it and when, and every place Slack puts its words — the plain text, a
+// bot's attachments, a Block Kit layout, the names of its files.
+type threadMessage struct {
+	TS         string `json:"ts"`
+	User       string `json:"user"`
+	BotID      string `json:"bot_id"`
+	Username   string `json:"username"`
+	SubType    string `json:"subtype"`
+	Text       string `json:"text"`
+	BotProfile struct {
+		Name string `json:"name"`
+	} `json:"bot_profile"`
+	Files []struct {
+		Name string `json:"name"`
+	} `json:"files"`
+	Attachments []threadAttachment `json:"attachments"`
+	Blocks      []threadBlock      `json:"blocks"`
+	// ReplyCount is set on the root message only: the number of replies under
+	// it, which is how the picker counts a thread without reading it.
+	ReplyCount int `json:"reply_count"`
+}
+
+// threadAttachment is the legacy-attachment shape a bot integration (PagerDuty
+// and friends) puts its content in when the message's own text is empty.
+type threadAttachment struct {
+	Title  string `json:"title"`
+	Text   string `json:"text"`
+	Fields []struct {
+		Title string `json:"title"`
+		Value string `json:"value"`
+	} `json:"fields"`
+}
+
+// threadBlock is the part of a Block Kit block that carries words: a section's
+// text and fields, a header's text, and the elements of a context or rich_text
+// block (whose own elements nest one level further).
+type threadBlock struct {
+	Type     string            `json:"type"`
+	Text     *threadBlockText  `json:"text"`
+	Fields   []threadBlockText `json:"fields"`
+	Elements []threadBlockElem `json:"elements"`
+}
+
+type threadBlockText struct {
+	Text string `json:"text"`
+}
+
+type threadBlockElem struct {
+	Type     string            `json:"type"`
+	Text     string            `json:"text"`
+	Elements []threadBlockElem `json:"elements"`
+}
+
+// threadRepliesPageSize is the page size of a context read. Slack caps
+// conversations.replies at 1000 per page; 200 keeps one response small while
+// reading the usual incident thread in a single call.
+const threadRepliesPageSize = 200
+
+// threadRepliesMaxPages bounds a context read, so a war room of thousands of
+// messages cannot spend the whole budget being paged through for a transcript
+// that keeps its last few dozen lines anyway.
+const threadRepliesMaxPages = 5
+
+// threadReplies reads a thread through conversations.replies, oldest first,
+// following the cursor across pages. It is NOT a routing-state read — the
+// thread record in the store stays the only carrier of a thread's agent,
+// initiator and grants; this reads the words people wrote, once, to hand them
+// to the agent a conversation pulls into the thread (see threadcontext.go).
+func (c *slackAPIClient) threadReplies(ctx context.Context, channel, threadTS string) ([]threadMessage, error) {
+	var all []threadMessage
+	cursor := ""
+	for page := 0; page < threadRepliesMaxPages; page++ {
+		params := url.Values{
+			paramChannel: {channel},
+			paramTS:      {threadTS},
+			paramLimit:   {strconv.Itoa(threadRepliesPageSize)},
+		}
+		if cursor != "" {
+			params.Set(paramCursor, cursor)
+		}
+		result, err := c.repliesPage(ctx, params)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, result.Messages...)
+		cursor = result.ResponseMetadata.NextCursor
+		if cursor == "" {
+			break
+		}
+	}
+	return all, nil
+}
+
+// threadSize returns how many messages a thread holds — its root plus the
+// replies Slack counts on it — without reading them. It is what the picker's
+// checkbox names, so a single limit=1 page is enough. Zero when the thread has
+// no root (it was deleted between the click and the read).
+func (c *slackAPIClient) threadSize(ctx context.Context, channel, threadTS string) (int, error) {
+	result, err := c.repliesPage(ctx, url.Values{
+		paramChannel: {channel},
+		paramTS:      {threadTS},
+		paramLimit:   {"1"},
+	})
+	if err != nil {
+		return 0, err
+	}
+	if len(result.Messages) == 0 {
+		return 0, nil
+	}
+	return result.Messages[0].ReplyCount + 1, nil
+}
+
+// repliesResponse is one conversations.replies page.
+type repliesResponse struct {
+	OK               bool            `json:"ok"`
+	Err              string          `json:"error,omitempty"`
+	Messages         []threadMessage `json:"messages"`
+	ResponseMetadata struct {
+		NextCursor string `json:"next_cursor"`
+	} `json:"response_metadata"`
+}
+
+// repliesPage runs one conversations.replies call and decodes it. A Slack
+// refusal is returned as an apiError so the caller can name its code
+// (missing_scope, not_in_channel, …) to the person.
+func (c *slackAPIClient) repliesPage(ctx context.Context, params url.Values) (repliesResponse, error) {
+	body, err := c.call(ctx, "conversations.replies", "application/x-www-form-urlencoded", params.Encode())
+	if err != nil {
+		return repliesResponse{}, err
+	}
+	var result repliesResponse
+	if err := json.Unmarshal(body, &result); err != nil {
+		return repliesResponse{}, fmt.Errorf("slack conversations.replies: decode: %w", err)
+	}
+	if !result.OK {
+		return repliesResponse{}, &apiError{method: "conversations.replies", code: result.Err}
+	}
+	return result, nil
+}
+
 // respondToURL posts an ephemeral text reply through a slash command's
 // response_url (usable five times within 30 minutes). The URL is a Slack
 // webhook, not a Web API method: no bot token, no envelope.

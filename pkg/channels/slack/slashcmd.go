@@ -115,6 +115,10 @@ type askAgentRequest struct {
 	TriggerID   string
 	Thread      string
 	Prefill     string
+	// ThreadSize is how many messages the target thread already holds, 0 when
+	// there is no thread or the count could not be read in time. It only names
+	// the context checkbox; the transcript itself is read on submit.
+	ThreadSize int
 }
 
 // handleSlashCommand opens the agent picker modal for a slash command, or
@@ -230,6 +234,16 @@ func (a *Adapter) openAgentPicker(ctx context.Context, req askAgentRequest, noti
 			notify(fmt.Sprintf(askAgentThreadOwnedNotice, owner))
 			return
 		}
+		// How many messages the thread holds, for the context checkbox. One
+		// limit=1 page reads the root's reply_count and nothing else, and it
+		// spends the same trigger budget as everything above: a count that
+		// does not arrive leaves the checkbox unnumbered, never unopened.
+		if size, err := a.apiClient().threadSize(pctx, req.Channel, req.Thread); err != nil {
+			a.Logger.Info("slack: thread size unavailable, offering the context checkbox without a count",
+				"channel_id", req.Channel, "thread_id", req.Thread, "error", err)
+		} else {
+			req.ThreadSize = size
+		}
 	}
 	agents, err := a.rosterAgentsBestEffort(pctx)
 	if err != nil {
@@ -323,6 +337,13 @@ func (a *Adapter) askAgentModal(agents []pkga2a.AgentInfo, req askAgentRequest) 
 	if text := truncateRunes(strings.TrimSpace(req.Prefill), modalQuestionMax); text != "" {
 		question[bkInitialValue] = text
 	}
+	blocks := []any{
+		map[string]any{bkType: bkInput, bkBlockID: askAgentAgentBlockID, bkLabel: plainTextObj(askAgentAgentLabel), bkElement: agentSelect},
+		map[string]any{bkType: bkInput, bkBlockID: askAgentQuestionBlockID, bkLabel: plainTextObj(askAgentQuestionLabel), bkElement: question},
+	}
+	if block, ok := threadContextBlock(req); ok {
+		blocks = append(blocks, block)
+	}
 	return map[string]any{
 		bkType:            bkModal,
 		bkCallbackID:      askAgentCallbackID,
@@ -330,11 +351,41 @@ func (a *Adapter) askAgentModal(agents []pkga2a.AgentInfo, req askAgentRequest) 
 		bkTitle:           plainTextObj(askAgentModalTitle),
 		bkSubmit:          plainTextObj(askAgentSubmitLabel),
 		bkClose:           plainTextObj(askAgentCloseLabel),
-		bkBlocks: []any{
-			map[string]any{bkType: bkInput, bkBlockID: askAgentAgentBlockID, bkLabel: plainTextObj(askAgentAgentLabel), bkElement: agentSelect},
-			map[string]any{bkType: bkInput, bkBlockID: askAgentQuestionBlockID, bkLabel: plainTextObj(askAgentQuestionLabel), bkElement: question},
-		},
+		bkBlocks:          blocks,
 	}, nil
+}
+
+// threadContextBlock is the checkbox that decides whether the agent is given
+// the messages the target thread already holds. It is offered only where there
+// is a thread to read — the shortcut — and is checked by default: the person
+// starting the session is a member of that thread and does it in the open, but
+// a thread whose earlier part is noise or private banter is theirs to leave
+// out with one click. The input is optional, or Slack would refuse a
+// submission with the box cleared.
+func threadContextBlock(req askAgentRequest) (map[string]any, bool) {
+	if req.Thread == "" {
+		return nil, false
+	}
+	label := askAgentContextOptionNoCount
+	switch {
+	case req.ThreadSize == 1:
+		label = askAgentContextOptionOne
+	case req.ThreadSize > 1:
+		label = fmt.Sprintf(askAgentContextOption, req.ThreadSize)
+	}
+	option := map[string]any{bkText: plainTextObj(label), bkValue: askAgentContextValue}
+	return map[string]any{
+		bkType:     bkInput,
+		bkBlockID:  askAgentContextBlockID,
+		bkOptional: true,
+		bkLabel:    plainTextObj(askAgentContextLabel),
+		bkElement: map[string]any{
+			bkType:           bkCheckboxes,
+			bkActionID:       askAgentContextActionID,
+			bkOptions:        []any{option},
+			bkInitialOptions: []any{option},
+		},
+	}, true
 }
 
 // handleAskAgentSubmission opens the conversation a submitted picker
@@ -363,6 +414,10 @@ func (a *Adapter) handleAskAgentSubmission(ctx context.Context, payload interact
 	}
 	ref := payload.View.State.Values[askAgentAgentBlockID][askAgentAgentActionID].selectedValue()
 	question := strings.TrimSpace(payload.View.State.Values[askAgentQuestionBlockID][askAgentQuestionActionID].Value)
+	// The context checkbox: absent from the view when there was no thread to
+	// read, and cleared by a person who wants the agent to see their question
+	// alone.
+	includeContext := len(payload.View.State.Values[askAgentContextBlockID][askAgentContextActionID].SelectedOptions) > 0
 	// Both inputs are required in the modal, so Slack refuses an empty
 	// submission itself; this only guards a malformed payload.
 	if ref == "" || question == "" {
@@ -462,12 +517,22 @@ func (a *Adapter) handleAskAgentSubmission(ctx context.Context, payload interact
 	a.accessPolicy().SetInitiator(ctx, pm.Channel, threadTS, user)
 	a.bindThreadAgent(ctx, pm.Channel, threadTS, ref)
 
+	// The thread the picker was opened on is read now, with the echo as the
+	// opener: it was just posted, so only the messages that were already there
+	// — everyone else's — land in the transcript. A thread the submission
+	// rooted itself (the slash command) has nothing earlier to read.
+	var threadContext string
+	if pm.Thread != "" && includeContext {
+		threadContext = a.threadContext(ctx, pm.Channel, threadTS, echoTS, user)
+	}
+
 	msg := channels.InboundMessage{
 		Channel:   ChannelName,
 		ChannelID: pm.Channel,
 		ThreadID:  threadTS,
 		MessageID: echoTS,
 		Text:      question,
+		Context:   threadContext,
 		Subject:   user,
 		AgentRef:  ref,
 		// The question opens the conversation: it names the agent session and

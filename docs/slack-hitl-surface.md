@@ -397,7 +397,10 @@ slash command (`/swarmgeist [question]`, whose text prefills the question box) a
 agent here** message shortcut (⋯ menu → Apps, `callback_id: ask_agent_here`). The select lists
 the live roster as the caller, the default agent preselected; `private_metadata` carries where
 the picker was opened, how to answer the user privately, and — for the shortcut — the thread the
-conversation starts in.
+conversation starts in. The shortcut's view carries a third block: a checkbox, ticked, offering the
+thread's earlier messages to the agent (the count comes from a `conversations.replies` call made
+while the modal is built, and is left out when that call does not land in time). The input is
+`optional`, so clearing the box still submits.
 
 ```json
 {
@@ -425,6 +428,18 @@ conversation starts in.
       "block_id": "ask_agent_question",
       "label": { "type": "plain_text", "text": "Question" },
       "element": { "type": "plain_text_input", "action_id": "question", "multiline": true, "max_length": 3000 }
+    },
+    {
+      "type": "input",
+      "block_id": "ask_agent_context",
+      "optional": true,
+      "label": { "type": "plain_text", "text": "Thread context" },
+      "element": {
+        "type": "checkboxes",
+        "action_id": "context",
+        "options": [ { "text": { "type": "plain_text", "text": "Include the 3 earlier messages in this thread" }, "value": "include" } ],
+        "initial_options": [ { "text": { "type": "plain_text", "text": "Include the 3 earlier messages in this thread" }, "value": "include" } ]
+      }
     }
   ]
 }
@@ -432,7 +447,9 @@ conversation starts in.
 
 Submitting posts the echo `💬 <@U123> asked *SRE Agent*:` with the question quoted, under the
 agent's identity — a new root message for the slash command, a reply in the carried thread for
-the shortcut — and runs the question as the thread's first turn.
+the shortcut — and runs the question as the thread's first turn. With the box ticked, the messages
+the thread held before that echo travel with the question as a labelled part of the turn (see
+[the Slack adapter](channels-slack.md)); nothing about them is posted in the thread.
 
 Everything the picker cannot do is said privately to the invoker, through the interaction's
 `response_url`, and nothing is posted in the channel:
@@ -449,6 +466,13 @@ Everything the picker cannot do is said privately to the invoker, through the in
 | on submit: the picked agent no longer validates | "I don't know an agent named `…`", with the current roster |
 | on submit: the picked agent is installed but cannot run | "*Agent* is installed but cannot start a conversation right now: <reason>. I haven't started anything." (+ the roster when it lists agents) |
 | on submit: the bot is not in the channel and cannot join | "Invite me to the channel and try again." |
+
+One more notice reaches the person who opened the conversation, as an ephemeral in the thread
+rather than through the `response_url`, because by then the conversation is running:
+
+| when | notice |
+|---|---|
+| the thread's earlier messages could not be read (`missing_scope`, `not_in_channel`, a timeout) | "I couldn't read the earlier messages in this thread (`<reason>`), so the agent only sees your question." |
 
 ## Answering: click and reply
 

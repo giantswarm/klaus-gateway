@@ -1178,14 +1178,24 @@ type fakeSlackAPI struct {
 	// non-empty return fails that call with the given slack error code. For
 	// conditional failures failWith cannot express (e.g. reject only branded
 	// posts).
-	failIf      func(path string, params map[string]any) string
+	failIf func(path string, params map[string]any) string
+	// respondFn, when set for a path, builds that call's response from its
+	// params. It serves what one canned body cannot: a paged
+	// conversations.replies, or a users.info answering per user.
+	respondFn   map[string]func(params map[string]any) string
 	seq         int
 	botUserID   string // returned as user_id from auth.test
 	botUsername string // returned as user from auth.test
 }
 
 func newFakeSlackAPI() *fakeSlackAPI {
-	return &fakeSlackAPI{failWith: map[string]string{}, respondWith: map[string]string{}, botUserID: "UBOT", botUsername: "swarmgeist"}
+	return &fakeSlackAPI{
+		failWith:    map[string]string{},
+		respondWith: map[string]string{},
+		respondFn:   map[string]func(map[string]any) string{},
+		botUserID:   "UBOT",
+		botUsername: "swarmgeist",
+	}
 }
 
 func (f *fakeSlackAPI) server(t *testing.T) *httptest.Server {
@@ -1209,6 +1219,9 @@ func (f *fakeSlackAPI) server(t *testing.T) *httptest.Server {
 			code = f.failIf(path, params)
 		}
 		canned := f.respondWith[path]
+		if fn := f.respondFn[path]; fn != nil && code == "" {
+			canned = fn(params)
+		}
 		f.seq++
 		ts := fmt.Sprintf("1700000000.%06d", f.seq)
 		botID := f.botUserID
@@ -1243,6 +1256,13 @@ func (f *fakeSlackAPI) setFail(path, code string) {
 func (f *fakeSlackAPI) setResponse(path, body string) {
 	f.mu.Lock()
 	f.respondWith[path] = body
+	f.mu.Unlock()
+}
+
+// setResponder makes the fake build path's response from each call's params.
+func (f *fakeSlackAPI) setResponder(path string, fn func(params map[string]any) string) {
+	f.mu.Lock()
+	f.respondFn[path] = fn
 	f.mu.Unlock()
 }
 

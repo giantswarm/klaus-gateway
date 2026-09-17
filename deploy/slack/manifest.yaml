@@ -94,6 +94,16 @@ oauth_config:
       - im:history
       # React to messages in channels the bot is a member of.
       - channels:history
+      # Read the messages a thread already held when a conversation opens
+      # inside it, so the agent is given what the thread said (the "Ask an
+      # agent here" shortcut, an /agent reply, a mention under an alert).
+      # channels:history and im:history above cover public channels and DMs;
+      # these two add private channels and group DMs. Slack applies a new
+      # scope only on re-install, so an existing app must be re-installed;
+      # until then a thread in a private channel answers missing_scope and the
+      # turn simply runs without the thread's context.
+      - groups:history
+      - mpim:history
       # Download message attachments (url_private) so they can be forwarded to
       # the agent. Without this the token is unauthorized and Slack serves an
       # HTML sign-in page instead of the file bytes.
