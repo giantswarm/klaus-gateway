@@ -30,7 +30,7 @@ func TestThreadRecord_AgentInitiatorAndGrantSurviveRestart(t *testing.T) {
 	// A reply inside an existing thread: the /agent prefix still opens the
 	// conversation, because nothing is recorded for the thread yet.
 	sendEvent(t, srv1, mention("U1", "/agent issue-agent what happened?", "900.2", "900.1"))
-	require.Eventually(t, func() bool { return gw1.resolveCount() == 1 }, 2*time.Second, 50*time.Millisecond)
+	require.Eventually(t, func() bool { return gw1.resolveCount() == 1 }, flowWait, 50*time.Millisecond)
 	require.Equal(t, "issue-agent", resolved1()[0].AgentRef)
 	sendAccessInteraction(t, srv1, "U1", accessAllowAction, "900.1", "U2", api.URL+"/response")
 
@@ -40,7 +40,7 @@ func TestThreadRecord_AgentInitiatorAndGrantSurviveRestart(t *testing.T) {
 		func(a *slackadapter.Adapter) { a.DefaultAgent = "sre-agent" })
 
 	sendEvent(t, srv2, mention("U2", "and now?", "900.3", "900.1"))
-	require.Eventually(t, func() bool { return gw2.resolveCount() == 1 }, 2*time.Second, 50*time.Millisecond)
+	require.Eventually(t, func() bool { return gw2.resolveCount() == 1 }, flowWait, 50*time.Millisecond)
 	require.Equal(t, "issue-agent", resolved2()[0].AgentRef, "the restarted gateway routes to the recorded agent")
 	require.NotContains(t, allText(fake.pathCalls("chat.postEphemeral")), "waiting for the thread owner",
 		"the grant survived: no consent prompt")
@@ -59,7 +59,7 @@ func TestThreadRecord_StoreOutageStopsTheTurn(t *testing.T) {
 	sendEvent(t, srv, mention("U1", "check the cluster", "910.1", ""))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postEphemeral")), "thread memory")
-	}, 2*time.Second, 50*time.Millisecond, "the author gets the store-unavailable notice")
+	}, flowWait, 50*time.Millisecond, "the author gets the store-unavailable notice")
 	time.Sleep(150 * time.Millisecond)
 	require.Zero(t, gw.resolveCount(), "no turn runs without a thread record")
 	require.NotContains(t, allText(fake.pathCalls("chat.postEphemeral")), "allowed to instruct",

@@ -29,12 +29,13 @@ func TestUsage_CarriesAcrossApprovalPause(t *testing.T) {
 			{Done: true},
 		},
 	}}
-	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
 	sendEvent(t, srv, dmEvent("U1", "clean up", "800.000"))
 	fake.waitForPath(t, "chat.postMessage", 1) // approval prompt surfaced
 
 	// Typed approval resumes the paused task in the same thread.
+	waitThreadIdle(t, a, "800.000")
 	sendEvent(t, srv, dmThreadEvent("U1", "approve", "801.000", "800.000"))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "deleted")
@@ -198,7 +199,7 @@ func TestStop_DuringTurnStartWindow(t *testing.T) {
 	sendEvent(t, srv, dmThreadEvent("U1", "/stop", "301.000", "300.000"))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Stopped")
-	}, 2*time.Second, 50*time.Millisecond, "/stop replies")
+	}, flowWait, 50*time.Millisecond, "/stop replies")
 
 	close(releaseResolve)
 
@@ -225,7 +226,7 @@ func TestStop_IdleThreadSaysNothingRunning(t *testing.T) {
 	sendEvent(t, srv, dmThreadEvent("U1", "/stop", "401.000", "400.000"))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Nothing is running in this thread")
-	}, 2*time.Second, 50*time.Millisecond, "an idle /stop says so")
+	}, flowWait, 50*time.Millisecond, "an idle /stop says so")
 	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "Stopped",
 		"an idle /stop must not claim it stopped anything")
 }
@@ -241,6 +242,7 @@ func TestStop_CancelClearsWorkingReactionSilently(t *testing.T) {
 
 	sendEvent(t, srv, dmEvent("U1", "long task", "555.000"))
 	fake.waitForPath(t, "reactions.add", 1)
+	waitTurnStreaming(t, fake)
 
 	sendEvent(t, srv, dmThreadEvent("U1", "/stop", "556.000", "555.000"))
 	fake.waitForPath(t, "reactions.remove", 1)

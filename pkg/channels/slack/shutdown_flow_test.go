@@ -25,6 +25,7 @@ func TestShutdown_PostsRestartNoticeAndLeavesTheTurnRunning(t *testing.T) {
 
 	sendEvent(t, srv, dmEvent("U1", "long task", "555.000"))
 	fake.waitForPath(t, "reactions.add", 1)
+	waitTurnStreaming(t, fake)
 
 	require.NoError(t, a.Stop(context.Background()))
 
@@ -52,6 +53,7 @@ func TestShutdown_NoticeWithoutDurableStoreMakesNoPromise(t *testing.T) {
 
 	sendEvent(t, srv, dmEvent("U1", "long task", "555.000"))
 	fake.waitForPath(t, "reactions.add", 1)
+	waitTurnStreaming(t, fake)
 
 	require.NoError(t, a.Stop(context.Background()))
 
@@ -74,7 +76,7 @@ func TestShutdown_TextModeReplacesThePlaceholder(t *testing.T) {
 	sendEvent(t, srv, dmEvent("U1", "long task", "100.000"))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "_thinking")
-	}, 2*time.Second, 20*time.Millisecond, "text placeholder posted")
+	}, flowWait, 20*time.Millisecond, "text placeholder posted")
 
 	require.NoError(t, a.Stop(context.Background()))
 
@@ -92,11 +94,12 @@ func TestStop_IsAPlainCancellationNotAShutdown(t *testing.T) {
 
 	sendEvent(t, srv, dmEvent("U1", "long task", "555.000"))
 	fake.waitForPath(t, "reactions.add", 1)
+	waitTurnStreaming(t, fake)
 
 	sendEvent(t, srv, dmThreadEvent("U1", "/stop", "556.000", "555.000"))
 	fake.waitForPath(t, "reactions.remove", 1)
 
-	require.Eventually(t, func() bool { return len(gw.sendCauseList()) == 1 }, 2*time.Second, 20*time.Millisecond)
+	require.Eventually(t, func() bool { return len(gw.sendCauseList()) == 1 }, flowWait, 20*time.Millisecond)
 	cause := gw.sendCauseList()[0]
 	require.ErrorIs(t, cause, context.Canceled)
 	require.False(t, errors.Is(cause, channels.ErrShutdown), "a /stop must not read as a shutdown")
@@ -208,7 +211,10 @@ func TestShutdown_FlushesBufferedTextBeforeTheNotice(t *testing.T) {
 
 	sendEvent(t, srv, dmEvent("U1", "count", "555.000"))
 	fake.waitForPath(t, "reactions.add", 1)
-	require.Eventually(t, func() bool { return len(gw.sendCauseList()) == 0 && gw.resolveCount() == 1 }, 2*time.Second, 20*time.Millisecond)
+	waitTurnStreaming(t, fake)
+	// The turn is resolved before its first delta is read: wait for the text to
+	// have reached the writer, or the shutdown below flushes an empty buffer.
+	require.Eventually(t, func() bool { return len(gw.sendCauseList()) == 0 && gw.deliveredDeltas() == 1 }, flowWait, 20*time.Millisecond)
 
 	require.NoError(t, a.Stop(context.Background()))
 

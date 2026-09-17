@@ -197,7 +197,10 @@ func TestEventsHandler_AppMentionDispatch(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprintf(w, `{"ok":true,"ts":"1234.5678"}`)
 	}))
-	defer fakeSlack.Close()
+	// Registered before the adapter, so it closes after the adapter has stopped
+	// (cleanups run last-registered-first): a winding-down turn never posts
+	// into a closed server.
+	t.Cleanup(fakeSlack.Close)
 
 	_, srv := newEventsAdapter(t, gw, fakeSlack.URL, channelMode)
 
@@ -229,7 +232,7 @@ func TestEventsHandler_AppMentionDispatch(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		return len(capturedMessages) > 0
-	}, 2*time.Second, 50*time.Millisecond, "expected dispatch to fire")
+	}, flowWait, 50*time.Millisecond, "expected dispatch to fire")
 
 	mu.Lock()
 	got := capturedMessages[0]
@@ -252,7 +255,7 @@ func TestEventsHandler_RedeliveredEventDropped(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprintf(w, `{"ok":true,"ts":"1234.5678"}`)
 	}))
-	defer fakeSlack.Close()
+	t.Cleanup(fakeSlack.Close) // closed after the adapter has stopped; cleanups run LIFO
 
 	_, srv := newEventsAdapter(t, gw, fakeSlack.URL)
 
@@ -289,7 +292,7 @@ func TestEventsHandler_NewcomerGatedAfterInitiator(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprintf(w, `{"ok":true,"ts":"1234.5678"}`)
 	}))
-	defer fakeSlack.Close()
+	t.Cleanup(fakeSlack.Close) // closed after the adapter has stopped; cleanups run LIFO
 
 	ctx, cancel := context.WithCancel(context.Background())
 	a := &slackadapter.Adapter{
@@ -321,7 +324,7 @@ func TestEventsHandler_NewcomerGatedAfterInitiator(t *testing.T) {
 	// U001 launches the thread and becomes its initiator.
 	send(`{"type":"event_callback","event":{"type":"app_mention","user":"U001","text":"<@BOT> hi","channel":"C1","ts":"111.222"}}`)
 	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
-		2*time.Second, 50*time.Millisecond, "the initiator's mention is dispatched")
+		flowWait, 50*time.Millisecond, "the initiator's mention is dispatched")
 
 	// U999 tries to instruct in the same thread: gated, not dispatched.
 	send(`{"type":"event_callback","event":{"type":"app_mention","user":"U999","text":"<@BOT> me too","channel":"C1","ts":"333.444","thread_ts":"111.222"}}`)
@@ -381,7 +384,7 @@ func TestBatchedWriter_FlushesContent(t *testing.T) {
 	// wait for the answer text rather than the first postMessage call.
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "hello world")
-	}, 2*time.Second, 20*time.Millisecond, "streamed answer is posted")
+	}, flowWait, 20*time.Millisecond, "streamed answer is posted")
 }
 
 // --- OBO injection ---
@@ -455,7 +458,7 @@ func dispatchAndCaptureOBO(t *testing.T, obo slackadapter.OBOTokenSource, slackU
 		}
 		_, _ = fmt.Fprintf(w, `{"ok":true,"ts":"1234.5678"}`)
 	}))
-	defer fakeSlack.Close()
+	t.Cleanup(fakeSlack.Close) // closed after the adapter has stopped; cleanups run LIFO
 
 	ctx, cancel := context.WithCancel(context.Background())
 	a := &slackadapter.Adapter{
@@ -488,7 +491,7 @@ func dispatchAndCaptureOBO(t *testing.T, obo slackadapter.OBOTokenSource, slackU
 		mu.Lock()
 		defer mu.Unlock()
 		return len(captured) > 0
-	}, 2*time.Second, 50*time.Millisecond, "expected dispatch to fire")
+	}, flowWait, 50*time.Millisecond, "expected dispatch to fire")
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -528,7 +531,7 @@ func TestDispatch_OBO_UnlinkedUserPromptsSignInAndDoesNotDispatch(t *testing.T) 
 
 	require.Eventually(t, func() bool {
 		return signInPrompted(fake)
-	}, 2*time.Second, 50*time.Millisecond, "unlinked user must be prompted to sign in with a real message")
+	}, flowWait, 50*time.Millisecond, "unlinked user must be prompted to sign in with a real message")
 	// In a channel the prompt is ephemeral to its user and carries the link;
 	// the public thread notice anchors it (a thread-scoped ephemeral in a
 	// thread that shows no message is never surfaced by Slack) and carries
@@ -571,7 +574,7 @@ func TestDispatch_OBO_ParksUnlinkedMessageAndReplaysAfterLink(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		return signInPrompted(fake)
-	}, 2*time.Second, 50*time.Millisecond, "unlinked user must be prompted to sign in")
+	}, flowWait, 50*time.Millisecond, "unlinked user must be prompted to sign in")
 	require.Zero(t, gw.resolveCount(), "the message must be parked, not dispatched, before linking")
 
 	// The user completes sign-in; the callback hook replays the parked message.
@@ -582,7 +585,7 @@ func TestDispatch_OBO_ParksUnlinkedMessageAndReplaysAfterLink(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		return len(captured) == 1
-	}, 2*time.Second, 50*time.Millisecond, "the parked message must replay after linking")
+	}, flowWait, 50*time.Millisecond, "the parked message must replay after linking")
 	mu.Lock()
 	got := captured[0]
 	mu.Unlock()
@@ -595,7 +598,7 @@ func TestDispatch_OBO_ParksUnlinkedMessageAndReplaysAfterLink(t *testing.T) {
 	// here: the replay's own output is the handoff signal.
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postEphemeral")), "Signed in")
-	}, 2*time.Second, 50*time.Millisecond, "the link completion is confirmed to the user")
+	}, flowWait, 50*time.Millisecond, "the link completion is confirmed to the user")
 	var confirm recordedCall
 	for _, call := range fake.pathCalls("chat.postEphemeral") {
 		if text, _ := call.params["text"].(string); strings.Contains(text, "Signed in") {
@@ -667,14 +670,14 @@ func TestDispatch_OBO_NewcomerReplaysToAccessPromptNotAgent(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		return len(captured) == 1
-	}, 2*time.Second, 50*time.Millisecond, "the initiator's turn is dispatched")
+	}, flowWait, 50*time.Millisecond, "the initiator's turn is dispatched")
 
 	// A newcomer (unlinked) tries to instruct in the same thread: parked + prompted
 	// to sign in, not dispatched.
 	send(`{"type":"event_callback","event":{"type":"app_mention","user":"U2","text":"<@BOT> me too","channel":"C1","ts":"333.444","thread_ts":"111.222"}}`)
 	require.Eventually(t, func() bool {
 		return signInPrompted(fake)
-	}, 2*time.Second, 50*time.Millisecond, "the newcomer is prompted to sign in")
+	}, flowWait, 50*time.Millisecond, "the newcomer is prompted to sign in")
 	mu.Lock()
 	require.Equal(t, 1, len(captured), "an unlinked newcomer must not reach the agent")
 	mu.Unlock()
@@ -707,7 +710,7 @@ func TestDispatch_OBO_TokenErrorAbortsTurn(t *testing.T) {
 		}
 		_, _ = fmt.Fprintf(w, `{"ok":true,"ts":"1234.5678"}`)
 	}))
-	defer fakeSlack.Close()
+	t.Cleanup(fakeSlack.Close) // closed after the adapter has stopped; cleanups run LIFO
 
 	gw := &stubGateway{}
 	a, srv := newEventsAdapter(t, gw, fakeSlack.URL, channelMode)
@@ -728,7 +731,7 @@ func TestDispatch_OBO_TokenErrorAbortsTurn(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		return messages >= 1
-	}, 2*time.Second, 50*time.Millisecond, "a transient token failure must surface an error message")
+	}, flowWait, 50*time.Millisecond, "a transient token failure must surface an error message")
 	require.Zero(t, gw.resolveCount(), "a transient token failure must not reach the agent as the SA")
 }
 
@@ -794,7 +797,7 @@ func captureEphemeral(t *testing.T) (*httptest.Server, func() []map[string]any) 
 
 func TestLogout_Unlinks(t *testing.T) {
 	fakeSlack, _ := captureEphemeral(t)
-	defer fakeSlack.Close()
+	t.Cleanup(fakeSlack.Close) // closed after the adapter has stopped; cleanups run LIFO
 
 	obo := &fakeOBO{linkedUser: "U123", token: "human-token"}
 	gw := &stubGateway{}
@@ -816,7 +819,7 @@ func TestLogout_Unlinks(t *testing.T) {
 		obo.mu.Lock()
 		defer obo.mu.Unlock()
 		return len(obo.unlinked) == 1 && obo.unlinked[0] == "U123"
-	}, 2*time.Second, 50*time.Millisecond, "/logout must unlink the Slack user")
+	}, flowWait, 50*time.Millisecond, "/logout must unlink the Slack user")
 
 	require.Zero(t, gw.resolveCount(), "/logout must be consumed, not dispatched to the agent")
 }
@@ -841,7 +844,7 @@ func TestLogin_PostsSignInPrompt(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		return signInPrompted(fake)
-	}, 2*time.Second, 50*time.Millisecond, "/login must post a sign-in prompt")
+	}, flowWait, 50*time.Millisecond, "/login must post a sign-in prompt")
 	require.Zero(t, gw.resolveCount(), "/login must be consumed, not dispatched to the agent")
 }
 
@@ -882,6 +885,11 @@ type stubGateway struct {
 	// deltas were consumed, the context cause it ended with (a shutdown names
 	// channels.ErrShutdown; a /stop is a plain cancellation).
 	sendCauses []error
+	// delivered counts the deltas the adapter has actually taken off the
+	// stream. A turn is resolved before its first delta is read, so a test
+	// that needs the content to be in the writer (a shutdown flush, say)
+	// waits on this rather than on the resolve.
+	delivered int
 	// resumes, when set, backs the restart-recovery capability (InFlightTurns,
 	// InFlightTurn, ResumeTurn); nil reports no turns left running.
 	resumes *stubResumes
@@ -1000,6 +1008,14 @@ func (s *stubGateway) ResumeTurn(ctx context.Context, msg channels.InboundMessag
 	return ch, nil
 }
 
+// deliveredDeltas returns how many deltas the adapter has taken off the
+// streams of this gateway.
+func (s *stubGateway) deliveredDeltas() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.delivered
+}
+
 // sendCauseList returns the recorded context causes of the ended sends.
 func (s *stubGateway) sendCauseList() []error {
 	s.mu.Lock()
@@ -1095,6 +1111,9 @@ func (s *stubGateway) SendCompletion(ctx context.Context, _ channels.InstanceRef
 			}
 			select {
 			case ch <- d:
+				s.mu.Lock()
+				s.delivered++
+				s.mu.Unlock()
 			case <-ctx.Done():
 				recordCause()
 				return
@@ -1136,7 +1155,7 @@ func TestBatchedWriter_CombinesDeltas(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "foobar")
-	}, 2*time.Second, 50*time.Millisecond, "expected foobar in the posted answer")
+	}, flowWait, 50*time.Millisecond, "expected foobar in the posted answer")
 }
 
 // --- Progress reactions & serialization (black-box via fake Slack Web API) ---
@@ -1243,7 +1262,7 @@ func (f *fakeSlackAPI) waitForPath(t *testing.T, path string, n int) {
 	t.Helper()
 	require.Eventually(t, func() bool {
 		return len(f.pathCalls(path)) >= n
-	}, 2*time.Second, 20*time.Millisecond, "expected >=%d call(s) to %s", n, path)
+	}, flowWait, 20*time.Millisecond, "expected >=%d call(s) to %s", n, path)
 }
 
 // signInPromptPrefix is the opening of the sign-in prompt, asserted on whichever
@@ -1379,7 +1398,7 @@ func TestProgress_FailedReactionOnError(t *testing.T) {
 	require.Contains(t, fake.reactionNames("reactions.add"), "x", "failed reaction added on error delta")
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "the turn failed")
-	}, 2*time.Second, 20*time.Millisecond, "the retry note is posted in the thread")
+	}, flowWait, 20*time.Millisecond, "the retry note is posted in the thread")
 	for _, c := range fake.pathCalls("chat.postMessage") {
 		if strings.Contains(fmt.Sprint(c.params["text"]), "the turn failed") {
 			require.Equal(t, "333.000", c.params["thread_ts"], "the note lands in the turn's thread")
@@ -1406,7 +1425,7 @@ func TestProgress_FailureAfterContentPostsNoNote(t *testing.T) {
 	require.Equal(t, []string{"eyes", "x"}, fake.reactionNames("reactions.add"))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allBlockText(fake.pathCalls("chat.postMessage")), "partial answer")
-	}, 2*time.Second, 20*time.Millisecond, "the streamed content reached the thread")
+	}, flowWait, 20*time.Millisecond, "the streamed content reached the thread")
 	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "the turn failed", "no generic note under streamed content")
 }
 
@@ -1572,7 +1591,7 @@ func TestSerializeResumeWhileTurnInFlight(t *testing.T) {
 	sendInteraction(t, srv, "hitl_approve", "999.000")
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "still finishing")
-	}, 2*time.Second, 20*time.Millisecond, "expected a busy notice for the concurrent button click")
+	}, flowWait, 20*time.Millisecond, "expected a busy notice for the concurrent button click")
 	require.Equal(t, 1, gw.resolveCount(), "resume rejected before reaching the agent")
 
 	close(hold)
@@ -1593,7 +1612,7 @@ func TestSerializeTurnsPerThread(t *testing.T) {
 	sendEvent(t, srv, dmThreadEvent("U1", "second", "667.000", "666.000"))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "still finishing")
-	}, 2*time.Second, 20*time.Millisecond, "expected a busy notice for the second turn")
+	}, flowWait, 20*time.Millisecond, "expected a busy notice for the second turn")
 
 	require.Equal(t, 1, gw.resolveCount(), "second turn is rejected before reaching the agent")
 	close(hold)
@@ -1611,7 +1630,7 @@ func TestDispatch_PreStreamFailurePostsNote(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "the turn failed")
-	}, 2*time.Second, 20*time.Millisecond, "a pre-stream dispatch failure must post the failure note")
+	}, flowWait, 20*time.Millisecond, "a pre-stream dispatch failure must post the failure note")
 }
 
 // A slash command the gateway does not own ("/invite", a typo) must not fall
@@ -1626,12 +1645,12 @@ func TestHandleInbound_UnknownSlashCommandIntercepted(t *testing.T) {
 	sendEvent(t, srv, mention("U1", "/invite <@U2>", "100.000", ""))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "not one of my commands")
-	}, 2*time.Second, 20*time.Millisecond, "an unknown command replies with a notice")
+	}, flowWait, 20*time.Millisecond, "an unknown command replies with a notice")
 	require.Zero(t, gw.resolveCount(), "an unknown slash command must not reach the agent")
 
 	sendEvent(t, srv, mention("U1", "/etc/hosts on node X is broken", "101.000", ""))
 	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
-		2*time.Second, 20*time.Millisecond, "a path-shaped prompt still dispatches")
+		flowWait, 20*time.Millisecond, "a path-shaped prompt still dispatches")
 }
 
 // A plain (non-mention) reply in a thread the bot has no trace of stays fully
@@ -1661,7 +1680,7 @@ func TestHandleInbound_ThreadBroadcastReplyDispatches(t *testing.T) {
 	// The first turn's answer marks the thread slot as about to free.
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "answer-text")
-	}, 2*time.Second, 50*time.Millisecond, "the mention's turn completes")
+	}, flowWait, 50*time.Millisecond, "the mention's turn completes")
 
 	broadcast := `{"type":"event_callback","event":{"type":"message","subtype":"thread_broadcast","user":"U1","text":"and then?","channel":"C1","ts":"401.000","thread_ts":"400.000"}}`
 	seq := 0
@@ -1695,7 +1714,7 @@ func TestHandleInbound_FileShareReplyDispatches(t *testing.T) {
 	// The first turn's answer marks the thread slot as about to free.
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "answer-text")
-	}, 2*time.Second, 50*time.Millisecond, "the mention's turn completes")
+	}, flowWait, 50*time.Millisecond, "the mention's turn completes")
 
 	// The file has no url_private, so dispatch drops it by name (posting the
 	// dropped-attachments notice) without touching the network; the caption
@@ -1711,7 +1730,7 @@ func TestHandleInbound_FileShareReplyDispatches(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "shot.png")
-	}, 2*time.Second, 50*time.Millisecond,
+	}, flowWait, 50*time.Millisecond,
 		"the attachment metadata travelled into dispatch (named in the dropped-attachments notice)")
 }
 
@@ -1728,12 +1747,12 @@ func TestStop_TextModePlaceholderResolved(t *testing.T) {
 	sendEvent(t, srv, dmEvent("U1", "long task", "100.000"))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "_thinking")
-	}, 2*time.Second, 20*time.Millisecond, "text placeholder posted")
+	}, flowWait, 20*time.Millisecond, "text placeholder posted")
 
 	sendEvent(t, srv, dmThreadEvent("U1", "/stop", "101.000", "100.000"))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.update")), "(stopped)")
-	}, 2*time.Second, 20*time.Millisecond, "the placeholder is replaced on stop")
+	}, flowWait, 20*time.Millisecond, "the placeholder is replaced on stop")
 }
 
 // A turn pausing on an approval prompt before any streamed content in
@@ -1750,7 +1769,7 @@ func TestPrompt_TextModePlaceholderResolved(t *testing.T) {
 	sendEvent(t, srv, dmEvent("U1", "do it", "100.000"))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.update")), "(waiting for your input")
-	}, 2*time.Second, 20*time.Millisecond, "the placeholder is replaced when the turn pauses")
+	}, flowWait, 20*time.Millisecond, "the placeholder is replaced when the turn pauses")
 }
 
 // A retried delivery whose original never reached the handler (pod restart,
@@ -1766,7 +1785,7 @@ func TestEventsHandler_RetryWithUnseenEventIDProcessed(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprintf(w, `{"ok":true,"ts":"1234.5678"}`)
 	}))
-	defer fakeSlack.Close()
+	t.Cleanup(fakeSlack.Close) // closed after the adapter has stopped; cleanups run LIFO
 
 	_, srv := newEventsAdapter(t, gw, fakeSlack.URL, channelMode)
 
@@ -1790,7 +1809,7 @@ func TestEventsHandler_RetryWithUnseenEventIDProcessed(t *testing.T) {
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 
 	require.Eventually(t, func() bool { return dispatched.Load() == 1 },
-		2*time.Second, 10*time.Millisecond,
+		flowWait, 10*time.Millisecond,
 		"a retry whose original delivery was lost must be processed")
 }
 
@@ -1806,7 +1825,7 @@ func TestEventsHandler_DuplicateEventIDDropped(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprintf(w, `{"ok":true,"ts":"1234.5678"}`)
 	}))
-	defer fakeSlack.Close()
+	t.Cleanup(fakeSlack.Close) // closed after the adapter has stopped; cleanups run LIFO
 
 	_, srv := newEventsAdapter(t, gw, fakeSlack.URL, channelMode)
 
@@ -1842,7 +1861,7 @@ func TestEventsHandler_DuplicateEventIDDropped(t *testing.T) {
 	// duplicate is dropped there rather than pre-ack: both deliveries return 200,
 	// but only one turn is dispatched.
 	require.Eventually(t, func() bool { return dispatched.Load() >= 1 },
-		2*time.Second, 10*time.Millisecond)
+		flowWait, 10*time.Millisecond)
 	time.Sleep(200 * time.Millisecond)
 	require.Equal(t, int32(1), dispatched.Load(), "duplicate delivery must not start a second turn")
 }
@@ -1869,7 +1888,7 @@ func TestDetails_DefaultOn_RendersToolActivity(t *testing.T) {
 	require.Eventually(t, func() bool {
 		text := allBlockText(fake.pathCalls("chat.postMessage"))
 		return strings.Contains(text, "list_pods") && strings.Contains(text, "Found 3 pods.")
-	}, 2*time.Second, 20*time.Millisecond, "default-on details should render the tool call and the answer")
+	}, flowWait, 20*time.Millisecond, "default-on details should render the tool call and the answer")
 }
 
 func TestDetails_Off_SuppressesToolActivity(t *testing.T) {
@@ -1885,7 +1904,7 @@ func TestDetails_Off_SuppressesToolActivity(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		return strings.Contains(allBlockText(fake.pathCalls("chat.postMessage")), "Found 3 pods.")
-	}, 2*time.Second, 20*time.Millisecond, "the answer should still be posted")
+	}, flowWait, 20*time.Millisecond, "the answer should still be posted")
 	require.NotContains(t, allBlockText(fake.pathCalls("chat.postMessage")), "list_pods",
 		"details off must not render tool activity")
 }
@@ -1906,7 +1925,7 @@ func TestResume_PostsStartingFreshWhenSessionGone(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "starting fresh")
-	}, 2*time.Second, 20*time.Millisecond, "a gone session should trigger the starting-fresh notice")
+	}, flowWait, 20*time.Millisecond, "a gone session should trigger the starting-fresh notice")
 	require.Equal(t, 1, gw.resumeCount())
 }
 
@@ -1956,13 +1975,13 @@ func TestUsage_DMTopLevelReportsSession(t *testing.T) {
 	sendEvent(t, srv, dmEvent("U1", "count pods", "100.000"))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "3 pods running.")
-	}, 2*time.Second, 20*time.Millisecond, "the turn must complete before /usage is sent")
+	}, flowWait, 20*time.Millisecond, "the turn must complete before /usage is sent")
 
 	// /usage typed as a new top-level DM message: its own ts is the threadID.
 	sendEvent(t, srv, dmEvent("U1", "/usage", "200.000"))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Last turn — in 10 · out 5 · total 15")
-	}, 2*time.Second, 20*time.Millisecond, "a top-level DM /usage must report the channel's usage")
+	}, flowWait, 20*time.Millisecond, "a top-level DM /usage must report the channel's usage")
 }
 
 // /usage mentioned in a channel thread no turn ever ran in replies with
@@ -1975,7 +1994,7 @@ func TestUsage_ChannelFreshThreadGetsGuidance(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "as a reply inside the agent's thread")
-	}, 2*time.Second, 20*time.Millisecond)
+	}, flowWait, 20*time.Millisecond)
 	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "not available yet")
 }
 
@@ -1993,12 +2012,12 @@ func TestUsage_InThreadStillWorks(t *testing.T) {
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_mention","user":"U1","text":"<@UBOT> count pods","channel":"C1","ts":"100.000"}}`)
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "done.")
-	}, 2*time.Second, 20*time.Millisecond, "the turn must complete before /usage is sent")
+	}, flowWait, 20*time.Millisecond, "the turn must complete before /usage is sent")
 
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","user":"U1","text":"/usage","channel":"C1","ts":"101.000","thread_ts":"100.000"}}`)
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Last turn — in 7 · out 3 · total 10")
-	}, 2*time.Second, 20*time.Millisecond)
+	}, flowWait, 20*time.Millisecond)
 }
 
 // Slack refusing the reply's rendering does not fail a turn the agent

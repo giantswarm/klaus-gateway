@@ -156,7 +156,7 @@ func TestSessionStopped_CancelsRunningTurn(t *testing.T) {
 	require.Eventually(t, func() bool {
 		posts, _, _ := rec.snapshot()
 		return len(posts) == 1
-	}, 2*time.Second, 10*time.Millisecond, "expected the stopped notice in the thread")
+	}, flowWait, 10*time.Millisecond, "expected the stopped notice in the thread")
 
 	posts, ephemerals, statuses := rec.snapshot()
 	require.Equal(t, []string{fmt.Sprintf(stopStoppedByNotice, stopEventUser)}, posts,
@@ -176,7 +176,7 @@ func TestSessionStopped_NoRunningTurnSetsActive(t *testing.T) {
 	require.Eventually(t, func() bool {
 		_, _, statuses := rec.snapshot()
 		return len(statuses) == 1
-	}, 2*time.Second, 10*time.Millisecond, "expected the session to be set back to active")
+	}, flowWait, 10*time.Millisecond, "expected the session to be set back to active")
 
 	posts, ephemerals, statuses := rec.snapshot()
 	require.Equal(t, []string{string(sessionActive)}, statuses)
@@ -230,7 +230,7 @@ func TestSessionStopped_NotPermittedUserIsRefused(t *testing.T) {
 	require.Eventually(t, func() bool {
 		_, ephemerals, _ := rec.snapshot()
 		return len(ephemerals) == 1
-	}, 2*time.Second, 10*time.Millisecond, "expected the refusal to reach the presser")
+	}, flowWait, 10*time.Millisecond, "expected the refusal to reach the presser")
 
 	posts, ephemerals, statuses := rec.snapshot()
 	require.Equal(t, []string{notPermittedNotice}, ephemerals)

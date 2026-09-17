@@ -74,7 +74,7 @@ func TestAskAgentShortcut_StartsConversationInTheMessageThread(t *testing.T) {
 
 	sendAskAgentSubmission(t, srv, "U1", view["private_metadata"].(string), "kagent/sre-agent", "why are pods crashlooping?")
 	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
-		2*time.Second, 50*time.Millisecond, "the submission dispatches the first turn")
+		flowWait, 50*time.Millisecond, "the submission dispatches the first turn")
 
 	echo := fake.pathCalls("chat.postMessage")[0]
 	require.Equal(t, "C1", echo.params["channel"])
@@ -115,7 +115,7 @@ func TestAskAgentShortcut_RootMessageOpensItsOwnThread(t *testing.T) {
 
 	sendAskAgentSubmission(t, srv, "U1", pmRaw, "kagent/sre-agent", "what happened here?")
 	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
-		2*time.Second, 50*time.Millisecond, "the submission dispatches the first turn")
+		flowWait, 50*time.Millisecond, "the submission dispatches the first turn")
 
 	require.Equal(t, "500.000", fake.pathCalls("chat.postMessage")[0].params["thread_ts"])
 	require.Equal(t, "500.000", resolved()[0].ThreadID)

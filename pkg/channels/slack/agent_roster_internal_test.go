@@ -102,7 +102,7 @@ func TestRosterBestEffort_StaleServesImmediatelyAndRefreshesOnce(t *testing.T) {
 		a.rosterMu.Lock()
 		defer a.rosterMu.Unlock()
 		return len(a.rosterCached) == 1 && a.rosterCached[0].DisplayName == "SRE Assistant v2"
-	}, 2*time.Second, 10*time.Millisecond, "the background refresh lands")
+	}, flowWait, 10*time.Millisecond, "the background refresh lands")
 
 	roster.mu.Lock()
 	calls := roster.calls

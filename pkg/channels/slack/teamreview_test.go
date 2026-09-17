@@ -180,7 +180,7 @@ func updatedWith(fake *fakeSlackAPI, ts string, texts ...string) bool {
 
 func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	require.Eventually(t, cond, 2*time.Second, 20*time.Millisecond, what)
+	require.Eventually(t, cond, flowWait, 20*time.Millisecond, what)
 }
 
 func TestTeamReview_RendersApproveAndLink(t *testing.T) {
