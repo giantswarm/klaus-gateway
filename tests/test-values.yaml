@@ -2,19 +2,16 @@
 # cluster. The default chart renders a ServiceMonitor (Prometheus Operator
 # CRD), which does not exist on a bare kind cluster, so it is disabled here.
 #
-# Branch builds use push: false in the push-to-registries job, so the dev
-# image referenced by the packaged chart's appVersion is never pushed to
-# gsoci. Pin image.tag to a released version so ATS doesn't ImagePullBackOff.
-# Bump this whenever the pinned binary is too old to pass the smoke test.
+# The image is not pinned: the branch build pushes the branch's own dev image
+# (branchPublish in giantswarm/github), execute-chart-tests waits on that push,
+# and the chart's stamped appVersion is that dev tag. The smoke test therefore
+# runs this chart with this binary.
 #
 # The chart default driver is "operator", which requires --operator-mcp-url.
 # No klaus-operator runs on the smoke cluster; the gateway dials the URL
 # lazily, so a placeholder is enough to boot.
 serviceMonitor:
   enabled: false
-
-image:
-  tag: "0.19.1"
 
 lifecycle:
   operatorMCPURL: "http://klaus-operator.klaus-operator.svc:8090/mcp"
