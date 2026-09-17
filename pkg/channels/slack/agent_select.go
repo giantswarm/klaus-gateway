@@ -275,16 +275,25 @@ func (a *Adapter) agentUnavailableReply(ctx context.Context, name string) string
 }
 
 // agentNotRunnableReply renders the refusal of an agent that exists but cannot
-// run, naming the reason the a2a layer gave. ok is false for any other error,
-// which the caller answers with the generic unavailable reply.
+// run, naming the reason the a2a layer gave, and appends the roster when it
+// lists agents so the person can pick one that works. ok is false for any
+// other error, which the caller answers with the generic unavailable reply.
 func (a *Adapter) agentNotRunnableReply(ctx context.Context, ref string, err error) (string, bool) {
 	var ue *pkga2a.AgentUnavailableError
 	if !errors.As(err, &ue) {
 		return "", false
 	}
-	// The roster lists selectable templates only, so the name lookup falls
-	// through to the technical name here — which is what the user typed.
-	return fmt.Sprintf(agentNotRunnableNotice, escapeMrkdwn(a.agentNameFor(ctx, ref)), escapeMrkdwn(ue.Reason)), true
+	// The reason is free text from a Kubernetes condition or a gRPC status: a
+	// compile error can span lines and end with a period, and it lands in the
+	// middle of one sentence here.
+	reason := strings.TrimSuffix(strings.Join(strings.Fields(ue.Reason), " "), ".")
+	// The roster's cache can still hold the agent's display name (the picker
+	// listed it seconds ago); the technical name the user typed is the fallback.
+	text := fmt.Sprintf(agentNotRunnableNotice, escapeMrkdwn(a.agentNameFor(ctx, ref)), escapeMrkdwn(reason))
+	if listing, lerr := a.rosterListing(ctx); lerr == nil && listing != agentRosterEmpty {
+		text += "\n\n" + listing
+	}
+	return text, true
 }
 
 // agentAmbiguousReply renders the loud ambiguous-selection failure with the

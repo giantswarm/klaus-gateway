@@ -844,8 +844,10 @@ type notRunnableCards struct{}
 func (notRunnableCards) CardIdentity(context.Context, string) (string, string) { return "", "" }
 func (notRunnableCards) CardInfo(context.Context, string) (string, string, error) {
 	return "", "", &pkga2a.AgentUnavailableError{
-		Ref:    "kagent/sre-agent",
-		Reason: "no Harness admits this AgentTemplate (it carries no admission label a platform Harness selects)",
+		Ref: "kagent/sre-agent",
+		// Free text from a condition message: lines and a trailing period, which
+		// the notice must fold into one sentence.
+		Reason: "no Harness admits this AgentTemplate\n  (it carries no admission label\n  a platform Harness selects).",
 	}
 }
 
@@ -857,15 +859,17 @@ func TestAgentSelection_NotRunnableAgentIsRefusedWithReason(t *testing.T) {
 	gw, _ := capturingGateway()
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, func(a *slackadapter.Adapter) {
 		a.DefaultAgent = "kagent/swarmgeist"
-		a.Roster = &fakeRoster{}
+		a.Roster = &fakeRoster{agents: []pkga2a.AgentInfo{{Name: "issue-agent", Namespace: "kagent", DisplayName: "Issue Agent"}}}
 		a.AgentCards = notRunnableCards{}
 	})
 
 	sendEvent(t, srv, mention("U1", "/agent sre-agent do things", "100.000", ""))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")),
-			"is installed but cannot start a conversation right now: no Harness admits this AgentTemplate")
-	}, 2*time.Second, 50*time.Millisecond, "the refusal names the real reason")
+			"*sre-agent* is installed but cannot start a conversation right now: no Harness admits this AgentTemplate (it carries no admission label a platform Harness selects). I haven't started anything.")
+	}, 2*time.Second, 50*time.Millisecond, "the refusal names the real reason, folded into one sentence")
+	require.Contains(t, allText(fake.pathCalls("chat.postMessage")), "*Issue Agent*",
+		"the roster follows, so the person can pick an agent that runs")
 	time.Sleep(100 * time.Millisecond)
 	require.Zero(t, gw.resolveCount(), "nothing is dispatched")
 	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "I don't know an agent named")
