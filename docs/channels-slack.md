@@ -423,9 +423,12 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
   (as reported by the roster), falling back to the resource's own name — `sre-agent`, not the
   underscored `sre_agent` the AgentCard publishes. The AgentCard supplies only the icon, which
   therefore stays keyed to the technical name: renaming an agent relabels it without changing
-  how it looks. When no icon is available the app's own icon is kept. Swarmgeist's other
-  messages (sign-in, errors, the DM redirect, the channel intro) keep the app's default
-  identity. Requires `chat:write.customize`.
+  how it looks. When no icon is available the app's own icon is kept. An agent whose display
+  name is the app's own name (the bot user's profile name, or its handle when `users:read` is
+  not granted; compared case-insensitively) is not branded at all: it posts under the app
+  identity, so the app and its namesake agent — typically the default agent — never appear as
+  two faces with one name in a thread. Swarmgeist's other messages (sign-in, errors, the DM
+  redirect, the channel intro) keep the app's default identity. Requires `chat:write.customize`.
 - **Inspect agent steps.** By default a turn shows only a compact status ticker and a
   one-line tool receipt. To see the actual tool calls after the fact, invoke the
   **Inspect agent steps** message shortcut (⋯ menu → Apps) on any message in the thread:
