@@ -2225,9 +2225,10 @@ func (a *Adapter) humanToken(ctx context.Context, slackChannel, threadID, slackU
 }
 
 // applyInitiatorIdentity makes a granted collaborator's turn run under the
-// thread initiator's identity. The thread is one shared kagent session with no
-// per-caller identity (user_id and the STS token cache are both session-scoped),
-// so every turn must forward the same principal or the session forks per sender.
+// thread initiator's identity. The thread is bound to one AgentInstance, which
+// the controller created and addresses under the initiator's principal.
+// Forwarding that same principal on every turn keeps the conversation on that
+// instance and makes the agent act with the initiator's rights, not the sender's.
 // It swaps in the initiator's token and records the sender (msg.Subject,
 // best-effort resolved to an email) as attribution. The initiator's own turns,
 // and turns where the initiator's token cannot be minted, keep the sender's own
