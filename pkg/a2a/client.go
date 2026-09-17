@@ -80,6 +80,23 @@ var (
 	ErrAgentUnavailable = errors.New("a2a: agent unavailable")
 )
 
+// AgentUnavailableError says why a template that exists cannot start a
+// conversation: no Harness admits it, or the admitting Harness has not
+// compiled a ready revision. It matches ErrAgentUnavailable in errors.Is, so a
+// channel can render the reason instead of parsing the message.
+type AgentUnavailableError struct {
+	// Ref is the agent ref as selected.
+	Ref string
+	// Reason is the sentence the roster readiness check or the controller gave.
+	Reason string
+}
+
+func (e *AgentUnavailableError) Error() string {
+	return fmt.Sprintf("%s: %s: %s", ErrAgentUnavailable.Error(), e.Ref, e.Reason)
+}
+
+func (e *AgentUnavailableError) Is(target error) bool { return target == ErrAgentUnavailable }
+
 // Config configures a Client.
 type Config struct {
 	// Target is the controller's gRPC endpoint, reached through agentgateway:

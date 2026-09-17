@@ -58,6 +58,11 @@ const agentNothingSelectedHint = "Nothing was selected — include your question
 // caller appends the current roster when it is available.
 const agentUnavailableNotice = "⚠️ I don't know an agent named `%s` (or it isn't reachable right now), so I haven't started anything."
 
+// agentNotRunnableNotice reports a selection of an agent that exists but
+// cannot start a conversation; %s are the agent's display name and the reason
+// the a2a layer gives (a Harness admission or readiness problem).
+const agentNotRunnableNotice = "⚠️ *%s* is installed but cannot start a conversation right now: %s. I haven't started anything."
+
 // agentSelectionUnavailable answers /agent and the slash command's picker on a
 // gateway with no agent-card client to validate names against (A2A not
 // configured).
@@ -166,6 +171,10 @@ func (a *Adapter) handleAgentSelection(ctx context.Context, cmd *slashCommand, m
 			reply(agentRosterSignIn)
 			return false
 		}
+		if text, ok := a.agentNotRunnableReply(ctx, ref, err); ok {
+			reply(text)
+			return false
+		}
 		reply(a.agentUnavailableReply(ctx, name))
 		return false
 	}
@@ -263,6 +272,28 @@ func (a *Adapter) agentUnavailableReply(ctx context.Context, name string) string
 		text += "\n\n" + listing
 	}
 	return text
+}
+
+// agentNotRunnableReply renders the refusal of an agent that exists but cannot
+// run, naming the reason the a2a layer gave, and appends the roster when it
+// lists agents so the person can pick one that works. ok is false for any
+// other error, which the caller answers with the generic unavailable reply.
+func (a *Adapter) agentNotRunnableReply(ctx context.Context, ref string, err error) (string, bool) {
+	var ue *pkga2a.AgentUnavailableError
+	if !errors.As(err, &ue) {
+		return "", false
+	}
+	// The reason is free text from a Kubernetes condition or a gRPC status: a
+	// compile error can span lines and end with a period, and it lands in the
+	// middle of one sentence here.
+	reason := strings.TrimSuffix(strings.Join(strings.Fields(ue.Reason), " "), ".")
+	// The roster's cache can still hold the agent's display name (the picker
+	// listed it seconds ago); the technical name the user typed is the fallback.
+	text := fmt.Sprintf(agentNotRunnableNotice, escapeMrkdwn(a.agentNameFor(ctx, ref)), escapeMrkdwn(reason))
+	if listing, lerr := a.rosterListing(ctx); lerr == nil && listing != agentRosterEmpty {
+		text += "\n\n" + listing
+	}
+	return text, true
 }
 
 // agentAmbiguousReply renders the loud ambiguous-selection failure with the

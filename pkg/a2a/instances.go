@@ -51,7 +51,7 @@ func (c *Client) CreateInstance(ctx context.Context, agentRef, requestID string)
 		return Instance{}, err
 	}
 	if info.Unavailable != "" {
-		return Instance{}, fmt.Errorf("%w: %s: %s", ErrAgentUnavailable, agentRef, info.Unavailable)
+		return Instance{}, &AgentUnavailableError{Ref: agentRef, Reason: info.Unavailable}
 	}
 	callCtx, err := c.serviceCtx(ctx)
 	if err != nil {
@@ -65,7 +65,7 @@ func (c *Client) CreateInstance(ctx context.Context, agentRef, requestID string)
 	if err != nil {
 		switch status.Code(err) {
 		case codes.FailedPrecondition:
-			return Instance{}, fmt.Errorf("%w: %s: %s", ErrAgentUnavailable, agentRef, status.Convert(err).Message())
+			return Instance{}, &AgentUnavailableError{Ref: agentRef, Reason: status.Convert(err).Message()}
 		case codes.AlreadyExists:
 			return Instance{}, fmt.Errorf("a2a: create AgentInstance for %s: request id %s was already used for a different conversation: %w", agentRef, requestID, err)
 		}

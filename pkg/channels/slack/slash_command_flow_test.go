@@ -493,3 +493,29 @@ func (s *syncBuffer) String() string {
 }
 
 var _ = channels.InboundMessage{}
+
+// A picked agent that stopped being runnable between the listing and the
+// submit is refused with the reason, through the response URL: no root, no
+// turn, and not as an unknown name.
+func TestAskAgentSubmission_NotRunnableAgentIsRefusedWithReason(t *testing.T) {
+	fake := newFakeSlackAPI()
+	api := fake.server(t)
+	gw, _ := capturingGateway()
+	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, func(a *slackadapter.Adapter) {
+		a.DefaultAgent = "kagent/swarmgeist"
+		a.Roster = pickerRoster()
+		a.AgentCards = notRunnableCards{}
+	})
+
+	sendSlashCommand(t, srv, "C1", "U1", "", api.URL+"/response_url")
+	pm := openedView(t, fake)["private_metadata"].(string)
+
+	sendAskAgentSubmission(t, srv, "U1", pm, "kagent/sre-agent", "why are pods crashlooping?")
+
+	fake.waitForPath(t, "response_url", 1)
+	require.Contains(t, responseURLTexts(fake),
+		"is installed but cannot start a conversation right now: no Harness admits this AgentTemplate")
+	require.NotContains(t, responseURLTexts(fake), "I don't know an agent named")
+	require.Empty(t, fake.pathCalls("chat.postMessage"), "no root is posted")
+	require.Equal(t, 0, gw.resolveCount())
+}
