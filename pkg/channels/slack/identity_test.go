@@ -289,6 +289,84 @@ func TestBranding_RosterFailureDeliversReplyAndIsNotRetried(t *testing.T) {
 		"the failure is cached, so branding does not re-ask the controller")
 }
 
+// An agent that carries the app's own name posts under the app identity: no
+// username, no icon_url, so the reply wears the app's face like Slack's own
+// thread furniture does. The match is case-insensitive — the fake's auth.test
+// handle is `swarmgeist`, the agent's display name "Swarmgeist".
+func TestBranding_AppNamesakeAgentPostsAsTheApp(t *testing.T) {
+	fake := newFakeSlackAPI() // auth.test user "swarmgeist"
+	roster := &fakeRoster{agents: []pkga2a.AgentInfo{
+		{Name: "swarmgeist", DisplayName: "Swarmgeist"},
+	}}
+	_, srv := newEventsAdapter(t, replyGateway(), fake.server(t).URL, func(a *slackadapter.Adapter) {
+		a.DefaultAgent = "swarmgeist"
+		a.Roster = roster
+		a.AgentCards = stubCards{username: "swarmgeist", iconURL: "https://avatars.test/v1/swarmgeist.png"}
+	})
+
+	awaitAgentReply(t, srv, fake, "507.000")
+
+	reply := replyPost(t, fake)
+	_, hasName := reply.params["username"]
+	_, hasIcon := reply.params["icon_url"]
+	require.False(t, hasName, "the namesake agent posts under the app's own name")
+	require.False(t, hasIcon, "and under the app's own icon")
+}
+
+// replyPost returns the chat.postMessage that carried the stub agent's answer.
+func replyPost(t *testing.T, fake *fakeSlackAPI) recordedCall {
+	t.Helper()
+	for _, c := range fake.pathCalls("chat.postMessage") {
+		if text, _ := c.params["text"].(string); strings.Contains(text, "all good") {
+			return c
+		}
+	}
+	require.FailNow(t, "no chat.postMessage carried the agent's answer")
+	return recordedCall{}
+}
+
+// Without `users:read` the bot's own users.info is refused with missing_scope
+// on every call. The namesake check then works off the auth.test handle and,
+// since the refusal is final, asks users.info once per process — not once per
+// post.
+func TestBranding_NamesakeCheckAsksUsersInfoOnceWithoutScope(t *testing.T) {
+	fake := newFakeSlackAPI()
+	fake.failIf = func(path string, params map[string]any) string {
+		if user, _ := params["user"].(string); path == "users.info" && user == "UBOT" {
+			return "missing_scope"
+		}
+		return ""
+	}
+	roster := &fakeRoster{agents: []pkga2a.AgentInfo{
+		{Name: "swarmgeist", DisplayName: "Swarmgeist"},
+	}}
+	gw := &stubGateway{sendQueue: [][]channels.OutboundDelta{
+		{{Content: "all good"}, {Done: true}},
+		{{Content: "all good"}, {Done: true}},
+	}}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, func(a *slackadapter.Adapter) {
+		a.DefaultAgent = "swarmgeist"
+		a.Roster = roster
+	})
+
+	awaitAgentReply(t, srv, fake, "508.000")
+	sendEvent(t, srv, dmEvent("U1", "status?", "509.000"))
+	require.Eventually(t, func() bool {
+		return strings.Count(allText(fake.pathCalls("chat.postMessage")), "all good") >= 2
+	}, 2*time.Second, 20*time.Millisecond, "the second reply arrives too")
+
+	for _, u := range usernamesOf(fake.pathCalls("chat.postMessage")) {
+		require.Empty(t, u, "the namesake agent posts as the app on the auth.test handle alone")
+	}
+	botLookups := 0
+	for _, c := range fake.pathCalls("users.info") {
+		if user, _ := c.params["user"].(string); user == "UBOT" {
+			botLookups++
+		}
+	}
+	require.Equal(t, 1, botLookups, "a missing_scope refusal is final and not retried per post")
+}
+
 // The bot being added to a channel posts exactly one Swarmgeist intro.
 func TestMemberJoined_SelfJoinPostsIntro(t *testing.T) {
 	fake := newFakeSlackAPI() // botUserID "UBOT"

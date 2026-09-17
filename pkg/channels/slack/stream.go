@@ -1889,7 +1889,7 @@ func (c *slackAPIClient) lookupUserEmail(ctx context.Context, userID string) (st
 		return "", fmt.Errorf("slack users.info: decode: %w", err)
 	}
 	if !result.OK {
-		return "", fmt.Errorf("slack users.info: %s", result.Err)
+		return "", &apiError{method: "users.info", code: result.Err}
 	}
 	return result.User.Profile.Email, nil
 }
@@ -1919,7 +1919,7 @@ func (c *slackAPIClient) lookupUserDisplayName(ctx context.Context, userID strin
 		return "", fmt.Errorf("slack users.info: decode: %w", err)
 	}
 	if !result.OK {
-		return "", fmt.Errorf("slack users.info: %s", result.Err)
+		return "", &apiError{method: "users.info", code: result.Err}
 	}
 	if result.User.Profile.DisplayName != "" {
 		return result.User.Profile.DisplayName, nil
