@@ -787,3 +787,21 @@ func TestAgentSelection_UnlinkedListingAsksToSignIn(t *testing.T) {
 	}, 2*time.Second, 50*time.Millisecond, "the unlinked caller is told to sign in")
 	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "can't list the available agents")
 }
+
+// A quoted selection from a caller the gateway cannot identify asks them to
+// sign in as well: the roster it needs is read as the caller, and "try again"
+// would send an unlinked person in circles here too.
+func TestAgentSelection_QuotedUnlinkedAsksToSignIn(t *testing.T) {
+	fake := newFakeSlackAPI()
+	roster := &fakeRoster{err: pkga2a.ErrNoIdentity}
+	gw, _ := capturingGateway()
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, withSelection(roster, &fakeCards{}))
+
+	sendEvent(t, srv, mention("U1", `/agent "SRE Agent" do things`, "100.000", ""))
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "I need to know who you are")
+	}, 2*time.Second, 50*time.Millisecond, "the unlinked caller is told to sign in")
+	time.Sleep(100 * time.Millisecond)
+	require.Zero(t, gw.resolveCount(), "nothing is dispatched")
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "couldn't check the available agents")
+}
