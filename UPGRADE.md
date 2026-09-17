@@ -4,6 +4,18 @@ Breaking or operator-visible changes between releases, newest first. The
 `CHANGELOG.md` lists every change; this file covers what an operator has to
 do or decide.
 
+## Next — the "Ask an agent here" Slack shortcut
+
+The Slack app gains a second message shortcut, `ask_agent_here`, which starts a conversation with
+a chosen agent inside any message's thread. Slack does not apply manifests by itself, so an
+existing app needs it added by hand at api.slack.com/apps (Features → Interactivity & Shortcuts →
+Shortcuts → Create New Shortcut → On messages) with callback ID `ask_agent_here`; re-importing
+`deploy/slack/manifest.yaml` does the same. No reinstall and no new scope: `commands` is already
+granted on any install that carries the existing shortcut. The display name is per app — the
+gateway routes on the callback ID alone — so name it whatever suits your workspace. Slack lists a
+shortcut under "Connect to apps" in a message's ⋯ menu only after a person has used it once;
+until then it sits behind "More message shortcuts…".
+
 ## Next — Slack thread state lives in the routing store
 
 Every Slack thread now has one row in the routing store: its agent, its initiator, the

@@ -97,22 +97,19 @@ const inspectRetainedElsewhereHint = "_This thread has been served, so the tool 
 // inspection message; the context blocks carry the real content.
 const inspectFallbackText = "Agent tool activity"
 
-// handleMessageAction routes a Slack message-shortcut invocation. Only the
-// "Inspect agent steps" shortcut is registered; anything else (a stale app
-// config, a forged payload) is dropped. The payload is attacker-shaped input:
-// the reply is ephemeral to the invoker and thread-scoped, and the rendered
-// content was escaped when it was recorded, so no field is trusted beyond
-// routing.
+// handleMessageAction routes a Slack message-shortcut invocation by its
+// callback id: "Inspect agent steps" to the tool-log rendering, "Ask an agent
+// here" to the agent picker. Anything else (a stale app config, a forged
+// payload) is dropped. The payload is attacker-shaped input, so no field is
+// trusted beyond routing: the inspection reply is ephemeral to the invoker and
+// thread-scoped, and its rendered content was escaped when it was recorded.
 func (a *Adapter) handleMessageAction(ctx context.Context, payload interactionPayload) {
-	if payload.CallbackID != inspectShortcutCallbackID {
-		return
-	}
 	if payload.User.ID == "" || payload.Channel.ID == "" {
 		return
 	}
-	// The shortcut can be invoked on any message of the thread; the log is
-	// keyed by the thread root (thread_ts, or the message's own ts when it is
-	// a top-level message).
+	// Either shortcut can be invoked on any message of a thread, and both key
+	// on the thread root: thread_ts, or the message's own ts when it is a
+	// top-level message (which the picker then opens the conversation in).
 	threadID := payload.Message.ThreadTS
 	if threadID == "" {
 		threadID = payload.Message.TS
@@ -120,7 +117,12 @@ func (a *Adapter) handleMessageAction(ctx context.Context, payload interactionPa
 	if threadID == "" {
 		return
 	}
-	a.postInspection(ctx, payload.Channel.ID, threadID, payload.User.ID)
+	switch payload.CallbackID {
+	case inspectShortcutCallbackID:
+		a.postInspection(ctx, payload.Channel.ID, threadID, payload.User.ID)
+	case askAgentShortcutCallbackID:
+		a.handleAskAgentShortcut(ctx, payload, threadID)
+	}
 }
 
 // postInspection renders threadID's retained tool log as ephemeral in-thread

@@ -37,7 +37,10 @@ type interactionPayload struct {
 	Type string `json:"type"`
 	// CallbackID identifies a shortcut on a message_action payload.
 	CallbackID string `json:"callback_id"`
-	User       struct {
+	// TriggerID opens a modal in response to the interaction; Slack
+	// invalidates it 3 seconds after issuing it.
+	TriggerID string `json:"trigger_id"`
+	User      struct {
 		ID string `json:"id"`
 	} `json:"user"`
 	Channel struct {
@@ -182,8 +185,9 @@ func (h *interactionsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 }
 
 // routeInteraction dispatches a parsed Slack interaction payload: a
-// message_action (the "Inspect agent steps" shortcut) to the inspection
-// renderer, a view_submission of the agent picker to the conversation opener,
+// message_action (the "Inspect agent steps" and "Ask an agent here" shortcuts)
+// to the shortcut router, a view_submission of the agent picker to the
+// conversation opener,
 // a block_actions click to the pending HITL task. Shared by the HTTP
 // interactions endpoint (Events API mode) and the Socket Mode
 // interactive-envelope handler (dev mode), so both work identically in both

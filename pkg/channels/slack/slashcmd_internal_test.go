@@ -44,7 +44,7 @@ func TestAskAgentModal_OptionsCapDedupAndDefault(t *testing.T) {
 	agents[7].DisplayName = ""                    // falls back to the technical name
 	agents[8].DisplayName = strings.Repeat("x", 120)
 
-	view, err := a.askAgentModal(agents, slashCommandPayload{ChannelID: "C1", UserID: "U1", ResponseURL: "https://hooks/r"})
+	view, err := a.askAgentModal(agents, askAgentRequest{Channel: "C1", User: "U1", ResponseURL: "https://hooks/r"})
 	require.NoError(t, err)
 
 	labels, values, initial := modalOptions(t, view)
@@ -67,14 +67,14 @@ func TestAskAgentModal_PrefillAndNoDefault(t *testing.T) {
 	a := pickerAdapter("kagent/elsewhere")
 	agents := []pkga2a.AgentInfo{{Name: "sre-agent", Namespace: "kagent", DisplayName: "SRE Agent"}}
 
-	view, err := a.askAgentModal(agents, slashCommandPayload{ChannelID: "C1", UserID: "U1", Text: "  " + strings.Repeat("q", modalQuestionMax+10) + "  "})
+	view, err := a.askAgentModal(agents, askAgentRequest{Channel: "C1", User: "U1", Prefill: "  " + strings.Repeat("q", modalQuestionMax+10) + "  "})
 	require.NoError(t, err)
 	_, _, initial := modalOptions(t, view)
 	require.Empty(t, initial)
 	question := view[bkBlocks].([]any)[1].(map[string]any)[bkElement].(map[string]any)
 	require.Equal(t, modalQuestionMax, len([]rune(question[bkInitialValue].(string))))
 
-	view, err = a.askAgentModal(agents, slashCommandPayload{ChannelID: "C1", UserID: "U1", Text: "   "})
+	view, err = a.askAgentModal(agents, askAgentRequest{Channel: "C1", User: "U1", Prefill: "   "})
 	require.NoError(t, err)
 	question = view[bkBlocks].([]any)[1].(map[string]any)[bkElement].(map[string]any)
 	_, has := question[bkInitialValue]
@@ -107,7 +107,7 @@ func TestAskAgentModal_DefaultPastCapIsKept(t *testing.T) {
 	for i := 0; i < modalMaxAgents+3; i++ {
 		agents = append(agents, pkga2a.AgentInfo{Name: fmt.Sprintf("a-%03d", i), Namespace: "kagent"})
 	}
-	view, err := a.askAgentModal(agents, slashCommandPayload{ChannelID: "C1", UserID: "U1"})
+	view, err := a.askAgentModal(agents, askAgentRequest{Channel: "C1", User: "U1"})
 	require.NoError(t, err)
 	_, values, initial := modalOptions(t, view)
 	require.Len(t, values, modalMaxAgents)
