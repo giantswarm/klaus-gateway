@@ -214,13 +214,20 @@ func (a *Adapter) openAgentPicker(ctx context.Context, req askAgentRequest, noti
 	// answers. An unlinked caller on a cold cache is told to sign in.
 	pctx = a.withCallerToken(pctx, req.User)
 	// A shortcut targets an existing thread: one that already talks to an
-	// agent is refused, because a second conversation would fork it. The read
-	// spends the same budget as everything else before views.open, and the
-	// agent's name resolves as the caller — the way the submit-time re-check
-	// names it, so both refusals agree.
+	// agent is refused, because a second conversation would fork it; one that
+	// already belongs to someone else is refused too, because a conversation
+	// opened here would run under the owner's delegated identity without the
+	// consent the access prompt exists to ask for. The reads spend the same
+	// budget as everything else before views.open, and the agent's name
+	// resolves as the caller — the way the submit-time re-check names it, so
+	// both refusals agree.
 	if req.Thread != "" {
 		if ref, bound := a.threadAgentBinding(pctx, req.Channel, req.Thread); bound {
 			notify(fmt.Sprintf(askAgentThreadBoundNotice, escapeMrkdwn(a.agentNameFor(pctx, ref))))
+			return
+		}
+		if owner := a.accessPolicy().Initiator(pctx, req.Channel, req.Thread); owner != "" && owner != req.User {
+			notify(fmt.Sprintf(askAgentThreadOwnedNotice, owner))
 			return
 		}
 	}
@@ -390,6 +397,20 @@ func (a *Adapter) handleAskAgentSubmission(ctx context.Context, payload interact
 		return
 	}
 
+	// The shortcut's thread exists already, so it is claimed before anything
+	// is posted: SetInitiator makes the submitter its owner, or returns the
+	// owner it already has — a /usage or /stop typed there wrote one, without
+	// an agent. Another person's thread is refused here, with nothing echoed
+	// and nothing bound; their reply in the thread takes the normal path, where
+	// the owner is asked to allow them. Granting them instead would let the
+	// owner's delegated identity act on their word without that consent.
+	if pm.Thread != "" {
+		if owner := a.accessPolicy().SetInitiator(ctx, pm.Channel, pm.Thread, user); owner != user {
+			notify(fmt.Sprintf(askAgentThreadOwnedNotice, owner))
+			return
+		}
+	}
+
 	// Escaped: the display name comes from an Agent CR annotation and this
 	// lands in a mrkdwn-parsed message. Emphasis characters (* _) pass through
 	// and can mangle the bold span — cosmetic, accepted.
@@ -423,14 +444,9 @@ func (a *Adapter) handleAskAgentSubmission(ctx context.Context, payload interact
 
 	// The opening message is the bot's, so the thread state a mention would
 	// carry on its own is written to the thread record here: the submitter
-	// owns the thread, and the thread is bound to the chosen agent. An
-	// existing thread can already have an owner without an agent — a /usage or
-	// /stop typed there wrote one — and SetInitiator keeps the first owner. The
-	// submitter opened this conversation and must be able to continue it, so
-	// in that case they are granted instead.
-	if owner := a.accessPolicy().SetInitiator(ctx, pm.Channel, threadTS, user); owner != user {
-		a.accessPolicy().Grant(ctx, pm.Channel, threadTS, user)
-	}
+	// owns the thread (the slash command's root is brand new; the shortcut's
+	// thread was claimed above), and the thread is bound to the chosen agent.
+	a.accessPolicy().SetInitiator(ctx, pm.Channel, threadTS, user)
 	a.bindThreadAgent(ctx, pm.Channel, threadTS, ref)
 
 	msg := channels.InboundMessage{

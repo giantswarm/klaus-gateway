@@ -204,8 +204,11 @@ agent when it opens, through one of three entry points, and keeps it for life:
   is a top-level one), so an alert another app posted or a running discussion is handed to a
   chosen agent without leaving it. On submit the gateway posts the same "💬 @user asked *Agent*:
   …" echo as a **reply** in that thread, makes the submitter the thread initiator, and runs the
-  question as the first turn. A thread that already talks to an agent is refused — reply in it to
-  ask that agent — because a second conversation would fork the one it has. Refusals and failures
+  question as the first turn. Two kinds of thread are refused, with nothing posted: one that
+  already talks to an agent — reply in it to ask that agent, a second conversation would fork the
+  one it has — and one that already belongs to someone else (a `/usage` or `/stop` typed there
+  made them its initiator) — reply in it, so the owner is asked to allow you, since a conversation
+  opened by the picker would run under the owner's delegated identity. Refusals and failures
   are private to the invoker, like the command's. The shortcut works in DMs too when DMs are
   served.
 

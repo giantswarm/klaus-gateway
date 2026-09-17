@@ -157,13 +157,14 @@ func TestAskAgentShortcut_UnlinkedCallerIsAskedToSignIn(t *testing.T) {
 }
 
 // A thread can already have an owner and no agent — someone typed /usage or
-// /stop there before any conversation. The owner stays (SetInitiator writes
-// once), and the submitter, who opened this conversation, is granted so the
-// turn runs for them instead of parking behind a consent prompt to the owner.
-func TestAskAgentShortcut_ExistingOwnerIsKeptAndSubmitterGranted(t *testing.T) {
+// /stop there before any conversation. The shortcut is refused for anyone
+// else before the picker opens: a conversation opened here would run under
+// the owner's delegated identity, a decision the access prompt exists to take.
+// Nothing is echoed and nothing is bound.
+func TestAskAgentShortcut_ThreadOwnedBySomeoneElseIsRefused(t *testing.T) {
 	fake := newFakeSlackAPI()
 	api := fake.server(t)
-	gw, resolved := capturingGateway()
+	gw, _ := capturingGateway()
 	require.NoError(t, gw.rec().UpdateThreadRecord(context.Background(), "slack", "C1", "100.000", func(e *store.Entry, _ bool) bool {
 		e.Initiator = "UA"
 		return true
@@ -171,20 +172,42 @@ func TestAskAgentShortcut_ExistingOwnerIsKeptAndSubmitterGranted(t *testing.T) {
 	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
 
 	sendAskAgentShortcut(t, srv, "C1", "UB", "200.000", "100.000", api.URL+"/response_url")
-	pmRaw := openedView(t, fake)["private_metadata"].(string)
-	sendAskAgentSubmission(t, srv, "UB", pmRaw, "kagent/sre-agent", "what is going on?")
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
-		2*time.Second, 50*time.Millisecond, "the submitter's own question runs")
-	require.Equal(t, "UB", resolved()[0].Subject)
-	require.NotContains(t, allText(fake.pathCalls("chat.postEphemeral")), "allowed to instruct",
-		"no consent prompt goes to the earlier owner")
 
-	entry, ok, err := gw.rec().ThreadRecord(context.Background(), "slack", "C1", "100.000")
-	require.NoError(t, err)
-	require.True(t, ok)
-	require.Equal(t, "UA", entry.Initiator, "the first owner is kept")
-	require.Contains(t, entry.Granted, "UB", "the submitter is granted")
-	require.Equal(t, "kagent/sre-agent", entry.AgentRef)
+	fake.waitForPath(t, "response_url", 1)
+	require.Contains(t, responseURLTexts(fake), "belongs to <@UA>")
+	require.Empty(t, fake.pathCalls("views.open"), "no picker in another person's thread")
+	require.Equal(t, 0, gw.resolveCount())
+	entry, _, _ := gw.rec().ThreadRecord(context.Background(), "slack", "C1", "100.000")
+	require.Equal(t, "UA", entry.Initiator)
+	require.Empty(t, entry.AgentRef, "nothing is bound")
+	require.Empty(t, entry.Granted, "nobody is granted behind the owner's back")
+}
+
+// The owner appeared between the picker opening and the submit (they typed a
+// command in the thread meanwhile): the submission is refused the same way,
+// before anything is echoed or bound.
+func TestAskAgentShortcut_OwnedBetweenOpenAndSubmitIsRefused(t *testing.T) {
+	fake := newFakeSlackAPI()
+	api := fake.server(t)
+	gw, _ := capturingGateway()
+	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
+
+	sendAskAgentShortcut(t, srv, "C1", "UB", "200.000", "100.000", api.URL+"/response_url")
+	pmRaw := openedView(t, fake)["private_metadata"].(string)
+	require.NoError(t, gw.rec().UpdateThreadRecord(context.Background(), "slack", "C1", "100.000", func(e *store.Entry, _ bool) bool {
+		e.Initiator = "UA"
+		return true
+	}))
+
+	sendAskAgentSubmission(t, srv, "UB", pmRaw, "kagent/sre-agent", "what is going on?")
+	fake.waitForPath(t, "response_url", 1)
+	require.Contains(t, responseURLTexts(fake), "belongs to <@UA>")
+	time.Sleep(150 * time.Millisecond)
+	require.Empty(t, fake.pathCalls("chat.postMessage"), "no echo is posted")
+	require.Equal(t, 0, gw.resolveCount(), "nothing runs")
+	entry, _, _ := gw.rec().ThreadRecord(context.Background(), "slack", "C1", "100.000")
+	require.Equal(t, "UA", entry.Initiator)
+	require.Empty(t, entry.AgentRef, "nothing is bound")
 }
 
 // The thread was free when the picker opened and someone bound it before the

@@ -166,6 +166,12 @@ const (
 	// talks to an agent: the picker opens conversations, and a second one in
 	// the same thread would fork it. %s is the bound agent's display name.
 	askAgentThreadBoundNotice = "_This thread already talks to *%s*. Reply in the thread to ask it — the picker starts conversations in threads that have none yet._"
+	// askAgentThreadOwnedNotice refuses the shortcut in a thread that already
+	// has an owner other than the invoker: the picker would make the owner's
+	// delegated identity act on the invoker's word without the owner's consent.
+	// A reply in the thread takes the normal path, where the owner is asked.
+	// %s is the owner's Slack user id.
+	askAgentThreadOwnedNotice = "_This thread belongs to <@%s>. Ask your question as a reply in the thread — they are asked to allow you — or start a new one._"
 	askAgentInviteNotice      = "⚠️ _I'm not a member of this channel, so I couldn't start the conversation. Invite me to the channel and try again._"
 	askAgentPostFailedNotice  = "⚠️ _I couldn't post your question in this channel just now. Please try again._"
 )
