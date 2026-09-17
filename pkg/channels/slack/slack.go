@@ -700,10 +700,11 @@ func (a *Adapter) botName(ctx context.Context) string {
 // resolveIdentity returns the bot's cached (user ID, display name): auth.test
 // for the ID and username, then users.info for the profile display name. The
 // pair is cached once fully resolved. A users.info failure falls back to the
-// auth.test username for that call only and is not cached — the ID is kept and
-// the name lookup retried next call — so a transient failure cannot pin the
-// fallback name for the process lifetime. Both are empty on auth.test failure
-// (logged).
+// auth.test username. A transient failure is not cached — the ID is kept and
+// the name lookup retried next call — so it cannot pin the fallback name for
+// the process lifetime; a missing_scope refusal (no `users:read`) is final and
+// is cached with the fallback, so the lookup is not repeated on every post that
+// asks for the name. Both are empty on auth.test failure (logged).
 func (a *Adapter) resolveIdentity(ctx context.Context) (id, name string) {
 	a.botIDMu.Lock()
 	if a.botResolved {
@@ -727,8 +728,8 @@ func (a *Adapter) resolveIdentity(ctx context.Context) (id, name string) {
 	resolved := true
 	if gotID != "" {
 		if dn, err := client.lookupUserDisplayName(ctx, gotID); err != nil {
-			a.Logger.Warn("slack: users.info failed for bot, using auth.test username", "error", err)
-			resolved = false
+			resolved = hasErrorCode(err, errCodeMissingScope)
+			a.Logger.Warn("slack: users.info failed for bot, using auth.test username", "error", err, "final", resolved)
 		} else if dn != "" {
 			displayName = dn
 		}
@@ -809,9 +810,16 @@ func (a *Adapter) agentClient(ctx context.Context, agentRef string) *slackAPICli
 // disagree across a roster cache expiry. When a branded post has been rejected
 // with missing_scope, branding is skipped entirely and the agent posts under
 // the app identity — unbranded but delivered.
+//
+// An agent that carries the app's own name posts under the app identity as
+// well. To the reader, the app and its namesake agent are one persona; branding
+// that agent would put a second face — its icon — next to the app's icon on the
+// thread's reply pile, its "is working…" indicator and the sign-in and access
+// prompts, all under the same name. Agents named differently keep their own
+// name and icon, so a hand-off to them stays visible.
 func (a *Adapter) agentClientNamed(ctx context.Context, agentRef, username string) *slackAPIClient {
 	c := a.apiClient()
-	if a.customizeUnsupported.Load() {
+	if a.customizeUnsupported.Load() || a.isAppName(ctx, username) {
 		return c
 	}
 	c.username = username
@@ -819,6 +827,17 @@ func (a *Adapter) agentClientNamed(ctx context.Context, agentRef, username strin
 		_, c.iconURL = a.AgentCards.CardIdentity(ctx, agentRef)
 	}
 	return c
+}
+
+// isAppName reports whether name is the app's own Slack name — the bot user's
+// profile name, or its auth.test handle when the profile is not readable —
+// compared case-insensitively, so the handle `swarmgeist` matches the display
+// name "Swarmgeist". An app name that cannot be resolved matches nothing:
+// branding stays on rather than guessing. The name is cached once resolved, so
+// this costs a lookup once per process, not once per post.
+func (a *Adapter) isAppName(ctx context.Context, name string) bool {
+	appName := a.botName(ctx)
+	return appName != "" && strings.EqualFold(strings.TrimSpace(name), strings.TrimSpace(appName))
 }
 
 // signInAnchor is the message coordinates of a posted sign-in prompt, kept so
