@@ -400,6 +400,12 @@ func (a *Adapter) handleAskAgentSubmission(ctx context.Context, payload interact
 			notify(slashCommandSignInNotice)
 			return
 		}
+		// The picker never offers an unavailable template, so this only fires
+		// when the agent became unavailable between the listing and the submit.
+		if text, ok := a.agentNotRunnableReply(ctx, ref, err); ok {
+			notify(text)
+			return
+		}
 		notify(a.agentUnavailableReply(ctx, ref))
 		return
 	}

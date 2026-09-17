@@ -222,6 +222,10 @@ agent when it opens, through one of three entry points, and keeps it for life:
   are private to the invoker, like the command's. The shortcut works in DMs too when DMs are
   served.
 
+An agent that is installed but that no Harness admits, or whose compiled revision is not ready,
+is refused with that reason instead of as an unknown name — in every entry point — so a name
+typed correctly is never reported as one the gateway does not know.
+
 A thread's agent binding is not re-derived after a restart — it does not need to be. It lives
 in the thread's row in the routing store (see [Threads and conversations](#threads-and-conversations)),
 so on a persistent store (`routing.store: valkey` or `bolt`) a restart changes nothing: same

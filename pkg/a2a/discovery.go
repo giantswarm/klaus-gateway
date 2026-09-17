@@ -85,7 +85,7 @@ func (c *Client) CardInfo(ctx context.Context, agentRef string) (name, descripti
 		return "", "", err
 	}
 	if info.Unavailable != "" {
-		return "", "", fmt.Errorf("%w: %s: %s", ErrAgentUnavailable, agentRef, info.Unavailable)
+		return "", "", &AgentUnavailableError{Ref: agentRef, Reason: info.Unavailable}
 	}
 	name = info.DisplayName
 	if name == "" {

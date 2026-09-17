@@ -447,6 +447,7 @@ Everything the picker cannot do is said privately to the invoker, through the in
 | the roster took longer than the trigger's 3-second life | "Listing the agents took too long for Slack's picker…" |
 | the roster is unreachable, or empty | "I can't list the available agents right now…" / "No agents are installed right now." |
 | on submit: the picked agent no longer validates | "I don't know an agent named `…`", with the current roster |
+| on submit: the picked agent is installed but cannot run | "*Agent* is installed but cannot start a conversation right now: `<reason>`…" |
 | on submit: the bot is not in the channel and cannot join | "Invite me to the channel and try again." |
 
 ## Answering: click and reply

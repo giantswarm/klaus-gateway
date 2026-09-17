@@ -183,6 +183,12 @@ func TestClient_ListAgents_ReadinessAndAnnotations(t *testing.T) {
 	_, _, err = client.CardInfo(ctx, "kagent/orphan")
 	require.ErrorIs(t, err, pkga2a.ErrAgentUnavailable)
 	require.ErrorContains(t, err, "no Harness admits")
+	// The reason is readable without parsing the message, so a channel can
+	// render it instead of calling the agent unknown.
+	var unavailable *pkga2a.AgentUnavailableError
+	require.ErrorAs(t, err, &unavailable)
+	require.Equal(t, "kagent/orphan", unavailable.Ref)
+	require.Contains(t, unavailable.Reason, "no Harness admits this AgentTemplate")
 	_, _, err = client.CardInfo(ctx, "no-status-yet")
 	require.ErrorIs(t, err, pkga2a.ErrAgentUnavailable)
 	require.ErrorContains(t, err, "no status reported yet")
