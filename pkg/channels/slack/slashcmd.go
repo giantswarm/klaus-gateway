@@ -288,8 +288,9 @@ func (a *Adapter) handleAskAgentSubmission(ctx context.Context, payload interact
 	if _, _, err := checker.CardInfo(vctx, ref); err != nil {
 		a.Logger.Info("slack: ask-agent selection failed validation", "agent", ref, "user", user, "error", err)
 		if errors.Is(err, pkga2a.ErrNoIdentity) {
-			// A warm roster cache let an unlinked caller open the picker; the
-			// card read has no such cache. Not an unknown agent: a sign-in.
+			// The picker opened on a cached roster, but this replica — another
+			// one, or this one after a restart — holds a cold cache, so the card
+			// read needs the caller's identity. Not an unknown agent: a sign-in.
 			notify(slashCommandSignInNotice)
 			return
 		}
