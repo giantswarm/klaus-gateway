@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"net"
 	"strings"
 	"sync"
@@ -66,6 +67,10 @@ type Store struct {
 	mu     sync.Mutex
 	client valkeygo.Client
 	closed bool
+
+	// keyLocks serialise read-modify-write on one key inside this process.
+	// Valkey has no CAS here, so a second replica is not protected.
+	keyLocks [64]sync.Mutex
 }
 
 // New returns a Store for opts. Nothing is dialed here: the first operation
@@ -148,9 +153,38 @@ func (s *Store) Delete(ctx context.Context, k store.Key) error {
 	return nil
 }
 
+// Update applies mutate to the entry at k and writes the result when mutate
+// reports a change. The read-modify-write holds a per-key lock, so two writers
+// of the same row inside this process cannot lose each other's fields; a
+// second replica writing the same key is not protected.
+func (s *Store) Update(ctx context.Context, k store.Key, mutate func(e *store.Entry, found bool) bool) error {
+	mu := s.keyLock(k)
+	mu.Lock()
+	defer mu.Unlock()
+	e, found, err := s.Get(ctx, k)
+	if err != nil {
+		return err
+	}
+	if !found {
+		e = store.Entry{}
+	}
+	if !mutate(&e, found) {
+		return nil
+	}
+	return s.Put(ctx, k, e)
+}
+
+// keyLock is the stripe serialising updates of k.
+func (s *Store) keyLock(k store.Key) *sync.Mutex {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(k.String()))
+	return &s.keyLocks[h.Sum32()%uint32(len(s.keyLocks))]
+}
+
 // List returns every live entry under the key prefix: a SCAN by prefix, then
-// the values in batches. A key under the prefix that is not a routing key is
-// reported as an error, since the namespace is this store's alone.
+// the values in batches. A key under the prefix that no longer parses as a
+// routing key is skipped: a key of an older layout outlives the upgrade until
+// an operator removes it, and must not break the listing.
 func (s *Store) List(ctx context.Context) ([]store.KeyEntry, error) {
 	c, err := s.conn()
 	if err != nil {
@@ -185,7 +219,7 @@ func (s *Store) List(ctx context.Context) ([]store.KeyEntry, error) {
 			}
 			k, err := store.ParseKey(strings.TrimPrefix(batch[i], s.opts.KeyPrefix))
 			if err != nil {
-				return nil, fmt.Errorf("valkey: key %s under the routing prefix: %w", batch[i], err)
+				continue
 			}
 			out = append(out, store.KeyEntry{Key: k, Entry: e})
 		}

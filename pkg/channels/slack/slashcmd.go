@@ -20,10 +20,9 @@ import (
 // gateway answers with a modal — an agent picker over the live roster and a
 // question box — and, on submit, posts the conversation's root message itself
 // and dispatches the question as the thread's first turn. The root is a bot
-// message, so the conversation's agent and initiator cannot be re-derived
-// from human text after a restart the way a prefixed mention's can; they are
-// carried on the root as a conversation marker instead (see
-// conversationMarker), which threadAgent and threadInitiator read first.
+// message with nothing to re-derive from, but nothing needs re-deriving: the
+// submission writes the thread's agent and initiator into its thread record in
+// the routing store, which is where every later turn reads them.
 //
 // The gateway never depends on the command's name: Slack routes the payload by
 // the URL, so each app manifest may call it what it likes. Slack does not
@@ -94,42 +93,6 @@ type askAgentPrivateMetadata struct {
 	Channel     string `json:"c"`
 	User        string `json:"u"`
 	ResponseURL string `json:"r"`
-}
-
-// conversationMarker is the durable record of a conversation the gateway
-// opened itself: its agent and its initiator. A bot-authored root has no
-// /agent prefix to re-derive the binding from, and the earliest human in the
-// thread is whoever replied first, not who opened it. The marker rides in the
-// block_id of the root's Block Kit section (conversationMarkerPrefix + JSON):
-// invisible to users, stored by Slack with the message, and returned by
-// conversations.replies. Slack message metadata would be the purpose-built
-// carrier, but Slack drops custom metadata unless its schema is declared in
-// the manifest, and the manifest of a classic Slack app has no place for
-// that (only Deno automation apps do) — verified 2026-09-10. JSON keys are
-// short to stay well inside the 255-char block_id cap.
-type conversationMarker struct {
-	AgentRef   string `json:"a"`
-	Initiator  string `json:"u"`
-	EntryPoint string `json:"e,omitempty"`
-}
-
-func (m conversationMarker) encode() string {
-	b, _ := json.Marshal(m)
-	return conversationMarkerPrefix + string(b)
-}
-
-// decodeConversationMarker parses a block_id; nil when it is not a marker or
-// the marker names no agent.
-func decodeConversationMarker(blockID string) *conversationMarker {
-	raw, ok := strings.CutPrefix(blockID, conversationMarkerPrefix)
-	if !ok {
-		return nil
-	}
-	var m conversationMarker
-	if err := json.Unmarshal([]byte(raw), &m); err != nil || m.AgentRef == "" {
-		return nil
-	}
-	return &m
 }
 
 // handleSlashCommand opens the agent picker modal for a slash command, or
@@ -328,22 +291,13 @@ func (a *Adapter) handleAskAgentSubmission(ctx context.Context, payload interact
 		return
 	}
 
-	// Escaped like the launch announcement's name: it comes from an Agent CR
-	// annotation. Emphasis characters (* _) pass through and can mangle the
-	// bold span — cosmetic, accepted (see postLaunchAnnouncement).
+	// Escaped: the display name comes from an Agent CR annotation and this
+	// lands in a mrkdwn-parsed message. Emphasis characters (* _) pass through
+	// and can mangle the bold span — cosmetic, accepted.
 	name := a.agentNameFor(ctx, ref)
 	rootText := fmt.Sprintf(askAgentRootText, user, escapeMrkdwn(name), quoteMrkdwn(escapeMrkdwn(question)))
-	marker := conversationMarker{AgentRef: ref, Initiator: user, EntryPoint: entryPointSlashCommand}
-	if id := marker.encode(); len(id) > blockIDMax {
-		// Unreachable for DNS-1123 refs (namespace/name is at most 127 bytes),
-		// but a marker Slack would reject must fail here, named, not as an
-		// opaque invalid_blocks on the post.
-		a.Logger.Error("slack: conversation marker exceeds Slack's block_id cap", "agent", ref, "len", len(id), "cap", blockIDMax)
-		notify(askAgentPostFailedNotice)
-		return
-	}
 	client := a.agentClientNamed(ctx, ref, name)
-	rootTS, err := client.postConversationRoot(ctx, pm.Channel, rootText, marker)
+	rootTS, err := client.postMessage(ctx, pm.Channel, rootText, "")
 	if err != nil && isNotInChannelErr(err) {
 		// A public channel the bot was never invited to: join (channels:join)
 		// and retry once. A private channel refuses the join, and the user is
@@ -353,7 +307,7 @@ func (a *Adapter) handleAskAgentSubmission(ctx context.Context, payload interact
 			notify(askAgentInviteNotice)
 			return
 		}
-		rootTS, err = client.postConversationRoot(ctx, pm.Channel, rootText, marker)
+		rootTS, err = client.postMessage(ctx, pm.Channel, rootText, "")
 	}
 	if err != nil {
 		a.Logger.Warn("slack: ask-agent root post failed", "channel", pm.Channel, "error", err)
@@ -361,13 +315,11 @@ func (a *Adapter) handleAskAgentSubmission(ctx context.Context, payload interact
 		return
 	}
 
-	// The root is the bot's, so the thread state a mention would derive from
-	// the root message is recorded here: the submitter owns the thread, the
-	// thread is bound to the chosen agent, and the launch intro is pre-claimed
-	// (the root already names the agent).
-	a.accessPolicy().SetInitiator(rootTS, user)
-	a.bindThreadAgent(rootTS, ref)
-	a.claimLaunchAnnounce(rootTS, ref, true)
+	// The root is the bot's, so the thread state a mention would carry on its
+	// own opening message is written to the thread record here: the submitter
+	// owns the thread, and the thread is bound to the chosen agent.
+	a.accessPolicy().SetInitiator(ctx, pm.Channel, rootTS, user)
+	a.bindThreadAgent(ctx, pm.Channel, rootTS, ref)
 
 	msg := channels.InboundMessage{
 		Channel:   ChannelName,
@@ -377,6 +329,9 @@ func (a *Adapter) handleAskAgentSubmission(ctx context.Context, payload interact
 		Text:      question,
 		Subject:   user,
 		AgentRef:  ref,
+		// The question opens the conversation: it names the agent session and
+		// the session title keys on it.
+		Opener: true,
 	}
 	if err := a.dispatchFrom(ctx, msg, pm.Channel, agentSourceCommand); err != nil && !errors.Is(err, context.Canceled) {
 		a.Logger.Error("slack: ask-agent dispatch error", "thread", rootTS, "error", err)

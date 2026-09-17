@@ -387,3 +387,20 @@ func TestValidate_RejectsRemovedStores(t *testing.T) {
 		})
 	}
 }
+
+func TestThreadTTL_FlagEnvDefault(t *testing.T) {
+	require.Equal(t, 90*24*time.Hour, config.Defaults().ThreadTTL, "the default thread lifetime is 90 days")
+
+	cfg, err := config.Load([]string{"--thread-ttl=48h"})
+	require.NoError(t, err)
+	require.Equal(t, 48*time.Hour, cfg.ThreadTTL)
+
+	t.Setenv("KLAUS_GATEWAY_THREAD_TTL", "72h")
+	cfg, err = config.Load(nil)
+	require.NoError(t, err)
+	require.Equal(t, 72*time.Hour, cfg.ThreadTTL)
+
+	bad := config.Defaults()
+	bad.ThreadTTL = -time.Hour
+	require.Error(t, bad.Validate())
+}

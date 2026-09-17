@@ -322,7 +322,7 @@ func (a *fakeAgent) lastStreamed() *a2apkg.Message {
 // newA2AFacade wires a facade on the fake with a memory store.
 func newA2AFacade(agent *fakeAgent) (*channels.Facade, store.Store) {
 	s := memory.New()
-	return &channels.Facade{Agent: agent, Routes: s}, s
+	return &channels.Facade{Agent: agent, Routes: s, ThreadTTL: channels.DefaultThreadTTL}, s
 }
 
 // taskInfo is the identity of the fake turn's task, as the controller's events
@@ -372,10 +372,12 @@ func TestFacade_SendCompletionViaA2A_FirstTurnCreatesTheInstance(t *testing.T) {
 	wantRequest := channels.SynthesizeContextID("slack", "C1", "", "1700.0001", "kagent/worker")
 	require.Equal(t, []string{wantRequest}, agent.createRequests)
 	require.Equal(t, []string{"inst-kagent/worker-1"}, agent.streamedOn)
-	entry, ok, err := routes.Get(t.Context(), store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700.0001", Agent: "kagent/worker"})
+	entry, ok, err := routes.Get(t.Context(), store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700.0001"})
 	require.NoError(t, err)
 	require.True(t, ok)
 	require.Equal(t, "inst-kagent/worker-1", entry.AgentInstanceID)
+	require.Equal(t, "kagent/worker", entry.AgentRef, "the row names the agent the thread is bound to")
+	require.Equal(t, channels.DefaultThreadTTL, entry.TTL, "the binding slides with the thread's lifetime")
 	require.Empty(t, entry.Instance)
 
 	sent := agent.lastStreamed()
@@ -388,8 +390,8 @@ func TestFacade_SendCompletionViaA2A_FirstTurnCreatesTheInstance(t *testing.T) {
 func TestFacade_SendCompletionViaA2A_LaterTurnsReuseTheBinding(t *testing.T) {
 	agent := newFakeAgent(a2apkg.NewStatusUpdateEvent(taskInfo, a2apkg.TaskStateCompleted, nil))
 	f, routes := newA2AFacade(agent)
-	key := store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700.0001", Agent: "kagent/worker"}
-	require.NoError(t, routes.Put(t.Context(), key, store.Entry{AgentInstanceID: "inst-from-before-the-restart"}))
+	key := store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700.0001"}
+	require.NoError(t, routes.Put(t.Context(), key, store.Entry{AgentRef: "kagent/worker", AgentInstanceID: "inst-from-before-the-restart"}))
 
 	ch, err := f.SendCompletion(t.Context(), channels.InstanceRef{}, slackMsg("and the nodes?"))
 	require.NoError(t, err)
@@ -405,7 +407,7 @@ func TestFacade_SendCompletionViaA2A_LaterTurnsReuseTheBinding(t *testing.T) {
 func TestFacade_SendCompletionViaA2A_RetriedFirstTurnIsIdempotent(t *testing.T) {
 	agent := newFakeAgent(a2apkg.NewStatusUpdateEvent(taskInfo, a2apkg.TaskStateCompleted, nil))
 	f, routes := newA2AFacade(agent)
-	key := store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700.0001", Agent: "kagent/worker"}
+	key := store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700.0001"}
 
 	for range 2 {
 		ch, err := f.SendCompletion(t.Context(), channels.InstanceRef{}, slackMsg("hi"))
@@ -592,8 +594,8 @@ func TestFacade_HitlResumeCarriesThePausedTaskAndTypedResponse(t *testing.T) {
 		Status: a2apkg.TaskStatus{State: a2apkg.TaskStateInputRequired, Message: prompt},
 	}
 	f, routes := newA2AFacade(agent)
-	require.NoError(t, routes.Put(t.Context(), store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700.0001", Agent: "kagent/worker"},
-		store.Entry{AgentInstanceID: "inst-1"}))
+	require.NoError(t, routes.Put(t.Context(), store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700.0001"},
+		store.Entry{AgentRef: "kagent/worker", AgentInstanceID: "inst-1"}))
 
 	msg := slackMsg("approve")
 	msg.TaskID = string(taskInfo.TaskID)
@@ -620,8 +622,8 @@ func TestFacade_HitlResumeRefusedWhenTheTaskIsNotPaused(t *testing.T) {
 	agent := newFakeAgent()
 	agent.tasks[taskInfo.TaskID] = &a2apkg.Task{ID: taskInfo.TaskID, Status: a2apkg.TaskStatus{State: a2apkg.TaskStateCompleted}}
 	f, routes := newA2AFacade(agent)
-	require.NoError(t, routes.Put(t.Context(), store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700.0001", Agent: "kagent/worker"},
-		store.Entry{AgentInstanceID: "inst-1"}))
+	require.NoError(t, routes.Put(t.Context(), store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700.0001"},
+		store.Entry{AgentRef: "kagent/worker", AgentInstanceID: "inst-1"}))
 
 	msg := slackMsg("approve")
 	msg.TaskID = string(taskInfo.TaskID)
@@ -662,7 +664,7 @@ var _ store.Store = memory.New()
 
 func TestFacade_SessionResumable(t *testing.T) {
 	msg := slackMsg("still there?")
-	key := store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700.0001", Agent: "kagent/worker"}
+	key := store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700.0001"}
 
 	t.Run("no binding: starting fresh", func(t *testing.T) {
 		f, _ := newA2AFacade(newFakeAgent())
@@ -675,28 +677,31 @@ func TestFacade_SessionResumable(t *testing.T) {
 		agent := newFakeAgent()
 		agent.instances["inst-1"] = pkga2a.Instance{ID: "inst-1", State: "AGENT_INSTANCE_STATE_SUSPENDED"}
 		f, routes := newA2AFacade(agent)
-		require.NoError(t, routes.Put(t.Context(), key, store.Entry{AgentInstanceID: "inst-1"}))
+		require.NoError(t, routes.Put(t.Context(), key, store.Entry{AgentRef: "kagent/worker", AgentInstanceID: "inst-1"}))
 		exists, checked := f.SessionResumable(t.Context(), msg)
 		require.True(t, checked)
 		require.True(t, exists)
 	})
 
-	t.Run("bound to a deleted instance drops the binding", func(t *testing.T) {
+	t.Run("bound to a deleted instance clears the binding and keeps the thread", func(t *testing.T) {
 		f, routes := newA2AFacade(newFakeAgent())
-		require.NoError(t, routes.Put(t.Context(), key, store.Entry{AgentInstanceID: "inst-gone"}))
+		require.NoError(t, routes.Put(t.Context(), key, store.Entry{AgentRef: "kagent/worker", AgentInstanceID: "inst-gone", Initiator: "U1"}))
 		exists, checked := f.SessionResumable(t.Context(), msg)
 		require.True(t, checked)
 		require.False(t, exists)
-		_, ok, err := routes.Get(t.Context(), key)
+		entry, ok, err := routes.Get(t.Context(), key)
 		require.NoError(t, err)
-		require.False(t, ok, "the next turn must create a fresh instance")
+		require.True(t, ok)
+		require.Empty(t, entry.AgentInstanceID, "the next turn must create a fresh instance")
+		require.Equal(t, "kagent/worker", entry.AgentRef, "the thread keeps its agent")
+		require.Equal(t, "U1", entry.Initiator, "and its initiator")
 	})
 
 	t.Run("lookup error is indeterminate", func(t *testing.T) {
 		agent := newFakeAgent()
 		agent.getErr = errors.New("boom")
 		f, routes := newA2AFacade(agent)
-		require.NoError(t, routes.Put(t.Context(), key, store.Entry{AgentInstanceID: "inst-1"}))
+		require.NoError(t, routes.Put(t.Context(), key, store.Entry{AgentRef: "kagent/worker", AgentInstanceID: "inst-1"}))
 		_, checked := f.SessionResumable(t.Context(), msg)
 		require.False(t, checked)
 	})
@@ -709,27 +714,29 @@ func TestFacade_SessionResumable(t *testing.T) {
 
 func TestFacade_ResetSession(t *testing.T) {
 	msg := slackMsg("resend")
-	key := store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700.0001", Agent: "kagent/worker"}
+	key := store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700.0001"}
 
-	t.Run("deletes the instance and the binding", func(t *testing.T) {
+	t.Run("deletes the instance and clears the binding", func(t *testing.T) {
 		agent := newFakeAgent()
 		agent.instances["inst-1"] = pkga2a.Instance{ID: "inst-1"}
 		f, routes := newA2AFacade(agent)
-		require.NoError(t, routes.Put(t.Context(), key, store.Entry{AgentInstanceID: "inst-1"}))
+		require.NoError(t, routes.Put(t.Context(), key, store.Entry{AgentRef: "kagent/worker", AgentInstanceID: "inst-1", Initiator: "U1"}))
 		reset, err := f.ResetSession(t.Context(), msg)
 		require.NoError(t, err)
 		require.True(t, reset)
 		require.Equal(t, []string{"inst-1"}, agent.deleted)
-		_, ok, err := routes.Get(t.Context(), key)
+		entry, ok, err := routes.Get(t.Context(), key)
 		require.NoError(t, err)
-		require.False(t, ok)
+		require.True(t, ok)
+		require.Empty(t, entry.AgentInstanceID)
+		require.Equal(t, "U1", entry.Initiator, "the thread keeps its initiator")
 	})
 
 	t.Run("delete failure is reported", func(t *testing.T) {
 		agent := newFakeAgent()
 		agent.deleteErr = errors.New("boom")
 		f, routes := newA2AFacade(agent)
-		require.NoError(t, routes.Put(t.Context(), key, store.Entry{AgentInstanceID: "inst-1"}))
+		require.NoError(t, routes.Put(t.Context(), key, store.Entry{AgentRef: "kagent/worker", AgentInstanceID: "inst-1"}))
 		reset, err := f.ResetSession(t.Context(), msg)
 		require.Error(t, err)
 		require.False(t, reset)
@@ -860,7 +867,7 @@ func TestFacade_CompletedTurnIsNotCancelledWhenTheChannelLeavesLate(t *testing.T
 // process to resubscribe to; a /stop (a plain cancellation) cancels the task
 // and drops the record.
 func TestFacade_ShutdownLeavesTheTaskRunningAndRecorded(t *testing.T) {
-	key := store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700.0001", Agent: "kagent/worker"}
+	key := store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700.0001"}
 	// run starts a turn, waits for its record, ends the turn context with
 	// cause, and drains the stream so the pump's bookkeeping has completed.
 	run := func(t *testing.T, cause error) (*fakeAgent, store.Store) {
@@ -939,7 +946,7 @@ func TestFacade_CompletedTurnClearsTheRecordAndIsNotCanceled(t *testing.T) {
 	agent.mu.Lock()
 	defer agent.mu.Unlock()
 	require.Empty(t, agent.canceled, "a completed task is never cancelled by the teardown")
-	key := store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700.0001", Agent: "kagent/worker"}
+	key := store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700.0001"}
 	entry, ok, err := routes.Get(t.Context(), key)
 	require.NoError(t, err)
 	require.True(t, ok)
@@ -950,11 +957,11 @@ func TestFacade_CompletedTurnClearsTheRecordAndIsNotCanceled(t *testing.T) {
 // delivers its result: a task that finished meanwhile arrives whole and its
 // artifacts are rendered as the answer; the record is cleared afterwards.
 func TestFacade_ResumeTurnDeliversAFinishedTask(t *testing.T) {
-	key := store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700.0001", Agent: "kagent/worker"}
+	key := store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700.0001"}
 	seed := func(t *testing.T, agent *fakeAgent) (*channels.Facade, store.Store) {
 		f, routes := newA2AFacade(agent)
 		require.NoError(t, routes.Put(t.Context(), key, store.Entry{
-			AgentInstanceID: "inst-1", TaskID: "task-7",
+			AgentRef: "kagent/worker", AgentInstanceID: "inst-1", TaskID: "task-7",
 			Resume:    map[string]string{"slack_user": "U1"},
 			CreatedAt: time.Now(), LastSeen: time.Now(),
 		}))
@@ -1090,4 +1097,57 @@ func TestFacade_ResumesTurns(t *testing.T) {
 	f.Durable = true
 	require.True(t, f.ResumesTurns())
 	require.False(t, (&channels.Facade{Durable: true}).ResumesTurns(), "no kagent client, no resubscription")
+}
+
+// A thread has one row: the channel's own facts, the agent it is bound to and
+// its AgentInstance live side by side, and no writer erases another's fields.
+func TestInstanceFor_OneRowPerThread(t *testing.T) {
+	agent := newFakeAgent(a2apkg.NewStatusUpdateEvent(taskInfo, a2apkg.TaskStateCompleted, nil))
+	f, routes := newA2AFacade(agent)
+	key := store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700.0001"}
+
+	// The channel records the thread's initiator before the first turn.
+	require.NoError(t, f.UpdateThreadRecord(t.Context(), "slack", "C1", "1700.0001", func(e *store.Entry, _ bool) bool {
+		e.Initiator = "U1"
+		return true
+	}))
+
+	ch, err := f.SendCompletion(t.Context(), channels.InstanceRef{}, slackMsg("hi"))
+	require.NoError(t, err)
+	drain(t, ch)
+
+	entry, ok, err := routes.Get(t.Context(), key)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, "U1", entry.Initiator, "the binding write keeps the channel's fields")
+	require.Equal(t, "kagent/worker", entry.AgentRef)
+	require.Equal(t, "inst-kagent/worker-1", entry.AgentInstanceID)
+
+	// A second turn on the same agent reuses the binding and slides the row.
+	require.NoError(t, routes.Update(t.Context(), key, func(e *store.Entry, _ bool) bool {
+		e.LastSeen = time.Now().Add(-time.Hour)
+		return true
+	}))
+	ch, err = f.SendCompletion(t.Context(), channels.InstanceRef{}, slackMsg("and now?"))
+	require.NoError(t, err)
+	drain(t, ch)
+
+	require.Len(t, agent.createRequests, 1, "a bound thread creates no second instance")
+	entry, _, err = routes.Get(t.Context(), key)
+	require.NoError(t, err)
+	require.WithinDuration(t, time.Now(), entry.LastSeen, time.Minute, "the turn refreshed the row")
+
+	// A turn naming another agent rebinds the thread, keeping what is the
+	// channel's.
+	other := slackMsg("you then")
+	other.AgentRef = "kagent/other"
+	ch, err = f.SendCompletion(t.Context(), channels.InstanceRef{}, other)
+	require.NoError(t, err)
+	drain(t, ch)
+
+	entry, _, err = routes.Get(t.Context(), key)
+	require.NoError(t, err)
+	require.Equal(t, "kagent/other", entry.AgentRef)
+	require.Equal(t, "inst-kagent/other-2", entry.AgentInstanceID)
+	require.Equal(t, "U1", entry.Initiator)
 }

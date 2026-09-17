@@ -36,10 +36,10 @@ a turn without a person's token is refused instead of running as a machine ident
 
 Discovery is a person's call too. The roster is fetched as the caller and cached briefly
 (`ListAgentTemplates` of `a2a.namespace`); reads that happen where no person's token is at hand
-— branding a reply with the agent's display name and icon, recovering a thread's agent after a
-restart — are served from that cache, which every authenticated call refreshes once it is
-older than 30 seconds. Right after a start, before any turn has run, a roster listing without
-a token reports the roster as unavailable until a turn has warmed the cache.
+— branding a reply with the agent's display name and icon — are served from that cache, which
+every authenticated call refreshes once it is older than 30 seconds. Right after a start,
+before any turn has run, a roster listing without a token reports the roster as unavailable
+until a turn has warmed the cache.
 
 ## Agents: the AgentTemplate roster
 
@@ -71,12 +71,17 @@ channel thread to exactly one instance:
    is idempotent per `(creator, request_id)`, so a retried first turn — the binding was not
    written, the process died in between — gets the same instance back instead of a second one.
    The call returns once the instance is READY.
-2. The instance id is persisted in the routing store as the thread's entry
-   (`store.Entry.AgentInstanceID`; key
-   `channel|channelID||threadID|agentRef`, user slot empty because the thread is shared by its
-   participants). It survives a gateway restart on the bolt and Valkey stores and never
-   expires on its own: the instance *is* the conversation, and the controller keeps it until
-   it is deleted.
+2. The instance id and the agent it belongs to are persisted as fields of the thread's row in
+   the routing store (`store.Entry.AgentInstanceID` and `.AgentRef`; key
+   `channel|channelID||threadID`, user slot empty because the thread is shared by its
+   participants) — the same row a channel's own facts about the thread live in, so the binding
+   is written through the store's `Update`, which serialises a read-modify-write per key against
+   every other writer of the row. It survives a gateway restart on the bolt and Valkey stores and
+   slides with the thread's lifetime (`--thread-ttl`, 90 days by default): every turn refreshes
+   the row, and after that long of silence the store drops it. The controller keeps the instance
+   until it is deleted, so a later mention by the same person in that thread gets it back through
+   the idempotent create — the request id has no per-conversation part — while another person
+   gets a new instance and the old one stays in the controller unreferenced.
 3. Every later turn of the thread routes to that instance: the id rides as the
    `x-kagent-agent-instance-id` metadata entry on each A2A call, exactly once. The message's
    `contextId` stays empty — the controller owns the conversation's context id and rejects any
@@ -89,8 +94,11 @@ active surfaces to the channel as the "still working" notice.
 starting-fresh notice and starts a new instance — this is also what a thread from before the
 cut-over to kagent API v2 sees: its earlier conversation is gone and the turn starts a new one.
 A binding whose instance the controller no longer has (`GetAgentInstance` → not found) is
-dropped the same way. The corrupt-session recovery (`ResetSession`) deletes the instance with
-`DeleteAgentInstance` and drops the binding, so the next turn creates a fresh instance.
+treated the same way, and so is the corrupt-session recovery (`ResetSession`, which also calls
+`DeleteAgentInstance`). Both now clear only the row's binding fields (`agent_instance_id`,
+`task_id`, `resume`) rather than the whole row: the thread keeps its agent, and any
+channel-owned facts on the row survive (a Slack thread's initiator and grants), so the next
+turn creates a fresh instance.
 
 ## Human-in-the-loop
 

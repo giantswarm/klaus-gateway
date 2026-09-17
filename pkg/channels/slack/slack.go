@@ -172,8 +172,10 @@ type Adapter struct {
 	ixHandler  http.Handler // interactions endpoint; nil in socketmode
 	cmdHandler http.Handler // slash commands endpoint; nil in socketmode
 
-	accessMu sync.Mutex
-	access   AccessPolicy // lazily initialised via accessPolicy()
+	// recordsMu guards memRecords, the in-process thread recorder used when the
+	// gateway has no routing store (tests, the Klaus-instance path).
+	recordsMu  sync.Mutex
+	memRecords *channels.Facade
 
 	pendingAccessMu sync.Mutex
 	pendingAccess   map[string]map[string][]*pendingAccessReq // threadID -> userID -> messages parked (in order) while the initiator decides
@@ -199,11 +201,13 @@ type Adapter struct {
 	signInNoticesMu sync.Mutex
 	signInNotices   map[string]ttlEntry[string]
 
-	// inactiveHintedMu guards inactiveHinted, the threads whose poster was
-	// already told the thread is inactive, so a dropped reply hints once per
-	// window instead of once per message.
-	inactiveHintedMu sync.Mutex
-	inactiveHinted   map[string]ttlEntry[struct{}]
+	// seenThreadsMu guards seenThreads, the threads this process has handled a
+	// turn in. Deliberately in-memory: "first sight" means first sight by THIS
+	// process, which is what the post-restart checks (a leftover turn to
+	// deliver, an instance to confirm) are about — the thread record in the
+	// store survives the restart and cannot tell.
+	seenThreadsMu sync.Mutex
+	seenThreads   map[string]ttlEntry[struct{}]
 
 	// parkedDropNoticedMu guards parkedDropNoticed, the (user, thread) pairs
 	// already told that parked messages past the cap were dropped within the
@@ -299,13 +303,6 @@ type Adapter struct {
 	connectorMu       sync.Mutex
 	connectorPrompted map[string]map[string]connectorPromptRecord
 
-	// bindingMu guards agentBindings: conversation→agent bindings derived from
-	// the /agent prefix on each conversation's root message. "" records a
-	// checked root with no prefix (default agent). Entries idle past
-	// threadStateTTL are evicted.
-	bindingMu     sync.Mutex
-	agentBindings map[string]ttlEntry[string] // keyed by threadID
-
 	// sessionTitleMu guards sessionTitles: per thread, the title the
 	// conversation's first turn creates its agent session with. Dispatch parks
 	// it on the opening message and the turn that sends the processing status
@@ -313,16 +310,6 @@ type Adapter struct {
 	// turn). Entries idle past threadStateTTL are evicted.
 	sessionTitleMu sync.Mutex
 	sessionTitles  map[string]ttlEntry[string] // keyed by threadID
-
-	// announceMu guards launchAnnounced: the agent last announced with the
-	// "Bringing in …" launch notice, per thread. The intro posts only when it
-	// informs — a thread's first turn, or a change of its bound agent — so
-	// repeated turns carrying the same /agent prefix stay quiet. Entries idle
-	// past threadStateTTL are evicted; the record is in-memory only, so after
-	// an eviction or restart a root turn may announce again — acceptable,
-	// where never announcing is not.
-	announceMu      sync.Mutex
-	launchAnnounced map[string]ttlEntry[string] // threadID -> announced agent ref
 
 	// rosterMu guards the briefly-cached /agent roster (see rosterAgents).
 	rosterMu      sync.Mutex
@@ -754,13 +741,6 @@ func (a *Adapter) resolveIdentity(ctx context.Context) (id, name string) {
 	return gotID, displayName
 }
 
-// mentionsBot reports whether text contains a mention of this bot. Returns
-// false when the bot's own user ID cannot be resolved.
-func (a *Adapter) mentionsBot(ctx context.Context, text string) bool {
-	id := a.botID(ctx)
-	return id != "" && strings.Contains(text, "<@"+id+">")
-}
-
 // postChannelIntro posts the one-time Swarmgeist-branded introduction when the
 // bot is added to a channel. Best-effort.
 func (a *Adapter) postChannelIntro(ctx context.Context, slackChannel string) {
@@ -839,74 +819,6 @@ func (a *Adapter) agentClientNamed(ctx context.Context, agentRef, username strin
 		_, c.iconURL = a.AgentCards.CardIdentity(ctx, agentRef)
 	}
 	return c
-}
-
-// maybeAnnounceLaunch posts the launch announcement when it actually informs:
-// the first turn of a thread, or a turn that changes the thread's bound
-// agent. A repeated turn naming the conversation's own agent (a re-mention
-// carrying the same /agent prefix) stays quiet — the intro is thread
-// furniture, not a per-turn banner. Keyed on in-memory per-thread state (like
-// the details level): after a TTL eviction or restart the record is gone, so
-// a reply into an unrecorded thread also stays quiet — mid-conversation the
-// intro would land out of place, and the thread saw it when it started.
-// Skipped for resumed tasks (the conversation is visibly underway) and for
-// DMs (a 1:1 DM is the agent conversation itself, with no channel handoff;
-// Slack DM channel IDs start with "D").
-func (a *Adapter) maybeAnnounceLaunch(ctx context.Context, slackChannel string, msg channels.InboundMessage) {
-	if msg.TaskID != "" || isDMChannelID(slackChannel) {
-		return
-	}
-	if !a.claimLaunchAnnounce(msg.ThreadID, msg.AgentRef, msg.ThreadID == msg.MessageID) {
-		return
-	}
-	a.postLaunchAnnouncement(ctx, slackChannel, msg.ThreadID, msg.AgentRef)
-}
-
-// claimLaunchAnnounce records agentRef as threadID's announced agent and
-// reports whether the intro should post: yes for a thread root with no live
-// record (the thread's first turn) and for a recorded agent that differs (the
-// binding changed); no for an unchanged agent and for a non-root turn with no
-// record. Every call re-records and refreshes the deadline, so a thread in
-// active use never re-announces its own agent, only idle ones are evicted.
-// Check and set are atomic under announceMu, and the claim is recorded before
-// the post: a post that then fails is not retried on later turns (they carry
-// nothing new to announce), matching the post's best-effort contract.
-func (a *Adapter) claimLaunchAnnounce(threadID, agentRef string, root bool) bool {
-	now := time.Now()
-	a.announceMu.Lock()
-	defer a.announceMu.Unlock()
-	if a.launchAnnounced == nil {
-		a.launchAnnounced = make(map[string]ttlEntry[string])
-	}
-	sweepExpired(a.launchAnnounced, now)
-	entry, found := a.launchAnnounced[threadID]
-	a.launchAnnounced[threadID] = ttlEntry[string]{value: agentRef, expires: now.Add(threadStateTTL)}
-	if found {
-		return entry.value != agentRef
-	}
-	return root
-}
-
-// postLaunchAnnouncement posts the handoff notice when a new thread starts,
-// making the app-to-agent transition explicit. It posts under the agent's
-// identity (not the app default) so it and the agent's replies share one
-// authoring bot, collapsing the channel thread face pile to a single avatar.
-// Best-effort.
-func (a *Adapter) postLaunchAnnouncement(ctx context.Context, slackChannel, threadID, agentRef string) {
-	// Resolved once and passed to both the text and the client, so the announced
-	// name and the username carrying it cannot disagree. In the text it is
-	// escaped: it comes from an Agent CR annotation, so it can carry mrkdwn
-	// metacharacters, and this lands in a plain chat.postMessage which Slack
-	// parses as mrkdwn (a display name containing <!channel> would otherwise ping
-	// the channel from inside a bot-branded message). Escaping covers mentions
-	// and links only — emphasis characters (* _) pass through, so a name
-	// containing them can mangle the surrounding bold span; cosmetic, accepted.
-	// The username param needs no escaping — Slack does not parse it as mrkdwn.
-	name := a.agentNameFor(ctx, agentRef)
-	text := fmt.Sprintf("🚀 Bringing in *%s* to help. Keep the conversation in this thread; mention me followed by `/help` to list what I can do.", escapeMrkdwn(name))
-	if _, err := a.agentClientNamed(ctx, agentRef, name).postMessage(ctx, slackChannel, text, threadID); err != nil {
-		a.Logger.Warn("slack: post launch announcement failed", "thread", threadID, "error", err)
-	}
 }
 
 // signInAnchor is the message coordinates of a posted sign-in prompt, kept so
@@ -1228,23 +1140,17 @@ func (a *Adapter) postAccessPrompt(ctx context.Context, slackChannel, threadID, 
 	}
 }
 
-// accessPolicy returns the adapter's AccessPolicy, lazily installing the
-// in-memory default so direct-construction tests need no wiring.
+// accessPolicy returns the adapter's AccessPolicy over the thread's row.
 func (a *Adapter) accessPolicy() AccessPolicy {
-	a.accessMu.Lock()
-	defer a.accessMu.Unlock()
-	if a.access == nil {
-		a.access = newMemoryAccess()
-	}
-	return a.access
+	return &recordAccess{rec: a.records(), channel: ChannelName}
 }
 
 // isActiveThread reports whether the bot has an active session in threadID —
 // either a known initiator (it was mentioned at some point) or a pending
 // input-required task. Used to decide whether to route message.channels thread
 // replies without requiring an @-mention.
-func (a *Adapter) isActiveThread(threadID string) bool {
-	if a.accessPolicy().Initiator(threadID) != "" {
+func (a *Adapter) isActiveThread(ctx context.Context, channelID, threadID string) bool {
+	if a.accessPolicy().Initiator(ctx, channelID, threadID) != "" {
 		return true
 	}
 	return a.hasPendingTask(threadID)
@@ -1564,8 +1470,8 @@ func (a *Adapter) handleSessionStopped(ctx context.Context, inner slackInnerEven
 	// becomes the thread's initiator, and only they (or someone they let in)
 	// may interrupt the agent there.
 	access := a.accessPolicy()
-	access.SetInitiator(inner.ThreadTS, inner.User)
-	if !access.Allowed(inner.ThreadTS, inner.User) {
+	access.SetInitiator(ctx, inner.Channel, inner.ThreadTS, inner.User)
+	if !access.Allowed(ctx, inner.Channel, inner.ThreadTS, inner.User) {
 		a.Logger.Debug("slack: stop button press refused, presser not permitted in this thread",
 			"channel", inner.Channel, "thread", inner.ThreadTS, "user", inner.User)
 		if err := a.apiClient().postEphemeralText(ctx, inner.Channel, inner.User, inner.ThreadTS, notPermittedNotice); err != nil {
@@ -1665,23 +1571,18 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 	// thread arrives as both a message and an app_mention event, and when the
 	// message copy lands first, having it claim the dedup slot on its way to
 	// being gate-dropped would discard the app_mention copy as a duplicate.
-	if threadReplyOnly && !a.isActiveThread(msg.ThreadID) {
+	// Dropped silently: a thread with no record is either one the bot never
+	// joined (a served channel's unrelated threads must not be pinged) or one
+	// forgotten after --thread-ttl of silence, and nothing durable tells the
+	// two apart. A mention re-opens the conversation either way.
+	if threadReplyOnly && !a.isActiveThread(ctx, inner.Channel, msg.ThreadID) {
 		a.Logger.Debug("slack: reply in inactive thread ignored", "channel", inner.Channel, "thread", msg.ThreadID)
-		// A mention arrives as message + app_mention twins; the app_mention twin
-		// acts on it (dispatch, park, or answer), so hinting on the gate-dropped
-		// message twin would contradict the outcome. When the bot ID cannot be
-		// resolved the mention cannot be recognised, and hinting is the safer
-		// default.
-		if !a.mentionsBot(ctx, inner.Text) {
-			a.hintInactiveThread(ctx, inner.Channel, msg.ThreadID, msg.Subject)
-		}
 		return
 	}
 	if a.seenMessage(inner.Channel, msg.MessageID) {
 		a.Logger.Info("slack: dropping duplicate message delivery", "channel", inner.Channel, "ts", msg.MessageID)
 		return
 	}
-	a.seedInitiatorFromRoot(ctx, inner.Channel, msg.ThreadID, msg.MessageID)
 	if cmd := parseCommand(msg.Text); cmd != nil {
 		// /agent is not a consumed command: the select form mutates msg (agent
 		// ref stamped, prefix stripped) and continues into dispatch as the
@@ -1810,77 +1711,6 @@ func (a *Adapter) threadEngaged(threadID string) bool {
 	return false
 }
 
-// hintInactiveThread posts a one-time ephemeral hint to the poster of a
-// non-mention reply the active-thread gate is about to drop, so the bot does
-// not read as deaf in a thread it was part of (a command-only thread never
-// activates; TTL expiry deactivates). Threads with no trace of the bot stay
-// silent: a served channel's unrelated threads must not be pinged. Ephemeral
-// so a shared channel is not spammed; once per thread per pendingTTL window.
-func (a *Adapter) hintInactiveThread(ctx context.Context, slackChannel, threadID, slackUser string) {
-	if slackUser == "" || !a.threadEngaged(threadID) {
-		return
-	}
-	if !markOnce(&a.inactiveHintedMu, &a.inactiveHinted, threadID, pendingTTL) {
-		return
-	}
-	const text = "_I'm not active in this thread, so I didn't act on your message. Mention me to start._"
-	if err := a.apiClient().postEphemeralText(ctx, slackChannel, slackUser, threadID, text); err != nil {
-		a.Logger.Warn("slack: post inactive-thread hint failed", "thread", threadID, "error", err)
-	}
-}
-
-// rootAuthorLookupTimeout bounds the conversations.replies call that seeds a
-// thread's initiator, so a slow Slack API cannot stall inbound handling.
-const rootAuthorLookupTimeout = 3 * time.Second
-
-// seedInitiatorFromRoot seeds a thread's initiator from its first human author.
-// The access policy is process-local, so after a restart the first poster into
-// a pre-existing thread would otherwise take it over as initiator. Only a reply
-// into a thread with no recorded initiator triggers the lookup; when no human
-// author can be determined (fetch failure, all-bot prefix) the first-poster
-// behavior stands.
-//
-// The reseed is restart recovery, and faithful only for bot-rooted threads
-// (top-level mention or DM) where the root author is the original initiator;
-// for a thread the bot was invited into as a reply the root author never
-// summoned the bot, so the reseed is best-effort there.
-//
-// A thread with no recorded initiator has three causes: a restart (state lost),
-// a threadAccessTTL sweep (state deliberately expired), or a thread never
-// engaged before. Within threadAccessTTL of process start nothing can yet have
-// been swept, so a missing initiator is pre-restart state loss and restoring
-// the root author is safe. Past that window it is a swept or never-seen thread;
-// in both the summoner of the fresh mention should own the thread, so the reseed
-// is suppressed and dispatch's first-interactor rule stands. Reseeding past the
-// window would resurrect state the TTL cleared and gate the user whose mention
-// re-engaged the thread.
-func (a *Adapter) seedInitiatorFromRoot(ctx context.Context, slackChannel, threadID, messageID string) {
-	if threadID == "" || threadID == messageID {
-		return
-	}
-	// A 1:1 DM has a single human, so there is no other participant to evict:
-	// first-poster-becomes-initiator is always correct, and the reseed would
-	// only cost a lookup.
-	if isDMChannelID(slackChannel) {
-		return
-	}
-	if a.startUnix == 0 || time.Now().Unix()-a.startUnix >= int64(threadAccessTTL.Seconds()) {
-		return
-	}
-	if a.accessPolicy().Initiator(threadID) != "" {
-		return
-	}
-	ctx, cancel := context.WithTimeout(ctx, rootAuthorLookupTimeout)
-	defer cancel()
-	author, err := a.apiClient().threadInitiator(ctx, slackChannel, threadID)
-	if err != nil || author == "" {
-		a.Logger.Debug("slack: thread initiator unavailable, first poster becomes initiator",
-			"thread", threadID, "error", err)
-		return
-	}
-	a.accessPolicy().SetInitiator(threadID, author)
-}
-
 // dispatch resolves an inbound Slack message to a Klaus instance, posts a
 // placeholder reply in-thread, and streams the completion back via chat.update batches.
 func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, slackChannel string) error {
@@ -1905,18 +1735,30 @@ func (a *Adapter) dispatchFrom(ctx context.Context, msg channels.InboundMessage,
 	ctx, _ = a.beginTurn(ctx, msg.ReceivedAt, msg.ChannelID, msg.ThreadID, slackUser)
 	defer channels.AbandonTurn(ctx, "not_dispatched")
 
-	// Captured before the policy records this thread: true when this process has
-	// no record of the thread, i.e. a reply into a thread it did not start
-	// (typically after a restart): the case the resume check targets.
-	firstSight := !a.isActiveThread(msg.ThreadID)
+	// True the first time THIS process handles a turn in the thread (typically a
+	// reply after a restart): the case the leftover-turn delivery and the resume
+	// check target. Kept in memory on purpose — the thread record in the store
+	// survives the restart, so it cannot tell a restarted process from a running
+	// one; the pending-task check keeps a paused HITL thread from counting as new.
+	firstSight := markOnce(&a.seenThreadsMu, &a.seenThreads, msg.ThreadID, threadStateTTL) && !a.hasPendingTask(msg.ThreadID)
 
 	// Access control. The first user to interact becomes the thread initiator and
 	// instructs freely. A different user is gated: authenticate first (unknown
 	// identity -> sign-in), then ask the initiator to approve them (the agent acts
 	// under the initiator's delegated identity, so the initiator must consent).
 	access := a.accessPolicy()
-	initiator := access.SetInitiator(msg.ThreadID, slackUser)
-	if !access.Allowed(msg.ThreadID, slackUser) {
+	initiator := access.SetInitiator(ctx, slackChannel, msg.ThreadID, slackUser)
+	if !access.Allowed(ctx, slackChannel, msg.ThreadID, slackUser) {
+		if initiator == slackUser {
+			// The policy names the author as initiator yet does not allow them:
+			// only a store that could not be written or read does that. Parking
+			// would ask the author to approve themself, so stop the turn instead.
+			a.Logger.Warn("slack: thread record unavailable, turn not handled", "thread", msg.ThreadID, "user", slackUser)
+			if perr := a.apiClient().postEphemeralText(ctx, slackChannel, slackUser, msg.ThreadID, storeUnavailableNotice); perr != nil {
+				a.Logger.Warn("slack: post store-unavailable notice failed", "user", slackUser, "error", perr)
+			}
+			return nil
+		}
 		if a.OBO != nil && slackUser != "" {
 			if _, err := a.OBO.TokenFor(ctx, slackUser); err != nil {
 				if errors.Is(err, musterlink.ErrNotLinked) {
@@ -1948,29 +1790,21 @@ func (a *Adapter) dispatchFrom(ctx context.Context, msg channels.InboundMessage,
 
 	// Resolve the turn's agent. An explicit /agent prefix travels on the
 	// message (handleAgentSelection stamped it, and only conversation-starting
-	// messages get that far); otherwise the conversation's binding — or the
+	// messages get that far); otherwise the thread's recorded binding — or the
 	// configured default — applies. opener records whether this message opened
 	// its conversation: root equality cannot tell on the assistant pane, where
 	// every message carries the chat's Slack-created anchor as thread_ts.
-	// A refusal means the conversation's display-name binding no longer
-	// resolves; the turn is answered with the notice, never re-routed.
-	// From here on the catalogue reads (binding recovery, branding) run as the
-	// caller: the controller serves the roster to a human identity, and a
-	// plain context only gets a warm cache. Best-effort — an unlinked caller
-	// keeps the plain context, and the turn itself still mints its own token.
+	// From here on the catalogue reads (branding) run as the caller: the
+	// controller serves the roster to a human identity, and a plain context
+	// only gets a warm cache. Best-effort — an unlinked caller keeps the plain
+	// context, and the turn itself still mints its own token.
 	ctx = a.withCallerToken(ctx, slackUser)
-	agentSource, opener := explicitSource, true
+	agentSource, opener := explicitSource, msg.Opener
 	if msg.AgentRef == "" {
-		var refusal string
 		roster := channels.TurnTimerFromContext(ctx).Span(channels.PhaseRoster)
-		msg.AgentRef, agentSource, opener, refusal = a.threadAgent(ctx, msg, slackChannel)
+		msg.AgentRef, agentSource, opener = a.threadAgent(ctx, msg, slackChannel)
 		roster()
-		if refusal != "" {
-			if _, err := a.apiClient().postMessage(ctx, slackChannel, refusal, msg.ThreadID); err != nil {
-				a.Logger.Warn("slack: post agent-recovery refusal failed", "thread", msg.ThreadID, "error", err)
-			}
-			return nil
-		}
+		msg.Opener = opener
 	}
 
 	// The opening message names the agent session. Root equality rides along
@@ -2108,16 +1942,6 @@ func (a *Adapter) dispatchFrom(ctx context.Context, msg channels.InboundMessage,
 			if firstSight && !opener {
 				a.maybeAnnounceResume(ctx, msg, slackChannel)
 			}
-		},
-		onAgentResolved: func(msg channels.InboundMessage) {
-			// Post the Swarmgeist handoff notice before the agent takes over, so
-			// the app-to-agent transition is explicit — but only when it informs:
-			// a new channel thread, or a changed binding; repeated turns with the
-			// same agent stay quiet (suppression and the task/DM guards live in
-			// maybeAnnounceLaunch). Posted only once the agent resolved, so a
-			// resolve failure does not announce a launch and then error out.
-			defer channels.TurnTimerFromContext(ctx).Span(channels.PhaseIntroPost)()
-			a.maybeAnnounceLaunch(ctx, slackChannel, msg)
 		},
 		onFailure: func() { a.postDispatchFailureNote(ctx, slackChannel, msg.ThreadID) },
 	})
@@ -2395,7 +2219,7 @@ func (a *Adapter) applyInitiatorIdentity(ctx context.Context, msg *channels.Inbo
 	if a.OBO == nil {
 		return slackUser
 	}
-	initiator := a.accessPolicy().Initiator(threadID)
+	initiator := a.accessPolicy().Initiator(ctx, msg.ChannelID, threadID)
 	if initiator == "" || initiator == slackUser {
 		return slackUser
 	}

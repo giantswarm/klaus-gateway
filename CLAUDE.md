@@ -70,6 +70,11 @@ Three backends are supported (set via `--store` / `KLAUS_GATEWAY_STORE`):
 | Valkey      | `valkey`    | yes        | yes            | For installations. One key per entry in Valkey (`--valkey-url`, password from `KLAUS_GATEWAY_VALKEY_PASSWORD` or `--valkey-password-file`); TTL as key expiry; every call bounded by `--valkey-timeout` |
 | Bolt        | `bolt`      | yes        | no             | Local file; path via `--bolt-path`          |
 
+A Slack thread's agent, initiator, grants, AgentInstance binding and in-flight task are one row
+in the store, sharing one sliding lifetime (`routing.threadTTL`, default 90 days). Every writer
+of that row (a channel's grant, the facade's task record, the binding) goes through
+`Store.Update`, which serialises a read-modify-write per key inside the process.
+
 ## Lifecycle drivers
 
 Three drivers are supported (set via `--driver` / `KLAUS_GATEWAY_DRIVER`):

@@ -2,7 +2,9 @@ package store_test
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -78,7 +80,7 @@ func runConformance(t *testing.T, factory func(t *testing.T) store.Store) {
 		// the Klaus instance name left empty.
 		s := factory(t)
 		ctx := context.Background()
-		k := store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700000000.000100", Agent: "kagent/sre-agent"}
+		k := store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700000000.000100"}
 		e := store.Entry{AgentInstanceID: "0192f1c2-7d1e-7a3b-9c4d-5e6f7a8b9c0d", CreatedAt: time.Now(), LastSeen: time.Now()}
 
 		require.NoError(t, s.Put(ctx, k, e))
@@ -93,6 +95,131 @@ func runConformance(t *testing.T, factory func(t *testing.T) store.Store) {
 		require.Len(t, entries, 1)
 		require.Equal(t, k, entries[0].Key)
 		require.Equal(t, e.AgentInstanceID, entries[0].Entry.AgentInstanceID)
+	})
+
+	t.Run("one-row-per-thread", func(t *testing.T) {
+		// A thread has one row: the agent it is bound to, the AgentInstance and
+		// the task in flight on it, and the channel's initiator and grants.
+		s := factory(t)
+		ctx := context.Background()
+		k := store.Key{Channel: channelWeb, ChannelID: "C1", ThreadID: "1700000000.000100"}
+		now := time.Now().UTC().Truncate(time.Second)
+		in := store.Entry{
+			AgentRef: "kagent/sre-agent", AgentInstanceID: "i-1", TaskID: "task-7",
+			Resume:    map[string]string{"slack_user": "U1"},
+			Initiator: "U1", Granted: []string{"U2", "U3"},
+			CreatedAt: now, LastSeen: now, TTL: 30 * 24 * time.Hour,
+		}
+		require.NoError(t, s.Put(ctx, k, in))
+		got, ok, err := s.Get(ctx, k)
+		require.NoError(t, err)
+		require.True(t, ok)
+		require.Equal(t, in.AgentRef, got.AgentRef)
+		require.Equal(t, in.AgentInstanceID, got.AgentInstanceID)
+		require.Equal(t, in.TaskID, got.TaskID)
+		require.Equal(t, in.Resume, got.Resume)
+		require.Equal(t, in.Initiator, got.Initiator)
+		require.Equal(t, in.Granted, got.Granted)
+		require.Empty(t, got.Instance)
+
+		entries, err := s.List(ctx)
+		require.NoError(t, err)
+		require.Len(t, entries, 1)
+		require.Equal(t, k, entries[0].Key)
+		require.Equal(t, in.AgentInstanceID, entries[0].Entry.AgentInstanceID)
+		require.Equal(t, in.Initiator, entries[0].Entry.Initiator)
+	})
+
+	t.Run("update-creates-and-merges", func(t *testing.T) {
+		s := factory(t)
+		ctx := context.Background()
+		k := store.Key{Channel: channelWeb, ChannelID: "C1", ThreadID: "T1"}
+
+		require.NoError(t, s.Update(ctx, k, func(e *store.Entry, found bool) bool {
+			require.False(t, found)
+			require.Equal(t, store.Entry{}, *e)
+			e.Instance, e.LastSeen, e.TTL = "i1", time.Now(), time.Hour
+			return true
+		}))
+		require.NoError(t, s.Update(ctx, k, func(e *store.Entry, found bool) bool {
+			require.True(t, found)
+			require.Equal(t, "i1", e.Instance)
+			e.Initiator, e.Granted = "U1", []string{"U2"}
+			return true
+		}))
+
+		got, ok, err := s.Get(ctx, k)
+		require.NoError(t, err)
+		require.True(t, ok)
+		require.Equal(t, "i1", got.Instance, "the first writer's field survives the second")
+		require.Equal(t, "U1", got.Initiator)
+		require.Equal(t, []string{"U2"}, got.Granted)
+	})
+
+	t.Run("update-no-write-when-unchanged", func(t *testing.T) {
+		s := factory(t)
+		ctx := context.Background()
+		k := store.Key{Channel: channelWeb, ChannelID: "C1", ThreadID: "T1"}
+
+		require.NoError(t, s.Update(ctx, k, func(*store.Entry, bool) bool { return false }))
+		_, ok, err := s.Get(ctx, k)
+		require.NoError(t, err)
+		require.False(t, ok, "a mutate that reports no change creates nothing")
+
+		require.NoError(t, s.Put(ctx, k, store.Entry{Instance: "i1", LastSeen: time.Now(), TTL: time.Hour}))
+		require.NoError(t, s.Update(ctx, k, func(e *store.Entry, _ bool) bool {
+			e.Instance = "other"
+			return false
+		}))
+		got, ok, err := s.Get(ctx, k)
+		require.NoError(t, err)
+		require.True(t, ok)
+		require.Equal(t, "i1", got.Instance, "the row is untouched")
+	})
+
+	t.Run("update-expired-is-absent", func(t *testing.T) {
+		s := factory(t)
+		ctx := context.Background()
+		k := store.Key{Channel: channelWeb, ChannelID: "C1", ThreadID: "T1"}
+		require.NoError(t, s.Put(ctx, k, store.Entry{
+			Instance: "i1", Initiator: "U1",
+			CreatedAt: time.Now().Add(-2 * time.Hour), LastSeen: time.Now().Add(-2 * time.Hour), TTL: time.Hour,
+		}))
+		require.NoError(t, s.Update(ctx, k, func(e *store.Entry, found bool) bool {
+			require.False(t, found, "an expired entry is absent")
+			require.Equal(t, store.Entry{}, *e)
+			return false
+		}))
+	})
+
+	t.Run("update-serialises-writers", func(t *testing.T) {
+		// The grant of one user must not erase another's: every writer reads
+		// what the previous one wrote.
+		s := factory(t)
+		ctx := context.Background()
+		k := store.Key{Channel: channelWeb, ChannelID: "C1", ThreadID: "T1"}
+		const writers = 32
+		var wg sync.WaitGroup
+		errs := make([]error, writers)
+		for i := range writers {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				errs[i] = s.Update(ctx, k, func(e *store.Entry, _ bool) bool {
+					e.Granted = append(e.Granted, fmt.Sprintf("U%02d", i))
+					e.LastSeen, e.TTL = time.Now(), time.Hour
+					return true
+				})
+			}()
+		}
+		wg.Wait()
+		for _, err := range errs {
+			require.NoError(t, err)
+		}
+		got, ok, err := s.Get(ctx, k)
+		require.NoError(t, err)
+		require.True(t, ok)
+		require.Len(t, got.Granted, writers, "no writer lost another's grant")
 	})
 
 	t.Run("ttl-expired-filtered", func(t *testing.T) {

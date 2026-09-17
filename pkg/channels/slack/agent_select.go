@@ -2,7 +2,6 @@ package slack
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -10,9 +9,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
-
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
+	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
 )
 
 // agentCardChecker is the optional AgentCardResolver extension that validates
@@ -26,7 +24,7 @@ type agentCardChecker interface {
 
 // agent_source values on the turn_dispatch record: how the turn's agent was
 // chosen. "prefix" is an /agent prefix on the dispatched message itself,
-// "thread" the binding inherited from the conversation's root message,
+// "thread" the agent recorded for the thread,
 // "default" the configured default agent, and "task" the agent replayed from a
 // paused task on a button-click resume.
 const (
@@ -61,11 +59,6 @@ const agentUnavailableNotice = "⚠️ I don't know an agent named `%s` (or it i
 // configured).
 const agentSelectionUnavailable = "_Agent selection isn't available on this gateway._"
 
-// agentCheckFailedNotice is posted when a DM selection could not be verified
-// as conversation-starting (the thread scan failed). Nothing is dispatched:
-// accepting blindly could rebind an existing conversation and fork its session.
-const agentCheckFailedNotice = "⚠️ _I couldn't check this conversation just now, so I haven't started anything. Please try again._"
-
 // agentResolveCheckFailedNotice is posted when a quoted selection could not be
 // resolved because the roster fetch failed. Nothing is dispatched: guessing an
 // agent would violate loud-never-substituted.
@@ -75,22 +68,6 @@ const agentResolveCheckFailedNotice = "⚠️ _I couldn't check the available ag
 // agent. The technical names disambiguate, so they are listed here even though
 // the roster itself shows display names only.
 const agentAmbiguousNotice = "⚠️ *%s* matches more than one agent, so I haven't started anything. Pick one by its technical name:"
-
-// agentRecoveryGoneNotice is posted when a conversation's opening message
-// selected an agent by display name that no longer resolves to exactly one
-// agent (renamed, removed, or now ambiguous). The turn is NOT dispatched:
-// routing it to any other agent would silently fork the session.
-const agentRecoveryGoneNotice = "⚠️ _This conversation was started with `/agent \"%s\"`, but that name doesn't match exactly one agent anymore, so I haven't sent your message. Start a new conversation to continue._"
-
-// agentRecoveryMarkerGoneNotice is posted when a slash-started conversation's
-// marker names an agent that no longer exists or is not selectable. The turn
-// is NOT dispatched: routing it anywhere else would silently fork the session.
-const agentRecoveryMarkerGoneNotice = "⚠️ _This conversation was started with the agent `%s`, but that agent isn't available anymore, so I haven't sent your message. Start a new conversation to continue._"
-
-// agentRecoveryCheckFailedNotice is posted when re-deriving a conversation's
-// display-name binding failed transiently (roster unreachable). Nothing is
-// cached, so the next message retries.
-const agentRecoveryCheckFailedNotice = "⚠️ _I couldn't check which agent this conversation uses just now, so I haven't sent your message. Please try again._"
 
 // agentValidateTimeout bounds the card fetch that validates a selected agent
 // (/agent prefix or picker) before dispatch.
@@ -130,13 +107,8 @@ func (a *Adapter) handleAgentSelection(ctx context.Context, cmd *slashCommand, m
 	}
 
 	// A conversation is bound to its agent for life; selection only rides the
-	// conversation-starting message (a channel mention that starts a reply
-	// thread, or the first message of a new assistant-pane chat).
-	starting, err := a.conversationStarting(ctx, *msg, slackChannel)
-	if err != nil {
-		reply(agentCheckFailedNotice)
-		return false
-	}
+	// message that opens one — in any thread, root or reply.
+	starting := a.conversationStarting(ctx, *msg, slackChannel)
 	if !starting {
 		return a.handleAgentReselection(ctx, reply, msg, slackChannel)
 	}
@@ -174,8 +146,9 @@ func (a *Adapter) handleAgentSelection(ctx context.Context, cmd *slashCommand, m
 		return false
 	}
 
-	a.bindThreadAgent(msg.ThreadID, ref)
+	a.bindThreadAgent(ctx, slackChannel, msg.ThreadID, ref)
 	msg.AgentRef = ref
+	msg.Opener = true
 	msg.Text = question
 	return true
 }
@@ -202,13 +175,10 @@ func (a *Adapter) handleAgentReselection(ctx context.Context, reply func(string)
 		reply(agentSwitchRefusal)
 		return false
 	}
-	// The conversation's current agent, recovered from the opening message when
-	// the in-memory binding was evicted (threadAgent caches what it derives). A
-	// recovery refusal means the turn could not dispatch anywhere; the switch
-	// refusal is answer enough — the next unprefixed reply re-derives and gets
-	// the specific notice.
-	current, _, _, refusal := a.threadAgent(ctx, *msg, slackChannel)
-	if refusal != "" || current != ref {
+	// Read the binding only: threadAgent would bind the default agent to a
+	// thread that has none, and a re-selection must never write a binding.
+	current, bound := a.threadAgentBinding(ctx, slackChannel, msg.ThreadID)
+	if !bound || current != ref {
 		reply(agentSwitchRefusal)
 		return false
 	}
@@ -354,278 +324,58 @@ func splitAgentCommand(text string) (name string, quoted bool, question string) 
 	return rest, false, ""
 }
 
-// bindThreadAgent records threadID's conversation→agent binding. An empty ref
-// records a checked root with no prefix (default agent), so replies skip the
-// root fetch. Entries idle past threadStateTTL are evicted on insert. The map
-// is deliberately in-memory only: the binding is derivable state (the /agent
-// prefix is visible in the conversation's opening message on Slack itself),
-// and threadAgent re-derives it after a restart or eviction.
-func (a *Adapter) bindThreadAgent(threadID, ref string) {
-	now := time.Now()
-	a.bindingMu.Lock()
-	defer a.bindingMu.Unlock()
-	if a.agentBindings == nil {
-		a.agentBindings = make(map[string]ttlEntry[string])
+// bindThreadAgent records ref as the thread's agent on its row.
+func (a *Adapter) bindThreadAgent(ctx context.Context, channelID, threadID, ref string) {
+	err := a.records().UpdateThreadRecord(ctx, ChannelName, channelID, threadID, func(e *store.Entry, _ bool) bool {
+		e.AgentRef = ref
+		return true
+	})
+	if err != nil {
+		a.Logger.Warn("slack: write agent binding failed", "thread", threadID, "agent", ref, "error", err)
 	}
-	sweepExpired(a.agentBindings, now)
-	a.agentBindings[threadID] = ttlEntry[string]{value: ref, expires: now.Add(threadStateTTL)}
 }
 
-// threadAgentBinding returns threadID's recorded binding. Reading refreshes
-// the deadline, like detailsLevel: a conversation in active use never loses
-// its agent mid-conversation, only idle ones are evicted.
-func (a *Adapter) threadAgentBinding(threadID string) (ref string, ok bool) {
-	a.bindingMu.Lock()
-	defer a.bindingMu.Unlock()
-	entry, ok := a.agentBindings[threadID]
-	if !ok {
+// threadAgentBinding is the thread's recorded agent, when its row exists and
+// names one.
+func (a *Adapter) threadAgentBinding(ctx context.Context, channelID, threadID string) (string, bool) {
+	e, ok, err := a.records().ThreadRecord(ctx, ChannelName, channelID, threadID)
+	if err != nil {
+		a.Logger.Warn("slack: read thread record failed", "thread", threadID, "error", err)
 		return "", false
 	}
-	entry.expires = time.Now().Add(threadStateTTL)
-	a.agentBindings[threadID] = entry
-	return entry.value, true
+	return e.AgentRef, ok && e.AgentRef != ""
 }
 
-// boundAgentOrDefault is the agent a thread's turns resolve to, without the
-// root-fetch recovery: the recorded binding, or the default. For display-only
-// callers (the /usage model line, the sign-in hand-off notice) where a
-// post-restart cache miss naming the default for a bound thread is cosmetic,
-// not routing.
-func (a *Adapter) boundAgentOrDefault(threadID string) string {
-	if bound, ok := a.threadAgentBinding(threadID); ok && bound != "" {
-		return bound
+// boundAgentOrDefault is the recorded agent, or the default. For display-only
+// callers (the /usage model line).
+func (a *Adapter) boundAgentOrDefault(ctx context.Context, channelID, threadID string) string {
+	if ref, ok := a.threadAgentBinding(ctx, channelID, threadID); ok {
+		return ref
 	}
 	return a.DefaultAgent
 }
 
-// rootAgentLookupTimeout bounds the conversations.replies call that recovers a
-// conversation's agent binding from its root message after a restart, so a
-// slow Slack API cannot stall inbound handling.
-const rootAgentLookupTimeout = 3 * time.Second
-
-// consumedCommandText reports whether a message's text is consumed as an
-// in-thread command rather than dispatched as a turn: the known commands
-// reply in-thread and stop, a command-shaped unknown verb gets the
-// not-a-command notice, and only the complete "/agent <name> <question>"
-// selection falls through into dispatch. The DM opening-message scans skip
-// consumed texts: a roster listing or help request never started a
-// conversation, so it must not block a later /agent selection in the same
-// pane chat, nor masquerade as the conversation's opener after a restart.
-//
-// Deliberately approximate at two edges, both of which read as openers here:
-// a complete /agent form that failed live validation (its conversation's
-// replies get the loud recovery refusal, same as before this predicate), and
-// a /stop that resolved a paused task (only possible mid-conversation, where
-// an earlier real opener exists for the scan to find).
-func consumedCommandText(text string) bool {
-	cmd := parseCommand(StripMention(text))
-	if cmd == nil {
-		return false
-	}
-	if cmd.Name == cmdAgent {
-		name, _, question := splitAgentCommand(StripMention(text))
-		return name == "" || question == ""
-	}
-	if _, known := knownCommands[cmd.Name]; known {
-		return true
-	}
-	return isUnknownCommand(cmd)
+// conversationStarting reports whether msg opens a conversation in its thread:
+// no record names an agent, because the thread is new or because the gateway
+// has forgotten it after its lifetime of silence and it starts over. Only a
+// starting message may carry /agent; a re-selection of the thread's own agent
+// is a no-op, anything else a refused switch.
+func (a *Adapter) conversationStarting(ctx context.Context, msg channels.InboundMessage, slackChannel string) bool {
+	_, bound := a.threadAgentBinding(ctx, slackChannel, msg.ThreadID)
+	return !bound
 }
 
-// conversationStarting reports whether msg starts a new conversation — the
-// only place an /agent prefix binds. In a channel that is a mention rooting
-// its own reply thread. In the assistant pane every message carries a
-// Slack-managed thread anchor as thread_ts, allocated when the chat opens
-// (klaus-gateway#157) — the chat's first message is never its own root — so
-// root equality is meaningless there: a DM message starts the conversation
-// when no conversation state exists in-process and no earlier DISPATCHED
-// human message precedes it in the thread (the post-restart check, one
-// bounded API call on the rare prefixed-DM path). Consumed commands don't
-// count: listing the roster with a bare /agent and then selecting is a new
-// conversation, not a switch.
-func (a *Adapter) conversationStarting(ctx context.Context, msg channels.InboundMessage, slackChannel string) (bool, error) {
-	if msg.ThreadID == msg.MessageID {
-		return true, nil
+// threadAgent resolves the agent of a turn that carries no explicit prefix:
+// the thread's recorded agent; else the default, which opens the conversation
+// (opener) and is recorded for the replies that follow. Inheritance is
+// load-bearing: the session's context id embeds the agent ref, so resolving a
+// reply to a different agent than its conversation would fork the session. A
+// thread the gateway has forgotten has no record, so it starts over on the
+// default like any new one.
+func (a *Adapter) threadAgent(ctx context.Context, msg channels.InboundMessage, slackChannel string) (ref, source string, opener bool) {
+	if bound, ok := a.threadAgentBinding(ctx, slackChannel, msg.ThreadID); ok {
+		return bound, agentSourceThread, false
 	}
-	if !isDMChannelID(slackChannel) {
-		return false, nil
-	}
-	if _, found := a.threadAgentBinding(msg.ThreadID); found {
-		return false, nil
-	}
-	if a.isActiveThread(msg.ThreadID) {
-		return false, nil
-	}
-	rctx, cancel := context.WithTimeout(ctx, rootAgentLookupTimeout)
-	defer cancel()
-	firstTS, _, err := a.apiClient().threadFirstHumanMessage(rctx, slackChannel, msg.ThreadID, consumedCommandText)
-	if err != nil {
-		a.Logger.Warn("slack: conversation-start check failed", "thread", msg.ThreadID, "error", err)
-		return false, err
-	}
-	// No earlier human message (an empty ts means the scan found none — a
-	// fresh chat whose own message hasn't landed in the replies view yet), or
-	// this message IS the first: the conversation starts here.
-	return firstTS == "" || firstTS == msg.MessageID, nil
-}
-
-// threadAgent resolves the agent for a turn that carries no explicit /agent
-// prefix: the conversation's recorded binding, the binding re-derived from the
-// conversation's opening message (the recovery path after a restart or TTL
-// sweep: the conversation marker of a root the gateway posted itself, else any
-// prefix visible in the text), or the configured default. The opening
-// message is the thread root in a channel, but the first dispatched HUMAN
-// message in a DM: the assistant pane roots threads at a Slack-managed
-// anchor, not the user's first message, and consumed commands (a bare /agent
-// roster listing, /help) never opened a conversation. Follow-up inheritance is load-bearing: the session's
-// context id embeds the agent ref, so resolving a reply to a different agent
-// than its conversation would fork the session. When the opening message
-// cannot be fetched the turn degrades to the default agent — a Slack API
-// flake must not block whole threads, and almost all conversations are
-// default-bound — but the fallback is NOT cached, so the next reply
-// re-derives the real binding instead of the conversation staying mis-bound.
-// opener reports whether msg itself opened its conversation: true for a
-// channel root mention, and for a DM whose thread has no earlier human
-// message (the assistant pane's first message is never its own thread root,
-// so root equality cannot tell). Dispatch uses it to skip reply-only work —
-// the resume existence-check must not greet every new pane chat with
-// "starting fresh".
-//
-// A non-empty refusal means the turn must not be dispatched at all: the
-// opening message selected an agent by display name that no longer resolves
-// (or the roster check failed), and routing the turn anywhere else would fork
-// the session. The caller posts refusal in-thread instead of dispatching.
-func (a *Adapter) threadAgent(ctx context.Context, msg channels.InboundMessage, slackChannel string) (ref, source string, opener bool, refusal string) {
-	if bound, found := a.threadAgentBinding(msg.ThreadID); found {
-		if bound == "" {
-			return a.DefaultAgent, agentSourceDefault, false, ""
-		}
-		return bound, agentSourceThread, false, ""
-	}
-	// A conversation-starting message with no prefix: the default, recorded so
-	// replies skip the opening-message fetch.
-	if msg.ThreadID == msg.MessageID {
-		a.bindThreadAgent(msg.ThreadID, "")
-		return a.DefaultAgent, agentSourceDefault, true, ""
-	}
-	rctx, cancel := context.WithTimeout(ctx, rootAgentLookupTimeout)
-	defer cancel()
-	var openingTS, openingText string
-	var err error
-	if isDMChannelID(slackChannel) {
-		openingTS, openingText, err = a.apiClient().threadFirstHumanMessage(rctx, slackChannel, msg.ThreadID, consumedCommandText)
-	} else {
-		// Channels keep strict root derivation: a refused /agent reply still
-		// exists as thread text, and a human-message scan would resurrect it.
-		// A root the gateway posted itself (the slash command's picker) has no
-		// prefix but carries the binding in its conversation marker, which
-		// wins: it is the resolved ref, so no roster re-resolution can drift it.
-		// The agent may be gone by now, though — same as a renamed quoted
-		// opener — so it is checked before the thread is rebound.
-		var root rootMessage
-		root, err = a.apiClient().threadRoot(rctx, slackChannel, msg.ThreadID)
-		if err == nil && root.Marker != nil {
-			if refusal := a.markerAgentRefusal(ctx, root.Marker.AgentRef); refusal != "" {
-				return "", "", false, refusal
-			}
-			a.bindThreadAgent(msg.ThreadID, root.Marker.AgentRef)
-			return root.Marker.AgentRef, agentSourceThread, false, ""
-		}
-		openingText = root.Text
-	}
-	if err != nil {
-		a.Logger.Warn("slack: conversation opening-message lookup for agent binding failed, using default agent uncached",
-			"thread", msg.ThreadID, "error", err)
-		return a.DefaultAgent, agentSourceDefault, false, ""
-	}
-	// In a DM the scanned opener may be this very message (a new pane chat);
-	// an empty ts means the scan saw no human message at all (the message has
-	// not landed in the replies view yet) — also a fresh conversation.
-	opener = isDMChannelID(slackChannel) && (openingTS == "" || openingTS == msg.MessageID)
-	var bound string
-	bound, refusal = a.openingAgentRef(ctx, openingText)
-	if refusal != "" {
-		return "", "", false, refusal
-	}
-	a.bindThreadAgent(msg.ThreadID, bound)
-	if bound == "" {
-		return a.DefaultAgent, agentSourceDefault, opener, ""
-	}
-	return bound, agentSourceThread, opener, ""
-}
-
-// markerAgentRefusal checks that the agent a conversation marker names still
-// exists and is selectable. A gone or unavailable agent yields the refusal to
-// post instead of dispatching to a dead ref; a transient check failure yields
-// "" and the turn proceeds on the marker — the ref is known, and a truly
-// missing agent still fails the turn loudly downstream. No card checker (A2A
-// not configured) skips the check.
-func (a *Adapter) markerAgentRefusal(ctx context.Context, ref string) string {
-	checker, ok := a.AgentCards.(agentCardChecker)
-	if !ok {
-		return ""
-	}
-	vctx, cancel := context.WithTimeout(ctx, agentValidateTimeout)
-	defer cancel()
-	_, _, err := checker.CardInfo(vctx, ref)
-	switch {
-	case err == nil:
-		return ""
-	case errors.Is(err, pkga2a.ErrAgentUnknown), errors.Is(err, pkga2a.ErrAgentUnavailable):
-		a.Logger.Info("slack: marker agent no longer selectable, refusing recovery", "agent", ref, "error", err)
-		return fmt.Sprintf(agentRecoveryMarkerGoneNotice, strings.ReplaceAll(ref, "`", "'"))
-	default:
-		a.Logger.Warn("slack: marker agent check failed, proceeding on the marker", "agent", ref, "error", err)
-		return ""
-	}
-}
-
-// openingAgentRef extracts the agent binding from a conversation-opening
-// message's text: the resolved ref of a complete "/agent <name> <question>"
-// prefix, or "" (default agent) for anything else. A name-only or malformed
-// prefix never started a conversation, so it binds nothing.
-//
-// The name MUST come from splitAgentCommand — the same splitter the live
-// selection used — never re-derived with different tokenization: live
-// selection and recovery must resolve identically for every input, or a
-// restart rebinds a conversation to a different agent than the one that
-// answered it (a session fork).
-//
-// A quoted (display-name) opener re-resolves against the live roster. When
-// that fails — the agent was renamed or removed, the name is now ambiguous, or
-// the roster is unreachable — refusal is the non-empty user-facing notice and
-// the turn must not be dispatched: any substitute agent would fork the
-// session. Failures are never cached, so a later message re-resolves.
-func (a *Adapter) openingAgentRef(ctx context.Context, openingText string) (ref, refusal string) {
-	text := StripMention(openingText)
-	cmd := parseCommand(text)
-	if cmd == nil || cmd.Name != cmdAgent {
-		return "", ""
-	}
-	name, quoted, question := splitAgentCommand(text)
-	if name == "" || question == "" {
-		return "", ""
-	}
-	if !quoted {
-		r, ok := a.agentRefFromName(name)
-		if !ok {
-			return "", ""
-		}
-		return r, ""
-	}
-	// Without a roster a quoted selection could never have bound live (it gets
-	// the selection-unavailable reply and dispatches nothing), so recovery
-	// binds nothing for it either.
-	if a.Roster == nil {
-		return "", ""
-	}
-	refs, err := a.agentRefsForSelector(ctx, name)
-	if err != nil {
-		a.Logger.Warn("slack: opening-message agent selector resolution failed", "selector", name, "error", err)
-		return "", agentRecoveryCheckFailedNotice
-	}
-	if len(refs) != 1 {
-		return "", fmt.Sprintf(agentRecoveryGoneNotice, strings.ReplaceAll(name, "`", "'"))
-	}
-	return refs[0], ""
+	a.bindThreadAgent(ctx, slackChannel, msg.ThreadID, a.DefaultAgent)
+	return a.DefaultAgent, agentSourceDefault, true
 }

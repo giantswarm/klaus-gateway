@@ -142,6 +142,8 @@ func run(args []string) error {
 		Router:    router,
 		Client:    instanceClient,
 		Lifecycle: manager,
+		Routes:    routeStore,
+		ThreadTTL: cfg.ThreadTTL,
 		// A turn a shutdown cuts short is delivered after the restart only when
 		// the thread's record of it outlives the process.
 		Durable: cfg.Store != config.StoreMemory,
@@ -190,6 +192,9 @@ func run(args []string) error {
 		if cfg.A2A.Enabled {
 			slackAdapter.DefaultAgent = cfg.A2A.DefaultAgent
 			slackAdapter.Namespace = cfg.A2A.Namespace
+		}
+		if cfg.Store == config.StoreMemory {
+			logger.Warn("slack: the routing store is memory, so every thread's agent, initiator, grants and instance binding are lost on a restart; installations run routing.store: valkey")
 		}
 		if err := slackAdapter.Start(ctx, facade); err != nil {
 			return fmt.Errorf("start slack adapter: %w", err)
@@ -313,7 +318,6 @@ func run(args []string) error {
 			}
 		}()
 		facade.Agent = kagentClient
-		facade.Routes = routeStore
 		if slackAdapter != nil {
 			slackAdapter.Models = kagentClient
 			slackAdapter.Roster = kagentClient

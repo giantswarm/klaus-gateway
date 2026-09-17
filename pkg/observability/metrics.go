@@ -69,7 +69,7 @@ func NewMetrics() *Metrics {
 	phase := prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: metricNamespace,
 		Name:      "turn_phase_seconds",
-		Help:      "Phases of a channel turn's timeline, labelled by channel and phase: marks since the message arrived (dispatch, first_event, first_text, task_done, stream_end, final_flush, total) and the duration of steps (token_mint, roster, intro_post, create_instance).",
+		Help:      "Phases of a channel turn's timeline, labelled by channel and phase: marks since the message arrived (dispatch, first_event, first_text, task_done, stream_end, final_flush, total) and the duration of steps (token_mint, roster, create_instance).",
 		Buckets:   turnPhaseBuckets,
 	}, []string{labelChannel, labelPhase})
 

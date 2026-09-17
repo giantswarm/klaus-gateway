@@ -641,6 +641,9 @@
                         "bolt"
                     ]
                 },
+                "threadTTL": {
+                    "type": "string"
+                },
                 "valkey": {
                     "type": "object",
                     "additionalProperties": false,

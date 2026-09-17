@@ -16,9 +16,6 @@ type turnHooks struct {
 	// the identity the turn will run as (e.g. the resume-degradation
 	// announcement).
 	onIdentityResolved func(msg channels.InboundMessage)
-	// onAgentResolved runs once the agent resolved, before the completion is
-	// sent (e.g. the launch announcement).
-	onAgentResolved func(msg channels.InboundMessage)
 	// onFailure posts the user-visible note when resolve or send fails: the
 	// turn dies before any streamed reply, so silence reads as success. Not
 	// called for a corrupt-session failure, where the recovery notice speaks
@@ -93,10 +90,6 @@ func (a *Adapter) runTurn(ctx context.Context, msg channels.InboundMessage, slac
 		}
 		a.completeTurn(ctx, msg, slackUser, channels.OutcomeResolveFailed, err)
 		return fmt.Errorf("slack: resolve: %w", err)
-	}
-
-	if hooks.onAgentResolved != nil {
-		hooks.onAgentResolved(msg)
 	}
 
 	turnCtx, done := a.registerTurn(ctx, msg.ThreadID)

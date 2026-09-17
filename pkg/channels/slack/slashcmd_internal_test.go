@@ -94,25 +94,6 @@ func TestSlashCommandPayload_DecodesSocketModeEnvelope(t *testing.T) {
 	require.Equal(t, slashCommandPayload{Command: "/swarmgeist", Text: "hi there", UserID: "U1", ChannelID: "C1", TriggerID: "1.2.abc", ResponseURL: "https://hooks.slack.com/commands/T/1/x"}, p)
 }
 
-// The conversation marker round-trips through a block_id; anything without
-// the prefix, malformed, or naming no agent yields nil rather than a
-// half-filled binding.
-func TestConversationMarker_EncodeDecode(t *testing.T) {
-	m := conversationMarker{AgentRef: "kagent/sre", Initiator: "U1", EntryPoint: entryPointSlashCommand}
-	id := m.encode()
-	require.True(t, strings.HasPrefix(id, conversationMarkerPrefix))
-	require.LessOrEqual(t, len(id), 255, "block_id cap")
-	require.Equal(t, &m, decodeConversationMarker(id))
-
-	require.Nil(t, decodeConversationMarker(`{"a":"kagent/sre","u":"U1"}`), "no prefix: not ours")
-	require.Nil(t, decodeConversationMarker(conversationMarkerPrefix+`{"a":`), "malformed")
-	require.Nil(t, decodeConversationMarker(conversationMarkerPrefix+`{"u":"U1"}`), "no agent")
-	require.Nil(t, decodeConversationMarker(""))
-
-	require.Equal(t, &m, conversationMarkerFromBlocks([]messageBlock{{BlockID: "other"}, {BlockID: id}}))
-	require.Nil(t, conversationMarkerFromBlocks(nil))
-}
-
 func TestQuoteMrkdwn_PrefixesEveryLine(t *testing.T) {
 	require.Equal(t, "> one\n> two", quoteMrkdwn("one\ntwo"))
 	require.Equal(t, "> single", quoteMrkdwn("single"))
@@ -133,12 +114,4 @@ func TestAskAgentModal_DefaultPastCapIsKept(t *testing.T) {
 	require.Equal(t, "kagent/a-102", initial, "the default stays preselected")
 	require.Equal(t, "kagent/a-102", values[0], "the default is moved to the front of the cut list")
 	require.Equal(t, "kagent/a-000", values[1], "the rest keeps its order")
-}
-
-// The longest marker a DNS-1123 ref and a Slack user id can produce fits the
-// block_id cap with room to spare.
-func TestConversationMarker_WorstCaseFitsBlockID(t *testing.T) {
-	ref := strings.Repeat("n", 63) + "/" + strings.Repeat("m", 63)
-	m := conversationMarker{AgentRef: ref, Initiator: strings.Repeat("U", 12), EntryPoint: entryPointSlashCommand}
-	require.LessOrEqual(t, len(m.encode()), blockIDMax)
 }

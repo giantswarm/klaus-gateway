@@ -320,7 +320,7 @@ func TestHandleCommand_Usage_Consumed(t *testing.T) {
 // state-changing / info commands.
 func TestHandleCommand_OnlookerRefused(t *testing.T) {
 	a, srv := newTestAdapter(t)
-	a.accessPolicy().SetInitiator("T001", "U001") // U001 initiates
+	a.accessPolicy().SetInitiator(t.Context(), "C001", "T001", "U001") // U001 initiates
 
 	for _, name := range []string{"stop", "usage"} {
 		require.True(t, a.handleCommand(t.Context(), &slashCommand{Name: name}, "U002", "C001", "T001"))
@@ -334,8 +334,8 @@ func TestHandleCommand_OnlookerRefused(t *testing.T) {
 // approved may run the gated commands.
 func TestHandleCommand_GrantedUserAllowed(t *testing.T) {
 	a, srv := newTestAdapter(t)
-	a.accessPolicy().SetInitiator("T001", "U001")
-	a.accessPolicy().Grant("T001", "U002")
+	a.accessPolicy().SetInitiator(t.Context(), "C001", "T001", "U001")
+	a.accessPolicy().Grant(t.Context(), "C001", "T001", "U002")
 
 	require.True(t, a.handleCommand(t.Context(), &slashCommand{Name: "details", Args: []string{"off"}}, "U002", "C001", "T001"))
 	require.Equal(t, detailsOff, a.detailsLevel("T001"), "a granted collaborator can change details")

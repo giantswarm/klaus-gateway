@@ -92,28 +92,6 @@ func openedView(t *testing.T, fake *fakeSlackAPI) map[string]any {
 	return view
 }
 
-// rootWithMarker returns the posted conversation root (the chat.postMessage
-// call carrying blocks) and the decoded JSON of its marker block_id.
-func rootWithMarker(t *testing.T, fake *fakeSlackAPI) (recordedCall, map[string]any) {
-	t.Helper()
-	for _, c := range fake.pathCalls("chat.postMessage") {
-		blocks, ok := c.params["blocks"].([]any)
-		if !ok || len(blocks) == 0 {
-			continue
-		}
-		id, _ := blocks[0].(map[string]any)["block_id"].(string)
-		const prefix = "klaus_gateway.agent_conversation:"
-		if !strings.HasPrefix(id, prefix) {
-			continue
-		}
-		var marker map[string]any
-		require.NoError(t, json.Unmarshal([]byte(strings.TrimPrefix(id, prefix)), &marker))
-		return c, marker
-	}
-	require.FailNow(t, "no conversation root with a marker block was posted")
-	return recordedCall{}, nil
-}
-
 // responseURLTexts returns the texts posted through the slash command's
 // response_url (the fake serves it at /response_url).
 func responseURLTexts(fake *fakeSlackAPI) string {
@@ -353,10 +331,10 @@ func TestSlashCommand_InvalidSignatureRejected(t *testing.T) {
 }
 
 // Submitting the picker opens the conversation: the gateway posts the root
-// under the agent's identity with the conversation metadata, the submitter is
-// the initiator, the thread is bound, and the question is the first turn.
-// Replies then behave as in any conversation: the submitter's reply inherits
-// the agent, a newcomer waits for the submitter's consent.
+// under the agent's identity, the submitter is the initiator, the thread is
+// bound, and the question is the first turn. Replies then behave as in any
+// conversation: the submitter's reply inherits the agent, a newcomer waits for
+// the submitter's consent.
 func TestAskAgentSubmission_OpensConversation(t *testing.T) {
 	fake := newFakeSlackAPI()
 	api := fake.server(t)
@@ -370,19 +348,15 @@ func TestAskAgentSubmission_OpensConversation(t *testing.T) {
 	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
 		2*time.Second, 50*time.Millisecond, "the submission dispatches the first turn")
 
-	// The root: branded as the agent, naming who asked and quoting the question,
-	// carrying the binding and the initiator as a marker in its block_id.
-	root, marker := rootWithMarker(t, fake)
+	// The root: a plain branded message naming who asked and quoting the
+	// question. The binding and the initiator live in the thread record.
+	root := fake.pathCalls("chat.postMessage")[0]
 	require.Equal(t, "C1", root.params["channel"])
 	require.Nil(t, root.params["thread_ts"], "the root is a top-level message")
 	require.Equal(t, "SRE Agent", root.params["username"], "posted under the agent's identity")
 	rootText := root.params["text"].(string)
 	require.Contains(t, rootText, "<@U1> asked *SRE Agent*")
 	require.Contains(t, rootText, "> why are pods crashlooping?")
-	require.Equal(t, "kagent/sre-agent", marker["a"])
-	require.Equal(t, "U1", marker["u"])
-	require.Equal(t, "slash_command", marker["e"])
-	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "Bringing in", "the root already names the agent; no launch intro")
 
 	msgs := resolved()
 	require.Equal(t, "kagent/sre-agent", msgs[0].AgentRef)
@@ -443,7 +417,7 @@ func TestAskAgentSubmission_JoinsPublicChannelOnNotInChannel(t *testing.T) {
 			joined.Store(true)
 			return ""
 		}
-		if path == "chat.postMessage" && params["blocks"] != nil && !joined.Load() {
+		if path == "chat.postMessage" && !joined.Load() {
 			return "not_in_channel"
 		}
 		return ""
@@ -478,73 +452,6 @@ func TestAskAgentSubmission_PrivateChannelAsksForInvite(t *testing.T) {
 	fake.waitForPath(t, "response_url", 1)
 	require.Contains(t, responseURLTexts(fake), "Invite me to the channel")
 	require.Equal(t, 0, gw.resolveCount())
-}
-
-// After a restart the in-memory binding and initiator are gone. A bot-rooted
-// conversation has no /agent prefix to re-derive from; its root marker
-// restores both: the reply reaches the picked agent (not the default), and the
-// submitter — not the first human to reply — is the initiator.
-func TestAskAgentRecovery_RootMarkerRestoresAgentAndInitiator(t *testing.T) {
-	fake := newFakeSlackAPI()
-	api := fake.server(t)
-	fake.setResponse("conversations.replies", `{"ok":true,"messages":[
-		{"type":"message","user":"UBOT","bot_id":"B1","ts":"100.000","text":"💬 <@U1> asked *SRE Agent*:\n> hello",
-		 "blocks":[{"type":"section","block_id":"klaus_gateway.agent_conversation:{\"a\":\"kagent/sre-agent\",\"u\":\"U1\",\"e\":\"slash_command\"}","text":{"type":"mrkdwn","text":"hello"}}]},
-		{"type":"message","user":"U2","ts":"150.000","text":"<@UBOT> what about me"}
-	]}`)
-	gw, resolved := capturingGateway()
-	// A fresh adapter: nothing in memory about thread 100.000.
-	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
-
-	sendEvent(t, srv, mention("U1", "any update?", "200.000", "100.000"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
-		2*time.Second, 50*time.Millisecond, "the submitter's reply dispatches")
-	require.Equal(t, "kagent/sre-agent", resolved()[0].AgentRef, "the agent comes from the root marker, not the default")
-
-	// U2 replied earlier in the thread, but the metadata names U1 as initiator,
-	// so U2 is a newcomer waiting on U1's consent.
-	sendEvent(t, srv, mention("U2", "and me?", "300.000", "100.000"))
-	require.Eventually(t, func() bool {
-		for _, c := range fake.pathCalls("chat.postEphemeral") {
-			if c.params["user"] == "U1" {
-				return true
-			}
-		}
-		return false
-	}, 2*time.Second, 50*time.Millisecond, "the consent prompt goes to the initiator from the marker")
-	require.Equal(t, 1, gw.resolveCount(), "the newcomer's reply waits")
-}
-
-// goneCards reports every agent as no longer existing, the way the kagent
-// client does for a deleted AgentTemplate.
-type goneCards struct{}
-
-func (goneCards) CardIdentity(context.Context, string) (string, string) { return "", "" }
-func (goneCards) CardInfo(_ context.Context, ref string) (string, string, error) {
-	return "", "", fmt.Errorf("%w: no AgentTemplate %s", pkga2a.ErrAgentUnknown, ref)
-}
-
-// A marker naming an agent that no longer exists refuses the recovery loudly
-// instead of dispatching to a dead ref or substituting the default.
-func TestAskAgentRecovery_MarkerAgentGoneRefusesLoudly(t *testing.T) {
-	fake := newFakeSlackAPI()
-	api := fake.server(t)
-	fake.setResponse("conversations.replies", `{"ok":true,"messages":[
-		{"type":"message","user":"UBOT","bot_id":"B1","ts":"100.000","text":"root",
-		 "blocks":[{"type":"section","block_id":"klaus_gateway.agent_conversation:{\"a\":\"kagent/gone-agent\",\"u\":\"U1\",\"e\":\"slash_command\"}","text":{"type":"mrkdwn","text":"root"}}]}
-	]}`)
-	gw, _ := capturingGateway()
-	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, func(a *slackadapter.Adapter) {
-		a.DefaultAgent = "kagent/swarmgeist"
-		a.Roster = pickerRoster()
-		a.AgentCards = goneCards{}
-	})
-
-	sendEvent(t, srv, mention("U1", "still there?", "200.000", "100.000"))
-	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "isn't available anymore")
-	}, 2*time.Second, 50*time.Millisecond, "the recovery is refused loudly")
-	require.Equal(t, 0, gw.resolveCount(), "nothing is dispatched")
 }
 
 // The turn's dispatch record names the picker as the agent's source.

@@ -144,7 +144,7 @@ func (a *Adapter) usageReport(ctx context.Context, threadID, channelID string) s
 	}
 	report := fmt.Sprintf("*Token usage*\n• Last turn — %s\n• Session — %s",
 		formatUsage(entry.value.lastTurn), formatUsage(entry.value.session))
-	if model := a.agentModelLabel(ctx, a.boundAgentOrDefault(threadID)); model != "" {
+	if model := a.agentModelLabel(ctx, a.boundAgentOrDefault(ctx, channelID, threadID)); model != "" {
 		report += "\n• Model — " + model
 	}
 	return report

@@ -4,6 +4,38 @@ Breaking or operator-visible changes between releases, newest first. The
 `CHANGELOG.md` lists every change; this file covers what an operator has to
 do or decide.
 
+## Next — Slack thread state lives in the routing store
+
+Every Slack thread now has one row in the routing store: its agent, its initiator, the
+collaborators the initiator allowed, its AgentInstance binding, and the task in flight on it. Run
+`routing.store: valkey` (see 1.6.0): on `memory` the state is lost on every restart and the
+gateway logs a warning at start. Nothing is migrated: a thread that exists at the upgrade gets one
+fresh start on its next reply, and its initiator is whoever replies first. The row has one sliding
+lifetime, `routing.threadTTL` (`--thread-ttl`), 90 days by default and `0` to never expire,
+refreshed by every turn; after it the thread is forgotten and the next mention starts it over:
+its author becomes the initiator and no grant carries over. The agent's session is the
+controller's: its create is idempotent per person and thread, so the same person may get the
+earlier session back while the controller still holds it. Decide whether 90 days suits your
+workspace before upgrading. The 24-hour
+access window is gone with it: while a thread lives, the initiator and the people they allowed
+keep replying without mentioning the bot again, and their grants no longer lapse after a day of
+silence.
+`/agent <name> <question>` now also opens a conversation as a reply inside an existing thread.
+The "🚀 Bringing in *Agent* to help…" launch announcement is gone: it was posted under the
+agent's own name and read as the agent introducing itself. The agent's first reply, under the
+agent's name, is now the first message of a conversation; the progress reaction or the working
+indicator still shows at once that the message was heard.
+
+The AgentInstance itself is unaffected by any of this: the kagent request id is derived from the
+channel, the thread and the agent, never from the store key, so a thread that exists at the
+upgrade gets its AgentInstance back — the same conversation — on its first turn afterwards; only
+its initiator resets, as above. What does not carry over is the old binding row: a 1.10.0 gateway
+wrote it at a five-part routing key (`…|<agentRef>`), and this release reads and writes only the
+four-part key above, so those old keys are never looked at again. They carry no TTL of their own,
+so Valkey keeps them until removed by hand; they are harmless, and doing so is optional, for
+example `valkey-cli --scan --pattern 'klaus-gateway:route:*' | awk -F'|' 'NF==5' | xargs -r
+valkey-cli del` (adapt to the installation's Valkey auth).
+
 ## Next — the crd and configmap routing stores are gone
 
 `routing.store: crd` and `routing.store: configmap` no longer exist; the gateway refuses to start

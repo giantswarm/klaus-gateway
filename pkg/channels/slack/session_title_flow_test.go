@@ -15,9 +15,6 @@ import (
 // create the session with the title, and a later reply must not send one.
 func TestSessionTitle_AssistantPaneOpenerNamesTheSession(t *testing.T) {
 	fake := newFakeSlackAPI()
-	// The agent-binding recovery scans the thread for its first human message;
-	// the opener's own message is the only one there.
-	fake.setResponse("conversations.replies", `{"ok":true,"messages":[{"user":"U1","text":"why did the CPU alert fire on gazelle","ts":"300.000","thread_ts":"100.000"}]}`)
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok", Done: true}}}
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
@@ -43,7 +40,6 @@ func TestSessionTitle_AssistantPaneOpenerNamesTheSession(t *testing.T) {
 // bound, so it no longer reads as the opener; the title must survive the hold.
 func TestSessionTitle_SurvivesSignInReplay(t *testing.T) {
 	fake := newFakeSlackAPI()
-	fake.setResponse("conversations.replies", `{"ok":true,"messages":[{"user":"U1","text":"why did the CPU alert fire on gazelle","ts":"300.000","thread_ts":"100.000"}]}`)
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok", Done: true}}}
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 	obo := &fakeOBO{linkedUser: "U1", token: "tok", notYetLinked: true}

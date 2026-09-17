@@ -218,7 +218,17 @@ failure never costs a person their sign-in:
 The routing table maps `(channel, channelID, userID, threadID)` to a Klaus instance name, or a
 thread to the kagent AgentInstance that holds its conversation, together with the record of the
 task in flight on that thread (delivered after a restart, see
-[Shutdown and restarts](#shutdown-and-restarts)). Choose the backend that matches your deployment:
+[Shutdown and restarts](#shutdown-and-restarts)). For the Slack channel, the same store also
+holds the thread's agent, its initiator, and the collaborators the initiator allowed: agent,
+initiator, grants, the AgentInstance and its in-flight task are one row, with one sliding
+lifetime — `routing.threadTTL` (`--thread-ttl`, 90 days by default; `0` never expires) —
+refreshed on every turn. While the thread lives, the initiator and the people they allowed reply
+without mentioning the bot again, and after that long of silence the thread is forgotten: the
+next mention starts it over with a new initiator and no grants (what the agent still remembers is
+the controller's call, see [channels-slack.md](channels-slack.md#threads-and-sessions)). On
+`routing.store: memory` this Slack
+thread state, like everything else in the table, is lost on every restart. Choose the backend that
+matches your deployment:
 
 | Store       | Helm value         | Persistent | Cluster-backed | Notes                              |
 |-------------|-------------------|------------|----------------|------------------------------------|
@@ -338,7 +348,10 @@ out and the thread is left with a frozen ticker. The recovery of left-running tu
 routing store that outlives the pod: `routing.store: memory` (the chart default) forgets the
 binding and the task with it. Installations with a Slack channel should run `valkey` (see
 [Valkey](#valkey)); `bolt` only counts when `routing.boltPath`
-lies inside a mounted volume.
+lies inside a mounted volume. On a persistent store a restarted gateway also keeps each Slack
+thread's agent, initiator and grants — for `routing.threadTTL` (90 days by default) of silence,
+after which the thread is forgotten on every store; on `memory` the thread starts fresh at each
+restart, and the first person to mention the bot becomes its initiator.
 
 ## Observability
 
@@ -358,8 +371,8 @@ ServiceMonitor). Beside the public mux's `klaus_gateway_requests_total` /
   `first_text` (the first text of the answer), `task_done` (the task's terminal state),
   `stream_end` (the A2A stream closed), `final_flush` (the last edit of the answer in the
   channel) and `total`; and the durations of the steps `token_mint` (the person's muster token,
-  ~0 on a cache hit, a round trip to muster on a refresh), `roster` (agent resolution),
-  `intro_post` (the launch announcement of a new conversation) and `create_instance` (the
+  ~0 on a cache hit, a round trip to muster on a refresh), `roster` (agent resolution) and
+  `create_instance` (the
   controller's `CreateAgentInstance` on a thread's first turn). Buckets run from 5 ms to 5 min.
   "Message received → answer landed" is `phase="final_flush"`; p50/p95 of it is the panel to
   watch.

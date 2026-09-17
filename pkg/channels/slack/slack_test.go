@@ -26,6 +26,7 @@ import (
 	"github.com/giantswarm/klaus-gateway/pkg/auth/musterlink"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 	slackadapter "github.com/giantswarm/klaus-gateway/pkg/channels/slack"
+	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
 )
 
 const helloText = "hello"
@@ -376,9 +377,8 @@ func TestBatchedWriter_FlushesContent(t *testing.T) {
 
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_mention","user":"U123","text":"<@BOT> go","channel":"C1","ts":"111.222"}}`)
 
-	// Default (auto) mode posts the answer as a Block Kit markdown message. The
-	// channel launch announcement also posts here, so wait for the answer text
-	// rather than the first postMessage call.
+	// Default (auto) mode posts the answer as a Block Kit markdown message;
+	// wait for the answer text rather than the first postMessage call.
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "hello world")
 	}, 2*time.Second, 20*time.Millisecond, "streamed answer is posted")
@@ -885,6 +885,36 @@ type stubGateway struct {
 	// resumes, when set, backs the restart-recovery capability (InFlightTurns,
 	// InFlightTurn, ResumeTurn); nil reports no turns left running.
 	resumes *stubResumes
+	// records backs the thread-record capability. Two adapters sharing one
+	// recorder simulate a restart with a surviving routing store.
+	records *slackadapter.MemoryRecorder
+	// recordsErr, when set, fails every thread-record read and write: a
+	// routing store that is down.
+	recordsErr error
+}
+
+// rec is the stub's thread recorder, created on first use.
+func (s *stubGateway) rec() *slackadapter.MemoryRecorder {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.records == nil {
+		s.records = slackadapter.NewMemoryRecorder()
+	}
+	return s.records
+}
+
+func (s *stubGateway) ThreadRecord(ctx context.Context, ch, cid, tid string) (store.Entry, bool, error) {
+	if s.recordsErr != nil {
+		return store.Entry{}, false, s.recordsErr
+	}
+	return s.rec().ThreadRecord(ctx, ch, cid, tid)
+}
+
+func (s *stubGateway) UpdateThreadRecord(ctx context.Context, ch, cid, tid string, mutate func(e *store.Entry, found bool) bool) error {
+	if s.recordsErr != nil {
+		return s.recordsErr
+	}
+	return s.rec().UpdateThreadRecord(ctx, ch, cid, tid, mutate)
 }
 
 // stubResumes is the stubGateway's record of turns a previous process left
@@ -1685,33 +1715,6 @@ func TestHandleInbound_FileShareReplyDispatches(t *testing.T) {
 		"the attachment metadata travelled into dispatch (named in the dropped-attachments notice)")
 }
 
-// A mention's message-event twin dropped by the inactive-thread gate must not
-// post the "I'm not active" hint: the app_mention twin acts on it, and the
-// hint would contradict the outcome.
-func TestHandleInbound_NoInactiveHintForMentionTwins(t *testing.T) {
-	fake := newFakeSlackAPI()
-	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok", Done: true}}}
-	obo := &fakeOBO{linkedUser: "UX", token: "tok"} // U1 stays unlinked
-	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
-	a.OBO = obo
-
-	// U1 runs /login as a reply in a human thread: posts the sign-in prompt
-	// (an engagement trace) without activating the thread.
-	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_mention","user":"U1","text":"<@UBOT> /login","channel":"C1","ts":"701.000","thread_ts":"700.000"}}`)
-	require.Eventually(t, func() bool {
-		return signInPrompted(fake)
-	}, 2*time.Second, 50*time.Millisecond, "the sign-in prompt posts")
-
-	// A new mention in the same thread: the message twin lands first.
-	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","user":"U1","text":"<@UBOT> hello","channel":"C1","ts":"702.000","thread_ts":"700.000"}}`)
-	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_mention","user":"U1","text":"<@UBOT> hello","channel":"C1","ts":"702.000","thread_ts":"700.000"}}`)
-
-	require.Never(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postEphemeral")), "not active in this thread")
-	}, time.Second, 100*time.Millisecond,
-		"the inactive-thread hint must not fire for a message whose mention twin acts")
-}
-
 // /stop before any streamed content in text-progress mode must resolve the
 // "thinking" placeholder instead of leaving it dangling above "Stopped.".
 func TestStop_TextModePlaceholderResolved(t *testing.T) {
@@ -1889,11 +1892,13 @@ func TestDetails_Off_SuppressesToolActivity(t *testing.T) {
 
 func TestResume_PostsStartingFreshWhenSessionGone(t *testing.T) {
 	fake := newFakeSlackAPI()
-	// The thread visibly predates this reply (an earlier human message): a
-	// genuine resume, not a conversation-opening pane message.
-	fake.setResponse("conversations.replies",
-		`{"ok":true,"messages":[{"user":"U1","ts":"100.000","text":"original question"}]}`)
 	gw := &stubGateway{onSessionResumable: func(channels.InboundMessage) (bool, bool) { return false, true }}
+	// The thread is already bound to an agent: this reply continues a
+	// conversation, it does not open one.
+	require.NoError(t, gw.rec().UpdateThreadRecord(context.Background(), "slack", "D1", "100.000", func(e *store.Entry, _ bool) bool {
+		e.AgentRef = "test-agent"
+		return true
+	}))
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
 	// A reply into a thread this process never started (thread_ts != ts).
@@ -1907,9 +1912,11 @@ func TestResume_PostsStartingFreshWhenSessionGone(t *testing.T) {
 
 func TestResume_SilentWhenSessionPresent(t *testing.T) {
 	fake := newFakeSlackAPI()
-	fake.setResponse("conversations.replies",
-		`{"ok":true,"messages":[{"user":"U1","ts":"100.000","text":"original question"}]}`)
 	gw := &stubGateway{onSessionResumable: func(channels.InboundMessage) (bool, bool) { return true, true }}
+	require.NoError(t, gw.rec().UpdateThreadRecord(context.Background(), "slack", "D1", "100.000", func(e *store.Entry, _ bool) bool {
+		e.AgentRef = "test-agent"
+		return true
+	}))
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","channel_type":"im","user":"U1","text":"hi again","channel":"D1","ts":"201.000","thread_ts":"100.000"}}`)

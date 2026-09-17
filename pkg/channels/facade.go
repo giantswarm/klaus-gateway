@@ -71,6 +71,25 @@ type Facade struct {
 	// cannot, channels tell the user where the result is instead of promising
 	// to post it.
 	Durable bool
+	// ThreadTTL is the sliding lifetime of a thread's record and of its
+	// AgentInstance binding: every turn refreshes it, and after it the store
+	// has forgotten the thread — the next mention starts it over. 0 never
+	// expires. main.go sets it from --thread-ttl.
+	ThreadTTL time.Duration
+
+	// now is the clock the facade stamps rows with; nil means time.Now.
+	now func() time.Time
+}
+
+// SetNowFunc is a test hook: the clock the facade stamps rows with, so a test
+// that ages a store's rows moves the facade's clock along with the store's.
+func (f *Facade) SetNowFunc(fn func() time.Time) { f.now = fn }
+
+func (f *Facade) clock() time.Time {
+	if f.now != nil {
+		return f.now()
+	}
+	return time.Now()
 }
 
 // ListAgents lists the agents a channel may select. Unavailable when no
@@ -86,9 +105,10 @@ func (f *Facade) ListAgents(ctx context.Context) ([]pkga2a.AgentInfo, error) {
 // the controller still knows, so a reply resumes it rather than starting
 // fresh. checked is false when no kagent client is configured or the lookup
 // errored; exists is then meaningless and the caller should stay silent. A
-// binding whose instance the controller no longer has is dropped, so the next
-// turn creates a fresh one. The lookup is bounded by a short timeout: it sits
-// before the turn, so a slow controller must not stall the first reply.
+// binding whose instance the controller no longer has is cleared — the thread
+// keeps its agent, its initiator and its grants — so the next turn creates a
+// fresh instance. The lookup is bounded by a short timeout: it sits before the
+// turn, so a slow controller must not stall the first reply.
 func (f *Facade) SessionResumable(ctx context.Context, msg InboundMessage) (exists, checked bool) {
 	if f == nil || f.Agent == nil || f.Routes == nil {
 		return false, false
@@ -96,7 +116,7 @@ func (f *Facade) SessionResumable(ctx context.Context, msg InboundMessage) (exis
 	ctx = withChannelAuth(ctx, msg)
 	ctx, cancel := context.WithTimeout(ctx, sessionCheckTimeout)
 	defer cancel()
-	key := instanceKey(msg)
+	key := threadKey(msg.Channel, msg.ChannelID, msg.ThreadID)
 	entry, ok, err := f.Routes.Get(ctx, key)
 	if err != nil {
 		return false, false
@@ -108,7 +128,7 @@ func (f *Facade) SessionResumable(ctx context.Context, msg InboundMessage) (exis
 		if !pkga2a.IsNotFound(err) {
 			return false, false
 		}
-		_ = f.Routes.Delete(ctx, key)
+		_ = f.Routes.Update(ctx, key, clearBinding)
 		return false, true
 	}
 	return true, true
@@ -118,11 +138,11 @@ func (f *Facade) SessionResumable(ctx context.Context, msg InboundMessage) (exis
 // turn's critical path.
 const sessionCheckTimeout = 3 * time.Second
 
-// ResetSession deletes the AgentInstance bound to msg's thread and drops the
-// binding, so the next turn starts a fresh instance. Used when the
-// conversation's history has become unusable (the model API rejects it on
-// every turn). Returns false when no kagent client is configured or the
-// thread has no binding.
+// ResetSession deletes the AgentInstance bound to msg's thread and clears the
+// binding — the thread keeps its agent, its initiator and its grants — so the
+// next turn starts a fresh instance. Used when the conversation's history has
+// become unusable (the model API rejects it on every turn). Returns false when
+// no kagent client is configured or the thread has no binding.
 func (f *Facade) ResetSession(ctx context.Context, msg InboundMessage) (bool, error) {
 	if f == nil || f.Agent == nil || f.Routes == nil {
 		return false, nil
@@ -130,7 +150,7 @@ func (f *Facade) ResetSession(ctx context.Context, msg InboundMessage) (bool, er
 	ctx = withChannelAuth(ctx, msg)
 	ctx, cancel := context.WithTimeout(ctx, sessionCheckTimeout)
 	defer cancel()
-	key := instanceKey(msg)
+	key := threadKey(msg.Channel, msg.ChannelID, msg.ThreadID)
 	entry, ok, err := f.Routes.Get(ctx, key)
 	if err != nil {
 		return false, err
@@ -141,7 +161,7 @@ func (f *Facade) ResetSession(ctx context.Context, msg InboundMessage) (bool, er
 	if err := f.Agent.DeleteInstance(ctx, entry.AgentInstanceID); err != nil {
 		return false, err
 	}
-	if err := f.Routes.Delete(ctx, key); err != nil {
+	if err := f.Routes.Update(ctx, key, clearBinding); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -183,31 +203,48 @@ func (f *Facade) SendCompletion(ctx context.Context, ref InstanceRef, msg Inboun
 	return f.sendViaOpenAI(ctx, ref, msg)
 }
 
-// instanceKey is the routing-store key of a thread's AgentInstance binding.
-// The user slot is empty on purpose: a thread is shared by its participants,
-// so every one of them reaches the same instance.
-func instanceKey(msg InboundMessage) store.Key {
-	return store.Key{Channel: msg.Channel, ChannelID: msg.ChannelID, ThreadID: msg.ThreadID, Agent: msg.AgentRef}
+// clearBinding drops a thread's AgentInstance binding and anything that only
+// makes sense with it, keeping the rest of the thread's row.
+func clearBinding(e *store.Entry, found bool) bool {
+	if !found {
+		return false
+	}
+	e.AgentInstanceID, e.TaskID, e.Resume = "", "", nil
+	return true
 }
 
 // instanceFor returns the AgentInstance id msg's thread is bound to, creating
-// the instance on the thread's first turn. The create is keyed by the
-// synthesized context id, so a retried first turn does not create a second
-// instance. The binding never expires on its own: the instance is the
-// conversation, and the controller keeps it until it is deleted.
+// the instance on the thread's first turn. A thread binds one agent; a turn
+// that names another one rebinds it, and the task in flight on the old
+// instance goes with it. The create is keyed by the synthesized context id, so
+// a retried first turn does not create a second instance. The binding slides
+// with the thread's lifetime: every turn refreshes it, the store expires the
+// row after ThreadTTL of silence, and the next mention asks the controller for
+// an instance again — the idempotent create hands the same person the earlier
+// one back while the controller still holds it.
 func (f *Facade) instanceFor(ctx context.Context, msg InboundMessage) (string, error) {
 	if f.Routes == nil {
 		return "", errors.New("channels: no routing store for the agent instance binding")
 	}
-	key := instanceKey(msg)
-	now := time.Now()
+	key := threadKey(msg.Channel, msg.ChannelID, msg.ThreadID)
+	now := f.clock()
 	entry, ok, err := f.Routes.Get(ctx, key)
 	if err != nil {
 		return "", fmt.Errorf("channels: read instance binding: %w", err)
 	}
-	if ok && entry.AgentInstanceID != "" {
-		entry.LastSeen = now
-		if err := f.Routes.Put(ctx, key, entry); err != nil {
+	if ok && entry.AgentInstanceID != "" && entry.AgentRef == msg.AgentRef {
+		if err := f.Routes.Update(ctx, key, func(e *store.Entry, found bool) bool {
+			if !found {
+				return false
+			}
+			e.LastSeen = now
+			// A row written before the thread lifetime existed carries no TTL;
+			// it adopts the lifetime on its next turn.
+			if e.TTL <= 0 && f.ThreadTTL > 0 {
+				e.TTL = f.ThreadTTL
+			}
+			return true
+		}); err != nil {
 			return "", fmt.Errorf("channels: refresh instance binding: %w", err)
 		}
 		return entry.AgentInstanceID, nil
@@ -219,7 +256,20 @@ func (f *Facade) instanceFor(ctx context.Context, msg InboundMessage) (string, e
 	if err != nil {
 		return "", err
 	}
-	if err := f.Routes.Put(ctx, key, store.Entry{AgentInstanceID: inst.ID, CreatedAt: now, LastSeen: now}); err != nil {
+	if err := f.Routes.Update(ctx, key, func(e *store.Entry, _ bool) bool {
+		if e.AgentInstanceID != "" && e.AgentInstanceID != inst.ID {
+			// A rebind: nothing of the previous instance's turn is deliverable.
+			e.TaskID, e.Resume = "", nil
+		}
+		e.AgentRef, e.AgentInstanceID, e.LastSeen = msg.AgentRef, inst.ID, now
+		if e.CreatedAt.IsZero() {
+			e.CreatedAt = now
+		}
+		if e.TTL <= 0 {
+			e.TTL = f.ThreadTTL
+		}
+		return true
+	}); err != nil {
 		return "", fmt.Errorf("channels: store instance binding: %w", err)
 	}
 	slog.Info("channels: thread bound to agent instance", "record", "instance_bound",
@@ -255,7 +305,7 @@ func (f *Facade) sendViaA2A(ctx context.Context, msg InboundMessage) (<-chan Out
 	// The task id is learned from the first event, also on a HITL resume: the
 	// paused task's record was dropped with the prompt, so the resumed segment
 	// is recorded afresh.
-	return f.streamTask(ctx, instanceKey(msg), instanceID, "", msg.Resume, f.Agent.Stream(ctx, instanceID, message))
+	return f.streamTask(ctx, threadKey(msg.Channel, msg.ChannelID, msg.ThreadID), instanceID, "", msg.Resume, f.Agent.Stream(ctx, instanceID, message))
 }
 
 // ResumesTurns reports whether a turn this gateway leaves running at its
@@ -266,8 +316,8 @@ func (f *Facade) ResumesTurns() bool {
 }
 
 // InFlightTurns lists the turns a previous process left running for channel:
-// every binding of that channel that still records a task. A channel adapter
-// calls it once at start to resubscribe to each and deliver the result.
+// every thread of that channel whose row still records a task. A channel
+// adapter calls it once at start to resubscribe to each and deliver the result.
 func (f *Facade) InFlightTurns(ctx context.Context, channel string) ([]InFlightTurn, error) {
 	if f == nil || f.Agent == nil || f.Routes == nil {
 		return nil, nil
@@ -295,7 +345,7 @@ func (f *Facade) InFlightTurn(ctx context.Context, msg InboundMessage) (InFlight
 	if f == nil || f.Agent == nil || f.Routes == nil {
 		return InFlightTurn{}, false, nil
 	}
-	key := instanceKey(msg)
+	key := threadKey(msg.Channel, msg.ChannelID, msg.ThreadID)
 	entry, ok, err := f.Routes.Get(ctx, key)
 	if err != nil {
 		return InFlightTurn{}, false, fmt.Errorf("channels: read in-flight turn: %w", err)
@@ -308,7 +358,7 @@ func (f *Facade) InFlightTurn(ctx context.Context, msg InboundMessage) (InFlight
 
 func inFlightTurn(key store.Key, entry store.Entry) InFlightTurn {
 	return InFlightTurn{
-		Msg:    InboundMessage{Channel: key.Channel, ChannelID: key.ChannelID, ThreadID: key.ThreadID, AgentRef: key.Agent, Resume: entry.Resume},
+		Msg:    InboundMessage{Channel: key.Channel, ChannelID: key.ChannelID, ThreadID: key.ThreadID, AgentRef: entry.AgentRef, Resume: entry.Resume},
 		TaskID: entry.TaskID,
 	}
 }
@@ -324,7 +374,7 @@ func (f *Facade) ResumeTurn(ctx context.Context, msg InboundMessage, taskID stri
 		return nil, errors.New("channels: no agent client configured")
 	}
 	ctx = withChannelAuth(ctx, msg)
-	key := instanceKey(msg)
+	key := threadKey(msg.Channel, msg.ChannelID, msg.ThreadID)
 	entry, ok, err := f.Routes.Get(ctx, key)
 	if err != nil {
 		return nil, fmt.Errorf("channels: read instance binding: %w", err)
@@ -503,22 +553,20 @@ func (f *Facade) forgetTask(ctx context.Context, key store.Key) {
 	})
 }
 
-// updateBinding applies mutate to the thread's binding when it exists and
-// writes it back when mutate reports a change. Best effort and detached from
-// the turn's cancellation: the binding itself is never at stake here, only the
-// bookkeeping of its in-flight task.
+// updateBinding applies mutate to the thread's row when it exists and writes it
+// back when mutate reports a change. It goes through the store's per-key
+// update, so a grant or a binding written during the turn is not lost. Best
+// effort and detached from the turn's cancellation: the row itself is never at
+// stake here, only the bookkeeping of its in-flight task.
 func (f *Facade) updateBinding(ctx context.Context, key store.Key, mutate func(*store.Entry) bool) {
 	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), bindingWriteTimeout)
 	defer cancel()
-	entry, ok, err := f.Routes.Get(wctx, key)
-	if err != nil {
-		slog.Warn("channels: read binding for the in-flight task record failed", "thread", key.ThreadID, "error", err)
-		return
-	}
-	if !ok || !mutate(&entry) {
-		return
-	}
-	if err := f.Routes.Put(wctx, key, entry); err != nil {
+	if err := f.Routes.Update(wctx, key, func(e *store.Entry, found bool) bool {
+		if !found {
+			return false
+		}
+		return mutate(e)
+	}); err != nil {
 		slog.Warn("channels: write in-flight task record failed", "thread", key.ThreadID, "error", err)
 	}
 }

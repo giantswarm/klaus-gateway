@@ -59,6 +59,29 @@ func (s *Store) Put(_ context.Context, k store.Key, e store.Entry) error {
 	return nil
 }
 
+// Update applies mutate to the entry at k under the store's lock, so two
+// writers of the same row cannot lose each other's fields. An expired entry is
+// presented as absent.
+func (s *Store) Update(_ context.Context, k store.Key, mutate func(e *store.Entry, found bool) bool) error {
+	s.mu.Lock()
+	e, found := s.data[k.String()]
+	if found && e.Expired(s.now()) {
+		e, found = store.Entry{}, false
+	}
+	if !found {
+		e = store.Entry{}
+	}
+	changed := mutate(&e, found)
+	if changed {
+		s.data[k.String()] = e
+	}
+	s.mu.Unlock()
+	if changed {
+		s.evictOnce.Do(s.startEvict)
+	}
+	return nil
+}
+
 // Delete removes an entry. Missing keys are not an error.
 func (s *Store) Delete(_ context.Context, k store.Key) error {
 	s.mu.Lock()
@@ -79,7 +102,7 @@ func (s *Store) List(_ context.Context) ([]store.KeyEntry, error) {
 		}
 		k, err := store.ParseKey(ks)
 		if err != nil {
-			return nil, err
+			continue // a key of an older layout: not this table's any more
 		}
 		out = append(out, store.KeyEntry{Key: k, Entry: e})
 	}

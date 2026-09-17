@@ -2,7 +2,6 @@ package slack
 
 import (
 	"context"
-	"errors"
 	"io"
 	"log/slog"
 	"testing"
@@ -46,34 +45,6 @@ func TestSplitAgentCommand(t *testing.T) {
 			require.Equal(t, tc.name, name)
 			require.Equal(t, tc.quoted, quoted)
 			require.Equal(t, tc.question, question)
-		})
-	}
-}
-
-// consumedCommandText decides which thread messages the opening-message scans
-// skip: consumed commands never opened a conversation.
-func TestConsumedCommandText(t *testing.T) {
-	cases := []struct {
-		in       string
-		consumed bool
-	}{
-		{"/agent", true},
-		{"<@UBOT> /agent", true},
-		{"/agent sre-agent", true},           // name-only: the hint replied, nothing dispatched
-		{`/agent "SRE Agent"`, true},         // quoted name-only: same
-		{"/agent sre-agent question", false}, // complete selection dispatches
-		{`/agent "SRE Agent" question`, false},
-		{"/help", true},
-		{"/usage", true},
-		{"/stop", true},
-		{"/frobnicate", true},      // unknown but command-shaped: the notice replied
-		{"/tmp/foo is bad", false}, // not command-shaped: dispatched as a turn
-		{"plain question", false},
-		{"", false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.in, func(t *testing.T) {
-			require.Equal(t, tc.consumed, consumedCommandText(tc.in))
 		})
 	}
 }
@@ -181,70 +152,6 @@ func TestAgentRefsForSelectorBareDefault(t *testing.T) {
 	refs, err := a.agentRefsForSelector(context.Background(), "SRE Agent")
 	require.NoError(t, err)
 	require.Equal(t, []string{"sre-agent"}, refs)
-}
-
-// openingAgentRef only binds for a complete "/agent <name> <question>"
-// opening message: a name-only or malformed prefix never started a
-// conversation.
-func TestOpeningAgentRef(t *testing.T) {
-	a := selectionAdapter(&staticRoster{agents: []pkga2a.AgentInfo{
-		{Name: "sre-agent", Namespace: "kagent", DisplayName: "SRE Agent"},
-	}})
-	ctx := context.Background()
-
-	ref, refusal := a.openingAgentRef(ctx, "<@UBOT> /agent sre-agent why?")
-	require.Empty(t, refusal)
-	require.Equal(t, "kagent/sre-agent", ref)
-
-	ref, refusal = a.openingAgentRef(ctx, "/agent sre-agent why?")
-	require.Empty(t, refusal)
-	require.Equal(t, "kagent/sre-agent", ref)
-
-	// A quoted opener re-resolves its display name against the live roster.
-	ref, refusal = a.openingAgentRef(ctx, `/agent "SRE Agent" why?`)
-	require.Empty(t, refusal)
-	require.Equal(t, "kagent/sre-agent", ref)
-
-	ref, refusal = a.openingAgentRef(ctx, "<@UBOT> plain question")
-	require.Empty(t, refusal)
-	require.Empty(t, ref)
-
-	ref, refusal = a.openingAgentRef(ctx, "/agent sre-agent")
-	require.Empty(t, refusal)
-	require.Empty(t, ref, "a name-only opener selected nothing")
-
-	ref, refusal = a.openingAgentRef(ctx, "/agent ../../etc oops")
-	require.Empty(t, refusal)
-	require.Empty(t, ref, "a malformed name binds nothing")
-
-	ref, refusal = a.openingAgentRef(ctx, "")
-	require.Empty(t, refusal)
-	require.Empty(t, ref)
-}
-
-// A quoted opener whose display name no longer resolves refuses the turn
-// loudly instead of silently re-routing it to the default agent.
-func TestOpeningAgentRefRefusals(t *testing.T) {
-	gone := selectionAdapter(&staticRoster{agents: []pkga2a.AgentInfo{
-		{Name: "swarmgeist", Namespace: "kagent", DisplayName: "Swarmgeist"},
-	}})
-	ref, refusal := gone.openingAgentRef(context.Background(), `/agent "SRE Agent" why?`)
-	require.Empty(t, ref)
-	require.Contains(t, refusal, "SRE Agent")
-	require.Contains(t, refusal, "haven't sent your message")
-
-	ambiguous := selectionAdapter(&staticRoster{agents: []pkga2a.AgentInfo{
-		{Name: "sre-agent", Namespace: "kagent", DisplayName: "SRE Agent"},
-		{Name: "sre-agent", Namespace: "other", DisplayName: "SRE Agent"},
-	}})
-	ref, refusal = ambiguous.openingAgentRef(context.Background(), `/agent "SRE Agent" why?`)
-	require.Empty(t, ref)
-	require.Contains(t, refusal, "haven't sent your message")
-
-	unreachable := selectionAdapter(&staticRoster{err: errors.New("boom")})
-	ref, refusal = unreachable.openingAgentRef(context.Background(), `/agent "SRE Agent" why?`)
-	require.Empty(t, ref)
-	require.Equal(t, agentRecoveryCheckFailedNotice, refusal)
 }
 
 func TestAgentRefFromName_FollowsDeploymentRefShape(t *testing.T) {

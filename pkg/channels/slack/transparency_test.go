@@ -4,9 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -247,7 +245,7 @@ func (perRefModelSource) AgentModel(_ context.Context, agentRef string) (string,
 // model line names the bound agent's model, not the default's.
 func TestUsageReport_ModelLineFollowsThreadBinding(t *testing.T) {
 	a := &Adapter{DefaultAgent: "kagent/default-agent", Models: perRefModelSource{}}
-	a.bindThreadAgent("T1", "kagent/sre-agent")
+	a.bindThreadAgent(t.Context(), "C1", "T1", "kagent/sre-agent")
 	a.recordTurnUsage("T1", "C1", channels.TurnUsage{TotalTokens: 3})
 
 	require.Contains(t, a.usageReport(t.Context(), "T1", "C1"), "Model — model-of-kagent/sre-agent")
@@ -356,34 +354,4 @@ func TestMaybeAnnounceResume_RetriesAfterTransientError(t *testing.T) {
 	a.maybeAnnounceResume(t.Context(), msg, "D1")
 	require.Equal(t, int32(2), gw.calls.Load())
 	require.Equal(t, int32(1), srv.posts.Load())
-}
-
-// The inactive-thread hint fires only for threads this process has a trace of
-// (here: a details setting), at most once per thread; unrelated threads in a
-// served channel stay silent.
-func TestHintInactiveThread_EngagedOnlyAndOnce(t *testing.T) {
-	var ephemerals atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "chat.postEphemeral") {
-			ephemerals.Add(1)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"ok":true}`))
-	}))
-	t.Cleanup(srv.Close)
-	a := &Adapter{
-		APIBase: srv.URL,
-		Secrets: Secrets{BotToken: "test-bot-token"}, //nolint:gosec
-		Logger:  slog.New(slog.DiscardHandler),
-	}
-
-	a.hintInactiveThread(t.Context(), "C1", "T1", "U1")
-	require.Equal(t, int32(0), ephemerals.Load(), "a thread with no bot trace must stay silent")
-
-	a.setDetailsLevel("T1", detailsOff)
-	a.hintInactiveThread(t.Context(), "C1", "T1", "U1")
-	require.Equal(t, int32(1), ephemerals.Load(), "an engaged thread gets the hint")
-
-	a.hintInactiveThread(t.Context(), "C1", "T1", "U2")
-	require.Equal(t, int32(1), ephemerals.Load(), "the hint posts once per thread")
 }

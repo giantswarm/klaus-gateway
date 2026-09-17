@@ -123,6 +123,18 @@ the title, so a refused title never costs the turn its indicator.
   falls back to the sender's own identity rather than the gateway service
   account. kagent v0.9.9 has no per-caller identity within a session; when that
   lands (kagent#1933, #2181) each caller's own identity replaces this.
+- Each thread's durable state — its agent, its initiator, the collaborators the initiator
+  allowed, and its AgentInstance binding — lives in one row in the routing store, at the
+  thread's plain key (`slack|<channelID>||<threadID>`, the user slot empty). It is the only
+  carrier: the gateway never reads Slack history to recover any of it. The row has one sliding
+  lifetime — `routing.threadTTL` (`--thread-ttl`), 90 days by default, `0` never expires —
+  refreshed by every turn. While the thread lives, the initiator and the collaborators they
+  allowed instruct the agent without mentioning the bot again and their grants hold. After that
+  long without a message the gateway has forgotten the thread: an un-mentioned reply is ignored,
+  and the next mention starts the thread over — its author becomes the initiator and no grant
+  carries over. Whether the agent remembers is the controller's call: its create is idempotent
+  per person and thread, so the same person gets the earlier session back while the controller
+  still holds it, and another person gets a new one.
 
 ### Two auth layers
 
@@ -168,9 +180,14 @@ Every Slack thread is routed to a single agent via the A2A executor. A conversat
 agent when it opens, through one of two entry points, and keeps it for life:
 
 - **Mention with a prefix**: `@bot /agent "<display name>" <question>` or
-  `@bot /agent <technical-name> <question>` on a conversation-starting message. The technical name
-  may carry the served namespace (`kagent/sre-agent`); it names the same agent as the bare name.
-  Without a prefix the conversation goes to the default agent (`slack.defaultAgent`).
+  `@bot /agent <technical-name> <question>` starts a conversation in any thread with no agent
+  recorded yet — a root `@`-mention, or a reply inside an existing thread that has none of its
+  own (an alert another app posted, say). The technical name may carry the served
+  namespace (`kagent/sre-agent`); it names the same agent as the bare name. Without a prefix the conversation goes to the default
+  agent (`slack.defaultAgent`). Inside a thread that already has a conversation, naming its own
+  agent again is a no-op — the turn dispatches as a normal reply — and naming a different agent
+  is refused: the session's identity is tied to the first agent, and a mid-conversation switch
+  would silently start an empty one.
 - **Slash command**: `/swarmgeist [question]` in a channel opens a modal with an agent select over
   the live roster (the default agent preselected) and a question box. On submit the gateway posts
   the conversation root itself, under the agent's identity ("💬 @user asked *Agent*: …"), makes
@@ -180,14 +197,21 @@ agent when it opens, through one of two entry points, and keeps it for life:
   asks for an invite to private ones. Failures (unknown agent, roster unavailable, channel not
   served) are reported privately to the invoking user.
 
-After a restart the in-memory binding is re-derived: from the `/agent` prefix in the opening
-message for mention-started threads, and from a conversation marker on the root for slash-started
-threads (the root is a bot message with no prefix). The marker is the `block_id` of the root's
-Block Kit section — invisible to users, stored by Slack with the message, returned by
-`conversations.replies` — and it also names the initiator, so the submitter, not the first person
-to reply, owns the thread after a restart. Slack message metadata would be the purpose-built
-carrier, but Slack drops custom metadata unless its schema is declared in the manifest, and the
-manifest of a classic Slack app has no place for that.
+A thread's agent binding is not re-derived after a restart — it does not need to be. It lives
+in the thread's row in the routing store (see [Threads and sessions](#threads-and-sessions)),
+so on a persistent store (`routing.store: valkey` or `bolt`) a restart changes nothing: same
+agent, same initiator, same grants. The gateway never reads Slack history — no
+`conversations.replies`, no re-parsing the opening message or the slash command's root — to
+recover any of it; the routing-store row is the only carrier. On `routing.store: memory` a
+restart loses this state, and every thread starts fresh from its next message. On any store a
+thread nobody has written in for `routing.threadTTL` is forgotten, agent and all, and its next
+mention starts it over (see [Threads and sessions](#threads-and-sessions) for what the agent may
+still remember).
+
+The turn that opens a conversation posts no notice of its own: the agent's first reply, under
+the agent's name, is the first sign of which agent joined the thread. The slash command's
+branded root names the agent up front, because there the picker chose it before any message
+existed.
 
 | Flag | Env var | Required |
 |------|---------|---------|
@@ -328,9 +352,9 @@ Three structured log records (`record=…`, JSON fields) tell a turn's story; jo
   `subject`, `channel_id`, `thread_id`, `message_id`, `task_id` (the A2A task the controller
   named), `tool_calls`, `streamed_chars`, `trace_id`, `error` on a failure, and the phases as
   milliseconds since the events POST (or the Socket Mode frame) arrived: `token_mint_ms`,
-  `roster_ms`, `intro_post_ms`, `dispatch_ms`, `create_instance_ms`, `first_event_ms`,
+  `roster_ms`, `dispatch_ms`, `create_instance_ms`, `first_event_ms`,
   `first_text_ms`, `task_done_ms`, `stream_end_ms`, `final_flush_ms`, `total_ms`. A phase that
-  did not happen (no instance created on a follow-up, no intro on a reply) is absent. A turn a
+  did not happen (no instance created on a follow-up) is absent. A turn a
   previous process left running and this one delivered after a restart gets a record too, its
   timeline starting at the delivery.
 - `token_refresh` -- the person's muster id_token was refreshed: `trigger` (`ahead` for the
@@ -393,8 +417,8 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
 
 ### Identity, HITL, and channel behavior
 
-- **Per-message branding.** Agent replies, the agent's own confirmation prompts, and the launch
-  announcement are posted under the agent's display name, so they read as the agent speaking
+- **Per-message branding.** Agent replies and the agent's own confirmation prompts are posted
+  under the agent's display name, so they read as the agent speaking
   rather than the app. The name is the `Agent` CR's `ui.giantswarm.io/display-name` annotation
   (as reported by the roster), falling back to the resource's own name — `sre-agent`, not the
   underscored `sre_agent` the AgentCard publishes. The AgentCard supplies only the icon, which
@@ -419,8 +443,6 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
   asks to confirm again); a plain "approve"/"deny" reply still decides.
 - **Channel intro.** When the bot is added to a channel it posts a one-time introduction
   (requires the `member_joined_channel` bot event).
-- **Launch announcement.** A new channel thread opens with a short Swarmgeist hand-off notice
-  before the agent takes over.
 - **Sign-in prompt.** An unlinked user's first message is answered with a "Sign in to Giant
   Swarm" prompt. In a channel the prompt is ephemeral, so only that user sees the link; a
   short notice in the thread says the agent is waiting for a sign-in, names nobody and
@@ -467,7 +489,7 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
 | `chat:write.customize` | Post agent replies under the agent's own name/icon |
 | `reactions:write` | Add/remove progress reactions on the triggering message |
 | `im:history`     | Read DMs sent to the bot                              |
-| `channels:history` | Read messages in channels the bot is a member of   |
+| `channels:history` | Required for Slack to deliver `message.channels` events (channel messages) to the bot; the gateway does not read channel history |
 | `channels:join`  | Join public channels on invite                        |
 | `files:read`     | Download message attachments (`url_private`) to forward to the agent |
 

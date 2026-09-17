@@ -357,7 +357,7 @@ func (a *Adapter) handleConnectorDismiss(ctx context.Context, slackUser, server,
 // click; the prompt is rewritten so the clicker is not left with a dead
 // button.
 func (a *Adapter) handleAccessDecision(ctx context.Context, slackChannel, threadID, newcomerID, clickerID, responseURL string, allow bool) {
-	initiator := a.accessPolicy().Initiator(threadID)
+	initiator := a.accessPolicy().Initiator(ctx, slackChannel, threadID)
 	if initiator == "" {
 		a.Logger.Info("slack: access decision for a thread with no initiator, prompt expired",
 			"thread", threadID, "clicker", clickerID, "newcomer", newcomerID)
@@ -395,7 +395,7 @@ func (a *Adapter) handleAccessDecision(ctx context.Context, slackChannel, thread
 		return
 	}
 
-	a.accessPolicy().Grant(threadID, newcomerID)
+	a.accessPolicy().Grant(ctx, slackChannel, threadID, newcomerID)
 	if err := respondURL(ctx, responseURL, threadID, fmt.Sprintf("✅ _<@%s> allowed._", newcomerID)); err != nil {
 		a.Logger.Warn("slack: update access prompt (allowed) failed", "thread", threadID, "error", err)
 	}
@@ -441,7 +441,7 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 	// tool call runs under the initiator's identity, so only a permitted user (the
 	// initiator or a granted collaborator) may approve or cancel it. An onlooker
 	// click is refused ephemerally and the pending task is left intact.
-	if !a.accessPolicy().Allowed(threadID, slackUser) {
+	if !a.accessPolicy().Allowed(ctx, slackChannel, threadID, slackUser) {
 		if err := client.postEphemeralText(ctx, slackChannel, slackUser, threadID, accessDecisionRefusal); err != nil {
 			a.Logger.Warn("slack: post decision refusal failed", "thread", threadID, "user", slackUser, "error", err)
 		}

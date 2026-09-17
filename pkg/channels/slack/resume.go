@@ -218,7 +218,7 @@ func (a *Adapter) deliverInFlight(ctx context.Context, resumer turnResumer, turn
 	msg.BearerToken = token
 	msg.MessageID = triggerTS
 	if slackUser != "" {
-		a.accessPolicy().SetInitiator(threadID, slackUser)
+		a.accessPolicy().SetInitiator(ctx, slackChannel, threadID, slackUser)
 	}
 
 	turnCtx, done := a.registerTurn(ctx, threadID)
