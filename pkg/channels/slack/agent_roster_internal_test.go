@@ -161,3 +161,37 @@ func TestRosterAgents_NoIdentityDoesNotArmTheNegativeCache(t *testing.T) {
 	require.NoError(t, err, "the signed-in caller is served at once")
 	require.Equal(t, "SRE Agent", got[0].DisplayName)
 }
+
+// rosterFails answers every listing with err.
+type rosterFails struct{ err error }
+
+func (r rosterFails) ListAgents(context.Context) ([]pkga2a.AgentInfo, error) { return nil, r.err }
+
+// The three outcomes of a failed fetch: a controller failure arms the negative
+// cache; a caller without an identity and a caller whose own context ended
+// say nothing about the roster and leave it unarmed.
+func TestRosterAgents_WhichFailuresArmTheNegativeCache(t *testing.T) {
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	cases := []struct {
+		name  string
+		err   error
+		ctx   context.Context
+		armed bool
+	}{
+		{"controller failure", errors.New("controller unreachable"), context.Background(), true},
+		{"no caller identity", pkga2a.ErrNoIdentity, context.Background(), false},
+		{"caller ran out of time", errors.New("rpc error: context canceled"), cancelled, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := testAdapterWithRoster(rosterFails{err: tc.err})
+			_, err := a.rosterAgents(tc.ctx)
+			require.Error(t, err)
+			a.rosterMu.Lock()
+			armed := !a.rosterFailedUntil.IsZero()
+			a.rosterMu.Unlock()
+			require.Equal(t, tc.armed, armed)
+		})
+	}
+}
