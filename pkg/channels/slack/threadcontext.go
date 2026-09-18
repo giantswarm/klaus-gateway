@@ -328,7 +328,7 @@ func blockText(b threadBlock) []string {
 // (a rich_text block wraps its runs in sections).
 func elementText(e threadBlockElem) []string {
 	var out []string
-	if t := strings.TrimSpace(e.Text); t != "" {
+	if t := strings.TrimSpace(string(e.Text)); t != "" {
 		out = append(out, t)
 	}
 	for _, nested := range e.Elements {

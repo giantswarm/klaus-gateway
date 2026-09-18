@@ -2,6 +2,7 @@ package slack
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -298,4 +299,30 @@ func TestDisplayName_CachedNameSurvivesTheBudget(t *testing.T) {
 	cancel()
 	require.Equal(t, "Marta", a.displayName(done, "U9"), "the cached name is used past the budget")
 	require.Equal(t, int32(1), calls.Load(), "and asks Slack nothing more")
+}
+
+// A PagerDuty alert as Slack delivers it: a section whose fields are text
+// objects, an actions block whose buttons carry their labels as text objects,
+// and a context block with an image element beside an mrkdwn one. The buttons
+// are not prose; everything else is.
+func TestThreadMessage_DecodesPagerDutyBlocks(t *testing.T) {
+	raw := `{"ts":"1.000","bot_id":"B1","username":"PagerDuty EU","text":"",
+	 "blocks":[
+	  {"type":"section","text":{"type":"mrkdwn","text":"*alba - FluxCustomerHelmReleaseFailed*: HelmRelease stuck in Failed state."},
+	   "fields":[{"type":"mrkdwn","text":"*Urgency:* High"},{"type":"mrkdwn","text":"*Service:* honeybadger-alertmanager"}]},
+	  {"type":"actions","elements":[
+	    {"type":"button","text":{"type":"plain_text","text":"Reopen","emoji":true},"action_id":"reopen"},
+	    {"type":"button","text":{"type":"plain_text","text":"Start Post-Incident Review"},"action_id":"pir"}]},
+	  {"type":"context","elements":[
+	    {"type":"image","image_url":"https://example.com/i.png","alt_text":"icon"},
+	    {"type":"mrkdwn","text":"Triggered via Grafana"}]},
+	  {"type":"divider"}
+	 ]}`
+	var m threadMessage
+	require.NoError(t, json.Unmarshal([]byte(raw), &m))
+	got := strings.Join(messageExtras(m), "\n")
+	require.Contains(t, got, "FluxCustomerHelmReleaseFailed")
+	require.Contains(t, got, "*Urgency:* High")
+	require.Contains(t, got, "Triggered via Grafana")
+	require.NotContains(t, got, "Reopen", "button labels are not prose")
 }

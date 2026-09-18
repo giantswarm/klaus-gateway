@@ -1888,8 +1888,32 @@ type threadBlockText struct {
 
 type threadBlockElem struct {
 	Type     string            `json:"type"`
-	Text     string            `json:"text"`
+	Text     blockString       `json:"text"`
 	Elements []threadBlockElem `json:"elements"`
+}
+
+// blockString is a Block Kit element's "text": a plain string in a rich_text
+// run, a text object ({"type":"plain_text","text":"Reopen"}) in a button or a
+// context element — PagerDuty's alert posts carry both in one message. Either
+// shape decodes to the words; anything else decodes to "", so one unusual
+// element never fails the read of a whole thread.
+type blockString string
+
+func (s *blockString) UnmarshalJSON(b []byte) error {
+	var str string
+	if err := json.Unmarshal(b, &str); err == nil {
+		*s = blockString(str)
+		return nil
+	}
+	var obj struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(b, &obj); err == nil {
+		*s = blockString(obj.Text)
+		return nil
+	}
+	*s = ""
+	return nil
 }
 
 // threadRepliesPageSize is the page size of a context read. The shared call
