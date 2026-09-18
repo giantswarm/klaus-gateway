@@ -866,7 +866,7 @@ func (w *batchedWriter) maybeConnectorPrompt(tool *channels.ToolActivity) {
 	promptURL, connectValue := loginURL, server
 	autoResume := false
 	if base := w.adapter.PublicBaseURL; base != "" {
-		stateID := w.adapter.mintConnectorCompletion(w.slackUser, server, w.channel, w.threadTS)
+		stateID := w.adapter.mintConnectorCompletion(connectorCompletion{slackUser: w.slackUser, server: server, channel: w.channel, threadTS: w.threadTS})
 		if decorated, err := decorateConnectorLoginURL(loginURL, base, stateID); err != nil {
 			w.logger.Warn("slack: connector login URL decoration failed, posting plain link", "server", server, "error", err)
 		} else {
@@ -2546,14 +2546,39 @@ func (c *slackAPIClient) postSignInPromptEphemeral(ctx context.Context, channel,
 // longer text gets the whole message rejected with invalid_blocks.
 const slackSectionTextMax = 3000
 
-// postConnectorPrompt posts an ephemeral (target-user-only) Block Kit message
-// offering to connect a muster backend the agent cannot use for the user yet:
-// a "Connect <server>" URL button opening loginURL plus a "Not now" dismissal.
-// When threadID is set the prompt is posted in-thread. connectValue is the
-// Connect button's value: the completion-state ID when the login URL carries a
-// post-login redirect, else the server name (the click stays a no-op then).
+// postConnectorPrompt posts the agent's Connect prompt: an ephemeral offering
+// to connect a muster backend the agent cannot use for the user yet, with a
+// "Not now" dismissal (the prompt cooldown then holds it back).
 func (c *slackAPIClient) postConnectorPrompt(ctx context.Context, channel, threadID, user, server, loginURL, connectValue string) error {
 	text := fmt.Sprintf("The agent can't use *%s* for you yet. Connect your account once so those tools work.", escapeMrkdwn(server))
+	return c.postConnectPrompt(ctx, channel, threadID, user, text, server, loginURL, connectValue, true)
+}
+
+// postConnectPrompt posts an ephemeral (target-user-only) Block Kit message
+// with a "Connect <server>" URL button opening loginURL under text, and a
+// "Not now" button when dismiss is set. When threadID is set the prompt is
+// posted in-thread. connectValue is the Connect button's value: the
+// completion-state ID when the login URL carries a post-login redirect, else
+// the server name (the click stays a no-op then).
+func (c *slackAPIClient) postConnectPrompt(ctx context.Context, channel, threadID, user, text, server, loginURL, connectValue string, dismiss bool) error {
+	elements := []any{
+		map[string]any{
+			bkType:     bkButton,
+			bkText:     map[string]any{bkType: bkPlainText, bkText: truncateButtonLabel("Connect " + server)},
+			bkStyle:    bkPrimary,
+			bkActionID: connectorConnect,
+			bkValue:    connectValue,
+			bkURL:      loginURL,
+		},
+	}
+	if dismiss {
+		elements = append(elements, map[string]any{
+			bkType:     bkButton,
+			bkText:     map[string]any{bkType: bkPlainText, bkText: "Not now"},
+			bkActionID: connectorDismiss,
+			bkValue:    server,
+		})
+	}
 	body := map[string]any{
 		paramChannel: channel,
 		paramUser:    user,
@@ -2563,25 +2588,7 @@ func (c *slackAPIClient) postConnectorPrompt(ctx context.Context, channel, threa
 				bkType: bkSection,
 				bkText: map[string]any{bkType: bkMrkdwn, bkText: text},
 			},
-			map[string]any{
-				bkType: bkActions,
-				bkElements: []any{
-					map[string]any{
-						bkType:     bkButton,
-						bkText:     map[string]any{bkType: bkPlainText, bkText: truncateButtonLabel("Connect " + server)},
-						bkStyle:    bkPrimary,
-						bkActionID: connectorConnect,
-						bkValue:    connectValue,
-						bkURL:      loginURL,
-					},
-					map[string]any{
-						bkType:     bkButton,
-						bkText:     map[string]any{bkType: bkPlainText, bkText: "Not now"},
-						bkActionID: connectorDismiss,
-						bkValue:    server,
-					},
-				},
-			},
+			map[string]any{bkType: bkActions, bkElements: elements},
 		},
 	}
 	if threadID != "" {
@@ -2715,11 +2722,17 @@ func truncateRunes(s string, max int) string {
 // chatUpdateBlocks replaces a Block Kit message with plain text (used to mark
 // an approval decision after the user clicks a button).
 func (c *slackAPIClient) chatUpdateBlocks(ctx context.Context, channel, ts, text string) error {
+	return c.chatUpdate(ctx, channel, ts, text, []any{})
+}
+
+// chatUpdate rewrites a message to the given blocks, text being the
+// notification fallback.
+func (c *slackAPIClient) chatUpdate(ctx context.Context, channel, ts, text string, blocks []any) error {
 	body := map[string]any{
 		paramChannel: channel,
 		paramTS:      ts,
 		paramText:    text,
-		paramBlocks:  []any{},
+		paramBlocks:  blocks,
 	}
 	_, err := c.postJSON(ctx, "chat.update", body)
 	return err
