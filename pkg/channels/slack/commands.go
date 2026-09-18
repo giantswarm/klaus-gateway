@@ -118,6 +118,16 @@ func parseCommand(text string) *slashCommand {
 	return &slashCommand{Name: strings.ToLower(parts[0]), Args: args}
 }
 
+// isBareStop reports whether text is the word "stop" on its own — the natural
+// reply in a thread the bot answers in without a mention — allowing case and
+// trailing punctuation. Only a thread with a running turn reads it as /stop;
+// anywhere else it stays what it is today: a message for the agent, or a deny
+// word for a paused prompt.
+func isBareStop(text string) bool {
+	text = strings.TrimRight(strings.TrimSpace(text), ".!?")
+	return strings.EqualFold(strings.TrimSpace(text), cmdStop)
+}
+
 const helpCommands = "• `/stop` — interrupt the current turn\n" +
 	"• `/usage` — show token usage for the last turn and the session\n" +
 	"• `/details on|off|full` — show or hide the agent's tool activity\n" +
