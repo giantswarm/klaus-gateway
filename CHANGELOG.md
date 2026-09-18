@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Team review: an Approve click by a member who has not connected the manager's backend in muster yet no longer dies as a refusal nobody sees. muster answers such a call with its sign-in challenge; the gateway showed its text — "auth_required … Please visit the link below" — as `❌ Your approval was not accepted`, cut to 500 characters with the link inside, as an ephemeral in the message's thread, which Slack shows only once the thread is opened. The challenge is now recognised: the clicker gets an ephemeral *Connect <server>* button where they clicked; with a public base URL the sign-in lands back on the gateway (`/connectors/complete`) and the approval is submitted again as the person, so one click and one consent land it; without one the prompt says to click *Approve* again. A backend that still challenges after the landing is reported once, not looped. Every notice to a clicker — refusal, sign-in, "already approved" — is a channel-level ephemeral now. The team sees the attempts too: a status line under the buttons names who is connecting, whose approval the manager refused and why, or whose could not be submitted, replaced on every attempt and gone once the review is approved; the approved message keeps the *Open PR* link as small print. Log records `team_review_connect` and `team_review_approved` (`resumed`).
+
 ### Added
 
 - Slack: an **Ask an agent here** message shortcut (⋯ menu → Apps on any message) starts a conversation with a chosen agent inside that message's thread — an alert thread, a running discussion — instead of a new root message. It opens the same picker the slash command opens (the live roster, the default agent preselected, a question box); on submit the question is echoed as a reply in that thread under the agent's identity and runs as the thread's first turn, with the submitter as its initiator. A thread that already talks to an agent is refused with a note to reply in it instead. The app needs the new `ask_agent_here` shortcut from `deploy/slack/manifest.yaml`; an existing app has it added by hand.
