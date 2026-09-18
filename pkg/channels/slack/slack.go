@@ -2279,10 +2279,12 @@ func (a *Adapter) applyInitiatorIdentity(ctx context.Context, msg *channels.Inbo
 // Shared by dispatch (a new turn; triggerTS is the user message) and
 // handleDecision (a button-click resume; empty triggerTS uses text progress).
 // ctx is the turn context (/stop cancels it); carried seeds the usage counters
-// when the turn resumes a paused one so /usage reports the whole turn.
+// when the turn resumes a paused one so /usage reports the whole turn;
+// delivered is what a previous process posted of the turn when this one
+// continues it after a restart (deliverInFlight), the zero value otherwise.
 // slackUser is the RAW Slack user ID (never the resolved email in msg.Subject),
 // so the ephemeral connector prompt reaches a valid chat.postEphemeral user.
-func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, deltas <-chan channels.OutboundDelta, msg channels.InboundMessage, slackUser, slackChannel, threadID, triggerTS, placeholder string, carried channels.TurnUsage) (err error) {
+func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, deltas <-chan channels.OutboundDelta, msg channels.InboundMessage, slackUser, slackChannel, threadID, triggerTS, placeholder string, carried channels.TurnUsage, delivered store.Delivered) (err error) {
 	// A turn dispatched here carries its timeline from the events POST on; the
 	// delivery of a turn a previous process left running (deliverInFlight) has
 	// none yet and gets one from here, so it leaves a turn_complete record too.
@@ -2304,6 +2306,8 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 	w.slackUser = slackUser
 	w.connectorPrompts = a.ConnectorPrompts
 	w.sessionTitle = a.takeSessionTitle(threadID)
+	w.continueFrom(delivered)
+	w.onDelivered = func(ctx context.Context, d store.Delivered) { a.recordDelivered(ctx, slackChannel, threadID, d) }
 
 	// cleanupCtx survives the turn context so a /stop-cancelled turn still gets
 	// its progress indicator cleared and terminal notes posted.
@@ -2448,9 +2452,15 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 	}
 	// A turn that produced no output would otherwise be silent (text mode leaves
 	// the "thinking" placeholder; reactions mode shows only a done emoji with no
-	// reply). Post a terminal note so the user is not left waiting.
+	// reply). Post a terminal note so the user is not left waiting. A continued
+	// turn whose answer had landed in full before the restart did produce its
+	// reply; the note says so instead.
 	if !w.wroteContent() {
-		a.postTerminalNote(ctx, client, slackChannel, threadID, replyTS, emptyOutputNote)
+		note := emptyOutputNote
+		if w.continued() {
+			note = continuedNothingNote
+		}
+		a.postTerminalNote(ctx, client, slackChannel, threadID, replyTS, note)
 	}
 	return nil
 }

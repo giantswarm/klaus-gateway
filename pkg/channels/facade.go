@@ -262,7 +262,7 @@ func (f *Facade) instanceFor(ctx context.Context, msg InboundMessage) (string, e
 	if err := f.Routes.Update(ctx, key, func(e *store.Entry, _ bool) bool {
 		if e.AgentInstanceID != "" && e.AgentInstanceID != inst.ID {
 			// A rebind: nothing of the previous instance's turn is deliverable.
-			e.TaskID, e.Resume = "", nil
+			e.TaskID, e.Resume, e.Delivered = "", nil, store.Delivered{}
 		}
 		e.AgentRef, e.AgentInstanceID, e.LastSeen = msg.AgentRef, inst.ID, now
 		if e.CreatedAt.IsZero() {
@@ -361,8 +361,9 @@ func (f *Facade) InFlightTurn(ctx context.Context, msg InboundMessage) (InFlight
 
 func inFlightTurn(key store.Key, entry store.Entry) InFlightTurn {
 	return InFlightTurn{
-		Msg:    InboundMessage{Channel: key.Channel, ChannelID: key.ChannelID, ThreadID: key.ThreadID, AgentRef: entry.AgentRef, Resume: entry.Resume},
-		TaskID: entry.TaskID,
+		Msg:       InboundMessage{Channel: key.Channel, ChannelID: key.ChannelID, ThreadID: key.ThreadID, AgentRef: entry.AgentRef, Resume: entry.Resume},
+		TaskID:    entry.TaskID,
+		Delivered: entry.Delivered,
 	}
 }
 
@@ -406,7 +407,9 @@ func (f *Facade) ResumeTurn(ctx context.Context, msg InboundMessage, taskID stri
 // wherever it is, and whatever the agent wrote between the previous process's
 // end and this one's subscription is not replayed — so its answer text is not
 // streamed but posted whole when the task completes, read back from the
-// controller; tool activity and narration still stream live. A consumer that goes away before a
+// controller, and the channel adapter cuts off the part the previous process
+// had posted (InFlightTurn.Delivered); tool activity and narration still
+// stream live. A consumer that goes away before a
 // terminal delta stopped the turn: the gateway's shutdown (context cause
 // ErrShutdown) leaves the task running and its record in place for the next
 // process to resubscribe to, a plain cancellation (/stop) cancels the task at
@@ -537,21 +540,24 @@ func (f *Facade) finalText(ctx context.Context, instanceID string, taskID a2apkg
 }
 
 // rememberTask records taskID as the task in flight on key's thread, with the
-// channel's resume data, so a restart can resubscribe to it.
+// channel's resume data, so a restart can resubscribe to it. Nothing of the
+// new task has been delivered yet, so a stale record of a previous turn's
+// delivery is dropped with it.
 func (f *Facade) rememberTask(ctx context.Context, key store.Key, taskID a2apkg.TaskID, resume map[string]string) {
 	f.updateBinding(ctx, key, func(e *store.Entry) bool {
-		e.TaskID, e.Resume = string(taskID), resume
+		e.TaskID, e.Resume, e.Delivered = string(taskID), resume, store.Delivered{}
 		return true
 	})
 }
 
-// forgetTask clears the thread's in-flight task record.
+// forgetTask clears the thread's in-flight task record, and with it what the
+// channel delivered of the turn.
 func (f *Facade) forgetTask(ctx context.Context, key store.Key) {
 	f.updateBinding(ctx, key, func(e *store.Entry) bool {
-		if e.TaskID == "" && e.Resume == nil {
+		if e.TaskID == "" && e.Resume == nil && e.Delivered.IsZero() {
 			return false
 		}
-		e.TaskID, e.Resume = "", nil
+		e.TaskID, e.Resume, e.Delivered = "", nil, store.Delivered{}
 		return true
 	})
 }

@@ -6,6 +6,7 @@ import (
 
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
+	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
 )
 
 // turnHooks are the per-entrypoint notification hooks of runTurn, the shared
@@ -115,5 +116,5 @@ func (a *Adapter) runTurn(ctx context.Context, msg channels.InboundMessage, slac
 	if task != nil {
 		carried = task.Usage
 	}
-	return a.streamResponse(turnCtx, a.agentClient(pkga2a.WithForwardedToken(ctx, msg.BearerToken), msg.AgentRef), deltas, msg, slackUser, slackChannel, msg.ThreadID, triggerTS, placeholder, carried)
+	return a.streamResponse(turnCtx, a.agentClient(pkga2a.WithForwardedToken(ctx, msg.BearerToken), msg.AgentRef), deltas, msg, slackUser, slackChannel, msg.ThreadID, triggerTS, placeholder, carried, store.Delivered{})
 }
