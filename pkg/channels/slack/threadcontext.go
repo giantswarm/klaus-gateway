@@ -129,7 +129,15 @@ func (a *Adapter) threadContext(ctx context.Context, channelID, threadID, opener
 			"reason", threadContextFailureReason(rctx, read.Err), "messages", len(read.Messages), "error", read.Err)
 	}
 	name := func(userID string) string { return a.displayName(rctx, userID) }
-	return renderThreadContext(read, openerTS, botUserID, name(initiator), name)
+	transcript := renderThreadContext(read, openerTS, botUserID, name(initiator), name)
+	if transcript != "" {
+		// The transcript is never posted anywhere a person sees it, so this
+		// record is the only trace that the opener carried the thread.
+		a.Logger.Info("slack: thread context attached to the opener",
+			"channel_id", channelID, "thread_id", threadID, "slack_user", initiator,
+			"messages", len(read.Messages), "complete", read.Complete, "chars", utf8.RuneCountInString(transcript))
+	}
+	return transcript
 }
 
 // threadContextFailureReason names the failure the way the notice and the log
