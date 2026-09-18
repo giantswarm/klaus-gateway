@@ -183,9 +183,22 @@ Unknown fields are refused. Response `201`:
 {"id": "8f3c2d…", "channel": "C0123ABCDE", "ts": "1726512345.000100"}
 ```
 
-`id` is the gateway's handle on the review; a click on the message is resolved against it. Open
-reviews are held in memory for seven days. A gateway restart drops them: a click on a dropped
-review rewrites the message to say it expired, and the manager posts the ask again.
+`id` is the gateway's handle on the review; a click on the message is resolved against it. The
+review — the ask, its message, the decision state and the status line — is a record in the
+gateway's routing store (`--store`, chart `routing.store`) for seven days, so on `valkey` (what
+installations run; one key per review, `klaus-gateway:review:<id>`, the seven days as the key's
+expiry) and on `bolt` a review posted before a gateway restart is approved by a click after it,
+and a click on a review somebody approved before the restart is told who decided. On `memory`
+the records die with the process, and a click on a dropped review rewrites the message to say it
+expired. A review past its seven days reads the same, and the manager posts the ask again. A
+store that does not answer a click is not an expiry: the clicker is told to click again in a
+moment, and the message keeps its buttons.
+
+One approval closes a review across replicas too: the click's claim on the record is a
+compare-and-set on the Valkey store, so of two clicks only one calls the tool and the other is
+told who decided. A claim left without an outcome for five minutes — a gateway that died during
+the tool call, which the muster client bounds to a minute — is taken over by the next click
+instead of holding the review for the rest of its seven days.
 
 The tool's answer decides what the click did. A success closes the review; what the tool said is
 shown to the team under the outcome — a plain text as written, a JSON object by its `message`

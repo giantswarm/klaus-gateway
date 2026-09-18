@@ -108,7 +108,8 @@ routing:
       # against when it differs from url's host.
       serverName: ""
     # keyPrefix namespaces the routing keys. Empty means klaus-gateway:route:.
-    # Set it when two gateways share one server.
+    # Set it when two gateways share one server. The team-review keys follow
+    # it (klaus-gateway:review: by default).
     keyPrefix: ""
     # timeout bounds the dial and every command. A Valkey outage fails the
     # turn after this long, with a clear error in the thread, instead of

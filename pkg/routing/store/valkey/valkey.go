@@ -1,8 +1,10 @@
 // Package valkey provides a Valkey-backed implementation of store.Store: one
 // key per routing entry, the JSON-encoded entry as its value, the entry's TTL
-// as the key's expiry. It is the store installations run: the platform already
-// operates a Valkey for muster's token store, so the routing table shares it
-// and survives a gateway restart without a volume or API-server access.
+// as the key's expiry; team reviews the same way under their own prefix, their
+// updates a compare-and-set so replicas cannot both claim one review. It is
+// the store installations run: the platform already operates a Valkey for
+// muster's token store, so the routing table shares it and survives a gateway
+// restart without a volume or API-server access.
 //
 // Every operation is bounded by Options.Timeout (dial and command alike), so a
 // Valkey outage fails the turn within seconds instead of hanging the thread.
@@ -35,13 +37,33 @@ const (
 	// routing key starts with the channel, so one SCAN by channel prefix lists
 	// a channel's entries.
 	DefaultKeyPrefix = "klaus-gateway:route:"
+	// DefaultReviewKeyPrefix is prepended to every review id. It sits next to
+	// the routing keys, not under them, so the routing SCAN never reads a
+	// review.
+	DefaultReviewKeyPrefix = "klaus-gateway:review:"
 	// DefaultTimeout bounds the dial and every command.
 	DefaultTimeout = 2 * time.Second
 
 	scanCount = 256
 	mgetBatch = 128
 	minExpiry = time.Millisecond
+
+	// routeSuffix is the last segment of the default routing prefix; the
+	// review prefix is derived by swapping it (see ReviewKeyPrefix).
+	routeSuffix  = "route:"
+	reviewSuffix = "review:"
+	// reviewUpdateAttempts bounds how often UpdateReview re-reads a record
+	// another writer changed under it before giving up.
+	reviewUpdateAttempts = 8
 )
+
+// reviewCAS writes ARGV[2] at KEYS[1] only while the key still holds ARGV[1],
+// with ARGV[3] milliseconds of expiry (0 for none); it answers 1 when it
+// wrote and 0 when the record changed or vanished meanwhile. Run as one
+// script, the compare and the write cannot interleave with another client's.
+const reviewCAS = `if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+if tonumber(ARGV[3]) > 0 then redis.call('SET', KEYS[1], ARGV[2], 'PX', ARGV[3]) else redis.call('SET', KEYS[1], ARGV[2]) end
+return 1`
 
 // Options configure the Valkey-backed store.
 type Options struct {
@@ -55,8 +77,14 @@ type Options struct {
 	DB int
 	// TLS enables TLS with the given configuration; nil keeps plaintext.
 	TLS *tls.Config
-	// KeyPrefix namespaces the keys; DefaultKeyPrefix when empty.
+	// KeyPrefix namespaces the routing keys; DefaultKeyPrefix when empty.
 	KeyPrefix string
+	// ReviewKeyPrefix namespaces the review keys. Empty derives it from
+	// KeyPrefix: a prefix ending in "route:" swaps that for "review:"
+	// (DefaultReviewKeyPrefix for the default), any other has "review:"
+	// appended — so a gateway that moves its routing keys moves its reviews
+	// with them.
+	ReviewKeyPrefix string
 	// Timeout bounds the dial and every command; DefaultTimeout when zero.
 	Timeout time.Duration
 }
@@ -84,6 +112,9 @@ func New(opts Options) (*Store, error) {
 	}
 	if opts.KeyPrefix == "" {
 		opts.KeyPrefix = DefaultKeyPrefix
+	}
+	if opts.ReviewKeyPrefix == "" {
+		opts.ReviewKeyPrefix = strings.TrimSuffix(opts.KeyPrefix, routeSuffix) + reviewSuffix
 	}
 	if opts.Timeout <= 0 {
 		opts.Timeout = DefaultTimeout
@@ -130,17 +161,22 @@ func (s *Store) Put(ctx context.Context, k store.Key, e store.Entry) error {
 	if err != nil {
 		return err
 	}
-	set := c.B().Set().Key(s.key(k)).Value(string(buf))
-	var cmd valkeygo.Completed
-	if e.TTL > 0 {
-		cmd = set.Px(remaining(e, now)).Build()
-	} else {
-		cmd = set.Build()
-	}
-	if err := s.do(ctx, c, cmd).Error(); err != nil {
+	if err := s.set(ctx, c, s.key(k), buf, remaining(e.TTL, e.LastSeen, now)); err != nil {
 		return fmt.Errorf("valkey: set: %w", err)
 	}
 	return nil
+}
+
+// set writes value at key, expiring after px when it is positive.
+func (s *Store) set(ctx context.Context, c valkeygo.Client, key string, value []byte, px time.Duration) error {
+	set := c.B().Set().Key(key).Value(string(value))
+	var cmd valkeygo.Completed
+	if px > 0 {
+		cmd = set.Px(px).Build()
+	} else {
+		cmd = set.Build()
+	}
+	return s.do(ctx, c, cmd).Error()
 }
 
 // Delete removes an entry; a missing key is not an error.
@@ -229,6 +265,98 @@ func (s *Store) List(ctx context.Context) ([]store.KeyEntry, error) {
 	return out, nil
 }
 
+// PutReview upserts a review record under the review prefix, what is left of
+// its TTL (counted from PostedAt) as the key's expiry; one that has already
+// expired removes the key instead.
+func (s *Store) PutReview(ctx context.Context, r store.Review) error {
+	c, err := s.conn()
+	if err != nil {
+		return err
+	}
+	now := s.now()
+	if r.Expired(now) {
+		if err := s.do(ctx, c, c.B().Del().Key(s.reviewKey(r.ID)).Build()).Error(); err != nil {
+			return fmt.Errorf("valkey: del review: %w", err)
+		}
+		return nil
+	}
+	buf, err := json.Marshal(r)
+	if err != nil {
+		return fmt.Errorf("valkey: encode review: %w", err)
+	}
+	if err := s.set(ctx, c, s.reviewKey(r.ID), buf, remaining(r.TTL, r.PostedAt, now)); err != nil {
+		return fmt.Errorf("valkey: set review: %w", err)
+	}
+	return nil
+}
+
+// GetReview returns the record for id, or (_, false, nil) when absent or expired.
+func (s *Store) GetReview(ctx context.Context, id string) (store.Review, bool, error) {
+	c, err := s.conn()
+	if err != nil {
+		return store.Review{}, false, err
+	}
+	_, r, found, err := s.readReview(ctx, c, s.reviewKey(id))
+	return r, found, err
+}
+
+// UpdateReview applies mutate to the record at id and writes the result as a
+// compare-and-set on the record's bytes (reviewCAS): a record another client
+// changed between the read and the write is not overwritten but re-read, and
+// mutate runs again on it. Replicas sharing the server therefore never lose
+// each other's writes — two clicks cannot both claim one review.
+func (s *Store) UpdateReview(ctx context.Context, id string, mutate func(r *store.Review) bool) (bool, error) {
+	c, err := s.conn()
+	if err != nil {
+		return false, err
+	}
+	key := s.reviewKey(id)
+	for range reviewUpdateAttempts {
+		raw, r, found, err := s.readReview(ctx, c, key)
+		if err != nil || !found {
+			return false, err
+		}
+		if !mutate(&r) {
+			return true, nil
+		}
+		buf, err := json.Marshal(r)
+		if err != nil {
+			return true, fmt.Errorf("valkey: encode review: %w", err)
+		}
+		px := remaining(r.TTL, r.PostedAt, s.now())
+		cmd := c.B().Eval().Script(reviewCAS).Numkeys(1).Key(key).
+			Arg(string(raw), string(buf), fmt.Sprint(px.Milliseconds())).Build()
+		written, err := s.do(ctx, c, cmd).AsInt64()
+		if err != nil {
+			return true, fmt.Errorf("valkey: update review: %w", err)
+		}
+		if written == 1 {
+			return true, nil
+		}
+	}
+	return true, fmt.Errorf("valkey: review %s kept changing under %d update attempts", id, reviewUpdateAttempts)
+}
+
+// readReview returns the record at key with the bytes it was decoded from —
+// the value the compare-and-set in UpdateReview compares against.
+func (s *Store) readReview(ctx context.Context, c valkeygo.Client, key string) ([]byte, store.Review, bool, error) {
+	raw, err := s.do(ctx, c, c.B().Get().Key(key).Build()).AsBytes()
+	if valkeygo.IsValkeyNil(err) {
+		return nil, store.Review{}, false, nil
+	}
+	if err != nil {
+		return nil, store.Review{}, false, fmt.Errorf("valkey: get review: %w", err)
+	}
+	var r store.Review
+	if err := json.Unmarshal(raw, &r); err != nil {
+		return nil, store.Review{}, false, fmt.Errorf("valkey: decode review: %w", err)
+	}
+	if r.Expired(s.now()) {
+		return nil, store.Review{}, false, nil
+	}
+	return raw, r, true, nil
+}
+
 // Ping checks the connection; the readiness probe uses it instead of List.
 func (s *Store) Ping(ctx context.Context) error {
 	c, err := s.conn()
@@ -257,6 +385,8 @@ func (s *Store) Close() error {
 func (s *Store) SetNowFunc(f func() time.Time) { s.now = f }
 
 func (s *Store) key(k store.Key) string { return s.opts.KeyPrefix + k.String() }
+
+func (s *Store) reviewKey(id string) string { return s.opts.ReviewKeyPrefix + id }
 
 // conn returns the client, dialing on first use. A failed dial is not
 // remembered: the next call tries again.
@@ -358,12 +488,16 @@ func (s *Store) scan(ctx context.Context, c valkeygo.Client) ([]string, error) {
 	}
 }
 
-// remaining is what is left of e's TTL counted from LastSeen, clamped to
-// [minExpiry, TTL] so a future LastSeen cannot extend it.
-func remaining(e store.Entry, now time.Time) time.Duration {
-	left := e.TTL - now.Sub(e.LastSeen)
-	if left > e.TTL {
-		left = e.TTL
+// remaining is what is left of ttl counted from since, clamped to
+// [minExpiry, ttl] so a future since cannot extend it. A ttl of zero or less
+// means no expiry and stays 0.
+func remaining(ttl time.Duration, since, now time.Time) time.Duration {
+	if ttl <= 0 {
+		return 0
+	}
+	left := ttl - now.Sub(since)
+	if left > ttl {
+		left = ttl
 	}
 	if left < minExpiry {
 		left = minExpiry

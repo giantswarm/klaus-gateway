@@ -12,6 +12,8 @@ import (
 
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 	"github.com/giantswarm/klaus-gateway/pkg/muster"
+	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
+	"github.com/giantswarm/klaus-gateway/pkg/routing/store/memory"
 )
 
 // The team review is the prompt kind a manager posts into a team's channel
@@ -31,6 +33,13 @@ import (
 // channel-level ephemeral, which Slack shows right where they clicked, is
 // reserved for what is the clicker's alone: a sign-in or Connect button, or a
 // click on a review somebody else decided.
+//
+// The record — the ask, where its message is, the decision state and the
+// status line (store.Review) — lives in the gateway's store (Adapter.Reviews)
+// for the review's TTL, so on a store that outlives the process a review
+// posted before a restart is decided by a click after it. Every transition
+// (claim, release, finish, status) is one atomic update of the record, and
+// the claim is what makes one approval close the review across replicas.
 
 // Team-review action IDs.
 const (
@@ -42,11 +51,25 @@ const (
 // past it rewrites the message to say so; the manager may post the ask again.
 const teamReviewTTL = 7 * 24 * time.Hour
 
+// teamReviewClaimLease bounds how long a claim without an outcome holds the
+// review. A click's tool call is bounded by the muster client's timeout (a
+// minute), so a claim older than this was left behind by a process that died
+// mid-call — a restart during the call — and the next click may take the
+// review over instead of being told for seven days that an approval is in
+// flight.
+const teamReviewClaimLease = 5 * time.Minute
+
 // Team-review notices to one clicker.
 const (
 	teamReviewExpiredNotice = "_This review has expired. Ask for it to be posted again._"
 	teamReviewDecidedNotice = "This review was already approved by <@%s>."
 	teamReviewPendingNotice = "<@%s>'s approval is being submitted right now."
+	// teamReviewUnavailableNotice answers a click the gateway could not
+	// resolve because its store did not answer; the message keeps its buttons.
+	teamReviewUnavailableNotice = "_The review could not be looked up right now. Click *Approve* again in a moment._"
+	// teamReviewUnrecordedNotice replaces a review the gateway posted but
+	// could not record: its button would never resolve.
+	teamReviewUnrecordedNotice = "_This review could not be recorded and cannot be approved here. Ask for it to be posted again._"
 	// teamReviewConnectNotice heads the Connect prompt when the sign-in lands
 	// back on the gateway and the approval is resubmitted by itself;
 	// teamReviewConnectManualNotice when it does not.
@@ -76,21 +99,6 @@ const teamReviewUnknownServer = "the manager"
 // given. *muster.Client satisfies it.
 type ToolCaller interface {
 	CallTool(ctx context.Context, bearer, tool string, args map[string]any) (muster.Result, error)
-}
-
-// teamReview is one posted review and its decision state.
-type teamReview struct {
-	channels.TeamReview
-	id       string
-	ts       string
-	postedAt time.Time
-	// decidedBy is the Slack user whose approval is in flight or done; "" while
-	// the review is open.
-	decidedBy string
-	done      bool
-	// status is the line the team sees under the buttons: the latest attempt
-	// that did not decide the review. "" shows none.
-	status string
 }
 
 // teamReviewValue is the Approve button's value: the review id.
@@ -129,16 +137,42 @@ func (a *Adapter) PostTeamReview(ctx context.Context, review channels.TeamReview
 	if err != nil {
 		return channels.PostReceipt{}, fmt.Errorf("slack: team review id: %w", err)
 	}
+	rv := newTeamReviewRecord(review, id)
 	ts, err := a.apiClient().postJSON(ctx, methodChatPostMessage, map[string]any{
-		paramChannel: review.Channel,
-		paramText:    teamMessageFallback(review.Team, review.Text),
-		paramBlocks:  teamReviewBlocks(review, id, ""),
+		paramChannel: rv.Channel,
+		paramText:    teamMessageFallback(rv.Team, rv.Text),
+		paramBlocks:  teamReviewBlocks(rv),
 	})
 	if err != nil {
 		return channels.PostReceipt{}, err
 	}
-	a.storeTeamReview(&teamReview{TeamReview: review, id: id, ts: ts, postedAt: time.Now()})
-	return channels.PostReceipt{ID: id, Channel: review.Channel, TS: ts}, nil
+	rv.TS = ts
+	if err := a.reviews().PutReview(ctx, rv); err != nil {
+		// The message is up but nothing will resolve its button: say so in
+		// its place rather than leave a button that reads "expired" on the
+		// first click.
+		a.Logger.Error("slack: team review could not be recorded", "review", id, "team", rv.Team, "error", err)
+		if uerr := a.apiClient().chatUpdateBlocks(ctx, rv.Channel, ts, teamReviewUnrecordedNotice); uerr != nil {
+			a.Logger.Warn("slack: team review unrecorded rewrite failed", "review", id, "error", uerr)
+		}
+		return channels.PostReceipt{}, fmt.Errorf("slack: record team review: %w", err)
+	}
+	return channels.PostReceipt{ID: id, Channel: rv.Channel, TS: ts}, nil
+}
+
+// newTeamReviewRecord is the record of review as posted now, before its
+// message exists (TS is set once Slack names it).
+func newTeamReviewRecord(review channels.TeamReview, id string) store.Review {
+	return store.Review{
+		ID:      id,
+		Channel: review.Channel,
+		Team:    review.Team,
+		Text:    review.Text,
+		Link:    review.Link,
+		Tool:    review.Approve.Tool, Arguments: review.Approve.Arguments,
+		PostedAt: time.Now(),
+		TTL:      teamReviewTTL,
+	}
 }
 
 // PostTeamNotice posts a message that asks for nothing: no buttons, the link
@@ -167,33 +201,33 @@ func teamHeading(team, text string) string {
 	return truncateRunes(fmt.Sprintf("*Review for %s*\n%s", escapeMrkdwn(team), text), slackSectionTextMax)
 }
 
-// teamReviewBlocks renders an open review: the ask, the buttons and, when
-// status is set, the status line the team sees under them.
-func teamReviewBlocks(review channels.TeamReview, id, status string) []any {
+// teamReviewBlocks renders an open review: the ask, the buttons and, when the
+// record carries a status line, that line under them for the team to read.
+func teamReviewBlocks(rv store.Review) []any {
 	elements := []any{
 		map[string]any{
 			bkType:     bkButton,
 			bkText:     map[string]any{bkType: bkPlainText, bkText: "✅ Approve"},
 			bkStyle:    bkPrimary,
 			bkActionID: teamReviewApprove,
-			bkValue:    encodeTeamReviewValue(id),
+			bkValue:    encodeTeamReviewValue(rv.ID),
 		},
 	}
-	if review.Link != "" {
+	if rv.Link != "" {
 		elements = append(elements, map[string]any{
 			bkType:     bkButton,
 			bkText:     map[string]any{bkType: bkPlainText, bkText: "Open PR"},
 			bkActionID: teamReviewOpen,
-			bkURL:      review.Link,
-			bkValue:    encodeTeamReviewValue(id),
+			bkURL:      rv.Link,
+			bkValue:    encodeTeamReviewValue(rv.ID),
 		})
 	}
 	blocks := []any{
-		map[string]any{bkType: bkSection, bkText: map[string]any{bkType: bkMrkdwn, bkText: teamHeading(review.Team, review.Text)}},
+		map[string]any{bkType: bkSection, bkText: map[string]any{bkType: bkMrkdwn, bkText: teamHeading(rv.Team, rv.Text)}},
 		map[string]any{bkType: bkActions, bkElements: elements},
 	}
-	if status != "" {
-		blocks = append(blocks, contextBlock(status))
+	if rv.Status != "" {
+		blocks = append(blocks, contextBlock(rv.Status))
 	}
 	return blocks
 }
@@ -216,14 +250,20 @@ func openLink(link string) string {
 
 // handleTeamReviewDecision resolves an Approve click against the review
 // record: an unknown or expired review rewrites the dead button, a known one
-// is decided as the clicker.
+// is decided as the clicker. A store that does not answer tells the clicker
+// to try again and leaves the message alone: not knowing is not "expired".
 func (a *Adapter) handleTeamReviewDecision(ctx context.Context, slackChannel, messageTS, clicker, value string) {
 	id, ok := decodeTeamReviewValue(value)
 	if !ok {
 		return
 	}
-	rv := a.lookupTeamReview(id)
-	if rv == nil {
+	rv, found, err := a.reviews().GetReview(ctx, id)
+	if err != nil {
+		a.Logger.Warn("slack: team review lookup failed", "record", "team_review_store_failed", "review", id, "slack_user", clicker, "error", err)
+		a.tellClickerIn(ctx, slackChannel, id, clicker, teamReviewUnavailableNotice)
+		return
+	}
+	if !found {
 		if err := a.apiClient().chatUpdateBlocks(ctx, slackChannel, messageTS, teamReviewExpiredNotice); err != nil {
 			a.Logger.Warn("slack: team review expired rewrite failed", "review", id, "error", err)
 		}
@@ -251,7 +291,7 @@ func (a *Adapter) handleTeamReviewDecision(ctx context.Context, slackChannel, me
 // clicker and the reason, where the clicker and the team both read it; so is
 // a manager the gateway could not reach. A success is written into the
 // message with the decider.
-func (a *Adapter) decideTeamReview(ctx context.Context, rv *teamReview, clicker string, resumed bool) {
+func (a *Adapter) decideTeamReview(ctx context.Context, rv store.Review, clicker string, resumed bool) {
 	// The person's own token is the identity the tool runs under; without a
 	// link there is nobody to act as, so the click is turned into a sign-in.
 	token, ok, signIn := a.humanToken(ctx, rv.Channel, "", clicker)
@@ -262,29 +302,37 @@ func (a *Adapter) decideTeamReview(ctx context.Context, rv *teamReview, clicker 
 		return
 	}
 
-	holder, claimed := a.claimTeamReview(rv.id, clicker)
-	if !claimed {
-		notice := fmt.Sprintf(teamReviewDecidedNotice, holder)
-		if !a.teamReviewDone(rv.id) {
-			notice = fmt.Sprintf(teamReviewPendingNotice, holder)
+	current, found, claimed, err := a.claimTeamReview(ctx, rv.ID, clicker)
+	switch {
+	case err != nil:
+		a.Logger.Warn("slack: team review claim failed", "record", "team_review_store_failed", "review", rv.ID, "slack_user", clicker, "error", err)
+		a.tellClicker(ctx, rv, clicker, teamReviewUnavailableNotice)
+		return
+	case !found:
+		a.tellClicker(ctx, rv, clicker, teamReviewExpiredNotice)
+		return
+	case !claimed:
+		notice := fmt.Sprintf(teamReviewDecidedNotice, current.DecidedBy)
+		if !current.Done {
+			notice = fmt.Sprintf(teamReviewPendingNotice, current.DecidedBy)
 		}
 		a.tellClicker(ctx, rv, clicker, notice)
 		return
 	}
 
-	res, err := a.Tools.CallTool(ctx, token, rv.Approve.Tool, rv.Approve.Arguments)
+	res, err := a.Tools.CallTool(ctx, token, rv.Tool, rv.Arguments)
 	if err != nil {
-		a.releaseTeamReview(rv.id)
-		a.Logger.Warn("slack: team review tool call failed", "review", rv.id, "team", rv.Team, "tool", rv.Approve.Tool, "user", clicker, "error", err)
+		a.releaseTeamReview(ctx, rv.ID)
+		a.Logger.Warn("slack: team review tool call failed", "review", rv.ID, "team", rv.Team, "tool", rv.Tool, "user", clicker, "error", err)
 		a.showTeamReviewStatus(ctx, rv, fmt.Sprintf(teamReviewStatusFailed, clicker))
 		return
 	}
 	if server, loginURL, challenged := authChallengeOf(res); challenged {
-		a.releaseTeamReview(rv.id)
+		a.releaseTeamReview(ctx, rv.ID)
 		if resumed {
 			// The sign-in landed and the backend still challenges: do not loop
 			// the person through the consent flow again on their behalf.
-			a.Logger.Warn("slack: team review still challenged after the connector sign-in", "review", rv.id, "team", rv.Team, "tool", rv.Approve.Tool, "user", clicker, "server", server)
+			a.Logger.Warn("slack: team review still challenged after the connector sign-in", "review", rv.ID, "team", rv.Team, "tool", rv.Tool, "user", clicker, "server", server)
 			a.showTeamReviewStatus(ctx, rv, fmt.Sprintf(teamReviewStatusStillChallenged, clicker, escapeMrkdwn(server)))
 			return
 		}
@@ -292,9 +340,9 @@ func (a *Adapter) decideTeamReview(ctx context.Context, rv *teamReview, clicker 
 		return
 	}
 	if res.IsError {
-		a.releaseTeamReview(rv.id)
+		a.releaseTeamReview(ctx, rv.ID)
 		a.Logger.Info("slack: team review approval refused by the tool", "record", "team_review_refused",
-			"review", rv.id, "team", rv.Team, "tool", rv.Approve.Tool, "slack_user", clicker, "reason", res.Text)
+			"review", rv.ID, "team", rv.Team, "tool", rv.Tool, "slack_user", clicker, "reason", res.Text)
 		reason := "the manager refused it"
 		if res.Text != "" {
 			reason = truncateRunes(escapeMrkdwn(res.Text), teamReviewReasonMax)
@@ -303,11 +351,11 @@ func (a *Adapter) decideTeamReview(ctx context.Context, rv *teamReview, clicker 
 		return
 	}
 
-	a.finishTeamReview(rv.id)
+	a.finishTeamReview(ctx, rv.ID)
 	a.Logger.Info("slack: team review approved", "record", "team_review_approved",
-		"review", rv.id, "team", rv.Team, "tool", rv.Approve.Tool, "slack_user", clicker, "subject", a.linkedSubject(clicker), "resumed", resumed)
-	if err := a.apiClient().chatUpdate(ctx, rv.Channel, rv.ts, teamReviewOutcome(rv, clicker, res.Text), teamReviewOutcomeBlocks(rv, clicker, res.Text)); err != nil {
-		a.Logger.Warn("slack: team review outcome rewrite failed", "review", rv.id, "error", err)
+		"review", rv.ID, "team", rv.Team, "tool", rv.Tool, "slack_user", clicker, "subject", a.linkedSubject(clicker), "resumed", resumed)
+	if err := a.apiClient().chatUpdate(ctx, rv.Channel, rv.TS, teamReviewOutcome(rv, clicker, res.Text), teamReviewOutcomeBlocks(rv, clicker, res.Text)); err != nil {
+		a.Logger.Warn("slack: team review outcome rewrite failed", "review", rv.ID, "error", err)
 	}
 }
 
@@ -339,37 +387,40 @@ func authChallengeOf(res muster.Result) (server, loginURL string, ok bool) {
 // gateway's landing and the completion state remembers the review, so the
 // landing submits the approval again as the person; without one the prompt
 // asks them to click Approve again afterwards.
-func (a *Adapter) promptTeamReviewConnect(ctx context.Context, rv *teamReview, clicker, server, loginURL string) {
+func (a *Adapter) promptTeamReviewConnect(ctx context.Context, rv store.Review, clicker, server, loginURL string) {
 	a.Logger.Info("slack: team review needs the person to connect the backend", "record", "team_review_connect",
-		"review", rv.id, "team", rv.Team, "tool", rv.Approve.Tool, "slack_user", clicker, "server", server)
+		"review", rv.ID, "team", rv.Team, "tool", rv.Tool, "slack_user", clicker, "server", server)
 	a.showTeamReviewStatus(ctx, rv, fmt.Sprintf(teamReviewStatusConnecting, clicker, escapeMrkdwn(server)))
 
 	promptURL, connectValue := loginURL, server
 	text := fmt.Sprintf(teamReviewConnectManualNotice, escapeMrkdwn(server))
 	if base := a.PublicBaseURL; base != "" {
-		stateID := a.mintConnectorCompletion(connectorCompletion{slackUser: clicker, server: server, channel: rv.Channel, review: rv.id})
+		stateID := a.mintConnectorCompletion(connectorCompletion{slackUser: clicker, server: server, channel: rv.Channel, review: rv.ID})
 		if decorated, err := decorateConnectorLoginURL(loginURL, base, stateID); err != nil {
-			a.Logger.Warn("slack: team review login URL decoration failed, posting plain link", "review", rv.id, "server", server, "error", err)
+			a.Logger.Warn("slack: team review login URL decoration failed, posting plain link", "review", rv.ID, "server", server, "error", err)
 		} else {
 			promptURL, connectValue = decorated, stateID
 			text = fmt.Sprintf(teamReviewConnectNotice, escapeMrkdwn(server))
 		}
 	}
 	if err := a.apiClient().postConnectPrompt(ctx, rv.Channel, "", clicker, text, server, promptURL, connectValue, false); err != nil {
-		a.Logger.Warn("slack: team review connect prompt failed", "review", rv.id, "user", clicker, "error", err)
+		a.Logger.Warn("slack: team review connect prompt failed", "review", rv.ID, "user", clicker, "error", err)
 	}
 }
 
 // resumeTeamReviewApproval is the landing's continuation of a Connect prompt
 // posted for a review: the person signed in to the backend, so the approval
-// they clicked for is submitted again as them. A review gone meanwhile
-// (restart, TTL) is told to the person alone.
+// they clicked for is submitted again as them. A review gone meanwhile (its
+// TTL passed) is told to the person alone; so is a store that does not answer.
 func (a *Adapter) resumeTeamReviewApproval(ctx context.Context, entry connectorCompletion) {
-	rv := a.lookupTeamReview(entry.review)
-	if rv == nil {
-		if err := a.apiClient().postEphemeralText(ctx, entry.channel, entry.slackUser, "", teamReviewExpiredNotice); err != nil {
-			a.Logger.Warn("slack: team review expired notice failed", "review", entry.review, "user", entry.slackUser, "error", err)
-		}
+	rv, found, err := a.reviews().GetReview(ctx, entry.review)
+	if err != nil {
+		a.Logger.Warn("slack: team review lookup failed", "record", "team_review_store_failed", "review", entry.review, "slack_user", entry.slackUser, "error", err)
+		a.tellClickerIn(ctx, entry.channel, entry.review, entry.slackUser, teamReviewUnavailableNotice)
+		return
+	}
+	if !found {
+		a.tellClickerIn(ctx, entry.channel, entry.review, entry.slackUser, teamReviewExpiredNotice)
 		return
 	}
 	if a.Tools == nil {
@@ -381,7 +432,7 @@ func (a *Adapter) resumeTeamReviewApproval(ctx context.Context, entry connectorC
 
 // teamReviewOutcome is the text the review message is rewritten to once it is
 // approved: who decided, for which team, the ask, and what the tool said.
-func teamReviewOutcome(rv *teamReview, decider, result string) string {
+func teamReviewOutcome(rv store.Review, decider, result string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "✅ *Approved* by <@%s> for %s.\n%s", decider, escapeMrkdwn(rv.Team), rv.Text)
 	if said := toolMessage(result); said != "" {
@@ -412,7 +463,7 @@ func toolMessage(result string) string {
 
 // teamReviewOutcomeBlocks renders the approved review: the outcome, and the
 // link kept as small print so the pull request stays one click away.
-func teamReviewOutcomeBlocks(rv *teamReview, decider, result string) []any {
+func teamReviewOutcomeBlocks(rv store.Review, decider, result string) []any {
 	blocks := []any{
 		map[string]any{bkType: bkSection, bkText: map[string]any{bkType: bkMrkdwn, bkText: teamReviewOutcome(rv, decider, result)}},
 	}
@@ -423,23 +474,31 @@ func teamReviewOutcomeBlocks(rv *teamReview, decider, result string) []any {
 }
 
 // showTeamReviewStatus records status as the review's current status line and
-// rewrites the message with it, buttons kept.
-func (a *Adapter) showTeamReviewStatus(ctx context.Context, rv *teamReview, status string) {
-	if !a.setTeamReviewStatus(rv.id, status) {
+// rewrites the message with it, buttons kept. A review decided meanwhile, or a
+// store that cannot say, leaves the message alone: it must never be rewritten
+// back to its buttons over an approval.
+func (a *Adapter) showTeamReviewStatus(ctx context.Context, rv store.Review, status string) {
+	if !a.setTeamReviewStatus(ctx, rv.ID, status) {
 		return
 	}
-	blocks := teamReviewBlocks(rv.TeamReview, rv.id, status)
-	if err := a.apiClient().chatUpdate(ctx, rv.Channel, rv.ts, teamMessageFallback(rv.Team, rv.Text), blocks); err != nil {
-		a.Logger.Warn("slack: team review status rewrite failed", "review", rv.id, "error", err)
+	rv.Status = status
+	if err := a.apiClient().chatUpdate(ctx, rv.Channel, rv.TS, teamMessageFallback(rv.Team, rv.Text), teamReviewBlocks(rv)); err != nil {
+		a.Logger.Warn("slack: team review status rewrite failed", "review", rv.ID, "error", err)
 	}
 }
 
 // tellClicker answers a click on a review somebody else decided, visibly only
 // to the clicker, in the channel where they clicked: the message itself says
 // nothing new to them.
-func (a *Adapter) tellClicker(ctx context.Context, rv *teamReview, clicker, text string) {
-	if err := a.apiClient().postEphemeralText(ctx, rv.Channel, clicker, "", text); err != nil {
-		a.Logger.Warn("slack: team review notice failed", "review", rv.id, "user", clicker, "error", err)
+func (a *Adapter) tellClicker(ctx context.Context, rv store.Review, clicker, text string) {
+	a.tellClickerIn(ctx, rv.Channel, rv.ID, clicker, text)
+}
+
+// tellClickerIn is tellClicker for a review the gateway holds no record of,
+// located by the channel the click came from.
+func (a *Adapter) tellClickerIn(ctx context.Context, channel, id, clicker, text string) {
+	if err := a.apiClient().postEphemeralText(ctx, channel, clicker, "", text); err != nil {
+		a.Logger.Warn("slack: team review notice failed", "review", id, "user", clicker, "error", err)
 	}
 }
 
@@ -453,89 +512,88 @@ func (a *Adapter) linkedSubject(slackUser string) string {
 	return ""
 }
 
-// --- review records: in-memory, guarded by teamReviewsMu ---
+// --- review records: one atomic update of the store's record per transition ---
 
-func (a *Adapter) storeTeamReview(rv *teamReview) {
-	a.teamReviewsMu.Lock()
-	defer a.teamReviewsMu.Unlock()
-	if a.teamReviews == nil {
-		a.teamReviews = map[string]*teamReview{}
+// reviews returns the store the review records live in: Adapter.Reviews, the
+// gateway's store, or — for an adapter given none (tests, a gateway without a
+// store) — an in-process memory store, so the records live for the life of
+// the process as on --store=memory.
+func (a *Adapter) reviews() store.ReviewStore {
+	if a.Reviews != nil {
+		return a.Reviews
 	}
-	cutoff := time.Now().Add(-teamReviewTTL)
-	for id, old := range a.teamReviews {
-		if old.postedAt.Before(cutoff) {
-			delete(a.teamReviews, id)
+	a.reviewsMu.Lock()
+	defer a.reviewsMu.Unlock()
+	if a.memReviews == nil {
+		a.memReviews = memory.New()
+	}
+	return a.memReviews
+}
+
+// claimTeamReview marks the review as being decided by user, as one atomic
+// update of the record, so of two clicks — on one replica or two — exactly
+// one takes it. It reports the record as it stands after the attempt: found
+// is false for a review that is gone, claimed false when another approval is
+// in flight or done (current.DecidedBy says whose). A claim without an
+// outcome older than teamReviewClaimLease is taken over: the process that
+// held it died mid-call.
+func (a *Adapter) claimTeamReview(ctx context.Context, id, user string) (current store.Review, found, claimed bool, err error) {
+	now := time.Now()
+	found, err = a.reviews().UpdateReview(ctx, id, func(r *store.Review) bool {
+		claimed = false
+		held := r.DecidedBy != "" && (r.Done || now.Sub(r.ClaimedAt) <= teamReviewClaimLease)
+		if held {
+			current = *r
+			return false
 		}
-	}
-	a.teamReviews[rv.id] = rv
+		r.DecidedBy, r.ClaimedAt = user, now
+		current, claimed = *r, true
+		return true
+	})
+	return current, found, claimed, err
 }
 
-// lookupTeamReview returns a copy of the record, or nil when it is unknown or
-// past its TTL.
-func (a *Adapter) lookupTeamReview(id string) *teamReview {
-	a.teamReviewsMu.Lock()
-	defer a.teamReviewsMu.Unlock()
-	rv, ok := a.teamReviews[id]
-	if !ok || time.Since(rv.postedAt) > teamReviewTTL {
-		return nil
-	}
-	cp := *rv
-	return &cp
-}
-
-// claimTeamReview marks the review as being decided by user. It reports the
-// current holder and false when another approval is in flight or done.
-func (a *Adapter) claimTeamReview(id, user string) (holder string, claimed bool) {
-	a.teamReviewsMu.Lock()
-	defer a.teamReviewsMu.Unlock()
-	rv, ok := a.teamReviews[id]
-	if !ok {
-		return "", false
-	}
-	if rv.decidedBy != "" {
-		return rv.decidedBy, false
-	}
-	rv.decidedBy = user
-	return "", true
-}
-
-// releaseTeamReview reopens a review whose approval did not go through.
-func (a *Adapter) releaseTeamReview(id string) {
-	a.teamReviewsMu.Lock()
-	defer a.teamReviewsMu.Unlock()
-	if rv, ok := a.teamReviews[id]; ok && !rv.done {
-		rv.decidedBy = ""
+// releaseTeamReview reopens a review whose approval did not go through. A
+// store that does not answer is logged: the lease frees the claim in time.
+func (a *Adapter) releaseTeamReview(ctx context.Context, id string) {
+	if _, err := a.reviews().UpdateReview(ctx, id, func(r *store.Review) bool {
+		if r.Done {
+			return false
+		}
+		r.DecidedBy, r.ClaimedAt = "", time.Time{}
+		return true
+	}); err != nil {
+		a.Logger.Warn("slack: team review release failed", "record", "team_review_store_failed", "review", id, "error", err)
 	}
 }
 
 // finishTeamReview records the approval as done; the record stays until its
 // TTL so a late click is told who decided.
-func (a *Adapter) finishTeamReview(id string) {
-	a.teamReviewsMu.Lock()
-	defer a.teamReviewsMu.Unlock()
-	if rv, ok := a.teamReviews[id]; ok {
-		rv.done = true
-		rv.status = ""
+func (a *Adapter) finishTeamReview(ctx context.Context, id string) {
+	if _, err := a.reviews().UpdateReview(ctx, id, func(r *store.Review) bool {
+		r.Done, r.Status = true, ""
+		return true
+	}); err != nil {
+		a.Logger.Warn("slack: team review finish failed", "record", "team_review_store_failed", "review", id, "error", err)
 	}
-}
-
-func (a *Adapter) teamReviewDone(id string) bool {
-	a.teamReviewsMu.Lock()
-	defer a.teamReviewsMu.Unlock()
-	rv, ok := a.teamReviews[id]
-	return ok && rv.done
 }
 
 // setTeamReviewStatus records the status line of an open review. It reports
-// false for a review that is unknown or decided already, whose message must
-// not be rewritten back to the buttons.
-func (a *Adapter) setTeamReviewStatus(id, status string) bool {
-	a.teamReviewsMu.Lock()
-	defer a.teamReviewsMu.Unlock()
-	rv, ok := a.teamReviews[id]
-	if !ok || rv.done {
+// false for a review that is unknown or decided already — whose message must
+// not be rewritten back to the buttons — and for a store that cannot say.
+func (a *Adapter) setTeamReviewStatus(ctx context.Context, id, status string) bool {
+	set := false
+	found, err := a.reviews().UpdateReview(ctx, id, func(r *store.Review) bool {
+		set = false
+		if r.Done {
+			return false
+		}
+		r.Status, set = status, true
+		return true
+	})
+	if err != nil {
+		a.Logger.Warn("slack: team review status update failed", "record", "team_review_store_failed", "review", id, "error", err)
 		return false
 	}
-	rv.status = status
-	return true
+	return found && set
 }

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -117,6 +119,142 @@ func TestTTLIsServerSide(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, ok)
 	require.Empty(t, m.Keys(), "the server dropped the key")
+}
+
+// A review lives next to the routing keys under its own prefix — the routing
+// SCAN never reads it — with what is left of its TTL as the key's expiry.
+func TestReviewKeyLayout(t *testing.T) {
+	m := miniredis.RunT(t)
+	s := newStore(t, m.Addr())
+	ctx := context.Background()
+	posted := time.Now().Add(-24 * time.Hour)
+	r := store.Review{
+		ID: "8f3c2d", Channel: "C1", TS: "1700000000.000100", Team: "team-bumblebee", Text: "*Archive* it.",
+		Link: "https://github.com/giantswarm/github/pull/4711", Tool: "x_giantswarm-repo-manager_approve_change",
+		Arguments: map[string]any{"pr": float64(4711)}, PostedAt: posted, TTL: 7 * 24 * time.Hour,
+	}
+	require.NoError(t, s.PutReview(ctx, r))
+	require.Equal(t, []string{"klaus-gateway:review:8f3c2d"}, m.Keys())
+	require.InDelta(t, 6*24*time.Hour, m.TTL("klaus-gateway:review:8f3c2d"), float64(2*time.Second), "what is left of the seven days")
+
+	raw, err := m.Get("klaus-gateway:review:8f3c2d")
+	require.NoError(t, err)
+	var got map[string]any
+	require.NoError(t, json.Unmarshal([]byte(raw), &got))
+	require.Equal(t, "team-bumblebee", got["team"])
+	require.Equal(t, "x_giantswarm-repo-manager_approve_change", got["tool"])
+	require.Equal(t, map[string]any{"pr": float64(4711)}, got["arguments"])
+	require.NotContains(t, got, "decided_by", "an open review carries no decider")
+	require.NotContains(t, got, "claimed_at")
+
+	entries, err := s.List(ctx)
+	require.NoError(t, err)
+	require.Empty(t, entries, "the routing listing does not see reviews")
+
+	m.FastForward(7 * 24 * time.Hour)
+	_, ok, err := s.GetReview(ctx, "8f3c2d")
+	require.NoError(t, err)
+	require.False(t, ok)
+	require.Empty(t, m.Keys(), "the server dropped the key")
+}
+
+// The review prefix follows the routing prefix, so a gateway that moves its
+// keys moves its reviews with them.
+func TestReviewKeyPrefixFollowsRoutePrefix(t *testing.T) {
+	for routes, want := range map[string]string{
+		"":                            "klaus-gateway:review:",
+		"other[1]:":                   "other[1]:review:",
+		"team-a:klaus-gateway:route:": "team-a:klaus-gateway:review:",
+	} {
+		m := miniredis.RunT(t)
+		s, err := valkeystore.New(valkeystore.Options{URL: m.Addr(), KeyPrefix: routes, Timeout: testTimeout})
+		require.NoError(t, err)
+		require.NoError(t, s.PutReview(context.Background(), store.Review{ID: "r", PostedAt: time.Now(), TTL: time.Hour}))
+		require.Equal(t, []string{want + "r"}, m.Keys(), "routing prefix %q", routes)
+		_ = s.Close()
+	}
+	m := miniredis.RunT(t)
+	s, err := valkeystore.New(valkeystore.Options{URL: m.Addr(), ReviewKeyPrefix: "elsewhere:", Timeout: testTimeout})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = s.Close() })
+	require.NoError(t, s.PutReview(context.Background(), store.Review{ID: "r", PostedAt: time.Now(), TTL: time.Hour}))
+	require.Equal(t, []string{"elsewhere:r"}, m.Keys(), "an explicit review prefix stands")
+}
+
+// An update that finds the record changed under it — another replica's click
+// landed between the read and the write — is not written over the change: the
+// record is re-read and mutate runs again on what is there now.
+func TestReviewUpdateIsACompareAndSet(t *testing.T) {
+	m := miniredis.RunT(t)
+	s := newStore(t, m.Addr())
+	ctx := context.Background()
+	require.NoError(t, s.PutReview(ctx, store.Review{ID: "r1", Team: "t", PostedAt: time.Now(), TTL: time.Hour}))
+
+	calls := 0
+	found, err := s.UpdateReview(ctx, "r1", func(r *store.Review) bool {
+		calls++
+		if calls == 1 {
+			// The other replica claims the review after this read: rewrite the
+			// key underneath, keeping its expiry, the way its own update would.
+			raw, err := m.Get("klaus-gateway:review:r1")
+			require.NoError(t, err)
+			var other store.Review
+			require.NoError(t, json.Unmarshal([]byte(raw), &other))
+			other.DecidedBy = "U-other"
+			buf, err := json.Marshal(other)
+			require.NoError(t, err)
+			require.NoError(t, m.Set("klaus-gateway:review:r1", string(buf)))
+		}
+		if r.DecidedBy != "" {
+			return false // told who holds it; nothing to write
+		}
+		r.DecidedBy = "U-mine"
+		return true
+	})
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, 2, calls, "the first write was refused and mutate ran again on the current record")
+	got, ok, err := s.GetReview(ctx, "r1")
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, "U-other", got.DecidedBy, "the other replica's claim stands")
+}
+
+// Two stores on one server — two gateway replicas — race for one review:
+// exactly one claim lands.
+func TestReviewClaimAcrossReplicas(t *testing.T) {
+	m := miniredis.RunT(t)
+	replicas := []*valkeystore.Store{newStore(t, m.Addr()), newStore(t, m.Addr())}
+	ctx := context.Background()
+	require.NoError(t, replicas[0].PutReview(ctx, store.Review{ID: "r1", PostedAt: time.Now(), TTL: time.Hour}))
+
+	const perReplica = 16
+	var wg sync.WaitGroup
+	var wins atomic.Int32
+	for ri, s := range replicas {
+		for i := range perReplica {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				user := fmt.Sprintf("R%dU%02d", ri, i)
+				won := false
+				_, err := s.UpdateReview(ctx, "r1", func(r *store.Review) bool {
+					won = false
+					if r.DecidedBy != "" {
+						return false
+					}
+					r.DecidedBy, won = user, true
+					return true
+				})
+				require.NoError(t, err)
+				if won {
+					wins.Add(1)
+				}
+			}()
+		}
+	}
+	wg.Wait()
+	require.Equal(t, int32(1), wins.Load())
 }
 
 func TestPutExpiredEntryDeletes(t *testing.T) {

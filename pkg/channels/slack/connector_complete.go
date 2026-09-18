@@ -147,7 +147,7 @@ func (a *Adapter) handleConnectorComplete(w http.ResponseWriter, r *http.Request
 		musterlink.RenderPage(w, http.StatusNotFound, musterlink.Page{
 			Title:   "Sign-in confirmation expired",
 			Heading: "Link expired",
-			Message: "This confirmation link is invalid or has expired. Return to Slack and continue the conversation there.",
+			Message: "This confirmation link is invalid or has expired. Return to Slack and continue there: reply in the conversation, or click the button you came from again.",
 		})
 		return
 	}

@@ -14,12 +14,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/stretchr/testify/require"
 
 	"github.com/giantswarm/klaus-gateway/pkg/auth/musterlink"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 	slackadapter "github.com/giantswarm/klaus-gateway/pkg/channels/slack"
 	"github.com/giantswarm/klaus-gateway/pkg/muster"
+	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
+	"github.com/giantswarm/klaus-gateway/pkg/routing/store/memory"
+	valkeystore "github.com/giantswarm/klaus-gateway/pkg/routing/store/valkey"
 )
 
 const signInLink = "https://gateway.example/auth/slack/link"
@@ -78,13 +82,78 @@ func (r *recordingTools) recorded() []toolCall {
 func teamReviewHarness(t *testing.T, tools *recordingTools, opts ...func(*slackadapter.Adapter)) (*slackadapter.Adapter, *httptest.Server, *fakeSlackAPI) {
 	t.Helper()
 	fake := newFakeSlackAPI()
+	a, srv := teamReviewAdapter(t, fake.server(t).URL, tools, opts...)
+	return a, srv, fake
+}
+
+// teamReviewAdapter is one gateway process serving team reviews against the
+// fake Slack API at apiURL. Two of them over one store and one fake are a
+// gateway before and after a restart.
+func teamReviewAdapter(t *testing.T, apiURL string, tools *recordingTools, opts ...func(*slackadapter.Adapter)) (*slackadapter.Adapter, *httptest.Server) {
+	t.Helper()
 	obo := linkedOBO{tokens: map[string]string{"U1": "id-token-U1", "U2": "id-token-U2"}}
 	options := append([]func(*slackadapter.Adapter){channelMode, func(a *slackadapter.Adapter) {
 		a.OBO = obo
 		a.Tools = tools
 	}}, opts...)
-	a, srv := newEventsAdapter(t, &stubGateway{}, fake.server(t).URL, options...)
-	return a, srv, fake
+	return newEventsAdapter(t, &stubGateway{}, apiURL, options...)
+}
+
+// withReviews gives the adapter the store its review records live in.
+func withReviews(s store.ReviewStore) func(*slackadapter.Adapter) {
+	return func(a *slackadapter.Adapter) { a.Reviews = s }
+}
+
+// restart stops the gateway process a and its server: the completion states
+// it held in memory are gone, the store is what the next process finds.
+func restart(t *testing.T, a *slackadapter.Adapter, srv *httptest.Server) {
+	t.Helper()
+	require.NoError(t, a.Stop(context.Background()))
+	srv.Close()
+}
+
+// reviewStores are the stores a gateway keeps its reviews in: the one
+// installations run, speaking the real protocol to a miniredis, and the
+// in-process store. Both are shared by the adapters of one test the way the
+// server is shared by the processes of one deployment.
+func reviewStores(t *testing.T) map[string]store.Store {
+	t.Helper()
+	m := miniredis.RunT(t)
+	vk, err := valkeystore.New(valkeystore.Options{URL: m.Addr(), Timeout: time.Second})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = vk.Close() })
+	mem := memory.New()
+	t.Cleanup(func() { _ = mem.Close() })
+	return map[string]store.Store{"valkey": vk, "memory": mem}
+}
+
+// failingReviews is a review store whose reads or writes fail: Valkey down.
+type failingReviews struct {
+	store.ReviewStore
+	failGet, failPut, failUpdate bool
+}
+
+var errStoreDown = errors.New("valkey: get review: dial tcp: connection refused")
+
+func (f failingReviews) GetReview(ctx context.Context, id string) (store.Review, bool, error) {
+	if f.failGet {
+		return store.Review{}, false, errStoreDown
+	}
+	return f.ReviewStore.GetReview(ctx, id)
+}
+
+func (f failingReviews) PutReview(ctx context.Context, r store.Review) error {
+	if f.failPut {
+		return errStoreDown
+	}
+	return f.ReviewStore.PutReview(ctx, r)
+}
+
+func (f failingReviews) UpdateReview(ctx context.Context, id string, mutate func(r *store.Review) bool) (bool, error) {
+	if f.failUpdate {
+		return false, errStoreDown
+	}
+	return f.ReviewStore.UpdateReview(ctx, id, mutate)
 }
 
 // reviewAuthChallenge is what muster's call_tool answers for a tool whose
@@ -564,6 +633,204 @@ func TestTeamReview_DecidedWhileConnecting(t *testing.T) {
 	_ = resp.Body.Close()
 	waitFor(t, "U1 is told who decided", func() bool { return ephemeralTo(fake, "U1", "already approved by <@U2>") })
 	require.Len(t, tools.recorded(), 2, "the landing calls no tool")
+}
+
+// A gateway restart between the post and the click — every release rolls the
+// pod — changes nothing for the team: the review, its status line and its
+// decision state are the store's, not the process's. The first process posts
+// the review and takes a refused approval, whose status line the team reads;
+// the second process approves it from a click, tells a late clicker who
+// decided, and renders the ask it never posted itself.
+func TestTeamReview_SurvivesRestart(t *testing.T) {
+	for name, reviews := range reviewStores(t) {
+		t.Run(name, func(t *testing.T) {
+			tools := &recordingTools{results: []muster.Result{
+				{IsError: true, Text: "not a member of team-bumblebee"},
+				{Text: "review submitted on giantswarm/github#4711"},
+			}}
+			fake := newFakeSlackAPI()
+			apiURL := fake.server(t).URL
+
+			a1, srv1 := teamReviewAdapter(t, apiURL, tools, withReviews(reviews))
+			receipt, err := a1.PostTeamReview(context.Background(), archiveReview())
+			require.NoError(t, err)
+			clickApprove(t, srv1, "U1", receipt.ID, receipt.TS)
+			waitFor(t, "the refusal is written under the buttons before the restart", func() bool {
+				return strings.Contains(statusLine(fake, receipt.TS), "<@U1>'s approval was not accepted")
+			})
+			restart(t, a1, srv1)
+
+			_, srv2 := teamReviewAdapter(t, apiURL, tools, withReviews(reviews))
+			clickApprove(t, srv2, "U2", receipt.ID, receipt.TS)
+			waitFor(t, "the approval lands on the process that never posted the review", func() bool {
+				return updatedWith(fake, receipt.TS, "Approved", "<@U2>", "review submitted")
+			})
+			calls := tools.recorded()
+			require.Len(t, calls, 2)
+			require.Equal(t, "id-token-U2", calls[1].bearer)
+			require.Equal(t, "x_giantswarm-repo-manager_approve_change", calls[1].tool)
+			wantArgs, _ := json.Marshal(map[string]any{"pr": 4711})
+			gotArgs, _ := json.Marshal(calls[1].args)
+			require.JSONEq(t, string(wantArgs), string(gotArgs), "the arguments reach the tool as posted")
+			require.False(t, updatedWith(fake, receipt.TS, "expired"), "the restart did not expire the review")
+			require.Empty(t, latestButtons(fake, receipt.TS))
+			require.Equal(t, "<https://github.com/giantswarm/github/pull/4711|Open PR>", statusLine(fake, receipt.TS), "the link survived with the ask")
+
+			clickApprove(t, srv2, "U1", receipt.ID, receipt.TS)
+			waitFor(t, "a late clicker is told who decided", func() bool { return ephemeralTo(fake, "U1", "already approved by <@U2>") })
+			require.Len(t, tools.recorded(), 2, "the late click calls no tool")
+		})
+	}
+}
+
+// The decision made before a restart holds after it: the next process reads
+// it from the store and refuses the second click with the decider.
+func TestTeamReview_DecisionSurvivesRestart(t *testing.T) {
+	for name, reviews := range reviewStores(t) {
+		t.Run(name, func(t *testing.T) {
+			tools := &recordingTools{}
+			fake := newFakeSlackAPI()
+			apiURL := fake.server(t).URL
+
+			a1, srv1 := teamReviewAdapter(t, apiURL, tools, withReviews(reviews))
+			receipt, err := a1.PostTeamReview(context.Background(), archiveReview())
+			require.NoError(t, err)
+			clickApprove(t, srv1, "U1", receipt.ID, receipt.TS)
+			waitFor(t, "the approval lands", func() bool { return updatedWith(fake, receipt.TS, "Approved", "<@U1>") })
+			restart(t, a1, srv1)
+
+			_, srv2 := teamReviewAdapter(t, apiURL, tools, withReviews(reviews))
+			clickApprove(t, srv2, "U2", receipt.ID, receipt.TS)
+			waitFor(t, "the second clicker is told who decided", func() bool { return ephemeralTo(fake, "U2", "already approved by <@U1>") })
+			require.Len(t, tools.recorded(), 1)
+			require.Len(t, fake.pathCalls("chat.update"), 1, "the approved message is not rewritten")
+		})
+	}
+}
+
+// The completion state behind a review's Connect button is the process's
+// alone (it lives minutes); the review is not. After a restart the landing
+// says the link is gone and to click again, and the click approves: the
+// person connected the backend meanwhile.
+func TestTeamReview_ConnectLandingGoneAfterRestartClickApproves(t *testing.T) {
+	reviews := reviewStores(t)["valkey"]
+	tools := &recordingTools{results: []muster.Result{
+		{IsError: true, Text: reviewAuthChallenge},
+		{Text: "review submitted"},
+	}}
+	fake := newFakeSlackAPI()
+	apiURL := fake.server(t).URL
+	public := func(a *slackadapter.Adapter) { a.PublicBaseURL = "https://gw.example" }
+
+	a1, srv1 := teamReviewAdapter(t, apiURL, tools, withReviews(reviews), public)
+	receipt, err := a1.PostTeamReview(context.Background(), archiveReview())
+	require.NoError(t, err)
+	clickApprove(t, srv1, "U1", receipt.ID, receipt.TS)
+	var stateID string
+	waitFor(t, "a Connect prompt is posted", func() bool {
+		var ok bool
+		_, stateID, ok = connectButton(fake)
+		return ok
+	})
+	waitFor(t, "the team sees who is connecting", func() bool {
+		return strings.Contains(statusLine(fake, receipt.TS), "<@U1> is connecting")
+	})
+	restart(t, a1, srv1)
+
+	_, srv2 := teamReviewAdapter(t, apiURL, tools, withReviews(reviews), public)
+	resp, err := http.Get(srv2.URL + "/connectors/complete?s=" + url.QueryEscape(stateID))
+	require.NoError(t, err)
+	page, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	require.Equal(t, http.StatusNotFound, resp.StatusCode)
+	require.Contains(t, string(page), "click the button you came from again")
+	require.Len(t, tools.recorded(), 1, "the landing submits nothing: the state it stood for is gone")
+
+	clickApprove(t, srv2, "U1", receipt.ID, receipt.TS)
+	waitFor(t, "the click approves on the new process", func() bool { return updatedWith(fake, receipt.TS, "Approved", "<@U1>") })
+	require.Len(t, tools.recorded(), 2)
+}
+
+// A store that does not answer is not "expired": the clicker is told to try
+// again, the message keeps its buttons, no tool is called.
+func TestTeamReview_StoreOutageOnClickKeepsTheReview(t *testing.T) {
+	for name, fail := range map[string]failingReviews{
+		"lookup fails": {failGet: true},
+		"claim fails":  {failUpdate: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tools := &recordingTools{}
+			mem := memory.New()
+			t.Cleanup(func() { _ = mem.Close() })
+			fail.ReviewStore = mem
+			a, srv, fake := teamReviewHarness(t, tools, withReviews(mem))
+			receipt, err := a.PostTeamReview(context.Background(), archiveReview())
+			require.NoError(t, err)
+			a.Reviews = fail // the outage begins after the post
+
+			clickApprove(t, srv, "U1", receipt.ID, receipt.TS)
+			waitFor(t, "the clicker is told to try again", func() bool {
+				return ephemeralTo(fake, "U1", "could not be looked up right now")
+			})
+			require.Empty(t, tools.recorded(), "no tool call without a claim")
+			require.Empty(t, fake.pathCalls("chat.update"), "the message keeps its buttons; an outage is not an expiry")
+
+			a.Reviews = mem // the store is back
+			clickApprove(t, srv, "U1", receipt.ID, receipt.TS)
+			waitFor(t, "the next click approves", func() bool { return updatedWith(fake, receipt.TS, "Approved", "<@U1>") })
+		})
+	}
+}
+
+// A review the gateway posted but could not record would carry a button that
+// never resolves: the message says so instead, and the manager is told the
+// post failed.
+func TestTeamReview_UnrecordedReviewIsReplaced(t *testing.T) {
+	mem := memory.New()
+	t.Cleanup(func() { _ = mem.Close() })
+	a, _, fake := teamReviewHarness(t, &recordingTools{}, withReviews(failingReviews{ReviewStore: mem, failPut: true}))
+
+	_, err := a.PostTeamReview(context.Background(), archiveReview())
+	require.ErrorIs(t, err, errStoreDown)
+	require.Len(t, fake.pathCalls("chat.postMessage"), 1)
+	updates := fake.pathCalls("chat.update")
+	require.Len(t, updates, 1, "the posted message is rewritten in place")
+	require.Contains(t, updates[0].params["text"], "could not be recorded")
+	require.Empty(t, actionIDs(blocksOf(updates[0])), "no button that would read expired on the first click")
+}
+
+// A claim a process died with — a restart during the tool call — does not
+// hold the review for seven days: past the lease the next click takes it.
+func TestTeamReview_StaleClaimIsTakenOver(t *testing.T) {
+	mem := memory.New()
+	t.Cleanup(func() { _ = mem.Close() })
+	tools := &recordingTools{}
+	a, srv, fake := teamReviewHarness(t, tools, withReviews(mem))
+	receipt, err := a.PostTeamReview(context.Background(), archiveReview())
+	require.NoError(t, err)
+
+	// The record as a process that died mid-call leaves it.
+	found, err := mem.UpdateReview(context.Background(), receipt.ID, func(r *store.Review) bool {
+		r.DecidedBy, r.ClaimedAt = "U9", time.Now().Add(-10*time.Minute)
+		return true
+	})
+	require.NoError(t, err)
+	require.True(t, found)
+
+	clickApprove(t, srv, "U1", receipt.ID, receipt.TS)
+	waitFor(t, "the stale claim is taken over", func() bool { return updatedWith(fake, receipt.TS, "Approved", "<@U1>") })
+
+	// A fresh claim is not.
+	receipt2, err := a.PostTeamReview(context.Background(), archiveReview())
+	require.NoError(t, err)
+	_, err = mem.UpdateReview(context.Background(), receipt2.ID, func(r *store.Review) bool {
+		r.DecidedBy, r.ClaimedAt = "U9", time.Now()
+		return true
+	})
+	require.NoError(t, err)
+	clickApprove(t, srv, "U1", receipt2.ID, receipt2.TS)
+	waitFor(t, "an approval in flight is reported", func() bool { return ephemeralTo(fake, "U1", "<@U9>'s approval is being submitted right now") })
+	require.Len(t, tools.recorded(), 1)
 }
 
 func TestTeamReview_UnknownReviewRewritesToExpired(t *testing.T) {
