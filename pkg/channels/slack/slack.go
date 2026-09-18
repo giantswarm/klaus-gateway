@@ -1826,13 +1826,17 @@ func (a *Adapter) dispatchFrom(ctx context.Context, msg channels.InboundMessage,
 		msg.Opener = opener
 	}
 
-	// The opening message names the agent session. Root equality rides along
-	// with opener because a channel root parked for sign-in replays after its
-	// binding is recorded, where threadAgent no longer reports it as the
-	// opener; on the assistant pane only opener can tell, the first message of
-	// a chat never being its own thread root.
+	// The title names the conversation on both surfaces, so every turn carries
+	// one: the gateway names a kagent conversation when it creates one, which a
+	// turn switching agents does mid-thread. Slack takes one only from the
+	// opening message. Root equality rides along with opener because a channel
+	// root parked for sign-in replays after its binding is recorded, where
+	// threadAgent no longer reports it as the opener; on the assistant pane only
+	// opener can tell, the first message of a chat never being its own thread
+	// root.
+	msg.Title = sessionTitleFrom(msg.Text)
 	if opener || msg.ThreadID == msg.MessageID {
-		a.storeSessionTitle(msg.ThreadID, sessionTitleFrom(msg.Text))
+		a.storeSessionTitle(msg.ThreadID, msg.Title)
 	}
 
 	// A turn must carry a human token, never the gateway's machine identity.

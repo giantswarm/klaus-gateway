@@ -71,6 +71,13 @@ channel thread to exactly one instance:
    is idempotent per `(creator, request_id)`, so a retried first turn — the binding was not
    written, the process died in between — gets the same instance back instead of a second one.
    The call returns once the instance is READY.
+
+   The create also carries `name`, the conversation's display name: the message that opened the
+   thread, rendered on one line and cut at the controller's 200-character limit on a word
+   boundary. Slack sends the line it titles its own session with, the mention and the command
+   stripped; the other channels send the message text. A message with nothing to name a
+   conversation after — an upload with no caption — creates it unnamed, and a name the
+   controller refuses is dropped and the create retried unnamed rather than failing the turn.
 2. The instance id and the agent it belongs to are persisted as fields of the thread's row in
    the routing store (`store.Entry.AgentInstanceID` and `.AgentRef`; key
    `channel|channelID||threadID`, user slot empty because the thread is shared by its

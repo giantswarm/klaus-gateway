@@ -85,6 +85,13 @@ type InboundMessage struct {
 	// thread's conversation (no agent recorded for the thread before it): the
 	// session title keys on it.
 	Opener bool
+	// Title, when set, is this message as a one-line title, from an adapter
+	// that renders one itself — Slack drops the mention and the command a user
+	// typed to address the bot. It names the kagent conversation a turn
+	// creates. Empty means "not supplied", and the title is derived from Text
+	// instead: an adapter with nothing to name a conversation after leaves Text
+	// with nothing in it either, so the two agree on saying nothing.
+	Title string
 	// TaskID, when set, continues an existing A2A task rather than starting a
 	// new one. Populated by the Slack adapter when a pending input-required task
 	// exists for the thread.
