@@ -187,7 +187,10 @@ Unknown fields are refused. Response `201`:
 reviews are held in memory for seven days. A gateway restart drops them: a click on a dropped
 review rewrites the message to say it expired, and the manager posts the ask again.
 
-The tool's answer decides what the click did. A success closes the review. An error result is a
+The tool's answer decides what the click did. A success closes the review; what the tool said is
+shown to the team under the outcome — a plain text as written, a JSON object by its `message`
+field (a tool that answers agents with structured data puts the sentence for the channel there),
+nothing of structured data without one. An error result is a
 refusal (the manager finding the person outside the team, or the author of the change) and is
 written once, as a status line under the buttons naming the clicker and the reason, where the
 clicker and the team both read it; the review stays open.

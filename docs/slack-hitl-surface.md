@@ -364,8 +364,9 @@ for anything else. It has **no initiator**; the decision rule is the team's:
   is reserved for what is theirs alone — a sign-in or Connect button, or a click on a review
   somebody else decided.
 - **One approval closes it.** A second click is refused with who decided (or whose approval is in
-  flight); the message is rewritten to the outcome, the decider and what the tool answered, the
-  *Open PR* link kept as small print.
+  flight); the message is rewritten to the outcome, the decider and what the tool answered — a
+  plain text as written, a JSON object by its `message` field, structured data without one not at
+  all — the *Open PR* link kept as small print.
 
 The Approve button's `value` is the JSON `{"r":"<review id>"}`; the id is what
 `POST /reviews` returned.

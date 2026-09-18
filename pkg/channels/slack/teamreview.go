@@ -384,10 +384,30 @@ func (a *Adapter) resumeTeamReviewApproval(ctx context.Context, entry connectorC
 func teamReviewOutcome(rv *teamReview, decider, result string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "✅ *Approved* by <@%s> for %s.\n%s", decider, escapeMrkdwn(rv.Team), rv.Text)
-	if result != "" {
-		fmt.Fprintf(&b, "\n_%s_", truncateRunes(escapeMrkdwn(result), teamReviewReasonMax))
+	if said := toolMessage(result); said != "" {
+		fmt.Fprintf(&b, "\n_%s_", truncateRunes(escapeMrkdwn(said), teamReviewReasonMax))
 	}
 	return truncateRunes(b.String(), slackSectionTextMax)
+}
+
+// toolMessage is what of a tool's answer is shown to people: a plain text as
+// written; of a JSON object its "message" field — a tool that answers agents
+// with structured data puts the sentence for a channel there — and nothing of
+// a JSON object without one. Structured data is for the caller, not the team.
+func toolMessage(result string) string {
+	result = strings.TrimSpace(result)
+	if result == "" {
+		return ""
+	}
+	var object map[string]any
+	if err := json.Unmarshal([]byte(result), &object); err != nil {
+		if strings.HasPrefix(result, "[") || strings.HasPrefix(result, "{") {
+			return "" // structured, but not an object with a message
+		}
+		return result
+	}
+	message, _ := object["message"].(string)
+	return strings.TrimSpace(message)
 }
 
 // teamReviewOutcomeBlocks renders the approved review: the outcome, and the
