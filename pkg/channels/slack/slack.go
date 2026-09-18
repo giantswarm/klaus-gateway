@@ -20,6 +20,7 @@ import (
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 	"github.com/giantswarm/klaus-gateway/pkg/auth/musterlink"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
+	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
 )
 
 // ChannelName identifies the Slack adapter in routing keys.
@@ -109,6 +110,11 @@ type Adapter struct {
 	// Tools calls a muster tool as a linked person; the team-review Approve
 	// click runs the review's tool through it. Nil disables team reviews.
 	Tools ToolCaller
+	// Reviews keeps the team reviews posted through PostTeamReview for their
+	// TTL: the gateway's routing store, so on a store that outlives the
+	// process (valkey, bolt) a review survives a restart. Nil keeps them in
+	// process memory, as --store=memory does.
+	Reviews store.ReviewStore
 	// Models, when set, resolves the default agent's model id for /usage.
 	// Nil omits the model line.
 	Models AgentModelSource
@@ -234,10 +240,10 @@ type Adapter struct {
 	threadsMu sync.Mutex
 	threads   map[string]*threadState // keyed by threadID
 
-	// teamReviews are the team-review asks posted through PostTeamReview and
-	// not yet past their TTL, keyed by review id (see teamreview.go).
-	teamReviewsMu sync.Mutex
-	teamReviews   map[string]*teamReview
+	// reviewsMu guards memReviews, the in-process review store used when
+	// Reviews is nil (see reviews in teamreview.go).
+	reviewsMu  sync.Mutex
+	memReviews store.ReviewStore
 
 	emailMu    sync.Mutex
 	emailCache map[string]emailEntry // Slack user ID -> resolved email

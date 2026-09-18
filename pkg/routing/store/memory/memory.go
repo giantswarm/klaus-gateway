@@ -17,9 +17,10 @@ var EvictionInterval = time.Minute
 
 // Store is a concurrency-safe in-memory routing store with TTL eviction.
 type Store struct {
-	mu   sync.RWMutex
-	data map[string]store.Entry
-	now  func() time.Time
+	mu      sync.RWMutex
+	data    map[string]store.Entry
+	reviews map[string]store.Review
+	now     func() time.Time
 
 	evictOnce sync.Once
 	stopEvict chan struct{}
@@ -30,6 +31,7 @@ type Store struct {
 func New() *Store {
 	return &Store{
 		data:      make(map[string]store.Entry),
+		reviews:   make(map[string]store.Review),
 		now:       time.Now,
 		stopEvict: make(chan struct{}),
 		evictDone: make(chan struct{}),
@@ -109,6 +111,45 @@ func (s *Store) List(_ context.Context) ([]store.KeyEntry, error) {
 	return out, nil
 }
 
+// PutReview upserts a review record; an expired one is removed instead.
+func (s *Store) PutReview(_ context.Context, r store.Review) error {
+	s.mu.Lock()
+	if r.Expired(s.now()) {
+		delete(s.reviews, r.ID)
+	} else {
+		s.reviews[r.ID] = r
+	}
+	s.mu.Unlock()
+	s.evictOnce.Do(s.startEvict)
+	return nil
+}
+
+// GetReview returns the record for id, or (_, false, nil) when absent or expired.
+func (s *Store) GetReview(_ context.Context, id string) (store.Review, bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	r, ok := s.reviews[id]
+	if !ok || r.Expired(s.now()) {
+		return store.Review{}, false, nil
+	}
+	return r, true, nil
+}
+
+// UpdateReview applies mutate to the record at id under the store's lock, so
+// no two writers interleave. An expired record is absent.
+func (s *Store) UpdateReview(_ context.Context, id string, mutate func(r *store.Review) bool) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.reviews[id]
+	if !ok || r.Expired(s.now()) {
+		return false, nil
+	}
+	if mutate(&r) {
+		s.reviews[id] = r
+	}
+	return true, nil
+}
+
 // Close stops the eviction goroutine and releases resources.
 func (s *Store) Close() error {
 	select {
@@ -149,6 +190,11 @@ func (s *Store) evict() {
 	for k, e := range s.data {
 		if e.Expired(now) {
 			delete(s.data, k)
+		}
+	}
+	for id, r := range s.reviews {
+		if r.Expired(now) {
+			delete(s.reviews, id)
 		}
 	}
 }

@@ -390,8 +390,12 @@ While an attempt is pending the message carries a context block under the action
 `🔗 <@U…> is connecting *giantswarm-repo-manager* to approve as themselves.` or
 `❌ <@U…>'s approval was not accepted: …`. After the approval the message reads
 `✅ *Approved* by <@U…> for team-bumblebee.`, then the ask, then the tool's answer in italics,
-with `<url|Open PR>` as a context block. A click on a review the gateway no longer holds (restart,
-seven days passed) rewrites the message to say it expired.
+with `<url|Open PR>` as a context block. The review is a record in the gateway's routing store
+for seven days (see [`POST /reviews`](api.md#post-reviews)): on a store that outlives the process
+a gateway restart changes nothing for the team, and a click on a review the gateway no longer
+holds — seven days passed, or `routing.store: memory` restarted — rewrites the message to say it
+expired. The completion state behind a review's *Connect* button is the process's own: after a
+restart the landing says the link is gone, and the person clicks *Approve* again, now connected.
 
 ## 11. Team notice (no decision)
 

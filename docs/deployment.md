@@ -233,14 +233,22 @@ matches your deployment:
 | Store       | Helm value         | Persistent | Cluster-backed | Notes                              |
 |-------------|-------------------|------------|----------------|------------------------------------|
 | `memory`    | `routing.store: memory`    | no  | no  | Default; state lost on restart     |
-| `valkey`    | `routing.store: valkey`    | yes | yes | For installations. One key per thread in a Valkey server; set `routing.valkey.url` and the password Secret |
+| `valkey`    | `routing.store: valkey`    | yes | yes | For installations. One key per thread and one per open team review in a Valkey server; set `routing.valkey.url` and the password Secret |
 | `bolt`      | `routing.store: bolt`      | file | no | Local file; set `routing.boltPath`. Durable only inside a mounted volume, which the chart does not provide |
+
+The store holds more than the routing table: the open [team reviews](api.md#team-review-endpoint)
+(the Approve prompts a manager posts into a team's channel) live in it for seven days, so on
+`valkey` and `bolt` a review posted before a restart is approved by a click after it; on `memory`
+a restart expires every open review.
 
 ### Valkey
 
 `routing.store: valkey` keeps one key per thread (`klaus-gateway:route:` + the serialised routing
 key, so a channel's entries share a prefix) with the JSON entry as its value; an entry with a TTL
-expires server-side. The gateway needs no volume and no API-server access, and replicas can
+expires server-side. Team reviews sit next to them under `klaus-gateway:review:` + the review id
+(the seven days as the key's expiry; the prefix follows `keyPrefix`, `route:` swapped for
+`review:`), and their updates are a compare-and-set, so replicas sharing the server cannot both
+approve one review. The gateway needs no volume and no API-server access, and replicas can
 share the table. The agent platform runs a Valkey for muster's token store (`muster-valkey:6379`,
 password under `valkey-password` in the platform Secret), which the gateway can share:
 
