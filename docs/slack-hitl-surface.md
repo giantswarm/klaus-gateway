@@ -347,11 +347,26 @@ for anything else. It has **no initiator**; the decision rule is the team's:
 - **The click calls the review's tool as that member.** The gateway calls the named muster tool
   (giantswarm-repo-manager's `approve_change`) with the clicking member's own token, so the
   manager acts under that person's GitHub grant and checks their membership of the named team
-  there. A refusal — not a member, or anything else the manager will not do — is shown to the
-  clicker alone (ephemerally, in the message's thread) and the review stays open for another
-  member; so does a manager the gateway could not reach.
+  there. A refusal — not a member, the author of the change themselves, or anything else the
+  manager will not do — is written once under the buttons, naming the clicker and the reason, and
+  the review stays open for another member; so is a manager the gateway could not reach.
+- **A backend the person has not connected yet is connected from the click.** When muster answers
+  the call with its sign-in challenge — the tool's server holds no grant for the person — the
+  clicker gets an ephemeral *Connect <server>* button. With a public base URL the link lands
+  back on the gateway (`/connectors/complete`, the connector landing) and the approval is
+  submitted again as the person, so one click and one consent are all it takes; without one the
+  prompt says to click *Approve* again afterwards. A backend that still challenges after the
+  landing is reported once, not looped.
+- **The clicker and the team read the same line.** A status line under the buttons names the
+  latest attempt that did not decide the review — who is connecting, whose approval the manager
+  refused and why, whose could not be submitted. It is replaced on every attempt and gone once
+  the review is approved. Nothing is repeated to the clicker privately; a channel-level ephemeral
+  is reserved for what is theirs alone — a sign-in or Connect button, or a click on a review
+  somebody else decided.
 - **One approval closes it.** A second click is refused with who decided (or whose approval is in
-  flight); the message is rewritten to the outcome, the decider and what the tool answered.
+  flight); the message is rewritten to the outcome, the decider and what the tool answered — a
+  plain text as written, a JSON object by its `message` field, structured data without one not at
+  all — the *Open PR* link kept as small print.
 
 The Approve button's `value` is the JSON `{"r":"<review id>"}`; the id is what
 `POST /reviews` returned.
@@ -371,9 +386,12 @@ The Approve button's `value` is the JSON `{"r":"<review id>"}`; the id is what
 }
 ```
 
-After the approval the message reads `✅ *Approved* by <@U…> for team-bumblebee.`, then the ask,
-then the tool's answer in italics. A click on a review the gateway no longer holds (restart, seven
-days passed) rewrites the message to say it expired.
+While an attempt is pending the message carries a context block under the actions, such as
+`🔗 <@U…> is connecting *giantswarm-repo-manager* to approve as themselves.` or
+`❌ <@U…>'s approval was not accepted: …`. After the approval the message reads
+`✅ *Approved* by <@U…> for team-bumblebee.`, then the ask, then the tool's answer in italics,
+with `<url|Open PR>` as a context block. A click on a review the gateway no longer holds (restart,
+seven days passed) rewrites the message to say it expired.
 
 ## 11. Team notice (no decision)
 

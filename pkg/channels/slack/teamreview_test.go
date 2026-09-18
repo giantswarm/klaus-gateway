@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -74,15 +75,62 @@ func (r *recordingTools) recorded() []toolCall {
 	return append([]toolCall(nil), r.calls...)
 }
 
-func teamReviewHarness(t *testing.T, tools *recordingTools) (*slackadapter.Adapter, *httptest.Server, *fakeSlackAPI) {
+func teamReviewHarness(t *testing.T, tools *recordingTools, opts ...func(*slackadapter.Adapter)) (*slackadapter.Adapter, *httptest.Server, *fakeSlackAPI) {
 	t.Helper()
 	fake := newFakeSlackAPI()
 	obo := linkedOBO{tokens: map[string]string{"U1": "id-token-U1", "U2": "id-token-U2"}}
-	a, srv := newEventsAdapter(t, &stubGateway{}, fake.server(t).URL, channelMode, func(a *slackadapter.Adapter) {
+	options := append([]func(*slackadapter.Adapter){channelMode, func(a *slackadapter.Adapter) {
 		a.OBO = obo
 		a.Tools = tools
-	})
+	}}, opts...)
+	a, srv := newEventsAdapter(t, &stubGateway{}, fake.server(t).URL, options...)
 	return a, srv, fake
+}
+
+// reviewAuthChallenge is what muster's call_tool answers for a tool whose
+// server holds no grant for the person yet: an error result naming the server
+// and carrying the sign-in link, as seen on a live install.
+const reviewAuthChallenge = "auth_required: server 'giantswarm-repo-manager' requires authentication before its tools can be called (this session is not authenticated to it).\n\n" +
+	"Authentication Required\n\n" +
+	"Server: giantswarm-repo-manager\n" +
+	"Status: Authentication required for giantswarm-repo-manager. Please visit the link below to authenticate.\n\n" +
+	"Please sign in to connect to this server:\n\n" +
+	"https://muster.example/oauth/proxy/start?state=abc123\n\n" +
+	"After signing in, run this tool again to complete the connection."
+
+// statusLine returns the context line under the review's buttons in its
+// latest rewrite, or "" when the latest rewrite carries none.
+func statusLine(fake *fakeSlackAPI, ts string) string {
+	updates := fake.pathCalls("chat.update")
+	for i := len(updates) - 1; i >= 0; i-- {
+		if updates[i].params["ts"] != ts {
+			continue
+		}
+		for _, b := range blocksOf(updates[i]) {
+			if b["type"] != "context" {
+				continue
+			}
+			elements, _ := b["elements"].([]any)
+			if len(elements) == 0 {
+				continue
+			}
+			text, _ := elements[0].(map[string]any)["text"].(string)
+			return text
+		}
+		return ""
+	}
+	return ""
+}
+
+// latestButtons lists the action_ids of the review message's latest rewrite.
+func latestButtons(fake *fakeSlackAPI, ts string) []string {
+	updates := fake.pathCalls("chat.update")
+	for i := len(updates) - 1; i >= 0; i-- {
+		if updates[i].params["ts"] == ts {
+			return actionIDs(blocksOf(updates[i]))
+		}
+	}
+	return nil
 }
 
 func archiveReview() channels.TeamReview {
@@ -242,6 +290,43 @@ func TestTeamReview_LinkedMemberApprovesAsThemselves(t *testing.T) {
 	})
 }
 
+// The tool's answer reaches the team as a sentence: a plain text as written,
+// a JSON object by its message field, structured data without one not at all.
+func TestTeamReview_OutcomeShowsTheToolsMessageNotItsJSON(t *testing.T) {
+	for name, tc := range map[string]struct{ result, shown, hidden string }{
+		"plain text":           {result: "review submitted on giantswarm/github#4711", shown: "review submitted on giantswarm/github#4711"},
+		"object with message":  {result: `{"pullRequest":4711,"login":"carol","member":true,"message":"Approved as carol and merged: giantswarm/github#4711."}`, shown: "Approved as carol and merged: giantswarm/github#4711.", hidden: `"login"`},
+		"object without one":   {result: `{"pullRequest":4711,"login":"carol","member":true}`, hidden: `"pullRequest"`},
+		"array":                {result: `[{"pullRequest":4711}]`, hidden: "4711"},
+		"empty":                {result: ""},
+		"whitespace around it": {result: "  \n{\"message\": \" merged. \"}\n", shown: "_merged._"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tools := &recordingTools{results: []muster.Result{{Text: tc.result}}}
+			a, srv, fake := teamReviewHarness(t, tools)
+			receipt, err := a.PostTeamReview(context.Background(), archiveReview())
+			require.NoError(t, err)
+			clickApprove(t, srv, "U1", receipt.ID, receipt.TS)
+			waitFor(t, "the approval lands", func() bool { return updatedWith(fake, receipt.TS, "Approved", "<@U1>") })
+			var text string
+			for _, u := range fake.pathCalls("chat.update") {
+				if u.params["ts"] == receipt.TS {
+					text, _ = u.params["text"].(string)
+				}
+			}
+			if tc.shown != "" {
+				require.Contains(t, text, tc.shown)
+			}
+			if tc.hidden != "" {
+				require.NotContains(t, text, tc.hidden)
+			}
+			if tc.shown == "" {
+				require.False(t, strings.Contains(text, "_"), "nothing of the answer is shown: %q", text)
+			}
+		})
+	}
+}
+
 func TestTeamReview_SecondClickIsRefused(t *testing.T) {
 	tools := &recordingTools{}
 	a, srv, fake := teamReviewHarness(t, tools)
@@ -298,10 +383,12 @@ func TestTeamReview_ToolRefusalReopensTheReview(t *testing.T) {
 	require.NoError(t, err)
 
 	clickApprove(t, srv, "U1", receipt.ID, receipt.TS)
-	waitFor(t, "U1 is told the refusal, privately", func() bool {
-		return ephemeralTo(fake, "U1", "not a member of team-bumblebee")
+	waitFor(t, "the refusal is written under the buttons, naming U1 and the reason", func() bool {
+		return strings.Contains(statusLine(fake, receipt.TS), "<@U1>'s approval was not accepted: not a member of team-bumblebee")
 	})
-	require.Empty(t, fake.pathCalls("chat.update"), "a refused approval leaves the ask open")
+	require.Equal(t, []string{"team_review_approve", "team_review_open"}, latestButtons(fake, receipt.TS), "the buttons stay")
+	require.False(t, updatedWith(fake, receipt.TS, "Approved"), "a refused approval leaves the ask open")
+	require.Empty(t, fake.pathCalls("chat.postEphemeral"), "the status line is the one place the refusal is read, by U1 and the team alike")
 
 	clickApprove(t, srv, "U2", receipt.ID, receipt.TS)
 	waitFor(t, "U2's approval lands", func() bool { return updatedWith(fake, receipt.TS, "<@U2>") })
@@ -309,6 +396,8 @@ func TestTeamReview_ToolRefusalReopensTheReview(t *testing.T) {
 	require.Len(t, calls, 2)
 	require.Equal(t, "id-token-U1", calls[0].bearer)
 	require.Equal(t, "id-token-U2", calls[1].bearer)
+	require.Empty(t, latestButtons(fake, receipt.TS), "the approved message carries no buttons")
+	require.Equal(t, "<https://github.com/giantswarm/github/pull/4711|Open PR>", statusLine(fake, receipt.TS), "the pull request stays one click away")
 }
 
 func TestTeamReview_ToolOutageKeepsTheReviewOpen(t *testing.T) {
@@ -318,8 +407,163 @@ func TestTeamReview_ToolOutageKeepsTheReviewOpen(t *testing.T) {
 	require.NoError(t, err)
 
 	clickApprove(t, srv, "U1", receipt.ID, receipt.TS)
-	waitFor(t, "U1 is told to try again", func() bool { return ephemeralTo(fake, "U1", "Try again") })
-	require.Empty(t, fake.pathCalls("chat.update"))
+	waitFor(t, "the failed attempt is written under the buttons", func() bool {
+		return strings.Contains(statusLine(fake, receipt.TS), "<@U1>'s approval could not be submitted")
+	})
+	require.False(t, updatedWith(fake, receipt.TS, "Approved"))
+	require.Empty(t, fake.pathCalls("chat.postEphemeral"), "nothing is repeated to U1 privately")
+}
+
+// The manager's backend holds no grant for the clicker yet: muster answers the
+// approval with a sign-in challenge. The clicker gets a Connect button whose
+// link lands back on the gateway, the team sees who is connecting, and once
+// the sign-in lands the approval is submitted again as the person — no second
+// click.
+func TestTeamReview_AuthChallengeConnectsThenApproves(t *testing.T) {
+	tools := &recordingTools{results: []muster.Result{
+		{IsError: true, Text: reviewAuthChallenge},
+		{Text: "review submitted on giantswarm/github#4711"},
+	}}
+	a, srv, fake := teamReviewHarness(t, tools, func(a *slackadapter.Adapter) { a.PublicBaseURL = "https://gw.example" })
+	receipt, err := a.PostTeamReview(context.Background(), archiveReview())
+	require.NoError(t, err)
+
+	clickApprove(t, srv, "U1", receipt.ID, receipt.TS)
+
+	var buttonURL, stateID string
+	waitFor(t, "a Connect prompt is posted to the clicker", func() bool {
+		var ok bool
+		buttonURL, stateID, ok = connectButton(fake)
+		return ok
+	})
+	prompts := fake.pathCalls("chat.postEphemeral")
+	require.Len(t, prompts, 1)
+	require.Equal(t, "U1", prompts[0].params["user"])
+	require.Nil(t, prompts[0].params["thread_ts"], "the prompt is a channel-level ephemeral, where the click happened")
+	require.Contains(t, prompts[0].params["text"], "connect *giantswarm-repo-manager* once")
+	require.Contains(t, prompts[0].params["text"], "submitted as soon as you're back")
+	require.Equal(t, []string{"connector_connect"}, actionIDs(blocksOf(prompts[0])), "no 'Not now': an ignored prompt simply lapses")
+	parsed, err := url.Parse(buttonURL)
+	require.NoError(t, err)
+	require.Equal(t, "muster.example", parsed.Host)
+	require.Equal(t, "abc123", parsed.Query().Get("state"), "the login link's own query survives")
+	require.Equal(t, "https://gw.example/connectors/complete?s="+stateID, parsed.Query().Get("redirect"))
+	require.NotContains(t, statusLine(fake, receipt.TS), "not accepted", "a sign-in challenge is not a refusal")
+
+	waitFor(t, "the team sees who is connecting", func() bool {
+		return strings.Contains(statusLine(fake, receipt.TS), "<@U1> is connecting *giantswarm-repo-manager*")
+	})
+	require.Equal(t, []string{"team_review_approve", "team_review_open"}, latestButtons(fake, receipt.TS), "the review stays open for the team")
+	require.Len(t, tools.recorded(), 1)
+
+	// The browser lands on the gateway after the consent flow.
+	resp, err := http.Get(srv.URL + "/connectors/complete?s=" + url.QueryEscape(stateID) + "&server=giantswarm-repo-manager")
+	require.NoError(t, err)
+	page, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Contains(t, string(page), "your approval is being submitted")
+
+	waitFor(t, "the approval is submitted again as the person", func() bool { return len(tools.recorded()) == 2 })
+	calls := tools.recorded()
+	require.Equal(t, "id-token-U1", calls[1].bearer)
+	require.Equal(t, calls[0].tool, calls[1].tool)
+	require.Equal(t, calls[0].args, calls[1].args)
+	waitFor(t, "the message shows the outcome and the decider", func() bool {
+		return updatedWith(fake, receipt.TS, "Approved", "<@U1>", "review submitted")
+	})
+	require.Empty(t, latestButtons(fake, receipt.TS))
+
+	// A reload of the landing does not submit the approval a third time.
+	resp, err = http.Get(srv.URL + "/connectors/complete?s=" + url.QueryEscape(stateID))
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	time.Sleep(50 * time.Millisecond)
+	require.Len(t, tools.recorded(), 2)
+}
+
+// Without a public base URL the sign-in cannot land back on the gateway: the
+// Connect button opens the plain login link and the prompt says to click
+// Approve again afterwards.
+func TestTeamReview_AuthChallengeWithoutLandingAsksToClickAgain(t *testing.T) {
+	tools := &recordingTools{results: []muster.Result{
+		{IsError: true, Text: reviewAuthChallenge},
+		{Text: "review submitted"},
+	}}
+	a, srv, fake := teamReviewHarness(t, tools)
+	receipt, err := a.PostTeamReview(context.Background(), archiveReview())
+	require.NoError(t, err)
+
+	clickApprove(t, srv, "U1", receipt.ID, receipt.TS)
+	var buttonURL, value string
+	waitFor(t, "a Connect prompt is posted", func() bool {
+		var ok bool
+		buttonURL, value, ok = connectButton(fake)
+		return ok
+	})
+	require.Equal(t, "https://muster.example/oauth/proxy/start?state=abc123", buttonURL, "the plain login link")
+	require.Equal(t, "giantswarm-repo-manager", value, "no completion state: the click is a no-op")
+	require.True(t, ephemeralTo(fake, "U1", "then click *Approve* again"))
+
+	// Connected meanwhile; the second click goes through.
+	clickApprove(t, srv, "U1", receipt.ID, receipt.TS)
+	waitFor(t, "the approval lands", func() bool { return updatedWith(fake, receipt.TS, "Approved", "<@U1>") })
+}
+
+// A backend that still challenges after the sign-in landed is not looped: the
+// person is told, once, and the review stays open.
+func TestTeamReview_StillChallengedAfterSignInIsNotLooped(t *testing.T) {
+	tools := &recordingTools{results: []muster.Result{{IsError: true, Text: reviewAuthChallenge}}}
+	a, srv, fake := teamReviewHarness(t, tools, func(a *slackadapter.Adapter) { a.PublicBaseURL = "https://gw.example" })
+	receipt, err := a.PostTeamReview(context.Background(), archiveReview())
+	require.NoError(t, err)
+
+	clickApprove(t, srv, "U1", receipt.ID, receipt.TS)
+	var stateID string
+	waitFor(t, "a Connect prompt is posted", func() bool {
+		var ok bool
+		_, stateID, ok = connectButton(fake)
+		return ok
+	})
+	resp, err := http.Get(srv.URL + "/connectors/complete?s=" + url.QueryEscape(stateID))
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+
+	waitFor(t, "the status line says the backend still challenges after the sign-in", func() bool {
+		return strings.Contains(statusLine(fake, receipt.TS), "<@U1> connected *giantswarm-repo-manager*, but the manager still asks them to sign in")
+	})
+	require.Len(t, tools.recorded(), 2, "one call per attempt, no loop")
+	require.Len(t, fake.pathCalls("chat.postEphemeral"), 1, "the one Connect prompt; no second one, no private repeat")
+	require.Equal(t, []string{"team_review_approve", "team_review_open"}, latestButtons(fake, receipt.TS), "the review stays open")
+}
+
+// Someone else approves while the clicker is connecting: the landing's
+// resubmission is told who decided instead of approving twice.
+func TestTeamReview_DecidedWhileConnecting(t *testing.T) {
+	tools := &recordingTools{results: []muster.Result{
+		{IsError: true, Text: reviewAuthChallenge},
+		{Text: "review submitted"},
+	}}
+	a, srv, fake := teamReviewHarness(t, tools, func(a *slackadapter.Adapter) { a.PublicBaseURL = "https://gw.example" })
+	receipt, err := a.PostTeamReview(context.Background(), archiveReview())
+	require.NoError(t, err)
+
+	clickApprove(t, srv, "U1", receipt.ID, receipt.TS)
+	var stateID string
+	waitFor(t, "a Connect prompt is posted", func() bool {
+		var ok bool
+		_, stateID, ok = connectButton(fake)
+		return ok
+	})
+	clickApprove(t, srv, "U2", receipt.ID, receipt.TS)
+	waitFor(t, "U2's approval lands", func() bool { return updatedWith(fake, receipt.TS, "Approved", "<@U2>") })
+
+	resp, err := http.Get(srv.URL + "/connectors/complete?s=" + url.QueryEscape(stateID))
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+	waitFor(t, "U1 is told who decided", func() bool { return ephemeralTo(fake, "U1", "already approved by <@U2>") })
+	require.Len(t, tools.recorded(), 2, "the landing calls no tool")
 }
 
 func TestTeamReview_UnknownReviewRewritesToExpired(t *testing.T) {
