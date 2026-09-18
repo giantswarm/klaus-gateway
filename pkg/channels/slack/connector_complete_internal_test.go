@@ -12,7 +12,7 @@ import (
 func TestConnectorCompletion_MintLookupAndTTL(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		a := &Adapter{}
-		stateID := a.mintConnectorCompletion("U1", "pro", "D1", "100.000")
+		stateID := a.mintConnectorCompletion(connectorCompletion{slackUser: "U1", server: "pro", channel: "D1", threadTS: "100.000"})
 		require.NotEmpty(t, stateID)
 
 		entry, rewriteNow, ok := a.recordConnectorConnectClick("U1", stateID, "https://hooks.example/r1")
@@ -29,7 +29,7 @@ func TestConnectorCompletion_MintLookupAndTTL(t *testing.T) {
 		_, _, _, ok = a.completeConnectorLanding(stateID)
 		require.False(t, ok, "an expired state must not complete")
 
-		a.mintConnectorCompletion("U2", "pro", "D2", "200.000")
+		a.mintConnectorCompletion(connectorCompletion{slackUser: "U2", server: "pro", channel: "D2", threadTS: "200.000"})
 		a.connectorCompletionsMu.Lock()
 		defer a.connectorCompletionsMu.Unlock()
 		require.Len(t, a.connectorCompletions, 1, "a fresh mint sweeps expired siblings")
@@ -38,7 +38,7 @@ func TestConnectorCompletion_MintLookupAndTTL(t *testing.T) {
 
 func TestConnectorCompletion_ClickThenLanding(t *testing.T) {
 	a := &Adapter{}
-	stateID := a.mintConnectorCompletion("U1", "pro", "D1", "100.000")
+	stateID := a.mintConnectorCompletion(connectorCompletion{slackUser: "U1", server: "pro", channel: "D1", threadTS: "100.000"})
 
 	_, rewriteNow, ok := a.recordConnectorConnectClick("U1", stateID, "https://hooks.example/r1")
 	require.True(t, ok)
@@ -53,7 +53,7 @@ func TestConnectorCompletion_ClickThenLanding(t *testing.T) {
 
 func TestConnectorCompletion_LandingThenClick(t *testing.T) {
 	a := &Adapter{}
-	stateID := a.mintConnectorCompletion("U1", "pro", "D1", "100.000")
+	stateID := a.mintConnectorCompletion(connectorCompletion{slackUser: "U1", server: "pro", channel: "D1", threadTS: "100.000"})
 
 	_, resume, rewrite, ok := a.completeConnectorLanding(stateID)
 	require.True(t, ok)
@@ -68,7 +68,7 @@ func TestConnectorCompletion_LandingThenClick(t *testing.T) {
 
 func TestConnectorCompletion_LandingReloadIsIdempotent(t *testing.T) {
 	a := &Adapter{}
-	stateID := a.mintConnectorCompletion("U1", "pro", "D1", "100.000")
+	stateID := a.mintConnectorCompletion(connectorCompletion{slackUser: "U1", server: "pro", channel: "D1", threadTS: "100.000"})
 	a.recordConnectorConnectClick("U1", stateID, "https://hooks.example/r1")
 
 	_, resume, rewrite, ok := a.completeConnectorLanding(stateID)
@@ -84,7 +84,7 @@ func TestConnectorCompletion_LandingReloadIsIdempotent(t *testing.T) {
 
 func TestConnectorCompletion_RejectsUnknownStateAndWrongUser(t *testing.T) {
 	a := &Adapter{}
-	stateID := a.mintConnectorCompletion("U1", "pro", "D1", "100.000")
+	stateID := a.mintConnectorCompletion(connectorCompletion{slackUser: "U1", server: "pro", channel: "D1", threadTS: "100.000"})
 
 	_, _, ok := a.recordConnectorConnectClick("U1", "bogus", "https://hooks.example/r1")
 	require.False(t, ok, "an unknown state (or a legacy server-name value) is a no-op")

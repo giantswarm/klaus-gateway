@@ -339,46 +339,90 @@ collaborator's real identity rides along as attribution. See
 
 Posted into a team's channel — not into a thread — by a manager through
 [`POST /reviews`](api.md#team-review-endpoint): the change spelled out (what, which repository,
-the giving and the receiving team for a transfer), an *Approve* button and an *Open PR* URL button
-for anything else. It has **no initiator**; the decision rule is the team's:
+the giving and the receiving team for a transfer; for an action the actor, the targets, the
+capability and the inputs that changed), the pull requests it lands as (one link per line,
+`owner/repo#n`), an *Approve* button, a *Deny* button when the manager names a deny tool, and a
+URL button for anything else, labelled by what it opens (*Open PR*, *Open run*, *Open issue*,
+*Open repository*, *Open link*). It has **no initiator**; the decision rule is the team's:
 
 - **Any linked member may decide.** The clicker needs a linked identity (the OBO sign-in). An
   unlinked clicker is asked to sign in; the review stays open.
+- **The actor does not approve their own action.** A review that names its actor (by the email
+  of their linked identity) refuses the actor's *Approve* with a status line under the buttons —
+  a second person decides. The actor's *Deny* withdraws the action.
+- **Deny takes a reason.** The *Deny* click opens a modal with one required box; on submit the
+  manager's deny tool is called as the member with the arguments plus `reason`. The modal claims
+  nothing until it is submitted, so one left open holds the review for nobody. The denied message
+  reads `❌ *Denied* by <@U…> for team-bumblebee.`, the ask, the reason as a quote, then what the
+  tool said.
+- **A second channel is informed.** A review naming a `noticeChannel` posts the same text, pull
+  requests and link there as a notice (section 11) before the review itself.
+- **The results come back into the thread.** The manager posts the action's outcome — merged,
+  rolled out, probes green or the failing probe — through `POST /reviews/{id}/results`; each is a
+  reply in the review message's thread, so one thread carries the whole action.
 - **The click calls the review's tool as that member.** The gateway calls the named muster tool
   (giantswarm-repo-manager's `approve_change`) with the clicking member's own token, so the
   manager acts under that person's GitHub grant and checks their membership of the named team
-  there. A refusal — not a member, or anything else the manager will not do — is shown to the
-  clicker alone (ephemerally, in the message's thread) and the review stays open for another
-  member; so does a manager the gateway could not reach.
-- **One approval closes it.** A second click is refused with who decided (or whose approval is in
-  flight); the message is rewritten to the outcome, the decider and what the tool answered.
+  there. A refusal — not a member, the author of the change themselves, or anything else the
+  manager will not do — is written once under the buttons, naming the clicker and the reason, and
+  the review stays open for another member; so is a manager the gateway could not reach.
+- **A backend the person has not connected yet is connected from the click.** When muster answers
+  the call with its sign-in challenge — the tool's server holds no grant for the person — the
+  clicker gets an ephemeral *Connect <server>* button. With a public base URL the link lands
+  back on the gateway (`/connectors/complete`, the connector landing) and the approval is
+  submitted again as the person, so one click and one consent are all it takes; without one the
+  prompt says to click *Approve* again afterwards. A backend that still challenges after the
+  landing is reported once, not looped.
+- **The clicker and the team read the same line.** A status line under the buttons names the
+  latest attempt that did not decide the review — who is connecting, whose approval the manager
+  refused and why, whose could not be submitted. It is replaced on every attempt and gone once
+  the review is approved. Nothing is repeated to the clicker privately; a channel-level ephemeral
+  is reserved for what is theirs alone — a sign-in or Connect button, or a click on a review
+  somebody else decided.
+- **One decision closes it.** A second click is refused with who decided and how (or whose
+  decision is in flight); the message is rewritten to the outcome, the decider and what the tool
+  answered — a plain text as written, a JSON object by its `message` field, structured data
+  without one not at all — the pull requests still listed and the link kept as small print.
 
-The Approve button's `value` is the JSON `{"r":"<review id>"}`; the id is what
-`POST /reviews` returned.
+The Approve and Deny buttons' `value` is the JSON `{"r":"<review id>"}`; the id is what
+`POST /reviews` returned. The Deny modal (`callback_id: team_review_deny`) carries
+`{"r":"<review id>","c":"<channel>"}` as `private_metadata` and reads the reason from
+`state.values.team_review_deny_reason.reason`.
 
 ```json
 {
   "blocks": [
-    { "type": "section", "text": { "type": "mrkdwn", "text": "*Review for team-bumblebee*\n*Archive* `giantswarm/old-thing`, owned by team-bumblebee." } },
+    { "type": "section", "text": { "type": "mrkdwn", "text": "*Review for team-bumblebee*\n*Enable* `agent-platform` on two installations for <@U…>: …" } },
+    { "type": "section", "text": { "type": "mrkdwn", "text": "• <https://github.com/giantswarm/a-configs/pull/12|giantswarm/a-configs#12>\n• <https://github.com/giantswarm/b-management-clusters/pull/7|giantswarm/b-management-clusters#7>" } },
     {
       "type": "actions",
       "elements": [
         { "type": "button", "text": { "type": "plain_text", "text": "✅ Approve" }, "style": "primary", "action_id": "team_review_approve", "value": "{\"r\":\"REVIEW_ID\"}" },
-        { "type": "button", "text": { "type": "plain_text", "text": "Open PR" }, "action_id": "team_review_open", "url": "https://github.com/giantswarm/github/pull/4711", "value": "{\"r\":\"REVIEW_ID\"}" }
+        { "type": "button", "text": { "type": "plain_text", "text": "❌ Deny" }, "style": "danger", "action_id": "team_review_deny", "value": "{\"r\":\"REVIEW_ID\"}" },
+        { "type": "button", "text": { "type": "plain_text", "text": "Open run" }, "action_id": "team_review_open", "url": "https://github.com/giantswarm/platform-manager/actions/runs/4242", "value": "{\"r\":\"REVIEW_ID\"}" }
       ]
     }
   ]
 }
 ```
 
-After the approval the message reads `✅ *Approved* by <@U…> for team-bumblebee.`, then the ask,
-then the tool's answer in italics. A click on a review the gateway no longer holds (restart, seven
-days passed) rewrites the message to say it expired.
+While an attempt is pending the message carries a context block under the actions, such as
+`🔗 <@U…> is connecting *giantswarm-repo-manager* to approve as themselves.` or
+`❌ <@U…>'s approval was not accepted: …`. After the approval the message reads
+`✅ *Approved* by <@U…> for team-bumblebee.`, then the ask, then the tool's answer in italics,
+with `<url|Open PR>` as a context block. The review is a record in the gateway's routing store
+for seven days (see [`POST /reviews`](api.md#post-reviews)): on a store that outlives the process
+a gateway restart changes nothing for the team, and a click on a review the gateway no longer
+holds — seven days passed, or `routing.store: memory` restarted — rewrites the message to say it
+expired. The completion state behind a review's *Connect* button is the process's own: after a
+restart the landing says the link is gone, and the person clicks *Approve* again, now connected.
 
 ## 11. Team notice (no decision)
 
-The variant without buttons, through [`POST /notices`](api.md#post-notices): a completion
-message, or the giving team's notice of a transfer. The link, when given, is a context line.
+The variant without buttons, through [`POST /notices`](api.md#post-notices) or as a review's
+`noticeChannel` copy: a completion message, or the giving team's notice of a transfer. The pull
+requests, when given, are links one per line; the link, when given, is a context line labelled
+by its kind.
 
 ```json
 {

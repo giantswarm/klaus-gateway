@@ -100,6 +100,11 @@ command, an upload with no caption) sends no title and leaves Slack to name the
 session. Should Slack refuse the titled call, the status is sent again without
 the title, so a refused title never costs the turn its indicator.
 
+The same line names the thread's kagent conversation, so both surfaces list the
+thread under what was asked in it (see `docs/kagent-a2a.md`). That title travels
+on every turn, not just the opener's: the gateway names a conversation when it
+creates one, which a turn that switches agents does mid-thread.
+
 ### Threads and conversations
 
 - `threadID` is `thread_ts` if set, otherwise the message `ts`.
@@ -392,7 +397,8 @@ any string that begins with `Slack bot`, `Slack app-level`, or `Slack user`.
    reply is incomplete, with the failed reaction) while the turn still counts as completed.
 
 Turns are serialized per thread: a message that arrives while the thread's previous turn is
-still running gets a brief "still working" notice rather than starting an overlapping turn.
+still running gets a brief "still working" notice rather than starting an overlapping turn; the
+notice names `/stop`, and a reply that is just `stop` there interrupts the running turn like `/stop`.
 A signed-out sender's message is held for sign-in instead (no busy notice) and replays once
 they link and the running turn finishes.
 

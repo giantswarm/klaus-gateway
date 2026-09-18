@@ -1,10 +1,12 @@
-// Package store defines the interface for the klaus-gateway routing table.
+// Package store defines the interface for the klaus-gateway routing table and
+// the other records the gateway must not lose while their Slack message is
+// live: the team reviews.
 //
 // A routing entry maps (channel, channel-id, user, thread) to everything the
 // gateway holds for that conversation: the klaus instance that owns it, or the
-// agent and the kagent AgentInstance its turns are routed to. Stores persist
-// this mapping across restarts where possible (bolt, valkey) or keep it in
-// memory.
+// agent and the kagent AgentInstance its turns are routed to. A review record
+// is one posted team review and its decision state (Review). Stores persist
+// both across restarts where possible (bolt, valkey) or keep them in memory.
 package store
 
 import (
@@ -117,7 +119,83 @@ type KeyEntry struct {
 	Entry Entry
 }
 
-// Store is the routing-table backend.
+// Review is one team review — the ask a manager posted into a team's channel
+// through POST /reviews — and its decision state: everything the Slack
+// adapter needs to resolve a click on the message's Approve button, kept for
+// as long as the button is live (TTL from PostedAt) so a gateway restart does
+// not turn an open review into an expired one.
+type Review struct {
+	// ID is the gateway's handle on the review; the Approve button carries it.
+	ID string `json:"id"`
+	// Channel is the Slack channel the review was posted to and TS the message
+	// it is: the decision rewrites that message in place.
+	Channel string `json:"channel"`
+	TS      string `json:"ts"`
+	// Team, Text and Link are the ask as posted: the team whose linked members
+	// may decide, the change spelled out, the link for anything else.
+	Team string `json:"team"`
+	Text string `json:"text"`
+	Link string `json:"link,omitempty"`
+	// Actor is the email of the person whose action the review decides; ""
+	// for a review without one. Their own approval is refused.
+	Actor string `json:"actor,omitempty"`
+	// PullRequests are the pull requests the change lands as, as URLs.
+	PullRequests []string `json:"pull_requests,omitempty"`
+	// Tool and Arguments are the muster tool call a member's approval makes,
+	// verbatim, under that member's identity.
+	Tool      string         `json:"tool"`
+	Arguments map[string]any `json:"arguments,omitempty"`
+	// DenyTool and DenyArguments are the call a member's denial makes, with
+	// the typed reason added; "" for a review without a Deny button.
+	DenyTool      string         `json:"deny_tool,omitempty"`
+	DenyArguments map[string]any `json:"deny_arguments,omitempty"`
+
+	// DecidedBy is the user whose decision is in flight or done; "" while the
+	// review is open. ClaimedAt is when that user's click took the review.
+	DecidedBy string    `json:"decided_by,omitempty"`
+	ClaimedAt time.Time `json:"claimed_at,omitzero"`
+	// Done is set once the decision went through; the record then stays until
+	// its TTL so a late click is told who decided. Denied says the decision
+	// in flight or done is a denial.
+	Done   bool `json:"done,omitempty"`
+	Denied bool `json:"denied,omitempty"`
+	// Status is the line the team reads under the buttons: the latest attempt
+	// that did not decide the review. "" shows none.
+	Status string `json:"status,omitempty"`
+
+	PostedAt time.Time     `json:"posted_at"`
+	TTL      time.Duration `json:"ttl"`
+}
+
+// Expired reports whether the review has aged past its TTL relative to now.
+// A zero TTL means never expire.
+func (r Review) Expired(now time.Time) bool {
+	if r.TTL <= 0 {
+		return false
+	}
+	return now.Sub(r.PostedAt) > r.TTL
+}
+
+// ReviewStore keeps team-review records (Review) by id.
+type ReviewStore interface {
+	// PutReview upserts a review record; one that has already expired is
+	// removed instead.
+	PutReview(ctx context.Context, r Review) error
+	// GetReview returns the record for id, or (_, false, nil) when it is
+	// unknown or expired.
+	GetReview(ctx context.Context, id string) (Review, bool, error)
+	// UpdateReview applies mutate to the record at id and writes the result
+	// when mutate returns true. found is false for an unknown or expired
+	// review; mutate is not called then. The read-modify-write is atomic
+	// against every other writer of the record, replicas included: a backend
+	// shared by processes writes only when the record is unchanged since it
+	// was read and re-reads otherwise, so mutate may run more than once and
+	// must derive what it reports from the record it is given.
+	UpdateReview(ctx context.Context, id string, mutate func(r *Review) bool) (found bool, err error)
+}
+
+// Store is the routing-table backend, and the review store with it: one
+// durable state for the gateway.
 type Store interface {
 	Get(ctx context.Context, k Key) (Entry, bool, error)
 	Put(ctx context.Context, k Key, e Entry) error
@@ -127,7 +205,9 @@ type Store interface {
 	// live — and writes the result when mutate returns true. Read-modify-write
 	// by different writers on one key (a channel's grant, the facade's task
 	// record, the binding) is serialised inside the process, so no writer loses
-	// another's fields. A second replica is not protected: the stores have no CAS.
+	// another's fields. A second replica is not protected: the stores have no
+	// CAS here (UpdateReview has one).
 	Update(ctx context.Context, k Key, mutate func(e *Entry, found bool) bool) error
+	ReviewStore
 	Close() error
 }

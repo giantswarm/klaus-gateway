@@ -20,6 +20,7 @@ import (
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 	"github.com/giantswarm/klaus-gateway/pkg/auth/musterlink"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
+	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
 )
 
 // ChannelName identifies the Slack adapter in routing keys.
@@ -109,6 +110,11 @@ type Adapter struct {
 	// Tools calls a muster tool as a linked person; the team-review Approve
 	// click runs the review's tool through it. Nil disables team reviews.
 	Tools ToolCaller
+	// Reviews keeps the team reviews posted through PostTeamReview for their
+	// TTL: the gateway's routing store, so on a store that outlives the
+	// process (valkey, bolt) a review survives a restart. Nil keeps them in
+	// process memory, as --store=memory does.
+	Reviews store.ReviewStore
 	// Models, when set, resolves the default agent's model id for /usage.
 	// Nil omits the model line.
 	Models AgentModelSource
@@ -234,10 +240,10 @@ type Adapter struct {
 	threadsMu sync.Mutex
 	threads   map[string]*threadState // keyed by threadID
 
-	// teamReviews are the team-review asks posted through PostTeamReview and
-	// not yet past their TTL, keyed by review id (see teamreview.go).
-	teamReviewsMu sync.Mutex
-	teamReviews   map[string]*teamReview
+	// reviewsMu guards memReviews, the in-process review store used when
+	// Reviews is nil (see reviews in teamreview.go).
+	reviewsMu  sync.Mutex
+	memReviews store.ReviewStore
 
 	emailMu    sync.Mutex
 	emailCache map[string]emailEntry // Slack user ID -> resolved email
@@ -1633,6 +1639,13 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 	if err := a.dispatch(ctx, msg, inner.Channel); err != nil {
 		switch {
 		case errors.Is(err, errThreadBusy):
+			// A bare "stop" while a turn runs means /stop; it is read here, where
+			// the busy state is decided, so an idle thread still hands the word to
+			// the agent (or to a paused prompt as a deny) as before.
+			if isBareStop(msg.Text) && a.handleCommand(ctx, &slashCommand{Name: cmdStop}, msg.Subject, inner.Channel, msg.ThreadID) {
+				a.Logger.Debug("slack: bare stop consumed as /stop", "channel", inner.Channel, "thread", msg.ThreadID)
+				return
+			}
 			if _, perr := a.apiClient().postMessage(ctx, inner.Channel, busyNotice, msg.ThreadID); perr != nil {
 				a.Logger.Warn("slack: post busy notice failed", "thread", msg.ThreadID, "error", perr)
 			}
@@ -1832,13 +1845,17 @@ func (a *Adapter) dispatchFrom(ctx context.Context, msg channels.InboundMessage,
 		msg.Opener = opener
 	}
 
-	// The opening message names the agent session. Root equality rides along
-	// with opener because a channel root parked for sign-in replays after its
-	// binding is recorded, where threadAgent no longer reports it as the
-	// opener; on the assistant pane only opener can tell, the first message of
-	// a chat never being its own thread root.
+	// The title names the conversation on both surfaces, so every turn carries
+	// one: the gateway names a kagent conversation when it creates one, which a
+	// turn switching agents does mid-thread. Slack takes one only from the
+	// opening message. Root equality rides along with opener because a channel
+	// root parked for sign-in replays after its binding is recorded, where
+	// threadAgent no longer reports it as the opener; on the assistant pane only
+	// opener can tell, the first message of a chat never being its own thread
+	// root.
+	msg.Title = sessionTitleFrom(msg.Text)
 	if opener || msg.ThreadID == msg.MessageID {
-		a.storeSessionTitle(msg.ThreadID, sessionTitleFrom(msg.Text))
+		a.storeSessionTitle(msg.ThreadID, msg.Title)
 	}
 
 	// A turn must carry a human token, never the gateway's machine identity.

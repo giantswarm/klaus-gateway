@@ -44,8 +44,9 @@ type AgentClient interface {
 	// CancelTask cancels a running task server-side.
 	CancelTask(ctx context.Context, instanceID string, taskID a2apkg.TaskID) (*a2apkg.Task, error)
 	// CreateInstance creates (idempotently per requestID) the instance for a
-	// conversation with agentRef and returns it once it is ready.
-	CreateInstance(ctx context.Context, agentRef, requestID string) (pkga2a.Instance, error)
+	// conversation with agentRef, named name, and returns it once it is ready.
+	// An empty name leaves the conversation unnamed.
+	CreateInstance(ctx context.Context, agentRef, requestID, name string) (pkga2a.Instance, error)
 	// GetInstance returns an instance; pkga2a.ErrInstanceNotFound when gone.
 	GetInstance(ctx context.Context, id string) (pkga2a.Instance, error)
 	// DeleteInstance removes an instance; a missing one is not an error.
@@ -214,9 +215,11 @@ func clearBinding(e *store.Entry, found bool) bool {
 }
 
 // instanceFor returns the AgentInstance id msg's thread is bound to, creating
-// the instance on the thread's first turn. A thread binds one agent; a turn
-// that names another one rebinds it, and the task in flight on the old
-// instance goes with it. The create is keyed by the synthesized context id, so
+// the instance on the thread's first turn, named after the message that opens
+// it. A thread binds one agent; a turn that names another one rebinds it, and
+// the task in flight on the old instance goes with it — the conversation the
+// rebind creates is named after the message that asked for it, that being its
+// own first message. The create is keyed by the synthesized context id, so
 // a retried first turn does not create a second instance. The binding slides
 // with the thread's lifetime: every turn refreshes it, the store expires the
 // row after ThreadTTL of silence, and the next mention asks the controller for
@@ -251,7 +254,7 @@ func (f *Facade) instanceFor(ctx context.Context, msg InboundMessage) (string, e
 	}
 	requestID := SynthesizeContextID(msg.Channel, msg.ChannelID, "", msg.ThreadID, msg.AgentRef)
 	created := TurnTimerFromContext(ctx).Span(PhaseCreateInstance)
-	inst, err := f.Agent.CreateInstance(ctx, msg.AgentRef, requestID)
+	inst, err := f.Agent.CreateInstance(ctx, msg.AgentRef, requestID, instanceName(msg))
 	created()
 	if err != nil {
 		return "", err

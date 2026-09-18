@@ -353,3 +353,50 @@ func TestDecisionReplyWithAttachment_PostsNotForwardedNote(t *testing.T) {
 	}
 	require.True(t, found, "the decision resumes the pending task")
 }
+
+// A bare "stop" while a turn runs is the natural reply in a thread the bot
+// answers in without a mention; it interrupts the turn like /stop instead of
+// being bounced with the busy notice.
+func TestStop_BareWordDuringTurnInterrupts(t *testing.T) {
+	fake := newFakeSlackAPI()
+	hold := make(chan struct{})
+	defer close(hold)
+	gw := &stubGateway{hold: hold}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+
+	sendEvent(t, srv, dmEvent("U1", "long task", "700.000"))
+	fake.waitForPath(t, "reactions.add", 1)
+	waitTurnStreaming(t, fake, 1)
+
+	sendEvent(t, srv, dmThreadEvent("U1", "Stop.", "701.000", "700.000"))
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Stopped")
+	}, flowWait, 50*time.Millisecond, "a bare stop replies like /stop")
+	fake.waitForPath(t, "reactions.remove", 1)
+
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "still finishing",
+		"a bare stop is not bounced as busy")
+	require.Equal(t, 1, gw.resolveCount(), "a bare stop never reaches the agent as a turn")
+}
+
+// A bare "stop" in a thread with no running turn keeps today's behaviour: it
+// is a message for the agent, neither a stop nor a busy notice.
+func TestStop_BareWordIdleThreadReachesAgent(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "done"}, {Done: true}}}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+
+	sendEvent(t, srv, dmEvent("U1", "hi", "800.000"))
+	fake.waitForPath(t, "reactions.remove", 1)
+	time.Sleep(150 * time.Millisecond)
+
+	sendEvent(t, srv, dmThreadEvent("U1", "stop", "801.000", "800.000"))
+	require.Eventually(t, func() bool { return gw.resolveCount() == 2 }, flowWait, 50*time.Millisecond,
+		"an idle bare stop is dispatched to the agent")
+	fake.waitForPath(t, "reactions.remove", 2)
+
+	posted := allText(fake.pathCalls("chat.postMessage"))
+	require.NotContains(t, posted, "Stopped", "nothing to stop")
+	require.NotContains(t, posted, "Nothing is running", "the nothing-running notice is /stop's alone")
+	require.NotContains(t, posted, "still finishing", "an idle thread is not busy")
+}

@@ -193,8 +193,12 @@ func run(args []string) error {
 			slackAdapter.DefaultAgent = cfg.A2A.DefaultAgent
 			slackAdapter.Namespace = cfg.A2A.Namespace
 		}
+		// The team reviews live in the same store as the routing table, so a
+		// review posted before a restart is decided by a click after it on
+		// every store that outlives the process.
+		slackAdapter.Reviews = routeStore
 		if cfg.Store == config.StoreMemory {
-			logger.Warn("slack: the routing store is memory, so every thread's agent, initiator, grants and instance binding are lost on a restart; installations run routing.store: valkey")
+			logger.Warn("slack: the routing store is memory, so every thread's agent, initiator, grants and instance binding, and every open team review, are lost on a restart; installations run routing.store: valkey")
 		}
 		if err := slackAdapter.Start(ctx, facade); err != nil {
 			return fmt.Errorf("start slack adapter: %w", err)

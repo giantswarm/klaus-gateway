@@ -1,6 +1,7 @@
 package a2a_test
 
 import (
+	"strings"
 	"testing"
 
 	a2apkg "github.com/a2aproject/a2a-go/v2/a2a"
@@ -256,19 +257,20 @@ func TestClient_CreateInstance_IdempotentPerRequestID(t *testing.T) {
 	ctx := asUser(t.Context(), userToken)
 	requestID := "1d2c7a1e5e1a4b7b8c9d0e1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d"
 
-	first, err := client.CreateInstance(ctx, "sre-agent", requestID)
+	first, err := client.CreateInstance(ctx, "sre-agent", requestID, "restart the kong pods on gazelle")
 	require.NoError(t, err)
 	require.True(t, first.Ready())
-	again, err := client.CreateInstance(ctx, "sre-agent", requestID)
+	again, err := client.CreateInstance(ctx, "sre-agent", requestID, "restart the kong pods on gazelle")
 	require.NoError(t, err)
 	require.Equal(t, first.ID, again.ID, "a retried create returns the same instance")
 	require.Len(t, f.created, 2)
 	require.Equal(t, "kagent", f.created[0].GetHarness().GetName(), "the admitting Harness from the template's status")
 	require.Equal(t, "sre-agent", f.created[0].GetAgentTemplate().GetName())
 	require.Equal(t, requestID, f.created[0].GetRequestId())
+	require.Equal(t, "restart the kong pods on gazelle", f.created[0].GetName(), "the conversation is named after the message that opened it")
 
 	// A different creator with the same request id is a different conversation.
-	other, err := client.CreateInstance(asUser(t.Context(), "someone-else"), "sre-agent", requestID)
+	other, err := client.CreateInstance(asUser(t.Context(), "someone-else"), "sre-agent", requestID, "")
 	require.NoError(t, err)
 	require.NotEqual(t, first.ID, other.ID)
 }
@@ -278,10 +280,27 @@ func TestClient_CreateInstance_WaitsForReady(t *testing.T) {
 	f.createState = apiv1alpha1.AgentInstanceState_AGENT_INSTANCE_STATE_CREATING
 	client := f.serve(t, pkga2a.Config{})
 
-	inst, err := client.CreateInstance(asUser(t.Context(), userToken), "sre-agent", "req-1")
+	inst, err := client.CreateInstance(asUser(t.Context(), userToken), "sre-agent", "req-1", "")
 	require.NoError(t, err)
 	require.True(t, inst.Ready())
 	require.GreaterOrEqual(t, f.callCount("GetAgentInstance"), 1, "a CREATING instance is polled until READY")
+}
+
+// A name the controller will not take costs the name, never the conversation:
+// the refused create reserved nothing, so the same request id goes again
+// unnamed.
+func TestClient_CreateInstance_FallsBackWhenTheNameIsRefused(t *testing.T) {
+	f := readyFake(t)
+	client := f.serve(t, pkga2a.Config{})
+	tooLong := strings.Repeat("x", 201)
+
+	inst, err := client.CreateInstance(asUser(t.Context(), userToken), "sre-agent", "req-1", tooLong)
+	require.NoError(t, err)
+	require.True(t, inst.Ready())
+	require.Len(t, f.created, 2)
+	require.Equal(t, tooLong, f.created[0].GetName())
+	require.Equal(t, "req-1", f.created[1].GetRequestId(), "the retry reuses the request id, so no second conversation")
+	require.Empty(t, f.created[1].GetName())
 }
 
 func TestClient_CreateInstance_RefusesAnUnavailableAgent(t *testing.T) {
@@ -293,16 +312,16 @@ func TestClient_CreateInstance_RefusesAnUnavailableAgent(t *testing.T) {
 	client := f.serve(t, pkga2a.Config{})
 	ctx := asUser(t.Context(), userToken)
 
-	_, err := client.CreateInstance(ctx, "compiling", "req-1")
+	_, err := client.CreateInstance(ctx, "compiling", "req-1", "")
 	require.ErrorIs(t, err, pkga2a.ErrAgentUnavailable)
 	require.Empty(t, f.created, "an unavailable template is refused before the controller is asked")
 
-	_, err = client.CreateInstance(ctx, "nobody", "req-1")
+	_, err = client.CreateInstance(ctx, "nobody", "req-1", "")
 	require.ErrorIs(t, err, pkga2a.ErrAgentUnknown)
 
 	// The controller's own refusal (the revision went away between the roster
 	// read and the create) maps the same way.
-	_, err = client.CreateInstance(ctx, "racy", "req-2")
+	_, err = client.CreateInstance(ctx, "racy", "req-2", "")
 	require.ErrorIs(t, err, pkga2a.ErrAgentUnavailable)
 }
 

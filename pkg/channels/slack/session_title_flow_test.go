@@ -1,6 +1,7 @@
 package slack_test
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -13,9 +14,19 @@ import (
 // message in that pane arrives as a reply under a Slack-created thread anchor:
 // the chat's first message is never its own thread root. Its turn must still
 // create the session with the title, and a later reply must not send one.
+//
+// The title also travels to the gateway on every turn, which is what names the
+// thread's kagent conversation: Slack takes a title only when it creates the
+// session, the gateway only when it creates the conversation, and a turn that
+// switches agents creates one mid-thread.
 func TestSessionTitle_AssistantPaneOpenerNamesTheSession(t *testing.T) {
 	fake := newFakeSlackAPI()
-	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok", Done: true}}}
+	var mu sync.Mutex
+	var titles []string
+	gw := &stubGateway{
+		deltas:    []channels.OutboundDelta{{Content: "ok", Done: true}},
+		onResolve: func(msg channels.InboundMessage) { mu.Lock(); titles = append(titles, msg.Title); mu.Unlock() },
+	}
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
 	sendEvent(t, srv, dmThreadEvent("U1", "why did   the CPU alert\nfire on gazelle", "300.000", "100.000"))
@@ -34,6 +45,11 @@ func TestSessionTitle_AssistantPaneOpenerNamesTheSession(t *testing.T) {
 	calls = fake.pathCalls("agents.sessions.setStatus")
 	require.Equal(t, "processing", calls[2].params["status"])
 	require.NotContains(t, calls[2].params, "title", "a reply is not the opener")
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, []string{"why did the CPU alert fire on gazelle", "and the disk?"}, titles,
+		"every turn carries its own title for the gateway to name a conversation with")
 }
 
 // A first chat from a user who has not signed in yet is held and replayed

@@ -29,23 +29,32 @@ const ConnectorCompletePath = "/connectors/complete"
 // browser landing can race it in either order, hence whichever side arrives
 // second performs the rewrite.
 type connectorCompletion struct {
-	slackUser       string // raw Slack user ID (U…)
-	server          string // backend name; the trusted source for user-facing text
-	channel         string // Slack channel the prompt was posted in
-	threadTS        string // thread root; respondURL target and resume thread
+	slackUser string // raw Slack user ID (U…)
+	server    string // backend name; the trusted source for user-facing text
+	channel   string // Slack channel the prompt was posted in
+	threadTS  string // thread root; respondURL target and resume thread ("" for a channel-level prompt)
+	// review is the team review the prompt was posted for, when the sign-in
+	// was needed to submit a decision: the landing then resubmits that
+	// decision — an approval, or a denial with its reason — as the person
+	// instead of resuming a conversation.
+	review          string
+	decision        teamReviewDecision
 	responseURL     string // recorded by the Connect click; empty until it arrives
 	completed       bool   // landing arrived; the one-shot resume fired
 	promptRewritten bool   // the ephemeral prompt was rewritten to the confirmation
 }
 
 // mintConnectorCompletion stores fresh completion state for a decorated
-// Connect button and returns its opaque ID. The ID travels in the button value
-// and in the redirect's s parameter; everything else stays server-side.
-func (a *Adapter) mintConnectorCompletion(slackUser, server, channel, threadTS string) string {
+// Connect button — who was prompted, for which backend, where, and the review
+// it was for when there is one — and returns its opaque ID. The ID travels in
+// the button value and in the redirect's s parameter; everything else stays
+// server-side. The entry's click-time and landing-time fields start clear.
+func (a *Adapter) mintConnectorCompletion(entry connectorCompletion) string {
 	raw := make([]byte, 16)
 	// crypto/rand.Read never returns an error (Go 1.24+).
 	_, _ = rand.Read(raw)
 	stateID := base64.RawURLEncoding.EncodeToString(raw)
+	entry.responseURL, entry.completed, entry.promptRewritten = "", false, false
 
 	now := time.Now()
 	a.connectorCompletionsMu.Lock()
@@ -54,15 +63,7 @@ func (a *Adapter) mintConnectorCompletion(slackUser, server, channel, threadTS s
 		a.connectorCompletions = make(map[string]ttlEntry[connectorCompletion])
 	}
 	sweepExpired(a.connectorCompletions, now)
-	a.connectorCompletions[stateID] = ttlEntry[connectorCompletion]{
-		value: connectorCompletion{
-			slackUser: slackUser,
-			server:    server,
-			channel:   channel,
-			threadTS:  threadTS,
-		},
-		expires: now.Add(connectorCompletionTTL),
-	}
+	a.connectorCompletions[stateID] = ttlEntry[connectorCompletion]{value: entry, expires: now.Add(connectorCompletionTTL)}
 	return stateID
 }
 
@@ -136,8 +137,9 @@ func decorateConnectorLoginURL(loginURL, publicBaseURL, stateID string) (string,
 
 // handleConnectorComplete serves the post-login landing. It rewrites the
 // ephemeral Connect prompt when the click's response_url has already been
-// recorded (otherwise the click side does it), dispatches the one-shot
-// synthetic continuation into the thread, and renders a "return to Slack"
+// recorded (otherwise the click side does it), fires the one-shot
+// continuation — the synthetic turn into the thread, or the approval of the
+// team review the prompt was posted for — and renders a "return to Slack"
 // page. The server query parameter muster appends is never trusted for
 // user-facing text; the state's stored server name is.
 func (a *Adapter) handleConnectorComplete(w http.ResponseWriter, r *http.Request) {
@@ -147,7 +149,7 @@ func (a *Adapter) handleConnectorComplete(w http.ResponseWriter, r *http.Request
 		musterlink.RenderPage(w, http.StatusNotFound, musterlink.Page{
 			Title:   "Sign-in confirmation expired",
 			Heading: "Link expired",
-			Message: "This confirmation link is invalid or has expired. Return to Slack and continue the conversation there.",
+			Message: "This confirmation link is invalid or has expired. Return to Slack and continue there: reply in the conversation, or click the button you came from again.",
 		})
 		return
 	}
@@ -163,8 +165,16 @@ func (a *Adapter) handleConnectorComplete(w http.ResponseWriter, r *http.Request
 			}
 		})
 	}
+	message := "You can close this tab and return to Slack; I'll pick the conversation back up there."
+	if entry.review != "" {
+		message = "You can close this tab and return to Slack; your " + entry.decision.noun() + " is being submitted there."
+	}
 	if resume {
 		a.background(func(ctx context.Context) {
+			if entry.review != "" {
+				a.resumeTeamReviewDecision(ctx, entry)
+				return
+			}
 			a.resumeAfterConnectorSignIn(ctx, entry)
 		})
 	}
@@ -172,7 +182,7 @@ func (a *Adapter) handleConnectorComplete(w http.ResponseWriter, r *http.Request
 	musterlink.RenderPage(w, http.StatusOK, musterlink.Page{
 		Title:   "Signed in to " + entry.server,
 		Heading: "Signed in",
-		Message: "You can close this tab and return to Slack; I'll pick the conversation back up there.",
+		Message: message,
 	})
 }
 

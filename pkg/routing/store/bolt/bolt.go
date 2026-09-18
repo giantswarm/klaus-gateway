@@ -1,6 +1,7 @@
 // Package bolt provides a bbolt-backed implementation of routing.Store.
 // Entries survive process restarts; one bucket ("routes") holds the
-// canonicalised key -> JSON-encoded entry mapping.
+// canonicalised key -> JSON-encoded entry mapping, a second ("reviews") the
+// team-review records by id.
 package bolt
 
 import (
@@ -19,7 +20,10 @@ import (
 // entries. It is a var so tests can shorten it.
 var EvictionInterval = time.Minute
 
-var bucketName = []byte("routes")
+var (
+	bucketName    = []byte("routes")
+	reviewsBucket = []byte("reviews")
+)
 
 // Store is a bbolt-backed routing store.
 type Store struct {
@@ -38,8 +42,12 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("open bolt %s: %w", path, err)
 	}
 	if err := db.Update(func(tx *bolt.Tx) error {
-		_, err := tx.CreateBucketIfNotExists(bucketName)
-		return err
+		for _, name := range [][]byte{bucketName, reviewsBucket} {
+			if _, err := tx.CreateBucketIfNotExists(name); err != nil {
+				return err
+			}
+		}
+		return nil
 	}); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -153,6 +161,73 @@ func (s *Store) List(_ context.Context) ([]store.KeyEntry, error) {
 	return out, err
 }
 
+// PutReview upserts a review record; an expired one is removed instead.
+func (s *Store) PutReview(_ context.Context, r store.Review) error {
+	if r.Expired(s.now()) {
+		return s.db.Update(func(tx *bolt.Tx) error {
+			return tx.Bucket(reviewsBucket).Delete([]byte(r.ID))
+		})
+	}
+	buf, err := json.Marshal(r)
+	if err != nil {
+		return err
+	}
+	return s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(reviewsBucket).Put([]byte(r.ID), buf)
+	})
+}
+
+// GetReview returns the record for id, or (_, false, nil) when absent or expired.
+func (s *Store) GetReview(_ context.Context, id string) (store.Review, bool, error) {
+	var r store.Review
+	found := false
+	err := s.db.View(func(tx *bolt.Tx) error {
+		v := tx.Bucket(reviewsBucket).Get([]byte(id))
+		if v == nil {
+			return nil
+		}
+		if err := json.Unmarshal(v, &r); err != nil {
+			return err
+		}
+		found = !r.Expired(s.now())
+		return nil
+	})
+	if err != nil || !found {
+		return store.Review{}, false, err
+	}
+	return r, true, nil
+}
+
+// UpdateReview applies mutate to the record at id inside one write
+// transaction, so no two writers interleave. An expired record is absent.
+func (s *Store) UpdateReview(_ context.Context, id string, mutate func(r *store.Review) bool) (bool, error) {
+	found := false
+	err := s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(reviewsBucket)
+		v := b.Get([]byte(id))
+		if v == nil {
+			return nil
+		}
+		var r store.Review
+		if err := json.Unmarshal(v, &r); err != nil {
+			return err
+		}
+		if r.Expired(s.now()) {
+			return nil
+		}
+		found = true
+		if !mutate(&r) {
+			return nil
+		}
+		buf, err := json.Marshal(r)
+		if err != nil {
+			return err
+		}
+		return b.Put([]byte(id), buf)
+	})
+	return found, err
+}
+
 // Close stops the eviction goroutine and closes the database.
 func (s *Store) Close() error {
 	s.stopOnce.Do(func() {
@@ -176,17 +251,36 @@ func (s *Store) evictLoop() {
 	}
 }
 
-// Evict scans the bucket and deletes expired entries. Exposed for tests.
+// Evict scans both buckets and deletes expired entries and reviews. Exposed
+// for tests.
 func (s *Store) Evict() error {
 	now := s.now()
+	expiredEntry := func(v []byte) (bool, error) {
+		var e store.Entry
+		err := json.Unmarshal(v, &e)
+		return e.Expired(now), err
+	}
+	expiredReview := func(v []byte) (bool, error) {
+		var r store.Review
+		err := json.Unmarshal(v, &r)
+		return r.Expired(now), err
+	}
+	if err := s.evictBucket(bucketName, expiredEntry); err != nil {
+		return err
+	}
+	return s.evictBucket(reviewsBucket, expiredReview)
+}
+
+// evictBucket deletes the keys of bucket whose value expired reports stale.
+func (s *Store) evictBucket(bucket []byte, expired func(v []byte) (bool, error)) error {
 	var toDelete [][]byte
 	if err := s.db.View(func(tx *bolt.Tx) error {
-		return tx.Bucket(bucketName).ForEach(func(k, v []byte) error {
-			var e store.Entry
-			if err := json.Unmarshal(v, &e); err != nil {
+		return tx.Bucket(bucket).ForEach(func(k, v []byte) error {
+			stale, err := expired(v)
+			if err != nil {
 				return err
 			}
-			if e.Expired(now) {
+			if stale {
 				kc := make([]byte, len(k))
 				copy(kc, k)
 				toDelete = append(toDelete, kc)
@@ -200,7 +294,7 @@ func (s *Store) Evict() error {
 		return nil
 	}
 	return s.db.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket(bucketName)
+		b := tx.Bucket(bucket)
 		for _, k := range toDelete {
 			if err := b.Delete(k); err != nil {
 				return err
