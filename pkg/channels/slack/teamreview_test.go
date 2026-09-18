@@ -346,17 +346,12 @@ func TestTeamReview_ToolRefusalReopensTheReview(t *testing.T) {
 	require.NoError(t, err)
 
 	clickApprove(t, srv, "U1", receipt.ID, receipt.TS)
-	waitFor(t, "U1 is told the refusal, privately", func() bool {
-		return ephemeralTo(fake, "U1", "not a member of team-bumblebee")
-	})
-	for _, e := range fake.pathCalls("chat.postEphemeral") {
-		require.Nil(t, e.params["thread_ts"], "a review is a channel message: its notices are channel-level ephemerals, not replies hidden in an unopened thread")
-	}
-	waitFor(t, "the team sees whose approval was refused, and the ask stays open", func() bool {
+	waitFor(t, "the refusal is written under the buttons, naming U1 and the reason", func() bool {
 		return strings.Contains(statusLine(fake, receipt.TS), "<@U1>'s approval was not accepted: not a member of team-bumblebee")
 	})
 	require.Equal(t, []string{"team_review_approve", "team_review_open"}, latestButtons(fake, receipt.TS), "the buttons stay")
 	require.False(t, updatedWith(fake, receipt.TS, "Approved"), "a refused approval leaves the ask open")
+	require.Empty(t, fake.pathCalls("chat.postEphemeral"), "the status line is the one place the refusal is read, by U1 and the team alike")
 
 	clickApprove(t, srv, "U2", receipt.ID, receipt.TS)
 	waitFor(t, "U2's approval lands", func() bool { return updatedWith(fake, receipt.TS, "<@U2>") })
@@ -375,11 +370,11 @@ func TestTeamReview_ToolOutageKeepsTheReviewOpen(t *testing.T) {
 	require.NoError(t, err)
 
 	clickApprove(t, srv, "U1", receipt.ID, receipt.TS)
-	waitFor(t, "U1 is told to try again", func() bool { return ephemeralTo(fake, "U1", "Try again") })
-	waitFor(t, "the team sees the attempt", func() bool {
+	waitFor(t, "the failed attempt is written under the buttons", func() bool {
 		return strings.Contains(statusLine(fake, receipt.TS), "<@U1>'s approval could not be submitted")
 	})
 	require.False(t, updatedWith(fake, receipt.TS, "Approved"))
+	require.Empty(t, fake.pathCalls("chat.postEphemeral"), "nothing is repeated to U1 privately")
 }
 
 // The manager's backend holds no grant for the clicker yet: muster answers the
@@ -416,7 +411,7 @@ func TestTeamReview_AuthChallengeConnectsThenApproves(t *testing.T) {
 	require.Equal(t, "muster.example", parsed.Host)
 	require.Equal(t, "abc123", parsed.Query().Get("state"), "the login link's own query survives")
 	require.Equal(t, "https://gw.example/connectors/complete?s="+stateID, parsed.Query().Get("redirect"))
-	require.NotContains(t, ephemeralJSON(fake), "Your approval was not accepted", "a sign-in challenge is not a refusal")
+	require.NotContains(t, statusLine(fake, receipt.TS), "not accepted", "a sign-in challenge is not a refusal")
 
 	waitFor(t, "the team sees who is connecting", func() bool {
 		return strings.Contains(statusLine(fake, receipt.TS), "<@U1> is connecting *giantswarm-repo-manager*")
@@ -498,11 +493,11 @@ func TestTeamReview_StillChallengedAfterSignInIsNotLooped(t *testing.T) {
 	require.NoError(t, err)
 	_ = resp.Body.Close()
 
-	waitFor(t, "the person is told the backend still challenges", func() bool {
-		return ephemeralTo(fake, "U1", "still can't reach giantswarm-repo-manager as you")
+	waitFor(t, "the status line says the backend still challenges after the sign-in", func() bool {
+		return strings.Contains(statusLine(fake, receipt.TS), "<@U1> connected *giantswarm-repo-manager*, but the manager still asks them to sign in")
 	})
 	require.Len(t, tools.recorded(), 2, "one call per attempt, no loop")
-	require.Len(t, fake.pathCalls("chat.postEphemeral"), 2, "one Connect prompt, one notice — no second Connect prompt")
+	require.Len(t, fake.pathCalls("chat.postEphemeral"), 1, "the one Connect prompt; no second one, no private repeat")
 	require.Equal(t, []string{"team_review_approve", "team_review_open"}, latestButtons(fake, receipt.TS), "the review stays open")
 }
 

@@ -348,8 +348,8 @@ for anything else. It has **no initiator**; the decision rule is the team's:
   (giantswarm-repo-manager's `approve_change`) with the clicking member's own token, so the
   manager acts under that person's GitHub grant and checks their membership of the named team
   there. A refusal — not a member, the author of the change themselves, or anything else the
-  manager will not do — is shown to the clicker (a channel-level ephemeral, where they clicked)
-  and the review stays open for another member; so does a manager the gateway could not reach.
+  manager will not do — is written once under the buttons, naming the clicker and the reason, and
+  the review stays open for another member; so is a manager the gateway could not reach.
 - **A backend the person has not connected yet is connected from the click.** When muster answers
   the call with its sign-in challenge — the tool's server holds no grant for the person — the
   clicker gets an ephemeral *Connect <server>* button. With a public base URL the link lands
@@ -357,10 +357,12 @@ for anything else. It has **no initiator**; the decision rule is the team's:
   submitted again as the person, so one click and one consent are all it takes; without one the
   prompt says to click *Approve* again afterwards. A backend that still challenges after the
   landing is reported once, not looped.
-- **The team sees the attempts.** A status line under the buttons names the latest attempt that
-  did not decide the review — who is connecting, whose approval the manager refused and why,
-  whose could not be submitted. It is replaced on every attempt and gone once the review is
-  approved.
+- **The clicker and the team read the same line.** A status line under the buttons names the
+  latest attempt that did not decide the review — who is connecting, whose approval the manager
+  refused and why, whose could not be submitted. It is replaced on every attempt and gone once
+  the review is approved. Nothing is repeated to the clicker privately; a channel-level ephemeral
+  is reserved for what is theirs alone — a sign-in or Connect button, or a click on a review
+  somebody else decided.
 - **One approval closes it.** A second click is refused with who decided (or whose approval is in
   flight); the message is rewritten to the outcome, the decider and what the tool answered, the
   *Open PR* link kept as small print.
