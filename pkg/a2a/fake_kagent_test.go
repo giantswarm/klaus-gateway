@@ -4,8 +4,11 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"testing"
+	"unicode"
+	"unicode/utf8"
 
 	a2apkg "github.com/a2aproject/a2a-go/v2/a2a"
 	a2apb "github.com/a2aproject/a2a-go/v2/a2apb/v1"
@@ -316,6 +319,15 @@ func (f *fakeKagent) CreateAgentInstance(ctx context.Context, req *apiv1alpha1.C
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.created = append(f.created, req)
+	// The controller's display-name contract, as protovalidate enforces it:
+	// at most 200 characters, no control characters, no leading or trailing
+	// whitespace. Checked after the attempt is recorded so a test can see both
+	// the refused create and what the client sent instead.
+	if name := req.GetName(); name != "" {
+		if utf8.RuneCountInString(name) > 200 || strings.TrimSpace(name) != name || strings.ContainsFunc(name, unicode.IsControl) {
+			return nil, status.Error(codes.InvalidArgument, "name must be at most 200 characters and hold no control characters")
+		}
+	}
 	key := who + "|" + req.GetRequestId()
 	if id, ok := f.byRequest[key]; ok {
 		existing := f.instances[id]
@@ -333,6 +345,7 @@ func (f *fakeKagent) CreateAgentInstance(ctx context.Context, req *apiv1alpha1.C
 		Harness:       req.GetHarness(),
 		AgentTemplate: req.GetAgentTemplate(),
 		State:         f.createState,
+		Name:          req.GetName(),
 		ContextId:     fmt.Sprintf("ctx-%d", len(f.instances)+1),
 	}
 	f.instances[inst.Id] = inst

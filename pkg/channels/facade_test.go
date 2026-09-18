@@ -174,6 +174,7 @@ type fakeAgent struct {
 	streamed        []*a2apkg.Message
 	streamedOn      []string
 	createRequests  []string
+	createNames     []string
 	canceled        []a2apkg.TaskID
 	canceledOn      []string
 	deleted         []string
@@ -267,10 +268,11 @@ func (a *fakeAgent) CancelTask(_ context.Context, instanceID string, taskID a2ap
 	return &a2apkg.Task{ID: taskID, Status: a2apkg.TaskStatus{State: a2apkg.TaskStateCanceled}}, nil
 }
 
-func (a *fakeAgent) CreateInstance(_ context.Context, agentRef, requestID string) (pkga2a.Instance, error) {
+func (a *fakeAgent) CreateInstance(_ context.Context, agentRef, requestID, name string) (pkga2a.Instance, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.createRequests = append(a.createRequests, requestID)
+	a.createNames = append(a.createNames, name)
 	if a.createErr != nil {
 		return pkga2a.Instance{}, a.createErr
 	}
@@ -371,6 +373,7 @@ func TestFacade_SendCompletionViaA2A_FirstTurnCreatesTheInstance(t *testing.T) {
 	// and the binding is persisted for the next turn and the next process.
 	wantRequest := channels.SynthesizeContextID("slack", "C1", "", "1700.0001", "kagent/worker")
 	require.Equal(t, []string{wantRequest}, agent.createRequests)
+	require.Equal(t, []string{"hi"}, agent.createNames, "the conversation is named after the message that opened it")
 	require.Equal(t, []string{"inst-kagent/worker-1"}, agent.streamedOn)
 	entry, ok, err := routes.Get(t.Context(), store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700.0001"})
 	require.NoError(t, err)
@@ -385,6 +388,55 @@ func TestFacade_SendCompletionViaA2A_FirstTurnCreatesTheInstance(t *testing.T) {
 	require.Empty(t, sent.ContextID, "the controller owns the conversation's context id")
 	require.Equal(t, a2apkg.MessageRoleUser, sent.Role)
 	require.Equal(t, "hi", sent.Parts[0].Text())
+}
+
+// The conversation is named after the message that opened it, so kagent lists
+// the thread under the line it started with instead of an id. An adapter that
+// renders its own title (Slack drops the mention and the command a user typed
+// to address the bot) is taken at its word, and a turn with nothing to name it
+// after creates the conversation unnamed rather than inventing a name.
+func TestFacade_SendCompletionViaA2A_NamesTheConversation(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		msg  channels.InboundMessage
+		want string
+	}{
+		{
+			name: "an adapter title wins over the raw text",
+			msg:  withTitle(slackMsg(`/agent "sre" why is kong down?`), "why is kong down?"),
+			want: "why is kong down?",
+		},
+		{
+			name: "a pasted question is rendered on one line",
+			msg:  slackMsg("why is this failing?\n\n  kubectl get pods\n"),
+			want: "why is this failing? kubectl get pods",
+		},
+		{
+			name: "an upload with no caption stays unnamed",
+			msg:  withAttachment(slackMsg("")),
+			want: "",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			agent := newFakeAgent(a2apkg.NewStatusUpdateEvent(taskInfo, a2apkg.TaskStateCompleted, nil))
+			f, _ := newA2AFacade(agent)
+
+			ch, err := f.SendCompletion(t.Context(), channels.InstanceRef{}, tc.msg)
+			require.NoError(t, err)
+			drain(t, ch)
+			require.Equal(t, []string{tc.want}, agent.createNames)
+		})
+	}
+}
+
+func withTitle(msg channels.InboundMessage, title string) channels.InboundMessage {
+	msg.Title = title
+	return msg
+}
+
+func withAttachment(msg channels.InboundMessage) channels.InboundMessage {
+	msg.Attachments = []channels.Attachment{{Filename: "graph.png", ContentType: "image/png", Bytes: []byte("PNG")}}
+	return msg
 }
 
 func TestFacade_SendCompletionViaA2A_LaterTurnsReuseTheBinding(t *testing.T) {

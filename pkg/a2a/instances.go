@@ -43,9 +43,11 @@ const instancePollInterval = 2 * time.Second
 // agentRef names: the template and the Harness admitting it, keyed by
 // requestID. The create is idempotent per (caller, requestID): a retried first
 // turn returns the instance the first attempt created instead of a second one.
-// A template that is not selectable is refused with ErrAgentUnavailable and the
-// reason. The call returns once the instance is READY.
-func (c *Client) CreateInstance(ctx context.Context, agentRef, requestID string) (Instance, error) {
+// name is the conversation's display name; an empty one leaves it unnamed,
+// identified by its id. A template that is not selectable is refused with
+// ErrAgentUnavailable and the reason. The call returns once the instance is
+// READY.
+func (c *Client) CreateInstance(ctx context.Context, agentRef, requestID, name string) (Instance, error) {
 	info, err := c.Agent(ctx, agentRef)
 	if err != nil {
 		return Instance{}, err
@@ -57,11 +59,21 @@ func (c *Client) CreateInstance(ctx context.Context, agentRef, requestID string)
 	if err != nil {
 		return Instance{}, err
 	}
-	resp, err := c.instances.CreateAgentInstance(callCtx, &apiv1alpha1.CreateAgentInstanceRequest{
+	req := &apiv1alpha1.CreateAgentInstanceRequest{
 		Harness:       &apiv1alpha1.ResourceReference{Namespace: info.Namespace, Name: info.Harness},
 		AgentTemplate: &apiv1alpha1.ResourceReference{Namespace: info.Namespace, Name: info.Name},
 		RequestId:     requestID,
-	})
+		Name:          name,
+	}
+	resp, err := c.instances.CreateAgentInstance(callCtx, req)
+	if err != nil && req.GetName() != "" && status.Code(err) == codes.InvalidArgument {
+		// A name the controller will not take costs the name, never the
+		// conversation: the refused create reserved nothing, so the same
+		// request id goes again unnamed.
+		c.logger.Warn("a2a: conversation name refused, creating it unnamed", "agent", agentRef, "error", err)
+		req.Name = ""
+		resp, err = c.instances.CreateAgentInstance(callCtx, req)
+	}
 	if err != nil {
 		switch status.Code(err) {
 		case codes.FailedPrecondition:

@@ -2043,15 +2043,14 @@ func (a *Adapter) takeSessionTitle(threadID string) string {
 
 // sessionTitleFrom derives a session title from the first human message of a
 // thread — the line the Messages tab timeline lists the conversation under,
-// where an untitled session reads as nothing at all.
+// where an untitled session reads as nothing at all. It also names the thread's
+// kagent conversation, so both surfaces list the thread under the same line.
 //
 // The command scaffolding a user types to address the bot says nothing about
 // the conversation, so the mention and a leading slash verb (the /agent
 // selector, or any other command-shaped verb) are dropped and only the
-// question survives. Whitespace collapses because the title renders on one
-// line: a pasted question's newlines and indentation would eat the budget
-// without adding words. Returns "" when nothing survives, in which case no
-// title is sent and Slack names the session itself.
+// question survives; channels.TitleFrom does the rest. Returns "" when nothing
+// survives, in which case no title is sent and Slack names the session itself.
 func sessionTitleFrom(text string) string {
 	s := StripMention(strings.TrimSpace(text))
 	if cmd := parseCommand(s); cmd != nil && commandShapeRe.MatchString(cmd.Name) {
@@ -2061,19 +2060,7 @@ func sessionTitleFrom(text string) string {
 			s = strings.Join(cmd.Args, " ")
 		}
 	}
-	s = strings.Join(strings.Fields(s), " ")
-	if utf8.RuneCountInString(s) <= sessionTitleMax {
-		return s
-	}
-	// Cut a rune short of the cap so the ellipsis marking the cut fits inside
-	// it. Whitespace is collapsed by now, so the last space in that budget is
-	// the last word boundary; a single word longer than the budget has none and
-	// takes the hard cut.
-	head := string([]rune(s)[:sessionTitleMax-1])
-	if i := strings.LastIndexByte(head, ' '); i > 0 {
-		return head[:i] + "…"
-	}
-	return truncateRunes(s, sessionTitleMax)
+	return channels.TitleFrom(s, sessionTitleMax)
 }
 
 // setSessionStatus sets the thread's agent session status, creating the
