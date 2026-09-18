@@ -650,20 +650,19 @@ func (a *Adapter) decideTeamReview(ctx context.Context, rv store.Review, clicker
 	}
 
 	a.finishTeamReview(ctx, rv.ID, decision.deny)
-	a.Logger.Info("slack: team review decided", "record", "team_review_"+decision.recordSuffix(),
+	a.Logger.Info("slack: team review decided", "record", decision.record(),
 		"review", rv.ID, "team", rv.Team, "tool", tool, "slack_user", clicker, "subject", a.linkedSubject(clicker), "resumed", resumed)
 	if err := a.apiClient().chatUpdate(ctx, rv.Channel, rv.TS, teamReviewOutcome(rv, clicker, decision, res.Text), teamReviewOutcomeBlocks(rv, clicker, decision, res.Text)); err != nil {
 		a.Logger.Warn("slack: team review outcome rewrite failed", "review", rv.ID, "error", err)
 	}
 }
 
-// recordSuffix names the decision in the log record: team_review_approved or
-// team_review_denied.
-func (d teamReviewDecision) recordSuffix() string {
+// record names the log record of a decision that went through.
+func (d teamReviewDecision) record() string {
 	if d.deny {
-		return "denied"
+		return "team_review_denied"
 	}
-	return "approved"
+	return "team_review_approved"
 }
 
 // isTeamReviewActor reports whether clicker is the person whose action the
