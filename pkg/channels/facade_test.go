@@ -1114,6 +1114,31 @@ func TestFacade_ResumeTurnDeliversAFinishedTask(t *testing.T) {
 		require.Equal(t, []channels.OutboundDelta{{Content: "from history"}, {Done: true}}, drain(t, ch))
 	})
 
+	// The answer read back at completion is rendered as the stream renders it:
+	// a paragraph break between two artifacts, as the live stream puts one
+	// before an artifact that follows rendered text. A channel that cuts off
+	// the prefix it posted while the stream was live therefore cuts at the
+	// right byte, and the continued text does not run two sentences together.
+	t.Run("still running, two artifacts", func(t *testing.T) {
+		agent := newFakeAgent()
+		info := a2apkg.TaskInfo{TaskID: "task-7", ContextID: "ctx-1"}
+		agent.subscribeEvents = []a2apkg.Event{
+			&a2apkg.Task{ID: "task-7", ContextID: "ctx-1", Status: a2apkg.TaskStatus{State: a2apkg.TaskStateWorking}},
+			a2apkg.NewStatusUpdateEvent(info, a2apkg.TaskStateCompleted, nil),
+		}
+		agent.tasks["task-7"] = &a2apkg.Task{
+			ID: "task-7", ContextID: "ctx-1", Status: a2apkg.TaskStatus{State: a2apkg.TaskStateCompleted},
+			Artifacts: []*a2apkg.Artifact{
+				{ID: "a1", Parts: a2apkg.ContentParts{a2apkg.NewTextPart("Last page remaining: valkey, zot.")}},
+				{ID: "a2", Parts: a2apkg.ContentParts{a2apkg.NewTextPart("Here's the full picture.")}},
+			},
+		}
+		f, _ := seed(t, agent)
+		ch, err := f.ResumeTurn(t.Context(), slackMsg(""), "task-7")
+		require.NoError(t, err)
+		require.Equal(t, []channels.OutboundDelta{{Content: "Last page remaining: valkey, zot.\n\nHere's the full picture."}, {Done: true}}, drain(t, ch))
+	})
+
 	// A task still running when the resubscription attaches: the text chunks
 	// streamed from here on are not the whole answer (what the agent wrote in
 	// between is not replayed), so the answer is read back whole at completion;
