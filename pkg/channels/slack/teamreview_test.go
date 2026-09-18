@@ -290,6 +290,43 @@ func TestTeamReview_LinkedMemberApprovesAsThemselves(t *testing.T) {
 	})
 }
 
+// The tool's answer reaches the team as a sentence: a plain text as written,
+// a JSON object by its message field, structured data without one not at all.
+func TestTeamReview_OutcomeShowsTheToolsMessageNotItsJSON(t *testing.T) {
+	for name, tc := range map[string]struct{ result, shown, hidden string }{
+		"plain text":           {result: "review submitted on giantswarm/github#4711", shown: "review submitted on giantswarm/github#4711"},
+		"object with message":  {result: `{"pullRequest":4711,"login":"carol","member":true,"message":"Approved as carol and merged: giantswarm/github#4711."}`, shown: "Approved as carol and merged: giantswarm/github#4711.", hidden: `"login"`},
+		"object without one":   {result: `{"pullRequest":4711,"login":"carol","member":true}`, hidden: `"pullRequest"`},
+		"array":                {result: `[{"pullRequest":4711}]`, hidden: "4711"},
+		"empty":                {result: ""},
+		"whitespace around it": {result: "  \n{\"message\": \" merged. \"}\n", shown: "_merged._"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tools := &recordingTools{results: []muster.Result{{Text: tc.result}}}
+			a, srv, fake := teamReviewHarness(t, tools)
+			receipt, err := a.PostTeamReview(context.Background(), archiveReview())
+			require.NoError(t, err)
+			clickApprove(t, srv, "U1", receipt.ID, receipt.TS)
+			waitFor(t, "the approval lands", func() bool { return updatedWith(fake, receipt.TS, "Approved", "<@U1>") })
+			var text string
+			for _, u := range fake.pathCalls("chat.update") {
+				if u.params["ts"] == receipt.TS {
+					text, _ = u.params["text"].(string)
+				}
+			}
+			if tc.shown != "" {
+				require.Contains(t, text, tc.shown)
+			}
+			if tc.hidden != "" {
+				require.NotContains(t, text, tc.hidden)
+			}
+			if tc.shown == "" {
+				require.False(t, strings.Contains(text, "_"), "nothing of the answer is shown: %q", text)
+			}
+		})
+	}
+}
+
 func TestTeamReview_SecondClickIsRefused(t *testing.T) {
 	tools := &recordingTools{}
 	a, srv, fake := teamReviewHarness(t, tools)
