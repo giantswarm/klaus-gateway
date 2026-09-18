@@ -156,7 +156,7 @@ Channel and routing gateway in front of klaus instances; uses agentgateway as th
 | obo.connectors.enabled | bool | `false` |  |
 | reviews.enabled | bool | `false` |  |
 | reviews.audience | string | `"klaus-gateway"` |  |
-| reviews.allowedCallers | list | `[]` |  |
+| reviews.allowedCallers[0] | string | `"system:serviceaccount:giantswarm-platform-manager:giantswarm-platform-manager"` |  |
 | global.podSecurityStandards.enforced | bool | `false` |  |
 | nodeSelector | object | `{}` |  |
 | tolerations | list | `[]` |  |

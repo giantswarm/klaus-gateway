@@ -504,8 +504,13 @@ reviews:
   # its ServiceAccount token for it.
   audience: klaus-gateway
   # allowedCallers lists the ServiceAccounts that may post, as
-  # system:serviceaccount:<namespace>:<name>.
-  allowedCallers: []
+  # system:serviceaccount:<namespace>:<name>. The platform manager -- the
+  # engine of the platform capabilities, whose actions the Team review
+  # approves -- is listed by default. A list given in an installation's values
+  # replaces this one (Helm does not merge lists), so it names every manager
+  # that posts there.
+  allowedCallers:
+    - system:serviceaccount:giantswarm-platform-manager:giantswarm-platform-manager
 
 global:  # @schema additionalProperties: true
   podSecurityStandards:

@@ -34,9 +34,11 @@ type connectorCompletion struct {
 	channel   string // Slack channel the prompt was posted in
 	threadTS  string // thread root; respondURL target and resume thread ("" for a channel-level prompt)
 	// review is the team review the prompt was posted for, when the sign-in
-	// was needed to submit an approval: the landing then resubmits that
-	// approval as the person instead of resuming a conversation.
+	// was needed to submit a decision: the landing then resubmits that
+	// decision — an approval, or a denial with its reason — as the person
+	// instead of resuming a conversation.
 	review          string
+	decision        teamReviewDecision
 	responseURL     string // recorded by the Connect click; empty until it arrives
 	completed       bool   // landing arrived; the one-shot resume fired
 	promptRewritten bool   // the ephemeral prompt was rewritten to the confirmation
@@ -165,12 +167,12 @@ func (a *Adapter) handleConnectorComplete(w http.ResponseWriter, r *http.Request
 	}
 	message := "You can close this tab and return to Slack; I'll pick the conversation back up there."
 	if entry.review != "" {
-		message = "You can close this tab and return to Slack; your approval is being submitted there."
+		message = "You can close this tab and return to Slack; your " + entry.decision.noun() + " is being submitted there."
 	}
 	if resume {
 		a.background(func(ctx context.Context) {
 			if entry.review != "" {
-				a.resumeTeamReviewApproval(ctx, entry)
+				a.resumeTeamReviewDecision(ctx, entry)
 				return
 			}
 			a.resumeAfterConnectorSignIn(ctx, entry)

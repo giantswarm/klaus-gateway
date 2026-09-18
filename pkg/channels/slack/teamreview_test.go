@@ -28,9 +28,12 @@ import (
 
 const signInLink = "https://gateway.example/auth/slack/link"
 
-// linkedOBO knows a fixed set of linked Slack users and their tokens; anyone
-// else is unlinked.
-type linkedOBO struct{ tokens map[string]string }
+// linkedOBO knows a fixed set of linked Slack users, their tokens and the
+// emails their accounts were linked to; anyone else is unlinked.
+type linkedOBO struct {
+	tokens map[string]string
+	emails map[string]string
+}
 
 func (o linkedOBO) TokenFor(_ context.Context, slackUser string) (string, error) {
 	if tok, ok := o.tokens[slackUser]; ok {
@@ -40,6 +43,15 @@ func (o linkedOBO) TokenFor(_ context.Context, slackUser string) (string, error)
 }
 func (linkedOBO) LinkURL(string) string { return signInLink }
 func (linkedOBO) Unlink(string) error   { return nil }
+
+// LinkedIdentity exposes the linked person's identity, as *musterlink.Linker
+// does: the subject and the email.
+func (o linkedOBO) LinkedIdentity(slackUser string) (sub, email string, ok bool) {
+	if _, linked := o.tokens[slackUser]; !linked {
+		return "", "", false
+	}
+	return "sub-" + slackUser, o.emails[slackUser], true
+}
 
 // toolCall is one recorded CallTool.
 type toolCall struct {
@@ -91,7 +103,10 @@ func teamReviewHarness(t *testing.T, tools *recordingTools, opts ...func(*slacka
 // gateway before and after a restart.
 func teamReviewAdapter(t *testing.T, apiURL string, tools *recordingTools, opts ...func(*slackadapter.Adapter)) (*slackadapter.Adapter, *httptest.Server) {
 	t.Helper()
-	obo := linkedOBO{tokens: map[string]string{"U1": "id-token-U1", "U2": "id-token-U2"}}
+	obo := linkedOBO{
+		tokens: map[string]string{"U1": "id-token-U1", "U2": "id-token-U2"},
+		emails: map[string]string{"U1": "u1@example.com", "U2": "u2@example.com"},
+	}
 	options := append([]func(*slackadapter.Adapter){channelMode, func(a *slackadapter.Adapter) {
 		a.OBO = obo
 		a.Tools = tools
@@ -217,14 +232,26 @@ func clickApprove(t *testing.T, srv *httptest.Server, clicker, reviewID, message
 	t.Helper()
 	value, err := json.Marshal(map[string]any{"r": reviewID})
 	require.NoError(t, err)
-	inner := map[string]any{
-		"type":      "block_actions",
-		"user":      map[string]any{"id": clicker},
-		"channel":   map[string]any{"id": "C1"},
-		"container": map[string]any{"message_ts": messageTS},
-		"message":   map[string]any{"ts": messageTS},
-		"actions":   []any{map[string]any{"action_id": "team_review_approve", "value": string(value)}},
+	postInteraction(t, srv, reviewClick(clicker, "team_review_approve", string(value), messageTS))
+}
+
+// reviewClick is the block_actions payload of a click on one of a review's
+// buttons.
+func reviewClick(clicker, actionID, value, messageTS string) map[string]any {
+	return map[string]any{
+		"type":       "block_actions",
+		"trigger_id": "trigger-" + clicker,
+		"user":       map[string]any{"id": clicker},
+		"channel":    map[string]any{"id": "C1"},
+		"container":  map[string]any{"message_ts": messageTS},
+		"message":    map[string]any{"ts": messageTS},
+		"actions":    []any{map[string]any{"action_id": actionID, "value": value}},
 	}
+}
+
+// postInteraction posts a signed interaction payload the way Slack does.
+func postInteraction(t *testing.T, srv *httptest.Server, inner map[string]any) {
+	t.Helper()
 	data, err := json.Marshal(inner)
 	require.NoError(t, err)
 	body := []byte("payload=" + url.QueryEscape(string(data)))

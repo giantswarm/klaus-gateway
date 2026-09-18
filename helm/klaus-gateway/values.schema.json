@@ -610,7 +610,10 @@
             "additionalProperties": false,
             "properties": {
                 "allowedCallers": {
-                    "type": "array"
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 },
                 "audience": {
                     "type": "string"
