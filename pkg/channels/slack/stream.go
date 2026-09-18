@@ -2007,7 +2007,15 @@ func (c *slackAPIClient) repliesPage(ctx context.Context, params url.Values) (re
 	}
 	var result repliesResponse
 	if err := json.Unmarshal(body, &result); err != nil {
-		return repliesResponse{}, fmt.Errorf("slack conversations.replies: decode: %w", err)
+		// A type mismatch is one field of one message in a shape this decoder
+		// did not expect (a PagerDuty button's label was the first); encoding/json
+		// skips that value, fills every other field and reports the mismatch at
+		// the end, so the page is usable and the thread is not lost for a field
+		// the transcript may not even want. Anything else is a broken body.
+		var typeErr *json.UnmarshalTypeError
+		if !errors.As(err, &typeErr) {
+			return repliesResponse{}, fmt.Errorf("slack conversations.replies: decode: %w", err)
+		}
 	}
 	if !result.OK {
 		return repliesResponse{}, &apiError{method: "conversations.replies", code: result.Err}

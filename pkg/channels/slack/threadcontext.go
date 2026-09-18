@@ -132,10 +132,12 @@ func (a *Adapter) threadContext(ctx context.Context, channelID, threadID, opener
 	transcript := renderThreadContext(read, openerTS, botUserID, name(initiator), name)
 	if transcript != "" {
 		// The transcript is never posted anywhere a person sees it, so this
-		// record is the only trace that the opener carried the thread.
+		// record is the only trace that the opener carried the thread. lines
+		// is what the agent was given (one per message shared, after the
+		// skips and the cap), not the number of messages the read returned.
 		a.Logger.Info("slack: thread context attached to the opener",
 			"channel_id", channelID, "thread_id", threadID, "slack_user", initiator,
-			"messages", len(read.Messages), "complete", read.Complete, "chars", utf8.RuneCountInString(transcript))
+			"lines", strings.Count(transcript, "\n"), "complete", read.Complete, "chars", utf8.RuneCountInString(transcript))
 	}
 	return transcript
 }

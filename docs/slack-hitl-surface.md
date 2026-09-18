@@ -441,7 +441,7 @@ slash command (`/swarmgeist [question]`, whose text prefills the question box) a
 agent here** message shortcut (⋯ menu → Apps, `callback_id: ask_agent_here`). The select lists
 the live roster as the caller, the default agent preselected; `private_metadata` carries where
 the picker was opened, how to answer the user privately, and — for the shortcut — the thread the
-conversation starts in. The shortcut's view carries a third block: a checkbox, ticked, offering the
+conversation starts in. In a channel, the shortcut's view carries a third block: a checkbox, ticked, offering the
 thread's earlier messages to the agent. It names no count — counting would mean reading the thread
 before `views.open`, and Slack invalidates the trigger three seconds after issuing it — and the
 input is `optional`, so clearing the box still submits.

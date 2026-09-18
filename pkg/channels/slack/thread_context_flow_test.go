@@ -572,3 +572,34 @@ func TestThreadContext_PageFailureMidReadKeepsWhatWasRead(t *testing.T) {
 	require.Contains(t, got, "line 0", "what was read is kept")
 	require.Empty(t, allText(fake.pathCalls("chat.postEphemeral")), "a partial read is not a failed one: nobody is told")
 }
+
+// One field of one message in a shape the decoder did not expect — here the
+// root's files as a string and a section's fields as a string — costs that
+// field, not the thread: encoding/json fills every other field and reports the
+// mismatch at the end, and the read keeps the page.
+func TestThreadContext_UnexpectedFieldShapeKeepsTheThread(t *testing.T) {
+	fake := newFakeSlackAPI()
+	fake.setResponder("conversations.replies", func(map[string]any) string {
+		return `{"ok":true,"messages":[
+		 {"ts":"100.000","bot_id":"B1","username":"PagerDuty","subtype":"bot_message","text":"TRIGGERED #4412","files":"none",
+		  "blocks":[{"type":"section","text":{"type":"mrkdwn","text":"pod crashlooping"},"fields":"oops"}],"reply_count":1},
+		 {"ts":"101.000","user":"U2","text":"restarts every 40 s"},
+		 {"ts":"103.000","user":"U1","text":"asked SRE Agent: which release introduced it?"}]}`
+	})
+	fake.withUserNames(map[string]string{"U1": "Jose", "U2": "Marta"}, nil)
+	api := fake.server(t)
+	gw, resolved := capturingGateway()
+	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
+
+	sendAskAgentShortcut(t, srv, "C1", "U1", "103.000", "100.000", api.URL+"/response_url")
+	pmRaw := openedView(t, fake)["private_metadata"].(string)
+	sendAskAgentSubmissionWithContext(t, srv, "U1", pmRaw, "kagent/sre-agent", "which release introduced it?", true)
+	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, flowWait, 50*time.Millisecond)
+
+	got := resolved()[0].Context
+	require.Equal(t, "[thread context shared by Jose: 2 earlier messages in this thread, oldest first]", strings.Split(got, "\n")[0])
+	require.Contains(t, got, "TRIGGERED #4412")
+	require.Contains(t, got, "pod crashlooping", "the section text beside the odd field is kept")
+	require.Contains(t, got, "Marta: restarts every 40 s")
+	require.Empty(t, fake.pathCalls("chat.postEphemeral"), "no failure notice: the read succeeded")
+}
