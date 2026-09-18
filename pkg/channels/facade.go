@@ -779,21 +779,18 @@ func (m *eventMapper) taskResultDeltas(task *a2apkg.Task) []OutboundDelta {
 	return textDeltaOf(lastAgentText(task.History))
 }
 
-// taskResultText is the whole answer of a completed task: the text of its
-// artifacts, or — for a runtime that records the reply in the history only —
-// the last agent message. Used where nothing of the task has been rendered
-// yet, so nothing needs reconciling.
+// taskResultText is the whole answer of a completed task, rendered as the
+// stream renders it: each artifact's text with a paragraph break where a new
+// artifact follows rendered text, or — for a runtime that records the reply
+// in the history only — the last agent message. Byte for byte what a
+// listener would have received had it heard the whole stream, so a channel
+// that cuts off the prefix it had already posted cuts at the right place.
 func taskResultText(task *a2apkg.Task) string {
-	var sb bytes.Buffer
-	for _, artifact := range task.Artifacts {
-		if artifact != nil {
-			sb.WriteString(extractTextFromA2AParts(artifact.Parts))
-		}
+	var sb strings.Builder
+	for _, delta := range newEventMapper().taskResultDeltas(task) {
+		sb.WriteString(delta.Content)
 	}
-	if sb.Len() > 0 {
-		return sb.String()
-	}
-	return lastAgentText(task.History)
+	return sb.String()
 }
 
 // lastAgentText is the text of the last agent message in history.
