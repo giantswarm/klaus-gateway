@@ -1633,6 +1633,13 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 	if err := a.dispatch(ctx, msg, inner.Channel); err != nil {
 		switch {
 		case errors.Is(err, errThreadBusy):
+			// A bare "stop" while a turn runs means /stop; it is read here, where
+			// the busy state is decided, so an idle thread still hands the word to
+			// the agent (or to a paused prompt as a deny) as before.
+			if isBareStop(msg.Text) && a.handleCommand(ctx, &slashCommand{Name: cmdStop}, msg.Subject, inner.Channel, msg.ThreadID) {
+				a.Logger.Debug("slack: bare stop consumed as /stop", "channel", inner.Channel, "thread", msg.ThreadID)
+				return
+			}
 			if _, perr := a.apiClient().postMessage(ctx, inner.Channel, busyNotice, msg.ThreadID); perr != nil {
 				a.Logger.Warn("slack: post busy notice failed", "thread", msg.ThreadID, "error", perr)
 			}

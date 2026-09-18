@@ -484,3 +484,30 @@ func TestDecisionFromText_SlashStopIsDeny(t *testing.T) {
 	require.Equal(t, channels.DecisionReject, d.Type)
 	require.Empty(t, d.RejectionReason, "/stop is a plain deny, not a reject-with-reason")
 }
+
+// The busy notice names the way out of a running turn.
+func TestBusyNoticeNamesStop(t *testing.T) {
+	require.Contains(t, busyNotice, "`/stop`")
+}
+
+// A bare "stop" is the word alone, in any case, with optional trailing
+// punctuation; a sentence containing it or the slash form is not.
+func TestIsBareStop(t *testing.T) {
+	for _, tc := range []struct {
+		text string
+		want bool
+	}{
+		{"stop", true},
+		{"Stop.", true},
+		{"STOP!", true},
+		{" stop ", true},
+		{"stop?", true},
+		{"/stop", false},
+		{"stop watching the thread", false},
+		{"please stop", false},
+		{"stopped", false},
+		{"", false},
+	} {
+		require.Equal(t, tc.want, isBareStop(tc.text), "%q", tc.text)
+	}
+}
