@@ -23,11 +23,14 @@ import (
 // a refusal there leaves the review open for another member. One approval
 // closes it: a later click is told who decided.
 //
-// A review is a channel message, not a thread: what the gateway has to say to
-// one clicker (a refusal, a sign-in) is a channel-level ephemeral, which Slack
-// shows right where they clicked, and what the team should see (who is
-// connecting, whose approval was refused) is a status line on the message
-// itself, replaced on every attempt and gone once the review is approved.
+// A review is a channel message, not a thread. What happened to the latest
+// attempt that did not decide it — who is connecting, whose approval the
+// manager refused and why, whose could not be submitted — is a status line
+// on the message itself, replaced on every attempt and gone once the review
+// is approved: the clicker and the team read it in the same place, once. A
+// channel-level ephemeral, which Slack shows right where they clicked, is
+// reserved for what is the clicker's alone: a sign-in or Connect button, or a
+// click on a review somebody else decided.
 
 // Team-review action IDs.
 const (
@@ -44,30 +47,26 @@ const (
 	teamReviewExpiredNotice = "_This review has expired. Ask for it to be posted again._"
 	teamReviewDecidedNotice = "This review was already approved by <@%s>."
 	teamReviewPendingNotice = "<@%s>'s approval is being submitted right now."
-	teamReviewRefusedNotice = "❌ Your approval was not accepted: %s"
-	teamReviewFailedNotice  = "⚠️ I couldn't submit your approval to the manager. Try again in a moment."
 	// teamReviewConnectNotice heads the Connect prompt when the sign-in lands
 	// back on the gateway and the approval is resubmitted by itself;
 	// teamReviewConnectManualNotice when it does not.
 	teamReviewConnectNotice       = "To approve as yourself, connect *%s* once. Your approval is submitted as soon as you're back."
 	teamReviewConnectManualNotice = "To approve as yourself, connect *%s* once, then click *Approve* again."
-	teamReviewStillChallenged     = "⚠️ I still can't reach %s as you after the sign-in. Click *Approve* again in a moment."
 )
 
-// Team-review status lines, shown to the whole team under the buttons. Each
-// replaces the previous one; the approval outcome replaces them all.
+// Team-review status lines, under the buttons, read by the clicker and the
+// team alike. Each replaces the previous one; the approval outcome replaces
+// them all.
 const (
-	teamReviewStatusConnecting = "🔗 <@%s> is connecting *%s* to approve as themselves."
-	teamReviewStatusRefused    = "❌ <@%s>'s approval was not accepted: %s"
-	teamReviewStatusFailed     = "⚠️ <@%s>'s approval could not be submitted to the manager; they can try again."
+	teamReviewStatusConnecting      = "🔗 <@%s> is connecting *%s* to approve as themselves."
+	teamReviewStatusRefused         = "❌ <@%s>'s approval was not accepted: %s"
+	teamReviewStatusFailed          = "⚠️ <@%s>'s approval could not be submitted to the manager; another click may do."
+	teamReviewStatusStillChallenged = "⚠️ <@%s> connected *%s*, but the manager still asks them to sign in; another click may do."
 )
 
-// teamReviewReasonMax bounds a tool's refusal text in the status line; the
-// clicker's own notice carries more of it.
-const (
-	teamReviewReasonMax       = 300
-	teamReviewNoticeReasonMax = 500
-)
+// teamReviewReasonMax bounds a tool's text — its refusal in the status line,
+// its answer in the outcome.
+const teamReviewReasonMax = 500
 
 // teamReviewUnknownServer names the backend in a Connect prompt when muster's
 // challenge does not.
@@ -248,9 +247,10 @@ func (a *Adapter) handleTeamReviewDecision(ctx context.Context, slackChannel, me
 // the approval is submitted again (resumed=true), so the person connects once
 // and never clicks twice. A refusal — the manager finding the person outside
 // the team, the author of their own change, or anything else it will not do
-// — is shown to the clicker and, in one line, to the team, and reopens the
-// review; so is a manager the gateway could not reach. A success is written
-// into the message with the decider.
+// — reopens the review and is written under the buttons once, naming the
+// clicker and the reason, where the clicker and the team both read it; so is
+// a manager the gateway could not reach. A success is written into the
+// message with the decider.
 func (a *Adapter) decideTeamReview(ctx context.Context, rv *teamReview, clicker string, resumed bool) {
 	// The person's own token is the identity the tool runs under; without a
 	// link there is nobody to act as, so the click is turned into a sign-in.
@@ -277,7 +277,6 @@ func (a *Adapter) decideTeamReview(ctx context.Context, rv *teamReview, clicker 
 		a.releaseTeamReview(rv.id)
 		a.Logger.Warn("slack: team review tool call failed", "review", rv.id, "team", rv.Team, "tool", rv.Approve.Tool, "user", clicker, "error", err)
 		a.showTeamReviewStatus(ctx, rv, fmt.Sprintf(teamReviewStatusFailed, clicker))
-		a.tellClicker(ctx, rv, clicker, teamReviewFailedNotice)
 		return
 	}
 	if server, loginURL, challenged := authChallengeOf(res); challenged {
@@ -286,8 +285,7 @@ func (a *Adapter) decideTeamReview(ctx context.Context, rv *teamReview, clicker 
 			// The sign-in landed and the backend still challenges: do not loop
 			// the person through the consent flow again on their behalf.
 			a.Logger.Warn("slack: team review still challenged after the connector sign-in", "review", rv.id, "team", rv.Team, "tool", rv.Approve.Tool, "user", clicker, "server", server)
-			a.showTeamReviewStatus(ctx, rv, fmt.Sprintf(teamReviewStatusFailed, clicker))
-			a.tellClicker(ctx, rv, clicker, fmt.Sprintf(teamReviewStillChallenged, escapeMrkdwn(server)))
+			a.showTeamReviewStatus(ctx, rv, fmt.Sprintf(teamReviewStatusStillChallenged, clicker, escapeMrkdwn(server)))
 			return
 		}
 		a.promptTeamReviewConnect(ctx, rv, clicker, server, loginURL)
@@ -299,10 +297,9 @@ func (a *Adapter) decideTeamReview(ctx context.Context, rv *teamReview, clicker 
 			"review", rv.id, "team", rv.Team, "tool", rv.Approve.Tool, "slack_user", clicker, "reason", res.Text)
 		reason := "the manager refused it"
 		if res.Text != "" {
-			reason = escapeMrkdwn(res.Text)
+			reason = truncateRunes(escapeMrkdwn(res.Text), teamReviewReasonMax)
 		}
-		a.showTeamReviewStatus(ctx, rv, fmt.Sprintf(teamReviewStatusRefused, clicker, truncateRunes(reason, teamReviewReasonMax)))
-		a.tellClicker(ctx, rv, clicker, fmt.Sprintf(teamReviewRefusedNotice, truncateRunes(reason, teamReviewNoticeReasonMax)))
+		a.showTeamReviewStatus(ctx, rv, fmt.Sprintf(teamReviewStatusRefused, clicker, reason))
 		return
 	}
 
@@ -388,7 +385,7 @@ func teamReviewOutcome(rv *teamReview, decider, result string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "✅ *Approved* by <@%s> for %s.\n%s", decider, escapeMrkdwn(rv.Team), rv.Text)
 	if result != "" {
-		fmt.Fprintf(&b, "\n_%s_", truncateRunes(escapeMrkdwn(result), teamReviewNoticeReasonMax))
+		fmt.Fprintf(&b, "\n_%s_", truncateRunes(escapeMrkdwn(result), teamReviewReasonMax))
 	}
 	return truncateRunes(b.String(), slackSectionTextMax)
 }
@@ -417,8 +414,9 @@ func (a *Adapter) showTeamReviewStatus(ctx context.Context, rv *teamReview, stat
 	}
 }
 
-// tellClicker answers a click that changed nothing, visibly only to the
-// clicker, in the channel where they clicked.
+// tellClicker answers a click on a review somebody else decided, visibly only
+// to the clicker, in the channel where they clicked: the message itself says
+// nothing new to them.
 func (a *Adapter) tellClicker(ctx context.Context, rv *teamReview, clicker, text string) {
 	if err := a.apiClient().postEphemeralText(ctx, rv.Channel, clicker, "", text); err != nil {
 		a.Logger.Warn("slack: team review notice failed", "review", rv.id, "user", clicker, "error", err)

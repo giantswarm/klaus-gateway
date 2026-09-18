@@ -189,7 +189,8 @@ review rewrites the message to say it expired, and the manager posts the ask aga
 
 The tool's answer decides what the click did. A success closes the review. An error result is a
 refusal (the manager finding the person outside the team, or the author of the change) and is
-shown to the clicker and, in a status line under the buttons, to the team; the review stays open.
+written once, as a status line under the buttons naming the clicker and the reason, where the
+clicker and the team both read it; the review stays open.
 muster's sign-in challenge — the tool's server holds no grant for the person yet — is not a
 refusal: the clicker gets a *Connect <server>* button, and when the gateway has a public base URL
 (`obo.callbackBaseURL`) and muster's `oauth.mcpClient.postLoginRedirectAllowlist` admits
