@@ -68,9 +68,13 @@ func (c *Client) CreateInstance(ctx context.Context, agentRef, requestID, name s
 	resp, err := c.instances.CreateAgentInstance(callCtx, req)
 	if err != nil && req.GetName() != "" && status.Code(err) == codes.InvalidArgument {
 		// A name the controller will not take costs the name, never the
-		// conversation: the refused create reserved nothing, so the same
-		// request id goes again unnamed.
-		c.logger.Warn("a2a: conversation name refused, creating it unnamed", "agent", agentRef, "error", err)
+		// conversation, so a rejected create goes again unnamed. The request id
+		// is reused because the controller validates the request in an
+		// interceptor, ahead of the handler that reserves it — a rejected
+		// create reserved nothing. The retry is the whole of what is known
+		// here: the rejection may just as well be about something else, in
+		// which case it comes back the same way and is returned below.
+		c.logger.Warn("a2a: create refused, retrying it unnamed", "agent", agentRef, "error", err)
 		req.Name = ""
 		resp, err = c.instances.CreateAgentInstance(callCtx, req)
 	}
