@@ -137,10 +137,37 @@ creates one, which a turn that switches agents does mid-thread.
   notice. A `ResetSession` after a corrupt history posts the corrupt-session notice
   instead — "An earlier interrupted turn corrupted this conversation's history … I've
   reset the session: please resend your message …" — so the person knows to resend.
+- **The thread's earlier messages go to the agent.** When a conversation opens inside a thread that
+  already has messages — the **Ask an agent here** shortcut, an `/agent "<name>" <question>` reply,
+  a bare mention under an alert — the adapter reads that thread once, on the opening turn, and hands
+  the messages written before the opener to the agent as a labelled part of its own (`[thread
+  context shared by <name>: N earlier messages in this thread, oldest first]`, one line per message
+  with a UTC time and the author's display name). A bot's alert is flattened out of its attachments
+  and blocks, which is where PagerDuty and friends put the text; `<@U…>` mentions become names; the
+  gateway's own posts and content-less events are left out; files are named, never downloaded. At
+  most 12,000 characters, oldest dropped first, root always kept — a constant, not configuration;
+  there is no message limit, so a thread of many short messages is handed over whole. The read
+  itself is bounded to ten pages of the Slack API (about 500 messages); a thread longer than that is
+  labelled as a partial read rather than presented as its newest messages. The picker offers a
+  checkbox ("Include the earlier messages in this thread", ticked) so the person starting the
+  session can leave a noisy thread out; it carries no count, because counting would mean reading the
+  thread before the modal opens and Slack kills the trigger after three seconds. The reply entry
+  points have no modal and no checkbox. A conversation that starts its own thread (a mention on a
+  root, the slash command) has nothing earlier to read, and a DM is never read at all, whichever
+  entry point opened the conversation — the shortcut included, which Slack also offers in a DM: the
+  assistant pane roots every chat at an anchor of Slack's own, so there is no thread there that
+  predates the conversation, and the only earlier messages are the person's own and the bot's.
+  Nothing is posted in the thread for this, and later turns read nothing: they are turns of the
+  conversation already. One 5-second budget covers every call the transcript costs — the paged
+  thread read and the display-name lookups behind it — so a rate-limited Slack cannot hold the first
+  reply: past it an author is named by their Slack ID, and a read that failed outright leaves the
+  turn running without a transcript and the person who opened the conversation with one ephemeral
+  naming the reason.
 - Each thread's durable state — its agent, its initiator, the collaborators the initiator
   allowed, and its AgentInstance binding — lives in one row in the routing store, at the
   thread's plain key (`slack|<channelID>||<threadID>`, the user slot empty). It is the only
-  carrier: the gateway never reads Slack history to recover any of it. The row has one sliding
+  carrier: the gateway never reads Slack history to recover any of it — the context read above is a
+  different read, for the agent's benefit, and nothing it returns is ever written back. The row has one sliding
   lifetime — `routing.threadTTL` (`--thread-ttl`), 90 days by default, `0` never expires —
   refreshed by every turn. While the thread lives, the initiator and the collaborators they
   allowed instruct the agent without mentioning the bot again and their grants hold. After that
@@ -541,11 +568,16 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
 | `chat:write.customize` | Post agent replies under the agent's own name/icon |
 | `reactions:write` | Add/remove progress reactions on the triggering message |
 | `im:history`     | Read DMs sent to the bot                              |
-| `channels:history` | Required for Slack to deliver `message.channels` events (channel messages) to the bot; the gateway does not read channel history |
+| `channels:history` | Required for Slack to deliver `message.channels` events (channel messages) to the bot, and to read a public-channel thread when a conversation opens inside it |
+| `groups:history` | The same read in a private channel                     |
+| `mpim:history`   | The same read in a group DM                            |
 | `channels:join`  | Join public channels on invite                        |
 | `files:read`     | Download message attachments (`url_private`) to forward to the agent |
 
 The `member_joined_channel` bot event must also be subscribed for the channel intro.
+`groups:history` and `mpim:history` are new: Slack grants a scope only on re-install, so an app
+installed before them keeps working and a thread in a private channel or a group DM answers
+`missing_scope` — the conversation opens and runs, without the thread's earlier messages.
 
 ## Endpoints
 

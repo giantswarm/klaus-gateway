@@ -248,6 +248,12 @@ type Adapter struct {
 	emailMu    sync.Mutex
 	emailCache map[string]emailEntry // Slack user ID -> resolved email
 
+	// displayNames caches the names a thread transcript puts on its lines
+	// (see threadcontext.go), so reading a thread costs one users.info per
+	// distinct author rather than one per message.
+	displayNameMu sync.Mutex
+	displayNames  map[string]ttlEntry[string] // Slack user ID -> display name
+
 	seenEventsMu sync.Mutex
 	seenEvents   map[string]time.Time // Slack event_id -> dedup entry expiry
 
@@ -1961,6 +1967,17 @@ func (a *Adapter) dispatchFrom(ctx context.Context, msg channels.InboundMessage,
 		if _, err := a.apiClient().postMessage(ctx, slackChannel, droppedAttachmentsNote(dropped), msg.ThreadID); err != nil {
 			a.Logger.Warn("slack: post dropped-attachment note failed", "thread", msg.ThreadID, "error", err)
 		}
+	}
+
+	// A conversation opening inside a thread other people wrote — an /agent
+	// reply or a bare mention under an alert — hands the agent what the thread
+	// already said. Read here, with the attachments, for the same reason: the
+	// turn is committed to run, so a message that was parked for a sign-in or
+	// bounced busy never spends a Slack call on it. The picker's own
+	// submission decided this with its checkbox and set the context itself, so
+	// it is not read again.
+	if explicitSource != agentSourceCommand && explicitSource != agentSourceShortcut {
+		a.attachThreadContext(ctx, &msg, slackChannel, slackUser)
 	}
 
 	return a.runTurn(ctx, msg, slackChannel, msg.MessageID, thinkingPlaceholder, task, agentSource, turnHooks{

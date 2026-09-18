@@ -159,6 +159,25 @@ func TestBuildInboundParts_TextAndAttachment(t *testing.T) {
 	require.Equal(t, "image/png", parts[1].MediaType)
 }
 
+// Shared context leads the turn as a part of its own, before the user's own
+// words and before anything they attached: two labels, so a transcript of
+// other people's messages is never read as the user's instruction.
+func TestBuildInboundParts_ContextLeadsAndStaysSeparate(t *testing.T) {
+	msg := InboundMessage{
+		Context: "[thread context shared by Jose: 2 earlier messages in this thread, oldest first]\n2026-09-17 09:41 PagerDuty: TRIGGERED",
+		Text:    "which release introduced it?",
+		Author:  "Jose",
+		Attachments: []Attachment{
+			{Filename: "shot.png", ContentType: "image/png", Bytes: []byte{0x89, 0x50}},
+		},
+	}
+	parts := buildInboundParts(msg)
+	require.Len(t, parts, 3)
+	require.True(t, strings.HasPrefix(parts[0].Text(), "[thread context shared by Jose:"))
+	require.Equal(t, "[message from Jose]\nwhich release introduced it?", parts[1].Text())
+	require.Equal(t, "shot.png", parts[2].Filename)
+}
+
 func TestBuildInboundParts_TextAttachmentBecomesTextPart(t *testing.T) {
 	// A text/* attachment must be forwarded as a text part, not a binary file
 	// part: the model backend rejects a text/plain inline_data blob.

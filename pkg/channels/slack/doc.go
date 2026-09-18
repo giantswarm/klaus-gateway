@@ -38,6 +38,10 @@
 //     agent binding, its initiator and their grants. It is the only carrier:
 //     Slack history is never read to recover any of them, so on a persistent
 //     store a thread survives a restart and on a memory store it does not.
+//     The one conversations.replies call the adapter does make (threadcontext.go)
+//     is not that fallback returning: it reads the words a thread already held
+//     when a conversation opened inside it, hands them to the agent as part of
+//     that one turn, and writes nothing back.
 //   - opener: the turn that starts a thread's conversation, root or reply —
 //     the one that finds no agent recorded and records it. The session title
 //     keys on it.

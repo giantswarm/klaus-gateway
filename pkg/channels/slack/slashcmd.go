@@ -323,6 +323,13 @@ func (a *Adapter) askAgentModal(agents []pkga2a.AgentInfo, req askAgentRequest) 
 	if text := truncateRunes(strings.TrimSpace(req.Prefill), modalQuestionMax); text != "" {
 		question[bkInitialValue] = text
 	}
+	blocks := []any{
+		map[string]any{bkType: bkInput, bkBlockID: askAgentAgentBlockID, bkLabel: plainTextObj(askAgentAgentLabel), bkElement: agentSelect},
+		map[string]any{bkType: bkInput, bkBlockID: askAgentQuestionBlockID, bkLabel: plainTextObj(askAgentQuestionLabel), bkElement: question},
+	}
+	if block, ok := threadContextBlock(req); ok {
+		blocks = append(blocks, block)
+	}
 	return map[string]any{
 		bkType:            bkModal,
 		bkCallbackID:      askAgentCallbackID,
@@ -330,11 +337,39 @@ func (a *Adapter) askAgentModal(agents []pkga2a.AgentInfo, req askAgentRequest) 
 		bkTitle:           plainTextObj(askAgentModalTitle),
 		bkSubmit:          plainTextObj(askAgentSubmitLabel),
 		bkClose:           plainTextObj(askAgentCloseLabel),
-		bkBlocks: []any{
-			map[string]any{bkType: bkInput, bkBlockID: askAgentAgentBlockID, bkLabel: plainTextObj(askAgentAgentLabel), bkElement: agentSelect},
-			map[string]any{bkType: bkInput, bkBlockID: askAgentQuestionBlockID, bkLabel: plainTextObj(askAgentQuestionLabel), bkElement: question},
-		},
+		bkBlocks:          blocks,
 	}, nil
+}
+
+// threadContextBlock is the checkbox that decides whether the agent is given
+// the messages the target thread already holds. It is offered whenever the
+// picker was opened on a message in a channel — there is then always at least
+// that thread's root to include — and is checked by default: the person
+// starting the session is a member of that thread and does it in the open, but
+// a thread whose earlier part is noise or private banter is theirs to leave
+// out with one click. A DM is not offered it: the shortcut works there when
+// DMs are served, and the only messages before the opener are the person's own
+// and the bot's, which the agent either wrote or is about to. It names no
+// count: counting would mean reading the thread before views.open, and Slack
+// invalidates the trigger after three seconds. The input is optional, or Slack
+// would refuse a submission with the box cleared.
+func threadContextBlock(req askAgentRequest) (map[string]any, bool) {
+	if req.Thread == "" || isDMChannelID(req.Channel) {
+		return nil, false
+	}
+	option := map[string]any{bkText: plainTextObj(askAgentContextOption), bkValue: askAgentContextValue}
+	return map[string]any{
+		bkType:     bkInput,
+		bkBlockID:  askAgentContextBlockID,
+		bkOptional: true,
+		bkLabel:    plainTextObj(askAgentContextLabel),
+		bkElement: map[string]any{
+			bkType:           bkCheckboxes,
+			bkActionID:       askAgentContextActionID,
+			bkOptions:        []any{option},
+			bkInitialOptions: []any{option},
+		},
+	}, true
 }
 
 // handleAskAgentSubmission opens the conversation a submitted picker
@@ -363,6 +398,10 @@ func (a *Adapter) handleAskAgentSubmission(ctx context.Context, payload interact
 	}
 	ref := payload.View.State.Values[askAgentAgentBlockID][askAgentAgentActionID].selectedValue()
 	question := strings.TrimSpace(payload.View.State.Values[askAgentQuestionBlockID][askAgentQuestionActionID].Value)
+	// The context checkbox: absent from the view when there was no thread to
+	// read, and cleared by a person who wants the agent to see their question
+	// alone.
+	includeContext := len(payload.View.State.Values[askAgentContextBlockID][askAgentContextActionID].SelectedOptions) > 0
 	// Both inputs are required in the modal, so Slack refuses an empty
 	// submission itself; this only guards a malformed payload.
 	if ref == "" || question == "" {
@@ -462,12 +501,24 @@ func (a *Adapter) handleAskAgentSubmission(ctx context.Context, payload interact
 	a.accessPolicy().SetInitiator(ctx, pm.Channel, threadTS, user)
 	a.bindThreadAgent(ctx, pm.Channel, threadTS, ref)
 
+	// The thread the picker was opened on is read now, with the echo as the
+	// opener: it was just posted, so only the messages that were already there
+	// — everyone else's — land in the transcript. A thread the submission
+	// rooted itself (the slash command) has nothing earlier to read, and a DM
+	// is never read at all — the same rule the typed entry points follow
+	// (attachThreadContext), and the reason no checkbox was offered there.
+	var threadContext string
+	if pm.Thread != "" && includeContext && !isDMChannelID(pm.Channel) {
+		threadContext = a.threadContext(ctx, pm.Channel, threadTS, echoTS, user)
+	}
+
 	msg := channels.InboundMessage{
 		Channel:   ChannelName,
 		ChannelID: pm.Channel,
 		ThreadID:  threadTS,
 		MessageID: echoTS,
 		Text:      question,
+		Context:   threadContext,
 		Subject:   user,
 		AgentRef:  ref,
 		// The question opens the conversation: it names the agent session and

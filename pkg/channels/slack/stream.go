@@ -1903,6 +1903,191 @@ func (c *slackAPIClient) conversationsJoin(ctx context.Context, channel string) 
 	return err
 }
 
+// threadMessage is one message of a thread as the context read needs it: who
+// wrote it and when, and every place Slack puts its words — the plain text, a
+// bot's attachments, a Block Kit layout, the names of its files.
+type threadMessage struct {
+	TS         string `json:"ts"`
+	User       string `json:"user"`
+	BotID      string `json:"bot_id"`
+	Username   string `json:"username"`
+	SubType    string `json:"subtype"`
+	Text       string `json:"text"`
+	BotProfile struct {
+		Name string `json:"name"`
+	} `json:"bot_profile"`
+	Files []struct {
+		Name string `json:"name"`
+	} `json:"files"`
+	Attachments []threadAttachment `json:"attachments"`
+	Blocks      []threadBlock      `json:"blocks"`
+	// ReplyCount is set on the root message only: the number of replies under
+	// it, which is how the picker counts a thread without reading it.
+	ReplyCount int `json:"reply_count"`
+}
+
+// threadAttachment is the legacy-attachment shape a bot integration (PagerDuty
+// and friends) puts its content in when the message's own text is empty.
+type threadAttachment struct {
+	Title  string `json:"title"`
+	Text   string `json:"text"`
+	Fields []struct {
+		Title string `json:"title"`
+		Value string `json:"value"`
+	} `json:"fields"`
+}
+
+// threadBlock is the part of a Block Kit block that carries words: a section's
+// text and fields, a header's text, and the elements of a context or rich_text
+// block (whose own elements nest one level further).
+type threadBlock struct {
+	Type     string            `json:"type"`
+	Text     *threadBlockText  `json:"text"`
+	Fields   []threadBlockText `json:"fields"`
+	Elements []threadBlockElem `json:"elements"`
+}
+
+type threadBlockText struct {
+	Text string `json:"text"`
+}
+
+type threadBlockElem struct {
+	Type     string            `json:"type"`
+	Text     blockString       `json:"text"`
+	Elements []threadBlockElem `json:"elements"`
+}
+
+// blockString is a Block Kit element's "text": a plain string in a rich_text
+// run, a text object ({"type":"plain_text","text":"Reopen"}) in a button or a
+// context element — PagerDuty's alert posts carry both in one message. Either
+// shape decodes to the words; anything else decodes to "", so one unusual
+// element never fails the read of a whole thread.
+type blockString string
+
+func (s *blockString) UnmarshalJSON(b []byte) error {
+	var str string
+	if err := json.Unmarshal(b, &str); err == nil {
+		*s = blockString(str)
+		return nil
+	}
+	var obj struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(b, &obj); err == nil {
+		*s = blockString(obj.Text)
+		return nil
+	}
+	*s = ""
+	return nil
+}
+
+// threadRepliesPageSize is the page size of a context read. The shared call
+// helper reads at most 1 MiB of a response and cannot tell a truncated body
+// from a complete one, and one alert message with its blocks and attachments
+// is easily several kilobytes, so a page stays well under that ceiling: a page
+// too large would decode to nothing and lose the whole transcript.
+const threadRepliesPageSize = 50
+
+// threadContextMaxPages bounds what one transcript may cost Slack: ten pages,
+// about 500 messages. A thread longer than that is read as far as this and
+// handed over labelled as a partial read, never as its newest messages. It
+// also bounds the read's memory by construction, so nothing needs to be
+// discarded while paging — the character cap that shapes the transcript needs
+// the rendered lines, which only the renderer has.
+const threadContextMaxPages = 10
+
+// threadRead is one context read: the messages it paged over (oldest first,
+// the thread's root first of all), how many messages the thread holds
+// according to the root's reply count (0 when Slack did not report one),
+// whether the read reached the end of the thread, and — when a page after the
+// first one failed — what Slack said, so the log can tell a read the page
+// bound stopped from one a rate limit or an outage cut short.
+type threadRead struct {
+	Messages []threadMessage
+	Total    int
+	Complete bool
+	Err      error
+}
+
+// threadReplies reads a thread through conversations.replies, oldest first,
+// following the cursor across pages. It is NOT a routing-state read — the
+// thread record in the store stays the only carrier of a thread's agent,
+// initiator and grants; this reads the words people wrote, once, to hand them
+// to the agent a conversation pulls into the thread (see threadcontext.go). A
+// page that fails after the first one yields what was read so far, marked
+// incomplete: part of a thread is worth more to the agent than none, as long
+// as the transcript does not claim to be the newest part.
+func (c *slackAPIClient) threadReplies(ctx context.Context, channel, threadTS string) (threadRead, error) {
+	read := threadRead{}
+	cursor := ""
+	for page := 0; page < threadContextMaxPages; page++ {
+		params := url.Values{
+			paramChannel: {channel},
+			paramTS:      {threadTS},
+			paramLimit:   {strconv.Itoa(threadRepliesPageSize)},
+		}
+		if cursor != "" {
+			params.Set(paramCursor, cursor)
+		}
+		result, err := c.repliesPage(ctx, params)
+		if err != nil {
+			if len(read.Messages) == 0 {
+				return threadRead{}, err
+			}
+			read.Err = err
+			return read, nil
+		}
+		read.Messages = append(read.Messages, result.Messages...)
+		// The root carries the thread's reply count, which is how a partial
+		// read can say how much of the thread it did not reach.
+		if page == 0 && len(result.Messages) > 0 && result.Messages[0].ReplyCount > 0 {
+			read.Total = result.Messages[0].ReplyCount + 1
+		}
+		cursor = result.ResponseMetadata.NextCursor
+		if cursor == "" {
+			read.Complete = true
+			break
+		}
+	}
+	return read, nil
+}
+
+// repliesResponse is one conversations.replies page.
+type repliesResponse struct {
+	OK               bool            `json:"ok"`
+	Err              string          `json:"error,omitempty"`
+	Messages         []threadMessage `json:"messages"`
+	ResponseMetadata struct {
+		NextCursor string `json:"next_cursor"`
+	} `json:"response_metadata"`
+}
+
+// repliesPage runs one conversations.replies call and decodes it. A Slack
+// refusal is returned as an apiError so the caller can name its code
+// (missing_scope, not_in_channel, …) to the person.
+func (c *slackAPIClient) repliesPage(ctx context.Context, params url.Values) (repliesResponse, error) {
+	body, err := c.call(ctx, "conversations.replies", "application/x-www-form-urlencoded", params.Encode())
+	if err != nil {
+		return repliesResponse{}, err
+	}
+	var result repliesResponse
+	if err := json.Unmarshal(body, &result); err != nil {
+		// A type mismatch is one field of one message in a shape this decoder
+		// did not expect (a PagerDuty button's label was the first); encoding/json
+		// skips that value, fills every other field and reports the mismatch at
+		// the end, so the page is usable and the thread is not lost for a field
+		// the transcript may not even want. Anything else is a broken body.
+		var typeErr *json.UnmarshalTypeError
+		if !errors.As(err, &typeErr) {
+			return repliesResponse{}, fmt.Errorf("slack conversations.replies: decode: %w", err)
+		}
+	}
+	if !result.OK {
+		return repliesResponse{}, &apiError{method: "conversations.replies", code: result.Err}
+	}
+	return result, nil
+}
+
 // respondToURL posts an ephemeral text reply through a slash command's
 // response_url (usable five times within 30 minutes). The URL is a Slack
 // webhook, not a Web API method: no bot token, no envelope.

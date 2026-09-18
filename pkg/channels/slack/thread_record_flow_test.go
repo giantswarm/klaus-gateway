@@ -14,7 +14,9 @@ import (
 // A conversation opened with /agent INSIDE an existing thread (root by someone
 // else), a grant to a colleague, then a "restart": a second adapter over the
 // same records. The colleague's reply runs on the same agent with no consent
-// prompt, and Slack history is never read.
+// prompt, and Slack history is never read to recover any of that — the
+// opener's one read is the thread context handed to the agent, and the
+// restarted gateway reads nothing at all.
 func TestThreadRecord_AgentInitiatorAndGrantSurviveRestart(t *testing.T) {
 	fake := newFakeSlackAPI()
 	api := fake.server(t)
@@ -39,6 +41,7 @@ func TestThreadRecord_AgentInitiatorAndGrantSurviveRestart(t *testing.T) {
 	// U2's reply below can reach the second adapter first and be parked in its
 	// own pendingAccess map, which nothing drains.
 	fake.waitForPath(t, "response", 1)
+	reads := len(fake.pathCalls("conversations.replies"))
 
 	gw2, resolved2 := capturingGateway()
 	gw2.records = shared
@@ -50,7 +53,8 @@ func TestThreadRecord_AgentInitiatorAndGrantSurviveRestart(t *testing.T) {
 	require.Equal(t, "issue-agent", resolved2()[0].AgentRef, "the restarted gateway routes to the recorded agent")
 	require.NotContains(t, allText(fake.pathCalls("chat.postEphemeral")), "waiting for the thread owner",
 		"the grant survived: no consent prompt")
-	require.Empty(t, fake.pathCalls("conversations.replies"), "no Slack history read")
+	require.Len(t, fake.pathCalls("conversations.replies"), reads,
+		"the restarted gateway reads the record, never Slack history")
 }
 
 // When the routing store is down the access policy cannot record the

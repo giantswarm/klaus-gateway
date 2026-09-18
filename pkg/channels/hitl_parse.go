@@ -36,10 +36,13 @@ const (
 	usageTotalTokens      = "totalTokenCount"
 )
 
-// buildInboundParts builds the A2A message parts for an outbound user turn: a
-// text part (when there is text) plus one part per downloaded attachment,
-// falling back to a single empty text part so the A2A message stays
-// well-formed. A HITL decision is carried by the message's extension payload,
+// buildInboundParts builds the A2A message parts for an outbound user turn:
+// the shared context (when the channel gathered any) as a leading part of its
+// own, a text part (when there is text) plus one part per downloaded
+// attachment, falling back to a single empty text part so the A2A message
+// stays well-formed. The context keeps its own part and its own label so a
+// transcript of other people's messages can never be read as the user's own
+// words. A HITL decision is carried by the message's extension payload,
 // not by a part; its parts are a human-readable label of the decision, so the
 // conversation's history reads as a dialogue.
 func buildInboundParts(msg InboundMessage) []*a2apkg.Part {
@@ -51,6 +54,9 @@ func buildInboundParts(msg InboundMessage) []*a2apkg.Part {
 		return []*a2apkg.Part{a2apkg.NewTextPart(withAuthor(msg.Author, label))}
 	}
 	var parts []*a2apkg.Part
+	if msg.Context != "" {
+		parts = append(parts, a2apkg.NewTextPart(msg.Context))
+	}
 	if text := withAuthor(msg.Author, msg.Text); text != "" {
 		parts = append(parts, a2apkg.NewTextPart(text))
 	}

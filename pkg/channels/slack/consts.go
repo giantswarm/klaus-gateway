@@ -138,6 +138,9 @@ const (
 	askAgentAgentActionID    = "agent"
 	askAgentQuestionBlockID  = "ask_agent_question"
 	askAgentQuestionActionID = "question"
+	askAgentContextBlockID   = "ask_agent_context"
+	askAgentContextActionID  = "context"
+	askAgentContextValue     = "include"
 
 	askAgentModalTitle          = "Ask an agent" // modal titles are capped at 24 chars
 	askAgentSubmitLabel         = "Ask"
@@ -146,6 +149,12 @@ const (
 	askAgentAgentPlaceholder    = "Pick an agent"
 	askAgentQuestionLabel       = "Question"
 	askAgentQuestionPlaceholder = "What do you want to ask?"
+	// askAgentContextLabel titles the thread-context checkbox and
+	// askAgentContextOption is its one option. Deliberately without a count:
+	// counting the thread would mean reading it before views.open, and the
+	// trigger the modal opens on dies three seconds after Slack issued it.
+	askAgentContextLabel  = "Thread context"
+	askAgentContextOption = "Include the earlier messages in this thread"
 
 	// modalMaxAgents is Slack's static_select option cap; modalOptionLabelMax
 	// its option label cap; modalQuestionMax the plain_text_input max_length.
@@ -174,6 +183,11 @@ const (
 	askAgentThreadOwnedNotice = "_This thread belongs to <@%s>. Ask your question as a reply in the thread — they are asked to allow you — or start a new one._"
 	askAgentInviteNotice      = "⚠️ _I'm not a member of this channel, so I couldn't start the conversation. Invite me to the channel and try again._"
 	askAgentPostFailedNotice  = "⚠️ _I couldn't post your question in this channel just now. Please try again._"
+	// threadContextFailedNotice tells the person who opened the conversation
+	// that the thread could not be read, so they know the agent is answering
+	// without what the thread already said. %s is Slack's reason. The turn
+	// itself runs regardless, which is why this is a notice and not a refusal.
+	threadContextFailedNotice = "_I couldn't read the earlier messages in this thread (`%s`), so the agent only sees your question._"
 )
 
 // pickerOpenBudget bounds the work between a slash command arriving and
@@ -449,6 +463,9 @@ const (
 
 	paramTriggerID = "trigger_id" // views.open
 	paramView      = "view"       // views.open
+
+	paramLimit  = "limit"  // conversations.replies page size
+	paramCursor = "cursor" // conversations.replies paging cursor
 )
 
 // bkURL is the Block Kit button "url" field (opens a link on click).
@@ -477,6 +494,8 @@ const (
 	bkElement         = "element"
 	bkPlaceholder     = "placeholder"
 	bkInitialOption   = "initial_option"
+	bkInitialOptions  = "initial_options"
+	bkOptional        = "optional"
 	bkInitialValue    = "initial_value"
 	bkMultiline       = "multiline"
 	bkMaxLength       = "max_length"
