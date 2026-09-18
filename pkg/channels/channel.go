@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/giantswarm/klaus-gateway/pkg/lifecycle"
+	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
 )
 
 // ErrShutdown is the cancellation cause of a turn the gateway's own shutdown
@@ -114,10 +115,13 @@ type InboundMessage struct {
 // InFlightTurn is a turn a previous gateway process left running at its
 // controller: the task to resubscribe to and the thread it belongs to. Msg
 // carries the thread's identity (Channel, ChannelID, ThreadID, AgentRef) and
-// the Resume data the turn was dispatched with.
+// the Resume data the turn was dispatched with; Delivered is what the
+// previous process had already rendered of the reply, for the adapter to
+// continue from rather than repeat.
 type InFlightTurn struct {
-	Msg    InboundMessage
-	TaskID string
+	Msg       InboundMessage
+	TaskID    string
+	Delivered store.Delivered
 }
 
 // DeltaKind classifies the content of an OutboundDelta. The zero value is

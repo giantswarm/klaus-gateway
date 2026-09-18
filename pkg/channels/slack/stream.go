@@ -23,6 +23,7 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
+	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
 )
 
 const (
@@ -201,6 +202,24 @@ type batchedWriter struct {
 	toolCurrent string         // display name of the segment's most recent call
 	toolOrder   []string       // distinct display names in segment first-use order
 	toolCounts  map[string]int // segment calls per display name
+
+	// Continuation across a restart (continuation.go). carried is what the
+	// previous process delivered of the turn this writer continues; skipText
+	// is how much answer text is still to be dropped, trimLead whether the
+	// whitespace the cut left in front is still to go, and leadTrimmed (under
+	// mu) how much of it went; carriedSteps is the step count the open
+	// segment was seeded with, so a segment closed without a new step posts
+	// no second receipt. onDelivered, when set, receives the delivery record
+	// after every flush and every step.
+	carried      store.Delivered
+	skipText     int
+	trimLead     bool
+	leadTrimmed  int
+	carriedSteps int
+	onDelivered  func(ctx context.Context, d store.Delivered)
+	// ran is set by run(): a second cycle over the same writer resets the
+	// ticker counters the previous cycle's closing pass left standing.
+	ran bool
 }
 
 // toolReceipt is one closed ticker segment's exact counters. It is snapshotted
@@ -262,6 +281,13 @@ func newBatchedWriterWithClient(client *slackAPIClient, channel, ts, threadTS st
 // run drains deltas from ch, batching chat.update calls at batchInterval.
 func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelta) error {
 	w.timer = channels.TurnTimerFromContext(ctx)
+	// A run() cycle over a writer that ran before (an auto-approved prompt
+	// resuming the turn in place) starts a fresh ticker: the previous cycle's
+	// segment collapsed into its receipt when its poster closed.
+	if w.ran {
+		w.resetToolStatus()
+	}
+	w.ran = true
 	ticker := time.NewTicker(batchInterval)
 	defer ticker.Stop()
 	// The session leaves "processing" on EVERY exit — stream done, stream error,
@@ -309,13 +335,14 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 			}
 			switch d.Kind {
 			case channels.DeltaText:
-				if d.Content == "" {
+				content := w.skipDelivered(d.Content)
+				if content == "" {
 					continue
 				}
 				w.timer.Mark(channels.PhaseFirstText)
-				w.timer.AddChars(len(d.Content))
+				w.timer.AddChars(len(content))
 				w.mu.Lock()
-				w.buf.WriteString(d.Content)
+				w.buf.WriteString(content)
 				w.mu.Unlock()
 			case channels.DeltaToolActivity:
 				if d.Tool != nil && d.Tool.Kind == channels.ToolCall {
@@ -494,6 +521,7 @@ func (w *batchedWriter) renderToolActivity(ctx context.Context, tool *channels.T
 		}
 		w.recordToolStep(displayName)
 		w.kickToolStatus(ctx)
+		w.noteDelivered(ctx)
 		return
 	}
 	if !ok {
@@ -607,19 +635,50 @@ func (w *batchedWriter) toolStatusSnapshot() (steps int, current string) {
 
 // takeToolStatus atomically snapshots and resets the ticker counters, closing
 // the current segment. Returns nil when the segment recorded no steps (nothing
-// to collapse). The reset also makes a resumed run() cycle over the same
-// writer (an auto-approved prompt) start a fresh ticker instead of
-// double-counting a collapsed one. The snapshot takes ownership of the slices
-// and map: the counters are re-created on the next recordToolStep.
+// to collapse) — steps the writer was seeded with by a previous process count
+// as none until a step of its own joins them: that segment's receipt was
+// posted by the process that ran it, a second copy would be noise. The
+// snapshot takes ownership of the slices and map: the counters are re-created
+// on the next recordToolStep.
 func (w *batchedWriter) takeToolStatus() *toolReceipt {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.toolSteps == 0 {
+	r := w.toolReceiptLocked()
+	w.resetToolStatusLocked()
+	return r
+}
+
+// toolReceipt is the open segment's receipt without closing the segment, for
+// the poster's closing pass at the turn's end: the counters stay as they are,
+// so what the turn delivered is still recorded after the receipt is posted
+// (a restart continues the segment from them). Nil under the same rule as
+// takeToolStatus.
+func (w *batchedWriter) toolReceipt() *toolReceipt {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	r := w.toolReceiptLocked()
+	if r != nil {
+		r.order, r.counts = slices.Clone(r.order), maps.Clone(r.counts)
+	}
+	return r
+}
+
+func (w *batchedWriter) toolReceiptLocked() *toolReceipt {
+	if w.toolSteps <= w.carriedSteps {
 		return nil
 	}
-	r := &toolReceipt{steps: w.toolSteps, order: w.toolOrder, counts: w.toolCounts}
-	w.toolSteps, w.toolCurrent, w.toolOrder, w.toolCounts = 0, "", nil, nil
-	return r
+	return &toolReceipt{steps: w.toolSteps, order: w.toolOrder, counts: w.toolCounts}
+}
+
+// resetToolStatus zeroes the ticker counters, the seeded ones included.
+func (w *batchedWriter) resetToolStatus() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.resetToolStatusLocked()
+}
+
+func (w *batchedWriter) resetToolStatusLocked() {
+	w.toolSteps, w.toolCurrent, w.toolOrder, w.toolCounts, w.carriedSteps = 0, "", nil, nil, 0
 }
 
 // statusName renders a tool name for the ticker and receipt: plain muted text,
@@ -799,6 +858,7 @@ func (w *batchedWriter) renderNarration(ctx context.Context, text string) {
 			// into the next receipt.
 			p.receipt = w.takeToolStatus()
 			segmentClosed = true
+			w.noteDelivered(ctx)
 		}
 		w.enqueueThreadPost(ctx, p)
 	}
@@ -1288,14 +1348,16 @@ func (w *batchedWriter) threadPoster(ctx context.Context) {
 	// earlier still gets its receipt and folded narration posted. A cancelled
 	// turn (a /stop, the gateway's shutdown) gets its receipt too: the tail runs
 	// on a context that outlives the cancellation, briefly, so the ticker is
-	// not left frozen mid-step.
+	// not left frozen mid-step. The counters are read, not taken: the flush
+	// that follows records them for a process continuing the turn after a
+	// restart, and a run() cycle that follows on this writer resets them.
 	if ctx.Err() != nil {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(context.WithoutCancel(ctx), posterTailTimeout)
 		defer cancel()
 	}
 	retryUndelivered()
-	if r := w.takeToolStatus(); r != nil {
+	if r := w.toolReceipt(); r != nil {
 		status.ticker = renderToolReceipt(r.steps, r.order, r.counts)
 		status.dirty = true
 	}
@@ -1636,6 +1698,7 @@ func (w *batchedWriter) flush(ctx context.Context) error {
 			w.flushedLen = flushingLen
 		}
 		w.mu.Unlock()
+		w.noteDelivered(ctx)
 		return nil
 	}
 
@@ -1654,12 +1717,14 @@ func (w *batchedWriter) flush(ctx context.Context) error {
 	}
 	// flushedLen advances only once every chunk landed, so a failed flush leaves
 	// the delta pending and a retried flush re-sends it (chat.update on the head
-	// and already-posted tails is idempotent).
+	// and already-posted tails is idempotent). What landed is recorded for the
+	// process that continues the turn after a restart.
 	w.mu.Lock()
 	if flushingLen > w.flushedLen {
 		w.flushedLen = flushingLen
 	}
 	w.mu.Unlock()
+	w.noteDelivered(ctx)
 	return nil
 }
 

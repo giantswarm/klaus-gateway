@@ -972,6 +972,38 @@ func TestFacade_ShutdownLeavesTheTaskRunningAndRecorded(t *testing.T) {
 	})
 }
 
+// A fresh turn on a thread whose row still carries what an earlier turn
+// delivered starts its record from nothing: the old delivery is no measure of
+// the new answer, and a restart during the new turn must not cut it.
+func TestFacade_FreshTurnDropsTheStaleDeliveryRecord(t *testing.T) {
+	key := store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700.0001"}
+	agent := newFakeAgent(
+		&a2apkg.Task{ID: taskInfo.TaskID, ContextID: taskInfo.ContextID, Status: a2apkg.TaskStatus{State: a2apkg.TaskStateSubmitted}},
+		a2apkg.NewStatusUpdateEvent(taskInfo, a2apkg.TaskStateWorking, nil),
+	)
+	agent.hold = make(chan struct{})
+	f, routes := newA2AFacade(agent)
+	require.NoError(t, routes.Put(t.Context(), key, store.Entry{
+		AgentRef: "kagent/worker", AgentInstanceID: "inst-1",
+		Delivered: store.Delivered{TextLen: 99, ToolSteps: 4, ToolOrder: []string{"get"}, ToolCounts: map[string]int{"get": 4}},
+		CreatedAt: time.Now(), LastSeen: time.Now(),
+	}))
+	ctx, cancel := context.WithCancelCause(t.Context())
+	defer cancel(nil)
+
+	ch, err := f.SendCompletion(ctx, channels.InstanceRef{}, slackMsg("again"))
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		entry, ok, err := routes.Get(t.Context(), key)
+		return err == nil && ok && entry.TaskID == string(taskInfo.TaskID)
+	}, 2*time.Second, 10*time.Millisecond, "the new task is recorded")
+	entry, _, err := routes.Get(t.Context(), key)
+	require.NoError(t, err)
+	require.True(t, entry.Delivered.IsZero(), "the stale delivery record went with the new task's record: %+v", entry.Delivered)
+	cancel(channels.ErrShutdown)
+	drain(t, ch)
+}
+
 // A turn that ran to completion clears its record; a context cancelled after
 // the terminal delta (the channel tearing the turn down) does not cancel the
 // completed task.
@@ -1010,11 +1042,13 @@ func TestFacade_CompletedTurnClearsTheRecordAndIsNotCanceled(t *testing.T) {
 // artifacts are rendered as the answer; the record is cleared afterwards.
 func TestFacade_ResumeTurnDeliversAFinishedTask(t *testing.T) {
 	key := store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700.0001"}
+	delivered := store.Delivered{TextLen: 11, ToolSteps: 2, ToolOrder: []string{"get"}, ToolCounts: map[string]int{"get": 2}}
 	seed := func(t *testing.T, agent *fakeAgent) (*channels.Facade, store.Store) {
 		f, routes := newA2AFacade(agent)
 		require.NoError(t, routes.Put(t.Context(), key, store.Entry{
 			AgentRef: "kagent/worker", AgentInstanceID: "inst-1", TaskID: "task-7",
 			Resume:    map[string]string{"slack_user": "U1"},
+			Delivered: delivered,
 			CreatedAt: time.Now(), LastSeen: time.Now(),
 		}))
 		return f, routes
@@ -1036,6 +1070,7 @@ func TestFacade_ResumeTurnDeliversAFinishedTask(t *testing.T) {
 		require.Equal(t, "U1", turns[0].Msg.Resume["slack_user"])
 		require.Equal(t, "1700.0001", turns[0].Msg.ThreadID)
 		require.Equal(t, "kagent/worker", turns[0].Msg.AgentRef)
+		require.Equal(t, delivered, turns[0].Delivered, "what the previous process posted travels with the turn")
 		none, err := f.InFlightTurns(t.Context(), "web")
 		require.NoError(t, err)
 		require.Empty(t, none, "other channels' bindings are not listed")
@@ -1058,6 +1093,7 @@ func TestFacade_ResumeTurnDeliversAFinishedTask(t *testing.T) {
 		require.NoError(t, err)
 		require.True(t, ok)
 		require.Equal(t, "inst-1", entry.AgentInstanceID, "the binding stays")
+		require.True(t, entry.Delivered.IsZero(), "the delivery record goes with the task")
 		require.Empty(t, entry.TaskID, "the delivered turn is no longer in flight")
 		_, ok, err = f.InFlightTurn(t.Context(), slackMsg("again?"))
 		require.NoError(t, err)
