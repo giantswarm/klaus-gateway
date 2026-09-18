@@ -136,18 +136,29 @@ type Review struct {
 	Team string `json:"team"`
 	Text string `json:"text"`
 	Link string `json:"link,omitempty"`
+	// Actor is the email of the person whose action the review decides; ""
+	// for a review without one. Their own approval is refused.
+	Actor string `json:"actor,omitempty"`
+	// PullRequests are the pull requests the change lands as, as URLs.
+	PullRequests []string `json:"pull_requests,omitempty"`
 	// Tool and Arguments are the muster tool call a member's approval makes,
 	// verbatim, under that member's identity.
 	Tool      string         `json:"tool"`
 	Arguments map[string]any `json:"arguments,omitempty"`
+	// DenyTool and DenyArguments are the call a member's denial makes, with
+	// the typed reason added; "" for a review without a Deny button.
+	DenyTool      string         `json:"deny_tool,omitempty"`
+	DenyArguments map[string]any `json:"deny_arguments,omitempty"`
 
-	// DecidedBy is the user whose approval is in flight or done; "" while the
+	// DecidedBy is the user whose decision is in flight or done; "" while the
 	// review is open. ClaimedAt is when that user's click took the review.
 	DecidedBy string    `json:"decided_by,omitempty"`
 	ClaimedAt time.Time `json:"claimed_at,omitzero"`
-	// Done is set once the approval went through; the record then stays until
-	// its TTL so a late click is told who decided.
-	Done bool `json:"done,omitempty"`
+	// Done is set once the decision went through; the record then stays until
+	// its TTL so a late click is told who decided. Denied says the decision
+	// in flight or done is a denial.
+	Done   bool `json:"done,omitempty"`
+	Denied bool `json:"denied,omitempty"`
 	// Status is the line the team reads under the buttons: the latest attempt
 	// that did not decide the review. "" shows none.
 	Status string `json:"status,omitempty"`

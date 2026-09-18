@@ -1,8 +1,10 @@
 // Package reviews is the inbound endpoint through which a manager posts a
-// team review or a notice into a team's channel:
+// team review or a notice into a team's channel, and an action's result into
+// its review's thread:
 //
-//	POST /reviews  -- an ask with an Approve button and the tool call it makes
-//	POST /notices  -- a message without a decision
+//	POST /reviews               -- an ask with Approve (and Deny) buttons and the tool calls they make
+//	POST /notices               -- a message without a decision
+//	POST /reviews/{id}/results  -- the outcome of the action, as a follow-up in the review's thread
 //
 // The caller is a service identity: a Kubernetes ServiceAccount whose
 // projected token the API server verifies (TokenReview), allow-listed by
@@ -43,12 +45,14 @@ type Handler struct {
 
 const maxBodyBytes = 1 << 20
 
-// Mount attaches POST /reviews and POST /notices to r.
+// Mount attaches POST /reviews, POST /notices and POST /reviews/{id}/results
+// to r.
 func (h *Handler) Mount(r chi.Router) {
 	if h.Logger == nil {
 		h.Logger = slog.Default()
 	}
 	r.Post("/reviews", h.postReview)
+	r.Post("/reviews/{id}/results", h.postResult)
 	r.Post("/notices", h.postNotice)
 }
 
@@ -67,12 +71,13 @@ func (h *Handler) postReview(w http.ResponseWriter, r *http.Request) {
 	}
 	receipt, err := h.Poster.PostTeamReview(r.Context(), review)
 	if err != nil {
-		h.Logger.Error("team review: post failed", "caller", caller.Username, "team", review.Team, "channel", review.Channel, "error", err)
+		h.Logger.Error("team review: post failed", "caller", caller.Username, "team", review.Team, "channel", review.Channel, "notice_channel", review.NoticeChannel, "error", err)
 		http.Error(w, "posting the review failed", http.StatusBadGateway)
 		return
 	}
 	h.Logger.Info("team review posted", "record", "team_review_posted",
-		"caller", caller.Username, "team", review.Team, "channel", receipt.Channel, "ts", receipt.TS, "review", receipt.ID, "tool", review.Approve.Tool)
+		"caller", caller.Username, "team", review.Team, "channel", receipt.Channel, "ts", receipt.TS, "review", receipt.ID,
+		"tool", review.Approve.Tool, "deny_tool", review.Deny.Tool, "actor", review.Actor, "pull_requests", len(review.PullRequests), "notice_ts", receipt.NoticeTS)
 	writeReceipt(w, receipt)
 }
 
@@ -97,6 +102,37 @@ func (h *Handler) postNotice(w http.ResponseWriter, r *http.Request) {
 	}
 	h.Logger.Info("team notice posted", "record", "team_notice_posted",
 		"caller", caller.Username, "team", notice.Team, "channel", receipt.Channel, "ts", receipt.TS)
+	writeReceipt(w, receipt)
+}
+
+// postResult posts an action's outcome into its review's thread. A review the
+// gateway holds no record of — unknown, or past its seven days — is a 404.
+func (h *Handler) postResult(w http.ResponseWriter, r *http.Request) {
+	caller, ok := h.authenticate(w, r)
+	if !ok {
+		return
+	}
+	id := chi.URLParam(r, "id")
+	var result channels.TeamReviewResult
+	if !decodeBody(w, r, &result) {
+		return
+	}
+	if err := result.Validate(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	receipt, err := h.Poster.PostTeamReviewResult(r.Context(), id, result)
+	switch {
+	case errors.Is(err, channels.ErrReviewNotFound):
+		http.Error(w, "no such review; it may have expired", http.StatusNotFound)
+		return
+	case err != nil:
+		h.Logger.Error("team review result: post failed", "caller", caller.Username, "review", id, "error", err)
+		http.Error(w, "posting the result failed", http.StatusBadGateway)
+		return
+	}
+	h.Logger.Info("team review result posted", "record", "team_review_result_posted",
+		"caller", caller.Username, "review", id, "channel", receipt.Channel, "ts", receipt.TS)
 	writeReceipt(w, receipt)
 }
 

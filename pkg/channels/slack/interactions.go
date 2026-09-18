@@ -198,8 +198,11 @@ func (a *Adapter) routeInteraction(ctx context.Context, payload interactionPaylo
 		return
 	}
 	if payload.Type == payloadTypeViewSubmission {
-		if payload.View.CallbackID == askAgentCallbackID {
+		switch payload.View.CallbackID {
+		case askAgentCallbackID:
 			a.handleAskAgentSubmission(ctx, payload)
+		case teamReviewDenyCallbackID:
+			a.handleTeamReviewDenial(ctx, payload)
 		}
 		return
 	}
@@ -231,6 +234,11 @@ func (a *Adapter) routeInteraction(ctx context.Context, payload interactionPaylo
 		// A team review has no thread and no initiator: the decision rule is
 		// the team's, resolved against the review record, not the thread.
 		a.handleTeamReviewDecision(ctx, payload.Channel.ID, payload.Container.MessageTS, payload.User.ID, action.Value)
+		return
+	case teamReviewDeny:
+		// The Deny click opens the reason modal; the decision is made on its
+		// submission (teamReviewDenyCallbackID above).
+		a.handleTeamReviewDenyClick(ctx, payload.Channel.ID, payload.Container.MessageTS, payload.User.ID, payload.TriggerID, action.Value)
 		return
 	}
 
