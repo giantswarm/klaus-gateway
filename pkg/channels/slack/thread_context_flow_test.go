@@ -583,8 +583,7 @@ func TestThreadContext_UnexpectedFieldShapeKeepsTheThread(t *testing.T) {
 		return `{"ok":true,"messages":[
 		 {"ts":"100.000","bot_id":"B1","username":"PagerDuty","subtype":"bot_message","text":"TRIGGERED #4412","files":"none",
 		  "blocks":[{"type":"section","text":{"type":"mrkdwn","text":"pod crashlooping"},"fields":"oops"}],"reply_count":1},
-		 {"ts":"101.000","user":"U2","text":"restarts every 40 s"},
-		 {"ts":"103.000","user":"U1","text":"asked SRE Agent: which release introduced it?"}]}`
+		 {"ts":"101.000","user":"U2","text":"restarts every 40 s"}]}`
 	})
 	fake.withUserNames(map[string]string{"U1": "Jose", "U2": "Marta"}, nil)
 	api := fake.server(t)
