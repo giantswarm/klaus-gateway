@@ -455,14 +455,23 @@ A turn ends early for one of two reasons, and the thread can tell them apart:
   working reaction is cleared, the ticker collapses into its receipt, and the task is **left
   running** at the controller. The new gateway process resubscribes to it on start (A2A
   `SubscribeToTask` on the thread's AgentInstance, under the same user's freshly minted
-  token) and streams what is left — or, when the task finished in between, posts the whole
-  answer — into the thread, with the working reaction back on the original message while it
-  does. A turn the start-up recovery cannot reach (its user signed out, the controller not up
-  yet after three tries ten seconds apart) is delivered by the thread's next reply, ahead of
-  that reply's own answer; a task the controller no longer has gets a short note instead.
+  token) and streams what is left into the thread, with the working reaction back on the
+  original message while it does. The answer text arrives whole when the task completes (the
+  resubscription does not replay what streamed before it), so the process continues the
+  reply where its predecessor left it rather than repeating it: the thread's row records, as
+  a turn streams, how much answer text has landed and the state of the open step receipt, and
+  the continuing process posts only the text after that mark — without the paragraph break
+  the cut leaves in front — while its receipt counts on from the recorded steps, names
+  included. A turn whose whole answer had landed before the restart closes with `_(done — the
+  reply above is complete)_`. A turn the start-up recovery cannot reach (its user signed out,
+  the controller not up yet after three tries ten seconds apart) is delivered by the thread's
+  next reply, ahead of that reply's own answer; a task the controller no longer has gets a
+  short note instead.
 
 The recovery rides on the thread's routing-store binding, which records the task in flight
-while a turn runs. It therefore needs a routing store that outlives the process
+while a turn runs, and with it what of the reply has landed (`delivered`: the answer text's
+length in bytes, the open receipt's step count and tool names, written after every flush and
+every step). It therefore needs a routing store that outlives the process
 (`routing.store: valkey` or `bolt`); with `memory` the record dies with the pod and
 the notice says so ("I cannot bring it into this thread"). The pod's
 `terminationGracePeriodSeconds` must leave room for the notice: the shutdown drains the HTTP

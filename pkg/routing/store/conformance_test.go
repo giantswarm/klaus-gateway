@@ -107,6 +107,7 @@ func runConformance(t *testing.T, factory func(t *testing.T) store.Store) {
 		in := store.Entry{
 			AgentRef: "kagent/sre-agent", AgentInstanceID: "i-1", TaskID: "task-7",
 			Resume:    map[string]string{"slack_user": "U1"},
+			Delivered: store.Delivered{TextLen: 42, ToolSteps: 3, ToolOrder: []string{"get", "list"}, ToolCounts: map[string]int{"get": 2, "list": 1}},
 			Initiator: "U1", Granted: []string{"U2", "U3"},
 			CreatedAt: now, LastSeen: now, TTL: 30 * 24 * time.Hour,
 		}
@@ -118,6 +119,7 @@ func runConformance(t *testing.T, factory func(t *testing.T) store.Store) {
 		require.Equal(t, in.AgentInstanceID, got.AgentInstanceID)
 		require.Equal(t, in.TaskID, got.TaskID)
 		require.Equal(t, in.Resume, got.Resume)
+		require.Equal(t, in.Delivered, got.Delivered)
 		require.Equal(t, in.Initiator, got.Initiator)
 		require.Equal(t, in.Granted, got.Granted)
 		require.Empty(t, got.Instance)

@@ -93,6 +93,11 @@ type Entry struct {
 	// Resume is the channel-private data needed to deliver TaskID's result
 	// after a restart (the channel adapter owns its keys). Set with TaskID.
 	Resume map[string]string `json:"resume,omitempty"`
+	// Delivered is what the channel adapter has already rendered of TaskID's
+	// turn, written as the turn streams, so the process that resubscribes
+	// after a restart continues the reply where this one left it instead of
+	// repeating it. Reset with TaskID, cleared with it.
+	Delivered Delivered `json:"delivered,omitzero"`
 	// Initiator is the user whose mention launched the thread, and Granted the
 	// users that initiator allowed into it. Written by the channel adapter:
 	// the facts it cannot recover after a restart.
@@ -102,6 +107,28 @@ type Entry struct {
 	CreatedAt time.Time     `json:"created_at"`
 	LastSeen  time.Time     `json:"last_seen"`
 	TTL       time.Duration `json:"ttl"`
+}
+
+// Delivered is the part of an in-flight turn's reply that has reached the
+// channel: the answer text that landed and the tool-step receipt still open.
+// A resubscription after a restart is handed the whole answer at completion
+// and no replay of the tool calls it missed, so this is what lets it post
+// only the text that follows and keep counting the steps.
+type Delivered struct {
+	// TextLen is the length, in bytes, of the answer text posted so far.
+	TextLen int `json:"text_len,omitempty"`
+	// ToolSteps counts the tool calls of the receipt segment open when the
+	// record was written, ToolOrder their distinct names in first-use order
+	// and ToolCounts the calls per name.
+	ToolSteps  int            `json:"tool_steps,omitempty"`
+	ToolOrder  []string       `json:"tool_order,omitempty"`
+	ToolCounts map[string]int `json:"tool_counts,omitempty"`
+}
+
+// IsZero reports whether nothing has been delivered; encoding/json's omitzero
+// drops the field then.
+func (d Delivered) IsZero() bool {
+	return d.TextLen == 0 && d.ToolSteps == 0
 }
 
 // Expired reports whether the entry has aged past its TTL relative to now.
