@@ -2306,9 +2306,10 @@ func TestSessionStatus_ChannelThreadGetsTheIndicator(t *testing.T) {
 // Slack attributes a session it creates to the author of the thread root
 // unless the call names someone, and that root is the bot's own message
 // whenever the picker opened the conversation. The writer names the thread's
-// owner on every status call — the creating one is what uses it — in a DM
-// thread and a channel thread alike.
-func TestSessionInitiator_SentOnTheStatusCalls(t *testing.T) {
+// owner on the processing call, the one that creates the session, in a DM
+// thread and a channel thread alike; the exit call carries nothing, since the
+// session exists by then.
+func TestSessionInitiator_SentOnTheCreatingCall(t *testing.T) {
 	for _, channel := range []string{"D1", "C1"} {
 		t.Run(channel, func(t *testing.T) {
 			ft := &fakeThread{}
@@ -2325,7 +2326,7 @@ func TestSessionInitiator_SentOnTheStatusCalls(t *testing.T) {
 
 			require.Equal(t, []string{"processing", "active"}, ft.statuses())
 			require.Equal(t, "U1", ft.statusCalls[0].initiator, "the creating call names the thread's owner")
-			require.Equal(t, "U1", ft.statusCalls[1].initiator)
+			require.Empty(t, ft.statusCalls[1].initiator, "the exit call decorates nothing")
 		})
 	}
 }
@@ -2569,16 +2570,38 @@ func TestSessionStatus_MissingScopeLatchesOff(t *testing.T) {
 // not_authorized means the bot is not a member of THIS channel, which says
 // nothing about the next one: the call fails softly and the latch stays unset,
 // so both ends of the turn are still attempted.
+//
+// A Slack verdict is never retried as it stands — it would only repeat. The
+// one exception is the decoration the creating call carries: the processing
+// call is sent again without the title and the initiator, so a turn whose
+// every call is refused makes three, not four. The exit call carries no
+// decoration and is sent once. The decoration warning names a decoration that
+// WAS the cause, so a bare call refused too leaves only the generic failure
+// line rather than blaming the title or the initiator for it.
 func TestSessionStatus_NotAuthorizedDoesNotLatch(t *testing.T) {
 	ft := &fakeThread{failStatus: "not_authorized"}
-	_, w, err := runSurfaceWriter(t, ft, "C1",
-		toolCallDelta("alpha"),
-		doneDelta(),
-	)
-	require.NoError(t, err)
+	srv := httptest.NewServer(ft.handler())
+	t.Cleanup(srv.Close)
+	logs := &recordingHandler{}
+
+	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "C1", "", "1.0", detailsOn, slog.New(logs))
+	w.adapter = &Adapter{}
+	w.sessionTitle, w.sessionInitiator = "Investigate CPU alert on gazelle", "U1"
+	ch := make(chan channels.OutboundDelta, 2)
+	ch <- toolCallDelta("alpha")
+	ch <- doneDelta()
+	close(ch)
+	require.NoError(t, w.run(t.Context(), ch))
 
 	require.False(t, w.adapter.sessionStatusUnsupported.Load())
-	require.Equal(t, []string{"processing", "active"}, ft.statuses())
+	require.Equal(t, []string{"processing", "processing", "active"}, ft.statuses(),
+		"the refused decoration earns one bare retry; the undecorated exit call earns none")
+	require.Equal(t, "U1", ft.statusCalls[0].initiator)
+	require.Empty(t, ft.statusCalls[1].initiator, "the retry is bare")
+	require.Empty(t, ft.statusCalls[1].title)
+	require.Nil(t, logs.find("msg", "slack: agent session title or initiator rejected, setting the status bare"),
+		"the bare call was refused too, so the decoration was not the cause")
+	require.NotNil(t, logs.find("msg", "slack: set agent session status failed"))
 }
 
 // A transport failure on the idle call is retried: the indicator does not

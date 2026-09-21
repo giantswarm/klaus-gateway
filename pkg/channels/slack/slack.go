@@ -1575,7 +1575,7 @@ func (a *Adapter) handleSessionStopped(ctx context.Context, inner slackInnerEven
 	// becomes the thread's initiator, and only they (or someone they let in)
 	// may interrupt the agent there.
 	access := a.accessPolicy()
-	access.SetInitiator(ctx, inner.Channel, inner.ThreadTS, inner.User)
+	initiator := access.SetInitiator(ctx, inner.Channel, inner.ThreadTS, inner.User)
 	if !access.Allowed(ctx, inner.Channel, inner.ThreadTS, inner.User) {
 		a.Logger.Debug("slack: stop button press refused, presser not permitted in this thread",
 			"channel", inner.Channel, "thread", inner.ThreadTS, "user", inner.User)
@@ -1592,7 +1592,7 @@ func (a *Adapter) handleSessionStopped(ctx context.Context, inner slackInnerEven
 		}
 		a.Logger.Debug("slack: stop button pressed with nothing running, clearing the indicator",
 			"channel", inner.Channel, "thread", inner.ThreadTS, "user", inner.User)
-		a.setSessionStatus(ctx, inner.Channel, inner.ThreadTS, sessionActive)
+		a.setSessionStatus(ctx, inner.Channel, inner.ThreadTS, sessionActive, initiator)
 		return
 	}
 	notice := fmt.Sprintf(stopStoppedByNotice, inner.User)
@@ -1605,12 +1605,14 @@ func (a *Adapter) handleSessionStopped(ctx context.Context, inner slackInnerEven
 // where no batchedWriter exists to own it. It borrows a writer that will never
 // write so the downgrade latch, the idle retry and the log lines stay in one
 // place — the status call needs nothing of a writer but its channel and thread.
-func (a *Adapter) setSessionStatus(ctx context.Context, channel, threadTS string, status sessionStatus) {
+//
+// initiator is the thread's owner, which this call names should it be the one
+// that creates the session; a caller that does not hold one already passes ""
+// rather than spend a store read on it.
+func (a *Adapter) setSessionStatus(ctx context.Context, channel, threadTS string, status sessionStatus, initiator string) {
 	w := newBatchedWriterWithClient(a.apiClient(), channel, "", threadTS, detailsOff, a.Logger)
 	w.adapter = a
-	// These calls can create the session too (a thread whose turns all predate
-	// the session), so the thread's owner rides along when the store knows one.
-	w.sessionInitiator = a.accessPolicy().Initiator(ctx, channel, threadTS)
+	w.sessionInitiator, w.statusOnly = initiator, true
 	w.setSessionStatus(ctx, status)
 }
 
@@ -2070,7 +2072,7 @@ func (a *Adapter) dispatchFrom(ctx context.Context, msg channels.InboundMessage,
 		a.attachThreadContext(ctx, &msg, slackChannel, slackUser)
 	}
 
-	return a.runTurn(ctx, msg, slackChannel, msg.MessageID, thinkingPlaceholder, task, agentSource, turnHooks{
+	return a.runTurn(ctx, msg, slackChannel, msg.MessageID, thinkingPlaceholder, initiator, task, agentSource, turnHooks{
 		onIdentityResolved: func(msg channels.InboundMessage) {
 			// A reply into a thread this process did not start may be resuming a
 			// kagent session that has since been evicted. Announce the "starting
@@ -2391,7 +2393,9 @@ func (a *Adapter) applyInitiatorIdentity(ctx context.Context, msg *channels.Inbo
 // continues it after a restart (deliverInFlight), the zero value otherwise.
 // slackUser is the RAW Slack user ID (never the resolved email in msg.Subject),
 // so the ephemeral connector prompt reaches a valid chat.postEphemeral user.
-func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, deltas <-chan channels.OutboundDelta, msg channels.InboundMessage, slackUser, slackChannel, threadID, triggerTS, placeholder string, carried channels.TurnUsage, delivered store.Delivered) (err error) {
+// initiator is the thread's owner as the caller's own access check read it (""
+// when the caller holds none); it names the agent session's starter.
+func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, deltas <-chan channels.OutboundDelta, msg channels.InboundMessage, slackUser, slackChannel, threadID, triggerTS, placeholder, initiator string, carried channels.TurnUsage, delivered store.Delivered) (err error) {
 	// A turn dispatched here carries its timeline from the events POST on; the
 	// delivery of a turn a previous process left running (deliverInFlight) has
 	// none yet and gets one from here, so it leaves a turn_complete record too.
@@ -2417,8 +2421,8 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 	// Slack attributes a session it creates to the thread root's author unless
 	// told otherwise, and the root is the bot's own message when the picker
 	// opened the conversation. The thread owner is who actually started it; a
-	// thread with no owner recorded yet is this sender's.
-	if w.sessionInitiator = a.accessPolicy().Initiator(ctx, slackChannel, threadID); w.sessionInitiator == "" {
+	// thread with no owner in hand is this sender's.
+	if w.sessionInitiator = initiator; w.sessionInitiator == "" {
 		w.sessionInitiator = slackUser
 	}
 	// A stream in a channel names the person it answers; a DM stream must not,

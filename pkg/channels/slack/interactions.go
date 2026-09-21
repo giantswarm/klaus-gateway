@@ -499,7 +499,7 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 		// prompt died with the task, and its session would otherwise keep
 		// saying "waiting for you" over a prompt nobody can answer.
 		_ = client.chatUpdateBlocks(ctx, slackChannel, messageTS, "_Already answered._")
-		a.setSessionStatus(ctx, slackChannel, threadID, sessionActive)
+		a.setSessionStatus(ctx, slackChannel, threadID, sessionActive, "")
 		return nil
 	}
 
@@ -593,7 +593,7 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 	// the failure note tells the user a typed reply can still resume it. The
 	// empty triggerTS selects text progress: a button resume has no user
 	// message to react to.
-	return a.runTurn(ctx, msg, slackChannel, "", "_continuing…_", task, agentSourceTask, turnHooks{
+	return a.runTurn(ctx, msg, slackChannel, "", "_continuing…_", "", task, agentSourceTask, turnHooks{
 		onFailure: func() { a.postResumeFailureNote(ctx, client, slackChannel, threadID) },
 	})
 }

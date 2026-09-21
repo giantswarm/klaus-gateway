@@ -163,9 +163,14 @@ type batchedWriter struct {
 	sessionTitle string
 	// sessionInitiator is the Slack user ID the agent session belongs to: the
 	// thread's owner, not whoever is speaking this turn. Slack applies it when
-	// the status call creates the session, so it rides on every call and only
-	// the creating one uses it.
+	// the status call creates the session, so it rides on the same call as the
+	// title.
 	sessionInitiator string
+	// statusOnly marks a writer borrowed to set the session status from
+	// outside a turn (Adapter.setSessionStatus), which writes nothing. Its one
+	// call is the call that can create the session, so it carries the
+	// initiator although it is not a processing call.
+	statusOnly bool
 	// callToolInner maps a call_tool invocation's CallID to the inner muster
 	// tool it targets, taken from the call arguments. Result deltas carry no
 	// arguments, so this is how a call_tool result is attributed to
@@ -827,15 +832,14 @@ func (w *batchedWriter) setSessionStatus(ctx context.Context, status sessionStat
 	if w.adapter == nil || w.adapter.sessionStatusUnsupported.Load() {
 		return
 	}
-	// The title rides on the processing call alone: it is the only one that can
-	// create the session, and Slack ignores a title on an existing one. The
-	// initiator rides on every call instead — a status set from outside a turn
-	// can create the session too, and it is never a processing one.
-	title := ""
-	if status == sessionProcessing {
-		title = w.sessionTitle
+	// The title and the initiator ride on the call that can CREATE the session
+	// and nowhere else, because Slack ignores both on a session that exists:
+	// a turn's processing call, whose exit call always follows it, or the one
+	// call of a writer borrowed from outside a turn.
+	title, initiator := "", ""
+	if status == sessionProcessing || w.statusOnly {
+		title, initiator = w.sessionTitle, w.sessionInitiator
 	}
-	initiator := w.sessionInitiator
 	base := context.WithoutCancel(ctx)
 	var err error
 	for attempt := 1; ; attempt++ {
@@ -850,13 +854,18 @@ func (w *batchedWriter) setSessionStatus(ctx context.Context, status sessionStat
 	// Slack gave a verdict against the decorated call. The title and the
 	// initiator are decoration; the status is what keeps the indicator honest,
 	// so send it once more bare rather than lose this turn's indicator to a
-	// field Slack will not take.
+	// field Slack will not take. Only a bare call that goes through proves the
+	// decoration was the cause, so only then is it named; a bare call that
+	// fails too is reported once by the generic line below.
 	if err != nil && (title != "" || initiator != "") && !errors.Is(err, errSessionStatusTransient) && !errors.Is(err, errSessionStatusUnsupported) {
-		w.logger.Warn("slack: agent session title or initiator rejected, setting the status bare",
-			"title_runes", utf8.RuneCountInString(title), "initiator", initiator, "error", err)
 		cctx, cancel := context.WithTimeout(base, sessionStatusTimeout)
-		err = w.client.setSessionStatus(cctx, w.channel, w.threadTS, status, "", "")
+		bare := w.client.setSessionStatus(cctx, w.channel, w.threadTS, status, "", "")
 		cancel()
+		if bare == nil {
+			w.logger.Warn("slack: agent session title or initiator rejected, setting the status bare",
+				"title_runes", utf8.RuneCountInString(title), "initiator", initiator, "error", err)
+		}
+		err = bare
 	}
 	switch {
 	case err == nil:
