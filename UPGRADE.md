@@ -17,9 +17,8 @@ a reply without a mention in one of the former gets one private line instead of 
 expiry is that lifetime, so the keys of threads nobody writes in are held twice as long as before
 — the row is a few hundred bytes, and the count is the number of Slack threads the gateway has
 ever answered in, not a per-message growth. Set `routing.threadTTL` lower if that matters; the
-notice then names the lifetime you set. Rows written before this release keep their single
-lifetime, so they expire when their conversation ends, exactly as today, and replies in them stay
-silent.
+notice then names the lifetime you set. A thread's row adopts the configured lifetime on its next
+message, so a change to `routing.threadTTL` reaches the threads people keep using.
 
 ## Next — two new Slack scopes for the thread a conversation opens in
 

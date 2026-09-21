@@ -104,10 +104,10 @@ func (f *Facade) ThreadClosed(ctx context.Context, channel, channelID, threadID 
 
 // UpdateThreadRecord applies mutate to the thread's row through the store's
 // per-key serialisation and, when mutate reports a change, stamps LastSeen =
-// now, CreatedAt when unset and the facade's storeTTL when the row has no
-// TTL: every handled message slides the thread's lifetime. A row whose
-// conversation has ended is handed to mutate empty and as not found, so the
-// write starts the thread over instead of merging into it.
+// now, CreatedAt when unset and the facade's storeTTL: every handled message
+// slides the thread's lifetime and brings the row to the configured one. A
+// row whose conversation has ended is handed to mutate empty and as not
+// found, so the write starts the thread over instead of merging into it.
 func (f *Facade) UpdateThreadRecord(ctx context.Context, channel, channelID, threadID string, mutate func(e *store.Entry, found bool) bool) error {
 	if f == nil || f.Routes == nil {
 		return errNoThreadStore
@@ -122,13 +122,12 @@ func (f *Facade) UpdateThreadRecord(ctx context.Context, channel, channelID, thr
 		if e.CreatedAt.IsZero() {
 			e.CreatedAt = now
 		}
-		// A TTL already on the row is kept: the router's route TTL, and the
-		// single thread lifetime rows written before storeTTL existed. Those
-		// older rows expire when their conversation ends rather than outliving
-		// it, so a reply in one of them stays silent, as it did before.
-		if e.TTL <= 0 {
-			e.TTL = f.storeTTL()
-		}
+		// The row's expiry is re-stamped on every change, not only when it is
+		// unset: a row written under an earlier lifetime — or under an
+		// earlier --thread-ttl — adopts the configured one on its next
+		// message. A thread nobody writes in again keeps the TTL it has and
+		// expires under it.
+		e.TTL = f.storeTTL()
 		return true
 	})
 	if err != nil {

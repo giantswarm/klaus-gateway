@@ -86,9 +86,44 @@ func TestThreadRecord_UpdateMergesIntoAnInstanceRoute(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, "klaus-1", e.Instance, "the route's instance survives the record write")
 	require.Equal(t, created, e.CreatedAt)
-	require.Equal(t, 24*time.Hour, e.TTL, "a TTL the router set is kept")
+	require.Equal(t, 2*DefaultThreadTTL, e.TTL, "the thread's lifetime governs the row it shares with the route")
 	require.WithinDuration(t, time.Now(), e.LastSeen, time.Minute)
 	require.Equal(t, "U1", e.Initiator)
+}
+
+// A row carrying a TTL from an earlier release, or from an earlier setting of
+// --thread-ttl, adopts the configured one on its next message. A row nobody
+// writes to again keeps the TTL it has.
+func TestThreadRecord_StaleTTLIsRestamped(t *testing.T) {
+	ctx := context.Background()
+	f := &Facade{Routes: memory.New(), ThreadTTL: DefaultThreadTTL}
+	key := store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "T1"}
+	now := time.Now()
+	require.NoError(t, f.Routes.Put(ctx, key, store.Entry{
+		Initiator: "U1", AgentRef: "sre-agent", CreatedAt: now, LastSeen: now, TTL: DefaultThreadTTL,
+	}))
+
+	e, _, err := f.ThreadRecord(ctx, "slack", "C1", "T1")
+	require.NoError(t, err)
+	require.Equal(t, DefaultThreadTTL, e.TTL, "the row still carries the lifetime it was written with")
+
+	require.NoError(t, f.UpdateThreadRecord(ctx, "slack", "C1", "T1", func(e *store.Entry, _ bool) bool {
+		e.Granted = append(e.Granted, "U2")
+		return true
+	}))
+	e, _, err = f.ThreadRecord(ctx, "slack", "C1", "T1")
+	require.NoError(t, err)
+	require.Equal(t, 2*DefaultThreadTTL, e.TTL, "the next message brings the row to the configured lifetime")
+	require.Equal(t, "U1", e.Initiator, "and changes nothing else about it")
+	require.Equal(t, "sre-agent", e.AgentRef)
+
+	// A mutate that writes nothing leaves the row, stale TTL and all.
+	f2 := &Facade{Routes: memory.New(), ThreadTTL: DefaultThreadTTL}
+	require.NoError(t, f2.Routes.Put(ctx, key, store.Entry{Initiator: "U1", CreatedAt: now, LastSeen: now, TTL: time.Hour}))
+	require.NoError(t, f2.UpdateThreadRecord(ctx, "slack", "C1", "T1", func(*store.Entry, bool) bool { return false }))
+	e, _, err = f2.ThreadRecord(ctx, "slack", "C1", "T1")
+	require.NoError(t, err)
+	require.Equal(t, time.Hour, e.TTL)
 }
 
 // A thread nobody wrote to for longer than the lifetime is closed: it reads

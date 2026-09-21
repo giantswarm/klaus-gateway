@@ -186,9 +186,8 @@ creates one, which a turn that switches agents does mid-thread.
   it, every reply gets it, and nothing is written to the store for it. Past twice the lifetime
   the row is gone and the thread is a stranger again: replies are ignored without a word, as for
   any thread the bot was never in. There is no warning before the end, and no sweep: the notice
-  is posted when somebody writes, which is the moment it is useful. Threads whose row was
-  written before this behaviour existed keep their single-lifetime expiry, so their replies stay
-  silent.
+  is posted when somebody writes, which is the moment it is useful. A thread's row adopts the
+  configured lifetime on its next message.
 
 ### Two auth layers
 
