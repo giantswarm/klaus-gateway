@@ -181,13 +181,17 @@ creates one, which a turn that switches agents does mid-thread.
   twice the lifetime (180 days by default; `0` still never expires), and while it is there the
   gateway knows the difference between a thread whose conversation ended and a thread it was
   never in. So an un-mentioned reply in one of the former gets one private line — _"This
-  conversation ended after 90 days without messages. Mention me to start a new one."_ (the
-  configured lifetime is named) — instead of silence. It is ephemeral, so only its author sees
-  it, every reply gets it, and nothing is written to the store for it. Past twice the lifetime
-  the row is gone and the thread is a stranger again: replies are ignored without a word, as for
-  any thread the bot was never in. There is no warning before the end, and no sweep: the notice
-  is posted when somebody writes, which is the moment it is useful. A thread's row adopts the
-  configured lifetime on its next message.
+  conversation ended after 90 days without messages. Mention me to start a new one."_ — instead
+  of silence. The sentence names the configured lifetime exactly, as the count of the largest
+  unit it is a whole multiple of: `--thread-ttl=36h` reads "36 hours", not "1 day", and `90m`
+  reads "90 minutes". It is ephemeral, so only its author sees it, every reply gets it, and
+  nothing is written to the store for it. A reply that **does** mention the bot gets no notice —
+  it starts the conversation over, and Slack delivers it twice (as a mention and as a plain
+  message), so the notice would answer the mention with a request to mention. Past twice the
+  lifetime the row is gone and the thread is a stranger again: replies are ignored without a
+  word, as for any thread the bot was never in. There is no warning before the end, and no
+  sweep: the notice is posted when somebody writes, which is the moment it is useful. A
+  thread's row adopts the configured lifetime on its next message.
 
 ### Two auth layers
 

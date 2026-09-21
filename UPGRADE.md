@@ -20,6 +20,15 @@ ever answered in, not a per-message growth. Set `routing.threadTTL` lower if tha
 notice then names the lifetime you set. A thread's row adopts the configured lifetime on its next
 message, so a change to `routing.threadTTL` reaches the threads people keep using.
 
+**`routing.defaultTTL` no longer governs a Slack thread's row.** A Slack thread's row is the same
+row as its Klaus-instance route (the key's user slot is empty, because a thread is shared by its
+participants), and until now a write to it kept the TTL the router had stamped —
+`routing.defaultTTL`, 24 hours by default. It is now stamped with twice the thread lifetime like
+every other thread row, so on the Klaus (non-kagent) path a Slack row that lived 24 hours lives
+180 days. That also corrects a fault of its own: the thread's initiator and the grants they gave
+died after 24 hours, and the thread then asked for consent again while people were still talking
+in it. `routing.defaultTTL` still governs the web and CLI routes, which are keyed per user.
+
 ## Next — two new Slack scopes for the thread a conversation opens in
 
 A conversation that opens inside an existing thread now hands that thread's earlier messages to
