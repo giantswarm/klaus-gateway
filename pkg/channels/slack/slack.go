@@ -163,6 +163,11 @@ type Adapter struct {
 	// stopped by the user, recovered), which is how the streaming API's tier-2
 	// budget on start and stop is watched. Nil records nothing.
 	Streams StreamRecorder
+	// RateLimits counts the Web API calls Slack answers with a 429, by method
+	// and by whether the client retried or gave up. A retried 429 is invisible
+	// otherwise, so this is what says a workspace is being throttled. Nil
+	// records nothing.
+	RateLimits RateLimitRecorder
 
 	gw      channels.Gateway
 	baseCtx context.Context // adapter lifecycle ctx, captured in Start; OnUserLinked's background work (login-replay dispatch and the sign-in confirmation POST) derives from it so shutdown cancels it
@@ -685,7 +690,7 @@ func (a *Adapter) apiClient() *slackAPIClient {
 	if base == "" {
 		base = slackAPIBase
 	}
-	return &slackAPIClient{botToken: a.Secrets.BotToken, baseURL: base, logger: a.Logger, customizeUnsupported: &a.customizeUnsupported}
+	return &slackAPIClient{botToken: a.Secrets.BotToken, baseURL: base, logger: a.Logger, customizeUnsupported: &a.customizeUnsupported, rateLimits: a.RateLimits}
 }
 
 // AgentCardResolver yields an agent's display identity from its A2A AgentCard.

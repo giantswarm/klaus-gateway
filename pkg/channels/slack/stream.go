@@ -2199,6 +2199,21 @@ func (w *batchedWriter) noteStream(event string) {
 	w.adapter.Streams.RecordSlackStream(event)
 }
 
+// RateLimitRecorder counts the Web API calls Slack answers with a 429; the
+// observability package implements it with a labelled counter. Nil is fine
+// wherever a recorder is optional.
+type RateLimitRecorder interface {
+	RecordSlackRateLimit(method, outcome string)
+}
+
+// What call() did with a 429 (see RateLimitRecorder): it waited Retry-After
+// and tried again, or it gave up — the attempt budget spent or the requested
+// wait over rateLimitRetryCap — and failed the call.
+const (
+	rateLimitRetried   = "retried"
+	rateLimitExhausted = "exhausted"
+)
+
 // slackHTTPClient bounds every Slack Web API call. Without a timeout a
 // blackholed connection blocks the calling goroutine indefinitely; some call
 // sites hold the per-thread slot while calling (e.g. the users.info lookup
@@ -2252,6 +2267,19 @@ type slackAPIClient struct {
 	// workspace's install predates chat:write.customize). Nil in tests that
 	// construct the client directly.
 	customizeUnsupported *atomic.Bool
+	// rateLimits, when set, counts every 429 Slack answers with. Nil in tests
+	// that construct the client directly; every client the adapter builds
+	// carries the adapter's recorder.
+	rateLimits RateLimitRecorder
+}
+
+// noteRateLimited counts one 429 under what the client did about it. A client
+// built without a recorder counts nothing.
+func (c *slackAPIClient) noteRateLimited(method, outcome string) {
+	if c.rateLimits == nil {
+		return
+	}
+	c.rateLimits.RecordSlackRateLimit(method, outcome)
 }
 
 // identityRejectedErr reports whether err is Slack rejecting a post because of
@@ -3624,9 +3652,17 @@ func (c *slackAPIClient) call(ctx context.Context, method, contentType, payload 
 		if resp.StatusCode == http.StatusTooManyRequests {
 			_ = resp.Body.Close()
 			wait := retryAfter(resp.Header)
+			// Debug, not Warn: a retried 429 is routine pacing, and the very
+			// condition this records is when a Warn would flood the log. The
+			// counter is the signal; this line is for diagnosing one call.
+			if c.logger != nil {
+				c.logger.Debug("slack: rate limited", "method", method, "wait", wait, "attempt", attempt)
+			}
 			if attempt >= maxAttempts || wait > rateLimitRetryCap {
+				c.noteRateLimited(method, rateLimitExhausted)
 				return nil, fmt.Errorf("slack %s: rate limited (retry after %s)", method, wait)
 			}
+			c.noteRateLimited(method, rateLimitRetried)
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()

@@ -44,6 +44,12 @@ type Metrics struct {
 	// started/stopped rates are what says how close a workspace is to that
 	// ceiling.
 	SlackStreamsTotal *prometheus.CounterVec
+	// SlackRateLimitedTotal counts the Slack Web API calls answered with HTTP
+	// 429, by method and by what the client did about it, fed by
+	// RecordSlackRateLimit. A 429 the client waits out and retries leaves no
+	// other trace, so this counter is what says whether a workspace is being
+	// throttled at all.
+	SlackRateLimitedTotal *prometheus.CounterVec
 }
 
 // NewMetrics builds and registers the default set of collectors.
@@ -86,15 +92,22 @@ func NewMetrics() *Metrics {
 		Help:      "Slack streamed replies, labelled by lifecycle event (started, stopped, stopped_by_user, recovered).",
 	}, []string{labelEvent})
 
-	reg.MustRegister(reqs, dur, turns, phase, streams)
+	rateLimited := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: metricNamespace,
+		Name:      "slack_rate_limited_total",
+		Help:      "Slack Web API calls answered with HTTP 429, labelled by method and by what the client did about it (retried, exhausted).",
+	}, []string{labelMethod, labelOutcome})
+
+	reg.MustRegister(reqs, dur, turns, phase, streams, rateLimited)
 
 	return &Metrics{
-		Registry:          reg,
-		RequestsTotal:     reqs,
-		RequestDuration:   dur,
-		TurnsTotal:        turns,
-		TurnPhase:         phase,
-		SlackStreamsTotal: streams,
+		Registry:              reg,
+		RequestsTotal:         reqs,
+		RequestDuration:       dur,
+		TurnsTotal:            turns,
+		TurnPhase:             phase,
+		SlackStreamsTotal:     streams,
+		SlackRateLimitedTotal: rateLimited,
 	}
 }
 
@@ -111,6 +124,13 @@ func (m *Metrics) RecordTurn(channel, outcome string, phases map[string]time.Dur
 // implements the Slack adapter's StreamRecorder.
 func (m *Metrics) RecordSlackStream(event string) {
 	m.SlackStreamsTotal.WithLabelValues(event).Inc()
+}
+
+// RecordSlackRateLimit counts one Slack Web API call Slack answered with a
+// 429, under the method and the outcome (retried, exhausted). It implements
+// the Slack adapter's RateLimitRecorder.
+func (m *Metrics) RecordSlackRateLimit(method, outcome string) {
+	m.SlackRateLimitedTotal.WithLabelValues(method, outcome).Inc()
 }
 
 // Handler exposes the Prometheus /metrics endpoint.

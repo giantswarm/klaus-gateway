@@ -189,6 +189,7 @@ func run(args []string) error {
 			ClearReactionOnDone: cfg.Slack.ClearReactionOnDone,
 			Turns:               metrics,
 			Streams:             metrics,
+			RateLimits:          metrics,
 		}
 		if cfg.A2A.Enabled {
 			slackAdapter.DefaultAgent = cfg.A2A.DefaultAgent

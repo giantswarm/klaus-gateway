@@ -47,6 +47,21 @@ func TestMetrics_RecordSlackStream(t *testing.T) {
 	require.Equal(t, 2, testutil.CollectAndCount(m.SlackStreamsTotal, "klaus_gateway_slack_stream_total"))
 }
 
+// RecordSlackRateLimit counts each rate-limited Web API call under its method
+// and what the client did about it, on the registry /metrics serves.
+func TestMetrics_RecordSlackRateLimit(t *testing.T) {
+	m := NewMetrics()
+	m.RecordSlackRateLimit("chat.appendStream", "retried")
+	m.RecordSlackRateLimit("chat.appendStream", "retried")
+	m.RecordSlackRateLimit("chat.appendStream", "exhausted")
+	m.RecordSlackRateLimit("chat.startStream", "retried")
+
+	require.Equal(t, float64(2), testutil.ToFloat64(m.SlackRateLimitedTotal.WithLabelValues("chat.appendStream", "retried")))
+	require.Equal(t, float64(1), testutil.ToFloat64(m.SlackRateLimitedTotal.WithLabelValues("chat.appendStream", "exhausted")))
+	require.Equal(t, float64(1), testutil.ToFloat64(m.SlackRateLimitedTotal.WithLabelValues("chat.startStream", "retried")))
+	require.Equal(t, 3, testutil.CollectAndCount(m.SlackRateLimitedTotal, "klaus_gateway_slack_rate_limited_total"), "one series per (method, outcome)")
+}
+
 // ParseHeaders reads the OTEL_EXPORTER_OTLP_HEADERS form and refuses an entry
 // that is not key=value.
 func TestParseHeaders(t *testing.T) {

@@ -29,7 +29,10 @@ with `started`, `stopped`, `stopped_by_user` and `recovered`; the `started` rate
 ceiling is the number to alert on, and a rising `recovered` means Slack is closing streams under
 the gateway. Expect `stopped_by_user` to stay at zero: it is defensive, and a Stop press was
 observed to leave the gateway's own `chat.stopStream` succeeding normally rather than answering
-with that code. A 429 is still paced by `Retry-After` and never fails a turn.
+with that code. A 429 is still paced by `Retry-After` and never fails a turn, and
+`klaus_gateway_slack_rate_limited_total{method,outcome}` now counts those 429s — `retried`
+when the pause absorbed one, `exhausted` when the call was given up — so throttling that used
+to leave no trace can be alerted on.
 
 ## Next — a Slack thread's row lives twice as long
 
