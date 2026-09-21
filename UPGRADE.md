@@ -4,6 +4,30 @@ Breaking or operator-visible changes between releases, newest first. The
 `CHANGELOG.md` lists every change; this file covers what an operator has to
 do or decide.
 
+## Next — Slack replies are streamed (chat.startStream)
+
+Agent replies are written with Slack's streaming API instead of a message edited every 250 ms:
+`chat.startStream` opens the answer on the turn's first text, `chat.appendStream` adds what has
+accumulated once a second, and `chat.stopStream` closes it carrying the session's exit status.
+Nothing to configure — no chart value, no flag, no new scope (`chat:write` already covers the
+three methods) — and no way to turn it off: **rollback is the previous image**.
+
+What people see change: the answer grows in place while Slack animates it; text lands on word
+boundaries, so half-written words no longer flicker; an answer over 12,000 characters still
+continues in a follow-up message; the working indicator clears together with the answer's last
+words; and in text-progress mode the `_thinking…_` placeholder is deleted once the answer has a
+message of its own. Two continuation cases read differently: a turn continued after a hard
+restart goes on in the message the previous process left open (after a graceful restart that
+message was already closed, so the continuation opens a new one), and a turn that resumes after
+an approval prompt writes its continuation as a **second message** instead of editing the first.
+
+What to watch: `chat.startStream` and `chat.stopStream` are **tier 2**, about 20 calls a minute
+for the whole app, which bounds a workspace to roughly 20 turn starts a minute — the appends are
+tier 4 and have plenty of headroom. `/metrics` exposes `klaus_gateway_slack_stream_total{event}`
+with `started`, `stopped`, `stopped_by_user` and `recovered`; the `started` rate against that
+ceiling is the number to alert on, and a rising `recovered` means Slack is closing streams under
+the gateway. A 429 is still paced by `Retry-After` and never fails a turn.
+
 ## Next — two new Slack scopes for the thread a conversation opens in
 
 A conversation that opens inside an existing thread now hands that thread's earlier messages to
