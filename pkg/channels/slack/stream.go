@@ -74,10 +74,10 @@ const (
 	methodChatAppendStream = "chat.appendStream"
 	methodChatStopStream   = "chat.stopStream"
 	// slackMarkdownBlockMax caps the text of one Block Kit markdown block and
-	// of one streamed message, Slack's 12 000-char limit. splitMarkdown budgets
-	// the fence auto-close and reopen inside this cap, so emitted chunks never
-	// exceed it; a streamed answer that reaches it rolls over into a new
-	// message.
+	// of one streamed message, Slack's 12 000-char limit. A narration post is
+	// split under it by splitMarkdown, fence close and reopen included; a
+	// streamed answer is cut at whitespace by cutPiece and rolls over into a
+	// new message when it reaches the cap.
 	slackMarkdownBlockMax = 12000
 	// slackFallbackTextMax caps a message's top-level text: chat.update refuses
 	// a text field over 4 000 characters (msg_too_long). On a markdown-block
