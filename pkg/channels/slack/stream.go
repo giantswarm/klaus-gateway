@@ -161,6 +161,11 @@ type batchedWriter struct {
 	// the status call creates the session and ignores it afterwards — so on
 	// every later turn it is empty and no title is sent.
 	sessionTitle string
+	// sessionInitiator is the Slack user ID the agent session belongs to: the
+	// thread's owner, not whoever is speaking this turn. Slack applies it when
+	// the status call creates the session, so it rides on every call and only
+	// the creating one uses it.
+	sessionInitiator string
 	// callToolInner maps a call_tool invocation's CallID to the inner muster
 	// tool it targets, taken from the call arguments. Result deltas carry no
 	// arguments, so this is how a call_tool result is attributed to
@@ -823,30 +828,34 @@ func (w *batchedWriter) setSessionStatus(ctx context.Context, status sessionStat
 		return
 	}
 	// The title rides on the processing call alone: it is the only one that can
-	// create the session, and Slack ignores a title on an existing one.
+	// create the session, and Slack ignores a title on an existing one. The
+	// initiator rides on every call instead — a status set from outside a turn
+	// can create the session too, and it is never a processing one.
 	title := ""
 	if status == sessionProcessing {
 		title = w.sessionTitle
 	}
+	initiator := w.sessionInitiator
 	base := context.WithoutCancel(ctx)
 	var err error
 	for attempt := 1; ; attempt++ {
 		cctx, cancel := context.WithTimeout(base, sessionStatusTimeout)
-		err = w.client.setSessionStatus(cctx, w.channel, w.threadTS, status, title)
+		err = w.client.setSessionStatus(cctx, w.channel, w.threadTS, status, title, initiator)
 		cancel()
 		if status == sessionProcessing || attempt >= sessionStatusIdleAttempts || !errors.Is(err, errSessionStatusTransient) {
 			break
 		}
 		time.Sleep(sessionStatusRetryBackoff * time.Duration(attempt))
 	}
-	// Slack gave a verdict against the titled call. The title is decoration;
-	// the status is what keeps the indicator honest, so send it once more bare
-	// rather than lose this turn's indicator to a title Slack will not take.
-	if err != nil && title != "" && !errors.Is(err, errSessionStatusTransient) && !errors.Is(err, errSessionStatusUnsupported) {
-		w.logger.Warn("slack: agent session title rejected, setting the status untitled",
-			"title_runes", utf8.RuneCountInString(title), "error", err)
+	// Slack gave a verdict against the decorated call. The title and the
+	// initiator are decoration; the status is what keeps the indicator honest,
+	// so send it once more bare rather than lose this turn's indicator to a
+	// field Slack will not take.
+	if err != nil && (title != "" || initiator != "") && !errors.Is(err, errSessionStatusTransient) && !errors.Is(err, errSessionStatusUnsupported) {
+		w.logger.Warn("slack: agent session title or initiator rejected, setting the status bare",
+			"title_runes", utf8.RuneCountInString(title), "initiator", initiator, "error", err)
 		cctx, cancel := context.WithTimeout(base, sessionStatusTimeout)
-		err = w.client.setSessionStatus(cctx, w.channel, w.threadTS, status, "")
+		err = w.client.setSessionStatus(cctx, w.channel, w.threadTS, status, "", "")
 		cancel()
 	}
 	switch {
@@ -2727,11 +2736,16 @@ func sessionTitleFrom(text string) string {
 // renamed by hand therefore keeps its name. An empty title is omitted rather
 // than sent blank.
 //
+// initiator is the person the session belongs to, applied on creation like the
+// title. Without it Slack reads the starter off the thread root, which is the
+// bot's own message whenever the picker opened the conversation. Empty is
+// omitted rather than sent blank.
+//
 // The call goes out unbranded on purpose: the display-identity fields would
 // need chat:write.customize, and its missing_scope rejection is
 // indistinguishable from the one that latches this method off for the whole
 // process.
-func (c *slackAPIClient) setSessionStatus(ctx context.Context, channelID, threadTS string, status sessionStatus, title string) error {
+func (c *slackAPIClient) setSessionStatus(ctx context.Context, channelID, threadTS string, status sessionStatus, title, initiator string) error {
 	params := map[string]any{
 		paramChannelID: channelID,
 		paramThreadTS:  threadTS,
@@ -2739,6 +2753,9 @@ func (c *slackAPIClient) setSessionStatus(ctx context.Context, channelID, thread
 	}
 	if title != "" {
 		params[paramTitle] = title
+	}
+	if initiator != "" {
+		params[paramInitiatorUserID] = initiator
 	}
 	payload, err := json.Marshal(params)
 	if err != nil {

@@ -1110,6 +1110,7 @@ type statusCall struct {
 	threadTS  string
 	status    string
 	title     string
+	initiator string
 }
 
 // streamCall is one chat.startStream / appendStream / stopStream invocation the
@@ -1202,6 +1203,7 @@ func (f *fakeThread) handler() http.HandlerFunc {
 			ThreadTS      string            `json:"thread_ts"`
 			Status        string            `json:"status"`
 			Title         string            `json:"title"`
+			Initiator     string            `json:"initiator_user_id"`
 			MarkdownText  string            `json:"markdown_text"`
 			SessionStatus string            `json:"session_status"`
 			RecipientUser string            `json:"recipient_user_id"`
@@ -1271,7 +1273,10 @@ func (f *fakeThread) handler() http.HandlerFunc {
 				}
 			}
 		case "agents.sessions.setStatus":
-			f.statusCalls = append(f.statusCalls, statusCall{channelID: body.ChannelID, threadTS: body.ThreadTS, status: body.Status, title: body.Title})
+			f.statusCalls = append(f.statusCalls, statusCall{
+				channelID: body.ChannelID, threadTS: body.ThreadTS, status: body.Status,
+				title: body.Title, initiator: body.Initiator,
+			})
 			statusErr = f.failStatus
 			if body.Status == string(sessionActive) && f.failIdleHTTP > 0 {
 				f.failIdleHTTP--
@@ -2298,6 +2303,48 @@ func TestSessionStatus_ChannelThreadGetsTheIndicator(t *testing.T) {
 	require.True(t, ft.sawText("⏳"), "the live line still renders as a message ticker")
 }
 
+// Slack attributes a session it creates to the author of the thread root
+// unless the call names someone, and that root is the bot's own message
+// whenever the picker opened the conversation. The writer names the thread's
+// owner on every status call — the creating one is what uses it — in a DM
+// thread and a channel thread alike.
+func TestSessionInitiator_SentOnTheStatusCalls(t *testing.T) {
+	for _, channel := range []string{"D1", "C1"} {
+		t.Run(channel, func(t *testing.T) {
+			ft := &fakeThread{}
+			srv := httptest.NewServer(ft.handler())
+			t.Cleanup(srv.Close)
+
+			w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, channel, "", "1.0", detailsOn, slog.Default())
+			w.adapter = &Adapter{}
+			w.sessionInitiator = "U1"
+			ch := make(chan channels.OutboundDelta, 1)
+			ch <- doneDelta()
+			close(ch)
+			require.NoError(t, w.run(t.Context(), ch))
+
+			require.Equal(t, []string{"processing", "active"}, ft.statuses())
+			require.Equal(t, "U1", ft.statusCalls[0].initiator, "the creating call names the thread's owner")
+			require.Equal(t, "U1", ft.statusCalls[1].initiator)
+		})
+	}
+}
+
+// A thread whose owner the store does not know sends no initiator rather than
+// an empty one, and Slack goes on guessing as it did.
+func TestSessionInitiator_AbsentWhenUnknown(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		_, _ = fmt.Fprint(w, `{"ok":true}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	c := &slackAPIClient{botToken: "t", baseURL: srv.URL, logger: slog.Default()}
+	require.NoError(t, c.setSessionStatus(t.Context(), "C1", "1.0", sessionProcessing, "", ""))
+	require.NotContains(t, body, "initiator_user_id")
+}
+
 // The turn that opens a conversation names the session, so the Messages tab
 // timeline lists it by its question. The title rides on the processing call —
 // the only one that can create the session — and never on the exit one.
@@ -2331,7 +2378,7 @@ func TestSessionTitle_AbsentOnLaterTurns(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	c := &slackAPIClient{botToken: "t", baseURL: srv.URL, logger: slog.Default()}
-	require.NoError(t, c.setSessionStatus(t.Context(), "C1", "1.0", sessionProcessing, ""))
+	require.NoError(t, c.setSessionStatus(t.Context(), "C1", "1.0", sessionProcessing, "", ""))
 	require.NotContains(t, body, "title")
 }
 
@@ -2572,7 +2619,7 @@ func TestSetSessionStatus_ErrorClassification(t *testing.T) {
 			}))
 			t.Cleanup(srv.Close)
 			c := &slackAPIClient{botToken: "t", baseURL: srv.URL}
-			err := c.setSessionStatus(t.Context(), "C1", "1.0", sessionProcessing, "")
+			err := c.setSessionStatus(t.Context(), "C1", "1.0", sessionProcessing, "", "")
 			require.Error(t, err)
 			require.Equal(t, tc.latches, errors.Is(err, errSessionStatusUnsupported))
 		})
@@ -2591,7 +2638,7 @@ func TestSetSessionStatus_WarningIsNotAnError(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	c := &slackAPIClient{botToken: "t", baseURL: srv.URL, logger: slog.Default()}
-	require.NoError(t, c.setSessionStatus(t.Context(), "C1", "1.0", sessionProcessing, ""))
+	require.NoError(t, c.setSessionStatus(t.Context(), "C1", "1.0", sessionProcessing, "", ""))
 	require.Equal(t, map[string]any{"channel_id": "C1", "thread_ts": "1.0", "status": "processing"}, body)
 }
 

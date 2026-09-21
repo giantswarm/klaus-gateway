@@ -1608,6 +1608,9 @@ func (a *Adapter) handleSessionStopped(ctx context.Context, inner slackInnerEven
 func (a *Adapter) setSessionStatus(ctx context.Context, channel, threadTS string, status sessionStatus) {
 	w := newBatchedWriterWithClient(a.apiClient(), channel, "", threadTS, detailsOff, a.Logger)
 	w.adapter = a
+	// These calls can create the session too (a thread whose turns all predate
+	// the session), so the thread's owner rides along when the store knows one.
+	w.sessionInitiator = a.accessPolicy().Initiator(ctx, channel, threadTS)
 	w.setSessionStatus(ctx, status)
 }
 
@@ -2411,6 +2414,13 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 	w.slackUser = slackUser
 	w.connectorPrompts = a.ConnectorPrompts
 	w.sessionTitle = a.takeSessionTitle(threadID)
+	// Slack attributes a session it creates to the thread root's author unless
+	// told otherwise, and the root is the bot's own message when the picker
+	// opened the conversation. The thread owner is who actually started it; a
+	// thread with no owner recorded yet is this sender's.
+	if w.sessionInitiator = a.accessPolicy().Initiator(ctx, slackChannel, threadID); w.sessionInitiator == "" {
+		w.sessionInitiator = slackUser
+	}
 	// A stream in a channel names the person it answers; a DM stream must not,
 	// so the team lookup (cached after the first turn) is skipped there.
 	if !isDMChannelID(slackChannel) {

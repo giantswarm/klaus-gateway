@@ -120,6 +120,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that gates the chart catalog release, and a separate "all registries" push
   that also covers the slow China mirror. The chart push no longer waits for
   the China mirror, so a slow mirror only delays itself.
+- Slack: a conversation's agent session is attributed to the person who started it. The creating `agents.sessions.setStatus` call now names the thread's owner (`initiator_user_id`) instead of leaving Slack to read the starter off the thread root, which made the app the starter of every conversation opened from the slash-command picker or the **Ask an agent here** shortcut — those threads are rooted by a message the gateway posts. No new scope and nothing to configure.
 
 ### Fixed
 
