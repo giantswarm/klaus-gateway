@@ -223,9 +223,13 @@ holds the thread's agent, its initiator, and the collaborators the initiator all
 initiator, grants, the AgentInstance and its in-flight task are one row, with one sliding
 lifetime — `routing.threadTTL` (`--thread-ttl`, 90 days by default; `0` never expires) —
 refreshed on every turn. While the thread lives, the initiator and the people they allowed reply
-without mentioning the bot again, and after that long of silence the thread is forgotten: the
-next mention starts it over with a new initiator and no grants (what the agent still remembers is
-the controller's call, see [channels-slack.md](channels-slack.md#threads-and-conversations)). On
+without mentioning the bot again, and after that long of silence the conversation ends: the next
+mention starts it over with a new initiator and no grants (what the agent still remembers is
+the controller's call, see [channels-slack.md](channels-slack.md#threads-and-conversations)). The
+row itself is kept for **twice** the lifetime (180 days by default), so a reply without a mention
+in a thread whose conversation ended gets one private line saying so instead of silence; past
+that the store drops the row and the thread is forgotten. Size the store for the doubled
+retention, not for the lifetime. On
 `routing.store: memory` this Slack
 thread state, like everything else in the table, is lost on every restart. Choose the backend that
 matches your deployment:
@@ -358,8 +362,10 @@ binding and the task with it. Installations with a Slack channel should run `val
 [Valkey](#valkey)); `bolt` only counts when `routing.boltPath`
 lies inside a mounted volume. On a persistent store a restarted gateway also keeps each Slack
 thread's agent, initiator and grants — for `routing.threadTTL` (90 days by default) of silence,
-after which the thread is forgotten on every store; on `memory` the thread starts fresh at each
-restart, and the first person to mention the bot becomes its initiator.
+after which the conversation has ended on every store: a reply without a mention gets the notice
+while the row lasts (twice the lifetime), and past that the thread is forgotten. On `memory` the
+thread starts fresh at each restart, and the first person to mention the bot becomes its
+initiator.
 
 ## Observability
 

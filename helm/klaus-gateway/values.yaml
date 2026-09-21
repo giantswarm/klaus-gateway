@@ -81,10 +81,12 @@ routing:
   defaultTTL: "24h"
   # Sliding lifetime of a channel thread's state: its agent, initiator, grants
   # and AgentInstance binding, refreshed on every turn. After this long without
-  # a message the thread is forgotten and the next mention starts it over (new
-  # initiator, no grants). Empty leaves the gateway's default, 2160h (90 days).
-  # "0" never expires (the keys are then never evictable in a Valkey that runs
-  # as a cache).
+  # a message the conversation has ended and the next mention starts the thread
+  # over (new initiator, no grants). The row itself is kept for twice this long
+  # — that is the key expiry, so size the store for it — so that a reply in a
+  # thread that ended is told so instead of ignored. Empty leaves the gateway's
+  # default, 2160h (90 days), rows kept 4320h (180 days). "0" never expires
+  # (the keys are then never evictable in a Valkey that runs as a cache).
   threadTTL: ""
   # Create instances on demand when a route key has no entry.
   autoCreate: false

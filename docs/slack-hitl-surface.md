@@ -518,6 +518,14 @@ rather than through the `response_url`, because by then the conversation is runn
 |---|---|
 | the thread's earlier messages could not be read (`missing_scope`, `not_in_channel`, a timeout) | "I couldn't read the earlier messages in this thread (`<reason>`), so the agent only sees your question." |
 
+One notice needs no conversation at all: it answers a message the gateway would otherwise
+ignore. Ephemeral to the author, in the thread, and posted again on every such reply — it
+writes nothing:
+
+| when | notice |
+|---|---|
+| a reply without a mention in a thread whose conversation ended after `routing.threadTTL` (the row is still in the store, at twice the lifetime) | "This conversation ended after 90 days without messages. Mention me to start a new one." (the configured lifetime is named) |
+
 ## Answering: click and reply
 
 On a click, Slack POSTs a `block_actions` payload to `/channels/slack/interactions`. The

@@ -382,7 +382,7 @@ func Load(args []string) (Config, error) {
 	fs.StringVar(&cfg.OTLPHeaders, "otel-otlp-headers", cfg.OTLPHeaders, "Headers sent with every trace export, as key=value,key=value (e.g. X-Scope-OrgID=giantswarm).")
 	fs.BoolVar(&cfg.AutoCreate, "auto-create", cfg.AutoCreate, "Create instances on route miss.")
 	fs.DurationVar(&cfg.DefaultTTL, "default-ttl", cfg.DefaultTTL, "Default TTL for route entries.")
-	fs.DurationVar(&cfg.ThreadTTL, "thread-ttl", cfg.ThreadTTL, "Sliding lifetime of a channel thread's state in the routing store: its agent, initiator, grants and AgentInstance binding. Refreshed on every handled message; 0 means never expire.")
+	fs.DurationVar(&cfg.ThreadTTL, "thread-ttl", cfg.ThreadTTL, "Sliding lifetime of a channel thread's conversation: its agent, initiator, grants and AgentInstance binding. Refreshed on every handled message; after it the conversation has ended and the next mention starts the thread over. The row itself is kept for twice as long, so a reply in a thread that ended gets a notice rather than silence, and is then dropped. 0 means never expire.")
 	fs.BoolVar(&cfg.ShowVersion, "version", false, "Print version information and exit.")
 	fs.BoolVar(&cfg.Slack.Enabled, "slack-enabled", cfg.Slack.Enabled, "Enable the Slack channel adapter.")
 	fs.StringVar(&cfg.Slack.Mode, "slack-mode", cfg.Slack.Mode, "Slack connection mode: events or socketmode.")
