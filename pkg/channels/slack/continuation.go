@@ -43,6 +43,11 @@ func (w *batchedWriter) continueFrom(d store.Delivered) {
 	w.carried = d
 	w.skipText = d.TextLen
 	w.streamTS, w.streamed, w.streamAdopted = d.StreamTS, d.StreamLen, d.StreamTS != ""
+	if d.StreamTS != "" {
+		// The adopted message is one of the turn's streamed messages, so a
+		// connector prompt taking the turn over retracts it like the rest.
+		w.streamMessages = append(w.streamMessages, d.StreamTS)
+	}
 	w.toolSteps, w.carriedSteps = d.ToolSteps, d.ToolSteps
 	w.toolOrder = slices.Clone(d.ToolOrder)
 	w.toolCounts = maps.Clone(d.ToolCounts)

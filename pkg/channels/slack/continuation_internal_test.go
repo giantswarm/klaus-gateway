@@ -253,3 +253,22 @@ func TestNoteDelivered_RecordsTheOpenStreamAsItGrows(t *testing.T) {
 	require.Equal(t, store.Delivered{TextLen: 23}, records[len(records)-1],
 		"the closing stop leaves no stream to adopt")
 }
+
+// A continued turn that ends as a connector sign-in prompt retracts the message
+// it adopted too: the prompt replaces the whole reply, not just the part this
+// process wrote.
+func TestContinueFrom_RetractDeletesTheAdoptedStream(t *testing.T) {
+	ft := &fakeThread{}
+	ts := openStreamOn(t, ft, "Sign in at ")
+	srv := httptest.NewServer(ft.handler())
+	t.Cleanup(srv.Close)
+
+	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "C1", "", "1.0", detailsOff, slog.Default())
+	w.continueFrom(store.Delivered{TextLen: 11, StreamTS: ts, StreamLen: 11})
+
+	w.retractRendered(t.Context())
+
+	require.Equal(t, []string{string(sessionProcessing)}, ft.stopStatuses(), "a streaming message is stopped before it is deleted")
+	require.Equal(t, []string{ts}, ft.deleted())
+	require.Empty(t, ft.finalMessages(), "nothing of the reply is left in the thread")
+}
