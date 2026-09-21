@@ -177,7 +177,7 @@ func TestContinueFrom_AppendsToTheAdoptedStream(t *testing.T) {
 	ft := &fakeThread{}
 	ts := openStreamOn(t, ft, opening)
 
-	msgs, records, w := runContinuedOn(t, ft,
+	msgs, records, _ := runContinuedOn(t, ft,
 		store.Delivered{TextLen: len(opening), StreamTS: ts, StreamLen: len(opening)},
 		textDelta(opening+tail))
 
@@ -185,7 +185,7 @@ func TestContinueFrom_AppendsToTheAdoptedStream(t *testing.T) {
 	require.Equal(t, ts, ft.streams()[1].ts, "the continuation writes to the message already open")
 	require.Equal(t, []string{string(sessionActive)}, ft.stopStatuses(), "the adopted stream carries the exit status")
 	require.Equal(t, []capturedMessage{{opening + tail}}, msgs, "the reply reads as one message")
-	require.True(t, w.exitStatusSent)
+	require.Equal(t, []string{"processing", "active"}, ft.statuses(), "and the session ends with the turn")
 
 	last := records[len(records)-1]
 	require.Equal(t, len(opening+tail), last.TextLen)

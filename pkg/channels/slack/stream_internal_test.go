@@ -2232,7 +2232,8 @@ func TestSessionStatus_DMThreadProcessingThenActive(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	require.Equal(t, []string{"processing"}, ft.statuses(), "the exit status rides the stop that closes the reply")
+	require.Equal(t, []string{"processing", "active"}, ft.statuses(),
+		"the status call ends the session; the stop names the same status")
 	require.Equal(t, []string{string(sessionActive)}, ft.stopStatuses())
 	for _, c := range ft.statusCalls {
 		require.Equal(t, "D1", c.channelID, "channel_id is always sent")
@@ -2256,7 +2257,8 @@ func TestSessionStatus_ChannelThreadGetsTheIndicator(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	require.Equal(t, []string{"processing"}, ft.statuses(), "the exit status rides the stop that closes the reply")
+	require.Equal(t, []string{"processing", "active"}, ft.statuses(),
+		"the status call ends the session; the stop names the same status")
 	require.Equal(t, []string{string(sessionActive)}, ft.stopStatuses())
 	for _, c := range ft.statusCalls {
 		require.Equal(t, "C1", c.channelID)
@@ -2447,9 +2449,9 @@ func TestSessionStatus_ProcessingAgainWhenTheAnswerResumesTheTurn(t *testing.T) 
 		doneDelta(),
 	)
 	require.NoError(t, err)
-	require.Equal(t, []string{"processing", "suspended", "processing"}, ft.statuses())
+	require.Equal(t, []string{"processing", "suspended", "processing", "active"}, ft.statuses())
 	require.Equal(t, []string{string(sessionActive)}, ft.stopStatuses(),
-		"the resumed turn hands the session back on the stop that closes its answer")
+		"the stop that closes the resumed turn's answer names the same status")
 }
 
 // A /stop cancels the turn context; the status call is detached from it, so
@@ -2672,7 +2674,8 @@ func TestStream_PromptPauseStopsWithSuspended(t *testing.T) {
 	require.NotNil(t, w.promptDelta)
 
 	require.Equal(t, []string{string(sessionSuspended)}, ft.stopStatuses())
-	require.Equal(t, []string{"processing"}, ft.statuses(), "no separate exit status call")
+	require.Equal(t, []string{"processing", "suspended"}, ft.statuses(),
+		"the status call is what leaves the thread waiting for the user")
 }
 
 // Pressing Stop ends the stream on Slack's side. The text path ends there,
@@ -2695,7 +2698,19 @@ func TestStream_StoppedByUserEndsTheTextPathQuietly(t *testing.T) {
 	require.NoError(t, w.closeStream(t.Context()))
 	require.Len(t, ft.streams(), sent, "nothing more is sent on a stream the user stopped")
 	require.Empty(t, w.pendingText())
-	require.False(t, w.exitStatusSent, "the session's exit status still rides the turn's own call")
+}
+
+// Slack answering the closing stop with stopped_by_user ends the text path
+// quietly, but the turn still ends the session with its own status call — that
+// call, not the field on the stop, is what clears the working indicator.
+func TestStream_StoppedByUserStillEndsTheSession(t *testing.T) {
+	ft := &fakeThread{stoppedByUser: true}
+	_, _, err := runSurfaceWriter(t, ft, "D1",
+		channels.OutboundDelta{Kind: channels.DeltaText, Content: "half an answer "},
+		doneDelta(),
+	)
+	require.NoError(t, err)
+	require.Equal(t, []string{"processing", "active"}, ft.statuses())
 }
 
 // Slack closing the stream under the app costs one recovery: the rest of the
@@ -2725,7 +2740,6 @@ func TestStream_RecoversOnceThenReportsTheReplyCutShort(t *testing.T) {
 
 	var rerr *renderError
 	require.ErrorAs(t, w.finish(t.Context()), &rerr, "the turn reports a reply it could not finish")
-	require.False(t, w.exitStatusSent, "so the exit status falls back to the turn's own call")
 	require.Equal(t, []string{streamEventStarted, streamEventRecovered, streamEventStarted}, rec.recorded(),
 		"the one recovery is counted once")
 }
@@ -2766,6 +2780,8 @@ func TestStream_CancelledTurnClosesTheStream(t *testing.T) {
 	require.ErrorIs(t, <-done, context.Canceled)
 
 	require.Equal(t, []string{string(sessionActive)}, ft.stopStatuses())
+	require.Equal(t, []string{"processing", "active"}, ft.statuses(),
+		"the status call runs after the stream is closed, so the indicator clears")
 	require.Equal(t, []capturedMessage{{"half an answer "}}, ft.finalMessages())
 }
 
@@ -2784,17 +2800,16 @@ func TestRetractRendered_StopsTheStreamBeforeDeleting(t *testing.T) {
 	require.False(t, w.wroteContent())
 }
 
-// Slack refusing the stop leaves the working indicator on the thread, so the
-// exit status falls back to its own call.
-func TestStream_FailedFinalStopFallsBackToTheStatusCall(t *testing.T) {
+// Slack refusing the stop costs the reply its last words, never the working
+// indicator: the session's exit status is a call of its own.
+func TestStream_FailedFinalStopStillClearsTheIndicator(t *testing.T) {
 	ft := &fakeThread{failStop: "fatal_error"}
-	_, w, err := runSurfaceWriter(t, ft, "D1",
+	_, _, err := runSurfaceWriter(t, ft, "D1",
 		channels.OutboundDelta{Kind: channels.DeltaText, Content: "the answer "},
 		doneDelta(),
 	)
 	var rerr *renderError
 	require.ErrorAs(t, err, &rerr, "a stop Slack keeps refusing is a rendering failure")
-	require.False(t, w.exitStatusSent)
 	require.Equal(t, []string{"processing", "active"}, ft.statuses(), "the indicator is cleared anyway")
 }
 

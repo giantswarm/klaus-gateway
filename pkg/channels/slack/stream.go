@@ -229,13 +229,10 @@ type batchedWriter struct {
 	// once this turn; streamStopped closes the text path quietly for the rest
 	// of the turn (the user pressed Stop); streamFailed closes it as a failure
 	// (Slack kept closing the stream), so the terminal flush reports the reply
-	// as incomplete instead of ending the turn as if it were whole;
-	// exitStatusSent marks the session's exit status as delivered by the stop
-	// that closed the stream, so run()'s exit call does not repeat it.
+	// as incomplete instead of ending the turn as if it were whole.
 	streamRecovered bool
 	streamStopped   bool
 	streamFailed    bool
-	exitStatusSent  bool
 	// narrationTS holds the timestamps of the narration posted after a login
 	// challenge this turn, so a connector prompt taking over can retract that
 	// sign-in prose with the reply. Written by the poster goroutine.
@@ -346,17 +343,13 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 	// The session leaves "processing" on EVERY exit — stream done, stream error,
 	// /stop, and the HITL prompt pause. Slack's agent loading UX does not clear
 	// itself when the app posts any more, so a missing exit status leaves the
-	// thread spinning for up to an hour. The stop that closes the reply's stream
-	// carries that status already, so this call covers the turns that never
-	// opened a stream and the stops that failed. Registered before the drain so
-	// it lands after the turn's last in-thread post.
+	// thread spinning for up to an hour. chat.stopStream carries a session
+	// status of its own, but observed on graveler 2026-09-21 it does not clear
+	// the indicator, so this call is the one that ends the session and it runs
+	// on every turn. Registered before the drain so it lands after the turn's
+	// last in-thread post, and before endStream so it follows the stop.
 	w.setSessionStatus(ctx, sessionProcessing)
-	defer func() {
-		if w.exitStatusSent {
-			return
-		}
-		w.setSessionStatus(ctx, w.exitSessionStatus())
-	}()
+	defer func() { w.setSessionStatus(ctx, w.exitSessionStatus()) }()
 	defer w.endStream(ctx)     // backstop for the ctx.Done() exit; finalFlush closes first
 	defer w.drainThreadPosts() // backstop for the ctx.Done() exit; finalFlush drains first
 
@@ -1826,16 +1819,18 @@ func (w *batchedWriter) closeStream(ctx context.Context) error {
 	if strings.TrimSpace(md) == "" {
 		md = ""
 	}
+	// The exit status rides the stop as the field Slack documents, and run()'s
+	// own agents.sessions.setStatus sends it again on the way out: observed on
+	// graveler 2026-09-21 that Slack accepts session_status here but the
+	// working indicator does not clear, so that call is the source of truth.
 	err := w.stopStream(ctx, md, len(raw), w.exitSessionStatus())
 	switch {
 	case err == nil:
-		w.exitStatusSent = !w.streamStopped
 		return nil
 	case streamGone(err):
 		// Nothing is left to close: a stream adopted from before a restart that
 		// Slack has closed since, most often. The last text goes back to
-		// pending so a retry can give it a stream of its own, and the session's
-		// exit status falls back to run()'s own call.
+		// pending so a retry can give it a stream of its own.
 		w.dropStream()
 		w.noteDelivered(ctx)
 		if raw == "" {
@@ -2025,10 +2020,15 @@ func (w *batchedWriter) recoverStream(ctx context.Context, raw, md string) error
 	return w.openStream(ctx, raw, md)
 }
 
-// endStreamQuietly closes the text path for the rest of the turn after the user
-// pressed Stop: Slack has ended the stream, so nothing more is sent on it — no
-// retry, no error notice. The stop button's own "Stopped by …" notice is the
-// thread's record of what happened.
+// endStreamQuietly closes the text path for the rest of the turn after Slack
+// answered a stream call with stopped_by_user: Slack has ended the stream, so
+// nothing more is sent on it — no retry, no error notice. The stop button's own
+// "Stopped by …" notice is the thread's record of what happened.
+//
+// This is defensive, not the mechanism: on graveler 2026-09-21 a Stop press
+// never produced stopped_by_user — the writer's own calls kept succeeding — and
+// the turn ended through its cancelled context instead (endStream closes the
+// stream on the way out). Nothing may depend on this branch firing.
 func (w *batchedWriter) endStreamQuietly() {
 	w.dropStream()
 	w.streamStopped = true
@@ -2046,7 +2046,7 @@ func (w *batchedWriter) dropStream() {
 // run() cycle over the same writer.
 func (w *batchedWriter) resetStream() {
 	w.dropStream()
-	w.streamRecovered, w.streamStopped, w.streamFailed, w.exitStatusSent = false, false, false, false
+	w.streamRecovered, w.streamStopped, w.streamFailed = false, false, false
 }
 
 // streamGone reports whether err says the message is not streaming any more:
@@ -2911,10 +2911,12 @@ func (c *slackAPIClient) appendStream(ctx context.Context, channel, ts, md strin
 	return streamErr(err)
 }
 
-// stopStream closes a stream, optionally with a last piece of text, and sets
+// stopStream closes a stream, optionally with a last piece of text, and names
 // the thread's agent session status in the same call. status is always sent:
-// Slack defaults the field to active, which would clear the working indicator
-// on a stop that only rolls the answer over into a new message.
+// Slack defaults the field to active, which would be wrong on a stop that only
+// rolls the answer over into a new message. Observed on graveler 2026-09-21
+// that Slack accepts the field but the working indicator does not clear with
+// it, so the turn also ends the session through agents.sessions.setStatus.
 func (c *slackAPIClient) stopStream(ctx context.Context, channel, ts, md string, status sessionStatus) error {
 	body := map[string]any{
 		paramChannel:       channel,

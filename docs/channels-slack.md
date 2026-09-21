@@ -38,11 +38,11 @@ While a turn runs, the thread carries Slack's **native working indicator**. It
 is driven by the agent session's lifecycle status
 (`agents.sessions.setStatus`, granular bot token with `chat:write`), which the
 adapter sets to `processing` when the turn starts and back to `active` on exit:
-normal end, stream error, `/stop`. A turn that streamed an answer hands that
-exit status over on the `chat.stopStream` that closes it (the method carries a
-`session_status`), so the last words of the answer and the cleared indicator
-land together; a turn that streamed nothing, and a stop Slack refused, use the
-status call. A turn that pauses on a HITL prompt — an
+normal end, stream error, `/stop`. Every turn makes that exit call, right after
+the `chat.stopStream` that closes its answer. The stop names the same status in
+its own `session_status` field, but Slack was observed (graveler, 2026-09-21) to
+accept that field without clearing the indicator, so the status call is what
+ends the session. A turn that pauses on a HITL prompt — an
 approval, an `ask_user` question, a form — ends in `suspended` instead, which
 Slack renders as *waiting for you*, so a conversation that needs an answer is
 told apart from a finished one at a glance. The user's answer starts the next
@@ -408,7 +408,7 @@ any string that begins with `Slack bot`, `Slack app-level`, or `Slack user`.
 8. The answer is streamed into one Slack message with the streaming API:
    `chat.startStream` opens it on the turn's first text, `chat.appendStream` adds what has
    accumulated since the last tick (one second), and `chat.stopStream` closes it with the
-   answer's last words and the session's exit status. Slack animates the message while the
+   answer's last words, naming the session's exit status. Slack animates the message while the
    stream is open. Each append carries only the new text, and text is sent up to the last
    whitespace boundary — an unfinished word waits for the next append, so nothing is ever
    half-written. Replies over 12,000 characters roll over into a further streamed message on

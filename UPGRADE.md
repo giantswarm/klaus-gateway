@@ -8,7 +8,8 @@ do or decide.
 
 Agent replies are written with Slack's streaming API instead of a message edited every 250 ms:
 `chat.startStream` opens the answer on the turn's first text, `chat.appendStream` adds what has
-accumulated once a second, and `chat.stopStream` closes it carrying the session's exit status.
+accumulated once a second, and `chat.stopStream` closes it. The working indicator is still cleared
+by the `agents.sessions.setStatus` call every turn ends with, as on the previous release.
 Nothing to configure — no chart value, no flag, no new scope (`chat:write` already covers the
 three methods) — and no way to turn it off: **rollback is the previous image**.
 
@@ -23,7 +24,7 @@ an approval prompt writes its continuation as a **second message** instead of ed
 
 What to watch: `chat.startStream` and `chat.stopStream` are **tier 2**, about 20 calls a minute
 for the whole app, which bounds a workspace to roughly 20 turn starts a minute — the appends are
-tier 4 and have plenty of headroom. `/metrics` exposes `klaus_gateway_slack_stream_total{event}`
+tier 4 and have plenty of headroom, and the two session-status calls per turn are unchanged. `/metrics` exposes `klaus_gateway_slack_stream_total{event}`
 with `started`, `stopped`, `stopped_by_user` and `recovered`; the `started` rate against that
 ceiling is the number to alert on, and a rising `recovered` means Slack is closing streams under
 the gateway. A 429 is still paced by `Retry-After` and never fails a turn.

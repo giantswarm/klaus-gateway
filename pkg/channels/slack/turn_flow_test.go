@@ -460,6 +460,33 @@ func TestStreamedReply_ChannelTurnNamesTheRecipient(t *testing.T) {
 	require.Equal(t, "U1", start.params["recipient_user_id"], "the stream names the asker")
 	require.Equal(t, "TWORKSPACE", start.params["recipient_team_id"], "and their workspace")
 	require.Equal(t, "active", fake.pathCalls(pathStopStream)[0].params["session_status"])
+
+	// The stop names the exit status, but the status call is what clears the
+	// working indicator, so the turn always makes it — after the stop.
+	status := fake.pathCalls("agents.sessions.setStatus")
+	require.Len(t, status, 2, "processing on the way in, the exit status on the way out")
+	require.Equal(t, "active", status[1].params["status"])
+	require.Less(t, callIndex(fake, pathStopStream), callIndex(fake, "agents.sessions.setStatus", "active"),
+		"the status call follows the stop that closed the stream")
+}
+
+// callIndex is the position of the first call to path in the fake's record,
+// optionally the first one whose status param is want.
+func callIndex(f *fakeSlackAPI, path string, want ...string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i, c := range f.calls {
+		if c.path != path {
+			continue
+		}
+		if len(want) > 0 {
+			if s, _ := c.params["status"].(string); s != want[0] {
+				continue
+			}
+		}
+		return i
+	}
+	return -1
 }
 
 // Slack closing the answer's stream twice is a rendering failure, not a silent
