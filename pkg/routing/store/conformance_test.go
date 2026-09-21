@@ -106,8 +106,11 @@ func runConformance(t *testing.T, factory func(t *testing.T) store.Store) {
 		now := time.Now().UTC().Truncate(time.Second)
 		in := store.Entry{
 			AgentRef: "kagent/sre-agent", AgentInstanceID: "i-1", TaskID: "task-7",
-			Resume:    map[string]string{"slack_user": "U1"},
-			Delivered: store.Delivered{TextLen: 42, ToolSteps: 3, ToolOrder: []string{"get", "list"}, ToolCounts: map[string]int{"get": 2, "list": 1}},
+			Resume: map[string]string{"slack_user": "U1"},
+			Delivered: store.Delivered{
+				TextLen: 42, StreamTS: "1700000000.000200", StreamLen: 30,
+				ToolSteps: 3, ToolOrder: []string{"get", "list"}, ToolCounts: map[string]int{"get": 2, "list": 1},
+			},
 			Initiator: "U1", Granted: []string{"U2", "U3"},
 			CreatedAt: now, LastSeen: now, TTL: 30 * 24 * time.Hour,
 		}

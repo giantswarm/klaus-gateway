@@ -25,7 +25,7 @@ func TestShutdown_PostsRestartNoticeAndLeavesTheTurnRunning(t *testing.T) {
 
 	sendEvent(t, srv, dmEvent("U1", "long task", "555.000"))
 	fake.waitForPath(t, "reactions.add", 1)
-	waitTurnStreaming(t, fake, 1)
+	waitTurnStreaming(t, fake)
 
 	require.NoError(t, a.Stop(context.Background()))
 
@@ -53,7 +53,7 @@ func TestShutdown_NoticeWithoutDurableStoreMakesNoPromise(t *testing.T) {
 
 	sendEvent(t, srv, dmEvent("U1", "long task", "555.000"))
 	fake.waitForPath(t, "reactions.add", 1)
-	waitTurnStreaming(t, fake, 1)
+	waitTurnStreaming(t, fake)
 
 	require.NoError(t, a.Stop(context.Background()))
 
@@ -94,7 +94,7 @@ func TestStop_IsAPlainCancellationNotAShutdown(t *testing.T) {
 
 	sendEvent(t, srv, dmEvent("U1", "long task", "555.000"))
 	fake.waitForPath(t, "reactions.add", 1)
-	waitTurnStreaming(t, fake, 1)
+	waitTurnStreaming(t, fake)
 
 	sendEvent(t, srv, dmThreadEvent("U1", "/stop", "556.000", "555.000"))
 	fake.waitForPath(t, "reactions.remove", 1)
@@ -134,12 +134,12 @@ func TestRecoverTurns_DeliversTheAnswerIntoTheThread(t *testing.T) {
 	a.RecoverTurns()
 
 	require.Eventually(t, func() bool {
-		return strings.Contains(allBlockText(fake.pathCalls("chat.postMessage")), "recovered answer")
-	}, flowWait, 20*time.Millisecond, "the finished answer is posted into the thread")
+		return strings.Contains(fake.streamedText(), "recovered answer")
+	}, flowWait, 20*time.Millisecond, "the finished answer is delivered into the thread")
 	fake.waitForPath(t, "reactions.add", 2)
 
-	posts := fake.pathCalls("chat.postMessage")
-	require.Equal(t, "700.000", posts[len(posts)-1].params["thread_ts"], "the answer lands in the original thread")
+	require.Equal(t, "700.000", fake.pathCalls(pathStartStream)[0].params["thread_ts"],
+		"the answer lands in the original thread")
 	require.Equal(t, "700.000", fake.pathCalls("reactions.add")[0].params["timestamp"], "the working reaction returns to the triggering message")
 	require.Contains(t, fake.reactionNames("reactions.add"), "white_check_mark", "the resumed turn completes like any other")
 
@@ -168,9 +168,9 @@ func TestReply_DeliversTheLeftoverTurnBeforeItself(t *testing.T) {
 	sendEvent(t, srv, dmThreadEvent("U1", "and then?", "701.000", "700.000"))
 
 	require.Eventually(t, func() bool {
-		return strings.Contains(allBlockText(fake.pathCalls("chat.postMessage")), "reply answer")
+		return strings.Contains(fake.streamedText(), "reply answer")
 	}, flowWait, 20*time.Millisecond, "the reply is answered")
-	posted := allBlockText(fake.pathCalls("chat.postMessage"))
+	posted := fake.threadText()
 	recovered, reply := strings.Index(posted, "recovered answer"), strings.Index(posted, "reply answer")
 	require.GreaterOrEqual(t, recovered, 0, "the leftover turn's answer is delivered")
 	require.Less(t, recovered, reply, "the leftover answer lands before the reply's own")
@@ -211,15 +211,14 @@ func TestShutdown_FlushesBufferedTextBeforeTheNotice(t *testing.T) {
 
 	sendEvent(t, srv, dmEvent("U1", "count", "555.000"))
 	fake.waitForPath(t, "reactions.add", 1)
-	waitTurnStreaming(t, fake, 1)
+	waitTurnStreaming(t, fake)
 	// The turn is resolved before its first delta is read: wait for the text to
 	// have reached the writer, or the shutdown below flushes an empty buffer.
 	require.Eventually(t, func() bool { return len(gw.sendCauseList()) == 0 && gw.deliveredDeltas() == 1 }, flowWait, 20*time.Millisecond)
 
 	require.NoError(t, a.Stop(context.Background()))
 
-	posts := fake.pathCalls("chat.postMessage")
-	texts := allBlockText(posts)
+	texts := fake.threadText()
 	content, notice := strings.Index(texts, "counting: 1, 2, 3"), strings.Index(texts, "I was restarted")
 	require.GreaterOrEqual(t, content, 0, "the buffered text is delivered")
 	require.Less(t, content, notice, "the text lands before the notice")

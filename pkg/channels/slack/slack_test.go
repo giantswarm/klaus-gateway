@@ -380,11 +380,9 @@ func TestBatchedWriter_FlushesContent(t *testing.T) {
 
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_mention","user":"U123","text":"<@BOT> go","channel":"C1","ts":"111.222"}}`)
 
-	// Default (auto) mode posts the answer as a Block Kit markdown message;
-	// wait for the answer text rather than the first postMessage call.
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "hello world")
-	}, flowWait, 20*time.Millisecond, "streamed answer is posted")
+		return strings.Contains(fake.streamedText(), "hello world")
+	}, flowWait, 20*time.Millisecond, "the answer is streamed")
 }
 
 // --- OBO injection ---
@@ -1154,8 +1152,8 @@ func TestBatchedWriter_CombinesDeltas(t *testing.T) {
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","channel_type":"im","user":"U1","text":"hi","channel":"D1","ts":"111.000"}}`)
 
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "foobar")
-	}, flowWait, 50*time.Millisecond, "expected foobar in the posted answer")
+		return strings.Contains(fake.streamedText(), "foobar")
+	}, flowWait, 50*time.Millisecond, "expected foobar in the streamed answer")
 }
 
 // --- Progress reactions & serialization (black-box via fake Slack Web API) ---
@@ -1191,6 +1189,14 @@ type fakeSlackAPI struct {
 	seq         int
 	botUserID   string // returned as user_id from auth.test
 	botUsername string // returned as user from auth.test
+	botTeamID   string // returned as team_id from auth.test
+	// streaming holds the ts of the messages chat.startStream opened and
+	// chat.stopStream has not closed; an append or stop against any other ts is
+	// refused the way Slack refuses it.
+	streaming map[string]bool
+	// stoppedByUser answers every append and stop with stopped_by_user, as
+	// Slack does once the user has pressed the stop button.
+	stoppedByUser bool
 }
 
 func newFakeSlackAPI() *fakeSlackAPI {
@@ -1198,8 +1204,10 @@ func newFakeSlackAPI() *fakeSlackAPI {
 		failWith:    map[string]string{},
 		respondWith: map[string]string{},
 		respondFn:   map[string]func(map[string]any) string{},
+		streaming:   map[string]bool{},
 		botUserID:   "UBOT",
 		botUsername: "swarmgeist",
+		botTeamID:   "TWORKSPACE",
 	}
 }
 
@@ -1231,6 +1239,25 @@ func (f *fakeSlackAPI) server(t *testing.T) *httptest.Server {
 		ts := fmt.Sprintf("1700000000.%06d", f.seq)
 		botID := f.botUserID
 		botName := f.botUsername
+		botTeam := f.botTeamID
+		// Model the streaming state: a stream is open between start and stop,
+		// and only an open one accepts an append or a stop.
+		if code == "" {
+			target, _ := params["ts"].(string)
+			switch path {
+			case pathStartStream:
+				f.streaming[ts] = true
+			case pathAppendStream, pathStopStream:
+				switch {
+				case f.stoppedByUser:
+					code = "stopped_by_user"
+				case !f.streaming[target]:
+					code = "message_not_in_streaming_state"
+				case path == pathStopStream:
+					delete(f.streaming, target)
+				}
+			}
+		}
 		var delay time.Duration
 		if f.delayIf != nil {
 			delay = f.delayIf(path, params)
@@ -1247,7 +1274,7 @@ func (f *fakeSlackAPI) server(t *testing.T) *httptest.Server {
 
 		w.Header().Set("Content-Type", "application/json")
 		if path == "auth.test" {
-			_, _ = fmt.Fprintf(w, `{"ok":true,"user_id":%q,"user":%q}`, botID, botName)
+			_, _ = fmt.Fprintf(w, `{"ok":true,"user_id":%q,"user":%q,"team_id":%q}`, botID, botName, botTeam)
 			return
 		}
 		if code != "" {
@@ -1288,6 +1315,71 @@ func (f *fakeSlackAPI) setResponder(path string, fn func(params map[string]any) 
 	f.mu.Lock()
 	f.respondFn[path] = fn
 	f.mu.Unlock()
+}
+
+// The streaming methods a turn's answer is rendered with.
+const (
+	pathStartStream  = "chat.startStream"
+	pathAppendStream = "chat.appendStream"
+	pathStopStream   = "chat.stopStream"
+)
+
+// streamedText concatenates the markdown_text of every streaming call, which is
+// where the agent's answer lands.
+func (f *fakeSlackAPI) streamedText() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var b strings.Builder
+	for _, c := range f.calls {
+		switch c.path {
+		case pathStartStream, pathAppendStream, pathStopStream:
+			if s, ok := c.params["markdown_text"].(string); ok {
+				b.WriteString(s)
+			}
+		}
+	}
+	return b.String()
+}
+
+// threadText is everything the adapter sent, in call order: the fallback text
+// and blocks of its posts plus the text of its streamed answer, so assertions
+// can find content wherever the renderer put it — and tell what landed first.
+func (f *fakeSlackAPI) threadText() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var b strings.Builder
+	for _, c := range f.calls {
+		// The streamed text is written without a separator: one answer arrives
+		// in as many pieces as the stream sent, and an assertion looks for the
+		// answer, not for the pieces.
+		if s, ok := c.params["markdown_text"].(string); ok {
+			b.WriteString(s)
+		}
+		if s, ok := c.params["text"].(string); ok {
+			b.WriteString(s)
+			b.WriteString("\n")
+		}
+		if blocks, ok := c.params["blocks"]; ok {
+			raw, _ := json.Marshal(blocks)
+			b.Write(raw)
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
+}
+
+// streamMethods returns the streaming calls' methods, in order.
+func (f *fakeSlackAPI) streamMethods() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []string
+	for _, c := range f.calls {
+		switch c.path {
+		case pathStartStream, pathAppendStream, pathStopStream:
+			out = append(out, c.path)
+		}
+	}
+	return out
 }
 
 func (f *fakeSlackAPI) pathCalls(path string) []recordedCall {
@@ -1468,7 +1560,7 @@ func TestProgress_FailureAfterContentPostsNoNote(t *testing.T) {
 	fake.waitForPath(t, "reactions.add", 2)
 	require.Equal(t, []string{"eyes", "x"}, fake.reactionNames("reactions.add"))
 	require.Eventually(t, func() bool {
-		return strings.Contains(allBlockText(fake.pathCalls("chat.postMessage")), "partial answer")
+		return strings.Contains(fake.streamedText(), "partial answer")
 	}, flowWait, 20*time.Millisecond, "the streamed content reached the thread")
 	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "the turn failed", "no generic note under streamed content")
 }
@@ -1480,15 +1572,16 @@ func TestProgress_TextFallbackOnMissingScope(t *testing.T) {
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
 	sendEvent(t, srv, dmEvent("U1", "first", "444.000"))
-	// Missing scope -> text mode: a placeholder (chat.postMessage) then the answer
-	// streamed via chat.update.
-	fake.waitForPath(t, "chat.update", 1)
-	require.Contains(t, allText(fake.pathCalls("chat.update")), "answer")
+	// Missing scope -> text mode: a placeholder (chat.postMessage), then the
+	// answer in a stream of its own, which retires the placeholder.
+	fake.waitForPath(t, pathStopStream, 1)
+	require.Contains(t, fake.streamedText(), "answer")
 	require.Contains(t, allText(fake.pathCalls("chat.postMessage")), "_thinking", "text placeholder posted")
+	require.NotEmpty(t, fake.pathCalls("chat.delete"), "the placeholder is retired by the streamed answer")
 
 	// Second turn must not retry reactions.add (the downgrade is cached).
 	sendEvent(t, srv, dmEvent("U1", "second", "445.000"))
-	fake.waitForPath(t, "chat.update", 2)
+	fake.waitForPath(t, pathStopStream, 2)
 	require.Len(t, fake.pathCalls("reactions.add"), 1, "reactions.add attempted once, then downgraded to text")
 }
 
@@ -1499,8 +1592,8 @@ func TestProgress_TextModeConfigured(t *testing.T) {
 	a.ProgressMode = "text"
 
 	sendEvent(t, srv, dmEvent("U1", "hi", "555.000"))
-	fake.waitForPath(t, "chat.update", 1) // placeholder (postMessage) then answer (update)
-	require.Contains(t, allText(fake.pathCalls("chat.update")), "hello")
+	fake.waitForPath(t, pathStopStream, 1) // placeholder (postMessage), then the streamed answer
+	require.Contains(t, fake.streamedText(), "hello")
 	require.Empty(t, fake.pathCalls("reactions.add"), "text mode never adds reactions")
 }
 
@@ -1566,9 +1659,9 @@ func TestTextMode_FailedTurnAfterContentPostsNewNote(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "the turn failed")
 	}, flowWait, 50*time.Millisecond, "the failure note posts as a new message")
-	updates := allText(fake.pathCalls("chat.update"))
-	require.Contains(t, updates, "partial answer", "the streamed content reached the placeholder")
-	require.NotContains(t, updates, "the turn failed", "the note must not overwrite streamed content")
+	require.Contains(t, fake.streamedText(), "partial answer", "the streamed content reached the thread")
+	require.NotContains(t, allText(fake.pathCalls("chat.update")), "the turn failed",
+		"the note must not overwrite streamed content")
 }
 
 // An error arriving in the same batch window as the text (no tick in between)
@@ -1590,9 +1683,9 @@ func TestTextMode_FailedTurnFlushesBufferedContentBeforeNote(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "the turn failed")
 	}, flowWait, 50*time.Millisecond, "the failure note posts as a new message")
-	updates := allText(fake.pathCalls("chat.update"))
-	require.Contains(t, updates, "partial answer", "buffered content is flushed before the error")
-	require.NotContains(t, updates, "the turn failed", "the note must not overwrite streamed content")
+	require.Contains(t, fake.streamedText(), "partial answer", "buffered content is flushed before the error")
+	require.NotContains(t, allText(fake.pathCalls("chat.update")), "the turn failed",
+		"the note must not overwrite streamed content")
 }
 
 // sendInteraction posts a signed block_actions interaction for actionID on
@@ -1722,7 +1815,7 @@ func TestHandleInbound_ThreadBroadcastReplyDispatches(t *testing.T) {
 
 	sendEvent(t, srv, mention("U1", "start", "400.000", ""))
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "answer-text")
+		return strings.Contains(fake.streamedText(), "answer-text")
 	}, flowWait, 50*time.Millisecond, "the mention's turn completes")
 
 	broadcast := `{"type":"event_callback","event":{"type":"message","subtype":"thread_broadcast","user":"U1","text":"and then?","channel":"C1","ts":"401.000","thread_ts":"400.000"}}`
@@ -1753,7 +1846,7 @@ func TestHandleInbound_FileShareReplyDispatches(t *testing.T) {
 
 	sendEvent(t, srv, mention("U1", "start", "500.000", ""))
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "answer-text")
+		return strings.Contains(fake.streamedText(), "answer-text")
 	}, flowWait, 50*time.Millisecond, "the mention's turn completes")
 
 	// The file has no url_private, so dispatch drops it by name (posting the
@@ -1924,7 +2017,7 @@ func TestDetails_DefaultOn_RendersToolActivity(t *testing.T) {
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","channel_type":"im","user":"U1","text":"list pods","channel":"D1","ts":"111.000"}}`)
 
 	require.Eventually(t, func() bool {
-		text := allBlockText(fake.pathCalls("chat.postMessage"))
+		text := fake.threadText()
 		return strings.Contains(text, "list_pods") && strings.Contains(text, "Found 3 pods.")
 	}, flowWait, 20*time.Millisecond, "default-on details should render the tool call and the answer")
 }
@@ -1941,9 +2034,9 @@ func TestDetails_Off_SuppressesToolActivity(t *testing.T) {
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","channel_type":"im","user":"U1","text":"list pods","channel":"D1","ts":"101.000","thread_ts":"100.000"}}`)
 
 	require.Eventually(t, func() bool {
-		return strings.Contains(allBlockText(fake.pathCalls("chat.postMessage")), "Found 3 pods.")
-	}, flowWait, 20*time.Millisecond, "the answer should still be posted")
-	require.NotContains(t, allBlockText(fake.pathCalls("chat.postMessage")), "list_pods",
+		return strings.Contains(fake.streamedText(), "Found 3 pods.")
+	}, flowWait, 20*time.Millisecond, "the answer should still be delivered")
+	require.NotContains(t, fake.threadText(), "list_pods",
 		"details off must not render tool activity")
 }
 
@@ -2012,7 +2105,7 @@ func TestUsage_DMTopLevelReportsSession(t *testing.T) {
 	// A completed DM turn records usage under its thread root ("100.000").
 	sendEvent(t, srv, dmEvent("U1", "count pods", "100.000"))
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "3 pods running.")
+		return strings.Contains(fake.streamedText(), "3 pods running.")
 	}, flowWait, 20*time.Millisecond, "the turn must complete before /usage is sent")
 
 	// /usage typed as a new top-level DM message: its own ts is the threadID.
@@ -2049,7 +2142,7 @@ func TestUsage_InThreadStillWorks(t *testing.T) {
 
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_mention","user":"U1","text":"<@UBOT> count pods","channel":"C1","ts":"100.000"}}`)
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "done.")
+		return strings.Contains(fake.streamedText(), "done.")
 	}, flowWait, 20*time.Millisecond, "the turn must complete before /usage is sent")
 
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","user":"U1","text":"/usage","channel":"C1","ts":"101.000","thread_ts":"100.000"}}`)
@@ -2065,12 +2158,7 @@ func TestUsage_InThreadStillWorks(t *testing.T) {
 func TestTurn_RenderFailureAfterCompletionIsNotAFailedTurn(t *testing.T) {
 	fake := newFakeSlackAPI()
 	// Every rendering of the reply is refused; other posts (the note) land.
-	fake.failIf = func(path string, params map[string]any) string {
-		if path == "chat.update" || (path == "chat.postMessage" && strings.Contains(fmt.Sprint(params["blocks"]), "half of the answer")) {
-			return "msg_too_long"
-		}
-		return ""
-	}
+	fake.setFail(pathStartStream, "msg_too_long")
 	gw := &stubGateway{
 		deltas: []channels.OutboundDelta{
 			{Kind: channels.DeltaText, Content: "first half of the answer"},

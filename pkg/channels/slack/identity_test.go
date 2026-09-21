@@ -72,7 +72,7 @@ func TestChat_HoldsPromptThenRoutesQuestionAsReject(t *testing.T) {
 	require.Contains(t, last.RejectionReason, "which ones exactly?")
 }
 
-// usernamesOf returns the username each recorded chat.postMessage carried.
+// usernamesOf returns the username each recorded call carried.
 func usernamesOf(calls []recordedCall) []string {
 	out := make([]string, 0, len(calls))
 	for _, c := range calls {
@@ -82,13 +82,14 @@ func usernamesOf(calls []recordedCall) []string {
 	return out
 }
 
-// awaitAgentReply drives one DM turn and waits for the agent's answer to be posted.
+// awaitAgentReply drives one DM turn and waits for the agent's answer to be
+// streamed into the thread.
 func awaitAgentReply(t *testing.T, srv *httptest.Server, fake *fakeSlackAPI, ts string) {
 	t.Helper()
 	sendEvent(t, srv, dmEvent("U1", "status?", ts))
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "all good")
-	}, flowWait, 20*time.Millisecond, "the agent answer is posted")
+		return strings.Contains(fake.streamedText(), "all good")
+	}, flowWait, 20*time.Millisecond, "the agent answer is streamed")
 }
 
 func replyGateway() *stubGateway {
@@ -111,10 +112,10 @@ func TestBranding_AgentReplyCarriesDisplayName(t *testing.T) {
 
 	awaitAgentReply(t, srv, fake, "500.000")
 
-	names := usernamesOf(fake.pathCalls("chat.postMessage"))
+	names := usernamesOf(fake.pathCalls(pathStartStream))
 	require.Contains(t, names, "SRE Assistant", "the reply carries the display-name annotation")
 	require.NotContains(t, names, "test_agent", "the AgentCard name is never shown")
-	for _, c := range fake.pathCalls("chat.postMessage") {
+	for _, c := range fake.pathCalls(pathStartStream) {
 		if u, _ := c.params["username"].(string); u == "SRE Assistant" {
 			_, hasIcon := c.params["icon_url"]
 			require.False(t, hasIcon, "no card icon means the app icon is kept (icon_url omitted)")
@@ -135,7 +136,7 @@ func TestBranding_NoAnnotationFallsBackToTechnicalName(t *testing.T) {
 
 	awaitAgentReply(t, srv, fake, "501.000")
 
-	names := usernamesOf(fake.pathCalls("chat.postMessage"))
+	names := usernamesOf(fake.pathCalls(pathStartStream))
 	require.Contains(t, names, "test-agent", "the hyphenated resource name is used")
 	require.NotContains(t, names, "test_agent", "the AgentCard name is never shown")
 }
@@ -152,7 +153,7 @@ func TestBranding_WhitespaceAnnotationCountsAsAbsent(t *testing.T) {
 
 	awaitAgentReply(t, srv, fake, "502.000")
 
-	require.Contains(t, usernamesOf(fake.pathCalls("chat.postMessage")), "test-agent",
+	require.Contains(t, usernamesOf(fake.pathCalls(pathStartStream)), "test-agent",
 		"a blank annotation falls through to the technical name")
 }
 
@@ -166,7 +167,7 @@ func TestBranding_QualifiedRefPostsBareName(t *testing.T) {
 
 	awaitAgentReply(t, srv, fake, "503.000")
 
-	names := usernamesOf(fake.pathCalls("chat.postMessage"))
+	names := usernamesOf(fake.pathCalls(pathStartStream))
 	require.Contains(t, names, "test-agent", "the namespace qualifier is stripped")
 	require.NotContains(t, names, "kagent/test-agent", "no namespace reaches Slack")
 }
@@ -179,7 +180,7 @@ func TestBranding_NoRosterStillNamesTheAgent(t *testing.T) {
 
 	awaitAgentReply(t, srv, fake, "504.000")
 
-	require.Contains(t, usernamesOf(fake.pathCalls("chat.postMessage")), "test-agent",
+	require.Contains(t, usernamesOf(fake.pathCalls(pathStartStream)), "test-agent",
 		"the technical name is used when no roster is configured")
 }
 
@@ -190,7 +191,7 @@ func TestBranding_NoRosterStillNamesTheAgent(t *testing.T) {
 func TestBranding_MissingScopeFallsBackToAppIdentity(t *testing.T) {
 	fake := newFakeSlackAPI()
 	fake.failIf = func(path string, params map[string]any) string {
-		if u, _ := params["username"].(string); path == "chat.postMessage" && u != "" {
+		if u, _ := params["username"].(string); path == pathStartStream && u != "" {
 			return "missing_scope"
 		}
 		return ""
@@ -209,38 +210,28 @@ func TestBranding_MissingScopeFallsBackToAppIdentity(t *testing.T) {
 	awaitAgentReply(t, srv, fake, "600.000")
 
 	branded := 0
-	for _, u := range usernamesOf(fake.pathCalls("chat.postMessage")) {
+	for _, u := range usernamesOf(fake.pathCalls(pathStartStream)) {
 		if u != "" {
 			branded++
 		}
 	}
-	require.Positive(t, branded, "the first post attempts branding")
-	// awaitAgentReply is satisfied by the refused branded post, which carries
-	// the same text, so the unbranded retry is still on its way: wait for it.
-	require.Eventually(t, func() bool {
-		for _, c := range fake.pathCalls("chat.postMessage") {
-			text, _ := c.params["text"].(string)
-			u, _ := c.params["username"].(string)
-			if strings.Contains(text, "all good") && u == "" {
-				return true
-			}
+	require.Positive(t, branded, "the first stream attempts branding")
+	var unbranded bool
+	for _, c := range fake.pathCalls(pathStartStream) {
+		if u, _ := c.params["username"].(string); u == "" {
+			unbranded = true
 		}
-		return false
-	}, flowWait, 20*time.Millisecond, "the reply arrives under the app identity")
+	}
+	require.True(t, unbranded, "the rejected stream is retried under the app identity")
+	require.Contains(t, fake.streamedText(), "all good", "the reply arrives")
 
 	// Second turn: the latched downgrade skips the branded attempt entirely.
 	sendEvent(t, srv, dmEvent("U1", "status?", "601.000"))
 	require.Eventually(t, func() bool {
-		n := 0
-		for _, c := range fake.pathCalls("chat.postMessage") {
-			if text, _ := c.params["text"].(string); strings.Contains(text, "all good") {
-				n++
-			}
-		}
-		return n >= 2
+		return len(fake.pathCalls(pathStopStream)) >= 2
 	}, flowWait, 20*time.Millisecond, "the second reply arrives too")
 	after := 0
-	for _, u := range usernamesOf(fake.pathCalls("chat.postMessage")) {
+	for _, u := range usernamesOf(fake.pathCalls(pathStartStream)) {
 		if u != "" {
 			after++
 		}
@@ -262,7 +253,7 @@ func TestBranding_DisplayNameIsSanitized(t *testing.T) {
 
 	awaitAgentReply(t, srv, fake, "602.000")
 
-	require.Contains(t, usernamesOf(fake.pathCalls("chat.postMessage")), "SRE Assistant (on-call)",
+	require.Contains(t, usernamesOf(fake.pathCalls(pathStartStream)), "SRE Assistant (on-call)",
 		"control characters become spaces and runs collapse")
 }
 
@@ -280,14 +271,14 @@ func TestBranding_RosterFailureDeliversReplyAndIsNotRetried(t *testing.T) {
 	})
 
 	awaitAgentReply(t, srv, fake, "505.000")
-	require.Contains(t, usernamesOf(fake.pathCalls("chat.postMessage")), "test-agent",
+	require.Contains(t, usernamesOf(fake.pathCalls(pathStartStream)), "test-agent",
 		"a failed lookup degrades to the technical name, the reply still arrives")
 
 	after := roster.listCalls()
 	require.Positive(t, after, "branding did consult the roster, so the next assertion is not vacuous")
 	sendEvent(t, srv, dmEvent("U1", "status?", "506.000"))
 	require.Eventually(t, func() bool {
-		return len(fake.pathCalls("chat.postMessage")) > 1
+		return len(fake.pathCalls(pathStartStream)) > 1
 	}, flowWait, 20*time.Millisecond, "the second turn is answered too")
 	require.Equal(t, after, roster.listCalls(),
 		"the failure is cached, so branding does not re-ask the controller")
@@ -317,16 +308,15 @@ func TestBranding_AppNamesakeAgentPostsAsTheApp(t *testing.T) {
 	require.False(t, hasIcon, "and under the app's own icon")
 }
 
-// replyPost returns the chat.postMessage that carried the stub agent's answer.
+// replyPost returns the chat.startStream that opened the stub agent's answer.
+// The answer itself arrives in pieces across that call and the ones after it,
+// so the text is asserted on the stream as a whole.
 func replyPost(t *testing.T, fake *fakeSlackAPI) recordedCall {
 	t.Helper()
-	for _, c := range fake.pathCalls("chat.postMessage") {
-		if text, _ := c.params["text"].(string); strings.Contains(text, "all good") {
-			return c
-		}
-	}
-	require.FailNow(t, "no chat.postMessage carried the agent's answer")
-	return recordedCall{}
+	require.Contains(t, fake.streamedText(), "all good", "the agent's answer was streamed")
+	calls := fake.pathCalls(pathStartStream)
+	require.NotEmpty(t, calls, "no chat.startStream carried the agent's answer")
+	return calls[0]
 }
 
 // Without `users:read` the bot's own users.info is refused with missing_scope
@@ -356,10 +346,10 @@ func TestBranding_NamesakeCheckAsksUsersInfoOnceWithoutScope(t *testing.T) {
 	awaitAgentReply(t, srv, fake, "508.000")
 	sendEvent(t, srv, dmEvent("U1", "status?", "509.000"))
 	require.Eventually(t, func() bool {
-		return strings.Count(allText(fake.pathCalls("chat.postMessage")), "all good") >= 2
+		return strings.Count(fake.streamedText(), "all good") >= 2
 	}, flowWait, 20*time.Millisecond, "the second reply arrives too")
 
-	for _, u := range usernamesOf(fake.pathCalls("chat.postMessage")) {
+	for _, u := range usernamesOf(fake.pathCalls(pathStartStream)) {
 		require.Empty(t, u, "the namesake agent posts as the app on the auth.test handle alone")
 	}
 	botLookups := 0

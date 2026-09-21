@@ -38,7 +38,7 @@ func TestUsage_CarriesAcrossApprovalPause(t *testing.T) {
 	waitThreadIdle(t, a, "800.000")
 	sendEvent(t, srv, dmThreadEvent("U1", "approve", "801.000", "800.000"))
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "deleted")
+		return strings.Contains(fake.streamedText(), "deleted")
 	}, flowWait, 50*time.Millisecond, "approved turn completes")
 
 	sendEvent(t, srv, dmThreadEvent("U1", "/usage", "802.000", "800.000"))
@@ -105,7 +105,7 @@ func TestTypedResume_FailureKeepsPendingTask(t *testing.T) {
 	require.Eventually(t, func() bool {
 		attempt++
 		sendEvent(t, srv, dmThreadEvent("U1", "approve", fmt.Sprintf("902.%03d", attempt), "900.000"))
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "done")
+		return strings.Contains(fake.streamedText(), "done")
 	}, flowWait, 100*time.Millisecond, "retried resume completes")
 
 	mu.Lock()
@@ -126,7 +126,7 @@ func TestTypedResume_FailureKeepsPendingTask(t *testing.T) {
 func TestPromptFlushFailure_KeepsPendingTask(t *testing.T) {
 	fake := newFakeSlackAPI()
 	fake.setFail("reactions.add", "missing_scope") // force text-mode progress
-	fake.setFail("chat.update", "fatal_error")
+	fake.setFail(pathStartStream, "fatal_error")
 
 	var mu sync.Mutex
 	var captured []channels.InboundMessage
@@ -148,9 +148,10 @@ func TestPromptFlushFailure_KeepsPendingTask(t *testing.T) {
 
 	sendEvent(t, srv, dmEvent("U1", "delete the pod", "111.000"))
 
-	// The buffered text is retried at the handoff (3 chat.update attempts), then
-	// the paused-note rewrite makes the 4th; the prompt itself posts regardless.
-	fake.waitForPath(t, "chat.update", 4)
+	// The buffered text is retried at the handoff (3 chat.startStream attempts);
+	// the paused note still rewrites the placeholder and the prompt still posts.
+	fake.waitForPath(t, pathStartStream, 3)
+	fake.waitForPath(t, "chat.update", 1)
 
 	// A typed reply must resume the paused task. Retry with fresh timestamps
 	// until the thread slot has been released and one reply dispatches; extra
@@ -242,7 +243,7 @@ func TestStop_CancelClearsWorkingReactionSilently(t *testing.T) {
 
 	sendEvent(t, srv, dmEvent("U1", "long task", "555.000"))
 	fake.waitForPath(t, "reactions.add", 1)
-	waitTurnStreaming(t, fake, 1)
+	waitTurnStreaming(t, fake)
 
 	sendEvent(t, srv, dmThreadEvent("U1", "/stop", "556.000", "555.000"))
 	fake.waitForPath(t, "reactions.remove", 1)
@@ -292,7 +293,7 @@ func TestAttachmentOnlyReply_LeavesPendingTaskAndAsksForText(t *testing.T) {
 	require.Eventually(t, func() bool {
 		attempt++
 		sendEvent(t, srv, dmThreadEvent("U1", "approve", fmt.Sprintf("912.%03d", attempt), "910.000"))
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "done")
+		return strings.Contains(fake.streamedText(), "done")
 	}, flowWait, 100*time.Millisecond, "typed approval still resumes the task")
 
 	mu.Lock()
@@ -335,7 +336,7 @@ func TestDecisionReplyWithAttachment_PostsNotForwardedNote(t *testing.T) {
 	require.Eventually(t, func() bool {
 		attempt++
 		sendEvent(t, srv, dmThreadFileEvent("U1", "approve", fmt.Sprintf("921.%03d", attempt), "920.000", "error.log"))
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "done")
+		return strings.Contains(fake.streamedText(), "done")
 	}, flowWait, 100*time.Millisecond, "decision reply completes")
 
 	posts := allText(fake.pathCalls("chat.postMessage"))
@@ -366,7 +367,7 @@ func TestStop_BareWordDuringTurnInterrupts(t *testing.T) {
 
 	sendEvent(t, srv, dmEvent("U1", "long task", "700.000"))
 	fake.waitForPath(t, "reactions.add", 1)
-	waitTurnStreaming(t, fake, 1)
+	waitTurnStreaming(t, fake)
 
 	sendEvent(t, srv, dmThreadEvent("U1", "Stop.", "701.000", "700.000"))
 	require.Eventually(t, func() bool {
@@ -399,4 +400,64 @@ func TestStop_BareWordIdleThreadReachesAgent(t *testing.T) {
 	require.NotContains(t, posted, "Stopped", "nothing to stop")
 	require.NotContains(t, posted, "Nothing is running", "the nothing-running notice is /stop's alone")
 	require.NotContains(t, posted, "still finishing", "an idle thread is not busy")
+}
+
+// A DM turn renders its answer as one streamed message: opened on the first
+// text, appended to while the agent keeps writing, closed when the turn ends —
+// and the session's exit status rides that close. A DM stream names no
+// recipient; Slack refuses one there.
+func TestStreamedReply_DMTurnStartsAppendsAndStops(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{
+		deltas: []channels.OutboundDelta{
+			{Content: "first half "},
+			{Content: "second half "},
+			{Done: true},
+		},
+		// Past the append tick, so the second delta rides an append of its own.
+		interDeltaDelay: 1200 * time.Millisecond,
+	}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+
+	sendEvent(t, srv, dmEvent("U1", "how many nodes?", "900.000"))
+	require.Eventually(t, func() bool {
+		return len(fake.pathCalls(pathStopStream)) > 0
+	}, flowWait, 20*time.Millisecond, "the stream is closed when the turn ends")
+	require.Contains(t, fake.streamedText(), "first half second half", "the whole answer is streamed")
+
+	require.Equal(t, []string{pathStartStream, pathAppendStream, pathStopStream}, fake.streamMethods())
+	start := fake.pathCalls(pathStartStream)[0]
+	require.Equal(t, "900.000", start.params["thread_ts"], "the answer streams into the thread")
+	require.NotContains(t, start.params, "recipient_user_id", "a DM stream names no recipient")
+	require.NotContains(t, start.params, "recipient_team_id")
+	require.Equal(t, "active", fake.pathCalls(pathStopStream)[0].params["session_status"],
+		"the session's exit status rides the stop")
+}
+
+// The same in a channel thread, where Slack requires the stream to name the
+// person it answers.
+func TestStreamedReply_ChannelTurnNamesTheRecipient(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{
+		deltas: []channels.OutboundDelta{
+			{Content: "first half "},
+			{Content: "second half "},
+			{Done: true},
+		},
+		interDeltaDelay: 1200 * time.Millisecond,
+	}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
+
+	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_mention","user":"U1","text":"<@UBOT> how many nodes?","channel":"C1","ts":"901.000"}}`)
+	require.Eventually(t, func() bool {
+		return len(fake.pathCalls(pathStopStream)) > 0
+	}, flowWait, 20*time.Millisecond, "the stream is closed when the turn ends")
+	require.Contains(t, fake.streamedText(), "first half second half", "the whole answer is streamed")
+
+	require.Equal(t, []string{pathStartStream, pathAppendStream, pathStopStream}, fake.streamMethods())
+	start := fake.pathCalls(pathStartStream)[0]
+	require.Equal(t, "901.000", start.params["thread_ts"])
+	require.Equal(t, "U1", start.params["recipient_user_id"], "the stream names the asker")
+	require.Equal(t, "TWORKSPACE", start.params["recipient_team_id"], "and their workspace")
+	require.Equal(t, "active", fake.pathCalls(pathStopStream)[0].params["session_status"])
 }

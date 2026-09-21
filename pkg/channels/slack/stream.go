@@ -18,6 +18,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
@@ -27,8 +28,17 @@ import (
 )
 
 const (
-	batchInterval = 250 * time.Millisecond
-	slackAPIBase  = "https://slack.com/api"
+	// streamAppendInterval paces chat.appendStream while a turn's answer
+	// streams. The first text of a turn goes out at once so the message appears
+	// while the agent is still writing; everything after it rides this tick, so
+	// one active thread costs about 60 appends a minute — comfortably inside the
+	// method's tier-4 budget, with the 429 handling in call() as the safety net.
+	streamAppendInterval = time.Second
+	// finalFlushRetryDelay spaces the attempts of the terminal flush.
+	finalFlushRetryDelay = 250 * time.Millisecond
+	// streamCloseTimeout bounds closing a stream a cancelled turn left open.
+	streamCloseTimeout = 5 * time.Second
+	slackAPIBase       = "https://slack.com/api"
 	// downloadSizeMargin is the headroom over Slack's declared file size that a
 	// download body may reach before it is rejected as an out-of-memory guard.
 	downloadSizeMargin = 1 << 20
@@ -58,14 +68,17 @@ const (
 	// methodSetSessionStatus is the agent-messaging method that drives the
 	// session lifecycle (and creates the session when it does not exist yet).
 	methodSetSessionStatus = "agents.sessions.setStatus"
-	// slackMarkdownBlockMax caps the text of one Block Kit markdown block,
-	// Slack's 12 000-char limit. splitMarkdown budgets the fence auto-close and
-	// reopen inside this cap, so emitted chunks never exceed it.
+	// The streaming methods that render a turn's answer: one message opened,
+	// appended to while the agent writes, and closed with the session's status.
+	methodChatStartStream  = "chat.startStream"
+	methodChatAppendStream = "chat.appendStream"
+	methodChatStopStream   = "chat.stopStream"
+	// slackMarkdownBlockMax caps the text of one Block Kit markdown block and
+	// of one streamed message, Slack's 12 000-char limit. splitMarkdown budgets
+	// the fence auto-close and reopen inside this cap, so emitted chunks never
+	// exceed it; a streamed answer that reaches it rolls over into a new
+	// message.
 	slackMarkdownBlockMax = 12000
-	// minMarkdownBlockMax is the floor the per-message budget shrinks to when
-	// Slack refuses a message as too long regardless (a limit the documented
-	// block cap does not describe).
-	minMarkdownBlockMax = 1000
 	// slackFallbackTextMax caps a message's top-level text: chat.update refuses
 	// a text field over 4 000 characters (msg_too_long). On a markdown-block
 	// message that field is only the notification and accessibility fallback of
@@ -73,17 +86,25 @@ const (
 	slackFallbackTextMax = 4000
 
 	// Slack Web API error codes the adapter reacts to.
-	errCodeMsgTooLong          = "msg_too_long"
 	errCodeMissingScope        = "missing_scope"
 	errCodeInvalidArguments    = "invalid_arguments"
 	errCodeNotAllowedTokenType = "not_allowed_token_type"
 	errCodeFeatureDisabled     = "feature_disabled"
+	// Streaming rejections: the user pressed Stop, the message is no longer
+	// streaming, or the message belongs to another app.
+	errCodeStoppedByUser       = "stopped_by_user"
+	errCodeNotInStreamingState = "message_not_in_streaming_state"
+	errCodeMsgNotOwned         = "message_not_owned_by_app"
 )
 
-// batchedWriter accumulates OutboundDelta content and periodically calls
-// chat.update to stay within Slack's rate limits (~4 updates/sec/channel).
+// batchedWriter accumulates OutboundDelta content and streams it into one
+// Slack message: chat.startStream opens the answer, chat.appendStream adds the
+// text accumulated since the last tick, and chat.stopStream closes it with the
+// agent session's exit status. Each append carries only the new text, Slack
+// animates the message while the stream is open, and the Stop button ends the
+// stream on Slack's side.
 //
-// The main reply (ts) accumulates DeltaText content. Tool activity is a live
+// The main reply accumulates DeltaText content. Tool activity is a live
 // status ticker at the default details level — one muted line that updates in
 // place while the agent works and collapses to a one-line receipt — and, at
 // detailsFull, additionally an aggregated audit message of per-call
@@ -98,8 +119,8 @@ const (
 // stream order. The agent's interim narration posts as its own in-thread
 // messages, except that at the default level a short narration folds into the
 // segment's status message as a muted context block above the ticker line, so
-// a typical narrate-then-call group is one compact message. The main reply is
-// posted lazily on the first flush and therefore lands last.
+// a typical narrate-then-call group is one compact message. The main reply's
+// stream opens on its first text and therefore lands last.
 //
 // When the stream ends on a DeltaPrompt, run() captures it in promptDelta
 // (flushing the main buffer first) and returns nil. The caller is responsible
@@ -108,9 +129,13 @@ type batchedWriter struct {
 	client   *slackAPIClient
 	channel  string
 	threadTS string // thread root — used when posting the status message
-	ts       string // main reply message timestamp
-	logger   *slog.Logger
-	details  detailsLevel // tool-activity verbosity snapshotted at turn start
+	// placeholderTS is the text-mode progress placeholder ("thinking…"), empty
+	// in reactions mode. A stream cannot take over an existing message the way
+	// chat.update did, so the placeholder is deleted once the answer has a
+	// message of its own.
+	placeholderTS string
+	logger        *slog.Logger
+	details       detailsLevel // tool-activity verbosity snapshotted at turn start
 
 	// adapter, slackUser, and connectorPrompts back the reactive connector
 	// prompt: a core_auth_login tool result in the stream renders a Connect
@@ -121,6 +146,11 @@ type batchedWriter struct {
 	adapter          *Adapter
 	slackUser        string
 	connectorPrompts bool
+	// recipientTeam is the workspace of the person the answer is for (the bot's
+	// own team, from auth.test). Slack requires it next to the recipient user on
+	// a stream opened in a channel; both are left off in a DM. Slack Connect
+	// channels, where the two teams differ, are out of scope.
+	recipientTeam string
 	// sessionTitle names the agent session in Slack's Messages tab. It is set
 	// only on the turn that opens the conversation — Slack applies a title when
 	// the status call creates the session and ignores it afterwards — so on
@@ -173,19 +203,36 @@ type batchedWriter struct {
 	threadPosterDone chan struct{}
 
 	mu            sync.Mutex
-	buf           strings.Builder
-	flushedLen    int       // length of buf at the last chat.update; skips no-op flushes
+	pending       string    // agent text accepted but not yet appended to the stream
 	flushFailures int       // consecutive failed ticker flushes; reset on success
 	flushRetryAt  time.Time // ticker flushes wait until here once they keep failing
-	// chunkMax is the per-message budget of the reply's markdown blocks. It
-	// starts at Slack's documented block limit and shrinks when Slack refuses a
-	// message as too long regardless. Only touched from run()'s goroutine.
-	chunkMax    int
-	wroteAny    bool                    // set once the head message carries agent text; survives a partial multi-chunk flush
+	// appendedLen counts the answer bytes this writer has handed to streams,
+	// summed across roll-overs. It is what a process continuing the turn after
+	// a restart must not post again, and what says the reply carries agent text.
+	appendedLen int
 	promptDelta *channels.OutboundDelta // set when stream ends on DeltaPrompt
-	// tailTS holds the timestamps of overflow messages posted when the reply
-	// outgrows a single Slack message. Only touched from run()'s goroutine.
-	tailTS []string
+	// Stream state, touched from run()'s goroutine (and from the terminal flush
+	// the adapter runs once run() has returned). streamTS is the open streamed
+	// message, "" when none is open; streamed counts the characters it carries,
+	// so the answer rolls over into a fresh message before Slack's per-message
+	// cap; streamMessages lists every streamed message of the turn, which is
+	// what a retract deletes.
+	streamTS       string
+	streamed       int
+	streamMessages []string
+	// streamAdopted marks streamTS as a stream a previous process opened
+	// (continueFrom), which this one has not written to yet: its first text
+	// goes out as an append, so a stream Slack has closed since the restart
+	// recovers onto a message of its own instead of failing the closing stop.
+	streamAdopted bool
+	// streamRecovered marks a stream Slack closed under us as already reopened
+	// once this turn; streamStopped closes the text path for the rest of the
+	// turn (the user pressed Stop, or the stream could not be kept open);
+	// exitStatusSent marks the session's exit status as delivered by the stop
+	// that closed the stream, so run()'s exit call does not repeat it.
+	streamRecovered bool
+	streamStopped   bool
+	exitStatusSent  bool
 	// narrationTS holds the timestamps of the narration posted after a login
 	// challenge this turn, so a connector prompt taking over can retract that
 	// sign-in prose with the reply. Written by the poster goroutine.
@@ -268,35 +315,46 @@ func newBatchedWriterWithClient(client *slackAPIClient, channel, ts, threadTS st
 		logger = slog.Default()
 	}
 	return &batchedWriter{
-		client:   client,
-		channel:  channel,
-		ts:       ts,
-		threadTS: threadTS,
-		details:  details,
-		logger:   logger,
-		chunkMax: slackMarkdownBlockMax,
+		client:        client,
+		channel:       channel,
+		placeholderTS: ts,
+		threadTS:      threadTS,
+		details:       details,
+		logger:        logger,
 	}
 }
 
-// run drains deltas from ch, batching chat.update calls at batchInterval.
+// run drains deltas from ch, appending the agent's text to the turn's streamed
+// message at streamAppendInterval.
 func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelta) error {
 	w.timer = channels.TurnTimerFromContext(ctx)
 	// A run() cycle over a writer that ran before (an auto-approved prompt
 	// resuming the turn in place) starts a fresh ticker: the previous cycle's
-	// segment collapsed into its receipt when its poster closed.
+	// segment collapsed into its receipt when its poster closed. Its answer
+	// stream was closed by that cycle's final stop, so the continuation opens a
+	// message of its own rather than reopening a closed one.
 	if w.ran {
 		w.resetToolStatus()
+		w.resetStream()
 	}
 	w.ran = true
-	ticker := time.NewTicker(batchInterval)
+	ticker := time.NewTicker(streamAppendInterval)
 	defer ticker.Stop()
 	// The session leaves "processing" on EVERY exit — stream done, stream error,
 	// /stop, and the HITL prompt pause. Slack's agent loading UX does not clear
 	// itself when the app posts any more, so a missing exit status leaves the
-	// thread spinning for up to an hour. Registered before the drain so it lands
-	// after the turn's last in-thread post.
+	// thread spinning for up to an hour. The stop that closes the reply's stream
+	// carries that status already, so this call covers the turns that never
+	// opened a stream and the stops that failed. Registered before the drain so
+	// it lands after the turn's last in-thread post.
 	w.setSessionStatus(ctx, sessionProcessing)
-	defer func() { w.setSessionStatus(ctx, w.exitSessionStatus()) }()
+	defer func() {
+		if w.exitStatusSent {
+			return
+		}
+		w.setSessionStatus(ctx, w.exitSessionStatus())
+	}()
+	defer w.endStream(ctx)     // backstop for the ctx.Done() exit; finalFlush closes first
 	defer w.drainThreadPosts() // backstop for the ctx.Done() exit; finalFlush drains first
 
 	for {
@@ -342,8 +400,18 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 				w.timer.Mark(channels.PhaseFirstText)
 				w.timer.AddChars(len(content))
 				w.mu.Lock()
-				w.buf.WriteString(content)
+				w.pending += content
 				w.mu.Unlock()
+				// The turn's first text opens the stream at once, so the answer
+				// shows up while the agent is still writing it; the tick paces
+				// the appends that follow. What the agent narrated before the
+				// answer has to land above it, and the streamed message exists
+				// from its first text on, so the poster cannot catch up later:
+				// drain it first, as the terminal flush does.
+				if w.streamTS == "" && !w.streamStopped {
+					w.drainThreadPosts()
+					w.tickFlush(ctx, time.Now())
+				}
 			case channels.DeltaToolActivity:
 				if d.Tool != nil && d.Tool.Kind == channels.ToolCall {
 					w.timer.AddToolCall()
@@ -354,6 +422,12 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 				w.timer.AddChars(len(d.Content))
 				w.renderNarration(ctx, d.Content)
 			case channels.DeltaPrompt:
+				// Recorded before the flush: the stop that closes the stream
+				// carries the session's exit status, which for a paused turn is
+				// "suspended" — Slack's "waiting for you".
+				w.mu.Lock()
+				w.promptDelta = &d
+				w.mu.Unlock()
 				// Flush partial text so far, then hand off to the caller to post
 				// the interactive approval prompt. A flush failure here is
 				// non-fatal: the pending-task store and the prompt post do not
@@ -363,21 +437,11 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 				if err := w.finalFlush(ctx); err != nil {
 					w.logger.Warn("slack: flush at prompt handoff failed, buffered text lost", "error", err)
 				}
-				w.mu.Lock()
-				w.promptDelta = &d
-				w.mu.Unlock()
 				return nil
 			}
 
 		case now := <-ticker.C:
-			if now.Before(w.flushRetryAt) {
-				continue
-			}
-			if err := w.flush(ctx); err != nil {
-				w.noteFlushFailure(now, err)
-				continue
-			}
-			w.flushFailures = 0
+			w.tickFlush(ctx, now)
 		}
 	}
 }
@@ -391,8 +455,21 @@ const maxFlushFailures = 3
 // Slack outage is not hammered every tick for the rest of the turn.
 const flushRetryBackoff = 5 * time.Second
 
-// noteFlushFailure records a failed ticker flush. flushedLen only advances on
-// success, so a later flush re-sends the same content: a Slack failure is never
+// tickFlush runs one paced flush, honouring the backoff a run of failures put
+// in place and recording the outcome.
+func (w *batchedWriter) tickFlush(ctx context.Context, now time.Time) {
+	if now.Before(w.flushRetryAt) {
+		return
+	}
+	if err := w.flush(ctx); err != nil {
+		w.noteFlushFailure(now, err)
+		return
+	}
+	w.flushFailures = 0
+}
+
+// noteFlushFailure records a failed ticker flush. Text an append did not
+// deliver stays pending, so a later flush re-sends it: a Slack failure is never
 // fatal to the turn — the agent keeps working, the reply lands once Slack
 // accepts it again, and only the final flush's failure is reported (as a
 // renderError). Aborting the turn here instead used to cancel the task
@@ -428,19 +505,22 @@ type renderError struct{ err error }
 func (e *renderError) Error() string { return "slack: reply rendering failed: " + e.err.Error() }
 func (e *renderError) Unwrap() error { return e.err }
 
-// finalFlush retries a terminal flush (stream done, error, or prompt handoff)
-// up to maxFlushFailures attempts. No later tick will re-send the buffered
-// tail, so a single transient Slack error here would discard it even though
-// the turn completed server-side; a short reply that never hits a ticker
-// flush would otherwise be killable by one such error.
+// finalFlush ends the turn's text path (stream done, error, or prompt handoff):
+// the text still pending — including the tail the last append held back — rides
+// the chat.stopStream that closes the streamed message, so the answer's last
+// words and the session's exit status land in one call.
+//
+// Retried up to maxFlushFailures attempts: no later tick will re-send that
+// tail, so a single transient Slack error here would discard it even though the
+// turn completed server-side; a short reply that never hits a ticker flush
+// would otherwise be killable by one such error.
 func (w *batchedWriter) finalFlush(ctx context.Context) error {
-	// Every queued in-thread post precedes the reply this flush lands, and in
-	// reactions mode the reply is posted right here, so drain the poster first to
-	// keep the answer the turn's last message.
+	// Every queued in-thread post precedes the reply this flush lands, so drain
+	// the poster first to keep the answer the turn's last message.
 	w.drainThreadPosts()
 	var err error
 	for attempt := 1; ; attempt++ {
-		if err = w.flush(ctx); err == nil {
+		if err = w.closeStream(ctx); err == nil {
 			return nil
 		}
 		if attempt >= maxFlushFailures || ctx.Err() != nil {
@@ -450,7 +530,7 @@ func (w *batchedWriter) finalFlush(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return err
-		case <-time.After(batchInterval):
+		case <-time.After(finalFlushRetryDelay):
 		}
 	}
 }
@@ -807,8 +887,8 @@ func renderToolReceipt(steps int, order []string, counts map[string]int) string 
 // just before firing tool calls — so it reads in order with the tool posts it
 // introduces. Unlike tool activity it ignores the details level: this is the
 // agent talking, not tool transparency. It stays out of the main reply buffer,
-// which is posted lazily on the first flush, so the answer keeps landing after
-// the narration that led to it.
+// whose stream opens on its first text, so the answer keeps landing after the
+// narration that led to it.
 //
 // Narration renders as its own in-thread message, except that at the default
 // level a short one folds into the segment's status message (the ticker's
@@ -840,7 +920,7 @@ func (w *batchedWriter) renderNarration(ctx context.Context, text string) {
 	retract := len(w.loginURLs) > 0
 	fold := w.details == detailsOn && !retract && foldableNarration(scrubbed)
 	segmentClosed := false
-	for _, md := range splitMarkdown(scrubbed, w.chunkMax) {
+	for _, md := range splitMarkdown(scrubbed, slackMarkdownBlockMax) {
 		w.narrationsRendered++
 		switch {
 		case w.narrationsRendered > maxNarrationMessages+1:
@@ -1618,18 +1698,15 @@ func spaceStructuralJSON(b []byte) string {
 	return out.String()
 }
 
-// wroteContent reports whether the head message carries agent text. Used after
-// the run loop to decide whether a terminal note may overwrite the placeholder,
-// so narration and tool activity deliberately do not count: they are separate
-// messages, and a turn that only narrated must still have its "thinking"
-// placeholder replaced by the note.
-// flushedLen only advances once every chunk of a flush lands, so a multi-chunk
-// flush whose head updated the placeholder but whose tail failed leaves it 0;
-// wroteAny captures the head landing so that partial delivery still counts.
+// wroteContent reports whether a streamed message carries agent text. Used
+// after the run loop to decide whether a terminal note may overwrite the
+// placeholder, so narration and tool activity deliberately do not count: they
+// are separate messages, and a turn that only narrated must still have its
+// "thinking" placeholder replaced by the note.
 func (w *batchedWriter) wroteContent() bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.flushedLen > 0 || w.wroteAny
+	return w.appendedLen > 0
 }
 
 // connectorReplyRetractable reports whether this turn's visible reply was only
@@ -1642,12 +1719,12 @@ func (w *batchedWriter) connectorReplyRetractable() bool {
 	return len(w.loginURLs) > 0 && !w.connectorManualSignIn
 }
 
-// retractRendered deletes the streamed agent messages (head, any overflow
-// tails, and the narration that followed the login challenge), leaving the
-// thread to the connector prompt alone. Tool activity stays: it is a
-// transparency record, not sign-in prose the button contradicts, and so does the
-// narration that explains it from before the challenge. Best-effort: a delete
-// failure is logged, not propagated.
+// retractRendered deletes the turn's streamed messages and the narration that
+// followed the login challenge, leaving the thread to the connector prompt
+// alone. Tool activity stays: it is a transparency record, not sign-in prose
+// the button contradicts, and so does the narration that explains it from
+// before the challenge. Best-effort: a delete failure is logged, not
+// propagated.
 // The run loop has finished and drained the poster, so narrationTS is complete;
 // it is still read under the lock because the poster wrote it.
 func (w *batchedWriter) retractRendered(ctx context.Context) {
@@ -1660,126 +1737,365 @@ func (w *batchedWriter) retractRendered(ctx context.Context) {
 			w.logger.Warn("slack: retract narration message failed", "ts", ts, "error", err)
 		}
 	}
-	tails := w.tailTS
-	head := w.ts
-	w.ts, w.tailTS = "", nil
-	w.wroteAny, w.flushedLen = false, 0
-	for _, ts := range tails {
-		if err := w.client.deleteMessage(ctx, w.channel, ts); err != nil {
-			w.logger.Warn("slack: retract connector reply tail failed", "ts", ts, "error", err)
+	// A message still streaming cannot be retracted, so close it first. The
+	// turn is being taken over by the sign-in prompt and is not over, hence
+	// processing rather than Slack's active default.
+	if w.streamTS != "" {
+		if err := w.stopStream(ctx, "", sessionProcessing); err != nil {
+			w.logger.Warn("slack: stop the reply stream before retracting it failed", "error", err)
 		}
 	}
-	if head != "" {
-		if err := w.client.deleteMessage(ctx, w.channel, head); err != nil {
-			w.logger.Warn("slack: retract connector reply head failed", "ts", head, "error", err)
+	messages := w.streamMessages
+	w.streamMessages = nil
+	w.dropStream()
+	w.mu.Lock()
+	w.appendedLen = 0
+	w.mu.Unlock()
+	for _, ts := range messages {
+		if err := w.client.deleteMessage(ctx, w.channel, ts); err != nil {
+			w.logger.Warn("slack: retract connector reply failed", "ts", ts, "error", err)
 		}
 	}
 }
 
+// flush appends the text accumulated since the last one to the turn's stream,
+// opening the stream on the first call. The text after the last whitespace is
+// held back: an append is final — unlike the chat.update it replaces, which
+// re-rendered the whole reply every tick — so a login URL must never be sent
+// half-scrubbed and a word never cut in two.
 func (w *batchedWriter) flush(ctx context.Context) error {
-	w.mu.Lock()
-	// Skip the chat.update when nothing new accumulated since the last flush;
-	// the ticker fires every batchInterval whether or not content changed.
-	if w.buf.Len() == w.flushedLen {
-		w.mu.Unlock()
+	if w.streamStopped {
+		w.takePending(true) // the text path is closed; drop what is left
 		return nil
 	}
-	text := w.buf.String()
-	flushingLen := w.buf.Len()
-	w.mu.Unlock()
-	text = w.scrubLoginURLs(text)
-
-	// Scrubbing a pure sign-in message can empty the buffer. Nothing to post, but
-	// advance flushedLen so the tick does not re-run on the same buffer; a later
-	// delta re-enters here with new content appended.
-	if strings.TrimSpace(text) == "" {
-		w.mu.Lock()
-		if flushingLen > w.flushedLen {
-			w.flushedLen = flushingLen
-		}
-		w.mu.Unlock()
-		w.noteDelivered(ctx)
+	md := w.scrubLoginURLs(w.takePending(false))
+	// Scrubbing a pure sign-in passage can empty the chunk, and a stream does
+	// not open on whitespace alone. Nothing to append, and nothing to put back:
+	// a later delta arrives with new content.
+	if md == "" || (w.streamTS == "" && strings.TrimSpace(md) == "") {
 		return nil
 	}
+	if unsent, err := w.appendText(ctx, md); err != nil {
+		w.putBackPending(unsent)
+		return err
+	}
+	return nil
+}
 
-	// A message Slack refuses as too long despite the block budget is re-split
-	// under a smaller one right away, instead of being re-sent identical on
-	// every tick until the turn ends.
-	for {
-		err := w.deliver(ctx, text)
-		if err == nil {
-			break
-		}
-		if apiErrorCode(err) != errCodeMsgTooLong || !w.shrinkChunks() {
+// closeStream ends the turn's text path: everything still pending rides the
+// chat.stopStream that closes the streamed message, together with the session's
+// exit status. Text the open message has no room for goes out as appends first,
+// and a turn whose whole answer is still pending opens its stream here. With no
+// stream and nothing pending it does nothing, leaving the exit status to run()'s
+// own call.
+func (w *batchedWriter) closeStream(ctx context.Context) error {
+	if w.streamStopped {
+		w.takePending(true)
+		return nil
+	}
+	md := w.scrubLoginURLs(w.takePending(true))
+	if strings.TrimSpace(md) == "" {
+		md = ""
+	}
+	if md == "" && w.streamTS == "" {
+		return nil
+	}
+	// Text the open message has no room for goes out as appends, and so does
+	// the text of a turn that has no stream yet. A stream adopted from before a
+	// restart takes the same route: Slack may have closed it since, and only
+	// the append path can move the text onto a stream of its own.
+	if md != "" && (w.streamTS == "" || w.streamAdopted || w.streamed+len(md) > slackMarkdownBlockMax) {
+		unsent, err := w.appendText(ctx, md)
+		if err != nil {
+			w.putBackPending(unsent)
 			return err
 		}
-		w.logger.Warn("slack: reply refused as too long, re-splitting into smaller messages", "chunk_max", w.chunkMax, "error", err)
+		md = ""
+		if w.streamTS == "" { // the user stopped the stream under us
+			return nil
+		}
 	}
-	// flushedLen advances only once every chunk landed, so a failed flush leaves
-	// the delta pending and a retried flush re-sends it (chat.update on the head
-	// and already-posted tails is idempotent). What landed is recorded for the
-	// process that continues the turn after a restart.
-	w.mu.Lock()
-	if flushingLen > w.flushedLen {
-		w.flushedLen = flushingLen
+	err := w.stopStream(ctx, md, w.exitSessionStatus())
+	switch {
+	case err == nil:
+		w.exitStatusSent = !w.streamStopped
+		return nil
+	case streamGone(err):
+		// Nothing is left to close: a stream adopted from before a restart that
+		// Slack has closed since, most often. The last text goes back to
+		// pending so a retry can give it a stream of its own, and the session's
+		// exit status falls back to run()'s own call.
+		w.dropStream()
+		w.noteDelivered(ctx)
+		if md == "" {
+			return nil
+		}
+		w.putBackPending(md)
 	}
-	w.mu.Unlock()
+	return err
+}
+
+// endStream closes a stream a turn left open. A cancelled turn (a /stop, the
+// gateway shutting down) returns without a terminal flush, so without this the
+// message would keep animating and the text buffered since the last append
+// would be lost. It runs on a context outliving the cancellation, like the
+// thread poster's closing pass.
+func (w *batchedWriter) endStream(ctx context.Context) {
+	if w.streamTS == "" && strings.TrimSpace(w.pendingText()) == "" {
+		return
+	}
+	if ctx.Err() != nil {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(context.WithoutCancel(ctx), streamCloseTimeout)
+		defer cancel()
+	}
+	if err := w.closeStream(ctx); err != nil {
+		w.logger.Warn("slack: closing the reply stream failed", "error", err)
+	}
+}
+
+// appendText delivers reply text on the turn's stream and returns what it could
+// not deliver, so the caller re-queues exactly the missing text.
+func (w *batchedWriter) appendText(ctx context.Context, md string) (unsent string, err error) {
+	pieces := []string{md}
+	if len(md) > slackMarkdownBlockMax {
+		// Only oversized text is re-split. splitMarkdown balances the Markdown
+		// of every chunk it emits, which on a normal append would close a code
+		// fence the next append continues.
+		pieces = splitMarkdown(md, slackMarkdownBlockMax)
+	}
+	for i, piece := range pieces {
+		if err := w.sendPiece(ctx, piece); err != nil {
+			return strings.Join(pieces[i:], ""), err
+		}
+		if w.streamStopped {
+			return "", nil
+		}
+	}
+	return "", nil
+}
+
+// sendPiece appends one within-cap piece to the stream, opening the stream when
+// none is open and rolling over into a fresh message when the open one has no
+// room left.
+func (w *batchedWriter) sendPiece(ctx context.Context, md string) error {
+	if w.streamTS != "" && w.streamed+len(md) > slackMarkdownBlockMax {
+		// The answer outgrew one Slack message. The turn is still running, so
+		// the stop closing the full message leaves the session processing;
+		// Slack's default (active) would clear the working indicator mid-answer.
+		if err := w.stopStream(ctx, "", sessionProcessing); err != nil {
+			if !streamGone(err) {
+				return err
+			}
+			w.dropStream() // already closed; the rest opens a message of its own
+		}
+		if w.streamStopped {
+			return nil
+		}
+	}
+	if w.streamTS == "" {
+		return w.openStream(ctx, md)
+	}
+	err := w.client.appendStream(ctx, w.channel, w.streamTS, md)
+	switch {
+	case err == nil:
+		w.streamed, w.streamAdopted = w.streamed+len(md), false
+		w.noteAppended(len(md))
+		w.noteDelivered(ctx)
+		return nil
+	case errors.Is(err, errStreamStoppedByUser):
+		w.endStreamQuietly(streamEventStoppedByUser)
+		return nil
+	case streamGone(err):
+		return w.recoverStream(ctx, md)
+	}
+	return err
+}
+
+// openStream posts the turn's streamed message with its first text. In a
+// channel Slack requires the recipient the answer is for; the progress
+// placeholder the answer supersedes goes once the message exists.
+func (w *batchedWriter) openStream(ctx context.Context, md string) error {
+	user, team := w.streamRecipient()
+	ts, err := w.client.startStream(ctx, w.channel, w.threadTS, md, user, team)
+	if err != nil {
+		return err
+	}
+	w.streamTS, w.streamed, w.streamAdopted = ts, len(md), false
+	w.streamMessages = append(w.streamMessages, ts)
+	w.noteStream(streamEventStarted)
+	w.noteAppended(len(md))
+	w.noteDelivered(ctx)
+	w.dropPlaceholder(ctx)
+	return nil
+}
+
+// stopStream closes the open stream with a last piece of text and the session
+// status the stop leaves the thread in. The status is always explicit: Slack
+// defaults it to active, which on an intermediate stop would clear the working
+// indicator while the turn keeps running.
+func (w *batchedWriter) stopStream(ctx context.Context, md string, status sessionStatus) error {
+	err := w.client.stopStream(ctx, w.channel, w.streamTS, md, status)
+	switch {
+	case err == nil:
+	case errors.Is(err, errStreamStoppedByUser):
+		w.endStreamQuietly(streamEventStoppedByUser)
+		return nil
+	default:
+		return err
+	}
+	w.dropStream()
+	w.noteStream(streamEventStopped)
+	if md != "" {
+		w.noteAppended(len(md))
+	}
 	w.noteDelivered(ctx)
 	return nil
 }
 
-// deliver renders text as Block Kit markdown blocks: a reply that fits one
-// block updates the main message; a larger one rolls over into stable
-// follow-up messages in-thread. The head message is posted lazily on the first
-// flush when ts is empty (reactions mode), else updated in place.
-//
-// ponytail: a multi-chunk reply makes one API call per chunk every
-// batchInterval, so a reply spanning N messages costs N calls/flush against
-// Slack's ~4 updates/sec/channel. Fine while >12 KB replies are rare; revisit
-// with per-call pacing if they become common.
-func (w *batchedWriter) deliver(ctx context.Context, text string) error {
-	chunks := splitMarkdown(text, w.chunkMax)
-	if w.ts == "" {
-		ts, err := w.client.postMarkdown(ctx, w.channel, chunks[0], w.threadTS)
-		if err != nil {
-			return err
-		}
-		w.ts = ts
-	} else if err := w.client.chatUpdateMarkdown(ctx, w.channel, w.ts, chunks[0]); err != nil {
-		return err
+// recoverStream reopens the stream after Slack reported the message no longer
+// streaming, and delivers md on the new one. One recovery per turn: a second
+// says the stream cannot be kept open, and scattering the rest of the answer
+// over fresh messages would read worse than ending the text path there.
+func (w *batchedWriter) recoverStream(ctx context.Context, md string) error {
+	w.dropStream()
+	if w.streamRecovered {
+		w.logger.Warn("slack: the reply stream keeps closing, dropping the rest of this turn's text",
+			"channel", w.channel, "thread", w.threadTS)
+		w.endStreamQuietly("")
+		return nil
 	}
-	// The head now carries agent text; mark it before the tail so a tail failure
-	// (which leaves flushedLen at 0) does not let the failure note overwrite the
-	// delivered head.
-	w.mu.Lock()
-	w.wroteAny = true
-	w.mu.Unlock()
-	for i, chunk := range chunks[1:] {
-		if i < len(w.tailTS) {
-			if err := w.client.chatUpdateMarkdown(ctx, w.channel, w.tailTS[i], chunk); err != nil {
-				return err
-			}
-			continue
-		}
-		ts, err := w.client.postMarkdown(ctx, w.channel, chunk, w.threadTS)
-		if err != nil {
-			return err
-		}
-		w.tailTS = append(w.tailTS, ts)
-	}
-	return nil
+	w.streamRecovered = true
+	w.noteStream(streamEventRecovered)
+	w.logger.Warn("slack: the reply stream closed early, opening a new one for the rest",
+		"channel", w.channel, "thread", w.threadTS)
+	return w.openStream(ctx, md)
 }
 
-// shrinkChunks halves the per-message budget after Slack refused a message as
-// too long, down to minMarkdownBlockMax, and reports whether a smaller budget
-// is left to try. Tails already posted are rewritten with the shifted content
-// on the next deliver; a budget change is a one-off, not the norm.
-func (w *batchedWriter) shrinkChunks() bool {
-	if w.chunkMax <= minMarkdownBlockMax {
-		return false
+// endStreamQuietly closes the text path for the rest of the turn: Slack ended
+// the stream (the user pressed Stop) or it could not be kept open, so nothing
+// more is sent on it — no retry, no error notice. The stop button's own
+// "Stopped by …" notice is the thread's record of what happened.
+func (w *batchedWriter) endStreamQuietly(event string) {
+	w.dropStream()
+	w.streamStopped = true
+	w.takePending(true)
+	if event != "" {
+		w.noteStream(event)
 	}
-	w.chunkMax = max(w.chunkMax/2, minMarkdownBlockMax)
-	return true
+}
+
+// dropStream forgets the open stream handle, so the next text of the turn opens
+// a message of its own.
+func (w *batchedWriter) dropStream() {
+	w.streamTS, w.streamed, w.streamAdopted = "", 0, false
+}
+
+// resetStream puts the stream state back to its opening shape for a second
+// run() cycle over the same writer.
+func (w *batchedWriter) resetStream() {
+	w.dropStream()
+	w.streamRecovered, w.streamStopped, w.exitStatusSent = false, false, false
+}
+
+// streamGone reports whether err says the message is not streaming any more:
+// Slack closed it, or it belongs to another app (a handle carried over a
+// restart). The handle is dead either way and the rest of the answer needs a
+// stream of its own.
+func streamGone(err error) bool {
+	return errors.Is(err, errStreamNotStreaming) || errors.Is(err, errStreamNotOwned)
+}
+
+// streamRecipient names the person a streamed answer is for. Slack requires the
+// pair on a stream opened in a channel and refuses it in a DM; an unresolved
+// team drops both rather than sending half a pair.
+func (w *batchedWriter) streamRecipient() (user, team string) {
+	if isDMChannelID(w.channel) || w.slackUser == "" || w.recipientTeam == "" {
+		return "", ""
+	}
+	return w.slackUser, w.recipientTeam
+}
+
+// dropPlaceholder removes the text-mode "thinking" placeholder once the answer
+// has a streamed message of its own, which is what chat.update used to take
+// over in place.
+func (w *batchedWriter) dropPlaceholder(ctx context.Context) {
+	ts := w.placeholderTS
+	if ts == "" {
+		return
+	}
+	w.placeholderTS = ""
+	if err := w.client.deleteMessage(ctx, w.channel, ts); err != nil {
+		w.logger.Warn("slack: remove the progress placeholder failed", "ts", ts, "error", err)
+	}
+}
+
+// takePending removes the text to send from the pending buffer. Unless final,
+// everything after the last whitespace stays pending: it may be half a word or
+// half a login URL, and an appended chunk cannot be taken back.
+func (w *batchedWriter) takePending(final bool) string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	text := w.pending
+	if !final {
+		i := strings.LastIndexFunc(text, unicode.IsSpace)
+		if i < 0 {
+			return ""
+		}
+		_, size := utf8.DecodeRuneInString(text[i:])
+		text = text[:i+size]
+	}
+	w.pending = w.pending[len(text):]
+	return text
+}
+
+// putBackPending re-queues text an append did not deliver, ahead of whatever
+// arrived meanwhile, so the next flush re-sends it in order.
+func (w *batchedWriter) putBackPending(text string) {
+	if text == "" {
+		return
+	}
+	w.mu.Lock()
+	w.pending = text + w.pending
+	w.mu.Unlock()
+}
+
+// pendingText is the text waiting to be appended.
+func (w *batchedWriter) pendingText() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.pending
+}
+
+// noteAppended records n bytes of answer text as landed on a stream.
+func (w *batchedWriter) noteAppended(n int) {
+	w.mu.Lock()
+	w.appendedLen += n
+	w.mu.Unlock()
+}
+
+// StreamRecorder counts the lifecycle events of the streamed replies; the
+// observability package implements it with a labelled counter. Nil is fine
+// wherever a recorder is optional.
+type StreamRecorder interface {
+	RecordSlackStream(event string)
+}
+
+// Stream lifecycle events counted per turn (see StreamRecorder).
+const (
+	streamEventStarted       = "started"
+	streamEventStopped       = "stopped"
+	streamEventStoppedByUser = "stopped_by_user"
+	streamEventRecovered     = "recovered"
+)
+
+// noteStream counts one stream lifecycle event. A writer with no adapter (a
+// direct-writer test) or an adapter with no recorder counts nothing.
+func (w *batchedWriter) noteStream(event string) {
+	if w.adapter == nil || w.adapter.Streams == nil {
+		return
+	}
+	w.adapter.Streams.RecordSlackStream(event)
 }
 
 // slackHTTPClient bounds every Slack Web API call. Without a timeout a
@@ -1858,15 +2174,16 @@ func (c *slackAPIClient) noteIdentityRejected(err error) {
 
 // applyIdentity adds the client's display identity (username/icon_url) via set.
 // It is a no-op unless an identity is configured and the method is one that
-// honours chat:write.customize (a new post, not an edit). Each field is applied
-// only when non-empty: a name without an icon posts under the custom name and
-// the Slack app's own icon (Slack keeps the app icon when icon_url is omitted),
-// which is what we want while the AgentCard exposes a name but no icon.
+// honours chat:write.customize (a message the app creates — a post or the start
+// of a stream — not an edit or an append). Each field is applied only when
+// non-empty: a name without an icon posts under the custom name and the Slack
+// app's own icon (Slack keeps the app icon when icon_url is omitted), which is
+// what we want while the AgentCard exposes a name but no icon.
 func (c *slackAPIClient) applyIdentity(method string, set func(k, v string)) {
 	if c.username == "" && c.iconURL == "" {
 		return
 	}
-	if method != methodChatPostMessage && method != "chat.postEphemeral" {
+	if method != methodChatPostMessage && method != "chat.postEphemeral" && method != methodChatStartStream {
 		return
 	}
 	if c.username != "" {
@@ -2177,13 +2494,14 @@ func (c *slackAPIClient) lookupUserDisplayName(ctx context.Context, userID strin
 	return result.User.Profile.RealName, nil
 }
 
-// authTest returns the bot's own Slack user ID and username via auth.test, used
-// to recognise the bot's own channel-join event and to name the bot in help
-// text. The username may be empty when Slack omits it.
-func (c *slackAPIClient) authTest(ctx context.Context) (userID, username string, err error) {
+// authTest returns the bot's own Slack user ID, username and team via
+// auth.test, used to recognise the bot's own channel-join event, to name the
+// bot in help text, and to name the recipient's workspace on a streamed reply
+// in a channel. The username may be empty when Slack omits it.
+func (c *slackAPIClient) authTest(ctx context.Context) (userID, username, teamID string, err error) {
 	body, err := c.call(ctx, "auth.test", "application/x-www-form-urlencoded", "")
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 
 	var result struct {
@@ -2191,14 +2509,15 @@ func (c *slackAPIClient) authTest(ctx context.Context) (userID, username string,
 		Err    string `json:"error,omitempty"`
 		UserID string `json:"user_id"`
 		User   string `json:"user"`
+		TeamID string `json:"team_id"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
-		return "", "", fmt.Errorf("slack auth.test: decode: %w", err)
+		return "", "", "", fmt.Errorf("slack auth.test: decode: %w", err)
 	}
 	if !result.OK {
-		return "", "", fmt.Errorf("slack auth.test: %s", result.Err)
+		return "", "", "", fmt.Errorf("slack auth.test: %s", result.Err)
 	}
-	return result.UserID, result.User, nil
+	return result.UserID, result.User, result.TeamID, nil
 }
 
 // errReactionsUnsupported reports that the bot cannot manage reactions (the
@@ -2493,6 +2812,84 @@ func (c *slackAPIClient) chatUpdateMarkdown(ctx context.Context, channel, ts, md
 		paramBlocks:  markdownBlocks(md),
 	}
 	_, err := c.postJSON(ctx, "chat.update", body)
+	return err
+}
+
+// errStreamStoppedByUser reports that the user pressed the Stop button: Slack
+// has already closed the stream, so the text path ends there, quietly.
+var errStreamStoppedByUser = errors.New("slack: stream stopped by the user")
+
+// errStreamNotStreaming reports that the message is no longer in a streaming
+// state, so the rest of the text needs a stream of its own.
+var errStreamNotStreaming = errors.New("slack: message not in a streaming state")
+
+// errStreamNotOwned reports a stream call against a message this app did not
+// post.
+var errStreamNotOwned = errors.New("slack: message not owned by the app")
+
+// startStream opens a streaming message in the thread carrying its first text
+// and returns its ts. recipientUser and recipientTeam name the person the
+// answer is for: Slack requires both when the stream is in a channel and
+// refuses them in a DM, so the caller passes them only for a channel. The
+// display identity rides along as it does on a new post, including the
+// unbranded retry when the customize scope is missing (see postJSON).
+func (c *slackAPIClient) startStream(ctx context.Context, channel, threadTS, md, recipientUser, recipientTeam string) (string, error) {
+	body := map[string]any{
+		paramChannel:      channel,
+		paramMarkdownText: md,
+	}
+	if threadTS != "" {
+		body[paramThreadTS] = threadTS
+	}
+	if recipientUser != "" && recipientTeam != "" {
+		body[paramRecipientUserID] = recipientUser
+		body[paramRecipientTeamID] = recipientTeam
+	}
+	ts, err := c.postJSON(ctx, methodChatStartStream, body)
+	return ts, streamErr(err)
+}
+
+// appendStream adds text to an open stream. Unlike chat.update it carries only
+// what is new, so a long answer costs one small call per tick.
+func (c *slackAPIClient) appendStream(ctx context.Context, channel, ts, md string) error {
+	_, err := c.postJSON(ctx, methodChatAppendStream, map[string]any{
+		paramChannel:      channel,
+		paramTS:           ts,
+		paramMarkdownText: md,
+	})
+	return streamErr(err)
+}
+
+// stopStream closes a stream, optionally with a last piece of text, and sets
+// the thread's agent session status in the same call. status is always sent:
+// Slack defaults the field to active, which would clear the working indicator
+// on a stop that only rolls the answer over into a new message.
+func (c *slackAPIClient) stopStream(ctx context.Context, channel, ts, md string, status sessionStatus) error {
+	body := map[string]any{
+		paramChannel:       channel,
+		paramTS:            ts,
+		paramSessionStatus: string(status),
+	}
+	if md != "" {
+		body[paramMarkdownText] = md
+	}
+	_, err := c.postJSON(ctx, methodChatStopStream, body)
+	return streamErr(err)
+}
+
+// streamErr maps the streaming methods' documented rejections to the sentinels
+// the writer reacts to, keeping Slack's own error for the log.
+func streamErr(err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case hasErrorCode(err, errCodeStoppedByUser):
+		return fmt.Errorf("%w: %w", errStreamStoppedByUser, err)
+	case hasErrorCode(err, errCodeNotInStreamingState):
+		return fmt.Errorf("%w: %w", errStreamNotStreaming, err)
+	case hasErrorCode(err, errCodeMsgNotOwned):
+		return fmt.Errorf("%w: %w", errStreamNotOwned, err)
+	}
 	return err
 }
 

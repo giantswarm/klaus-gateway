@@ -25,15 +25,14 @@ func waitThreadIdle(t *testing.T, a *slackadapter.Adapter, threadID string) {
 		"the previous turn in thread %s released the thread slot", threadID)
 }
 
-// waitTurnStreaming blocks until the turn'th turn of the thread is draining its
-// stream (turn is 1-based). The fake records the working reaction when the
-// request arrives, while the adapter notes the reaction only once the response
-// is back, so a stop or a shutdown sent on the reaction alone can find nothing
-// to clear. Marking the session "processing" is the writer's first act after
-// that bookkeeping, and every turn sets the session status twice (processing on
-// the way in, its exit status on the way out), which is what makes the turn'th
-// processing call the (2*turn-1)'th status call.
-func waitTurnStreaming(t *testing.T, fake *fakeSlackAPI, turn int) {
+// waitTurnStreaming blocks until the first turn of the thread is draining its
+// stream. The fake records the working reaction when the request arrives, while
+// the adapter notes the reaction only once the response is back, so a stop or a
+// shutdown sent on the reaction alone can find nothing to clear. Marking the
+// session "processing" is the writer's first act after that bookkeeping, and it
+// is the turn's first status call — the exit status usually rides the stop that
+// closes the streamed answer instead of a call of its own.
+func waitTurnStreaming(t *testing.T, fake *fakeSlackAPI) {
 	t.Helper()
-	fake.waitForPath(t, "agents.sessions.setStatus", 2*turn-1)
+	fake.waitForPath(t, "agents.sessions.setStatus", 1)
 }

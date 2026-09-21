@@ -27,12 +27,28 @@ func (f *fakeSlackAPI) callsSince(n int) []recordedCall {
 	return append([]recordedCall(nil), f.calls[n:]...)
 }
 
-// callsCarrying counts the calls whose text or blocks contain sub (one post
-// carries its text twice, as the fallback text and in the block).
+// textOf is everything the given calls carried: the streamed answer text plus
+// the fallback text and blocks of the posts, so an assertion can read a window
+// of the conversation whichever way the renderer delivered it. The streamed
+// pieces are joined without a separator — one answer arrives in as many pieces
+// as the stream sent it in.
+func textOf(calls []recordedCall) string {
+	var b strings.Builder
+	for _, c := range calls {
+		if md, ok := c.params["markdown_text"].(string); ok {
+			b.WriteString(md)
+		}
+		b.WriteString(allBlockText([]recordedCall{c}))
+	}
+	return b.String()
+}
+
+// callsCarrying counts the calls whose text, blocks or streamed text contain
+// sub (one post carries its text twice, as the fallback text and in the block).
 func callsCarrying(calls []recordedCall, sub string) int {
 	n := 0
 	for _, c := range calls {
-		if strings.Contains(allBlockText([]recordedCall{c}), sub) {
+		if strings.Contains(textOf([]recordedCall{c}), sub) {
 			n++
 		}
 	}
@@ -75,8 +91,8 @@ func TestRestart_ContinuedTurnPostsOnlyWhatFollows(t *testing.T) {
 	a1, srv1 := newEventsAdapter(t, gw1, api.URL)
 	sendEvent(t, srv1, dmEvent("U1", "create the repository", "555.000"))
 	require.Eventually(t, func() bool {
-		posted := allBlockText(fake.pathCalls("chat.postMessage"))
-		return strings.Contains(posted, "One thing to flag") && strings.Contains(allBlockText(fake.callsSince(0)), "step 2")
+		return strings.Contains(fake.streamedText(), "One thing to flag") &&
+			strings.Contains(textOf(fake.callsSince(0)), "step 2")
 	}, flowWait, 20*time.Millisecond, "the opening and the two-step ticker landed before the restart")
 	require.NoError(t, a1.Stop(context.Background()))
 	require.Contains(t, allBlockText(fake.pathCalls("chat.postMessage")), "I was restarted while")
@@ -102,19 +118,20 @@ func TestRestart_ContinuedTurnPostsOnlyWhatFollows(t *testing.T) {
 	a2.RecoverTurns()
 
 	require.Eventually(t, func() bool {
-		return strings.Contains(allBlockText(fake.callsSince(restart)), tail)
+		return strings.Contains(textOf(fake.callsSince(restart)), tail)
 	}, flowWait, 20*time.Millisecond, "the tail of the answer is posted after the restart")
 	require.Eventually(t, func() bool {
 		return strings.Contains(strings.Join(fake.reactionNames("reactions.add"), " "), "white_check_mark")
 	}, flowWait, 20*time.Millisecond, "the continued turn completes")
 
-	after := allBlockText(fake.callsSince(restart))
+	after := textOf(fake.callsSince(restart))
 	require.NotContains(t, after, "One thing to flag", "the opening the first process posted is not posted again")
-	require.Equal(t, 1, callsCarrying(fake.pathCalls("chat.postMessage"), "One thing to flag"), "the thread carries the opening once")
+	require.Equal(t, 1, callsCarrying(fake.pathCalls(pathStartStream), "One thing to flag"), "the thread carries the opening once")
 	require.Contains(t, after, "🛠️ 3 steps · create · protect · team", "the receipt counts on from the recorded steps")
 	require.NotContains(t, after, "1 step", "the count does not start over")
-	posts := fake.pathCalls("chat.postMessage")
-	require.Equal(t, "555.000", posts[len(posts)-1].params["thread_ts"], "the continuation lands in the thread")
+	streams := fake.pathCalls(pathStartStream)
+	require.Len(t, streams, 2, "the continuation opens a message of its own; the first one was closed on shutdown")
+	require.Equal(t, "555.000", streams[1].params["thread_ts"], "the continuation lands in the thread")
 
 	row, _, err = shared.ThreadRecord(t.Context(), "slack", "D1", "555.000")
 	require.NoError(t, err)
@@ -142,7 +159,7 @@ func TestRecoverTurns_NothingLeftToPostSaysSo(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return strings.Contains(allBlockText(fake.pathCalls("chat.postMessage")), "the reply above is complete")
 	}, flowWait, 20*time.Millisecond, "the thread is told the reply was complete")
-	posted := allBlockText(fake.pathCalls("chat.postMessage"))
+	posted := textOf(fake.callsSince(0))
 	require.NotContains(t, posted, "same chart version", "the answer is not posted a second time")
 	require.NotContains(t, posted, "finished without a reply", "a delivered answer is not reported as none")
 }

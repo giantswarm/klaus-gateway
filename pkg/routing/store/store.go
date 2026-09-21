@@ -117,6 +117,12 @@ type Entry struct {
 type Delivered struct {
 	// TextLen is the length, in bytes, of the answer text posted so far.
 	TextLen int `json:"text_len,omitempty"`
+	// StreamTS is the streamed message the answer is landing in, empty when
+	// none is open, and StreamLen how many bytes of it that message carries.
+	// A process continuing the turn appends to that message instead of opening
+	// a second one, and counts on toward the per-message text cap.
+	StreamTS  string `json:"stream_ts,omitempty"`
+	StreamLen int    `json:"stream_len,omitempty"`
 	// ToolSteps counts the tool calls of the receipt segment open when the
 	// record was written, ToolOrder their distinct names in first-use order
 	// and ToolCounts the calls per name.
@@ -128,7 +134,7 @@ type Delivered struct {
 // IsZero reports whether nothing has been delivered; encoding/json's omitzero
 // drops the field then.
 func (d Delivered) IsZero() bool {
-	return d.TextLen == 0 && d.ToolSteps == 0
+	return d.TextLen == 0 && d.StreamTS == "" && d.ToolSteps == 0
 }
 
 // Expired reports whether the entry has aged past its TTL relative to now.

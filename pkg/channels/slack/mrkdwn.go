@@ -14,9 +14,8 @@ import (
 // the fence while inside one.
 //
 // Packing is greedy left-to-right, so every non-final chunk boundary is stable
-// as text accumulates across flushes: the streamed tail messages (tailTS) keep
-// their content and are never rewritten with shifted text. Preserve this if
-// editing.
+// as text accumulates: a chunk already appended to a streamed message keeps its
+// content and is never rewritten with shifted text. Preserve this if editing.
 func splitMarkdown(text string, maxLen int) []string {
 	var chunks []string
 	var b strings.Builder

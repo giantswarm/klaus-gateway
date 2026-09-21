@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -125,19 +126,21 @@ func TestSend_FailsFastOnHugeRetryAfter(t *testing.T) {
 // One transient mid-stream Slack failure must not abort a healthy turn: the
 // ticker retries the flush and the content is still delivered.
 func TestRun_TransientFlushFailureDoesNotAbortTurn(t *testing.T) {
-	var updates atomic.Int32
-	var lastText atomic.Value
+	var calls atomic.Int32
+	var delivered atomic.Value
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			Text string `json:"text"`
+			MarkdownText string `json:"markdown_text"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		w.Header().Set("Content-Type", "application/json")
-		if updates.Add(1) == 1 {
+		if calls.Add(1) == 1 {
 			_, _ = fmt.Fprint(w, `{"ok":false,"error":"fatal_error"}`)
 			return
 		}
-		lastText.Store(body.Text)
+		if body.MarkdownText != "" {
+			delivered.Store(body.MarkdownText)
+		}
 		_, _ = fmt.Fprint(w, `{"ok":true,"ts":"1.2"}`)
 	}))
 	defer srv.Close()
@@ -148,13 +151,13 @@ func TestRun_TransientFlushFailureDoesNotAbortTurn(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- w.run(t.Context(), ch) }()
 
-	ch <- channels.OutboundDelta{Kind: channels.DeltaText, Content: "hello"}
-	require.Eventually(t, func() bool { return updates.Load() >= 2 },
+	ch <- channels.OutboundDelta{Kind: channels.DeltaText, Content: "hello "}
+	require.Eventually(t, func() bool { return calls.Load() >= 2 },
 		flowWait, 20*time.Millisecond, "the failed flush must be retried on a later tick")
 	close(ch)
 
 	require.NoError(t, <-done, "a single flush failure must not fail the turn")
-	require.Equal(t, "hello", lastText.Load())
+	require.Equal(t, "hello ", delivered.Load())
 }
 
 // A persistent Slack failure does not abort the turn: the agent keeps working
@@ -177,7 +180,7 @@ func TestRun_PersistentFlushFailureDoesNotAbortTurn(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- w.run(t.Context(), ch) }()
 
-	ch <- channels.OutboundDelta{Kind: channels.DeltaText, Content: "hello"}
+	ch <- channels.OutboundDelta{Kind: channels.DeltaText, Content: "hello "}
 	require.Eventually(t, func() bool { return updates.Load() >= int32(maxFlushFailures) },
 		flowWait, 20*time.Millisecond)
 	select {
@@ -195,55 +198,42 @@ func TestRun_PersistentFlushFailureDoesNotAbortTurn(t *testing.T) {
 	require.Equal(t, "fatal_error", apiErrorCode(err))
 }
 
-// recordingSlack is a fake Slack API that keeps the latest markdown block of
-// every message the writer posted or updated, in post order, plus every
-// fallback text it was sent. refuse, when set, rejects a block over that many
-// bytes as msg_too_long — a limit the documented block cap does not describe.
+// recordingSlack is a fake Slack API that accumulates the text of every
+// streamed message the writer opened, in the order the streams were opened.
 type recordingSlack struct {
-	mu        sync.Mutex
-	seq       int
-	order     []string
-	texts     map[string]string
-	fallbacks []string
-	refuse    int
+	mu    sync.Mutex
+	seq   int
+	order []string
+	texts map[string]string
 }
 
-func newRecordingSlack(t *testing.T, refuse int) (*recordingSlack, *slackAPIClient) {
+func newRecordingSlack(t *testing.T) (*recordingSlack, *slackAPIClient) {
 	t.Helper()
-	rec := &recordingSlack{texts: map[string]string{}, refuse: refuse}
+	rec := &recordingSlack{texts: map[string]string{}}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			TS     string `json:"ts"`
-			Text   string `json:"text"`
-			Blocks []struct {
-				Text string `json:"text"`
-			} `json:"blocks"`
+			TS           string `json:"ts"`
+			MarkdownText string `json:"markdown_text"`
 		}
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
-		require.Len(t, body.Blocks, 1)
 		w.Header().Set("Content-Type", "application/json")
-		if rec.refuse > 0 && len(body.Blocks[0].Text) > rec.refuse {
-			_, _ = fmt.Fprint(w, `{"ok":false,"error":"msg_too_long"}`)
-			return
-		}
 		rec.mu.Lock()
 		defer rec.mu.Unlock()
 		ts := body.TS
-		if strings.HasSuffix(r.URL.Path, "chat.postMessage") {
+		if strings.HasSuffix(r.URL.Path, methodChatStartStream) {
 			rec.seq++
 			ts = fmt.Sprintf("1.%d", rec.seq)
 			rec.order = append(rec.order, ts)
 		}
-		rec.texts[ts] = body.Blocks[0].Text
-		rec.fallbacks = append(rec.fallbacks, body.Text)
+		rec.texts[ts] += body.MarkdownText
 		_, _ = fmt.Fprintf(w, `{"ok":true,"ts":%q}`, ts)
 	}))
 	t.Cleanup(srv.Close)
 	return rec, &slackAPIClient{botToken: "t", baseURL: srv.URL}
 }
 
-// delivered returns the messages' current texts concatenated in post order,
-// asserting each block within budget.
+// delivered returns the streamed messages' texts concatenated in the order they
+// were opened, asserting each one within budget.
 func (r *recordingSlack) delivered(t *testing.T, budget int) string {
 	t.Helper()
 	r.mu.Lock()
@@ -253,18 +243,14 @@ func (r *recordingSlack) delivered(t *testing.T, budget int) string {
 		require.LessOrEqual(t, len(r.texts[ts]), budget)
 		b.WriteString(r.texts[ts])
 	}
-	for _, fb := range r.fallbacks {
-		require.LessOrEqual(t, utf8.RuneCountInString(fb), slackFallbackTextMax, "the fallback text stays within chat.update's limit")
-	}
 	return b.String()
 }
 
-// A long streamed reply rolls over into follow-up messages across several
-// flushes; every message stays within the block budget and the fallback text
-// within Slack's 4 000-character limit, and the turn completes with the whole
+// A long reply rolls over into follow-up streamed messages: each one stays
+// within Slack's per-message text cap and the turn completes with the whole
 // text delivered in order (klaus-gateway#242).
-func TestRun_LongMultiChunkStreamIsDeliveredInFull(t *testing.T) {
-	rec, client := newRecordingSlack(t, 0)
+func TestRun_LongReplyRollsOverIntoFurtherStreams(t *testing.T) {
+	rec, client := newRecordingSlack(t)
 	w := newBatchedWriterWithClient(client, "C1", "", "1.0", detailsOff, slog.Default())
 	ch := make(chan channels.OutboundDelta)
 	done := make(chan error, 1)
@@ -275,41 +261,12 @@ func TestRun_LongMultiChunkStreamIsDeliveredInFull(t *testing.T) {
 		line := fmt.Sprintf("%03d %s\n", i, strings.Repeat("x", 995))
 		want.WriteString(line)
 		ch <- channels.OutboundDelta{Kind: channels.DeltaText, Content: line}
-		if i%10 == 9 {
-			time.Sleep(2 * batchInterval) // let the ticker flush mid-stream, so the tails grow across flushes
-		}
 	}
 	close(ch)
 	require.NoError(t, <-done)
 
 	require.Equal(t, want.String(), rec.delivered(t, slackMarkdownBlockMax), "the whole reply, across the messages")
-	require.Len(t, rec.order, 3, "30 000 characters roll over into three messages")
-}
-
-// Slack refusing a message as too long despite the documented block budget
-// re-splits the reply under a smaller budget right away, instead of re-sending
-// the same message every tick until the turn ends.
-func TestFlush_MsgTooLongShrinksTheChunks(t *testing.T) {
-	rec, client := newRecordingSlack(t, 5000)
-	w := newBatchedWriterWithClient(client, "C1", "", "1.0", detailsOff, slog.Default())
-	var want strings.Builder
-	for i := range 90 {
-		fmt.Fprintf(&want, "%02d %s\n", i, strings.Repeat("y", 96))
-	}
-	w.buf.WriteString(want.String())
-
-	require.NoError(t, w.flush(t.Context()))
-	require.Equal(t, 3000, w.chunkMax, "12 000 → 6 000 → 3 000, until Slack accepted")
-	require.Equal(t, want.String(), rec.delivered(t, 3000))
-	require.True(t, w.wroteContent())
-	require.Equal(t, want.Len(), w.flushedLen)
-}
-
-func TestShrinkChunks_StopsAtTheFloor(t *testing.T) {
-	w := &batchedWriter{chunkMax: 1500}
-	require.True(t, w.shrinkChunks())
-	require.Equal(t, minMarkdownBlockMax, w.chunkMax)
-	require.False(t, w.shrinkChunks(), "at the floor a msg_too_long is surfaced, not retried")
+	require.GreaterOrEqual(t, len(rec.order), 3, "30 000 characters roll over into further streamed messages")
 }
 
 // The message's top-level text is only the notification fallback of the
@@ -328,51 +285,56 @@ func TestFallbackText_IsBoundedAndKeepsEntitiesWhole(t *testing.T) {
 	require.Equal(t, "a &amp; b", fallbackText("a & b"), "short text is escaped, not cut")
 }
 
-func TestFlush_FailedUpdateIsResentOnNextFlush(t *testing.T) {
-	var updates atomic.Int32
+// Text an append did not deliver stays pending, so the next flush sends it.
+func TestFlush_FailedAppendIsResentOnNextFlush(t *testing.T) {
+	var calls atomic.Int32
 	var lastText atomic.Value
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			Text string `json:"text"`
+			MarkdownText string `json:"markdown_text"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		w.Header().Set("Content-Type", "application/json")
-		if updates.Add(1) == 1 {
+		if calls.Add(1) == 1 {
 			_, _ = fmt.Fprint(w, `{"ok":false,"error":"fatal_error"}`)
 			return
 		}
-		lastText.Store(body.Text)
+		if body.MarkdownText != "" {
+			lastText.Store(body.MarkdownText)
+		}
 		_, _ = fmt.Fprint(w, `{"ok":true,"ts":"1.2"}`)
 	}))
 	defer srv.Close()
 
 	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
 	w := newBatchedWriterWithClient(client, "C1", "1.1", "1.0", detailsOff, slog.Default())
-	w.buf.WriteString("hello")
+	w.pending = "hello "
 
 	require.Error(t, w.flush(t.Context()))
-	require.False(t, w.wroteContent(), "failed flush must not mark content as written")
+	require.False(t, w.wroteContent(), "a failed flush must not mark content as written")
 
 	require.NoError(t, w.flush(t.Context()))
-	require.Equal(t, "hello", lastText.Load(), "pending delta must be resent after a failed flush")
+	require.Equal(t, "hello ", lastText.Load(), "the pending delta is re-sent after a failed flush")
 	require.True(t, w.wroteContent())
 }
 
-// A multi-chunk reply whose head lands but whose tail fails leaves flushedLen at
-// 0, yet the head already replaced the placeholder with agent text. wroteContent
-// must report true so the failure note posts as a new message instead of
-// overwriting the delivered head.
-func TestFlush_PartialMultiChunkStillCountsAsContent(t *testing.T) {
-	var updates, posts atomic.Int32
+// A reply too long for one streamed message rolls over; when the roll-over's
+// new stream fails, the text that did land still counts as written content, so
+// a failure note posts as a new message instead of overwriting it, and only the
+// undelivered remainder stays pending.
+func TestFlush_PartialRolloverStillCountsAsContent(t *testing.T) {
+	var starts atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
-		case strings.HasSuffix(r.URL.Path, "chat.update"): // head, in place
-			updates.Add(1)
-			_, _ = fmt.Fprint(w, `{"ok":true,"ts":"1.1"}`)
-		case strings.HasSuffix(r.URL.Path, "chat.postMessage"): // tail overflow
-			posts.Add(1)
+		case strings.HasSuffix(r.URL.Path, methodChatStartStream):
+			if starts.Add(1) == 1 {
+				_, _ = fmt.Fprint(w, `{"ok":true,"ts":"1.1"}`)
+				return
+			}
 			_, _ = fmt.Fprint(w, `{"ok":false,"error":"fatal_error"}`)
+		case strings.HasSuffix(r.URL.Path, methodChatStopStream):
+			_, _ = fmt.Fprint(w, `{"ok":true,"ts":"1.1"}`)
 		default:
 			t.Errorf("unexpected path %s", r.URL.Path)
 		}
@@ -380,15 +342,14 @@ func TestFlush_PartialMultiChunkStillCountsAsContent(t *testing.T) {
 	defer srv.Close()
 
 	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
-	w := newBatchedWriterWithClient(client, "C1", "1.1", "1.0", detailsOff, slog.Default())
-	// One line over the block max hard-splits into a head + tail chunk.
-	w.buf.WriteString(strings.Repeat("a", slackMarkdownBlockMax+500))
+	w := newBatchedWriterWithClient(client, "C1", "", "1.0", detailsOff, slog.Default())
+	// One line over the per-message cap splits into two streamed messages.
+	w.pending = strings.Repeat("a", slackMarkdownBlockMax+500) + " "
 
-	require.Error(t, w.flush(t.Context()), "the tail post fails")
-	require.Equal(t, int32(1), updates.Load(), "the head replaced the placeholder in place")
-	require.Equal(t, int32(1), posts.Load(), "the tail was attempted")
-	require.Equal(t, 0, w.flushedLen, "flushedLen stays 0 because not every chunk landed")
-	require.True(t, w.wroteContent(), "the delivered head must count as written content")
+	require.Error(t, w.flush(t.Context()), "the second stream fails to open")
+	require.Equal(t, int32(2), starts.Load(), "the roll-over opened a second stream")
+	require.True(t, w.wroteContent(), "the text the first message took counts as written content")
+	require.Equal(t, strings.Repeat("a", 500)+" ", w.pendingText(), "only the undelivered remainder stays pending")
 }
 
 func TestLookupUserEmail_RetriesOnceOnRateLimit(t *testing.T) {
@@ -1017,7 +978,7 @@ func TestConnectorReplyRetractable(t *testing.T) {
 	require.False(t, manual.connectorReplyRetractable())
 }
 
-func TestRetractRendered_DeletesHeadAndTails(t *testing.T) {
+func TestRetractRendered_DeletesEveryStreamedMessage(t *testing.T) {
 	var deleted []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "chat.delete") {
@@ -1032,15 +993,14 @@ func TestRetractRendered_DeletesHeadAndTails(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	w := newBatchedWriterWithClient(&slackAPIClient{baseURL: srv.URL}, "C1", "head-ts", "T1", detailsOff, nil)
-	w.tailTS = []string{"tail-1", "tail-2"}
-	w.wroteAny = true
+	w := newBatchedWriterWithClient(&slackAPIClient{baseURL: srv.URL}, "C1", "", "T1", detailsOff, nil)
+	w.streamMessages = []string{"stream-1", "stream-2"}
+	w.appendedLen = 12
 
 	w.retractRendered(t.Context())
 
-	require.ElementsMatch(t, []string{"head-ts", "tail-1", "tail-2"}, deleted)
-	require.Empty(t, w.ts)
-	require.Empty(t, w.tailTS)
+	require.ElementsMatch(t, []string{"stream-1", "stream-2"}, deleted)
+	require.Empty(t, w.streamMessages)
 	require.False(t, w.wroteContent())
 }
 
@@ -1057,19 +1017,21 @@ func TestParseAuthChallengePayload_DepthBounded(t *testing.T) {
 // short reply that never hits a ticker flush has no later tick to re-send it,
 // so the terminal flush retries in place.
 func TestRun_TransientFinalFlushFailureDoesNotAbortTurn(t *testing.T) {
-	var updates atomic.Int32
-	var lastText atomic.Value
+	var calls atomic.Int32
+	var delivered atomic.Value
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			Text string `json:"text"`
+			MarkdownText string `json:"markdown_text"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		w.Header().Set("Content-Type", "application/json")
-		if updates.Add(1) == 1 {
+		if calls.Add(1) == 1 {
 			_, _ = fmt.Fprint(w, `{"ok":false,"error":"fatal_error"}`)
 			return
 		}
-		lastText.Store(body.Text)
+		if body.MarkdownText != "" {
+			delivered.Store(body.MarkdownText)
+		}
 		_, _ = fmt.Fprint(w, `{"ok":true,"ts":"1.2"}`)
 	}))
 	defer srv.Close()
@@ -1082,8 +1044,7 @@ func TestRun_TransientFinalFlushFailureDoesNotAbortTurn(t *testing.T) {
 	close(ch)
 
 	require.NoError(t, w.run(t.Context(), ch), "one transient final-flush failure must not fail the turn")
-	require.Equal(t, int32(2), updates.Load(), "the failed final flush is retried in place")
-	require.Equal(t, "hello", lastText.Load())
+	require.Equal(t, "hello", delivered.Load(), "the retried final flush delivered the reply")
 }
 
 func TestUnwrapCallTool(t *testing.T) {
@@ -1150,22 +1111,43 @@ type statusCall struct {
 	title     string
 }
 
+// streamCall is one chat.startStream / appendStream / stopStream invocation the
+// fake thread received.
+type streamCall struct {
+	method        string
+	ts            string
+	markdown      string
+	status        string
+	threadTS      string
+	recipientUser string
+	recipientTeam string
+	username      string
+}
+
 // fakeThread models a Slack thread: chat.postMessage appends a message with a
 // fresh ts, chat.update replaces the content at its ts (upserting an unknown
-// ts, e.g. the text-mode placeholder posted before the writer existed), so
-// assertions run against the thread a user would actually see.
+// ts, e.g. the text-mode placeholder posted before the writer existed),
+// chat.delete removes one, and the streaming trio models a streamed message —
+// chat.startStream opens it, chat.appendStream adds to it, chat.stopStream
+// closes it, and an append or stop on a message that is not streaming is
+// refused the way Slack refuses it. Assertions therefore run against the thread
+// a user would actually see.
 // agents.sessions.setStatus calls are recorded separately (failStatus makes
 // them fail), and history keeps every message revision so tests can assert
 // content that never survives to the final state, like the live ticker line.
 type fakeThread struct {
-	mu       sync.Mutex
-	order    []string
-	messages map[string]capturedMessage
-	nextTS   int
-	posts    int
-	history  []capturedMessage
-	// statusCalls records agents.sessions.setStatus invocations in order.
+	mu        sync.Mutex
+	order     []string
+	messages  map[string]capturedMessage
+	streaming map[string]bool
+	nextTS    int
+	posts     int
+	deletes   []string
+	history   []capturedMessage
+	// statusCalls records agents.sessions.setStatus invocations in order;
+	// streamCalls the streaming ones.
 	statusCalls []statusCall
+	streamCalls []streamCall
 	// failStatus, when set, makes agents.sessions.setStatus respond with
 	// this Slack error instead of ok.
 	failStatus string
@@ -1173,17 +1155,35 @@ type fakeThread struct {
 	// calls answer HTTP 500 (a transport failure, no Slack verdict) before
 	// succeeding.
 	failIdleHTTP int
+	// stoppedByUser makes every append and stop answer stopped_by_user, as
+	// Slack does once the user has pressed the stop button.
+	stoppedByUser bool
+	// failStop, when set, makes chat.stopStream respond with this Slack error.
+	failStop string
+}
+
+// haltStream ends a stream behind the app's back, the way Slack does when it
+// closes a streaming message the app still believes is open.
+func (f *fakeThread) haltStream(ts string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.streaming, ts)
 }
 
 func (f *fakeThread) handler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			TS        string            `json:"ts"`
-			Blocks    []json.RawMessage `json:"blocks"`
-			ChannelID string            `json:"channel_id"`
-			ThreadTS  string            `json:"thread_ts"`
-			Status    string            `json:"status"`
-			Title     string            `json:"title"`
+			TS            string            `json:"ts"`
+			Blocks        []json.RawMessage `json:"blocks"`
+			ChannelID     string            `json:"channel_id"`
+			ThreadTS      string            `json:"thread_ts"`
+			Status        string            `json:"status"`
+			Title         string            `json:"title"`
+			MarkdownText  string            `json:"markdown_text"`
+			SessionStatus string            `json:"session_status"`
+			RecipientUser string            `json:"recipient_user_id"`
+			RecipientTeam string            `json:"recipient_team_id"`
+			Username      string            `json:"username"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		texts := blockTexts(body.Blocks)
@@ -1194,7 +1194,11 @@ func (f *fakeThread) handler() http.HandlerFunc {
 		if f.messages == nil {
 			f.messages = map[string]capturedMessage{}
 		}
-		switch path.Base(r.URL.Path) {
+		if f.streaming == nil {
+			f.streaming = map[string]bool{}
+		}
+		method := path.Base(r.URL.Path)
+		switch method {
 		case "chat.postMessage":
 			f.posts++
 			f.nextTS++
@@ -1208,6 +1212,41 @@ func (f *fakeThread) handler() http.HandlerFunc {
 			}
 			f.messages[ts] = texts
 			f.history = append(f.history, texts)
+		case "chat.delete":
+			f.deletes = append(f.deletes, ts)
+			delete(f.messages, ts)
+			f.order = slices.DeleteFunc(f.order, func(id string) bool { return id == ts })
+		case methodChatStartStream:
+			f.nextTS++
+			ts = "msg-" + strconv.Itoa(f.nextTS)
+			f.order = append(f.order, ts)
+			f.streaming[ts] = true
+			f.messages[ts] = capturedMessage{body.MarkdownText}
+			f.history = append(f.history, f.messages[ts])
+			f.streamCalls = append(f.streamCalls, streamCall{
+				method: method, ts: ts, markdown: body.MarkdownText, threadTS: body.ThreadTS,
+				recipientUser: body.RecipientUser, recipientTeam: body.RecipientTeam, username: body.Username,
+			})
+		case methodChatAppendStream, methodChatStopStream:
+			f.streamCalls = append(f.streamCalls, streamCall{
+				method: method, ts: ts, markdown: body.MarkdownText, status: body.SessionStatus,
+			})
+			switch {
+			case f.stoppedByUser:
+				statusErr = errCodeStoppedByUser
+			case method == methodChatStopStream && f.failStop != "":
+				statusErr = f.failStop
+			case !f.streaming[ts]:
+				statusErr = errCodeNotInStreamingState
+			default:
+				if body.MarkdownText != "" {
+					f.messages[ts] = capturedMessage{f.messages[ts][0] + body.MarkdownText}
+					f.history = append(f.history, f.messages[ts])
+				}
+				if method == methodChatStopStream {
+					delete(f.streaming, ts)
+				}
+			}
 		case "agents.sessions.setStatus":
 			f.statusCalls = append(f.statusCalls, statusCall{channelID: body.ChannelID, threadTS: body.ThreadTS, status: body.Status, title: body.Title})
 			statusErr = f.failStatus
@@ -1228,6 +1267,40 @@ func (f *fakeThread) handler() http.HandlerFunc {
 		}
 		_, _ = fmt.Fprintf(w, `{"ok":true,"ts":%q}`, ts)
 	}
+}
+
+// streams returns the recorded streaming calls.
+func (f *fakeThread) streams() []streamCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.streamCalls)
+}
+
+// streamMethods returns the streaming calls' methods, in order.
+func (f *fakeThread) streamMethods() []string {
+	out := []string{}
+	for _, c := range f.streams() {
+		out = append(out, c.method)
+	}
+	return out
+}
+
+// stopStatuses returns the session_status of every chat.stopStream, in order.
+func (f *fakeThread) stopStatuses() []string {
+	out := []string{}
+	for _, c := range f.streams() {
+		if c.method == methodChatStopStream {
+			out = append(out, c.status)
+		}
+	}
+	return out
+}
+
+// deleted returns the ts of every chat.delete, in order.
+func (f *fakeThread) deleted() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.deletes)
 }
 
 // statuses returns the status texts of every recorded setStatus call, in order.
@@ -1645,7 +1718,7 @@ func TestRenderNarration_DoesNotTouchMainReply(t *testing.T) {
 	require.Len(t, msgs, 1)
 	require.Equal(t, capturedMessage{"Let me look that up."}, msgs[0],
 		"a folded narration still renders when no tool call ever follows")
-	require.Empty(t, w.ts, "no main reply was posted")
+	require.Empty(t, w.streamMessages, "no reply stream was opened")
 	require.False(t, w.wroteContent())
 }
 
@@ -1761,13 +1834,13 @@ func TestRetractRendered_DeletesNarrationPosts(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	w := newBatchedWriterWithClient(&slackAPIClient{baseURL: srv.URL}, "C1", "head-ts", "T1", detailsOff, nil)
-	w.tailTS = []string{"tail-1"}
+	w := newBatchedWriterWithClient(&slackAPIClient{baseURL: srv.URL}, "C1", "", "T1", detailsOff, nil)
+	w.streamMessages = []string{"stream-1"}
 	w.narrationTS = []string{"narr-1", "narr-2"}
 
 	w.retractRendered(t.Context())
 
-	require.ElementsMatch(t, []string{"head-ts", "tail-1", "narr-1", "narr-2"}, deleted)
+	require.ElementsMatch(t, []string{"stream-1", "narr-1", "narr-2"}, deleted)
 	require.Empty(t, w.narrationTS)
 }
 
@@ -1779,7 +1852,8 @@ func TestFinalFlush_DrainsThreadPostsBeforeReply(t *testing.T) {
 	var posted []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			Blocks []struct {
+			MarkdownText string `json:"markdown_text"`
+			Blocks       []struct {
 				Text string `json:"text"`
 			} `json:"blocks"`
 		}
@@ -1788,8 +1862,11 @@ func TestFinalFlush_DrainsThreadPostsBeforeReply(t *testing.T) {
 			time.Sleep(100 * time.Millisecond)
 		}
 		mu.Lock()
-		if len(body.Blocks) > 0 {
+		switch {
+		case len(body.Blocks) > 0:
 			posted = append(posted, body.Blocks[0].Text)
+		case body.MarkdownText != "":
+			posted = append(posted, body.MarkdownText)
 		}
 		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
@@ -1810,7 +1887,8 @@ func TestFinalFlush_DrainsThreadPostsBeforeReply(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	require.Equal(t, []string{"slow narration\nsecond line\nthird line", "the answer"}, posted)
+	require.Equal(t, "slow narration\nsecond line\nthird line", posted[0], "the narration lands before the answer")
+	require.Equal(t, "the answer", strings.Join(posted[1:], ""), "the answer follows it, in the pieces the stream sent")
 }
 
 func TestRenderToolActivity_UnwrapsCallTool(t *testing.T) {
@@ -2153,7 +2231,8 @@ func TestSessionStatus_DMThreadProcessingThenActive(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	require.Equal(t, []string{"processing", "active"}, ft.statuses())
+	require.Equal(t, []string{"processing"}, ft.statuses(), "the exit status rides the stop that closes the reply")
+	require.Equal(t, []string{string(sessionActive)}, ft.stopStatuses())
 	for _, c := range ft.statusCalls {
 		require.Equal(t, "D1", c.channelID, "channel_id is always sent")
 		require.Equal(t, "1.0", c.threadTS, "thread_ts is always sent")
@@ -2176,7 +2255,8 @@ func TestSessionStatus_ChannelThreadGetsTheIndicator(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	require.Equal(t, []string{"processing", "active"}, ft.statuses())
+	require.Equal(t, []string{"processing"}, ft.statuses(), "the exit status rides the stop that closes the reply")
+	require.Equal(t, []string{string(sessionActive)}, ft.stopStatuses())
 	for _, c := range ft.statusCalls {
 		require.Equal(t, "C1", c.channelID)
 		require.Equal(t, "1.0", c.threadTS)
@@ -2366,7 +2446,9 @@ func TestSessionStatus_ProcessingAgainWhenTheAnswerResumesTheTurn(t *testing.T) 
 		doneDelta(),
 	)
 	require.NoError(t, err)
-	require.Equal(t, []string{"processing", "suspended", "processing", "active"}, ft.statuses())
+	require.Equal(t, []string{"processing", "suspended", "processing"}, ft.statuses())
+	require.Equal(t, []string{string(sessionActive)}, ft.stopStatuses(),
+		"the resumed turn hands the session back on the stop that closes its answer")
 }
 
 // A /stop cancels the turn context; the status call is detached from it, so
@@ -2412,7 +2494,6 @@ func TestSessionStatus_NotAuthorizedDoesNotLatch(t *testing.T) {
 	ft := &fakeThread{failStatus: "not_authorized"}
 	_, w, err := runSurfaceWriter(t, ft, "C1",
 		toolCallDelta("alpha"),
-		channels.OutboundDelta{Kind: channels.DeltaText, Content: "done"},
 		doneDelta(),
 	)
 	require.NoError(t, err)
@@ -2428,7 +2509,7 @@ func TestSessionStatus_NotAuthorizedDoesNotLatch(t *testing.T) {
 func TestSessionStatus_ActiveRetriesTransportFailure(t *testing.T) {
 	ft := &fakeThread{failIdleHTTP: 1}
 	_, w, err := runSurfaceWriter(t, ft, "C1",
-		channels.OutboundDelta{Kind: channels.DeltaText, Content: "done"},
+		toolCallDelta("alpha"),
 		doneDelta(),
 	)
 	require.NoError(t, err)
@@ -2480,4 +2561,303 @@ func TestSetSessionStatus_WarningIsNotAnError(t *testing.T) {
 	c := &slackAPIClient{botToken: "t", baseURL: srv.URL, logger: slog.Default()}
 	require.NoError(t, c.setSessionStatus(t.Context(), "C1", "1.0", sessionProcessing, ""))
 	require.Equal(t, map[string]any{"channel_id": "C1", "thread_ts": "1.0", "status": "processing"}, body)
+}
+
+// --- streamed replies (chat.startStream / appendStream / stopStream) ---
+
+// streamWriter returns a writer talking to ft on channel, with an adapter
+// attached so the status latch and the stream counters have a home.
+func streamWriter(t *testing.T, ft *fakeThread, channel string) *batchedWriter {
+	t.Helper()
+	srv := httptest.NewServer(ft.handler())
+	t.Cleanup(srv.Close)
+	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, channel, "", "1.0", detailsOff, slog.Default())
+	w.adapter = &Adapter{}
+	return w
+}
+
+// The turn's first text opens the stream; later text is appended, and an
+// append carries only what is new — the whole point of the move off
+// chat.update, which re-sent the entire reply on every tick.
+func TestStream_FirstTextStartsThenAppendsIncrements(t *testing.T) {
+	ft := &fakeThread{}
+	w := streamWriter(t, ft, "D1")
+
+	w.pending = "first part "
+	require.NoError(t, w.flush(t.Context()))
+	w.pending = "second part "
+	require.NoError(t, w.flush(t.Context()))
+	require.NoError(t, w.closeStream(t.Context()))
+
+	require.Equal(t, []string{methodChatStartStream, methodChatAppendStream, methodChatStopStream}, ft.streamMethods())
+	calls := ft.streams()
+	require.Equal(t, "first part ", calls[0].markdown)
+	require.Equal(t, "1.0", calls[0].threadTS, "the answer streams into the thread")
+	require.Equal(t, "second part ", calls[1].markdown, "the append carries only the new text")
+	require.Equal(t, []capturedMessage{{"first part second part "}}, ft.finalMessages(),
+		"the pieces accumulate into one message")
+}
+
+// An append cannot be taken back, so the text after the last whitespace waits:
+// it may be half a word, or half a login URL the scrubbing has to see whole.
+func TestStream_HoldsBackTheUnfinishedTail(t *testing.T) {
+	ft := &fakeThread{}
+	w := streamWriter(t, ft, "D1")
+
+	w.pending = "half a sen"
+	require.NoError(t, w.flush(t.Context()))
+	require.Equal(t, "half a ", ft.streams()[0].markdown)
+	require.Equal(t, "sen", w.pendingText(), "the unfinished word waits for the next flush")
+
+	w.pending = "nowhitespaceyet"
+	require.NoError(t, w.flush(t.Context()))
+	require.Len(t, ft.streams(), 1, "text with no boundary in it is not sent at all")
+
+	require.NoError(t, w.closeStream(t.Context()))
+	require.Equal(t, []capturedMessage{{"half a nowhitespaceyet"}}, ft.finalMessages(),
+		"the final stop delivers the held-back tail")
+}
+
+// Slack requires the recipient of a stream opened in a channel and refuses it
+// in a DM.
+func TestStream_ChannelNamesTheRecipientDMDoesNot(t *testing.T) {
+	for _, tc := range []struct {
+		channel, wantUser, wantTeam string
+	}{
+		{channel: "C1", wantUser: "U1", wantTeam: "T1"},
+		{channel: "D1"},
+	} {
+		t.Run(tc.channel, func(t *testing.T) {
+			ft := &fakeThread{}
+			w := streamWriter(t, ft, tc.channel)
+			w.slackUser, w.recipientTeam = "U1", "T1"
+
+			w.pending = "hi "
+			require.NoError(t, w.flush(t.Context()))
+
+			require.Equal(t, tc.wantUser, ft.streams()[0].recipientUser)
+			require.Equal(t, tc.wantTeam, ft.streams()[0].recipientTeam)
+		})
+	}
+}
+
+// A reply outgrowing one Slack message rolls over into a new stream. The turn
+// is still running, so the stop closing the full message must leave the
+// session processing — Slack's default (active) would clear the working
+// indicator mid-answer.
+func TestStream_RolloverStopsWithProcessing(t *testing.T) {
+	ft := &fakeThread{}
+	w := streamWriter(t, ft, "D1")
+
+	w.pending = strings.Repeat("a", slackMarkdownBlockMax-10) + " "
+	require.NoError(t, w.flush(t.Context()))
+	w.pending = "the rest of the answer "
+	require.NoError(t, w.flush(t.Context()))
+
+	require.Equal(t, []string{methodChatStartStream, methodChatStopStream, methodChatStartStream}, ft.streamMethods())
+	require.Equal(t, []string{string(sessionProcessing)}, ft.stopStatuses())
+	require.Len(t, w.streamMessages, 2, "both messages are retractable")
+}
+
+// A turn pausing on a prompt hands the session to "waiting for you" on the
+// stop that closes its partial answer, not on a call of its own.
+func TestStream_PromptPauseStopsWithSuspended(t *testing.T) {
+	ft := &fakeThread{}
+	_, w, err := runSurfaceWriter(t, ft, "D1",
+		channels.OutboundDelta{Kind: channels.DeltaText, Content: "let me check that "},
+		channels.OutboundDelta{Kind: channels.DeltaPrompt, TaskID: "task-1"},
+	)
+	require.NoError(t, err)
+	require.NotNil(t, w.promptDelta)
+
+	require.Equal(t, []string{string(sessionSuspended)}, ft.stopStatuses())
+	require.Equal(t, []string{"processing"}, ft.statuses(), "no separate exit status call")
+}
+
+// Pressing Stop ends the stream on Slack's side. The text path ends there,
+// quietly: no retry, no error notice, nothing more sent on that message. The
+// stop button's own "Stopped by …" notice is the thread's record.
+func TestStream_StoppedByUserEndsTheTextPathQuietly(t *testing.T) {
+	ft := &fakeThread{}
+	w := streamWriter(t, ft, "D1")
+
+	w.pending = "working on it "
+	require.NoError(t, w.flush(t.Context()))
+	ft.stoppedByUser = true
+
+	w.pending = "more text "
+	require.NoError(t, w.flush(t.Context()), "a stream the user stopped is not a failure")
+	sent := len(ft.streams())
+
+	w.pending = "even more text "
+	require.NoError(t, w.flush(t.Context()))
+	require.NoError(t, w.closeStream(t.Context()))
+	require.Len(t, ft.streams(), sent, "nothing more is sent on a stream the user stopped")
+	require.Empty(t, w.pendingText())
+	require.False(t, w.exitStatusSent, "the session's exit status still rides the turn's own call")
+}
+
+// Slack closing the stream under the app costs one recovery: the rest of the
+// answer opens a new stream. A second loss ends the text path for the turn
+// rather than scattering the answer over fresh messages.
+func TestStream_RecoversOnceFromALostStream(t *testing.T) {
+	ft := &fakeThread{}
+	w := streamWriter(t, ft, "D1")
+
+	w.pending = "first "
+	require.NoError(t, w.flush(t.Context()))
+	ft.haltStream("msg-1")
+
+	w.pending = "second "
+	require.NoError(t, w.flush(t.Context()))
+	require.Equal(t, []string{methodChatStartStream, methodChatAppendStream, methodChatStartStream}, ft.streamMethods())
+	require.True(t, w.streamRecovered)
+
+	ft.haltStream("msg-2")
+	w.pending = "third "
+	require.NoError(t, w.flush(t.Context()))
+	require.True(t, w.streamStopped, "a stream that keeps closing ends the turn's text path")
+	require.Empty(t, w.pendingText())
+}
+
+// A turn that ends in an error still closes its stream, so the partial answer
+// stops animating and the indicator clears; the failure note stays a message
+// of its own.
+func TestStream_FailedTurnClosesTheStream(t *testing.T) {
+	ft := &fakeThread{}
+	msgs, _, err := runSurfaceWriter(t, ft, "D1",
+		channels.OutboundDelta{Kind: channels.DeltaText, Content: "partial answer "},
+		channels.OutboundDelta{Err: errors.New("boom")},
+	)
+	require.Error(t, err)
+
+	require.Equal(t, []string{string(sessionActive)}, ft.stopStatuses())
+	require.Equal(t, []capturedMessage{{"partial answer "}}, msgs)
+}
+
+// A cancelled turn (a /stop, the gateway shutting down) returns without a
+// terminal flush: the stream is closed on the way out, so the message does not
+// keep animating and the text buffered since the last append still lands.
+func TestStream_CancelledTurnClosesTheStream(t *testing.T) {
+	ft := &fakeThread{}
+	srv := httptest.NewServer(ft.handler())
+	t.Cleanup(srv.Close)
+
+	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "D1", "", "1.0", detailsOff, slog.Default())
+	w.adapter = &Adapter{}
+	ctx, cancel := context.WithCancel(t.Context())
+	ch := make(chan channels.OutboundDelta)
+	done := make(chan error, 1)
+	go func() { done <- w.run(ctx, ch) }()
+
+	ch <- channels.OutboundDelta{Kind: channels.DeltaText, Content: "half an answer "}
+	require.Eventually(t, func() bool { return len(ft.streams()) > 0 }, flowWait, 10*time.Millisecond)
+	cancel()
+	require.ErrorIs(t, <-done, context.Canceled)
+
+	require.Equal(t, []string{string(sessionActive)}, ft.stopStatuses())
+	require.Equal(t, []capturedMessage{{"half an answer "}}, ft.finalMessages())
+}
+
+// A streaming message cannot be deleted, so the retract stops it first — mid
+// turn, hence processing — and then removes it.
+func TestRetractRendered_StopsTheStreamBeforeDeleting(t *testing.T) {
+	ft := &fakeThread{}
+	w := streamWriter(t, ft, "D1")
+
+	w.pending = "visit the link "
+	require.NoError(t, w.flush(t.Context()))
+	w.retractRendered(t.Context())
+
+	require.Equal(t, []string{string(sessionProcessing)}, ft.stopStatuses())
+	require.Equal(t, []string{"msg-1"}, ft.deleted())
+	require.False(t, w.wroteContent())
+}
+
+// Slack refusing the stop leaves the working indicator on the thread, so the
+// exit status falls back to its own call.
+func TestStream_FailedFinalStopFallsBackToTheStatusCall(t *testing.T) {
+	ft := &fakeThread{failStop: "fatal_error"}
+	_, w, err := runSurfaceWriter(t, ft, "D1",
+		channels.OutboundDelta{Kind: channels.DeltaText, Content: "the answer "},
+		doneDelta(),
+	)
+	var rerr *renderError
+	require.ErrorAs(t, err, &rerr, "a stop Slack keeps refusing is a rendering failure")
+	require.False(t, w.exitStatusSent)
+	require.Equal(t, []string{"processing", "active"}, ft.statuses(), "the indicator is cleared anyway")
+}
+
+// A prompt the user approves resumes the turn over the same writer. The first
+// cycle's stop closed its message, so the continuation opens one of its own
+// rather than reopening a closed stream.
+func TestStream_SecondRunCycleOpensANewStream(t *testing.T) {
+	ft := &fakeThread{}
+	srv := httptest.NewServer(ft.handler())
+	t.Cleanup(srv.Close)
+
+	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "D1", "", "1.0", detailsOff, slog.Default())
+	w.adapter = &Adapter{}
+	run := func(deltas ...channels.OutboundDelta) {
+		ch := make(chan channels.OutboundDelta, len(deltas))
+		for _, d := range deltas {
+			ch <- d
+		}
+		close(ch)
+		require.NoError(t, w.run(t.Context(), ch))
+	}
+
+	run(channels.OutboundDelta{Kind: channels.DeltaText, Content: "may I delete it? "},
+		channels.OutboundDelta{Kind: channels.DeltaPrompt, TaskID: "task-1"})
+	w.promptDelta = nil // the caller consumed the prompt and resumed the task
+	run(channels.OutboundDelta{Kind: channels.DeltaText, Content: "deleted "}, doneDelta())
+
+	require.Equal(t, []string{
+		methodChatStartStream, methodChatStopStream,
+		methodChatStartStream, methodChatStopStream,
+	}, ft.streamMethods())
+	require.Equal(t, []string{string(sessionSuspended), string(sessionActive)}, ft.stopStatuses())
+	require.Equal(t, []capturedMessage{{"may I delete it? "}, {"deleted "}}, ft.finalMessages())
+}
+
+// recordingStreams is a StreamRecorder that keeps the events it was given.
+type recordingStreams struct {
+	mu     sync.Mutex
+	events []string
+}
+
+func (r *recordingStreams) RecordSlackStream(event string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.events = append(r.events, event)
+}
+
+func (r *recordingStreams) recorded() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.events)
+}
+
+// The stream lifecycle is counted: start and stop bound the app to Slack's
+// tier-2 budget, and a stop the user caused is told apart from an ordinary one.
+func TestStream_CountsTheLifecycleEvents(t *testing.T) {
+	ft := &fakeThread{}
+	w := streamWriter(t, ft, "D1")
+	rec := &recordingStreams{}
+	w.adapter.Streams = rec
+
+	w.pending = "the answer "
+	require.NoError(t, w.flush(t.Context()))
+	require.NoError(t, w.closeStream(t.Context()))
+	require.Equal(t, []string{streamEventStarted, streamEventStopped}, rec.recorded())
+
+	ft.stoppedByUser = true
+	w2 := streamWriter(t, ft, "D1")
+	w2.adapter.Streams = rec
+	w2.pending = "another answer "
+	require.NoError(t, w2.flush(t.Context()))
+	w2.pending = "and more "
+	require.NoError(t, w2.flush(t.Context()))
+	require.Equal(t, []string{streamEventStarted, streamEventStopped, streamEventStarted, streamEventStoppedByUser},
+		rec.recorded())
 }
