@@ -1161,6 +1161,28 @@ type fakeThread struct {
 	stoppedByUser bool
 	// failStop, when set, makes chat.stopStream respond with this Slack error.
 	failStop string
+	// hold blocks the next call to holdMethod after it has been recorded, so a
+	// test can cancel a turn with a write in flight: Slack has taken it, the
+	// caller has not heard back yet. See holdAt/release.
+	hold       chan struct{}
+	holdMethod string
+}
+
+// holdAt makes the next call to method block, once recorded, until release is
+// called.
+func (f *fakeThread) holdAt(method string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.hold, f.holdMethod = make(chan struct{}), method
+}
+
+// release lets the held call answer.
+func (f *fakeThread) release() {
+	f.mu.Lock()
+	hold := f.hold
+	f.hold = nil
+	f.mu.Unlock()
+	close(hold)
 }
 
 // haltStream ends a stream behind the app's back, the way Slack does when it
@@ -1256,7 +1278,14 @@ func (f *fakeThread) handler() http.HandlerFunc {
 				statusHTTP = http.StatusInternalServerError
 			}
 		}
+		var hold chan struct{}
+		if f.holdMethod == method {
+			hold, f.holdMethod = f.hold, "" // the next call only
+		}
 		f.mu.Unlock()
+		if hold != nil {
+			<-hold
+		}
 		if statusHTTP != 0 {
 			w.WriteHeader(statusHTTP)
 			return
@@ -2761,9 +2790,12 @@ func TestStream_FailedTurnClosesTheStream(t *testing.T) {
 
 // A cancelled turn (a /stop, the gateway shutting down) returns without a
 // terminal flush: the stream is closed on the way out, so the message does not
-// keep animating and the text buffered since the last append still lands.
+// keep animating and the text buffered since the last append still lands. The
+// cancel lands while the opening call is in flight — Slack has taken the text,
+// the writer has not heard back — which must not cost a second message.
 func TestStream_CancelledTurnClosesTheStream(t *testing.T) {
 	ft := &fakeThread{}
+	ft.holdAt(methodChatStartStream)
 	srv := httptest.NewServer(ft.handler())
 	t.Cleanup(srv.Close)
 
@@ -2775,14 +2807,48 @@ func TestStream_CancelledTurnClosesTheStream(t *testing.T) {
 	go func() { done <- w.run(ctx, ch) }()
 
 	ch <- channels.OutboundDelta{Kind: channels.DeltaText, Content: "half an answer "}
-	require.Eventually(t, func() bool { return len(ft.streams()) > 0 }, flowWait, 10*time.Millisecond)
+	require.Eventually(t, func() bool { return len(ft.streams()) > 0 }, flowWait, 10*time.Millisecond,
+		"Slack has the opening call and is not answering yet")
 	cancel()
+	ft.release()
 	require.ErrorIs(t, <-done, context.Canceled)
 
 	require.Equal(t, []string{string(sessionActive)}, ft.stopStatuses())
 	require.Equal(t, []string{"processing", "active"}, ft.statuses(),
 		"the status call runs after the stream is closed, so the indicator clears")
-	require.Equal(t, []capturedMessage{{"half an answer "}}, ft.finalMessages())
+	require.Equal(t, []capturedMessage{{"half an answer "}}, ft.finalMessages(),
+		"the text Slack already took is not sent a second time")
+}
+
+// The same with an append in flight rather than the opening call: the chunk
+// lands exactly once in the message that is already open.
+func TestStream_CancelledDuringAnAppendSendsTheTextOnce(t *testing.T) {
+	ft := &fakeThread{}
+	srv := httptest.NewServer(ft.handler())
+	t.Cleanup(srv.Close)
+
+	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "D1", "", "1.0", detailsOff, slog.Default())
+	w.adapter = &Adapter{}
+	ctx, cancel := context.WithCancel(t.Context())
+	ch := make(chan channels.OutboundDelta)
+	done := make(chan error, 1)
+	go func() { done <- w.run(ctx, ch) }()
+
+	ch <- channels.OutboundDelta{Kind: channels.DeltaText, Content: "first part "}
+	require.Eventually(t, func() bool { return len(ft.streams()) == 1 }, flowWait, 10*time.Millisecond,
+		"the stream is open")
+
+	// The text after the first rides the tick, which is the append to hold.
+	ft.holdAt(methodChatAppendStream)
+	ch <- channels.OutboundDelta{Kind: channels.DeltaText, Content: "second part "}
+	require.Eventually(t, func() bool { return len(ft.streams()) == 2 }, flowWait, 10*time.Millisecond,
+		"Slack has the append and is not answering yet")
+	cancel()
+	ft.release()
+	require.ErrorIs(t, <-done, context.Canceled)
+
+	require.Equal(t, []capturedMessage{{"first part second part "}}, ft.finalMessages(),
+		"the appended chunk lands exactly once")
 }
 
 // A streaming message cannot be deleted, so the retract stops it first — mid

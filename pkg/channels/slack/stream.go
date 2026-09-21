@@ -38,7 +38,12 @@ const (
 	finalFlushRetryDelay = 250 * time.Millisecond
 	// streamCloseTimeout bounds closing a stream a cancelled turn left open.
 	streamCloseTimeout = 5 * time.Second
-	slackAPIBase       = "https://slack.com/api"
+	// streamCallTimeout bounds one write to the turn's streamed message. Those
+	// writes are detached from the turn's cancellation (streamCallCtx), so a
+	// cancelled turn waits for the one in flight before it exits: shorter than
+	// the 30 s of slackHTTPClient, because that wait is what a /stop costs.
+	streamCallTimeout = 10 * time.Second
+	slackAPIBase      = "https://slack.com/api"
 	// downloadSizeMargin is the headroom over Slack's declared file size that a
 	// download body may reach before it is rejected as an out-of-memory guard.
 	downloadSizeMargin = 1 << 20
@@ -1865,6 +1870,22 @@ func (w *batchedWriter) endStream(ctx context.Context) {
 	}
 }
 
+// streamCallCtx detaches one write to the streamed message from the turn's
+// cancellation and bounds it. A write Slack may already have taken has to run
+// to a real answer: a cancelled call comes back as an error the writer cannot
+// tell from a refusal, and re-queueing the text then posts it twice — which is
+// what pressing Stop mid-chunk used to do. An enclosing deadline that is nearer
+// still wins, so the closing pass keeps its own budget.
+func streamCallCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	timeout := streamCallTimeout
+	if deadline, ok := ctx.Deadline(); ok {
+		if left := time.Until(deadline); left < timeout {
+			timeout = left
+		}
+	}
+	return context.WithTimeout(context.WithoutCancel(ctx), timeout)
+}
+
 // appendText delivers raw answer text on the turn's stream and returns the raw
 // text it could not deliver, so the caller re-queues exactly what is missing.
 // Everything here is measured on the agent's own bytes: that is the unit a
@@ -1943,7 +1964,9 @@ func (w *batchedWriter) sendPiece(ctx context.Context, raw string) error {
 	if w.streamTS == "" {
 		return w.openStream(ctx, raw, md)
 	}
-	err := w.client.appendStream(ctx, w.channel, w.streamTS, md)
+	sctx, cancel := streamCallCtx(ctx)
+	err := w.client.appendStream(sctx, w.channel, w.streamTS, md)
+	cancel()
 	switch {
 	case err == nil:
 		w.streamed, w.streamAdopted = w.streamed+len(raw), false
@@ -1964,7 +1987,9 @@ func (w *batchedWriter) sendPiece(ctx context.Context, raw string) error {
 // placeholder the answer supersedes goes once the message exists.
 func (w *batchedWriter) openStream(ctx context.Context, raw, md string) error {
 	user, team := w.streamRecipient()
-	ts, err := w.client.startStream(ctx, w.channel, w.threadTS, md, user, team)
+	sctx, cancel := streamCallCtx(ctx)
+	ts, err := w.client.startStream(sctx, w.channel, w.threadTS, md, user, team)
+	cancel()
 	if err != nil {
 		return err
 	}
@@ -1984,7 +2009,9 @@ func (w *batchedWriter) openStream(ctx context.Context, raw, md string) error {
 // is always explicit: Slack defaults it to active, which on an intermediate
 // stop would clear the working indicator while the turn keeps running.
 func (w *batchedWriter) stopStream(ctx context.Context, md string, rawLen int, status sessionStatus) error {
-	err := w.client.stopStream(ctx, w.channel, w.streamTS, md, status)
+	sctx, cancel := streamCallCtx(ctx)
+	err := w.client.stopStream(sctx, w.channel, w.streamTS, md, status)
+	cancel()
 	switch {
 	case err == nil:
 	case errors.Is(err, errStreamStoppedByUser):
