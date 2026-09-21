@@ -1735,7 +1735,12 @@ func (w *batchedWriter) retractRendered(ctx context.Context) {
 	}
 	// A message still streaming cannot be retracted, so close it first. The
 	// turn is being taken over by the sign-in prompt and is not over, hence
-	// processing rather than Slack's active default.
+	// processing rather than Slack's active default. Beware the ordering: this
+	// runs after run() has set the session's exit status, so the day Slack
+	// honours session_status on a stop, this one would re-arm an indicator the
+	// turn just cleared. It is unreachable today — closeStream clears streamTS
+	// on a successful stop and on a stream-gone refusal, and the retract is
+	// only reached on a turn that ended normally.
 	if w.streamTS != "" {
 		if err := w.stopStream(ctx, "", 0, sessionProcessing); err != nil {
 			w.logger.Warn("slack: stop the reply stream before retracting it failed", "error", err)

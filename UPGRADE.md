@@ -27,7 +27,9 @@ for the whole app, which bounds a workspace to roughly 20 turn starts a minute â
 tier 4 and have plenty of headroom, and the two session-status calls per turn are unchanged. `/metrics` exposes `klaus_gateway_slack_stream_total{event}`
 with `started`, `stopped`, `stopped_by_user` and `recovered`; the `started` rate against that
 ceiling is the number to alert on, and a rising `recovered` means Slack is closing streams under
-the gateway. A 429 is still paced by `Retry-After` and never fails a turn.
+the gateway. Expect `stopped_by_user` to stay at zero: it is defensive, and a Stop press was
+observed to leave the gateway's own `chat.stopStream` succeeding normally rather than answering
+with that code. A 429 is still paced by `Retry-After` and never fails a turn.
 
 ## Next â€” a Slack thread's row lives twice as long
 
