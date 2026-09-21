@@ -13,10 +13,10 @@ import (
 // longer than maxLen is hard-split via splitAtLines, with each piece wrapped in
 // the fence while inside one.
 //
-// Packing is greedy left-to-right, so every non-final chunk boundary is stable
-// as text accumulates across flushes: the streamed tail messages (tailTS) keep
-// their content and are never rewritten with shifted text. Preserve this if
-// editing.
+// Its remaining caller is renderNarration, which posts each narration passage
+// as a message of its own. The streamed answer is not split here: cutPiece
+// (stream.go) cuts it at whitespace, because a fence closed at a cut would
+// break the block the next append continues.
 func splitMarkdown(text string, maxLen int) []string {
 	var chunks []string
 	var b strings.Builder

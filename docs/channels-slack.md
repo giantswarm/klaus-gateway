@@ -38,7 +38,11 @@ While a turn runs, the thread carries Slack's **native working indicator**. It
 is driven by the agent session's lifecycle status
 (`agents.sessions.setStatus`, granular bot token with `chat:write`), which the
 adapter sets to `processing` when the turn starts and back to `active` on exit:
-normal end, stream error, `/stop`. A turn that pauses on a HITL prompt — an
+normal end, stream error, `/stop`. Every turn makes that exit call, right after
+the `chat.stopStream` that closes its answer. The stop names the same status in
+its own `session_status` field, but Slack was observed (graveler, 2026-09-21) to
+accept that field without clearing the indicator, so the status call is what
+ends the session. A turn that pauses on a HITL prompt — an
 approval, an `ask_user` question, a form — ends in `suspended` instead, which
 Slack renders as *waiting for you*, so a conversation that needs an answer is
 told apart from a finished one at a glance. The user's answer starts the next
@@ -401,16 +405,32 @@ any string that begins with `Slack bot`, `Slack app-level`, or `Slack user`.
    `SLACK_CLEAR_REACTION_ON_DONE=false` to swap in a done reaction instead. A failed turn always
    swaps in the failed reaction. With `SLACK_PROGRESS_MODE=text`, or in `auto` mode when
    `reactions:write` is unavailable, a `_thinking…_` placeholder message is posted instead.
-8. Completion deltas are batched into a Block Kit `markdown` block and written back via
-   `chat.update` (or an initial `chat.postMessage`) as the response accumulates. Replies over
-   12,000 characters roll over into follow-up in-thread messages on code-fence boundaries; the
-   message's notification fallback text is cut to Slack's 4,000-character limit for that field.
-   Each streamed text run is rendered once — the A2A artifact update's append/replace semantics
-   are honoured, so the Go ADK's re-send of a finished run does not duplicate it — and runs
-   separated by tool calls are separated by a paragraph. A Slack refusal while rendering never
-   fails the turn: flushes keep retrying until the agent finishes, a message refused as too long
-   is re-split smaller, and only a final flush that still fails is reported in the thread (the
-   reply is incomplete, with the failed reaction) while the turn still counts as completed.
+8. The answer is streamed into one Slack message with the streaming API:
+   `chat.startStream` opens it on the turn's first text, `chat.appendStream` adds what has
+   accumulated since the last tick (one second), and `chat.stopStream` closes it with the
+   answer's last words, naming the session's exit status. Slack animates the message while the
+   stream is open. Each append carries only the new text, and text is sent up to the last
+   whitespace boundary — an unfinished word waits for the next append, so nothing is ever
+   half-written. Replies over 12,000 characters roll over into a further streamed message on
+   code-fence boundaries; the intermediate close carries `processing`, so the working
+   indicator stays on mid-answer. In a channel the stream names the person it answers
+   (`recipient_user_id` + `recipient_team_id`); in a DM it names nobody, which is what Slack
+   requires there. Each streamed text run is rendered once — the A2A artifact update's
+   append/replace semantics are honoured, so the Go ADK's re-send of a finished run does not
+   duplicate it — and runs separated by tool calls are separated by a paragraph. In
+   text-progress mode the `_thinking…_` placeholder is removed once the streamed message
+   exists (a stream cannot take over an existing message). A Slack refusal while rendering
+   never fails the turn: flushes keep retrying until the agent finishes, a message Slack
+   closed under the app gets one replacement stream, and only a final flush that still fails
+   is reported in the thread (the reply is incomplete, with the failed reaction) while the
+   turn still counts as completed. Pressing Slack's stop button ends the stream on Slack's
+   side: the adapter learns it from the `stopped_by_user` its next call is answered with and
+   stops writing — quietly, since the button's own "Stopped by @user" notice already tells
+   the thread. `/metrics` counts the lifecycle as
+   `klaus_gateway_slack_stream_total{event}` (`started`, `stopped`, `stopped_by_user`,
+   `recovered`); `chat.startStream` and `chat.stopStream` are tier-2 methods, about 20 calls
+   a minute for the whole app, so those rates are what says how close a workspace is to the
+   ceiling.
 
 Turns are serialized per thread: a message that arrives while the thread's previous turn is
 still running gets a brief "still working" notice rather than starting an overlapping turn; the
@@ -475,11 +495,15 @@ A turn ends early for one of two reasons, and the thread can tell them apart:
   original message while it does. The answer text arrives whole when the task completes (the
   resubscription does not replay what streamed before it), so the process continues the
   reply where its predecessor left it rather than repeating it: the thread's row records, as
-  a turn streams, how much answer text has landed and the state of the open step receipt, and
-  the continuing process posts only the text after that mark — without the paragraph break
-  the cut leaves in front — while its receipt counts on from the recorded steps, names
-  included. A turn whose whole answer had landed before the restart closes with `_(done — the
-  reply above is complete)_`. A turn the start-up recovery cannot reach (its user signed out,
+  a turn streams, how much answer text has landed, which streamed message it is landing in,
+  and the state of the open step receipt; the continuing process posts only the text after
+  that mark — without the paragraph break the cut leaves in front — while its receipt counts
+  on from the recorded steps, names included. A message the previous process left open is
+  adopted, so the reply goes on in the same bubble; if Slack closed it in the meantime the
+  rest opens a message of its own. An adopted message is always closed, even when nothing is
+  left to add, so it stops animating. A graceful restart closes the streamed message on its
+  way out, so a continuation after one always opens a new message. A turn whose whole answer
+  had landed before the restart closes with `_(done — the reply above is complete)_`. A turn the start-up recovery cannot reach (its user signed out,
   the controller not up yet after three tries ten seconds apart) is delivered by the thread's
   next reply, ahead of that reply's own answer; a task the controller no longer has gets a
   short note instead.
@@ -580,7 +604,7 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
 
 | Scope            | Purpose                                               |
 |------------------|-------------------------------------------------------|
-| `chat:write`     | Post messages and update existing messages            |
+| `chat:write`     | Post messages, update them, and stream agent replies  |
 | `chat:write.customize` | Post agent replies under the agent's own name/icon |
 | `reactions:write` | Add/remove progress reactions on the triggering message |
 | `im:history`     | Read DMs sent to the bot                              |

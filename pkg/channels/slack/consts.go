@@ -493,6 +493,17 @@ const (
 	paramChannelID = "channel_id" // agents.sessions.setStatus channel
 	paramStatus    = "status"     // agents.sessions.setStatus lifecycle state
 	paramTitle     = "title"      // agents.sessions.setStatus session name (create only)
+
+	// Streamed reply parameters (chat.startStream / appendStream / stopStream).
+	paramMarkdownText = "markdown_text" // the stream's new text, Slack-flavoured Markdown
+	// recipient_user_id and recipient_team_id name the person the streamed
+	// answer is for; Slack requires both when the stream is in a channel and
+	// refuses them in a DM.
+	paramRecipientUserID = "recipient_user_id"
+	paramRecipientTeamID = "recipient_team_id"
+	// session_status is the agent session state chat.stopStream leaves the
+	// thread in. Slack defaults it to active, so it is always sent explicitly.
+	paramSessionStatus = "session_status"
 	// unfurl_links / unfurl_media are forced to false on every chat.postMessage:
 	// bot posts relay agent- and tool-controlled links, and an unfurl has
 	// Slack's crawler fetch them (fatal for single-use auth links).

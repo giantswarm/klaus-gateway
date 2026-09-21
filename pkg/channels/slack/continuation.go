@@ -32,15 +32,22 @@ const deliveredWriteTimeout = 2 * time.Second
 const continuedNothingNote = "_(done — the reply above is complete)_"
 
 // continueFrom seeds the writer with what a previous process delivered of the
-// turn it continues: the first TextLen bytes of answer text are dropped, and
-// the receipt segment starts at the recorded steps so it counts on. The
-// record's slices and maps are copied: the store's copy is not to be edited
-// in place.
+// turn it continues: the first TextLen bytes of answer text are dropped, the
+// receipt segment starts at the recorded steps so it counts on, and a stream
+// the previous process left open is adopted, so the reply continues in the
+// same message instead of a second one. The record's slices and maps are
+// copied: the store's copy is not to be edited in place.
 func (w *batchedWriter) continueFrom(d store.Delivered) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.carried = d
 	w.skipText = d.TextLen
+	w.streamTS, w.streamed, w.streamAdopted = d.StreamTS, d.StreamLen, d.StreamTS != ""
+	if d.StreamTS != "" {
+		// The adopted message is one of the turn's streamed messages, so a
+		// connector prompt taking the turn over retracts it like the rest.
+		w.streamMessages = append(w.streamMessages, d.StreamTS)
+	}
 	w.toolSteps, w.carriedSteps = d.ToolSteps, d.ToolSteps
 	w.toolOrder = slices.Clone(d.ToolOrder)
 	w.toolCounts = maps.Clone(d.ToolCounts)
@@ -78,15 +85,18 @@ func (w *batchedWriter) skipDelivered(content string) string {
 }
 
 // noteDelivered records what the turn has delivered so far — the answer text
-// that landed (what the previous process posted plus this one's flushes) and
-// the open receipt segment — through the writer's sink, when it has one.
+// that landed (what the previous process posted plus what this one appended),
+// the stream it is landing in, and the open receipt segment — through the
+// writer's sink, when it has one.
 func (w *batchedWriter) noteDelivered(ctx context.Context) {
 	if w.onDelivered == nil {
 		return
 	}
 	w.mu.Lock()
 	d := store.Delivered{
-		TextLen:    w.carried.TextLen + w.leadTrimmed + w.flushedLen,
+		TextLen:    w.carried.TextLen + w.leadTrimmed + w.appendedLen,
+		StreamTS:   w.streamTS,
+		StreamLen:  w.streamed,
 		ToolSteps:  w.toolSteps,
 		ToolOrder:  slices.Clone(w.toolOrder),
 		ToolCounts: maps.Clone(w.toolCounts),
