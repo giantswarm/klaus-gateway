@@ -226,12 +226,15 @@ type batchedWriter struct {
 	// recovers onto a message of its own instead of failing the closing stop.
 	streamAdopted bool
 	// streamRecovered marks a stream Slack closed under us as already reopened
-	// once this turn; streamStopped closes the text path for the rest of the
-	// turn (the user pressed Stop, or the stream could not be kept open);
+	// once this turn; streamStopped closes the text path quietly for the rest
+	// of the turn (the user pressed Stop); streamFailed closes it as a failure
+	// (Slack kept closing the stream), so the terminal flush reports the reply
+	// as incomplete instead of ending the turn as if it were whole;
 	// exitStatusSent marks the session's exit status as delivered by the stop
 	// that closed the stream, so run()'s exit call does not repeat it.
 	streamRecovered bool
 	streamStopped   bool
+	streamFailed    bool
 	exitStatusSent  bool
 	// narrationTS holds the timestamps of the narration posted after a login
 	// challenge this turn, so a connector prompt taking over can retract that
@@ -523,7 +526,7 @@ func (w *batchedWriter) finalFlush(ctx context.Context) error {
 		if err = w.closeStream(ctx); err == nil {
 			return nil
 		}
-		if attempt >= maxFlushFailures || ctx.Err() != nil {
+		if errors.Is(err, errStreamLost) || attempt >= maxFlushFailures || ctx.Err() != nil {
 			return err
 		}
 		w.logger.Warn("slack: final flush failed, retrying", "attempt", attempt, "error", err)
@@ -1741,7 +1744,7 @@ func (w *batchedWriter) retractRendered(ctx context.Context) {
 	// turn is being taken over by the sign-in prompt and is not over, hence
 	// processing rather than Slack's active default.
 	if w.streamTS != "" {
-		if err := w.stopStream(ctx, "", sessionProcessing); err != nil {
+		if err := w.stopStream(ctx, "", 0, sessionProcessing); err != nil {
 			w.logger.Warn("slack: stop the reply stream before retracting it failed", "error", err)
 		}
 	}
@@ -1751,6 +1754,8 @@ func (w *batchedWriter) retractRendered(ctx context.Context) {
 	w.mu.Lock()
 	w.appendedLen = 0
 	w.mu.Unlock()
+	// The row must stop naming text and a message the thread no longer has.
+	w.noteDelivered(ctx)
 	for _, ts := range messages {
 		if err := w.client.deleteMessage(ctx, w.channel, ts); err != nil {
 			w.logger.Warn("slack: retract connector reply failed", "ts", ts, "error", err)
@@ -1758,24 +1763,25 @@ func (w *batchedWriter) retractRendered(ctx context.Context) {
 	}
 }
 
-// flush appends the text accumulated since the last one to the turn's stream,
-// opening the stream on the first call. The text after the last whitespace is
-// held back: an append is final — unlike the chat.update it replaces, which
-// re-rendered the whole reply every tick — so a login URL must never be sent
-// half-scrubbed and a word never cut in two.
+// flush appends the answer text accumulated since the last one to the turn's
+// stream, opening the stream on the first call. The text after the last
+// whitespace is held back: an append is final — unlike the chat.update it
+// replaces, which re-rendered the whole reply every tick — so a login URL must
+// never be sent half-scrubbed and a word never cut in two.
 func (w *batchedWriter) flush(ctx context.Context) error {
 	if w.streamStopped {
 		w.takePending(true) // the text path is closed; drop what is left
 		return nil
 	}
-	md := w.scrubLoginURLs(w.takePending(false))
-	// Scrubbing a pure sign-in passage can empty the chunk, and a stream does
-	// not open on whitespace alone. Nothing to append, and nothing to put back:
-	// a later delta arrives with new content.
-	if md == "" || (w.streamTS == "" && strings.TrimSpace(md) == "") {
+	if w.streamFailed {
+		w.takePending(true)
+		return errStreamLost
+	}
+	raw := w.takePending(false)
+	if raw == "" {
 		return nil
 	}
-	if unsent, err := w.appendText(ctx, md); err != nil {
+	if unsent, err := w.appendText(ctx, raw); err != nil {
 		w.putBackPending(unsent)
 		return err
 	}
@@ -1793,29 +1799,34 @@ func (w *batchedWriter) closeStream(ctx context.Context) error {
 		w.takePending(true)
 		return nil
 	}
-	md := w.scrubLoginURLs(w.takePending(true))
-	if strings.TrimSpace(md) == "" {
-		md = ""
+	if w.streamFailed {
+		w.takePending(true)
+		return errStreamLost
 	}
-	if md == "" && w.streamTS == "" {
+	raw := w.takePending(true)
+	if raw == "" && w.streamTS == "" {
 		return nil
 	}
 	// Text the open message has no room for goes out as appends, and so does
 	// the text of a turn that has no stream yet. A stream adopted from before a
 	// restart takes the same route: Slack may have closed it since, and only
 	// the append path can move the text onto a stream of its own.
-	if md != "" && (w.streamTS == "" || w.streamAdopted || w.streamed+len(md) > slackMarkdownBlockMax) {
-		unsent, err := w.appendText(ctx, md)
+	if raw != "" && (w.streamTS == "" || w.streamAdopted || w.streamed+len(raw) > slackMarkdownBlockMax) {
+		unsent, err := w.appendText(ctx, raw)
 		if err != nil {
 			w.putBackPending(unsent)
 			return err
 		}
-		md = ""
+		raw = ""
 		if w.streamTS == "" { // the user stopped the stream under us
 			return nil
 		}
 	}
-	err := w.stopStream(ctx, md, w.exitSessionStatus())
+	md := w.scrubLoginURLs(raw)
+	if strings.TrimSpace(md) == "" {
+		md = ""
+	}
+	err := w.stopStream(ctx, md, len(raw), w.exitSessionStatus())
 	switch {
 	case err == nil:
 		w.exitStatusSent = !w.streamStopped
@@ -1827,10 +1838,10 @@ func (w *batchedWriter) closeStream(ctx context.Context) error {
 		// exit status falls back to run()'s own call.
 		w.dropStream()
 		w.noteDelivered(ctx)
-		if md == "" {
+		if raw == "" {
 			return nil
 		}
-		w.putBackPending(md)
+		w.putBackPending(raw)
 	}
 	return err
 }
@@ -1854,36 +1865,72 @@ func (w *batchedWriter) endStream(ctx context.Context) {
 	}
 }
 
-// appendText delivers reply text on the turn's stream and returns what it could
-// not deliver, so the caller re-queues exactly the missing text.
-func (w *batchedWriter) appendText(ctx context.Context, md string) (unsent string, err error) {
-	pieces := []string{md}
-	if len(md) > slackMarkdownBlockMax {
-		// Only oversized text is re-split. splitMarkdown balances the Markdown
-		// of every chunk it emits, which on a normal append would close a code
-		// fence the next append continues.
-		pieces = splitMarkdown(md, slackMarkdownBlockMax)
-	}
-	for i, piece := range pieces {
+// appendText delivers raw answer text on the turn's stream and returns the raw
+// text it could not deliver, so the caller re-queues exactly what is missing.
+// Everything here is measured on the agent's own bytes: that is the unit a
+// process continuing the turn after a restart skips, so it has to be the unit
+// the pieces are cut in as well.
+func (w *batchedWriter) appendText(ctx context.Context, raw string) (unsent string, err error) {
+	for raw != "" {
+		piece, rest := cutPiece(raw, slackMarkdownBlockMax)
 		if err := w.sendPiece(ctx, piece); err != nil {
-			return strings.Join(pieces[i:], ""), err
+			return raw, err
 		}
 		if w.streamStopped {
 			return "", nil
 		}
+		raw = rest
 	}
 	return "", nil
 }
 
-// sendPiece appends one within-cap piece to the stream, opening the stream when
-// none is open and rolling over into a fresh message when the open one has no
-// room left.
-func (w *batchedWriter) sendPiece(ctx context.Context, md string) error {
-	if w.streamTS != "" && w.streamed+len(md) > slackMarkdownBlockMax {
+// cutPiece takes the first at most budget bytes of s, cutting at the last
+// whitespace inside the budget so a word stays whole — and a login URL, which
+// holds no whitespace, is never handed to the scrubbing in halves. A single
+// token longer than the budget is cut at the budget, on a rune boundary.
+//
+// An oversize append is deliberately NOT balanced as Markdown (splitMarkdown):
+// on a stream the next piece continues the same message, so a closing fence
+// inserted at the cut would break the code block it is inside. A roll-over that
+// lands inside a fence is the known cosmetic cost.
+func cutPiece(s string, budget int) (piece, rest string) {
+	if len(s) <= budget {
+		return s, ""
+	}
+	if i := strings.LastIndexFunc(s[:budget], unicode.IsSpace); i >= 0 {
+		_, size := utf8.DecodeRuneInString(s[i:])
+		return s[:i+size], s[i+size:]
+	}
+	cut := budget
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut], s[cut:]
+}
+
+// sendPiece appends one within-cap piece of answer text to the stream, opening
+// the stream when none is open and rolling over into a fresh message when the
+// open one has no room left. raw is the agent's own text; what Slack receives
+// is that text with this turn's login URLs scrubbed out.
+func (w *batchedWriter) sendPiece(ctx context.Context, raw string) error {
+	md := w.scrubLoginURLs(raw)
+	// Scrubbing a pure sign-in passage can empty the piece, and a stream does
+	// not open on whitespace alone. Nothing reaches Slack, but the bytes count
+	// as delivered all the same: a process continuing the turn would only scrub
+	// them away again.
+	if md == "" || (w.streamTS == "" && strings.TrimSpace(md) == "") {
+		w.noteAppended(len(raw))
+		w.noteDelivered(ctx)
+		return nil
+	}
+	// streamed counts the agent's bytes, not the shorter text Slack sees:
+	// scrubbing only ever removes, so the count over-estimates and rolls the
+	// answer over a little early — the safe side of Slack's per-message cap.
+	if w.streamTS != "" && w.streamed+len(raw) > slackMarkdownBlockMax {
 		// The answer outgrew one Slack message. The turn is still running, so
 		// the stop closing the full message leaves the session processing;
 		// Slack's default (active) would clear the working indicator mid-answer.
-		if err := w.stopStream(ctx, "", sessionProcessing); err != nil {
+		if err := w.stopStream(ctx, "", 0, sessionProcessing); err != nil {
 			if !streamGone(err) {
 				return err
 			}
@@ -1894,20 +1941,20 @@ func (w *batchedWriter) sendPiece(ctx context.Context, md string) error {
 		}
 	}
 	if w.streamTS == "" {
-		return w.openStream(ctx, md)
+		return w.openStream(ctx, raw, md)
 	}
 	err := w.client.appendStream(ctx, w.channel, w.streamTS, md)
 	switch {
 	case err == nil:
-		w.streamed, w.streamAdopted = w.streamed+len(md), false
-		w.noteAppended(len(md))
+		w.streamed, w.streamAdopted = w.streamed+len(raw), false
+		w.noteAppended(len(raw))
 		w.noteDelivered(ctx)
 		return nil
 	case errors.Is(err, errStreamStoppedByUser):
-		w.endStreamQuietly(streamEventStoppedByUser)
+		w.endStreamQuietly()
 		return nil
 	case streamGone(err):
-		return w.recoverStream(ctx, md)
+		return w.recoverStream(ctx, raw, md)
 	}
 	return err
 }
@@ -1915,74 +1962,78 @@ func (w *batchedWriter) sendPiece(ctx context.Context, md string) error {
 // openStream posts the turn's streamed message with its first text. In a
 // channel Slack requires the recipient the answer is for; the progress
 // placeholder the answer supersedes goes once the message exists.
-func (w *batchedWriter) openStream(ctx context.Context, md string) error {
+func (w *batchedWriter) openStream(ctx context.Context, raw, md string) error {
 	user, team := w.streamRecipient()
 	ts, err := w.client.startStream(ctx, w.channel, w.threadTS, md, user, team)
 	if err != nil {
 		return err
 	}
-	w.streamTS, w.streamed, w.streamAdopted = ts, len(md), false
+	w.streamTS, w.streamed, w.streamAdopted = ts, len(raw), false
 	w.streamMessages = append(w.streamMessages, ts)
 	w.noteStream(streamEventStarted)
-	w.noteAppended(len(md))
+	w.noteAppended(len(raw))
 	w.noteDelivered(ctx)
 	w.dropPlaceholder(ctx)
 	return nil
 }
 
 // stopStream closes the open stream with a last piece of text and the session
-// status the stop leaves the thread in. The status is always explicit: Slack
-// defaults it to active, which on an intermediate stop would clear the working
-// indicator while the turn keeps running.
-func (w *batchedWriter) stopStream(ctx context.Context, md string, status sessionStatus) error {
+// status the stop leaves the thread in. md is what Slack receives and rawLen
+// the answer bytes it stands for — the two differ when a login URL was scrubbed
+// out of it, and the delivery record counts the answer's own bytes. The status
+// is always explicit: Slack defaults it to active, which on an intermediate
+// stop would clear the working indicator while the turn keeps running.
+func (w *batchedWriter) stopStream(ctx context.Context, md string, rawLen int, status sessionStatus) error {
 	err := w.client.stopStream(ctx, w.channel, w.streamTS, md, status)
 	switch {
 	case err == nil:
 	case errors.Is(err, errStreamStoppedByUser):
-		w.endStreamQuietly(streamEventStoppedByUser)
+		w.endStreamQuietly()
 		return nil
 	default:
 		return err
 	}
 	w.dropStream()
 	w.noteStream(streamEventStopped)
-	if md != "" {
-		w.noteAppended(len(md))
-	}
+	w.noteAppended(rawLen)
 	w.noteDelivered(ctx)
 	return nil
 }
 
+// errStreamLost reports that Slack kept closing the turn's streamed message, so
+// the rest of the answer could not be delivered. It travels out as a
+// renderError, which is what puts the "reply is incomplete" note in the thread.
+var errStreamLost = errors.New("slack: the reply stream keeps closing")
+
 // recoverStream reopens the stream after Slack reported the message no longer
-// streaming, and delivers md on the new one. One recovery per turn: a second
-// says the stream cannot be kept open, and scattering the rest of the answer
-// over fresh messages would read worse than ending the text path there.
-func (w *batchedWriter) recoverStream(ctx context.Context, md string) error {
+// streaming, and delivers the piece on the new one. One recovery per turn: a
+// second says the stream cannot be kept open, and scattering the rest of the
+// answer over fresh messages would read worse than stopping there — so the turn
+// gives up on the text path and says so in the thread.
+func (w *batchedWriter) recoverStream(ctx context.Context, raw, md string) error {
 	w.dropStream()
 	if w.streamRecovered {
-		w.logger.Warn("slack: the reply stream keeps closing, dropping the rest of this turn's text",
+		w.streamFailed = true
+		w.logger.Warn("slack: the reply stream keeps closing, the rest of this turn's text is not delivered",
 			"channel", w.channel, "thread", w.threadTS)
-		w.endStreamQuietly("")
-		return nil
+		return errStreamLost
 	}
 	w.streamRecovered = true
 	w.noteStream(streamEventRecovered)
 	w.logger.Warn("slack: the reply stream closed early, opening a new one for the rest",
 		"channel", w.channel, "thread", w.threadTS)
-	return w.openStream(ctx, md)
+	return w.openStream(ctx, raw, md)
 }
 
-// endStreamQuietly closes the text path for the rest of the turn: Slack ended
-// the stream (the user pressed Stop) or it could not be kept open, so nothing
-// more is sent on it — no retry, no error notice. The stop button's own
-// "Stopped by …" notice is the thread's record of what happened.
-func (w *batchedWriter) endStreamQuietly(event string) {
+// endStreamQuietly closes the text path for the rest of the turn after the user
+// pressed Stop: Slack has ended the stream, so nothing more is sent on it — no
+// retry, no error notice. The stop button's own "Stopped by …" notice is the
+// thread's record of what happened.
+func (w *batchedWriter) endStreamQuietly() {
 	w.dropStream()
 	w.streamStopped = true
 	w.takePending(true)
-	if event != "" {
-		w.noteStream(event)
-	}
+	w.noteStream(streamEventStoppedByUser)
 }
 
 // dropStream forgets the open stream handle, so the next text of the turn opens
@@ -1995,7 +2046,7 @@ func (w *batchedWriter) dropStream() {
 // run() cycle over the same writer.
 func (w *batchedWriter) resetStream() {
 	w.dropStream()
-	w.streamRecovered, w.streamStopped, w.exitStatusSent = false, false, false
+	w.streamRecovered, w.streamStopped, w.streamFailed, w.exitStatusSent = false, false, false, false
 }
 
 // streamGone reports whether err says the message is not streaming any more:

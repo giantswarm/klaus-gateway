@@ -22,6 +22,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
+	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
 )
 
 func TestSend_RetriesOnceOnRateLimit(t *testing.T) {
@@ -2698,11 +2699,14 @@ func TestStream_StoppedByUserEndsTheTextPathQuietly(t *testing.T) {
 }
 
 // Slack closing the stream under the app costs one recovery: the rest of the
-// answer opens a new stream. A second loss ends the text path for the turn
-// rather than scattering the answer over fresh messages.
-func TestStream_RecoversOnceFromALostStream(t *testing.T) {
+// answer opens a new stream. A second loss gives up on the text path — but as a
+// rendering failure, so the thread is told the reply is incomplete instead of
+// the answer stopping mid-sentence with no sign.
+func TestStream_RecoversOnceThenReportsTheReplyCutShort(t *testing.T) {
 	ft := &fakeThread{}
 	w := streamWriter(t, ft, "D1")
+	rec := &recordingStreams{}
+	w.adapter.Streams = rec
 
 	w.pending = "first "
 	require.NoError(t, w.flush(t.Context()))
@@ -2715,9 +2719,15 @@ func TestStream_RecoversOnceFromALostStream(t *testing.T) {
 
 	ft.haltStream("msg-2")
 	w.pending = "third "
-	require.NoError(t, w.flush(t.Context()))
-	require.True(t, w.streamStopped, "a stream that keeps closing ends the turn's text path")
-	require.Empty(t, w.pendingText())
+	require.ErrorIs(t, w.flush(t.Context()), errStreamLost)
+	require.True(t, w.streamFailed)
+	require.False(t, w.streamStopped, "the turn does not end quietly; the thread is told")
+
+	var rerr *renderError
+	require.ErrorAs(t, w.finish(t.Context()), &rerr, "the turn reports a reply it could not finish")
+	require.False(t, w.exitStatusSent, "so the exit status falls back to the turn's own call")
+	require.Equal(t, []string{streamEventStarted, streamEventRecovered, streamEventStarted}, rec.recorded(),
+		"the one recovery is counted once")
 }
 
 // A turn that ends in an error still closes its stream, so the partial answer
@@ -2860,4 +2870,75 @@ func TestStream_CountsTheLifecycleEvents(t *testing.T) {
 	require.NoError(t, w2.flush(t.Context()))
 	require.Equal(t, []string{streamEventStarted, streamEventStopped, streamEventStarted, streamEventStoppedByUser},
 		rec.recorded())
+}
+
+// cutPiece cuts an oversize append on the agent's own bytes: at the last
+// whitespace inside the budget, so a word — and a login URL, which holds none —
+// stays whole, and at the budget on a rune boundary when there is no
+// whitespace to cut at. The pieces always add back up to the input.
+func TestCutPiece(t *testing.T) {
+	piece, rest := cutPiece("short enough", 100)
+	require.Equal(t, "short enough", piece)
+	require.Empty(t, rest)
+
+	piece, rest = cutPiece("alpha beta gamma", 12)
+	require.Equal(t, "alpha beta ", piece, "the cut falls after the last whitespace inside the budget")
+	require.Equal(t, "gamma", rest)
+
+	piece, rest = cutPiece("aaaaaaaaaa", 4)
+	require.Equal(t, "aaaa", piece, "a token with no whitespace is cut at the budget")
+	require.Equal(t, "aaaaaa", rest)
+
+	piece, rest = cutPiece("üüüü", 3)
+	require.Equal(t, "ü", piece, "the cut never splits a rune")
+	require.Equal(t, "üüü", rest)
+}
+
+// An oversize append is cut on the agent's own bytes, not re-rendered: the
+// pieces add up to the raw chunk, no fence line is injected at the cut, and the
+// delivery record counts exactly the bytes the agent produced.
+func TestStream_OversizeAppendIsCutOnRawBytes(t *testing.T) {
+	ft := &fakeThread{}
+	w := streamWriter(t, ft, "D1")
+	var records []store.Delivered
+	w.onDelivered = func(_ context.Context, d store.Delivered) { records = append(records, d) }
+
+	// A fenced block spanning the cut: splitMarkdown would close and reopen it.
+	answer := "```yaml\n" + strings.Repeat("key: value\n", 1600) + "```\n"
+	require.Greater(t, len(answer), slackMarkdownBlockMax)
+	w.pending = answer
+	require.NoError(t, w.flush(t.Context()))
+	require.NoError(t, w.closeStream(t.Context()))
+
+	var sent strings.Builder
+	fences := 0
+	for _, c := range ft.streams() {
+		sent.WriteString(c.markdown)
+		fences += strings.Count(c.markdown, "```")
+	}
+	require.Equal(t, answer, sent.String(), "the pieces add back up to the answer, byte for byte")
+	require.Equal(t, 2, fences, "the agent's own two fence markers, none injected at the cut")
+	require.Equal(t, len(answer), records[len(records)-1].TextLen,
+		"the record counts the bytes the agent produced")
+}
+
+// A login URL scrubbed out of an append shortens what Slack receives but not
+// what the turn has delivered: a continuation cuts the replayed answer at the
+// agent's own byte offset, so it neither repeats nor drops text.
+func TestStream_ScrubbedAppendStillCountsItsRawBytes(t *testing.T) {
+	ft := &fakeThread{}
+	w := streamWriter(t, ft, "D1")
+	var records []store.Delivered
+	w.onDelivered = func(_ context.Context, d store.Delivered) { records = append(records, d) }
+	w.loginURLs = []string{"https://login.example/auth?code=abc"}
+
+	const answer = "Here is what I found.\nhttps://login.example/auth?code=abc\nTell me once you are in. "
+	w.pending = answer
+	require.NoError(t, w.flush(t.Context()))
+
+	sent := ft.streams()[0].markdown
+	require.NotContains(t, sent, "login.example", "the URL never reaches Slack")
+	require.Less(t, len(sent), len(answer), "so Slack saw fewer bytes than the agent produced")
+	require.Equal(t, len(answer), records[len(records)-1].TextLen,
+		"the record counts the answer's own bytes, not the shorter text Slack saw")
 }

@@ -461,3 +461,39 @@ func TestStreamedReply_ChannelTurnNamesTheRecipient(t *testing.T) {
 	require.Equal(t, "TWORKSPACE", start.params["recipient_team_id"], "and their workspace")
 	require.Equal(t, "active", fake.pathCalls(pathStopStream)[0].params["session_status"])
 }
+
+// Slack closing the answer's stream twice is a rendering failure, not a silent
+// stop: the turn opens one replacement stream, then tells the thread the reply
+// is incomplete, marks the triggering message failed, and clears the working
+// indicator with its own status call.
+func TestStreamedReply_StreamLostTwiceReportsTheReplyCutShort(t *testing.T) {
+	fake := newFakeSlackAPI()
+	fake.setFail(pathAppendStream, "message_not_in_streaming_state")
+	gw := &stubGateway{
+		deltas: []channels.OutboundDelta{
+			{Content: "first third "},
+			{Content: "second third "},
+			{Content: "last third "},
+			{Done: true},
+		},
+		// Past the append tick, so each delta rides an append of its own.
+		interDeltaDelay: 1200 * time.Millisecond,
+	}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+
+	sendEvent(t, srv, dmEvent("U1", "how many nodes?", "930.000"))
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Slack refused the rest of the reply")
+	}, flowWait, 20*time.Millisecond, "the thread is told the reply is incomplete")
+
+	require.Len(t, fake.pathCalls(pathStartStream), 2, "one replacement stream, then the turn gives up")
+	require.Contains(t, fake.reactionNames("reactions.add"), "x", "the triggering message carries the failed reaction")
+	var statuses []string
+	for _, c := range fake.pathCalls("agents.sessions.setStatus") {
+		if v, ok := c.params["status"].(string); ok {
+			statuses = append(statuses, v)
+		}
+	}
+	require.Equal(t, []string{"processing", "active"}, statuses,
+		"no stop carried the exit status, so the turn's own call clears the indicator")
+}
