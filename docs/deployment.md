@@ -350,13 +350,13 @@ See [docs/channels-cli.md](channels-cli.md) for usage.
 On `SIGTERM` the gateway drains its HTTP servers (up to 15 s), then stops the channel adapters
 (up to 15 s, one budget for all of them), and only then closes the kagent client and the
 stores. The adapter stop is where a Slack turn cut short posts its restart notice, clears its
-progress reaction and collapses its status ticker; the task itself is left running at the
+progress reaction and closes its reply's stream; the task itself is left running at the
 controller, and its id stays on the thread's routing-store binding so the next process can
 resubscribe to it and deliver the answer ([channels-slack.md](channels-slack.md#restarts-and-stop)).
 
 `terminationGracePeriodSeconds` (default `45`) has to cover both windows with some margin for
 the closes; below the drain plus the stop, the kubelet kills the pod before the notice goes
-out and the thread is left with a frozen ticker. The recovery of left-running turns needs a
+out and the thread is left with a reply that keeps animating. The recovery of left-running turns needs a
 routing store that outlives the pod: `routing.store: memory` (the chart default) forgets the
 binding and the task with it. Installations with a Slack channel should run `valkey` (see
 [Valkey](#valkey)); `bolt` only counts when `routing.boltPath`
