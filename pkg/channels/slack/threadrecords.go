@@ -17,6 +17,12 @@ import (
 type threadRecorder interface {
 	ThreadRecord(ctx context.Context, channel, channelID, threadID string) (store.Entry, bool, error)
 	UpdateThreadRecord(ctx context.Context, channel, channelID, threadID string, mutate func(e *store.Entry, found bool) bool) error
+	// ThreadState is one read that answers both questions the inactive-thread
+	// gate asks of a row: what a live record holds, and — when the row is
+	// still in the store but its conversation has ended (ThreadRecord reads
+	// it as absent) — the lifetime it ended after. The one use of a closed
+	// row: telling the author of a reply that the conversation is over.
+	ThreadState(ctx context.Context, channel, channelID, threadID string) (channels.ThreadState, error)
 }
 
 // records returns the gateway's thread recorder, or the in-process fallback.

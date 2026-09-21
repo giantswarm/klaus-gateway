@@ -85,10 +85,12 @@ channel thread to exactly one instance:
    is written through the store's `Update`, which serialises a read-modify-write per key against
    every other writer of the row. It survives a gateway restart on the bolt and Valkey stores and
    slides with the thread's lifetime (`--thread-ttl`, 90 days by default): every turn refreshes
-   the row, and after that long of silence the store drops it. The controller keeps the instance
-   until it is deleted, so a later mention by the same person in that thread gets it back through
-   the idempotent create — the request id has no per-conversation part — while another person
-   gets a new instance and the old one stays in the controller unreferenced.
+   the row, and after that long of silence the conversation has ended and the binding reads as
+   absent. The row itself is kept for twice the lifetime, so a reply in a thread that ended gets
+   a notice rather than silence, and the store drops it after that. The controller keeps the
+   instance until it is deleted, so a later mention by the same person in that thread gets it
+   back through the idempotent create — the request id has no per-conversation part — while
+   another person gets a new instance and the old one stays in the controller unreferenced.
 3. Every later turn of the thread routes to that instance: the id rides as the
    `x-kagent-agent-instance-id` metadata entry on each A2A call, exactly once. The message's
    `contextId` stays empty — the controller owns the conversation's context id and rejects any

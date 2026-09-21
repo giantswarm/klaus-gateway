@@ -28,6 +28,31 @@ with `started`, `stopped`, `stopped_by_user` and `recovered`; the `started` rate
 ceiling is the number to alert on, and a rising `recovered` means Slack is closing streams under
 the gateway. A 429 is still paced by `Retry-After` and never fails a turn.
 
+## Next — a Slack thread's row lives twice as long
+
+A Slack thread's conversation still ends after `routing.threadTTL` (`--thread-ttl`, 90 days by
+default): the agent, the initiator, the grants and the AgentInstance binding all read as absent
+from then on, and the next mention starts the thread over. What changed is the row's own expiry,
+which is now **twice** the lifetime (180 days by default; `0` still never expires). The gateway
+uses that second half to tell a thread whose conversation ended from a thread it was never in, so
+a reply without a mention in one of the former gets one private line instead of silence.
+
+**No action needed.** One thing to know if you size the store: on Valkey the row is one key whose
+expiry is that lifetime, so the keys of threads nobody writes in are held twice as long as before
+— the row is a few hundred bytes, and the count is the number of Slack threads the gateway has
+ever answered in, not a per-message growth. Set `routing.threadTTL` lower if that matters; the
+notice then names the lifetime you set. A thread's row adopts the configured lifetime on its next
+message, so a change to `routing.threadTTL` reaches the threads people keep using.
+
+**`routing.defaultTTL` no longer governs a Slack thread's row.** A Slack thread's row is the same
+row as its Klaus-instance route (the key's user slot is empty, because a thread is shared by its
+participants), and until now a write to it kept the TTL the router had stamped —
+`routing.defaultTTL`, 24 hours by default. It is now stamped with twice the thread lifetime like
+every other thread row, so on the Klaus (non-kagent) path a Slack row that lived 24 hours lives
+180 days. That also corrects a fault of its own: the thread's initiator and the grants they gave
+died after 24 hours, and the thread then asked for consent again while people were still talking
+in it. `routing.defaultTTL` still governs the web and CLI routes, which are keyed per user.
+
 ## Next — two new Slack scopes for the thread a conversation opens in
 
 A conversation that opens inside an existing thread now hands that thread's earlier messages to

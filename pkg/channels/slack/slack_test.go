@@ -923,6 +923,13 @@ func (s *stubGateway) UpdateThreadRecord(ctx context.Context, ch, cid, tid strin
 	return s.rec().UpdateThreadRecord(ctx, ch, cid, tid, mutate)
 }
 
+func (s *stubGateway) ThreadState(ctx context.Context, ch, cid, tid string) (channels.ThreadState, error) {
+	if s.recordsErr != nil {
+		return channels.ThreadState{}, s.recordsErr
+	}
+	return s.rec().ThreadState(ctx, ch, cid, tid)
+}
+
 // stubResumes is the stubGateway's record of turns a previous process left
 // running: the turns InFlightTurns lists (and InFlightTurn finds by thread),
 // the deltas ResumeTurn streams for each task, and what was resumed.

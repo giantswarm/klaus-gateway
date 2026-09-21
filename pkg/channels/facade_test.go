@@ -380,7 +380,7 @@ func TestFacade_SendCompletionViaA2A_FirstTurnCreatesTheInstance(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, "inst-kagent/worker-1", entry.AgentInstanceID)
 	require.Equal(t, "kagent/worker", entry.AgentRef, "the row names the agent the thread is bound to")
-	require.Equal(t, channels.DefaultThreadTTL, entry.TTL, "the binding slides with the thread's lifetime")
+	require.Equal(t, 2*channels.DefaultThreadTTL, entry.TTL, "the binding slides with the thread's lifetime, and the row outlives it by as much again")
 	require.Empty(t, entry.Instance)
 
 	sent := agent.lastStreamed()
