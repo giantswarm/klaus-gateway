@@ -171,11 +171,24 @@ creates one, which a turn that switches agents does mid-thread.
   lifetime — `routing.threadTTL` (`--thread-ttl`), 90 days by default, `0` never expires —
   refreshed by every turn. While the thread lives, the initiator and the collaborators they
   allowed instruct the agent without mentioning the bot again and their grants hold. After that
-  long without a message the gateway has forgotten the thread: an un-mentioned reply is ignored,
-  and the next mention starts the thread over — its author becomes the initiator and no grant
-  carries over. Whether the agent remembers is the controller's call: its create is idempotent
-  per person and thread, so the same person gets the earlier instance back while the controller
-  still holds it, and another person gets a new one.
+  long without a message the **conversation has ended**: the agent, the initiator, the grants and
+  the binding all read as absent, an un-mentioned reply is not answered, and the next mention
+  starts the thread over — its author becomes the initiator and no grant carries over. Whether
+  the agent remembers is the controller's call: its create is idempotent per person and thread,
+  so the same person gets the earlier instance back while the controller still holds it, and
+  another person gets a new one.
+- **A reply in a conversation that ended is told so.** The row itself stays in the store for
+  twice the lifetime (180 days by default; `0` still never expires), and while it is there the
+  gateway knows the difference between a thread whose conversation ended and a thread it was
+  never in. So an un-mentioned reply in one of the former gets one private line — _"This
+  conversation ended after 90 days without messages. Mention me to start a new one."_ (the
+  configured lifetime is named) — instead of silence. It is ephemeral, so only its author sees
+  it, every reply gets it, and nothing is written to the store for it. Past twice the lifetime
+  the row is gone and the thread is a stranger again: replies are ignored without a word, as for
+  any thread the bot was never in. There is no warning before the end, and no sweep: the notice
+  is posted when somebody writes, which is the moment it is useful. Threads whose row was
+  written before this behaviour existed keep their single-lifetime expiry, so their replies stay
+  silent.
 
 ### Two auth layers
 
@@ -266,9 +279,9 @@ agent, same initiator, same grants. The gateway never reads Slack history — no
 `conversations.replies`, no re-parsing the opening message or the slash command's root — to
 recover any of it; the routing-store row is the only carrier. On `routing.store: memory` a
 restart loses this state, and every thread starts fresh from its next message. On any store a
-thread nobody has written in for `routing.threadTTL` is forgotten, agent and all, and its next
+thread nobody has written in for `routing.threadTTL` has ended, agent and all, and its next
 mention starts it over (see [Threads and conversations](#threads-and-conversations) for what the agent may
-still remember).
+still remember and for the notice an un-mentioned reply gets meanwhile).
 
 The turn that opens a conversation posts no notice of its own: the agent's first reply, under
 the agent's name, is the first sign of which agent joined the thread. The picker's branded echo

@@ -1176,6 +1176,32 @@ func (a *Adapter) accessPolicy() AccessPolicy {
 	return &recordAccess{rec: a.records(), channel: ChannelName}
 }
 
+// noticeThreadClosed tells the author of an un-mentioned reply that the
+// thread's conversation ended after the lifetime, so the silence does not read
+// as an outage. Only for a thread whose row the store still holds and reports
+// as closed: a thread with no row at all is either one the bot never joined or
+// one the store has forgotten, and stays silent. Ephemeral and unrecorded —
+// every reply in a closed thread gets it, which costs no write and no noise in
+// the thread. Best-effort. Slack history is never read.
+func (a *Adapter) noticeThreadClosed(ctx context.Context, slackChannel, threadID, userID string) {
+	if userID == "" {
+		return
+	}
+	closed, lifetime, err := a.records().ThreadClosed(ctx, ChannelName, slackChannel, threadID)
+	if err != nil {
+		a.Logger.Warn("slack: read thread-closed state failed", "thread", threadID, "error", err)
+		return
+	}
+	if !closed {
+		return
+	}
+	a.Logger.Info("slack: reply in a closed thread", "record", "thread_closed",
+		"channel_id", slackChannel, "thread", threadID, "user", userID)
+	if err := a.apiClient().postEphemeralText(ctx, slackChannel, userID, threadID, threadClosedNotice(lifetime)); err != nil {
+		a.Logger.Warn("slack: post thread-closed notice failed", "thread", threadID, "error", err)
+	}
+}
+
 // isActiveThread reports whether the bot has an active session in threadID —
 // either a known initiator (it was mentioned at some point) or a pending
 // input-required task. Used to decide whether to route message.channels thread
@@ -1604,9 +1630,12 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 	// being gate-dropped would discard the app_mention copy as a duplicate.
 	// Dropped silently: a thread with no record is either one the bot never
 	// joined (a served channel's unrelated threads must not be pinged) or one
-	// forgotten after --thread-ttl of silence, and nothing durable tells the
-	// two apart. A mention re-opens the conversation either way.
+	// the store has forgotten entirely, and nothing durable tells the two
+	// apart. A thread whose row is still there but whose conversation ended
+	// after the lifetime is the one case that is known, and its author is
+	// told. A mention re-opens the conversation either way.
 	if threadReplyOnly && !a.isActiveThread(ctx, inner.Channel, msg.ThreadID) {
+		a.noticeThreadClosed(ctx, inner.Channel, msg.ThreadID, inner.User)
 		a.Logger.Debug("slack: reply in inactive thread ignored", "channel", inner.Channel, "thread", msg.ThreadID)
 		return
 	}

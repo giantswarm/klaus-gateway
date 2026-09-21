@@ -73,9 +73,12 @@ type Facade struct {
 	// to post it.
 	Durable bool
 	// ThreadTTL is the sliding lifetime of a thread's record and of its
-	// AgentInstance binding: every turn refreshes it, and after it the store
-	// has forgotten the thread — the next mention starts it over. 0 never
-	// expires. main.go sets it from --thread-ttl.
+	// AgentInstance binding: every turn refreshes it, and after it the
+	// conversation has ended — routing, the binding and the grants read the
+	// row as absent and the next mention starts the thread over. The row
+	// itself stays for twice as long (storeTTL) so a reply in a thread that
+	// ended can be told so; after that the store has forgotten the thread.
+	// 0 never expires. main.go sets it from --thread-ttl.
 	ThreadTTL time.Duration
 
 	// now is the clock the facade stamps rows with; nil means time.Now.
@@ -122,6 +125,7 @@ func (f *Facade) SessionResumable(ctx context.Context, msg InboundMessage) (exis
 	if err != nil {
 		return false, false
 	}
+	entry, ok = f.liveEntry(entry, ok)
 	if !ok || entry.AgentInstanceID == "" {
 		return false, true
 	}
@@ -221,10 +225,10 @@ func clearBinding(e *store.Entry, found bool) bool {
 // rebind creates is named after the message that asked for it, that being its
 // own first message. The create is keyed by the synthesized context id, so
 // a retried first turn does not create a second instance. The binding slides
-// with the thread's lifetime: every turn refreshes it, the store expires the
-// row after ThreadTTL of silence, and the next mention asks the controller for
-// an instance again — the idempotent create hands the same person the earlier
-// one back while the controller still holds it.
+// with the thread's lifetime: every turn refreshes it, the conversation ends
+// after ThreadTTL of silence, and the next mention asks the controller for an
+// instance again — the idempotent create hands the same person the earlier one
+// back while the controller still holds it.
 func (f *Facade) instanceFor(ctx context.Context, msg InboundMessage) (string, error) {
 	if f.Routes == nil {
 		return "", errors.New("channels: no routing store for the agent instance binding")
@@ -235,6 +239,11 @@ func (f *Facade) instanceFor(ctx context.Context, msg InboundMessage) (string, e
 	if err != nil {
 		return "", fmt.Errorf("channels: read instance binding: %w", err)
 	}
+	if f.threadClosed(entry, now) {
+		// The conversation ended: the row is still there but its binding is
+		// not the thread's any more, so this turn creates a fresh instance.
+		entry, ok = store.Entry{}, false
+	}
 	if ok && entry.AgentInstanceID != "" && entry.AgentRef == msg.AgentRef {
 		if err := f.Routes.Update(ctx, key, func(e *store.Entry, found bool) bool {
 			if !found {
@@ -242,9 +251,9 @@ func (f *Facade) instanceFor(ctx context.Context, msg InboundMessage) (string, e
 			}
 			e.LastSeen = now
 			// A row written before the thread lifetime existed carries no TTL;
-			// it adopts the lifetime on its next turn.
+			// it adopts the row lifetime on its next turn.
 			if e.TTL <= 0 && f.ThreadTTL > 0 {
-				e.TTL = f.ThreadTTL
+				e.TTL = f.storeTTL()
 			}
 			return true
 		}); err != nil {
@@ -259,7 +268,8 @@ func (f *Facade) instanceFor(ctx context.Context, msg InboundMessage) (string, e
 	if err != nil {
 		return "", err
 	}
-	if err := f.Routes.Update(ctx, key, func(e *store.Entry, _ bool) bool {
+	if err := f.Routes.Update(ctx, key, func(e *store.Entry, found bool) bool {
+		f.reopen(e, found, now)
 		if e.AgentInstanceID != "" && e.AgentInstanceID != inst.ID {
 			// A rebind: nothing of the previous instance's turn is deliverable.
 			e.TaskID, e.Resume, e.Delivered = "", nil, store.Delivered{}
@@ -269,7 +279,7 @@ func (f *Facade) instanceFor(ctx context.Context, msg InboundMessage) (string, e
 			e.CreatedAt = now
 		}
 		if e.TTL <= 0 {
-			e.TTL = f.ThreadTTL
+			e.TTL = f.storeTTL()
 		}
 		return true
 	}); err != nil {
@@ -329,9 +339,15 @@ func (f *Facade) InFlightTurns(ctx context.Context, channel string) ([]InFlightT
 	if err != nil {
 		return nil, fmt.Errorf("channels: list in-flight turns: %w", err)
 	}
+	now := f.clock()
 	var turns []InFlightTurn
 	for _, ke := range entries {
 		if ke.Key.Channel != channel || ke.Entry.TaskID == "" || ke.Entry.AgentInstanceID == "" {
+			continue
+		}
+		// A row whose conversation has ended is absent for the binding too:
+		// its task is nobody's turn any more.
+		if f.threadClosed(ke.Entry, now) {
 			continue
 		}
 		turns = append(turns, inFlightTurn(ke.Key, ke.Entry))
@@ -353,6 +369,7 @@ func (f *Facade) InFlightTurn(ctx context.Context, msg InboundMessage) (InFlight
 	if err != nil {
 		return InFlightTurn{}, false, fmt.Errorf("channels: read in-flight turn: %w", err)
 	}
+	entry, ok = f.liveEntry(entry, ok)
 	if !ok || entry.TaskID == "" || entry.AgentInstanceID == "" {
 		return InFlightTurn{}, false, nil
 	}

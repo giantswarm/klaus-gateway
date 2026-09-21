@@ -4,6 +4,23 @@ Breaking or operator-visible changes between releases, newest first. The
 `CHANGELOG.md` lists every change; this file covers what an operator has to
 do or decide.
 
+## Next — a Slack thread's row lives twice as long
+
+A Slack thread's conversation still ends after `routing.threadTTL` (`--thread-ttl`, 90 days by
+default): the agent, the initiator, the grants and the AgentInstance binding all read as absent
+from then on, and the next mention starts the thread over. What changed is the row's own expiry,
+which is now **twice** the lifetime (180 days by default; `0` still never expires). The gateway
+uses that second half to tell a thread whose conversation ended from a thread it was never in, so
+a reply without a mention in one of the former gets one private line instead of silence.
+
+**No action needed.** One thing to know if you size the store: on Valkey the row is one key whose
+expiry is that lifetime, so the keys of threads nobody writes in are held twice as long as before
+— the row is a few hundred bytes, and the count is the number of Slack threads the gateway has
+ever answered in, not a per-message growth. Set `routing.threadTTL` lower if that matters; the
+notice then names the lifetime you set. Rows written before this release keep their single
+lifetime, so they expire when their conversation ends, exactly as today, and replies in them stay
+silent.
+
 ## Next — two new Slack scopes for the thread a conversation opens in
 
 A conversation that opens inside an existing thread now hands that thread's earlier messages to

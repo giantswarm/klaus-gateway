@@ -925,6 +925,13 @@ func (s *stubGateway) UpdateThreadRecord(ctx context.Context, ch, cid, tid strin
 	return s.rec().UpdateThreadRecord(ctx, ch, cid, tid, mutate)
 }
 
+func (s *stubGateway) ThreadClosed(ctx context.Context, ch, cid, tid string) (bool, time.Duration, error) {
+	if s.recordsErr != nil {
+		return false, 0, s.recordsErr
+	}
+	return s.rec().ThreadClosed(ctx, ch, cid, tid)
+}
+
 // stubResumes is the stubGateway's record of turns a previous process left
 // running: the turns InFlightTurns lists (and InFlightTurn finds by thread),
 // the deltas ResumeTurn streams for each task, and what was resumed.

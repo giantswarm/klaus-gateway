@@ -2,6 +2,7 @@ package slack
 
 import (
 	"context"
+	"time"
 
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
@@ -17,6 +18,11 @@ import (
 type threadRecorder interface {
 	ThreadRecord(ctx context.Context, channel, channelID, threadID string) (store.Entry, bool, error)
 	UpdateThreadRecord(ctx context.Context, channel, channelID, threadID string, mutate func(e *store.Entry, found bool) bool) error
+	// ThreadClosed reports whether the thread's row is still in the store
+	// while its conversation has ended (ThreadRecord reads it as absent), and
+	// the lifetime it ended after. The one use of a closed row: telling the
+	// author of a reply that the conversation is over.
+	ThreadClosed(ctx context.Context, channel, channelID, threadID string) (bool, time.Duration, error)
 }
 
 // records returns the gateway's thread recorder, or the in-process fallback.

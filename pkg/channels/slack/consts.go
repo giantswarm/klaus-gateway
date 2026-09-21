@@ -418,6 +418,36 @@ const corruptSessionStuckNotice = "An earlier interrupted turn corrupted this co
 // kagent session no longer exists, so the user is not confused by lost context.
 const resumeStartingFreshNotice = "I couldn't find our earlier conversation in this thread, so I'm starting fresh."
 
+// threadClosedNotice tells the author of a reply in a thread whose
+// conversation ended — no message for the whole thread lifetime — why nobody
+// answers, and how to start again. Ephemeral: the rest of the thread does not
+// need it.
+func threadClosedNotice(lifetime time.Duration) string {
+	return fmt.Sprintf("_This conversation ended after %s without messages. Mention me to start a new one._", spellDuration(lifetime))
+}
+
+// spellDuration writes a thread lifetime the way the notice reads it: the
+// largest whole unit it fits into, "90 days", "12 hours", "30 minutes".
+func spellDuration(d time.Duration) string {
+	switch {
+	case d >= 24*time.Hour:
+		return countOf(int64(d/(24*time.Hour)), "day")
+	case d >= time.Hour:
+		return countOf(int64(d/time.Hour), "hour")
+	case d >= time.Minute:
+		return countOf(int64(d/time.Minute), "minute")
+	default:
+		return countOf(int64(d/time.Second), "second")
+	}
+}
+
+func countOf(n int64, unit string) string {
+	if n == 1 {
+		return "1 " + unit
+	}
+	return fmt.Sprintf("%d %ss", n, unit)
+}
+
 // channelIntro is posted once when the bot is added to a channel, so members
 // know what it is and how to reach it.
 const channelIntro = "👋 Hi, I'm Swarmgeist. Mention me (`@Swarmgeist`) in this channel to start a thread and I'll bring in an agent to help investigate and act on your clusters. I reply in-thread and ask before anything destructive. Mention me with `/help` (as in `@Swarmgeist /help`) for the full list of commands."
