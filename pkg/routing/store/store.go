@@ -110,10 +110,10 @@ type Entry struct {
 }
 
 // Delivered is the part of an in-flight turn's reply that has reached the
-// channel: the answer text that landed and the tool-step receipt still open.
+// channel: the answer text that landed and the step ids handed out for it.
 // A resubscription after a restart is handed the whole answer at completion
 // and no replay of the tool calls it missed, so this is what lets it post
-// only the text that follows and keep counting the steps.
+// only the text that follows and keep numbering the steps.
 type Delivered struct {
 	// TextLen is the length, in bytes, of the answer text posted so far.
 	TextLen int `json:"text_len,omitempty"`
@@ -123,12 +123,10 @@ type Delivered struct {
 	// a second one, and counts on toward the per-message text cap.
 	StreamTS  string `json:"stream_ts,omitempty"`
 	StreamLen int    `json:"stream_len,omitempty"`
-	// ToolSteps counts the tool calls of the receipt segment open when the
-	// record was written, ToolOrder their distinct names in first-use order
-	// and ToolCounts the calls per name.
-	ToolSteps  int            `json:"tool_steps,omitempty"`
-	ToolOrder  []string       `json:"tool_order,omitempty"`
-	ToolCounts map[string]int `json:"tool_counts,omitempty"`
+	// ToolSteps counts the step ids the turn has handed out to the reply's task
+	// list. A process continuing the turn numbers its own steps on from it, so
+	// it never reuses an id already on the adopted message.
+	ToolSteps int `json:"tool_steps,omitempty"`
 }
 
 // IsZero reports whether nothing has been delivered; encoding/json's omitzero

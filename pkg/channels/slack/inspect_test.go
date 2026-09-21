@@ -93,7 +93,6 @@ func TestRenderToolActivity_RecordsAtOnAndFullNotOff(t *testing.T) {
 				Kind: channels.ToolResult, Name: "kube_get", CallID: "c1",
 				Response: map[string]any{"items": "3 pods"},
 			})
-			w.drainThreadPosts()
 
 			entries, _ := a.toolLogSnapshot("T1")
 			require.Len(t, entries, tc.want)
@@ -122,7 +121,6 @@ func TestRenderToolActivity_RecordedEntryEscapesHostileContent(t *testing.T) {
 		Kind: channels.ToolCall, Name: "evil`<!channel>`\ntool",
 		Args: map[string]any{"cmd": "a&b <script>"},
 	})
-	w.drainThreadPosts()
 
 	entries, _ := a.toolLogSnapshot("T1")
 	require.Len(t, entries, 1)
@@ -152,7 +150,6 @@ func TestRenderToolActivity_RecordsUnwrappedCallTool(t *testing.T) {
 		Kind: channels.ToolResult, Name: musterCallToolMetaTool, CallID: "c1",
 		Response: map[string]any{"output": "1"},
 	})
-	w.drainThreadPosts()
 
 	entries, _ := a.toolLogSnapshot("T1")
 	require.Len(t, entries, 2)

@@ -207,7 +207,7 @@ func (a *Adapter) recoveryToken(ctx context.Context, slackUser, fallback string)
 // progress rendering as the turn it continues (the working reaction on the
 // original message, when the record names one), from where the previous
 // process left the reply: the answer text it posted is not posted again and
-// the step receipt counts on (turn.Delivered). The caller holds the thread's
+// the step ids count on (turn.Delivered). The caller holds the thread's
 // slot. The thread is marked active under the recorded user, so plain replies
 // into it are served again after the restart.
 func (a *Adapter) deliverInFlight(ctx context.Context, resumer turnResumer, turn channels.InFlightTurn, token string) recoverOutcome {

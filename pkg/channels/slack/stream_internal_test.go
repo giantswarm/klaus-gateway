@@ -131,7 +131,7 @@ func TestRun_TransientFlushFailureDoesNotAbortTurn(t *testing.T) {
 	var delivered atomic.Value
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			MarkdownText string `json:"markdown_text"`
+			Chunks []streamChunk `json:"chunks"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		w.Header().Set("Content-Type", "application/json")
@@ -139,8 +139,8 @@ func TestRun_TransientFlushFailureDoesNotAbortTurn(t *testing.T) {
 			_, _ = fmt.Fprint(w, `{"ok":false,"error":"fatal_error"}`)
 			return
 		}
-		if body.MarkdownText != "" {
-			delivered.Store(body.MarkdownText)
+		if md, _, _ := splitChunks(body.Chunks); md != "" {
+			delivered.Store(md)
 		}
 		_, _ = fmt.Fprint(w, `{"ok":true,"ts":"1.2"}`)
 	}))
@@ -213,11 +213,12 @@ func newRecordingSlack(t *testing.T) (*recordingSlack, *slackAPIClient) {
 	rec := &recordingSlack{texts: map[string]string{}}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			TS           string `json:"ts"`
-			MarkdownText string `json:"markdown_text"`
+			TS     string        `json:"ts"`
+			Chunks []streamChunk `json:"chunks"`
 		}
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
 		w.Header().Set("Content-Type", "application/json")
+		md, _, _ := splitChunks(body.Chunks)
 		rec.mu.Lock()
 		defer rec.mu.Unlock()
 		ts := body.TS
@@ -226,7 +227,7 @@ func newRecordingSlack(t *testing.T) (*recordingSlack, *slackAPIClient) {
 			ts = fmt.Sprintf("1.%d", rec.seq)
 			rec.order = append(rec.order, ts)
 		}
-		rec.texts[ts] += body.MarkdownText
+		rec.texts[ts] += md
 		_, _ = fmt.Fprintf(w, `{"ok":true,"ts":%q}`, ts)
 	}))
 	t.Cleanup(srv.Close)
@@ -286,13 +287,13 @@ func TestFallbackText_IsBoundedAndKeepsEntitiesWhole(t *testing.T) {
 	require.Equal(t, "a &amp; b", fallbackText("a & b"), "short text is escaped, not cut")
 }
 
-// Text an append did not deliver stays pending, so the next flush sends it.
+// Text an append did not deliver stays queued, so the next flush sends it.
 func TestFlush_FailedAppendIsResentOnNextFlush(t *testing.T) {
 	var calls atomic.Int32
 	var lastText atomic.Value
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			MarkdownText string `json:"markdown_text"`
+			Chunks []streamChunk `json:"chunks"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		w.Header().Set("Content-Type", "application/json")
@@ -300,8 +301,8 @@ func TestFlush_FailedAppendIsResentOnNextFlush(t *testing.T) {
 			_, _ = fmt.Fprint(w, `{"ok":false,"error":"fatal_error"}`)
 			return
 		}
-		if body.MarkdownText != "" {
-			lastText.Store(body.MarkdownText)
+		if md, _, _ := splitChunks(body.Chunks); md != "" {
+			lastText.Store(md)
 		}
 		_, _ = fmt.Fprint(w, `{"ok":true,"ts":"1.2"}`)
 	}))
@@ -309,13 +310,13 @@ func TestFlush_FailedAppendIsResentOnNextFlush(t *testing.T) {
 
 	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
 	w := newBatchedWriterWithClient(client, "C1", "1.1", "1.0", detailsOff, slog.Default())
-	w.pending = "hello "
+	w.queueAnswer("hello ")
 
 	require.Error(t, w.flush(t.Context()))
 	require.False(t, w.wroteContent(), "a failed flush must not mark content as written")
 
 	require.NoError(t, w.flush(t.Context()))
-	require.Equal(t, "hello ", lastText.Load(), "the pending delta is re-sent after a failed flush")
+	require.Equal(t, "hello ", lastText.Load(), "the queued delta is re-sent after a failed flush")
 	require.True(t, w.wroteContent())
 }
 
@@ -345,12 +346,13 @@ func TestFlush_PartialRolloverStillCountsAsContent(t *testing.T) {
 	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
 	w := newBatchedWriterWithClient(client, "C1", "", "1.0", detailsOff, slog.Default())
 	// One line over the per-message cap splits into two streamed messages.
-	w.pending = strings.Repeat("a", slackMarkdownBlockMax+500) + " "
+	w.queueAnswer(strings.Repeat("a", slackMarkdownBlockMax+500) + " ")
 
 	require.Error(t, w.flush(t.Context()), "the second stream fails to open")
 	require.Equal(t, int32(2), starts.Load(), "the roll-over opened a second stream")
 	require.True(t, w.wroteContent(), "the text the first message took counts as written content")
-	require.Equal(t, strings.Repeat("a", 500)+" ", w.pendingText(), "only the undelivered remainder stays pending")
+	require.Equal(t, []queuedChunk{{text: strings.Repeat("a", 500) + " ", answer: true}}, w.queue,
+		"only the undelivered remainder stays queued")
 }
 
 func TestLookupUserEmail_RetriesOnceOnRateLimit(t *testing.T) {
@@ -371,38 +373,6 @@ func TestLookupUserEmail_RetriesOnceOnRateLimit(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "user@example.com", email)
 	require.Equal(t, int32(2), calls.Load())
-}
-
-// An auto-approved read-only prompt resumes the turn in place by calling run()
-// again on the same writer. run() defers drainThreadPosts, so draining must be
-// idempotent and re-init the queue for the resumed segment; otherwise the
-// second drain re-closes a closed channel and panics the whole process.
-func TestDrainThreadPosts_IdempotentAcrossRunCycles(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{"ok":true,"ts":"1.2"}`)
-	}))
-	defer srv.Close()
-
-	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
-	w := newBatchedWriterWithClient(client, "C1", "1.1", "1.0", detailsOn, slog.Default())
-
-	// First segment queued tool activity and drained (as run()'s defer does).
-	w.enqueueThreadPost(t.Context(), threadPost{kind: postToolEntry, md: "tool one"})
-	require.NotPanics(t, w.drainThreadPosts)
-
-	// Resumed segment over the same writer: a fresh poster starts and drains
-	// without re-closing the first segment's queue. Narration shares the queue and
-	// carries its per-turn count across cycles.
-	require.NotPanics(t, func() {
-		w.enqueueThreadPost(t.Context(), threadPost{kind: postToolEntry, md: "tool two"})
-		w.renderNarration(t.Context(), "and now the second step")
-		w.drainThreadPosts()
-	})
-	require.Equal(t, 1, w.narrationsRendered)
-
-	// Draining with nothing queued stays a no-op.
-	require.NotPanics(t, w.drainThreadPosts)
 }
 
 // Agent-rendered text entering an mrkdwn section block must be escaped so
@@ -1022,7 +992,7 @@ func TestRun_TransientFinalFlushFailureDoesNotAbortTurn(t *testing.T) {
 	var delivered atomic.Value
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			MarkdownText string `json:"markdown_text"`
+			Chunks []streamChunk `json:"chunks"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		w.Header().Set("Content-Type", "application/json")
@@ -1030,8 +1000,8 @@ func TestRun_TransientFinalFlushFailureDoesNotAbortTurn(t *testing.T) {
 			_, _ = fmt.Fprint(w, `{"ok":false,"error":"fatal_error"}`)
 			return
 		}
-		if body.MarkdownText != "" {
-			delivered.Store(body.MarkdownText)
+		if md, _, _ := splitChunks(body.Chunks); md != "" {
+			delivered.Store(md)
 		}
 		_, _ = fmt.Fprint(w, `{"ok":true,"ts":"1.2"}`)
 	}))
@@ -1114,16 +1084,55 @@ type statusCall struct {
 }
 
 // streamCall is one chat.startStream / appendStream / stopStream invocation the
-// fake thread received.
+// fake thread received. markdown is the prose its markdown_text chunks carried,
+// concatenated; steps the task_update chunks, in the order they were sent;
+// chunkTypes every chunk's type, so a test can assert the interleaving.
 type streamCall struct {
 	method        string
 	ts            string
 	markdown      string
+	steps         []taskChunk
+	chunkTypes    []string
 	status        string
 	threadTS      string
 	recipientUser string
 	recipientTeam string
 	username      string
+}
+
+// taskChunk is one task_update chunk as the fake thread received it.
+type taskChunk struct {
+	id      string
+	title   string
+	status  string
+	details string
+	output  string
+}
+
+// streamChunk is the wire shape of one chunk of a streamed message.
+type streamChunk struct {
+	Type    string `json:"type"`
+	Text    string `json:"text"`
+	ID      string `json:"id"`
+	Title   string `json:"title"`
+	Status  string `json:"status"`
+	Details string `json:"details"`
+	Output  string `json:"output"`
+}
+
+// splitChunks reads a streaming call's chunks into the prose it carries, its
+// steps, and the type of every chunk in order.
+func splitChunks(chunks []streamChunk) (md string, steps []taskChunk, types []string) {
+	for _, c := range chunks {
+		types = append(types, c.Type)
+		switch c.Type {
+		case chunkTypeMarkdownText:
+			md += c.Text
+		case chunkTypeTaskUpdate:
+			steps = append(steps, taskChunk{id: c.ID, title: c.Title, status: c.Status, details: c.Details, output: c.Output})
+		}
+	}
+	return md, steps, types
 }
 
 // fakeThread models a Slack thread: chat.postMessage appends a message with a
@@ -1204,7 +1213,7 @@ func (f *fakeThread) handler() http.HandlerFunc {
 			Status        string            `json:"status"`
 			Title         string            `json:"title"`
 			Initiator     string            `json:"initiator_user_id"`
-			MarkdownText  string            `json:"markdown_text"`
+			Chunks        []streamChunk     `json:"chunks"`
 			SessionStatus string            `json:"session_status"`
 			RecipientUser string            `json:"recipient_user_id"`
 			RecipientTeam string            `json:"recipient_team_id"`
@@ -1212,6 +1221,7 @@ func (f *fakeThread) handler() http.HandlerFunc {
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		texts := blockTexts(body.Blocks)
+		chunkMD, chunkSteps, chunkTypes := splitChunks(body.Chunks)
 		ts := body.TS
 		statusErr := ""
 		statusHTTP := 0
@@ -1246,15 +1256,17 @@ func (f *fakeThread) handler() http.HandlerFunc {
 			ts = "msg-" + strconv.Itoa(f.nextTS)
 			f.order = append(f.order, ts)
 			f.streaming[ts] = true
-			f.messages[ts] = capturedMessage{body.MarkdownText}
+			f.messages[ts] = capturedMessage{chunkMD}
 			f.history = append(f.history, f.messages[ts])
 			f.streamCalls = append(f.streamCalls, streamCall{
-				method: method, ts: ts, markdown: body.MarkdownText, threadTS: body.ThreadTS,
+				method: method, ts: ts, markdown: chunkMD, steps: chunkSteps, chunkTypes: chunkTypes,
+				threadTS:      body.ThreadTS,
 				recipientUser: body.RecipientUser, recipientTeam: body.RecipientTeam, username: body.Username,
 			})
 		case methodChatAppendStream, methodChatStopStream:
 			f.streamCalls = append(f.streamCalls, streamCall{
-				method: method, ts: ts, markdown: body.MarkdownText, status: body.SessionStatus,
+				method: method, ts: ts, markdown: chunkMD, steps: chunkSteps, chunkTypes: chunkTypes,
+				status: body.SessionStatus,
 			})
 			switch {
 			case f.stoppedByUser:
@@ -1264,8 +1276,8 @@ func (f *fakeThread) handler() http.HandlerFunc {
 			case !f.streaming[ts]:
 				statusErr = errCodeNotInStreamingState
 			default:
-				if body.MarkdownText != "" {
-					f.messages[ts] = capturedMessage{f.messages[ts][0] + body.MarkdownText}
+				if chunkMD != "" {
+					f.messages[ts] = capturedMessage{f.messages[ts][0] + chunkMD}
 					f.history = append(f.history, f.messages[ts])
 				}
 				if method == methodChatStopStream {
@@ -1320,6 +1332,45 @@ func (f *fakeThread) streamMethods() []string {
 	return out
 }
 
+// steps returns every task_update chunk the streaming calls carried, in order.
+func (f *fakeThread) steps() []taskChunk {
+	var out []taskChunk
+	for _, c := range f.streams() {
+		out = append(out, c.steps...)
+	}
+	return out
+}
+
+// streamedText concatenates the prose of every streaming call.
+func (f *fakeThread) streamedText() string {
+	var b strings.Builder
+	for _, c := range f.streams() {
+		b.WriteString(c.markdown)
+	}
+	return b.String()
+}
+
+// chunkOrder returns the type of every chunk the streaming calls carried, in
+// order, so a test can assert how prose and steps interleave.
+func (f *fakeThread) chunkOrder() []string {
+	out := []string{}
+	for _, c := range f.streams() {
+		out = append(out, c.chunkTypes...)
+	}
+	return out
+}
+
+// narrationChunks counts the markdown_text chunks the streaming calls carried.
+func (f *fakeThread) narrationChunks() int {
+	n := 0
+	for _, typ := range f.chunkOrder() {
+		if typ == chunkTypeMarkdownText {
+			n++
+		}
+	}
+	return n
+}
+
 // stopStatuses returns the session_status of every chat.stopStream, in order.
 func (f *fakeThread) stopStatuses() []string {
 	out := []string{}
@@ -1347,21 +1398,6 @@ func (f *fakeThread) statuses() []string {
 		out = append(out, c.status)
 	}
 	return out
-}
-
-// sawText reports whether any message revision (post or update) ever carried a
-// block whose text contains sub.
-func (f *fakeThread) sawText(sub string) bool {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	for _, revision := range f.history {
-		for _, text := range revision {
-			if strings.Contains(text, sub) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // finalMessages returns each thread message's final content, in post order.
@@ -1418,12 +1454,12 @@ func blockTexts(blocks []json.RawMessage) capturedMessage {
 	return out
 }
 
-// capturePosts drives run() over deltas (plus a terminal Done) against a fake
-// Slack thread and returns its final messages in order, together with the
-// writer. headTS empty is reactions mode, where the main reply is posted lazily
-// on the first flush; a non-empty headTS is text mode, where it is updated in
-// place.
-func capturePosts(t *testing.T, details detailsLevel, headTS string, deltas ...channels.OutboundDelta) ([]capturedMessage, *batchedWriter) {
+// captureStream drives run() over deltas (plus a terminal Done) against a fake
+// Slack thread and hands back the thread, so a test can read the chunks the
+// reply was streamed with, together with the writer. headTS empty is reactions
+// mode; a non-empty headTS is text mode, where the progress placeholder waits
+// to be superseded.
+func captureStream(t *testing.T, details detailsLevel, headTS string, deltas ...channels.OutboundDelta) (*fakeThread, *batchedWriter) {
 	t.Helper()
 	ft := &fakeThread{}
 	srv := httptest.NewServer(ft.handler())
@@ -1439,19 +1475,35 @@ func capturePosts(t *testing.T, details detailsLevel, headTS string, deltas ...c
 	close(ch)
 	require.NoError(t, w.run(t.Context(), ch))
 
-	return ft.finalMessages(), w
+	return ft, w
 }
 
-// captureToolPostBlocks returns every rendered tool entry across the thread's
-// activity messages, in stream order, in text mode.
-func captureToolPostBlocks(t *testing.T, details detailsLevel, deltas ...channels.OutboundDelta) []string {
+// captureToolLog returns every entry the turn retained in the thread's tool
+// log — the rendering the "Inspect agent steps" shortcut shows — in stream
+// order.
+func captureToolLog(t *testing.T, details detailsLevel, deltas ...channels.OutboundDelta) []string {
 	t.Helper()
-	msgs, _ := capturePosts(t, details, "1.1", deltas...)
-	var entries []string
-	for _, m := range msgs {
-		entries = append(entries, m...)
+	ft := &fakeThread{}
+	srv := httptest.NewServer(ft.handler())
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{Logger: slog.Default()}
+	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "C1", "1.1", "T1", details, slog.Default())
+	w.adapter = a
+	ch := make(chan channels.OutboundDelta, len(deltas)+1)
+	for _, d := range deltas {
+		ch <- d
 	}
-	return entries
+	ch <- channels.OutboundDelta{Done: true}
+	close(ch)
+	require.NoError(t, w.run(t.Context(), ch))
+
+	entries, _ := a.toolLogSnapshot("T1")
+	out := make([]string, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, e.md)
+	}
+	return out
 }
 
 // runSurfaceWriter drives run() over deltas against ft on the given channel
@@ -1478,6 +1530,17 @@ func runSurfaceWriter(t *testing.T, ft *fakeThread, channel string, deltas ...ch
 
 func doneDelta() channels.OutboundDelta { return channels.OutboundDelta{Done: true} }
 
+// queuedText is the prose still waiting to be sent.
+func (w *batchedWriter) queuedText() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	var b strings.Builder
+	for _, it := range w.queue {
+		b.WriteString(it.text)
+	}
+	return b.String()
+}
+
 func narrationDelta(text string) channels.OutboundDelta {
 	return channels.OutboundDelta{Kind: channels.DeltaNarration, Content: text}
 }
@@ -1489,272 +1552,229 @@ func toolCallDelta(name string) channels.OutboundDelta {
 	}
 }
 
-// The agent's narration reads in order with the status ticker it introduces,
-// and the answer still lands last (klaus-gateway#197). The ticker is
-// per-segment: narration closes the live ticker into its receipt at its
-// position — counting only that segment's steps — and a short narration folds
-// into the NEXT segment's status message, so each narrate-then-call group is
-// one compact message and the thread reads in stream order.
-func TestRenderNarration_PerSegmentReceiptsInStreamOrder(t *testing.T) {
-	msgs, w := capturePosts(t, detailsOn, "",
+func toolCallDeltaWith(name, callID string, args map[string]any) channels.OutboundDelta {
+	return channels.OutboundDelta{
+		Kind: channels.DeltaToolActivity,
+		Tool: &channels.ToolActivity{Kind: channels.ToolCall, Name: name, CallID: callID, Args: args},
+	}
+}
+
+func toolResultDelta(name, callID string, resp map[string]any) channels.OutboundDelta {
+	return channels.OutboundDelta{
+		Kind: channels.DeltaToolActivity,
+		Tool: &channels.ToolActivity{Kind: channels.ToolResult, Name: name, CallID: callID, Response: resp},
+	}
+}
+
+// The turn is one message, in the order the agent produced it: the narration
+// that introduces a tool call, the steps themselves, and the answer, all as
+// chunks of the same streamed reply (klaus-gateway#197, #314).
+func TestStream_NarrationStepsAndAnswerShareOneMessage(t *testing.T) {
+	ft, w := captureStream(t, detailsOn, "",
 		narrationDelta("Let me pull the HelmRelease from both clusters."),
 		toolCallDelta("x_kubernetes_get"),
-		toolCallDelta("x_kubernetes_get"),
 		narrationDelta("Both share the same chart version."),
-		toolCallDelta("x_kubernetes_get"),
+		toolCallDelta("x_kubernetes_diff"),
 		channels.OutboundDelta{Kind: channels.DeltaText, Content: "here is the diff"},
 	)
 
-	require.Len(t, msgs, 3)
-	require.Equal(t, capturedMessage{
-		"Let me pull the HelmRelease from both clusters.",
-		"🛠️ 2 steps · x_kubernetes_get ×2",
-	}, msgs[0], "the first segment's receipt counts only the steps before the next narration")
-	require.Equal(t, capturedMessage{
-		"Both share the same chart version.",
-		"🛠️ 1 step · x_kubernetes_get",
-	}, msgs[1], "mid-turn narration closes the segment and folds into the next one")
-	require.Equal(t, capturedMessage{"here is the diff"}, msgs[2], "the answer is the turn's last message")
+	require.Equal(t, []capturedMessage{{
+		"Let me pull the HelmRelease from both clusters." +
+			"Both share the same chart version." +
+			"here is the diff",
+	}}, ft.finalMessages(), "one message carries the whole turn")
+	require.Equal(t, []string{
+		chunkTypeMarkdownText, chunkTypeTaskUpdate,
+		chunkTypeMarkdownText, chunkTypeTaskUpdate,
+		chunkTypeMarkdownText,
+	}, ft.chunkOrder(), "the chunks arrive in the order the deltas came")
 	require.True(t, w.wroteContent())
 }
 
-// A full-weight (non-foldable) narration between tool batches collapses the
-// live ticker into its receipt AT ITS POSITION, and the next tool call opens a
-// fresh ticker message below the narration — the thread reads like the stream:
-// receipt → narration → receipt → answer.
-func TestToolStatus_OwnMessageNarrationSplitsSegments(t *testing.T) {
-	msgs, _ := capturePosts(t, detailsOn, "",
-		toolCallDelta("x_kubernetes_get"),
-		toolCallDelta("x_kubernetes_list"),
-		narrationDelta("one\ntwo\nthree"), // multi-line keeps its own message
-		toolCallDelta("skills"),
-		channels.OutboundDelta{Kind: channels.DeltaText, Content: "the answer"},
+// The stream opens on the FIRST thing the turn produces. Tools usually run
+// before any answer text, so a stream that waited for the text would leave the
+// steps nowhere to live.
+func TestStream_OpensOnTheFirstToolCall(t *testing.T) {
+	ft, _ := captureStream(t, detailsOn, "",
+		toolCallDelta("filter_tools"),
+		channels.OutboundDelta{Kind: channels.DeltaText, Content: "done"},
 	)
 
-	require.Len(t, msgs, 4)
-	require.Equal(t, capturedMessage{"🛠️ 2 steps · x_kubernetes_get · x_kubernetes_list"}, msgs[0],
-		"the first segment's receipt stays above the narration that closed it")
-	require.Equal(t, capturedMessage{"one\ntwo\nthree"}, msgs[1])
-	require.Equal(t, capturedMessage{"🛠️ 1 step · skills"}, msgs[2],
-		"the next segment opens a fresh status message below the narration")
-	require.Equal(t, capturedMessage{"the answer"}, msgs[3])
+	require.Equal(t, []string{methodChatStartStream, methodChatStopStream}, ft.streamMethods())
+	require.Equal(t, []string{chunkTypeTaskUpdate}, ft.streams()[0].chunkTypes,
+		"the step opens the message; the answer follows on the stop")
+	require.Equal(t, "done", ft.streamedText())
 }
 
-// Each segment's receipt lists tools in ITS OWN first-use order and counts,
-// independent of earlier segments.
-func TestToolStatus_SegmentReceiptsUseSegmentLocalOrderAndCounts(t *testing.T) {
-	msgs, _ := capturePosts(t, detailsOn, "",
-		toolCallDelta("alpha"),
-		toolCallDelta("beta"),
-		narrationDelta("one\ntwo\nthree"),
-		toolCallDelta("beta"),
-		toolCallDelta("beta"),
-		toolCallDelta("alpha"),
+// A narration passage opens the stream just as a tool call does, so prose the
+// agent writes before it calls anything still lands in the reply.
+func TestStream_OpensOnTheFirstNarration(t *testing.T) {
+	ft, _ := captureStream(t, detailsOn, "", narrationDelta("Let me look that up."))
+
+	require.Equal(t, []string{methodChatStartStream, methodChatStopStream}, ft.streamMethods())
+	require.Equal(t, "Let me look that up.", ft.streamedText())
+}
+
+// A tool call opens a step as in_progress; its result closes the SAME step —
+// same id, so Slack updates the card instead of listing the call twice.
+func TestSteps_CallThenResultShareOneID(t *testing.T) {
+	ft, _ := captureStream(t, detailsOn, "",
+		toolCallDeltaWith("x_kubernetes_list", "c1", map[string]any{"kind": "pods"}),
+		toolResultDelta("x_kubernetes_list", "c1", map[string]any{"output": "3 pods"}),
 	)
 
-	require.Len(t, msgs, 3)
-	require.Equal(t, capturedMessage{"🛠️ 2 steps · alpha · beta"}, msgs[0])
-	require.Equal(t, capturedMessage{"one\ntwo\nthree"}, msgs[1])
-	require.Equal(t, capturedMessage{"🛠️ 3 steps · beta ×2 · alpha"}, msgs[2],
-		"the second segment counts and orders its own calls only")
+	require.Equal(t, []taskChunk{
+		{id: "step-1", title: "Kubernetes list", status: stepInProgress},
+		{id: "step-1", title: "Kubernetes list", status: stepComplete},
+	}, ft.steps())
 }
 
-// A turn ending mid-segment (tool calls after the last narration, then done)
-// still collapses the open segment into its receipt before the answer.
-func TestToolStatus_TurnEndingMidSegmentCollapsesLastSegment(t *testing.T) {
-	msgs, _ := capturePosts(t, detailsOn, "",
-		toolCallDelta("alpha"),
-		narrationDelta("one\ntwo\nthree"),
-		toolCallDelta("beta"),
+// A result the tool reported as an error closes its step as error, whatever the
+// details level.
+func TestSteps_ErrorResultClosesTheStepAsError(t *testing.T) {
+	ft, _ := captureStream(t, detailsOn, "",
+		toolCallDeltaWith("kube_get", "c1", nil),
+		toolResultDelta("kube_get", "c1", map[string]any{
+			"content": []any{map[string]any{"type": "text", "text": "boom"}},
+			"isError": true,
+		}),
 	)
 
-	require.Len(t, msgs, 3)
-	require.Equal(t, capturedMessage{"🛠️ 1 step · alpha"}, msgs[0])
-	require.Equal(t, capturedMessage{"one\ntwo\nthree"}, msgs[1])
-	require.Equal(t, capturedMessage{"🛠️ 1 step · beta"}, msgs[2],
-		"the open segment collapses at turn end")
+	require.Equal(t, []taskChunk{
+		{id: "step-1", title: "Kube get", status: stepInProgress},
+		{id: "step-1", title: "Kube get", status: stepError},
+	}, ft.steps())
 }
 
-// Consecutive foldable narrations with no tool calls between them share one
-// status message instead of each opening a segment: an empty segment has no
-// receipt to collapse.
-func TestToolStatus_ConsecutiveFoldedNarrationsShareOneMessage(t *testing.T) {
-	msgs, _ := capturePosts(t, detailsOn, "",
-		toolCallDelta("alpha"),
-		narrationDelta("First thought."),
-		narrationDelta("Second thought."),
-		toolCallDelta("beta"),
+// Step ids are the turn's call ordinal, so a process continuing the turn after
+// a restart knows which ids are already on the reply.
+func TestSteps_IDsAreTheTurnsCallOrdinal(t *testing.T) {
+	ft, w := captureStream(t, detailsOn, "",
+		toolCallDeltaWith("alpha", "c1", nil),
+		toolCallDeltaWith("beta", "c2", nil),
+		toolResultDelta("alpha", "c1", map[string]any{"output": "ok"}),
+		toolCallDeltaWith("gamma", "c3", nil),
 	)
 
-	require.Len(t, msgs, 2)
-	require.Equal(t, capturedMessage{"🛠️ 1 step · alpha"}, msgs[0])
-	require.Equal(t, capturedMessage{
-		"First thought.",
-		"Second thought.",
-		"🛠️ 1 step · beta",
-	}, msgs[1], "a stepless narration does not close the fresh segment")
+	var ids []string
+	for _, s := range ft.steps() {
+		ids = append(ids, s.id)
+	}
+	require.Equal(t, []string{"step-1", "step-2", "step-1", "step-3"}, ids)
+	require.Equal(t, 3, w.stepsIssued)
 }
 
-// The typical turn — one short narration, a few tool calls, the answer —
-// renders as exactly one status message plus the answer: the narration block
-// kept above the collapsed receipt, with no full-weight narration message.
-func TestNarrationFold_SingleStatusMessagePlusAnswer(t *testing.T) {
-	msgs, _ := capturePosts(t, detailsOn, "",
-		narrationDelta("Sure! I'll call the skills tool right away."),
-		toolCallDelta("skills"),
-		toolCallDelta("skills"),
-		toolCallDelta("skills"),
-		channels.OutboundDelta{Kind: channels.DeltaText, Content: "the answer"},
+// A result whose call was never seen has no step to close, so nothing is sent
+// for it.
+func TestSteps_OrphanResultIsDropped(t *testing.T) {
+	ft, _ := captureStream(t, detailsOn, "",
+		toolResultDelta("kube_get", "unknown", map[string]any{"output": "ok"}),
+		channels.OutboundDelta{Kind: channels.DeltaText, Content: "done"},
 	)
 
-	require.Len(t, msgs, 2, "one status message plus the answer")
-	require.Equal(t, capturedMessage{
-		"Sure! I'll call the skills tool right away.",
-		"🛠️ 3 steps · skills ×3",
-	}, msgs[0])
-	require.Equal(t, capturedMessage{"the answer"}, msgs[1])
+	require.Empty(t, ft.steps())
 }
 
-// Folding is only for narration that is safely short: long prose keeps the
-// own-message rendering (a markdown block, not a muted context block).
-func TestNarrationFold_LongNarrationKeepsOwnMessage(t *testing.T) {
-	long := strings.TrimSpace(strings.Repeat("I will inspect the cluster state next. ", 10)) // > foldedNarrationMaxChars
-	msgs, _ := capturePosts(t, detailsOn, "",
-		narrationDelta(long),
-		toolCallDelta("skills"),
+// /details off is the private mode: no step is rendered and nothing is
+// recorded, but the agent's own prose still lands.
+func TestSteps_DetailsOffRendersNoSteps(t *testing.T) {
+	ft, _ := captureStream(t, detailsOff, "",
+		narrationDelta("Let me look that up."),
+		toolCallDeltaWith("x_kubernetes_get", "c1", map[string]any{"kind": "pods"}),
+		toolResultDelta("x_kubernetes_get", "c1", map[string]any{"output": "ok"}),
 	)
 
-	require.Len(t, msgs, 2)
-	require.Equal(t, capturedMessage{long}, msgs[0])
-	require.Equal(t, capturedMessage{"🛠️ 1 step · skills"}, msgs[1])
+	require.Empty(t, ft.steps())
+	require.Equal(t, "Let me look that up.", ft.streamedText())
 }
 
-// A narration over the fold's line budget keeps its own message even when it
-// is short by character count.
-func TestNarrationFold_MultilineNarrationKeepsOwnMessage(t *testing.T) {
-	msgs, _ := capturePosts(t, detailsOn, "",
-		narrationDelta("one\ntwo\nthree"),
-		toolCallDelta("skills"),
+// /details on is titles only: no payload reaches the step card.
+func TestSteps_DetailsOnIsTitlesOnly(t *testing.T) {
+	ft, _ := captureStream(t, detailsOn, "",
+		toolCallDeltaWith("x_kubernetes_get", "c1", map[string]any{"kind": "pods"}),
+		toolResultDelta("x_kubernetes_get", "c1", map[string]any{"output": "3 pods"}),
 	)
 
-	require.Len(t, msgs, 2)
-	require.Equal(t, capturedMessage{"one\ntwo\nthree"}, msgs[0])
-	require.Equal(t, capturedMessage{"🛠️ 1 step · skills"}, msgs[1])
+	for _, s := range ft.steps() {
+		require.Empty(t, s.details, "no arguments at /details on")
+		require.Empty(t, s.output, "no result preview at /details on")
+	}
 }
 
-// A fallback (own-message) narration posted before any tool call closes the
-// ticker-less status message, so the ticker opens a fresh one below it and the
-// thread keeps reading in stream order.
-func TestNarrationFold_FallbackBeforeTickerKeepsStreamOrder(t *testing.T) {
-	msgs, _ := capturePosts(t, detailsOn, "",
-		narrationDelta("Short intro."),
-		narrationDelta("one\ntwo\nthree"),
-		toolCallDelta("skills"),
+// /details full carries the raw tool name and its arguments as the step's
+// details, and the result preview as its output.
+func TestSteps_DetailsFullCarriesDetailsAndOutput(t *testing.T) {
+	ft, _ := captureStream(t, detailsFull, "",
+		toolCallDeltaWith("x_kubernetes_get", "c1", map[string]any{"kind": "pods"}),
+		toolResultDelta("x_kubernetes_get", "c1", map[string]any{"output": "3 pods running"}),
 	)
 
-	require.Len(t, msgs, 3)
-	require.Equal(t, capturedMessage{"Short intro."}, msgs[0], "the folded narration stays in the first status message")
-	require.Equal(t, capturedMessage{"one\ntwo\nthree"}, msgs[1])
-	require.Equal(t, capturedMessage{"🛠️ 1 step · skills"}, msgs[2],
-		"the ticker opens below the fallback narration, in stream order")
+	steps := ft.steps()
+	require.Len(t, steps, 2)
+	require.Contains(t, steps[0].details, "x_kubernetes_get", "the raw name stays available")
+	require.Contains(t, steps[0].details, `"kind": "pods"`)
+	require.Empty(t, steps[0].output, "a call has no result yet")
+	require.Equal(t, steps[0].details, steps[1].details, "the closing update keeps the details on screen")
+	require.Equal(t, "3 pods running", steps[1].output)
 }
 
-// Folded narration enters an mrkdwn context block, so mrkdwn control sequences
-// must arrive escaped: a quoted <!channel> cannot notify from the status
-// message any more than from a tool name. (Own-message narration renders as a
-// Block Kit markdown block, which does not parse these sequences.)
-func TestNarrationFold_EscapesMrkdwn(t *testing.T) {
-	msgs, _ := capturePosts(t, detailsOn, "",
-		narrationDelta("Pinging <!channel> & <@U1>"),
-		toolCallDelta("skills"),
+// Slack caps a task_update chunk's fields, so the payload previews are cut to
+// it however long the tool was.
+func TestSteps_DetailsAndOutputAreTruncated(t *testing.T) {
+	ft, _ := captureStream(t, detailsFull, "",
+		toolCallDeltaWith("kube_get", "c1", map[string]any{"filter": strings.Repeat("a", 2000)}),
+		toolResultDelta("kube_get", "c1", map[string]any{"output": strings.Repeat("b", 2000)}),
 	)
 
-	require.Len(t, msgs, 1)
-	require.Equal(t, capturedMessage{
-		"Pinging &lt;!channel&gt; &amp; &lt;@U1&gt;",
-		"🛠️ 1 step · skills",
-	}, msgs[0])
+	steps := ft.steps()
+	require.Len(t, steps, 2)
+	require.Len(t, []rune(steps[0].details), stepFieldMax)
+	require.Len(t, []rune(steps[1].output), stepFieldMax)
 }
 
-// Post-login-challenge narration is retractable, and retraction deletes whole
-// messages by ts — it cannot delete one block inside the shared status message
-// — so it must keep the own-message rendering however short it is.
-func TestNarrationFold_RetractableKeepsOwnMessageAndRetracts(t *testing.T) {
-	var mu sync.Mutex
-	var deleted []string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			TS string `json:"ts"`
-		}
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		if path.Base(r.URL.Path) == "chat.delete" {
-			mu.Lock()
-			deleted = append(deleted, body.TS)
-			mu.Unlock()
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{"ok":true,"ts":"narr-1"}`)
-	}))
+// A step title is agent- and MCP-controlled text: mrkdwn control sequences must
+// arrive escaped, and the title must stay one line.
+func TestSteps_TitleEscapesMrkdwnAndFlattens(t *testing.T) {
+	ft, _ := captureStream(t, detailsOn, "", toolCallDelta("ping <!channel> &\nnow"))
+
+	require.Equal(t, []taskChunk{{id: "step-1", title: "Ping &lt;!channel&gt; &amp; now", status: stepInProgress}}, ft.steps())
+}
+
+// Narration counts toward the message's character cap but never toward the
+// answer length the delivery record carries: a process continuing the turn
+// replays the answer, not the narration.
+func TestNarration_AdvancesTheMessageNotTheAnswerLength(t *testing.T) {
+	const narration = "Let me look that up."
+	const answer = "three pods"
+	ft := &fakeThread{}
+	srv := httptest.NewServer(ft.handler())
 	t.Cleanup(srv.Close)
 
 	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "C1", "", "1.0", detailsOn, slog.Default())
-	w.loginURLs = []string{"https://auth.example/authorize?x=1"} // challenge seen
-	w.renderNarration(t.Context(), "Sign in, then tell me once you are done.")
-	w.drainThreadPosts()
+	var records []store.Delivered
+	w.onDelivered = func(_ context.Context, d store.Delivered) { records = append(records, d) }
 
-	require.Equal(t, []string{"narr-1"}, w.narrationTS,
-		"short post-challenge narration keeps its own message so it stays retractable")
-	w.retractRendered(t.Context())
-	mu.Lock()
-	defer mu.Unlock()
-	require.Contains(t, deleted, "narr-1")
-}
+	w.renderNarration(t.Context(), narration)
+	require.NoError(t, w.flush(t.Context()))
+	require.Equal(t, store.Delivered{StreamTS: "msg-1", StreamLen: len(narration)}, records[len(records)-1],
+		"the narration advances the open message, not the answer length")
 
-// Narration never folds at detailsFull: there is no status ticker there, and
-// narration separates the aggregated tool-activity segments instead.
-func TestNarrationFold_DetailsFullKeepsOwnMessage(t *testing.T) {
-	msgs, _ := capturePosts(t, detailsFull, "",
-		narrationDelta("Short intro."),
-		toolCallDelta("skills"),
-	)
-
-	require.Len(t, msgs, 2)
-	require.Equal(t, capturedMessage{"Short intro."}, msgs[0])
-	require.Contains(t, msgs[1][0], "skills")
-}
-
-func TestFoldableNarration(t *testing.T) {
-	require.True(t, foldableNarration("one line"))
-	require.True(t, foldableNarration("one\ntwo"))
-	require.False(t, foldableNarration("one\ntwo\nthree"), "over the line budget")
-	require.False(t, foldableNarration(strings.Repeat("x", foldedNarrationMaxChars+1)), "over the char budget")
-	require.True(t, foldableNarration(strings.Repeat("ä", foldedNarrationMaxChars)), "the budget counts runes, not bytes")
+	w.queueAnswer(answer + " ")
+	require.NoError(t, w.flush(t.Context()))
+	require.Equal(t, len(answer)+1, records[len(records)-1].TextLen, "only the answer counts as replayable text")
+	require.Equal(t, len(narration)+len(answer)+1, records[len(records)-1].StreamLen)
 }
 
 // Narration is the agent talking, not tool transparency, so /details off mutes
-// the tool post and keeps the prose.
+// the steps and keeps the prose.
 func TestRenderNarration_ShownWithDetailsOff(t *testing.T) {
-	msgs, _ := capturePosts(t, detailsOff, "",
+	ft, _ := captureStream(t, detailsOff, "",
 		narrationDelta("Let me look that up."),
 		toolCallDelta("x_kubernetes_get"),
 	)
 
-	require.Len(t, msgs, 1)
-	require.Equal(t, capturedMessage{"Let me look that up."}, msgs[0])
-}
-
-// Narration must stay out of the main reply buffer: the reply is posted lazily on
-// the first flush, and seeding it early would put the answer above the narration
-// and tool posts it followed. It also must not count as delivered content, or a
-// turn that only narrated would leave its "thinking" placeholder in place.
-func TestRenderNarration_DoesNotTouchMainReply(t *testing.T) {
-	msgs, w := capturePosts(t, detailsOn, "", narrationDelta("Let me look that up."))
-
-	require.Len(t, msgs, 1)
-	require.Equal(t, capturedMessage{"Let me look that up."}, msgs[0],
-		"a folded narration still renders when no tool call ever follows")
-	require.Empty(t, w.streamMessages, "no reply stream was opened")
-	require.False(t, w.wroteContent())
+	require.Equal(t, "Let me look that up.", ft.streamedText())
+	require.Empty(t, ft.steps())
 }
 
 // Dropping the agent's prose without saying so is the bug this rendering fixes,
@@ -1762,24 +1782,25 @@ func TestRenderNarration_DoesNotTouchMainReply(t *testing.T) {
 func TestRenderNarration_CapsWithOneNote(t *testing.T) {
 	deltas := make([]channels.OutboundDelta, 0, maxNarrationMessages+5)
 	for i := range maxNarrationMessages + 5 {
-		deltas = append(deltas, narrationDelta(fmt.Sprintf("step %d", i)))
+		deltas = append(deltas, narrationDelta(fmt.Sprintf("step %d.", i)))
 	}
-	deltas = append(deltas, toolCallDelta("x_kubernetes_get"))
-	msgs, _ := capturePosts(t, detailsOn, "", deltas...)
+	ft, _ := captureStream(t, detailsOn, "", deltas...)
 
-	require.Len(t, msgs, 3, "the folded narration, its note, and the tool receipt")
-	require.Len(t, msgs[0], maxNarrationMessages, "short narration folds and shares the per-turn budget")
-	require.Equal(t, capturedMessage{narrationLimitNote}, msgs[1], "the note stays a visible message of its own")
-	require.Contains(t, msgs[2][0], "x_kubernetes_get", "tool activity keeps its own budget")
+	text := ft.streamedText()
+	require.Contains(t, text, "step 0.")
+	require.Contains(t, text, fmt.Sprintf("step %d.", maxNarrationMessages-1))
+	require.NotContains(t, text, fmt.Sprintf("step %d.", maxNarrationMessages))
+	require.True(t, strings.HasSuffix(text, narrationLimitNote), "the note says the rest is hidden: %q", text)
 }
 
-// Slack rejects a markdown block over slackMarkdownBlockMax outright, so an
-// outsized narration must be split rather than dropped.
+// Slack rejects a chunk over slackMarkdownBlockMax outright, so an outsized
+// narration must be split rather than dropped.
 func TestRenderNarration_SplitsOversizedNarration(t *testing.T) {
 	long := strings.Repeat("plan step. ", slackMarkdownBlockMax/5) // ~2.4x the block cap
-	msgs, _ := capturePosts(t, detailsOn, "", narrationDelta(long))
+	ft, _ := captureStream(t, detailsOn, "", narrationDelta(long))
 
-	require.Len(t, msgs, 3)
+	msgs := ft.finalMessages()
+	require.Len(t, msgs, 3, "the narration rolls over into further streamed messages")
 	var joined strings.Builder
 	for _, m := range msgs {
 		require.Len(t, m, 1)
@@ -1789,145 +1810,58 @@ func TestRenderNarration_SplitsOversizedNarration(t *testing.T) {
 	require.Equal(t, len(strings.TrimSpace(long)), len(strings.TrimSpace(joined.String())), "no prose is dropped")
 }
 
-// Chunks share the per-turn budget, so one enormous narration cannot flood the
-// thread and still ends in the visible note.
+// Chunks share the per-turn budget, so one enormous narration cannot bury the
+// answer and still ends in the visible note.
 func TestRenderNarration_SplitChunksShareTheBudget(t *testing.T) {
 	long := strings.Repeat("plan step. ", slackMarkdownBlockMax) // far past the cap
-	msgs, _ := capturePosts(t, detailsOn, "", narrationDelta(long))
+	ft, _ := captureStream(t, detailsOn, "", narrationDelta(long))
 
-	require.Len(t, msgs, maxNarrationMessages+1)
-	require.Equal(t, capturedMessage{narrationLimitNote}, msgs[maxNarrationMessages])
+	require.Equal(t, maxNarrationMessages+1, ft.narrationChunks())
+	require.True(t, strings.HasSuffix(ft.streamedText(), narrationLimitNote))
 }
 
 // A single-use login link must not be duplicated next to the Connect button, in
-// narration any more than in the main reply. Narration that is nothing but the
-// link posts nothing and keeps its budget.
+// narration any more than in the answer. Narration that is nothing but the link
+// sends nothing and keeps its budget.
 func TestRenderNarration_ScrubsLoginURL(t *testing.T) {
 	const loginURL = "https://auth.example/authorize?client_id=x"
-	var posted []string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			Blocks []struct {
-				Text string `json:"text"`
-			} `json:"blocks"`
-		}
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		if len(body.Blocks) > 0 {
-			posted = append(posted, body.Blocks[0].Text)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{"ok":true,"ts":"1"}`)
-	}))
+	ft := &fakeThread{}
+	srv := httptest.NewServer(ft.handler())
 	t.Cleanup(srv.Close)
 
 	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "C1", "", "1.0", detailsOn, slog.Default())
 	w.loginURLs = []string{loginURL}
 	w.renderNarration(t.Context(), loginURL)
 	w.renderNarration(t.Context(), "Sign in here:\n"+loginURL+"\nThen tell me once you are done.")
-	w.drainThreadPosts()
+	require.NoError(t, w.closeStream(t.Context()))
 
 	require.Equal(t, 1, w.narrationsRendered, "a link-only narration keeps its budget")
-	require.Len(t, posted, 1)
-	require.NotContains(t, posted[0], "auth.example")
-	require.NotContains(t, posted[0], "Sign in here:")
-	require.Contains(t, posted[0], "Then tell me once you are done.")
+	text := ft.streamedText()
+	require.NotContains(t, text, "auth.example")
+	require.NotContains(t, text, "Sign in here:")
+	require.Contains(t, text, "Then tell me once you are done.")
 }
 
-// The retract exists for sign-in prose the Connect button contradicts. Narration
-// from before the challenge explains tool posts that stay, so only what follows
-// the challenge is marked for retraction.
-func TestRenderNarration_OnlyPostChallengeNarrationIsRetractable(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{"ok":true,"ts":"1"}`)
-	}))
+// The sign-in prose the Connect button contradicts lives in the reply now, so
+// retracting the reply retracts it.
+func TestRetractRendered_TakesTheNarrationWithTheReply(t *testing.T) {
+	ft := &fakeThread{}
+	srv := httptest.NewServer(ft.handler())
 	t.Cleanup(srv.Close)
 
-	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "C1", "", "1.0", detailsOn, slog.Default())
-	w.renderNarration(t.Context(), "Let me pull the HelmRelease from both clusters.")
-	w.loginURLs = append(w.loginURLs, "https://auth.example/authorize?x=1") // challenge seen
-	w.renderNarration(t.Context(), "You need to sign in before I can continue.")
-	w.drainThreadPosts()
-
-	require.Len(t, w.narrationTS, 1, "only the sign-in narration is retractable")
-}
-
-// Narration that followed the challenge is the same sign-in prose the retract
-// exists for, so it goes with the reply when the button takes the turn over.
-func TestRetractRendered_DeletesNarrationPosts(t *testing.T) {
-	var deleted []string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "chat.delete") {
-			var body struct {
-				TS string `json:"ts"`
-			}
-			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
-			deleted = append(deleted, body.TS)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"ok":true}`))
-	}))
-	t.Cleanup(srv.Close)
-
-	w := newBatchedWriterWithClient(&slackAPIClient{baseURL: srv.URL}, "C1", "", "T1", detailsOff, nil)
-	w.streamMessages = []string{"stream-1"}
-	w.narrationTS = []string{"narr-1", "narr-2"}
+	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "C1", "", "1.0", detailsOff, slog.Default())
+	w.renderNarration(t.Context(), "Sign in, then tell me once you are done.")
+	require.NoError(t, w.flush(t.Context()))
+	require.Equal(t, "Sign in, then tell me once you are done.", ft.streamedText())
 
 	w.retractRendered(t.Context())
 
-	require.ElementsMatch(t, []string{"stream-1", "narr-1", "narr-2"}, deleted)
-	require.Empty(t, w.narrationTS)
-}
-
-// The queued in-thread posts all precede the reply, so the terminal flush drains
-// the poster before posting it — otherwise a slow Slack API leaves the answer
-// above the narration that led to it.
-func TestFinalFlush_DrainsThreadPostsBeforeReply(t *testing.T) {
-	var mu sync.Mutex
-	var posted []string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			MarkdownText string `json:"markdown_text"`
-			Blocks       []struct {
-				Text string `json:"text"`
-			} `json:"blocks"`
-		}
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		if len(body.Blocks) > 0 && strings.HasPrefix(body.Blocks[0].Text, "slow") {
-			time.Sleep(100 * time.Millisecond)
-		}
-		mu.Lock()
-		switch {
-		case len(body.Blocks) > 0:
-			posted = append(posted, body.Blocks[0].Text)
-		case body.MarkdownText != "":
-			posted = append(posted, body.MarkdownText)
-		}
-		mu.Unlock()
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{"ok":true,"ts":"1"}`)
-	}))
-	t.Cleanup(srv.Close)
-
-	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
-	w := newBatchedWriterWithClient(client, "C1", "", "1.0", detailsOn, slog.Default())
-	ch := make(chan channels.OutboundDelta, 3)
-	// Three lines keep the narration out of the fold, so it posts as its own
-	// (slow) message ahead of the answer.
-	ch <- narrationDelta("slow narration\nsecond line\nthird line")
-	ch <- channels.OutboundDelta{Kind: channels.DeltaText, Content: "the answer"}
-	ch <- channels.OutboundDelta{Done: true}
-	close(ch)
-	require.NoError(t, w.run(t.Context(), ch))
-
-	mu.Lock()
-	defer mu.Unlock()
-	require.Equal(t, "slow narration\nsecond line\nthird line", posted[0], "the narration lands before the answer")
-	require.Equal(t, "the answer", strings.Join(posted[1:], ""), "the answer follows it, in the pieces the stream sent")
+	require.Equal(t, []string{"msg-1"}, ft.deleted())
+	require.Empty(t, ft.finalMessages(), "nothing of the reply is left in the thread")
 }
 
 func TestRenderToolActivity_UnwrapsCallTool(t *testing.T) {
-	posts := captureToolPostBlocks(t, detailsFull, channels.OutboundDelta{
+	posts := captureToolLog(t, detailsFull, channels.OutboundDelta{
 		Kind: channels.DeltaToolActivity,
 		Tool: &channels.ToolActivity{
 			Kind:   channels.ToolCall,
@@ -1946,7 +1880,7 @@ func TestRenderToolActivity_UnwrapsCallTool(t *testing.T) {
 }
 
 func TestRenderToolActivity_DirectToolUnchanged(t *testing.T) {
-	posts := captureToolPostBlocks(t, detailsFull, channels.OutboundDelta{
+	posts := captureToolLog(t, detailsFull, channels.OutboundDelta{
 		Kind: channels.DeltaToolActivity,
 		Tool: &channels.ToolActivity{Kind: channels.ToolCall, Name: "list_pods"},
 	})
@@ -1955,73 +1889,27 @@ func TestRenderToolActivity_DirectToolUnchanged(t *testing.T) {
 	require.NotContains(t, posts[0], "via muster")
 }
 
-// The default level is a status experience, not an audit log: the whole turn
-// collapses into one receipt line with no payloads, and the call_tool wrapper
-// is unwrapped so the receipt names the real tools.
-func TestToolStatus_CollapsesToReceiptWithoutPayloads(t *testing.T) {
-	msgs, _ := capturePosts(t, detailsOn, "",
+// The step names the tool the agent really ran, not muster's wrapper, so a
+// reader is told "Kubernetes get" rather than "Call tool".
+func TestSteps_UnwrapsCallToolInTheTitle(t *testing.T) {
+	ft, _ := captureStream(t, detailsOn, "",
 		channels.OutboundDelta{Kind: channels.DeltaToolActivity, Tool: &channels.ToolActivity{
 			Kind: channels.ToolCall, Name: musterCallToolMetaTool, CallID: "c1",
 			Args: map[string]any{"name": "x_kubernetes_get", "arguments": map[string]any{"namespace": "flux"}},
 		}},
-		toolCallDelta("x_kubernetes_get"),
-		toolCallDelta("ask_user"),
+		toolResultDelta(musterCallToolMetaTool, "c1", map[string]any{"output": "ok"}),
 		channels.OutboundDelta{Kind: channels.DeltaText, Content: "done"},
 	)
 
-	require.Len(t, msgs, 2, "one receipt line plus the answer")
-	require.Equal(t, capturedMessage{"🛠️ 3 steps · x_kubernetes_get ×2 · ask_user"}, msgs[0])
-	require.Equal(t, capturedMessage{"done"}, msgs[1])
-}
-
-// Tool results carry no extra signal at the default level; only calls count as
-// steps, so a call+result pair is one step, not two.
-func TestToolStatus_ResultsDoNotCountAsSteps(t *testing.T) {
-	msgs, _ := capturePosts(t, detailsOn, "",
-		toolCallDelta("list_pods"),
-		channels.OutboundDelta{Kind: channels.DeltaToolActivity, Tool: &channels.ToolActivity{
-			Kind: channels.ToolResult, Name: "list_pods", Response: map[string]any{"output": "ok"},
-		}},
-	)
-
-	require.Len(t, msgs, 1)
-	require.Equal(t, capturedMessage{"🛠️ 1 step · list_pods"}, msgs[0])
-}
-
-// Receipt and ticker text is agent-controlled: mrkdwn control sequences must
-// arrive escaped so a quoted <!channel> in a tool name cannot notify.
-func TestToolStatus_EscapesMrkdwn(t *testing.T) {
-	msgs, _ := capturePosts(t, detailsOn, "",
-		toolCallDelta("notify <!channel>"),
-	)
-
-	require.Len(t, msgs, 1)
-	require.NotContains(t, msgs[0][0], "<!channel>")
-	require.Contains(t, msgs[0][0], "&lt;!channel&gt;")
-}
-
-func TestRenderToolTickerAndReceipt(t *testing.T) {
-	require.Equal(t, "⏳ skills…", renderToolTicker(1, "skills"))
-	require.Equal(t, "⏳ ask_user… · step 4", renderToolTicker(4, "ask_user"))
-
-	require.Equal(t, "🛠️ 1 step · skills", renderToolReceipt(1, []string{"skills"}, map[string]int{"skills": 1}))
-	require.Equal(t, "🛠️ 3 steps · skills ×2 · ask_user",
-		renderToolReceipt(3, []string{"skills", "ask_user"}, map[string]int{"skills": 2, "ask_user": 1}))
-
-	// Past the name cap the receipt summarises instead of growing unbounded.
-	order := make([]string, receiptNameMax+3)
-	counts := map[string]int{}
-	for i := range order {
-		order[i] = fmt.Sprintf("tool_%d", i)
-		counts[order[i]] = 1
-	}
-	got := renderToolReceipt(len(order), order, counts)
-	require.Contains(t, got, "+3 more")
-	require.NotContains(t, got, order[receiptNameMax])
+	require.Equal(t, []taskChunk{
+		{id: "step-1", title: "Kubernetes get", status: stepInProgress},
+		{id: "step-1", title: "Kubernetes get", status: stepComplete},
+	}, ft.steps())
+	require.Equal(t, "done", ft.streamedText())
 }
 
 func TestRenderToolActivity_UnwrapsCallToolResult(t *testing.T) {
-	posts := captureToolPostBlocks(t, detailsFull,
+	posts := captureToolLog(t, detailsFull,
 		channels.OutboundDelta{Kind: channels.DeltaToolActivity, Tool: &channels.ToolActivity{
 			Kind: channels.ToolCall, Name: musterCallToolMetaTool, CallID: "c1",
 			Args: map[string]any{"name": "x_kubernetes_get", "arguments": map[string]any{"namespace": "flux"}},
@@ -2166,7 +2054,7 @@ func TestToolResultPreview(t *testing.T) {
 // A direct MCP tool result (the filter_tools case) renders the payload the
 // envelope carries, not the envelope itself.
 func TestRenderToolActivity_UnwrapsMCPResultEnvelope(t *testing.T) {
-	posts := captureToolPostBlocks(t, detailsFull,
+	posts := captureToolLog(t, detailsFull,
 		toolCallDelta("filter_tools"),
 		channels.OutboundDelta{Kind: channels.DeltaToolActivity, Tool: &channels.ToolActivity{
 			Kind: channels.ToolResult, Name: "filter_tools",
@@ -2184,7 +2072,7 @@ func TestRenderToolActivity_UnwrapsMCPResultEnvelope(t *testing.T) {
 // result: the entry names the inner tool and previews the innermost payload.
 func TestRenderToolActivity_UnwrapsMusterDoubleWrappedResult(t *testing.T) {
 	inner := serialize(t, mcpEnvelope(`{"clusters":["alpha","beta"]}`, false))
-	posts := captureToolPostBlocks(t, detailsFull,
+	posts := captureToolLog(t, detailsFull,
 		channels.OutboundDelta{Kind: channels.DeltaToolActivity, Tool: &channels.ToolActivity{
 			Kind: channels.ToolCall, Name: musterCallToolMetaTool, CallID: "c1",
 			Args: map[string]any{"name": "x_kubernetes_capi_list_clusters", "arguments": map[string]any{"management_cluster": "gazelle"}},
@@ -2202,7 +2090,7 @@ func TestRenderToolActivity_UnwrapsMusterDoubleWrappedResult(t *testing.T) {
 
 // A result the tool flagged as an error is marked visibly.
 func TestRenderToolActivity_FlagsErrorResults(t *testing.T) {
-	posts := captureToolPostBlocks(t, detailsFull,
+	posts := captureToolLog(t, detailsFull,
 		toolCallDelta("kube_get"),
 		channels.OutboundDelta{Kind: channels.DeltaToolActivity, Tool: &channels.ToolActivity{
 			Kind: channels.ToolResult, Name: "kube_get",
@@ -2217,7 +2105,7 @@ func TestRenderToolActivity_FlagsErrorResults(t *testing.T) {
 // Unwrapped result text is MCP-server-controlled and no longer neutralised by
 // JSON marshaling: the mrkdwn escaping must hold on the plain-text path.
 func TestRenderToolActivity_UnwrappedResultEscapesHostileText(t *testing.T) {
-	posts := captureToolPostBlocks(t, detailsFull,
+	posts := captureToolLog(t, detailsFull,
 		toolCallDelta("kube_get"),
 		channels.OutboundDelta{Kind: channels.DeltaToolActivity, Tool: &channels.ToolActivity{
 			Kind: channels.ToolResult, Name: "kube_get",
@@ -2237,7 +2125,7 @@ func TestRenderToolActivity_UnwrappedResultEscapesHostileText(t *testing.T) {
 // escaped so a quoted <!channel> cannot notify, and backticks cannot break out
 // of the code span.
 func TestRenderToolActivity_EscapesMrkdwnAndCodeSpans(t *testing.T) {
-	entries := captureToolPostBlocks(t, detailsFull, channels.OutboundDelta{
+	entries := captureToolLog(t, detailsFull, channels.OutboundDelta{
 		Kind: channels.DeltaToolActivity,
 		Tool: &channels.ToolActivity{
 			Kind: channels.ToolCall,
@@ -2274,10 +2162,8 @@ func TestSessionStatus_DMThreadProcessingThenActive(t *testing.T) {
 		require.Equal(t, "1.0", c.threadTS, "thread_ts is always sent")
 	}
 
-	require.Len(t, msgs, 2)
-	require.Equal(t, capturedMessage{"🛠️ 2 steps · alpha · beta"}, msgs[0])
-	require.Equal(t, capturedMessage{"the answer"}, msgs[1])
-	require.True(t, ft.sawText("⏳"), "the message ticker carries the detail on every surface")
+	require.Equal(t, []capturedMessage{{"the answer"}}, msgs, "the steps ride the reply, not a message of their own")
+	require.Len(t, ft.steps(), 2, "and the reply carries both of them")
 }
 
 // A channel thread gets the same native indicator: agents.sessions.setStatus
@@ -2298,9 +2184,8 @@ func TestSessionStatus_ChannelThreadGetsTheIndicator(t *testing.T) {
 		require.Equal(t, "C1", c.channelID)
 		require.Equal(t, "1.0", c.threadTS)
 	}
-	require.Len(t, msgs, 2)
-	require.Equal(t, capturedMessage{"🛠️ 1 step · alpha"}, msgs[0])
-	require.True(t, ft.sawText("⏳"), "the live line still renders as a message ticker")
+	require.Equal(t, []capturedMessage{{"the answer"}}, msgs)
+	require.Len(t, ft.steps(), 1)
 }
 
 // Slack attributes a session it creates to the author of the thread root
@@ -2551,7 +2436,7 @@ func TestSessionStatus_ActiveOnCancelledTurn(t *testing.T) {
 
 // missing_scope means the install can never set the status: one rejection
 // latches the process-wide downgrade, so the exit call is skipped and the
-// thread falls back to the message ticker alone.
+// thread is left with the reply's own step list.
 func TestSessionStatus_MissingScopeLatchesOff(t *testing.T) {
 	ft := &fakeThread{failStatus: "missing_scope"}
 	msgs, w, err := runSurfaceWriter(t, ft, "C1",
@@ -2563,8 +2448,9 @@ func TestSessionStatus_MissingScopeLatchesOff(t *testing.T) {
 
 	require.True(t, w.adapter.sessionStatusUnsupported.Load())
 	require.Equal(t, []string{"processing"}, ft.statuses(), "the latch skips the exit call")
-	require.True(t, ft.sawText("⏳"), "the message ticker still carries the progress")
-	require.Equal(t, capturedMessage{"🛠️ 1 step · alpha"}, msgs[0])
+	require.Equal(t, []capturedMessage{{"done"}}, msgs)
+	require.Equal(t, []taskChunk{{id: "step-1", title: "Alpha", status: stepInProgress}}, ft.steps(),
+		"the reply still carries what the agent did")
 }
 
 // not_authorized means the bot is not a member of THIS channel, which says
@@ -2685,9 +2571,9 @@ func TestStream_FirstTextStartsThenAppendsIncrements(t *testing.T) {
 	ft := &fakeThread{}
 	w := streamWriter(t, ft, "D1")
 
-	w.pending = "first part "
+	w.queueAnswer("first part ")
 	require.NoError(t, w.flush(t.Context()))
-	w.pending = "second part "
+	w.queueAnswer("second part ")
 	require.NoError(t, w.flush(t.Context()))
 	require.NoError(t, w.closeStream(t.Context()))
 
@@ -2706,17 +2592,17 @@ func TestStream_HoldsBackTheUnfinishedTail(t *testing.T) {
 	ft := &fakeThread{}
 	w := streamWriter(t, ft, "D1")
 
-	w.pending = "half a sen"
+	w.queueAnswer("half a sen")
 	require.NoError(t, w.flush(t.Context()))
 	require.Equal(t, "half a ", ft.streams()[0].markdown)
-	require.Equal(t, "sen", w.pendingText(), "the unfinished word waits for the next flush")
+	require.Equal(t, "sen", w.queuedText(), "the unfinished word waits for the next flush")
 
-	w.pending = "nowhitespaceyet"
+	w.queueAnswer("nowhitespaceyet")
 	require.NoError(t, w.flush(t.Context()))
 	require.Len(t, ft.streams(), 1, "text with no boundary in it is not sent at all")
 
 	require.NoError(t, w.closeStream(t.Context()))
-	require.Equal(t, []capturedMessage{{"half a nowhitespaceyet"}}, ft.finalMessages(),
+	require.Equal(t, []capturedMessage{{"half a sennowhitespaceyet"}}, ft.finalMessages(),
 		"the final stop delivers the held-back tail")
 }
 
@@ -2734,7 +2620,7 @@ func TestStream_ChannelNamesTheRecipientDMDoesNot(t *testing.T) {
 			w := streamWriter(t, ft, tc.channel)
 			w.slackUser, w.recipientTeam = "U1", "T1"
 
-			w.pending = "hi "
+			w.queueAnswer("hi ")
 			require.NoError(t, w.flush(t.Context()))
 
 			require.Equal(t, tc.wantUser, ft.streams()[0].recipientUser)
@@ -2751,9 +2637,9 @@ func TestStream_RolloverStopsWithProcessing(t *testing.T) {
 	ft := &fakeThread{}
 	w := streamWriter(t, ft, "D1")
 
-	w.pending = strings.Repeat("a", slackMarkdownBlockMax-10) + " "
+	w.queueAnswer(strings.Repeat("a", slackMarkdownBlockMax-10) + " ")
 	require.NoError(t, w.flush(t.Context()))
-	w.pending = "the rest of the answer "
+	w.queueAnswer("the rest of the answer ")
 	require.NoError(t, w.flush(t.Context()))
 
 	require.Equal(t, []string{methodChatStartStream, methodChatStopStream, methodChatStartStream}, ft.streamMethods())
@@ -2784,19 +2670,19 @@ func TestStream_StoppedByUserEndsTheTextPathQuietly(t *testing.T) {
 	ft := &fakeThread{}
 	w := streamWriter(t, ft, "D1")
 
-	w.pending = "working on it "
+	w.queueAnswer("working on it ")
 	require.NoError(t, w.flush(t.Context()))
 	ft.stoppedByUser = true
 
-	w.pending = "more text "
+	w.queueAnswer("more text ")
 	require.NoError(t, w.flush(t.Context()), "a stream the user stopped is not a failure")
 	sent := len(ft.streams())
 
-	w.pending = "even more text "
+	w.queueAnswer("even more text ")
 	require.NoError(t, w.flush(t.Context()))
 	require.NoError(t, w.closeStream(t.Context()))
 	require.Len(t, ft.streams(), sent, "nothing more is sent on a stream the user stopped")
-	require.Empty(t, w.pendingText())
+	require.Empty(t, w.queuedText())
 }
 
 // Slack answering the closing stop with stopped_by_user ends the text path
@@ -2822,17 +2708,17 @@ func TestStream_RecoversOnceThenReportsTheReplyCutShort(t *testing.T) {
 	rec := &recordingStreams{}
 	w.adapter.Streams = rec
 
-	w.pending = "first "
+	w.queueAnswer("first ")
 	require.NoError(t, w.flush(t.Context()))
 	ft.haltStream("msg-1")
 
-	w.pending = "second "
+	w.queueAnswer("second ")
 	require.NoError(t, w.flush(t.Context()))
 	require.Equal(t, []string{methodChatStartStream, methodChatAppendStream, methodChatStartStream}, ft.streamMethods())
 	require.True(t, w.streamRecovered)
 
 	ft.haltStream("msg-2")
-	w.pending = "third "
+	w.queueAnswer("third ")
 	require.ErrorIs(t, w.flush(t.Context()), errStreamLost)
 	require.True(t, w.streamFailed)
 	require.False(t, w.streamStopped, "the turn does not end quietly; the thread is told")
@@ -2927,7 +2813,7 @@ func TestRetractRendered_StopsTheStreamBeforeDeleting(t *testing.T) {
 	ft := &fakeThread{}
 	w := streamWriter(t, ft, "D1")
 
-	w.pending = "visit the link "
+	w.queueAnswer("visit the link ")
 	require.NoError(t, w.flush(t.Context()))
 	w.retractRendered(t.Context())
 
@@ -2957,7 +2843,7 @@ func TestStream_SecondRunCycleOpensANewStream(t *testing.T) {
 	srv := httptest.NewServer(ft.handler())
 	t.Cleanup(srv.Close)
 
-	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "D1", "", "1.0", detailsOff, slog.Default())
+	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "D1", "", "1.0", detailsOn, slog.Default())
 	w.adapter = &Adapter{}
 	run := func(deltas ...channels.OutboundDelta) {
 		ch := make(chan channels.OutboundDelta, len(deltas))
@@ -2968,17 +2854,22 @@ func TestStream_SecondRunCycleOpensANewStream(t *testing.T) {
 		require.NoError(t, w.run(t.Context(), ch))
 	}
 
-	run(channels.OutboundDelta{Kind: channels.DeltaText, Content: "may I delete it? "},
+	run(toolCallDelta("delete"),
+		channels.OutboundDelta{Kind: channels.DeltaText, Content: "may I delete it? "},
 		channels.OutboundDelta{Kind: channels.DeltaPrompt, TaskID: "task-1"})
 	w.promptDelta = nil // the caller consumed the prompt and resumed the task
-	run(channels.OutboundDelta{Kind: channels.DeltaText, Content: "deleted "}, doneDelta())
+	run(toolCallDelta("purge"), channels.OutboundDelta{Kind: channels.DeltaText, Content: "deleted "}, doneDelta())
 
 	require.Equal(t, []string{
 		methodChatStartStream, methodChatStopStream,
 		methodChatStartStream, methodChatStopStream,
-	}, ft.streamMethods())
+	}, ft.streamMethods(), "the step opens each cycle's message, its text closes it")
 	require.Equal(t, []string{string(sessionSuspended), string(sessionActive)}, ft.stopStatuses())
 	require.Equal(t, []capturedMessage{{"may I delete it? "}, {"deleted "}}, ft.finalMessages())
+	require.Equal(t, []taskChunk{
+		{id: "step-1", title: "Delete", status: stepInProgress},
+		{id: "step-2", title: "Purge", status: stepInProgress},
+	}, ft.steps(), "the step ids stay unique across the turn's two run cycles")
 }
 
 // recordingStreams is a StreamRecorder that keeps the events it was given.
@@ -3007,7 +2898,7 @@ func TestStream_CountsTheLifecycleEvents(t *testing.T) {
 	rec := &recordingStreams{}
 	w.adapter.Streams = rec
 
-	w.pending = "the answer "
+	w.queueAnswer("the answer ")
 	require.NoError(t, w.flush(t.Context()))
 	require.NoError(t, w.closeStream(t.Context()))
 	require.Equal(t, []string{streamEventStarted, streamEventStopped}, rec.recorded())
@@ -3015,9 +2906,9 @@ func TestStream_CountsTheLifecycleEvents(t *testing.T) {
 	ft.stoppedByUser = true
 	w2 := streamWriter(t, ft, "D1")
 	w2.adapter.Streams = rec
-	w2.pending = "another answer "
+	w2.queueAnswer("another answer ")
 	require.NoError(t, w2.flush(t.Context()))
-	w2.pending = "and more "
+	w2.queueAnswer("and more ")
 	require.NoError(t, w2.flush(t.Context()))
 	require.Equal(t, []string{streamEventStarted, streamEventStopped, streamEventStarted, streamEventStoppedByUser},
 		rec.recorded())
@@ -3057,7 +2948,7 @@ func TestStream_OversizeAppendIsCutOnRawBytes(t *testing.T) {
 	// A fenced block spanning the cut: splitMarkdown would close and reopen it.
 	answer := "```yaml\n" + strings.Repeat("key: value\n", 1600) + "```\n"
 	require.Greater(t, len(answer), slackMarkdownBlockMax)
-	w.pending = answer
+	w.queueAnswer(answer)
 	require.NoError(t, w.flush(t.Context()))
 	require.NoError(t, w.closeStream(t.Context()))
 
@@ -3084,7 +2975,7 @@ func TestStream_ScrubbedAppendStillCountsItsRawBytes(t *testing.T) {
 	w.loginURLs = []string{"https://login.example/auth?code=abc"}
 
 	const answer = "Here is what I found.\nhttps://login.example/auth?code=abc\nTell me once you are in. "
-	w.pending = answer
+	w.queueAnswer(answer)
 	require.NoError(t, w.flush(t.Context()))
 
 	sent := ft.streams()[0].markdown

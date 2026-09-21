@@ -35,9 +35,7 @@ func (f *fakeSlackAPI) callsSince(n int) []recordedCall {
 func textOf(calls []recordedCall) string {
 	var b strings.Builder
 	for _, c := range calls {
-		if md, ok := c.params["markdown_text"].(string); ok {
-			b.WriteString(md)
-		}
+		b.WriteString(chunkText(c.params))
 		b.WriteString(allBlockText([]recordedCall{c}))
 	}
 	return b.String()
@@ -75,7 +73,7 @@ func seedInFlightRow(t *testing.T, rec *slackadapter.MemoryRecorder) {
 // the answer and two tool steps and is shut down; a second process over the
 // same routing store resubscribes and is handed one more step and the whole
 // answer. The thread reads the opening once, the notice, then the tail — and
-// the receipt after the restart counts three steps, not one (klaus-gateway#301).
+// the step after the restart is numbered three, not one (klaus-gateway#301).
 func TestRestart_ContinuedTurnPostsOnlyWhatFollows(t *testing.T) {
 	fake := newFakeSlackAPI()
 	api := fake.server(t)
@@ -91,9 +89,8 @@ func TestRestart_ContinuedTurnPostsOnlyWhatFollows(t *testing.T) {
 	a1, srv1 := newEventsAdapter(t, gw1, api.URL)
 	sendEvent(t, srv1, dmEvent("U1", "create the repository", "555.000"))
 	require.Eventually(t, func() bool {
-		return strings.Contains(fake.streamedText(), "One thing to flag") &&
-			strings.Contains(textOf(fake.callsSince(0)), "step 2")
-	}, flowWait, 20*time.Millisecond, "the opening and the two-step ticker landed before the restart")
+		return strings.Contains(fake.streamedText(), "One thing to flag") && len(fake.streamedSteps()) == 2
+	}, flowWait, 20*time.Millisecond, "the opening and the two steps landed before the restart")
 	require.NoError(t, a1.Stop(context.Background()))
 	require.Contains(t, allBlockText(fake.pathCalls("chat.postMessage")), "I was restarted while")
 	restart := fake.callCount()
@@ -101,7 +98,7 @@ func TestRestart_ContinuedTurnPostsOnlyWhatFollows(t *testing.T) {
 	row, ok, err := shared.ThreadRecord(t.Context(), "slack", "D1", "555.000")
 	require.NoError(t, err)
 	require.True(t, ok)
-	require.Equal(t, store.Delivered{TextLen: len(opening), ToolSteps: 2, ToolOrder: []string{"create", "protect"}, ToolCounts: map[string]int{"create": 1, "protect": 1}}, row.Delivered,
+	require.Equal(t, store.Delivered{TextLen: len(opening), ToolSteps: 2}, row.Delivered,
 		"the row records what the first process delivered")
 
 	turn := channels.InFlightTurn{
@@ -127,8 +124,11 @@ func TestRestart_ContinuedTurnPostsOnlyWhatFollows(t *testing.T) {
 	after := textOf(fake.callsSince(restart))
 	require.NotContains(t, after, "One thing to flag", "the opening the first process posted is not posted again")
 	require.Equal(t, 1, callsCarrying(fake.pathCalls(pathStartStream), "One thing to flag"), "the thread carries the opening once")
-	require.Contains(t, after, "🛠️ 3 steps · create · protect · team", "the receipt counts on from the recorded steps")
-	require.NotContains(t, after, "1 step", "the count does not start over")
+	var ids []string
+	for _, s := range fake.streamedSteps() {
+		ids = append(ids, s["id"].(string))
+	}
+	require.Equal(t, []string{"step-1", "step-2", "step-3"}, ids, "the step ids count on from the recorded ones")
 	streams := fake.pathCalls(pathStartStream)
 	require.Len(t, streams, 2, "the continuation opens a message of its own; the first one was closed on shutdown")
 	require.Equal(t, "555.000", streams[1].params["thread_ts"], "the continuation lands in the thread")
