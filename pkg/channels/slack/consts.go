@@ -426,19 +426,27 @@ func threadClosedNotice(lifetime time.Duration) string {
 	return fmt.Sprintf("_This conversation ended after %s without messages. Mention me to start a new one._", spellDuration(lifetime))
 }
 
-// spellDuration writes a thread lifetime the way the notice reads it: the
-// largest whole unit it fits into, "90 days", "12 hours", "30 minutes".
+// spellDuration writes a thread lifetime the way the notice reads it, and
+// never shorter than it is: the count of the largest unit the duration is a
+// whole multiple of. 90 days is "90 days", 36 hours is "36 hours" (not "1
+// day"), 90 minutes is "90 minutes" (not "1 hour"). A duration that is no
+// whole number of seconds is written as Go writes it ("1.5s"): exact, and
+// nobody configures a thread lifetime like that.
 func spellDuration(d time.Duration) string {
-	switch {
-	case d >= 24*time.Hour:
-		return countOf(int64(d/(24*time.Hour)), "day")
-	case d >= time.Hour:
-		return countOf(int64(d/time.Hour), "hour")
-	case d >= time.Minute:
-		return countOf(int64(d/time.Minute), "minute")
-	default:
-		return countOf(int64(d/time.Second), "second")
+	for _, u := range []struct {
+		size time.Duration
+		name string
+	}{
+		{24 * time.Hour, "day"},
+		{time.Hour, "hour"},
+		{time.Minute, "minute"},
+		{time.Second, "second"},
+	} {
+		if d >= u.size && d%u.size == 0 {
+			return countOf(int64(d/u.size), u.name)
+		}
 	}
+	return d.String()
 }
 
 func countOf(n int64, unit string) string {
