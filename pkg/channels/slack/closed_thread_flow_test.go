@@ -158,3 +158,41 @@ func TestClosedThread_ReplyWithoutARowStaysSilent(t *testing.T) {
 	require.Len(t, fake.pathCalls("chat.postEphemeral"), before,
 		"the row is gone, so there is nothing left to tell its author")
 }
+
+// A mention in a thread reaches the gateway twice: as message.channels and as
+// app_mention. In a thread whose conversation ended, the message twin lands on
+// the inactive-thread gate, where the notice would tell its author to mention
+// the bot — which is what they just did. Which twin arrives first is a race,
+// so the gate recognises the mention itself: the message twin says nothing and
+// only the app_mention twin acts.
+func TestClosedThread_MentionTwinIsNotToldTheConversationEnded(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw, _ := capturingGateway()
+	rec, advance := agingRecorder(t)
+	gw.records = rec
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
+
+	sendEvent(t, srv, mention("U1", "why is the cluster unhappy?", "840.000", ""))
+	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, flowWait, 20*time.Millisecond)
+	waitThreadIdle(t, a, "840.000")
+	before := len(fake.pathCalls("chat.postEphemeral"))
+
+	advance(channels.DefaultThreadTTL + time.Hour)
+
+	// The message twin first, on its own: it must post nothing and must not
+	// claim the message's dedup slot.
+	sendEvent(t, srv, threadReply("U1", "<@UBOT> picking this back up", "840.001", "840.000"))
+	time.Sleep(150 * time.Millisecond)
+	require.Len(t, fake.pathCalls("chat.postEphemeral"), before,
+		"the mention's message twin must not say the conversation ended")
+	require.Equal(t, 1, gw.resolveCount(), "and it does not dispatch either")
+
+	// Then the app_mention twin of the same message, which starts over.
+	sendEvent(t, srv, mention("U1", "<@UBOT> picking this back up", "840.001", "840.000"))
+	require.Eventually(t, func() bool { return gw.resolveCount() == 2 }, flowWait, 20*time.Millisecond,
+		"the app_mention twin starts the conversation over")
+	waitThreadIdle(t, a, "840.000")
+	require.Equal(t, 2, gw.resolveCount(), "the agent answers once")
+	require.Len(t, fake.pathCalls("chat.postEphemeral"), before,
+		"and its author is never told the conversation ended")
+}

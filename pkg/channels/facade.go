@@ -269,7 +269,10 @@ func (f *Facade) instanceFor(ctx context.Context, msg InboundMessage) (string, e
 		return "", err
 	}
 	if err := f.Routes.Update(ctx, key, func(e *store.Entry, found bool) bool {
-		f.reopen(e, found, now)
+		// Only the side effect counts here — a closed row emptied, so this
+		// turn writes a fresh binding rather than merging into the ended
+		// conversation's. The reopened found state has no reader below.
+		_ = f.reopen(e, found, now)
 		if e.AgentInstanceID != "" && e.AgentInstanceID != inst.ID {
 			// A rebind: nothing of the previous instance's turn is deliverable.
 			e.TaskID, e.Resume, e.Delivered = "", nil, store.Delivered{}

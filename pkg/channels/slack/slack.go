@@ -1177,22 +1177,12 @@ func (a *Adapter) accessPolicy() AccessPolicy {
 }
 
 // noticeThreadClosed tells the author of an un-mentioned reply that the
-// thread's conversation ended after the lifetime, so the silence does not read
-// as an outage. Only for a thread whose row the store still holds and reports
-// as closed: a thread with no row at all is either one the bot never joined or
-// one the store has forgotten, and stays silent. Ephemeral and unrecorded —
-// every reply in a closed thread gets it, which costs no write and no noise in
-// the thread. Best-effort. Slack history is never read.
-func (a *Adapter) noticeThreadClosed(ctx context.Context, slackChannel, threadID, userID string) {
+// thread's conversation ended after lifetime, so the silence does not read as
+// an outage. Ephemeral and unrecorded — every reply in a closed thread gets
+// it, which costs no write and no noise in the thread. Best-effort. Slack
+// history is never read; the caller has already read the row (threadGate).
+func (a *Adapter) noticeThreadClosed(ctx context.Context, slackChannel, threadID, userID string, lifetime time.Duration) {
 	if userID == "" {
-		return
-	}
-	closed, lifetime, err := a.records().ThreadClosed(ctx, ChannelName, slackChannel, threadID)
-	if err != nil {
-		a.Logger.Warn("slack: read thread-closed state failed", "thread", threadID, "error", err)
-		return
-	}
-	if !closed {
 		return
 	}
 	a.Logger.Info("slack: reply in a closed thread", "record", "thread_closed",
@@ -1202,15 +1192,54 @@ func (a *Adapter) noticeThreadClosed(ctx context.Context, slackChannel, threadID
 	}
 }
 
-// isActiveThread reports whether the bot has an active session in threadID —
-// either a known initiator (it was mentioned at some point) or a pending
-// input-required task. Used to decide whether to route message.channels thread
-// replies without requiring an @-mention.
-func (a *Adapter) isActiveThread(ctx context.Context, channelID, threadID string) bool {
-	if a.accessPolicy().Initiator(ctx, channelID, threadID) != "" {
-		return true
+// mentionsBot reports whether text @-mentions this bot. Slack writes a mention
+// as the bot's own user ID in a "<@U…>" token (older clients add "|label"),
+// which mentionRe reads; the ID is cached, so this costs no Slack call after
+// the first. False when the ID could not be resolved — the caller then treats
+// the message as un-mentioned, which is what it looks like.
+func (a *Adapter) mentionsBot(ctx context.Context, text string) bool {
+	id := a.botID(ctx)
+	if id == "" {
+		return false
 	}
-	return a.hasPendingTask(threadID)
+	for _, m := range mentionRe.FindAllStringSubmatch(text, -1) {
+		if m[1] == id {
+			return true
+		}
+	}
+	return false
+}
+
+// threadGate reads the thread's row once and reports what the inactive-thread
+// gate needs of it: whether the bot has an active session in threadID — a
+// known initiator (it was mentioned at some point) or a pending input-required
+// task — and, when it has not, whether the row is still there with its
+// conversation ended, and the lifetime it ended after. One read serves both:
+// this runs for every thread reply in every served channel, which under
+// channelMode "all" is the most frequent message the gateway sees.
+func (a *Adapter) threadGate(ctx context.Context, channelID, threadID string) (active, closed bool, lifetime time.Duration) {
+	st, err := a.records().ThreadState(ctx, ChannelName, channelID, threadID)
+	if err != nil {
+		// A store outage reads as no row, as the access policy does: the
+		// thread is not active and nothing is claimed about its end.
+		a.Logger.Warn("slack: read thread state failed", "thread", threadID, "error", err)
+		return a.hasPendingTask(threadID), false, 0
+	}
+	if st.Found && st.Entry.Initiator != "" {
+		return true, false, 0
+	}
+	if a.hasPendingTask(threadID) {
+		return true, false, 0
+	}
+	return false, st.Closed, st.Lifetime
+}
+
+// isActiveThread reports whether the bot has an active session in threadID.
+// Used to decide whether to route message.channels thread replies without
+// requiring an @-mention.
+func (a *Adapter) isActiveThread(ctx context.Context, channelID, threadID string) bool {
+	active, _, _ := a.threadGate(ctx, channelID, threadID)
+	return active
 }
 
 // storePendingAccess appends a newcomer's message to their parked queue for the
@@ -1634,10 +1663,19 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 	// apart. A thread whose row is still there but whose conversation ended
 	// after the lifetime is the one case that is known, and its author is
 	// told. A mention re-opens the conversation either way.
-	if threadReplyOnly && !a.isActiveThread(ctx, inner.Channel, msg.ThreadID) {
-		a.noticeThreadClosed(ctx, inner.Channel, msg.ThreadID, inner.User)
-		a.Logger.Debug("slack: reply in inactive thread ignored", "channel", inner.Channel, "thread", msg.ThreadID)
-		return
+	if threadReplyOnly {
+		active, closed, lifetime := a.threadGate(ctx, inner.Channel, msg.ThreadID)
+		if !active {
+			// A mention is not told the conversation ended: its app_mention
+			// twin starts the thread over, so the notice would tell its
+			// author to do what they just did. Which twin lands first is a
+			// race, so the message copy has to recognise the mention itself.
+			if closed && !a.mentionsBot(ctx, inner.Text) {
+				a.noticeThreadClosed(ctx, inner.Channel, msg.ThreadID, inner.User, lifetime)
+			}
+			a.Logger.Debug("slack: reply in inactive thread ignored", "channel", inner.Channel, "thread", msg.ThreadID)
+			return
+		}
 	}
 	if a.seenMessage(inner.Channel, msg.MessageID) {
 		a.Logger.Info("slack: dropping duplicate message delivery", "channel", inner.Channel, "ts", msg.MessageID)

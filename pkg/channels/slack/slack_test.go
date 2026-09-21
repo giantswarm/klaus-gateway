@@ -925,11 +925,11 @@ func (s *stubGateway) UpdateThreadRecord(ctx context.Context, ch, cid, tid strin
 	return s.rec().UpdateThreadRecord(ctx, ch, cid, tid, mutate)
 }
 
-func (s *stubGateway) ThreadClosed(ctx context.Context, ch, cid, tid string) (bool, time.Duration, error) {
+func (s *stubGateway) ThreadState(ctx context.Context, ch, cid, tid string) (channels.ThreadState, error) {
 	if s.recordsErr != nil {
-		return false, 0, s.recordsErr
+		return channels.ThreadState{}, s.recordsErr
 	}
-	return s.rec().ThreadClosed(ctx, ch, cid, tid)
+	return s.rec().ThreadState(ctx, ch, cid, tid)
 }
 
 // stubResumes is the stubGateway's record of turns a previous process left

@@ -127,7 +127,7 @@ func TestThreadRecord_StaleTTLIsRestamped(t *testing.T) {
 }
 
 // A thread nobody wrote to for longer than the lifetime is closed: it reads
-// as no record at all, ThreadClosed names it and the lifetime it ended after,
+// as no record at all, ThreadState names it and the lifetime it ended after,
 // and the next write starts the thread over instead of merging into what the
 // store still holds.
 func TestThreadRecord_ClosedAfterTheLifetime(t *testing.T) {
@@ -148,18 +148,22 @@ func TestThreadRecord_ClosedAfterTheLifetime(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, ok)
 	require.Equal(t, 2*DefaultThreadTTL, rec.TTL, "the row outlives the conversation by as much again")
-	closed, _, err := f.ThreadClosed(ctx, "slack", "C1", "T1")
+	st, err := f.ThreadState(ctx, "slack", "C1", "T1")
 	require.NoError(t, err)
-	require.False(t, closed, "a thread within its lifetime is open")
+	require.False(t, st.Closed, "a thread within its lifetime is open")
+	require.True(t, st.Found, "and one read hands back the record itself")
+	require.Equal(t, "U1", st.Entry.Initiator)
 
 	now = now.Add(DefaultThreadTTL + time.Hour)
 	_, ok, err = f.ThreadRecord(ctx, "slack", "C1", "T1")
 	require.NoError(t, err)
 	require.False(t, ok, "past the lifetime the conversation reads as absent")
-	closed, lifetime, err := f.ThreadClosed(ctx, "slack", "C1", "T1")
+	st, err = f.ThreadState(ctx, "slack", "C1", "T1")
 	require.NoError(t, err)
-	require.True(t, closed)
-	require.Equal(t, DefaultThreadTTL, lifetime, "the notice names the lifetime it ended after")
+	require.True(t, st.Closed)
+	require.False(t, st.Found, "a closed row is no record")
+	require.Zero(t, st.Entry, "and nothing of it is handed out")
+	require.Equal(t, DefaultThreadTTL, st.Lifetime, "the notice names the lifetime it ended after")
 
 	var found bool
 	var handed store.Entry
@@ -194,18 +198,19 @@ func TestThreadRecord_RowGoneAtTwiceTheLifetime(t *testing.T) {
 
 	require.NoError(t, f.UpdateThreadRecord(ctx, "slack", "C1", "T1", setAgentAndInitiator("sre-agent", "U1")))
 	now = now.Add(2*DefaultThreadTTL + time.Hour)
-	closed, _, err := f.ThreadClosed(ctx, "slack", "C1", "T1")
+	st, err := f.ThreadState(ctx, "slack", "C1", "T1")
 	require.NoError(t, err)
-	require.False(t, closed, "the store dropped the row, so there is nothing to report")
+	require.False(t, st.Closed, "the store dropped the row, so there is nothing to report")
+	require.False(t, st.Found)
 }
 
-// A thread the store never had is not closed — nothing is posted about it.
-func TestThreadClosed_UnknownThread(t *testing.T) {
+// A thread the store never had is neither found nor closed — nothing is
+// posted about it.
+func TestThreadState_UnknownThread(t *testing.T) {
 	f := &Facade{Routes: memory.New(), ThreadTTL: DefaultThreadTTL}
-	closed, lifetime, err := f.ThreadClosed(context.Background(), "slack", "C1", "T1")
+	st, err := f.ThreadState(context.Background(), "slack", "C1", "T1")
 	require.NoError(t, err)
-	require.False(t, closed)
-	require.Zero(t, lifetime)
+	require.Zero(t, st)
 }
 
 // A gateway run with --thread-ttl=0 never closes a conversation, however long
@@ -222,14 +227,17 @@ func TestThreadRecord_ZeroTTLNeverCloses(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, ok)
 	require.Equal(t, "U1", rec.Initiator)
-	closed, _, err := f.ThreadClosed(ctx, "slack", "C1", "T1")
+	st, err := f.ThreadState(ctx, "slack", "C1", "T1")
 	require.NoError(t, err)
-	require.False(t, closed)
+	require.False(t, st.Closed)
+	require.True(t, st.Found)
 }
 
 func TestThreadRecord_NoStore(t *testing.T) {
 	f := &Facade{}
 	_, _, err := f.ThreadRecord(context.Background(), "slack", "C1", "T1")
+	require.Error(t, err)
+	_, err = f.ThreadState(context.Background(), "slack", "C1", "T1")
 	require.Error(t, err)
 	require.Error(t, f.UpdateThreadRecord(context.Background(), "slack", "C1", "T1", func(*store.Entry, bool) bool { return true }))
 }

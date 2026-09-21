@@ -68,38 +68,51 @@ func (f *Facade) reopen(e *store.Entry, found bool, now time.Time) bool {
 	return false
 }
 
-// ThreadRecord reads the thread's row; ok is false when the thread has none or
-// its conversation has ended (ThreadClosed tells the two apart).
-func (f *Facade) ThreadRecord(ctx context.Context, channel, channelID, threadID string) (store.Entry, bool, error) {
-	if f == nil || f.Routes == nil {
-		return store.Entry{}, false, errNoThreadStore
-	}
-	e, ok, err := f.Routes.Get(ctx, threadKey(channel, channelID, threadID))
-	if err != nil {
-		return store.Entry{}, false, fmt.Errorf("channels: read thread record: %w", err)
-	}
-	e, ok = f.liveEntry(e, ok)
-	return e, ok, nil
+// ThreadState is what one read of a thread's row tells its readers: the live
+// record, or — when the conversation on it has ended while the row is still in
+// the store — that it is Closed, and the Lifetime it ended after. Found and
+// Closed are never both true, and both are false for a thread the store has no
+// row for at all.
+type ThreadState struct {
+	Entry    store.Entry
+	Found    bool
+	Closed   bool
+	Lifetime time.Duration
 }
 
-// ThreadClosed reports whether the thread's conversation has ended while its
-// row is still in the store: silent for longer than the lifetime, but not yet
-// dropped at twice it. It is the one thing a closed thread is good for — a
-// channel adapter tells the author of a reply that the conversation ended
-// rather than ignoring them. lifetime is what it ended after, for that notice;
-// 0 when the thread is not closed. A thread with no row at all is not closed.
-func (f *Facade) ThreadClosed(ctx context.Context, channel, channelID, threadID string) (bool, time.Duration, error) {
+// ThreadState reads the thread's row once and reports both of the things a
+// reader wants from it: what a live row holds, and whether the conversation on
+// it has ended — silent for longer than the lifetime, but not yet dropped at
+// twice it. A closed row is good for one thing only: a channel adapter tells
+// the author of a reply that the conversation ended rather than ignoring them.
+// It comes from the same read as the record, so the most frequent path in a
+// served channel — a reply in a thread the bot has no session in — costs one
+// store call, not two.
+func (f *Facade) ThreadState(ctx context.Context, channel, channelID, threadID string) (ThreadState, error) {
 	if f == nil || f.Routes == nil {
-		return false, 0, errNoThreadStore
+		return ThreadState{}, errNoThreadStore
 	}
 	e, ok, err := f.Routes.Get(ctx, threadKey(channel, channelID, threadID))
 	if err != nil {
-		return false, 0, fmt.Errorf("channels: read thread record: %w", err)
+		return ThreadState{}, fmt.Errorf("channels: read thread record: %w", err)
 	}
-	if !ok || !f.threadClosed(e, f.clock()) {
-		return false, 0, nil
+	if !ok {
+		return ThreadState{}, nil
 	}
-	return true, f.ThreadTTL, nil
+	if f.threadClosed(e, f.clock()) {
+		return ThreadState{Closed: true, Lifetime: f.ThreadTTL}, nil
+	}
+	return ThreadState{Entry: e, Found: true}, nil
+}
+
+// ThreadRecord reads the thread's row; ok is false when the thread has none or
+// its conversation has ended (ThreadState tells the two apart).
+func (f *Facade) ThreadRecord(ctx context.Context, channel, channelID, threadID string) (store.Entry, bool, error) {
+	st, err := f.ThreadState(ctx, channel, channelID, threadID)
+	if err != nil {
+		return store.Entry{}, false, err
+	}
+	return st.Entry, st.Found, nil
 }
 
 // UpdateThreadRecord applies mutate to the thread's row through the store's
