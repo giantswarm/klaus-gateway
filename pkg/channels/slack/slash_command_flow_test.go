@@ -456,6 +456,26 @@ func TestAskAgentSubmission_PrivateChannelAsksForInvite(t *testing.T) {
 	require.Equal(t, 0, gw.resolveCount())
 }
 
+// The conversation the picker opens is rooted by a message the gateway posted,
+// so Slack, left to read the starter off the root, would attribute the session
+// to the app. The creating status call names the submitter instead.
+func TestAskAgentSubmission_SessionNamesTheSubmitter(t *testing.T) {
+	fake := newFakeSlackAPI()
+	api := fake.server(t)
+	gw, _ := capturingGateway()
+	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
+
+	sendSlashCommand(t, srv, "C1", "U1", "", api.URL+"/response_url")
+	pm := openedView(t, fake)["private_metadata"].(string)
+	sendAskAgentSubmission(t, srv, "U1", pm, "kagent/sre-agent", "why are pods crashlooping?")
+
+	fake.waitForPath(t, "agents.sessions.setStatus", 1)
+	create := fake.pathCalls("agents.sessions.setStatus")[0]
+	require.Equal(t, "processing", create.params["status"], "the creating call")
+	require.Equal(t, "U1", create.params["initiator_user_id"],
+		"the session belongs to the person who submitted the picker, not to the bot that posted the root")
+}
+
 // The turn's dispatch record names the picker as the agent's source.
 func TestAskAgentSubmission_DispatchRecordNamesCommandSource(t *testing.T) {
 	fake := newFakeSlackAPI()

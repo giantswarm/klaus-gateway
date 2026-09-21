@@ -493,6 +493,8 @@ const (
 	paramChannelID = "channel_id" // agents.sessions.setStatus channel
 	paramStatus    = "status"     // agents.sessions.setStatus lifecycle state
 	paramTitle     = "title"      // agents.sessions.setStatus session name (create only)
+	// agents.sessions.setStatus session starter (create only)
+	paramInitiatorUserID = "initiator_user_id"
 
 	// Streamed reply parameters (chat.startStream / appendStream / stopStream).
 	paramMarkdownText = "markdown_text" // the stream's new text, Slack-flavoured Markdown

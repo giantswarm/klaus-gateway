@@ -222,7 +222,7 @@ func (a *Adapter) storePendingTask(threadID string, task *pendingTask) {
 	// belongs to no turn, so it goes on the adapter's background context.
 	for _, s := range swept {
 		a.background(func(bg context.Context) {
-			a.setSessionStatus(bg, s.channel, s.thread, sessionActive)
+			a.setSessionStatus(bg, s.channel, s.thread, sessionActive, "")
 		})
 	}
 }

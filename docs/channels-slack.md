@@ -101,8 +101,16 @@ overwritten. The title is derived when the message is dispatched and sent by the
 turn that eventually runs, so an opening message held for sign-in still names
 the session once it replays. A first message that normalises to nothing (a bare
 command, an upload with no caption) sends no title and leaves Slack to name the
-session. Should Slack refuse the titled call, the status is sent again without
-the title, so a refused title never costs the turn its indicator.
+session. Should Slack refuse the decorated call, the status is sent again bare,
+so a refused title never costs the turn its indicator.
+
+The creating call also **names the session's starter** (`initiator_user_id`):
+the thread's initiator, the owner the access rule already keeps in the thread's
+routing-store row, falling back to the turn's sender when the turn carries no
+owner. Slack applies it on creation only, like the title, so it rides on the
+same calls — a turn's `processing` call, or a status set from outside a turn,
+which can create a session too — and a thread whose owner is unknown sends
+none. It needs no scope beyond the `chat:write` the call already uses.
 
 The same line names the thread's kagent conversation, so both surfaces list the
 thread under what was asked in it (see `docs/kagent-a2a.md`). That title travels
