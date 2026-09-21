@@ -441,11 +441,14 @@ any string that begins with `Slack bot`, `Slack app-level`, or `Slack user`.
    ceiling.
 
    Throttling itself is counted as `klaus_gateway_slack_rate_limited_total{method,outcome}`:
-   one per Web API call Slack answers with a 429, under the method it answered (`method`) and
-   what the client did about it (`outcome`) — `retried`, it waited the `Retry-After` and
-   called again, so nothing failed; or `exhausted`, it gave up, because the four attempts ran
-   out or the requested wait was over the 30-second cap, and the call failed with
-   `rate limited`. A retried 429 leaves no other trace, so any increase here is the early
+   one per call made through the Web API client that Slack answers with a 429, under the
+   method it answered (`method`) and what the client did about it (`outcome`) — `retried`, it
+   waited the `Retry-After` and called again, so nothing failed; or `exhausted`, it gave up,
+   because the four attempts ran out or the requested wait was over the 30-second cap, and the
+   call failed with `rate limited`. Three Slack HTTP paths do not go through that client and
+   are therefore not counted: the Socket Mode `apps.connections.open` handshake, the ephemeral
+   posts to a slash command's `response_url`, and the `url_private` file downloads. A retried
+   429 leaves no other trace, so any increase here is the early
    warning that a workspace is being paced: alert on
    `sum(rate(klaus_gateway_slack_rate_limited_total[5m])) > 0` for five minutes, then read the
    `method` label to see which call is being held back. Each 429 also writes a debug log line

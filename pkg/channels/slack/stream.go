@@ -3662,12 +3662,15 @@ func (c *slackAPIClient) call(ctx context.Context, method, contentType, payload 
 				c.noteRateLimited(method, rateLimitExhausted)
 				return nil, fmt.Errorf("slack %s: rate limited (retry after %s)", method, wait)
 			}
-			c.noteRateLimited(method, rateLimitRetried)
 			select {
 			case <-ctx.Done():
+				// The wait was cut short by the turn's cancellation, so no
+				// retry happens and nothing is counted: one lost sample on a
+				// turn that is going away anyway.
 				return nil, ctx.Err()
 			case <-time.After(wait):
 			}
+			c.noteRateLimited(method, rateLimitRetried)
 			continue
 		}
 		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {

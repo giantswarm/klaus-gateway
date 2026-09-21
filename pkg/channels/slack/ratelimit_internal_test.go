@@ -40,7 +40,9 @@ func TestCall_CountsA429ItRetried(t *testing.T) {
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if calls.Add(1) == 1 {
-			w.Header().Set("Retry-After", "1")
+			// Zero seconds keeps the wait instant; the branch under test is
+			// the one a real Retry-After takes.
+			w.Header().Set("Retry-After", "0")
 			w.WriteHeader(http.StatusTooManyRequests)
 			return
 		}
@@ -66,8 +68,6 @@ func TestCall_CountsTheAttemptsAndTheGivingUp(t *testing.T) {
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls.Add(1)
-		// Zero seconds keeps the four attempts instant; the branch under test
-		// is the one a real Retry-After takes.
 		w.Header().Set("Retry-After", "0")
 		w.WriteHeader(http.StatusTooManyRequests)
 	}))
