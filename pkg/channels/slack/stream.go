@@ -347,8 +347,9 @@ func newBatchedWriterWithClient(client *slackAPIClient, channel, ts, threadTS st
 	}
 }
 
-// run drains deltas from ch, appending the agent's text to the turn's streamed
-// message at streamAppendInterval.
+// run drains deltas from ch, queueing the turn's text, narration and steps in
+// the order they arrive and appending what has accumulated to the turn's
+// streamed message at streamAppendInterval.
 func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelta) error {
 	w.timer = channels.TurnTimerFromContext(ctx)
 	// A run() cycle over a writer that ran before (an auto-approved prompt
