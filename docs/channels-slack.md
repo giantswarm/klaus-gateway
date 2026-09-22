@@ -429,7 +429,13 @@ any string that begins with `Slack bot`, `Slack app-level`, or `Slack user`.
      attached to the reply: `in_progress` when the call starts, `complete` — or `error` when
      the tool reported one — when its result arrives. The two updates share an id, so Slack
      replaces the step rather than listing the call twice. Slack collapses the list once the
-     answer is done.
+     answer is done. Slack never ends a task on its own, so **every step still running when the
+     turn ends is closed by its last flush**, before the message is stopped: `complete` on a
+     normal end and on a pause for a HITL prompt (the call did its work; the answer is what is
+     awaited), `error` on a turn that failed or was cancelled, where the result is never coming.
+     That is also what closes a call the stream gave no id, which no result can be matched to.
+     A turn is capped at 100 steps; past it the calls still reach the **Inspect agent steps**
+     log and one note in the reply says the rest are not shown.
 
    The stream therefore opens at the **first** thing the turn produces — a tool call, a
    narration passage or the first answer text, whichever comes first — because tools usually
@@ -453,10 +459,12 @@ any string that begins with `Slack bot`, `Slack app-level`, or `Slack user`.
    Each append carries only what is new, and answer text is sent up to the last whitespace
    boundary — an unfinished word waits for the next append, so nothing is ever half-written.
    Replies over 12,000 characters roll over into a further streamed message; the intermediate
-   close carries `processing`, so the working indicator stays on mid-answer. Narration counts
-   toward that per-message limit like any other prose, but never toward the answer length the
-   delivery record carries — a process continuing the turn after a restart replays the answer,
-   not the narration, so the two are counted separately. In a channel the stream names the
+   close carries `processing`, so the working indicator stays on mid-answer. Every narration
+   passage ends in a paragraph break, so two passages — or a passage and the answer after it —
+   never run together in the message body. Narration counts toward that per-message limit like
+   any other prose, but never toward the answer length the delivery record carries — a process
+   continuing the turn after a restart replays the answer, not the narration, so the two are
+   counted separately. In a channel the stream names the
    person it answers (`recipient_user_id` + `recipient_team_id`); in a DM it names nobody,
    which is what Slack requires there. Each streamed text run is rendered once — the A2A
    artifact update's append/replace semantics are honoured, so the Go ADK's re-send of a
@@ -555,9 +563,12 @@ A turn ends early for one of two reasons, and the thread can tell them apart:
   a turn streams, how much answer text has landed, which streamed message it is landing in,
   and how many step ids have been handed out; the continuing process posts only the text after
   that mark — without the paragraph break the cut leaves in front — and numbers its own steps
-  on from the recorded count, so no id already on the reply is reused. The step the previous
-  process was running when it died would otherwise spin forever, so it is closed first; the
-  record does not carry its title, so it closes as a plain "Step N". A message the previous
+  on from the recorded count, so no id already on the reply is reused. The record also names
+  the step that was **running** when it was written, and clears it when that step ends: the
+  continuing process closes exactly that one on the adopted message, under the title it was
+  opened with, and leaves every step that had already finished alone. It does so even when it
+  has nothing else to add, so a reply completed just before the restart is not left with a step
+  spinning. A message the previous
   process left open is adopted, so the reply goes on in the same bubble; if Slack closed it in
   the meantime the
   rest opens a message of its own. An adopted message is always closed, even when nothing is
@@ -570,8 +581,8 @@ A turn ends early for one of two reasons, and the thread can tell them apart:
 
 The recovery rides on the thread's routing-store binding, which records the task in flight
 while a turn runs, and with it what of the reply has landed (`delivered`: the answer text's
-length in bytes, the streamed message and its length, and the count of step ids handed out,
-written after every flush and every step). It therefore needs a routing store that outlives the process
+length in bytes, the streamed message and its length, the count of step ids handed out and the
+step still running, written after every flush and every step). It therefore needs a routing store that outlives the process
 (`routing.store: valkey` or `bolt`); with `memory` the record dies with the pod and
 the notice says so ("I cannot bring it into this thread"). The pod's
 `terminationGracePeriodSeconds` must leave room for the notice: the shutdown drains the HTTP

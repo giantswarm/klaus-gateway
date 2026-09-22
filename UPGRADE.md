@@ -26,9 +26,8 @@ the audit view, with the fuller payloads, and it is unchanged and still records 
 What to watch: nothing new. The steps ride the same `chat.appendStream` calls as the answer
 text, so a tool-heavy turn no longer costs one `chat.update` per call, and
 `klaus_gateway_slack_stream_total` and `klaus_gateway_slack_rate_limited_total` keep their
-meaning. One cosmetic edge: a turn continued after a hard gateway restart closes the step that
-was running when the process died under a plain "Step N", because the delivery record carries
-the count, not the title.
+meaning. A turn is capped at 100 steps; past it the calls still reach the **Inspect agent
+steps** log and one line in the reply says the rest are not shown.
 
 ## Next — Slack replies are streamed (chat.startStream)
 
