@@ -430,12 +430,16 @@ any string that begins with `Slack bot`, `Slack app-level`, or `Slack user`.
      the tool reported one — when its result arrives. The two updates share an id, so Slack
      replaces the step rather than listing the call twice. Slack collapses the list once the
      answer is done. Slack never ends a task on its own, so **every step still running when the
-     turn ends is closed by its last flush**, before the message is stopped: `complete` on a
-     normal end and on a pause for a HITL prompt (the call did its work; the answer is what is
-     awaited), `error` on a turn that failed or was cancelled, where the result is never coming.
-     That is also what closes a call the stream gave no id, which no result can be matched to.
-     A turn is capped at 100 steps; past it the calls still reach the **Inspect agent steps**
-     log and one note in the reply says the rest are not shown.
+     turn ends is closed by its last flush**, before the message is stopped. What it is closed
+     as follows from how the turn ended: `complete` on a normal end, on a pause for a HITL
+     prompt (the call did its work; the answer is what is awaited) and on a **gateway shutdown**
+     (the tool call is not cancelled — the task keeps running at the controller and another
+     process delivers its answer); `error` on a turn that failed and on one a `/stop` or the
+     per-turn deadline cancelled, where the result really is never coming. That rule is also
+     what closes a call the stream gave no id, which no result can be matched to. A turn is
+     capped at 100 steps; past it one note in the reply says the rest are not shown and the
+     calls still reach the **Inspect agent steps** log, which keeps the most recent 100 per
+     thread.
 
    The stream therefore opens at the **first** thing the turn produces — a tool call, a
    narration passage or the first answer text, whichever comes first — because tools usually

@@ -26,8 +26,9 @@ the audit view, with the fuller payloads, and it is unchanged and still records 
 What to watch: nothing new. The steps ride the same `chat.appendStream` calls as the answer
 text, so a tool-heavy turn no longer costs one `chat.update` per call, and
 `klaus_gateway_slack_stream_total` and `klaus_gateway_slack_rate_limited_total` keep their
-meaning. A turn is capped at 100 steps; past it the calls still reach the **Inspect agent
-steps** log and one line in the reply says the rest are not shown.
+meaning. A turn is capped at 100 steps; past it one line in the reply says the rest are not shown
+and the calls still reach the **Inspect agent steps** log, which keeps the most recent 100 per
+thread.
 
 ## Next — Slack replies are streamed (chat.startStream)
 

@@ -589,7 +589,8 @@ const (
 	// appends the answer already makes, so this is not a rate limit: Slack
 	// documents no maximum number of tasks on a message, and a turn of several
 	// hundred calls is untested territory. Past it one note is sent and the
-	// calls are still retained for the "Inspect agent steps" shortcut.
+	// calls still reach the "Inspect agent steps" log, under its own cap
+	// (maxToolLogEntries per thread, so a very long turn loses its oldest).
 	maxSteps = 100
 )
 
@@ -600,8 +601,9 @@ const passageBreak = "\n\n"
 // narrationLimitNote replaces the narration past the per-turn cap.
 const narrationLimitNote = "_…narration limit reached; hiding this turn's remaining step-by-step notes. The answer still follows._"
 
-// stepLimitNote is sent once when a turn's tool calls pass the step cap.
-const stepLimitNote = "_…step limit reached; hiding this turn's remaining tool calls. The Inspect agent steps shortcut still has them._"
+// stepLimitNote is sent once when a turn's tool calls pass the step cap. The
+// tool log has its own, shorter bound, so it is promised only the recent calls.
+const stepLimitNote = "_…step limit reached; hiding this turn's remaining tool calls. The Inspect agent steps shortcut has the most recent ones._"
 
 // renderToolActivity turns a tool call into one step of the reply's task list:
 // a task_update chunk that opens the step as in_progress, and a second one on
@@ -750,6 +752,20 @@ func (w *batchedWriter) takeOpenStep(callID string) (openStep, bool) {
 // did its work; the answer is what is being waited for) and error when the turn
 // failed or was cancelled, where the result never arrived and never will. A
 // call the stream gave no id is only ever closed here.
+// cancelledStepStatus is how a step still running is closed when the turn's
+// context is cancelled. The gateway's own shutdown does not end the tool call:
+// the task keeps running at the controller, the thread is told so, and another
+// process delivers its answer — so the step on this message is closed as done,
+// not as failed, and the result that arrives after the restart belongs to a
+// step nobody is waiting on any more. Every other cancellation — a /stop, the
+// per-turn deadline — does end the call, and its result is never coming.
+func cancelledStepStatus(ctx context.Context) string {
+	if errors.Is(context.Cause(ctx), channels.ErrShutdown) {
+		return stepComplete
+	}
+	return stepError
+}
+
 func (w *batchedWriter) closeOpenSteps(ctx context.Context, status string) {
 	w.mu.Lock()
 	open := w.openSteps
@@ -1477,10 +1493,11 @@ func (w *batchedWriter) closeStream(ctx context.Context) error {
 // message would keep animating and everything queued since the last append
 // would be lost. It runs on a context outliving the cancellation.
 func (w *batchedWriter) endStream(ctx context.Context) {
-	// A cancelled turn is where a step is most likely to be left running: the
-	// tool was interrupted, so its result is never coming. A normal end closed
-	// them already, which makes this a no-op there.
-	w.closeOpenSteps(ctx, stepError)
+	// A cancelled turn is where a step is most likely to be left running. The
+	// cause says what that means for it — and it has to be read before the
+	// context is replaced below, because WithoutCancel drops it. A normal end
+	// closed the steps already, which makes this a no-op there.
+	w.closeOpenSteps(ctx, cancelledStepStatus(ctx))
 	if w.streamTS == "" && !w.hasQueuedContent() {
 		return
 	}

@@ -1689,13 +1689,34 @@ func TestSteps_CallWithoutAnIDIsClosedAtTheTurnsEnd(t *testing.T) {
 // error: the tool was interrupted and its result is never coming, and Slack
 // never closes a task on its own.
 func TestSteps_CancelledTurnClosesTheOpenStepAsError(t *testing.T) {
+	require.Equal(t, []taskChunk{
+		{id: "step-1", title: "Kubernetes list", status: stepInProgress},
+		{id: "step-1", title: "Kubernetes list", status: stepError},
+	}, cancelledTurnSteps(t, nil))
+}
+
+// The gateway's own shutdown is not one: the task keeps running at the
+// controller and another process delivers its answer, so the step on this
+// message is closed as done rather than carrying an error badge for a tool that
+// may well succeed.
+func TestSteps_ShutdownClosesTheOpenStepAsComplete(t *testing.T) {
+	require.Equal(t, []taskChunk{
+		{id: "step-1", title: "Kubernetes list", status: stepInProgress},
+		{id: "step-1", title: "Kubernetes list", status: stepComplete},
+	}, cancelledTurnSteps(t, channels.ErrShutdown))
+}
+
+// cancelledTurnSteps runs a turn that opens one step, cancels it with cause,
+// and returns the step updates the reply carried.
+func cancelledTurnSteps(t *testing.T, cause error) []taskChunk {
+	t.Helper()
 	ft := &fakeThread{}
 	srv := httptest.NewServer(ft.handler())
 	t.Cleanup(srv.Close)
 
 	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "D1", "", "1.0", detailsOn, slog.Default())
 	w.adapter = &Adapter{}
-	ctx, cancel := context.WithCancel(t.Context())
+	ctx, cancel := context.WithCancelCause(t.Context())
 	ch := make(chan channels.OutboundDelta)
 	done := make(chan error, 1)
 	go func() { done <- w.run(ctx, ch) }()
@@ -1703,13 +1724,10 @@ func TestSteps_CancelledTurnClosesTheOpenStepAsError(t *testing.T) {
 	ch <- toolCallDeltaWith("x_kubernetes_list", "c1", nil)
 	require.Eventually(t, func() bool { return len(ft.streams()) > 0 }, flowWait, 10*time.Millisecond,
 		"the step opened the reply")
-	cancel()
+	cancel(cause)
 	require.ErrorIs(t, <-done, context.Canceled)
 
-	require.Equal(t, []taskChunk{
-		{id: "step-1", title: "Kubernetes list", status: stepInProgress},
-		{id: "step-1", title: "Kubernetes list", status: stepError},
-	}, ft.steps())
+	return ft.steps()
 }
 
 // A turn pausing on a HITL prompt closes its steps on the message it is about

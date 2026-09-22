@@ -130,9 +130,10 @@ func TestRestart_ContinuedTurnPostsOnlyWhatFollows(t *testing.T) {
 	}
 	require.Equal(t, []string{
 		"step-1 in_progress", "step-2 in_progress",
-		// The shutdown closes what the first process had running; the
-		// continuation numbers on and its own end closes step-3.
-		"step-1 error", "step-2 error",
+		// The shutdown does not cancel the tool calls — the task keeps running
+		// at the controller — so the first process closes its steps as done, not
+		// as failed. The continuation numbers on and its own end closes step-3.
+		"step-1 complete", "step-2 complete",
 		"step-3 in_progress", "step-3 complete",
 	}, ids, "the step ids count on from the recorded ones")
 	streams := fake.pathCalls(pathStartStream)
