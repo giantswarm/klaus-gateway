@@ -110,6 +110,25 @@ func TestStart_AllowsBareDefaultAgentWithRoster(t *testing.T) {
 	require.NoError(t, newAdapter("kagent/swarmgeist").Start(t.Context(), &stubGateway{}))
 }
 
+// The adapter refuses to start without a gateway to dispatch into, and without
+// a default agent: a turn has nothing to run on in either case, so the wiring
+// error surfaces at boot instead of on the first mention.
+func TestStart_RefusesNilGatewayAndMissingDefaultAgent(t *testing.T) {
+	adapter := func() *slackadapter.Adapter {
+		return &slackadapter.Adapter{
+			Mode:         slackadapter.ModeEvents,
+			Secrets:      slackadapter.Secrets{BotToken: "b", SigningSecret: "s"}, //nolint:gosec // dummy test creds
+			DefaultAgent: "swarmgeist",
+		}
+	}
+
+	require.ErrorContains(t, adapter().Start(t.Context(), nil), "nil gateway")
+
+	noAgent := adapter()
+	noAgent.DefaultAgent = ""
+	require.ErrorContains(t, noAgent.Start(t.Context(), &stubGateway{}), "DefaultAgent")
+}
+
 // A prefixed channel mention binds the new conversation to the named agent and
 // dispatches the remainder of the message as its first turn; an unprefixed
 // reply in that conversation inherits the same agent without re-prefixing.

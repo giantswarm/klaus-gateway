@@ -1,6 +1,6 @@
 # klaus-gateway
 
-Channel and routing gateway in front of klaus instances; uses agentgateway as the LLM/MCP/A2A data plane
+Slack channel gateway for the Agent Platform's kagent agents
 
 **Homepage:** <https://github.com/giantswarm/klaus-gateway>
 
@@ -20,11 +20,11 @@ Channel and routing gateway in front of klaus instances; uses agentgateway as th
 |-----|------|---------|-------------|
 | enabled | bool | `true` |  |
 | agentgatewayRoute | object | `{}` |  |
-| web | object | `{}` |  |
-| cli | object | `{}` |  |
-| lifecycle | object | `{}` |  |
-| upstream | object | `{}` |  |
-| agentgateway | object | `{}` |  |
+| web | object | `{}` | Ignored since the Slack-only release; accepted because the agent-platform umbrella still forwards it; removed in a later minor. |
+| cli | object | `{}` | Ignored since the Slack-only release; accepted because the agent-platform umbrella still forwards it; removed in a later minor. |
+| lifecycle | object | `{}` | Ignored since the Slack-only release; accepted because the agent-platform umbrella still forwards it; removed in a later minor. |
+| upstream | object | `{}` | Ignored since the Slack-only release; accepted because the agent-platform umbrella still forwards it; removed in a later minor. |
+| agentgateway | object | `{}` | Ignored since the Slack-only release; accepted because the agent-platform umbrella still forwards it; removed in a later minor. |
 | name | string | `"klaus-gateway"` |  |
 | serviceType | string | `"managed"` |  |
 | fullnameOverride | string | `""` |  |
@@ -51,9 +51,9 @@ Channel and routing gateway in front of klaus instances; uses agentgateway as th
 | serviceMonitor.labels | object | `{}` | Labels on the ServiceMonitor, beside the chart's own. The Giant Swarm observability platform routes a scrape to a Mimir tenant by `observability.giantswarm.io/tenant`; a monitor without it writes to no tenant. |
 | routing.store | string | `"memory"` |  |
 | routing.boltPath | string | `"/var/lib/klaus-gateway/routes.bolt"` |  |
-| routing.defaultTTL | string | `""` |  |
+| routing.defaultTTL | string | `""` | Ignored since the Slack-only release; accepted because the agent-platform umbrella still forwards it; removed in a later minor. It was the TTL of a Klaus route entry; a thread's lifetime is threadTTL. |
 | routing.threadTTL | string | `""` |  |
-| routing.autoCreate | bool | `false` |  |
+| routing.autoCreate | bool | `false` | Ignored since the Slack-only release; accepted because the agent-platform umbrella still forwards it; removed in a later minor. It created a Klaus instance on a route miss; there is no Klaus path left. |
 | routing.valkey.url | string | `""` |  |
 | routing.valkey.username | string | `""` |  |
 | routing.valkey.existingSecret | string | `""` |  |
@@ -80,9 +80,9 @@ Channel and routing gateway in front of klaus instances; uses agentgateway as th
 | a2a.namespace | string | `"kagent"` |  |
 | a2a.caSecret | string | `""` |  |
 | a2a.caFile | string | `""` |  |
-| a2a.tokenPath | string | `""` |  |
+| a2a.tokenPath | string | `""` | Ignored since the Slack-only release; accepted because the agent-platform umbrella still forwards it; removed in a later minor. It named a Bearer token file for the Klaus-instance paths, which are gone. |
 | a2a.fallbackIconUrlTemplate | string | `""` |  |
-| a2a.saToken | object | `{}` |  |
+| a2a.saToken | object | `{}` | Ignored since the Slack-only release; accepted because the agent-platform umbrella still forwards it; removed in a later minor. It projected a ServiceAccount token for the Klaus-instance paths, which are gone; the pod mounts nothing for it any more. |
 | slack.enabled | bool | `false` |  |
 | slack.mode | string | `"events"` |  |
 | slack.secretName | string | `""` |  |

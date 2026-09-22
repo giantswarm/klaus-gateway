@@ -1,6 +1,6 @@
 apiVersion: v2
 name: klaus-gateway
-description: Channel and routing gateway in front of klaus instances; uses agentgateway as the LLM/MCP/A2A data plane
+description: Slack channel gateway for the Agent Platform's kagent agents
 type: application
 # `version` and `appVersion` are placeholders. The CI pipeline runs through
 # `architect/push-to-app-catalog` with the `app-build-suite` executor, which
@@ -19,9 +19,6 @@ sources:
   - https://github.com/giantswarm/klaus-gateway
 annotations:
   io.giantswarm.application.team: bumblebee
-  # Upstream agentgateway CRD version (agentgateway.dev/v1alpha1) these
-  # templates target. Bump when upstream introduces breaking schema changes.
-  klaus-gateway.giantswarm.io/agentgateway-version: v1.1.0
 maintainers:
   - name: Giant Swarm
     url: https://www.giantswarm.io

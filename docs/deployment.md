@@ -195,14 +195,14 @@ initiator.
 
 The admin port serves `GET /metrics` (Prometheus; `serviceMonitor.enabled` renders the
 ServiceMonitor). Beside the public mux's `klaus_gateway_requests_total` /
-`klaus_gateway_request_duration_seconds`, every channel turn (Slack, web, CLI) feeds:
+`klaus_gateway_request_duration_seconds`, every Slack turn feeds:
 
 - `klaus_gateway_turn_total{channel, outcome}` -- turns that ended, by outcome: `completed`,
   `input_required` (paused on a prompt), `canceled` (`/stop`, the stop button, a closed stream),
   `shutdown` (the gateway's restart cut it short), `timeout` (the 30-minute turn deadline),
   `failed` (the task failed or the stream broke), `render_failed` (the task completed but the
-  channel refused part of the answer), `resolve_failed` / `send_failed` (the turn died before it
-  was sent).
+  channel refused part of the answer) and `send_failed` (the turn died before it was sent: the
+  controller refused it).
 - `klaus_gateway_turn_phase_seconds{channel, phase}` -- one histogram per phase of the turn's
   timeline, measured from the moment the channel received the message: the marks `dispatch`
   (admission, identity and agent resolved), `first_event` (the controller's first A2A event),
@@ -252,8 +252,8 @@ fields or wrong types.
 
 The `web`, `cli`, `lifecycle`, `upstream`, `agentgateway`, `routing.defaultTTL`,
 `routing.autoCreate`, `a2a.saToken` and `a2a.tokenPath` keys are accepted and ignored: the
-agent-platform umbrella still forwards them. A later minor deletes them — see
-[UPGRADE.md](../UPGRADE.md).
+agent-platform umbrella still forwards them. Each is marked so in
+`helm/klaus-gateway/README.md`. A later minor deletes them — see [UPGRADE.md](../UPGRADE.md).
 
 ## Local checks
 

@@ -98,16 +98,19 @@ func (s *Store) List(_ context.Context) ([]store.KeyEntry, error) {
 	defer s.mu.RUnlock()
 	out := make([]store.KeyEntry, 0, len(s.data))
 	now := s.now()
+	skipped := 0
 	for ks, e := range s.data {
 		if e.Expired(now) {
 			continue
 		}
 		k, err := store.ParseKey(ks)
 		if err != nil {
-			continue // a key of an older layout: not this table's any more
+			skipped++ // a key of an older layout: not this table's any more
+			continue
 		}
 		out = append(out, store.KeyEntry{Key: k, Entry: e})
 	}
+	store.LogSkippedKeys("memory", skipped)
 	return out, nil
 }
 

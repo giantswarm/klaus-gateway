@@ -6,17 +6,22 @@
 enabled: true
 agentgatewayRoute: {}  # @schema additionalProperties: true
 
-# Deprecated, ignored since the Slack-only release; removed in a later minor.
-# The gateway serves Slack only: the web and CLI channel adapters, the
+# Deprecated keys, ignored since the Slack-only release and removed in a later
+# minor. The gateway serves Slack only: the web and CLI channel adapters, the
 # OpenAI-compatible /v1 front door, the Klaus instance path with its lifecycle
 # drivers, and the chart's own Gateway API rendering are gone. These keys stay
 # accepted and do nothing, because the agent-platform umbrella still forwards
 # them and the values schema refuses keys it does not know. Drop them from
 # your values before the minor that deletes them.
+# -- Ignored since the Slack-only release; accepted because the agent-platform umbrella still forwards it; removed in a later minor.
 web: {}  # @schema additionalProperties: true
+# -- Ignored since the Slack-only release; accepted because the agent-platform umbrella still forwards it; removed in a later minor.
 cli: {}  # @schema additionalProperties: true
+# -- Ignored since the Slack-only release; accepted because the agent-platform umbrella still forwards it; removed in a later minor.
 lifecycle: {}  # @schema additionalProperties: true
+# -- Ignored since the Slack-only release; accepted because the agent-platform umbrella still forwards it; removed in a later minor.
 upstream: {}  # @schema additionalProperties: true
+# -- Ignored since the Slack-only release; accepted because the agent-platform umbrella still forwards it; removed in a later minor.
 agentgateway: {}  # @schema additionalProperties: true
 
 name: klaus-gateway
@@ -95,8 +100,7 @@ serviceMonitor:
 routing:
   store: memory  # @schema enum: [memory, valkey, bolt]
   boltPath: /var/lib/klaus-gateway/routes.bolt
-  # Deprecated, ignored since the Slack-only release; removed in a later minor.
-  # It was the TTL of a Klaus route entry; a thread's lifetime is threadTTL.
+  # -- Ignored since the Slack-only release; accepted because the agent-platform umbrella still forwards it; removed in a later minor. It was the TTL of a Klaus route entry; a thread's lifetime is threadTTL.
   defaultTTL: ""
   # Sliding lifetime of a channel thread's state: its agent, initiator, grants
   # and AgentInstance binding, refreshed on every turn. After this long without
@@ -107,8 +111,7 @@ routing:
   # default, 2160h (90 days), rows kept 4320h (180 days). "0" never expires
   # (the keys are then never evictable in a Valkey that runs as a cache).
   threadTTL: ""
-  # Deprecated, ignored since the Slack-only release; removed in a later minor.
-  # It created a Klaus instance on a route miss; there is no Klaus path left.
+  # -- Ignored since the Slack-only release; accepted because the agent-platform umbrella still forwards it; removed in a later minor. It created a Klaus instance on a route miss; there is no Klaus path left.
   autoCreate: false
   # The Valkey server of store: valkey.
   valkey:
@@ -224,8 +227,7 @@ a2a:
   # caFile is a path inside the container to a CA bundle for a grpcs:// url,
   # for images or mounts that already carry one. caSecret takes precedence.
   caFile: ""
-  # Deprecated, ignored since the Slack-only release; removed in a later minor.
-  # It named a Bearer token file for the Klaus-instance paths, which are gone.
+  # -- Ignored since the Slack-only release; accepted because the agent-platform umbrella still forwards it; removed in a later minor. It named a Bearer token file for the Klaus-instance paths, which are gone.
   tokenPath: ""
   # fallbackIconUrlTemplate is used when an AgentTemplate carries no
   # ui.giantswarm.io/icon-url annotation. "{agent}" is replaced with the
@@ -233,9 +235,7 @@ a2a:
   # own default icon).
   # Example: https://avatars.example.com/v1/{agent}.png
   fallbackIconUrlTemplate: ""
-  # Deprecated, ignored since the Slack-only release; removed in a later minor.
-  # It projected a ServiceAccount token for the Klaus-instance paths, which are
-  # gone; the pod mounts nothing for it any more.
+  # -- Ignored since the Slack-only release; accepted because the agent-platform umbrella still forwards it; removed in a later minor. It projected a ServiceAccount token for the Klaus-instance paths, which are gone; the pod mounts nothing for it any more.
   saToken: {}  # @schema additionalProperties: true
 
 # Slack channel adapter.

@@ -372,7 +372,7 @@ func Load(args []string) (Config, error) {
 	})
 
 	fs.Usage = func() {
-		_, _ = fmt.Fprintf(fs.Output(), "klaus-gateway -- channel and routing gateway in front of klaus instances.\n\n")
+		_, _ = fmt.Fprintf(fs.Output(), "klaus-gateway -- Slack channel gateway for the Agent Platform's kagent agents.\n\n")
 		_, _ = fmt.Fprintf(fs.Output(), "Usage:\n  %s [flags]\n\nFlags:\n", os.Args[0])
 		fs.PrintDefaults()
 	}

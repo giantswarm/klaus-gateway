@@ -50,6 +50,29 @@ func TestThreadRecord_SaveAndLoad(t *testing.T) {
 	require.Equal(t, "sre-agent", rec.AgentRef, "the earlier fields survive")
 }
 
+// A record write merges into the row that is already there: the fields it does
+// not own — here the row's birth date and the binding a turn wrote — survive,
+// and the row adopts the thread's lifetime.
+func TestThreadRecord_UpdateMergesIntoAnExistingRow(t *testing.T) {
+	ctx := context.Background()
+	f := &Facade{Routes: memory.New(), ThreadTTL: DefaultThreadTTL}
+	key := store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "T1"}
+	created := time.Now().Add(-time.Hour).Truncate(time.Second)
+	require.NoError(t, f.Routes.Put(ctx, key, store.Entry{
+		AgentInstanceID: "inst-1", CreatedAt: created, LastSeen: created, TTL: 24 * time.Hour,
+	}))
+
+	require.NoError(t, f.UpdateThreadRecord(ctx, "slack", "C1", "T1", setAgentAndInitiator("sre-agent", "U1")))
+	e, ok, err := f.ThreadRecord(ctx, "slack", "C1", "T1")
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, "inst-1", e.AgentInstanceID, "the binding survives the record write")
+	require.Equal(t, created, e.CreatedAt, "the row keeps its birth date")
+	require.Equal(t, 2*DefaultThreadTTL, e.TTL, "the thread's lifetime governs the row")
+	require.WithinDuration(t, time.Now(), e.LastSeen, time.Minute)
+	require.Equal(t, "U1", e.Initiator)
+}
+
 // A mutate that reports no change writes nothing.
 func TestThreadRecord_UnchangedWritesNothing(t *testing.T) {
 	ctx := context.Background()

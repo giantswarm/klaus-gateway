@@ -1,4 +1,4 @@
-// klaus-gateway is the channel and routing gateway in front of klaus instances.
+// klaus-gateway is the Slack channel gateway for the Agent Platform's kagent agents.
 package main
 
 import (

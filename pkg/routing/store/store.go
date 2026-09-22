@@ -13,6 +13,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 )
@@ -53,6 +54,18 @@ func ParseKey(s string) (Key, error) {
 		ChannelID: unescape(parts[1]),
 		ThreadID:  unescape(parts[2]),
 	}, nil
+}
+
+// LogSkippedKeys reports the rows a List had to leave out because their key is
+// of an older layout — every row written before the key lost its user slot, so
+// a store carried over from an earlier release says so once per List rather
+// than dropping them in silence. Nothing is logged when none were skipped.
+func LogSkippedKeys(backend string, skipped int) {
+	if skipped == 0 {
+		return
+	}
+	slog.Debug("routing store: rows skipped, their key is of an older layout",
+		"backend", backend, "skipped", skipped)
 }
 
 func escape(s string) string {

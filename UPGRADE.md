@@ -35,12 +35,25 @@ fails the upgrade. **Remove them from your values before that minor lands.**
 **The routing-store key changed.** It is now three parts, `<channel>|<channelID>|<threadID>`;
 the user slot existed for the per-user web and CLI routes and is gone. A row written with the
 old four-part key no longer parses: every store skips it when listing, and a lookup misses it.
-The effect is per thread and one-off — the first Slack message in a thread after the upgrade
-starts the conversation over (a new initiator, no grants carried over, a fresh AgentInstance),
-exactly as a thread whose lifetime had run out. A turn that was in flight across the upgrade is
-not resubscribed. The stale rows expire on their own TTL (180 days by default) and can be
-deleted at any time; on Valkey they are the `klaus-gateway:route:` keys with four pipe-separated
-parts.
+
+What a thread loses is the row, not its conversation. The row held the thread's initiator, the
+people that initiator had allowed in, the agent the thread was bound to, and the record of a
+turn in flight. So after the upgrade the thread's next mention starts a new row: the person who
+writes it becomes the initiator, nobody else is allowed in until they are let in again, and a
+turn that was running across the upgrade is not resubscribed — its result is lost rather than
+posted late.
+
+The agent's memory survives, because the conversation was never keyed by the store key. The
+idempotency key of the AgentInstance the gateway asks the controller for is
+`SynthesizeContextID(channel, channelID, "", threadID, agentRef)` — the user slot was already
+empty there for Slack — so the next turn asks for the same instance and the controller hands
+back the one it still holds, with the thread's history in it. The exception is a thread that had
+been switched to a non-default agent: the switch lived in the lost row, so the turn runs on the
+default agent again, and that is a different conversation. Switch it back with `/agent` and the
+earlier one returns.
+
+The stale rows expire on their own TTL (180 days by default) and can be deleted at any time; on
+Valkey they are the `klaus-gateway:route:` keys with four pipe-separated parts.
 
 ## Next — Slack replies are streamed (chat.startStream)
 

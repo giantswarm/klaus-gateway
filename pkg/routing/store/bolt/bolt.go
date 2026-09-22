@@ -141,6 +141,7 @@ func (s *Store) Delete(_ context.Context, k store.Key) error {
 func (s *Store) List(_ context.Context) ([]store.KeyEntry, error) {
 	var out []store.KeyEntry
 	now := s.now()
+	skipped := 0
 	err := s.db.View(func(tx *bolt.Tx) error {
 		return tx.Bucket(bucketName).ForEach(func(k, v []byte) error {
 			var e store.Entry
@@ -152,12 +153,14 @@ func (s *Store) List(_ context.Context) ([]store.KeyEntry, error) {
 			}
 			key, err := store.ParseKey(string(k))
 			if err != nil {
-				return nil // a key of an older layout: not this table's any more
+				skipped++ // a key of an older layout: not this table's any more
+				return nil
 			}
 			out = append(out, store.KeyEntry{Key: key, Entry: e})
 			return nil
 		})
 	})
+	store.LogSkippedKeys("bolt", skipped)
 	return out, err
 }
 
