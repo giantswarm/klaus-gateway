@@ -449,9 +449,11 @@ func TestStreamedReply_ChannelTurnNamesTheRecipient(t *testing.T) {
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
 
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_mention","user":"U1","text":"<@UBOT> how many nodes?","channel":"C1","ts":"901.000"}}`)
+	// The exit status call is made after the stop that closed the stream, so
+	// waiting on the stop alone races the assertion below against it.
 	require.Eventually(t, func() bool {
-		return len(fake.pathCalls(pathStopStream)) > 0
-	}, flowWait, 20*time.Millisecond, "the stream is closed when the turn ends")
+		return len(fake.pathCalls(pathStopStream)) > 0 && len(fake.pathCalls("agents.sessions.setStatus")) == 2
+	}, flowWait, 20*time.Millisecond, "the stream is closed and the session left processing when the turn ends")
 	require.Contains(t, fake.streamedText(), "first half second half", "the whole answer is streamed")
 
 	require.Equal(t, []string{pathStartStream, pathAppendStream, pathStopStream}, fake.streamMethods())
