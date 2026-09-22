@@ -1600,10 +1600,12 @@ func TestStream_OpensOnTheFirstToolCall(t *testing.T) {
 		channels.OutboundDelta{Kind: channels.DeltaText, Content: "done"},
 	)
 
+	calls := ft.streams()
 	require.Equal(t, []string{methodChatStartStream, methodChatStopStream}, ft.streamMethods())
-	require.Equal(t, []string{chunkTypeTaskUpdate}, ft.streams()[0].chunkTypes,
-		"the step opens the message; the answer follows on the stop")
-	require.Equal(t, "done", ft.streamedText())
+	require.Equal(t, []string{chunkTypeTaskUpdate}, calls[0].chunkTypes, "the step opens the message")
+	require.Equal(t, []string{chunkTypeMarkdownText}, calls[1].chunkTypes, "the answer rides the stop")
+	require.Equal(t, "done", calls[1].markdown)
+	require.Equal(t, string(sessionActive), calls[1].status, "and the stop names the session's exit status")
 }
 
 // A narration passage opens the stream just as a tool call does, so prose the

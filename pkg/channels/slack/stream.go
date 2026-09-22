@@ -677,8 +677,9 @@ func (w *batchedWriter) openStep(ctx context.Context, callID, displayName string
 // closeStep queues the update that ends the step the call opened: complete, or
 // error when the tool reported the result as one. A result whose call was never
 // seen (a stream that started mid-turn, a result without a call id) has no step
-// to close and is dropped.
-func (w *batchedWriter) closeStep(ctx context.Context, callID, preview string, isErr bool) {
+// to close and is dropped. Nothing is recorded for it: a result hands out no id,
+// so the delivery record would say exactly what it already says.
+func (w *batchedWriter) closeStep(_ context.Context, callID, preview string, isErr bool) {
 	s, ok := w.steps[callID]
 	if !ok {
 		return
@@ -693,7 +694,6 @@ func (w *batchedWriter) closeStep(ctx context.Context, callID, preview string, i
 		u.output = stepField(preview)
 	}
 	w.queueStep(u)
-	w.noteDelivered(ctx)
 }
 
 // stepField prepares a payload preview for a step's details or output: escaped
@@ -1489,15 +1489,17 @@ func (w *batchedWriter) sendQueued(ctx context.Context, items []queuedChunk, clo
 			// rolls the reply over a little early — the safe side of Slack's
 			// per-message cap.
 			if room := slackMarkdownBlockMax - w.streamed - batch.textRaw; len(piece) > room {
-				// The reply outgrew one Slack message: land what the batch holds
-				// on it and roll over into a fresh one.
-				if err := w.deliverBatch(ctx, &batch); err != nil {
-					return left(i, raw, answer), err
+				// No room for this piece. Land what the batch already holds
+				// first — that may be all it takes, since the delivery can end
+				// up on a message of its own — and only then roll the open one
+				// over. Either way the next pass has room, so the loop advances.
+				var err error
+				if batch.empty() {
+					err = w.rollOverStream(ctx)
+				} else {
+					err = w.deliverBatch(ctx, &batch)
 				}
-				if w.streamStopped {
-					return nil, nil
-				}
-				if err := w.rollOverStream(ctx); err != nil {
+				if err != nil {
 					return left(i, raw, answer), err
 				}
 				if w.streamStopped {
