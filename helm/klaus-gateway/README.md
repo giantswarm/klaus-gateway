@@ -43,6 +43,7 @@ Channel and routing gateway in front of klaus instances; uses agentgateway as th
 | serviceMonitor.enabled | bool | `true` |  |
 | serviceMonitor.interval | string | `"60s"` |  |
 | serviceMonitor.scrapeTimeout | string | `"45s"` |  |
+| serviceMonitor.labels | object | `{}` | Labels on the ServiceMonitor, beside the chart's own. The Giant Swarm observability platform routes a scrape to a Mimir tenant by `observability.giantswarm.io/tenant`; a monitor without it writes to no tenant. |
 | routing.store | string | `"memory"` |  |
 | routing.boltPath | string | `"/var/lib/klaus-gateway/routes.bolt"` |  |
 | routing.defaultTTL | string | `"24h"` |  |

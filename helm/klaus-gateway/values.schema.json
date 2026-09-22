@@ -753,6 +753,11 @@
                 "interval": {
                     "type": "string"
                 },
+                "labels": {
+                    "type": "object",
+                    "description": "Labels on the ServiceMonitor, beside the chart's own. The Giant Swarm observability platform routes a scrape to a Mimir tenant by `observability.giantswarm.io/tenant`; a monitor without it writes to no tenant.",
+                    "additionalProperties": true
+                },
                 "scrapeTimeout": {
                     "type": "string"
                 }
