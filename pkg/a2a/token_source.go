@@ -28,7 +28,7 @@ func AgentRefFromContext(ctx context.Context) string {
 // channelKey is the context key for the originating channel name.
 type channelKey struct{}
 
-// WithChannel stores the originating channel name (e.g. "slack", "web") in ctx
+// WithChannel stores the originating channel name (e.g. "slack") in ctx
 // for the A2A egress request. An empty channel leaves ctx unchanged.
 func WithChannel(ctx context.Context, channel string) context.Context {
 	if channel == "" {

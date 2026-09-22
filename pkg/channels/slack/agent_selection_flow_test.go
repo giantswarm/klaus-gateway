@@ -80,7 +80,7 @@ func capturingGateway() (*stubGateway, func() []channels.InboundMessage) {
 	var resolved []channels.InboundMessage
 	gw := &stubGateway{
 		deltas: []channels.OutboundDelta{{Content: "ok"}, {Done: true}},
-		onResolve: func(msg channels.InboundMessage) {
+		onDispatch: func(msg channels.InboundMessage) {
 			mu.Lock()
 			resolved = append(resolved, msg)
 			mu.Unlock()
@@ -120,12 +120,12 @@ func TestAgentSelection_PrefixBindsConversationAndRepliesInherit(t *testing.T) {
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, withSelection(&fakeRoster{}, cards))
 
 	sendEvent(t, srv, mention("U1", "/agent sre-agent why are pods crashlooping?", "100.000", ""))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 50*time.Millisecond, "prefixed mention dispatches")
 
 	waitThreadIdle(t, a, "100.000")
 	sendEvent(t, srv, mention("U1", "and the nodes?", "200.000", "100.000"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 2 },
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 },
 		flowWait, 50*time.Millisecond, "unprefixed reply dispatches")
 
 	msgs := resolved()
@@ -144,12 +144,12 @@ func TestAgentSelection_DMPrefixBindsAndRepliesInherit(t *testing.T) {
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, withSelection(&fakeRoster{}, cards))
 
 	sendEvent(t, srv, dmEvent("U1", "/agent sre-agent hello there", "100.000"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 50*time.Millisecond, "prefixed DM dispatches")
 
 	waitThreadIdle(t, a, "100.000")
 	sendEvent(t, srv, dmThreadEvent("U1", "follow up", "200.000", "100.000"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 2 },
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 },
 		flowWait, 50*time.Millisecond, "DM reply dispatches")
 
 	msgs := resolved()
@@ -177,7 +177,7 @@ func TestAgentSelection_UnknownAgentFailsLoudlyWithRoster(t *testing.T) {
 	require.Contains(t, allText(fake.pathCalls("chat.postMessage")), "*sre-agent* — Investigates infra issues",
 		"the failure reply includes the current roster")
 	time.Sleep(100 * time.Millisecond)
-	require.Zero(t, gw.resolveCount(), "nothing is dispatched for an unknown agent")
+	require.Zero(t, gw.dispatchCount(), "nothing is dispatched for an unknown agent")
 }
 
 // Whitespace between the slash and the verb ("/ agent …") parses like the
@@ -189,7 +189,7 @@ func TestAgentSelection_WhitespaceAfterSlash(t *testing.T) {
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, withSelection(&fakeRoster{}, cards))
 
 	sendEvent(t, srv, mention("U1", "/ agent sre-agent do things", "100.000", ""))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 50*time.Millisecond)
 	msgs := resolved()
 	require.Equal(t, "kagent/sre-agent", msgs[0].AgentRef)
@@ -210,7 +210,7 @@ func TestAgentSelection_OnlookerReadOnlyFormsUngated(t *testing.T) {
 
 	// U1 starts and owns the conversation.
 	sendEvent(t, srv, mention("U1", "/agent sre-agent start here", "100.000", ""))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 50*time.Millisecond)
 
 	// An onlooker lists the roster in the thread: allowed, dispatches nothing.
@@ -225,12 +225,12 @@ func TestAgentSelection_OnlookerReadOnlyFormsUngated(t *testing.T) {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "already has its agent")
 	}, flowWait, 50*time.Millisecond)
 	time.Sleep(100 * time.Millisecond)
-	require.Equal(t, 1, gw.resolveCount(), "neither read-only form dispatches")
+	require.Equal(t, 1, gw.dispatchCount(), "neither read-only form dispatches")
 
 	// The initiator's follow-up still resolves the original binding.
 	waitThreadIdle(t, a, "100.000")
 	sendEvent(t, srv, mention("U1", "continue", "400.000", "100.000"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 2 },
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 },
 		flowWait, 50*time.Millisecond)
 	require.Equal(t, "kagent/sre-agent", resolved()[1].AgentRef, "the binding is untouched by onlooker commands")
 }
@@ -249,12 +249,12 @@ func TestAgentSelection_NameOnlySelectsNothing(t *testing.T) {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")),
 			"Nothing was selected — include your question in the same message: `/agent sre-agent <question>`")
 	}, flowWait, 50*time.Millisecond, "the hint says explicitly that nothing was selected")
-	require.Zero(t, gw.resolveCount(), "a name-only /agent starts no conversation")
+	require.Zero(t, gw.dispatchCount(), "a name-only /agent starts no conversation")
 
 	// The next message (a fresh mention) goes to the default agent, not the
 	// one just named.
 	sendEvent(t, srv, mention("U1", "so what now?", "200.000", ""))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 50*time.Millisecond, "the follow-up dispatches")
 	require.Equal(t, "kagent/swarmgeist", resolved()[0].AgentRef, "no binding was created; the default agent applies")
 }
@@ -283,7 +283,7 @@ func TestAgentSelection_BareAgentListsRoster(t *testing.T) {
 	require.Contains(t, listing, "*k8s-agent* — Kubernetes specialist",
 		"an agent without a display-name annotation lists by technical name")
 	require.NotContains(t, listing, "kagent", "namespaces never appear in the roster")
-	require.Zero(t, gw.resolveCount(), "listing the roster dispatches nothing")
+	require.Zero(t, gw.dispatchCount(), "listing the roster dispatches nothing")
 
 	// A second listing within the cache window is served without another
 	// controller call.
@@ -317,7 +317,7 @@ func TestAgentSelection_RefusedInsideExistingConversation(t *testing.T) {
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, withSelection(&fakeRoster{}, cards))
 
 	sendEvent(t, srv, mention("U1", "/agent sre-agent start here", "100.000", ""))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 50*time.Millisecond)
 
 	// Mid-conversation switch attempt: refused, nothing dispatched for it.
@@ -326,12 +326,12 @@ func TestAgentSelection_RefusedInsideExistingConversation(t *testing.T) {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "already has its agent")
 	}, flowWait, 50*time.Millisecond, "the switch is refused with an explanation")
 	time.Sleep(100 * time.Millisecond)
-	require.Equal(t, 1, gw.resolveCount(), "the refused switch dispatches nothing")
+	require.Equal(t, 1, gw.dispatchCount(), "the refused switch dispatches nothing")
 
 	// The conversation stays with its original agent.
 	waitThreadIdle(t, a, "100.000")
 	sendEvent(t, srv, mention("U1", "continue", "300.000", "100.000"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 2 },
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 },
 		flowWait, 50*time.Millisecond)
 	msgs := resolved()
 	require.Equal(t, "kagent/sre-agent", msgs[1].AgentRef, "the binding is unchanged after a refused switch")
@@ -356,7 +356,7 @@ func TestAgentSelection_PaneRosterThenSelectBinds(t *testing.T) {
 	}, flowWait, 50*time.Millisecond, "the roster listing posts")
 
 	sendEvent(t, srv, dmThreadEvent("U1", `/agent "SRE Agent" check crashing pods in gazelle`, "300.000", "100.000"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 50*time.Millisecond, "the selection after the roster listing dispatches")
 	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "already has its agent",
 		"a consumed roster request must not make the selection a refused switch")
@@ -377,12 +377,12 @@ func TestAgentSelection_PaneFirstMessageBindsAndInherits(t *testing.T) {
 
 	// First message of a new pane chat: ts 200.000, thread anchor 100.000.
 	sendEvent(t, srv, dmThreadEvent("U1", "/agent sre-agent hello there", "200.000", "100.000"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 50*time.Millisecond, "the pane's first message binds and dispatches")
 
 	waitThreadIdle(t, a, "100.000")
 	sendEvent(t, srv, dmThreadEvent("U1", "follow up", "300.000", "100.000"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 2 },
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 },
 		flowWait, 50*time.Millisecond)
 
 	msgs := resolved()
@@ -396,7 +396,7 @@ func TestAgentSelection_PaneFirstMessageBindsAndInherits(t *testing.T) {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "already has its agent")
 	}, flowWait, 50*time.Millisecond)
 	time.Sleep(100 * time.Millisecond)
-	require.Equal(t, 2, gw.resolveCount(), "the refused switch dispatches nothing")
+	require.Equal(t, 2, gw.dispatchCount(), "the refused switch dispatches nothing")
 }
 
 // A new pane chat is not greeted with the "starting fresh" resume notice: its
@@ -416,7 +416,7 @@ func TestPane_NewChatNotGreetedWithStartingFresh(t *testing.T) {
 		_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
 		sendEvent(t, srv, dmThreadEvent("U1", "hello", "200.000", "100.000"))
-		require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
+		require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 			flowWait, 50*time.Millisecond)
 		time.Sleep(150 * time.Millisecond)
 		require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "starting fresh",
@@ -456,12 +456,12 @@ func TestAgentSelection_QuotedDisplayNameBindsConversation(t *testing.T) {
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, withSelection(roster, cards))
 
 	sendEvent(t, srv, mention("U1", `/agent "SRE Agent" why are pods crashing in gazelle?`, "100.000", ""))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 50*time.Millisecond, "quoted display-name selection dispatches")
 
 	waitThreadIdle(t, a, "100.000")
 	sendEvent(t, srv, mention("U1", "and the nodes?", "200.000", "100.000"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 2 },
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 },
 		flowWait, 50*time.Millisecond)
 
 	msgs := resolved()
@@ -483,7 +483,7 @@ func TestAgentSelection_QuotedDisplayNameBareDefault(t *testing.T) {
 		func(a *slackadapter.Adapter) { a.DefaultAgent = "swarmgeist" })
 
 	sendEvent(t, srv, mention("U1", `/agent "SRE Agent" check gazelle`, "100.000", ""))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 50*time.Millisecond)
 	require.Equal(t, "sre-agent", resolved()[0].AgentRef, "bare default keeps refs bare")
 }
@@ -514,7 +514,7 @@ func TestAgentSelection_QuotedDisplayNameNoMatchAndAmbiguous(t *testing.T) {
 	require.Contains(t, allText(fake.pathCalls("chat.postMessage")), "`/agent kagent/sre-agent <question>`",
 		"the ambiguity reply lists the technical selectors")
 	time.Sleep(100 * time.Millisecond)
-	require.Zero(t, gw.resolveCount(), "neither failure dispatches anything")
+	require.Zero(t, gw.dispatchCount(), "neither failure dispatches anything")
 }
 
 // A roster fetch failure during a quoted selection refuses with a try-again
@@ -530,7 +530,7 @@ func TestAgentSelection_QuotedDisplayNameRosterFailure(t *testing.T) {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "couldn't check the available agents")
 	}, flowWait, 50*time.Millisecond)
 	time.Sleep(100 * time.Millisecond)
-	require.Zero(t, gw.resolveCount())
+	require.Zero(t, gw.dispatchCount())
 }
 
 // Two users' prefixed conversations in one channel are independent: each new
@@ -543,7 +543,7 @@ func TestAgentSelection_TwoUsersIndependentConversations(t *testing.T) {
 
 	sendEvent(t, srv, mention("U1", "/agent sre-agent pods are crashing", "100.000", ""))
 	sendEvent(t, srv, mention("U2", "/agent k8s-agent explain operators", "200.000", ""))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 2 },
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 },
 		flowWait, 50*time.Millisecond)
 
 	byThread := map[string]string{}
@@ -570,7 +570,7 @@ func TestAgentSelection_NamespaceCompletion(t *testing.T) {
 
 	sendEvent(t, srv, mention("U1", "/agent sre-agent check gazelle", "100.000", ""))
 	sendEvent(t, srv, mention("U2", "/agent other/lab-agent check the lab", "200.000", ""))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 2 },
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 },
 		flowWait, 50*time.Millisecond)
 
 	byThread := map[string]string{}
@@ -591,7 +591,7 @@ func TestAgentSelection_CaseInsensitiveName(t *testing.T) {
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, withSelection(&fakeRoster{}, cards))
 
 	sendEvent(t, srv, mention("U1", "/agent SRE-Agent why?", "100.000", ""))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 50*time.Millisecond)
 	require.Equal(t, "kagent/sre-agent", resolved()[0].AgentRef)
 }
@@ -627,7 +627,7 @@ func TestAgentSelection_UnavailableWithoutCards(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "selection isn't available")
 	}, flowWait, 50*time.Millisecond)
-	require.Zero(t, gw.resolveCount())
+	require.Zero(t, gw.dispatchCount())
 }
 
 // Re-selecting the conversation's OWN agent mid-thread is a no-op, not a
@@ -644,19 +644,19 @@ func TestAgentSelection_SameAgentReselectionDispatchesQuietly(t *testing.T) {
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, withSelection(roster, cards))
 
 	sendEvent(t, srv, mention("U1", "/agent sre-agent why are pods crashlooping?", "100.000", ""))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 50*time.Millisecond, "the opener dispatches")
 
 	// The same agent re-selected in-thread, technical form: dispatches.
 	waitThreadIdle(t, a, "100.000")
 	sendEvent(t, srv, mention("U1", "/agent sre-agent and the nodes?", "200.000", "100.000"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 2 },
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 },
 		flowWait, 50*time.Millisecond, "the same-agent re-selection dispatches")
 
 	// And by quoted display name: still the same agent, still dispatches.
 	waitThreadIdle(t, a, "100.000")
 	sendEvent(t, srv, mention("U1", `/agent "SRE Agent" anything else?`, "300.000", "100.000"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 3 },
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 3 },
 		flowWait, 50*time.Millisecond, "the quoted same-agent re-selection dispatches")
 
 	msgs := resolved()
@@ -680,12 +680,12 @@ func TestAgentSelection_DefaultAgentReselectionDispatchesQuietly(t *testing.T) {
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, withSelection(&fakeRoster{}, cards))
 
 	sendEvent(t, srv, mention("U1", "check the cluster", "100.000", ""))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 50*time.Millisecond, "the unprefixed opener dispatches on the default agent")
 
 	waitThreadIdle(t, a, "100.000")
 	sendEvent(t, srv, mention("U1", "/agent swarmgeist and the nodes?", "200.000", "100.000"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 2 },
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 },
 		flowWait, 50*time.Millisecond, "re-selecting the default agent dispatches")
 
 	msgs := resolved()
@@ -738,7 +738,7 @@ func TestAgentSelection_TextPathReadsCatalogueAsCaller(t *testing.T) {
 	require.Equal(t, []string{"tok-u1"}, roster.seen(), "the listing runs as the caller")
 
 	sendEvent(t, srv, mention("U1", "/agent sre-agent why?", "200.000", ""))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 50*time.Millisecond, "the selection dispatches")
 	require.Equal(t, []string{"tok-u1"}, cards.seen(), "the validation runs as the caller")
 }
@@ -759,13 +759,13 @@ func TestAgentSelection_QualifiedNameOfBoundAgentIsNotASwitch(t *testing.T) {
 
 	// The root mention carries no prefix: the thread binds to the bare default.
 	sendEvent(t, srv, mention("U1", "why are pods crashlooping?", "100.000", ""))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 50*time.Millisecond, "the unprefixed opener dispatches on the default agent")
 
 	// A reply names the bound agent by its qualified technical name.
 	waitThreadIdle(t, a, "100.000")
 	sendEvent(t, srv, mention("U1", "/agent kagent/sre-agent again", "200.000", "100.000"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 2 },
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 },
 		flowWait, 50*time.Millisecond, "the qualified name of the bound agent dispatches, not refused")
 
 	msgs := resolved()
@@ -809,7 +809,7 @@ func TestAgentSelection_QuotedUnlinkedAsksToSignIn(t *testing.T) {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "I need to know who you are")
 	}, flowWait, 50*time.Millisecond, "the unlinked caller is told to sign in")
 	time.Sleep(100 * time.Millisecond)
-	require.Zero(t, gw.resolveCount(), "nothing is dispatched")
+	require.Zero(t, gw.dispatchCount(), "nothing is dispatched")
 	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "couldn't check the available agents")
 }
 
@@ -840,7 +840,7 @@ func TestAgentSelection_UnquotedUnlinkedAsksToSignIn(t *testing.T) {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "I need to know who you are")
 	}, flowWait, 50*time.Millisecond, "the unlinked caller is told to sign in")
 	time.Sleep(100 * time.Millisecond)
-	require.Zero(t, gw.resolveCount(), "nothing is dispatched")
+	require.Zero(t, gw.dispatchCount(), "nothing is dispatched")
 	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "I don't know an agent named")
 }
 
@@ -878,6 +878,6 @@ func TestAgentSelection_NotRunnableAgentIsRefusedWithReason(t *testing.T) {
 	require.Contains(t, allText(fake.pathCalls("chat.postMessage")), "*Issue Agent*",
 		"the roster follows, so the person can pick an agent that runs")
 	time.Sleep(100 * time.Millisecond)
-	require.Zero(t, gw.resolveCount(), "nothing is dispatched")
+	require.Zero(t, gw.dispatchCount(), "nothing is dispatched")
 	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "I don't know an agent named")
 }

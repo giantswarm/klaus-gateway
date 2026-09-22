@@ -24,7 +24,7 @@ func TestFacade_SendCompletionViaA2A_MarksTurnPhases(t *testing.T) {
 	f, _ := newA2AFacade(agent)
 
 	ctx, timer := channels.BeginTurn(t.Context(), "slack", time.Now())
-	ch, err := f.SendCompletion(ctx, channels.InstanceRef{}, slackMsg("hi"))
+	ch, err := f.SendCompletion(ctx, slackMsg("hi"))
 	require.NoError(t, err)
 	drain(t, ch)
 
@@ -38,14 +38,14 @@ func TestFacade_SendCompletionViaA2A_MarksTurnPhases(t *testing.T) {
 	require.Equal(t, string(taskInfo.TaskID), timer.TaskID())
 
 	ctx2, timer2 := channels.BeginTurn(t.Context(), "slack", time.Now())
-	ch, err = f.SendCompletion(ctx2, channels.InstanceRef{}, slackMsg("again"))
+	ch, err = f.SendCompletion(ctx2, slackMsg("again"))
 	require.NoError(t, err)
 	drain(t, ch)
 	require.NotContains(t, timer2.Phases(), channels.PhaseCreateInstance, "a follow-up reuses the thread's instance")
 	require.Contains(t, timer2.Phases(), channels.PhaseFirstEvent)
 
 	// A context without a timer is served the same way.
-	ch, err = f.SendCompletion(t.Context(), channels.InstanceRef{}, slackMsg("plain"))
+	ch, err = f.SendCompletion(t.Context(), slackMsg("plain"))
 	require.NoError(t, err)
 	drain(t, ch)
 }

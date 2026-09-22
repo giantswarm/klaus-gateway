@@ -27,9 +27,9 @@ func TestIntegration_BootWithBolt(t *testing.T) {
 	t.Cleanup(func() { _ = s.Close() })
 
 	// Seed state so the store is non-empty when ready probes run.
-	k := store.Key{Channel: "web", ChannelID: "c1", UserID: "u1", ThreadID: "t1"}
+	k := store.Key{Channel: "slack", ChannelID: "c1", ThreadID: "t1"}
 	require.NoError(t, s.Put(context.Background(), k, store.Entry{
-		Instance: "i1", LastSeen: time.Now(), TTL: time.Hour,
+		AgentInstanceID: "i1", LastSeen: time.Now(), TTL: time.Hour,
 	}))
 
 	srv := server.New(server.Options{

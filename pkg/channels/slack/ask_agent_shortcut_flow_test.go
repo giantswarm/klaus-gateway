@@ -73,7 +73,7 @@ func TestAskAgentShortcut_StartsConversationInTheMessageThread(t *testing.T) {
 	require.False(t, prefilled, "the shortcut has no question to prefill")
 
 	sendAskAgentSubmission(t, srv, "U1", view["private_metadata"].(string), "kagent/sre-agent", "why are pods crashlooping?")
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 50*time.Millisecond, "the submission dispatches the first turn")
 
 	echo := fake.pathCalls("chat.postMessage")[0]
@@ -114,7 +114,7 @@ func TestAskAgentShortcut_RootMessageOpensItsOwnThread(t *testing.T) {
 	require.Equal(t, "500.000", pm["t"], "a root message's own ts is the thread")
 
 	sendAskAgentSubmission(t, srv, "U1", pmRaw, "kagent/sre-agent", "what happened here?")
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 50*time.Millisecond, "the submission dispatches the first turn")
 
 	require.Equal(t, "500.000", fake.pathCalls("chat.postMessage")[0].params["thread_ts"])
@@ -138,7 +138,7 @@ func TestAskAgentShortcut_ThreadWithAnAgentIsRefused(t *testing.T) {
 	fake.waitForPath(t, "response_url", 1)
 	require.Contains(t, responseURLTexts(fake), "already talks to *SRE Agent*")
 	require.Empty(t, fake.pathCalls("views.open"), "no picker in a thread that has its agent")
-	require.Equal(t, 0, gw.resolveCount())
+	require.Equal(t, 0, gw.dispatchCount())
 }
 
 // Without a caller identity the controller refuses the roster listing; the
@@ -176,7 +176,7 @@ func TestAskAgentShortcut_ThreadOwnedBySomeoneElseIsRefused(t *testing.T) {
 	fake.waitForPath(t, "response_url", 1)
 	require.Contains(t, responseURLTexts(fake), "belongs to <@UA>")
 	require.Empty(t, fake.pathCalls("views.open"), "no picker in another person's thread")
-	require.Equal(t, 0, gw.resolveCount())
+	require.Equal(t, 0, gw.dispatchCount())
 	entry, _, _ := gw.rec().ThreadRecord(context.Background(), "slack", "C1", "100.000")
 	require.Equal(t, "UA", entry.Initiator)
 	require.Empty(t, entry.AgentRef, "nothing is bound")
@@ -204,7 +204,7 @@ func TestAskAgentShortcut_OwnedBetweenOpenAndSubmitIsRefused(t *testing.T) {
 	require.Contains(t, responseURLTexts(fake), "belongs to <@UA>")
 	time.Sleep(150 * time.Millisecond)
 	require.Empty(t, fake.pathCalls("chat.postMessage"), "no echo is posted")
-	require.Equal(t, 0, gw.resolveCount(), "nothing runs")
+	require.Equal(t, 0, gw.dispatchCount(), "nothing runs")
 	entry, _, _ := gw.rec().ThreadRecord(context.Background(), "slack", "C1", "100.000")
 	require.Equal(t, "UA", entry.Initiator)
 	require.Empty(t, entry.AgentRef, "nothing is bound")
@@ -231,5 +231,5 @@ func TestAskAgentShortcut_BoundBetweenOpenAndSubmitIsRefused(t *testing.T) {
 	require.Contains(t, responseURLTexts(fake), "already talks to *SRE Agent*")
 	time.Sleep(150 * time.Millisecond)
 	require.Empty(t, fake.pathCalls("chat.postMessage"), "no echo is posted")
-	require.Equal(t, 0, gw.resolveCount(), "nothing runs")
+	require.Equal(t, 0, gw.dispatchCount(), "nothing runs")
 }

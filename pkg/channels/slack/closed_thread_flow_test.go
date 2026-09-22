@@ -60,7 +60,7 @@ func TestClosedThread_UnmentionedReplyGetsTheNotice(t *testing.T) {
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
 
 	sendEvent(t, srv, mention("U1", "why is the cluster unhappy?", "800.000", ""))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, flowWait, 20*time.Millisecond)
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 20*time.Millisecond)
 	waitThreadIdle(t, a, "800.000")
 	before := len(fake.pathCalls("chat.postEphemeral"))
 
@@ -73,13 +73,13 @@ func TestClosedThread_UnmentionedReplyGetsTheNotice(t *testing.T) {
 	text := allText(fake.pathCalls("chat.postEphemeral"))
 	require.Contains(t, text, "This conversation ended after 90 days without messages.")
 	require.Contains(t, text, "Mention me to start a new one.")
-	require.Equal(t, 1, gw.resolveCount(), "nothing is dispatched into a conversation that ended")
+	require.Equal(t, 1, gw.dispatchCount(), "nothing is dispatched into a conversation that ended")
 
 	sendEvent(t, srv, threadReply("U2", "anyone?", "800.002", "800.000"))
 	require.Eventually(t, func() bool {
 		return len(fake.pathCalls("chat.postEphemeral")) == before+2
 	}, flowWait, 20*time.Millisecond, "every reply in the ended conversation is told, each author privately")
-	require.Equal(t, 1, gw.resolveCount())
+	require.Equal(t, 1, gw.dispatchCount())
 	require.Empty(t, fake.pathCalls("conversations.replies"), "the state comes from the row, never from Slack history")
 }
 
@@ -96,7 +96,7 @@ func TestClosedThread_MentionStartsTheThreadOver(t *testing.T) {
 	ctx := context.Background()
 
 	sendEvent(t, srv, mention("U1", "look at the nodes", "810.000", ""))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, flowWait, 20*time.Millisecond)
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 20*time.Millisecond)
 	waitThreadIdle(t, a, "810.000")
 
 	// The conversation as it stood: bound to an agent and its instance, with
@@ -110,7 +110,7 @@ func TestClosedThread_MentionStartsTheThreadOver(t *testing.T) {
 	advance(channels.DefaultThreadTTL + time.Hour)
 
 	sendEvent(t, srv, mention("U3", "picking this back up", "810.001", "810.000"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 2 }, flowWait, 20*time.Millisecond)
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 }, flowWait, 20*time.Millisecond)
 	waitThreadIdle(t, a, "810.000")
 
 	row, ok, err := rec.ThreadRecord(ctx, "slack", "C1", "810.000")
@@ -129,7 +129,7 @@ func TestClosedThread_MentionStartsTheThreadOver(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postEphemeral")), "waiting for the thread owner")
 	}, flowWait, 20*time.Millisecond, "the colleague has to be allowed in again")
-	require.Equal(t, 2, gw.resolveCount(), "and their message does not reach the agent meanwhile")
+	require.Equal(t, 2, gw.dispatchCount(), "and their message does not reach the agent meanwhile")
 }
 
 // A reply in a thread the store has no row for stays silent, as before: the
@@ -144,11 +144,11 @@ func TestClosedThread_ReplyWithoutARowStaysSilent(t *testing.T) {
 
 	sendEvent(t, srv, threadReply("U1", "lunch anyone?", "820.001", "820.000"))
 	time.Sleep(150 * time.Millisecond)
-	require.Zero(t, gw.resolveCount())
+	require.Zero(t, gw.dispatchCount())
 	require.Empty(t, fake.pathCalls("chat.postEphemeral"), "a thread the bot was never in is none of its business")
 
 	sendEvent(t, srv, mention("U1", "have a look", "830.000", ""))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, flowWait, 20*time.Millisecond)
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 20*time.Millisecond)
 	waitThreadIdle(t, a, "830.000")
 	before := len(fake.pathCalls("chat.postEphemeral"))
 
@@ -156,7 +156,7 @@ func TestClosedThread_ReplyWithoutARowStaysSilent(t *testing.T) {
 
 	sendEvent(t, srv, threadReply("U1", "still there?", "830.001", "830.000"))
 	time.Sleep(150 * time.Millisecond)
-	require.Equal(t, 1, gw.resolveCount())
+	require.Equal(t, 1, gw.dispatchCount())
 	require.Len(t, fake.pathCalls("chat.postEphemeral"), before,
 		"the row is gone, so there is nothing left to tell its author")
 }
@@ -175,7 +175,7 @@ func TestClosedThread_MentionTwinIsNotToldTheConversationEnded(t *testing.T) {
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
 
 	sendEvent(t, srv, mention("U1", "why is the cluster unhappy?", "840.000", ""))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, flowWait, 20*time.Millisecond)
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 20*time.Millisecond)
 	waitThreadIdle(t, a, "840.000")
 	before := len(fake.pathCalls("chat.postEphemeral"))
 
@@ -187,14 +187,14 @@ func TestClosedThread_MentionTwinIsNotToldTheConversationEnded(t *testing.T) {
 	time.Sleep(150 * time.Millisecond)
 	require.Len(t, fake.pathCalls("chat.postEphemeral"), before,
 		"the mention's message twin must not say the conversation ended")
-	require.Equal(t, 1, gw.resolveCount(), "and it does not dispatch either")
+	require.Equal(t, 1, gw.dispatchCount(), "and it does not dispatch either")
 
 	// Then the app_mention twin of the same message, which starts over.
 	sendEvent(t, srv, mention("U1", "<@UBOT> picking this back up", "840.001", "840.000"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 2 }, flowWait, 20*time.Millisecond,
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 }, flowWait, 20*time.Millisecond,
 		"the app_mention twin starts the conversation over")
 	waitThreadIdle(t, a, "840.000")
-	require.Equal(t, 2, gw.resolveCount(), "the agent answers once")
+	require.Equal(t, 2, gw.dispatchCount(), "the agent answers once")
 	require.Len(t, fake.pathCalls("chat.postEphemeral"), before,
 		"and its author is never told the conversation ended")
 }

@@ -59,7 +59,7 @@ func TestTypedResume_FailureKeepsPendingTask(t *testing.T) {
 	var mu sync.Mutex
 	var resolved []channels.InboundMessage
 	gw := &stubGateway{
-		onResolve: func(msg channels.InboundMessage) {
+		onDispatch: func(msg channels.InboundMessage) {
 			mu.Lock()
 			resolved = append(resolved, msg)
 			mu.Unlock()
@@ -87,7 +87,7 @@ func TestTypedResume_FailureKeepsPendingTask(t *testing.T) {
 	// below owns the successful resume.
 	firstAttempt := 0
 	require.Eventually(t, func() bool {
-		if gw.resolveCount() >= 2 {
+		if gw.dispatchCount() >= 2 {
 			return true
 		}
 		firstAttempt++
@@ -131,7 +131,7 @@ func TestPromptFlushFailure_KeepsPendingTask(t *testing.T) {
 	var mu sync.Mutex
 	var captured []channels.InboundMessage
 	gw := &stubGateway{
-		onResolve: func(msg channels.InboundMessage) {
+		onDispatch: func(msg channels.InboundMessage) {
 			mu.Lock()
 			captured = append(captured, msg)
 			mu.Unlock()
@@ -182,7 +182,7 @@ func TestStop_DuringTurnStartWindow(t *testing.T) {
 	var once sync.Once
 	gw := &stubGateway{
 		deltas: []channels.OutboundDelta{{Content: "THE-ANSWER"}, {Done: true}},
-		onResolve: func(channels.InboundMessage) {
+		onDispatch: func(channels.InboundMessage) {
 			once.Do(func() { close(resolveEntered) })
 			<-releaseResolve
 		},
@@ -263,7 +263,7 @@ func TestAttachmentOnlyReply_LeavesPendingTaskAndAsksForText(t *testing.T) {
 	var mu sync.Mutex
 	var resolved []channels.InboundMessage
 	gw := &stubGateway{
-		onResolve: func(msg channels.InboundMessage) {
+		onDispatch: func(msg channels.InboundMessage) {
 			mu.Lock()
 			resolved = append(resolved, msg)
 			mu.Unlock()
@@ -317,7 +317,7 @@ func TestDecisionReplyWithAttachment_PostsNotForwardedNote(t *testing.T) {
 	var mu sync.Mutex
 	var resolved []channels.InboundMessage
 	gw := &stubGateway{
-		onResolve: func(msg channels.InboundMessage) {
+		onDispatch: func(msg channels.InboundMessage) {
 			mu.Lock()
 			resolved = append(resolved, msg)
 			mu.Unlock()
@@ -377,7 +377,7 @@ func TestStop_BareWordDuringTurnInterrupts(t *testing.T) {
 
 	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "still finishing",
 		"a bare stop is not bounced as busy")
-	require.Equal(t, 1, gw.resolveCount(), "a bare stop never reaches the agent as a turn")
+	require.Equal(t, 1, gw.dispatchCount(), "a bare stop never reaches the agent as a turn")
 }
 
 // A bare "stop" in a thread with no running turn keeps today's behaviour: it
@@ -392,7 +392,7 @@ func TestStop_BareWordIdleThreadReachesAgent(t *testing.T) {
 	time.Sleep(150 * time.Millisecond)
 
 	sendEvent(t, srv, dmThreadEvent("U1", "stop", "801.000", "800.000"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 2 }, flowWait, 50*time.Millisecond,
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 }, flowWait, 50*time.Millisecond,
 		"an idle bare stop is dispatched to the agent")
 	fake.waitForPath(t, "reactions.remove", 2)
 

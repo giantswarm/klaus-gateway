@@ -21,28 +21,18 @@ import (
 	"github.com/giantswarm/klaus-gateway/internal/config"
 	"github.com/giantswarm/klaus-gateway/internal/version"
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
-	"github.com/giantswarm/klaus-gateway/pkg/api"
 	"github.com/giantswarm/klaus-gateway/pkg/auth/musterlink"
 	"github.com/giantswarm/klaus-gateway/pkg/auth/satoken"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
-	cliachannel "github.com/giantswarm/klaus-gateway/pkg/channels/cli"
 	slackchannel "github.com/giantswarm/klaus-gateway/pkg/channels/slack"
-	"github.com/giantswarm/klaus-gateway/pkg/channels/web"
-	"github.com/giantswarm/klaus-gateway/pkg/instance"
-	"github.com/giantswarm/klaus-gateway/pkg/lifecycle"
-	"github.com/giantswarm/klaus-gateway/pkg/lifecycle/klausctl"
-	"github.com/giantswarm/klaus-gateway/pkg/lifecycle/operator"
-	"github.com/giantswarm/klaus-gateway/pkg/lifecycle/static"
 	"github.com/giantswarm/klaus-gateway/pkg/muster"
 	"github.com/giantswarm/klaus-gateway/pkg/observability"
 	"github.com/giantswarm/klaus-gateway/pkg/reviews"
-	"github.com/giantswarm/klaus-gateway/pkg/routing"
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
 	boltstore "github.com/giantswarm/klaus-gateway/pkg/routing/store/bolt"
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store/memory"
 	valkeystore "github.com/giantswarm/klaus-gateway/pkg/routing/store/valkey"
 	"github.com/giantswarm/klaus-gateway/pkg/server"
-	"github.com/giantswarm/klaus-gateway/pkg/upstream"
 )
 
 func main() {
@@ -79,8 +69,6 @@ func run(args []string) error {
 		"listen_address", cfg.ListenAddress,
 		"admin_address", cfg.AdminAddress,
 		"store", cfg.Store,
-		"driver", cfg.Driver,
-		"agentgateway_url", cfg.AgentgatewayURL,
 	)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -121,27 +109,7 @@ func run(args []string) error {
 		}
 	}()
 
-	manager, err := buildLifecycle(cfg)
-	if err != nil {
-		return fmt.Errorf("build lifecycle: %w", err)
-	}
-
-	upstreamClient, err := upstream.Parse(cfg.AgentgatewayURL)
-	if err != nil {
-		return fmt.Errorf("parse agentgateway url: %w", err)
-	}
-
-	router := routing.New(routeStore, manager, cfg.AutoCreate, cfg.DefaultTTL)
-
-	instanceClient := instance.NewClient()
-	if upstreamClient != nil {
-		instanceClient.Upstream = upstreamClient
-	}
-
 	facade := &channels.Facade{
-		Router:    router,
-		Client:    instanceClient,
-		Lifecycle: manager,
 		Routes:    routeStore,
 		ThreadTTL: cfg.ThreadTTL,
 		// A turn a shutdown cuts short is delivered after the restart only when
@@ -152,18 +120,6 @@ func run(args []string) error {
 	// Adapters are stopped in reverse start order once the servers have
 	// drained, and before the clients they use are closed (see stopAdapters).
 	var adapters []channels.ChannelAdapter
-
-	var webAdapter *web.Adapter
-	if cfg.Web.Enabled {
-		webAdapter = &web.Adapter{Logger: logger, Turns: metrics}
-		if cfg.A2A.Enabled {
-			webAdapter.DefaultAgent = cfg.A2A.DefaultAgent
-		}
-		if err := webAdapter.Start(ctx, facade); err != nil {
-			return fmt.Errorf("start web adapter: %w", err)
-		}
-		adapters = append(adapters, webAdapter)
-	}
 
 	publicMux := chi.NewRouter()
 
@@ -208,19 +164,6 @@ func run(args []string) error {
 		slackAdapter.Mount(publicMux)
 		adapters = append(adapters, slackAdapter)
 		logger.Info("slack adapter started", "mode", cfg.Slack.Mode)
-	}
-
-	if cfg.CLI.Enabled {
-		cliAdapter := &cliachannel.Adapter{Logger: logger, Turns: metrics}
-		if cfg.A2A.Enabled {
-			cliAdapter.DefaultAgent = cfg.A2A.DefaultAgent
-		}
-		if err := cliAdapter.Start(ctx, facade); err != nil {
-			return fmt.Errorf("start cli adapter: %w", err)
-		}
-		cliAdapter.Mount(publicMux)
-		adapters = append(adapters, cliAdapter)
-		logger.Info("cli adapter started")
 	}
 
 	if cfg.OBO.Enabled {
@@ -294,19 +237,11 @@ func run(args []string) error {
 		)
 	}
 
-	apiHandler := &api.Handler{
-		Manager:  manager,
-		Streamer: instanceClient,
-		Logger:   logger,
-	}
-
 	if cfg.A2A.Enabled {
 		// The controller is spoken to as the person behind the turn only: the
-		// forwarded Dex id_token is the sole credential, on every channel. A turn
-		// without one is refused instead of running as the gateway's machine
-		// identity (the ServiceAccount token, when mounted, serves the
-		// Klaus-instance paths only).
-		tokenSource := pkga2a.ForwardedTokenSource{ForwardedOnlyChannels: []string{slackchannel.ChannelName, web.ChannelName, cliachannel.ChannelName}}
+		// forwarded Dex id_token is the sole credential. A turn without one is
+		// refused instead of running as the gateway's machine identity.
+		tokenSource := pkga2a.ForwardedTokenSource{ForwardedOnlyChannels: []string{slackchannel.ChannelName}}
 		kagentClient, err := pkga2a.Dial(pkga2a.Config{
 			Target:                  cfg.A2A.URL,
 			CAFile:                  cfg.A2A.CAFile,
@@ -337,10 +272,6 @@ func run(args []string) error {
 		)
 	}
 
-	apiHandler.Mount(publicMux)
-	if webAdapter != nil {
-		webAdapter.Mount(publicMux)
-	}
 	// Everything a resubscription needs is wired now: the turns the previous
 	// process left running are picked up from here.
 	if slackAdapter != nil {
@@ -352,7 +283,7 @@ func run(args []string) error {
 		AdminAddress:  cfg.AdminAddress,
 		Logger:        logger,
 		Metrics:       metrics,
-		Ready:         readiness(routeStore, upstreamClient),
+		Ready:         readiness(routeStore),
 		Public:        publicMux,
 	})
 
@@ -567,19 +498,6 @@ func podNamespace() string {
 	return "default"
 }
 
-func buildLifecycle(cfg config.Config) (lifecycle.Manager, error) {
-	switch cfg.Driver {
-	case config.DriverKlausctl:
-		return klausctl.New(cfg.KlausctlBin)
-	case config.DriverOperator:
-		return operator.New(cfg.OperatorMCPURL, cfg.OperatorMCPToken)
-	case config.DriverStatic:
-		return static.New(cfg.StaticInstances)
-	default:
-		return nil, fmt.Errorf("unknown driver %q", cfg.Driver)
-	}
-}
-
 // buildKubeConfig returns a *rest.Config using in-cluster config when running
 // inside Kubernetes, falling back to the local kubeconfig otherwise.
 func buildKubeConfig() (*rest.Config, error) {
@@ -599,22 +517,18 @@ func buildKubeConfig() (*rest.Config, error) {
 }
 
 // readiness returns 200 once the store is responsive: a store that can ping
-// its server (valkey) is pinged, any other is listed. The upstream URL is
-// considered reachable if it parses; a real connect probe lands in the
-// follow-up PR alongside the channel adapters.
-func readiness(s store.Store, up *upstream.Agentgateway) server.ReadinessFunc {
+// its server (valkey) is pinged, any other is listed.
+func readiness(s store.Store) server.ReadinessFunc {
 	return func(ctx context.Context) error {
 		if p, ok := s.(interface{ Ping(context.Context) error }); ok {
 			if err := p.Ping(ctx); err != nil {
 				return fmt.Errorf("store: %w", err)
 			}
-			_ = up
 			return nil
 		}
 		if _, err := s.List(ctx); err != nil {
 			return fmt.Errorf("store: %w", err)
 		}
-		_ = up
 		return nil
 	}
 }

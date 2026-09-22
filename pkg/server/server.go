@@ -1,10 +1,9 @@
 // Package server wires the public HTTP mux and the admin HTTP mux and manages
 // their lifecycles.
 //
-// The public mux hosts channel adapters and the `/v1/{instance}/...` front
-// door in the follow-up PR. Today it's an empty chi router: requests return
-// 404 cleanly, traces are still emitted, and the middleware stack is already
-// in place.
+// The public mux hosts the channel adapters, the muster account-linking
+// routes and the team-review endpoint; the admin mux hosts health, readiness
+// and metrics.
 package server
 
 import (

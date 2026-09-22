@@ -85,22 +85,12 @@ func (a *Adapter) runTurn(ctx context.Context, msg channels.InboundMessage, slac
 		}
 	}
 
-	ref, err := a.gw.Resolve(ctx, msg)
-	if err != nil {
-		restoreTask()
-		if hooks.onFailure != nil && !isCorruptSessionErr(err) {
-			hooks.onFailure()
-		}
-		a.completeTurn(ctx, msg, slackUser, channels.OutcomeResolveFailed, err)
-		return fmt.Errorf("slack: resolve: %w", err)
-	}
-
 	turnCtx, done := a.registerTurn(ctx, msg.ThreadID)
 	defer done()
 
 	a.logTurnDispatch(ctx, msg, slackUser, task != nil, agentSource)
 
-	deltas, err := a.gw.SendCompletion(turnCtx, ref, msg)
+	deltas, err := a.gw.SendCompletion(turnCtx, msg)
 	if err != nil {
 		restoreTask()
 		if hooks.onFailure != nil && !isCorruptSessionErr(err) {

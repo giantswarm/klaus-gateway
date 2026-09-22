@@ -185,7 +185,7 @@ func TestEventsHandler_AppMentionDispatch(t *testing.T) {
 	var capturedMessages []channels.InboundMessage
 
 	gw := &stubGateway{
-		onResolve: func(msg channels.InboundMessage) {
+		onDispatch: func(msg channels.InboundMessage) {
 			mu.Lock()
 			capturedMessages = append(capturedMessages, msg)
 			mu.Unlock()
@@ -239,7 +239,6 @@ func TestEventsHandler_AppMentionDispatch(t *testing.T) {
 	mu.Unlock()
 	require.Equal(t, "slack", got.Channel)
 	require.Equal(t, "C456", got.ChannelID)
-	require.Empty(t, got.UserID, "thread-scoped session shares one contextID")
 	require.Equal(t, "U123", got.Subject, "Subject carries the raw Slack user ID for access control")
 	require.Equal(t, helloText, got.Text)
 	require.Equal(t, "test-agent", got.AgentRef, "AgentRef must be set to DefaultAgent")
@@ -248,7 +247,7 @@ func TestEventsHandler_AppMentionDispatch(t *testing.T) {
 func TestEventsHandler_RedeliveredEventDropped(t *testing.T) {
 	var dispatched atomic.Int32
 	gw := &stubGateway{
-		onResolve: func(channels.InboundMessage) { dispatched.Add(1) },
+		onDispatch: func(channels.InboundMessage) { dispatched.Add(1) },
 	}
 
 	fakeSlack := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -323,13 +322,13 @@ func TestEventsHandler_NewcomerGatedAfterInitiator(t *testing.T) {
 
 	// U001 launches the thread and becomes its initiator.
 	send(`{"type":"event_callback","event":{"type":"app_mention","user":"U001","text":"<@BOT> hi","channel":"C1","ts":"111.222"}}`)
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 50*time.Millisecond, "the initiator's mention is dispatched")
 
 	// U999 tries to instruct in the same thread: gated, not dispatched.
 	send(`{"type":"event_callback","event":{"type":"app_mention","user":"U999","text":"<@BOT> me too","channel":"C1","ts":"333.444","thread_ts":"111.222"}}`)
 	time.Sleep(150 * time.Millisecond)
-	require.Equal(t, 1, gw.resolveCount(), "a newcomer must not trigger resolve until approved")
+	require.Equal(t, 1, gw.dispatchCount(), "a newcomer must not trigger resolve until approved")
 }
 
 func TestEventsHandler_BotMessageIgnored(t *testing.T) {
@@ -362,7 +361,7 @@ func TestEventsHandler_BotMessageIgnored(t *testing.T) {
 
 	// Give the goroutine time to run (it should not call Resolve).
 	time.Sleep(100 * time.Millisecond)
-	require.Zero(t, gw.resolveCount())
+	require.Zero(t, gw.dispatchCount())
 }
 
 // --- Batched writer via fake Slack API ---
@@ -442,7 +441,7 @@ func dispatchAndCaptureOBO(t *testing.T, obo slackadapter.OBOTokenSource, slackU
 	t.Helper()
 	var mu sync.Mutex
 	var captured []channels.InboundMessage
-	gw := &stubGateway{onResolve: func(msg channels.InboundMessage) {
+	gw := &stubGateway{onDispatch: func(msg channels.InboundMessage) {
 		mu.Lock()
 		captured = append(captured, msg)
 		mu.Unlock()
@@ -541,7 +540,7 @@ func TestDispatch_OBO_UnlinkedUserPromptsSignInAndDoesNotDispatch(t *testing.T) 
 	require.Equal(t, "111.222", notice.params["thread_ts"])
 	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "U123")
 	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "http")
-	require.Zero(t, gw.resolveCount(), "unlinked turn must not reach the agent (no M2M fallback)")
+	require.Zero(t, gw.dispatchCount(), "unlinked turn must not reach the agent (no M2M fallback)")
 }
 
 // An unlinked user's message is parked while they sign in and replayed through
@@ -549,7 +548,7 @@ func TestDispatch_OBO_UnlinkedUserPromptsSignInAndDoesNotDispatch(t *testing.T) 
 func TestDispatch_OBO_ParksUnlinkedMessageAndReplaysAfterLink(t *testing.T) {
 	var mu sync.Mutex
 	var captured []channels.InboundMessage
-	gw := &stubGateway{onResolve: func(msg channels.InboundMessage) {
+	gw := &stubGateway{onDispatch: func(msg channels.InboundMessage) {
 		mu.Lock()
 		captured = append(captured, msg)
 		mu.Unlock()
@@ -573,7 +572,7 @@ func TestDispatch_OBO_ParksUnlinkedMessageAndReplaysAfterLink(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return signInPrompted(fake)
 	}, flowWait, 50*time.Millisecond, "unlinked user must be prompted to sign in")
-	require.Zero(t, gw.resolveCount(), "the message must be parked, not dispatched, before linking")
+	require.Zero(t, gw.dispatchCount(), "the message must be parked, not dispatched, before linking")
 
 	// The user completes sign-in; the callback hook replays the parked message.
 	obo.completeLink()
@@ -640,7 +639,7 @@ func (o *multiUserOBO) Unlink(string) error   { return nil }
 func TestDispatch_OBO_NewcomerReplaysToAccessPromptNotAgent(t *testing.T) {
 	var mu sync.Mutex
 	var captured []channels.InboundMessage
-	gw := &stubGateway{onResolve: func(msg channels.InboundMessage) {
+	gw := &stubGateway{onDispatch: func(msg channels.InboundMessage) {
 		mu.Lock()
 		captured = append(captured, msg)
 		mu.Unlock()
@@ -730,7 +729,7 @@ func TestDispatch_OBO_TokenErrorAbortsTurn(t *testing.T) {
 		defer mu.Unlock()
 		return messages >= 1
 	}, flowWait, 50*time.Millisecond, "a transient token failure must surface an error message")
-	require.Zero(t, gw.resolveCount(), "a transient token failure must not reach the agent as the SA")
+	require.Zero(t, gw.dispatchCount(), "a transient token failure must not reach the agent as the SA")
 }
 
 func TestLookupUserEmail_Caches(t *testing.T) {
@@ -819,7 +818,7 @@ func TestLogout_Unlinks(t *testing.T) {
 		return len(obo.unlinked) == 1 && obo.unlinked[0] == "U123"
 	}, flowWait, 50*time.Millisecond, "/logout must unlink the Slack user")
 
-	require.Zero(t, gw.resolveCount(), "/logout must be consumed, not dispatched to the agent")
+	require.Zero(t, gw.dispatchCount(), "/logout must be consumed, not dispatched to the agent")
 }
 
 func TestLogin_PostsSignInPrompt(t *testing.T) {
@@ -843,19 +842,19 @@ func TestLogin_PostsSignInPrompt(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return signInPrompted(fake)
 	}, flowWait, 50*time.Millisecond, "/login must post a sign-in prompt")
-	require.Zero(t, gw.resolveCount(), "/login must be consumed, not dispatched to the agent")
+	require.Zero(t, gw.dispatchCount(), "/login must be consumed, not dispatched to the agent")
 }
 
 // --- stubGateway ---
 
 type stubGateway struct {
-	mu            sync.Mutex
-	resolveCount_ int
-	resumeCount_  int
-	onResolve     func(channels.InboundMessage)
-	// resolveErr, when set, is returned by every Resolve call.
-	resolveErr error
-	deltas     []channels.OutboundDelta
+	mu             sync.Mutex
+	dispatchCount_ int
+	resumeCount_   int
+	onDispatch     func(channels.InboundMessage)
+	// dispatchErr, when set, is returned by every SendCompletion call.
+	dispatchErr error
+	deltas      []channels.OutboundDelta
 	// sendQueue, when non-empty, supplies a distinct delta set per SendCompletion
 	// call (popped in order), so a test can drive a multi-step turn such as a
 	// prompt followed by its auto-approved continuation. Falls back to deltas.
@@ -1055,28 +1054,24 @@ func (s *stubGateway) SessionResumable(_ context.Context, msg channels.InboundMe
 	return cb(msg)
 }
 
-func (s *stubGateway) resolveCount() int {
+func (s *stubGateway) dispatchCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.resolveCount_
+	return s.dispatchCount_
 }
 
-func (s *stubGateway) Resolve(_ context.Context, msg channels.InboundMessage) (channels.InstanceRef, error) {
+func (s *stubGateway) SendCompletion(ctx context.Context, msg channels.InboundMessage) (<-chan channels.OutboundDelta, error) {
 	s.mu.Lock()
-	s.resolveCount_++
-	cb := s.onResolve
-	resolveErr := s.resolveErr
+	s.dispatchCount_++
+	cb := s.onDispatch
+	dispatchErr := s.dispatchErr
 	s.mu.Unlock()
 	if cb != nil {
 		cb(msg)
 	}
-	if resolveErr != nil {
-		return channels.InstanceRef{}, resolveErr
+	if dispatchErr != nil {
+		return nil, dispatchErr
 	}
-	return channels.InstanceRef{Name: "test-instance"}, nil
-}
-
-func (s *stubGateway) SendCompletion(ctx context.Context, _ channels.InstanceRef, _ channels.InboundMessage) (<-chan channels.OutboundDelta, error) {
 	s.mu.Lock()
 	if s.failSendsAfter > 0 {
 		s.failSendsAfter--
@@ -1133,10 +1128,6 @@ func (s *stubGateway) SendCompletion(ctx context.Context, _ channels.InstanceRef
 		}
 	}()
 	return ch, nil
-}
-
-func (s *stubGateway) FetchHistory(_ context.Context, _ channels.InstanceRef) ([]channels.Message, error) {
-	return nil, nil
 }
 
 // Ensure stubGateway satisfies channels.Gateway at compile time.
@@ -1736,7 +1727,7 @@ func TestSerializeResumeWhileTurnInFlight(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "still finishing")
 	}, flowWait, 20*time.Millisecond, "expected a busy notice for the concurrent button click")
-	require.Equal(t, 1, gw.resolveCount(), "resume rejected before reaching the agent")
+	require.Equal(t, 1, gw.dispatchCount(), "resume rejected before reaching the agent")
 
 	close(hold)
 }
@@ -1758,7 +1749,7 @@ func TestSerializeTurnsPerThread(t *testing.T) {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "still finishing")
 	}, flowWait, 20*time.Millisecond, "expected a busy notice for the second turn")
 
-	require.Equal(t, 1, gw.resolveCount(), "second turn is rejected before reaching the agent")
+	require.Equal(t, 1, gw.dispatchCount(), "second turn is rejected before reaching the agent")
 	close(hold)
 }
 
@@ -1767,7 +1758,7 @@ func TestSerializeTurnsPerThread(t *testing.T) {
 // running, so a kagent outage was previously complete silence.
 func TestDispatch_PreStreamFailurePostsNote(t *testing.T) {
 	fake := newFakeSlackAPI()
-	gw := &stubGateway{resolveErr: errors.New("kagent unreachable")}
+	gw := &stubGateway{dispatchErr: errors.New("kagent unreachable")}
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
 	sendEvent(t, srv, dmEvent("U1", "hi", "100.000"))
@@ -1790,10 +1781,10 @@ func TestHandleInbound_UnknownSlashCommandIntercepted(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "not one of my commands")
 	}, flowWait, 20*time.Millisecond, "an unknown command replies with a notice")
-	require.Zero(t, gw.resolveCount(), "an unknown slash command must not reach the agent")
+	require.Zero(t, gw.dispatchCount(), "an unknown slash command must not reach the agent")
 
 	sendEvent(t, srv, mention("U1", "/etc/hosts on node X is broken", "101.000", ""))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 20*time.Millisecond, "a path-shaped prompt still dispatches")
 }
 
@@ -1807,7 +1798,7 @@ func TestHandleInbound_UnrelatedThreadReplyStaysSilent(t *testing.T) {
 
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","channel_type":"channel","user":"U1","text":"lunch anyone?","channel":"C1","ts":"200.000","thread_ts":"100.000"}}`)
 	time.Sleep(150 * time.Millisecond)
-	require.Zero(t, gw.resolveCount())
+	require.Zero(t, gw.dispatchCount())
 	require.Empty(t, fake.pathCalls("chat.postEphemeral"), "no hint for a thread with no bot trace")
 	require.Empty(t, fake.pathCalls("chat.postMessage"))
 }
@@ -1828,18 +1819,18 @@ func TestHandleInbound_ThreadBroadcastReplyDispatches(t *testing.T) {
 	broadcast := `{"type":"event_callback","event":{"type":"message","subtype":"thread_broadcast","user":"U1","text":"and then?","channel":"C1","ts":"401.000","thread_ts":"400.000"}}`
 	waitThreadIdle(t, a, "400.000")
 	sendEvent(t, srv, broadcast)
-	require.Eventually(t, func() bool { return gw.resolveCount() >= 2 },
+	require.Eventually(t, func() bool { return gw.dispatchCount() >= 2 },
 		flowWait, 50*time.Millisecond,
 		"a broadcast thread reply must reach the agent like any other reply")
 
 	// Other subtypes must stay rejected: an edit in the same active thread
 	// never starts a turn.
 	waitThreadIdle(t, a, "400.000")
-	before := gw.resolveCount()
+	before := gw.dispatchCount()
 	edited := `{"type":"event_callback","event":{"type":"message","subtype":"message_changed","user":"U1","text":"edited","channel":"C1","ts":"402.000","thread_ts":"400.000"}}`
 	sendEvent(t, srv, edited)
 	time.Sleep(150 * time.Millisecond)
-	require.Equal(t, before, gw.resolveCount(), "a message_changed subtype must not start a turn")
+	require.Equal(t, before, gw.dispatchCount(), "a message_changed subtype must not start a turn")
 }
 
 // A file_share reply (an upload without a bot mention) into an active bot
@@ -1862,7 +1853,7 @@ func TestHandleInbound_FileShareReplyDispatches(t *testing.T) {
 	reply := `{"type":"event_callback","event":{"type":"message","subtype":"file_share","user":"U1","text":"look at this","channel":"C1","ts":"501.000","thread_ts":"500.000","files":[{"name":"shot.png","mimetype":"image/png","size":10}]}}`
 	waitThreadIdle(t, a, "500.000")
 	sendEvent(t, srv, reply)
-	require.Eventually(t, func() bool { return gw.resolveCount() >= 2 },
+	require.Eventually(t, func() bool { return gw.dispatchCount() >= 2 },
 		flowWait, 50*time.Millisecond,
 		"a file_share thread reply must reach the agent like any other reply")
 
@@ -1916,7 +1907,7 @@ func TestPrompt_TextModePlaceholderResolved(t *testing.T) {
 func TestEventsHandler_RetryWithUnseenEventIDProcessed(t *testing.T) {
 	var dispatched atomic.Int32
 	gw := &stubGateway{
-		onResolve: func(channels.InboundMessage) { dispatched.Add(1) },
+		onDispatch: func(channels.InboundMessage) { dispatched.Add(1) },
 	}
 
 	fakeSlack := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -1956,7 +1947,7 @@ func TestEventsHandler_RetryWithUnseenEventIDProcessed(t *testing.T) {
 func TestEventsHandler_DuplicateEventIDDropped(t *testing.T) {
 	var dispatched atomic.Int32
 	gw := &stubGateway{
-		onResolve: func(channels.InboundMessage) { dispatched.Add(1) },
+		onDispatch: func(channels.InboundMessage) { dispatched.Add(1) },
 	}
 
 	fakeSlack := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

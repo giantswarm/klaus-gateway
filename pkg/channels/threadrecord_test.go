@@ -71,26 +71,6 @@ func TestThreadRecord_ZeroTTLNeverExpires(t *testing.T) {
 	require.Zero(t, e.TTL)
 }
 
-// On the Klaus-instance path the router keeps the thread's instance route on
-// the same row; the channel's own fields merge into it, they do not replace it.
-func TestThreadRecord_UpdateMergesIntoAnInstanceRoute(t *testing.T) {
-	ctx := context.Background()
-	f := &Facade{Routes: memory.New(), ThreadTTL: DefaultThreadTTL}
-	key := store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "T1"}
-	created := time.Now().Add(-time.Hour).Truncate(time.Second)
-	require.NoError(t, f.Routes.Put(ctx, key, store.Entry{Instance: "klaus-1", CreatedAt: created, LastSeen: created, TTL: 24 * time.Hour}))
-
-	require.NoError(t, f.UpdateThreadRecord(ctx, "slack", "C1", "T1", setAgentAndInitiator("sre-agent", "U1")))
-	e, ok, err := f.ThreadRecord(ctx, "slack", "C1", "T1")
-	require.NoError(t, err)
-	require.True(t, ok)
-	require.Equal(t, "klaus-1", e.Instance, "the route's instance survives the record write")
-	require.Equal(t, created, e.CreatedAt)
-	require.Equal(t, 2*DefaultThreadTTL, e.TTL, "the thread's lifetime governs the row it shares with the route")
-	require.WithinDuration(t, time.Now(), e.LastSeen, time.Minute)
-	require.Equal(t, "U1", e.Initiator)
-}
-
 // A row carrying a TTL from an earlier release, or from an earlier setting of
 // --thread-ttl, adopts the configured one on its next message. A row nobody
 // writes to again keeps the TTL it has.

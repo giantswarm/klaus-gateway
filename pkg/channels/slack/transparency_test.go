@@ -311,15 +311,7 @@ type resumeStub struct {
 	calls           atomic.Int32
 }
 
-func (r *resumeStub) Resolve(context.Context, channels.InboundMessage) (channels.InstanceRef, error) {
-	return channels.InstanceRef{}, nil
-}
-
-func (r *resumeStub) SendCompletion(context.Context, channels.InstanceRef, channels.InboundMessage) (<-chan channels.OutboundDelta, error) {
-	return nil, nil
-}
-
-func (r *resumeStub) FetchHistory(context.Context, channels.InstanceRef) ([]channels.Message, error) {
+func (r *resumeStub) SendCompletion(context.Context, channels.InboundMessage) (<-chan channels.OutboundDelta, error) {
 	return nil, nil
 }
 

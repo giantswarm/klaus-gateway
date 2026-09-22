@@ -19,9 +19,9 @@ func TestPersistence(t *testing.T) {
 
 	s1, err := boltstore.Open(path)
 	require.NoError(t, err)
-	k := store.Key{Channel: "web", ChannelID: "c1", UserID: "u1", ThreadID: "t1"}
+	k := store.Key{Channel: "slack", ChannelID: "c1", ThreadID: "t1"}
 	require.NoError(t, s1.Put(ctx, k, store.Entry{
-		Instance: "inst-42", CreatedAt: time.Now(), LastSeen: time.Now(), TTL: time.Hour,
+		AgentInstanceID: "inst-42", CreatedAt: time.Now(), LastSeen: time.Now(), TTL: time.Hour,
 	}))
 	require.NoError(t, s1.Close())
 
@@ -32,7 +32,7 @@ func TestPersistence(t *testing.T) {
 	got, ok, err := s2.Get(ctx, k)
 	require.NoError(t, err)
 	require.True(t, ok)
-	require.Equal(t, "inst-42", got.Instance)
+	require.Equal(t, "inst-42", got.AgentInstanceID)
 }
 
 // A thread's kagent binding carries the task in flight and the channel's

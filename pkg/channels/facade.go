@@ -3,10 +3,8 @@ package channels
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"iter"
 	"log/slog"
 	"strings"
@@ -16,23 +14,12 @@ import (
 	a2apkg "github.com/a2aproject/a2a-go/v2/a2a"
 
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
-	"github.com/giantswarm/klaus-gateway/pkg/instance"
-	"github.com/giantswarm/klaus-gateway/pkg/lifecycle"
-	"github.com/giantswarm/klaus-gateway/pkg/routing"
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
 )
 
-// InstanceClient is the slice of pkg/instance.Client that the Facade needs.
-// Tests can inject a fake without standing up an HTTP server.
-type InstanceClient interface {
-	StreamCompletion(ctx context.Context, ref InstanceRef, body []byte) (io.ReadCloser, error)
-	Messages(ctx context.Context, ref InstanceRef, threadID string) (instance.MessagesResponse, error)
-}
-
 // AgentClient is the slice of pkg/a2a.Client the Facade needs to run a
 // conversation on a kagent API v2 controller: the A2A v1 calls on an
-// AgentInstance, the instance lifecycle, and the AgentTemplate roster. When
-// nil, SendCompletion falls back to the OpenAI /v1 path unconditionally.
+// AgentInstance, the instance lifecycle, and the AgentTemplate roster.
 type AgentClient interface {
 	// Stream sends msg to the instance and yields the task's events.
 	Stream(ctx context.Context, instanceID string, msg *a2apkg.Message) iter.Seq2[a2apkg.Event, error]
@@ -55,14 +42,10 @@ type AgentClient interface {
 	ListAgents(ctx context.Context) ([]pkga2a.AgentInfo, error)
 }
 
-// Facade wires the routing.Router, instance.Client, and lifecycle.Manager
-// together into the Gateway surface used by channel adapters.
+// Facade wires the kagent client and the routing store together into the
+// Gateway surface used by channel adapters.
 type Facade struct {
-	Router    *routing.Router
-	Client    InstanceClient
-	Lifecycle lifecycle.Manager
-	// Agent, when non-nil, routes channel turns that carry an AgentRef to a
-	// kagent controller instead of the OpenAI /v1 path.
+	// Agent runs a channel turn on the thread's kagent AgentInstance.
 	Agent AgentClient
 	// Routes persists the thread -> AgentInstance binding across restarts.
 	// Required when Agent is set.
@@ -172,40 +155,15 @@ func (f *Facade) ResetSession(ctx context.Context, msg InboundMessage) (bool, er
 	return true, nil
 }
 
-// Resolve maps an InboundMessage to a live InstanceRef via the routing
-// table (creating a new instance on miss when the router has auto-create
-// enabled). On the kagent path (Agent set and AgentRef non-empty) routing is
-// bypassed and a zero InstanceRef is returned — the thread's AgentInstance is
-// resolved when the turn is sent.
-func (f *Facade) Resolve(ctx context.Context, in InboundMessage) (InstanceRef, error) {
-	if f == nil || f.Router == nil {
-		return InstanceRef{}, errors.New("channels: facade router is nil")
-	}
-	if f.Agent != nil && in.AgentRef != "" {
-		return InstanceRef{}, nil
-	}
-	ref, err := f.Router.Resolve(ctx, routing.InboundMessage{
-		Channel:   in.Channel,
-		ChannelID: in.ChannelID,
-		UserID:    in.UserID,
-		ThreadID:  in.ThreadID,
-	})
-	if err != nil {
-		return InstanceRef{}, err
-	}
-	return ref, nil
-}
-
-// SendCompletion streams a completion for msg. When Agent is set and
-// msg.AgentRef is non-empty, the turn runs on the thread's AgentInstance;
-// otherwise it falls back to the OpenAI /v1 SSE path.
+// SendCompletion streams a completion for msg: the turn runs on the
+// AgentInstance msg's thread is bound to.
 //
 // The caller must receive from the returned channel until it closes.
-func (f *Facade) SendCompletion(ctx context.Context, ref InstanceRef, msg InboundMessage) (<-chan OutboundDelta, error) {
-	if f.Agent != nil && msg.AgentRef != "" {
-		return f.sendViaA2A(ctx, msg)
+func (f *Facade) SendCompletion(ctx context.Context, msg InboundMessage) (<-chan OutboundDelta, error) {
+	if f == nil || f.Agent == nil {
+		return nil, errors.New("channels: no agent client configured")
 	}
-	return f.sendViaOpenAI(ctx, ref, msg)
+	return f.sendViaA2A(ctx, msg)
 }
 
 // clearBinding drops a thread's AgentInstance binding and anything that only
@@ -978,110 +936,4 @@ func extractTextFromA2AParts(parts a2apkg.ContentParts) string {
 		}
 	}
 	return sb.String()
-}
-
-// sendViaOpenAI POSTs a minimal OpenAI-compat body to the instance and
-// streams the SSE response as typed OutboundDelta values.
-func (f *Facade) sendViaOpenAI(ctx context.Context, ref InstanceRef, msg InboundMessage) (<-chan OutboundDelta, error) {
-	if f == nil || f.Client == nil {
-		return nil, errors.New("channels: facade instance client is nil")
-	}
-	body, err := json.Marshal(map[string]any{
-		"stream": true,
-		"messages": []map[string]any{
-			{"role": "user", "content": msg.Text},
-		},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("marshal body: %w", err)
-	}
-	src, err := f.Client.StreamCompletion(ctx, ref, body)
-	if err != nil {
-		return nil, err
-	}
-
-	out := make(chan OutboundDelta, 16)
-	go func() {
-		defer close(out)
-		defer func() { _ = src.Close() }()
-
-		deltas := make(chan instance.Delta, 16)
-		errCh := make(chan error, 1)
-		go func() { errCh <- instance.StreamDeltas(ctx, src, deltas) }()
-
-		for d := range deltas {
-			if d.Event == "done" || bytes.Equal(bytes.TrimSpace(d.Data), []byte("[DONE]")) {
-				select {
-				case <-ctx.Done():
-				case out <- OutboundDelta{Done: true}:
-				}
-				continue
-			}
-			content := extractContent(d.Data)
-			if content == "" {
-				continue
-			}
-			select {
-			case <-ctx.Done():
-				return
-			case out <- OutboundDelta{Content: content}:
-			}
-		}
-		if err := <-errCh; err != nil && !errors.Is(err, io.EOF) {
-			select {
-			case <-ctx.Done():
-			case out <- OutboundDelta{Err: err}:
-			}
-		}
-	}()
-	return out, nil
-}
-
-// FetchHistory returns the stored message log for the thread owned by ref.
-func (f *Facade) FetchHistory(ctx context.Context, ref InstanceRef) ([]Message, error) {
-	if f == nil || f.Client == nil {
-		return nil, errors.New("channels: facade instance client is nil")
-	}
-	resp, err := f.Client.Messages(ctx, ref, "")
-	if err != nil {
-		return nil, err
-	}
-	out := make([]Message, 0, len(resp.Messages))
-	for _, m := range resp.Messages {
-		out = append(out, Message{Role: m.Role, Content: m.Content})
-	}
-	return out, nil
-}
-
-// extractContent peels the user-visible text out of an OpenAI-style
-// `chat.completion.chunk`. Missing fields are treated as empty; channel
-// adapters that need the raw SSE should read the stream directly.
-func extractContent(data []byte) string {
-	if len(data) == 0 {
-		return ""
-	}
-	var envelope struct {
-		Choices []struct {
-			Delta struct {
-				Content string `json:"content"`
-			} `json:"delta"`
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-		// Some servers emit a flat {"delta": "..."} shape; tolerate it.
-		Delta string `json:"delta"`
-	}
-	if err := json.Unmarshal(data, &envelope); err != nil {
-		return ""
-	}
-	if len(envelope.Choices) > 0 {
-		if c := envelope.Choices[0].Delta.Content; c != "" {
-			return c
-		}
-		if c := envelope.Choices[0].Message.Content; c != "" {
-			return c
-		}
-	}
-	return envelope.Delta
 }

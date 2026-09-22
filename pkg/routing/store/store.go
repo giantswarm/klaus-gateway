@@ -2,11 +2,11 @@
 // the other records the gateway must not lose while their Slack message is
 // live: the team reviews.
 //
-// A routing entry maps (channel, channel-id, user, thread) to everything the
-// gateway holds for that conversation: the klaus instance that owns it, or the
-// agent and the kagent AgentInstance its turns are routed to. A review record
-// is one posted team review and its decision state (Review). Stores persist
-// both across restarts where possible (bolt, valkey) or keep them in memory.
+// A routing entry maps (channel, channel-id, thread) to everything the gateway
+// holds for that conversation: the agent and the kagent AgentInstance its
+// turns are routed to. A review record is one posted team review and its
+// decision state (Review). Stores persist both across restarts where possible
+// (bolt, valkey) or keep them in memory.
 package store
 
 import (
@@ -20,39 +20,38 @@ import (
 // ErrNotFound is returned by Get when no entry matches the key.
 var ErrNotFound = errors.New("routing entry not found")
 
-// Key identifies a conversation across channels. The user slot is empty for a
-// thread shared by its participants — Slack, and every kagent binding — so
-// every participant reaches the same row; web and CLI route per user.
+// Key identifies a conversation thread. A thread is shared by its
+// participants, so every participant reaches the same row.
 type Key struct {
 	Channel   string
 	ChannelID string
-	UserID    string
 	ThreadID  string
 }
 
-// String returns the canonical serialised form used as a storage key: four
+// String returns the canonical serialised form used as a storage key: three
 // pipe-separated parts. The format is stable: stores rely on it for on-disk
 // keys.
 func (k Key) String() string {
 	return strings.Join([]string{
 		escape(k.Channel),
 		escape(k.ChannelID),
-		escape(k.UserID),
 		escape(k.ThreadID),
 	}, "|")
 }
 
-// ParseKey inverts Key.String.
+// ParseKey inverts Key.String. A key written by a gateway older than the
+// Slack-only release carried a fourth (user) part; it no longer parses, and a
+// store that lists its keys skips the row — the thread's next message writes
+// it afresh.
 func ParseKey(s string) (Key, error) {
 	parts := strings.Split(s, "|")
-	if len(parts) != 4 {
-		return Key{}, fmt.Errorf("invalid key %q: expected 4 parts", s)
+	if len(parts) != 3 {
+		return Key{}, fmt.Errorf("invalid key %q: expected 3 parts", s)
 	}
 	return Key{
 		Channel:   unescape(parts[0]),
 		ChannelID: unescape(parts[1]),
-		UserID:    unescape(parts[2]),
-		ThreadID:  unescape(parts[3]),
+		ThreadID:  unescape(parts[2]),
 	}, nil
 }
 
@@ -67,24 +66,20 @@ func unescape(s string) string {
 }
 
 // Entry is the one row a conversation thread has: everything the gateway must
-// not lose across a restart. The Klaus instance that owns the conversation
-// (Instance), or — on the kagent path — the agent the thread is bound to and
-// its AgentInstance plus the task in flight on it, and the channel's own facts
+// not lose across a restart. The agent the thread is bound to and its
+// AgentInstance plus the task in flight on it, and the channel's own facts
 // about the thread, its initiator and the users it granted.
 //
 // Several writers read-modify-write this row (a channel's grant, the facade's
 // task record, the binding), so they write through Store.Update rather than
 // Put, and each keeps the fields it does not own.
 type Entry struct {
-	// Instance is the name of the Klaus instance that owns the conversation.
-	// Empty for a kagent conversation.
-	Instance string `json:"instance,omitempty"`
 	// AgentRef is the agent the thread is bound to, in the shape the
 	// deployment spells it. Never "" standing for the default: a changed
 	// default must not fork the conversation.
 	AgentRef string `json:"agent_ref,omitempty"`
 	// AgentInstanceID is the kagent AgentInstance (a controller-assigned UUID)
-	// the conversation's A2A turns are routed to. Empty for a Klaus conversation.
+	// the conversation's A2A turns are routed to.
 	AgentInstanceID string `json:"agent_instance_id,omitempty"`
 	// TaskID is the A2A task running on AgentInstanceID while a turn is in
 	// flight, cleared when the turn ends. A gateway that restarts mid-turn finds

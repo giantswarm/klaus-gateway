@@ -26,7 +26,7 @@ func TestSynthesizeContextID(t *testing.T) {
 	})
 
 	t.Run("distinct_channel_type", func(t *testing.T) {
-		other := SynthesizeContextID("cli", "C123", "U456", "T789", "worker")
+		other := SynthesizeContextID("other", "C123", "U456", "T789", "worker")
 		require.NotEqual(t, base(), other, "different channel must yield different ID")
 	})
 

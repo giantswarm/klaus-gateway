@@ -2759,7 +2759,6 @@ func (e slackInnerEvent) toInboundMessage(threadReplyOnly bool) (channels.Inboun
 	return channels.InboundMessage{
 		Channel:     ChannelName,
 		ChannelID:   e.Channel,
-		UserID:      "", // thread-scoped session: all participants share one contextID
 		ThreadID:    threadID,
 		MessageID:   e.TS, // triggering message; progress-reaction target
 		Text:        text,

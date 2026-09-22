@@ -159,7 +159,7 @@ func TestThreadContext_ShortcutSharesTheThread(t *testing.T) {
 	sendAskAgentShortcut(t, srv, "C1", "U1", "103.000", "100.000", api.URL+"/response_url")
 	pmRaw := openedView(t, fake)["private_metadata"].(string)
 	sendAskAgentSubmissionWithContext(t, srv, "U1", pmRaw, "kagent/sre-agent", "which release introduced it?", true)
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, flowWait, 50*time.Millisecond)
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
 
 	got := resolved()[0].Context
 	lines := strings.Split(got, "\n")
@@ -187,7 +187,7 @@ func TestThreadContext_ShortcutCheckboxOffSharesNothing(t *testing.T) {
 	pmRaw := openedView(t, fake)["private_metadata"].(string)
 	countCalls := len(fake.pathCalls("conversations.replies"))
 	sendAskAgentSubmissionWithContext(t, srv, "U1", pmRaw, "kagent/sre-agent", "why?", false)
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, flowWait, 50*time.Millisecond)
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
 
 	require.Empty(t, resolved()[0].Context, "a cleared box shares nothing")
 	require.Len(t, fake.pathCalls("conversations.replies"), countCalls, "the thread is not read on submit")
@@ -232,7 +232,7 @@ func TestThreadContext_SlashCommandHasNoThreadToShare(t *testing.T) {
 	require.Len(t, openedView(t, fake)["blocks"].([]any), 2, "no context checkbox without a thread")
 
 	sendAskAgentSubmission(t, srv, "U1", pmRaw, "kagent/sre-agent", "why are pods crashlooping?")
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, flowWait, 50*time.Millisecond)
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
 
 	require.Empty(t, resolved()[0].Context)
 	require.Empty(t, fake.pathCalls("conversations.replies"), "a thread the command rooted itself is not read")
@@ -251,7 +251,7 @@ func TestThreadContext_AgentSelectionReplySharesTheThread(t *testing.T) {
 	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
 
 	sendEvent(t, srv, mention("U1", "/agent \"SRE Agent\" what happened?", "104.000", "100.000"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, flowWait, 50*time.Millisecond)
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
 
 	msg := resolved()[0]
 	require.True(t, msg.Opener)
@@ -270,7 +270,7 @@ func TestThreadContext_BareMentionReplySharesTheThread(t *testing.T) {
 	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
 
 	sendEvent(t, srv, mention("U1", "what happened here?", "104.000", "100.000"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, flowWait, 50*time.Millisecond)
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
 
 	require.Contains(t, resolved()[0].Context, "Marta: the pod restarts every 40 s")
 }
@@ -285,13 +285,13 @@ func TestThreadContext_LaterRepliesDoNotReadAgain(t *testing.T) {
 	a, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
 
 	sendEvent(t, srv, mention("U1", "what happened here?", "104.000", "100.000"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, flowWait, 50*time.Millisecond)
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
 	reads := len(fake.pathCalls("conversations.replies"))
 	require.Positive(t, reads)
 	waitThreadIdle(t, a, "100.000")
 
 	sendEvent(t, srv, mention("U1", "and the release?", "105.000", "100.000"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 2 }, flowWait, 50*time.Millisecond)
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 }, flowWait, 50*time.Millisecond)
 
 	require.Empty(t, resolved()[1].Context, "a turn inside the conversation carries no transcript")
 	require.Len(t, fake.pathCalls("conversations.replies"), reads, "and reads nothing")
@@ -312,7 +312,7 @@ func TestThreadContext_ManyShortMessagesAllFit(t *testing.T) {
 	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
 
 	sendEvent(t, srv, mention("U1", "what happened here?", "900.000", "100.000"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, flowWait, 50*time.Millisecond)
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
 
 	got := resolved()[0].Context
 	lines := strings.Split(got, "\n")
@@ -338,7 +338,7 @@ func TestThreadContext_LongMessagesAreCutFromTheOldest(t *testing.T) {
 	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
 
 	sendEvent(t, srv, mention("U1", "what happened here?", "900.000", "100.000"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, flowWait, 50*time.Millisecond)
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
 
 	got := resolved()[0].Context
 	lines := strings.Split(got, "\n")
@@ -363,7 +363,7 @@ func TestThreadContext_PagesThroughTheWholeThread(t *testing.T) {
 	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
 
 	sendEvent(t, srv, mention("U1", "what happened here?", "900.000", "100.000"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, flowWait, 50*time.Millisecond)
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
 
 	got := resolved()[0].Context
 	require.Contains(t, got, "root of it all")
@@ -381,7 +381,7 @@ func TestThreadContext_ReadFailureRunsTheTurnAndNotifies(t *testing.T) {
 	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
 
 	sendEvent(t, srv, mention("U1", "what happened here?", "104.000", "100.000"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, flowWait, 50*time.Millisecond)
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
 
 	require.Empty(t, resolved()[0].Context)
 	require.Eventually(t, func() bool {
@@ -400,7 +400,7 @@ func TestThreadContext_UnresolvableAuthorFallsBackToTheID(t *testing.T) {
 	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
 
 	sendEvent(t, srv, mention("U1", "what happened here?", "104.000", "100.000"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, flowWait, 50*time.Millisecond)
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
 
 	got := resolved()[0].Context
 	require.Contains(t, got, "U2: the pod restarts every 40 s", "the unreadable author keeps their ID")
@@ -427,7 +427,7 @@ func TestThreadContext_HangingNameLookupEndsWithTheBudget(t *testing.T) {
 	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
 
 	sendEvent(t, srv, mention("U1", "what happened here?", "104.000", "100.000"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, flowWait, 50*time.Millisecond,
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond,
 		"the turn runs once the read's budget ends, not once Slack answers")
 
 	got := resolved()[0].Context
@@ -453,7 +453,7 @@ func TestThreadContext_ThreadTooLongToReadIsLabelledPartial(t *testing.T) {
 	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
 
 	sendEvent(t, srv, mention("U1", "what happened here?", "9000.000", "1000.000"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, flowWait, 50*time.Millisecond)
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
 
 	got := resolved()[0].Context
 	lines := strings.Split(got, "\n")
@@ -478,7 +478,7 @@ func TestThreadContext_LongButReadableThreadIsCountedInFull(t *testing.T) {
 	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
 
 	sendEvent(t, srv, mention("U1", "what happened here?", "9000.000", "1000.000"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, flowWait, 50*time.Millisecond)
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
 
 	got := resolved()[0].Context
 	require.Contains(t, got, "300 earlier messages in this thread, the most recent 12,000 characters shown")
@@ -498,7 +498,7 @@ func TestThreadContext_AssistantPaneIsNotRead(t *testing.T) {
 	_, srv := newEventsAdapter(t, gw, api.URL)
 
 	sendEvent(t, srv, dmThreadEvent("U1", "what can you do?", "300.000", "100.000"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, flowWait, 50*time.Millisecond)
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
 
 	require.True(t, resolved()[0].Opener)
 	require.Empty(t, resolved()[0].Context)
@@ -536,7 +536,7 @@ func TestThreadContext_ShortcutInADMOffersNothingAndReadsNothing(t *testing.T) {
 	require.Len(t, view["blocks"].([]any), 2, "no context checkbox in a DM")
 
 	sendAskAgentSubmissionWithContext(t, srv, "U1", view["private_metadata"].(string), "kagent/sre-agent", "what happened?", true)
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, flowWait, 50*time.Millisecond)
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
 
 	require.Empty(t, resolved()[0].Context)
 	require.Empty(t, fake.pathCalls("conversations.replies"), "a DM chat has no thread that predates it")
@@ -565,7 +565,7 @@ func TestThreadContext_PageFailureMidReadKeepsWhatWasRead(t *testing.T) {
 	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
 
 	sendEvent(t, srv, mention("U1", "what happened here?", "9000.000", "1000.000"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, flowWait, 50*time.Millisecond)
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
 
 	got := resolved()[0].Context
 	require.Contains(t, got, "50 of 120 earlier messages read (the read stopped early)")
@@ -593,7 +593,7 @@ func TestThreadContext_UnexpectedFieldShapeKeepsTheThread(t *testing.T) {
 	sendAskAgentShortcut(t, srv, "C1", "U1", "103.000", "100.000", api.URL+"/response_url")
 	pmRaw := openedView(t, fake)["private_metadata"].(string)
 	sendAskAgentSubmissionWithContext(t, srv, "U1", pmRaw, "kagent/sre-agent", "which release introduced it?", true)
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, flowWait, 50*time.Millisecond)
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
 
 	got := resolved()[0].Context
 	require.Equal(t, "[thread context shared by Jose: 2 earlier messages in this thread, oldest first]", strings.Split(got, "\n")[0])
