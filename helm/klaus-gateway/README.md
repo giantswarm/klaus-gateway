@@ -20,6 +20,11 @@ Channel and routing gateway in front of klaus instances; uses agentgateway as th
 |-----|------|---------|-------------|
 | enabled | bool | `true` |  |
 | agentgatewayRoute | object | `{}` |  |
+| web | object | `{}` |  |
+| cli | object | `{}` |  |
+| lifecycle | object | `{}` |  |
+| upstream | object | `{}` |  |
+| agentgateway | object | `{}` |  |
 | name | string | `"klaus-gateway"` |  |
 | serviceType | string | `"managed"` |  |
 | fullnameOverride | string | `""` |  |
@@ -46,7 +51,7 @@ Channel and routing gateway in front of klaus instances; uses agentgateway as th
 | serviceMonitor.labels | object | `{}` | Labels on the ServiceMonitor, beside the chart's own. The Giant Swarm observability platform routes a scrape to a Mimir tenant by `observability.giantswarm.io/tenant`; a monitor without it writes to no tenant. |
 | routing.store | string | `"memory"` |  |
 | routing.boltPath | string | `"/var/lib/klaus-gateway/routes.bolt"` |  |
-| routing.defaultTTL | string | `"24h"` |  |
+| routing.defaultTTL | string | `""` |  |
 | routing.threadTTL | string | `""` |  |
 | routing.autoCreate | bool | `false` |  |
 | routing.valkey.url | string | `""` |  |
@@ -58,59 +63,17 @@ Channel and routing gateway in front of klaus instances; uses agentgateway as th
 | routing.valkey.tls.serverName | string | `""` |  |
 | routing.valkey.keyPrefix | string | `""` |  |
 | routing.valkey.timeout | string | `"2s"` |  |
-| lifecycle.driver | string | `"operator"` |  |
-| lifecycle.klausctlBin | string | `""` |  |
-| lifecycle.operatorMCPURL | string | `""` |  |
-| lifecycle.operatorMCPToken | string | `""` |  |
-| lifecycle.staticInstances | string | `""` |  |
-| upstream.url | string | `""` |  |
-| upstream.agentgatewayURL | string | `""` |  |
 | observability.otlpEndpoint | string | `""` |  |
 | observability.otlpHeaders | object | `{}` | Headers sent with every trace export, e.g. the tenant of a multi-tenant gateway: `X-Scope-OrgID: giantswarm`. Rendered as --otel-otlp-headers. |
 | podAnnotations | object | `{}` | Annotations on the pod template (merged over the chart's own). The agent platform sets `karpenter.sh/do-not-disrupt: "true"` here so Karpenter's consolidation works around the pod that holds the channel connections and the in-flight A2A streams instead of evicting it. |
 | podLabels | object | `{}` | Labels on the pod template. |
-| podDisruptionBudget | object | `{"enabled":false,"maxUnavailable":null,"minAvailable":1,"unhealthyPodEvictionPolicy":""}` | PodDisruptionBudget on the gateway pods. Off by default: with `replicaCount: 1` a `minAvailable: 1` budget refuses every voluntary eviction (node drains wait for the drain timeout), which is the intended guard for a single replica that carries live Slack/CLI/web turns, but a deliberate choice. Set exactly one of `minAvailable` / `maxUnavailable` (int or percentage); `unhealthyPodEvictionPolicy: AlwaysAllow` lets a pod that is not Ready be evicted regardless, so a crash-looping gateway never wedges a drain. |
+| podDisruptionBudget | object | `{"enabled":false,"maxUnavailable":null,"minAvailable":1,"unhealthyPodEvictionPolicy":""}` | PodDisruptionBudget on the gateway pods. Off by default: with `replicaCount: 1` a `minAvailable: 1` budget refuses every voluntary eviction (node drains wait for the drain timeout), which is the intended guard for a single replica that carries live Slack turns, but a deliberate choice. Set exactly one of `minAvailable` / `maxUnavailable` (int or percentage); `unhealthyPodEvictionPolicy: AlwaysAllow` lets a pod that is not Ready be evicted regardless, so a crash-looping gateway never wedges a drain. |
 | terminationGracePeriodSeconds | int | `45` | Seconds the kubelet gives the pod to stop before it is killed. The shutdown drains the HTTP servers (up to 15 s), then stops the channel adapters (up to 15 s more), which is when a Slack turn cut short posts its restart notice and clears its progress reaction; the rest is margin for the client and store closes. Lower than the drain plus the stop and a turn interrupted by a restart ends in silence. |
 | podSecurityContext.seccompProfile.type | string | `"RuntimeDefault"` |  |
 | securityContext.allowPrivilegeEscalation | bool | `false` |  |
 | securityContext.readOnlyRootFilesystem | bool | `true` |  |
 | securityContext.seccompProfile.type | string | `"RuntimeDefault"` |  |
 | securityContext.capabilities.drop[0] | string | `"ALL"` |  |
-| agentgateway.enabled | bool | `false` |  |
-| agentgateway.gatewayClassName | string | `"agentgateway"` |  |
-| agentgateway.gateway.create | bool | `true` |  |
-| agentgateway.gateway.parentRefs | list | `[]` |  |
-| agentgateway.gateway.listeners[0].name | string | `"http"` |  |
-| agentgateway.gateway.listeners[0].port | int | `80` |  |
-| agentgateway.gateway.listeners[0].protocol | string | `"HTTP"` |  |
-| agentgateway.gateway.listeners[0].allowedRoutes.namespaces.from | string | `"Same"` |  |
-| agentgateway.gateway.annotations | object | `{}` |  |
-| agentgateway.routes.chatAndMcp.enabled | bool | `true` |  |
-| agentgateway.routes.chatAndMcp.prefixes[0] | string | `"/v1/"` |  |
-| agentgateway.routes.chatAndMcp.prefixes[1] | string | `"/mcp"` |  |
-| agentgateway.routes.cli.enabled | bool | `false` |  |
-| agentgateway.routes.cli.prefixes[0] | string | `"/cli/v1/"` |  |
-| agentgateway.routes.obo.enabled | bool | `false` |  |
-| agentgateway.routes.obo.prefixes[0] | string | `"/auth/slack/"` |  |
-| agentgateway.routes.directInstance.enabled | bool | `false` |  |
-| agentgateway.policy.enabled | bool | `false` |  |
-| agentgateway.policy.jwt.enabled | bool | `false` |  |
-| agentgateway.policy.jwt.mode | string | `"Strict"` |  |
-| agentgateway.policy.jwt.issuer | string | `""` |  |
-| agentgateway.policy.jwt.audiences | list | `[]` |  |
-| agentgateway.policy.jwt.jwks.mode | string | `"remote"` |  |
-| agentgateway.policy.jwt.jwks.inline | string | `""` |  |
-| agentgateway.policy.jwt.jwks.remote.jwksPath | string | `"/.well-known/jwks.json"` |  |
-| agentgateway.policy.jwt.jwks.remote.cacheDuration | string | `"5m"` |  |
-| agentgateway.policy.jwt.jwks.remote.backendRef.group | string | `""` |  |
-| agentgateway.policy.jwt.jwks.remote.backendRef.kind | string | `"Service"` |  |
-| agentgateway.policy.jwt.jwks.remote.backendRef.name | string | `""` |  |
-| agentgateway.policy.jwt.jwks.remote.backendRef.namespace | string | `""` |  |
-| agentgateway.policy.jwt.jwks.remote.backendRef.port | int | `443` |  |
-| agentgateway.backendsExample.enabled | bool | `false` |  |
-| agentgateway.backendsExample.name | string | `"klaus-instance-example"` |  |
-| agentgateway.backendsExample.static.host | string | `"klaus-instance-example.default.svc.cluster.local"` |  |
-| agentgateway.backendsExample.static.port | int | `8080` |  |
 | a2a.enabled | bool | `false` |  |
 | a2a.defaultAgent | string | `"sre-agent"` |  |
 | a2a.url | string | `""` |  |
@@ -119,10 +82,7 @@ Channel and routing gateway in front of klaus instances; uses agentgateway as th
 | a2a.caFile | string | `""` |  |
 | a2a.tokenPath | string | `""` |  |
 | a2a.fallbackIconUrlTemplate | string | `""` |  |
-| a2a.saToken.enabled | bool | `false` |  |
-| a2a.saToken.audience | string | `"kagent"` |  |
-| a2a.saToken.mountPath | string | `"/var/run/secrets/kagent/token"` |  |
-| a2a.saToken.expirationSeconds | int | `3600` |  |
+| a2a.saToken | object | `{}` |  |
 | slack.enabled | bool | `false` |  |
 | slack.mode | string | `"events"` |  |
 | slack.secretName | string | `""` |  |
@@ -138,8 +98,6 @@ Channel and routing gateway in front of klaus instances; uses agentgateway as th
 | slack.botToken | string | `""` |  |
 | slack.signingSecret | string | `""` |  |
 | slack.appToken | string | `""` |  |
-| cli.enabled | bool | `false` |  |
-| web.enabled | bool | `false` |  |
 | obo.enabled | bool | `false` |  |
 | obo.musterUrl | string | `""` |  |
 | obo.callbackBaseUrl | string | `""` |  |

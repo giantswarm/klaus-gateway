@@ -6,6 +6,19 @@
 enabled: true
 agentgatewayRoute: {}  # @schema additionalProperties: true
 
+# Deprecated, ignored since the Slack-only release; removed in a later minor.
+# The gateway serves Slack only: the web and CLI channel adapters, the
+# OpenAI-compatible /v1 front door, the Klaus instance path with its lifecycle
+# drivers, and the chart's own Gateway API rendering are gone. These keys stay
+# accepted and do nothing, because the agent-platform umbrella still forwards
+# them and the values schema refuses keys it does not know. Drop them from
+# your values before the minor that deletes them.
+web: {}  # @schema additionalProperties: true
+cli: {}  # @schema additionalProperties: true
+lifecycle: {}  # @schema additionalProperties: true
+upstream: {}  # @schema additionalProperties: true
+agentgateway: {}  # @schema additionalProperties: true
+
 name: klaus-gateway
 serviceType: managed
 
@@ -42,7 +55,8 @@ serviceAccount:
   create: true
   annotations: {}
 
-# Public HTTP server (channel adapters + /v1/* front door).
+# Public HTTP server: the Slack channel adapter, the OBO linking routes and
+# the team-review endpoint.
 server:
   port: 8080
 
@@ -81,8 +95,9 @@ serviceMonitor:
 routing:
   store: memory  # @schema enum: [memory, valkey, bolt]
   boltPath: /var/lib/klaus-gateway/routes.bolt
-  # Default TTL for route entries (e.g. "24h"). Zero means never expire.
-  defaultTTL: "24h"
+  # Deprecated, ignored since the Slack-only release; removed in a later minor.
+  # It was the TTL of a Klaus route entry; a thread's lifetime is threadTTL.
+  defaultTTL: ""
   # Sliding lifetime of a channel thread's state: its agent, initiator, grants
   # and AgentInstance binding, refreshed on every turn. After this long without
   # a message the conversation has ended and the next mention starts the thread
@@ -92,7 +107,8 @@ routing:
   # default, 2160h (90 days), rows kept 4320h (180 days). "0" never expires
   # (the keys are then never evictable in a Valkey that runs as a cache).
   threadTTL: ""
-  # Create instances on demand when a route key has no entry.
+  # Deprecated, ignored since the Slack-only release; removed in a later minor.
+  # It created a Klaus instance on a route miss; there is no Klaus path left.
   autoCreate: false
   # The Valkey server of store: valkey.
   valkey:
@@ -122,28 +138,6 @@ routing:
     # hanging it; readiness fails with it and recovers with the server.
     timeout: "2s"
 
-# Lifecycle driver: klausctl (local), operator (MCP to klaus-operator), or static (no-op when staticInstances is empty).
-lifecycle:
-  driver: operator
-  klausctlBin: ""
-  operatorMCPURL: ""
-  # Bearer token for the operator MCP endpoint; empty disables auth.
-  operatorMCPToken: ""
-  # staticInstances is a comma-separated list of name=baseURL pairs used when
-  # driver is "static" (e.g. "sre-agent=http://sre-agent.kagent.svc:8080").
-  staticInstances: ""
-
-# Upstream wiring for the OpenAI-compat direct proxy path (pkg/api).
-# When empty the gateway talks directly to instance BaseURLs.
-# When set, outgoing requests are rewritten through the agentgateway data-plane
-# and the instance name is passed via the X-Klaus-Instance header.
-# Not used for A2A channel traffic; A2A routes through a2a.url instead.
-upstream:
-  url: ""
-  # Deprecated alias for url, still forwarded by the agent-platform umbrella.
-  # Ignored by the chart.
-  agentgatewayURL: ""
-
 observability:
   # OTLP gRPC collector traces are exported to: a URL whose scheme decides TLS
   # (http://otlp-gateway.kube-system.svc:4317) or a bare host:port (plaintext).
@@ -167,7 +161,7 @@ podLabels: {}
 # -- PodDisruptionBudget on the gateway pods. Off by default: with
 # `replicaCount: 1` a `minAvailable: 1` budget refuses every voluntary eviction
 # (node drains wait for the drain timeout), which is the intended guard for a
-# single replica that carries live Slack/CLI/web turns, but a deliberate choice.
+# single replica that carries live Slack turns, but a deliberate choice.
 # Set exactly one of `minAvailable` / `maxUnavailable` (int or percentage);
 # `unhealthyPodEvictionPolicy: AlwaysAllow` lets a pod that is not Ready be
 # evicted regardless, so a crash-looping gateway never wedges a drain.
@@ -198,101 +192,15 @@ securityContext:
     drop:
       - ALL
 
-# Optional Kubernetes Gateway API + agentgateway CRDs that sit in front of this
-# gateway. Rendered only when agentgateway.enabled is true so the chart stays
-# installable in clusters without the agentgateway CRDs.
-#
-# Targets upstream agentgateway v1.1.0 (agentgateway.dev/v1alpha1).
-agentgateway:
-  enabled: false
-  # gatewayClassName of the Gateway API controller that reconciles the Gateway.
-  gatewayClassName: agentgateway
-
-  # Gateway rendering. When create is false, the chart does not render a
-  # Gateway and the HTTPRoute attaches to the externally-managed Gateway
-  # referenced by parentRefs.
-  gateway:
-    create: true
-    parentRefs: []
-    # Listener definitions applied when create is true.
-    listeners:
-    - name: http
-      port: 80
-      protocol: HTTP
-      allowedRoutes:
-        namespaces:
-          from: Same
-    annotations: {}
-
-  routes:
-    # Primary route: /v1/* and /mcp traffic enters klaus-gateway, which then
-    # dispatches to the right klaus instance.
-    chatAndMcp:
-      enabled: true
-      prefixes:
-      - /v1/
-      - /mcp
-    # CLI channel adapter route: /cli/v1/* for remote klausctl users.
-    cli:
-      enabled: false
-      prefixes:
-      - /cli/v1/
-    # Slack OBO linking + CIMD document: /auth/slack/link, /auth/slack/callback
-    # and /auth/slack/client.json. muster and the linking browser must both be
-    # able to reach these on the gateway's public hostname. Enable with obo.
-    obo:
-      enabled: false
-      prefixes:
-      - /auth/slack/
-    # Direct-to-instance IDE traffic. Normally populated by klaus-operator at
-    # runtime, so off by default in the chart.
-    directInstance:
-      enabled: false
-
-  # AgentgatewayPolicy attached to the Gateway.
-  # Upstream v1.1.0 supports JWT but not Cedar. Cedar will be wired in when it
-  # lands upstream; see docs/deployment.md.
-  policy:
-    enabled: false
-    # JWT validation via spec.traffic.jwtAuthentication.
-    jwt:
-      enabled: false
-      mode: Strict
-      issuer: ""
-      audiences: []
-      jwks:
-        # "inline" (literal JWKS JSON) or "remote" (jwksPath + backendRef).
-        mode: remote
-        inline: ""
-        remote:
-          jwksPath: /.well-known/jwks.json
-          cacheDuration: 5m
-          backendRef:
-            group: ""
-            kind: Service
-            name: ""
-            namespace: ""
-            port: 443
-
-  # Example AgentgatewayBackend pointing at a single klaus instance Service.
-  # Real cluster usage creates one Backend per instance, owned by
-  # klaus-operator.
-  backendsExample:
-    enabled: false
-    name: klaus-instance-example
-    static:
-      host: klaus-instance-example.default.svc.cluster.local
-      port: 8080
-
 # kagent client surface. When enabled, the gateway runs channel turns on a
 # kagent API v2 controller: the AgentTemplate roster is discovered over
 # kagent's gRPC services, every thread is bound to one AgentInstance, and the
 # turns travel as A2A v1 over gRPC. No A2A server is started on the gateway.
 #
-# Every call to the controller is made as the person behind the turn: their
-# Dex id_token (the Slack account link, or the bearer a web/cli caller sends)
-# is the only credential presented. The gateway never speaks to the controller
-# as its own ServiceAccount, so the route's JWT policy needs no second issuer.
+# Every call to the controller is made as the person behind the turn: the Dex
+# id_token of their Slack account link is the only credential presented. The
+# gateway never speaks to the controller as its own ServiceAccount, so the
+# route's JWT policy needs no second issuer.
 a2a:
   enabled: false
   # defaultAgent is the AgentTemplate a turn runs on when the channel names
@@ -316,9 +224,8 @@ a2a:
   # caFile is a path inside the container to a CA bundle for a grpcs:// url,
   # for images or mounts that already carry one. caSecret takes precedence.
   caFile: ""
-  # tokenPath is an optional path to a file holding a Bearer token for the
-  # Klaus-instance paths. It is never presented to the kagent controller. When
-  # saToken.enabled is true this is auto-set.
+  # Deprecated, ignored since the Slack-only release; removed in a later minor.
+  # It named a Bearer token file for the Klaus-instance paths, which are gone.
   tokenPath: ""
   # fallbackIconUrlTemplate is used when an AgentTemplate carries no
   # ui.giantswarm.io/icon-url annotation. "{agent}" is replaced with the
@@ -326,13 +233,10 @@ a2a:
   # own default icon).
   # Example: https://avatars.example.com/v1/{agent}.png
   fallbackIconUrlTemplate: ""
-  # saToken controls a projected ServiceAccount token mounted on the gateway pod
-  # for the Klaus-instance paths. It is not used toward the kagent controller.
-  saToken:
-    enabled: false
-    audience: "kagent"
-    mountPath: "/var/run/secrets/kagent/token"
-    expirationSeconds: 3600
+  # Deprecated, ignored since the Slack-only release; removed in a later minor.
+  # It projected a ServiceAccount token for the Klaus-instance paths, which are
+  # gone; the pod mounts nothing for it any more.
+  saToken: {}  # @schema additionalProperties: true
 
 # Slack channel adapter.
 # Disabled by default. To enable, set slack.enabled: true and provide a
@@ -396,20 +300,6 @@ slack:
   botToken: ""
   signingSecret: ""
   appToken: ""
-
-# CLI channel adapter.
-# Exposes POST /cli/v1/{instance}/run (SSE completions) and
-# POST /cli/v1/{instance}/messages (history) for remote klausctl users.
-# Disabled by default.
-cli:
-  enabled: false
-
-# Web channel adapter.
-# Exposes POST /web/messages (SSE completions) for browser front-ends (e.g.
-# lab's chatproxy). Disabled by default in cluster deployments; the binary
-# default is enabled for local development.
-web:
-  enabled: false
 
 # Slack on-behalf-of (OBO) muster account linking.
 # When enabled, the gateway acts as a muster OAuth client: a human links their

@@ -6,12 +6,5 @@
 # (branchPublish in giantswarm/github), execute-chart-tests waits on that push,
 # and the chart's stamped appVersion is that dev tag. The smoke test therefore
 # runs this chart with this binary.
-#
-# The chart default driver is "operator", which requires --operator-mcp-url.
-# No klaus-operator runs on the smoke cluster; the gateway dials the URL
-# lazily, so a placeholder is enough to boot.
 serviceMonitor:
   enabled: false
-
-lifecycle:
-  operatorMCPURL: "http://klaus-operator.klaus-operator.svc:8090/mcp"
