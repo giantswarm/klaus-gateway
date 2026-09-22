@@ -4,16 +4,18 @@ Project context for AI coding agents working in this repo.
 
 ## What this is
 
-`klaus-gateway` is the channel and routing front door for [Klaus](https://github.com/giantswarm/klaus)
-instances. It is **not** the LLM/MCP data plane — that is
-[agentgateway](https://github.com/agentgateway/agentgateway). Keep these roles separate when
-reading or writing code:
+`klaus-gateway` is the **Slack** front door of the agent platform. It is **not** the LLM/MCP
+data plane — that is [agentgateway](https://github.com/agentgateway/agentgateway). Keep these
+roles separate when reading or writing code:
 
-- **agentgateway** — proxies `/v1/*`, `/mcp`, A2A; speaks OpenAI / MCP / A2A natively;
-  enforces JWT/Cedar policy.
-- **klaus-gateway** — exposes channel adapters (Slack, web, CLI), maps
-  `(channel, channelID, userID, threadID)` to a Klaus instance, creates instances on demand,
-  and forwards LLM traffic through agentgateway.
+- **agentgateway** — proxies A2A, MCP and the OpenAI surface; enforces JWT/Cedar policy.
+- **klaus-gateway** — runs the Slack adapter, keys every thread by
+  `(channel, channelID, threadID)`, binds it to one agent and one kagent AgentInstance, and
+  runs the turn as A2A v1 over gRPC through agentgateway.
+
+Slack is the only channel. There is no web or CLI adapter, no OpenAI-compatible `/v1` front
+door, no Klaus instance path and no lifecycle driver: they were removed in the Slack-only
+release (issue #319).
 
 ## Stack
 
@@ -26,37 +28,24 @@ reading or writing code:
 ## Package layout
 
 ```
-main.go                 entrypoint; wires stores, lifecycle drivers, adapters, server
+main.go                 entrypoint; wires the store, the kagent client, the Slack adapter, the server
 pkg/a2a/                kagent API v2 client: A2A v1 over gRPC turns, AgentTemplate roster, AgentInstance per thread, HITL payloads
 pkg/kagent/gen/         generated kagent.api.v1alpha1 gRPC stubs (make generate-kagent; pin in its README)
-pkg/api/                OpenAI-compat front door (/v1/{instance}/...)
-pkg/channels/           ChannelAdapter interface + Gateway facade
-pkg/channels/web/       web channel adapter (/web/*)
+pkg/channels/           ChannelAdapter interface + Gateway facade (SendCompletion only)
 pkg/channels/slack/     Slack channel adapter (/channels/slack/*); Events API + Socket Mode
-pkg/channels/cli/       CLI channel adapter (/cli/v1/*)
-pkg/instance/           HTTP client for Klaus instances + SSE helpers
-pkg/lifecycle/          lifecycle.Manager interface + drivers
-pkg/lifecycle/klausctl/ calls klausctl CLI (local dev)
-pkg/lifecycle/operator/ calls Klaus Operator MCP tools (cluster)
-pkg/lifecycle/static/   fixed instance map (compose harness / CI)
-pkg/routing/            routing table
-pkg/routing/store/      Store interface + three backends (memory, valkey, bolt)
+pkg/routing/store/      Store interface + three backends (memory, valkey, bolt); thread state + team reviews
 pkg/auth/musterlink/    Slack OBO: muster account linking + the link Store (memory, bolt file, Kubernetes Secret)
+pkg/auth/satoken/       TokenReview verifier of the team-review endpoint
+pkg/reviews/            the team-review endpoint (POST /reviews, /notices)
+pkg/muster/             muster tool client an approved review calls through
 pkg/server/             http.Server wiring, middleware, admin mux
-pkg/upstream/           agentgateway upstream URL rewriter
 pkg/observability/      OTel traces + Prometheus metrics
 pkg/project/            build identifiers: ldflags target for version, git SHA and build timestamp; version falls back to the Go build info
 internal/config/        env-var + flag config (KLAUS_GATEWAY_* prefix)
 internal/version/       re-exports pkg/project for the rest of the code
 helm/klaus-gateway/     Helm chart
 hack/kagent-proto/      kagent protos copied from giantswarm/kagent-upstream; input of make generate-kagent
-hack/helm-template-tests      renders the chart with agentgateway off and on and asserts the expected kinds
-hack/wait-for, hack/smoke-completion   scripts of the compose smoke harness
 tests/                  chart tests CI runs on a kind cluster (app-test-suite): tests/ats/, tests/test-values.yaml
-deploy/docker-compose.yml     compose smoke harness
-deploy/klaus-gateway.Dockerfile   image build for the harness (public base image; the production Dockerfile copies a prebuilt binary)
-deploy/klaus-instance-stub/   tiny Go server that mimics the Klaus HTTP surface for the harness
-deploy/agentgateway/    standalone agentgateway config, shared by the harness and klausctl gateway start
 deploy/slack/manifest.yaml    Slack app manifest
 ```
 
@@ -70,35 +59,21 @@ Three backends are supported (set via `--store` / `KLAUS_GATEWAY_STORE`):
 | Valkey      | `valkey`    | yes        | yes            | For installations. One key per entry in Valkey (`--valkey-url`, password from `KLAUS_GATEWAY_VALKEY_PASSWORD` or `--valkey-password-file`); TTL as key expiry; every call bounded by `--valkey-timeout` |
 | Bolt        | `bolt`      | yes        | no             | Local file; path via `--bolt-path`          |
 
-A Slack thread's agent, initiator, grants, AgentInstance binding and in-flight task are one row
-in the store, sharing one sliding lifetime (`routing.threadTTL`, default 90 days). Every writer
+The store key is `<channel>|<channelID>|<threadID>` (three parts; the user slot went with the
+per-user web and CLI routes). A Slack thread's agent, initiator, grants, AgentInstance binding
+and in-flight task are one row in the store, sharing one sliding lifetime (`routing.threadTTL`, default 90 days). Every writer
 of that row (a channel's grant, the facade's task record, the binding) goes through
 `Store.Update`, which serialises a read-modify-write per key inside the process.
 
-## Lifecycle drivers
-
-Three drivers are supported (set via `--driver` / `KLAUS_GATEWAY_DRIVER`):
-
-- `klausctl` — shells out to `klausctl` to create/list instances. Default for local dev.
-- `operator` — calls Klaus Operator via MCP (`--operator-mcp-url`). Used in cluster.
-- `static` — maps a fixed comma-separated `name=baseURL` list. Used in the compose harness.
-
 ## Local testing
 
-**Developer path** (preferred): `klausctl gateway start` — spins up `klaus-gateway`,
-`agentgateway`, and a Klaus instance with your LLM key.
-
-**Compose harness** (contributor smoke test, see `deploy/README.md`):
-
 ```bash
-docker compose -f deploy/docker-compose.yml up -d --build
-./hack/wait-for http://127.0.0.1:8080/healthz
-./hack/smoke-completion
-docker compose -f deploy/docker-compose.yml down -v
+make test                    # go test ./...
+helm lint helm/klaus-gateway && helm template t helm/klaus-gateway
 ```
 
-The harness uses the `static` driver with `test-instance` mapped to the `klaus-instance`
-service, a tiny Go server (`deploy/klaus-instance-stub/`) that mimics the Klaus HTTP surface.
+There is no compose harness and no `klausctl gateway start` path any more. The end-to-end check
+is the chart smoke test CI runs on a kind cluster through app-test-suite (`tests/`).
 
 ## Conventions
 
@@ -122,13 +97,10 @@ will fail the scan.
 
 ## Related repos
 
-- `giantswarm/klaus` — agent binary; `klaus-gateway` proxies traffic to its `/v1/*` and `/mcp` endpoints.
-- `giantswarm/klaus-operator` — exposes MCP tools (`create_instance`, `list_instances`, …) used by the cluster lifecycle driver.
-- `giantswarm/klausctl` — local lifecycle equivalent; `klaus-gateway` calls it for `--driver=klausctl` mode.
 - `giantswarm/kagent-upstream` — the kagent API v2 controller `pkg/a2a` talks to; `hack/kagent-proto/` is copied from it.
 - `giantswarm/muster` — the authorization server behind Slack on-behalf-of account linking (`pkg/auth/musterlink`).
 - `giantswarm/agent-platform` — the meta chart that deploys `klaus-gateway` as a component and renders its routes.
-- `agentgateway/agentgateway` (Linux Foundation) — the data plane; consumed via OCI image and `gateway.networking.k8s.io` CRDs.
+- `agentgateway/agentgateway` (Linux Foundation) — the data plane the kagent controller is reached through.
 
 ## Documentation
 
@@ -136,9 +108,9 @@ Everything is in this repo:
 
 - `docs/deployment.md` — Helm chart, agentgateway wiring, channel configuration
 - `docs/channels-slack.md` and `docs/slack-hitl-surface.md` — the Slack adapter and every interactive prompt it posts
-- `docs/channels-web.md`, `docs/channels-cli.md`, `docs/api.md` — the other adapters and the HTTP surface
+- `docs/api.md` — the team-review endpoint and the admin surface
 - `docs/kagent-a2a.md` — A2A v1 over gRPC, the AgentTemplate roster, one AgentInstance per thread, HITL and stop
-- `docs/development.md` — build, test, compose harness, adding an adapter
+- `docs/development.md` — build, test, the HTTP surface, adding an adapter
 - `UPGRADE.md` — what an operator has to do or decide between releases; `CHANGELOG.md` lists every change
 
 ## Build / test
@@ -147,15 +119,14 @@ Everything is in this repo:
 go build ./...
 make test                    # what CI runs: go test ./... (race detector when cgo is available)
 make lint                    # golangci-lint with gosec + goconst
-./hack/helm-template-tests   # chart render check with agentgateway off and on; CI runs the chart on kind (tests/)
+helm lint helm/klaus-gateway && helm template t helm/klaus-gateway   # CI also runs the chart on kind (tests/)
 CGO_ENABLED=0 go build -o klaus-gateway-linux-amd64 . && docker build -t klaus-gateway:dev .   # the image copies the prebuilt binary
 ```
 
 ## CI
 
 CircleCI through the `architect` orb. `.circleci/workflows.yml` is generated by devctl and rewritten
-by align-files; repo-specific jobs go into `.circleci/custom.yml`, changes to the generated jobs into
-devctl. On a branch: `go-build` (`make test`), `push-to-registries` (hadolint + amd64 build, pushed
+by align-files; changes to the generated jobs go into devctl. On a branch: `go-build` (`make test`), `push-to-registries` (hadolint + amd64 build, pushed
 to gsoci as a dev image `<next version>-dev.<branch>.<utc date>.<utc time>.h<sha>`; `branchPublish` in
 giantswarm/github), `build-chart`, `execute-chart-tests` (the chart on a kind cluster through
 app-test-suite, `tests/`, installed with the branch's own dev image) and `push-chart` (the dev chart

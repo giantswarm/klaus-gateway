@@ -1,162 +1,25 @@
 # Deploying klaus-gateway
 
-`klaus-gateway` ships as a Helm chart at `helm/klaus-gateway/`. The chart always renders the
-gateway itself (`Deployment`, `Service`, `ServiceAccount`, `ServiceMonitor`). It optionally
-renders Kubernetes Gateway API + upstream [agentgateway](https://github.com/agentgateway/agentgateway)
-resources so the gateway sits behind an agentgateway data plane.
+`klaus-gateway` ships as a Helm chart at `helm/klaus-gateway/`. The chart renders the gateway
+itself (`Deployment`, `Service`, `ServiceAccount`, `ServiceMonitor`) and, with the features
+below, the OBO link Secret and RBAC, the team-review RBAC and a PodDisruptionBudget. It renders
+no Gateway API resources: the routes that carry `/channels/slack` and `/auth/slack/` into the
+gateway belong to the agent-platform-connectivity chart.
 
-## Modes
-
-| Mode                                  | When to use                                                                 |
-|---------------------------------------|-----------------------------------------------------------------------------|
-| Cluster mode **without** agentgateway | Dev clusters, CI clusters, or any cluster that does not run agentgateway.   |
-| Cluster mode **with** agentgateway    | Production clusters (e.g. spidertron) where policy/authn live on the edge. |
-
-The agentgateway block is off by default, so the chart stays installable on clusters that do
-not have the `agentgateway.dev` CRDs.
-
-## Cluster mode (without agentgateway)
-
-Plain install — no Gateway API resources, no agentgateway CRDs required:
+## Install
 
 ```bash
 helm upgrade --install klaus-gateway helm/klaus-gateway \
   --namespace klaus-gateway --create-namespace
 ```
 
-Traffic lands directly on the `klaus-gateway` `Service` (port 80, container port
-`server.port`). Expose it with whatever mechanism you already use (`Ingress`,
-`LoadBalancer` service, port-forward, etc.).
-
-## Cluster mode (with agentgateway)
-
-### Prerequisites
-
-1. Install the Kubernetes Gateway API standard CRDs (`gateway.networking.k8s.io/v1`):
-
-    ```bash
-    kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.5.1/standard-install.yaml
-    ```
-
-2. Install upstream agentgateway (installs the `AgentgatewayPolicy` and `AgentgatewayBackend`
-   CRDs and the controller):
-
-    ```bash
-    helm upgrade --install agentgateway \
-      oci://ghcr.io/agentgateway/charts/agentgateway \
-      --version v1.1.0 \
-      --namespace agentgateway --create-namespace
-    ```
-
-   These templates target agentgateway **v1.1.0** (`agentgateway.dev/v1alpha1`). The pinned
-   version is recorded in `Chart.yaml` under the
-   `klaus-gateway.giantswarm.io/agentgateway-version` annotation.
-
-### Install
-
-Enable the agentgateway block to render a `Gateway`, an `HTTPRoute`, and optionally an
-`AgentgatewayPolicy` and example `AgentgatewayBackend`:
-
-```yaml
-# values-cluster.yaml
-agentgateway:
-  enabled: true
-  gatewayClassName: agentgateway
-  gateway:
-    create: true
-    listeners:
-    - name: http
-      port: 80
-      protocol: HTTP
-      allowedRoutes:
-        namespaces:
-          from: Same
-  routes:
-    chatAndMcp:
-      enabled: true
-      prefixes:
-      - /v1/
-      - /mcp
-  policy:
-    enabled: true
-    jwt:
-      enabled: true
-      mode: Strict
-      issuer: https://auth.example.com/
-      audiences:
-      - klaus
-      jwks:
-        mode: remote
-        remote:
-          jwksPath: /.well-known/jwks.json
-          cacheDuration: 5m
-          backendRef:
-            kind: Service
-            name: oidc-jwks
-            namespace: auth
-            port: 443
-```
-
-```bash
-helm upgrade --install klaus-gateway helm/klaus-gateway \
-  --namespace klaus-gateway --create-namespace \
-  -f values-cluster.yaml
-```
-
-### What gets rendered
-
-When `agentgateway.enabled=true`:
-
-| Resource                                          | Template                                  | Gated by                                    |
-|---------------------------------------------------|-------------------------------------------|---------------------------------------------|
-| `gateway.networking.k8s.io/v1 Gateway`            | `templates/agentgateway-gateway.yaml`     | `agentgateway.gateway.create`               |
-| `gateway.networking.k8s.io/v1 HTTPRoute`          | `templates/agentgateway-httproute.yaml`   | `agentgateway.routes.chatAndMcp.enabled`    |
-| `agentgateway.dev/v1alpha1 AgentgatewayPolicy`    | `templates/agentgateway-policy.yaml`      | `agentgateway.policy.enabled`               |
-| `agentgateway.dev/v1alpha1 AgentgatewayBackend`   | `templates/agentgateway-backend.yaml`     | `agentgateway.backendsExample.enabled`      |
-
-The example `AgentgatewayBackend` is a placeholder pointing at a single Klaus instance
-`Service`. In production each instance `Backend` is created by
-[Klaus Operator](https://github.com/giantswarm/klaus-operator) at runtime; leave
-`backendsExample.enabled=false` there.
-
-### Attaching to an externally-managed Gateway
-
-If a shared `Gateway` already exists (e.g. owned by the platform team), set
-`agentgateway.gateway.create=false` and point `parentRefs` at it:
-
-```yaml
-agentgateway:
-  enabled: true
-  gateway:
-    create: false
-    parentRefs:
-    - name: platform-gateway
-      namespace: gateway-system
-```
-
-The `HTTPRoute` and `AgentgatewayPolicy` will attach to that Gateway instead of rendering
-a new one.
-
-### JWT validation
-
-The chart renders `spec.traffic.jwtAuthentication` on the `AgentgatewayPolicy`. Both JWKS
-modes are supported:
-
-- **remote** (default) — agentgateway fetches the JWKS via a `Service` or
-  `AgentgatewayBackend` backend ref. Requires
-  `agentgateway.policy.jwt.jwks.remote.backendRef.name`.
-- **inline** — ship a literal JWKS JSON document in the policy. Set
-  `agentgateway.policy.jwt.jwks.mode=inline` and provide
-  `agentgateway.policy.jwt.jwks.inline`.
-
-### Cedar policies
-
-Cedar is **not** part of agentgateway v1.1.0. Once upstream lands Cedar, the chart will
-grow a `policy.cedar` block and a `templates/agentgateway-cedar-policy.yaml` ConfigMap.
+Traffic lands on the `klaus-gateway` `Service` (port 80, container port `server.port`). On an
+installation the agent platform routes to it; standalone, expose it with whatever you already
+use (`Ingress`, `LoadBalancer` service, port-forward).
 
 ## kagent (agent conversations)
 
-With `a2a.enabled: true` the gateway runs channel turns on a kagent API v2 controller through
+With `a2a.enabled: true` the gateway runs Slack turns on a kagent API v2 controller through
 the platform's agentgateway: A2A v1 over gRPC, the AgentTemplate roster over kagent's gRPC
 services, one AgentInstance per thread. The full model is in [kagent-a2a.md](kagent-a2a.md).
 
@@ -215,11 +78,10 @@ failure never costs a person their sign-in:
 
 ## Routing store
 
-The routing table maps `(channel, channelID, userID, threadID)` to a Klaus instance name, or a
-thread to the kagent AgentInstance that holds its conversation, together with the record of the
-task in flight on that thread and of how much of its reply has landed (continued, not repeated,
-after a restart, see [Shutdown and restarts](#shutdown-and-restarts)). For the Slack channel, the same store also
-holds the thread's agent, its initiator, and the collaborators the initiator allowed: agent,
+The routing table maps `(channel, channelID, threadID)` to the kagent AgentInstance that holds
+the thread's conversation, together with the record of the task in flight on that thread and of
+how much of its reply has landed (continued, not repeated, after a restart, see
+[Shutdown and restarts](#shutdown-and-restarts)). The same store also holds the thread's agent, its initiator, and the collaborators the initiator allowed: agent,
 initiator, grants, the AgentInstance and its in-flight task are one row, with one sliding
 lifetime — `routing.threadTTL` (`--thread-ttl`, 90 days by default; `0` never expires) —
 refreshed on every turn. While the thread lives, the initiator and the people they allowed reply
@@ -276,25 +138,6 @@ with a clear error in the thread, the pod's readiness probe (a `PING`) fails, an
 the server — no restart. Under a Cilium network policy the gateway pod needs egress to the Valkey
 pods on 6379 (the agent platform's connectivity chart renders it).
 
-## Lifecycle driver
-
-The lifecycle driver creates Klaus instances on demand when a route miss occurs.
-
-| Driver     | Helm value              | When to use                            |
-|------------|-------------------------|----------------------------------------|
-| `operator` | `lifecycle.driver: operator` | Cluster deployments; calls Klaus Operator MCP tools |
-| `klausctl` | `lifecycle.driver: klausctl` | Local / single-node; calls `klausctl` CLI |
-| `static`   | `lifecycle.driver: static`  | Compose harness or fixed single-instance |
-
-For the `operator` driver, set:
-
-```yaml
-lifecycle:
-  driver: operator
-  operatorMCPURL: http://klaus-operator.default.svc:8090
-  operatorMCPToken: ""  # optional bearer token
-```
-
 ## Channel configuration
 
 ### Slack
@@ -325,25 +168,6 @@ For Events API mode, set the Request URL in your Slack app to
 and configure the Slack app in one step.
 
 See [docs/channels-slack.md](channels-slack.md) for the full Slack setup guide.
-
-### CLI
-
-The CLI adapter is disabled by default:
-
-```yaml
-cli:
-  enabled: true
-
-# Optionally expose /cli/v1/* through agentgateway:
-agentgateway:
-  routes:
-    cli:
-      enabled: true
-      prefixes:
-      - /cli/v1/
-```
-
-See [docs/channels-cli.md](channels-cli.md) for usage.
 
 ## Shutdown and restarts
 
@@ -422,15 +246,20 @@ every turn is exported; the traffic is turns, not requests.
 
 ## Values reference
 
-See `helm/klaus-gateway/values.yaml` for the full set. The agentgateway block is validated by
+See `helm/klaus-gateway/values.yaml` for the full set, validated by
 `helm/klaus-gateway/values.schema.json`; `helm install` and `helm upgrade` reject unknown
 fields or wrong types.
+
+The `web`, `cli`, `lifecycle`, `upstream`, `agentgateway`, `routing.defaultTTL`,
+`routing.autoCreate`, `a2a.saToken` and `a2a.tokenPath` keys are accepted and ignored: the
+agent-platform umbrella still forwards them. A later minor deletes them — see
+[UPGRADE.md](../UPGRADE.md).
 
 ## Local checks
 
 ```bash
-make helm-test
+helm lint helm/klaus-gateway
+helm template t helm/klaus-gateway
 ```
 
-Runs `helm lint` and `helm template` in both agentgateway-disabled and -enabled modes and
-asserts the expected kinds are (or are not) present.
+CI installs the chart on a kind cluster through app-test-suite (`tests/`).

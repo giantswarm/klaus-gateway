@@ -305,18 +305,20 @@ agent was chosen before any message existed.
 
 | Flag | Env var | Required |
 |------|---------|---------|
-| `--slack-default-agent` | `KLAUS_GATEWAY_SLACK_DEFAULT_AGENT` | Yes (when Slack is enabled) |
+| `--a2a-default-agent` | `KLAUS_GATEWAY_A2A_DEFAULT_AGENT` | Yes (when Slack is enabled) |
 
-When `--driver=static`, the gateway validates at startup that the named agent exists in
-the pre-configured instance set. With other drivers (klausctl, operator), the name is
-used as the instance creation hint and instances may not exist yet at startup.
+The adapter refuses to start without it. The name is not checked at startup: the controller
+resolves it on the thread's first turn, and an unknown agent is reported in the thread.
 
 Example Helm values:
 
 ```yaml
 slack:
   enabled: true
-  defaultAgent: my-instance
+a2a:
+  enabled: true
+  defaultAgent: sre-agent
+  namespace: kagent
 ```
 
 ## Running in Events API mode (production)
