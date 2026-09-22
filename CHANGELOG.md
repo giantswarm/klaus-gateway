@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Chart: `serviceMonitor.labels`, labels on the ServiceMonitor beside the chart's own. The Giant Swarm observability platform routes a scrape to a Mimir tenant by `observability.giantswarm.io/tenant`, and the monitor carried no way to set it, so the gateway's `klaus_gateway_*` series reached no tenant on every installation.
+
 ### Fixed
 
 - Slack: the answer a resubscribed turn reads back whole at completion is rendered as the live stream renders it — a paragraph break between two artifacts — so a continued reply no longer runs two sentences together ("…roles.Here's the full picture"), and the cut at what the previous process had posted falls on the right byte when more than one artifact streamed before the restart (klaus-gateway#301).
