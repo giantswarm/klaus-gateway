@@ -3,6 +3,7 @@ package slack_test
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -122,11 +123,12 @@ func TestClosedThread_MentionStartsTheThreadOver(t *testing.T) {
 
 	// The colleague the old initiator had allowed is a newcomer again.
 	sendEvent(t, srv, threadReply("U2", "on it", "810.002", "810.000"))
+	// postAccessPrompt posts the owner's consent prompt first and the
+	// newcomer's ack second; waiting for the first ephemeral and asserting on
+	// the second races that second post.
 	require.Eventually(t, func() bool {
-		return len(fake.pathCalls("chat.postEphemeral")) > 0
-	}, flowWait, 20*time.Millisecond)
-	require.Contains(t, allText(fake.pathCalls("chat.postEphemeral")), "waiting for the thread owner",
-		"the colleague has to be allowed in again")
+		return strings.Contains(allText(fake.pathCalls("chat.postEphemeral")), "waiting for the thread owner")
+	}, flowWait, 20*time.Millisecond, "the colleague has to be allowed in again")
 	require.Equal(t, 2, gw.resolveCount(), "and their message does not reach the agent meanwhile")
 }
 
