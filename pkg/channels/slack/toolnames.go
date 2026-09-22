@@ -42,13 +42,11 @@ var toolNamespacePrefixes = []string{"x_", "workflow_"}
 // sequences are escaped and newlines flattened before it is cut to Slack's
 // title limit.
 //
-// UNVERIFIED: the chat.appendStream reference does not say whether a
-// task_update's title, details and output are parsed as mrkdwn or shown as
-// plain text. The escaping is the safe side — a name is never allowed to carry
-// <!channel> into a notification — but if they are plain text an argument
-// containing & or < shows as &amp; / &lt; on screen. If the live check on
-// graveler finds that, drop escapeMrkdwn from stepSafeText and keep the
-// whitespace flattening; nothing else depends on it.
+// The chat.appendStream reference does not say whether a task_update's title,
+// details and output are parsed as mrkdwn, but graveler answered it on
+// 2026-09-22: a result preview sent with &gt; rendered as ">" on screen. The
+// fields decode entities, so they follow mrkdwn semantics and the escaping is
+// necessary — a raw <…> would be read as a link or a mention.
 func stepTitle(name string) string {
 	title, ok := metaToolTitles[name]
 	if !ok {

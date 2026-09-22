@@ -1815,8 +1815,51 @@ func TestSteps_DetailsFullCarriesDetailsAndOutput(t *testing.T) {
 	require.Contains(t, steps[0].details, "x_kubernetes_get", "the raw name stays available")
 	require.Contains(t, steps[0].details, `"kind": "pods"`)
 	require.Empty(t, steps[0].output, "a call has no result yet")
-	require.Equal(t, steps[0].details, steps[1].details, "the closing update keeps the details on screen")
+	require.Empty(t, steps[1].details, "Slack appends details across updates, so only the opening one carries them")
 	require.Equal(t, "3 pods running", steps[1].output)
+}
+
+// Slack appends a step's details across the updates of one id instead of
+// replacing them, so a details string sent twice showed twice (graveler,
+// 2026-09-22). Exactly one update of a step may carry them: the one that opens
+// it.
+func TestSteps_DetailsRideTheOpeningUpdateOnly(t *testing.T) {
+	ft, _ := captureStream(t, detailsFull, "",
+		toolCallDeltaWith("x_kubernetes_get", "c1", map[string]any{"kind": "pods"}),
+		toolResultDelta("x_kubernetes_get", "c1", map[string]any{"output": "ok"}),
+		// A second call whose result never comes, so the turn's end closes it.
+		toolCallDeltaWith("x_kubernetes_list", "c2", map[string]any{"kind": "nodes"}),
+	)
+
+	withDetails := map[string]int{}
+	for _, s := range ft.steps() {
+		if s.details != "" {
+			withDetails[s.id]++
+			require.Equal(t, stepInProgress, s.status, "only the update that opens a step carries details")
+		}
+	}
+	require.Equal(t, map[string]int{"step-1": 1, "step-2": 1}, withDetails)
+}
+
+// The agent's own payloads reach the step as they were written: Go's HTML-safe
+// JSON marshalling spelled a PromQL "<" as "<" on screen (graveler,
+// 2026-09-22), so the compacting turns it off and the mrkdwn escaping does the
+// neutralising, as it does everywhere else.
+func TestSteps_DetailsCarryTheRealCharacters(t *testing.T) {
+	ft, _ := captureStream(t, detailsFull, "",
+		toolCallDeltaWith("x_prometheus_execute_query", "c1", map[string]any{
+			"query": `up{job!="x"} > 0.5 and on() vector(1) < 2 & more`,
+		}),
+		toolResultDelta("x_prometheus_execute_query", "c1", map[string]any{"output": "{} => 7.14 < 8"}),
+	)
+
+	steps := ft.steps()
+	require.Len(t, steps, 2)
+	require.NotContains(t, steps[0].details, "\\u00", "no JSON escapes reach the step")
+	require.Contains(t, steps[0].details, "&gt; 0.5")
+	require.Contains(t, steps[0].details, "&lt; 2")
+	require.Contains(t, steps[0].details, "&amp; more")
+	require.Contains(t, steps[1].output, "=&gt; 7.14 &lt; 8")
 }
 
 // Slack caps a task_update chunk's fields, so the payload previews are cut to

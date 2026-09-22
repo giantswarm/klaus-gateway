@@ -128,11 +128,13 @@ func TestRenderToolActivity_RecordedEntryEscapesHostileContent(t *testing.T) {
 	require.NotContains(t, md, "<!channel>", "angle brackets must be escaped")
 	require.Contains(t, md, "&lt;!channel&gt;")
 	require.NotContains(t, md, "`\n", "newlines and backticks must not break the code span")
-	// Args pass through Go's HTML-safe JSON marshaling, which neutralises the
-	// mrkdwn-sensitive bytes as literal \u escapes.
+	// The args are marshalled with HTML escaping off — Go's default spelled the
+	// agent's own "<" as "<" on screen — so the mrkdwn escaping is what
+	// neutralises them, as it does for the name.
 	require.NotContains(t, md, "<script>")
-	require.Contains(t, md, "\\u003cscript\\u003e")
-	require.Contains(t, md, "a\\u0026b")
+	require.NotContains(t, md, "\\u003c", "the payload carries the real characters, not JSON escapes")
+	require.Contains(t, md, "&lt;script&gt;")
+	require.Contains(t, md, "a&amp;b")
 }
 
 // A call_tool invocation is unwrapped to the inner muster tool in the log,

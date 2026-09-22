@@ -1,6 +1,7 @@
 package slack
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -282,18 +283,25 @@ type batchedWriter struct {
 // openStep is a tool call that has a step on the stream and no result yet: the
 // id Slack keys it by, the call id its result will arrive under (empty when the
 // stream gave none, which is why the turn's end has to close it), and the title
-// and details it was opened with, so the update that closes it renders the same
-// step rather than a second one.
+// it was opened with, so the update that closes it renders the same step rather
+// than a second one. The details are deliberately absent: they ride the opening
+// update alone (see taskUpdate).
 type openStep struct {
-	id      string
-	callID  string
-	title   string
-	details string
+	id     string
+	callID string
+	title  string
 }
 
 // taskUpdate is one state of one step of the reply's task list. Sending the
-// same id again replaces the step, which is how a running call becomes a
+// same id again updates the step, which is how a running call becomes a
 // finished one.
+//
+// Slack APPENDS details across the updates of one step rather than replacing
+// it (observed on graveler, 2026-09-22: a step sent with the same details twice
+// showed both copies run together, while output, sent once, showed once). So
+// details rides the update that OPENS the step and no other; every later update
+// of that step carries the id, the title, the status and — at /details full —
+// the output.
 type taskUpdate struct {
 	id      string
 	title   string
@@ -694,15 +702,17 @@ func (w *batchedWriter) openStep(ctx context.Context, callID, displayName string
 		callID: callID,
 		title:  stepTitle(displayName),
 	}
+	u := taskUpdate{id: s.id, title: s.title, status: stepInProgress}
 	if w.details == detailsFull {
 		// The raw name is what a reader debugging a turn needs: the title is a
-		// phrase, the details name the tool and what it was called with.
-		s.details = stepField(displayName + " " + compactJSON(args, toolArgsMax))
+		// phrase, the details name the tool and what it was called with. This is
+		// the only update of this step that carries them.
+		u.details = stepField(displayName + " " + compactJSON(args, toolArgsMax))
 	}
 	w.mu.Lock()
 	w.openSteps = append(w.openSteps, s)
 	w.mu.Unlock()
-	w.queueStep(taskUpdate{id: s.id, title: s.title, status: stepInProgress, details: s.details})
+	w.queueStep(u)
 	w.noteDelivered(ctx)
 }
 
@@ -720,7 +730,7 @@ func (w *batchedWriter) closeStep(ctx context.Context, callID, preview string, i
 	if isErr {
 		status = stepError
 	}
-	u := taskUpdate{id: s.id, title: s.title, status: status, details: s.details}
+	u := taskUpdate{id: s.id, title: s.title, status: status}
 	if w.details == detailsFull {
 		u.output = stepField(preview)
 	}
@@ -775,15 +785,16 @@ func (w *batchedWriter) closeOpenSteps(ctx context.Context, status string) {
 		return
 	}
 	for _, s := range open {
-		w.queueStep(taskUpdate{id: s.id, title: s.title, status: status, details: s.details})
+		w.queueStep(taskUpdate{id: s.id, title: s.title, status: status})
 	}
 	w.noteDelivered(ctx)
 }
 
 // stepField prepares a payload preview for a step's details or output: escaped
 // like every other agent-controlled string, flattened to one line, and cut to
-// the chunk size Slack documents for task_update. Whether Slack parses the
-// field as mrkdwn is unverified — see stepTitle for which way to flip it.
+// the chunk size Slack documents for task_update. Slack decodes the entities
+// again when it renders the field (verified on graveler, 2026-09-22), so the
+// escaping costs the reader nothing and keeps a payload from carrying a mention.
 func stepField(s string) string {
 	return truncateRunes(stepSafeText(s), stepFieldMax)
 }
@@ -1240,11 +1251,17 @@ func compactJSON(v map[string]any, max int) string {
 // compactJSONValue is compactJSON over any JSON value, so unwrapped payloads
 // that are arrays render the same single readable line as objects.
 func compactJSONValue(v any, max int) string {
-	b, err := json.Marshal(v)
-	if err != nil {
+	// json.Marshal is HTML-safe: it spells <, > and & as <, > and
+	// &. That neutralising is the wrong layer here — every place this
+	// preview lands escapes it for mrkdwn itself (escapeMrkdwn) — and it put
+	// the agent's own PromQL on screen as "> 0.5" (graveler, 2026-09-22).
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
 		return ""
 	}
-	rs := []rune(spaceStructuralJSON(b))
+	rs := []rune(spaceStructuralJSON(bytes.TrimRight(buf.Bytes(), "\n")))
 	if len(rs) > max {
 		return string(rs[:max]) + "…"
 	}
