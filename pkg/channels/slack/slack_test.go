@@ -2065,7 +2065,8 @@ func TestDetails_DefaultOn_RendersToolActivity(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		steps := fake.streamedSteps()
-		return len(steps) == 1 && steps[0]["title"] == "List pods" &&
+		return len(steps) == 2 && steps[0]["title"] == "List pods" &&
+			steps[0]["status"] == "in_progress" && steps[1]["status"] == "complete" &&
 			strings.Contains(fake.threadText(), "Found 3 pods.")
 	}, flowWait, 20*time.Millisecond, "default-on details should render the step and the answer")
 }

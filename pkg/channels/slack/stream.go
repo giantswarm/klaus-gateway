@@ -252,39 +252,41 @@ type batchedWriter struct {
 	streamStopped   bool
 	streamFailed    bool
 
-	// Step state of the reply's task list, touched only from run()'s goroutine
-	// except where noted. stepsIssued counts the step ids this turn has handed
-	// out — the id of the n-th tool call is "step-<n>", continuing the count a
-	// restart carried over, so a process continuing the turn never reuses an id
-	// already on the adopted stream. steps maps a call's id to the step it
-	// opened, so its result can close the same step.
+	// Step state of the reply's task list. stepsIssued counts the step ids this
+	// turn has handed out — the id of the n-th tool call is "step-<n>",
+	// continuing the count a restart carried over, so a process continuing the
+	// turn never reuses an id already on the adopted stream. openSteps holds the
+	// steps opened and not yet closed, oldest first: a result closes the one its
+	// call id names, and whatever is left when the turn ends is closed by its
+	// last flush. Written on run()'s goroutine; openSteps is guarded by mu
+	// because the delivery record names its most recent entry.
 	stepsIssued int
-	steps       map[string]openStep
+	openSteps   []openStep
 
 	// Continuation across a restart (continuation.go). carried is what the
 	// previous process delivered of the turn this writer continues; skipText
 	// is how much answer text is still to be dropped, trimLead whether the
 	// whitespace the cut left in front is still to go, and leadTrimmed (under
-	// mu) how much of it went; closeCarried marks the last step the previous
-	// process issued as still to be closed on the adopted stream.
-	// onDelivered, when set, receives the delivery record after every flush and
-	// every step.
-	carried      store.Delivered
-	skipText     int
-	trimLead     bool
-	leadTrimmed  int
-	closeCarried bool
-	onDelivered  func(ctx context.Context, d store.Delivered)
+	// mu) how much of it went. onDelivered, when set, receives the delivery
+	// record after every flush and every step.
+	carried     store.Delivered
+	skipText    int
+	trimLead    bool
+	leadTrimmed int
+	onDelivered func(ctx context.Context, d store.Delivered)
 	// ran is set by run(): a second cycle over the same writer opens a stream
 	// of its own instead of reopening the one the previous cycle closed.
 	ran bool
 }
 
-// openStep is a tool call that has a step on the stream: the id Slack keys it
-// by, the title it was opened with and the details it carries, so the update
-// that closes it renders the same step rather than a second one.
+// openStep is a tool call that has a step on the stream and no result yet: the
+// id Slack keys it by, the call id its result will arrive under (empty when the
+// stream gave none, which is why the turn's end has to close it), and the title
+// and details it was opened with, so the update that closes it renders the same
+// step rather than a second one.
 type openStep struct {
 	id      string
+	callID  string
 	title   string
 	details string
 }
@@ -402,6 +404,8 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 				// Flush text buffered since the last tick before surfacing the
 				// error, so wroteContent reflects all delivered content and the
 				// failure note posts as a new message instead of overwriting it.
+				// A step still running when the turn fails never gets its result.
+				w.closeOpenSteps(ctx, stepError)
 				if ferr := w.finalFlush(ctx); ferr != nil {
 					w.logger.Warn("slack: flush before failure note failed", "error", ferr)
 				}
@@ -429,7 +433,7 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 				w.openEarly(ctx)
 			case channels.DeltaNarration:
 				w.timer.AddChars(len(d.Content))
-				w.renderNarration(ctx, d.Content)
+				w.renderNarration(d.Content)
 				w.openEarly(ctx)
 			case channels.DeltaPrompt:
 				// Recorded before the flush: the stop that closes the stream
@@ -438,6 +442,11 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 				w.mu.Lock()
 				w.promptDelta = &d
 				w.mu.Unlock()
+				// The call that asked the question is done asking, and this
+				// message is about to be closed, so its step is closed on it —
+				// the answer resumes the turn into a message of its own, where
+				// an update for this step would render as a second card.
+				w.closeOpenSteps(ctx, stepComplete)
 				// Flush partial text so far, then hand off to the caller to post
 				// the interactive approval prompt. A flush failure here is
 				// non-fatal: the pending-task store and the prompt post do not
@@ -511,6 +520,9 @@ func (w *batchedWriter) noteFlushFailure(now time.Time, err error) {
 // after its retries is reported as a renderError: the agent completed the turn,
 // only its rendering did not.
 func (w *batchedWriter) finish(ctx context.Context) error {
+	// A step whose result never arrived — a call the stream gave no id, a tool
+	// that answered nothing — would spin on the finished reply forever.
+	w.closeOpenSteps(ctx, stepComplete)
 	if err := w.finalFlush(ctx); err != nil {
 		return &renderError{err: err}
 	}
@@ -573,10 +585,23 @@ const (
 	// one truncation note is sent: dropping the agent's prose without saying so
 	// is the bug this rendering fixes.
 	maxNarrationMessages = 10
+	// maxSteps bounds the steps one turn puts on its reply. The steps ride the
+	// appends the answer already makes, so this is not a rate limit: Slack
+	// documents no maximum number of tasks on a message, and a turn of several
+	// hundred calls is untested territory. Past it one note is sent and the
+	// calls are still retained for the "Inspect agent steps" shortcut.
+	maxSteps = 100
 )
+
+// passageBreak ends a narration chunk, so two passages — or a passage and the
+// answer that follows it — never run together in the message body.
+const passageBreak = "\n\n"
 
 // narrationLimitNote replaces the narration past the per-turn cap.
 const narrationLimitNote = "_…narration limit reached; hiding this turn's remaining step-by-step notes. The answer still follows._"
+
+// stepLimitNote is sent once when a turn's tool calls pass the step cap.
+const stepLimitNote = "_…step limit reached; hiding this turn's remaining tool calls. The Inspect agent steps shortcut still has them._"
 
 // renderToolActivity turns a tool call into one step of the reply's task list:
 // a task_update chunk that opens the step as in_progress, and a second one on
@@ -653,39 +678,42 @@ func (w *batchedWriter) toolResultMarkdown(tool *channels.ToolActivity, preview 
 // openStep queues the step that says this call is running. The id is the
 // call's ordinal in the turn ("step-4"), which is what a process continuing the
 // turn after a restart counts on from, and what the result's update repeats to
-// close the same step.
+// close the same step. Past maxSteps no step is opened and one note says so.
 func (w *batchedWriter) openStep(ctx context.Context, callID, displayName string, args map[string]any) {
 	w.stepsIssued++
+	if w.stepsIssued > maxSteps {
+		if w.stepsIssued == maxSteps+1 {
+			w.queueNarration(stepLimitNote + passageBreak)
+		}
+		return
+	}
 	s := openStep{
-		id:    stepID(w.stepsIssued),
-		title: stepTitle(displayName),
+		id:     stepID(w.stepsIssued),
+		callID: callID,
+		title:  stepTitle(displayName),
 	}
 	if w.details == detailsFull {
 		// The raw name is what a reader debugging a turn needs: the title is a
 		// phrase, the details name the tool and what it was called with.
 		s.details = stepField(displayName + " " + compactJSON(args, toolArgsMax))
 	}
-	if callID != "" {
-		if w.steps == nil {
-			w.steps = make(map[string]openStep)
-		}
-		w.steps[callID] = s
-	}
+	w.mu.Lock()
+	w.openSteps = append(w.openSteps, s)
+	w.mu.Unlock()
 	w.queueStep(taskUpdate{id: s.id, title: s.title, status: stepInProgress, details: s.details})
 	w.noteDelivered(ctx)
 }
 
 // closeStep queues the update that ends the step the call opened: complete, or
 // error when the tool reported the result as one. A result whose call was never
-// seen (a stream that started mid-turn, a result without a call id) has no step
-// to close and is dropped. Nothing is recorded for it: a result hands out no id,
-// so the delivery record would say exactly what it already says.
-func (w *batchedWriter) closeStep(_ context.Context, callID, preview string, isErr bool) {
-	s, ok := w.steps[callID]
+// seen — a stream that started mid-turn, a call past the step cap, a step the
+// turn's end already closed — has no step to close and is dropped. The record
+// follows, because the step it named is no longer running.
+func (w *batchedWriter) closeStep(ctx context.Context, callID, preview string, isErr bool) {
+	s, ok := w.takeOpenStep(callID)
 	if !ok {
 		return
 	}
-	delete(w.steps, callID)
 	status := stepComplete
 	if isErr {
 		status = stepError
@@ -695,11 +723,51 @@ func (w *batchedWriter) closeStep(_ context.Context, callID, preview string, isE
 		u.output = stepField(preview)
 	}
 	w.queueStep(u)
+	w.noteDelivered(ctx)
+}
+
+// takeOpenStep removes the open step a result belongs to. A result with no call
+// id matches nothing: it cannot be told from any other, and closing the wrong
+// step would be worse than leaving the turn's end to close it.
+func (w *batchedWriter) takeOpenStep(callID string) (openStep, bool) {
+	if callID == "" {
+		return openStep{}, false
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for i, s := range w.openSteps {
+		if s.callID == callID {
+			w.openSteps = append(w.openSteps[:i], w.openSteps[i+1:]...)
+			return s, true
+		}
+	}
+	return openStep{}, false
+}
+
+// closeOpenSteps ends every step still running as the turn ends, so no message
+// is left with one that spins forever — Slack never closes a task on its own.
+// status is complete on a normal end and on a pause for a HITL prompt (the call
+// did its work; the answer is what is being waited for) and error when the turn
+// failed or was cancelled, where the result never arrived and never will. A
+// call the stream gave no id is only ever closed here.
+func (w *batchedWriter) closeOpenSteps(ctx context.Context, status string) {
+	w.mu.Lock()
+	open := w.openSteps
+	w.openSteps = nil
+	w.mu.Unlock()
+	if len(open) == 0 {
+		return
+	}
+	for _, s := range open {
+		w.queueStep(taskUpdate{id: s.id, title: s.title, status: status, details: s.details})
+	}
+	w.noteDelivered(ctx)
 }
 
 // stepField prepares a payload preview for a step's details or output: escaped
 // like every other agent-controlled string, flattened to one line, and cut to
-// the chunk size Slack documents for task_update.
+// the chunk size Slack documents for task_update. Whether Slack parses the
+// field as mrkdwn is unverified — see stepTitle for which way to flip it.
 func stepField(s string) string {
 	return truncateRunes(stepSafeText(s), stepFieldMax)
 }
@@ -822,19 +890,27 @@ func (w *batchedWriter) setSessionStatus(ctx context.Context, status sessionStat
 //
 // Narration is unbounded agent prose, so it is split like the main reply: one
 // chunk may not exceed slackMarkdownBlockMax. Chunks share the per-turn budget,
-// so an outsized narration ends in the same limit note.
-func (w *batchedWriter) renderNarration(_ context.Context, text string) {
+// so an outsized narration ends in the same limit note. A passage ends in a
+// paragraph break — the chunks of one message run into one body — so what
+// follows it starts a line of its own; the split pieces of a single passage get
+// none, since the cut falls mid-prose.
+func (w *batchedWriter) renderNarration(text string) {
 	scrubbed := strings.TrimSpace(w.scrubLoginURLs(text))
 	if scrubbed == "" {
 		return
 	}
-	for _, md := range splitMarkdown(scrubbed, slackMarkdownBlockMax) {
+	pieces := splitMarkdown(scrubbed, slackMarkdownBlockMax)
+	for i, md := range pieces {
 		w.narrationsRendered++
 		switch {
 		case w.narrationsRendered > maxNarrationMessages+1:
 			return // already queued the truncation note
 		case w.narrationsRendered == maxNarrationMessages+1:
-			md = narrationLimitNote
+			w.queueNarration(narrationLimitNote + passageBreak)
+			return
+		}
+		if i == len(pieces)-1 {
+			md += passageBreak
 		}
 		w.queueNarration(md)
 	}
@@ -1401,6 +1477,10 @@ func (w *batchedWriter) closeStream(ctx context.Context) error {
 // message would keep animating and everything queued since the last append
 // would be lost. It runs on a context outliving the cancellation.
 func (w *batchedWriter) endStream(ctx context.Context) {
+	// A cancelled turn is where a step is most likely to be left running: the
+	// tool was interrupted, so its result is never coming. A normal end closed
+	// them already, which makes this a no-op there.
+	w.closeOpenSteps(ctx, stepError)
 	if w.streamTS == "" && !w.hasQueuedContent() {
 		return
 	}
@@ -1758,10 +1838,15 @@ func (w *batchedWriter) dropStream() {
 }
 
 // resetStream puts the stream state back to its opening shape for a second
-// run() cycle over the same writer.
+// run() cycle over the same writer. The open steps go with it: the previous
+// cycle's message is closed and they were closed on it, so a result arriving
+// late must not reopen one of them on this cycle's message.
 func (w *batchedWriter) resetStream() {
 	w.dropStream()
 	w.streamRecovered, w.streamStopped, w.streamFailed = false, false, false
+	w.mu.Lock()
+	w.openSteps = nil
+	w.mu.Unlock()
 }
 
 // streamGone reports whether err says the message is not streaming any more:
@@ -1802,7 +1887,6 @@ func (w *batchedWriter) dropPlaceholder(ctx context.Context) {
 func (w *batchedWriter) queueAnswer(text string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.closeCarriedStepLocked()
 	if n := len(w.queue); n > 0 && w.queue[n-1].step == nil && w.queue[n-1].answer {
 		w.queue[n-1].text += text
 		return
@@ -1814,7 +1898,6 @@ func (w *batchedWriter) queueAnswer(text string) {
 func (w *batchedWriter) queueNarration(md string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.closeCarriedStepLocked()
 	w.queue = append(w.queue, queuedChunk{text: md})
 }
 
@@ -1822,27 +1905,7 @@ func (w *batchedWriter) queueNarration(md string) {
 func (w *batchedWriter) queueStep(u taskUpdate) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.closeCarriedStepLocked()
 	w.queue = append(w.queue, queuedChunk{step: &u})
-}
-
-// closeCarriedStepLocked closes the last step a previous process issued on the
-// stream this one adopted. That process was interrupted while the step was
-// running, so Slack still shows it spinning; the delivery record does not carry
-// its title, so it closes under a plain "Step N" rather than costing a call to
-// Slack to find out. Cosmetic, and it runs once, in front of this writer's own
-// first chunk.
-func (w *batchedWriter) closeCarriedStepLocked() {
-	if !w.closeCarried {
-		return
-	}
-	w.closeCarried = false
-	n := w.carried.ToolSteps
-	w.queue = append(w.queue, queuedChunk{step: &taskUpdate{
-		id:     stepID(n),
-		title:  fmt.Sprintf("Step %d", n),
-		status: stepComplete,
-	}})
 }
 
 // stepID is the id Slack keys the n-th step of the turn by. It is derived from

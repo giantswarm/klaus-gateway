@@ -63,8 +63,10 @@ func TestContinueFrom_PostsOnlyWhatFollowsAndCountsOn(t *testing.T) {
 	ft := &fakeThread{}
 	_, records, _ := runContinuedOn(t, ft, carried, toolCallDelta("team"), textDelta(opening+"\n\n"+tail))
 
-	require.Equal(t, []taskChunk{{id: "step-3", title: "Team", status: stepInProgress}}, ft.steps(),
-		"the step counts on from the recorded ones")
+	require.Equal(t, []taskChunk{
+		{id: "step-3", title: "Team", status: stepInProgress},
+		{id: "step-3", title: "Team", status: stepComplete},
+	}, ft.steps(), "the step counts on from the recorded ones; the record named none as open")
 	require.Equal(t, tail, ft.streamedText(),
 		"only the text after the recorded length is sent, without the paragraph break in front")
 
@@ -74,22 +76,63 @@ func TestContinueFrom_PostsOnlyWhatFollowsAndCountsOn(t *testing.T) {
 }
 
 // The previous process died with a step still running on the message this one
-// adopts. That step is closed before anything else goes out — Slack would keep
-// it spinning otherwise — and the turn's next call opens the step after it.
+// adopts, and the record names it. That step is closed under its own title
+// before anything else goes out — Slack would keep it spinning otherwise — and
+// the turn's next call opens the step after it.
 func TestContinueFrom_ClosesTheCarriedStepThenCountsOn(t *testing.T) {
 	ft := &fakeThread{}
 	ts := openStreamOn(t, ft, "Looking. ")
-	carried := store.Delivered{TextLen: 9, StreamTS: ts, StreamLen: 9, ToolSteps: 3}
+	carried := store.Delivered{
+		TextLen: 9, StreamTS: ts, StreamLen: 9, ToolSteps: 3,
+		OpenStepID: "step-3", OpenStepTitle: "Prometheus query",
+	}
 
 	_, records, _ := runContinuedOn(t, ft, carried, toolCallDelta("x_kubernetes_list"), textDelta("Looking. Done."))
 
 	require.Equal(t, []taskChunk{
-		{id: "step-3", title: "Step 3", status: stepComplete},
+		{id: "step-3", title: "Prometheus query", status: stepComplete},
 		{id: "step-4", title: "Kubernetes list", status: stepInProgress},
-	}, ft.steps(), "the carried step is closed, the new one counts on")
+		{id: "step-4", title: "Kubernetes list", status: stepComplete},
+	}, ft.steps(), "the carried step is closed under its real title, the new one counts on")
 	require.Equal(t, ts, ft.streams()[1].ts, "both ride the adopted stream")
 
-	require.Equal(t, 4, records[len(records)-1].ToolSteps)
+	last := records[len(records)-1]
+	require.Equal(t, 4, last.ToolSteps)
+	require.Empty(t, last.OpenStepID, "nothing is left running")
+}
+
+// A restart that fell between a step's result and the answer's last words
+// leaves no step running, so the continuation touches none of them — a finished
+// step keeps its real title and an error step stays an error.
+func TestContinueFrom_NoOpenStepTouchesNoStep(t *testing.T) {
+	ft := &fakeThread{}
+	ts := openStreamOn(t, ft, "Looking. ")
+	carried := store.Delivered{TextLen: 9, StreamTS: ts, StreamLen: 9, ToolSteps: 3}
+
+	msgs, _, _ := runContinuedOn(t, ft, carried, textDelta("Looking. Done."))
+
+	require.Empty(t, ft.steps(), "the record named no open step, so none is rewritten")
+	require.Equal(t, []capturedMessage{{"Looking. Done."}}, msgs, "only the text after the recorded length is added")
+}
+
+// The whole answer had landed before the restart, so the continuation adds
+// nothing — but the step the previous process was running still has to be
+// closed on the adopted message before it is stopped.
+func TestContinueFrom_NothingToAddStillClosesTheOpenStep(t *testing.T) {
+	const answer = "All three clusters run the same chart version."
+	ft := &fakeThread{}
+	ts := openStreamOn(t, ft, answer)
+	carried := store.Delivered{
+		TextLen: len(answer), StreamTS: ts, StreamLen: len(answer), ToolSteps: 2,
+		OpenStepID: "step-2", OpenStepTitle: "Kubernetes get",
+	}
+
+	_, _, w := runContinuedOn(t, ft, carried, textDelta(answer))
+
+	require.Equal(t, []taskChunk{{id: "step-2", title: "Kubernetes get", status: stepComplete}}, ft.steps())
+	require.Equal(t, []string{methodChatStartStream, methodChatAppendStream, methodChatStopStream}, ft.streamMethods(),
+		"the close rides an append on the adopted message, which is then stopped")
+	require.False(t, w.wroteContent(), "closing a step is not a reply of this process's own")
 }
 
 // A writer that continues nothing works as before: no text is dropped, the

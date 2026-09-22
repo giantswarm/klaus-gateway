@@ -34,8 +34,13 @@ const continuedNothingNote = "_(done — the reply above is complete)_"
 // turn it continues: the first TextLen bytes of answer text are dropped, the
 // step ids count on from the recorded ones, and a stream the previous process
 // left open is adopted, so the reply continues in the same message instead of
-// a second one. The step that process was running when it died is closed on
-// the adopted stream in front of this writer's first chunk.
+// a second one.
+//
+// A step the record names as still running is closed on the adopted stream
+// straight away — queued here, not on this writer's first chunk — because a
+// turn whose answer had all landed before the restart adds nothing to the queue
+// and would otherwise close the message with the step spinning. A record that
+// names none leaves the reply's steps exactly as they are.
 func (w *batchedWriter) continueFrom(d store.Delivered) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -48,7 +53,11 @@ func (w *batchedWriter) continueFrom(d store.Delivered) {
 		w.streamMessages = append(w.streamMessages, d.StreamTS)
 	}
 	w.stepsIssued = d.ToolSteps
-	w.closeCarried = d.StreamTS != "" && d.ToolSteps > 0
+	if d.StreamTS != "" && d.OpenStepID != "" {
+		w.queue = append(w.queue, queuedChunk{step: &taskUpdate{
+			id: d.OpenStepID, title: d.OpenStepTitle, status: stepComplete,
+		}})
+	}
 }
 
 // continued reports whether the writer continues a turn of which answer text
@@ -98,6 +107,12 @@ func (w *batchedWriter) noteDelivered(ctx context.Context) {
 		StreamTS:  w.streamTS,
 		StreamLen: w.streamed,
 		ToolSteps: w.stepsIssued,
+	}
+	// The most recent step still running is the one a process continuing the
+	// turn has to close; a turn with nothing running names none, so a step that
+	// already finished is left alone.
+	if n := len(w.openSteps); n > 0 {
+		d.OpenStepID, d.OpenStepTitle = w.openSteps[n-1].id, w.openSteps[n-1].title
 	}
 	w.mu.Unlock()
 	w.onDelivered(ctx, d)

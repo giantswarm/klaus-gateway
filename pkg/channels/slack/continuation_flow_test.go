@@ -126,9 +126,15 @@ func TestRestart_ContinuedTurnPostsOnlyWhatFollows(t *testing.T) {
 	require.Equal(t, 1, callsCarrying(fake.pathCalls(pathStartStream), "One thing to flag"), "the thread carries the opening once")
 	var ids []string
 	for _, s := range fake.streamedSteps() {
-		ids = append(ids, s["id"].(string))
+		ids = append(ids, s["id"].(string)+" "+s["status"].(string))
 	}
-	require.Equal(t, []string{"step-1", "step-2", "step-3"}, ids, "the step ids count on from the recorded ones")
+	require.Equal(t, []string{
+		"step-1 in_progress", "step-2 in_progress",
+		// The shutdown closes what the first process had running; the
+		// continuation numbers on and its own end closes step-3.
+		"step-1 error", "step-2 error",
+		"step-3 in_progress", "step-3 complete",
+	}, ids, "the step ids count on from the recorded ones")
 	streams := fake.pathCalls(pathStartStream)
 	require.Len(t, streams, 2, "the continuation opens a message of its own; the first one was closed on shutdown")
 	require.Equal(t, "555.000", streams[1].params["thread_ts"], "the continuation lands in the thread")

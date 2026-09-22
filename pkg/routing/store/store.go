@@ -127,6 +127,14 @@ type Delivered struct {
 	// list. A process continuing the turn numbers its own steps on from it, so
 	// it never reuses an id already on the adopted message.
 	ToolSteps int `json:"tool_steps,omitempty"`
+	// OpenStepID and OpenStepTitle name the step that was running when the
+	// record was written, and are cleared when it ends. A process continuing the
+	// turn closes exactly that step on the adopted message — Slack would keep it
+	// spinning forever otherwise — under the title it was opened with, and
+	// leaves a step that had already finished alone. A turn with several calls
+	// in flight records the most recent of them.
+	OpenStepID    string `json:"open_step_id,omitempty"`
+	OpenStepTitle string `json:"open_step_title,omitempty"`
 }
 
 // IsZero reports whether nothing has been delivered; encoding/json's omitzero

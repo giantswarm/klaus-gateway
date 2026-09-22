@@ -1579,14 +1579,15 @@ func TestStream_NarrationStepsAndAnswerShareOneMessage(t *testing.T) {
 	)
 
 	require.Equal(t, []capturedMessage{{
-		"Let me pull the HelmRelease from both clusters." +
-			"Both share the same chart version." +
+		"Let me pull the HelmRelease from both clusters." + passageBreak +
+			"Both share the same chart version." + passageBreak +
 			"here is the diff",
-	}}, ft.finalMessages(), "one message carries the whole turn")
+	}}, ft.finalMessages(), "one message carries the whole turn, each passage on a line of its own")
 	require.Equal(t, []string{
 		chunkTypeMarkdownText, chunkTypeTaskUpdate,
 		chunkTypeMarkdownText, chunkTypeTaskUpdate,
 		chunkTypeMarkdownText,
+		chunkTypeTaskUpdate, chunkTypeTaskUpdate, // the turn's end closes both steps
 	}, ft.chunkOrder(), "the chunks arrive in the order the deltas came")
 	require.True(t, w.wroteContent())
 }
@@ -1603,7 +1604,8 @@ func TestStream_OpensOnTheFirstToolCall(t *testing.T) {
 	calls := ft.streams()
 	require.Equal(t, []string{methodChatStartStream, methodChatStopStream}, ft.streamMethods())
 	require.Equal(t, []string{chunkTypeTaskUpdate}, calls[0].chunkTypes, "the step opens the message")
-	require.Equal(t, []string{chunkTypeMarkdownText}, calls[1].chunkTypes, "the answer rides the stop")
+	require.Equal(t, []string{chunkTypeMarkdownText, chunkTypeTaskUpdate}, calls[1].chunkTypes,
+		"the answer rides the stop, and with it the close of the step that got no result")
 	require.Equal(t, "done", calls[1].markdown)
 	require.Equal(t, string(sessionActive), calls[1].status, "and the stop names the session's exit status")
 }
@@ -1614,7 +1616,7 @@ func TestStream_OpensOnTheFirstNarration(t *testing.T) {
 	ft, _ := captureStream(t, detailsOn, "", narrationDelta("Let me look that up."))
 
 	require.Equal(t, []string{methodChatStartStream, methodChatStopStream}, ft.streamMethods())
-	require.Equal(t, "Let me look that up.", ft.streamedText())
+	require.Equal(t, "Let me look that up."+passageBreak, ft.streamedText())
 }
 
 // A tool call opens a step as in_progress; its result closes the SAME step —
@@ -1662,8 +1664,87 @@ func TestSteps_IDsAreTheTurnsCallOrdinal(t *testing.T) {
 	for _, s := range ft.steps() {
 		ids = append(ids, s.id)
 	}
-	require.Equal(t, []string{"step-1", "step-2", "step-1", "step-3"}, ids)
+	require.Equal(t, []string{"step-1", "step-2", "step-1", "step-3", "step-2", "step-3"}, ids,
+		"one id per call, its result closes the same one, and the turn's end closes what is left")
 	require.Equal(t, 3, w.stepsIssued)
+}
+
+// A step is opened for a call the stream gave no id, because the person should
+// see the call; no result can ever be matched to it, so the turn's end is what
+// closes it.
+func TestSteps_CallWithoutAnIDIsClosedAtTheTurnsEnd(t *testing.T) {
+	ft, _ := captureStream(t, detailsOn, "",
+		toolCallDelta("x_kubernetes_list"),
+		toolResultDelta("x_kubernetes_list", "", map[string]any{"output": "3 pods"}),
+		channels.OutboundDelta{Kind: channels.DeltaText, Content: "done"},
+	)
+
+	require.Equal(t, []taskChunk{
+		{id: "step-1", title: "Kubernetes list", status: stepInProgress},
+		{id: "step-1", title: "Kubernetes list", status: stepComplete},
+	}, ft.steps(), "the result cannot be matched, so the turn's end closes the step once")
+}
+
+// A turn nobody finished — a /stop, a shutdown — closes its running step as an
+// error: the tool was interrupted and its result is never coming, and Slack
+// never closes a task on its own.
+func TestSteps_CancelledTurnClosesTheOpenStepAsError(t *testing.T) {
+	ft := &fakeThread{}
+	srv := httptest.NewServer(ft.handler())
+	t.Cleanup(srv.Close)
+
+	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "D1", "", "1.0", detailsOn, slog.Default())
+	w.adapter = &Adapter{}
+	ctx, cancel := context.WithCancel(t.Context())
+	ch := make(chan channels.OutboundDelta)
+	done := make(chan error, 1)
+	go func() { done <- w.run(ctx, ch) }()
+
+	ch <- toolCallDeltaWith("x_kubernetes_list", "c1", nil)
+	require.Eventually(t, func() bool { return len(ft.streams()) > 0 }, flowWait, 10*time.Millisecond,
+		"the step opened the reply")
+	cancel()
+	require.ErrorIs(t, <-done, context.Canceled)
+
+	require.Equal(t, []taskChunk{
+		{id: "step-1", title: "Kubernetes list", status: stepInProgress},
+		{id: "step-1", title: "Kubernetes list", status: stepError},
+	}, ft.steps())
+}
+
+// A turn pausing on a HITL prompt closes its steps on the message it is about
+// to stop. The answer resumes the turn into a message of its own, where an
+// update for a step of the previous one would render as a second card.
+func TestSteps_PromptPauseClosesTheStepOnTheFirstMessage(t *testing.T) {
+	ft := &fakeThread{}
+	srv := httptest.NewServer(ft.handler())
+	t.Cleanup(srv.Close)
+
+	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "D1", "", "1.0", detailsOn, slog.Default())
+	w.adapter = &Adapter{}
+	run := func(deltas ...channels.OutboundDelta) {
+		ch := make(chan channels.OutboundDelta, len(deltas))
+		for _, d := range deltas {
+			ch <- d
+		}
+		close(ch)
+		require.NoError(t, w.run(t.Context(), ch))
+	}
+
+	run(toolCallDeltaWith("ask_user", "c1", nil), channels.OutboundDelta{Kind: channels.DeltaPrompt, TaskID: "task-1"})
+	w.promptDelta = nil // the caller posted the prompt and the answer resumed the task
+	// The answer to the question arrives as the paused call's result, on the
+	// turn's second message.
+	run(toolResultDelta("ask_user", "c1", map[string]any{"output": "yes"}),
+		channels.OutboundDelta{Kind: channels.DeltaText, Content: "done"}, doneDelta())
+
+	require.Equal(t, []taskChunk{
+		{id: "step-1", title: "Ask user", status: stepInProgress},
+		{id: "step-1", title: "Ask user", status: stepComplete},
+	}, ft.steps(), "the step is opened and closed on the first message only")
+	require.Equal(t, []string{string(sessionSuspended), string(sessionActive)}, ft.stopStatuses())
+	require.Equal(t, []string{chunkTypeTaskUpdate, chunkTypeTaskUpdate, chunkTypeMarkdownText}, ft.chunkOrder(),
+		"the second message carries the answer alone")
 }
 
 // A result whose call was never seen has no step to close, so nothing is sent
@@ -1687,7 +1768,7 @@ func TestSteps_DetailsOffRendersNoSteps(t *testing.T) {
 	)
 
 	require.Empty(t, ft.steps())
-	require.Equal(t, "Let me look that up.", ft.streamedText())
+	require.Equal(t, "Let me look that up."+passageBreak, ft.streamedText())
 }
 
 // /details on is titles only: no payload reaches the step card.
@@ -1739,7 +1820,10 @@ func TestSteps_DetailsAndOutputAreTruncated(t *testing.T) {
 func TestSteps_TitleEscapesMrkdwnAndFlattens(t *testing.T) {
 	ft, _ := captureStream(t, detailsOn, "", toolCallDelta("ping <!channel> &\nnow"))
 
-	require.Equal(t, []taskChunk{{id: "step-1", title: "Ping &lt;!channel&gt; &amp; now", status: stepInProgress}}, ft.steps())
+	require.Equal(t, []taskChunk{
+		{id: "step-1", title: "Ping &lt;!channel&gt; &amp; now", status: stepInProgress},
+		{id: "step-1", title: "Ping &lt;!channel&gt; &amp; now", status: stepComplete},
+	}, ft.steps())
 }
 
 // Narration counts toward the message's character cap but never toward the
@@ -1756,15 +1840,15 @@ func TestNarration_AdvancesTheMessageNotTheAnswerLength(t *testing.T) {
 	var records []store.Delivered
 	w.onDelivered = func(_ context.Context, d store.Delivered) { records = append(records, d) }
 
-	w.renderNarration(t.Context(), narration)
+	w.renderNarration(narration)
 	require.NoError(t, w.flush(t.Context()))
-	require.Equal(t, store.Delivered{StreamTS: "msg-1", StreamLen: len(narration)}, records[len(records)-1],
-		"the narration advances the open message, not the answer length")
+	require.Equal(t, store.Delivered{StreamTS: "msg-1", StreamLen: len(narration) + len(passageBreak)}, records[len(records)-1],
+		"the narration and the break that ends it advance the open message, not the answer length")
 
 	w.queueAnswer(answer + " ")
 	require.NoError(t, w.flush(t.Context()))
 	require.Equal(t, len(answer)+1, records[len(records)-1].TextLen, "only the answer counts as replayable text")
-	require.Equal(t, len(narration)+len(answer)+1, records[len(records)-1].StreamLen)
+	require.Equal(t, len(narration)+len(passageBreak)+len(answer)+1, records[len(records)-1].StreamLen)
 }
 
 // Narration is the agent talking, not tool transparency, so /details off mutes
@@ -1775,7 +1859,7 @@ func TestRenderNarration_ShownWithDetailsOff(t *testing.T) {
 		toolCallDelta("x_kubernetes_get"),
 	)
 
-	require.Equal(t, "Let me look that up.", ft.streamedText())
+	require.Equal(t, "Let me look that up."+passageBreak, ft.streamedText())
 	require.Empty(t, ft.steps())
 }
 
@@ -1792,7 +1876,10 @@ func TestRenderNarration_CapsWithOneNote(t *testing.T) {
 	require.Contains(t, text, "step 0.")
 	require.Contains(t, text, fmt.Sprintf("step %d.", maxNarrationMessages-1))
 	require.NotContains(t, text, fmt.Sprintf("step %d.", maxNarrationMessages))
-	require.True(t, strings.HasSuffix(text, narrationLimitNote), "the note says the rest is hidden: %q", text)
+	require.True(t, strings.HasSuffix(strings.TrimSpace(text), narrationLimitNote),
+		"the note says the rest is hidden: %q", text)
+	require.Equal(t, maxNarrationMessages, strings.Count(text, "."+passageBreak),
+		"every passage ends in a paragraph break, so they do not run together")
 }
 
 // Slack rejects a chunk over slackMarkdownBlockMax outright, so an outsized
@@ -1809,7 +1896,9 @@ func TestRenderNarration_SplitsOversizedNarration(t *testing.T) {
 		require.LessOrEqual(t, len(m[0]), slackMarkdownBlockMax)
 		joined.WriteString(m[0])
 	}
-	require.Equal(t, len(strings.TrimSpace(long)), len(strings.TrimSpace(joined.String())), "no prose is dropped")
+	// The split pieces of one passage carry no break of their own; only the
+	// passage's last piece ends in one.
+	require.Equal(t, strings.TrimSpace(long), strings.TrimSpace(joined.String()), "no prose is dropped")
 }
 
 // Chunks share the per-turn budget, so one enormous narration cannot bury the
@@ -1819,7 +1908,7 @@ func TestRenderNarration_SplitChunksShareTheBudget(t *testing.T) {
 	ft, _ := captureStream(t, detailsOn, "", narrationDelta(long))
 
 	require.Equal(t, maxNarrationMessages+1, ft.narrationChunks())
-	require.True(t, strings.HasSuffix(ft.streamedText(), narrationLimitNote))
+	require.True(t, strings.HasSuffix(strings.TrimSpace(ft.streamedText()), narrationLimitNote))
 }
 
 // A single-use login link must not be duplicated next to the Connect button, in
@@ -1833,8 +1922,8 @@ func TestRenderNarration_ScrubsLoginURL(t *testing.T) {
 
 	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "C1", "", "1.0", detailsOn, slog.Default())
 	w.loginURLs = []string{loginURL}
-	w.renderNarration(t.Context(), loginURL)
-	w.renderNarration(t.Context(), "Sign in here:\n"+loginURL+"\nThen tell me once you are done.")
+	w.renderNarration(loginURL)
+	w.renderNarration("Sign in here:\n" + loginURL + "\nThen tell me once you are done.")
 	require.NoError(t, w.closeStream(t.Context()))
 
 	require.Equal(t, 1, w.narrationsRendered, "a link-only narration keeps its budget")
@@ -1852,9 +1941,9 @@ func TestRetractRendered_TakesTheNarrationWithTheReply(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "C1", "", "1.0", detailsOff, slog.Default())
-	w.renderNarration(t.Context(), "Sign in, then tell me once you are done.")
+	w.renderNarration("Sign in, then tell me once you are done.")
 	require.NoError(t, w.flush(t.Context()))
-	require.Equal(t, "Sign in, then tell me once you are done.", ft.streamedText())
+	require.Equal(t, "Sign in, then tell me once you are done."+passageBreak, ft.streamedText())
 
 	w.retractRendered(t.Context())
 
@@ -2165,7 +2254,7 @@ func TestSessionStatus_DMThreadProcessingThenActive(t *testing.T) {
 	}
 
 	require.Equal(t, []capturedMessage{{"the answer"}}, msgs, "the steps ride the reply, not a message of their own")
-	require.Len(t, ft.steps(), 2, "and the reply carries both of them")
+	require.Len(t, ft.steps(), 4, "and the reply carries both of them, opened and closed")
 }
 
 // A channel thread gets the same native indicator: agents.sessions.setStatus
@@ -2187,7 +2276,7 @@ func TestSessionStatus_ChannelThreadGetsTheIndicator(t *testing.T) {
 		require.Equal(t, "1.0", c.threadTS)
 	}
 	require.Equal(t, []capturedMessage{{"the answer"}}, msgs)
-	require.Len(t, ft.steps(), 1)
+	require.Len(t, ft.steps(), 2)
 }
 
 // Slack attributes a session it creates to the author of the thread root
@@ -2451,8 +2540,10 @@ func TestSessionStatus_MissingScopeLatchesOff(t *testing.T) {
 	require.True(t, w.adapter.sessionStatusUnsupported.Load())
 	require.Equal(t, []string{"processing"}, ft.statuses(), "the latch skips the exit call")
 	require.Equal(t, []capturedMessage{{"done"}}, msgs)
-	require.Equal(t, []taskChunk{{id: "step-1", title: "Alpha", status: stepInProgress}}, ft.steps(),
-		"the reply still carries what the agent did")
+	require.Equal(t, []taskChunk{
+		{id: "step-1", title: "Alpha", status: stepInProgress},
+		{id: "step-1", title: "Alpha", status: stepComplete},
+	}, ft.steps(), "the reply still carries what the agent did")
 }
 
 // not_authorized means the bot is not a member of THIS channel, which says
@@ -2870,8 +2961,10 @@ func TestStream_SecondRunCycleOpensANewStream(t *testing.T) {
 	require.Equal(t, []capturedMessage{{"may I delete it? "}, {"deleted "}}, ft.finalMessages())
 	require.Equal(t, []taskChunk{
 		{id: "step-1", title: "Delete", status: stepInProgress},
+		{id: "step-1", title: "Delete", status: stepComplete},
 		{id: "step-2", title: "Purge", status: stepInProgress},
-	}, ft.steps(), "the step ids stay unique across the turn's two run cycles")
+		{id: "step-2", title: "Purge", status: stepComplete},
+	}, ft.steps(), "each cycle closes its own step before its message is stopped, and the ids stay unique")
 }
 
 // recordingStreams is a StreamRecorder that keeps the events it was given.
