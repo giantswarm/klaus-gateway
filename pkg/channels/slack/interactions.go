@@ -55,6 +55,9 @@ type interactionPayload struct {
 	Message struct {
 		TS       string `json:"ts"`
 		ThreadTS string `json:"thread_ts"`
+		// Blocks are the clicked message's blocks, read to keep an approval
+		// card's section when the click finds its task gone.
+		Blocks []map[string]any `json:"blocks"`
 	} `json:"message"`
 	// ResponseURL updates the source message. Ephemeral messages (the
 	// access-consent prompt) have no addressable ts, so they are updated this way.
@@ -264,6 +267,8 @@ func (a *Adapter) routeInteraction(ctx context.Context, payload interactionPaylo
 	threadID := hv.Thread
 	act.taskID = hv.Task
 	switch act.kind {
+	case hitlApprove, hitlDeny, hitlChat:
+		act.section = cardSection(payload.Message.Blocks)
 	case hitlChoice:
 		cv, ok := decodeChoiceValue(action.Value)
 		if !ok {
@@ -289,8 +294,11 @@ func (a *Adapter) routeInteraction(ctx context.Context, payload interactionPaylo
 
 // hitlAction is a decoded Block Kit button click.
 type hitlAction struct {
-	kind    string // hitlApprove, hitlDeny, hitlChat, hitlChoice, or hitlSubmit
-	taskID  string // task the clicked prompt renders; "" on legacy buttons (no check)
+	kind   string // hitlApprove, hitlDeny, hitlChat, hitlChoice, or hitlSubmit
+	taskID string // task the clicked prompt renders; "" on legacy buttons (no check)
+	// section is the clicked approval card's section block (Approve, Deny and
+	// Chat clicks), nil when the message has none.
+	section map[string]any
 	choice  choiceValue
 	choices []int         // selected choice indices, for a single-question hitlSubmit
 	answers map[int][]int // selected choice indices per question, for a multi-question form hitlSubmit
@@ -498,7 +506,7 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 		// this click is the only moment the gateway learns of a thread whose
 		// prompt died with the task, and its session would otherwise keep
 		// saying "waiting for you" over a prompt nobody can answer.
-		_ = client.chatUpdateBlocks(ctx, slackChannel, messageTS, "_Already answered._")
+		_ = retirePrompt(ctx, client, slackChannel, messageTS, act, promptAnsweredNotice)
 		a.setSessionStatus(ctx, slackChannel, threadID, sessionActive, "")
 		return nil
 	}
@@ -508,8 +516,10 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 	// and the thread paused again on a new one). Selections are raw indices,
 	// so answering the newer prompt with them would deliver choices the user
 	// never saw. Refuse the stale message and leave the pending task intact.
-	if act.taskID != "" && act.taskID != pending.TaskID {
-		_ = client.chatUpdateBlocks(ctx, slackChannel, messageTS, promptSupersededNotice)
+	// A Chat button exists only on cards an earlier gateway version posted,
+	// whose task died with that process, so a Chat click is always stale.
+	if act.kind == hitlChat || (act.taskID != "" && act.taskID != pending.TaskID) {
+		_ = retirePrompt(ctx, client, slackChannel, messageTS, act, promptSupersededNotice)
 		return nil
 	}
 
@@ -546,25 +556,7 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 	task := a.takePendingTask(threadID)
 	if task == nil {
 		// A concurrent reply consumed it between the peek and here.
-		_ = client.chatUpdateBlocks(ctx, slackChannel, messageTS, "_Already answered._")
-		return nil
-	}
-
-	// Chat: keep the approval pending and swap the buttons for a reply hint. The
-	// next in-thread reply resolves the task through the normal free-text path
-	// (decisionFromText), which turns a follow-up question into a reject carrying
-	// it as the reason, so the agent answers and asks to confirm again — while a
-	// plain "approve"/"deny" reply still decides directly.
-	if act.kind == hitlChat {
-		a.storePendingTask(threadID, task)
-		// Release the slot before the Slack round-trip: the user is invited to
-		// type their question right away, and a reply arriving while the slot is
-		// still held would bounce off the busy notice instead of resuming the task.
-		release()
-		card := approvalCard(task.Prompt, task.PromptText)
-		if err := client.chatUpdate(ctx, slackChannel, messageTS, chatModePrompt, approvalCardBlocks(card, chatModePrompt)); err != nil {
-			a.Logger.Warn("slack: update prompt for chat mode failed", "error", err)
-		}
+		_ = retirePrompt(ctx, client, slackChannel, messageTS, act, promptAnsweredNotice)
 		return nil
 	}
 
@@ -605,6 +597,25 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 	return a.runTurn(ctx, msg, slackChannel, "", "_continuing…_", "", task, agentSourceTask, turnHooks{
 		onFailure: func() { a.postResumeFailureNote(ctx, client, slackChannel, threadID) },
 	})
+}
+
+// retirePrompt rewrites a prompt whose click cannot decide anything. An
+// approval card keeps its section, taken from the clicked message, and the note
+// replaces its buttons; any other prompt becomes the note alone.
+func retirePrompt(ctx context.Context, client *slackAPIClient, channel, ts string, act hitlAction, note string) error {
+	if act.section == nil {
+		return client.chatUpdateBlocks(ctx, channel, ts, note)
+	}
+	return client.chatUpdate(ctx, channel, ts, note, []any{act.section, contextBlock(note)})
+}
+
+// cardSection returns the first block of an approval card, its section, or nil
+// when the message does not start with one.
+func cardSection(blocks []map[string]any) map[string]any {
+	if len(blocks) == 0 || blocks[0][bkType] != bkSection {
+		return nil
+	}
+	return blocks[0]
 }
 
 // buildButtonDecision turns a Block Kit click into a structured HITL decision,

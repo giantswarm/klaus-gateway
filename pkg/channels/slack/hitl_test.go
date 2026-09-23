@@ -221,7 +221,7 @@ func TestPostHitlPrompt_FallsBackToTextOnBlockKitFailure(t *testing.T) {
 	// Generic tool approval: Approve/Deny buttons fail, plain text lands.
 	err := a.postHitlPrompt(t.Context(), a.apiClient(), "C1", "T1", &channels.OutboundDelta{
 		Content: "Run kubectl delete?",
-		Prompt:  &channels.HitlPrompt{},
+		Prompt:  &channels.HitlPrompt{StatusText: "Run kubectl delete?"},
 	})
 	require.NoError(t, err)
 
@@ -270,22 +270,26 @@ func TestApprovedCalls(t *testing.T) {
 }
 
 // The card names the calls as the reply's task list does, muster's call_tool
-// unwrapped, and leaves out text that adds nothing to the title: the ADK
-// runtime's default hint, and the tool names a status without text falls back
-// to. A hint of the agent's own is kept, escaped.
+// unwrapped. Its body is the status's own text (StatusText), not the delta's
+// Content, which falls back to the tool names; the runtime's default hint lines
+// are left out and the agent's own lines kept, escaped.
 func TestApprovalCard(t *testing.T) {
 	capi := channels.HitlTool{Name: "call_tool", Args: map[string]any{"name": "x_capi_list_clusters", "arguments": map[string]any{}}}
-	prompt := &channels.HitlPrompt{ToolName: "call_tool", Tools: []channels.HitlTool{capi}}
+	withText := func(text string, tools ...channels.HitlTool) *channels.HitlPrompt {
+		return &channels.HitlPrompt{ToolName: tools[0].Name, Tools: tools, StatusText: text}
+	}
+	const adkHint = "Please approve or reject the tool call call_tool() by responding with a FunctionResponse with an expected ToolConfirmation payload."
 
-	require.Equal(t, "*Approval required* · Capi list clusters",
-		approvalCard(prompt, "Please approve or reject the tool call call_tool() by responding with a FunctionResponse with an expected ToolConfirmation payload."))
-	require.Equal(t, "*Approval required* · Capi list clusters", approvalCard(prompt, "call_tool"), "the summary fallback")
-	require.Equal(t, "*Approval required* · Capi list clusters", approvalCard(prompt, ""))
+	require.Equal(t, "*Approval required* · Capi list clusters", approvalCard(withText(adkHint, capi), adkHint))
+	require.Equal(t, "*Approval required* · Capi list clusters", approvalCard(withText("", capi), "call_tool"),
+		"a status without text: the Content fallback is not shown")
 	require.Equal(t, "*Approval required* · Capi list clusters\nRestart &lt;!here&gt; now",
-		approvalCard(prompt, "Restart <!here> now"))
+		approvalCard(withText("Restart <!here> now", capi), "Restart <!here> now"))
+	require.Equal(t, "*Approval required* · Capi list clusters\nThis lists every cluster.",
+		approvalCard(withText(adkHint+"\nThis lists every cluster.", capi), ""), "only the default hint lines go")
 
-	two := &channels.HitlPrompt{ToolName: "call_tool", Tools: []channels.HitlTool{capi, {Name: "kube_delete"}}}
-	require.Equal(t, "*Approval required* · Capi list clusters, Kube delete", approvalCard(two, "call_tool, kube_delete"))
+	two := withText(adkHint+"\n"+strings.Replace(adkHint, "call_tool()", "kube_delete()", 1), capi, channels.HitlTool{Name: "kube_delete"})
+	require.Equal(t, "*Approval required* · Capi list clusters, Kube delete", approvalCard(two, ""))
 
 	require.Equal(t, "*Approval required*\nrun it?", approvalCard(nil, "run it?"), "a prompt without structure keeps its text")
 }
@@ -333,4 +337,34 @@ func TestPostApprovalPrompt_Card(t *testing.T) {
 		require.Equal(t, want.action, b["action_id"])
 		require.Equal(t, hitlValue{Thread: "T1", Task: "task-1"}, decodeHitlValue(b["value"].(string)))
 	}
+}
+
+// A click that finds its task gone keeps an approval card's section, read from
+// the clicked message, and puts the note where the buttons were; a prompt
+// without a leading section becomes the note alone.
+func TestRetirePrompt(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		got = nil
+		_ = json.Unmarshal(raw, &got)
+		_, _ = w.Write([]byte(`{"ok":true,"ts":"1.2"}`))
+	}))
+	t.Cleanup(srv.Close)
+	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
+
+	section := map[string]any{"type": "section", "text": map[string]any{"type": "mrkdwn", "text": "*Approval required* · Capi list clusters"}}
+	card := []map[string]any{section, {"type": "actions"}}
+	act := hitlAction{kind: hitlApprove, section: cardSection(card)}
+	require.NoError(t, retirePrompt(t.Context(), client, "C1", "1.0", act, promptAnsweredNotice))
+	require.Equal(t, promptAnsweredNotice, got["text"])
+	blocks := got["blocks"].([]any)
+	require.Len(t, blocks, 2)
+	require.Equal(t, "*Approval required* · Capi list clusters", blocks[0].(map[string]any)["text"].(map[string]any)["text"])
+	require.Equal(t, "context", blocks[1].(map[string]any)["type"])
+
+	require.Nil(t, cardSection([]map[string]any{{"type": "actions"}}), "no leading section")
+	require.NoError(t, retirePrompt(t.Context(), client, "C1", "1.0", hitlAction{kind: hitlSubmit}, promptAnsweredNotice))
+	require.Equal(t, promptAnsweredNotice, got["text"])
+	require.Empty(t, got["blocks"])
 }

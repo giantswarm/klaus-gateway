@@ -186,18 +186,23 @@ func (a *Adapter) postHitlPrompt(ctx context.Context, client *slackAPIClient, sl
 const adkDefaultApprovalHint = "Please approve or reject the tool call "
 
 // approvalCard renders the section of a tool approval prompt: the ask and the
-// calls it covers, named as the reply's task list names them, then the agent's
-// hint when it says more than the runtime's default. A decision rewrites the
-// prompt with the same section, rebuilt from the pending task.
-func approvalCard(p *channels.HitlPrompt, hint string) string {
-	text := "*" + approvalRequiredTitle + "*"
+// calls it covers, named as the reply's task list names them, then the text the
+// status carried of its own, without the runtime's default hint. text is the
+// prompt delta's Content, used only for a prompt without structure (p nil),
+// whose Content is the status's own text. A decision rewrites the prompt with
+// the same section, rebuilt from the pending task.
+func approvalCard(p *channels.HitlPrompt, text string) string {
+	if p != nil {
+		text = p.StatusText
+	}
+	card := "*" + approvalRequiredTitle + "*"
 	if titles := approvalToolTitles(p); titles != "" {
-		text += " · " + titles
+		card += " · " + titles
 	}
-	if body := approvalHint(p, hint); body != "" {
-		text += "\n" + escapeMrkdwn(body)
+	if body := approvalHint(text); body != "" {
+		card += "\n" + escapeMrkdwn(body)
 	}
-	return truncateRunes(text, slackSectionTextMax)
+	return truncateRunes(card, slackSectionTextMax)
 }
 
 // approvalToolTitles names the calls an approval covers with their step
@@ -221,24 +226,16 @@ func approvalToolTitles(p *channels.HitlPrompt) string {
 	return strings.Join(titles, ", ")
 }
 
-// approvalHint is the prompt's text when it adds to the title: not the
-// runtime's default hint, and not the tool names the status falls back to
-// when it carries no text of its own.
-func approvalHint(p *channels.HitlPrompt, hint string) string {
-	hint = strings.TrimSpace(hint)
-	if hint == "" || strings.HasPrefix(hint, adkDefaultApprovalHint) {
-		return ""
-	}
-	if p != nil {
-		names := make([]string, 0, len(p.Tools))
-		for _, t := range p.Tools {
-			names = append(names, t.Name)
-		}
-		if hint == p.ToolName || hint == strings.Join(names, ", ") {
-			return ""
+// approvalHint is the status's text without the lines that are the runtime's
+// default hint, one per call it asks for; the agent's own words stay.
+func approvalHint(text string) string {
+	var kept []string
+	for line := range strings.SplitSeq(text, "\n") {
+		if line = strings.TrimSpace(line); line != "" && !strings.HasPrefix(line, adkDefaultApprovalHint) {
+			kept = append(kept, line)
 		}
 	}
-	return hint
+	return strings.Join(kept, "\n")
 }
 
 // approvalDecisionLine is the context line that replaces an approval card's

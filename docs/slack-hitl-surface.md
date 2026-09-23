@@ -49,10 +49,9 @@ gateway posts an approval card:
 - **Context:** `<@initiator> or the people they allowed can decide`. The call runs with the
   initiator's identity, whoever decides.
 - **Buttons:** Approve (primary) runs the call, Deny (danger) rejects it. There is no "Ask a
-  question" button yet. A typed reply that is not "approve" or "deny" is sent as a rejection
-  with the text as its reason, but the Go ADK runtime drops that reason, so the model sees only
-  "call is rejected" (giantswarm/kagent-upstream#71). A card that an earlier gateway version
-  posted can still have a Chat button (`hitl_chat`), and the gateway still handles it.
+  question" button. A typed reply that is not "approve" or "deny" is sent as a rejection with
+  the text as its reason, but the Go ADK runtime drops that reason, so the model sees only
+  "call is rejected" (giantswarm/kagent-upstream#71).
 
 `value` is the JSON `{"t":"<thread>","id":"<task>"}`; the task binds the buttons to the
 prompt they render, so a click on a superseded prompt is refused instead of answering a newer
@@ -83,8 +82,11 @@ loses it (klaus-gateway#132).
 
 A click updates the card in place. The section stays, and one context line replaces the
 context and the buttons: `Approved by <@U123> · <!date^…^{time}|16:30 UTC>` or `Denied by …`
-(Slack shows the time in each reader's time zone). A Chat click on an older card shows
-"Reply in this thread to ask about this step. The agent answers, then asks again."
+(Slack shows the time in each reader's time zone). A click whose task is gone (answered,
+dropped, or lost in a restart) or superseded by a newer prompt also keeps the section, and the
+note (`_Already answered._` or the superseded notice) replaces the buttons. A Chat button
+(`hitl_chat`) exists only on cards an earlier gateway version posted; a click on it is refused
+the same way.
 
 ## 2. ask_user — single question, radio buttons (1–10 choices, single-select)
 

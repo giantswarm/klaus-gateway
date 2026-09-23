@@ -723,6 +723,9 @@ func mapTaskStatus(taskID a2apkg.TaskID, status a2apkg.TaskStatus, usage *TurnUs
 		if status.Message != nil {
 			hitl = parseHitlPrompt(status.Message)
 			text = extractTextFromA2AParts(status.Message.Parts)
+			if hitl != nil {
+				hitl.StatusText = text
+			}
 		}
 		// The status message's text is the agent's hint; when it carries none,
 		// fall back to the structured prompt's summary for plain-text renderers.

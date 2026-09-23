@@ -26,10 +26,10 @@ func (s stubCards) CardIdentity(_ context.Context, _ string) (username, iconURL 
 	return s.username, s.iconURL
 }
 
-// Clicking "Chat" on an approval prompt holds the paused task and swaps the
-// buttons for a reply hint; the next in-thread reply is routed to the task as a
-// reject carrying the question (kagent resolves the gate, the agent re-proposes).
-func TestChat_HoldsPromptThenRoutesQuestionAsReject(t *testing.T) {
+// A Chat button exists only on cards an earlier version posted, so a click on
+// one is refused as stale and leaves the pending task alone. A typed follow-up
+// is routed to the task as a reject carrying the question.
+func TestChat_IsStaleAndAReplyRoutesAsReject(t *testing.T) {
 	fake := newFakeSlackAPI()
 	var mu sync.Mutex
 	var decisions []*channels.HitlDecision
@@ -52,13 +52,14 @@ func TestChat_HoldsPromptThenRoutesQuestionAsReject(t *testing.T) {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Approval required")
 	}, flowWait, 20*time.Millisecond, "the approval prompt is posted")
 
-	// Click Chat: the prompt is held and the buttons become a reply hint.
+	// Click Chat: refused as stale, the task stays pending.
 	sendInteraction(t, srv, "hitl_chat", "400.000")
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.update")), "Reply in this thread to ask about this step")
-	}, flowWait, 20*time.Millisecond, "Chat swaps the buttons for a reply hint")
+		return strings.Contains(allText(fake.pathCalls("chat.update")), "superseded")
+	}, flowWait, 20*time.Millisecond, "a Chat click is refused as stale")
 
-	// Reply with a question: resolves the paused task as a reject carrying it.
+	// Reply with a question: the task is still pending, and the reply resolves
+	// it as a reject carrying the question.
 	waitThreadIdle(t, a, "400.000")
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","channel_type":"im","user":"U1","text":"which ones exactly?","channel":"D1","ts":"401.000","thread_ts":"400.000"}}`)
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 }, flowWait, 20*time.Millisecond, "the reply resumes the paused task")
