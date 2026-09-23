@@ -22,7 +22,9 @@ klaus-gateway:
 ```
 
 A nested key is named by its parent: `at '/routing': additional properties 'defaultTTL' not
-allowed`, `at '/a2a': additional properties 'saToken' not allowed`.
+allowed`, `at '/a2a': additional properties 'saToken' not allowed`. That wording is Helm 3.19 and
+later (and Helm 4, which the helm-controller on `main` builds on); an older Helm writes
+`(root): Additional property cli is not allowed` for the same refusal.
 
 **What to do.** Delete the keys from the values you set for this chart. On a Giant Swarm
 installation there is most likely nothing to do: the `agent-platform` umbrella stopped
@@ -33,10 +35,16 @@ pins an older umbrella, or that sets one of the keys in its own
 forwards its `klausGateway` block verbatim, so a key left in the patch reaches this chart and
 fails the release.
 
-The keys the umbrella does forward — `enabled`, `agentgatewayRoute`, `image`, `podAnnotations`,
-`podDisruptionBudget`, `routing.store` and `routing.valkey`, `observability.otlpEndpoint` and
-`.otlpHeaders`, `serviceMonitor`, `slack.*`, `obo.*`, `a2a` without `saToken` and `tokenPath`,
-`nodeSelector`, `tolerations` and `global` — are all still declared here and unchanged.
+The keys the umbrella does forward — `enabled`, `agentgatewayRoute`, `fullnameOverride` (the
+shared defaults set it), `image`, `podAnnotations`, `podDisruptionBudget`, `routing.store` and
+`routing.valkey`, `observability.otlpEndpoint` and `.otlpHeaders`, `serviceMonitor`, `slack.*`,
+`obo.*`, `a2a` without `saToken` and `tokenPath`, `reviews` (set in the gazelle and graveler
+patches), `nodeSelector`, `tolerations` and `global` — are all still declared here and unchanged.
+
+**When the release reaches an installation.** This is chart 3.0.0, and the umbrella admits the
+`2.x` line only (`components.klaus-gateway.versionRange: ">=2.0.0 <3.0.0"`). Until
+giantswarm/agent-platform#643 widens that ceiling to `<4.0.0` and the umbrella rolls, Flux does
+not pull chart 3.0.0 and every installation keeps the release it runs.
 
 ## Next — the agent's steps move inside the Slack reply
 
