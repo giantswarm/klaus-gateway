@@ -297,8 +297,8 @@ func TestApprovalDecisionLine(t *testing.T) {
 	require.Empty(t, approvalDecisionLine(hitlSubmit, "U1", at), "a question's answer keeps its own echo")
 }
 
-// The card: the section, who may decide, and three plain verbs — one primary,
-// one danger, one default — carrying the routing value.
+// The card: the section, who may decide, and two plain verbs — one primary,
+// one danger — carrying the routing value.
 func TestPostApprovalPrompt_Card(t *testing.T) {
 	var got []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -321,11 +321,10 @@ func TestPostApprovalPrompt_Card(t *testing.T) {
 	require.Equal(t, "<@U1> or the people they allowed can decide",
 		block(1)["elements"].([]any)[0].(map[string]any)["text"])
 	buttons := block(2)["elements"].([]any)
-	require.Len(t, buttons, 3)
+	require.Len(t, buttons, 2, "no Ask a question: the runtime drops a rejection's reason")
 	for i, want := range []struct{ label, style, action string }{
 		{"Approve", "primary", hitlApprove},
 		{"Deny", "danger", hitlDeny},
-		{"Ask a question", "", hitlChat},
 	} {
 		b := buttons[i].(map[string]any)
 		require.Equal(t, want.label, b["text"].(map[string]any)["text"])

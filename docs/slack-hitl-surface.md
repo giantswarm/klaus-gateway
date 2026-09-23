@@ -27,8 +27,8 @@ A single ask_user question picks its layout by choice count, select mode, and la
 | 2–20 | each 1–10 | any | each ≤75 | single **form** (one group per question) | one Submit |
 | >20, or any question free-text / >10 / label >75 | — | — | — | numbered text + free-text reply | reply |
 
-Generic (non-`ask_user`) tool approvals always render as the approval card, with Approve /
-Deny / Ask a question buttons.
+Generic (non-`ask_user`) tool approvals always render as the approval card, with Approve and
+Deny buttons.
 Any prompt can also be answered by replying in-thread; a reply resolves the paused task the
 same way a click does. Only a permitted user (the thread initiator or a granted collaborator)
 may decide; an onlooker click is refused ephemerally. A thread is one shared session, so any
@@ -48,9 +48,11 @@ gateway posts an approval card:
   and the tool-name fallback of a status without text are left out.
 - **Context:** `<@initiator> or the people they allowed can decide`. The call runs with the
   initiator's identity, whoever decides.
-- **Buttons:** Approve (primary) runs the call, Deny (danger) rejects it, Ask a question
-  (default) holds the task and swaps in a reply hint so the user can ask a follow-up before
-  deciding.
+- **Buttons:** Approve (primary) runs the call, Deny (danger) rejects it. There is no "Ask a
+  question" button yet. A typed reply that is not "approve" or "deny" is sent as a rejection
+  with the text as its reason, but the Go ADK runtime drops that reason, so the model sees only
+  "call is rejected" (giantswarm/kagent-upstream#71). A card that an earlier gateway version
+  posted can still have a Chat button (`hitl_chat`), and the gateway still handles it.
 
 `value` is the JSON `{"t":"<thread>","id":"<task>"}`; the task binds the buttons to the
 prompt they render, so a click on a superseded prompt is refused instead of answering a newer
@@ -72,8 +74,7 @@ loses it (klaus-gateway#132).
       "type": "actions",
       "elements": [
         { "type": "button", "text": { "type": "plain_text", "text": "Approve" }, "style": "primary", "action_id": "hitl_approve", "value": "{\"t\":\"THREAD_TS\",\"id\":\"TASK_ID\"}" },
-        { "type": "button", "text": { "type": "plain_text", "text": "Deny" }, "style": "danger", "action_id": "hitl_deny", "value": "{\"t\":\"THREAD_TS\",\"id\":\"TASK_ID\"}" },
-        { "type": "button", "text": { "type": "plain_text", "text": "Ask a question" }, "action_id": "hitl_chat", "value": "{\"t\":\"THREAD_TS\",\"id\":\"TASK_ID\"}" }
+        { "type": "button", "text": { "type": "plain_text", "text": "Deny" }, "style": "danger", "action_id": "hitl_deny", "value": "{\"t\":\"THREAD_TS\",\"id\":\"TASK_ID\"}" }
       ]
     }
   ]
@@ -82,8 +83,8 @@ loses it (klaus-gateway#132).
 
 A click updates the card in place. The section stays, and one context line replaces the
 context and the buttons: `Approved by <@U123> · <!date^…^{time}|16:30 UTC>` or `Denied by …`
-(Slack shows the time in each reader's time zone), or, for Ask a question, "Reply in this
-thread to ask about this step. The agent answers, then asks again."
+(Slack shows the time in each reader's time zone). A Chat click on an older card shows
+"Reply in this thread to ask about this step. The agent answers, then asks again."
 
 ## 2. ask_user — single question, radio buttons (1–10 choices, single-select)
 

@@ -355,13 +355,16 @@ const promptSupersededNotice = "_This prompt was superseded; please answer the l
 // pending so the user can complete it and submit again.
 const formIncompleteNudge = "_Please answer every question, then click Submit._"
 
-// chatModePrompt replaces the approval buttons after the user clicks "Ask a
-// question": the pending tool call is held and the next in-thread reply is
-// sent as the follow-up question.
+// chatModePrompt replaces the approval buttons after the user clicks "Chat" on
+// a card an earlier gateway version posted (new cards have no such button):
+// the pending tool call is held and the next in-thread reply is sent as the
+// follow-up question.
 const chatModePrompt = "Reply in this thread to ask about this step. The agent answers, then asks again."
 
 // The approval card: its title, the context line naming who may decide, the
-// button labels, and the line that replaces the buttons after a decision. The
+// button labels, and the line that replaces the buttons after a decision. It
+// has no "Ask a question" button: the Go ADK runtime drops a rejection's
+// reason, so the model never sees the question (giantswarm/kagent-upstream#71). The
 // decision lines end with a Slack date token, so each reader sees the time in
 // their own time zone.
 const (
@@ -369,7 +372,6 @@ const (
 	approvalDeciders      = "<@%s> or the people they allowed can decide"
 	approvalApproveLabel  = "Approve"
 	approvalDenyLabel     = "Deny"
-	approvalAskLabel      = "Ask a question"
 	approvalApprovedBy    = "Approved by <@%s> · %s"
 	approvalDeniedBy      = "Denied by <@%s> · %s"
 )

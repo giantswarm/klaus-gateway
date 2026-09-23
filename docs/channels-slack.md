@@ -640,9 +640,9 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
   manifest requires re-syncing the app config at api.slack.com/apps. Slack lists a shortcut
   under "Connect to apps" in the ⋯ menu only once a person has used it; the first time it is
   behind "More message shortcuts…".
-- **HITL "Ask a question".** A tool-approval prompt shows Approve / Deny / **Ask a question**.
-  Ask a question holds the pending tool call and invites a follow-up question in the thread;
-  the reply is routed to the paused task. A question resolves it as a reject carrying the question (the agent answers and
+- **HITL follow-up.** A tool-approval card shows Approve / Deny only. A card from an earlier
+  gateway version still has a **Chat** button, which holds the pending tool call and invites a
+  follow-up question in the thread; the reply is routed to the paused task. A question resolves it as a reject carrying the question (the agent answers and
   asks to confirm again); a plain "approve"/"deny" reply still decides.
 - **Channel intro.** When the bot is added to a channel it posts a one-time introduction
   (requires the `member_joined_channel` bot event).

@@ -2918,8 +2918,8 @@ func (c *slackAPIClient) deleteMessage(ctx context.Context, channel, ts string) 
 }
 
 // postApprovalPrompt posts the approval card of a HITL tool approval: the
-// section card (approvalCard), who may decide, and the Approve, Deny and Ask a
-// question buttons. The button values encode the thread (routing) and the task
+// section card (approvalCard), who may decide, and the Approve and Deny
+// buttons. The button values encode the thread (routing) and the task
 // the prompt renders (staleness check).
 func (c *slackAPIClient) postApprovalPrompt(ctx context.Context, channel, threadID, taskID, card, initiator string) error {
 	blocks := []any{
@@ -2937,7 +2937,6 @@ func (c *slackAPIClient) postApprovalPrompt(ctx context.Context, channel, thread
 		bkElements: []any{
 			map[string]any{bkType: bkButton, bkText: plainTextObj(approvalApproveLabel), bkStyle: bkPrimary, bkActionID: hitlApprove, bkValue: value},
 			map[string]any{bkType: bkButton, bkText: plainTextObj(approvalDenyLabel), bkStyle: bkDanger, bkActionID: hitlDeny, bkValue: value},
-			map[string]any{bkType: bkButton, bkText: plainTextObj(approvalAskLabel), bkActionID: hitlChat, bkValue: value},
 		},
 	})
 	_, err := c.postJSON(ctx, methodChatPostMessage, map[string]any{
