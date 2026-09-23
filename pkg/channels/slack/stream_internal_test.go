@@ -397,6 +397,48 @@ func TestPostApprovalPrompt_EscapesMrkdwn(t *testing.T) {
 	require.Equal(t, "run &lt;!channel&gt; now?", payload.Text)
 }
 
+// The picker's question enters an mrkdwn section and the fallback text, so it
+// is escaped, and the escaped text stays inside the section limit without
+// cutting an entity in half.
+func TestPostQuestion_EscapesAndTruncates(t *testing.T) {
+	var body atomic.Value
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		body.Store(string(raw))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"ok":true,"ts":"1.2"}`)
+	}))
+	defer srv.Close()
+	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
+
+	post := func(question string) (text, section string) {
+		t.Helper()
+		_, err := client.postQuestion(t.Context(), "C1", question, "U1", "")
+		require.NoError(t, err)
+		raw, _ := body.Load().(string)
+		var payload struct {
+			Text   string `json:"text"`
+			Blocks []struct {
+				Text struct {
+					Text string `json:"text"`
+				} `json:"text"`
+			} `json:"blocks"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(raw), &payload))
+		require.Len(t, payload.Blocks, 2)
+		return payload.Text, payload.Blocks[0].Text.Text
+	}
+
+	text, section := post("ping <!channel> now")
+	require.Equal(t, "ping &lt;!channel&gt; now", text)
+	require.Equal(t, text, section)
+
+	text, section = post(strings.Repeat("&", slackSectionTextMax))
+	require.Equal(t, text, section)
+	require.LessOrEqual(t, utf8.RuneCountInString(text), slackSectionTextMax)
+	require.True(t, strings.HasSuffix(text, "&amp;…"), "the cut falls between two entities")
+}
+
 // The top-level text of a markdown-block message is the notification fallback
 // and is mrkdwn-parsed by Slack, so it must be escaped even though the markdown
 // block itself carries the raw text.
