@@ -2743,7 +2743,16 @@ func (c *slackAPIClient) postMarkdown(ctx context.Context, channel, md, threadTS
 // picker: the question as the message, who asked as a context line under it.
 func (c *slackAPIClient) postQuestion(ctx context.Context, channel, question, user, threadTS string) (string, error) {
 	// Escaping can grow a question the modal capped at slackSectionTextMax.
-	text := truncateRunes(escapeMrkdwn(question), slackSectionTextMax)
+	text := escapeMrkdwn(question)
+	if r := []rune(text); len(r) > slackSectionTextMax {
+		cut := string(r[:slackSectionTextMax-1])
+		// An entity cut in half would show as "&am…". After escaping, every
+		// "&" starts an entity that ends with ";".
+		if i := strings.LastIndexByte(cut, '&'); i > strings.LastIndexByte(cut, ';') {
+			cut = cut[:i]
+		}
+		text = cut + "…"
+	}
 	body := map[string]any{
 		paramChannel: channel,
 		paramText:    text,
@@ -2761,9 +2770,9 @@ func (c *slackAPIClient) postQuestion(ctx context.Context, channel, question, us
 	return c.postJSON(ctx, methodChatPostMessage, body)
 }
 
-// contextBlock wraps one rendered tool entry in a Block Kit context block,
-// which Slack renders as small muted text — visually subordinate to the
-// agent's prose, which is what tool transparency should be.
+// contextBlock wraps mrkdwn in a Block Kit context block, which Slack renders
+// as small muted text — visually subordinate to the agent's prose, which is
+// what tool transparency and a message's metadata should be.
 func contextBlock(md string) map[string]any {
 	return map[string]any{
 		bkType:     bkContext,

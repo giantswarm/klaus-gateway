@@ -263,12 +263,11 @@ agent when it opens, through one of three entry points, and keeps it for life:
 - **Slash command**: `/swarmgeist [question]` in a channel opens a modal with an agent select over
   the live roster (the default agent preselected) and a question box. On submit the gateway posts
   the conversation root itself, under the agent's identity (the question, with "Asked by @user" as
-  context under it), makes
-  the submitter the thread initiator, and runs the question as the first turn. Slack hides
-  developer slash commands in threads and in the agent pane, so the command only opens channel
-  conversations; in a channel the bot is not a member of, the gateway joins public channels and
-  asks for an invite to private ones. Failures (unknown agent, roster unavailable, channel not
-  served) are reported privately to the invoking user.
+  context under it), makes the submitter the thread initiator, and runs the question as the first
+  turn. Slack hides developer slash commands in threads and in the agent pane, so the command only
+  opens channel conversations; in a channel the bot is not a member of, the gateway joins public
+  channels and asks for an invite to private ones. Failures (unknown agent, roster unavailable,
+  channel not served) are reported privately to the invoking user.
 - **"Ask an agent here" message shortcut** (⋯ menu → Apps on any message): opens the same picker
   where the command cannot reach — inside an existing thread. The conversation starts in the
   thread of the message the shortcut was invoked on (or in the thread that message roots, when it

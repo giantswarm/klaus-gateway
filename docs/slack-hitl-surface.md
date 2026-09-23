@@ -490,10 +490,11 @@ input is `optional`, so clearing the box still submits.
 ```
 
 Submitting posts the question as the message, with a context block `Asked by <@U123>` under it,
-under the agent's identity — a new root message for the slash command, a reply in the carried thread for
-the shortcut — and runs the question as the thread's first turn. With the box ticked, the messages
-the thread held before that echo travel with the question as a labelled part of the turn (see
-[the Slack adapter](channels-slack.md)); nothing about them is posted in the thread.
+under the agent's identity — a new root message for the slash command, a reply in the carried
+thread for the shortcut — and runs the question as the thread's first turn. With the box ticked,
+the messages the thread held before that question message travel with the question as a labelled
+part of the turn (see [the Slack adapter](channels-slack.md)); nothing about them is posted in the
+thread.
 
 Everything the picker cannot do is said privately to the invoker, through the interaction's
 `response_url`, and nothing is posted in the channel:
