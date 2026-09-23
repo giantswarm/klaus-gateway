@@ -2,33 +2,18 @@
 # Render the klaus-gateway chart in the agentgateway-disabled and -enabled
 # modes, and assert that the expected kinds are (or are not) present.
 #
-# Chart.yaml uses architect-style `[[ .Version ]]` / `[[ .AppVersion ]]`
-# placeholders that only resolve during CI. This script stamps them to
-# throwaway values in a tempdir copy so local `helm template` works.
+# Chart.yaml carries concrete semver in `version` / `appVersion` (the architect
+# CI orb rewrites both to the git tag at release), so helm renders the chart in
+# place — no tempdir copy, no version stamping.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
-chart_src="$repo_root/helm/klaus-gateway"
+chart="$repo_root/helm/klaus-gateway"
 
 if ! command -v helm >/dev/null 2>&1; then
   echo "error: helm not found in PATH" >&2
   exit 1
 fi
-
-workdir="$(mktemp -d)"
-trap 'rm -rf "$workdir"' EXIT
-
-cp -R "$chart_src" "$workdir/klaus-gateway"
-# `sed -i` is not portable: GNU takes an optional backup suffix attached to the
-# flag, BSD/macOS requires a separate suffix argument, so `sed -i -e ...` reads
-# `-e` as the suffix on macOS and fails. Render to a temp file and move it back.
-chart_yaml="$workdir/klaus-gateway/Chart.yaml"
-sed -e 's/\[\[ .Version \]\]/0.0.0-test/' \
-    -e 's/\[\[ .AppVersion \]\]/0.0.0/' \
-    "$chart_yaml" >"$chart_yaml.tmp"
-mv "$chart_yaml.tmp" "$chart_yaml"
-
-chart="$workdir/klaus-gateway"
 
 echo "==> helm lint (default values)"
 helm lint "$chart"
