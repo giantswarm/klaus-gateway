@@ -154,11 +154,15 @@ const (
 	// is on the list; %s is its display name.
 	askAgentDefaultHint = "%s is the default for this workspace."
 	// The line that opens the modal: where the conversation lands. %s is the
-	// channel, rendered by Slack from its <#id> mention. A DM has no other
-	// readers and no one else to instruct the agent, so its line says less.
-	askAgentLeadNewThread = "Starts a thread in <#%s> under the agent's name. Anyone in the channel can read it; you decide who may instruct the agent."
-	askAgentLeadThread    = "Continues this thread in <#%s> under the agent's name. Anyone in the channel can read it; you decide who may instruct the agent."
-	askAgentLeadDM        = "Continues this thread under the agent's name."
+	// channel, rendered by Slack from its <#id> mention. In a channel the line
+	// ends with askAgentLeadAudience; a DM has no other readers and no one else
+	// to instruct the agent, so its line says less.
+	askAgentLeadNewThread     = "Starts a thread in <#%s> under the agent's name."
+	askAgentLeadMessageThread = "Starts this message's thread in <#%s> under the agent's name."
+	askAgentLeadThread        = "Continues this thread in <#%s> under the agent's name."
+	askAgentLeadAudience      = " Anyone in the channel can read it; you decide who may instruct the agent."
+	askAgentLeadDMMessage     = "Starts this message's thread under the agent's name."
+	askAgentLeadDM            = "Continues this thread under the agent's name."
 	// askAgentContextLabel titles the thread-context checkbox and
 	// askAgentContextOption is its one option. Deliberately without a count:
 	// counting the thread would mean reading it before views.open, and the

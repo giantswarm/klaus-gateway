@@ -115,6 +115,10 @@ type askAgentRequest struct {
 	TriggerID   string
 	Thread      string
 	Prefill     string
+	// ThreadStarted is set by the shortcut when its message already has a
+	// thread; on a top-level message without replies Thread is the message's
+	// own ts and the conversation starts its thread.
+	ThreadStarted bool
 }
 
 // handleSlashCommand opens the agent picker modal for a slash command, or
@@ -157,6 +161,9 @@ func (a *Adapter) handleAskAgentShortcut(ctx context.Context, payload interactio
 		ResponseURL: payload.ResponseURL,
 		TriggerID:   payload.TriggerID,
 		Thread:      threadID,
+		// Slack sets thread_ts on a message in a thread and on a root that
+		// has replies, and leaves it out on a lone top-level message.
+		ThreadStarted: payload.Message.ThreadTS != "",
 	}
 	notify := a.askAgentNotifier(ctx, req, "ask-agent shortcut")
 	if isDMChannelID(req.Channel) {
@@ -353,15 +360,21 @@ func (a *Adapter) askAgentModal(agents []pkga2a.AgentInfo, req askAgentRequest) 
 }
 
 // askAgentLead says where the picker's conversation lands: a new thread in the
-// channel for the slash command, the invoked thread for the shortcut.
+// channel for the slash command; for the shortcut, the invoked thread, or the
+// thread the invoked message starts when it has no replies yet.
 func askAgentLead(req askAgentRequest) string {
+	dm := isDMChannelID(req.Channel)
 	switch {
-	case isDMChannelID(req.Channel):
+	case dm && req.ThreadStarted:
 		return askAgentLeadDM
-	case req.Thread != "":
-		return fmt.Sprintf(askAgentLeadThread, req.Channel)
+	case dm:
+		return askAgentLeadDMMessage
+	case req.Thread == "":
+		return fmt.Sprintf(askAgentLeadNewThread, req.Channel) + askAgentLeadAudience
+	case req.ThreadStarted:
+		return fmt.Sprintf(askAgentLeadThread, req.Channel) + askAgentLeadAudience
 	default:
-		return fmt.Sprintf(askAgentLeadNewThread, req.Channel)
+		return fmt.Sprintf(askAgentLeadMessageThread, req.Channel) + askAgentLeadAudience
 	}
 }
 

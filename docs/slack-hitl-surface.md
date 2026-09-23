@@ -462,20 +462,23 @@ by its kind.
 
 The one modal the gateway opens, and the only prompt here that no agent raised: the user asked
 to start a conversation. Two entry points open the same view (`callback_id: ask_agent`) — the
-slash command (`/swarmgeist [question]`, whose text prefills the **Prompt** box) and the **Ask an
-agent here** message shortcut (⋯ menu → Apps, `callback_id: ask_agent_here`). The view is titled
-**New conversation**. It opens with a context line that says where the conversation lands: "Starts
-a thread in #channel under the agent's name…" for the slash command, "Continues this thread in
-#channel…" for the shortcut, and only "Continues this thread under the agent's name." in a DM,
-which has no other readers. The select lists the live roster as the caller, the default agent
-preselected and named in the select's hint ("SRE Agent is the default for this workspace.", only
-when the default is on the list). The submit button reads **Start thread** for the slash command
-and **Start conversation** for the shortcut, whose thread exists already. `private_metadata`
-carries where the picker was opened, how to answer the user privately, and — for the shortcut —
-the thread the conversation starts in. In a channel, the shortcut's view carries one more block:
-a checkbox, ticked, offering the thread's earlier messages to the agent. It names no count — counting would mean reading the thread
-before `views.open`, and Slack invalidates the trigger three seconds after issuing it — and the
-input is `optional`, so clearing the box still submits.
+slash command (`/swarmgeist [question]`, whose text prefills the **Prompt** box) and the **Ask
+an agent here** message shortcut (⋯ menu → Apps, `callback_id: ask_agent_here`). The view is
+titled **New conversation**. It opens with a context line that says where the conversation
+lands: "Starts a thread in #channel under the agent's name…" for the slash command, "Continues
+this thread in #channel…" for the shortcut in a thread, "Starts this message's thread in
+#channel…" for the shortcut on a top-level message without replies (Slack sends no `thread_ts`
+for it), and in a DM the same without the channel and without "Anyone in the channel can read
+it…", because a DM has no other readers. The select lists the live roster as the caller, the
+default agent preselected and named in the select's hint ("SRE Agent is the default for this
+workspace.", only when the default is on the list). The submit button reads **Start thread** for
+the slash command and **Start conversation** for the shortcut, whose thread exists already.
+`private_metadata` carries where the picker was opened, how to answer the user privately, and —
+for the shortcut — the thread the conversation starts in. In a channel, the shortcut's view
+carries one more block: a checkbox, ticked, offering the thread's earlier messages to the agent.
+It names no count — counting would mean reading the thread before `views.open`, and Slack
+invalidates the trigger three seconds after issuing it — and the input is `optional`, so
+clearing the box still submits.
 
 ```json
 {

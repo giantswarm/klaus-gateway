@@ -112,3 +112,25 @@ func TestAskAgentModal_DefaultPastCapIsKept(t *testing.T) {
 	require.Equal(t, "kagent/a-102", values[0], "the default is moved to the front of the cut list")
 	require.Equal(t, "kagent/a-000", values[1], "the rest keeps its order")
 }
+
+// The lead line names where the conversation lands for each way the picker
+// opens: the slash command's new thread, the shortcut's existing thread, and
+// the thread the shortcut's lone message starts; a DM names no channel.
+func TestAskAgentLead(t *testing.T) {
+	const audience = " Anyone in the channel can read it; you decide who may instruct the agent."
+	for _, tc := range []struct {
+		name string
+		req  askAgentRequest
+		want string
+	}{
+		{"slash command", askAgentRequest{Channel: "C1"}, "Starts a thread in <#C1> under the agent's name." + audience},
+		{"shortcut in a thread", askAgentRequest{Channel: "C1", Thread: "100.000", ThreadStarted: true}, "Continues this thread in <#C1> under the agent's name." + audience},
+		{"shortcut on a lone message", askAgentRequest{Channel: "C1", Thread: "100.000"}, "Starts this message's thread in <#C1> under the agent's name." + audience},
+		{"DM thread", askAgentRequest{Channel: "D1", Thread: "100.000", ThreadStarted: true}, "Continues this thread under the agent's name."},
+		{"DM lone message", askAgentRequest{Channel: "D1", Thread: "100.000"}, "Starts this message's thread under the agent's name."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, askAgentLead(tc.req))
+		})
+	}
+}
