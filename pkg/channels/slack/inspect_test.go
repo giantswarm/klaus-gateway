@@ -93,7 +93,6 @@ func TestRenderToolActivity_RecordsAtOnAndFullNotOff(t *testing.T) {
 				Kind: channels.ToolResult, Name: "kube_get", CallID: "c1",
 				Response: map[string]any{"items": "3 pods"},
 			})
-			w.drainThreadPosts()
 
 			entries, _ := a.toolLogSnapshot("T1")
 			require.Len(t, entries, tc.want)
@@ -122,7 +121,6 @@ func TestRenderToolActivity_RecordedEntryEscapesHostileContent(t *testing.T) {
 		Kind: channels.ToolCall, Name: "evil`<!channel>`\ntool",
 		Args: map[string]any{"cmd": "a&b <script>"},
 	})
-	w.drainThreadPosts()
 
 	entries, _ := a.toolLogSnapshot("T1")
 	require.Len(t, entries, 1)
@@ -130,11 +128,13 @@ func TestRenderToolActivity_RecordedEntryEscapesHostileContent(t *testing.T) {
 	require.NotContains(t, md, "<!channel>", "angle brackets must be escaped")
 	require.Contains(t, md, "&lt;!channel&gt;")
 	require.NotContains(t, md, "`\n", "newlines and backticks must not break the code span")
-	// Args pass through Go's HTML-safe JSON marshaling, which neutralises the
-	// mrkdwn-sensitive bytes as literal \u escapes.
+	// The args are marshalled with HTML escaping off — Go's default spelled the
+	// agent's own "<" as "<" on screen — so the mrkdwn escaping is what
+	// neutralises them, as it does for the name.
 	require.NotContains(t, md, "<script>")
-	require.Contains(t, md, "\\u003cscript\\u003e")
-	require.Contains(t, md, "a\\u0026b")
+	require.NotContains(t, md, "\\u003c", "the payload carries the real characters, not JSON escapes")
+	require.Contains(t, md, "&lt;script&gt;")
+	require.Contains(t, md, "a&amp;b")
 }
 
 // A call_tool invocation is unwrapped to the inner muster tool in the log,
@@ -152,7 +152,6 @@ func TestRenderToolActivity_RecordsUnwrappedCallTool(t *testing.T) {
 		Kind: channels.ToolResult, Name: musterCallToolMetaTool, CallID: "c1",
 		Response: map[string]any{"output": "1"},
 	})
-	w.drainThreadPosts()
 
 	entries, _ := a.toolLogSnapshot("T1")
 	require.Len(t, entries, 2)

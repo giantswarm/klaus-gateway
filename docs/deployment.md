@@ -174,13 +174,13 @@ See [docs/channels-slack.md](channels-slack.md) for the full Slack setup guide.
 On `SIGTERM` the gateway drains its HTTP servers (up to 15 s), then stops the channel adapters
 (up to 15 s, one budget for all of them), and only then closes the kagent client and the
 stores. The adapter stop is where a Slack turn cut short posts its restart notice, clears its
-progress reaction and collapses its status ticker; the task itself is left running at the
+progress reaction and closes its reply's stream; the task itself is left running at the
 controller, and its id stays on the thread's routing-store binding so the next process can
 resubscribe to it and deliver the answer ([channels-slack.md](channels-slack.md#restarts-and-stop)).
 
 `terminationGracePeriodSeconds` (default `45`) has to cover both windows with some margin for
 the closes; below the drain plus the stop, the kubelet kills the pod before the notice goes
-out and the thread is left with a frozen ticker. The recovery of left-running turns needs a
+out and the thread is left with a reply that keeps animating. The recovery of left-running turns needs a
 routing store that outlives the pod: `routing.store: memory` (the chart default) forgets the
 binding and the task with it. Installations with a Slack channel should run `valkey` (see
 [Valkey](#valkey)); `bolt` only counts when `routing.boltPath`
@@ -255,6 +255,25 @@ The `web`, `cli`, `lifecycle`, `upstream`, `agentgateway`, `routing.defaultTTL`,
 agent-platform umbrella still forwards them. Each is marked so in
 `helm/klaus-gateway/README.md`. The next major release deletes them, which the schema then turns
 into a failed upgrade for a values file that still sets one — see [UPGRADE.md](../UPGRADE.md).
+
+### Where an installation's values come from
+
+On a Giant Swarm installation `klaus-gateway` is deployed as a component of the
+[`agent-platform`](https://github.com/giantswarm/agent-platform) meta chart, so its values are
+not set on this chart directly. `konfigure-operator` renders the `agent-platform-konfiguration`
+ConfigMap the umbrella HelmRelease consumes by layering, in order:
+
+1. **Defaults** — `default/apps/agent-platform/configmap-values.yaml.template` in
+   [`giantswarm/shared-configs`](https://github.com/giantswarm/shared-configs), pulled in through
+   the Flux `GitRepository` `include`.
+2. **Per installation** — `installations/<installation>/apps/agent-platform/configmap-values.yaml.patch`
+   in [`giantswarm/giantswarm-configs`](https://github.com/giantswarm/giantswarm-configs) (this
+   app directory was renamed from `agentic-platform`).
+3. The `management-cluster-configuration` `KonfigurationSchema` (namespace `giantswarm`) names
+   those layer paths.
+
+To change a value on one installation, edit its patch in `giantswarm-configs`; to change it for
+all, edit the `shared-configs` template. konfigure re-renders and Flux rolls the pod.
 
 ## Local checks
 

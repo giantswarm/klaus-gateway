@@ -2,8 +2,6 @@ package slack
 
 import (
 	"context"
-	"maps"
-	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -15,11 +13,12 @@ import (
 // resubscribes to a turn left running is handed the whole answer when the
 // task completes and none of the tool calls it missed, so on its own it would
 // post the opening the previous process had already streamed a second time
-// and count the steps from one again. The writer therefore records, on the
-// thread's routing-store row and as the turn streams, how much answer text
-// has landed and the state of the open receipt segment (store.Delivered), and
-// a writer that continues the turn is seeded with that record: it drops that
-// many bytes of the answer and counts its steps on from the recorded ones.
+// and number its steps from one again — reusing ids that are already on the
+// reply. The writer therefore records, on the thread's routing-store row and
+// as the turn streams, how much answer text has landed, which message it is
+// landing in and how many step ids it has handed out (store.Delivered), and a
+// writer that continues the turn is seeded with that record: it drops that
+// many bytes of the answer and numbers its steps on from the recorded count.
 
 // deliveredWriteTimeout bounds one write of the delivery record. The write
 // runs on the writer's goroutine, after the Slack call it follows, so a store
@@ -33,10 +32,15 @@ const continuedNothingNote = "_(done — the reply above is complete)_"
 
 // continueFrom seeds the writer with what a previous process delivered of the
 // turn it continues: the first TextLen bytes of answer text are dropped, the
-// receipt segment starts at the recorded steps so it counts on, and a stream
-// the previous process left open is adopted, so the reply continues in the
-// same message instead of a second one. The record's slices and maps are
-// copied: the store's copy is not to be edited in place.
+// step ids count on from the recorded ones, and a stream the previous process
+// left open is adopted, so the reply continues in the same message instead of
+// a second one.
+//
+// A step the record names as still running is closed on the adopted stream
+// straight away — queued here, not on this writer's first chunk — because a
+// turn whose answer had all landed before the restart adds nothing to the queue
+// and would otherwise close the message with the step spinning. A record that
+// names none leaves the reply's steps exactly as they are.
 func (w *batchedWriter) continueFrom(d store.Delivered) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -48,9 +52,12 @@ func (w *batchedWriter) continueFrom(d store.Delivered) {
 		// connector prompt taking the turn over retracts it like the rest.
 		w.streamMessages = append(w.streamMessages, d.StreamTS)
 	}
-	w.toolSteps, w.carriedSteps = d.ToolSteps, d.ToolSteps
-	w.toolOrder = slices.Clone(d.ToolOrder)
-	w.toolCounts = maps.Clone(d.ToolCounts)
+	w.stepsIssued = d.ToolSteps
+	if d.StreamTS != "" && d.OpenStepID != "" {
+		w.queue = append(w.queue, queuedChunk{step: &taskUpdate{
+			id: d.OpenStepID, title: d.OpenStepTitle, status: stepComplete,
+		}})
+	}
 }
 
 // continued reports whether the writer continues a turn of which answer text
@@ -86,20 +93,26 @@ func (w *batchedWriter) skipDelivered(content string) string {
 
 // noteDelivered records what the turn has delivered so far — the answer text
 // that landed (what the previous process posted plus what this one appended),
-// the stream it is landing in, and the open receipt segment — through the
-// writer's sink, when it has one.
+// the stream it is landing in, and the step ids handed out — through the
+// writer's sink, when it has one. Narration is deliberately absent from the
+// text count: a continuing process replays the answer, never the narration, so
+// counting it would cut the answer in the wrong place.
 func (w *batchedWriter) noteDelivered(ctx context.Context) {
 	if w.onDelivered == nil {
 		return
 	}
 	w.mu.Lock()
 	d := store.Delivered{
-		TextLen:    w.carried.TextLen + w.leadTrimmed + w.appendedLen,
-		StreamTS:   w.streamTS,
-		StreamLen:  w.streamed,
-		ToolSteps:  w.toolSteps,
-		ToolOrder:  slices.Clone(w.toolOrder),
-		ToolCounts: maps.Clone(w.toolCounts),
+		TextLen:   w.carried.TextLen + w.leadTrimmed + w.appendedLen,
+		StreamTS:  w.streamTS,
+		StreamLen: w.streamed,
+		ToolSteps: w.stepsIssued,
+	}
+	// The most recent step still running is the one a process continuing the
+	// turn has to close; a turn with nothing running names none, so a step that
+	// already finished is left alone.
+	if n := len(w.openSteps); n > 0 {
+		d.OpenStepID, d.OpenStepTitle = w.openSteps[n-1].id, w.openSteps[n-1].title
 	}
 	w.mu.Unlock()
 	w.onDelivered(ctx, d)

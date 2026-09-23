@@ -106,7 +106,7 @@ func runConformance(t *testing.T, factory func(t *testing.T) store.Store) {
 			Resume: map[string]string{"slack_user": "U1"},
 			Delivered: store.Delivered{
 				TextLen: 42, StreamTS: "1700000000.000200", StreamLen: 30,
-				ToolSteps: 3, ToolOrder: []string{"get", "list"}, ToolCounts: map[string]int{"get": 2, "list": 1},
+				ToolSteps: 3, OpenStepID: "step-3", OpenStepTitle: "Kubernetes list",
 			},
 			Initiator: "U1", Granted: []string{"U2", "U3"},
 			CreatedAt: now, LastSeen: now, TTL: 30 * 24 * time.Hour,
