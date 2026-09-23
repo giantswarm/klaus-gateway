@@ -85,7 +85,8 @@ is the chart smoke test CI runs on a kind cluster through app-test-suite (`tests
 - PR titles: Conventional Commits (`feat:`, `fix:`, `docs:`, `chore:`, …); the semantic PR title check is required
 - Changelog: every user-visible change gets an entry under `## [Unreleased]` in `CHANGELOG.md`;
   a change an operator has to act on or decide about also gets a section in `UPGRADE.md`
-- Versioning: build metadata via `-ldflags` into `pkg/project`
+- Versioning: build metadata via `-ldflags` into `pkg/project`; in CI the orb's `.ldflags` gets `version`
+  from `make test` (`ldflags-version` in `Makefile.custom.mk`)
 - Comments: explain non-obvious intent only; don't narrate code
 
 ## Gitleaks
