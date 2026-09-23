@@ -1350,7 +1350,9 @@ func toolResultPreview(resp map[string]any, max int) (preview string, isErr bool
 // envelope ({"content": [{"type": "text", "text": ...}, ...], "isError": ...}),
 // whose text items are joined and whose non-text items render as a [type]
 // placeholder, or the ADK/kagent single-key wrap around a plain tool output
-// ({"output": text} or {"result": text}, depending on the tool type). Any
+// ({"output": text} or {"result": text}, depending on the tool type), or the
+// ADK runtime's single-key wrap around a failed call ({"error": text}): adk-go
+// turns every tool error, an MCP isError result included, into that shape. Any
 // other shape yields ok false so the caller keeps the raw JSON rendering.
 func toolResultText(v map[string]any) (text string, isErr, ok bool) {
 	items, isEnvelope := v["content"].([]any)
@@ -1360,6 +1362,9 @@ func toolResultText(v map[string]any) (text string, isErr, ok bool) {
 				if out, isText := v[key].(string); isText {
 					return out, false, true
 				}
+			}
+			if msg, isText := v["error"].(string); isText {
+				return msg, true, true
 			}
 		}
 		return "", false, false
@@ -2917,53 +2922,34 @@ func (c *slackAPIClient) deleteMessage(ctx context.Context, channel, ts string) 
 	return err
 }
 
-// postApprovalPrompt posts a Block Kit message with ✅/❌ buttons for HITL
-// approval. The button values encode the thread (routing) and the task the
-// prompt renders (staleness check).
-func (c *slackAPIClient) postApprovalPrompt(ctx context.Context, channel, threadID, taskID, promptText string) error {
-	text := "_Waiting for approval…_"
-	if promptText != "" {
-		// promptText is agent-rendered (tool name, args, hint) and enters an
-		// mrkdwn section block.
-		text = truncateRunes(escapeMrkdwn(promptText), slackSectionTextMax)
-	}
-	body := map[string]any{
-		paramChannel:  channel,
-		paramThreadTS: threadID,
-		paramText:     text,
-		paramBlocks: []any{
-			map[string]any{
-				bkType: bkSection,
-				bkText: map[string]any{bkType: bkMrkdwn, bkText: text},
-			},
-			map[string]any{
-				bkType: bkActions,
-				bkElements: []any{
-					map[string]any{
-						bkType:     bkButton,
-						bkText:     map[string]any{bkType: bkPlainText, bkText: "✅ Approve"},
-						bkStyle:    bkPrimary,
-						bkActionID: hitlApprove,
-						bkValue:    encodeHitlValue(threadID, taskID),
-					},
-					map[string]any{
-						bkType:     bkButton,
-						bkText:     map[string]any{bkType: bkPlainText, bkText: "❌ Deny"},
-						bkStyle:    bkDanger,
-						bkActionID: hitlDeny,
-						bkValue:    encodeHitlValue(threadID, taskID),
-					},
-					map[string]any{
-						bkType:     bkButton,
-						bkText:     map[string]any{bkType: bkPlainText, bkText: "💬 Chat"},
-						bkActionID: hitlChat,
-						bkValue:    encodeHitlValue(threadID, taskID),
-					},
-				},
-			},
+// postApprovalPrompt posts the approval card of a HITL tool approval: the
+// section card (approvalCard), who may decide, and the Approve and Deny
+// buttons. The button values encode the thread (routing) and the task
+// the prompt renders (staleness check).
+func (c *slackAPIClient) postApprovalPrompt(ctx context.Context, channel, threadID, taskID, card, initiator string) error {
+	blocks := []any{
+		map[string]any{
+			bkType: bkSection,
+			bkText: map[string]any{bkType: bkMrkdwn, bkText: card},
 		},
 	}
-	_, err := c.postJSON(ctx, methodChatPostMessage, body)
+	if initiator != "" {
+		blocks = append(blocks, contextBlock(fmt.Sprintf(approvalDeciders, initiator)))
+	}
+	value := encodeHitlValue(threadID, taskID)
+	blocks = append(blocks, map[string]any{
+		bkType: bkActions,
+		bkElements: []any{
+			map[string]any{bkType: bkButton, bkText: plainTextObj(approvalApproveLabel), bkStyle: bkPrimary, bkActionID: hitlApprove, bkValue: value},
+			map[string]any{bkType: bkButton, bkText: plainTextObj(approvalDenyLabel), bkStyle: bkDanger, bkActionID: hitlDeny, bkValue: value},
+		},
+	})
+	_, err := c.postJSON(ctx, methodChatPostMessage, map[string]any{
+		paramChannel:  channel,
+		paramThreadTS: threadID,
+		paramText:     card,
+		paramBlocks:   blocks,
+	})
 	return err
 }
 

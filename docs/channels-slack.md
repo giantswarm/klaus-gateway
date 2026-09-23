@@ -429,7 +429,8 @@ any string that begins with `Slack bot`, `Slack app-level`, or `Slack user`.
      call), as `markdown_text` chunks;
    - each tool call as a `task_update` chunk, which Slack renders as a **step** of a task list
      attached to the reply: `in_progress` when the call starts, `complete` — or `error` when
-     the tool reported one — when its result arrives. The two updates share an id, so Slack
+     the tool reported one (an MCP result with `isError`, or the `{"error": …}` result the ADK
+     runtime sends for every failed call) — when its result arrives. The two updates share an id, so Slack
      replaces the step rather than listing the call twice. Slack collapses the list once the
      answer is done. Slack never ends a task on its own, so **every step still running when the
      turn ends is closed by its last flush**, before the message is stopped. What it is closed
@@ -640,10 +641,10 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
   manifest requires re-syncing the app config at api.slack.com/apps. Slack lists a shortcut
   under "Connect to apps" in the ⋯ menu only once a person has used it; the first time it is
   behind "More message shortcuts…".
-- **HITL "Chat".** A tool-approval prompt shows Approve / Deny / **Chat**. Chat holds the
-  pending tool call and invites a follow-up question in the thread; the reply is routed to the
-  paused task. A question resolves it as a reject carrying the question (the agent answers and
-  asks to confirm again); a plain "approve"/"deny" reply still decides.
+- **HITL follow-up.** A tool-approval card shows Approve / Deny only. A reply in the thread is
+  routed to the paused task: a plain "approve"/"deny" decides, and any other text resolves it as
+  a reject carrying the text. The Go ADK runtime does not give that text to the model
+  (giantswarm/kagent-upstream#71).
 - **Channel intro.** When the bot is added to a channel it posts a one-time introduction
   (requires the `member_joined_channel` bot event).
 - **Sign-in prompt.** An unlinked user's first message is answered with a "Sign in to Giant

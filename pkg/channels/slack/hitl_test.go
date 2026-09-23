@@ -1,6 +1,8 @@
 package slack
 
 import (
+	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -9,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -218,7 +221,7 @@ func TestPostHitlPrompt_FallsBackToTextOnBlockKitFailure(t *testing.T) {
 	// Generic tool approval: Approve/Deny buttons fail, plain text lands.
 	err := a.postHitlPrompt(t.Context(), a.apiClient(), "C1", "T1", &channels.OutboundDelta{
 		Content: "Run kubectl delete?",
-		Prompt:  &channels.HitlPrompt{},
+		Prompt:  &channels.HitlPrompt{StatusText: "Run kubectl delete?"},
 	})
 	require.NoError(t, err)
 
@@ -264,4 +267,104 @@ func TestApprovedCalls(t *testing.T) {
 	require.Nil(t, approvedCalls(approval, nil), "a typed follow-up without a decision")
 	require.Nil(t, approvedCalls(question, approve))
 	require.Nil(t, approvedCalls(nil, approve))
+}
+
+// The card names the calls as the reply's task list does, muster's call_tool
+// unwrapped. Its body is the status's own text (StatusText), not the delta's
+// Content, which falls back to the tool names; the runtime's default hint lines
+// are left out and the agent's own lines kept, escaped.
+func TestApprovalCard(t *testing.T) {
+	capi := channels.HitlTool{Name: "call_tool", Args: map[string]any{"name": "x_capi_list_clusters", "arguments": map[string]any{}}}
+	withText := func(text string, tools ...channels.HitlTool) *channels.HitlPrompt {
+		return &channels.HitlPrompt{ToolName: tools[0].Name, Tools: tools, StatusText: text}
+	}
+	const adkHint = "Please approve or reject the tool call call_tool() by responding with a FunctionResponse with an expected ToolConfirmation payload."
+
+	require.Equal(t, "*Approval required* · Capi list clusters", approvalCard(withText(adkHint, capi), adkHint))
+	require.Equal(t, "*Approval required* · Capi list clusters", approvalCard(withText("", capi), "call_tool"),
+		"a status without text: the Content fallback is not shown")
+	require.Equal(t, "*Approval required* · Capi list clusters\nRestart &lt;!here&gt; now",
+		approvalCard(withText("Restart <!here> now", capi), "Restart <!here> now"))
+	require.Equal(t, "*Approval required* · Capi list clusters\nThis lists every cluster.",
+		approvalCard(withText(adkHint+"\nThis lists every cluster.", capi), ""), "only the default hint lines go")
+
+	two := withText(adkHint+"\n"+strings.Replace(adkHint, "call_tool()", "kube_delete()", 1), capi, channels.HitlTool{Name: "kube_delete"})
+	require.Equal(t, "*Approval required* · Capi list clusters, Kube delete", approvalCard(two, ""))
+
+	require.Equal(t, "*Approval required*\nrun it?", approvalCard(nil, "run it?"), "a prompt without structure keeps its text")
+}
+
+func TestApprovalDecisionLine(t *testing.T) {
+	at := time.Date(2026, 9, 23, 16, 30, 0, 0, time.UTC)
+	require.Equal(t, fmt.Sprintf("Approved by <@U1> · <!date^%d^{time}|16:30 UTC>", at.Unix()), approvalDecisionLine(hitlApprove, "U1", at))
+	require.Equal(t, fmt.Sprintf("Denied by <@U1> · <!date^%d^{time}|16:30 UTC>", at.Unix()), approvalDecisionLine(hitlDeny, "U1", at))
+	require.Empty(t, approvalDecisionLine(hitlSubmit, "U1", at), "a question's answer keeps its own echo")
+}
+
+// The card: the section, who may decide, and two plain verbs — one primary,
+// one danger — carrying the routing value.
+func TestPostApprovalPrompt_Card(t *testing.T) {
+	var got []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, _ = io.ReadAll(r.Body)
+		_, _ = w.Write([]byte(`{"ok":true,"ts":"1.2"}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
+	require.NoError(t, client.postApprovalPrompt(t.Context(), "C1", "T1", "task-1", "*Approval required* · Capi list clusters", "U1"))
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(got, &payload))
+	require.Equal(t, "*Approval required* · Capi list clusters", payload["text"])
+	blocks := payload["blocks"].([]any)
+	require.Len(t, blocks, 3)
+	block := func(i int) map[string]any { return blocks[i].(map[string]any) }
+	require.Equal(t, "section", block(0)["type"])
+	require.Equal(t, "context", block(1)["type"])
+	require.Equal(t, "<@U1> or the people they allowed can decide",
+		block(1)["elements"].([]any)[0].(map[string]any)["text"])
+	buttons := block(2)["elements"].([]any)
+	require.Len(t, buttons, 2, "no Ask a question: the runtime drops a rejection's reason")
+	for i, want := range []struct{ label, style, action string }{
+		{"Approve", "primary", hitlApprove},
+		{"Deny", "danger", hitlDeny},
+	} {
+		b := buttons[i].(map[string]any)
+		require.Equal(t, want.label, b["text"].(map[string]any)["text"])
+		style, _ := b["style"].(string)
+		require.Equal(t, want.style, style)
+		require.Equal(t, want.action, b["action_id"])
+		require.Equal(t, hitlValue{Thread: "T1", Task: "task-1"}, decodeHitlValue(b["value"].(string)))
+	}
+}
+
+// A click that finds its task gone keeps an approval card's section, read from
+// the clicked message, and puts the note where the buttons were; a prompt
+// without a leading section becomes the note alone.
+func TestRetirePrompt(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		got = nil
+		_ = json.Unmarshal(raw, &got)
+		_, _ = w.Write([]byte(`{"ok":true,"ts":"1.2"}`))
+	}))
+	t.Cleanup(srv.Close)
+	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
+
+	section := map[string]any{"type": "section", "text": map[string]any{"type": "mrkdwn", "text": "*Approval required* · Capi list clusters"}}
+	card := []map[string]any{section, {"type": "actions"}}
+	act := hitlAction{kind: hitlApprove, section: cardSection(card)}
+	require.NoError(t, retirePrompt(t.Context(), client, "C1", "1.0", act, promptAnsweredNotice))
+	require.Equal(t, promptAnsweredNotice, got["text"])
+	blocks := got["blocks"].([]any)
+	require.Len(t, blocks, 2)
+	require.Equal(t, "*Approval required* · Capi list clusters", blocks[0].(map[string]any)["text"].(map[string]any)["text"])
+	require.Equal(t, "context", blocks[1].(map[string]any)["type"])
+
+	require.Nil(t, cardSection([]map[string]any{{"type": "actions"}}), "no leading section")
+	require.NoError(t, retirePrompt(t.Context(), client, "C1", "1.0", hitlAction{kind: hitlSubmit}, promptAnsweredNotice))
+	require.Equal(t, promptAnsweredNotice, got["text"])
+	require.Empty(t, got["blocks"])
 }

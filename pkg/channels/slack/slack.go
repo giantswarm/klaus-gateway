@@ -2561,12 +2561,13 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 			a.postTerminalNote(cctx, client, slackChannel, threadID, replyTS, pausedNote)
 		}
 		a.storePendingTask(threadID, &pendingTask{
-			TaskID:    pd.TaskID,
-			AgentRef:  msg.AgentRef,
-			Channel:   slackChannel,
-			ChannelID: msg.ChannelID,
-			Prompt:    pd.Prompt,
-			Usage:     w.turnUsage,
+			TaskID:     pd.TaskID,
+			AgentRef:   msg.AgentRef,
+			Channel:    slackChannel,
+			ChannelID:  msg.ChannelID,
+			Prompt:     pd.Prompt,
+			PromptText: pd.Content,
+			Usage:      w.turnUsage,
 		})
 		return a.postHitlPrompt(cctx, client, slackChannel, threadID, pd)
 	}
