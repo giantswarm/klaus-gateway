@@ -10,10 +10,10 @@ import (
 )
 
 // threadStateTTL bounds how long per-thread transparency state (usage figures,
-// resume-check marks) is retained. Entries past the TTL are
-// swept opportunistically on insert, so an idle thread's state cannot
-// accumulate forever on a long-lived pod. Active threads refresh their entries
-// on every turn.
+// resume-check marks) is retained. Entries past the TTL are swept
+// opportunistically on insert, so an idle thread's state cannot accumulate
+// forever on a long-lived pod. Active threads refresh their entries on every
+// turn.
 const threadStateTTL = 24 * time.Hour
 
 // ttlEntry pairs a value with its eviction deadline.

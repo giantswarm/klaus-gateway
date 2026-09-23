@@ -617,10 +617,10 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
   invoke the **Inspect agent steps** message shortcut (⋯ menu → Apps) on any message in the
   thread: the gateway replies with an ephemeral, invoker-only rendering of the retained
   tool-call log — per call, the tool name with its arguments and a result preview, grouped
-  per turn, fuller than what a step has room for. The log is in-memory and bounded:
-  the last 100 calls per thread, kept for up to 24 hours and not surviving a gateway restart.
-  When nothing is retained the reply says so. The shortcut is
-  registered in `deploy/slack/manifest.yaml`, next to **Ask an agent here** (which starts a
+  per turn, fuller than what a step has room for. The log is in-memory and bounded: the last
+  100 calls per thread, kept for up to 24 hours and not surviving a gateway restart. When
+  nothing is retained the reply says so. The shortcut is registered in
+  `deploy/slack/manifest.yaml`, next to **Ask an agent here** (which starts a
   conversation in the message's thread, see [Agent routing](#agent-routing)); changing the
   manifest requires re-syncing the app config at api.slack.com/apps. Slack lists a shortcut
   under "Connect to apps" in the ⋯ menu only once a person has used it; the first time it is
