@@ -713,7 +713,7 @@ func TestHandleDecision_OBO_TokenMintFailurePreservesTask(t *testing.T) {
 	// The sign-in prompt (ephemeral to the clicker, anchored by a thread
 	// notice) is the terminal action on the failure path.
 	require.Eventually(t, func() bool {
-		return strings.Contains(strings.Join(sink.ephemeralTexts(), "\n"), signInPromptText)
+		return strings.Contains(strings.Join(sink.ephemeralTexts(), "\n"), signInForClickLine)
 	}, flowWait, 10*time.Millisecond, "token-mint failure must drive a sign-in prompt")
 
 	posts, updates, _ := sink.counts()

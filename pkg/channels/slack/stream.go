@@ -3105,41 +3105,59 @@ func (c *slackAPIClient) postChoiceSectionPrompt(ctx context.Context, channel, t
 	return err
 }
 
-// signInPromptText is the sign-in prompt's body. It names no one: the prompt
-// reaches its user through the message's audience (an ephemeral in a channel,
-// a DM thread otherwise), never through an @-mention a whole thread can read
-// (klaus-gateway#185).
-const signInPromptText = "Sign in so I can act as you. Until you do, I can't run tools on your behalf."
+// signInTrigger is what asked for a sign-in prompt. It picks the card's last
+// line: only a held message runs by itself once the link completes.
+type signInTrigger int
 
-// signInPromptBody builds the sign-in prompt's Slack post body: a section with
-// the prompt text plus a "Sign in" URL button opening linkURL. A non-empty lead
-// is put on its own line above the prompt text.
-func signInPromptBody(channel, threadID, linkURL, lead string) map[string]any {
-	text := signInPromptText
-	if lead != "" {
-		text = lead + "\n" + text
+const (
+	signInForMessage signInTrigger = iota // an unlinked user's message, held for replay
+	signInForLogin                        // the /login command: nothing is held
+	signInForClick                        // a button click: nothing to replay, the person clicks again
+)
+
+// signInPromptBody builds the sign-in card's Slack post body: when it replaces
+// a prompt whose link expired, a context line saying so; the title and body
+// with the trigger's line; a "Sign in" URL button opening linkURL; and the
+// context line for a person whose earlier session ended.
+func signInPromptBody(channel, threadID, linkURL string, supersedes bool, trigger signInTrigger) map[string]any {
+	text := "*" + signInPromptTitle + "*\n" + fmt.Sprintf(signInPromptBodyFormat, int(signInNudgeTTL/time.Minute))
+	switch trigger {
+	case signInForMessage:
+		text += " " + signInForMessageLine
+	case signInForClick:
+		text += " " + signInForClickLine
 	}
-	body := map[string]any{
-		paramChannel: channel,
-		paramText:    text,
-		paramBlocks: []any{
-			map[string]any{
-				bkType: bkSection,
-				bkText: map[string]any{bkType: bkMrkdwn, bkText: text},
-			},
-			map[string]any{
-				bkType: bkActions,
-				bkElements: []any{
-					map[string]any{
-						bkType:     bkButton,
-						bkText:     map[string]any{bkType: bkPlainText, bkText: "Sign in"},
-						bkStyle:    bkPrimary,
-						bkActionID: oboSignIn,
-						bkURL:      linkURL,
-					},
+	var blocks []any
+	if supersedes {
+		blocks = append(blocks, contextBlock(signInLinkSupersededNote))
+	}
+	blocks = append(blocks,
+		map[string]any{
+			bkType: bkSection,
+			bkText: map[string]any{bkType: bkMrkdwn, bkText: text},
+		},
+		map[string]any{
+			bkType: bkActions,
+			bkElements: []any{
+				map[string]any{
+					bkType:     bkButton,
+					bkText:     map[string]any{bkType: bkPlainText, bkText: "Sign in"},
+					bkStyle:    bkPrimary,
+					bkActionID: oboSignIn,
+					bkURL:      linkURL,
 				},
 			},
 		},
+		contextBlock(signInSessionHint),
+	)
+	fallback := text
+	if supersedes {
+		fallback = signInLinkSupersededNote + "\n" + text
+	}
+	body := map[string]any{
+		paramChannel: channel,
+		paramText:    fallback,
+		paramBlocks:  blocks,
 	}
 	if threadID != "" {
 		body[paramThreadTS] = threadID
@@ -3147,13 +3165,27 @@ func signInPromptBody(channel, threadID, linkURL, lead string) map[string]any {
 	return body
 }
 
+// postContextMessage posts text as a context block, Slack's small muted text,
+// with the same text as the notification fallback.
+func (c *slackAPIClient) postContextMessage(ctx context.Context, channel, threadID, text string) (string, error) {
+	body := map[string]any{
+		paramChannel: channel,
+		paramText:    text,
+		paramBlocks:  []any{contextBlock(text)},
+	}
+	if threadID != "" {
+		body[paramThreadTS] = threadID
+	}
+	return c.postJSON(ctx, methodChatPostMessage, body)
+}
+
 // postSignInPrompt posts the sign-in prompt as a real threaded message and
 // returns its ts. It is the DM form of the prompt: a DM thread has one reader,
 // so nothing is hidden by making it ephemeral, and only thread replies render
 // in the assistant pane. The returned ts lets the prompt be rewritten in place
 // once the link completes.
-func (c *slackAPIClient) postSignInPrompt(ctx context.Context, channel, threadID, linkURL string) (string, error) {
-	return c.postJSON(ctx, methodChatPostMessage, signInPromptBody(channel, threadID, linkURL, ""))
+func (c *slackAPIClient) postSignInPrompt(ctx context.Context, channel, threadID, linkURL string, trigger signInTrigger) (string, error) {
+	return c.postJSON(ctx, methodChatPostMessage, signInPromptBody(channel, threadID, linkURL, false, trigger))
 }
 
 // postSignInPromptEphemeral posts the sign-in prompt visible to user only. It
@@ -3162,10 +3194,10 @@ func (c *slackAPIClient) postSignInPrompt(ctx context.Context, channel, threadID
 // addressable ts, so it cannot be rewritten later; the caller confirms the
 // completed link with a fresh ephemeral instead. Slack only surfaces a
 // thread-scoped ephemeral in a thread that already shows a message, which is
-// why the caller anchors a fresh mention first (klaus-gateway#156). lead is put
-// above the prompt text when this prompt replaces one whose link expired.
-func (c *slackAPIClient) postSignInPromptEphemeral(ctx context.Context, channel, threadID, user, linkURL, lead string) error {
-	body := signInPromptBody(channel, threadID, linkURL, lead)
+// why the caller anchors a thread notice first (klaus-gateway#156). supersedes
+// marks a prompt that replaces one whose link expired.
+func (c *slackAPIClient) postSignInPromptEphemeral(ctx context.Context, channel, threadID, user, linkURL string, supersedes bool, trigger signInTrigger) error {
+	body := signInPromptBody(channel, threadID, linkURL, supersedes, trigger)
 	body[paramUser] = user
 	_, err := c.postJSON(ctx, "chat.postEphemeral", body)
 	return err

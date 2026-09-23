@@ -545,7 +545,7 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 	if signIn {
 		// A button resume has no message to replay, so just prompt; the clicker
 		// signs in and clicks again.
-		a.postSignIn(ctx, slackChannel, threadID, slackUser, false)
+		a.postSignIn(ctx, slackChannel, threadID, slackUser, false, signInForClick)
 	}
 	if !ok {
 		return nil

@@ -330,25 +330,48 @@ const notPermittedNotice = "_You can read this thread, but only people the threa
 // state TTL once a fresh prompt is posted, so the dead button cannot be
 // mistaken for the live one. Only a DM prompt is rewritten this way; a channel
 // prompt is ephemeral and has no addressable ts.
-const signInLinkExpiredNote = "_This sign-in link expired; use the newer one below._"
+const signInLinkExpiredNote = "This sign-in link expired. Use the newer one below."
 
 // signInLinkSupersededNote leads a channel sign-in prompt that replaces one
 // whose link expired. Slack cannot rewrite or delete an ephemeral, so the dead
 // button stays on the user's screen until their client reloads; the fresh
 // prompt carries the warning that a DM's predecessor is rewritten to carry.
-const signInLinkSupersededNote = "_An earlier sign-in link in this thread expired; use the button below._"
+const signInLinkSupersededNote = "The earlier sign-in link expired. Use this one."
 
-// signInThreadNotice anchors a channel thread whose first reply would
-// otherwise be the sign-in prompt. The prompt is ephemeral and Slack does not
-// surface a thread-scoped ephemeral in a thread with no messages
-// (klaus-gateway#156), so the thread needs one real reply — and it must name
-// nobody and carry no link, since everyone in the channel can read it
-// (klaus-gateway#185).
-const signInThreadNotice = "🔒 I need a sign-in before I can act here. I've posted the link privately to whoever asked."
+// The sign-in card: its title, its body (%d is the link's lifetime in
+// minutes), the line each trigger adds, and the context line under the button.
+// The card names no one: it reaches its user through the message's audience
+// (an ephemeral in a channel, a DM thread otherwise).
+const (
+	signInPromptTitle      = "Sign in to Giant Swarm"
+	signInPromptBodyFormat = "The agent runs its tools with your own permissions, so it needs your sign-in once. The link is valid for %d minutes."
+	signInForMessageLine   = "Your message runs as soon as you sign in."
+	signInForClickLine     = "Sign in, then click the button again."
+	signInSessionHint      = "Signed in before? Your session may have expired."
+)
+
+// The thread notice anchors a channel thread's ephemeral sign-in prompts:
+// Slack does not surface a thread-scoped ephemeral in a thread with no
+// messages (klaus-gateway#156). It names who the thread is waiting for, and
+// after the last of them signs in, who signed in. It never carries the link,
+// which is minted for one identity and stays in the ephemeral
+// (klaus-gateway#185). %s is the people, as mentions.
+const (
+	signInWaitingFormat  = "Waiting for %s to sign in to Giant Swarm"
+	signInSignedInFormat = "%s signed in to Giant Swarm"
+)
+
+// The /login and /logout replies. They are ephemeral: the first carries the
+// caller's email, which a shared thread must not see.
+const (
+	loginSignedInAsNotice = "Signed in as %s."
+	loginSignedInNotice   = "Signed in."
+	logoutNotice          = "Signed out. The agent asks for /login before it acts for you again."
+)
 
 // signedInNotice confirms a completed account link. It names no identity: the
 // email the user signed in as is shown on the private browser success page.
-const signedInNotice = "✅ Signed in. I can act on your behalf now."
+const signedInNotice = "Signed in to Giant Swarm. The agent now acts with your permissions."
 
 // signInNudgeTTL bounds how long a posted sign-in prompt suppresses a fresh
 // nudge for the same (user, thread). It is the sign-in link's state lifetime:

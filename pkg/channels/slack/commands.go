@@ -218,13 +218,13 @@ func (a *Adapter) handleLoginCommand(ctx context.Context, slackUser, slackChanne
 			return true
 		}
 		// Explicit request: post the sign-in prompt without the nudge throttle.
-		a.postSignIn(ctx, slackChannel, threadID, slackUser, false)
+		a.postSignIn(ctx, slackChannel, threadID, slackUser, false, signInForLogin)
 		return true
 	}
 	if email := a.linkedEmail(slackUser); email != "" {
-		reply(fmt.Sprintf("✅ _Signed in as *%s*._", escapeMrkdwn(email)))
+		reply(fmt.Sprintf(loginSignedInAsNotice, escapeMrkdwn(email)))
 	} else {
-		reply("✅ _Signed in._")
+		reply(loginSignedInNotice)
 	}
 	return true
 }
@@ -256,7 +256,7 @@ func (a *Adapter) handleLogoutCommand(slackUser string, reply func(string)) bool
 		reply(logoutFailedNotice)
 		return true
 	}
-	reply("👋 Signed out. I'll ask you to `/login` again before I can act as you.")
+	reply(logoutNotice)
 	return true
 }
 

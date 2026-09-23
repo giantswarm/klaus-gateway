@@ -77,12 +77,13 @@ func TestAccess_UnlinkedNewcomerPromptedToSignIn(t *testing.T) {
 	}, flowWait, 50*time.Millisecond, "the newcomer is prompted to sign in")
 	require.Equal(t, 1, gw.dispatchCount(), "an unlinked newcomer must not reach the agent")
 	// The link is minted for the newcomer, so only they may see it: the prompt
-	// is ephemeral to them and the thread's other readers get a notice that
-	// names nobody (klaus-gateway#185).
+	// is ephemeral to them, and the thread's other readers get a notice that
+	// names who the thread waits for but carries no link (klaus-gateway#185).
 	prompt := fake.pathCalls("chat.postEphemeral")[0]
 	require.Equal(t, "U999", prompt.params["user"], "the sign-in prompt must reach its target user only")
-	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "U999",
-		"no public message may name the prompted user")
+	require.Contains(t, allText(fake.pathCalls("chat.postMessage")), "Waiting for <@U999> to sign in to Giant Swarm")
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "http",
+		"no public message may carry the link")
 }
 
 // A known newcomer is held pending the initiator's consent; on Yes their held
