@@ -142,13 +142,23 @@ const (
 	askAgentContextActionID  = "context"
 	askAgentContextValue     = "include"
 
-	askAgentModalTitle          = "Ask an agent" // modal titles are capped at 24 chars
-	askAgentSubmitLabel         = "Ask"
+	askAgentModalTitle          = "New conversation" // modal titles and button labels are capped at 24 chars
+	askAgentSubmitLabel         = "Start thread"
+	askAgentShortcutSubmitLabel = "Start conversation" // the shortcut's thread exists already
 	askAgentCloseLabel          = "Cancel"
 	askAgentAgentLabel          = "Agent"
 	askAgentAgentPlaceholder    = "Pick an agent"
-	askAgentQuestionLabel       = "Question"
-	askAgentQuestionPlaceholder = "What do you want to ask?"
+	askAgentQuestionLabel       = "Prompt"
+	askAgentQuestionPlaceholder = "What should the agent look into?"
+	// askAgentDefaultHint sits under the agent select when the default agent
+	// is on the list; %s is its display name.
+	askAgentDefaultHint = "%s is the default for this workspace."
+	// The line that opens the modal: where the conversation lands. %s is the
+	// channel, rendered by Slack from its <#id> mention. A DM has no other
+	// readers and no one else to instruct the agent, so its line says less.
+	askAgentLeadNewThread = "Starts a thread in <#%s> under the agent's name. Anyone in the channel can read it; you decide who may instruct the agent."
+	askAgentLeadThread    = "Continues this thread in <#%s> under the agent's name. Anyone in the channel can read it; you decide who may instruct the agent."
+	askAgentLeadDM        = "Continues this thread under the agent's name."
 	// askAgentContextLabel titles the thread-context checkbox and
 	// askAgentContextOption is its one option. Deliberately without a count:
 	// counting the thread would mean reading it before views.open, and the
@@ -161,6 +171,7 @@ const (
 	modalMaxAgents      = 100
 	modalOptionLabelMax = 75
 	modalQuestionMax    = 3000
+	modalHintMax        = 2000 // an input block's hint text
 
 	// askAgentAskedBy is the context line under the question the gateway posts
 	// on submit. The agent is the message's author, so it is not repeated.
@@ -569,6 +580,7 @@ const (
 	bkInitialValue    = "initial_value"
 	bkMultiline       = "multiline"
 	bkMaxLength       = "max_length"
+	bkHint            = "hint"
 )
 
 // Block Kit type values.

@@ -462,12 +462,18 @@ by its kind.
 
 The one modal the gateway opens, and the only prompt here that no agent raised: the user asked
 to start a conversation. Two entry points open the same view (`callback_id: ask_agent`) — the
-slash command (`/swarmgeist [question]`, whose text prefills the question box) and the **Ask an
-agent here** message shortcut (⋯ menu → Apps, `callback_id: ask_agent_here`). The select lists
-the live roster as the caller, the default agent preselected; `private_metadata` carries where
-the picker was opened, how to answer the user privately, and — for the shortcut — the thread the
-conversation starts in. In a channel, the shortcut's view carries a third block: a checkbox, ticked, offering the
-thread's earlier messages to the agent. It names no count — counting would mean reading the thread
+slash command (`/swarmgeist [question]`, whose text prefills the **Prompt** box) and the **Ask an
+agent here** message shortcut (⋯ menu → Apps, `callback_id: ask_agent_here`). The view is titled
+**New conversation**. It opens with a context line that says where the conversation lands: "Starts
+a thread in #channel under the agent's name…" for the slash command, "Continues this thread in
+#channel…" for the shortcut, and only "Continues this thread under the agent's name." in a DM,
+which has no other readers. The select lists the live roster as the caller, the default agent
+preselected and named in the select's hint ("SRE Agent is the default for this workspace.", only
+when the default is on the list). The submit button reads **Start thread** for the slash command
+and **Start conversation** for the shortcut, whose thread exists already. `private_metadata`
+carries where the picker was opened, how to answer the user privately, and — for the shortcut —
+the thread the conversation starts in. In a channel, the shortcut's view carries one more block:
+a checkbox, ticked, offering the thread's earlier messages to the agent. It names no count — counting would mean reading the thread
 before `views.open`, and Slack invalidates the trigger three seconds after issuing it — and the
 input is `optional`, so clearing the box still submits.
 
@@ -476,14 +482,19 @@ input is `optional`, so clearing the box still submits.
   "type": "modal",
   "callback_id": "ask_agent",
   "private_metadata": "{\"c\":\"C123\",\"u\":\"U123\",\"r\":\"https://hooks.slack.com/actions/…\",\"t\":\"1699999999.000100\"}",
-  "title": { "type": "plain_text", "text": "Ask an agent" },
-  "submit": { "type": "plain_text", "text": "Ask" },
+  "title": { "type": "plain_text", "text": "New conversation" },
+  "submit": { "type": "plain_text", "text": "Start conversation" },
   "close": { "type": "plain_text", "text": "Cancel" },
   "blocks": [
+    {
+      "type": "context",
+      "elements": [ { "type": "mrkdwn", "text": "Continues this thread in <#C123> under the agent's name. Anyone in the channel can read it; you decide who may instruct the agent." } ]
+    },
     {
       "type": "input",
       "block_id": "ask_agent_agent",
       "label": { "type": "plain_text", "text": "Agent" },
+      "hint": { "type": "plain_text", "text": "SRE Agent is the default for this workspace." },
       "element": {
         "type": "static_select",
         "action_id": "agent",
@@ -495,8 +506,8 @@ input is `optional`, so clearing the box still submits.
     {
       "type": "input",
       "block_id": "ask_agent_question",
-      "label": { "type": "plain_text", "text": "Question" },
-      "element": { "type": "plain_text_input", "action_id": "question", "multiline": true, "max_length": 3000 }
+      "label": { "type": "plain_text", "text": "Prompt" },
+      "element": { "type": "plain_text_input", "action_id": "question", "multiline": true, "max_length": 3000, "placeholder": { "type": "plain_text", "text": "What should the agent look into?" } }
     },
     {
       "type": "input",

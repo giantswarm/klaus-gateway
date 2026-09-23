@@ -206,8 +206,8 @@ func TestThreadContext_PickerOffersTheCheckbox(t *testing.T) {
 	sendAskAgentShortcut(t, srv, "C1", "U1", "103.000", "100.000", api.URL+"/response_url")
 
 	blocks := openedView(t, fake)["blocks"].([]any)
-	require.Len(t, blocks, 3, "agent, question, thread context")
-	block := blocks[2].(map[string]any)
+	require.Len(t, blocks, 4, "lead, agent, prompt, thread context")
+	block := blocks[3].(map[string]any)
 	require.Equal(t, "ask_agent_context", block["block_id"])
 	require.Equal(t, true, block["optional"], "a cleared box must still submit")
 	element := block["element"].(map[string]any)
@@ -229,7 +229,7 @@ func TestThreadContext_SlashCommandHasNoThreadToShare(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, sendSlashCommand(t, srv, "C1", "U1", "why are pods crashlooping?", api.URL+"/response_url"))
 	pmRaw := openedView(t, fake)["private_metadata"].(string)
-	require.Len(t, openedView(t, fake)["blocks"].([]any), 2, "no context checkbox without a thread")
+	require.Len(t, openedView(t, fake)["blocks"].([]any), 3, "no context checkbox without a thread")
 
 	sendAskAgentSubmission(t, srv, "U1", pmRaw, "kagent/sre-agent", "why are pods crashlooping?")
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
@@ -533,7 +533,9 @@ func TestThreadContext_ShortcutInADMOffersNothingAndReadsNothing(t *testing.T) {
 	sendAskAgentShortcut(t, srv, "D1", "U1", "103.000", "100.000", api.URL+"/response_url")
 
 	view := openedView(t, fake)
-	require.Len(t, view["blocks"].([]any), 2, "no context checkbox in a DM")
+	require.Len(t, view["blocks"].([]any), 3, "no context checkbox in a DM")
+	require.Equal(t, "Continues this thread under the agent's name.",
+		view["blocks"].([]any)[0].(map[string]any)["elements"].([]any)[0].(map[string]any)["text"], "a DM names no channel and no other readers")
 
 	sendAskAgentSubmissionWithContext(t, srv, "U1", view["private_metadata"].(string), "kagent/sre-agent", "what happened?", true)
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)

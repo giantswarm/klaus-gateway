@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -68,7 +69,10 @@ func TestAskAgentShortcut_StartsConversationInTheMessageThread(t *testing.T) {
 	require.Equal(t, "C1", pm["c"])
 	require.Equal(t, "U1", pm["u"])
 	require.Equal(t, "100.000", pm["t"], "the conversation starts in the invoked message's thread")
-	question := view["blocks"].([]any)[1].(map[string]any)["element"].(map[string]any)
+	require.Equal(t, "Start conversation", view["submit"].(map[string]any)["text"], "the shortcut's thread exists already")
+	lead := view["blocks"].([]any)[0].(map[string]any)["elements"].([]any)[0].(map[string]any)["text"].(string)
+	require.True(t, strings.HasPrefix(lead, "Continues this thread in <#C1> under the agent's name."), lead)
+	question := view["blocks"].([]any)[2].(map[string]any)["element"].(map[string]any)
 	_, prefilled := question["initial_value"]
 	require.False(t, prefilled, "the shortcut has no question to prefill")
 

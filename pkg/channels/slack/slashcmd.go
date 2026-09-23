@@ -264,9 +264,10 @@ func (a *Adapter) openAgentPicker(ctx context.Context, req askAgentRequest, noti
 	}
 }
 
-// askAgentModal renders the picker: a static_select over the roster (display
-// name as label, agent ref as value, the default agent preselected) and a
-// multiline question box prefilled with the request's text, if any. A
+// askAgentModal renders the picker: a line saying where the conversation
+// lands, a static_select over the roster (display name as label, agent ref as
+// value, the default agent preselected and named in a hint) and a multiline
+// prompt box prefilled with the request's text, if any. A
 // static_select holds at most modalMaxAgents options; a larger roster is cut,
 // with a warning, rather than refused.
 func (a *Adapter) askAgentModal(agents []pkga2a.AgentInfo, req askAgentRequest) (map[string]any, error) {
@@ -276,6 +277,7 @@ func (a *Adapter) askAgentModal(agents []pkga2a.AgentInfo, req askAgentRequest) 
 	}
 	options := make([]any, 0, len(agents))
 	var initial map[string]any
+	var defaultLabel string
 	defaultIdx := -1
 	seen := make(map[string]bool, len(agents))
 	for _, ag := range agents {
@@ -290,7 +292,7 @@ func (a *Adapter) askAgentModal(agents []pkga2a.AgentInfo, req askAgentRequest) 
 		}
 		opt := map[string]any{bkText: plainTextObj(truncateRunes(label, modalOptionLabelMax)), bkValue: ref}
 		if ref == a.DefaultAgent {
-			initial, defaultIdx = opt, len(options)
+			initial, defaultIdx, defaultLabel = opt, len(options), label
 		}
 		options = append(options, opt)
 	}
@@ -323,22 +325,44 @@ func (a *Adapter) askAgentModal(agents []pkga2a.AgentInfo, req askAgentRequest) 
 	if text := truncateRunes(strings.TrimSpace(req.Prefill), modalQuestionMax); text != "" {
 		question[bkInitialValue] = text
 	}
+	agentInput := map[string]any{bkType: bkInput, bkBlockID: askAgentAgentBlockID, bkLabel: plainTextObj(askAgentAgentLabel), bkElement: agentSelect}
+	if initial != nil {
+		agentInput[bkHint] = plainTextObj(truncateRunes(fmt.Sprintf(askAgentDefaultHint, defaultLabel), modalHintMax))
+	}
 	blocks := []any{
-		map[string]any{bkType: bkInput, bkBlockID: askAgentAgentBlockID, bkLabel: plainTextObj(askAgentAgentLabel), bkElement: agentSelect},
+		contextBlock(askAgentLead(req)),
+		agentInput,
 		map[string]any{bkType: bkInput, bkBlockID: askAgentQuestionBlockID, bkLabel: plainTextObj(askAgentQuestionLabel), bkElement: question},
 	}
 	if block, ok := threadContextBlock(req); ok {
 		blocks = append(blocks, block)
+	}
+	submit := askAgentSubmitLabel
+	if req.Thread != "" {
+		submit = askAgentShortcutSubmitLabel
 	}
 	return map[string]any{
 		bkType:            bkModal,
 		bkCallbackID:      askAgentCallbackID,
 		bkPrivateMetadata: string(pm),
 		bkTitle:           plainTextObj(askAgentModalTitle),
-		bkSubmit:          plainTextObj(askAgentSubmitLabel),
+		bkSubmit:          plainTextObj(submit),
 		bkClose:           plainTextObj(askAgentCloseLabel),
 		bkBlocks:          blocks,
 	}, nil
+}
+
+// askAgentLead says where the picker's conversation lands: a new thread in the
+// channel for the slash command, the invoked thread for the shortcut.
+func askAgentLead(req askAgentRequest) string {
+	switch {
+	case isDMChannelID(req.Channel):
+		return askAgentLeadDM
+	case req.Thread != "":
+		return fmt.Sprintf(askAgentLeadThread, req.Channel)
+	default:
+		return fmt.Sprintf(askAgentLeadNewThread, req.Channel)
+	}
 }
 
 // threadContextBlock is the checkbox that decides whether the agent is given

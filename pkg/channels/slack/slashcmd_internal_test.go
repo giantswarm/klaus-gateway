@@ -19,7 +19,7 @@ func pickerAdapter(defaultAgent string) *Adapter {
 
 func modalOptions(t *testing.T, view map[string]any) (labels, values []string, initial string) {
 	t.Helper()
-	sel := view[bkBlocks].([]any)[0].(map[string]any)[bkElement].(map[string]any)
+	sel := view[bkBlocks].([]any)[1].(map[string]any)[bkElement].(map[string]any)
 	for _, o := range sel[bkOptions].([]any) {
 		opt := o.(map[string]any)
 		labels = append(labels, opt[bkText].(map[string]any)[bkText].(string))
@@ -61,8 +61,8 @@ func TestAskAgentModal_OptionsCapDedupAndDefault(t *testing.T) {
 }
 
 // A default agent that is not on the roster leaves the select without a
-// preselection; the command's text prefills the question, cut to the input's
-// max length; an empty text leaves the box empty.
+// preselection or hint; the command's text prefills the prompt, cut to the
+// input's max length; an empty text leaves the box empty.
 func TestAskAgentModal_PrefillAndNoDefault(t *testing.T) {
 	a := pickerAdapter("kagent/elsewhere")
 	agents := []pkga2a.AgentInfo{{Name: "sre-agent", Namespace: "kagent", DisplayName: "SRE Agent"}}
@@ -71,12 +71,14 @@ func TestAskAgentModal_PrefillAndNoDefault(t *testing.T) {
 	require.NoError(t, err)
 	_, _, initial := modalOptions(t, view)
 	require.Empty(t, initial)
-	question := view[bkBlocks].([]any)[1].(map[string]any)[bkElement].(map[string]any)
+	_, hinted := view[bkBlocks].([]any)[1].(map[string]any)[bkHint]
+	require.False(t, hinted, "no default on the list, no hint naming one")
+	question := view[bkBlocks].([]any)[2].(map[string]any)[bkElement].(map[string]any)
 	require.Equal(t, modalQuestionMax, len([]rune(question[bkInitialValue].(string))))
 
 	view, err = a.askAgentModal(agents, askAgentRequest{Channel: "C1", User: "U1", Prefill: "   "})
 	require.NoError(t, err)
-	question = view[bkBlocks].([]any)[1].(map[string]any)[bkElement].(map[string]any)
+	question = view[bkBlocks].([]any)[2].(map[string]any)[bkElement].(map[string]any)
 	_, has := question[bkInitialValue]
 	require.False(t, has, "no text, no prefill")
 
