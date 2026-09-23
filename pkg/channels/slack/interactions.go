@@ -561,7 +561,8 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 		// type their question right away, and a reply arriving while the slot is
 		// still held would bounce off the busy notice instead of resuming the task.
 		release()
-		if err := client.chatUpdateBlocks(ctx, slackChannel, messageTS, chatModePrompt); err != nil {
+		card := approvalCard(task.Prompt, task.PromptText)
+		if err := client.chatUpdate(ctx, slackChannel, messageTS, chatModePrompt, approvalCardBlocks(card, chatModePrompt)); err != nil {
 			a.Logger.Warn("slack: update prompt for chat mode failed", "error", err)
 		}
 		return nil
@@ -569,9 +570,17 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 
 	decision, resumeText, decisionText := buildButtonDecision(act, task.Prompt)
 
-	// Replace the Block Kit buttons with the decision text.
-	if err := client.chatUpdateBlocks(ctx, slackChannel, messageTS, decisionText); err != nil {
-		a.Logger.Warn("slack: update approval message failed", "error", err)
+	// Replace the buttons with the decision: an approval card keeps its
+	// section and names who decided; a question's prompt becomes the answer.
+	var uerr error
+	if line := approvalDecisionLine(act.kind, slackUser, time.Now()); line != "" {
+		card := approvalCard(task.Prompt, task.PromptText)
+		uerr = client.chatUpdate(ctx, slackChannel, messageTS, line, approvalCardBlocks(card, line))
+	} else {
+		uerr = client.chatUpdateBlocks(ctx, slackChannel, messageTS, decisionText)
+	}
+	if uerr != nil {
+		a.Logger.Warn("slack: update approval message failed", "error", uerr)
 	}
 
 	msg := channels.InboundMessage{
@@ -629,9 +638,10 @@ func buildButtonDecision(act hitlAction, prompt *channels.HitlPrompt) (*channels
 		joined := strings.Join(labels, ", ")
 		return decision, joined, "👉 _" + escapeMrkdwn(joined) + "_"
 	case hitlDeny:
-		return &channels.HitlDecision{Type: channels.DecisionReject}, "denied", "❌ _Denied._"
+		// The card's rewrite names who decided (approvalDecisionLine).
+		return &channels.HitlDecision{Type: channels.DecisionReject}, "denied", ""
 	default: // hitlApprove
-		return &channels.HitlDecision{Type: channels.DecisionApprove}, labelApproved, "✅ _Approved._"
+		return &channels.HitlDecision{Type: channels.DecisionApprove}, labelApproved, ""
 	}
 }
 

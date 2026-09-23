@@ -49,13 +49,13 @@ func TestChat_HoldsPromptThenRoutesQuestionAsReject(t *testing.T) {
 	// Turn 1: the tool prompt surfaces for approval.
 	sendEvent(t, srv, dmEvent("U1", "clean up configmaps", "400.000"))
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Waiting for approval")
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Approval required")
 	}, flowWait, 20*time.Millisecond, "the approval prompt is posted")
 
 	// Click Chat: the prompt is held and the buttons become a reply hint.
 	sendInteraction(t, srv, "hitl_chat", "400.000")
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.update")), "Ask your question")
+		return strings.Contains(allText(fake.pathCalls("chat.update")), "Reply in this thread to ask about this step")
 	}, flowWait, 20*time.Millisecond, "Chat swaps the buttons for a reply hint")
 
 	// Reply with a question: resolves the paused task as a reject carrying it.

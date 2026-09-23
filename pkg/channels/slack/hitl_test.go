@@ -1,6 +1,8 @@
 package slack
 
 import (
+	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -9,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -264,4 +267,71 @@ func TestApprovedCalls(t *testing.T) {
 	require.Nil(t, approvedCalls(approval, nil), "a typed follow-up without a decision")
 	require.Nil(t, approvedCalls(question, approve))
 	require.Nil(t, approvedCalls(nil, approve))
+}
+
+// The card names the calls as the reply's task list does, muster's call_tool
+// unwrapped, and leaves out text that adds nothing to the title: the ADK
+// runtime's default hint, and the tool names a status without text falls back
+// to. A hint of the agent's own is kept, escaped.
+func TestApprovalCard(t *testing.T) {
+	capi := channels.HitlTool{Name: "call_tool", Args: map[string]any{"name": "x_capi_list_clusters", "arguments": map[string]any{}}}
+	prompt := &channels.HitlPrompt{ToolName: "call_tool", Tools: []channels.HitlTool{capi}}
+
+	require.Equal(t, "*Approval required* · Capi list clusters",
+		approvalCard(prompt, "Please approve or reject the tool call call_tool() by responding with a FunctionResponse with an expected ToolConfirmation payload."))
+	require.Equal(t, "*Approval required* · Capi list clusters", approvalCard(prompt, "call_tool"), "the summary fallback")
+	require.Equal(t, "*Approval required* · Capi list clusters", approvalCard(prompt, ""))
+	require.Equal(t, "*Approval required* · Capi list clusters\nRestart &lt;!here&gt; now",
+		approvalCard(prompt, "Restart <!here> now"))
+
+	two := &channels.HitlPrompt{ToolName: "call_tool", Tools: []channels.HitlTool{capi, {Name: "kube_delete"}}}
+	require.Equal(t, "*Approval required* · Capi list clusters, Kube delete", approvalCard(two, "call_tool, kube_delete"))
+
+	require.Equal(t, "*Approval required*\nrun it?", approvalCard(nil, "run it?"), "a prompt without structure keeps its text")
+}
+
+func TestApprovalDecisionLine(t *testing.T) {
+	at := time.Date(2026, 9, 23, 16, 30, 0, 0, time.UTC)
+	require.Equal(t, fmt.Sprintf("Approved by <@U1> · <!date^%d^{time}|16:30 UTC>", at.Unix()), approvalDecisionLine(hitlApprove, "U1", at))
+	require.Equal(t, fmt.Sprintf("Denied by <@U1> · <!date^%d^{time}|16:30 UTC>", at.Unix()), approvalDecisionLine(hitlDeny, "U1", at))
+	require.Empty(t, approvalDecisionLine(hitlSubmit, "U1", at), "a question's answer keeps its own echo")
+}
+
+// The card: the section, who may decide, and three plain verbs — one primary,
+// one danger, one default — carrying the routing value.
+func TestPostApprovalPrompt_Card(t *testing.T) {
+	var got []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, _ = io.ReadAll(r.Body)
+		_, _ = w.Write([]byte(`{"ok":true,"ts":"1.2"}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
+	require.NoError(t, client.postApprovalPrompt(t.Context(), "C1", "T1", "task-1", "*Approval required* · Capi list clusters", "U1"))
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(got, &payload))
+	require.Equal(t, "*Approval required* · Capi list clusters", payload["text"])
+	blocks := payload["blocks"].([]any)
+	require.Len(t, blocks, 3)
+	block := func(i int) map[string]any { return blocks[i].(map[string]any) }
+	require.Equal(t, "section", block(0)["type"])
+	require.Equal(t, "context", block(1)["type"])
+	require.Equal(t, "<@U1> or the people they allowed can decide",
+		block(1)["elements"].([]any)[0].(map[string]any)["text"])
+	buttons := block(2)["elements"].([]any)
+	require.Len(t, buttons, 3)
+	for i, want := range []struct{ label, style, action string }{
+		{"Approve", "primary", hitlApprove},
+		{"Deny", "danger", hitlDeny},
+		{"Ask a question", "", hitlChat},
+	} {
+		b := buttons[i].(map[string]any)
+		require.Equal(t, want.label, b["text"].(map[string]any)["text"])
+		style, _ := b["style"].(string)
+		require.Equal(t, want.style, style)
+		require.Equal(t, want.action, b["action_id"])
+		require.Equal(t, hitlValue{Thread: "T1", Task: "task-1"}, decodeHitlValue(b["value"].(string)))
+	}
 }

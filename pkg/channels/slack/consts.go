@@ -355,10 +355,24 @@ const promptSupersededNotice = "_This prompt was superseded; please answer the l
 // pending so the user can complete it and submit again.
 const formIncompleteNudge = "_Please answer every question, then click Submit._"
 
-// chatModePrompt replaces the approval buttons after the user clicks "Chat":
-// the pending tool call is held and the next in-thread reply is sent as the
-// follow-up question.
-const chatModePrompt = "💬 _Ask your question in this thread; I'll answer, then ask you to confirm again._"
+// chatModePrompt replaces the approval buttons after the user clicks "Ask a
+// question": the pending tool call is held and the next in-thread reply is
+// sent as the follow-up question.
+const chatModePrompt = "Reply in this thread to ask about this step. The agent answers, then asks again."
+
+// The approval card: its title, the context line naming who may decide, the
+// button labels, and the line that replaces the buttons after a decision. The
+// decision lines end with a Slack date token, so each reader sees the time in
+// their own time zone.
+const (
+	approvalRequiredTitle = "Approval required"
+	approvalDeciders      = "<@%s> or the people they allowed can decide"
+	approvalApproveLabel  = "Approve"
+	approvalDenyLabel     = "Deny"
+	approvalAskLabel      = "Ask a question"
+	approvalApprovedBy    = "Approved by <@%s> · %s"
+	approvalDeniedBy      = "Denied by <@%s> · %s"
+)
 
 // emptyOutputNote replaces the text-mode placeholder when a turn completes
 // without producing any output, so it does not linger as "thinking".

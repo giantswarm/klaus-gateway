@@ -27,7 +27,8 @@ A single ask_user question picks its layout by choice count, select mode, and la
 | 2–20 | each 1–10 | any | each ≤75 | single **form** (one group per question) | one Submit |
 | >20, or any question free-text / >10 / label >75 | — | — | — | numbered text + free-text reply | reply |
 
-Generic (non-`ask_user`) tool approvals always render as Approve / Deny / Chat buttons.
+Generic (non-`ask_user`) tool approvals always render as the approval card, with Approve /
+Deny / Ask a question buttons.
 Any prompt can also be answered by replying in-thread; a reply resolves the paused task the
 same way a click does. Only a permitted user (the thread initiator or a granted collaborator)
 may decide; an onlooker click is refused ephemerally. A thread is one shared session, so any
@@ -36,32 +37,53 @@ it has no initiator, and any linked member of its team may decide.
 
 ## 1. Tool approval
 
-The agent paused on a tool call that needs approval (`ToolName` is not `ask_user`). Approve
-runs the call, Deny rejects it, Chat holds the task and swaps in a reply hint so the user can
-ask a follow-up before deciding. `value` is the JSON `{"t":"<thread>","id":"<task>"}`;
-the task binds the buttons to the prompt they render, so a click on a superseded
-prompt is refused instead of answering a newer one.
+The agent paused on a tool call that needs approval (`ToolName` is not `ask_user`). The
+gateway posts an approval card:
+
+- **Section:** `*Approval required* · <tools>`. The tools are named with their step titles in
+  the reply's task list ("Capi list clusters"). Muster's `call_tool` is unwrapped to the tool it
+  runs, and several calls decided together are listed with commas. A second line carries the
+  agent's hint, escaped, but only when it adds something: the ADK runtime's default hint
+  ("Please approve or reject the tool call call_tool() by responding with a FunctionResponse…")
+  and the tool-name fallback of a status without text are left out.
+- **Context:** `<@initiator> or the people they allowed can decide`. The call runs with the
+  initiator's identity, whoever decides.
+- **Buttons:** Approve (primary) runs the call, Deny (danger) rejects it, Ask a question
+  (default) holds the task and swaps in a reply hint so the user can ask a follow-up before
+  deciding.
+
+`value` is the JSON `{"t":"<thread>","id":"<task>"}`; the task binds the buttons to the
+prompt they render, so a click on a superseded prompt is refused instead of answering a newer
+one. The card states no expiry: the pending task is held in the gateway's memory, so a restart
+loses it (klaus-gateway#132).
 
 ```json
 {
   "blocks": [
     {
       "type": "section",
-      "text": { "type": "mrkdwn", "text": "The agent wants to run *delete_cluster* on `prod-eu`." }
+      "text": { "type": "mrkdwn", "text": "*Approval required* · Capi list clusters" }
+    },
+    {
+      "type": "context",
+      "elements": [ { "type": "mrkdwn", "text": "<@U123> or the people they allowed can decide" } ]
     },
     {
       "type": "actions",
       "elements": [
-        { "type": "button", "text": { "type": "plain_text", "text": "✅ Approve" }, "style": "primary", "action_id": "hitl_approve", "value": "{\"t\":\"THREAD_TS\",\"id\":\"TASK_ID\"}" },
-        { "type": "button", "text": { "type": "plain_text", "text": "❌ Deny" }, "style": "danger", "action_id": "hitl_deny", "value": "{\"t\":\"THREAD_TS\",\"id\":\"TASK_ID\"}" },
-        { "type": "button", "text": { "type": "plain_text", "text": "💬 Chat" }, "action_id": "hitl_chat", "value": "{\"t\":\"THREAD_TS\",\"id\":\"TASK_ID\"}" }
+        { "type": "button", "text": { "type": "plain_text", "text": "Approve" }, "style": "primary", "action_id": "hitl_approve", "value": "{\"t\":\"THREAD_TS\",\"id\":\"TASK_ID\"}" },
+        { "type": "button", "text": { "type": "plain_text", "text": "Deny" }, "style": "danger", "action_id": "hitl_deny", "value": "{\"t\":\"THREAD_TS\",\"id\":\"TASK_ID\"}" },
+        { "type": "button", "text": { "type": "plain_text", "text": "Ask a question" }, "action_id": "hitl_chat", "value": "{\"t\":\"THREAD_TS\",\"id\":\"TASK_ID\"}" }
       ]
     }
   ]
 }
 ```
 
-<img width="727" height="174" alt="image" src="https://github.com/user-attachments/assets/4aced0b9-64f5-49c0-aaab-63798a1956bf" />
+A click updates the card in place. The section stays, and one context line replaces the
+context and the buttons: `Approved by <@U123> · <!date^…^{time}|16:30 UTC>` or `Denied by …`
+(Slack shows the time in each reader's time zone), or, for Ask a question, "Reply in this
+thread to ask about this step. The agent answers, then asks again."
 
 ## 2. ask_user — single question, radio buttons (1–10 choices, single-select)
 

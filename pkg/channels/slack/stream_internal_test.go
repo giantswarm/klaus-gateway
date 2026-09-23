@@ -388,13 +388,13 @@ func TestPostApprovalPrompt_EscapesMrkdwn(t *testing.T) {
 	defer srv.Close()
 
 	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
-	require.NoError(t, client.postApprovalPrompt(t.Context(), "C1", "T1", "task-1", "run <!channel> now?"))
+	require.NoError(t, client.postApprovalPrompt(t.Context(), "C1", "T1", "task-1", approvalCard(nil, "run <!channel> now?"), "U1"))
 	raw, _ := body.Load().(string)
 	var payload struct {
 		Text string `json:"text"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(raw), &payload))
-	require.Equal(t, "run &lt;!channel&gt; now?", payload.Text)
+	require.Equal(t, "*Approval required*\nrun &lt;!channel&gt; now?", payload.Text)
 }
 
 // The picker's question enters an mrkdwn section and the fallback text, so it
@@ -706,7 +706,7 @@ type sectionPayload struct {
 	} `json:"blocks"`
 }
 
-// An oversized prompt must be truncated to Slack's 3000-char section limit;
+// An oversized hint must be truncated to Slack's 3000-char section limit;
 // otherwise the whole message is rejected with invalid_blocks and the paused
 // task is stranded with no visible prompt.
 func TestPostApprovalPrompt_TruncatesOversizedSection(t *testing.T) {
@@ -721,7 +721,7 @@ func TestPostApprovalPrompt_TruncatesOversizedSection(t *testing.T) {
 
 	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
 	oversized := strings.Repeat("日", 5000)
-	require.NoError(t, client.postApprovalPrompt(t.Context(), "C1", "T1", "task-1", oversized))
+	require.NoError(t, client.postApprovalPrompt(t.Context(), "C1", "T1", "task-1", approvalCard(nil, oversized), "U1"))
 
 	raw, _ := body.Load().(string)
 	var payload sectionPayload
