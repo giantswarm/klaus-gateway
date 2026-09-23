@@ -1807,6 +1807,45 @@ func TestSteps_PromptPauseClosesTheStepOnTheFirstMessage(t *testing.T) {
 		"the second message carries the answer alone")
 }
 
+// A call that waits for approval did not run: the runtime's confirmation
+// request ends its step as the ask for approval, not as the tool's run. Once
+// approved, the call runs in the resumed message, which opens a step for it so
+// the real result has one to close.
+func TestSteps_ApprovalHoldsTheStepAndTheResumeReopensIt(t *testing.T) {
+	ft := &fakeThread{}
+	srv := httptest.NewServer(ft.handler())
+	t.Cleanup(srv.Close)
+
+	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "D1", "", "1.0", detailsOn, slog.Default())
+	w.adapter = &Adapter{}
+	run := func(deltas ...channels.OutboundDelta) {
+		ch := make(chan channels.OutboundDelta, len(deltas))
+		for _, d := range deltas {
+			ch <- d
+		}
+		close(ch)
+		require.NoError(t, w.run(t.Context(), ch))
+	}
+
+	args := map[string]any{"name": "x_kubernetes_rollout_restart", "arguments": map[string]any{"name": "loki-backend"}}
+	held := toolResultDelta("call_tool", "c1", map[string]any{"error": `error tool "call_tool" requires confirmation, please approve or reject`})
+	held.Tool.AwaitsApproval = true
+	run(toolCallDeltaWith("call_tool", "c1", args), held,
+		channels.OutboundDelta{Kind: channels.DeltaPrompt, TaskID: "task-1"})
+	w.promptDelta = nil // the caller posted the prompt and the approval resumed the task
+	w.approvedCalls = []channels.HitlTool{{ID: "a1", CallID: "c1", Name: "call_tool", Args: args}}
+	run(toolResultDelta("call_tool", "c1", map[string]any{"output": "restarted"}),
+		channels.OutboundDelta{Kind: channels.DeltaText, Content: "done"}, doneDelta())
+
+	require.Equal(t, []taskChunk{
+		{id: "step-1", title: "Kubernetes rollout restart", status: stepInProgress},
+		{id: "step-1", title: "Asked for approval: Kubernetes rollout restart", status: stepComplete},
+		{id: "step-2", title: "Kubernetes rollout restart", status: stepInProgress},
+		{id: "step-2", title: "Kubernetes rollout restart", status: stepComplete},
+	}, ft.steps())
+	require.Equal(t, []string{string(sessionSuspended), string(sessionActive)}, ft.stopStatuses())
+}
+
 // A result whose call was never seen has no step to close, so nothing is sent
 // for it.
 func TestSteps_OrphanResultIsDropped(t *testing.T) {

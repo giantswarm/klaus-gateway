@@ -246,7 +246,7 @@ func (a *Adapter) deliverInFlight(ctx context.Context, resumer turnResumer, turn
 		"record", "turn_resume", "agent", msg.AgentRef, "slack_user", slackUser,
 		"channel_id", msg.ChannelID, "thread_id", threadID, "task_id", turn.TaskID,
 		"delivered_text_len", turn.Delivered.TextLen, "delivered_tool_steps", turn.Delivered.ToolSteps)
-	if err := a.streamResponse(turnCtx, client, deltas, msg, slackUser, slackChannel, threadID, triggerTS, thinkingPlaceholder, initiator, channels.TurnUsage{}, turn.Delivered); err != nil && !errors.Is(err, context.Canceled) {
+	if err := a.streamResponse(turnCtx, client, deltas, msg, slackUser, slackChannel, threadID, triggerTS, thinkingPlaceholder, initiator, channels.TurnUsage{}, turn.Delivered, nil); err != nil && !errors.Is(err, context.Canceled) {
 		a.Logger.Warn("slack: delivery of a turn left running failed", "thread", threadID, "task", turn.TaskID, "error", err)
 	}
 	return recoverDone

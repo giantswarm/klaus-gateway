@@ -97,6 +97,28 @@ func TestMapA2AEvent_ConfirmationPartIsNotToolActivity(t *testing.T) {
 	require.Empty(t, newEventMapper().deltas(ev))
 }
 
+// A call to a tool that needs approval is answered by the runtime with its
+// confirmation request before the task pauses; that result is marked, any
+// other result is not.
+func TestMapA2AEvent_ConfirmationRequiredResultAwaitsApproval(t *testing.T) {
+	result := func(resp map[string]any) *ToolActivity {
+		t.Helper()
+		part := dataPart(t, mdTypeFunctionResponse, map[string]any{"name": "call_tool", "id": "call-1", "response": resp})
+		ev := &a2apkg.TaskArtifactUpdateEvent{Artifact: &a2apkg.Artifact{Parts: a2apkg.ContentParts{part}}}
+		deltas := newEventMapper().deltas(ev)
+		require.Len(t, deltas, 1)
+		require.NotNil(t, deltas[0].Tool)
+		return deltas[0].Tool
+	}
+
+	held := result(map[string]any{"error": `error tool "call_tool" requires confirmation, please approve or reject`})
+	require.Equal(t, ToolResult, held.Kind)
+	require.True(t, held.AwaitsApproval)
+
+	require.False(t, result(map[string]any{"error": "connection refused"}).AwaitsApproval)
+	require.False(t, result(map[string]any{"output": "3 pods"}).AwaitsApproval)
+}
+
 // The prose the agent writes before firing its tool calls rides on the same
 // working event as the calls, and must reach the channel ahead of them
 // (klaus-gateway#197).
