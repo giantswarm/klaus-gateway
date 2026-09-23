@@ -8,6 +8,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+
+	"github.com/giantswarm/klaus-gateway/pkg/channels"
 )
 
 // metricNamespace prefixes every metric name the gateway exposes.
