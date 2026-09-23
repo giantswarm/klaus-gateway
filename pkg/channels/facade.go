@@ -156,14 +156,108 @@ func (f *Facade) ResetSession(ctx context.Context, msg InboundMessage) (bool, er
 }
 
 // SendCompletion streams a completion for msg: the turn runs on the
-// AgentInstance msg's thread is bound to.
+// AgentInstance msg's thread is bound to. A fresh turn that fails before it
+// showed anything, on a failure a second attempt may get past
+// (FailureClass.Retryable), is sent once more on the same instance and the
+// channel sees only the second attempt: the runtime sets up its tool set and
+// its MCP sessions again for every run, and a new instance would start the
+// conversation over. A resume is sent once: the paused task it answers is
+// gone once it failed.
 //
 // The caller must receive from the returned channel until it closes.
 func (f *Facade) SendCompletion(ctx context.Context, msg InboundMessage) (<-chan OutboundDelta, error) {
 	if f == nil || f.Agent == nil {
 		return nil, errors.New("channels: no agent client configured")
 	}
-	return f.sendViaA2A(ctx, msg)
+	deltas, err := f.sendViaA2A(ctx, msg)
+	if msg.TaskID != "" {
+		return deltas, err
+	}
+	if err != nil {
+		if ctx.Err() != nil || !ClassifyFailure(err).Retryable() {
+			return nil, err
+		}
+		noteRetry(ctx, msg, err)
+		return f.sendViaA2A(ctx, msg)
+	}
+	return f.retryUnshown(ctx, msg, deltas), nil
+}
+
+// retryUnshown forwards a turn's deltas. When the task failed before any of it
+// reached the channel — no text, narration, tool activity or prompt — on a
+// retryable failure, the message is sent once more and that attempt's deltas
+// are forwarded instead. Only a task the controller reports failed is sent
+// again: it is over, where a stream that broke may leave a task running that
+// a second message would run beside. Should the second send be refused, the
+// first failure is what the turn reports: it names what broke.
+func (f *Facade) retryUnshown(ctx context.Context, msg InboundMessage, deltas <-chan OutboundDelta) <-chan OutboundDelta {
+	out := make(chan OutboundDelta, cap(deltas))
+	go func() {
+		defer close(out)
+		retried, shown := false, false
+		for d := range deltas {
+			if !shown && !retried && ctx.Err() == nil && isTaskFailure(d.Err) && ClassifyFailure(d.Err).Retryable() {
+				retried = true
+				drainDeltas(deltas)
+				noteRetry(ctx, msg, d.Err)
+				if d.Usage != nil && !f.emit(ctx, out, OutboundDelta{Usage: d.Usage}) {
+					return
+				}
+				next, err := f.sendViaA2A(ctx, msg)
+				if err == nil {
+					f.forward(ctx, out, next)
+					return
+				}
+				slog.Warn("channels: the turn's second attempt was refused", "channel", msg.Channel, "thread", msg.ThreadID, "error", err)
+			}
+			shown = shown || d.shows()
+			if !f.emit(ctx, out, d) {
+				drainDeltas(deltas)
+				return
+			}
+		}
+	}()
+	return out
+}
+
+// forward copies deltas to out until deltas closes, draining the rest once
+// out's reader is gone.
+func (f *Facade) forward(ctx context.Context, out chan<- OutboundDelta, deltas <-chan OutboundDelta) {
+	for d := range deltas {
+		if !f.emit(ctx, out, d) {
+			drainDeltas(deltas)
+			return
+		}
+	}
+}
+
+// taskEnded is a task's terminal state other than completed, with the
+// runtime's (or the controller's) account of it as the error text.
+type taskEnded struct {
+	state  a2apkg.TaskState
+	reason string
+}
+
+func (e *taskEnded) Error() string { return e.reason }
+
+// isTaskFailure reports whether err is a task that ended failed.
+func isTaskFailure(err error) bool {
+	var ended *taskEnded
+	return errors.As(err, &ended) && ended.state == a2apkg.TaskStateFailed
+}
+
+// drainDeltas receives from deltas until it closes, so its producer finishes.
+func drainDeltas(deltas <-chan OutboundDelta) {
+	for range deltas {
+	}
+}
+
+// noteRetry records that the turn on ctx is sent a second time after err.
+func noteRetry(ctx context.Context, msg InboundMessage, err error) {
+	TurnTimerFromContext(ctx).Retry()
+	slog.Warn("channels: turn failed before it showed anything, sending it once more", "record", RecordTurnRetry,
+		"channel", msg.Channel, "channel_id", msg.ChannelID, "thread", msg.ThreadID, "agent", msg.AgentRef,
+		"failure_class", ClassifyFailure(err), "error", err)
 }
 
 // clearBinding drops a thread's AgentInstance binding and anything that only
@@ -741,7 +835,7 @@ func mapTaskStatus(taskID a2apkg.TaskID, status a2apkg.TaskStatus, usage *TurnUs
 					msg = text
 				}
 			}
-			return []OutboundDelta{{Err: errors.New(msg), Usage: usage}}
+			return []OutboundDelta{{Err: &taskEnded{state: status.State, reason: msg}, Usage: usage}}
 		}
 		return interim()
 	}

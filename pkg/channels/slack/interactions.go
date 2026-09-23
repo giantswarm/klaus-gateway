@@ -595,7 +595,7 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 	// empty triggerTS selects text progress: a button resume has no user
 	// message to react to.
 	return a.runTurn(ctx, msg, slackChannel, "", "_continuing…_", "", task, agentSourceTask, turnHooks{
-		onFailure: func() { a.postResumeFailureNote(ctx, client, slackChannel, threadID) },
+		onFailure: func(error) { a.postResumeFailureNote(ctx, client, slackChannel, threadID) },
 	})
 }
 

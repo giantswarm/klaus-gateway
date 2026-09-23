@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/giantswarm/klaus-gateway/pkg/auth/musterlink"
+	"github.com/giantswarm/klaus-gateway/pkg/channels"
 )
 
 // Slack event type strings. Slack's current Agent view no longer sends
@@ -406,6 +407,34 @@ const pausedNote = "_(waiting for your input below)_"
 // and in reactions mode it is posted into the thread next to the failed emoji,
 // which alone would leave the user guessing whether a retry helps.
 const failedNote = "_(the turn failed; please try again)_"
+
+// The notes of a turn that failed on something the gateway can name
+// (channels.ClassifyFailure). They replace failedNote because they say what
+// broke and whether trying again helps: a tools or platform failure was
+// already retried once and is not the person's to fix, a model error usually
+// passes, a policy refusal stays.
+const (
+	toolsFailedNote    = "⚠️ _I couldn't connect to my tools, so I couldn't work on your message. This is a problem on the platform side, not with your message, and trying again right away won't fix it._"
+	platformFailedNote = "⚠️ _I couldn't reach the agent platform, so I couldn't work on your message. This is a problem on the platform side, not with your message, and trying again right away won't fix it._"
+	modelFailedNote    = "⚠️ _The model behind this agent returned an error instead of an answer. That is usually temporary: please try again in a minute._"
+	policyFailedNote   = "⚠️ _A platform policy refused this request, so I couldn't answer it. Sending it again won't change that._"
+)
+
+// failureNote is the note of a turn that failed with err before the agent
+// answered: the class's own note, or failedNote when no class names it.
+func failureNote(err error) string {
+	switch channels.ClassifyFailure(err) {
+	case channels.FailureTools:
+		return toolsFailedNote
+	case channels.FailurePlatform:
+		return platformFailedNote
+	case channels.FailureModel:
+		return modelFailedNote
+	case channels.FailurePolicy:
+		return policyFailedNote
+	}
+	return failedNote
+}
 
 // renderFailedNote is posted when the agent completed its turn but Slack kept
 // refusing the reply's final rendering, so the thread knows the text above is

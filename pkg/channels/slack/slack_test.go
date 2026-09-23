@@ -1580,6 +1580,37 @@ func TestProgress_FailedReactionOnError(t *testing.T) {
 	}
 }
 
+// A failure the gateway can name gets the note of its class instead of the
+// generic retry invitation, whether the stream failed or the send was refused
+// before it started; the generic note is left for what no class names.
+func TestProgress_FailureNoteNamesTheClass(t *testing.T) {
+	const toolSet = `failed to extract tools from the tool set "mcp_tool_set": failed to list MCP tools: failed to init MCP session: calling "initialize": read: connection reset by peer`
+	for _, tc := range []struct {
+		name      string
+		gw        *stubGateway
+		want      string
+		wantNotIn string
+	}{
+		{"tools", &stubGateway{deltas: []channels.OutboundDelta{{Err: errors.New(toolSet)}}}, "I couldn't connect to my tools", "the turn failed"},
+		{"model", &stubGateway{deltas: []channels.OutboundDelta{{Err: errors.New(`anthropic API error: 529 {"type":"overloaded_error"}`)}}}, "The model behind this agent returned an error", "the turn failed"},
+		{"policy", &stubGateway{deltas: []channels.OutboundDelta{{Err: errors.New("OpenAI chat completion request failed: 403 authorization failed")}}}, "A platform policy refused this request", "the turn failed"},
+		{"platform, before the stream", &stubGateway{dispatchErr: errors.New("rpc error: code = Unavailable desc = connection refused")}, "I couldn't reach the agent platform", "the turn failed"},
+		{"unknown", &stubGateway{deltas: []channels.OutboundDelta{{Err: errors.New("boom")}}}, "the turn failed; please try again", "⚠️"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := newFakeSlackAPI()
+			_, srv := newEventsAdapter(t, tc.gw, fake.server(t).URL)
+
+			sendEvent(t, srv, dmEvent("U1", "hi", "335.000"))
+
+			require.Eventually(t, func() bool {
+				return strings.Contains(allText(fake.pathCalls("chat.postMessage")), tc.want)
+			}, flowWait, 20*time.Millisecond, "the class's note is posted in the thread")
+			require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), tc.wantNotIn)
+		})
+	}
+}
+
 // Once answer text has streamed, a failure keeps today's behaviour in
 // reactions mode: the failed emoji marks the incomplete reply and no generic
 // note is added under it.

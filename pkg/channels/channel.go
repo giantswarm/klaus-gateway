@@ -198,6 +198,11 @@ func (d OutboundDelta) isZero() bool {
 		d.TaskID == "" && d.Prompt == nil && d.Usage == nil && d.Tool == nil
 }
 
+// shows reports whether the delta puts something in front of the person.
+func (d OutboundDelta) shows() bool {
+	return d.Content != "" || d.Tool != nil || d.Prompt != nil || d.Kind == DeltaPrompt
+}
+
 // Attachment is an inbound file/image payload.
 type Attachment struct {
 	Filename    string
