@@ -1126,7 +1126,9 @@ func TestHandleDecision_SubmitResumesWithSelectedAnswers(t *testing.T) {
 	require.NotNil(t, msg.Decision)
 	require.Equal(t, channels.DecisionApprove, msg.Decision.Type)
 	require.Equal(t, [][]string{{"Auth", "Caching"}}, msg.Decision.AskUserAnswers)
-	require.Contains(t, sink.updateTexts(), "👉 _Auth, Caching_", "message rewritten to the selection")
+	require.True(t, slices.ContainsFunc(sink.updateTexts(), func(s string) bool {
+		return strings.HasPrefix(s, "Auth, Caching · answered by <@U001> · <!date^")
+	}), "the question is rewritten to name the answer, who gave it and when")
 }
 
 // A Submit click with nothing selected must leave the task pending and nudge the

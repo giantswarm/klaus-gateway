@@ -51,6 +51,10 @@ type pendingTask struct {
 	// Prompt is the structured approval request the task is paused on, used to
 	// map a free-text reply or choice click back to a HITL decision.
 	Prompt *channels.HitlPrompt
+	// PromptTS is the message a question prompt was posted in, so a typed
+	// answer rewrites it like a click does. Empty for an approval, and until
+	// the prompt is posted.
+	PromptTS string
 	// PromptText is the prompt's text as the task paused with it; an approval
 	// card is rebuilt from it and Prompt when a click rewrites the card.
 	PromptText string
@@ -228,6 +232,17 @@ func (a *Adapter) storePendingTask(threadID string, task *pendingTask) {
 			a.setSessionStatus(bg, s.channel, s.thread, sessionActive, "")
 		})
 	}
+}
+
+// notePromptTS records the message the pending task's prompt was posted in.
+// The task is stored before the prompt posts, so this finds it; a task that
+// was taken or replaced meanwhile (another task id) is left alone.
+func (a *Adapter) notePromptTS(threadID, taskID, ts string) {
+	a.withThread(threadID, func(st *threadState) {
+		if st.pending != nil && st.pending.TaskID == taskID {
+			st.pending.PromptTS = ts
+		}
+	})
 }
 
 // takePendingTask atomically retrieves and removes a pending task for a thread.
