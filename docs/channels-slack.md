@@ -459,16 +459,11 @@ any string that begins with `Slack bot`, `Slack app-level`, or `Slack user`.
    phrases of their own (`filter_tools` → "Finding the right tool"), a `call_tool` wrapper is
    unwrapped to the tool it really runs, and every other name is humanised by dropping the
    `x_`/`workflow_` namespace and capitalising the rest (`x_kubernetes_list` → "Kubernetes
-   list"). `/details` decides how much a step carries:
+   list"). Every step carries the raw tool name and its arguments as its details and the
+   result preview as its output, each cut to Slack's 256-character chunk limit. Nothing is
+   hidden by a per-thread setting.
 
-   | `/details` | What a step shows |
-   |------------|-------------------|
-   | `off`      | nothing — no step is rendered and nothing is recorded (the private mode) |
-   | `on`       | the title alone (the default) |
-   | `full`     | the title, plus the raw tool name and its arguments as the step's details and the result preview as its output, each cut to Slack's 256-character chunk limit |
-
-   The **Inspect agent steps** shortcut is the audit view at `on` and `full` alike, with the
-   fuller payloads; `/details off` still records nothing for it.
+   The **Inspect agent steps** shortcut is the audit view, with the fuller retained payloads.
 
    Each append carries only what is new, and answer text is sent up to the last whitespace
    boundary — an unfinished word waits for the next append, so nothing is ever half-written.
@@ -627,16 +622,15 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
   identity, so the app and its namesake agent — typically the default agent — never appear as
   two faces with one name in a thread. Swarmgeist's other messages (sign-in, errors, the DM
   redirect, the channel intro) keep the app's default identity. Requires `chat:write.customize`.
-- **Inspect agent steps.** By default a turn's step list names what the agent did, not what
-  it sent or got back. To see the actual tool calls after the fact, invoke the
-  **Inspect agent steps** message shortcut (⋯ menu → Apps) on any message in the thread:
-  the gateway replies with an ephemeral, invoker-only rendering of the retained tool-call
-  log — per call, the tool name with its arguments and a result preview, grouped per turn,
-  fuller than what a step at `/details full` has room for. The log is in-memory and bounded:
-  the last 100 calls per thread, kept for up to 24 hours and not surviving a gateway restart;
-  nothing is recorded while the thread is set to `/details off`. When nothing is retained
-  the reply says so and points at `/details full` for live debugging. The shortcut is
-  registered in `deploy/slack/manifest.yaml`, next to **Ask an agent here** (which starts a
+- **Inspect agent steps.** A turn's step list shows each tool call's arguments and result
+  preview, cut to fit Slack's inline display. To see the fuller payloads after the fact,
+  invoke the **Inspect agent steps** message shortcut (⋯ menu → Apps) on any message in the
+  thread: the gateway replies with an ephemeral, invoker-only rendering of the retained
+  tool-call log — per call, the tool name with its arguments and a result preview, grouped
+  per turn, fuller than what a step has room for. The log is in-memory and bounded: the last
+  100 calls per thread, kept for up to 24 hours and not surviving a gateway restart. When
+  nothing is retained the reply says so. The shortcut is registered in
+  `deploy/slack/manifest.yaml`, next to **Ask an agent here** (which starts a
   conversation in the message's thread, see [Agent routing](#agent-routing)); changing the
   manifest requires re-syncing the app config at api.slack.com/apps. Slack lists a shortcut
   under "Connect to apps" in the ⋯ menu only once a person has used it; the first time it is

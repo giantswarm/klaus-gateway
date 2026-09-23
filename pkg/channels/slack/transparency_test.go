@@ -17,38 +17,6 @@ import (
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 )
 
-func TestDetailsLevel_DefaultOnAndSet(t *testing.T) {
-	a := &Adapter{}
-	require.Equal(t, detailsOn, a.detailsLevel("T1"), "an un-set thread defaults to on")
-
-	a.setDetailsLevel("T1", detailsOff)
-	require.Equal(t, detailsOff, a.detailsLevel("T1"))
-	require.Equal(t, "off", a.detailsLevel("T1").String())
-
-	a.setDetailsLevel("T1", detailsFull)
-	require.Equal(t, detailsFull, a.detailsLevel("T1"))
-	require.Equal(t, detailsOn, a.detailsLevel("T2"), "other threads unaffected")
-}
-
-func TestParseDetailsLevel(t *testing.T) {
-	for _, tc := range []struct {
-		in    string
-		want  detailsLevel
-		wantK bool
-	}{
-		{"on", detailsOn, true},
-		{"off", detailsOff, true},
-		{"FULL", detailsFull, true},
-		{"maybe", detailsOn, false},
-	} {
-		got, ok := parseDetailsLevel(tc.in)
-		require.Equal(t, tc.wantK, ok, tc.in)
-		if tc.wantK {
-			require.Equal(t, tc.want, got, tc.in)
-		}
-	}
-}
-
 func TestRecordTurnUsage_LastAndSession(t *testing.T) {
 	a := &Adapter{}
 	require.Equal(t, "Token usage not available yet.", a.usageReport(t.Context(), "T1", "D1"))
@@ -104,7 +72,7 @@ func TestUsageReport_ChannelMissGivesGuidance(t *testing.T) {
 // TestBatchedWriter_SumsUsageAcrossTurn verifies the run loop sums the per-call
 // usage kagent reports into a single turn total.
 func TestBatchedWriter_SumsUsageAcrossTurn(t *testing.T) {
-	w := newBatchedWriterWithClient(&slackAPIClient{}, "C1", "", "T1", detailsOn, nil)
+	w := newBatchedWriterWithClient(&slackAPIClient{}, "C1", "", "T1", nil)
 
 	ch := make(chan channels.OutboundDelta, 3)
 	ch <- channels.OutboundDelta{Usage: &channels.TurnUsage{InputTokens: 100, OutputTokens: 50, TotalTokens: 150}}
@@ -123,7 +91,7 @@ func TestBatchedWriter_ToolStepsPreserveOrder(t *testing.T) {
 	srv := httptest.NewServer(ft.handler())
 	t.Cleanup(srv.Close)
 
-	w := newBatchedWriterWithClient(&slackAPIClient{baseURL: srv.URL}, "C1", "", "T1", detailsFull, nil)
+	w := newBatchedWriterWithClient(&slackAPIClient{baseURL: srv.URL}, "C1", "", "T1", nil)
 
 	names := []string{"alpha", "bravo", "charlie", "delta"}
 	ch := make(chan channels.OutboundDelta, len(names)+1)
@@ -154,7 +122,7 @@ func TestBatchedWriter_ToolStormIsOneMessage(t *testing.T) {
 	srv := httptest.NewServer(ft.handler())
 	t.Cleanup(srv.Close)
 
-	w := newBatchedWriterWithClient(&slackAPIClient{baseURL: srv.URL}, "C1", "", "T1", detailsOn, nil)
+	w := newBatchedWriterWithClient(&slackAPIClient{baseURL: srv.URL}, "C1", "", "T1", nil)
 
 	const calls = 50
 	ch := make(chan channels.OutboundDelta, calls+1)
@@ -179,7 +147,7 @@ func TestBatchedWriter_CapsSteps(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	a := &Adapter{Logger: testLogger()}
-	w := newBatchedWriterWithClient(&slackAPIClient{baseURL: srv.URL}, "C1", "", "T1", detailsOn, nil)
+	w := newBatchedWriterWithClient(&slackAPIClient{baseURL: srv.URL}, "C1", "", "T1", nil)
 	w.adapter = a
 
 	const calls = maxSteps + 5
@@ -275,13 +243,12 @@ func TestUsageReport_OmitsModelLineWhenUnavailable(t *testing.T) {
 	require.NotContains(t, noSource.usageReport(t.Context(), "T1", "C1"), "Model")
 }
 
-// Idle per-thread state (details, usage, resume marks) is swept on insert once
-// past threadStateTTL, so a long-lived pod does not accumulate one entry per
-// thread forever. synctest fakes time.Now inside the bubble.
+// Idle per-thread state (usage, resume marks) is swept on insert once past
+// threadStateTTL, so a long-lived pod does not accumulate one entry per thread
+// forever. synctest fakes time.Now inside the bubble.
 func TestThreadState_EvictedAfterTTL(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		a := &Adapter{Logger: slog.New(slog.DiscardHandler)}
-		a.setDetailsLevel("T-old", detailsOff)
 		a.recordTurnUsage("T-old", "D-old", channels.TurnUsage{TotalTokens: 1})
 		a.resumeMu.Lock()
 		a.resumeChecked = map[string]time.Time{"T-old": time.Now().Add(threadStateTTL)}
@@ -290,16 +257,10 @@ func TestThreadState_EvictedAfterTTL(t *testing.T) {
 		time.Sleep(threadStateTTL + time.Minute)
 
 		// Inserts sweep the expired entries.
-		a.setDetailsLevel("T-new", detailsFull)
 		a.recordTurnUsage("T-new", "D-new", channels.TurnUsage{TotalTokens: 2})
 		gw := &resumeStub{exists: true, checked: true}
 		a.gw = gw
 		a.maybeAnnounceResume(t.Context(), channels.InboundMessage{ThreadID: "T-new"}, "D-new")
-
-		a.detailsMu.Lock()
-		require.NotContains(t, a.details, "T-old")
-		require.Contains(t, a.details, "T-new")
-		a.detailsMu.Unlock()
 
 		a.usageMu.Lock()
 		require.NotContains(t, a.threadUsage, "T-old")

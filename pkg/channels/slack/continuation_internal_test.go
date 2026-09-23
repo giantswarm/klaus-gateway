@@ -24,7 +24,7 @@ func runContinuedOn(t *testing.T, ft *fakeThread, carried store.Delivered, delta
 	t.Cleanup(srv.Close)
 
 	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
-	w := newBatchedWriterWithClient(client, "C1", "", "1.0", detailsOn, slog.Default())
+	w := newBatchedWriterWithClient(client, "C1", "", "1.0", slog.Default())
 	w.adapter = &Adapter{}
 	w.continueFrom(carried)
 	var mu sync.Mutex
@@ -66,7 +66,7 @@ func TestContinueFrom_PostsOnlyWhatFollowsAndCountsOn(t *testing.T) {
 	require.Equal(t, []taskChunk{
 		{id: "step-3", title: "Team", status: stepInProgress},
 		{id: "step-3", title: "Team", status: stepComplete},
-	}, ft.steps(), "the step counts on from the recorded ones; the record named none as open")
+	}, ft.stepShapes(), "the step counts on from the recorded ones; the record named none as open")
 	require.Equal(t, tail, ft.streamedText(),
 		"only the text after the recorded length is sent, without the paragraph break in front")
 
@@ -93,7 +93,7 @@ func TestContinueFrom_ClosesTheCarriedStepThenCountsOn(t *testing.T) {
 		{id: "step-3", title: "Prometheus query", status: stepComplete},
 		{id: "step-4", title: "Kubernetes list", status: stepInProgress},
 		{id: "step-4", title: "Kubernetes list", status: stepComplete},
-	}, ft.steps(), "the carried step is closed under its real title, the new one counts on")
+	}, ft.stepShapes(), "the carried step is closed under its real title, the new one counts on")
 	require.Equal(t, ts, ft.streams()[1].ts, "both ride the adopted stream")
 
 	last := records[len(records)-1]
@@ -156,7 +156,7 @@ func TestNoteDelivered_RecordsTextAndTheStepCount(t *testing.T) {
 
 // Without a sink nothing is recorded and the writer behaves as before.
 func TestNoteDelivered_WithoutASinkIsANoOp(t *testing.T) {
-	w := newBatchedWriterWithClient(&slackAPIClient{}, "C1", "", "1.0", detailsOn, slog.Default())
+	w := newBatchedWriterWithClient(&slackAPIClient{}, "C1", "", "1.0", slog.Default())
 	w.noteDelivered(t.Context())
 	require.Equal(t, "hello", w.skipDelivered("hello"), "no continuation, no cut")
 }
@@ -165,7 +165,7 @@ func TestNoteDelivered_WithoutASinkIsANoOp(t *testing.T) {
 // until the recorded length is reached; leading whitespace after the cut is
 // dropped only once, and counted.
 func TestSkipDelivered_SpansDeltasAndTrimsTheBreakOnce(t *testing.T) {
-	w := newBatchedWriterWithClient(&slackAPIClient{}, "C1", "", "1.0", detailsOn, slog.Default())
+	w := newBatchedWriterWithClient(&slackAPIClient{}, "C1", "", "1.0", slog.Default())
 	w.continueFrom(store.Delivered{TextLen: 7})
 
 	require.Equal(t, "", w.skipDelivered("hello"))
@@ -283,7 +283,7 @@ func TestContinueFrom_RetractDeletesTheAdoptedStream(t *testing.T) {
 	srv := httptest.NewServer(ft.handler())
 	t.Cleanup(srv.Close)
 
-	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "C1", "", "1.0", detailsOff, slog.Default())
+	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "C1", "", "1.0", slog.Default())
 	w.continueFrom(store.Delivered{TextLen: 11, StreamTS: ts, StreamLen: 11})
 
 	w.retractRendered(t.Context())

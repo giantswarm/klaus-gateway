@@ -289,11 +289,6 @@ type Adapter struct {
 	notServedMu      sync.Mutex
 	notServedNoticed map[string]ttlEntry[struct{}]
 
-	// detailsMu guards details. Absent thread resolves to detailsOn (the MVP
-	// default). Entries idle past threadStateTTL are evicted.
-	detailsMu sync.Mutex
-	details   map[string]ttlEntry[detailsLevel] // keyed by threadID
-
 	// usageMu guards both usage maps. threadUsage keys usage by the turn's
 	// thread root; channelUsage aggregates DM channels so a top-level /usage in
 	// a DM (which keys a brand-new thread) still has figures to report.
@@ -1615,7 +1610,7 @@ func (a *Adapter) handleSessionStopped(ctx context.Context, inner slackInnerEven
 // that creates the session; a caller that does not hold one already passes ""
 // rather than spend a store read on it.
 func (a *Adapter) setSessionStatus(ctx context.Context, channel, threadTS string, status sessionStatus, initiator string) {
-	w := newBatchedWriterWithClient(a.apiClient(), channel, "", threadTS, detailsOff, a.Logger)
+	w := newBatchedWriterWithClient(a.apiClient(), channel, "", threadTS, a.Logger)
 	w.adapter = a
 	w.sessionInitiator, w.statusOnly = initiator, true
 	w.setSessionStatus(ctx, status)
@@ -1816,18 +1811,12 @@ func (a *Adapter) replayDispatch(ctx context.Context, msg channels.InboundMessag
 }
 
 // threadEngaged reports whether this process holds any trace of the bot
-// having interacted in threadID: a sign-in prompt, a details setting, or
-// recorded usage. The active-thread gate already rules out an initiator or
-// pending task, so these traces are what distinguishes "the bot was here but
-// the thread never activated / expired" from a served channel's unrelated
-// threads. Process-local: after a restart there is no trace and no hint.
+// having interacted in threadID: a sign-in prompt, or recorded usage. The
+// active-thread gate already rules out an initiator or pending task, so these
+// traces are what distinguishes "the bot was here but the thread never
+// activated / expired" from a served channel's unrelated threads.
+// Process-local: after a restart there is no trace and no hint.
 func (a *Adapter) threadEngaged(threadID string) bool {
-	a.detailsMu.Lock()
-	_, hasDetails := a.details[threadID]
-	a.detailsMu.Unlock()
-	if hasDetails {
-		return true
-	}
 	a.usageMu.Lock()
 	_, hasUsage := a.threadUsage[threadID]
 	a.usageMu.Unlock()
@@ -2417,7 +2406,7 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 	// is left here is the message a terminal note replaces when no answer came.
 	prog, replyTS := a.startProgress(ctx, client, slackChannel, threadID, triggerTS, placeholder)
 
-	w := newBatchedWriterWithClient(client, slackChannel, replyTS, threadID, a.detailsLevel(threadID), a.Logger)
+	w := newBatchedWriterWithClient(client, slackChannel, replyTS, threadID, a.Logger)
 	w.turnUsage = carried
 	w.approvedCalls = approved
 	w.adapter = a
