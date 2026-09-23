@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Slack: a turn that fails before the agent answered says what broke instead of always asking the person to try again. The note names the failure's class — the agent's tools (`tools`), the connection to the platform (`platform`), the model or its provider (`model`), a gateway policy (`policy`) — and whether trying again helps; `_(the turn failed; please try again)_` is left for a failure no class names (klaus-gateway#329).
+- A fresh turn that fails on its tools or on the platform connection before anything of it was shown is sent once more on the thread's AgentInstance before the note goes out; the runtime sets its tool set up again on every run. The `turn_retry` record logs it, and `turn_complete` counts it as `retries` (klaus-gateway#329).
+- `turn_complete` carries a failed turn's `failure_class`, and `klaus_gateway_turn_total` gains the `failure_class` label (empty unless the turn failed or its send did), so a burst of tool-set failures across people can alert apart from a one-off model error (klaus-gateway#329).
 - Chart: `serviceMonitor.labels`, labels on the ServiceMonitor beside the chart's own. The Giant Swarm observability platform routes a scrape to a Mimir tenant by `observability.giantswarm.io/tenant`, and the monitor carried no way to set it, so the gateway's `klaus_gateway_*` series reached no tenant on every installation.
 
 ### Fixed

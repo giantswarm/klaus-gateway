@@ -53,14 +53,15 @@ type fakeRecorder struct {
 	mu      sync.Mutex
 	channel string
 	outcome string
+	class   FailureClass
 	phases  map[string]time.Duration
 	calls   int
 }
 
-func (r *fakeRecorder) RecordTurn(channel, outcome string, phases map[string]time.Duration) {
+func (r *fakeRecorder) RecordTurn(channel, outcome string, class FailureClass, phases map[string]time.Duration) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.channel, r.outcome, r.phases = channel, outcome, phases
+	r.channel, r.outcome, r.class, r.phases = channel, outcome, class, phases
 	r.calls++
 }
 
@@ -160,6 +161,8 @@ func TestBeginCompleteTurn_RecordMetricsAndSpan(t *testing.T) {
 	require.Equal(t, "T1", r["thread_id"])
 	require.Equal(t, timer.TraceID(), r["trace_id"])
 	require.NotContains(t, r, "error")
+	require.NotContains(t, r, "failure_class", "a completed turn has no failure class")
+	require.Equal(t, int64(0), r["retries"])
 	require.Contains(t, r, "dispatch_ms")
 	require.Contains(t, r, "token_mint_ms")
 	require.Contains(t, r, "total_ms")
@@ -168,6 +171,7 @@ func TestBeginCompleteTurn_RecordMetricsAndSpan(t *testing.T) {
 	require.Equal(t, 1, rec.calls)
 	require.Equal(t, "slack", rec.channel)
 	require.Equal(t, OutcomeCompleted, rec.outcome)
+	require.Equal(t, FailureNone, rec.class)
 	require.Contains(t, rec.phases, PhaseTotal)
 	require.Contains(t, rec.phases, PhaseDispatch)
 
@@ -224,4 +228,44 @@ func TestCompleteTurn_ErrorAbandonAndNoTimer(t *testing.T) {
 	AbandonTurn(context.Background(), "nothing")
 	require.Equal(t, 1, rec.calls)
 	require.Len(t, h.find("record", RecordTurnComplete), 1)
+}
+
+// A turn sent a second time counts the retry, and its task_done and
+// stream_end are the second attempt's; a failed turn's record, metric and
+// span carry the class of its failure.
+func TestCompleteTurn_RetryAndFailureClass(t *testing.T) {
+	exporter := installTestTracer(t)
+	h := &recordingHandler{}
+	rec := &fakeRecorder{}
+
+	ctx, timer := BeginTurn(context.Background(), "slack", time.Time{})
+	timer.Mark(PhaseFirstEvent)
+	timer.Mark(PhaseTaskDone)
+	timer.Mark(PhaseStreamEnd)
+	timer.Retry()
+	for _, phase := range []string{PhaseTaskDone, PhaseStreamEnd} {
+		_, ok := timer.Phase(phase)
+		require.False(t, ok, "the failed attempt's %s is forgotten", phase)
+	}
+	_, ok := timer.Phase(PhaseFirstEvent)
+	require.True(t, ok, "the controller answered the first attempt")
+	timer.Mark(PhaseTaskDone)
+	_, ok = timer.Phase(PhaseTaskDone)
+	require.True(t, ok, "the second attempt marks its own end")
+
+	CompleteTurn(ctx, slog.New(h), rec, "slack", OutcomeFailed, errors.New(`failed to extract tools from the tool set "mcp_tool_set": failed to list MCP tools: failed to init MCP session: read: connection reset by peer`))
+	records := h.find("record", RecordTurnComplete)
+	require.Len(t, records, 1)
+	require.Equal(t, string(FailureTools), records[0]["failure_class"])
+	require.Equal(t, int64(1), records[0]["retries"])
+	require.Equal(t, FailureTools, rec.class)
+
+	spans := exporter.GetSpans()
+	require.Len(t, spans, 1)
+	attrs := map[string]any{}
+	for _, kv := range spans[0].Attributes {
+		attrs[string(kv.Key)] = kv.Value.AsInterface()
+	}
+	require.Equal(t, string(FailureTools), attrs["klaus_gateway.turn.failure_class"])
+	require.Equal(t, int64(1), attrs["klaus_gateway.turn.retries"])
 }

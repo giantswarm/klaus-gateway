@@ -66,6 +66,10 @@ const (
 // with.
 const RecordTurnComplete = "turn_complete"
 
+// RecordTurnRetry is the `record` value of the log line of a turn sent a
+// second time (Facade.SendCompletion).
+const RecordTurnRetry = "turn_retry"
+
 // TurnTimer is the telemetry handle of one turn: when it started, which phase
 // was reached when, how long the steps took, the counters the turn_complete
 // record carries, and the turn's root span. It travels on the context from
@@ -83,6 +87,7 @@ type TurnTimer struct {
 	taskID    string
 	toolCalls int
 	chars     int
+	retries   int
 }
 
 // NewTurnTimer starts a timeline at start (the moment the channel received
@@ -176,6 +181,30 @@ func (t *TurnTimer) AddChars(n int) {
 	t.chars += n
 }
 
+// Retry counts a second attempt of the turn and forgets when the failed
+// attempt ended (task_done, stream_end), so those phases describe the
+// attempt that answered.
+func (t *TurnTimer) Retry() {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.retries++
+	delete(t.phases, PhaseTaskDone)
+	delete(t.phases, PhaseStreamEnd)
+}
+
+// Retries is how often the turn was sent again.
+func (t *TurnTimer) Retries() int {
+	if t == nil {
+		return 0
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.retries
+}
+
 // Counters reports the tool calls made and the characters streamed so far.
 func (t *TurnTimer) Counters() (toolCalls, chars int) {
 	if t == nil {
@@ -241,11 +270,21 @@ func (t *TurnTimer) LogAttrs() []any {
 	return attrs
 }
 
-// TurnRecorder takes the outcome and the phases of a finished turn; the
-// observability package implements it with a per-outcome counter and
-// per-phase histograms. Nil is fine everywhere a recorder is optional.
+// TurnRecorder takes the outcome, the failure class (empty unless the turn
+// failed) and the phases of a finished turn; the observability package
+// implements it with a per-outcome counter and per-phase histograms. Nil is
+// fine everywhere a recorder is optional.
 type TurnRecorder interface {
-	RecordTurn(channel, outcome string, phases map[string]time.Duration)
+	RecordTurn(channel, outcome string, class FailureClass, phases map[string]time.Duration)
+}
+
+// turnFailureClass is the class a turn that ended with outcome and err is
+// recorded under: that of its error when the turn failed, none otherwise.
+func turnFailureClass(outcome string, err error) FailureClass {
+	if outcome != OutcomeFailed && outcome != OutcomeSendFailed {
+		return FailureNone
+	}
+	return ClassifyFailure(err)
 }
 
 type turnTimerKey struct{}
@@ -288,9 +327,9 @@ func BeginTurn(ctx context.Context, channel string, start time.Time, attrs ...at
 }
 
 // CompleteTurn ends the turn on ctx: it writes the turn_complete record
-// (the outcome, the task, the counters, every phase as `<phase>_ms` and the
-// trace id, plus the channel's own attrs), feeds the recorder and ends the
-// span. Idempotent; a nil recorder records nothing, a nil logger uses the
+// (the outcome, a failed turn's failure class, the task, the counters, every
+// phase as `<phase>_ms` and the trace id, plus the channel's own attrs), feeds
+// the recorder and ends the span. Idempotent; a nil recorder records nothing, a nil logger uses the
 // default. Without a timer on ctx nothing happens.
 func CompleteTurn(ctx context.Context, logger *slog.Logger, rec TurnRecorder, channel, outcome string, err error, attrs ...any) {
 	t := TurnTimerFromContext(ctx)
@@ -303,14 +342,21 @@ func CompleteTurn(ctx context.Context, logger *slog.Logger, rec TurnRecorder, ch
 	t.Mark(PhaseTotal)
 	phases := t.Phases()
 	toolCalls, chars := t.Counters()
+	class := turnFailureClass(outcome, err)
 	fields := []any{
 		"record", RecordTurnComplete,
 		"channel", channel,
 		"outcome", outcome,
+	}
+	if class != FailureNone {
+		fields = append(fields, "failure_class", string(class))
+	}
+	fields = append(fields,
 		"task_id", t.TaskID(),
 		"tool_calls", toolCalls,
 		"streamed_chars", chars,
-	}
+		"retries", t.Retries(),
+	)
 	if id := t.TraceID(); id != "" {
 		fields = append(fields, "trace_id", id)
 	}
@@ -321,14 +367,18 @@ func CompleteTurn(ctx context.Context, logger *slog.Logger, rec TurnRecorder, ch
 	fields = append(fields, t.LogAttrs()...)
 	logger.Info(channel+": turn complete", fields...)
 	if rec != nil {
-		rec.RecordTurn(channel, outcome, phases)
+		rec.RecordTurn(channel, outcome, class, phases)
 	}
 	if t.span != nil {
 		t.span.SetAttributes(
 			attribute.String("klaus_gateway.turn.outcome", outcome),
 			attribute.Int("klaus_gateway.turn.tool_calls", toolCalls),
 			attribute.Int("klaus_gateway.turn.streamed_chars", chars),
+			attribute.Int("klaus_gateway.turn.retries", t.Retries()),
 		)
+		if class != FailureNone {
+			t.span.SetAttributes(attribute.String("klaus_gateway.turn.failure_class", string(class)))
+		}
 		if err != nil {
 			t.span.RecordError(err)
 			t.span.SetStatus(codes.Error, outcome)

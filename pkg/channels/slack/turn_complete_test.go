@@ -36,15 +36,27 @@ type fakeTurnRecorder struct {
 	mu       sync.Mutex
 	channels []string
 	outcomes []string
+	classes  []channels.FailureClass
 	phases   []map[string]time.Duration
 }
 
-func (r *fakeTurnRecorder) RecordTurn(channel, outcome string, phases map[string]time.Duration) {
+func (r *fakeTurnRecorder) RecordTurn(channel, outcome string, class channels.FailureClass, phases map[string]time.Duration) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.channels = append(r.channels, channel)
 	r.outcomes = append(r.outcomes, outcome)
+	r.classes = append(r.classes, class)
 	r.phases = append(r.phases, phases)
+}
+
+// lastClass is the failure class of the last recorded turn.
+func (r *fakeTurnRecorder) lastClass() channels.FailureClass {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.classes) == 0 {
+		return channels.FailureNone
+	}
+	return r.classes[len(r.classes)-1]
 }
 
 func (r *fakeTurnRecorder) last() (string, string, map[string]time.Duration) {
@@ -137,17 +149,22 @@ func TestDispatch_EmitsTurnCompleteRecord(t *testing.T) {
 // A turn the controller refuses before its stream starts still leaves a
 // record, with the send_failed outcome and the error; so does one whose
 // stream fails, with failed; a turn paused on a prompt ends with
-// input_required.
+// input_required. A failed turn's record and metric carry its failure class,
+// any other turn's none.
 func TestDispatch_TurnCompleteOutcomes(t *testing.T) {
+	const toolSet = `failed to extract tools from the tool set "mcp_tool_set": failed to list MCP tools: failed to init MCP session: calling "initialize": read: connection reset by peer`
 	cases := []struct {
 		name    string
 		gw      *fakeGateway
 		outcome string
 		hasErr  bool
+		class   channels.FailureClass
 	}{
-		{"send refused", &fakeGateway{sendErr: errors.New("instance busy")}, channels.OutcomeSendFailed, true},
-		{"stream failed", &fakeGateway{deltas: []channels.OutboundDelta{{Content: "par"}, {Err: errors.New("task failed")}}}, channels.OutcomeFailed, true},
-		{"prompt", &fakeGateway{deltas: []channels.OutboundDelta{{Kind: channels.DeltaPrompt, Content: "approve?", TaskID: "task-1"}}}, channels.OutcomeInputRequired, false},
+		{"send refused", &fakeGateway{sendErr: errors.New("instance busy")}, channels.OutcomeSendFailed, true, channels.FailureUnknown},
+		{"send unreachable", &fakeGateway{sendErr: errors.New("rpc error: code = Unavailable desc = connection refused")}, channels.OutcomeSendFailed, true, channels.FailurePlatform},
+		{"stream failed", &fakeGateway{deltas: []channels.OutboundDelta{{Content: "par"}, {Err: errors.New("task failed")}}}, channels.OutcomeFailed, true, channels.FailureUnknown},
+		{"tool set failed", &fakeGateway{deltas: []channels.OutboundDelta{{Err: errors.New(toolSet)}}}, channels.OutcomeFailed, true, channels.FailureTools},
+		{"prompt", &fakeGateway{deltas: []channels.OutboundDelta{{Kind: channels.DeltaPrompt, Content: "approve?", TaskID: "task-1"}}}, channels.OutcomeInputRequired, false, channels.FailureNone},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -162,8 +179,14 @@ func TestDispatch_TurnCompleteOutcomes(t *testing.T) {
 			} else {
 				require.NotContains(t, records[0], "error")
 			}
+			if tc.class == channels.FailureNone {
+				require.NotContains(t, records[0], "failure_class")
+			} else {
+				require.Equal(t, string(tc.class), records[0]["failure_class"])
+			}
 			_, outcome, _ := rec.last()
 			require.Equal(t, tc.outcome, outcome)
+			require.Equal(t, tc.class, rec.lastClass())
 		})
 	}
 }

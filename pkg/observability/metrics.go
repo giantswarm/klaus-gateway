@@ -19,6 +19,7 @@ const (
 	labelStatus  = "status"
 	labelChannel = "channel"
 	labelOutcome = "outcome"
+	labelClass   = "failure_class"
 	labelPhase   = "phase"
 	labelEvent   = "event"
 )
@@ -76,8 +77,8 @@ func NewMetrics() *Metrics {
 	turns := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: metricNamespace,
 		Name:      "turn_total",
-		Help:      "Channel turns that ended, labelled by channel and outcome (completed, input_required, canceled, shutdown, timeout, failed, render_failed, send_failed).",
-	}, []string{labelChannel, labelOutcome})
+		Help:      "Channel turns that ended, labelled by channel, outcome (completed, input_required, canceled, shutdown, timeout, failed, render_failed, send_failed) and, for a failed or send_failed turn, failure_class (tools, platform, model, policy, unknown).",
+	}, []string{labelChannel, labelOutcome, labelClass})
 
 	phase := prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: metricNamespace,
@@ -111,10 +112,10 @@ func NewMetrics() *Metrics {
 	}
 }
 
-// RecordTurn counts a finished turn under its outcome and observes each of
-// its phases. It implements channels.TurnRecorder.
-func (m *Metrics) RecordTurn(channel, outcome string, phases map[string]time.Duration) {
-	m.TurnsTotal.WithLabelValues(channel, outcome).Inc()
+// RecordTurn counts a finished turn under its outcome and failure class and
+// observes each of its phases. It implements channels.TurnRecorder.
+func (m *Metrics) RecordTurn(channel, outcome string, class channels.FailureClass, phases map[string]time.Duration) {
+	m.TurnsTotal.WithLabelValues(channel, outcome, string(class)).Inc()
 	for phase, d := range phases {
 		m.TurnPhase.WithLabelValues(channel, phase).Observe(d.Seconds())
 	}
