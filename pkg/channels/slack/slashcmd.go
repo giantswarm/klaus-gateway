@@ -115,6 +115,10 @@ type askAgentRequest struct {
 	TriggerID   string
 	Thread      string
 	Prefill     string
+	// ThreadStarted is set by the shortcut when its message already has a
+	// thread; on a top-level message without replies Thread is the message's
+	// own ts and the conversation starts its thread.
+	ThreadStarted bool
 }
 
 // handleSlashCommand opens the agent picker modal for a slash command, or
@@ -157,6 +161,9 @@ func (a *Adapter) handleAskAgentShortcut(ctx context.Context, payload interactio
 		ResponseURL: payload.ResponseURL,
 		TriggerID:   payload.TriggerID,
 		Thread:      threadID,
+		// Slack sets thread_ts on a message in a thread and on a root that
+		// has replies, and leaves it out on a lone top-level message.
+		ThreadStarted: payload.Message.ThreadTS != "",
 	}
 	notify := a.askAgentNotifier(ctx, req, "ask-agent shortcut")
 	if isDMChannelID(req.Channel) {
@@ -264,9 +271,10 @@ func (a *Adapter) openAgentPicker(ctx context.Context, req askAgentRequest, noti
 	}
 }
 
-// askAgentModal renders the picker: a static_select over the roster (display
-// name as label, agent ref as value, the default agent preselected) and a
-// multiline question box prefilled with the request's text, if any. A
+// askAgentModal renders the picker: a line saying where the conversation
+// lands, a static_select over the roster (display name as label, agent ref as
+// value, the default agent preselected and named in a hint) and a multiline
+// prompt box prefilled with the request's text, if any. A
 // static_select holds at most modalMaxAgents options; a larger roster is cut,
 // with a warning, rather than refused.
 func (a *Adapter) askAgentModal(agents []pkga2a.AgentInfo, req askAgentRequest) (map[string]any, error) {
@@ -276,6 +284,7 @@ func (a *Adapter) askAgentModal(agents []pkga2a.AgentInfo, req askAgentRequest) 
 	}
 	options := make([]any, 0, len(agents))
 	var initial map[string]any
+	var defaultLabel string
 	defaultIdx := -1
 	seen := make(map[string]bool, len(agents))
 	for _, ag := range agents {
@@ -290,7 +299,7 @@ func (a *Adapter) askAgentModal(agents []pkga2a.AgentInfo, req askAgentRequest) 
 		}
 		opt := map[string]any{bkText: plainTextObj(truncateRunes(label, modalOptionLabelMax)), bkValue: ref}
 		if ref == a.DefaultAgent {
-			initial, defaultIdx = opt, len(options)
+			initial, defaultIdx, defaultLabel = opt, len(options), label
 		}
 		options = append(options, opt)
 	}
@@ -323,22 +332,50 @@ func (a *Adapter) askAgentModal(agents []pkga2a.AgentInfo, req askAgentRequest) 
 	if text := truncateRunes(strings.TrimSpace(req.Prefill), modalQuestionMax); text != "" {
 		question[bkInitialValue] = text
 	}
+	agentInput := map[string]any{bkType: bkInput, bkBlockID: askAgentAgentBlockID, bkLabel: plainTextObj(askAgentAgentLabel), bkElement: agentSelect}
+	if initial != nil {
+		agentInput[bkHint] = plainTextObj(truncateRunes(fmt.Sprintf(askAgentDefaultHint, defaultLabel), modalHintMax))
+	}
 	blocks := []any{
-		map[string]any{bkType: bkInput, bkBlockID: askAgentAgentBlockID, bkLabel: plainTextObj(askAgentAgentLabel), bkElement: agentSelect},
+		contextBlock(askAgentLead(req)),
+		agentInput,
 		map[string]any{bkType: bkInput, bkBlockID: askAgentQuestionBlockID, bkLabel: plainTextObj(askAgentQuestionLabel), bkElement: question},
 	}
 	if block, ok := threadContextBlock(req); ok {
 		blocks = append(blocks, block)
+	}
+	submit := askAgentSubmitLabel
+	if req.Thread != "" {
+		submit = askAgentShortcutSubmitLabel
 	}
 	return map[string]any{
 		bkType:            bkModal,
 		bkCallbackID:      askAgentCallbackID,
 		bkPrivateMetadata: string(pm),
 		bkTitle:           plainTextObj(askAgentModalTitle),
-		bkSubmit:          plainTextObj(askAgentSubmitLabel),
+		bkSubmit:          plainTextObj(submit),
 		bkClose:           plainTextObj(askAgentCloseLabel),
 		bkBlocks:          blocks,
 	}, nil
+}
+
+// askAgentLead says where the picker's conversation lands: a new thread in the
+// channel for the slash command; for the shortcut, the invoked thread, or the
+// thread the invoked message starts when it has no replies yet.
+func askAgentLead(req askAgentRequest) string {
+	dm := isDMChannelID(req.Channel)
+	switch {
+	case dm && req.ThreadStarted:
+		return askAgentLeadDM
+	case dm:
+		return askAgentLeadDMMessage
+	case req.Thread == "":
+		return fmt.Sprintf(askAgentLeadNewThread, req.Channel) + askAgentLeadAudience
+	case req.ThreadStarted:
+		return fmt.Sprintf(askAgentLeadThread, req.Channel) + askAgentLeadAudience
+	default:
+		return fmt.Sprintf(askAgentLeadMessageThread, req.Channel) + askAgentLeadAudience
+	}
 }
 
 // threadContextBlock is the checkbox that decides whether the agent is given

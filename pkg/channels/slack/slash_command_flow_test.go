@@ -135,9 +135,18 @@ func TestSlashCommand_OpensAgentPicker(t *testing.T) {
 	require.Equal(t, "U1", pm["u"], "the invoking user")
 	require.Equal(t, api.URL+"/response_url", pm["r"])
 
+	require.Equal(t, "New conversation", view["title"].(map[string]any)["text"])
+	require.Equal(t, "Start thread", view["submit"].(map[string]any)["text"])
+
 	blocks := view["blocks"].([]any)
-	require.Len(t, blocks, 2)
-	agentSelect := blocks[0].(map[string]any)["element"].(map[string]any)
+	require.Len(t, blocks, 3)
+	lead := blocks[0].(map[string]any)
+	require.Equal(t, "context", lead["type"])
+	require.Equal(t, "Starts a thread in <#C1> under the agent's name. Anyone in the channel can read it; you decide who may instruct the agent.",
+		lead["elements"].([]any)[0].(map[string]any)["text"], "the line names where the conversation lands")
+	agentInput := blocks[1].(map[string]any)
+	require.Equal(t, "Swarmgeist is the default for this workspace.", agentInput["hint"].(map[string]any)["text"])
+	agentSelect := agentInput["element"].(map[string]any)
 	require.Equal(t, "static_select", agentSelect["type"])
 	var labels, values []string
 	for _, o := range agentSelect["options"].([]any) {
@@ -149,7 +158,8 @@ func TestSlashCommand_OpensAgentPicker(t *testing.T) {
 	require.Equal(t, []string{"kagent/swarmgeist", "kagent/sre-agent", "kagent/grill-master"}, values, "values are the A2A refs")
 	require.Equal(t, "kagent/swarmgeist", agentSelect["initial_option"].(map[string]any)["value"], "the default agent is preselected")
 
-	question := blocks[1].(map[string]any)["element"].(map[string]any)
+	require.Equal(t, "Prompt", blocks[2].(map[string]any)["label"].(map[string]any)["text"])
+	question := blocks[2].(map[string]any)["element"].(map[string]any)
 	require.Equal(t, "plain_text_input", question["type"])
 	require.Equal(t, true, question["multiline"])
 	require.Equal(t, "why are pods crashlooping?", question["initial_value"], "the command's text prefills the question")

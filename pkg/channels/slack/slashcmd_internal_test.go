@@ -19,7 +19,7 @@ func pickerAdapter(defaultAgent string) *Adapter {
 
 func modalOptions(t *testing.T, view map[string]any) (labels, values []string, initial string) {
 	t.Helper()
-	sel := view[bkBlocks].([]any)[0].(map[string]any)[bkElement].(map[string]any)
+	sel := view[bkBlocks].([]any)[1].(map[string]any)[bkElement].(map[string]any)
 	for _, o := range sel[bkOptions].([]any) {
 		opt := o.(map[string]any)
 		labels = append(labels, opt[bkText].(map[string]any)[bkText].(string))
@@ -61,8 +61,8 @@ func TestAskAgentModal_OptionsCapDedupAndDefault(t *testing.T) {
 }
 
 // A default agent that is not on the roster leaves the select without a
-// preselection; the command's text prefills the question, cut to the input's
-// max length; an empty text leaves the box empty.
+// preselection or hint; the command's text prefills the prompt, cut to the
+// input's max length; an empty text leaves the box empty.
 func TestAskAgentModal_PrefillAndNoDefault(t *testing.T) {
 	a := pickerAdapter("kagent/elsewhere")
 	agents := []pkga2a.AgentInfo{{Name: "sre-agent", Namespace: "kagent", DisplayName: "SRE Agent"}}
@@ -71,12 +71,14 @@ func TestAskAgentModal_PrefillAndNoDefault(t *testing.T) {
 	require.NoError(t, err)
 	_, _, initial := modalOptions(t, view)
 	require.Empty(t, initial)
-	question := view[bkBlocks].([]any)[1].(map[string]any)[bkElement].(map[string]any)
+	_, hinted := view[bkBlocks].([]any)[1].(map[string]any)[bkHint]
+	require.False(t, hinted, "no default on the list, no hint naming one")
+	question := view[bkBlocks].([]any)[2].(map[string]any)[bkElement].(map[string]any)
 	require.Equal(t, modalQuestionMax, len([]rune(question[bkInitialValue].(string))))
 
 	view, err = a.askAgentModal(agents, askAgentRequest{Channel: "C1", User: "U1", Prefill: "   "})
 	require.NoError(t, err)
-	question = view[bkBlocks].([]any)[1].(map[string]any)[bkElement].(map[string]any)
+	question = view[bkBlocks].([]any)[2].(map[string]any)[bkElement].(map[string]any)
 	_, has := question[bkInitialValue]
 	require.False(t, has, "no text, no prefill")
 
@@ -109,4 +111,26 @@ func TestAskAgentModal_DefaultPastCapIsKept(t *testing.T) {
 	require.Equal(t, "kagent/a-102", initial, "the default stays preselected")
 	require.Equal(t, "kagent/a-102", values[0], "the default is moved to the front of the cut list")
 	require.Equal(t, "kagent/a-000", values[1], "the rest keeps its order")
+}
+
+// The lead line names where the conversation lands for each way the picker
+// opens: the slash command's new thread, the shortcut's existing thread, and
+// the thread the shortcut's lone message starts; a DM names no channel.
+func TestAskAgentLead(t *testing.T) {
+	const audience = " Anyone in the channel can read it; you decide who may instruct the agent."
+	for _, tc := range []struct {
+		name string
+		req  askAgentRequest
+		want string
+	}{
+		{"slash command", askAgentRequest{Channel: "C1"}, "Starts a thread in <#C1> under the agent's name." + audience},
+		{"shortcut in a thread", askAgentRequest{Channel: "C1", Thread: "100.000", ThreadStarted: true}, "Continues this thread in <#C1> under the agent's name." + audience},
+		{"shortcut on a lone message", askAgentRequest{Channel: "C1", Thread: "100.000"}, "Starts this message's thread in <#C1> under the agent's name." + audience},
+		{"DM thread", askAgentRequest{Channel: "D1", Thread: "100.000", ThreadStarted: true}, "Continues this thread under the agent's name."},
+		{"DM lone message", askAgentRequest{Channel: "D1", Thread: "100.000"}, "Starts this message's thread under the agent's name."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, askAgentLead(tc.req))
+		})
+	}
 }
