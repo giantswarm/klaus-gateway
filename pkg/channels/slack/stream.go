@@ -592,13 +592,14 @@ func (w *batchedWriter) finalFlush(ctx context.Context) error {
 const (
 	toolArgsMax   = 500
 	toolResultMax = 800
-	// stepFieldMax caps a step's details and output. The previews are cut to
-	// 255 so the whole field fits Slack's inline display without a one-character
-	// "Show more" toggle (Slack shows 255 characters inline and hides the rest;
-	// the task_update chunk limit is 256). The tool log the "Inspect agent
+	// stepFieldMax caps a step's details and output. Slack documents 256
+	// characters as the chunk size limit of task_update, so the payload
+	// previews are cut to it after escaping; the tool log the "Inspect agent
 	// steps" shortcut shows keeps the fuller toolArgsMax/toolResultMax
-	// renderings.
-	stepFieldMax = 255
+	// renderings. Slack collapses a long field behind its own "Show more"
+	// toggle by rendered height, not by a character count, so no cap short of
+	// losing payload avoids it (measured on graveler, 2026-09-23).
+	stepFieldMax = 256
 	// maxActivityBlocks bounds the context blocks of one in-thread Block Kit
 	// message, comfortably under Slack's 50-blocks-per-message limit; the tool
 	// log's inspection posts roll over into a further message past it.

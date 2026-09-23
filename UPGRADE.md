@@ -24,7 +24,7 @@ activity messages are gone; **Inspect agent steps** (⋯ menu → Apps) is the a
 fuller retained payloads.
 
 **This widens what a thread shows by default.** Until now a thread showed step titles alone
-unless someone set `/details full` in it; every step now carries up to 255 characters of the
+unless someone set `/details full` in it; every step now carries up to 256 characters of the
 tool's arguments and of its result, unredacted, to everyone who can read the channel. With
 on-behalf-of sign-in the tool ran as the person who started the thread, so a call that reads a
 Secret or a private repository puts that data in the thread. Weigh that where a channel's

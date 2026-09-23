@@ -1936,12 +1936,6 @@ func TestSteps_DetailsAndOutputAreTruncated(t *testing.T) {
 		toolResultDelta("kube_get", "c1", map[string]any{"output": strings.Repeat("b", 2000)}),
 	)
 
-	// Pin the value, not just the constant: Slack shows 255 characters of the
-	// field inline and hides the rest behind "Show more", so a cap of 256
-	// overshoots by one and brings back a toggle that reveals nothing but the
-	// ellipsis the truncator itself appended.
-	require.Equal(t, 255, stepFieldMax)
-
 	steps := ft.steps()
 	require.Len(t, steps, 2)
 	require.Len(t, []rune(steps[0].details), stepFieldMax)
