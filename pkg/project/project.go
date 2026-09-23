@@ -12,13 +12,17 @@ const dev = "dev"
 // no resolvable VCS tag (no .git, or built outside a module checkout).
 const devel = "(devel)"
 
-// Build identifiers. The architect-orb `go-build` job overrides `gitSHA` (from
-// `CIRCLE_SHA1`) and `buildTimestamp` (UTC build time) at link time via `-X`
-// ldflags, and stamps `version` from the tag on tag builds; the devctl
-// Makefile stamps all three locally. A build without a `version` ldflag
-// derives it at runtime from the Go build info (see Version), which the
-// toolchain stamps from the VCS tag — a clean semver when the build sits
-// exactly on a tag with a clean tree, as release builds do.
+// Build identifiers, overridden at link time via `-X` ldflags. The
+// architect-orb `go-build` job links with the `.ldflags` file its `go-test`
+// step writes, which stamps `gitSHA` (from `CIRCLE_SHA1`) and `buildTimestamp`
+// (UTC build time) but not `version`; `make test`, which the job runs in
+// between, appends `version` from gitsemver (Makefile.custom.mk): the release
+// on a tag build, a dev version on a branch, the same string as the image tag.
+// The devctl Makefile stamps all three locally. A build without a `version`
+// ldflag, such as a plain `go build`, falls back to the Go build info (see
+// Version). That is never a v2+ release: the module path carries no major
+// version suffix, so the toolchain ignores the v2+ tags and reports a v0/v1
+// pseudo-version or "(devel)".
 var (
 	version        = dev
 	gitSHA         = dev
@@ -27,8 +31,8 @@ var (
 
 // Version returns the best human-readable build identifier available, in
 // order: an explicitly injected `version` ldflag, the VCS version stamped into
-// the Go build info, the injected commit SHA, and finally the placeholder
-// "dev".
+// the Go build info (a v0/v1 pseudo-version for this module, see above), the
+// injected commit SHA, and finally the placeholder "dev".
 func Version() string {
 	if version != dev && version != "" {
 		return version
