@@ -756,12 +756,6 @@ func (w *batchedWriter) takeOpenStep(callID string) (openStep, bool) {
 	return openStep{}, false
 }
 
-// closeOpenSteps ends every step still running as the turn ends, so no message
-// is left with one that spins forever — Slack never closes a task on its own.
-// status is complete on a normal end and on a pause for a HITL prompt (the call
-// did its work; the answer is what is being waited for) and error when the turn
-// failed or was cancelled, where the result never arrived and never will. A
-// call the stream gave no id is only ever closed here.
 // cancelledStepStatus is how a step still running is closed when the turn's
 // context is cancelled. The gateway's own shutdown does not end the tool call:
 // the task keeps running at the controller, the thread is told so, and another
@@ -776,6 +770,12 @@ func cancelledStepStatus(ctx context.Context) string {
 	return stepError
 }
 
+// closeOpenSteps ends every step still running as the turn ends, so no message
+// is left with one that spins forever — Slack never closes a task on its own.
+// status is complete on a normal end and on a pause for a HITL prompt (the call
+// did its work; the answer is what is being waited for), error when the turn
+// failed, and what cancelledStepStatus says when it was cancelled. A call the
+// stream gave no id is only ever closed here.
 func (w *batchedWriter) closeOpenSteps(ctx context.Context, status string) {
 	w.mu.Lock()
 	open := w.openSteps
