@@ -219,6 +219,12 @@ func (f *Facade) instanceFor(ctx context.Context, msg InboundMessage) (string, e
 		}
 		return entry.AgentInstanceID, nil
 	}
+	// The empty user slot is load-bearing, and not a leftover of the field
+	// InboundMessage no longer has: this hash is the create's idempotency key,
+	// and it has been computed with an empty user slot on every release. Fill
+	// it, or drop the parameter, and every hash changes — every live thread
+	// then asks for an instance the controller does not have and starts its
+	// conversation over, empty.
 	requestID := SynthesizeContextID(msg.Channel, msg.ChannelID, "", msg.ThreadID, msg.AgentRef)
 	created := TurnTimerFromContext(ctx).Span(PhaseCreateInstance)
 	inst, err := f.Agent.CreateInstance(ctx, msg.AgentRef, requestID, instanceName(msg))

@@ -212,7 +212,7 @@ func TestShutdown_FlushesBufferedTextBeforeTheNotice(t *testing.T) {
 	sendEvent(t, srv, dmEvent("U1", "count", "555.000"))
 	fake.waitForPath(t, "reactions.add", 1)
 	waitTurnStreaming(t, fake)
-	// The turn is resolved before its first delta is read: wait for the text to
+	// The turn is dispatched before its first delta is read: wait for the text to
 	// have reached the writer, or the shutdown below flushes an empty buffer.
 	require.Eventually(t, func() bool { return len(gw.sendCauseList()) == 0 && gw.deliveredDeltas() == 1 }, flowWait, 20*time.Millisecond)
 

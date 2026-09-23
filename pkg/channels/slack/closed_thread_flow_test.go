@@ -89,7 +89,7 @@ func TestClosedThread_UnmentionedReplyGetsTheNotice(t *testing.T) {
 // allowed again.
 func TestClosedThread_MentionStartsTheThreadOver(t *testing.T) {
 	fake := newFakeSlackAPI()
-	gw, resolved := capturingGateway()
+	gw, dispatched := capturingGateway()
 	rec, advance := agingRecorder(t)
 	gw.records = rec
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
@@ -119,7 +119,7 @@ func TestClosedThread_MentionStartsTheThreadOver(t *testing.T) {
 	require.Equal(t, "U3", row.Initiator, "the mentioner is the new initiator")
 	require.Empty(t, row.Granted, "no grant of the ended conversation is carried over")
 	require.Empty(t, row.AgentInstanceID, "the binding is cleared, so the turn binds a fresh instance")
-	require.Equal(t, "test-agent", resolved()[1].AgentRef, "and the turn runs on the default agent, not the ended conversation's")
+	require.Equal(t, "test-agent", dispatched()[1].AgentRef, "and the turn runs on the default agent, not the ended conversation's")
 
 	// The colleague the old initiator had allowed is a newcomer again.
 	sendEvent(t, srv, threadReply("U2", "on it", "810.002", "810.000"))

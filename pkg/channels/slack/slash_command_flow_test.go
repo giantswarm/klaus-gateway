@@ -338,7 +338,7 @@ func TestSlashCommand_InvalidSignatureRejected(t *testing.T) {
 func TestAskAgentSubmission_OpensConversation(t *testing.T) {
 	fake := newFakeSlackAPI()
 	api := fake.server(t)
-	gw, resolved := capturingGateway()
+	gw, dispatched := capturingGateway()
 	a, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
 
 	sendSlashCommand(t, srv, "C1", "U1", "", api.URL+"/response_url")
@@ -358,7 +358,7 @@ func TestAskAgentSubmission_OpensConversation(t *testing.T) {
 	require.Contains(t, rootText, "<@U1> asked *SRE Agent*")
 	require.Contains(t, rootText, "> why are pods crashlooping?")
 
-	msgs := resolved()
+	msgs := dispatched()
 	require.Equal(t, "kagent/sre-agent", msgs[0].AgentRef)
 	require.Equal(t, "why are pods crashlooping?", msgs[0].Text, "the question is the turn, without decoration")
 	require.Equal(t, "U1", msgs[0].Subject, "the turn runs as the submitter")
@@ -372,7 +372,7 @@ func TestAskAgentSubmission_OpensConversation(t *testing.T) {
 	sendEvent(t, srv, mention("U1", "and the nodes?", "200.000", rootTS))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 },
 		flowWait, 50*time.Millisecond, "the reply dispatches")
-	require.Equal(t, "kagent/sre-agent", resolved()[1].AgentRef, "replies inherit the conversation's agent")
+	require.Equal(t, "kagent/sre-agent", dispatched()[1].AgentRef, "replies inherit the conversation's agent")
 
 	// A newcomer is gated on the submitter's consent: nothing dispatches, the
 	// submitter gets the consent prompt.

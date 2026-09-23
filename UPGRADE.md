@@ -28,9 +28,10 @@ the Klaus-instance paths.
 are still accepted and documented as ignored, because the agent-platform umbrella forwards its
 whole `klausGateway` block verbatim and the values schema refuses keys it does not know. An
 installation that sets any of them keeps installing; nothing in the chart reads them. A
-companion agent-platform pull request stops forwarding them, and a later klaus-gateway minor
-deletes them from `values.yaml` and the schema — from then on a values file that still sets one
-fails the upgrade. **Remove them from your values before that minor lands.**
+companion agent-platform pull request stops forwarding them, and the next klaus-gateway **major
+release** deletes them from `values.yaml` and the schema — from then on a values file that still
+sets one fails the upgrade. That deletion is itself a breaking change, which is why it is a major
+and not a minor. **Remove them from your values before it lands.**
 
 **The routing-store key changed.** It is now three parts, `<channel>|<channelID>|<threadID>`;
 the user slot existed for the per-user web and CLI routes and is gone. A row written with the

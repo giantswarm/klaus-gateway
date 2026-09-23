@@ -253,7 +253,8 @@ fields or wrong types.
 The `web`, `cli`, `lifecycle`, `upstream`, `agentgateway`, `routing.defaultTTL`,
 `routing.autoCreate`, `a2a.saToken` and `a2a.tokenPath` keys are accepted and ignored: the
 agent-platform umbrella still forwards them. Each is marked so in
-`helm/klaus-gateway/README.md`. A later minor deletes them — see [UPGRADE.md](../UPGRADE.md).
+`helm/klaus-gateway/README.md`. The next major release deletes them, which the schema then turns
+into a failed upgrade for a values file that still sets one — see [UPGRADE.md](../UPGRADE.md).
 
 ## Local checks
 

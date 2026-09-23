@@ -328,7 +328,7 @@ func TestEventsHandler_NewcomerGatedAfterInitiator(t *testing.T) {
 	// U999 tries to instruct in the same thread: gated, not dispatched.
 	send(`{"type":"event_callback","event":{"type":"app_mention","user":"U999","text":"<@BOT> me too","channel":"C1","ts":"333.444","thread_ts":"111.222"}}`)
 	time.Sleep(150 * time.Millisecond)
-	require.Equal(t, 1, gw.dispatchCount(), "a newcomer must not trigger resolve until approved")
+	require.Equal(t, 1, gw.dispatchCount(), "a newcomer must not reach the agent until approved")
 }
 
 func TestEventsHandler_BotMessageIgnored(t *testing.T) {
@@ -359,7 +359,7 @@ func TestEventsHandler_BotMessageIgnored(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 
-	// Give the goroutine time to run (it should not call Resolve).
+	// Give the goroutine time to run (it must not dispatch).
 	time.Sleep(100 * time.Millisecond)
 	require.Zero(t, gw.dispatchCount())
 }
@@ -883,9 +883,9 @@ type stubGateway struct {
 	// channels.ErrShutdown; a /stop is a plain cancellation).
 	sendCauses []error
 	// delivered counts the deltas the adapter has actually taken off the
-	// stream. A turn is resolved before its first delta is read, so a test
+	// stream. A turn is dispatched before its first delta is read, so a test
 	// that needs the content to be in the writer (a shutdown flush, say)
-	// waits on this rather than on the resolve.
+	// waits on this rather than on the dispatch.
 	delivered int
 	// resumes, when set, backs the restart-recovery capability (InFlightTurns,
 	// InFlightTurn, ResumeTurn); nil reports no turns left running.
@@ -1753,7 +1753,7 @@ func TestSerializeTurnsPerThread(t *testing.T) {
 	close(hold)
 }
 
-// A turn that dies before its stream starts (agent resolve or send fails) must
+// A turn that dies before its stream starts (the agent lookup or the send fails) must
 // post the failure note: streamResponse only covers errors after the stream is
 // running, so a kagent outage was previously complete silence.
 func TestDispatch_PreStreamFailurePostsNote(t *testing.T) {

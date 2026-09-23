@@ -24,7 +24,7 @@ func TestThreadRecord_AgentInitiatorAndGrantSurviveRestart(t *testing.T) {
 	cards := func() *fakeCards {
 		return &fakeCards{known: map[string]string{"sre-agent": "SRE Agent", "issue-agent": "Issue Agent"}}
 	}
-	gw1, resolved1 := capturingGateway()
+	gw1, dispatched1 := capturingGateway()
 	gw1.records = shared
 	_, srv1 := newEventsAdapter(t, gw1, api.URL, channelMode, withSelection(&fakeRoster{}, cards()),
 		func(a *slackadapter.Adapter) { a.DefaultAgent = "sre-agent" })
@@ -33,7 +33,7 @@ func TestThreadRecord_AgentInitiatorAndGrantSurviveRestart(t *testing.T) {
 	// conversation, because nothing is recorded for the thread yet.
 	sendEvent(t, srv1, mention("U1", "/agent issue-agent what happened?", "900.2", "900.1"))
 	require.Eventually(t, func() bool { return gw1.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
-	require.Equal(t, "issue-agent", resolved1()[0].AgentRef)
+	require.Equal(t, "issue-agent", dispatched1()[0].AgentRef)
 	sendAccessInteraction(t, srv1, "U1", accessAllowAction, "900.1", "U2", api.URL+"/response")
 	// The click is acknowledged before the grant is written: the handler runs on
 	// its own goroutine and rewrites the prompt through the response URL right
@@ -43,14 +43,14 @@ func TestThreadRecord_AgentInitiatorAndGrantSurviveRestart(t *testing.T) {
 	fake.waitForPath(t, "response", 1)
 	reads := len(fake.pathCalls("conversations.replies"))
 
-	gw2, resolved2 := capturingGateway()
+	gw2, dispatched2 := capturingGateway()
 	gw2.records = shared
 	_, srv2 := newEventsAdapter(t, gw2, api.URL, channelMode, withSelection(&fakeRoster{}, cards()),
 		func(a *slackadapter.Adapter) { a.DefaultAgent = "sre-agent" })
 
 	sendEvent(t, srv2, mention("U2", "and now?", "900.3", "900.1"))
 	require.Eventually(t, func() bool { return gw2.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
-	require.Equal(t, "issue-agent", resolved2()[0].AgentRef, "the restarted gateway routes to the recorded agent")
+	require.Equal(t, "issue-agent", dispatched2()[0].AgentRef, "the restarted gateway routes to the recorded agent")
 	require.NotContains(t, allText(fake.pathCalls("chat.postEphemeral")), "waiting for the thread owner",
 		"the grant survived: no consent prompt")
 	require.Len(t, fake.pathCalls("conversations.replies"), reads,

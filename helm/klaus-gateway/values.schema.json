@@ -27,12 +27,12 @@
                 },
                 "saToken": {
                     "type": "object",
-                    "description": "Ignored since the Slack-only release; accepted because the agent-platform umbrella still forwards it; removed in a later minor. It projected a ServiceAccount token for the Klaus-instance paths, which are gone; the pod mounts nothing for it any more.",
+                    "description": "Ignored since the Slack-only release; accepted because the agent-platform umbrella still forwards it; removed in the next major release. It projected a ServiceAccount token for the Klaus-instance paths, which are gone; the pod mounts nothing for it any more.",
                     "additionalProperties": true
                 },
                 "tokenPath": {
                     "type": "string",
-                    "description": "Ignored since the Slack-only release; accepted because the agent-platform umbrella still forwards it; removed in a later minor. It named a Bearer token file for the Klaus-instance paths, which are gone."
+                    "description": "Ignored since the Slack-only release; accepted because the agent-platform umbrella still forwards it; removed in the next major release. It named a Bearer token file for the Klaus-instance paths, which are gone."
                 },
                 "url": {
                     "type": "string"
@@ -54,7 +54,7 @@
         },
         "agentgateway": {
             "type": "object",
-            "description": "Ignored since the Slack-only release; accepted because the agent-platform umbrella still forwards it; removed in a later minor.",
+            "description": "Ignored since the Slack-only release; accepted because the agent-platform umbrella still forwards it; removed in the next major release.",
             "additionalProperties": true
         },
         "agentgatewayRoute": {
@@ -78,7 +78,7 @@
         },
         "cli": {
             "type": "object",
-            "description": "Ignored since the Slack-only release; accepted because the agent-platform umbrella still forwards it; removed in a later minor.",
+            "description": "Ignored since the Slack-only release; accepted because the agent-platform umbrella still forwards it; removed in the next major release.",
             "additionalProperties": true
         },
         "cluster": {
@@ -141,7 +141,7 @@
         },
         "lifecycle": {
             "type": "object",
-            "description": "Ignored since the Slack-only release; accepted because the agent-platform umbrella still forwards it; removed in a later minor.",
+            "description": "Ignored since the Slack-only release; accepted because the agent-platform umbrella still forwards it; removed in the next major release.",
             "additionalProperties": true
         },
         "logLevel": {
@@ -385,14 +385,14 @@
             "properties": {
                 "autoCreate": {
                     "type": "boolean",
-                    "description": "Ignored since the Slack-only release; accepted because the agent-platform umbrella still forwards it; removed in a later minor. It created a Klaus instance on a route miss; there is no Klaus path left."
+                    "description": "Ignored since the Slack-only release; accepted because the agent-platform umbrella still forwards it; removed in the next major release. It created a Klaus instance on a route miss; there is no Klaus path left."
                 },
                 "boltPath": {
                     "type": "string"
                 },
                 "defaultTTL": {
                     "type": "string",
-                    "description": "Ignored since the Slack-only release; accepted because the agent-platform umbrella still forwards it; removed in a later minor. It was the TTL of a Klaus route entry; a thread's lifetime is threadTTL."
+                    "description": "Ignored since the Slack-only release; accepted because the agent-platform umbrella still forwards it; removed in the next major release. It was the TTL of a Klaus route entry; a thread's lifetime is threadTTL."
                 },
                 "store": {
                     "type": "string",
@@ -602,12 +602,12 @@
         },
         "upstream": {
             "type": "object",
-            "description": "Ignored since the Slack-only release; accepted because the agent-platform umbrella still forwards it; removed in a later minor.",
+            "description": "Ignored since the Slack-only release; accepted because the agent-platform umbrella still forwards it; removed in the next major release.",
             "additionalProperties": true
         },
         "web": {
             "type": "object",
-            "description": "Ignored since the Slack-only release; accepted because the agent-platform umbrella still forwards it; removed in a later minor.",
+            "description": "Ignored since the Slack-only release; accepted because the agent-platform umbrella still forwards it; removed in the next major release.",
             "additionalProperties": true
         }
     }

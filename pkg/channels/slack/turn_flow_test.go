@@ -57,11 +57,11 @@ func TestUsage_CarriesAcrossApprovalPause(t *testing.T) {
 func TestTypedResume_FailureKeepsPendingTask(t *testing.T) {
 	fake := newFakeSlackAPI()
 	var mu sync.Mutex
-	var resolved []channels.InboundMessage
+	var dispatched []channels.InboundMessage
 	gw := &stubGateway{
 		onDispatch: func(msg channels.InboundMessage) {
 			mu.Lock()
-			resolved = append(resolved, msg)
+			dispatched = append(dispatched, msg)
 			mu.Unlock()
 		},
 		sendQueue: [][]channels.OutboundDelta{
@@ -111,7 +111,7 @@ func TestTypedResume_FailureKeepsPendingTask(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	retried := false
-	for _, msg := range resolved {
+	for _, msg := range dispatched {
 		if msg.TaskID == "task-1" && msg.Decision != nil && strings.HasPrefix(msg.MessageID, "902.") {
 			retried = true
 		}
@@ -177,23 +177,23 @@ func TestPromptFlushFailure_KeepsPendingTask(t *testing.T) {
 // turn's answer.
 func TestStop_DuringTurnStartWindow(t *testing.T) {
 	fake := newFakeSlackAPI()
-	resolveEntered := make(chan struct{})
-	releaseResolve := make(chan struct{})
+	dispatchEntered := make(chan struct{})
+	releaseDispatch := make(chan struct{})
 	var once sync.Once
 	gw := &stubGateway{
 		deltas: []channels.OutboundDelta{{Content: "THE-ANSWER"}, {Done: true}},
 		onDispatch: func(channels.InboundMessage) {
-			once.Do(func() { close(resolveEntered) })
-			<-releaseResolve
+			once.Do(func() { close(dispatchEntered) })
+			<-releaseDispatch
 		},
 	}
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
 	sendEvent(t, srv, dmEvent("U1", "do something", "300.000"))
 	select {
-	case <-resolveEntered:
+	case <-dispatchEntered:
 	case <-time.After(2 * time.Second):
-		t.Fatal("turn never reached Resolve")
+		t.Fatal("turn never reached the gateway")
 	}
 
 	// The turn holds the thread slot but has not registered a cancelable turn yet.
@@ -202,7 +202,7 @@ func TestStop_DuringTurnStartWindow(t *testing.T) {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Stopped")
 	}, flowWait, 50*time.Millisecond, "/stop replies")
 
-	close(releaseResolve)
+	close(releaseDispatch)
 
 	require.Never(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "THE-ANSWER") ||
@@ -261,11 +261,11 @@ func TestStop_CancelClearsWorkingReactionSilently(t *testing.T) {
 func TestAttachmentOnlyReply_LeavesPendingTaskAndAsksForText(t *testing.T) {
 	fake := newFakeSlackAPI()
 	var mu sync.Mutex
-	var resolved []channels.InboundMessage
+	var dispatched []channels.InboundMessage
 	gw := &stubGateway{
 		onDispatch: func(msg channels.InboundMessage) {
 			mu.Lock()
-			resolved = append(resolved, msg)
+			dispatched = append(dispatched, msg)
 			mu.Unlock()
 		},
 		sendQueue: [][]channels.OutboundDelta{
@@ -299,7 +299,7 @@ func TestAttachmentOnlyReply_LeavesPendingTaskAndAsksForText(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	resumed := false
-	for _, msg := range resolved {
+	for _, msg := range dispatched {
 		require.False(t, strings.HasPrefix(msg.MessageID, "911."),
 			"the attachment-only reply must never reach the gateway as a turn")
 		if msg.TaskID == "task-1" && msg.Decision != nil && msg.Decision.Type == channels.DecisionApprove {
@@ -315,11 +315,11 @@ func TestAttachmentOnlyReply_LeavesPendingTaskAndAsksForText(t *testing.T) {
 func TestDecisionReplyWithAttachment_PostsNotForwardedNote(t *testing.T) {
 	fake := newFakeSlackAPI()
 	var mu sync.Mutex
-	var resolved []channels.InboundMessage
+	var dispatched []channels.InboundMessage
 	gw := &stubGateway{
 		onDispatch: func(msg channels.InboundMessage) {
 			mu.Lock()
-			resolved = append(resolved, msg)
+			dispatched = append(dispatched, msg)
 			mu.Unlock()
 		},
 		sendQueue: [][]channels.OutboundDelta{
@@ -346,7 +346,7 @@ func TestDecisionReplyWithAttachment_PostsNotForwardedNote(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	found := false
-	for _, msg := range resolved {
+	for _, msg := range dispatched {
 		if msg.TaskID == "task-1" && msg.Decision != nil {
 			found = true
 			require.Empty(t, msg.Attachments, "no attachment travels with a decision")

@@ -189,14 +189,14 @@ func TestConnectorPrompt_Cooldown(t *testing.T) {
 // The thread slot is released a beat after the previous turn's stream
 // completes, so an event racing that release is answered with a busy notice
 // and dropped; retrying with a fresh ts converges, as a real user would.
-func dispatchTurn(t *testing.T, srv *httptest.Server, gw *stubGateway, wantResolves int, text, threadTS string) {
+func dispatchTurn(t *testing.T, srv *httptest.Server, gw *stubGateway, wantDispatches int, text, threadTS string) {
 	t.Helper()
 	for i := 0; ; i++ {
 		require.Less(t, i, 20, "turn never dispatched past the busy thread slot")
 		sendEvent(t, srv, dmThreadEvent("U1", text, fmt.Sprintf("777.%03d", i), threadTS))
 		deadline := time.Now().Add(250 * time.Millisecond)
 		for time.Now().Before(deadline) {
-			if gw.dispatchCount() >= wantResolves {
+			if gw.dispatchCount() >= wantDispatches {
 				return
 			}
 			time.Sleep(10 * time.Millisecond)

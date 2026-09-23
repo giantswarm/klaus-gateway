@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -56,17 +57,31 @@ func ParseKey(s string) (Key, error) {
 	}, nil
 }
 
+// skippedKeysOnce guards the one Info line per process. Readiness lists on
+// every probe for the memory and bolt stores, so the per-call record has to
+// stay at Debug; the first skip is also the evidence an operator needs for the
+// upgrade, and installations run at info.
+var skippedKeysOnce sync.Once
+
 // LogSkippedKeys reports the rows a List had to leave out because their key is
-// of an older layout — every row written before the key lost its user slot, so
-// a store carried over from an earlier release says so once per List rather
-// than dropping them in silence. Nothing is logged when none were skipped.
+// of an older layout — every row written before the key lost its user slot.
+// The first such List in the process logs once at Info, so the upgrade leaves
+// evidence at the level installations run at; every List after it records the
+// count at Debug. Nothing is logged when none were skipped.
 func LogSkippedKeys(backend string, skipped int) {
 	if skipped == 0 {
 		return
 	}
+	skippedKeysOnce.Do(func() {
+		slog.Info("routing store: rows written before the Slack-only release were skipped, their key carries the old user slot; the threads they belong to start over on their next message",
+			"record", "store_keys_skipped", "backend", backend, "skipped", skipped)
+	})
 	slog.Debug("routing store: rows skipped, their key is of an older layout",
 		"backend", backend, "skipped", skipped)
 }
+
+// ResetSkippedKeysOnce re-arms the one-per-process Info line. For tests only.
+func ResetSkippedKeysOnce() { skippedKeysOnce = sync.Once{} }
 
 func escape(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\\`)

@@ -73,23 +73,23 @@ func withSelection(roster *fakeRoster, cards *fakeCards) func(*slackadapter.Adap
 	}
 }
 
-// captureResolves records every message reaching the gateway, keyed for
+// capturingGateway records every message dispatched to the gateway, keyed for
 // assertions on which agent ref each turn carried.
 func capturingGateway() (*stubGateway, func() []channels.InboundMessage) {
 	var mu sync.Mutex
-	var resolved []channels.InboundMessage
+	var dispatched []channels.InboundMessage
 	gw := &stubGateway{
 		deltas: []channels.OutboundDelta{{Content: "ok"}, {Done: true}},
 		onDispatch: func(msg channels.InboundMessage) {
 			mu.Lock()
-			resolved = append(resolved, msg)
+			dispatched = append(dispatched, msg)
 			mu.Unlock()
 		},
 	}
 	return gw, func() []channels.InboundMessage {
 		mu.Lock()
 		defer mu.Unlock()
-		return append([]channels.InboundMessage(nil), resolved...)
+		return append([]channels.InboundMessage(nil), dispatched...)
 	}
 }
 
@@ -135,7 +135,7 @@ func TestStart_RefusesNilGatewayAndMissingDefaultAgent(t *testing.T) {
 func TestAgentSelection_PrefixBindsConversationAndRepliesInherit(t *testing.T) {
 	fake := newFakeSlackAPI()
 	cards := &fakeCards{known: map[string]string{"kagent/sre-agent": "SRE Agent"}}
-	gw, resolved := capturingGateway()
+	gw, dispatched := capturingGateway()
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, withSelection(&fakeRoster{}, cards))
 
 	sendEvent(t, srv, mention("U1", "/agent sre-agent why are pods crashlooping?", "100.000", ""))
@@ -147,7 +147,7 @@ func TestAgentSelection_PrefixBindsConversationAndRepliesInherit(t *testing.T) {
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 },
 		flowWait, 50*time.Millisecond, "unprefixed reply dispatches")
 
-	msgs := resolved()
+	msgs := dispatched()
 	require.Equal(t, "kagent/sre-agent", msgs[0].AgentRef, "the conversation binds to the named agent")
 	require.Equal(t, "why are pods crashlooping?", msgs[0].Text, "the prefix is stripped; the question is the first turn")
 	require.Equal(t, "kagent/sre-agent", msgs[1].AgentRef, "replies inherit the conversation's agent")
@@ -159,7 +159,7 @@ func TestAgentSelection_PrefixBindsConversationAndRepliesInherit(t *testing.T) {
 func TestAgentSelection_DMPrefixBindsAndRepliesInherit(t *testing.T) {
 	fake := newFakeSlackAPI()
 	cards := &fakeCards{known: map[string]string{"kagent/sre-agent": "SRE Agent"}}
-	gw, resolved := capturingGateway()
+	gw, dispatched := capturingGateway()
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, withSelection(&fakeRoster{}, cards))
 
 	sendEvent(t, srv, dmEvent("U1", "/agent sre-agent hello there", "100.000"))
@@ -171,7 +171,7 @@ func TestAgentSelection_DMPrefixBindsAndRepliesInherit(t *testing.T) {
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 },
 		flowWait, 50*time.Millisecond, "DM reply dispatches")
 
-	msgs := resolved()
+	msgs := dispatched()
 	require.Equal(t, "kagent/sre-agent", msgs[0].AgentRef)
 	require.Equal(t, "hello there", msgs[0].Text)
 	require.Equal(t, "kagent/sre-agent", msgs[1].AgentRef, "DM replies inherit the conversation's agent")
@@ -204,13 +204,13 @@ func TestAgentSelection_UnknownAgentFailsLoudlyWithRoster(t *testing.T) {
 func TestAgentSelection_WhitespaceAfterSlash(t *testing.T) {
 	fake := newFakeSlackAPI()
 	cards := &fakeCards{known: map[string]string{"kagent/sre-agent": "SRE Agent"}}
-	gw, resolved := capturingGateway()
+	gw, dispatched := capturingGateway()
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, withSelection(&fakeRoster{}, cards))
 
 	sendEvent(t, srv, mention("U1", "/ agent sre-agent do things", "100.000", ""))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 50*time.Millisecond)
-	msgs := resolved()
+	msgs := dispatched()
 	require.Equal(t, "kagent/sre-agent", msgs[0].AgentRef)
 	require.Equal(t, "do things", msgs[0].Text)
 }
@@ -224,7 +224,7 @@ func TestAgentSelection_OnlookerReadOnlyFormsUngated(t *testing.T) {
 	fake := newFakeSlackAPI()
 	cards := &fakeCards{known: map[string]string{"kagent/sre-agent": "SRE Agent", "kagent/k8s-agent": "K8s Agent"}}
 	roster := &fakeRoster{agents: []pkga2a.AgentInfo{{Name: "sre-agent", Namespace: "kagent"}}}
-	gw, resolved := capturingGateway()
+	gw, dispatched := capturingGateway()
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, withSelection(roster, cards))
 
 	// U1 starts and owns the conversation.
@@ -251,7 +251,7 @@ func TestAgentSelection_OnlookerReadOnlyFormsUngated(t *testing.T) {
 	sendEvent(t, srv, mention("U1", "continue", "400.000", "100.000"))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 },
 		flowWait, 50*time.Millisecond)
-	require.Equal(t, "kagent/sre-agent", resolved()[1].AgentRef, "the binding is untouched by onlooker commands")
+	require.Equal(t, "kagent/sre-agent", dispatched()[1].AgentRef, "the binding is untouched by onlooker commands")
 }
 
 // "/agent <name>" with no question selects nothing: the hint says so, and the
@@ -260,7 +260,7 @@ func TestAgentSelection_OnlookerReadOnlyFormsUngated(t *testing.T) {
 func TestAgentSelection_NameOnlySelectsNothing(t *testing.T) {
 	fake := newFakeSlackAPI()
 	cards := &fakeCards{known: map[string]string{"kagent/sre-agent": "SRE Agent"}}
-	gw, resolved := capturingGateway()
+	gw, dispatched := capturingGateway()
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, withSelection(&fakeRoster{}, cards))
 
 	sendEvent(t, srv, mention("U1", "/agent sre-agent", "100.000", ""))
@@ -275,7 +275,7 @@ func TestAgentSelection_NameOnlySelectsNothing(t *testing.T) {
 	sendEvent(t, srv, mention("U1", "so what now?", "200.000", ""))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 50*time.Millisecond, "the follow-up dispatches")
-	require.Equal(t, "kagent/swarmgeist", resolved()[0].AgentRef, "no binding was created; the default agent applies")
+	require.Equal(t, "kagent/swarmgeist", dispatched()[0].AgentRef, "no binding was created; the default agent applies")
 }
 
 // A bare /agent lists the roster: display names (from the CR annotation) and
@@ -332,7 +332,7 @@ func TestAgentSelection_RosterFetchFailure(t *testing.T) {
 func TestAgentSelection_RefusedInsideExistingConversation(t *testing.T) {
 	fake := newFakeSlackAPI()
 	cards := &fakeCards{known: map[string]string{"kagent/sre-agent": "SRE Agent", "kagent/k8s-agent": "K8s Agent"}}
-	gw, resolved := capturingGateway()
+	gw, dispatched := capturingGateway()
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, withSelection(&fakeRoster{}, cards))
 
 	sendEvent(t, srv, mention("U1", "/agent sre-agent start here", "100.000", ""))
@@ -352,7 +352,7 @@ func TestAgentSelection_RefusedInsideExistingConversation(t *testing.T) {
 	sendEvent(t, srv, mention("U1", "continue", "300.000", "100.000"))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 },
 		flowWait, 50*time.Millisecond)
-	msgs := resolved()
+	msgs := dispatched()
 	require.Equal(t, "kagent/sre-agent", msgs[1].AgentRef, "the binding is unchanged after a refused switch")
 }
 
@@ -366,7 +366,7 @@ func TestAgentSelection_PaneRosterThenSelectBinds(t *testing.T) {
 		{Name: "sre-agent", Namespace: "kagent", DisplayName: "SRE Agent"},
 	}}
 	cards := &fakeCards{known: map[string]string{"kagent/sre-agent": "SRE Agent"}}
-	gw, resolved := capturingGateway()
+	gw, dispatched := capturingGateway()
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, withSelection(roster, cards))
 
 	sendEvent(t, srv, dmThreadEvent("U1", "/agent", "200.000", "100.000"))
@@ -379,8 +379,8 @@ func TestAgentSelection_PaneRosterThenSelectBinds(t *testing.T) {
 		flowWait, 50*time.Millisecond, "the selection after the roster listing dispatches")
 	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "already has its agent",
 		"a consumed roster request must not make the selection a refused switch")
-	require.Equal(t, "kagent/sre-agent", resolved()[0].AgentRef)
-	require.Equal(t, "check crashing pods in gazelle", resolved()[0].Text)
+	require.Equal(t, "kagent/sre-agent", dispatched()[0].AgentRef)
+	require.Equal(t, "check crashing pods in gazelle", dispatched()[0].Text)
 }
 
 // Assistant-pane semantics: a pane chat's first message arrives with
@@ -391,7 +391,7 @@ func TestAgentSelection_PaneRosterThenSelectBinds(t *testing.T) {
 func TestAgentSelection_PaneFirstMessageBindsAndInherits(t *testing.T) {
 	fake := newFakeSlackAPI()
 	cards := &fakeCards{known: map[string]string{"kagent/sre-agent": "SRE Agent", "kagent/k8s-agent": "K8s Agent"}}
-	gw, resolved := capturingGateway()
+	gw, dispatched := capturingGateway()
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, withSelection(&fakeRoster{}, cards))
 
 	// First message of a new pane chat: ts 200.000, thread anchor 100.000.
@@ -404,7 +404,7 @@ func TestAgentSelection_PaneFirstMessageBindsAndInherits(t *testing.T) {
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 },
 		flowWait, 50*time.Millisecond)
 
-	msgs := resolved()
+	msgs := dispatched()
 	require.Equal(t, "kagent/sre-agent", msgs[0].AgentRef, "the pane conversation binds to the named agent")
 	require.Equal(t, "hello there", msgs[0].Text)
 	require.Equal(t, "kagent/sre-agent", msgs[1].AgentRef, "pane replies inherit the binding")
@@ -471,7 +471,7 @@ func TestAgentSelection_QuotedDisplayNameBindsConversation(t *testing.T) {
 		{Name: "sre-agent", Namespace: "kagent", DisplayName: "SRE Agent"},
 	}}
 	cards := &fakeCards{known: map[string]string{"kagent/sre-agent": "SRE Agent"}}
-	gw, resolved := capturingGateway()
+	gw, dispatched := capturingGateway()
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, withSelection(roster, cards))
 
 	sendEvent(t, srv, mention("U1", `/agent "SRE Agent" why are pods crashing in gazelle?`, "100.000", ""))
@@ -483,7 +483,7 @@ func TestAgentSelection_QuotedDisplayNameBindsConversation(t *testing.T) {
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 },
 		flowWait, 50*time.Millisecond)
 
-	msgs := resolved()
+	msgs := dispatched()
 	require.Equal(t, "kagent/sre-agent", msgs[0].AgentRef, "the display name resolves to the technical ref")
 	require.Equal(t, "why are pods crashing in gazelle?", msgs[0].Text)
 	require.Equal(t, "kagent/sre-agent", msgs[1].AgentRef, "replies inherit the conversation's agent")
@@ -497,14 +497,14 @@ func TestAgentSelection_QuotedDisplayNameBareDefault(t *testing.T) {
 		{Name: "sre-agent", Namespace: "kagent", DisplayName: "SRE Agent"},
 	}}
 	cards := &fakeCards{known: map[string]string{"sre-agent": "SRE Agent"}}
-	gw, resolved := capturingGateway()
+	gw, dispatched := capturingGateway()
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, withSelection(roster, cards),
 		func(a *slackadapter.Adapter) { a.DefaultAgent = "swarmgeist" })
 
 	sendEvent(t, srv, mention("U1", `/agent "SRE Agent" check gazelle`, "100.000", ""))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 50*time.Millisecond)
-	require.Equal(t, "sre-agent", resolved()[0].AgentRef, "bare default keeps refs bare")
+	require.Equal(t, "sre-agent", dispatched()[0].AgentRef, "bare default keeps refs bare")
 }
 
 // A quoted name matching no agent fails loudly with the roster; a quoted name
@@ -557,7 +557,7 @@ func TestAgentSelection_QuotedDisplayNameRosterFailure(t *testing.T) {
 func TestAgentSelection_TwoUsersIndependentConversations(t *testing.T) {
 	fake := newFakeSlackAPI()
 	cards := &fakeCards{known: map[string]string{"kagent/sre-agent": "SRE Agent", "kagent/k8s-agent": "K8s Agent"}}
-	gw, resolved := capturingGateway()
+	gw, dispatched := capturingGateway()
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, withSelection(&fakeRoster{}, cards))
 
 	sendEvent(t, srv, mention("U1", "/agent sre-agent pods are crashing", "100.000", ""))
@@ -566,7 +566,7 @@ func TestAgentSelection_TwoUsersIndependentConversations(t *testing.T) {
 		flowWait, 50*time.Millisecond)
 
 	byThread := map[string]string{}
-	for _, msg := range resolved() {
+	for _, msg := range dispatched() {
 		byThread[msg.ThreadID] = msg.AgentRef
 	}
 	require.Equal(t, map[string]string{
@@ -583,7 +583,7 @@ func TestAgentSelection_NamespaceCompletion(t *testing.T) {
 		"kagent/sre-agent": "SRE Agent",
 		"other/lab-agent":  "Lab Agent",
 	}}
-	gw, resolved := capturingGateway()
+	gw, dispatched := capturingGateway()
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, withSelection(&fakeRoster{}, cards),
 		func(a *slackadapter.Adapter) { a.DefaultAgent = "kagent/swarmgeist" })
 
@@ -593,7 +593,7 @@ func TestAgentSelection_NamespaceCompletion(t *testing.T) {
 		flowWait, 50*time.Millisecond)
 
 	byThread := map[string]string{}
-	for _, msg := range resolved() {
+	for _, msg := range dispatched() {
 		byThread[msg.ThreadID] = msg.AgentRef
 	}
 	require.Equal(t, map[string]string{
@@ -606,13 +606,13 @@ func TestAgentSelection_NamespaceCompletion(t *testing.T) {
 func TestAgentSelection_CaseInsensitiveName(t *testing.T) {
 	fake := newFakeSlackAPI()
 	cards := &fakeCards{known: map[string]string{"kagent/sre-agent": "SRE Agent"}}
-	gw, resolved := capturingGateway()
+	gw, dispatched := capturingGateway()
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, withSelection(&fakeRoster{}, cards))
 
 	sendEvent(t, srv, mention("U1", "/agent SRE-Agent why?", "100.000", ""))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 50*time.Millisecond)
-	require.Equal(t, "kagent/sre-agent", resolved()[0].AgentRef)
+	require.Equal(t, "kagent/sre-agent", dispatched()[0].AgentRef)
 }
 
 // /help mentions the /agent command when selection is available, and not when
@@ -659,7 +659,7 @@ func TestAgentSelection_SameAgentReselectionDispatchesQuietly(t *testing.T) {
 	roster := &fakeRoster{agents: []pkga2a.AgentInfo{
 		{Name: "sre-agent", Namespace: "kagent", DisplayName: "SRE Agent"},
 	}}
-	gw, resolved := capturingGateway()
+	gw, dispatched := capturingGateway()
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, withSelection(roster, cards))
 
 	sendEvent(t, srv, mention("U1", "/agent sre-agent why are pods crashlooping?", "100.000", ""))
@@ -678,7 +678,7 @@ func TestAgentSelection_SameAgentReselectionDispatchesQuietly(t *testing.T) {
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 3 },
 		flowWait, 50*time.Millisecond, "the quoted same-agent re-selection dispatches")
 
-	msgs := resolved()
+	msgs := dispatched()
 	require.Equal(t, "kagent/sre-agent", msgs[1].AgentRef)
 	require.Equal(t, "and the nodes?", msgs[1].Text, "the prefix is stripped from the re-selection turn")
 	require.Equal(t, "kagent/sre-agent", msgs[2].AgentRef)
@@ -695,7 +695,7 @@ func TestAgentSelection_SameAgentReselectionDispatchesQuietly(t *testing.T) {
 func TestAgentSelection_DefaultAgentReselectionDispatchesQuietly(t *testing.T) {
 	fake := newFakeSlackAPI()
 	cards := &fakeCards{known: map[string]string{"kagent/swarmgeist": "Swarmgeist"}}
-	gw, resolved := capturingGateway()
+	gw, dispatched := capturingGateway()
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, withSelection(&fakeRoster{}, cards))
 
 	sendEvent(t, srv, mention("U1", "check the cluster", "100.000", ""))
@@ -707,7 +707,7 @@ func TestAgentSelection_DefaultAgentReselectionDispatchesQuietly(t *testing.T) {
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 },
 		flowWait, 50*time.Millisecond, "re-selecting the default agent dispatches")
 
-	msgs := resolved()
+	msgs := dispatched()
 	require.Equal(t, "kagent/swarmgeist", msgs[1].AgentRef)
 	require.Equal(t, "and the nodes?", msgs[1].Text)
 
@@ -769,7 +769,7 @@ func TestAgentSelection_TextPathReadsCatalogueAsCaller(t *testing.T) {
 func TestAgentSelection_QualifiedNameOfBoundAgentIsNotASwitch(t *testing.T) {
 	fake := newFakeSlackAPI()
 	cards := &fakeCards{known: map[string]string{"sre-agent": "SRE Agent"}}
-	gw, resolved := capturingGateway()
+	gw, dispatched := capturingGateway()
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, withSelection(&fakeRoster{}, cards),
 		func(a *slackadapter.Adapter) {
 			a.DefaultAgent = "sre-agent"
@@ -787,7 +787,7 @@ func TestAgentSelection_QualifiedNameOfBoundAgentIsNotASwitch(t *testing.T) {
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 },
 		flowWait, 50*time.Millisecond, "the qualified name of the bound agent dispatches, not refused")
 
-	msgs := resolved()
+	msgs := dispatched()
 	require.Equal(t, "sre-agent", msgs[0].AgentRef, "the bare default binds the thread")
 	require.Equal(t, "sre-agent", msgs[1].AgentRef, "the qualified selector resolves to the same bare ref")
 	require.Equal(t, "again", msgs[1].Text, "the prefix is stripped from the re-selection turn")

@@ -57,7 +57,7 @@ func sendAskAgentShortcut(t *testing.T, srv *httptest.Server, channel, user, ts,
 func TestAskAgentShortcut_StartsConversationInTheMessageThread(t *testing.T) {
 	fake := newFakeSlackAPI()
 	api := fake.server(t)
-	gw, resolved := capturingGateway()
+	gw, dispatched := capturingGateway()
 	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
 
 	sendAskAgentShortcut(t, srv, "C1", "U1", "200.000", "100.000", api.URL+"/response_url")
@@ -83,7 +83,7 @@ func TestAskAgentShortcut_StartsConversationInTheMessageThread(t *testing.T) {
 	require.Contains(t, echo.params["text"].(string), "<@U1> asked *SRE Agent*")
 	require.Contains(t, echo.params["text"].(string), "> why are pods crashlooping?")
 
-	msgs := resolved()
+	msgs := dispatched()
 	require.Len(t, msgs, 1)
 	require.Equal(t, "100.000", msgs[0].ThreadID, "the turn runs in the existing thread")
 	require.Equal(t, "kagent/sre-agent", msgs[0].AgentRef)
@@ -103,7 +103,7 @@ func TestAskAgentShortcut_StartsConversationInTheMessageThread(t *testing.T) {
 func TestAskAgentShortcut_RootMessageOpensItsOwnThread(t *testing.T) {
 	fake := newFakeSlackAPI()
 	api := fake.server(t)
-	gw, resolved := capturingGateway()
+	gw, dispatched := capturingGateway()
 	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
 
 	sendAskAgentShortcut(t, srv, "C1", "U1", "500.000", "", api.URL+"/response_url")
@@ -118,7 +118,7 @@ func TestAskAgentShortcut_RootMessageOpensItsOwnThread(t *testing.T) {
 		flowWait, 50*time.Millisecond, "the submission dispatches the first turn")
 
 	require.Equal(t, "500.000", fake.pathCalls("chat.postMessage")[0].params["thread_ts"])
-	require.Equal(t, "500.000", resolved()[0].ThreadID)
+	require.Equal(t, "500.000", dispatched()[0].ThreadID)
 }
 
 // A thread that already talks to an agent is refused before the picker opens:
