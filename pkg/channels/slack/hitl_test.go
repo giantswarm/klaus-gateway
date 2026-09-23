@@ -249,3 +249,19 @@ func TestPostHitlPrompt_FallsBackToTextOnBlockKitFailure(t *testing.T) {
 	require.Contains(t, plainTexts[2], "Database?")
 	require.Contains(t, plainTexts[2], "one line per question")
 }
+
+// Only an approval hands its calls to the resumed turn; a denial, an ask_user
+// answer and a fresh turn hand none.
+func TestApprovedCalls(t *testing.T) {
+	tools := []channels.HitlTool{{ID: "a1", CallID: "c1", Name: "call_tool"}}
+	approval := &pendingTask{Prompt: &channels.HitlPrompt{ToolName: "call_tool", Tools: tools}}
+	question := &pendingTask{Prompt: &channels.HitlPrompt{ToolName: channels.AskUserToolName}}
+	approve := &channels.HitlDecision{Type: channels.DecisionApprove}
+	reject := &channels.HitlDecision{Type: channels.DecisionReject}
+
+	require.Equal(t, tools, approvedCalls(approval, approve))
+	require.Nil(t, approvedCalls(approval, reject))
+	require.Nil(t, approvedCalls(approval, nil), "a typed follow-up without a decision")
+	require.Nil(t, approvedCalls(question, approve))
+	require.Nil(t, approvedCalls(nil, approve))
+}
