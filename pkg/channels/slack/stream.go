@@ -110,10 +110,15 @@ const (
 
 	// Step states of a task_update chunk, spelled exactly as Slack names them
 	// in the chat.appendStream reference.
+	stepPending    = "pending"
 	stepInProgress = "in_progress"
 	stepComplete   = "complete"
 	stepError      = "error"
 )
+
+// stepAwaitingApprovalSuffix follows the title of a step whose call waits for
+// the person's approval: the reply closes on the prompt with the step not run.
+const stepAwaitingApprovalSuffix = " · waiting for approval"
 
 // batchedWriter accumulates OutboundDelta content and streams it into one
 // Slack message: chat.startStream opens the reply, chat.appendStream adds
@@ -226,6 +231,10 @@ type batchedWriter struct {
 	// a restart must not post again, and what says the reply carries agent text.
 	appendedLen int
 	promptDelta *channels.OutboundDelta // set when stream ends on DeltaPrompt
+	// approvedCalls are the calls of the approval this turn resumes. Their
+	// results arrive in this turn's message, which never saw the calls, so
+	// run() opens a step for each before the first event.
+	approvedCalls []channels.HitlTool
 	// Stream state, touched from run()'s goroutine (and from the terminal flush
 	// the adapter runs once run() has returned). streamTS is the open streamed
 	// message, "" when none is open; streamed counts the characters it carries,
@@ -372,6 +381,10 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 		w.resetStream()
 	}
 	w.ran = true
+	for _, c := range w.approvedCalls {
+		w.renderToolActivity(ctx, &channels.ToolActivity{Name: c.Name, Kind: channels.ToolCall, CallID: c.CallID, Args: c.Args})
+	}
+	w.approvedCalls = nil
 	ticker := time.NewTicker(streamAppendInterval)
 	defer ticker.Stop()
 	// The session leaves "processing" on EVERY exit — stream done, stream error,
@@ -643,6 +656,10 @@ func (w *batchedWriter) renderToolActivity(ctx context.Context, tool *channels.T
 		w.recordToolLog(toolCallMarkdown(displayName, viaMuster, args))
 		w.openStep(ctx, tool.CallID, displayName, args)
 	case channels.ToolResult:
+		if tool.AwaitsApproval {
+			w.holdStep(ctx, tool.CallID)
+			return
+		}
 		preview, isErr := toolResultPreview(tool.Response, toolResultMax)
 		if md, ok := w.toolResultMarkdown(tool, preview, isErr); ok {
 			w.recordToolLog(md)
@@ -735,6 +752,20 @@ func (w *batchedWriter) closeStep(ctx context.Context, callID, preview string, i
 		u.output = stepField(preview)
 	}
 	w.queueStep(u)
+	w.noteDelivered(ctx)
+}
+
+// holdStep ends the step of a call that waits for the person's approval: not
+// run, so neither complete nor an error. The reply closes on the prompt; once
+// approved, the call runs in the next turn's message, which opens a step of its
+// own for it (approvedCalls).
+func (w *batchedWriter) holdStep(ctx context.Context, callID string) {
+	s, ok := w.takeOpenStep(callID)
+	if !ok {
+		return
+	}
+	title := truncateRunes(s.title+stepAwaitingApprovalSuffix, stepTitleMax)
+	w.queueStep(taskUpdate{id: s.id, title: title, status: stepPending})
 	w.noteDelivered(ctx)
 }
 

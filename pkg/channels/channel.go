@@ -160,6 +160,10 @@ type ToolActivity struct {
 	CallID   string           // correlates a call with its response
 	Args     map[string]any   // call arguments; nil for a result
 	Response map[string]any   // result payload; nil for a call
+	// AwaitsApproval marks a result that is not the tool's output: the runtime
+	// answered the call with its request for the person's approval, and the
+	// tool runs only once the approval prompt is decided.
+	AwaitsApproval bool
 }
 
 // OutboundDelta is one chunk streamed from an instance back through an

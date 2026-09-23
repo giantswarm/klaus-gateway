@@ -108,5 +108,14 @@ func (a *Adapter) runTurn(ctx context.Context, msg channels.InboundMessage, slac
 	if task != nil {
 		carried = task.Usage
 	}
-	return a.streamResponse(turnCtx, a.agentClient(pkga2a.WithForwardedToken(ctx, msg.BearerToken), msg.AgentRef), deltas, msg, slackUser, slackChannel, msg.ThreadID, triggerTS, placeholder, initiator, carried, store.Delivered{})
+	return a.streamResponse(turnCtx, a.agentClient(pkga2a.WithForwardedToken(ctx, msg.BearerToken), msg.AgentRef), deltas, msg, slackUser, slackChannel, msg.ThreadID, triggerTS, placeholder, initiator, carried, store.Delivered{}, approvedCalls(task, msg.Decision))
+}
+
+// approvedCalls returns the tool calls a decision approves, which run in the
+// resumed turn: none for a fresh turn, a denial or an ask_user answer.
+func approvedCalls(task *pendingTask, decision *channels.HitlDecision) []channels.HitlTool {
+	if task == nil || task.Prompt == nil || task.Prompt.IsAskUser() || decision == nil || decision.Type != channels.DecisionApprove {
+		return nil
+	}
+	return task.Prompt.Tools
 }

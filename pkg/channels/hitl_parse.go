@@ -308,11 +308,25 @@ func toolActivityDelta(p *a2apkg.Part) OutboundDelta {
 	if typ == mdTypeFunctionResponse {
 		tool.Kind = ToolResult
 		tool.Response, _ = data["response"].(map[string]any)
+		tool.AwaitsApproval = isConfirmationRequired(tool.Response)
 	} else {
 		tool.Kind = ToolCall
 		tool.Args, _ = data["args"].(map[string]any)
 	}
 	return OutboundDelta{Kind: DeltaToolActivity, Content: tool.Name, Tool: tool}
+}
+
+// confirmationRequiredText ends the error the ADK runtime answers a call with
+// when the tool needs the person's approval (adk-go tool.ErrConfirmationRequired,
+// wrapped as `error tool "<name>" requires confirmation, …`). The result comes
+// before the adk_request_confirmation call that pauses the task.
+const confirmationRequiredText = "requires confirmation, please approve or reject"
+
+// isConfirmationRequired reports whether a function_response payload is the
+// runtime's approval request rather than the tool's output.
+func isConfirmationRequired(resp map[string]any) bool {
+	msg, _ := resp["error"].(string)
+	return strings.HasSuffix(msg, confirmationRequiredText)
 }
 
 // mdInt reads an integer usage field. A2A event metadata is JSON-decoded, so
