@@ -4,6 +4,40 @@ Breaking or operator-visible changes between releases, newest first. The
 `CHANGELOG.md` lists every change; this file covers what an operator has to
 do or decide.
 
+## Next — the ignored Slack-only values keys are deleted (breaking)
+
+Nine values keys the chart has accepted and ignored since the Slack-only release are removed from
+`values.yaml` and from the values schema: `web`, `cli`, `lifecycle`, `upstream`, `agentgateway`,
+`routing.defaultTTL`, `routing.autoCreate`, `a2a.saToken` and `a2a.tokenPath`. Nothing in the
+chart ever read them; what changes is that the schema no longer accepts them.
+
+**A values file that still sets one fails the upgrade.** The schema refuses unknown keys, so
+`helm upgrade` (and Flux's helm-controller, which reconciles the HelmRelease with the same
+check) stops before it installs anything:
+
+```
+Error: values don't meet the specifications of the schema(s) in the following chart(s):
+klaus-gateway:
+- at '': additional properties 'cli' not allowed
+```
+
+A nested key is named by its parent: `at '/routing': additional properties 'defaultTTL' not
+allowed`, `at '/a2a': additional properties 'saToken' not allowed`.
+
+**What to do.** Delete the keys from the values you set for this chart. On a Giant Swarm
+installation there is most likely nothing to do: the `agent-platform` umbrella stopped
+forwarding them in 4.62.0 and the shared defaults stopped setting them, so an installation on
+that umbrella or later already sends a `klausGateway` block without them. An installation that
+pins an older umbrella, or that sets one of the keys in its own
+`installations/<installation>/apps/agent-platform` patch, removes it there first — the umbrella
+forwards its `klausGateway` block verbatim, so a key left in the patch reaches this chart and
+fails the release.
+
+The keys the umbrella does forward — `enabled`, `agentgatewayRoute`, `image`, `podAnnotations`,
+`podDisruptionBudget`, `routing.store` and `routing.valkey`, `observability.otlpEndpoint` and
+`.otlpHeaders`, `serviceMonitor`, `slack.*`, `obo.*`, `a2a` without `saToken` and `tokenPath`,
+`nodeSelector`, `tolerations` and `global` — are all still declared here and unchanged.
+
 ## Next — the agent's steps move inside the Slack reply
 
 A turn's tool calls are now steps of Slack's native task list, attached to the reply message
