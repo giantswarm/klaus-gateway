@@ -147,7 +147,7 @@ func TestRun_TransientFlushFailureDoesNotAbortTurn(t *testing.T) {
 	defer srv.Close()
 
 	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
-	w := newBatchedWriterWithClient(client, "C1", "1.1", "1.0", detailsOff, slog.Default())
+	w := newBatchedWriterWithClient(client, "C1", "1.1", "1.0", slog.Default())
 	ch := make(chan channels.OutboundDelta)
 	done := make(chan error, 1)
 	go func() { done <- w.run(t.Context(), ch) }()
@@ -176,7 +176,7 @@ func TestRun_PersistentFlushFailureDoesNotAbortTurn(t *testing.T) {
 	defer srv.Close()
 
 	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
-	w := newBatchedWriterWithClient(client, "C1", "1.1", "1.0", detailsOff, slog.Default())
+	w := newBatchedWriterWithClient(client, "C1", "1.1", "1.0", slog.Default())
 	ch := make(chan channels.OutboundDelta)
 	done := make(chan error, 1)
 	go func() { done <- w.run(t.Context(), ch) }()
@@ -253,7 +253,7 @@ func (r *recordingSlack) delivered(t *testing.T, budget int) string {
 // text delivered in order (klaus-gateway#242).
 func TestRun_LongReplyRollsOverIntoFurtherStreams(t *testing.T) {
 	rec, client := newRecordingSlack(t)
-	w := newBatchedWriterWithClient(client, "C1", "", "1.0", detailsOff, slog.Default())
+	w := newBatchedWriterWithClient(client, "C1", "", "1.0", slog.Default())
 	ch := make(chan channels.OutboundDelta)
 	done := make(chan error, 1)
 	go func() { done <- w.run(t.Context(), ch) }()
@@ -309,7 +309,7 @@ func TestFlush_FailedAppendIsResentOnNextFlush(t *testing.T) {
 	defer srv.Close()
 
 	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
-	w := newBatchedWriterWithClient(client, "C1", "1.1", "1.0", detailsOff, slog.Default())
+	w := newBatchedWriterWithClient(client, "C1", "1.1", "1.0", slog.Default())
 	w.queueAnswer("hello ")
 
 	require.Error(t, w.flush(t.Context()))
@@ -344,7 +344,7 @@ func TestFlush_PartialRolloverStillCountsAsContent(t *testing.T) {
 	defer srv.Close()
 
 	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
-	w := newBatchedWriterWithClient(client, "C1", "", "1.0", detailsOff, slog.Default())
+	w := newBatchedWriterWithClient(client, "C1", "", "1.0", slog.Default())
 	// One line over the per-message cap splits into two streamed messages.
 	w.queueAnswer(strings.Repeat("a", slackMarkdownBlockMax+500) + " ")
 
@@ -964,7 +964,7 @@ func TestRetractRendered_DeletesEveryStreamedMessage(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	w := newBatchedWriterWithClient(&slackAPIClient{baseURL: srv.URL}, "C1", "", "T1", detailsOff, nil)
+	w := newBatchedWriterWithClient(&slackAPIClient{baseURL: srv.URL}, "C1", "", "T1", nil)
 	w.streamMessages = []string{"stream-1", "stream-2"}
 	w.appendedLen = 12
 
@@ -1008,7 +1008,7 @@ func TestRun_TransientFinalFlushFailureDoesNotAbortTurn(t *testing.T) {
 	defer srv.Close()
 
 	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
-	w := newBatchedWriterWithClient(client, "C1", "1.1", "1.0", detailsOff, slog.Default())
+	w := newBatchedWriterWithClient(client, "C1", "1.1", "1.0", slog.Default())
 	ch := make(chan channels.OutboundDelta, 2)
 	ch <- channels.OutboundDelta{Kind: channels.DeltaText, Content: "hello"}
 	ch <- channels.OutboundDelta{Done: true}
@@ -1341,6 +1341,18 @@ func (f *fakeThread) steps() []taskChunk {
 	return out
 }
 
+// stepShapes returns the steps with their payload fields cleared, so a
+// lifecycle test can assert on id, title and status without repeating the
+// details and output the always-on rendering now attaches — those are covered
+// by the payload tests.
+func (f *fakeThread) stepShapes() []taskChunk {
+	out := f.steps()
+	for i := range out {
+		out[i].details, out[i].output = "", ""
+	}
+	return out
+}
+
 // streamedText concatenates the prose of every streaming call.
 func (f *fakeThread) streamedText() string {
 	var b strings.Builder
@@ -1459,14 +1471,14 @@ func blockTexts(blocks []json.RawMessage) capturedMessage {
 // reply was streamed with, together with the writer. headTS empty is reactions
 // mode; a non-empty headTS is text mode, where the progress placeholder waits
 // to be superseded.
-func captureStream(t *testing.T, details detailsLevel, headTS string, deltas ...channels.OutboundDelta) (*fakeThread, *batchedWriter) {
+func captureStream(t *testing.T, headTS string, deltas ...channels.OutboundDelta) (*fakeThread, *batchedWriter) {
 	t.Helper()
 	ft := &fakeThread{}
 	srv := httptest.NewServer(ft.handler())
 	t.Cleanup(srv.Close)
 
 	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
-	w := newBatchedWriterWithClient(client, "C1", headTS, "1.0", details, slog.Default())
+	w := newBatchedWriterWithClient(client, "C1", headTS, "1.0", slog.Default())
 	ch := make(chan channels.OutboundDelta, len(deltas)+1)
 	for _, d := range deltas {
 		ch <- d
@@ -1481,14 +1493,14 @@ func captureStream(t *testing.T, details detailsLevel, headTS string, deltas ...
 // captureToolLog returns every entry the turn retained in the thread's tool
 // log — the rendering the "Inspect agent steps" shortcut shows — in stream
 // order.
-func captureToolLog(t *testing.T, details detailsLevel, deltas ...channels.OutboundDelta) []string {
+func captureToolLog(t *testing.T, deltas ...channels.OutboundDelta) []string {
 	t.Helper()
 	ft := &fakeThread{}
 	srv := httptest.NewServer(ft.handler())
 	t.Cleanup(srv.Close)
 
 	a := &Adapter{Logger: slog.Default()}
-	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "C1", "1.1", "T1", details, slog.Default())
+	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "C1", "1.1", "T1", slog.Default())
 	w.adapter = a
 	ch := make(chan channels.OutboundDelta, len(deltas)+1)
 	for _, d := range deltas {
@@ -1517,7 +1529,7 @@ func runSurfaceWriter(t *testing.T, ft *fakeThread, channel string, deltas ...ch
 	t.Cleanup(srv.Close)
 
 	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
-	w := newBatchedWriterWithClient(client, channel, "", "1.0", detailsOn, slog.Default())
+	w := newBatchedWriterWithClient(client, channel, "", "1.0", slog.Default())
 	w.adapter = &Adapter{}
 	ch := make(chan channels.OutboundDelta, len(deltas))
 	for _, d := range deltas {
@@ -1570,7 +1582,7 @@ func toolResultDelta(name, callID string, resp map[string]any) channels.Outbound
 // that introduces a tool call, the steps themselves, and the answer, all as
 // chunks of the same streamed reply (klaus-gateway#197, #314).
 func TestStream_NarrationStepsAndAnswerShareOneMessage(t *testing.T) {
-	ft, w := captureStream(t, detailsOn, "",
+	ft, w := captureStream(t, "",
 		narrationDelta("Let me pull the HelmRelease from both clusters."),
 		toolCallDelta("x_kubernetes_get"),
 		narrationDelta("Both share the same chart version."),
@@ -1596,7 +1608,7 @@ func TestStream_NarrationStepsAndAnswerShareOneMessage(t *testing.T) {
 // before any answer text, so a stream that waited for the text would leave the
 // steps nowhere to live.
 func TestStream_OpensOnTheFirstToolCall(t *testing.T) {
-	ft, _ := captureStream(t, detailsOn, "",
+	ft, _ := captureStream(t, "",
 		toolCallDelta("filter_tools"),
 		channels.OutboundDelta{Kind: channels.DeltaText, Content: "done"},
 	)
@@ -1613,7 +1625,7 @@ func TestStream_OpensOnTheFirstToolCall(t *testing.T) {
 // A narration passage opens the stream just as a tool call does, so prose the
 // agent writes before it calls anything still lands in the reply.
 func TestStream_OpensOnTheFirstNarration(t *testing.T) {
-	ft, _ := captureStream(t, detailsOn, "", narrationDelta("Let me look that up."))
+	ft, _ := captureStream(t, "", narrationDelta("Let me look that up."))
 
 	require.Equal(t, []string{methodChatStartStream, methodChatStopStream}, ft.streamMethods())
 	require.Equal(t, "Let me look that up."+passageBreak, ft.streamedText())
@@ -1622,7 +1634,7 @@ func TestStream_OpensOnTheFirstNarration(t *testing.T) {
 // A tool call opens a step as in_progress; its result closes the SAME step —
 // same id, so Slack updates the card instead of listing the call twice.
 func TestSteps_CallThenResultShareOneID(t *testing.T) {
-	ft, _ := captureStream(t, detailsOn, "",
+	ft, _ := captureStream(t, "",
 		toolCallDeltaWith("x_kubernetes_list", "c1", map[string]any{"kind": "pods"}),
 		toolResultDelta("x_kubernetes_list", "c1", map[string]any{"output": "3 pods"}),
 	)
@@ -1630,13 +1642,12 @@ func TestSteps_CallThenResultShareOneID(t *testing.T) {
 	require.Equal(t, []taskChunk{
 		{id: "step-1", title: "Kubernetes list", status: stepInProgress},
 		{id: "step-1", title: "Kubernetes list", status: stepComplete},
-	}, ft.steps())
+	}, ft.stepShapes())
 }
 
-// A result the tool reported as an error closes its step as error, whatever the
-// details level.
+// A result the tool reported as an error closes its step as error.
 func TestSteps_ErrorResultClosesTheStepAsError(t *testing.T) {
-	ft, _ := captureStream(t, detailsOn, "",
+	ft, _ := captureStream(t, "",
 		toolCallDeltaWith("kube_get", "c1", nil),
 		toolResultDelta("kube_get", "c1", map[string]any{
 			"content": []any{map[string]any{"type": "text", "text": "boom"}},
@@ -1647,13 +1658,13 @@ func TestSteps_ErrorResultClosesTheStepAsError(t *testing.T) {
 	require.Equal(t, []taskChunk{
 		{id: "step-1", title: "Kube get", status: stepInProgress},
 		{id: "step-1", title: "Kube get", status: stepError},
-	}, ft.steps())
+	}, ft.stepShapes())
 }
 
 // Step ids are the turn's call ordinal, so a process continuing the turn after
 // a restart knows which ids are already on the reply.
 func TestSteps_IDsAreTheTurnsCallOrdinal(t *testing.T) {
-	ft, w := captureStream(t, detailsOn, "",
+	ft, w := captureStream(t, "",
 		toolCallDeltaWith("alpha", "c1", nil),
 		toolCallDeltaWith("beta", "c2", nil),
 		toolResultDelta("alpha", "c1", map[string]any{"output": "ok"}),
@@ -1673,7 +1684,7 @@ func TestSteps_IDsAreTheTurnsCallOrdinal(t *testing.T) {
 // see the call; no result can ever be matched to it, so the turn's end is what
 // closes it.
 func TestSteps_CallWithoutAnIDIsClosedAtTheTurnsEnd(t *testing.T) {
-	ft, _ := captureStream(t, detailsOn, "",
+	ft, _ := captureStream(t, "",
 		toolCallDelta("x_kubernetes_list"),
 		toolResultDelta("x_kubernetes_list", "", map[string]any{"output": "3 pods"}),
 		channels.OutboundDelta{Kind: channels.DeltaText, Content: "done"},
@@ -1682,7 +1693,7 @@ func TestSteps_CallWithoutAnIDIsClosedAtTheTurnsEnd(t *testing.T) {
 	require.Equal(t, []taskChunk{
 		{id: "step-1", title: "Kubernetes list", status: stepInProgress},
 		{id: "step-1", title: "Kubernetes list", status: stepComplete},
-	}, ft.steps(), "the result cannot be matched, so the turn's end closes the step once")
+	}, ft.stepShapes(), "the result cannot be matched, so the turn's end closes the step once")
 }
 
 // A turn nobody finished — a /stop, a shutdown — closes its running step as an
@@ -1714,7 +1725,7 @@ func cancelledTurnSteps(t *testing.T, cause error) []taskChunk {
 	srv := httptest.NewServer(ft.handler())
 	t.Cleanup(srv.Close)
 
-	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "D1", "", "1.0", detailsOn, slog.Default())
+	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "D1", "", "1.0", slog.Default())
 	w.adapter = &Adapter{}
 	ctx, cancel := context.WithCancelCause(t.Context())
 	ch := make(chan channels.OutboundDelta)
@@ -1727,7 +1738,7 @@ func cancelledTurnSteps(t *testing.T, cause error) []taskChunk {
 	cancel(cause)
 	require.ErrorIs(t, <-done, context.Canceled)
 
-	return ft.steps()
+	return ft.stepShapes()
 }
 
 // A turn pausing on a HITL prompt closes its steps on the message it is about
@@ -1738,7 +1749,7 @@ func TestSteps_PromptPauseClosesTheStepOnTheFirstMessage(t *testing.T) {
 	srv := httptest.NewServer(ft.handler())
 	t.Cleanup(srv.Close)
 
-	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "D1", "", "1.0", detailsOn, slog.Default())
+	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "D1", "", "1.0", slog.Default())
 	w.adapter = &Adapter{}
 	run := func(deltas ...channels.OutboundDelta) {
 		ch := make(chan channels.OutboundDelta, len(deltas))
@@ -1759,7 +1770,7 @@ func TestSteps_PromptPauseClosesTheStepOnTheFirstMessage(t *testing.T) {
 	require.Equal(t, []taskChunk{
 		{id: "step-1", title: "Ask user", status: stepInProgress},
 		{id: "step-1", title: "Ask user", status: stepComplete},
-	}, ft.steps(), "the step is opened and closed on the first message only")
+	}, ft.stepShapes(), "the step is opened and closed on the first message only")
 	require.Equal(t, []string{string(sessionSuspended), string(sessionActive)}, ft.stopStatuses())
 	require.Equal(t, []string{chunkTypeTaskUpdate, chunkTypeTaskUpdate, chunkTypeMarkdownText}, ft.chunkOrder(),
 		"the second message carries the answer alone")
@@ -1768,7 +1779,7 @@ func TestSteps_PromptPauseClosesTheStepOnTheFirstMessage(t *testing.T) {
 // A result whose call was never seen has no step to close, so nothing is sent
 // for it.
 func TestSteps_OrphanResultIsDropped(t *testing.T) {
-	ft, _ := captureStream(t, detailsOn, "",
+	ft, _ := captureStream(t, "",
 		toolResultDelta("kube_get", "unknown", map[string]any{"output": "ok"}),
 		channels.OutboundDelta{Kind: channels.DeltaText, Content: "done"},
 	)
@@ -1776,36 +1787,10 @@ func TestSteps_OrphanResultIsDropped(t *testing.T) {
 	require.Empty(t, ft.steps())
 }
 
-// /details off is the private mode: no step is rendered and nothing is
-// recorded, but the agent's own prose still lands.
-func TestSteps_DetailsOffRendersNoSteps(t *testing.T) {
-	ft, _ := captureStream(t, detailsOff, "",
-		narrationDelta("Let me look that up."),
-		toolCallDeltaWith("x_kubernetes_get", "c1", map[string]any{"kind": "pods"}),
-		toolResultDelta("x_kubernetes_get", "c1", map[string]any{"output": "ok"}),
-	)
-
-	require.Empty(t, ft.steps())
-	require.Equal(t, "Let me look that up."+passageBreak, ft.streamedText())
-}
-
-// /details on is titles only: no payload reaches the step card.
-func TestSteps_DetailsOnIsTitlesOnly(t *testing.T) {
-	ft, _ := captureStream(t, detailsOn, "",
-		toolCallDeltaWith("x_kubernetes_get", "c1", map[string]any{"kind": "pods"}),
-		toolResultDelta("x_kubernetes_get", "c1", map[string]any{"output": "3 pods"}),
-	)
-
-	for _, s := range ft.steps() {
-		require.Empty(t, s.details, "no arguments at /details on")
-		require.Empty(t, s.output, "no result preview at /details on")
-	}
-}
-
-// /details full carries the raw tool name and its arguments as the step's
-// details, and the result preview as its output.
-func TestSteps_DetailsFullCarriesDetailsAndOutput(t *testing.T) {
-	ft, _ := captureStream(t, detailsFull, "",
+// A step carries the raw tool name and its arguments as the step's details,
+// and the result preview as its output.
+func TestSteps_CarriesDetailsAndOutput(t *testing.T) {
+	ft, _ := captureStream(t, "",
 		toolCallDeltaWith("x_kubernetes_get", "c1", map[string]any{"kind": "pods"}),
 		toolResultDelta("x_kubernetes_get", "c1", map[string]any{"output": "3 pods running"}),
 	)
@@ -1824,7 +1809,7 @@ func TestSteps_DetailsFullCarriesDetailsAndOutput(t *testing.T) {
 // 2026-09-22). Exactly one update of a step may carry them: the one that opens
 // it.
 func TestSteps_DetailsRideTheOpeningUpdateOnly(t *testing.T) {
-	ft, _ := captureStream(t, detailsFull, "",
+	ft, _ := captureStream(t, "",
 		toolCallDeltaWith("x_kubernetes_get", "c1", map[string]any{"kind": "pods"}),
 		toolResultDelta("x_kubernetes_get", "c1", map[string]any{"output": "ok"}),
 		// A second call whose result never comes, so the turn's end closes it.
@@ -1846,7 +1831,7 @@ func TestSteps_DetailsRideTheOpeningUpdateOnly(t *testing.T) {
 // 2026-09-22), so the compacting turns it off and the mrkdwn escaping does the
 // neutralising, as it does everywhere else.
 func TestSteps_DetailsCarryTheRealCharacters(t *testing.T) {
-	ft, _ := captureStream(t, detailsFull, "",
+	ft, _ := captureStream(t, "",
 		toolCallDeltaWith("x_prometheus_execute_query", "c1", map[string]any{
 			"query": `up{job!="x"} > 0.5 and on() vector(1) < 2 & more`,
 		}),
@@ -1865,7 +1850,7 @@ func TestSteps_DetailsCarryTheRealCharacters(t *testing.T) {
 // Slack caps a task_update chunk's fields, so the payload previews are cut to
 // it however long the tool was.
 func TestSteps_DetailsAndOutputAreTruncated(t *testing.T) {
-	ft, _ := captureStream(t, detailsFull, "",
+	ft, _ := captureStream(t, "",
 		toolCallDeltaWith("kube_get", "c1", map[string]any{"filter": strings.Repeat("a", 2000)}),
 		toolResultDelta("kube_get", "c1", map[string]any{"output": strings.Repeat("b", 2000)}),
 	)
@@ -1879,12 +1864,12 @@ func TestSteps_DetailsAndOutputAreTruncated(t *testing.T) {
 // A step title is agent- and MCP-controlled text: mrkdwn control sequences must
 // arrive escaped, and the title must stay one line.
 func TestSteps_TitleEscapesMrkdwnAndFlattens(t *testing.T) {
-	ft, _ := captureStream(t, detailsOn, "", toolCallDelta("ping <!channel> &\nnow"))
+	ft, _ := captureStream(t, "", toolCallDelta("ping <!channel> &\nnow"))
 
 	require.Equal(t, []taskChunk{
 		{id: "step-1", title: "Ping &lt;!channel&gt; &amp; now", status: stepInProgress},
 		{id: "step-1", title: "Ping &lt;!channel&gt; &amp; now", status: stepComplete},
-	}, ft.steps())
+	}, ft.stepShapes())
 }
 
 // Narration counts toward the message's character cap but never toward the
@@ -1897,7 +1882,7 @@ func TestNarration_AdvancesTheMessageNotTheAnswerLength(t *testing.T) {
 	srv := httptest.NewServer(ft.handler())
 	t.Cleanup(srv.Close)
 
-	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "C1", "", "1.0", detailsOn, slog.Default())
+	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "C1", "", "1.0", slog.Default())
 	var records []store.Delivered
 	w.onDelivered = func(_ context.Context, d store.Delivered) { records = append(records, d) }
 
@@ -1912,18 +1897,6 @@ func TestNarration_AdvancesTheMessageNotTheAnswerLength(t *testing.T) {
 	require.Equal(t, len(narration)+len(passageBreak)+len(answer)+1, records[len(records)-1].StreamLen)
 }
 
-// Narration is the agent talking, not tool transparency, so /details off mutes
-// the steps and keeps the prose.
-func TestRenderNarration_ShownWithDetailsOff(t *testing.T) {
-	ft, _ := captureStream(t, detailsOff, "",
-		narrationDelta("Let me look that up."),
-		toolCallDelta("x_kubernetes_get"),
-	)
-
-	require.Equal(t, "Let me look that up."+passageBreak, ft.streamedText())
-	require.Empty(t, ft.steps())
-}
-
 // Dropping the agent's prose without saying so is the bug this rendering fixes,
 // so the per-turn cap ends in a visible note.
 func TestRenderNarration_CapsWithOneNote(t *testing.T) {
@@ -1931,7 +1904,7 @@ func TestRenderNarration_CapsWithOneNote(t *testing.T) {
 	for i := range maxNarrationMessages + 5 {
 		deltas = append(deltas, narrationDelta(fmt.Sprintf("step %d.", i)))
 	}
-	ft, _ := captureStream(t, detailsOn, "", deltas...)
+	ft, _ := captureStream(t, "", deltas...)
 
 	text := ft.streamedText()
 	require.Contains(t, text, "step 0.")
@@ -1947,7 +1920,7 @@ func TestRenderNarration_CapsWithOneNote(t *testing.T) {
 // narration must be split rather than dropped.
 func TestRenderNarration_SplitsOversizedNarration(t *testing.T) {
 	long := strings.Repeat("plan step. ", slackMarkdownBlockMax/5) // ~2.4x the block cap
-	ft, _ := captureStream(t, detailsOn, "", narrationDelta(long))
+	ft, _ := captureStream(t, "", narrationDelta(long))
 
 	msgs := ft.finalMessages()
 	require.Len(t, msgs, 3, "the narration rolls over into further streamed messages")
@@ -1966,7 +1939,7 @@ func TestRenderNarration_SplitsOversizedNarration(t *testing.T) {
 // answer and still ends in the visible note.
 func TestRenderNarration_SplitChunksShareTheBudget(t *testing.T) {
 	long := strings.Repeat("plan step. ", slackMarkdownBlockMax) // far past the cap
-	ft, _ := captureStream(t, detailsOn, "", narrationDelta(long))
+	ft, _ := captureStream(t, "", narrationDelta(long))
 
 	require.Equal(t, maxNarrationMessages+1, ft.narrationChunks())
 	require.True(t, strings.HasSuffix(strings.TrimSpace(ft.streamedText()), narrationLimitNote))
@@ -1981,7 +1954,7 @@ func TestRenderNarration_ScrubsLoginURL(t *testing.T) {
 	srv := httptest.NewServer(ft.handler())
 	t.Cleanup(srv.Close)
 
-	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "C1", "", "1.0", detailsOn, slog.Default())
+	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "C1", "", "1.0", slog.Default())
 	w.loginURLs = []string{loginURL}
 	w.renderNarration(loginURL)
 	w.renderNarration("Sign in here:\n" + loginURL + "\nThen tell me once you are done.")
@@ -2001,7 +1974,7 @@ func TestRetractRendered_TakesTheNarrationWithTheReply(t *testing.T) {
 	srv := httptest.NewServer(ft.handler())
 	t.Cleanup(srv.Close)
 
-	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "C1", "", "1.0", detailsOff, slog.Default())
+	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "C1", "", "1.0", slog.Default())
 	w.renderNarration("Sign in, then tell me once you are done.")
 	require.NoError(t, w.flush(t.Context()))
 	require.Equal(t, "Sign in, then tell me once you are done."+passageBreak, ft.streamedText())
@@ -2013,7 +1986,7 @@ func TestRetractRendered_TakesTheNarrationWithTheReply(t *testing.T) {
 }
 
 func TestRenderToolActivity_UnwrapsCallTool(t *testing.T) {
-	posts := captureToolLog(t, detailsFull, channels.OutboundDelta{
+	posts := captureToolLog(t, channels.OutboundDelta{
 		Kind: channels.DeltaToolActivity,
 		Tool: &channels.ToolActivity{
 			Kind:   channels.ToolCall,
@@ -2032,7 +2005,7 @@ func TestRenderToolActivity_UnwrapsCallTool(t *testing.T) {
 }
 
 func TestRenderToolActivity_DirectToolUnchanged(t *testing.T) {
-	posts := captureToolLog(t, detailsFull, channels.OutboundDelta{
+	posts := captureToolLog(t, channels.OutboundDelta{
 		Kind: channels.DeltaToolActivity,
 		Tool: &channels.ToolActivity{Kind: channels.ToolCall, Name: "list_pods"},
 	})
@@ -2044,7 +2017,7 @@ func TestRenderToolActivity_DirectToolUnchanged(t *testing.T) {
 // The step names the tool the agent really ran, not muster's wrapper, so a
 // reader is told "Kubernetes get" rather than "Call tool".
 func TestSteps_UnwrapsCallToolInTheTitle(t *testing.T) {
-	ft, _ := captureStream(t, detailsOn, "",
+	ft, _ := captureStream(t, "",
 		channels.OutboundDelta{Kind: channels.DeltaToolActivity, Tool: &channels.ToolActivity{
 			Kind: channels.ToolCall, Name: musterCallToolMetaTool, CallID: "c1",
 			Args: map[string]any{"name": "x_kubernetes_get", "arguments": map[string]any{"namespace": "flux"}},
@@ -2056,12 +2029,12 @@ func TestSteps_UnwrapsCallToolInTheTitle(t *testing.T) {
 	require.Equal(t, []taskChunk{
 		{id: "step-1", title: "Kubernetes get", status: stepInProgress},
 		{id: "step-1", title: "Kubernetes get", status: stepComplete},
-	}, ft.steps())
+	}, ft.stepShapes())
 	require.Equal(t, "done", ft.streamedText())
 }
 
 func TestRenderToolActivity_UnwrapsCallToolResult(t *testing.T) {
-	posts := captureToolLog(t, detailsFull,
+	posts := captureToolLog(t,
 		channels.OutboundDelta{Kind: channels.DeltaToolActivity, Tool: &channels.ToolActivity{
 			Kind: channels.ToolCall, Name: musterCallToolMetaTool, CallID: "c1",
 			Args: map[string]any{"name": "x_kubernetes_get", "arguments": map[string]any{"namespace": "flux"}},
@@ -2206,7 +2179,7 @@ func TestToolResultPreview(t *testing.T) {
 // A direct MCP tool result (the filter_tools case) renders the payload the
 // envelope carries, not the envelope itself.
 func TestRenderToolActivity_UnwrapsMCPResultEnvelope(t *testing.T) {
-	posts := captureToolLog(t, detailsFull,
+	posts := captureToolLog(t,
 		toolCallDelta("filter_tools"),
 		channels.OutboundDelta{Kind: channels.DeltaToolActivity, Tool: &channels.ToolActivity{
 			Kind: channels.ToolResult, Name: "filter_tools",
@@ -2224,7 +2197,7 @@ func TestRenderToolActivity_UnwrapsMCPResultEnvelope(t *testing.T) {
 // result: the entry names the inner tool and previews the innermost payload.
 func TestRenderToolActivity_UnwrapsMusterDoubleWrappedResult(t *testing.T) {
 	inner := serialize(t, mcpEnvelope(`{"clusters":["alpha","beta"]}`, false))
-	posts := captureToolLog(t, detailsFull,
+	posts := captureToolLog(t,
 		channels.OutboundDelta{Kind: channels.DeltaToolActivity, Tool: &channels.ToolActivity{
 			Kind: channels.ToolCall, Name: musterCallToolMetaTool, CallID: "c1",
 			Args: map[string]any{"name": "x_kubernetes_capi_list_clusters", "arguments": map[string]any{"management_cluster": "gazelle"}},
@@ -2242,7 +2215,7 @@ func TestRenderToolActivity_UnwrapsMusterDoubleWrappedResult(t *testing.T) {
 
 // A result the tool flagged as an error is marked visibly.
 func TestRenderToolActivity_FlagsErrorResults(t *testing.T) {
-	posts := captureToolLog(t, detailsFull,
+	posts := captureToolLog(t,
 		toolCallDelta("kube_get"),
 		channels.OutboundDelta{Kind: channels.DeltaToolActivity, Tool: &channels.ToolActivity{
 			Kind: channels.ToolResult, Name: "kube_get",
@@ -2257,7 +2230,7 @@ func TestRenderToolActivity_FlagsErrorResults(t *testing.T) {
 // Unwrapped result text is MCP-server-controlled and no longer neutralised by
 // JSON marshaling: the mrkdwn escaping must hold on the plain-text path.
 func TestRenderToolActivity_UnwrappedResultEscapesHostileText(t *testing.T) {
-	posts := captureToolLog(t, detailsFull,
+	posts := captureToolLog(t,
 		toolCallDelta("kube_get"),
 		channels.OutboundDelta{Kind: channels.DeltaToolActivity, Tool: &channels.ToolActivity{
 			Kind: channels.ToolResult, Name: "kube_get",
@@ -2277,7 +2250,7 @@ func TestRenderToolActivity_UnwrappedResultEscapesHostileText(t *testing.T) {
 // escaped so a quoted <!channel> cannot notify, and backticks cannot break out
 // of the code span.
 func TestRenderToolActivity_EscapesMrkdwnAndCodeSpans(t *testing.T) {
-	entries := captureToolLog(t, detailsFull, channels.OutboundDelta{
+	entries := captureToolLog(t, channels.OutboundDelta{
 		Kind: channels.DeltaToolActivity,
 		Tool: &channels.ToolActivity{
 			Kind: channels.ToolCall,
@@ -2353,7 +2326,7 @@ func TestSessionInitiator_SentOnTheCreatingCall(t *testing.T) {
 			srv := httptest.NewServer(ft.handler())
 			t.Cleanup(srv.Close)
 
-			w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, channel, "", "1.0", detailsOn, slog.Default())
+			w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, channel, "", "1.0", slog.Default())
 			w.adapter = &Adapter{}
 			w.sessionInitiator = "U1"
 			ch := make(chan channels.OutboundDelta, 1)
@@ -2391,7 +2364,7 @@ func TestSessionTitle_SentOnTheOpeningTurn(t *testing.T) {
 	srv := httptest.NewServer(ft.handler())
 	t.Cleanup(srv.Close)
 
-	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "C1", "", "1.0", detailsOn, slog.Default())
+	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "C1", "", "1.0", slog.Default())
 	w.adapter = &Adapter{}
 	w.sessionTitle = "Investigate CPU alert on gazelle"
 	ch := make(chan channels.OutboundDelta, 1)
@@ -2453,7 +2426,7 @@ func TestSessionTitle_RejectedTitleFallsBackToUntitledStatus(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "C1", "", "1.0", detailsOn, slog.Default())
+	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "C1", "", "1.0", slog.Default())
 	w.adapter = &Adapter{}
 	w.sessionTitle = "Investigate CPU alert on gazelle"
 	ch := make(chan channels.OutboundDelta, 1)
@@ -2485,7 +2458,7 @@ func TestSessionTitleFrom(t *testing.T) {
 		{"agent selector", `/agent "Swarm Helper" investigate the CPU alert`, "investigate the CPU alert"},
 		{"unquoted agent selector", "/agent helper check the disk", "check the disk"},
 		{"mention and agent selector", `<@U123> /agent "Helper" check the disk`, "check the disk"},
-		{"other slash verb", "/details full and then look at the logs", "full and then look at the logs"},
+		{"other slash verb", "/mute alerts and then look at the logs", "alerts and then look at the logs"},
 		{"bare slash verb", "/help", ""},
 		{"selector with no question", `/agent "Helper"`, ""},
 		{"a path is not a command", "/etc/hosts is missing an entry", "/etc/hosts is missing an entry"},
@@ -2576,7 +2549,7 @@ func TestSessionStatus_ActiveOnCancelledTurn(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
-	w := newBatchedWriterWithClient(client, "C1", "", "1.0", detailsOn, slog.Default())
+	w := newBatchedWriterWithClient(client, "C1", "", "1.0", slog.Default())
 	w.adapter = &Adapter{}
 	ctx, cancel := context.WithCancel(t.Context())
 	ch := make(chan channels.OutboundDelta)
@@ -2604,7 +2577,7 @@ func TestSessionStatus_MissingScopeLatchesOff(t *testing.T) {
 	require.Equal(t, []taskChunk{
 		{id: "step-1", title: "Alpha", status: stepInProgress},
 		{id: "step-1", title: "Alpha", status: stepComplete},
-	}, ft.steps(), "the reply still carries what the agent did")
+	}, ft.stepShapes(), "the reply still carries what the agent did")
 }
 
 // not_authorized means the bot is not a member of THIS channel, which says
@@ -2624,7 +2597,7 @@ func TestSessionStatus_NotAuthorizedDoesNotLatch(t *testing.T) {
 	t.Cleanup(srv.Close)
 	logs := &recordingHandler{}
 
-	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "C1", "", "1.0", detailsOn, slog.New(logs))
+	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "C1", "", "1.0", slog.New(logs))
 	w.adapter = &Adapter{}
 	w.sessionTitle, w.sessionInitiator = "Investigate CPU alert on gazelle", "U1"
 	ch := make(chan channels.OutboundDelta, 2)
@@ -2713,7 +2686,7 @@ func streamWriter(t *testing.T, ft *fakeThread, channel string) *batchedWriter {
 	t.Helper()
 	srv := httptest.NewServer(ft.handler())
 	t.Cleanup(srv.Close)
-	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, channel, "", "1.0", detailsOff, slog.Default())
+	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, channel, "", "1.0", slog.Default())
 	w.adapter = &Adapter{}
 	return w
 }
@@ -2909,7 +2882,7 @@ func TestStream_CancelledTurnClosesTheStream(t *testing.T) {
 	srv := httptest.NewServer(ft.handler())
 	t.Cleanup(srv.Close)
 
-	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "D1", "", "1.0", detailsOff, slog.Default())
+	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "D1", "", "1.0", slog.Default())
 	w.adapter = &Adapter{}
 	ctx, cancel := context.WithCancel(t.Context())
 	ch := make(chan channels.OutboundDelta)
@@ -2937,7 +2910,7 @@ func TestStream_CancelledDuringAnAppendSendsTheTextOnce(t *testing.T) {
 	srv := httptest.NewServer(ft.handler())
 	t.Cleanup(srv.Close)
 
-	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "D1", "", "1.0", detailsOff, slog.Default())
+	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "D1", "", "1.0", slog.Default())
 	w.adapter = &Adapter{}
 	ctx, cancel := context.WithCancel(t.Context())
 	ch := make(chan channels.OutboundDelta)
@@ -2997,7 +2970,7 @@ func TestStream_SecondRunCycleOpensANewStream(t *testing.T) {
 	srv := httptest.NewServer(ft.handler())
 	t.Cleanup(srv.Close)
 
-	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "D1", "", "1.0", detailsOn, slog.Default())
+	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "D1", "", "1.0", slog.Default())
 	w.adapter = &Adapter{}
 	run := func(deltas ...channels.OutboundDelta) {
 		ch := make(chan channels.OutboundDelta, len(deltas))
@@ -3025,7 +2998,7 @@ func TestStream_SecondRunCycleOpensANewStream(t *testing.T) {
 		{id: "step-1", title: "Delete", status: stepComplete},
 		{id: "step-2", title: "Purge", status: stepInProgress},
 		{id: "step-2", title: "Purge", status: stepComplete},
-	}, ft.steps(), "each cycle closes its own step before its message is stopped, and the ids stay unique")
+	}, ft.stepShapes(), "each cycle closes its own step before its message is stopped, and the ids stay unique")
 }
 
 // recordingStreams is a StreamRecorder that keeps the events it was given.

@@ -81,7 +81,7 @@ func TestParseCommand(t *testing.T) {
 	}{
 		{input: "/stop", name: "stop", args: nil},
 		{input: "/help", name: "help", args: nil},
-		{input: "/details on", name: "details", args: []string{"on"}},
+		{input: "/agent list", name: "agent", args: []string{"list"}},
 		{input: "/LOGIN", name: "login", args: nil},
 		{input: "  /logout  ", name: "logout", args: nil},
 		{input: "hello /stop", wantNil: true},
@@ -288,26 +288,6 @@ func TestHandleCommand_Stop_DuringSenderMint_ReportsNothingRunning(t *testing.T)
 	require.NoError(t, <-dispatchDone)
 }
 
-func TestHandleCommand_Details_SetsLevel(t *testing.T) {
-	a, srv := newTestAdapter(t)
-
-	require.Equal(t, detailsOn, a.detailsLevel("T1"), "default is on")
-
-	require.True(t, a.handleCommand(t.Context(), &slashCommand{Name: "details", Args: []string{"off"}}, "U1", "C1", "T1"))
-	require.Equal(t, detailsOff, a.detailsLevel("T1"))
-
-	require.True(t, a.handleCommand(t.Context(), &slashCommand{Name: "details", Args: []string{"full"}}, "U1", "C1", "T1"))
-	require.Equal(t, detailsFull, a.detailsLevel("T1"))
-
-	// No arg reports the current level; a bad arg shows usage — both consumed,
-	// neither changes the level.
-	require.True(t, a.handleCommand(t.Context(), &slashCommand{Name: "details"}, "U1", "C1", "T1"))
-	require.True(t, a.handleCommand(t.Context(), &slashCommand{Name: "details", Args: []string{"loud"}}, "U1", "C1", "T1"))
-	require.Equal(t, detailsFull, a.detailsLevel("T1"))
-
-	require.Equal(t, int32(4), srv.posts.Load())
-}
-
 func TestHandleCommand_Usage_Consumed(t *testing.T) {
 	a, srv := newTestAdapter(t)
 	consumed := a.handleCommand(t.Context(), &slashCommand{Name: "usage"}, "U1", "C1", "T1")
@@ -325,9 +305,7 @@ func TestHandleCommand_OnlookerRefused(t *testing.T) {
 	for _, name := range []string{"stop", "usage"} {
 		require.True(t, a.handleCommand(t.Context(), &slashCommand{Name: name}, "U002", "C001", "T001"))
 	}
-	require.True(t, a.handleCommand(t.Context(), &slashCommand{Name: "details", Args: []string{"off"}}, "U002", "C001", "T001"))
-	require.Equal(t, detailsOn, a.detailsLevel("T001"), "an onlooker cannot change details")
-	require.Equal(t, int32(3), srv.posts.Load(), "each refusal posts one message")
+	require.Equal(t, int32(2), srv.posts.Load(), "each refusal posts one message")
 }
 
 // TestHandleCommand_GrantedUserAllowed verifies a collaborator the initiator
@@ -337,9 +315,8 @@ func TestHandleCommand_GrantedUserAllowed(t *testing.T) {
 	a.accessPolicy().SetInitiator(t.Context(), "C001", "T001", "U001")
 	a.accessPolicy().Grant(t.Context(), "C001", "T001", "U002")
 
-	require.True(t, a.handleCommand(t.Context(), &slashCommand{Name: "details", Args: []string{"off"}}, "U002", "C001", "T001"))
-	require.Equal(t, detailsOff, a.detailsLevel("T001"), "a granted collaborator can change details")
-	require.Equal(t, int32(1), srv.posts.Load())
+	require.True(t, a.handleCommand(t.Context(), &slashCommand{Name: "usage"}, "U002", "C001", "T001"))
+	require.Equal(t, int32(1), srv.posts.Load(), "a granted collaborator can run the gated commands")
 }
 
 // TestHandleCommand_LoginLogout_OBODisabled confirms /login and /logout are

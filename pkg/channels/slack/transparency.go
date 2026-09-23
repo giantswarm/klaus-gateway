@@ -9,8 +9,8 @@ import (
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 )
 
-// threadStateTTL bounds how long per-thread transparency state (details level,
-// usage figures, resume-check marks) is retained. Entries past the TTL are
+// threadStateTTL bounds how long per-thread transparency state (usage figures,
+// resume-check marks) is retained. Entries past the TTL are
 // swept opportunistically on insert, so an idle thread's state cannot
 // accumulate forever on a long-lived pod. Active threads refresh their entries
 // on every turn.
@@ -50,34 +50,6 @@ func markOnce[K comparable](mu *sync.Mutex, entries *map[K]ttlEntry[struct{}], k
 	sweepExpired(*entries, now)
 	(*entries)[key] = ttlEntry[struct{}]{expires: now.Add(ttl)}
 	return true
-}
-
-// detailsLevel returns the tool-activity verbosity for a thread. An un-set
-// thread resolves to detailsOn (the MVP default).
-func (a *Adapter) detailsLevel(threadID string) detailsLevel {
-	a.detailsMu.Lock()
-	defer a.detailsMu.Unlock()
-	entry, ok := a.details[threadID]
-	if !ok {
-		return detailsOn
-	}
-	// Reading refreshes the deadline: a thread in active use never reverts to
-	// the default mid-conversation, only idle threads are evicted.
-	entry.expires = time.Now().Add(threadStateTTL)
-	a.details[threadID] = entry
-	return entry.value
-}
-
-// setDetailsLevel records the verbosity for a thread.
-func (a *Adapter) setDetailsLevel(threadID string, level detailsLevel) {
-	now := time.Now()
-	a.detailsMu.Lock()
-	defer a.detailsMu.Unlock()
-	if a.details == nil {
-		a.details = make(map[string]ttlEntry[detailsLevel])
-	}
-	sweepExpired(a.details, now)
-	a.details[threadID] = ttlEntry[detailsLevel]{value: level, expires: now.Add(threadStateTTL)}
 }
 
 // usageTotals is one scope's accumulated token usage: the most recent turn's

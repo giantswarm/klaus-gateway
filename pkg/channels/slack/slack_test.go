@@ -2056,7 +2056,7 @@ func toolActivityDeltas() []channels.OutboundDelta {
 	}
 }
 
-func TestDetails_DefaultOn_RendersToolActivity(t *testing.T) {
+func TestToolActivity_RendersSteps(t *testing.T) {
 	fake := newFakeSlackAPI()
 	gw := &stubGateway{deltas: toolActivityDeltas()}
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
@@ -2068,25 +2068,7 @@ func TestDetails_DefaultOn_RendersToolActivity(t *testing.T) {
 		return len(steps) == 2 && steps[0]["title"] == "List pods" &&
 			steps[0]["status"] == "in_progress" && steps[1]["status"] == "complete" &&
 			strings.Contains(fake.threadText(), "Found 3 pods.")
-	}, flowWait, 20*time.Millisecond, "default-on details should render the step and the answer")
-}
-
-func TestDetails_Off_SuppressesToolActivity(t *testing.T) {
-	fake := newFakeSlackAPI()
-	gw := &stubGateway{deltas: toolActivityDeltas()}
-	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
-
-	// Quiet the thread first (same thread_ts as the turn below).
-	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","channel_type":"im","user":"U1","text":"/details off","channel":"D1","ts":"100.000","thread_ts":"100.000"}}`)
-	fake.waitForPath(t, "chat.postMessage", 1)
-
-	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","channel_type":"im","user":"U1","text":"list pods","channel":"D1","ts":"101.000","thread_ts":"100.000"}}`)
-
-	require.Eventually(t, func() bool {
-		return strings.Contains(fake.streamedText(), "Found 3 pods.")
-	}, flowWait, 20*time.Millisecond, "the answer should still be delivered")
-	require.NotContains(t, fake.threadText(), "list_pods",
-		"details off must not render tool activity")
+	}, flowWait, 20*time.Millisecond, "the tool step and the answer should render")
 }
 
 func TestResume_PostsStartingFreshWhenSessionGone(t *testing.T) {
