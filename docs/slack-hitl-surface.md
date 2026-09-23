@@ -304,25 +304,32 @@ for the Builder to accept it.
 ## 8. OBO sign-in (act-as-user account linking)
 
 Posted when a turn needs the user's token but they haven't linked their account. In a
-channel it is ephemeral to that user, anchored by a thread notice that names nobody,
-carries no link and is posted once per thread; in a DM it is a threaded message. The button
-opens the linking flow. Once the link completes, a DM prompt is rewritten in place to the
-signed-in confirmation and a channel prompt is confirmed with a fresh ephemeral. The link
-expires after 15 minutes; a later message posts a fresh prompt. A DM prompt is rewritten to
-say its link expired; a channel prompt cannot be rewritten, so the fresh ephemeral says the
-earlier link expired instead. A turn that still has no user token is aborted rather than
-run as the gateway identity.
+channel it is ephemeral to that user, anchored by a thread notice (a context line) that
+names who the thread waits for ("Waiting for @Pau and @Jose to sign in to Giant Swarm"),
+carries no link and is posted once per thread; it drops each person who signs in, and once
+nobody waits it reads "@Pau and @Jose signed in to Giant Swarm". In a DM it is a threaded
+message. The card's last line depends on what asked for it: "Your message runs as soon as
+you sign in." for a held message, "Sign in, then click the button again." for a button
+click, nothing for `/login`. The button opens the linking flow. Once the link completes, a
+DM prompt is rewritten in place to the signed-in confirmation ("Signed in to Giant Swarm.
+The agent now acts with your permissions.") and a channel prompt is confirmed with a fresh
+ephemeral. A fresh prompt that replaces an expired one starts with the context line "The
+earlier sign-in link expired. Use this one." The link expires after 15 minutes; a later
+message posts a fresh prompt. A DM prompt is rewritten to say its link expired; a channel
+prompt cannot be rewritten, so the fresh ephemeral says the earlier link expired instead. A
+turn that still has no user token is aborted rather than run as the gateway identity.
 
 ```json
 {
   "blocks": [
-    { "type": "section", "text": { "type": "mrkdwn", "text": "Sign in so I can act as you. Until you do, I can't run tools on your behalf." } },
+    { "type": "section", "text": { "type": "mrkdwn", "text": "*Sign in to Giant Swarm*\nThe agent runs its tools with your own permissions, so it needs your sign-in once. The link is valid for 15 minutes. Your message runs as soon as you sign in." } },
     {
       "type": "actions",
       "elements": [
         { "type": "button", "text": { "type": "plain_text", "text": "Sign in" }, "style": "primary", "action_id": "obo_sign_in", "url": "https://example.com/login" }
       ]
-    }
+    },
+    { "type": "context", "elements": [ { "type": "mrkdwn", "text": "Signed in before? Your session may have expired." } ] }
   ]
 }
 ```

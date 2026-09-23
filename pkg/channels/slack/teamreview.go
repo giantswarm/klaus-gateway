@@ -499,7 +499,7 @@ func (a *Adapter) handleTeamReviewDenyClick(ctx context.Context, slackChannel, m
 	}
 	_, ok, signIn := a.humanToken(ctx, rv.Channel, "", clicker)
 	if signIn {
-		a.postSignIn(ctx, rv.Channel, "", clicker, false)
+		a.postSignIn(ctx, rv.Channel, "", clicker, false, signInForClick)
 	}
 	if !ok {
 		return
@@ -587,7 +587,7 @@ func (a *Adapter) decideTeamReview(ctx context.Context, rv store.Review, clicker
 	// link there is nobody to act as, so the click is turned into a sign-in.
 	token, ok, signIn := a.humanToken(ctx, rv.Channel, "", clicker)
 	if signIn {
-		a.postSignIn(ctx, rv.Channel, "", clicker, false)
+		a.postSignIn(ctx, rv.Channel, "", clicker, false, signInForClick)
 	}
 	if !ok {
 		return

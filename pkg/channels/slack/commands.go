@@ -49,6 +49,11 @@ func isUnknownCommand(cmd *slashCommand) bool {
 type slashCommand struct {
 	Name string   // lower-case command name, e.g. "stop", "usage"
 	Args []string // remaining tokens, e.g. ["<@U123456>"]
+	// Root is set when the command message is its thread's root: a top-level
+	// message, whose thread has no replies yet. Slack does not show a
+	// thread-scoped ephemeral in such a thread (klaus-gateway#156), so a
+	// private reply goes to the channel instead.
+	Root bool
 }
 
 // parseCommand extracts a leading /command from text. Commands are always
@@ -121,7 +126,11 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *slashCommand, slackUse
 	// Sign-in state is caller-only information; a shared thread must not see
 	// the linked email, so /login and /logout confirm ephemerally.
 	ephemeralReply := func(text string) {
-		if err := client.postEphemeralText(ctx, slackChannel, slackUser, threadID, text); err != nil {
+		ephemeralThread := threadID
+		if cmd.Root {
+			ephemeralThread = ""
+		}
+		if err := client.postEphemeralText(ctx, slackChannel, slackUser, ephemeralThread, text); err != nil {
 			a.Logger.Warn("slack: post ephemeral command reply failed", "error", err)
 		}
 	}
@@ -218,13 +227,13 @@ func (a *Adapter) handleLoginCommand(ctx context.Context, slackUser, slackChanne
 			return true
 		}
 		// Explicit request: post the sign-in prompt without the nudge throttle.
-		a.postSignIn(ctx, slackChannel, threadID, slackUser, false)
+		a.postSignIn(ctx, slackChannel, threadID, slackUser, false, signInForLogin)
 		return true
 	}
 	if email := a.linkedEmail(slackUser); email != "" {
-		reply(fmt.Sprintf("✅ _Signed in as *%s*._", escapeMrkdwn(email)))
+		reply(fmt.Sprintf(loginSignedInAsNotice, escapeMrkdwn(email)))
 	} else {
-		reply("✅ _Signed in._")
+		reply(loginSignedInNotice)
 	}
 	return true
 }
@@ -256,7 +265,7 @@ func (a *Adapter) handleLogoutCommand(slackUser string, reply func(string)) bool
 		reply(logoutFailedNotice)
 		return true
 	}
-	reply("👋 Signed out. I'll ask you to `/login` again before I can act as you.")
+	reply(logoutNotice)
 	return true
 }
 

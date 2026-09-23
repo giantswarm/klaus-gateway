@@ -531,14 +531,14 @@ func TestDispatch_OBO_UnlinkedUserPromptsSignInAndDoesNotDispatch(t *testing.T) 
 	}, flowWait, 50*time.Millisecond, "unlinked user must be prompted to sign in with a real message")
 	// In a channel the prompt is ephemeral to its user and carries the link;
 	// the public thread notice anchors it (a thread-scoped ephemeral in a
-	// thread that shows no message is never surfaced by Slack) and carries
-	// neither the link nor a mention (klaus-gateway#185).
+	// thread that shows no message is never surfaced by Slack), names who the
+	// thread waits for, and never carries the link (klaus-gateway#185).
 	prompt := fake.pathCalls("chat.postEphemeral")[0]
 	require.Equal(t, "111.222", prompt.params["thread_ts"])
 	require.Equal(t, "U123", prompt.params["user"])
 	notice := fake.pathCalls("chat.postMessage")[0]
 	require.Equal(t, "111.222", notice.params["thread_ts"])
-	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "U123")
+	require.Contains(t, allText(fake.pathCalls("chat.postMessage")), "Waiting for <@U123> to sign in to Giant Swarm")
 	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "http")
 	require.Zero(t, gw.dispatchCount(), "unlinked turn must not reach the agent (no M2M fallback)")
 }
@@ -1441,7 +1441,7 @@ func (f *fakeSlackAPI) waitForPath(t *testing.T, path string, n int) {
 
 // signInPromptPrefix is the opening of the sign-in prompt, asserted on whichever
 // surface carries it.
-const signInPromptPrefix = "Sign in so I can act as you"
+const signInPromptPrefix = "*Sign in to Giant Swarm*"
 
 // signInPrompted reports whether the sign-in prompt reached its user: an
 // ephemeral in a channel (klaus-gateway#185), a real threaded message in a DM.

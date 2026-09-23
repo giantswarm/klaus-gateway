@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/giantswarm/klaus-gateway/pkg/channels"
 )
 
 // The sign-in nudge throttle re-arms on signInNudgeTTL (the link URL's state
@@ -60,10 +62,10 @@ func TestMaybePostSignIn_RepromptsAfterLinkExpiry(t *testing.T) {
 	}
 	a.signInPromptedMu.Unlock()
 
-	a.maybePostSignIn(t.Context(), "D1", "T1", "U1")
+	a.maybePostSignIn(t.Context(), "D1", "T1", "U1", signInForMessage)
 	require.Equal(t, int32(1), srv.posts.Load(), "a fresh prompt posts once the old link expired")
 
-	a.maybePostSignIn(t.Context(), "D1", "T1", "U1")
+	a.maybePostSignIn(t.Context(), "D1", "T1", "U1", signInForMessage)
 	require.Equal(t, int32(1), srv.posts.Load(), "the throttle re-arms on the fresh prompt")
 
 	anchors := a.takeSignInAnchors("U1")
@@ -72,27 +74,29 @@ func TestMaybePostSignIn_RepromptsAfterLinkExpiry(t *testing.T) {
 }
 
 // In a channel the sign-in link is minted for one identity, so no message the
-// thread can read may carry it or name its user (klaus-gateway#185): the prompt
-// is ephemeral, and the notice that anchors it is posted once and reused by a
-// re-prompt.
+// thread can read may carry it (klaus-gateway#185): the prompt is ephemeral,
+// and the notice that anchors it names who the thread waits for, is posted
+// once, and is reused by a re-prompt.
 func TestPostSignIn_ChannelPromptStaysPrivate(t *testing.T) {
 	a, srv := newTestAdapter(t)
 	a.OBO = deadLinkOBO{} // still unlinked: the convergence check must not drain the anchor
 
-	a.postSignIn(t.Context(), "C1", "T1", "U1", false)
+	a.postSignIn(t.Context(), "C1", "T1", "U1", false, signInForMessage)
 
 	require.Equal(t, int32(1), srv.ephemerals.Load(), "the prompt reaches its user ephemerally")
 	require.Equal(t, int32(1), srv.posts.Load(), "one thread notice anchors the ephemeral")
 	srv.mu.Lock()
 	notice, prompt, bodies := srv.postTexts[0], srv.ephemeralTexts[0], strings.Join(srv.postBodies, "\n")
 	srv.mu.Unlock()
-	require.Equal(t, signInThreadNotice, notice)
-	require.NotContains(t, notice, "U1", "the public notice must not name the prompted user")
+	require.Equal(t, "Waiting for <@U1> to sign in to Giant Swarm", notice)
 	require.NotContains(t, bodies, "example.test/link", "the link must not reach a public message")
-	require.Contains(t, prompt, signInPromptText)
+	require.Contains(t, prompt, "*Sign in to Giant Swarm*")
+	require.Contains(t, prompt, "The link is valid for 15 minutes.")
+	require.Contains(t, prompt, signInForMessageLine, "a held message runs after the sign-in")
 
-	a.postSignIn(t.Context(), "C1", "T1", "U1", false)
+	a.postSignIn(t.Context(), "C1", "T1", "U1", false, signInForMessage)
 	require.Equal(t, int32(1), srv.posts.Load(), "a re-prompt reuses the notice already in the thread")
+	require.Zero(t, srv.updates.Load(), "the notice already names the user")
 	require.Equal(t, int32(2), srv.ephemerals.Load(), "each re-prompt posts a fresh ephemeral")
 }
 
@@ -103,7 +107,7 @@ func TestPostSignIn_DMPromptStaysAddressable(t *testing.T) {
 	a, srv := newTestAdapter(t)
 	a.OBO = deadLinkOBO{}
 
-	a.postSignIn(t.Context(), "D1", "T1", "U1", false)
+	a.postSignIn(t.Context(), "D1", "T1", "U1", false, signInForMessage)
 
 	require.Equal(t, int32(1), srv.posts.Load(), "the DM prompt is a real message")
 	require.Zero(t, srv.ephemerals.Load(), "nothing is hidden in a DM")
@@ -132,23 +136,91 @@ func TestUpdateSignInAnchors_ConfirmsPerSurface(t *testing.T) {
 	require.Equal(t, int32(1), srv.ephemerals.Load(), "the DM rewrite posts nothing new")
 }
 
-// The thread notice names nobody, so one serves the whole thread: a second
-// unlinked user's prompt reuses it instead of repeating it, and so does a
-// prompt posted after a completed link drained the first user's anchor.
-func TestPostSignIn_ThreadNoticeIsPostedOncePerThread(t *testing.T) {
+// One notice serves the whole thread and names the people it waits for: a
+// second unlinked user joins it, a completed link moves a user to "signed in",
+// and once nobody waits it names who signed in. Another thread gets its own.
+func TestPostSignIn_ThreadNoticeNamesWhoItWaitsFor(t *testing.T) {
 	a, srv := newTestAdapter(t)
 	a.OBO = deadLinkOBO{}
+	latest := func() string {
+		t.Helper()
+		srv.mu.Lock()
+		defer srv.mu.Unlock()
+		require.NotEmpty(t, srv.updateTexts)
+		return srv.updateTexts[len(srv.updateTexts)-1]
+	}
 
-	a.postSignIn(t.Context(), "C1", "T1", "U1", false)
-	a.postSignIn(t.Context(), "C1", "T1", "U2", false)
-	require.Equal(t, int32(1), srv.posts.Load(), "a second unlinked user reuses the thread's notice")
+	a.postSignIn(t.Context(), "C1", "T1", "U1", false, signInForMessage)
+	a.postSignIn(t.Context(), "C1", "T1", "U2", false, signInForMessage)
+	require.Equal(t, int32(1), srv.posts.Load(), "a second unlinked user joins the thread's notice")
+	require.Equal(t, "Waiting for <@U1> and <@U2> to sign in to Giant Swarm", latest())
 
-	a.takeSignInAnchors("U1") // the link completes and drains U1's anchor
-	a.postSignIn(t.Context(), "C1", "T1", "U1", false)
-	require.Equal(t, int32(1), srv.posts.Load(), "a drained anchor does not take the notice with it")
+	a.updateSignInAnchors(t.Context(), "U1") // U1's link completes
+	require.Equal(t, "Waiting for <@U2> to sign in to Giant Swarm", latest())
 
-	a.postSignIn(t.Context(), "C2", "T2", "U1", false)
+	a.updateSignInAnchors(t.Context(), "U2")
+	require.Equal(t, "<@U1> and <@U2> signed in to Giant Swarm", latest())
+
+	updates := srv.updates.Load()
+	a.updateSignInAnchors(t.Context(), "U2")
+	require.Equal(t, updates, srv.updates.Load(), "a notice that does not wait for the user is left alone")
+
+	a.postSignIn(t.Context(), "C1", "T1", "U1", false, signInForMessage) // U1 signed out and writes again
+	require.Equal(t, int32(1), srv.posts.Load(), "the thread keeps its one notice")
+	require.Equal(t, "Waiting for <@U1> to sign in to Giant Swarm", latest())
+
+	a.postSignIn(t.Context(), "C2", "T2", "U1", false, signInForMessage)
 	require.Equal(t, int32(2), srv.posts.Load(), "a different thread gets its own notice")
+}
+
+// The card's last line follows what asked for it: a held message runs by
+// itself, a button click is clicked again, /login needs nothing more.
+func TestSignInPromptBody_Trigger(t *testing.T) {
+	text := func(trigger signInTrigger) string {
+		return signInPromptBody("C1", "T1", "https://example.test/link", false, trigger)[paramText].(string)
+	}
+	require.True(t, strings.HasSuffix(text(signInForMessage), signInForMessageLine))
+	require.True(t, strings.HasSuffix(text(signInForClick), signInForClickLine))
+	require.True(t, strings.HasSuffix(text(signInForLogin), "The link is valid for 15 minutes."))
+
+	blocks := signInPromptBody("C1", "T1", "https://example.test/link", true, signInForLogin)[paramBlocks].([]any)
+	require.Len(t, blocks, 4, "superseded note, section, button, session hint")
+	require.Equal(t, contextBlock(signInLinkSupersededNote), blocks[0])
+	require.Equal(t, contextBlock(signInSessionHint), blocks[3])
+}
+
+// A parked message is replayed once the link completes, so its card says so;
+// a bare "login" is parked too but dropped at replay, so its card promises
+// nothing.
+func TestParkForLogin_TriggerFollowsTheMessage(t *testing.T) {
+	for _, tc := range []struct {
+		text     string
+		promises bool
+	}{
+		{"why are pods crashlooping?", true},
+		{"login", false},
+		{"Sign in!", false},
+	} {
+		t.Run(tc.text, func(t *testing.T) {
+			a, srv := newTestAdapter(t)
+			a.OBO = deadLinkOBO{}
+			a.parkForLogin(t.Context(), channels.InboundMessage{ThreadID: "T1", Text: tc.text}, "C1", "U1")
+			srv.mu.Lock()
+			defer srv.mu.Unlock()
+			require.Len(t, srv.ephemeralTexts, 1)
+			if tc.promises {
+				require.Contains(t, srv.ephemeralTexts[0], signInForMessageLine)
+			} else {
+				require.NotContains(t, srv.ephemeralTexts[0], signInForMessageLine)
+			}
+		})
+	}
+}
+
+func TestJoinMentions(t *testing.T) {
+	require.Equal(t, "<@A>", joinMentions([]string{"A"}))
+	require.Equal(t, "<@A> and <@B>", joinMentions([]string{"A", "B"}))
+	require.Equal(t, "<@A>, <@B> and <@C>", joinMentions([]string{"A", "B", "C"}))
 }
 
 // Slack cannot rewrite or delete an ephemeral, so a channel prompt that
@@ -168,7 +240,7 @@ func TestMaybePostSignIn_SupersededChannelPromptWarnsOnTheFreshOne(t *testing.T)
 	}
 	a.signInPromptedMu.Unlock()
 
-	a.maybePostSignIn(t.Context(), "C1", "T1", "U1")
+	a.maybePostSignIn(t.Context(), "C1", "T1", "U1", signInForMessage)
 
 	require.Zero(t, srv.updates.Load(), "an ephemeral prompt has no message to rewrite")
 	srv.mu.Lock()
@@ -176,5 +248,5 @@ func TestMaybePostSignIn_SupersededChannelPromptWarnsOnTheFreshOne(t *testing.T)
 	require.Len(t, srv.ephemeralTexts, 1)
 	require.Contains(t, srv.ephemeralTexts[0], signInLinkSupersededNote,
 		"the fresh prompt tells the user which button is live")
-	require.Contains(t, srv.ephemeralTexts[0], signInPromptText)
+	require.Contains(t, srv.ephemeralTexts[0], "*Sign in to Giant Swarm*")
 }

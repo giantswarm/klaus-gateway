@@ -664,10 +664,16 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
 - **Channel intro.** When the bot is added to a channel it posts a one-time introduction
   (requires the `member_joined_channel` bot event).
 - **Sign-in prompt.** An unlinked user's first message is answered with a "Sign in to Giant
-  Swarm" prompt. In a channel the prompt is ephemeral, so only that user sees the link; a
-  short notice in the thread says the agent is waiting for a sign-in, names nobody and
-  carries no link, and gives the ephemeral something to render against. The notice is
-  posted once per thread and serves every unlinked user in it. In a DM the prompt is a
+  Swarm" card: the agent runs its tools with the person's permissions, the link lasts 15
+  minutes, and a last line that depends on the trigger ("Your message runs as soon as you sign
+  in." for a held message, "Sign in, then click the button again." for a button click, nothing
+  for `/login`). In a channel the prompt is ephemeral, so only that user sees the link; a
+  context line in the thread names who the thread waits for ("Waiting for @Pau to sign in to
+  Giant Swarm"), carries no link, and gives the ephemeral something to render against. The
+  thread has one notice for every unlinked user in it: it adds a second person, drops each
+  person who signs in, and once nobody waits it names who signed in ("@Pau signed in to Giant
+  Swarm"). The list is in memory, so after a restart a notice can keep naming someone until
+  they write again. In a DM the prompt is a
   real threaded message and lands in the Slack
   Assistant pane. Once the link completes, a DM prompt is rewritten in place to the
   signed-in confirmation, with the agent hand-off folded in when a held message is about to

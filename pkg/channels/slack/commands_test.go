@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -115,17 +117,32 @@ type fakeSlackServer struct {
 	postTexts      []string
 	postBodies     []string
 	ephemeralTexts []string
+	updateTexts    []string
+}
+
+// requestText is the text field of a form or JSON Slack call, and the raw body
+// for the record.
+func requestText(r *http.Request) (text, raw string) {
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+		b, _ := io.ReadAll(r.Body)
+		var body map[string]any
+		_ = json.Unmarshal(b, &body)
+		text, _ = body["text"].(string)
+		return text, string(b)
+	}
+	_ = r.ParseForm()
+	return r.PostFormValue("text"), r.PostForm.Encode()
 }
 
 func (f *fakeSlackServer) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/chat.postMessage", func(w http.ResponseWriter, r *http.Request) {
 		f.posts.Add(1)
-		_ = r.ParseForm()
+		text, raw := requestText(r)
 		f.mu.Lock()
-		f.postBodies = append(f.postBodies, r.PostForm.Encode())
+		f.postBodies = append(f.postBodies, raw)
 		f.mu.Unlock()
-		if text := r.PostFormValue("text"); text != "" {
+		if text != "" {
 			f.mu.Lock()
 			f.postTexts = append(f.postTexts, text)
 			f.mu.Unlock()
@@ -145,8 +162,12 @@ func (f *fakeSlackServer) handler() http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
 	})
-	mux.HandleFunc("/chat.update", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/chat.update", func(w http.ResponseWriter, r *http.Request) {
 		f.updates.Add(1)
+		text, _ := requestText(r)
+		f.mu.Lock()
+		f.updateTexts = append(f.updateTexts, text)
+		f.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "ts": "1234.5678"})
 	})
@@ -376,8 +397,9 @@ func TestHandleCommand_LoginLinkedButDeadTokenRepromptsSignIn(t *testing.T) {
 	require.Equal(t, int32(1), srv.ephemerals.Load(), "the sign-in prompt reaches the caller only")
 	srv.mu.Lock()
 	defer srv.mu.Unlock()
-	require.Contains(t, srv.ephemeralTexts[0], "Sign in so I can act as you",
+	require.Contains(t, srv.ephemeralTexts[0], "*Sign in to Giant Swarm*",
 		"a dead link re-prompts instead of confirming a sign-in")
+	require.NotContains(t, srv.ephemeralTexts[0], signInForMessageLine, "/login holds no message")
 	require.Equal(t, int32(1), srv.posts.Load(), "the thread notice anchors the ephemeral prompt")
 }
 
@@ -389,6 +411,9 @@ func TestHandleCommand_LogoutConfirmsEphemerally(t *testing.T) {
 	require.True(t, a.handleCommand(t.Context(), &slashCommand{Name: "logout"}, "U1", "C1", "T1"))
 	require.Equal(t, int32(0), srv.posts.Load())
 	require.Equal(t, int32(1), srv.ephemerals.Load())
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	require.Equal(t, logoutNotice, srv.ephemeralTexts[0])
 }
 
 // A link store that is briefly away is not a dead link: /login must tell the
@@ -404,7 +429,7 @@ func TestHandleCommand_LoginStoreDownRepliesTransientNotice(t *testing.T) {
 	srv.mu.Lock()
 	defer srv.mu.Unlock()
 	require.Contains(t, srv.ephemeralTexts[0], tokenErrorNotice)
-	require.NotContains(t, srv.ephemeralTexts[0], "Sign in so I can act as you")
+	require.NotContains(t, srv.ephemeralTexts[0], "*Sign in to Giant Swarm*")
 }
 
 // A sign-out the store refused is reported as such: confirming it would leave
@@ -486,5 +511,36 @@ func TestIsBareStop(t *testing.T) {
 		{"", false},
 	} {
 		require.Equal(t, tc.want, isBareStop(tc.text), "%q", tc.text)
+	}
+}
+
+// A command sent as a top-level message is its thread's root, and Slack does
+// not show a thread-scoped ephemeral in a thread without replies
+// (klaus-gateway#156): its private reply goes to the channel. A command sent
+// as a reply keeps its reply in the thread.
+func TestHandleCommand_RootCommandRepliesInTheChannel(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		root   bool
+		thread any
+	}{
+		{"top-level message", true, nil},
+		{"reply in a thread", false, "T1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var body map[string]any
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/chat.postEphemeral" {
+					_ = json.NewDecoder(r.Body).Decode(&body)
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+			}))
+			t.Cleanup(srv.Close)
+			a := &Adapter{APIBase: srv.URL, Secrets: Secrets{BotToken: "t"}, Logger: slog.New(slog.DiscardHandler), OBO: identOBO{}}
+
+			require.True(t, a.handleCommand(t.Context(), &slashCommand{Name: "logout", Root: tc.root}, "U1", "C1", "T1"))
+			require.Equal(t, logoutNotice, body["text"])
+			require.Equal(t, tc.thread, body["thread_ts"])
+		})
 	}
 }
