@@ -1331,8 +1331,33 @@ const (
 	pathStopStream   = "chat.stopStream"
 )
 
-// streamedText concatenates the markdown_text of every streaming call, which is
-// where the agent's answer lands.
+// chunkText concatenates the text of a streaming call's markdown_text chunks,
+// which is where the agent's prose lands.
+func chunkText(params map[string]any) string {
+	var b strings.Builder
+	for _, c := range chunksOf(params) {
+		if c["type"] == "markdown_text" {
+			s, _ := c["text"].(string)
+			b.WriteString(s)
+		}
+	}
+	return b.String()
+}
+
+// chunksOf returns a streaming call's chunks as decoded objects.
+func chunksOf(params map[string]any) []map[string]any {
+	raw, _ := params["chunks"].([]any)
+	out := make([]map[string]any, 0, len(raw))
+	for _, c := range raw {
+		if m, ok := c.(map[string]any); ok {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// streamedText concatenates the prose of every streaming call, which is where
+// the agent's answer lands.
 func (f *fakeSlackAPI) streamedText() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -1340,12 +1365,29 @@ func (f *fakeSlackAPI) streamedText() string {
 	for _, c := range f.calls {
 		switch c.path {
 		case pathStartStream, pathAppendStream, pathStopStream:
-			if s, ok := c.params["markdown_text"].(string); ok {
-				b.WriteString(s)
-			}
+			b.WriteString(chunkText(c.params))
 		}
 	}
 	return b.String()
+}
+
+// streamedSteps returns every task_update chunk of the streaming calls, in
+// call order.
+func (f *fakeSlackAPI) streamedSteps() []map[string]any {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []map[string]any
+	for _, c := range f.calls {
+		switch c.path {
+		case pathStartStream, pathAppendStream, pathStopStream:
+			for _, chunk := range chunksOf(c.params) {
+				if chunk["type"] == "task_update" {
+					out = append(out, chunk)
+				}
+			}
+		}
+	}
+	return out
 }
 
 // threadText is everything the adapter sent, in call order: the fallback text
@@ -1359,9 +1401,7 @@ func (f *fakeSlackAPI) threadText() string {
 		// The streamed text is written without a separator: one answer arrives
 		// in as many pieces as the stream sent, and an assertion looks for the
 		// answer, not for the pieces.
-		if s, ok := c.params["markdown_text"].(string); ok {
-			b.WriteString(s)
-		}
+		b.WriteString(chunkText(c.params))
 		if s, ok := c.params["text"].(string); ok {
 			b.WriteString(s)
 			b.WriteString("\n")
@@ -2024,9 +2064,11 @@ func TestDetails_DefaultOn_RendersToolActivity(t *testing.T) {
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","channel_type":"im","user":"U1","text":"list pods","channel":"D1","ts":"111.000"}}`)
 
 	require.Eventually(t, func() bool {
-		text := fake.threadText()
-		return strings.Contains(text, "list_pods") && strings.Contains(text, "Found 3 pods.")
-	}, flowWait, 20*time.Millisecond, "default-on details should render the tool call and the answer")
+		steps := fake.streamedSteps()
+		return len(steps) == 2 && steps[0]["title"] == "List pods" &&
+			steps[0]["status"] == "in_progress" && steps[1]["status"] == "complete" &&
+			strings.Contains(fake.threadText(), "Found 3 pods.")
+	}, flowWait, 20*time.Millisecond, "default-on details should render the step and the answer")
 }
 
 func TestDetails_Off_SuppressesToolActivity(t *testing.T) {

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http/httptest"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -114,41 +116,9 @@ func TestBatchedWriter_SumsUsageAcrossTurn(t *testing.T) {
 	require.Equal(t, channels.TurnUsage{InputTokens: 130, OutputTokens: 70, TotalTokens: 200}, w.turnUsage)
 }
 
-// TestBatchedWriter_CapsToolActivity verifies a tool-heavy detailsFull turn
-// stays bounded: at most maxToolEntries entries plus one truncation note,
-// aggregated into activity messages that respect the per-message block budget
-// instead of one post per call.
-func TestBatchedWriter_CapsToolActivity(t *testing.T) {
-	ft := &fakeThread{}
-	srv := httptest.NewServer(ft.handler())
-	t.Cleanup(srv.Close)
-
-	w := newBatchedWriterWithClient(&slackAPIClient{baseURL: srv.URL}, "C1", "", "T1", detailsFull, nil)
-
-	ch := make(chan channels.OutboundDelta, maxToolEntries+6)
-	for range maxToolEntries + 5 {
-		ch <- channels.OutboundDelta{Kind: channels.DeltaToolActivity, Tool: &channels.ToolActivity{Name: "list_pods", Kind: channels.ToolCall}}
-	}
-	ch <- channels.OutboundDelta{Done: true}
-	close(ch)
-
-	require.NoError(t, w.run(t.Context(), ch))
-
-	msgs := ft.finalMessages()
-	var entries []string
-	for _, m := range msgs {
-		require.LessOrEqual(t, len(m), maxActivityBlocks, "one activity message stays within the block budget")
-		entries = append(entries, m...)
-	}
-	require.Len(t, entries, maxToolEntries+1, "capped entries plus the truncation note")
-	require.Equal(t, toolLimitNote, entries[maxToolEntries])
-	require.Len(t, msgs, 2, "entries aggregate into activity messages, rolling over past the block budget")
-}
-
-// TestBatchedWriter_ToolPostsPreserveOrder verifies the async poster keeps
-// detailsFull tool entries in stream order, aggregated into one activity
-// message, and delivers them all before run() returns.
-func TestBatchedWriter_ToolPostsPreserveOrder(t *testing.T) {
+// TestBatchedWriter_ToolStepsPreserveOrder verifies the steps reach Slack in
+// stream order, inside the one message the turn streams.
+func TestBatchedWriter_ToolStepsPreserveOrder(t *testing.T) {
 	ft := &fakeThread{}
 	srv := httptest.NewServer(ft.handler())
 	t.Cleanup(srv.Close)
@@ -165,25 +135,28 @@ func TestBatchedWriter_ToolPostsPreserveOrder(t *testing.T) {
 
 	require.NoError(t, w.run(t.Context(), ch))
 
-	// run() drained the poster before returning: every entry is already delivered.
-	msgs := ft.finalMessages()
-	require.Len(t, msgs, 1, "consecutive tool calls share one activity message")
-	require.Len(t, msgs[0], len(names))
+	steps := ft.steps()
+	require.Len(t, steps, 2*len(names), "each call opens a step; none got a result, so the turn's end closes them")
 	for i, n := range names {
-		require.Contains(t, msgs[0][i], "`"+n+"`", "tool entries must stay in stream order")
+		require.Equal(t, fmt.Sprintf("step-%d", i+1), steps[i].id)
+		require.Equal(t, stepInProgress, steps[i].status)
+		require.Contains(t, steps[i].details, n, "the steps stay in stream order")
+		require.Equal(t, steps[i].id, steps[len(names)+i].id, "and are closed in the same order")
+		require.Equal(t, stepComplete, steps[len(names)+i].status)
 	}
+	require.Len(t, ft.finalMessages(), 1, "a tool-heavy turn is still one message")
 }
 
-// At the default level a tool storm costs the thread exactly ONE message —
-// the ticker, collapsing into its receipt — no matter how many calls stream.
-func TestBatchedWriter_DefaultLevelIsOneStatusMessage(t *testing.T) {
+// A tool storm costs the thread exactly ONE message — the reply, with the steps
+// inside it — however many calls stream, and no post of its own.
+func TestBatchedWriter_ToolStormIsOneMessage(t *testing.T) {
 	ft := &fakeThread{}
 	srv := httptest.NewServer(ft.handler())
 	t.Cleanup(srv.Close)
 
 	w := newBatchedWriterWithClient(&slackAPIClient{baseURL: srv.URL}, "C1", "", "T1", detailsOn, nil)
 
-	const calls = maxToolEntries + 20 // no per-turn entry cap applies here
+	const calls = 50
 	ch := make(chan channels.OutboundDelta, calls+1)
 	for range calls {
 		ch <- channels.OutboundDelta{Kind: channels.DeltaToolActivity, Tool: &channels.ToolActivity{Name: "list_pods", Kind: channels.ToolCall}}
@@ -193,10 +166,46 @@ func TestBatchedWriter_DefaultLevelIsOneStatusMessage(t *testing.T) {
 
 	require.NoError(t, w.run(t.Context(), ch))
 
-	msgs := ft.finalMessages()
-	require.Len(t, msgs, 1)
-	require.Equal(t, capturedMessage{fmt.Sprintf("🛠️ %d steps · list_pods ×%d", calls, calls)}, msgs[0])
-	require.Equal(t, 1, ft.postCount(), "every refresh edits the one ticker message in place")
+	require.Len(t, ft.finalMessages(), 1)
+	require.Len(t, ft.steps(), 2*calls, "one update per call, plus the close the turn's end sends")
+	require.Equal(t, 0, ft.postCount(), "the steps never cost a message of their own")
+}
+
+// A turn past the step cap opens no further steps and says so once. The calls
+// are still recorded for the "Inspect agent steps" shortcut.
+func TestBatchedWriter_CapsSteps(t *testing.T) {
+	ft := &fakeThread{}
+	srv := httptest.NewServer(ft.handler())
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{Logger: testLogger()}
+	w := newBatchedWriterWithClient(&slackAPIClient{baseURL: srv.URL}, "C1", "", "T1", detailsOn, nil)
+	w.adapter = a
+
+	const calls = maxSteps + 5
+	ch := make(chan channels.OutboundDelta, 2*calls+1)
+	for i := range calls {
+		id := fmt.Sprintf("c%d", i)
+		ch <- channels.OutboundDelta{Kind: channels.DeltaToolActivity, Tool: &channels.ToolActivity{
+			Name: "list_pods", Kind: channels.ToolCall, CallID: id,
+		}}
+		ch <- channels.OutboundDelta{Kind: channels.DeltaToolActivity, Tool: &channels.ToolActivity{
+			Name: "list_pods", Kind: channels.ToolResult, CallID: id, Response: map[string]any{"output": "ok"},
+		}}
+	}
+	ch <- channels.OutboundDelta{Done: true}
+	close(ch)
+
+	require.NoError(t, w.run(t.Context(), ch))
+
+	steps := ft.steps()
+	require.Len(t, steps, 2*maxSteps, "each of the capped calls opens and closes its step; the rest open none")
+	require.Equal(t, "step-"+strconv.Itoa(maxSteps), steps[len(steps)-1].id)
+	require.Equal(t, 1, strings.Count(ft.streamedText(), stepLimitNote), "the note is sent once")
+
+	entries, dropped := a.toolLogSnapshot("T1")
+	require.Equal(t, 2*calls, len(entries)+dropped,
+		"every call is still recorded for the inspection shortcut, under its own cap")
 }
 
 func TestCompactJSON_TruncatesAndEmpty(t *testing.T) {

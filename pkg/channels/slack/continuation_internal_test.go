@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"net/http/httptest"
 	"slices"
-	"strings"
 	"sync"
 	"testing"
 
@@ -15,17 +14,10 @@ import (
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
 )
 
-// runContinued drives a writer seeded with what a previous process delivered
-// over deltas (plus a closing Done) in reactions mode, and returns the thread
-// as a user sees it and every delivery record the writer reported.
-func runContinued(t *testing.T, carried store.Delivered, deltas ...channels.OutboundDelta) ([]capturedMessage, []store.Delivered) {
-	t.Helper()
-	msgs, records, _ := runContinuedOn(t, &fakeThread{}, carried, deltas...)
-	return msgs, records
-}
-
-// runContinuedOn is runContinued against a thread the caller set up, so a test
-// can seed a stream for the writer to adopt and then read the calls it made.
+// runContinuedOn drives a writer seeded with what a previous process delivered
+// over deltas (plus a closing Done) in reactions mode, against a thread the
+// caller set up, so a test can seed a stream for the writer to adopt and then
+// read the calls it made.
 func runContinuedOn(t *testing.T, ft *fakeThread, carried store.Delivered, deltas ...channels.OutboundDelta) ([]capturedMessage, []store.Delivered, *batchedWriter) {
 	t.Helper()
 	srv := httptest.NewServer(ft.handler())
@@ -59,79 +51,107 @@ func textDelta(text string) channels.OutboundDelta {
 	return channels.OutboundDelta{Kind: channels.DeltaText, Content: text}
 }
 
-// threadText flattens the thread into one string for containment checks.
-func threadText(msgs []capturedMessage) string {
-	var b strings.Builder
-	for _, m := range msgs {
-		b.WriteString(strings.Join(m, "\n"))
-		b.WriteString("\n")
-	}
-	return b.String()
-}
-
 // A writer continuing a turn drops the answer text the previous process
-// posted — the whole answer arrives at completion — and the receipt counts
-// the steps on from the recorded segment, names included (klaus-gateway#301).
+// posted — the whole answer arrives at completion — and numbers its steps on
+// from the recorded count, so no id already on the reply is reused
+// (klaus-gateway#301).
 func TestContinueFrom_PostsOnlyWhatFollowsAndCountsOn(t *testing.T) {
 	const opening = "Created. One thing to flag: the repository is private."
 	const tail = "Next: rotate the deploy token."
-	carried := store.Delivered{TextLen: len(opening), ToolSteps: 2, ToolOrder: []string{"create", "protect"}, ToolCounts: map[string]int{"create": 1, "protect": 1}}
+	carried := store.Delivered{TextLen: len(opening), ToolSteps: 2}
 
-	msgs, records := runContinued(t, carried, toolCallDelta("team"), textDelta(opening+"\n\n"+tail))
+	ft := &fakeThread{}
+	_, records, _ := runContinuedOn(t, ft, carried, toolCallDelta("team"), textDelta(opening+"\n\n"+tail))
 
-	require.Len(t, msgs, 2, "the receipt and the continued answer: %v", msgs)
-	require.Equal(t, capturedMessage{"🛠️ 3 steps · create · protect · team"}, msgs[0], "the receipt continues the recorded segment")
-	require.Equal(t, capturedMessage{tail}, msgs[1], "only the text after the recorded length is posted, without the paragraph break in front")
-	require.NotContains(t, threadText(msgs), "One thing to flag")
+	require.Equal(t, []taskChunk{
+		{id: "step-3", title: "Team", status: stepInProgress},
+		{id: "step-3", title: "Team", status: stepComplete},
+	}, ft.steps(), "the step counts on from the recorded ones; the record named none as open")
+	require.Equal(t, tail, ft.streamedText(),
+		"only the text after the recorded length is sent, without the paragraph break in front")
 
 	last := records[len(records)-1]
 	require.Equal(t, len(opening+"\n\n"+tail), last.TextLen, "the record covers the whole answer, the dropped break included")
 	require.Equal(t, 3, last.ToolSteps)
-	require.Equal(t, []string{"create", "protect", "team"}, last.ToolOrder)
 }
 
-// The previous process posted the receipt of the segment it was seeded from
-// when it shut down; a narration that closes that segment before any new
-// step posts no second copy, and the steps after the narration start a fresh
-// count as they would in one process.
-func TestContinueFrom_SegmentClosedWithoutANewStepPostsNoSecondReceipt(t *testing.T) {
-	carried := store.Delivered{TextLen: 5, ToolSteps: 2, ToolOrder: []string{"get"}, ToolCounts: map[string]int{"get": 2}}
+// The previous process died with a step still running on the message this one
+// adopts, and the record names it. That step is closed under its own title
+// before anything else goes out — Slack would keep it spinning otherwise — and
+// the turn's next call opens the step after it.
+func TestContinueFrom_ClosesTheCarriedStepThenCountsOn(t *testing.T) {
+	ft := &fakeThread{}
+	ts := openStreamOn(t, ft, "Looking. ")
+	carried := store.Delivered{
+		TextLen: 9, StreamTS: ts, StreamLen: 9, ToolSteps: 3,
+		OpenStepID: "step-3", OpenStepTitle: "Prometheus query",
+	}
 
-	msgs, records := runContinued(t, carried,
-		narrationDelta("Both share the same chart version."),
-		toolCallDelta("diff"),
-		textDelta("hello world"),
-	)
+	_, records, _ := runContinuedOn(t, ft, carried, toolCallDelta("x_kubernetes_list"), textDelta("Looking. Done."))
 
-	text := threadText(msgs)
-	require.NotContains(t, text, "2 steps", "the seeded segment's receipt is not posted again")
-	require.Contains(t, text, "🛠️ 1 step · diff", "the segment after the narration counts from one")
-	require.Contains(t, text, "world", "the text after the recorded length lands")
-	require.NotContains(t, text, "hello world", "the first five bytes are the previous process's")
+	require.Equal(t, []taskChunk{
+		{id: "step-3", title: "Prometheus query", status: stepComplete},
+		{id: "step-4", title: "Kubernetes list", status: stepInProgress},
+		{id: "step-4", title: "Kubernetes list", status: stepComplete},
+	}, ft.steps(), "the carried step is closed under its real title, the new one counts on")
+	require.Equal(t, ts, ft.streams()[1].ts, "both ride the adopted stream")
 
-	closed := slices.IndexFunc(records, func(d store.Delivered) bool { return d.ToolSteps == 0 })
-	require.GreaterOrEqual(t, closed, 0, "the narration records the closed segment as no open steps")
-	require.Equal(t, 5, records[closed].TextLen, "the recorded text length is kept across the segment close")
+	last := records[len(records)-1]
+	require.Equal(t, 4, last.ToolSteps)
+	require.Empty(t, last.OpenStepID, "nothing is left running")
+}
+
+// A restart that fell between a step's result and the answer's last words
+// leaves no step running, so the continuation touches none of them — a finished
+// step keeps its real title and an error step stays an error.
+func TestContinueFrom_NoOpenStepTouchesNoStep(t *testing.T) {
+	ft := &fakeThread{}
+	ts := openStreamOn(t, ft, "Looking. ")
+	carried := store.Delivered{TextLen: 9, StreamTS: ts, StreamLen: 9, ToolSteps: 3}
+
+	msgs, _, _ := runContinuedOn(t, ft, carried, textDelta("Looking. Done."))
+
+	require.Empty(t, ft.steps(), "the record named no open step, so none is rewritten")
+	require.Equal(t, []capturedMessage{{"Looking. Done."}}, msgs, "only the text after the recorded length is added")
+}
+
+// The whole answer had landed before the restart, so the continuation adds
+// nothing — but the step the previous process was running still has to be
+// closed on the adopted message before it is stopped.
+func TestContinueFrom_NothingToAddStillClosesTheOpenStep(t *testing.T) {
+	const answer = "All three clusters run the same chart version."
+	ft := &fakeThread{}
+	ts := openStreamOn(t, ft, answer)
+	carried := store.Delivered{
+		TextLen: len(answer), StreamTS: ts, StreamLen: len(answer), ToolSteps: 2,
+		OpenStepID: "step-2", OpenStepTitle: "Kubernetes get",
+	}
+
+	_, _, w := runContinuedOn(t, ft, carried, textDelta(answer))
+
+	require.Equal(t, []taskChunk{{id: "step-2", title: "Kubernetes get", status: stepComplete}}, ft.steps())
+	require.Equal(t, []string{methodChatStartStream, methodChatAppendStream, methodChatStopStream}, ft.streamMethods(),
+		"the close rides an append on the adopted message, which is then stopped")
+	require.False(t, w.wroteContent(), "closing a step is not a reply of this process's own")
 }
 
 // A writer that continues nothing works as before: no text is dropped, the
-// count starts at one, and every step and flush is recorded for a restart.
-func TestNoteDelivered_RecordsTextAndTheOpenSegment(t *testing.T) {
-	msgs, records := runContinued(t, store.Delivered{},
+// step count starts at one, and every step and flush is recorded for a restart.
+func TestNoteDelivered_RecordsTextAndTheStepCount(t *testing.T) {
+	ft := &fakeThread{}
+	_, records, _ := runContinuedOn(t, ft, store.Delivered{},
 		toolCallDelta("get"), toolCallDelta("get"),
 		narrationDelta("Looking at the second cluster now."),
 		toolCallDelta("list"),
 		textDelta("hello"),
 	)
 
-	require.Contains(t, threadText(msgs), "hello")
-	require.Equal(t, store.Delivered{TextLen: 5, ToolSteps: 1, ToolOrder: []string{"list"}, ToolCounts: map[string]int{"list": 1}}, records[len(records)-1],
-		"the last record is the appended text and the segment open at the end, the stream closed")
+	require.Contains(t, ft.streamedText(), "hello")
+	require.Equal(t, store.Delivered{TextLen: 5, ToolSteps: 3}, records[len(records)-1],
+		"the last record is the answer text and every step id issued, the stream closed")
 	require.True(t, slices.ContainsFunc(records, func(d store.Delivered) bool {
-		return d.ToolSteps == 2 && d.ToolCounts["get"] == 2 && d.TextLen == 0
-	}), "the first segment's steps were recorded as they happened: %v", records)
-	require.True(t, slices.ContainsFunc(records, func(d store.Delivered) bool { return d.ToolSteps == 0 }),
-		"the narration recorded the segment as closed: %v", records)
+		return d.ToolSteps == 2 && d.TextLen == 0
+	}), "the steps were recorded as they happened: %v", records)
 }
 
 // Without a sink nothing is recorded and the writer behaves as before.
@@ -163,7 +183,7 @@ func openStreamOn(t *testing.T, ft *fakeThread, text string) string {
 	srv := httptest.NewServer(ft.handler())
 	t.Cleanup(srv.Close)
 	c := &slackAPIClient{botToken: "t", baseURL: srv.URL}
-	ts, err := c.startStream(t.Context(), "C1", "1.0", text, "", "")
+	ts, err := c.startStream(t.Context(), "C1", "1.0", []any{textChunk(text)}, "", "")
 	require.NoError(t, err)
 	return ts
 }
@@ -239,9 +259,9 @@ func TestNoteDelivered_RecordsTheOpenStreamAsItGrows(t *testing.T) {
 	var records []store.Delivered
 	w.onDelivered = func(_ context.Context, d store.Delivered) { records = append(records, d) }
 
-	w.pending = "first part "
+	w.queueAnswer("first part ")
 	require.NoError(t, w.flush(t.Context()))
-	w.pending = "second part "
+	w.queueAnswer("second part ")
 	require.NoError(t, w.flush(t.Context()))
 
 	require.Len(t, records, 2)

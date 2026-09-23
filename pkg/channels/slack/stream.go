@@ -1,6 +1,7 @@
 package slack
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -79,8 +80,8 @@ const (
 	methodChatAppendStream = "chat.appendStream"
 	methodChatStopStream   = "chat.stopStream"
 	// slackMarkdownBlockMax caps the text of one Block Kit markdown block and
-	// of one streamed message, Slack's 12 000-char limit. A narration post is
-	// split under it by splitMarkdown, fence close and reopen included; a
+	// of one streamed message, Slack's 12 000-char limit. A narration passage
+	// is split under it by splitMarkdown, fence close and reopen included; a
 	// streamed answer is cut at whitespace by cutPiece and rolls over into a
 	// new message when it reaches the cap.
 	slackMarkdownBlockMax = 12000
@@ -100,40 +101,51 @@ const (
 	errCodeStoppedByUser       = "stopped_by_user"
 	errCodeNotInStreamingState = "message_not_in_streaming_state"
 	errCodeMsgNotOwned         = "message_not_owned_by_app"
+
+	// Chunk types of a streamed message. Prose (the answer and the agent's
+	// narration) travels as markdown_text; one step of the reply's task list
+	// as task_update.
+	chunkTypeMarkdownText = "markdown_text"
+	chunkTypeTaskUpdate   = "task_update"
+
+	// Step states of a task_update chunk, spelled exactly as Slack names them
+	// in the chat.appendStream reference.
+	stepInProgress = "in_progress"
+	stepComplete   = "complete"
+	stepError      = "error"
 )
 
 // batchedWriter accumulates OutboundDelta content and streams it into one
-// Slack message: chat.startStream opens the answer, chat.appendStream adds the
-// text accumulated since the last tick, and chat.stopStream closes it with the
-// agent session's exit status. Each append carries only the new text, Slack
-// animates the message while the stream is open, and the Stop button ends the
-// stream on Slack's side.
+// Slack message: chat.startStream opens the reply, chat.appendStream adds
+// everything accumulated since the last tick, and chat.stopStream closes it
+// with the agent session's exit status. Each append carries only what is new,
+// Slack animates the message while the stream is open, and the Stop button
+// ends the stream on Slack's side.
 //
-// The main reply accumulates DeltaText content. Tool activity is a live
-// status ticker at the default details level — one muted line that updates in
-// place while the agent works and collapses to a one-line receipt — and, at
-// detailsFull, additionally an aggregated audit message of per-call
-// context-block entries. The live line is a message on every surface: Slack's
-// native working indicator (the agent session status, setSessionStatus) says
-// only THAT the agent is working — the method carries no free text — so the
-// ticker message stays as the detail carrier saying what it is working on.
-// The ticker is per-segment: narration closes the live
-// ticker into its receipt at its position (counting only that segment's
-// steps), and the next tool call opens a fresh ticker message below the
-// narration, so a long turn reads narration → receipt → narration → receipt in
-// stream order. The agent's interim narration posts as its own in-thread
-// messages, except that at the default level a short narration folds into the
-// segment's status message as a muted context block above the ticker line, so
-// a typical narrate-then-call group is one compact message. The main reply's
-// stream opens on its first text and therefore lands last.
+// The whole turn is one message, in the order the agent produced it. The
+// stream carries a list of typed chunks rather than a plain markdown_text
+// field — a message uses one of the two from its first call to its last, and
+// Slack refuses a mode change mid-message — so the turn's content queues up as
+// chunks and goes out together:
+//
+//   - the answer, and the agent's interim narration, as markdown_text chunks;
+//   - each tool call as a task_update chunk, which Slack renders as a step of
+//     a task list attached to the reply: in_progress when the call starts,
+//     complete or error when its result arrives. /details decides how much a
+//     step carries — nothing at all at off, the title alone at on, the
+//     truncated arguments and result preview at full.
+//
+// The stream therefore opens at the FIRST thing the turn produces — a tool
+// call, a narration passage or the first answer text, whichever comes first —
+// so the steps live inside the reply instead of above it.
 //
 // When the stream ends on a DeltaPrompt, run() captures it in promptDelta
-// (flushing the main buffer first) and returns nil. The caller is responsible
-// for posting the approval prompt and registering the pending task.
+// (flushing the queue first) and returns nil. The caller is responsible for
+// posting the approval prompt and registering the pending task.
 type batchedWriter struct {
 	client   *slackAPIClient
 	channel  string
-	threadTS string // thread root — used when posting the status message
+	threadTS string // thread root — the reply and the turn's prompts hang off it
 	// placeholderTS is the text-mode progress placeholder ("thinking…"), empty
 	// in reactions mode. A stream cannot take over an existing message the way
 	// chat.update did, so the placeholder is deleted once the answer has a
@@ -196,31 +208,19 @@ type batchedWriter struct {
 	// text delta, the characters streamed and the tool calls are recorded on
 	// it as the deltas arrive.
 	timer *channels.TurnTimer
-	// toolsRendered counts detailsFull tool-activity entries this turn so a
-	// tool-heavy turn does not flood the thread (or hit Slack post rate limits).
-	// Only touched from run()'s goroutine.
-	toolsRendered int
-	// narrationsRendered counts narration renderings this turn (own messages
-	// and blocks folded into the status message), capped like tool activity so
-	// a long tool-calling loop does not flood the thread. Only touched from
-	// run()'s goroutine.
+	// narrationsRendered counts narration chunks queued this turn, capped so a
+	// long tool-calling loop does not bury the answer. Only touched from run()'s
+	// goroutine.
 	narrationsRendered int
 	// toolLogTurn is this turn's ordinal in the adapter's per-thread tool log
 	// (see inspect.go), opened lazily on the first recorded entry; 0 until
 	// then. Only touched from run()'s goroutine.
 	toolLogTurn int
-	// threadPosts carries rendered in-thread messages (tool activity and
-	// narration) to a single poster goroutine so a slow Slack API does not stall
-	// delta draining. Buffered to the per-turn caps so enqueue never blocks; nil
-	// until the first post. Drained before the main reply lands.
-	// threadPosterDone closes when the poster exits.
-	threadPosts      chan threadPost
-	threadPosterDone chan struct{}
 
 	mu            sync.Mutex
-	pending       string    // agent text accepted but not yet appended to the stream
-	flushFailures int       // consecutive failed ticker flushes; reset on success
-	flushRetryAt  time.Time // ticker flushes wait until here once they keep failing
+	queue         []queuedChunk // content accepted but not yet sent, in delta order
+	flushFailures int           // consecutive failed ticker flushes; reset on success
+	flushRetryAt  time.Time     // ticker flushes wait until here once they keep failing
 	// appendedLen counts the answer bytes this writer has handed to streams,
 	// summed across roll-overs. It is what a process continuing the turn after
 	// a restart must not post again, and what says the reply carries agent text.
@@ -239,7 +239,11 @@ type batchedWriter struct {
 	// (continueFrom), which this one has not written to yet: its first text
 	// goes out as an append, so a stream Slack has closed since the restart
 	// recovers onto a message of its own instead of failing the closing stop.
+	// streamOpened marks a message THIS writer opened, which is what says the
+	// reply exists and the progress placeholder is gone; an adopted one does
+	// not count (under mu).
 	streamAdopted bool
+	streamOpened  bool
 	// streamRecovered marks a stream Slack closed under us as already reopened
 	// once this turn; streamStopped closes the text path quietly for the rest
 	// of the turn (the user pressed Stop); streamFailed closes it as a failure
@@ -248,81 +252,95 @@ type batchedWriter struct {
 	streamRecovered bool
 	streamStopped   bool
 	streamFailed    bool
-	// narrationTS holds the timestamps of the narration posted after a login
-	// challenge this turn, so a connector prompt taking over can retract that
-	// sign-in prose with the reply. Written by the poster goroutine.
-	narrationTS []string
 
-	// Tool-status ticker state (the detailsOn rendering) for the CURRENT
-	// segment: written under mu on run()'s goroutine as tool calls stream, read
-	// by the poster to render the live ticker. Kept outside the poster so a
-	// dropped ticker kick never loses a step: the next render always sees exact
-	// counts. Narration closes a segment by snapshotting and resetting these
-	// atomically (takeToolStatus) on run()'s goroutine, so steps recorded after
-	// the narration in the delta stream count toward the next segment.
-	toolSteps   int
-	toolCurrent string         // display name of the segment's most recent call
-	toolOrder   []string       // distinct display names in segment first-use order
-	toolCounts  map[string]int // segment calls per display name
+	// Step state of the reply's task list. stepsIssued counts the step ids this
+	// turn has handed out — the id of the n-th tool call is "step-<n>",
+	// continuing the count a restart carried over, so a process continuing the
+	// turn never reuses an id already on the adopted stream. openSteps holds the
+	// steps opened and not yet closed, oldest first: a result closes the one its
+	// call id names, and whatever is left when the turn ends is closed by its
+	// last flush. Written on run()'s goroutine; openSteps is guarded by mu
+	// because the delivery record names its most recent entry.
+	stepsIssued int
+	openSteps   []openStep
 
 	// Continuation across a restart (continuation.go). carried is what the
 	// previous process delivered of the turn this writer continues; skipText
 	// is how much answer text is still to be dropped, trimLead whether the
 	// whitespace the cut left in front is still to go, and leadTrimmed (under
-	// mu) how much of it went; carriedSteps is the step count the open
-	// segment was seeded with, so a segment closed without a new step posts
-	// no second receipt. onDelivered, when set, receives the delivery record
-	// after every flush and every step.
-	carried      store.Delivered
-	skipText     int
-	trimLead     bool
-	leadTrimmed  int
-	carriedSteps int
-	onDelivered  func(ctx context.Context, d store.Delivered)
-	// ran is set by run(): a second cycle over the same writer resets the
-	// ticker counters the previous cycle's closing pass left standing.
+	// mu) how much of it went. onDelivered, when set, receives the delivery
+	// record after every flush and every step.
+	carried     store.Delivered
+	skipText    int
+	trimLead    bool
+	leadTrimmed int
+	onDelivered func(ctx context.Context, d store.Delivered)
+	// ran is set by run(): a second cycle over the same writer opens a stream
+	// of its own instead of reopening the one the previous cycle closed.
 	ran bool
 }
 
-// toolReceipt is one closed ticker segment's exact counters. It is snapshotted
-// and reset atomically on run()'s goroutine when narration closes the segment,
-// and travels to the poster on the narration's threadPost, so the receipt
-// renders exact per-segment counts no matter how far the poster lags.
-type toolReceipt struct {
-	steps  int
-	order  []string
-	counts map[string]int
+// openStep is a tool call that has a step on the stream and no result yet: the
+// id Slack keys it by, the call id its result will arrive under (empty when the
+// stream gave none, which is why the turn's end has to close it), and the title
+// it was opened with, so the update that closes it renders the same step rather
+// than a second one. The details are deliberately absent: they ride the opening
+// update alone (see taskUpdate).
+type openStep struct {
+	id     string
+	callID string
+	title  string
 }
 
-// threadPostKind selects how the poster lands one queued item: narration is
-// its own full-weight message (or, when marked foldable and no ticker is live
-// yet, a muted block inside the status message); a tool entry (detailsFull) is
-// one context block appended to the running activity message; a status kick
-// (detailsOn) refreshes the live ticker from the writer's counters. The zero
-// value is narration so the retract bookkeeping (which only narration uses)
-// matches the zero-value struct.
-type threadPostKind int
+// taskUpdate is one state of one step of the reply's task list. Sending the
+// same id again updates the step, which is how a running call becomes a
+// finished one.
+//
+// Slack APPENDS details across the updates of one step rather than replacing
+// it (observed on graveler, 2026-09-22: a step sent with the same details twice
+// showed both copies run together, while output, sent once, showed once). So
+// details rides the update that OPENS the step and no other; every later update
+// of that step carries the id, the title, the status and — at /details full —
+// the output.
+type taskUpdate struct {
+	id      string
+	title   string
+	status  string
+	details string
+	output  string
+}
 
-const (
-	postNarration threadPostKind = iota
-	postToolEntry
-	postToolStatusKick
-)
+// queuedChunk is one element of the reply waiting to go out, in the order the
+// agent's deltas produced it: a piece of prose — the answer (answer true) or
+// the agent's interim narration — or a step update. Only a trailing answer
+// chunk still grows, which is why the whitespace hold-back applies to it alone.
+type queuedChunk struct {
+	text   string
+	answer bool
+	step   *taskUpdate
+}
 
-// threadPost is one rendered in-thread item, posted outside the main reply.
-// retract marks the narration a connector prompt taking over the turn deletes
-// along with the reply. fold marks narration short enough to render as a muted
-// context block inside the segment's status message instead of a full-weight
-// message of its own. receipt, set on the first rendered chunk of a narration
-// that follows tool calls, carries the ticker segment the narration closes:
-// the poster collapses the live status message into this receipt at its
-// position before rendering the narration below it.
-type threadPost struct {
-	kind    threadPostKind
-	md      string
-	retract bool
-	fold    bool
-	receipt *toolReceipt
+// textChunk renders a piece of prose as a streamed chunk.
+func textChunk(md string) map[string]any {
+	return map[string]any{"type": chunkTypeMarkdownText, "text": md}
+}
+
+// stepChunk renders one step state as a streamed chunk. details and output are
+// left off when empty — at /details on a step is its title alone.
+func stepChunk(s taskUpdate) map[string]any {
+	c := map[string]any{
+		"type":   chunkTypeTaskUpdate,
+		"id":     s.id,
+		"title":  s.title,
+		"status": s.status,
+	}
+	if s.details != "" {
+		c["details"] = s.details
+	}
+	if s.output != "" {
+		c["output"] = s.output
+	}
+	return c
 }
 
 func newBatchedWriterWithClient(client *slackAPIClient, channel, ts, threadTS string, details detailsLevel, logger *slog.Logger) *batchedWriter {
@@ -339,17 +357,18 @@ func newBatchedWriterWithClient(client *slackAPIClient, channel, ts, threadTS st
 	}
 }
 
-// run drains deltas from ch, appending the agent's text to the turn's streamed
-// message at streamAppendInterval.
+// run drains deltas from ch, queueing the turn's text, narration and steps in
+// the order they arrive and appending what has accumulated to the turn's
+// streamed message at streamAppendInterval.
 func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelta) error {
 	w.timer = channels.TurnTimerFromContext(ctx)
 	// A run() cycle over a writer that ran before (an auto-approved prompt
-	// resuming the turn in place) starts a fresh ticker: the previous cycle's
-	// segment collapsed into its receipt when its poster closed. Its answer
-	// stream was closed by that cycle's final stop, so the continuation opens a
-	// message of its own rather than reopening a closed one.
+	// resuming the turn in place) continues the same turn: its answer stream
+	// was closed by that cycle's final stop, so the continuation opens a message
+	// of its own rather than reopening a closed one. The step count is NOT
+	// reset — the ids stay unique for the whole turn, which is what the
+	// delivery record hands to a process continuing it after a restart.
 	if w.ran {
-		w.resetToolStatus()
 		w.resetStream()
 	}
 	w.ran = true
@@ -365,8 +384,7 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 	// last in-thread post, and before endStream so it follows the stop.
 	w.setSessionStatus(ctx, sessionProcessing)
 	defer func() { w.setSessionStatus(ctx, w.exitSessionStatus()) }()
-	defer w.endStream(ctx)     // backstop for the ctx.Done() exit; finalFlush closes first
-	defer w.drainThreadPosts() // backstop for the ctx.Done() exit; finalFlush drains first
+	defer w.endStream(ctx) // backstop for the ctx.Done() exit; finalFlush closes first
 
 	for {
 		select {
@@ -394,6 +412,8 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 				// Flush text buffered since the last tick before surfacing the
 				// error, so wroteContent reflects all delivered content and the
 				// failure note posts as a new message instead of overwriting it.
+				// A step still running when the turn fails never gets its result.
+				w.closeOpenSteps(ctx, stepError)
 				if ferr := w.finalFlush(ctx); ferr != nil {
 					w.logger.Warn("slack: flush before failure note failed", "error", ferr)
 				}
@@ -410,28 +430,19 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 				}
 				w.timer.Mark(channels.PhaseFirstText)
 				w.timer.AddChars(len(content))
-				w.mu.Lock()
-				w.pending += content
-				w.mu.Unlock()
-				// The turn's first text opens the stream at once, so the answer
-				// shows up while the agent is still writing it; the tick paces
-				// the appends that follow. What the agent narrated before the
-				// answer has to land above it, and the streamed message exists
-				// from its first text on, so the poster cannot catch up later:
-				// drain it first, as the terminal flush does.
-				if w.streamTS == "" && !w.streamStopped {
-					w.drainThreadPosts()
-					w.tickFlush(ctx, time.Now())
-				}
+				w.queueAnswer(content)
+				w.openEarly(ctx)
 			case channels.DeltaToolActivity:
 				if d.Tool != nil && d.Tool.Kind == channels.ToolCall {
 					w.timer.AddToolCall()
 				}
 				w.renderToolActivity(ctx, d.Tool)
 				w.maybeConnectorPrompt(d.Tool)
+				w.openEarly(ctx)
 			case channels.DeltaNarration:
 				w.timer.AddChars(len(d.Content))
-				w.renderNarration(ctx, d.Content)
+				w.renderNarration(d.Content)
+				w.openEarly(ctx)
 			case channels.DeltaPrompt:
 				// Recorded before the flush: the stop that closes the stream
 				// carries the session's exit status, which for a paused turn is
@@ -439,6 +450,11 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 				w.mu.Lock()
 				w.promptDelta = &d
 				w.mu.Unlock()
+				// The call that asked the question is done asking, and this
+				// message is about to be closed, so its step is closed on it —
+				// the answer resumes the turn into a message of its own, where
+				// an update for this step would render as a second card.
+				w.closeOpenSteps(ctx, stepComplete)
 				// Flush partial text so far, then hand off to the caller to post
 				// the interactive approval prompt. A flush failure here is
 				// non-fatal: the pending-task store and the prompt post do not
@@ -455,6 +471,17 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 			w.tickFlush(ctx, now)
 		}
 	}
+}
+
+// openEarly opens the turn's stream on the first thing the agent produces — a
+// tool call, a narration passage or the first answer text, whichever comes
+// first — so the reply message exists while the agent is still working and its
+// steps land inside it. Everything after that rides the tick.
+func (w *batchedWriter) openEarly(ctx context.Context) {
+	if w.streamTS != "" || w.streamStopped {
+		return
+	}
+	w.tickFlush(ctx, time.Now())
 }
 
 // maxFlushFailures is the number of attempts a terminal flush gets, and the
@@ -501,6 +528,9 @@ func (w *batchedWriter) noteFlushFailure(now time.Time, err error) {
 // after its retries is reported as a renderError: the agent completed the turn,
 // only its rendering did not.
 func (w *batchedWriter) finish(ctx context.Context) error {
+	// A step whose result never arrived — a call the stream gave no id, a tool
+	// that answered nothing — would spin on the finished reply forever.
+	w.closeOpenSteps(ctx, stepComplete)
 	if err := w.finalFlush(ctx); err != nil {
 		return &renderError{err: err}
 	}
@@ -526,9 +556,6 @@ func (e *renderError) Unwrap() error { return e.err }
 // turn completed server-side; a short reply that never hits a ticker flush
 // would otherwise be killable by one such error.
 func (w *batchedWriter) finalFlush(ctx context.Context) error {
-	// Every queued in-thread post precedes the reply this flush lands, so drain
-	// the poster first to keep the answer the turn's last message.
-	w.drainThreadPosts()
 	var err error
 	for attempt := 1; ; attempt++ {
 		if err = w.closeStream(ctx); err == nil {
@@ -551,122 +578,225 @@ func (w *batchedWriter) finalFlush(ctx context.Context) error {
 const (
 	toolArgsMax   = 500
 	toolResultMax = 800
-	// maxToolEntries bounds tool-activity entries per turn. Entries aggregate
-	// into shared activity messages, so the cap guards the per-entry chat.update
-	// calls (rate limits) rather than thread flooding; past it, one truncation
-	// note is rendered and the rest are silent.
-	maxToolEntries = 30
-	// maxActivityBlocks bounds the context blocks of one activity message,
-	// comfortably under Slack's 50-blocks-per-message limit; further entries
-	// roll over into a new activity message.
+	// stepFieldMax caps a step's details and output. Slack documents 256
+	// characters as the chunk size limit of task_update, so the payload
+	// previews are cut to it after escaping; the tool log the "Inspect agent
+	// steps" shortcut shows keeps the fuller toolArgsMax/toolResultMax
+	// renderings.
+	stepFieldMax = 256
+	// maxActivityBlocks bounds the context blocks of one in-thread Block Kit
+	// message, comfortably under Slack's 50-blocks-per-message limit; the tool
+	// log's inspection posts roll over into a further message past it.
 	maxActivityBlocks = 24
-	// maxNarrationMessages bounds narration posts per turn, on its own budget so
-	// muted tool activity does not buy extra narration. Past it one truncation
-	// note is posted: dropping the agent's prose without saying so is the bug this
-	// rendering fixes.
+	// maxNarrationMessages bounds narration chunks per turn, so a long
+	// tool-calling loop does not bury the answer under interim prose. Past it
+	// one truncation note is sent: dropping the agent's prose without saying so
+	// is the bug this rendering fixes.
 	maxNarrationMessages = 10
+	// maxSteps bounds the steps one turn puts on its reply. The steps ride the
+	// appends the answer already makes, so this is not a rate limit: Slack
+	// documents no maximum number of tasks on a message, and a turn of several
+	// hundred calls is untested territory. Past it one note is sent and the
+	// calls still reach the "Inspect agent steps" log, under its own cap
+	// (maxToolLogEntries per thread, so a very long turn loses its oldest).
+	maxSteps = 100
 )
+
+// passageBreak ends a narration chunk, so two passages — or a passage and the
+// answer that follows it — never run together in the message body.
+const passageBreak = "\n\n"
 
 // narrationLimitNote replaces the narration past the per-turn cap.
 const narrationLimitNote = "_…narration limit reached; hiding this turn's remaining step-by-step notes. The answer still follows._"
 
-// toolLimitNote replaces the tool entry past the per-turn cap.
-const toolLimitNote = "_…tool-activity limit reached; hiding this turn's remaining tool calls. Details are still on: `/details off` mutes them entirely._"
+// stepLimitNote is sent once when a turn's tool calls pass the step cap. The
+// tool log has its own, shorter bound, so it is promised only the recent calls.
+const stepLimitNote = "_…step limit reached; hiding this turn's remaining tool calls. The Inspect agent steps shortcut has the most recent ones._"
 
-// renderToolActivity renders a tool call for the thread. At the default level
-// (detailsOn) it feeds the live status ticker: one muted line per segment that
-// updates in place while the agent works and collapses to a one-line receipt
-// when narration closes the segment or the turn ends — no payloads, no
-// per-call messages. At detailsFull each
-// call (and its result) additionally renders as a context-block entry with its
-// JSON payload, aggregated into a shared activity message: the audit view.
-// At every level except off the entry is also retained in the adapter's
-// per-thread tool log, so the "Inspect agent steps" shortcut can show the
-// payloads retroactively; off stays a private mode and records nothing.
-// The rendering decision runs here (in run()'s goroutine); the HTTP post is
-// handed to an async poster so a slow Slack API does not stall delta draining.
+// renderToolActivity turns a tool call into one step of the reply's task list:
+// a task_update chunk that opens the step as in_progress, and a second one on
+// its result that closes the step as complete — or as error when the tool
+// reported one. The two carry the same id, so Slack updates the step in place
+// instead of listing it twice. /details decides what a step carries: at off
+// nothing is rendered and nothing is recorded (it is the private mode), at on
+// the plain-language title alone, at full the truncated call arguments as the
+// step's details and the truncated result preview as its output.
+//
+// At every level except off the call and its result are also retained in the
+// adapter's per-thread tool log, so the "Inspect agent steps" shortcut can show
+// the payloads retroactively whatever the level was.
 func (w *batchedWriter) renderToolActivity(ctx context.Context, tool *channels.ToolActivity) {
 	if w.details == detailsOff || tool == nil {
 		return
 	}
-	displayName, viaMuster := tool.Name, false
-	args := tool.Args
-	if tool.Kind == channels.ToolCall {
+	switch tool.Kind {
+	case channels.ToolCall:
+		displayName, viaMuster := tool.Name, false
+		args := tool.Args
 		if inner, innerArgs, ok := unwrapCallTool(tool); ok {
-			// Record the call→inner mapping so a detailsFull result (which
-			// carries no Args) can resolve the inner name via effectiveToolName,
+			// Record the call→inner mapping so the result (which carries no
+			// Args) can resolve the inner name via effectiveToolName,
 			// independent of whether connector prompts are enabled.
 			w.noteCallToolTarget(tool)
 			displayName, viaMuster, args = inner, true, innerArgs
 		}
-	}
-
-	md, ok := w.toolEntryMarkdown(tool, displayName, viaMuster, args)
-	if ok {
-		w.recordToolLog(md)
-	}
-
-	if w.details != detailsFull {
-		if tool.Kind != channels.ToolCall {
-			return
+		w.recordToolLog(toolCallMarkdown(displayName, viaMuster, args))
+		w.openStep(ctx, tool.CallID, displayName, args)
+	case channels.ToolResult:
+		preview, isErr := toolResultPreview(tool.Response, toolResultMax)
+		if md, ok := w.toolResultMarkdown(tool, preview, isErr); ok {
+			w.recordToolLog(md)
 		}
-		w.recordToolStep(displayName)
-		w.kickToolStatus(ctx)
-		w.noteDelivered(ctx)
+		w.closeStep(ctx, tool.CallID, preview, isErr)
+	}
+}
+
+// toolCallMarkdown renders one tool call as the tool log's entry: "🔧 name"
+// with an args code span. Name and args are agent- and MCP-controlled, so
+// everything is escaped for the mrkdwn context block the log lands in.
+func toolCallMarkdown(displayName string, viaMuster bool, args map[string]any) string {
+	md := "🔧 " + toolLabel(displayName)
+	if viaMuster {
+		md += " (via muster)"
+	}
+	if summary := compactJSON(args, toolArgsMax); summary != "" {
+		md += "\n" + inlineCode(summary)
+	}
+	return md
+}
+
+// toolResultMarkdown renders one tool result as the tool log's entry: "↳ name
+// result" with the payload preview the caller already unwrapped, ⚠️ marking a
+// result the tool reported as an error. ok is false when the result carries no
+// preview, so nothing is recorded for it.
+func (w *batchedWriter) toolResultMarkdown(tool *channels.ToolActivity, preview string, isErr bool) (md string, ok bool) {
+	if preview == "" {
+		return "", false
+	}
+	resultName := w.effectiveToolName(tool)
+	md = "↳ "
+	if isErr {
+		md += "⚠️ "
+	}
+	md += toolLabel(resultName) + " result"
+	if tool.Name == musterCallToolMetaTool && resultName != tool.Name {
+		md += " (via muster)"
+	}
+	return md + "\n" + inlineCode(preview), true
+}
+
+// openStep queues the step that says this call is running. The id is the
+// call's ordinal in the turn ("step-4"), which is what a process continuing the
+// turn after a restart counts on from, and what the result's update repeats to
+// close the same step. Past maxSteps no step is opened and one note says so.
+func (w *batchedWriter) openStep(ctx context.Context, callID, displayName string, args map[string]any) {
+	w.stepsIssued++
+	if w.stepsIssued > maxSteps {
+		if w.stepsIssued == maxSteps+1 {
+			w.queueNarration(stepLimitNote + passageBreak)
+		}
 		return
 	}
+	s := openStep{
+		id:     stepID(w.stepsIssued),
+		callID: callID,
+		title:  stepTitle(displayName),
+	}
+	u := taskUpdate{id: s.id, title: s.title, status: stepInProgress}
+	if w.details == detailsFull {
+		// The raw name is what a reader debugging a turn needs: the title is a
+		// phrase, the details name the tool and what it was called with. This is
+		// the only update of this step that carries them.
+		u.details = stepField(displayName + " " + compactJSON(args, toolArgsMax))
+	}
+	w.mu.Lock()
+	w.openSteps = append(w.openSteps, s)
+	w.mu.Unlock()
+	w.queueStep(u)
+	w.noteDelivered(ctx)
+}
+
+// closeStep queues the update that ends the step the call opened: complete, or
+// error when the tool reported the result as one. A result whose call was never
+// seen — a stream that started mid-turn, a call past the step cap, a step the
+// turn's end already closed — has no step to close and is dropped. The record
+// follows, because the step it named is no longer running.
+func (w *batchedWriter) closeStep(ctx context.Context, callID, preview string, isErr bool) {
+	s, ok := w.takeOpenStep(callID)
 	if !ok {
 		return
 	}
-
-	w.toolsRendered++
-	switch {
-	case w.toolsRendered > maxToolEntries+1:
-		return // already queued the truncation note
-	case w.toolsRendered == maxToolEntries+1:
-		md = toolLimitNote
+	status := stepComplete
+	if isErr {
+		status = stepError
 	}
-
-	w.enqueueThreadPost(ctx, threadPost{kind: postToolEntry, md: md})
+	u := taskUpdate{id: s.id, title: s.title, status: status}
+	if w.details == detailsFull {
+		u.output = stepField(preview)
+	}
+	w.queueStep(u)
+	w.noteDelivered(ctx)
 }
 
-// toolEntryMarkdown renders one tool call or result as the detailsFull entry:
-// "🔧 name" with an args code span, or "↳ name result" with a payload preview.
-// The result preview is the innermost readable payload (MCP envelopes and
-// muster's serialized re-wraps are unwrapped first), with ⚠️ marking a result
-// the tool reported as an error. Name, args, and result are agent- and
-// MCP-controlled, so everything is escaped for the mrkdwn context block it
-// lands in. ok is false when there is nothing to render (a result with no
-// preview, or an unknown kind).
-func (w *batchedWriter) toolEntryMarkdown(tool *channels.ToolActivity, displayName string, viaMuster bool, args map[string]any) (md string, ok bool) {
-	switch tool.Kind {
-	case channels.ToolCall:
-		md = "🔧 " + toolLabel(displayName)
-		if viaMuster {
-			md += " (via muster)"
-		}
-		if summary := compactJSON(args, toolArgsMax); summary != "" {
-			md += "\n" + inlineCode(summary)
-		}
-		return md, true
-	case channels.ToolResult:
-		resultName := w.effectiveToolName(tool)
-		preview, isErr := toolResultPreview(tool.Response, toolResultMax)
-		md = "↳ "
-		if isErr {
-			md += "⚠️ "
-		}
-		md += toolLabel(resultName) + " result"
-		if tool.Name == musterCallToolMetaTool && resultName != tool.Name {
-			md += " (via muster)"
-		}
-		if preview == "" {
-			return "", false
-		}
-		return md + "\n" + inlineCode(preview), true
-	default:
-		return "", false
+// takeOpenStep removes the open step a result belongs to. A result with no call
+// id matches nothing: it cannot be told from any other, and closing the wrong
+// step would be worse than leaving the turn's end to close it.
+func (w *batchedWriter) takeOpenStep(callID string) (openStep, bool) {
+	if callID == "" {
+		return openStep{}, false
 	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for i, s := range w.openSteps {
+		if s.callID == callID {
+			w.openSteps = append(w.openSteps[:i], w.openSteps[i+1:]...)
+			return s, true
+		}
+	}
+	return openStep{}, false
+}
+
+// cancelledStepStatus is how a step still running is closed when the turn's
+// context is cancelled. The gateway's own shutdown does not end the tool call:
+// the task keeps running at the controller, the thread is told so, and another
+// process delivers its answer — so the step on this message is closed as done,
+// not as failed, and the result that arrives after the restart belongs to a
+// step nobody is waiting on any more. Every other cancellation — a /stop, the
+// per-turn deadline — does end the call, and its result is never coming.
+func cancelledStepStatus(ctx context.Context) string {
+	if errors.Is(context.Cause(ctx), channels.ErrShutdown) {
+		return stepComplete
+	}
+	return stepError
+}
+
+// closeOpenSteps ends every step still running as the turn ends, so no message
+// is left with one that spins forever — Slack never closes a task on its own.
+// status is complete on a normal end and on a pause for a HITL prompt (the call
+// did its work; the answer is what is being waited for), error when the turn
+// failed, and what cancelledStepStatus says when it was cancelled. A call the
+// stream gave no id is only ever closed here.
+func (w *batchedWriter) closeOpenSteps(ctx context.Context, status string) {
+	w.mu.Lock()
+	open := w.openSteps
+	w.openSteps = nil
+	w.mu.Unlock()
+	if len(open) == 0 {
+		return
+	}
+	for _, s := range open {
+		w.queueStep(taskUpdate{id: s.id, title: s.title, status: status})
+	}
+	w.noteDelivered(ctx)
+}
+
+// stepField prepares a payload preview for a step's details or output: escaped
+// like every other agent-controlled string, flattened to one line, and cut to
+// the chunk size Slack documents for task_update. Slack decodes the entities
+// again when it renders the field (verified on graveler, 2026-09-22), so the
+// escaping costs the reader nothing and keeps a payload from carrying a mention.
+func stepField(s string) string {
+	return truncateRunes(stepSafeText(s), stepFieldMax)
 }
 
 // recordToolLog retains one rendered entry in the adapter's per-thread tool
@@ -683,109 +813,6 @@ func (w *batchedWriter) recordToolLog(md string) {
 		w.toolLogTurn = w.adapter.beginToolLogTurn(w.threadTS)
 	}
 	w.adapter.appendToolLog(w.threadTS, w.toolLogTurn, md)
-}
-
-// recordToolStep counts one tool call into the current segment's ticker state.
-func (w *batchedWriter) recordToolStep(displayName string) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	w.toolSteps++
-	w.toolCurrent = displayName
-	if w.toolCounts == nil {
-		w.toolCounts = make(map[string]int)
-	}
-	if _, seen := w.toolCounts[displayName]; !seen {
-		w.toolOrder = append(w.toolOrder, displayName)
-	}
-	w.toolCounts[displayName]++
-}
-
-// kickToolStatus nudges the poster to re-render the status ticker. The kick is
-// lossy on purpose (a full queue drops it rather than stalling delta draining):
-// the ticker always renders from the exact counters, and every segment's
-// receipt renders unconditionally (from the snapshot a closing narration
-// carries, or the poster's final pass), so a dropped kick costs at most one
-// intermediate refresh, never a step.
-func (w *batchedWriter) kickToolStatus(ctx context.Context) {
-	if w.threadPosts == nil {
-		w.enqueueThreadPost(ctx, threadPost{kind: postToolStatusKick})
-		return
-	}
-	select {
-	case w.threadPosts <- threadPost{kind: postToolStatusKick}:
-	default:
-	}
-}
-
-// toolStatusSnapshot returns the live ticker counters for rendering.
-func (w *batchedWriter) toolStatusSnapshot() (steps int, current string) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.toolSteps, w.toolCurrent
-}
-
-// takeToolStatus atomically snapshots and resets the ticker counters, closing
-// the current segment. Returns nil when the segment recorded no steps (nothing
-// to collapse) — steps the writer was seeded with by a previous process count
-// as none until a step of its own joins them: that segment's receipt was
-// posted by the process that ran it, a second copy would be noise. The
-// snapshot takes ownership of the slices and map: the counters are re-created
-// on the next recordToolStep.
-func (w *batchedWriter) takeToolStatus() *toolReceipt {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	r := w.toolReceiptLocked()
-	w.resetToolStatusLocked()
-	return r
-}
-
-// toolReceipt is the open segment's receipt without closing the segment, for
-// the poster's closing pass at the turn's end: the counters stay as they are,
-// so what the turn delivered is still recorded after the receipt is posted
-// (a restart continues the segment from them). Nil under the same rule as
-// takeToolStatus.
-func (w *batchedWriter) toolReceipt() *toolReceipt {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	r := w.toolReceiptLocked()
-	if r != nil {
-		r.order, r.counts = slices.Clone(r.order), maps.Clone(r.counts)
-	}
-	return r
-}
-
-func (w *batchedWriter) toolReceiptLocked() *toolReceipt {
-	if w.toolSteps <= w.carriedSteps {
-		return nil
-	}
-	return &toolReceipt{steps: w.toolSteps, order: w.toolOrder, counts: w.toolCounts}
-}
-
-// resetToolStatus zeroes the ticker counters, the seeded ones included.
-func (w *batchedWriter) resetToolStatus() {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	w.resetToolStatusLocked()
-}
-
-func (w *batchedWriter) resetToolStatusLocked() {
-	w.toolSteps, w.toolCurrent, w.toolOrder, w.toolCounts, w.carriedSteps = 0, "", nil, nil, 0
-}
-
-// statusName renders a tool name for the ticker and receipt: plain muted text,
-// no code chips. The name is agent-controlled, so mrkdwn control sequences are
-// escaped and newlines flattened; emphasis glyphs are cosmetic and left alone.
-func statusName(name string) string {
-	return strings.ReplaceAll(escapeMrkdwn(name), "\n", " ")
-}
-
-// renderToolTicker is the live one-liner shown while the agent works.
-func renderToolTicker(steps int, current string) string {
-	md := "⏳ " + statusName(current) + "…"
-	if steps > 1 {
-		md += fmt.Sprintf(" · step %d", steps)
-	}
-	return md
 }
 
 // exitSessionStatus is the state the session lands in when run() returns:
@@ -877,108 +904,43 @@ func (w *batchedWriter) setSessionStatus(ctx context.Context, status sessionStat
 	}
 }
 
-// receiptNameMax bounds how many distinct tool names the receipt lists.
-const receiptNameMax = 8
-
-// renderToolReceipt is the one-line summary the ticker collapses into when its
-// segment closes (narration posted, or turn ended): step count plus the tools
-// used, deduplicated in the segment's first-use order.
-func renderToolReceipt(steps int, order []string, counts map[string]int) string {
-	label := "steps"
-	if steps == 1 {
-		label = "step"
-	}
-	md := fmt.Sprintf("🛠️ %d %s", steps, label)
-	for i, name := range order {
-		if i == receiptNameMax {
-			md += fmt.Sprintf(" · +%d more", len(order)-receiptNameMax)
-			break
-		}
-		md += " · " + statusName(name)
-		if n := counts[name]; n > 1 {
-			md += fmt.Sprintf(" ×%d", n)
-		}
-	}
-	return md
-}
-
 // renderNarration queues the agent's interim narration — the prose it writes
-// just before firing tool calls — so it reads in order with the tool posts it
-// introduces. Unlike tool activity it ignores the details level: this is the
-// agent talking, not tool transparency. It stays out of the main reply buffer,
-// whose stream opens on its first text, so the answer keeps landing after the
-// narration that led to it.
+// just before firing tool calls — as text chunks of the reply, so it reads in
+// order with the steps it introduces and the answer that follows. Unlike tool
+// activity it ignores the details level: this is the agent talking, not tool
+// transparency.
 //
-// Narration renders as its own in-thread message, except that at the default
-// level a short one folds into the segment's status message (the ticker's
-// home) as a muted context block, so a typical narrate-then-call group costs
-// one status message instead of two posts. Folding only ever changes WHERE the
-// prose renders, never whether: anything not safely short — multi-line, over
-// the fold budget, or retractable sign-in prose (retraction deletes whole
-// messages by ts, which cannot delete a block inside the shared status
-// message) — keeps the own-message rendering.
+// Narration bytes count toward the streamed message's character cap, like any
+// other prose, but NOT toward the answer length the delivery record carries:
+// that number is the answer text a process continuing the turn after a restart
+// must not post again, and narration is not replayed.
 //
-// Narration also closes the live ticker segment: the counters are snapshotted
-// and reset here, on run()'s goroutine, exactly at the narration's position in
-// the delta stream, and the snapshot travels on the first rendered chunk so
-// the poster collapses the segment's status message into a receipt with
-// exactly the steps that preceded this narration.
-//
-// Narration is unbounded agent prose, so it is split like the main reply: Slack
-// rejects a whole post whose markdown block exceeds slackMarkdownBlockMax, which
-// would drop the text this rendering exists to deliver. Chunks share the
-// per-turn budget, so an outsized narration ends in the same limit note.
-func (w *batchedWriter) renderNarration(ctx context.Context, text string) {
+// Narration is unbounded agent prose, so it is split like the main reply: one
+// chunk may not exceed slackMarkdownBlockMax. Chunks share the per-turn budget,
+// so an outsized narration ends in the same limit note. A passage ends in a
+// paragraph break — the chunks of one message run into one body — so what
+// follows it starts a line of its own; the split pieces of a single passage get
+// none, since the cut falls mid-prose.
+func (w *batchedWriter) renderNarration(text string) {
 	scrubbed := strings.TrimSpace(w.scrubLoginURLs(text))
 	if scrubbed == "" {
 		return
 	}
-	// Only narration from the point a login challenge was seen is sign-in prose
-	// the Connect button contradicts; earlier narration explains tool posts that
-	// stay, so it is kept when the prompt takes the turn over.
-	retract := len(w.loginURLs) > 0
-	fold := w.details == detailsOn && !retract && foldableNarration(scrubbed)
-	segmentClosed := false
-	for _, md := range splitMarkdown(scrubbed, slackMarkdownBlockMax) {
+	pieces := splitMarkdown(scrubbed, slackMarkdownBlockMax)
+	for i, md := range pieces {
 		w.narrationsRendered++
 		switch {
 		case w.narrationsRendered > maxNarrationMessages+1:
 			return // already queued the truncation note
 		case w.narrationsRendered == maxNarrationMessages+1:
-			// The note must stay a visible message of its own: folding it into
-			// the muted status message would hide the very fact it announces.
-			md, fold = narrationLimitNote, false
+			w.queueNarration(narrationLimitNote + passageBreak)
+			return
 		}
-		p := threadPost{kind: postNarration, md: md, retract: retract, fold: fold}
-		if !segmentClosed {
-			// Only a narration that actually renders closes the ticker segment,
-			// and only its first chunk carries the receipt. Past the narration
-			// cap nothing renders, so the segment stays open and its steps roll
-			// into the next receipt.
-			p.receipt = w.takeToolStatus()
-			segmentClosed = true
-			w.noteDelivered(ctx)
+		if i == len(pieces)-1 {
+			md += passageBreak
 		}
-		w.enqueueThreadPost(ctx, p)
+		w.queueNarration(md)
 	}
-}
-
-// Fold budget for narration rendered inside the status message: one or two
-// lines and at most this many runes. Anything larger is real prose, not a
-// pre-tool aside, and keeps its own full-weight message. The budget also keeps
-// the folded block comfortably inside Slack's 3000-char mrkdwn element cap
-// after escaping, and (being far under slackMarkdownBlockMax) guarantees a
-// foldable narration is a single chunk.
-const (
-	foldedNarrationMaxChars = 300
-	foldedNarrationMaxLines = 2
-)
-
-// foldableNarration reports whether scrubbed narration is short enough to fold
-// into the status message.
-func foldableNarration(s string) bool {
-	return strings.Count(s, "\n") < foldedNarrationMaxLines &&
-		utf8.RuneCountInString(s) <= foldedNarrationMaxChars
 }
 
 var (
@@ -1276,294 +1238,6 @@ func validLoginURL(raw string) string {
 	return raw
 }
 
-// threadPostQueueSize buffers a whole turn's in-thread posts: both producers cap
-// themselves before enqueueing, so the send never blocks the delta loop.
-const threadPostQueueSize = maxToolEntries + maxNarrationMessages + 2
-
-// enqueueThreadPost buffers a rendered in-thread message for the poster,
-// starting it on first use. Called only from run()'s goroutine, so the lazy
-// init is race-free.
-func (w *batchedWriter) enqueueThreadPost(ctx context.Context, p threadPost) {
-	if w.threadPosts == nil {
-		w.threadPosts = make(chan threadPost, threadPostQueueSize)
-		w.threadPosterDone = make(chan struct{})
-		go w.threadPoster(ctx)
-	}
-	w.threadPosts <- p
-}
-
-// activitySegment is the open tool-activity message: consecutive tool entries
-// accumulate here as context blocks and land in one message that is updated in
-// place, instead of one full-weight message per tool call. dirty marks blocks
-// not yet delivered, so a transient post/update failure retries on the next
-// flush with everything accumulated since.
-type activitySegment struct {
-	ts     string
-	blocks []any
-	dirty  bool
-}
-
-// statusMessage is the open status message of the current ticker segment at
-// the default details level: the short narration blocks folded above the
-// ticker, then the ticker line itself (which the segment's receipt replaces
-// when narration closes the segment or the turn ends). dirty marks content not
-// yet delivered, so a transient post/update failure retries on the next render
-// with everything accumulated since.
-type statusMessage struct {
-	ts        string
-	narration []string // escaped mrkdwn, one context block each, above the ticker
-	ticker    string   // current ticker/receipt line; "" until the first tool call renders
-	dirty     bool
-}
-
-// threadPoster lands queued in-thread items in order: narration as its own
-// message (or, when short and its segment's ticker is not live yet, folded
-// into the segment's status message), detailsFull tool entries appended to the
-// running activity segment, and status kicks refreshed onto the live message
-// ticker. A narration message closes the ticker segment: the status message collapses
-// into the receipt it carries — at its position, with only that segment's
-// counts — and the next tool call opens a fresh status message below the
-// narration, so the thread keeps reading in stream order (narration → receipt
-// → narration → receipt → …). When the queue closes, the last open segment's
-// ticker collapses into its receipt, keeping any folded narration above it.
-// Best-effort: a post failure (including a cancelled ctx) is logged and never
-// aborts the turn.
-func (w *batchedWriter) threadPoster(ctx context.Context) {
-	defer close(w.threadPosterDone)
-	var seg activitySegment
-	var status statusMessage
-	// undelivered holds closed status messages whose collapse failed to land, so
-	// a transient Slack error never loses a segment's folded narration or
-	// receipt counts: later renders keep retrying them.
-	var undelivered []statusMessage
-	kicked := false
-	retryUndelivered := func() {
-		kept := undelivered[:0]
-		for i := range undelivered {
-			w.upsertStatus(ctx, &undelivered[i])
-			if undelivered[i].dirty {
-				kept = append(kept, undelivered[i])
-			}
-		}
-		undelivered = kept
-	}
-	// closeSegment collapses the current status message into the closed
-	// segment's receipt at its position and opens a fresh status message for
-	// the next segment. The exact receipt supersedes any pending ticker
-	// refresh, so the kick is consumed with it.
-	closeSegment := func(r *toolReceipt) {
-		kicked = false
-		status.ticker = renderToolReceipt(r.steps, r.order, r.counts)
-		status.dirty = true
-		w.upsertStatus(ctx, &status)
-		if status.dirty {
-			undelivered = append(undelivered, status)
-		}
-		status = statusMessage{}
-	}
-	// renderStatus delivers the status message when its content changed: a
-	// pending kick refreshes the live ticker line from the exact counters, and
-	// narration folded since the last render lands with it. Consecutive kicks
-	// coalesce into one render, so a burst of tool calls costs a single API
-	// call.
-	renderStatus := func() {
-		retryUndelivered()
-		if kicked {
-			kicked = false
-			if steps, current := w.toolStatusSnapshot(); steps > 0 {
-				// The live line stays in the message body on every surface: the
-				// agent session status carries no free text, so the native
-				// indicator says only that the agent is working and this line is
-				// the one that says what it is working on.
-				status.ticker = renderToolTicker(steps, current)
-				status.dirty = true
-			}
-		}
-		w.upsertStatus(ctx, &status)
-	}
-	for p := range w.threadPosts {
-		// Coalesce everything already queued into this iteration, so a burst of
-		// tool entries (a call and its result usually arrive together) costs one
-		// API call instead of one per entry.
-		for _, q := range w.collectPending(p) {
-			switch q.kind {
-			case postToolEntry:
-				w.appendActivity(ctx, &seg, q.md)
-			case postToolStatusKick:
-				kicked = true
-			default:
-				// This narration closes a ticker segment: collapse the status
-				// message into the receipt first, so it lands above the
-				// narration in stream order.
-				if q.receipt != nil {
-					closeSegment(q.receipt)
-				}
-				// Short narration folds into the (fresh, or never-ticking)
-				// status message — but only while no ticker line is live
-				// (rendered, or pending in this batch): the queue preserves
-				// stream order, so a narration seen before any kick really did
-				// precede the tools, and folding it above the ticker keeps the
-				// reading order exact. Escaped here because it enters an mrkdwn
-				// context block, unlike the markdown-block own-message
-				// rendering.
-				if q.fold && !kicked && status.ticker == "" {
-					status.narration = append(status.narration, escapeMrkdwn(q.md))
-					status.dirty = true
-					continue
-				}
-				// The open segment and any pending status content precede this
-				// narration in the stream, so deliver them first (the segment
-				// also starts fresh: appending later entries to the closed one
-				// would render them above the narration).
-				w.flushActivity(ctx, &seg)
-				seg = activitySegment{}
-				renderStatus()
-				ts, err := w.client.postMarkdown(ctx, w.channel, q.md, w.threadTS)
-				if err != nil {
-					w.logger.Warn("slack: post in-thread message failed", "error", err)
-					continue
-				}
-				// A ticker starting after this message must not render into a
-				// status message sitting above it: close a delivered ticker-less
-				// status message so the ticker opens a fresh one below, in
-				// stream order. An undelivered one stays open so the next
-				// render keeps retrying its folded narration.
-				if status.ticker == "" && !status.dirty {
-					status = statusMessage{}
-				}
-				if q.retract {
-					w.mu.Lock()
-					w.narrationTS = append(w.narrationTS, ts)
-					w.mu.Unlock()
-				}
-			}
-		}
-		w.flushActivity(ctx, &seg)
-		renderStatus()
-	}
-	// The turn is over (or pausing on a prompt): collapse the last open
-	// segment's ticker into its one-line receipt, before the answer lands
-	// (finalFlush drains this poster first). A status message whose post failed
-	// earlier still gets its receipt and folded narration posted. A cancelled
-	// turn (a /stop, the gateway's shutdown) gets its receipt too: the tail runs
-	// on a context that outlives the cancellation, briefly, so the ticker is
-	// not left frozen mid-step. The counters are read, not taken: the flush
-	// that follows records them for a process continuing the turn after a
-	// restart, and a run() cycle that follows on this writer resets them.
-	if ctx.Err() != nil {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(context.WithoutCancel(ctx), posterTailTimeout)
-		defer cancel()
-	}
-	retryUndelivered()
-	if r := w.toolReceipt(); r != nil {
-		status.ticker = renderToolReceipt(r.steps, r.order, r.counts)
-		status.dirty = true
-	}
-	w.upsertStatus(ctx, &status)
-}
-
-// posterTailTimeout bounds the thread poster's closing receipt once the turn
-// context is gone.
-const posterTailTimeout = 5 * time.Second
-
-// upsertStatus delivers the status message's blocks — folded narration above
-// the ticker line — posting on first use and updating in place afterwards. On
-// failure the message stays dirty, so the next render retries (an unposted one
-// keeps ts == "" and retries the post).
-func (w *batchedWriter) upsertStatus(ctx context.Context, status *statusMessage) {
-	if !status.dirty {
-		return
-	}
-	blocks := make([]any, 0, len(status.narration)+1)
-	for _, md := range status.narration {
-		blocks = append(blocks, contextBlock(md))
-	}
-	if status.ticker != "" {
-		blocks = append(blocks, contextBlock(status.ticker))
-	}
-	if len(blocks) == 0 {
-		status.dirty = false
-		return
-	}
-	if status.ts == "" {
-		ts, err := w.client.postActivity(ctx, w.channel, w.threadTS, blocks)
-		if err != nil {
-			w.logger.Warn("slack: post tool-status message failed", "error", err)
-			return
-		}
-		status.ts = ts
-	} else if err := w.client.updateActivity(ctx, w.channel, status.ts, blocks); err != nil {
-		w.logger.Warn("slack: update tool-status message failed", "error", err)
-		return
-	}
-	status.dirty = false
-}
-
-// collectPending returns p plus every item already queued, without blocking.
-func (w *batchedWriter) collectPending(p threadPost) []threadPost {
-	batch := []threadPost{p}
-	for {
-		select {
-		case q, ok := <-w.threadPosts:
-			if !ok {
-				return batch
-			}
-			batch = append(batch, q)
-		default:
-			return batch
-		}
-	}
-}
-
-// appendActivity adds one tool entry to the segment, rolling over into a fresh
-// message when the per-message block budget is exhausted.
-func (w *batchedWriter) appendActivity(ctx context.Context, seg *activitySegment, md string) {
-	if len(seg.blocks) >= maxActivityBlocks {
-		w.flushActivity(ctx, seg)
-		*seg = activitySegment{}
-	}
-	seg.blocks = append(seg.blocks, contextBlock(md))
-	seg.dirty = true
-}
-
-// flushActivity delivers the segment's undelivered blocks: the first flush
-// posts the activity message, later ones replace it in full (chat.update). On
-// failure the segment stays dirty so the next flush retries; the entry caps
-// bound how often that can happen.
-func (w *batchedWriter) flushActivity(ctx context.Context, seg *activitySegment) {
-	if !seg.dirty {
-		return
-	}
-	if seg.ts == "" {
-		ts, err := w.client.postActivity(ctx, w.channel, w.threadTS, seg.blocks)
-		if err != nil {
-			w.logger.Warn("slack: post tool-activity message failed", "error", err)
-			return
-		}
-		seg.ts = ts
-	} else if err := w.client.updateActivity(ctx, w.channel, seg.ts, seg.blocks); err != nil {
-		w.logger.Warn("slack: update tool-activity message failed", "error", err)
-		return
-	}
-	seg.dirty = false
-}
-
-// drainThreadPosts closes the queue and waits for the poster to finish, so every
-// in-thread post lands before the main reply. No-op when nothing was queued.
-// Idempotent: it clears the queue so a subsequent run() over the same writer (an
-// auto-approved resume segment) starts a fresh poster instead of re-closing a
-// closed channel.
-func (w *batchedWriter) drainThreadPosts() {
-	if w.threadPosts == nil {
-		return
-	}
-	close(w.threadPosts)
-	<-w.threadPosterDone
-	w.threadPosts = nil
-	w.threadPosterDone = nil
-}
-
 // compactJSON marshals a tool payload to a single readable line: one space after
 // each structural ':' and ',' (outside string literals), truncated to max runes.
 // Returns "" for an empty or unmarshalable payload.
@@ -1577,11 +1251,17 @@ func compactJSON(v map[string]any, max int) string {
 // compactJSONValue is compactJSON over any JSON value, so unwrapped payloads
 // that are arrays render the same single readable line as objects.
 func compactJSONValue(v any, max int) string {
-	b, err := json.Marshal(v)
-	if err != nil {
+	// json.Marshal is HTML-safe: it spells <, > and & as \u003c, \u003e and
+	// \u0026. That neutralising is the wrong layer here — every place this
+	// preview lands escapes it for mrkdwn itself (escapeMrkdwn) — and it put
+	// the agent's own PromQL on screen as "\u003e 0.5" (graveler, 2026-09-22).
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
 		return ""
 	}
-	rs := []rune(spaceStructuralJSON(b))
+	rs := []rune(spaceStructuralJSON(bytes.TrimRight(buf.Bytes(), "\n")))
 	if len(rs) > max {
 		return string(rs[:max]) + "…"
 	}
@@ -1717,15 +1397,18 @@ func spaceStructuralJSON(b []byte) string {
 	return out.String()
 }
 
-// wroteContent reports whether a streamed message carries agent text. Used
-// after the run loop to decide whether a terminal note may overwrite the
-// placeholder, so narration and tool activity deliberately do not count: they
-// are separate messages, and a turn that only narrated must still have its
-// "thinking" placeholder replaced by the note.
+// wroteContent reports whether this writer left a message of its own in the
+// thread. Used after the run loop to decide whether a terminal note may
+// overwrite the "thinking" placeholder: it may not once the reply exists,
+// because opening the stream is what deletes the placeholder. The reply need
+// not carry answer text — narration and the steps live in it too, and a turn
+// that produced only those has a message all the same. A stream merely adopted
+// from a previous process is not one: that message is already on screen, and a
+// continued turn with nothing to add still has its say.
 func (w *batchedWriter) wroteContent() bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.appendedLen > 0
+	return w.appendedLen > 0 || w.streamOpened
 }
 
 // connectorReplyRetractable reports whether this turn's visible reply was only
@@ -1738,24 +1421,12 @@ func (w *batchedWriter) connectorReplyRetractable() bool {
 	return len(w.loginURLs) > 0 && !w.connectorManualSignIn
 }
 
-// retractRendered deletes the turn's streamed messages and the narration that
-// followed the login challenge, leaving the thread to the connector prompt
-// alone. Tool activity stays: it is a transparency record, not sign-in prose
-// the button contradicts, and so does the narration that explains it from
-// before the challenge. Best-effort: a delete failure is logged, not
-// propagated.
-// The run loop has finished and drained the poster, so narrationTS is complete;
-// it is still read under the lock because the poster wrote it.
+// retractRendered deletes the turn's streamed messages, leaving the thread to
+// the connector prompt alone: the reply is where the sign-in narration the
+// button contradicts lives, and the steps with it. The tool log the "Inspect
+// agent steps" shortcut shows is untouched — it is a transparency record, not
+// prose on screen. Best-effort: a delete failure is logged, not propagated.
 func (w *batchedWriter) retractRendered(ctx context.Context) {
-	w.mu.Lock()
-	narration := w.narrationTS
-	w.narrationTS = nil
-	w.mu.Unlock()
-	for _, ts := range narration {
-		if err := w.client.deleteMessage(ctx, w.channel, ts); err != nil {
-			w.logger.Warn("slack: retract narration message failed", "ts", ts, "error", err)
-		}
-	}
 	// A message still streaming cannot be retracted, so close it first. The
 	// turn is being taken over by the sign-in prompt and is not over, hence
 	// processing rather than Slack's active default. Beware the ordering: this
@@ -1765,15 +1436,14 @@ func (w *batchedWriter) retractRendered(ctx context.Context) {
 	// on a successful stop and on a stream-gone refusal, and the retract is
 	// only reached on a turn that ended normally.
 	if w.streamTS != "" {
-		if err := w.stopStream(ctx, "", 0, sessionProcessing); err != nil {
+		if err := w.stopStream(ctx, nil, 0, sessionProcessing); err != nil {
 			w.logger.Warn("slack: stop the reply stream before retracting it failed", "error", err)
 		}
 	}
-	messages := w.streamMessages
-	w.streamMessages = nil
 	w.dropStream()
 	w.mu.Lock()
-	w.appendedLen = 0
+	messages := w.streamMessages
+	w.streamMessages, w.streamOpened, w.appendedLen = nil, false, 0
 	w.mu.Unlock()
 	// The row must stop naming text and a message the thread no longer has.
 	w.noteDelivered(ctx)
@@ -1784,98 +1454,68 @@ func (w *batchedWriter) retractRendered(ctx context.Context) {
 	}
 }
 
-// flush appends the answer text accumulated since the last one to the turn's
-// stream, opening the stream on the first call. The text after the last
+// flush sends everything queued since the last one to the turn's stream,
+// opening the stream on the first call. The answer text after the last
 // whitespace is held back: an append is final — unlike the chat.update it
 // replaces, which re-rendered the whole reply every tick — so a login URL must
 // never be sent half-scrubbed and a word never cut in two.
 func (w *batchedWriter) flush(ctx context.Context) error {
 	if w.streamStopped {
-		w.takePending(true) // the text path is closed; drop what is left
+		w.takeQueued(true) // the reply is closed; drop what is left
 		return nil
 	}
 	if w.streamFailed {
-		w.takePending(true)
+		w.takeQueued(true)
 		return errStreamLost
 	}
-	raw := w.takePending(false)
-	if raw == "" {
+	items := w.takeQueued(false)
+	if len(items) == 0 {
 		return nil
 	}
-	if unsent, err := w.appendText(ctx, raw); err != nil {
-		w.putBackPending(unsent)
+	if unsent, err := w.sendQueued(ctx, items, false); err != nil {
+		w.putBackQueued(unsent)
 		return err
 	}
 	return nil
 }
 
-// closeStream ends the turn's text path: everything still pending rides the
+// closeStream ends the turn's reply: everything still queued rides the
 // chat.stopStream that closes the streamed message, together with the session's
-// exit status. Text the open message has no room for goes out as appends first,
-// and a turn whose whole answer is still pending opens its stream here. With no
-// stream and nothing pending it does nothing, leaving the exit status to run()'s
-// own call.
+// exit status. Content the open message has no room for goes out as appends
+// first, and a turn whose whole reply is still queued opens its stream here.
+// With no stream and nothing queued it does nothing, leaving the exit status to
+// run()'s own call.
 func (w *batchedWriter) closeStream(ctx context.Context) error {
 	if w.streamStopped {
-		w.takePending(true)
+		w.takeQueued(true)
 		return nil
 	}
 	if w.streamFailed {
-		w.takePending(true)
+		w.takeQueued(true)
 		return errStreamLost
 	}
-	raw := w.takePending(true)
-	if raw == "" && w.streamTS == "" {
+	items := w.takeQueued(true)
+	if len(items) == 0 && w.streamTS == "" {
 		return nil
 	}
-	// Text the open message has no room for goes out as appends, and so does
-	// the text of a turn that has no stream yet. A stream adopted from before a
-	// restart takes the same route: Slack may have closed it since, and only
-	// the append path can move the text onto a stream of its own.
-	if raw != "" && (w.streamTS == "" || w.streamAdopted || w.streamed+len(raw) > slackMarkdownBlockMax) {
-		unsent, err := w.appendText(ctx, raw)
-		if err != nil {
-			w.putBackPending(unsent)
-			return err
-		}
-		raw = ""
-		if w.streamTS == "" { // the user stopped the stream under us
-			return nil
-		}
+	if unsent, err := w.sendQueued(ctx, items, true); err != nil {
+		w.putBackQueued(unsent)
+		return err
 	}
-	md := w.scrubLoginURLs(raw)
-	if strings.TrimSpace(md) == "" {
-		md = ""
-	}
-	// The exit status rides the stop as the field Slack documents, and run()'s
-	// own agents.sessions.setStatus sends it again on the way out: observed on
-	// graveler 2026-09-21 that Slack accepts session_status here but the
-	// working indicator does not clear, so that call is the source of truth.
-	err := w.stopStream(ctx, md, len(raw), w.exitSessionStatus())
-	switch {
-	case err == nil:
-		return nil
-	case streamGone(err):
-		// Nothing is left to close: a stream adopted from before a restart that
-		// Slack has closed since, most often. The last text goes back to
-		// pending so a retry can give it a stream of its own.
-		w.dropStream()
-		w.noteDelivered(ctx)
-		if raw == "" {
-			return nil
-		}
-		w.putBackPending(raw)
-	}
-	return err
+	return nil
 }
 
 // endStream closes a stream a turn left open. A cancelled turn (a /stop, the
 // gateway shutting down) returns without a terminal flush, so without this the
-// message would keep animating and the text buffered since the last append
-// would be lost. It runs on a context outliving the cancellation, like the
-// thread poster's closing pass.
+// message would keep animating and everything queued since the last append
+// would be lost. It runs on a context outliving the cancellation.
 func (w *batchedWriter) endStream(ctx context.Context) {
-	if w.streamTS == "" && strings.TrimSpace(w.pendingText()) == "" {
+	// A cancelled turn is where a step is most likely to be left running. The
+	// cause says what that means for it — and it has to be read before the
+	// context is replaced below, because WithoutCancel drops it. A normal end
+	// closed the steps already, which makes this a no-op there.
+	w.closeOpenSteps(ctx, cancelledStepStatus(ctx))
+	if w.streamTS == "" && !w.hasQueuedContent() {
 		return
 	}
 	if ctx.Err() != nil {
@@ -1904,23 +1544,211 @@ func streamCallCtx(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), timeout)
 }
 
-// appendText delivers raw answer text on the turn's stream and returns the raw
-// text it could not deliver, so the caller re-queues exactly what is missing.
-// Everything here is measured on the agent's own bytes: that is the unit a
-// process continuing the turn after a restart skips, so it has to be the unit
-// the pieces are cut in as well.
-func (w *batchedWriter) appendText(ctx context.Context, raw string) (unsent string, err error) {
-	for raw != "" {
-		piece, rest := cutPiece(raw, slackMarkdownBlockMax)
-		if err := w.sendPiece(ctx, piece); err != nil {
-			return raw, err
-		}
-		if w.streamStopped {
-			return "", nil
-		}
-		raw = rest
+// streamBatch accumulates the chunks destined for one streamed message: the
+// pieces taken off the queue since the last Slack call, and the byte counts
+// they stand for. The pieces are kept as they were queued, so a delivery that
+// fails hands back exactly what did not land.
+type streamBatch struct {
+	items []queuedChunk
+	// answerRaw is the agent's own answer bytes the batch carries, textRaw
+	// those plus its narration bytes. The first is what the delivery record
+	// counts — the text a process continuing the turn must not post again — and
+	// the second what the message's character cap counts.
+	answerRaw int
+	textRaw   int
+}
+
+func (b *streamBatch) addText(piece string, answer bool) {
+	b.items = append(b.items, queuedChunk{text: piece, answer: answer})
+	b.textRaw += len(piece)
+	if answer {
+		b.answerRaw += len(piece)
 	}
-	return "", nil
+}
+
+func (b *streamBatch) addStep(s *taskUpdate) {
+	b.items = append(b.items, queuedChunk{step: s})
+}
+
+func (b *streamBatch) empty() bool { return len(b.items) == 0 }
+
+func (b *streamBatch) reset() { *b = streamBatch{} }
+
+// sendQueued delivers queued content on the turn's stream and returns what it
+// could not deliver, so the caller re-queues exactly what is missing. Prose is
+// measured on the agent's own bytes: that is the unit a process continuing the
+// turn after a restart skips, so it has to be the unit the pieces are cut in as
+// well. When closing, the last batch rides the chat.stopStream that ends the
+// reply instead of an append of its own.
+func (w *batchedWriter) sendQueued(ctx context.Context, items []queuedChunk, closing bool) (unsent []queuedChunk, err error) {
+	var batch streamBatch
+	// left is everything Slack has not taken: what the batch still holds, the
+	// untaken tail of the piece being cut, and the items after it.
+	left := func(i int, raw string, answer bool) []queuedChunk {
+		rest := slices.Clone(batch.items)
+		if raw != "" {
+			rest = append(rest, queuedChunk{text: raw, answer: answer})
+		}
+		return append(rest, items[i+1:]...)
+	}
+	for i := range items {
+		if step := items[i].step; step != nil {
+			batch.addStep(step)
+			continue
+		}
+		raw, answer := items[i].text, items[i].answer
+		for raw != "" {
+			piece, rest := cutPiece(raw, slackMarkdownBlockMax)
+			// streamed counts the agent's bytes, not the shorter text Slack
+			// sees: scrubbing only ever removes, so the count over-estimates and
+			// rolls the reply over a little early — the safe side of Slack's
+			// per-message cap.
+			if room := slackMarkdownBlockMax - w.streamed - batch.textRaw; len(piece) > room {
+				// No room for this piece. Land what the batch already holds
+				// first — that may be all it takes, since the delivery can end
+				// up on a message of its own — and only then roll the open one
+				// over. Either way the next pass has room, so the loop advances.
+				var err error
+				if batch.empty() {
+					err = w.rollOverStream(ctx)
+				} else {
+					err = w.deliverBatch(ctx, &batch)
+				}
+				if err != nil {
+					return left(i, raw, answer), err
+				}
+				if w.streamStopped {
+					return nil, nil
+				}
+				continue
+			}
+			batch.addText(piece, answer)
+			raw = rest
+		}
+	}
+	if closing {
+		return w.closeBatch(ctx, &batch)
+	}
+	if err := w.deliverBatch(ctx, &batch); err != nil {
+		return batch.items, err
+	}
+	return nil, nil
+}
+
+// chunkBodies renders the batch's pieces as streamed chunks. This turn's login
+// URLs are scrubbed out of every piece of prose here, at the last moment, so a
+// link the agent surfaced after a passage was queued is caught too; a piece
+// scrubbing empties carries nothing and is left out. visible reports whether
+// the batch holds anything a message can be opened on — prose that is
+// whitespace alone never is.
+func (w *batchedWriter) chunkBodies(items []queuedChunk) (chunks []any, visible bool) {
+	for _, it := range items {
+		if it.step != nil {
+			chunks = append(chunks, stepChunk(*it.step))
+			visible = true
+			continue
+		}
+		md := w.scrubLoginURLs(it.text)
+		if md == "" {
+			continue
+		}
+		chunks = append(chunks, textChunk(md))
+		visible = visible || strings.TrimSpace(md) != ""
+	}
+	return chunks, visible
+}
+
+// deliverBatch hands the batch to Slack — chat.startStream when no message is
+// open, chat.appendStream otherwise — and empties it once it has landed.
+func (w *batchedWriter) deliverBatch(ctx context.Context, b *streamBatch) error {
+	if b.empty() {
+		return nil
+	}
+	chunks, visible := w.chunkBodies(b.items)
+	// Scrubbing a pure sign-in passage can empty a piece, and a stream does not
+	// open on whitespace alone. Nothing reaches Slack, but the bytes count as
+	// delivered all the same: a process continuing the turn would only scrub
+	// them away again.
+	if len(chunks) == 0 || (w.streamTS == "" && !visible) {
+		w.noteAppended(b.answerRaw)
+		w.noteDelivered(ctx)
+		b.reset()
+		return nil
+	}
+	if w.streamTS == "" {
+		return w.openStream(ctx, b, chunks)
+	}
+	sctx, cancel := streamCallCtx(ctx)
+	err := w.client.appendStream(sctx, w.channel, w.streamTS, chunks)
+	cancel()
+	switch {
+	case err == nil:
+		w.streamed, w.streamAdopted = w.streamed+b.textRaw, false
+		w.noteAppended(b.answerRaw)
+		w.noteDelivered(ctx)
+		b.reset()
+		return nil
+	case errors.Is(err, errStreamStoppedByUser):
+		w.endStreamQuietly()
+		b.reset()
+		return nil
+	case streamGone(err):
+		return w.recoverStream(ctx, b, chunks)
+	}
+	return err
+}
+
+// rollOverStream closes the message the reply outgrew, so what follows opens
+// one of its own. The turn is still running, so the stop leaves the session
+// processing; Slack's default (active) would clear the working indicator
+// mid-answer.
+func (w *batchedWriter) rollOverStream(ctx context.Context) error {
+	if w.streamTS == "" {
+		return nil
+	}
+	if err := w.stopStream(ctx, nil, 0, sessionProcessing); err != nil {
+		if !streamGone(err) {
+			return err
+		}
+		w.dropStream() // already closed; the rest opens a message of its own
+	}
+	return nil
+}
+
+// closeBatch lands the reply's last chunks and closes the streamed message with
+// the session's exit status, in one call where it can. A stream adopted from
+// before a restart takes the append path first: Slack may have closed it since,
+// and only that path can move the content onto a stream of its own.
+func (w *batchedWriter) closeBatch(ctx context.Context, b *streamBatch) (unsent []queuedChunk, err error) {
+	if w.streamTS == "" || w.streamAdopted {
+		if err := w.deliverBatch(ctx, b); err != nil {
+			return b.items, err
+		}
+		if w.streamTS == "" { // stopped under us, or nothing worth a message
+			return nil, nil
+		}
+	}
+	// The exit status rides the stop as the field Slack documents, and run()'s
+	// own agents.sessions.setStatus sends it again on the way out: observed on
+	// graveler 2026-09-21 that Slack accepts session_status here but the
+	// working indicator does not clear, so that call is the source of truth.
+	chunks, _ := w.chunkBodies(b.items)
+	err = w.stopStream(ctx, chunks, b.answerRaw, w.exitSessionStatus())
+	switch {
+	case err == nil:
+		b.reset()
+		return nil, nil
+	case streamGone(err):
+		// Nothing is left to close: a stream adopted from before a restart that
+		// Slack has closed since, most often. What the stop was carrying goes
+		// back to the queue so a retry can give it a stream of its own.
+		w.dropStream()
+		w.noteDelivered(ctx)
+		if b.empty() {
+			return nil, nil
+		}
+	}
+	return b.items, err
 }
 
 // cutPiece takes the first at most budget bytes of s, cutting at the last
@@ -1947,88 +1775,39 @@ func cutPiece(s string, budget int) (piece, rest string) {
 	return s[:cut], s[cut:]
 }
 
-// sendPiece appends one within-cap piece of answer text to the stream, opening
-// the stream when none is open and rolling over into a fresh message when the
-// open one has no room left. raw is the agent's own text; what Slack receives
-// is that text with this turn's login URLs scrubbed out.
-func (w *batchedWriter) sendPiece(ctx context.Context, raw string) error {
-	md := w.scrubLoginURLs(raw)
-	// Scrubbing a pure sign-in passage can empty the piece, and a stream does
-	// not open on whitespace alone. Nothing reaches Slack, but the bytes count
-	// as delivered all the same: a process continuing the turn would only scrub
-	// them away again.
-	if md == "" || (w.streamTS == "" && strings.TrimSpace(md) == "") {
-		w.noteAppended(len(raw))
-		w.noteDelivered(ctx)
-		return nil
-	}
-	// streamed counts the agent's bytes, not the shorter text Slack sees:
-	// scrubbing only ever removes, so the count over-estimates and rolls the
-	// answer over a little early — the safe side of Slack's per-message cap.
-	if w.streamTS != "" && w.streamed+len(raw) > slackMarkdownBlockMax {
-		// The answer outgrew one Slack message. The turn is still running, so
-		// the stop closing the full message leaves the session processing;
-		// Slack's default (active) would clear the working indicator mid-answer.
-		if err := w.stopStream(ctx, "", 0, sessionProcessing); err != nil {
-			if !streamGone(err) {
-				return err
-			}
-			w.dropStream() // already closed; the rest opens a message of its own
-		}
-		if w.streamStopped {
-			return nil
-		}
-	}
-	if w.streamTS == "" {
-		return w.openStream(ctx, raw, md)
-	}
-	sctx, cancel := streamCallCtx(ctx)
-	err := w.client.appendStream(sctx, w.channel, w.streamTS, md)
-	cancel()
-	switch {
-	case err == nil:
-		w.streamed, w.streamAdopted = w.streamed+len(raw), false
-		w.noteAppended(len(raw))
-		w.noteDelivered(ctx)
-		return nil
-	case errors.Is(err, errStreamStoppedByUser):
-		w.endStreamQuietly()
-		return nil
-	case streamGone(err):
-		return w.recoverStream(ctx, raw, md)
-	}
-	return err
-}
-
-// openStream posts the turn's streamed message with its first text. In a
+// openStream posts the turn's streamed message with its first chunks. In a
 // channel Slack requires the recipient the answer is for; the progress
-// placeholder the answer supersedes goes once the message exists.
-func (w *batchedWriter) openStream(ctx context.Context, raw, md string) error {
+// placeholder the reply supersedes goes once the message exists.
+func (w *batchedWriter) openStream(ctx context.Context, b *streamBatch, chunks []any) error {
 	user, team := w.streamRecipient()
 	sctx, cancel := streamCallCtx(ctx)
-	ts, err := w.client.startStream(sctx, w.channel, w.threadTS, md, user, team)
+	ts, err := w.client.startStream(sctx, w.channel, w.threadTS, chunks, user, team)
 	cancel()
 	if err != nil {
 		return err
 	}
-	w.streamTS, w.streamed, w.streamAdopted = ts, len(raw), false
+	w.streamTS, w.streamed, w.streamAdopted = ts, b.textRaw, false
+	w.mu.Lock()
 	w.streamMessages = append(w.streamMessages, ts)
+	w.streamOpened = true
+	w.mu.Unlock()
 	w.noteStream(streamEventStarted)
-	w.noteAppended(len(raw))
+	w.noteAppended(b.answerRaw)
 	w.noteDelivered(ctx)
+	b.reset()
 	w.dropPlaceholder(ctx)
 	return nil
 }
 
-// stopStream closes the open stream with a last piece of text and the session
-// status the stop leaves the thread in. md is what Slack receives and rawLen
-// the answer bytes it stands for — the two differ when a login URL was scrubbed
-// out of it, and the delivery record counts the answer's own bytes. The status
-// is always explicit: Slack defaults it to active, which on an intermediate
-// stop would clear the working indicator while the turn keeps running.
-func (w *batchedWriter) stopStream(ctx context.Context, md string, rawLen int, status sessionStatus) error {
+// stopStream closes the open stream with a last batch of chunks and the session
+// status the stop leaves the thread in. rawLen is the answer bytes the chunks
+// stand for — it differs from what Slack receives when a login URL was scrubbed
+// out, and the delivery record counts the answer's own bytes. The status is
+// always explicit: Slack defaults it to active, which on an intermediate stop
+// would clear the working indicator while the turn keeps running.
+func (w *batchedWriter) stopStream(ctx context.Context, chunks []any, rawLen int, status sessionStatus) error {
 	sctx, cancel := streamCallCtx(ctx)
-	err := w.client.stopStream(sctx, w.channel, w.streamTS, md, status)
+	err := w.client.stopStream(sctx, w.channel, w.streamTS, chunks, status)
 	cancel()
 	switch {
 	case err == nil:
@@ -2051,11 +1830,11 @@ func (w *batchedWriter) stopStream(ctx context.Context, md string, rawLen int, s
 var errStreamLost = errors.New("slack: the reply stream keeps closing")
 
 // recoverStream reopens the stream after Slack reported the message no longer
-// streaming, and delivers the piece on the new one. One recovery per turn: a
+// streaming, and delivers the batch on the new one. One recovery per turn: a
 // second says the stream cannot be kept open, and scattering the rest of the
 // answer over fresh messages would read worse than stopping there — so the turn
-// gives up on the text path and says so in the thread.
-func (w *batchedWriter) recoverStream(ctx context.Context, raw, md string) error {
+// gives up on the reply and says so in the thread.
+func (w *batchedWriter) recoverStream(ctx context.Context, b *streamBatch, chunks []any) error {
 	w.dropStream()
 	if w.streamRecovered {
 		w.streamFailed = true
@@ -2067,7 +1846,7 @@ func (w *batchedWriter) recoverStream(ctx context.Context, raw, md string) error
 	w.noteStream(streamEventRecovered)
 	w.logger.Warn("slack: the reply stream closed early, opening a new one for the rest",
 		"channel", w.channel, "thread", w.threadTS)
-	return w.openStream(ctx, raw, md)
+	return w.openStream(ctx, b, chunks)
 }
 
 // endStreamQuietly closes the text path for the rest of the turn after Slack
@@ -2082,7 +1861,7 @@ func (w *batchedWriter) recoverStream(ctx context.Context, raw, md string) error
 func (w *batchedWriter) endStreamQuietly() {
 	w.dropStream()
 	w.streamStopped = true
-	w.takePending(true)
+	w.takeQueued(true)
 	w.noteStream(streamEventStoppedByUser)
 }
 
@@ -2093,10 +1872,15 @@ func (w *batchedWriter) dropStream() {
 }
 
 // resetStream puts the stream state back to its opening shape for a second
-// run() cycle over the same writer.
+// run() cycle over the same writer. The open steps go with it: the previous
+// cycle's message is closed and they were closed on it, so a result arriving
+// late must not reopen one of them on this cycle's message.
 func (w *batchedWriter) resetStream() {
 	w.dropStream()
 	w.streamRecovered, w.streamStopped, w.streamFailed = false, false, false
+	w.mu.Lock()
+	w.openSteps = nil
+	w.mu.Unlock()
 }
 
 // streamGone reports whether err says the message is not streaming any more:
@@ -2131,41 +1915,95 @@ func (w *batchedWriter) dropPlaceholder(ctx context.Context) {
 	}
 }
 
-// takePending removes the text to send from the pending buffer. Unless final,
-// everything after the last whitespace stays pending: it may be half a word or
-// half a login URL, and an appended chunk cannot be taken back.
-func (w *batchedWriter) takePending(final bool) string {
+// queueAnswer accepts a piece of the agent's answer, merging it into the
+// trailing answer chunk when there is one: the answer arrives token by token,
+// and one chunk per token would say nothing a single one does not.
+func (w *batchedWriter) queueAnswer(text string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	text := w.pending
-	if !final {
-		i := strings.LastIndexFunc(text, unicode.IsSpace)
-		if i < 0 {
-			return ""
-		}
-		_, size := utf8.DecodeRuneInString(text[i:])
-		text = text[:i+size]
+	if n := len(w.queue); n > 0 && w.queue[n-1].step == nil && w.queue[n-1].answer {
+		w.queue[n-1].text += text
+		return
 	}
-	w.pending = w.pending[len(text):]
-	return text
+	w.queue = append(w.queue, queuedChunk{text: text, answer: true})
 }
 
-// putBackPending re-queues text an append did not deliver, ahead of whatever
+// queueNarration accepts one chunk of the agent's interim prose.
+func (w *batchedWriter) queueNarration(md string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.queue = append(w.queue, queuedChunk{text: md})
+}
+
+// queueStep accepts one state of one step of the reply's task list.
+func (w *batchedWriter) queueStep(u taskUpdate) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.queue = append(w.queue, queuedChunk{step: &u})
+}
+
+// stepID is the id Slack keys the n-th step of the turn by. It is derived from
+// the count alone, so a process continuing the turn after a restart addresses
+// the steps already on the adopted stream without asking Slack about them.
+func stepID(n int) string { return fmt.Sprintf("step-%d", n) }
+
+// takeQueued removes the content to send from the queue. Unless final, a
+// trailing answer chunk keeps everything after its last whitespace: it may be
+// half a word or half a login URL, and an appended chunk cannot be taken back.
+// Narration and steps are complete when they are queued, so nothing is ever
+// held back for them.
+func (w *batchedWriter) takeQueued(final bool) []queuedChunk {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	n := len(w.queue)
+	if n == 0 {
+		return nil
+	}
+	last := w.queue[n-1]
+	if final || last.step != nil || !last.answer {
+		taken := w.queue
+		w.queue = nil
+		return taken
+	}
+	i := strings.LastIndexFunc(last.text, unicode.IsSpace)
+	if i < 0 {
+		// The growing chunk holds no whitespace at all: hold it back whole.
+		taken := slices.Clone(w.queue[:n-1])
+		w.queue = []queuedChunk{last}
+		return taken
+	}
+	_, size := utf8.DecodeRuneInString(last.text[i:])
+	taken := append(slices.Clone(w.queue[:n-1]), queuedChunk{text: last.text[:i+size], answer: true})
+	if rest := last.text[i+size:]; rest != "" {
+		w.queue = []queuedChunk{{text: rest, answer: true}}
+	} else {
+		w.queue = nil
+	}
+	return taken
+}
+
+// putBackQueued re-queues what a delivery did not land, ahead of whatever
 // arrived meanwhile, so the next flush re-sends it in order.
-func (w *batchedWriter) putBackPending(text string) {
-	if text == "" {
+func (w *batchedWriter) putBackQueued(items []queuedChunk) {
+	if len(items) == 0 {
 		return
 	}
 	w.mu.Lock()
-	w.pending = text + w.pending
+	w.queue = append(slices.Clone(items), w.queue...)
 	w.mu.Unlock()
 }
 
-// pendingText is the text waiting to be appended.
-func (w *batchedWriter) pendingText() string {
+// hasQueuedContent reports whether anything queued would reach Slack: a step,
+// or prose that is more than whitespace.
+func (w *batchedWriter) hasQueuedContent() bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.pending
+	for _, it := range w.queue {
+		if it.step != nil || strings.TrimSpace(it.text) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // noteAppended records n bytes of answer text as landed on a stream.
@@ -2901,10 +2739,6 @@ func (c *slackAPIClient) postMarkdown(ctx context.Context, channel, md, threadTS
 	return c.postJSON(ctx, methodChatPostMessage, body)
 }
 
-// activityFallbackText is the notification/accessibility fallback of a
-// tool-activity message; the context blocks carry the real content.
-const activityFallbackText = "Tool activity"
-
 // contextBlock wraps one rendered tool entry in a Block Kit context block,
 // which Slack renders as small muted text — visually subordinate to the
 // agent's prose, which is what tool transparency should be.
@@ -2913,31 +2747,6 @@ func contextBlock(md string) map[string]any {
 		bkType:     bkContext,
 		bkElements: []any{map[string]any{bkType: bkMrkdwn, bkText: md}},
 	}
-}
-
-// postActivity posts a new in-thread tool-activity message carrying blocks.
-func (c *slackAPIClient) postActivity(ctx context.Context, channel, threadTS string, blocks []any) (string, error) {
-	body := map[string]any{
-		paramChannel: channel,
-		paramText:    activityFallbackText,
-		paramBlocks:  blocks,
-	}
-	if threadTS != "" {
-		body[paramThreadTS] = threadTS
-	}
-	return c.postJSON(ctx, methodChatPostMessage, body)
-}
-
-// updateActivity replaces a tool-activity message's blocks in full; chat.update
-// carries no partial-append, so every delivered entry is resent.
-func (c *slackAPIClient) updateActivity(ctx context.Context, channel, ts string, blocks []any) error {
-	_, err := c.postJSON(ctx, "chat.update", map[string]any{
-		paramChannel: channel,
-		paramTS:      ts,
-		paramText:    activityFallbackText,
-		paramBlocks:  blocks,
-	})
-	return err
 }
 
 // chatUpdateMarkdown replaces a message's content with a markdown block.
@@ -2964,16 +2773,18 @@ var errStreamNotStreaming = errors.New("slack: message not in a streaming state"
 // post.
 var errStreamNotOwned = errors.New("slack: message not owned by the app")
 
-// startStream opens a streaming message in the thread carrying its first text
-// and returns its ts. recipientUser and recipientTeam name the person the
-// answer is for: Slack requires both when the stream is in a channel and
+// startStream opens a streaming message in the thread carrying its first
+// chunks and returns its ts. recipientUser and recipientTeam name the person
+// the answer is for: Slack requires both when the stream is in a channel and
 // refuses them in a DM, so the caller passes them only for a channel. The
 // display identity rides along as it does on a new post, including the
 // unbranded retry when the customize scope is missing (see postJSON).
-func (c *slackAPIClient) startStream(ctx context.Context, channel, threadTS, md, recipientUser, recipientTeam string) (string, error) {
+// task_display_mode is left at Slack's default (timeline), which interleaves
+// the steps with the prose in the order they were sent.
+func (c *slackAPIClient) startStream(ctx context.Context, channel, threadTS string, chunks []any, recipientUser, recipientTeam string) (string, error) {
 	body := map[string]any{
-		paramChannel:      channel,
-		paramMarkdownText: md,
+		paramChannel: channel,
+		paramChunks:  chunks,
 	}
 	if threadTS != "" {
 		body[paramThreadTS] = threadTS
@@ -2986,31 +2797,31 @@ func (c *slackAPIClient) startStream(ctx context.Context, channel, threadTS, md,
 	return ts, streamErr(err)
 }
 
-// appendStream adds text to an open stream. Unlike chat.update it carries only
-// what is new, so a long answer costs one small call per tick.
-func (c *slackAPIClient) appendStream(ctx context.Context, channel, ts, md string) error {
+// appendStream adds chunks to an open stream. Unlike chat.update it carries
+// only what is new, so a long answer costs one small call per tick.
+func (c *slackAPIClient) appendStream(ctx context.Context, channel, ts string, chunks []any) error {
 	_, err := c.postJSON(ctx, methodChatAppendStream, map[string]any{
-		paramChannel:      channel,
-		paramTS:           ts,
-		paramMarkdownText: md,
+		paramChannel: channel,
+		paramTS:      ts,
+		paramChunks:  chunks,
 	})
 	return streamErr(err)
 }
 
-// stopStream closes a stream, optionally with a last piece of text, and names
+// stopStream closes a stream, optionally with a last batch of chunks, and names
 // the thread's agent session status in the same call. status is always sent:
 // Slack defaults the field to active, which would be wrong on a stop that only
 // rolls the answer over into a new message. Observed on graveler 2026-09-21
 // that Slack accepts the field but the working indicator does not clear with
 // it, so the turn also ends the session through agents.sessions.setStatus.
-func (c *slackAPIClient) stopStream(ctx context.Context, channel, ts, md string, status sessionStatus) error {
+func (c *slackAPIClient) stopStream(ctx context.Context, channel, ts string, chunks []any, status sessionStatus) error {
 	body := map[string]any{
 		paramChannel:       channel,
 		paramTS:            ts,
 		paramSessionStatus: string(status),
 	}
-	if md != "" {
-		body[paramMarkdownText] = md
+	if len(chunks) > 0 {
+		body[paramChunks] = chunks
 	}
 	_, err := c.postJSON(ctx, methodChatStopStream, body)
 	return streamErr(err)

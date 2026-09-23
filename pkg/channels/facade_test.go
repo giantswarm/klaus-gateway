@@ -985,7 +985,7 @@ func TestFacade_FreshTurnDropsTheStaleDeliveryRecord(t *testing.T) {
 	f, routes := newA2AFacade(agent)
 	require.NoError(t, routes.Put(t.Context(), key, store.Entry{
 		AgentRef: "kagent/worker", AgentInstanceID: "inst-1",
-		Delivered: store.Delivered{TextLen: 99, ToolSteps: 4, ToolOrder: []string{"get"}, ToolCounts: map[string]int{"get": 4}},
+		Delivered: store.Delivered{TextLen: 99, ToolSteps: 4},
 		CreatedAt: time.Now(), LastSeen: time.Now(),
 	}))
 	ctx, cancel := context.WithCancelCause(t.Context())
@@ -1042,7 +1042,7 @@ func TestFacade_CompletedTurnClearsTheRecordAndIsNotCanceled(t *testing.T) {
 // artifacts are rendered as the answer; the record is cleared afterwards.
 func TestFacade_ResumeTurnDeliversAFinishedTask(t *testing.T) {
 	key := store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700.0001"}
-	delivered := store.Delivered{TextLen: 11, ToolSteps: 2, ToolOrder: []string{"get"}, ToolCounts: map[string]int{"get": 2}}
+	delivered := store.Delivered{TextLen: 11, ToolSteps: 2}
 	seed := func(t *testing.T, agent *fakeAgent) (*channels.Facade, store.Store) {
 		f, routes := newA2AFacade(agent)
 		require.NoError(t, routes.Put(t.Context(), key, store.Entry{

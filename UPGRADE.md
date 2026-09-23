@@ -4,6 +4,32 @@ Breaking or operator-visible changes between releases, newest first. The
 `CHANGELOG.md` lists every change; this file covers what an operator has to
 do or decide.
 
+## Next — the agent's steps move inside the Slack reply
+
+A turn's tool calls are now steps of Slack's native task list, attached to the reply message
+itself, instead of the gateway's own progress messages. Nothing to configure — no chart value,
+no flag, no new scope — and no way to turn it off: **rollback is the previous image**.
+
+What goes away from the thread: the separate hourglass message (`⏳ filter_tools… · step 3`)
+that was edited on every tool call, and the one-line receipt it collapsed into
+(`🛠️ 8 steps · x_kubernetes_list, …`). What replaces them: a step list inside the reply, with
+one entry per call — "Listing the available tools", "Kubernetes list" — that turns from running
+to done, or to an error when the tool failed, and that Slack collapses once the answer is
+complete. One message per answer instead of two, in plain language rather than API names.
+
+`/details` still decides how much is shown: `off` renders no steps at all, `on` (the default)
+shows the titles, `full` adds the tool's arguments and a result preview on each step. `full` no
+longer posts the separate JSON activity messages — **Inspect agent steps** (⋯ menu → Apps) is
+the audit view, with the fuller payloads, and it is unchanged and still records at `on` and
+`full` alike.
+
+What to watch: nothing new. The steps ride the same `chat.appendStream` calls as the answer
+text, so a tool-heavy turn no longer costs one `chat.update` per call, and
+`klaus_gateway_slack_stream_total` and `klaus_gateway_slack_rate_limited_total` keep their
+meaning. A turn is capped at 100 steps; past it one line in the reply says the rest are not shown
+and the calls still reach the **Inspect agent steps** log, which keeps the most recent 100 per
+thread.
+
 ## Next — Slack replies are streamed (chat.startStream)
 
 Agent replies are written with Slack's streaming API instead of a message edited every 250 ms:

@@ -497,7 +497,12 @@ const (
 	paramInitiatorUserID = "initiator_user_id"
 
 	// Streamed reply parameters (chat.startStream / appendStream / stopStream).
-	paramMarkdownText = "markdown_text" // the stream's new text, Slack-flavoured Markdown
+	// chunks carries everything the reply adds — the agent's prose as
+	// markdown_text chunks, its tool steps as task_update chunks — in one
+	// ordered array. It is the alternative to the plain markdown_text field,
+	// and the two may not be combined; a message uses one of them from its
+	// first call to its last.
+	paramChunks = "chunks"
 	// recipient_user_id and recipient_team_id name the person the streamed
 	// answer is for; Slack requires both when the stream is in a channel and
 	// refuses them in a DM.
