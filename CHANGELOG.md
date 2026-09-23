@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Slack: `/login` and `/logout` sent as a top-level channel message show their private reply, in the channel. Before, nothing appeared.
 - Slack: a tool call that waits for approval no longer shows as done in the reply's task list. Its step reads "Asked for approval: …", and once the prompt is approved the next message shows the call running and its result. Before, the step showed as complete before the tool ran, and the approved run did not show at all.
 - Slack: a tool call that fails behind the kagent runtime shows as failed (✗) in the reply's task list. Before, such a call showed as done (✓), for example a call without a required argument.
 - Slack: the answer a resubscribed turn reads back whole at completion is rendered as the live stream renders it — a paragraph break between two artifacts — so a continued reply no longer runs two sentences together ("…roles.Here's the full picture"), and the cut at what the previous process had posted falls on the right byte when more than one artifact streamed before the restart (klaus-gateway#301).

@@ -513,3 +513,34 @@ func TestIsBareStop(t *testing.T) {
 		require.Equal(t, tc.want, isBareStop(tc.text), "%q", tc.text)
 	}
 }
+
+// A command sent as a top-level message is its thread's root, and Slack does
+// not show a thread-scoped ephemeral in a thread without replies
+// (klaus-gateway#156): its private reply goes to the channel. A command sent
+// as a reply keeps its reply in the thread.
+func TestHandleCommand_RootCommandRepliesInTheChannel(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		root   bool
+		thread any
+	}{
+		{"top-level message", true, nil},
+		{"reply in a thread", false, "T1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var body map[string]any
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/chat.postEphemeral" {
+					_ = json.NewDecoder(r.Body).Decode(&body)
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+			}))
+			t.Cleanup(srv.Close)
+			a := &Adapter{APIBase: srv.URL, Secrets: Secrets{BotToken: "t"}, Logger: slog.New(slog.DiscardHandler), OBO: identOBO{}}
+
+			require.True(t, a.handleCommand(t.Context(), &slashCommand{Name: "logout", Root: tc.root}, "U1", "C1", "T1"))
+			require.Equal(t, logoutNotice, body["text"])
+			require.Equal(t, tc.thread, body["thread_ts"])
+		})
+	}
+}

@@ -1800,6 +1800,7 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 		return
 	}
 	if cmd := parseCommand(msg.Text); cmd != nil {
+		cmd.Root = msg.MessageID == msg.ThreadID
 		// /agent is not a consumed command: the select form mutates msg (agent
 		// ref stamped, prefix stripped) and continues into dispatch as the
 		// conversation's first turn.
