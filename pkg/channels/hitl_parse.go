@@ -322,7 +322,8 @@ func toolActivityDelta(p *a2apkg.Part) OutboundDelta {
 // before the adk_request_confirmation call that pauses the task. The gateway
 // does not import adk-go, so it can only match the text: check it again on
 // every ADK bump of the kagent runtime (go.mod of giantswarm/kagent-upstream).
-// If the text changes, the step shows as done before the approval again.
+// If the text changes, the step shows as failed (the {"error": …} result is an
+// error to toolResultText) before the approval.
 const confirmationRequiredText = "requires confirmation, please approve or reject"
 
 // isConfirmationRequired reports whether a function_response payload is the

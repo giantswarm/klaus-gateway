@@ -429,7 +429,8 @@ any string that begins with `Slack bot`, `Slack app-level`, or `Slack user`.
      call), as `markdown_text` chunks;
    - each tool call as a `task_update` chunk, which Slack renders as a **step** of a task list
      attached to the reply: `in_progress` when the call starts, `complete` — or `error` when
-     the tool reported one — when its result arrives. The two updates share an id, so Slack
+     the tool reported one (an MCP result with `isError`, or the `{"error": …}` result the ADK
+     runtime sends for every failed call) — when its result arrives. The two updates share an id, so Slack
      replaces the step rather than listing the call twice. Slack collapses the list once the
      answer is done. Slack never ends a task on its own, so **every step still running when the
      turn ends is closed by its last flush**, before the message is stopped. What it is closed
