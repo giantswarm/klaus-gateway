@@ -80,8 +80,7 @@ func TestAskAgentShortcut_StartsConversationInTheMessageThread(t *testing.T) {
 	require.Equal(t, "C1", echo.params["channel"])
 	require.Equal(t, "100.000", echo.params["thread_ts"], "the echo is a reply in the target thread")
 	require.Equal(t, "SRE Agent", echo.params["username"], "posted under the agent's identity")
-	require.Contains(t, echo.params["text"].(string), "<@U1> asked *SRE Agent*")
-	require.Contains(t, echo.params["text"].(string), "> why are pods crashlooping?")
+	requireQuestionMessage(t, echo.params, "why are pods crashlooping?", "U1")
 
 	msgs := dispatched()
 	require.Len(t, msgs, 1)

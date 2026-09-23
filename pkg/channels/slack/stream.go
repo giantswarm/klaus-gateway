@@ -2739,6 +2739,28 @@ func (c *slackAPIClient) postMarkdown(ctx context.Context, channel, md, threadTS
 	return c.postJSON(ctx, methodChatPostMessage, body)
 }
 
+// postQuestion posts the question that opens a conversation from the agent
+// picker: the question as the message, who asked as a context line under it.
+func (c *slackAPIClient) postQuestion(ctx context.Context, channel, question, user, threadTS string) (string, error) {
+	// Escaping can grow a question the modal capped at slackSectionTextMax.
+	text := truncateRunes(escapeMrkdwn(question), slackSectionTextMax)
+	body := map[string]any{
+		paramChannel: channel,
+		paramText:    text,
+		paramBlocks: []any{
+			map[string]any{
+				bkType: bkSection,
+				bkText: map[string]any{bkType: bkMrkdwn, bkText: text},
+			},
+			contextBlock(fmt.Sprintf(askAgentAskedBy, user)),
+		},
+	}
+	if threadTS != "" {
+		body[paramThreadTS] = threadTS
+	}
+	return c.postJSON(ctx, methodChatPostMessage, body)
+}
+
 // contextBlock wraps one rendered tool entry in a Block Kit context block,
 // which Slack renders as small muted text — visually subordinate to the
 // agent's prose, which is what tool transparency should be.

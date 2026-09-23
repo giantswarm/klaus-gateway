@@ -162,9 +162,9 @@ const (
 	modalOptionLabelMax = 75
 	modalQuestionMax    = 3000
 
-	// askAgentRootText is the conversation root the gateway posts on submit:
-	// who asked, which agent (bold display name), and the question quoted.
-	askAgentRootText = "💬 <@%s> asked *%s*:\n%s"
+	// askAgentAskedBy is the context line under the question the gateway posts
+	// on submit. The agent is the message's author, so it is not repeated.
+	askAgentAskedBy = "Asked by <@%s>"
 
 	slashCommandDMNotice         = "_This command opens a conversation in a channel. In a direct message, just type your question._"
 	slashCommandSignInNotice     = rosterSignInLead + " _in a channel, sign in, then run the command again._"
