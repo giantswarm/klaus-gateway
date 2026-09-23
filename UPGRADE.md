@@ -17,11 +17,11 @@ one entry per call — "Listing the available tools", "Kubernetes list" — that
 to done, or to an error when the tool failed, and that Slack collapses once the answer is
 complete. One message per answer instead of two, in plain language rather than API names.
 
-`/details` still decides how much is shown: `off` renders no steps at all, `on` (the default)
-shows the titles, `full` adds the tool's arguments and a result preview on each step. `full` no
-longer posts the separate JSON activity messages — **Inspect agent steps** (⋯ menu → Apps) is
-the audit view, with the fuller payloads, and it is unchanged and still records at `on` and
-`full` alike.
+The `/details` command and its per-thread verbosity setting are removed: there is no `off`, `on`,
+or `full` to choose any more, and a user who had set `/details off` can no longer hide the agent's
+tool activity — every step now shows the tool's arguments and a result preview. The separate JSON
+activity messages are gone; **Inspect agent steps** (⋯ menu → Apps) is the audit view, with the
+fuller retained payloads.
 
 What to watch: nothing new. The steps ride the same `chat.appendStream` calls as the answer
 text, so a tool-heavy turn no longer costs one `chat.update` per call, and

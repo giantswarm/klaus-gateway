@@ -254,6 +254,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The 24-hour access window: the initiator and the people they allowed no longer have to mention the bot again after a day of silence, and grants no longer lapse; a thread's state lives for `routing.threadTTL`. The ephemeral "I'm not active in this thread" hint goes with it: a reply in a thread the bot has no record of is dropped silently.
 - The "🚀 Bringing in *Agent* to help…" launch announcement at the start of a channel conversation. It posted under the agent's own name and read as the agent introducing itself; the agent's first reply, under the agent's name, now opens the thread, and the progress reaction or working indicator remains the immediate acknowledgement. The `intro_post` phase leaves the `turn_complete` record and the `klaus_gateway_turn_phase_seconds` histogram.
 - The five-part routing-store key (`…|<agentRef>`) that held a thread's AgentInstance binding apart from its record is gone: a thread now has one row. Keys written in the old layout are ignored and safe to delete; see `UPGRADE.md`.
+- Slack: the `/details on|off|full` command is gone; the agent's tool calls and their result previews now always show as the step list inside the reply. The **Inspect agent steps** shortcut still shows the fuller retained payloads.
 
 ### Refactored
 
