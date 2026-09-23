@@ -444,9 +444,11 @@ any string that begins with `Slack bot`, `Slack app-level`, or `Slack user`.
      step ends as `complete` with the title "Asked for approval: …": what completed is the
      ask, not the tool. Slack has no waiting state (`pending` renders as an error). Once the
      prompt is approved, the resumed turn's message opens a step for the call, which its real
-     result closes; a denied call gets no second step. A turn is capped at 100 steps; past it one note in the reply says the rest are not shown and the
-     calls still reach the **Inspect agent steps** log, which keeps the most recent 100 per
-     thread.
+     result closes; a denied call gets no second step. For the same reason the **Inspect agent
+     steps** log shows an approved call twice: in the turn that asked for approval, without a
+     result, and in the resumed turn, with the call and its result. A turn is capped at 100
+     steps; past it one note in the reply says the rest are not shown and the calls still reach
+     the **Inspect agent steps** log, which keeps the most recent 100 per thread.
 
    The stream therefore opens at the **first** thing the turn produces — a tool call, a
    narration passage or the first answer text, whichever comes first — because tools usually

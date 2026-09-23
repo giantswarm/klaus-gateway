@@ -1808,8 +1808,9 @@ func TestSteps_PromptPauseClosesTheStepOnTheFirstMessage(t *testing.T) {
 }
 
 // A call that waits for approval did not run: the runtime's confirmation
-// request ends its step as the ask for approval, not as the tool's run. Once approved, the call runs in the resumed message, which opens a
-// step for it so the real result has one to close.
+// request ends its step as the ask for approval, not as the tool's run. Once
+// approved, the call runs in the resumed message, which opens a step for it so
+// the real result has one to close.
 func TestSteps_ApprovalHoldsTheStepAndTheResumeReopensIt(t *testing.T) {
 	ft := &fakeThread{}
 	srv := httptest.NewServer(ft.handler())
