@@ -19,9 +19,14 @@ workdir="$(mktemp -d)"
 trap 'rm -rf "$workdir"' EXIT
 
 cp -R "$chart_src" "$workdir/klaus-gateway"
-sed -i -e 's/\[\[ .Version \]\]/0.0.0-test/' \
-       -e 's/\[\[ .AppVersion \]\]/0.0.0/' \
-       "$workdir/klaus-gateway/Chart.yaml"
+# `sed -i` is not portable: GNU takes an optional backup suffix attached to the
+# flag, BSD/macOS requires a separate suffix argument, so `sed -i -e ...` reads
+# `-e` as the suffix on macOS and fails. Render to a temp file and move it back.
+chart_yaml="$workdir/klaus-gateway/Chart.yaml"
+sed -e 's/\[\[ .Version \]\]/0.0.0-test/' \
+    -e 's/\[\[ .AppVersion \]\]/0.0.0/' \
+    "$chart_yaml" >"$chart_yaml.tmp"
+mv "$chart_yaml.tmp" "$chart_yaml"
 
 chart="$workdir/klaus-gateway"
 
