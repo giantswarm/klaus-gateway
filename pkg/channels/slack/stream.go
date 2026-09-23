@@ -325,7 +325,9 @@ func textChunk(md string) map[string]any {
 }
 
 // stepChunk renders one step state as a streamed chunk. details and output are
-// left off when empty — an open step with no arguments is its title alone.
+// left off when empty: the update that opens a step always carries details — at
+// least the raw tool name, even for a call with no arguments — while a step
+// closed without a result preview, the turn-end close path, carries no output.
 func stepChunk(s taskUpdate) map[string]any {
 	c := map[string]any{
 		"type":   chunkTypeTaskUpdate,
