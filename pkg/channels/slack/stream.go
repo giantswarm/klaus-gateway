@@ -1251,10 +1251,10 @@ func compactJSON(v map[string]any, max int) string {
 // compactJSONValue is compactJSON over any JSON value, so unwrapped payloads
 // that are arrays render the same single readable line as objects.
 func compactJSONValue(v any, max int) string {
-	// json.Marshal is HTML-safe: it spells <, > and & as <, > and
-	// &. That neutralising is the wrong layer here — every place this
+	// json.Marshal is HTML-safe: it spells <, > and & as \u003c, \u003e and
+	// \u0026. That neutralising is the wrong layer here — every place this
 	// preview lands escapes it for mrkdwn itself (escapeMrkdwn) — and it put
-	// the agent's own PromQL on screen as "> 0.5" (graveler, 2026-09-22).
+	// the agent's own PromQL on screen as "\u003e 0.5" (graveler, 2026-09-22).
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
