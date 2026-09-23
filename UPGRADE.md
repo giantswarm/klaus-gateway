@@ -41,10 +41,10 @@ shared defaults set it), `image`, `podAnnotations`, `podDisruptionBudget`, `rout
 `obo.*`, `a2a` without `saToken` and `tokenPath`, `reviews` (set in the gazelle and graveler
 patches), `nodeSelector`, `tolerations` and `global` — are all still declared here and unchanged.
 
-**When the release reaches an installation.** This is chart 3.0.0, and the umbrella admits the
-`2.x` line only (`components.klaus-gateway.versionRange: ">=2.0.0 <3.0.0"`). Until
-giantswarm/agent-platform#643 widens that ceiling to `<4.0.0` and the umbrella rolls, Flux does
-not pull chart 3.0.0 and every installation keeps the release it runs.
+**When the release reaches an installation.** This is chart 3.0.0. agent-platform admits the
+3.x line from 4.63.0 (`components.klaus-gateway.versionRange: ">=2.0.0 <4.0.0"`,
+giantswarm/agent-platform#643), so Flux pulls chart 3.0.0 at once on an installation whose
+umbrella is 4.63.0 or later; an installation on an older umbrella keeps the release it runs.
 
 ## Next — the agent's steps move inside the Slack reply
 
