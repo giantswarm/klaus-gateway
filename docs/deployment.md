@@ -251,10 +251,9 @@ See `helm/klaus-gateway/values.yaml` for the full set, validated by
 fields or wrong types.
 
 The `web`, `cli`, `lifecycle`, `upstream`, `agentgateway`, `routing.defaultTTL`,
-`routing.autoCreate`, `a2a.saToken` and `a2a.tokenPath` keys are accepted and ignored: the
-agent-platform umbrella still forwards them. Each is marked so in
-`helm/klaus-gateway/README.md`. The next major release deletes them, which the schema then turns
-into a failed upgrade for a values file that still sets one — see [UPGRADE.md](../UPGRADE.md).
+`routing.autoCreate`, `a2a.saToken` and `a2a.tokenPath` keys, accepted and ignored since the
+Slack-only release, are gone. A values file that still sets one fails the upgrade with
+`additional properties '<key>' not allowed` — see [UPGRADE.md](../UPGRADE.md).
 
 ### Where an installation's values come from
 

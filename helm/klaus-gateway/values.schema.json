@@ -25,15 +25,6 @@
                 "namespace": {
                     "type": "string"
                 },
-                "saToken": {
-                    "type": "object",
-                    "description": "Ignored since the Slack-only release; accepted because the agent-platform umbrella still forwards it; removed in the next major release. It projected a ServiceAccount token for the Klaus-instance paths, which are gone; the pod mounts nothing for it any more.",
-                    "additionalProperties": true
-                },
-                "tokenPath": {
-                    "type": "string",
-                    "description": "Ignored since the Slack-only release; accepted because the agent-platform umbrella still forwards it; removed in the next major release. It named a Bearer token file for the Klaus-instance paths, which are gone."
-                },
                 "url": {
                     "type": "string"
                 }
@@ -50,11 +41,6 @@
         },
         "affinity": {
             "type": "object",
-            "additionalProperties": true
-        },
-        "agentgateway": {
-            "type": "object",
-            "description": "Ignored since the Slack-only release; accepted because the agent-platform umbrella still forwards it; removed in the next major release.",
             "additionalProperties": true
         },
         "agentgatewayRoute": {
@@ -74,11 +60,6 @@
         },
         "ciliumNetworkPolicy": {
             "type": "object",
-            "additionalProperties": true
-        },
-        "cli": {
-            "type": "object",
-            "description": "Ignored since the Slack-only release; accepted because the agent-platform umbrella still forwards it; removed in the next major release.",
             "additionalProperties": true
         },
         "cluster": {
@@ -138,11 +119,6 @@
                     "type": "string"
                 }
             }
-        },
-        "lifecycle": {
-            "type": "object",
-            "description": "Ignored since the Slack-only release; accepted because the agent-platform umbrella still forwards it; removed in the next major release.",
-            "additionalProperties": true
         },
         "logLevel": {
             "type": "string"
@@ -383,16 +359,8 @@
             "type": "object",
             "additionalProperties": false,
             "properties": {
-                "autoCreate": {
-                    "type": "boolean",
-                    "description": "Ignored since the Slack-only release; accepted because the agent-platform umbrella still forwards it; removed in the next major release. It created a Klaus instance on a route miss; there is no Klaus path left."
-                },
                 "boltPath": {
                     "type": "string"
-                },
-                "defaultTTL": {
-                    "type": "string",
-                    "description": "Ignored since the Slack-only release; accepted because the agent-platform umbrella still forwards it; removed in the next major release. It was the TTL of a Klaus route entry; a thread's lifetime is threadTTL."
                 },
                 "store": {
                     "type": "string",
@@ -599,16 +567,6 @@
         },
         "tolerations": {
             "type": "array"
-        },
-        "upstream": {
-            "type": "object",
-            "description": "Ignored since the Slack-only release; accepted because the agent-platform umbrella still forwards it; removed in the next major release.",
-            "additionalProperties": true
-        },
-        "web": {
-            "type": "object",
-            "description": "Ignored since the Slack-only release; accepted because the agent-platform umbrella still forwards it; removed in the next major release.",
-            "additionalProperties": true
         }
     }
 }
