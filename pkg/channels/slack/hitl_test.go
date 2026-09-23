@@ -12,6 +12,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/require"
 
@@ -135,22 +136,20 @@ func TestBuildButtonDecision_Choice(t *testing.T) {
 	prompt := askUserPrompt(false, "Investigate", "Health check")
 	act := hitlAction{kind: hitlChoice, choice: choiceValue{Choice: 1}}
 
-	decision, resume, display := buildButtonDecision(act, prompt)
+	decision, resume := buildButtonDecision(act, prompt)
 	require.Equal(t, channels.DecisionApprove, decision.Type)
 	require.Equal(t, [][]string{{"Health check"}}, decision.AskUserAnswers)
 	require.Equal(t, "Health check", resume)
-	require.Contains(t, display, "Health check")
 }
 
 func TestBuildButtonDecision_Submit(t *testing.T) {
 	prompt := askUserPrompt(true, "Auth", "Logging", "Caching")
 	act := hitlAction{kind: hitlSubmit, choices: []int{0, 2}}
 
-	decision, resume, display := buildButtonDecision(act, prompt)
+	decision, resume := buildButtonDecision(act, prompt)
 	require.Equal(t, channels.DecisionApprove, decision.Type)
 	require.Equal(t, [][]string{{"Auth", "Caching"}}, decision.AskUserAnswers)
 	require.Equal(t, "Auth, Caching", resume)
-	require.Contains(t, display, "Auth, Caching")
 }
 
 func TestBuildButtonDecision_SubmitForm(t *testing.T) {
@@ -163,20 +162,66 @@ func TestBuildButtonDecision_SubmitForm(t *testing.T) {
 	}
 	act := hitlAction{kind: hitlSubmit, answers: map[int][]int{0: {1}, 1: {0, 2}}}
 
-	decision, resume, display := buildButtonDecision(act, prompt)
+	decision, resume := buildButtonDecision(act, prompt)
 	require.Equal(t, channels.DecisionApprove, decision.Type)
 	require.Equal(t, [][]string{{"MySQL"}, {"Auth", "Caching"}}, decision.AskUserAnswers)
 	require.Equal(t, "MySQL; Auth, Caching", resume)
-	require.Contains(t, display, "Database?")
-	require.Contains(t, display, "MySQL")
-	require.Contains(t, display, "Auth, Caching")
+}
+
+// An answered question keeps its question and names the answer, who gave it
+// and when; a form keeps each question with its answer under it and names who
+// answered. Question and answer text is escaped.
+func TestQuestionAnsweredBlocks(t *testing.T) {
+	at := time.Date(2026, 9, 23, 21, 43, 0, 0, time.UTC)
+	when := fmt.Sprintf("<!date^%d^{time}|21:43 UTC>", at.Unix())
+	text := func(b any) string {
+		t.Helper()
+		m := b.(map[string]any)
+		if m[bkType] == bkContext {
+			return m[bkElements].([]any)[0].(map[string]any)[bkText].(string)
+		}
+		return m[bkText].(map[string]any)[bkText].(string)
+	}
+
+	single := askUserPrompt(true, "gazelle", "graveler")
+	single.Questions[0].Question = "Which <cluster>?"
+	line, blocks := questionAnsweredBlocks(single, [][]string{{"gazelle", "graveler"}}, "U1", at)
+	require.Equal(t, "gazelle, graveler · answered by <@U1> · "+when, line)
+	require.Len(t, blocks, 2)
+	require.Equal(t, "*Which &lt;cluster&gt;?*", text(blocks[0]))
+	require.Equal(t, line, text(blocks[1]))
+
+	form := &channels.HitlPrompt{
+		ToolName: channels.AskUserToolName,
+		Questions: []channels.HitlQuestion{
+			{Question: "Database?", Choices: []string{"PostgreSQL", "MySQL"}},
+			{Question: "Features?", Multiple: true, Choices: []string{"Auth", "Logging"}},
+		},
+	}
+	line, blocks = questionAnsweredBlocks(form, [][]string{{"MySQL"}, {"Auth", "Logging"}}, "U1", at)
+	require.Equal(t, "Answered by <@U1> · "+when, line)
+	require.Len(t, blocks, 3)
+	require.Equal(t, "*Database?*\nMySQL", text(blocks[0]))
+	require.Equal(t, "*Features?*\nAuth, Logging", text(blocks[1]))
+	require.Equal(t, line, text(blocks[2]))
+
+	// A typed reply to a form gives one line per question; a missing line is
+	// shown, not left blank.
+	_, blocks = questionAnsweredBlocks(form, [][]string{{"MySQL"}, {}}, "U1", at)
+	require.Equal(t, "*Features?*\nNo answer", text(blocks[1]))
+
+	// A pasted log as a typed answer: the line stays within Slack's cap, so
+	// the rewrite is not refused and the controls do not stay live.
+	line, _ = questionAnsweredBlocks(single, [][]string{{strings.Repeat("x", 5000)}}, "U1", at)
+	require.LessOrEqual(t, utf8.RuneCountInString(line), slackSectionTextMax)
+	require.True(t, strings.HasSuffix(line, " · answered by <@U1> · "+when), "the cut is in the answer, not in who and when")
 }
 
 func TestBuildButtonDecision_ApproveDeny(t *testing.T) {
-	approve, _, _ := buildButtonDecision(hitlAction{kind: hitlApprove}, nil)
+	approve, _ := buildButtonDecision(hitlAction{kind: hitlApprove}, nil)
 	require.Equal(t, channels.DecisionApprove, approve.Type)
 
-	deny, _, _ := buildButtonDecision(hitlAction{kind: hitlDeny}, nil)
+	deny, _ := buildButtonDecision(hitlAction{kind: hitlDeny}, nil)
 	require.Equal(t, channels.DecisionReject, deny.Type)
 }
 
@@ -354,8 +399,9 @@ func TestRetirePrompt(t *testing.T) {
 	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
 
 	section := map[string]any{"type": "section", "text": map[string]any{"type": "mrkdwn", "text": "*Approval required* · Capi list clusters"}}
-	card := []map[string]any{section, {"type": "actions"}}
-	act := hitlAction{kind: hitlApprove, section: cardSection(card)}
+	choice := map[string]any{"type": "section", "text": map[string]any{"type": "mrkdwn", "text": "a long choice"}, "accessory": map[string]any{"type": "button"}}
+	card := []map[string]any{section, choice, {"type": "actions"}}
+	act := hitlAction{kind: hitlApprove, sections: promptSections(card)}
 	require.NoError(t, retirePrompt(t.Context(), client, "C1", "1.0", act, promptAnsweredNotice))
 	require.Equal(t, promptAnsweredNotice, got["text"])
 	blocks := got["blocks"].([]any)
@@ -363,8 +409,47 @@ func TestRetirePrompt(t *testing.T) {
 	require.Equal(t, "*Approval required* · Capi list clusters", blocks[0].(map[string]any)["text"].(map[string]any)["text"])
 	require.Equal(t, "context", blocks[1].(map[string]any)["type"])
 
-	require.Nil(t, cardSection([]map[string]any{{"type": "actions"}}), "no leading section")
+	require.Empty(t, promptSections([]map[string]any{{"type": "actions"}}), "no text section")
 	require.NoError(t, retirePrompt(t.Context(), client, "C1", "1.0", hitlAction{kind: hitlSubmit}, promptAnsweredNotice))
 	require.Equal(t, promptAnsweredNotice, got["text"])
 	require.Empty(t, got["blocks"])
+}
+
+// A question prompt's message is recorded on its pending task, and a typed
+// answer rewrites that message the way a click does, so the controls do not
+// stay live on an answered question. An approval has no question to rewrite.
+func TestTypedAnswerRewritesTheQuestion(t *testing.T) {
+	var mu sync.Mutex
+	var updates []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/chat.update" {
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			mu.Lock()
+			updates = append(updates, body)
+			mu.Unlock()
+		}
+		_, _ = w.Write([]byte(`{"ok":true,"ts":"555.000"}`))
+	}))
+	t.Cleanup(srv.Close)
+	a := &Adapter{APIBase: srv.URL, Secrets: Secrets{BotToken: "t"}, Logger: slog.New(slog.DiscardHandler)}
+
+	prompt := askUserPrompt(false, "gazelle", "graveler")
+	a.storePendingTask("T1", &pendingTask{TaskID: "task-1", Prompt: prompt})
+	require.NoError(t, a.postHitlPrompt(t.Context(), a.apiClient(), "C1", "T1", &channels.OutboundDelta{TaskID: "task-1", Prompt: prompt}))
+	task := a.takePendingTask("T1")
+	require.Equal(t, "555.000", task.PromptTS, "the posted question is recorded on its task")
+
+	a.markQuestionAnswered(t.Context(), "C1", task, decisionFromText(prompt, "graveler"), "U1")
+	mu.Lock()
+	require.Len(t, updates, 1)
+	require.Equal(t, "555.000", updates[0]["ts"])
+	require.True(t, strings.HasPrefix(updates[0]["text"].(string), "graveler · answered by <@U1> · "))
+	mu.Unlock()
+
+	approval := &pendingTask{TaskID: "task-2", PromptTS: "556.000", Prompt: &channels.HitlPrompt{ToolName: "kube_delete"}}
+	a.markQuestionAnswered(t.Context(), "C1", approval, decisionFromText(approval.Prompt, "approve"), "U1")
+	mu.Lock()
+	require.Len(t, updates, 1, "an approval is not rewritten by this path")
+	mu.Unlock()
 }

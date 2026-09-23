@@ -4,6 +4,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/giantswarm/klaus-gateway/pkg/channels"
 )
 
 // stepTitleMax is Slack's cap on a task_update chunk's title.
@@ -23,6 +25,9 @@ var metaToolTitles = map[string]string{
 	"filter_tools":  "Finding the right tool",
 	"describe_tool": "Reading a tool's schema",
 	"list_tools":    "Listing the available tools",
+	// Not a muster tool: the runtime's question to the person, which the
+	// prompt under the reply asks. Its raw name reads as an instruction.
+	channels.AskUserToolName: "Question for you",
 }
 
 // toolNamespacePrefixes are the namespaces muster puts in front of a tool name.

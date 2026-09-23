@@ -3019,7 +3019,7 @@ func choiceWidgetBlock(blockID string, choices []string, multiple bool) map[stri
 // radio_buttons (single-select) or checkboxes (multi-select) widget plus a
 // Submit button. Each option's value is its choice index; the interaction
 // handler reads the selection out of state.values on Submit.
-func (c *slackAPIClient) postChoiceWidgetPrompt(ctx context.Context, channel, threadID, taskID, question string, choices []string, multiple bool) error {
+func (c *slackAPIClient) postChoiceWidgetPrompt(ctx context.Context, channel, threadID, taskID, question string, choices []string, multiple bool) (string, error) {
 	body := map[string]any{
 		paramChannel:  channel,
 		paramThreadTS: threadID,
@@ -3030,8 +3030,7 @@ func (c *slackAPIClient) postChoiceWidgetPrompt(ctx context.Context, channel, th
 			submitActions(threadID, taskID),
 		},
 	}
-	_, err := c.postJSON(ctx, methodChatPostMessage, body)
-	return err
+	return c.postJSON(ctx, methodChatPostMessage, body)
 }
 
 // postChoiceFormPrompt posts a multi-question ask_user prompt as a single form:
@@ -3039,7 +3038,7 @@ func (c *slackAPIClient) postChoiceWidgetPrompt(ctx context.Context, channel, th
 // one Submit. Each question's widget block_id encodes its question index
 // (hitlQGroupPrefix + "_<qi>") so the handler maps each selection back to its
 // question. The caller (formRenderable) guarantees every question is widgetable.
-func (c *slackAPIClient) postChoiceFormPrompt(ctx context.Context, channel, threadID, taskID string, questions []channels.HitlQuestion) error {
+func (c *slackAPIClient) postChoiceFormPrompt(ctx context.Context, channel, threadID, taskID string, questions []channels.HitlQuestion) (string, error) {
 	blocks := make([]any, 0, 2*len(questions)+1)
 	for qi, q := range questions {
 		blocks = append(blocks, questionSection(q.Question))
@@ -3052,8 +3051,7 @@ func (c *slackAPIClient) postChoiceFormPrompt(ctx context.Context, channel, thre
 		paramText:     "Please answer the questions below.",
 		paramBlocks:   blocks,
 	}
-	_, err := c.postJSON(ctx, "chat.postMessage", body)
-	return err
+	return c.postJSON(ctx, methodChatPostMessage, body)
 }
 
 // postChoiceSectionPrompt posts an ask_user question whose choices are too long
@@ -3063,7 +3061,7 @@ func (c *slackAPIClient) postChoiceFormPrompt(ctx context.Context, channel, thre
 // choice per row is unambiguous); multi-select uses an accessory single-option
 // checkbox per row plus a Submit button, and the handler gathers the selected
 // rows out of state.values.
-func (c *slackAPIClient) postChoiceSectionPrompt(ctx context.Context, channel, threadID, taskID, question string, choices []string, multiple bool) error {
+func (c *slackAPIClient) postChoiceSectionPrompt(ctx context.Context, channel, threadID, taskID, question string, choices []string, multiple bool) (string, error) {
 	blocks := []any{questionSection(question)}
 	for i, choice := range choices {
 		section := map[string]any{
@@ -3101,8 +3099,7 @@ func (c *slackAPIClient) postChoiceSectionPrompt(ctx context.Context, channel, t
 		paramText:     truncateRunes(escapeMrkdwn(question), slackSectionTextMax),
 		paramBlocks:   blocks,
 	}
-	_, err := c.postJSON(ctx, "chat.postMessage", body)
-	return err
+	return c.postJSON(ctx, methodChatPostMessage, body)
 }
 
 // signInTrigger is what asked for a sign-in prompt. It picks the card's last

@@ -22,7 +22,7 @@ func TestStepTitle(t *testing.T) {
 		{"x_prometheus_query", "Prometheus query"},
 		{"workflow_cluster_health", "Cluster health"},
 		// Everything else is humanised as it stands.
-		{"ask_user", "Ask user"},
+		{"ask_user", "Question for you"},
 		{"core_auth_login", "Core auth login"},
 		{"skills", "Skills"},
 		// call_tool is unwrapped to the inner tool before a title is asked for

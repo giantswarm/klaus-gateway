@@ -581,8 +581,17 @@ handler checks the clicking user is permitted, then routes by `action_id` (a
 decide the tool call directly; a `hitl_choice_<i>` button commits that one choice; a
 `hitl_submit` reads the selection(s) out of `state.values` (grouped per question for a form)
 and resumes the paused task with one answer slot per question. An incomplete Submit is nudged
-and the form is left pending. The prompt message is then rewritten in place to show the chosen
-answer.
+and the form is left pending. The prompt message is then rewritten in place. The question stays
+and its controls go: one context line names the answer, who gave it and when (`gazelle ·
+answered by <@U123> · <!date^…^{time}|21:43 UTC>`, several choices joined with commas). A form
+keeps each question with its answer on the line under it ("No answer" when a typed reply had
+no line for it), and its context line reads `Answered by <@U123> · …`. A long answer is cut so
+the line stays within Slack's 3000-character limit, or Slack would refuse the whole rewrite. The approval card is rewritten the same way (section 1).
 
 Every prompt can also be answered by a plain in-thread reply, which maps free text to the same
-structured decision.
+structured decision. A question prompt's message is recorded when it posts, so a typed answer
+rewrites it exactly like a click, and no live controls stay on an answered question. A click that
+finds its task gone or superseded keeps the prompt's text sections (the question, each question
+of a form) and puts the note where the controls were.
+
+In the reply's task list, the `ask_user` call shows as the step **Question for you**.

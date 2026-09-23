@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 )
@@ -138,32 +139,40 @@ func (a *Adapter) postHitlPrompt(ctx context.Context, client *slackAPIClient, sl
 	// falls back to the plain-text rendering (the free-text reply path resolves
 	// the task either way).
 	if p.IsAskUser() {
+		// The question's message is recorded on the pending task, so a typed
+		// answer rewrites it the way a click does.
 		if len(p.Questions) == 1 {
 			q := p.Questions[0]
+			var ts string
 			var err error
 			interactive := true
 			switch chooseChoiceRender(q) {
 			case renderWidget:
-				err = client.postChoiceWidgetPrompt(ctx, slackChannel, threadID, pd.TaskID, q.Question, q.Choices, q.Multiple)
+				ts, err = client.postChoiceWidgetPrompt(ctx, slackChannel, threadID, pd.TaskID, q.Question, q.Choices, q.Multiple)
 			case renderSection:
-				err = client.postChoiceSectionPrompt(ctx, slackChannel, threadID, pd.TaskID, q.Question, q.Choices, q.Multiple)
+				ts, err = client.postChoiceSectionPrompt(ctx, slackChannel, threadID, pd.TaskID, q.Question, q.Choices, q.Multiple)
 			default:
 				interactive = false
 			}
 			if interactive {
 				if err == nil {
+					a.notePromptTS(threadID, pd.TaskID, ts)
 					return nil
 				}
 				a.Logger.Warn("slack: choice prompt failed, falling back to text", "thread", threadID, "error", err)
 			}
 		} else if formRenderable(p) {
-			err := client.postChoiceFormPrompt(ctx, slackChannel, threadID, pd.TaskID, p.Questions)
+			ts, err := client.postChoiceFormPrompt(ctx, slackChannel, threadID, pd.TaskID, p.Questions)
 			if err == nil {
+				a.notePromptTS(threadID, pd.TaskID, ts)
 				return nil
 			}
 			a.Logger.Warn("slack: form prompt failed, falling back to text", "thread", threadID, "error", err)
 		}
-		_, err := client.postMessage(ctx, slackChannel, renderAskUserText(p), threadID)
+		ts, err := client.postMessage(ctx, slackChannel, renderAskUserText(p), threadID)
+		if err == nil {
+			a.notePromptTS(threadID, pd.TaskID, ts)
+		}
 		return err
 	}
 
@@ -264,6 +273,61 @@ func approvalCardBlocks(card, line string) []any {
 	return []any{
 		map[string]any{bkType: bkSection, bkText: map[string]any{bkType: bkMrkdwn, bkText: card}},
 		contextBlock(line),
+	}
+}
+
+// questionAnsweredBlocks is a question prompt once it is answered, for the
+// message the prompt was posted in: the questions stay, the controls go, and
+// one context line says what was answered, by whom and when. A single
+// question puts its answer in that line; a form puts each answer under its
+// question. It returns the line, which is also the notification text. Question
+// and answer text is agent- or user-authored, so it is escaped.
+func questionAnsweredBlocks(p *channels.HitlPrompt, answers [][]string, user string, at time.Time) (string, []any) {
+	var questions []channels.HitlQuestion
+	if p != nil {
+		questions = p.Questions
+	}
+	answer := func(i int) string {
+		if i < len(answers) {
+			return strings.Join(answers[i], ", ")
+		}
+		return ""
+	}
+	// The line is one context element, which Slack caps like a section; an
+	// answer can be a pasted log or several long choices, and a line over the
+	// cap would get the whole rewrite refused, leaving the controls live.
+	var blocks []any
+	var line string
+	if len(questions) > 1 {
+		for i, q := range questions {
+			a := answer(i)
+			if strings.TrimSpace(a) == "" {
+				a = formNoAnswer
+			}
+			text := truncateRunes("*"+escapeMrkdwn(q.Question)+"*\n"+escapeMrkdwn(a), slackSectionTextMax)
+			blocks = append(blocks, map[string]any{bkType: bkSection, bkText: map[string]any{bkType: bkMrkdwn, bkText: text}})
+		}
+		line = fmt.Sprintf(formAnsweredFormat, user, slackTime(at))
+	} else {
+		if len(questions) == 1 {
+			blocks = append(blocks, questionSection(questions[0].Question))
+		}
+		rest := utf8.RuneCountInString(fmt.Sprintf(questionAnsweredFormat, "", user, slackTime(at)))
+		line = fmt.Sprintf(questionAnsweredFormat, truncateRunes(escapeMrkdwn(answer(0)), slackSectionTextMax-rest), user, slackTime(at))
+	}
+	return line, append(blocks, contextBlock(line))
+}
+
+// markQuestionAnswered rewrites a question prompt answered by a typed reply the
+// way a click rewrites it, so its controls do not stay live on an answered
+// question. Best-effort: the answer runs either way.
+func (a *Adapter) markQuestionAnswered(ctx context.Context, slackChannel string, task *pendingTask, decision *channels.HitlDecision, slackUser string) {
+	if task.PromptTS == "" || !task.Prompt.IsAskUser() || decision == nil {
+		return
+	}
+	line, blocks := questionAnsweredBlocks(task.Prompt, decision.AskUserAnswers, slackUser, time.Now())
+	if err := a.apiClient().chatUpdate(ctx, slackChannel, task.PromptTS, line, blocks); err != nil {
+		a.Logger.Warn("slack: rewrite answered question failed", "channel", slackChannel, "ts", task.PromptTS, "error", err)
 	}
 }
 

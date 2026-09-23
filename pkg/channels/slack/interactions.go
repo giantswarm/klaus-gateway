@@ -266,9 +266,8 @@ func (a *Adapter) routeInteraction(ctx context.Context, payload interactionPaylo
 	hv := decodeHitlValue(action.Value)
 	threadID := hv.Thread
 	act.taskID = hv.Task
+	act.sections = promptSections(payload.Message.Blocks)
 	switch act.kind {
-	case hitlApprove, hitlDeny, hitlChat:
-		act.section = cardSection(payload.Message.Blocks)
 	case hitlChoice:
 		cv, ok := decodeChoiceValue(action.Value)
 		if !ok {
@@ -296,12 +295,12 @@ func (a *Adapter) routeInteraction(ctx context.Context, payload interactionPaylo
 type hitlAction struct {
 	kind   string // hitlApprove, hitlDeny, hitlChat, hitlChoice, or hitlSubmit
 	taskID string // task the clicked prompt renders; "" on legacy buttons (no check)
-	// section is the clicked approval card's section block (Approve, Deny and
-	// Chat clicks), nil when the message has none.
-	section map[string]any
-	choice  choiceValue
-	choices []int         // selected choice indices, for a single-question hitlSubmit
-	answers map[int][]int // selected choice indices per question, for a multi-question form hitlSubmit
+	// sections are the clicked prompt's text sections (the approval card's, a
+	// question's), kept when a click that decides nothing retires the prompt.
+	sections []any
+	choice   choiceValue
+	choices  []int         // selected choice indices, for a single-question hitlSubmit
+	answers  map[int][]int // selected choice indices per question, for a multi-question form hitlSubmit
 }
 
 // classifyAction maps a Block Kit action_id to a hitlAction.
@@ -560,16 +559,19 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 		return nil
 	}
 
-	decision, resumeText, decisionText := buildButtonDecision(act, task.Prompt)
+	decision, resumeText := buildButtonDecision(act, task.Prompt)
 
-	// Replace the buttons with the decision: an approval card keeps its
-	// section and names who decided; a question's prompt becomes the answer.
+	// Replace the controls with the decision: an approval card keeps its
+	// section and names who decided; a question keeps its question and names
+	// the answer, who gave it and when.
+	now := time.Now()
 	var uerr error
-	if line := approvalDecisionLine(act.kind, slackUser, time.Now()); line != "" {
+	if line := approvalDecisionLine(act.kind, slackUser, now); line != "" {
 		card := approvalCard(task.Prompt, task.PromptText)
 		uerr = client.chatUpdate(ctx, slackChannel, messageTS, line, approvalCardBlocks(card, line))
 	} else {
-		uerr = client.chatUpdateBlocks(ctx, slackChannel, messageTS, decisionText)
+		line, blocks := questionAnsweredBlocks(task.Prompt, decision.AskUserAnswers, slackUser, now)
+		uerr = client.chatUpdate(ctx, slackChannel, messageTS, line, blocks)
 	}
 	if uerr != nil {
 		a.Logger.Warn("slack: update approval message failed", "error", uerr)
@@ -599,29 +601,33 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 	})
 }
 
-// retirePrompt rewrites a prompt whose click cannot decide anything. An
-// approval card keeps its section, taken from the clicked message, and the note
-// replaces its buttons; any other prompt becomes the note alone.
+// retirePrompt rewrites a prompt whose click cannot decide anything. The
+// prompt keeps its text sections, taken from the clicked message, and the note
+// replaces its controls; a prompt without them becomes the note alone.
 func retirePrompt(ctx context.Context, client *slackAPIClient, channel, ts string, act hitlAction, note string) error {
-	if act.section == nil {
+	if len(act.sections) == 0 {
 		return client.chatUpdateBlocks(ctx, channel, ts, note)
 	}
-	return client.chatUpdate(ctx, channel, ts, note, []any{act.section, contextBlock(note)})
+	return client.chatUpdate(ctx, channel, ts, note, append(act.sections, contextBlock(note)))
 }
 
-// cardSection returns the first block of an approval card, its section, or nil
-// when the message does not start with one.
-func cardSection(blocks []map[string]any) map[string]any {
-	if len(blocks) == 0 || blocks[0][bkType] != bkSection {
-		return nil
+// promptSections returns a prompt message's text sections: the approval card's
+// section, a question's, each question of a form. A section with an accessory
+// is a control (a long choice with its Select button) and is left out.
+func promptSections(blocks []map[string]any) []any {
+	var sections []any
+	for _, b := range blocks {
+		if _, control := b[bkAccessory]; b[bkType] == bkSection && !control {
+			sections = append(sections, b)
+		}
 	}
-	return blocks[0]
+	return sections
 }
 
-// buildButtonDecision turns a Block Kit click into a structured HITL decision,
-// the human-readable resume label, and the text the prompt message is updated
-// to after the click.
-func buildButtonDecision(act hitlAction, prompt *channels.HitlPrompt) (*channels.HitlDecision, string, string) {
+// buildButtonDecision turns a Block Kit click into a structured HITL decision
+// and the human-readable resume label. The prompt's rewrite is built from the
+// decision (approvalDecisionLine, questionAnsweredBlocks).
+func buildButtonDecision(act hitlAction, prompt *channels.HitlPrompt) (*channels.HitlDecision, string) {
 	switch act.kind {
 	case hitlChoice:
 		label := choiceLabel(prompt, act.choice)
@@ -629,8 +635,7 @@ func buildButtonDecision(act hitlAction, prompt *channels.HitlPrompt) (*channels
 			Type:           channels.DecisionApprove,
 			AskUserAnswers: [][]string{{label}},
 		}
-		// The label is agent-authored; it re-enters Slack via chat.update text.
-		return decision, label, "👉 _" + escapeMrkdwn(label) + "_"
+		return decision, label
 	case hitlSubmit:
 		if prompt != nil && len(prompt.Questions) > 1 {
 			answers := answersByQuestion(prompt, act.answers)
@@ -638,21 +643,18 @@ func buildButtonDecision(act hitlAction, prompt *channels.HitlPrompt) (*channels
 				Type:           channels.DecisionApprove,
 				AskUserAnswers: answers,
 			}
-			resume, display := formResumeText(prompt, answers)
-			return decision, resume, display
+			return decision, formResumeText(answers)
 		}
 		labels := choiceLabels(prompt, act.choices)
 		decision := &channels.HitlDecision{
 			Type:           channels.DecisionApprove,
 			AskUserAnswers: [][]string{labels},
 		}
-		joined := strings.Join(labels, ", ")
-		return decision, joined, "👉 _" + escapeMrkdwn(joined) + "_"
+		return decision, strings.Join(labels, ", ")
 	case hitlDeny:
-		// The card's rewrite names who decided (approvalDecisionLine).
-		return &channels.HitlDecision{Type: channels.DecisionReject}, "denied", ""
+		return &channels.HitlDecision{Type: channels.DecisionReject}, "denied"
 	default: // hitlApprove
-		return &channels.HitlDecision{Type: channels.DecisionApprove}, labelApproved, ""
+		return &channels.HitlDecision{Type: channels.DecisionApprove}, labelApproved
 	}
 }
 
@@ -750,18 +752,12 @@ func answersByQuestion(prompt *channels.HitlPrompt, selected map[int][]int) [][]
 	return answers
 }
 
-// formResumeText builds the human-readable resume label (msg.Text) and the
-// display text that replaces the form after Submit. Both list each question's
-// answer; question and choice text are agent-authored, so they are escaped.
-func formResumeText(prompt *channels.HitlPrompt, answers [][]string) (resume, display string) {
-	var resumeB, displayB strings.Builder
-	for qi, q := range prompt.Questions {
-		joined := strings.Join(answers[qi], ", ")
-		if qi > 0 {
-			resumeB.WriteString("; ")
-		}
-		resumeB.WriteString(joined)
-		fmt.Fprintf(&displayB, "👉 *%s* _%s_\n", escapeMrkdwn(q.Question), escapeMrkdwn(joined))
+// formResumeText builds the human-readable resume label (msg.Text) of a form:
+// each question's answer, in order.
+func formResumeText(answers [][]string) string {
+	parts := make([]string, len(answers))
+	for qi, a := range answers {
+		parts[qi] = strings.Join(a, ", ")
 	}
-	return resumeB.String(), strings.TrimRight(displayB.String(), "\n")
+	return strings.Join(parts, "; ")
 }

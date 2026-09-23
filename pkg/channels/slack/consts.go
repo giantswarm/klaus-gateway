@@ -398,6 +398,17 @@ const promptAnsweredNotice = "_Already answered._"
 // pending so the user can complete it and submit again.
 const formIncompleteNudge = "_Please answer every question, then click Submit._"
 
+// The line that replaces a question prompt's controls once it is answered:
+// the answer (a single question) or nothing (a form, whose answers sit under
+// their questions), who answered, and a Slack date token for when.
+const (
+	questionAnsweredFormat = "%s · answered by <@%s> · %s"
+	formAnsweredFormat     = "Answered by <@%s> · %s"
+	// formNoAnswer stands under a form question a typed reply left without an
+	// answer (one line per question), so the thread sees what the agent got.
+	formNoAnswer = "No answer"
+)
+
 // The approval card: its title, the context line naming who may decide, the
 // button labels, and the line that replaces the buttons after a decision. The
 // decision lines end with a Slack date token, so each reader sees the time in
