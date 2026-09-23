@@ -1591,11 +1591,11 @@ func TestProgress_FailureNoteNamesTheClass(t *testing.T) {
 		want      string
 		wantNotIn string
 	}{
-		{"tools", &stubGateway{deltas: []channels.OutboundDelta{{Err: errors.New(toolSet)}}}, toolsFailedNote, "the turn failed"},
-		{"model", &stubGateway{deltas: []channels.OutboundDelta{{Err: errors.New(`anthropic API error: 529 {"type":"overloaded_error"}`)}}}, modelFailedNote, "the turn failed"},
-		{"policy", &stubGateway{deltas: []channels.OutboundDelta{{Err: errors.New("OpenAI chat completion request failed: 403 authorization failed")}}}, policyFailedNote, "the turn failed"},
-		{"platform, before the stream", &stubGateway{dispatchErr: errors.New("rpc error: code = Unavailable desc = connection refused")}, platformFailedNote, "the turn failed"},
-		{"unknown", &stubGateway{deltas: []channels.OutboundDelta{{Err: errors.New("boom")}}}, failedNote, "⚠️"},
+		{"tools", &stubGateway{deltas: []channels.OutboundDelta{{Err: errors.New(toolSet)}}}, "I couldn't connect to my tools", "the turn failed"},
+		{"model", &stubGateway{deltas: []channels.OutboundDelta{{Err: errors.New(`anthropic API error: 529 {"type":"overloaded_error"}`)}}}, "The model behind this agent returned an error", "the turn failed"},
+		{"policy", &stubGateway{deltas: []channels.OutboundDelta{{Err: errors.New("OpenAI chat completion request failed: 403 authorization failed")}}}, "A platform policy refused this request", "the turn failed"},
+		{"platform, before the stream", &stubGateway{dispatchErr: errors.New("rpc error: code = Unavailable desc = connection refused")}, "I couldn't reach the agent platform", "the turn failed"},
+		{"unknown", &stubGateway{deltas: []channels.OutboundDelta{{Err: errors.New("boom")}}}, "the turn failed; please try again", "⚠️"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fake := newFakeSlackAPI()
