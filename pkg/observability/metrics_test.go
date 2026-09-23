@@ -18,11 +18,11 @@ func TestMetrics_RecordTurn(t *testing.T) {
 		"first_text": 1500 * time.Millisecond,
 	})
 	m.RecordTurn("slack", "completed", map[string]time.Duration{"total": 3 * time.Second})
-	m.RecordTurn("web", "failed", map[string]time.Duration{"total": time.Second})
+	m.RecordTurn("slack", "failed", map[string]time.Duration{"total": time.Second})
 
 	require.Equal(t, float64(2), testutil.ToFloat64(m.TurnsTotal.WithLabelValues("slack", "completed")))
-	require.Equal(t, float64(1), testutil.ToFloat64(m.TurnsTotal.WithLabelValues("web", "failed")))
-	require.Equal(t, 3, testutil.CollectAndCount(m.TurnPhase, "klaus_gateway_turn_phase_seconds"), "one series per (channel, phase): slack/total, slack/first_text, web/total")
+	require.Equal(t, float64(1), testutil.ToFloat64(m.TurnsTotal.WithLabelValues("slack", "failed")))
+	require.Equal(t, 2, testutil.CollectAndCount(m.TurnPhase, "klaus_gateway_turn_phase_seconds"), "one series per (channel, phase): slack/total, slack/first_text")
 
 	families, err := m.Registry.Gather()
 	require.NoError(t, err)

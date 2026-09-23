@@ -1747,7 +1747,7 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 }
 
 // postDispatchFailureNote posts the generic failure note for a turn that died
-// before its stream started (agent resolve or send failed). Errors inside a
+// before its stream started (the agent lookup or the send failed). Errors inside a
 // running stream are surfaced by streamResponse; without this note a
 // pre-stream failure is invisible to the thread. Skipped on the replay path,
 // where the caller posts the more specific postReplayFailureNote. Best-effort,
@@ -1834,9 +1834,9 @@ func (a *Adapter) threadEngaged(threadID string) bool {
 	return false
 }
 
-// dispatch resolves an inbound Slack message to a Klaus instance, posts a
-// placeholder reply in-thread, and streams the completion into a streamed
-// message in the thread.
+// dispatch admits an inbound Slack message, binds it to the thread's agent,
+// posts a placeholder reply in-thread, and streams the completion into a
+// streamed message in the thread.
 func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, slackChannel string) error {
 	return a.dispatchFrom(ctx, msg, slackChannel, agentSourcePrefix)
 }
@@ -2748,7 +2748,6 @@ func (e slackInnerEvent) toInboundMessage(threadReplyOnly bool) (channels.Inboun
 	return channels.InboundMessage{
 		Channel:     ChannelName,
 		ChannelID:   e.Channel,
-		UserID:      "", // thread-scoped session: all participants share one contextID
 		ThreadID:    threadID,
 		MessageID:   e.TS, // triggering message; progress-reaction target
 		Text:        text,

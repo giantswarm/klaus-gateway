@@ -463,13 +463,9 @@ func (a *Adapter) handleAskAgentSubmission(ctx context.Context, payload interact
 		}
 	}
 
-	// Escaped: the display name comes from an Agent CR annotation and this
-	// lands in a mrkdwn-parsed message. Emphasis characters (* _) pass through
-	// and can mangle the bold span — cosmetic, accepted.
 	name := a.agentNameFor(ctx, ref)
-	echoText := fmt.Sprintf(askAgentRootText, user, escapeMrkdwn(name), quoteMrkdwn(escapeMrkdwn(question)))
 	client := a.agentClientNamed(ctx, ref, name)
-	echoTS, err := client.postMessage(ctx, pm.Channel, echoText, pm.Thread)
+	echoTS, err := client.postQuestion(ctx, pm.Channel, question, user, pm.Thread)
 	if err != nil && isNotInChannelErr(err) {
 		// A public channel the bot was never invited to: join (channels:join)
 		// and retry once. A private channel refuses the join, and the user is
@@ -479,7 +475,7 @@ func (a *Adapter) handleAskAgentSubmission(ctx context.Context, payload interact
 			notify(askAgentInviteNotice)
 			return
 		}
-		echoTS, err = client.postMessage(ctx, pm.Channel, echoText, pm.Thread)
+		echoTS, err = client.postQuestion(ctx, pm.Channel, question, user, pm.Thread)
 	}
 	if err != nil {
 		a.Logger.Warn("slack: ask-agent echo post failed", "channel", pm.Channel, "error", err)
@@ -544,9 +540,4 @@ func isNotInChannelErr(err error) bool {
 
 func plainTextObj(s string) map[string]any {
 	return map[string]any{bkType: bkPlainText, bkText: s}
-}
-
-// quoteMrkdwn renders s as a Slack block quote, one "> " prefix per line.
-func quoteMrkdwn(s string) string {
-	return "> " + strings.ReplaceAll(s, "\n", "\n> ")
 }

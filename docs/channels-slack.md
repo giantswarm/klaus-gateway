@@ -262,18 +262,18 @@ agent when it opens, through one of three entry points, and keeps it for life:
   conversation.
 - **Slash command**: `/swarmgeist [question]` in a channel opens a modal with an agent select over
   the live roster (the default agent preselected) and a question box. On submit the gateway posts
-  the conversation root itself, under the agent's identity ("💬 @user asked *Agent*: …"), makes
-  the submitter the thread initiator, and runs the question as the first turn. Slack hides
-  developer slash commands in threads and in the agent pane, so the command only opens channel
-  conversations; in a channel the bot is not a member of, the gateway joins public channels and
-  asks for an invite to private ones. Failures (unknown agent, roster unavailable, channel not
-  served) are reported privately to the invoking user.
+  the conversation root itself, under the agent's identity (the question, with "Asked by @user" as
+  context under it), makes the submitter the thread initiator, and runs the question as the first
+  turn. Slack hides developer slash commands in threads and in the agent pane, so the command only
+  opens channel conversations; in a channel the bot is not a member of, the gateway joins public
+  channels and asks for an invite to private ones. Failures (unknown agent, roster unavailable,
+  channel not served) are reported privately to the invoking user.
 - **"Ask an agent here" message shortcut** (⋯ menu → Apps on any message): opens the same picker
   where the command cannot reach — inside an existing thread. The conversation starts in the
   thread of the message the shortcut was invoked on (or in the thread that message roots, when it
   is a top-level one), so an alert another app posted or a running discussion is handed to a
-  chosen agent without leaving it. On submit the gateway posts the same "💬 @user asked *Agent*:
-  …" echo as a **reply** in that thread, makes the submitter the thread initiator, and runs the
+  chosen agent without leaving it. On submit the gateway posts the same question message as a
+  **reply** in that thread, makes the submitter the thread initiator, and runs the
   question as the first turn. Two kinds of thread are refused, with nothing posted: one that
   already talks to an agent — reply in it to ask that agent, a second conversation would fork the
   one it has — and one that already belongs to someone else (a `/usage` or `/stop` typed there
@@ -305,18 +305,20 @@ agent was chosen before any message existed.
 
 | Flag | Env var | Required |
 |------|---------|---------|
-| `--slack-default-agent` | `KLAUS_GATEWAY_SLACK_DEFAULT_AGENT` | Yes (when Slack is enabled) |
+| `--a2a-default-agent` | `KLAUS_GATEWAY_A2A_DEFAULT_AGENT` | Yes (when Slack is enabled) |
 
-When `--driver=static`, the gateway validates at startup that the named agent exists in
-the pre-configured instance set. With other drivers (klausctl, operator), the name is
-used as the instance creation hint and instances may not exist yet at startup.
+The adapter refuses to start without it. The name is not checked at startup: the controller
+resolves it on the thread's first turn, and an unknown agent is reported in the thread.
 
 Example Helm values:
 
 ```yaml
 slack:
   enabled: true
-  defaultAgent: my-instance
+a2a:
+  enabled: true
+  defaultAgent: sre-agent
+  namespace: kagent
 ```
 
 ## Running in Events API mode (production)

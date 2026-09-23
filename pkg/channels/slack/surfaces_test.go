@@ -28,18 +28,18 @@ func TestEventsHandler_ChannelAllowlist(t *testing.T) {
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, allowlistMode("C1"))
 
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_mention","user":"U123","text":"<@BOT> hi","channel":"C1","ts":"111.222"}}`)
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 20*time.Millisecond, "a mention in an allowlisted channel dispatches")
 
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_mention","user":"U123","text":"<@BOT> hi","channel":"C9","ts":"333.444"}}`)
 	require.Eventually(t, func() bool { return len(fake.pathCalls("chat.postEphemeral")) == 1 },
 		flowWait, 20*time.Millisecond, "a mention outside the allowlist gets an ephemeral notice")
-	require.Equal(t, 1, gw.resolveCount(), "a mention outside the allowlist must not dispatch")
+	require.Equal(t, 1, gw.dispatchCount(), "a mention outside the allowlist must not dispatch")
 
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_mention","user":"U123","text":"<@BOT> again","channel":"C9","ts":"555.666"}}`)
 	time.Sleep(150 * time.Millisecond)
 	require.Len(t, fake.pathCalls("chat.postEphemeral"), 1, "repeated mentions nudge once per window")
-	require.Equal(t, 1, gw.resolveCount())
+	require.Equal(t, 1, gw.dispatchCount())
 }
 
 // With DMs served alongside channels, both surfaces dispatch and no DM
@@ -53,11 +53,11 @@ func TestEventsHandler_DMServedAlongsideChannels(t *testing.T) {
 	})
 
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","channel_type":"im","user":"U1","text":"hi","channel":"D1","ts":"111.000"}}`)
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 20*time.Millisecond, "a DM dispatches in serve mode")
 
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_mention","user":"U1","text":"<@BOT> hi","channel":"C1","ts":"222.000"}}`)
-	require.Eventually(t, func() bool { return gw.resolveCount() == 2 },
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 },
 		flowWait, 20*time.Millisecond, "a channel mention dispatches alongside DMs")
 }
 
@@ -74,7 +74,7 @@ func TestEventsHandler_DMRedirectCoversFileShare(t *testing.T) {
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","subtype":"file_share","channel_type":"im","user":"U1","channel":"D1","ts":"111.000","files":[{"name":"shot.png","mimetype":"image/png","size":10}]}}`)
 	require.Eventually(t, func() bool { return len(fake.pathCalls("chat.postMessage")) == 1 },
 		flowWait, 20*time.Millisecond, "an image-only DM gets the redirect notice")
-	require.Zero(t, gw.resolveCount(), "a redirected DM must not dispatch")
+	require.Zero(t, gw.dispatchCount(), "a redirected DM must not dispatch")
 }
 
 // DMModeIgnore drops DMs silently: no dispatch, no redirect.
@@ -88,7 +88,7 @@ func TestEventsHandler_DMIgnored(t *testing.T) {
 
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","channel_type":"im","user":"U1","text":"hi","channel":"D1","ts":"111.000"}}`)
 	time.Sleep(150 * time.Millisecond)
-	require.Zero(t, gw.resolveCount(), "an ignored DM must not dispatch")
+	require.Zero(t, gw.dispatchCount(), "an ignored DM must not dispatch")
 	require.Empty(t, fake.pathCalls("chat.postMessage"), "an ignored DM must not be answered or redirected")
 }
 

@@ -489,11 +489,12 @@ input is `optional`, so clearing the box still submits.
 }
 ```
 
-Submitting posts the echo `💬 <@U123> asked *SRE Agent*:` with the question quoted, under the
-agent's identity — a new root message for the slash command, a reply in the carried thread for
-the shortcut — and runs the question as the thread's first turn. With the box ticked, the messages
-the thread held before that echo travel with the question as a labelled part of the turn (see
-[the Slack adapter](channels-slack.md)); nothing about them is posted in the thread.
+Submitting posts the question as the message, with a context block `Asked by <@U123>` under it,
+under the agent's identity — a new root message for the slash command, a reply in the carried
+thread for the shortcut — and runs the question as the thread's first turn. With the box ticked,
+the messages the thread held before that question message travel with the question as a labelled
+part of the turn (see [the Slack adapter](channels-slack.md)); nothing about them is posted in the
+thread.
 
 Everything the picker cannot do is said privately to the invoker, through the interaction's
 `response_url`, and nothing is posted in the channel:
@@ -538,5 +539,4 @@ and the form is left pending. The prompt message is then rewritten in place to s
 answer.
 
 Every prompt can also be answered by a plain in-thread reply, which maps free text to the same
-structured decision — this is the only path on the web and CLI channels, which don't render
-interactive widgets.
+structured decision.

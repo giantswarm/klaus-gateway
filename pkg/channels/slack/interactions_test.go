@@ -64,8 +64,8 @@ func slackInteractionPayload(t *testing.T, actionID, threadID, channelID, messag
 // fakeGateway captures SendCompletion calls.
 type fakeGateway struct {
 	deltas []channels.OutboundDelta
-	// resolveErr, when set, is returned by every Resolve call.
-	resolveErr error
+	// dispatchErr, when set, is returned by every SendCompletion call.
+	dispatchErr error
 	// sendErr, when set, is returned by every SendCompletion call.
 	sendErr error
 	// onResetSession, when set, backs ResetSession; nil reports the reset as
@@ -85,18 +85,15 @@ func (g *fakeGateway) ResetSession(_ context.Context, msg channels.InboundMessag
 	return g.onResetSession(msg)
 }
 
-func (g *fakeGateway) Resolve(_ context.Context, _ channels.InboundMessage) (channels.InstanceRef, error) {
-	if g.resolveErr != nil {
-		return channels.InstanceRef{}, g.resolveErr
-	}
-	return channels.InstanceRef{Name: "i1"}, nil
-}
-func (g *fakeGateway) SendCompletion(_ context.Context, _ channels.InstanceRef, msg channels.InboundMessage) (<-chan channels.OutboundDelta, error) {
+func (g *fakeGateway) SendCompletion(_ context.Context, msg channels.InboundMessage) (<-chan channels.OutboundDelta, error) {
 	g.mu.Lock()
 	g.sent = append(g.sent, msg)
 	g.sends++
 	g.lastMsg = msg
 	g.mu.Unlock()
+	if g.dispatchErr != nil {
+		return nil, g.dispatchErr
+	}
 	if g.sendErr != nil {
 		return nil, g.sendErr
 	}
@@ -112,9 +109,6 @@ func (g *fakeGateway) sentMessages() []channels.InboundMessage {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return append([]channels.InboundMessage(nil), g.sent...)
-}
-func (g *fakeGateway) FetchHistory(_ context.Context, _ channels.InstanceRef) ([]channels.Message, error) {
-	return nil, nil
 }
 
 // sendCount reports how many times SendCompletion (a task resume) was called.
@@ -507,7 +501,7 @@ func TestSignInClickIsBareAck(t *testing.T) {
 // the prompt message already shows the decision text, so silence reads as
 // success while the task quietly went nowhere.
 func TestHandleDecision_ResumeFailurePostsNote(t *testing.T) {
-	gw := &fakeGateway{resolveErr: errors.New("kagent down")}
+	gw := &fakeGateway{dispatchErr: errors.New("kagent down")}
 	a, paths := newDecisionAdapter(t, gw, linkedOBO{user: "U001", token: "human-token"})
 
 	err := a.handleDecision(t.Context(), "C001", "T001", "MSG001", "U001", hitlAction{kind: hitlApprove})

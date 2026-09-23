@@ -110,7 +110,7 @@ func TestForwardedTokenSource(t *testing.T) {
 			Fallback:              pkga2a.FileTokenSource{Path: path},
 			ForwardedOnlyChannels: []string{"slack"},
 		}
-		ctx := pkga2a.WithChannel(t.Context(), "web")
+		ctx := pkga2a.WithChannel(t.Context(), "other")
 
 		token, err := src.Token(ctx)
 		require.NoError(t, err)

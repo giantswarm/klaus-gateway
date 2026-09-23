@@ -136,7 +136,7 @@ func TestBeginCompleteTurn_RecordMetricsAndSpan(t *testing.T) {
 	h := &recordingHandler{}
 	rec := &fakeRecorder{}
 
-	ctx, timer := BeginTurn(context.Background(), "web", time.Now().Add(-500*time.Millisecond))
+	ctx, timer := BeginTurn(context.Background(), "slack", time.Now().Add(-500*time.Millisecond))
 	require.Same(t, timer, TurnTimerFromContext(ctx))
 	require.NotEmpty(t, timer.TraceID())
 	timer.Mark(PhaseDispatch)
@@ -145,14 +145,14 @@ func TestBeginCompleteTurn_RecordMetricsAndSpan(t *testing.T) {
 	timer.AddChars(12)
 	timer.Span(PhaseTokenMint)()
 
-	CompleteTurn(ctx, slog.New(h), rec, "web", OutcomeCompleted, nil, "thread_id", "T1")
-	CompleteTurn(ctx, slog.New(h), rec, "web", OutcomeFailed, errors.New("late"), "thread_id", "T1")
+	CompleteTurn(ctx, slog.New(h), rec, "slack", OutcomeCompleted, nil, "thread_id", "T1")
+	CompleteTurn(ctx, slog.New(h), rec, "slack", OutcomeFailed, errors.New("late"), "thread_id", "T1")
 	AbandonTurn(ctx, "too late")
 
 	records := h.find("record", RecordTurnComplete)
 	require.Len(t, records, 1, "one turn, one record")
 	r := records[0]
-	require.Equal(t, "web", r["channel"])
+	require.Equal(t, "slack", r["channel"])
 	require.Equal(t, OutcomeCompleted, r["outcome"])
 	require.Equal(t, "task-9", r["task_id"])
 	require.Equal(t, int64(1), r["tool_calls"])
@@ -166,19 +166,19 @@ func TestBeginCompleteTurn_RecordMetricsAndSpan(t *testing.T) {
 	require.GreaterOrEqual(t, r["total_ms"].(int64), int64(500), "total is measured from the turn's start")
 
 	require.Equal(t, 1, rec.calls)
-	require.Equal(t, "web", rec.channel)
+	require.Equal(t, "slack", rec.channel)
 	require.Equal(t, OutcomeCompleted, rec.outcome)
 	require.Contains(t, rec.phases, PhaseTotal)
 	require.Contains(t, rec.phases, PhaseDispatch)
 
 	spans := exporter.GetSpans()
 	require.Len(t, spans, 1)
-	require.Equal(t, "web.turn", spans[0].Name)
+	require.Equal(t, "slack.turn", spans[0].Name)
 	attrs := map[string]any{}
 	for _, kv := range spans[0].Attributes {
 		attrs[string(kv.Key)] = kv.Value.AsInterface()
 	}
-	require.Equal(t, "web", attrs["klaus_gateway.channel"])
+	require.Equal(t, "slack", attrs["klaus_gateway.channel"])
 	require.Equal(t, OutcomeCompleted, attrs["klaus_gateway.turn.outcome"])
 	require.Equal(t, "task-9", attrs["a2a.task_id"])
 	require.Equal(t, int64(1), attrs["klaus_gateway.turn.tool_calls"])

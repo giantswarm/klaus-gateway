@@ -94,11 +94,6 @@ func TestSlashCommandPayload_DecodesSocketModeEnvelope(t *testing.T) {
 	require.Equal(t, slashCommandPayload{Command: "/swarmgeist", Text: "hi there", UserID: "U1", ChannelID: "C1", TriggerID: "1.2.abc", ResponseURL: "https://hooks.slack.com/commands/T/1/x"}, p)
 }
 
-func TestQuoteMrkdwn_PrefixesEveryLine(t *testing.T) {
-	require.Equal(t, "> one\n> two", quoteMrkdwn("one\ntwo"))
-	require.Equal(t, "> single", quoteMrkdwn("single"))
-}
-
 // A default agent past the option cap is moved to the front of the list, so
 // the cut never drops the preselected option.
 func TestAskAgentModal_DefaultPastCapIsKept(t *testing.T) {

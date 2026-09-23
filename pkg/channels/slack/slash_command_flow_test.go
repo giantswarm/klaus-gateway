@@ -338,27 +338,25 @@ func TestSlashCommand_InvalidSignatureRejected(t *testing.T) {
 func TestAskAgentSubmission_OpensConversation(t *testing.T) {
 	fake := newFakeSlackAPI()
 	api := fake.server(t)
-	gw, resolved := capturingGateway()
+	gw, dispatched := capturingGateway()
 	a, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
 
 	sendSlashCommand(t, srv, "C1", "U1", "", api.URL+"/response_url")
 	pm := openedView(t, fake)["private_metadata"].(string)
 
 	sendAskAgentSubmission(t, srv, "U1", pm, "kagent/sre-agent", "why are pods crashlooping?")
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 50*time.Millisecond, "the submission dispatches the first turn")
 
-	// The root: a plain branded message naming who asked and quoting the
-	// question. The binding and the initiator live in the thread record.
+	// The root: the question as a branded message, who asked as context
+	// under it. The binding and the initiator live in the thread record.
 	root := fake.pathCalls("chat.postMessage")[0]
 	require.Equal(t, "C1", root.params["channel"])
 	require.Nil(t, root.params["thread_ts"], "the root is a top-level message")
 	require.Equal(t, "SRE Agent", root.params["username"], "posted under the agent's identity")
-	rootText := root.params["text"].(string)
-	require.Contains(t, rootText, "<@U1> asked *SRE Agent*")
-	require.Contains(t, rootText, "> why are pods crashlooping?")
+	requireQuestionMessage(t, root.params, "why are pods crashlooping?", "U1")
 
-	msgs := resolved()
+	msgs := dispatched()
 	require.Equal(t, "kagent/sre-agent", msgs[0].AgentRef)
 	require.Equal(t, "why are pods crashlooping?", msgs[0].Text, "the question is the turn, without decoration")
 	require.Equal(t, "U1", msgs[0].Subject, "the turn runs as the submitter")
@@ -370,9 +368,9 @@ func TestAskAgentSubmission_OpensConversation(t *testing.T) {
 	// The submitter's reply inherits the agent without re-selecting.
 	waitThreadIdle(t, a, rootTS)
 	sendEvent(t, srv, mention("U1", "and the nodes?", "200.000", rootTS))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 2 },
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 },
 		flowWait, 50*time.Millisecond, "the reply dispatches")
-	require.Equal(t, "kagent/sre-agent", resolved()[1].AgentRef, "replies inherit the conversation's agent")
+	require.Equal(t, "kagent/sre-agent", dispatched()[1].AgentRef, "replies inherit the conversation's agent")
 
 	// A newcomer is gated on the submitter's consent: nothing dispatches, the
 	// submitter gets the consent prompt.
@@ -386,7 +384,7 @@ func TestAskAgentSubmission_OpensConversation(t *testing.T) {
 		}
 		return false
 	}, flowWait, 50*time.Millisecond, "the consent prompt goes to the submitter, the initiator")
-	require.Equal(t, 2, gw.resolveCount(), "the newcomer's message waits")
+	require.Equal(t, 2, gw.dispatchCount(), "the newcomer's message waits")
 	require.Empty(t, fake.pathCalls("response_url"), "a clean submission needs no private notice")
 }
 
@@ -406,7 +404,7 @@ func TestAskAgentSubmission_UnknownAgentFailsLoudly(t *testing.T) {
 	fake.waitForPath(t, "response_url", 1)
 	require.Contains(t, responseURLTexts(fake), "I don't know an agent named `kagent/grill-master`")
 	require.Empty(t, fake.pathCalls("chat.postMessage"), "no root is posted")
-	require.Equal(t, 0, gw.resolveCount())
+	require.Equal(t, 0, gw.dispatchCount())
 }
 
 // A public channel the bot was never invited to: the root post fails with
@@ -432,7 +430,7 @@ func TestAskAgentSubmission_JoinsPublicChannelOnNotInChannel(t *testing.T) {
 	pm := openedView(t, fake)["private_metadata"].(string)
 	sendAskAgentSubmission(t, srv, "U1", pm, "kagent/sre-agent", "hello")
 
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 50*time.Millisecond, "the retried root post opens the conversation")
 	require.Len(t, fake.pathCalls("conversations.join"), 1)
 	require.Equal(t, "C1", fake.pathCalls("conversations.join")[0].params["channel"])
@@ -453,7 +451,7 @@ func TestAskAgentSubmission_PrivateChannelAsksForInvite(t *testing.T) {
 
 	fake.waitForPath(t, "response_url", 1)
 	require.Contains(t, responseURLTexts(fake), "Invite me to the channel")
-	require.Equal(t, 0, gw.resolveCount())
+	require.Equal(t, 0, gw.dispatchCount())
 }
 
 // The conversation the picker opens is rooted by a message the gateway posted,
@@ -489,7 +487,7 @@ func TestAskAgentSubmission_DispatchRecordNamesCommandSource(t *testing.T) {
 	sendSlashCommand(t, srv, "C1", "U1", "", api.URL+"/response_url")
 	pm := openedView(t, fake)["private_metadata"].(string)
 	sendAskAgentSubmission(t, srv, "U1", pm, "kagent/sre-agent", "hello")
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, flowWait, 50*time.Millisecond)
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
 
 	require.Eventually(t, func() bool {
 		return strings.Contains(logs.String(), "agent_source=command")
@@ -539,5 +537,21 @@ func TestAskAgentSubmission_NotRunnableAgentIsRefusedWithReason(t *testing.T) {
 		"is installed but cannot start a conversation right now: no Harness admits this AgentTemplate")
 	require.NotContains(t, responseURLTexts(fake), "I don't know an agent named")
 	require.Empty(t, fake.pathCalls("chat.postMessage"), "no root is posted")
-	require.Equal(t, 0, gw.resolveCount())
+	require.Equal(t, 0, gw.dispatchCount())
+}
+
+// requireQuestionMessage checks the message that opens a conversation from the
+// picker: the question as the message and its fallback text, who asked as the
+// only context line under it.
+func requireQuestionMessage(t *testing.T, params map[string]any, question, user string) {
+	t.Helper()
+	require.Equal(t, question, params["text"])
+	blocks := params["blocks"].([]any)
+	require.Len(t, blocks, 2)
+	section := blocks[0].(map[string]any)
+	require.Equal(t, "section", section["type"])
+	require.Equal(t, question, section["text"].(map[string]any)["text"])
+	ctxBlock := blocks[1].(map[string]any)
+	require.Equal(t, "context", ctxBlock["type"])
+	require.Equal(t, "Asked by <@"+user+">", ctxBlock["elements"].([]any)[0].(map[string]any)["text"])
 }

@@ -52,8 +52,8 @@ func TestKeyLayout(t *testing.T) {
 	}
 	require.NoError(t, s.Put(ctx, k, e))
 
-	require.Equal(t, []string{"klaus-gateway:route:slack|C1||1700000000.000100"}, m.Keys())
-	raw, err := m.Get("klaus-gateway:route:slack|C1||1700000000.000100")
+	require.Equal(t, []string{"klaus-gateway:route:slack|C1|1700000000.000100"}, m.Keys())
+	raw, err := m.Get("klaus-gateway:route:slack|C1|1700000000.000100")
 	require.NoError(t, err)
 	var got map[string]any
 	require.NoError(t, json.Unmarshal([]byte(raw), &got))
@@ -84,12 +84,12 @@ func TestKeyPrefixOption(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = s.Close() })
 	ctx := context.Background()
-	k := store.Key{Channel: "web", ChannelID: "c", ThreadID: "t"}
-	require.NoError(t, s.Put(ctx, k, store.Entry{Instance: "i"}))
-	require.Equal(t, []string{"other[1]:web|c||t"}, m.Keys())
+	k := store.Key{Channel: "slack", ChannelID: "c", ThreadID: "t"}
+	require.NoError(t, s.Put(ctx, k, store.Entry{AgentInstanceID: "i"}))
+	require.Equal(t, []string{"other[1]:slack|c|t"}, m.Keys())
 	// A foreign key next to ours is not listed: the glob metacharacters in
 	// the prefix are matched literally.
-	require.NoError(t, m.Set("other1:web|x||y", "{}"))
+	require.NoError(t, m.Set("other1:slack|x|y", "{}"))
 	entries, err := s.List(ctx)
 	require.NoError(t, err)
 	require.Len(t, entries, 1)
@@ -102,16 +102,16 @@ func TestTTLIsServerSide(t *testing.T) {
 	m := miniredis.RunT(t)
 	s := newStore(t, m.Addr())
 	ctx := context.Background()
-	k := store.Key{Channel: "web", ChannelID: "c", UserID: "u", ThreadID: "t"}
+	k := store.Key{Channel: "slack", ChannelID: "c", ThreadID: "t"}
 
 	now := time.Now()
-	require.NoError(t, s.Put(ctx, k, store.Entry{Instance: "i", LastSeen: now, TTL: time.Hour}))
+	require.NoError(t, s.Put(ctx, k, store.Entry{AgentInstanceID: "i", LastSeen: now, TTL: time.Hour}))
 	require.InDelta(t, time.Hour, m.TTL(got0(m)), float64(2*time.Second))
 
-	require.NoError(t, s.Put(ctx, k, store.Entry{Instance: "i", LastSeen: now.Add(-40 * time.Minute), TTL: time.Hour}))
+	require.NoError(t, s.Put(ctx, k, store.Entry{AgentInstanceID: "i", LastSeen: now.Add(-40 * time.Minute), TTL: time.Hour}))
 	require.InDelta(t, 20*time.Minute, m.TTL(got0(m)), float64(2*time.Second), "what is left of the TTL from LastSeen")
 
-	require.NoError(t, s.Put(ctx, k, store.Entry{Instance: "i", LastSeen: now.Add(time.Hour), TTL: time.Hour}))
+	require.NoError(t, s.Put(ctx, k, store.Entry{AgentInstanceID: "i", LastSeen: now.Add(time.Hour), TTL: time.Hour}))
 	require.InDelta(t, time.Hour, m.TTL(got0(m)), float64(2*time.Second), "a future LastSeen does not extend the TTL")
 
 	m.FastForward(2 * time.Hour)
@@ -261,10 +261,10 @@ func TestPutExpiredEntryDeletes(t *testing.T) {
 	m := miniredis.RunT(t)
 	s := newStore(t, m.Addr())
 	ctx := context.Background()
-	k := store.Key{Channel: "web", ChannelID: "c", UserID: "u", ThreadID: "t"}
-	require.NoError(t, s.Put(ctx, k, store.Entry{Instance: "i", LastSeen: time.Now()}))
+	k := store.Key{Channel: "slack", ChannelID: "c", ThreadID: "t"}
+	require.NoError(t, s.Put(ctx, k, store.Entry{AgentInstanceID: "i", LastSeen: time.Now()}))
 	require.Len(t, m.Keys(), 1)
-	require.NoError(t, s.Put(ctx, k, store.Entry{Instance: "i", LastSeen: time.Now().Add(-2 * time.Hour), TTL: time.Hour}))
+	require.NoError(t, s.Put(ctx, k, store.Entry{AgentInstanceID: "i", LastSeen: time.Now().Add(-2 * time.Hour), TTL: time.Hour}))
 	require.Empty(t, m.Keys())
 }
 
@@ -310,22 +310,22 @@ func TestOutageFailsFastAndRecovers(t *testing.T) {
 	m := miniredis.RunT(t)
 	s := newStore(t, m.Addr())
 	ctx := context.Background()
-	k := store.Key{Channel: "web", ChannelID: "c", UserID: "u", ThreadID: "t"}
-	require.NoError(t, s.Put(ctx, k, store.Entry{Instance: "i", LastSeen: time.Now()}))
+	k := store.Key{Channel: "slack", ChannelID: "c", ThreadID: "t"}
+	require.NoError(t, s.Put(ctx, k, store.Entry{AgentInstanceID: "i", LastSeen: time.Now()}))
 
 	m.Close()
 	start := time.Now()
 	_, _, err := s.Get(ctx, k)
 	require.Error(t, err)
 	require.Less(t, time.Since(start), 4*testTimeout, "an unreachable server fails the turn fast")
-	require.Error(t, s.Put(ctx, k, store.Entry{Instance: "i", LastSeen: time.Now()}))
+	require.Error(t, s.Put(ctx, k, store.Entry{AgentInstanceID: "i", LastSeen: time.Now()}))
 
 	require.NoError(t, m.Restart())
 	require.Eventually(t, func() bool { return s.Ping(ctx) == nil }, 5*time.Second, 50*time.Millisecond)
 	got, ok, err := s.Get(ctx, k)
 	require.NoError(t, err)
 	require.True(t, ok, "miniredis keeps its data across Restart")
-	require.Equal(t, "i", got.Instance)
+	require.Equal(t, "i", got.AgentInstanceID)
 }
 
 // A server that accepts the connection and never answers (a half-open node, a
@@ -346,7 +346,7 @@ func TestHangingServerTimesOut(t *testing.T) {
 	}()
 	s := newStore(t, ln.Addr().String())
 	start := time.Now()
-	_, _, err = s.Get(context.Background(), store.Key{Channel: "web", ChannelID: "c", UserID: "u", ThreadID: "t"})
+	_, _, err = s.Get(context.Background(), store.Key{Channel: "slack", ChannelID: "c", ThreadID: "t"})
 	require.Error(t, err)
 	require.Less(t, time.Since(start), 5*testTimeout)
 }
@@ -355,7 +355,7 @@ func TestClosedStoreRefuses(t *testing.T) {
 	m := miniredis.RunT(t)
 	s := newStore(t, m.Addr())
 	require.NoError(t, s.Close())
-	_, _, err := s.Get(context.Background(), store.Key{Channel: "web", ChannelID: "c", UserID: "u", ThreadID: "t"})
+	_, _, err := s.Get(context.Background(), store.Key{Channel: "slack", ChannelID: "c", ThreadID: "t"})
 	require.Error(t, err)
 	require.NoError(t, s.Close(), "Close is idempotent")
 }
@@ -368,10 +368,10 @@ func TestRestartWithEveryPipeDialed(t *testing.T) {
 	s := newStore(t, m.Addr())
 	ctx := context.Background()
 	key := func(i int) store.Key {
-		return store.Key{Channel: "web", ChannelID: "c", UserID: "u", ThreadID: fmt.Sprint(i)}
+		return store.Key{Channel: "slack", ChannelID: "c", ThreadID: fmt.Sprint(i)}
 	}
 	for i := 0; i < 40; i++ {
-		require.NoError(t, s.Put(ctx, key(i), store.Entry{Instance: "i", LastSeen: time.Now()}))
+		require.NoError(t, s.Put(ctx, key(i), store.Entry{AgentInstanceID: "i", LastSeen: time.Now()}))
 	}
 	m.Close()
 	require.NoError(t, m.Restart())

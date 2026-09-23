@@ -15,9 +15,8 @@ import (
 // starts it over.
 const DefaultThreadTTL = 90 * 24 * time.Hour
 
-// threadKey is the routing-store key of a thread's row. The user slot is empty
-// on purpose: a thread is shared by its participants, so every one of them
-// reaches the same row.
+// threadKey is the routing-store key of a thread's row: a thread is shared by
+// its participants, so every one of them reaches the same row.
 func threadKey(channel, channelID, threadID string) store.Key {
 	return store.Key{Channel: channel, ChannelID: channelID, ThreadID: threadID}
 }

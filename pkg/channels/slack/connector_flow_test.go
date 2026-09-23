@@ -159,7 +159,7 @@ func TestConnectorPrompt_CallToolOtherToolNoPrompt(t *testing.T) {
 	fake, srv := connectorAdapter(t, gw)
 
 	sendEvent(t, srv, dmEvent("U1", "hi", "105.000"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 20*time.Millisecond)
 	time.Sleep(100 * time.Millisecond)
 	require.NotContains(t, ephemeralJSON(fake), "connector_connect")
@@ -189,14 +189,14 @@ func TestConnectorPrompt_Cooldown(t *testing.T) {
 // The thread slot is released a beat after the previous turn's stream
 // completes, so an event racing that release is answered with a busy notice
 // and dropped; retrying with a fresh ts converges, as a real user would.
-func dispatchTurn(t *testing.T, srv *httptest.Server, gw *stubGateway, wantResolves int, text, threadTS string) {
+func dispatchTurn(t *testing.T, srv *httptest.Server, gw *stubGateway, wantDispatches int, text, threadTS string) {
 	t.Helper()
 	for i := 0; ; i++ {
 		require.Less(t, i, 20, "turn never dispatched past the busy thread slot")
 		sendEvent(t, srv, dmThreadEvent("U1", text, fmt.Sprintf("777.%03d", i), threadTS))
 		deadline := time.Now().Add(250 * time.Millisecond)
 		for time.Now().Before(deadline) {
-			if gw.resolveCount() >= wantResolves {
+			if gw.dispatchCount() >= wantDispatches {
 				return
 			}
 			time.Sleep(10 * time.Millisecond)
@@ -213,7 +213,7 @@ func TestConnectorPrompt_NoURLNoPrompt(t *testing.T) {
 	fake, srv := connectorAdapter(t, gw)
 
 	sendEvent(t, srv, dmEvent("U1", "hi", "104.000"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 20*time.Millisecond)
 	time.Sleep(100 * time.Millisecond)
 	require.NotContains(t, ephemeralJSON(fake), "connector_connect")
@@ -266,7 +266,7 @@ func TestConnectorPrompt_NonHTTPSNoPrompt(t *testing.T) {
 	fake, srv := connectorAdapter(t, gw)
 
 	sendEvent(t, srv, dmEvent("U1", "hi", "106.000"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 20*time.Millisecond)
 	time.Sleep(100 * time.Millisecond)
 	require.NotContains(t, ephemeralJSON(fake), "connector_connect")
@@ -488,7 +488,7 @@ func TestConnectorComplete_RewritesPromptAndResumes(t *testing.T) {
 		authLoginResult(authChallengeOutput),
 		{Content: "ok"}, {Done: true},
 	}}
-	gw.onResolve = func(msg channels.InboundMessage) {
+	gw.onDispatch = func(msg channels.InboundMessage) {
 		dispatched.mu.Lock()
 		dispatched.texts = append(dispatched.texts, msg.Text)
 		dispatched.mu.Unlock()
@@ -537,7 +537,7 @@ func TestConnectorComplete_LandingBeforeClick(t *testing.T) {
 	require.NoError(t, err)
 	_ = resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
-	require.Eventually(t, func() bool { return gw.resolveCount() >= 2 },
+	require.Eventually(t, func() bool { return gw.dispatchCount() >= 2 },
 		flowWait, 20*time.Millisecond, "the landing resumes even before the click is delivered")
 
 	sendConnectorInteractionURL(t, srv, "connector_connect", stateID, responseSrv.URL)
@@ -560,7 +560,7 @@ func TestConnectorComplete_UnknownState(t *testing.T) {
 	require.Contains(t, string(page), "Link expired")
 
 	time.Sleep(100 * time.Millisecond)
-	require.Zero(t, gw.resolveCount(), "nothing is dispatched for an unknown state")
+	require.Zero(t, gw.dispatchCount(), "nothing is dispatched for an unknown state")
 }
 
 // Reloading the landing page must not re-dispatch the continuation.
@@ -573,7 +573,7 @@ func TestConnectorComplete_ReloadIdempotent(t *testing.T) {
 		authLoginResult(authChallengeOutput),
 		{Content: "ok"}, {Done: true},
 	}}
-	gw.onResolve = func(msg channels.InboundMessage) {
+	gw.onDispatch = func(msg channels.InboundMessage) {
 		if strings.Contains(msg.Text, "I've signed in") {
 			resumes.mu.Lock()
 			resumes.count++

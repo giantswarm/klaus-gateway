@@ -44,16 +44,6 @@ const (
 	StoreValkey = "valkey"
 )
 
-// Driver names understood by the lifecycle manager factory.
-const (
-	DriverKlausctl = "klausctl"
-	DriverOperator = "operator"
-	// DriverStatic serves a fixed set of instances declared at startup.
-	// Intended for compose / CI smoke harnesses and minimal single-instance
-	// deployments where no cluster-side controller is available.
-	DriverStatic = "static"
-)
-
 // A2AConfig holds runtime configuration for the kagent (A2A) client surface.
 type A2AConfig struct {
 	// Enabled gates all A2A behaviour.
@@ -72,10 +62,6 @@ type A2AConfig struct {
 	// Namespace is the namespace whose AgentTemplates are served. Defaults to
 	// "kagent".
 	Namespace string
-	// TokenPath is an optional path to a file holding a Bearer token for the
-	// Klaus-instance paths. It is never presented to the kagent controller,
-	// which is spoken to as the person behind the turn only.
-	TokenPath string
 	// FallbackIconURLTemplate is used when an AgentTemplate carries no icon-URL
 	// annotation. "{agent}" is replaced with the agent's technical name. Empty
 	// disables the fallback.
@@ -89,20 +75,6 @@ func (c A2AConfig) ValidateURL() error {
 		return fmt.Errorf("--a2a-url: %w", err)
 	}
 	return nil
-}
-
-// CLIConfig holds runtime configuration for the CLI channel adapter.
-type CLIConfig struct {
-	// Enabled gates all CLI behaviour; the adapter is skipped when false.
-	Enabled bool
-}
-
-// WebConfig holds runtime configuration for the web channel adapter.
-type WebConfig struct {
-	// Enabled gates all web behaviour; the adapter is skipped when false.
-	// Defaults to true (local development front door); cluster deployments
-	// disable it through the chart unless a consumer (e.g. lab) needs it.
-	Enabled bool
 }
 
 // SlackConfig holds runtime configuration for the Slack channel adapter.
@@ -260,16 +232,6 @@ type Config struct {
 	BoltPath string
 	Valkey   ValkeyConfig
 
-	Driver           string
-	KlausctlBin      string
-	OperatorMCPURL   string
-	OperatorMCPToken string
-	// StaticInstances is a comma-separated list of `name=baseURL` pairs used
-	// by the static driver.
-	StaticInstances string
-
-	AgentgatewayURL string
-
 	// OTLPEndpoint is the OTLP gRPC collector traces are exported to: a URL
 	// (its scheme decides TLS) or a bare host:port (plaintext). Empty exports
 	// nothing. OTLPHeaders ride on every export (`key=value,key=value`; the
@@ -277,14 +239,10 @@ type Config struct {
 	OTLPEndpoint string
 	OTLPHeaders  string
 
-	AutoCreate  bool
-	DefaultTTL  time.Duration
 	ThreadTTL   time.Duration
 	ShowVersion bool
 
 	Slack   SlackConfig
-	CLI     CLIConfig
-	Web     WebConfig
 	A2A     A2AConfig
 	OBO     OBOConfig
 	Reviews ReviewsConfig
@@ -325,9 +283,6 @@ func Defaults() Config {
 		Store:         StoreMemory,
 		BoltPath:      "/var/lib/klaus-gateway/routes.bolt",
 		Valkey:        ValkeyConfig{Timeout: 2 * time.Second},
-		Driver:        DriverKlausctl,
-		KlausctlBin:   "klausctl",
-		DefaultTTL:    24 * time.Hour,
 		ThreadTTL:     90 * 24 * time.Hour,
 		Slack: SlackConfig{
 			Enabled:             false,
@@ -336,12 +291,6 @@ func Defaults() Config {
 			DMMode:              DMModeServe,
 			ChannelMode:         ChannelModeAll,
 			ClearReactionOnDone: true,
-		},
-		CLI: CLIConfig{
-			Enabled: false,
-		},
-		Web: WebConfig{
-			Enabled: true,
 		},
 		A2A: A2AConfig{
 			DefaultAgent: "sre-agent",
@@ -372,16 +321,8 @@ func Load(args []string) (Config, error) {
 	fs.StringVar(&cfg.Valkey.TLSServerName, "valkey-tls-server-name", cfg.Valkey.TLSServerName, "Server name the Valkey certificate is verified against when it differs from the URL's host.")
 	fs.StringVar(&cfg.Valkey.KeyPrefix, "valkey-key-prefix", cfg.Valkey.KeyPrefix, "Prefix of the routing keys in Valkey; empty means klaus-gateway:route:.")
 	fs.DurationVar(&cfg.Valkey.Timeout, "valkey-timeout", cfg.Valkey.Timeout, "Bound on the Valkey dial and on every command.")
-	fs.StringVar(&cfg.Driver, "driver", cfg.Driver, "Lifecycle driver: klausctl, operator, static.")
-	fs.StringVar(&cfg.KlausctlBin, "klausctl-bin", cfg.KlausctlBin, "Path to the klausctl binary (klausctl driver only).")
-	fs.StringVar(&cfg.OperatorMCPURL, "operator-mcp-url", cfg.OperatorMCPURL, "klaus-operator MCP endpoint (operator driver only).")
-	fs.StringVar(&cfg.OperatorMCPToken, "operator-mcp-token", cfg.OperatorMCPToken, "Bearer token for the operator MCP endpoint.")
-	fs.StringVar(&cfg.StaticInstances, "static-instances", cfg.StaticInstances, "Static driver instances: name=baseURL[,name=baseURL ...].")
-	fs.StringVar(&cfg.AgentgatewayURL, "agentgateway-url", cfg.AgentgatewayURL, "Upstream agentgateway base URL. Empty means direct-to-instance bypass mode.")
 	fs.StringVar(&cfg.OTLPEndpoint, "otel-otlp-endpoint", cfg.OTLPEndpoint, "OTLP gRPC endpoint for traces: a URL (http:// plaintext, https:// TLS) or host:port (plaintext). Empty exports no traces.")
 	fs.StringVar(&cfg.OTLPHeaders, "otel-otlp-headers", cfg.OTLPHeaders, "Headers sent with every trace export, as key=value,key=value (e.g. X-Scope-OrgID=giantswarm).")
-	fs.BoolVar(&cfg.AutoCreate, "auto-create", cfg.AutoCreate, "Create instances on route miss.")
-	fs.DurationVar(&cfg.DefaultTTL, "default-ttl", cfg.DefaultTTL, "Default TTL for route entries.")
 	fs.DurationVar(&cfg.ThreadTTL, "thread-ttl", cfg.ThreadTTL, "Sliding lifetime of a channel thread's conversation: its agent, initiator, grants and AgentInstance binding. Refreshed on every handled message; after it the conversation has ended and the next mention starts the thread over. The row itself is kept for twice as long, so a reply in a thread that ended gets a notice rather than silence, and is then dropped. 0 means never expire.")
 	fs.BoolVar(&cfg.ShowVersion, "version", false, "Print version information and exit.")
 	fs.BoolVar(&cfg.Slack.Enabled, "slack-enabled", cfg.Slack.Enabled, "Enable the Slack channel adapter.")
@@ -405,14 +346,11 @@ func Load(args []string) (Config, error) {
 	fs.StringVar(&cfg.Slack.DoneEmoji, "slack-done-emoji", cfg.Slack.DoneEmoji, "Slack reaction emoji name for a completed turn (no colons). Empty uses the default.")
 	fs.StringVar(&cfg.Slack.FailedEmoji, "slack-failed-emoji", cfg.Slack.FailedEmoji, "Slack reaction emoji name for a failed turn (no colons). Empty uses the default.")
 	fs.BoolVar(&cfg.Slack.ClearReactionOnDone, "slack-clear-reaction-on-done", cfg.Slack.ClearReactionOnDone, "On a successful turn, remove the working reaction without adding a done reaction (default true). Set false to swap in the done emoji.")
-	fs.BoolVar(&cfg.CLI.Enabled, "cli-enabled", cfg.CLI.Enabled, "Enable the CLI channel adapter at /cli/v1/*.")
-	fs.BoolVar(&cfg.Web.Enabled, "web-enabled", cfg.Web.Enabled, "Enable the web channel adapter at /web/* (default true).")
 	fs.BoolVar(&cfg.A2A.Enabled, "a2a-enabled", cfg.A2A.Enabled, "Enable the A2A client surface.")
 	fs.StringVar(&cfg.A2A.DefaultAgent, "a2a-default-agent", cfg.A2A.DefaultAgent, "AgentTemplate a turn runs on when the channel names none: a bare name in --a2a-namespace, or namespace/name.")
 	fs.StringVar(&cfg.A2A.URL, "a2a-url", cfg.A2A.URL, "kagent controller gRPC target through agentgateway: grpc://host:port (h2c) or grpcs://host[:port] (TLS, 443 by default).")
 	fs.StringVar(&cfg.A2A.CAFile, "a2a-ca-file", cfg.A2A.CAFile, "PEM bundle trusted for a grpcs:// --a2a-url in addition to the system roots. Empty uses the system roots only.")
 	fs.StringVar(&cfg.A2A.Namespace, "a2a-namespace", cfg.A2A.Namespace, "Namespace whose AgentTemplates are served.")
-	fs.StringVar(&cfg.A2A.TokenPath, "a2a-token-path", cfg.A2A.TokenPath, "Path to a file holding a Bearer token for the Klaus-instance paths (e.g. a projected SA token). Never presented to the kagent controller.")
 	fs.StringVar(&cfg.A2A.FallbackIconURLTemplate, "a2a-fallback-icon-url-template", cfg.A2A.FallbackIconURLTemplate, "Fallback agent icon URL used when the AgentTemplate has no icon-URL annotation. \"{agent}\" is replaced with the agent's technical name. Empty disables the fallback.")
 	fs.BoolVar(&cfg.OBO.Enabled, "obo-enabled", cfg.OBO.Enabled, "Enable Slack on-behalf-of muster account linking and the /auth/slack/* routes.")
 	fs.StringVar(&cfg.OBO.MusterURL, "obo-muster-url", cfg.OBO.MusterURL, "muster authorization-server base URL (RFC 8414 discovery).")
@@ -434,7 +372,7 @@ func Load(args []string) (Config, error) {
 	})
 
 	fs.Usage = func() {
-		_, _ = fmt.Fprintf(fs.Output(), "klaus-gateway -- channel and routing gateway in front of klaus instances.\n\n")
+		_, _ = fmt.Fprintf(fs.Output(), "klaus-gateway -- Slack channel gateway for the Agent Platform's kagent agents.\n\n")
 		_, _ = fmt.Fprintf(fs.Output(), "Usage:\n  %s [flags]\n\nFlags:\n", os.Args[0])
 		fs.PrintDefaults()
 	}
@@ -493,37 +431,11 @@ func applyEnv(cfg *Config) {
 			cfg.Valkey.Timeout = d
 		}
 	}
-	if v, ok := lookup("DRIVER"); ok {
-		cfg.Driver = v
-	}
-	if v, ok := lookup("KLAUSCTL_BIN"); ok {
-		cfg.KlausctlBin = v
-	}
-	if v, ok := lookup("OPERATOR_MCP_URL"); ok {
-		cfg.OperatorMCPURL = v
-	}
-	if v, ok := lookup("OPERATOR_MCP_TOKEN"); ok {
-		cfg.OperatorMCPToken = v
-	}
-	if v, ok := lookup("STATIC_INSTANCES"); ok {
-		cfg.StaticInstances = v
-	}
-	if v, ok := lookup("AGENTGATEWAY_URL"); ok {
-		cfg.AgentgatewayURL = v
-	}
 	if v, ok := os.LookupEnv("OTEL_EXPORTER_OTLP_ENDPOINT"); ok {
 		cfg.OTLPEndpoint = v
 	}
 	if v, ok := os.LookupEnv("OTEL_EXPORTER_OTLP_HEADERS"); ok {
 		cfg.OTLPHeaders = v
-	}
-	if v, ok := lookup("AUTO_CREATE"); ok {
-		cfg.AutoCreate = strings.EqualFold(v, "true") || v == "1"
-	}
-	if v, ok := lookup("DEFAULT_TTL"); ok {
-		if d, err := time.ParseDuration(v); err == nil {
-			cfg.DefaultTTL = d
-		}
 	}
 	if v, ok := lookup("THREAD_TTL"); ok {
 		if d, err := time.ParseDuration(v); err == nil {
@@ -569,12 +481,6 @@ func applyEnv(cfg *Config) {
 	if v, ok := lookup("SLACK_CLEAR_REACTION_ON_DONE"); ok {
 		cfg.Slack.ClearReactionOnDone = strings.EqualFold(v, "true") || v == "1"
 	}
-	if v, ok := lookup("CLI_ENABLED"); ok {
-		cfg.CLI.Enabled = strings.EqualFold(v, "true") || v == "1"
-	}
-	if v, ok := lookup("WEB_ENABLED"); ok {
-		cfg.Web.Enabled = strings.EqualFold(v, "true") || v == "1"
-	}
 	if v, ok := lookup("A2A_ENABLED"); ok {
 		cfg.A2A.Enabled = strings.EqualFold(v, "true") || v == "1"
 	}
@@ -589,9 +495,6 @@ func applyEnv(cfg *Config) {
 	}
 	if v, ok := lookup("A2A_NAMESPACE"); ok {
 		cfg.A2A.Namespace = v
-	}
-	if v, ok := lookup("A2A_TOKEN_PATH"); ok {
-		cfg.A2A.TokenPath = v
 	}
 	if v, ok := lookup("A2A_FALLBACK_ICON_URL_TEMPLATE"); ok {
 		cfg.A2A.FallbackIconURLTemplate = v
@@ -654,11 +557,6 @@ func (c Config) Validate() error {
 	default:
 		return fmt.Errorf("invalid --store %q: must be one of memory, bolt, valkey", c.Store)
 	}
-	switch c.Driver {
-	case DriverKlausctl, DriverOperator, DriverStatic:
-	default:
-		return fmt.Errorf("invalid --driver %q: must be one of klausctl, operator, static", c.Driver)
-	}
 	if c.Store == StoreBolt && c.BoltPath == "" {
 		return fmt.Errorf("--bolt-path is required with --store=bolt")
 	}
@@ -672,9 +570,6 @@ func (c Config) Validate() error {
 	}
 	if c.ThreadTTL < 0 {
 		return fmt.Errorf("--thread-ttl must be zero or positive")
-	}
-	if c.Driver == DriverOperator && c.OperatorMCPURL == "" {
-		return fmt.Errorf("--operator-mcp-url is required with --driver=operator")
 	}
 	if c.A2A.Enabled {
 		if c.A2A.URL == "" {

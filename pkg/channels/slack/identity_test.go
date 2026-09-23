@@ -38,7 +38,7 @@ func TestChat_HoldsPromptThenRoutesQuestionAsReject(t *testing.T) {
 			{{Kind: channels.DeltaPrompt, TaskID: "task-1", Prompt: &channels.HitlPrompt{ToolName: "kubectl_delete"}}},
 			{{Content: "here are the configmaps"}, {Done: true}},
 		},
-		onResolve: func(m channels.InboundMessage) {
+		onDispatch: func(m channels.InboundMessage) {
 			mu.Lock()
 			decisions = append(decisions, m.Decision)
 			mu.Unlock()
@@ -61,7 +61,7 @@ func TestChat_HoldsPromptThenRoutesQuestionAsReject(t *testing.T) {
 	// Reply with a question: resolves the paused task as a reject carrying it.
 	waitThreadIdle(t, a, "400.000")
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","channel_type":"im","user":"U1","text":"which ones exactly?","channel":"D1","ts":"401.000","thread_ts":"400.000"}}`)
-	require.Eventually(t, func() bool { return gw.resolveCount() == 2 }, flowWait, 20*time.Millisecond, "the reply resumes the paused task")
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 }, flowWait, 20*time.Millisecond, "the reply resumes the paused task")
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -395,7 +395,7 @@ func TestDM_RedirectInChannelMode(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "I work in channels")
 	}, flowWait, 20*time.Millisecond, "a DM in channel mode is redirected")
-	require.Zero(t, gw.resolveCount(), "a redirected DM never reaches the agent")
+	require.Zero(t, gw.dispatchCount(), "a redirected DM never reaches the agent")
 
 	sendEvent(t, srv, dmEvent("U1", "why not?", "601.000"))
 	time.Sleep(150 * time.Millisecond)
@@ -406,5 +406,5 @@ func TestDM_RedirectInChannelMode(t *testing.T) {
 		}
 	}
 	require.Equal(t, 1, redirects, "a second DM within the guard window must not post another redirect")
-	require.Zero(t, gw.resolveCount())
+	require.Zero(t, gw.dispatchCount())
 }

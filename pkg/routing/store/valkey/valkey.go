@@ -234,6 +234,7 @@ func (s *Store) List(ctx context.Context) ([]store.KeyEntry, error) {
 	}
 	now := s.now()
 	out := make([]store.KeyEntry, 0, len(keys))
+	skipped := 0
 	for start := 0; start < len(keys); start += mgetBatch {
 		batch := keys[start:min(start+mgetBatch, len(keys))]
 		values, err := s.do(ctx, c, c.B().Mget().Key(batch...).Build()).ToArray()
@@ -257,11 +258,13 @@ func (s *Store) List(ctx context.Context) ([]store.KeyEntry, error) {
 			}
 			k, err := store.ParseKey(strings.TrimPrefix(batch[i], s.opts.KeyPrefix))
 			if err != nil {
+				skipped++ // a key of an older layout: not this table's any more
 				continue
 			}
 			out = append(out, store.KeyEntry{Key: k, Entry: e})
 		}
 	}
+	store.LogSkippedKeys("valkey", skipped)
 	return out, nil
 }
 

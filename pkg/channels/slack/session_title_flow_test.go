@@ -24,8 +24,8 @@ func TestSessionTitle_AssistantPaneOpenerNamesTheSession(t *testing.T) {
 	var mu sync.Mutex
 	var titles []string
 	gw := &stubGateway{
-		deltas:    []channels.OutboundDelta{{Content: "ok", Done: true}},
-		onResolve: func(msg channels.InboundMessage) { mu.Lock(); titles = append(titles, msg.Title); mu.Unlock() },
+		deltas:     []channels.OutboundDelta{{Content: "ok", Done: true}},
+		onDispatch: func(msg channels.InboundMessage) { mu.Lock(); titles = append(titles, msg.Title); mu.Unlock() },
 	}
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
@@ -66,7 +66,7 @@ func TestSessionTitle_SurvivesSignInReplay(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return len(fake.pathCalls("chat.postMessage"))+len(fake.pathCalls("chat.postEphemeral")) > 0
 	}, flowWait, 50*time.Millisecond, "the unlinked opener gets the sign-in prompt")
-	require.Zero(t, gw.resolveCount(), "the unlinked opener must be held, not dispatched")
+	require.Zero(t, gw.dispatchCount(), "the unlinked opener must be held, not dispatched")
 	require.Empty(t, fake.pathCalls("agents.sessions.setStatus"), "no turn ran, so no session was created")
 
 	obo.completeLink()

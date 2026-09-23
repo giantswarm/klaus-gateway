@@ -32,16 +32,6 @@ func TestValidate(t *testing.T) {
 	badBolt.Store = "bolt"
 	badBolt.BoltPath = ""
 	require.Error(t, badBolt.Validate())
-
-	badOp := cfg
-	badOp.Driver = "operator"
-	badOp.OperatorMCPURL = ""
-	require.Error(t, badOp.Validate())
-
-	staticEmpty := cfg
-	staticEmpty.Driver = "static"
-	staticEmpty.StaticInstances = ""
-	require.NoError(t, staticEmpty.Validate(), "static driver with no instances is valid (A2A-only deployments)")
 }
 
 func TestValidate_A2A(t *testing.T) {
@@ -112,20 +102,6 @@ func TestLoad_A2AFallbackIconURLTemplateEnv(t *testing.T) {
 	cfg, err := config.Load([]string{"--a2a-fallback-icon-url-template=https://cli.example/{agent}.svg"})
 	require.NoError(t, err)
 	require.Equal(t, "https://cli.example/{agent}.svg", cfg.A2A.FallbackIconURLTemplate, "the flag overrides the env value")
-}
-
-func TestLoad_WebEnabledEnv(t *testing.T) {
-	t.Setenv("KLAUS_GATEWAY_WEB_ENABLED", "false")
-
-	cfg, err := config.Load(nil)
-	require.NoError(t, err)
-	require.False(t, cfg.Web.Enabled)
-}
-
-func TestWebEnabledByDefault(t *testing.T) {
-	cfg, err := config.Load(nil)
-	require.NoError(t, err)
-	require.True(t, cfg.Web.Enabled, "the web adapter stays on by default for local development")
 }
 
 func TestValidate_SlackSurfaces(t *testing.T) {

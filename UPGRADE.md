@@ -37,6 +37,58 @@ meaning. A turn is capped at 100 steps; past it one line in the reply says the r
 and the calls still reach the **Inspect agent steps** log, which keeps the most recent 100 per
 thread.
 
+## Next — Slack only
+
+The gateway serves Slack and nothing else. This release removes the web and CLI channels, the
+OpenAI-compatible `/v1` front door and the whole Klaus instance path. klausctl, the only client
+of the CLI channel, is being archived.
+
+**What disappears.** The HTTP endpoints `POST /web/messages`, `GET /web/messages`,
+`GET /web/healthz`, `POST /cli/v1/{instance}/run`, `POST /cli/v1/{instance}/messages`,
+`GET /cli/v1/healthz`, `POST /v1/{instance}/chat/completions` and
+`POST /v1/{instance}/chat/messages` now answer 404. The flags `--web-enabled`, `--cli-enabled`,
+`--driver`, `--klausctl-bin`, `--operator-mcp-url`, `--operator-mcp-token`,
+`--static-instances`, `--agentgateway-url`, `--auto-create`, `--default-ttl` and
+`--a2a-token-path`, and the matching `KLAUS_GATEWAY_*` variables, are gone: the binary refuses
+to start on an unknown flag. The chart no longer renders a `Gateway`, `HTTPRoute`,
+`AgentgatewayPolicy` or `AgentgatewayBackend` of its own — they were disabled on every
+installation, and the routes that carry `/channels/slack` and `/auth/slack/` belong to the
+agent-platform-connectivity chart — nor the projected ServiceAccount token the pod mounted for
+the Klaus-instance paths.
+
+**Nothing to do now.** The removed values keys — `web`, `cli`, `lifecycle`, `upstream`,
+`agentgateway`, `routing.defaultTTL`, `routing.autoCreate`, `a2a.saToken`, `a2a.tokenPath` —
+are still accepted and documented as ignored, because the agent-platform umbrella forwards its
+whole `klausGateway` block verbatim and the values schema refuses keys it does not know. An
+installation that sets any of them keeps installing; nothing in the chart reads them. A
+companion agent-platform pull request stops forwarding them, and the next klaus-gateway **major
+release** deletes them from `values.yaml` and the schema — from then on a values file that still
+sets one fails the upgrade. That deletion is itself a breaking change, which is why it is a major
+and not a minor. **Remove them from your values before it lands.**
+
+**The routing-store key changed.** It is now three parts, `<channel>|<channelID>|<threadID>`;
+the user slot existed for the per-user web and CLI routes and is gone. A row written with the
+old four-part key no longer parses: every store skips it when listing, and a lookup misses it.
+
+What a thread loses is the row, not its conversation. The row held the thread's initiator, the
+people that initiator had allowed in, the agent the thread was bound to, and the record of a
+turn in flight. So after the upgrade the thread's next mention starts a new row: the person who
+writes it becomes the initiator, nobody else is allowed in until they are let in again, and a
+turn that was running across the upgrade is not resubscribed — its result is lost rather than
+posted late.
+
+The agent's memory survives, because the conversation was never keyed by the store key. The
+idempotency key of the AgentInstance the gateway asks the controller for is
+`SynthesizeContextID(channel, channelID, "", threadID, agentRef)` — the user slot was already
+empty there for Slack — so the next turn asks for the same instance and the controller hands
+back the one it still holds, with the thread's history in it. The exception is a thread that had
+been switched to a non-default agent: the switch lived in the lost row, so the turn runs on the
+default agent again, and that is a different conversation. Switch it back with `/agent` and the
+earlier one returns.
+
+The stale rows expire on their own TTL (180 days by default) and can be deleted at any time; on
+Valkey they are the `klaus-gateway:route:` keys with four pipe-separated parts.
+
 ## Next — Slack replies are streamed (chat.startStream)
 
 Agent replies are written with Slack's streaming API instead of a message edited every 250 ms:

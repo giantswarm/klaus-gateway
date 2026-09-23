@@ -74,10 +74,10 @@ func TestAssistantSurface_ContextChangedNoOp(t *testing.T) {
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_context_changed","context":{"entities":[{"type":"slack#/types/channel_id","value":"C42","team_id":"T1"}]},"event_ts":"111.000"}}`)
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_context_changed","context":{},"event_ts":"112.000"}}`)
 	time.Sleep(150 * time.Millisecond)
-	require.Zero(t, gw.resolveCount(), "context changes must not dispatch")
+	require.Zero(t, gw.dispatchCount(), "context changes must not dispatch")
 	require.Empty(t, fake.pathCalls("chat.postMessage"))
 
 	sendEvent(t, srv, dmEvent("U1", "hello", "113.000"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 20*time.Millisecond, "a DM after context changes still dispatches")
 }
