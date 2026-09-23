@@ -197,12 +197,19 @@ The admin port serves `GET /metrics` (Prometheus; `serviceMonitor.enabled` rende
 ServiceMonitor). Beside the public mux's `klaus_gateway_requests_total` /
 `klaus_gateway_request_duration_seconds`, every Slack turn feeds:
 
-- `klaus_gateway_turn_total{channel, outcome}` -- turns that ended, by outcome: `completed`,
-  `input_required` (paused on a prompt), `canceled` (`/stop`, the stop button, a closed stream),
-  `shutdown` (the gateway's restart cut it short), `timeout` (the 30-minute turn deadline),
-  `failed` (the task failed or the stream broke), `render_failed` (the task completed but the
-  channel refused part of the answer) and `send_failed` (the turn died before it was sent: the
-  controller refused it).
+- `klaus_gateway_turn_total{channel, outcome, failure_class}` -- turns that ended, by outcome:
+  `completed`, `input_required` (paused on a prompt), `canceled` (`/stop`, the stop button, a
+  closed stream), `shutdown` (the gateway's restart cut it short), `timeout` (the 30-minute turn
+  deadline), `failed` (the task failed or the stream broke), `render_failed` (the task completed
+  but the channel refused part of the answer) and `send_failed` (the turn died before it was
+  sent: the controller refused it). A `failed` or `send_failed` turn carries what broke as
+  `failure_class`: `tools` (the agent's MCP tool set), `platform` (the connection to the
+  controller or the runtime), `model` (the model or its provider), `policy` (a gateway policy
+  refused it) or `unknown`; every other turn has none. One person's model error is noise; a
+  burst of one class across people is an outage of that part of the platform, which
+  `sum by (failure_class) (increase(klaus_gateway_turn_total{outcome=~"failed|send_failed"}[10m]))`
+  shows (see [channels-slack.md](channels-slack.md#restarts-and-stop) for what each class tells
+  the thread).
 - `klaus_gateway_turn_phase_seconds{channel, phase}` -- one histogram per phase of the turn's
   timeline, measured from the moment the channel received the message: the marks `dispatch`
   (admission, identity and agent resolved), `first_event` (the controller's first A2A event),
@@ -217,8 +224,8 @@ ServiceMonitor). Beside the public mux's `klaus_gateway_requests_total` /
 
 The same numbers are on the `turn_complete` log record every turn ends with (see
 [channels-slack.md](channels-slack.md#records)), as `<phase>_ms` fields next to the outcome, the
-task id, the tool-call count and the streamed characters, so a single turn can be read from the
-log while the histograms show the population.
+task id, the tool-call count, the streamed characters, the failure class and the retries, so a
+single turn can be read from the log while the histograms show the population.
 
 Traces: every turn is one trace. The gateway opens a `<channel>.turn` span when the message
 arrives; the A2A calls to the kagent controller (`otelgrpc`), the Slack Web API calls

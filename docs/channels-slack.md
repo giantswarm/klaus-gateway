@@ -523,15 +523,20 @@ Three structured log records (`record=…`, JSON fields) tell a turn's story; jo
   e-mail), `sub` (the linked muster identity), `channel_id`, `thread_id`, `message_id`,
   `task_id` (on a resume), `resume`, `trace_id`, `dispatch_ms` (since the event arrived).
 - `turn_complete` -- one per turn, whatever its end: `outcome` (see
-  [deployment.md](deployment.md#observability) for the values), `agent`, `slack_user`,
-  `subject`, `channel_id`, `thread_id`, `message_id`, `task_id` (the A2A task the controller
-  named), `tool_calls`, `streamed_chars`, `trace_id`, `error` on a failure, and the phases as
+  [deployment.md](deployment.md#observability) for the values), `failure_class` on a `failed`
+  or `send_failed` turn (below), `agent`, `slack_user`, `subject`, `channel_id`, `thread_id`,
+  `message_id`, `task_id` (the A2A task the controller named), `tool_calls`, `streamed_chars`,
+  `retries` (how often the turn was sent again), `trace_id`, `error` on a failure, and the phases as
   milliseconds since the events POST (or the Socket Mode frame) arrived: `token_mint_ms`,
   `roster_ms`, `dispatch_ms`, `create_instance_ms`, `first_event_ms`,
   `first_text_ms`, `task_done_ms`, `stream_end_ms`, `final_flush_ms`, `total_ms`. A phase that
   did not happen (no instance created on a follow-up) is absent. A turn a
   previous process left running and this one delivered after a restart gets a record too, its
   timeline starting at the delivery.
+- `turn_retry` -- a fresh turn failed before it showed anything on a failure a second attempt
+  may get past, and is sent once more on the same AgentInstance: `channel`, `channel_id`,
+  `thread`, `agent`, `failure_class`, `error` (the first attempt's). The thread sees only the
+  second attempt; `task_done_ms` and `stream_end_ms` are that attempt's.
 - `token_refresh` -- the person's muster id_token was refreshed: `trigger` (`ahead` for the
   background refresher, `turn` for a refresh on the turn's path), `slackUser`, `duration_ms`,
   `expires_in_s`, or `error`. The refresher keeps the tokens of the people whose token a turn
@@ -542,8 +547,8 @@ Three structured log records (`record=…`, JSON fields) tell a turn's story; jo
   muster refuses drops the link like a turn's would, and the person is asked to sign in on their
   next message.
 
-The same phases feed the `klaus_gateway_turn_phase_seconds` histograms and the outcome the
-`klaus_gateway_turn_total` counter; the trace the records name spans the gateway, the kagent
+The same phases feed the `klaus_gateway_turn_phase_seconds` histograms and the outcome and
+failure class the `klaus_gateway_turn_total` counter; the trace the records name spans the gateway, the kagent
 controller and the actor when `observability.otlpEndpoint` is set.
 
 ### Restarts and `/stop`
@@ -555,11 +560,27 @@ A turn ends early for one of two reasons, and the thread can tell them apart:
   mode (`_(stopped)_` replaces the placeholder in text mode), and the task is cancelled at the
   controller so the agent stops working.
 - **An error** before any answer text (an agent that did not start in time, a controller
-  refusal) marks the triggering message with the failed reaction and posts
-  `_(the turn failed; please try again)_` in the thread, in reactions mode too — the emoji
-  alone does not say whether a retry helps, and for a conversation the gateway opened itself it
-  sits on the bot's own root message. Once answer text has streamed, only the reaction marks
-  the incomplete reply.
+  refusal) marks the triggering message with the failed reaction and posts a note in the
+  thread, in reactions mode too — the emoji alone does not say whether a retry helps, and for a
+  conversation the gateway opened itself it sits on the bot's own root message. The note names
+  what broke, read off the runtime's error (its `failure_class`):
+
+  | Class | What broke | The note |
+  |---|---|---|
+  | `tools` | the agent's tool set: the MCP `initialize` or tool listing failed, an MCP server asked for authorization | ⚠️ I couldn't connect to my tools … trying again right away won't fix it |
+  | `platform` | the connection between the gateway, the controller and the runtime (connection refused or reset, gRPC `Unavailable`) | ⚠️ I couldn't reach the agent platform … trying again right away won't fix it |
+  | `model` | the model or its provider returned an error | ⚠️ The model behind this agent returned an error … please try again in a minute |
+  | `policy` | a gateway policy refused the request (authorization, a prompt guard, a rate limit) | ⚠️ A platform policy refused this request … sending it again won't change that |
+  | `unknown` | anything else | `_(the turn failed; please try again)_` |
+
+  A fresh turn that fails on `tools` or `platform` before anything of it was shown — the
+  controller refused the send, or the task ended `failed` — is sent once more on the thread's
+  AgentInstance first (`turn_retry`): the runtime sets its tool set and its MCP sessions up
+  again on every run, so a connection that broke once may hold the next time, and the
+  conversation stays where it is. Only when the second attempt fails too does the note go out.
+  A stream that broke is not sent again (the task may still run at the controller), and neither
+  is a HITL decision (the paused task it answers is gone once it failed).
+  Once answer text has streamed, only the reaction marks the incomplete reply.
 - **A gateway restart** (a pod restart, a node loss with a grace period) is nobody's decision.
   The thread gets a one-line notice — `⚠️ I was restarted while **<agent>** was working. It
   keeps going — the result is in the Dev Portal, and I post it here when it is done.` — the

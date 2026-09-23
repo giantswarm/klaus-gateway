@@ -17,11 +17,11 @@ type turnHooks struct {
 	// the identity the turn will run as (e.g. the resume-degradation
 	// announcement).
 	onIdentityResolved func(msg channels.InboundMessage)
-	// onFailure posts the user-visible note when the send fails: the
+	// onFailure posts the user-visible note when the send fails with err: the
 	// turn dies before any streamed reply, so silence reads as success. Not
 	// called for a corrupt-session failure, where the recovery notice speaks
 	// instead (a "retry" invitation would retry into the deleted session).
-	onFailure func()
+	onFailure func(err error)
 }
 
 // runTurn is the shared tail of a Slack turn: the part that runs the same
@@ -94,7 +94,7 @@ func (a *Adapter) runTurn(ctx context.Context, msg channels.InboundMessage, slac
 	if err != nil {
 		restoreTask()
 		if hooks.onFailure != nil && !isCorruptSessionErr(err) {
-			hooks.onFailure()
+			hooks.onFailure(err)
 		}
 		a.completeTurn(ctx, msg, slackUser, channels.OutcomeSendFailed, err)
 		return fmt.Errorf("slack: send completion: %w", err)

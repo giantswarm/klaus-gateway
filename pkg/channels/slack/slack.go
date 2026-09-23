@@ -1836,22 +1836,23 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 				a.Logger.Warn("slack: post busy notice failed", "thread", msg.ThreadID, "error", perr)
 			}
 		case !errors.Is(err, context.Canceled):
-			a.Logger.Error("slack: dispatch error", "channel", inner.Channel, "error", err)
+			a.Logger.Error("slack: dispatch error", "channel", inner.Channel, "failure_class", channels.ClassifyFailure(err), "error", err)
 		}
 	}
 }
 
-// postDispatchFailureNote posts the generic failure note for a turn that died
-// before its stream started (the agent lookup or the send failed). Errors inside a
-// running stream are surfaced by streamResponse; without this note a
-// pre-stream failure is invisible to the thread. Skipped on the replay path,
-// where the caller posts the more specific postReplayFailureNote. Best-effort,
-// and silent on shutdown (a canceled context means nobody is waiting for it).
-func (a *Adapter) postDispatchFailureNote(ctx context.Context, slackChannel, threadID string) {
+// postDispatchFailureNote posts the failure note of a turn that died with
+// cause before its stream started (the agent lookup or the send failed).
+// Errors inside a running stream are surfaced by streamResponse; without this
+// note a pre-stream failure is invisible to the thread. Skipped on the replay
+// path, where the caller posts the more specific postReplayFailureNote.
+// Best-effort, and silent on shutdown (a canceled context means nobody is
+// waiting for it).
+func (a *Adapter) postDispatchFailureNote(ctx context.Context, slackChannel, threadID string, cause error) {
 	if ctx.Err() != nil || isReplayContext(ctx) {
 		return
 	}
-	if _, err := a.apiClient().postMessage(ctx, slackChannel, failedNote, threadID); err != nil {
+	if _, err := a.apiClient().postMessage(ctx, slackChannel, failureNote(cause), threadID); err != nil {
 		a.Logger.Warn("slack: post dispatch failure note failed", "thread", threadID, "error", err)
 	}
 }
@@ -2177,7 +2178,7 @@ func (a *Adapter) dispatchFrom(ctx context.Context, msg channels.InboundMessage,
 				a.maybeAnnounceResume(ctx, msg, slackChannel)
 			}
 		},
-		onFailure: func() { a.postDispatchFailureNote(ctx, slackChannel, msg.ThreadID) },
+		onFailure: func(err error) { a.postDispatchFailureNote(ctx, slackChannel, msg.ThreadID, err) },
 	})
 }
 
@@ -2595,13 +2596,13 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 		prog.failed(cctx)
 		// An oversize-payload rejection is actionable (the user can send a
 		// smaller file or shorter message), so it always gets its own explanatory
-		// note, in both reactions and text mode. Every other error keeps the
-		// generic note and posts it only in text mode, where the placeholder would
-		// otherwise linger as "thinking". The note names attachments only when the
-		// message actually carried some; a text/history-only overflow gets the
-		// generic size notice instead.
+		// note, in both reactions and text mode. The note names attachments only
+		// when the message actually carried some; a text/history-only overflow
+		// gets the generic size notice instead. Every other failure gets the note
+		// of its class (failureNote), in reactions mode only while no answer
+		// text streamed.
 		oversize := errors.Is(err, pkga2a.ErrPayloadTooLarge)
-		note := failedNote
+		note := failureNote(err)
 		if oversize {
 			note = payloadTooLargeNote
 			if len(msg.Attachments) > 0 {

@@ -30,6 +30,9 @@ type fakeAgent struct {
 	streamErr error // yielded as the stream's first item
 	tailErr   error // yielded after events
 	hold      chan struct{}
+	// attempts, when set, script the Stream calls one by one: the nth call
+	// plays attempts[n] instead of events and streamErr.
+	attempts []streamAttempt
 
 	instances map[string]pkga2a.Instance
 	byRequest map[string]string
@@ -58,6 +61,13 @@ type fakeAgent struct {
 	created, gotIns int
 }
 
+// streamAttempt is what one Stream call of the fake plays: its events, or err
+// as the stream's first item.
+type streamAttempt struct {
+	events []a2apkg.Event
+	err    error
+}
+
 func newFakeAgent(events ...a2apkg.Event) *fakeAgent {
 	return &fakeAgent{
 		events:    events,
@@ -74,6 +84,9 @@ func (a *fakeAgent) Stream(ctx context.Context, instanceID string, msg *a2apkg.M
 		a.streamed = append(a.streamed, msg)
 		a.streamedOn = append(a.streamedOn, instanceID)
 		events, streamErr, tailErr, hold := a.events, a.streamErr, a.tailErr, a.hold
+		if n := len(a.streamed) - 1; n < len(a.attempts) {
+			events, streamErr = a.attempts[n].events, a.attempts[n].err
+		}
 		a.mu.Unlock()
 		if streamErr != nil {
 			yield(nil, streamErr)
