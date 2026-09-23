@@ -106,7 +106,11 @@ will fail the scan.
 
 Everything is in this repo:
 
-- `docs/deployment.md` — Helm chart, agentgateway wiring, channel configuration
+- `docs/invariants.md` — facts about Slack, the store and the meta chart that every change must
+  respect, one line each with the PR that proved it. Read it before touching `pkg/channels/slack`,
+  `pkg/routing` or `helm/`; a review that finds a new one adds a line
+- `docs/deployment.md` — Helm chart, channel configuration; its section "Where an installation's
+  values come from" is the values contract with agent-platform (why deleting a values key is a major)
 - `docs/channels-slack.md` and `docs/slack-hitl-surface.md` — the Slack adapter and every interactive prompt it posts
 - `docs/api.md` — the team-review endpoint and the admin surface
 - `docs/kagent-a2a.md` — A2A v1 over gRPC, the AgentTemplate roster, one AgentInstance per thread, HITL and stop
