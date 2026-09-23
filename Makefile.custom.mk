@@ -18,3 +18,20 @@ generate-kagent: ## Refresh the kagent protos from KAGENT_PROTO_COMMIT and regen
 	# imports differently, so the generated files are formatted once here.
 	go run golang.org/x/tools/cmd/goimports@v0.50.0 -local github.com/giantswarm/klaus-gateway -w pkg/kagent/gen
 	sed -i 's/^KAGENT_PROTO_COMMIT: .*/KAGENT_PROTO_COMMIT: $(KAGENT_PROTO_COMMIT)/' pkg/kagent/gen/README.md
+
+# The architect orb's go-build job links the release binary with the .ldflags
+# file its go-test step writes, and runs `make test` (the job's test_target)
+# between the two. The orb stamps pkg/project.gitSHA and buildTimestamp there,
+# not version, and the Go build info cannot stand in: the module path has no /v3
+# suffix, so the toolchain ignores the v2+ tags. This appends the version
+# `make build` stamps, gitsemver's, which is also the image tag the orb pushes:
+# the release on a tag build, a dev version on a branch. A no-op without
+# .ldflags (local runs) and once the orb stamps the version itself.
+.PHONY: ldflags-version
+ldflags-version:
+	@if [ -f .ldflags ] && [ -n "$(VERSION)" ] && ! grep -q '/pkg/project\.version=' .ldflags; then \
+		printf " -X '%s/pkg/project.version=%s'" "$(MODULE)" "$(VERSION)" >> .ldflags; \
+		echo "====> $@: $(VERSION)"; \
+	fi
+
+test: ldflags-version
