@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"iter"
 	"strings"
 	"sync"
@@ -16,132 +15,9 @@ import (
 
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
-	"github.com/giantswarm/klaus-gateway/pkg/instance"
-	"github.com/giantswarm/klaus-gateway/pkg/lifecycle"
-	"github.com/giantswarm/klaus-gateway/pkg/routing"
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store/memory"
 )
-
-type fakeLifecycle struct {
-	instances map[string]lifecycle.InstanceRef
-}
-
-func (f *fakeLifecycle) Get(_ context.Context, name string) (lifecycle.InstanceRef, error) {
-	if ref, ok := f.instances[name]; ok {
-		return ref, nil
-	}
-	return lifecycle.InstanceRef{}, lifecycle.ErrNotFound
-}
-func (f *fakeLifecycle) Create(_ context.Context, s lifecycle.CreateSpec) (lifecycle.InstanceRef, error) {
-	ref := lifecycle.InstanceRef{Name: s.Name, BaseURL: "http://" + s.Name, Status: "ready"}
-	if f.instances == nil {
-		f.instances = map[string]lifecycle.InstanceRef{}
-	}
-	f.instances[s.Name] = ref
-	return ref, nil
-}
-func (f *fakeLifecycle) List(context.Context) ([]lifecycle.InstanceRef, error) { return nil, nil }
-func (f *fakeLifecycle) Stop(context.Context, string) error                    { return nil }
-
-type fakeClient struct {
-	sseBody  string
-	messages []instance.Message
-	err      error
-}
-
-func (f *fakeClient) StreamCompletion(context.Context, channels.InstanceRef, []byte) (io.ReadCloser, error) {
-	if f.err != nil {
-		return nil, f.err
-	}
-	return io.NopCloser(strings.NewReader(f.sseBody)), nil
-}
-func (f *fakeClient) Messages(context.Context, channels.InstanceRef, string) (instance.MessagesResponse, error) {
-	return instance.MessagesResponse{Messages: f.messages}, nil
-}
-
-func TestFacade_ResolveCreatesInstance(t *testing.T) {
-	s := memory.New()
-	lm := &fakeLifecycle{}
-	router := routing.New(s, lm, true, time.Hour)
-	f := &channels.Facade{Router: router}
-
-	ref, err := f.Resolve(context.Background(), channels.InboundMessage{
-		Channel:   "web",
-		ChannelID: "c1",
-		UserID:    "u1",
-		ThreadID:  "t1",
-	})
-	require.NoError(t, err)
-	require.NotEmpty(t, ref.Name)
-
-	// And the store now has the mapping.
-	entries, err := s.List(context.Background())
-	require.NoError(t, err)
-	require.Len(t, entries, 1)
-	require.Equal(t, ref.Name, entries[0].Entry.Instance)
-}
-
-func TestFacade_ResolveAutoCreateOffReturnsRouteNotFound(t *testing.T) {
-	s := memory.New()
-	lm := &fakeLifecycle{}
-	router := routing.New(s, lm, false, time.Hour)
-	f := &channels.Facade{Router: router}
-
-	_, err := f.Resolve(context.Background(), channels.InboundMessage{
-		Channel: "web", ChannelID: "c1", UserID: "u1", ThreadID: "t1",
-	})
-	require.ErrorIs(t, err, routing.ErrRouteNotFound)
-}
-
-func TestFacade_SendCompletionEmitsDeltas(t *testing.T) {
-	client := &fakeClient{sseBody: "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n" +
-		"data: {\"choices\":[{\"delta\":{\"content\":\" world\"}}]}\n\n" +
-		"data: [DONE]\n\n"}
-	f := &channels.Facade{Client: client}
-
-	ch, err := f.SendCompletion(context.Background(), channels.InstanceRef{Name: "i1"}, channels.InboundMessage{Text: "hi"})
-	require.NoError(t, err)
-
-	var parts []string
-	var done bool
-	for d := range ch {
-		if d.Err != nil {
-			t.Fatalf("unexpected error: %v", d.Err)
-		}
-		if d.Done {
-			done = true
-			continue
-		}
-		if d.Content != "" {
-			parts = append(parts, d.Content)
-		}
-	}
-	require.True(t, done, "expected terminal Done delta")
-	require.Equal(t, "hello world", strings.Join(parts, ""))
-}
-
-func TestFacade_SendCompletionSurfacesUpstreamError(t *testing.T) {
-	client := &fakeClient{err: errors.New("upstream boom")}
-	f := &channels.Facade{Client: client}
-
-	_, err := f.SendCompletion(context.Background(), channels.InstanceRef{Name: "i1"}, channels.InboundMessage{Text: "hi"})
-	require.Error(t, err)
-}
-
-func TestFacade_FetchHistory(t *testing.T) {
-	client := &fakeClient{messages: []instance.Message{
-		{Role: "user", Content: "hi"},
-		{Role: "assistant", Content: "hello"},
-	}}
-	f := &channels.Facade{Client: client}
-
-	msgs, err := f.FetchHistory(context.Background(), channels.InstanceRef{Name: "i1"})
-	require.NoError(t, err)
-	require.Len(t, msgs, 2)
-	require.Equal(t, "user", msgs[0].Role)
-	require.Equal(t, "hello", msgs[1].Content)
-}
 
 // fakeAgent is the kagent client at the facade's seam: it records the message
 // and instance every turn is sent with, hands out instances keyed by request
@@ -332,7 +208,7 @@ func newA2AFacade(agent *fakeAgent) (*channels.Facade, store.Store) {
 var taskInfo = a2apkg.TaskInfo{TaskID: "task-1", ContextID: "ctx-1"}
 
 func slackMsg(text string) channels.InboundMessage {
-	return channels.InboundMessage{Channel: "slack", ChannelID: "C1", ThreadID: "1700.0001", UserID: "U1", AgentRef: "kagent/worker", Text: text, BearerToken: "user-jwt"}
+	return channels.InboundMessage{Channel: "slack", ChannelID: "C1", ThreadID: "1700.0001", AgentRef: "kagent/worker", Text: text, BearerToken: "user-jwt"}
 }
 
 // drain collects every delta of a turn.
@@ -354,7 +230,7 @@ func TestFacade_SendCompletionViaA2A_FirstTurnCreatesTheInstance(t *testing.T) {
 	f, routes := newA2AFacade(agent)
 	msg := slackMsg("hi")
 
-	ch, err := f.SendCompletion(t.Context(), channels.InstanceRef{}, msg)
+	ch, err := f.SendCompletion(t.Context(), msg)
 	require.NoError(t, err)
 	var content strings.Builder
 	var done bool
@@ -381,7 +257,6 @@ func TestFacade_SendCompletionViaA2A_FirstTurnCreatesTheInstance(t *testing.T) {
 	require.Equal(t, "inst-kagent/worker-1", entry.AgentInstanceID)
 	require.Equal(t, "kagent/worker", entry.AgentRef, "the row names the agent the thread is bound to")
 	require.Equal(t, 2*channels.DefaultThreadTTL, entry.TTL, "the binding slides with the thread's lifetime, and the row outlives it by as much again")
-	require.Empty(t, entry.Instance)
 
 	sent := agent.lastStreamed()
 	require.Empty(t, sent.TaskID, "a fresh turn lets the controller assign the task id")
@@ -421,7 +296,7 @@ func TestFacade_SendCompletionViaA2A_NamesTheConversation(t *testing.T) {
 			agent := newFakeAgent(a2apkg.NewStatusUpdateEvent(taskInfo, a2apkg.TaskStateCompleted, nil))
 			f, _ := newA2AFacade(agent)
 
-			ch, err := f.SendCompletion(t.Context(), channels.InstanceRef{}, tc.msg)
+			ch, err := f.SendCompletion(t.Context(), tc.msg)
 			require.NoError(t, err)
 			drain(t, ch)
 			require.Equal(t, []string{tc.want}, agent.createNames)
@@ -445,7 +320,7 @@ func TestFacade_SendCompletionViaA2A_LaterTurnsReuseTheBinding(t *testing.T) {
 	key := store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700.0001"}
 	require.NoError(t, routes.Put(t.Context(), key, store.Entry{AgentRef: "kagent/worker", AgentInstanceID: "inst-from-before-the-restart"}))
 
-	ch, err := f.SendCompletion(t.Context(), channels.InstanceRef{}, slackMsg("and the nodes?"))
+	ch, err := f.SendCompletion(t.Context(), slackMsg("and the nodes?"))
 	require.NoError(t, err)
 	drain(t, ch)
 
@@ -462,7 +337,7 @@ func TestFacade_SendCompletionViaA2A_RetriedFirstTurnIsIdempotent(t *testing.T) 
 	key := store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700.0001"}
 
 	for range 2 {
-		ch, err := f.SendCompletion(t.Context(), channels.InstanceRef{}, slackMsg("hi"))
+		ch, err := f.SendCompletion(t.Context(), slackMsg("hi"))
 		require.NoError(t, err)
 		drain(t, ch)
 		require.NoError(t, routes.Delete(t.Context(), key))
@@ -506,7 +381,7 @@ func TestFacade_SendCompletionViaA2A_NarrationDeliveredOnceWithFinalAnswer(t *te
 	)
 	f, _ := newA2AFacade(agent)
 
-	ch, err := f.SendCompletion(t.Context(), channels.InstanceRef{}, slackMsg("compare both clusters"))
+	ch, err := f.SendCompletion(t.Context(), slackMsg("compare both clusters"))
 	require.NoError(t, err)
 
 	var narrations, texts []string
@@ -545,14 +420,14 @@ func TestFacade_SendCompletionViaA2A_ForwardsIdentity(t *testing.T) {
 	f, _ := newA2AFacade(agent)
 
 	msg := slackMsg("hi")
-	msg.Channel = "web"
-	ch, err := f.SendCompletion(t.Context(), channels.InstanceRef{}, msg)
+	msg.Channel = "slack"
+	ch, err := f.SendCompletion(t.Context(), msg)
 	require.NoError(t, err)
 	drain(t, ch)
 
 	require.Equal(t, "kagent/worker", pkga2a.AgentRefFromContext(agent.streamCtx))
 	require.Equal(t, "user-jwt", pkga2a.ForwardedTokenFromContext(agent.streamCtx))
-	require.Equal(t, "web", pkga2a.ChannelFromContext(agent.streamCtx))
+	require.Equal(t, "slack", pkga2a.ChannelFromContext(agent.streamCtx))
 }
 
 // A refusal before the first event — the controller rejecting the turn — is
@@ -562,13 +437,13 @@ func TestFacade_SendCompletionViaA2A_RefusalIsSynchronous(t *testing.T) {
 	agent.streamErr = fmt.Errorf("%w: AgentInstance x already has an active task", pkga2a.ErrInstanceBusy)
 	f, _ := newA2AFacade(agent)
 
-	_, err := f.SendCompletion(t.Context(), channels.InstanceRef{}, slackMsg("hi"))
+	_, err := f.SendCompletion(t.Context(), slackMsg("hi"))
 	require.ErrorIs(t, err, pkga2a.ErrInstanceBusy)
 
 	agent = newFakeAgent()
 	agent.createErr = fmt.Errorf("%w: kagent/worker: no Harness admits this AgentTemplate", pkga2a.ErrAgentUnavailable)
 	f, _ = newA2AFacade(agent)
-	_, err = f.SendCompletion(t.Context(), channels.InstanceRef{}, slackMsg("hi"))
+	_, err = f.SendCompletion(t.Context(), slackMsg("hi"))
 	require.ErrorIs(t, err, pkga2a.ErrAgentUnavailable)
 	require.Empty(t, agent.streamed, "a refused instance never gets a turn")
 }
@@ -578,7 +453,7 @@ func TestFacade_SendCompletionViaA2A_MidStreamErrorPropagated(t *testing.T) {
 	agent.tailErr = errors.New("executor boom")
 	f, _ := newA2AFacade(agent)
 
-	ch, err := f.SendCompletion(t.Context(), channels.InstanceRef{}, slackMsg("hi"))
+	ch, err := f.SendCompletion(t.Context(), slackMsg("hi"))
 	require.NoError(t, err)
 	var gotErr error
 	for _, d := range drain(t, ch) {
@@ -589,27 +464,12 @@ func TestFacade_SendCompletionViaA2A_MidStreamErrorPropagated(t *testing.T) {
 	require.ErrorContains(t, gotErr, "executor boom")
 }
 
-func TestFacade_SendCompletionFallsBackToOpenAI_WhenNoAgentRef(t *testing.T) {
-	client := &fakeClient{sseBody: "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n"}
-	f := &channels.Facade{Agent: newFakeAgent(), Client: client}
-
-	// AgentRef is empty, so the OpenAI path must be used even though Agent is set.
-	ch, err := f.SendCompletion(t.Context(), channels.InstanceRef{Name: "i1"}, channels.InboundMessage{Text: "hi"})
-	require.NoError(t, err)
-
-	var content strings.Builder
-	for d := range ch {
-		content.WriteString(d.Content)
-	}
-	require.Equal(t, "ok", content.String())
-}
-
 func TestFacade_SendCompletionViaA2A_InputRequired_EmitsPromptDelta(t *testing.T) {
 	msg := a2apkg.NewMessage(a2apkg.MessageRoleAgent, a2apkg.NewTextPart("approve the tool call?"))
 	agent := newFakeAgent(a2apkg.NewStatusUpdateEvent(taskInfo, a2apkg.TaskStateInputRequired, msg))
 	f, _ := newA2AFacade(agent)
 
-	ch, err := f.SendCompletion(t.Context(), channels.InstanceRef{}, slackMsg("hi"))
+	ch, err := f.SendCompletion(t.Context(), slackMsg("hi"))
 	require.NoError(t, err)
 	deltas := drain(t, ch)
 	require.Len(t, deltas, 1)
@@ -623,7 +483,7 @@ func TestFacade_SendCompletionViaA2A_AuthRequired_EmitsPromptDelta(t *testing.T)
 	agent := newFakeAgent(a2apkg.NewStatusUpdateEvent(taskInfo, a2apkg.TaskStateAuthRequired, nil))
 	f, _ := newA2AFacade(agent)
 
-	ch, err := f.SendCompletion(t.Context(), channels.InstanceRef{}, slackMsg("hi"))
+	ch, err := f.SendCompletion(t.Context(), slackMsg("hi"))
 	require.NoError(t, err)
 	deltas := drain(t, ch)
 	require.Len(t, deltas, 1)
@@ -652,7 +512,7 @@ func TestFacade_HitlResumeCarriesThePausedTaskAndTypedResponse(t *testing.T) {
 	msg := slackMsg("approve")
 	msg.TaskID = string(taskInfo.TaskID)
 	msg.Decision = &channels.HitlDecision{Type: channels.DecisionApprove}
-	ch, err := f.SendCompletion(t.Context(), channels.InstanceRef{}, msg)
+	ch, err := f.SendCompletion(t.Context(), msg)
 	require.NoError(t, err)
 	drain(t, ch)
 
@@ -680,7 +540,7 @@ func TestFacade_HitlResumeRefusedWhenTheTaskIsNotPaused(t *testing.T) {
 	msg := slackMsg("approve")
 	msg.TaskID = string(taskInfo.TaskID)
 	msg.Decision = &channels.HitlDecision{Type: channels.DecisionApprove}
-	_, err := f.SendCompletion(t.Context(), channels.InstanceRef{}, msg)
+	_, err := f.SendCompletion(t.Context(), msg)
 	require.ErrorIs(t, err, channels.ErrNoPendingPrompt)
 	require.Empty(t, agent.streamed)
 }
@@ -696,7 +556,7 @@ func TestFacade_StoppedTurnCancelsTheTaskServerSide(t *testing.T) {
 	f, _ := newA2AFacade(agent)
 
 	ctx, cancel := context.WithCancel(t.Context())
-	ch, err := f.SendCompletion(ctx, channels.InstanceRef{}, slackMsg("long task"))
+	ch, err := f.SendCompletion(ctx, slackMsg("long task"))
 	require.NoError(t, err)
 	cancel()
 	drain(t, ch)
@@ -861,7 +721,7 @@ func TestFacade_SendCompletionViaA2A_StreamedRunsRenderOnce(t *testing.T) {
 	)
 	f, _ := newA2AFacade(agent)
 
-	ch, err := f.SendCompletion(t.Context(), channels.InstanceRef{}, slackMsg("how many nodes?"))
+	ch, err := f.SendCompletion(t.Context(), slackMsg("how many nodes?"))
 	require.NoError(t, err)
 
 	var text strings.Builder
@@ -903,7 +763,7 @@ func TestFacade_CompletedTurnIsNotCancelledWhenTheChannelLeavesLate(t *testing.T
 	f, _ := newA2AFacade(agent)
 
 	ctx, cancel := context.WithCancel(t.Context())
-	ch, err := f.SendCompletion(ctx, channels.InstanceRef{}, slackMsg("long answer"))
+	ch, err := f.SendCompletion(ctx, slackMsg("long answer"))
 	require.NoError(t, err)
 	// Nothing is read: the producer fills the channel's buffer, then blocks on
 	// the completed event until the channel goes away.
@@ -933,7 +793,7 @@ func TestFacade_ShutdownLeavesTheTaskRunningAndRecorded(t *testing.T) {
 		defer cancel(nil)
 		msg := slackMsg("long task")
 		msg.Resume = map[string]string{"slack_user": "U1", "message_ts": "1700.0001"}
-		ch, err := f.SendCompletion(ctx, channels.InstanceRef{}, msg)
+		ch, err := f.SendCompletion(ctx, msg)
 		require.NoError(t, err)
 		// The record is written once the controller has named the task.
 		require.Eventually(t, func() bool {
@@ -991,7 +851,7 @@ func TestFacade_FreshTurnDropsTheStaleDeliveryRecord(t *testing.T) {
 	ctx, cancel := context.WithCancelCause(t.Context())
 	defer cancel(nil)
 
-	ch, err := f.SendCompletion(ctx, channels.InstanceRef{}, slackMsg("again"))
+	ch, err := f.SendCompletion(ctx, slackMsg("again"))
 	require.NoError(t, err)
 	require.Eventually(t, func() bool {
 		entry, ok, err := routes.Get(t.Context(), key)
@@ -1016,7 +876,7 @@ func TestFacade_CompletedTurnClearsTheRecordAndIsNotCanceled(t *testing.T) {
 	f, routes := newA2AFacade(agent)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	ch, err := f.SendCompletion(ctx, channels.InstanceRef{}, slackMsg("quick"))
+	ch, err := f.SendCompletion(ctx, slackMsg("quick"))
 	require.NoError(t, err)
 	var deltas []channels.OutboundDelta
 	for d := range ch {
@@ -1071,7 +931,7 @@ func TestFacade_ResumeTurnDeliversAFinishedTask(t *testing.T) {
 		require.Equal(t, "1700.0001", turns[0].Msg.ThreadID)
 		require.Equal(t, "kagent/worker", turns[0].Msg.AgentRef)
 		require.Equal(t, delivered, turns[0].Delivered, "what the previous process posted travels with the turn")
-		none, err := f.InFlightTurns(t.Context(), "web")
+		none, err := f.InFlightTurns(t.Context(), "other")
 		require.NoError(t, err)
 		require.Empty(t, none, "other channels' bindings are not listed")
 
@@ -1225,7 +1085,7 @@ func TestInstanceFor_OneRowPerThread(t *testing.T) {
 		return true
 	}))
 
-	ch, err := f.SendCompletion(t.Context(), channels.InstanceRef{}, slackMsg("hi"))
+	ch, err := f.SendCompletion(t.Context(), slackMsg("hi"))
 	require.NoError(t, err)
 	drain(t, ch)
 
@@ -1241,7 +1101,7 @@ func TestInstanceFor_OneRowPerThread(t *testing.T) {
 		e.LastSeen = time.Now().Add(-time.Hour)
 		return true
 	}))
-	ch, err = f.SendCompletion(t.Context(), channels.InstanceRef{}, slackMsg("and now?"))
+	ch, err = f.SendCompletion(t.Context(), slackMsg("and now?"))
 	require.NoError(t, err)
 	drain(t, ch)
 
@@ -1254,7 +1114,7 @@ func TestInstanceFor_OneRowPerThread(t *testing.T) {
 	// channel's.
 	other := slackMsg("you then")
 	other.AgentRef = "kagent/other"
-	ch, err = f.SendCompletion(t.Context(), channels.InstanceRef{}, other)
+	ch, err = f.SendCompletion(t.Context(), other)
 	require.NoError(t, err)
 	drain(t, ch)
 

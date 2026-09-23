@@ -3,8 +3,8 @@
 klaus-gateway runs its agent conversations on a kagent API v2 controller. This page describes
 the carrier under every channel: how the gateway finds agents, how a thread becomes a
 conversation the controller holds, how a turn, a tool approval and a stop travel, and how the
-gateway authenticates. The channel guides ([Slack](channels-slack.md), [Web](channels-web.md),
-[CLI](channels-cli.md)) describe what a user sees; nothing there depends on the carrier.
+gateway authenticates. The channel guide ([Slack](channels-slack.md)) describes what a user
+sees; nothing there depends on the carrier.
 
 ## Wire
 
@@ -29,10 +29,9 @@ protos (see `pkg/kagent/gen/README.md`).
 ## Identity
 
 Every call is made **as the person behind the turn**: the Dex id_token the Slack account link
-mints, or the bearer a web/cli caller sends, rides as the `authorization` metadata entry. The
-gateway never presents its own ServiceAccount to the controller (`a2a.saToken` serves the
-Klaus-instance paths only), so the controller route's JWT policy needs no second issuer, and
-a turn without a person's token is refused instead of running as a machine identity.
+mints rides as the `authorization` metadata entry. The gateway never presents its own
+ServiceAccount to the controller, so the controller route's JWT policy needs no second issuer,
+and a turn without a person's token is refused instead of running as a machine identity.
 
 Discovery is a person's call too. The roster is fetched as the caller and cached briefly
 (`ListAgentTemplates` of `a2a.namespace`); reads that happen where no person's token is at hand
@@ -133,7 +132,7 @@ place and nothing is left waiting at `input-required`.
 
 ## Stop
 
-`/stop` (and a web client closing its stream) cancels the gateway-side turn and then calls
+`/stop` cancels the gateway-side turn and then calls
 `CancelTask` on the running task, so the agent stops working server-side; `GetTask` reports the
 task canceled. A task paused on a prompt is not canceled by a stop — it is resolved by a
 decision (the Slack `/stop` on a paused thread is routed as a rejection).
@@ -148,7 +147,6 @@ decision (the Slack `/stop` on a paused thread is routed as a rejection).
 | `a2a.defaultAgent` | `--a2a-default-agent` / `KLAUS_GATEWAY_A2A_DEFAULT_AGENT` | Template a turn runs on when the channel names none |
 | `a2a.caSecret`, `a2a.caFile` | `--a2a-ca-file` / `KLAUS_GATEWAY_A2A_CA_FILE` | CA bundle trusted for a `grpcs://` target besides the system roots (`caSecret`: a Secret with `ca.crt`, mounted by the chart) |
 | `a2a.fallbackIconUrlTemplate` | `--a2a-fallback-icon-url-template` | Icon when the template has no icon annotation; `{agent}` = technical name |
-| `a2a.saToken`, `a2a.tokenPath` | `--a2a-token-path` | Projected ServiceAccount token for the Klaus-instance paths; never presented to the controller |
 
 Requirements: a kagent API v2 controller (`kagent.dev/v1alpha3`, the `lf.a2a.v1` and
 `kagent.api.v1alpha1` gRPC services on one port) behind a gRPC-capable route that validates the
@@ -157,9 +155,9 @@ cut-over are not migrated: the first reply in such a thread gets the starting-fr
 
 ## Verification
 
-The headless proof runs the gateway from a branch build against a lab controller: the `web`
-channel with a lab user's Dex id_token forwarded, `GET /web/agents` for discovery, one streamed
-turn attributed to the person at the MCP gateway, one HITL round trip on a template whose
+The headless proof runs the gateway from a branch build against a lab controller with a lab
+user's Dex id_token forwarded: roster discovery, one streamed turn attributed to the person at
+the MCP gateway, one HITL round trip on a template whose
 tool binding carries `requireApproval: true` (the task reaches `input-required`, the decision
 resumes it, `GetTask` shows nothing left waiting), a stop that `GetTask` reports as canceled
 followed by a further turn, and a gateway restart on the bolt store that continues the same

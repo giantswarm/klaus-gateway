@@ -22,7 +22,7 @@ func TestLoginReplay_DropsBareAuthUtterances(t *testing.T) {
 	fake := newFakeSlackAPI()
 	var mu sync.Mutex
 	var captured []channels.InboundMessage
-	gw := &stubGateway{onResolve: func(msg channels.InboundMessage) {
+	gw := &stubGateway{onDispatch: func(msg channels.InboundMessage) {
 		mu.Lock()
 		captured = append(captured, msg)
 		mu.Unlock()
@@ -36,16 +36,16 @@ func TestLoginReplay_DropsBareAuthUtterances(t *testing.T) {
 	fake.waitForPath(t, "chat.postMessage", 1)
 	sendEvent(t, srv, mention("U123", "login to grafana fails", "101.000", "100.000"))
 	time.Sleep(100 * time.Millisecond)
-	require.Zero(t, gw.resolveCount(), "unlinked messages must be parked, not dispatched")
+	require.Zero(t, gw.dispatchCount(), "unlinked messages must be parked, not dispatched")
 
 	obo.completeLink()
 	a.OnUserLinked(t.Context(), "U123", "u123@example.com")
 
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 50*time.Millisecond, "the real question replays after linking")
 	// Give an erroneous replay of the bare "login" a chance to land.
 	time.Sleep(150 * time.Millisecond)
-	require.Equal(t, 1, gw.resolveCount(), "the bare sign-in request must not replay")
+	require.Equal(t, 1, gw.dispatchCount(), "the bare sign-in request must not replay")
 	mu.Lock()
 	defer mu.Unlock()
 	require.Contains(t, captured[0].Text, "login to grafana fails")
@@ -62,10 +62,10 @@ func TestLoginReplay_FailurePostsNote(t *testing.T) {
 
 	sendEvent(t, srv, mention("U123", "what failed on prod?", "100.000", ""))
 	fake.waitForPath(t, "chat.postMessage", 1)
-	require.Zero(t, gw.resolveCount(), "the unlinked message must be parked")
+	require.Zero(t, gw.dispatchCount(), "the unlinked message must be parked")
 
 	gw.mu.Lock()
-	gw.resolveErr = errors.New("kagent unreachable")
+	gw.dispatchErr = errors.New("kagent unreachable")
 	gw.mu.Unlock()
 	obo.completeLink()
 	a.OnUserLinked(t.Context(), "U123", "u123@example.com")
@@ -84,7 +84,7 @@ func TestAccess_MultipleParkedMessagesReplayInOrder(t *testing.T) {
 	var captured []channels.InboundMessage
 	gw := &stubGateway{
 		deltas: []channels.OutboundDelta{{Content: "ok", Done: true}},
-		onResolve: func(msg channels.InboundMessage) {
+		onDispatch: func(msg channels.InboundMessage) {
 			mu.Lock()
 			captured = append(captured, msg)
 			mu.Unlock()
@@ -99,7 +99,7 @@ func TestAccess_MultipleParkedMessagesReplayInOrder(t *testing.T) {
 		names := fake.reactionNames("reactions.add")
 		return len(names) > 0 && names[len(names)-1] == "white_check_mark"
 	}, flowWait, 50*time.Millisecond, "the initiator's opening turn completes")
-	require.Equal(t, 1, gw.resolveCount(), "initiator's mention dispatches")
+	require.Equal(t, 1, gw.dispatchCount(), "initiator's mention dispatches")
 
 	// The newcomer sends two messages before being granted: one consent prompt
 	// (plus one waiting-ack), both messages held.
@@ -109,10 +109,10 @@ func TestAccess_MultipleParkedMessagesReplayInOrder(t *testing.T) {
 	time.Sleep(150 * time.Millisecond)
 	require.Len(t, fake.pathCalls("chat.postEphemeral"), 2,
 		"a second parked message must not re-prompt the initiator")
-	require.Equal(t, 1, gw.resolveCount(), "held newcomer messages must not reach the agent yet")
+	require.Equal(t, 1, gw.dispatchCount(), "held newcomer messages must not reach the agent yet")
 
 	sendAccessInteraction(t, srv, "U001", accessAllowAction, "100.000", "U999", fakeURL+"/response")
-	require.Eventually(t, func() bool { return gw.resolveCount() == 3 },
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 3 },
 		flowWait, 50*time.Millisecond, "both parked messages replay on grant")
 	mu.Lock()
 	defer mu.Unlock()
@@ -128,7 +128,7 @@ func TestLoginReplay_WaitsForBusyThread(t *testing.T) {
 	fakeURL := fake.server(t).URL
 	var mu sync.Mutex
 	var captured []channels.InboundMessage
-	gw := &stubGateway{onResolve: func(msg channels.InboundMessage) {
+	gw := &stubGateway{onDispatch: func(msg channels.InboundMessage) {
 		mu.Lock()
 		captured = append(captured, msg)
 		mu.Unlock()
@@ -144,7 +144,7 @@ func TestLoginReplay_WaitsForBusyThread(t *testing.T) {
 		names := fake.reactionNames("reactions.add")
 		return len(names) > 0 && names[len(names)-1] == "white_check_mark"
 	}, flowWait, 50*time.Millisecond, "the initiator's opening turn completes")
-	require.Equal(t, 1, gw.resolveCount(), "initiator's mention dispatches")
+	require.Equal(t, 1, gw.dispatchCount(), "initiator's mention dispatches")
 
 	// Grant U999 up front (a grant with nothing parked still stands), so their
 	// later message reaches the login-park path rather than the consent prompt.
@@ -156,7 +156,7 @@ func TestLoginReplay_WaitsForBusyThread(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return signInPrompted(fake)
 	}, flowWait, 50*time.Millisecond, "the unlinked granted user is prompted to sign in")
-	require.Equal(t, 1, gw.resolveCount(), "the unlinked message is parked, not dispatched")
+	require.Equal(t, 1, gw.dispatchCount(), "the unlinked message is parked, not dispatched")
 
 	// The initiator starts a turn that keeps the thread slot held.
 	hold := make(chan struct{})
@@ -164,19 +164,19 @@ func TestLoginReplay_WaitsForBusyThread(t *testing.T) {
 	gw.hold = hold
 	gw.mu.Unlock()
 	sendEvent(t, srv, mention("U001", "long task", "300.000", "100.000"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 2 },
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 },
 		flowWait, 50*time.Millisecond, "the holding turn starts")
 
 	// U999's link completes mid-turn: the replay must wait, silently.
 	obo.link("U999", "tok2")
 	a.OnUserLinked(t.Context(), "U999", "u999@example.com")
 	time.Sleep(150 * time.Millisecond)
-	require.Equal(t, 2, gw.resolveCount(), "the replay must wait for the running turn")
+	require.Equal(t, 2, gw.dispatchCount(), "the replay must wait for the running turn")
 	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "still finishing",
 		"a deferred login replay must not post the busy notice")
 
 	close(hold)
-	require.Eventually(t, func() bool { return gw.resolveCount() == 3 },
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 3 },
 		flowWait, 50*time.Millisecond, "the replay is delivered once the slot frees")
 	mu.Lock()
 	defer mu.Unlock()
@@ -194,7 +194,7 @@ func TestSignInPark_BusyThreadParksInsteadOfDropping(t *testing.T) {
 	fakeURL := fake.server(t).URL
 	var mu sync.Mutex
 	var captured []channels.InboundMessage
-	gw := &stubGateway{onResolve: func(msg channels.InboundMessage) {
+	gw := &stubGateway{onDispatch: func(msg channels.InboundMessage) {
 		mu.Lock()
 		captured = append(captured, msg)
 		mu.Unlock()
@@ -210,7 +210,7 @@ func TestSignInPark_BusyThreadParksInsteadOfDropping(t *testing.T) {
 		names := fake.reactionNames("reactions.add")
 		return len(names) > 0 && names[len(names)-1] == "white_check_mark"
 	}, flowWait, 50*time.Millisecond, "the initiator's opening turn completes")
-	require.Equal(t, 1, gw.resolveCount(), "initiator's mention dispatches")
+	require.Equal(t, 1, gw.dispatchCount(), "initiator's mention dispatches")
 
 	// Grant U999 up front (a grant with nothing parked still stands), so their
 	// later message reaches the login-park path rather than the consent prompt.
@@ -223,7 +223,7 @@ func TestSignInPark_BusyThreadParksInsteadOfDropping(t *testing.T) {
 	gw.hold = hold
 	gw.mu.Unlock()
 	sendEvent(t, srv, mention("U001", "long task", "200.000", "100.000"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 2 },
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 },
 		flowWait, 50*time.Millisecond, "the holding turn starts")
 
 	// U999 (granted, unlinked) posts into the busy thread: parked for sign-in,
@@ -234,16 +234,16 @@ func TestSignInPark_BusyThreadParksInsteadOfDropping(t *testing.T) {
 	}, flowWait, 50*time.Millisecond, "the signed-out user is prompted to sign in despite the busy thread")
 	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "still finishing",
 		"a sign-in park must not post the busy notice")
-	require.Equal(t, 2, gw.resolveCount(), "the parked message must not be dispatched")
+	require.Equal(t, 2, gw.dispatchCount(), "the parked message must not be dispatched")
 
 	// The link completes mid-turn; the replay still waits for the slot.
 	obo.link("U999", "tok2")
 	a.OnUserLinked(t.Context(), "U999", "u999@example.com")
 	time.Sleep(150 * time.Millisecond)
-	require.Equal(t, 2, gw.resolveCount(), "the replay must wait for the running turn")
+	require.Equal(t, 2, gw.dispatchCount(), "the replay must wait for the running turn")
 
 	close(hold)
-	require.Eventually(t, func() bool { return gw.resolveCount() == 3 },
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 3 },
 		flowWait, 50*time.Millisecond, "the parked message replays once the slot frees")
 	mu.Lock()
 	defer mu.Unlock()
@@ -281,7 +281,7 @@ func TestLoginReplay_ParkAfterLinkRaceDrainsImmediately(t *testing.T) {
 	fake := newFakeSlackAPI()
 	var mu sync.Mutex
 	var captured []channels.InboundMessage
-	gw := &stubGateway{onResolve: func(msg channels.InboundMessage) {
+	gw := &stubGateway{onDispatch: func(msg channels.InboundMessage) {
 		mu.Lock()
 		captured = append(captured, msg)
 		mu.Unlock()
@@ -291,7 +291,7 @@ func TestLoginReplay_ParkAfterLinkRaceDrainsImmediately(t *testing.T) {
 
 	sendEvent(t, srv, dmEvent("U1", "what is broken?", "700.000"))
 
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 },
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 50*time.Millisecond, "the raced message drains without waiting for a link callback")
 	mu.Lock()
 	got := captured[0]
@@ -323,7 +323,7 @@ func TestSignInPrompt_ThrottledPerThreadUser(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	require.Len(t, fake.pathCalls("chat.postMessage"), 1,
 		"a second parked message within the window must not re-prompt")
-	require.Zero(t, gw.resolveCount(), "both messages stay parked")
+	require.Zero(t, gw.dispatchCount(), "both messages stay parked")
 }
 
 // Parked messages past the per-thread cap are dropped oldest-first; the drop
@@ -335,7 +335,7 @@ func TestLoginPark_QueueCapDropIsVisible(t *testing.T) {
 	var texts []string
 	gw := &stubGateway{
 		deltas: []channels.OutboundDelta{{Content: "ok", Done: true}},
-		onResolve: func(msg channels.InboundMessage) {
+		onDispatch: func(msg channels.InboundMessage) {
 			mu.Lock()
 			texts = append(texts, msg.Text)
 			mu.Unlock()

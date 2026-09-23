@@ -17,7 +17,7 @@ type turnHooks struct {
 	// the identity the turn will run as (e.g. the resume-degradation
 	// announcement).
 	onIdentityResolved func(msg channels.InboundMessage)
-	// onFailure posts the user-visible note when resolve or send fails: the
+	// onFailure posts the user-visible note when the send fails: the
 	// turn dies before any streamed reply, so silence reads as success. Not
 	// called for a corrupt-session failure, where the recovery notice speaks
 	// instead (a "retry" invitation would retry into the deleted session).
@@ -85,22 +85,12 @@ func (a *Adapter) runTurn(ctx context.Context, msg channels.InboundMessage, slac
 		}
 	}
 
-	ref, err := a.gw.Resolve(ctx, msg)
-	if err != nil {
-		restoreTask()
-		if hooks.onFailure != nil && !isCorruptSessionErr(err) {
-			hooks.onFailure()
-		}
-		a.completeTurn(ctx, msg, slackUser, channels.OutcomeResolveFailed, err)
-		return fmt.Errorf("slack: resolve: %w", err)
-	}
-
 	turnCtx, done := a.registerTurn(ctx, msg.ThreadID)
 	defer done()
 
 	a.logTurnDispatch(ctx, msg, slackUser, task != nil, agentSource)
 
-	deltas, err := a.gw.SendCompletion(turnCtx, ref, msg)
+	deltas, err := a.gw.SendCompletion(turnCtx, msg)
 	if err != nil {
 		restoreTask()
 		if hooks.onFailure != nil && !isCorruptSessionErr(err) {

@@ -249,14 +249,6 @@ func TestOutboundDelta_IsZero(t *testing.T) {
 	require.False(t, OutboundDelta{Tool: &ToolActivity{Name: "x"}}.isZero())
 }
 
-// An adapter that concatenates chunks into one reply must not glue narration to
-// the answer that follows it.
-func TestOutboundDelta_StreamText(t *testing.T) {
-	require.Equal(t, "let me look\n\n", OutboundDelta{Kind: DeltaNarration, Content: "let me look"}.StreamText())
-	require.Equal(t, "the answer", OutboundDelta{Content: "the answer"}.StreamText())
-	require.Empty(t, OutboundDelta{Kind: DeltaNarration}.StreamText())
-}
-
 // Partial (streaming) events mirror the usage metadata of the LLM call they
 // belong to; counting them would tally one call several times. kagent marks
 // them with adk_partial/kagent_partial.

@@ -81,32 +81,8 @@ spec:
         {{- end }}
         {{- end }}
         {{- end }}
-        {{- if .Values.routing.defaultTTL }}
-        - --default-ttl={{ .Values.routing.defaultTTL }}
-        {{- end }}
         {{- if .Values.routing.threadTTL }}
         - --thread-ttl={{ .Values.routing.threadTTL }}
-        {{- end }}
-        {{- if or .Values.routing.autoCreate .Values.a2a.enabled }}
-        - --auto-create
-        {{- end }}
-        - --driver={{ .Values.lifecycle.driver }}
-        {{- if and (eq .Values.lifecycle.driver "klausctl") .Values.lifecycle.klausctlBin }}
-        - --klausctl-bin={{ .Values.lifecycle.klausctlBin }}
-        {{- end }}
-        {{- if eq .Values.lifecycle.driver "operator" }}
-        {{- if .Values.lifecycle.operatorMCPURL }}
-        - --operator-mcp-url={{ .Values.lifecycle.operatorMCPURL }}
-        {{- end }}
-        {{- if .Values.lifecycle.operatorMCPToken }}
-        - --operator-mcp-token={{ .Values.lifecycle.operatorMCPToken }}
-        {{- end }}
-        {{- end }}
-        {{- if and (eq .Values.lifecycle.driver "static") .Values.lifecycle.staticInstances }}
-        - --static-instances={{ .Values.lifecycle.staticInstances }}
-        {{- end }}
-        {{- if .Values.upstream.url }}
-        - --agentgateway-url={{ .Values.upstream.url }}
         {{- end }}
         {{- if .Values.observability.otlpEndpoint }}
         - --otel-otlp-endpoint={{ .Values.observability.otlpEndpoint }}
@@ -137,11 +113,6 @@ spec:
         - --a2a-ca-file=/etc/klaus-gateway/a2a/ca.crt
         {{- else if .Values.a2a.caFile }}
         - --a2a-ca-file={{ .Values.a2a.caFile }}
-        {{- end }}
-        {{- if .Values.a2a.saToken.enabled }}
-        - --a2a-token-path={{ .Values.a2a.saToken.mountPath }}
-        {{- else if .Values.a2a.tokenPath }}
-        - --a2a-token-path={{ .Values.a2a.tokenPath }}
         {{- end }}
         {{- if .Values.a2a.fallbackIconUrlTemplate }}
         - --a2a-fallback-icon-url-template={{ .Values.a2a.fallbackIconUrlTemplate }}
@@ -222,10 +193,6 @@ spec:
         - name: KLAUS_GATEWAY_SLACK_CLEAR_REACTION_ON_DONE
           value: {{ .Values.slack.progress.clearReactionOnDone | quote }}
         {{- end }}
-        - name: KLAUS_GATEWAY_CLI_ENABLED
-          value: {{ .Values.cli.enabled | quote }}
-        - name: KLAUS_GATEWAY_WEB_ENABLED
-          value: {{ .Values.web.enabled | quote }}
         {{- if .Values.reviews.enabled }}
         - name: KLAUS_GATEWAY_REVIEWS_ENABLED
           value: "true"
@@ -286,13 +253,8 @@ spec:
           {{- with .Values.securityContext }}
             {{- . | toYaml | nindent 10 }}
           {{- end }}
-        {{- if or .Values.a2a.saToken.enabled .Values.a2a.caSecret .Values.obo.enabled }}
+        {{- if or .Values.a2a.caSecret .Values.obo.enabled }}
         volumeMounts:
-        {{- if .Values.a2a.saToken.enabled }}
-        - name: kagent-sa-token
-          mountPath: {{ dir .Values.a2a.saToken.mountPath }}
-          readOnly: true
-        {{- end }}
         {{- if .Values.a2a.caSecret }}
         - name: kagent-ca
           mountPath: /etc/klaus-gateway/a2a
@@ -312,17 +274,8 @@ spec:
         {{- end }}
         {{- end }}
         {{- end }}
-      {{- if or .Values.a2a.saToken.enabled .Values.a2a.caSecret .Values.obo.enabled }}
+      {{- if or .Values.a2a.caSecret .Values.obo.enabled }}
       volumes:
-      {{- if .Values.a2a.saToken.enabled }}
-      - name: kagent-sa-token
-        projected:
-          sources:
-          - serviceAccountToken:
-              path: {{ base .Values.a2a.saToken.mountPath }}
-              audience: {{ .Values.a2a.saToken.audience }}
-              expirationSeconds: {{ .Values.a2a.saToken.expirationSeconds }}
-      {{- end }}
       {{- if .Values.a2a.caSecret }}
       - name: kagent-ca
         secret:

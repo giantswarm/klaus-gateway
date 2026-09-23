@@ -153,15 +153,15 @@ func TestThreadContext_ShortcutSharesTheThread(t *testing.T) {
 	fake.withThread(alertThread(), 200)
 	fake.withUserNames(map[string]string{"U1": "Jose", "U2": "Marta", "U3": "Piotr"}, nil)
 	api := fake.server(t)
-	gw, resolved := capturingGateway()
+	gw, dispatched := capturingGateway()
 	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
 
 	sendAskAgentShortcut(t, srv, "C1", "U1", "103.000", "100.000", api.URL+"/response_url")
 	pmRaw := openedView(t, fake)["private_metadata"].(string)
 	sendAskAgentSubmissionWithContext(t, srv, "U1", pmRaw, "kagent/sre-agent", "which release introduced it?", true)
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, flowWait, 50*time.Millisecond)
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
 
-	got := resolved()[0].Context
+	got := dispatched()[0].Context
 	lines := strings.Split(got, "\n")
 	require.Equal(t, "[thread context shared by Jose: 3 earlier messages in this thread, oldest first]", lines[0])
 	require.Contains(t, got, "PagerDuty: TRIGGERED #4412 KubePodCrashLooping")
@@ -180,16 +180,16 @@ func TestThreadContext_ShortcutCheckboxOffSharesNothing(t *testing.T) {
 	fake := newFakeSlackAPI()
 	fake.withThread(alertThread(), 200)
 	api := fake.server(t)
-	gw, resolved := capturingGateway()
+	gw, dispatched := capturingGateway()
 	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
 
 	sendAskAgentShortcut(t, srv, "C1", "U1", "103.000", "100.000", api.URL+"/response_url")
 	pmRaw := openedView(t, fake)["private_metadata"].(string)
 	countCalls := len(fake.pathCalls("conversations.replies"))
 	sendAskAgentSubmissionWithContext(t, srv, "U1", pmRaw, "kagent/sre-agent", "why?", false)
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, flowWait, 50*time.Millisecond)
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
 
-	require.Empty(t, resolved()[0].Context, "a cleared box shares nothing")
+	require.Empty(t, dispatched()[0].Context, "a cleared box shares nothing")
 	require.Len(t, fake.pathCalls("conversations.replies"), countCalls, "the thread is not read on submit")
 }
 
@@ -224,7 +224,7 @@ func TestThreadContext_SlashCommandHasNoThreadToShare(t *testing.T) {
 	fake := newFakeSlackAPI()
 	fake.withThread(alertThread(), 200)
 	api := fake.server(t)
-	gw, resolved := capturingGateway()
+	gw, dispatched := capturingGateway()
 	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
 
 	require.Equal(t, http.StatusOK, sendSlashCommand(t, srv, "C1", "U1", "why are pods crashlooping?", api.URL+"/response_url"))
@@ -232,9 +232,9 @@ func TestThreadContext_SlashCommandHasNoThreadToShare(t *testing.T) {
 	require.Len(t, openedView(t, fake)["blocks"].([]any), 2, "no context checkbox without a thread")
 
 	sendAskAgentSubmission(t, srv, "U1", pmRaw, "kagent/sre-agent", "why are pods crashlooping?")
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, flowWait, 50*time.Millisecond)
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
 
-	require.Empty(t, resolved()[0].Context)
+	require.Empty(t, dispatched()[0].Context)
 	require.Empty(t, fake.pathCalls("conversations.replies"), "a thread the command rooted itself is not read")
 }
 
@@ -247,13 +247,13 @@ func TestThreadContext_AgentSelectionReplySharesTheThread(t *testing.T) {
 	fake.withThread(alertThread(), 200)
 	fake.withUserNames(map[string]string{"U1": "Jose", "U2": "Marta", "U3": "Piotr"}, nil)
 	api := fake.server(t)
-	gw, resolved := capturingGateway()
+	gw, dispatched := capturingGateway()
 	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
 
 	sendEvent(t, srv, mention("U1", "/agent \"SRE Agent\" what happened?", "104.000", "100.000"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, flowWait, 50*time.Millisecond)
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
 
-	msg := resolved()[0]
+	msg := dispatched()[0]
 	require.True(t, msg.Opener)
 	require.Contains(t, msg.Context, "[thread context shared by Jose:")
 	require.Contains(t, msg.Context, "Marta: the pod restarts every 40 s")
@@ -266,13 +266,13 @@ func TestThreadContext_BareMentionReplySharesTheThread(t *testing.T) {
 	fake.withThread(alertThread(), 200)
 	fake.withUserNames(map[string]string{"U1": "Jose", "U2": "Marta", "U3": "Piotr"}, nil)
 	api := fake.server(t)
-	gw, resolved := capturingGateway()
+	gw, dispatched := capturingGateway()
 	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
 
 	sendEvent(t, srv, mention("U1", "what happened here?", "104.000", "100.000"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, flowWait, 50*time.Millisecond)
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
 
-	require.Contains(t, resolved()[0].Context, "Marta: the pod restarts every 40 s")
+	require.Contains(t, dispatched()[0].Context, "Marta: the pod restarts every 40 s")
 }
 
 // The second message of a conversation is a turn of it already: the thread is
@@ -281,19 +281,19 @@ func TestThreadContext_LaterRepliesDoNotReadAgain(t *testing.T) {
 	fake := newFakeSlackAPI()
 	fake.withThread(alertThread(), 200)
 	api := fake.server(t)
-	gw, resolved := capturingGateway()
+	gw, dispatched := capturingGateway()
 	a, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
 
 	sendEvent(t, srv, mention("U1", "what happened here?", "104.000", "100.000"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, flowWait, 50*time.Millisecond)
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
 	reads := len(fake.pathCalls("conversations.replies"))
 	require.Positive(t, reads)
 	waitThreadIdle(t, a, "100.000")
 
 	sendEvent(t, srv, mention("U1", "and the release?", "105.000", "100.000"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 2 }, flowWait, 50*time.Millisecond)
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 }, flowWait, 50*time.Millisecond)
 
-	require.Empty(t, resolved()[1].Context, "a turn inside the conversation carries no transcript")
+	require.Empty(t, dispatched()[1].Context, "a turn inside the conversation carries no transcript")
 	require.Len(t, fake.pathCalls("conversations.replies"), reads, "and reads nothing")
 }
 
@@ -308,13 +308,13 @@ func TestThreadContext_ManyShortMessagesAllFit(t *testing.T) {
 	fake.withThread(msgs, 50)
 	fake.withUserNames(map[string]string{"U1": "Jose", "U2": "Marta"}, nil)
 	api := fake.server(t)
-	gw, resolved := capturingGateway()
+	gw, dispatched := capturingGateway()
 	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
 
 	sendEvent(t, srv, mention("U1", "what happened here?", "900.000", "100.000"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, flowWait, 50*time.Millisecond)
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
 
-	got := resolved()[0].Context
+	got := dispatched()[0].Context
 	lines := strings.Split(got, "\n")
 	require.Equal(t, "[thread context shared by Jose: 70 earlier messages in this thread, oldest first]", lines[0])
 	require.Len(t, lines, 71)
@@ -334,13 +334,13 @@ func TestThreadContext_LongMessagesAreCutFromTheOldest(t *testing.T) {
 	fake.withThread(msgs, 50)
 	fake.withUserNames(map[string]string{"U1": "Jose", "U2": "Marta"}, nil)
 	api := fake.server(t)
-	gw, resolved := capturingGateway()
+	gw, dispatched := capturingGateway()
 	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
 
 	sendEvent(t, srv, mention("U1", "what happened here?", "900.000", "100.000"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, flowWait, 50*time.Millisecond)
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
 
-	got := resolved()[0].Context
+	got := dispatched()[0].Context
 	lines := strings.Split(got, "\n")
 	require.Equal(t, "[thread context shared by Jose: 8 earlier messages in this thread, the most recent 12,000 characters shown]", lines[0])
 	require.Contains(t, got, "the alert that started it", "the root is always kept")
@@ -359,13 +359,13 @@ func TestThreadContext_PagesThroughTheWholeThread(t *testing.T) {
 	fake.withThread(msgs, 5) // three pages
 	fake.withUserNames(map[string]string{"U1": "Jose", "U2": "Marta"}, nil)
 	api := fake.server(t)
-	gw, resolved := capturingGateway()
+	gw, dispatched := capturingGateway()
 	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
 
 	sendEvent(t, srv, mention("U1", "what happened here?", "900.000", "100.000"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, flowWait, 50*time.Millisecond)
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
 
-	got := resolved()[0].Context
+	got := dispatched()[0].Context
 	require.Contains(t, got, "root of it all")
 	require.Contains(t, got, "line 11", "the last page is read too")
 	require.Contains(t, got, "12 earlier messages")
@@ -377,13 +377,13 @@ func TestThreadContext_ReadFailureRunsTheTurnAndNotifies(t *testing.T) {
 	fake := newFakeSlackAPI()
 	fake.setFail("conversations.replies", "missing_scope")
 	api := fake.server(t)
-	gw, resolved := capturingGateway()
+	gw, dispatched := capturingGateway()
 	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
 
 	sendEvent(t, srv, mention("U1", "what happened here?", "104.000", "100.000"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, flowWait, 50*time.Millisecond)
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
 
-	require.Empty(t, resolved()[0].Context)
+	require.Empty(t, dispatched()[0].Context)
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postEphemeral")), "I couldn't read the earlier messages in this thread (`missing_scope`)")
 	}, flowWait, 20*time.Millisecond, "the initiator is told the agent only sees their question")
@@ -396,13 +396,13 @@ func TestThreadContext_UnresolvableAuthorFallsBackToTheID(t *testing.T) {
 	fake.withThread(alertThread(), 200)
 	fake.withUserNames(map[string]string{"U1": "Jose", "U3": "Piotr"}, map[string]bool{"U2": true})
 	api := fake.server(t)
-	gw, resolved := capturingGateway()
+	gw, dispatched := capturingGateway()
 	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
 
 	sendEvent(t, srv, mention("U1", "what happened here?", "104.000", "100.000"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, flowWait, 50*time.Millisecond)
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
 
-	got := resolved()[0].Context
+	got := dispatched()[0].Context
 	require.Contains(t, got, "U2: the pod restarts every 40 s", "the unreadable author keeps their ID")
 	require.Contains(t, got, "Piotr: logs say", "the others still resolve")
 }
@@ -423,14 +423,14 @@ func TestThreadContext_HangingNameLookupEndsWithTheBudget(t *testing.T) {
 		return 0
 	})
 	api := fake.server(t)
-	gw, resolved := capturingGateway()
+	gw, dispatched := capturingGateway()
 	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
 
 	sendEvent(t, srv, mention("U1", "what happened here?", "104.000", "100.000"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, flowWait, 50*time.Millisecond,
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond,
 		"the turn runs once the read's budget ends, not once Slack answers")
 
-	got := resolved()[0].Context
+	got := dispatched()[0].Context
 	require.Contains(t, got, "U2: the pod restarts every 40 s", "an author nobody could name keeps their ID")
 	require.Contains(t, got, "U3: logs say")
 	require.Positive(t, userLookups(fake, "U2"), "the first author's lookup is what runs the budget out")
@@ -449,13 +449,13 @@ func TestThreadContext_ThreadTooLongToReadIsLabelledPartial(t *testing.T) {
 	fake.withThread(msgs, 50) // 26 pages; the read stops at 10
 	fake.withUserNames(map[string]string{"U1": "Jose", "U2": "Marta"}, nil)
 	api := fake.server(t)
-	gw, resolved := capturingGateway()
+	gw, dispatched := capturingGateway()
 	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
 
 	sendEvent(t, srv, mention("U1", "what happened here?", "9000.000", "1000.000"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, flowWait, 50*time.Millisecond)
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
 
-	got := resolved()[0].Context
+	got := dispatched()[0].Context
 	lines := strings.Split(got, "\n")
 	require.Equal(t, "[thread context shared by Jose: 500 of 1,300 earlier messages read (the read stopped early), "+
 		"the most recent 12,000 characters shown]", lines[0])
@@ -474,13 +474,13 @@ func TestThreadContext_LongButReadableThreadIsCountedInFull(t *testing.T) {
 	fake.withThread(msgs, 50)
 	fake.withUserNames(map[string]string{"U1": "Jose", "U2": "Marta"}, nil)
 	api := fake.server(t)
-	gw, resolved := capturingGateway()
+	gw, dispatched := capturingGateway()
 	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
 
 	sendEvent(t, srv, mention("U1", "what happened here?", "9000.000", "1000.000"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, flowWait, 50*time.Millisecond)
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
 
-	got := resolved()[0].Context
+	got := dispatched()[0].Context
 	require.Contains(t, got, "300 earlier messages in this thread, the most recent 12,000 characters shown")
 	require.Contains(t, got, "line 299 ", "the newest are the ones kept")
 	require.Contains(t, got, "line 0 ", "the root is always kept")
@@ -494,14 +494,14 @@ func TestThreadContext_AssistantPaneIsNotRead(t *testing.T) {
 	fake := newFakeSlackAPI()
 	fake.withThread(alertThread(), 50)
 	api := fake.server(t)
-	gw, resolved := capturingGateway()
+	gw, dispatched := capturingGateway()
 	_, srv := newEventsAdapter(t, gw, api.URL)
 
 	sendEvent(t, srv, dmThreadEvent("U1", "what can you do?", "300.000", "100.000"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, flowWait, 50*time.Millisecond)
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
 
-	require.True(t, resolved()[0].Opener)
-	require.Empty(t, resolved()[0].Context)
+	require.True(t, dispatched()[0].Opener)
+	require.Empty(t, dispatched()[0].Context)
 	require.Empty(t, fake.pathCalls("conversations.replies"), "a DM chat has no thread that predates it")
 }
 
@@ -524,7 +524,7 @@ func TestThreadContext_ShortcutInADMOffersNothingAndReadsNothing(t *testing.T) {
 	fake := newFakeSlackAPI()
 	fake.withThread(alertThread(), 50)
 	api := fake.server(t)
-	gw, resolved := capturingGateway()
+	gw, dispatched := capturingGateway()
 	// DMs served and channels served: the shipped default, and the only shape
 	// in which the shortcut reaches a DM at all.
 	_, srv := newEventsAdapter(t, gw, api.URL, withSelection(pickerRoster(), pickerCards()),
@@ -536,9 +536,9 @@ func TestThreadContext_ShortcutInADMOffersNothingAndReadsNothing(t *testing.T) {
 	require.Len(t, view["blocks"].([]any), 2, "no context checkbox in a DM")
 
 	sendAskAgentSubmissionWithContext(t, srv, "U1", view["private_metadata"].(string), "kagent/sre-agent", "what happened?", true)
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, flowWait, 50*time.Millisecond)
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
 
-	require.Empty(t, resolved()[0].Context)
+	require.Empty(t, dispatched()[0].Context)
 	require.Empty(t, fake.pathCalls("conversations.replies"), "a DM chat has no thread that predates it")
 }
 
@@ -561,13 +561,13 @@ func TestThreadContext_PageFailureMidReadKeepsWhatWasRead(t *testing.T) {
 		return ""
 	}
 	api := fake.server(t)
-	gw, resolved := capturingGateway()
+	gw, dispatched := capturingGateway()
 	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
 
 	sendEvent(t, srv, mention("U1", "what happened here?", "9000.000", "1000.000"))
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, flowWait, 50*time.Millisecond)
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
 
-	got := resolved()[0].Context
+	got := dispatched()[0].Context
 	require.Contains(t, got, "50 of 120 earlier messages read (the read stopped early)")
 	require.Contains(t, got, "line 0", "what was read is kept")
 	require.Empty(t, allText(fake.pathCalls("chat.postEphemeral")), "a partial read is not a failed one: nobody is told")
@@ -587,15 +587,15 @@ func TestThreadContext_UnexpectedFieldShapeKeepsTheThread(t *testing.T) {
 	})
 	fake.withUserNames(map[string]string{"U1": "Jose", "U2": "Marta"}, nil)
 	api := fake.server(t)
-	gw, resolved := capturingGateway()
+	gw, dispatched := capturingGateway()
 	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
 
 	sendAskAgentShortcut(t, srv, "C1", "U1", "103.000", "100.000", api.URL+"/response_url")
 	pmRaw := openedView(t, fake)["private_metadata"].(string)
 	sendAskAgentSubmissionWithContext(t, srv, "U1", pmRaw, "kagent/sre-agent", "which release introduced it?", true)
-	require.Eventually(t, func() bool { return gw.resolveCount() == 1 }, flowWait, 50*time.Millisecond)
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
 
-	got := resolved()[0].Context
+	got := dispatched()[0].Context
 	require.Equal(t, "[thread context shared by Jose: 2 earlier messages in this thread, oldest first]", strings.Split(got, "\n")[0])
 	require.Contains(t, got, "TRIGGERED #4412")
 	require.Contains(t, got, "pod crashlooping", "the section text beside the odd field is kept")

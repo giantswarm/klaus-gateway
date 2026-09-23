@@ -1,10 +1,9 @@
-// Package channels defines the surface channel adapters (web, Slack, CLI)
-// share with the rest of klaus-gateway.
+// Package channels defines the surface channel adapters share with the rest
+// of klaus-gateway.
 //
-// Adapters receive a Gateway facade from the server wiring and call into it
-// to resolve identity to an instance, stream a completion, or fetch history.
-// They never depend on the routing store, lifecycle driver, or upstream URL
-// directly -- that wiring lives in the facade implementation.
+// Adapters receive a Gateway facade from the server wiring and call into it to
+// stream a completion. They never depend on the routing store or the kagent
+// client directly -- that wiring lives in the facade implementation.
 package channels
 
 import (
@@ -14,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/giantswarm/klaus-gateway/pkg/lifecycle"
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
 )
 
@@ -35,11 +33,7 @@ func BearerToken(r *http.Request) string {
 	return ""
 }
 
-// InstanceRef re-exports lifecycle.InstanceRef so adapters depend on this
-// package only.
-type InstanceRef = lifecycle.InstanceRef
-
-// ChannelAdapter is the interface each channel (web, slack, cli) implements.
+// ChannelAdapter is the interface each channel implements.
 // Start is called once during server boot with the Gateway facade; Stop
 // drains any adapter-owned goroutines on shutdown.
 type ChannelAdapter interface {
@@ -51,16 +45,13 @@ type ChannelAdapter interface {
 // Gateway is the server-side surface adapters call back into. The wiring in
 // main.go provides the concrete implementation (Facade).
 type Gateway interface {
-	Resolve(ctx context.Context, in InboundMessage) (InstanceRef, error)
-	SendCompletion(ctx context.Context, ref InstanceRef, msg InboundMessage) (<-chan OutboundDelta, error)
-	FetchHistory(ctx context.Context, ref InstanceRef) ([]Message, error)
+	SendCompletion(ctx context.Context, msg InboundMessage) (<-chan OutboundDelta, error)
 }
 
 // InboundMessage is the normalised shape each adapter hands to the gateway.
 type InboundMessage struct {
 	Channel   string
 	ChannelID string
-	UserID    string
 	ThreadID  string
 	// MessageID is the platform-specific ID of the triggering message (the Slack
 	// message ts). Used as the target for progress reactions. May be empty.
@@ -86,8 +77,7 @@ type InboundMessage struct {
 	// Slack thread acting under its initiator. Surfaced to the agent as
 	// attribution; BearerToken remains the acting identity.
 	Author string
-	// AgentRef is the target agent name. When set, SendCompletion routes
-	// through the A2A executor instead of the OpenAI /v1 path.
+	// AgentRef is the target agent name: the agent the turn runs on.
 	AgentRef string
 	// Opener is set by a channel adapter when this message starts its
 	// thread's conversation (no agent recorded for the thread before it): the
@@ -196,17 +186,6 @@ type OutboundDelta struct {
 	Tool *ToolActivity
 }
 
-// StreamText is the delta's content as a plain-text stream renders it. Adapters
-// that concatenate every chunk into one reply (web, cli) have no side-message
-// concept, so narration is closed with a paragraph break instead of running into
-// the answer that follows it.
-func (d OutboundDelta) StreamText() string {
-	if d.Kind == DeltaNarration && d.Content != "" {
-		return d.Content + "\n\n"
-	}
-	return d.Content
-}
-
 // isZero reports whether the delta carries no channel-visible payload. Used
 // instead of `delta == OutboundDelta{}` because the struct embeds an error
 // interface, and == panics when the concrete error type is not comparable.
@@ -227,11 +206,4 @@ type Attachment struct {
 	// download as a memory guard; it is not a product limit.
 	Size  int
 	Bytes []byte
-}
-
-// Message is a single stored turn returned by FetchHistory.
-type Message struct {
-	Role    string    `json:"role"`
-	Content string    `json:"content"`
-	SentAt  time.Time `json:"sent_at,omitzero"`
 }

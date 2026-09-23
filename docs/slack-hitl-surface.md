@@ -538,5 +538,4 @@ and the form is left pending. The prompt message is then rewritten in place to s
 answer.
 
 Every prompt can also be answered by a plain in-thread reply, which maps free text to the same
-structured decision — this is the only path on the web and CLI channels, which don't render
-interactive widgets.
+structured decision.

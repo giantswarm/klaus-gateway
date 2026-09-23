@@ -76,7 +76,7 @@ func NewMetrics() *Metrics {
 	turns := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: metricNamespace,
 		Name:      "turn_total",
-		Help:      "Channel turns that ended, labelled by channel and outcome (completed, input_required, canceled, shutdown, timeout, failed, render_failed, resolve_failed, send_failed).",
+		Help:      "Channel turns that ended, labelled by channel and outcome (completed, input_required, canceled, shutdown, timeout, failed, render_failed, send_failed).",
 	}, []string{labelChannel, labelOutcome})
 
 	phase := prometheus.NewHistogramVec(prometheus.HistogramOpts{

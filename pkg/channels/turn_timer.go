@@ -59,7 +59,6 @@ const (
 	OutcomeTimeout       = "timeout"        // the turn ran into the gateway's turn deadline
 	OutcomeFailed        = "failed"         // the task failed, or the stream broke
 	OutcomeRenderFailed  = "render_failed"  // the task completed but the channel refused (part of) the answer
-	OutcomeResolveFailed = "resolve_failed" // the turn died before it was sent: the agent did not resolve
 	OutcomeSendFailed    = "send_failed"    // the turn died before it was sent: the controller refused it
 )
 
