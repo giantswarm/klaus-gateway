@@ -350,15 +350,29 @@ const choiceSelectNudge = "_Pick at least one option, then click Submit._"
 // so the click cannot deliver answers the user never saw.
 const promptSupersededNotice = "_This prompt was superseded; please answer the latest one in this thread._"
 
+// promptAnsweredNotice replaces a prompt whose task is no longer pending:
+// answered, dropped by the TTL, or lost in a restart.
+const promptAnsweredNotice = "_Already answered._"
+
 // formIncompleteNudge is shown (ephemerally) when a user clicks Submit on a
 // multi-question ask_user form with a question still unanswered; the form stays
 // pending so the user can complete it and submit again.
 const formIncompleteNudge = "_Please answer every question, then click Submit._"
 
-// chatModePrompt replaces the approval buttons after the user clicks "Chat":
-// the pending tool call is held and the next in-thread reply is sent as the
-// follow-up question.
-const chatModePrompt = "💬 _Ask your question in this thread; I'll answer, then ask you to confirm again._"
+// The approval card: its title, the context line naming who may decide, the
+// button labels, and the line that replaces the buttons after a decision. The
+// decision lines end with a Slack date token, so each reader sees the time in
+// their own time zone. The card has no "Ask a question" button: the Go ADK
+// runtime drops a rejection's reason, so the model never sees the question
+// (giantswarm/kagent-upstream#71).
+const (
+	approvalRequiredTitle = "Approval required"
+	approvalDeciders      = "<@%s> or the people they allowed can decide"
+	approvalApproveLabel  = "Approve"
+	approvalDenyLabel     = "Deny"
+	approvalApprovedBy    = "Approved by <@%s> · %s"
+	approvalDeniedBy      = "Denied by <@%s> · %s"
+)
 
 // emptyOutputNote replaces the text-mode placeholder when a turn completes
 // without producing any output, so it does not linger as "thinking".

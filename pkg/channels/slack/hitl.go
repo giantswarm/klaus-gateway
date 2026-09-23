@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 )
@@ -166,18 +167,104 @@ func (a *Adapter) postHitlPrompt(ctx context.Context, client *slackAPIClient, sl
 		return err
 	}
 
-	// Generic tool approval → Approve/Deny.
-	text := pd.Content
-	if text == "" {
-		text = "_Waiting for approval…_"
-	}
-	err := client.postApprovalPrompt(ctx, slackChannel, threadID, pd.TaskID, text)
+	// Generic tool approval → the approval card.
+	card := approvalCard(p, pd.Content)
+	initiator := a.accessPolicy().Initiator(ctx, slackChannel, threadID)
+	err := client.postApprovalPrompt(ctx, slackChannel, threadID, pd.TaskID, card, initiator)
 	if err == nil {
 		return nil
 	}
 	a.Logger.Warn("slack: approval prompt failed, falling back to text", "thread", threadID, "error", err)
-	_, err = client.postMessage(ctx, slackChannel, text+"\n\n_Reply *approve* or *deny* in this thread._", threadID)
+	_, err = client.postMessage(ctx, slackChannel, card+"\n\n_Reply *approve* or *deny* in this thread._", threadID)
 	return err
+}
+
+// adkDefaultApprovalHint starts the hint the ADK runtime puts on every approval
+// it asks for ("Please approve or reject the tool call call_tool() by
+// responding with a FunctionResponse…", adk-go tool.WithConfirmation). It is
+// written for the model, not the person, so the card leaves it out.
+const adkDefaultApprovalHint = "Please approve or reject the tool call "
+
+// approvalCard renders the section of a tool approval prompt: the ask and the
+// calls it covers, named as the reply's task list names them, then the text the
+// status carried of its own, without the runtime's default hint. text is the
+// prompt delta's Content, used only for a prompt without structure (p nil),
+// whose Content is the status's own text. A decision rewrites the prompt with
+// the same section, rebuilt from the pending task.
+func approvalCard(p *channels.HitlPrompt, text string) string {
+	if p != nil {
+		text = p.StatusText
+	}
+	card := "*" + approvalRequiredTitle + "*"
+	if titles := approvalToolTitles(p); titles != "" {
+		card += " · " + titles
+	}
+	if body := approvalHint(text); body != "" {
+		card += "\n" + escapeMrkdwn(body)
+	}
+	return truncateRunes(card, slackSectionTextMax)
+}
+
+// approvalToolTitles names the calls an approval covers with their step
+// titles, muster's call_tool unwrapped to the tool it runs.
+func approvalToolTitles(p *channels.HitlPrompt) string {
+	if p == nil {
+		return ""
+	}
+	tools := p.Tools
+	if len(tools) == 0 && p.ToolName != "" {
+		tools = []channels.HitlTool{{Name: p.ToolName, Args: p.Args}}
+	}
+	titles := make([]string, 0, len(tools))
+	for _, t := range tools {
+		name := t.Name
+		if inner, _, ok := unwrapCallTool(&channels.ToolActivity{Name: t.Name, Args: t.Args}); ok {
+			name = inner
+		}
+		titles = append(titles, stepTitle(name))
+	}
+	return strings.Join(titles, ", ")
+}
+
+// approvalHint is the status's text without the lines that are the runtime's
+// default hint, one per call it asks for; the agent's own words stay.
+func approvalHint(text string) string {
+	var kept []string
+	for line := range strings.SplitSeq(text, "\n") {
+		if line = strings.TrimSpace(line); line != "" && !strings.HasPrefix(line, adkDefaultApprovalHint) {
+			kept = append(kept, line)
+		}
+	}
+	return strings.Join(kept, "\n")
+}
+
+// approvalDecisionLine is the context line that replaces an approval card's
+// buttons after an Approve or Deny click, or "" for any other click.
+func approvalDecisionLine(kind, user string, at time.Time) string {
+	format := approvalApprovedBy
+	switch kind {
+	case hitlApprove:
+	case hitlDeny:
+		format = approvalDeniedBy
+	default:
+		return ""
+	}
+	return fmt.Sprintf(format, user, slackTime(at))
+}
+
+// slackTime renders t as a Slack date token: each reader sees the time in
+// their own time zone, and the fallback (notifications, old clients) in UTC.
+func slackTime(t time.Time) string {
+	return fmt.Sprintf("<!date^%d^{time}|%s>", t.Unix(), t.UTC().Format("15:04 UTC"))
+}
+
+// approvalCardBlocks is an approval card after a click: the section it was
+// posted with and one context line where the buttons were.
+func approvalCardBlocks(card, line string) []any {
+	return []any{
+		map[string]any{bkType: bkSection, bkText: map[string]any{bkType: bkMrkdwn, bkText: card}},
+		contextBlock(line),
+	}
 }
 
 // renderAskUserText renders all questions and their choices as mrkdwn, with an

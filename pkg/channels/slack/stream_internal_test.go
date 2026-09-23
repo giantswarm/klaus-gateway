@@ -388,13 +388,13 @@ func TestPostApprovalPrompt_EscapesMrkdwn(t *testing.T) {
 	defer srv.Close()
 
 	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
-	require.NoError(t, client.postApprovalPrompt(t.Context(), "C1", "T1", "task-1", "run <!channel> now?"))
+	require.NoError(t, client.postApprovalPrompt(t.Context(), "C1", "T1", "task-1", approvalCard(nil, "run <!channel> now?"), "U1"))
 	raw, _ := body.Load().(string)
 	var payload struct {
 		Text string `json:"text"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(raw), &payload))
-	require.Equal(t, "run &lt;!channel&gt; now?", payload.Text)
+	require.Equal(t, "*Approval required*\nrun &lt;!channel&gt; now?", payload.Text)
 }
 
 // The picker's question enters an mrkdwn section and the fallback text, so it
@@ -706,7 +706,7 @@ type sectionPayload struct {
 	} `json:"blocks"`
 }
 
-// An oversized prompt must be truncated to Slack's 3000-char section limit;
+// An oversized hint must be truncated to Slack's 3000-char section limit;
 // otherwise the whole message is rejected with invalid_blocks and the paused
 // task is stranded with no visible prompt.
 func TestPostApprovalPrompt_TruncatesOversizedSection(t *testing.T) {
@@ -721,7 +721,7 @@ func TestPostApprovalPrompt_TruncatesOversizedSection(t *testing.T) {
 
 	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
 	oversized := strings.Repeat("日", 5000)
-	require.NoError(t, client.postApprovalPrompt(t.Context(), "C1", "T1", "task-1", oversized))
+	require.NoError(t, client.postApprovalPrompt(t.Context(), "C1", "T1", "task-1", approvalCard(nil, oversized), "U1"))
 
 	raw, _ := body.Load().(string)
 	var payload sectionPayload
@@ -1703,6 +1703,20 @@ func TestSteps_ErrorResultClosesTheStepAsError(t *testing.T) {
 	}, ft.stepShapes())
 }
 
+// A tool that failed behind the ADK runtime arrives as {"error": text}, not as
+// an MCP envelope; its step closes as error too.
+func TestSteps_ADKErrorResultClosesTheStepAsError(t *testing.T) {
+	ft, _ := captureStream(t, "",
+		toolCallDeltaWith("x_capi_list_clusters", "c1", nil),
+		toolResultDelta("x_capi_list_clusters", "c1", map[string]any{"error": "Tool execution failed."}),
+	)
+
+	require.Equal(t, []taskChunk{
+		{id: "step-1", title: "Capi list clusters", status: stepInProgress},
+		{id: "step-1", title: "Capi list clusters", status: stepError},
+	}, ft.stepShapes())
+}
+
 // Step ids are the turn's call ordinal, so a process continuing the turn after
 // a restart knows which ids are already on the reply.
 func TestSteps_IDsAreTheTurnsCallOrdinal(t *testing.T) {
@@ -2173,6 +2187,28 @@ func TestToolResultPreview(t *testing.T) {
 	t.Run("result wrap unwraps to the bare text", func(t *testing.T) {
 		preview, isErr := toolResultPreview(map[string]any{"result": "<command-message>skill loading</command-message>\n\nBase directory: /skills"}, 100)
 		require.Equal(t, "<command-message>skill loading</command-message> Base directory: /skills", preview)
+		require.False(t, isErr)
+	})
+
+	t.Run("ADK error wrap is the error text, marked as an error", func(t *testing.T) {
+		// adk-go turns an MCP isError result into a Go error and sends it as
+		// {"error": err.Error()}; this one is from graveler, 2026-09-23.
+		msg := `Tool execution failed. Details: {"isError":true,"content":[{"text":"the \"management_cluster\" parameter is required","type":"text"}]}`
+		preview, isErr := toolResultPreview(map[string]any{"error": msg}, 200)
+		require.Equal(t, msg, preview)
+		require.True(t, isErr)
+	})
+
+	t.Run("error wrap inside a muster envelope is an error too", func(t *testing.T) {
+		resp := mcpEnvelope(`{"error": "backend unreachable"}`, false)
+		preview, isErr := toolResultPreview(resp, 100)
+		require.Equal(t, "backend unreachable", preview)
+		require.True(t, isErr)
+	})
+
+	t.Run("error wrap with extra keys is not a text carrier", func(t *testing.T) {
+		preview, isErr := toolResultPreview(map[string]any{"error": "x", "status": "failed"}, 100)
+		require.Equal(t, `{"error": "x", "status": "failed"}`, preview)
 		require.False(t, isErr)
 	})
 

@@ -209,11 +209,20 @@ func TestInteractionsHandler_Approve(t *testing.T) {
 		return len(updateCalls) > 0
 	}, flowWait, 10*time.Millisecond)
 
-	// chat.update should have replaced buttons with approval text.
+	// chat.update keeps the card's section and replaces the buttons with who
+	// approved.
 	mu.Lock()
 	gotText := updateCalls[0]["text"]
+	gotBlocks, _ := updateCalls[0]["blocks"].([]any)
 	mu.Unlock()
-	require.Equal(t, "✅ _Approved._", gotText)
+	require.Len(t, gotBlocks, 2)
+	section := gotBlocks[0].(map[string]any)
+	require.Equal(t, "section", section["type"])
+	require.Equal(t, "*Approval required*", section["text"].(map[string]any)["text"])
+	decided := gotBlocks[1].(map[string]any)
+	require.Equal(t, "context", decided["type"])
+	require.Equal(t, gotText, decided["elements"].([]any)[0].(map[string]any)["text"])
+	require.True(t, strings.HasPrefix(gotText.(string), "Approved by <@U001> · <!date^"), "the card names who approved, and when: %v", gotText)
 
 	// Pending task should be cleared.
 	require.Nil(t, a.takePendingTask("T001"))
@@ -745,7 +754,7 @@ func TestHandleDecision_OBO_SuccessResumes(t *testing.T) {
 		return gw.sendCount() >= 1
 	}, flowWait, 10*time.Millisecond, "a linked clicker must resume the paused task")
 
-	require.Contains(t, sink.updateTexts(), "✅ _Approved._", "success path must rewrite the message to the approval text")
+	require.True(t, slices.ContainsFunc(sink.updateTexts(), func(s string) bool { return strings.HasPrefix(s, "Approved by <@U_LINKED> · ") }), "success path must rewrite the card to name who approved")
 	require.False(t, a.hasPendingTask("T001"), "resumed task must be consumed")
 	require.Equal(t, "human-token", gw.lastCompletion().BearerToken, "the resume must carry the clicker's human token")
 }

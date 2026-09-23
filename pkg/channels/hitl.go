@@ -25,6 +25,10 @@ type HitlPrompt struct {
 	ToolName string
 	// Hint is the agent's human-readable hint for a tool approval.
 	Hint string
+	// StatusText is the input-required status message's own text, "" when it
+	// carried none. The delta's Content falls back to the prompt's summary in
+	// that case; a renderer that shows the summary its own way reads this.
+	StatusText string
 	// OriginalCallID is the model's call id of the first tool awaiting approval.
 	OriginalCallID string
 	// Args is the arguments of the first tool awaiting approval, for rendering.

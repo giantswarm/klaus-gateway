@@ -51,6 +51,9 @@ type pendingTask struct {
 	// Prompt is the structured approval request the task is paused on, used to
 	// map a free-text reply or choice click back to a HITL decision.
 	Prompt *channels.HitlPrompt
+	// PromptText is the prompt's text as the task paused with it; an approval
+	// card is rebuilt from it and Prompt when a click rewrites the card.
+	PromptText string
 	// Usage carries the paused turn's token counts so the resuming turn reports
 	// the whole turn, not just its tail.
 	Usage channels.TurnUsage
