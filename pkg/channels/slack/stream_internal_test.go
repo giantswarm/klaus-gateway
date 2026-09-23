@@ -2226,6 +2226,13 @@ func TestToolResultPreview(t *testing.T) {
 		require.True(t, isErr)
 	})
 
+	t.Run("error wrap inside a muster envelope is an error too", func(t *testing.T) {
+		resp := mcpEnvelope(`{"error": "backend unreachable"}`, false)
+		preview, isErr := toolResultPreview(resp, 100)
+		require.Equal(t, "backend unreachable", preview)
+		require.True(t, isErr)
+	})
+
 	t.Run("error wrap with extra keys is not a text carrier", func(t *testing.T) {
 		preview, isErr := toolResultPreview(map[string]any{"error": "x", "status": "failed"}, 100)
 		require.Equal(t, `{"error": "x", "status": "failed"}`, preview)
