@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 )
@@ -292,11 +293,18 @@ func questionAnsweredBlocks(p *channels.HitlPrompt, answers [][]string, user str
 		}
 		return ""
 	}
+	// The line is one context element, which Slack caps like a section; an
+	// answer can be a pasted log or several long choices, and a line over the
+	// cap would get the whole rewrite refused, leaving the controls live.
 	var blocks []any
 	var line string
 	if len(questions) > 1 {
 		for i, q := range questions {
-			text := truncateRunes("*"+escapeMrkdwn(q.Question)+"*\n"+escapeMrkdwn(answer(i)), slackSectionTextMax)
+			a := answer(i)
+			if strings.TrimSpace(a) == "" {
+				a = formNoAnswer
+			}
+			text := truncateRunes("*"+escapeMrkdwn(q.Question)+"*\n"+escapeMrkdwn(a), slackSectionTextMax)
 			blocks = append(blocks, map[string]any{bkType: bkSection, bkText: map[string]any{bkType: bkMrkdwn, bkText: text}})
 		}
 		line = fmt.Sprintf(formAnsweredFormat, user, slackTime(at))
@@ -304,7 +312,8 @@ func questionAnsweredBlocks(p *channels.HitlPrompt, answers [][]string, user str
 		if len(questions) == 1 {
 			blocks = append(blocks, questionSection(questions[0].Question))
 		}
-		line = fmt.Sprintf(questionAnsweredFormat, escapeMrkdwn(answer(0)), user, slackTime(at))
+		rest := utf8.RuneCountInString(fmt.Sprintf(questionAnsweredFormat, "", user, slackTime(at)))
+		line = fmt.Sprintf(questionAnsweredFormat, truncateRunes(escapeMrkdwn(answer(0)), slackSectionTextMax-rest), user, slackTime(at))
 	}
 	return line, append(blocks, contextBlock(line))
 }

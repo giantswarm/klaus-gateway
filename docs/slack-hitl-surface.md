@@ -584,8 +584,9 @@ and resumes the paused task with one answer slot per question. An incomplete Sub
 and the form is left pending. The prompt message is then rewritten in place. The question stays
 and its controls go: one context line names the answer, who gave it and when (`gazelle ·
 answered by <@U123> · <!date^…^{time}|21:43 UTC>`, several choices joined with commas). A form
-keeps each question with its answer on the line under it, and its context line reads `Answered
-by <@U123> · …`. The approval card is rewritten the same way (section 1).
+keeps each question with its answer on the line under it ("No answer" when a typed reply had
+no line for it), and its context line reads `Answered by <@U123> · …`. A long answer is cut so
+the line stays within Slack's 3000-character limit, or Slack would refuse the whole rewrite. The approval card is rewritten the same way (section 1).
 
 Every prompt can also be answered by a plain in-thread reply, which maps free text to the same
 structured decision. A question prompt's message is recorded when it posts, so a typed answer

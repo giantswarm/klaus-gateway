@@ -404,6 +404,9 @@ const formIncompleteNudge = "_Please answer every question, then click Submit._"
 const (
 	questionAnsweredFormat = "%s · answered by <@%s> · %s"
 	formAnsweredFormat     = "Answered by <@%s> · %s"
+	// formNoAnswer stands under a form question a typed reply left without an
+	// answer (one line per question), so the thread sees what the agent got.
+	formNoAnswer = "No answer"
 )
 
 // The approval card: its title, the context line naming who may decide, the

@@ -12,6 +12,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/require"
 
@@ -203,6 +204,17 @@ func TestQuestionAnsweredBlocks(t *testing.T) {
 	require.Equal(t, "*Database?*\nMySQL", text(blocks[0]))
 	require.Equal(t, "*Features?*\nAuth, Logging", text(blocks[1]))
 	require.Equal(t, line, text(blocks[2]))
+
+	// A typed reply to a form gives one line per question; a missing line is
+	// shown, not left blank.
+	_, blocks = questionAnsweredBlocks(form, [][]string{{"MySQL"}, {}}, "U1", at)
+	require.Equal(t, "*Features?*\nNo answer", text(blocks[1]))
+
+	// A pasted log as a typed answer: the line stays within Slack's cap, so
+	// the rewrite is not refused and the controls do not stay live.
+	line, _ = questionAnsweredBlocks(single, [][]string{{strings.Repeat("x", 5000)}}, "U1", at)
+	require.LessOrEqual(t, utf8.RuneCountInString(line), slackSectionTextMax)
+	require.True(t, strings.HasSuffix(line, " · answered by <@U1> · "+when), "the cut is in the answer, not in who and when")
 }
 
 func TestBuildButtonDecision_ApproveDeny(t *testing.T) {
