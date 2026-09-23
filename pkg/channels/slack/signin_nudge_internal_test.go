@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/giantswarm/klaus-gateway/pkg/channels"
 )
 
 // The sign-in nudge throttle re-arms on signInNudgeTTL (the link URL's state
@@ -60,10 +62,10 @@ func TestMaybePostSignIn_RepromptsAfterLinkExpiry(t *testing.T) {
 	}
 	a.signInPromptedMu.Unlock()
 
-	a.maybePostSignIn(t.Context(), "D1", "T1", "U1")
+	a.maybePostSignIn(t.Context(), "D1", "T1", "U1", signInForMessage)
 	require.Equal(t, int32(1), srv.posts.Load(), "a fresh prompt posts once the old link expired")
 
-	a.maybePostSignIn(t.Context(), "D1", "T1", "U1")
+	a.maybePostSignIn(t.Context(), "D1", "T1", "U1", signInForMessage)
 	require.Equal(t, int32(1), srv.posts.Load(), "the throttle re-arms on the fresh prompt")
 
 	anchors := a.takeSignInAnchors("U1")
@@ -187,6 +189,34 @@ func TestSignInPromptBody_Trigger(t *testing.T) {
 	require.Equal(t, contextBlock(signInSessionHint), blocks[3])
 }
 
+// A parked message is replayed once the link completes, so its card says so;
+// a bare "login" is parked too but dropped at replay, so its card promises
+// nothing.
+func TestParkForLogin_TriggerFollowsTheMessage(t *testing.T) {
+	for _, tc := range []struct {
+		text     string
+		promises bool
+	}{
+		{"why are pods crashlooping?", true},
+		{"login", false},
+		{"Sign in!", false},
+	} {
+		t.Run(tc.text, func(t *testing.T) {
+			a, srv := newTestAdapter(t)
+			a.OBO = deadLinkOBO{}
+			a.parkForLogin(t.Context(), channels.InboundMessage{ThreadID: "T1", Text: tc.text}, "C1", "U1")
+			srv.mu.Lock()
+			defer srv.mu.Unlock()
+			require.Len(t, srv.ephemeralTexts, 1)
+			if tc.promises {
+				require.Contains(t, srv.ephemeralTexts[0], signInForMessageLine)
+			} else {
+				require.NotContains(t, srv.ephemeralTexts[0], signInForMessageLine)
+			}
+		})
+	}
+}
+
 func TestJoinMentions(t *testing.T) {
 	require.Equal(t, "<@A>", joinMentions([]string{"A"}))
 	require.Equal(t, "<@A> and <@B>", joinMentions([]string{"A", "B"}))
@@ -210,7 +240,7 @@ func TestMaybePostSignIn_SupersededChannelPromptWarnsOnTheFreshOne(t *testing.T)
 	}
 	a.signInPromptedMu.Unlock()
 
-	a.maybePostSignIn(t.Context(), "C1", "T1", "U1")
+	a.maybePostSignIn(t.Context(), "C1", "T1", "U1", signInForMessage)
 
 	require.Zero(t, srv.updates.Load(), "an ephemeral prompt has no message to rewrite")
 	srv.mu.Lock()

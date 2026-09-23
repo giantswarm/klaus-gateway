@@ -25,6 +25,9 @@ or `helm/`. Add a line when a review finds a new one.
   tester who looks at the thread sees nothing (#288 live test).
 - **Slack applies a new OAuth scope only on re-install** of the app. A manifest change alone
   changes nothing on an existing install (#288, `UPGRADE.md`).
+- **A mention notifies only when the message is posted.** A mention that `chat.update` adds
+  to a message sends no notification, so a notice that names a second person does not ping
+  them (#332).
 - **Every message in a served channel reaches the inactive-thread gate.** That path is the
   most frequent one the gateway runs; it costs at most one store read (#307).
 

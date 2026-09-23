@@ -1051,13 +1051,21 @@ func (a *Adapter) ensureSignInNotice(ctx context.Context, client *slackAPIClient
 	return nil
 }
 
-// noteSignedIn moves slackUser from waiting to signed in on every thread
-// notice that names them, and rewrites those notices.
-func (a *Adapter) noteSignedIn(ctx context.Context, slackUser string) {
+// noteSignedIn moves slackUser from waiting to signed in on the thread notices
+// their prompts were posted under, and rewrites those notices. Only a channel
+// prompt in a thread has a notice, and a notice names a user only once their
+// prompt posted, so the user's anchors are the notices to look at: a linked
+// user's turn, which drains no anchors, touches none.
+func (a *Adapter) noteSignedIn(ctx context.Context, slackUser string, anchors []signInAnchor) {
+	var notices []*signInNotice
 	a.signInNoticesMu.Lock()
-	notices := make([]*signInNotice, 0, len(a.signInNotices))
-	for _, entry := range a.signInNotices {
-		notices = append(notices, entry.value)
+	for _, anchor := range anchors {
+		if !anchor.ephemeral || anchor.threadID == "" {
+			continue
+		}
+		if n := a.signInNotices[anchor.channel+"\x00"+anchor.threadID].value; n != nil {
+			notices = append(notices, n)
+		}
 	}
 	a.signInNoticesMu.Unlock()
 	client := a.apiClient()
@@ -1175,11 +1183,11 @@ func (a *Adapter) takeSignInAnchors(slackUser string) []signInAnchor {
 // happens to a parked message is signalled by the replay itself, not by this
 // confirmation.
 func (a *Adapter) updateSignInAnchors(ctx context.Context, slackUser string) {
-	a.noteSignedIn(ctx, slackUser)
 	anchors := a.takeSignInAnchors(slackUser)
 	if len(anchors) == 0 {
 		return
 	}
+	a.noteSignedIn(ctx, slackUser, anchors)
 	client := a.apiClient()
 	for _, anchor := range anchors {
 		if anchor.ts == "" {
@@ -1224,7 +1232,7 @@ func shouldPostSignInNudge(entry ttlEntry[signInAnchor], exists bool, now time.T
 // postSignIn overwrites it with the posted message's coordinates. When a
 // re-nudge replaces a prompt whose link expired, the old prompt is rewritten
 // (best-effort) so its dead button cannot be mistaken for the live one.
-func (a *Adapter) maybePostSignIn(ctx context.Context, slackChannel, threadID, slackUser string) {
+func (a *Adapter) maybePostSignIn(ctx context.Context, slackChannel, threadID, slackUser string, trigger signInTrigger) {
 	now := time.Now()
 	key := slackUser + "\x00" + threadID
 	a.signInPromptedMu.Lock()
@@ -1251,7 +1259,7 @@ func (a *Adapter) maybePostSignIn(ctx context.Context, slackChannel, threadID, s
 			a.Logger.Warn("slack: rewrite expired sign-in prompt failed", "user", slackUser, "thread", threadID, "error", err)
 		}
 	}
-	a.postSignIn(ctx, slackChannel, threadID, slackUser, expired.ephemeral, signInForMessage)
+	a.postSignIn(ctx, slackChannel, threadID, slackUser, expired.ephemeral, trigger)
 }
 
 // postAccessPrompt asks the thread initiator (ephemerally) to approve a newcomer
@@ -1482,7 +1490,13 @@ func (a *Adapter) parkForLogin(ctx context.Context, msg channels.InboundMessage,
 		a.OnUserLinked(ctx, slackUser, "")
 		return
 	}
-	a.maybePostSignIn(ctx, slackChannel, msg.ThreadID, slackUser)
+	// A bare "login" is parked too, but the completed link drops it rather than
+	// replaying it (OnUserLinked), so its card must not promise a replay.
+	trigger := signInForMessage
+	if isBareAuthUtterance(msg.Text) {
+		trigger = signInForLogin
+	}
+	a.maybePostSignIn(ctx, slackChannel, msg.ThreadID, slackUser, trigger)
 }
 
 // takePendingLogin atomically retrieves and removes a user's parked messages,
