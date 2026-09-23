@@ -426,6 +426,25 @@ See `helm/klaus-gateway/values.yaml` for the full set. The agentgateway block is
 `helm/klaus-gateway/values.schema.json`; `helm install` and `helm upgrade` reject unknown
 fields or wrong types.
 
+### Where an installation's values come from
+
+On a Giant Swarm installation `klaus-gateway` is deployed as a component of the
+[`agent-platform`](https://github.com/giantswarm/agent-platform) meta chart, so its values are
+not set on this chart directly. `konfigure-operator` renders the `agent-platform-konfiguration`
+ConfigMap the umbrella HelmRelease consumes by layering, in order:
+
+1. **Defaults** — `default/apps/agent-platform/configmap-values.yaml.template` in
+   [`giantswarm/shared-configs`](https://github.com/giantswarm/shared-configs), pulled in through
+   the Flux `GitRepository` `include`.
+2. **Per installation** — `installations/<installation>/apps/agent-platform/configmap-values.yaml.patch`
+   in [`giantswarm/giantswarm-configs`](https://github.com/giantswarm/giantswarm-configs) (this
+   app directory was renamed from `agentic-platform`).
+3. The `management-cluster-configuration` `KonfigurationSchema` (namespace `giantswarm`) names
+   those layer paths.
+
+To change a value on one installation, edit its patch in `giantswarm-configs`; to change it for
+all, edit the `shared-configs` template. konfigure re-renders and Flux rolls the pod.
+
 ## Local checks
 
 ```bash
