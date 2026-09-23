@@ -12,67 +12,22 @@ import (
 )
 
 const (
-	cmdHelp    = "help"
-	cmdStop    = "stop"
-	cmdLogin   = "login"  // OBO account linking: sign in
-	cmdLogout  = "logout" // OBO account linking: sign out
-	cmdUsage   = "usage"
-	cmdDetails = "details"
-	cmdAgent   = "agent" // agent selection; handled by handleAgentSelection, not handleCommand
+	cmdHelp   = "help"
+	cmdStop   = "stop"
+	cmdLogin  = "login"  // OBO account linking: sign in
+	cmdLogout = "logout" // OBO account linking: sign out
+	cmdUsage  = "usage"
+	cmdAgent  = "agent" // agent selection; handled by handleAgentSelection, not handleCommand
 )
-
-// detailsLevel controls how much of the agent's tool activity is rendered
-// inline in a thread. The zero value is detailsOn so an un-set thread defaults
-// to showing tool calls (the MVP default).
-type detailsLevel int
-
-const (
-	detailsOn   detailsLevel = iota // show tool calls compactly (default)
-	detailsOff                      // hide tool activity
-	detailsFull                     // show tool calls and result previews
-)
-
-const (
-	argOn   = "on"
-	argOff  = "off"
-	argFull = "full"
-)
-
-func (l detailsLevel) String() string {
-	switch l {
-	case detailsOff:
-		return argOff
-	case detailsFull:
-		return argFull
-	default:
-		return argOn
-	}
-}
-
-// parseDetailsLevel maps a command argument to a level. ok is false for an
-// unrecognised argument.
-func parseDetailsLevel(s string) (level detailsLevel, ok bool) {
-	switch strings.ToLower(s) {
-	case argOn:
-		return detailsOn, true
-	case argOff:
-		return detailsOff, true
-	case argFull:
-		return detailsFull, true
-	default:
-		return detailsOn, false
-	}
-}
 
 // knownCommands is the verb set the gateway owns.
 var knownCommands = map[string]struct{}{
-	cmdHelp:    {},
-	cmdStop:    {},
-	cmdLogin:   {},
-	cmdLogout:  {},
-	cmdUsage:   {},
-	cmdDetails: {},
-	cmdAgent:   {},
+	cmdHelp:   {},
+	cmdStop:   {},
+	cmdLogin:  {},
+	cmdLogout: {},
+	cmdUsage:  {},
+	cmdAgent:  {},
 }
 
 // commandShapeRe matches a verb that reads as a command word. A path or URL
@@ -130,7 +85,6 @@ func isBareStop(text string) bool {
 
 const helpCommands = "• `/stop` — interrupt the current turn\n" +
 	"• `/usage` — show token usage for the last turn and the session\n" +
-	"• `/details on|off|full` — show or hide the agent's tool activity\n" +
 	"• *Inspect agent steps* (message shortcut: ⋯ menu → Apps, on any message in the thread) — see the tool calls and results behind recent turns, visible only to you\n" +
 	"• `/help` — show this message"
 
@@ -231,30 +185,6 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *slashCommand, slackUse
 		// The model line is read from the kagent controller as the caller: the
 		// controller serves nothing to the gateway's own identity.
 		reply(a.usageReport(a.withCallerToken(ctx, slackUser), threadID, slackChannel))
-		return true
-
-	case cmdDetails:
-		if !permittedOnly() {
-			return true
-		}
-		if len(cmd.Args) == 0 {
-			reply(fmt.Sprintf("Tool activity is *%s* for this thread. Use `/details on`, `/details off`, or `/details full`.", a.detailsLevel(threadID)))
-			return true
-		}
-		level, ok := parseDetailsLevel(cmd.Args[0])
-		if !ok {
-			reply("_Usage:_ `/details on|off|full`")
-			return true
-		}
-		a.setDetailsLevel(threadID, level)
-		switch level {
-		case detailsOff:
-			reply("🔇 Hiding the agent's tool activity in this thread.")
-		case detailsFull:
-			reply("🔎 Showing the agent's tool calls and results in this thread.")
-		default:
-			reply("🔧 Showing the agent's tool calls in this thread.")
-		}
 		return true
 	}
 

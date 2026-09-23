@@ -36,7 +36,7 @@ var toolNamespacePrefixes = []string{"x_", "workflow_"}
 // meta-tools get phrases of their own and every other name is humanised: the
 // namespace prefix goes, underscores become spaces and the first word is
 // capitalised ("x_kubernetes_list" → "Kubernetes list"). The raw name stays
-// available in the step's details at /details full.
+// available in the step's details.
 //
 // The name is agent- and MCP-server-controlled text, so mrkdwn control
 // sequences are escaped and newlines flattened before it is cut to Slack's

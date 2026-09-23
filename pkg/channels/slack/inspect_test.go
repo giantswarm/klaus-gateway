@@ -69,44 +69,30 @@ func TestToolLog_TTLEviction(t *testing.T) {
 	})
 }
 
-// The tool log records at detailsOn and detailsFull — the retroactive view must
-// exist for the default level — but not at detailsOff, which stays private.
-func TestRenderToolActivity_RecordsAtOnAndFullNotOff(t *testing.T) {
-	for _, tc := range []struct {
-		level detailsLevel
-		want  int
-	}{
-		{detailsOn, 2},
-		{detailsFull, 2},
-		{detailsOff, 0},
-	} {
-		t.Run(tc.level.String(), func(t *testing.T) {
-			a, _ := newInspectTestAdapter(t)
-			w := newBatchedWriterWithClient(a.apiClient(), "C1", "", "T1", tc.level, testLogger())
-			w.adapter = a
+// The tool log always records the call and its result, so the retroactive
+// Inspect view exists for every turn.
+func TestRenderToolActivity_RecordsCallAndResult(t *testing.T) {
+	a, _ := newInspectTestAdapter(t)
+	w := newBatchedWriterWithClient(a.apiClient(), "C1", "", "T1", testLogger())
+	w.adapter = a
 
-			w.renderToolActivity(t.Context(), &channels.ToolActivity{
-				Kind: channels.ToolCall, Name: "kube_get", CallID: "c1",
-				Args: map[string]any{"resource": "pods"},
-			})
-			w.renderToolActivity(t.Context(), &channels.ToolActivity{
-				Kind: channels.ToolResult, Name: "kube_get", CallID: "c1",
-				Response: map[string]any{"items": "3 pods"},
-			})
+	w.renderToolActivity(t.Context(), &channels.ToolActivity{
+		Kind: channels.ToolCall, Name: "kube_get", CallID: "c1",
+		Args: map[string]any{"resource": "pods"},
+	})
+	w.renderToolActivity(t.Context(), &channels.ToolActivity{
+		Kind: channels.ToolResult, Name: "kube_get", CallID: "c1",
+		Response: map[string]any{"items": "3 pods"},
+	})
 
-			entries, _ := a.toolLogSnapshot("T1")
-			require.Len(t, entries, tc.want)
-			if tc.want == 0 {
-				return
-			}
-			require.Contains(t, entries[0].md, "🔧")
-			require.Contains(t, entries[0].md, "kube_get")
-			require.Contains(t, entries[0].md, "pods", "args summary is retained")
-			require.Contains(t, entries[1].md, "↳")
-			require.Contains(t, entries[1].md, "result")
-			require.Contains(t, entries[1].md, "3 pods", "result preview is retained")
-		})
-	}
+	entries, _ := a.toolLogSnapshot("T1")
+	require.Len(t, entries, 2)
+	require.Contains(t, entries[0].md, "🔧")
+	require.Contains(t, entries[0].md, "kube_get")
+	require.Contains(t, entries[0].md, "pods", "args summary is retained")
+	require.Contains(t, entries[1].md, "↳")
+	require.Contains(t, entries[1].md, "result")
+	require.Contains(t, entries[1].md, "3 pods", "result preview is retained")
 }
 
 // Tool names, args, and results are agent- and MCP-controlled: the recorded
@@ -114,7 +100,7 @@ func TestRenderToolActivity_RecordsAtOnAndFullNotOff(t *testing.T) {
 // or inject mrkdwn when the inspection renders it.
 func TestRenderToolActivity_RecordedEntryEscapesHostileContent(t *testing.T) {
 	a, _ := newInspectTestAdapter(t)
-	w := newBatchedWriterWithClient(a.apiClient(), "C1", "", "T1", detailsOn, testLogger())
+	w := newBatchedWriterWithClient(a.apiClient(), "C1", "", "T1", testLogger())
 	w.adapter = a
 
 	w.renderToolActivity(t.Context(), &channels.ToolActivity{
@@ -138,10 +124,10 @@ func TestRenderToolActivity_RecordedEntryEscapesHostileContent(t *testing.T) {
 }
 
 // A call_tool invocation is unwrapped to the inner muster tool in the log,
-// matching the detailsFull rendering.
+// matching the step's details rendering.
 func TestRenderToolActivity_RecordsUnwrappedCallTool(t *testing.T) {
 	a, _ := newInspectTestAdapter(t)
-	w := newBatchedWriterWithClient(a.apiClient(), "C1", "", "T1", detailsOn, testLogger())
+	w := newBatchedWriterWithClient(a.apiClient(), "C1", "", "T1", testLogger())
 	w.adapter = a
 
 	w.renderToolActivity(t.Context(), &channels.ToolActivity{
@@ -204,10 +190,9 @@ func TestRouteInteraction_MessageActionEmptyLog(t *testing.T) {
 	posts := srv.ephemeralBodies()
 	require.Len(t, posts, 1)
 	require.Contains(t, posts[0]["text"], "don't have retained tool activity")
-	require.Contains(t, posts[0]["text"], "/details full")
 
-	// The same thread with a details setting is known to have been served.
-	a.setDetailsLevel("400.000", detailsFull)
+	// The same thread with recorded usage is known to have been served.
+	a.recordTurnUsage("400.000", "C1", channels.TurnUsage{TotalTokens: 1})
 	a.routeInteraction(t.Context(), inspectPayload("400.000", ""))
 	posts = srv.ephemeralBodies()
 	require.Len(t, posts, 2)

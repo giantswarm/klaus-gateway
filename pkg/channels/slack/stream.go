@@ -137,9 +137,9 @@ const stepApprovalAskedPrefix = "Asked for approval: "
 //   - the answer, and the agent's interim narration, as markdown_text chunks;
 //   - each tool call as a task_update chunk, which Slack renders as a step of
 //     a task list attached to the reply: in_progress when the call starts,
-//     complete or error when its result arrives. /details decides how much a
-//     step carries — nothing at all at off, the title alone at on, the
-//     truncated arguments and result preview at full.
+//     complete or error when its result arrives. A step carries the truncated
+//     call arguments as its details and the truncated result preview as its
+//     output.
 //
 // The stream therefore opens at the FIRST thing the turn produces — a tool
 // call, a narration passage or the first answer text, whichever comes first —
@@ -158,7 +158,6 @@ type batchedWriter struct {
 	// message of its own.
 	placeholderTS string
 	logger        *slog.Logger
-	details       detailsLevel // tool-activity verbosity snapshotted at turn start
 
 	// adapter, slackUser, and connectorPrompts back the reactive connector
 	// prompt: a core_auth_login tool result in the stream renders a Connect
@@ -310,8 +309,8 @@ type openStep struct {
 // it (observed on graveler, 2026-09-22: a step sent with the same details twice
 // showed both copies run together, while output, sent once, showed once). So
 // details rides the update that OPENS the step and no other; every later update
-// of that step carries the id, the title, the status and — at /details full —
-// the output.
+// of that step carries the id, the title, the status and — on the update that
+// closes the step — the output.
 type taskUpdate struct {
 	id      string
 	title   string
@@ -336,7 +335,9 @@ func textChunk(md string) map[string]any {
 }
 
 // stepChunk renders one step state as a streamed chunk. details and output are
-// left off when empty — at /details on a step is its title alone.
+// left off when empty: the update that opens a step always carries details — at
+// least the raw tool name, even for a call with no arguments — while a step
+// closed without a result preview, the turn-end close path, carries no output.
 func stepChunk(s taskUpdate) map[string]any {
 	c := map[string]any{
 		"type":   chunkTypeTaskUpdate,
@@ -353,7 +354,7 @@ func stepChunk(s taskUpdate) map[string]any {
 	return c
 }
 
-func newBatchedWriterWithClient(client *slackAPIClient, channel, ts, threadTS string, details detailsLevel, logger *slog.Logger) *batchedWriter {
+func newBatchedWriterWithClient(client *slackAPIClient, channel, ts, threadTS string, logger *slog.Logger) *batchedWriter {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -362,7 +363,6 @@ func newBatchedWriterWithClient(client *slackAPIClient, channel, ts, threadTS st
 		channel:       channel,
 		placeholderTS: ts,
 		threadTS:      threadTS,
-		details:       details,
 		logger:        logger,
 	}
 }
@@ -596,7 +596,9 @@ const (
 	// characters as the chunk size limit of task_update, so the payload
 	// previews are cut to it after escaping; the tool log the "Inspect agent
 	// steps" shortcut shows keeps the fuller toolArgsMax/toolResultMax
-	// renderings.
+	// renderings. Slack collapses a long field behind its own "Show more"
+	// toggle by rendered height, not by a character count, so no cap short of
+	// losing payload avoids it (measured on graveler, 2026-09-23).
 	stepFieldMax = 256
 	// maxActivityBlocks bounds the context blocks of one in-thread Block Kit
 	// message, comfortably under Slack's 50-blocks-per-message limit; the tool
@@ -631,16 +633,14 @@ const stepLimitNote = "_…step limit reached; hiding this turn's remaining tool
 // a task_update chunk that opens the step as in_progress, and a second one on
 // its result that closes the step as complete — or as error when the tool
 // reported one. The two carry the same id, so Slack updates the step in place
-// instead of listing it twice. /details decides what a step carries: at off
-// nothing is rendered and nothing is recorded (it is the private mode), at on
-// the plain-language title alone, at full the truncated call arguments as the
-// step's details and the truncated result preview as its output.
+// instead of listing it twice. A step carries the truncated call arguments as
+// its details and the truncated result preview as its output.
 //
-// At every level except off the call and its result are also retained in the
-// adapter's per-thread tool log, so the "Inspect agent steps" shortcut can show
-// the payloads retroactively whatever the level was.
+// The call and its result are also retained in the adapter's per-thread tool
+// log, so the "Inspect agent steps" shortcut can show the fuller payloads
+// retroactively.
 func (w *batchedWriter) renderToolActivity(ctx context.Context, tool *channels.ToolActivity) {
-	if w.details == detailsOff || tool == nil {
+	if tool == nil {
 		return
 	}
 	switch tool.Kind {
@@ -721,12 +721,10 @@ func (w *batchedWriter) openStep(ctx context.Context, callID, displayName string
 		title:  stepTitle(displayName),
 	}
 	u := taskUpdate{id: s.id, title: s.title, status: stepInProgress}
-	if w.details == detailsFull {
-		// The raw name is what a reader debugging a turn needs: the title is a
-		// phrase, the details name the tool and what it was called with. This is
-		// the only update of this step that carries them.
-		u.details = stepField(displayName + " " + compactJSON(args, toolArgsMax))
-	}
+	// The raw name is what a reader debugging a turn needs: the title is a
+	// phrase, the details name the tool and what it was called with. This is
+	// the only update of this step that carries them.
+	u.details = stepField(displayName + " " + compactJSON(args, toolArgsMax))
 	w.mu.Lock()
 	w.openSteps = append(w.openSteps, s)
 	w.mu.Unlock()
@@ -749,9 +747,7 @@ func (w *batchedWriter) closeStep(ctx context.Context, callID, preview string, i
 		status = stepError
 	}
 	u := taskUpdate{id: s.id, title: s.title, status: status}
-	if w.details == detailsFull {
-		u.output = stepField(preview)
-	}
+	u.output = stepField(preview)
 	w.queueStep(u)
 	w.noteDelivered(ctx)
 }
@@ -938,9 +934,9 @@ func (w *batchedWriter) setSessionStatus(ctx context.Context, status sessionStat
 
 // renderNarration queues the agent's interim narration — the prose it writes
 // just before firing tool calls — as text chunks of the reply, so it reads in
-// order with the steps it introduces and the answer that follows. Unlike tool
-// activity it ignores the details level: this is the agent talking, not tool
-// transparency.
+// order with the steps it introduces and the answer that follows. This is the
+// agent talking, not tool transparency, so it renders as prose rather than as a
+// step of the task list.
 //
 // Narration bytes count toward the streamed message's character cap, like any
 // other prose, but NOT toward the answer length the delivery record carries:

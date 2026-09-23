@@ -14,8 +14,8 @@ import (
 // and lost on restart by design.
 const maxToolLogEntries = 100
 
-// toolLogEntry is one retained tool call or result rendering, in the
-// detailsFull entry format (already escaped for an mrkdwn context block).
+// toolLogEntry is one retained tool call or result rendering, in the tool-log
+// entry format (already escaped for an mrkdwn context block).
 type toolLogEntry struct {
 	turn int    // 1-based turn ordinal within this thread's log
 	md   string // rendered entry: "🔧 `name`" + args span, or "↳ `name` result" + preview
@@ -86,12 +86,12 @@ func (a *Adapter) toolLogSnapshot(threadID string) (entries []toolLogEntry, drop
 // invoked in a thread with no retained tool activity: no agent turn ran here,
 // the log expired or was capped away, or the gateway restarted. Honest about
 // the retention model rather than guessing which case applies.
-const inspectNothingRetainedNotice = "_I don't have retained tool activity for this thread — either no agent turn ran here recently, or my record is gone (tool calls are kept in memory for 24 hours, don't survive a restart, and aren't recorded while `/details off` is set). For live debugging, set `/details full` in the thread before the turn runs._"
+const inspectNothingRetainedNotice = "_I don't have retained tool activity for this thread — either no agent turn ran here recently, or my record is gone (tool calls are kept in memory for 24 hours and don't survive a restart)._"
 
 // inspectRetainedElsewhereHint extends the empty-log notice when this process
-// has other traces of the thread (details setting, usage): a turn very likely
-// ran, so the log was evicted rather than never written.
-const inspectRetainedElsewhereHint = "_This thread has been served, so the tool log for its earlier turns is no longer retained — use `/details full` before the next turn for live debugging._"
+// has other traces of the thread (recorded usage): a turn very likely ran, so
+// the log was evicted rather than never written.
+const inspectRetainedElsewhereHint = "_This thread has been served, so the tool log for its earlier turns is no longer retained._"
 
 // inspectFallbackText is the notification/accessibility fallback of an
 // inspection message; the context blocks carry the real content.
@@ -126,7 +126,7 @@ func (a *Adapter) handleMessageAction(ctx context.Context, payload interactionPa
 }
 
 // postInspection renders threadID's retained tool log as ephemeral in-thread
-// messages visible only to slackUser: per call, the detailsFull entry format
+// messages visible only to slackUser: per call, the tool-log entry format
 // (🔧 name + args, ↳ result preview) grouped under per-turn markers. Splits
 // across several ephemeral posts when the log outgrows one message's block
 // budget. An empty log gets the honest "no longer retained" guidance instead.
