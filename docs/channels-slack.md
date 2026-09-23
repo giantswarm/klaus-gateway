@@ -441,7 +441,8 @@ any string that begins with `Slack bot`, `Slack app-level`, or `Slack user`.
      what closes a call the stream gave no id, which no result can be matched to. A call to a
      tool that needs approval is the exception: the runtime answers it with its confirmation
      request (`requires confirmation, please approve or reject`) before the task pauses, so its
-     step ends as `pending`, titled "… · waiting for approval", and not as done. Once the
+     step ends as `complete` with the title "Asked for approval: …": what completed is the
+     ask, not the tool. Slack has no waiting state (`pending` renders as an error). Once the
      prompt is approved, the resumed turn's message opens a step for the call, which its real
      result closes; a denied call gets no second step. A turn is capped at 100 steps; past it one note in the reply says the rest are not shown and the
      calls still reach the **Inspect agent steps** log, which keeps the most recent 100 per

@@ -110,15 +110,16 @@ const (
 
 	// Step states of a task_update chunk, spelled exactly as Slack names them
 	// in the chat.appendStream reference.
-	stepPending    = "pending"
 	stepInProgress = "in_progress"
 	stepComplete   = "complete"
 	stepError      = "error"
 )
 
-// stepAwaitingApprovalSuffix follows the title of a step whose call waits for
-// the person's approval: the reply closes on the prompt with the step not run.
-const stepAwaitingApprovalSuffix = " · waiting for approval"
+// stepApprovalAskedPrefix leads the title of a step whose call waits for the
+// person's approval. Slack has no waiting state, and a step left in_progress
+// spins on the closed reply forever, so the step closes complete and its title
+// says what completed: the ask, not the tool.
+const stepApprovalAskedPrefix = "Asked for approval: "
 
 // batchedWriter accumulates OutboundDelta content and streams it into one
 // Slack message: chat.startStream opens the reply, chat.appendStream adds
@@ -755,8 +756,8 @@ func (w *batchedWriter) closeStep(ctx context.Context, callID, preview string, i
 	w.noteDelivered(ctx)
 }
 
-// holdStep ends the step of a call that waits for the person's approval: not
-// run, so neither complete nor an error. The reply closes on the prompt; once
+// holdStep ends the step of a call that waits for the person's approval as the
+// ask for it, not as the tool's run. The reply closes on the prompt; once
 // approved, the call runs in the next turn's message, which opens a step of its
 // own for it (approvedCalls).
 func (w *batchedWriter) holdStep(ctx context.Context, callID string) {
@@ -764,8 +765,8 @@ func (w *batchedWriter) holdStep(ctx context.Context, callID string) {
 	if !ok {
 		return
 	}
-	title := truncateRunes(s.title+stepAwaitingApprovalSuffix, stepTitleMax)
-	w.queueStep(taskUpdate{id: s.id, title: title, status: stepPending})
+	title := truncateRunes(stepApprovalAskedPrefix+s.title, stepTitleMax)
+	w.queueStep(taskUpdate{id: s.id, title: title, status: stepComplete})
 	w.noteDelivered(ctx)
 }
 

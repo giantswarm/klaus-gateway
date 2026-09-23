@@ -1808,8 +1808,7 @@ func TestSteps_PromptPauseClosesTheStepOnTheFirstMessage(t *testing.T) {
 }
 
 // A call that waits for approval did not run: the runtime's confirmation
-// request ends its step as pending, not complete, and the prompt pause leaves
-// it so. Once approved, the call runs in the resumed message, which opens a
+// request ends its step as the ask for approval, not as the tool's run. Once approved, the call runs in the resumed message, which opens a
 // step for it so the real result has one to close.
 func TestSteps_ApprovalHoldsTheStepAndTheResumeReopensIt(t *testing.T) {
 	ft := &fakeThread{}
@@ -1839,7 +1838,7 @@ func TestSteps_ApprovalHoldsTheStepAndTheResumeReopensIt(t *testing.T) {
 
 	require.Equal(t, []taskChunk{
 		{id: "step-1", title: "Kubernetes rollout restart", status: stepInProgress},
-		{id: "step-1", title: "Kubernetes rollout restart · waiting for approval", status: stepPending},
+		{id: "step-1", title: "Asked for approval: Kubernetes rollout restart", status: stepComplete},
 		{id: "step-2", title: "Kubernetes rollout restart", status: stepInProgress},
 		{id: "step-2", title: "Kubernetes rollout restart", status: stepComplete},
 	}, ft.steps())
