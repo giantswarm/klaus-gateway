@@ -177,7 +177,7 @@ func TestSlashCommand_DMIsAnsweredPrivately(t *testing.T) {
 	sendSlashCommand(t, srv, "D1", "U1", "hello", api.URL+"/response_url")
 
 	fake.waitForPath(t, "response_url", 1)
-	require.Contains(t, responseURLTexts(fake), "opens a conversation in a channel")
+	require.Contains(t, responseURLTexts(fake), "starts a conversation in a channel")
 	require.Empty(t, fake.pathCalls("views.open"))
 }
 
@@ -192,7 +192,7 @@ func TestSlashCommand_UnservedChannelIsRefused(t *testing.T) {
 	sendSlashCommand(t, srv, "C1", "U1", "hello", api.URL+"/response_url")
 
 	fake.waitForPath(t, "response_url", 1)
-	require.Contains(t, responseURLTexts(fake), "not enabled in this channel")
+	require.Contains(t, responseURLTexts(fake), "channel is not enabled")
 	require.Empty(t, fake.pathCalls("views.open"))
 }
 
@@ -207,7 +207,7 @@ func TestSlashCommand_RosterUnavailableIsLoud(t *testing.T) {
 	sendSlashCommand(t, srv, "C1", "U1", "", api.URL+"/response_url")
 
 	fake.waitForPath(t, "response_url", 1)
-	require.Contains(t, responseURLTexts(fake), "can't list the available agents")
+	require.Contains(t, responseURLTexts(fake), "agents cannot be listed")
 	require.Empty(t, fake.pathCalls("views.open"))
 }
 
@@ -412,7 +412,7 @@ func TestAskAgentSubmission_UnknownAgentFailsLoudly(t *testing.T) {
 	sendAskAgentSubmission(t, srv, "U1", pm, "kagent/grill-master", "smoke a brisket")
 
 	fake.waitForPath(t, "response_url", 1)
-	require.Contains(t, responseURLTexts(fake), "I don't know an agent named `kagent/grill-master`")
+	require.Contains(t, responseURLTexts(fake), "No agent named `kagent/grill-master` is available")
 	require.Empty(t, fake.pathCalls("chat.postMessage"), "no root is posted")
 	require.Equal(t, 0, gw.dispatchCount())
 }
@@ -460,7 +460,7 @@ func TestAskAgentSubmission_PrivateChannelAsksForInvite(t *testing.T) {
 	sendAskAgentSubmission(t, srv, "U1", pm, "kagent/sre-agent", "hello")
 
 	fake.waitForPath(t, "response_url", 1)
-	require.Contains(t, responseURLTexts(fake), "Invite me to the channel")
+	require.Contains(t, responseURLTexts(fake), "Invite the bot to the channel")
 	require.Equal(t, 0, gw.dispatchCount())
 }
 
@@ -545,7 +545,7 @@ func TestAskAgentSubmission_NotRunnableAgentIsRefusedWithReason(t *testing.T) {
 	fake.waitForPath(t, "response_url", 1)
 	require.Contains(t, responseURLTexts(fake),
 		"is installed but cannot start a conversation right now: no Harness admits this AgentTemplate")
-	require.NotContains(t, responseURLTexts(fake), "I don't know an agent named")
+	require.NotContains(t, responseURLTexts(fake), "No agent named")
 	require.Empty(t, fake.pathCalls("chat.postMessage"), "no root is posted")
 	require.Equal(t, 0, gw.dispatchCount())
 }

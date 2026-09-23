@@ -88,30 +88,79 @@ func isBareStop(text string) bool {
 	return strings.EqualFold(strings.TrimSpace(text), cmdStop)
 }
 
-const helpCommands = "• `/stop` — interrupt the current turn\n" +
-	"• `/usage` — show token usage for the last turn and the session\n" +
-	"• *Inspect agent steps* (message shortcut: ⋯ menu → Apps, on any message in the thread) — see the tool calls and results behind recent turns, visible only to you\n" +
-	"• `/help` — show this message"
+// helpCommand is one command in the help reply: the command as it is typed,
+// and what it does.
+type helpCommand struct{ command, effect string }
 
-// agentHelpText is appended to the help reply when agent selection is available.
-const agentHelpText = "\n• `/agent \"<name>\" <question>` — start a new conversation with the named agent; `/agent` alone lists the available agents"
+// helpGroup is one group of the help reply, named by what the person is doing.
+type helpGroup struct {
+	title    string
+	commands []helpCommand
+}
 
-// oboHelpText is appended to the help reply when OBO account linking is enabled.
-const oboHelpText = `
-• ` + "`/login`" + ` — sign in to Giant Swarm so I act as you
-• ` + "`/logout`" + ` — sign out`
-
-// helpText builds the /help reply. botName is the bot's own display name; when
-// known the mention example names it ("@Swarmgeist /stop"), otherwise the
-// example drops the name rather than hardcoding one.
-func helpText(botName string) string {
-	var header string
-	if botName != "" {
-		header = fmt.Sprintf("*Commands* — mention me first, e.g. `@%s /stop`.\n", botName)
-	} else {
-		header = "*Commands* — mention me first, then the command, e.g. `/stop`.\n"
+// helpGroups lists the commands the gateway serves, grouped by what the
+// person is doing: agent selection and sign-in only when this gateway has
+// them.
+func helpGroups(agents, signIn bool) []helpGroup {
+	groups := []helpGroup{{title: "In a thread", commands: []helpCommand{
+		{"/stop", "Interrupt the running turn"},
+		{"/usage", "Tokens for the last turn and the session"},
+	}}}
+	if agents {
+		groups = append(groups, helpGroup{title: "Agents", commands: []helpCommand{
+			{"/agent", "List the agents"},
+			{`/agent "Name" question`, "Start a conversation with a named agent"},
+		}})
 	}
-	return header + helpCommands
+	if signIn {
+		groups = append(groups, helpGroup{title: "Account", commands: []helpCommand{
+			{"/login", "Sign in to Giant Swarm; the agent then acts with your permissions"},
+			{"/logout", "Sign out"},
+		}})
+	}
+	return groups
+}
+
+// helpShortcutNote names the one feature that is a shortcut, not a command.
+const helpShortcutNote = "Inspect agent steps: open the ⋯ menu on any message in the thread, then Apps. Visible only to you."
+
+// helpBlocks builds the /help reply: a header, how to address the bot, one
+// group per activity with the command as a code label and its effect as the
+// text, and the Inspect shortcut. botName is the bot's own display name; when
+// known the mention names it, otherwise it says "the bot" rather than
+// hardcoding one. The returned text is the notification fallback.
+func helpBlocks(botName string, agents, signIn bool) (string, []any) {
+	mention := "the bot"
+	if botName != "" {
+		mention = "@" + botName
+	}
+	var lines []string
+	var elements []any
+	for _, g := range helpGroups(agents, signIn) {
+		elements = append(elements, map[string]any{
+			bkType:     "rich_text_section",
+			bkElements: []any{map[string]any{bkType: bkText, bkText: g.title, bkStyle: map[string]any{"bold": true}}},
+		})
+		items := make([]any, 0, len(g.commands))
+		for _, c := range g.commands {
+			lines = append(lines, c.command)
+			items = append(items, map[string]any{
+				bkType: "rich_text_section",
+				bkElements: []any{
+					map[string]any{bkType: bkText, bkText: c.command, bkStyle: map[string]any{"code": true}},
+					map[string]any{bkType: bkText, bkText: "  " + c.effect},
+				},
+			})
+		}
+		elements = append(elements, map[string]any{bkType: "rich_text_list", bkStyle: "bullet", bkElements: items})
+	}
+	blocks := []any{
+		map[string]any{bkType: "header", bkText: plainTextObj("Commands")},
+		contextBlock(fmt.Sprintf("In a channel, mention %s first. In a direct message, type the command.", mention)),
+		map[string]any{bkType: "rich_text", bkElements: elements},
+		contextBlock(helpShortcutNote),
+	}
+	return "Commands: " + strings.Join(lines, ", "), blocks
 }
 
 // handleCommand processes a slash command and posts a reply in-thread.
@@ -121,6 +170,13 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *slashCommand, slackUse
 	reply := func(text string) {
 		if _, err := client.postMessage(ctx, slackChannel, text, threadID); err != nil {
 			a.Logger.Warn("slack: post command reply failed", "error", err)
+		}
+	}
+	// note answers a command whose reply is one short gateway line (a stop, a
+	// refusal) in the metadata register.
+	note := func(text string) {
+		if _, err := client.postNote(ctx, slackChannel, text, threadID); err != nil {
+			a.Logger.Warn("slack: post command note failed", "error", err)
 		}
 	}
 	// Sign-in state is caller-only information; a shared thread must not see
@@ -145,7 +201,7 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *slashCommand, slackUse
 		access := a.accessPolicy()
 		access.SetInitiator(ctx, slackChannel, threadID, slackUser)
 		if !access.Allowed(ctx, slackChannel, threadID, slackUser) {
-			reply(notPermittedNotice)
+			note(notPermittedNotice)
 			return false
 		}
 		return true
@@ -153,14 +209,11 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *slashCommand, slackUse
 
 	switch cmd.Name {
 	case cmdHelp:
-		text := helpText(a.botName(ctx))
-		if _, ok := a.AgentCards.(agentCardChecker); ok {
-			text += agentHelpText
+		_, agents := a.AgentCards.(agentCardChecker)
+		text, blocks := helpBlocks(a.botName(ctx), agents, a.OBO != nil)
+		if _, err := client.postBlocks(ctx, slackChannel, threadID, text, blocks); err != nil {
+			a.Logger.Warn("slack: post help failed", "error", err)
 		}
-		if a.OBO != nil {
-			text += oboHelpText
-		}
-		reply(text)
 		return true
 
 	case cmdLogin:
@@ -174,7 +227,7 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *slashCommand, slackUse
 			return true
 		}
 		if a.stopThread(threadID) {
-			reply(stopStoppedNotice)
+			note(stopStoppedNotice)
 			return true
 		}
 		// A thread paused on input-required has no in-flight turn to cancel; the
@@ -184,7 +237,7 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *slashCommand, slackUse
 		if a.hasPendingTask(threadID) {
 			return false
 		}
-		reply(stopNothingRunningNotice)
+		note(stopNothingRunningNotice)
 		return true
 
 	case cmdUsage:
@@ -207,11 +260,11 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *slashCommand, slackUse
 // the caller's email, which a shared thread must not see.
 func (a *Adapter) handleLoginCommand(ctx context.Context, slackUser, slackChannel, threadID string, reply func(string)) bool {
 	if a.OBO == nil {
-		reply("_On-behalf-of sign-in is not enabled on this gateway._")
+		reply(oboDisabledNotice)
 		return true
 	}
 	if slackUser == "" {
-		reply("_Could not determine your Slack user; sign-in is unavailable._")
+		reply(noSlackUserNotice)
 		return true
 	}
 	// Probe the link for real rather than trusting a store entry: the identity
@@ -252,11 +305,11 @@ func (a *Adapter) linkedEmail(slackUser string) string {
 // link, so the gateway asks them to sign in again before acting as them.
 func (a *Adapter) handleLogoutCommand(slackUser string, reply func(string)) bool {
 	if a.OBO == nil {
-		reply("_On-behalf-of sign-in is not enabled on this gateway._")
+		reply(oboDisabledNotice)
 		return true
 	}
 	if slackUser == "" {
-		reply("_Could not determine your Slack user; sign-in is unavailable._")
+		reply(noSlackUserNotice)
 		return true
 	}
 

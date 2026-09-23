@@ -71,7 +71,7 @@ func TestLoginReplay_FailurePostsNote(t *testing.T) {
 	a.OnUserLinked(t.Context(), "U123", "u123@example.com")
 
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "couldn't pick your message back up")
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "could not be picked up again")
 	}, flowWait, 50*time.Millisecond, "a failed replay must post a failure note in-thread")
 }
 
@@ -172,7 +172,7 @@ func TestLoginReplay_WaitsForBusyThread(t *testing.T) {
 	a.OnUserLinked(t.Context(), "U999", "u999@example.com")
 	time.Sleep(150 * time.Millisecond)
 	require.Equal(t, 2, gw.dispatchCount(), "the replay must wait for the running turn")
-	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "still finishing",
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "Still answering",
 		"a deferred login replay must not post the busy notice")
 
 	close(hold)
@@ -232,7 +232,7 @@ func TestSignInPark_BusyThreadParksInsteadOfDropping(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return signInPrompted(fake)
 	}, flowWait, 50*time.Millisecond, "the signed-out user is prompted to sign in despite the busy thread")
-	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "still finishing",
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "Still answering",
 		"a sign-in park must not post the busy notice")
 	require.Equal(t, 2, gw.dispatchCount(), "the parked message must not be dispatched")
 
@@ -353,12 +353,12 @@ func TestLoginPark_QueueCapDropIsVisible(t *testing.T) {
 		sendEvent(t, srv, dmThreadEvent("U1", fmt.Sprintf("q%d", i), fmt.Sprintf("600.%03d", i), "600.000"))
 		time.Sleep(150 * time.Millisecond)
 	}
-	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "still finishing",
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "Still answering",
 		"test setup: no message may be lost to the busy rejection")
 
 	// The sixth park overflows the cap of five: the user is told, once.
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postEphemeral")), "I can only hold your last")
+		return strings.Contains(allText(fake.pathCalls("chat.postEphemeral")), "Only your last")
 	}, flowWait, 50*time.Millisecond,
 		"messages dropped past the parked-queue cap must be surfaced, not lost silently")
 

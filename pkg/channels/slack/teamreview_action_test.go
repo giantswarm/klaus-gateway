@@ -116,7 +116,7 @@ func TestTeamReview_ActionRendersPullRequestsNoticeAndDeny(t *testing.T) {
 	require.Equal(t, "C1", review.params["channel"])
 	blocks := blocksOf(review)
 	require.Equal(t, []string{"team_review_approve", "team_review_deny", "team_review_open"}, actionIDs(blocks))
-	require.Equal(t, []string{"✅ Approve", "❌ Deny", "Open run"}, buttonLabels(blocks), "the link button reads the target's kind")
+	require.Equal(t, []string{"Approve", "Deny", "Open run"}, buttonLabels(blocks), "the link button reads the target's kind")
 	texts := sectionTexts(blocks)
 	require.Len(t, texts, 2, "the ask and the pull requests")
 	require.Contains(t, texts[1], "• <"+actionPR1+"|giantswarm/a-configs#12>")

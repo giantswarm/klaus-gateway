@@ -235,7 +235,7 @@ func (a *Adapter) maybeAnnounceResume(ctx context.Context, msg channels.InboundM
 	if exists {
 		return
 	}
-	if _, err := a.apiClient().postMessage(ctx, slackChannel, resumeStartingFreshNotice, msg.ThreadID); err != nil {
+	if _, err := a.apiClient().postNote(ctx, slackChannel, resumeStartingFreshNotice, msg.ThreadID); err != nil {
 		a.Logger.Warn("slack: post starting-fresh notice failed", "thread", msg.ThreadID, "error", err)
 	}
 }

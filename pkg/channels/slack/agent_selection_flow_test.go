@@ -191,7 +191,7 @@ func TestAgentSelection_UnknownAgentFailsLoudlyWithRoster(t *testing.T) {
 	sendEvent(t, srv, mention("U1", "/agent no-such-agent do things", "100.000", ""))
 
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "I don't know an agent named `no-such-agent`")
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "No agent named `no-such-agent` is available")
 	}, flowWait, 50*time.Millisecond, "the failure is loud")
 	require.Contains(t, allText(fake.pathCalls("chat.postMessage")), "*sre-agent* — Investigates infra issues",
 		"the failure reply includes the current roster")
@@ -266,7 +266,7 @@ func TestAgentSelection_NameOnlySelectsNothing(t *testing.T) {
 	sendEvent(t, srv, mention("U1", "/agent sre-agent", "100.000", ""))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")),
-			"Nothing was selected — include your question in the same message: `/agent sre-agent <question>`")
+			"Nothing was selected. Include your question in the same message: `/agent sre-agent <question>`")
 	}, flowWait, 50*time.Millisecond, "the hint says explicitly that nothing was selected")
 	require.Zero(t, gw.dispatchCount(), "a name-only /agent starts no conversation")
 
@@ -323,7 +323,7 @@ func TestAgentSelection_RosterFetchFailure(t *testing.T) {
 	sendEvent(t, srv, mention("U1", "/agent", "100.000", ""))
 
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "can't list the available agents")
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "agents cannot be listed")
 	}, flowWait, 50*time.Millisecond)
 }
 
@@ -418,7 +418,7 @@ func TestAgentSelection_PaneFirstMessageBindsAndInherits(t *testing.T) {
 	require.Equal(t, 2, gw.dispatchCount(), "the refused switch dispatches nothing")
 }
 
-// A new pane chat is not greeted with the "starting fresh" resume notice: its
+// A new pane chat is not greeted with the "starts fresh" resume notice: its
 // first message arrives as a thread reply (the chat's Slack-created anchor is
 // its thread_ts) but it OPENS the conversation — there is no earlier session
 // to resume. A genuine reply into a thread the process does not know still
@@ -438,7 +438,7 @@ func TestPane_NewChatNotGreetedWithStartingFresh(t *testing.T) {
 		require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 			flowWait, 50*time.Millisecond)
 		time.Sleep(150 * time.Millisecond)
-		require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "starting fresh",
+		require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "starts fresh",
 			"a conversation-opening pane message must not be greeted with the resume notice")
 	})
 
@@ -458,7 +458,7 @@ func TestPane_NewChatNotGreetedWithStartingFresh(t *testing.T) {
 
 		sendEvent(t, srv, dmThreadEvent("U1", "are you still there?", "300.000", "100.000"))
 		require.Eventually(t, func() bool {
-			return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "starting fresh")
+			return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "starts fresh")
 		}, flowWait, 50*time.Millisecond, "a real resume with a gone session still gets the notice")
 	})
 }
@@ -521,7 +521,7 @@ func TestAgentSelection_QuotedDisplayNameNoMatchAndAmbiguous(t *testing.T) {
 
 	sendEvent(t, srv, mention("U1", `/agent "No Such Agent" do things`, "100.000", ""))
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "I don't know an agent named `No Such Agent`")
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "No agent named `No Such Agent` is available")
 	}, flowWait, 50*time.Millisecond, "no match fails loudly")
 	require.Contains(t, allText(fake.pathCalls("chat.postMessage")), "*SRE Agent*",
 		"the failure reply includes the roster")
@@ -546,7 +546,7 @@ func TestAgentSelection_QuotedDisplayNameRosterFailure(t *testing.T) {
 
 	sendEvent(t, srv, mention("U1", `/agent "SRE Agent" do things`, "100.000", ""))
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "couldn't check the available agents")
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "available agents could not be checked")
 	}, flowWait, 50*time.Millisecond)
 	time.Sleep(100 * time.Millisecond)
 	require.Zero(t, gw.dispatchCount())
@@ -624,7 +624,7 @@ func TestAgentSelection_HelpMentionsAgentCommand(t *testing.T) {
 
 	sendEvent(t, srv, dmEvent("U1", "/help", "100.000"))
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "/agent \"<name>\" <question>")
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "/agent \"Name\" question")
 	}, flowWait, 50*time.Millisecond, "/help lists the /agent command when selection is available")
 
 	fakeOff := newFakeSlackAPI()
@@ -644,7 +644,7 @@ func TestAgentSelection_UnavailableWithoutCards(t *testing.T) {
 
 	sendEvent(t, srv, mention("U1", "/agent sre-agent hello", "100.000", ""))
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "selection isn't available")
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "selection is not available")
 	}, flowWait, 50*time.Millisecond)
 	require.Zero(t, gw.dispatchCount())
 }
@@ -809,9 +809,9 @@ func TestAgentSelection_UnlinkedListingAsksToSignIn(t *testing.T) {
 	sendEvent(t, srv, mention("U1", "/agent", "100.000", ""))
 
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "I need to know who you are")
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "listed with your permissions, so sign in first")
 	}, flowWait, 50*time.Millisecond, "the unlinked caller is told to sign in")
-	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "can't list the available agents")
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "agents cannot be listed")
 }
 
 // A quoted selection from a caller the gateway cannot identify asks them to
@@ -825,11 +825,11 @@ func TestAgentSelection_QuotedUnlinkedAsksToSignIn(t *testing.T) {
 
 	sendEvent(t, srv, mention("U1", `/agent "SRE Agent" do things`, "100.000", ""))
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "I need to know who you are")
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "listed with your permissions, so sign in first")
 	}, flowWait, 50*time.Millisecond, "the unlinked caller is told to sign in")
 	time.Sleep(100 * time.Millisecond)
 	require.Zero(t, gw.dispatchCount(), "nothing is dispatched")
-	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "couldn't check the available agents")
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "available agents could not be checked")
 }
 
 // unlinkedCards is a card client that cannot identify the caller: every card
@@ -856,11 +856,11 @@ func TestAgentSelection_UnquotedUnlinkedAsksToSignIn(t *testing.T) {
 
 	sendEvent(t, srv, mention("U1", "/agent sre-agent do things", "100.000", ""))
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "I need to know who you are")
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "listed with your permissions, so sign in first")
 	}, flowWait, 50*time.Millisecond, "the unlinked caller is told to sign in")
 	time.Sleep(100 * time.Millisecond)
 	require.Zero(t, gw.dispatchCount(), "nothing is dispatched")
-	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "I don't know an agent named")
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "No agent named")
 }
 
 // notRunnableCards is a card client whose template exists but cannot start a
@@ -892,11 +892,11 @@ func TestAgentSelection_NotRunnableAgentIsRefusedWithReason(t *testing.T) {
 	sendEvent(t, srv, mention("U1", "/agent sre-agent do things", "100.000", ""))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")),
-			"*sre-agent* is installed but cannot start a conversation right now: no Harness admits this AgentTemplate (it carries no admission label a platform Harness selects). I haven't started anything.")
+			"*sre-agent* is installed but cannot start a conversation right now: no Harness admits this AgentTemplate (it carries no admission label a platform Harness selects). Nothing was started.")
 	}, flowWait, 50*time.Millisecond, "the refusal names the real reason, folded into one sentence")
 	require.Contains(t, allText(fake.pathCalls("chat.postMessage")), "*Issue Agent*",
 		"the roster follows, so the person can pick an agent that runs")
 	time.Sleep(100 * time.Millisecond)
 	require.Zero(t, gw.dispatchCount(), "nothing is dispatched")
-	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "I don't know an agent named")
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "No agent named")
 }

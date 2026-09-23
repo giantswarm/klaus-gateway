@@ -61,7 +61,7 @@ func TestAssistantSurface_HomeOpenedDMModeRedirects(t *testing.T) {
 	fake.waitForPath(t, "chat.postMessage", 1)
 	redirect := fake.pathCalls("chat.postMessage")[0]
 	require.Equal(t, "D1", redirect.params["channel"])
-	require.Contains(t, redirect.params["text"], "channels, not direct messages")
+	require.Contains(t, redirect.params["text"], "channels, not in direct messages")
 }
 
 // app_context_changed is consumed cleanly (with and without entities): no API

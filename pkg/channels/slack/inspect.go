@@ -18,7 +18,7 @@ const maxToolLogEntries = 100
 // entry format (already escaped for an mrkdwn context block).
 type toolLogEntry struct {
 	turn int    // 1-based turn ordinal within this thread's log
-	md   string // rendered entry: "🔧 `name`" + args span, or "↳ `name` result" + preview
+	md   string // rendered entry: "`name`" + args span, or "↳ `name` result" + preview
 }
 
 // threadToolLog is one thread's retained tool activity. turns counts turns
@@ -86,12 +86,12 @@ func (a *Adapter) toolLogSnapshot(threadID string) (entries []toolLogEntry, drop
 // invoked in a thread with no retained tool activity: no agent turn ran here,
 // the log expired or was capped away, or the gateway restarted. Honest about
 // the retention model rather than guessing which case applies.
-const inspectNothingRetainedNotice = "_I don't have retained tool activity for this thread — either no agent turn ran here recently, or my record is gone (tool calls are kept in memory for 24 hours and don't survive a restart)._"
+const inspectNothingRetainedNotice = "No tool activity is kept for this thread: no agent turn ran here recently, or the record is gone. Tool calls are kept in memory for 24 hours and do not survive a restart."
 
 // inspectRetainedElsewhereHint extends the empty-log notice when this process
 // has other traces of the thread (recorded usage): a turn very likely ran, so
 // the log was evicted rather than never written.
-const inspectRetainedElsewhereHint = "_This thread has been served, so the tool log for its earlier turns is no longer retained._"
+const inspectRetainedElsewhereHint = "This thread has been served, so the tool log of its earlier turns is no longer kept."
 
 // inspectFallbackText is the notification/accessibility fallback of an
 // inspection message; the context blocks carry the real content.
@@ -159,7 +159,7 @@ func (a *Adapter) postInspection(ctx context.Context, slackChannel, threadID, sl
 // entry. Entry text is already escaped; it is re-capped to the mrkdwn element
 // limit because escaping may have grown it past what was recorded.
 func inspectionBlocks(entries []toolLogEntry, dropped int) []any {
-	header := "🔍 *Agent tool calls in this thread* — only you can see this."
+	header := "*Tool calls in this thread*"
 	if dropped > 0 {
 		header += fmt.Sprintf(" Showing the last %d calls; %d earlier ones were dropped.", len(entries), dropped)
 	}

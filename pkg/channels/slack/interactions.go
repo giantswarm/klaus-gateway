@@ -357,7 +357,7 @@ func (a *Adapter) handleConnectorDismiss(ctx context.Context, slackUser, server,
 	if !validConnectorName(server) {
 		return
 	}
-	text := "_Okay, I won't ask again for a while._"
+	text := "Not asked again for an hour."
 	if err := respondURL(ctx, responseURL, threadTS, text); err != nil {
 		a.Logger.Warn("slack: update connector prompt (dismissed) failed", "user", slackUser, "server", server, "error", err)
 	}
@@ -397,7 +397,7 @@ func (a *Adapter) handleAccessDecision(ctx context.Context, slackChannel, thread
 	parked := a.takePendingAccess(threadID, newcomerID)
 
 	if !allow {
-		if err := respondURL(ctx, responseURL, threadID, "🚫 _Declined._"); err != nil {
+		if err := respondURL(ctx, responseURL, threadID, "Declined."); err != nil {
 			a.Logger.Warn("slack: update access prompt (declined) failed", "thread", threadID, "error", err)
 		}
 		// The newcomer was told their message is waiting; without this the
@@ -415,7 +415,7 @@ func (a *Adapter) handleAccessDecision(ctx context.Context, slackChannel, thread
 	}
 
 	a.accessPolicy().Grant(ctx, slackChannel, threadID, newcomerID)
-	if err := respondURL(ctx, responseURL, threadID, fmt.Sprintf("✅ _<@%s> allowed._", newcomerID)); err != nil {
+	if err := respondURL(ctx, responseURL, threadID, fmt.Sprintf("<@%s> allowed.", newcomerID)); err != nil {
 		a.Logger.Warn("slack: update access prompt (allowed) failed", "thread", threadID, "error", err)
 	}
 
@@ -444,8 +444,8 @@ func (a *Adapter) postResumeFailureNote(ctx context.Context, client *slackAPICli
 	if ctx.Err() != nil {
 		return
 	}
-	const text = "⚠️ _I couldn't deliver your decision to the agent. Reply in this thread to try again._"
-	if _, err := client.postMessage(ctx, slackChannel, text, threadID); err != nil {
+	const text = "The decision did not reach the agent. Reply in this thread to try again."
+	if _, err := client.postNote(ctx, slackChannel, text, threadID); err != nil {
 		a.Logger.Warn("slack: post resume failure note failed", "thread", threadID, "error", err)
 	}
 }
@@ -480,7 +480,7 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 	// must run under it, and a click has no message to park, so nothing is
 	// gained by mirroring dispatch's mint-before-slot ordering here.
 	if !a.acquireThread(threadID) {
-		if _, err := client.postMessage(ctx, slackChannel, busyNotice, threadID); err != nil {
+		if _, err := client.postNote(ctx, slackChannel, busyNotice, threadID); err != nil {
 			a.Logger.Warn("slack: post busy notice failed", "thread", threadID, "error", err)
 		}
 		return nil
@@ -596,7 +596,7 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 	// the failure note tells the user a typed reply can still resume it. The
 	// empty triggerTS selects text progress: a button resume has no user
 	// message to react to.
-	return a.runTurn(ctx, msg, slackChannel, "", "_continuing…_", "", task, agentSourceTask, turnHooks{
+	return a.runTurn(ctx, msg, slackChannel, "", thinkingPlaceholder, "", task, agentSourceTask, turnHooks{
 		onFailure: func(error) { a.postResumeFailureNote(ctx, client, slackChannel, threadID) },
 	})
 }

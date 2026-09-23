@@ -103,7 +103,7 @@ func TestAccess_NewcomerApprovedReplaysMessage(t *testing.T) {
 	sendEvent(t, srv, mention("U999", "help", "200.000", "100.000"))
 	fake.waitForPath(t, "chat.postEphemeral", 2)
 	ephemeral := allText(fake.pathCalls("chat.postEphemeral"))
-	require.Contains(t, ephemeral, "allowed to instruct the agent to work on your behalf")
+	require.Contains(t, ephemeral, "wants to join this thread*\nTheir messages would run under your sign-in")
 	require.Contains(t, ephemeral, "waiting for the thread owner")
 	require.Equal(t, 1, gw.dispatchCount(), "held newcomer message must not reach the agent yet")
 
@@ -182,7 +182,7 @@ func TestAccess_GrantWhileThreadBusyDeliversAfterRelease(t *testing.T) {
 	fake.waitForPath(t, "response", 1)
 	time.Sleep(150 * time.Millisecond)
 	require.Equal(t, 1, gw.dispatchCount(), "replay must wait for the running turn")
-	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "still finishing",
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "Still answering",
 		"a deferred replay must not post the busy notice")
 
 	// The running turn finishes; the deferred replay is delivered.
@@ -209,7 +209,7 @@ func TestAccess_NewcomerTransientTokenErrorSurfaced(t *testing.T) {
 
 	sendEvent(t, srv, mention("U999", "help", "200.000", "100.000"))
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postEphemeral")), "couldn't refresh your Giant Swarm sign-in")
+		return strings.Contains(allText(fake.pathCalls("chat.postEphemeral")), "sign-in could not be refreshed")
 	}, flowWait, 50*time.Millisecond, "the token error is surfaced to the newcomer")
 	require.NotContains(t, allText(fake.pathCalls("chat.postEphemeral")), "waiting for the thread owner",
 		"a failing newcomer must not be parked pending consent")
@@ -249,7 +249,7 @@ func TestAccess_StaleConsentClickGetsFeedback(t *testing.T) {
 
 	fake.waitForPath(t, "response", 1)
 	response := allText(fake.pathCalls("response"))
-	require.Contains(t, response, "approval expired", "the prompt is rewritten to say it expired")
+	require.Contains(t, response, "request expired", "the prompt is rewritten to say it expired")
 	require.Contains(t, response, "<@U2>", "the rewrite says whose message to resend")
 	require.Zero(t, gw.dispatchCount(), "no grant and no replay from a stale click")
 }

@@ -47,7 +47,7 @@ func TestCountOf(t *testing.T) {
 // The notice reads as one sentence with the configured lifetime in it.
 func TestThreadClosedNotice(t *testing.T) {
 	require.Equal(t,
-		"_This conversation ended after 90 days without messages. Mention me to start a new one._",
+		"This conversation ended after 90 days without messages. Mention the bot to start a new one.",
 		threadClosedNotice(90*24*time.Hour))
 	require.Contains(t, threadClosedNotice(36*time.Hour), "after 36 hours without messages")
 }

@@ -28,7 +28,7 @@ const deliveredWriteTimeout = 2 * time.Second
 // continuedNothingNote closes a continued turn whose whole answer had already
 // been posted before the restart, so the restart notice's promise of a post is
 // kept without repeating the reply.
-const continuedNothingNote = "_(done — the reply above is complete)_"
+const continuedNothingNote = "Done. The reply above is complete."
 
 // continueFrom seeds the writer with what a previous process delivered of the
 // turn it continues: the first TextLen bytes of answer text are dropped, the

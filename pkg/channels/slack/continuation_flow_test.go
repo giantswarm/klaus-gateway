@@ -92,7 +92,7 @@ func TestRestart_ContinuedTurnPostsOnlyWhatFollows(t *testing.T) {
 		return strings.Contains(fake.streamedText(), "One thing to flag") && len(fake.streamedSteps()) == 2
 	}, flowWait, 20*time.Millisecond, "the opening and the two steps landed before the restart")
 	require.NoError(t, a1.Stop(context.Background()))
-	require.Contains(t, allBlockText(fake.pathCalls("chat.postMessage")), "I was restarted while")
+	require.Contains(t, allBlockText(fake.pathCalls("chat.postMessage")), "The gateway restarted while")
 	restart := fake.callCount()
 
 	row, ok, err := shared.ThreadRecord(t.Context(), "slack", "D1", "555.000")
@@ -164,7 +164,7 @@ func TestRecoverTurns_NothingLeftToPostSaysSo(t *testing.T) {
 	a.RecoverTurns()
 
 	require.Eventually(t, func() bool {
-		return strings.Contains(allBlockText(fake.pathCalls("chat.postMessage")), "the reply above is complete")
+		return strings.Contains(allBlockText(fake.pathCalls("chat.postMessage")), "The reply above is complete")
 	}, flowWait, 20*time.Millisecond, "the thread is told the reply was complete")
 	posted := textOf(fake.callsSince(0))
 	require.NotContains(t, posted, "same chart version", "the answer is not posted a second time")

@@ -1571,10 +1571,10 @@ func TestProgress_FailedReactionOnError(t *testing.T) {
 	fake.waitForPath(t, "reactions.add", 2)
 	require.Contains(t, fake.reactionNames("reactions.add"), "x", "failed reaction added on error delta")
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "the turn failed")
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "The turn failed")
 	}, flowWait, 20*time.Millisecond, "the retry note is posted in the thread")
 	for _, c := range fake.pathCalls("chat.postMessage") {
-		if strings.Contains(fmt.Sprint(c.params["text"]), "the turn failed") {
+		if strings.Contains(fmt.Sprint(c.params["text"]), "The turn failed") {
 			require.Equal(t, "333.000", c.params["thread_ts"], "the note lands in the turn's thread")
 		}
 	}
@@ -1591,11 +1591,11 @@ func TestProgress_FailureNoteNamesTheClass(t *testing.T) {
 		want      string
 		wantNotIn string
 	}{
-		{"tools", &stubGateway{deltas: []channels.OutboundDelta{{Err: errors.New(toolSet)}}}, "I couldn't connect to my tools", "the turn failed"},
-		{"model", &stubGateway{deltas: []channels.OutboundDelta{{Err: errors.New(`anthropic API error: 529 {"type":"overloaded_error"}`)}}}, "The model behind this agent returned an error", "the turn failed"},
-		{"policy", &stubGateway{deltas: []channels.OutboundDelta{{Err: errors.New("OpenAI chat completion request failed: 403 authorization failed")}}}, "A platform policy refused this request", "the turn failed"},
-		{"platform, before the stream", &stubGateway{dispatchErr: errors.New("rpc error: code = Unavailable desc = connection refused")}, "I couldn't reach the agent platform", "the turn failed"},
-		{"unknown", &stubGateway{deltas: []channels.OutboundDelta{{Err: errors.New("boom")}}}, "the turn failed; please try again", "⚠️"},
+		{"tools", &stubGateway{deltas: []channels.OutboundDelta{{Err: errors.New(toolSet)}}}, "could not connect to its tools", "The turn failed"},
+		{"model", &stubGateway{deltas: []channels.OutboundDelta{{Err: errors.New(`anthropic API error: 529 {"type":"overloaded_error"}`)}}}, "The model behind this agent returned an error", "The turn failed"},
+		{"policy", &stubGateway{deltas: []channels.OutboundDelta{{Err: errors.New("OpenAI chat completion request failed: 403 authorization failed")}}}, "A platform policy refused this request", "The turn failed"},
+		{"platform, before the stream", &stubGateway{dispatchErr: errors.New("rpc error: code = Unavailable desc = connection refused")}, "agent platform could not be reached", "The turn failed"},
+		{"unknown", &stubGateway{deltas: []channels.OutboundDelta{{Err: errors.New("boom")}}}, "The turn failed before an answer", "⚠️"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fake := newFakeSlackAPI()
@@ -1631,7 +1631,7 @@ func TestProgress_FailureAfterContentPostsNoNote(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return strings.Contains(fake.streamedText(), "partial answer")
 	}, flowWait, 20*time.Millisecond, "the streamed content reached the thread")
-	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "the turn failed", "no generic note under streamed content")
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "The turn failed", "no generic note under streamed content")
 }
 
 func TestProgress_TextFallbackOnMissingScope(t *testing.T) {
@@ -1645,7 +1645,7 @@ func TestProgress_TextFallbackOnMissingScope(t *testing.T) {
 	// answer in a stream of its own, which retires the placeholder.
 	fake.waitForPath(t, pathStopStream, 1)
 	require.Contains(t, fake.streamedText(), "answer")
-	require.Contains(t, allText(fake.pathCalls("chat.postMessage")), "_thinking", "text placeholder posted")
+	require.Contains(t, allText(fake.pathCalls("chat.postMessage")), "Working…", "text placeholder posted")
 	require.NotEmpty(t, fake.pathCalls("chat.delete"), "the placeholder is retired by the streamed answer")
 
 	// Second turn must not retry reactions.add (the downgrade is cached).
@@ -1705,7 +1705,7 @@ func TestTextMode_FailedTurnReplacesPlaceholder(t *testing.T) {
 	// Placeholder is posted, then replaced by a failure note rather than left
 	// dangling as "thinking"; text mode swaps no failed reaction.
 	fake.waitForPath(t, "chat.update", 1)
-	require.Contains(t, allText(fake.pathCalls("chat.update")), "the turn failed")
+	require.Contains(t, allText(fake.pathCalls("chat.update")), "The turn failed")
 	require.Empty(t, fake.pathCalls("reactions.add"), "text mode adds no reactions")
 }
 
@@ -1726,10 +1726,10 @@ func TestTextMode_FailedTurnAfterContentPostsNewNote(t *testing.T) {
 	sendEvent(t, srv, dmEvent("U1", "hi", "779.000"))
 
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "the turn failed")
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "The turn failed")
 	}, flowWait, 50*time.Millisecond, "the failure note posts as a new message")
 	require.Contains(t, fake.streamedText(), "partial answer", "the streamed content reached the thread")
-	require.NotContains(t, allText(fake.pathCalls("chat.update")), "the turn failed",
+	require.NotContains(t, allText(fake.pathCalls("chat.update")), "The turn failed",
 		"the note must not overwrite streamed content")
 }
 
@@ -1750,10 +1750,10 @@ func TestTextMode_FailedTurnFlushesBufferedContentBeforeNote(t *testing.T) {
 	sendEvent(t, srv, dmEvent("U1", "hi", "780.000"))
 
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "the turn failed")
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "The turn failed")
 	}, flowWait, 50*time.Millisecond, "the failure note posts as a new message")
 	require.Contains(t, fake.streamedText(), "partial answer", "buffered content is flushed before the error")
-	require.NotContains(t, allText(fake.pathCalls("chat.update")), "the turn failed",
+	require.NotContains(t, allText(fake.pathCalls("chat.update")), "The turn failed",
 		"the note must not overwrite streamed content")
 }
 
@@ -1796,7 +1796,7 @@ func TestSerializeResumeWhileTurnInFlight(t *testing.T) {
 	// concurrently, and must not consume the pending task or reach the agent.
 	sendInteraction(t, srv, "hitl_approve", "999.000")
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "still finishing")
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Still answering")
 	}, flowWait, 20*time.Millisecond, "expected a busy notice for the concurrent button click")
 	require.Equal(t, 1, gw.dispatchCount(), "resume rejected before reaching the agent")
 
@@ -1817,7 +1817,7 @@ func TestSerializeTurnsPerThread(t *testing.T) {
 	// A distinct ts: a real second message is never a redelivery of the first.
 	sendEvent(t, srv, dmThreadEvent("U1", "second", "667.000", "666.000"))
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "still finishing")
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Still answering")
 	}, flowWait, 20*time.Millisecond, "expected a busy notice for the second turn")
 
 	require.Equal(t, 1, gw.dispatchCount(), "second turn is rejected before reaching the agent")
@@ -1835,7 +1835,7 @@ func TestDispatch_PreStreamFailurePostsNote(t *testing.T) {
 	sendEvent(t, srv, dmEvent("U1", "hi", "100.000"))
 
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "the turn failed")
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "The turn failed")
 	}, flowWait, 20*time.Millisecond, "a pre-stream dispatch failure must post the failure note")
 }
 
@@ -1850,7 +1850,7 @@ func TestHandleInbound_UnknownSlashCommandIntercepted(t *testing.T) {
 
 	sendEvent(t, srv, mention("U1", "/invite <@U2>", "100.000", ""))
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "not one of my commands")
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "is not a command")
 	}, flowWait, 20*time.Millisecond, "an unknown command replies with a notice")
 	require.Zero(t, gw.dispatchCount(), "an unknown slash command must not reach the agent")
 
@@ -1946,12 +1946,12 @@ func TestStop_TextModePlaceholderResolved(t *testing.T) {
 
 	sendEvent(t, srv, dmEvent("U1", "long task", "100.000"))
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "_thinking")
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Working…")
 	}, flowWait, 20*time.Millisecond, "text placeholder posted")
 
 	sendEvent(t, srv, dmThreadEvent("U1", "/stop", "101.000", "100.000"))
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.update")), "(stopped)")
+		return strings.Contains(allText(fake.pathCalls("chat.update")), "Stopped.")
 	}, flowWait, 20*time.Millisecond, "the placeholder is replaced on stop")
 }
 
@@ -1968,7 +1968,7 @@ func TestPrompt_TextModePlaceholderResolved(t *testing.T) {
 
 	sendEvent(t, srv, dmEvent("U1", "do it", "100.000"))
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.update")), "(waiting for your input")
+		return strings.Contains(allText(fake.pathCalls("chat.update")), "Waiting for your answer")
 	}, flowWait, 20*time.Millisecond, "the placeholder is replaced when the turn pauses")
 }
 
@@ -2108,7 +2108,7 @@ func TestResume_PostsStartingFreshWhenSessionGone(t *testing.T) {
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","channel_type":"im","user":"U1","text":"hi again","channel":"D1","ts":"201.000","thread_ts":"100.000"}}`)
 
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "starting fresh")
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "starts fresh")
 	}, flowWait, 20*time.Millisecond, "a gone session should trigger the starting-fresh notice")
 	require.Equal(t, 1, gw.resumeCount())
 }
@@ -2126,7 +2126,7 @@ func TestResume_SilentWhenSessionPresent(t *testing.T) {
 
 	// Wait for the turn to complete (empty-output note), then assert no notice.
 	fake.waitForPath(t, "chat.postMessage", 1)
-	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "starting fresh")
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "starts fresh")
 	require.Equal(t, 1, gw.resumeCount())
 }
 
@@ -2139,7 +2139,7 @@ func TestResume_SkippedForRootMessage(t *testing.T) {
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","channel_type":"im","user":"U1","text":"brand new","channel":"D1","ts":"300.000"}}`)
 
 	fake.waitForPath(t, "chat.postMessage", 1)
-	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "starting fresh")
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "starts fresh")
 	require.Equal(t, 0, gw.resumeCount(), "root messages must not trigger the resume check")
 }
 

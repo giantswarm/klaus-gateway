@@ -35,11 +35,11 @@ func TestCorruptSession_ResetAndNotice(t *testing.T) {
 
 	sendEvent(t, srv, dmEvent("U1", "list my epics", "700.000"))
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "reset the session")
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "The session is reset")
 	}, flowWait, 50*time.Millisecond, "reset notice posted")
 	// The recovery notice is the only note: the generic "turn failed, try
 	// again" (posted for other errors in reactions mode) would contradict it.
-	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "the turn failed",
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "The turn failed",
 		"no generic retry note in front of the recovery notice")
 
 	mu.Lock()
@@ -107,7 +107,7 @@ func TestCorruptSession_ResetUnavailableAdvisesNewThread(t *testing.T) {
 
 	sendEvent(t, srv, dmEvent("U1", "list my epics", "701.000"))
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "start a new thread")
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Start a new thread")
 	}, flowWait, 50*time.Millisecond, "stuck notice posted")
 }
 

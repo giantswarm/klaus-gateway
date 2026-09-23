@@ -165,7 +165,7 @@ func (a *Adapter) handleConnectorComplete(w http.ResponseWriter, r *http.Request
 			}
 		})
 	}
-	message := "You can close this tab and return to Slack; I'll pick the conversation back up there."
+	message := "You can close this tab and return to Slack. The conversation continues there."
 	if entry.review != "" {
 		message = "You can close this tab and return to Slack; your " + entry.decision.noun() + " is being submitted there."
 	}
@@ -207,5 +207,5 @@ func (a *Adapter) resumeAfterConnectorSignIn(ctx context.Context, entry connecto
 // connectorSignedInNotice is the confirmation the ephemeral Connect prompt is
 // rewritten to once the backend sign-in completes.
 func connectorSignedInNotice(server string) string {
-	return fmt.Sprintf("✅ _Signed in to %s._", escapeMrkdwn(server))
+	return fmt.Sprintf("Signed in to %s.", escapeMrkdwn(server))
 }

@@ -56,9 +56,9 @@ type stopAPIRecorder struct {
 func (r *stopAPIRecorder) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/chat.postMessage", func(w http.ResponseWriter, req *http.Request) {
-		_ = req.ParseForm()
+		text, _ := requestText(req)
 		r.mu.Lock()
-		r.postTexts = append(r.postTexts, req.PostFormValue("text"))
+		r.postTexts = append(r.postTexts, text)
 		r.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "ts": "1234.5678"})

@@ -71,7 +71,7 @@ subscribed to the `agent_session_stopped` bot event — the subscription is what
 draws the button, so an existing Slack app must have it added by hand (Event
 Subscriptions → Subscribe to bot events) before users see it. Pressing it is
 equivalent to `/stop`: the adapter cancels the thread's in-flight turn and
-confirms with `⏹ Stopped by @presser.` in the thread — the notice names the
+confirms with the context line `Stopped by @presser` in the thread — the notice names the
 presser because, unlike a typed `/stop`, the press leaves no message of its own,
 so it is the thread's only record of who stopped the turn. It carries the same
 per-thread access rule as `/stop` — only the thread owner and the people they
@@ -144,8 +144,8 @@ creates one, which a turn that switches agents does mid-thread.
   the thread keeps its agent, its initiator and its grants, and the next turn creates
   a fresh instance. An instance the controller no longer has is found by the resume
   check that runs on the first reply this process sees in a thread: that reply gets
-  the starting-fresh notice ("I couldn't find our earlier conversation in this thread,
-  so I'm starting fresh."), and a loss found in the middle of a conversation posts no
+  the starting-fresh notice ("The earlier conversation in this thread was not found, so the
+  agent starts fresh."), and a loss found in the middle of a conversation posts no
   notice. A `ResetSession` after a corrupt history posts the corrupt-session notice
   instead — "An earlier interrupted turn corrupted this conversation's history … I've
   reset the session: please resend your message …" — so the person knows to resend.
@@ -192,8 +192,8 @@ creates one, which a turn that switches agents does mid-thread.
 - **A reply in a conversation that ended is told so.** The row itself stays in the store for
   twice the lifetime (180 days by default; `0` still never expires), and while it is there the
   gateway knows the difference between a thread whose conversation ended and a thread it was
-  never in. So an un-mentioned reply in one of the former gets one private line — _"This
-  conversation ended after 90 days without messages. Mention me to start a new one."_ — instead
+  never in. So an un-mentioned reply in one of the former gets one private line — "This
+  conversation ended after 90 days without messages. Mention the bot to start a new one." — instead
   of silence. The sentence names the configured lifetime exactly, as the count of the largest
   unit it is a whole multiple of: `--thread-ttl=36h` reads "36 hours", not "1 day", and `90m`
   reads "90 minutes". It is ephemeral, so only its author sees it, every reply gets it, and
@@ -415,7 +415,7 @@ any string that begins with `Slack bot`, `Slack app-level`, or `Slack user`.
    working reaction is removed with no residual emoji (default); set
    `SLACK_CLEAR_REACTION_ON_DONE=false` to swap in a done reaction instead. A failed turn always
    swaps in the failed reaction. With `SLACK_PROGRESS_MODE=text`, or in `auto` mode when
-   `reactions:write` is unavailable, a `_thinking…_` placeholder message is posted instead.
+   `reactions:write` is unavailable, a `Working…` placeholder message is posted instead.
 8. The whole turn is streamed into **one** Slack message with the streaming API:
    `chat.startStream` opens it, `chat.appendStream` adds what has accumulated since the last
    tick (one second), and `chat.stopStream` closes it with the answer's last words, naming
@@ -479,7 +479,7 @@ any string that begins with `Slack bot`, `Slack app-level`, or `Slack user`.
    which is what Slack requires there. Each streamed text run is rendered once — the A2A
    artifact update's append/replace semantics are honoured, so the Go ADK's re-send of a
    finished run does not duplicate it — and runs separated by tool calls are separated by a
-   paragraph. In text-progress mode the `_thinking…_` placeholder is removed once the streamed
+   paragraph. In text-progress mode the `Working…` placeholder is removed once the streamed
    message exists (a stream cannot take over an existing message). A Slack refusal while
    rendering never fails the turn: flushes keep retrying until the agent finishes, a message
    Slack closed under the app gets one replacement stream, and only a final flush that still
@@ -557,7 +557,7 @@ A turn ends early for one of two reasons, and the thread can tell them apart:
 
 - **`/stop`** is the user's decision. The working reaction is cleared, the reply's stream is
   closed where it stands (its steps stay as they were), nothing else is posted in reactions
-  mode (`_(stopped)_` replaces the placeholder in text mode), and the task is cancelled at the
+  mode (the context line `Stopped.` replaces the placeholder in text mode), and the task is cancelled at the
   controller so the agent stops working.
 - **An error** before any answer text (an agent that did not start in time, a controller
   refusal) marks the triggering message with the failed reaction and posts a note in the
@@ -567,11 +567,11 @@ A turn ends early for one of two reasons, and the thread can tell them apart:
 
   | Class | What broke | The note |
   |---|---|---|
-  | `tools` | the agent's tool set: the MCP `initialize` or tool listing failed, an MCP server asked for authorization | ⚠️ I couldn't connect to my tools … trying again right away won't fix it |
-  | `platform` | the connection between the gateway, the controller and the runtime (connection refused or reset, gRPC `Unavailable`) | ⚠️ I couldn't reach the agent platform … trying again right away won't fix it |
-  | `model` | the model or its provider returned an error | ⚠️ The model behind this agent returned an error … please try again in a minute |
-  | `policy` | a gateway policy refused the request (authorization, a prompt guard, a rate limit) | ⚠️ A platform policy refused this request … sending it again won't change that |
-  | `unknown` | anything else | `_(the turn failed; please try again)_` |
+  | `tools` | the agent's tool set: the MCP `initialize` or tool listing failed, an MCP server asked for authorization | The agent could not connect to its tools … a retry right now does not help |
+  | `platform` | the connection between the gateway, the controller and the runtime (connection refused or reset, gRPC `Unavailable`) | The agent platform could not be reached … a retry right now does not help |
+  | `model` | the model or its provider returned an error | The model behind this agent returned an error … try again in a minute |
+  | `policy` | a gateway policy refused the request (authorization, a prompt guard, a rate limit) | A platform policy refused this request … sending it again does not change that |
+  | `unknown` | anything else | The turn failed before an answer. Send the message again to retry. |
 
   A fresh turn that fails on `tools` or `platform` before anything of it was shown — the
   controller refused the send, or the task ended `failed` — is sent once more on the thread's
@@ -582,8 +582,8 @@ A turn ends early for one of two reasons, and the thread can tell them apart:
   is a HITL decision (the paused task it answers is gone once it failed).
   Once answer text has streamed, only the reaction marks the incomplete reply.
 - **A gateway restart** (a pod restart, a node loss with a grace period) is nobody's decision.
-  The thread gets a one-line notice — `⚠️ I was restarted while **<agent>** was working. It
-  keeps going — the result is in the Dev Portal, and I post it here when it is done.` — the
+  The thread gets a one-line notice — `The gateway restarted while *<agent>* was working. The
+  agent keeps going: its result is in the Dev Portal, and it is posted here when it is done.` — the
   working reaction is cleared, the reply's stream is closed where it stands, and the task is
   **left running** at the controller. The new gateway process resubscribes to it on start (A2A
   `SubscribeToTask` on the thread's AgentInstance, under the same user's freshly minted
@@ -605,7 +605,7 @@ A turn ends early for one of two reasons, and the thread can tell them apart:
   rest opens a message of its own. An adopted message is always closed, even when nothing is
   left to add, so it stops animating. A graceful restart closes the streamed message on its
   way out, so a continuation after one always opens a new message. A turn whose whole answer
-  had landed before the restart closes with `_(done — the reply above is complete)_`. A turn the start-up recovery cannot reach (its user signed out,
+  had landed before the restart closes with `Done. The reply above is complete.` A turn the start-up recovery cannot reach (its user signed out,
   the controller not up yet after three tries ten seconds apart) is delivered by the thread's
   next reply, ahead of that reply's own answer; a task the controller no longer has gets a
   short note instead.
@@ -632,6 +632,14 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
 
 ### Identity, HITL, and channel behavior
 
+- **Commands and notes.** `/help` answers with a header, how to address the bot ("In a
+  channel, mention @Swarmgeist first. In a direct message, type the command."), the commands
+  grouped by what the person is doing (In a thread: `/stop`, `/usage`; Agents: `/agent`, only
+  with agent selection; Account: `/login`, `/logout`, only with sign-in), each command as a code
+  label with its effect as text, and a context line for the **Inspect agent steps** shortcut.
+  The gateway's own notes (a stop, a failure, a refusal, a busy thread) are one short context
+  line in Slack's small muted text, written in the third person without emoji: they name what
+  happened and the one thing to do next, apart from the agent's answer.
 - **Per-message branding.** Agent replies and the agent's own confirmation prompts are posted
   under the agent's display name, so they read as the agent speaking
   rather than the app. The name is the `Agent` CR's `ui.giantswarm.io/display-name` annotation
@@ -688,7 +696,7 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
   kept, and the user is told when earlier ones are dropped.
 - **Transient sign-in failures.** When a linked person's token cannot be minted right now —
   muster's token endpoint or the gateway's link store not answering — they get an ephemeral
-  "I couldn't refresh your Giant Swarm sign-in just now" notice and their message is not held;
+  "Your Giant Swarm sign-in could not be refreshed" notice and their message is not held;
   the sign-in prompt is reserved for people with no link. `/login` answers the same way, and
   `/logout` reports a sign-out the link store refused instead of confirming it. The gateway
   keeps a process-local copy of every link it has served, so a store outage does not reach the
