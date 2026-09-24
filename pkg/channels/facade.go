@@ -100,7 +100,7 @@ func (f *Facade) SessionResumable(ctx context.Context, msg InboundMessage) (exis
 	if f == nil || f.Agent == nil || f.Routes == nil {
 		return false, false
 	}
-	ctx = withChannelAuth(ctx, msg)
+	ctx = withCallerAuth(ctx, msg)
 	ctx, cancel := context.WithTimeout(ctx, sessionCheckTimeout)
 	defer cancel()
 	key := threadKey(msg.Channel, msg.ChannelID, msg.ThreadID)
@@ -135,7 +135,7 @@ func (f *Facade) ResetSession(ctx context.Context, msg InboundMessage) (bool, er
 	if f == nil || f.Agent == nil || f.Routes == nil {
 		return false, nil
 	}
-	ctx = withChannelAuth(ctx, msg)
+	ctx = withCallerAuth(ctx, msg)
 	ctx, cancel := context.WithTimeout(ctx, sessionCheckTimeout)
 	defer cancel()
 	key := threadKey(msg.Channel, msg.ChannelID, msg.ThreadID)
@@ -366,7 +366,7 @@ const bindingWriteTimeout = 5 * time.Second
 // resume that names no paused prompt) is returned synchronously so channels
 // can render it; the stream's own failures arrive as error deltas.
 func (f *Facade) sendViaA2A(ctx context.Context, msg InboundMessage) (<-chan OutboundDelta, error) {
-	ctx = withChannelAuth(ctx, msg)
+	ctx = withCallerAuth(ctx, msg)
 
 	instanceID, err := f.instanceFor(ctx, msg)
 	if err != nil {
@@ -455,7 +455,7 @@ func (f *Facade) ResumeTurn(ctx context.Context, msg InboundMessage, taskID stri
 	if f == nil || f.Agent == nil || f.Routes == nil {
 		return nil, errors.New("channels: no agent client configured")
 	}
-	ctx = withChannelAuth(ctx, msg)
+	ctx = withCallerAuth(ctx, msg)
 	key := threadKey(msg.Channel, msg.ChannelID, msg.ThreadID)
 	entry, ok, err := f.Routes.Get(ctx, key)
 	if err != nil {
@@ -718,13 +718,11 @@ func (f *Facade) outboundMessage(ctx context.Context, instanceID string, msg Inb
 // is not paused on a prompt any more.
 var ErrNoPendingPrompt = errors.New("a2a: the task is not waiting for a decision")
 
-// withChannelAuth seeds ctx with the target agent ref, the originating channel
-// name, and the caller's forwarded bearer token for the A2A client. The channel
-// name lets the token source enforce per-channel credential policy (e.g. no
-// service-account fallback for Slack when account linking is enabled).
-func withChannelAuth(ctx context.Context, msg InboundMessage) context.Context {
+// withCallerAuth seeds ctx with the target agent ref and the caller's forwarded
+// bearer token for the A2A client. A turn without the token is refused by the
+// client (a Slack turn without a forwarded token never runs).
+func withCallerAuth(ctx context.Context, msg InboundMessage) context.Context {
 	ctx = pkga2a.WithAgentRef(ctx, msg.AgentRef)
-	ctx = pkga2a.WithChannel(ctx, msg.Channel)
 	ctx = pkga2a.WithForwardedToken(ctx, msg.BearerToken)
 	return ctx
 }

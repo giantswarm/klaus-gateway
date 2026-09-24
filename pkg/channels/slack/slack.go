@@ -33,8 +33,7 @@ const ChannelName = "slack"
 // human token is the only credential forwarded to the agent: a turn without one
 // is aborted rather than degraded to the gateway service account (see
 // klaus-gateway#116). When OBO is nil (linking disabled), there is no human
-// path and turns run as the M2M ServiceAccount identity (the historical
-// behaviour) via the gateway's ForwardedTokenSource fallback.
+// token and the gateway refuses the turn.
 type OBOTokenSource interface {
 	// TokenFor returns a fresh human token (the dex id_token) for the Slack user,
 	// or musterlink.ErrNotLinked when the user has not linked an identity.

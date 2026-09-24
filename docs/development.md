@@ -77,6 +77,7 @@ Slack is the only channel today; the seam is still there.
 2. Normalise inbound events into `channels.InboundMessage{Channel: ChannelName, AgentRef: ..., ...}`.
 3. Call `gw.SendCompletion(ctx, msg)` and render the deltas.
 4. Wire the adapter in `main.go` behind a config flag (follow the `cfg.Slack.Enabled` pattern),
-   and add it to the `ForwardedTokenSource` channel list so its turns carry the caller's token.
+   and set `InboundMessage.BearerToken` to the caller's token: the kagent client refuses a call
+   without one (`pkga2a.ErrNoIdentity`).
 5. Add a `KLAUS_GATEWAY_<NAME>_ENABLED` env var in `internal/config/config.go`.
 6. Add channel-specific docs in `docs/channels-<name>.md`.
