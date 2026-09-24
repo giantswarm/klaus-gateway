@@ -567,13 +567,11 @@ func countOf(n int64, unit string) string {
 // plain mention reaches, and say how to reach the commands and the roster.
 // The %[1]s verbs take the bot's mention, %[2]s the default agent's name.
 const (
-	channelIntroText       = "Swarmgeist connects this channel to Giant Swarm's agents. Mention %[1]s to start a thread with *%[2]s*, or mention it with `/agent` to pick another agent. Agents work with your permissions and ask before making changes."
-	channelIntroTextNoDflt = "Swarmgeist connects this channel to Giant Swarm's agents. Mention %[1]s with `/agent` to pick an agent and start a thread. Agents work with your permissions and ask before making changes."
-	channelIntroContext    = "%[1]s `/help` lists the commands"
+	channelIntroText    = "Swarmgeist connects this channel to Giant Swarm's agents. Mention %[1]s to start a thread with *%[2]s*, or mention it with `/agent` to pick another agent. Agents work with your permissions and ask before making changes."
+	channelIntroContext = "%[1]s `/help` lists the commands"
 
-	assistantGreetingText       = "Ask about a cluster, an alert or a deployment. Swarmgeist routes each conversation to an agent, *%[2]s* by default. Agents work with your permissions and ask before making changes."
-	assistantGreetingTextNoDflt = "Ask about a cluster, an alert or a deployment. Swarmgeist routes each conversation to an agent. Agents work with your permissions and ask before making changes."
-	assistantGreetingContext    = "%[1]s `/help` lists the commands · %[1]s `/agent` lists the agents"
+	assistantGreetingText    = "Ask about a cluster, an alert or a deployment. Swarmgeist routes each conversation to an agent, *%[2]s* by default. Agents work with your permissions and ask before making changes."
+	assistantGreetingContext = "%[1]s `/help` lists the commands · %[1]s `/agent` lists the agents"
 )
 
 // homeGreetingTTL bounds how often the assistant-pane greeting repeats per
