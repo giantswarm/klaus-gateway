@@ -23,6 +23,10 @@ or `helm/`. Add a line when a review finds a new one.
   never the whole read (#288).
 - **A `response_url` ephemeral appears in the channel view**, not in the thread pane. A
   tester who looks at the thread sees nothing (#288 live test).
+- **A `response_url` replacement of an ephemeral stays where that ephemeral is.** With the
+  thread's `thread_ts` and `replace_original: true`, a sign-in card in a thread became the
+  confirmation in the thread. The Sign in click reaches the gateway seconds before the link
+  completes, so its `response_url` is there in time (#346 live test).
 - **Slack applies a new OAuth scope only on re-install** of the app. A manifest change alone
   changes nothing on an existing install (#288, `UPGRADE.md`).
 - **A mention notifies only when the message is posted.** A mention that `chat.update` adds
