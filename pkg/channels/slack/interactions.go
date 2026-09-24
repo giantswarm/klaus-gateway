@@ -216,6 +216,9 @@ func (a *Adapter) routeInteraction(ctx context.Context, payload interactionPaylo
 	action := payload.Actions[0]
 
 	switch action.ActionID {
+	case agentSelectAction:
+		a.handleRosterSelect(ctx, payload, action.Value)
+		return
 	case oboSignIn:
 		// URL button: the browser opens the link itself, and the prompt message
 		// is rewritten via OnUserLinked once the link completes, so the click

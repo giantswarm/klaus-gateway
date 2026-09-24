@@ -134,3 +134,15 @@ func TestAskAgentLead(t *testing.T) {
 		})
 	}
 }
+
+// A roster row's Select opens the picker on that agent; the hint still names
+// the default.
+func TestAskAgentModal_Preselect(t *testing.T) {
+	a := pickerAdapter("kagent/a")
+	agents := []pkga2a.AgentInfo{{Name: "a", Namespace: "kagent", DisplayName: "A"}, {Name: "b", Namespace: "kagent", DisplayName: "B"}}
+	view, err := a.askAgentModal(agents, askAgentRequest{Channel: "C1", User: "U1", Thread: "1.0", ThreadStarted: true, Preselect: "kagent/b"})
+	require.NoError(t, err)
+	_, _, initial := modalOptions(t, view)
+	require.Equal(t, "kagent/b", initial)
+	require.Equal(t, "A is the default for this workspace.", view[bkBlocks].([]any)[1].(map[string]any)[bkHint].(map[string]any)[bkText])
+}

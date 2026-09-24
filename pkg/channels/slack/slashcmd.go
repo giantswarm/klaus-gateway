@@ -119,6 +119,9 @@ type askAgentRequest struct {
 	// thread; on a top-level message without replies Thread is the message's
 	// own ts and the conversation starts its thread.
 	ThreadStarted bool
+	// Preselect is the agent ref the select opens on, from a roster row's
+	// Select button; empty selects the default agent.
+	Preselect string
 }
 
 // handleSlashCommand opens the agent picker modal for a slash command, or
@@ -165,7 +168,38 @@ func (a *Adapter) handleAskAgentShortcut(ctx context.Context, payload interactio
 		// has replies, and leaves it out on a lone top-level message.
 		ThreadStarted: payload.Message.ThreadTS != "",
 	}
-	notify := a.askAgentNotifier(ctx, req, "ask-agent shortcut")
+	a.openThreadPicker(ctx, req, "ask-agent shortcut")
+}
+
+// handleRosterSelect opens the picker from a roster row's Select button, with
+// that agent preselected, for the thread the roster was posted in: the roster
+// is always a reply, so the thread exists. It is the shortcut's flow, so a
+// thread that already talks to an agent, or belongs to someone else, is
+// refused privately in the same words.
+func (a *Adapter) handleRosterSelect(ctx context.Context, payload interactionPayload, ref string) {
+	if !a.started.Load() || ref == "" {
+		return
+	}
+	thread := payload.Message.ThreadTS
+	if thread == "" {
+		thread = payload.Message.TS
+	}
+	a.openThreadPicker(ctx, askAgentRequest{
+		Channel:       payload.Channel.ID,
+		User:          payload.User.ID,
+		ResponseURL:   payload.ResponseURL,
+		TriggerID:     payload.TriggerID,
+		Thread:        thread,
+		ThreadStarted: true,
+		Preselect:     ref,
+	}, "roster select")
+}
+
+// openThreadPicker opens the picker for a conversation inside a thread (the
+// shortcut, a roster row), after the checks both share; surface names the
+// entry point in the log.
+func (a *Adapter) openThreadPicker(ctx context.Context, req askAgentRequest, surface string) {
+	notify := a.askAgentNotifier(ctx, req, surface)
 	if isDMChannelID(req.Channel) {
 		if a.dmMode() != DMModeServe {
 			notify(dmRedirect)
@@ -282,10 +316,14 @@ func (a *Adapter) askAgentModal(agents []pkga2a.AgentInfo, req askAgentRequest) 
 	if err != nil {
 		return nil, err
 	}
+	selected := a.DefaultAgent
+	if req.Preselect != "" {
+		selected = req.Preselect
+	}
 	options := make([]any, 0, len(agents))
 	var initial map[string]any
 	var defaultLabel string
-	defaultIdx := -1
+	initialIdx := -1
 	seen := make(map[string]bool, len(agents))
 	for _, ag := range agents {
 		ref := a.agentInfoRef(ag)
@@ -298,17 +336,20 @@ func (a *Adapter) askAgentModal(agents []pkga2a.AgentInfo, req askAgentRequest) 
 			label = ag.Name
 		}
 		opt := map[string]any{bkText: plainTextObj(truncateRunes(label, modalOptionLabelMax)), bkValue: ref}
+		if ref == selected {
+			initial, initialIdx = opt, len(options)
+		}
 		if ref == a.DefaultAgent {
-			initial, defaultIdx, defaultLabel = opt, len(options), label
+			defaultLabel = label
 		}
 		options = append(options, opt)
 	}
 	if len(options) > modalMaxAgents {
-		// The cut must never drop the preselected default: move it to the
-		// front so it stays on the list whatever the roster order.
-		if defaultIdx >= modalMaxAgents {
-			def := options[defaultIdx]
-			options = append([]any{def}, append(options[:defaultIdx:defaultIdx], options[defaultIdx+1:]...)...)
+		// The cut must never drop the preselected agent: move it to the front
+		// so it stays on the list whatever the roster order.
+		if initialIdx >= modalMaxAgents {
+			sel := options[initialIdx]
+			options = append([]any{sel}, append(options[:initialIdx:initialIdx], options[initialIdx+1:]...)...)
 		}
 		a.Logger.Warn("slack: roster exceeds the modal option cap, list cut", "cap", modalMaxAgents, "roster", len(options))
 		options = options[:modalMaxAgents]
@@ -333,7 +374,7 @@ func (a *Adapter) askAgentModal(agents []pkga2a.AgentInfo, req askAgentRequest) 
 		question[bkInitialValue] = text
 	}
 	agentInput := map[string]any{bkType: bkInput, bkBlockID: askAgentAgentBlockID, bkLabel: plainTextObj(askAgentAgentLabel), bkElement: agentSelect}
-	if initial != nil {
+	if defaultLabel != "" {
 		agentInput[bkHint] = plainTextObj(truncateRunes(fmt.Sprintf(askAgentDefaultHint, defaultLabel), modalHintMax))
 	}
 	blocks := []any{

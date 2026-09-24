@@ -94,6 +94,11 @@ func (a *Adapter) handleAgentSelection(ctx context.Context, cmd *slashCommand, m
 			a.Logger.Warn("slack: post agent-selection reply failed", "thread", msg.ThreadID, "error", err)
 		}
 	}
+	// replyRoster posts a failed selection's notice with the roster rows under
+	// it, so the person picks a real agent with one click.
+	replyRoster := func(lead string) {
+		_ = a.postRoster(ctx, slackChannel, msg.ThreadID, lead)
+	}
 
 	// Bare "/agent": list the roster. Discovery is deliberately ungated, like
 	// /help: the roster is global information, not thread state, so the
@@ -106,7 +111,7 @@ func (a *Adapter) handleAgentSelection(ctx context.Context, cmd *slashCommand, m
 			reply(agentSelectionUnavailable)
 			return false
 		}
-		listing, err := a.rosterListing(ctx)
+		err := a.postRoster(ctx, slackChannel, msg.ThreadID, "")
 		switch {
 		case err == nil:
 		case errors.Is(err, pkga2a.ErrNoIdentity):
@@ -122,8 +127,6 @@ func (a *Adapter) handleAgentSelection(ctx context.Context, cmd *slashCommand, m
 			reply(agentRosterSignIn)
 		case err != nil:
 			reply(agentRosterUnavailable)
-		default:
-			reply(listing)
 		}
 		return false
 	}
@@ -150,7 +153,7 @@ func (a *Adapter) handleAgentSelection(ctx context.Context, cmd *slashCommand, m
 		return false
 	}
 
-	ref, resolved := a.resolveSelection(ctx, reply, name, quoted, msg.ThreadID)
+	ref, resolved := a.resolveSelection(ctx, reply, replyRoster, name, quoted, msg.ThreadID)
 	if !resolved {
 		return false
 	}
@@ -171,11 +174,11 @@ func (a *Adapter) handleAgentSelection(ctx context.Context, cmd *slashCommand, m
 			reply(agentRosterSignIn)
 			return false
 		}
-		if text, ok := a.agentNotRunnableReply(ctx, ref, err); ok {
-			reply(text)
+		if lead, ok := a.agentNotRunnableLead(ctx, ref, err); ok {
+			replyRoster(lead)
 			return false
 		}
-		reply(a.agentUnavailableReply(ctx, name))
+		replyRoster(agentUnavailableLead(name))
 		return false
 	}
 
@@ -203,7 +206,7 @@ func (a *Adapter) handleAgentReselection(ctx context.Context, reply func(string)
 		reply(agentSwitchRefusal)
 		return false
 	}
-	ref, ok := a.resolveSelection(ctx, func(string) {}, name, quoted, msg.ThreadID)
+	ref, ok := a.resolveSelection(ctx, func(string) {}, func(string) {}, name, quoted, msg.ThreadID)
 	if !ok {
 		reply(agentSwitchRefusal)
 		return false
@@ -226,12 +229,13 @@ func (a *Adapter) handleAgentReselection(ctx context.Context, reply func(string)
 // (the caller validates it against the agent card). ok is false when the
 // selection failed — the failure has already been replied in-thread, loudly:
 // no match, an ambiguous name, and an unreachable roster all consume the
-// message rather than substitute an agent.
-func (a *Adapter) resolveSelection(ctx context.Context, reply func(string), name string, quoted bool, threadID string) (ref string, ok bool) {
+// message rather than substitute an agent. replyRoster posts a notice with the
+// roster rows under it.
+func (a *Adapter) resolveSelection(ctx context.Context, reply, replyRoster func(string), name string, quoted bool, threadID string) (ref string, ok bool) {
 	if !quoted {
 		ref, validName := a.agentRefFromName(name)
 		if !validName {
-			reply(a.agentUnavailableReply(ctx, name))
+			replyRoster(agentUnavailableLead(name))
 			return "", false
 		}
 		return ref, true
@@ -254,7 +258,7 @@ func (a *Adapter) resolveSelection(ctx context.Context, reply func(string), name
 	}
 	switch len(refs) {
 	case 0:
-		reply(a.agentUnavailableReply(ctx, name))
+		replyRoster(agentUnavailableLead(name))
 		return "", false
 	case 1:
 		return refs[0], true
@@ -264,21 +268,27 @@ func (a *Adapter) resolveSelection(ctx context.Context, reply func(string), name
 	}
 }
 
-// agentUnavailableReply renders the loud selection failure, including the
-// current roster when it can be fetched so the user can pick a real name.
+// agentUnavailableLead is the loud selection failure for name.
+func agentUnavailableLead(name string) string {
+	return fmt.Sprintf(agentUnavailableNotice, strings.ReplaceAll(name, "`", "'"))
+}
+
+// agentUnavailableReply is the loud selection failure as text, with the
+// current roster when it can be fetched so the user can pick a real name. It
+// answers where only text can go (a picker notice through a response_url); a
+// thread gets the roster rows (postRoster).
 func (a *Adapter) agentUnavailableReply(ctx context.Context, name string) string {
-	text := fmt.Sprintf(agentUnavailableNotice, strings.ReplaceAll(name, "`", "'"))
+	text := agentUnavailableLead(name)
 	if listing, err := a.rosterListing(ctx); err == nil {
 		text += "\n\n" + listing
 	}
 	return text
 }
 
-// agentNotRunnableReply renders the refusal of an agent that exists but cannot
-// run, naming the reason the a2a layer gave, and appends the roster when it
-// lists agents so the person can pick one that works. ok is false for any
-// other error, which the caller answers with the generic unavailable reply.
-func (a *Adapter) agentNotRunnableReply(ctx context.Context, ref string, err error) (string, bool) {
+// agentNotRunnableLead is the refusal of an agent that exists but cannot run,
+// naming the reason the a2a layer gave. ok is false for any other error, which
+// the caller answers with the generic unavailable notice.
+func (a *Adapter) agentNotRunnableLead(ctx context.Context, ref string, err error) (string, bool) {
 	var ue *pkga2a.AgentUnavailableError
 	if !errors.As(err, &ue) {
 		return "", false
@@ -289,7 +299,17 @@ func (a *Adapter) agentNotRunnableReply(ctx context.Context, ref string, err err
 	reason := strings.TrimSuffix(strings.Join(strings.Fields(ue.Reason), " "), ".")
 	// The roster's cache can still hold the agent's display name (the picker
 	// listed it seconds ago); the technical name the user typed is the fallback.
-	text := fmt.Sprintf(agentNotRunnableNotice, escapeMrkdwn(a.agentNameFor(ctx, ref)), escapeMrkdwn(reason))
+	return fmt.Sprintf(agentNotRunnableNotice, escapeMrkdwn(a.agentNameFor(ctx, ref)), escapeMrkdwn(reason)), true
+}
+
+// agentNotRunnableReply is agentNotRunnableLead as text, with the roster when
+// it lists agents so the person can pick one that works; for a picker notice
+// through a response_url.
+func (a *Adapter) agentNotRunnableReply(ctx context.Context, ref string, err error) (string, bool) {
+	text, ok := a.agentNotRunnableLead(ctx, ref, err)
+	if !ok {
+		return "", false
+	}
 	if listing, lerr := a.rosterListing(ctx); lerr == nil && listing != agentRosterEmpty {
 		text += "\n\n" + listing
 	}
