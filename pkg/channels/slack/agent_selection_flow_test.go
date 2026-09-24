@@ -266,7 +266,7 @@ func TestAgentSelection_NameOnlySelectsNothing(t *testing.T) {
 	sendEvent(t, srv, mention("U1", "/agent sre-agent", "100.000", ""))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")),
-			"Nothing was selected. Include your question in the same message: `/agent sre-agent <question>`")
+			"Nothing was selected. Include your question in the same message: mention the bot with `/agent sre-agent <question>`")
 	}, flowWait, 50*time.Millisecond, "the hint says explicitly that nothing was selected")
 	require.Zero(t, gw.dispatchCount(), "a name-only /agent starts no conversation")
 

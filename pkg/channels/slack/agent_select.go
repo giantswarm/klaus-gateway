@@ -45,18 +45,18 @@ const (
 // start an empty session; refusing is kinder than that. Re-selecting the
 // conversation's own agent is no switch at all and dispatches normally (see
 // handleAgentReselection).
-const agentSwitchRefusal = "This conversation already has its agent, and a switch would lose its context. Start a new conversation, with a new mention or a new chat, with `/agent \"<name>\" <question>`."
+const agentSwitchRefusal = "This conversation already has its agent, and a switch would lose its context. Start a new conversation: in a new thread or a new chat, mention the bot with `/agent \"<name>\" <question>`."
 
 // agentNothingSelectedHint answers a name-only "/agent <name>": with no
 // question there is nothing to dispatch, so no conversation starts and no
 // binding exists for later messages to inherit. It must say so explicitly — a
 // user who typed the name and their question as two messages will otherwise
 // reasonably assume the selection stuck.
-const agentNothingSelectedHint = "Nothing was selected. Include your question in the same message: `/agent %s <question>`."
+const agentNothingSelectedHint = "Nothing was selected. Include your question in the same message: mention the bot with `/agent %s <question>`."
 
 // agentUnavailableNotice reports a selection that failed validation. The
 // caller appends the current roster when it is available.
-const agentUnavailableNotice = "No agent named `%s` is available. Nothing was started; `/agent` lists the agents."
+const agentUnavailableNotice = "No agent named `%s` is available. Nothing was started; mention the bot with `/agent` to list the agents."
 
 // agentNotRunnableNotice reports a selection of an agent that exists but
 // cannot start a conversation; %s are the agent's display name and the reason

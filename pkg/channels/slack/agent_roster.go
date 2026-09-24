@@ -30,7 +30,7 @@ const rosterSignInLead = "The agents are listed with your permissions, so sign i
 
 // agentRosterSignIn answers a bare or quoted /agent from a caller the gateway
 // cannot identify.
-const agentRosterSignIn = rosterSignInLead + ", sign in, then try `/agent` again."
+const agentRosterSignIn = rosterSignInLead + ", sign in, then mention the bot with `/agent` again."
 
 // agentRosterEmpty answers a bare /agent when the controller reports no agents.
 const agentRosterEmpty = "No agents are installed."

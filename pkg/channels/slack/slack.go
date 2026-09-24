@@ -1815,7 +1815,7 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 			a.Logger.Debug("slack: command consumed", "command", cmd.Name, "channel", inner.Channel, "thread", msg.ThreadID)
 			return
 		} else if isUnknownCommand(cmd) {
-			text := fmt.Sprintf("`/%s` is not a command (see `/help`). If it was meant for the agent, send it again without the leading slash.", cmd.Name)
+			text := fmt.Sprintf("`/%s` is not a command; mention the bot with `/help` for the list. If it was meant for the agent, send it again without the leading slash.", cmd.Name)
 			if _, err := a.apiClient().postNote(ctx, inner.Channel, text, msg.ThreadID); err != nil {
 				a.Logger.Warn("slack: post unknown-command notice failed", "error", err)
 			}

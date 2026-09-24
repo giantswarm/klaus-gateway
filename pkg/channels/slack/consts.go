@@ -285,11 +285,11 @@ const busyNotice = "Still answering the previous message. Send this one again on
 // could not record the thread, so the turn was not run. Ephemeral, in-thread.
 const storeUnavailableNotice = "The thread state could not be read, so your message was not sent to the agent. Try again in a moment."
 
-const tokenErrorNotice = "Your Giant Swarm sign-in could not be refreshed. Try again in a moment. If it keeps failing, sign in again with `/login`."
+const tokenErrorNotice = "Your Giant Swarm sign-in could not be refreshed. Try again in a moment. If it keeps failing, mention the bot with `/login` to sign in again."
 
 // logoutFailedNotice is shown (ephemerally) when /logout could not remove the
 // link from the store, so the person does not believe they are signed out.
-const logoutFailedNotice = "The sign-out failed: your sign-in could not be removed. Try `/logout` again in a moment."
+const logoutFailedNotice = "The sign-out failed: your sign-in could not be removed. Mention the bot with `/logout` again in a moment."
 
 // accessDecisionRefusal is shown (ephemerally) when a user who is not permitted
 // in the thread clicks an in-thread tool Approve/Deny button.
@@ -380,7 +380,7 @@ const (
 const (
 	loginSignedInAsNotice = "Signed in as %s."
 	loginSignedInNotice   = "Signed in."
-	logoutNotice          = "Signed out. The agent asks for /login before it acts for you again."
+	logoutNotice          = "Signed out. The agent asks you to sign in again before it acts for you."
 )
 
 // signedInNotice confirms a completed account link. It names no identity: the
