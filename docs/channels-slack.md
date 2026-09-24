@@ -260,6 +260,16 @@ agent when it opens, through one of three entry points, and keeps it for life:
   is refused: the thread's row binds one agent and one AgentInstance, and a different agent
   would need a different instance, so the switch is refused rather than forking the
   conversation.
+- **The roster**: `@bot /agent` alone lists the agents as rows, and so do the notices of a
+  failed selection (an unknown name, an agent that cannot run): an "Agents" header, how many
+  there are and which one a plain mention reaches, then one row per agent, the default first
+  and the rest A–Z: the display name, the first sentence of its description, and a **Select**
+  button. At most 8 rows; the rest are named in the footer, with the typed form (`@bot /agent
+  "Name" question`). Select opens the same picker as the shortcut below, for the thread the
+  roster was posted in, with that agent preselected (the default, when that agent has left the
+  roster since); a thread that belongs to someone else is refused privately. In a thread that
+  already has its conversation the rows carry no button, and the footer points at a new thread.
+  The picker's own notices, sent through its `response_url`, keep the roster as a text list.
 - **Slash command**: `/swarmgeist [question]` in a channel opens a modal with an agent select
   over the live roster (the default agent preselected) and a **Prompt** box, titled "New
   conversation". On submit the gateway posts the conversation root itself, under the agent's

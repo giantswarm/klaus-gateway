@@ -667,6 +667,8 @@ const (
 const (
 	bkSection        = "section"
 	bkContext        = "context" // small muted text; carries the tool-activity entries
+	bkHeader         = "header"
+	bkDivider        = "divider"
 	bkActions        = "actions"
 	bkButton         = "button"
 	bkRadioButtons   = "radio_buttons"

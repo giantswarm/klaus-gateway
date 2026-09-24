@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -55,19 +56,25 @@ const rosterTTL = 30 * time.Second
 // worse than paying the timeout.
 const rosterFailureTTL = 45 * time.Second
 
-// rosterListing renders the selectable-agent roster: display names (the
-// display-name annotation on the AgentTemplate, falling back to the technical
-// name) and the templates' descriptions. Namespaces are deliberately absent —
-// which namespace serves a selection is deployment configuration, not
-// something a Slack user picks. The error is the fetch's own, so a caller can
-// tell a missing identity (pkga2a.ErrNoIdentity) from a roster failure.
+// rosterListing renders the selectable-agent roster as text: display names
+// (the display-name annotation on the AgentTemplate, falling back to the
+// technical name) and the templates' descriptions. Namespaces are deliberately
+// absent — which namespace serves a selection is deployment configuration, not
+// something a Slack user picks. It answers where only text can go (a picker
+// notice through a response_url) and is the rows message's fallback text. The
+// error is the fetch's own, so a caller can tell a missing identity
+// (pkga2a.ErrNoIdentity) from a roster failure.
 func (a *Adapter) rosterListing(ctx context.Context) (string, error) {
 	agents, err := a.rosterAgents(ctx)
 	if err != nil {
 		return "", err
 	}
+	return rosterText(agents), nil
+}
+
+func rosterText(agents []pkga2a.AgentInfo) string {
 	if len(agents) == 0 {
-		return agentRosterEmpty, nil
+		return agentRosterEmpty
 	}
 	var b strings.Builder
 	b.WriteString("*Available agents* — start a new conversation with `/agent \"<name>\" <question>`:")
@@ -77,7 +84,136 @@ func (a *Adapter) rosterListing(ctx context.Context) (string, error) {
 			b.WriteString(" — " + escapeMrkdwn(ag.Description))
 		}
 	}
-	return b.String(), nil
+	return b.String()
+}
+
+// The roster message: at most rosterRowsMax agents as rows, each with a Select
+// button (action agentSelectAction, value the agent ref) that opens the picker
+// with that agent preselected, for the thread the roster was posted in.
+const (
+	rosterRowsMax     = 8
+	agentSelectAction = "agent_select"
+	agentSelectLabel  = "Select"
+	rosterTitle       = "Agents"
+	// rosterDescMax caps a row's description after the first-sentence cut.
+	rosterDescMax = 300
+)
+
+// postRoster posts the roster as rows under lead (a notice such as an unknown
+// agent's; "" for a bare listing) in the thread. selectable adds the Select
+// buttons; a thread that already has its conversation gets the rows without
+// them, since the picker refuses such a thread. A roster that cannot be
+// listed, or lists no agent, leaves lead on its own; with no lead either, the
+// empty roster says so. The error is the roster fetch's, for the caller to
+// answer a bare listing that failed.
+func (a *Adapter) postRoster(ctx context.Context, channel, threadID, lead string, selectable bool) error {
+	agents, err := a.rosterAgents(ctx)
+	client := a.apiClient()
+	if err != nil || len(agents) == 0 {
+		text := lead
+		if err == nil && text == "" {
+			text = agentRosterEmpty
+		}
+		if text != "" {
+			if _, perr := client.postMessage(ctx, channel, text, threadID); perr != nil {
+				a.Logger.Warn("slack: post roster reply failed", "thread", threadID, "error", perr)
+			}
+		}
+		return err
+	}
+	var blocks []any
+	fallback := rosterText(agents)
+	if lead != "" {
+		blocks = append(blocks, map[string]any{bkType: bkSection, bkText: map[string]any{bkType: bkMrkdwn, bkText: truncateRunes(lead, slackSectionTextMax)}})
+		fallback = lead + "\n\n" + fallback
+	}
+	blocks = append(blocks, a.rosterBlocks(agents, selectable)...)
+	if _, perr := client.postBlocks(ctx, channel, threadID, truncateRunes(fallback, slackSectionTextMax), blocks); perr != nil {
+		a.Logger.Warn("slack: post roster failed", "thread", threadID, "error", perr)
+	}
+	return nil
+}
+
+// rosterBlocks renders the roster rows: a header, how many agents there are
+// and which one a plain mention reaches, one row per agent (the default first,
+// then A–Z) with its description's first sentence and a Select button, and a
+// line naming the agents past rosterRowsMax and the typed way to pick one.
+// Without selectable, the rows carry no button and the footer says to start a
+// new thread.
+func (a *Adapter) rosterBlocks(agents []pkga2a.AgentInfo, selectable bool) []any {
+	sorted := slices.Clone(agents)
+	isDefault := func(ag pkga2a.AgentInfo) bool { return a.agentInfoRef(ag) == a.DefaultAgent }
+	slices.SortStableFunc(sorted, func(x, y pkga2a.AgentInfo) int {
+		if dx, dy := isDefault(x), isDefault(y); dx != dy {
+			if dx {
+				return -1
+			}
+			return 1
+		}
+		return strings.Compare(strings.ToLower(agentDisplayName(x)), strings.ToLower(agentDisplayName(y)))
+	})
+
+	summary := countOf(int64(len(sorted)), "agent") + " available"
+	if len(sorted) > 0 && isDefault(sorted[0]) {
+		summary += " · " + escapeMrkdwn(agentDisplayName(sorted[0])) + " answers plain mentions"
+	}
+	blocks := []any{
+		map[string]any{bkType: bkHeader, bkText: plainTextObj(rosterTitle)},
+		contextBlock(summary),
+		map[string]any{bkType: bkDivider},
+	}
+	shown := sorted[:min(len(sorted), rosterRowsMax)]
+	for _, ag := range shown {
+		text := "*" + escapeMrkdwn(agentDisplayName(ag)) + "*"
+		if isDefault(ag) {
+			text += " · default"
+		}
+		if desc := firstSentence(ag.Description); desc != "" {
+			text += "\n" + escapeMrkdwn(truncateRunes(desc, rosterDescMax))
+		}
+		row := map[string]any{
+			bkType: bkSection,
+			bkText: map[string]any{bkType: bkMrkdwn, bkText: text},
+		}
+		if selectable {
+			row[bkAccessory] = map[string]any{
+				bkType:     bkButton,
+				bkText:     plainTextObj(agentSelectLabel),
+				bkActionID: agentSelectAction,
+				bkValue:    a.agentInfoRef(ag),
+			}
+		}
+		blocks = append(blocks, row)
+	}
+	footer := "Or mention the bot with `/agent \"Name\" question`."
+	if !selectable {
+		footer = "This thread already has its agent. To talk to another one, mention the bot with `/agent \"Name\" question` in a new thread."
+	}
+	if rest := sorted[len(shown):]; len(rest) > 0 {
+		names := make([]string, len(rest))
+		for i, ag := range rest {
+			names[i] = escapeMrkdwn(agentDisplayName(ag))
+		}
+		footer = fmt.Sprintf("%d more: %s. ", len(rest), strings.Join(names, ", ")) + footer
+	}
+	return append(blocks, map[string]any{bkType: bkDivider}, contextBlock(truncateRunes(footer, slackSectionTextMax)))
+}
+
+// firstSentence is a description cut at its first sentence end (". ", "! ",
+// "? " or a line break), with whitespace collapsed; the whole text when it has
+// one sentence.
+func firstSentence(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	for i := 0; i+1 < len(s); i++ {
+		if (s[i] == '.' || s[i] == '!' || s[i] == '?') && s[i+1] == ' ' {
+			s = s[:i+1]
+			break
+		}
+	}
+	return strings.Join(strings.Fields(s), " ")
 }
 
 // displayNameMaxRunes caps a display name at the Slack boundary. Slack

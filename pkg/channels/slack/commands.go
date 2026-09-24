@@ -158,7 +158,7 @@ func helpBlocks(botName string, agents, signIn bool) (string, []any) {
 		elements = append(elements, map[string]any{bkType: "rich_text_list", bkStyle: "bullet", bkElements: items})
 	}
 	blocks := []any{
-		map[string]any{bkType: "header", bkText: plainTextObj("Commands")},
+		map[string]any{bkType: bkHeader, bkText: plainTextObj("Commands")},
 		contextBlock(address),
 		map[string]any{bkType: "rich_text", bkElements: elements},
 		contextBlock(helpShortcutNote),

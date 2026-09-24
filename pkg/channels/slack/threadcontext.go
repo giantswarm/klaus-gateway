@@ -307,7 +307,7 @@ func messageExtras(m threadMessage) []string {
 func blockText(b threadBlock) []string {
 	var out []string
 	switch b.Type {
-	case bkSection, "header":
+	case bkSection, bkHeader:
 		if b.Text != nil {
 			if t := strings.TrimSpace(b.Text.Text); t != "" {
 				out = append(out, t)

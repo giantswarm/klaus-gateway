@@ -236,3 +236,146 @@ func TestAskAgentShortcut_BoundBetweenOpenAndSubmitIsRefused(t *testing.T) {
 	require.Empty(t, fake.pathCalls("chat.postMessage"), "no echo is posted")
 	require.Equal(t, 0, gw.dispatchCount(), "nothing runs")
 }
+
+// sendRosterSelect clicks a roster row's Select button: a block_actions
+// payload from the roster message, which is a reply in threadTS.
+func sendRosterSelect(t *testing.T, srv *httptest.Server, channel, user, threadTS, ref, responseURL string) {
+	t.Helper()
+	inner := map[string]any{
+		"type":         "block_actions",
+		"trigger_id":   "123.456.abcdef",
+		"response_url": responseURL,
+		"user":         map[string]any{"id": user},
+		"channel":      map[string]any{"id": channel},
+		"container":    map[string]any{"message_ts": "150.000"},
+		"message":      map[string]any{"ts": "150.000", "thread_ts": threadTS},
+		"actions":      []any{map[string]any{"action_id": "agent_select", "value": ref}},
+	}
+	data, err := json.Marshal(inner)
+	require.NoError(t, err)
+	body := []byte("payload=" + url.QueryEscape(string(data)))
+	stamp, sig := signBody(t, "signing-secret", body)
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/channels/slack/interactions", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-Slack-Request-Timestamp", stamp)
+	req.Header.Set("X-Slack-Signature", sig)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+// A bare /agent lists the agents as rows, the default first, each with a
+// Select button; a click opens the picker for the roster's thread with that
+// agent preselected.
+func TestRoster_SelectOpensThePickerPreselected(t *testing.T) {
+	fake := newFakeSlackAPI()
+	api := fake.server(t)
+	gw, _ := capturingGateway()
+	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
+
+	sendEvent(t, srv, mention("U1", "<@UBOT> /agent", "100.000", ""))
+	var blocks []any
+	require.Eventually(t, func() bool {
+		for _, c := range fake.pathCalls("chat.postMessage") {
+			if b, ok := c.params["blocks"].([]any); ok && strings.Contains(allBlockText([]recordedCall{c}), "agent_select") {
+				blocks = b
+				require.Equal(t, "100.000", c.params["thread_ts"], "the roster is a reply in the command's thread")
+				return true
+			}
+		}
+		return false
+	}, flowWait, 20*time.Millisecond, "the roster is posted as rows")
+
+	var rows []string
+	for _, b := range blocks {
+		m := b.(map[string]any)
+		if acc, ok := m["accessory"].(map[string]any); ok {
+			require.Equal(t, "Select", acc["text"].(map[string]any)["text"])
+			rows = append(rows, acc["value"].(string))
+		}
+	}
+	require.Equal(t, []string{"kagent/swarmgeist", "kagent/grill-master", "kagent/sre-agent"}, rows,
+		"the default first, then A–Z by display name")
+
+	sendRosterSelect(t, srv, "C1", "U1", "100.000", "kagent/sre-agent", api.URL+"/response_url")
+	view := openedView(t, fake)
+	var pm map[string]string
+	require.NoError(t, json.Unmarshal([]byte(view["private_metadata"].(string)), &pm))
+	require.Equal(t, "100.000", pm["t"], "the conversation opens in the roster's thread")
+	agentSelect := view["blocks"].([]any)[1].(map[string]any)["element"].(map[string]any)
+	require.Equal(t, "kagent/sre-agent", agentSelect["initial_option"].(map[string]any)["value"], "the clicked agent is preselected")
+}
+
+// hasSelectRows reports whether a recorded post carries roster rows with
+// Select buttons.
+func hasSelectRows(c recordedCall) bool {
+	return strings.Contains(allBlockText([]recordedCall{c}), `"agent_select"`)
+}
+
+// A failed selection posts its notice with the roster rows under it, in one
+// message, so the person picks a real agent with one click.
+func TestRoster_UnknownAgentNoticeCarriesTheRows(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw, _ := capturingGateway()
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, withSelection(pickerRoster(), pickerCards()))
+
+	sendEvent(t, srv, mention("U1", `<@UBOT> /agent "No Such Agent" hello`, "100.000", ""))
+	require.Eventually(t, func() bool {
+		for _, c := range fake.pathCalls("chat.postMessage") {
+			text, _ := c.params["text"].(string)
+			if strings.HasPrefix(text, "No agent named `No Such Agent` is available.") && hasSelectRows(c) {
+				return true
+			}
+		}
+		return false
+	}, flowWait, 20*time.Millisecond, "the notice and the rows are one message")
+}
+
+// A bare /agent inside a thread that already has its conversation lists the
+// agents without Select buttons: the picker would refuse every click there.
+func TestRoster_BoundThreadListsWithoutButtons(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw, _ := capturingGateway()
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, withSelection(pickerRoster(), pickerCards()))
+
+	sendEvent(t, srv, mention("U1", "<@UBOT> /agent sre-agent start here", "100.000", ""))
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 20*time.Millisecond)
+
+	sendEvent(t, srv, mention("U1", "<@UBOT> /agent", "200.000", "100.000"))
+	require.Eventually(t, func() bool {
+		for _, c := range fake.pathCalls("chat.postMessage") {
+			if strings.Contains(allBlockText([]recordedCall{c}), "This thread already has its agent") {
+				require.False(t, hasSelectRows(c), "no Select button in a bound thread")
+				return true
+			}
+		}
+		return false
+	}, flowWait, 20*time.Millisecond, "the bound thread gets the rows without buttons")
+}
+
+// A Select on a thread that already has its conversation is refused as an
+// ephemeral in the thread, never through the click's response_url: from a
+// button on a normal message that URL replaces the roster for everyone.
+func TestRoster_SelectRefusalLeavesTheRoster(t *testing.T) {
+	fake := newFakeSlackAPI()
+	api := fake.server(t)
+	gw, _ := capturingGateway()
+	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
+
+	sendEvent(t, srv, mention("U1", "<@UBOT> /agent sre-agent start here", "100.000", ""))
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 20*time.Millisecond)
+
+	sendRosterSelect(t, srv, "C1", "U1", "100.000", "kagent/sre-agent", api.URL+"/response_url")
+	require.Eventually(t, func() bool {
+		for _, c := range fake.pathCalls("chat.postEphemeral") {
+			text, _ := c.params["text"].(string)
+			if strings.Contains(text, "already talks to") && c.params["thread_ts"] == "100.000" && c.params["user"] == "U1" {
+				return true
+			}
+		}
+		return false
+	}, flowWait, 20*time.Millisecond, "the refusal is an ephemeral in the thread")
+	require.Empty(t, fake.pathCalls("response_url"), "the click's response_url is never used")
+	require.Empty(t, fake.pathCalls("chat.update"), "the roster is not rewritten")
+}
