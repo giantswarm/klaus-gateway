@@ -127,7 +127,7 @@ func (a *Adapter) handleMessageAction(ctx context.Context, payload interactionPa
 
 // postInspection renders threadID's retained tool log as ephemeral in-thread
 // messages visible only to slackUser: per call, the tool-log entry format
-// (🔧 name + args, ↳ result preview) grouped under per-turn markers. Splits
+// (name + args, ↳ result preview) grouped under per-turn markers. Splits
 // across several ephemeral posts when the log outgrows one message's block
 // budget. An empty log gets the honest "no longer retained" guidance instead.
 func (a *Adapter) postInspection(ctx context.Context, slackChannel, threadID, slackUser string) {

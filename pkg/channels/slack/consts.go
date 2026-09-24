@@ -116,6 +116,12 @@ const maxConnectorNameLen = 128
 // renders the expired page and no resume fires.
 const connectorCompletionTTL = musterlink.DefaultStateTTL
 
+// connectorDismissedNotice replaces a Connect prompt after "Not now": the
+// prompt stays away for connectorPromptCooldown.
+func connectorDismissedNotice() string {
+	return fmt.Sprintf("Not asked again for %s.", spellDuration(connectorPromptCooldown))
+}
+
 // connectorResumeText is the synthetic message dispatched into the thread
 // after a connector sign-in completes, so the agent retries the blocked tools
 // without the user retyping; %s is the backend name.
@@ -437,7 +443,7 @@ const emptyOutputNote = "The agent finished without a reply."
 
 // stoppedNote replaces the text-mode placeholder when a turn is cancelled
 // before any content streamed, so "thinking" does not linger under "Stopped.".
-const stoppedNote = "Stopped."
+const stoppedNote = "Stopped before an answer."
 
 // pausedNote replaces the text-mode placeholder when a turn pauses on an
 // input-required prompt before any content streamed.
@@ -486,7 +492,7 @@ func renderFailedNote(err error) string {
 	if reason == "" {
 		reason = err.Error()
 	}
-	return fmt.Sprintf("The agent finished, but Slack refused the rest of the reply: %s.", reason)
+	return fmt.Sprintf("The agent finished, but Slack refused the rest of the reply: %s.", escapeMrkdwn(reason))
 }
 
 // attachmentsUnavailableNote is posted when a message carried only attachments

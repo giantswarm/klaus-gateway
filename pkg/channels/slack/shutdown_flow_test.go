@@ -32,7 +32,7 @@ func TestShutdown_PostsRestartNoticeAndLeavesTheTurnRunning(t *testing.T) {
 	posted := allBlockText(fake.pathCalls("chat.postMessage"))
 	require.Contains(t, posted, "The gateway restarted while *test-agent* was working", "the thread is told about the restart")
 	require.Contains(t, posted, "it is posted here when it is done", "a durable store lets the notice promise the delivery")
-	require.NotContains(t, posted, "Stopped.", "a restart is not rendered as a stop")
+	require.NotContains(t, posted, "Stopped", "a restart is not rendered as a stop")
 	require.Equal(t, []string{"eyes"}, fake.reactionNames("reactions.remove"), "working reaction cleared")
 	require.Equal(t, []string{"eyes"}, fake.reactionNames("reactions.add"), "no failed reaction for a restart")
 	require.Equal(t, "555.000", fake.pathCalls("chat.postMessage")[len(fake.pathCalls("chat.postMessage"))-1].params["thread_ts"], "the notice lands in the thread")

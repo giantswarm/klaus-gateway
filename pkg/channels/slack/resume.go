@@ -57,7 +57,8 @@ const (
 )
 
 func (a *Adapter) restartedNotice(ctx context.Context, agentRef string) string {
-	name := a.agentNameFor(ctx, agentRef)
+	// The note is mrkdwn, and the display name comes from an annotation.
+	name := escapeMrkdwn(a.agentNameFor(ctx, agentRef))
 	if r, ok := a.gw.(turnResumer); ok && r.ResumesTurns() {
 		return fmt.Sprintf(restartedResumesNotice, name)
 	}

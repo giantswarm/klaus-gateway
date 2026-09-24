@@ -357,7 +357,7 @@ func (a *Adapter) handleConnectorDismiss(ctx context.Context, slackUser, server,
 	if !validConnectorName(server) {
 		return
 	}
-	text := "Not asked again for an hour."
+	text := connectorDismissedNotice()
 	if err := respondURL(ctx, responseURL, threadTS, text); err != nil {
 		a.Logger.Warn("slack: update connector prompt (dismissed) failed", "user", slackUser, "server", server, "error", err)
 	}

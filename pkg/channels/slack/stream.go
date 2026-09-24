@@ -669,7 +669,7 @@ func (w *batchedWriter) renderToolActivity(ctx context.Context, tool *channels.T
 	}
 }
 
-// toolCallMarkdown renders one tool call as the tool log's entry: "🔧 name"
+// toolCallMarkdown renders one tool call as the tool log's entry: the name
 // with an args code span. Name and args are agent- and MCP-controlled, so
 // everything is escaped for the mrkdwn context block the log lands in.
 func toolCallMarkdown(displayName string, viaMuster bool, args map[string]any) string {
@@ -684,8 +684,8 @@ func toolCallMarkdown(displayName string, viaMuster bool, args map[string]any) s
 }
 
 // toolResultMarkdown renders one tool result as the tool log's entry: "↳ name
-// result" with the payload preview the caller already unwrapped, ⚠️ marking a
-// result the tool reported as an error. ok is false when the result carries no
+// result" with the payload preview the caller already unwrapped, "(error)"
+// marking a result the tool reported as an error. ok is false when the result carries no
 // preview, so nothing is recorded for it.
 func (w *batchedWriter) toolResultMarkdown(tool *channels.ToolActivity, preview string, isErr bool) (md string, ok bool) {
 	if preview == "" {

@@ -1935,7 +1935,9 @@ func TestHandleInbound_FileShareReplyDispatches(t *testing.T) {
 }
 
 // /stop before any streamed content in text-progress mode must resolve the
-// "thinking" placeholder instead of leaving it dangling above "Stopped.".
+// "Working…" placeholder instead of leaving it dangling above "Stopped.". The
+// placeholder's note is not the command's own note, or the thread would show
+// the same line twice.
 func TestStop_TextModePlaceholderResolved(t *testing.T) {
 	fake := newFakeSlackAPI()
 	hold := make(chan struct{})
@@ -1951,7 +1953,7 @@ func TestStop_TextModePlaceholderResolved(t *testing.T) {
 
 	sendEvent(t, srv, dmThreadEvent("U1", "/stop", "101.000", "100.000"))
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.update")), "Stopped.")
+		return strings.Contains(allText(fake.pathCalls("chat.update")), "Stopped before an answer.")
 	}, flowWait, 20*time.Millisecond, "the placeholder is replaced on stop")
 }
 
