@@ -312,12 +312,17 @@ message. The card's last line depends on what asked for it: "Your message runs a
 you sign in." for a held message, "Sign in, then click the button again." for a button
 click, nothing for `/login`. The button opens the linking flow. Once the link completes, a
 DM prompt is rewritten in place to the signed-in confirmation ("Signed in to Giant Swarm.
-The agent now acts with your permissions.") and a channel prompt is confirmed with a fresh
-ephemeral. A fresh prompt that replaces an expired one starts with the context line "The
-earlier sign-in link expired. Use this one." The link expires after 15 minutes; a later
-message posts a fresh prompt. A DM prompt is rewritten to say its link expired; a channel
-prompt cannot be rewritten, so the fresh ephemeral says the earlier link expired instead. A
-turn that still has no user token is aborted rather than run as the gateway identity.
+The agent now acts with your permissions."). A channel prompt is replaced with the same
+text through the `response_url` of its Sign in click, so its button goes; when the click
+did not reach this process, or the replace fails, it is confirmed with a fresh ephemeral.
+A fresh prompt that replaces an expired one starts with the context line "The earlier
+sign-in link expired. Use this one." The link expires after 15 minutes; a later message
+posts a fresh prompt. A DM prompt is rewritten to say its link expired; a channel prompt
+cannot be rewritten, so the fresh ephemeral says the earlier link expired instead. A turn
+that still has no user token is aborted rather than run as the gateway identity. In a
+channel the button's `value` is `<thread>|<prompt id>`, so a click is matched to the card
+it came from and a click on an older card in the thread cannot take the current card's
+`response_url`; a DM prompt's button has no value.
 
 ```json
 {
@@ -326,7 +331,7 @@ turn that still has no user token is aborted rather than run as the gateway iden
     {
       "type": "actions",
       "elements": [
-        { "type": "button", "text": { "type": "plain_text", "text": "Sign in" }, "style": "primary", "action_id": "obo_sign_in", "url": "https://example.com/login" }
+        { "type": "button", "text": { "type": "plain_text", "text": "Sign in" }, "style": "primary", "action_id": "obo_sign_in", "url": "https://example.com/login", "value": "1712345678.000100|K3VQ7X2M4PZJ6WTBN5HRC8DY2A" }
       ]
     },
     { "type": "context", "elements": [ { "type": "mrkdwn", "text": "Signed in before? Your session may have expired." } ] }

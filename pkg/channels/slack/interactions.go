@@ -220,9 +220,11 @@ func (a *Adapter) routeInteraction(ctx context.Context, payload interactionPaylo
 		a.handleRosterSelect(ctx, payload, action.Value)
 		return
 	case oboSignIn:
-		// URL button: the browser opens the link itself, and the prompt message
-		// is rewritten via OnUserLinked once the link completes, so the click
-		// needs no handling beyond the ack.
+		// URL button: the browser opens the link itself. A DM prompt is
+		// rewritten by its ts once the link completes; a channel prompt is an
+		// ephemeral, and the click's response_url is the only handle that can
+		// replace it, so it is filed under the prompt's anchor.
+		a.recordSignInClick(payload.User.ID, action.Value, payload.ResponseURL)
 		return
 	case connectorDismiss:
 		a.handleConnectorDismiss(ctx, payload.User.ID, action.Value, payload.Message.ThreadTS, payload.ResponseURL)

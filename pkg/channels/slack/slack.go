@@ -2,6 +2,7 @@ package slack
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -912,7 +913,14 @@ type signInAnchor struct {
 	ts        string
 	threadID  string
 	ephemeral bool
-	nudgedAt  time.Time // when the prompt for this (user, thread) last posted
+	// promptID names the ephemeral prompt in its button value, so only a click
+	// on this card fills responseURL.
+	promptID string
+	// responseURL is the Sign in click's response_url on an ephemeral prompt:
+	// the one handle that can replace it. "" until the click arrives, and for a
+	// prompt the click of which reached another process or none at all.
+	responseURL string
+	nudgedAt    time.Time // when the prompt for this (user, thread) last posted
 }
 
 // addressable reports whether the anchor points at a message that was posted,
@@ -982,10 +990,11 @@ func (a *Adapter) postSignInPrompt(ctx context.Context, slackChannel, threadID, 
 			return signInAnchor{}, err
 		}
 	}
-	if err := client.postSignInPromptEphemeral(ctx, slackChannel, threadID, slackUser, url, supersedes, trigger); err != nil {
+	promptID := rand.Text()
+	if err := client.postSignInPromptEphemeral(ctx, slackChannel, threadID, slackUser, url, promptID, supersedes, trigger); err != nil {
 		return signInAnchor{}, err
 	}
-	return signInAnchor{channel: slackChannel, ephemeral: true}, nil
+	return signInAnchor{channel: slackChannel, ephemeral: true, promptID: promptID}, nil
 }
 
 // signInNotice is a thread's sign-in notice: the message, and the people it
@@ -1135,6 +1144,29 @@ func (a *Adapter) recordSignInAnchor(slackUser, threadID string, anchor signInAn
 	a.signInPrompted[key] = ttlEntry[signInAnchor]{value: anchor, expires: now.Add(pendingTTL)}
 }
 
+// recordSignInClick files a Sign in click's response_url under the (user,
+// thread) anchor of the ephemeral prompt it came from, so the completed link
+// can replace that prompt. The anchor keeps its lifetime and throttle. A click
+// that finds no live ephemeral anchor for its prompt (a DM prompt, a drained or
+// expired anchor, an older card the thread's anchor has moved on from, another
+// process's prompt) is a no-op, and the completed link then posts its
+// confirmation as a separate ephemeral.
+func (a *Adapter) recordSignInClick(slackUser, value, responseURL string) {
+	threadID, promptID, ok := decodeSignInValue(value)
+	if !ok || slackUser == "" || responseURL == "" {
+		return
+	}
+	key := slackUser + "\x00" + threadID
+	a.signInPromptedMu.Lock()
+	defer a.signInPromptedMu.Unlock()
+	entry, ok := a.signInPrompted[key]
+	if !ok || !entry.value.ephemeral || entry.value.promptID != promptID || !time.Now().Before(entry.expires) {
+		return
+	}
+	entry.value.responseURL = responseURL
+	a.signInPrompted[key] = entry
+}
+
 // markConnectorPrompted records a prompt attempt for (user, server) and
 // reports whether one is allowed now: outside the cooldown, or carrying a
 // login URL different from the last surfaced button (the auth server issued
@@ -1195,11 +1227,12 @@ func (a *Adapter) takeSignInAnchors(slackUser string) []signInAnchor {
 // updateSignInAnchors confirms the completed account link on every surface that
 // prompted the user. A DM prompt is rewritten in place, which folds the
 // confirmation into the message the user is already looking at and drops the
-// URL button. A channel prompt is ephemeral, so it cannot be rewritten: the
-// confirmation is a fresh ephemeral to the same user, and the public thread
-// notice stops naming them as waiting (noteSignedIn); it keeps waiting for
-// anyone else. The identity the user signed in as is confirmed
-// on the private browser success page, not here, so neither form carries an
+// URL button. A channel prompt is ephemeral and has no ts: it is replaced
+// through the response_url of its Sign in click when that click reached this
+// process, else the confirmation is a fresh ephemeral to the same user. Either
+// way the public thread notice stops naming them as waiting (noteSignedIn); it
+// keeps waiting for anyone else. The identity the user signed in as is
+// confirmed on the private browser success page, not here, so neither form carries an
 // email. The text is the same fixed phrase for every anchor, so all paths (the
 // link callback and the convergence re-checks) are interchangeable; what
 // happens to a parked message is signalled by the replay itself, not by this
@@ -1213,6 +1246,15 @@ func (a *Adapter) updateSignInAnchors(ctx context.Context, slackUser string) {
 	client := a.apiClient()
 	for _, anchor := range anchors {
 		if anchor.ts == "" {
+			// The click's response_url replaces the prompt, so its button goes
+			// and no second ephemeral is posted.
+			if anchor.responseURL != "" {
+				err := respondURL(ctx, anchor.responseURL, anchor.threadID, signedInNotice)
+				if err == nil {
+					continue
+				}
+				a.Logger.Warn("slack: replace sign-in prompt after link failed", "user", slackUser, "channel", anchor.channel, "error", err)
+			}
 			// A failed confirmation is not re-recorded: the anchor exists to
 			// address a message, and an ephemeral has none. The user is
 			// already linked, so the worst a retry would buy back is the

@@ -3132,13 +3132,28 @@ const (
 // a prompt whose link expired, a context line saying so; the title and body
 // with the trigger's line; a "Sign in" URL button opening linkURL; and the
 // context line for a person whose earlier session ended.
-func signInPromptBody(channel, threadID, linkURL string, supersedes bool, trigger signInTrigger) map[string]any {
+func signInPromptBody(channel, threadID, linkURL, promptID string, supersedes bool, trigger signInTrigger) map[string]any {
 	text := "*" + signInPromptTitle + "*\n" + fmt.Sprintf(signInPromptBodyFormat, int(signInNudgeTTL/time.Minute))
 	switch trigger {
 	case signInForMessage:
 		text += " " + signInForMessageLine
 	case signInForClick:
 		text += " " + signInForClickLine
+	}
+	signInButton := map[string]any{
+		bkType:     bkButton,
+		bkText:     map[string]any{bkType: bkPlainText, bkText: "Sign in"},
+		bkStyle:    bkPrimary,
+		bkActionID: oboSignIn,
+		bkURL:      linkURL,
+	}
+	// A channel prompt's click names its thread and the prompt, so the handler
+	// files the click's response_url under the prompt's (user, thread) anchor
+	// only while that anchor is still this prompt: a click on an older card in
+	// the thread must not take the handle of the current one. A DM prompt is
+	// rewritten by its ts and carries no value.
+	if promptID != "" {
+		signInButton[bkValue] = encodeSignInValue(threadID, promptID)
 	}
 	var blocks []any
 	if supersedes {
@@ -3150,16 +3165,8 @@ func signInPromptBody(channel, threadID, linkURL string, supersedes bool, trigge
 			bkText: map[string]any{bkType: bkMrkdwn, bkText: text},
 		},
 		map[string]any{
-			bkType: bkActions,
-			bkElements: []any{
-				map[string]any{
-					bkType:     bkButton,
-					bkText:     map[string]any{bkType: bkPlainText, bkText: "Sign in"},
-					bkStyle:    bkPrimary,
-					bkActionID: oboSignIn,
-					bkURL:      linkURL,
-				},
-			},
+			bkType:     bkActions,
+			bkElements: []any{signInButton},
 		},
 		contextBlock(signInSessionHint),
 	)
@@ -3212,25 +3219,36 @@ func (c *slackAPIClient) postContextMessage(ctx context.Context, channel, thread
 	return c.postJSON(ctx, methodChatPostMessage, body)
 }
 
+// encodeSignInValue and decodeSignInValue carry a channel sign-in prompt's
+// thread and prompt ID in its button value. A thread ts never holds "|".
+func encodeSignInValue(threadID, promptID string) string { return threadID + "|" + promptID }
+
+func decodeSignInValue(value string) (threadID, promptID string, ok bool) {
+	threadID, promptID, ok = strings.Cut(value, "|")
+	return threadID, promptID, ok && promptID != ""
+}
+
 // postSignInPrompt posts the sign-in prompt as a real threaded message and
 // returns its ts. It is the DM form of the prompt: a DM thread has one reader,
 // so nothing is hidden by making it ephemeral, and only thread replies render
 // in the assistant pane. The returned ts lets the prompt be rewritten in place
 // once the link completes.
 func (c *slackAPIClient) postSignInPrompt(ctx context.Context, channel, threadID, linkURL string, trigger signInTrigger) (string, error) {
-	return c.postJSON(ctx, methodChatPostMessage, signInPromptBody(channel, threadID, linkURL, false, trigger))
+	return c.postJSON(ctx, methodChatPostMessage, signInPromptBody(channel, threadID, linkURL, "", false, trigger))
 }
 
 // postSignInPromptEphemeral posts the sign-in prompt visible to user only. It
 // is the channel form: the link is minted for one identity, so a thread full
 // of bystanders must not see it (klaus-gateway#185). An ephemeral has no
-// addressable ts, so it cannot be rewritten later; the caller confirms the
-// completed link with a fresh ephemeral instead. Slack only surfaces a
-// thread-scoped ephemeral in a thread that already shows a message, which is
-// why the caller anchors a thread notice first (klaus-gateway#156). supersedes
-// marks a prompt that replaces one whose link expired.
-func (c *slackAPIClient) postSignInPromptEphemeral(ctx context.Context, channel, threadID, user, linkURL string, supersedes bool, trigger signInTrigger) error {
-	body := signInPromptBody(channel, threadID, linkURL, supersedes, trigger)
+// addressable ts: the caller replaces it through its Sign in click's
+// response_url, or confirms the completed link with a fresh ephemeral when
+// no click reached this process. promptID names this card in the button's
+// value. Slack only surfaces a thread-scoped ephemeral in a thread that
+// already shows a message, which is why the caller anchors a thread notice
+// first (klaus-gateway#156). supersedes marks a prompt that replaces one whose
+// link expired.
+func (c *slackAPIClient) postSignInPromptEphemeral(ctx context.Context, channel, threadID, user, linkURL, promptID string, supersedes bool, trigger signInTrigger) error {
+	body := signInPromptBody(channel, threadID, linkURL, promptID, supersedes, trigger)
 	body[paramUser] = user
 	_, err := c.postJSON(ctx, "chat.postEphemeral", body)
 	return err
