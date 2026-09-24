@@ -471,8 +471,11 @@ any string that begins with `Slack bot`, `Slack app-level`, or `Slack user`.
    unwrapped to the tool it really runs, and every other name is humanised by dropping the
    `x_`/`workflow_` namespace and capitalising the rest (`x_kubernetes_list` → "Kubernetes
    list"). Every step carries the raw tool name and its arguments as its details and the
-   result preview as its output, each cut to Slack's 256-character chunk limit. Nothing is
-   hidden by a per-thread setting.
+   result preview as its output, each cut to Slack's 256-character chunk limit without ever
+   splitting an escape sequence. The fields are plain mrkdwn text, escaped like the title, so
+   a `<@U…>` in a payload stays literal; a tool's own `*` or `_` renders as Slack formatting,
+   since Slack has no escape for those in plain text. Nothing is hidden by a per-thread
+   setting.
 
    The **Inspect agent steps** shortcut is the audit view, with the fuller retained payloads.
 
