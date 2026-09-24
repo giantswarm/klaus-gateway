@@ -774,9 +774,31 @@ func (a *Adapter) botTeam(ctx context.Context) string {
 // postChannelIntro posts the one-time Swarmgeist-branded introduction when the
 // bot is added to a channel. Best-effort.
 func (a *Adapter) postChannelIntro(ctx context.Context, slackChannel string) {
-	if _, err := a.apiClient().postMessage(ctx, slackChannel, channelIntro, ""); err != nil {
+	text, blocks := a.introBlocks(ctx, channelIntroText, channelIntroTextNoDflt, channelIntroContext)
+	if _, err := a.apiClient().postBlocks(ctx, slackChannel, "", text, blocks); err != nil {
 		a.Logger.Warn("slack: post channel intro failed", "channel", slackChannel, "error", err)
 	}
+}
+
+// introBlocks renders the channel intro or the assistant greeting: the body as a
+// section, the command hints as context. The bot is named by its mention, so
+// each app shows its own name; the default agent by its roster name, so the
+// text names the agent a plain mention really reaches. With no default agent
+// the body without one is used. text is the notification fallback.
+func (a *Adapter) introBlocks(ctx context.Context, body, bodyNoDefault, hints string) (text string, blocks []any) {
+	mention := "the bot"
+	if id := a.botID(ctx); id != "" {
+		mention = "<@" + id + ">"
+	}
+	if a.DefaultAgent == "" {
+		body = bodyNoDefault
+	}
+	text = fmt.Sprintf(body, mention, escapeMrkdwn(a.agentNameFor(ctx, a.DefaultAgent)))
+	blocks = []any{
+		map[string]any{bkType: bkSection, bkText: map[string]any{bkType: bkMrkdwn, bkText: text}},
+		contextBlock(fmt.Sprintf(hints, mention)),
+	}
+	return text, blocks
 }
 
 // dmRedirectTTL bounds how often the DM redirect is repeated per IM channel,
@@ -805,7 +827,8 @@ func (a *Adapter) greetAssistantUser(userID, imChannel string) {
 		return
 	}
 	a.background(func(ctx context.Context) {
-		if _, err := a.apiClient().postMessage(ctx, imChannel, assistantGreeting, ""); err != nil {
+		text, blocks := a.introBlocks(ctx, assistantGreetingText, assistantGreetingTextNoDflt, assistantGreetingContext)
+		if _, err := a.apiClient().postBlocks(ctx, imChannel, "", text, blocks); err != nil {
 			a.Logger.Warn("slack: post assistant greeting failed", "channel", imChannel, "error", err)
 		}
 	})

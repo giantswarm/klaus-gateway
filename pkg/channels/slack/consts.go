@@ -561,14 +561,20 @@ func countOf(n int64, unit string) string {
 	return fmt.Sprintf("%d %ss", n, unit)
 }
 
-// channelIntro is posted once when the bot is added to a channel, so members
-// know what it is and how to reach it.
-const channelIntro = "👋 Hi, I'm Swarmgeist. Mention me (`@Swarmgeist`) in this channel to start a thread and I'll bring in an agent to help investigate and act on your clusters. I reply in-thread and ask before anything destructive. Mention me with `/help` (as in `@Swarmgeist /help`) for the full list of commands."
+// The channel intro is posted once when the bot is added to a channel, and the
+// assistant greeting into a user's assistant pane the first time they open it
+// (app_home_opened, Messages tab). Both describe the product, name the agent a
+// plain mention reaches, and say how to reach the commands and the roster.
+// The %[1]s verbs take the bot's mention, %[2]s the default agent's name.
+const (
+	channelIntroText       = "Swarmgeist connects this channel to Giant Swarm's agents. Mention %[1]s to start a thread with *%[2]s*, or mention it with `/agent` to pick another agent. Agents work with your permissions and ask before making changes."
+	channelIntroTextNoDflt = "Swarmgeist connects this channel to Giant Swarm's agents. Mention %[1]s with `/agent` to pick an agent and start a thread. Agents work with your permissions and ask before making changes."
+	channelIntroContext    = "%[1]s `/help` lists the commands"
 
-// assistantGreeting is posted into a user's assistant pane the first time they
-// open it (app_home_opened, Messages tab), so a new assistant thread does not
-// open bare.
-const assistantGreeting = "👋 Hi, I'm Swarmgeist. Ask me here about your clusters and platform and I'll bring in an agent to help investigate and act. I ask before anything destructive. Send `/help` for the full list of commands."
+	assistantGreetingText       = "Ask about a cluster, an alert or a deployment. Swarmgeist routes each conversation to an agent, *%[2]s* by default. Agents work with your permissions and ask before making changes."
+	assistantGreetingTextNoDflt = "Ask about a cluster, an alert or a deployment. Swarmgeist routes each conversation to an agent. Agents work with your permissions and ask before making changes."
+	assistantGreetingContext    = "%[1]s `/help` lists the commands · %[1]s `/agent` lists the agents"
+)
 
 // homeGreetingTTL bounds how often the assistant-pane greeting repeats per
 // user: app_home_opened fires on every pane open, not once per thread.

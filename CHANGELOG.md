@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `turn_complete` carries a failed turn's `failure_class`, and `klaus_gateway_turn_total` gains the `failure_class` label (empty unless the turn failed or its send did), so a burst of tool-set failures across people can alert apart from a one-off model error (klaus-gateway#329).
 - Chart: `serviceMonitor.labels`, labels on the ServiceMonitor beside the chart's own. The Giant Swarm observability platform routes a scrape to a Mimir tenant by `observability.giantswarm.io/tenant`, and the monitor carried no way to set it, so the gateway's `klaus_gateway_*` series reached no tenant on every installation.
 
+### Changed
+
+- Slack: the channel intro and the assistant-pane greeting describe Swarmgeist without emoji or a first-person voice, name the default agent a plain mention reaches, and show the command hints as a muted line. The hints use the app's own mention, so each Slack app shows its own name. The app manifest's agent description is rewritten and a "List the agents" suggested prompt is added.
+
 ### Fixed
 
 - Release images log their own version. The start record, `--version` and the OTel `service.version` of `3.2.0` and `3.3.0` reported a v1 pseudo-version (`v1.21.1-0.20260923163143-9bf2b7ad2008`): the architect orb links the release binary without a `pkg/project.version` ldflag, and the Go build info cannot stand in, because the module path has no `/v3` suffix and the toolchain ignores the v2+ tags. `make test`, which the orb's build job runs before it links, now appends the gitsemver version to the orb's `.ldflags` (`Makefile.custom.mk`), so a binary reports the same string as its image tag: the release version on a tag build, the dev version on a branch build (klaus-gateway#335).

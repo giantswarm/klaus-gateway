@@ -684,7 +684,10 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
   a reject carrying the text. The Go ADK runtime does not give that text to the model
   (giantswarm/kagent-upstream#71).
 - **Channel intro.** When the bot is added to a channel it posts a one-time introduction
-  (requires the `member_joined_channel` bot event).
+  (requires the `member_joined_channel` bot event). It names the default agent, the one a plain
+  mention reaches, by its roster name, and ends with how to reach `/help`. The assistant-pane
+  greeting does the same and also points at `/agent`. Both name the bot by its mention, so each
+  Slack app shows its own name.
 - **Sign-in prompt.** An unlinked user's first message is answered with a "Sign in to Giant
   Swarm" card: the agent runs its tools with the person's permissions, the link lasts 15
   minutes, and a last line that depends on the trigger ("Your message runs as soon as you sign
