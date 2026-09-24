@@ -2237,6 +2237,21 @@ func TestToolResultPreview(t *testing.T) {
 		require.False(t, isErr)
 	})
 
+	t.Run("a non-boolean flag does not make a wrap a text carrier", func(t *testing.T) {
+		preview, isErr := toolResultPreview(map[string]any{"result": "x", "isError": "yes"}, 100)
+		require.Equal(t, `{"isError": "yes", "result": "x"}`, preview)
+		require.False(t, isErr)
+	})
+
+	t.Run("the flag on a nested shape that is not a carrier still marks the error", func(t *testing.T) {
+		// The harness shape with a structured result, arriving as the text of an
+		// output wrap: not a text carrier itself, but its flag must not be lost.
+		inner := `{"result": {"code": 7}, "isError": true}`
+		preview, isErr := toolResultPreview(map[string]any{"output": inner}, 100)
+		require.Equal(t, `{"isError": true, "result": {"code": 7}}`, preview)
+		require.True(t, isErr)
+	})
+
 	t.Run("result wrap with extra keys is not a text carrier", func(t *testing.T) {
 		preview, _ := toolResultPreview(map[string]any{"result": "x", "status": "ok"}, 100)
 		require.Equal(t, `{"result": "x", "status": "ok"}`, preview)

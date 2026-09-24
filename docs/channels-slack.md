@@ -464,9 +464,8 @@ any string that begins with `Slack bot`, `Slack app-level`, or `Slack user`.
    result preview as its output, each cut to Slack's 256-character chunk limit without ever
    splitting an escape sequence. The fields are plain mrkdwn text, escaped like the title, so
    a `<@U…>` in a payload stays literal; a tool's own `*` or `_` renders as Slack formatting,
-   because Slack has no escape for those in plain text and a code span reads worse (it wraps
-   into one fragment per line, and a fenced block flattens to the same). Nothing is hidden by
-   a per-thread setting.
+   since Slack has no escape for those in plain text. Nothing is hidden by a per-thread
+   setting.
 
    The **Inspect agent steps** shortcut is the audit view, with the fuller retained payloads.
 

@@ -820,20 +820,12 @@ func (w *batchedWriter) closeOpenSteps(ctx context.Context, status string) {
 
 // stepField prepares a payload preview for a step's details or output: escaped
 // like every other agent-controlled string, flattened to one line, and cut to
-// the chunk size Slack documents for task_update without ever splitting an
-// entity. Slack decodes the entities again when it renders the field (graveler,
-// 2026-09-22), so the escaping costs the reader nothing and keeps a <@U…> in a
-// payload literal text.
-//
-// A tool's own mrkdwn emphasis (*, _, ~) is deliberately left as it is. Slack
-// offers no escape for those markers in plain text, and every alternative was
-// tried on graveler (2026-09-24) and read worse than the occasional bold word:
-// a code span renders a wrapped payload as one highlighted fragment per line, a
-// fenced block flattens to that same inline span on this surface, and invisible
-// characters between the markers corrupt copied text. The leak is bounded — it
-// needs paired markers and at worst bolds the tail of a 256-character preview
-// (muster's prometheus tool emphasising a label, 2026-09-23). Should it bite,
-// the upgrade path is to code-span only a payload that carries an emphasis pair.
+// the chunk size Slack documents for task_update without splitting an entity.
+// Slack decodes the entities again when it renders the field, so the escaping
+// costs the reader nothing and keeps a <@U…> in a payload literal text. A
+// tool's own mrkdwn emphasis (*, _, ~) is left as it is on purpose — Slack has
+// no escape for those markers in plain text, and a code span reads worse on
+// this surface; TestStepField_LeavesEmphasisAlone pins that decision.
 func stepField(s string) string {
 	return truncateEntityAware(stepSafeText(s), stepFieldMax)
 }
@@ -1367,14 +1359,14 @@ func toolResultPreview(resp map[string]any, max int) (preview string, isErr bool
 //
 // isErr is read wherever the payload carries it, not only inside an envelope:
 // kagent's harness runtime sets it beside the wrap ({"result": …, "isError":
-// true}), so that one key is allowed next to a carrier, and the flag is
-// reported even when the shape is otherwise not recognised.
+// true}), so that one key, as a boolean, is allowed next to a carrier, and the
+// flag is reported even when the shape is otherwise not recognised.
 func toolResultText(v map[string]any) (text string, isErr, ok bool) {
 	isErr, _ = v["isError"].(bool)
 	items, isEnvelope := v["content"].([]any)
 	if !isEnvelope {
 		carrierKeys := len(v)
-		if _, flagged := v["isError"]; flagged {
+		if _, flagged := v["isError"].(bool); flagged {
 			carrierKeys--
 		}
 		if carrierKeys == 1 {
@@ -3403,7 +3395,7 @@ func truncateRunes(s string, max int) string {
 // truncateEntityAware caps s at max runes like truncateRunes, but never leaves
 // a partial entity at the cut. s is already escaped, so every "&" opens one of
 // &amp;, &lt; or &gt;; a cut that lands inside one is backed off to the "&", so
-// a payload ends in "…" and not in "&am…" (raised reviewing klaus-gateway#322).
+// a payload ends in "…" and not in "&am…".
 func truncateEntityAware(s string, max int) string {
 	r := []rune(s)
 	if len(r) <= max {

@@ -58,7 +58,7 @@ func TestStepField_EscapesFlattensAndTruncates(t *testing.T) {
 }
 
 // A cut never lands inside an escaped entity, so a truncated payload ends in
-// "…" and not in a fragment such as "&am…" (raised reviewing klaus-gateway#322).
+// "…" and not in a fragment such as "&am…".
 func TestStepField_CutNeverSplitsAnEntity(t *testing.T) {
 	// Fill the budget so the "&amp;" of the escaped "&" straddles the cut.
 	got := stepField(strings.Repeat("a", stepFieldMax-3) + "& more")
@@ -79,8 +79,7 @@ func TestTruncateEntityAware(t *testing.T) {
 }
 
 // A tool's own emphasis markers are left alone, on purpose: Slack has no escape
-// for them in plain text, and the alternatives — a code span, a fence, invisible
-// characters — all read worse on this surface (graveler, 2026-09-24). This pins
+// for them in plain text, and a code span reads worse on this surface. This pins
 // the decision so a later change to it is deliberate.
 func TestStepField_LeavesEmphasisAlone(t *testing.T) {
 	require.Equal(t, "*tenant_id*=gs", stepField("*tenant_id*=gs"))
