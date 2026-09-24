@@ -702,8 +702,10 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
   real threaded message and lands in the Slack
   Assistant pane. Once the link completes, a DM prompt is rewritten in place to the
   signed-in confirmation, with the agent hand-off folded in when a held message is about to
-  replay; a channel prompt cannot be rewritten (an ephemeral has no message id), so the
-  confirmation is a fresh ephemeral to the same user. The sign-in link is per-user and the
+  replay. A channel prompt is an ephemeral and has no message id: it is replaced with the
+  confirmation through the `response_url` of its **Sign in** click, and when that click did not
+  reach this process (or the replace fails) the confirmation is a fresh ephemeral to the same
+  user. The sign-in link is per-user and the
   callback also verifies the OAuth identity's email against the Slack profile email. The
   link in the button expires after 15 minutes; a message sent after that gets a fresh
   prompt. A DM prompt is rewritten to say its link expired; a channel prompt cannot be

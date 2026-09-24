@@ -3140,6 +3140,19 @@ func signInPromptBody(channel, threadID, linkURL string, supersedes bool, trigge
 	case signInForClick:
 		text += " " + signInForClickLine
 	}
+	signInButton := map[string]any{
+		bkType:     bkButton,
+		bkText:     map[string]any{bkType: bkPlainText, bkText: "Sign in"},
+		bkStyle:    bkPrimary,
+		bkActionID: oboSignIn,
+		bkURL:      linkURL,
+	}
+	// The click names its thread, so the handler can file the click's
+	// response_url under the prompt's (user, thread) anchor. Slack refuses an
+	// empty value, and a top-level prompt's anchor has an empty thread anyway.
+	if threadID != "" {
+		signInButton[bkValue] = threadID
+	}
 	var blocks []any
 	if supersedes {
 		blocks = append(blocks, contextBlock(signInLinkSupersededNote))
@@ -3150,16 +3163,8 @@ func signInPromptBody(channel, threadID, linkURL string, supersedes bool, trigge
 			bkText: map[string]any{bkType: bkMrkdwn, bkText: text},
 		},
 		map[string]any{
-			bkType: bkActions,
-			bkElements: []any{
-				map[string]any{
-					bkType:     bkButton,
-					bkText:     map[string]any{bkType: bkPlainText, bkText: "Sign in"},
-					bkStyle:    bkPrimary,
-					bkActionID: oboSignIn,
-					bkURL:      linkURL,
-				},
-			},
+			bkType:     bkActions,
+			bkElements: []any{signInButton},
 		},
 		contextBlock(signInSessionHint),
 	)

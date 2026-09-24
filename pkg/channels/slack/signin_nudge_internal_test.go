@@ -1,7 +1,11 @@
 package slack
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -136,6 +140,113 @@ func TestUpdateSignInAnchors_ConfirmsPerSurface(t *testing.T) {
 	require.Equal(t, int32(1), srv.ephemerals.Load(), "the DM rewrite posts nothing new")
 }
 
+// responseURLRecorder is a response_url endpoint that records every body and
+// answers status.
+type responseURLRecorder struct {
+	mu     sync.Mutex
+	bodies []map[string]any
+	status int
+}
+
+func newResponseURLRecorder(t *testing.T, status int) (*responseURLRecorder, string) {
+	t.Helper()
+	r := &responseURLRecorder{status: status}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		var v map[string]any
+		_ = json.NewDecoder(req.Body).Decode(&v)
+		r.mu.Lock()
+		r.bodies = append(r.bodies, v)
+		r.mu.Unlock()
+		w.WriteHeader(r.status)
+	}))
+	t.Cleanup(srv.Close)
+	return r, srv.URL
+}
+
+func (r *responseURLRecorder) calls() []map[string]any {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]map[string]any(nil), r.bodies...)
+}
+
+func signInClick(user, threadID, responseURL string) interactionPayload {
+	var p interactionPayload
+	p.Type = payloadTypeBlockActions
+	p.User.ID = user
+	p.Channel.ID = "C1"
+	p.ResponseURL = responseURL
+	p.Actions = append(p.Actions, struct {
+		ActionID string `json:"action_id"`
+		Value    string `json:"value"`
+	}{ActionID: oboSignIn, Value: threadID})
+	return p
+}
+
+// A channel prompt whose Sign in click reached this process is replaced through
+// the click's response_url when the link completes: the card loses its button
+// and no second ephemeral is posted (klaus-gateway#334).
+func TestUpdateSignInAnchors_ReplacesTheClickedChannelPrompt(t *testing.T) {
+	a, srv := newTestAdapter(t)
+	rec, responseURL := newResponseURLRecorder(t, http.StatusOK)
+
+	a.recordSignInAnchor("U1", "T1", signInAnchor{channel: "C1", ephemeral: true})
+	a.routeInteraction(t.Context(), signInClick("U1", "T1", responseURL))
+	a.updateSignInAnchors(t.Context(), "U1")
+
+	calls := rec.calls()
+	require.Len(t, calls, 1, "the prompt is replaced once")
+	require.Equal(t, true, calls[0]["replace_original"])
+	require.Equal(t, "T1", calls[0]["thread_ts"], "the replacement stays in the thread")
+	require.Equal(t, signedInNotice, calls[0]["text"])
+	_, hasBlocks := calls[0]["blocks"]
+	require.False(t, hasBlocks, "the replacement carries no button")
+	require.Zero(t, srv.ephemerals.Load(), "no second ephemeral")
+}
+
+// A replace that fails falls back to the separate confirmation, so the person
+// still learns the sign-in completed.
+func TestUpdateSignInAnchors_FailedReplacePostsTheConfirmation(t *testing.T) {
+	a, srv := newTestAdapter(t)
+	rec, responseURL := newResponseURLRecorder(t, http.StatusNotFound)
+
+	a.recordSignInAnchor("U1", "T1", signInAnchor{channel: "C1", ephemeral: true})
+	a.recordSignInClick("U1", "T1", responseURL)
+	a.updateSignInAnchors(t.Context(), "U1")
+
+	require.Len(t, rec.calls(), 1, "the replace was tried")
+	require.Equal(t, int32(1), srv.ephemerals.Load(), "the confirmation posts on its own")
+}
+
+// Only a live ephemeral anchor under the click's (user, thread) takes the
+// response_url: a click never creates an anchor, and a DM prompt keeps its
+// in-place rewrite by ts.
+func TestRecordSignInClick_OnlyFillsALiveEphemeralAnchor(t *testing.T) {
+	a, _ := newTestAdapter(t)
+	responseURL := "https://hooks.slack.test/actions/1"
+
+	a.recordSignInClick("U1", "T1", responseURL)
+	require.Empty(t, a.takeSignInAnchors("U1"), "a click without a prompt records nothing")
+
+	a.recordSignInAnchor("U1", "T1", signInAnchor{channel: "C1", ephemeral: true})
+	a.recordSignInClick("U1", "T2", responseURL)
+	a.recordSignInClick("U2", "T1", responseURL)
+	anchors := a.takeSignInAnchors("U1")
+	require.Len(t, anchors, 1)
+	require.Empty(t, anchors[0].responseURL, "a click in another thread or by another user is not filed")
+
+	a.recordSignInAnchor("U1", "T1", signInAnchor{channel: "D1", ts: "p.000"})
+	a.recordSignInClick("U1", "T1", responseURL)
+	anchors = a.takeSignInAnchors("U1")
+	require.Len(t, anchors, 1)
+	require.Empty(t, anchors[0].responseURL, "a DM prompt is rewritten by its ts")
+
+	a.recordSignInAnchor("U1", "", signInAnchor{channel: "C1", ephemeral: true})
+	a.recordSignInClick("U1", "", responseURL)
+	anchors = a.takeSignInAnchors("U1")
+	require.Len(t, anchors, 1)
+	require.Equal(t, responseURL, anchors[0].responseURL, "a top-level prompt takes its click")
+}
+
 // One notice serves the whole thread and names the people it waits for: a
 // second unlinked user joins it, a completed link moves a user to "signed in",
 // and once nobody waits it names who signed in. Another thread gets its own.
@@ -185,6 +296,12 @@ func TestSignInPromptBody_Trigger(t *testing.T) {
 
 	blocks := signInPromptBody("C1", "T1", "https://example.test/link", true, signInForLogin)[paramBlocks].([]any)
 	require.Len(t, blocks, 4, "superseded note, section, button, session hint")
+	button := func(blocks []any) map[string]any {
+		return blocks[len(blocks)-2].(map[string]any)[bkElements].([]any)[0].(map[string]any)
+	}
+	require.Equal(t, "T1", button(blocks)[bkValue], "the click names its thread")
+	_, hasValue := button(signInPromptBody("C1", "", "https://example.test/link", false, signInForLogin)[paramBlocks].([]any))[bkValue]
+	require.False(t, hasValue, "a top-level prompt's button carries no empty value")
 	require.Equal(t, contextBlock(signInLinkSupersededNote), blocks[0])
 	require.Equal(t, contextBlock(signInSessionHint), blocks[3])
 }
