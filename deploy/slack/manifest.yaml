@@ -72,16 +72,13 @@ features:
   agent_view:
     agent_description: Routes each conversation to one of Giant Swarm's agents, which work with your permissions and ask before making changes.
     # Pinned at the top of the assistant Messages tab; clicking one sends its
-    # message as a normal DM turn.
+    # message as a normal DM turn. A message that starts with "/" never reaches
+    # the bot (docs/invariants.md), so no prompt runs a gateway command.
     suggested_prompts:
       - title: Check cluster health
         message: How are my clusters doing right now?
       - title: Investigate an alert
         message: Help me investigate a firing alert.
-      - title: See what I can do
-        message: /help
-      - title: List the agents
-        message: /agent
 
 oauth_config:
   scopes:

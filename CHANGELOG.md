@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Slack: the channel intro and the assistant-pane greeting describe Swarmgeist without emoji or a first-person voice, name the default agent a plain mention reaches, and show the command hints as a muted line. The hints use the app's own mention, so each Slack app shows its own name. The app manifest's agent description is rewritten and a "List the agents" suggested prompt is added.
+- Slack: the channel intro and the assistant-pane greeting describe Swarmgeist without emoji or a first-person voice, name the default agent a plain mention reaches, and show the command hints as a muted line. The hints use the app's own mention, so each Slack app shows its own name. The app manifest's agent description is rewritten, and its "See what I can do" (`/help`) suggested prompt is removed: Slack runs a prompt that starts with `/` as a Slack command, so it never reached the bot.
 
 ### Fixed
 
