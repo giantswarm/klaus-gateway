@@ -3243,10 +3243,10 @@ func (c *slackAPIClient) postSignInPrompt(ctx context.Context, channel, threadID
 // addressable ts: the caller replaces it through its Sign in click's
 // response_url, or confirms the completed link with a fresh ephemeral when
 // no click reached this process. promptID names this card in the button's
-// value. Slack only surfaces a
-// thread-scoped ephemeral in a thread that already shows a message, which is
-// why the caller anchors a thread notice first (klaus-gateway#156). supersedes
-// marks a prompt that replaces one whose link expired.
+// value. Slack only surfaces a thread-scoped ephemeral in a thread that
+// already shows a message, which is why the caller anchors a thread notice
+// first (klaus-gateway#156). supersedes marks a prompt that replaces one whose
+// link expired.
 func (c *slackAPIClient) postSignInPromptEphemeral(ctx context.Context, channel, threadID, user, linkURL, promptID string, supersedes bool, trigger signInTrigger) error {
 	body := signInPromptBody(channel, threadID, linkURL, promptID, supersedes, trigger)
 	body[paramUser] = user

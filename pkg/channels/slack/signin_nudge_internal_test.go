@@ -244,7 +244,7 @@ func TestRecordSignInClick_OnlyFillsTheClickedPromptsAnchor(t *testing.T) {
 	require.Equal(t, responseURL, anchors[0].responseURL, "a later click on the expired card keeps the current card's handle")
 
 	a.recordSignInAnchor("U1", "T1", signInAnchor{channel: "D1", ts: "p.000"})
-	a.recordSignInClick("U1", "T1|", responseURL)
+	a.recordSignInClick("U1", "T1|P1", responseURL)
 	anchors = a.takeSignInAnchors("U1")
 	require.Len(t, anchors, 1)
 	require.Empty(t, anchors[0].responseURL, "a DM prompt is rewritten by its ts")
