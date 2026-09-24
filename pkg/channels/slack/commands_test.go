@@ -40,13 +40,13 @@ func TestHelpBlocks(t *testing.T) {
 	text, blocks := helpBlocks("swarmgeist", true, true)
 	require.Len(t, blocks, 4)
 	require.Equal(t, "header", blocks[0].(map[string]any)[bkType])
-	require.Equal(t, "In a channel, mention @swarmgeist first. In a direct message, type the command.", contextText(blocks[1]))
+	require.Equal(t, "Mention @swarmgeist first, as in `@swarmgeist /stop`: a message that starts with / goes to Slack's own commands.", contextText(blocks[1]))
 	require.Equal(t, []string{"In a thread", "Agents", "Account"}, groups(blocks))
 	require.Equal(t, helpShortcutNote, contextText(blocks[3]))
 	require.Equal(t, `Commands: /stop, /usage, /agent, /agent "Name" question, /login, /logout`, text)
 
 	_, blocks = helpBlocks("", false, false)
-	require.Equal(t, "In a channel, mention the bot first. In a direct message, type the command.", contextText(blocks[1]))
+	require.Equal(t, "Mention the bot first, then the command: a message that starts with / goes to Slack's own commands.", contextText(blocks[1]))
 	require.Equal(t, []string{"In a thread"}, groups(blocks), "no agent selection, no sign-in")
 }
 
@@ -504,9 +504,12 @@ func TestDecisionFromText_SlashStopIsDeny(t *testing.T) {
 	require.Empty(t, d.RejectionReason, "/stop is a plain deny, not a reject-with-reason")
 }
 
-// The busy notice names the way out of a running turn.
+// The busy notice names the way out of a running turn that a person can type:
+// a plain `stop` (isBareStop), since Slack's composer takes a message that
+// starts with / as one of its own commands.
 func TestBusyNoticeNamesStop(t *testing.T) {
-	require.Contains(t, busyNotice, "`/stop`")
+	require.Contains(t, busyNotice, "reply `stop`")
+	require.True(t, isBareStop("stop"))
 }
 
 // A bare "stop" is the word alone, in any case, with optional trailing

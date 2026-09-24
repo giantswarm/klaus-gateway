@@ -277,7 +277,7 @@ const thinkingPlaceholder = "Working…"
 
 // busyNotice is posted when a turn is rejected because another turn is already
 // in flight on the same thread (per-thread serialization).
-const busyNotice = "Still answering the previous message. Send this one again once the reply has landed, or reply `/stop` to interrupt it."
+const busyNotice = "Still answering the previous message. Send this one again once the reply has landed, or reply `stop` to interrupt it."
 
 // tokenErrorNotice is shown (ephemerally) when minting a user's muster token
 // fails for a reason other than not being linked (a transient refresh failure).

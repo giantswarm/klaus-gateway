@@ -103,7 +103,7 @@ type helpGroup struct {
 // them.
 func helpGroups(agents, signIn bool) []helpGroup {
 	groups := []helpGroup{{title: "In a thread", commands: []helpCommand{
-		{"/stop", "Interrupt the running turn"},
+		{"/stop", "Interrupt the running turn; a plain stop in its thread works too"},
 		{"/usage", "Tokens for the last turn and the session"},
 	}}}
 	if agents {
@@ -130,9 +130,12 @@ const helpShortcutNote = "Inspect agent steps: open the ⋯ menu on any message 
 // known the mention names it, otherwise it says "the bot" rather than
 // hardcoding one. The returned text is the notification fallback.
 func helpBlocks(botName string, agents, signIn bool) (string, []any) {
-	mention := "the bot"
+	// Slack's composer takes a message that starts with / as one of Slack's
+	// own commands, in a DM too, so a command reaches the bot only after a
+	// mention.
+	address := "Mention the bot first, then the command: a message that starts with / goes to Slack's own commands."
 	if botName != "" {
-		mention = "@" + botName
+		address = fmt.Sprintf("Mention @%s first, as in `@%s /stop`: a message that starts with / goes to Slack's own commands.", botName, botName)
 	}
 	var lines []string
 	var elements []any
@@ -156,7 +159,7 @@ func helpBlocks(botName string, agents, signIn bool) (string, []any) {
 	}
 	blocks := []any{
 		map[string]any{bkType: "header", bkText: plainTextObj("Commands")},
-		contextBlock(fmt.Sprintf("In a channel, mention %s first. In a direct message, type the command.", mention)),
+		contextBlock(address),
 		map[string]any{bkType: "rich_text", bkElements: elements},
 		contextBlock(helpShortcutNote),
 	}

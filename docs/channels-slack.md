@@ -632,8 +632,9 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
 
 ### Identity, HITL, and channel behavior
 
-- **Commands and notes.** `/help` answers with a header, how to address the bot ("In a
-  channel, mention @Swarmgeist first. In a direct message, type the command."), the commands
+- **Commands and notes.** `/help` answers with a header, how to address the bot ("Mention
+  @Swarmgeist first, as in `@Swarmgeist /stop`": Slack's composer takes a message that starts with
+  `/` as one of Slack's own commands, in a DM too), the commands
   grouped by what the person is doing (In a thread: `/stop`, `/usage`; Agents: `/agent`, only
   with agent selection; Account: `/login`, `/logout`, only with sign-in), each command as a code
   label with its effect as text, and a context line for the **Inspect agent steps** shortcut.
