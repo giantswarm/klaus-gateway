@@ -1901,7 +1901,7 @@ func TestSteps_CarriesDetailsAndOutput(t *testing.T) {
 	require.Contains(t, steps[0].details, `"kind": "pods"`)
 	require.Empty(t, steps[0].output, "a call has no result yet")
 	require.Empty(t, steps[1].details, "Slack appends details across updates, so only the opening one carries them")
-	require.Equal(t, "`3 pods running`", steps[1].output, "the payload is a code span")
+	require.Equal(t, "3 pods running", steps[1].output)
 }
 
 // Slack appends a step's details across the updates of one id instead of
@@ -1928,8 +1928,8 @@ func TestSteps_DetailsRideTheOpeningUpdateOnly(t *testing.T) {
 
 // The agent's own payloads reach the step as they were written: Go's HTML-safe
 // JSON marshalling spelled a PromQL "<" as "<" on screen (graveler,
-// 2026-09-22), so the compacting turns it off; the code span the field is
-// rendered in shows the characters as typed (no mrkdwn escaping, see stepField).
+// 2026-09-22), so the compacting turns it off and the mrkdwn escaping does the
+// neutralising, as it does everywhere else.
 func TestSteps_DetailsCarryTheRealCharacters(t *testing.T) {
 	ft, _ := captureStream(t, "",
 		toolCallDeltaWith("x_prometheus_execute_query", "c1", map[string]any{
@@ -1941,10 +1941,10 @@ func TestSteps_DetailsCarryTheRealCharacters(t *testing.T) {
 	steps := ft.steps()
 	require.Len(t, steps, 2)
 	require.NotContains(t, steps[0].details, "\\u00", "no JSON escapes reach the step")
-	require.Contains(t, steps[0].details, "> 0.5")
-	require.Contains(t, steps[0].details, "< 2")
-	require.Contains(t, steps[0].details, "& more")
-	require.Contains(t, steps[1].output, "=> 7.14 < 8")
+	require.Contains(t, steps[0].details, "&gt; 0.5")
+	require.Contains(t, steps[0].details, "&lt; 2")
+	require.Contains(t, steps[0].details, "&amp; more")
+	require.Contains(t, steps[1].output, "=&gt; 7.14 &lt; 8")
 }
 
 // Slack caps a task_update chunk's fields, so the payload previews are cut to

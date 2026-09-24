@@ -818,27 +818,24 @@ func (w *batchedWriter) closeOpenSteps(ctx context.Context, status string) {
 	w.noteDelivered(ctx)
 }
 
-// stepField prepares a payload preview for a step's details or output as a
-// code span, and nothing else: no mrkdwn escaping. The payload is
-// tool-controlled text, and Slack renders code verbatim on this surface —
-// emphasis markers, mention syntax and entities alike. Measured on graveler,
-// 2026-09-24: a payload escaped the usual way showed its "&gt;" literally
-// inside the code, so the escaping that keeps a plain field safe makes code
-// unreadable, and the span itself is what keeps a "<@U…>" in a payload from
-// becoming a mention (it rendered as plain text). Muster's prometheus tool
-// emphasising a label had rendered bold in a plain field (2026-09-23); in code
-// the asterisks show as typed. A fenced block was tried for a single-box look
-// and renders identically to a span here — the field flattens code to inline —
-// so the span stays: same rendering, four more characters of payload.
-// Backticks in the payload become apostrophes so they cannot close the span,
-// and the cut leaves room for the two backticks inside the chunk limit. The
-// title stays a plain, escaped field (stepSafeText).
+// stepField prepares a payload preview for a step's details or output: escaped
+// like every other agent-controlled string, flattened to one line, and cut to
+// the chunk size Slack documents for task_update without ever splitting an
+// entity. Slack decodes the entities again when it renders the field (graveler,
+// 2026-09-22), so the escaping costs the reader nothing and keeps a <@U…> in a
+// payload literal text.
+//
+// A tool's own mrkdwn emphasis (*, _, ~) is deliberately left as it is. Slack
+// offers no escape for those markers in plain text, and every alternative was
+// tried on graveler (2026-09-24) and read worse than the occasional bold word:
+// a code span renders a wrapped payload as one highlighted fragment per line, a
+// fenced block flattens to that same inline span on this surface, and invisible
+// characters between the markers corrupt copied text. The leak is bounded — it
+// needs paired markers and at worst bolds the tail of a 256-character preview
+// (muster's prometheus tool emphasising a label, 2026-09-23). Should it bite,
+// the upgrade path is to code-span only a payload that carries an emphasis pair.
 func stepField(s string) string {
-	inner := truncateRunes(codeSpanSafe(strings.Join(strings.Fields(s), " ")), stepFieldMax-2)
-	if inner == "" {
-		return ""
-	}
-	return "`" + inner + "`"
+	return truncateEntityAware(stepSafeText(s), stepFieldMax)
 }
 
 // recordToolLog retains one rendered entry in the adapter's per-thread tool
@@ -3401,6 +3398,30 @@ func truncateRunes(s string, max int) string {
 		return s
 	}
 	return string(r[:max-1]) + "…"
+}
+
+// truncateEntityAware caps s at max runes like truncateRunes, but never leaves
+// a partial entity at the cut. s is already escaped, so every "&" opens one of
+// &amp;, &lt; or &gt;; a cut that lands inside one is backed off to the "&", so
+// a payload ends in "…" and not in "&am…" (raised reviewing klaus-gateway#322).
+func truncateEntityAware(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	kept := r[:max-1]
+	// An entity is at most 5 runes, so an unterminated "&" can only sit within
+	// the last 4 kept runes; meeting a ";" first means the last one is whole.
+	for i := len(kept) - 1; i >= 0 && i >= len(kept)-4; i-- {
+		if kept[i] == ';' {
+			break
+		}
+		if kept[i] == '&' {
+			kept = kept[:i]
+			break
+		}
+	}
+	return string(kept) + "…"
 }
 
 // chatUpdateBlocks replaces a Block Kit message with plain text (used to mark
