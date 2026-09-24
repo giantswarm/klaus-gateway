@@ -32,6 +32,9 @@ or `helm/`. Add a line when a review finds a new one.
   too, so a plain `/stop` never reaches the bot. A command needs a mention first
   (`@bot /stop`); in a thread with a running turn a plain `stop` works. The Slack API sends
   `/stop` as text, so a test through the API does not show this (#339 live test).
+- **A suggested prompt that starts with `/` never reaches the bot.** Slack runs its text as
+  a Slack command, the same as the composer, and it removes a leading space first, so
+  `" /agent"` fails too. A prompt cannot run a gateway command (#344 live test on glean).
 - **A `response_url` from a button on a normal message replaces that message.** A refusal
   sent through it overwrote the public roster for everyone. Answer such a click with a
   thread-scoped ephemeral, and send `"replace_original": false` on every `response_url` reply
