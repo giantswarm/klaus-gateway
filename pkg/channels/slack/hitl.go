@@ -323,16 +323,21 @@ func questionAnsweredBlocks(p *channels.HitlPrompt, answers [][]string, user str
 // markPromptDecided rewrites a prompt that a typed reply decided the way a
 // click rewrites it, so its controls do not stay live: a question names its
 // answer, an approval card names who approved or denied it. A reply that is
-// not an approve word denies (decisionFromText), so the card says so.
+// not an approve word denies (decisionFromText), so the card says so. A card
+// posted for a status without a structured prompt has no decision to name:
+// the reply goes to the agent as text, so the card only says who answered.
 // Best-effort: the decision runs either way.
 func (a *Adapter) markPromptDecided(ctx context.Context, slackChannel string, task *pendingTask, decision *channels.HitlDecision, slackUser string) {
-	if task.PromptTS == "" || task.Prompt == nil || decision == nil {
+	if task.PromptTS == "" || (task.Prompt != nil && decision == nil) {
 		return
 	}
 	now := time.Now()
 	var line string
 	var blocks []any
-	if task.Prompt.IsAskUser() {
+	if task.Prompt == nil {
+		line = fmt.Sprintf(formAnsweredFormat, slackUser, slackTime(now))
+		blocks = approvalCardBlocks(approvalCard(nil, task.PromptText), line)
+	} else if task.Prompt.IsAskUser() {
 		line, blocks = questionAnsweredBlocks(task.Prompt, decision.AskUserAnswers, slackUser, now)
 	} else {
 		kind := hitlDeny

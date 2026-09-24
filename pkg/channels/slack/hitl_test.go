@@ -452,7 +452,8 @@ func TestTypedAnswerRewritesTheQuestion(t *testing.T) {
 // An approval card's message is recorded on its pending task too, and a typed
 // approve or deny rewrites the card the way a click does: the section stays,
 // the buttons go, and the line names who decided. A reply that is not an
-// approve word denies, so the card says denied.
+// approve word denies, so the card says denied. A card without a structured
+// prompt has no decision to name, so it says who answered.
 func TestTypedDecisionRewritesTheApprovalCard(t *testing.T) {
 	var mu sync.Mutex
 	var updates []map[string]any
@@ -468,27 +469,35 @@ func TestTypedDecisionRewritesTheApprovalCard(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	a := &Adapter{APIBase: srv.URL, Secrets: Secrets{BotToken: "t"}, Logger: slog.New(slog.DiscardHandler)}
-	last := func() map[string]any {
+	only := func(t *testing.T) map[string]any {
+		t.Helper()
 		mu.Lock()
 		defer mu.Unlock()
-		require.NotEmpty(t, updates)
-		return updates[len(updates)-1]
+		require.Len(t, updates, 1)
+		return updates[0]
 	}
 
-	for _, tc := range []struct{ reply, line string }{
-		{"approve", "Approved by <@U1> · "},
-		{"deny", "Denied by <@U1> · "},
-		{"not this one, use staging", "Denied by <@U1> · "},
+	structured := &channels.HitlPrompt{ToolName: "kube_delete", StatusText: "Delete the pod?"}
+	for _, tc := range []struct {
+		name, reply, line string
+		prompt            *channels.HitlPrompt
+	}{
+		{"approve", "approve", "Approved by <@U1> · ", structured},
+		{"deny", "deny", "Denied by <@U1> · ", structured},
+		{"free text denies", "not this one, use staging", "Denied by <@U1> · ", structured},
+		{"no structured prompt", "go ahead", "Answered by <@U1> · ", nil},
 	} {
-		t.Run(tc.reply, func(t *testing.T) {
-			prompt := &channels.HitlPrompt{ToolName: "kube_delete", StatusText: "Delete the pod?"}
-			a.storePendingTask("T1", &pendingTask{TaskID: "task-2", Prompt: prompt, PromptText: prompt.StatusText})
-			require.NoError(t, a.postHitlPrompt(t.Context(), a.apiClient(), "C1", "T1", &channels.OutboundDelta{TaskID: "task-2", Prompt: prompt}))
+		t.Run(tc.name, func(t *testing.T) {
+			mu.Lock()
+			updates = nil
+			mu.Unlock()
+			a.storePendingTask("T1", &pendingTask{TaskID: "task-2", Prompt: tc.prompt, PromptText: "Delete the pod?"})
+			require.NoError(t, a.postHitlPrompt(t.Context(), a.apiClient(), "C1", "T1", &channels.OutboundDelta{TaskID: "task-2", Prompt: tc.prompt, Content: "Delete the pod?"}))
 			task := a.takePendingTask("T1")
 			require.Equal(t, "556.000", task.PromptTS, "the posted card is recorded on its task")
 
-			a.markPromptDecided(t.Context(), "C1", task, decisionFromText(prompt, tc.reply), "U1")
-			update := last()
+			a.markPromptDecided(t.Context(), "C1", task, decisionFromText(tc.prompt, tc.reply), "U1")
+			update := only(t)
 			require.Equal(t, "556.000", update["ts"])
 			require.True(t, strings.HasPrefix(update["text"].(string), tc.line), update["text"])
 			blocks := update["blocks"].([]any)

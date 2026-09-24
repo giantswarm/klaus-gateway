@@ -54,7 +54,8 @@ gateway posts an approval card:
   "call is rejected" (giantswarm/kagent-upstream#71).
 - **After a decision:** the buttons go and a context line names who decided, for a click and
   for a typed reply alike: `Approved by <@U123> · <time>` for "approve", `Denied by <@U123> ·
-  <time>` for "deny" and for any other reply.
+  <time>` for "deny" and for any other reply. A card posted for a status without a structured
+  prompt sends a typed reply to the agent as text, so it reads `Answered by <@U123> · <time>`.
 
 `value` is the JSON `{"t":"<thread>","id":"<task>"}`; the task binds the buttons to the
 prompt they render, so a click on a superseded prompt is refused instead of answering a newer
