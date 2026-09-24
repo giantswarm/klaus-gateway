@@ -93,7 +93,7 @@ func (a *Adapter) recordTurnUsage(threadID, channelID string, turn channels.Turn
 	}
 }
 
-const usageGuidance = "No token usage recorded for this thread yet. Run `/usage` as a reply inside the agent's thread."
+const usageGuidance = "No token usage recorded for this thread yet. Mention the bot with `/usage` in a reply inside the agent's thread."
 
 // usageReport renders the /usage reply. The lookup is thread-first; a miss in
 // a DM falls back to the channel's aggregated usage, because a top-level DM
@@ -235,7 +235,7 @@ func (a *Adapter) maybeAnnounceResume(ctx context.Context, msg channels.InboundM
 	if exists {
 		return
 	}
-	if _, err := a.apiClient().postMessage(ctx, slackChannel, resumeStartingFreshNotice, msg.ThreadID); err != nil {
+	if _, err := a.apiClient().postNote(ctx, slackChannel, resumeStartingFreshNotice, msg.ThreadID); err != nil {
 		a.Logger.Warn("slack: post starting-fresh notice failed", "thread", msg.ThreadID, "error", err)
 	}
 }

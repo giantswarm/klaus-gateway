@@ -45,38 +45,38 @@ const (
 // start an empty session; refusing is kinder than that. Re-selecting the
 // conversation's own agent is no switch at all and dispatches normally (see
 // handleAgentReselection).
-const agentSwitchRefusal = "_This conversation already has its agent, and switching mid-conversation would lose its context. Start a new conversation — a fresh mention, or a new chat — with_ `/agent \"<name>\" <question>`."
+const agentSwitchRefusal = "This conversation already has its agent, and a switch would lose its context. Start a new conversation: in a new thread or a new chat, mention the bot with `/agent \"<name>\" <question>`."
 
 // agentNothingSelectedHint answers a name-only "/agent <name>": with no
 // question there is nothing to dispatch, so no conversation starts and no
 // binding exists for later messages to inherit. It must say so explicitly — a
 // user who typed the name and their question as two messages will otherwise
 // reasonably assume the selection stuck.
-const agentNothingSelectedHint = "Nothing was selected — include your question in the same message: `/agent %s <question>`."
+const agentNothingSelectedHint = "Nothing was selected. Include your question in the same message: mention the bot with `/agent %s <question>`."
 
 // agentUnavailableNotice reports a selection that failed validation. The
 // caller appends the current roster when it is available.
-const agentUnavailableNotice = "⚠️ I don't know an agent named `%s` (or it isn't reachable right now), so I haven't started anything."
+const agentUnavailableNotice = "No agent named `%s` is available. Nothing was started; mention the bot with `/agent` to list the agents."
 
 // agentNotRunnableNotice reports a selection of an agent that exists but
 // cannot start a conversation; %s are the agent's display name and the reason
 // the a2a layer gives (a Harness admission or readiness problem).
-const agentNotRunnableNotice = "⚠️ *%s* is installed but cannot start a conversation right now: %s. I haven't started anything."
+const agentNotRunnableNotice = "*%s* is installed but cannot start a conversation right now: %s. Nothing was started."
 
 // agentSelectionUnavailable answers /agent and the slash command's picker on a
 // gateway with no agent-card client to validate names against (A2A not
 // configured).
-const agentSelectionUnavailable = "_Agent selection isn't available on this gateway._"
+const agentSelectionUnavailable = "Agent selection is not available on this gateway."
 
 // agentResolveCheckFailedNotice is posted when a quoted selection could not be
 // resolved because the roster fetch failed. Nothing is dispatched: guessing an
 // agent would violate loud-never-substituted.
-const agentResolveCheckFailedNotice = "⚠️ _I couldn't check the available agents just now, so I haven't started anything. Please try again._"
+const agentResolveCheckFailedNotice = "The available agents could not be checked, so nothing was started. Try again."
 
 // agentAmbiguousNotice reports a quoted selection matching more than one
 // agent. The technical names disambiguate, so they are listed here even though
 // the roster itself shows display names only.
-const agentAmbiguousNotice = "⚠️ *%s* matches more than one agent, so I haven't started anything. Pick one by its technical name:"
+const agentAmbiguousNotice = "*%s* matches more than one agent, so nothing was started. Pick one by its technical name:"
 
 // agentValidateTimeout bounds the card fetch that validates a selected agent
 // (/agent prefix or picker) before dispatch.

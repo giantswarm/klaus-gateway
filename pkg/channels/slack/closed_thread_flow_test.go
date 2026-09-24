@@ -72,7 +72,7 @@ func TestClosedThread_UnmentionedReplyGetsTheNotice(t *testing.T) {
 	}, flowWait, 20*time.Millisecond, "the reply's author is told the conversation ended")
 	text := allText(fake.pathCalls("chat.postEphemeral"))
 	require.Contains(t, text, "This conversation ended after 90 days without messages.")
-	require.Contains(t, text, "Mention me to start a new one.")
+	require.Contains(t, text, "Mention the bot to start a new one.")
 	require.Equal(t, 1, gw.dispatchCount(), "nothing is dispatched into a conversation that ended")
 
 	sendEvent(t, srv, threadReply("U2", "anyone?", "800.002", "800.000"))

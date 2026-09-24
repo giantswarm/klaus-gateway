@@ -106,11 +106,11 @@ const (
 // team alike. Each replaces the previous one; the decision's outcome replaces
 // them all. The noun is the decision's: approval or denial.
 const (
-	teamReviewStatusConnecting      = "🔗 <@%s> is connecting *%s* to %s as themselves."
-	teamReviewStatusRefused         = "❌ <@%s>'s %s was not accepted: %s"
-	teamReviewStatusFailed          = "⚠️ <@%s>'s %s could not be submitted to the manager; another click may do."
-	teamReviewStatusStillChallenged = "⚠️ <@%s> connected *%s*, but the manager still asks them to sign in; another click may do."
-	teamReviewStatusActor           = "❌ <@%s>'s approval was not accepted: the action is theirs, a second person decides."
+	teamReviewStatusConnecting      = "<@%s> is connecting *%s* to %s as themselves."
+	teamReviewStatusRefused         = "<@%s>'s %s was not accepted: %s"
+	teamReviewStatusFailed          = "<@%s>'s %s could not be submitted to the manager; another click may do."
+	teamReviewStatusStillChallenged = "<@%s> connected *%s*, but the manager still asks them to sign in; another click may do."
+	teamReviewStatusActor           = "<@%s>'s approval was not accepted: the action is theirs, a second person decides."
 )
 
 // teamReviewReasonMax bounds a tool's text — its refusal in the status line,
@@ -333,7 +333,7 @@ func teamReviewBlocks(rv store.Review) []any {
 	elements := []any{
 		map[string]any{
 			bkType:     bkButton,
-			bkText:     map[string]any{bkType: bkPlainText, bkText: "✅ Approve"},
+			bkText:     map[string]any{bkType: bkPlainText, bkText: "Approve"},
 			bkStyle:    bkPrimary,
 			bkActionID: teamReviewApprove,
 			bkValue:    encodeTeamReviewValue(rv.ID),
@@ -342,7 +342,7 @@ func teamReviewBlocks(rv store.Review) []any {
 	if rv.DenyTool != "" {
 		elements = append(elements, map[string]any{
 			bkType:     bkButton,
-			bkText:     map[string]any{bkType: bkPlainText, bkText: "❌ Deny"},
+			bkText:     map[string]any{bkType: bkPlainText, bkText: "Deny"},
 			bkStyle:    bkDanger,
 			bkActionID: teamReviewDeny,
 			bkValue:    encodeTeamReviewValue(rv.ID),
@@ -783,9 +783,9 @@ func (a *Adapter) resumeTeamReviewDecision(ctx context.Context, entry connectorC
 func teamReviewOutcome(rv store.Review, decider string, decision teamReviewDecision, result string) string {
 	var b strings.Builder
 	if decision.deny {
-		fmt.Fprintf(&b, "❌ *Denied* by <@%s> for %s.\n%s\n> %s", decider, escapeMrkdwn(rv.Team), rv.Text, escapeMrkdwn(decision.reason))
+		fmt.Fprintf(&b, "*Denied* by <@%s> for %s.\n%s\n> %s", decider, escapeMrkdwn(rv.Team), rv.Text, escapeMrkdwn(decision.reason))
 	} else {
-		fmt.Fprintf(&b, "✅ *Approved* by <@%s> for %s.\n%s", decider, escapeMrkdwn(rv.Team), rv.Text)
+		fmt.Fprintf(&b, "*Approved* by <@%s> for %s.\n%s", decider, escapeMrkdwn(rv.Team), rv.Text)
 	}
 	if said := toolMessage(result); said != "" {
 		fmt.Fprintf(&b, "\n_%s_", truncateRunes(escapeMrkdwn(said), teamReviewReasonMax))

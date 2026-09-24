@@ -1690,7 +1690,7 @@ func (a *Adapter) handleSessionStopped(ctx context.Context, inner slackInnerEven
 		return
 	}
 	notice := fmt.Sprintf(stopStoppedByNotice, inner.User)
-	if _, err := a.apiClient().postMessage(ctx, inner.Channel, notice, inner.ThreadTS); err != nil {
+	if _, err := a.apiClient().postNote(ctx, inner.Channel, notice, inner.ThreadTS); err != nil {
 		a.Logger.Warn("slack: post stop-button notice failed", "error", err)
 	}
 }
@@ -1815,8 +1815,8 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 			a.Logger.Debug("slack: command consumed", "command", cmd.Name, "channel", inner.Channel, "thread", msg.ThreadID)
 			return
 		} else if isUnknownCommand(cmd) {
-			text := fmt.Sprintf("_`/%s` is not one of my commands (see `/help`). If it was meant for the agent, resend it without the leading slash._", cmd.Name)
-			if _, err := a.apiClient().postMessage(ctx, inner.Channel, text, msg.ThreadID); err != nil {
+			text := fmt.Sprintf("`/%s` is not a command; mention the bot with `/help` for the list. If it was meant for the agent, send it again without the leading slash.", cmd.Name)
+			if _, err := a.apiClient().postNote(ctx, inner.Channel, text, msg.ThreadID); err != nil {
 				a.Logger.Warn("slack: post unknown-command notice failed", "error", err)
 			}
 			return
@@ -1832,7 +1832,7 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 				a.Logger.Debug("slack: bare stop consumed as /stop", "channel", inner.Channel, "thread", msg.ThreadID)
 				return
 			}
-			if _, perr := a.apiClient().postMessage(ctx, inner.Channel, busyNotice, msg.ThreadID); perr != nil {
+			if _, perr := a.apiClient().postNote(ctx, inner.Channel, busyNotice, msg.ThreadID); perr != nil {
 				a.Logger.Warn("slack: post busy notice failed", "thread", msg.ThreadID, "error", perr)
 			}
 		case !errors.Is(err, context.Canceled):
@@ -1852,7 +1852,7 @@ func (a *Adapter) postDispatchFailureNote(ctx context.Context, slackChannel, thr
 	if ctx.Err() != nil || isReplayContext(ctx) {
 		return
 	}
-	if _, err := a.apiClient().postMessage(ctx, slackChannel, failureNote(cause), threadID); err != nil {
+	if _, err := a.apiClient().postNote(ctx, slackChannel, failureNote(cause), threadID); err != nil {
 		a.Logger.Warn("slack: post dispatch failure note failed", "thread", threadID, "error", err)
 	}
 }
@@ -1861,8 +1861,8 @@ func (a *Adapter) postDispatchFailureNote(ctx context.Context, slackChannel, thr
 // replayed, so a sign-in or access grant that just promised action does not
 // end in silence. Best-effort: a post failure is only logged.
 func (a *Adapter) postReplayFailureNote(ctx context.Context, slackChannel, threadID string) {
-	const text = "⚠️ _I couldn't pick your message back up. Please resend it._"
-	if _, err := a.apiClient().postMessage(ctx, slackChannel, text, threadID); err != nil {
+	const text = "Your message could not be picked up again. Send it again."
+	if _, err := a.apiClient().postNote(ctx, slackChannel, text, threadID); err != nil {
 		a.Logger.Warn("slack: post replay failure note failed", "thread", threadID, "error", err)
 	}
 }
@@ -2093,7 +2093,7 @@ func (a *Adapter) dispatchFrom(ctx context.Context, msg channels.InboundMessage,
 	// the task pending — peek, not take; the held thread slot keeps it from
 	// being consumed elsewhere — and ask for a text reply instead.
 	if strings.TrimSpace(msg.Text) == "" && a.peekPendingTask(msg.ThreadID) != nil {
-		if _, err := a.apiClient().postMessage(ctx, slackChannel, hitlTextReplyNeededNote, msg.ThreadID); err != nil {
+		if _, err := a.apiClient().postNote(ctx, slackChannel, hitlTextReplyNeededNote, msg.ThreadID); err != nil {
 			a.Logger.Warn("slack: post text-reply-needed note failed", "thread", msg.ThreadID, "error", err)
 		}
 		return nil
@@ -2128,7 +2128,7 @@ func (a *Adapter) dispatchFrom(ctx context.Context, msg channels.InboundMessage,
 			names = append(names, att.Filename)
 		}
 		msg.Attachments = nil
-		if _, err := a.apiClient().postMessage(ctx, slackChannel, hitlAttachmentsNotForwardedNote(names), msg.ThreadID); err != nil {
+		if _, err := a.apiClient().postNote(ctx, slackChannel, hitlAttachmentsNotForwardedNote(names), msg.ThreadID); err != nil {
 			a.Logger.Warn("slack: post decision-attachment note failed", "thread", msg.ThreadID, "error", err)
 		}
 	}
@@ -2137,7 +2137,7 @@ func (a *Adapter) dispatchFrom(ctx context.Context, msg channels.InboundMessage,
 	// tell the user rather than dispatching an empty turn. A HITL reply (Decision
 	// set) always carries the decision, so it is exempt.
 	if msg.Decision == nil && msg.Text == "" && len(msg.Attachments) == 0 {
-		if _, err := a.apiClient().postMessage(ctx, slackChannel, attachmentsUnavailableNote, msg.ThreadID); err != nil {
+		if _, err := a.apiClient().postNote(ctx, slackChannel, attachmentsUnavailableNote, msg.ThreadID); err != nil {
 			a.Logger.Warn("slack: post attachment-unavailable note failed", "thread", msg.ThreadID, "error", err)
 		}
 		return nil
@@ -2147,7 +2147,7 @@ func (a *Adapter) dispatchFrom(ctx context.Context, msg channels.InboundMessage,
 	// on. Name the dropped files so an answer computed from partial input is not
 	// silently misleading.
 	if len(dropped) > 0 {
-		if _, err := a.apiClient().postMessage(ctx, slackChannel, droppedAttachmentsNote(dropped), msg.ThreadID); err != nil {
+		if _, err := a.apiClient().postNote(ctx, slackChannel, droppedAttachmentsNote(dropped), msg.ThreadID); err != nil {
 			a.Logger.Warn("slack: post dropped-attachment note failed", "thread", msg.ThreadID, "error", err)
 		}
 	}
@@ -2245,14 +2245,14 @@ func (a *Adapter) fetchAttachments(ctx context.Context, msg *channels.InboundMes
 // attachments failed to download and the turn runs on the rest, so the user
 // knows which files the agent did not receive.
 func droppedAttachmentsNote(names []string) string {
-	return fmt.Sprintf("I couldn't download these attachments, so the agent didn't receive them: %s. The rest of your message went through.", strings.Join(names, ", "))
+	return fmt.Sprintf("These attachments could not be downloaded, so the agent did not receive them: %s. The rest of your message was sent.", strings.Join(names, ", "))
 }
 
 // hitlAttachmentsNotForwardedNote renders the notice posted when a file rides
 // on a confirmation reply: the reply forwards only the decision, so the agent
 // never receives the file and the user must re-share it afterwards.
 func hitlAttachmentsNotForwardedNote(names []string) string {
-	return fmt.Sprintf("A confirmation reply carries only your decision, so the agent didn't receive: %s. Share the file(s) again once this step completes.", strings.Join(names, ", "))
+	return fmt.Sprintf("A confirmation reply carries only your decision, so the agent did not receive: %s. Share the files again after this step.", strings.Join(names, ", "))
 }
 
 // attachmentsTooLargeNote renders the notice posted when kagent rejects a turn
@@ -2264,7 +2264,7 @@ func attachmentsTooLargeNote(attachments []channels.Attachment) string {
 	for _, att := range attachments {
 		total += len(att.Bytes)
 	}
-	return fmt.Sprintf("Those attachments (%.1f MB total) were too large for the agent to accept, so I couldn't process them. Please try again with smaller files.", float64(total)/(1<<20))
+	return fmt.Sprintf("Those attachments (%.1f MB in total) were too large for the agent to accept, so they were not sent. Try again with smaller files.", float64(total)/(1<<20))
 }
 
 // isCorruptSessionErr reports whether a turn failed because the session's
@@ -2318,7 +2318,7 @@ func (a *Adapter) recoverCorruptSession(ctx context.Context, msg channels.Inboun
 	if !reset {
 		note = corruptSessionStuckNotice
 	}
-	if _, err := a.apiClient().postMessage(ctx, slackChannel, note, msg.ThreadID); err != nil {
+	if _, err := a.apiClient().postNote(ctx, slackChannel, note, msg.ThreadID); err != nil {
 		a.Logger.Warn("slack: post corrupt-session notice failed", "thread", msg.ThreadID, "error", err)
 	}
 }
@@ -2687,12 +2687,13 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 // a failure is logged, not propagated.
 func (a *Adapter) postTerminalNote(ctx context.Context, client *slackAPIClient, slackChannel, threadID, replyTS, note string) {
 	if replyTS != "" {
-		if err := client.chatUpdateMarkdown(ctx, slackChannel, replyTS, note); err != nil {
+		note = truncateRunes(note, slackSectionTextMax)
+		if err := client.chatUpdate(ctx, slackChannel, replyTS, note, []any{contextBlock(note)}); err != nil {
 			a.Logger.Warn("slack: replace placeholder failed", "thread", threadID, "error", err)
 		}
 		return
 	}
-	if _, err := client.postMarkdown(ctx, slackChannel, note, threadID); err != nil {
+	if _, err := client.postNote(ctx, slackChannel, note, threadID); err != nil {
 		a.Logger.Warn("slack: post terminal note failed", "thread", threadID, "error", err)
 	}
 }

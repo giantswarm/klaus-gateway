@@ -338,8 +338,8 @@ turn that still has no user token is aborted rather than run as the gateway iden
 
 ## 9. Access consent (a newcomer wants to instruct the agent in someone's thread)
 
-Ephemeral, shown only to the thread initiator. Yes grants the newcomer (additively) and
-replays their held message; No discards it and tells the newcomer (ephemerally) that the
+Ephemeral, shown only to the thread initiator. Allow grants the newcomer (additively) and
+replays their held message; Decline discards it and tells the newcomer (ephemerally) that the
 owner declined. A click on a prompt whose thread state the gateway no longer holds (pod
 restart, expiry) rewrites the prompt to say the approval expired. Each button's `value` is
 the JSON `{"t":"<thread>","u":"<newcomer>"}`, since one initiator can have several pending
@@ -353,12 +353,12 @@ collaborator's real identity rides along as attribution. See
 ```json
 {
   "blocks": [
-    { "type": "section", "text": { "type": "mrkdwn", "text": "Is <@U0NEWCOMER> allowed to instruct the agent to work on your behalf in this thread?" } },
+    { "type": "section", "text": { "type": "mrkdwn", "text": "*<@U0NEWCOMER> wants to join this thread*\nTheir messages would run under your sign-in. Allow them to instruct the agent here?" } },
     {
       "type": "actions",
       "elements": [
-        { "type": "button", "text": { "type": "plain_text", "text": "✅ Yes" }, "style": "primary", "action_id": "access_allow", "value": "{\"t\":\"THREAD_TS\",\"u\":\"U0NEWCOMER\"}" },
-        { "type": "button", "text": { "type": "plain_text", "text": "❌ No" }, "style": "danger", "action_id": "access_deny", "value": "{\"t\":\"THREAD_TS\",\"u\":\"U0NEWCOMER\"}" }
+        { "type": "button", "text": { "type": "plain_text", "text": "Allow" }, "style": "primary", "action_id": "access_allow", "value": "{\"t\":\"THREAD_TS\",\"u\":\"U0NEWCOMER\"}" },
+        { "type": "button", "text": { "type": "plain_text", "text": "Decline" }, "style": "danger", "action_id": "access_deny", "value": "{\"t\":\"THREAD_TS\",\"u\":\"U0NEWCOMER\"}" }
       ]
     }
   ]
@@ -385,7 +385,7 @@ URL button for anything else, labelled by what it opens (*Open PR*, *Open run*, 
 - **Deny takes a reason.** The *Deny* click opens a modal with one required box; on submit the
   manager's deny tool is called as the member with the arguments plus `reason`. The modal claims
   nothing until it is submitted, so one left open holds the review for nobody. The denied message
-  reads `❌ *Denied* by <@U…> for team-bumblebee.`, the ask, the reason as a quote, then what the
+  reads `*Denied* by <@U…> for team-bumblebee.`, the ask, the reason as a quote, then what the
   tool said.
 - **A second channel is informed.** A review naming a `noticeChannel` posts the same text, pull
   requests and link there as a notice (section 11) before the review itself.
@@ -429,8 +429,8 @@ The Approve and Deny buttons' `value` is the JSON `{"r":"<review id>"}`; the id 
     {
       "type": "actions",
       "elements": [
-        { "type": "button", "text": { "type": "plain_text", "text": "✅ Approve" }, "style": "primary", "action_id": "team_review_approve", "value": "{\"r\":\"REVIEW_ID\"}" },
-        { "type": "button", "text": { "type": "plain_text", "text": "❌ Deny" }, "style": "danger", "action_id": "team_review_deny", "value": "{\"r\":\"REVIEW_ID\"}" },
+        { "type": "button", "text": { "type": "plain_text", "text": "Approve" }, "style": "primary", "action_id": "team_review_approve", "value": "{\"r\":\"REVIEW_ID\"}" },
+        { "type": "button", "text": { "type": "plain_text", "text": "Deny" }, "style": "danger", "action_id": "team_review_deny", "value": "{\"r\":\"REVIEW_ID\"}" },
         { "type": "button", "text": { "type": "plain_text", "text": "Open run" }, "action_id": "team_review_open", "url": "https://github.com/giantswarm/platform-manager/actions/runs/4242", "value": "{\"r\":\"REVIEW_ID\"}" }
       ]
     }
@@ -439,9 +439,9 @@ The Approve and Deny buttons' `value` is the JSON `{"r":"<review id>"}`; the id 
 ```
 
 While an attempt is pending the message carries a context block under the actions, such as
-`🔗 <@U…> is connecting *giantswarm-repo-manager* to approve as themselves.` or
-`❌ <@U…>'s approval was not accepted: …`. After the approval the message reads
-`✅ *Approved* by <@U…> for team-bumblebee.`, then the ask, then the tool's answer in italics,
+`<@U…> is connecting *giantswarm-repo-manager* to approve as themselves.` or
+`<@U…>'s approval was not accepted: …`. After the approval the message reads
+`*Approved* by <@U…> for team-bumblebee.`, then the ask, then the tool's answer in italics,
 with `<url|Open PR>` as a context block. The review is a record in the gateway's routing store
 for seven days (see [`POST /reviews`](api.md#post-reviews)): on a store that outlives the process
 a gateway restart changes nothing for the team, and a click on a review the gateway no longer
@@ -549,21 +549,21 @@ Everything the picker cannot do is said privately to the invoker, through the in
 |---|---|
 | the shortcut, in a thread that already talks to an agent | "This thread already talks to *Agent*. Reply in the thread to ask it…" |
 | the shortcut, in a DM while DMs are not served | the DM redirect |
-| the slash command, in a DM | "This command opens a conversation in a channel…" |
-| the channel is not served | "I'm not enabled in this channel yet…" |
-| the caller is not signed in | "I need to know who you are before I can list the agents…" (`/login`) |
+| the slash command, in a DM | "This command starts a conversation in a channel…" |
+| the channel is not served | "This channel is not enabled yet…" |
+| the caller is not signed in | "The agents are listed with your permissions, so sign in first…" (`/login`) |
 | the roster took longer than the trigger's 3-second life | "Listing the agents took too long for Slack's picker…" |
-| the roster is unreachable, or empty | "I can't list the available agents right now…" / "No agents are installed right now." |
-| on submit: the picked agent no longer validates | "I don't know an agent named `…`", with the current roster |
-| on submit: the picked agent is installed but cannot run | "*Agent* is installed but cannot start a conversation right now: <reason>. I haven't started anything." (+ the roster when it lists agents) |
-| on submit: the bot is not in the channel and cannot join | "Invite me to the channel and try again." |
+| the roster is unreachable, or empty | "The agents cannot be listed right now…" / "No agents are installed." |
+| on submit: the picked agent no longer validates | "No agent named `…` is available…", with the current roster |
+| on submit: the picked agent is installed but cannot run | "*Agent* is installed but cannot start a conversation right now: <reason>. Nothing was started." (+ the roster when it lists agents) |
+| on submit: the bot is not in the channel and cannot join | "Invite the bot to the channel and try again." |
 
 One more notice reaches the person who opened the conversation, as an ephemeral in the thread
 rather than through the `response_url`, because by then the conversation is running:
 
 | when | notice |
 |---|---|
-| the thread's earlier messages could not be read (`missing_scope`, `not_in_channel`, a timeout) | "I couldn't read the earlier messages in this thread (`<reason>`), so the agent only sees your question." |
+| the thread's earlier messages could not be read (`missing_scope`, `not_in_channel`, a timeout) | "The earlier messages in this thread could not be read (`<reason>`), so the agent sees only your question." |
 
 One notice needs no conversation at all: it answers a message the gateway would otherwise
 ignore. Ephemeral to the author, in the thread, and posted again on every such reply — it
@@ -571,7 +571,7 @@ writes nothing:
 
 | when | notice |
 |---|---|
-| a reply without a mention in a thread whose conversation ended after `routing.threadTTL` (the row is still in the store, at twice the lifetime) | "This conversation ended after 90 days without messages. Mention me to start a new one." (the configured lifetime is named) |
+| a reply without a mention in a thread whose conversation ended after `routing.threadTTL` (the row is still in the store, at twice the lifetime) | "This conversation ended after 90 days without messages. Mention the bot to start a new one." (the configured lifetime is named) |
 
 ## Answering: click and reply
 

@@ -623,11 +623,11 @@ const (
 const passageBreak = "\n\n"
 
 // narrationLimitNote replaces the narration past the per-turn cap.
-const narrationLimitNote = "_…narration limit reached; hiding this turn's remaining step-by-step notes. The answer still follows._"
+const narrationLimitNote = "Narration limit reached: the rest of this turn's step-by-step notes are hidden. The answer still follows."
 
 // stepLimitNote is sent once when a turn's tool calls pass the step cap. The
 // tool log has its own, shorter bound, so it is promised only the recent calls.
-const stepLimitNote = "_…step limit reached; hiding this turn's remaining tool calls. The Inspect agent steps shortcut has the most recent ones._"
+const stepLimitNote = "Step limit reached: the rest of this turn's tool calls are hidden. The Inspect agent steps shortcut has the most recent ones."
 
 // renderToolActivity turns a tool call into one step of the reply's task list:
 // a task_update chunk that opens the step as in_progress, and a second one on
@@ -669,11 +669,11 @@ func (w *batchedWriter) renderToolActivity(ctx context.Context, tool *channels.T
 	}
 }
 
-// toolCallMarkdown renders one tool call as the tool log's entry: "🔧 name"
+// toolCallMarkdown renders one tool call as the tool log's entry: the name
 // with an args code span. Name and args are agent- and MCP-controlled, so
 // everything is escaped for the mrkdwn context block the log lands in.
 func toolCallMarkdown(displayName string, viaMuster bool, args map[string]any) string {
-	md := "🔧 " + toolLabel(displayName)
+	md := toolLabel(displayName)
 	if viaMuster {
 		md += " (via muster)"
 	}
@@ -684,19 +684,18 @@ func toolCallMarkdown(displayName string, viaMuster bool, args map[string]any) s
 }
 
 // toolResultMarkdown renders one tool result as the tool log's entry: "↳ name
-// result" with the payload preview the caller already unwrapped, ⚠️ marking a
-// result the tool reported as an error. ok is false when the result carries no
+// result" with the payload preview the caller already unwrapped, "(error)"
+// marking a result the tool reported as an error. ok is false when the result carries no
 // preview, so nothing is recorded for it.
 func (w *batchedWriter) toolResultMarkdown(tool *channels.ToolActivity, preview string, isErr bool) (md string, ok bool) {
 	if preview == "" {
 		return "", false
 	}
 	resultName := w.effectiveToolName(tool)
-	md = "↳ "
+	md = "↳ " + toolLabel(resultName) + " result"
 	if isErr {
-		md += "⚠️ "
+		md += " (error)"
 	}
-	md += toolLabel(resultName) + " result"
 	if tool.Name == musterCallToolMetaTool && resultName != tool.Name {
 		md += " (via muster)"
 	}
@@ -3063,7 +3062,7 @@ func (c *slackAPIClient) postChoiceFormPrompt(ctx context.Context, channel, thre
 	body := map[string]any{
 		paramChannel:  channel,
 		paramThreadTS: threadID,
-		paramText:     "Please answer the questions below.",
+		paramText:     "Answer the questions below.",
 		paramBlocks:   blocks,
 	}
 	return c.postJSON(ctx, methodChatPostMessage, body)
@@ -3177,6 +3176,26 @@ func signInPromptBody(channel, threadID, linkURL string, supersedes bool, trigge
 	return body
 }
 
+// postBlocks posts a Block Kit message with text as its notification fallback.
+func (c *slackAPIClient) postBlocks(ctx context.Context, channel, threadID, text string, blocks []any) (string, error) {
+	body := map[string]any{
+		paramChannel: channel,
+		paramText:    text,
+		paramBlocks:  blocks,
+	}
+	if threadID != "" {
+		body[paramThreadTS] = threadID
+	}
+	return c.postJSON(ctx, methodChatPostMessage, body)
+}
+
+// postNote posts one of the gateway's own notes (a stop, a failure, a refusal)
+// in the metadata register: a context block, Slack's small muted text, so it
+// reads apart from the agent's answer.
+func (c *slackAPIClient) postNote(ctx context.Context, channel, text, threadID string) (string, error) {
+	return c.postContextMessage(ctx, channel, threadID, truncateRunes(text, slackSectionTextMax))
+}
+
 // postContextMessage posts text as a context block, Slack's small muted text,
 // with the same text as the notification fallback.
 func (c *slackAPIClient) postContextMessage(ctx context.Context, channel, threadID, text string) (string, error) {
@@ -3286,7 +3305,7 @@ func (c *slackAPIClient) postEphemeralText(ctx context.Context, channel, user, t
 }
 
 // postAccessConsentPrompt posts the ephemeral (initiator-only) "is <newcomer>
-// allowed?" prompt with Yes/No buttons. Only the initiator receives it, so only
+// allowed?" prompt with Allow/Decline buttons. Only the initiator receives it, so only
 // the initiator can click. The button value encodes the thread and the newcomer
 // so the interaction handler resolves the right parked request.
 func (c *slackAPIClient) postAccessConsentPrompt(ctx context.Context, channel, threadID, initiator, newcomer string) error {
@@ -3294,7 +3313,7 @@ func (c *slackAPIClient) postAccessConsentPrompt(ctx context.Context, channel, t
 	// initiator's identity even after others are allowed in (per-user identity
 	// is the kagent-dev/kagent#1933 + #2181 fix). So the grant does let the
 	// newcomer drive the agent on the initiator's behalf; the wording says so.
-	text := fmt.Sprintf("Is <@%s> allowed to instruct the agent to work on your behalf in this thread?", newcomer)
+	text := fmt.Sprintf("*<@%s> wants to join this thread*\nTheir messages would run under your sign-in. Allow them to instruct the agent here?", newcomer)
 	value := encodeAccessValue(threadID, newcomer)
 	body := map[string]any{
 		paramChannel:  channel,
@@ -3311,14 +3330,14 @@ func (c *slackAPIClient) postAccessConsentPrompt(ctx context.Context, channel, t
 				bkElements: []any{
 					map[string]any{
 						bkType:     bkButton,
-						bkText:     map[string]any{bkType: bkPlainText, bkText: "✅ Yes"},
+						bkText:     map[string]any{bkType: bkPlainText, bkText: "Allow"},
 						bkStyle:    bkPrimary,
 						bkActionID: accessAllow,
 						bkValue:    value,
 					},
 					map[string]any{
 						bkType:     bkButton,
-						bkText:     map[string]any{bkType: bkPlainText, bkText: "❌ No"},
+						bkText:     map[string]any{bkType: bkPlainText, bkText: "Decline"},
 						bkStyle:    bkDanger,
 						bkActionID: accessDeny,
 						bkValue:    value,

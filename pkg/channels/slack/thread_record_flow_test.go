@@ -68,7 +68,7 @@ func TestThreadRecord_StoreOutageStopsTheTurn(t *testing.T) {
 
 	sendEvent(t, srv, mention("U1", "check the cluster", "910.1", ""))
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postEphemeral")), "thread memory")
+		return strings.Contains(allText(fake.pathCalls("chat.postEphemeral")), "thread state could not be read")
 	}, flowWait, 50*time.Millisecond, "the author gets the store-unavailable notice")
 	time.Sleep(150 * time.Millisecond)
 	require.Zero(t, gw.dispatchCount(), "no turn runs without a thread record")

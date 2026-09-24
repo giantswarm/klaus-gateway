@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -87,7 +88,7 @@ func TestRenderToolActivity_RecordsCallAndResult(t *testing.T) {
 
 	entries, _ := a.toolLogSnapshot("T1")
 	require.Len(t, entries, 2)
-	require.Contains(t, entries[0].md, "🔧")
+	require.True(t, strings.HasPrefix(entries[0].md, "*`kube_get`*"), entries[0].md)
 	require.Contains(t, entries[0].md, "kube_get")
 	require.Contains(t, entries[0].md, "pods", "args summary is retained")
 	require.Contains(t, entries[1].md, "↳")
@@ -164,7 +165,7 @@ func TestRouteInteraction_MessageActionRendersEphemeralLog(t *testing.T) {
 	blocks, _ := json.Marshal(body["blocks"])
 	require.Contains(t, string(blocks), "kube_get")
 	require.Contains(t, string(blocks), "turn 1")
-	require.Contains(t, string(blocks), "only you can see this")
+	require.Contains(t, string(blocks), "Tool calls in this thread")
 }
 
 // A shortcut invoked on a top-level message (no thread_ts) resolves the thread
@@ -182,21 +183,21 @@ func TestRouteInteraction_MessageActionTopLevelMessage(t *testing.T) {
 
 // An empty or evicted log answers with honest guidance instead of silence, and
 // stays ephemeral. A thread this process has other traces of gets the
-// "no longer retained" wording; an unknown thread the generic guidance.
+// "no longer kept" wording; an unknown thread the generic guidance.
 func TestRouteInteraction_MessageActionEmptyLog(t *testing.T) {
 	a, srv := newInspectTestAdapter(t)
 
 	a.routeInteraction(t.Context(), inspectPayload("300.000", ""))
 	posts := srv.ephemeralBodies()
 	require.Len(t, posts, 1)
-	require.Contains(t, posts[0]["text"], "don't have retained tool activity")
+	require.Contains(t, posts[0]["text"], "No tool activity is kept")
 
 	// The same thread with recorded usage is known to have been served.
 	a.recordTurnUsage("400.000", "C1", channels.TurnUsage{TotalTokens: 1})
 	a.routeInteraction(t.Context(), inspectPayload("400.000", ""))
 	posts = srv.ephemeralBodies()
 	require.Len(t, posts, 2)
-	require.Contains(t, posts[1]["text"], "no longer retained")
+	require.Contains(t, posts[1]["text"], "no longer kept")
 	require.Equal(t, int32(0), srv.posts.Load(), "nothing is ever posted to the thread itself")
 }
 

@@ -28,6 +28,10 @@ or `helm/`. Add a line when a review finds a new one.
 - **A mention notifies only when the message is posted.** A mention that `chat.update` adds
   to a message sends no notification, so a notice that names a second person does not ping
   them (#332).
+- **The composer keeps a message that starts with `/` for Slack's own commands**, in a DM
+  too, so a plain `/stop` never reaches the bot. A command needs a mention first
+  (`@bot /stop`); in a thread with a running turn a plain `stop` works. The Slack API sends
+  `/stop` as text, so a test through the API does not show this (#339 live test).
 - **Every message in a served channel reaches the inactive-thread gate.** That path is the
   most frequent one the gateway runs; it costs at most one store read (#307).
 
