@@ -100,11 +100,13 @@ const (
 )
 
 // postRoster posts the roster as rows under lead (a notice such as an unknown
-// agent's; "" for a bare listing) in the thread. A roster that cannot be
+// agent's; "" for a bare listing) in the thread. selectable adds the Select
+// buttons; a thread that already has its conversation gets the rows without
+// them, since the picker refuses such a thread. A roster that cannot be
 // listed, or lists no agent, leaves lead on its own; with no lead either, the
 // empty roster says so. The error is the roster fetch's, for the caller to
 // answer a bare listing that failed.
-func (a *Adapter) postRoster(ctx context.Context, channel, threadID, lead string) error {
+func (a *Adapter) postRoster(ctx context.Context, channel, threadID, lead string, selectable bool) error {
 	agents, err := a.rosterAgents(ctx)
 	client := a.apiClient()
 	if err != nil || len(agents) == 0 {
@@ -125,7 +127,7 @@ func (a *Adapter) postRoster(ctx context.Context, channel, threadID, lead string
 		blocks = append(blocks, map[string]any{bkType: bkSection, bkText: map[string]any{bkType: bkMrkdwn, bkText: truncateRunes(lead, slackSectionTextMax)}})
 		fallback = lead + "\n\n" + fallback
 	}
-	blocks = append(blocks, a.rosterBlocks(agents)...)
+	blocks = append(blocks, a.rosterBlocks(agents, selectable)...)
 	if _, perr := client.postBlocks(ctx, channel, threadID, truncateRunes(fallback, slackSectionTextMax), blocks); perr != nil {
 		a.Logger.Warn("slack: post roster failed", "thread", threadID, "error", perr)
 	}
@@ -136,7 +138,9 @@ func (a *Adapter) postRoster(ctx context.Context, channel, threadID, lead string
 // and which one a plain mention reaches, one row per agent (the default first,
 // then A–Z) with its description's first sentence and a Select button, and a
 // line naming the agents past rosterRowsMax and the typed way to pick one.
-func (a *Adapter) rosterBlocks(agents []pkga2a.AgentInfo) []any {
+// Without selectable, the rows carry no button and the footer says to start a
+// new thread.
+func (a *Adapter) rosterBlocks(agents []pkga2a.AgentInfo, selectable bool) []any {
 	sorted := slices.Clone(agents)
 	isDefault := func(ag pkga2a.AgentInfo) bool { return a.agentInfoRef(ag) == a.DefaultAgent }
 	slices.SortStableFunc(sorted, func(x, y pkga2a.AgentInfo) int {
@@ -167,24 +171,30 @@ func (a *Adapter) rosterBlocks(agents []pkga2a.AgentInfo) []any {
 		if desc := firstSentence(ag.Description); desc != "" {
 			text += "\n" + escapeMrkdwn(truncateRunes(desc, rosterDescMax))
 		}
-		blocks = append(blocks, map[string]any{
+		row := map[string]any{
 			bkType: bkSection,
 			bkText: map[string]any{bkType: bkMrkdwn, bkText: text},
-			bkAccessory: map[string]any{
+		}
+		if selectable {
+			row[bkAccessory] = map[string]any{
 				bkType:     bkButton,
 				bkText:     plainTextObj(agentSelectLabel),
 				bkActionID: agentSelectAction,
 				bkValue:    a.agentInfoRef(ag),
-			},
-		})
+			}
+		}
+		blocks = append(blocks, row)
 	}
 	footer := "Or mention the bot with `/agent \"Name\" question`."
+	if !selectable {
+		footer = "This thread already has its agent. To talk to another one, mention the bot with `/agent \"Name\" question` in a new thread."
+	}
 	if rest := sorted[len(shown):]; len(rest) > 0 {
 		names := make([]string, len(rest))
 		for i, ag := range rest {
 			names[i] = escapeMrkdwn(agentDisplayName(ag))
 		}
-		footer = fmt.Sprintf("%d more: %s. Mention the bot with `/agent \"Name\" question` to start with one of them.", len(rest), strings.Join(names, ", "))
+		footer = fmt.Sprintf("%d more: %s. ", len(rest), strings.Join(names, ", ")) + footer
 	}
 	return append(blocks, map[string]any{bkType: bkDivider}, contextBlock(truncateRunes(footer, slackSectionTextMax)))
 }

@@ -145,4 +145,11 @@ func TestAskAgentModal_Preselect(t *testing.T) {
 	_, _, initial := modalOptions(t, view)
 	require.Equal(t, "kagent/b", initial)
 	require.Equal(t, "A is the default for this workspace.", view[bkBlocks].([]any)[1].(map[string]any)[bkHint].(map[string]any)[bkText])
+
+	// A row posted before its agent left the roster: the default is chosen,
+	// not an empty select.
+	view, err = a.askAgentModal(agents, askAgentRequest{Channel: "C1", User: "U1", Thread: "1.0", ThreadStarted: true, Preselect: "kagent/gone"})
+	require.NoError(t, err)
+	_, _, initial = modalOptions(t, view)
+	require.Equal(t, "kagent/a", initial)
 }

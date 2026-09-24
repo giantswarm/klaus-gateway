@@ -306,3 +306,50 @@ func TestRoster_SelectOpensThePickerPreselected(t *testing.T) {
 	agentSelect := view["blocks"].([]any)[1].(map[string]any)["element"].(map[string]any)
 	require.Equal(t, "kagent/sre-agent", agentSelect["initial_option"].(map[string]any)["value"], "the clicked agent is preselected")
 }
+
+// hasSelectRows reports whether a recorded post carries roster rows with
+// Select buttons.
+func hasSelectRows(c recordedCall) bool {
+	return strings.Contains(allBlockText([]recordedCall{c}), `"agent_select"`)
+}
+
+// A failed selection posts its notice with the roster rows under it, in one
+// message, so the person picks a real agent with one click.
+func TestRoster_UnknownAgentNoticeCarriesTheRows(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw, _ := capturingGateway()
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, withSelection(pickerRoster(), pickerCards()))
+
+	sendEvent(t, srv, mention("U1", `<@UBOT> /agent "No Such Agent" hello`, "100.000", ""))
+	require.Eventually(t, func() bool {
+		for _, c := range fake.pathCalls("chat.postMessage") {
+			text, _ := c.params["text"].(string)
+			if strings.HasPrefix(text, "No agent named `No Such Agent` is available.") && hasSelectRows(c) {
+				return true
+			}
+		}
+		return false
+	}, flowWait, 20*time.Millisecond, "the notice and the rows are one message")
+}
+
+// A bare /agent inside a thread that already has its conversation lists the
+// agents without Select buttons: the picker would refuse every click there.
+func TestRoster_BoundThreadListsWithoutButtons(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw, _ := capturingGateway()
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, withSelection(pickerRoster(), pickerCards()))
+
+	sendEvent(t, srv, mention("U1", "<@UBOT> /agent sre-agent start here", "100.000", ""))
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 20*time.Millisecond)
+
+	sendEvent(t, srv, mention("U1", "<@UBOT> /agent", "200.000", "100.000"))
+	require.Eventually(t, func() bool {
+		for _, c := range fake.pathCalls("chat.postMessage") {
+			if strings.Contains(allBlockText([]recordedCall{c}), "This thread already has its agent") {
+				require.False(t, hasSelectRows(c), "no Select button in a bound thread")
+				return true
+			}
+		}
+		return false
+	}, flowWait, 20*time.Millisecond, "the bound thread gets the rows without buttons")
+}

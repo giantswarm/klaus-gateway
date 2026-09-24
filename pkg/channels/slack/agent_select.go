@@ -97,7 +97,8 @@ func (a *Adapter) handleAgentSelection(ctx context.Context, cmd *slashCommand, m
 	// replyRoster posts a failed selection's notice with the roster rows under
 	// it, so the person picks a real agent with one click.
 	replyRoster := func(lead string) {
-		_ = a.postRoster(ctx, slackChannel, msg.ThreadID, lead)
+		// Failed selections only reach here while the conversation starts.
+		_ = a.postRoster(ctx, slackChannel, msg.ThreadID, lead, true)
 	}
 
 	// Bare "/agent": list the roster. Discovery is deliberately ungated, like
@@ -111,7 +112,7 @@ func (a *Adapter) handleAgentSelection(ctx context.Context, cmd *slashCommand, m
 			reply(agentSelectionUnavailable)
 			return false
 		}
-		err := a.postRoster(ctx, slackChannel, msg.ThreadID, "")
+		err := a.postRoster(ctx, slackChannel, msg.ThreadID, "", a.conversationStarting(ctx, *msg, slackChannel))
 		switch {
 		case err == nil:
 		case errors.Is(err, pkga2a.ErrNoIdentity):

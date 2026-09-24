@@ -266,9 +266,10 @@ agent when it opens, through one of three entry points, and keeps it for life:
   and the rest A–Z: the display name, the first sentence of its description, and a **Select**
   button. At most 8 rows; the rest are named in the footer, with the typed form (`@bot /agent
   "Name" question`). Select opens the same picker as the shortcut below, for the thread the
-  roster was posted in, with that agent preselected; a thread that already talks to an agent
-  or belongs to someone else is refused privately. The picker's own notices, sent through its
-  `response_url`, keep the roster as a text list.
+  roster was posted in, with that agent preselected (the default, when that agent has left the
+  roster since); a thread that belongs to someone else is refused privately. In a thread that
+  already has its conversation the rows carry no button, and the footer points at a new thread.
+  The picker's own notices, sent through its `response_url`, keep the roster as a text list.
 - **Slash command**: `/swarmgeist [question]` in a channel opens a modal with an agent select
   over the live roster (the default agent preselected) and a **Prompt** box, titled "New
   conversation". On submit the gateway posts the conversation root itself, under the agent's

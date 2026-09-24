@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
@@ -316,8 +317,10 @@ func (a *Adapter) askAgentModal(agents []pkga2a.AgentInfo, req askAgentRequest) 
 	if err != nil {
 		return nil, err
 	}
+	// A roster row's agent can leave the roster after the row was posted: the
+	// select then falls back to the default, as the other entry points open.
 	selected := a.DefaultAgent
-	if req.Preselect != "" {
+	if req.Preselect != "" && slices.ContainsFunc(agents, func(ag pkga2a.AgentInfo) bool { return a.agentInfoRef(ag) == req.Preselect }) {
 		selected = req.Preselect
 	}
 	options := make([]any, 0, len(agents))
