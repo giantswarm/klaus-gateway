@@ -3260,3 +3260,17 @@ func TestPostNote_IsAContextLine(t *testing.T) {
 	require.NoError(t, err)
 	require.LessOrEqual(t, utf8.RuneCountInString(body["text"].(string)), slackSectionTextMax)
 }
+
+// A response_url reply is a new private message: replace_original false, or a
+// URL from a button on a normal message replaces that message.
+func TestRespondToURL_NeverReplacesTheSource(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+	}))
+	defer srv.Close()
+	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
+	require.NoError(t, client.respondToURL(t.Context(), srv.URL, "hello"))
+	require.Equal(t, false, body["replace_original"])
+	require.Equal(t, "ephemeral", body["response_type"])
+}

@@ -2411,7 +2411,9 @@ func (c *slackAPIClient) respondToURL(ctx context.Context, responseURL, text str
 	if responseURL == "" {
 		return errors.New("slack: no response_url")
 	}
-	data, err := json.Marshal(map[string]any{"response_type": "ephemeral", paramText: text})
+	// replace_original false: from a button on a normal message, a response_url
+	// replaces that message unless told otherwise.
+	data, err := json.Marshal(map[string]any{"response_type": "ephemeral", "replace_original": false, paramText: text})
 	if err != nil {
 		return err
 	}

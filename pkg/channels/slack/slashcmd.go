@@ -186,9 +186,10 @@ func (a *Adapter) handleRosterSelect(ctx context.Context, payload interactionPay
 		thread = payload.Message.TS
 	}
 	a.openThreadPicker(ctx, askAgentRequest{
-		Channel:       payload.Channel.ID,
-		User:          payload.User.ID,
-		ResponseURL:   payload.ResponseURL,
+		Channel: payload.Channel.ID,
+		User:    payload.User.ID,
+		// No response_url: this one would replace the roster message
+		// (notifyPrivately); the notices go as ephemerals in the thread.
 		TriggerID:     payload.TriggerID,
 		Thread:        thread,
 		ThreadStarted: true,
@@ -219,14 +220,27 @@ func (a *Adapter) openThreadPicker(ctx context.Context, req askAgentRequest, sur
 	a.openAgentPicker(ctx, req, notify)
 }
 
-// askAgentNotifier answers the picker's invoker privately through the
-// interaction's response_url; surface names the entry point in the log.
+// askAgentNotifier answers the picker's invoker privately; surface names the
+// entry point in the log.
 func (a *Adapter) askAgentNotifier(ctx context.Context, req askAgentRequest, surface string) func(string) {
 	return func(text string) {
-		if err := a.apiClient().respondToURL(ctx, req.ResponseURL, text); err != nil {
+		if err := a.notifyPrivately(ctx, req.ResponseURL, req.Channel, req.User, req.Thread, text); err != nil {
 			a.Logger.Warn("slack: "+surface+" notice failed", "user", req.User, "error", err)
 		}
 	}
+}
+
+// notifyPrivately sends text to user alone: through the interaction's
+// response_url when there is one (the slash command, the shortcut), else as an
+// ephemeral in the thread (a roster row's Select). A button on a normal
+// message hands over a response_url that replaces that message, so the Select
+// path carries none: its refusal would otherwise overwrite the roster for
+// everyone.
+func (a *Adapter) notifyPrivately(ctx context.Context, responseURL, channel, user, threadID, text string) error {
+	if responseURL != "" {
+		return a.apiClient().respondToURL(ctx, responseURL, text)
+	}
+	return a.apiClient().postEphemeralText(ctx, channel, user, threadID, text)
 }
 
 // agentSelectionReady reports whether this gateway can offer a picker at all:
@@ -473,7 +487,7 @@ func (a *Adapter) handleAskAgentSubmission(ctx context.Context, payload interact
 		user = pm.User
 	}
 	notify := func(text string) {
-		if err := a.apiClient().respondToURL(ctx, pm.ResponseURL, text); err != nil {
+		if err := a.notifyPrivately(ctx, pm.ResponseURL, pm.Channel, user, pm.Thread, text); err != nil {
 			a.Logger.Warn("slack: ask-agent notice failed", "user", user, "error", err)
 		}
 	}

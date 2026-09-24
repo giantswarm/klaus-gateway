@@ -353,3 +353,29 @@ func TestRoster_BoundThreadListsWithoutButtons(t *testing.T) {
 		return false
 	}, flowWait, 20*time.Millisecond, "the bound thread gets the rows without buttons")
 }
+
+// A Select on a thread that already has its conversation is refused as an
+// ephemeral in the thread, never through the click's response_url: from a
+// button on a normal message that URL replaces the roster for everyone.
+func TestRoster_SelectRefusalLeavesTheRoster(t *testing.T) {
+	fake := newFakeSlackAPI()
+	api := fake.server(t)
+	gw, _ := capturingGateway()
+	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
+
+	sendEvent(t, srv, mention("U1", "<@UBOT> /agent sre-agent start here", "100.000", ""))
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 20*time.Millisecond)
+
+	sendRosterSelect(t, srv, "C1", "U1", "100.000", "kagent/sre-agent", api.URL+"/response_url")
+	require.Eventually(t, func() bool {
+		for _, c := range fake.pathCalls("chat.postEphemeral") {
+			text, _ := c.params["text"].(string)
+			if strings.Contains(text, "already talks to") && c.params["thread_ts"] == "100.000" && c.params["user"] == "U1" {
+				return true
+			}
+		}
+		return false
+	}, flowWait, 20*time.Millisecond, "the refusal is an ephemeral in the thread")
+	require.Empty(t, fake.pathCalls("response_url"), "the click's response_url is never used")
+	require.Empty(t, fake.pathCalls("chat.update"), "the roster is not rewritten")
+}
