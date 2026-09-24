@@ -388,7 +388,8 @@ func TestPostApprovalPrompt_EscapesMrkdwn(t *testing.T) {
 	defer srv.Close()
 
 	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
-	require.NoError(t, client.postApprovalPrompt(t.Context(), "C1", "T1", "task-1", approvalCard(nil, "run <!channel> now?"), "U1"))
+	_, err := client.postApprovalPrompt(t.Context(), "C1", "T1", "task-1", approvalCard(nil, "run <!channel> now?"), "U1")
+	require.NoError(t, err)
 	raw, _ := body.Load().(string)
 	var payload struct {
 		Text string `json:"text"`
@@ -726,7 +727,8 @@ func TestPostApprovalPrompt_TruncatesOversizedSection(t *testing.T) {
 
 	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
 	oversized := strings.Repeat("日", 5000)
-	require.NoError(t, client.postApprovalPrompt(t.Context(), "C1", "T1", "task-1", approvalCard(nil, oversized), "U1"))
+	_, err := client.postApprovalPrompt(t.Context(), "C1", "T1", "task-1", approvalCard(nil, oversized), "U1")
+	require.NoError(t, err)
 
 	raw, _ := body.Load().(string)
 	var payload sectionPayload

@@ -357,7 +357,8 @@ func TestPostApprovalPrompt_Card(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
-	require.NoError(t, client.postApprovalPrompt(t.Context(), "C1", "T1", "task-1", "*Approval required* · Capi list clusters", "U1"))
+	_, err := client.postApprovalPrompt(t.Context(), "C1", "T1", "task-1", "*Approval required* · Capi list clusters", "U1")
+	require.NoError(t, err)
 
 	var payload map[string]any
 	require.NoError(t, json.Unmarshal(got, &payload))
@@ -417,7 +418,7 @@ func TestRetirePrompt(t *testing.T) {
 
 // A question prompt's message is recorded on its pending task, and a typed
 // answer rewrites that message the way a click does, so the controls do not
-// stay live on an answered question. An approval has no question to rewrite.
+// stay live on an answered question.
 func TestTypedAnswerRewritesTheQuestion(t *testing.T) {
 	var mu sync.Mutex
 	var updates []map[string]any
@@ -440,16 +441,68 @@ func TestTypedAnswerRewritesTheQuestion(t *testing.T) {
 	task := a.takePendingTask("T1")
 	require.Equal(t, "555.000", task.PromptTS, "the posted question is recorded on its task")
 
-	a.markQuestionAnswered(t.Context(), "C1", task, decisionFromText(prompt, "graveler"), "U1")
+	a.markPromptDecided(t.Context(), "C1", task, decisionFromText(prompt, "graveler"), "U1")
 	mu.Lock()
 	require.Len(t, updates, 1)
 	require.Equal(t, "555.000", updates[0]["ts"])
 	require.True(t, strings.HasPrefix(updates[0]["text"].(string), "graveler · answered by <@U1> · "))
 	mu.Unlock()
+}
 
-	approval := &pendingTask{TaskID: "task-2", PromptTS: "556.000", Prompt: &channels.HitlPrompt{ToolName: "kube_delete"}}
-	a.markQuestionAnswered(t.Context(), "C1", approval, decisionFromText(approval.Prompt, "approve"), "U1")
-	mu.Lock()
-	require.Len(t, updates, 1, "an approval is not rewritten by this path")
-	mu.Unlock()
+// An approval card's message is recorded on its pending task too, and a typed
+// approve or deny rewrites the card the way a click does: the section stays,
+// the buttons go, and the line names who decided. A reply that is not an
+// approve word denies, so the card says denied. A card without a structured
+// prompt has no decision to name, so it says who answered.
+func TestTypedDecisionRewritesTheApprovalCard(t *testing.T) {
+	var mu sync.Mutex
+	var updates []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/chat.update" {
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			mu.Lock()
+			updates = append(updates, body)
+			mu.Unlock()
+		}
+		_, _ = w.Write([]byte(`{"ok":true,"ts":"556.000"}`))
+	}))
+	t.Cleanup(srv.Close)
+	a := &Adapter{APIBase: srv.URL, Secrets: Secrets{BotToken: "t"}, Logger: slog.New(slog.DiscardHandler)}
+	only := func(t *testing.T) map[string]any {
+		t.Helper()
+		mu.Lock()
+		defer mu.Unlock()
+		require.Len(t, updates, 1)
+		return updates[0]
+	}
+
+	structured := &channels.HitlPrompt{ToolName: "kube_delete", StatusText: "Delete the pod?"}
+	for _, tc := range []struct {
+		name, reply, line string
+		prompt            *channels.HitlPrompt
+	}{
+		{"approve", "approve", "Approved by <@U1> · ", structured},
+		{"deny", "deny", "Denied by <@U1> · ", structured},
+		{"free text denies", "not this one, use staging", "Denied by <@U1> · ", structured},
+		{"no structured prompt", "go ahead", "Answered by <@U1> · ", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mu.Lock()
+			updates = nil
+			mu.Unlock()
+			a.storePendingTask("T1", &pendingTask{TaskID: "task-2", Prompt: tc.prompt, PromptText: "Delete the pod?"})
+			require.NoError(t, a.postHitlPrompt(t.Context(), a.apiClient(), "C1", "T1", &channels.OutboundDelta{TaskID: "task-2", Prompt: tc.prompt, Content: "Delete the pod?"}))
+			task := a.takePendingTask("T1")
+			require.Equal(t, "556.000", task.PromptTS, "the posted card is recorded on its task")
+
+			a.markPromptDecided(t.Context(), "C1", task, decisionFromText(tc.prompt, tc.reply), "U1")
+			update := only(t)
+			require.Equal(t, "556.000", update["ts"])
+			require.True(t, strings.HasPrefix(update["text"].(string), tc.line), update["text"])
+			blocks := update["blocks"].([]any)
+			require.Len(t, blocks, 2, "the section and the decision line; no buttons")
+			require.Contains(t, blocks[0].(map[string]any)["text"].(map[string]any)["text"], "Delete the pod?", "the card keeps its section")
+		})
+	}
 }

@@ -52,6 +52,10 @@ gateway posts an approval card:
   question" button. A typed reply that is not "approve" or "deny" is sent as a rejection with
   the text as its reason, but the Go ADK runtime drops that reason, so the model sees only
   "call is rejected" (giantswarm/kagent-upstream#71).
+- **After a decision:** the buttons go and a context line names who decided, for a click and
+  for a typed reply alike: `Approved by <@U123> · <time>` for "approve", `Denied by <@U123> ·
+  <time>` for "deny" and for any other reply. A card posted for a status without a structured
+  prompt sends a typed reply to the agent as text, so it reads `Answered by <@U123> · <time>`.
 
 `value` is the JSON `{"t":"<thread>","id":"<task>"}`; the task binds the buttons to the
 prompt they render, so a click on a superseded prompt is refused instead of answering a newer
@@ -594,8 +598,9 @@ no line for it), and its context line reads `Answered by <@U123> · …`. A long
 the line stays within Slack's 3000-character limit, or Slack would refuse the whole rewrite. The approval card is rewritten the same way (section 1).
 
 Every prompt can also be answered by a plain in-thread reply, which maps free text to the same
-structured decision. A question prompt's message is recorded when it posts, so a typed answer
-rewrites it exactly like a click, and no live controls stay on an answered question. A click that
+structured decision. A question prompt's or an approval card's message is recorded when it
+posts, so a typed answer rewrites it exactly like a click, and no live controls stay on a
+decided prompt. A click that
 finds its task gone or superseded keeps the prompt's text sections (the question, each question
 of a form) and puts the note where the controls were.
 

@@ -453,3 +453,44 @@ func TestTypedAnswer_RewritesTheQuestionThroughDispatch(t *testing.T) {
 		return false
 	}, flowWait, 20*time.Millisecond, "the typed answer rewrites the question's own message")
 }
+
+// A typed approve to a pending approval goes through dispatch like any reply,
+// and it rewrites the card's own message: the buttons go and the line names
+// who approved it, as a click does.
+func TestTypedApprove_RewritesTheApprovalCardThroughDispatch(t *testing.T) {
+	fake := newFakeSlackAPI()
+	const cardTS = "556.000"
+	fake.setResponder("chat.postMessage", func(params map[string]any) string {
+		if text, _ := params["text"].(string); strings.HasPrefix(text, "*Approval required*") {
+			return `{"ok":true,"ts":"` + cardTS + `"}`
+		}
+		return ""
+	})
+	prompt := &channels.HitlPrompt{ToolName: "kube_delete", StatusText: "Delete the pod?"}
+	gw := &stubGateway{
+		sendQueue: [][]channels.OutboundDelta{
+			{{Kind: channels.DeltaPrompt, TaskID: "task-1", Prompt: prompt, Content: prompt.StatusText}},
+			{{Content: "deleted"}, {Done: true}},
+		},
+	}
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL) // DM-only default
+
+	sendEvent(t, srv, dmEvent("U1", "delete the pod", "400.000"))
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "*Approval required*")
+	}, flowWait, 20*time.Millisecond, "the approval card is posted")
+
+	waitThreadIdle(t, a, "400.000")
+	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","channel_type":"im","user":"U1","text":"approve","channel":"D1","ts":"401.000","thread_ts":"400.000"}}`)
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 }, flowWait, 20*time.Millisecond, "the reply resumes the paused task")
+
+	require.Eventually(t, func() bool {
+		for _, c := range fake.pathCalls("chat.update") {
+			text, _ := c.params["text"].(string)
+			if c.params["ts"] == cardTS && strings.HasPrefix(text, "Approved by <@U1> · ") {
+				return true
+			}
+		}
+		return false
+	}, flowWait, 20*time.Millisecond, "the typed approve rewrites the card's own message")
+}

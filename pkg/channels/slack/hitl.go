@@ -176,11 +176,13 @@ func (a *Adapter) postHitlPrompt(ctx context.Context, client *slackAPIClient, sl
 		return err
 	}
 
-	// Generic tool approval → the approval card.
+	// Generic tool approval → the approval card, recorded on the pending task
+	// like a question, so a typed approve or deny rewrites it as a click does.
 	card := approvalCard(p, pd.Content)
 	initiator := a.accessPolicy().Initiator(ctx, slackChannel, threadID)
-	err := client.postApprovalPrompt(ctx, slackChannel, threadID, pd.TaskID, card, initiator)
+	ts, err := client.postApprovalPrompt(ctx, slackChannel, threadID, pd.TaskID, card, initiator)
 	if err == nil {
+		a.notePromptTS(threadID, pd.TaskID, ts)
 		return nil
 	}
 	a.Logger.Warn("slack: approval prompt failed, falling back to text", "thread", threadID, "error", err)
@@ -318,16 +320,35 @@ func questionAnsweredBlocks(p *channels.HitlPrompt, answers [][]string, user str
 	return line, append(blocks, contextBlock(line))
 }
 
-// markQuestionAnswered rewrites a question prompt answered by a typed reply the
-// way a click rewrites it, so its controls do not stay live on an answered
-// question. Best-effort: the answer runs either way.
-func (a *Adapter) markQuestionAnswered(ctx context.Context, slackChannel string, task *pendingTask, decision *channels.HitlDecision, slackUser string) {
-	if task.PromptTS == "" || !task.Prompt.IsAskUser() || decision == nil {
+// markPromptDecided rewrites a prompt that a typed reply decided the way a
+// click rewrites it, so its controls do not stay live: a question names its
+// answer, an approval card names who approved or denied it. A reply that is
+// not an approve word denies (decisionFromText), so the card says so. A card
+// posted for a status without a structured prompt has no decision to name:
+// the reply goes to the agent as text, so the card only says who answered.
+// Best-effort: the decision runs either way.
+func (a *Adapter) markPromptDecided(ctx context.Context, slackChannel string, task *pendingTask, decision *channels.HitlDecision, slackUser string) {
+	if task.PromptTS == "" || (task.Prompt != nil && decision == nil) {
 		return
 	}
-	line, blocks := questionAnsweredBlocks(task.Prompt, decision.AskUserAnswers, slackUser, time.Now())
+	now := time.Now()
+	var line string
+	var blocks []any
+	if task.Prompt == nil {
+		line = fmt.Sprintf(formAnsweredFormat, slackUser, slackTime(now))
+		blocks = approvalCardBlocks(approvalCard(nil, task.PromptText), line)
+	} else if task.Prompt.IsAskUser() {
+		line, blocks = questionAnsweredBlocks(task.Prompt, decision.AskUserAnswers, slackUser, now)
+	} else {
+		kind := hitlDeny
+		if decision.Type == channels.DecisionApprove {
+			kind = hitlApprove
+		}
+		line = approvalDecisionLine(kind, slackUser, now)
+		blocks = approvalCardBlocks(approvalCard(task.Prompt, task.PromptText), line)
+	}
 	if err := a.apiClient().chatUpdate(ctx, slackChannel, task.PromptTS, line, blocks); err != nil {
-		a.Logger.Warn("slack: rewrite answered question failed", "channel", slackChannel, "ts", task.PromptTS, "error", err)
+		a.Logger.Warn("slack: rewrite decided prompt failed", "channel", slackChannel, "ts", task.PromptTS, "error", err)
 	}
 }
 
