@@ -819,25 +819,26 @@ func (w *batchedWriter) closeOpenSteps(ctx context.Context, status string) {
 }
 
 // stepField prepares a payload preview for a step's details or output as a
-// fenced code block, and nothing else: no mrkdwn escaping. The payload is
+// code span, and nothing else: no mrkdwn escaping. The payload is
 // tool-controlled text, and Slack renders code verbatim on this surface —
 // emphasis markers, mention syntax and entities alike. Measured on graveler,
 // 2026-09-24: a payload escaped the usual way showed its "&gt;" literally
 // inside the code, so the escaping that keeps a plain field safe makes code
-// unreadable, and the fence itself is what keeps a "<@U…>" in a payload from
-// becoming a mention. Muster's prometheus tool emphasising a label had rendered
-// bold in a plain field (2026-09-23); in code the asterisks show as typed. A
-// block rather than an inline span because a wrapped span renders as one
-// highlighted fragment per line, a block as a single box. Backticks in the
-// payload become apostrophes so they cannot close the fence, and the cut leaves
-// room for the six fence characters inside the chunk limit. The title stays a
-// plain, escaped field (stepSafeText).
+// unreadable, and the span itself is what keeps a "<@U…>" in a payload from
+// becoming a mention (it rendered as plain text). Muster's prometheus tool
+// emphasising a label had rendered bold in a plain field (2026-09-23); in code
+// the asterisks show as typed. A fenced block was tried for a single-box look
+// and renders identically to a span here — the field flattens code to inline —
+// so the span stays: same rendering, four more characters of payload.
+// Backticks in the payload become apostrophes so they cannot close the span,
+// and the cut leaves room for the two backticks inside the chunk limit. The
+// title stays a plain, escaped field (stepSafeText).
 func stepField(s string) string {
-	inner := truncateRunes(codeSpanSafe(strings.Join(strings.Fields(s), " ")), stepFieldMax-6)
+	inner := truncateRunes(codeSpanSafe(strings.Join(strings.Fields(s), " ")), stepFieldMax-2)
 	if inner == "" {
 		return ""
 	}
-	return "```" + inner + "```"
+	return "`" + inner + "`"
 }
 
 // recordToolLog retains one rendered entry in the adapter's per-thread tool

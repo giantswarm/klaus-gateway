@@ -49,30 +49,32 @@ func TestStepTitle_TruncatesToSlacksLimit(t *testing.T) {
 	require.Len(t, []rune(title), stepTitleMax)
 }
 
-// The details and output of a step are a fenced code block cut to the chunk
-// size Slack documents for task_update, with the six fence characters inside
-// that budget. Unlike the title they are not mrkdwn-escaped: Slack renders code
-// verbatim, so an escaped "&" would show as "&amp;" (graveler, 2026-09-24).
-func TestStepField_IsAFlattenedCodeBlock(t *testing.T) {
-	require.Equal(t, "```a & b```", stepField("a &\nb"))
+// The details and output of a step are a code span cut to the chunk size Slack
+// documents for task_update, with the two backticks inside that budget. Unlike
+// the title they are not mrkdwn-escaped: Slack renders code verbatim, so an
+// escaped "&" would show as "&amp;" (graveler, 2026-09-24). A fenced block
+// renders the same as a span on this surface, so the cheaper span is used.
+func TestStepField_IsAFlattenedCodeSpan(t *testing.T) {
+	require.Equal(t, "`a & b`", stepField("a &\nb"))
 	require.Len(t, []rune(stepField(strings.Repeat("x", stepFieldMax*2))), stepFieldMax)
-	require.Empty(t, stepField("   "), "an empty payload sends no field, not an empty block")
+	require.Empty(t, stepField("   "), "an empty payload sends no field, not an empty span")
 }
 
-// Inside the block a tool's own text shows as typed: emphasis markers cannot
+// Inside the span a tool's own text shows as typed: emphasis markers cannot
 // style the reply (graveler, 2026-09-23: muster's prometheus tool emphasised a
-// label and it rendered bold in a plain field), mention syntax stays text, and
-// backticks become apostrophes so they cannot close the fence early.
+// label and it rendered bold in a plain field), mention syntax stays text
+// (verified literal on graveler, 2026-09-24), and backticks become apostrophes
+// so they cannot close the span early.
 func TestStepField_RendersTheTextVerbatim(t *testing.T) {
-	require.Equal(t, "```node_dmi_info{*tenant_id*=\"gs\"}```", stepField(`node_dmi_info{*tenant_id*="gs"}`))
-	require.Equal(t, "```<@U123> hi```", stepField("<@U123> hi"))
-	require.Equal(t, "```run 'ls' now```", stepField("run `ls` now"))
-	require.Equal(t, "```fence ''' inside```", stepField("fence ``` inside"))
+	require.Equal(t, "`node_dmi_info{*tenant_id*=\"gs\"}`", stepField(`node_dmi_info{*tenant_id*="gs"}`))
+	require.Equal(t, "`<@U123> hi`", stepField("<@U123> hi"))
+	require.Equal(t, "`run 'ls' now`", stepField("run `ls` now"))
+	require.Equal(t, "`fence ''' inside`", stepField("fence ``` inside"))
 }
 
 // A payload cut at the limit ends in the ellipsis, inside the budget.
 func TestStepField_CutEndsCleanly(t *testing.T) {
 	got := stepField(strings.Repeat("a", stepFieldMax*2) + "& more")
 	require.LessOrEqual(t, len([]rune(got)), stepFieldMax)
-	require.True(t, strings.HasSuffix(got, "…```"), "%q", got)
+	require.True(t, strings.HasSuffix(got, "…`"), "%q", got)
 }

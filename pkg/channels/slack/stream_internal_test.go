@@ -1901,7 +1901,7 @@ func TestSteps_CarriesDetailsAndOutput(t *testing.T) {
 	require.Contains(t, steps[0].details, `"kind": "pods"`)
 	require.Empty(t, steps[0].output, "a call has no result yet")
 	require.Empty(t, steps[1].details, "Slack appends details across updates, so only the opening one carries them")
-	require.Equal(t, "```3 pods running```", steps[1].output, "the payload is a code block")
+	require.Equal(t, "`3 pods running`", steps[1].output, "the payload is a code span")
 }
 
 // Slack appends a step's details across the updates of one id instead of
@@ -1928,7 +1928,7 @@ func TestSteps_DetailsRideTheOpeningUpdateOnly(t *testing.T) {
 
 // The agent's own payloads reach the step as they were written: Go's HTML-safe
 // JSON marshalling spelled a PromQL "<" as "<" on screen (graveler,
-// 2026-09-22), so the compacting turns it off; the code block the field is
+// 2026-09-22), so the compacting turns it off; the code span the field is
 // rendered in shows the characters as typed (no mrkdwn escaping, see stepField).
 func TestSteps_DetailsCarryTheRealCharacters(t *testing.T) {
 	ft, _ := captureStream(t, "",
