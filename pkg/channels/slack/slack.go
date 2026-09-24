@@ -2174,7 +2174,7 @@ func (a *Adapter) dispatchFrom(ctx context.Context, msg channels.InboundMessage,
 	if task != nil {
 		msg.TaskID = task.TaskID
 		msg.Decision = decisionFromText(task.Prompt, msg.Text)
-		a.markQuestionAnswered(ctx, slackChannel, task, msg.Decision, slackUser)
+		a.markPromptDecided(ctx, slackChannel, task, msg.Decision, slackUser)
 	}
 
 	// Fetch attachment bytes now that the turn is committed to run (thread slot

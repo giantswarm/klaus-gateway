@@ -2938,7 +2938,7 @@ func (c *slackAPIClient) deleteMessage(ctx context.Context, channel, ts string) 
 // section card (approvalCard), who may decide, and the Approve and Deny
 // buttons. The button values encode the thread (routing) and the task
 // the prompt renders (staleness check).
-func (c *slackAPIClient) postApprovalPrompt(ctx context.Context, channel, threadID, taskID, card, initiator string) error {
+func (c *slackAPIClient) postApprovalPrompt(ctx context.Context, channel, threadID, taskID, card, initiator string) (string, error) {
 	blocks := []any{
 		map[string]any{
 			bkType: bkSection,
@@ -2956,13 +2956,12 @@ func (c *slackAPIClient) postApprovalPrompt(ctx context.Context, channel, thread
 			map[string]any{bkType: bkButton, bkText: plainTextObj(approvalDenyLabel), bkStyle: bkDanger, bkActionID: hitlDeny, bkValue: value},
 		},
 	})
-	_, err := c.postJSON(ctx, methodChatPostMessage, map[string]any{
+	return c.postJSON(ctx, methodChatPostMessage, map[string]any{
 		paramChannel:  channel,
 		paramThreadTS: threadID,
 		paramText:     card,
 		paramBlocks:   blocks,
 	})
-	return err
 }
 
 // questionSection renders an ask_user question as a bold mrkdwn section block.

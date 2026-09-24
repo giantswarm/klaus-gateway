@@ -51,9 +51,9 @@ type pendingTask struct {
 	// Prompt is the structured approval request the task is paused on, used to
 	// map a free-text reply or choice click back to a HITL decision.
 	Prompt *channels.HitlPrompt
-	// PromptTS is the message a question prompt was posted in, so a typed
-	// answer rewrites it like a click does. Empty for an approval, and until
-	// the prompt is posted.
+	// PromptTS is the message a question or an approval card was posted in,
+	// so a typed answer rewrites it like a click does. Empty until the prompt
+	// is posted, and for a prompt posted as plain text after its card failed.
 	PromptTS string
 	// PromptText is the prompt's text as the task paused with it; an approval
 	// card is rebuilt from it and Prompt when a click rewrites the card.
