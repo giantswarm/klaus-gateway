@@ -70,7 +70,7 @@ features:
   # app_context_changed lifecycle events. Note: per Slack, adopting agent_view
   # is one-way (no downgrade to the legacy assistant_view).
   agent_view:
-    agent_description: AI assistant powered by Klaus, routed through Klaus Gateway
+    agent_description: Routes each conversation to one of Giant Swarm's agents, which work with your permissions and ask before making changes.
     # Pinned at the top of the assistant Messages tab; clicking one sends its
     # message as a normal DM turn.
     suggested_prompts:
@@ -80,6 +80,8 @@ features:
         message: Help me investigate a firing alert.
       - title: See what I can do
         message: /help
+      - title: List the agents
+        message: /agent
 
 oauth_config:
   scopes:
