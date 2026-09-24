@@ -2,6 +2,7 @@ package slack
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -912,6 +913,9 @@ type signInAnchor struct {
 	ts        string
 	threadID  string
 	ephemeral bool
+	// promptID names the ephemeral prompt in its button value, so only a click
+	// on this card fills responseURL.
+	promptID string
 	// responseURL is the Sign in click's response_url on an ephemeral prompt:
 	// the one handle that can replace it. "" until the click arrives, and for a
 	// prompt the click of which reached another process or none at all.
@@ -986,10 +990,11 @@ func (a *Adapter) postSignInPrompt(ctx context.Context, slackChannel, threadID, 
 			return signInAnchor{}, err
 		}
 	}
-	if err := client.postSignInPromptEphemeral(ctx, slackChannel, threadID, slackUser, url, supersedes, trigger); err != nil {
+	promptID := rand.Text()
+	if err := client.postSignInPromptEphemeral(ctx, slackChannel, threadID, slackUser, url, promptID, supersedes, trigger); err != nil {
 		return signInAnchor{}, err
 	}
-	return signInAnchor{channel: slackChannel, ephemeral: true}, nil
+	return signInAnchor{channel: slackChannel, ephemeral: true, promptID: promptID}, nil
 }
 
 // signInNotice is a thread's sign-in notice: the message, and the people it
@@ -1142,18 +1147,20 @@ func (a *Adapter) recordSignInAnchor(slackUser, threadID string, anchor signInAn
 // recordSignInClick files a Sign in click's response_url under the (user,
 // thread) anchor of the ephemeral prompt it came from, so the completed link
 // can replace that prompt. The anchor keeps its lifetime and throttle. A click
-// that finds no live ephemeral anchor (a DM prompt, a drained or expired
-// anchor, a click on another process's prompt) is a no-op, and the completed
-// link then posts its confirmation as a separate ephemeral.
-func (a *Adapter) recordSignInClick(slackUser, threadID, responseURL string) {
-	if slackUser == "" || responseURL == "" {
+// that finds no live ephemeral anchor for its prompt (a DM prompt, a drained or
+// expired anchor, an older card the thread's anchor has moved on from, another
+// process's prompt) is a no-op, and the completed link then posts its
+// confirmation as a separate ephemeral.
+func (a *Adapter) recordSignInClick(slackUser, value, responseURL string) {
+	threadID, promptID, ok := decodeSignInValue(value)
+	if !ok || slackUser == "" || responseURL == "" {
 		return
 	}
 	key := slackUser + "\x00" + threadID
 	a.signInPromptedMu.Lock()
 	defer a.signInPromptedMu.Unlock()
 	entry, ok := a.signInPrompted[key]
-	if !ok || !entry.value.ephemeral || !time.Now().Before(entry.expires) {
+	if !ok || !entry.value.ephemeral || entry.value.promptID != promptID || !time.Now().Before(entry.expires) {
 		return
 	}
 	entry.value.responseURL = responseURL

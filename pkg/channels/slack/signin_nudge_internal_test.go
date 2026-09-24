@@ -189,8 +189,8 @@ func TestUpdateSignInAnchors_ReplacesTheClickedChannelPrompt(t *testing.T) {
 	a, srv := newTestAdapter(t)
 	rec, responseURL := newResponseURLRecorder(t, http.StatusOK)
 
-	a.recordSignInAnchor("U1", "T1", signInAnchor{channel: "C1", ephemeral: true})
-	a.routeInteraction(t.Context(), signInClick("U1", "T1", responseURL))
+	a.recordSignInAnchor("U1", "T1", signInAnchor{channel: "C1", ephemeral: true, promptID: "P1"})
+	a.routeInteraction(t.Context(), signInClick("U1", "T1|P1", responseURL))
 	a.updateSignInAnchors(t.Context(), "U1")
 
 	calls := rec.calls()
@@ -209,42 +209,63 @@ func TestUpdateSignInAnchors_FailedReplacePostsTheConfirmation(t *testing.T) {
 	a, srv := newTestAdapter(t)
 	rec, responseURL := newResponseURLRecorder(t, http.StatusNotFound)
 
-	a.recordSignInAnchor("U1", "T1", signInAnchor{channel: "C1", ephemeral: true})
-	a.recordSignInClick("U1", "T1", responseURL)
+	a.recordSignInAnchor("U1", "T1", signInAnchor{channel: "C1", ephemeral: true, promptID: "P1"})
+	a.recordSignInClick("U1", "T1|P1", responseURL)
 	a.updateSignInAnchors(t.Context(), "U1")
 
 	require.Len(t, rec.calls(), 1, "the replace was tried")
 	require.Equal(t, int32(1), srv.ephemerals.Load(), "the confirmation posts on its own")
 }
 
-// Only a live ephemeral anchor under the click's (user, thread) takes the
-// response_url: a click never creates an anchor, and a DM prompt keeps its
-// in-place rewrite by ts.
-func TestRecordSignInClick_OnlyFillsALiveEphemeralAnchor(t *testing.T) {
+// Only the live ephemeral anchor of the clicked prompt takes the response_url:
+// a click never creates an anchor, a click on an older card in the thread
+// cannot take the current card's handle, and a DM prompt keeps its in-place
+// rewrite by ts.
+func TestRecordSignInClick_OnlyFillsTheClickedPromptsAnchor(t *testing.T) {
 	a, _ := newTestAdapter(t)
 	responseURL := "https://hooks.slack.test/actions/1"
 
-	a.recordSignInClick("U1", "T1", responseURL)
+	a.recordSignInClick("U1", "T1|P1", responseURL)
 	require.Empty(t, a.takeSignInAnchors("U1"), "a click without a prompt records nothing")
 
-	a.recordSignInAnchor("U1", "T1", signInAnchor{channel: "C1", ephemeral: true})
-	a.recordSignInClick("U1", "T2", responseURL)
-	a.recordSignInClick("U2", "T1", responseURL)
+	a.recordSignInAnchor("U1", "T1", signInAnchor{channel: "C1", ephemeral: true, promptID: "P1"})
+	a.recordSignInClick("U1", "T2|P1", responseURL)
+	a.recordSignInClick("U2", "T1|P1", responseURL)
+	a.recordSignInClick("U1", "T1", responseURL)
 	anchors := a.takeSignInAnchors("U1")
 	require.Len(t, anchors, 1)
-	require.Empty(t, anchors[0].responseURL, "a click in another thread or by another user is not filed")
+	require.Empty(t, anchors[0].responseURL, "a click in another thread, by another user, or without a prompt ID is not filed")
+
+	a.recordSignInAnchor("U1", "T1", signInAnchor{channel: "C1", ephemeral: true, promptID: "P2"})
+	a.recordSignInClick("U1", "T1|P2", responseURL)
+	a.recordSignInClick("U1", "T1|P1", "https://hooks.slack.test/actions/old")
+	anchors = a.takeSignInAnchors("U1")
+	require.Len(t, anchors, 1)
+	require.Equal(t, responseURL, anchors[0].responseURL, "a later click on the expired card keeps the current card's handle")
 
 	a.recordSignInAnchor("U1", "T1", signInAnchor{channel: "D1", ts: "p.000"})
-	a.recordSignInClick("U1", "T1", responseURL)
+	a.recordSignInClick("U1", "T1|", responseURL)
 	anchors = a.takeSignInAnchors("U1")
 	require.Len(t, anchors, 1)
 	require.Empty(t, anchors[0].responseURL, "a DM prompt is rewritten by its ts")
 
-	a.recordSignInAnchor("U1", "", signInAnchor{channel: "C1", ephemeral: true})
-	a.recordSignInClick("U1", "", responseURL)
+	a.recordSignInAnchor("U1", "", signInAnchor{channel: "C1", ephemeral: true, promptID: "P3"})
+	a.recordSignInClick("U1", "|P3", responseURL)
 	anchors = a.takeSignInAnchors("U1")
 	require.Len(t, anchors, 1)
 	require.Equal(t, responseURL, anchors[0].responseURL, "a top-level prompt takes its click")
+}
+
+// A channel prompt posts with a fresh prompt ID in its button and on its
+// anchor, so a later click can be matched to the card.
+func TestPostSignIn_ChannelPromptCarriesItsPromptID(t *testing.T) {
+	a, _ := newTestAdapter(t)
+	anchor, err := a.postSignInPrompt(t.Context(), "C1", "T1", "U1", "https://example.test/link", false, signInForMessage)
+	require.NoError(t, err)
+	require.NotEmpty(t, anchor.promptID)
+	again, err := a.postSignInPrompt(t.Context(), "C1", "T1", "U1", "https://example.test/link", false, signInForMessage)
+	require.NoError(t, err)
+	require.NotEqual(t, anchor.promptID, again.promptID, "each card has its own ID")
 }
 
 // One notice serves the whole thread and names the people it waits for: a
@@ -288,20 +309,22 @@ func TestPostSignIn_ThreadNoticeNamesWhoItWaitsFor(t *testing.T) {
 // itself, a button click is clicked again, /login needs nothing more.
 func TestSignInPromptBody_Trigger(t *testing.T) {
 	text := func(trigger signInTrigger) string {
-		return signInPromptBody("C1", "T1", "https://example.test/link", false, trigger)[paramText].(string)
+		return signInPromptBody("C1", "T1", "https://example.test/link", "", false, trigger)[paramText].(string)
 	}
 	require.True(t, strings.HasSuffix(text(signInForMessage), signInForMessageLine))
 	require.True(t, strings.HasSuffix(text(signInForClick), signInForClickLine))
 	require.True(t, strings.HasSuffix(text(signInForLogin), "The link is valid for 15 minutes."))
 
-	blocks := signInPromptBody("C1", "T1", "https://example.test/link", true, signInForLogin)[paramBlocks].([]any)
+	blocks := signInPromptBody("C1", "T1", "https://example.test/link", "P1", true, signInForLogin)[paramBlocks].([]any)
 	require.Len(t, blocks, 4, "superseded note, section, button, session hint")
 	button := func(blocks []any) map[string]any {
 		return blocks[len(blocks)-2].(map[string]any)[bkElements].([]any)[0].(map[string]any)
 	}
-	require.Equal(t, "T1", button(blocks)[bkValue], "the click names its thread")
-	_, hasValue := button(signInPromptBody("C1", "", "https://example.test/link", false, signInForLogin)[paramBlocks].([]any))[bkValue]
-	require.False(t, hasValue, "a top-level prompt's button carries no empty value")
+	require.Equal(t, "T1|P1", button(blocks)[bkValue], "a channel prompt's click names its thread and the prompt")
+	require.Equal(t, "|P1", button(signInPromptBody("C1", "", "https://example.test/link", "P1", false, signInForLogin)[paramBlocks].([]any))[bkValue],
+		"a top-level prompt's value still names the prompt")
+	_, hasValue := button(signInPromptBody("D1", "T1", "https://example.test/link", "", false, signInForLogin)[paramBlocks].([]any))[bkValue]
+	require.False(t, hasValue, "a DM prompt, rewritten by its ts, carries no value")
 	require.Equal(t, contextBlock(signInLinkSupersededNote), blocks[0])
 	require.Equal(t, contextBlock(signInSessionHint), blocks[3])
 }
