@@ -38,8 +38,6 @@ type AgentClient interface {
 	GetInstance(ctx context.Context, id string) (pkga2a.Instance, error)
 	// DeleteInstance removes an instance; a missing one is not an error.
 	DeleteInstance(ctx context.Context, id string) error
-	// ListAgents lists the selectable agents of the served namespace.
-	ListAgents(ctx context.Context) ([]pkga2a.AgentInfo, error)
 }
 
 // Facade wires the kagent client and the routing store together into the
@@ -77,15 +75,6 @@ func (f *Facade) clock() time.Time {
 		return f.now()
 	}
 	return time.Now()
-}
-
-// ListAgents lists the agents a channel may select. Unavailable when no
-// kagent client is configured.
-func (f *Facade) ListAgents(ctx context.Context) ([]pkga2a.AgentInfo, error) {
-	if f == nil || f.Agent == nil {
-		return nil, errors.New("channels: no agent client configured")
-	}
-	return f.Agent.ListAgents(ctx)
 }
 
 // SessionResumable reports whether msg's thread is bound to an AgentInstance
@@ -570,11 +559,11 @@ func (f *Facade) streamTask(ctx context.Context, key store.Key, instanceID strin
 			}
 		}
 		if ctx.Err() != nil {
-			// The channel stopped listening (/stop, a closed web stream, the
-			// gateway's shutdown). A task still running is cancelled server-side
-			// so the agent does not work on unobserved — unless the shutdown is
-			// what stopped the channel: then the task runs on and its record stays
-			// for the next process to resubscribe to. One that already finished or
+			// The channel stopped listening (/stop, the gateway's shutdown). A
+			// task still running is cancelled server-side so the agent does not
+			// work on unobserved — unless the shutdown is what stopped the
+			// channel: then the task runs on and its record stays for the next
+			// process to resubscribe to. One that already finished or
 			// paused on a prompt is left alone — cancelling it would record a
 			// completed turn as canceled (klaus-gateway#242).
 			if taskID != "" && !terminal {

@@ -14,6 +14,7 @@ import (
 	"github.com/giantswarm/klaus-gateway/pkg/observability"
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
 	boltstore "github.com/giantswarm/klaus-gateway/pkg/routing/store/bolt"
+	"github.com/giantswarm/klaus-gateway/pkg/routing/store/storetest"
 	"github.com/giantswarm/klaus-gateway/pkg/server"
 )
 
@@ -28,7 +29,7 @@ func TestIntegration_BootWithBolt(t *testing.T) {
 
 	// Seed state so the store is non-empty when ready probes run.
 	k := store.Key{Channel: "slack", ChannelID: "c1", ThreadID: "t1"}
-	require.NoError(t, s.Put(context.Background(), k, store.Entry{
+	require.NoError(t, storetest.Put(context.Background(), s, k, store.Entry{
 		AgentInstanceID: "i1", LastSeen: time.Now(), TTL: time.Hour,
 	}))
 

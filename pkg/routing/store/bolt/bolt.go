@@ -90,17 +90,6 @@ func (s *Store) Get(_ context.Context, k store.Key) (store.Entry, bool, error) {
 	return e, true, nil
 }
 
-// Put upserts an entry.
-func (s *Store) Put(_ context.Context, k store.Key, e store.Entry) error {
-	buf, err := json.Marshal(e)
-	if err != nil {
-		return err
-	}
-	return s.db.Update(func(tx *bolt.Tx) error {
-		return tx.Bucket(bucketName).Put([]byte(k.String()), buf)
-	})
-}
-
 // Update applies mutate to the entry at k inside one write transaction, so two
 // writers of the same row cannot lose each other's fields. An expired entry is
 // presented as absent.
@@ -126,13 +115,6 @@ func (s *Store) Update(_ context.Context, k store.Key, mutate func(e *store.Entr
 			return err
 		}
 		return b.Put([]byte(k.String()), buf)
-	})
-}
-
-// Delete removes an entry; missing keys are not an error.
-func (s *Store) Delete(_ context.Context, k store.Key) error {
-	return s.db.Update(func(tx *bolt.Tx) error {
-		return tx.Bucket(bucketName).Delete([]byte(k.String()))
 	})
 }
 

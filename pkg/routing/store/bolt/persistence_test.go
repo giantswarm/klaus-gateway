@@ -9,6 +9,7 @@ import (
 
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
 	boltstore "github.com/giantswarm/klaus-gateway/pkg/routing/store/bolt"
+	"github.com/giantswarm/klaus-gateway/pkg/routing/store/storetest"
 )
 
 // TestPersistence verifies the acceptance-criteria guarantee that the routing
@@ -20,7 +21,7 @@ func TestPersistence(t *testing.T) {
 	s1, err := boltstore.Open(path)
 	require.NoError(t, err)
 	k := store.Key{Channel: "slack", ChannelID: "c1", ThreadID: "t1"}
-	require.NoError(t, s1.Put(ctx, k, store.Entry{
+	require.NoError(t, storetest.Put(ctx, s1, k, store.Entry{
 		AgentInstanceID: "inst-42", CreatedAt: time.Now(), LastSeen: time.Now(), TTL: time.Hour,
 	}))
 	require.NoError(t, s1.Close())
@@ -45,7 +46,7 @@ func TestPersistence_InFlightTask(t *testing.T) {
 	s1, err := boltstore.Open(path)
 	require.NoError(t, err)
 	k := store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700.0001"}
-	require.NoError(t, s1.Put(ctx, k, store.Entry{
+	require.NoError(t, storetest.Put(ctx, s1, k, store.Entry{
 		AgentRef: "sre", AgentInstanceID: "inst-1", TaskID: "task-7",
 		Resume:    map[string]string{"slack_user": "U1", "message_ts": "1700.0001"},
 		CreatedAt: time.Now(), LastSeen: time.Now(),

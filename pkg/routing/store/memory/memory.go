@@ -52,15 +52,6 @@ func (s *Store) Get(_ context.Context, k store.Key) (store.Entry, bool, error) {
 	return e, true, nil
 }
 
-// Put upserts an entry and starts the eviction goroutine if not already running.
-func (s *Store) Put(_ context.Context, k store.Key, e store.Entry) error {
-	s.mu.Lock()
-	s.data[k.String()] = e
-	s.mu.Unlock()
-	s.evictOnce.Do(s.startEvict)
-	return nil
-}
-
 // Update applies mutate to the entry at k under the store's lock, so two
 // writers of the same row cannot lose each other's fields. An expired entry is
 // presented as absent.
@@ -81,14 +72,6 @@ func (s *Store) Update(_ context.Context, k store.Key, mutate func(e *store.Entr
 	if changed {
 		s.evictOnce.Do(s.startEvict)
 	}
-	return nil
-}
-
-// Delete removes an entry. Missing keys are not an error.
-func (s *Store) Delete(_ context.Context, k store.Key) error {
-	s.mu.Lock()
-	delete(s.data, k.String())
-	s.mu.Unlock()
 	return nil
 }
 

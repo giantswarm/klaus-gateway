@@ -73,15 +73,15 @@ channel thread to exactly one instance:
 
    The create also carries `name`, the conversation's display name: the message that opened the
    thread, rendered on one line and cut at the controller's 200-character limit on a word
-   boundary. Slack sends the line it titles its own session with, the mention and the command
-   stripped; the other channels send the message text. A message with nothing to name a
-   conversation after — an upload with no caption — creates it unnamed, and a name the
-   controller refuses is dropped and the create retried unnamed rather than failing the turn.
+   boundary: the line Slack titles its own session with, the mention and the command
+   stripped. A message with nothing to name a conversation after — an upload with no caption —
+   creates it unnamed, and a name the controller refuses is dropped and the create retried
+   unnamed rather than failing the turn.
 2. The instance id and the agent it belongs to are persisted as fields of the thread's row in
    the routing store (`store.Entry.AgentInstanceID` and `.AgentRef`; key
-   `channel|channelID||threadID`, user slot empty because the thread is shared by its
-   participants) — the same row a channel's own facts about the thread live in, so the binding
-   is written through the store's `Update`, which serialises a read-modify-write per key against
+   `slack|<channelID>|<threadID>`, one row for the thread, which its participants share) — the
+   same row a channel's own facts about the thread live in, so the binding is written through
+   the store's `Update`, which serialises a read-modify-write per key against
    every other writer of the row. It survives a gateway restart on the bolt and Valkey stores and
    slides with the thread's lifetime (`--thread-ttl`, 90 days by default): every turn refreshes
    the row, and after that long of silence the conversation has ended and the binding reads as

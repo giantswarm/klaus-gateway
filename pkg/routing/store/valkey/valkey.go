@@ -145,13 +145,13 @@ func (s *Store) Get(ctx context.Context, k store.Key) (store.Entry, bool, error)
 	return e, true, nil
 }
 
-// Put upserts an entry. An entry with a TTL expires server-side after what is
+// put writes an entry. An entry with a TTL expires server-side after what is
 // left of it (TTL counted from LastSeen, the contract Entry.Expired states);
 // an entry that has already expired removes the key instead.
-func (s *Store) Put(ctx context.Context, k store.Key, e store.Entry) error {
+func (s *Store) put(ctx context.Context, k store.Key, e store.Entry) error {
 	now := s.now()
 	if e.Expired(now) {
-		return s.Delete(ctx, k)
+		return s.del(ctx, k)
 	}
 	buf, err := json.Marshal(e)
 	if err != nil {
@@ -179,8 +179,8 @@ func (s *Store) set(ctx context.Context, c valkeygo.Client, key string, value []
 	return s.do(ctx, c, cmd).Error()
 }
 
-// Delete removes an entry; a missing key is not an error.
-func (s *Store) Delete(ctx context.Context, k store.Key) error {
+// del removes an entry; a missing key is not an error.
+func (s *Store) del(ctx context.Context, k store.Key) error {
 	c, err := s.conn()
 	if err != nil {
 		return err
@@ -209,7 +209,7 @@ func (s *Store) Update(ctx context.Context, k store.Key, mutate func(e *store.En
 	if !mutate(&e, found) {
 		return nil
 	}
-	return s.Put(ctx, k, e)
+	return s.put(ctx, k, e)
 }
 
 // keyLock is the stripe serialising updates of k.
