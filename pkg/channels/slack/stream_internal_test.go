@@ -2012,7 +2012,8 @@ func TestRenderNarration_CapsWithOneNote(t *testing.T) {
 	require.NotContains(t, text, fmt.Sprintf("step %d.", maxNarrationMessages))
 	require.True(t, strings.HasSuffix(strings.TrimSpace(text), narrationLimitNote),
 		"the note says the rest is hidden: %q", text)
-	require.Equal(t, maxNarrationMessages, strings.Count(text, "."+passageBreak),
+	passages := strings.TrimSuffix(strings.TrimSpace(text), narrationLimitNote)
+	require.Equal(t, maxNarrationMessages, strings.Count(passages, "."+passageBreak),
 		"every passage ends in a paragraph break, so they do not run together")
 }
 
@@ -2099,7 +2100,7 @@ func TestRenderToolActivity_UnwrapsCallTool(t *testing.T) {
 		},
 	})
 	require.Len(t, posts, 1)
-	require.Contains(t, posts[0], "🔧 *`x_kubernetes_get`* (via muster)")
+	require.Contains(t, posts[0], "*`x_kubernetes_get`* (via muster)")
 	require.Contains(t, posts[0], `{"namespace": "flux-giantswarm", "resourceType": "helmreleases"}`)
 	require.NotContains(t, posts[0], "call_tool")
 }
@@ -2110,7 +2111,7 @@ func TestRenderToolActivity_DirectToolUnchanged(t *testing.T) {
 		Tool: &channels.ToolActivity{Kind: channels.ToolCall, Name: "list_pods"},
 	})
 	require.Len(t, posts, 1)
-	require.Contains(t, posts[0], "🔧 *`list_pods`*")
+	require.Contains(t, posts[0], "*`list_pods`*")
 	require.NotContains(t, posts[0], "via muster")
 }
 
@@ -2145,7 +2146,7 @@ func TestRenderToolActivity_UnwrapsCallToolResult(t *testing.T) {
 		}},
 	)
 	require.Len(t, posts, 2)
-	require.Contains(t, posts[0], "🔧 *`x_kubernetes_get`* (via muster)")
+	require.Contains(t, posts[0], "*`x_kubernetes_get`* (via muster)")
 	require.Contains(t, posts[1], "↳ *`x_kubernetes_get`* result (via muster)")
 	require.Contains(t, posts[1], "`ok`", "the output wrap is unwrapped to the bare payload")
 	require.NotContains(t, posts[1], `{"output"`)
@@ -2345,7 +2346,7 @@ func TestRenderToolActivity_FlagsErrorResults(t *testing.T) {
 		}},
 	)
 	require.Len(t, posts, 2)
-	require.Contains(t, posts[1], "↳ ⚠️ *`kube_get`* result")
+	require.Contains(t, posts[1], "↳ *`kube_get`* result (error)")
 	require.Contains(t, posts[1], "forbidden: access denied")
 }
 
@@ -3234,4 +3235,28 @@ func TestStream_ScrubbedAppendStillCountsItsRawBytes(t *testing.T) {
 	require.Less(t, len(sent), len(answer), "so Slack saw fewer bytes than the agent produced")
 	require.Equal(t, len(answer), records[len(records)-1].TextLen,
 		"the record counts the answer's own bytes, not the shorter text Slack saw")
+}
+
+// A gateway note is posted in the metadata register: one context block, with
+// the note as the notification text, cut to Slack's context text cap.
+func TestPostNote_IsAContextLine(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		_, _ = fmt.Fprint(w, `{"ok":true,"ts":"1.2"}`)
+	}))
+	defer srv.Close()
+	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
+
+	_, err := client.postNote(t.Context(), "C1", stopStoppedNotice, "T1")
+	require.NoError(t, err)
+	require.Equal(t, stopStoppedNotice, body["text"])
+	require.Equal(t, "T1", body["thread_ts"])
+	blocks := body["blocks"].([]any)
+	require.Len(t, blocks, 1)
+	require.Equal(t, "context", blocks[0].(map[string]any)["type"])
+
+	_, err = client.postNote(t.Context(), "C1", strings.Repeat("x", 5000), "T1")
+	require.NoError(t, err)
+	require.LessOrEqual(t, utf8.RuneCountInString(body["text"].(string)), slackSectionTextMax)
 }

@@ -285,7 +285,7 @@ func TestAttachmentOnlyReply_LeavesPendingTaskAndAsksForText(t *testing.T) {
 	require.Eventually(t, func() bool {
 		attempt++
 		sendEvent(t, srv, dmThreadFileEvent("U1", "", fmt.Sprintf("911.%03d", attempt), "910.000", "shot.png"))
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "waiting on the pending confirmation")
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "waits for the confirmation above")
 	}, flowWait, 100*time.Millisecond, "needs-text note posted")
 
 	// The task must still be pending: a typed approval resumes task-1.
@@ -375,7 +375,7 @@ func TestStop_BareWordDuringTurnInterrupts(t *testing.T) {
 	}, flowWait, 50*time.Millisecond, "a bare stop replies like /stop")
 	fake.waitForPath(t, "reactions.remove", 1)
 
-	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "still finishing",
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "Still answering",
 		"a bare stop is not bounced as busy")
 	require.Equal(t, 1, gw.dispatchCount(), "a bare stop never reaches the agent as a turn")
 }
@@ -399,7 +399,7 @@ func TestStop_BareWordIdleThreadReachesAgent(t *testing.T) {
 	posted := allText(fake.pathCalls("chat.postMessage"))
 	require.NotContains(t, posted, "Stopped", "nothing to stop")
 	require.NotContains(t, posted, "Nothing is running", "the nothing-running notice is /stop's alone")
-	require.NotContains(t, posted, "still finishing", "an idle thread is not busy")
+	require.NotContains(t, posted, "Still answering", "an idle thread is not busy")
 }
 
 // A DM turn renders its answer as one streamed message: opened on the first

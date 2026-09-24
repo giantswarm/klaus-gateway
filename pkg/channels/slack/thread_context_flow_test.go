@@ -385,7 +385,7 @@ func TestThreadContext_ReadFailureRunsTheTurnAndNotifies(t *testing.T) {
 
 	require.Empty(t, dispatched()[0].Context)
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postEphemeral")), "I couldn't read the earlier messages in this thread (`missing_scope`)")
+		return strings.Contains(allText(fake.pathCalls("chat.postEphemeral")), "The earlier messages in this thread could not be read (`missing_scope`)")
 	}, flowWait, 20*time.Millisecond, "the initiator is told the agent only sees their question")
 }
 

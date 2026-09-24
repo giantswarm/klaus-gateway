@@ -295,7 +295,7 @@ func TestConnectorDismissInteraction(t *testing.T) {
 	require.Eventually(t, func() bool {
 		captured.mu.Lock()
 		defer captured.mu.Unlock()
-		return strings.Contains(captured.body, "won't ask again")
+		return strings.Contains(captured.body, "Not asked again")
 	}, flowWait, 20*time.Millisecond, "the prompt is replaced with an acknowledgement")
 }
 

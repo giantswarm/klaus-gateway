@@ -116,6 +116,12 @@ const maxConnectorNameLen = 128
 // renders the expired page and no resume fires.
 const connectorCompletionTTL = musterlink.DefaultStateTTL
 
+// connectorDismissedNotice replaces a Connect prompt after "Not now": the
+// prompt stays away for connectorPromptCooldown.
+func connectorDismissedNotice() string {
+	return fmt.Sprintf("Not asked again for %s.", spellDuration(connectorPromptCooldown))
+}
+
 // connectorResumeText is the synthetic message dispatched into the thread
 // after a connector sign-in completes, so the agent retries the blocked tools
 // without the user retyping; %s is the backend name.
@@ -182,28 +188,28 @@ const (
 	// on submit. The agent is the message's author, so it is not repeated.
 	askAgentAskedBy = "Asked by <@%s>"
 
-	slashCommandDMNotice         = "_This command opens a conversation in a channel. In a direct message, just type your question._"
-	slashCommandSignInNotice     = rosterSignInLead + " _in a channel, sign in, then run the command again._"
-	slashCommandSlowNotice       = "_Listing the agents took too long for Slack's picker. Please run the command again._"
-	slashCommandOpenFailedNotice = "⚠️ _I couldn't open the agent picker just now. Please try again._"
-	askAgentIncompleteNotice     = "⚠️ _Pick an agent and type a question, then submit again._"
+	slashCommandDMNotice         = "This command starts a conversation in a channel. In a direct message, type your question."
+	slashCommandSignInNotice     = rosterSignInLead + " in a channel, then run the command again."
+	slashCommandSlowNotice       = "Listing the agents took too long for Slack's picker. Run the command again."
+	slashCommandOpenFailedNotice = "The agent picker did not open. Run the command again."
+	askAgentIncompleteNotice     = "Pick an agent and type a prompt, then submit again."
 	// askAgentThreadBoundNotice refuses the shortcut in a thread that already
 	// talks to an agent: the picker opens conversations, and a second one in
 	// the same thread would fork it. %s is the bound agent's display name.
-	askAgentThreadBoundNotice = "_This thread already talks to *%s*. Reply in the thread to ask it — the picker starts conversations in threads that have none yet._"
+	askAgentThreadBoundNotice = "This thread already talks to *%s*. Reply in the thread to ask it: the picker starts conversations only in threads without one."
 	// askAgentThreadOwnedNotice refuses the shortcut in a thread that already
 	// has an owner other than the invoker: the picker would make the owner's
 	// delegated identity act on the invoker's word without the owner's consent.
 	// A reply in the thread takes the normal path, where the owner is asked.
 	// %s is the owner's Slack user id.
-	askAgentThreadOwnedNotice = "_This thread belongs to <@%s>. Ask your question as a reply in the thread — they are asked to allow you — or start a new one._"
-	askAgentInviteNotice      = "⚠️ _I'm not a member of this channel, so I couldn't start the conversation. Invite me to the channel and try again._"
-	askAgentPostFailedNotice  = "⚠️ _I couldn't post your question in this channel just now. Please try again._"
+	askAgentThreadOwnedNotice = "This thread belongs to <@%s>. Reply in the thread, and they are asked to allow you, or start a new thread."
+	askAgentInviteNotice      = "The bot is not a member of this channel, so the conversation did not start. Invite the bot to the channel and try again."
+	askAgentPostFailedNotice  = "Your question was not posted in this channel. Try again."
 	// threadContextFailedNotice tells the person who opened the conversation
 	// that the thread could not be read, so they know the agent is answering
 	// without what the thread already said. %s is Slack's reason. The turn
 	// itself runs regardless, which is why this is a notice and not a refusal.
-	threadContextFailedNotice = "_I couldn't read the earlier messages in this thread (`%s`), so the agent only sees your question._"
+	threadContextFailedNotice = "The earlier messages in this thread could not be read (`%s`), so the agent sees only your question."
 )
 
 // pickerOpenBudget bounds the work between a slash command arriving and
@@ -267,41 +273,41 @@ const (
 
 // thinkingPlaceholder is the text-mode progress placeholder, posted before the
 // first agent output and replaced by the answer.
-const thinkingPlaceholder = "_thinking…_"
+const thinkingPlaceholder = "Working…"
 
 // busyNotice is posted when a turn is rejected because another turn is already
 // in flight on the same thread (per-thread serialization).
-const busyNotice = "I'm still finishing your previous message in this thread. Give me a moment and try again once I've replied, or reply `/stop` to interrupt it."
+const busyNotice = "Still answering the previous message. Send this one again once the reply has landed, or reply `stop` to interrupt it."
 
 // tokenErrorNotice is shown (ephemerally) when minting a user's muster token
 // fails for a reason other than not being linked (a transient refresh failure).
 // storeUnavailableNotice tells the author of a message that the routing store
 // could not record the thread, so the turn was not run. Ephemeral, in-thread.
-const storeUnavailableNotice = "_I couldn't reach my thread memory just now, so I didn't act on your message. Please try again in a moment._"
+const storeUnavailableNotice = "The thread state could not be read, so your message was not sent to the agent. Try again in a moment."
 
-const tokenErrorNotice = "I couldn't refresh your Giant Swarm sign-in just now. Please try again in a moment; if it keeps failing, re-link with the `/login` command."
+const tokenErrorNotice = "Your Giant Swarm sign-in could not be refreshed. Try again in a moment. If it keeps failing, mention the bot with `/login` to sign in again."
 
 // logoutFailedNotice is shown (ephemerally) when /logout could not remove the
 // link from the store, so the person does not believe they are signed out.
-const logoutFailedNotice = "I couldn't sign you out just now: your sign-in could not be removed. Please try `/logout` again in a moment."
+const logoutFailedNotice = "The sign-out failed: your sign-in could not be removed. Mention the bot with `/logout` again in a moment."
 
 // accessDecisionRefusal is shown (ephemerally) when a user who is not permitted
 // in the thread clicks an in-thread tool Approve/Deny button.
-const accessDecisionRefusal = "_Only the thread owner (and people they've allowed) can approve or deny this action._"
+const accessDecisionRefusal = "Only the thread owner and the people they allowed can approve or deny this action."
 
 // accessPromptExpiredNotice replaces an access-consent prompt whose thread
 // state this process no longer holds (restart or TTL sweep), so the clicker is
 // not left with a button that silently does nothing.
-const accessPromptExpiredNotice = "_This approval expired (I lost the thread state). Ask <@%s> to resend their message._"
+const accessPromptExpiredNotice = "This request expired because the thread state was lost. Ask <@%s> to send their message again."
 
 // accessDeniedNewcomerNotice is shown (ephemerally) to a parked newcomer when
 // the thread owner declines them, closing the loop opened by the waiting ack.
-const accessDeniedNewcomerNotice = "_The thread owner declined, so I won't act on your messages in this thread. Mention me in a new thread to start your own._"
+const accessDeniedNewcomerNotice = "The thread owner declined, so the agent does not act on your messages in this thread. Mention the bot in a new thread to start your own."
 
 // parkedDropNotice is shown (ephemerally) to a user whose parked messages
 // overflowed the per-thread cap, so the drop is visible and the user knows to
 // resend. %d is maxParkedPerThread.
-const parkedDropNotice = "_I can only hold your last %d messages here; earlier ones were dropped, please resend them once I can act on your messages._"
+const parkedDropNotice = "Only your last %d messages are held here; earlier ones were dropped. Send them again when the agent can act on your messages."
 
 // parkedDropNoticeTTL bounds how often the parked-drop notice repeats per
 // (user, thread), so a long burst past the cap nudges once instead of once per
@@ -310,22 +316,22 @@ const parkedDropNoticeTTL = time.Hour
 
 // stopNothingRunningNotice replies to a /stop in a thread with no in-flight
 // turn and no pending prompt, instead of falsely confirming a stop.
-const stopNothingRunningNotice = "_Nothing is running in this thread._"
+const stopNothingRunningNotice = "Nothing is running in this thread."
 
 // stopStoppedNotice confirms a turn interrupted by the /stop command. The
 // command's own message is in the thread above it, so the thread can already
 // see who asked.
-const stopStoppedNotice = "⏹ Stopped."
+const stopStoppedNotice = "Stopped."
 
 // stopStoppedByNotice confirms a turn interrupted with the native stop button.
 // %s is the presser's Slack user ID. The press leaves no message of its own, so
 // unlike /stop this notice is the thread's only record of who stopped the turn.
-const stopStoppedByNotice = "⏹ Stopped by <@%s>."
+const stopStoppedByNotice = "Stopped by <@%s>"
 
 // notPermittedNotice refuses a caller who may read the thread but was never let
 // in to instruct the agent there. Shared by the gated commands and the native
 // stop button, which enforce the same per-thread rule.
-const notPermittedNotice = "_You can read this thread, but only people the thread owner has allowed can instruct the agent (that includes this command). Post a message and the owner can let you in._"
+const notPermittedNotice = "You can read this thread, but only the people the thread owner allowed can instruct the agent, and that includes commands. Post a message, and the owner can let you in."
 
 // signInLinkExpiredNote replaces a sign-in prompt whose link outlived its
 // state TTL once a fresh prompt is posted, so the dead button cannot be
@@ -362,12 +368,19 @@ const (
 	signInSignedInFormat = "%s signed in to Giant Swarm"
 )
 
+// oboDisabledNotice and noSlackUserNotice answer /login and /logout when
+// sign-in cannot run at all.
+const (
+	oboDisabledNotice = "Sign-in is not enabled on this gateway."
+	noSlackUserNotice = "Your Slack user could not be read, so sign-in is not available."
+)
+
 // The /login and /logout replies. They are ephemeral: the first carries the
 // caller's email, which a shared thread must not see.
 const (
 	loginSignedInAsNotice = "Signed in as %s."
 	loginSignedInNotice   = "Signed in."
-	logoutNotice          = "Signed out. The agent asks for /login before it acts for you again."
+	logoutNotice          = "Signed out. The agent asks you to sign in again before it acts for you."
 )
 
 // signedInNotice confirms a completed account link. It names no identity: the
@@ -382,21 +395,21 @@ const signInNudgeTTL = musterlink.DefaultStateTTL
 
 // choiceSelectNudge is shown (ephemerally) when a user clicks Submit on an
 // ask_user choice widget without selecting anything; the task stays pending.
-const choiceSelectNudge = "_Pick at least one option, then click Submit._"
+const choiceSelectNudge = "Pick at least one option, then click Submit."
 
 // promptSupersededNotice replaces a prompt message whose button was clicked
 // after its task was already resumed and the thread paused on a newer prompt,
 // so the click cannot deliver answers the user never saw.
-const promptSupersededNotice = "_This prompt was superseded; please answer the latest one in this thread._"
+const promptSupersededNotice = "A newer prompt replaced this one. Answer the latest one in this thread."
 
 // promptAnsweredNotice replaces a prompt whose task is no longer pending:
 // answered, dropped by the TTL, or lost in a restart.
-const promptAnsweredNotice = "_Already answered._"
+const promptAnsweredNotice = "Already answered."
 
 // formIncompleteNudge is shown (ephemerally) when a user clicks Submit on a
 // multi-question ask_user form with a question still unanswered; the form stays
 // pending so the user can complete it and submit again.
-const formIncompleteNudge = "_Please answer every question, then click Submit._"
+const formIncompleteNudge = "Answer every question, then click Submit."
 
 // The line that replaces a question prompt's controls once it is answered:
 // the answer (a single question) or nothing (a form, whose answers sit under
@@ -426,21 +439,21 @@ const (
 
 // emptyOutputNote replaces the text-mode placeholder when a turn completes
 // without producing any output, so it does not linger as "thinking".
-const emptyOutputNote = "_(the agent finished without a reply)_"
+const emptyOutputNote = "The agent finished without a reply."
 
 // stoppedNote replaces the text-mode placeholder when a turn is cancelled
 // before any content streamed, so "thinking" does not linger under "Stopped.".
-const stoppedNote = "_(stopped)_"
+const stoppedNote = "Stopped before an answer."
 
 // pausedNote replaces the text-mode placeholder when a turn pauses on an
 // input-required prompt before any content streamed.
-const pausedNote = "_(waiting for your input below)_"
+const pausedNote = "Waiting for your answer below."
 
 // failedNote is posted when a turn ends in error before any answer text: it
 // replaces the text-mode placeholder (so it does not linger as "thinking"),
 // and in reactions mode it is posted into the thread next to the failed emoji,
 // which alone would leave the user guessing whether a retry helps.
-const failedNote = "_(the turn failed; please try again)_"
+const failedNote = "The turn failed before an answer. Send the message again to retry."
 
 // The notes of a turn that failed on something the gateway can name
 // (channels.ClassifyFailure). They replace failedNote because they say what
@@ -448,10 +461,10 @@ const failedNote = "_(the turn failed; please try again)_"
 // already retried once and is not the person's to fix, a model error usually
 // passes, a policy refusal stays.
 const (
-	toolsFailedNote    = "⚠️ _I couldn't connect to my tools, so I couldn't work on your message. This is a problem on the platform side, not with your message, and trying again right away won't fix it._"
-	platformFailedNote = "⚠️ _I couldn't reach the agent platform, so I couldn't work on your message. This is a problem on the platform side, not with your message, and trying again right away won't fix it._"
-	modelFailedNote    = "⚠️ _The model behind this agent returned an error instead of an answer. That is usually temporary: please try again in a minute._"
-	policyFailedNote   = "⚠️ _A platform policy refused this request, so I couldn't answer it. Sending it again won't change that._"
+	toolsFailedNote    = "The agent could not connect to its tools, so it did not work on your message. The problem is on the platform side, not in your message, and a retry right now does not help."
+	platformFailedNote = "The agent platform could not be reached, so the agent did not work on your message. The problem is on the platform side, not in your message, and a retry right now does not help."
+	modelFailedNote    = "The model behind this agent returned an error instead of an answer. This is usually temporary: try again in a minute."
+	policyFailedNote   = "A platform policy refused this request, so the agent did not answer it. Sending it again does not change that."
 )
 
 // failureNote is the note of a turn that failed with err before the agent
@@ -479,43 +492,43 @@ func renderFailedNote(err error) string {
 	if reason == "" {
 		reason = err.Error()
 	}
-	return fmt.Sprintf("_(the agent finished, but Slack refused the rest of the reply: %s)_", reason)
+	return fmt.Sprintf("The agent finished, but Slack refused the rest of the reply: %s.", escapeMrkdwn(reason))
 }
 
 // attachmentsUnavailableNote is posted when a message carried only attachments
 // and none of them could be downloaded, so there is nothing to send the agent.
-const attachmentsUnavailableNote = "I couldn't download the attachment(s) you shared, so there was nothing to send to the agent. Please try again."
+const attachmentsUnavailableNote = "Your attachments could not be downloaded, so nothing was sent to the agent. Try again."
 
 // hitlTextReplyNeededNote is posted when a reply into a thread with a paused
 // confirmation carries no text (attachment only): no decision can be read from
 // an empty reply, so the task stays pending and the user is asked to answer in
 // words.
-const hitlTextReplyNeededNote = "This thread is waiting on the pending confirmation above, and I can't read a decision from an attachment alone. Reply with text (e.g. `approve` or `deny`) — I didn't forward the file(s)."
+const hitlTextReplyNeededNote = "This thread waits for the confirmation above, and a file alone is not a decision. Reply with text, for example `approve` or `deny`. The file was not sent to the agent."
 
 // payloadTooLargeNote is posted when the agent rejects a turn as too large and
 // the message carried no attachments, so the size is the text/history rather
 // than a file the user can shrink.
-const payloadTooLargeNote = "That was too large for the agent to accept, so I couldn't process it. Please try a shorter message or start a new thread."
+const payloadTooLargeNote = "That was too large for the agent to accept, so it was not sent. Try a shorter message, or start a new thread."
 
 // corruptSessionResetNotice is posted after a corrupt-history failure when the
 // broken kagent session was deleted, so the user knows to resend rather than
 // retry into the same failure.
-const corruptSessionResetNotice = "An earlier interrupted turn corrupted this conversation's history, and the agent could no longer read it. I've reset the session: please resend your message and we'll continue from a clean slate (earlier context in this thread is lost)."
+const corruptSessionResetNotice = "An earlier interrupted turn corrupted this conversation's history, and the agent could no longer read it. The session is reset: send your message again to continue. The earlier context of this thread is lost."
 
 // corruptSessionStuckNotice is posted after a corrupt-history failure when the
 // session could not be deleted; the thread cannot recover.
-const corruptSessionStuckNotice = "An earlier interrupted turn corrupted this conversation's history, and I couldn't reset it automatically. Please start a new thread."
+const corruptSessionStuckNotice = "An earlier interrupted turn corrupted this conversation's history, and the session could not be reset. Start a new thread."
 
 // resumeStartingFreshNotice is posted when a reply lands in a thread whose
 // kagent session no longer exists, so the user is not confused by lost context.
-const resumeStartingFreshNotice = "I couldn't find our earlier conversation in this thread, so I'm starting fresh."
+const resumeStartingFreshNotice = "The earlier conversation in this thread was not found, so the agent starts fresh."
 
 // threadClosedNotice tells the author of a reply in a thread whose
 // conversation ended — no message for the whole thread lifetime — why nobody
 // answers, and how to start again. Ephemeral: the rest of the thread does not
 // need it.
 func threadClosedNotice(lifetime time.Duration) string {
-	return fmt.Sprintf("_This conversation ended after %s without messages. Mention me to start a new one._", spellDuration(lifetime))
+	return fmt.Sprintf("This conversation ended after %s without messages. Mention the bot to start a new one.", spellDuration(lifetime))
 }
 
 // spellDuration writes a thread lifetime the way the notice reads it, and
@@ -563,12 +576,12 @@ const homeGreetingTTL = 24 * time.Hour
 
 // dmRedirect is posted when a user DMs the bot while DMs are in redirect mode,
 // pointing them to a channel instead.
-const dmRedirect = "I work in channels, not direct messages. Invite me to a channel and mention me there (`@Swarmgeist`) to get started."
+const dmRedirect = "Swarmgeist works in channels, not in direct messages. Invite it to a channel and mention `@Swarmgeist` there to start."
 
 // channelNotServed tells a user the channel is outside the configured
 // allowlist: ephemerally on a mention, through the response_url on a slash
 // command.
-const channelNotServed = "I'm not enabled in this channel yet. Ask a platform admin to add it to my channel allowlist."
+const channelNotServed = "This channel is not enabled yet. Ask a platform admin to add it to the channel allowlist."
 
 // Slack Web API parameter keys (form-encoded and JSON body).
 const (

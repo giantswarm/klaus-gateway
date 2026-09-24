@@ -55,7 +55,7 @@ func TestChat_IsStaleAndAReplyRoutesAsReject(t *testing.T) {
 	// Click Chat: refused as stale, the task stays pending.
 	sendInteraction(t, srv, "hitl_chat", "400.000")
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.update")), "superseded")
+		return strings.Contains(allText(fake.pathCalls("chat.update")), "newer prompt replaced")
 	}, flowWait, 20*time.Millisecond, "a Chat click is refused as stale")
 
 	// Reply with a question: the task is still pending, and the reply resolves
@@ -394,7 +394,7 @@ func TestDM_RedirectInChannelMode(t *testing.T) {
 
 	sendEvent(t, srv, dmEvent("U1", "hey", "600.000"))
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "I work in channels")
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Swarmgeist works in channels")
 	}, flowWait, 20*time.Millisecond, "a DM in channel mode is redirected")
 	require.Zero(t, gw.dispatchCount(), "a redirected DM never reaches the agent")
 
@@ -402,7 +402,7 @@ func TestDM_RedirectInChannelMode(t *testing.T) {
 	time.Sleep(150 * time.Millisecond)
 	redirects := 0
 	for _, call := range fake.pathCalls("chat.postMessage") {
-		if text, _ := call.params["text"].(string); strings.Contains(text, "I work in channels") {
+		if text, _ := call.params["text"].(string); strings.Contains(text, "Swarmgeist works in channels") {
 			redirects++
 		}
 	}

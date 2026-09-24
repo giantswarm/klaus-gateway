@@ -49,15 +49,16 @@ func resumeData(slackUser, triggerTS string) map[string]string {
 // keep that promise: without a routing store that outlives the process, the
 // turn is unreachable once this one exits.
 const (
-	restartedResumesNotice = "⚠️ I was restarted while **%s** was working. It keeps going — the result is in the Dev Portal, and I post it here when it is done."
-	restartedNotice        = "⚠️ I was restarted while **%s** was working. It keeps going and its result lands in the Dev Portal, but I cannot bring it into this thread; please ask again if you need it here."
+	restartedResumesNotice = "The gateway restarted while *%s* was working. The agent keeps going: its result is in the Dev Portal, and it is posted here when it is done."
+	restartedNotice        = "The gateway restarted while *%s* was working. The agent keeps going and its result is in the Dev Portal, but it cannot be posted in this thread. Ask again if you need it here."
 	// resumeLostNote replaces the restart notice's promise when the controller
 	// no longer has the task the previous process left running.
-	resumeLostNote = "_(I couldn't recover the result of the turn my restart interrupted; please ask again)_"
+	resumeLostNote = "The result of the turn that the restart interrupted could not be recovered. Ask again."
 )
 
 func (a *Adapter) restartedNotice(ctx context.Context, agentRef string) string {
-	name := a.agentNameFor(ctx, agentRef)
+	// The note is mrkdwn, and the display name comes from an annotation.
+	name := escapeMrkdwn(a.agentNameFor(ctx, agentRef))
 	if r, ok := a.gw.(turnResumer); ok && r.ResumesTurns() {
 		return fmt.Sprintf(restartedResumesNotice, name)
 	}

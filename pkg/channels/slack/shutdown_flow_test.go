@@ -30,9 +30,9 @@ func TestShutdown_PostsRestartNoticeAndLeavesTheTurnRunning(t *testing.T) {
 	require.NoError(t, a.Stop(context.Background()))
 
 	posted := allBlockText(fake.pathCalls("chat.postMessage"))
-	require.Contains(t, posted, "I was restarted while **test-agent** was working", "the thread is told about the restart")
-	require.Contains(t, posted, "I post it here when it is done", "a durable store lets the notice promise the delivery")
-	require.NotContains(t, posted, "(stopped)", "a restart is not rendered as a stop")
+	require.Contains(t, posted, "The gateway restarted while *test-agent* was working", "the thread is told about the restart")
+	require.Contains(t, posted, "it is posted here when it is done", "a durable store lets the notice promise the delivery")
+	require.NotContains(t, posted, "Stopped", "a restart is not rendered as a stop")
 	require.Equal(t, []string{"eyes"}, fake.reactionNames("reactions.remove"), "working reaction cleared")
 	require.Equal(t, []string{"eyes"}, fake.reactionNames("reactions.add"), "no failed reaction for a restart")
 	require.Equal(t, "555.000", fake.pathCalls("chat.postMessage")[len(fake.pathCalls("chat.postMessage"))-1].params["thread_ts"], "the notice lands in the thread")
@@ -58,9 +58,9 @@ func TestShutdown_NoticeWithoutDurableStoreMakesNoPromise(t *testing.T) {
 	require.NoError(t, a.Stop(context.Background()))
 
 	posted := allBlockText(fake.pathCalls("chat.postMessage"))
-	require.Contains(t, posted, "I was restarted while **test-agent** was working")
-	require.Contains(t, posted, "cannot bring it into this thread")
-	require.NotContains(t, posted, "I post it here when it is done")
+	require.Contains(t, posted, "The gateway restarted while *test-agent* was working")
+	require.Contains(t, posted, "cannot be posted in this thread")
+	require.NotContains(t, posted, "it is posted here when it is done")
 }
 
 // In text-progress mode the restart notice replaces the "thinking" placeholder
@@ -75,12 +75,12 @@ func TestShutdown_TextModeReplacesThePlaceholder(t *testing.T) {
 
 	sendEvent(t, srv, dmEvent("U1", "long task", "100.000"))
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "_thinking")
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Working…")
 	}, flowWait, 20*time.Millisecond, "text placeholder posted")
 
 	require.NoError(t, a.Stop(context.Background()))
 
-	require.Contains(t, allBlockText(fake.pathCalls("chat.update")), "I was restarted while", "the placeholder is replaced by the notice")
+	require.Contains(t, allBlockText(fake.pathCalls("chat.update")), "The gateway restarted while", "the placeholder is replaced by the notice")
 }
 
 // A /stop stays a plain cancellation: the facade sees no shutdown cause and
@@ -103,7 +103,7 @@ func TestStop_IsAPlainCancellationNotAShutdown(t *testing.T) {
 	cause := gw.sendCauseList()[0]
 	require.ErrorIs(t, cause, context.Canceled)
 	require.False(t, errors.Is(cause, channels.ErrShutdown), "a /stop must not read as a shutdown")
-	require.NotContains(t, allBlockText(fake.pathCalls("chat.postMessage")), "I was restarted", "no restart notice for a /stop")
+	require.NotContains(t, allBlockText(fake.pathCalls("chat.postMessage")), "The gateway restarted", "no restart notice for a /stop")
 }
 
 // leftoverTurn is a turn a previous process left running on DM thread 700.000
@@ -195,7 +195,7 @@ func TestRecoverTurns_GoneTaskPostsANote(t *testing.T) {
 	a.RecoverTurns()
 
 	require.Eventually(t, func() bool {
-		return strings.Contains(allBlockText(fake.pathCalls("chat.postMessage")), "couldn't recover the result")
+		return strings.Contains(allBlockText(fake.pathCalls("chat.postMessage")), "could not be recovered")
 	}, flowWait, 20*time.Millisecond, "the thread is told the result is gone")
 }
 
@@ -219,7 +219,7 @@ func TestShutdown_FlushesBufferedTextBeforeTheNotice(t *testing.T) {
 	require.NoError(t, a.Stop(context.Background()))
 
 	texts := fake.threadText()
-	content, notice := strings.Index(texts, "counting: 1, 2, 3"), strings.Index(texts, "I was restarted")
+	content, notice := strings.Index(texts, "counting: 1, 2, 3"), strings.Index(texts, "The gateway restarted")
 	require.GreaterOrEqual(t, content, 0, "the buffered text is delivered")
 	require.Less(t, content, notice, "the text lands before the notice")
 }

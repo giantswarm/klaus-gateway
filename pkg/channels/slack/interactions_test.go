@@ -376,9 +376,9 @@ func newCorruptDecisionAdapter(t *testing.T, gw channels.Gateway, obo OBOTokenSo
 	)
 	apiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/chat.postMessage" {
-			_ = r.ParseForm()
+			text, _ := requestText(r)
 			mu.Lock()
-			posts = append(posts, r.PostFormValue("text"))
+			posts = append(posts, text)
 			mu.Unlock()
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -434,7 +434,7 @@ func TestHandleDecision_CorruptSessionResetsUnderTurnIdentity(t *testing.T) {
 	require.Equal(t, "T001", resets[0].ThreadID)
 	require.Equal(t, "tok-initiator", resets[0].BearerToken,
 		"the reset must present the token the turn ran under, not the clicker's own")
-	require.Contains(t, strings.Join(posts(), "\n"), "reset the session",
+	require.Contains(t, strings.Join(posts(), "\n"), "The session is reset",
 		"the thread is told the session was reset")
 	require.False(t, a.hasPendingTask("T001"),
 		"a task inside the deleted session must not stay pending")
@@ -458,7 +458,7 @@ func TestHandleDecision_CorruptSessionPreStreamDropsPendingTask(t *testing.T) {
 	require.False(t, a.hasPendingTask("T001"),
 		"the re-stored task points into the deleted session and must be dropped")
 	all := strings.Join(posts(), "\n")
-	require.Contains(t, all, "reset the session", "the reset notice is posted")
+	require.Contains(t, all, "The session is reset", "the reset notice is posted")
 	require.NotContains(t, all, "try again",
 		"the failure note must not invite a retry into the deleted session")
 }
@@ -1580,7 +1580,7 @@ func TestHandleDecision_StaleSubmitRefusedAsSuperseded(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		for _, text := range sink.updateTexts() {
-			if strings.Contains(text, "superseded") {
+			if strings.Contains(text, "newer prompt replaced") {
 				return true
 			}
 		}

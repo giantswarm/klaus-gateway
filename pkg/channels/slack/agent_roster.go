@@ -19,21 +19,21 @@ type AgentRosterSource interface {
 }
 
 // agentRosterUnavailable answers a bare /agent when the roster fetch failed.
-const agentRosterUnavailable = "_I can't list the available agents right now. Please try again in a moment._"
+const agentRosterUnavailable = "The agents cannot be listed right now. Try again in a moment."
 
 // rosterSignInLead opens every notice that sends an unidentified caller to
 // sign in before the roster can be listed: the controller serves the roster to
 // a human identity, so a retry cannot help them. Each surface appends its own
 // tail (the slash command's slashCommandSignInNotice, /agent's
 // agentRosterSignIn), so a wording change lands on all of them.
-const rosterSignInLead = "_I need to know who you are before I can list the agents. Mention me with_ `/login`"
+const rosterSignInLead = "The agents are listed with your permissions, so sign in first: mention the bot with `/login`"
 
 // agentRosterSignIn answers a bare or quoted /agent from a caller the gateway
 // cannot identify.
-const agentRosterSignIn = rosterSignInLead + ", _sign in, then try_ `/agent` _again._"
+const agentRosterSignIn = rosterSignInLead + ", sign in, then mention the bot with `/agent` again."
 
 // agentRosterEmpty answers a bare /agent when the controller reports no agents.
-const agentRosterEmpty = "_No agents are installed right now._"
+const agentRosterEmpty = "No agents are installed."
 
 // rosterListTimeout bounds the list-agents call behind a roster listing or a
 // selector resolution.

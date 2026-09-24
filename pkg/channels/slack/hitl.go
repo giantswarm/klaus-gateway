@@ -184,7 +184,7 @@ func (a *Adapter) postHitlPrompt(ctx context.Context, client *slackAPIClient, sl
 		return nil
 	}
 	a.Logger.Warn("slack: approval prompt failed, falling back to text", "thread", threadID, "error", err)
-	_, err = client.postMessage(ctx, slackChannel, card+"\n\n_Reply *approve* or *deny* in this thread._", threadID)
+	_, err = client.postMessage(ctx, slackChannel, card+"\n\nReply *approve* or *deny* in this thread.", threadID)
 	return err
 }
 
@@ -347,9 +347,9 @@ func renderAskUserText(p *channels.HitlPrompt) string {
 		}
 	}
 	if len(p.Questions) > 1 {
-		b.WriteString("\n\n_Reply in this thread, one line per question._")
+		b.WriteString("\n\nReply in this thread, one line per question.")
 	} else {
-		b.WriteString("\n\n_Reply in this thread with your answer._")
+		b.WriteString("\n\nReply in this thread with your answer.")
 	}
 	return b.String()
 }

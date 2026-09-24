@@ -1,6 +1,7 @@
 package slack
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -47,7 +48,26 @@ func TestCountOf(t *testing.T) {
 // The notice reads as one sentence with the configured lifetime in it.
 func TestThreadClosedNotice(t *testing.T) {
 	require.Equal(t,
-		"_This conversation ended after 90 days without messages. Mention me to start a new one._",
+		"This conversation ended after 90 days without messages. Mention the bot to start a new one.",
 		threadClosedNotice(90*24*time.Hour))
 	require.Contains(t, threadClosedNotice(36*time.Hour), "after 36 hours without messages")
+}
+
+// The dismissed-connector note names the real cooldown, so a change to it
+// cannot leave the note wrong.
+func TestConnectorDismissedNotice(t *testing.T) {
+	require.Equal(t, "Not asked again for 1 hour.", connectorDismissedNotice())
+	require.Contains(t, connectorDismissedNotice(), spellDuration(connectorPromptCooldown))
+}
+
+// A terminal note is mrkdwn: Slack's error text in it is escaped.
+func TestRenderFailedNote_EscapesTheReason(t *testing.T) {
+	require.Equal(t, "The agent finished, but Slack refused the rest of the reply: a &lt;b&gt; &amp; c.",
+		renderFailedNote(errors.New("a <b> & c")))
+}
+
+// In text mode a /stop before any answer posts the command's note and
+// replaces the placeholder: the two must not be the same line.
+func TestStopNotesDiffer(t *testing.T) {
+	require.NotEqual(t, stoppedNote, stopStoppedNotice)
 }
