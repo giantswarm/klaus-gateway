@@ -819,11 +819,14 @@ func (w *batchedWriter) closeOpenSteps(ctx context.Context, status string) {
 
 // stepField prepares a payload preview for a step's details or output: escaped
 // like every other agent-controlled string, flattened to one line, and cut to
-// the chunk size Slack documents for task_update. Slack decodes the entities
-// again when it renders the field (verified on graveler, 2026-09-22), so the
-// escaping costs the reader nothing and keeps a payload from carrying a mention.
+// the chunk size Slack documents for task_update without splitting an entity.
+// Slack decodes the entities again when it renders the field, so the escaping
+// costs the reader nothing and keeps a <@U…> in a payload literal text. A
+// tool's own mrkdwn emphasis (*, _, ~) is left as it is on purpose — Slack has
+// no escape for those markers in plain text, and a code span reads worse on
+// this surface; TestStepField_LeavesEmphasisAlone pins that decision.
 func stepField(s string) string {
-	return truncateRunes(stepSafeText(s), stepFieldMax)
+	return truncateEntityAware(stepSafeText(s), stepFieldMax)
 }
 
 // recordToolLog retains one rendered entry in the adapter's per-thread tool
@@ -1315,7 +1318,9 @@ const maxMCPResultUnwrapDepth = 4
 func toolResultPreview(resp map[string]any, max int) (preview string, isErr bool) {
 	text, isErr, ok := toolResultText(resp)
 	if !ok {
-		return compactJSON(resp, max), false
+		// Not a text carrier, but the error flag is honoured wherever the
+		// payload carries it.
+		return compactJSON(resp, max), isErr
 	}
 	for depth := 0; depth < maxMCPResultUnwrapDepth; depth++ {
 		v, isJSON := decodeJSONDocument(text)
@@ -1323,9 +1328,10 @@ func toolResultPreview(resp map[string]any, max int) (preview string, isErr bool
 			break
 		}
 		if m, isMap := v.(map[string]any); isMap {
-			if inner, innerErr, isEnvelope := toolResultText(m); isEnvelope {
+			inner, innerErr, isEnvelope := toolResultText(m)
+			isErr = isErr || innerErr
+			if isEnvelope {
 				text = inner
-				isErr = isErr || innerErr
 				continue
 			}
 		}
@@ -1349,26 +1355,36 @@ func toolResultPreview(resp map[string]any, max int) (preview string, isErr bool
 // ADK runtime's single-key wrap around a failed call ({"error": text}): adk-go
 // turns every tool error, an MCP isError result included, into that shape. Any
 // other shape yields ok false so the caller keeps the raw JSON rendering.
+//
+// isErr is read wherever the payload carries it, not only inside an envelope:
+// kagent's harness runtime sets it beside the wrap ({"result": …, "isError":
+// true}), so that one key, as a boolean, is allowed next to a carrier, and the
+// flag is reported even when the shape is otherwise not recognised.
 func toolResultText(v map[string]any) (text string, isErr, ok bool) {
+	isErr, _ = v["isError"].(bool)
 	items, isEnvelope := v["content"].([]any)
 	if !isEnvelope {
-		if len(v) == 1 {
+		carrierKeys := len(v)
+		if _, flagged := v["isError"].(bool); flagged {
+			carrierKeys--
+		}
+		if carrierKeys == 1 {
 			for _, key := range []string{"output", "result"} {
 				if out, isText := v[key].(string); isText {
-					return out, false, true
+					return out, isErr, true
 				}
 			}
 			if msg, isText := v["error"].(string); isText {
 				return msg, true, true
 			}
 		}
-		return "", false, false
+		return "", isErr, false
 	}
 	parts := make([]string, 0, len(items))
 	for _, item := range items {
 		m, isMap := item.(map[string]any)
 		if !isMap {
-			return "", false, false
+			return "", isErr, false
 		}
 		if s, hasText := m["text"].(string); hasText {
 			parts = append(parts, s)
@@ -1376,11 +1392,10 @@ func toolResultText(v map[string]any) (text string, isErr, ok bool) {
 		}
 		typ, hasType := m["type"].(string)
 		if !hasType {
-			return "", false, false
+			return "", isErr, false
 		}
 		parts = append(parts, "["+typ+"]")
 	}
-	isErr, _ = v["isError"].(bool)
 	return strings.Join(parts, "\n"), isErr, true
 }
 
@@ -3394,6 +3409,30 @@ func truncateRunes(s string, max int) string {
 		return s
 	}
 	return string(r[:max-1]) + "…"
+}
+
+// truncateEntityAware caps s at max runes like truncateRunes, but never leaves
+// a partial entity at the cut. s is already escaped, so every "&" opens one of
+// &amp;, &lt; or &gt;; a cut that lands inside one is backed off to the "&", so
+// a payload ends in "…" and not in "&am…".
+func truncateEntityAware(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	kept := r[:max-1]
+	// An entity is at most 5 runes, so an unterminated "&" can only sit within
+	// the last 4 kept runes; meeting a ";" first means the last one is whole.
+	for i := len(kept) - 1; i >= 0 && i >= len(kept)-4; i-- {
+		if kept[i] == ';' {
+			break
+		}
+		if kept[i] == '&' {
+			kept = kept[:i]
+			break
+		}
+	}
+	return string(kept) + "…"
 }
 
 // chatUpdateBlocks replaces a Block Kit message with plain text (used to mark
