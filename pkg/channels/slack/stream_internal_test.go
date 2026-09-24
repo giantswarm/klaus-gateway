@@ -1901,7 +1901,7 @@ func TestSteps_CarriesDetailsAndOutput(t *testing.T) {
 	require.Contains(t, steps[0].details, `"kind": "pods"`)
 	require.Empty(t, steps[0].output, "a call has no result yet")
 	require.Empty(t, steps[1].details, "Slack appends details across updates, so only the opening one carries them")
-	require.Equal(t, "3 pods running", steps[1].output)
+	require.Equal(t, "`3 pods running`", steps[1].output, "the payload is a code span")
 }
 
 // Slack appends a step's details across the updates of one id instead of
@@ -2214,6 +2214,26 @@ func TestToolResultPreview(t *testing.T) {
 	t.Run("error wrap with extra keys is not a text carrier", func(t *testing.T) {
 		preview, isErr := toolResultPreview(map[string]any{"error": "x", "status": "failed"}, 100)
 		require.Equal(t, `{"error": "x", "status": "failed"}`, preview)
+		require.False(t, isErr)
+	})
+
+	t.Run("harness runtime: the error flag beside a result wrap is an error", func(t *testing.T) {
+		// kagent's harness runtime (go/harness/runtime/a2a, toolResultPart)
+		// emits {"result": …, "isError": true}: one carrier key plus the flag.
+		preview, isErr := toolResultPreview(map[string]any{"result": "boom", "isError": true}, 100)
+		require.Equal(t, "boom", preview)
+		require.True(t, isErr)
+	})
+
+	t.Run("harness runtime: a structured result keeps the raw rendering and the flag", func(t *testing.T) {
+		preview, isErr := toolResultPreview(map[string]any{"result": map[string]any{"code": 7}, "isError": true}, 100)
+		require.Equal(t, `{"isError": true, "result": {"code": 7}}`, preview)
+		require.True(t, isErr)
+	})
+
+	t.Run("the flag is the only key allowed beside a wrap", func(t *testing.T) {
+		preview, isErr := toolResultPreview(map[string]any{"result": "x", "isError": false, "status": "ok"}, 100)
+		require.Equal(t, `{"isError": false, "result": "x", "status": "ok"}`, preview)
 		require.False(t, isErr)
 	})
 
