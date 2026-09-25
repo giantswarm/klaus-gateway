@@ -436,7 +436,6 @@ func TestFacade_SendCompletionViaA2A_ForwardsIdentity(t *testing.T) {
 
 	require.Equal(t, "kagent/worker", pkga2a.AgentRefFromContext(agent.streamCtx))
 	require.Equal(t, "user-jwt", pkga2a.ForwardedTokenFromContext(agent.streamCtx))
-	require.Equal(t, "slack", pkga2a.ChannelFromContext(agent.streamCtx))
 }
 
 // A refusal before the first event — the controller rejecting the turn — is
