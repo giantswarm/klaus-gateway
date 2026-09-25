@@ -76,7 +76,7 @@ func TestDispatch_EmitsTurnDispatchRecord(t *testing.T) {
 		DefaultAgent: "agent-1",
 		OBO:          identOBO{},
 	}
-	require.NoError(t, a.Start(t.Context(), &fakeGateway{}))
+	require.NoError(t, a.Start(t.Context(), &fakeGateway{Facade: newMemoryRecorder()}))
 	t.Cleanup(func() { _ = a.Stop(context.Background()) })
 
 	msg := channels.InboundMessage{Channel: ChannelName, ChannelID: "D1", ThreadID: "T1", MessageID: "M1", Subject: "U1", Text: "hello"}
@@ -112,7 +112,7 @@ func TestDispatch_TurnDispatchRecord_AgentSource(t *testing.T) {
 			APIBase:      fake.URL,
 			DefaultAgent: "agent-1",
 		}
-		require.NoError(t, a.Start(t.Context(), &fakeGateway{}))
+		require.NoError(t, a.Start(t.Context(), &fakeGateway{Facade: newMemoryRecorder()}))
 		return a, h
 	}
 
@@ -166,7 +166,7 @@ func TestDispatch_TurnDispatchRecord_NoIdentitySource(t *testing.T) {
 		APIBase:      fake.URL,
 		DefaultAgent: "agent-1",
 	}
-	require.NoError(t, a.Start(t.Context(), &fakeGateway{}))
+	require.NoError(t, a.Start(t.Context(), &fakeGateway{Facade: newMemoryRecorder()}))
 	t.Cleanup(func() { _ = a.Stop(context.Background()) })
 
 	msg := channels.InboundMessage{Channel: ChannelName, ChannelID: "D1", ThreadID: "T2", MessageID: "M2", Subject: "U2", Text: "hi"}
@@ -194,7 +194,7 @@ func TestDispatch_TurnDispatchRecord_Resume(t *testing.T) {
 		APIBase:      fake.URL,
 		DefaultAgent: "agent-1",
 	}
-	require.NoError(t, a.Start(t.Context(), &fakeGateway{}))
+	require.NoError(t, a.Start(t.Context(), &fakeGateway{Facade: newMemoryRecorder()}))
 	t.Cleanup(func() { _ = a.Stop(context.Background()) })
 
 	a.storePendingTask("T3", &pendingTask{TaskID: "task-9", AgentRef: "agent-1", Channel: "D1", ChannelID: "D1"})

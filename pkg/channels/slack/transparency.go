@@ -180,14 +180,6 @@ type modelEntry struct {
 	expires time.Time
 }
 
-// sessionChecker is the optional Gateway capability that reports whether a
-// thread's conversation (its AgentInstance) still exists at the kagent
-// controller, so a reply resumes it. The Facade implements it; adapters degrade
-// gracefully when the gateway does not.
-type sessionChecker interface {
-	SessionResumable(ctx context.Context, msg channels.InboundMessage) (exists, checked bool)
-}
-
 // maybeAnnounceResume runs the resume existence-check at most once per thread.
 // When the session is confirmed gone it posts the "starting fresh" notice; a
 // confirmed-present result stays silent (resume-by-default). Only a conclusive
@@ -197,11 +189,6 @@ type sessionChecker interface {
 // advisory and never blocks the turn. Turns on a thread are serialized, so the
 // check-then-mark window admits no concurrent duplicate.
 func (a *Adapter) maybeAnnounceResume(ctx context.Context, msg channels.InboundMessage, slackChannel string) {
-	sc, ok := a.gw.(sessionChecker)
-	if !ok {
-		return
-	}
-
 	now := time.Now()
 	a.resumeMu.Lock()
 	if expiry, seen := a.resumeChecked[msg.ThreadID]; seen && now.Before(expiry) {
@@ -210,7 +197,7 @@ func (a *Adapter) maybeAnnounceResume(ctx context.Context, msg channels.InboundM
 	}
 	a.resumeMu.Unlock()
 
-	exists, checked := sc.SessionResumable(ctx, msg)
+	exists, checked := a.gw.SessionResumable(ctx, msg)
 	if !checked {
 		return
 	}

@@ -13,19 +13,6 @@ import (
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 )
 
-// turnResumer is the optional Gateway capability behind restart recovery: the
-// record of the turns a process left running at the controller, and the
-// resubscription that delivers their results. The facade implements it once a
-// kagent client and a routing store are wired.
-type turnResumer interface {
-	// ResumesTurns reports whether a turn cut short by a shutdown is delivered
-	// after the restart (the record must outlive the process).
-	ResumesTurns() bool
-	InFlightTurns(ctx context.Context, channel string) ([]channels.InFlightTurn, error)
-	InFlightTurn(ctx context.Context, msg channels.InboundMessage) (channels.InFlightTurn, bool, error)
-	ResumeTurn(ctx context.Context, msg channels.InboundMessage, taskID string) (<-chan channels.OutboundDelta, error)
-}
-
 // Keys of the resume data a turn is dispatched with (InboundMessage.Resume);
 // the thread's Slack channel is the routing key's ChannelID already.
 const (
@@ -59,7 +46,7 @@ const (
 func (a *Adapter) restartedNotice(ctx context.Context, agentRef string) string {
 	// The note is mrkdwn, and the display name comes from an annotation.
 	name := escapeMrkdwn(a.agentNameFor(ctx, agentRef))
-	if r, ok := a.gw.(turnResumer); ok && r.ResumesTurns() {
+	if a.gw.ResumesTurns() {
 		return fmt.Sprintf(restartedResumesNotice, name)
 	}
 	return fmt.Sprintf(restartedNotice, name)
@@ -90,17 +77,14 @@ const (
 // RecoverTurns delivers, in the background, the results of the turns a
 // previous process left running at the controller. Call it once the gateway
 // is fully wired (kagent client, account linking, roster): a resubscription
-// needs all of them. Without the capability nothing happens.
+// needs all of them.
 func (a *Adapter) RecoverTurns() {
-	if _, ok := a.gw.(turnResumer); ok {
-		a.background(a.recoverTurns)
-	}
+	a.background(a.recoverTurns)
 }
 
 func (a *Adapter) recoverTurns(ctx context.Context) {
-	resumer := a.gw.(turnResumer)
 	lctx, cancel := context.WithTimeout(ctx, recoverListTimeout)
-	turns, err := resumer.InFlightTurns(lctx, ChannelName)
+	turns, err := a.gw.InFlightTurns(lctx, ChannelName)
 	cancel()
 	if err != nil {
 		a.Logger.Warn("slack: list of turns left running by the previous process unavailable", "error", err)
@@ -111,21 +95,21 @@ func (a *Adapter) recoverTurns(ctx context.Context) {
 	}
 	a.Logger.Info("slack: recovering turns left running by the previous process", "record", "turns_recover", "count", len(turns))
 	for _, turn := range turns {
-		a.background(func(ctx context.Context) { a.recoverTurn(ctx, resumer, turn) })
+		a.background(func(ctx context.Context) { a.recoverTurn(ctx, turn) })
 	}
 }
 
 // recoverTurn delivers one left-running turn, retrying a failure that may
 // clear. A turn given up on stays recorded: the thread's next reply delivers
 // it (dispatch's deliverLeftoverTurn).
-func (a *Adapter) recoverTurn(ctx context.Context, resumer turnResumer, turn channels.InFlightTurn) {
+func (a *Adapter) recoverTurn(ctx context.Context, turn channels.InFlightTurn) {
 	for attempt := 1; ; attempt++ {
 		token, outcome := a.recoveryToken(ctx, turn.Msg.Resume[resumeKeyUser], "")
 		if outcome == recoverDone {
 			if !a.acquireThread(turn.Msg.ThreadID) {
 				return // another turn holds the thread; the reply path delivers
 			}
-			outcome = a.deliverInFlight(ctx, resumer, turn, token)
+			outcome = a.deliverInFlight(ctx, turn, token)
 			a.releaseThread(turn.Msg.ThreadID)
 		}
 		if outcome != recoverRetry {
@@ -151,12 +135,8 @@ func (a *Adapter) recoverTurn(ctx context.Context, resumer turnResumer, turn cha
 // under the reply's otherwise. Best effort: a failure leaves the record for a
 // later reply.
 func (a *Adapter) deliverLeftoverTurn(ctx context.Context, msg channels.InboundMessage, slackChannel, slackUser string) {
-	resumer, ok := a.gw.(turnResumer)
-	if !ok {
-		return
-	}
 	lctx, cancel := context.WithTimeout(ctx, recoverLookupTimeout)
-	turn, found, err := resumer.InFlightTurn(lctx, msg)
+	turn, found, err := a.gw.InFlightTurn(lctx, msg)
 	cancel()
 	if err != nil {
 		a.Logger.Warn("slack: lookup of a turn left running on the thread failed", "thread", msg.ThreadID, "error", err)
@@ -169,7 +149,7 @@ func (a *Adapter) deliverLeftoverTurn(ctx context.Context, msg channels.InboundM
 	if outcome != recoverDone {
 		return
 	}
-	a.deliverInFlight(ctx, resumer, turn, token)
+	a.deliverInFlight(ctx, turn, token)
 }
 
 // recoveryToken is the token a left-running turn's delivery runs under: the
@@ -211,7 +191,7 @@ func (a *Adapter) recoveryToken(ctx context.Context, slackUser, fallback string)
 // the step ids count on (turn.Delivered). The caller holds the thread's
 // slot. The thread is marked active under the recorded user, so plain replies
 // into it are served again after the restart.
-func (a *Adapter) deliverInFlight(ctx context.Context, resumer turnResumer, turn channels.InFlightTurn, token string) recoverOutcome {
+func (a *Adapter) deliverInFlight(ctx context.Context, turn channels.InFlightTurn, token string) recoverOutcome {
 	slackUser := turn.Msg.Resume[resumeKeyUser]
 	triggerTS := turn.Msg.Resume[resumeKeyMessage]
 	slackChannel := turn.Msg.ChannelID
@@ -229,7 +209,7 @@ func (a *Adapter) deliverInFlight(ctx context.Context, resumer turnResumer, turn
 	defer done()
 
 	client := a.agentClient(pkga2a.WithForwardedToken(ctx, token), msg.AgentRef)
-	deltas, err := resumer.ResumeTurn(turnCtx, msg, turn.TaskID)
+	deltas, err := a.gw.ResumeTurn(turnCtx, msg, turn.TaskID)
 	if err != nil {
 		switch {
 		case ctx.Err() != nil:

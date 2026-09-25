@@ -53,21 +53,17 @@ func New(opts Options) *Server {
 	if opts.Ready == nil {
 		opts.Ready = func(context.Context) error { return nil }
 	}
+	if opts.Public == nil {
+		// Tests build a server without routes; the middleware (request id,
+		// access log, RED metrics) still runs for them.
+		opts.Public = http.NotFoundHandler()
+	}
 
 	public := chi.NewRouter()
 	public.Use(RequestID)
 	public.Use(AccessLog(opts.Logger))
-	public.Use(opts.Metrics.Middleware("public"))
-
-	if opts.Public != nil {
-		public.Mount("/", opts.Public)
-	} else {
-		// Catch-all so middleware (request-id, access log, RED metrics)
-		// still runs for requests to the mux before any channel adapters
-		// have been mounted. Without this chi returns 404 without invoking
-		// the middleware chain.
-		public.Handle("/*", http.NotFoundHandler())
-	}
+	public.Use(opts.Metrics.Middleware())
+	public.Mount("/", opts.Public)
 
 	publicHandler := otelhttp.NewHandler(public, "klaus-gateway")
 

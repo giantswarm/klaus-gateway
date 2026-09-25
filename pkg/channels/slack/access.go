@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"slices"
 
+	"github.com/giantswarm/klaus-gateway/pkg/channels"
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
 )
 
@@ -35,7 +36,7 @@ type AccessPolicy interface {
 // Every write goes through the store's per-key update, so a grant does not
 // erase what the turn wrote on the same row.
 type recordAccess struct {
-	rec     threadRecorder
+	rec     channels.Gateway
 	channel string
 }
 

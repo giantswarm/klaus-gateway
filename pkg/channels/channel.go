@@ -22,19 +22,42 @@ import (
 // the task server-side.
 var ErrShutdown = errors.New("channels: the gateway is shutting down")
 
-// ChannelAdapter is the interface each channel implements.
-// Start is called once during server boot with the Gateway facade; Stop
-// drains any adapter-owned goroutines on shutdown.
-type ChannelAdapter interface {
-	Name() string
-	Start(ctx context.Context, gw Gateway) error
-	Stop(ctx context.Context) error
-}
-
 // Gateway is the server-side surface adapters call back into. The wiring in
 // main.go provides the concrete implementation (Facade).
 type Gateway interface {
+	// SendCompletion runs msg's turn on the thread's AgentInstance and streams
+	// its reply.
 	SendCompletion(ctx context.Context, msg InboundMessage) (<-chan OutboundDelta, error)
+
+	// ResumesTurns reports whether a turn cut short by a shutdown is delivered
+	// after the restart (the record must outlive the process).
+	ResumesTurns() bool
+	// InFlightTurns lists the turns a previous process left running for
+	// channel; InFlightTurn is the one on msg's thread, if any.
+	InFlightTurns(ctx context.Context, channel string) ([]InFlightTurn, error)
+	InFlightTurn(ctx context.Context, msg InboundMessage) (InFlightTurn, bool, error)
+	// ResumeTurn resubscribes to taskID, a turn left running on msg's thread,
+	// and streams the rest of its reply.
+	ResumeTurn(ctx context.Context, msg InboundMessage, taskID string) (<-chan OutboundDelta, error)
+
+	// SessionResumable reports whether msg's thread is bound to an
+	// AgentInstance the controller still knows; checked is false when that
+	// could not be told.
+	SessionResumable(ctx context.Context, msg InboundMessage) (exists, checked bool)
+	// ResetSession deletes the thread's AgentInstance, so the next message
+	// starts a fresh one; it reports whether one was deleted.
+	ResetSession(ctx context.Context, msg InboundMessage) (bool, error)
+
+	// ThreadRecord and UpdateThreadRecord read and read-modify-write the
+	// thread's row in the routing store.
+	ThreadRecord(ctx context.Context, channel, channelID, threadID string) (store.Entry, bool, error)
+	UpdateThreadRecord(ctx context.Context, channel, channelID, threadID string, mutate func(e *store.Entry, found bool) bool) error
+	// ThreadState is one read that answers both questions the inactive-thread
+	// gate asks of a row: what a live record holds, and — when the row is
+	// still in the store but its conversation has ended (ThreadRecord reads
+	// it as absent) — the lifetime it ended after. The one use of a closed
+	// row: telling the author of a reply that the conversation is over.
+	ThreadState(ctx context.Context, channel, channelID, threadID string) (ThreadState, error)
 }
 
 // InboundMessage is the normalised shape each adapter hands to the gateway.

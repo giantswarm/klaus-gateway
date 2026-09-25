@@ -65,7 +65,9 @@ func (r *rosterErrThenAgents) ListAgents(context.Context) ([]pkga2a.AgentInfo, e
 }
 
 func testAdapterWithRoster(r AgentRosterSource) *Adapter {
-	return &Adapter{Roster: r, Logger: slog.New(slog.DiscardHandler)}
+	a := &Adapter{Roster: r, Logger: slog.New(slog.DiscardHandler)}
+	a.gw = newMemoryRecorder()
+	return a
 }
 
 // A stale roster is served as the last known good one even while the negative

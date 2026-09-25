@@ -117,10 +117,6 @@ func run(args []string) error {
 		Durable: cfg.Store != config.StoreMemory,
 	}
 
-	// Adapters are stopped in reverse start order once the servers have
-	// drained, and before the clients they use are closed (see stopAdapters).
-	var adapters []channels.ChannelAdapter
-
 	publicMux := chi.NewRouter()
 
 	var slackAdapter *slackchannel.Adapter
@@ -162,7 +158,6 @@ func run(args []string) error {
 			return fmt.Errorf("start slack adapter: %w", err)
 		}
 		slackAdapter.Mount(publicMux)
-		adapters = append(adapters, slackAdapter)
 		logger.Info("slack adapter started", "mode", cfg.Slack.Mode)
 	}
 
@@ -286,23 +281,24 @@ func run(args []string) error {
 	})
 
 	err = srv.Run(ctx)
-	stopAdapters(adapters, logger)
+	stopSlack(slackAdapter, logger)
 	return err
 }
 
-// stopAdapters stops the channel adapters in reverse start order, once the
-// servers have drained and before the deferred closes take the kagent client,
-// the link store and the routing store away: a Slack turn the shutdown cuts
-// short still posts its notice, and a /stop-issued cancel still reaches the
-// controller. All adapters share one budget, so the pod's termination grace
-// has to cover the server drain plus this stop (both DefaultShutdownTimeout).
-func stopAdapters(adapters []channels.ChannelAdapter, logger *slog.Logger) {
+// stopSlack stops the Slack adapter, when one runs, once the servers have
+// drained and before the deferred closes take the kagent client, the link
+// store and the routing store away: a Slack turn the shutdown cuts short still
+// posts its notice, and a /stop-issued cancel still reaches the controller. The
+// pod's termination grace has to cover the server drain plus this stop (both
+// DefaultShutdownTimeout).
+func stopSlack(a *slackchannel.Adapter, logger *slog.Logger) {
+	if a == nil {
+		return
+	}
 	stopCtx, cancel := context.WithTimeout(context.Background(), server.DefaultShutdownTimeout)
 	defer cancel()
-	for i := len(adapters) - 1; i >= 0; i-- {
-		if err := adapters[i].Stop(stopCtx); err != nil {
-			logger.Warn("adapter stop", "adapter", adapters[i].Name(), "error", err)
-		}
+	if err := a.Stop(stopCtx); err != nil {
+		logger.Warn("slack adapter stop", "error", err)
 	}
 }
 

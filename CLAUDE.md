@@ -31,7 +31,7 @@ release (issue #319).
 main.go                 entrypoint; wires the store, the kagent client, the Slack adapter, the server
 pkg/a2a/                kagent API v2 client: A2A v1 over gRPC turns, AgentTemplate roster, AgentInstance per thread, HITL payloads
 pkg/kagent/gen/         generated kagent.api.v1alpha1 gRPC stubs (make generate-kagent; pin in its README)
-pkg/channels/           ChannelAdapter interface + Gateway facade (SendCompletion only)
+pkg/channels/           Gateway interface (turns, resumes, sessions, thread records) + its Facade
 pkg/channels/slack/     Slack channel adapter (/channels/slack/*); Events API + Socket Mode
 pkg/routing/store/      Store interface + three backends (memory, valkey, bolt); thread state + team reviews
 pkg/auth/musterlink/    Slack OBO: muster account linking + the link Store (memory, bolt file, Kubernetes Secret)

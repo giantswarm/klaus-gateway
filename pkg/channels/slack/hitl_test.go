@@ -262,6 +262,7 @@ func TestPostHitlPrompt_FallsBackToTextOnBlockKitFailure(t *testing.T) {
 		Secrets: Secrets{BotToken: "test-bot-token"}, //nolint:gosec
 		Logger:  slog.New(slog.DiscardHandler),
 	}
+	a.gw = newMemoryRecorder()
 
 	// Generic tool approval: Approve/Deny buttons fail, plain text lands.
 	err := a.postHitlPrompt(t.Context(), a.apiClient(), "C1", "T1", &channels.OutboundDelta{
@@ -469,6 +470,7 @@ func TestTypedDecisionRewritesTheApprovalCard(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	a := &Adapter{APIBase: srv.URL, Secrets: Secrets{BotToken: "t"}, Logger: slog.New(slog.DiscardHandler)}
+	a.gw = newMemoryRecorder()
 	only := func(t *testing.T) map[string]any {
 		t.Helper()
 		mu.Lock()

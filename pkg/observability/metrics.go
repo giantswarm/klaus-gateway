@@ -141,16 +141,20 @@ func (m *Metrics) Handler() http.Handler {
 	return promhttp.HandlerFor(m.Registry, promhttp.HandlerOpts{})
 }
 
+// publicRoute is the route label of the public mux, the only one the
+// middleware wraps.
+const publicRoute = "public"
+
 // Middleware records a counter + histogram sample for every request, labelled
-// with route (the name of the mux it wraps), the method and the status.
-func (m *Metrics) Middleware(route string) func(http.Handler) http.Handler {
+// with the route, the method and the status.
+func (m *Metrics) Middleware() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
 			rw := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 			next.ServeHTTP(rw, r)
 			labels := prometheus.Labels{
-				labelRoute:  route,
+				labelRoute:  publicRoute,
 				labelMethod: r.Method,
 				labelStatus: strconv.Itoa(rw.status),
 			}

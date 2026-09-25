@@ -408,7 +408,7 @@ func splitAgentCommand(text string) (name string, quoted bool, question string) 
 
 // bindThreadAgent records ref as the thread's agent on its row.
 func (a *Adapter) bindThreadAgent(ctx context.Context, channelID, threadID, ref string) {
-	err := a.records().UpdateThreadRecord(ctx, ChannelName, channelID, threadID, func(e *store.Entry, _ bool) bool {
+	err := a.gw.UpdateThreadRecord(ctx, ChannelName, channelID, threadID, func(e *store.Entry, _ bool) bool {
 		e.AgentRef = ref
 		return true
 	})
@@ -420,7 +420,7 @@ func (a *Adapter) bindThreadAgent(ctx context.Context, channelID, threadID, ref 
 // threadAgentBinding is the thread's recorded agent, when its row exists and
 // names one.
 func (a *Adapter) threadAgentBinding(ctx context.Context, channelID, threadID string) (string, bool) {
-	e, ok, err := a.records().ThreadRecord(ctx, ChannelName, channelID, threadID)
+	e, ok, err := a.gw.ThreadRecord(ctx, ChannelName, channelID, threadID)
 	if err != nil {
 		a.Logger.Warn("slack: read thread record failed", "thread", threadID, "error", err)
 		return "", false

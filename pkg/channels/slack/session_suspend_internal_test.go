@@ -58,6 +58,7 @@ func newSuspendTestAdapter(t *testing.T) (*Adapter, *suspendAPIRecorder) {
 		Secrets: Secrets{BotToken: "test-bot-token"}, //nolint:gosec // dummy value used only in tests
 		Logger:  slog.New(slog.DiscardHandler),
 	}
+	a.gw = newMemoryRecorder()
 	return a, rec
 }
 

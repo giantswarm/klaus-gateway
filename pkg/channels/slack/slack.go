@@ -71,7 +71,8 @@ const (
 	ChannelModeNone      ChannelMode = "none"      // no channels (DM-only deployments)
 )
 
-// Adapter implements channels.ChannelAdapter for the Slack channel.
+// Adapter is the Slack channel: main.go starts it with the Gateway facade and
+// stops it on shutdown.
 type Adapter struct {
 	Logger  *slog.Logger
 	Mode    string
@@ -186,11 +187,6 @@ type Adapter struct {
 	evHandler  http.Handler
 	ixHandler  http.Handler // interactions endpoint; nil in socketmode
 	cmdHandler http.Handler // slash commands endpoint; nil in socketmode
-
-	// recordsMu guards memRecords, the in-process thread recorder used when the
-	// gateway has no routing store (tests, the Klaus-instance path).
-	recordsMu  sync.Mutex
-	memRecords *channels.Facade
 
 	pendingAccessMu sync.Mutex
 	pendingAccess   map[string]map[string][]*pendingAccessReq // threadID -> userID -> messages parked (in order) while the initiator decides
@@ -406,8 +402,6 @@ const maxParkedPerThread = 5
 const pendingTTL = 24 * time.Hour
 
 // Name returns the channel name used in routing keys.
-func (a *Adapter) Name() string { return ChannelName }
-
 // Start wires the Gateway facade and initialises the chosen connection mode.
 func (a *Adapter) Start(ctx context.Context, gw channels.Gateway) error {
 	if gw == nil {
@@ -1341,7 +1335,7 @@ func (a *Adapter) postAccessPrompt(ctx context.Context, slackChannel, threadID, 
 
 // accessPolicy returns the adapter's AccessPolicy over the thread's row.
 func (a *Adapter) accessPolicy() AccessPolicy {
-	return &recordAccess{rec: a.records(), channel: ChannelName}
+	return &recordAccess{rec: a.gw, channel: ChannelName}
 }
 
 // noticeThreadClosed tells the author of an un-mentioned reply that the
@@ -1386,7 +1380,7 @@ func (a *Adapter) mentionsBot(ctx context.Context, text string) bool {
 // this runs for every thread reply in every served channel, which under
 // channelMode "all" is the most frequent message the gateway sees.
 func (a *Adapter) threadGate(ctx context.Context, channelID, threadID string) (active, closed bool, lifetime time.Duration) {
-	st, err := a.records().ThreadState(ctx, ChannelName, channelID, threadID)
+	st, err := a.gw.ThreadState(ctx, ChannelName, channelID, threadID)
 	if err != nil {
 		// A store outage reads as no row, as the access policy does: the
 		// thread is not active and nothing is claimed about its end.
@@ -2352,26 +2346,16 @@ func isCorruptSessionErr(err error) bool {
 		strings.Contains(s, "tool_use") && strings.Contains(s, "tool_result")
 }
 
-// sessionResetter is the optional Gateway capability that deletes a thread's
-// kagent session. The Facade implements it; without it recovery degrades to
-// advising a new thread.
-type sessionResetter interface {
-	ResetSession(ctx context.Context, msg channels.InboundMessage) (bool, error)
-}
-
 // recoverCorruptSession deletes the thread's kagent session after a
 // corrupt-history failure so the next message starts a fresh session instead
 // of failing forever, and tells the user what happened. Best-effort: when the
 // reset is unavailable or fails, the notice advises starting a new thread.
 func (a *Adapter) recoverCorruptSession(ctx context.Context, msg channels.InboundMessage, slackChannel string) {
-	reset := false
-	if sr, ok := a.gw.(sessionResetter); ok {
-		ok, err := sr.ResetSession(ctx, msg)
-		if err != nil {
-			a.Logger.Warn("slack: corrupt-session reset failed", "thread", msg.ThreadID, "error", err)
-		}
-		reset = ok && err == nil
+	ok, err := a.gw.ResetSession(ctx, msg)
+	if err != nil {
+		a.Logger.Warn("slack: corrupt-session reset failed", "thread", msg.ThreadID, "error", err)
 	}
+	reset := ok && err == nil
 	a.Logger.Info("slack: corrupt session detected",
 		"record", "session_corrupt",
 		"thread", msg.ThreadID,

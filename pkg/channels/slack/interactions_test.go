@@ -61,8 +61,10 @@ func slackInteractionPayload(t *testing.T, actionID, threadID, channelID, messag
 	return []byte("payload=" + url.QueryEscape(string(data)))
 }
 
-// fakeGateway captures SendCompletion calls.
+// fakeGateway captures SendCompletion calls. The embedded memory facade
+// answers every other Gateway call.
 type fakeGateway struct {
+	*channels.Facade
 	deltas []channels.OutboundDelta
 	// dispatchErr, when set, is returned by every SendCompletion call.
 	dispatchErr error
@@ -168,7 +170,7 @@ func TestInteractionsHandler_Approve(t *testing.T) {
 	}))
 	t.Cleanup(apiSrv.Close)
 
-	gw := &fakeGateway{deltas: []channels.OutboundDelta{
+	gw := &fakeGateway{Facade: newMemoryRecorder(), deltas: []channels.OutboundDelta{
 		{Content: "done"},
 		{Done: true},
 	}}
@@ -296,7 +298,7 @@ func newDecisionAdapter(t *testing.T, gw channels.Gateway, obo OBOTokenSource) (
 // approved tool call executes under the approver's identity, never the gateway
 // service account (klaus-gateway#116).
 func TestHandleDecision_ForwardsHumanToken(t *testing.T) {
-	gw := &fakeGateway{deltas: []channels.OutboundDelta{{Content: "done"}, {Done: true}}}
+	gw := &fakeGateway{Facade: newMemoryRecorder(), deltas: []channels.OutboundDelta{{Content: "done"}, {Done: true}}}
 	a, _ := newDecisionAdapter(t, gw, linkedOBO{user: "U001", token: "human-token"})
 
 	err := a.handleDecision(t.Context(), "C001", "T001", "MSG001", "U001", hitlAction{kind: hitlApprove})
@@ -327,7 +329,7 @@ func (multiUserOBO) Unlink(string) error   { return nil }
 // attribution — matching the typed-turn path in dispatch so a click and a typed
 // "approve" reply cannot fork the session differently.
 func TestHandleDecision_CollaboratorClickForwardsInitiatorToken(t *testing.T) {
-	gw := &fakeGateway{deltas: []channels.OutboundDelta{{Content: "done"}, {Done: true}}}
+	gw := &fakeGateway{Facade: newMemoryRecorder(), deltas: []channels.OutboundDelta{{Content: "done"}, {Done: true}}}
 	// newDecisionAdapter makes U001 the initiator; U002 is a granted collaborator.
 	a, _ := newDecisionAdapter(t, gw, multiUserOBO{"U001": "tok-initiator", "U002": "tok-collab"})
 	a.accessPolicy().Grant(t.Context(), "C001", "T001", "U002")
@@ -347,7 +349,7 @@ func TestHandleDecision_CollaboratorClickForwardsInitiatorToken(t *testing.T) {
 // collaborator's click falls back to the clicker's own identity rather than the
 // gateway service account, and carries no attribution.
 func TestHandleDecision_CollaboratorClickFallsBackWhenInitiatorUnavailable(t *testing.T) {
-	gw := &fakeGateway{deltas: []channels.OutboundDelta{{Content: "done"}, {Done: true}}}
+	gw := &fakeGateway{Facade: newMemoryRecorder(), deltas: []channels.OutboundDelta{{Content: "done"}, {Done: true}}}
 	// U001 is the initiator but unlinked; U002 is a granted, linked collaborator.
 	a, _ := newDecisionAdapter(t, gw, multiUserOBO{"U002": "tok-collab"})
 	a.accessPolicy().Grant(t.Context(), "C001", "T001", "U002")
@@ -413,7 +415,7 @@ func TestHandleDecision_CorruptSessionResetsUnderTurnIdentity(t *testing.T) {
 		mu     sync.Mutex
 		resets []channels.InboundMessage
 	)
-	gw := &fakeGateway{
+	gw := &fakeGateway{Facade: newMemoryRecorder(),
 		deltas: []channels.OutboundDelta{{Err: errCorruptHistoryUnit}},
 		onResetSession: func(msg channels.InboundMessage) (bool, error) {
 			mu.Lock()
@@ -446,7 +448,7 @@ func TestHandleDecision_CorruptSessionResetsUnderTurnIdentity(t *testing.T) {
 // so the handle is dropped and the retry-inviting failure note is replaced by
 // the reset notice.
 func TestHandleDecision_CorruptSessionPreStreamDropsPendingTask(t *testing.T) {
-	gw := &fakeGateway{
+	gw := &fakeGateway{Facade: newMemoryRecorder(),
 		sendErr:        errCorruptHistoryUnit,
 		onResetSession: func(channels.InboundMessage) (bool, error) { return true, nil },
 	}
@@ -467,7 +469,7 @@ func TestHandleDecision_CorruptSessionPreStreamDropsPendingTask(t *testing.T) {
 // (buttons keep working for a linked user), the gateway sends nothing to the
 // agent, and the clicker gets the sign-in prompt.
 func TestHandleDecision_UnlinkedClicker_PreservesPendingTask(t *testing.T) {
-	gw := &fakeGateway{}
+	gw := &fakeGateway{Facade: newMemoryRecorder()}
 	a, paths := newDecisionAdapter(t, gw, linkedOBO{user: "U-linked", token: "human-token"})
 
 	err := a.handleDecision(t.Context(), "C001", "T001", "MSG001", "U-unlinked", hitlAction{kind: hitlApprove})
@@ -494,7 +496,7 @@ func TestSignInClickIsBareAck(t *testing.T) {
 		Secrets:      Secrets{BotToken: "test-bot-token", SigningSecret: secret}, //nolint:gosec
 		DefaultAgent: "worker",
 	}
-	require.NoError(t, a.Start(t.Context(), &fakeGateway{}))
+	require.NoError(t, a.Start(t.Context(), &fakeGateway{Facade: newMemoryRecorder()}))
 	t.Cleanup(func() { _ = a.Stop(context.Background()) })
 	a.storePendingTask("T001", &pendingTask{TaskID: "task-abc", AgentRef: "worker", Channel: "C001", ChannelID: "C001"})
 
@@ -510,7 +512,7 @@ func TestSignInClickIsBareAck(t *testing.T) {
 // the prompt message already shows the decision text, so silence reads as
 // success while the task quietly went nowhere.
 func TestHandleDecision_ResumeFailurePostsNote(t *testing.T) {
-	gw := &fakeGateway{dispatchErr: errors.New("kagent down")}
+	gw := &fakeGateway{Facade: newMemoryRecorder(), dispatchErr: errors.New("kagent down")}
 	a, paths := newDecisionAdapter(t, gw, linkedOBO{user: "U001", token: "human-token"})
 
 	err := a.handleDecision(t.Context(), "C001", "T001", "MSG001", "U001", hitlAction{kind: hitlApprove})
@@ -548,7 +550,7 @@ func TestInteractionsHandler_NoPendingTask(t *testing.T) {
 	}))
 	t.Cleanup(apiSrv.Close)
 
-	gw := &fakeGateway{}
+	gw := &fakeGateway{Facade: newMemoryRecorder()}
 	a := &Adapter{
 		APIBase:      apiSrv.URL,
 		Secrets:      Secrets{BotToken: "test-bot-token", SigningSecret: secret}, //nolint:gosec
@@ -690,7 +692,7 @@ func TestHandleDecision_OBO_TokenMintFailurePreservesTask(t *testing.T) {
 	const secret = "test-secret"
 	srv, sink := newIxSlackServer(t)
 
-	gw := &fakeGateway{}
+	gw := &fakeGateway{Facade: newMemoryRecorder()}
 	a := &Adapter{
 		APIBase:      srv.URL,
 		Secrets:      Secrets{BotToken: "test-bot-token", SigningSecret: secret}, //nolint:gosec
@@ -730,7 +732,7 @@ func TestHandleDecision_OBO_SuccessResumes(t *testing.T) {
 	const secret = "test-secret"
 	srv, sink := newIxSlackServer(t)
 
-	gw := &fakeGateway{deltas: []channels.OutboundDelta{{Content: "done"}, {Done: true}}}
+	gw := &fakeGateway{Facade: newMemoryRecorder(), deltas: []channels.OutboundDelta{{Content: "done"}, {Done: true}}}
 	a := &Adapter{
 		APIBase:      srv.URL,
 		Secrets:      Secrets{BotToken: "test-bot-token", SigningSecret: secret}, //nolint:gosec
@@ -783,7 +785,7 @@ func TestInteractionsHandler_OnlookerCannotDecide(t *testing.T) {
 	}))
 	t.Cleanup(apiSrv.Close)
 
-	gw := &fakeGateway{deltas: []channels.OutboundDelta{{Content: "done"}, {Done: true}}}
+	gw := &fakeGateway{Facade: newMemoryRecorder(), deltas: []channels.OutboundDelta{{Content: "done"}, {Done: true}}}
 	a := &Adapter{
 		APIBase:      apiSrv.URL,
 		Secrets:      Secrets{BotToken: "test-bot-token", SigningSecret: secret}, //nolint:gosec
@@ -853,7 +855,7 @@ func TestHandleDecision_FormResumesWithPerQuestionAnswers(t *testing.T) {
 	const secret = "test-secret"
 	srv, _ := newIxSlackServer(t)
 
-	gw := &fakeGateway{deltas: []channels.OutboundDelta{{Content: "done"}, {Done: true}}}
+	gw := &fakeGateway{Facade: newMemoryRecorder(), deltas: []channels.OutboundDelta{{Content: "done"}, {Done: true}}}
 	a := &Adapter{
 		APIBase:      srv.URL,
 		Secrets:      Secrets{BotToken: "test-bot-token", SigningSecret: secret}, //nolint:gosec
@@ -919,7 +921,7 @@ func TestHandleDecision_FormIncompleteNudges(t *testing.T) {
 	const secret = "test-secret"
 	srv, sink := newIxSlackServer(t)
 
-	gw := &fakeGateway{}
+	gw := &fakeGateway{Facade: newMemoryRecorder()}
 	a := &Adapter{
 		APIBase:      srv.URL,
 		Secrets:      Secrets{BotToken: "test-bot-token", SigningSecret: secret}, //nolint:gosec
@@ -980,7 +982,7 @@ func TestHandleDecision_FormEmptyUsesFormNudge(t *testing.T) {
 	const secret = "test-secret"
 	srv, sink := newIxSlackServer(t)
 
-	gw := &fakeGateway{}
+	gw := &fakeGateway{Facade: newMemoryRecorder()}
 	a := &Adapter{
 		APIBase:      srv.URL,
 		Secrets:      Secrets{BotToken: "test-bot-token", SigningSecret: secret}, //nolint:gosec
@@ -1016,7 +1018,7 @@ func TestHandleDecision_FormStaleSelectionNudges(t *testing.T) {
 	const secret = "test-secret"
 	srv, sink := newIxSlackServer(t)
 
-	gw := &fakeGateway{}
+	gw := &fakeGateway{Facade: newMemoryRecorder()}
 	a := &Adapter{
 		APIBase:      srv.URL,
 		Secrets:      Secrets{BotToken: "test-bot-token", SigningSecret: secret}, //nolint:gosec
@@ -1076,7 +1078,7 @@ func TestHandleDecision_SubmitResumesWithSelectedAnswers(t *testing.T) {
 	const secret = "test-secret"
 	srv, sink := newIxSlackServer(t)
 
-	gw := &fakeGateway{deltas: []channels.OutboundDelta{{Content: "done"}, {Done: true}}}
+	gw := &fakeGateway{Facade: newMemoryRecorder(), deltas: []channels.OutboundDelta{{Content: "done"}, {Done: true}}}
 	a := &Adapter{
 		APIBase:      srv.URL,
 		Secrets:      Secrets{BotToken: "test-bot-token", SigningSecret: secret}, //nolint:gosec
@@ -1137,7 +1139,7 @@ func TestHandleDecision_SubmitWithNoSelectionIsNudged(t *testing.T) {
 	const secret = "test-secret"
 	srv, sink := newIxSlackServer(t)
 
-	gw := &fakeGateway{}
+	gw := &fakeGateway{Facade: newMemoryRecorder()}
 	a := &Adapter{
 		APIBase:      srv.URL,
 		Secrets:      Secrets{BotToken: "test-bot-token", SigningSecret: secret}, //nolint:gosec
@@ -1170,7 +1172,7 @@ func TestHandleDecision_OnlookerEmptySubmitIsRefused(t *testing.T) {
 	const secret = "test-secret"
 	srv, sink := newIxSlackServer(t)
 
-	gw := &fakeGateway{}
+	gw := &fakeGateway{Facade: newMemoryRecorder()}
 	a := &Adapter{
 		APIBase:      srv.URL,
 		Secrets:      Secrets{BotToken: "test-bot-token", SigningSecret: secret}, //nolint:gosec
@@ -1199,6 +1201,7 @@ func TestHandleDecision_OnlookerEmptySubmitIsRefused(t *testing.T) {
 
 func TestIsActiveThread(t *testing.T) {
 	a := &Adapter{}
+	a.gw = newMemoryRecorder()
 
 	require.False(t, a.isActiveThread(t.Context(), "C001", "T001"))
 
@@ -1406,7 +1409,7 @@ func TestOnUserLinkedAnchorNeverNamesAgent(t *testing.T) {
 		APIBase:      srv.URL,
 		DefaultAgent: "worker",
 	}
-	require.NoError(t, a.Start(t.Context(), &fakeGateway{}))
+	require.NoError(t, a.Start(t.Context(), &fakeGateway{Facade: newMemoryRecorder()}))
 	t.Cleanup(func() { _ = a.Stop(context.Background()) })
 	a.accessPolicy().SetInitiator(t.Context(), "C1", "T1", "U001") // the parked user owns the thread, so the replay reaches the agent
 	a.recordSignInAnchor("U001", "T1", signInAnchor{channel: "C1", ts: "111.111"})
@@ -1532,7 +1535,7 @@ func TestHandleDecision_StaleSubmitRefusedAsSuperseded(t *testing.T) {
 	const secret = "test-secret"
 	srv, sink := newIxSlackServer(t)
 
-	gw := &fakeGateway{}
+	gw := &fakeGateway{Facade: newMemoryRecorder()}
 	a := &Adapter{
 		APIBase:      srv.URL,
 		Secrets:      Secrets{BotToken: "test-bot-token", SigningSecret: secret}, //nolint:gosec
@@ -1597,7 +1600,7 @@ func TestHandleDecision_LegacyRawValueStillRoutes(t *testing.T) {
 	const secret = "test-secret"
 	srv, _ := newIxSlackServer(t)
 
-	gw := &fakeGateway{}
+	gw := &fakeGateway{Facade: newMemoryRecorder()}
 	a := &Adapter{
 		APIBase:      srv.URL,
 		Secrets:      Secrets{BotToken: "test-bot-token", SigningSecret: secret}, //nolint:gosec
