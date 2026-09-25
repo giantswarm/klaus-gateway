@@ -420,3 +420,52 @@ func TestCommonPrefixLen(t *testing.T) {
 	// ö is 2 bytes; a divergence inside it backs off to the rune start.
 	require.Equal(t, 1, commonPrefixLen("aö", "aü"))
 }
+
+// kagent 1.1 and later mark tool activity and usage with the canonical
+// kagent.dev/a2a/ keys only; older releases use the kagent_ or adk_ prefix.
+// Every spelling maps to the same deltas.
+func TestMapA2AEvent_ReadsEveryMetadataKeySpelling(t *testing.T) {
+	cases := []struct {
+		name     string
+		typeKey  string
+		usageKey string
+	}{
+		{name: "canonical", typeKey: mdTypeCanonical, usageKey: mdUsageCanonical},
+		{name: "kagent prefix", typeKey: mdTypeKagent, usageKey: mdUsageKagent},
+		{name: "adk prefix", typeKey: mdTypeADK, usageKey: mdUsageADK},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			call := a2apkg.NewDataPart(map[string]any{"name": "kubectl_get", "id": "call-1"})
+			call.Metadata = map[string]any{tc.typeKey: mdTypeFunctionCall}
+			ev := &a2apkg.TaskStatusUpdateEvent{
+				Metadata: map[string]any{tc.usageKey: map[string]any{
+					usagePromptTokens: float64(3), usageCompletionTokens: float64(4), usageTotalTokens: float64(7),
+				}},
+				Status: a2apkg.TaskStatus{
+					State:   a2apkg.TaskStateWorking,
+					Message: &a2apkg.Message{Parts: a2apkg.ContentParts{call}},
+				},
+			}
+
+			deltas := newEventMapper().deltas(ev)
+			require.Len(t, deltas, 2)
+			require.Equal(t, DeltaToolActivity, deltas[0].Kind)
+			require.Equal(t, ToolCall, deltas[0].Tool.Kind)
+			require.Equal(t, "kubectl_get", deltas[0].Tool.Name)
+			require.NotNil(t, deltas[1].Usage)
+			require.Equal(t, TurnUsage{InputTokens: 3, OutputTokens: 4, TotalTokens: 7}, *deltas[1].Usage)
+		})
+	}
+}
+
+// The canonical metadata carries no long-running marker, so the runtime's
+// confirmation call is recognised by its name.
+func TestMapA2AEvent_CanonicalConfirmationPartIsNotToolActivity(t *testing.T) {
+	confirm := a2apkg.NewDataPart(map[string]any{"name": confirmationCallName, "id": "confirm-1"})
+	confirm.Metadata = map[string]any{mdTypeCanonical: mdTypeFunctionCall}
+	ev := &a2apkg.TaskArtifactUpdateEvent{
+		Artifact: &a2apkg.Artifact{Parts: a2apkg.ContentParts{confirm}},
+	}
+	require.Empty(t, newEventMapper().deltas(ev))
+}
