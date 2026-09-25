@@ -8,11 +8,13 @@ import (
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 )
 
-// Part metadata keys kagent sets on the DataParts of tool activity. Both the
-// kagent_ and adk_ prefixes appear in the wild; we accept either. A
-// long-running function_call is the runtime's own confirmation bookkeeping,
-// never tool activity to show.
+// Part metadata keys kagent sets on the DataParts of tool activity. kagent
+// 1.1 and later emit only the canonical kagent.dev/a2a/ key for every
+// runtime; older releases emit the kagent_ or adk_ prefix. We read the
+// canonical key first. A long-running function_call is the runtime's own
+// confirmation bookkeeping, never tool activity to show.
 const (
+	mdTypeCanonical        = "kagent.dev/a2a/part-type"
 	mdTypeKagent           = "kagent_type"
 	mdTypeADK              = "adk_type"
 	mdLongRunningKagent    = "kagent_is_long_running"
@@ -21,12 +23,13 @@ const (
 	mdTypeFunctionResponse = "function_response"
 )
 
-// Event/message-level metadata keys kagent sets for token usage. Both prefixes
-// appear in the wild; we accept either. The value is a flat object with the
-// camelCase field names below.
+// Event/message-level metadata keys kagent sets for token usage, canonical
+// first as for the part type. Every key holds the same flat object with the
+// camelCase field names below. The partial markers have no canonical key.
 const (
-	mdUsageKagent = "kagent_usage_metadata"
-	mdUsageADK    = "adk_usage_metadata"
+	mdUsageCanonical = "kagent.dev/a2a/usage"
+	mdUsageKagent    = "kagent_usage_metadata"
+	mdUsageADK       = "adk_usage_metadata"
 
 	mdPartialKagent = "kagent_partial"
 	mdPartialADK    = "adk_partial"
@@ -189,19 +192,31 @@ func parseHitlPrompt(msg *a2apkg.Message) *HitlPrompt {
 	return prompt
 }
 
-// isConfirmationPart reports whether a DataPart's metadata marks it as a
-// long-running function_call: the runtime's confirmation bookkeeping, which
-// is surfaced through the input-required prompt rather than as tool activity.
-func isConfirmationPart(md map[string]any) bool {
-	if md == nil {
+// confirmationCallName is the function_call the ADK runtime pauses a task
+// with (adk-go toolconfirmation.FunctionCallName). The canonical metadata
+// drops the long-running marker, so the name is what identifies it there.
+const confirmationCallName = "adk_request_confirmation"
+
+// isConfirmationPart reports whether a DataPart is the runtime's confirmation
+// bookkeeping: a function_call marked long-running, or named
+// confirmationCallName. It is surfaced through the input-required prompt
+// rather than as tool activity.
+func isConfirmationPart(p *a2apkg.Part) bool {
+	if p == nil || partType(p.Metadata) != mdTypeFunctionCall {
 		return false
 	}
-	typ, _ := firstString(md, mdTypeKagent, mdTypeADK)
-	if typ != mdTypeFunctionCall {
-		return false
+	if lr, _ := firstBool(p.Metadata, mdLongRunningKagent, mdLongRunningADK); lr {
+		return true
 	}
-	lr, _ := firstBool(md, mdLongRunningKagent, mdLongRunningADK)
-	return lr
+	data, _ := p.Data().(map[string]any)
+	name, _ := data["name"].(string)
+	return name == confirmationCallName
+}
+
+// partType reads a DataPart's semantic kind, canonical key first.
+func partType(md map[string]any) string {
+	typ, _ := firstString(md, mdTypeCanonical, mdTypeKagent, mdTypeADK)
+	return typ
 }
 
 // hasFunctionCallPart reports whether any of parts is a function_call DataPart.
@@ -210,7 +225,7 @@ func hasFunctionCallPart(parts a2apkg.ContentParts) bool {
 		if p == nil {
 			continue
 		}
-		if typ, _ := firstString(p.Metadata, mdTypeKagent, mdTypeADK); typ == mdTypeFunctionCall {
+		if partType(p.Metadata) == mdTypeFunctionCall {
 			return true
 		}
 	}
@@ -268,7 +283,7 @@ func parseTurnUsage(md map[string]any) *TurnUsage {
 		return nil
 	}
 	var raw map[string]any
-	for _, k := range []string{mdUsageKagent, mdUsageADK} {
+	for _, k := range []string{mdUsageCanonical, mdUsageKagent, mdUsageADK} {
 		if v, ok := md[k].(map[string]any); ok {
 			raw = v
 			break
@@ -292,13 +307,13 @@ func toolActivityDelta(p *a2apkg.Part) OutboundDelta {
 	if p == nil {
 		return OutboundDelta{}
 	}
-	typ, ok := firstString(p.Metadata, mdTypeKagent, mdTypeADK)
-	if !ok || (typ != mdTypeFunctionCall && typ != mdTypeFunctionResponse) {
+	typ := partType(p.Metadata)
+	if typ != mdTypeFunctionCall && typ != mdTypeFunctionResponse {
 		return OutboundDelta{}
 	}
-	// A long-running function_call is an adk_request_confirmation (HITL), handled
-	// on the input-required path, not surfaced as tool activity.
-	if typ == mdTypeFunctionCall && isConfirmationPart(p.Metadata) {
+	// A confirmation call (HITL) is handled on the input-required path, not
+	// surfaced as tool activity.
+	if isConfirmationPart(p) {
 		return OutboundDelta{}
 	}
 	data, _ := p.Data().(map[string]any)
