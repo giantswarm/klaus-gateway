@@ -40,6 +40,8 @@ type AgentClient interface {
 	DeleteInstance(ctx context.Context, id string) error
 }
 
+var _ Gateway = (*Facade)(nil)
+
 // Facade wires the kagent client and the routing store together into the
 // Gateway surface used by channel adapters.
 type Facade struct {

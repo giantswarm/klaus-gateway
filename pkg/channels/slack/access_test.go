@@ -27,7 +27,7 @@ func (c *countingStore) Update(ctx context.Context, k store.Key, mutate func(e *
 	})
 }
 
-// newRecordAccessForTest builds the policy over the in-process fallback with
+// newRecordAccessForTest builds the policy over a memory-store facade with
 // one controllable clock on the store and the facade: advancing *now ages the
 // rows past ttl.
 func newRecordAccessForTest(now *time.Time, ttl time.Duration) (*recordAccess, *channels.Facade, *countingStore) {
@@ -133,16 +133,5 @@ func TestRecordAccess_SetInitiatorWritesOnce(t *testing.T) {
 	now = now.Add(49 * time.Hour)
 	if p.Allowed(ctx, "C1", "T1", "U1") {
 		t.Fatal("a whole lifetime of silence forgets the thread")
-	}
-}
-
-func TestAccessPolicy_InProcessFallback(t *testing.T) {
-	a := &Adapter{}
-	ctx := context.Background()
-	if got := a.accessPolicy().SetInitiator(ctx, "C1", "T001", "U001"); got != "U001" {
-		t.Fatalf("SetInitiator over the in-process fallback = %q", got)
-	}
-	if !a.accessPolicy().Allowed(ctx, "C1", "T001", "U001") {
-		t.Fatal("the in-process fallback must remember the initiator")
 	}
 }

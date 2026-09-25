@@ -291,5 +291,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Factor the duplicated Slack inbound pipeline (Events API + Socket Mode) into a single `Adapter.handleInbound` so both transports behave identically.
 - Code the Slack-only release left without a caller: `channels.BearerToken`, `InboundMessage.ReplyTo`, `Facade.ListAgents` (and `ListAgents` on the facade's `AgentClient`), `Put` and `Delete` on the routing `Store` interface and its backends (every write goes through `Store.Update`), and the `Flush` forwarders of the metrics and access-log response writers.
+- `channels.Gateway` names every method the facade offers an adapter (turns, resumes, sessions, thread records). `channels.ChannelAdapter` and `Adapter.Name()` are removed, and `main.go` stops the Slack adapter directly. `Metrics.Middleware` takes no argument; the label stays `public`.
 
 [Unreleased]: https://github.com/giantswarm/REPOSITORY_NAME/tree/main

@@ -24,7 +24,7 @@ func TestHandleInbound_CrossEventTypeTwinDeduped(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	gw := &fakeGateway{deltas: []channels.OutboundDelta{{Content: "ok"}, {Done: true}}}
+	gw := &fakeGateway{Facade: newMemoryRecorder(), deltas: []channels.OutboundDelta{{Content: "ok"}, {Done: true}}}
 	a := &Adapter{
 		APIBase:      srv.URL,
 		Secrets:      Secrets{BotToken: "test-bot-token"}, //nolint:gosec

@@ -126,7 +126,7 @@ func (w *batchedWriter) noteDelivered(ctx context.Context) {
 func (a *Adapter) recordDelivered(ctx context.Context, slackChannel, threadID string, d store.Delivered) {
 	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), deliveredWriteTimeout)
 	defer cancel()
-	err := a.records().UpdateThreadRecord(wctx, ChannelName, slackChannel, threadID, func(e *store.Entry, found bool) bool {
+	err := a.gw.UpdateThreadRecord(wctx, ChannelName, slackChannel, threadID, func(e *store.Entry, found bool) bool {
 		if !found || e.TaskID == "" {
 			return false
 		}

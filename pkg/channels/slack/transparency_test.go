@@ -19,6 +19,7 @@ import (
 
 func TestRecordTurnUsage_LastAndSession(t *testing.T) {
 	a := &Adapter{}
+	a.gw = newMemoryRecorder()
 	require.Equal(t, "Token usage not available yet.", a.usageReport(t.Context(), "T1", "D1"))
 
 	a.recordTurnUsage("T1", "C1", channels.TurnUsage{InputTokens: 100, OutputTokens: 50, TotalTokens: 150})
@@ -38,6 +39,7 @@ func TestRecordTurnUsage_LastAndSession(t *testing.T) {
 // usage exists.
 func TestUsageReport_DMTopLevelFallsBackToChannel(t *testing.T) {
 	a := &Adapter{}
+	a.gw = newMemoryRecorder()
 	a.recordTurnUsage("100.000", "D1", channels.TurnUsage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15})
 	a.recordTurnUsage("200.000", "D1", channels.TurnUsage{InputTokens: 30, OutputTokens: 20, TotalTokens: 50})
 
@@ -201,6 +203,7 @@ func (f *fakeModelSource) AgentModel(_ context.Context, _ string) (string, strin
 func TestUsageReport_IncludesModelLineAndCaches(t *testing.T) {
 	source := &fakeModelSource{model: "gpt-5", provider: "OpenAI"}
 	a := &Adapter{DefaultAgent: "kagent/sre-agent", Models: source}
+	a.gw = newMemoryRecorder()
 	a.recordTurnUsage("T1", "C1", channels.TurnUsage{InputTokens: 1, OutputTokens: 2, TotalTokens: 3})
 
 	report := a.usageReport(t.Context(), "T1", "C1")
@@ -222,6 +225,7 @@ func (perRefModelSource) AgentModel(_ context.Context, agentRef string) (string,
 // model line names the bound agent's model, not the default's.
 func TestUsageReport_ModelLineFollowsThreadBinding(t *testing.T) {
 	a := &Adapter{DefaultAgent: "kagent/default-agent", Models: perRefModelSource{}}
+	a.gw = newMemoryRecorder()
 	a.bindThreadAgent(t.Context(), "C1", "T1", "kagent/sre-agent")
 	a.recordTurnUsage("T1", "C1", channels.TurnUsage{TotalTokens: 3})
 
@@ -235,10 +239,12 @@ func TestUsageReport_ModelLineFollowsThreadBinding(t *testing.T) {
 // A BYO agent exposes no model; the line is omitted rather than rendered empty.
 func TestUsageReport_OmitsModelLineWhenUnavailable(t *testing.T) {
 	a := &Adapter{DefaultAgent: "kagent/sre-agent", Models: &fakeModelSource{}}
+	a.gw = newMemoryRecorder()
 	a.recordTurnUsage("T1", "C1", channels.TurnUsage{TotalTokens: 3})
 	require.NotContains(t, a.usageReport(t.Context(), "T1", "C1"), "Model")
 
 	noSource := &Adapter{DefaultAgent: "kagent/sre-agent"}
+	noSource.gw = newMemoryRecorder()
 	noSource.recordTurnUsage("T1", "C1", channels.TurnUsage{TotalTokens: 3})
 	require.NotContains(t, noSource.usageReport(t.Context(), "T1", "C1"), "Model")
 }
@@ -258,7 +264,7 @@ func TestThreadState_EvictedAfterTTL(t *testing.T) {
 
 		// Inserts sweep the expired entries.
 		a.recordTurnUsage("T-new", "D-new", channels.TurnUsage{TotalTokens: 2})
-		gw := &resumeStub{exists: true, checked: true}
+		gw := &resumeStub{Facade: newMemoryRecorder(), exists: true, checked: true}
 		a.gw = gw
 		a.maybeAnnounceResume(t.Context(), channels.InboundMessage{ThreadID: "T-new"}, "D-new")
 
@@ -275,8 +281,10 @@ func TestThreadState_EvictedAfterTTL(t *testing.T) {
 	})
 }
 
-// resumeStub is a minimal Gateway with a canned SessionResumable answer.
+// resumeStub is a minimal Gateway with a canned SessionResumable answer; the
+// embedded memory facade answers every other call.
 type resumeStub struct {
+	*channels.Facade
 	exists, checked bool
 	calls           atomic.Int32
 }
@@ -297,7 +305,7 @@ func TestMaybeAnnounceResume_RetriesAfterTransientError(t *testing.T) {
 	ts := httptest.NewServer(srv.handler())
 	t.Cleanup(ts.Close)
 	a := &Adapter{APIBase: ts.URL, Secrets: Secrets{BotToken: "test-bot-token"}, Logger: slog.New(slog.DiscardHandler)} //nolint:gosec
-	gw := &resumeStub{exists: false, checked: false}
+	gw := &resumeStub{Facade: newMemoryRecorder(), exists: false, checked: false}
 	a.gw = gw
 	msg := channels.InboundMessage{ThreadID: "100.000"}
 

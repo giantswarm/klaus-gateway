@@ -201,6 +201,7 @@ func newTestAdapter(t *testing.T) (*Adapter, *fakeSlackServer) {
 		Secrets: Secrets{BotToken: "test-bot-token"}, //nolint:gosec
 		Logger:  slog.New(slog.DiscardHandler),
 	}
+	a.gw = newMemoryRecorder()
 	return a, srv
 }
 
@@ -307,7 +308,7 @@ func TestHandleCommand_Stop_DuringSenderMint_ReportsNothingRunning(t *testing.T)
 	a.DefaultAgent = "agent"
 	obo := &blockingOBO{entered: make(chan struct{}), release: make(chan struct{})}
 	a.OBO = obo
-	require.NoError(t, a.Start(t.Context(), &fakeGateway{}))
+	require.NoError(t, a.Start(t.Context(), &fakeGateway{Facade: newMemoryRecorder()}))
 	t.Cleanup(func() { _ = a.Stop(context.Background()) })
 
 	msg := channels.InboundMessage{Channel: ChannelName, ChannelID: "C001", ThreadID: "T001", MessageID: "T001", Subject: "U001", Text: "long question"}

@@ -50,7 +50,7 @@ See [docs/api.md](api.md) for the team-review and admin surfaces, and
 
 ```
 main.go                 entrypoint; wires the store, the kagent client, the Slack adapter, the server
-pkg/channels/           ChannelAdapter interface + Gateway facade
+pkg/channels/           Gateway interface (turns, resumes, sessions, thread records) + its Facade
 pkg/channels/slack/     Slack channel adapter (/channels/slack/*)
 pkg/routing/store/      Store interface + memory / bolt / valkey backends (thread state, team reviews)
 pkg/auth/musterlink/    Slack OBO: muster account linking + the link Store (memory, bolt file, Kubernetes Secret)
@@ -67,17 +67,18 @@ internal/version/       ldflags-injected version metadata
 
 ## Adding a new channel adapter
 
-Slack is the only channel today; the seam is still there.
+Slack is the only channel. A second one would follow the Slack adapter:
 
-1. Create `pkg/channels/<name>/` and implement `channels.ChannelAdapter`:
-   - `Name() string` — stable channel identifier used as the store key's `Channel` field.
-   - `Start(ctx, gw channels.Gateway) error` — wire in the `channels.Gateway` facade.
+1. Create `pkg/channels/<name>/` with an adapter that has, like `pkg/channels/slack`:
+   - `Start(ctx, gw channels.Gateway) error` — keep the `channels.Gateway` facade.
    - `Stop(ctx) error` — clean up background goroutines.
    - `Mount(r chi.Router)` — register HTTP routes.
+   Its channel name (`ChannelName`) is the store key's `Channel` field.
 2. Normalise inbound events into `channels.InboundMessage{Channel: ChannelName, AgentRef: ..., ...}`.
 3. Call `gw.SendCompletion(ctx, msg)` and render the deltas.
-4. Wire the adapter in `main.go` behind a config flag (follow the `cfg.Slack.Enabled` pattern),
-   and set `InboundMessage.BearerToken` to the caller's token: the kagent client refuses a call
-   without one (`pkga2a.ErrNoIdentity`).
+4. Wire the adapter in `main.go` behind a config flag (follow the `cfg.Slack.Enabled` pattern):
+   start it, mount it, and stop it next to the Slack adapter once the servers drain
+   (`stopSlack`). Set `InboundMessage.BearerToken` to the caller's token: the kagent client
+   refuses a call without one (`pkga2a.ErrNoIdentity`).
 5. Add a `KLAUS_GATEWAY_<NAME>_ENABLED` env var in `internal/config/config.go`.
 6. Add channel-specific docs in `docs/channels-<name>.md`.

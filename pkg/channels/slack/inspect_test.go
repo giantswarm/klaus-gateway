@@ -309,6 +309,7 @@ func newInspectTestAdapter(t *testing.T) (*Adapter, *inspectFakeSlack) {
 		Secrets: Secrets{BotToken: "test-bot-token"}, //nolint:gosec
 		Logger:  testLogger(),
 	}
+	a.gw = newMemoryRecorder()
 	return a, srv
 }
 

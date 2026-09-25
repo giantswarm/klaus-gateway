@@ -100,7 +100,7 @@ func newRecordedAdapter(t *testing.T, gw channels.Gateway) (*Adapter, *recording
 // phases, and the dispatch record carries the trace id the complete record
 // carries.
 func TestDispatch_EmitsTurnCompleteRecord(t *testing.T) {
-	gw := &fakeGateway{deltas: []channels.OutboundDelta{
+	gw := &fakeGateway{Facade: newMemoryRecorder(), deltas: []channels.OutboundDelta{
 		{Kind: channels.DeltaToolActivity, Tool: &channels.ToolActivity{Name: "get_pods", Kind: channels.ToolCall, CallID: "c1"}},
 		{Kind: channels.DeltaToolActivity, Tool: &channels.ToolActivity{Name: "get_pods", Kind: channels.ToolResult, CallID: "c1"}},
 		{Content: "pong"},
@@ -160,11 +160,11 @@ func TestDispatch_TurnCompleteOutcomes(t *testing.T) {
 		hasErr  bool
 		class   channels.FailureClass
 	}{
-		{"send refused", &fakeGateway{sendErr: errors.New("instance busy")}, channels.OutcomeSendFailed, true, channels.FailureUnknown},
-		{"send unreachable", &fakeGateway{sendErr: errors.New("rpc error: code = Unavailable desc = connection refused")}, channels.OutcomeSendFailed, true, channels.FailurePlatform},
-		{"stream failed", &fakeGateway{deltas: []channels.OutboundDelta{{Content: "par"}, {Err: errors.New("task failed")}}}, channels.OutcomeFailed, true, channels.FailureUnknown},
-		{"tool set failed", &fakeGateway{deltas: []channels.OutboundDelta{{Err: errors.New(toolSet)}}}, channels.OutcomeFailed, true, channels.FailureTools},
-		{"prompt", &fakeGateway{deltas: []channels.OutboundDelta{{Kind: channels.DeltaPrompt, Content: "approve?", TaskID: "task-1"}}}, channels.OutcomeInputRequired, false, channels.FailureNone},
+		{"send refused", &fakeGateway{Facade: newMemoryRecorder(), sendErr: errors.New("instance busy")}, channels.OutcomeSendFailed, true, channels.FailureUnknown},
+		{"send unreachable", &fakeGateway{Facade: newMemoryRecorder(), sendErr: errors.New("rpc error: code = Unavailable desc = connection refused")}, channels.OutcomeSendFailed, true, channels.FailurePlatform},
+		{"stream failed", &fakeGateway{Facade: newMemoryRecorder(), deltas: []channels.OutboundDelta{{Content: "par"}, {Err: errors.New("task failed")}}}, channels.OutcomeFailed, true, channels.FailureUnknown},
+		{"tool set failed", &fakeGateway{Facade: newMemoryRecorder(), deltas: []channels.OutboundDelta{{Err: errors.New(toolSet)}}}, channels.OutcomeFailed, true, channels.FailureTools},
+		{"prompt", &fakeGateway{Facade: newMemoryRecorder(), deltas: []channels.OutboundDelta{{Kind: channels.DeltaPrompt, Content: "approve?", TaskID: "task-1"}}}, channels.OutcomeInputRequired, false, channels.FailureNone},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -194,7 +194,7 @@ func TestDispatch_TurnCompleteOutcomes(t *testing.T) {
 // A message that never becomes a turn — a signed-out user's message parked
 // for the sign-in — leaves no turn_complete record and no metric.
 func TestDispatch_ParkedMessageLeavesNoTurnRecord(t *testing.T) {
-	gw := &fakeGateway{deltas: []channels.OutboundDelta{{Content: "never"}, {Done: true}}}
+	gw := &fakeGateway{Facade: newMemoryRecorder(), deltas: []channels.OutboundDelta{{Content: "never"}, {Done: true}}}
 	a, h, rec := newRecordedAdapter(t, gw)
 	a.OBO = deadLinkOBO{}
 
