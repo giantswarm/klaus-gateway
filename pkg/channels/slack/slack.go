@@ -401,7 +401,6 @@ const maxParkedPerThread = 5
 // next store.
 const pendingTTL = 24 * time.Hour
 
-// Name returns the channel name used in routing keys.
 // Start wires the Gateway facade and initialises the chosen connection mode.
 func (a *Adapter) Start(ctx context.Context, gw channels.Gateway) error {
 	if gw == nil {
