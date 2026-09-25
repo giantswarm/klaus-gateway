@@ -9,6 +9,7 @@ import (
 
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store/memory"
+	"github.com/giantswarm/klaus-gateway/pkg/routing/store/storetest"
 )
 
 // setAgentAndInitiator is the write a channel adapter makes when a thread
@@ -58,7 +59,7 @@ func TestThreadRecord_UpdateMergesIntoAnExistingRow(t *testing.T) {
 	f := &Facade{Routes: memory.New(), ThreadTTL: DefaultThreadTTL}
 	key := store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "T1"}
 	created := time.Now().Add(-time.Hour).Truncate(time.Second)
-	require.NoError(t, f.Routes.Put(ctx, key, store.Entry{
+	require.NoError(t, storetest.Put(ctx, f.Routes, key, store.Entry{
 		AgentInstanceID: "inst-1", CreatedAt: created, LastSeen: created, TTL: 24 * time.Hour,
 	}))
 
@@ -102,7 +103,7 @@ func TestThreadRecord_StaleTTLIsRestamped(t *testing.T) {
 	f := &Facade{Routes: memory.New(), ThreadTTL: DefaultThreadTTL}
 	key := store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "T1"}
 	now := time.Now()
-	require.NoError(t, f.Routes.Put(ctx, key, store.Entry{
+	require.NoError(t, storetest.Put(ctx, f.Routes, key, store.Entry{
 		Initiator: "U1", AgentRef: "sre-agent", CreatedAt: now, LastSeen: now, TTL: DefaultThreadTTL,
 	}))
 
@@ -122,7 +123,7 @@ func TestThreadRecord_StaleTTLIsRestamped(t *testing.T) {
 
 	// A mutate that writes nothing leaves the row, stale TTL and all.
 	f2 := &Facade{Routes: memory.New(), ThreadTTL: DefaultThreadTTL}
-	require.NoError(t, f2.Routes.Put(ctx, key, store.Entry{Initiator: "U1", CreatedAt: now, LastSeen: now, TTL: time.Hour}))
+	require.NoError(t, storetest.Put(ctx, f2.Routes, key, store.Entry{Initiator: "U1", CreatedAt: now, LastSeen: now, TTL: time.Hour}))
 	require.NoError(t, f2.UpdateThreadRecord(ctx, "slack", "C1", "T1", func(*store.Entry, bool) bool { return false }))
 	e, _, err = f2.ThreadRecord(ctx, "slack", "C1", "T1")
 	require.NoError(t, err)

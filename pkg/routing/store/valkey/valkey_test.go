@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
+	"github.com/giantswarm/klaus-gateway/pkg/routing/store/storetest"
 	valkeystore "github.com/giantswarm/klaus-gateway/pkg/routing/store/valkey"
 )
 
@@ -50,7 +51,7 @@ func TestKeyLayout(t *testing.T) {
 		Initiator: "U1", Granted: []string{"U2"},
 		CreatedAt: now, LastSeen: now,
 	}
-	require.NoError(t, s.Put(ctx, k, e))
+	require.NoError(t, storetest.Put(ctx, s, k, e))
 
 	require.Equal(t, []string{"klaus-gateway:route:slack|C1|1700000000.000100"}, m.Keys())
 	raw, err := m.Get("klaus-gateway:route:slack|C1|1700000000.000100")
@@ -64,7 +65,6 @@ func TestKeyLayout(t *testing.T) {
 	require.Equal(t, "U1", got["initiator"])
 	require.Equal(t, []any{"U2"}, got["granted"])
 	require.NotContains(t, got, "thread", "the thread's fields are the row's own, not a nested record")
-	require.NotContains(t, got, "instance", "an empty Klaus instance is omitted, as in the other stores")
 	require.Zero(t, m.TTL(got0(m)), "a row without TTL never expires")
 
 	back, ok, err := s.Get(ctx, k)
@@ -85,7 +85,7 @@ func TestKeyPrefixOption(t *testing.T) {
 	t.Cleanup(func() { _ = s.Close() })
 	ctx := context.Background()
 	k := store.Key{Channel: "slack", ChannelID: "c", ThreadID: "t"}
-	require.NoError(t, s.Put(ctx, k, store.Entry{AgentInstanceID: "i"}))
+	require.NoError(t, storetest.Put(ctx, s, k, store.Entry{AgentInstanceID: "i"}))
 	require.Equal(t, []string{"other[1]:slack|c|t"}, m.Keys())
 	// A foreign key next to ours is not listed: the glob metacharacters in
 	// the prefix are matched literally.
@@ -105,13 +105,13 @@ func TestTTLIsServerSide(t *testing.T) {
 	k := store.Key{Channel: "slack", ChannelID: "c", ThreadID: "t"}
 
 	now := time.Now()
-	require.NoError(t, s.Put(ctx, k, store.Entry{AgentInstanceID: "i", LastSeen: now, TTL: time.Hour}))
+	require.NoError(t, storetest.Put(ctx, s, k, store.Entry{AgentInstanceID: "i", LastSeen: now, TTL: time.Hour}))
 	require.InDelta(t, time.Hour, m.TTL(got0(m)), float64(2*time.Second))
 
-	require.NoError(t, s.Put(ctx, k, store.Entry{AgentInstanceID: "i", LastSeen: now.Add(-40 * time.Minute), TTL: time.Hour}))
+	require.NoError(t, storetest.Put(ctx, s, k, store.Entry{AgentInstanceID: "i", LastSeen: now.Add(-40 * time.Minute), TTL: time.Hour}))
 	require.InDelta(t, 20*time.Minute, m.TTL(got0(m)), float64(2*time.Second), "what is left of the TTL from LastSeen")
 
-	require.NoError(t, s.Put(ctx, k, store.Entry{AgentInstanceID: "i", LastSeen: now.Add(time.Hour), TTL: time.Hour}))
+	require.NoError(t, storetest.Put(ctx, s, k, store.Entry{AgentInstanceID: "i", LastSeen: now.Add(time.Hour), TTL: time.Hour}))
 	require.InDelta(t, time.Hour, m.TTL(got0(m)), float64(2*time.Second), "a future LastSeen does not extend the TTL")
 
 	m.FastForward(2 * time.Hour)
@@ -262,9 +262,9 @@ func TestPutExpiredEntryDeletes(t *testing.T) {
 	s := newStore(t, m.Addr())
 	ctx := context.Background()
 	k := store.Key{Channel: "slack", ChannelID: "c", ThreadID: "t"}
-	require.NoError(t, s.Put(ctx, k, store.Entry{AgentInstanceID: "i", LastSeen: time.Now()}))
+	require.NoError(t, storetest.Put(ctx, s, k, store.Entry{AgentInstanceID: "i", LastSeen: time.Now()}))
 	require.Len(t, m.Keys(), 1)
-	require.NoError(t, s.Put(ctx, k, store.Entry{AgentInstanceID: "i", LastSeen: time.Now().Add(-2 * time.Hour), TTL: time.Hour}))
+	require.NoError(t, storetest.Put(ctx, s, k, store.Entry{AgentInstanceID: "i", LastSeen: time.Now().Add(-2 * time.Hour), TTL: time.Hour}))
 	require.Empty(t, m.Keys())
 }
 
@@ -275,7 +275,7 @@ func TestListScansPastOnePage(t *testing.T) {
 	const n = 700 // more than one SCAN page and more than one MGET batch
 	for i := range n {
 		k := store.Key{Channel: "slack", ChannelID: "C", ThreadID: time.Unix(int64(i), 0).Format("1136239445.000000")}
-		require.NoError(t, s.Put(ctx, k, store.Entry{AgentInstanceID: "a", LastSeen: time.Now()}))
+		require.NoError(t, storetest.Put(ctx, s, k, store.Entry{AgentInstanceID: "a", LastSeen: time.Now()}))
 	}
 	entries, err := s.List(ctx)
 	require.NoError(t, err)
@@ -311,14 +311,14 @@ func TestOutageFailsFastAndRecovers(t *testing.T) {
 	s := newStore(t, m.Addr())
 	ctx := context.Background()
 	k := store.Key{Channel: "slack", ChannelID: "c", ThreadID: "t"}
-	require.NoError(t, s.Put(ctx, k, store.Entry{AgentInstanceID: "i", LastSeen: time.Now()}))
+	require.NoError(t, storetest.Put(ctx, s, k, store.Entry{AgentInstanceID: "i", LastSeen: time.Now()}))
 
 	m.Close()
 	start := time.Now()
 	_, _, err := s.Get(ctx, k)
 	require.Error(t, err)
 	require.Less(t, time.Since(start), 4*testTimeout, "an unreachable server fails the turn fast")
-	require.Error(t, s.Put(ctx, k, store.Entry{AgentInstanceID: "i", LastSeen: time.Now()}))
+	require.Error(t, storetest.Put(ctx, s, k, store.Entry{AgentInstanceID: "i", LastSeen: time.Now()}))
 
 	require.NoError(t, m.Restart())
 	require.Eventually(t, func() bool { return s.Ping(ctx) == nil }, 5*time.Second, 50*time.Millisecond)
@@ -371,7 +371,7 @@ func TestRestartWithEveryPipeDialed(t *testing.T) {
 		return store.Key{Channel: "slack", ChannelID: "c", ThreadID: fmt.Sprint(i)}
 	}
 	for i := 0; i < 40; i++ {
-		require.NoError(t, s.Put(ctx, key(i), store.Entry{AgentInstanceID: "i", LastSeen: time.Now()}))
+		require.NoError(t, storetest.Put(ctx, s, key(i), store.Entry{AgentInstanceID: "i", LastSeen: time.Now()}))
 	}
 	m.Close()
 	require.NoError(t, m.Restart())

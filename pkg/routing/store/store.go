@@ -99,8 +99,8 @@ func unescape(s string) string {
 // about the thread, its initiator and the users it granted.
 //
 // Several writers read-modify-write this row (a channel's grant, the facade's
-// task record, the binding), so they write through Store.Update rather than
-// Put, and each keeps the fields it does not own.
+// task record, the binding), so they write through Store.Update, and each
+// keeps the fields it does not own.
 type Entry struct {
 	// AgentRef is the agent the thread is bound to, in the shape the
 	// deployment spells it. Never "" standing for the default: a changed
@@ -260,8 +260,6 @@ type ReviewStore interface {
 // durable state for the gateway.
 type Store interface {
 	Get(ctx context.Context, k Key) (Entry, bool, error)
-	Put(ctx context.Context, k Key, e Entry) error
-	Delete(ctx context.Context, k Key) error
 	List(ctx context.Context) ([]KeyEntry, error)
 	// Update applies mutate to the entry at k — the zero Entry when none is
 	// live — and writes the result when mutate returns true. Read-modify-write

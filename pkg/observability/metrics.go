@@ -141,9 +141,8 @@ func (m *Metrics) Handler() http.Handler {
 	return promhttp.HandlerFor(m.Registry, promhttp.HandlerOpts{})
 }
 
-// Middleware records a counter + histogram sample for every request. The
-// route label is derived from the chi RouteContext when present, otherwise
-// falls back to the URL path.
+// Middleware records a counter + histogram sample for every request, labelled
+// with route (the name of the mux it wraps), the method and the status.
 func (m *Metrics) Middleware(route string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -180,12 +179,4 @@ func (r *statusRecorder) Write(b []byte) (int, error) {
 		r.written = true
 	}
 	return r.ResponseWriter.Write(b)
-}
-
-// Flush forwards to an underlying Flusher if the writer supports streaming.
-// Keeps SSE happy when metrics middleware wraps a streaming handler.
-func (r *statusRecorder) Flush() {
-	if f, ok := r.ResponseWriter.(http.Flusher); ok {
-		f.Flush()
-	}
 }

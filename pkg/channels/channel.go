@@ -9,8 +9,6 @@ package channels
 import (
 	"context"
 	"errors"
-	"net/http"
-	"strings"
 	"time"
 
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
@@ -23,15 +21,6 @@ import (
 // result is delivered after the restart — where a plain cancellation cancels
 // the task server-side.
 var ErrShutdown = errors.New("channels: the gateway is shutting down")
-
-// BearerToken returns the raw value of an `Authorization: Bearer` header, or
-// an empty string when absent.
-func BearerToken(r *http.Request) string {
-	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
-		return strings.TrimPrefix(auth, "Bearer ")
-	}
-	return ""
-}
 
 // ChannelAdapter is the interface each channel implements.
 // Start is called once during server boot with the Gateway facade; Stop
@@ -65,12 +54,11 @@ type InboundMessage struct {
 	// wrote from what the user is asking. It is never thread state: only the
 	// turn that opens a conversation carries it.
 	Context string
-	ReplyTo string
 	// Subject is the authenticated user's OAuth `sub` when available.
 	Subject string
-	// BearerToken is the caller's raw inbound bearer token, forwarded on the
-	// A2A egress request so kagent sees the end-user identity. Empty for
-	// channels without a per-user token (e.g. Slack).
+	// BearerToken is the person's token (the Slack user's Dex id_token),
+	// forwarded on the A2A request so kagent sees the end-user identity. A turn
+	// without one is refused.
 	BearerToken string
 	// Author, when non-empty, is the real end-user who wrote this turn in a
 	// shared session that runs under a different (delegated) identity, such as a

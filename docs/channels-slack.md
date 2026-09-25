@@ -177,8 +177,8 @@ creates one, which a turn that switches agents does mid-thread.
   naming the reason.
 - Each thread's durable state — its agent, its initiator, the collaborators the initiator
   allowed, and its AgentInstance binding — lives in one row in the routing store, at the
-  thread's plain key (`slack|<channelID>||<threadID>`, the user slot empty). It is the only
-  carrier: the gateway never reads Slack history to recover any of it — the context read above is a
+  thread's key (`slack|<channelID>|<threadID>`). It is the only carrier: the gateway never
+  reads Slack history to recover any of it — the context read above is a
   different read, for the agent's benefit, and nothing it returns is ever written back. The row has one sliding
   lifetime — `routing.threadTTL` (`--thread-ttl`), 90 days by default, `0` never expires —
   refreshed by every turn. While the thread lives, the initiator and the collaborators they
@@ -412,15 +412,14 @@ any string that begins with `Slack bot`, `Slack app-level`, or `Slack user`.
    `thread_broadcast` (a thread reply the author also sent to the channel) is a normal human
    reply and is routed like one. It processes `app_mention` and `message.im` events only.
 3. The `@mention` prefix is stripped from `app_mention` text before routing.
-4. The routing key is `(channel="slack", channelID=<Slack channel ID>, userID=<Slack user ID>,
+4. The routing key is `(channel="slack", channelID=<Slack channel ID>,
    threadID=<thread_ts or ts>)`.
 5. The thread's row in the routing store names its agent and its AgentInstance. The thread's
    first turn creates that instance and records it; every later turn is addressed to it, so
    every participant in the thread talks to the one conversation. See
    [Threads and conversations](#threads-and-conversations).
 6. The gateway forwards the turn through the A2A executor to the thread's AgentInstance — the
-   agent the row names, which is the default agent when nothing selected another one. The
-   OpenAI `/v1` path is bypassed.
+   agent the row names, which is the default agent when nothing selected another one.
 7. Progress is shown by adding a working reaction to the triggering message. On success the
    working reaction is removed with no residual emoji (default); set
    `SLACK_CLEAR_REACTION_ON_DONE=false` to swap in a done reaction instead. A failed turn always

@@ -14,6 +14,7 @@ import (
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
 	boltstore "github.com/giantswarm/klaus-gateway/pkg/routing/store/bolt"
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store/memory"
+	"github.com/giantswarm/klaus-gateway/pkg/routing/store/storetest"
 	valkeystore "github.com/giantswarm/klaus-gateway/pkg/routing/store/valkey"
 )
 
@@ -23,7 +24,7 @@ const channelSlack = "slack"
 func runConformance(t *testing.T, factory func(t *testing.T) store.Store) {
 	t.Helper()
 
-	t.Run("put-get-delete", func(t *testing.T) {
+	t.Run("put-get-expire", func(t *testing.T) {
 		s := factory(t)
 		ctx := context.Background()
 		k := store.Key{Channel: channelSlack, ChannelID: "c1", ThreadID: "t1"}
@@ -33,13 +34,13 @@ func runConformance(t *testing.T, factory func(t *testing.T) store.Store) {
 		require.NoError(t, err)
 		require.False(t, ok)
 
-		require.NoError(t, s.Put(ctx, k, e))
+		require.NoError(t, storetest.Put(ctx, s, k, e))
 		got, ok, err := s.Get(ctx, k)
 		require.NoError(t, err)
 		require.True(t, ok)
 		require.Equal(t, e.AgentInstanceID, got.AgentInstanceID)
 
-		require.NoError(t, s.Delete(ctx, k))
+		require.NoError(t, storetest.Expire(ctx, s, k))
 		_, ok, err = s.Get(ctx, k)
 		require.NoError(t, err)
 		require.False(t, ok)
@@ -53,7 +54,7 @@ func runConformance(t *testing.T, factory func(t *testing.T) store.Store) {
 			{Channel: "slack", ChannelID: "c2", ThreadID: "t2"},
 		}
 		for _, k := range keys {
-			require.NoError(t, s.Put(ctx, k, store.Entry{
+			require.NoError(t, storetest.Put(ctx, s, k, store.Entry{
 				AgentInstanceID: "inst", CreatedAt: time.Now(), LastSeen: time.Now(), TTL: time.Hour,
 			}))
 		}
@@ -66,7 +67,7 @@ func runConformance(t *testing.T, factory func(t *testing.T) store.Store) {
 		s := factory(t)
 		ctx := context.Background()
 		k := store.Key{Channel: channelSlack, ChannelID: "c|pipe", ThreadID: `t\back`}
-		require.NoError(t, s.Put(ctx, k, store.Entry{AgentInstanceID: "inst", LastSeen: time.Now(), TTL: time.Hour}))
+		require.NoError(t, storetest.Put(ctx, s, k, store.Entry{AgentInstanceID: "inst", LastSeen: time.Now(), TTL: time.Hour}))
 		got, ok, err := s.Get(ctx, k)
 		require.NoError(t, err)
 		require.True(t, ok)
@@ -81,7 +82,7 @@ func runConformance(t *testing.T, factory func(t *testing.T) store.Store) {
 		k := store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700000000.000100"}
 		e := store.Entry{AgentInstanceID: "0192f1c2-7d1e-7a3b-9c4d-5e6f7a8b9c0d", CreatedAt: time.Now(), LastSeen: time.Now()}
 
-		require.NoError(t, s.Put(ctx, k, e))
+		require.NoError(t, storetest.Put(ctx, s, k, e))
 		got, ok, err := s.Get(ctx, k)
 		require.NoError(t, err)
 		require.True(t, ok)
@@ -111,7 +112,7 @@ func runConformance(t *testing.T, factory func(t *testing.T) store.Store) {
 			Initiator: "U1", Granted: []string{"U2", "U3"},
 			CreatedAt: now, LastSeen: now, TTL: 30 * 24 * time.Hour,
 		}
-		require.NoError(t, s.Put(ctx, k, in))
+		require.NoError(t, storetest.Put(ctx, s, k, in))
 		got, ok, err := s.Get(ctx, k)
 		require.NoError(t, err)
 		require.True(t, ok)
@@ -167,7 +168,7 @@ func runConformance(t *testing.T, factory func(t *testing.T) store.Store) {
 		require.NoError(t, err)
 		require.False(t, ok, "a mutate that reports no change creates nothing")
 
-		require.NoError(t, s.Put(ctx, k, store.Entry{AgentInstanceID: "i1", LastSeen: time.Now(), TTL: time.Hour}))
+		require.NoError(t, storetest.Put(ctx, s, k, store.Entry{AgentInstanceID: "i1", LastSeen: time.Now(), TTL: time.Hour}))
 		require.NoError(t, s.Update(ctx, k, func(e *store.Entry, _ bool) bool {
 			e.AgentInstanceID = "other"
 			return false
@@ -182,7 +183,7 @@ func runConformance(t *testing.T, factory func(t *testing.T) store.Store) {
 		s := factory(t)
 		ctx := context.Background()
 		k := store.Key{Channel: channelSlack, ChannelID: "C1", ThreadID: "T1"}
-		require.NoError(t, s.Put(ctx, k, store.Entry{
+		require.NoError(t, storetest.Put(ctx, s, k, store.Entry{
 			AgentInstanceID: "i1", Initiator: "U1",
 			CreatedAt: time.Now().Add(-2 * time.Hour), LastSeen: time.Now().Add(-2 * time.Hour), TTL: time.Hour,
 		}))
@@ -348,7 +349,7 @@ func runConformance(t *testing.T, factory func(t *testing.T) store.Store) {
 			LastSeen:        time.Now().Add(-2 * time.Hour),
 			TTL:             time.Hour,
 		}
-		require.NoError(t, s.Put(ctx, k, e))
+		require.NoError(t, storetest.Put(ctx, s, k, e))
 		_, ok, err := s.Get(ctx, k)
 		require.NoError(t, err)
 		require.False(t, ok, "expired entry should not be returned")
@@ -427,7 +428,7 @@ func TestValkeyStore_ConformanceReal(t *testing.T) {
 			entries, err := s.List(ctx)
 			require.NoError(t, err)
 			for _, ke := range entries {
-				require.NoError(t, s.Delete(ctx, ke.Key))
+				require.NoError(t, storetest.Expire(ctx, s, ke.Key))
 			}
 			_ = s.Close()
 		})

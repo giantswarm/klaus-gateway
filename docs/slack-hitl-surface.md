@@ -1,8 +1,8 @@
 # HITL & interactive surface (Slack)
 
 Every interactive prompt klaus-gateway can post to Slack (as the **Swarmgeist** app), when it
-appears, and how the user answers it. The gateway receives a neutral stream of deltas from a
-Klaus instance (over A2A); when a turn pauses for the user, the Slack adapter renders one of
+appears, and how the user answers it. The gateway receives a neutral stream of deltas from the
+thread's kagent AgentInstance (over A2A); when a turn pauses for the user, the Slack adapter renders one of
 the prompts below. Prompt building lives in `pkg/channels/slack/` (`stream.go`, `hitl.go`);
 click handling lives in `interactions.go`.
 

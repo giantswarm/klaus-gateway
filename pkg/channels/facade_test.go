@@ -17,6 +17,7 @@ import (
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store/memory"
+	"github.com/giantswarm/klaus-gateway/pkg/routing/store/storetest"
 )
 
 // fakeAgent is the kagent client at the facade's seam: it records the message
@@ -39,7 +40,6 @@ type fakeAgent struct {
 	createErr error
 	getErr    error
 	deleteErr error
-	agents    []pkga2a.AgentInfo
 	tasks     map[a2apkg.TaskID]*a2apkg.Task
 
 	// subscribeEvents are played back by Subscribe; subscribeErr is yielded as
@@ -200,10 +200,6 @@ func (a *fakeAgent) DeleteInstance(_ context.Context, id string) error {
 	return nil
 }
 
-func (a *fakeAgent) ListAgents(context.Context) ([]pkga2a.AgentInfo, error) {
-	return a.agents, nil
-}
-
 func (a *fakeAgent) lastStreamed() *a2apkg.Message {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -331,7 +327,7 @@ func TestFacade_SendCompletionViaA2A_LaterTurnsReuseTheBinding(t *testing.T) {
 	agent := newFakeAgent(a2apkg.NewStatusUpdateEvent(taskInfo, a2apkg.TaskStateCompleted, nil))
 	f, routes := newA2AFacade(agent)
 	key := store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700.0001"}
-	require.NoError(t, routes.Put(t.Context(), key, store.Entry{AgentRef: "kagent/worker", AgentInstanceID: "inst-from-before-the-restart"}))
+	require.NoError(t, storetest.Put(t.Context(), routes, key, store.Entry{AgentRef: "kagent/worker", AgentInstanceID: "inst-from-before-the-restart"}))
 
 	ch, err := f.SendCompletion(t.Context(), slackMsg("and the nodes?"))
 	require.NoError(t, err)
@@ -353,7 +349,7 @@ func TestFacade_SendCompletionViaA2A_RetriedFirstTurnIsIdempotent(t *testing.T) 
 		ch, err := f.SendCompletion(t.Context(), slackMsg("hi"))
 		require.NoError(t, err)
 		drain(t, ch)
-		require.NoError(t, routes.Delete(t.Context(), key))
+		require.NoError(t, storetest.Expire(t.Context(), routes, key))
 	}
 	require.Len(t, agent.createRequests, 2)
 	require.Equal(t, agent.createRequests[0], agent.createRequests[1])
@@ -518,7 +514,7 @@ func TestFacade_HitlResumeCarriesThePausedTaskAndTypedResponse(t *testing.T) {
 		Status: a2apkg.TaskStatus{State: a2apkg.TaskStateInputRequired, Message: prompt},
 	}
 	f, routes := newA2AFacade(agent)
-	require.NoError(t, routes.Put(t.Context(), store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700.0001"},
+	require.NoError(t, storetest.Put(t.Context(), routes, store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700.0001"},
 		store.Entry{AgentRef: "kagent/worker", AgentInstanceID: "inst-1"}))
 
 	msg := slackMsg("approve")
@@ -546,7 +542,7 @@ func TestFacade_HitlResumeRefusedWhenTheTaskIsNotPaused(t *testing.T) {
 	agent := newFakeAgent()
 	agent.tasks[taskInfo.TaskID] = &a2apkg.Task{ID: taskInfo.TaskID, Status: a2apkg.TaskStatus{State: a2apkg.TaskStateCompleted}}
 	f, routes := newA2AFacade(agent)
-	require.NoError(t, routes.Put(t.Context(), store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700.0001"},
+	require.NoError(t, storetest.Put(t.Context(), routes, store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700.0001"},
 		store.Entry{AgentRef: "kagent/worker", AgentInstanceID: "inst-1"}))
 
 	msg := slackMsg("approve")
@@ -601,7 +597,7 @@ func TestFacade_SessionResumable(t *testing.T) {
 		agent := newFakeAgent()
 		agent.instances["inst-1"] = pkga2a.Instance{ID: "inst-1", State: "AGENT_INSTANCE_STATE_SUSPENDED"}
 		f, routes := newA2AFacade(agent)
-		require.NoError(t, routes.Put(t.Context(), key, store.Entry{AgentRef: "kagent/worker", AgentInstanceID: "inst-1"}))
+		require.NoError(t, storetest.Put(t.Context(), routes, key, store.Entry{AgentRef: "kagent/worker", AgentInstanceID: "inst-1"}))
 		exists, checked := f.SessionResumable(t.Context(), msg)
 		require.True(t, checked)
 		require.True(t, exists)
@@ -609,7 +605,7 @@ func TestFacade_SessionResumable(t *testing.T) {
 
 	t.Run("bound to a deleted instance clears the binding and keeps the thread", func(t *testing.T) {
 		f, routes := newA2AFacade(newFakeAgent())
-		require.NoError(t, routes.Put(t.Context(), key, store.Entry{AgentRef: "kagent/worker", AgentInstanceID: "inst-gone", Initiator: "U1"}))
+		require.NoError(t, storetest.Put(t.Context(), routes, key, store.Entry{AgentRef: "kagent/worker", AgentInstanceID: "inst-gone", Initiator: "U1"}))
 		exists, checked := f.SessionResumable(t.Context(), msg)
 		require.True(t, checked)
 		require.False(t, exists)
@@ -625,7 +621,7 @@ func TestFacade_SessionResumable(t *testing.T) {
 		agent := newFakeAgent()
 		agent.getErr = errors.New("boom")
 		f, routes := newA2AFacade(agent)
-		require.NoError(t, routes.Put(t.Context(), key, store.Entry{AgentRef: "kagent/worker", AgentInstanceID: "inst-1"}))
+		require.NoError(t, storetest.Put(t.Context(), routes, key, store.Entry{AgentRef: "kagent/worker", AgentInstanceID: "inst-1"}))
 		_, checked := f.SessionResumable(t.Context(), msg)
 		require.False(t, checked)
 	})
@@ -644,7 +640,7 @@ func TestFacade_ResetSession(t *testing.T) {
 		agent := newFakeAgent()
 		agent.instances["inst-1"] = pkga2a.Instance{ID: "inst-1"}
 		f, routes := newA2AFacade(agent)
-		require.NoError(t, routes.Put(t.Context(), key, store.Entry{AgentRef: "kagent/worker", AgentInstanceID: "inst-1", Initiator: "U1"}))
+		require.NoError(t, storetest.Put(t.Context(), routes, key, store.Entry{AgentRef: "kagent/worker", AgentInstanceID: "inst-1", Initiator: "U1"}))
 		reset, err := f.ResetSession(t.Context(), msg)
 		require.NoError(t, err)
 		require.True(t, reset)
@@ -660,7 +656,7 @@ func TestFacade_ResetSession(t *testing.T) {
 		agent := newFakeAgent()
 		agent.deleteErr = errors.New("boom")
 		f, routes := newA2AFacade(agent)
-		require.NoError(t, routes.Put(t.Context(), key, store.Entry{AgentRef: "kagent/worker", AgentInstanceID: "inst-1"}))
+		require.NoError(t, storetest.Put(t.Context(), routes, key, store.Entry{AgentRef: "kagent/worker", AgentInstanceID: "inst-1"}))
 		reset, err := f.ResetSession(t.Context(), msg)
 		require.Error(t, err)
 		require.False(t, reset)
@@ -678,18 +674,6 @@ func TestFacade_ResetSession(t *testing.T) {
 		require.NoError(t, err)
 		require.False(t, reset)
 	})
-}
-
-func TestFacade_ListAgents(t *testing.T) {
-	agent := newFakeAgent()
-	agent.agents = []pkga2a.AgentInfo{{Name: "sre-agent", Namespace: "kagent", DisplayName: "SRE Agent"}}
-	f, _ := newA2AFacade(agent)
-	agents, err := f.ListAgents(t.Context())
-	require.NoError(t, err)
-	require.Equal(t, agent.agents, agents)
-
-	_, err = (&channels.Facade{}).ListAgents(t.Context())
-	require.Error(t, err)
 }
 
 // The Go ADK's wire shape for two text runs around a tool call: every run is
@@ -855,7 +839,7 @@ func TestFacade_FreshTurnDropsTheStaleDeliveryRecord(t *testing.T) {
 	)
 	agent.hold = make(chan struct{})
 	f, routes := newA2AFacade(agent)
-	require.NoError(t, routes.Put(t.Context(), key, store.Entry{
+	require.NoError(t, storetest.Put(t.Context(), routes, key, store.Entry{
 		AgentRef: "kagent/worker", AgentInstanceID: "inst-1",
 		Delivered: store.Delivered{TextLen: 99, ToolSteps: 4},
 		CreatedAt: time.Now(), LastSeen: time.Now(),
@@ -917,7 +901,7 @@ func TestFacade_ResumeTurnDeliversAFinishedTask(t *testing.T) {
 	delivered := store.Delivered{TextLen: 11, ToolSteps: 2}
 	seed := func(t *testing.T, agent *fakeAgent) (*channels.Facade, store.Store) {
 		f, routes := newA2AFacade(agent)
-		require.NoError(t, routes.Put(t.Context(), key, store.Entry{
+		require.NoError(t, storetest.Put(t.Context(), routes, key, store.Entry{
 			AgentRef: "kagent/worker", AgentInstanceID: "inst-1", TaskID: "task-7",
 			Resume:    map[string]string{"slack_user": "U1"},
 			Delivered: delivered,
