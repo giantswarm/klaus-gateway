@@ -241,12 +241,10 @@ func run(args []string) error {
 		// The controller is spoken to as the person behind the turn only: the
 		// forwarded Dex id_token is the sole credential. A turn without one is
 		// refused instead of running as the gateway's machine identity.
-		tokenSource := pkga2a.ForwardedTokenSource{ForwardedOnlyChannels: []string{slackchannel.ChannelName}}
 		kagentClient, err := pkga2a.Dial(pkga2a.Config{
 			Target:                  cfg.A2A.URL,
 			CAFile:                  cfg.A2A.CAFile,
 			Namespace:               cfg.A2A.Namespace,
-			TokenSource:             tokenSource,
 			FallbackIconURLTemplate: cfg.A2A.FallbackIconURLTemplate,
 			Logger:                  logger,
 		})

@@ -108,8 +108,6 @@ type Config struct {
 	// Namespace is the namespace whose AgentTemplates are served; a bare agent
 	// ref is resolved in it.
 	Namespace string
-	// TokenSource yields the caller's bearer token for every call.
-	TokenSource TokenSource
 	// FallbackIconURLTemplate supplies an agent icon when the AgentTemplate
 	// carries no icon-URL annotation. "{agent}" is replaced with the agent's
 	// technical name. Empty leaves the icon empty.
@@ -125,7 +123,6 @@ type Client struct {
 	models    apiv1alpha1.ModelServiceClient
 
 	namespace    string
-	tokens       TokenSource
 	iconTemplate string
 	logger       *slog.Logger
 	closeConn    func() error
@@ -195,10 +192,6 @@ func NewClient(conn grpc.ClientConnInterface, cfg Config) (*Client, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	tokens := cfg.TokenSource
-	if tokens == nil {
-		tokens = ForwardedTokenSource{}
-	}
 	transport := a2agrpc.NewGRPCTransportFromClient(a2apb.NewA2AServiceClient(conn))
 	// NewFromEndpoints does no I/O: the factory below hands back the transport
 	// on the shared connection, so the only error source is a configuration
@@ -220,7 +213,6 @@ func NewClient(conn grpc.ClientConnInterface, cfg Config) (*Client, error) {
 		instances:    apiv1alpha1.NewAgentInstanceServiceClient(conn),
 		models:       apiv1alpha1.NewModelServiceClient(conn),
 		namespace:    cfg.Namespace,
-		tokens:       tokens,
 		iconTemplate: cfg.FallbackIconURLTemplate,
 		logger:       logger,
 		closeConn:    func() error { return nil },
@@ -258,12 +250,11 @@ func transportCredentials(useTLS bool, hostPort, caFile string) (credentials.Tra
 	return credentials.NewTLS(tlsCfg), nil
 }
 
-// bearer returns the caller's token from ctx, or ErrNoIdentity.
+// bearer returns the caller's forwarded token from ctx, or ErrNoIdentity: the
+// controller is spoken to as the person behind the call only, never as the
+// gateway's own identity.
 func (c *Client) bearer(ctx context.Context) (string, error) {
-	token, err := c.tokens.Token(ctx)
-	if err != nil {
-		return "", err
-	}
+	token := ForwardedTokenFromContext(ctx)
 	if token == "" {
 		return "", ErrNoIdentity
 	}
