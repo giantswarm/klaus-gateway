@@ -284,10 +284,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The compose smoke harness (`deploy/docker-compose.yml`, the Klaus stub, the standalone agentgateway config, `hack/wait-for`, `hack/smoke-completion`) and `hack/helm-template-tests`. `make test` plus the chart smoke test CI runs on kind is the end-to-end check.
 - **Breaking:** the chart's values schema no longer accepts `web`, `cli`, `lifecycle`, `upstream`, `agentgateway`, `routing.defaultTTL`, `routing.autoCreate`, `a2a.saToken` and `a2a.tokenPath`. They were accepted and ignored since the Slack-only release; a values file that still sets one now fails the upgrade with `additional properties '<key>' not allowed`. The `agent-platform` umbrella stops forwarding them in 4.62.0, so an installation on that umbrella or later has nothing to change; see `UPGRADE.md`.
 - Slack: the `/details on|off|full` command is gone; the agent's tool calls and their result previews now always show as the step list inside the reply. The **Inspect agent steps** shortcut still shows the fuller retained payloads.
-- Code the Slack-only release left without a caller: `channels.BearerToken`, `InboundMessage.ReplyTo`, `Facade.ListAgents` (and `ListAgents` on the facade's `AgentClient`), and `Put` and `Delete` on the routing `Store` interface and its backends; every write goes through `Store.Update`. Tests put rows in with the new `pkg/routing/store/storetest` helpers.
 
 ### Refactored
 
 - Factor the duplicated Slack inbound pipeline (Events API + Socket Mode) into a single `Adapter.handleInbound` so both transports behave identically.
+- Code the Slack-only release left without a caller: `channels.BearerToken`, `InboundMessage.ReplyTo`, `Facade.ListAgents` (and `ListAgents` on the facade's `AgentClient`), `Put` and `Delete` on the routing `Store` interface and its backends (every write goes through `Store.Update`), and the `Flush` forwarders of the metrics and access-log response writers.
 
 [Unreleased]: https://github.com/giantswarm/REPOSITORY_NAME/tree/main

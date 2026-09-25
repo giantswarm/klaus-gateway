@@ -177,8 +177,8 @@ creates one, which a turn that switches agents does mid-thread.
   naming the reason.
 - Each thread's durable state — its agent, its initiator, the collaborators the initiator
   allowed, and its AgentInstance binding — lives in one row in the routing store, at the
-  thread's plain key (`slack|<channelID>|<threadID>`). It is the only
-  carrier: the gateway never reads Slack history to recover any of it — the context read above is a
+  thread's key (`slack|<channelID>|<threadID>`). It is the only carrier: the gateway never
+  reads Slack history to recover any of it — the context read above is a
   different read, for the agent's benefit, and nothing it returns is ever written back. The row has one sliding
   lifetime — `routing.threadTTL` (`--thread-ttl`), 90 days by default, `0` never expires —
   refreshed by every turn. While the thread lives, the initiator and the collaborators they

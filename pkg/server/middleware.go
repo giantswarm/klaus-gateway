@@ -76,12 +76,6 @@ func (s *statusWriter) Write(b []byte) (int, error) {
 	return s.ResponseWriter.Write(b)
 }
 
-func (s *statusWriter) Flush() {
-	if f, ok := s.ResponseWriter.(http.Flusher); ok {
-		f.Flush()
-	}
-}
-
 func newRequestID() string {
 	var b [8]byte
 	if _, err := rand.Read(b[:]); err != nil {
