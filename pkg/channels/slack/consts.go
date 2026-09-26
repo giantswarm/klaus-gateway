@@ -170,6 +170,7 @@ const (
 	askAgentLeadAudience      = " Anyone in the channel can read it; you decide who may instruct the agent."
 	askAgentLeadDMMessage     = "Starts this message's thread under the agent's name."
 	askAgentLeadDM            = "Continues this thread under the agent's name."
+	askAgentLeadDMNew         = "Starts a conversation here under the agent's name."
 	// askAgentContextLabel titles the thread-context checkbox and
 	// askAgentContextOption is its one option. Deliberately without a count:
 	// counting the thread would mean reading it before views.open, and the
@@ -188,8 +189,9 @@ const (
 	// on submit. The agent is the message's author, so it is not repeated.
 	askAgentAskedBy = "Asked by <@%s>"
 
-	slashCommandDMNotice         = "This command starts a conversation in a channel. In a direct message, type your question."
-	slashCommandSignInNotice     = rosterSignInLead + " in a channel, then run the command again."
+	// The command runs in a channel and in a direct message, so its sign-in
+	// notice names neither: the bot answers `/login` on both surfaces.
+	slashCommandSignInNotice     = rosterSignInLead + ", then run the command again."
 	slashCommandSlowNotice       = "Listing the agents took too long for Slack's picker. Run the command again."
 	slashCommandOpenFailedNotice = "The agent picker did not open. Run the command again."
 	askAgentIncompleteNotice     = "Pick an agent and type a prompt, then submit again."
