@@ -273,8 +273,8 @@ agent when it opens, through one of three entry points, and keeps it for life:
 - **Slash command**: `/swarmgeist [question]` opens a modal with an agent select over the live
   roster (the default agent preselected) and a **Prompt** box, titled "New conversation". On
   submit the gateway posts the conversation root itself, under the agent's identity (the
-  question, with "Asked by @user" as context under it), makes the submitter the thread
-  initiator, and runs the question as the first turn. It works in a channel and in a direct
+  question, and in a channel "Asked by @user" as context under it), makes the submitter the
+  thread initiator, and runs the question as the first turn. It works in a channel and in a direct
   message — Slack offers the command in the agent pane's composer, and the root the submission
   posts is the conversation the pane then shows — but never inside a thread: Slack sends no
   thread with a command, so the conversation always starts on a fresh root (the shortcut below

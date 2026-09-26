@@ -207,11 +207,12 @@ const (
 	askAgentThreadOwnedNotice = "This thread belongs to <@%s>. Reply in the thread, and they are asked to allow you, or start a new thread."
 	askAgentInviteNotice      = "The bot is not a member of this channel, so the conversation did not start. Invite the bot to the channel and try again."
 	askAgentPostFailedNotice  = "Your question was not posted in this channel. Try again."
-	// askAgentForeignDMNotice answers a command run in somebody else's direct
-	// message — Slack offers it in every conversation the person is in, and the
-	// bot is in none of those. Trying again cannot help, so the notice says
-	// where the command does work instead.
-	askAgentForeignDMNotice = "This is a direct message the bot is not part of, so the conversation did not start. Run the command in a channel, or in your own direct message with the bot."
+	// askAgentForeignDMNotice answers a picker opened in somebody else's direct
+	// message — Slack offers the command in every conversation the person is
+	// in, and the shortcut reaches any message they can see; the bot is in
+	// neither. Trying again cannot help, so the notice says where a
+	// conversation does start. It names no entry point, because both reach it.
+	askAgentForeignDMNotice = "This is a direct message the bot is not part of, so the conversation did not start. Start it in a channel, or in your own direct message with the bot."
 	// threadContextFailedNotice tells the person who opened the conversation
 	// that the thread could not be read, so they know the agent is answering
 	// without what the thread already said. %s is Slack's reason. The turn
