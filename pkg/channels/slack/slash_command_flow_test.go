@@ -193,6 +193,24 @@ func TestSlashCommand_DMOpensAgentPicker(t *testing.T) {
 	require.Empty(t, fake.pathCalls("response_url"), "nothing to tell the user privately")
 }
 
+// An installation that ignores DMs drops messages without a word, but answers
+// the command: it was typed deliberately, and the picker would otherwise open
+// on a conversation that goes nowhere.
+func TestSlashCommand_DMIgnoreModeIsAnsweredPrivately(t *testing.T) {
+	fake := newFakeSlackAPI()
+	api := fake.server(t)
+	_, srv := newEventsAdapter(t, &stubGateway{}, api.URL, func(a *slackadapter.Adapter) {
+		a.DMMode = slackadapter.DMModeIgnore
+		a.ChannelMode = slackadapter.ChannelModeAll
+	}, withSelection(pickerRoster(), pickerCards()))
+
+	sendSlashCommand(t, srv, "D1", "U1", "hello", api.URL+"/response_url")
+
+	fake.waitForPath(t, "response_url", 1)
+	require.Contains(t, responseURLTexts(fake), "works in channels, not in direct messages")
+	require.Empty(t, fake.pathCalls("views.open"))
+}
+
 // An installation that redirects DMs refuses the command there with the same
 // notice a message in that DM gets, and opens no picker.
 func TestSlashCommand_DMRedirectModeIsRefused(t *testing.T) {
@@ -445,12 +463,36 @@ func TestAskAgentSubmission_DMOpensConversation(t *testing.T) {
 	require.Equal(t, "D1", root.params["channel"])
 	require.Nil(t, root.params["thread_ts"], "the root is a top-level message")
 	require.Equal(t, "SRE Agent", root.params["username"], "posted under the agent's identity")
+	require.Len(t, root.params["blocks"].([]any), 1,
+		"no \"Asked by\" line: the one person who can read it is the one who asked")
 
 	msgs := dispatched()
 	require.Equal(t, "kagent/sre-agent", msgs[0].AgentRef, "the picked agent, not the default")
 	require.Equal(t, "D1", msgs[0].ChannelID)
 	require.Equal(t, msgs[0].ThreadID, msgs[0].MessageID, "the bot root is the thread")
 	require.Empty(t, fake.pathCalls("response_url"), "a clean submission needs no private notice")
+}
+
+// Slack offers the command in a direct message between two other people too,
+// whose channel id is a "D…" like the bot's own. The bot is not in it, so the
+// post fails: the notice names that instead of asking for a retry that cannot
+// succeed, and nothing tries to join a direct message.
+func TestAskAgentSubmission_ForeignDMSaysWhereTheCommandWorks(t *testing.T) {
+	fake := newFakeSlackAPI()
+	fake.setFail("chat.postMessage", "channel_not_found")
+	api := fake.server(t)
+	gw, _ := capturingGateway()
+	_, srv := newEventsAdapter(t, gw, api.URL, withSelection(pickerRoster(), pickerCards()))
+
+	sendSlashCommand(t, srv, "D9", "U1", "", api.URL+"/response_url")
+	pm := openedView(t, fake)["private_metadata"].(string)
+	sendAskAgentSubmission(t, srv, "U1", pm, "kagent/sre-agent", "hello")
+
+	fake.waitForPath(t, "response_url", 1)
+	require.Contains(t, responseURLTexts(fake), "direct message the bot is not part of")
+	require.NotContains(t, responseURLTexts(fake), "Try again", "trying again cannot work")
+	require.Empty(t, fake.pathCalls("conversations.join"), "a direct message is never joined")
+	require.Equal(t, 0, gw.dispatchCount())
 }
 
 // A picked agent that no longer validates fails loudly through the response
