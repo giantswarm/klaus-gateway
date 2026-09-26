@@ -127,19 +127,17 @@ type askAgentRequest struct {
 
 // handleSlashCommand opens the agent picker modal for a slash command, or
 // tells the invoking user privately why it cannot. Slack sends no thread with
-// a command, so its conversation always starts on a fresh root.
+// a command, so its conversation always starts on a fresh root — in a channel,
+// and in a direct message, where Slack offers the command in the agent pane's
+// composer and that root is the conversation the pane shows.
 func (a *Adapter) handleSlashCommand(ctx context.Context, p slashCommandPayload) {
 	if !a.started.Load() {
 		return
 	}
 	req := askAgentRequest{Channel: p.ChannelID, User: p.UserID, ResponseURL: p.ResponseURL, TriggerID: p.TriggerID, Prefill: p.Text}
 	notify := a.askAgentNotifier(ctx, req, "slash command")
-	if isDMChannelID(p.ChannelID) {
-		notify(slashCommandDMNotice)
-		return
-	}
-	if !a.channelServed(p.ChannelID) {
-		notify(channelNotServed)
+	if notice, ok := a.conversationServed(p.ChannelID); !ok {
+		notify(notice)
 		return
 	}
 	if !a.agentSelectionReady() {
@@ -147,6 +145,25 @@ func (a *Adapter) handleSlashCommand(ctx context.Context, p slashCommandPayload)
 		return
 	}
 	a.openAgentPicker(ctx, req, notify)
+}
+
+// conversationServed reports whether the gateway opens conversations in this
+// channel, and what to tell the person when it does not. The two gates are
+// different questions — an installation that serves an allowlist of channels
+// still answers direct messages, and one that redirects direct messages still
+// serves channels — so every entry point asks this one, rather than the
+// channel gate alone, which is about channels and answers "no" to every DM.
+func (a *Adapter) conversationServed(channel string) (string, bool) {
+	if isDMChannelID(channel) {
+		if a.dmMode() != DMModeServe {
+			return dmRedirect, false
+		}
+		return "", true
+	}
+	if !a.channelServed(channel) {
+		return channelNotServed, false
+	}
+	return "", true
 }
 
 // handleAskAgentShortcut opens the agent picker for the "Ask an agent here"
@@ -202,13 +219,8 @@ func (a *Adapter) handleRosterSelect(ctx context.Context, payload interactionPay
 // entry point in the log.
 func (a *Adapter) openThreadPicker(ctx context.Context, req askAgentRequest, surface string) {
 	notify := a.askAgentNotifier(ctx, req, surface)
-	if isDMChannelID(req.Channel) {
-		if a.dmMode() != DMModeServe {
-			notify(dmRedirect)
-			return
-		}
-	} else if !a.channelServed(req.Channel) {
-		notify(channelNotServed)
+	if notice, ok := a.conversationServed(req.Channel); !ok {
+		notify(notice)
 		return
 	}
 	if !a.agentSelectionReady() {
@@ -417,12 +429,15 @@ func (a *Adapter) askAgentModal(agents []pkga2a.AgentInfo, req askAgentRequest) 
 	}, nil
 }
 
-// askAgentLead says where the picker's conversation lands: a new thread in the
-// channel for the slash command; for the shortcut, the invoked thread, or the
-// thread the invoked message starts when it has no replies yet.
+// askAgentLead says where the picker's conversation lands: a new thread for
+// the slash command, in the channel it was typed in or in the direct message;
+// for the shortcut, the invoked thread, or the thread the invoked message
+// starts when it has no replies yet.
 func askAgentLead(req askAgentRequest) string {
 	dm := isDMChannelID(req.Channel)
 	switch {
+	case dm && req.Thread == "":
+		return askAgentLeadDMNew
 	case dm && req.ThreadStarted:
 		return askAgentLeadDM
 	case dm:
@@ -503,8 +518,8 @@ func (a *Adapter) handleAskAgentSubmission(ctx context.Context, payload interact
 		notify(askAgentIncompleteNotice)
 		return
 	}
-	if !a.channelServed(pm.Channel) {
-		notify(channelNotServed)
+	if notice, ok := a.conversationServed(pm.Channel); !ok {
+		notify(notice)
 		return
 	}
 	checker, ok := a.AgentCards.(agentCardChecker)

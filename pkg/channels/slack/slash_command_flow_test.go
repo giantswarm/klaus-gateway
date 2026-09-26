@@ -167,17 +167,44 @@ func TestSlashCommand_OpensAgentPicker(t *testing.T) {
 	require.Empty(t, fake.pathCalls("response_url"), "nothing to tell the user privately")
 }
 
-// Slack hides the command in the agent pane, but a plain DM composer may
-// still offer it: the command only opens channel conversations, and says so.
-func TestSlashCommand_DMIsAnsweredPrivately(t *testing.T) {
+// Slack offers the command in the agent pane's composer, so it opens the
+// picker there too: the same modal, and a line that names no channel because
+// the conversation lands in the direct message itself.
+func TestSlashCommand_DMOpensAgentPicker(t *testing.T) {
 	fake := newFakeSlackAPI()
 	api := fake.server(t)
+	// The default harness serves DMs and no channel: the picker's gate asks
+	// about DMs, not about the channel allowlist that never covers one.
+	_, srv := newEventsAdapter(t, &stubGateway{}, api.URL, withSelection(pickerRoster(), pickerCards()))
+
+	require.Equal(t, http.StatusOK, sendSlashCommand(t, srv, "D1", "U1", "hello", api.URL+"/response_url"))
+
+	view := openedView(t, fake)
+	require.Equal(t, "ask_agent", view["callback_id"])
+	lead := view["blocks"].([]any)[0].(map[string]any)
+	require.Equal(t, "Starts a conversation here under the agent's name.",
+		lead["elements"].([]any)[0].(map[string]any)["text"],
+		"no channel to name, and no one else who could read it")
+
+	var pm map[string]string
+	require.NoError(t, json.Unmarshal([]byte(view["private_metadata"].(string)), &pm))
+	require.Equal(t, "D1", pm["c"])
+	require.Empty(t, pm["t"], "the command carries no thread: its own root is the conversation")
+	require.Empty(t, fake.pathCalls("response_url"), "nothing to tell the user privately")
+}
+
+// An installation that redirects DMs refuses the command there with the same
+// notice a message in that DM gets, and opens no picker.
+func TestSlashCommand_DMRedirectModeIsRefused(t *testing.T) {
+	fake := newFakeSlackAPI()
+	api := fake.server(t)
+	// channelMode serves channels and redirects DMs.
 	_, srv := newEventsAdapter(t, &stubGateway{}, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
 
 	sendSlashCommand(t, srv, "D1", "U1", "hello", api.URL+"/response_url")
 
 	fake.waitForPath(t, "response_url", 1)
-	require.Contains(t, responseURLTexts(fake), "starts a conversation in a channel")
+	require.Contains(t, responseURLTexts(fake), "works in channels, not in direct messages")
 	require.Empty(t, fake.pathCalls("views.open"))
 }
 
@@ -395,6 +422,34 @@ func TestAskAgentSubmission_OpensConversation(t *testing.T) {
 		return false
 	}, flowWait, 50*time.Millisecond, "the consent prompt goes to the submitter, the initiator")
 	require.Equal(t, 2, gw.dispatchCount(), "the newcomer's message waits")
+	require.Empty(t, fake.pathCalls("response_url"), "a clean submission needs no private notice")
+}
+
+// The same submission in a direct message: the root is posted there, the turn
+// runs under the picked agent, and the channel allowlist — which no DM is ever
+// on — does not refuse it.
+func TestAskAgentSubmission_DMOpensConversation(t *testing.T) {
+	fake := newFakeSlackAPI()
+	api := fake.server(t)
+	gw, dispatched := capturingGateway()
+	_, srv := newEventsAdapter(t, gw, api.URL, withSelection(pickerRoster(), pickerCards()))
+
+	sendSlashCommand(t, srv, "D1", "U1", "", api.URL+"/response_url")
+	pm := openedView(t, fake)["private_metadata"].(string)
+
+	sendAskAgentSubmission(t, srv, "U1", pm, "kagent/sre-agent", "why are pods crashlooping?")
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
+		flowWait, 50*time.Millisecond, "the submission dispatches the first turn")
+
+	root := fake.pathCalls("chat.postMessage")[0]
+	require.Equal(t, "D1", root.params["channel"])
+	require.Nil(t, root.params["thread_ts"], "the root is a top-level message")
+	require.Equal(t, "SRE Agent", root.params["username"], "posted under the agent's identity")
+
+	msgs := dispatched()
+	require.Equal(t, "kagent/sre-agent", msgs[0].AgentRef, "the picked agent, not the default")
+	require.Equal(t, "D1", msgs[0].ChannelID)
+	require.Equal(t, msgs[0].ThreadID, msgs[0].MessageID, "the bot root is the thread")
 	require.Empty(t, fake.pathCalls("response_url"), "a clean submission needs no private notice")
 }
 
