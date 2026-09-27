@@ -2789,7 +2789,10 @@ func (c *slackAPIClient) postMarkdown(ctx context.Context, channel, md, threadTS
 }
 
 // postQuestion posts the question that opens a conversation from the agent
-// picker: the question as the message, who asked as a context line under it.
+// picker: the question as the message, and in a channel who asked as a context
+// line under it. A direct message leaves that line out — the message already
+// carries the agent's name, and the only person who can read it is the one who
+// asked.
 func (c *slackAPIClient) postQuestion(ctx context.Context, channel, question, user, threadTS string) (string, error) {
 	// Escaping can grow a question the modal capped at slackSectionTextMax.
 	text := escapeMrkdwn(question)
@@ -2802,16 +2805,17 @@ func (c *slackAPIClient) postQuestion(ctx context.Context, channel, question, us
 		}
 		text = cut + "…"
 	}
+	blocks := []any{map[string]any{
+		bkType: bkSection,
+		bkText: map[string]any{bkType: bkMrkdwn, bkText: text},
+	}}
+	if !isDMChannelID(channel) {
+		blocks = append(blocks, contextBlock(fmt.Sprintf(askAgentAskedBy, user)))
+	}
 	body := map[string]any{
 		paramChannel: channel,
 		paramText:    text,
-		paramBlocks: []any{
-			map[string]any{
-				bkType: bkSection,
-				bkText: map[string]any{bkType: bkMrkdwn, bkText: text},
-			},
-			contextBlock(fmt.Sprintf(askAgentAskedBy, user)),
-		},
+		paramBlocks:  blocks,
 	}
 	if threadTS != "" {
 		body[paramThreadTS] = threadTS

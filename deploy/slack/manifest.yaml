@@ -53,13 +53,16 @@ features:
       callback_id: ask_agent_here
       description: Start a conversation with an agent in this message's thread
   # Native slash command: opens the agent picker modal (agent select over the
-  # live roster + question box); submitting it posts the conversation root in
-  # the channel and runs the question as the thread's first turn. The gateway
-  # does not depend on the command's name, so rename it per app if you like;
-  # names are workspace-global (avoid /agent: it collides with Slack's built-in
-  # /agents). Slack hides developer slash commands in threads and in the agent
-  # pane, so this only opens channel conversations. Set the url to your public
-  # hostname, like the request URLs below.
+  # live roster + question box); submitting it posts the conversation root and
+  # runs the question as the thread's first turn. The gateway does not depend
+  # on the command's name, so rename it per app if you like; names are
+  # workspace-global (avoid /agent: it collides with Slack's built-in /agents).
+  # It works in a channel and in the bot's own direct message, where Slack
+  # offers it in the agent pane's composer, but never inside a thread: Slack
+  # sends no thread with a command, so the conversation always starts on a
+  # fresh root (the "Ask an agent here" shortcut above is the entry point for
+  # an existing thread). Set the url to your public hostname, like the request
+  # URLs below.
   slash_commands:
     - command: /swarmgeist
       description: Start a conversation with an agent

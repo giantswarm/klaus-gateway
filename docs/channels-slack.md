@@ -270,15 +270,24 @@ agent when it opens, through one of three entry points, and keeps it for life:
   roster since); a thread that belongs to someone else is refused privately. In a thread that
   already has its conversation the rows carry no button, and the footer points at a new thread.
   The picker's own notices, sent through its `response_url`, keep the roster as a text list.
-- **Slash command**: `/swarmgeist [question]` in a channel opens a modal with an agent select
-  over the live roster (the default agent preselected) and a **Prompt** box, titled "New
-  conversation". On submit the gateway posts the conversation root itself, under the agent's
-  identity (the question, with "Asked by @user" as context under it), makes the submitter the
-  thread initiator, and runs the question as the first turn. Slack hides developer slash
-  commands in threads and in the agent pane, so the command only opens channel conversations; in
-  a channel the bot is not a member of, the gateway joins public channels and asks for an invite
-  to private ones. Failures (unknown agent, roster unavailable, channel not served) are reported
-  privately to the invoking user.
+- **Slash command**: `/swarmgeist [question]` opens a modal with an agent select over the live
+  roster (the default agent preselected) and a **Prompt** box, titled "New conversation". On
+  submit the gateway posts the conversation root itself, under the agent's identity (the
+  question, and in a channel "Asked by @user" as context under it), makes the submitter the
+  thread initiator, and runs the question as the first turn. It works in a channel and in a direct
+  message — Slack offers the command in the agent pane's composer, and the root the submission
+  posts is the conversation the pane then shows — but never inside a thread: Slack sends no
+  thread with a command, so the conversation always starts on a fresh root (the shortcut below
+  is the entry point for an existing thread). In a channel the bot is not a member of, the
+  gateway joins public channels and asks for an invite to private ones. Where the gateway does
+  not serve direct messages (`slack.dmMode`), the command is refused there privately with the
+  redirect notice — under `ignore` too, which drops a *message* without a word: a command was
+  typed deliberately, and the picker would otherwise open on a conversation that goes nowhere.
+  Slack also offers the command in a direct message between two other people, whose channel id
+  looks like any other direct message's; the bot is not in that one, so the conversation cannot
+  start, and the submission says where the command does work rather than asking for a retry
+  that cannot succeed. Other failures (unknown agent, roster unavailable, channel not served)
+  are reported privately to the invoking user too.
 - **"Ask an agent here" message shortcut** (⋯ menu → Apps on any message): opens the same picker
   where the command cannot reach — inside an existing thread. The conversation starts in the
   thread of the message the shortcut was invoked on (or in the thread that message roots, when it

@@ -52,6 +52,27 @@ func sendAskAgentShortcut(t *testing.T, srv *httptest.Server, channel, user, ts,
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
+// The shortcut reaches any message a person can see, including one in a direct
+// message between two other people, where the bot is not a member and cannot
+// post. It shares the submission path with the command, so it shares the
+// notice — which therefore names no entry point.
+func TestAskAgentShortcut_ForeignDMSaysWhereAConversationStarts(t *testing.T) {
+	fake := newFakeSlackAPI()
+	fake.setFail("chat.postMessage", "channel_not_found")
+	api := fake.server(t)
+	gw, _ := capturingGateway()
+	_, srv := newEventsAdapter(t, gw, api.URL, withSelection(pickerRoster(), pickerCards()))
+
+	sendAskAgentShortcut(t, srv, "D9", "U1", "200.000", "", api.URL+"/response_url")
+	pm := openedView(t, fake)["private_metadata"].(string)
+	sendAskAgentSubmission(t, srv, "U1", pm, "kagent/sre-agent", "hello")
+
+	fake.waitForPath(t, "response_url", 1)
+	require.Contains(t, responseURLTexts(fake), "direct message the bot is not part of")
+	require.NotContains(t, responseURLTexts(fake), "Run the command", "the shortcut is not a command")
+	require.Equal(t, 0, gw.dispatchCount())
+}
+
 // Invoked on a reply inside a thread nobody has bound, the shortcut carries
 // that thread through the modal: the submission echoes the question as a reply
 // in it, under the agent's identity, and runs the first turn there.

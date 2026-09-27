@@ -170,6 +170,7 @@ const (
 	askAgentLeadAudience      = " Anyone in the channel can read it; you decide who may instruct the agent."
 	askAgentLeadDMMessage     = "Starts this message's thread under the agent's name."
 	askAgentLeadDM            = "Continues this thread under the agent's name."
+	askAgentLeadDMNew         = "Starts a conversation here under the agent's name."
 	// askAgentContextLabel titles the thread-context checkbox and
 	// askAgentContextOption is its one option. Deliberately without a count:
 	// counting the thread would mean reading it before views.open, and the
@@ -188,8 +189,9 @@ const (
 	// on submit. The agent is the message's author, so it is not repeated.
 	askAgentAskedBy = "Asked by <@%s>"
 
-	slashCommandDMNotice         = "This command starts a conversation in a channel. In a direct message, type your question."
-	slashCommandSignInNotice     = rosterSignInLead + " in a channel, then run the command again."
+	// The command runs in a channel and in a direct message, so its sign-in
+	// notice names neither: the bot answers `/login` on both surfaces.
+	slashCommandSignInNotice     = rosterSignInLead + ", then run the command again."
 	slashCommandSlowNotice       = "Listing the agents took too long for Slack's picker. Run the command again."
 	slashCommandOpenFailedNotice = "The agent picker did not open. Run the command again."
 	askAgentIncompleteNotice     = "Pick an agent and type a prompt, then submit again."
@@ -205,6 +207,12 @@ const (
 	askAgentThreadOwnedNotice = "This thread belongs to <@%s>. Reply in the thread, and they are asked to allow you, or start a new thread."
 	askAgentInviteNotice      = "The bot is not a member of this channel, so the conversation did not start. Invite the bot to the channel and try again."
 	askAgentPostFailedNotice  = "Your question was not posted in this channel. Try again."
+	// askAgentForeignDMNotice answers a picker opened in somebody else's direct
+	// message — Slack offers the command in every conversation the person is
+	// in, and the shortcut reaches any message they can see; the bot is in
+	// neither. Trying again cannot help, so the notice says where a
+	// conversation does start. It names no entry point, because both reach it.
+	askAgentForeignDMNotice = "This is a direct message the bot is not part of, so the conversation did not start. Start it in a channel, or in your own direct message with the bot."
 	// threadContextFailedNotice tells the person who opened the conversation
 	// that the thread could not be read, so they know the agent is answering
 	// without what the thread already said. %s is Slack's reason. The turn
