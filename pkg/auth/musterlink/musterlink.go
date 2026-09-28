@@ -93,10 +93,20 @@ const grantTypeRefreshToken = "refresh_token"
 // in the CIMD document and the name of the callback query parameter.
 const responseTypeCode = "code"
 
-// tokenRefreshSkew refreshes a cached token this long before it actually
-// expires, so a token handed to a downstream A2A call is not about to expire
-// mid-request.
+// tokenRefreshSkew is the least remaining lifetime of any token TokenFor hands
+// out, and the floor of Config.MinTokenLifetime. It is also how long a token
+// this process has just refreshed is reused below the turn minimum (see
+// reusableToken), so the several TokenFor calls one turn makes spend one
+// refresh.
 const tokenRefreshSkew = 60 * time.Second
+
+// DefaultMinTokenLifetime is the least remaining lifetime a cached id_token
+// must have to be handed to a turn when Config.MinTokenLifetime is zero. The
+// agent keeps the bearer it is dispatched with for the whole turn and muster
+// ends the turn's session when that bearer expires, so the token must outlive
+// the longest turn, not just the request that starts it: a long-running agent
+// turn takes 10 to 20 minutes.
+const DefaultMinTokenLifetime = 25 * time.Minute
 
 // ErrNotLinked is returned by TokenFor when no muster link exists for the Slack
 // user, and by Store.Get when none is stored. Callers treat it as a signal to
@@ -176,6 +186,13 @@ type Config struct {
 	StateKey []byte
 	// StateTTL bounds the link flow lifetime. Zero uses DefaultStateTTL.
 	StateTTL time.Duration
+	// MinTokenLifetime is the least remaining lifetime of a cached id_token
+	// TokenFor hands to a turn; a shorter-lived one is refreshed first, and the
+	// background refresher keeps the token of a recently served person above
+	// it. When the issuer's tokens live shorter than this, every turn gets a
+	// freshly refreshed token. Zero uses DefaultMinTokenLifetime; a value below
+	// one minute is raised to it.
+	MinTokenLifetime time.Duration
 	// Store persists the resulting links. Required.
 	Store Store
 	// SlackEmail, when set, returns the Slack-workspace-verified email for a
@@ -215,6 +232,7 @@ type Linker struct {
 	store         Store
 	stateKey      []byte
 	stateTTL      time.Duration
+	minLifetime   time.Duration
 	slackEmail    func(ctx context.Context, slackUserID string) (string, error)
 	onLinked      func(ctx context.Context, slackUserID, email string)
 	logger        *slog.Logger
@@ -375,6 +393,11 @@ func New(cfg Config) (*Linker, error) {
 	if ttl <= 0 {
 		ttl = DefaultStateTTL
 	}
+	minLifetime := cfg.MinTokenLifetime
+	if minLifetime == 0 {
+		minLifetime = DefaultMinTokenLifetime
+	}
+	minLifetime = max(minLifetime, tokenRefreshSkew)
 	logger := cfg.Logger
 	if logger == nil {
 		logger = slog.Default()
@@ -392,6 +415,7 @@ func New(cfg Config) (*Linker, error) {
 		store:         cfg.Store,
 		stateKey:      cfg.StateKey,
 		stateTTL:      ttl,
+		minLifetime:   minLifetime,
 		slackEmail:    cfg.SlackEmail,
 		onLinked:      cfg.OnLinked,
 		logger:        logger,
@@ -758,9 +782,9 @@ func (l *Linker) userinfo(ctx context.Context, accessToken string) (sub, email s
 }
 
 // TokenFor returns a fresh short-lived human token (the dex id_token) for the
-// Slack user, to be forwarded as the subject on A2A requests. It reuses a
-// still-valid cached id_token when one is stored, and only when none is valid
-// does it refresh: it spends the stored (rotating) muster refresh token, caches
+// Slack user, to be forwarded as the subject on A2A requests. The turn keeps
+// that token until it ends, so TokenFor reuses a cached id_token only while it
+// covers a turn (see reusableToken), and otherwise refreshes: it spends the stored (rotating) muster refresh token, caches
 // the new id_token with its expiry, rotates the stored refresh token, and
 // persists both. It returns ErrNotLinked when no link exists and drops the link
 // on a hard refresh failure (invalid/expired refresh token) so the next attempt
@@ -785,7 +809,7 @@ func (l *Linker) TokenFor(ctx context.Context, slackUserID string) (string, erro
 	// Fast path: a still-valid cached id_token avoids a refresh (and the
 	// per-user lock) entirely.
 	if link, err := l.load(slackUserID); err == nil {
-		if tok := validCachedToken(link, l.now()); tok != "" {
+		if tok := l.reusableToken(slackUserID, link, l.now()); tok != "" {
 			l.noteServed(slackUserID)
 			return tok, nil
 		}
@@ -799,7 +823,7 @@ func (l *Linker) TokenFor(ctx context.Context, slackUserID string) (string, erro
 		return "", err
 	}
 	// Re-check under the lock: a concurrent caller may have just refreshed.
-	if tok := validCachedToken(link, l.now()); tok != "" {
+	if tok := l.reusableToken(slackUserID, link, l.now()); tok != "" {
 		l.noteServed(slackUserID)
 		return tok, nil
 	}
@@ -827,7 +851,16 @@ func (l *Linker) refreshLink(ctx context.Context, slackUserID string, link *Link
 			l.logger.Warn("musterlink: id_token refresh failed", append(fields, "error", err.Error())...)
 			return
 		}
-		l.logger.Info("musterlink: id_token refreshed", append(fields, "expires_in_s", int64(expiry.Sub(l.now()).Seconds()))...)
+		left := expiry.Sub(l.now())
+		fields = append(fields, "expires_in_s", int64(left.Seconds()))
+		if left < l.minLifetime {
+			// muster handed back a token that does not cover a turn: its
+			// tokens live shorter than the minimum, or it returned the
+			// upstream token it already held instead of renewing it.
+			l.logger.Warn("musterlink: id_token refreshed below the turn minimum", append(fields, "min_lifetime_s", int64(l.minLifetime.Seconds()))...)
+			return
+		}
+		l.logger.Info("musterlink: id_token refreshed", fields...)
 	}()
 	if err := l.ensureEndpoints(ctx); err != nil {
 		return "", time.Time{}, fmt.Errorf("musterlink: discover endpoints: %w", err)
@@ -870,6 +903,7 @@ func (l *Linker) refreshLink(ctx context.Context, slackUserID string, link *Link
 	updated.IDToken = idToken
 	updated.Expiry = idTokenExpiry(idToken, tok.Expiry)
 	l.save(slackUserID, &updated)
+	l.noteRefreshed(slackUserID)
 	return idToken, updated.Expiry, nil
 }
 
@@ -910,14 +944,22 @@ func (l *Linker) LinkedIdentity(slackUserID string) (sub, email string, ok bool)
 	return link.Sub, link.Email, true
 }
 
-// validCachedToken returns the link's cached id_token when it is present and
-// not within tokenRefreshSkew of expiry, else "". A zero Expiry is treated as
-// unknown and forces a refresh.
-func validCachedToken(link *Link, now time.Time) string {
+// reusableToken returns the link's cached id_token when it can be handed to a
+// turn without a refresh, else "". A token covers a turn when it has at least
+// minLifetime left. Below that it is reused only when this process refreshed it
+// within tokenRefreshSkew and it has more than tokenRefreshSkew left: that is
+// the freshest token muster issues when its tokens live shorter than the
+// minimum, and it keeps the several TokenFor calls of one turn to one refresh.
+// A zero Expiry is treated as unknown and forces a refresh.
+func (l *Linker) reusableToken(slackUserID string, link *Link, now time.Time) string {
 	if link.IDToken == "" || link.Expiry.IsZero() {
 		return ""
 	}
-	if now.Add(tokenRefreshSkew).Before(link.Expiry) {
+	left := link.Expiry.Sub(now)
+	if left >= l.minLifetime {
+		return link.IDToken
+	}
+	if refreshed := l.refreshedAt(slackUserID); left > tokenRefreshSkew && !refreshed.IsZero() && now.Sub(refreshed) < tokenRefreshSkew {
 		return link.IDToken
 	}
 	return ""

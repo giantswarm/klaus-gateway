@@ -48,6 +48,20 @@ type cachedLink struct {
 	checked time.Time // when the store was last consulted for this user
 	dirty   bool      // the store does not hold this version yet (a Put failed)
 	served  time.Time // when TokenFor last handed this user's token to a turn
+	// refreshed is when this process last refreshed this user's id_token.
+	refreshed time.Time
+}
+
+// put replaces slackUserID's entry with link, carrying over what the process
+// knows beyond the store (when the token was served and refreshed), so a store
+// read or write does not drop the person from the refresher. The caller holds
+// linksMu.
+func (l *Linker) put(slackUserID string, link Link, checked time.Time, dirty bool) {
+	c := &cachedLink{link: link, checked: checked, dirty: dirty}
+	if old, ok := l.links[slackUserID]; ok {
+		c.served, c.refreshed = old.served, old.refreshed
+	}
+	l.links[slackUserID] = c
 }
 
 // load returns the link for slackUserID: from the process-local copy when it
@@ -79,7 +93,7 @@ func (l *Linker) load(slackUserID string) (*Link, error) {
 	}
 	switch {
 	case err == nil:
-		l.links[slackUserID] = &cachedLink{link: *link, checked: now}
+		l.put(slackUserID, *link, now, false)
 		return link, nil
 	case errors.Is(err, ErrNotLinked):
 		delete(l.links, slackUserID)
@@ -104,7 +118,7 @@ func (l *Linker) reload(slackUserID string) (*Link, error) {
 		return nil, err
 	}
 	l.linksMu.Lock()
-	l.links[slackUserID] = &cachedLink{link: *link, checked: l.now()}
+	l.put(slackUserID, *link, l.now(), false)
 	l.linksMu.Unlock()
 	return link, nil
 }
@@ -116,7 +130,7 @@ func (l *Linker) reload(slackUserID string) (*Link, error) {
 // the per-user lock, which orders saves and drops of one user.
 func (l *Linker) save(slackUserID string, link *Link) {
 	l.linksMu.Lock()
-	l.links[slackUserID] = &cachedLink{link: *link, checked: l.now(), dirty: true}
+	l.put(slackUserID, *link, l.now(), true)
 	l.linksMu.Unlock()
 	if err := l.store.Put(slackUserID, link); err != nil {
 		l.logger.Error("musterlink: link store write failed, keeping the link in memory and retrying", "slackUser", slackUserID, "err", err)

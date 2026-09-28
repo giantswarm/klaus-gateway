@@ -103,6 +103,7 @@ Slack channel gateway for the Agent Platform's kagent agents
 | obo.existingSecret | string | `""` |  |
 | obo.stateKey | string | `""` |  |
 | obo.storeKey | string | `""` |  |
+| obo.minTokenLifetime | string | `""` |  |
 | obo.connectors.enabled | bool | `false` |  |
 | reviews.enabled | bool | `false` |  |
 | reviews.audience | string | `"klaus-gateway"` |  |

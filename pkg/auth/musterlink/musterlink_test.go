@@ -26,10 +26,11 @@ type musterStub struct {
 	mu             sync.Mutex
 	email          string
 	sub            string
-	failRefresh    bool // reject refresh with 400 invalid_grant (dead token)
-	failRefresh5xx bool // reject refresh with a transient 503 (no OAuth error code)
-	hangRefresh    bool // never answer a refresh (blackholed endpoint) until the request context ends
-	omitIDToken    bool // omit id_token from the token response (upstream had none)
+	failRefresh    bool          // reject refresh with 400 invalid_grant (dead token)
+	failRefresh5xx bool          // reject refresh with a transient 503 (no OAuth error code)
+	hangRefresh    bool          // never answer a refresh (blackholed endpoint) until the request context ends
+	omitIDToken    bool          // omit id_token from the token response (upstream had none)
+	idTokenTTL     time.Duration // lifetime of a minted id_token; zero means an hour
 	counter        int
 	validAccess    map[string]bool
 	// spent holds every refresh token already presented: muster rotates on each
@@ -95,7 +96,11 @@ func newMusterStub(t *testing.T, clientID, email, sub string) *musterStub {
 			"refresh_token": rt,
 		}
 		if !s.omitIDToken {
-			resp["id_token"] = makeIDToken(s.sub, time.Now().Add(time.Hour))
+			ttl := s.idTokenTTL
+			if ttl == 0 {
+				ttl = time.Hour
+			}
+			resp["id_token"] = makeIDToken(s.sub, time.Now().Add(ttl))
 		}
 		writeJSON(w, resp)
 	})
@@ -366,6 +371,86 @@ func TestTokenForReusesCachedToken(t *testing.T) {
 	calls := stub.counter
 	stub.mu.Unlock()
 	require.Equal(t, 1, calls, "second TokenFor must reuse the cached token, not refresh")
+}
+
+// A cached token that still covers a turn (the default minimum is 25m) is
+// handed out as it is: no call to muster.
+func TestTokenForReusesTokenThatCoversATurn(t *testing.T) {
+	stub := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
+	store := NewMemStore()
+	cached := makeIDToken("muster-sub", time.Now().Add(30*time.Minute))
+	require.NoError(t, store.Put("U1", &Link{RefreshToken: "refresh-0", IDToken: cached, Expiry: time.Now().Add(30 * time.Minute)}))
+	l := newTestLinker(t, stub, store, nil)
+
+	tok, err := l.TokenFor(context.Background(), "U1")
+	require.NoError(t, err)
+	require.Equal(t, cached, tok)
+	require.Equal(t, 0, stubCalls(stub))
+}
+
+// A cached token that is still valid but would expire during a turn is
+// refreshed before the turn is dispatched with it: the agent keeps the token
+// for the whole turn, and muster ends the turn's session at its expiry.
+func TestTokenForRefreshesTokenBelowTurnMinimum(t *testing.T) {
+	stub := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
+	store := NewMemStore()
+	cached := makeIDToken("muster-sub", time.Now().Add(10*time.Minute))
+	require.NoError(t, store.Put("U1", &Link{RefreshToken: "refresh-0", IDToken: cached, Expiry: time.Now().Add(10 * time.Minute)}))
+	l := newTestLinker(t, stub, store, nil)
+
+	tok, err := l.TokenFor(context.Background(), "U1")
+	require.NoError(t, err)
+	require.NotEqual(t, cached, tok)
+	require.Equal(t, 1, stubCalls(stub))
+	stored, err := store.Get("U1")
+	require.NoError(t, err)
+	require.True(t, stored.Expiry.After(time.Now().Add(DefaultMinTokenLifetime)), "the turn's token covers the minimum")
+
+	again, err := l.TokenFor(context.Background(), "U1")
+	require.NoError(t, err)
+	require.Equal(t, tok, again, "the refreshed token covers the next turn too")
+	require.Equal(t, 1, stubCalls(stub))
+}
+
+// When muster's tokens live shorter than the minimum, every turn gets a
+// freshly refreshed one; the TokenFor calls of one turn (within a minute of
+// the refresh) share it rather than each spending a refresh.
+func TestTokenForLifetimeShorterThanMinimum(t *testing.T) {
+	stub := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
+	stub.idTokenTTL = 10 * time.Minute
+	store := NewMemStore()
+	require.NoError(t, store.Put("U1", &Link{RefreshToken: "refresh-0"}))
+	l := newTestLinker(t, stub, store, nil)
+
+	first, err := l.TokenFor(context.Background(), "U1")
+	require.NoError(t, err)
+	require.Equal(t, 1, stubCalls(stub))
+	same, err := l.TokenFor(context.Background(), "U1")
+	require.NoError(t, err)
+	require.Equal(t, first, same, "the same turn reuses the token it was just refreshed")
+	require.Equal(t, 1, stubCalls(stub))
+
+	// Two minutes later the next turn refreshes again, although the cached
+	// token has eight minutes left.
+	l.now = func() time.Time { return time.Now().Add(2 * time.Minute) }
+	_, err = l.TokenFor(context.Background(), "U1")
+	require.NoError(t, err)
+	require.Equal(t, 2, stubCalls(stub))
+}
+
+// The minimum is configurable, and never below a minute.
+func TestNewMinTokenLifetime(t *testing.T) {
+	stub := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
+	for _, tc := range []struct{ in, want time.Duration }{
+		{0, DefaultMinTokenLifetime},
+		{40 * time.Minute, 40 * time.Minute},
+		{time.Second, tokenRefreshSkew},
+	} {
+		l, err := New(Config{BaseURL: stub.server.URL, ClientID: "c", RedirectURL: "https://gw.example.com" + CallbackPath, StateKey: []byte("k"), Store: NewMemStore(), MinTokenLifetime: tc.in})
+		require.NoError(t, err)
+		require.Equal(t, tc.want, l.minLifetime, "MinTokenLifetime %s", tc.in)
+		require.NoError(t, l.Close())
+	}
 }
 
 func TestTokenForRefreshesExpiredCachedToken(t *testing.T) {

@@ -56,6 +56,12 @@ where those records live; both backends seal every record with `store-key` (AES-
 
 `UPGRADE.md` describes the move from the volume to the Secret.
 
+The cached id_token is handed to a turn only while it has at least `obo.minTokenLifetime` left
+(a Go duration; empty means 25m): the agent keeps the token for the whole turn and muster ends
+the turn's session when it expires, so set it above the longest turn you expect. A token with
+less left is refreshed before the turn starts, and the background refresher keeps recently
+active people above the minimum (see `token_refresh` in [channels-slack.md](channels-slack.md)).
+
 Both backends can fail a call — the Secret backend on any apiserver hiccup (a restart, a
 `resourceVersion` conflict past the retries, the 10 s call timeout), the bolt file on a full
 disk — and the gateway keeps a process-local copy of every link it has read or written so a

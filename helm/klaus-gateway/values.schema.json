@@ -161,6 +161,9 @@
                 "existingSecret": {
                     "type": "string"
                 },
+                "minTokenLifetime": {
+                    "type": "string"
+                },
                 "musterUrl": {
                     "type": "string"
                 },
