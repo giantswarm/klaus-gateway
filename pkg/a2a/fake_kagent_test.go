@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -22,7 +23,9 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
+	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/structpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 	apiv1alpha1 "github.com/giantswarm/klaus-gateway/pkg/kagent/gen/kagent/api/v1alpha1"
@@ -53,14 +56,15 @@ type fakeKagent struct {
 	serverOpts []grpc.ServerOption // the controller's gRPC options (size limits)
 	clientOpts []grpc.DialOption   // the client connection's extra options
 
-	calls    map[string][]metadata.MD // method -> incoming metadata per call
-	sent     []*a2apkg.Message
-	created  []*apiv1alpha1.CreateAgentInstanceRequest
-	canceled []string
-	deleted  []string
-	shares   map[string]string // share id -> instance id
-	sharedAs []apiv1alpha1.AgentInstanceSharePermission
-	revoked  []string
+	calls     map[string][]metadata.MD // method -> incoming metadata per call
+	sent      []*a2apkg.Message
+	created   []*apiv1alpha1.CreateAgentInstanceRequest
+	canceled  []string
+	deleted   []string
+	shares    map[string]string // share id -> instance id
+	sharedAs  []apiv1alpha1.AgentInstanceSharePermission
+	sharedTTL []*durationpb.Duration
+	revoked   []string
 }
 
 func newFakeKagent() *fakeKagent {
@@ -414,10 +418,12 @@ func (f *fakeKagent) CreateAgentInstanceShare(ctx context.Context, req *apiv1alp
 	id := fmt.Sprintf("share-%d", len(f.shares)+1)
 	f.shares[id] = inst.GetId()
 	f.sharedAs = append(f.sharedAs, req.GetPermission())
-	return &apiv1alpha1.CreateAgentInstanceShareResponse{
-		Share: &apiv1alpha1.AgentInstanceShare{Id: id, AgentInstanceId: inst.GetId(), Permission: req.GetPermission()},
-		Token: "token-" + id,
-	}, nil
+	f.sharedTTL = append(f.sharedTTL, req.GetTtl())
+	share := &apiv1alpha1.AgentInstanceShare{Id: id, AgentInstanceId: inst.GetId(), Permission: req.GetPermission()}
+	if req.GetTtl() != nil {
+		share.ExpiresAt = timestamppb.New(time.Now().Add(req.GetTtl().AsDuration()))
+	}
+	return &apiv1alpha1.CreateAgentInstanceShareResponse{Share: share, Token: "token-" + id}, nil
 }
 
 func (f *fakeKagent) RevokeAgentInstanceShare(ctx context.Context, req *apiv1alpha1.RevokeAgentInstanceShareRequest) (*apiv1alpha1.RevokeAgentInstanceShareResponse, error) {
