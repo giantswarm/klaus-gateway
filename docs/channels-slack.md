@@ -150,14 +150,21 @@ creates one, which a turn that switches agents does mid-thread.
   its shares at the controller. Only the instance's creator may revoke its
   shares, so a turn that does not hold the creator's token (a collaborator's
   while the creator is signed out, or a new mention that restarts an ended
-  conversation) leaves the share valid and logs it. A share kagent issues does not expire on its
-  own, so the share of a thread nobody writes to again stays valid at the
-  controller.
+  conversation) leaves the share valid and logs it.
+- The share is minted to expire after the thread's lifetime (`--thread-ttl`).
+  A collaborator turn replaces a share that expires within the renewal window
+  (an hour, or half the thread lifetime when that is shorter) under the
+  creator's token and revokes the old one. With the creator signed out, the
+  turn keeps using the old share until five minutes before it expires, and is
+  refused from then on, so a turn does not start on a share that runs out
+  under it. With `--thread-ttl 0` the share is minted without an expiry, and a
+  controller that predates share expiry ignores the lifetime: in both cases a
+  share stays valid until revoked.
 - A thread has one share for all its collaborators, and only the gateway holds
   it. Who may use it is the thread's access list: the gateway sends a turn with
   the share only for a granted user.
-- When the thread holds no share yet and the initiator's token cannot be
-  minted, the gateway refuses the collaborator's turn and tells the thread that
+- When the thread holds no usable share (none yet, or one expired) and the
+  initiator's token cannot be minted, the gateway refuses the collaborator's turn and tells the thread that
   the initiator has to be signed in. The resume check on such a turn is
   indeterminate rather than a miss (the collaborator's own token cannot see the
   instance), so it neither posts the starting-fresh notice nor clears the

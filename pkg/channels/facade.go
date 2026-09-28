@@ -40,8 +40,8 @@ type AgentClient interface {
 	// DeleteInstance removes an instance; a missing one is not an error.
 	DeleteInstance(ctx context.Context, id string) error
 	// CreateShare mints a read-write share of an instance, which only its
-	// creator may do.
-	CreateShare(ctx context.Context, instanceID string) (pkga2a.Share, error)
+	// creator may do, expiring ttl after its creation (0 never).
+	CreateShare(ctx context.Context, instanceID string, ttl time.Duration) (pkga2a.Share, error)
 	// RevokeShare revokes a share; a missing one is not an error.
 	RevokeShare(ctx context.Context, shareID string) error
 }
