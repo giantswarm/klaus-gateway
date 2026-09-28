@@ -132,10 +132,13 @@ func (a *Adapter) bareCommandFor(msg channels.InboundMessage) *slashCommand {
 	// is the shape the question asks for, and the paused task must be
 	// resolved or the tool call dangles. The command is reachable there as
 	// `/login` after a mention, since the word alone is the answer with or
-	// without one. An approval card is not a question: any text beside it is
-	// read as a rejection carrying that text, so the word stays the command
-	// and the card stays open.
-	if task := a.peekPendingTask(msg.ThreadID); task != nil && task.Prompt.IsAskUser() {
+	// without one. Both kinds of question count: the ask_user card, and a
+	// pause with no structured prompt, whose typed reply reaches the agent as
+	// the answer itself (decisionFromText maps a nil prompt to no decision).
+	// An approval card is not a question: any text beside it is read as a
+	// rejection carrying that text, so the word stays the command and the
+	// card stays open.
+	if task := a.peekPendingTask(msg.ThreadID); task != nil && (task.Prompt == nil || task.Prompt.IsAskUser()) {
 		return nil
 	}
 	return cmd

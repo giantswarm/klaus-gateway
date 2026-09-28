@@ -992,6 +992,32 @@ func TestBareCommand_PausedQuestionKeepsTheWord(t *testing.T) {
 	require.Empty(t, obo.unlinked, "an answer to a question must not sign the person out")
 }
 
+// A question needs no card to be a question. A turn can pause with no
+// structured prompt, and a typed reply then reaches the agent as the answer
+// itself, so the word belongs to that answer too.
+func TestBareCommand_PausedQuestionWithoutACardKeepsTheWord(t *testing.T) {
+	fake := newFakeSlackAPI()
+	obo := &fakeOBO{linkedUser: "U1", token: "human-token"}
+	gw := &stubGateway{sendQueue: [][]channels.OutboundDelta{
+		{{Kind: channels.DeltaPrompt, TaskID: "task-1", Content: "Which account should I use?"}},
+		{{Content: "done"}, {Done: true}},
+	}}
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+	a.OBO = obo
+
+	sendEvent(t, srv, dmEvent("U1", "set me up", "970.000"))
+	fake.waitForPath(t, "chat.postMessage", 1) // the question is up, without a card
+
+	sendEvent(t, srv, dmThreadEvent("U1", "logout", "971.000", "970.000"))
+
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 }, flowWait, 50*time.Millisecond,
+		"the answer must reach the paused task")
+
+	obo.mu.Lock()
+	defer obo.mu.Unlock()
+	require.Empty(t, obo.unlinked, "an answer to a question must not sign the person out")
+}
+
 // An approval card is not a question. Any text beside it is read as a
 // rejection carrying that text, so the word stays the command: the person is
 // signed out and the card is left for them to decide.

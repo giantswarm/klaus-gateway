@@ -675,8 +675,9 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
   that word alone, in any case and with trailing punctuation (`Login.`), so they need no
   slash and no mention wherever the bot reads: a DM, or a thread it is in. `/login` and
   `/logout` also work after a mention. Three messages keep the word instead: a sentence that
-  contains it, a caption on an upload, and an answer in a thread paused on a **question**,
-  where one word is what the question asked for. In such a thread the command is `/login`
+  contains it, a caption on an upload, and an answer in a thread paused on a **question** —
+  the `ask_user` card, or a question without one, whose typed reply reaches the agent as the
+  answer itself — where one word is what the question asked for. In such a thread the command is `/login`
   after a mention, because the word alone is the answer with or without one — the sign-in
   notices name the mention form, so that one line of advice is the one to read as the slash
   form there. A thread paused on an **approval card** is not a question: any text beside a
