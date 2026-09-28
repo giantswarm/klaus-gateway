@@ -1229,9 +1229,10 @@ type fakeThread struct {
 	// sizeLimit, when set, makes a streaming call answer msg_too_long the way
 	// Slack does once the streamed message holds text and outgrows the size
 	// measured on graveler (see slackMeasuredSize); sizes is each message's
-	// content in that measure.
+	// content in that measure, and tooLong counts the calls refused so.
 	sizeLimit int
 	sizes     map[string]*fakeMessageSize
+	tooLong   int
 }
 
 // slackMeasuredLimit is the size, in slackMeasuredSize, past which Slack
@@ -1306,10 +1307,18 @@ func (f *fakeThread) fitsSize(ts, md string, steps []taskChunk) bool {
 	}
 	next := cur.with(md, steps)
 	if f.sizeLimit > 0 && next.text > 0 && next.slackMeasuredSize() > f.sizeLimit {
+		f.tooLong++
 		return false
 	}
 	f.sizes[ts] = next
 	return true
+}
+
+// refusedTooLong returns how many streaming calls were refused as too long.
+func (f *fakeThread) refusedTooLong() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.tooLong
 }
 
 // cardsOf returns the step cards a streamed message ended up with.

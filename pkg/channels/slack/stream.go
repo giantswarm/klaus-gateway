@@ -638,8 +638,10 @@ const (
 	// stepOutputReserve is what opening a step holds back for the output its
 	// close will add: the new message a full budget calls for can only start
 	// while no step is open, because a step's close has to reach the message
-	// that shows the step.
-	stepOutputReserve = stepFieldCost + stepFieldMax*5/4
+	// that shows the step. It covers a full preview dense with quotes and
+	// emphasis markers — the costliest output of the refused gazelle turn came
+	// to 583 — and an output denser still eats into the budget's margin.
+	stepOutputReserve = stepFieldCost + stepFieldMax*7/4
 	// maxSteps bounds the steps one turn puts on its reply. The steps ride the
 	// appends the answer already makes, so this is not a rate limit: Slack
 	// documents no maximum number of tasks on a message, and a turn of several
@@ -1686,17 +1688,36 @@ func (w *batchedWriter) stepCost(u *taskUpdate, b *streamBatch) (cost int, open 
 	}
 	holds := u.status == stepInProgress
 	if !here && (u.details != "" || w.movedSteps[u.id]) {
-		cost = stepCardCost + jsonEscapedLen(u.title) + fieldCost(u.details) + fieldCost(u.output)
-		if holds {
-			cost += stepOutputReserve
-		}
-		return cost, holds
+		return newCardCost(u), holds
 	}
 	cost = fieldCost(u.details) + fieldCost(u.output)
 	if reserved && !holds {
 		cost -= stepOutputReserve
 	}
 	return cost, reserved && holds
+}
+
+// newCardCost is what an update adds that gives its step a card on the
+// message, the output reserve included while the step runs.
+func newCardCost(u *taskUpdate) int {
+	cost := stepCardCost + jsonEscapedLen(u.title) + fieldCost(u.details) + fieldCost(u.output)
+	if u.status == stepInProgress {
+		cost += stepOutputReserve
+	}
+	return cost
+}
+
+// groupOpenCost prices the run of step openings at the head of items: the
+// rest of a group of calls the agent started at once.
+func groupOpenCost(items []queuedChunk) int {
+	cost := 0
+	for _, it := range items {
+		if s := it.step; s == nil || s.status != stepInProgress || s.details == "" {
+			break
+		}
+		cost += newCardCost(it.step)
+	}
+	return cost
 }
 
 // stepsOpen reports whether a step on the open message is still running once
@@ -1760,8 +1781,22 @@ func (w *batchedWriter) makeRoom(ctx context.Context, b *streamBatch) error {
 // measured on the agent's own bytes: that is the unit a process continuing the
 // turn after a restart skips, so it has to be the unit the pieces are cut in as
 // well. When closing, the last batch rides the chat.stopStream that ends the
-// reply instead of an append of its own.
+// reply instead of an append of its own. What a message Slack refused to grow
+// could not take goes on to a new message in the same call (overflowStream):
+// that is a delivery still under way, not a failed one to retry later.
 func (w *batchedWriter) sendQueued(ctx context.Context, items []queuedChunk, closing bool) (unsent []queuedChunk, err error) {
+	for {
+		unsent, err = w.sendQueuedOnce(ctx, items, closing)
+		if !errors.Is(err, errStreamOverflow) {
+			return unsent, err
+		}
+		items = unsent
+	}
+}
+
+// sendQueuedOnce is one pass of sendQueued, which ends early when a message
+// overflows.
+func (w *batchedWriter) sendQueuedOnce(ctx context.Context, items []queuedChunk, closing bool) (unsent []queuedChunk, err error) {
 	var batch streamBatch
 	// left is everything Slack has not taken: what the batch still holds, the
 	// untaken tail of the piece being cut, and the items after it.
@@ -1776,9 +1811,16 @@ func (w *batchedWriter) sendQueued(ctx context.Context, items []queuedChunk, clo
 		if step := items[i].step; step != nil {
 			for {
 				// A step only rolls the message over while no other step on it
-				// is running: their closes must reach the cards they update.
+				// is running: their closes must reach the cards they update. So
+				// the first step of a group the agent starts at once decides for
+				// the whole group, which usually arrives in the same flush.
 				cost, open := w.stepCost(step, &batch)
-				if cost <= w.room(&batch) || w.stepsOpen(&batch) || (w.streamTS == "" && batch.empty()) {
+				running := w.stepsOpen(&batch)
+				need := cost
+				if open && !running {
+					need += groupOpenCost(items[i+1:])
+				}
+				if need <= w.room(&batch) || running || (w.streamTS == "" && batch.empty()) {
 					batch.addStep(step, cost, open)
 					break
 				}
@@ -1797,8 +1839,10 @@ func (w *batchedWriter) sendQueued(ctx context.Context, items []queuedChunk, clo
 			// streamed counts the agent's bytes, not the shorter text Slack
 			// sees: scrubbing only ever removes, so the count over-estimates and
 			// rolls the reply over a little early — the safe side of Slack's
-			// per-message cap.
-			if len(piece) > w.room(&batch) {
+			// per-message cap. Like a step, prose does not roll the message over
+			// while a step on it runs; should Slack refuse it, overflowStream
+			// moves it on.
+			if len(piece) > w.room(&batch) && !w.stepsOpen(&batch) {
 				// No room for this piece. Land what the batch already holds
 				// first — that may be all it takes, since the delivery can end
 				// up on a message of its own — and only then roll the open one
@@ -1884,7 +1928,7 @@ func (w *batchedWriter) deliverBatch(ctx context.Context, b *streamBatch) error 
 		return nil
 	case streamGone(err):
 		return w.recoverStream(ctx, b, chunks)
-	case hasErrorCode(err, errCodeMsgTooLong) && w.streamed > 0:
+	case hasErrorCode(err, errCodeMsgTooLong) && w.heldContent():
 		return w.overflowStream(ctx, b, err)
 	}
 	return err
@@ -1904,28 +1948,44 @@ func (w *batchedWriter) landBatch(b *streamBatch) {
 // then, and what the batch still holds goes out on a new one.
 var errStreamOverflow = errors.New("slack: the reply outgrew its message")
 
+// heldContent reports whether the open message took content before: this
+// writer's own, or an adopted stream's from before a restart, whose record may
+// count none.
+func (w *batchedWriter) heldContent() bool {
+	return w.streamed > 0 || w.streamAdopted
+}
+
 // overflowStream moves the rest of the reply off a message Slack refused to
 // grow. The closes in the batch of steps on that message still reach their
 // cards, without the output that did not fit — the tool log keeps it — and a
 // step still running there is marked complete, so no card on a message that
-// takes no more updates spins forever: its result gets a card on the new
-// message. The message is then closed and the batch keeps what is left, for
-// the next flush to open a message with. What the full message held becomes
-// the turn's budget, so the later messages stay at a size Slack took. It runs
-// only when the message took content before, so a batch too long for any
-// message is not moved on and on.
+// takes no more updates spins forever. That step stays open for the writer:
+// its result gets a second card on the new message, and should none come,
+// the turn's end gives it a second, empty one, so the first "complete" may be
+// the only word on a call that still fails. The message is then closed and
+// the batch keeps what is left, for sendQueued to deliver on a new message.
+// What the full message held becomes the turn's budget, so the later messages
+// stay at a size Slack took. It runs only when the message held content (see
+// heldContent), so a batch too long for any message is not moved on and on.
 func (w *batchedWriter) overflowStream(ctx context.Context, b *streamBatch, cause error) error {
 	w.sizeBudget = max(min(w.streamed, w.budget()), slackMarkdownBlockMax/4)
+	// A step is on the full message unless its card is on an earlier one or
+	// this batch opens it: an adopted stream's steps have no record here.
+	opened := map[string]bool{}
+	for _, it := range b.items {
+		if s := it.step; s != nil && s.status == stepInProgress && s.details != "" {
+			opened[s.id] = true
+		}
+	}
+	onFull := func(id string) bool { return !w.movedSteps[id] && !opened[id] }
 	var closes []any
 	var rest []queuedChunk
 	closed := map[string]bool{}
 	for _, it := range b.items {
-		if s := it.step; s != nil && s.status != stepInProgress {
-			if _, ok := w.msgSteps[s.id]; ok {
-				closes = append(closes, stepChunk(taskUpdate{id: s.id, title: s.title, status: s.status}))
-				closed[s.id] = true
-				continue
-			}
+		if s := it.step; s != nil && s.status != stepInProgress && onFull(s.id) {
+			closes = append(closes, stepChunk(taskUpdate{id: s.id, title: s.title, status: s.status}))
+			closed[s.id] = true
+			continue
 		}
 		rest = append(rest, it)
 	}
@@ -2003,7 +2063,7 @@ func (w *batchedWriter) closeBatch(ctx context.Context, b *streamBatch) (unsent 
 		if b.empty() {
 			return nil, nil
 		}
-	case hasErrorCode(err, errCodeMsgTooLong) && w.streamed > 0:
+	case hasErrorCode(err, errCodeMsgTooLong) && w.heldContent():
 		// The retry of the final flush opens a message for what is left.
 		err = w.overflowStream(ctx, b, err)
 	}

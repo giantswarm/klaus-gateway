@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
+	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
 )
 
 // kubernetesGetResult is a tool result shaped like the x_kubernetes_get
@@ -55,7 +56,11 @@ func answerMarkdown() string {
 // stuckDeletingTurn is the shape of the refused gazelle turn: seventeen tool
 // calls in parallel groups with object-sized results, a narration, and a
 // formatted answer.
-func stuckDeletingTurn() []channels.OutboundDelta {
+func stuckDeletingTurn() []channels.OutboundDelta { return groupedTurn(4, 4, 4, 1, 4) }
+
+// groupedTurn is a turn of parallel tool-call groups of the given sizes, a
+// narration after the second group, and the formatted answer.
+func groupedTurn(sizes ...int) []channels.OutboundDelta {
 	var deltas []channels.OutboundDelta
 	n := 0
 	group := func(size int) {
@@ -71,12 +76,12 @@ func stuckDeletingTurn() []channels.OutboundDelta {
 			deltas = append(deltas, toolResultDelta("x_kubernetes_get", fmt.Sprintf("call-%d", i), kubernetesGetResult(fmt.Sprintf("cl-%d", i))))
 		}
 	}
-	group(4)
-	group(4)
-	deltas = append(deltas, narrationDelta("Two clusters are in `Deleting`. Next I'll check how long they've been stuck."))
-	group(4)
-	group(1)
-	group(4)
+	for g, size := range sizes {
+		group(size)
+		if g == 1 {
+			deltas = append(deltas, narrationDelta("Two clusters are in `Deleting`. Next I'll check how long they've been stuck."))
+		}
+	}
 	answer := answerMarkdown()
 	for len(answer) > 0 {
 		cut := min(len(answer), 200)
@@ -123,9 +128,39 @@ func TestStream_StepsCountTowardTheMessageSize(t *testing.T) {
 	_, _, err := runSurfaceWriter(t, ft, "C1", stuckDeletingTurn()...)
 	require.NoError(t, err)
 
+	require.Zero(t, ft.refusedTooLong(), "the budget rolls the reply over before Slack refuses it")
 	require.GreaterOrEqual(t, len(ft.streamTSs()), 2, "the reply rolled over into a further message")
 	require.Contains(t, ft.streamedText(), answerMarkdown(), "the whole answer is delivered")
 	requireEveryStepClosed(t, ft, 17)
+}
+
+// A group of calls the agent starts at once is priced as a whole by its first
+// step: the rest of the group cannot roll the message over while that step
+// runs, so the group must fit where it starts. Here the message has room for
+// one step of a group of eight, which therefore starts a new message.
+func TestStream_WideParallelGroupsFitWhereTheyStart(t *testing.T) {
+	ft := &fakeThread{sizeLimit: slackMeasuredLimit}
+	w := streamWriter(t, ft, "C1")
+	preview, _ := toolResultPreview(kubernetesGetResult("cl-1"), toolResultMax)
+	const group = 8
+
+	w.queueAnswer(strings.Repeat("a", slackMarkdownBlockMax-2000) + " ")
+	require.NoError(t, w.flush(t.Context()))
+	for i := 1; i <= group; i++ {
+		w.queueStep(taskUpdate{id: stepID(i), title: "Kubernetes get", status: stepInProgress,
+			details: stepField(`x_kubernetes_get {"apiGroup": "infrastructure.cluster.x-k8s.io", "management_cluster": "mc-1-mcp-kubernetes", "name": "cl-1", "namespace": "org-example"}`)})
+	}
+	require.NoError(t, w.flush(t.Context()))
+	for i := 1; i <= group; i++ {
+		w.queueStep(taskUpdate{id: stepID(i), title: "Kubernetes get", status: stepComplete, output: stepField(preview)})
+	}
+	require.NoError(t, w.flush(t.Context()))
+
+	require.Zero(t, ft.refusedTooLong(), "the group does not outgrow the message it starts on")
+	tss := ft.streamTSs()
+	require.Len(t, tss, 2, "the group starts a new message")
+	require.Len(t, ft.cardsOf(tss[1]), group, "the whole group is on the new message")
+	requireEveryStepClosed(t, ft, group)
 }
 
 // The size budget is an estimate. Should Slack still refuse a batch as too
@@ -137,6 +172,7 @@ func TestStream_MsgTooLongContinuesOnANewMessage(t *testing.T) {
 	require.NoError(t, err, "a refusal the reply recovers from is not a rendering failure")
 
 	require.GreaterOrEqual(t, len(ft.streamTSs()), 2)
+	require.LessOrEqual(t, ft.refusedTooLong(), 2, "the size the full message held bounds the messages after it")
 	require.Contains(t, ft.streamedText(), answerMarkdown(), "the whole answer is delivered")
 	for _, ts := range ft.streamTSs() {
 		for id, c := range ft.cardsOf(ts) {
@@ -158,10 +194,12 @@ func TestStream_NoRollOverWhileAStepIsOpen(t *testing.T) {
 		w.queueStep(taskUpdate{id: id, title: "Kubernetes get", status: stepComplete, output: strings.Repeat("o", 250)})
 	}
 
-	// Text that leaves room for one open step, not two.
+	// Text that leaves room for one open step, not two. step-2 starts in a
+	// later flush, while step-1 runs.
 	w.queueAnswer(strings.Repeat("a", slackMarkdownBlockMax-1200) + " ")
 	require.NoError(t, w.flush(t.Context()))
 	open("step-1")
+	require.NoError(t, w.flush(t.Context()))
 	open("step-2")
 	require.NoError(t, w.flush(t.Context()))
 	closeStep("step-1")
@@ -179,4 +217,43 @@ func TestStream_NoRollOverWhileAStepIsOpen(t *testing.T) {
 		require.Equal(t, stepComplete, c.status)
 	}
 	require.Contains(t, ft.cardsOf(tss[1]), "step-3")
+}
+
+// Prose that arrives while a step runs does not roll the message over either:
+// the step's close would land on a new message and leave its card spinning.
+func TestStream_TextDoesNotRollOverWhileAStepIsOpen(t *testing.T) {
+	ft := &fakeThread{}
+	w := streamWriter(t, ft, "D1")
+
+	w.queueAnswer(strings.Repeat("a", slackMarkdownBlockMax-1500) + " ")
+	require.NoError(t, w.flush(t.Context()))
+	w.queueStep(taskUpdate{id: "step-1", title: "Kubernetes get", status: stepInProgress, details: "x_kubernetes_get {}"})
+	require.NoError(t, w.flush(t.Context()))
+	w.queueNarration(strings.Repeat("n", 1500) + passageBreak)
+	require.NoError(t, w.flush(t.Context()))
+	w.queueStep(taskUpdate{id: "step-1", title: "Kubernetes get", status: stepComplete, output: "done"})
+	require.NoError(t, w.flush(t.Context()))
+
+	tss := ft.streamTSs()
+	require.Len(t, tss, 1, "no roll-over while step-1 runs")
+	require.Equal(t, stepComplete, ft.cardsOf(tss[0])["step-1"].status)
+}
+
+// A stream adopted after a restart held content even when its delivery record
+// counts none, so Slack refusing its first append as too long moves the rest
+// of the reply on to a new message instead of retrying it until the turn ends.
+func TestStream_AdoptedStreamOverflowsOntoANewMessage(t *testing.T) {
+	ft := &fakeThread{sizeLimit: slackMeasuredLimit}
+	ft.streaming = map[string]bool{"adopted-1": true}
+	ft.messages = map[string]capturedMessage{"adopted-1": {""}}
+	ft.sizes = map[string]*fakeMessageSize{"adopted-1": {text: slackMeasuredLimit - 10}}
+	w := streamWriter(t, ft, "D1")
+	w.continueFrom(store.Delivered{StreamTS: "adopted-1"})
+
+	w.queueAnswer("the rest of the answer, too long for the message it started on ")
+	require.NoError(t, w.flush(t.Context()))
+
+	require.Equal(t, 1, ft.refusedTooLong())
+	require.Len(t, ft.streamTSs(), 1, "the rest opened a message of its own")
+	require.Contains(t, ft.streamedText(), "the rest of the answer")
 }
