@@ -1859,8 +1859,9 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 	// Slack keeps a message that starts with "/" for its own commands, so the
 	// plain word is the form a person can type without addressing the bot;
 	// the slash form still works after a mention. Read before dispatch, so a
-	// busy thread answers the command instead of the busy notice.
-	if bare := parseBareCommand(msg.Text); bare != nil {
+	// busy thread answers the command instead of the busy notice;
+	// bareCommandFor names the messages that keep the word instead.
+	if bare := a.bareCommandFor(msg); bare != nil {
 		bare.Root = msg.MessageID == msg.ThreadID
 		if a.handleCommand(ctx, bare, msg.Subject, inner.Channel, msg.ThreadID) {
 			a.Logger.Debug("slack: bare command consumed", "command", bare.Name, "channel", inner.Channel, "thread", msg.ThreadID)

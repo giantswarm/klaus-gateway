@@ -893,6 +893,121 @@ func TestBareLogin_ConfirmsSignedIn(t *testing.T) {
 	require.Zero(t, gw.dispatchCount(), "a plain login must be consumed, not dispatched to the agent")
 }
 
+// The other surface the words serve: an unmentioned reply in a channel thread
+// the bot is in. Slack sends it as a plain message, so nothing marks it as
+// addressed to the bot.
+func TestBareLogout_ChannelThreadReply(t *testing.T) {
+	fake := newFakeSlackAPI()
+	obo := &fakeOBO{linkedUser: "U123", token: "human-token"}
+	gw := &stubGateway{}
+	rec, _ := agingRecorder(t)
+	gw.records = rec
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
+	a.OBO = obo
+
+	sendEvent(t, srv, mention("U123", "<@BOT> why is the cluster unhappy?", "800.000", ""))
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 20*time.Millisecond)
+	waitThreadIdle(t, a, "800.000")
+
+	sendEvent(t, srv, threadReply("U123", "logout", "800.001", "800.000"))
+
+	require.Eventually(t, func() bool {
+		obo.mu.Lock()
+		defer obo.mu.Unlock()
+		return len(obo.unlinked) == 1
+	}, flowWait, 50*time.Millisecond, "a plain logout in a channel thread must unlink the Slack user")
+
+	require.Equal(t, 1, gw.dispatchCount(), "the word must not reach the agent as a turn")
+}
+
+// The word is read before dispatch, so a thread with a turn running answers
+// the command instead of the busy notice.
+func TestBareLogout_DuringRunningTurn(t *testing.T) {
+	fake := newFakeSlackAPI()
+	hold := make(chan struct{})
+	defer close(hold)
+	obo := &fakeOBO{linkedUser: "U1", token: "human-token"}
+	gw := &stubGateway{hold: hold}
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+	a.OBO = obo
+
+	sendEvent(t, srv, dmEvent("U1", "long task", "700.000"))
+	fake.waitForPath(t, "reactions.add", 1)
+	waitTurnStreaming(t, fake)
+
+	sendEvent(t, srv, dmThreadEvent("U1", "logout", "701.000", "700.000"))
+
+	require.Eventually(t, func() bool {
+		obo.mu.Lock()
+		defer obo.mu.Unlock()
+		return len(obo.unlinked) == 1
+	}, flowWait, 50*time.Millisecond, "a running turn must not hide the command")
+
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "Still answering",
+		"the command is answered, not bounced as busy")
+	require.Equal(t, 1, gw.dispatchCount(), "the word must not reach the agent as a turn")
+}
+
+// A thread paused on a prompt keeps the word for its answer: a prompt asks for
+// exactly this shape, and the paused task has to be resolved. The command is
+// still reachable there after a mention.
+func TestBareCommand_PausedPromptKeepsTheWord(t *testing.T) {
+	fake := newFakeSlackAPI()
+	obo := &fakeOBO{linkedUser: "U1", token: "human-token"}
+	gw := &stubGateway{sendQueue: [][]channels.OutboundDelta{
+		{{Kind: channels.DeltaPrompt, TaskID: "task-1", Prompt: &channels.HitlPrompt{ToolName: "restart_service", Hint: "Which service?"}}},
+		{{Content: "done"}, {Done: true}},
+	}}
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+	a.OBO = obo
+
+	sendEvent(t, srv, dmEvent("U1", "restart it", "930.000"))
+	fake.waitForPath(t, "chat.postMessage", 1) // the prompt is up
+
+	sendEvent(t, srv, dmThreadEvent("U1", "logout", "931.000", "930.000"))
+
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 }, flowWait, 50*time.Millisecond,
+		"the answer must reach the paused task")
+
+	obo.mu.Lock()
+	defer obo.mu.Unlock()
+	require.Empty(t, obo.unlinked, "an answer to a prompt must not sign the person out")
+}
+
+// A word beside an upload is that file's caption. Consuming it would drop the
+// file without a word to its sender.
+func TestBareCommand_AttachmentCaptionReachesTheAgent(t *testing.T) {
+	fake := newFakeSlackAPI()
+	obo := &fakeOBO{linkedUser: "U1", token: "human-token"}
+	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "seen"}, {Done: true}}}
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+	a.OBO = obo
+
+	sendEvent(t, srv, dmEvent("U1", "here is the screenshot", "940.000"))
+	fake.waitForPath(t, "reactions.remove", 1)
+	sendEvent(t, srv, dmThreadFileEvent("U1", "logout", "941.000", "940.000", "login-page.png"))
+
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 }, flowWait, 50*time.Millisecond,
+		"a captioned upload must reach the agent")
+
+	obo.mu.Lock()
+	defer obo.mu.Unlock()
+	require.Empty(t, obo.unlinked, "a caption must not sign the person out")
+}
+
+// A gateway without sign-in serves neither word: its /help lists no account
+// command, so the word is a message like any other.
+func TestBareCommand_WithoutSignInReachesTheAgent(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "hi"}, {Done: true}}}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+
+	sendEvent(t, srv, dmEvent("U1", "login", "950.000"))
+
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond,
+		"without sign-in the word belongs to the agent")
+}
+
 // A word the gateway does not own, and a sentence that only contains one,
 // stay messages for the agent.
 func TestBareCommand_OnlyTheWordAlone(t *testing.T) {

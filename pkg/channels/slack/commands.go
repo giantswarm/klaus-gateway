@@ -9,6 +9,7 @@ import (
 
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 	"github.com/giantswarm/klaus-gateway/pkg/auth/musterlink"
+	"github.com/giantswarm/klaus-gateway/pkg/channels"
 )
 
 const (
@@ -106,6 +107,41 @@ func parseBareCommand(text string) *slashCommand {
 		return nil
 	}
 	return &slashCommand{Name: word}
+}
+
+// servesBareCommand reports whether this gateway answers name at all. A
+// gateway without sign-in keeps "login" and "logout" for the agent: its /help
+// lists no account command, so the word carries no meaning here.
+func (a *Adapter) servesBareCommand(name string) bool {
+	switch name {
+	case cmdLogin, cmdLogout:
+		return a.OBO != nil
+	}
+	return false
+}
+
+// bareCommandFor returns the command msg runs as a plain word, or nil when the
+// message is something else. Three messages keep the word for what they
+// carry, since a consumed message is one the agent never sees.
+func (a *Adapter) bareCommandFor(msg channels.InboundMessage) *slashCommand {
+	cmd := parseBareCommand(msg.Text)
+	if cmd == nil || !a.servesBareCommand(cmd.Name) {
+		return nil
+	}
+	// A word beside an upload is that file's caption. Consuming it would drop
+	// the file without a word to its sender.
+	if len(msg.Attachments) > 0 {
+		return nil
+	}
+	// A thread paused on a prompt keeps the word for its answer: the paused
+	// task must be resolved or the tool call dangles, and a one-word answer
+	// (a service name, a cluster) is the shape a prompt asks for. The command
+	// is still reachable there as `/login` after a mention, the rule /stop
+	// follows.
+	if a.hasPendingTask(msg.ThreadID) {
+		return nil
+	}
+	return cmd
 }
 
 // isBareStop reports whether text is the word "stop" on its own — the natural

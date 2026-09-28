@@ -673,10 +673,13 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
   happened and the one thing to do next, apart from the agent's answer.
 - **Account commands are plain words.** `login` and `logout` are read from a message that is
   that word alone, in any case and with trailing punctuation (`Login.`), so they need no
-  slash and no mention wherever the bot reads: a DM, or a thread it is in. A sentence that
-  contains the word is a message for the agent. `/login` and `/logout` still work after a
-  mention, undocumented, for the people who learned them. The same shape serves `stop`, which
-  is a command only while a turn runs (see [Restarts and `/stop`](#restarts-and-stop)).
+  slash and no mention wherever the bot reads: a DM, or a thread it is in. `/login` and
+  `/logout` also work after a mention. Three messages keep the word instead: a sentence that
+  contains it, a caption on an upload, and an answer in a thread paused on a prompt — where a
+  one-word answer is what the prompt asked for, and the mention form still reaches the
+  command. A gateway without sign-in serves neither word and passes both to the agent. The
+  same shape serves `stop`, which is a command only while a turn runs (see
+  [Restarts and `/stop`](#restarts-and-stop)).
 - **Per-message branding.** Agent replies and the agent's own confirmation prompts are posted
   under the agent's display name, so they read as the agent speaking
   rather than the app. The name is the `Agent` CR's `ui.giantswarm.io/display-name` annotation
