@@ -27,7 +27,7 @@ const agentRosterUnavailable = "The agents cannot be listed right now. Try again
 // a human identity, so a retry cannot help them. Each surface appends its own
 // tail (the slash command's slashCommandSignInNotice, /agent's
 // agentRosterSignIn), so a wording change lands on all of them.
-const rosterSignInLead = "The agents are listed with your permissions, so sign in first: mention the bot with `/login`"
+const rosterSignInLead = "The agents are listed with your permissions, so sign in first: mention the bot with `login`"
 
 // agentRosterSignIn answers a bare or quoted /agent from a caller the gateway
 // cannot identify.

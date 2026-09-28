@@ -70,7 +70,7 @@ failure never costs a person their sign-in:
 - A store that fails to read serves the link the gateway already knows (`link store read
   failed, serving the link this process knows`). A person it has never seen is not treated as
   unlinked: in Slack they get the transient "couldn't refresh your sign-in" notice, not the
-  sign-in prompt, and `/login` answers the same way. `/logout` reports a sign-out the store
+  sign-in prompt, and `login` answers the same way. `logout` reports a sign-out the store
   refused instead of confirming it.
 - Reads are served from the copy for 30 s, so a Slack turn costs one Secret read rather than
   one per lookup. Before a link is dropped on `invalid_grant` the store is re-read, so a token

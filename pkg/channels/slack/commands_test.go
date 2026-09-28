@@ -40,13 +40,15 @@ func TestHelpBlocks(t *testing.T) {
 	text, blocks := helpBlocks("swarmgeist", true, true)
 	require.Len(t, blocks, 4)
 	require.Equal(t, "header", blocks[0].(map[string]any)[bkType])
-	require.Equal(t, "Mention @swarmgeist first, as in `@swarmgeist /stop`: a message that starts with / goes to Slack's own commands.", contextText(blocks[1]))
+	require.Equal(t, "Mention @swarmgeist first for a command that starts with /, as in `@swarmgeist /stop`: a message that starts with / goes to Slack's own commands. A command without a slash needs no mention in a thread the bot is in.", contextText(blocks[1]))
 	require.Equal(t, []string{"In a thread", "Agents", "Account"}, groups(blocks))
 	require.Equal(t, helpShortcutNote, contextText(blocks[3]))
-	require.Equal(t, `Commands: /stop, /usage, /agent, /agent "Name" question, /login, /logout`, text)
+	require.Equal(t, `Commands: /stop, /usage, /agent, /agent "Name" question, login, logout`, text,
+		"the account commands are plain words, so nothing in Slack's composer intercepts them")
 
 	_, blocks = helpBlocks("", false, false)
-	require.Equal(t, "Mention the bot first, then the command: a message that starts with / goes to Slack's own commands.", contextText(blocks[1]))
+	require.Equal(t, "Mention the bot first for a command that starts with /: a message that starts with / goes to Slack's own commands.", contextText(blocks[1]),
+		"without sign-in every command has a slash, so the help does not talk about words")
 	require.Equal(t, []string{"In a thread"}, groups(blocks), "no agent selection, no sign-in")
 }
 
@@ -532,6 +534,40 @@ func TestIsBareStop(t *testing.T) {
 		{"", false},
 	} {
 		require.Equal(t, tc.want, isBareStop(tc.text), "%q", tc.text)
+	}
+}
+
+// The account commands are read as the word alone, in any case, with trailing
+// punctuation: Slack's composer keeps a message that starts with "/" for its
+// own commands, so a plain word is what a person can type. A sentence around
+// the word is a message for the agent, and "stop" is not in the set: it is a
+// command only while a turn runs, which dispatch decides.
+func TestParseBareCommand(t *testing.T) {
+	for _, tc := range []struct {
+		text string
+		want string
+	}{
+		{"login", cmdLogin},
+		{" LOGIN ", cmdLogin},
+		{"Login.", cmdLogin},
+		{"logout", cmdLogout},
+		{"Logout!", cmdLogout},
+		{"/login", ""},
+		{"please login", ""},
+		{"how do I login to the cluster?", ""},
+		{"logins", ""},
+		{"stop", ""},
+		{"usage", ""},
+		{"", ""},
+	} {
+		cmd := parseBareCommand(tc.text)
+		if tc.want == "" {
+			require.Nil(t, cmd, "%q", tc.text)
+			continue
+		}
+		require.NotNil(t, cmd, "%q", tc.text)
+		require.Equal(t, tc.want, cmd.Name, "%q", tc.text)
+		require.Empty(t, cmd.Args, "%q", tc.text)
 	}
 }
 

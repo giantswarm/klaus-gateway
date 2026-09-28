@@ -1855,6 +1855,18 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 		a.Logger.Info("slack: dropping duplicate message delivery", "channel", inner.Channel, "ts", msg.MessageID)
 		return
 	}
+	// A message that is the word "login" or "logout" alone is that command.
+	// Slack keeps a message that starts with "/" for its own commands, so the
+	// plain word is the form a person can type without addressing the bot;
+	// the slash form still works after a mention. Read before dispatch, so a
+	// busy thread answers the command instead of the busy notice.
+	if bare := parseBareCommand(msg.Text); bare != nil {
+		bare.Root = msg.MessageID == msg.ThreadID
+		if a.handleCommand(ctx, bare, msg.Subject, inner.Channel, msg.ThreadID) {
+			a.Logger.Debug("slack: bare command consumed", "command", bare.Name, "channel", inner.Channel, "thread", msg.ThreadID)
+			return
+		}
+	}
 	if cmd := parseCommand(msg.Text); cmd != nil {
 		cmd.Root = msg.MessageID == msg.ThreadID
 		// /agent is not a consumed command: the select form mutates msg (agent

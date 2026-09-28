@@ -325,7 +325,7 @@ func TestSlashCommand_UnlinkedCallerIsAskedToSignIn(t *testing.T) {
 	sendSlashCommand(t, srv, "C1", "U1", "", api.URL+"/response_url")
 
 	fake.waitForPath(t, "response_url", 1)
-	require.Contains(t, responseURLTexts(fake), "`/login`")
+	require.Contains(t, responseURLTexts(fake), "`login`")
 	require.Empty(t, fake.pathCalls("views.open"))
 }
 

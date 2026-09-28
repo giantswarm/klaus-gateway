@@ -314,7 +314,7 @@ carries no link and is posted once per thread; it drops each person who signs in
 nobody waits it reads "@Pau and @Jose signed in to Giant Swarm". In a DM it is a threaded
 message. The card's last line depends on what asked for it: "Your message runs as soon as
 you sign in." for a held message, "Sign in, then click the button again." for a button
-click, nothing for `/login`. The button opens the linking flow. Once the link completes, a
+click, nothing for `login`. The button opens the linking flow. Once the link completes, a
 DM prompt is rewritten in place to the signed-in confirmation ("Signed in to Giant Swarm.
 The agent now acts with your permissions."). A channel prompt is replaced with the same
 text through the `response_url` of its Sign in click, so its button goes; when the click
@@ -561,7 +561,7 @@ Everything the picker cannot do is said privately to the invoker, through the in
 | the shortcut, in a DM while DMs are not served | the DM redirect |
 | the slash command, in a DM | "This command starts a conversation in a channel…" |
 | the channel is not served | "This channel is not enabled yet…" |
-| the caller is not signed in | "The agents are listed with your permissions, so sign in first…" (`/login`) |
+| the caller is not signed in | "The agents are listed with your permissions, so sign in first…" (`login`) |
 | the roster took longer than the trigger's 3-second life | "Listing the agents took too long for Slack's picker…" |
 | the roster is unreachable, or empty | "The agents cannot be listed right now…" / "No agents are installed." |
 | on submit: the picked agent no longer validates | "No agent named `…` is available…", with the current roster |

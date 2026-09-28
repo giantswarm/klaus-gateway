@@ -845,6 +845,76 @@ func TestLogin_PostsSignInPrompt(t *testing.T) {
 	require.Zero(t, gw.dispatchCount(), "/login must be consumed, not dispatched to the agent")
 }
 
+// The account commands are plain words: Slack's composer keeps a message that
+// starts with "/" for its own commands, so "logout" typed on its own is the
+// command, with no slash and no mention.
+func TestBareLogout_Unlinks(t *testing.T) {
+	fakeSlack, _ := captureEphemeral(t)
+	t.Cleanup(fakeSlack.Close) // closed after the adapter has stopped; cleanups run LIFO
+
+	obo := &fakeOBO{linkedUser: "U123", token: "human-token"}
+	gw := &stubGateway{}
+	a, srv := newEventsAdapter(t, gw, fakeSlack.URL)
+	a.OBO = obo
+
+	sendEvent(t, srv, dmEvent("U123", "logout", "111.222"))
+
+	require.Eventually(t, func() bool {
+		obo.mu.Lock()
+		defer obo.mu.Unlock()
+		return len(obo.unlinked) == 1 && obo.unlinked[0] == "U123"
+	}, flowWait, 50*time.Millisecond, "a plain logout must unlink the Slack user")
+
+	require.Zero(t, gw.dispatchCount(), "a plain logout must be consumed, not dispatched to the agent")
+}
+
+// A plain "login" answers a signed-in person with their identity, the same as
+// the slash form. Capitalisation and a full stop are how a person types a
+// word, so they do not change what it means.
+func TestBareLogin_ConfirmsSignedIn(t *testing.T) {
+	fakeSlack, ephemerals := captureEphemeral(t)
+	t.Cleanup(fakeSlack.Close)
+
+	gw := &stubGateway{}
+	a, srv := newEventsAdapter(t, gw, fakeSlack.URL)
+	a.OBO = &fakeOBO{linkedUser: "U123", token: "human-token"}
+
+	sendEvent(t, srv, dmEvent("U123", "Login.", "111.222"))
+
+	require.Eventually(t, func() bool {
+		for _, e := range ephemerals() {
+			if text, _ := e["text"].(string); strings.HasPrefix(text, "Signed in") {
+				return true
+			}
+		}
+		return false
+	}, flowWait, 50*time.Millisecond, "a plain login must confirm the sign-in to the caller only")
+
+	require.Zero(t, gw.dispatchCount(), "a plain login must be consumed, not dispatched to the agent")
+}
+
+// A word the gateway does not own, and a sentence that only contains one,
+// stay messages for the agent.
+func TestBareCommand_OnlyTheWordAlone(t *testing.T) {
+	fakeSlack, _ := captureEphemeral(t)
+	t.Cleanup(fakeSlack.Close)
+
+	obo := &fakeOBO{linkedUser: "U123", token: "human-token"}
+	gw := &stubGateway{}
+	a, srv := newEventsAdapter(t, gw, fakeSlack.URL)
+	a.OBO = obo
+
+	sendEvent(t, srv, dmEvent("U123", "how do I login to the cluster?", "111.222"))
+
+	require.Eventually(t, func() bool {
+		return gw.dispatchCount() == 1
+	}, flowWait, 50*time.Millisecond, "a question that contains the word must reach the agent")
+
+	obo.mu.Lock()
+	defer obo.mu.Unlock()
+	require.Empty(t, obo.unlinked, "the question must not sign the person out")
+}
+
 // --- stubGateway ---
 
 type stubGateway struct {

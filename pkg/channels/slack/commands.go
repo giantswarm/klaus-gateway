@@ -78,14 +78,43 @@ func parseCommand(text string) *slashCommand {
 	return &slashCommand{Name: strings.ToLower(parts[0]), Args: args}
 }
 
+// bareCommands are the verbs a message carries as the word alone, with no
+// slash. Slack's composer keeps a message that starts with "/" for its own
+// commands, in a DM too, so a slash form reaches the bot only after a mention;
+// the plain word is the form a person can type wherever the bot reads. "stop"
+// is not one of them: it is a command only while a turn runs, which dispatch
+// decides (see isBareStop).
+var bareCommands = map[string]struct{}{
+	cmdLogin:  {},
+	cmdLogout: {},
+}
+
+// bareWord normalises a message that may be a one-word command: the word
+// alone, in any case, with trailing sentence punctuation allowed. Anything
+// longer comes back unchanged apart from the trim, so it matches no verb.
+func bareWord(text string) string {
+	text = strings.TrimRight(strings.TrimSpace(text), ".!?")
+	return strings.ToLower(strings.TrimSpace(text))
+}
+
+// parseBareCommand returns the command a message carries as a plain word, or
+// nil when it carries none. The whole message must be that word: a sentence
+// around it is a message for the agent.
+func parseBareCommand(text string) *slashCommand {
+	word := bareWord(text)
+	if _, ok := bareCommands[word]; !ok {
+		return nil
+	}
+	return &slashCommand{Name: word}
+}
+
 // isBareStop reports whether text is the word "stop" on its own — the natural
 // reply in a thread the bot answers in without a mention — allowing case and
 // trailing punctuation. Only a thread with a running turn reads it as /stop;
 // anywhere else it stays what it is today: a message for the agent, or a deny
 // word for a paused prompt.
 func isBareStop(text string) bool {
-	text = strings.TrimRight(strings.TrimSpace(text), ".!?")
-	return strings.EqualFold(strings.TrimSpace(text), cmdStop)
+	return bareWord(text) == cmdStop
 }
 
 // helpCommand is one command in the help reply: the command as it is typed,
@@ -114,8 +143,8 @@ func helpGroups(agents, signIn bool) []helpGroup {
 	}
 	if signIn {
 		groups = append(groups, helpGroup{title: "Account", commands: []helpCommand{
-			{"/login", "Sign in to Giant Swarm; the agent then acts with your permissions"},
-			{"/logout", "Sign out"},
+			{cmdLogin, "Sign in to Giant Swarm; the agent then acts with your permissions"},
+			{cmdLogout, "Sign out"},
 		}})
 	}
 	return groups
@@ -131,11 +160,15 @@ const helpShortcutNote = "Inspect agent steps: open the ⋯ menu on any message 
 // hardcoding one. The returned text is the notification fallback.
 func helpBlocks(botName string, agents, signIn bool) (string, []any) {
 	// Slack's composer takes a message that starts with / as one of Slack's
-	// own commands, in a DM too, so a command reaches the bot only after a
-	// mention.
-	address := "Mention the bot first, then the command: a message that starts with / goes to Slack's own commands."
+	// own commands, in a DM too, so a command with a slash reaches the bot
+	// only after a mention. A command that is a plain word does not, which is
+	// why the account commands carry no slash.
+	address := "Mention the bot first for a command that starts with /: a message that starts with / goes to Slack's own commands."
 	if botName != "" {
-		address = fmt.Sprintf("Mention @%s first, as in `@%s /stop`: a message that starts with / goes to Slack's own commands.", botName, botName)
+		address = fmt.Sprintf("Mention @%s first for a command that starts with /, as in `@%s /stop`: a message that starts with / goes to Slack's own commands.", botName, botName)
+	}
+	if signIn {
+		address += " A command without a slash needs no mention in a thread the bot is in."
 	}
 	var lines []string
 	var elements []any
@@ -256,7 +289,8 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *slashCommand, slackUse
 	return false
 }
 
-// handleLoginCommand handles `/login`. It always consumes the command. When
+// handleLoginCommand handles the login command, typed as the word alone or as
+// `/login` after a mention. It always consumes the command. When
 // OBO is disabled it says so rather than dispatching to the agent. An unlinked
 // user gets the sign-in prompt; a linked user gets a confirmation of their
 // signed-in identity. reply is ephemeral: the identity confirmation carries
@@ -304,7 +338,8 @@ func (a *Adapter) linkedEmail(slackUser string) string {
 	return ""
 }
 
-// handleLogoutCommand handles `/logout`: it signs the user out of their muster
+// handleLogoutCommand handles the logout command, typed as the word alone or
+// as `/logout` after a mention: it signs the user out of their muster
 // link, so the gateway asks them to sign in again before acting as them.
 func (a *Adapter) handleLogoutCommand(slackUser string, reply func(string)) bool {
 	if a.OBO == nil {

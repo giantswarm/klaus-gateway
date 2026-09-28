@@ -209,7 +209,7 @@ creates one, which a turn that switches agents does mid-thread.
 
 These are independent; a user can have completed one and not the other.
 
-1. **The gateway's account link** (`/login`, musterlink): binds a Slack user to
+1. **The gateway's account link** (`login`, musterlink): binds a Slack user to
    a Giant Swarm identity. The callback enforces an email match between the
    OAuth identity and the Slack profile email. GitHub-backed sign-in releases
    the GitHub *primary* email by default, which is the usual mismatch cause;
@@ -662,14 +662,21 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
 ### Identity, HITL, and channel behavior
 
 - **Commands and notes.** `/help` answers with a header, how to address the bot ("Mention
-  @Swarmgeist first, as in `@Swarmgeist /stop`": Slack's composer takes a message that starts with
+  @Swarmgeist first for a command that starts with /, as in `@Swarmgeist /stop`": Slack's
+  composer takes a message that starts with
   `/` as one of Slack's own commands, in a DM too), the commands
   grouped by what the person is doing (In a thread: `/stop`, `/usage`; Agents: `/agent`, only
-  with agent selection; Account: `/login`, `/logout`, only with sign-in), each command as a code
+  with agent selection; Account: `login`, `logout`, only with sign-in), each command as a code
   label with its effect as text, and a context line for the **Inspect agent steps** shortcut.
   The gateway's own notes (a stop, a failure, a refusal, a busy thread) are one short context
   line in Slack's small muted text, written in the third person without emoji: they name what
   happened and the one thing to do next, apart from the agent's answer.
+- **Account commands are plain words.** `login` and `logout` are read from a message that is
+  that word alone, in any case and with trailing punctuation (`Login.`), so they need no
+  slash and no mention wherever the bot reads: a DM, or a thread it is in. A sentence that
+  contains the word is a message for the agent. `/login` and `/logout` still work after a
+  mention, undocumented, for the people who learned them. The same shape serves `stop`, which
+  is a command only while a turn runs (see [Restarts and `/stop`](#restarts-and-stop)).
 - **Per-message branding.** Agent replies and the agent's own confirmation prompts are posted
   under the agent's display name, so they read as the agent speaking
   rather than the app. The name is the `Agent` CR's `ui.giantswarm.io/display-name` annotation
@@ -708,7 +715,7 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
   Swarm" card: the agent runs its tools with the person's permissions, the link lasts 15
   minutes, and a last line that depends on the trigger ("Your message runs as soon as you sign
   in." for a held message, "Sign in, then click the button again." for a button click, nothing
-  for `/login`). In a channel the prompt is ephemeral, so only that user sees the link; a
+  for `login`). In a channel the prompt is ephemeral, so only that user sees the link; a
   context line in the thread names who the thread waits for ("Waiting for @Pau to sign in to
   Giant Swarm"), carries no link, and gives the ephemeral something to render against. The
   thread has one notice for every unlinked user in it: it adds a second person, drops each
@@ -732,8 +739,8 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
 - **Transient sign-in failures.** When a linked person's token cannot be minted right now —
   muster's token endpoint or the gateway's link store not answering — they get an ephemeral
   "Your Giant Swarm sign-in could not be refreshed" notice and their message is not held;
-  the sign-in prompt is reserved for people with no link. `/login` answers the same way, and
-  `/logout` reports a sign-out the link store refused instead of confirming it. The gateway
+  the sign-in prompt is reserved for people with no link. `login` answers the same way, and
+  `logout` reports a sign-out the link store refused instead of confirming it. The gateway
   keeps a process-local copy of every link it has served, so a store outage does not reach the
   people it already knows and a refresh token the store failed to take is written later rather
   than lost (see `deployment.md`, "OBO link store").
