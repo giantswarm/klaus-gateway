@@ -4,6 +4,7 @@ import (
 	"net"
 	"strings"
 	"testing"
+	"time"
 
 	a2apkg "github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/stretchr/testify/require"
@@ -453,20 +454,33 @@ func TestClient_CreateAndRevokeShare(t *testing.T) {
 	client := f.serve(t, pkga2a.Config{})
 	ctx := asUser(t.Context(), userToken)
 
-	share, err := client.CreateShare(ctx, instanceID)
+	share, err := client.CreateShare(ctx, instanceID, 0)
 	require.NoError(t, err)
 	require.NotEmpty(t, share.ID)
 	require.NotEmpty(t, share.Token)
+	require.Nil(t, f.sharedTTL[0], "no ttl asks for a share that never expires")
+	require.True(t, share.ExpiresAt.IsZero())
 	require.Equal(t, []apiv1alpha1.AgentInstanceSharePermission{apiv1alpha1.AgentInstanceSharePermission_AGENT_INSTANCE_SHARE_PERMISSION_READ_WRITE}, f.sharedAs,
 		"a collaborator sends and cancels turns, which a read-only share refuses")
 	require.Equal(t, []string{"Bearer " + userToken}, f.lastMD("CreateAgentInstanceShare").Get("authorization"))
 
-	_, err = client.CreateShare(asUser(t.Context(), "someone-else"), instanceID)
+	_, err = client.CreateShare(asUser(t.Context(), "someone-else"), instanceID, 0)
 	require.ErrorIs(t, err, pkga2a.ErrInstanceNotFound, "only the instance's creator may share it")
 
 	require.NoError(t, client.RevokeShare(ctx, share.ID))
 	require.Equal(t, []string{share.ID}, f.revoked)
 	require.NoError(t, client.RevokeShare(ctx, share.ID), "a share already gone is revoked either way")
+}
+
+func TestClient_CreateShare_AsksForAnExpiry(t *testing.T) {
+	f := readyFake(t)
+	client := f.serve(t, pkga2a.Config{})
+	before := time.Now()
+
+	share, err := client.CreateShare(asUser(t.Context(), userToken), instanceID, time.Hour)
+	require.NoError(t, err)
+	require.Equal(t, time.Hour, f.sharedTTL[0].AsDuration())
+	require.WithinRange(t, share.ExpiresAt, before.Add(time.Hour), time.Now().Add(time.Hour), "the controller's expiry is handed back")
 }
 
 // A share token in the context rides on every call as x-share-token, next to

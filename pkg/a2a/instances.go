@@ -8,6 +8,7 @@ import (
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/durationpb"
 
 	apiv1alpha1 "github.com/giantswarm/klaus-gateway/pkg/kagent/gen/kagent/api/v1alpha1"
 )
@@ -153,24 +154,32 @@ func (c *Client) DeleteInstance(ctx context.Context, id string) error {
 
 // Share is an AgentInstance share: ID names it for a revoke, and Token is the
 // secret a call presents to act on the instance. The controller returns the
-// token only when the share is created and keeps just its hash.
+// token only when the share is created and keeps just its hash. ExpiresAt is
+// when the token stops granting access; zero means never.
 type Share struct {
-	ID    string
-	Token string
+	ID        string
+	Token     string
+	ExpiresAt time.Time
 }
 
 // CreateShare mints a read-write share of the instance, which lets a caller
 // other than its creator send and cancel turns on it as themselves. Only the
-// instance's creator may create one.
-func (c *Client) CreateShare(ctx context.Context, instanceID string) (Share, error) {
+// instance's creator may create one. A positive ttl asks the controller to
+// expire the share that long after its creation; a controller that does not
+// know share expiry ignores it, and the share then reports no ExpiresAt.
+func (c *Client) CreateShare(ctx context.Context, instanceID string, ttl time.Duration) (Share, error) {
 	callCtx, err := c.serviceCtx(ctx)
 	if err != nil {
 		return Share{}, err
 	}
-	resp, err := c.instances.CreateAgentInstanceShare(callCtx, &apiv1alpha1.CreateAgentInstanceShareRequest{
+	req := &apiv1alpha1.CreateAgentInstanceShareRequest{
 		AgentInstanceId: instanceID,
 		Permission:      apiv1alpha1.AgentInstanceSharePermission_AGENT_INSTANCE_SHARE_PERMISSION_READ_WRITE,
-	})
+	}
+	if ttl > 0 {
+		req.Ttl = durationpb.New(ttl)
+	}
+	resp, err := c.instances.CreateAgentInstanceShare(callCtx, req)
 	if err != nil {
 		if status.Code(err) == codes.NotFound {
 			return Share{}, fmt.Errorf("%w: %s", ErrInstanceNotFound, instanceID)
@@ -180,7 +189,11 @@ func (c *Client) CreateShare(ctx context.Context, instanceID string) (Share, err
 	if resp.GetToken() == "" || resp.GetShare().GetId() == "" {
 		return Share{}, fmt.Errorf("a2a: share AgentInstance %s: the controller returned no share token", instanceID)
 	}
-	return Share{ID: resp.GetShare().GetId(), Token: resp.GetToken()}, nil
+	share := Share{ID: resp.GetShare().GetId(), Token: resp.GetToken()}
+	if at := resp.GetShare().GetExpiresAt(); at != nil {
+		share.ExpiresAt = at.AsTime()
+	}
+	return share, nil
 }
 
 // RevokeShare revokes a share, so its token no longer grants anything. A share

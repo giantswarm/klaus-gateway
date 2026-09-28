@@ -64,6 +64,8 @@ type fakeAgent struct {
 	// bearer of each CreateShare, shares the ids minted, revoked the revokes.
 	createdAs []string
 	sharedAs  []string
+	sharedTTL []time.Duration
+	shareExp  func(ttl time.Duration) time.Time
 	shareErr  error
 	shares    []string
 	revoked   []string
@@ -212,22 +214,27 @@ func (a *fakeAgent) DeleteInstance(_ context.Context, id string) error {
 	return nil
 }
 
-func (a *fakeAgent) CreateShare(ctx context.Context, instanceID string) (pkga2a.Share, error) {
+func (a *fakeAgent) CreateShare(ctx context.Context, instanceID string, ttl time.Duration) (pkga2a.Share, error) {
 	a.mu.Lock()
 	a.sharedAs = append(a.sharedAs, pkga2a.ForwardedTokenFromContext(ctx))
+	a.sharedTTL = append(a.sharedTTL, ttl)
 	if a.shareErr != nil {
 		a.mu.Unlock()
 		return pkga2a.Share{}, a.shareErr
 	}
 	id := fmt.Sprintf("share-%d", len(a.shares)+1)
 	a.shares = append(a.shares, id)
+	share := pkga2a.Share{ID: id, Token: "token-" + id + "-" + instanceID}
+	if a.shareExp != nil {
+		share.ExpiresAt = a.shareExp(ttl)
+	}
 	hook := a.onShare
 	a.onShare = nil
 	a.mu.Unlock()
 	if hook != nil {
 		hook()
 	}
-	return pkga2a.Share{ID: id, Token: "token-" + id + "-" + instanceID}, nil
+	return share, nil
 }
 
 func (a *fakeAgent) RevokeShare(_ context.Context, shareID string) error {

@@ -309,7 +309,7 @@ func (k *ownedKagent) DeleteInstance(ctx context.Context, _ string) error {
 	return nil
 }
 
-func (k *ownedKagent) CreateShare(context.Context, string) (pkga2a.Share, error) {
+func (k *ownedKagent) CreateShare(context.Context, string, time.Duration) (pkga2a.Share, error) {
 	return pkga2a.Share{}, errors.New("not scripted")
 }
 
