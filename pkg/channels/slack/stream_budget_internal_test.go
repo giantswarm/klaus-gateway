@@ -257,3 +257,19 @@ func TestStream_AdoptedStreamOverflowsOntoANewMessage(t *testing.T) {
 	require.Len(t, ft.streamTSs(), 1, "the rest opened a message of its own")
 	require.Contains(t, ft.streamedText(), "the rest of the answer")
 }
+
+// A Stop press that Slack reports on the stop closing a full message ends the
+// reply: the rest of it is dropped, not moved on to a new message.
+func TestStream_OverflowAfterStopOpensNoNewMessage(t *testing.T) {
+	ft := &fakeThread{sizeLimit: 1000, failStop: errCodeStoppedByUser}
+	w := streamWriter(t, ft, "D1")
+
+	w.queueAnswer(strings.Repeat("a", 900) + " ")
+	require.NoError(t, w.flush(t.Context()))
+	w.queueAnswer(strings.Repeat("b", 200) + " ")
+	require.NoError(t, w.flush(t.Context()))
+
+	require.Equal(t, 1, ft.refusedTooLong())
+	require.Len(t, ft.streamTSs(), 1, "no message is opened after the Stop press")
+	require.True(t, w.streamStopped)
+}

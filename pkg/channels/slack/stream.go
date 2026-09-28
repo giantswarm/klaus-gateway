@@ -1790,6 +1790,11 @@ func (w *batchedWriter) sendQueued(ctx context.Context, items []queuedChunk, clo
 		if !errors.Is(err, errStreamOverflow) {
 			return unsent, err
 		}
+		if w.streamStopped {
+			// The stop closing the full message found the user had pressed
+			// Stop: the rest of the reply is dropped, like any after a Stop.
+			return nil, nil
+		}
 		items = unsent
 	}
 }
@@ -2064,7 +2069,7 @@ func (w *batchedWriter) closeBatch(ctx context.Context, b *streamBatch) (unsent 
 			return nil, nil
 		}
 	case hasErrorCode(err, errCodeMsgTooLong) && w.heldContent():
-		// The retry of the final flush opens a message for what is left.
+		// sendQueued opens a message for what is left and closes the reply there.
 		err = w.overflowStream(ctx, b, err)
 	}
 	return b.items, err
