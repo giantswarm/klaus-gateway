@@ -14,8 +14,8 @@ func stubCalls(stub *musterStub) int {
 	return stub.counter
 }
 
-// A token a turn was handed and that is within refreshAhead of expiry is
-// refreshed by the sweep, off any turn: the cached id_token and its expiry
+// A token a turn was handed and that is within a sweep of dropping below the
+// turn minimum is refreshed by the sweep, off any turn: the cached id_token and its expiry
 // move, the stored refresh token rotates, and the next TokenFor is a cache
 // hit with no call to muster. A second sweep finds nothing due.
 func TestRefreshDue_RefreshesServedTokenAheadOfExpiry(t *testing.T) {
@@ -90,14 +90,16 @@ func TestRefreshDue_OnlyServedLinksWithinTheWindow(t *testing.T) {
 func TestRefreshDue_RefusalDropsTransientKeeps(t *testing.T) {
 	stub := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
 	store := NewMemStore()
-	soon := time.Now().Add(2 * time.Minute)
+	// Covers a turn, yet within a sweep of dropping below the minimum: served
+	// by TokenFor and due for the sweep.
+	soon := time.Now().Add(DefaultMinTokenLifetime + 30*time.Second)
 	require.NoError(t, store.Put("dead", &Link{RefreshToken: "dead", IDToken: makeIDToken("muster-sub", soon), Expiry: soon}))
 	require.NoError(t, store.Put("flaky", &Link{RefreshToken: "refresh-0", IDToken: makeIDToken("muster-sub", soon), Expiry: soon}))
 	l := newTestLinker(t, stub, store, nil)
 	t.Cleanup(func() { _ = l.Close() })
 	for _, id := range []string{"dead", "flaky"} {
 		_, err := l.TokenFor(context.Background(), id)
-		require.NoError(t, err, "two minutes from expiry the cached token is still served")
+		require.NoError(t, err, "just above the turn minimum the cached token is still served")
 	}
 
 	stub.mu.Lock()
@@ -118,6 +120,36 @@ func TestRefreshDue_RefusalDropsTransientKeeps(t *testing.T) {
 	require.ErrorIs(t, err, ErrNotLinked, "a refusal drops the link")
 	_, err = l.TokenFor(context.Background(), "dead")
 	require.ErrorIs(t, err, ErrNotLinked, "the next turn prompts a sign-in")
+}
+
+// The sweep keeps a served token above the turn minimum: a token with 30
+// minutes left is not due, the same token four and a half minutes later (one
+// sweep from dropping below 25 minutes) is. When muster's tokens live shorter
+// than the minimum the token is due after every refresh, and the sweep spends
+// at most one refresh per refreshMinInterval on it.
+func TestRefreshDue_KeepsServedTokenAboveTurnMinimum(t *testing.T) {
+	stub := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
+	stub.idTokenTTL = 10 * time.Minute
+	store := NewMemStore()
+	exp := time.Now().Add(30 * time.Minute)
+	require.NoError(t, store.Put("U1", &Link{RefreshToken: "refresh-0", IDToken: makeIDToken("muster-sub", exp), Expiry: exp}))
+	l := newTestLinker(t, stub, store, nil)
+	t.Cleanup(func() { _ = l.Close() })
+	_, err := l.TokenFor(context.Background(), "U1")
+	require.NoError(t, err)
+	require.Equal(t, 0, l.RefreshDue(context.Background()), "30 minutes left: not due")
+
+	base := time.Now()
+	l.now = func() time.Time { return base.Add(4*time.Minute + 30*time.Second) }
+	require.Equal(t, 1, l.RefreshDue(context.Background()), "a sweep from the minimum: due")
+	require.Equal(t, 1, stubCalls(stub))
+
+	// The ten-minute token is below the minimum at once, yet not refreshed
+	// again before refreshMinInterval.
+	require.Equal(t, 0, l.RefreshDue(context.Background()))
+	l.now = func() time.Time { return base.Add(4*time.Minute + 30*time.Second + refreshMinInterval) }
+	require.Equal(t, 1, l.RefreshDue(context.Background()))
+	require.Equal(t, 2, stubCalls(stub))
 }
 
 // Close stops the refresher and is idempotent; New starts it.

@@ -380,3 +380,21 @@ func TestThreadTTL_FlagEnvDefault(t *testing.T) {
 	bad.ThreadTTL = -time.Hour
 	require.Error(t, bad.Validate())
 }
+
+func TestOBOMinTokenLifetime_FlagEnvValidate(t *testing.T) {
+	require.Zero(t, config.Defaults().OBO.MinTokenLifetime, "zero leaves the default (25m) to musterlink")
+
+	cfg, err := config.Load([]string{"--obo-min-token-lifetime=40m"})
+	require.NoError(t, err)
+	require.Equal(t, 40*time.Minute, cfg.OBO.MinTokenLifetime)
+
+	t.Setenv("KLAUS_GATEWAY_OBO_MIN_TOKEN_LIFETIME", "20m")
+	cfg, err = config.Load(nil)
+	require.NoError(t, err)
+	require.Equal(t, 20*time.Minute, cfg.OBO.MinTokenLifetime)
+
+	bad := config.Defaults()
+	bad.Slack.Enabled = true
+	bad.OBO = config.OBOConfig{Enabled: true, MusterURL: "https://muster.example.com", CallbackBaseURL: "https://gateway.example.com", StateKeyFile: "/k", MinTokenLifetime: -time.Minute}
+	require.Error(t, bad.Validate())
+}

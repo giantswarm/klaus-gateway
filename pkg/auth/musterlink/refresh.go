@@ -7,13 +7,13 @@ import (
 
 // The id_token a turn forwards is Dex's, with Dex's lifetime; refreshing it
 // spends a round trip to muster's token endpoint (about 1.2 s on an
-// installation, including muster fetching the gateway's CIMD document). Until
-// 1.10 that refresh ran inside TokenFor, on the turn's critical path: the
-// first message after every expiry waited for it. The refresher below runs
+// installation, including muster fetching the gateway's CIMD document).
+// TokenFor refreshes on the turn's critical path whenever the cached token
+// would not cover a turn (Config.MinTokenLifetime). The refresher below runs
 // the same refresh ahead of time, off any turn, for the people whose token
-// this process has recently handed to a turn, so TokenFor finds a fresh
-// token and its own refresh stays the fallback for a refresher that could
-// not reach muster in time.
+// this process has recently handed to a turn, so TokenFor finds a token that
+// covers the next turn and its own refresh stays the fallback for a refresher
+// that could not reach muster in time.
 const (
 	// recordTokenRefresh is the `record` value of the log line every refresh
 	// leaves, with `trigger` naming who ran it.
@@ -23,13 +23,16 @@ const (
 	refreshTriggerTurn  = "turn"
 	refreshTriggerAhead = "ahead"
 
-	// refreshAhead is how long before its expiry a served id_token is
-	// refreshed. Well above tokenRefreshSkew (the point at which TokenFor
-	// refreshes on the path itself) and above one sweep interval, so a sweep
-	// that misses muster once still leaves the next one time to succeed.
-	refreshAhead = 5 * time.Minute
-	// refreshSweepInterval is how often the refresher looks for due tokens.
+	// refreshSweepInterval is how often the refresher looks for due tokens. A
+	// token is due one interval before it drops below the turn minimum, so the
+	// next sweep's turn still finds it covering a turn.
 	refreshSweepInterval = time.Minute
+	// refreshMinInterval is the least time between two refreshes of one
+	// person's token by the refresher. It bounds the refresher to a dozen
+	// refreshes an hour per person when muster's tokens live barely longer
+	// than the turn minimum, or shorter, or when muster hands back the token
+	// it already held.
+	refreshMinInterval = 5 * time.Minute
 	// refreshServedWindow bounds whose tokens are kept fresh: a person whose
 	// token no turn asked for in this long is left to TokenFor's own refresh
 	// on their next message, so an idle person's link is not rotated every
@@ -49,10 +52,38 @@ func (l *Linker) noteServed(slackUserID string) {
 	}
 }
 
-// refreshDueAt reports whether link's id_token is within refreshAhead of
-// expiry at now (an unknown expiry is TokenFor's to sort out).
-func refreshDueAt(link *Link, now time.Time) bool {
-	return !link.Expiry.IsZero() && !now.Add(refreshAhead).Before(link.Expiry)
+// noteRefreshed records that this process just refreshed slackUserID's token.
+func (l *Linker) noteRefreshed(slackUserID string) {
+	l.linksMu.Lock()
+	defer l.linksMu.Unlock()
+	if c, ok := l.links[slackUserID]; ok {
+		c.refreshed = l.now()
+	}
+}
+
+// refreshedAt returns when this process last refreshed slackUserID's token,
+// zero when it has not.
+func (l *Linker) refreshedAt(slackUserID string) time.Time {
+	l.linksMu.Lock()
+	defer l.linksMu.Unlock()
+	if c, ok := l.links[slackUserID]; ok {
+		return c.refreshed
+	}
+	return time.Time{}
+}
+
+// refreshDueAt reports whether c's id_token is due at now: it is within one
+// sweep of dropping below the turn minimum, and the refresher has not
+// refreshed it within refreshMinInterval. An unknown expiry is TokenFor's to
+// sort out.
+func (l *Linker) refreshDueAt(c *cachedLink, now time.Time) bool {
+	if c.link.Expiry.IsZero() {
+		return false
+	}
+	if !c.refreshed.IsZero() && now.Sub(c.refreshed) < refreshMinInterval {
+		return false
+	}
+	return !now.Add(l.minLifetime + refreshSweepInterval).Before(c.link.Expiry)
 }
 
 // dueForRefresh lists the people whose token a turn asked for within the
@@ -65,11 +96,19 @@ func (l *Linker) dueForRefresh(now time.Time) []string {
 		if c.served.IsZero() || now.Sub(c.served) > refreshServedWindow {
 			continue
 		}
-		if refreshDueAt(&c.link, now) {
+		if l.refreshDueAt(c, now) {
 			due = append(due, id)
 		}
 	}
 	return due
+}
+
+// isDue reports whether slackUserID's cached token is due at now.
+func (l *Linker) isDue(slackUserID string, now time.Time) bool {
+	l.linksMu.Lock()
+	defer l.linksMu.Unlock()
+	c, ok := l.links[slackUserID]
+	return ok && l.refreshDueAt(c, now)
 }
 
 // RefreshDue refreshes every due token once (see dueForRefresh) and returns
@@ -100,7 +139,7 @@ func (l *Linker) refreshAheadOfExpiry(ctx context.Context, slackUserID string) b
 	if err != nil {
 		return false
 	}
-	if !refreshDueAt(link, l.now()) {
+	if !l.isDue(slackUserID, l.now()) {
 		return false // a turn refreshed it meanwhile
 	}
 	rctx, cancel := context.WithTimeout(ctx, refreshTimeout)

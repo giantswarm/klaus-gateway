@@ -381,15 +381,16 @@ func buildOBOLinker(cfg config.OBOConfig, logger *slog.Logger,
 	}
 
 	linker, err := musterlink.New(musterlink.Config{
-		BaseURL:       cfg.MusterURL,
-		ClientID:      cfg.ClientID,
-		ClientSecret:  cfg.ClientSecret,
-		PublicBaseURL: cfg.CallbackBaseURL,
-		StateKey:      stateKey,
-		Store:         store,
-		SlackEmail:    slackEmail,
-		OnLinked:      onLinked,
-		Logger:        logger,
+		BaseURL:          cfg.MusterURL,
+		ClientID:         cfg.ClientID,
+		ClientSecret:     cfg.ClientSecret,
+		PublicBaseURL:    cfg.CallbackBaseURL,
+		StateKey:         stateKey,
+		MinTokenLifetime: cfg.MinTokenLifetime,
+		Store:            store,
+		SlackEmail:       slackEmail,
+		OnLinked:         onLinked,
+		Logger:           logger,
 	})
 	if err != nil {
 		_ = cleanup()

@@ -168,6 +168,11 @@ type OBOConfig struct {
 	// StateKeyFile holds the HMAC key used to sign link state (CSRF + binding
 	// the link to the requesting Slack user). Required when OBO is enabled.
 	StateKeyFile string
+	// MinTokenLifetime is the least remaining lifetime of the human token a
+	// turn is dispatched with: a cached token with less left is refreshed
+	// first, because the agent keeps it for the whole turn. Zero uses
+	// musterlink.DefaultMinTokenLifetime (25m).
+	MinTokenLifetime time.Duration
 	// ConnectorsEnabled turns on the reactive Slack "Connect <backend>" UX: the
 	// gateway detects a core_auth_login challenge in the agent's A2A stream and
 	// renders a Connect button from the login link the agent relays. The gateway
@@ -363,6 +368,7 @@ func Load(args []string) (Config, error) {
 	fs.StringVar(&cfg.OBO.StoreSecretName, "obo-store-secret", cfg.OBO.StoreSecretName, "Name of the Secret holding the links (secret backend).")
 	fs.StringVar(&cfg.OBO.StoreSecretNamespace, "obo-store-secret-namespace", cfg.OBO.StoreSecretNamespace, "Namespace of the link Secret (secret backend). Empty means the pod's own namespace.")
 	fs.StringVar(&cfg.OBO.StateKeyFile, "obo-state-key-file", cfg.OBO.StateKeyFile, "Path to the HMAC key file used to sign link state (required with --obo-enabled).")
+	fs.DurationVar(&cfg.OBO.MinTokenLifetime, "obo-min-token-lifetime", cfg.OBO.MinTokenLifetime, "Least remaining lifetime of the human token a turn is dispatched with; a cached token with less left is refreshed first, since the agent keeps it for the whole turn. Set it above the longest turn. 0 means 25m; values below 1m are raised to 1m.")
 	fs.BoolVar(&cfg.OBO.ConnectorsEnabled, "obo-connectors-enabled", cfg.OBO.ConnectorsEnabled, "Enable the reactive Slack connector UX: the gateway detects a core_auth_login challenge in the agent's response stream and renders a Connect button from the login link the agent relays. The gateway does not call muster. Requires --obo-enabled.")
 	fs.BoolVar(&cfg.Reviews.Enabled, "reviews-enabled", cfg.Reviews.Enabled, "Enable the team-review endpoint (POST /reviews, POST /notices) for managers authenticated as a Kubernetes ServiceAccount. Requires --slack-enabled and --obo-enabled.")
 	fs.StringVar(&cfg.Reviews.Audience, "reviews-audience", cfg.Reviews.Audience, "Token audience the API server checks for the team-review endpoint (default klaus-gateway).")
@@ -544,6 +550,11 @@ func applyEnv(cfg *Config) {
 	if v, ok := lookup("OBO_CONNECTORS_ENABLED"); ok {
 		cfg.OBO.ConnectorsEnabled = strings.EqualFold(v, "true") || v == "1"
 	}
+	if v, ok := lookup("OBO_MIN_TOKEN_LIFETIME"); ok {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.OBO.MinTokenLifetime = d
+		}
+	}
 }
 
 func lookup(key string) (string, bool) {
@@ -609,6 +620,9 @@ func (c Config) Validate() error {
 	if c.OBO.Enabled {
 		if !c.Slack.Enabled {
 			return fmt.Errorf("--slack-enabled is required with --obo-enabled (OBO links Slack identities and enforces the Slack/muster email match)")
+		}
+		if c.OBO.MinTokenLifetime < 0 {
+			return fmt.Errorf("--obo-min-token-lifetime must not be negative (got %s)", c.OBO.MinTokenLifetime)
 		}
 		if c.OBO.MusterURL == "" {
 			return fmt.Errorf("--obo-muster-url is required with --obo-enabled")

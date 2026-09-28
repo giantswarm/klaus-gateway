@@ -4,6 +4,16 @@ Breaking or operator-visible changes between releases, newest first. The
 `CHANGELOG.md` lists every change; this file covers what an operator has to
 do or decide.
 
+## Next — a turn's token covers the turn (`obo.minTokenLifetime`)
+
+A turn is dispatched with a human token that has at least `obo.minTokenLifetime` left (25m by
+default), since the agent keeps it for the whole turn. With muster's 30-minute tokens this
+moves more token refreshes ahead of the turn: the refresher refreshes a person who spoke in the
+last 48 hours about every five minutes instead of once per token lifetime, and a turn whose
+cached token has less than the minimum left refreshes on its own path. Set the value above the
+longest turn an installation runs; `id_token refreshed below the turn minimum` in the log means
+muster did not return a token that long-lived.
+
 ## Next — the ignored Slack-only values keys are deleted (breaking)
 
 Nine values keys the chart has accepted and ignored since the Slack-only release are removed from

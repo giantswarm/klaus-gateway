@@ -568,13 +568,21 @@ Three structured log records (`record=…`, JSON fields) tell a turn's story; jo
   second attempt; `task_done_ms` and `stream_end_ms` are that attempt's.
 - `token_refresh` -- the person's muster id_token was refreshed: `trigger` (`ahead` for the
   background refresher, `turn` for a refresh on the turn's path), `slackUser`, `duration_ms`,
-  `expires_in_s`, or `error`. The refresher keeps the tokens of the people whose token a turn
-  asked for in the last 48 hours fresh -- every minute it refreshes those within five minutes of
-  expiry, under the same per-user lock and through the same store write as a turn's refresh, so
-  the rotating refresh token is never raced -- and a turn's `token_mint_ms` stays at a cache hit.
-  When the refresher could not reach muster in time the turn refreshes as before; a refresh
-  muster refuses drops the link like a turn's would, and the person is asked to sign in on their
-  next message.
+  `expires_in_s`, or `error`. A turn is dispatched only with a token that covers a turn: the
+  agent keeps the token it starts with until the turn ends, and muster ends the turn's session
+  (and its tools) when that token expires, so a cached token with less than
+  `obo.minTokenLifetime` left (`--obo-min-token-lifetime`, 25 minutes by default) is refreshed
+  first. The refresher keeps the tokens of the people whose token a turn asked for in the last
+  48 hours above that minimum -- every minute it refreshes those within a minute of dropping
+  below it, at most once per five minutes per person, under the same per-user lock and through
+  the same store write as a turn's refresh, so the rotating refresh token is never raced -- and
+  a turn's `token_mint_ms` stays at a cache hit. When the refresher could not reach muster in
+  time the turn refreshes as before; a refresh muster refuses drops the link like a turn's
+  would, and the person is asked to sign in on their next message. A refresh that returns a
+  token with less than the minimum left logs `id_token refreshed below the turn minimum` with
+  `min_lifetime_s`: muster's tokens live shorter than the minimum, or muster handed back the
+  upstream token it already held. Then every turn gets a freshly refreshed token, shared by the
+  calls of one turn within a minute of the refresh.
 
 The same phases feed the `klaus_gateway_turn_phase_seconds` histograms and the outcome and
 failure class the `klaus_gateway_turn_total` counter; the trace the records name spans the gateway, the kagent
