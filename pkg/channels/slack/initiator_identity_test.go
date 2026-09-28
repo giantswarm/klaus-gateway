@@ -11,6 +11,7 @@ import (
 	"github.com/giantswarm/klaus-gateway/pkg/auth/musterlink"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 	slackadapter "github.com/giantswarm/klaus-gateway/pkg/channels/slack"
+	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
 )
 
 // perUserOBO mints a distinct token per Slack user so a test can tell whose
@@ -33,10 +34,11 @@ func (o perUserOBO) TokenFor(_ context.Context, slackUserID string) (string, err
 func (perUserOBO) LinkURL(string) string { return "https://gw.example/link" }
 func (perUserOBO) Unlink(string) error   { return nil }
 
-// A granted collaborator's turn runs under the thread initiator's token (one
-// shared session), and the real author is attached as attribution. The
-// initiator's own turn carries their own token and no attribution.
-func TestInitiator_CollaboratorTurnForwardsInitiatorToken(t *testing.T) {
+// A granted collaborator's turn runs under their own token, marked as a
+// collaborator's with the initiator's token as the instance owner's, and the
+// author is attached as attribution. The initiator's own turn carries their own
+// token, no owner token and no attribution.
+func TestInitiator_CollaboratorTurnRunsAsTheCollaborator(t *testing.T) {
 	fake := newFakeSlackAPI()
 	fakeURL := fake.server(t).URL
 	fake.setResponse("users.info", `{"ok":true,"user":{"profile":{"email":"collaborator@example.com"}}}`)
@@ -71,17 +73,23 @@ func TestInitiator_CollaboratorTurnForwardsInitiatorToken(t *testing.T) {
 
 	initiatorTurn := msgs[0]
 	require.Equal(t, "tok-initiator", initiatorTurn.BearerToken, "initiator's turn runs under their own token")
-	require.Empty(t, initiatorTurn.Author, "initiator's own turn is not delegated")
+	require.Empty(t, initiatorTurn.Author, "initiator's own turn needs no attribution")
+	require.False(t, initiatorTurn.Collaborator)
+	require.Empty(t, initiatorTurn.OwnerToken)
 
 	collaboratorTurn := msgs[1]
-	require.Equal(t, "tok-initiator", collaboratorTurn.BearerToken,
-		"collaborator's turn runs under the initiator's token, not the collaborator's")
+	require.Equal(t, "tok-collab", collaboratorTurn.BearerToken,
+		"collaborator's turn runs under their own token")
+	require.True(t, collaboratorTurn.Collaborator)
+	require.Equal(t, "tok-initiator", collaboratorTurn.OwnerToken,
+		"the initiator's token rides along for the instance they created")
 	require.Equal(t, "collaborator@example.com", collaboratorTurn.Author,
-		"the real author is attached as attribution")
+		"the author is attached as attribution")
 }
 
 // When the initiator's token cannot be minted (unlinked), a collaborator's turn
-// falls back to the collaborator's own identity rather than the gateway SA.
+// still runs as the collaborator, without an owner token: it relies on the
+// share the thread already holds.
 func TestInitiator_FallsBackToSenderWhenTokenUnavailable(t *testing.T) {
 	fake := newFakeSlackAPI()
 	fakeURL := fake.server(t).URL
@@ -121,7 +129,43 @@ func TestInitiator_FallsBackToSenderWhenTokenUnavailable(t *testing.T) {
 	defer mu.Unlock()
 	require.Len(t, msgs, 1)
 	fallback := msgs[0]
-	require.Equal(t, "tok-collab", fallback.BearerToken,
-		"with the initiator unlinked, the turn falls back to the sender's own token")
-	require.Empty(t, fallback.Author, "a non-delegated fallback turn carries no attribution")
+	require.Equal(t, "tok-collab", fallback.BearerToken, "the turn runs under the sender's own token")
+	require.True(t, fallback.Collaborator)
+	require.Empty(t, fallback.OwnerToken, "the unlinked initiator has no token to lend")
+	require.Equal(t, "collaborator@example.com", fallback.Author)
+}
+
+// A collaborator's turn a restart cut short resubscribes the way it ran: under
+// the collaborator's own token, marked as a collaborator's, with the
+// initiator's token as the instance owner's.
+func TestInitiator_RecoveredCollaboratorTurnRunsAsTheCollaborator(t *testing.T) {
+	fake := newFakeSlackAPI()
+	records := slackadapter.NewMemoryRecorder()
+	require.NoError(t, records.UpdateThreadRecord(t.Context(), "slack", "D1", "700.000", func(e *store.Entry, _ bool) bool {
+		e.Initiator, e.Granted = "U001", []string{"U002"}
+		return true
+	}))
+	turn := leftoverTurn("task-9")
+	turn.Msg.Resume = map[string]string{"slack_user": "U002", "message_ts": "700.000"}
+	gw := &stubGateway{records: records, resumes: &stubResumes{
+		durable: true,
+		turns:   []channels.InFlightTurn{turn},
+		deltas:  map[string][]channels.OutboundDelta{"task-9": {{Content: "done"}, {Done: true}}},
+	}}
+	obo := perUserOBO{tokens: map[string]string{"U001": "tok-initiator", "U002": "tok-collab"}}
+	a, _ := newEventsAdapter(t, gw, fake.server(t).URL, func(a *slackadapter.Adapter) { a.OBO = obo })
+
+	a.RecoverTurns()
+
+	require.Eventually(t, func() bool {
+		gw.mu.Lock()
+		defer gw.mu.Unlock()
+		return len(gw.resumes.resumed) == 1
+	}, flowWait, 20*time.Millisecond, "the turn is resubscribed")
+	gw.mu.Lock()
+	defer gw.mu.Unlock()
+	resumed := gw.resumes.resumed[0]
+	require.Equal(t, "tok-collab", resumed.BearerToken)
+	require.True(t, resumed.Collaborator)
+	require.Equal(t, "tok-initiator", resumed.OwnerToken)
 }

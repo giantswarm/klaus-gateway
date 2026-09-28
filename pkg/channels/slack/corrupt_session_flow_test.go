@@ -48,11 +48,11 @@ func TestCorruptSession_ResetAndNotice(t *testing.T) {
 	require.Equal(t, "700.000", resetMsgs[0].ThreadID)
 }
 
-// A granted collaborator's turn on a shared thread runs under the initiator's
-// token; when it fails on corrupt session history, the reset must present that
-// same token, or kagent resolves a different principal and the delete misses
-// the corrupt session.
-func TestCorruptSession_CollaboratorTurnResetsUnderInitiatorToken(t *testing.T) {
+// A granted collaborator's turn on a shared thread runs on the initiator's
+// instance; when it fails on corrupt session history, the reset carries the
+// initiator's token as the owner's, since only the instance's creator deletes
+// it outright.
+func TestCorruptSession_CollaboratorTurnResetsAsTheInstanceOwner(t *testing.T) {
 	fake := newFakeSlackAPI()
 	fakeURL := fake.server(t).URL
 	var mu sync.Mutex
@@ -94,8 +94,10 @@ func TestCorruptSession_CollaboratorTurnResetsUnderInitiatorToken(t *testing.T) 
 	mu.Lock()
 	defer mu.Unlock()
 	require.Equal(t, "100.000", resets[0].ThreadID)
-	require.Equal(t, "tok1", resets[0].BearerToken,
-		"the reset must present the initiator's token the turn ran under, not the collaborator's")
+	require.Equal(t, "tok2", resets[0].BearerToken, "the turn and its reset run as the collaborator")
+	require.True(t, resets[0].Collaborator)
+	require.Equal(t, "tok1", resets[0].OwnerToken,
+		"the reset deletes the initiator's instance under the initiator's token")
 }
 
 // When the session cannot be deleted, the notice advises a new thread rather

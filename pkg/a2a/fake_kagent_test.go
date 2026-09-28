@@ -55,6 +55,9 @@ type fakeKagent struct {
 	created  []*apiv1alpha1.CreateAgentInstanceRequest
 	canceled []string
 	deleted  []string
+	shares   map[string]string // share id -> instance id
+	sharedAs []apiv1alpha1.AgentInstanceSharePermission
+	revoked  []string
 }
 
 func newFakeKagent() *fakeKagent {
@@ -63,6 +66,7 @@ func newFakeKagent() *fakeKagent {
 		instances:    map[string]*apiv1alpha1.AgentInstance{},
 		byRequest:    map[string]string{},
 		tasks:        map[string]*a2apkg.Task{},
+		shares:       map[string]string{},
 		calls:        map[string][]metadata.MD{},
 		createState:  apiv1alpha1.AgentInstanceState_AGENT_INSTANCE_STATE_READY,
 	}
@@ -385,6 +389,44 @@ func (f *fakeKagent) DeleteAgentInstance(ctx context.Context, req *apiv1alpha1.D
 	f.deleted = append(f.deleted, req.GetAgentInstanceId())
 	delete(f.instances, req.GetAgentInstanceId())
 	return &apiv1alpha1.DeleteAgentInstanceResponse{AgentInstance: inst}, nil
+}
+
+// CreateAgentInstanceShare mirrors the controller's owner-scoped insert: only
+// the instance's creator may share it, and anyone else gets NotFound.
+func (f *fakeKagent) CreateAgentInstanceShare(ctx context.Context, req *apiv1alpha1.CreateAgentInstanceShareRequest) (*apiv1alpha1.CreateAgentInstanceShareResponse, error) {
+	f.record(ctx, "CreateAgentInstanceShare")
+	who, err := creator(ctx)
+	if err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	inst, ok := f.instances[req.GetAgentInstanceId()]
+	if !ok || inst.GetCreator() != who {
+		return nil, status.Error(codes.NotFound, "AgentInstance not found")
+	}
+	id := fmt.Sprintf("share-%d", len(f.shares)+1)
+	f.shares[id] = inst.GetId()
+	f.sharedAs = append(f.sharedAs, req.GetPermission())
+	return &apiv1alpha1.CreateAgentInstanceShareResponse{
+		Share: &apiv1alpha1.AgentInstanceShare{Id: id, AgentInstanceId: inst.GetId(), Permission: req.GetPermission()},
+		Token: "token-" + id,
+	}, nil
+}
+
+func (f *fakeKagent) RevokeAgentInstanceShare(ctx context.Context, req *apiv1alpha1.RevokeAgentInstanceShareRequest) (*apiv1alpha1.RevokeAgentInstanceShareResponse, error) {
+	f.record(ctx, "RevokeAgentInstanceShare")
+	if _, err := creator(ctx); err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.shares[req.GetShareId()]; !ok {
+		return nil, status.Error(codes.NotFound, "AgentInstance share not found")
+	}
+	delete(f.shares, req.GetShareId())
+	f.revoked = append(f.revoked, req.GetShareId())
+	return &apiv1alpha1.RevokeAgentInstanceShareResponse{}, nil
 }
 
 // template builds an AgentTemplate the way the controller serves it: the

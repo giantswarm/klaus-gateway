@@ -461,9 +461,9 @@ func (a *Adapter) postResumeFailureNote(ctx context.Context, client *slackAPICli
 func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, messageTS, slackUser string, act hitlAction) error {
 	client := a.apiClient()
 
-	// The approval buttons are posted in-thread and visible to everyone, but the
-	// tool call runs under the initiator's identity, so only a permitted user (the
-	// initiator or a granted collaborator) may approve or cancel it. An onlooker
+	// The approval buttons are posted in-thread and visible to everyone, but
+	// only a permitted user (the initiator or a granted collaborator) may
+	// approve or cancel the tool call. An onlooker
 	// click is refused ephemerally and the pending task is left intact.
 	if !a.accessPolicy().Allowed(ctx, slackChannel, threadID, slackUser) {
 		if err := client.postEphemeralText(ctx, slackChannel, slackUser, threadID, accessDecisionRefusal); err != nil {
@@ -594,9 +594,9 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 		BearerToken: token,
 	}
 
-	// runTurn resolves the clicker's email, applies the initiator's identity
-	// (a collaborator's decision resumes the one shared session, so it runs
-	// under the initiator just like a typed turn), and re-stores the taken
+	// runTurn resolves the clicker's email, marks a collaborator's decision
+	// (it resumes the initiator's instance through the thread's share, under
+	// the clicker's own token, just like a typed turn), and re-stores the taken
 	// task on a pre-stream failure: the buttons already show the decision, so
 	// the failure note tells the user a typed reply can still resume it. The
 	// empty triggerTS selects text progress: a button resume has no user

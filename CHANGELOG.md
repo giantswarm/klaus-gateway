@@ -18,8 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Slack: a granted collaborator's turn in a thread runs under the collaborator's own token instead of the thread initiator's, so the agent's tool calls, and muster, act with the collaborator's rights and name them. The turn reaches the initiator's AgentInstance through a read-write AgentInstance share that the gateway mints under the initiator's token on the first collaborator turn and sends as `x-share-token` from then on. The share is revoked when the thread moves to another agent or its conversation has ended; a session reset deletes it with the instance. The access prompt now says the newcomer would instruct the agent under their own sign-in (klaus-gateway#350).
 - Slack: the channel intro and the assistant-pane greeting describe Swarmgeist without emoji or a first-person voice, name the default agent a plain mention reaches, and show the command hints as a muted line. The hints use the app's own mention, so each Slack app shows its own name. The app manifest's agent description is rewritten, and its "See what I can do" (`/help`) suggested prompt is removed: Slack runs a prompt that starts with `/` as a Slack command, so it never reached the bot.
 - Slack: the app's slash command (`/swarmgeist`) opens the agent picker in a direct message too. Slack offers the command in the agent pane's composer, where it used to answer that it starts conversations in channels and to type the question instead — leaving the pane with no way to reach an agent other than the default. The conversation it starts is the pane's own: the submitted question is posted there as the root, under the chosen agent, without the "Asked by" line a channel needs. An installation that does not serve direct messages refuses the command there privately, with the redirect notice. Slack offers the command in a direct message with another person too, where the bot cannot post: that says where the command works instead of asking for a retry that cannot succeed.
+
+### Security
+
+- The thread's AgentInstance share token is stored in the thread's row sealed with AES-256-GCM, under a key derived from the OBO link-store key (`--obo-store-key-file`). An installation whose link store is `memory` seals it under a key for the process alone, and a share that no longer opens is replaced on the next collaborator turn (klaus-gateway#350).
 
 ### Fixed
 

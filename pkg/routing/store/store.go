@@ -121,6 +121,11 @@ type Entry struct {
 	// after a restart continues the reply where this one left it instead of
 	// repeating it. Reset with TaskID, cleared with it.
 	Delivered Delivered `json:"delivered,omitzero"`
+	// Share is the AgentInstance share the thread's granted users run their
+	// turns through: the instance belongs to its creator, and the share lets
+	// another person act on it as themselves. Bound to AgentInstanceID and
+	// dropped with the binding.
+	Share *Share `json:"share,omitempty"`
 	// Initiator is the user whose mention launched the thread, and Granted the
 	// users that initiator allowed into it. Written by the channel adapter:
 	// the facts it cannot recover after a restart.
@@ -130,6 +135,19 @@ type Entry struct {
 	CreatedAt time.Time     `json:"created_at"`
 	LastSeen  time.Time     `json:"last_seen"`
 	TTL       time.Duration `json:"ttl"`
+}
+
+// Share is a thread's AgentInstance share. The token is held sealed: it is a
+// bearer capability on the instance, so a copy of the row must not be enough
+// to use it.
+type Share struct {
+	// ID names the share at the controller, for a revoke.
+	ID string `json:"id"`
+	// InstanceID is the AgentInstance the share was minted for.
+	InstanceID string `json:"instance_id"`
+	// Sealed is the share token, encrypted and bound to the thread and the
+	// instance.
+	Sealed []byte `json:"sealed"`
 }
 
 // Delivered is the part of an in-flight turn's reply that has reached the

@@ -62,6 +62,13 @@ the turn's session when it expires, so set it above the longest turn you expect.
 less left is refreshed before the turn starts, and the background refresher keeps recently
 active people above the minimum (see `token_refresh` in [channels-slack.md](channels-slack.md)).
 
+The routing store's thread rows hold one more secret: the AgentInstance share a thread's granted
+collaborators run their turns through. It is sealed under a key derived from `store-key`
+(HKDF-SHA256), so a Valkey dump does not hand it out. Rotating `store-key` makes the stored
+shares unreadable; the next collaborator turn in each thread mints a new share under the
+initiator's token and revokes the old one. On `obo.store: memory` there is no `store-key`, and
+the shares are sealed under a key for the process alone.
+
 Both backends can fail a call — the Secret backend on any apiserver hiccup (a restart, a
 `resourceVersion` conflict past the retries, the 10 s call timeout), the bolt file on a full
 disk — and the gateway keeps a process-local copy of every link it has read or written so a

@@ -83,11 +83,20 @@ type InboundMessage struct {
 	// forwarded on the A2A request so kagent sees the end-user identity. A turn
 	// without one is refused.
 	BearerToken string
-	// Author, when non-empty, is the real end-user who wrote this turn in a
-	// shared session that runs under a different (delegated) identity, such as a
-	// Slack thread acting under its initiator. Surfaced to the agent as
-	// attribution; BearerToken remains the acting identity.
+	// Author, when non-empty, names the person who wrote this turn in a
+	// conversation several people take part in, such as a Slack thread its
+	// initiator granted others into. Surfaced to the agent as attribution.
 	Author string
+	// Collaborator marks a turn whose sender is not the creator of the
+	// thread's AgentInstance. Its calls on the instance carry the thread's
+	// AgentInstance share next to BearerToken, so the turn runs as the sender
+	// on a conversation that is not theirs.
+	Collaborator bool
+	// OwnerToken is, on a collaborator turn, the token of the person who
+	// created the thread's AgentInstance, when it can be minted. The
+	// instance's lifecycle runs under it (creating the instance, minting and
+	// revoking its share); the turn itself never does. Empty elsewhere.
+	OwnerToken string
 	// AgentRef is the target agent name: the agent the turn runs on.
 	AgentRef string
 	// Opener is set by a channel adapter when this message starts its

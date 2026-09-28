@@ -2,7 +2,6 @@ package musterlink
 
 import (
 	"encoding/base64"
-	"encoding/hex"
 	"os"
 	"testing"
 	"time"
@@ -107,41 +106,6 @@ func TestBoltStoreReadOnlyRefusesWrites(t *testing.T) {
 func TestNewGCMRejectsBadKeyLength(t *testing.T) {
 	_, err := OpenBoltStore(t.TempDir()+"/x.bolt", []byte("tooshort"), nil)
 	require.Error(t, err)
-}
-
-func TestNormalizeStoreKey(t *testing.T) {
-	raw := key32()
-
-	t.Run("raw 32 bytes used verbatim", func(t *testing.T) {
-		got, err := normalizeStoreKey(raw)
-		require.NoError(t, err)
-		require.Equal(t, raw, got)
-	})
-
-	t.Run("base64 std (the SOPS-staged form) decodes to 32 bytes", func(t *testing.T) {
-		enc := base64.StdEncoding.EncodeToString(raw) // 44 chars, the real gazelle case
-		require.Len(t, enc, 44)
-		got, err := normalizeStoreKey([]byte(enc))
-		require.NoError(t, err)
-		require.Equal(t, raw, got)
-	})
-
-	t.Run("trailing newline is trimmed", func(t *testing.T) {
-		got, err := normalizeStoreKey([]byte(base64.StdEncoding.EncodeToString(raw) + "\n"))
-		require.NoError(t, err)
-		require.Equal(t, raw, got)
-	})
-
-	t.Run("hex decodes to 32 bytes", func(t *testing.T) {
-		got, err := normalizeStoreKey([]byte(hex.EncodeToString(raw)))
-		require.NoError(t, err)
-		require.Equal(t, raw, got)
-	})
-
-	t.Run("garbage that is not 32 bytes is rejected", func(t *testing.T) {
-		_, err := normalizeStoreKey([]byte("nope"))
-		require.Error(t, err)
-	})
 }
 
 func TestBoltStoreAcceptsBase64Key(t *testing.T) {

@@ -15,6 +15,7 @@ import (
 
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
+	"github.com/giantswarm/klaus-gateway/pkg/seal"
 )
 
 // AgentClient is the slice of pkg/a2a.Client the Facade needs to run a
@@ -38,6 +39,11 @@ type AgentClient interface {
 	GetInstance(ctx context.Context, id string) (pkga2a.Instance, error)
 	// DeleteInstance removes an instance; a missing one is not an error.
 	DeleteInstance(ctx context.Context, id string) error
+	// CreateShare mints a read-write share of an instance, which only its
+	// creator may do.
+	CreateShare(ctx context.Context, instanceID string) (pkga2a.Share, error)
+	// RevokeShare revokes a share; a missing one is not an error.
+	RevokeShare(ctx context.Context, shareID string) error
 }
 
 var _ Gateway = (*Facade)(nil)
@@ -63,6 +69,11 @@ type Facade struct {
 	// ended can be told so; after that the store has forgotten the thread.
 	// 0 never expires. main.go sets it from --thread-ttl.
 	ThreadTTL time.Duration
+	// Sealer encrypts the AgentInstance share a thread's collaborators run
+	// their turns through before it is stored in the thread's row. Nil turns
+	// shares off: a collaborator's turn then goes out under their own token
+	// alone.
+	Sealer *seal.Sealer
 
 	// now is the clock the facade stamps rows with; nil means time.Now.
 	now func() time.Time
@@ -91,7 +102,7 @@ func (f *Facade) SessionResumable(ctx context.Context, msg InboundMessage) (exis
 	if f == nil || f.Agent == nil || f.Routes == nil {
 		return false, false
 	}
-	ctx = withCallerAuth(ctx, msg)
+	ctx = withOwnerAuth(ctx, msg)
 	ctx, cancel := context.WithTimeout(ctx, sessionCheckTimeout)
 	defer cancel()
 	key := threadKey(msg.Channel, msg.ChannelID, msg.ThreadID)
@@ -102,6 +113,9 @@ func (f *Facade) SessionResumable(ctx context.Context, msg InboundMessage) (exis
 	entry, ok = f.liveEntry(entry, ok)
 	if !ok || entry.AgentInstanceID == "" {
 		return false, true
+	}
+	if msg.OwnerToken == "" {
+		ctx = f.withStoredShare(ctx, msg, entry)
 	}
 	if _, err := f.Agent.GetInstance(ctx, entry.AgentInstanceID); err != nil {
 		if !pkga2a.IsNotFound(err) {
@@ -126,7 +140,7 @@ func (f *Facade) ResetSession(ctx context.Context, msg InboundMessage) (bool, er
 	if f == nil || f.Agent == nil || f.Routes == nil {
 		return false, nil
 	}
-	ctx = withCallerAuth(ctx, msg)
+	ctx = withOwnerAuth(ctx, msg)
 	ctx, cancel := context.WithTimeout(ctx, sessionCheckTimeout)
 	defer cancel()
 	key := threadKey(msg.Channel, msg.ChannelID, msg.ThreadID)
@@ -136,6 +150,11 @@ func (f *Facade) ResetSession(ctx context.Context, msg InboundMessage) (bool, er
 	}
 	if !ok || entry.AgentInstanceID == "" {
 		return false, nil
+	}
+	if msg.OwnerToken == "" {
+		// A read-write share may delete the instance, which takes its shares
+		// with it at the controller.
+		ctx = f.withStoredShare(ctx, msg, entry)
 	}
 	if err := f.Agent.DeleteInstance(ctx, entry.AgentInstanceID); err != nil {
 		return false, err
@@ -252,12 +271,13 @@ func noteRetry(ctx context.Context, msg InboundMessage, err error) {
 }
 
 // clearBinding drops a thread's AgentInstance binding and anything that only
-// makes sense with it, keeping the rest of the thread's row.
+// makes sense with it, keeping the rest of the thread's row. The share goes
+// with the instance: it is gone at the controller once the instance is.
 func clearBinding(e *store.Entry, found bool) bool {
 	if !found {
 		return false
 	}
-	e.AgentInstanceID, e.TaskID, e.Resume = "", "", nil
+	e.AgentInstanceID, e.TaskID, e.Resume, e.Share = "", "", nil, nil
 	return true
 }
 
@@ -271,7 +291,10 @@ func clearBinding(e *store.Entry, found bool) bool {
 // with the thread's lifetime: every turn refreshes it, the conversation ends
 // after ThreadTTL of silence, and the next mention asks the controller for an
 // instance again — the idempotent create hands the same person the earlier one
-// back while the controller still holds it.
+// back while the controller still holds it. ctx carries the identity the
+// instance is created under: on a collaborator turn, its creator's. A share of
+// an instance the thread leaves, on a rebind or when the conversation ended,
+// is revoked.
 func (f *Facade) instanceFor(ctx context.Context, msg InboundMessage) (string, error) {
 	if f.Routes == nil {
 		return "", errors.New("channels: no routing store for the agent instance binding")
@@ -285,6 +308,9 @@ func (f *Facade) instanceFor(ctx context.Context, msg InboundMessage) (string, e
 	if f.threadClosed(entry, now) {
 		// The conversation ended: the row is still there but its binding is
 		// not the thread's any more, so this turn creates a fresh instance.
+		if entry.Share != nil {
+			f.revokeShare(ctx, msg.ThreadID, entry.Share.ID)
+		}
 		entry, ok = store.Entry{}, false
 	}
 	if ok && entry.AgentInstanceID != "" && entry.AgentRef == msg.AgentRef {
@@ -317,6 +343,7 @@ func (f *Facade) instanceFor(ctx context.Context, msg InboundMessage) (string, e
 	if err != nil {
 		return "", err
 	}
+	var left *store.Share
 	if err := f.Routes.Update(ctx, key, func(e *store.Entry, found bool) bool {
 		// Only the side effect counts here — a closed row emptied, so this
 		// turn writes a fresh binding rather than merging into the ended
@@ -325,6 +352,9 @@ func (f *Facade) instanceFor(ctx context.Context, msg InboundMessage) (string, e
 		if e.AgentInstanceID != "" && e.AgentInstanceID != inst.ID {
 			// A rebind: nothing of the previous instance's turn is deliverable.
 			e.TaskID, e.Resume, e.Delivered = "", nil, store.Delivered{}
+		}
+		if e.Share != nil && e.Share.InstanceID != inst.ID {
+			left, e.Share = e.Share, nil
 		}
 		e.AgentRef, e.AgentInstanceID, e.LastSeen = msg.AgentRef, inst.ID, now
 		if e.CreatedAt.IsZero() {
@@ -336,6 +366,9 @@ func (f *Facade) instanceFor(ctx context.Context, msg InboundMessage) (string, e
 		return true
 	}); err != nil {
 		return "", fmt.Errorf("channels: store instance binding: %w", err)
+	}
+	if left != nil {
+		f.revokeShare(ctx, msg.ThreadID, left.ID)
 	}
 	slog.Info("channels: thread bound to agent instance", "record", "instance_bound",
 		"channel", msg.Channel, "channel_id", msg.ChannelID, "thread", msg.ThreadID, "agent", msg.AgentRef, "instance", inst.ID)
@@ -359,10 +392,11 @@ const bindingWriteTimeout = 5 * time.Second
 func (f *Facade) sendViaA2A(ctx context.Context, msg InboundMessage) (<-chan OutboundDelta, error) {
 	ctx = withCallerAuth(ctx, msg)
 
-	instanceID, err := f.instanceFor(ctx, msg)
+	instanceID, err := f.instanceFor(withOwnerAuth(ctx, msg), msg)
 	if err != nil {
 		return nil, err
 	}
+	ctx = f.withShare(ctx, msg, instanceID)
 	message, err := f.outboundMessage(ctx, instanceID, msg)
 	if err != nil {
 		return nil, err
@@ -455,6 +489,7 @@ func (f *Facade) ResumeTurn(ctx context.Context, msg InboundMessage, taskID stri
 	if !ok || entry.AgentInstanceID == "" {
 		return nil, fmt.Errorf("channels: thread %s has no agent instance to resume task %s on", msg.ThreadID, taskID)
 	}
+	ctx = f.withShare(ctx, msg, entry.AgentInstanceID)
 	id := a2apkg.TaskID(taskID)
 	out, err := f.streamTask(ctx, key, entry.AgentInstanceID, id, nil, f.Agent.Subscribe(ctx, entry.AgentInstanceID, id))
 	if err != nil {

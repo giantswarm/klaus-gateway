@@ -2020,8 +2020,8 @@ func (a *Adapter) dispatchFrom(ctx context.Context, msg channels.InboundMessage,
 
 	// Access control. The first user to interact becomes the thread initiator and
 	// instructs freely. A different user is gated: authenticate first (unknown
-	// identity -> sign-in), then ask the initiator to approve them (the agent acts
-	// under the initiator's delegated identity, so the initiator must consent).
+	// identity -> sign-in), then ask the initiator to approve them (the agent
+	// works in the initiator's conversation, so the initiator must consent).
 	access := a.accessPolicy()
 	initiator := access.SetInitiator(ctx, slackChannel, msg.ThreadID, slackUser)
 	if !access.Allowed(ctx, slackChannel, msg.ThreadID, slackUser) {
@@ -2487,36 +2487,35 @@ func (a *Adapter) humanToken(ctx context.Context, slackChannel, threadID, slackU
 	}
 }
 
-// applyInitiatorIdentity makes a granted collaborator's turn run under the
-// thread initiator's identity. The thread is bound to one AgentInstance, which
-// the controller created and addresses under the initiator's principal.
-// Forwarding that same principal on every turn keeps the conversation on that
-// instance and makes the agent act with the initiator's rights, not the sender's.
-// It swaps in the initiator's token and records the sender (msg.Subject,
-// best-effort resolved to an email) as attribution. The initiator's own turns,
-// and turns where the initiator's token cannot be minted, keep the sender's own
-// token (they are signed in) rather than the gateway machine identity. Call
-// after the sender's token and email are resolved. It returns the Slack user
-// whose identity the turn runs under.
-func (a *Adapter) applyInitiatorIdentity(ctx context.Context, msg *channels.InboundMessage, threadID, slackUser string) string {
+// applyInstanceOwner marks a granted collaborator's turn as one on a
+// conversation that is not theirs. The thread is bound to one AgentInstance,
+// which its initiator created; the turn keeps the sender's own token, so the
+// agent acts with the sender's rights, and reaches the instance through the
+// thread's share (see channels.InboundMessage.Collaborator). The initiator's
+// token rides along as OwnerToken for what only the instance's creator may do
+// (creating the instance, minting its share); when it cannot be minted, the
+// share the thread already holds is what the turn goes through. The sender
+// (msg.Subject, best-effort resolved to an email) is recorded as attribution.
+// Call after the sender's token and email are resolved.
+func (a *Adapter) applyInstanceOwner(ctx context.Context, msg *channels.InboundMessage, threadID, slackUser string) {
 	if a.OBO == nil {
-		return slackUser
+		return
 	}
 	initiator := a.accessPolicy().Initiator(ctx, msg.ChannelID, threadID)
 	if initiator == "" || initiator == slackUser {
-		return slackUser
+		return
 	}
-	mint := channels.TurnTimerFromContext(ctx).Span(channels.PhaseTokenMint)
-	initiatorToken, err := a.OBO.TokenFor(ctx, initiator)
-	mint()
-	if err != nil || initiatorToken == "" {
-		a.Logger.Info("slack: initiator token unavailable, running turn under sender identity",
-			"initiator", initiator, "sender", slackUser)
-		return slackUser
-	}
-	msg.BearerToken = initiatorToken
+	msg.Collaborator = true
 	msg.Author = msg.Subject
-	return initiator
+	mint := channels.TurnTimerFromContext(ctx).Span(channels.PhaseTokenMint)
+	ownerToken, err := a.OBO.TokenFor(ctx, initiator)
+	mint()
+	if err != nil || ownerToken == "" {
+		a.Logger.Info("slack: initiator token unavailable, collaborator turn relies on the thread's share",
+			"initiator", initiator, "sender", slackUser)
+		return
+	}
+	msg.OwnerToken = ownerToken
 }
 
 // streamResponse renders turn progress (reactions on triggerTS, or a text
