@@ -437,7 +437,7 @@ func (a *Adapter) handleAccessDecision(ctx context.Context, slackChannel, thread
 		if err := a.replayDispatch(ctx, req.msg, req.slackChannel); err != nil && !errors.Is(err, context.Canceled) {
 			a.Logger.Error("slack: replay after access grant failed",
 				"thread", threadID, "user", newcomerID, "error", err)
-			a.postReplayFailureNote(ctx, req.slackChannel, req.msg.ThreadID)
+			a.postReplayFailureNote(ctx, req.slackChannel, req.msg.ThreadID, err)
 		}
 	}
 }
@@ -445,11 +445,14 @@ func (a *Adapter) handleAccessDecision(ctx context.Context, slackChannel, thread
 // postResumeFailureNote tells the thread a button decision could not be
 // delivered to the agent. The task was re-stored, so a typed reply still
 // resumes it; the note is what makes that recovery discoverable. Best-effort.
-func (a *Adapter) postResumeFailureNote(ctx context.Context, client *slackAPIClient, slackChannel, threadID string) {
+func (a *Adapter) postResumeFailureNote(ctx context.Context, client *slackAPIClient, slackChannel, threadID string, cause error) {
 	if ctx.Err() != nil {
 		return
 	}
-	const text = "The decision did not reach the agent. Reply in this thread to try again."
+	text := "The decision did not reach the agent. Reply in this thread to try again."
+	if errors.Is(cause, channels.ErrShareUnavailable) {
+		text = shareUnavailableNote
+	}
 	if _, err := client.postNote(ctx, slackChannel, text, threadID); err != nil {
 		a.Logger.Warn("slack: post resume failure note failed", "thread", threadID, "error", err)
 	}
@@ -602,7 +605,7 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 	// empty triggerTS selects text progress: a button resume has no user
 	// message to react to.
 	return a.runTurn(ctx, msg, slackChannel, "", thinkingPlaceholder, "", task, agentSourceTask, turnHooks{
-		onFailure: func(error) { a.postResumeFailureNote(ctx, client, slackChannel, threadID) },
+		onFailure: func(err error) { a.postResumeFailureNote(ctx, client, slackChannel, threadID, err) },
 	})
 }
 

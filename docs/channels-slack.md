@@ -150,6 +150,19 @@ creates one, which a turn that switches agents does mid-thread.
   its shares at the controller. A share kagent issues does not expire on its
   own, so the share of a thread nobody writes to again stays valid at the
   controller.
+- A thread has one share for all its collaborators, and only the gateway holds
+  it. Who may use it is the thread's access list: the gateway sends a turn with
+  the share only for a granted user.
+- When the thread holds no share yet and the initiator's token cannot be
+  minted, the gateway refuses the collaborator's turn and tells the thread that
+  the initiator has to be signed in. A collaborator whose turn opens the
+  thread's binding while the initiator is signed out creates the instance under
+  their own token; that instance is theirs, and no share of it is minted.
+- A collaborator's turn that finds the session's history corrupt deletes the
+  instance through the share, the same recovery an initiator's turn runs.
+- The agent still sees the instance creator in `X-User-Id` on a collaborator's
+  turn (kagent#2459), so anything that names the person from that header names
+  the initiator.
 - **When the instance is gone.** Two cases clear only the binding fields of the row;
   the thread keeps its agent, its initiator and its grants, and the next turn creates
   a fresh instance. An instance the controller no longer has is found by the resume

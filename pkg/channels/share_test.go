@@ -3,6 +3,7 @@ package channels_test
 import (
 	"encoding/json"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	a2apkg "github.com/a2aproject/a2a-go/v2/a2a"
@@ -34,6 +35,7 @@ func newSharingFacade(t *testing.T, agent *fakeAgent) (*channels.Facade, *memory
 	sealer, err := seal.Ephemeral()
 	require.NoError(t, err)
 	mem := memory.New()
+	t.Cleanup(func() { require.NoError(t, mem.Close()) })
 	return &channels.Facade{Agent: agent, Routes: mem, ThreadTTL: channels.DefaultThreadTTL, Sealer: sealer}, mem
 }
 
@@ -100,17 +102,74 @@ func TestFacade_CollaboratorTurnReusesTheStoredShare(t *testing.T) {
 	require.Len(t, agent.shares, 1, "the stored share is reused, not minted again")
 }
 
-// Without a share and without the creator's token the turn goes out under the
-// collaborator's token alone.
+// Without a share and without the creator's token the collaborator's turn is
+// refused before it reaches the controller, which would refuse it anyway.
 func TestFacade_CollaboratorTurnWithoutShareOrOwnerToken(t *testing.T) {
 	agent := newFakeAgent(completedTurn()...)
 	f, _ := newSharingFacade(t, agent)
 	runTurn(t, f, slackMsg("open"))
+	streamed := len(agent.streamed)
 
-	runTurn(t, f, collaboratorMsg("join", ""))
+	_, err := f.SendCompletion(t.Context(), collaboratorMsg("join", ""))
 
-	require.Empty(t, pkga2a.ShareTokenFromContext(agent.streamCtx))
+	require.ErrorIs(t, err, channels.ErrShareUnavailable)
+	require.Len(t, agent.streamed, streamed, "the refused turn is not sent")
 	require.Empty(t, agent.sharedAs)
+}
+
+// A collaborator who opens the thread's binding while the initiator is signed
+// out creates the instance under their own token: it is theirs, so their
+// turns need no share, now or once the initiator is back.
+func TestFacade_CollaboratorCreatedInstanceNeedsNoShare(t *testing.T) {
+	agent := newFakeAgent(completedTurn()...)
+	f, routes := newSharingFacade(t, agent)
+
+	runTurn(t, f, collaboratorMsg("open", ""))
+	require.Equal(t, []string{collaboratorJWT}, agent.createdAs)
+	require.True(t, threadRow(t, routes).SenderCreated)
+
+	runTurn(t, f, collaboratorMsg("again", ownerJWT))
+
+	require.Empty(t, agent.sharedAs, "no share is minted of the collaborator's own instance")
+	require.Empty(t, pkga2a.ShareTokenFromContext(agent.streamCtx))
+}
+
+// Two collaborator turns that mint a share at once keep one: the turn that
+// finds the other's share stored uses it and revokes its own.
+func TestFacade_ConcurrentShareMintKeepsOne(t *testing.T) {
+	agent := newFakeAgent(completedTurn()...)
+	f, routes := newSharingFacade(t, agent)
+	runTurn(t, f, slackMsg("open"))
+	agent.onShare = func() { runTurn(t, f, collaboratorMsg("other", ownerJWT)) }
+
+	runTurn(t, f, collaboratorMsg("join", ownerJWT))
+
+	require.Equal(t, []string{"share-1", "share-2"}, agent.shares)
+	require.Equal(t, []string{"share-1"}, agent.revoked, "the share that lost the write is revoked")
+	require.Equal(t, "share-2", threadRow(t, routes).Share.ID)
+	require.Contains(t, pkga2a.ShareTokenFromContext(agent.streamCtx), "share-2")
+}
+
+// A share minted for an instance the thread left meanwhile is revoked at once,
+// not stored or used.
+func TestFacade_ShareOfALeftInstanceIsRevoked(t *testing.T) {
+	agent := newFakeAgent(completedTurn()...)
+	f, routes := newSharingFacade(t, agent)
+	runTurn(t, f, slackMsg("open"))
+	msg := slackMsg("")
+	key := store.Key{Channel: msg.Channel, ChannelID: msg.ChannelID, ThreadID: msg.ThreadID}
+	agent.onShare = func() {
+		require.NoError(t, routes.Update(t.Context(), key, func(e *store.Entry, _ bool) bool {
+			e.AgentInstanceID = "elsewhere"
+			return true
+		}))
+	}
+
+	runTurn(t, f, collaboratorMsg("join", ownerJWT))
+
+	require.Equal(t, []string{"share-1"}, agent.revoked)
+	require.Nil(t, threadRow(t, routes).Share)
+	require.Empty(t, pkga2a.ShareTokenFromContext(agent.streamCtx))
 }
 
 // With shares off, a collaborator's turn carries no share.
@@ -191,19 +250,17 @@ func TestFacade_ResetSessionDropsTheShare(t *testing.T) {
 // The next turn after the conversation ended revokes the share of the
 // instance the thread no longer uses.
 func TestFacade_ClosedThreadRevokesItsShare(t *testing.T) {
-	agent := newFakeAgent(completedTurn()...)
-	f, routes := newSharingFacade(t, agent)
-	now := time.Now()
-	clock := func() time.Time { return now }
-	f.SetNowFunc(clock)
-	routes.SetNowFunc(clock)
-	runTurn(t, f, slackMsg("open"))
-	runTurn(t, f, collaboratorMsg("join", ownerJWT))
-	old := threadRow(t, routes).Share.ID
+	synctest.Test(t, func(t *testing.T) {
+		agent := newFakeAgent(completedTurn()...)
+		f, routes := newSharingFacade(t, agent)
+		runTurn(t, f, slackMsg("open"))
+		runTurn(t, f, collaboratorMsg("join", ownerJWT))
+		old := threadRow(t, routes).Share.ID
 
-	now = now.Add(channels.DefaultThreadTTL + time.Hour)
-	runTurn(t, f, slackMsg("back"))
+		time.Sleep(channels.DefaultThreadTTL + time.Hour)
+		runTurn(t, f, slackMsg("back"))
 
-	require.Equal(t, []string{old}, agent.revoked)
-	require.Nil(t, threadRow(t, routes).Share)
+		require.Equal(t, []string{old}, agent.revoked)
+		require.Nil(t, threadRow(t, routes).Share)
+	})
 }

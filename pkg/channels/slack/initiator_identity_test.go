@@ -2,6 +2,7 @@ package slack_test
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -168,4 +169,31 @@ func TestInitiator_RecoveredCollaboratorTurnRunsAsTheCollaborator(t *testing.T) 
 	require.Equal(t, "tok-collab", resumed.BearerToken)
 	require.True(t, resumed.Collaborator)
 	require.Equal(t, "tok-initiator", resumed.OwnerToken)
+}
+
+// A collaborator's turn the gateway refuses for want of a share, the
+// initiator being signed out, tells the thread who can unblock it.
+func TestInitiator_CollaboratorWithoutShareIsToldWhy(t *testing.T) {
+	fake := newFakeSlackAPI()
+	fakeURL := fake.server(t).URL
+	fake.setResponse("users.info", `{"ok":true,"user":{"profile":{"email":"collaborator@example.com"}}}`)
+
+	gw := &stubGateway{dispatchErr: channels.ErrShareUnavailable}
+	obo := perUserOBO{
+		tokens:   map[string]string{"U002": "tok-collab"},
+		unlinked: map[string]bool{"U001": true},
+	}
+	_, srv := newEventsAdapter(t, gw, fakeURL, channelMode, func(a *slackadapter.Adapter) { a.OBO = obo })
+
+	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
+	require.Eventually(t, func() bool {
+		return signInPrompted(fake)
+	}, flowWait, 50*time.Millisecond, "the unlinked initiator is prompted to sign in")
+	sendEvent(t, srv, mention("U002", "help", "200.000", "100.000"))
+	fake.waitForPath(t, "chat.postEphemeral", 1)
+	sendAccessInteraction(t, srv, "U001", accessAllowAction, "100.000", "U002", fakeURL+"/response")
+
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "only be opened to you while they are signed in")
+	}, flowWait, 50*time.Millisecond, "the thread is told the initiator has to be signed in")
 }

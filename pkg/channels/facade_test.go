@@ -67,6 +67,9 @@ type fakeAgent struct {
 	shareErr  error
 	shares    []string
 	revoked   []string
+	// onShare, when set, runs after CreateShare minted a share and before it
+	// returns, standing in for what another turn does meanwhile.
+	onShare func()
 }
 
 // streamAttempt is what one Stream call of the fake plays: its events, or err
@@ -211,13 +214,19 @@ func (a *fakeAgent) DeleteInstance(_ context.Context, id string) error {
 
 func (a *fakeAgent) CreateShare(ctx context.Context, instanceID string) (pkga2a.Share, error) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	a.sharedAs = append(a.sharedAs, pkga2a.ForwardedTokenFromContext(ctx))
 	if a.shareErr != nil {
+		a.mu.Unlock()
 		return pkga2a.Share{}, a.shareErr
 	}
 	id := fmt.Sprintf("share-%d", len(a.shares)+1)
 	a.shares = append(a.shares, id)
+	hook := a.onShare
+	a.onShare = nil
+	a.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 	return pkga2a.Share{ID: id, Token: "token-" + id + "-" + instanceID}, nil
 }
 

@@ -277,7 +277,7 @@ func clearBinding(e *store.Entry, found bool) bool {
 	if !found {
 		return false
 	}
-	e.AgentInstanceID, e.TaskID, e.Resume, e.Share = "", "", nil, nil
+	e.AgentInstanceID, e.TaskID, e.Resume, e.Share, e.SenderCreated = "", "", nil, nil, false
 	return true
 }
 
@@ -356,6 +356,9 @@ func (f *Facade) instanceFor(ctx context.Context, msg InboundMessage) (string, e
 		if e.Share != nil && e.Share.InstanceID != inst.ID {
 			left, e.Share = e.Share, nil
 		}
+		if e.AgentInstanceID != inst.ID {
+			e.SenderCreated = msg.Collaborator && msg.OwnerToken == ""
+		}
 		e.AgentRef, e.AgentInstanceID, e.LastSeen = msg.AgentRef, inst.ID, now
 		if e.CreatedAt.IsZero() {
 			e.CreatedAt = now
@@ -396,7 +399,10 @@ func (f *Facade) sendViaA2A(ctx context.Context, msg InboundMessage) (<-chan Out
 	if err != nil {
 		return nil, err
 	}
-	ctx = f.withShare(ctx, msg, instanceID)
+	ctx, err = f.withShare(ctx, msg, instanceID)
+	if err != nil {
+		return nil, err
+	}
 	message, err := f.outboundMessage(ctx, instanceID, msg)
 	if err != nil {
 		return nil, err
@@ -489,7 +495,10 @@ func (f *Facade) ResumeTurn(ctx context.Context, msg InboundMessage, taskID stri
 	if !ok || entry.AgentInstanceID == "" {
 		return nil, fmt.Errorf("channels: thread %s has no agent instance to resume task %s on", msg.ThreadID, taskID)
 	}
-	ctx = f.withShare(ctx, msg, entry.AgentInstanceID)
+	ctx, err = f.withShare(ctx, msg, entry.AgentInstanceID)
+	if err != nil {
+		return nil, err
+	}
 	id := a2apkg.TaskID(taskID)
 	out, err := f.streamTask(ctx, key, entry.AgentInstanceID, id, nil, f.Agent.Subscribe(ctx, entry.AgentInstanceID, id))
 	if err != nil {

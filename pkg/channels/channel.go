@@ -22,6 +22,12 @@ import (
 // the task server-side.
 var ErrShutdown = errors.New("channels: the gateway is shutting down")
 
+// ErrShareUnavailable refuses a collaborator's turn on a thread whose
+// AgentInstance holds no share yet while its creator's token cannot be minted:
+// without either, the controller refuses the collaborator on an instance that
+// is not theirs.
+var ErrShareUnavailable = errors.New("channels: the thread's agent instance is not shared yet and its creator is signed out")
+
 // Gateway is the server-side surface adapters call back into. The wiring in
 // main.go provides the concrete implementation (Facade).
 type Gateway interface {

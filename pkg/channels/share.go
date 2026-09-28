@@ -21,13 +21,18 @@ func withOwnerAuth(ctx context.Context, msg InboundMessage) context.Context {
 
 // withShare adds the thread's AgentInstance share to ctx on a collaborator
 // turn, minting it under OwnerToken when the thread holds none for
-// instanceID. Without a share the turn goes out under the sender's token
-// alone, which the controller refuses on an instance someone else created.
-func (f *Facade) withShare(ctx context.Context, msg InboundMessage, instanceID string) context.Context {
+// instanceID. It returns ErrShareUnavailable when the thread holds none and
+// OwnerToken is empty. A share that cannot be minted is logged, and the turn
+// goes out under the sender's token alone for the controller to decide.
+func (f *Facade) withShare(ctx context.Context, msg InboundMessage, instanceID string) (context.Context, error) {
 	if !msg.Collaborator || f.Sealer == nil || instanceID == "" {
-		return ctx
+		return ctx, nil
 	}
-	return pkga2a.WithShareToken(ctx, f.shareFor(ctx, msg, instanceID))
+	token, err := f.shareFor(ctx, msg, instanceID)
+	if err != nil {
+		return nil, err
+	}
+	return pkga2a.WithShareToken(ctx, token), nil
 }
 
 // withStoredShare adds the share the thread already holds for instanceID to
@@ -46,63 +51,77 @@ func (f *Facade) withStoredShare(ctx context.Context, msg InboundMessage, entry 
 
 // shareFor returns the token of the thread's share of instanceID: the one the
 // row holds, or a new one minted under OwnerToken and stored sealed. It
-// returns "" when neither is possible; the failure is logged, and the turn
-// then fails at the controller the way it would without the share.
-func (f *Facade) shareFor(ctx context.Context, msg InboundMessage, instanceID string) string {
+// returns "" for an instance the sender created, and when minting fails.
+func (f *Facade) shareFor(ctx context.Context, msg InboundMessage, instanceID string) (string, error) {
 	key := threadKey(msg.Channel, msg.ChannelID, msg.ThreadID)
 	entry, ok, err := f.Routes.Get(ctx, key)
 	if err != nil {
 		slog.Warn("channels: read the thread's share failed", "thread", msg.ThreadID, "error", err)
-		return ""
+		return "", nil
 	}
 	var held *store.Share
 	if ok {
+		if entry.SenderCreated && entry.AgentInstanceID == instanceID {
+			return "", nil
+		}
 		held = entry.Share
 		if token, opened := f.openShare(key, held, instanceID); opened {
-			return token
+			return token, nil
 		}
 	}
 	if msg.OwnerToken == "" {
-		slog.Info("channels: collaborator turn without a share, and the instance creator's token is unavailable",
+		slog.Info("channels: collaborator turn refused, the thread holds no share and the instance creator's token is unavailable",
 			"thread", msg.ThreadID, "instance", instanceID)
-		return ""
+		return "", ErrShareUnavailable
 	}
 	ownerCtx := withOwnerAuth(ctx, msg)
 	share, err := f.Agent.CreateShare(ownerCtx, instanceID)
 	if err != nil {
 		slog.Warn("channels: share the thread's agent instance failed", "thread", msg.ThreadID, "instance", instanceID, "error", err)
-		return ""
+		return "", nil
 	}
 	sealed, err := f.Sealer.Seal([]byte(share.Token), shareAAD(key, instanceID))
 	if err != nil {
 		slog.Warn("channels: seal the thread's share failed", "thread", msg.ThreadID, "error", err)
 		f.revokeShare(ownerCtx, msg.ThreadID, share.ID)
-		return ""
+		return "", nil
 	}
-	stored := false
+	moved, winner := false, ""
 	if err := f.Routes.Update(ctx, key, func(e *store.Entry, found bool) bool {
 		if !found || e.AgentInstanceID != instanceID {
+			moved = true
 			return false
 		}
+		if e.Share != nil && (held == nil || e.Share.ID != held.ID) {
+			// Another turn stored a share of this instance meanwhile.
+			if token, opened := f.openShare(key, e.Share, instanceID); opened {
+				winner = token
+				return false
+			}
+		}
 		e.Share = &store.Share{ID: share.ID, InstanceID: instanceID, Sealed: sealed}
-		stored = true
 		return true
 	}); err != nil {
+		// The turn still uses the share; the next one mints another.
 		slog.Warn("channels: store the thread's share failed", "thread", msg.ThreadID, "error", err)
+	}
+	if winner != "" {
+		f.revokeShare(ownerCtx, msg.ThreadID, share.ID)
+		return winner, nil
+	}
+	if moved {
+		// The thread left instanceID while the share was minted.
+		f.revokeShare(ownerCtx, msg.ThreadID, share.ID)
+		return "", nil
 	}
 	if held != nil {
 		// A share the row held but could not open (another instance, or sealed
 		// under a key this process does not have) is replaced by this one.
 		f.revokeShare(ownerCtx, msg.ThreadID, held.ID)
 	}
-	if !stored {
-		// The binding moved while the share was minted: this turn still uses
-		// it, but nothing will present it again.
-		defer f.revokeShare(context.WithoutCancel(ownerCtx), msg.ThreadID, share.ID)
-	}
 	slog.Info("channels: shared the thread's agent instance with its collaborators", "record", "instance_shared",
 		"thread", msg.ThreadID, "instance", instanceID, "share", share.ID)
-	return share.Token
+	return share.Token, nil
 }
 
 // openShare returns the token of share when it is the thread's share of

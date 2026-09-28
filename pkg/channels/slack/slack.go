@@ -1616,7 +1616,7 @@ func (a *Adapter) OnUserLinked(_ context.Context, slackUser, _ string) {
 				}
 				if err := a.replayDispatch(ctx, req.msg, req.slackChannel); err != nil && !errors.Is(err, context.Canceled) {
 					a.Logger.Error("slack: replay after sign-in failed", "user", slackUser, "thread", req.msg.ThreadID, "error", err)
-					a.postReplayFailureNote(ctx, req.slackChannel, req.msg.ThreadID)
+					a.postReplayFailureNote(ctx, req.slackChannel, req.msg.ThreadID, err)
 				}
 			}
 		})
@@ -1916,8 +1916,11 @@ func (a *Adapter) postDispatchFailureNote(ctx context.Context, slackChannel, thr
 // postReplayFailureNote tells the thread a parked message could not be
 // replayed, so a sign-in or access grant that just promised action does not
 // end in silence. Best-effort: a post failure is only logged.
-func (a *Adapter) postReplayFailureNote(ctx context.Context, slackChannel, threadID string) {
-	const text = "Your message could not be picked up again. Send it again."
+func (a *Adapter) postReplayFailureNote(ctx context.Context, slackChannel, threadID string, cause error) {
+	text := "Your message could not be picked up again. Send it again."
+	if errors.Is(cause, channels.ErrShareUnavailable) {
+		text = shareUnavailableNote
+	}
 	if _, err := a.apiClient().postNote(ctx, slackChannel, text, threadID); err != nil {
 		a.Logger.Warn("slack: post replay failure note failed", "thread", threadID, "error", err)
 	}

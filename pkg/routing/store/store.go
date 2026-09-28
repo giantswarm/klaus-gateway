@@ -126,6 +126,11 @@ type Entry struct {
 	// another person act on it as themselves. Bound to AgentInstanceID and
 	// dropped with the binding.
 	Share *Share `json:"share,omitempty"`
+	// SenderCreated marks an AgentInstanceID a collaborator's turn created
+	// under the collaborator's own token, the initiator's being unavailable:
+	// its creator is that collaborator, so no share of it is minted. Dropped
+	// with the binding.
+	SenderCreated bool `json:"sender_created,omitempty"`
 	// Initiator is the user whose mention launched the thread, and Granted the
 	// users that initiator allowed into it. Written by the channel adapter:
 	// the facts it cannot recover after a restart.

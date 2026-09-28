@@ -1,6 +1,7 @@
 package slack
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -475,9 +476,17 @@ const (
 	policyFailedNote   = "A platform policy refused this request, so the agent did not answer it. Sending it again does not change that."
 )
 
+// shareUnavailableNote is posted when a collaborator's turn cannot reach the
+// thread's conversation: it is not shared with collaborators yet, and the
+// initiator's sign-in, which shares it, has lapsed.
+const shareUnavailableNote = "This conversation belongs to the person who started the thread, and it can only be opened to you while they are signed in. Ask them to send a message here, which signs them in again if needed, then send yours again."
+
 // failureNote is the note of a turn that failed with err before the agent
 // answered: the class's own note, or failedNote when no class names it.
 func failureNote(err error) string {
+	if errors.Is(err, channels.ErrShareUnavailable) {
+		return shareUnavailableNote
+	}
 	switch channels.ClassifyFailure(err) {
 	case channels.FailureTools:
 		return toolsFailedNote
