@@ -490,7 +490,13 @@ any string that begins with `Slack bot`, `Slack app-level`, or `Slack user`.
    Each append carries only what is new, and answer text is sent up to the last whitespace
    boundary — an unfinished word waits for the next append, so nothing is ever half-written.
    Replies over 12,000 characters roll over into a further streamed message; the intermediate
-   close carries `processing`, so the working indicator stays on mid-answer. Every narration
+   close carries `processing`, so the working indicator stays on mid-answer. The steps count
+   toward that budget too, at an estimate of the task card Slack stores for each (far more
+   than their characters), and a step only starts the new message while no step on the full
+   one is running, so every result reaches its card. Should Slack still answer `msg_too_long`,
+   the steps that batch closes reach their cards without the output preview, the full message
+   is closed, and the rest continues in a new one, whose size then bounds the turn's later
+   messages. Every narration
    passage ends in a paragraph break, so two passages — or a passage and the answer after it —
    never run together in the message body. Narration counts toward that per-message limit like
    any other prose, but never toward the answer length the delivery record carries — a process

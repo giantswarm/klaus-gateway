@@ -1,6 +1,7 @@
 package slack
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1225,6 +1226,100 @@ type fakeThread struct {
 	// caller has not heard back yet. See holdAt/release.
 	hold       chan struct{}
 	holdMethod string
+	// sizeLimit, when set, makes a streaming call answer msg_too_long the way
+	// Slack does once the streamed message holds text and outgrows the size
+	// measured on graveler (see slackMeasuredSize); sizes is each message's
+	// content in that measure.
+	sizeLimit int
+	sizes     map[string]*fakeMessageSize
+}
+
+// slackMeasuredLimit is the size, in slackMeasuredSize, past which Slack
+// refused a streamed message holding text in the replays of 2026-09-28.
+const slackMeasuredLimit = 13790
+
+// fakeMessageSize is what a streamed message holds, in the terms Slack's
+// size limit was measured in: the text length and each step card's fields.
+// A card's details and output grow with every update that carries them, as
+// Slack's do.
+type fakeMessageSize struct {
+	text  int
+	cards map[string]*taskChunk
+}
+
+func (m *fakeMessageSize) with(md string, steps []taskChunk) *fakeMessageSize {
+	next := &fakeMessageSize{text: m.text + len(md), cards: map[string]*taskChunk{}}
+	for id, c := range m.cards {
+		cc := *c
+		next.cards[id] = &cc
+	}
+	for _, s := range steps {
+		c, ok := next.cards[s.id]
+		if !ok {
+			c = &taskChunk{id: s.id}
+			next.cards[s.id] = c
+		}
+		c.title, c.status = s.title, s.status
+		c.details += s.details
+		c.output += s.output
+	}
+	return next
+}
+
+// slackMeasuredSize is the fit of the msg_too_long boundary found by replaying
+// streams on graveler (2026-09-28): 90 per card, 160 per non-empty field, the
+// JSON-escaped characters of title, details and output, 10 per emphasis
+// marker, plus the text at its length. It is written independently of the
+// writer's own, rounded-up estimate, so a test holds the writer to Slack's
+// behaviour rather than to itself.
+func (m *fakeMessageSize) slackMeasuredSize() int {
+	escaped := func(s string) int {
+		var b bytes.Buffer
+		enc := json.NewEncoder(&b)
+		enc.SetEscapeHTML(false)
+		_ = enc.Encode(s)
+		return utf8.RuneCount(bytes.TrimSpace(b.Bytes())) - 2
+	}
+	n := m.text
+	for _, c := range m.cards {
+		n += 90 + escaped(c.title)
+		for _, f := range []string{c.details, c.output} {
+			if f != "" {
+				n += 160 + escaped(f) + 10*strings.Count(f, "`") + 10*strings.Count(f, "*") +
+					10*strings.Count(f, "_") + 10*strings.Count(f, "~")
+			}
+		}
+	}
+	return n
+}
+
+// fitsSize applies a streaming call's chunks to the message's measured size,
+// and reports false, leaving the size alone, when Slack would refuse them.
+// Called with f.mu held.
+func (f *fakeThread) fitsSize(ts, md string, steps []taskChunk) bool {
+	if f.sizes == nil {
+		f.sizes = map[string]*fakeMessageSize{}
+	}
+	cur := f.sizes[ts]
+	if cur == nil {
+		cur = &fakeMessageSize{}
+	}
+	next := cur.with(md, steps)
+	if f.sizeLimit > 0 && next.text > 0 && next.slackMeasuredSize() > f.sizeLimit {
+		return false
+	}
+	f.sizes[ts] = next
+	return true
+}
+
+// cardsOf returns the step cards a streamed message ended up with.
+func (f *fakeThread) cardsOf(ts string) map[string]*taskChunk {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.sizes[ts] == nil {
+		return nil
+	}
+	return f.sizes[ts].cards
 }
 
 // holdAt makes the next call to method block, once recorded, until release is
@@ -1303,6 +1398,10 @@ func (f *fakeThread) handler() http.HandlerFunc {
 		case methodChatStartStream:
 			f.nextTS++
 			ts = "msg-" + strconv.Itoa(f.nextTS)
+			if !f.fitsSize(ts, chunkMD, chunkSteps) {
+				statusErr = errCodeMsgTooLong
+				break
+			}
 			f.order = append(f.order, ts)
 			f.streaming[ts] = true
 			f.messages[ts] = capturedMessage{chunkMD}
@@ -1324,6 +1423,8 @@ func (f *fakeThread) handler() http.HandlerFunc {
 				statusErr = f.failStop
 			case !f.streaming[ts]:
 				statusErr = errCodeNotInStreamingState
+			case !f.fitsSize(ts, chunkMD, chunkSteps):
+				statusErr = errCodeMsgTooLong
 			default:
 				if chunkMD != "" {
 					f.messages[ts] = capturedMessage{f.messages[ts][0] + chunkMD}
