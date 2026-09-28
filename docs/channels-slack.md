@@ -675,11 +675,15 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
   that word alone, in any case and with trailing punctuation (`Login.`), so they need no
   slash and no mention wherever the bot reads: a DM, or a thread it is in. `/login` and
   `/logout` also work after a mention. Three messages keep the word instead: a sentence that
-  contains it, a caption on an upload, and an answer in a thread paused on a prompt — where a
-  one-word answer is what the prompt asked for, and the mention form still reaches the
-  command. A gateway without sign-in serves neither word and passes both to the agent. The
-  same shape serves `stop`, which is a command only while a turn runs (see
-  [Restarts and `/stop`](#restarts-and-stop)).
+  contains it, a caption on an upload, and an answer in a thread paused on a **question**,
+  where one word is what the question asked for. In such a thread the command is `/login`
+  after a mention, because the word alone is the answer with or without one — the sign-in
+  notices name the mention form, so that one line of advice is the one to read as the slash
+  form there. A thread paused on an **approval card** is not a question: any text beside a
+  card is read as a rejection carrying that text, so the word stays the command, the person
+  is signed out and the card is left to decide (`slack-hitl-surface.md`). A gateway without
+  sign-in serves neither word and passes both to the agent. The same shape serves `stop`,
+  which is a command only while a turn runs (see [Restarts and `/stop`](#restarts-and-stop)).
 - **Per-message branding.** Agent replies and the agent's own confirmation prompts are posted
   under the agent's display name, so they read as the agent speaking
   rather than the app. The name is the `Agent` CR's `ui.giantswarm.io/display-name` annotation

@@ -51,7 +51,11 @@ gateway posts an approval card:
 - **Buttons:** Approve (primary) runs the call, Deny (danger) rejects it. There is no "Ask a
   question" button. A typed reply that is not "approve" or "deny" is sent as a rejection with
   the text as its reason, but the Go ADK runtime drops that reason, so the model sees only
-  "call is rejected" (giantswarm/kagent-upstream#71).
+  "call is rejected" (giantswarm/kagent-upstream#71). The account commands are the exception:
+  a reply that is only `login` or `logout` runs that command and leaves the card open, since
+  rejecting a call with the reason "logout" is what nobody meant. Beside a **question**, where
+  one word is an answer, those words stay answers; `/login` after a mention is the command
+  there (`channels-slack.md`, "Account commands are plain words").
 - **After a decision:** the buttons go and a context line names who decided, for a click and
   for a typed reply alike: `Approved by <@U123> · <time>` for "approve", `Denied by <@U123> ·
   <time>` for "deny" and for any other reply. A card posted for a status without a structured

@@ -948,30 +948,75 @@ func TestBareLogout_DuringRunningTurn(t *testing.T) {
 	require.Equal(t, 1, gw.dispatchCount(), "the word must not reach the agent as a turn")
 }
 
-// A thread paused on a prompt keeps the word for its answer: a prompt asks for
-// exactly this shape, and the paused task has to be resolved. The command is
-// still reachable there after a mention.
-func TestBareCommand_PausedPromptKeepsTheWord(t *testing.T) {
+// A thread paused on a question keeps the word for its answer: one word is the
+// shape the question asks for, and the paused task has to be resolved. The
+// command is reachable there as /login after a mention.
+func TestBareCommand_PausedQuestionKeepsTheWord(t *testing.T) {
 	fake := newFakeSlackAPI()
 	obo := &fakeOBO{linkedUser: "U1", token: "human-token"}
-	gw := &stubGateway{sendQueue: [][]channels.OutboundDelta{
-		{{Kind: channels.DeltaPrompt, TaskID: "task-1", Prompt: &channels.HitlPrompt{ToolName: "restart_service", Hint: "Which service?"}}},
-		{{Content: "done"}, {Done: true}},
-	}}
+	var mu sync.Mutex
+	var answers []channels.InboundMessage
+	gw := &stubGateway{
+		onDispatch: func(msg channels.InboundMessage) {
+			mu.Lock()
+			answers = append(answers, msg)
+			mu.Unlock()
+		},
+		sendQueue: [][]channels.OutboundDelta{
+			{{Kind: channels.DeltaPrompt, TaskID: "task-1", Prompt: &channels.HitlPrompt{
+				ToolName:  channels.AskUserToolName,
+				Questions: []channels.HitlQuestion{{Question: "Which account do you use?"}},
+			}}},
+			{{Content: "done"}, {Done: true}},
+		},
+	}
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 	a.OBO = obo
 
-	sendEvent(t, srv, dmEvent("U1", "restart it", "930.000"))
-	fake.waitForPath(t, "chat.postMessage", 1) // the prompt is up
+	sendEvent(t, srv, dmEvent("U1", "set me up", "930.000"))
+	fake.waitForPath(t, "chat.postMessage", 1) // the question is up
 
 	sendEvent(t, srv, dmThreadEvent("U1", "logout", "931.000", "930.000"))
 
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 }, flowWait, 50*time.Millisecond,
 		"the answer must reach the paused task")
 
+	mu.Lock()
+	defer mu.Unlock()
+	last := answers[len(answers)-1]
+	require.Equal(t, "task-1", last.TaskID, "the answer resumes the question's task")
+	require.NotNil(t, last.Decision, "the word is read as the answer, not as a command")
+
 	obo.mu.Lock()
 	defer obo.mu.Unlock()
-	require.Empty(t, obo.unlinked, "an answer to a prompt must not sign the person out")
+	require.Empty(t, obo.unlinked, "an answer to a question must not sign the person out")
+}
+
+// An approval card is not a question. Any text beside it is read as a
+// rejection carrying that text, so the word stays the command: the person is
+// signed out and the card is left for them to decide.
+func TestBareCommand_ApprovalCardIsNotAQuestion(t *testing.T) {
+	fake := newFakeSlackAPI()
+	obo := &fakeOBO{linkedUser: "U1", token: "human-token"}
+	gw := &stubGateway{sendQueue: [][]channels.OutboundDelta{
+		{{Kind: channels.DeltaPrompt, TaskID: "task-1", Prompt: &channels.HitlPrompt{ToolName: "restart_service", Hint: "Restart api-server?"}}},
+		{{Content: "done"}, {Done: true}},
+	}}
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+	a.OBO = obo
+
+	sendEvent(t, srv, dmEvent("U1", "restart it", "960.000"))
+	fake.waitForPath(t, "chat.postMessage", 1) // the approval card is up
+
+	sendEvent(t, srv, dmThreadEvent("U1", "logout", "961.000", "960.000"))
+
+	require.Eventually(t, func() bool {
+		obo.mu.Lock()
+		defer obo.mu.Unlock()
+		return len(obo.unlinked) == 1
+	}, flowWait, 50*time.Millisecond, "the word beside an approval card signs the person out")
+
+	require.Equal(t, 1, gw.dispatchCount(), "the tool call is not rejected with the word as its reason")
 }
 
 // A word beside an upload is that file's caption. Consuming it would drop the

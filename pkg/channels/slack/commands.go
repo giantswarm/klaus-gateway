@@ -109,23 +109,18 @@ func parseBareCommand(text string) *slashCommand {
 	return &slashCommand{Name: word}
 }
 
-// servesBareCommand reports whether this gateway answers name at all. A
-// gateway without sign-in keeps "login" and "logout" for the agent: its /help
-// lists no account command, so the word carries no meaning here.
-func (a *Adapter) servesBareCommand(name string) bool {
-	switch name {
-	case cmdLogin, cmdLogout:
-		return a.OBO != nil
-	}
-	return false
-}
-
 // bareCommandFor returns the command msg runs as a plain word, or nil when the
 // message is something else. Three messages keep the word for what they
 // carry, since a consumed message is one the agent never sees.
 func (a *Adapter) bareCommandFor(msg channels.InboundMessage) *slashCommand {
 	cmd := parseBareCommand(msg.Text)
-	if cmd == nil || !a.servesBareCommand(cmd.Name) {
+	if cmd == nil {
+		return nil
+	}
+	// Every verb of the set is an account command, so sign-in decides all of
+	// them: a gateway without it keeps the word for the agent, as its /help
+	// implies. A verb that does not turn on sign-in needs its own rule here.
+	if a.OBO == nil {
 		return nil
 	}
 	// A word beside an upload is that file's caption. Consuming it would drop
@@ -133,12 +128,14 @@ func (a *Adapter) bareCommandFor(msg channels.InboundMessage) *slashCommand {
 	if len(msg.Attachments) > 0 {
 		return nil
 	}
-	// A thread paused on a prompt keeps the word for its answer: the paused
-	// task must be resolved or the tool call dangles, and a one-word answer
-	// (a service name, a cluster) is the shape a prompt asks for. The command
-	// is still reachable there as `/login` after a mention, the rule /stop
-	// follows.
-	if a.hasPendingTask(msg.ThreadID) {
+	// A thread paused on a question keeps the word for its answer: one word
+	// is the shape the question asks for, and the paused task must be
+	// resolved or the tool call dangles. The command is reachable there as
+	// `/login` after a mention, since the word alone is the answer with or
+	// without one. An approval card is not a question: any text beside it is
+	// read as a rejection carrying that text, so the word stays the command
+	// and the card stays open.
+	if task := a.peekPendingTask(msg.ThreadID); task != nil && task.Prompt.IsAskUser() {
 		return nil
 	}
 	return cmd
