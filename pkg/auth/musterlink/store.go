@@ -1,22 +1,20 @@
 package musterlink
 
 import (
-	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
-	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
 	bolt "go.etcd.io/bbolt"
+
+	"github.com/giantswarm/klaus-gateway/pkg/seal"
 )
 
 // Link is the persisted association between a Slack user and a muster identity.
@@ -97,13 +95,13 @@ type linkCipher struct {
 	gcm cipher.AEAD
 }
 
-// newLinkCipher resolves key with normalizeStoreKey and builds the AEAD.
+// newLinkCipher resolves key with seal.NormalizeKey and builds the AEAD.
 func newLinkCipher(key []byte) (*linkCipher, error) {
-	key, err := normalizeStoreKey(key)
+	key, err := seal.NormalizeKey(key)
 	if err != nil {
 		return nil, err
 	}
-	gcm, err := newGCM(key)
+	gcm, err := seal.NewAEAD(key)
 	if err != nil {
 		return nil, err
 	}
@@ -158,7 +156,7 @@ type BoltStore struct {
 
 // OpenBoltStore opens or creates an encrypted link store at path. key must
 // resolve to a 32-byte AES-256 key: it is used verbatim when it is exactly 32
-// raw bytes, otherwise it is base64- or hex-decoded (see normalizeStoreKey).
+// raw bytes, otherwise it is base64- or hex-decoded (see seal.NormalizeKey).
 // A nil logger defaults to slog.Default().
 func OpenBoltStore(path string, key []byte, logger *slog.Logger) (*BoltStore, error) {
 	return openBoltStore(path, key, logger, false)
@@ -283,41 +281,3 @@ func (s *BoltStore) Each(fn func(slackUserID string, link *Link) error) error {
 
 // Close closes the underlying database.
 func (s *BoltStore) Close() error { return s.db.Close() }
-
-// normalizeStoreKey resolves the configured link-store key to the raw 32-byte
-// AES-256 key. A 32-byte input is raw key material and used as-is. Anything else
-// is treated as a text encoding: surrounding whitespace is trimmed (secret files
-// routinely carry a trailing newline) and the value is base64- or hex-decoded.
-// Only a result of exactly 32 bytes is accepted, so a misconfigured key fails
-// loudly at startup instead of silently weakening encryption. This is what makes
-// a SOPS-staged 44-char base64 key (the common case) work without forcing
-// operators to stage raw bytes.
-func normalizeStoreKey(raw []byte) ([]byte, error) {
-	if len(raw) == 32 {
-		return raw, nil
-	}
-	s := strings.TrimSpace(string(raw))
-	for _, decode := range []func(string) ([]byte, error){
-		base64.StdEncoding.DecodeString,
-		base64.RawStdEncoding.DecodeString,
-		base64.URLEncoding.DecodeString,
-		base64.RawURLEncoding.DecodeString,
-		hex.DecodeString,
-	} {
-		if k, err := decode(s); err == nil && len(k) == 32 {
-			return k, nil
-		}
-	}
-	return nil, fmt.Errorf("musterlink: store key must be 32 raw bytes or a base64/hex encoding of 32 bytes (got %d bytes)", len(raw))
-}
-
-func newGCM(key []byte) (cipher.AEAD, error) {
-	if len(key) != 32 {
-		return nil, fmt.Errorf("musterlink: encryption key must be 32 bytes (AES-256), got %d", len(key))
-	}
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, fmt.Errorf("musterlink: new cipher: %w", err)
-	}
-	return cipher.NewGCM(block)
-}

@@ -22,6 +22,11 @@ type AccessPolicy interface {
 	SetInitiator(ctx context.Context, channelID, threadID, userID string) string
 	// Initiator returns the thread initiator, or "" when the thread has none.
 	Initiator(ctx context.Context, channelID, threadID string) string
+	// InstanceOwner returns who owns the AgentInstance a turn for agentRef
+	// runs on: its recorded creator while the thread is bound to agentRef,
+	// the initiator otherwise (an instance the turn creates is theirs). ""
+	// when the thread has no initiator.
+	InstanceOwner(ctx context.Context, channelID, threadID, agentRef string) string
 	// Allowed reports whether userID may instruct the agent in the thread: the
 	// initiator, or a user granted via Grant.
 	Allowed(ctx context.Context, channelID, threadID, userID string) bool
@@ -66,6 +71,17 @@ func (p *recordAccess) Initiator(ctx context.Context, channelID, threadID string
 	e, ok, err := p.rec.ThreadRecord(ctx, p.channel, channelID, threadID)
 	if err != nil || !ok {
 		return ""
+	}
+	return e.Initiator
+}
+
+func (p *recordAccess) InstanceOwner(ctx context.Context, channelID, threadID, agentRef string) string {
+	e, ok, err := p.rec.ThreadRecord(ctx, p.channel, channelID, threadID)
+	if err != nil || !ok || e.Initiator == "" {
+		return ""
+	}
+	if e.AgentInstanceID != "" && e.AgentRef == agentRef && e.InstanceCreator != "" {
+		return e.InstanceCreator
 	}
 	return e.Initiator
 }

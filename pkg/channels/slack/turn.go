@@ -28,7 +28,7 @@ type turnHooks struct {
 // way no matter which entrypoint admitted it. dispatch (a typed message) and
 // handleDecision (a button click) converge here after their own admission
 // (gates, token, thread slot); runTurn then resolves the sender's email,
-// applies the initiator's identity for a shared thread, resolves the agent,
+// marks a collaborator's turn on a shared thread, resolves the agent,
 // and streams the completion.
 //
 // task is the pending input-required task this turn resumes (nil = a fresh
@@ -51,9 +51,9 @@ func (a *Adapter) runTurn(ctx context.Context, msg channels.InboundMessage, slac
 	slackUser := msg.Subject
 
 	// Corrupt-session recovery lives here, not in the callers: the reset must
-	// present the identity the turn ran under (the initiator's token after the
-	// swap below, since kagent keys the session lookup on the token's
-	// principal), and only this msg copy carries it. A corrupt session
+	// present the identities the turn ran with (on a collaborator's turn, the
+	// initiator's token the instance belongs to, set below), and only this msg
+	// copy carries them. A corrupt session
 	// invalidates any pending task inside it, so the handle is dropped rather
 	// than left (or re-stored by a failure branch) for a resume that can only
 	// fail against the deleted session.
@@ -67,10 +67,10 @@ func (a *Adapter) runTurn(ctx context.Context, msg channels.InboundMessage, slac
 
 	a.resolveSubjectEmail(ctx, &msg)
 
-	actor := a.applyInitiatorIdentity(ctx, &msg, msg.ThreadID, slackUser)
+	a.applyInstanceOwner(ctx, &msg, msg.ThreadID, slackUser)
 	// Should the gateway restart mid-turn, the next process delivers the result
-	// under the acting identity, reacting on the triggering message.
-	msg.Resume = resumeData(actor, triggerTS)
+	// under the sender's identity, reacting on the triggering message.
+	msg.Resume = resumeData(slackUser, triggerTS)
 
 	if hooks.onIdentityResolved != nil {
 		hooks.onIdentityResolved(msg)
