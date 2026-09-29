@@ -131,15 +131,50 @@ creates one, which a turn that switches agents does mid-thread.
   persistent store (`valkey` or `bolt`), because the row carries it, not the process.
 - In a DM every top-level message opens its own thread and therefore its own
   instance; a "New chat" in the assistant pane likewise.
-- A turn runs under the thread **initiator's** identity. For a granted
-  collaborator's turn the gateway forwards the initiator's token and attaches the
-  collaborator as attribution, so the instance is created and addressed by one
-  principal and the agent still sees who spoke while acting with the initiator's
-  rights. That is why a newcomer needs the initiator's consent — the access
-  prompt — before their message runs. The initiator's own turns, and turns where
-  the initiator's token cannot be minted, use the sender's own token rather than
-  the gateway service account (`applyInitiatorIdentity` in
-  `pkg/channels/slack/slack.go`).
+- The instance is created under the thread **initiator's** identity, and kagent
+  lets only its creator act on it. A granted collaborator's turn runs under the
+  collaborator's own token and reaches the instance through an **AgentInstance
+  share**: the first collaborator turn mints a read-write share under the
+  initiator's token, and every collaborator turn after that presents it as
+  `x-share-token` next to their own bearer. The agent, and muster behind it,
+  act with the collaborator's rights, and the collaborator is named to the agent
+  as attribution. The conversation stays the initiator's, which is why a
+  newcomer needs the initiator's consent — the access prompt — before their
+  message runs (`applyInstanceOwner` in `pkg/channels/slack/slack.go`).
+- The share is kept in the thread's row, sealed with AES-256-GCM under a key
+  derived from the OBO link-store key, so a copy of the row does not hand out
+  the share. A collaborator turn uses the stored share without the initiator's
+  token, so it keeps working after the initiator signs out. The gateway revokes
+  a share when the thread moves to another agent, and when a turn finds the
+  conversation ended; deleting the instance, as a session reset does, removes
+  its shares at the controller. Only the instance's creator may revoke its
+  shares, so a turn that does not hold the creator's token (a collaborator's
+  while the creator is signed out, or a new mention that restarts an ended
+  conversation) leaves the share valid and logs it. A share kagent issues does not expire on its
+  own, so the share of a thread nobody writes to again stays valid at the
+  controller.
+- A thread has one share for all its collaborators, and only the gateway holds
+  it. Who may use it is the thread's access list: the gateway sends a turn with
+  the share only for a granted user.
+- When the thread holds no share yet and the initiator's token cannot be
+  minted, the gateway refuses the collaborator's turn and tells the thread that
+  the initiator has to be signed in. The resume check on such a turn is
+  indeterminate rather than a miss (the collaborator's own token cannot see the
+  instance), so it neither posts the starting-fresh notice nor clears the
+  binding.
+- A collaborator whose turn opens the thread's binding while the initiator is
+  signed out creates the instance under their own token. The row records that
+  collaborator as the instance's creator (`instance_creator`): their turns need
+  no share, and every other person's turn in the thread, the initiator's
+  included, is a collaborator's turn that borrows the creator's token for the
+  share. A row without a recorded creator reads as the initiator's.
+- A collaborator's turn that finds the session's history corrupt deletes the
+  instance through the share, the same recovery an initiator's turn runs;
+  without the share or the creator's token the reset is refused and the
+  thread is told to start a new one.
+- The agent still sees the instance creator in `X-User-Id` on a collaborator's
+  turn (kagent#2459), so anything that names the person from that header names
+  the initiator.
 - **When the instance is gone.** Two cases clear only the binding fields of the row;
   the thread keeps its agent, its initiator and its grants, and the next turn creates
   a fresh instance. An instance the controller no longer has is found by the resume
@@ -192,7 +227,8 @@ creates one, which a turn that switches agents does mid-thread.
 - **A reply in a conversation that ended is told so.** The row itself stays in the store for
   twice the lifetime (180 days by default; `0` still never expires), and while it is there the
   gateway knows the difference between a thread whose conversation ended and a thread it was
-  never in. So an un-mentioned reply in one of the former gets one private line — "This
+  never in. So an un-mentioned reply in one of the former, unless it opens with someone else's mention (below),
+  gets one private line — "This
   conversation ended after 90 days without messages. Mention the bot to start a new one." — instead
   of silence. The sentence names the configured lifetime exactly, as the count of the largest
   unit it is a whole multiple of: `--thread-ttl=36h` reads "36 hours", not "1 day", and `90m`
@@ -204,6 +240,13 @@ creates one, which a turn that switches agents does mid-thread.
   word, as for any thread the bot was never in. There is no warning before the end, and no
   sweep: the notice is posted when somebody writes, which is the moment it is useful. A
   thread's row adopts the configured lifetime on its next message.
+- **A reply that opens with someone else's mention is not for the agent.** In a channel thread,
+  a reply whose first token mentions a person other than the bot (`@alice can you check?`) is
+  ignored without a word, even in a live conversation and even while a question or approval is
+  pending. A mention later in the text (`ask @alice about it`) does not count, and a mention of
+  the bot anywhere in the reply (`@alice @bot look too`) still addresses the bot. Direct
+  messages are not affected. Only a person's mention counts: a reply that opens with a user group
+  (`@oncall`) or `@here` still reaches the agent.
 
 ### Two auth layers
 
@@ -298,7 +341,7 @@ agent when it opens, through one of three entry points, and keeps it for life:
   already talks to an agent — reply in it to ask that agent, a second conversation would fork the
   one it has — and one that already belongs to someone else (a `/usage` or `/stop` typed there
   made them its initiator) — reply in it, so the owner is asked to allow you, since a conversation
-  opened by the picker would run under the owner's delegated identity. Refusals and failures
+  opened by the picker would run in the owner's conversation. Refusals and failures
   are private to the invoker, like the command's. The shortcut works in DMs too when DMs are
   served.
 
@@ -750,11 +793,10 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
   keeps a process-local copy of every link it has served, so a store outage does not reach the
   people it already knows and a refresh token the store failed to take is written later rather
   than lost (see `deployment.md`, "OBO link store").
-- **One conversation per thread.** A thread is bound to one agent and one AgentInstance, and
-  every turn in it runs under the thread initiator's identity even after others are allowed
-  in; a granted collaborator instructs the agent on the initiator's behalf, with their own
-  identity attached as attribution. Actions are therefore attributed to the initiator (see
-  [Threads and conversations](#threads-and-conversations)).
+- **One conversation per thread.** A thread is bound to one agent and one AgentInstance, which
+  its initiator created. A granted collaborator instructs the agent in that conversation under
+  their own identity, through the thread's AgentInstance share, so their actions are attributed
+  to them (see [Threads and conversations](#threads-and-conversations)).
 - **Surfaces.** DMs and channels are controlled independently. `SLACK_DM_MODE` selects the DM
   behaviour: `serve` (answer DMs, the default), `redirect` (a polite pointer to channels), or
   `ignore` (drop silently). `SLACK_CHANNEL_MODE` selects the channels served: `all` (every

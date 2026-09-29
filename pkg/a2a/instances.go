@@ -151,6 +151,52 @@ func (c *Client) DeleteInstance(ctx context.Context, id string) error {
 	return nil
 }
 
+// Share is an AgentInstance share: ID names it for a revoke, and Token is the
+// secret a call presents to act on the instance. The controller returns the
+// token only when the share is created and keeps just its hash.
+type Share struct {
+	ID    string
+	Token string
+}
+
+// CreateShare mints a read-write share of the instance, which lets a caller
+// other than its creator send and cancel turns on it as themselves. Only the
+// instance's creator may create one.
+func (c *Client) CreateShare(ctx context.Context, instanceID string) (Share, error) {
+	callCtx, err := c.serviceCtx(ctx)
+	if err != nil {
+		return Share{}, err
+	}
+	resp, err := c.instances.CreateAgentInstanceShare(callCtx, &apiv1alpha1.CreateAgentInstanceShareRequest{
+		AgentInstanceId: instanceID,
+		Permission:      apiv1alpha1.AgentInstanceSharePermission_AGENT_INSTANCE_SHARE_PERMISSION_READ_WRITE,
+	})
+	if err != nil {
+		if status.Code(err) == codes.NotFound {
+			return Share{}, fmt.Errorf("%w: %s", ErrInstanceNotFound, instanceID)
+		}
+		return Share{}, fmt.Errorf("a2a: share AgentInstance %s: %w", instanceID, err)
+	}
+	if resp.GetToken() == "" || resp.GetShare().GetId() == "" {
+		return Share{}, fmt.Errorf("a2a: share AgentInstance %s: the controller returned no share token", instanceID)
+	}
+	return Share{ID: resp.GetShare().GetId(), Token: resp.GetToken()}, nil
+}
+
+// RevokeShare revokes a share, so its token no longer grants anything. A share
+// that is already gone is success.
+func (c *Client) RevokeShare(ctx context.Context, shareID string) error {
+	callCtx, err := c.serviceCtx(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = c.instances.RevokeAgentInstanceShare(callCtx, &apiv1alpha1.RevokeAgentInstanceShareRequest{ShareId: shareID})
+	if err != nil && status.Code(err) != codes.NotFound {
+		return fmt.Errorf("a2a: revoke AgentInstance share %s: %w", shareID, err)
+	}
+	return nil
+}
+
 // IsNotFound reports whether err says the instance is gone.
 func IsNotFound(err error) bool {
 	return errors.Is(err, ErrInstanceNotFound)

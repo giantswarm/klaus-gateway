@@ -181,9 +181,9 @@ func TestLoginReplay_WaitsForBusyThread(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	require.Equal(t, "help me out", captured[2].Text)
-	require.Equal(t, "tok1", captured[2].BearerToken,
-		"the replayed collaborator turn runs under the initiator's token, not the sender's")
-	require.NotEmpty(t, captured[2].Author, "the real sender is attached as attribution")
+	require.Equal(t, "tok2", captured[2].BearerToken, "the replayed collaborator turn runs under the sender's own token")
+	require.Equal(t, "tok1", captured[2].OwnerToken, "with the initiator's token as the instance owner's")
+	require.NotEmpty(t, captured[2].Author, "the sender is attached as attribution")
 }
 
 // A message from a signed-out user that arrives while another turn holds the
@@ -248,8 +248,8 @@ func TestSignInPark_BusyThreadParksInsteadOfDropping(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	require.Equal(t, "help me out", captured[2].Text)
-	require.Equal(t, "tok1", captured[2].BearerToken,
-		"the replayed collaborator turn runs under the initiator's token, not the sender's")
+	require.Equal(t, "tok2", captured[2].BearerToken, "the replayed collaborator turn runs under the sender's own token")
+	require.Equal(t, "tok1", captured[2].OwnerToken, "with the initiator's token as the instance owner's")
 }
 
 // raceLinkOBO reports the user unlinked exactly once and linked from then on,

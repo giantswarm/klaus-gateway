@@ -103,7 +103,7 @@ func TestAccess_NewcomerApprovedReplaysMessage(t *testing.T) {
 	sendEvent(t, srv, mention("U999", "help", "200.000", "100.000"))
 	fake.waitForPath(t, "chat.postEphemeral", 2)
 	ephemeral := allText(fake.pathCalls("chat.postEphemeral"))
-	require.Contains(t, ephemeral, "wants to join this thread*\nTheir messages would run under your sign-in")
+	require.Contains(t, ephemeral, "wants to join this thread*\nThey would see this conversation and instruct the agent in it, under their own sign-in")
 	require.Contains(t, ephemeral, "waiting for the thread owner")
 	require.Equal(t, 1, gw.dispatchCount(), "held newcomer message must not reach the agent yet")
 

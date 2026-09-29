@@ -59,6 +59,17 @@ type fakeAgent struct {
 	deleted         []string
 	gotTasks        []a2apkg.TaskID
 	created, gotIns int
+
+	// createdAs is the bearer each CreateInstance ran under; sharedAs the
+	// bearer of each CreateShare, shares the ids minted, revoked the revokes.
+	createdAs []string
+	sharedAs  []string
+	shareErr  error
+	shares    []string
+	revoked   []string
+	// onShare, when set, runs after CreateShare minted a share and before it
+	// returns, standing in for what another turn does meanwhile.
+	onShare func()
 }
 
 // streamAttempt is what one Stream call of the fake plays: its events, or err
@@ -157,9 +168,10 @@ func (a *fakeAgent) CancelTask(_ context.Context, instanceID string, taskID a2ap
 	return &a2apkg.Task{ID: taskID, Status: a2apkg.TaskStatus{State: a2apkg.TaskStateCanceled}}, nil
 }
 
-func (a *fakeAgent) CreateInstance(_ context.Context, agentRef, requestID, name string) (pkga2a.Instance, error) {
+func (a *fakeAgent) CreateInstance(ctx context.Context, agentRef, requestID, name string) (pkga2a.Instance, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.createdAs = append(a.createdAs, pkga2a.ForwardedTokenFromContext(ctx))
 	a.createRequests = append(a.createRequests, requestID)
 	a.createNames = append(a.createNames, name)
 	if a.createErr != nil {
@@ -197,6 +209,31 @@ func (a *fakeAgent) DeleteInstance(_ context.Context, id string) error {
 		return a.deleteErr
 	}
 	delete(a.instances, id)
+	return nil
+}
+
+func (a *fakeAgent) CreateShare(ctx context.Context, instanceID string) (pkga2a.Share, error) {
+	a.mu.Lock()
+	a.sharedAs = append(a.sharedAs, pkga2a.ForwardedTokenFromContext(ctx))
+	if a.shareErr != nil {
+		a.mu.Unlock()
+		return pkga2a.Share{}, a.shareErr
+	}
+	id := fmt.Sprintf("share-%d", len(a.shares)+1)
+	a.shares = append(a.shares, id)
+	hook := a.onShare
+	a.onShare = nil
+	a.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	return pkga2a.Share{ID: id, Token: "token-" + id + "-" + instanceID}, nil
+}
+
+func (a *fakeAgent) RevokeShare(_ context.Context, shareID string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.revoked = append(a.revoked, shareID)
 	return nil
 }
 

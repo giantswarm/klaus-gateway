@@ -324,11 +324,11 @@ func (o multiUserOBO) TokenFor(_ context.Context, slackUserID string) (string, e
 func (multiUserOBO) LinkURL(string) string { return "https://gw.example.com/link" }
 func (multiUserOBO) Unlink(string) error   { return nil }
 
-// A granted collaborator's button decision resumes the shared session under the
-// thread initiator's token, not the clicker's, with the clicker attached as
-// attribution — matching the typed-turn path in dispatch so a click and a typed
-// "approve" reply cannot fork the session differently.
-func TestHandleDecision_CollaboratorClickForwardsInitiatorToken(t *testing.T) {
+// A granted collaborator's button decision resumes the initiator's instance
+// under the clicker's own token, marked as a collaborator's with the
+// initiator's token as the owner's, and the clicker attached as attribution —
+// matching the typed-turn path in dispatch.
+func TestHandleDecision_CollaboratorClickRunsAsTheClicker(t *testing.T) {
 	gw := &fakeGateway{Facade: newMemoryRecorder(), deltas: []channels.OutboundDelta{{Content: "done"}, {Done: true}}}
 	// newDecisionAdapter makes U001 the initiator; U002 is a granted collaborator.
 	a, _ := newDecisionAdapter(t, gw, multiUserOBO{"U001": "tok-initiator", "U002": "tok-collab"})
@@ -339,15 +339,15 @@ func TestHandleDecision_CollaboratorClickForwardsInitiatorToken(t *testing.T) {
 
 	sent := gw.sentMessages()
 	require.Len(t, sent, 1)
-	require.Equal(t, "tok-initiator", sent[0].BearerToken,
-		"collaborator's click must run under the initiator's token, not the clicker's")
+	require.Equal(t, "tok-collab", sent[0].BearerToken, "the click runs under the clicker's own token")
+	require.True(t, sent[0].Collaborator)
+	require.Equal(t, "tok-initiator", sent[0].OwnerToken)
 	require.Equal(t, "clicker@example.com", sent[0].Author,
-		"the real clicker is attached as attribution")
+		"the clicker is attached as attribution")
 }
 
 // When the initiator's token cannot be minted (unlinked), a granted
-// collaborator's click falls back to the clicker's own identity rather than the
-// gateway service account, and carries no attribution.
+// collaborator's click still runs as the clicker, without an owner token.
 func TestHandleDecision_CollaboratorClickFallsBackWhenInitiatorUnavailable(t *testing.T) {
 	gw := &fakeGateway{Facade: newMemoryRecorder(), deltas: []channels.OutboundDelta{{Content: "done"}, {Done: true}}}
 	// U001 is the initiator but unlinked; U002 is a granted, linked collaborator.
@@ -359,9 +359,9 @@ func TestHandleDecision_CollaboratorClickFallsBackWhenInitiatorUnavailable(t *te
 
 	sent := gw.sentMessages()
 	require.Len(t, sent, 1)
-	require.Equal(t, "tok-collab", sent[0].BearerToken,
-		"fallback runs under the clicker's own token when the initiator's is unavailable")
-	require.Empty(t, sent[0].Author, "fallback turn is not delegated, so no attribution")
+	require.Equal(t, "tok-collab", sent[0].BearerToken)
+	require.True(t, sent[0].Collaborator)
+	require.Empty(t, sent[0].OwnerToken, "the unlinked initiator has no token to lend")
 }
 
 // errCorruptHistoryUnit mimics the model API rejection kagent relays for a
@@ -406,10 +406,9 @@ func newCorruptDecisionAdapter(t *testing.T, gw channels.Gateway, obo OBOTokenSo
 }
 
 // A corrupt-history failure on a button resume resets the session like a
-// typed turn does, and the reset presents the identity the turn ran under
-// (the initiator's token for a collaborator's click, since kagent keys the
-// session lookup on the token's principal), so it deletes the session the
-// turn actually hit.
+// typed turn does, and the reset presents the identities the turn ran with:
+// the clicker's own token, and the initiator's as the owner of the instance
+// the reset deletes.
 func TestHandleDecision_CorruptSessionResetsUnderTurnIdentity(t *testing.T) {
 	var (
 		mu     sync.Mutex
@@ -434,8 +433,10 @@ func TestHandleDecision_CorruptSessionResetsUnderTurnIdentity(t *testing.T) {
 	defer mu.Unlock()
 	require.Len(t, resets, 1, "the corrupt session is deleted once")
 	require.Equal(t, "T001", resets[0].ThreadID)
-	require.Equal(t, "tok-initiator", resets[0].BearerToken,
-		"the reset must present the token the turn ran under, not the clicker's own")
+	require.Equal(t, "tok-collab", resets[0].BearerToken)
+	require.True(t, resets[0].Collaborator)
+	require.Equal(t, "tok-initiator", resets[0].OwnerToken,
+		"the reset deletes the initiator's instance under the initiator's token")
 	require.Contains(t, strings.Join(posts(), "\n"), "The session is reset",
 		"the thread is told the session was reset")
 	require.False(t, a.hasPendingTask("T001"),
