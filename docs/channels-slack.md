@@ -617,7 +617,12 @@ A turn ends early for one of two reasons, and the thread can tell them apart:
   conversation stays where it is. Only when the second attempt fails too does the note go out.
   A stream that broke is not sent again (the task may still run at the controller), and neither
   is a HITL decision (the paused task it answers is gone once it failed).
-  Once answer text has streamed, only the reaction marks the incomplete reply.
+  Once the reply has started (steps, narration or part of the answer), the failed reaction marks
+  it and one note goes under it, in both progress modes: `The turn ended with <a platform error>
+  before the agent finished. What it did so far is in the Dev Portal; reply here to try again.`
+  It names the class (a tool connection error, a platform error, a model error, a policy
+  refusal, or just an error), never the error's text. A stream reset by a controller restart
+  (`RST_STREAM`) is a `platform` failure.
 - **A gateway restart** (a pod restart, a node loss with a grace period) is nobody's decision.
   The thread gets a one-line notice — `The gateway restarted while *<agent>* was working. The
   agent keeps going: its result is in the Dev Portal, and it is posted here when it is done.` — the
