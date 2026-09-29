@@ -156,6 +156,9 @@ type Share struct {
 	// Sealed is the share token, encrypted and bound to the thread and the
 	// instance.
 	Sealed []byte `json:"sealed"`
+	// ExpiresAt is when the controller stops honouring the token; zero means
+	// never.
+	ExpiresAt time.Time `json:"expires_at,omitzero"`
 }
 
 // Delivered is the part of an in-flight turn's reply that has reached the

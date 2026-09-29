@@ -3,6 +3,7 @@ package channels
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
@@ -46,7 +47,7 @@ func (f *Facade) withInstanceAuth(ctx context.Context, msg InboundMessage, entry
 		return ctx, true
 	}
 	key := threadKey(msg.Channel, msg.ChannelID, msg.ThreadID)
-	token, opened := f.openShare(key, entry.Share, entry.AgentInstanceID)
+	token, opened := f.openShare(key, entry.Share, entry.AgentInstanceID, f.shareExpiryMargin())
 	if !opened {
 		return ctx, false
 	}
@@ -86,7 +87,13 @@ func (f *Facade) shareFor(ctx context.Context, msg InboundMessage, instanceID st
 			return "", nil
 		}
 		held = entry.Share
-		if token, opened := f.openShare(key, held, instanceID); opened {
+		// Without the creator's token no replacement can be minted, so a
+		// share is used until shortly before it expires.
+		margin := f.shareExpiryMargin()
+		if msg.OwnerToken != "" {
+			margin = f.shareRenewal()
+		}
+		if token, opened := f.openShare(key, held, instanceID, margin); opened {
 			return token, nil
 		}
 	}
@@ -96,7 +103,7 @@ func (f *Facade) shareFor(ctx context.Context, msg InboundMessage, instanceID st
 		return "", ErrShareUnavailable
 	}
 	ownerCtx := withOwnerAuth(ctx, msg)
-	share, err := f.Agent.CreateShare(ownerCtx, instanceID)
+	share, err := f.Agent.CreateShare(ownerCtx, instanceID, f.ThreadTTL)
 	if err != nil {
 		slog.Warn("channels: share the thread's agent instance failed", "thread", msg.ThreadID, "instance", instanceID, "error", err)
 		return "", nil
@@ -118,13 +125,13 @@ func (f *Facade) shareFor(ctx context.Context, msg InboundMessage, instanceID st
 		if e.Share != nil && (held == nil || e.Share.ID != held.ID) {
 			// Another turn stored a share of this instance meanwhile. One this
 			// process cannot open is overwritten, and revoked below.
-			if token, opened := f.openShare(key, e.Share, instanceID); opened {
+			if token, opened := f.openShare(key, e.Share, instanceID, 0); opened {
 				winner = token
 				return false
 			}
 			displaced = e.Share
 		}
-		e.Share = &store.Share{ID: share.ID, InstanceID: instanceID, Sealed: sealed}
+		e.Share = &store.Share{ID: share.ID, InstanceID: instanceID, Sealed: sealed, ExpiresAt: share.ExpiresAt}
 		return true
 	}); err != nil {
 		// The turn still uses the share; the next one mints another.
@@ -141,9 +148,13 @@ func (f *Facade) shareFor(ctx context.Context, msg InboundMessage, instanceID st
 		return "", nil
 	}
 	if held != nil {
-		// A share the row held but could not open (another instance, or sealed
-		// under a key this process does not have) is replaced by this one.
-		f.revokeShare(ownerCtx, msg.ThreadID, held.ID)
+		// A share the row held but could not open (another instance, sealed
+		// under a key this process does not have, or expired) is revoked. One
+		// replaced only for renewal stays valid until its expiry: a turn
+		// already running on it keeps working.
+		if _, valid := f.openShare(key, held, instanceID, 0); !valid {
+			f.revokeShare(ownerCtx, msg.ThreadID, held.ID)
+		}
 	}
 	if displaced != nil {
 		f.revokeShare(ownerCtx, msg.ThreadID, displaced.ID)
@@ -153,10 +164,35 @@ func (f *Facade) shareFor(ctx context.Context, msg InboundMessage, instanceID st
 	return share.Token, nil
 }
 
+// shareRenewal is how long before its expiry a share is replaced when the
+// instance's creator can mint the next one: an hour, or half the thread
+// lifetime when that is shorter, so a fresh share is never due at once.
+func (f *Facade) shareRenewal() time.Duration {
+	if f.ThreadTTL > 0 {
+		return min(time.Hour, f.ThreadTTL/2)
+	}
+	return time.Hour
+}
+
+// shareExpiryMargin is how long a share must still be valid for a turn to
+// start on it when no replacement can be minted: kagent checks the share on
+// every call, and a turn's later calls (a stop, the final read, a
+// resubscription after a restart) must not outlive it, clock skew between the
+// gateway and the controller's database included. Five minutes, or the
+// renewal window when that is shorter.
+func (f *Facade) shareExpiryMargin() time.Duration {
+	return min(5*time.Minute, f.shareRenewal())
+}
+
 // openShare returns the token of share when it is the thread's share of
-// instanceID and opens under this process's key.
-func (f *Facade) openShare(key store.Key, share *store.Share, instanceID string) (string, bool) {
+// instanceID, grants access for at least margin more, and opens under this
+// process's key.
+func (f *Facade) openShare(key store.Key, share *store.Share, instanceID string, margin time.Duration) (string, bool) {
 	if f.Sealer == nil || share == nil || instanceID == "" || share.InstanceID != instanceID {
+		return "", false
+	}
+	if !share.ExpiresAt.IsZero() && !f.clock().Add(margin).Before(share.ExpiresAt) {
+		slog.Info("channels: the thread's share is expired or about to", "thread", key.ThreadID, "share", share.ID, "expires_at", share.ExpiresAt)
 		return "", false
 	}
 	token, err := f.Sealer.Open(share.Sealed, shareAAD(key, instanceID))

@@ -3,6 +3,7 @@ syntax = "proto3";
 package kagent.api.v1alpha1;
 
 import "buf/validate/validate.proto";
+import "google/protobuf/duration.proto";
 import "google/protobuf/timestamp.proto";
 import "kagent/api/v1alpha1/common.proto";
 
@@ -167,6 +168,8 @@ message AgentInstanceShare {
   string agent_instance_id = 2;
   AgentInstanceSharePermission permission = 3;
   google.protobuf.Timestamp created_at = 4;
+  // When the share's token stops granting access. Unset means never.
+  google.protobuf.Timestamp expires_at = 5;
 }
 
 message CreateAgentInstanceShareRequest {
@@ -175,6 +178,9 @@ message CreateAgentInstanceShareRequest {
     defined_only: true
     not_in: 0
   }];
+  // How long the share's token grants access, from its creation. Unset means
+  // until the share is revoked or the instance deleted.
+  google.protobuf.Duration ttl = 3 [(buf.validate.field).duration.gt = {}];
 }
 
 message CreateAgentInstanceShareResponse {
