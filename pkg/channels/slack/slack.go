@@ -2671,10 +2671,14 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 		// note, in both reactions and text mode. The note names attachments only
 		// when the message actually carried some; a text/history-only overflow
 		// gets the generic size notice instead. Every other failure gets the note
-		// of its class (failureNote), in reactions mode only while no answer
-		// text streamed.
+		// of its class: failureNote before the reply started, and once it did
+		// (steps, narration, part of the answer) interruptedFailureNote, which
+		// says the turn is over and where its progress is.
 		oversize := errors.Is(err, pkga2a.ErrPayloadTooLarge)
 		note := failureNote(err)
+		if w.wroteContent() {
+			note = interruptedFailureNote(err)
+		}
 		if oversize {
 			note = payloadTooLargeNote
 			if len(msg.Attachments) > 0 {
@@ -2690,13 +2694,12 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 				noteTS = ""
 			}
 			a.postTerminalNote(cctx, client, slackChannel, threadID, noteTS, note)
-		} else if oversize || (!w.wroteContent() && !isCorruptSessionErr(err)) {
+		} else if oversize || !isCorruptSessionErr(err) {
 			// Reactions mode. The failed emoji alone says nothing about what to
 			// do, and it lands on the triggering message — for a conversation the
 			// gateway opened itself that is the bot's own root, which nobody
-			// watches for reactions. With no answer text in the thread the note
-			// goes there too; once content streamed, the emoji on a visibly
-			// incomplete reply is signal enough. A corrupt-history failure is
+			// watches for reactions. So the note goes into the thread too, under
+			// the incomplete reply when one streamed. A corrupt-history failure is
 			// left out: runTurn's deferred recoverCorruptSession posts its own
 			// notice (reset + "resend"), and a generic "try again" in front of it
 			// would only muddle the advice. (Text mode keeps replacing the

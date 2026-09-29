@@ -23,6 +23,7 @@ func TestClassifyFailure(t *testing.T) {
 		{"tool set listing", errors.New(`failed to extract tools from the tool set "mcp_tool_set": failed to list MCP tools: connection lost again after reconnection`), channels.FailureTools},
 		{"tool set refused by policy", errors.New(`failed to extract tools from the tool set "mcp_tool_set": failed to list MCP tools: failed to init MCP session: calling "initialize": 403 authorization failed`), channels.FailureTools},
 		{"MCP server asks for authorization", errors.New("calling \"tools/list\": authorization required"), channels.FailureTools},
+		{"stream reset by a controller restart", errors.New("stream terminated by RST_STREAM with error code: INTERNAL_ERROR"), channels.FailurePlatform},
 		{"controller unreachable", fmt.Errorf("slack: send completion: %w", errors.New(`rpc error: code = Unavailable desc = connection error: desc = "transport: Error while dialing: dial tcp 10.0.0.3:8083: connect: connection refused"`)), channels.FailurePlatform},
 		{"runtime connection reset", errors.New("runtime stream failed: read: connection reset by peer"), channels.FailurePlatform},
 		{"anthropic overloaded", errors.New(`anthropic API error: POST "https://api.anthropic.com/v1/messages": 529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`), channels.FailureModel},
