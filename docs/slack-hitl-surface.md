@@ -29,7 +29,8 @@ A single ask_user question picks its layout by choice count, select mode, and la
 
 Generic (non-`ask_user`) tool approvals always render as the approval card, with Approve and
 Deny buttons.
-Any prompt can also be answered by replying in-thread; a reply resolves the paused task the
+Any prompt can also be answered by replying in-thread (a reply that opens with a mention of
+someone other than the bot is not for the agent and answers nothing); a reply resolves the paused task the
 same way a click does. Only a permitted user (the thread initiator or a granted collaborator)
 may decide; an onlooker click is refused ephemerally. A thread is one shared session, so any
 permitted user may answer a prompt it raised. The team review (section 10) is the exception:
@@ -581,7 +582,7 @@ writes nothing:
 
 | when | notice |
 |---|---|
-| a reply without a mention in a thread whose conversation ended after `routing.threadTTL` (the row is still in the store, at twice the lifetime) | "This conversation ended after 90 days without messages. Mention the bot to start a new one." (the configured lifetime is named) |
+| a reply without a mention, and not opening with someone else's mention, in a thread whose conversation ended after `routing.threadTTL` (the row is still in the store, at twice the lifetime) | "This conversation ended after 90 days without messages. Mention the bot to start a new one." (the configured lifetime is named) |
 
 ## Answering: click and reply
 
@@ -598,7 +599,8 @@ keeps each question with its answer on the line under it ("No answer" when a typ
 no line for it), and its context line reads `Answered by <@U123> · …`. A long answer is cut so
 the line stays within Slack's 3000-character limit, or Slack would refuse the whole rewrite. The approval card is rewritten the same way (section 1).
 
-Every prompt can also be answered by a plain in-thread reply, which maps free text to the same
+Every prompt can also be answered by a plain in-thread reply that does not open with a mention
+of someone other than the bot, which maps free text to the same
 structured decision. A question prompt's or an approval card's message is recorded when it
 posts, so a typed answer rewrites it exactly like a click, and no live controls stay on a
 decided prompt. A click that

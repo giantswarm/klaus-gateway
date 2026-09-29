@@ -192,7 +192,8 @@ creates one, which a turn that switches agents does mid-thread.
 - **A reply in a conversation that ended is told so.** The row itself stays in the store for
   twice the lifetime (180 days by default; `0` still never expires), and while it is there the
   gateway knows the difference between a thread whose conversation ended and a thread it was
-  never in. So an un-mentioned reply in one of the former gets one private line — "This
+  never in. So an un-mentioned reply in one of the former, unless it opens with someone else's mention (below),
+  gets one private line — "This
   conversation ended after 90 days without messages. Mention the bot to start a new one." — instead
   of silence. The sentence names the configured lifetime exactly, as the count of the largest
   unit it is a whole multiple of: `--thread-ttl=36h` reads "36 hours", not "1 day", and `90m`
@@ -209,7 +210,8 @@ creates one, which a turn that switches agents does mid-thread.
   ignored without a word, even in a live conversation and even while a question or approval is
   pending. A mention later in the text (`ask @alice about it`) does not count, and a mention of
   the bot anywhere in the reply (`@alice @bot look too`) still addresses the bot. Direct
-  messages are not affected.
+  messages are not affected. Only a person's mention counts: a reply that opens with a user group
+  (`@oncall`) or `@here` still reaches the agent.
 
 ### Two auth layers
 
