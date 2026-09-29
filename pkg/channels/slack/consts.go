@@ -491,6 +491,29 @@ func failureNote(err error) string {
 	return failedNote
 }
 
+// interruptedNote is posted when a turn fails after its reply had started:
+// the steps, narration or part of the answer on screen do not say that the
+// turn is over, and the failed emoji alone is easy to miss under them. It
+// names what broke by its class, never by the error's text.
+const interruptedNote = "The turn ended with %s before the agent finished. What it did so far is in the Dev Portal; reply here to try again."
+
+// interruptedFailureNote is the note of a turn that failed with err after its
+// reply had started.
+func interruptedFailureNote(err error) string {
+	cause := "an error"
+	switch channels.ClassifyFailure(err) {
+	case channels.FailureTools:
+		cause = "a tool connection error"
+	case channels.FailurePlatform:
+		cause = "a platform error"
+	case channels.FailureModel:
+		cause = "a model error"
+	case channels.FailurePolicy:
+		cause = "a policy refusal"
+	}
+	return fmt.Sprintf(interruptedNote, cause)
+}
+
 // renderFailedNote is posted when the agent completed its turn but Slack kept
 // refusing the reply's final rendering, so the thread knows the text above is
 // incomplete rather than the whole answer. It names Slack's error code when

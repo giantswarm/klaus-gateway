@@ -1611,10 +1611,10 @@ func TestProgress_FailureNoteNamesTheClass(t *testing.T) {
 	}
 }
 
-// Once answer text has streamed, a failure keeps today's behaviour in
-// reactions mode: the failed emoji marks the incomplete reply and no generic
-// note is added under it.
-func TestProgress_FailureAfterContentPostsNoNote(t *testing.T) {
+// Once the reply has streamed, a failure in reactions mode marks it with the
+// failed emoji and posts the interrupted note under it: the incomplete reply
+// alone does not say the turn is over. The note before an answer is not used.
+func TestProgress_FailureAfterContentPostsInterruptedNote(t *testing.T) {
 	fake := newFakeSlackAPI()
 	gw := &stubGateway{
 		deltas: []channels.OutboundDelta{{Content: "partial answer"}, {Err: errors.New("boom")}},
@@ -1631,7 +1631,15 @@ func TestProgress_FailureAfterContentPostsNoNote(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return strings.Contains(fake.streamedText(), "partial answer")
 	}, flowWait, 20*time.Millisecond, "the streamed content reached the thread")
-	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "The turn failed", "no generic note under streamed content")
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "The turn ended with an error before the agent finished")
+	}, flowWait, 20*time.Millisecond, "the interrupted note is posted under the streamed content")
+	for _, c := range fake.pathCalls("chat.postMessage") {
+		if strings.Contains(fmt.Sprint(c.params["text"]), "The turn ended") {
+			require.Equal(t, "444.000", c.params["thread_ts"], "the note lands in the turn's thread")
+		}
+	}
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "The turn failed before an answer")
 }
 
 func TestProgress_TextFallbackOnMissingScope(t *testing.T) {
@@ -1726,10 +1734,10 @@ func TestTextMode_FailedTurnAfterContentPostsNewNote(t *testing.T) {
 	sendEvent(t, srv, dmEvent("U1", "hi", "779.000"))
 
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "The turn failed")
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "The turn ended with an error")
 	}, flowWait, 50*time.Millisecond, "the failure note posts as a new message")
 	require.Contains(t, fake.streamedText(), "partial answer", "the streamed content reached the thread")
-	require.NotContains(t, allText(fake.pathCalls("chat.update")), "The turn failed",
+	require.NotContains(t, allText(fake.pathCalls("chat.update")), "The turn ended with an error",
 		"the note must not overwrite streamed content")
 }
 
@@ -1750,10 +1758,10 @@ func TestTextMode_FailedTurnFlushesBufferedContentBeforeNote(t *testing.T) {
 	sendEvent(t, srv, dmEvent("U1", "hi", "780.000"))
 
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "The turn failed")
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "The turn ended with an error")
 	}, flowWait, 50*time.Millisecond, "the failure note posts as a new message")
 	require.Contains(t, fake.streamedText(), "partial answer", "buffered content is flushed before the error")
-	require.NotContains(t, allText(fake.pathCalls("chat.update")), "The turn failed",
+	require.NotContains(t, allText(fake.pathCalls("chat.update")), "The turn ended with an error",
 		"the note must not overwrite streamed content")
 }
 

@@ -71,3 +71,23 @@ func TestRenderFailedNote_EscapesTheReason(t *testing.T) {
 func TestStopNotesDiffer(t *testing.T) {
 	require.NotEqual(t, stoppedNote, stopStoppedNotice)
 }
+
+// A turn that failed after its reply started says it is over and names what
+// broke by its class only, never by the error's text.
+func TestInterruptedFailureNote(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{
+		{errors.New("stream terminated by RST_STREAM with error code: INTERNAL_ERROR"), "a platform error"},
+		{errors.New(`anthropic API error: 529 {"type":"overloaded_error"}`), "a model error"},
+		{errors.New("failed to list MCP tools: connection reset by peer"), "a tool connection error"},
+		{errors.New("403 authorization failed"), "a policy refusal"},
+		{errors.New("boom"), "an error"},
+	} {
+		note := interruptedFailureNote(tc.err)
+		require.Contains(t, note, "The turn ended with "+tc.want+" before the agent finished", "%v", tc.err)
+		require.Contains(t, note, "Dev Portal")
+		require.NotContains(t, note, tc.err.Error(), "the error's text stays out of the thread")
+	}
+}
