@@ -148,10 +148,13 @@ func (f *Facade) shareFor(ctx context.Context, msg InboundMessage, instanceID st
 		return "", nil
 	}
 	if held != nil {
-		// A share the row held but could not use (another instance, sealed
-		// under a key this process does not have, or about to expire) is
-		// replaced by this one.
-		f.revokeShare(ownerCtx, msg.ThreadID, held.ID)
+		// A share the row held but could not open (another instance, sealed
+		// under a key this process does not have, or expired) is revoked. One
+		// replaced only for renewal stays valid until its expiry: a turn
+		// already running on it keeps working.
+		if _, valid := f.openShare(key, held, instanceID, 0); !valid {
+			f.revokeShare(ownerCtx, msg.ThreadID, held.ID)
+		}
 	}
 	if displaced != nil {
 		f.revokeShare(ownerCtx, msg.ThreadID, displaced.ID)
