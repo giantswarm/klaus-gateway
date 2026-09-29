@@ -307,7 +307,7 @@ func (o multiUserOBO) TokenFor(_ context.Context, slackUserID string) (string, e
 func (multiUserOBO) LinkURL(string) string { return "https://gw.example.com/link" }
 func (multiUserOBO) Unlink(string) error   { return nil }
 
-// A granted collaborator's button decision resumes the initiator's instance
+// A granted collaborator's button decision resumes the initiator's session
 // under the clicker's own token, marked as a collaborator's with the
 // initiator's token as the owner's, and the clicker attached as attribution —
 // matching the typed-turn path in dispatch.
@@ -390,7 +390,7 @@ func newCorruptDecisionAdapter(t *testing.T, gw channels.Gateway, obo OBOTokenSo
 
 // A corrupt-history failure on a button resume resets the session like a
 // typed turn does, and the reset presents the identities the turn ran with:
-// the clicker's own token, and the initiator's as the owner of the instance
+// the clicker's own token, and the initiator's as the owner of the session
 // the reset deletes.
 func TestHandleDecision_CorruptSessionResetsUnderTurnIdentity(t *testing.T) {
 	var (
@@ -419,7 +419,7 @@ func TestHandleDecision_CorruptSessionResetsUnderTurnIdentity(t *testing.T) {
 	require.Equal(t, "tok-collab", resets[0].BearerToken)
 	require.True(t, resets[0].Collaborator)
 	require.Equal(t, "tok-initiator", resets[0].OwnerToken,
-		"the reset deletes the initiator's instance under the initiator's token")
+		"the reset deletes the initiator's session under the initiator's token")
 	require.Contains(t, strings.Join(posts(), "\n"), "The session is reset",
 		"the thread is told the session was reset")
 	require.False(t, a.hasPendingTask("T001"),

@@ -4,7 +4,7 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
 `klaus-gateway` is the Slack front door of the Giant Swarm agent platform. It receives Slack
-messages, binds every thread to one agent and one kagent AgentInstance, and runs the turn as
+messages, binds every thread to one agent and one kagent Session, and runs the turn as
 A2A v1 over gRPC against the kagent controller, reached through
 [agentgateway](https://github.com/agentgateway/agentgateway) as the data plane. Every call is
 made as the person behind the turn: the Dex id_token of their Slack account link.
@@ -29,8 +29,8 @@ Slack                     Gateway layer                    Platform
 +---------+              |   store: memory/valkey/   |                  v
                          |   bolt)                   |     +---------------------------+
                          | muster account linking    |     | kagent controller         |
-                         | team reviews              |     | (AgentTemplates,          |
-                         +---------------------------+     |  AgentInstances, A2A v1)  |
+                         | team reviews              |     | (Agents, Sessions,        |
+                         +---------------------------+     |  A2A v1)                  |
                                                            +---------------------------+
 ```
 
@@ -42,7 +42,7 @@ the agent carrier under the channel in [docs/kagent-a2a.md](docs/kagent-a2a.md).
 - [Development guide](docs/development.md) — build, test, the chart smoke test
 - [Deployment guide](docs/deployment.md) — Helm chart, agentgateway wiring, channel configuration
 - [API reference](docs/api.md) — the HTTP surface: Slack, muster linking, team reviews, admin
-- [kagent integration](docs/kagent-a2a.md) — A2A v1 over gRPC, the AgentTemplate roster, one AgentInstance per thread, HITL and stop
+- [kagent integration](docs/kagent-a2a.md) — A2A v1 over gRPC, the Agent roster, one Session per thread, HITL and stop
 - Channel guide: [Slack](docs/channels-slack.md) ([interactive surface](docs/slack-hitl-surface.md))
 - [Upgrade notes](UPGRADE.md) — what an operator has to do or decide between releases
 

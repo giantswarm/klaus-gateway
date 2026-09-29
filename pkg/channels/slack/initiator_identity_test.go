@@ -43,7 +43,7 @@ func (perUserOBO) LinkURL(string) string { return "https://gw.example/link" }
 func (perUserOBO) Unlink(string) error   { return nil }
 
 // A granted collaborator's turn runs under their own token, marked as a
-// collaborator's with the initiator's token as the instance owner's, and the
+// collaborator's with the initiator's token as the session owner's, and the
 // author is attached as attribution. The initiator's own turn carries their own
 // token, no owner token and no attribution.
 func TestInitiator_CollaboratorTurnRunsAsTheCollaborator(t *testing.T) {
@@ -90,7 +90,7 @@ func TestInitiator_CollaboratorTurnRunsAsTheCollaborator(t *testing.T) {
 		"collaborator's turn runs under their own token")
 	require.True(t, collaboratorTurn.Collaborator)
 	require.Equal(t, "tok-initiator", collaboratorTurn.OwnerToken,
-		"the initiator's token rides along for the instance they created")
+		"the initiator's token rides along for the session they created")
 	require.Equal(t, "collaborator@example.com", collaboratorTurn.Author,
 		"the author is attached as attribution")
 }
@@ -145,7 +145,7 @@ func TestInitiator_FallsBackToSenderWhenTokenUnavailable(t *testing.T) {
 
 // A collaborator's turn a restart cut short resubscribes the way it ran: under
 // the collaborator's own token, marked as a collaborator's, with the
-// initiator's token as the instance owner's.
+// initiator's token as the session owner's.
 func TestInitiator_RecoveredCollaboratorTurnRunsAsTheCollaborator(t *testing.T) {
 	fake := newFakeSlackAPI()
 	records := slackadapter.NewMemoryRecorder()
@@ -205,7 +205,7 @@ func TestInitiator_CollaboratorWithoutShareIsToldWhy(t *testing.T) {
 	}, flowWait, 50*time.Millisecond, "the thread is told the initiator has to be signed in")
 }
 
-// The instance's recorded creator, not the initiator, is the owner a turn
+// The session's recorded creator, not the initiator, is the owner a turn
 // borrows the token of: a collaborator created it while the initiator was
 // signed out, so the initiator's own turn is the collaborator's turn there.
 func TestInitiator_RecordedInstanceCreatorIsTheOwner(t *testing.T) {
@@ -243,9 +243,9 @@ func TestInitiator_RecordedInstanceCreatorIsTheOwner(t *testing.T) {
 	require.Equal(t, "tok-collab", resumed.OwnerToken)
 }
 
-// ownedKagent is a kagent controller that answers a call on an instance only
+// ownedKagent is a kagent controller that answers a call on a session only
 // under its creator's token or one of its shares, as the real one does: to
-// anyone else the instance does not exist.
+// anyone else the session does not exist.
 type ownedKagent struct {
 	mu        sync.Mutex
 	owners    map[string]string
@@ -256,12 +256,12 @@ type ownedKagent struct {
 	deletedAs []string
 }
 
-func (k *ownedKagent) reaches(ctx context.Context, instanceID string) bool {
-	if k.owners[instanceID] == pkga2a.ForwardedTokenFromContext(ctx) {
+func (k *ownedKagent) reaches(ctx context.Context, sessionID string) bool {
+	if k.owners[sessionID] == pkga2a.ForwardedTokenFromContext(ctx) {
 		return true
 	}
 	share := pkga2a.ShareTokenFromContext(ctx)
-	return share != "" && k.shares[share] == instanceID
+	return share != "" && k.shares[share] == sessionID
 }
 
 func (k *ownedKagent) Stream(context.Context, string, *a2apkg.Message) iter.Seq2[a2apkg.Event, error] {
@@ -271,38 +271,38 @@ func (k *ownedKagent) Stream(context.Context, string, *a2apkg.Message) iter.Seq2
 	return func(yield func(a2apkg.Event, error) bool) { yield(nil, errors.New("not scripted")) }
 }
 
-func (k *ownedKagent) Subscribe(context.Context, string, a2apkg.TaskID) iter.Seq2[a2apkg.Event, error] {
+func (k *ownedKagent) Subscribe(context.Context, a2apkg.TaskID) iter.Seq2[a2apkg.Event, error] {
 	return func(yield func(a2apkg.Event, error) bool) { yield(nil, a2apkg.ErrTaskNotFound) }
 }
 
-func (k *ownedKagent) GetTask(context.Context, string, a2apkg.TaskID) (*a2apkg.Task, error) {
+func (k *ownedKagent) GetTask(context.Context, a2apkg.TaskID) (*a2apkg.Task, error) {
 	return nil, a2apkg.ErrTaskNotFound
 }
 
-func (k *ownedKagent) CancelTask(context.Context, string, a2apkg.TaskID) (*a2apkg.Task, error) {
+func (k *ownedKagent) CancelTask(context.Context, a2apkg.TaskID) (*a2apkg.Task, error) {
 	return nil, a2apkg.ErrTaskNotFound
 }
 
-func (k *ownedKagent) CreateInstance(ctx context.Context, _, _, _ string) (pkga2a.Instance, error) {
+func (k *ownedKagent) CreateSession(ctx context.Context, _, _, _ string) (pkga2a.Session, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	k.created++
 	id := fmt.Sprintf("inst-new-%d", k.created)
 	k.owners[id] = pkga2a.ForwardedTokenFromContext(ctx)
-	return pkga2a.Instance{ID: id, State: "AGENT_INSTANCE_STATE_READY"}, nil
+	return pkga2a.Session{ID: id, State: "RUNTIME_STATE_READY"}, nil
 }
 
-func (k *ownedKagent) GetInstance(ctx context.Context, id string) (pkga2a.Instance, error) {
+func (k *ownedKagent) GetSession(ctx context.Context, id string) (pkga2a.Session, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	k.gotAs = append(k.gotAs, pkga2a.ForwardedTokenFromContext(ctx))
 	if !k.reaches(ctx, id) {
-		return pkga2a.Instance{}, fmt.Errorf("%w: %s", pkga2a.ErrInstanceNotFound, id)
+		return pkga2a.Session{}, fmt.Errorf("%w: %s", pkga2a.ErrSessionNotFound, id)
 	}
-	return pkga2a.Instance{ID: id, State: "AGENT_INSTANCE_STATE_READY"}, nil
+	return pkga2a.Session{ID: id, State: "RUNTIME_STATE_READY"}, nil
 }
 
-func (k *ownedKagent) DeleteInstance(ctx context.Context, _ string) error {
+func (k *ownedKagent) DeleteSession(ctx context.Context, _ string) error {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	k.deletedAs = append(k.deletedAs, pkga2a.ForwardedTokenFromContext(ctx))
@@ -352,6 +352,6 @@ func TestInitiator_FirstSightCollaboratorWithoutShareKeepsTheBinding(t *testing.
 	kagent.mu.Lock()
 	defer kagent.mu.Unlock()
 	require.Empty(t, kagent.gotAs, "the resume check does not ask as the collaborator")
-	require.Zero(t, kagent.created, "no instance is created under the collaborator's token")
+	require.Zero(t, kagent.created, "no session is created under the collaborator's token")
 	require.Zero(t, kagent.streamed)
 }

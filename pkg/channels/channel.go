@@ -23,15 +23,15 @@ import (
 var ErrShutdown = errors.New("channels: the gateway is shutting down")
 
 // ErrShareUnavailable refuses a collaborator's turn on a thread whose
-// AgentInstance holds no share yet while its creator's token cannot be minted:
-// without either, the controller refuses the collaborator on an instance that
+// Session holds no share yet while its creator's token cannot be minted:
+// without either, the controller refuses the collaborator on a session that
 // is not theirs.
-var ErrShareUnavailable = errors.New("channels: the thread's agent instance is not shared yet and its creator is signed out")
+var ErrShareUnavailable = errors.New("channels: the thread's session is not shared yet and its creator is signed out")
 
 // Gateway is the server-side surface adapters call back into. The wiring in
 // main.go provides the concrete implementation (Facade).
 type Gateway interface {
-	// SendCompletion runs msg's turn on the thread's AgentInstance and streams
+	// SendCompletion runs msg's turn on the thread's Session and streams
 	// its reply.
 	SendCompletion(ctx context.Context, msg InboundMessage) (<-chan OutboundDelta, error)
 
@@ -47,10 +47,10 @@ type Gateway interface {
 	ResumeTurn(ctx context.Context, msg InboundMessage, taskID string) (<-chan OutboundDelta, error)
 
 	// SessionResumable reports whether msg's thread is bound to an
-	// AgentInstance the controller still knows; checked is false when that
+	// Session the controller still knows; checked is false when that
 	// could not be told.
 	SessionResumable(ctx context.Context, msg InboundMessage) (exists, checked bool)
-	// ResetSession deletes the thread's AgentInstance, so the next message
+	// ResetSession deletes the thread's Session, so the next message
 	// starts a fresh one; it reports whether one was deleted.
 	ResetSession(ctx context.Context, msg InboundMessage) (bool, error)
 
@@ -97,18 +97,18 @@ type InboundMessage struct {
 	// initiator granted others into. Surfaced to the agent as attribution.
 	Author string
 	// SenderID is the channel's own id of the person who sent the turn (the
-	// raw Slack user id). The facade records it as the AgentInstance's
+	// raw Slack user id). The facade records it as the Session's
 	// creator when the turn creates one under BearerToken.
 	SenderID string
 	// Collaborator marks a turn whose sender is not the creator of the
-	// thread's AgentInstance. Its calls on the instance carry the thread's
-	// AgentInstance share next to BearerToken, so the turn runs as the sender
+	// thread's Session. Its calls on the session carry the thread's
+	// Session share next to BearerToken, so the turn runs as the sender
 	// on a conversation that is not theirs.
 	Collaborator bool
 	// OwnerID is, on a collaborator turn, the channel's id of the person who
-	// created the thread's AgentInstance (the initiator when none is
+	// created the thread's Session (the initiator when none is
 	// recorded), and OwnerToken their token, when it can be minted. The
-	// instance's lifecycle runs under OwnerToken (creating the instance,
+	// session's lifecycle runs under OwnerToken (creating the session,
 	// minting and revoking its share); the turn itself never does. Empty
 	// elsewhere.
 	OwnerID    string
@@ -202,7 +202,7 @@ type ToolActivity struct {
 	AwaitsApproval bool
 }
 
-// OutboundDelta is one chunk streamed from an instance back through an
+// OutboundDelta is one chunk streamed from a session back through an
 // adapter. Content may be empty on the terminal delta. Err, when non-nil,
 // signals an upstream or gateway failure; the channel is closed after.
 type OutboundDelta struct {

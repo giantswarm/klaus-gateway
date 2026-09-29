@@ -3,7 +3,7 @@
 // live: the team reviews.
 //
 // A routing entry maps (channel, channel-id, thread) to everything the gateway
-// holds for that conversation: the agent and the kagent AgentInstance its
+// holds for that conversation: the agent and the kagent Session its
 // turns are routed to. A review record is one posted team review and its
 // decision state (Review). Stores persist both across restarts where possible
 // (bolt, valkey) or keep them in memory.
@@ -92,7 +92,7 @@ func unescape(s string) string {
 
 // Entry is the one row a conversation thread has: everything the gateway must
 // not lose across a restart. The agent the thread is bound to and its
-// AgentInstance plus the task in flight on it, and the channel's own facts
+// Session plus the task in flight on it, and the channel's own facts
 // about the thread, its initiator and the users it granted.
 //
 // Several writers read-modify-write this row (a channel's grant, the facade's
@@ -103,8 +103,9 @@ type Entry struct {
 	// deployment spells it. Never "" standing for the default: a changed
 	// default must not fork the conversation.
 	AgentRef string `json:"agent_ref,omitempty"`
-	// AgentInstanceID is the kagent AgentInstance (a controller-assigned UUID)
-	// the conversation's A2A turns are routed to.
+	// AgentInstanceID is the kagent Session (a controller-assigned UUID)
+	// the conversation's A2A turns are routed to. The field, its JSON name
+	// and InstanceCreator's keep the names rows are stored under.
 	AgentInstanceID string `json:"agent_instance_id,omitempty"`
 	// TaskID is the A2A task running on AgentInstanceID while a turn is in
 	// flight, cleared when the turn ends. A gateway that restarts mid-turn finds
@@ -118,13 +119,13 @@ type Entry struct {
 	// after a restart continues the reply where this one left it instead of
 	// repeating it. Reset with TaskID, cleared with it.
 	Delivered Delivered `json:"delivered,omitzero"`
-	// Share is the AgentInstance share the thread's granted users run their
-	// turns through: the instance belongs to its creator, and the share lets
+	// Share is the Session share the thread's granted users run their
+	// turns through: the session belongs to its creator, and the share lets
 	// another person act on it as themselves. Bound to AgentInstanceID and
 	// dropped with the binding.
 	Share *Share `json:"share,omitempty"`
 	// InstanceCreator is the channel user whose token created
-	// AgentInstanceID: the instance is theirs, so their turns need no share
+	// AgentInstanceID: the session is theirs, so their turns need no share
 	// and its lifecycle (minting and revoking the share, a reset) runs under
 	// their token. Usually the initiator; a collaborator when their turn
 	// opened the binding while the initiator was signed out. Empty on a row
@@ -148,16 +149,16 @@ type Entry struct {
 	TTL       time.Duration `json:"ttl"`
 }
 
-// Share is a thread's AgentInstance share. The token is held sealed: it is a
-// bearer capability on the instance, so a copy of the row must not be enough
+// Share is a thread's Session share. The token is held sealed: it is a
+// bearer capability on the session, so a copy of the row must not be enough
 // to use it.
 type Share struct {
 	// ID names the share at the controller, for a revoke.
 	ID string `json:"id"`
-	// InstanceID is the AgentInstance the share was minted for.
+	// InstanceID is the Session the share was minted for.
 	InstanceID string `json:"instance_id"`
 	// Sealed is the share token, encrypted and bound to the thread and the
-	// instance.
+	// session.
 	Sealed []byte `json:"sealed"`
 	// ExpiresAt is when the controller stops honouring the token; zero means
 	// never.

@@ -165,7 +165,7 @@ func TestDispatch_TurnCompleteOutcomes(t *testing.T) {
 		hasErr  bool
 		class   channels.FailureClass
 	}{
-		{"send refused", &fakeGateway{Facade: newMemoryRecorder(), sendErr: errors.New("instance busy")}, channels.OutcomeSendFailed, true, channels.FailureUnknown},
+		{"send refused", &fakeGateway{Facade: newMemoryRecorder(), sendErr: errors.New("session busy")}, channels.OutcomeSendFailed, true, channels.FailureUnknown},
 		{"send unreachable", &fakeGateway{Facade: newMemoryRecorder(), sendErr: errors.New("rpc error: code = Unavailable desc = connection refused")}, channels.OutcomeSendFailed, true, channels.FailurePlatform},
 		{"stream failed", &fakeGateway{Facade: newMemoryRecorder(), deltas: []channels.OutboundDelta{{Content: "par"}, {Err: errors.New("task failed")}}}, channels.OutcomeFailed, true, channels.FailureUnknown},
 		{"tool set failed", &fakeGateway{Facade: newMemoryRecorder(), deltas: []channels.OutboundDelta{{Err: errors.New(toolSet)}}}, channels.OutcomeFailed, true, channels.FailureTools},

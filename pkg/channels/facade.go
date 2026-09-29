@@ -20,29 +20,32 @@ import (
 )
 
 // AgentClient is the slice of pkg/a2a.Client the Facade needs to run a
-// conversation on a kagent API v2 controller: the A2A v1 calls on an
-// AgentInstance, the instance lifecycle, and the AgentTemplate roster.
+// conversation on a kagent API v2 controller: the A2A v1 calls on a Session,
+// the session lifecycle, and the Agent roster. Every call is addressed to the
+// agent the context names (pkga2a.WithAgentRef): the A2A calls name it as
+// their tenant.
 type AgentClient interface {
-	// Stream sends msg to the instance and yields the task's events.
-	Stream(ctx context.Context, instanceID string, msg *a2apkg.Message) iter.Seq2[a2apkg.Event, error]
-	// Subscribe attaches to a task already running on the instance and yields
-	// its events; a task that has quiesced arrives whole, as the only event.
-	Subscribe(ctx context.Context, instanceID string, taskID a2apkg.TaskID) iter.Seq2[a2apkg.Event, error]
-	// GetTask returns one task of the instance.
-	GetTask(ctx context.Context, instanceID string, taskID a2apkg.TaskID) (*a2apkg.Task, error)
+	// Stream sends msg to the session and yields the task's events.
+	Stream(ctx context.Context, sessionID string, msg *a2apkg.Message) iter.Seq2[a2apkg.Event, error]
+	// Subscribe attaches to a task already running on the agent's session and
+	// yields its events; a task that has quiesced arrives whole, as the only
+	// event.
+	Subscribe(ctx context.Context, taskID a2apkg.TaskID) iter.Seq2[a2apkg.Event, error]
+	// GetTask returns one task of the agent's session.
+	GetTask(ctx context.Context, taskID a2apkg.TaskID) (*a2apkg.Task, error)
 	// CancelTask cancels a running task server-side.
-	CancelTask(ctx context.Context, instanceID string, taskID a2apkg.TaskID) (*a2apkg.Task, error)
-	// CreateInstance creates (idempotently per requestID) the instance for a
+	CancelTask(ctx context.Context, taskID a2apkg.TaskID) (*a2apkg.Task, error)
+	// CreateSession creates (idempotently per requestID) the session for a
 	// conversation with agentRef, named name, and returns it once it is ready.
 	// An empty name leaves the conversation unnamed.
-	CreateInstance(ctx context.Context, agentRef, requestID, name string) (pkga2a.Instance, error)
-	// GetInstance returns an instance; pkga2a.ErrInstanceNotFound when gone.
-	GetInstance(ctx context.Context, id string) (pkga2a.Instance, error)
-	// DeleteInstance removes an instance; a missing one is not an error.
-	DeleteInstance(ctx context.Context, id string) error
-	// CreateShare mints a read-write share of an instance, which only its
+	CreateSession(ctx context.Context, agentRef, requestID, name string) (pkga2a.Session, error)
+	// GetSession returns a session; pkga2a.ErrSessionNotFound when gone.
+	GetSession(ctx context.Context, id string) (pkga2a.Session, error)
+	// DeleteSession removes a session; a missing one is not an error.
+	DeleteSession(ctx context.Context, id string) error
+	// CreateShare mints a read-write share of a session, which only its
 	// creator may do, expiring ttl after its creation (0 never).
-	CreateShare(ctx context.Context, instanceID string, ttl time.Duration) (pkga2a.Share, error)
+	CreateShare(ctx context.Context, sessionID string, ttl time.Duration) (pkga2a.Share, error)
 	// RevokeShare revokes a share; a missing one is not an error.
 	RevokeShare(ctx context.Context, shareID string) error
 }
@@ -52,9 +55,9 @@ var _ Gateway = (*Facade)(nil)
 // Facade wires the kagent client and the routing store together into the
 // Gateway surface used by channel adapters.
 type Facade struct {
-	// Agent runs a channel turn on the thread's kagent AgentInstance.
+	// Agent runs a channel turn on the thread's kagent Session.
 	Agent AgentClient
-	// Routes persists the thread -> AgentInstance binding across restarts.
+	// Routes persists the thread -> Session binding across restarts.
 	// Required when Agent is set.
 	Routes store.Store
 	// Durable reports whether Routes outlives the process. A turn a shutdown
@@ -63,14 +66,14 @@ type Facade struct {
 	// to post it.
 	Durable bool
 	// ThreadTTL is the sliding lifetime of a thread's record and of its
-	// AgentInstance binding: every turn refreshes it, and after it the
+	// Session binding: every turn refreshes it, and after it the
 	// conversation has ended — routing, the binding and the grants read the
 	// row as absent and the next mention starts the thread over. The row
 	// itself stays for twice as long (storeTTL) so a reply in a thread that
 	// ended can be told so; after that the store has forgotten the thread.
 	// 0 never expires. main.go sets it from --thread-ttl.
 	ThreadTTL time.Duration
-	// Sealer encrypts the AgentInstance share a thread's collaborators run
+	// Sealer encrypts the Session share a thread's collaborators run
 	// their turns through before it is stored in the thread's row. Nil turns
 	// shares off: a collaborator's turn then goes out under their own token
 	// alone.
@@ -91,14 +94,14 @@ func (f *Facade) clock() time.Time {
 	return time.Now()
 }
 
-// SessionResumable reports whether msg's thread is bound to an AgentInstance
+// SessionResumable reports whether msg's thread is bound to a Session
 // the controller still knows, so a reply resumes it rather than starting
 // fresh. checked is false when no kagent client is configured or the lookup
 // errored; exists is then meaningless and the caller should stay silent. A
-// binding whose instance the controller no longer has is cleared — the thread
+// binding whose session the controller no longer has is cleared — the thread
 // keeps its agent, its initiator and its grants — so the next turn creates a
-// fresh instance. A collaborator's turn that holds neither the instance
-// creator's token nor a usable share cannot see the instance, so its check is
+// fresh session. A collaborator's turn that holds neither the session
+// creator's token nor a usable share cannot see the session, so its check is
 // indeterminate rather than a miss. The lookup is bounded by a short timeout:
 // it sits before the turn, so a slow controller must not stall the first
 // reply.
@@ -118,11 +121,11 @@ func (f *Facade) SessionResumable(ctx context.Context, msg InboundMessage) (exis
 	if !ok || entry.AgentInstanceID == "" {
 		return false, true
 	}
-	ctx, ok = f.withInstanceAuth(ctx, msg, entry)
+	ctx, ok = f.withSessionAuth(ctx, msg, entry)
 	if !ok {
 		return false, false
 	}
-	if _, err := f.Agent.GetInstance(ctx, entry.AgentInstanceID); err != nil {
+	if _, err := f.Agent.GetSession(ctx, entry.AgentInstanceID); err != nil {
 		if !pkga2a.IsNotFound(err) {
 			return false, false
 		}
@@ -136,13 +139,13 @@ func (f *Facade) SessionResumable(ctx context.Context, msg InboundMessage) (exis
 // turn's critical path.
 const sessionCheckTimeout = 3 * time.Second
 
-// ResetSession deletes the AgentInstance bound to msg's thread and clears the
+// ResetSession deletes the Session bound to msg's thread and clears the
 // binding — the thread keeps its agent, its initiator and its grants — so the
-// next turn starts a fresh instance. Used when the conversation's history has
+// next turn starts a fresh session. Used when the conversation's history has
 // become unusable (the model API rejects it on every turn). Returns false when
 // no kagent client is configured or the thread has no binding, and
 // ErrShareUnavailable on a collaborator's turn that holds neither the
-// instance creator's token nor a usable share.
+// session creator's token nor a usable share.
 func (f *Facade) ResetSession(ctx context.Context, msg InboundMessage) (bool, error) {
 	if f == nil || f.Agent == nil || f.Routes == nil {
 		return false, nil
@@ -158,13 +161,13 @@ func (f *Facade) ResetSession(ctx context.Context, msg InboundMessage) (bool, er
 	if !ok || entry.AgentInstanceID == "" {
 		return false, nil
 	}
-	// A read-write share may delete the instance, which takes its shares with
+	// A read-write share may delete the session, which takes its shares with
 	// it at the controller.
-	ctx, ok = f.withInstanceAuth(ctx, msg, entry)
+	ctx, ok = f.withSessionAuth(ctx, msg, entry)
 	if !ok {
 		return false, ErrShareUnavailable
 	}
-	if err := f.Agent.DeleteInstance(ctx, entry.AgentInstanceID); err != nil {
+	if err := f.Agent.DeleteSession(ctx, entry.AgentInstanceID); err != nil {
 		return false, err
 	}
 	if err := f.Routes.Update(ctx, key, clearBinding); err != nil {
@@ -174,11 +177,11 @@ func (f *Facade) ResetSession(ctx context.Context, msg InboundMessage) (bool, er
 }
 
 // SendCompletion streams a completion for msg: the turn runs on the
-// AgentInstance msg's thread is bound to. A fresh turn that fails before it
+// Session msg's thread is bound to. A fresh turn that fails before it
 // showed anything, on a failure a second attempt may get past
-// (FailureClass.Retryable), is sent once more on the same instance and the
+// (FailureClass.Retryable), is sent once more on the same session and the
 // channel sees only the second attempt: the runtime sets up its tool set and
-// its MCP sessions again for every run, and a new instance would start the
+// its MCP sessions again for every run, and a new session would start the
 // conversation over. A resume is sent once: the paused task it answers is
 // gone once it failed.
 //
@@ -275,9 +278,9 @@ func noteRetry(ctx context.Context, msg InboundMessage, err error) {
 		"failure_class", ClassifyFailure(err), "error", err)
 }
 
-// clearBinding drops a thread's AgentInstance binding and anything that only
+// clearBinding drops a thread's Session binding and anything that only
 // makes sense with it, keeping the rest of the thread's row. The share goes
-// with the instance: it is gone at the controller once the instance is.
+// with the session: it is gone at the controller once the session is.
 func clearBinding(e *store.Entry, found bool) bool {
 	if !found {
 		return false
@@ -286,33 +289,33 @@ func clearBinding(e *store.Entry, found bool) bool {
 	return true
 }
 
-// instanceFor returns the AgentInstance id msg's thread is bound to, creating
-// the instance on the thread's first turn, named after the message that opens
+// sessionFor returns the Session id msg's thread is bound to, creating
+// the session on the thread's first turn, named after the message that opens
 // it. A thread binds one agent; a turn that names another one rebinds it, and
-// the task in flight on the old instance goes with it — the conversation the
+// the task in flight on the old session goes with it — the conversation the
 // rebind creates is named after the message that asked for it, that being its
 // own first message. The create is keyed by the synthesized context id, so
-// a retried first turn does not create a second instance. The binding slides
+// a retried first turn does not create a second session. The binding slides
 // with the thread's lifetime: every turn refreshes it, the conversation ends
 // after ThreadTTL of silence, and the next mention asks the controller for an
-// instance again — the idempotent create hands the same person the earlier one
+// session again — the idempotent create hands the same person the earlier one
 // back while the controller still holds it. ctx carries the identity the
-// instance is created under: on a collaborator turn, its creator's. A share of
-// an instance the thread leaves, on a rebind or when the conversation ended,
-// is revoked when ctx is that instance's creator's.
-func (f *Facade) instanceFor(ctx context.Context, msg InboundMessage) (string, error) {
+// session is created under: on a collaborator turn, its creator's. A share of
+// a session the thread leaves, on a rebind or when the conversation ended,
+// is revoked when ctx is that session's creator's.
+func (f *Facade) sessionFor(ctx context.Context, msg InboundMessage) (string, error) {
 	if f.Routes == nil {
-		return "", errors.New("channels: no routing store for the agent instance binding")
+		return "", errors.New("channels: no routing store for the session binding")
 	}
 	key := threadKey(msg.Channel, msg.ChannelID, msg.ThreadID)
 	now := f.clock()
 	entry, ok, err := f.Routes.Get(ctx, key)
 	if err != nil {
-		return "", fmt.Errorf("channels: read instance binding: %w", err)
+		return "", fmt.Errorf("channels: read session binding: %w", err)
 	}
 	if f.threadClosed(entry, now) {
 		// The conversation ended: the row is still there but its binding is
-		// not the thread's any more, so this turn creates a fresh instance.
+		// not the thread's any more, so this turn creates a fresh session.
 		if entry.Share != nil {
 			f.revokeLeftShare(ctx, msg, entry.Share, recordedCreator(entry))
 		}
@@ -331,7 +334,7 @@ func (f *Facade) instanceFor(ctx context.Context, msg InboundMessage) (string, e
 			}
 			return true
 		}); err != nil {
-			return "", fmt.Errorf("channels: refresh instance binding: %w", err)
+			return "", fmt.Errorf("channels: refresh session binding: %w", err)
 		}
 		return entry.AgentInstanceID, nil
 	}
@@ -339,11 +342,11 @@ func (f *Facade) instanceFor(ctx context.Context, msg InboundMessage) (string, e
 	// InboundMessage no longer has: this hash is the create's idempotency key,
 	// and it has been computed with an empty user slot on every release. Fill
 	// it, or drop the parameter, and every hash changes — every live thread
-	// then asks for an instance the controller does not have and starts its
+	// then asks for a session the controller does not have and starts its
 	// conversation over, empty.
 	requestID := SynthesizeContextID(msg.Channel, msg.ChannelID, "", msg.ThreadID, msg.AgentRef)
-	created := TurnTimerFromContext(ctx).Span(PhaseCreateInstance)
-	inst, err := f.Agent.CreateInstance(ctx, msg.AgentRef, requestID, instanceName(msg))
+	created := TurnTimerFromContext(ctx).Span(PhaseCreateSession)
+	session, err := f.Agent.CreateSession(ctx, msg.AgentRef, requestID, sessionName(msg))
 	created()
 	if err != nil {
 		return "", err
@@ -355,18 +358,18 @@ func (f *Facade) instanceFor(ctx context.Context, msg InboundMessage) (string, e
 		// turn writes a fresh binding rather than merging into the ended
 		// conversation's. The reopened found state has no reader below.
 		_ = f.reopen(e, found, now)
-		if e.AgentInstanceID != "" && e.AgentInstanceID != inst.ID {
-			// A rebind: nothing of the previous instance's turn is deliverable.
+		if e.AgentInstanceID != "" && e.AgentInstanceID != session.ID {
+			// A rebind: nothing of the previous session's turn is deliverable.
 			e.TaskID, e.Resume, e.Delivered = "", nil, store.Delivered{}
 		}
 		left, leftCreator = nil, ""
-		if e.Share != nil && e.Share.InstanceID != inst.ID {
+		if e.Share != nil && e.Share.InstanceID != session.ID {
 			left, leftCreator, e.Share = e.Share, recordedCreator(*e), nil
 		}
-		if e.AgentInstanceID != inst.ID {
+		if e.AgentInstanceID != session.ID {
 			e.InstanceCreator = creatorID(msg)
 		}
-		e.AgentRef, e.AgentInstanceID, e.LastSeen = msg.AgentRef, inst.ID, now
+		e.AgentRef, e.AgentInstanceID, e.LastSeen = msg.AgentRef, session.ID, now
 		if e.CreatedAt.IsZero() {
 			e.CreatedAt = now
 		}
@@ -375,14 +378,14 @@ func (f *Facade) instanceFor(ctx context.Context, msg InboundMessage) (string, e
 		}
 		return true
 	}); err != nil {
-		return "", fmt.Errorf("channels: store instance binding: %w", err)
+		return "", fmt.Errorf("channels: store session binding: %w", err)
 	}
 	if left != nil {
 		f.revokeLeftShare(ctx, msg, left, leftCreator)
 	}
-	slog.Info("channels: thread bound to agent instance", "record", "instance_bound",
-		"channel", msg.Channel, "channel_id", msg.ChannelID, "thread", msg.ThreadID, "agent", msg.AgentRef, "instance", inst.ID)
-	return inst.ID, nil
+	slog.Info("channels: thread bound to session", "record", "session_bound",
+		"channel", msg.Channel, "channel_id", msg.ChannelID, "thread", msg.ThreadID, "agent", msg.AgentRef, "session", session.ID)
+	return session.ID, nil
 }
 
 // cancelTimeout bounds the server-side cancel of a task whose channel turn
@@ -394,30 +397,30 @@ const cancelTimeout = 10 * time.Second
 // turn still clears its record.
 const bindingWriteTimeout = 5 * time.Second
 
-// sendViaA2A runs the turn on the thread's AgentInstance and maps the task's
+// sendViaA2A runs the turn on the thread's Session and maps the task's
 // events to OutboundDeltas. The controller's refusal of a turn (an unknown or
-// unavailable agent, an instance still working on a previous message, a
+// unavailable agent, a session still working on a previous message, a
 // resume that names no paused prompt) is returned synchronously so channels
 // can render it; the stream's own failures arrive as error deltas.
 func (f *Facade) sendViaA2A(ctx context.Context, msg InboundMessage) (<-chan OutboundDelta, error) {
 	ctx = withCallerAuth(ctx, msg)
 
-	instanceID, err := f.instanceFor(withOwnerAuth(ctx, msg), msg)
+	sessionID, err := f.sessionFor(withOwnerAuth(ctx, msg), msg)
 	if err != nil {
 		return nil, err
 	}
-	ctx, err = f.withShare(ctx, msg, instanceID)
+	ctx, err = f.withShare(ctx, msg, sessionID)
 	if err != nil {
 		return nil, err
 	}
-	message, err := f.outboundMessage(ctx, instanceID, msg)
+	message, err := f.outboundMessage(ctx, msg)
 	if err != nil {
 		return nil, err
 	}
 	// The task id is learned from the first event, also on a HITL resume: the
 	// paused task's record was dropped with the prompt, so the resumed segment
 	// is recorded afresh.
-	return f.streamTask(ctx, threadKey(msg.Channel, msg.ChannelID, msg.ThreadID), instanceID, "", msg.Resume, f.Agent.Stream(ctx, instanceID, message))
+	return f.streamTask(ctx, threadKey(msg.Channel, msg.ChannelID, msg.ThreadID), sessionID, "", msg.Resume, f.Agent.Stream(ctx, sessionID, message))
 }
 
 // ResumesTurns reports whether a turn this gateway leaves running at its
@@ -487,7 +490,7 @@ func inFlightTurn(key store.Key, entry store.Entry) InFlightTurn {
 // of it — for a task that finished meanwhile, its result — as OutboundDeltas
 // under msg's identity. The record of the in-flight turn goes when the task
 // quiesces, and at once when the controller no longer knows the task or the
-// instance (nothing is left to deliver); any other failure keeps it for a
+// session (nothing is left to deliver); any other failure keeps it for a
 // later attempt.
 func (f *Facade) ResumeTurn(ctx context.Context, msg InboundMessage, taskID string) (<-chan OutboundDelta, error) {
 	if f == nil || f.Agent == nil || f.Routes == nil {
@@ -497,17 +500,17 @@ func (f *Facade) ResumeTurn(ctx context.Context, msg InboundMessage, taskID stri
 	key := threadKey(msg.Channel, msg.ChannelID, msg.ThreadID)
 	entry, ok, err := f.Routes.Get(ctx, key)
 	if err != nil {
-		return nil, fmt.Errorf("channels: read instance binding: %w", err)
+		return nil, fmt.Errorf("channels: read session binding: %w", err)
 	}
 	if !ok || entry.AgentInstanceID == "" {
-		return nil, fmt.Errorf("channels: thread %s has no agent instance to resume task %s on", msg.ThreadID, taskID)
+		return nil, fmt.Errorf("channels: thread %s has no session to resume task %s on", msg.ThreadID, taskID)
 	}
 	ctx, err = f.withShare(ctx, msg, entry.AgentInstanceID)
 	if err != nil {
 		return nil, err
 	}
 	id := a2apkg.TaskID(taskID)
-	out, err := f.streamTask(ctx, key, entry.AgentInstanceID, id, nil, f.Agent.Subscribe(ctx, entry.AgentInstanceID, id))
+	out, err := f.streamTask(ctx, key, entry.AgentInstanceID, id, nil, f.Agent.Subscribe(ctx, id))
 	if err != nil {
 		if errors.Is(err, a2apkg.ErrTaskNotFound) || pkga2a.IsNotFound(err) {
 			f.forgetTask(ctx, key)
@@ -535,7 +538,7 @@ func (f *Facade) ResumeTurn(ctx context.Context, msg InboundMessage, taskID stri
 // process to resubscribe to, a plain cancellation (stop) cancels the task at
 // the controller. A context cancelled after the terminal delta is the turn
 // being torn down and touches the task not at all.
-func (f *Facade) streamTask(ctx context.Context, key store.Key, instanceID string, known a2apkg.TaskID, resume map[string]string, events iter.Seq2[a2apkg.Event, error]) (<-chan OutboundDelta, error) {
+func (f *Facade) streamTask(ctx context.Context, key store.Key, sessionID string, known a2apkg.TaskID, resume map[string]string, events iter.Seq2[a2apkg.Event, error]) (<-chan OutboundDelta, error) {
 	next, stop := iter.Pull2(events)
 	first, err, ok := next()
 	if err != nil {
@@ -593,7 +596,7 @@ func (f *Facade) streamTask(ctx context.Context, key store.Key, instanceID strin
 					terminal = true
 					timer.Mark(PhaseTaskDone)
 				}
-				if resumed && !whole && delta.Done && !f.emitFinal(ctx, out, mapper, instanceID, taskID) {
+				if resumed && !whole && delta.Done && !f.emitFinal(ctx, out, mapper, sessionID, taskID) {
 					break
 				}
 				if !f.emit(ctx, out, delta) {
@@ -624,11 +627,11 @@ func (f *Facade) streamTask(ctx context.Context, key store.Key, instanceID strin
 			if taskID != "" && !terminal {
 				if errors.Is(context.Cause(ctx), ErrShutdown) {
 					slog.Info("a2a: task left running through the shutdown", "record", "task_left_running",
-						"instance", instanceID, "task", taskID, "channel", key.Channel, "thread", key.ThreadID)
+						"session", sessionID, "task", taskID, "channel", key.Channel, "thread", key.ThreadID)
 					return
 				}
 				f.forgetTask(ctx, key)
-				f.cancelTask(ctx, instanceID, taskID)
+				f.cancelTask(ctx, sessionID, taskID)
 				return
 			}
 			if recorded {
@@ -651,12 +654,12 @@ func (f *Facade) streamTask(ctx context.Context, key store.Key, instanceID strin
 // whole, and the usage of the calls the stream did not deliver. It reports
 // whether every delta was delivered. A failed read is logged and delivers
 // nothing: the terminal delta still closes the turn.
-func (f *Facade) emitFinal(ctx context.Context, out chan<- OutboundDelta, mapper *eventMapper, instanceID string, taskID a2apkg.TaskID) bool {
+func (f *Facade) emitFinal(ctx context.Context, out chan<- OutboundDelta, mapper *eventMapper, sessionID string, taskID a2apkg.TaskID) bool {
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), bindingWriteTimeout)
 	defer cancel()
-	task, err := f.Agent.GetTask(rctx, instanceID, taskID)
+	task, err := f.Agent.GetTask(rctx, taskID)
 	if err != nil {
-		slog.Warn("a2a: read the completed task's answer failed", "instance", instanceID, "task", taskID, "error", err)
+		slog.Warn("a2a: read the completed task's answer failed", "session", sessionID, "task", taskID, "error", err)
 		return true
 	}
 	if text := taskResultText(task); text != "" && !f.emit(ctx, out, OutboundDelta{Content: text}) {
@@ -725,20 +728,20 @@ func (f *Facade) emit(ctx context.Context, out chan<- OutboundDelta, delta Outbo
 // cancelTask cancels the task server-side after the channel stopped the turn,
 // so the agent stops working instead of running on unobserved. The cancel
 // keeps the turn's identity but not its cancellation.
-func (f *Facade) cancelTask(ctx context.Context, instanceID string, taskID a2apkg.TaskID) {
+func (f *Facade) cancelTask(ctx context.Context, sessionID string, taskID a2apkg.TaskID) {
 	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cancelTimeout)
 	defer cancel()
-	if _, err := f.Agent.CancelTask(cctx, instanceID, taskID); err != nil {
-		slog.Warn("a2a: cancel task after stopped turn failed", "instance", instanceID, "task", taskID, "error", err)
+	if _, err := f.Agent.CancelTask(cctx, taskID); err != nil {
+		slog.Warn("a2a: cancel task after stopped turn failed", "session", sessionID, "task", taskID, "error", err)
 	}
 }
 
 // outboundMessage builds the A2A message of a turn. A fresh turn carries no
-// task id (the controller assigns one) and no context id (the controller owns
-// it). A HITL decision resumes the paused task: the message carries that task's
-// id, and the typed response — built against the request the task is paused
-// on — rides as the HITL extension payload.
-func (f *Facade) outboundMessage(ctx context.Context, instanceID string, msg InboundMessage) (*a2apkg.Message, error) {
+// task id (the controller assigns one); the context id is the session's, set
+// by the client. A HITL decision resumes the paused task: the message carries
+// that task's id, and the typed response, built against the request the task
+// is paused on, rides as the HITL extension payload.
+func (f *Facade) outboundMessage(ctx context.Context, msg InboundMessage) (*a2apkg.Message, error) {
 	message := a2apkg.NewMessage(a2apkg.MessageRoleUser, buildInboundParts(msg)...)
 	if msg.TaskID == "" {
 		return message, nil
@@ -747,7 +750,7 @@ func (f *Facade) outboundMessage(ctx context.Context, instanceID string, msg Inb
 	if msg.Decision == nil {
 		return message, nil
 	}
-	task, err := f.Agent.GetTask(ctx, instanceID, message.TaskID)
+	task, err := f.Agent.GetTask(ctx, message.TaskID)
 	if err != nil {
 		return nil, fmt.Errorf("a2a: load the paused task %s: %w", msg.TaskID, err)
 	}
@@ -771,10 +774,11 @@ func (f *Facade) outboundMessage(ctx context.Context, instanceID string, msg Inb
 // is not paused on a prompt any more.
 var ErrNoPendingPrompt = errors.New("a2a: the task is not waiting for a decision")
 
-// withCallerAuth seeds ctx with the caller's forwarded bearer token for the A2A
-// client. A turn without the token is refused by the client (a Slack turn
-// without a forwarded token never runs).
+// withCallerAuth seeds ctx with the target agent ref and the caller's forwarded
+// bearer token for the A2A client. A turn without the token is refused by the
+// client (a Slack turn without a forwarded token never runs).
 func withCallerAuth(ctx context.Context, msg InboundMessage) context.Context {
+	ctx = pkga2a.WithAgentRef(ctx, msg.AgentRef)
 	return pkga2a.WithForwardedToken(ctx, msg.BearerToken)
 }
 

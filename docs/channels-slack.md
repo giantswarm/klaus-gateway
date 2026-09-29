@@ -121,34 +121,34 @@ creates one, which a turn that switches agents does mid-thread.
 ### Threads and conversations
 
 - `threadID` is `thread_ts` if set, otherwise the message `ts`.
-- A thread is bound to exactly one agent and exactly one **AgentInstance** — the
+- A thread is bound to exactly one agent and exactly one **Session** — the
   running conversation the kagent controller creates and owns, which holds the
   agent's memory of that thread (see [kagent A2A](kagent-a2a.md)). The thread's
-  first turn creates the instance; the create is idempotent per person and
+  first turn creates the session; the create is idempotent per person and
   thread, so a retried first turn — the binding was not written, the process died
-  in between — gets the same instance back instead of a second one. The instance
+  in between — gets the same session back instead of a second one. The session
   id and the agent ref are written into the thread's row, every later turn of the
-  thread is addressed to that instance, and a gateway restart keeps the mapping on a
+  thread is addressed to that session, and a gateway restart keeps the mapping on a
   persistent store (`valkey` or `bolt`), because the row carries it, not the process.
 - In a DM every top-level message opens its own thread and therefore its own
-  instance; a "New chat" in the assistant pane likewise.
-- The instance is created under the thread **initiator's** identity, and kagent
+  session; a "New chat" in the assistant pane likewise.
+- The session is created under the thread **initiator's** identity, and kagent
   lets only its creator act on it. A granted collaborator's turn runs under the
-  collaborator's own token and reaches the instance through an **AgentInstance
+  collaborator's own token and reaches the session through an **Session
   share**: the first collaborator turn mints a read-write share under the
   initiator's token, and every collaborator turn after that presents it as
   `x-share-token` next to their own bearer. The agent, and muster behind it,
   act with the collaborator's rights, and the collaborator is named to the agent
   as attribution. The conversation stays the initiator's, which is why a
   newcomer needs the initiator's consent — the access prompt — before their
-  message runs (`applyInstanceOwner` in `pkg/channels/slack/slack.go`).
+  message runs (`applySessionOwner` in `pkg/channels/slack/slack.go`).
 - The share is kept in the thread's row, sealed with AES-256-GCM under a key
   derived from the OBO link-store key, so a copy of the row does not hand out
   the share. A collaborator turn uses the stored share without the initiator's
   token, so it keeps working after the initiator signs out. The gateway revokes
   a share when the thread moves to another agent, and when a turn finds the
-  conversation ended; deleting the instance, as a session reset does, removes
-  its shares at the controller. Only the instance's creator may revoke its
+  conversation ended; deleting the session, as a session reset does, removes
+  its shares at the controller. Only the session's creator may revoke its
   shares, so a turn that does not hold the creator's token (a collaborator's
   while the creator is signed out, or a new mention that restarts an ended
   conversation) leaves the share valid and logs it.
@@ -168,24 +168,26 @@ creates one, which a turn that switches agents does mid-thread.
   initiator's token cannot be minted, the gateway refuses the collaborator's turn and tells the thread that
   the initiator has to be signed in. The resume check on such a turn is
   indeterminate rather than a miss (the collaborator's own token cannot see the
-  instance), so it neither posts the starting-fresh notice nor clears the
+  session), so it neither posts the starting-fresh notice nor clears the
   binding.
 - A collaborator whose turn opens the thread's binding while the initiator is
-  signed out creates the instance under their own token. The row records that
-  collaborator as the instance's creator (`instance_creator`): their turns need
+  signed out creates the session under their own token. The row records that
+  collaborator as the session's creator (`instance_creator`): their turns need
   no share, and every other person's turn in the thread, the initiator's
   included, is a collaborator's turn that borrows the creator's token for the
-  share. A row without a recorded creator reads as the initiator's.
+  share. A row without a recorded creator reads as the initiator's. The row's
+  fields keep their stored names (`agent_instance_id`, `instance_creator`,
+  the share's `instance_id`): they hold the Session's id and creator.
 - A collaborator's turn that finds the session's history corrupt deletes the
-  instance through the share, the same recovery an initiator's turn runs;
+  session through the share, the same recovery an initiator's turn runs;
   without the share or the creator's token the reset is refused and the
   thread is told to start a new one.
-- The agent still sees the instance creator in `X-User-Id` on a collaborator's
+- The agent still sees the session creator in `X-User-Id` on a collaborator's
   turn (kagent#2459), so anything that names the person from that header names
   the initiator.
-- **When the instance is gone.** Two cases clear only the binding fields of the row;
+- **When the session is gone.** Two cases clear only the binding fields of the row;
   the thread keeps its agent, its initiator and its grants, and the next turn creates
-  a fresh instance. An instance the controller no longer has is found by the resume
+  a fresh session. A session the controller no longer has is found by the resume
   check that runs on the first reply this process sees in a thread: that reply gets
   the starting-fresh notice ("The earlier conversation in this thread was not found, so the
   agent starts fresh."), and a loss found in the middle of a conversation posts no
@@ -219,7 +221,7 @@ creates one, which a turn that switches agents does mid-thread.
   turn running without a transcript and the person who opened the conversation with one ephemeral
   naming the reason.
 - Each thread's durable state — its agent, its initiator, the collaborators the initiator
-  allowed, and its AgentInstance binding — lives in one row in the routing store, at the
+  allowed, and its Session binding — lives in one row in the routing store, at the
   thread's key (`slack|<channelID>|<threadID>`). It is the only carrier: the gateway never
   reads Slack history to recover any of it — the context read above is a
   different read, for the agent's benefit, and nothing it returns is ever written back. The row has one sliding
@@ -230,7 +232,7 @@ creates one, which a turn that switches agents does mid-thread.
   the binding all read as absent, an un-mentioned reply is not answered, and the next mention
   starts the thread over — its author becomes the initiator and no grant carries over. Whether
   the agent remembers is the controller's call: its create is idempotent per person and thread,
-  so the same person gets the earlier instance back while the controller still holds it, and
+  so the same person gets the earlier session back while the controller still holds it, and
   another person gets a new one.
 - **A reply in a conversation that ended is told so.** The row itself stays in the store for
   twice the lifetime (180 days by default; `0` still never expires), and while it is there the
@@ -350,7 +352,7 @@ agent when it opens, and keeps it for life. A plain mention reaches the default 
   are private to the invoker, like the command's. The shortcut works in DMs too when DMs are
   served.
 
-An agent that is installed but that no Harness admits, or whose compiled revision is not ready,
+An agent that is installed but whose `Agent` is not ready (its `Ready` condition is not `True`)
 is refused by the pickers with that reason instead of as an unknown name. The roster lists
 selectable agents only, so such an agent has no row to pick in the first place.
 
@@ -477,11 +479,11 @@ any string that begins with `Slack bot`, `Slack app-level`, or `Slack user`.
 3. The `@mention` prefix is stripped from `app_mention` text before routing.
 4. The routing key is `(channel="slack", channelID=<Slack channel ID>,
    threadID=<thread_ts or ts>)`.
-5. The thread's row in the routing store names its agent and its AgentInstance. The thread's
-   first turn creates that instance and records it; every later turn is addressed to it, so
+5. The thread's row in the routing store names its agent and its Session. The thread's
+   first turn creates that session and records it; every later turn is addressed to it, so
    every participant in the thread talks to the one conversation. See
    [Threads and conversations](#threads-and-conversations).
-6. The gateway forwards the turn through the A2A executor to the thread's AgentInstance — the
+6. The gateway forwards the turn through the A2A executor to the thread's Session — the
    agent the row names, which is the default agent when nothing selected another one.
 7. Progress is shown by adding a working reaction to the triggering message. On success the
    working reaction is removed with no residual emoji (default); set
@@ -593,9 +595,9 @@ Three structured log records (`record=…`, JSON fields) tell a turn's story; jo
   which is also when `usage` has nothing to show; `total_tokens` is also 0 for an Anthropic
   model, which reports no total, so the `usage` card shows only in and out), `trace_id`, `error` on a failure, and the phases as
   milliseconds since the events POST (or the Socket Mode frame) arrived: `token_mint_ms`,
-  `roster_ms`, `dispatch_ms`, `create_instance_ms`, `first_event_ms`,
+  `roster_ms`, `dispatch_ms`, `create_session_ms`, `first_event_ms`,
   `first_text_ms`, `task_done_ms`, `stream_end_ms`, `final_flush_ms`, `total_ms`. A phase that
-  did not happen (no instance created on a follow-up) is absent. A turn a
+  did not happen (no session created on a follow-up) is absent. A turn a
   previous process left running and this one delivered after a restart gets a record too, its
   timeline starting at the delivery. Its tokens are the turn's full total, the calls made before
   the restart included; the previous process's `shutdown` record of the same `task_id` holds only
@@ -606,7 +608,7 @@ Three structured log records (`record=…`, JSON fields) tell a turn's story; jo
   It shows which keys a runtime sends,
   for example whether any event carries `kagent.dev/a2a/usage`.
 - `turn_retry` -- a fresh turn failed before it showed anything on a failure a second attempt
-  may get past, and is sent once more on the same AgentInstance: `channel`, `channel_id`,
+  may get past, and is sent once more on the same Session: `channel`, `channel_id`,
   `thread`, `agent`, `failure_class`, `error` (the first attempt's). The thread sees only the
   second attempt; `task_done_ms` and `stream_end_ms` are that attempt's.
 - `token_refresh` -- the person's muster id_token was refreshed: `trigger` (`ahead` for the
@@ -655,7 +657,7 @@ A turn ends early for one of two reasons, and the thread can tell them apart:
 
   A fresh turn that fails on `tools` or `platform` before anything of it was shown — the
   controller refused the send, or the task ended `failed` — is sent once more on the thread's
-  AgentInstance first (`turn_retry`): the runtime sets its tool set and its MCP sessions up
+  Session first (`turn_retry`): the runtime sets its tool set and its MCP sessions up
   again on every run, so a connection that broke once may hold the next time, and the
   conversation stays where it is. Only when the second attempt fails too does the note go out.
   A stream that broke is not sent again (the task may still run at the controller), and neither
@@ -671,7 +673,7 @@ A turn ends early for one of two reasons, and the thread can tell them apart:
   agent keeps going: its result is in the Dev Portal, and it is posted here when it is done.` — the
   working reaction is cleared, the reply's stream is closed where it stands, and the task is
   **left running** at the controller. The new gateway process resubscribes to it on start (A2A
-  `SubscribeToTask` on the thread's AgentInstance, under the same user's freshly minted
+  `SubscribeToTask` on the thread's Session, under the same user's freshly minted
   token) and streams what is left into the thread, with the working reaction back on the
   original message while it does. The answer text arrives whole when the task completes (the
   resubscription does not replay what streamed before it), so the process continues the
@@ -830,9 +832,9 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
   keeps a process-local copy of every link it has served, so a store outage does not reach the
   people it already knows and a refresh token the store failed to take is written later rather
   than lost (see `deployment.md`, "OBO link store").
-- **One conversation per thread.** A thread is bound to one agent and one AgentInstance, which
+- **One conversation per thread.** A thread is bound to one agent and one Session, which
   its initiator created. A granted collaborator instructs the agent in that conversation under
-  their own identity, through the thread's AgentInstance share, so their actions are attributed
+  their own identity, through the thread's Session share, so their actions are attributed
   to them (see [Threads and conversations](#threads-and-conversations)).
 - **Surfaces.** DMs and channels are controlled independently. `SLACK_DM_MODE` selects the DM
   behaviour: `serve` (answer DMs, the default), `redirect` (a polite pointer to channels), or

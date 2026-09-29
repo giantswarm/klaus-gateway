@@ -10,10 +10,10 @@ import (
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 )
 
-// The facade marks the turn's timeline it finds on the context: the instance
+// The facade marks the turn's timeline it finds on the context: the session
 // create of a first turn as a span, the first A2A event, the task's terminal
 // state and the stream's end as marks, and the task id once the controller
-// names it. A follow-up on the same thread creates no instance and records no
+// names it. A follow-up on the same thread creates no session and records no
 // create span.
 func TestFacade_SendCompletionViaA2A_MarksTurnPhases(t *testing.T) {
 	agent := newFakeAgent(
@@ -29,7 +29,7 @@ func TestFacade_SendCompletionViaA2A_MarksTurnPhases(t *testing.T) {
 	drain(t, ch)
 
 	phases := timer.Phases()
-	require.Contains(t, phases, channels.PhaseCreateInstance, "the first turn creates the instance")
+	require.Contains(t, phases, channels.PhaseCreateSession, "the first turn creates the session")
 	require.Contains(t, phases, channels.PhaseFirstEvent)
 	require.Contains(t, phases, channels.PhaseTaskDone)
 	require.Contains(t, phases, channels.PhaseStreamEnd)
@@ -41,7 +41,7 @@ func TestFacade_SendCompletionViaA2A_MarksTurnPhases(t *testing.T) {
 	ch, err = f.SendCompletion(ctx2, slackMsg("again"))
 	require.NoError(t, err)
 	drain(t, ch)
-	require.NotContains(t, timer2.Phases(), channels.PhaseCreateInstance, "a follow-up reuses the thread's instance")
+	require.NotContains(t, timer2.Phases(), channels.PhaseCreateSession, "a follow-up reuses the thread's session")
 	require.Contains(t, timer2.Phases(), channels.PhaseFirstEvent)
 
 	// A context without a timer is served the same way.

@@ -52,7 +52,7 @@ func (a *Adapter) runTurn(ctx context.Context, msg channels.InboundMessage, slac
 
 	// Corrupt-session recovery lives here, not in the callers: the reset must
 	// present the identities the turn ran with (on a collaborator's turn, the
-	// initiator's token the instance belongs to, set below), and only this msg
+	// initiator's token the session belongs to, set below), and only this msg
 	// copy carries them. A corrupt session
 	// invalidates any pending task inside it, so the handle is dropped rather
 	// than left (or re-stored by a failure branch) for a resume that can only
@@ -67,7 +67,7 @@ func (a *Adapter) runTurn(ctx context.Context, msg channels.InboundMessage, slac
 
 	a.resolveSubjectEmail(ctx, &msg)
 
-	a.applyInstanceOwner(ctx, &msg, msg.ThreadID, slackUser)
+	a.applySessionOwner(ctx, &msg, msg.ThreadID, slackUser)
 	// Should the gateway restart mid-turn, the next process delivers the result
 	// under the sender's identity, reacting on the triggering message.
 	msg.Resume = resumeData(slackUser, triggerTS)

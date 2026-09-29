@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The gateway speaks kagent's Session and Agent API. A thread's conversation is a `Session` of an `Agent` (`api.kagent.dev/v1alpha3`, the explicit pairing of an AgentTemplate and a Harness), created with `SessionService/CreateSession`, looked up, resumed and deleted through the same service, and shared with a thread's collaborators through `CreateSessionShare` with the thread lifetime as `ttl`. An A2A call names the Agent as its tenant (`namespace/name`) and the Session as the message's `contextId`; the `x-kagent-agent-instance-id` header is gone. A session the controller reports `SUSPENDED` is resumed before the turn. The generated stubs move to a provisional commit of the kagent re-pin candidate (`pkg/kagent/gen/README.md`).
+- The agent roster is the namespace's `Agent` objects (`AgentService/ListAgents`), branded by the Agent's `ui.giantswarm.io/*` annotations or, when it carries none, its AgentTemplate's. An agent is offered when the Agent's `Ready` condition is `True`; one that is not ready is refused by name with the condition's message (`Agent <name> is not ready: <message>`) in place of the Harness admission and revision wording.
+- The thread's row keeps its stored shape: `agent_instance_id`, `instance_creator` and the share's `instance_id` now hold the Session's id and creator. Bindings written before this release name conversations the Session controller does not have, so the first reply in such a thread gets the starting-fresh notice and a new Session. The log records `instance_bound` and `instance_shared` are `session_bound` and `session_shared`, their `instance` attribute is `session`, and the turn phase `create_instance` (`create_instance_ms` in `turn_complete`, the `klaus_gateway_turn_phase_seconds` label) is `create_session`.
+
 ### Added
 
 - Slack: a sign-in prompt in a channel also sends its card to the person's DM with the app, led by a line that links the thread it was asked in, so a person whose Slack client was closed when the ephemeral went out finds it later; the thread's waiting line says where the link is. A later message of theirs in the thread re-issues the ephemeral and refreshes the DM card to the fresh link in place. The completed link rewrites the DM card to the confirmation (klaus-gateway#406).
