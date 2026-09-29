@@ -47,7 +47,7 @@ gateway posts an approval card:
   ("Please approve or reject the tool call call_tool() by responding with a FunctionResponse…")
   and the tool-name fallback of a status without text are left out.
 - **Context:** `<@initiator> or the people they allowed can decide`. The call runs with the
-  initiator's identity, whoever decides.
+  identity of whoever decides.
 - **Buttons:** Approve (primary) runs the call, Deny (danger) rejects it. There is no "Ask a
   question" button. A typed reply that is not "approve" or "deny" is sent as a rejection with
   the text as its reason, but the Go ADK runtime drops that reason, so the model sees only
@@ -354,15 +354,15 @@ restart, expiry) rewrites the prompt to say the approval expired. Each button's 
 the JSON `{"t":"<thread>","u":"<newcomer>"}`, since one initiator can have several pending
 approvals at once.
 
-A granted collaborator's turns run under the initiator's identity ("on your behalf"): the
-gateway forwards the initiator's token so the thread stays one shared session, and the
-collaborator's real identity rides along as attribution. See
+A granted collaborator's turns run in the initiator's conversation under the collaborator's
+own identity: the gateway sends their own token together with the thread's AgentInstance
+share, and names them to the agent as attribution. See
 [Threads and conversations](channels-slack.md#threads-and-conversations).
 
 ```json
 {
   "blocks": [
-    { "type": "section", "text": { "type": "mrkdwn", "text": "*<@U0NEWCOMER> wants to join this thread*\nTheir messages would run under your sign-in. Allow them to instruct the agent here?" } },
+    { "type": "section", "text": { "type": "mrkdwn", "text": "*<@U0NEWCOMER> wants to join this thread*\nThey would see this conversation and instruct the agent in it, under their own sign-in. Allow them?" } },
     {
       "type": "actions",
       "elements": [

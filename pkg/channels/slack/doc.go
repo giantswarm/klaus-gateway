@@ -28,12 +28,12 @@
 //     click) resumes it. A task can span several turns; a turn serves at
 //     most one task. Turn and task are distinct on purpose: renaming one
 //     into the other would erase the pause/resume relationship.
-//   - initiator: the first user to interact in a thread. Collaborators need
-//     the initiator's consent, and every turn on the thread is forwarded
-//     under the initiator's identity, so the shared session sees a single
-//     principal.
-//   - collaborator: a user the initiator granted. Their turns are attributed
-//     to them (msg.Author) but run under the initiator's token.
+//   - initiator: the first user to interact in a thread. The thread's
+//     AgentInstance is created under their identity, and collaborators need
+//     their consent.
+//   - collaborator: a user the initiator granted. Their turns run under
+//     their own token, reach the initiator's instance through the thread's
+//     AgentInstance share, and are attributed to them (msg.Author).
 //   - thread record: the thread's durable state in the routing store — its
 //     agent binding, its initiator and their grants. It is the only carrier:
 //     Slack history is never read to recover any of them, so on a persistent
@@ -62,7 +62,7 @@
 //     then take the task the gates validated against.
 //
 // runTurn is everything that runs the same way regardless of entrypoint:
-// resolve the sender's email, apply the initiator's identity, resolve the
+// resolve the sender's email, mark a collaborator's turn, resolve the
 // agent, register the turn for /stop, send, and stream. It owns the
 // restore-on-failure guard for the taken task and corrupt-session recovery.
 package slack

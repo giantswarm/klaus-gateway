@@ -43,6 +43,11 @@ import (
 // AgentInstance holding the conversation. The controller requires exactly one.
 const InstanceIDHeader = "x-kagent-agent-instance-id"
 
+// ShareTokenHeader is the gRPC metadata entry that presents an AgentInstance
+// share token. The controller authorizes a call carrying it on the shared
+// instance while the caller stays authenticated as themselves.
+const ShareTokenHeader = "x-share-token"
+
 // Target schemes accepted by ParseTarget.
 const (
 	SchemePlaintext = "grpc"  // h2c, the in-cluster agentgateway Service
@@ -261,17 +266,23 @@ func (c *Client) bearer(ctx context.Context) (string, error) {
 	return token, nil
 }
 
-// serviceCtx attaches the caller's bearer to a kagent service call.
+// serviceCtx attaches the caller's bearer, and the share token ctx carries,
+// to a kagent service call.
 func (c *Client) serviceCtx(ctx context.Context) (context.Context, error) {
 	token, err := c.bearer(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+token), nil
+	kv := []string{"authorization", "Bearer " + token}
+	if share := ShareTokenFromContext(ctx); share != "" {
+		kv = append(kv, ShareTokenHeader, share)
+	}
+	return metadata.AppendToOutgoingContext(ctx, kv...), nil
 }
 
 // a2aCtx attaches the A2A service parameters of a call on instanceID: the
-// caller's bearer, the instance route, and the HITL extension request. The
+// caller's bearer, the share token ctx carries, the instance route, and the
+// HITL extension request. The
 // gRPC transport carries them as metadata (keys lower-cased), so the
 // extension request lands as `a2a-extensions`.
 func (c *Client) a2aCtx(ctx context.Context, instanceID string) (context.Context, error) {
@@ -279,11 +290,15 @@ func (c *Client) a2aCtx(ctx context.Context, instanceID string) (context.Context
 	if err != nil {
 		return nil, err
 	}
-	return a2aclient.AttachServiceParams(ctx, a2aclient.ServiceParams{
+	params := a2aclient.ServiceParams{
 		"authorization":           {"Bearer " + token},
 		InstanceIDHeader:          {instanceID},
 		a2apkg.SvcParamExtensions: {HITLExtensionURI},
-	}), nil
+	}
+	if share := ShareTokenFromContext(ctx); share != "" {
+		params[ShareTokenHeader] = []string{share}
+	}
+	return a2aclient.AttachServiceParams(ctx, params), nil
 }
 
 // Stream sends msg to the AgentInstance and yields the task's events. A

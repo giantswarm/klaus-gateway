@@ -1616,7 +1616,7 @@ func (a *Adapter) OnUserLinked(_ context.Context, slackUser, _ string) {
 				}
 				if err := a.replayDispatch(ctx, req.msg, req.slackChannel); err != nil && !errors.Is(err, context.Canceled) {
 					a.Logger.Error("slack: replay after sign-in failed", "user", slackUser, "thread", req.msg.ThreadID, "error", err)
-					a.postReplayFailureNote(ctx, req.slackChannel, req.msg.ThreadID)
+					a.postReplayFailureNote(ctx, req.slackChannel, req.msg.ThreadID, err)
 				}
 			}
 		})
@@ -1916,8 +1916,11 @@ func (a *Adapter) postDispatchFailureNote(ctx context.Context, slackChannel, thr
 // postReplayFailureNote tells the thread a parked message could not be
 // replayed, so a sign-in or access grant that just promised action does not
 // end in silence. Best-effort: a post failure is only logged.
-func (a *Adapter) postReplayFailureNote(ctx context.Context, slackChannel, threadID string) {
-	const text = "Your message could not be picked up again. Send it again."
+func (a *Adapter) postReplayFailureNote(ctx context.Context, slackChannel, threadID string, cause error) {
+	text := "Your message could not be picked up again. Send it again."
+	if errors.Is(cause, channels.ErrShareUnavailable) {
+		text = shareUnavailableNote
+	}
 	if _, err := a.apiClient().postNote(ctx, slackChannel, text, threadID); err != nil {
 		a.Logger.Warn("slack: post replay failure note failed", "thread", threadID, "error", err)
 	}
@@ -2020,8 +2023,8 @@ func (a *Adapter) dispatchFrom(ctx context.Context, msg channels.InboundMessage,
 
 	// Access control. The first user to interact becomes the thread initiator and
 	// instructs freely. A different user is gated: authenticate first (unknown
-	// identity -> sign-in), then ask the initiator to approve them (the agent acts
-	// under the initiator's delegated identity, so the initiator must consent).
+	// identity -> sign-in), then ask the initiator to approve them (the agent
+	// works in the initiator's conversation, so the initiator must consent).
 	access := a.accessPolicy()
 	initiator := access.SetInitiator(ctx, slackChannel, msg.ThreadID, slackUser)
 	if !access.Allowed(ctx, slackChannel, msg.ThreadID, slackUser) {
@@ -2487,36 +2490,39 @@ func (a *Adapter) humanToken(ctx context.Context, slackChannel, threadID, slackU
 	}
 }
 
-// applyInitiatorIdentity makes a granted collaborator's turn run under the
-// thread initiator's identity. The thread is bound to one AgentInstance, which
-// the controller created and addresses under the initiator's principal.
-// Forwarding that same principal on every turn keeps the conversation on that
-// instance and makes the agent act with the initiator's rights, not the sender's.
-// It swaps in the initiator's token and records the sender (msg.Subject,
-// best-effort resolved to an email) as attribution. The initiator's own turns,
-// and turns where the initiator's token cannot be minted, keep the sender's own
-// token (they are signed in) rather than the gateway machine identity. Call
-// after the sender's token and email are resolved. It returns the Slack user
-// whose identity the turn runs under.
-func (a *Adapter) applyInitiatorIdentity(ctx context.Context, msg *channels.InboundMessage, threadID, slackUser string) string {
+// applyInstanceOwner marks a granted collaborator's turn as one on a
+// conversation that is not theirs. The thread is bound to one AgentInstance,
+// which its creator (the initiator, or the collaborator whose turn opened the
+// binding while the initiator was signed out) owns; the turn keeps the
+// sender's own token, so the agent acts with the sender's rights, and reaches
+// the instance through the thread's share (see
+// channels.InboundMessage.Collaborator). The creator's token rides along as
+// OwnerToken for what only the instance's creator may do (creating the
+// instance, minting and revoking its share); when it cannot be minted, the
+// share the thread already holds is what the turn goes through. The sender
+// (msg.Subject, best-effort resolved to an email) is recorded as attribution.
+// Call after the sender's token and email are resolved.
+func (a *Adapter) applyInstanceOwner(ctx context.Context, msg *channels.InboundMessage, threadID, slackUser string) {
+	msg.SenderID = slackUser
 	if a.OBO == nil {
-		return slackUser
+		return
 	}
-	initiator := a.accessPolicy().Initiator(ctx, msg.ChannelID, threadID)
-	if initiator == "" || initiator == slackUser {
-		return slackUser
+	owner := a.accessPolicy().InstanceOwner(ctx, msg.ChannelID, threadID, msg.AgentRef)
+	if owner == "" || owner == slackUser {
+		return
 	}
-	mint := channels.TurnTimerFromContext(ctx).Span(channels.PhaseTokenMint)
-	initiatorToken, err := a.OBO.TokenFor(ctx, initiator)
-	mint()
-	if err != nil || initiatorToken == "" {
-		a.Logger.Info("slack: initiator token unavailable, running turn under sender identity",
-			"initiator", initiator, "sender", slackUser)
-		return slackUser
-	}
-	msg.BearerToken = initiatorToken
+	msg.Collaborator = true
+	msg.OwnerID = owner
 	msg.Author = msg.Subject
-	return initiator
+	mint := channels.TurnTimerFromContext(ctx).Span(channels.PhaseTokenMint)
+	ownerToken, err := a.OBO.TokenFor(ctx, owner)
+	mint()
+	if err != nil || ownerToken == "" {
+		a.Logger.Info("slack: instance creator token unavailable, collaborator turn relies on the thread's share",
+			"owner", owner, "sender", slackUser)
+		return
+	}
+	msg.OwnerToken = ownerToken
 }
 
 // streamResponse renders turn progress (reactions on triggerTS, or a text
