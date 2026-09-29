@@ -204,6 +204,12 @@ creates one, which a turn that switches agents does mid-thread.
   word, as for any thread the bot was never in. There is no warning before the end, and no
   sweep: the notice is posted when somebody writes, which is the moment it is useful. A
   thread's row adopts the configured lifetime on its next message.
+- **A reply that opens with someone else's mention is not for the agent.** In a channel thread,
+  a reply whose first token mentions a person other than the bot (`@alice can you check?`) is
+  ignored without a word, even in a live conversation and even while a question or approval is
+  pending. A mention later in the text (`ask @alice about it`) does not count, and a mention of
+  the bot anywhere in the reply (`@alice @bot look too`) still addresses the bot. Direct
+  messages are not affected.
 
 ### Two auth layers
 
