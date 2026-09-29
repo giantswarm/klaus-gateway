@@ -2492,30 +2492,34 @@ func (a *Adapter) humanToken(ctx context.Context, slackChannel, threadID, slackU
 
 // applyInstanceOwner marks a granted collaborator's turn as one on a
 // conversation that is not theirs. The thread is bound to one AgentInstance,
-// which its initiator created; the turn keeps the sender's own token, so the
-// agent acts with the sender's rights, and reaches the instance through the
-// thread's share (see channels.InboundMessage.Collaborator). The initiator's
-// token rides along as OwnerToken for what only the instance's creator may do
-// (creating the instance, minting its share); when it cannot be minted, the
+// which its creator (the initiator, or the collaborator whose turn opened the
+// binding while the initiator was signed out) owns; the turn keeps the
+// sender's own token, so the agent acts with the sender's rights, and reaches
+// the instance through the thread's share (see
+// channels.InboundMessage.Collaborator). The creator's token rides along as
+// OwnerToken for what only the instance's creator may do (creating the
+// instance, minting and revoking its share); when it cannot be minted, the
 // share the thread already holds is what the turn goes through. The sender
 // (msg.Subject, best-effort resolved to an email) is recorded as attribution.
 // Call after the sender's token and email are resolved.
 func (a *Adapter) applyInstanceOwner(ctx context.Context, msg *channels.InboundMessage, threadID, slackUser string) {
+	msg.SenderID = slackUser
 	if a.OBO == nil {
 		return
 	}
-	initiator := a.accessPolicy().Initiator(ctx, msg.ChannelID, threadID)
-	if initiator == "" || initiator == slackUser {
+	owner := a.accessPolicy().InstanceOwner(ctx, msg.ChannelID, threadID, msg.AgentRef)
+	if owner == "" || owner == slackUser {
 		return
 	}
 	msg.Collaborator = true
+	msg.OwnerID = owner
 	msg.Author = msg.Subject
 	mint := channels.TurnTimerFromContext(ctx).Span(channels.PhaseTokenMint)
-	ownerToken, err := a.OBO.TokenFor(ctx, initiator)
+	ownerToken, err := a.OBO.TokenFor(ctx, owner)
 	mint()
 	if err != nil || ownerToken == "" {
-		a.Logger.Info("slack: initiator token unavailable, collaborator turn relies on the thread's share",
-			"initiator", initiator, "sender", slackUser)
+		a.Logger.Info("slack: instance creator token unavailable, collaborator turn relies on the thread's share",
+			"owner", owner, "sender", slackUser)
 		return
 	}
 	msg.OwnerToken = ownerToken

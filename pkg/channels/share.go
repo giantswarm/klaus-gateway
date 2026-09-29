@@ -35,18 +35,39 @@ func (f *Facade) withShare(ctx context.Context, msg InboundMessage, instanceID s
 	return pkga2a.WithShareToken(ctx, token), nil
 }
 
-// withStoredShare adds the share the thread already holds for instanceID to
-// ctx on a collaborator turn, without minting one.
-func (f *Facade) withStoredShare(ctx context.Context, msg InboundMessage, entry store.Entry) context.Context {
-	if !msg.Collaborator || f.Sealer == nil {
-		return ctx
+// withInstanceAuth adds to ctx what a call on the thread's bound instance
+// needs besides the identity withOwnerAuth set: on a collaborator turn
+// without the instance creator's token, the share the thread holds for it,
+// without minting one. ok is false when that turn holds no usable share: its
+// own token cannot reach the instance, so the controller's answer would say
+// nothing about the instance.
+func (f *Facade) withInstanceAuth(ctx context.Context, msg InboundMessage, entry store.Entry) (_ context.Context, ok bool) {
+	if !msg.Collaborator || msg.OwnerToken != "" {
+		return ctx, true
 	}
 	key := threadKey(msg.Channel, msg.ChannelID, msg.ThreadID)
-	token, ok := f.openShare(key, entry.Share, entry.AgentInstanceID)
-	if !ok {
-		return ctx
+	token, opened := f.openShare(key, entry.Share, entry.AgentInstanceID)
+	if !opened {
+		return ctx, false
 	}
-	return pkga2a.WithShareToken(ctx, token)
+	return pkga2a.WithShareToken(ctx, token), true
+}
+
+// creatorID is the channel user whose token withOwnerAuth puts on ctx: the
+// person who creates the thread's instance when this turn needs one.
+func creatorID(msg InboundMessage) string {
+	if msg.OwnerToken != "" {
+		return msg.OwnerID
+	}
+	return msg.SenderID
+}
+
+// recordedCreator is the channel user who created entry's instance.
+func recordedCreator(entry store.Entry) string {
+	if entry.InstanceCreator != "" {
+		return entry.InstanceCreator
+	}
+	return entry.Initiator
 }
 
 // shareFor returns the token of the thread's share of instanceID: the one the
@@ -61,7 +82,7 @@ func (f *Facade) shareFor(ctx context.Context, msg InboundMessage, instanceID st
 	}
 	var held *store.Share
 	if ok {
-		if entry.SenderCreated && entry.AgentInstanceID == instanceID {
+		if entry.AgentInstanceID == instanceID && msg.SenderID != "" && msg.SenderID == entry.InstanceCreator {
 			return "", nil
 		}
 		held = entry.Share
@@ -87,23 +108,28 @@ func (f *Facade) shareFor(ctx context.Context, msg InboundMessage, instanceID st
 		return "", nil
 	}
 	moved, winner := false, ""
+	var displaced *store.Share
 	if err := f.Routes.Update(ctx, key, func(e *store.Entry, found bool) bool {
+		moved, winner, displaced = false, "", nil
 		if !found || e.AgentInstanceID != instanceID {
 			moved = true
 			return false
 		}
 		if e.Share != nil && (held == nil || e.Share.ID != held.ID) {
-			// Another turn stored a share of this instance meanwhile.
+			// Another turn stored a share of this instance meanwhile. One this
+			// process cannot open is overwritten, and revoked below.
 			if token, opened := f.openShare(key, e.Share, instanceID); opened {
 				winner = token
 				return false
 			}
+			displaced = e.Share
 		}
 		e.Share = &store.Share{ID: share.ID, InstanceID: instanceID, Sealed: sealed}
 		return true
 	}); err != nil {
 		// The turn still uses the share; the next one mints another.
 		slog.Warn("channels: store the thread's share failed", "thread", msg.ThreadID, "error", err)
+		displaced = nil
 	}
 	if winner != "" {
 		f.revokeShare(ownerCtx, msg.ThreadID, share.ID)
@@ -118,6 +144,9 @@ func (f *Facade) shareFor(ctx context.Context, msg InboundMessage, instanceID st
 		// A share the row held but could not open (another instance, or sealed
 		// under a key this process does not have) is replaced by this one.
 		f.revokeShare(ownerCtx, msg.ThreadID, held.ID)
+	}
+	if displaced != nil {
+		f.revokeShare(ownerCtx, msg.ThreadID, displaced.ID)
 	}
 	slog.Info("channels: shared the thread's agent instance with its collaborators", "record", "instance_shared",
 		"thread", msg.ThreadID, "instance", instanceID, "share", share.ID)
@@ -136,6 +165,19 @@ func (f *Facade) openShare(key store.Key, share *store.Share, instanceID string)
 		return "", false
 	}
 	return string(token), true
+}
+
+// revokeLeftShare revokes the share of an instance the thread leaves, created
+// by creator. Only the instance's creator may revoke its shares, and
+// kagent answers anyone else NotFound, which reads as success: under
+// another identity the revoke is skipped and logged instead.
+func (f *Facade) revokeLeftShare(ctx context.Context, msg InboundMessage, share *store.Share, creator string) {
+	if creator != "" && creatorID(msg) != creator {
+		slog.Warn("channels: a share the thread no longer uses stays valid at the controller, this turn does not hold its instance creator's token",
+			"thread", msg.ThreadID, "share", share.ID, "instance", share.InstanceID)
+		return
+	}
+	f.revokeShare(ctx, msg.ThreadID, share.ID)
 }
 
 // revokeShare revokes a share the thread no longer uses. Best effort: a

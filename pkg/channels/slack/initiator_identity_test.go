@@ -2,17 +2,24 @@ package slack_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"iter"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	a2apkg "github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/stretchr/testify/require"
 
+	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 	"github.com/giantswarm/klaus-gateway/pkg/auth/musterlink"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 	slackadapter "github.com/giantswarm/klaus-gateway/pkg/channels/slack"
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
+	"github.com/giantswarm/klaus-gateway/pkg/routing/store/memory"
+	"github.com/giantswarm/klaus-gateway/pkg/seal"
 )
 
 // perUserOBO mints a distinct token per Slack user so a test can tell whose
@@ -196,4 +203,155 @@ func TestInitiator_CollaboratorWithoutShareIsToldWhy(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "only be opened to you while they are signed in")
 	}, flowWait, 50*time.Millisecond, "the thread is told the initiator has to be signed in")
+}
+
+// The instance's recorded creator, not the initiator, is the owner a turn
+// borrows the token of: a collaborator created it while the initiator was
+// signed out, so the initiator's own turn is the collaborator's turn there.
+func TestInitiator_RecordedInstanceCreatorIsTheOwner(t *testing.T) {
+	fake := newFakeSlackAPI()
+	records := slackadapter.NewMemoryRecorder()
+	require.NoError(t, records.UpdateThreadRecord(t.Context(), "slack", "D1", "700.000", func(e *store.Entry, _ bool) bool {
+		e.Initiator, e.Granted = "U001", []string{"U002"}
+		e.AgentRef, e.AgentInstanceID, e.InstanceCreator = "test-agent", "inst-1", "U002"
+		return true
+	}))
+	turn := leftoverTurn("task-9")
+	turn.Msg.Resume = map[string]string{"slack_user": "U001", "message_ts": "700.000"}
+	gw := &stubGateway{records: records, resumes: &stubResumes{
+		durable: true,
+		turns:   []channels.InFlightTurn{turn},
+		deltas:  map[string][]channels.OutboundDelta{"task-9": {{Content: "done"}, {Done: true}}},
+	}}
+	obo := perUserOBO{tokens: map[string]string{"U001": "tok-initiator", "U002": "tok-collab"}}
+	a, _ := newEventsAdapter(t, gw, fake.server(t).URL, func(a *slackadapter.Adapter) { a.OBO = obo })
+
+	a.RecoverTurns()
+
+	require.Eventually(t, func() bool {
+		gw.mu.Lock()
+		defer gw.mu.Unlock()
+		return len(gw.resumes.resumed) == 1
+	}, flowWait, 20*time.Millisecond, "the turn is resubscribed")
+	gw.mu.Lock()
+	defer gw.mu.Unlock()
+	resumed := gw.resumes.resumed[0]
+	require.Equal(t, "tok-initiator", resumed.BearerToken)
+	require.Equal(t, "U001", resumed.SenderID)
+	require.True(t, resumed.Collaborator)
+	require.Equal(t, "U002", resumed.OwnerID)
+	require.Equal(t, "tok-collab", resumed.OwnerToken)
+}
+
+// ownedKagent is a kagent controller that answers a call on an instance only
+// under its creator's token or one of its shares, as the real one does: to
+// anyone else the instance does not exist.
+type ownedKagent struct {
+	mu        sync.Mutex
+	owners    map[string]string
+	shares    map[string]string
+	gotAs     []string
+	created   int
+	streamed  int
+	deletedAs []string
+}
+
+func (k *ownedKagent) reaches(ctx context.Context, instanceID string) bool {
+	if k.owners[instanceID] == pkga2a.ForwardedTokenFromContext(ctx) {
+		return true
+	}
+	share := pkga2a.ShareTokenFromContext(ctx)
+	return share != "" && k.shares[share] == instanceID
+}
+
+func (k *ownedKagent) Stream(context.Context, string, *a2apkg.Message) iter.Seq2[a2apkg.Event, error] {
+	k.mu.Lock()
+	k.streamed++
+	k.mu.Unlock()
+	return func(yield func(a2apkg.Event, error) bool) { yield(nil, errors.New("not scripted")) }
+}
+
+func (k *ownedKagent) Subscribe(context.Context, string, a2apkg.TaskID) iter.Seq2[a2apkg.Event, error] {
+	return func(yield func(a2apkg.Event, error) bool) { yield(nil, a2apkg.ErrTaskNotFound) }
+}
+
+func (k *ownedKagent) GetTask(context.Context, string, a2apkg.TaskID) (*a2apkg.Task, error) {
+	return nil, a2apkg.ErrTaskNotFound
+}
+
+func (k *ownedKagent) CancelTask(context.Context, string, a2apkg.TaskID) (*a2apkg.Task, error) {
+	return nil, a2apkg.ErrTaskNotFound
+}
+
+func (k *ownedKagent) CreateInstance(ctx context.Context, _, _, _ string) (pkga2a.Instance, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.created++
+	id := fmt.Sprintf("inst-new-%d", k.created)
+	k.owners[id] = pkga2a.ForwardedTokenFromContext(ctx)
+	return pkga2a.Instance{ID: id, State: "AGENT_INSTANCE_STATE_READY"}, nil
+}
+
+func (k *ownedKagent) GetInstance(ctx context.Context, id string) (pkga2a.Instance, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.gotAs = append(k.gotAs, pkga2a.ForwardedTokenFromContext(ctx))
+	if !k.reaches(ctx, id) {
+		return pkga2a.Instance{}, fmt.Errorf("%w: %s", pkga2a.ErrInstanceNotFound, id)
+	}
+	return pkga2a.Instance{ID: id, State: "AGENT_INSTANCE_STATE_READY"}, nil
+}
+
+func (k *ownedKagent) DeleteInstance(ctx context.Context, _ string) error {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.deletedAs = append(k.deletedAs, pkga2a.ForwardedTokenFromContext(ctx))
+	return nil
+}
+
+func (k *ownedKagent) CreateShare(context.Context, string) (pkga2a.Share, error) {
+	return pkga2a.Share{}, errors.New("not scripted")
+}
+
+func (k *ownedKagent) RevokeShare(context.Context, string) error { return nil }
+
+// A collaborator's first reply the gateway sees in a thread it has not seen
+// since it started, with the initiator signed out and no share stored yet, is
+// refused with the note. The resume check does not read the collaborator's
+// NotFound as a lost conversation: no "starting fresh", and the initiator's
+// binding stays.
+func TestInitiator_FirstSightCollaboratorWithoutShareKeepsTheBinding(t *testing.T) {
+	fake := newFakeSlackAPI()
+	fakeURL := fake.server(t).URL
+	fake.setResponse("users.info", `{"ok":true,"user":{"profile":{"email":"collaborator@example.com"}}}`)
+
+	sealer, err := seal.Ephemeral()
+	require.NoError(t, err)
+	mem := memory.New()
+	t.Cleanup(func() { _ = mem.Close() })
+	kagent := &ownedKagent{owners: map[string]string{"inst-1": "tok-initiator"}, shares: map[string]string{}}
+	facade := &channels.Facade{Agent: kagent, Routes: mem, ThreadTTL: channels.DefaultThreadTTL, Sealer: sealer}
+	require.NoError(t, facade.UpdateThreadRecord(t.Context(), "slack", "C1", "100.000", func(e *store.Entry, _ bool) bool {
+		e.Initiator, e.Granted = "U001", []string{"U002"}
+		e.AgentRef, e.AgentInstanceID, e.InstanceCreator = "test-agent", "inst-1", "U001"
+		return true
+	}))
+	obo := perUserOBO{tokens: map[string]string{"U002": "tok-collab"}, unlinked: map[string]bool{"U001": true}}
+	_, srv := newEventsAdapter(t, facade, fakeURL, channelMode, func(a *slackadapter.Adapter) { a.OBO = obo })
+
+	sendEvent(t, srv, mention("U002", "help", "200.000", "100.000"))
+
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "only be opened to you while they are signed in")
+	}, flowWait, 50*time.Millisecond, "the collaborator is told the initiator has to be signed in")
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "starts fresh")
+	row, ok, err := facade.ThreadRecord(t.Context(), "slack", "C1", "100.000")
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, "inst-1", row.AgentInstanceID, "the initiator's binding stays")
+	kagent.mu.Lock()
+	defer kagent.mu.Unlock()
+	require.Empty(t, kagent.gotAs, "the resume check does not ask as the collaborator")
+	require.Zero(t, kagent.created, "no instance is created under the collaborator's token")
+	require.Zero(t, kagent.streamed)
 }

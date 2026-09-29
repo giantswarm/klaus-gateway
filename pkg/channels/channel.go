@@ -93,15 +93,22 @@ type InboundMessage struct {
 	// conversation several people take part in, such as a Slack thread its
 	// initiator granted others into. Surfaced to the agent as attribution.
 	Author string
+	// SenderID is the channel's own id of the person who sent the turn (the
+	// raw Slack user id). The facade records it as the AgentInstance's
+	// creator when the turn creates one under BearerToken.
+	SenderID string
 	// Collaborator marks a turn whose sender is not the creator of the
 	// thread's AgentInstance. Its calls on the instance carry the thread's
 	// AgentInstance share next to BearerToken, so the turn runs as the sender
 	// on a conversation that is not theirs.
 	Collaborator bool
-	// OwnerToken is, on a collaborator turn, the token of the person who
-	// created the thread's AgentInstance, when it can be minted. The
-	// instance's lifecycle runs under it (creating the instance, minting and
-	// revoking its share); the turn itself never does. Empty elsewhere.
+	// OwnerID is, on a collaborator turn, the channel's id of the person who
+	// created the thread's AgentInstance (the initiator when none is
+	// recorded), and OwnerToken their token, when it can be minted. The
+	// instance's lifecycle runs under OwnerToken (creating the instance,
+	// minting and revoking its share); the turn itself never does. Empty
+	// elsewhere.
+	OwnerID    string
 	OwnerToken string
 	// AgentRef is the target agent name: the agent the turn runs on.
 	AgentRef string

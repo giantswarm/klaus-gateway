@@ -147,7 +147,10 @@ creates one, which a turn that switches agents does mid-thread.
   token, so it keeps working after the initiator signs out. The gateway revokes
   a share when the thread moves to another agent, and when a turn finds the
   conversation ended; deleting the instance, as a session reset does, removes
-  its shares at the controller. A share kagent issues does not expire on its
+  its shares at the controller. Only the instance's creator may revoke its
+  shares, so a turn that does not hold the creator's token (a collaborator's
+  while the creator is signed out, or a new mention that restarts an ended
+  conversation) leaves the share valid and logs it. A share kagent issues does not expire on its
   own, so the share of a thread nobody writes to again stays valid at the
   controller.
 - A thread has one share for all its collaborators, and only the gateway holds
@@ -155,11 +158,20 @@ creates one, which a turn that switches agents does mid-thread.
   the share only for a granted user.
 - When the thread holds no share yet and the initiator's token cannot be
   minted, the gateway refuses the collaborator's turn and tells the thread that
-  the initiator has to be signed in. A collaborator whose turn opens the
-  thread's binding while the initiator is signed out creates the instance under
-  their own token; that instance is theirs, and no share of it is minted.
+  the initiator has to be signed in. The resume check on such a turn is
+  indeterminate rather than a miss (the collaborator's own token cannot see the
+  instance), so it neither posts the starting-fresh notice nor clears the
+  binding.
+- A collaborator whose turn opens the thread's binding while the initiator is
+  signed out creates the instance under their own token. The row records that
+  collaborator as the instance's creator (`instance_creator`): their turns need
+  no share, and every other person's turn in the thread, the initiator's
+  included, is a collaborator's turn that borrows the creator's token for the
+  share. A row without a recorded creator reads as the initiator's.
 - A collaborator's turn that finds the session's history corrupt deletes the
-  instance through the share, the same recovery an initiator's turn runs.
+  instance through the share, the same recovery an initiator's turn runs;
+  without the share or the creator's token the reset is refused and the
+  thread is told to start a new one.
 - The agent still sees the instance creator in `X-User-Id` on a collaborator's
   turn (kagent#2459), so anything that names the person from that header names
   the initiator.

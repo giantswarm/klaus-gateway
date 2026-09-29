@@ -96,8 +96,11 @@ func (f *Facade) clock() time.Time {
 // errored; exists is then meaningless and the caller should stay silent. A
 // binding whose instance the controller no longer has is cleared — the thread
 // keeps its agent, its initiator and its grants — so the next turn creates a
-// fresh instance. The lookup is bounded by a short timeout: it sits before the
-// turn, so a slow controller must not stall the first reply.
+// fresh instance. A collaborator's turn that holds neither the instance
+// creator's token nor a usable share cannot see the instance, so its check is
+// indeterminate rather than a miss. The lookup is bounded by a short timeout:
+// it sits before the turn, so a slow controller must not stall the first
+// reply.
 func (f *Facade) SessionResumable(ctx context.Context, msg InboundMessage) (exists, checked bool) {
 	if f == nil || f.Agent == nil || f.Routes == nil {
 		return false, false
@@ -114,8 +117,9 @@ func (f *Facade) SessionResumable(ctx context.Context, msg InboundMessage) (exis
 	if !ok || entry.AgentInstanceID == "" {
 		return false, true
 	}
-	if msg.OwnerToken == "" {
-		ctx = f.withStoredShare(ctx, msg, entry)
+	ctx, ok = f.withInstanceAuth(ctx, msg, entry)
+	if !ok {
+		return false, false
 	}
 	if _, err := f.Agent.GetInstance(ctx, entry.AgentInstanceID); err != nil {
 		if !pkga2a.IsNotFound(err) {
@@ -135,7 +139,9 @@ const sessionCheckTimeout = 3 * time.Second
 // binding — the thread keeps its agent, its initiator and its grants — so the
 // next turn starts a fresh instance. Used when the conversation's history has
 // become unusable (the model API rejects it on every turn). Returns false when
-// no kagent client is configured or the thread has no binding.
+// no kagent client is configured or the thread has no binding, and
+// ErrShareUnavailable on a collaborator's turn that holds neither the
+// instance creator's token nor a usable share.
 func (f *Facade) ResetSession(ctx context.Context, msg InboundMessage) (bool, error) {
 	if f == nil || f.Agent == nil || f.Routes == nil {
 		return false, nil
@@ -151,10 +157,11 @@ func (f *Facade) ResetSession(ctx context.Context, msg InboundMessage) (bool, er
 	if !ok || entry.AgentInstanceID == "" {
 		return false, nil
 	}
-	if msg.OwnerToken == "" {
-		// A read-write share may delete the instance, which takes its shares
-		// with it at the controller.
-		ctx = f.withStoredShare(ctx, msg, entry)
+	// A read-write share may delete the instance, which takes its shares with
+	// it at the controller.
+	ctx, ok = f.withInstanceAuth(ctx, msg, entry)
+	if !ok {
+		return false, ErrShareUnavailable
 	}
 	if err := f.Agent.DeleteInstance(ctx, entry.AgentInstanceID); err != nil {
 		return false, err
@@ -277,7 +284,7 @@ func clearBinding(e *store.Entry, found bool) bool {
 	if !found {
 		return false
 	}
-	e.AgentInstanceID, e.TaskID, e.Resume, e.Share, e.SenderCreated = "", "", nil, nil, false
+	e.AgentInstanceID, e.TaskID, e.Resume, e.Share, e.InstanceCreator = "", "", nil, nil, ""
 	return true
 }
 
@@ -294,7 +301,7 @@ func clearBinding(e *store.Entry, found bool) bool {
 // back while the controller still holds it. ctx carries the identity the
 // instance is created under: on a collaborator turn, its creator's. A share of
 // an instance the thread leaves, on a rebind or when the conversation ended,
-// is revoked.
+// is revoked when ctx is that instance's creator's.
 func (f *Facade) instanceFor(ctx context.Context, msg InboundMessage) (string, error) {
 	if f.Routes == nil {
 		return "", errors.New("channels: no routing store for the agent instance binding")
@@ -309,7 +316,7 @@ func (f *Facade) instanceFor(ctx context.Context, msg InboundMessage) (string, e
 		// The conversation ended: the row is still there but its binding is
 		// not the thread's any more, so this turn creates a fresh instance.
 		if entry.Share != nil {
-			f.revokeShare(ctx, msg.ThreadID, entry.Share.ID)
+			f.revokeLeftShare(ctx, msg, entry.Share, recordedCreator(entry))
 		}
 		entry, ok = store.Entry{}, false
 	}
@@ -344,6 +351,7 @@ func (f *Facade) instanceFor(ctx context.Context, msg InboundMessage) (string, e
 		return "", err
 	}
 	var left *store.Share
+	var leftCreator string
 	if err := f.Routes.Update(ctx, key, func(e *store.Entry, found bool) bool {
 		// Only the side effect counts here — a closed row emptied, so this
 		// turn writes a fresh binding rather than merging into the ended
@@ -353,11 +361,12 @@ func (f *Facade) instanceFor(ctx context.Context, msg InboundMessage) (string, e
 			// A rebind: nothing of the previous instance's turn is deliverable.
 			e.TaskID, e.Resume, e.Delivered = "", nil, store.Delivered{}
 		}
+		left, leftCreator = nil, ""
 		if e.Share != nil && e.Share.InstanceID != inst.ID {
-			left, e.Share = e.Share, nil
+			left, leftCreator, e.Share = e.Share, recordedCreator(*e), nil
 		}
 		if e.AgentInstanceID != inst.ID {
-			e.SenderCreated = msg.Collaborator && msg.OwnerToken == ""
+			e.InstanceCreator = creatorID(msg)
 		}
 		e.AgentRef, e.AgentInstanceID, e.LastSeen = msg.AgentRef, inst.ID, now
 		if e.CreatedAt.IsZero() {
@@ -371,7 +380,7 @@ func (f *Facade) instanceFor(ctx context.Context, msg InboundMessage) (string, e
 		return "", fmt.Errorf("channels: store instance binding: %w", err)
 	}
 	if left != nil {
-		f.revokeShare(ctx, msg.ThreadID, left.ID)
+		f.revokeLeftShare(ctx, msg, left, leftCreator)
 	}
 	slog.Info("channels: thread bound to agent instance", "record", "instance_bound",
 		"channel", msg.Channel, "channel_id", msg.ChannelID, "thread", msg.ThreadID, "agent", msg.AgentRef, "instance", inst.ID)

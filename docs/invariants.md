@@ -19,6 +19,10 @@ or `helm/`. Add a line when a review finds a new one.
   that instance through the thread's AgentInstance share (#350). Letting a person in is the
   initiator's consent decision, taken through the Allow prompt; no entry point grants a
   newcomer as a side effect (#279).
+- **kagent answers NotFound to anyone who is not the instance's creator.** A lookup, delete
+  or share revoke under a collaborator's token without a share gets NotFound for an instance
+  that exists. Never read that as "gone": do not clear the binding, report a reset or log a
+  revoke on it. Only the creator's token, or a share, makes the answer mean something (#356).
 - **Payload fields change shape between message kinds.** A block element's `text` is a
   string in rich text and a `{type, text}` object in a button; PagerDuty posts carry both.
   Decode leniently: accept both shapes, and a type mismatch in one field skips that field,
