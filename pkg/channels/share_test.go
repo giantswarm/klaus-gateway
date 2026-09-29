@@ -421,7 +421,8 @@ func TestFacade_ShareExpiresWithTheThread(t *testing.T) {
 }
 
 // A share about to expire is replaced under the creator's token, and the old
-// one revoked. Without that token the old share is used until it expires.
+// one, still valid, is left to expire so a turn running on it keeps working.
+// Without that token the old share is used until it expires.
 func TestFacade_ShareAboutToExpireIsReplaced(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		agent := newFakeAgent(completedTurn()...)
@@ -438,9 +439,27 @@ func TestFacade_ShareAboutToExpireIsReplaced(t *testing.T) {
 
 		runTurn(t, f, collaboratorMsg("again", ownerJWT))
 		require.Len(t, agent.shares, 2, "a new share is minted")
-		require.Equal(t, []string{old}, agent.revoked)
+		require.Empty(t, agent.revoked)
 		require.NotEqual(t, old, threadRow(t, routes).Share.ID)
 		require.Contains(t, pkga2a.ShareTokenFromContext(agent.streamCtx), threadRow(t, routes).Share.ID)
+	})
+}
+
+// An expired share is replaced under the creator's token and revoked.
+func TestFacade_ExpiredShareIsReplacedAndRevoked(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		agent := newFakeAgent(completedTurn()...)
+		agent.shareExp = func(time.Duration) time.Time { return time.Now().Add(2 * time.Hour) }
+		f, routes := newSharingFacade(t, agent)
+		runTurn(t, f, initiatorMsg("open"))
+		runTurn(t, f, collaboratorMsg("join", ownerJWT))
+		old := threadRow(t, routes).Share.ID
+
+		time.Sleep(2 * time.Hour)
+		runTurn(t, f, collaboratorMsg("late", ownerJWT))
+
+		require.Len(t, agent.shares, 2)
+		require.Equal(t, []string{old}, agent.revoked)
 	})
 }
 
