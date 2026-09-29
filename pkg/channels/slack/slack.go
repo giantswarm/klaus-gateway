@@ -1371,6 +1371,18 @@ func (a *Adapter) mentionsBot(ctx context.Context, text string) bool {
 	return false
 }
 
+// addressesOtherUser reports whether text opens with a mention of a user who is
+// not this bot and mentions the bot nowhere. When the bot's ID could not be
+// resolved, a message opening with the bot's own mention reads as addressed to
+// someone else too; its app_mention twin still routes it.
+func (a *Adapter) addressesOtherUser(ctx context.Context, text string) bool {
+	m := mentionRe.FindStringSubmatchIndex(strings.TrimSpace(text))
+	if m == nil || m[0] != 0 {
+		return false
+	}
+	return !a.mentionsBot(ctx, text)
+}
+
 // threadGate reads the thread's row once and reports what the inactive-thread
 // gate needs of it: whether the bot has an active session in threadID — a
 // known initiator (it was mentioned at some point) or a pending input-required
@@ -1838,6 +1850,13 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 	// after the lifetime is the one case that is known, and its author is
 	// told. A mention re-opens the conversation either way.
 	if threadReplyOnly {
+		// A reply that opens by mentioning someone else talks to that person,
+		// not to the agent, even in the agent's own thread. A mention of the
+		// bot anywhere in it still addresses the bot.
+		if a.addressesOtherUser(ctx, inner.Text) {
+			a.Logger.Debug("slack: reply addressed to another user ignored", "channel", inner.Channel, "thread", msg.ThreadID)
+			return
+		}
 		active, closed, lifetime := a.threadGate(ctx, inner.Channel, msg.ThreadID)
 		if !active {
 			// A mention is not told the conversation ended: its app_mention
