@@ -48,6 +48,42 @@ func TestCorruptSession_ResetAndNotice(t *testing.T) {
 	require.Equal(t, "700.000", resetMsgs[0].ThreadID)
 }
 
+// A turn a previous process left running, resumed by a button click (so no
+// message to react on), that fails on corrupt session history after the
+// restart still resets the session and tells the thread: without it the
+// thread would get neither a note nor an emoji.
+func TestCorruptSession_ContinuedTurnResetsAndNotices(t *testing.T) {
+	fake := newFakeSlackAPI()
+	turn := leftoverTurn("task-9")
+	delete(turn.Msg.Resume, "message_ts")
+	var mu sync.Mutex
+	var resets int
+	gw := &stubGateway{
+		resumes: &stubResumes{
+			durable: true,
+			turns:   []channels.InFlightTurn{turn},
+			deltas:  map[string][]channels.OutboundDelta{"task-9": {{Err: errCorruptHistory}}},
+		},
+		onResetSession: func(channels.InboundMessage) (bool, error) {
+			mu.Lock()
+			resets++
+			mu.Unlock()
+			return true, nil
+		},
+	}
+	a, _ := newEventsAdapter(t, gw, fake.server(t).URL)
+
+	a.RecoverTurns()
+
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "The session is reset")
+	}, flowWait, 50*time.Millisecond, "reset notice posted")
+	require.Empty(t, fake.pathCalls("reactions.add"), "a click-resumed turn has no message to react on")
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, 1, resets, "the corrupt session is deleted once")
+}
+
 // A granted collaborator's turn on a shared thread runs on the initiator's
 // instance; when it fails on corrupt session history, the reset carries the
 // initiator's token as the owner's, since only the instance's creator deletes

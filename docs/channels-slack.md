@@ -479,9 +479,11 @@ any string that begins with `Slack bot`, `Slack app-level`, or `Slack user`.
    swaps in the failed reaction. A turn with no triggering message (a button or form resume, a
    resume after sign-in) gets no reaction; neither does any turn once Slack refused
    `reactions:write` (the refusal is remembered until the process restarts). No message stands
-   in for the reaction: the thread's working indicator shows that the turn runs. Without a
-   reaction, a failure note, an empty-output note and the restart notice post as messages in the
-   thread; a stop or a pause on a prompt posts nothing of its own.
+   in for the reaction: the thread's working indicator shows that the turn runs, where Slack
+   accepts the agent session status (on an install where it does not, such a turn shows nothing
+   until its answer streams). Without a reaction, a failure note, an empty-output note and the
+   restart notice post as messages in the thread; a stop or a pause on a prompt posts nothing of
+   its own.
 8. The whole turn is streamed into **one** Slack message with the streaming API:
    `chat.startStream` opens it, `chat.appendStream` adds what has accumulated since the last
    tick (one second), and `chat.stopStream` closes it with the answer's last words, naming
@@ -665,7 +667,7 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
 
 | Flag | Env var | Default |
 |------|---------|---------|
-| `--slack-progress-mode` | `SLACK_PROGRESS_MODE` | deprecated, no effect (a set value logs a warning); removed in the next release |
+| `--slack-progress-mode` | `SLACK_PROGRESS_MODE` | deprecated, no effect (a set value logs a warning); removed in the next major release |
 | `--slack-working-emoji` | `SLACK_WORKING_EMOJI` | `eyes` |
 | `--slack-done-emoji` | `SLACK_DONE_EMOJI` | `white_check_mark` |
 | `--slack-failed-emoji` | `SLACK_FAILED_EMOJI` | `x` |

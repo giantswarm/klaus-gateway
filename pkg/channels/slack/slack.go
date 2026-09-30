@@ -2639,10 +2639,10 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 		prog.failed(cctx)
 		// An oversize-payload rejection is actionable (the user can send a
 		// smaller file or shorter message), so it always gets its own explanatory
-		// note. The note names attachments only
-		// when the message actually carried some; a text/history-only overflow
-		// gets the generic size notice instead. Every other failure gets the note
-		// of its class: failureNote before the reply started, and once it did
+		// note. The note names attachments only when the message actually
+		// carried some; a text/history-only overflow gets the generic size
+		// notice instead. Every other failure gets the note of its class:
+		// failureNote before the reply started, and once it did
 		// (narration, part of the answer) interruptedFailureNote, which
 		// says the turn is over and where its progress is.
 		oversize := errors.Is(err, pkga2a.ErrPayloadTooLarge)
@@ -2699,9 +2699,8 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 	}
 	// A turn that produced no output would otherwise be silent (at most a done
 	// emoji with no reply). Post a terminal note so the user is not left
-	// waiting. A continued
-	// turn whose answer had landed in full before the restart did produce its
-	// reply; the note says so instead.
+	// waiting. A continued turn whose answer had landed in full before the
+	// restart did produce its reply; the note says so instead.
 	if !w.wroteContent() {
 		note := emptyOutputNote
 		if w.continued() {

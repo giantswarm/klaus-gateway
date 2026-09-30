@@ -230,8 +230,15 @@ func (a *Adapter) deliverInFlight(ctx context.Context, turn channels.InFlightTur
 		"record", "turn_resume", "agent", msg.AgentRef, "slack_user", slackUser,
 		"channel_id", msg.ChannelID, "thread_id", threadID, "task_id", turn.TaskID,
 		"delivered_text_len", turn.Delivered.TextLen)
-	if err := a.streamResponse(turnCtx, client, deltas, msg, slackUser, slackChannel, threadID, triggerTS, initiator, channels.TurnUsage{}, turn.Delivered, nil); err != nil && !errors.Is(err, context.Canceled) {
+	err = a.streamResponse(turnCtx, client, deltas, msg, slackUser, slackChannel, threadID, triggerTS, initiator, channels.TurnUsage{}, turn.Delivered, nil)
+	if err != nil && !errors.Is(err, context.Canceled) {
 		a.Logger.Warn("slack: delivery of a turn left running failed", "thread", threadID, "task", turn.TaskID, "error", err)
+	}
+	// streamResponse leaves a corrupt-history failure to the caller's recovery,
+	// as runTurn's deferred one does for a turn this process started.
+	if isCorruptSessionErr(err) {
+		a.takePendingTask(threadID)
+		a.recoverCorruptSession(ctx, msg, slackChannel)
 	}
 	return recoverDone
 }

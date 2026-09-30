@@ -67,7 +67,8 @@ func (p *progressState) removeWorking(ctx context.Context) {
 // triggering message (a button or form resume, a resume after sign-in) gets no
 // reaction; neither does one after Slack refused reactions for lack of scope,
 // which is cached so later turns skip the doomed call. No message is posted
-// either way: Slack's working indicator shows that the turn runs.
+// either way: Slack's working indicator shows that the turn runs, where the
+// install accepts the agent session status.
 func (a *Adapter) startProgress(ctx context.Context, client *slackAPIClient, channel, triggerTS string) *progressState {
 	p := &progressState{client: client, channel: channel, clearOnDone: a.ClearReactionOnDone, emojis: a.progressEmojis(), logger: a.Logger}
 	if triggerTS == "" || a.reactionsUnsupported.Load() {

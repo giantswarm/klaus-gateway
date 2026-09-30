@@ -550,7 +550,7 @@
                         },
                         "mode": {
                             "type": "string",
-                            "description": "Deprecated, no effect: every turn tries the progress reactions, and none posts a text placeholder. Still rendered as SLACK_PROGRESS_MODE, so a value set here only logs a warning. Removed in the next release."
+                            "description": "Deprecated, no effect: every turn tries the progress reactions, and none posts a text placeholder. Still rendered as SLACK_PROGRESS_MODE, so a value set here only logs a warning. Removed in the next major release."
                         }
                     }
                 },

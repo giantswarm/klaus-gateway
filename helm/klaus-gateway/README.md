@@ -81,7 +81,7 @@ Slack channel gateway for the Agent Platform's kagent agents
 | slack.channelMode | string | `""` |  |
 | slack.channelAllowlist | list | `[]` |  |
 | slack.dropStale | bool | `false` |  |
-| slack.progress.mode | string | `""` | Deprecated, no effect: every turn tries the progress reactions, and none posts a text placeholder. Still rendered as SLACK_PROGRESS_MODE, so a value set here only logs a warning. Removed in the next release. |
+| slack.progress.mode | string | `""` | Deprecated, no effect: every turn tries the progress reactions, and none posts a text placeholder. Still rendered as SLACK_PROGRESS_MODE, so a value set here only logs a warning. Removed in the next major release. |
 | slack.progress.emojis.working | string | `""` |  |
 | slack.progress.emojis.done | string | `""` |  |
 | slack.progress.emojis.failed | string | `""` |  |

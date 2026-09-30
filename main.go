@@ -159,7 +159,7 @@ func run(args []string) error {
 			logger.Warn("slack: the routing store is memory, so every thread's agent, initiator, grants and instance binding, and every open team review, are lost on a restart; installations run routing.store: valkey")
 		}
 		if cfg.Slack.ProgressMode != "" {
-			logger.Warn("slack: the progress mode setting has no effect and goes in the next release; every turn tries the progress reactions", "slack_progress_mode", cfg.Slack.ProgressMode)
+			logger.Warn("slack: the progress mode setting has no effect; every turn tries the progress reactions", "slack_progress_mode", cfg.Slack.ProgressMode)
 		}
 		if err := slackAdapter.Start(ctx, facade); err != nil {
 			return fmt.Errorf("start slack adapter: %w", err)

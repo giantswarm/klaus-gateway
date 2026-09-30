@@ -1194,10 +1194,11 @@ func spaceStructuralJSON(b []byte) string {
 // wroteContent reports whether this writer left a message of its own in the
 // thread. Used after the run loop to pick a terminal note: an empty-output
 // note only when no reply exists, a failure note that says the reply is
-// incomplete once one does. The reply need not carry answer text — narration lives in it too, and a turn that produced
-// only narration has a message all the same. A stream merely adopted
-// from a previous process is not one: that message is already on screen, and a
-// continued turn with nothing to add still has its say.
+// incomplete once one does. The reply need not carry answer text — narration
+// lives in it too, and a turn that produced only narration has a message all
+// the same. A stream merely adopted from a previous process is not one: that
+// message is already on screen, and a continued turn with nothing to add still
+// has its say.
 func (w *batchedWriter) wroteContent() bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()

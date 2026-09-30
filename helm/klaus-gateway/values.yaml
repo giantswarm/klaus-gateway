@@ -251,7 +251,7 @@ slack:
   progress:
     # -- Deprecated, no effect: every turn tries the progress reactions, and
     # none posts a text placeholder. Still rendered as SLACK_PROGRESS_MODE, so
-    # a value set here only logs a warning. Removed in the next release.
+    # a value set here only logs a warning. Removed in the next major release.
     mode: ""
     # emojis override the reaction emoji names (no colons) for a turn that is
     # working / done / failed. Rendered as SLACK_WORKING_EMOJI, SLACK_DONE_EMOJI,
