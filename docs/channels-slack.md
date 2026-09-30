@@ -491,16 +491,18 @@ any string that begins with `Slack bot`, `Slack app-level`, or `Slack user`.
    **The tool calls are not in the reply.** A call and its result go to the thread's tool log
    alone, which the **Inspect agent steps** shortcut shows with the arguments and a result
    preview. A turn that only calls tools opens no message until it writes prose; in text mode
-   the `Working…` placeholder stays until then.
+   the `Working…` placeholder stays until then. A call that needs approval shows in the log
+   twice: in the turn that asked for approval, without a result, and in the resumed turn, with
+   the call and its result.
 
    Each append carries only what is new, and answer text is sent up to the last whitespace
    boundary — an unfinished word waits for the next append, so nothing is ever half-written.
    Replies over 12,000 characters roll over into a further streamed message; the intermediate
-   close carries `processing`, so the working indicator stays on mid-answer. Slack refused a
-   streamed message near 13,800 characters of text in a replay on graveler, so the 12,000 cap
-   leaves a margin. Should Slack still answer `msg_too_long`, the full message is closed and
-   the rest continues in a new one in the same flush, whose size then bounds the turn's later
-   messages. Every narration
+   close carries `processing`, so the working indicator stays on mid-answer. Slack refuses a
+   streamed message near 13,800 characters of text (see [invariants](invariants.md)), so the
+   12,000 cap leaves a margin. Should Slack still answer `msg_too_long`, the full message is
+   closed and the rest continues in a new one in the same flush, whose size then bounds the
+   turn's later messages. Every narration
    passage ends in a paragraph break, so two passages — or a passage and the answer after it —
    never run together in the message body. Narration counts toward that per-message limit like
    any other prose, but never toward the answer length the delivery record carries — a process

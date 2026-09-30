@@ -647,9 +647,9 @@ const (
 
 	// Streamed reply parameters (chat.startStream / appendStream / stopStream).
 	// chunks carries everything the reply adds — the agent's narration and
-	// answer as markdown_text chunks — in one ordered array. It is the alternative to the plain markdown_text field,
-	// and the two may not be combined; a message uses one of them from its
-	// first call to its last.
+	// answer as markdown_text chunks — in one ordered array. It is the
+	// alternative to the plain markdown_text field, and the two may not be
+	// combined; a message uses one of them from its first call to its last.
 	paramChunks = "chunks"
 	// recipient_user_id and recipient_team_id name the person the streamed
 	// answer is for; Slack requires both when the stream is in a channel and

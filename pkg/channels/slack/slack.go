@@ -2557,7 +2557,7 @@ func (a *Adapter) applyInstanceOwner(ctx context.Context, msg *channels.InboundM
 // so the ephemeral connector prompt reaches a valid chat.postEphemeral user.
 // initiator is the thread's owner as the caller's own access check read it (""
 // when the caller holds none); it names the agent session's starter.
-func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, deltas <-chan channels.OutboundDelta, msg channels.InboundMessage, slackUser, slackChannel, threadID, triggerTS, placeholder, initiator string, carried channels.TurnUsage, delivered store.Delivered) (err error) {
+func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, deltas <-chan channels.OutboundDelta, msg channels.InboundMessage, slackUser, slackChannel, threadID, triggerTS, placeholder, initiator string, carried channels.TurnUsage, delivered store.Delivered, approved []channels.HitlTool) (err error) {
 	// A turn dispatched here carries its timeline from the events POST on; the
 	// delivery of a turn a previous process left running (deliverInFlight) has
 	// none yet and gets one from here, so it leaves a turn_complete record too.
@@ -2576,6 +2576,7 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 
 	w := newBatchedWriterWithClient(client, slackChannel, replyTS, threadID, a.Logger)
 	w.turnUsage = carried
+	w.approvedCalls = approved
 	w.adapter = a
 	w.slackUser = slackUser
 	w.connectorPrompts = a.ConnectorPrompts

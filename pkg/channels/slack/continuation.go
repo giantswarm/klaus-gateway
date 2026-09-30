@@ -78,9 +78,10 @@ func (w *batchedWriter) skipDelivered(content string) string {
 
 // noteDelivered records what the turn has delivered so far — the answer text
 // that landed (what the previous process posted plus what this one appended)
-// and the stream it is landing in — through the writer's sink, when it has one. Narration is deliberately absent from the
-// text count: a continuing process replays the answer, never the narration, so
-// counting it would cut the answer in the wrong place.
+// and the stream it is landing in — through the writer's sink, when it has
+// one. Narration is deliberately absent from the text count: a continuing
+// process replays the answer, never the narration, so counting it would cut
+// the answer in the wrong place.
 func (w *batchedWriter) noteDelivered(ctx context.Context) {
 	if w.onDelivered == nil {
 		return

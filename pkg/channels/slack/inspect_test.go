@@ -124,6 +124,32 @@ func TestRenderToolActivity_RecordedEntryEscapesHostileContent(t *testing.T) {
 	require.Contains(t, md, "a&amp;b")
 }
 
+// The turn an approval resumes streams the approved call's result, not the
+// call. The writer records the call from the approval, so the resumed turn's
+// log names both, and names the result by the tool call_tool really ran.
+func TestRenderToolActivity_ApprovedCallIsLoggedInTheResumedTurn(t *testing.T) {
+	a, _ := newInspectTestAdapter(t)
+	w := newBatchedWriterWithClient(a.apiClient(), "C1", "", "T1", testLogger())
+	w.adapter = a
+	args := map[string]any{"name": "x_kubernetes_rollout_restart", "arguments": map[string]any{"name": "loki-backend"}}
+	w.approvedCalls = []channels.HitlTool{{ID: "a1", CallID: "c1", Name: musterCallToolMetaTool, Args: args}}
+
+	ch := make(chan channels.OutboundDelta, 3)
+	ch <- channels.OutboundDelta{Kind: channels.DeltaToolActivity, Tool: &channels.ToolActivity{
+		Kind: channels.ToolResult, Name: musterCallToolMetaTool, CallID: "c1", Response: map[string]any{"output": "restarted"},
+	}}
+	ch <- channels.OutboundDelta{Done: true}
+	close(ch)
+	require.NoError(t, w.run(t.Context(), ch))
+
+	entries, _ := a.toolLogSnapshot("T1")
+	require.Len(t, entries, 2, "the approved call and its result")
+	require.Contains(t, entries[0].md, "x_kubernetes_rollout_restart")
+	require.Contains(t, entries[0].md, "(via muster)")
+	require.Contains(t, entries[1].md, "x_kubernetes_rollout_restart")
+	require.Contains(t, entries[1].md, "result (via muster)")
+}
+
 // A call_tool invocation is unwrapped to the inner muster tool in the log,
 // so the log names the tool that really ran.
 func TestRenderToolActivity_RecordsUnwrappedCallTool(t *testing.T) {

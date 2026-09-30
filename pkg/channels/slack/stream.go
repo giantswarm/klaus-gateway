@@ -211,6 +211,11 @@ type batchedWriter struct {
 	// a restart must not post again, and what says the reply carries agent text.
 	appendedLen int
 	promptDelta *channels.OutboundDelta // set when stream ends on DeltaPrompt
+	// approvedCalls are the calls of the approval this turn resumes. The
+	// resumed task streams their results and not the calls, so run() records
+	// each call in the tool log before the first event, and with it the
+	// call_tool target its result is named by.
+	approvedCalls []channels.HitlTool
 	// Stream state, touched from run()'s goroutine (and from the terminal flush
 	// the adapter runs once run() has returned). streamTS is the open streamed
 	// message, "" when none is open; streamed is the text it carries against
@@ -298,6 +303,10 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 		w.resetStream()
 	}
 	w.ran = true
+	for _, c := range w.approvedCalls {
+		w.renderToolActivity(&channels.ToolActivity{Name: c.Name, Kind: channels.ToolCall, CallID: c.CallID, Args: c.Args})
+	}
+	w.approvedCalls = nil
 	ticker := time.NewTicker(streamAppendInterval)
 	defer ticker.Stop()
 	// The session leaves "processing" on EVERY exit — stream done, stream error,

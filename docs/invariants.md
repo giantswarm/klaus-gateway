@@ -49,13 +49,12 @@ or `helm/`. Add a line when a review finds a new one.
   sent through it overwrote the public roster for everyone. Answer such a click with a
   thread-scoped ephemeral, and send `"replace_original": false` on every `response_url` reply
   that is meant as a new message (#343 live test).
-- **A streamed message that holds text has a size limit its steps count toward.** Slack
-  stores each step as a task card whose details and output are rich text, and refuses an
-  append or a stop with `msg_too_long` once the message outgrows about 13,800 in that measure
-  (a card costs about 90, plus 160 per field, plus its JSON-escaped characters), far below
-  what the 12,000-character text limit suggests. A message of steps alone is not checked. An
-  update's `output` and `details` add to the card rather than replace it (#358, replays on graveler,
-  2026-09-28).
+- **A streamed message that holds text is refused near 13,800.** Slack answers an append or a
+  stop with `msg_too_long` once the message outgrows about 13,800 characters of text, so the
+  12,000-character cap leaves a margin. A `task_update` step would count toward the same limit
+  as a card (about 90, plus 160 per field, plus its JSON-escaped characters), far more than its
+  characters, and an update's `output` and `details` add to the card rather than replace it
+  (#358, replays on graveler, 2026-09-28).
 - **Every message in a served channel reaches the inactive-thread gate.** That path is the
   most frequent one the gateway runs; it costs at most one store read (#307).
 
