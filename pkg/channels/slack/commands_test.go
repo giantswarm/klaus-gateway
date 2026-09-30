@@ -560,6 +560,7 @@ func TestParseBareCommand(t *testing.T) {
 		{"Agents?", cmdAgents},
 		{"/login", ""},
 		{"/help", ""},
+		{"/agents", ""},
 		{"please login", ""},
 		{"how do I login to the cluster?", ""},
 		{"logins", ""},

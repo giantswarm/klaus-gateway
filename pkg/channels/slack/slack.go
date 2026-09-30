@@ -1878,12 +1878,14 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 		// here. The listing reads the agent catalogue at the kagent
 		// controller, which serves it to a human identity, so it runs as the
 		// caller, like the slash form below.
+		consumed := false
 		if bare.Name == cmdAgents {
 			a.handleAgentSelection(a.withCallerToken(ctx, msg.Subject), &slashCommand{Name: cmdAgent}, &msg, inner.Channel)
-			a.Logger.Debug("slack: bare command consumed", "command", bare.Name, "channel", inner.Channel, "thread", msg.ThreadID)
-			return
+			consumed = true
+		} else {
+			consumed = a.handleCommand(ctx, bare, msg.Subject, inner.Channel, msg.ThreadID)
 		}
-		if a.handleCommand(ctx, bare, msg.Subject, inner.Channel, msg.ThreadID) {
+		if consumed {
 			a.Logger.Debug("slack: bare command consumed", "command", bare.Name, "channel", inner.Channel, "thread", msg.ThreadID)
 			return
 		}

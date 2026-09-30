@@ -121,16 +121,15 @@ func (a *Adapter) bareCommandFor(msg channels.InboundMessage) *slashCommand {
 	if cmd == nil {
 		return nil
 	}
-	// A word this gateway cannot serve belongs to the agent: its help reply
-	// does not list the command either. usage and help it answers from
-	// itself, always.
+	// A word this gateway cannot serve belongs to the agent. usage and help it
+	// answers from itself, always.
 	switch cmd.Name {
 	case cmdLogin, cmdLogout:
 		if a.OBO == nil {
 			return nil
 		}
 	case cmdAgents:
-		if a.Roster == nil {
+		if !a.agentSelectionReady() {
 			return nil
 		}
 	}
@@ -184,7 +183,7 @@ func helpGroups(agents, signIn bool) []helpGroup {
 	}}}
 	if agents {
 		groups = append(groups, helpGroup{title: "Agents", commands: []helpCommand{
-			{cmdAgents, "List the agents, with a button to start a conversation with one"},
+			{cmdAgents, "List the agents; in a new thread each row starts a conversation"},
 			{`/agent "Name" question`, "Start a conversation with a named agent"},
 		}})
 	}

@@ -704,14 +704,15 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
   contains it, a caption on an upload, and an answer in a thread paused on a **question** —
   the `ask_user` card, or a question without one, whose typed reply reaches the agent as the
   answer itself — where one word is what the question asked for. In such a thread the command is
-  the slash form after a mention (`/login`),
-  because the word alone is the answer with or without one — the sign-in
+  the slash form after a mention (`/login`, and `/agent` for the listing, which has no
+  `/agents`), because the word alone is the answer with or without one — the sign-in
   notices name the mention form, so that one line of advice is the one to read as the slash
   form there. A thread paused on an **approval card** is not a question: any text beside a
   card is read as a rejection carrying that text, so the word stays the command, the person
-  is signed out and the card is left to decide (`slack-hitl-surface.md`). Sign-in decides the
-  account words alone: a gateway without it passes `login` and `logout` to the agent, while
-  `usage` and `help`, which it answers from itself, keep working.
+  is signed out and the card is left to decide (`slack-hitl-surface.md`). What a gateway serves decides which
+  words are commands on it: one without sign-in passes `login` and `logout` to the agent, one
+  that lists no agents passes `agents`, and `usage` and `help`, which it answers from itself,
+  always work.
 - **Per-message branding.** Agent replies and the agent's own confirmation prompts are posted
   under the agent's display name, so they read as the agent speaking
   rather than the app. The name is the `Agent` CR's `ui.giantswarm.io/display-name` annotation

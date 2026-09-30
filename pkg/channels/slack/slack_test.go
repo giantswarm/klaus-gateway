@@ -1167,8 +1167,9 @@ func TestBareAgents_ListsTheRoster(t *testing.T) {
 	sendEvent(t, srv, dmEvent("U1", "Agents?", "1000.000"))
 
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Available agents")
-	}, flowWait, 50*time.Millisecond, "a plain agents must post the roster")
+		posted := allBlockText(fake.pathCalls("chat.postMessage"))
+		return strings.Contains(posted, "Available agents") && strings.Contains(posted, "agent_select")
+	}, flowWait, 50*time.Millisecond, "a plain agents must post the roster with its Select buttons")
 
 	require.Zero(t, gw.dispatchCount(), "the listing must not reach the agent as a turn")
 }
@@ -2249,6 +2250,16 @@ func TestHandleInbound_UnknownSlashCommandIntercepted(t *testing.T) {
 	sendEvent(t, srv, mention("U1", "/etc/hosts on node X is broken", "101.000", ""))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 20*time.Millisecond, "a path-shaped prompt still dispatches")
+
+	// The roster listing is the word `agents`; no slash form was added for it,
+	// so the slash spelling gets the notice that points at the help reply.
+	before := len(fake.pathCalls("chat.postMessage"))
+	sendEvent(t, srv, mention("U1", "/agents", "102.000", ""))
+	require.Eventually(t, func() bool {
+		return len(fake.pathCalls("chat.postMessage")) > before
+	}, flowWait, 20*time.Millisecond, "`/agents` is not a command")
+	require.Contains(t, allText(fake.pathCalls("chat.postMessage")), "`/agents` is not a command")
+	require.Equal(t, 1, gw.dispatchCount(), "the slash spelling must not reach the agent")
 }
 
 // A plain (non-mention) reply in a thread the bot has no trace of stays fully
