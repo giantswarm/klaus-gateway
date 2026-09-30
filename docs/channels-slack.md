@@ -648,10 +648,13 @@ A turn ends early for one of two reasons, and the thread can tell them apart:
   rest opens a message of its own. An adopted message is always closed, even when nothing is
   left to add, so it stops animating. A graceful restart closes the streamed message on its
   way out, so a continuation after one always opens a new message. A turn whose whole answer
-  had landed before the restart closes with `Done. The reply above is complete.` A turn the start-up recovery cannot reach (its user signed out,
-  the controller not up yet after three tries ten seconds apart) is delivered by the thread's
-  next reply, ahead of that reply's own answer; a task the controller no longer has gets a
-  short note instead.
+  had landed before the restart closes with `Done. The reply above is complete.` The start-up recovery keeps
+  trying a turn it cannot reach yet (the routing store or the controller not up, muster
+  refusing the token refresh while it rolls too) with a backoff from 10 s to 2 min, for as
+  long as the turn may run (30 min). A turn it gives up on, or whose user is signed out, gets
+  a note that a reply in the thread brings the result — the restart notice's promise does not
+  stand — and the thread's next reply delivers it, ahead of that reply's own answer; a task
+  the controller no longer has gets a short note instead.
 
 The recovery rides on the thread's routing-store binding, which records the task in flight
 while a turn runs, and with it what of the reply has landed (`delivered`: the answer text's

@@ -936,6 +936,7 @@ type stubResumes struct {
 	turns        []channels.InFlightTurn
 	deltas       map[string][]channels.OutboundDelta // task id -> deltas
 	resumeErr    error
+	listFailures int // InFlightTurns fails this many times before it answers
 	durable      bool
 	resumed      []channels.InboundMessage
 	resumedTasks []string
@@ -952,6 +953,10 @@ func (s *stubGateway) InFlightTurns(_ context.Context, channel string) ([]channe
 	defer s.mu.Unlock()
 	if s.resumes == nil {
 		return nil, nil
+	}
+	if s.resumes.listFailures > 0 {
+		s.resumes.listFailures--
+		return nil, errors.New("stub: routing store unreachable")
 	}
 	var out []channels.InFlightTurn
 	for _, t := range s.resumes.turns {

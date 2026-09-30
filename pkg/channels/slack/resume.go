@@ -41,6 +41,10 @@ const (
 	// resumeLostNote replaces the restart notice's promise when the controller
 	// no longer has the task the previous process left running.
 	resumeLostNote = "The result of the turn that the restart interrupted could not be recovered. Ask again."
+	// resumeOnReplyNote replaces the promise when the start-up recovery gave
+	// up on the turn (its user signed out, the platform unreachable for as
+	// long as the turn may run): the record stays, and a reply delivers it.
+	resumeOnReplyNote = "The result of the turn that the restart interrupted could not be posted here automatically. Reply in this thread to get it."
 )
 
 func (a *Adapter) restartedNotice(ctx context.Context, agentRef string) string {
@@ -52,18 +56,45 @@ func (a *Adapter) restartedNotice(ctx context.Context, agentRef string) string {
 	return fmt.Sprintf(restartedNotice, name)
 }
 
-// Recovery of a turn: how many times the start-up pass retries a turn whose
-// delivery failed for a reason that may clear (the controller not reachable
-// yet, a token mint that timed out), how long it waits between tries, and how
-// long the listing of the records may take.
+// Recovery of a turn: the start-up pass retries a failure that may clear (the
+// routing store or the controller not reachable yet, a token mint refused
+// while muster rolls alongside the gateway) with a backoff from
+// recoverRetryDelay up to recoverRetryMax, for as long as the turn itself may
+// still run (recoverWindow, a turn's own maxTurnDuration): a result that is
+// still coming is worth waiting for. recoverListTimeout bounds one listing of
+// the records.
+var (
+	recoverRetryDelay = 10 * time.Second
+	recoverRetryMax   = 2 * time.Minute
+	recoverWindow     = maxTurnDuration
+)
+
 const (
-	recoverAttempts    = 3
-	recoverRetryDelay  = 10 * time.Second
 	recoverListTimeout = 15 * time.Second
 	// recoverLookupTimeout bounds the per-thread record lookup a reply makes
 	// on the turn's critical path.
 	recoverLookupTimeout = 3 * time.Second
 )
+
+// recoverBackoff yields the wait before each further try of a recovery until
+// recoverWindow is used up: false once it is, or once ctx ends.
+func recoverBackoff() func(ctx context.Context) bool {
+	deadline := time.Now().Add(recoverWindow)
+	delay := recoverRetryDelay
+	return func(ctx context.Context) bool {
+		wait := min(delay, time.Until(deadline))
+		if wait <= 0 {
+			return false
+		}
+		delay = min(2*delay, recoverRetryMax)
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(wait):
+			return true
+		}
+	}
+}
 
 // recoverOutcome is what one delivery attempt of a left-running turn came to.
 type recoverOutcome int
@@ -83,12 +114,20 @@ func (a *Adapter) RecoverTurns() {
 }
 
 func (a *Adapter) recoverTurns(ctx context.Context) {
-	lctx, cancel := context.WithTimeout(ctx, recoverListTimeout)
-	turns, err := a.gw.InFlightTurns(lctx, ChannelName)
-	cancel()
-	if err != nil {
+	var turns []channels.InFlightTurn
+	for again := recoverBackoff(); ; {
+		lctx, cancel := context.WithTimeout(ctx, recoverListTimeout)
+		list, err := a.gw.InFlightTurns(lctx, ChannelName)
+		cancel()
+		if err == nil {
+			turns = list
+			break
+		}
 		a.Logger.Warn("slack: list of turns left running by the previous process unavailable", "error", err)
-		return
+		if !again(ctx) {
+			a.Logger.Warn("slack: turns left running by the previous process not listed; each is delivered on its thread's next reply")
+			return
+		}
 	}
 	if len(turns) == 0 {
 		return
@@ -100,10 +139,11 @@ func (a *Adapter) recoverTurns(ctx context.Context) {
 }
 
 // recoverTurn delivers one left-running turn, retrying a failure that may
-// clear. A turn given up on stays recorded: the thread's next reply delivers
-// it (dispatch's deliverLeftoverTurn).
+// clear. A turn given up on stays recorded, and the thread is told that its
+// next reply brings the result (dispatch's deliverLeftoverTurn): the restart
+// notice promised an automatic post this process could not make.
 func (a *Adapter) recoverTurn(ctx context.Context, turn channels.InFlightTurn) {
-	for attempt := 1; ; attempt++ {
+	for again := recoverBackoff(); ; {
 		token, outcome := a.recoveryToken(ctx, turn.Msg.Resume[resumeKeyUser], "")
 		if outcome == recoverDone {
 			if !a.acquireThread(turn.Msg.ThreadID) {
@@ -112,20 +152,30 @@ func (a *Adapter) recoverTurn(ctx context.Context, turn channels.InFlightTurn) {
 			outcome = a.deliverInFlight(ctx, turn, token)
 			a.releaseThread(turn.Msg.ThreadID)
 		}
-		if outcome != recoverRetry {
+		switch {
+		case outcome == recoverDone || ctx.Err() != nil:
 			return
-		}
-		if attempt == recoverAttempts {
+		case outcome == recoverSkip:
+			a.postResumeOnReplyNote(ctx, turn)
+			return
+		case !again(ctx):
+			if ctx.Err() != nil {
+				return // shutting down: the next process takes the turn up
+			}
 			a.Logger.Warn("slack: turn left running by the previous process not recovered; delivered on the thread's next reply",
 				"thread", turn.Msg.ThreadID, "task", turn.TaskID)
+			a.postResumeOnReplyNote(ctx, turn)
 			return
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(recoverRetryDelay):
 		}
 	}
+}
+
+// postResumeOnReplyNote tells a thread whose left-running turn this process
+// gave up on that a reply brings the result, correcting the restart notice's
+// promise of an automatic post.
+func (a *Adapter) postResumeOnReplyNote(ctx context.Context, turn channels.InFlightTurn) {
+	client := a.agentClient(ctx, turn.Msg.AgentRef)
+	a.postTerminalNote(ctx, client, turn.Msg.ChannelID, turn.Msg.ThreadID, resumeOnReplyNote)
 }
 
 // deliverLeftoverTurn delivers the result of a turn a previous process left
