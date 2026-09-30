@@ -298,6 +298,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** the chart's values schema no longer accepts `web`, `cli`, `lifecycle`, `upstream`, `agentgateway`, `routing.defaultTTL`, `routing.autoCreate`, `a2a.saToken` and `a2a.tokenPath`. They were accepted and ignored since the Slack-only release; a values file that still sets one now fails the upgrade with `additional properties '<key>' not allowed`. The `agent-platform` umbrella stops forwarding them in 4.62.0, so an installation on that umbrella or later has nothing to change; see `UPGRADE.md`.
 - Slack: the `/details on|off|full` command is gone; the agent's tool calls and their result previews now always show as the step list inside the reply. The **Inspect agent steps** shortcut still shows the fuller retained payloads.
 - `pkg/a2a`: the `TokenSource` interface, `FileTokenSource`, `ForwardedTokenSource`, `Config.TokenSource`, `WithChannel` and `ChannelFromContext`. The client reads the caller's token from the context (`WithForwardedToken`), and a call without one is refused with `ErrNoIdentity`, as before.
+- Slack: a reply no longer shows the agent's tool calls as steps. It carries the agent's narration and its answer only; while tools run, Slack's working indicator is the thread's progress sign. The **Inspect agent steps** shortcut still shows every call with its arguments and result. See `UPGRADE.md`.
 
 ### Refactored
 

@@ -2672,7 +2672,7 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 		// when the message actually carried some; a text/history-only overflow
 		// gets the generic size notice instead. Every other failure gets the note
 		// of its class: failureNote before the reply started, and once it did
-		// (steps, narration, part of the answer) interruptedFailureNote, which
+		// (narration, part of the answer) interruptedFailureNote, which
 		// says the turn is over and where its progress is.
 		oversize := errors.Is(err, pkga2a.ErrPayloadTooLarge)
 		note := failureNote(err)

@@ -83,8 +83,9 @@ const (
 	// of one streamed message, Slack's 12 000-char limit. A narration passage
 	// is split under it by splitMarkdown, fence close and reopen included; a
 	// streamed answer is cut at whitespace by cutPiece and rolls over into a
-	// new message when it reaches the cap. On a stream the cap is a budget the
-	// steps share with the text (see stepCardCost).
+	// new message when it reaches the cap. Slack's own refusal of a streamed
+	// message lies near 13 800 characters of text (measured on graveler
+	// 2026-09-28), so the cap leaves a margin under it.
 	slackMarkdownBlockMax = 12000
 	// slackFallbackTextMax caps a message's top-level text: chat.update refuses
 	// a text field over 4 000 characters (msg_too_long). On a markdown-block
@@ -106,24 +107,10 @@ const (
 	// room for.
 	errCodeMsgTooLong = "msg_too_long"
 
-	// Chunk types of a streamed message. Prose (the answer and the agent's
-	// narration) travels as markdown_text; one step of the reply's task list
-	// as task_update.
+	// chunkTypeMarkdownText is the chunk type of a streamed message's prose:
+	// the answer and the agent's narration.
 	chunkTypeMarkdownText = "markdown_text"
-	chunkTypeTaskUpdate   = "task_update"
-
-	// Step states of a task_update chunk, spelled exactly as Slack names them
-	// in the chat.appendStream reference.
-	stepInProgress = "in_progress"
-	stepComplete   = "complete"
-	stepError      = "error"
 )
-
-// stepApprovalAskedPrefix leads the title of a step whose call waits for the
-// person's approval. Slack has no waiting state, and a step left in_progress
-// spins on the closed reply forever, so the step closes complete and its title
-// says what completed: the ask, not the tool.
-const stepApprovalAskedPrefix = "Asked for approval: "
 
 // batchedWriter accumulates OutboundDelta content and streams it into one
 // Slack message: chat.startStream opens the reply, chat.appendStream adds
@@ -132,22 +119,11 @@ const stepApprovalAskedPrefix = "Asked for approval: "
 // Slack animates the message while the stream is open, and the Stop button
 // ends the stream on Slack's side.
 //
-// The whole turn is one message, in the order the agent produced it. The
-// stream carries a list of typed chunks rather than a plain markdown_text
-// field — a message uses one of the two from its first call to its last, and
-// Slack refuses a mode change mid-message — so the turn's content queues up as
-// chunks and goes out together:
-//
-//   - the answer, and the agent's interim narration, as markdown_text chunks;
-//   - each tool call as a task_update chunk, which Slack renders as a step of
-//     a task list attached to the reply: in_progress when the call starts,
-//     complete or error when its result arrives. A step carries the truncated
-//     call arguments as its details and the truncated result preview as its
-//     output.
-//
-// The stream therefore opens at the FIRST thing the turn produces — a tool
-// call, a narration passage or the first answer text, whichever comes first —
-// so the steps live inside the reply instead of above it.
+// The whole turn is one message: the agent's interim narration and its
+// answer, as markdown_text chunks in the order the agent produced them. The
+// tool calls are not on it; they go to the tool log the "Inspect agent steps"
+// shortcut shows. The stream opens at the first narration passage or answer
+// text, whichever comes first.
 //
 // When the stream ends on a DeltaPrompt, run() captures it in promptDelta
 // (flushing the queue first) and returns nil. The caller is responsible for
@@ -235,25 +211,20 @@ type batchedWriter struct {
 	// a restart must not post again, and what says the reply carries agent text.
 	appendedLen int
 	promptDelta *channels.OutboundDelta // set when stream ends on DeltaPrompt
-	// approvedCalls are the calls of the approval this turn resumes. Their
-	// results arrive in this turn's message, which never saw the calls, so
-	// run() opens a step for each before the first event.
+	// approvedCalls are the calls of the approval this turn resumes. The
+	// resumed task streams their results and not the calls, so run() records
+	// each call in the tool log before the first event, and with it the
+	// call_tool target its result is named by.
 	approvedCalls []channels.HitlTool
 	// Stream state, touched from run()'s goroutine (and from the terminal flush
 	// the adapter runs once run() has returned). streamTS is the open streamed
-	// message, "" when none is open; streamed is what it carries against the
-	// size budget (text and steps, see stepCardCost), so the reply rolls over
-	// into a fresh message before Slack's per-message cap; streamMessages lists
-	// every streamed message of the turn, which is what a retract deletes.
-	// msgSteps names the steps whose card is on the open message, true while
-	// the step is open and holds its output reserve; movedSteps the steps whose
-	// card is on an earlier message of the turn, where a late update can no
-	// longer reach it.
+	// message, "" when none is open; streamed is the text it carries against
+	// the size budget, so the reply rolls over into a fresh message before
+	// Slack's per-message cap; streamMessages lists every streamed message of
+	// the turn, which is what a retract deletes.
 	streamTS       string
 	streamed       int
 	streamMessages []string
-	msgSteps       map[string]bool
-	movedSteps     map[string]bool
 	// sizeBudget, once Slack refused a message the budget said had room, is
 	// what that message held: a size known to fit, which bounds every later
 	// message of the turn. 0 until then (see budget).
@@ -276,23 +247,12 @@ type batchedWriter struct {
 	streamStopped   bool
 	streamFailed    bool
 
-	// Step state of the reply's task list. stepsIssued counts the step ids this
-	// turn has handed out — the id of the n-th tool call is "step-<n>",
-	// continuing the count a restart carried over, so a process continuing the
-	// turn never reuses an id already on the adopted stream. openSteps holds the
-	// steps opened and not yet closed, oldest first: a result closes the one its
-	// call id names, and whatever is left when the turn ends is closed by its
-	// last flush. Written on run()'s goroutine; openSteps is guarded by mu
-	// because the delivery record names its most recent entry.
-	stepsIssued int
-	openSteps   []openStep
-
 	// Continuation across a restart (continuation.go). carried is what the
 	// previous process delivered of the turn this writer continues; skipText
 	// is how much answer text is still to be dropped, trimLead whether the
 	// whitespace the cut left in front is still to go, and leadTrimmed (under
 	// mu) how much of it went. onDelivered, when set, receives the delivery
-	// record after every flush and every step.
+	// record after every flush.
 	carried     store.Delivered
 	skipText    int
 	trimLead    bool
@@ -303,69 +263,18 @@ type batchedWriter struct {
 	ran bool
 }
 
-// openStep is a tool call that has a step on the stream and no result yet: the
-// id Slack keys it by, the call id its result will arrive under (empty when the
-// stream gave none, which is why the turn's end has to close it), and the title
-// it was opened with, so the update that closes it renders the same step rather
-// than a second one. The details are deliberately absent: they ride the opening
-// update alone (see taskUpdate).
-type openStep struct {
-	id     string
-	callID string
-	title  string
-}
-
-// taskUpdate is one state of one step of the reply's task list. Sending the
-// same id again updates the step, which is how a running call becomes a
-// finished one.
-//
-// Slack APPENDS details across the updates of one step rather than replacing
-// it (observed on graveler, 2026-09-22: a step sent with the same details twice
-// showed both copies run together, while output, sent once, showed once). So
-// details rides the update that OPENS the step and no other; every later update
-// of that step carries the id, the title, the status and — on the update that
-// closes the step — the output.
-type taskUpdate struct {
-	id      string
-	title   string
-	status  string
-	details string
-	output  string
-}
-
-// queuedChunk is one element of the reply waiting to go out, in the order the
-// agent's deltas produced it: a piece of prose — the answer (answer true) or
-// the agent's interim narration — or a step update. Only a trailing answer
-// chunk still grows, which is why the whitespace hold-back applies to it alone.
+// queuedChunk is one piece of the reply's prose waiting to go out, in the order
+// the agent's deltas produced it: the answer (answer true) or the agent's
+// interim narration. Only a trailing answer chunk still grows, which is why the
+// whitespace hold-back applies to it alone.
 type queuedChunk struct {
 	text   string
 	answer bool
-	step   *taskUpdate
 }
 
 // textChunk renders a piece of prose as a streamed chunk.
 func textChunk(md string) map[string]any {
 	return map[string]any{"type": chunkTypeMarkdownText, "text": md}
-}
-
-// stepChunk renders one step state as a streamed chunk. details and output are
-// left off when empty: the update that opens a step always carries details — at
-// least the raw tool name, even for a call with no arguments — while a step
-// closed without a result preview, the turn-end close path, carries no output.
-func stepChunk(s taskUpdate) map[string]any {
-	c := map[string]any{
-		"type":   chunkTypeTaskUpdate,
-		"id":     s.id,
-		"title":  s.title,
-		"status": s.status,
-	}
-	if s.details != "" {
-		c["details"] = s.details
-	}
-	if s.output != "" {
-		c["output"] = s.output
-	}
-	return c
 }
 
 func newBatchedWriterWithClient(client *slackAPIClient, channel, ts, threadTS string, logger *slog.Logger) *batchedWriter {
@@ -381,23 +290,21 @@ func newBatchedWriterWithClient(client *slackAPIClient, channel, ts, threadTS st
 	}
 }
 
-// run drains deltas from ch, queueing the turn's text, narration and steps in
-// the order they arrive and appending what has accumulated to the turn's
+// run drains deltas from ch, queueing the turn's text and narration in the
+// order they arrive and appending what has accumulated to the turn's
 // streamed message at streamAppendInterval.
 func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelta) error {
 	w.timer = channels.TurnTimerFromContext(ctx)
 	// A run() cycle over a writer that ran before (an auto-approved prompt
 	// resuming the turn in place) continues the same turn: its answer stream
 	// was closed by that cycle's final stop, so the continuation opens a message
-	// of its own rather than reopening a closed one. The step count is NOT
-	// reset — the ids stay unique for the whole turn, which is what the
-	// delivery record hands to a process continuing it after a restart.
+	// of its own rather than reopening a closed one.
 	if w.ran {
 		w.resetStream()
 	}
 	w.ran = true
 	for _, c := range w.approvedCalls {
-		w.renderToolActivity(ctx, &channels.ToolActivity{Name: c.Name, Kind: channels.ToolCall, CallID: c.CallID, Args: c.Args})
+		w.renderToolActivity(&channels.ToolActivity{Name: c.Name, Kind: channels.ToolCall, CallID: c.CallID, Args: c.Args})
 	}
 	w.approvedCalls = nil
 	ticker := time.NewTicker(streamAppendInterval)
@@ -440,8 +347,6 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 				// Flush text buffered since the last tick before surfacing the
 				// error, so wroteContent reflects all delivered content and the
 				// failure note posts as a new message instead of overwriting it.
-				// A step still running when the turn fails never gets its result.
-				w.closeOpenSteps(ctx, stepError)
 				if ferr := w.finalFlush(ctx); ferr != nil {
 					w.logger.Warn("slack: flush before failure note failed", "error", ferr)
 				}
@@ -464,9 +369,8 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 				if d.Tool != nil && d.Tool.Kind == channels.ToolCall {
 					w.timer.AddToolCall()
 				}
-				w.renderToolActivity(ctx, d.Tool)
+				w.renderToolActivity(d.Tool)
 				w.maybeConnectorPrompt(d.Tool)
-				w.openEarly(ctx)
 			case channels.DeltaNarration:
 				w.timer.AddChars(len(d.Content))
 				w.renderNarration(d.Content)
@@ -478,11 +382,6 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 				w.mu.Lock()
 				w.promptDelta = &d
 				w.mu.Unlock()
-				// The call that asked the question is done asking, and this
-				// message is about to be closed, so its step is closed on it —
-				// the answer resumes the turn into a message of its own, where
-				// an update for this step would render as a second card.
-				w.closeOpenSteps(ctx, stepComplete)
 				// Flush partial text so far, then hand off to the caller to post
 				// the interactive approval prompt. A flush failure here is
 				// non-fatal: the pending-task store and the prompt post do not
@@ -501,10 +400,10 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 	}
 }
 
-// openEarly opens the turn's stream on the first thing the agent produces — a
-// tool call, a narration passage or the first answer text, whichever comes
-// first — so the reply message exists while the agent is still working and its
-// steps land inside it. Everything after that rides the tick.
+// openEarly opens the turn's stream on the first prose the agent produces — a
+// narration passage or the first answer text, whichever comes first — so the
+// reply message exists while the agent is still working. Everything after that
+// rides the tick.
 func (w *batchedWriter) openEarly(ctx context.Context) {
 	if w.streamTS != "" || w.streamStopped {
 		return
@@ -556,9 +455,6 @@ func (w *batchedWriter) noteFlushFailure(now time.Time, err error) {
 // after its retries is reported as a renderError: the agent completed the turn,
 // only its rendering did not.
 func (w *batchedWriter) finish(ctx context.Context) error {
-	// A step whose result never arrived — a call the stream gave no id, a tool
-	// that answered nothing — would spin on the finished reply forever.
-	w.closeOpenSteps(ctx, stepComplete)
 	if err := w.finalFlush(ctx); err != nil {
 		return &renderError{err: err}
 	}
@@ -601,19 +497,10 @@ func (w *batchedWriter) finalFlush(ctx context.Context) error {
 	}
 }
 
-// tool-activity rendering caps, kept compact so a default-on stream does not
-// overwhelm the thread.
+// Caps of the tool log's renderings of a call's arguments and result.
 const (
 	toolArgsMax   = 500
 	toolResultMax = 800
-	// stepFieldMax caps a step's details and output. Slack documents 256
-	// characters as the chunk size limit of task_update, so the payload
-	// previews are cut to it after escaping; the tool log the "Inspect agent
-	// steps" shortcut shows keeps the fuller toolArgsMax/toolResultMax
-	// renderings. Slack collapses a long field behind its own "Show more"
-	// toggle by rendered height, not by a character count, so no cap short of
-	// losing payload avoids it (measured on graveler, 2026-09-23).
-	stepFieldMax = 256
 	// maxActivityBlocks bounds the context blocks of one in-thread Block Kit
 	// message, comfortably under Slack's 50-blocks-per-message limit; the tool
 	// log's inspection posts roll over into a further message past it.
@@ -623,32 +510,6 @@ const (
 	// one truncation note is sent: dropping the agent's prose without saying so
 	// is the bug this rendering fixes.
 	maxNarrationMessages = 10
-	// stepCardCost, stepFieldCost and stepMarkerCost price a step against a
-	// streamed message's size budget. Slack stores each step as a task card
-	// whose details and output are rich text, and once the message holds text
-	// it refuses anything past a size it does not document: a card costs far
-	// more than its characters. Measured on graveler 2026-09-28 by replaying
-	// streams until Slack answered msg_too_long, the refusal fits about 90 per
-	// card, 160 per field, the JSON-escaped characters and 10 per emphasis
-	// marker, against a limit near 13 800 with the text counted at its length.
-	// The costs here are rounded up, so slackMarkdownBlockMax leaves a margin.
-	stepCardCost   = 100
-	stepFieldCost  = 170
-	stepMarkerCost = 10
-	// stepOutputReserve is what opening a step holds back for the output its
-	// close will add: the new message a full budget calls for can only start
-	// while no step is open, because a step's close has to reach the message
-	// that shows the step. It covers a full preview dense with quotes and
-	// emphasis markers — the costliest output of the refused gazelle turn came
-	// to 583 — and an output denser still eats into the budget's margin.
-	stepOutputReserve = stepFieldCost + stepFieldMax*7/4
-	// maxSteps bounds the steps one turn puts on its reply. The steps ride the
-	// appends the answer already makes, so this is not a rate limit: Slack
-	// documents no maximum number of tasks on a message, and a turn of several
-	// hundred calls is untested territory. Past it one note is sent and the
-	// calls still reach the "Inspect agent steps" log, under its own cap
-	// (maxToolLogEntries per thread, so a very long turn loses its oldest).
-	maxSteps = 100
 )
 
 // passageBreak ends a narration chunk, so two passages — or a passage and the
@@ -658,21 +519,12 @@ const passageBreak = "\n\n"
 // narrationLimitNote replaces the narration past the per-turn cap.
 const narrationLimitNote = "Narration limit reached: the rest of this turn's step-by-step notes are hidden. The answer still follows."
 
-// stepLimitNote is sent once when a turn's tool calls pass the step cap. The
-// tool log has its own, shorter bound, so it is promised only the recent calls.
-const stepLimitNote = "Step limit reached: the rest of this turn's tool calls are hidden. The Inspect agent steps shortcut has the most recent ones."
-
-// renderToolActivity turns a tool call into one step of the reply's task list:
-// a task_update chunk that opens the step as in_progress, and a second one on
-// its result that closes the step as complete — or as error when the tool
-// reported one. The two carry the same id, so Slack updates the step in place
-// instead of listing it twice. A step carries the truncated call arguments as
-// its details and the truncated result preview as its output.
-//
-// The call and its result are also retained in the adapter's per-thread tool
-// log, so the "Inspect agent steps" shortcut can show the fuller payloads
-// retroactively.
-func (w *batchedWriter) renderToolActivity(ctx context.Context, tool *channels.ToolActivity) {
+// renderToolActivity records a tool call, or its result, in the adapter's
+// per-thread tool log, which the "Inspect agent steps" shortcut shows. Nothing
+// of it goes on the reply. A result that only asks for the person's approval is
+// not the tool's output, and the approval prompt already shows it, so it is not
+// recorded.
+func (w *batchedWriter) renderToolActivity(tool *channels.ToolActivity) {
 	if tool == nil {
 		return
 	}
@@ -688,17 +540,14 @@ func (w *batchedWriter) renderToolActivity(ctx context.Context, tool *channels.T
 			displayName, viaMuster, args = inner, true, innerArgs
 		}
 		w.recordToolLog(toolCallMarkdown(displayName, viaMuster, args))
-		w.openStep(ctx, tool.CallID, displayName, args)
 	case channels.ToolResult:
 		if tool.AwaitsApproval {
-			w.holdStep(ctx, tool.CallID)
 			return
 		}
 		preview, isErr := toolResultPreview(tool.Response, toolResultMax)
 		if md, ok := w.toolResultMarkdown(tool, preview, isErr); ok {
 			w.recordToolLog(md)
 		}
-		w.closeStep(ctx, tool.CallID, preview, isErr)
 	}
 }
 
@@ -733,133 +582,6 @@ func (w *batchedWriter) toolResultMarkdown(tool *channels.ToolActivity, preview 
 		md += " (via muster)"
 	}
 	return md + "\n" + inlineCode(preview), true
-}
-
-// openStep queues the step that says this call is running. The id is the
-// call's ordinal in the turn ("step-4"), which is what a process continuing the
-// turn after a restart counts on from, and what the result's update repeats to
-// close the same step. Past maxSteps no step is opened and one note says so.
-func (w *batchedWriter) openStep(ctx context.Context, callID, displayName string, args map[string]any) {
-	w.stepsIssued++
-	if w.stepsIssued > maxSteps {
-		if w.stepsIssued == maxSteps+1 {
-			w.queueNarration(stepLimitNote + passageBreak)
-		}
-		return
-	}
-	s := openStep{
-		id:     stepID(w.stepsIssued),
-		callID: callID,
-		title:  stepTitle(displayName),
-	}
-	u := taskUpdate{id: s.id, title: s.title, status: stepInProgress}
-	// The raw name is what a reader debugging a turn needs: the title is a
-	// phrase, the details name the tool and what it was called with. This is
-	// the only update of this step that carries them.
-	u.details = stepField(displayName + " " + compactJSON(args, toolArgsMax))
-	w.mu.Lock()
-	w.openSteps = append(w.openSteps, s)
-	w.mu.Unlock()
-	w.queueStep(u)
-	w.noteDelivered(ctx)
-}
-
-// closeStep queues the update that ends the step the call opened: complete, or
-// error when the tool reported the result as one. A result whose call was never
-// seen — a stream that started mid-turn, a call past the step cap, a step the
-// turn's end already closed — has no step to close and is dropped. The record
-// follows, because the step it named is no longer running.
-func (w *batchedWriter) closeStep(ctx context.Context, callID, preview string, isErr bool) {
-	s, ok := w.takeOpenStep(callID)
-	if !ok {
-		return
-	}
-	status := stepComplete
-	if isErr {
-		status = stepError
-	}
-	u := taskUpdate{id: s.id, title: s.title, status: status}
-	u.output = stepField(preview)
-	w.queueStep(u)
-	w.noteDelivered(ctx)
-}
-
-// holdStep ends the step of a call that waits for the person's approval as the
-// ask for it, not as the tool's run. The reply closes on the prompt; once
-// approved, the call runs in the next turn's message, which opens a step of its
-// own for it (approvedCalls).
-func (w *batchedWriter) holdStep(ctx context.Context, callID string) {
-	s, ok := w.takeOpenStep(callID)
-	if !ok {
-		return
-	}
-	title := truncateRunes(stepApprovalAskedPrefix+s.title, stepTitleMax)
-	w.queueStep(taskUpdate{id: s.id, title: title, status: stepComplete})
-	w.noteDelivered(ctx)
-}
-
-// takeOpenStep removes the open step a result belongs to. A result with no call
-// id matches nothing: it cannot be told from any other, and closing the wrong
-// step would be worse than leaving the turn's end to close it.
-func (w *batchedWriter) takeOpenStep(callID string) (openStep, bool) {
-	if callID == "" {
-		return openStep{}, false
-	}
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	for i, s := range w.openSteps {
-		if s.callID == callID {
-			w.openSteps = append(w.openSteps[:i], w.openSteps[i+1:]...)
-			return s, true
-		}
-	}
-	return openStep{}, false
-}
-
-// cancelledStepStatus is how a step still running is closed when the turn's
-// context is cancelled. The gateway's own shutdown does not end the tool call:
-// the task keeps running at the controller, the thread is told so, and another
-// process delivers its answer — so the step on this message is closed as done,
-// not as failed, and the result that arrives after the restart belongs to a
-// step nobody is waiting on any more. Every other cancellation — a /stop, the
-// per-turn deadline — does end the call, and its result is never coming.
-func cancelledStepStatus(ctx context.Context) string {
-	if errors.Is(context.Cause(ctx), channels.ErrShutdown) {
-		return stepComplete
-	}
-	return stepError
-}
-
-// closeOpenSteps ends every step still running as the turn ends, so no message
-// is left with one that spins forever — Slack never closes a task on its own.
-// status is complete on a normal end and on a pause for a HITL prompt (the call
-// did its work; the answer is what is being waited for), error when the turn
-// failed, and what cancelledStepStatus says when it was cancelled. A call the
-// stream gave no id is only ever closed here.
-func (w *batchedWriter) closeOpenSteps(ctx context.Context, status string) {
-	w.mu.Lock()
-	open := w.openSteps
-	w.openSteps = nil
-	w.mu.Unlock()
-	if len(open) == 0 {
-		return
-	}
-	for _, s := range open {
-		w.queueStep(taskUpdate{id: s.id, title: s.title, status: status})
-	}
-	w.noteDelivered(ctx)
-}
-
-// stepField prepares a payload preview for a step's details or output: escaped
-// like every other agent-controlled string, flattened to one line, and cut to
-// the chunk size Slack documents for task_update without splitting an entity.
-// Slack decodes the entities again when it renders the field, so the escaping
-// costs the reader nothing and keeps a <@U…> in a payload literal text. A
-// tool's own mrkdwn emphasis (*, _, ~) is left as it is on purpose — Slack has
-// no escape for those markers in plain text, and a code span reads worse on
-// this surface; TestStepField_LeavesEmphasisAlone pins that decision.
-func stepField(s string) string {
-	return truncateEntityAware(stepSafeText(s), stepFieldMax)
 }
 
 // recordToolLog retains one rendered entry in the adapter's per-thread tool
@@ -969,9 +691,7 @@ func (w *batchedWriter) setSessionStatus(ctx context.Context, status sessionStat
 
 // renderNarration queues the agent's interim narration — the prose it writes
 // just before firing tool calls — as text chunks of the reply, so it reads in
-// order with the steps it introduces and the answer that follows. This is the
-// agent talking, not tool transparency, so it renders as prose rather than as a
-// step of the task list.
+// order with the answer that follows.
 //
 // Narration bytes count toward the streamed message's character cap, like any
 // other prose, but NOT toward the answer length the delivery record carries:
@@ -1481,8 +1201,8 @@ func spaceStructuralJSON(b []byte) string {
 // thread. Used after the run loop to decide whether a terminal note may
 // overwrite the "thinking" placeholder: it may not once the reply exists,
 // because opening the stream is what deletes the placeholder. The reply need
-// not carry answer text — narration and the steps live in it too, and a turn
-// that produced only those has a message all the same. A stream merely adopted
+// not carry answer text — narration lives in it too, and a turn that produced
+// only narration has a message all the same. A stream merely adopted
 // from a previous process is not one: that message is already on screen, and a
 // continued turn with nothing to add still has its say.
 func (w *batchedWriter) wroteContent() bool {
@@ -1503,7 +1223,7 @@ func (w *batchedWriter) connectorReplyRetractable() bool {
 
 // retractRendered deletes the turn's streamed messages, leaving the thread to
 // the connector prompt alone: the reply is where the sign-in narration the
-// button contradicts lives, and the steps with it. The tool log the "Inspect
+// button contradicts lives. The tool log the "Inspect
 // agent steps" shortcut shows is untouched — it is a transparency record, not
 // prose on screen. Best-effort: a delete failure is logged, not propagated.
 func (w *batchedWriter) retractRendered(ctx context.Context) {
@@ -1590,11 +1310,6 @@ func (w *batchedWriter) closeStream(ctx context.Context) error {
 // message would keep animating and everything queued since the last append
 // would be lost. It runs on a context outliving the cancellation.
 func (w *batchedWriter) endStream(ctx context.Context) {
-	// A cancelled turn is where a step is most likely to be left running. The
-	// cause says what that means for it — and it has to be read before the
-	// context is replaced below, because WithoutCancel drops it. A normal end
-	// closed the steps already, which makes this a no-op there.
-	w.closeOpenSteps(ctx, cancelledStepStatus(ctx))
 	if w.streamTS == "" && !w.hasQueuedContent() {
 		return
 	}
@@ -1633,11 +1348,9 @@ type streamBatch struct {
 	// answerRaw is the agent's own answer bytes the batch carries, what the
 	// delivery record counts — the text a process continuing the turn must not
 	// post again. cost is what the batch adds to the message's size budget:
-	// its prose and narration bytes and its steps (stepCost). steps records the
-	// steps the batch touches as msgSteps will, once the batch has landed.
+	// its prose and narration bytes.
 	answerRaw int
 	cost      int
-	steps     map[string]bool
 }
 
 func (b *streamBatch) addText(piece string, answer bool) {
@@ -1646,15 +1359,6 @@ func (b *streamBatch) addText(piece string, answer bool) {
 	if answer {
 		b.answerRaw += len(piece)
 	}
-}
-
-func (b *streamBatch) addStep(s *taskUpdate, cost int, open bool) {
-	b.items = append(b.items, queuedChunk{step: s})
-	b.cost += cost
-	if b.steps == nil {
-		b.steps = map[string]bool{}
-	}
-	b.steps[s.id] = open
 }
 
 func (b *streamBatch) empty() bool { return len(b.items) == 0 }
@@ -1672,99 +1376,6 @@ func (w *batchedWriter) budget() int {
 // room is what the open message's size budget has left once the batch lands.
 func (w *batchedWriter) room(b *streamBatch) int {
 	return w.budget() - w.streamed - b.cost
-}
-
-// stepCost prices one step update against the size budget of the message it
-// is about to join (see stepCardCost), and says whether the step is open after
-// it. The update that opens a step pays for its card and holds the output
-// reserve; the one that closes it pays for the output and gives the reserve
-// back. A step whose card is on an earlier message gets a new card here. A
-// step with no record at all was on the stream a process continuing the turn
-// adopted, so its card is on this message.
-func (w *batchedWriter) stepCost(u *taskUpdate, b *streamBatch) (cost int, open bool) {
-	reserved, here := b.steps[u.id]
-	if !here {
-		reserved, here = w.msgSteps[u.id]
-	}
-	holds := u.status == stepInProgress
-	if !here && (u.details != "" || w.movedSteps[u.id]) {
-		return newCardCost(u), holds
-	}
-	cost = fieldCost(u.details) + fieldCost(u.output)
-	if reserved && !holds {
-		cost -= stepOutputReserve
-	}
-	return cost, reserved && holds
-}
-
-// newCardCost is what an update adds that gives its step a card on the
-// message, the output reserve included while the step runs.
-func newCardCost(u *taskUpdate) int {
-	cost := stepCardCost + jsonEscapedLen(u.title) + fieldCost(u.details) + fieldCost(u.output)
-	if u.status == stepInProgress {
-		cost += stepOutputReserve
-	}
-	return cost
-}
-
-// groupOpenCost prices the run of step openings at the head of items: the
-// rest of a group of calls the agent started at once.
-func groupOpenCost(items []queuedChunk) int {
-	cost := 0
-	for _, it := range items {
-		if s := it.step; s == nil || s.status != stepInProgress || s.details == "" {
-			break
-		}
-		cost += newCardCost(it.step)
-	}
-	return cost
-}
-
-// stepsOpen reports whether a step on the open message is still running once
-// the batch lands.
-func (w *batchedWriter) stepsOpen(b *streamBatch) bool {
-	for id, open := range w.msgSteps {
-		if v, ok := b.steps[id]; ok {
-			open = v
-		}
-		if open {
-			return true
-		}
-	}
-	for _, open := range b.steps {
-		if open {
-			return true
-		}
-	}
-	return false
-}
-
-// fieldCost prices a step's details or output (see stepCardCost).
-func fieldCost(s string) int {
-	if s == "" {
-		return 0
-	}
-	markers := 0
-	for _, m := range []string{"`", "*", "_", "~"} {
-		markers += strings.Count(s, m)
-	}
-	return stepFieldCost + jsonEscapedLen(s) + stepMarkerCost*markers
-}
-
-// jsonEscapedLen is the length of s as a JSON string's contents, in runes.
-func jsonEscapedLen(s string) int {
-	n := 0
-	for _, r := range s {
-		switch {
-		case r == '"' || r == '\\':
-			n += 2
-		case r < 0x20:
-			n += 6
-		default:
-			n++
-		}
-	}
-	return n
 }
 
 // makeRoom lands what the batch holds or, with nothing held, rolls the open
@@ -1813,41 +1424,15 @@ func (w *batchedWriter) sendQueuedOnce(ctx context.Context, items []queuedChunk,
 		return append(rest, items[i+1:]...)
 	}
 	for i := range items {
-		if step := items[i].step; step != nil {
-			for {
-				// A step only rolls the message over while no other step on it
-				// is running: their closes must reach the cards they update. So
-				// the first step of a group the agent starts at once decides for
-				// the whole group, which usually arrives in the same flush.
-				cost, open := w.stepCost(step, &batch)
-				running := w.stepsOpen(&batch)
-				need := cost
-				if open && !running {
-					need += groupOpenCost(items[i+1:])
-				}
-				if need <= w.room(&batch) || running || (w.streamTS == "" && batch.empty()) {
-					batch.addStep(step, cost, open)
-					break
-				}
-				if err := w.makeRoom(ctx, &batch); err != nil {
-					return append(slices.Clone(batch.items), items[i:]...), err
-				}
-				if w.streamStopped {
-					return nil, nil
-				}
-			}
-			continue
-		}
 		raw, answer := items[i].text, items[i].answer
 		for raw != "" {
 			piece, rest := cutPiece(raw, w.budget())
 			// streamed counts the agent's bytes, not the shorter text Slack
 			// sees: scrubbing only ever removes, so the count over-estimates and
 			// rolls the reply over a little early — the safe side of Slack's
-			// per-message cap. Like a step, prose does not roll the message over
-			// while a step on it runs; should Slack refuse it, overflowStream
-			// moves it on.
-			if len(piece) > w.room(&batch) && !w.stepsOpen(&batch) {
+			// per-message cap. Should Slack refuse it all the same,
+			// overflowStream moves it on.
+			if len(piece) > w.room(&batch) {
 				// No room for this piece. Land what the batch already holds
 				// first — that may be all it takes, since the delivery can end
 				// up on a message of its own — and only then roll the open one
@@ -1881,11 +1466,6 @@ func (w *batchedWriter) sendQueuedOnce(ctx context.Context, items []queuedChunk,
 // whitespace alone never is.
 func (w *batchedWriter) chunkBodies(items []queuedChunk) (chunks []any, visible bool) {
 	for _, it := range items {
-		if it.step != nil {
-			chunks = append(chunks, stepChunk(*it.step))
-			visible = true
-			continue
-		}
 		md := w.scrubLoginURLs(it.text)
 		if md == "" {
 			continue
@@ -1942,10 +1522,6 @@ func (w *batchedWriter) deliverBatch(ctx context.Context, b *streamBatch) error 
 // landBatch books a batch the open message took against its size budget.
 func (w *batchedWriter) landBatch(b *streamBatch) {
 	w.streamed += b.cost
-	if w.msgSteps == nil {
-		w.msgSteps = map[string]bool{}
-	}
-	maps.Copy(w.msgSteps, b.steps)
 }
 
 // errStreamOverflow reports that Slack refused a batch its message had no
@@ -1961,61 +1537,18 @@ func (w *batchedWriter) heldContent() bool {
 }
 
 // overflowStream moves the rest of the reply off a message Slack refused to
-// grow. The closes in the batch of steps on that message still reach their
-// cards, without the output that did not fit — the tool log keeps it — and a
-// step still running there is marked complete, so no card on a message that
-// takes no more updates spins forever. That step stays open for the writer:
-// its result gets a second card on the new message, and should none come,
-// the turn's end gives it a second, empty one, so the first "complete" may be
-// the only word on a call that still fails. The message is then closed and
-// the batch keeps what is left, for sendQueued to deliver on a new message.
-// What the full message held becomes the turn's budget, so the later messages
-// stay at a size Slack took. It runs only when the message held content (see
-// heldContent), so a batch too long for any message is not moved on and on.
+// grow: the message is closed and the batch keeps what it holds, for
+// sendQueued to deliver on a new message. What the full message held becomes
+// the turn's budget, so the later messages stay at a size Slack took. It runs
+// only when the message held content (see heldContent), so a batch too long
+// for any message is not moved on and on.
 func (w *batchedWriter) overflowStream(ctx context.Context, b *streamBatch, cause error) error {
 	w.sizeBudget = max(min(w.streamed, w.budget()), slackMarkdownBlockMax/4)
-	// A step is on the full message unless its card is on an earlier one or
-	// this batch opens it: an adopted stream's steps have no record here.
-	opened := map[string]bool{}
-	for _, it := range b.items {
-		if s := it.step; s != nil && s.status == stepInProgress && s.details != "" {
-			opened[s.id] = true
-		}
-	}
-	onFull := func(id string) bool { return !w.movedSteps[id] && !opened[id] }
-	var closes []any
-	var rest []queuedChunk
-	closed := map[string]bool{}
-	for _, it := range b.items {
-		if s := it.step; s != nil && s.status != stepInProgress && onFull(s.id) {
-			closes = append(closes, stepChunk(taskUpdate{id: s.id, title: s.title, status: s.status}))
-			closed[s.id] = true
-			continue
-		}
-		rest = append(rest, it)
-	}
-	w.mu.Lock()
-	open := slices.Clone(w.openSteps)
-	w.mu.Unlock()
-	for _, s := range open {
-		if w.msgSteps[s.id] && !closed[s.id] {
-			closes = append(closes, stepChunk(taskUpdate{id: s.id, title: s.title, status: stepComplete}))
-		}
-	}
-	if len(closes) > 0 {
-		sctx, cancel := streamCallCtx(ctx)
-		err := w.client.appendStream(sctx, w.channel, w.streamTS, closes)
-		cancel()
-		if err != nil {
-			w.logger.Warn("slack: closing the steps of a full message failed", "error", err)
-		}
-	}
 	if err := w.rollOverStream(ctx); err != nil {
 		return err
 	}
 	w.logger.Warn("slack: the reply outgrew its message, continuing in a new one",
 		"channel", w.channel, "thread", w.threadTS, "error", cause)
-	b.items = rest
 	return fmt.Errorf("%w: %w", errStreamOverflow, cause)
 }
 
@@ -2191,28 +1724,16 @@ func (w *batchedWriter) endStreamQuietly() {
 }
 
 // dropStream forgets the open stream handle, so the next text of the turn opens
-// a message of its own. The steps on it stay behind with it.
+// a message of its own.
 func (w *batchedWriter) dropStream() {
 	w.streamTS, w.streamed, w.streamAdopted = "", 0, false
-	if len(w.msgSteps) > 0 && w.movedSteps == nil {
-		w.movedSteps = map[string]bool{}
-	}
-	for id := range w.msgSteps {
-		w.movedSteps[id] = true
-	}
-	w.msgSteps = nil
 }
 
 // resetStream puts the stream state back to its opening shape for a second
-// run() cycle over the same writer. The open steps go with it: the previous
-// cycle's message is closed and they were closed on it, so a result arriving
-// late must not reopen one of them on this cycle's message.
+// run() cycle over the same writer.
 func (w *batchedWriter) resetStream() {
 	w.dropStream()
 	w.streamRecovered, w.streamStopped, w.streamFailed = false, false, false
-	w.mu.Lock()
-	w.openSteps = nil
-	w.mu.Unlock()
 }
 
 // streamGone reports whether err says the message is not streaming any more:
@@ -2253,7 +1774,7 @@ func (w *batchedWriter) dropPlaceholder(ctx context.Context) {
 func (w *batchedWriter) queueAnswer(text string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if n := len(w.queue); n > 0 && w.queue[n-1].step == nil && w.queue[n-1].answer {
+	if n := len(w.queue); n > 0 && w.queue[n-1].answer {
 		w.queue[n-1].text += text
 		return
 	}
@@ -2267,23 +1788,11 @@ func (w *batchedWriter) queueNarration(md string) {
 	w.queue = append(w.queue, queuedChunk{text: md})
 }
 
-// queueStep accepts one state of one step of the reply's task list.
-func (w *batchedWriter) queueStep(u taskUpdate) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	w.queue = append(w.queue, queuedChunk{step: &u})
-}
-
-// stepID is the id Slack keys the n-th step of the turn by. It is derived from
-// the count alone, so a process continuing the turn after a restart addresses
-// the steps already on the adopted stream without asking Slack about them.
-func stepID(n int) string { return fmt.Sprintf("step-%d", n) }
-
 // takeQueued removes the content to send from the queue. Unless final, a
 // trailing answer chunk keeps everything after its last whitespace: it may be
 // half a word or half a login URL, and an appended chunk cannot be taken back.
-// Narration and steps are complete when they are queued, so nothing is ever
-// held back for them.
+// Narration is complete when it is queued, so nothing is ever held back for
+// it.
 func (w *batchedWriter) takeQueued(final bool) []queuedChunk {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -2292,7 +1801,7 @@ func (w *batchedWriter) takeQueued(final bool) []queuedChunk {
 		return nil
 	}
 	last := w.queue[n-1]
-	if final || last.step != nil || !last.answer {
+	if final || !last.answer {
 		taken := w.queue
 		w.queue = nil
 		return taken
@@ -2325,13 +1834,13 @@ func (w *batchedWriter) putBackQueued(items []queuedChunk) {
 	w.mu.Unlock()
 }
 
-// hasQueuedContent reports whether anything queued would reach Slack: a step,
-// or prose that is more than whitespace.
+// hasQueuedContent reports whether anything queued would reach Slack: prose
+// that is more than whitespace.
 func (w *batchedWriter) hasQueuedContent() bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	for _, it := range w.queue {
-		if it.step != nil || strings.TrimSpace(it.text) != "" {
+		if strings.TrimSpace(it.text) != "" {
 			return true
 		}
 	}
@@ -3148,8 +2657,6 @@ var errStreamNotOwned = errors.New("slack: message not owned by the app")
 // refuses them in a DM, so the caller passes them only for a channel. The
 // display identity rides along as it does on a new post, including the
 // unbranded retry when the customize scope is missing (see postJSON).
-// task_display_mode is left at Slack's default (timeline), which interleaves
-// the steps with the prose in the order they were sent.
 func (c *slackAPIClient) startStream(ctx context.Context, channel, threadTS string, chunks []any, recipientUser, recipientTeam string) (string, error) {
 	body := map[string]any{
 		paramChannel: channel,
@@ -3716,30 +3223,6 @@ func truncateRunes(s string, max int) string {
 		return s
 	}
 	return string(r[:max-1]) + "…"
-}
-
-// truncateEntityAware caps s at max runes like truncateRunes, but never leaves
-// a partial entity at the cut. s is already escaped, so every "&" opens one of
-// &amp;, &lt; or &gt;; a cut that lands inside one is backed off to the "&", so
-// a payload ends in "…" and not in "&am…".
-func truncateEntityAware(s string, max int) string {
-	r := []rune(s)
-	if len(r) <= max {
-		return s
-	}
-	kept := r[:max-1]
-	// An entity is at most 5 runes, so an unterminated "&" can only sit within
-	// the last 4 kept runes; meeting a ";" first means the last one is whole.
-	for i := len(kept) - 1; i >= 0 && i >= len(kept)-4; i-- {
-		if kept[i] == ';' {
-			break
-		}
-		if kept[i] == '&' {
-			kept = kept[:i]
-			break
-		}
-	}
-	return string(kept) + "…"
 }
 
 // chatUpdateBlocks replaces a Block Kit message with plain text (used to mark

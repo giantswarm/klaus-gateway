@@ -41,8 +41,9 @@ it has no initiator, and any linked member of its team may decide.
 The agent paused on a tool call that needs approval (`ToolName` is not `ask_user`). The
 gateway posts an approval card:
 
-- **Section:** `*Approval required* · <tools>`. The tools are named with their step titles in
-  the reply's task list ("Capi list clusters"). Muster's `call_tool` is unwrapped to the tool it
+- **Section:** `*Approval required* · <tools>`. The tools are named in plain language: muster's
+  meta-tools get phrases of their own, and every other name drops its `x_`/`workflow_` namespace
+  and is capitalised ("Capi list clusters"). Muster's `call_tool` is unwrapped to the tool it
   runs, and several calls decided together are listed with commas. A second line carries the
   agent's hint, escaped, but only when it adds something: the ADK runtime's default hint
   ("Please approve or reject the tool call call_tool() by responding with a FunctionResponse…")
@@ -606,5 +607,3 @@ posts, so a typed answer rewrites it exactly like a click, and no live controls 
 decided prompt. A click that
 finds its task gone or superseded keeps the prompt's text sections (the question, each question
 of a form) and puts the note where the controls were.
-
-In the reply's task list, the `ask_user` call shows as the step **Question for you**.
