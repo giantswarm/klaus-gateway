@@ -608,9 +608,9 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 	// the clicker's own token, just like a typed turn), and re-stores the taken
 	// task on a pre-stream failure: the buttons already show the decision, so
 	// the failure note tells the user a typed reply can still resume it. The
-	// empty triggerTS selects text progress: a button resume has no user
+	// empty triggerTS means no reaction: a button resume has no user
 	// message to react to.
-	return a.runTurn(ctx, msg, slackChannel, "", thinkingPlaceholder, "", task, agentSourceTask, turnHooks{
+	return a.runTurn(ctx, msg, slackChannel, "", "", task, agentSourceTask, turnHooks{
 		onFailure: func(err error) { a.postResumeFailureNote(ctx, client, slackChannel, threadID, err) },
 	})
 }

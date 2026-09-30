@@ -125,7 +125,7 @@ func TestTypedResume_FailureKeepsPendingTask(t *testing.T) {
 // dangling with an open tool call).
 func TestPromptFlushFailure_KeepsPendingTask(t *testing.T) {
 	fake := newFakeSlackAPI()
-	fake.setFail("reactions.add", "missing_scope") // force text-mode progress
+	fake.setFail("reactions.add", "missing_scope") // no reaction to clear at the handoff
 	fake.setFail(pathStartStream, "fatal_error")
 
 	var mu sync.Mutex
@@ -149,9 +149,11 @@ func TestPromptFlushFailure_KeepsPendingTask(t *testing.T) {
 	sendEvent(t, srv, dmEvent("U1", "delete the pod", "111.000"))
 
 	// The buffered text is retried at the handoff (3 chat.startStream attempts);
-	// the paused note still rewrites the placeholder and the prompt still posts.
+	// the prompt still posts.
 	fake.waitForPath(t, pathStartStream, 3)
-	fake.waitForPath(t, "chat.update", 1)
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Approval required")
+	}, flowWait, 20*time.Millisecond, "the approval prompt still posts")
 
 	// A typed reply must resume the paused task. Retry with fresh timestamps
 	// until the thread slot has been released and one reply dispatches; extra

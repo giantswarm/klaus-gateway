@@ -139,7 +139,6 @@ func run(args []string) error {
 			ChannelMode:         slackchannel.ChannelMode(cfg.Slack.ChannelMode),
 			ChannelAllowlist:    cfg.Slack.ChannelAllowlist,
 			DropStaleEvents:     cfg.Slack.DropStaleEvents,
-			ProgressMode:        cfg.Slack.ProgressMode,
 			WorkingEmoji:        cfg.Slack.WorkingEmoji,
 			DoneEmoji:           cfg.Slack.DoneEmoji,
 			FailedEmoji:         cfg.Slack.FailedEmoji,
@@ -158,6 +157,9 @@ func run(args []string) error {
 		slackAdapter.Reviews = routeStore
 		if cfg.Store == config.StoreMemory {
 			logger.Warn("slack: the routing store is memory, so every thread's agent, initiator, grants and instance binding, and every open team review, are lost on a restart; installations run routing.store: valkey")
+		}
+		if cfg.Slack.ProgressMode != "" {
+			logger.Warn("slack: the progress mode setting has no effect; every turn tries the progress reactions", "slack_progress_mode", cfg.Slack.ProgressMode)
 		}
 		if err := slackAdapter.Start(ctx, facade); err != nil {
 			return fmt.Errorf("start slack adapter: %w", err)

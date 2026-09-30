@@ -272,13 +272,6 @@ const choiceLabelWidgetMax = 75
 // renders as text.
 const maxFormQuestions = 20
 
-// Progress-mode values (Adapter.ProgressMode).
-const (
-	progressModeAuto      = "auto"      // reactions, falling back to text on missing_scope
-	progressModeReactions = "reactions" // reactions only
-	progressModeText      = "text"      // text placeholder only
-)
-
 // Default progress reaction emoji names (no surrounding colons). Overridable
 // via config so a workspace can pick emoji its members recognise.
 const (
@@ -286,10 +279,6 @@ const (
 	defaultDoneEmoji    = "white_check_mark"
 	defaultFailedEmoji  = "x"
 )
-
-// thinkingPlaceholder is the text-mode progress placeholder, posted before the
-// first agent output and replaced by the answer.
-const thinkingPlaceholder = "Working…"
 
 // busyNotice is posted when a turn is rejected because another turn is already
 // in flight on the same thread (per-thread serialization).
@@ -453,22 +442,13 @@ const (
 	approvalDeniedBy      = "Denied by <@%s> · %s"
 )
 
-// emptyOutputNote replaces the text-mode placeholder when a turn completes
-// without producing any output, so it does not linger as "thinking".
+// emptyOutputNote is posted when a turn completes without producing any
+// output, so the thread is not left silent.
 const emptyOutputNote = "The agent finished without a reply."
 
-// stoppedNote replaces the text-mode placeholder when a turn is cancelled
-// before any content streamed, so "thinking" does not linger under "Stopped.".
-const stoppedNote = "Stopped before an answer."
-
-// pausedNote replaces the text-mode placeholder when a turn pauses on an
-// input-required prompt before any content streamed.
-const pausedNote = "Waiting for your answer below."
-
-// failedNote is posted when a turn ends in error before any answer text: it
-// replaces the text-mode placeholder (so it does not linger as "thinking"),
-// and in reactions mode it is posted into the thread next to the failed emoji,
-// which alone would leave the user guessing whether a retry helps.
+// failedNote is posted into the thread when a turn ends in error before any
+// answer text: the failed emoji, when there is one, alone would leave the user
+// guessing whether a retry helps.
 const failedNote = "The turn failed before an answer. Send the message again to retry."
 
 // The notes of a turn that failed on something the gateway can name

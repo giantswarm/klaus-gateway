@@ -14,7 +14,7 @@ import (
 	slackadapter "github.com/giantswarm/klaus-gateway/pkg/channels/slack"
 )
 
-// The gateway's shutdown is not a /stop: in reactions mode, where a stop
+// The gateway's shutdown is not a /stop: where a stop
 // leaves no note, the thread is told that the agent keeps working and where
 // the answer goes, the working reaction is cleared, and the facade sees the
 // shutdown cause on the turn context so it leaves the task running.
@@ -65,24 +65,24 @@ func TestShutdown_NoticeWithoutDurableStoreMakesNoPromise(t *testing.T) {
 	require.NotContains(t, posted, "it is posted here when it is done")
 }
 
-// In text-progress mode the restart notice replaces the "thinking" placeholder
-// so it does not linger, just as the stop and failure notes do.
-func TestShutdown_TextModeReplacesThePlaceholder(t *testing.T) {
+// A turn without a reaction still gets the restart notice, as a message of its
+// own in the thread.
+func TestShutdown_NoReactionPostsTheNotice(t *testing.T) {
 	fake := newFakeSlackAPI()
+	fake.setFail("reactions.add", "missing_scope")
 	hold := make(chan struct{})
 	defer close(hold)
 	gw := &stubGateway{hold: hold, resumes: &stubResumes{durable: true}}
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
-	a.ProgressMode = "text"
 
 	sendEvent(t, srv, dmEvent("U1", "long task", "100.000"))
-	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Working…")
-	}, flowWait, 20*time.Millisecond, "text placeholder posted")
+	fake.waitForPath(t, "reactions.add", 1)
+	waitTurnStreaming(t, fake)
 
 	require.NoError(t, a.Stop(context.Background()))
 
-	require.Contains(t, allBlockText(fake.pathCalls("chat.update")), "The gateway restarted while", "the placeholder is replaced by the notice")
+	require.Contains(t, allBlockText(fake.pathCalls("chat.postMessage")), "The gateway restarted while", "the notice is posted in the thread")
+	require.Empty(t, fake.pathCalls("chat.update"), "no placeholder to replace")
 }
 
 // A /stop stays a plain cancellation: the facade sees no shutdown cause and

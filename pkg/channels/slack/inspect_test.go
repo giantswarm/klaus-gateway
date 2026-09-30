@@ -114,7 +114,7 @@ func TestToolLog_ResultsCloseTheirCalls(t *testing.T) {
 // indented JSON, the result preview and the state.
 func TestRenderToolActivity_RecordsCallAndResult(t *testing.T) {
 	a, _ := newInspectTestAdapter(t)
-	w := newBatchedWriterWithClient(a.apiClient(), "C1", "", "T1", testLogger())
+	w := newBatchedWriterWithClient(a.apiClient(), "C1", "T1", testLogger())
 	w.adapter = a
 
 	w.renderToolActivity(&channels.ToolActivity{
@@ -140,7 +140,7 @@ func TestRenderToolActivity_RecordsCallAndResult(t *testing.T) {
 // tool's output: it marks the call as stopped at the approval.
 func TestRenderToolActivity_ApprovalRequestMarksTheCall(t *testing.T) {
 	a, _ := newInspectTestAdapter(t)
-	w := newBatchedWriterWithClient(a.apiClient(), "C1", "", "T1", testLogger())
+	w := newBatchedWriterWithClient(a.apiClient(), "C1", "T1", testLogger())
 	w.adapter = a
 
 	w.renderToolActivity(&channels.ToolActivity{Kind: channels.ToolCall, Name: "restart", CallID: "c1"})
@@ -160,7 +160,7 @@ func TestRenderToolActivity_ApprovalRequestMarksTheCall(t *testing.T) {
 // log names both, and names the result by the tool call_tool really ran.
 func TestRenderToolActivity_ApprovedCallIsLoggedInTheResumedTurn(t *testing.T) {
 	a, _ := newInspectTestAdapter(t)
-	w := newBatchedWriterWithClient(a.apiClient(), "C1", "", "T1", testLogger())
+	w := newBatchedWriterWithClient(a.apiClient(), "C1", "T1", testLogger())
 	w.adapter = a
 	args := map[string]any{"name": "x_kubernetes_rollout_restart", "arguments": map[string]any{"name": "loki-backend"}}
 	w.approvedCalls = []channels.HitlTool{{ID: "a1", CallID: "c1", Name: musterCallToolMetaTool, Args: args}}
