@@ -500,6 +500,16 @@ any string that begins with `Slack bot`, `Slack app-level`, or `Slack user`.
    needs approval shows in the log twice: in the turn that asked for approval, without a
    result, and in the resumed turn, with the call and its result.
 
+   A reply whose tool calls include failed ones — a result the tool or the runtime reported as
+   an error, ❌ in the log; an approval request is not one — ends with one muted line that
+   counts them and points to the shortcut: `⚠️ 2 tool calls failed · To see them: ⋯ on this
+   message → Apps → Inspect agent steps`. It is a context block the final `chat.stopStream`
+   adds below the streamed text (its `blocks` argument), so it is part of the reply and
+   everyone in the thread sees it. It counts every failed call of the reply, also one the
+   agent recovered from with a later call, and starts from zero for each reply. A reply
+   that rolls over carries it on its last message; a turn without prose has no reply to
+   carry it, and a final stop that fails loses it.
+
    Each append carries only what is new, and answer text is sent up to the last whitespace
    boundary — an unfinished word waits for the next append, so nothing is ever half-written.
    Replies over 12,000 characters roll over into a further streamed message; the intermediate

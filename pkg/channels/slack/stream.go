@@ -241,6 +241,10 @@ type batchedWriter struct {
 	streamRecovered bool
 	streamStopped   bool
 	streamFailed    bool
+	// failedCalls counts the tool calls whose result was an error since this
+	// reply began, so its last message can say so (failedCallsBlocks). Only
+	// touched from run()'s goroutine and the terminal flush after it.
+	failedCalls int
 
 	// Continuation across a restart (continuation.go). carried is what the
 	// previous process delivered of the turn this writer continues; skipText
@@ -550,6 +554,7 @@ func (w *batchedWriter) renderToolActivity(tool *channels.ToolActivity) {
 			e.state = toolDone
 			if isErr {
 				e.state = toolFailed
+				w.failedCalls++
 			}
 		}
 		w.recordToolResult(e)
@@ -1176,7 +1181,7 @@ func (w *batchedWriter) retractRendered(ctx context.Context) {
 	// on a successful stop and on a stream-gone refusal, and the retract is
 	// only reached on a turn that ended normally.
 	if w.streamTS != "" {
-		if err := w.stopStream(ctx, nil, 0, sessionProcessing); err != nil {
+		if err := w.stopStream(ctx, nil, nil, 0, sessionProcessing); err != nil {
 			w.logger.Warn("slack: stop the reply stream before retracting it failed", "error", err)
 		}
 	}
@@ -1500,7 +1505,7 @@ func (w *batchedWriter) rollOverStream(ctx context.Context) error {
 	if w.streamTS == "" {
 		return nil
 	}
-	if err := w.stopStream(ctx, nil, 0, sessionProcessing); err != nil {
+	if err := w.stopStream(ctx, nil, nil, 0, sessionProcessing); err != nil {
 		if !streamGone(err) {
 			return err
 		}
@@ -1527,7 +1532,7 @@ func (w *batchedWriter) closeBatch(ctx context.Context, b *streamBatch) (unsent 
 	// graveler 2026-09-21 that Slack accepts session_status here but the
 	// working indicator does not clear, so that call is the source of truth.
 	chunks, _ := w.chunkBodies(b.items)
-	err = w.stopStream(ctx, chunks, b.answerRaw, w.exitSessionStatus())
+	err = w.stopStream(ctx, chunks, w.failedCallsBlocks(), b.answerRaw, w.exitSessionStatus())
 	switch {
 	case err == nil:
 		b.reset()
@@ -1601,9 +1606,9 @@ func (w *batchedWriter) openStream(ctx context.Context, b *streamBatch, chunks [
 // out, and the delivery record counts the answer's own bytes. The status is
 // always explicit: Slack defaults it to active, which on an intermediate stop
 // would clear the working indicator while the turn keeps running.
-func (w *batchedWriter) stopStream(ctx context.Context, chunks []any, rawLen int, status sessionStatus) error {
+func (w *batchedWriter) stopStream(ctx context.Context, chunks, blocks []any, rawLen int, status sessionStatus) error {
 	sctx, cancel := streamCallCtx(ctx)
-	err := w.client.stopStream(sctx, w.channel, w.streamTS, chunks, status)
+	err := w.client.stopStream(sctx, w.channel, w.streamTS, chunks, blocks, status)
 	cancel()
 	switch {
 	case err == nil:
@@ -1672,6 +1677,26 @@ func (w *batchedWriter) dropStream() {
 func (w *batchedWriter) resetStream() {
 	w.dropStream()
 	w.streamRecovered, w.streamStopped, w.streamFailed = false, false, false
+	w.failedCalls = 0
+}
+
+// failedCallsBlocks is the muted line the reply's last message ends with when
+// tool calls of this reply failed, and where to see them; nil when none did.
+// The reply no longer shows the calls, so without it a failure is visible only
+// when the agent says so.
+func (w *batchedWriter) failedCallsBlocks() []any {
+	if w.failedCalls == 0 {
+		return nil
+	}
+	return []any{contextBlock(failedCallsNote(w.failedCalls))}
+}
+
+// failedCallsNote is the text of failedCallsBlocks for n failed calls.
+func failedCallsNote(n int) string {
+	if n == 1 {
+		return "⚠️ 1 tool call failed · To see it: ⋯ on this message → Apps → *Inspect agent steps*"
+	}
+	return fmt.Sprintf("⚠️ %d tool calls failed · To see them: ⋯ on this message → Apps → *Inspect agent steps*", n)
 }
 
 // streamGone reports whether err says the message is not streaming any more:
@@ -2625,7 +2650,7 @@ func (c *slackAPIClient) appendStream(ctx context.Context, channel, ts string, c
 // rolls the answer over into a new message. Observed on graveler 2026-09-21
 // that Slack accepts the field but the working indicator does not clear with
 // it, so the turn also ends the session through agents.sessions.setStatus.
-func (c *slackAPIClient) stopStream(ctx context.Context, channel, ts string, chunks []any, status sessionStatus) error {
+func (c *slackAPIClient) stopStream(ctx context.Context, channel, ts string, chunks, blocks []any, status sessionStatus) error {
 	body := map[string]any{
 		paramChannel:       channel,
 		paramTS:            ts,
@@ -2633,6 +2658,11 @@ func (c *slackAPIClient) stopStream(ctx context.Context, channel, ts string, chu
 	}
 	if len(chunks) > 0 {
 		body[paramChunks] = chunks
+	}
+	// blocks render at the bottom of the finalized message (the method
+	// reference), below everything the stream carried.
+	if len(blocks) > 0 {
+		body[paramBlocks] = blocks
 	}
 	_, err := c.postJSON(ctx, methodChatStopStream, body)
 	return streamErr(err)
