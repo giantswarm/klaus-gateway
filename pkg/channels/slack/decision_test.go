@@ -29,7 +29,7 @@ func rollDecision() channels.Decision {
 		Recommend: 2,
 		Due:       time.Now().Add(time.Hour),
 		Default:   "Wait for Monday.",
-		AskedBy:   "Board pull 99",
+		AskedBy:   "the platform supervisor",
 		Answer:    channels.ToolInvocation{Tool: "x_beekeeper_note_answer", Arguments: map[string]any{"note": "614"}},
 	}
 }
@@ -94,7 +94,7 @@ func TestDecision_RendersOptionsRecommendationAndDue(t *testing.T) {
 	require.Contains(t, due, "<!date^")
 	require.Contains(t, due, "if unanswered: Wait for Monday.")
 	asked := blocks[6]["elements"].([]any)[0].(map[string]any)["text"].(string)
-	require.Equal(t, "For team-bumblebee · Asked by Board pull 99 · note #614", asked)
+	require.Equal(t, "For team-bumblebee · Asked by the platform supervisor · note #614", asked)
 }
 
 func TestDecision_PersonIsReachedByEmailInADirectMessage(t *testing.T) {
@@ -117,7 +117,7 @@ func TestDecision_PersonIsReachedByEmailInADirectMessage(t *testing.T) {
 	require.Equal(t, "D1", receipt.Channel, "edits go to the conversation Slack put it in")
 	require.Equal(t, "D1-1700000100.000001", receipt.ID)
 	asked := blocksOf(fake.pathCalls("chat.postMessage")[0])[6]["elements"].([]any)[0].(map[string]any)["text"].(string)
-	require.Equal(t, "Asked by Board pull 99 · note #614", asked)
+	require.Equal(t, "Asked by the platform supervisor · note #614", asked)
 
 	tools := &recordingTools{}
 	a.Tools = tools
@@ -266,11 +266,11 @@ func TestDecision_AnsweredElsewhereShowsTheClosesText(t *testing.T) {
 	receipt, err := a.PostDecision(context.Background(), rollDecision())
 	require.NoError(t, err)
 
-	_, err = a.CloseDecision(context.Background(), receipt.ID, channels.DecisionClose{Outcome: store.DecisionAnswered, Text: "Wait for Monday (timo, in the terminal)"})
+	_, err = a.CloseDecision(context.Background(), receipt.ID, channels.DecisionClose{Outcome: store.DecisionAnswered, Text: "Wait for Monday (alex, in the terminal)"})
 	require.NoError(t, err)
 	text := latestUpdateText(fake, receipt.TS)
 	require.Contains(t, text, "Answered · <!date^")
-	require.Contains(t, text, ": Wait for Monday (timo, in the terminal)")
+	require.Contains(t, text, ": Wait for Monday (alex, in the terminal)")
 }
 
 // A person who never linked is asked to sign in, and nothing is submitted.

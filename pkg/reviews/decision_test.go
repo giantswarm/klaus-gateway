@@ -66,7 +66,7 @@ func validDecision() map[string]any {
 		"recommend": 1,
 		"due":       time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
 		"default":   "Wait for Monday.",
-		"askedBy":   "Board pull 99 on the lab machine",
+		"askedBy":   "the platform supervisor",
 		"answer":    map[string]any{"tool": "x_beekeeper_note_answer", "arguments": map[string]any{"note": "614"}},
 	}
 }

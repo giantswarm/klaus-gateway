@@ -14,14 +14,14 @@ func TestDecision_Validate(t *testing.T) {
 	now := time.Date(2026, 9, 30, 20, 0, 0, 0, time.UTC)
 	valid := func() Decision {
 		return Decision{
-			Person:    "timo@example.com",
+			Person:    "alex@example.com",
 			Question:  "Roll tonight?",
 			StatusQuo: "graveler runs it.",
 			Options:   []store.DecisionOption{{Label: "Roll"}, {Label: "Wait", Consequence: "Monday."}},
 			Recommend: 2,
 			Due:       now.Add(time.Hour),
 			Default:   "Wait.",
-			AskedBy:   "Board pull 99",
+			AskedBy:   "the platform supervisor",
 			Answer:    ToolInvocation{Tool: "x_beekeeper_note_answer"},
 		}
 	}
@@ -36,7 +36,7 @@ func TestDecision_Validate(t *testing.T) {
 	for name, mutate := range map[string]func(d *Decision){
 		"person and team":         func(d *Decision) { d.Team, d.Channel = "team-bumblebee", "C0123ABCDE" },
 		"neither":                 func(d *Decision) { d.Person = "" },
-		"person without an email": func(d *Decision) { d.Person = "timo" },
+		"person without an email": func(d *Decision) { d.Person = "alex" },
 		"person with a channel":   func(d *Decision) { d.Channel = "C0123ABCDE" },
 		"team with a name":        func(d *Decision) { d.Person, d.Team, d.Channel = "", "team-bumblebee", "#bumblebee" },
 		"no question":             func(d *Decision) { d.Question = " " },
