@@ -23,6 +23,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/require"
 
+	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 	"github.com/giantswarm/klaus-gateway/pkg/auth/musterlink"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 	slackadapter "github.com/giantswarm/klaus-gateway/pkg/channels/slack"
@@ -843,6 +844,397 @@ func TestLogin_PostsSignInPrompt(t *testing.T) {
 		return signInPrompted(fake)
 	}, flowWait, 50*time.Millisecond, "/login must post a sign-in prompt")
 	require.Zero(t, gw.dispatchCount(), "/login must be consumed, not dispatched to the agent")
+}
+
+// The account commands are plain words: Slack's composer keeps a message that
+// starts with "/" for its own commands, so "logout" typed on its own is the
+// command, with no slash and no mention.
+func TestBareLogout_Unlinks(t *testing.T) {
+	fakeSlack, _ := captureEphemeral(t)
+	t.Cleanup(fakeSlack.Close) // closed after the adapter has stopped; cleanups run LIFO
+
+	obo := &fakeOBO{linkedUser: "U123", token: "human-token"}
+	gw := &stubGateway{}
+	a, srv := newEventsAdapter(t, gw, fakeSlack.URL)
+	a.OBO = obo
+
+	sendEvent(t, srv, dmEvent("U123", "logout", "111.222"))
+
+	require.Eventually(t, func() bool {
+		obo.mu.Lock()
+		defer obo.mu.Unlock()
+		return len(obo.unlinked) == 1 && obo.unlinked[0] == "U123"
+	}, flowWait, 50*time.Millisecond, "a plain logout must unlink the Slack user")
+
+	require.Zero(t, gw.dispatchCount(), "a plain logout must be consumed, not dispatched to the agent")
+}
+
+// A plain "login" answers a signed-in person with their identity, the same as
+// the slash form. Capitalisation and a full stop are how a person types a
+// word, so they do not change what it means.
+func TestBareLogin_ConfirmsSignedIn(t *testing.T) {
+	fakeSlack, ephemerals := captureEphemeral(t)
+	t.Cleanup(fakeSlack.Close)
+
+	gw := &stubGateway{}
+	a, srv := newEventsAdapter(t, gw, fakeSlack.URL)
+	a.OBO = &fakeOBO{linkedUser: "U123", token: "human-token"}
+
+	sendEvent(t, srv, dmEvent("U123", "Login.", "111.222"))
+
+	require.Eventually(t, func() bool {
+		for _, e := range ephemerals() {
+			if text, _ := e["text"].(string); strings.HasPrefix(text, "Signed in") {
+				return true
+			}
+		}
+		return false
+	}, flowWait, 50*time.Millisecond, "a plain login must confirm the sign-in to the caller only")
+
+	require.Zero(t, gw.dispatchCount(), "a plain login must be consumed, not dispatched to the agent")
+}
+
+// The other surface the words serve: an unmentioned reply in a channel thread
+// the bot is in. Slack sends it as a plain message, so nothing marks it as
+// addressed to the bot.
+func TestBareLogout_ChannelThreadReply(t *testing.T) {
+	fake := newFakeSlackAPI()
+	obo := &fakeOBO{linkedUser: "U123", token: "human-token"}
+	gw := &stubGateway{}
+	rec, _ := agingRecorder(t)
+	gw.records = rec
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
+	a.OBO = obo
+
+	sendEvent(t, srv, mention("U123", "<@BOT> why is the cluster unhappy?", "800.000", ""))
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 20*time.Millisecond)
+	waitThreadIdle(t, a, "800.000")
+
+	sendEvent(t, srv, threadReply("U123", "logout", "800.001", "800.000"))
+
+	require.Eventually(t, func() bool {
+		obo.mu.Lock()
+		defer obo.mu.Unlock()
+		return len(obo.unlinked) == 1
+	}, flowWait, 50*time.Millisecond, "a plain logout in a channel thread must unlink the Slack user")
+
+	require.Equal(t, 1, gw.dispatchCount(), "the word must not reach the agent as a turn")
+}
+
+// The word is read before dispatch, so a thread with a turn running answers
+// the command instead of the busy notice.
+func TestBareLogout_DuringRunningTurn(t *testing.T) {
+	fake := newFakeSlackAPI()
+	hold := make(chan struct{})
+	defer close(hold)
+	obo := &fakeOBO{linkedUser: "U1", token: "human-token"}
+	gw := &stubGateway{hold: hold}
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+	a.OBO = obo
+
+	sendEvent(t, srv, dmEvent("U1", "long task", "700.000"))
+	fake.waitForPath(t, "reactions.add", 1)
+	waitTurnStreaming(t, fake)
+
+	sendEvent(t, srv, dmThreadEvent("U1", "logout", "701.000", "700.000"))
+
+	require.Eventually(t, func() bool {
+		obo.mu.Lock()
+		defer obo.mu.Unlock()
+		return len(obo.unlinked) == 1
+	}, flowWait, 50*time.Millisecond, "a running turn must not hide the command")
+
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "Still answering",
+		"the command is answered, not bounced as busy")
+	require.Equal(t, 1, gw.dispatchCount(), "the word must not reach the agent as a turn")
+}
+
+// A thread paused on a question keeps the word for its answer: one word is the
+// shape the question asks for, and the paused task has to be resolved. The
+// command is reachable there as /login after a mention.
+func TestBareCommand_PausedQuestionKeepsTheWord(t *testing.T) {
+	fake := newFakeSlackAPI()
+	obo := &fakeOBO{linkedUser: "U1", token: "human-token"}
+	var mu sync.Mutex
+	var answers []channels.InboundMessage
+	gw := &stubGateway{
+		onDispatch: func(msg channels.InboundMessage) {
+			mu.Lock()
+			answers = append(answers, msg)
+			mu.Unlock()
+		},
+		sendQueue: [][]channels.OutboundDelta{
+			{{Kind: channels.DeltaPrompt, TaskID: "task-1", Prompt: &channels.HitlPrompt{
+				ToolName:  channels.AskUserToolName,
+				Questions: []channels.HitlQuestion{{Question: "Which account do you use?"}},
+			}}},
+			{{Content: "done"}, {Done: true}},
+		},
+	}
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+	a.OBO = obo
+
+	sendEvent(t, srv, dmEvent("U1", "set me up", "930.000"))
+	fake.waitForPath(t, "chat.postMessage", 1) // the question is up
+
+	sendEvent(t, srv, dmThreadEvent("U1", "logout", "931.000", "930.000"))
+
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 }, flowWait, 50*time.Millisecond,
+		"the answer must reach the paused task")
+
+	mu.Lock()
+	defer mu.Unlock()
+	last := answers[len(answers)-1]
+	require.Equal(t, "task-1", last.TaskID, "the answer resumes the question's task")
+	require.NotNil(t, last.Decision, "the word is read as the answer, not as a command")
+
+	obo.mu.Lock()
+	defer obo.mu.Unlock()
+	require.Empty(t, obo.unlinked, "an answer to a question must not sign the person out")
+}
+
+// The exception holds for every command word, not only the account ones: the
+// gateway serves usage from itself, and a paused question still keeps it.
+func TestBareCommand_PausedQuestionKeepsUsage(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{sendQueue: [][]channels.OutboundDelta{
+		{{Kind: channels.DeltaPrompt, TaskID: "task-1", Prompt: &channels.HitlPrompt{
+			ToolName:  channels.AskUserToolName,
+			Questions: []channels.HitlQuestion{{Question: "Which report do you mean?"}},
+		}}},
+		{{Content: "done"}, {Done: true}},
+	}}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+
+	sendEvent(t, srv, dmEvent("U1", "report on it", "990.000"))
+	fake.waitForPath(t, "chat.postMessage", 1) // the question is up
+
+	sendEvent(t, srv, dmThreadEvent("U1", "usage", "991.000", "990.000"))
+
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 }, flowWait, 50*time.Millisecond,
+		"the answer must reach the paused task")
+
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "Token usage",
+		"the word answered the question instead of reporting tokens")
+}
+
+// A question needs no card to be a question. A turn can pause with no
+// structured prompt, and a typed reply then reaches the agent as the answer
+// itself, so the word belongs to that answer too.
+func TestBareCommand_PausedQuestionWithoutACardKeepsTheWord(t *testing.T) {
+	fake := newFakeSlackAPI()
+	obo := &fakeOBO{linkedUser: "U1", token: "human-token"}
+	gw := &stubGateway{sendQueue: [][]channels.OutboundDelta{
+		{{Kind: channels.DeltaPrompt, TaskID: "task-1", Content: "Which account should I use?"}},
+		{{Content: "done"}, {Done: true}},
+	}}
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+	a.OBO = obo
+
+	sendEvent(t, srv, dmEvent("U1", "set me up", "970.000"))
+	fake.waitForPath(t, "chat.postMessage", 1) // the question is up, without a card
+
+	sendEvent(t, srv, dmThreadEvent("U1", "logout", "971.000", "970.000"))
+
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 }, flowWait, 50*time.Millisecond,
+		"the answer must reach the paused task")
+
+	obo.mu.Lock()
+	defer obo.mu.Unlock()
+	require.Empty(t, obo.unlinked, "an answer to a question must not sign the person out")
+}
+
+// An approval card is not a question. Any text beside it is read as a
+// rejection carrying that text, so the word stays the command: the person is
+// signed out and the card is left for them to decide.
+func TestBareCommand_ApprovalCardIsNotAQuestion(t *testing.T) {
+	fake := newFakeSlackAPI()
+	obo := &fakeOBO{linkedUser: "U1", token: "human-token"}
+	gw := &stubGateway{sendQueue: [][]channels.OutboundDelta{
+		{{Kind: channels.DeltaPrompt, TaskID: "task-1", Prompt: &channels.HitlPrompt{ToolName: "restart_service", Hint: "Restart api-server?"}}},
+		{{Content: "done"}, {Done: true}},
+	}}
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+	a.OBO = obo
+
+	sendEvent(t, srv, dmEvent("U1", "restart it", "960.000"))
+	fake.waitForPath(t, "chat.postMessage", 1) // the approval card is up
+
+	sendEvent(t, srv, dmThreadEvent("U1", "logout", "961.000", "960.000"))
+
+	require.Eventually(t, func() bool {
+		obo.mu.Lock()
+		defer obo.mu.Unlock()
+		return len(obo.unlinked) == 1
+	}, flowWait, 50*time.Millisecond, "the word beside an approval card signs the person out")
+
+	require.Equal(t, 1, gw.dispatchCount(), "the tool call is not rejected with the word as its reason")
+}
+
+// A word beside an upload is that file's caption. Consuming it would drop the
+// file without a word to its sender.
+func TestBareCommand_AttachmentCaptionReachesTheAgent(t *testing.T) {
+	fake := newFakeSlackAPI()
+	obo := &fakeOBO{linkedUser: "U1", token: "human-token"}
+	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "seen"}, {Done: true}}}
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+	a.OBO = obo
+
+	sendEvent(t, srv, dmEvent("U1", "here is the screenshot", "940.000"))
+	fake.waitForPath(t, "reactions.remove", 1)
+	sendEvent(t, srv, dmThreadFileEvent("U1", "logout", "941.000", "940.000", "login-page.png"))
+
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 }, flowWait, 50*time.Millisecond,
+		"a captioned upload must reach the agent")
+
+	obo.mu.Lock()
+	defer obo.mu.Unlock()
+	require.Empty(t, obo.unlinked, "a caption must not sign the person out")
+}
+
+// A gateway without sign-in serves neither account word: its help reply
+// lists no account command, so the word is a message like any other.
+func TestBareCommand_WithoutSignInReachesTheAgent(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "hi"}, {Done: true}}}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+
+	sendEvent(t, srv, dmEvent("U1", "login", "950.000"))
+
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond,
+		"without sign-in the word belongs to the agent")
+}
+
+// The thread commands are words too: a message that is only "usage" answers
+// with the thread's token report.
+func TestBareUsage_AnswersInThread(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+
+	sendEvent(t, srv, dmEvent("U1", "Usage?", "980.000"))
+
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Token usage")
+	}, flowWait, 50*time.Millisecond, "a plain usage must answer with the token report")
+
+	require.Zero(t, gw.dispatchCount(), "a plain usage must be consumed, not dispatched to the agent")
+}
+
+// A message that is only "help" answers with the command list, the same as
+// /help after a mention.
+func TestBareHelp_AnswersWithTheCommandList(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+
+	sendEvent(t, srv, dmEvent("U1", "help", "981.000"))
+
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Commands: ")
+	}, flowWait, 50*time.Millisecond, "a plain help must answer with the command list")
+
+	require.Zero(t, gw.dispatchCount(), "a plain help must be consumed, not dispatched to the agent")
+}
+
+// Sign-in decides the account commands alone. A gateway without it still
+// answers "help" and "usage", which it serves from itself.
+func TestBareCommand_WithoutSignInStillAnswersHelp(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{}
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+	require.Nil(t, a.OBO, "this gateway has no sign-in")
+
+	sendEvent(t, srv, dmEvent("U1", "help", "982.000"))
+
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Commands: ")
+	}, flowWait, 50*time.Millisecond, "help does not depend on sign-in")
+
+	require.Zero(t, gw.dispatchCount(), "help must be consumed, not dispatched to the agent")
+}
+
+// "agents" lists the roster, the listing a bare /agent posts. Starting a
+// conversation moves to the app's own slash command and the shortcut, so the
+// listing is the one thing the word has to carry.
+func TestBareAgents_ListsTheRoster(t *testing.T) {
+	fake := newFakeSlackAPI()
+	cards := &fakeCards{known: map[string]string{"kagent/sre-agent": "SRE Agent"}}
+	roster := &fakeRoster{agents: []pkga2a.AgentInfo{{Name: "sre-agent", Namespace: "kagent"}}}
+	gw := &stubGateway{}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, withSelection(roster, cards))
+
+	sendEvent(t, srv, dmEvent("U1", "Agents?", "1000.000"))
+
+	require.Eventually(t, func() bool {
+		posted := allBlockText(fake.pathCalls("chat.postMessage"))
+		return strings.Contains(posted, "Available agents") && strings.Contains(posted, "agent_select")
+	}, flowWait, 50*time.Millisecond, "a plain agents must post the roster with its Select buttons")
+
+	require.Zero(t, gw.dispatchCount(), "the listing must not reach the agent as a turn")
+}
+
+// A gateway with no roster source cannot list anything, and its help reply
+// names no agent command, so the word belongs to the agent there.
+func TestBareAgents_WithoutARosterReachesTheAgent(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "hi"}, {Done: true}}}
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+	require.Nil(t, a.Roster, "this gateway lists no agents")
+
+	sendEvent(t, srv, dmEvent("U1", "agents", "1001.000"))
+
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond,
+		"without a roster the word belongs to the agent")
+}
+
+// The exceptions hold for the new word too: a thread paused on a question
+// keeps it for the answer.
+func TestBareAgents_PausedQuestionKeepsTheWord(t *testing.T) {
+	fake := newFakeSlackAPI()
+	cards := &fakeCards{known: map[string]string{"kagent/sre-agent": "SRE Agent"}}
+	roster := &fakeRoster{agents: []pkga2a.AgentInfo{{Name: "sre-agent", Namespace: "kagent"}}}
+	gw := &stubGateway{sendQueue: [][]channels.OutboundDelta{
+		{{Kind: channels.DeltaPrompt, TaskID: "task-1", Prompt: &channels.HitlPrompt{
+			ToolName:  channels.AskUserToolName,
+			Questions: []channels.HitlQuestion{{Question: "Which list do you mean?"}},
+		}}},
+		{{Content: "done"}, {Done: true}},
+	}}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, withSelection(roster, cards))
+
+	sendEvent(t, srv, dmEvent("U1", "list them", "1002.000"))
+	fake.waitForPath(t, "chat.postMessage", 1) // the question is up
+
+	sendEvent(t, srv, dmThreadEvent("U1", "agents", "1003.000", "1002.000"))
+
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 }, flowWait, 50*time.Millisecond,
+		"the answer must reach the paused task")
+
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "Available agents",
+		"the word answered the question instead of listing the roster")
+}
+
+// A word the gateway does not own, and a sentence that only contains one,
+// stay messages for the agent.
+func TestBareCommand_OnlyTheWordAlone(t *testing.T) {
+	fakeSlack, _ := captureEphemeral(t)
+	t.Cleanup(fakeSlack.Close)
+
+	obo := &fakeOBO{linkedUser: "U123", token: "human-token"}
+	gw := &stubGateway{}
+	a, srv := newEventsAdapter(t, gw, fakeSlack.URL)
+	a.OBO = obo
+
+	sendEvent(t, srv, dmEvent("U123", "how do I login to the cluster?", "111.222"))
+
+	require.Eventually(t, func() bool {
+		return gw.dispatchCount() == 1
+	}, flowWait, 50*time.Millisecond, "a question that contains the word must reach the agent")
+
+	obo.mu.Lock()
+	defer obo.mu.Unlock()
+	require.Empty(t, obo.unlinked, "the question must not sign the person out")
 }
 
 // --- stubGateway ---
@@ -1858,6 +2250,16 @@ func TestHandleInbound_UnknownSlashCommandIntercepted(t *testing.T) {
 	sendEvent(t, srv, mention("U1", "/etc/hosts on node X is broken", "101.000", ""))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 20*time.Millisecond, "a path-shaped prompt still dispatches")
+
+	// The roster listing is the word `agents`; no slash form was added for it,
+	// so the slash spelling gets the notice that points at the help reply.
+	before := len(fake.pathCalls("chat.postMessage"))
+	sendEvent(t, srv, mention("U1", "/agents", "102.000", ""))
+	require.Eventually(t, func() bool {
+		return len(fake.pathCalls("chat.postMessage")) > before
+	}, flowWait, 20*time.Millisecond, "`/agents` is not a command")
+	require.Contains(t, allText(fake.pathCalls("chat.postMessage")), "`/agents` is not a command")
+	require.Equal(t, 1, gw.dispatchCount(), "the slash spelling must not reach the agent")
 }
 
 // A plain (non-mention) reply in a thread the bot has no trace of stays fully

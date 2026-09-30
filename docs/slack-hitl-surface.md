@@ -53,7 +53,13 @@ gateway posts an approval card:
 - **Buttons:** Approve (primary) runs the call, Deny (danger) rejects it. There is no "Ask a
   question" button. A typed reply that is not "approve" or "deny" is sent as a rejection with
   the text as its reason, but the Go ADK runtime drops that reason, so the model sees only
-  "call is rejected" (giantswarm/kagent-upstream#71).
+  "call is rejected" (giantswarm/kagent-upstream#71). The account commands are the exception:
+  a reply that is only a command word (`usage`, `help`, `agents`, `login`, `logout`) runs that command
+  and leaves the card open, since rejecting a call with the reason "logout" is what nobody
+  meant. Beside a **question** — the
+  `ask_user` card, or one without a card, where a typed reply is the answer — those words stay
+  answers; the slash form after a mention is the command there (`channels-slack.md`, "Commands
+  are plain words").
 - **After a decision:** the buttons go and a context line names who decided, for a click and
   for a typed reply alike: `Approved by <@U123> · <time>` for "approve", `Denied by <@U123> ·
   <time>` for "deny" and for any other reply. A card posted for a status without a structured
@@ -316,7 +322,7 @@ carries no link and is posted once per thread; it drops each person who signs in
 nobody waits it reads "@Pau and @Jose signed in to Giant Swarm". In a DM it is a threaded
 message. The card's last line depends on what asked for it: "Your message runs as soon as
 you sign in." for a held message, "Sign in, then click the button again." for a button
-click, nothing for `/login`. The button opens the linking flow. Once the link completes, a
+click, nothing for `login`. The button opens the linking flow. Once the link completes, a
 DM prompt is rewritten in place to the signed-in confirmation ("Signed in to Giant Swarm.
 The agent now acts with your permissions."). A channel prompt is replaced with the same
 text through the `response_url` of its Sign in click, so its button goes; when the click
@@ -563,7 +569,7 @@ Everything the picker cannot do is said privately to the invoker, through the in
 | the shortcut, in a DM while DMs are not served | the DM redirect |
 | the slash command, in a DM | "This command starts a conversation in a channel…" |
 | the channel is not served | "This channel is not enabled yet…" |
-| the caller is not signed in | "The agents are listed with your permissions, so sign in first…" (`/login`) |
+| the caller is not signed in | "The agents are listed with your permissions, so sign in first…" (`login`) |
 | the roster took longer than the trigger's 3-second life | "Listing the agents took too long for Slack's picker…" |
 | the roster is unreachable, or empty | "The agents cannot be listed right now…" / "No agents are installed." |
 | on submit: the picked agent no longer validates | "No agent named `…` is available…", with the current roster |

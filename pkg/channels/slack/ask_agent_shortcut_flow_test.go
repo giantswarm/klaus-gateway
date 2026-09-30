@@ -176,7 +176,7 @@ func TestAskAgentShortcut_UnlinkedCallerIsAskedToSignIn(t *testing.T) {
 	sendAskAgentShortcut(t, srv, "C1", "U1", "200.000", "100.000", api.URL+"/response_url")
 
 	fake.waitForPath(t, "response_url", 1)
-	require.Contains(t, responseURLTexts(fake), "`/login`")
+	require.Contains(t, responseURLTexts(fake), "`login`")
 	require.Empty(t, fake.pathCalls("views.open"))
 }
 
