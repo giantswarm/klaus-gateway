@@ -22,7 +22,7 @@ const (
 
 // resumeData is what a later process needs to deliver the turn's result into
 // its thread: whose token to mint and which message to react on. triggerTS is
-// empty for a button resume, which then renders text progress.
+// empty for a button resume, which then gets no reaction.
 func resumeData(slackUser, triggerTS string) map[string]string {
 	data := map[string]string{resumeKeyUser: slackUser}
 	if triggerTS != "" {
@@ -175,7 +175,7 @@ func (a *Adapter) recoverTurn(ctx context.Context, turn channels.InFlightTurn) {
 // promise of an automatic post.
 func (a *Adapter) postResumeOnReplyNote(ctx context.Context, turn channels.InFlightTurn) {
 	client := a.agentClient(ctx, turn.Msg.AgentRef)
-	a.postTerminalNote(ctx, client, turn.Msg.ChannelID, turn.Msg.ThreadID, "", resumeOnReplyNote)
+	a.postTerminalNote(ctx, client, turn.Msg.ChannelID, turn.Msg.ThreadID, resumeOnReplyNote)
 }
 
 // deliverLeftoverTurn delivers the result of a turn a previous process left
@@ -269,7 +269,7 @@ func (a *Adapter) deliverInFlight(ctx context.Context, turn channels.InFlightTur
 			return recoverSkip
 		case errors.Is(err, a2apkg.ErrTaskNotFound), pkga2a.IsNotFound(err):
 			a.Logger.Warn("slack: turn left running by the previous process is gone at the controller", "thread", threadID, "task", turn.TaskID, "error", err)
-			a.postTerminalNote(ctx, client, slackChannel, threadID, "", resumeLostNote)
+			a.postTerminalNote(ctx, client, slackChannel, threadID, resumeLostNote)
 			return recoverDone
 		default:
 			a.Logger.Warn("slack: resubscribe to a turn left running failed", "thread", threadID, "task", turn.TaskID, "error", err)
@@ -280,8 +280,15 @@ func (a *Adapter) deliverInFlight(ctx context.Context, turn channels.InFlightTur
 		"record", "turn_resume", "agent", msg.AgentRef, "slack_user", slackUser,
 		"channel_id", msg.ChannelID, "thread_id", threadID, "task_id", turn.TaskID,
 		"delivered_text_len", turn.Delivered.TextLen)
-	if err := a.streamResponse(turnCtx, client, deltas, msg, slackUser, slackChannel, threadID, triggerTS, thinkingPlaceholder, initiator, channels.TurnUsage{}, turn.Delivered, nil); err != nil && !errors.Is(err, context.Canceled) {
+	err = a.streamResponse(turnCtx, client, deltas, msg, slackUser, slackChannel, threadID, triggerTS, initiator, channels.TurnUsage{}, turn.Delivered, nil)
+	if err != nil && !errors.Is(err, context.Canceled) {
 		a.Logger.Warn("slack: delivery of a turn left running failed", "thread", threadID, "task", turn.TaskID, "error", err)
+	}
+	// streamResponse leaves a corrupt-history failure to the caller's recovery,
+	// as runTurn's deferred one does for a turn this process started.
+	if isCorruptSessionErr(err) {
+		a.takePendingTask(threadID)
+		a.recoverCorruptSession(ctx, msg, slackChannel)
 	}
 	return recoverDone
 }

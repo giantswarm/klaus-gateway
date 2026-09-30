@@ -147,7 +147,7 @@ func TestRun_TransientFlushFailureDoesNotAbortTurn(t *testing.T) {
 	defer srv.Close()
 
 	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
-	w := newBatchedWriterWithClient(client, "C1", "1.1", "1.0", slog.Default())
+	w := newBatchedWriterWithClient(client, "C1", "1.0", slog.Default())
 	ch := make(chan channels.OutboundDelta)
 	done := make(chan error, 1)
 	go func() { done <- w.run(t.Context(), ch) }()
@@ -176,7 +176,7 @@ func TestRun_PersistentFlushFailureDoesNotAbortTurn(t *testing.T) {
 	defer srv.Close()
 
 	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
-	w := newBatchedWriterWithClient(client, "C1", "1.1", "1.0", slog.Default())
+	w := newBatchedWriterWithClient(client, "C1", "1.0", slog.Default())
 	ch := make(chan channels.OutboundDelta)
 	done := make(chan error, 1)
 	go func() { done <- w.run(t.Context(), ch) }()
@@ -253,7 +253,7 @@ func (r *recordingSlack) delivered(t *testing.T, budget int) string {
 // text delivered in order (klaus-gateway#242).
 func TestRun_LongReplyRollsOverIntoFurtherStreams(t *testing.T) {
 	rec, client := newRecordingSlack(t)
-	w := newBatchedWriterWithClient(client, "C1", "", "1.0", slog.Default())
+	w := newBatchedWriterWithClient(client, "C1", "1.0", slog.Default())
 	ch := make(chan channels.OutboundDelta)
 	done := make(chan error, 1)
 	go func() { done <- w.run(t.Context(), ch) }()
@@ -309,7 +309,7 @@ func TestFlush_FailedAppendIsResentOnNextFlush(t *testing.T) {
 	defer srv.Close()
 
 	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
-	w := newBatchedWriterWithClient(client, "C1", "1.1", "1.0", slog.Default())
+	w := newBatchedWriterWithClient(client, "C1", "1.0", slog.Default())
 	w.queueAnswer("hello ")
 
 	require.Error(t, w.flush(t.Context()))
@@ -344,7 +344,7 @@ func TestFlush_PartialRolloverStillCountsAsContent(t *testing.T) {
 	defer srv.Close()
 
 	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
-	w := newBatchedWriterWithClient(client, "C1", "", "1.0", slog.Default())
+	w := newBatchedWriterWithClient(client, "C1", "1.0", slog.Default())
 	// One line over the per-message cap splits into two streamed messages.
 	w.queueAnswer(strings.Repeat("a", slackMarkdownBlockMax+500) + " ")
 
@@ -1013,7 +1013,7 @@ func TestRetractRendered_DeletesEveryStreamedMessage(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	w := newBatchedWriterWithClient(&slackAPIClient{baseURL: srv.URL}, "C1", "", "T1", nil)
+	w := newBatchedWriterWithClient(&slackAPIClient{baseURL: srv.URL}, "C1", "T1", nil)
 	w.streamMessages = []string{"stream-1", "stream-2"}
 	w.appendedLen = 12
 
@@ -1057,7 +1057,7 @@ func TestRun_TransientFinalFlushFailureDoesNotAbortTurn(t *testing.T) {
 	defer srv.Close()
 
 	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
-	w := newBatchedWriterWithClient(client, "C1", "1.1", "1.0", slog.Default())
+	w := newBatchedWriterWithClient(client, "C1", "1.0", slog.Default())
 	ch := make(chan channels.OutboundDelta, 2)
 	ch <- channels.OutboundDelta{Kind: channels.DeltaText, Content: "hello"}
 	ch <- channels.OutboundDelta{Done: true}
@@ -1168,7 +1168,7 @@ func splitChunks(chunks []streamChunk) (md string, types []string) {
 
 // fakeThread models a Slack thread: chat.postMessage appends a message with a
 // fresh ts, chat.update replaces the content at its ts (upserting an unknown
-// ts, e.g. the text-mode placeholder posted before the writer existed),
+// ts),
 // chat.delete removes one, and the streaming trio models a streamed message —
 // chat.startStream opens it, chat.appendStream adds to it, chat.stopStream
 // closes it, and an append or stop on a message that is not streaming is
@@ -1517,17 +1517,15 @@ func blockTexts(blocks []json.RawMessage) capturedMessage {
 
 // captureStream drives run() over deltas (plus a terminal Done) against a fake
 // Slack thread and hands back the thread, so a test can read the chunks the
-// reply was streamed with, together with the writer. headTS empty is reactions
-// mode; a non-empty headTS is text mode, where the progress placeholder waits
-// to be superseded.
-func captureStream(t *testing.T, headTS string, deltas ...channels.OutboundDelta) (*fakeThread, *batchedWriter) {
+// reply was streamed with, together with the writer.
+func captureStream(t *testing.T, deltas ...channels.OutboundDelta) (*fakeThread, *batchedWriter) {
 	t.Helper()
 	ft := &fakeThread{}
 	srv := httptest.NewServer(ft.handler())
 	t.Cleanup(srv.Close)
 
 	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
-	w := newBatchedWriterWithClient(client, "C1", headTS, "1.0", slog.Default())
+	w := newBatchedWriterWithClient(client, "C1", "1.0", slog.Default())
 	ch := make(chan channels.OutboundDelta, len(deltas)+1)
 	for _, d := range deltas {
 		ch <- d
@@ -1549,7 +1547,7 @@ func captureToolLog(t *testing.T, deltas ...channels.OutboundDelta) []string {
 	t.Cleanup(srv.Close)
 
 	a := &Adapter{Logger: slog.Default()}
-	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "C1", "1.1", "T1", slog.Default())
+	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "C1", "T1", slog.Default())
 	w.adapter = a
 	ch := make(chan channels.OutboundDelta, len(deltas)+1)
 	for _, d := range deltas {
@@ -1578,7 +1576,7 @@ func runSurfaceWriter(t *testing.T, ft *fakeThread, channel string, deltas ...ch
 	t.Cleanup(srv.Close)
 
 	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
-	w := newBatchedWriterWithClient(client, channel, "", "1.0", slog.Default())
+	w := newBatchedWriterWithClient(client, channel, "1.0", slog.Default())
 	w.adapter = &Adapter{}
 	ch := make(chan channels.OutboundDelta, len(deltas))
 	for _, d := range deltas {
@@ -1631,7 +1629,7 @@ func toolResultDelta(name, callID string, resp map[string]any) channels.Outbound
 // narration that introduces a tool call and the answer. The tool calls
 // themselves are not on it; they go to the tool log alone.
 func TestStream_NarrationAndAnswerShareOneMessage(t *testing.T) {
-	ft, w := captureStream(t, "",
+	ft, w := captureStream(t,
 		narrationDelta("Let me pull the HelmRelease from both clusters."),
 		toolCallDeltaWith("x_kubernetes_get", "c1", nil),
 		toolResultDelta("x_kubernetes_get", "c1", map[string]any{"output": "ok"}),
@@ -1654,14 +1652,14 @@ func TestStream_NarrationAndAnswerShareOneMessage(t *testing.T) {
 // A tool call puts nothing on the thread: a turn that only calls tools opens
 // no message, and the stream opens on the first prose that follows.
 func TestStream_ToolCallsOpenNoMessage(t *testing.T) {
-	ft, w := captureStream(t, "",
+	ft, w := captureStream(t,
 		toolCallDeltaWith("filter_tools", "c1", nil),
 		toolResultDelta("filter_tools", "c1", map[string]any{"output": "3 tools"}),
 	)
 	require.Empty(t, ft.streams(), "no prose, no message")
 	require.False(t, w.wroteContent())
 
-	ft, _ = captureStream(t, "",
+	ft, _ = captureStream(t,
 		toolCallDelta("filter_tools"),
 		channels.OutboundDelta{Kind: channels.DeltaText, Content: "done"},
 	)
@@ -1674,7 +1672,7 @@ func TestStream_ToolCallsOpenNoMessage(t *testing.T) {
 // A narration passage opens the stream, so prose the agent writes before it
 // calls anything lands in the reply.
 func TestStream_OpensOnTheFirstNarration(t *testing.T) {
-	ft, _ := captureStream(t, "", narrationDelta("Let me look that up."))
+	ft, _ := captureStream(t, narrationDelta("Let me look that up."))
 
 	require.Equal(t, []string{methodChatStartStream, methodChatStopStream}, ft.streamMethods())
 	require.Equal(t, "Let me look that up."+passageBreak, ft.streamedText())
@@ -1690,7 +1688,7 @@ func TestNarration_AdvancesTheMessageNotTheAnswerLength(t *testing.T) {
 	srv := httptest.NewServer(ft.handler())
 	t.Cleanup(srv.Close)
 
-	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "C1", "", "1.0", slog.Default())
+	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "C1", "1.0", slog.Default())
 	var records []store.Delivered
 	w.onDelivered = func(_ context.Context, d store.Delivered) { records = append(records, d) }
 
@@ -1712,7 +1710,7 @@ func TestRenderNarration_CapsWithOneNote(t *testing.T) {
 	for i := range maxNarrationMessages + 5 {
 		deltas = append(deltas, narrationDelta(fmt.Sprintf("step %d.", i)))
 	}
-	ft, _ := captureStream(t, "", deltas...)
+	ft, _ := captureStream(t, deltas...)
 
 	text := ft.streamedText()
 	require.Contains(t, text, "step 0.")
@@ -1729,7 +1727,7 @@ func TestRenderNarration_CapsWithOneNote(t *testing.T) {
 // narration must be split rather than dropped.
 func TestRenderNarration_SplitsOversizedNarration(t *testing.T) {
 	long := strings.Repeat("plan step. ", slackMarkdownBlockMax/5) // ~2.4x the block cap
-	ft, _ := captureStream(t, "", narrationDelta(long))
+	ft, _ := captureStream(t, narrationDelta(long))
 
 	msgs := ft.finalMessages()
 	require.Len(t, msgs, 3, "the narration rolls over into further streamed messages")
@@ -1748,7 +1746,7 @@ func TestRenderNarration_SplitsOversizedNarration(t *testing.T) {
 // answer and still ends in the visible note.
 func TestRenderNarration_SplitChunksShareTheBudget(t *testing.T) {
 	long := strings.Repeat("plan step. ", slackMarkdownBlockMax) // far past the cap
-	ft, _ := captureStream(t, "", narrationDelta(long))
+	ft, _ := captureStream(t, narrationDelta(long))
 
 	require.Equal(t, maxNarrationMessages+1, ft.narrationChunks())
 	require.True(t, strings.HasSuffix(strings.TrimSpace(ft.streamedText()), narrationLimitNote))
@@ -1763,7 +1761,7 @@ func TestRenderNarration_ScrubsLoginURL(t *testing.T) {
 	srv := httptest.NewServer(ft.handler())
 	t.Cleanup(srv.Close)
 
-	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "C1", "", "1.0", slog.Default())
+	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "C1", "1.0", slog.Default())
 	w.loginURLs = []string{loginURL}
 	w.renderNarration(loginURL)
 	w.renderNarration("Sign in here:\n" + loginURL + "\nThen tell me once you are done.")
@@ -1783,7 +1781,7 @@ func TestRetractRendered_TakesTheNarrationWithTheReply(t *testing.T) {
 	srv := httptest.NewServer(ft.handler())
 	t.Cleanup(srv.Close)
 
-	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "C1", "", "1.0", slog.Default())
+	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "C1", "1.0", slog.Default())
 	w.renderNarration("Sign in, then tell me once you are done.")
 	require.NoError(t, w.flush(t.Context()))
 	require.Equal(t, "Sign in, then tell me once you are done."+passageBreak, ft.streamedText())
@@ -2171,7 +2169,7 @@ func TestSessionInitiator_SentOnTheCreatingCall(t *testing.T) {
 			srv := httptest.NewServer(ft.handler())
 			t.Cleanup(srv.Close)
 
-			w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, channel, "", "1.0", slog.Default())
+			w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, channel, "1.0", slog.Default())
 			w.adapter = &Adapter{}
 			w.sessionInitiator = "U1"
 			ch := make(chan channels.OutboundDelta, 1)
@@ -2209,7 +2207,7 @@ func TestSessionTitle_SentOnTheOpeningTurn(t *testing.T) {
 	srv := httptest.NewServer(ft.handler())
 	t.Cleanup(srv.Close)
 
-	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "C1", "", "1.0", slog.Default())
+	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "C1", "1.0", slog.Default())
 	w.adapter = &Adapter{}
 	w.sessionTitle = "Investigate CPU alert on gazelle"
 	ch := make(chan channels.OutboundDelta, 1)
@@ -2271,7 +2269,7 @@ func TestSessionTitle_RejectedTitleFallsBackToUntitledStatus(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "C1", "", "1.0", slog.Default())
+	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "C1", "1.0", slog.Default())
 	w.adapter = &Adapter{}
 	w.sessionTitle = "Investigate CPU alert on gazelle"
 	ch := make(chan channels.OutboundDelta, 1)
@@ -2394,7 +2392,7 @@ func TestSessionStatus_ActiveOnCancelledTurn(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
-	w := newBatchedWriterWithClient(client, "C1", "", "1.0", slog.Default())
+	w := newBatchedWriterWithClient(client, "C1", "1.0", slog.Default())
 	w.adapter = &Adapter{}
 	ctx, cancel := context.WithCancel(t.Context())
 	ch := make(chan channels.OutboundDelta)
@@ -2438,7 +2436,7 @@ func TestSessionStatus_NotAuthorizedDoesNotLatch(t *testing.T) {
 	t.Cleanup(srv.Close)
 	logs := &recordingHandler{}
 
-	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "C1", "", "1.0", slog.New(logs))
+	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "C1", "1.0", slog.New(logs))
 	w.adapter = &Adapter{}
 	w.sessionTitle, w.sessionInitiator = "Investigate CPU alert on gazelle", "U1"
 	ch := make(chan channels.OutboundDelta, 2)
@@ -2527,7 +2525,7 @@ func streamWriter(t *testing.T, ft *fakeThread, channel string) *batchedWriter {
 	t.Helper()
 	srv := httptest.NewServer(ft.handler())
 	t.Cleanup(srv.Close)
-	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, channel, "", "1.0", slog.Default())
+	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, channel, "1.0", slog.Default())
 	w.adapter = &Adapter{}
 	return w
 }
@@ -2723,7 +2721,7 @@ func TestStream_CancelledTurnClosesTheStream(t *testing.T) {
 	srv := httptest.NewServer(ft.handler())
 	t.Cleanup(srv.Close)
 
-	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "D1", "", "1.0", slog.Default())
+	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "D1", "1.0", slog.Default())
 	w.adapter = &Adapter{}
 	ctx, cancel := context.WithCancel(t.Context())
 	ch := make(chan channels.OutboundDelta)
@@ -2751,7 +2749,7 @@ func TestStream_CancelledDuringAnAppendSendsTheTextOnce(t *testing.T) {
 	srv := httptest.NewServer(ft.handler())
 	t.Cleanup(srv.Close)
 
-	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "D1", "", "1.0", slog.Default())
+	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "D1", "1.0", slog.Default())
 	w.adapter = &Adapter{}
 	ctx, cancel := context.WithCancel(t.Context())
 	ch := make(chan channels.OutboundDelta)
@@ -2811,7 +2809,7 @@ func TestStream_SecondRunCycleOpensANewStream(t *testing.T) {
 	srv := httptest.NewServer(ft.handler())
 	t.Cleanup(srv.Close)
 
-	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "D1", "", "1.0", slog.Default())
+	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "D1", "1.0", slog.Default())
 	w.adapter = &Adapter{}
 	run := func(deltas ...channels.OutboundDelta) {
 		ch := make(chan channels.OutboundDelta, len(deltas))

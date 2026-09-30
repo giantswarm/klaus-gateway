@@ -169,6 +169,20 @@ func TestLoad_SlackSurfaceEnv(t *testing.T) {
 	require.Equal(t, []string{"C1", "C2", "C3"}, cfg.Slack.ChannelAllowlist)
 }
 
+// The deprecated progress mode still parses, with any value, so a deployment
+// that sets it keeps starting (main only logs a warning for it).
+func TestLoad_DeprecatedSlackProgressModeStillParses(t *testing.T) {
+	t.Setenv("KLAUS_GATEWAY_SLACK_PROGRESS_MODE", "bogus")
+	cfg, err := config.Load(nil)
+	require.NoError(t, err)
+	require.NoError(t, cfg.Validate())
+	require.Equal(t, "bogus", cfg.Slack.ProgressMode)
+
+	cfg, err = config.Load([]string{"--slack-progress-mode", "text"})
+	require.NoError(t, err)
+	require.Equal(t, "text", cfg.Slack.ProgressMode)
+}
+
 func TestValidate_OBO(t *testing.T) {
 	base := config.Defaults()
 	base.Slack.Enabled = true // OBO links Slack identities, so Slack must be on

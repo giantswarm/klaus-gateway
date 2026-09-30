@@ -72,7 +72,7 @@ func TestUsageReport_ChannelMissGivesGuidance(t *testing.T) {
 // TestBatchedWriter_SumsUsageAcrossTurn verifies the run loop sums the per-call
 // usage kagent reports into a single turn total.
 func TestBatchedWriter_SumsUsageAcrossTurn(t *testing.T) {
-	w := newBatchedWriterWithClient(&slackAPIClient{}, "C1", "", "T1", nil)
+	w := newBatchedWriterWithClient(&slackAPIClient{}, "C1", "T1", nil)
 
 	ch := make(chan channels.OutboundDelta, 3)
 	ch <- channels.OutboundDelta{Usage: &channels.TurnUsage{InputTokens: 100, OutputTokens: 50, TotalTokens: 150}}
@@ -93,7 +93,7 @@ func TestBatchedWriter_ToolCallsPutNothingOnTheThread(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	a := &Adapter{Logger: testLogger()}
-	w := newBatchedWriterWithClient(&slackAPIClient{baseURL: srv.URL}, "C1", "", "T1", nil)
+	w := newBatchedWriterWithClient(&slackAPIClient{baseURL: srv.URL}, "C1", "T1", nil)
 	w.adapter = a
 
 	const calls = 50

@@ -1616,7 +1616,7 @@ func TestProgress_FailureNoteNamesTheClass(t *testing.T) {
 	}
 }
 
-// Once the reply has streamed, a failure in reactions mode marks it with the
+// Once the reply has streamed, a failure with a reaction marks it with the
 // failed emoji and posts the interrupted note under it: the incomplete reply
 // alone does not say the turn is over. The note before an answer is not used.
 func TestProgress_FailureAfterContentPostsInterruptedNote(t *testing.T) {
@@ -1647,50 +1647,38 @@ func TestProgress_FailureAfterContentPostsInterruptedNote(t *testing.T) {
 	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "The turn failed before an answer")
 }
 
-func TestProgress_TextFallbackOnMissingScope(t *testing.T) {
+// Slack refusing reactions for lack of scope leaves the turn with the working
+// indicator alone: no placeholder message stands in for the emoji, and later
+// turns skip the doomed reactions.add.
+func TestProgress_MissingScopePostsNoPlaceholder(t *testing.T) {
 	fake := newFakeSlackAPI()
 	fake.setFail("reactions.add", "missing_scope")
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "answer"}, {Done: true}}}
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
 	sendEvent(t, srv, dmEvent("U1", "first", "444.000"))
-	// Missing scope -> text mode: a placeholder (chat.postMessage), then the
-	// answer in a stream of its own, which retires the placeholder.
 	fake.waitForPath(t, pathStopStream, 1)
 	require.Contains(t, fake.streamedText(), "answer")
-	require.Contains(t, allText(fake.pathCalls("chat.postMessage")), "Working…", "text placeholder posted")
-	require.NotEmpty(t, fake.pathCalls("chat.delete"), "the placeholder is retired by the streamed answer")
+	require.Empty(t, fake.pathCalls("chat.postMessage"), "no placeholder is posted")
+	require.Empty(t, fake.pathCalls("chat.delete"), "no placeholder to retire")
 
-	// Second turn must not retry reactions.add (the downgrade is cached).
+	// Second turn must not retry reactions.add (the refusal is cached).
 	sendEvent(t, srv, dmEvent("U1", "second", "445.000"))
 	fake.waitForPath(t, pathStopStream, 2)
-	require.Len(t, fake.pathCalls("reactions.add"), 1, "reactions.add attempted once, then downgraded to text")
+	require.Len(t, fake.pathCalls("reactions.add"), 1, "reactions.add attempted once, then skipped")
 }
 
-func TestProgress_TextModeConfigured(t *testing.T) {
+func TestNoReaction_EmptyOutputPostsNote(t *testing.T) {
 	fake := newFakeSlackAPI()
-	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "hello"}, {Done: true}}}
-	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
-	a.ProgressMode = "text"
-
-	sendEvent(t, srv, dmEvent("U1", "hi", "555.000"))
-	fake.waitForPath(t, pathStopStream, 1) // placeholder (postMessage), then the streamed answer
-	require.Contains(t, fake.streamedText(), "hello")
-	require.Empty(t, fake.pathCalls("reactions.add"), "text mode never adds reactions")
-}
-
-func TestTextMode_EmptyOutputReplacesPlaceholder(t *testing.T) {
-	fake := newFakeSlackAPI()
+	fake.setFail("reactions.add", "missing_scope")
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Done: true}}} // no content
-	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
-	a.ProgressMode = "text"
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
 	sendEvent(t, srv, dmEvent("U1", "hi", "777.000"))
 
-	// Placeholder is posted, then replaced by a terminal note (not left as "thinking").
-	fake.waitForPath(t, "chat.update", 1)
-	require.Contains(t, allText(fake.pathCalls("chat.update")), "finished without a reply")
-	require.Empty(t, fake.pathCalls("reactions.add"), "text mode adds no reactions")
+	fake.waitForPath(t, "chat.postMessage", 1)
+	require.Contains(t, allText(fake.pathCalls("chat.postMessage")), "finished without a reply")
+	require.Empty(t, fake.pathCalls("chat.update"), "no placeholder to replace")
 }
 
 func TestReactionsMode_EmptyOutputPostsNote(t *testing.T) {
@@ -1700,41 +1688,41 @@ func TestReactionsMode_EmptyOutputPostsNote(t *testing.T) {
 
 	sendEvent(t, srv, dmEvent("U1", "hi", "660.000"))
 
-	// Reactions mode has no placeholder, so a zero-output turn must still post a
+	// There is no placeholder, so a zero-output turn must still post a
 	// note rather than leaving only a done emoji.
 	fake.waitForPath(t, "chat.postMessage", 1)
 	require.Contains(t, allText(fake.pathCalls("chat.postMessage")), "finished without a reply")
 	require.Contains(t, fake.reactionNames("reactions.add"), "white_check_mark")
 }
 
-func TestTextMode_FailedTurnReplacesPlaceholder(t *testing.T) {
+// A failed turn without a reaction has no failed emoji to show it, so the
+// failure note is what tells the thread.
+func TestNoReaction_FailedTurnPostsNote(t *testing.T) {
 	fake := newFakeSlackAPI()
+	fake.setFail("reactions.add", "missing_scope")
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Err: errors.New("boom")}}}
-	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
-	a.ProgressMode = "text"
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
 	sendEvent(t, srv, dmEvent("U1", "hi", "778.000"))
 
-	// Placeholder is posted, then replaced by a failure note rather than left
-	// dangling as "thinking"; text mode swaps no failed reaction.
-	fake.waitForPath(t, "chat.update", 1)
-	require.Contains(t, allText(fake.pathCalls("chat.update")), "The turn failed")
-	require.Empty(t, fake.pathCalls("reactions.add"), "text mode adds no reactions")
+	fake.waitForPath(t, "chat.postMessage", 1)
+	require.Contains(t, allText(fake.pathCalls("chat.postMessage")), "The turn failed")
+	require.Empty(t, fake.pathCalls("chat.update"), "no placeholder to replace")
 }
 
-// A turn that fails after part of the answer was already streamed must not
-// overwrite the streamed content with the failure note; the note posts as a
-// new message instead.
-func TestTextMode_FailedTurnAfterContentPostsNewNote(t *testing.T) {
+// A turn without a reaction that fails after part of the answer was already
+// streamed must not overwrite the streamed content with the failure note; the
+// note posts as a new message instead.
+func TestNoReaction_FailedTurnAfterContentPostsNewNote(t *testing.T) {
 	fake := newFakeSlackAPI()
+	fake.setFail("reactions.add", "missing_scope")
 	gw := &stubGateway{
 		deltas: []channels.OutboundDelta{{Content: "partial answer"}, {Err: errors.New("boom")}},
-		// Longer than the writer's batch interval so the content flushes into
-		// the placeholder before the error arrives.
+		// Longer than the writer's batch interval so the content flushes
+		// before the error arrives.
 		interDeltaDelay: 600 * time.Millisecond,
 	}
-	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
-	a.ProgressMode = "text"
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
 	sendEvent(t, srv, dmEvent("U1", "hi", "779.000"))
 
@@ -1750,15 +1738,15 @@ func TestTextMode_FailedTurnAfterContentPostsNewNote(t *testing.T) {
 // must still preserve the content: the writer flushes buffered text before
 // surfacing the error, so the note posts as a new message rather than
 // overwriting it.
-func TestTextMode_FailedTurnFlushesBufferedContentBeforeNote(t *testing.T) {
+func TestNoReaction_FailedTurnFlushesBufferedContentBeforeNote(t *testing.T) {
 	fake := newFakeSlackAPI()
+	fake.setFail("reactions.add", "missing_scope")
 	gw := &stubGateway{
 		deltas: []channels.OutboundDelta{{Content: "partial answer"}, {Err: errors.New("boom")}},
 		// No interDeltaDelay: the error follows the text with no batch tick, so
 		// the content is only surfaced by the flush on the error path.
 	}
-	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
-	a.ProgressMode = "text"
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
 	sendEvent(t, srv, dmEvent("U1", "hi", "780.000"))
 
@@ -1947,44 +1935,43 @@ func TestHandleInbound_FileShareReplyDispatches(t *testing.T) {
 		"the attachment metadata travelled into dispatch (named in the dropped-attachments notice)")
 }
 
-// /stop before any streamed content in text-progress mode must resolve the
-// "Working…" placeholder instead of leaving it dangling above "Stopped.". The
-// placeholder's note is not the command's own note, or the thread would show
-// the same line twice.
-func TestStop_TextModePlaceholderResolved(t *testing.T) {
+// A /stop before any streamed content on a turn without a reaction posts the
+// command's own note only: there is no placeholder for a second note to
+// resolve.
+func TestStop_NoReactionPostsOnlyTheCommandNote(t *testing.T) {
 	fake := newFakeSlackAPI()
+	fake.setFail("reactions.add", "missing_scope")
 	hold := make(chan struct{})
 	gw := &stubGateway{hold: hold}
 	defer close(hold)
-	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
-	a.ProgressMode = "text"
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
 	sendEvent(t, srv, dmEvent("U1", "long task", "100.000"))
-	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Working…")
-	}, flowWait, 20*time.Millisecond, "text placeholder posted")
+	fake.waitForPath(t, "reactions.add", 1)
+	waitTurnStreaming(t, fake)
 
 	sendEvent(t, srv, dmThreadEvent("U1", "/stop", "101.000", "100.000"))
-	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.update")), "Stopped before an answer.")
-	}, flowWait, 20*time.Millisecond, "the placeholder is replaced on stop")
+	require.Eventually(t, func() bool { return len(gw.sendCauseList()) == 1 }, flowWait, 20*time.Millisecond)
+	require.Empty(t, fake.pathCalls("chat.update"), "no placeholder to replace")
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "Working", "no placeholder posted")
 }
 
-// A turn pausing on an approval prompt before any streamed content in
-// text-progress mode must resolve the placeholder, which otherwise sits as
-// "thinking" above the prompt.
-func TestPrompt_TextModePlaceholderResolved(t *testing.T) {
+// A turn without a reaction that pauses on an approval prompt before any
+// streamed content posts the prompt alone: no placeholder sits above it.
+func TestPrompt_NoReactionPostsOnlyThePrompt(t *testing.T) {
 	fake := newFakeSlackAPI()
+	fake.setFail("reactions.add", "missing_scope")
 	gw := &stubGateway{deltas: []channels.OutboundDelta{
 		{Kind: channels.DeltaPrompt, TaskID: "task-1", Prompt: &channels.HitlPrompt{ToolName: "delete_pod"}},
 	}}
-	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
-	a.ProgressMode = "text"
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
 	sendEvent(t, srv, dmEvent("U1", "do it", "100.000"))
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.update")), "Waiting for your answer")
-	}, flowWait, 20*time.Millisecond, "the placeholder is replaced when the turn pauses")
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Approval required")
+	}, flowWait, 20*time.Millisecond, "the approval prompt is posted")
+	require.Empty(t, fake.pathCalls("chat.update"), "no placeholder to replace")
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "Waiting for your answer", "no paused note")
 }
 
 // A retried delivery whose original never reached the handler (pod restart,
