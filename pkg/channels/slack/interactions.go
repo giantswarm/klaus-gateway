@@ -209,6 +209,8 @@ func (a *Adapter) routeInteraction(ctx context.Context, payload interactionPaylo
 			a.handleAskAgentSubmission(ctx, payload)
 		case teamReviewDenyCallbackID:
 			a.handleTeamReviewDenial(ctx, payload)
+		case decisionAnswerCallbackID:
+			a.handleDecisionAnswerSubmission(ctx, payload)
 		}
 		return
 	}
@@ -256,6 +258,13 @@ func (a *Adapter) routeInteraction(ctx context.Context, payload interactionPaylo
 		// The Deny click opens the reason modal; the decision is made on its
 		// submission (teamReviewDenyCallbackID above).
 		a.handleTeamReviewDenyClick(ctx, payload.Channel.ID, payload.Container.MessageTS, payload.User.ID, payload.TriggerID, action.Value)
+		return
+	case decisionChoose:
+		// A decision is its message: the click's channel and message name it.
+		a.handleDecisionChoose(ctx, payload.Channel.ID, payload.Container.MessageTS, payload.User.ID, action.Value)
+		return
+	case decisionOwnWords:
+		a.handleDecisionOwnWordsClick(ctx, payload.Channel.ID, payload.Container.MessageTS, payload.User.ID, payload.TriggerID)
 		return
 	}
 

@@ -118,6 +118,11 @@ oauth_config:
       - channels:join
       # Assistant surface (agent_view); Slack adds this scope with the feature.
       - assistant:write
+      # Decisions (POST /decisions) reach a person by their email:
+      # users.lookupByEmail needs users:read.email, and Slack grants it only
+      # with users:read beside it. users:read also names the bot in help text.
+      - users:read
+      - users:read.email
       # Slash commands and shortcuts. Already granted on installs that carry the
       # message shortcut (Slack adds it with the feature); listed so a fresh
       # install gets it.

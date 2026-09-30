@@ -215,7 +215,8 @@ func run(args []string) error {
 	if cfg.Reviews.Enabled {
 		// The team-review endpoint: a manager posts an ask as its own
 		// ServiceAccount (verified through TokenReview); the Approve click calls
-		// the manager's tool through muster as the clicking, linked member.
+		// the manager's tool through muster as the clicking, linked member. The
+		// same surface puts decisions to a person or a team (POST /decisions).
 		restCfg, err := buildKubeConfig()
 		if err != nil {
 			return fmt.Errorf("team reviews: %w", err)
@@ -230,6 +231,7 @@ func run(args []string) error {
 			Auth:           &satoken.Authenticator{Reviews: kclient.AuthenticationV1().TokenReviews(), Audiences: []string{cfg.Reviews.ResolvedAudience()}},
 			AllowedCallers: cfg.Reviews.AllowedCallers,
 			Poster:         slackAdapter,
+			Decisions:      slackAdapter,
 		}
 		reviewsHandler.Mount(publicMux)
 		logger.Info("team-review endpoint mounted",
