@@ -591,6 +591,45 @@ writes nothing:
 |---|---|
 | a reply without a mention, and not opening with someone else's mention, in a thread whose conversation ended after `routing.threadTTL` (the row is still in the store, at twice the lifetime) | "This conversation ended after 90 days without messages. Mention the bot to start a new one." (the configured lifetime is named) |
 
+## 13. Decision (a question to a person or a team)
+
+Posted by a service through [`POST /decisions`](api.md#post-decisions): a direct message from the
+app to a person, found by their email (`users.lookupByEmail`), or a message in a team's channel.
+One message per decision:
+
+- **Header:** the question. **Section:** the status quo.
+- **One section per option:** the label in bold and its consequence, with a *Choose* button as
+  its accessory. The recommended option's section starts with *Recommended* and its button is
+  `primary`. A click answers at once: one row is one answer.
+- **Actions:** *Answer in my own words* opens a modal (`callback_id: decision_answer`) with a
+  required box of up to 3000 characters (`decision_answer_text.text`) and, when the decision has
+  options, an optional select of them (`decision_answer_choice.choice`), so an answer can be an
+  option with a condition, or none of them. **A plain reply in the message's thread** is the same
+  answer in the person's own words.
+- **Context:** `Due <date> · if unanswered: <default>`, and `For <team> · Asked by <asker> · note #<note>`.
+
+Every answer calls the decision's answer tool through muster as the person who answered, with
+its arguments plus `choice` (the option, 1-based) and `text` (their words), each only when given.
+The tool decides whether that person may answer — the addressee, or a member of the team. The
+rest is the team review's (section 10): an unlinked person is asked to sign in; a backend they
+have not connected is connected from the answer, whose landing submits it again; a refusal or a
+failure is a status line under the buttons, naming the person and the reason, and the decision
+stays open; the first answer claims the record, so a second one is told who answered.
+
+The answered message keeps the question and the status quo, drops the options and buttons, and
+reads `Answered by <@U…> · <time>: <option> — <text>`. The asker closes the decision through
+`POST /decisions/{id}/close` whenever it closes — answered here or elsewhere, at its due time, or
+withdrawn — and the message is rewritten to `Answered · <time>: <text>`,
+`Not answered by <due>; the default was applied: <default>` or `Withdrawn · <time>: <text>`. A
+click on a closed decision is refused privately with how it closed.
+
+A decision is named by its message, `<channel>-<ts>`: a click, the modal's `private_metadata` and
+a thread reply all carry it. Only a reply under the bot's own message (`parent_user_id`) is looked
+up, so a reply anywhere else costs no store read. The record lives in the routing store until the
+due time plus seven days. Thread replies reach the gateway in a DM and in a public channel
+(`message.im`, `message.channels`); a team decision in a private channel is answered by click or
+modal only.
+
 ## Answering: click and reply
 
 On a click, Slack POSTs a `block_actions` payload to `/channels/slack/interactions`. The

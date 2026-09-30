@@ -359,6 +359,7 @@ const (
 	signInPromptBodyFormat = "The agent runs its tools with your own permissions, so it needs your sign-in once. The link is valid for %d minutes."
 	signInForMessageLine   = "Your message runs as soon as you sign in."
 	signInForClickLine     = "Sign in, then click the button again."
+	signInForReplyLine     = "Sign in, then send your answer again."
 	signInSessionHint      = "Signed in before? Your session may have expired."
 )
 
