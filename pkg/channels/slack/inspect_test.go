@@ -590,3 +590,58 @@ func togglePayload(state, value string) interactionPayload {
 	}{ActionID: inspectToggleAction, Value: value})
 	return p
 }
+
+// openClickPayload is a click by U9 on the "Show tool calls" button of a reply
+// in thread threadTS of channel C1.
+func openClickPayload(threadTS string) interactionPayload {
+	var p interactionPayload
+	p.Type = payloadTypeBlockActions
+	p.TriggerID = "trigger-2"
+	p.User.ID = "U9"
+	p.Channel.ID = "C1"
+	p.Message.ThreadTS = threadTS
+	p.Message.TS = "100.500"
+	p.Actions = append(p.Actions, struct {
+		ActionID string `json:"action_id"`
+		Value    string `json:"value"`
+	}{ActionID: inspectOpenAction})
+	return p
+}
+
+// The "Show tool calls" button of a reply opens the thread's inspection modal
+// for the person who clicked, the same modal the shortcut opens.
+func TestInspectOpen_ButtonOpensTheThreadsModal(t *testing.T) {
+	a, srv := newInspectTestAdapter(t)
+	a.appendToolLog("100.000", toolLogEntry{turn: a.beginToolLogTurn("100.000"), name: "x_prometheus_query", called: true, state: toolFailed, result: "parse error"})
+
+	a.routeInteraction(t.Context(), openClickPayload("100.000"))
+
+	views := srv.viewBodies()
+	require.Len(t, views, 1)
+	require.Equal(t, "trigger-2", views[0]["trigger_id"])
+	view, _ := json.Marshal(views[0]["view"])
+	require.Contains(t, string(view), inspectModalTitle)
+	require.Contains(t, string(view), "x_prometheus_query", "the log of the reply's thread")
+	require.Contains(t, string(view), `\"t\":\"100.000\"`, "the modal is bound to that thread")
+	require.Empty(t, srv.ephemeralBodies())
+}
+
+// A click without a user, a channel or a message to name the thread opens
+// nothing.
+func TestInspectOpen_IgnoresIncompleteClicks(t *testing.T) {
+	a, srv := newInspectTestAdapter(t)
+	a.appendToolLog("100.000", toolLogEntry{turn: a.beginToolLogTurn("100.000"), name: "get", called: true})
+
+	noUser := openClickPayload("100.000")
+	noUser.User.ID = ""
+	a.routeInteraction(t.Context(), noUser)
+	noChannel := openClickPayload("100.000")
+	noChannel.Channel.ID = ""
+	a.routeInteraction(t.Context(), noChannel)
+	noMessage := openClickPayload("")
+	noMessage.Message.TS = ""
+	a.routeInteraction(t.Context(), noMessage)
+
+	require.Empty(t, srv.viewBodies())
+	require.Empty(t, srv.ephemeralBodies())
+}

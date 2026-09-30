@@ -2996,8 +2996,8 @@ func (f *fakeThread) stopBlocks() []capturedMessage {
 }
 
 // A reply whose turn had failed tool calls ends with one muted line that
-// counts them and says where to see them; the line is a block of the final
-// stop, so it is part of the reply itself.
+// counts them and a button that opens the tool calls; both are blocks of the
+// final stop, so they are part of the reply itself.
 func TestFailedCalls_TheReplyEndsWithOneLine(t *testing.T) {
 	ft, _ := captureStream(t,
 		toolCallDeltaWith("get", "c1", nil), failedResultDelta("get", "c1"),
@@ -3007,9 +3007,14 @@ func TestFailedCalls_TheReplyEndsWithOneLine(t *testing.T) {
 	)
 	require.Equal(t, []capturedMessage{{failedCallsNote(2)}}, ft.stopBlocks())
 	calls := ft.streams()
-	require.Equal(t, []string{bkContext}, calls[len(calls)-1].blockTypes, "the line is a muted context block")
-	require.Equal(t, "⚠️ 2 tool calls failed · To see them: ⋯ on this message → Apps → *Inspect agent steps*", failedCallsNote(2))
-	require.Equal(t, "⚠️ 1 tool call failed · To see it: ⋯ on this message → Apps → *Inspect agent steps*", failedCallsNote(1))
+	require.Equal(t, []string{bkContext, bkActions}, calls[len(calls)-1].blockTypes, "a muted context line, then the button")
+	w := &batchedWriter{failedCalls: 1}
+	button, err := json.Marshal(w.failedCallsBlocks()[1])
+	require.NoError(t, err)
+	require.Contains(t, string(button), `"action_id":"inspect_open"`)
+	require.Contains(t, string(button), failedCallsButton)
+	require.Equal(t, "⚠️ 2 tool calls failed", failedCallsNote(2))
+	require.Equal(t, "⚠️ 1 tool call failed", failedCallsNote(1))
 }
 
 // A turn without a failed call, or whose only error is the runtime's request

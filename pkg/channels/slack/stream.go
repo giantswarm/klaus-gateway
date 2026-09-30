@@ -1680,23 +1680,36 @@ func (w *batchedWriter) resetStream() {
 	w.failedCalls = 0
 }
 
-// failedCallsBlocks is the muted line the reply's last message ends with when
-// tool calls of this reply failed, and where to see them; nil when none did.
-// The reply does not show the calls, so without it a failure is visible only
-// when the agent says so.
+// failedCallsBlocks is what the reply's last message ends with when tool calls
+// of this reply failed: a muted line that counts them and a button that opens
+// the thread's "Agent steps" modal; nil when none did. The reply does not show
+// the calls, so without it a failure is visible only when the agent says so.
 func (w *batchedWriter) failedCallsBlocks() []any {
 	if w.failedCalls == 0 {
 		return nil
 	}
-	return []any{contextBlock(failedCallsNote(w.failedCalls))}
+	return []any{
+		contextBlock(failedCallsNote(w.failedCalls)),
+		map[string]any{
+			bkType: bkActions,
+			bkElements: []any{map[string]any{
+				bkType:     bkButton,
+				bkText:     plainTextObj(failedCallsButton),
+				bkActionID: inspectOpenAction,
+			}},
+		},
+	}
 }
+
+// failedCallsButton labels the button of failedCallsBlocks.
+const failedCallsButton = "Show tool calls"
 
 // failedCallsNote is the text of failedCallsBlocks for n failed calls.
 func failedCallsNote(n int) string {
 	if n == 1 {
-		return "⚠️ 1 tool call failed · To see it: ⋯ on this message → Apps → *Inspect agent steps*"
+		return "⚠️ 1 tool call failed"
 	}
-	return fmt.Sprintf("⚠️ %d tool calls failed · To see them: ⋯ on this message → Apps → *Inspect agent steps*", n)
+	return fmt.Sprintf("⚠️ %d tool calls failed", n)
 }
 
 // streamGone reports whether err says the message is not streaming any more:

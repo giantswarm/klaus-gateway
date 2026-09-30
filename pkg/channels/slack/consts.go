@@ -238,6 +238,11 @@ const (
 	inspectToggleAction   = "inspect_toggle"
 )
 
+// inspectOpenAction is the "Show tool calls" button a reply with failed tool
+// calls ends with; a click opens the thread's inspection modal, as the
+// shortcut does.
+const inspectOpenAction = "inspect_open"
+
 // askAgentShortcutCallbackID is the callback_id of the "Ask an agent here"
 // message shortcut registered in deploy/slack/manifest.yaml. Invoked on any
 // message, it opens the agent picker and starts the conversation inside that

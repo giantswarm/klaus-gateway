@@ -502,13 +502,16 @@ any string that begins with `Slack bot`, `Slack app-level`, or `Slack user`.
 
    A reply whose tool calls include failed ones — a result the tool or the runtime reported as
    an error, ❌ in the log; an approval request is not one — ends with one muted line that
-   counts them and points to the shortcut: `⚠️ 2 tool calls failed · To see them: ⋯ on this
-   message → Apps → Inspect agent steps`. It is a context block the final `chat.stopStream`
-   adds below the streamed text (its `blocks` argument), so it is part of the reply and
-   everyone in the thread sees it. It counts every failed call of the reply, also one the
+   counts them, `⚠️ 2 tool calls failed`, and a **Show tool calls** button. The button opens
+   the thread's **Agent steps** modal for the person who clicks it, as the shortcut does:
+   the click brings the `trigger_id` a modal needs, and the thread is the clicked message's.
+   Line and button are a context block and an actions block the final `chat.stopStream`
+   adds below the streamed text (its `blocks` argument), so they are part of the reply and
+   everyone in the thread sees them. It counts every failed call of the reply, also one the
    agent recovered from with a later call, and starts from zero for each reply; after a
-   gateway restart during the turn, it counts only the calls after the restart. The line
-   stays in the thread, but the calls it points to are kept for 24 hours only. A reply that
+   gateway restart during the turn, it counts only the calls after the restart. The button
+   stays in the thread, but the calls it opens are kept for 24 hours only; a later click
+   opens the modal with the "No tool activity is kept" notice. A reply that
    rolls over carries it on its last message; a turn without prose has no reply to carry
    it, and a final stop that fails loses it.
 
