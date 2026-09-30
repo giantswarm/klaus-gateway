@@ -1864,6 +1864,32 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 		a.Logger.Info("slack: dropping duplicate message delivery", "channel", inner.Channel, "ts", msg.MessageID)
 		return
 	}
+	// A message that is one of the gateway's command words alone is that
+	// command: usage, help, login, logout, agents (bareCommands).
+	// Slack keeps a message that starts with "/" for its own commands, so the
+	// plain word is the form a person can type without addressing the bot;
+	// the slash form still works after a mention. Read before dispatch, so a
+	// busy thread answers the command instead of the busy notice;
+	// bareCommandFor names the messages that keep the word instead.
+	if bare := a.bareCommandFor(msg); bare != nil {
+		bare.Root = msg.MessageID == msg.ThreadID
+		// "agents" is the roster listing, which the /agent command serves for
+		// its bare form. That form never dispatches, so the word is consumed
+		// here. The listing reads the agent catalogue at the kagent
+		// controller, which serves it to a human identity, so it runs as the
+		// caller, like the slash form below.
+		consumed := false
+		if bare.Name == cmdAgents {
+			a.handleAgentSelection(a.withCallerToken(ctx, msg.Subject), &slashCommand{Name: cmdAgent}, &msg, inner.Channel)
+			consumed = true
+		} else {
+			consumed = a.handleCommand(ctx, bare, msg.Subject, inner.Channel, msg.ThreadID)
+		}
+		if consumed {
+			a.Logger.Debug("slack: bare command consumed", "command", bare.Name, "channel", inner.Channel, "thread", msg.ThreadID)
+			return
+		}
+	}
 	if cmd := parseCommand(msg.Text); cmd != nil {
 		cmd.Root = msg.MessageID == msg.ThreadID
 		// /agent is not a consumed command: the select form mutates msg (agent
@@ -1880,7 +1906,7 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 			a.Logger.Debug("slack: command consumed", "command", cmd.Name, "channel", inner.Channel, "thread", msg.ThreadID)
 			return
 		} else if isUnknownCommand(cmd) {
-			text := fmt.Sprintf("`/%s` is not a command; mention the bot with `/help` for the list. If it was meant for the agent, send it again without the leading slash.", cmd.Name)
+			text := fmt.Sprintf("`/%s` is not a command; mention the bot with `help` for the list. If it was meant for the agent, send it again without the leading slash.", cmd.Name)
 			if _, err := a.apiClient().postNote(ctx, inner.Channel, text, msg.ThreadID); err != nil {
 				a.Logger.Warn("slack: post unknown-command notice failed", "error", err)
 			}

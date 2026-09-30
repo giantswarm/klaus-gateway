@@ -56,7 +56,7 @@ const agentNothingSelectedHint = "Nothing was selected. Include your question in
 
 // agentUnavailableNotice reports a selection that failed validation. The
 // caller appends the current roster when it is available.
-const agentUnavailableNotice = "No agent named `%s` is available. Nothing was started; mention the bot with `/agent` to list the agents."
+const agentUnavailableNotice = "No agent named `%s` is available. Nothing was started; mention the bot with `agents` to list the agents."
 
 // agentNotRunnableNotice reports a selection of an agent that exists but
 // cannot start a conversation; %s are the agent's display name and the reason

@@ -9,6 +9,7 @@ import (
 
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 	"github.com/giantswarm/klaus-gateway/pkg/auth/musterlink"
+	"github.com/giantswarm/klaus-gateway/pkg/channels"
 )
 
 const (
@@ -17,7 +18,8 @@ const (
 	cmdLogin  = "login"  // OBO account linking: sign in
 	cmdLogout = "logout" // OBO account linking: sign out
 	cmdUsage  = "usage"
-	cmdAgent  = "agent" // agent selection; handled by handleAgentSelection, not handleCommand
+	cmdAgent  = "agent"  // agent selection; handled by handleAgentSelection, not handleCommand
+	cmdAgents = "agents" // the roster listing as a word; handleAgentSelection serves it too
 )
 
 // knownCommands is the verb set the gateway owns.
@@ -78,14 +80,87 @@ func parseCommand(text string) *slashCommand {
 	return &slashCommand{Name: strings.ToLower(parts[0]), Args: args}
 }
 
+// bareCommands are the verbs a message carries as the word alone, with no
+// slash. Slack's composer keeps a message that starts with "/" for its own
+// commands, in a DM too, so a slash form reaches the bot only after a mention;
+// the plain word is the form a person can type wherever the bot reads. "stop"
+// is not one of them: it is a command only while a turn runs, which dispatch
+// decides (see isBareStop).
+var bareCommands = map[string]struct{}{
+	cmdLogin:  {},
+	cmdLogout: {},
+	cmdUsage:  {},
+	cmdHelp:   {},
+	cmdAgents: {},
+}
+
+// bareWord normalises a message that may be a one-word command: the word
+// alone, in any case, with trailing sentence punctuation allowed. Anything
+// longer comes back unchanged apart from the trim, so it matches no verb.
+func bareWord(text string) string {
+	text = strings.TrimRight(strings.TrimSpace(text), ".!?")
+	return strings.ToLower(strings.TrimSpace(text))
+}
+
+// parseBareCommand returns the command a message carries as a plain word, or
+// nil when it carries none. The whole message must be that word: a sentence
+// around it is a message for the agent.
+func parseBareCommand(text string) *slashCommand {
+	word := bareWord(text)
+	if _, ok := bareCommands[word]; !ok {
+		return nil
+	}
+	return &slashCommand{Name: word}
+}
+
+// bareCommandFor returns the command msg runs as a plain word, or nil when the
+// message is something else. Three messages keep the word for what they
+// carry, since a consumed message is one the agent never sees.
+func (a *Adapter) bareCommandFor(msg channels.InboundMessage) *slashCommand {
+	cmd := parseBareCommand(msg.Text)
+	if cmd == nil {
+		return nil
+	}
+	// A word this gateway cannot serve belongs to the agent. usage and help it
+	// answers from itself, always.
+	switch cmd.Name {
+	case cmdLogin, cmdLogout:
+		if a.OBO == nil {
+			return nil
+		}
+	case cmdAgents:
+		if !a.agentSelectionReady() {
+			return nil
+		}
+	}
+	// A word beside an upload is that file's caption. Consuming it would drop
+	// the file without a word to its sender.
+	if len(msg.Attachments) > 0 {
+		return nil
+	}
+	// A thread paused on a question keeps the word for its answer: one word
+	// is the shape the question asks for, and the paused task must be
+	// resolved or the tool call dangles. The command is reachable there as
+	// `/login` after a mention, since the word alone is the answer with or
+	// without one. Both kinds of question count: the ask_user card, and a
+	// pause with no structured prompt, whose typed reply reaches the agent as
+	// the answer itself (decisionFromText maps a nil prompt to no decision).
+	// An approval card is not a question: any text beside it is read as a
+	// rejection carrying that text, so the word stays the command and the
+	// card stays open.
+	if task := a.peekPendingTask(msg.ThreadID); task != nil && (task.Prompt == nil || task.Prompt.IsAskUser()) {
+		return nil
+	}
+	return cmd
+}
+
 // isBareStop reports whether text is the word "stop" on its own — the natural
 // reply in a thread the bot answers in without a mention — allowing case and
 // trailing punctuation. Only a thread with a running turn reads it as /stop;
 // anywhere else it stays what it is today: a message for the agent, or a deny
 // word for a paused prompt.
 func isBareStop(text string) bool {
-	text = strings.TrimRight(strings.TrimSpace(text), ".!?")
-	return strings.EqualFold(strings.TrimSpace(text), cmdStop)
+	return bareWord(text) == cmdStop
 }
 
 // helpCommand is one command in the help reply: the command as it is typed,
@@ -103,19 +178,19 @@ type helpGroup struct {
 // them.
 func helpGroups(agents, signIn bool) []helpGroup {
 	groups := []helpGroup{{title: "In a thread", commands: []helpCommand{
-		{"/stop", "Interrupt the running turn; a plain stop in its thread works too"},
-		{"/usage", "Tokens for the last turn and the session"},
+		{cmdStop, "Interrupt the turn that is running, or deny an open approval; with neither it is a message for the agent"},
+		{cmdUsage, "Tokens for the last turn and the session"},
 	}}}
 	if agents {
 		groups = append(groups, helpGroup{title: "Agents", commands: []helpCommand{
-			{"/agent", "List the agents"},
+			{cmdAgents, "List the agents; in a new thread each row starts a conversation"},
 			{`/agent "Name" question`, "Start a conversation with a named agent"},
 		}})
 	}
 	if signIn {
 		groups = append(groups, helpGroup{title: "Account", commands: []helpCommand{
-			{"/login", "Sign in to Giant Swarm; the agent then acts with your permissions"},
-			{"/logout", "Sign out"},
+			{cmdLogin, "Sign in to Giant Swarm; the agent then acts with your permissions"},
+			{cmdLogout, "Sign out"},
 		}})
 	}
 	return groups
@@ -130,12 +205,18 @@ const helpShortcutNote = "Inspect agent steps: open the ⋯ menu on any message 
 // known the mention names it, otherwise it says "the bot" rather than
 // hardcoding one. The returned text is the notification fallback.
 func helpBlocks(botName string, agents, signIn bool) (string, []any) {
-	// Slack's composer takes a message that starts with / as one of Slack's
-	// own commands, in a DM too, so a command reaches the bot only after a
-	// mention.
-	address := "Mention the bot first, then the command: a message that starts with / goes to Slack's own commands."
+	// A plain word reaches the bot wherever it reads messages, which is a DM
+	// and a thread it is in; a top-level channel message reaches it only with
+	// a mention. Slack's composer takes a message that starts with / as one
+	// of Slack's own commands, in a DM too, so /agent — the one command that
+	// keeps a slash — needs the mention everywhere.
+	who := "the bot"
 	if botName != "" {
-		address = fmt.Sprintf("Mention @%s first, as in `@%s /stop`: a message that starts with / goes to Slack's own commands.", botName, botName)
+		who = "@" + botName
+	}
+	address := fmt.Sprintf("Send a command as the word alone, in a direct message or in a thread %s is in; anywhere else mention %s first.", who, who)
+	if agents {
+		address += " `/agent` always needs the mention: Slack keeps a message that starts with / for its own commands."
 	}
 	var lines []string
 	var elements []any
@@ -256,7 +337,8 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *slashCommand, slackUse
 	return false
 }
 
-// handleLoginCommand handles `/login`. It always consumes the command. When
+// handleLoginCommand handles the login command, typed as the word alone or as
+// `/login` after a mention. It always consumes the command. When
 // OBO is disabled it says so rather than dispatching to the agent. An unlinked
 // user gets the sign-in prompt; a linked user gets a confirmation of their
 // signed-in identity. reply is ephemeral: the identity confirmation carries
@@ -304,7 +386,8 @@ func (a *Adapter) linkedEmail(slackUser string) string {
 	return ""
 }
 
-// handleLogoutCommand handles `/logout`: it signs the user out of their muster
+// handleLogoutCommand handles the logout command, typed as the word alone or
+// as `/logout` after a mention: it signs the user out of their muster
 // link, so the gateway asks them to sign in again before acting as them.
 func (a *Adapter) handleLogoutCommand(slackUser string, reply func(string)) bool {
 	if a.OBO == nil {

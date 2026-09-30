@@ -13,7 +13,7 @@ sees; nothing there depends on the carrier.
 | Turns | A2A v1 over gRPC (`lf.a2a.v1.A2AService`: `SendStreamingMessage`, `GetTask`, `CancelTask`) through the `a2a-go/v2` client on its gRPC transport |
 | Agent roster | `kagent.api.v1alpha1.AgentTemplateService/ListAgentTemplates` |
 | Conversations | `kagent.api.v1alpha1.AgentInstanceService` (`CreateAgentInstance`, `GetAgentInstance`, `DeleteAgentInstance`) |
-| Model line (`/usage`) | `kagent.api.v1alpha1.ModelService/GetModelConfig` |
+| Model line (`usage`) | `kagent.api.v1alpha1.ModelService/GetModelConfig` |
 
 All of it goes to one gRPC target, `a2a.url`, reached through the platform's agentgateway:
 `grpc://host:port` for plaintext h2c (the in-cluster agentgateway Service, e.g.
@@ -56,7 +56,7 @@ offers is derived from `ListAgentTemplates`:
   not compiled a ready revision yet, is not offered; selecting it by name is refused with the
   reason in the gateway's log (the channel shows its unknown-agent notice with the roster).
 
-The template's `modelConfig` reference backs the `/usage` model line through `GetModelConfig`
+The template's `modelConfig` reference backs the `usage` model line through `GetModelConfig`
 (`spec.provider/spec.model`).
 
 ## Conversations: one AgentInstance per thread
