@@ -2,8 +2,10 @@ package slack
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -30,6 +32,9 @@ const (
 // fields are raw agent- and tool-controlled text; inspectionBlocks escapes them
 // when it renders the log.
 type toolLogEntry struct {
+	// id names the entry within its thread's log, so a "Show details" click
+	// finds it again however the log moved on since the modal was drawn.
+	id     int
 	turn   int    // 1-based turn ordinal within this thread's log
 	callID string // correlates the result with the call; "" when the stream gave none
 	// name is the tool that ran: call_tool's inner tool when it wrapped one, in
@@ -47,10 +52,12 @@ type toolLogEntry struct {
 
 // threadToolLog is one thread's retained tool activity. turns counts turns
 // recorded since the log entry was created; dropped counts entries evicted by
-// the per-thread cap, so the inspection is honest about what it shows.
+// the per-thread cap, so the inspection is honest about what it shows; ids
+// counts the entry ids handed out.
 type threadToolLog struct {
 	turns   int
 	dropped int
+	ids     int
 	entries []toolLogEntry
 }
 
@@ -73,6 +80,8 @@ func (a *Adapter) appendToolLog(threadID string, e toolLogEntry) {
 }
 
 func (a *Adapter) appendToolLogLocked(log *threadToolLog, e toolLogEntry) {
+	log.ids++
+	e.id = log.ids
 	log.entries = append(log.entries, e)
 	if over := len(log.entries) - maxToolLogEntries; over > 0 {
 		log.dropped += over
@@ -195,28 +204,24 @@ func (a *Adapter) handleMessageAction(ctx context.Context, payload interactionPa
 }
 
 // postInspection shows threadID's retained tool log to slackUser in a modal
-// opened with the shortcut's trigger_id. Should Slack refuse the modal — the
-// trigger_id lives only 3 seconds — the same content goes out as ephemeral
-// in-thread messages instead, split across several when it outgrows one
-// message's block budget. An empty log gets the honest "no longer retained"
-// guidance instead.
+// opened with the shortcut's trigger_id: one short line per call, whose "Show
+// details" button opens its arguments and result in place. Should Slack refuse
+// the modal — the trigger_id lives only 3 seconds — the log goes out as
+// ephemeral in-thread messages instead, every call with its details, since a
+// message cannot be redrawn like a modal; split across several when it outgrows
+// one message's block budget. An empty log gets the honest "no longer
+// retained" guidance instead.
 func (a *Adapter) postInspection(ctx context.Context, slackChannel, threadID, slackUser, triggerID string) {
 	client := a.apiClient()
 	entries, dropped := a.toolLogSnapshot(threadID)
 	notice := ""
-	var blocks []any
 	if len(entries) == 0 {
-		notice = inspectNothingRetainedNotice
-		if a.threadEngaged(threadID) {
-			notice = inspectRetainedElsewhereHint
-		}
-		blocks = []any{sectionBlock(notice)}
-	} else {
-		blocks = inspectionBlocks(entries, dropped)
+		notice = a.inspectEmptyNotice(threadID)
 	}
 
 	if triggerID != "" {
-		err := client.viewsOpen(ctx, triggerID, inspectionView(blocks))
+		view := inspectionView(threadID, nil, a.inspectionModalBlocks(threadID, nil))
+		err := client.viewsOpen(ctx, triggerID, view)
 		if err == nil {
 			return
 		}
@@ -229,6 +234,7 @@ func (a *Adapter) postInspection(ctx context.Context, slackChannel, threadID, sl
 		}
 		return
 	}
+	blocks := inspectionBlocks(entries, dropped, nil, false)
 	for start := 0; start < len(blocks); start += maxActivityBlocks {
 		end := min(start+maxActivityBlocks, len(blocks))
 		if err := client.postEphemeralBlocks(ctx, slackChannel, slackUser, threadID, inspectFallbackText, blocks[start:end]); err != nil {
@@ -238,13 +244,70 @@ func (a *Adapter) postInspection(ctx context.Context, slackChannel, threadID, sl
 	}
 }
 
+// inspectEmptyNotice is what the inspection says of a thread with no retained
+// tool activity.
+func (a *Adapter) inspectEmptyNotice(threadID string) string {
+	if a.threadEngaged(threadID) {
+		return inspectRetainedElsewhereHint
+	}
+	return inspectNothingRetainedNotice
+}
+
+// inspectionModalBlocks renders threadID's current log for the modal, the
+// calls expanded names open with their details.
+func (a *Adapter) inspectionModalBlocks(threadID string, expanded []int) []any {
+	entries, dropped := a.toolLogSnapshot(threadID)
+	if len(entries) == 0 {
+		return []any{sectionBlock(a.inspectEmptyNotice(threadID))}
+	}
+	return inspectionBlocks(entries, dropped, expanded, true)
+}
+
+// inspectViewState is what the inspection modal carries in its private_metadata
+// for its "Show details" clicks: the thread it shows, and the ids of the calls
+// open with their details.
+type inspectViewState struct {
+	Thread   string `json:"t"`
+	Expanded []int  `json:"e,omitempty"`
+}
+
 // inspectionView is the modal that shows the inspection blocks.
-func inspectionView(blocks []any) map[string]any {
+func inspectionView(threadID string, expanded []int, blocks []any) map[string]any {
+	state, _ := json.Marshal(inspectViewState{Thread: threadID, Expanded: expanded})
 	return map[string]any{
-		bkType:   bkModal,
-		bkTitle:  plainTextObj(inspectModalTitle),
-		bkClose:  plainTextObj("Close"),
-		bkBlocks: blocks,
+		bkType:            bkModal,
+		bkCallbackID:      inspectViewCallbackID,
+		bkPrivateMetadata: string(state),
+		bkTitle:           plainTextObj(inspectModalTitle),
+		bkClose:           plainTextObj("Close"),
+		bkBlocks:          blocks,
+	}
+}
+
+// handleInspectToggle opens or closes one call's details in the inspection
+// modal it was clicked in, and redraws the modal from the current log. The
+// view's hash makes Slack refuse a redraw of a modal that changed since this
+// click saw it, such as by a second click in flight; that click is dropped.
+func (a *Adapter) handleInspectToggle(ctx context.Context, payload interactionPayload) {
+	if payload.View.ID == "" || payload.View.CallbackID != inspectViewCallbackID || len(payload.Actions) == 0 {
+		return
+	}
+	var state inspectViewState
+	if err := json.Unmarshal([]byte(payload.View.PrivateMetadata), &state); err != nil || state.Thread == "" {
+		return
+	}
+	id, err := strconv.Atoi(payload.Actions[0].Value)
+	if err != nil {
+		return
+	}
+	if i := slices.Index(state.Expanded, id); i >= 0 {
+		state.Expanded = slices.Delete(state.Expanded, i, i+1)
+	} else {
+		state.Expanded = append(state.Expanded, id)
+	}
+	view := inspectionView(state.Thread, state.Expanded, a.inspectionModalBlocks(state.Thread, state.Expanded))
+	if err := a.apiClient().viewsUpdate(ctx, payload.View.ID, payload.View.Hash, view); err != nil {
+		a.Logger.Warn("slack: redraw the inspection modal failed", "thread", state.Thread, "user", payload.User.ID, "error", err)
 	}
 }
 
@@ -260,9 +323,12 @@ func headerBlock(text string) map[string]any {
 
 // inspectionBlocks renders retained entries as Block Kit blocks: a context
 // line stating scope and visibility, then per turn a divider and a header, and
-// one section per call. The oldest calls give way when the log would outgrow a
-// modal, and the context line counts them with the ones the cap dropped.
-func inspectionBlocks(entries []toolLogEntry, dropped int) []any {
+// one section per call. With interactive set (the modal) a call is its short
+// line with a "Show details" button, open with its details when expanded names
+// it; without (the fallback messages) every call shows its details and no
+// button. The oldest calls give way when the log would outgrow a modal, and
+// the context line counts them with the ones the cap dropped.
+func inspectionBlocks(entries []toolLogEntry, dropped int, expanded []int, interactive bool) []any {
 	for len(entries) > 0 && 1+len(entries)+2*countTurns(entries) > maxInspectBlocks {
 		entries = entries[1:]
 		dropped++
@@ -281,7 +347,23 @@ func inspectionBlocks(entries []toolLogEntry, dropped int) []any {
 		header := fmt.Sprintf("Turn %d · %d %s", turn, j-i, plural(j-i, "call", "calls"))
 		blocks = append(blocks, map[string]any{bkType: bkDivider}, headerBlock(header))
 		for _, e := range entries[i:j] {
-			blocks = append(blocks, sectionBlock(callSectionText(e)))
+			if !interactive {
+				blocks = append(blocks, sectionBlock(callSectionText(e)))
+				continue
+			}
+			open := slices.Contains(expanded, e.id)
+			text, label := callHeadline(e), "Show details"
+			if open {
+				text, label = callSectionText(e), "Hide"
+			}
+			section := sectionBlock(text)
+			section[bkAccessory] = map[string]any{
+				bkType:     bkButton,
+				bkText:     plainTextObj(label),
+				bkActionID: inspectToggleAction,
+				bkValue:    strconv.Itoa(e.id),
+			}
+			blocks = append(blocks, section)
 		}
 		i = j
 	}
@@ -300,17 +382,24 @@ func countTurns(entries []toolLogEntry) int {
 	return n
 }
 
-// callSectionText renders one call: its status, its plain-language title with
-// the raw tool name, its arguments and its result. Every payload is agent- or
-// tool-controlled, so it is escaped, kept inside its code block and cut to its
-// share of the section's size.
+// callHeadline is one call's short line: its status and its plain-language
+// title with the raw tool name.
+func callHeadline(e toolLogEntry) string {
+	line := toolStateIcon(e.state) + " *" + strings.ReplaceAll(toolTitle(e.name), "`", "'") + "*  ·  `" +
+		codeSpanSafe(cutEscaped(escapeMrkdwn(e.name), inspectNameMax)) + "`"
+	if e.viaMuster {
+		line += "  via muster"
+	}
+	return line
+}
+
+// callSectionText renders one call with its details: its short line, its
+// arguments and its result. Every payload is agent- or tool-controlled, so it
+// is escaped, kept inside its code block and cut to its share of the section's
+// size.
 func callSectionText(e toolLogEntry) string {
 	var b strings.Builder
-	b.WriteString(toolStateIcon(e.state) + " *" + strings.ReplaceAll(toolTitle(e.name), "`", "'") + "*  ·  `" +
-		codeSpanSafe(cutEscaped(escapeMrkdwn(e.name), inspectNameMax)) + "`")
-	if e.viaMuster {
-		b.WriteString("  via muster")
-	}
+	b.WriteString(callHeadline(e))
 	switch {
 	case !e.called:
 		b.WriteString("\n_The call itself was not recorded._")

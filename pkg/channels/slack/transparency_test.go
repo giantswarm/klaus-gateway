@@ -122,13 +122,16 @@ func TestBatchedWriter_ToolCallsPutNothingOnTheThread(t *testing.T) {
 	}
 }
 
-func TestCompactJSON_TruncatesAndEmpty(t *testing.T) {
-	require.Equal(t, "", compactJSON(nil, 100))
-	require.Equal(t, "", compactJSON(map[string]any{}, 100))
-	require.Equal(t, `{"a": "b"}`, compactJSON(map[string]any{"a": "b"}, 100))
+func TestIndentJSON_TruncatesAndEmpty(t *testing.T) {
+	require.Equal(t, "", indentJSON(nil, 100))
+	require.Equal(t, "", indentJSON(map[string]any{}, 100))
+	require.Equal(t, "{\n  \"a\": \"b\"\n}", indentJSON(map[string]any{"a": "b"}, 100))
+	require.Equal(t, "[\n  1,\n  2\n]", indentJSONValue([]any{1, 2}, 100), "an array indents like an object")
+	require.Contains(t, indentJSON(map[string]any{"q": "x > 0.5 && y < 1"}, 100), `"q": "x > 0.5 && y < 1"`,
+		"the real characters, not JSON's HTML escapes")
 
-	out := compactJSON(map[string]any{"k": "0123456789"}, 8)
-	require.Len(t, []rune(out), 9, "8 runes + ellipsis")
+	out := indentJSON(map[string]any{"k": "0123456789"}, 8)
+	require.Len(t, []rune(out), 8, "7 runes + ellipsis")
 	require.Contains(t, out, "…")
 }
 

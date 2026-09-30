@@ -77,7 +77,10 @@ type interactionPayload struct {
 	// names the form, private_metadata carries what the opener stashed, and
 	// state.values holds every input, keyed like State above.
 	View struct {
-		ID              string `json:"id"`
+		ID string `json:"id"`
+		// Hash is the view's version, which views.update checks so a redraw
+		// cannot overwrite a newer one.
+		Hash            string `json:"hash"`
 		CallbackID      string `json:"callback_id"`
 		PrivateMetadata string `json:"private_metadata"`
 		State           struct {
@@ -216,6 +219,9 @@ func (a *Adapter) routeInteraction(ctx context.Context, payload interactionPaylo
 	action := payload.Actions[0]
 
 	switch action.ActionID {
+	case inspectToggleAction:
+		a.handleInspectToggle(ctx, payload)
+		return
 	case agentSelectAction:
 		a.handleRosterSelect(ctx, payload, action.Value)
 		return

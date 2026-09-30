@@ -1110,14 +1110,6 @@ func TestUnwrapCallTool(t *testing.T) {
 	}
 }
 
-func TestSpaceStructuralJSON(t *testing.T) {
-	require.Equal(t, `{"a": "b", "c": "d"}`, spaceStructuralJSON([]byte(`{"a":"b","c":"d"}`)))
-	// ':' and ',' inside a string value stay untouched.
-	require.Equal(t, `{"k": "a,b:c"}`, spaceStructuralJSON([]byte(`{"k":"a,b:c"}`)))
-	// An escaped quote does not end the string, so its trailing ',' is left alone.
-	require.Equal(t, `{"k": "a\"b,c"}`, spaceStructuralJSON([]byte(`{"k":"a\"b,c"}`)))
-}
-
 // capturedMessage is one thread message's final content: the text of each of
 // its blocks (context elements flattened), after all in-place updates.
 type capturedMessage []string
@@ -1863,13 +1855,13 @@ func TestToolResultPreview(t *testing.T) {
 
 	t.Run("non-envelope payloads keep the raw JSON rendering", func(t *testing.T) {
 		preview, isErr := toolResultPreview(map[string]any{"items": "3 pods"}, 100)
-		require.Equal(t, `{"items": "3 pods"}`, preview)
+		require.JSONEq(t, `{"items": "3 pods"}`, preview)
 		require.False(t, isErr)
 	})
 
 	t.Run("output wrap with extra keys is not a text carrier", func(t *testing.T) {
 		preview, _ := toolResultPreview(map[string]any{"output": "x", "status": "ok"}, 100)
-		require.Equal(t, `{"output": "x", "status": "ok"}`, preview)
+		require.JSONEq(t, `{"output": "x", "status": "ok"}`, preview)
 	})
 
 	t.Run("output wrap unwraps to the bare text", func(t *testing.T) {
@@ -1902,7 +1894,7 @@ func TestToolResultPreview(t *testing.T) {
 
 	t.Run("error wrap with extra keys is not a text carrier", func(t *testing.T) {
 		preview, isErr := toolResultPreview(map[string]any{"error": "x", "status": "failed"}, 100)
-		require.Equal(t, `{"error": "x", "status": "failed"}`, preview)
+		require.JSONEq(t, `{"error": "x", "status": "failed"}`, preview)
 		require.False(t, isErr)
 	})
 
@@ -1916,19 +1908,19 @@ func TestToolResultPreview(t *testing.T) {
 
 	t.Run("harness runtime: a structured result keeps the raw rendering and the flag", func(t *testing.T) {
 		preview, isErr := toolResultPreview(map[string]any{"result": map[string]any{"code": 7}, "isError": true}, 100)
-		require.Equal(t, `{"isError": true, "result": {"code": 7}}`, preview)
+		require.JSONEq(t, `{"isError": true, "result": {"code": 7}}`, preview)
 		require.True(t, isErr)
 	})
 
 	t.Run("the flag is the only key allowed beside a wrap", func(t *testing.T) {
 		preview, isErr := toolResultPreview(map[string]any{"result": "x", "isError": false, "status": "ok"}, 100)
-		require.Equal(t, `{"isError": false, "result": "x", "status": "ok"}`, preview)
+		require.JSONEq(t, `{"isError": false, "result": "x", "status": "ok"}`, preview)
 		require.False(t, isErr)
 	})
 
 	t.Run("a non-boolean flag does not make a wrap a text carrier", func(t *testing.T) {
 		preview, isErr := toolResultPreview(map[string]any{"result": "x", "isError": "yes"}, 100)
-		require.Equal(t, `{"isError": "yes", "result": "x"}`, preview)
+		require.JSONEq(t, `{"isError": "yes", "result": "x"}`, preview)
 		require.False(t, isErr)
 	})
 
@@ -1937,13 +1929,13 @@ func TestToolResultPreview(t *testing.T) {
 		// output wrap: not a text carrier itself, but its flag must not be lost.
 		inner := `{"result": {"code": 7}, "isError": true}`
 		preview, isErr := toolResultPreview(map[string]any{"output": inner}, 100)
-		require.Equal(t, `{"isError": true, "result": {"code": 7}}`, preview)
+		require.JSONEq(t, `{"isError": true, "result": {"code": 7}}`, preview)
 		require.True(t, isErr)
 	})
 
 	t.Run("result wrap with extra keys is not a text carrier", func(t *testing.T) {
 		preview, _ := toolResultPreview(map[string]any{"result": "x", "status": "ok"}, 100)
-		require.Equal(t, `{"result": "x", "status": "ok"}`, preview)
+		require.JSONEq(t, `{"result": "x", "status": "ok"}`, preview)
 	})
 
 	t.Run("envelope text renders without the content boilerplate", func(t *testing.T) {
@@ -1952,22 +1944,22 @@ func TestToolResultPreview(t *testing.T) {
 		require.False(t, isErr)
 	})
 
-	t.Run("JSON text decodes to compact JSON with real quotes", func(t *testing.T) {
-		preview, _ := toolResultPreview(mcpEnvelope("{\n  \"filters\": {\n    \"query\": \"list clusters\"\n  }\n}", false), 100)
-		require.Equal(t, `{"filters": {"query": "list clusters"}}`, preview)
+	t.Run("JSON text decodes to indented JSON with real quotes", func(t *testing.T) {
+		preview, _ := toolResultPreview(mcpEnvelope(`{"filters":{"query":"list clusters"}}`, false), 100)
+		require.Equal(t, "{\n  \"filters\": {\n    \"query\": \"list clusters\"\n  }\n}", preview)
 	})
 
 	t.Run("muster double wrap unwraps to the innermost payload", func(t *testing.T) {
 		resp := mcpEnvelope(serialize(t, mcpEnvelope(clusters, false)), false)
 		preview, isErr := toolResultPreview(resp, 100)
-		require.Equal(t, `{"clusters": ["alpha", "beta"]}`, preview)
+		require.JSONEq(t, `{"clusters": ["alpha", "beta"]}`, preview)
 		require.False(t, isErr)
 	})
 
 	t.Run("triple wrap unwraps too", func(t *testing.T) {
 		resp := mcpEnvelope(serialize(t, mcpEnvelope(serialize(t, mcpEnvelope(clusters, false)), false)), false)
 		preview, _ := toolResultPreview(resp, 100)
-		require.Equal(t, `{"clusters": ["alpha", "beta"]}`, preview)
+		require.JSONEq(t, `{"clusters": ["alpha", "beta"]}`, preview)
 	})
 
 	t.Run("inner isError surfaces through the wrap", func(t *testing.T) {
@@ -2012,13 +2004,13 @@ func TestToolResultPreview(t *testing.T) {
 
 	t.Run("empty content falls back to the raw payload", func(t *testing.T) {
 		preview, isErr := toolResultPreview(map[string]any{"content": []any{}, "isError": true}, 100)
-		require.Equal(t, `{"content": [], "isError": true}`, preview)
+		require.JSONEq(t, `{"content": [], "isError": true}`, preview)
 		require.True(t, isErr)
 	})
 
 	t.Run("malformed content items keep the raw rendering", func(t *testing.T) {
 		preview, _ := toolResultPreview(map[string]any{"content": []any{"not a map"}}, 100)
-		require.Equal(t, `{"content": ["not a map"]}`, preview)
+		require.JSONEq(t, `{"content": ["not a map"]}`, preview)
 	})
 }
 
@@ -2034,7 +2026,7 @@ func TestRenderToolActivity_UnwrapsMCPResultEnvelope(t *testing.T) {
 	)
 	require.Len(t, posts, 1, "a result without an id closes the running call of its tool")
 	require.Contains(t, posts[0], "✅ *Finding the right tool*  ·  `filter_tools`")
-	require.Contains(t, posts[0], `{"filters": {"query": "list clusters"}}`)
+	require.Contains(t, posts[0], "```{\n  \"filters\": {\n    \"query\": \"list clusters\"\n  }\n}```")
 	require.NotContains(t, posts[0], "content", "no envelope boilerplate in the preview")
 	require.NotContains(t, posts[0], `\n`, "no literal escape sequences in the preview")
 }
@@ -2055,7 +2047,7 @@ func TestRenderToolActivity_UnwrapsMusterDoubleWrappedResult(t *testing.T) {
 	)
 	require.Len(t, posts, 1)
 	require.Contains(t, posts[0], "`x_kubernetes_capi_list_clusters`  via muster")
-	require.Contains(t, posts[0], `{"clusters": ["alpha", "beta"]}`)
+	require.Contains(t, posts[0], "```{\n  \"clusters\": [\n    \"alpha\",\n    \"beta\"\n  ]\n}```")
 	require.NotContains(t, posts[0], `\"`, "no double-escaped quotes in the preview")
 }
 

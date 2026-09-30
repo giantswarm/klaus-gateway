@@ -1001,43 +1001,23 @@ func validLoginURL(raw string) string {
 	return raw
 }
 
-// compactJSON marshals a tool payload to a single readable line: one space after
-// each structural ':' and ',' (outside string literals), truncated to max runes.
-// Returns "" for an empty or unmarshalable payload.
-func compactJSON(v map[string]any, max int) string {
-	if len(v) == 0 {
-		return ""
-	}
-	return compactJSONValue(v, max)
-}
-
-// compactJSONValue is compactJSON over any JSON value, so unwrapped payloads
-// that are arrays render the same single readable line as objects.
-func compactJSONValue(v any, max int) string {
-	// json.Marshal is HTML-safe: it spells <, > and & as \u003c, \u003e and
-	// \u0026. That neutralising is the wrong layer here — every place this
-	// preview lands escapes it for mrkdwn itself (escapeMrkdwn) — and it put
-	// the agent's own PromQL on screen as "\u003e 0.5" (graveler, 2026-09-22).
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(v); err != nil {
-		return ""
-	}
-	rs := []rune(spaceStructuralJSON(bytes.TrimRight(buf.Bytes(), "\n")))
-	if len(rs) > max {
-		return string(rs[:max]) + "…"
-	}
-	return string(rs)
-}
-
 // indentJSON renders a call's arguments as indented JSON, one key per line,
-// truncated to max runes; "" for a call without arguments. HTML escaping is off
-// for the reason compactJSONValue gives.
+// truncated to max runes; "" for a call without arguments.
 func indentJSON(v map[string]any, max int) string {
 	if len(v) == 0 {
 		return ""
 	}
+	return indentJSONValue(v, max)
+}
+
+// indentJSONValue is indentJSON over any JSON value, so a result that is an
+// array renders like one that is an object; "" for a value that does not
+// marshal.
+func indentJSONValue(v any, max int) string {
+	// json.Marshal is HTML-safe: it spells <, > and & as \u003c, \u003e and
+	// \u0026. That neutralising is the wrong layer here — the inspection
+	// escapes every payload for mrkdwn itself (escapeMrkdwn) — and it put the
+	// agent's own PromQL on screen as "\u003e 0.5" (graveler, 2026-09-22).
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
@@ -1055,22 +1035,22 @@ func indentJSON(v map[string]any, max int) string {
 // input, rendered as-is.
 const maxMCPResultUnwrapDepth = 4
 
-// toolResultPreview renders a tool result payload as a single readable line,
-// spending the max budget on the innermost actual payload instead of envelope
+// toolResultPreview renders a tool result payload for the tool log, spending
+// the max budget on the innermost actual payload instead of envelope
 // boilerplate. An MCP result envelope ({"content": [...], "isError": ...}) or
 // kagent's plain-output wrap ({"output": text}) is reduced to its text; text
 // that is itself a serialized JSON document (muster's call_tool re-wrap) is
 // decoded and unwrapped again up to maxMCPResultUnwrapDepth. The innermost
-// payload renders as compact JSON when it is a JSON document and as
-// whitespace-collapsed plain text otherwise. isErr reports whether any
-// unwrapped envelope flagged the result as an error. Payloads with any other
-// shape render unchanged via compactJSON.
+// payload renders as indented JSON when it is a JSON document, like the call's
+// arguments, and as whitespace-collapsed plain text otherwise. isErr reports
+// whether any unwrapped envelope flagged the result as an error. Payloads with
+// any other shape render unchanged as indented JSON.
 func toolResultPreview(resp map[string]any, max int) (preview string, isErr bool) {
 	text, isErr, ok := toolResultText(resp)
 	if !ok {
 		// Not a text carrier, but the error flag is honoured wherever the
 		// payload carries it.
-		return compactJSON(resp, max), isErr
+		return indentJSON(resp, max), isErr
 	}
 	for depth := 0; depth < maxMCPResultUnwrapDepth; depth++ {
 		v, isJSON := decodeJSONDocument(text)
@@ -1085,13 +1065,13 @@ func toolResultPreview(resp map[string]any, max int) (preview string, isErr bool
 				continue
 			}
 		}
-		return compactJSONValue(v, max), isErr
+		return indentJSONValue(v, max), isErr
 	}
 	text = strings.Join(strings.Fields(text), " ")
 	if text == "" {
 		// An envelope with no text content (empty content list, non-text items
 		// only): fall back to the raw payload so the entry still shows something.
-		return compactJSON(resp, max), isErr
+		return indentJSON(resp, max), isErr
 	}
 	return truncateRunes(text, max), isErr
 }
@@ -1161,37 +1141,6 @@ func decodeJSONDocument(text string) (v any, ok bool) {
 		return nil, false
 	}
 	return v, true
-}
-
-// spaceStructuralJSON inserts one space after ':' and ',' that fall outside
-// string literals in compact JSON, yielding a readable single line without
-// indentation. String contents (which may themselves contain ':', ',' or
-// escaped quotes) are left untouched.
-func spaceStructuralJSON(b []byte) string {
-	var out strings.Builder
-	out.Grow(len(b) + len(b)/8)
-	inString, escaped := false, false
-	for _, c := range b {
-		out.WriteByte(c)
-		if inString {
-			switch {
-			case escaped:
-				escaped = false
-			case c == '\\':
-				escaped = true
-			case c == '"':
-				inString = false
-			}
-			continue
-		}
-		switch c {
-		case '"':
-			inString = true
-		case ':', ',':
-			out.WriteByte(' ')
-		}
-	}
-	return out.String()
 }
 
 // wroteContent reports whether this writer left a message of its own in the
@@ -2015,6 +1964,17 @@ func (c *slackAPIClient) postMessage(ctx context.Context, channel, text, threadT
 // lookups before calling this.
 func (c *slackAPIClient) viewsOpen(ctx context.Context, triggerID string, view map[string]any) error {
 	_, err := c.postJSON(ctx, "views.open", map[string]any{paramTriggerID: triggerID, paramView: view})
+	return err
+}
+
+// viewsUpdate replaces an open modal's view. hash is the version the caller
+// saw: Slack refuses the update (hash_conflict) when the view changed since.
+func (c *slackAPIClient) viewsUpdate(ctx context.Context, viewID, hash string, view map[string]any) error {
+	body := map[string]any{paramViewID: viewID, paramView: view}
+	if hash != "" {
+		body[paramHash] = hash
+	}
+	_, err := c.postJSON(ctx, "views.update", body)
 	return err
 }
 

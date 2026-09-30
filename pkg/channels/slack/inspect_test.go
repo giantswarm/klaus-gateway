@@ -255,7 +255,7 @@ func TestInspectionBlocks_TurnHeadersAndDropNote(t *testing.T) {
 		{turn: 3, name: "b", called: true, state: toolDone},
 		{turn: 4, name: "c", called: true},
 	}
-	blocks := inspectionBlocks(entries, 7)
+	blocks := inspectionBlocks(entries, 7, nil, false)
 	raw, err := json.Marshal(blocks)
 	require.NoError(t, err)
 	s := string(raw)
@@ -273,12 +273,81 @@ func TestInspectionBlocks_FitAModal(t *testing.T) {
 	for i := range maxToolLogEntries {
 		entries = append(entries, toolLogEntry{turn: i + 1, name: "t", called: true})
 	}
-	blocks := inspectionBlocks(entries, 0)
+	blocks := inspectionBlocks(entries, 0, nil, true)
 	require.LessOrEqual(t, len(blocks), maxInspectBlocks)
 	raw, err := json.Marshal(blocks[0])
 	require.NoError(t, err)
 	shown := (len(blocks) - 1) / 3
 	require.Contains(t, string(raw), fmt.Sprintf("%d earlier calls are not shown", maxToolLogEntries-shown))
+}
+
+// In the modal a call is its short line with a "Show details" button, whose
+// value names the entry; open ones show their details and a "Hide" button. The
+// fallback messages show every call's details and no button.
+func TestInspectionBlocks_ShortLinesAndDetails(t *testing.T) {
+	entries := []toolLogEntry{
+		{id: 1, turn: 1, name: "x_kubernetes_list", viaMuster: true, called: true, args: "{}", state: toolDone, result: "ok"},
+		{id: 2, turn: 1, name: "filter_tools", called: true, state: toolDone, result: "tools"},
+	}
+	blocks := inspectionBlocks(entries, 0, []int{2}, true)
+	require.Len(t, blocks, 1+2+2)
+	closed, _ := json.Marshal(blocks[3])
+	require.NotContains(t, string(closed), "Arguments", "a closed call is its short line")
+	require.Contains(t, string(closed), "Kubernetes list")
+	require.Contains(t, string(closed), `"action_id":"inspect_toggle"`)
+	require.Contains(t, string(closed), `"value":"1"`)
+	require.Contains(t, string(closed), "Show details")
+	open, _ := json.Marshal(blocks[4])
+	require.Contains(t, string(open), "tools", "an open call shows its result")
+	require.Contains(t, string(open), "Hide")
+
+	flat, _ := json.Marshal(inspectionBlocks(entries, 0, nil, false))
+	require.Contains(t, string(flat), "Arguments")
+	require.NotContains(t, string(flat), "inspect_toggle", "a message has no toggle")
+}
+
+// "Show details" redraws the modal it was clicked in with that call open, and
+// "Hide" closes it again; the view's hash guards the redraw.
+func TestInspectToggle_OpensAndClosesDetails(t *testing.T) {
+	a, srv := newInspectTestAdapter(t)
+	a.appendToolLog("100.000", toolLogEntry{turn: a.beginToolLogTurn("100.000"), name: "kube_get", called: true, args: "{\n  \"kind\": \"pods\"\n}", state: toolDone, result: "3 pods"})
+
+	a.routeInteraction(t.Context(), togglePayload(`{"t":"100.000"}`, "1"))
+	updates := srv.updateBodies()
+	require.Len(t, updates, 1)
+	require.Equal(t, "V1", updates[0]["view_id"])
+	require.Equal(t, "hash-1", updates[0]["hash"])
+	view, _ := json.Marshal(updates[0]["view"])
+	require.Contains(t, string(view), "3 pods", "the call opens with its details")
+	require.Contains(t, string(view), "Hide")
+	require.Contains(t, string(view), `\"e\":[1]`, "the modal remembers the open call")
+
+	a.routeInteraction(t.Context(), togglePayload(`{"t":"100.000","e":[1]}`, "1"))
+	updates = srv.updateBodies()
+	require.Len(t, updates, 2)
+	view, _ = json.Marshal(updates[1]["view"])
+	require.NotContains(t, string(view), "3 pods", "Hide closes it again")
+	require.NotContains(t, string(view), `\"e\":`)
+	require.Empty(t, srv.ephemeralBodies())
+}
+
+// A click that is not on the inspection modal, or carries a broken state or
+// value, redraws nothing.
+func TestInspectToggle_IgnoresForeignClicks(t *testing.T) {
+	a, srv := newInspectTestAdapter(t)
+	a.appendToolLog("100.000", toolLogEntry{turn: a.beginToolLogTurn("100.000"), name: "kube_get", called: true})
+
+	other := togglePayload(`{"t":"100.000"}`, "1")
+	other.View.CallbackID = askAgentCallbackID
+	a.routeInteraction(t.Context(), other)
+	a.routeInteraction(t.Context(), togglePayload(`not json`, "1"))
+	a.routeInteraction(t.Context(), togglePayload(`{"t":""}`, "1"))
+	a.routeInteraction(t.Context(), togglePayload(`{"t":"100.000"}`, "one"))
+	noView := togglePayload(`{"t":"100.000"}`, "1")
+	noView.View.ID = ""
+	a.routeInteraction(t.Context(), noView)
+
+	require.Empty(t, srv.updateBodies())
 }
 
 // The shortcut opens a modal for the invoker; nothing is posted in the thread.
@@ -297,6 +366,9 @@ func TestRouteInteraction_MessageActionOpensTheModal(t *testing.T) {
 	require.Contains(t, string(view), "kube_get")
 	require.Contains(t, string(view), "Turn 1 · 1 call")
 	require.Contains(t, string(view), "Visible only to you")
+	require.Contains(t, string(view), "Show details")
+	require.NotContains(t, string(view), "Arguments", "every call opens as its short line")
+	require.Contains(t, string(view), inspectViewCallbackID)
 	require.Empty(t, srv.ephemeralBodies(), "nothing goes to the thread")
 	require.Equal(t, int32(0), srv.posts.Load())
 }
@@ -400,8 +472,17 @@ type inspectFakeSlack struct {
 	mu          sync.Mutex
 	ephemerals  []map[string]any
 	views       []map[string]any
+	updates     []map[string]any
 	refuseViews bool
 	posts       atomic.Int32
+}
+
+func (f *inspectFakeSlack) updateBodies() []map[string]any {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]map[string]any, len(f.updates))
+	copy(out, f.updates)
+	return out
 }
 
 func (f *inspectFakeSlack) ephemeralBodies() []map[string]any {
@@ -445,6 +526,15 @@ func (f *inspectFakeSlack) handler() http.Handler {
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
 	})
+	mux.HandleFunc("/views.update", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		f.mu.Lock()
+		f.updates = append(f.updates, body)
+		f.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		f.posts.Add(1)
 		w.Header().Set("Content-Type", "application/json")
@@ -481,5 +571,22 @@ func inspectPayload(threadTS, ts string) interactionPayload {
 	p.Channel.ID = "C1"
 	p.Message.ThreadTS = threadTS
 	p.Message.TS = ts
+	return p
+}
+
+// togglePayload is a "Show details" / "Hide" click in inspection modal V1 of
+// user U9, with the modal's private_metadata and the button's value.
+func togglePayload(state, value string) interactionPayload {
+	var p interactionPayload
+	p.Type = payloadTypeBlockActions
+	p.User.ID = "U9"
+	p.View.ID = "V1"
+	p.View.Hash = "hash-1"
+	p.View.CallbackID = inspectViewCallbackID
+	p.View.PrivateMetadata = state
+	p.Actions = append(p.Actions, struct {
+		ActionID string `json:"action_id"`
+		Value    string `json:"value"`
+	}{ActionID: inspectToggleAction, Value: value})
 	return p
 }

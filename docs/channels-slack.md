@@ -696,17 +696,21 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
 - **Inspect agent steps.** The reply does not show the agent's tool calls. To see them,
   invoke the **Inspect agent steps** message shortcut (⋯ menu → Apps) on any message in the
   thread: the gateway opens an **Agent steps** modal for the invoker alone, and posts nothing
-  in the thread. Each turn has a header ("Turn 2 · 3 calls"), and each call one section: a
+  in the thread. Each turn has a header ("Turn 2 · 3 calls"), and each call one short line: a
   status (✅ done, ❌ error, ⏸ asked for approval, ⏳ no result yet), the plain-language title
-  with the raw tool name ("via muster" when `call_tool` wrapped it), the arguments as
-  indented JSON and the result preview, each in a code block. A result pairs with its call by
+  with the raw tool name ("via muster" when `call_tool` wrapped it), and a **Show details**
+  button. The button redraws the modal (`views.update`, guarded by the view's hash) with that
+  call's arguments and result preview open, each in a code block, JSON indented; **Hide**
+  closes them. Several calls can be open at once: the modal keeps their entry ids in its
+  `private_metadata`, and each redraw reads the log as it is then. A result pairs with its call by
   call id; one the stream gave no id closes the oldest running call of the same tool (of any
   tool muster ran, for a `call_tool` result). The log
   is in-memory and bounded: the last 100 calls per thread, kept for up to 24 hours and not
   surviving a gateway restart; a log of many short turns shows its most recent calls, as
   many as a modal's 100 blocks hold, and says how many it leaves out. When nothing is
   retained the modal says so. Should Slack refuse the modal (its `trigger_id` lives 3
-  seconds), the same content goes out as ephemeral messages in the thread. The shortcut is
+  seconds), the log goes out as ephemeral messages in the thread instead, every call with its
+  details, since a message cannot be redrawn like a modal. The shortcut is
   registered in
   `deploy/slack/manifest.yaml`, next to **Ask an agent here** (which starts a
   conversation in the message's thread, see [Agent routing](#agent-routing)); changing the
