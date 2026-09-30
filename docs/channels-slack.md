@@ -337,9 +337,8 @@ agent when it opens, and keeps it for life. A plain mention reaches the default 
   served.
 
 An agent that is installed but that no Harness admits, or whose compiled revision is not ready,
-is refused with that reason instead of as an unknown name, on the technical-name form and on
-the pickers. The quoted display-name form still reports an unknown name in that case, because
-it resolves the name against the roster, which lists selectable agents only.
+is refused by the pickers with that reason instead of as an unknown name. The roster lists
+selectable agents only, so such an agent has no row to pick in the first place.
 
 A thread's agent binding is not re-derived after a restart — it does not need to be. It lives
 in the thread's row in the routing store (see [Threads and conversations](#threads-and-conversations)),
@@ -546,7 +545,7 @@ Three structured log records (`record=…`, JSON fields) tell a turn's story; jo
 `thread_id` (the Slack `thread_ts`) and `trace_id`:
 
 - `turn_dispatch` -- the turn is admitted and about to be sent: `agent`, `agent_source`
-  (`prefix`, `command`, `shortcut`, `thread`, `default`, `task`), `slack_user`, `subject` (the resolved
+  (`command`, `shortcut`, `thread`, `default`, `task`, `replay`), `slack_user`, `subject` (the resolved
   e-mail), `sub` (the linked muster identity), `channel_id`, `thread_id`, `message_id`,
   `task_id` (on a resume), `resume`, `trace_id`, `dispatch_ms` (since the event arrived).
 - `turn_complete` -- one per turn, whatever its end: `outcome` (see

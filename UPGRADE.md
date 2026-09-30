@@ -12,8 +12,10 @@ message. Every command is the word alone: `login`, `logout`, `usage`, `help`, `a
 from the app's own `/swarmgeist` command, or from the **Ask an agent here** shortcut.
 
 Nothing to configure, and no values key changes. What an operator has to decide is whether to
-tell their users: a person who types `@bot /login` out of habit now sends that text to the
-agent, which answers it as a question instead of signing them in. `help` lists the words.
+tell their users: a person who types `@bot /usage` or `@bot /agent "SRE" …` out of habit now
+sends that text to the agent, which answers it as a question instead of running the command.
+`help` lists the words. One habit still lands softly: `/login` from a signed-out person is read
+as a request to sign in, like the word, and is not passed on to the agent afterwards.
 
 The app's own slash command (`/swarmgeist`) is untouched, and so is the message shortcut.
 

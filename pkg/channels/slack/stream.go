@@ -42,7 +42,7 @@ const (
 	// streamCallTimeout bounds one write to the turn's streamed message. Those
 	// writes are detached from the turn's cancellation (streamCallCtx), so a
 	// cancelled turn waits for the one in flight before it exits: shorter than
-	// the 30 s of slackHTTPClient, because that wait is what a /stop costs.
+	// the 30 s of slackHTTPClient, because that wait is what a stop costs.
 	streamCallTimeout = 10 * time.Second
 	slackAPIBase      = "https://slack.com/api"
 	// downloadSizeMargin is the headroom over Slack's declared file size that a
@@ -304,7 +304,7 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 	ticker := time.NewTicker(streamAppendInterval)
 	defer ticker.Stop()
 	// The session leaves "processing" on EVERY exit — stream done, stream error,
-	// /stop, and the HITL prompt pause. Slack's agent loading UX does not clear
+	// a stop, and the HITL prompt pause. Slack's agent loading UX does not clear
 	// itself when the app posts any more, so a missing exit status leaves the
 	// thread spinning for up to an hour. chat.stopStream carries a session
 	// status of its own, but observed on graveler 2026-09-21 it does not clear
@@ -1245,7 +1245,7 @@ func (w *batchedWriter) closeStream(ctx context.Context) error {
 	return nil
 }
 
-// endStream closes a stream a turn left open. A cancelled turn (a /stop, the
+// endStream closes a stream a turn left open. A cancelled turn (a stop, the
 // gateway shutting down) returns without a terminal flush, so without this the
 // message would keep animating and everything queued since the last append
 // would be lost. It runs on a context outliving the cancellation.

@@ -180,8 +180,8 @@ func TestAgentSelection_BareAgentListsRoster(t *testing.T) {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Available agents")
 	}, flowWait, 50*time.Millisecond, "the roster listing posts")
 	listing := allText(fake.pathCalls("chat.postMessage"))
-	require.Contains(t, listing, "`/agent \"<name>\" <question>`",
-		"the listing advertises the quoted display-name form")
+	require.NotContains(t, listing, "/agent",
+		"the listing advertises no command the gateway stopped serving")
 	require.Contains(t, listing, "*SRE Agent* — Investigates infra issues",
 		"display name and description")
 	require.Contains(t, listing, "*k8s-agent* — Kubernetes specialist",
@@ -317,28 +317,13 @@ func TestAgentSelection_WordReachesTheAgentWithoutCards(t *testing.T) {
 	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "Available agents")
 }
 
-// tokenCards records the caller token each card lookup carried, on top of
-// fakeCards' resolution.
-type tokenCards struct {
-	*fakeCards
-	mu     sync.Mutex
-	tokens []string
-}
-
-func (c *tokenCards) CardInfo(ctx context.Context, ref string) (string, string, error) {
-	c.mu.Lock()
-	c.tokens = append(c.tokens, pkga2a.ForwardedTokenFromContext(ctx))
-	c.mu.Unlock()
-	return c.fakeCards.CardInfo(ctx, ref)
-}
-
-// The listing reads the catalogue as the caller: the roster
-// and the technical-name validation carry the caller's linked token, so a
-// cold roster cache on a fresh pod refuses nothing a linked user may pick.
-func TestAgentSelection_TextPathReadsCatalogueAsCaller(t *testing.T) {
+// The listing reads the catalogue as the caller: the roster carries the
+// caller's linked token, so a cold roster cache on a fresh pod refuses nothing
+// a linked user may pick.
+func TestAgentSelection_ListingReadsTheRosterAsCaller(t *testing.T) {
 	fake := newFakeSlackAPI()
 	roster := &tokenRoster{agents: []pkga2a.AgentInfo{{Name: "sre-agent", Namespace: "kagent", DisplayName: "SRE Agent"}}}
-	cards := &tokenCards{fakeCards: &fakeCards{known: map[string]string{"kagent/sre-agent": "SRE Agent"}}}
+	cards := &fakeCards{known: map[string]string{"kagent/sre-agent": "SRE Agent"}}
 	gw, _ := capturingGateway()
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, func(a *slackadapter.Adapter) {
 		a.DefaultAgent = "kagent/swarmgeist"

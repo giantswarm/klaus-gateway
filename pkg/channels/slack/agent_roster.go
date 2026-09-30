@@ -19,21 +19,21 @@ type AgentRosterSource interface {
 	ListAgents(ctx context.Context) ([]pkga2a.AgentInfo, error)
 }
 
-// agentRosterUnavailable answers a bare /agent when the roster fetch failed.
+// agentRosterUnavailable answers the agents command when the roster fetch failed.
 const agentRosterUnavailable = "The agents cannot be listed right now. Try again in a moment."
 
 // rosterSignInLead opens every notice that sends an unidentified caller to
 // sign in before the roster can be listed: the controller serves the roster to
 // a human identity, so a retry cannot help them. Each surface appends its own
-// tail (the slash command's slashCommandSignInNotice, /agent's
+// tail (the slash command's slashCommandSignInNotice, the listing's
 // agentRosterSignIn), so a wording change lands on all of them.
 const rosterSignInLead = "The agents are listed with your permissions, so sign in first: mention the bot with `login`"
 
-// agentRosterSignIn answers a bare or quoted /agent from a caller the gateway
+// agentRosterSignIn answers the agents command from a caller the gateway
 // cannot identify.
 const agentRosterSignIn = rosterSignInLead + ", sign in, then send what you typed again."
 
-// agentRosterEmpty answers a bare /agent when the controller reports no agents.
+// agentRosterEmpty answers the agents command when the controller reports no agents.
 const agentRosterEmpty = "No agents are installed."
 
 // rosterListTimeout bounds the list-agents call behind a roster listing or a
@@ -42,7 +42,7 @@ const rosterListTimeout = 5 * time.Second
 
 // rosterTTL is how long a fetched roster is served from cache. Short, so a
 // newly installed agent becomes selectable without a redeploy while repeated
-// /agent listings stay off the controller.
+// repeated listings stay off the controller.
 const rosterTTL = 30 * time.Second
 
 // rosterFailureTTL is how long a failed roster fetch is remembered before the
@@ -51,7 +51,7 @@ const rosterTTL = 30 * time.Second
 // against an unreachable controller pays the full rosterListTimeout.
 //
 // Only rosterAgentsBestEffort honours it. Callers whose failure is user-facing
-// and blocks the turn — /agent selection and opener re-resolution — keep
+// and blocks the turn — the listing and opener re-resolution — keep
 // re-attempting, because refusing several messages in a row over one blip is
 // worse than paying the timeout.
 const rosterFailureTTL = 45 * time.Second
@@ -77,7 +77,7 @@ func rosterText(agents []pkga2a.AgentInfo) string {
 		return agentRosterEmpty
 	}
 	var b strings.Builder
-	b.WriteString("*Available agents* — start a new conversation with `/agent \"<name>\" <question>`:")
+	b.WriteString("*Available agents*:")
 	for _, ag := range agents {
 		b.WriteString("\n• *" + escapeMrkdwn(agentDisplayName(ag)) + "*")
 		if ag.Description != "" {
@@ -174,9 +174,9 @@ func (a *Adapter) rosterBlocks(agents []pkga2a.AgentInfo, selectable bool) []any
 		}
 		blocks = append(blocks, row)
 	}
-	footer := "Or mention the bot with `/agent \"Name\" question`."
+	footer := "Select starts a conversation with that agent in this thread."
 	if !selectable {
-		footer = "This thread already has its agent. To talk to another one, mention the bot with `/agent \"Name\" question` in a new thread."
+		footer = "This thread already has its agent. To talk to another one, send `agents` in a new thread and pick it there."
 	}
 	if rest := sorted[len(shown):]; len(rest) > 0 {
 		names := make([]string, len(rest))
@@ -248,7 +248,7 @@ func agentDisplayName(ag pkga2a.AgentInfo) string {
 // reports, or agentRef's bare technical name when the roster has nothing for it.
 //
 // The name is the AgentTemplate's display-name annotation — the same source the
-// roster lists and /agent accepts — so no surface ever shows a spelling another
+// roster lists — so no surface ever shows a spelling another
 // one refuses.
 func (a *Adapter) agentNameFor(ctx context.Context, agentRef string) string {
 	if name := a.rosterDisplayName(ctx, agentRef); name != "" {
@@ -278,7 +278,7 @@ func (a *Adapter) rosterDisplayName(ctx context.Context, agentRef string) string
 }
 
 // bareAgentName drops any qualifier from agentRef, leaving the Agent
-// resource's own name — the spelling the CR carries and /agent accepts. The
+// resource's own name — the spelling the CR carries. The
 // last path segment is taken, so the result never contains a slash whatever
 // shape an unvalidated ref arrives in. Refs bound from a selection are
 // DNS-1123 validated, so this is that name exactly.

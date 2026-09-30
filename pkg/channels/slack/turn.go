@@ -100,7 +100,7 @@ func (a *Adapter) runTurn(ctx context.Context, msg channels.InboundMessage, slac
 		return fmt.Errorf("slack: send completion: %w", err)
 	}
 
-	// The turn context feeds the whole stream so /stop cancels the turn, and an
+	// The turn context feeds the whole stream so a stop cancels the turn, and an
 	// aborted consumer releases the producer goroutine. The branding client is
 	// resolved under the turn's forwarded identity: the roster it reads is
 	// served by the kagent controller as the person, never as the gateway.

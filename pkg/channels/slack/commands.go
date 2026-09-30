@@ -89,9 +89,9 @@ func (a *Adapter) bareCommandFor(msg channels.InboundMessage) *command {
 	}
 	// A thread paused on a question keeps the word for its answer: one word
 	// is the shape the question asks for, and the paused task must be
-	// resolved or the tool call dangles. The command is reachable there as
-	// `/login` after a mention, since the word alone is the answer with or
-	// without one. Both kinds of question count: the ask_user card, and a
+	// resolved or the tool call dangles. The command waits until the question
+	// is answered: with no slash form left, the word alone is that answer
+	// whether or not it addresses the bot. Both kinds of question count: the ask_user card, and a
 	// pause with no structured prompt, whose typed reply reaches the agent as
 	// the answer itself (decisionFromText maps a nil prompt to no decision).
 	// An approval card is not a question: any text beside it is read as a
@@ -191,7 +191,7 @@ func helpBlocks(botName string, agents, signIn bool) (string, []any) {
 	return "Commands: " + strings.Join(lines, ", "), blocks
 }
 
-// handleCommand processes a slash command and posts a reply in-thread.
+// handleCommand runs a command and posts a reply in-thread.
 // Returns true when the command was consumed (caller should not dispatch).
 func (a *Adapter) handleCommand(ctx context.Context, cmd *command, slackUser, slackChannel, threadID string) bool {
 	client := a.apiClient()
@@ -281,8 +281,7 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *command, slackUser, sl
 	return false
 }
 
-// handleLoginCommand handles the login command, typed as the word alone or as
-// `/login` after a mention. It always consumes the command. When
+// handleLoginCommand handles the login command. It always consumes it. When
 // OBO is disabled it says so rather than dispatching to the agent. An unlinked
 // user gets the sign-in prompt; a linked user gets a confirmation of their
 // signed-in identity. reply is ephemeral: the identity confirmation carries
@@ -330,8 +329,7 @@ func (a *Adapter) linkedEmail(slackUser string) string {
 	return ""
 }
 
-// handleLogoutCommand handles the logout command, typed as the word alone or
-// as `/logout` after a mention: it signs the user out of their muster
+// handleLogoutCommand handles the logout command: it signs the user out of their muster
 // link, so the gateway asks them to sign in again before acting as them.
 func (a *Adapter) handleLogoutCommand(slackUser string, reply func(string)) bool {
 	if a.OBO == nil {

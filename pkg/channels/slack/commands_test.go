@@ -462,12 +462,6 @@ func TestHandleCommand_Stop_RunningTurnStillCancels(t *testing.T) {
 	require.Equal(t, int32(1), srv.posts.Load())
 }
 
-func TestDecisionFromText_SlashStopIsDeny(t *testing.T) {
-	d := decisionFromText(&channels.HitlPrompt{ToolName: "delete_file"}, "/stop")
-	require.Equal(t, channels.DecisionReject, d.Type)
-	require.Empty(t, d.RejectionReason, "/stop is a plain deny, not a reject-with-reason")
-}
-
 // The busy notice names the way out of a running turn that a person can type:
 // a plain `stop` (isBareStop), since Slack's composer takes a message that
 // starts with / as one of its own commands.

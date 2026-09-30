@@ -13,7 +13,7 @@ import (
 )
 
 // agentCardChecker is the optional AgentCardResolver extension that validates
-// a selected agent (the /agent prefix or the slash command's picker): unlike
+// a selected agent (the agent picker or the slash command's picker): unlike
 // CardIdentity it surfaces the card fetch error,
 // so an unknown or unreachable agent fails loudly before anything is
 // dispatched — never a silent substitute. pkg/a2a.AgentCardClient implements it.
@@ -22,13 +22,14 @@ type agentCardChecker interface {
 }
 
 // agent_source values on the turn_dispatch record: how the turn's agent was
-// chosen. "prefix" is an /agent prefix on the dispatched message itself,
+// chosen. "replay" is an agent the message already carried when it reached
+// dispatch — a picker submission parked for a sign-in and replayed after it —
 // "thread" the agent recorded for the thread,
 // "default" the configured default agent, "task" the agent replayed from a
 // paused task on a button-click resume, and "command"/"shortcut" the agent
 // picked in the modal the slash command and the message shortcut open.
 const (
-	agentSourcePrefix   = "prefix"
+	agentSourceReplay   = "replay"
 	agentSourceThread   = "thread"
 	agentSourceDefault  = "default"
 	agentSourceTask     = "task"
@@ -45,13 +46,13 @@ const agentUnavailableNotice = "No agent named `%s` is available. Nothing was st
 // the a2a layer gives (a Harness admission or readiness problem).
 const agentNotRunnableNotice = "*%s* is installed but cannot start a conversation right now: %s. Nothing was started."
 
-// agentSelectionUnavailable answers /agent and the slash command's picker on a
+// agentSelectionUnavailable answers the slash command's picker on a
 // gateway with no agent-card client to validate names against (A2A not
 // configured).
 const agentSelectionUnavailable = "Agent selection is not available on this gateway."
 
 // agentValidateTimeout bounds the card fetch that validates a selected agent
-// (/agent prefix or picker) before dispatch.
+// (the picker) before dispatch.
 const agentValidateTimeout = 10 * time.Second
 
 // listAgents posts the roster in the thread: the whole answer to the "agents"
@@ -177,8 +178,8 @@ func (a *Adapter) boundAgentOrDefault(ctx context.Context, channelID, threadID s
 // conversationStarting reports whether msg opens a conversation in its thread:
 // no record names an agent, because the thread is new or because the gateway
 // has forgotten it after its lifetime of silence and it starts over. Only a
-// starting message may carry /agent; a re-selection of the thread's own agent
-// is a no-op, anything else a refused switch.
+// starting message may pick an agent; the roster's Select and the pickers
+// refuse a thread that already has one.
 func (a *Adapter) conversationStarting(ctx context.Context, msg channels.InboundMessage, slackChannel string) bool {
 	_, bound := a.threadAgentBinding(ctx, slackChannel, msg.ThreadID)
 	return !bound
