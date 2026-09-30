@@ -1803,6 +1803,11 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 	if !a.acceptEvent(inner) {
 		return
 	}
+	// A reply under a decision is an answer, in a DM or a channel, served or
+	// not: the decision went there on purpose.
+	if a.answerDecisionReply(ctx, inner) {
+		return
+	}
 	if inner.isDM() {
 		switch a.dmMode() {
 		case DMModeRedirect:
@@ -2735,6 +2740,8 @@ type slackInnerEvent struct {
 	ChannelType string `json:"channel_type,omitempty"`
 	TS          string `json:"ts"`
 	ThreadTS    string `json:"thread_ts,omitempty"`
+	// ParentUserID is the author of a thread reply's root message.
+	ParentUserID string `json:"parent_user_id,omitempty"`
 	// EventTS is the event envelope timestamp; for events like
 	// member_joined_channel and app_home_opened it is the only timestamp carried.
 	EventTS string `json:"event_ts,omitempty"`

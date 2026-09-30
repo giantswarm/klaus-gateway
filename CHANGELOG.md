@@ -11,10 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `POST /decisions` and `POST /decisions/{id}/close`: a service puts a decision to a person (a direct message, found by their email) or to a team (its channel) — the question, the status quo, a *Choose* button per option with the recommended one marked, *Answer in my own words*, the due time and the default. An answer — a click, the modal or a reply in the message's thread — calls the decision's answer tool through muster as the person who answered, with `choice` and `text`; the close rewrites the message to how the decision closed (answered, defaulted, withdrawn). Mounted with the team-review endpoint; the Slack app needs `users:read` and `users:read.email` for a person's decision ([docs/api.md](docs/api.md#decisions), klaus-gateway#360).
 - Slack: a turn that fails before the agent answered says what broke instead of always asking the person to try again. The note names the failure's class — the agent's tools (`tools`), the connection to the platform (`platform`), the model or its provider (`model`), a gateway policy (`policy`) — and whether trying again helps; `_(the turn failed; please try again)_` is left for a failure no class names (klaus-gateway#329).
 - A fresh turn that fails on its tools or on the platform connection before anything of it was shown is sent once more on the thread's AgentInstance before the note goes out; the runtime sets its tool set up again on every run. The `turn_retry` record logs it, and `turn_complete` counts it as `retries` (klaus-gateway#329).
 - `turn_complete` carries a failed turn's `failure_class`, and `klaus_gateway_turn_total` gains the `failure_class` label (empty unless the turn failed or its send did), so a burst of tool-set failures across people can alert apart from a one-off model error (klaus-gateway#329).
 - Chart: `serviceMonitor.labels`, labels on the ServiceMonitor beside the chart's own. The Giant Swarm observability platform routes a scrape to a Mimir tenant by `observability.giantswarm.io/tenant`, and the monitor carried no way to set it, so the gateway's `klaus_gateway_*` series reached no tenant on every installation.
+- Slack: a reply whose turn had failed tool calls ends with one muted line that counts them (`⚠️ 2 tool calls failed`) and a **Show tool calls** button that opens the "Agent steps" modal for the person who clicks it. Everyone in the thread sees them. A reply without a failed call is unchanged.
 
 ### Changed
 

@@ -238,6 +238,11 @@ const (
 	inspectToggleAction   = "inspect_toggle"
 )
 
+// inspectOpenAction is the "Show tool calls" button a reply with failed tool
+// calls ends with; a click opens the thread's inspection modal, as the
+// shortcut does.
+const inspectOpenAction = "inspect_open"
+
 // askAgentShortcutCallbackID is the callback_id of the "Ask an agent here"
 // message shortcut registered in deploy/slack/manifest.yaml. Invoked on any
 // message, it opens the agent picker and starts the conversation inside that
@@ -359,6 +364,7 @@ const (
 	signInPromptBodyFormat = "The agent runs its tools with your own permissions, so it needs your sign-in once. The link is valid for %d minutes."
 	signInForMessageLine   = "Your message runs as soon as you sign in."
 	signInForClickLine     = "Sign in, then click the button again."
+	signInForReplyLine     = "Sign in, then send your answer again."
 	signInSessionHint      = "Signed in before? Your session may have expired."
 )
 

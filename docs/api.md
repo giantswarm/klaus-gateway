@@ -165,6 +165,65 @@ Same authentication and fields as `POST /reviews` except `actor`, `approve`, `de
 `noticeChannel`; renders without buttons, the pull requests as links and the link as a context
 line. Response `201` with `channel` and `ts`.
 
+## Decisions
+
+Through the same surface, with the same authentication, a service puts a decision to a person or
+a team: one Slack message with the question, the status quo, a *Choose* button per option and an
+*Answer in my own words* button, answered by a click, the modal or a reply in its thread. Every
+answer calls the decision's answer tool through muster as the person who answered. What it looks
+like and how an answer goes: [slack-hitl-surface.md](slack-hitl-surface.md#13-decision-a-question-to-a-person-or-a-team).
+
+### `POST /decisions`
+
+```json
+{
+  "person": "alex@example.com",
+  "note": "614",
+  "question": "Roll kagent v1.1.1 onto gazelle tonight?",
+  "statusQuo": "graveler and glean run v1.1.1 since Tuesday without a restart.",
+  "options": [
+    {"label": "Roll tonight", "consequence": "The lane clears at 22:00."},
+    {"label": "Wait for Monday", "consequence": "Nothing rolls before Monday."}
+  ],
+  "recommend": 2,
+  "due": "2026-10-01T08:00:00Z",
+  "default": "Wait for Monday.",
+  "askedBy": "the platform supervisor on gazelle",
+  "answer": {"tool": "x_beekeeper_note_answer", "arguments": {"note": "614"}}
+}
+```
+
+- `person` — the email of the person it is for: a direct message from the app. Or `team` (shown
+  in the message) with `channel`, the Slack channel ID it is posted to. Exactly one addressee.
+- `question` — one line, at most 150 characters: the message's header. Required.
+- `statusQuo` — what is true now and why the question arises, Slack mrkdwn, at most 3000
+  characters. Required.
+- `options` — 0 to 10, each a `label` (one line, at most 75 characters) and an optional
+  `consequence` (mrkdwn). Without options the decision is answered in the person's own words.
+- `recommend` — the recommended option, 1-based; 0 or absent recommends none.
+- `due` — RFC 3339, in the future. Required; `default` — what the asker applies then, at most 1000
+  characters. Required.
+- `askedBy` — who asks, one line. Required; `note` — the asker's reference, shown as `note #<note>`.
+- `answer` — the muster tool every answer calls as the person, with `arguments` plus `choice`
+  (1-based) and `text` when the answer has them. Required.
+
+Unknown fields are refused. Response `201` with `id` (`<channel>-<ts>`), `channel` (a person's
+direct message conversation) and `ts`; `422` when no member of the Slack workspace has the
+person's email.
+
+### `POST /decisions/{id}/close`
+
+```json
+{"outcome": "defaulted", "text": ""}
+```
+
+`outcome` is `answered`, `defaulted` or `withdrawn`; `text`, at most 3000 characters, is shown
+with an answer given elsewhere or a withdrawal. The message loses its buttons and says how the
+decision closed; a later click is refused. Call it on every path the decision closes by,
+including an answer given through the message, which keeps the answer and who gave it. Response
+`200` with `id`, `channel` and `ts`; `404` for a decision the gateway does not hold — unknown, or
+past its due time plus seven days.
+
 ## Admin surface
 
 Served on the admin port (default `:8081`):

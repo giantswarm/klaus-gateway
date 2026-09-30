@@ -203,6 +203,24 @@ func (a *Adapter) handleMessageAction(ctx context.Context, payload interactionPa
 	}
 }
 
+// handleInspectOpen answers a click on the "Show tool calls" button a reply
+// ends with: the thread's inspection modal opens for the person who clicked,
+// as the shortcut opens it. The thread is the clicked message's, as Slack
+// reports it; the button carries nothing of its own.
+func (a *Adapter) handleInspectOpen(ctx context.Context, payload interactionPayload) {
+	if payload.User.ID == "" || payload.Channel.ID == "" {
+		return
+	}
+	threadID := payload.Message.ThreadTS
+	if threadID == "" {
+		threadID = payload.Message.TS
+	}
+	if threadID == "" {
+		return
+	}
+	a.postInspection(ctx, payload.Channel.ID, threadID, payload.User.ID, payload.TriggerID)
+}
+
 // postInspection shows threadID's retained tool log to slackUser in a modal
 // opened with the shortcut's trigger_id: one short line per call, whose "Show
 // details" button opens its arguments and result in place. Should Slack refuse

@@ -292,7 +292,7 @@ func (a *Adapter) PostTeamReviewResult(ctx context.Context, id string, result ch
 	if err != nil {
 		return channels.PostReceipt{}, fmt.Errorf("slack: look up team review: %w", err)
 	}
-	if !found {
+	if !found || rv.Decision != nil {
 		return channels.PostReceipt{}, channels.ErrReviewNotFound
 	}
 	blocks := []any{
@@ -452,7 +452,7 @@ func (a *Adapter) lookupTeamReview(ctx context.Context, slackChannel, messageTS,
 		a.tellClickerIn(ctx, slackChannel, id, clicker, teamReviewUnavailableNotice)
 		return store.Review{}, false
 	}
-	if !found {
+	if !found || rv.Decision != nil {
 		if err := a.apiClient().chatUpdateBlocks(ctx, slackChannel, messageTS, teamReviewExpiredNotice); err != nil {
 			a.Logger.Warn("slack: team review expired rewrite failed", "review", id, "error", err)
 		}
@@ -684,19 +684,29 @@ func (a *Adapter) isTeamReviewActor(rv store.Review, clicker string) bool {
 }
 
 // tellIfDecided answers a click on a decided review with who decided, or on
-// one whose decision is in flight with whose; it reports whether it did.
+// one whose decision is in flight with whose; it reports whether it did. A
+// decision closed without an answer here (defaulted, withdrawn, answered
+// elsewhere) is decided too.
 func (a *Adapter) tellIfDecided(ctx context.Context, rv store.Review, clicker string) bool {
-	held := rv.DecidedBy != "" && (rv.Done || time.Since(rv.ClaimedAt) <= teamReviewClaimLease)
-	if !held {
+	if !reviewHeld(rv, time.Now()) {
 		return false
 	}
 	a.tellClicker(ctx, rv, clicker, decidedNotice(rv))
 	return true
 }
 
+// reviewHeld reports whether a review or decision takes no further click:
+// done, or claimed by a decision still within its lease.
+func reviewHeld(rv store.Review, now time.Time) bool {
+	return rv.Done || (rv.DecidedBy != "" && now.Sub(rv.ClaimedAt) <= teamReviewClaimLease)
+}
+
 // decidedNotice tells a clicker who decided the review, or whose decision is
 // in flight.
 func decidedNotice(rv store.Review) string {
+	if rv.Decision != nil {
+		return decisionNotice(rv)
+	}
 	switch {
 	case !rv.Done:
 		return fmt.Sprintf(teamReviewPendingNotice, rv.DecidedBy, teamReviewDecision{deny: rv.Denied}.noun())
@@ -895,8 +905,7 @@ func (a *Adapter) claimTeamReview(ctx context.Context, id, user string, deny boo
 	now := time.Now()
 	found, err = a.reviews().UpdateReview(ctx, id, func(r *store.Review) bool {
 		claimed = false
-		held := r.DecidedBy != "" && (r.Done || now.Sub(r.ClaimedAt) <= teamReviewClaimLease)
-		if held {
+		if reviewHeld(*r, now) {
 			current = *r
 			return false
 		}

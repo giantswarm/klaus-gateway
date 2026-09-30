@@ -4,6 +4,15 @@ Breaking or operator-visible changes between releases, newest first. The
 `CHANGELOG.md` lists every change; this file covers what an operator has to
 do or decide.
 
+## Next — decisions for people (`POST /decisions`)
+
+`POST /decisions` is mounted with the team-review endpoint (`reviews.enabled`) and admits the
+same callers (`reviews.allowedCallers`); add the ServiceAccount of the service that puts
+decisions there. A decision for a person finds them by their email, which needs two bot scopes
+the Slack app did not ask for: add `users:read` and `users:read.email` (in
+`deploy/slack/manifest.yaml`) and **re-install the app**. Until then a person's decision answers
+`502` and the log says `missing_scope`; a team's decision needs no new scope.
+
 ## Next — the in-message slash commands are gone
 
 The gateway no longer reads `/login`, `/logout`, `/usage`, `/help`, `/stop` or `/agent` from a
