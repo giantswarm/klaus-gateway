@@ -93,12 +93,21 @@ func TestToolLog_ResultsCloseTheirCalls(t *testing.T) {
 	require.False(t, entries[3].called, "a result without its call is kept on its own")
 	require.Equal(t, "late", entries[3].result)
 
+	// Without an id a call_tool result names no inner tool: it closes the
+	// oldest call muster ran.
+	a.appendToolLog("T1", toolLogEntry{turn: turn, name: "x_kubernetes_get", viaMuster: true, called: true})
+	a.completeToolLog("T1", toolLogEntry{turn: turn, name: musterCallToolMetaTool, state: toolDone, result: "pods"})
+	entries, _ = a.toolLogSnapshot("T1")
+	require.Len(t, entries, 5)
+	require.Equal(t, "x_kubernetes_get", entries[4].name)
+	require.Equal(t, "pods", entries[4].result)
+
 	// A result never closes a call of another turn.
 	next := a.beginToolLogTurn("T1")
 	a.completeToolLog("T1", toolLogEntry{turn: next, name: "list", state: toolDone})
 	entries, _ = a.toolLogSnapshot("T1")
 	require.Equal(t, toolRunning, entries[2].state)
-	require.Len(t, entries, 5)
+	require.Len(t, entries, 6)
 }
 
 // The writer records a call and pairs its result with it: the arguments as

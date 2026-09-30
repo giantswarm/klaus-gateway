@@ -700,7 +700,8 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
   status (✅ done, ❌ error, ⏸ asked for approval, ⏳ no result yet), the plain-language title
   with the raw tool name ("via muster" when `call_tool` wrapped it), the arguments as
   indented JSON and the result preview, each in a code block. A result pairs with its call by
-  call id; one the stream gave no id closes the oldest running call of the same tool. The log
+  call id; one the stream gave no id closes the oldest running call of the same tool (of any
+  tool muster ran, for a `call_tool` result). The log
   is in-memory and bounded: the last 100 calls per thread, kept for up to 24 hours and not
   surviving a gateway restart; a log of many short turns shows its most recent calls, as
   many as a modal's 100 blocks hold, and says how many it leaves out. When nothing is

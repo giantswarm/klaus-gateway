@@ -84,7 +84,8 @@ func (a *Adapter) appendToolLogLocked(log *threadToolLog, e toolLogEntry) {
 // turn it belongs to, and a result no running call matches becomes an entry of
 // its own, without the call. A result belongs to the call with its call id; a
 // result the stream gave no id closes the oldest running call of the same tool
-// that has none either, first in, first out.
+// that has none either, first in, first out. Without an id, a call_tool result
+// cannot name the tool it ran, so it closes the oldest such call muster ran.
 func (a *Adapter) completeToolLog(threadID string, result toolLogEntry) {
 	a.toolLogMu.Lock()
 	defer a.toolLogMu.Unlock()
@@ -94,7 +95,7 @@ func (a *Adapter) completeToolLog(threadID string, result toolLogEntry) {
 		if e.turn != result.turn || e.state != toolRunning || e.callID != result.callID {
 			continue
 		}
-		if result.callID == "" && e.name != result.name {
+		if result.callID == "" && e.name != result.name && (result.name != musterCallToolMetaTool || !e.viaMuster) {
 			continue
 		}
 		e.state, e.result = result.state, result.result

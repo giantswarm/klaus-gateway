@@ -500,7 +500,7 @@ func (w *batchedWriter) finalFlush(ctx context.Context) error {
 // Caps, in runes, of what the tool log keeps of a call's arguments (as indented
 // JSON) and of its result preview.
 const (
-	toolArgsMax   = 1400
+	toolArgsMax   = 800
 	toolResultMax = 800
 	// maxActivityBlocks bounds the blocks of one ephemeral inspection message,
 	// comfortably under Slack's 50-blocks-per-message limit; an inspection

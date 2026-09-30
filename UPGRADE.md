@@ -13,8 +13,9 @@ it back on: **rollback is the previous image**.
 What people see: while the agent runs tools and has written nothing, the thread shows only
 Slack's working indicator (and, in text progress mode, the `Working…` placeholder). A tool call
 that fails is no longer marked in the thread; the agent's answer is what says so. The
-**Inspect agent steps** shortcut (⋯ menu → Apps) is unchanged and is now the only place that
-shows the calls.
+**Inspect agent steps** shortcut (⋯ menu → Apps) is now the only place that shows the calls. It
+opens an "Agent steps" modal for the person who uses it, with one block per call: its status,
+its arguments and its result.
 
 A rolling upgrade needs no care: the old pod closes the steps of a turn in flight when it shuts
 down. Only a turn whose old pod is killed without a graceful shutdown can keep one step shown as
