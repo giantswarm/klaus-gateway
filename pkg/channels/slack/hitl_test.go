@@ -315,7 +315,7 @@ func TestApprovedCalls(t *testing.T) {
 	require.Nil(t, approvedCalls(nil, approve))
 }
 
-// The card names the calls as the reply's task list does, muster's call_tool
+// The card names the calls by their plain titles, muster's call_tool
 // unwrapped. Its body is the status's own text (StatusText), not the delta's
 // Content, which falls back to the tool names; the runtime's default hint lines
 // are left out and the agent's own lines kept, escaped.

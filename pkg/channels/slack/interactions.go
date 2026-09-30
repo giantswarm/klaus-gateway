@@ -437,7 +437,7 @@ func (a *Adapter) handleAccessDecision(ctx context.Context, slackChannel, thread
 		if err := a.replayDispatch(ctx, req.msg, req.slackChannel); err != nil && !errors.Is(err, context.Canceled) {
 			a.Logger.Error("slack: replay after access grant failed",
 				"thread", threadID, "user", newcomerID, "error", err)
-			a.postReplayFailureNote(ctx, req.slackChannel, req.msg.ThreadID)
+			a.postReplayFailureNote(ctx, req.slackChannel, req.msg.ThreadID, err)
 		}
 	}
 }
@@ -445,11 +445,14 @@ func (a *Adapter) handleAccessDecision(ctx context.Context, slackChannel, thread
 // postResumeFailureNote tells the thread a button decision could not be
 // delivered to the agent. The task was re-stored, so a typed reply still
 // resumes it; the note is what makes that recovery discoverable. Best-effort.
-func (a *Adapter) postResumeFailureNote(ctx context.Context, client *slackAPIClient, slackChannel, threadID string) {
+func (a *Adapter) postResumeFailureNote(ctx context.Context, client *slackAPIClient, slackChannel, threadID string, cause error) {
 	if ctx.Err() != nil {
 		return
 	}
-	const text = "The decision did not reach the agent. Reply in this thread to try again."
+	text := "The decision did not reach the agent. Reply in this thread to try again."
+	if errors.Is(cause, channels.ErrShareUnavailable) {
+		text = shareUnavailableNote
+	}
 	if _, err := client.postNote(ctx, slackChannel, text, threadID); err != nil {
 		a.Logger.Warn("slack: post resume failure note failed", "thread", threadID, "error", err)
 	}
@@ -461,9 +464,9 @@ func (a *Adapter) postResumeFailureNote(ctx context.Context, client *slackAPICli
 func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, messageTS, slackUser string, act hitlAction) error {
 	client := a.apiClient()
 
-	// The approval buttons are posted in-thread and visible to everyone, but the
-	// tool call runs under the initiator's identity, so only a permitted user (the
-	// initiator or a granted collaborator) may approve or cancel it. An onlooker
+	// The approval buttons are posted in-thread and visible to everyone, but
+	// only a permitted user (the initiator or a granted collaborator) may
+	// approve or cancel the tool call. An onlooker
 	// click is refused ephemerally and the pending task is left intact.
 	if !a.accessPolicy().Allowed(ctx, slackChannel, threadID, slackUser) {
 		if err := client.postEphemeralText(ctx, slackChannel, slackUser, threadID, accessDecisionRefusal); err != nil {
@@ -594,15 +597,15 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 		BearerToken: token,
 	}
 
-	// runTurn resolves the clicker's email, applies the initiator's identity
-	// (a collaborator's decision resumes the one shared session, so it runs
-	// under the initiator just like a typed turn), and re-stores the taken
+	// runTurn resolves the clicker's email, marks a collaborator's decision
+	// (it resumes the initiator's instance through the thread's share, under
+	// the clicker's own token, just like a typed turn), and re-stores the taken
 	// task on a pre-stream failure: the buttons already show the decision, so
 	// the failure note tells the user a typed reply can still resume it. The
-	// empty triggerTS selects text progress: a button resume has no user
+	// empty triggerTS means no reaction: a button resume has no user
 	// message to react to.
-	return a.runTurn(ctx, msg, slackChannel, "", thinkingPlaceholder, "", task, agentSourceTask, turnHooks{
-		onFailure: func(error) { a.postResumeFailureNote(ctx, client, slackChannel, threadID) },
+	return a.runTurn(ctx, msg, slackChannel, "", "", task, agentSourceTask, turnHooks{
+		onFailure: func(err error) { a.postResumeFailureNote(ctx, client, slackChannel, threadID, err) },
 	})
 }
 

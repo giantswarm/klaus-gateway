@@ -1,6 +1,7 @@
 package slack
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -264,13 +265,6 @@ const choiceLabelWidgetMax = 75
 // renders as text.
 const maxFormQuestions = 20
 
-// Progress-mode values (Adapter.ProgressMode).
-const (
-	progressModeAuto      = "auto"      // reactions, falling back to text on missing_scope
-	progressModeReactions = "reactions" // reactions only
-	progressModeText      = "text"      // text placeholder only
-)
-
 // Default progress reaction emoji names (no surrounding colons). Overridable
 // via config so a workspace can pick emoji its members recognise.
 const (
@@ -278,10 +272,6 @@ const (
 	defaultDoneEmoji    = "white_check_mark"
 	defaultFailedEmoji  = "x"
 )
-
-// thinkingPlaceholder is the text-mode progress placeholder, posted before the
-// first agent output and replaced by the answer.
-const thinkingPlaceholder = "Working…"
 
 // busyNotice is posted when a turn is rejected because another turn is already
 // in flight on the same thread (per-thread serialization).
@@ -445,22 +435,13 @@ const (
 	approvalDeniedBy      = "Denied by <@%s> · %s"
 )
 
-// emptyOutputNote replaces the text-mode placeholder when a turn completes
-// without producing any output, so it does not linger as "thinking".
+// emptyOutputNote is posted when a turn completes without producing any
+// output, so the thread is not left silent.
 const emptyOutputNote = "The agent finished without a reply."
 
-// stoppedNote replaces the text-mode placeholder when a turn is cancelled
-// before any content streamed, so "thinking" does not linger under "Stopped.".
-const stoppedNote = "Stopped before an answer."
-
-// pausedNote replaces the text-mode placeholder when a turn pauses on an
-// input-required prompt before any content streamed.
-const pausedNote = "Waiting for your answer below."
-
-// failedNote is posted when a turn ends in error before any answer text: it
-// replaces the text-mode placeholder (so it does not linger as "thinking"),
-// and in reactions mode it is posted into the thread next to the failed emoji,
-// which alone would leave the user guessing whether a retry helps.
+// failedNote is posted into the thread when a turn ends in error before any
+// answer text: the failed emoji, when there is one, alone would leave the user
+// guessing whether a retry helps.
 const failedNote = "The turn failed before an answer. Send the message again to retry."
 
 // The notes of a turn that failed on something the gateway can name
@@ -475,9 +456,17 @@ const (
 	policyFailedNote   = "A platform policy refused this request, so the agent did not answer it. Sending it again does not change that."
 )
 
+// shareUnavailableNote is posted when a collaborator's turn cannot reach the
+// thread's conversation: it is not shared with collaborators yet, and the
+// initiator's sign-in, which shares it, has lapsed.
+const shareUnavailableNote = "This conversation belongs to the person who started it, and it can only be opened to you while they are signed in. Ask them to send a message here, which signs them in again if needed, then send yours again."
+
 // failureNote is the note of a turn that failed with err before the agent
 // answered: the class's own note, or failedNote when no class names it.
 func failureNote(err error) string {
+	if errors.Is(err, channels.ErrShareUnavailable) {
+		return shareUnavailableNote
+	}
 	switch channels.ClassifyFailure(err) {
 	case channels.FailureTools:
 		return toolsFailedNote
@@ -489,6 +478,29 @@ func failureNote(err error) string {
 		return policyFailedNote
 	}
 	return failedNote
+}
+
+// interruptedNote is posted when a turn fails after its reply had started:
+// the narration or part of the answer on screen do not say that the turn is
+// over, and the failed emoji alone is easy to miss under them. It names what
+// broke by its class, never by the error's text.
+const interruptedNote = "The turn ended with %s before the agent finished. What it did so far is in the Dev Portal; reply here to try again."
+
+// interruptedFailureNote is the note of a turn that failed with err after its
+// reply had started.
+func interruptedFailureNote(err error) string {
+	cause := "an error"
+	switch channels.ClassifyFailure(err) {
+	case channels.FailureTools:
+		cause = "a tool connection error"
+	case channels.FailurePlatform:
+		cause = "a platform error"
+	case channels.FailureModel:
+		cause = "a model error"
+	case channels.FailurePolicy:
+		cause = "a policy refusal"
+	}
+	return fmt.Sprintf(interruptedNote, cause)
 }
 
 // renderFailedNote is posted when the agent completed its turn but Slack kept
@@ -614,11 +626,10 @@ const (
 	paramInitiatorUserID = "initiator_user_id"
 
 	// Streamed reply parameters (chat.startStream / appendStream / stopStream).
-	// chunks carries everything the reply adds — the agent's prose as
-	// markdown_text chunks, its tool steps as task_update chunks — in one
-	// ordered array. It is the alternative to the plain markdown_text field,
-	// and the two may not be combined; a message uses one of them from its
-	// first call to its last.
+	// chunks carries everything the reply adds — the agent's narration and
+	// answer as markdown_text chunks — in one ordered array. It is the
+	// alternative to the plain markdown_text field, and the two may not be
+	// combined; a message uses one of them from its first call to its last.
 	paramChunks = "chunks"
 	// recipient_user_id and recipient_team_id name the person the streamed
 	// answer is for; Slack requires both when the stream is in a channel and

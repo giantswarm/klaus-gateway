@@ -7,6 +7,9 @@ import (
 // forwardedTokenKey is the context key for a caller-forwarded bearer token.
 type forwardedTokenKey struct{}
 
+// shareTokenKey is the context key for an AgentInstance share token.
+type shareTokenKey struct{}
+
 // agentRefKey is the context key for the target agentRef.
 type agentRefKey struct{}
 
@@ -34,5 +37,23 @@ func WithForwardedToken(ctx context.Context, token string) context.Context {
 // an empty string.
 func ForwardedTokenFromContext(ctx context.Context) string {
 	token, _ := ctx.Value(forwardedTokenKey{}).(string)
+	return token
+}
+
+// WithShareToken stores an AgentInstance share token in ctx. Every kagent call
+// made with ctx then carries it next to the caller's own bearer, which lets a
+// caller who is not the instance's creator act on that one instance as
+// themselves. An empty token leaves ctx unchanged.
+func WithShareToken(ctx context.Context, token string) context.Context {
+	if token == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, shareTokenKey{}, token)
+}
+
+// ShareTokenFromContext returns the token stored by WithShareToken, or an
+// empty string.
+func ShareTokenFromContext(ctx context.Context) string {
+	token, _ := ctx.Value(shareTokenKey{}).(string)
 	return token
 }

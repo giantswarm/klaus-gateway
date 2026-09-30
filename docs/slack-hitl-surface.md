@@ -29,7 +29,8 @@ A single ask_user question picks its layout by choice count, select mode, and la
 
 Generic (non-`ask_user`) tool approvals always render as the approval card, with Approve and
 Deny buttons.
-Any prompt can also be answered by replying in-thread; a reply resolves the paused task the
+Any prompt can also be answered by replying in-thread (a reply that opens with a mention of
+someone other than the bot is not for the agent and answers nothing); a reply resolves the paused task the
 same way a click does. Only a permitted user (the thread initiator or a granted collaborator)
 may decide; an onlooker click is refused ephemerally. A thread is one shared session, so any
 permitted user may answer a prompt it raised. The team review (section 10) is the exception:
@@ -40,14 +41,15 @@ it has no initiator, and any linked member of its team may decide.
 The agent paused on a tool call that needs approval (`ToolName` is not `ask_user`). The
 gateway posts an approval card:
 
-- **Section:** `*Approval required* · <tools>`. The tools are named with their step titles in
-  the reply's task list ("Capi list clusters"). Muster's `call_tool` is unwrapped to the tool it
+- **Section:** `*Approval required* · <tools>`. The tools are named in plain language: muster's
+  meta-tools get phrases of their own, and every other name drops its `x_`/`workflow_` namespace
+  and is capitalised ("Capi list clusters"). Muster's `call_tool` is unwrapped to the tool it
   runs, and several calls decided together are listed with commas. A second line carries the
   agent's hint, escaped, but only when it adds something: the ADK runtime's default hint
   ("Please approve or reject the tool call call_tool() by responding with a FunctionResponse…")
   and the tool-name fallback of a status without text are left out.
 - **Context:** `<@initiator> or the people they allowed can decide`. The call runs with the
-  initiator's identity, whoever decides.
+  identity of whoever decides.
 - **Buttons:** Approve (primary) runs the call, Deny (danger) rejects it. There is no "Ask a
   question" button. A typed reply that is not "approve" or "deny" is sent as a rejection with
   the text as its reason, but the Go ADK runtime drops that reason, so the model sees only
@@ -359,15 +361,15 @@ restart, expiry) rewrites the prompt to say the approval expired. Each button's 
 the JSON `{"t":"<thread>","u":"<newcomer>"}`, since one initiator can have several pending
 approvals at once.
 
-A granted collaborator's turns run under the initiator's identity ("on your behalf"): the
-gateway forwards the initiator's token so the thread stays one shared session, and the
-collaborator's real identity rides along as attribution. See
+A granted collaborator's turns run in the initiator's conversation under the collaborator's
+own identity: the gateway sends their own token together with the thread's AgentInstance
+share, and names them to the agent as attribution. See
 [Threads and conversations](channels-slack.md#threads-and-conversations).
 
 ```json
 {
   "blocks": [
-    { "type": "section", "text": { "type": "mrkdwn", "text": "*<@U0NEWCOMER> wants to join this thread*\nTheir messages would run under your sign-in. Allow them to instruct the agent here?" } },
+    { "type": "section", "text": { "type": "mrkdwn", "text": "*<@U0NEWCOMER> wants to join this thread*\nThey would see this conversation and instruct the agent in it, under their own sign-in. Allow them?" } },
     {
       "type": "actions",
       "elements": [
@@ -586,7 +588,7 @@ writes nothing:
 
 | when | notice |
 |---|---|
-| a reply without a mention in a thread whose conversation ended after `routing.threadTTL` (the row is still in the store, at twice the lifetime) | "This conversation ended after 90 days without messages. Mention the bot to start a new one." (the configured lifetime is named) |
+| a reply without a mention, and not opening with someone else's mention, in a thread whose conversation ended after `routing.threadTTL` (the row is still in the store, at twice the lifetime) | "This conversation ended after 90 days without messages. Mention the bot to start a new one." (the configured lifetime is named) |
 
 ## Answering: click and reply
 
@@ -603,11 +605,10 @@ keeps each question with its answer on the line under it ("No answer" when a typ
 no line for it), and its context line reads `Answered by <@U123> · …`. A long answer is cut so
 the line stays within Slack's 3000-character limit, or Slack would refuse the whole rewrite. The approval card is rewritten the same way (section 1).
 
-Every prompt can also be answered by a plain in-thread reply, which maps free text to the same
+Every prompt can also be answered by a plain in-thread reply that does not open with a mention
+of someone other than the bot, which maps free text to the same
 structured decision. A question prompt's or an approval card's message is recorded when it
 posts, so a typed answer rewrites it exactly like a click, and no live controls stay on a
 decided prompt. A click that
 finds its task gone or superseded keeps the prompt's text sections (the question, each question
 of a form) and puts the note where the controls were.
-
-In the reply's task list, the `ask_user` call shows as the step **Question for you**.

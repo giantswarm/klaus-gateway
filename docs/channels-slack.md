@@ -58,11 +58,12 @@ and channel threads alike, because `channel_id` and `thread_ts` are always sent
 (the bot must be a member of the channel).
 
 The indicator carries no text of its own — it says only *that* the agent is
-working. What it is working on is said by the reply's own **step list** (see
-[Message flow](#message-flow)), so the two are independent: installs
-where the method is unavailable — the scope missing from the bot token, the
-wrong token type, or agent messaging disabled for the workspace — drop the
-native indicator for the rest of the process lifetime and keep the steps. A
+working. While the agent runs tools and writes no prose, it is the only sign of
+progress in the thread: the tool calls are not shown in the reply (see
+[Message flow](#message-flow)). Installs where the method is unavailable — the
+scope missing from the bot token, the wrong token type, or agent messaging
+disabled for the workspace — drop the native indicator for the rest of the
+process lifetime; the reply is unaffected. A
 `not_authorized` rejection (the bot is not a member of that one channel) only
 costs that call.
 
@@ -131,15 +132,50 @@ creates one, which a turn that switches agents does mid-thread.
   persistent store (`valkey` or `bolt`), because the row carries it, not the process.
 - In a DM every top-level message opens its own thread and therefore its own
   instance; a "New chat" in the assistant pane likewise.
-- A turn runs under the thread **initiator's** identity. For a granted
-  collaborator's turn the gateway forwards the initiator's token and attaches the
-  collaborator as attribution, so the instance is created and addressed by one
-  principal and the agent still sees who spoke while acting with the initiator's
-  rights. That is why a newcomer needs the initiator's consent — the access
-  prompt — before their message runs. The initiator's own turns, and turns where
-  the initiator's token cannot be minted, use the sender's own token rather than
-  the gateway service account (`applyInitiatorIdentity` in
-  `pkg/channels/slack/slack.go`).
+- The instance is created under the thread **initiator's** identity, and kagent
+  lets only its creator act on it. A granted collaborator's turn runs under the
+  collaborator's own token and reaches the instance through an **AgentInstance
+  share**: the first collaborator turn mints a read-write share under the
+  initiator's token, and every collaborator turn after that presents it as
+  `x-share-token` next to their own bearer. The agent, and muster behind it,
+  act with the collaborator's rights, and the collaborator is named to the agent
+  as attribution. The conversation stays the initiator's, which is why a
+  newcomer needs the initiator's consent — the access prompt — before their
+  message runs (`applyInstanceOwner` in `pkg/channels/slack/slack.go`).
+- The share is kept in the thread's row, sealed with AES-256-GCM under a key
+  derived from the OBO link-store key, so a copy of the row does not hand out
+  the share. A collaborator turn uses the stored share without the initiator's
+  token, so it keeps working after the initiator signs out. The gateway revokes
+  a share when the thread moves to another agent, and when a turn finds the
+  conversation ended; deleting the instance, as a session reset does, removes
+  its shares at the controller. Only the instance's creator may revoke its
+  shares, so a turn that does not hold the creator's token (a collaborator's
+  while the creator is signed out, or a new mention that restarts an ended
+  conversation) leaves the share valid and logs it. A share kagent issues does not expire on its
+  own, so the share of a thread nobody writes to again stays valid at the
+  controller.
+- A thread has one share for all its collaborators, and only the gateway holds
+  it. Who may use it is the thread's access list: the gateway sends a turn with
+  the share only for a granted user.
+- When the thread holds no share yet and the initiator's token cannot be
+  minted, the gateway refuses the collaborator's turn and tells the thread that
+  the initiator has to be signed in. The resume check on such a turn is
+  indeterminate rather than a miss (the collaborator's own token cannot see the
+  instance), so it neither posts the starting-fresh notice nor clears the
+  binding.
+- A collaborator whose turn opens the thread's binding while the initiator is
+  signed out creates the instance under their own token. The row records that
+  collaborator as the instance's creator (`instance_creator`): their turns need
+  no share, and every other person's turn in the thread, the initiator's
+  included, is a collaborator's turn that borrows the creator's token for the
+  share. A row without a recorded creator reads as the initiator's.
+- A collaborator's turn that finds the session's history corrupt deletes the
+  instance through the share, the same recovery an initiator's turn runs;
+  without the share or the creator's token the reset is refused and the
+  thread is told to start a new one.
+- The agent still sees the instance creator in `X-User-Id` on a collaborator's
+  turn (kagent#2459), so anything that names the person from that header names
+  the initiator.
 - **When the instance is gone.** Two cases clear only the binding fields of the row;
   the thread keeps its agent, its initiator and its grants, and the next turn creates
   a fresh instance. An instance the controller no longer has is found by the resume
@@ -192,7 +228,8 @@ creates one, which a turn that switches agents does mid-thread.
 - **A reply in a conversation that ended is told so.** The row itself stays in the store for
   twice the lifetime (180 days by default; `0` still never expires), and while it is there the
   gateway knows the difference between a thread whose conversation ended and a thread it was
-  never in. So an un-mentioned reply in one of the former gets one private line — "This
+  never in. So an un-mentioned reply in one of the former, unless it opens with someone else's mention (below),
+  gets one private line — "This
   conversation ended after 90 days without messages. Mention the bot to start a new one." — instead
   of silence. The sentence names the configured lifetime exactly, as the count of the largest
   unit it is a whole multiple of: `--thread-ttl=36h` reads "36 hours", not "1 day", and `90m`
@@ -204,6 +241,13 @@ creates one, which a turn that switches agents does mid-thread.
   word, as for any thread the bot was never in. There is no warning before the end, and no
   sweep: the notice is posted when somebody writes, which is the moment it is useful. A
   thread's row adopts the configured lifetime on its next message.
+- **A reply that opens with someone else's mention is not for the agent.** In a channel thread,
+  a reply whose first token mentions a person other than the bot (`@alice can you check?`) is
+  ignored without a word, even in a live conversation and even while a question or approval is
+  pending. A mention later in the text (`ask @alice about it`) does not count, and a mention of
+  the bot anywhere in the reply (`@alice @bot look too`) still addresses the bot. Direct
+  messages are not affected. Only a person's mention counts: a reply that opens with a user group
+  (`@oncall`) or `@here` still reaches the agent.
 
 ### Two auth layers
 
@@ -298,7 +342,7 @@ agent when it opens, through one of three entry points, and keeps it for life:
   already talks to an agent — reply in it to ask that agent, a second conversation would fork the
   one it has — and one that already belongs to someone else (a `/usage` or `/stop` typed there
   made them its initiator) — reply in it, so the owner is asked to allow you, since a conversation
-  opened by the picker would run under the owner's delegated identity. Refusals and failures
+  opened by the picker would run in the owner's conversation. Refusals and failures
   are private to the invoker, like the command's. The shortcut works in DMs too when DMs are
   served.
 
@@ -432,73 +476,38 @@ any string that begins with `Slack bot`, `Slack app-level`, or `Slack user`.
 7. Progress is shown by adding a working reaction to the triggering message. On success the
    working reaction is removed with no residual emoji (default); set
    `SLACK_CLEAR_REACTION_ON_DONE=false` to swap in a done reaction instead. A failed turn always
-   swaps in the failed reaction. With `SLACK_PROGRESS_MODE=text`, or in `auto` mode when
-   `reactions:write` is unavailable, a `Working…` placeholder message is posted instead.
+   swaps in the failed reaction. A turn with no triggering message (a button or form resume, a
+   resume after sign-in) gets no reaction; neither does any turn once Slack refused
+   `reactions:write` (the refusal is remembered until the process restarts). No message stands
+   in for the reaction: the thread's working indicator shows that the turn runs, where Slack
+   accepts the agent session status (on an install where it does not, such a turn shows nothing
+   until its answer streams). Without a reaction, a failure note, an empty-output note and the
+   restart notice post as messages in the thread; a stop or a pause on a prompt posts nothing of
+   its own.
 8. The whole turn is streamed into **one** Slack message with the streaming API:
    `chat.startStream` opens it, `chat.appendStream` adds what has accumulated since the last
    tick (one second), and `chat.stopStream` closes it with the answer's last words, naming
    the session's exit status. Slack animates the message while the stream is open.
 
-   The stream carries a list of typed **chunks**, not a plain text field — a message uses one
-   of the two from its first call to its last, and Slack refuses a mode change mid-message —
-   so everything the turn produces queues up in the order the agent produced it and goes out
-   together:
+   The stream carries a list of typed **chunks**, not a plain text field: the answer and the
+   agent's interim narration (the prose it writes before firing a tool call), as
+   `markdown_text` chunks in the order the agent produced them. The stream opens at the first
+   narration passage or answer text, whichever comes first.
 
-   - the answer, and the agent's interim narration (the prose it writes before firing a tool
-     call), as `markdown_text` chunks;
-   - each tool call as a `task_update` chunk, which Slack renders as a **step** of a task list
-     attached to the reply: `in_progress` when the call starts, `complete` — or `error` when
-     the tool reported one (an MCP result with `isError`, or the `{"error": …}` result the ADK
-     runtime sends for every failed call) — when its result arrives. The two updates share an id, so Slack
-     replaces the step rather than listing the call twice. Slack collapses the list once the
-     answer is done. Slack never ends a task on its own, so **every step still running when the
-     turn ends is closed by its last flush**, before the message is stopped. What it is closed
-     as follows from how the turn ended: `complete` on a normal end, on a pause for a HITL
-     prompt (the call did its work; the answer is what is awaited) and on a **gateway shutdown**
-     (the tool call is not cancelled — the task keeps running at the controller and another
-     process delivers its answer); `error` on a turn that failed and on one a `/stop` or the
-     per-turn deadline cancelled, where the result really is never coming. That rule is also
-     what closes a call the stream gave no id, which no result can be matched to. A call to a
-     tool that needs approval is the exception: the runtime answers it with its confirmation
-     request (`requires confirmation, please approve or reject`) before the task pauses, so its
-     step ends as `complete` with the title "Asked for approval: …": what completed is the
-     ask, not the tool. Slack has no waiting state (`pending` renders as an error). Once the
-     prompt is approved, the resumed turn's message opens a step for the call, which its real
-     result closes; a denied call gets no second step. For the same reason the **Inspect agent
-     steps** log shows an approved call twice: in the turn that asked for approval, without a
-     result, and in the resumed turn, with the call and its result. A turn is capped at 100
-     steps; past it one note in the reply says the rest are not shown and the calls still reach
-     the **Inspect agent steps** log, which keeps the most recent 100 per thread.
-
-   The stream therefore opens at the **first** thing the turn produces — a tool call, a
-   narration passage or the first answer text, whichever comes first — because tools usually
-   run before any answer text and the steps have to live in the reply.
-
-   Step titles are plain language, as Slack's agent design guide asks: muster's meta-tools get
-   phrases of their own (`filter_tools` → "Finding the right tool"), a `call_tool` wrapper is
-   unwrapped to the tool it really runs, and every other name is humanised by dropping the
-   `x_`/`workflow_` namespace and capitalising the rest (`x_kubernetes_list` → "Kubernetes
-   list"). Every step carries the raw tool name and its arguments as its details and the
-   result preview as its output, each cut to Slack's 256-character chunk limit without ever
-   splitting an escape sequence. The fields are plain mrkdwn text, escaped like the title, so
-   a `<@U…>` in a payload stays literal; a tool's own `*` or `_` renders as Slack formatting,
-   since Slack has no escape for those in plain text. Nothing is hidden by a per-thread
-   setting.
-
-   The **Inspect agent steps** shortcut is the audit view, with the fuller retained payloads.
+   **The tool calls are not in the reply.** A call and its result go to the thread's tool log
+   alone, which the **Inspect agent steps** shortcut shows with the arguments and a result
+   preview. A turn that only calls tools opens no message until it writes prose. A call that
+   needs approval shows in the log twice: in the turn that asked for approval, without a
+   result, and in the resumed turn, with the call and its result.
 
    Each append carries only what is new, and answer text is sent up to the last whitespace
    boundary — an unfinished word waits for the next append, so nothing is ever half-written.
    Replies over 12,000 characters roll over into a further streamed message; the intermediate
-   close carries `processing`, so the working indicator stays on mid-answer. The steps count
-   toward that budget too, at an estimate of the task card Slack stores for each (far more
-   than their characters). No new message starts while a step on the full one is running, for
-   a step or for prose, so every result reaches its card; the first step of a group of calls
-   started together is priced with the whole group, so the group starts where it fits. Should
-   Slack still answer `msg_too_long`, the steps that batch closes reach their cards without the
-   output preview, a step still running there is shown as done (its result gets a card on the
-   next message), the full message is closed, and the rest continues in a new one in the same
-   flush, whose size then bounds the turn's later messages. Every narration
+   close carries `processing`, so the working indicator stays on mid-answer. Slack refuses a
+   streamed message near 13,800 characters of text (see [invariants](invariants.md)), so the
+   12,000 cap leaves a margin. Should Slack still answer `msg_too_long`, the full message is
+   closed and the rest continues in a new one in the same flush, whose size then bounds the
+   turn's later messages. Every narration
    passage ends in a paragraph break, so two passages — or a passage and the answer after it —
    never run together in the message body. Narration counts toward that per-message limit like
    any other prose, but never toward the answer length the delivery record carries — a process
@@ -508,8 +517,7 @@ any string that begins with `Slack bot`, `Slack app-level`, or `Slack user`.
    which is what Slack requires there. Each streamed text run is rendered once — the A2A
    artifact update's append/replace semantics are honoured, so the Go ADK's re-send of a
    finished run does not duplicate it — and runs separated by tool calls are separated by a
-   paragraph. In text-progress mode the `Working…` placeholder is removed once the streamed
-   message exists (a stream cannot take over an existing message). A Slack refusal while
+   paragraph. A Slack refusal while
    rendering never fails the turn: flushes keep retrying until the agent finishes, a message
    Slack closed under the app gets one replacement stream, and only a final flush that still
    fails is reported in the thread (the reply is incomplete, with the failed reaction) while
@@ -568,13 +576,21 @@ Three structured log records (`record=…`, JSON fields) tell a turn's story; jo
   second attempt; `task_done_ms` and `stream_end_ms` are that attempt's.
 - `token_refresh` -- the person's muster id_token was refreshed: `trigger` (`ahead` for the
   background refresher, `turn` for a refresh on the turn's path), `slackUser`, `duration_ms`,
-  `expires_in_s`, or `error`. The refresher keeps the tokens of the people whose token a turn
-  asked for in the last 48 hours fresh -- every minute it refreshes those within five minutes of
-  expiry, under the same per-user lock and through the same store write as a turn's refresh, so
-  the rotating refresh token is never raced -- and a turn's `token_mint_ms` stays at a cache hit.
-  When the refresher could not reach muster in time the turn refreshes as before; a refresh
-  muster refuses drops the link like a turn's would, and the person is asked to sign in on their
-  next message.
+  `expires_in_s`, or `error`. A turn is dispatched only with a token that covers a turn: the
+  agent keeps the token it starts with until the turn ends, and muster ends the turn's session
+  (and its tools) when that token expires, so a cached token with less than
+  `obo.minTokenLifetime` left (`--obo-min-token-lifetime`, 25 minutes by default) is refreshed
+  first. The refresher keeps the tokens of the people whose token a turn asked for in the last
+  48 hours above that minimum -- every minute it refreshes those within a minute of dropping
+  below it, at most once per five minutes per person, under the same per-user lock and through
+  the same store write as a turn's refresh, so the rotating refresh token is never raced -- and
+  a turn's `token_mint_ms` stays at a cache hit. When the refresher could not reach muster in
+  time the turn refreshes as before; a refresh muster refuses drops the link like a turn's
+  would, and the person is asked to sign in on their next message. A refresh that returns a
+  token with less than the minimum left logs `id_token refreshed below the turn minimum` with
+  `min_lifetime_s`: muster's tokens live shorter than the minimum, or muster handed back the
+  upstream token it already held. Then every turn gets a freshly refreshed token, shared by the
+  calls of one turn within a minute of the refresh.
 
 The same phases feed the `klaus_gateway_turn_phase_seconds` histograms and the outcome and
 failure class the `klaus_gateway_turn_total` counter; the trace the records name spans the gateway, the kagent
@@ -585,12 +601,11 @@ controller and the actor when `observability.otlpEndpoint` is set.
 A turn ends early for one of two reasons, and the thread can tell them apart:
 
 - **`/stop`** is the user's decision. The working reaction is cleared, the reply's stream is
-  closed where it stands (its steps stay as they were), nothing else is posted in reactions
-  mode (the context line `Stopped.` replaces the placeholder in text mode), and the task is cancelled at the
+  closed where it stands, nothing else is posted, and the task is cancelled at the
   controller so the agent stops working.
 - **An error** before any answer text (an agent that did not start in time, a controller
   refusal) marks the triggering message with the failed reaction and posts a note in the
-  thread, in reactions mode too — the emoji alone does not say whether a retry helps, and for a
+  thread — the emoji alone does not say whether a retry helps, and for a
   conversation the gateway opened itself it sits on the bot's own root message. The note names
   what broke, read off the runtime's error (its `failure_class`):
 
@@ -609,7 +624,12 @@ A turn ends early for one of two reasons, and the thread can tell them apart:
   conversation stays where it is. Only when the second attempt fails too does the note go out.
   A stream that broke is not sent again (the task may still run at the controller), and neither
   is a HITL decision (the paused task it answers is gone once it failed).
-  Once answer text has streamed, only the reaction marks the incomplete reply.
+  Once the reply has started (narration or part of the answer), the failed reaction marks
+  it and one note goes under it: `The turn ended with <a platform error>
+  before the agent finished. What it did so far is in the Dev Portal; reply here to try again.`
+  It names the class (a tool connection error, a platform error, a model error, a policy
+  refusal, or just an error), never the error's text. A stream reset by a controller restart
+  (`RST_STREAM`) is a `platform` failure.
 - **A gateway restart** (a pod restart, a node loss with a grace period) is nobody's decision.
   The thread gets a one-line notice — `The gateway restarted while *<agent>* was working. The
   agent keeps going: its result is in the Dev Portal, and it is posted here when it is done.` — the
@@ -620,29 +640,26 @@ A turn ends early for one of two reasons, and the thread can tell them apart:
   original message while it does. The answer text arrives whole when the task completes (the
   resubscription does not replay what streamed before it), so the process continues the
   reply where its predecessor left it rather than repeating it: the thread's row records, as
-  a turn streams, how much answer text has landed, which streamed message it is landing in,
-  and how many step ids have been handed out; the continuing process posts only the text after
-  that mark — without the paragraph break the cut leaves in front — and numbers its own steps
-  on from the recorded count, so no id already on the reply is reused. The record also names
-  the step that was **running** when it was written, and clears it when that step ends: the
-  continuing process closes exactly that one on the adopted message, under the title it was
-  opened with, and leaves every step that had already finished alone. It does so even when it
-  has nothing else to add, so a reply completed just before the restart is not left with a step
-  spinning. A message the previous
+  a turn streams, how much answer text has landed and which streamed message it is landing
+  in; the continuing process posts only the text after that mark — without the paragraph break
+  the cut leaves in front. A message the previous
   process left open is adopted, so the reply goes on in the same bubble; if Slack closed it in
   the meantime the
   rest opens a message of its own. An adopted message is always closed, even when nothing is
   left to add, so it stops animating. A graceful restart closes the streamed message on its
   way out, so a continuation after one always opens a new message. A turn whose whole answer
-  had landed before the restart closes with `Done. The reply above is complete.` A turn the start-up recovery cannot reach (its user signed out,
-  the controller not up yet after three tries ten seconds apart) is delivered by the thread's
-  next reply, ahead of that reply's own answer; a task the controller no longer has gets a
-  short note instead.
+  had landed before the restart closes with `Done. The reply above is complete.` The start-up recovery keeps
+  trying a turn it cannot reach yet (the routing store or the controller not up, muster
+  refusing the token refresh while it rolls too) with a backoff from 10 s to 2 min, for as
+  long as the turn may run (30 min). A turn it gives up on, or whose user is signed out, gets
+  a note that a reply in the thread brings the result — the restart notice's promise does not
+  stand — and the thread's next reply delivers it, ahead of that reply's own answer; a task
+  the controller no longer has gets a short note instead.
 
 The recovery rides on the thread's routing-store binding, which records the task in flight
 while a turn runs, and with it what of the reply has landed (`delivered`: the answer text's
-length in bytes, the streamed message and its length, the count of step ids handed out and the
-step still running, written after every flush and every step). It therefore needs a routing store that outlives the process
+length in bytes and the streamed message and its length, written after every flush). It
+therefore needs a routing store that outlives the process
 (`routing.store: valkey` or `bolt`); with `memory` the record dies with the pod and
 the notice says so ("I cannot bring it into this thread"). The pod's
 `terminationGracePeriodSeconds` must leave room for the notice: the shutdown drains the HTTP
@@ -653,7 +670,7 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
 
 | Flag | Env var | Default |
 |------|---------|---------|
-| `--slack-progress-mode` | `SLACK_PROGRESS_MODE` | `auto` (`reactions` with a text fallback), or `reactions` / `text` |
+| `--slack-progress-mode` | `SLACK_PROGRESS_MODE` | deprecated, no effect (a set value logs a warning); removed in the next major release |
 | `--slack-working-emoji` | `SLACK_WORKING_EMOJI` | `eyes` |
 | `--slack-done-emoji` | `SLACK_DONE_EMOJI` | `white_check_mark` |
 | `--slack-failed-emoji` | `SLACK_FAILED_EMOJI` | `x` |
@@ -697,12 +714,11 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
   identity, so the app and its namesake agent — typically the default agent — never appear as
   two faces with one name in a thread. Swarmgeist's other messages (sign-in, errors, the DM
   redirect, the channel intro) keep the app's default identity. Requires `chat:write.customize`.
-- **Inspect agent steps.** A turn's step list shows each tool call's arguments and result
-  preview, cut to fit Slack's inline display. To see the fuller payloads after the fact,
+- **Inspect agent steps.** The reply does not show the agent's tool calls. To see them,
   invoke the **Inspect agent steps** message shortcut (⋯ menu → Apps) on any message in the
   thread: the gateway replies with an ephemeral, invoker-only rendering of the retained
   tool-call log — per call, the tool name with its arguments and a result preview, grouped
-  per turn, fuller than what a step has room for. The log is in-memory and bounded: the last
+  per turn. The log is in-memory and bounded: the last
   100 calls per thread, kept for up to 24 hours and not surviving a gateway restart. When
   nothing is retained the reply says so. The shortcut is registered in
   `deploy/slack/manifest.yaml`, next to **Ask an agent here** (which starts a
@@ -752,11 +768,10 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
   keeps a process-local copy of every link it has served, so a store outage does not reach the
   people it already knows and a refresh token the store failed to take is written later rather
   than lost (see `deployment.md`, "OBO link store").
-- **One conversation per thread.** A thread is bound to one agent and one AgentInstance, and
-  every turn in it runs under the thread initiator's identity even after others are allowed
-  in; a granted collaborator instructs the agent on the initiator's behalf, with their own
-  identity attached as attribution. Actions are therefore attributed to the initiator (see
-  [Threads and conversations](#threads-and-conversations)).
+- **One conversation per thread.** A thread is bound to one agent and one AgentInstance, which
+  its initiator created. A granted collaborator instructs the agent in that conversation under
+  their own identity, through the thread's AgentInstance share, so their actions are attributed
+  to them (see [Threads and conversations](#threads-and-conversations)).
 - **Surfaces.** DMs and channels are controlled independently. `SLACK_DM_MODE` selects the DM
   behaviour: `serve` (answer DMs, the default), `redirect` (a polite pointer to channels), or
   `ignore` (drop silently). `SLACK_CHANNEL_MODE` selects the channels served: `all` (every

@@ -103,7 +103,7 @@ func TestAccess_NewcomerApprovedReplaysMessage(t *testing.T) {
 	sendEvent(t, srv, mention("U999", "help", "200.000", "100.000"))
 	fake.waitForPath(t, "chat.postEphemeral", 2)
 	ephemeral := allText(fake.pathCalls("chat.postEphemeral"))
-	require.Contains(t, ephemeral, "wants to join this thread*\nTheir messages would run under your sign-in")
+	require.Contains(t, ephemeral, "wants to join this thread*\nThey would see this conversation and instruct the agent in it, under their own sign-in")
 	require.Contains(t, ephemeral, "waiting for the thread owner")
 	require.Equal(t, 1, gw.dispatchCount(), "held newcomer message must not reach the agent yet")
 
@@ -233,6 +233,30 @@ func TestHITL_ToolPromptSurfacedForApproval(t *testing.T) {
 	require.Contains(t, allText(fake.pathCalls("chat.postMessage")), "Approval required",
 		"a tool prompt is surfaced for human approval")
 	require.Equal(t, 1, gw.dispatchCount(), "the prompt is not resumed without a human decision")
+}
+
+// A turn resumed by an approval click has no message to react on. It posts no
+// placeholder either: the working indicator shows the turn runs, and the answer
+// is the next message in the thread.
+func TestHITL_ApprovedResumePostsNoPlaceholder(t *testing.T) {
+	fake := newFakeSlackAPI()
+	prompt := channels.OutboundDelta{
+		Kind:   channels.DeltaPrompt,
+		TaskID: "task-1",
+		Prompt: &channels.HitlPrompt{ToolName: "kubectl_delete"},
+	}
+	gw := &stubGateway{sendQueue: [][]channels.OutboundDelta{{prompt}, {{Content: "deleted"}, {Done: true}}}}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+
+	sendEvent(t, srv, dmEvent("U1", "clean up", "400.000"))
+	fake.waitForPath(t, "chat.postMessage", 1)
+	posted := len(fake.pathCalls("chat.postMessage"))
+
+	sendInteraction(t, srv, "hitl_approve", "400.000")
+	fake.waitForPath(t, pathStopStream, 1)
+	require.Contains(t, fake.streamedText(), "deleted")
+	require.Len(t, fake.pathCalls("chat.postMessage"), posted, "the resume posts no message of its own")
+	require.Len(t, fake.pathCalls("reactions.add"), 1, "only the typed turn gets a reaction")
 }
 
 // An access-consent click for a thread this process has no initiator for (pod

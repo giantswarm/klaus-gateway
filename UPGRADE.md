@@ -4,6 +4,52 @@ Breaking or operator-visible changes between releases, newest first. The
 `CHANGELOG.md` lists every change; this file covers what an operator has to
 do or decide.
 
+## Next — the Slack progress mode has no effect (`slack.progress.mode`)
+
+Every turn tries the progress reactions on its triggering message, and no turn posts the
+`Working…` placeholder any more. `slack.progress.mode` (`SLACK_PROGRESS_MODE`,
+`--slack-progress-mode`) is still accepted but does nothing; a set value logs
+`slack: the progress mode setting has no effect` at start. No installation sets it. **Remove it
+from your values now:** the key goes in the next major release, and the schema then refuses a
+values file that still sets it.
+
+What people see: a turn that continues after a click (Approve, Deny, a form) or after a sign-in
+has no message to react on, and before this release posted `Working…`. It now shows only
+Slack's working indicator until the answer streams. The same holds for every turn on an
+installation whose Slack app lacks `reactions:write`, which used to fall back to the
+placeholder. Such a turn still posts its failure, empty-output and restart notes; a stop or a
+pause on a prompt posts nothing of its own. The indicator needs the agent session status
+(`agents.sessions.setStatus`: an Agent-type app with `chat:write`). Where Slack refuses it, the
+log says `agent session status unavailable` and such a turn shows nothing until its answer
+streams. Rollback is the previous image.
+
+## Next — the agent's tool calls leave the Slack reply
+
+A reply no longer shows the agent's tool calls as a step list. It carries the agent's narration
+and its answer. Nothing to configure — no chart value, no flag, no scope — and no way to turn
+it back on: **rollback is the previous image**.
+
+What people see: while the agent runs tools and has written nothing, the thread shows only
+Slack's working indicator. A tool call
+that fails is no longer marked in the thread; the agent's answer is what says so. The
+**Inspect agent steps** shortcut (⋯ menu → Apps) is unchanged and is now the only place that
+shows the calls.
+
+A rolling upgrade needs no care: the old pod closes the steps of a turn in flight when it shuts
+down. Only a turn whose old pod is killed without a graceful shutdown can keep one step shown as
+running on its reply, because the new pod does not close steps any more. That reply is otherwise
+complete.
+
+## Next — a turn's token covers the turn (`obo.minTokenLifetime`)
+
+A turn is dispatched with a human token that has at least `obo.minTokenLifetime` left (25m by
+default), since the agent keeps it for the whole turn. With muster's 30-minute tokens this
+moves more token refreshes ahead of the turn: the refresher refreshes a person who spoke in the
+last 48 hours about every five minutes instead of once per token lifetime, and a turn whose
+cached token has less than the minimum left refreshes on its own path. Set the value above the
+longest turn an installation runs; `id_token refreshed below the turn minimum` in the log means
+muster did not return a token that long-lived.
+
 ## Next — the ignored Slack-only values keys are deleted (breaking)
 
 Nine values keys the chart has accepted and ignored since the Slack-only release are removed from

@@ -108,9 +108,10 @@ type SlackConfig struct {
 	// so a restart never replays messages queued while it was down.
 	// SLACK_DROP_STALE=true. Default false.
 	DropStaleEvents bool
-	// ProgressMode selects how turn progress is shown: "auto" (default; reactions
-	// with a text fallback when reactions:write is unavailable), "reactions", or
-	// "text". SLACK_PROGRESS_MODE.
+	// ProgressMode is deprecated and has no effect: every turn tries the
+	// progress reactions. Still read so a deployment that sets it keeps
+	// starting; main logs a warning.
+	// SLACK_PROGRESS_MODE.
 	ProgressMode string
 	// WorkingEmoji, DoneEmoji, FailedEmoji override the progress reaction emoji
 	// names (no surrounding colons). Empty uses the defaults (eyes /
@@ -168,6 +169,11 @@ type OBOConfig struct {
 	// StateKeyFile holds the HMAC key used to sign link state (CSRF + binding
 	// the link to the requesting Slack user). Required when OBO is enabled.
 	StateKeyFile string
+	// MinTokenLifetime is the least remaining lifetime of the human token a
+	// turn is dispatched with: a cached token with less left is refreshed
+	// first, because the agent keeps it for the whole turn. Zero uses
+	// musterlink.DefaultMinTokenLifetime (25m).
+	MinTokenLifetime time.Duration
 	// ConnectorsEnabled turns on the reactive Slack "Connect <backend>" UX: the
 	// gateway detects a core_auth_login challenge in the agent's A2A stream and
 	// renders a Connect button from the login link the agent relays. The gateway
@@ -341,7 +347,7 @@ func Load(args []string) (Config, error) {
 		cfg.Slack.ChannelAllowlist = splitCommaList(v)
 		return nil
 	})
-	fs.StringVar(&cfg.Slack.ProgressMode, "slack-progress-mode", cfg.Slack.ProgressMode, "Slack turn-progress mode: auto (default), reactions, or text.")
+	fs.StringVar(&cfg.Slack.ProgressMode, "slack-progress-mode", cfg.Slack.ProgressMode, "Deprecated, no effect: every turn tries the progress reactions.")
 	fs.StringVar(&cfg.Slack.WorkingEmoji, "slack-working-emoji", cfg.Slack.WorkingEmoji, "Slack reaction emoji name for a turn in progress (no colons). Empty uses the default.")
 	fs.StringVar(&cfg.Slack.DoneEmoji, "slack-done-emoji", cfg.Slack.DoneEmoji, "Slack reaction emoji name for a completed turn (no colons). Empty uses the default.")
 	fs.StringVar(&cfg.Slack.FailedEmoji, "slack-failed-emoji", cfg.Slack.FailedEmoji, "Slack reaction emoji name for a failed turn (no colons). Empty uses the default.")
@@ -359,10 +365,11 @@ func Load(args []string) (Config, error) {
 	fs.StringVar(&cfg.OBO.CallbackBaseURL, "obo-callback-base-url", cfg.OBO.CallbackBaseURL, "Gateway's public base URL; the muster redirect URI is this joined with /auth/slack/callback.")
 	fs.StringVar(&cfg.OBO.Store, "obo-store", cfg.OBO.Store, "Link-store backend: memory, bolt (a file at --obo-store-path) or secret (one Kubernetes Secret, --obo-store-secret). Empty means bolt when --obo-store-path is set, memory otherwise.")
 	fs.StringVar(&cfg.OBO.StorePath, "obo-store-path", cfg.OBO.StorePath, "Path to the encrypted bolt link store (bolt backend). With --obo-store=secret: an existing bolt file to import links from on start.")
-	fs.StringVar(&cfg.OBO.StoreKeyFile, "obo-store-key-file", cfg.OBO.StoreKeyFile, "Path to the 32-byte AES-256 key file for the link store (required with the bolt and secret backends).")
+	fs.StringVar(&cfg.OBO.StoreKeyFile, "obo-store-key-file", cfg.OBO.StoreKeyFile, "Path to the 32-byte AES-256 key file for the link store (required with the bolt and secret backends). The key the thread rows' AgentInstance shares are sealed under is derived from it.")
 	fs.StringVar(&cfg.OBO.StoreSecretName, "obo-store-secret", cfg.OBO.StoreSecretName, "Name of the Secret holding the links (secret backend).")
 	fs.StringVar(&cfg.OBO.StoreSecretNamespace, "obo-store-secret-namespace", cfg.OBO.StoreSecretNamespace, "Namespace of the link Secret (secret backend). Empty means the pod's own namespace.")
 	fs.StringVar(&cfg.OBO.StateKeyFile, "obo-state-key-file", cfg.OBO.StateKeyFile, "Path to the HMAC key file used to sign link state (required with --obo-enabled).")
+	fs.DurationVar(&cfg.OBO.MinTokenLifetime, "obo-min-token-lifetime", cfg.OBO.MinTokenLifetime, "Least remaining lifetime of the human token a turn is dispatched with; a cached token with less left is refreshed first, since the agent keeps it for the whole turn. Set it above the longest turn. 0 means 25m; values below 1m are raised to 1m.")
 	fs.BoolVar(&cfg.OBO.ConnectorsEnabled, "obo-connectors-enabled", cfg.OBO.ConnectorsEnabled, "Enable the reactive Slack connector UX: the gateway detects a core_auth_login challenge in the agent's response stream and renders a Connect button from the login link the agent relays. The gateway does not call muster. Requires --obo-enabled.")
 	fs.BoolVar(&cfg.Reviews.Enabled, "reviews-enabled", cfg.Reviews.Enabled, "Enable the team-review endpoint (POST /reviews, POST /notices) for managers authenticated as a Kubernetes ServiceAccount. Requires --slack-enabled and --obo-enabled.")
 	fs.StringVar(&cfg.Reviews.Audience, "reviews-audience", cfg.Reviews.Audience, "Token audience the API server checks for the team-review endpoint (default klaus-gateway).")
@@ -544,6 +551,11 @@ func applyEnv(cfg *Config) {
 	if v, ok := lookup("OBO_CONNECTORS_ENABLED"); ok {
 		cfg.OBO.ConnectorsEnabled = strings.EqualFold(v, "true") || v == "1"
 	}
+	if v, ok := lookup("OBO_MIN_TOKEN_LIFETIME"); ok {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.OBO.MinTokenLifetime = d
+		}
+	}
 }
 
 func lookup(key string) (string, bool) {
@@ -609,6 +621,9 @@ func (c Config) Validate() error {
 	if c.OBO.Enabled {
 		if !c.Slack.Enabled {
 			return fmt.Errorf("--slack-enabled is required with --obo-enabled (OBO links Slack identities and enforces the Slack/muster email match)")
+		}
+		if c.OBO.MinTokenLifetime < 0 {
+			return fmt.Errorf("--obo-min-token-lifetime must not be negative (got %s)", c.OBO.MinTokenLifetime)
 		}
 		if c.OBO.MusterURL == "" {
 			return fmt.Errorf("--obo-muster-url is required with --obo-enabled")

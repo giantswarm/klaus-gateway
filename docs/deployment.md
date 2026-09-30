@@ -56,6 +56,19 @@ where those records live; both backends seal every record with `store-key` (AES-
 
 `UPGRADE.md` describes the move from the volume to the Secret.
 
+The cached id_token is handed to a turn only while it has at least `obo.minTokenLifetime` left
+(a Go duration; empty means 25m): the agent keeps the token for the whole turn and muster ends
+the turn's session when it expires, so set it above the longest turn you expect. A token with
+less left is refreshed before the turn starts, and the background refresher keeps recently
+active people above the minimum (see `token_refresh` in [channels-slack.md](channels-slack.md)).
+
+The routing store's thread rows hold one more secret: the AgentInstance share a thread's granted
+collaborators run their turns through. It is sealed under a key derived from `store-key`
+(HKDF-SHA256), so a Valkey dump does not hand it out. Rotating `store-key` makes the stored
+shares unreadable; the next collaborator turn in each thread mints a new share under the
+initiator's token and revokes the old one. On `obo.store: memory` there is no `store-key`, and
+the shares are sealed under a key for the process alone.
+
 Both backends can fail a call — the Secret backend on any apiserver hiccup (a restart, a
 `resourceVersion` conflict past the retries, the 10 s call timeout), the bolt file on a full
 disk — and the gateway keeps a process-local copy of every link it has read or written so a
@@ -261,6 +274,9 @@ The `web`, `cli`, `lifecycle`, `upstream`, `agentgateway`, `routing.defaultTTL`,
 `routing.autoCreate`, `a2a.saToken` and `a2a.tokenPath` keys, accepted and ignored since the
 Slack-only release, are gone. A values file that still sets one fails the upgrade with
 `additional properties '<key>' not allowed` — see [UPGRADE.md](../UPGRADE.md).
+
+`slack.progress.mode` is accepted and has no effect (a set value logs a warning); it goes in the
+next major release, with the same failure for a values file that still sets it.
 
 ### Where an installation's values come from
 

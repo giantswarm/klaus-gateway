@@ -121,6 +121,19 @@ type Entry struct {
 	// after a restart continues the reply where this one left it instead of
 	// repeating it. Reset with TaskID, cleared with it.
 	Delivered Delivered `json:"delivered,omitzero"`
+	// Share is the AgentInstance share the thread's granted users run their
+	// turns through: the instance belongs to its creator, and the share lets
+	// another person act on it as themselves. Bound to AgentInstanceID and
+	// dropped with the binding.
+	Share *Share `json:"share,omitempty"`
+	// InstanceCreator is the channel user whose token created
+	// AgentInstanceID: the instance is theirs, so their turns need no share
+	// and its lifecycle (minting and revoking the share, a reset) runs under
+	// their token. Usually the initiator; a collaborator when their turn
+	// opened the binding while the initiator was signed out. Empty on a row
+	// written before it was recorded, which reads as the initiator. Dropped
+	// with the binding.
+	InstanceCreator string `json:"instance_creator,omitempty"`
 	// Initiator is the user whose mention launched the thread, and Granted the
 	// users that initiator allowed into it. Written by the channel adapter:
 	// the facts it cannot recover after a restart.
@@ -132,11 +145,23 @@ type Entry struct {
 	TTL       time.Duration `json:"ttl"`
 }
 
+// Share is a thread's AgentInstance share. The token is held sealed: it is a
+// bearer capability on the instance, so a copy of the row must not be enough
+// to use it.
+type Share struct {
+	// ID names the share at the controller, for a revoke.
+	ID string `json:"id"`
+	// InstanceID is the AgentInstance the share was minted for.
+	InstanceID string `json:"instance_id"`
+	// Sealed is the share token, encrypted and bound to the thread and the
+	// instance.
+	Sealed []byte `json:"sealed"`
+}
+
 // Delivered is the part of an in-flight turn's reply that has reached the
-// channel: the answer text that landed and the step ids handed out for it.
-// A resubscription after a restart is handed the whole answer at completion
-// and no replay of the tool calls it missed, so this is what lets it post
-// only the text that follows and keep numbering the steps.
+// channel: the answer text that landed and the message it landed in. A
+// resubscription after a restart is handed the whole answer at completion, so
+// this is what lets it post only the text that follows.
 type Delivered struct {
 	// TextLen is the length, in bytes, of the answer text posted so far.
 	TextLen int `json:"text_len,omitempty"`
@@ -146,24 +171,12 @@ type Delivered struct {
 	// a second one, and counts on toward the per-message text cap.
 	StreamTS  string `json:"stream_ts,omitempty"`
 	StreamLen int    `json:"stream_len,omitempty"`
-	// ToolSteps counts the step ids the turn has handed out to the reply's task
-	// list. A process continuing the turn numbers its own steps on from it, so
-	// it never reuses an id already on the adopted message.
-	ToolSteps int `json:"tool_steps,omitempty"`
-	// OpenStepID and OpenStepTitle name the step that was running when the
-	// record was written, and are cleared when it ends. A process continuing the
-	// turn closes exactly that step on the adopted message — Slack would keep it
-	// spinning forever otherwise — under the title it was opened with, and
-	// leaves a step that had already finished alone. A turn with several calls
-	// in flight records the most recent of them.
-	OpenStepID    string `json:"open_step_id,omitempty"`
-	OpenStepTitle string `json:"open_step_title,omitempty"`
 }
 
 // IsZero reports whether nothing has been delivered; encoding/json's omitzero
 // drops the field then.
 func (d Delivered) IsZero() bool {
-	return d.TextLen == 0 && d.StreamTS == "" && d.ToolSteps == 0
+	return d.TextLen == 0 && d.StreamTS == ""
 }
 
 // Expired reports whether the entry has aged past its TTL relative to now.

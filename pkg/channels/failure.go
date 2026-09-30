@@ -63,6 +63,7 @@ var (
 		"broken pipe",
 		"no such host",
 		"code = unavailable",
+		"rst_stream", // the controller's HTTP/2 stream reset mid-turn (a restart)
 	}
 )
 

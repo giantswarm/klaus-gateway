@@ -32,6 +32,7 @@ import (
 	boltstore "github.com/giantswarm/klaus-gateway/pkg/routing/store/bolt"
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store/memory"
 	valkeystore "github.com/giantswarm/klaus-gateway/pkg/routing/store/valkey"
+	"github.com/giantswarm/klaus-gateway/pkg/seal"
 	"github.com/giantswarm/klaus-gateway/pkg/server"
 )
 
@@ -116,6 +117,10 @@ func run(args []string) error {
 		// the thread's record of it outlives the process.
 		Durable: cfg.Store != config.StoreMemory,
 	}
+	facade.Sealer, err = buildShareSealer(cfg.OBO, logger)
+	if err != nil {
+		return fmt.Errorf("share sealer: %w", err)
+	}
 
 	publicMux := chi.NewRouter()
 
@@ -134,7 +139,6 @@ func run(args []string) error {
 			ChannelMode:         slackchannel.ChannelMode(cfg.Slack.ChannelMode),
 			ChannelAllowlist:    cfg.Slack.ChannelAllowlist,
 			DropStaleEvents:     cfg.Slack.DropStaleEvents,
-			ProgressMode:        cfg.Slack.ProgressMode,
 			WorkingEmoji:        cfg.Slack.WorkingEmoji,
 			DoneEmoji:           cfg.Slack.DoneEmoji,
 			FailedEmoji:         cfg.Slack.FailedEmoji,
@@ -153,6 +157,9 @@ func run(args []string) error {
 		slackAdapter.Reviews = routeStore
 		if cfg.Store == config.StoreMemory {
 			logger.Warn("slack: the routing store is memory, so every thread's agent, initiator, grants and instance binding, and every open team review, are lost on a restart; installations run routing.store: valkey")
+		}
+		if cfg.Slack.ProgressMode != "" {
+			logger.Warn("slack: the progress mode setting has no effect; every turn tries the progress reactions", "slack_progress_mode", cfg.Slack.ProgressMode)
 		}
 		if err := slackAdapter.Start(ctx, facade); err != nil {
 			return fmt.Errorf("start slack adapter: %w", err)
@@ -381,15 +388,16 @@ func buildOBOLinker(cfg config.OBOConfig, logger *slog.Logger,
 	}
 
 	linker, err := musterlink.New(musterlink.Config{
-		BaseURL:       cfg.MusterURL,
-		ClientID:      cfg.ClientID,
-		ClientSecret:  cfg.ClientSecret,
-		PublicBaseURL: cfg.CallbackBaseURL,
-		StateKey:      stateKey,
-		Store:         store,
-		SlackEmail:    slackEmail,
-		OnLinked:      onLinked,
-		Logger:        logger,
+		BaseURL:          cfg.MusterURL,
+		ClientID:         cfg.ClientID,
+		ClientSecret:     cfg.ClientSecret,
+		PublicBaseURL:    cfg.CallbackBaseURL,
+		StateKey:         stateKey,
+		MinTokenLifetime: cfg.MinTokenLifetime,
+		Store:            store,
+		SlackEmail:       slackEmail,
+		OnLinked:         onLinked,
+		Logger:           logger,
 	})
 	if err != nil {
 		_ = cleanup()
@@ -403,6 +411,31 @@ func buildOBOLinker(cfg config.OBOConfig, logger *slog.Logger,
 		return cleanup()
 	}
 	return linker, closeAll, nil
+}
+
+// shareSealInfo derives the key the thread rows' AgentInstance shares are
+// sealed under from the link-store key, so neither secret is encrypted under
+// the other's key.
+const shareSealInfo = "klaus-gateway agent instance share token"
+
+// buildShareSealer returns the sealer for the AgentInstance share a thread's
+// collaborators run their turns through. Collaborators exist only with account
+// linking, so without it there is none. A link store with no key (memory) gets
+// a key for this process alone: a share stored before a restart then no longer
+// opens, and the next collaborator turn mints a new one.
+func buildShareSealer(cfg config.OBOConfig, logger *slog.Logger) (*seal.Sealer, error) {
+	if !cfg.Enabled {
+		return nil, nil
+	}
+	if cfg.ResolvedStore() == config.OBOStoreMemory {
+		logger.Info("obo: the link store keeps no key, so thread shares are sealed under a key for this process only")
+		return seal.Ephemeral()
+	}
+	key, err := os.ReadFile(cfg.StoreKeyFile)
+	if err != nil {
+		return nil, fmt.Errorf("read obo store key: %w", err)
+	}
+	return seal.Derive(key, shareSealInfo)
 }
 
 // buildOBOStore opens the link store cfg selects (see config.OBOConfig.Store)

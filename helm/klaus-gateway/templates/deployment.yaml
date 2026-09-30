@@ -230,6 +230,10 @@ spec:
         - name: KLAUS_GATEWAY_OBO_STORE_KEY_FILE
           value: /etc/klaus-gateway/obo/store-key
         {{- end }}
+        {{- if .Values.obo.minTokenLifetime }}
+        - name: KLAUS_GATEWAY_OBO_MIN_TOKEN_LIFETIME
+          value: {{ .Values.obo.minTokenLifetime | quote }}
+        {{- end }}
         {{- if .Values.obo.connectors.enabled }}
         - name: KLAUS_GATEWAY_OBO_CONNECTORS_ENABLED
           value: "true"

@@ -343,6 +343,59 @@ func TestClient_GetAndDeleteInstance(t *testing.T) {
 	require.NoError(t, client.DeleteInstance(ctx, instanceID), "a missing instance is gone either way")
 }
 
+func TestClient_CreateAndRevokeShare(t *testing.T) {
+	f := readyFake(t)
+	client := f.serve(t, pkga2a.Config{})
+	ctx := asUser(t.Context(), userToken)
+
+	share, err := client.CreateShare(ctx, instanceID)
+	require.NoError(t, err)
+	require.NotEmpty(t, share.ID)
+	require.NotEmpty(t, share.Token)
+	require.Equal(t, []apiv1alpha1.AgentInstanceSharePermission{apiv1alpha1.AgentInstanceSharePermission_AGENT_INSTANCE_SHARE_PERMISSION_READ_WRITE}, f.sharedAs,
+		"a collaborator sends and cancels turns, which a read-only share refuses")
+	require.Equal(t, []string{"Bearer " + userToken}, f.lastMD("CreateAgentInstanceShare").Get("authorization"))
+
+	_, err = client.CreateShare(asUser(t.Context(), "someone-else"), instanceID)
+	require.ErrorIs(t, err, pkga2a.ErrInstanceNotFound, "only the instance's creator may share it")
+
+	require.NoError(t, client.RevokeShare(ctx, share.ID))
+	require.Equal(t, []string{share.ID}, f.revoked)
+	require.NoError(t, client.RevokeShare(ctx, share.ID), "a share already gone is revoked either way")
+}
+
+// A share token in the context rides on every call as x-share-token, next to
+// the caller's own bearer; without one no such entry is sent.
+func TestClient_ShareTokenRidesEveryCall(t *testing.T) {
+	f := readyFake(t)
+	f.tasks["task-1"] = &a2apkg.Task{ID: "task-1", ContextID: "ctx-1", Status: a2apkg.TaskStatus{State: a2apkg.TaskStateWorking}}
+	f.events = []a2apkg.Event{&a2apkg.Task{ID: "task-1", ContextID: "ctx-1", Status: a2apkg.TaskStatus{State: a2apkg.TaskStateCompleted}}}
+	client := f.serve(t, pkga2a.Config{})
+
+	plain := asUser(t.Context(), userToken)
+	for _, err := range client.Stream(plain, instanceID, a2apkg.NewMessage(a2apkg.MessageRoleUser, a2apkg.NewTextPart("hi"))) {
+		require.NoError(t, err)
+	}
+	require.Empty(t, f.lastMD("SendStreamingMessage").Get(pkga2a.ShareTokenHeader))
+
+	shared := pkga2a.WithShareToken(asUser(t.Context(), "collaborator-jwt"), "share-secret")
+	for _, err := range client.Stream(shared, instanceID, a2apkg.NewMessage(a2apkg.MessageRoleUser, a2apkg.NewTextPart("hi"))) {
+		require.NoError(t, err)
+	}
+	_, err := client.GetTask(shared, instanceID, "task-1")
+	require.NoError(t, err)
+	_, err = client.CancelTask(shared, instanceID, "task-1")
+	require.NoError(t, err)
+	_, err = client.GetInstance(shared, instanceID)
+	require.NoError(t, err)
+
+	for _, method := range []string{"SendStreamingMessage", "GetTask", "CancelTask", "GetAgentInstance"} {
+		md := f.lastMD(method)
+		require.Equal(t, []string{"Bearer collaborator-jwt"}, md.Get("authorization"), method)
+		require.Equal(t, []string{"share-secret"}, md.Get(pkga2a.ShareTokenHeader), method)
+	}
+}
+
 func TestAttachAndParseHITL_RoundTrip(t *testing.T) {
 	msg := a2apkg.NewMessage(a2apkg.MessageRoleUser, a2apkg.NewTextPart("approve"))
 	require.NoError(t, pkga2a.AttachHITL(msg, pkga2a.ToolApprovalResponse{

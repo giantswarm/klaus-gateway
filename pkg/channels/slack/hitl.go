@@ -197,7 +197,7 @@ func (a *Adapter) postHitlPrompt(ctx context.Context, client *slackAPIClient, sl
 const adkDefaultApprovalHint = "Please approve or reject the tool call "
 
 // approvalCard renders the section of a tool approval prompt: the ask and the
-// calls it covers, named as the reply's task list names them, then the text the
+// calls it covers, named by their plain titles (toolTitle), then the text the
 // status carried of its own, without the runtime's default hint. text is the
 // prompt delta's Content, used only for a prompt without structure (p nil),
 // whose Content is the status's own text. A decision rewrites the prompt with
@@ -216,7 +216,7 @@ func approvalCard(p *channels.HitlPrompt, text string) string {
 	return truncateRunes(card, slackSectionTextMax)
 }
 
-// approvalToolTitles names the calls an approval covers with their step
+// approvalToolTitles names the calls an approval covers with their plain
 // titles, muster's call_tool unwrapped to the tool it runs.
 func approvalToolTitles(p *channels.HitlPrompt) string {
 	if p == nil {
@@ -232,7 +232,7 @@ func approvalToolTitles(p *channels.HitlPrompt) string {
 		if inner, _, ok := unwrapCallTool(&channels.ToolActivity{Name: t.Name, Args: t.Args}); ok {
 			name = inner
 		}
-		titles = append(titles, stepTitle(name))
+		titles = append(titles, toolTitle(name))
 	}
 	return strings.Join(titles, ", ")
 }

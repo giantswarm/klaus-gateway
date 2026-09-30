@@ -14,9 +14,20 @@ or `helm/`. Add a line when a review finds a new one.
   then the handler runs in the background. A test that sends the next message on the ack
   races the write; wait for the write's own side effect, such as the `response_url` rewrite
   that follows a grant (#287).
-- **A thread acts under its initiator's delegated identity.** Letting a person in is the
+- **A thread's conversation is its initiator's.** Its AgentInstance is created under the
+  initiator's identity; a granted collaborator's turns run under their own token and reach
+  that instance through the thread's AgentInstance share (#350). Letting a person in is the
   initiator's consent decision, taken through the Allow prompt; no entry point grants a
   newcomer as a side effect (#279).
+- **kagent answers NotFound to anyone who is not the instance's creator.** A lookup, delete
+  or share revoke under a collaborator's token without a share gets NotFound for an instance
+  that exists. Never read that as "gone": do not clear the binding, report a reset or log a
+  revoke on it. Only the creator's token, or a share, makes the answer mean something (#356).
+- **A turn that an approval resumes streams the approved call's result, not the call.** The
+  call arrived in the turn that asked for approval. The writer of the resumed turn takes it
+  from the pending task (`approvedCalls`, replayed at the start of `run()`), and that replay
+  is what puts the call, and the tool `call_tool` really ran, in the tool log. Without it the
+  result reads "`call_tool` result" (#370).
 - **Payload fields change shape between message kinds.** A block element's `text` is a
   string in rich text and a `{type, text}` object in a button; PagerDuty posts carry both.
   Decode leniently: accept both shapes, and a type mismatch in one field skips that field,
@@ -43,13 +54,12 @@ or `helm/`. Add a line when a review finds a new one.
   sent through it overwrote the public roster for everyone. Answer such a click with a
   thread-scoped ephemeral, and send `"replace_original": false` on every `response_url` reply
   that is meant as a new message (#343 live test).
-- **A streamed message that holds text has a size limit its steps count toward.** Slack
-  stores each step as a task card whose details and output are rich text, and refuses an
-  append or a stop with `msg_too_long` once the message outgrows about 13,800 in that measure
-  (a card costs about 90, plus 160 per field, plus its JSON-escaped characters), far below
-  what the 12,000-character text limit suggests. A message of steps alone is not checked. An
-  update's `output` and `details` add to the card rather than replace it (#358, replays on graveler,
-  2026-09-28).
+- **A streamed message that holds text is refused near 13,800.** Slack answers an append or a
+  stop with `msg_too_long` once the message outgrows about 13,800 characters of text, so the
+  12,000-character cap leaves a margin. A `task_update` step would count toward the same limit
+  as a card (about 90, plus 160 per field, plus its JSON-escaped characters), far more than its
+  characters, and an update's `output` and `details` add to the card rather than replace it
+  (#358, replays on graveler, 2026-09-28).
 - **Every message in a served channel reaches the inactive-thread gate.** That path is the
   most frequent one the gateway runs; it costs at most one store read (#307).
 

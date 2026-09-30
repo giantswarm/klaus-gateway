@@ -22,6 +22,12 @@ import (
 // the task server-side.
 var ErrShutdown = errors.New("channels: the gateway is shutting down")
 
+// ErrShareUnavailable refuses a collaborator's turn on a thread whose
+// AgentInstance holds no share yet while its creator's token cannot be minted:
+// without either, the controller refuses the collaborator on an instance that
+// is not theirs.
+var ErrShareUnavailable = errors.New("channels: the thread's agent instance is not shared yet and its creator is signed out")
+
 // Gateway is the server-side surface adapters call back into. The wiring in
 // main.go provides the concrete implementation (Facade).
 type Gateway interface {
@@ -83,11 +89,27 @@ type InboundMessage struct {
 	// forwarded on the A2A request so kagent sees the end-user identity. A turn
 	// without one is refused.
 	BearerToken string
-	// Author, when non-empty, is the real end-user who wrote this turn in a
-	// shared session that runs under a different (delegated) identity, such as a
-	// Slack thread acting under its initiator. Surfaced to the agent as
-	// attribution; BearerToken remains the acting identity.
+	// Author, when non-empty, names the person who wrote this turn in a
+	// conversation several people take part in, such as a Slack thread its
+	// initiator granted others into. Surfaced to the agent as attribution.
 	Author string
+	// SenderID is the channel's own id of the person who sent the turn (the
+	// raw Slack user id). The facade records it as the AgentInstance's
+	// creator when the turn creates one under BearerToken.
+	SenderID string
+	// Collaborator marks a turn whose sender is not the creator of the
+	// thread's AgentInstance. Its calls on the instance carry the thread's
+	// AgentInstance share next to BearerToken, so the turn runs as the sender
+	// on a conversation that is not theirs.
+	Collaborator bool
+	// OwnerID is, on a collaborator turn, the channel's id of the person who
+	// created the thread's AgentInstance (the initiator when none is
+	// recorded), and OwnerToken their token, when it can be minted. The
+	// instance's lifecycle runs under OwnerToken (creating the instance,
+	// minting and revoking its share); the turn itself never does. Empty
+	// elsewhere.
+	OwnerID    string
+	OwnerToken string
 	// AgentRef is the target agent name: the agent the turn runs on.
 	AgentRef string
 	// Opener is set by a channel adapter when this message starts its

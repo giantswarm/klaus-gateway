@@ -249,9 +249,9 @@ slack:
   dropStale: false
   # progress configures how a turn's progress is shown in Slack.
   progress:
-    # mode selects the display: "auto" (reactions, falling back to text on
-    # missing scope), "reactions", or "text". Rendered as SLACK_PROGRESS_MODE.
-    # Empty lets the binary default (auto).
+    # -- Deprecated, no effect: every turn tries the progress reactions, and
+    # none posts a text placeholder. Still rendered as SLACK_PROGRESS_MODE, so
+    # a value set here only logs a warning. Removed in the next major release.
     mode: ""
     # emojis override the reaction emoji names (no colons) for a turn that is
     # working / done / failed. Rendered as SLACK_WORKING_EMOJI, SLACK_DONE_EMOJI,
@@ -352,6 +352,13 @@ obo:
   # store is secret or storePath is set, and existingSecret is empty. Accepts 32 raw bytes or a
   # base64/hex encoding of 32 bytes (a SOPS-staged base64 value works directly).
   storeKey: ""
+  # minTokenLifetime is the least remaining lifetime of the human token a turn
+  # is dispatched with (a Go duration, e.g. 25m). The agent keeps that token for
+  # the whole turn and muster ends the turn's session when it expires, so set it
+  # above the longest turn; a cached token with less left is refreshed first.
+  # Empty uses the gateway's default, 25m. When muster's tokens live shorter,
+  # every turn gets a freshly refreshed one.
+  minTokenLifetime: ""
   # connectors enables the reactive Slack connector UX: the gateway detects a
   # core_auth_login challenge in the agent's response stream and offers a
   # "Connect <backend>" button from the login link the agent relays. The
