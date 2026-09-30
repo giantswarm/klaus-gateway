@@ -132,12 +132,7 @@ type batchedWriter struct {
 	client   *slackAPIClient
 	channel  string
 	threadTS string // thread root — the reply and the turn's prompts hang off it
-	// placeholderTS is the text-mode progress placeholder ("thinking…"), empty
-	// in reactions mode. A stream cannot take over an existing message the way
-	// chat.update did, so the placeholder is deleted once the answer has a
-	// message of its own.
-	placeholderTS string
-	logger        *slog.Logger
+	logger   *slog.Logger
 
 	// adapter, slackUser, and connectorPrompts back the reactive connector
 	// prompt: a core_auth_login tool result in the stream renders a Connect
@@ -234,7 +229,7 @@ type batchedWriter struct {
 	// goes out as an append, so a stream Slack has closed since the restart
 	// recovers onto a message of its own instead of failing the closing stop.
 	// streamOpened marks a message THIS writer opened, which is what says the
-	// reply exists and the progress placeholder is gone; an adopted one does
+	// reply exists; an adopted one does
 	// not count (under mu).
 	streamAdopted bool
 	streamOpened  bool
@@ -277,16 +272,15 @@ func textChunk(md string) map[string]any {
 	return map[string]any{"type": chunkTypeMarkdownText, "text": md}
 }
 
-func newBatchedWriterWithClient(client *slackAPIClient, channel, ts, threadTS string, logger *slog.Logger) *batchedWriter {
+func newBatchedWriterWithClient(client *slackAPIClient, channel, threadTS string, logger *slog.Logger) *batchedWriter {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &batchedWriter{
-		client:        client,
-		channel:       channel,
-		placeholderTS: ts,
-		threadTS:      threadTS,
-		logger:        logger,
+		client:   client,
+		channel:  channel,
+		threadTS: threadTS,
+		logger:   logger,
 	}
 }
 
@@ -1198,10 +1192,9 @@ func spaceStructuralJSON(b []byte) string {
 }
 
 // wroteContent reports whether this writer left a message of its own in the
-// thread. Used after the run loop to decide whether a terminal note may
-// overwrite the "thinking" placeholder: it may not once the reply exists,
-// because opening the stream is what deletes the placeholder. The reply need
-// not carry answer text — narration lives in it too, and a turn that produced
+// thread. Used after the run loop to pick a terminal note: an empty-output
+// note only when no reply exists, a failure note that says the reply is
+// incomplete once one does. The reply need not carry answer text — narration lives in it too, and a turn that produced
 // only narration has a message all the same. A stream merely adopted
 // from a previous process is not one: that message is already on screen, and a
 // continued turn with nothing to add still has its say.
@@ -1633,8 +1626,7 @@ func cutPiece(s string, budget int) (piece, rest string) {
 }
 
 // openStream posts the turn's streamed message with its first chunks. In a
-// channel Slack requires the recipient the answer is for; the progress
-// placeholder the reply supersedes goes once the message exists.
+// channel Slack requires the recipient the answer is for.
 func (w *batchedWriter) openStream(ctx context.Context, b *streamBatch, chunks []any) error {
 	user, team := w.streamRecipient()
 	sctx, cancel := streamCallCtx(ctx)
@@ -1653,7 +1645,6 @@ func (w *batchedWriter) openStream(ctx context.Context, b *streamBatch, chunks [
 	w.noteAppended(b.answerRaw)
 	w.noteDelivered(ctx)
 	b.reset()
-	w.dropPlaceholder(ctx)
 	return nil
 }
 
@@ -1752,20 +1743,6 @@ func (w *batchedWriter) streamRecipient() (user, team string) {
 		return "", ""
 	}
 	return w.slackUser, w.recipientTeam
-}
-
-// dropPlaceholder removes the text-mode "thinking" placeholder once the answer
-// has a streamed message of its own, which is what chat.update used to take
-// over in place.
-func (w *batchedWriter) dropPlaceholder(ctx context.Context) {
-	ts := w.placeholderTS
-	if ts == "" {
-		return
-	}
-	w.placeholderTS = ""
-	if err := w.client.deleteMessage(ctx, w.channel, ts); err != nil {
-		w.logger.Warn("slack: remove the progress placeholder failed", "ts", ts, "error", err)
-	}
 }
 
 // queueAnswer accepts a piece of the agent's answer, merging it into the

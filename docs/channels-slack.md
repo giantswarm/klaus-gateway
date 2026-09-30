@@ -476,8 +476,12 @@ any string that begins with `Slack bot`, `Slack app-level`, or `Slack user`.
 7. Progress is shown by adding a working reaction to the triggering message. On success the
    working reaction is removed with no residual emoji (default); set
    `SLACK_CLEAR_REACTION_ON_DONE=false` to swap in a done reaction instead. A failed turn always
-   swaps in the failed reaction. With `SLACK_PROGRESS_MODE=text`, or in `auto` mode when
-   `reactions:write` is unavailable, a `Working…` placeholder message is posted instead.
+   swaps in the failed reaction. A turn with no triggering message (a button or form resume, a
+   resume after sign-in) gets no reaction; neither does any turn once Slack refused
+   `reactions:write` (the refusal is remembered until the process restarts). No message stands
+   in for the reaction: the thread's working indicator shows that the turn runs. Without a
+   reaction, a failure note, an empty-output note and the restart notice post as messages in the
+   thread; a stop or a pause on a prompt posts nothing of its own.
 8. The whole turn is streamed into **one** Slack message with the streaming API:
    `chat.startStream` opens it, `chat.appendStream` adds what has accumulated since the last
    tick (one second), and `chat.stopStream` closes it with the answer's last words, naming
@@ -490,10 +494,9 @@ any string that begins with `Slack bot`, `Slack app-level`, or `Slack user`.
 
    **The tool calls are not in the reply.** A call and its result go to the thread's tool log
    alone, which the **Inspect agent steps** shortcut shows with the arguments and a result
-   preview. A turn that only calls tools opens no message until it writes prose; in text mode
-   the `Working…` placeholder stays until then. A call that needs approval shows in the log
-   twice: in the turn that asked for approval, without a result, and in the resumed turn, with
-   the call and its result.
+   preview. A turn that only calls tools opens no message until it writes prose. A call that
+   needs approval shows in the log twice: in the turn that asked for approval, without a
+   result, and in the resumed turn, with the call and its result.
 
    Each append carries only what is new, and answer text is sent up to the last whitespace
    boundary — an unfinished word waits for the next append, so nothing is ever half-written.
@@ -512,8 +515,7 @@ any string that begins with `Slack bot`, `Slack app-level`, or `Slack user`.
    which is what Slack requires there. Each streamed text run is rendered once — the A2A
    artifact update's append/replace semantics are honoured, so the Go ADK's re-send of a
    finished run does not duplicate it — and runs separated by tool calls are separated by a
-   paragraph. In text-progress mode the `Working…` placeholder is removed once the streamed
-   message exists (a stream cannot take over an existing message). A Slack refusal while
+   paragraph. A Slack refusal while
    rendering never fails the turn: flushes keep retrying until the agent finishes, a message
    Slack closed under the app gets one replacement stream, and only a final flush that still
    fails is reported in the thread (the reply is incomplete, with the failed reaction) while
@@ -597,12 +599,11 @@ controller and the actor when `observability.otlpEndpoint` is set.
 A turn ends early for one of two reasons, and the thread can tell them apart:
 
 - **`/stop`** is the user's decision. The working reaction is cleared, the reply's stream is
-  closed where it stands, nothing else is posted in reactions
-  mode (the context line `Stopped.` replaces the placeholder in text mode), and the task is cancelled at the
+  closed where it stands, nothing else is posted, and the task is cancelled at the
   controller so the agent stops working.
 - **An error** before any answer text (an agent that did not start in time, a controller
   refusal) marks the triggering message with the failed reaction and posts a note in the
-  thread, in reactions mode too — the emoji alone does not say whether a retry helps, and for a
+  thread — the emoji alone does not say whether a retry helps, and for a
   conversation the gateway opened itself it sits on the bot's own root message. The note names
   what broke, read off the runtime's error (its `failure_class`):
 
@@ -622,7 +623,7 @@ A turn ends early for one of two reasons, and the thread can tell them apart:
   A stream that broke is not sent again (the task may still run at the controller), and neither
   is a HITL decision (the paused task it answers is gone once it failed).
   Once the reply has started (narration or part of the answer), the failed reaction marks
-  it and one note goes under it, in both progress modes: `The turn ended with <a platform error>
+  it and one note goes under it: `The turn ended with <a platform error>
   before the agent finished. What it did so far is in the Dev Portal; reply here to try again.`
   It names the class (a tool connection error, a platform error, a model error, a policy
   refusal, or just an error), never the error's text. A stream reset by a controller restart
@@ -664,7 +665,7 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
 
 | Flag | Env var | Default |
 |------|---------|---------|
-| `--slack-progress-mode` | `SLACK_PROGRESS_MODE` | `auto` (`reactions` with a text fallback), or `reactions` / `text` |
+| `--slack-progress-mode` | `SLACK_PROGRESS_MODE` | deprecated, no effect (a set value logs a warning); removed in the next release |
 | `--slack-working-emoji` | `SLACK_WORKING_EMOJI` | `eyes` |
 | `--slack-done-emoji` | `SLACK_DONE_EMOJI` | `white_check_mark` |
 | `--slack-failed-emoji` | `SLACK_FAILED_EMOJI` | `x` |

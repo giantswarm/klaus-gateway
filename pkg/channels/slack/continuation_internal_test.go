@@ -14,7 +14,7 @@ import (
 )
 
 // runContinuedOn drives a writer seeded with what a previous process delivered
-// over deltas (plus a closing Done) in reactions mode, against a thread the
+// over deltas (plus a closing Done), against a thread the
 // caller set up, so a test can seed a stream for the writer to adopt and then
 // read the calls it made.
 func runContinuedOn(t *testing.T, ft *fakeThread, carried store.Delivered, deltas ...channels.OutboundDelta) ([]capturedMessage, []store.Delivered, *batchedWriter) {
@@ -23,7 +23,7 @@ func runContinuedOn(t *testing.T, ft *fakeThread, carried store.Delivered, delta
 	t.Cleanup(srv.Close)
 
 	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
-	w := newBatchedWriterWithClient(client, "C1", "", "1.0", slog.Default())
+	w := newBatchedWriterWithClient(client, "C1", "1.0", slog.Default())
 	w.adapter = &Adapter{}
 	w.continueFrom(carried)
 	var mu sync.Mutex
@@ -87,7 +87,7 @@ func TestNoteDelivered_RecordsTheAnswerText(t *testing.T) {
 
 // Without a sink nothing is recorded and the writer behaves as before.
 func TestNoteDelivered_WithoutASinkIsANoOp(t *testing.T) {
-	w := newBatchedWriterWithClient(&slackAPIClient{}, "C1", "", "1.0", slog.Default())
+	w := newBatchedWriterWithClient(&slackAPIClient{}, "C1", "1.0", slog.Default())
 	w.noteDelivered(t.Context())
 	require.Equal(t, "hello", w.skipDelivered("hello"), "no continuation, no cut")
 }
@@ -96,7 +96,7 @@ func TestNoteDelivered_WithoutASinkIsANoOp(t *testing.T) {
 // until the recorded length is reached; leading whitespace after the cut is
 // dropped only once, and counted.
 func TestSkipDelivered_SpansDeltasAndTrimsTheBreakOnce(t *testing.T) {
-	w := newBatchedWriterWithClient(&slackAPIClient{}, "C1", "", "1.0", slog.Default())
+	w := newBatchedWriterWithClient(&slackAPIClient{}, "C1", "1.0", slog.Default())
 	w.continueFrom(store.Delivered{TextLen: 7})
 
 	require.Equal(t, "", w.skipDelivered("hello"))
@@ -214,7 +214,7 @@ func TestContinueFrom_RetractDeletesTheAdoptedStream(t *testing.T) {
 	srv := httptest.NewServer(ft.handler())
 	t.Cleanup(srv.Close)
 
-	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "C1", "", "1.0", slog.Default())
+	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "C1", "1.0", slog.Default())
 	w.continueFrom(store.Delivered{TextLen: 11, StreamTS: ts, StreamLen: 11})
 
 	w.retractRendered(t.Context())

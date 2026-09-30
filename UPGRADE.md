@@ -4,6 +4,22 @@ Breaking or operator-visible changes between releases, newest first. The
 `CHANGELOG.md` lists every change; this file covers what an operator has to
 do or decide.
 
+## Next — the Slack progress mode has no effect (`slack.progress.mode`)
+
+Every turn tries the progress reactions on its triggering message, and no turn posts the
+`Working…` placeholder any more. `slack.progress.mode` (`SLACK_PROGRESS_MODE`,
+`--slack-progress-mode`) is still accepted but does nothing; a set value logs
+`slack: the progress mode setting has no effect` at start. No installation sets it. **Remove it
+from your values now:** the key goes in the next release, and the schema then refuses a values
+file that still sets it.
+
+What people see: a turn that continues after a click (Approve, Deny, a form) or after a sign-in
+has no message to react on, and before this release posted `Working…`. It now shows only
+Slack's working indicator until the answer streams. The same holds for every turn on an
+installation whose Slack app lacks `reactions:write`, which used to fall back to the
+placeholder. Such a turn still posts its failure, empty-output and restart notes; a stop or a
+pause on a prompt posts nothing of its own. Rollback is the previous image.
+
 ## Next — the agent's tool calls leave the Slack reply
 
 A reply no longer shows the agent's tool calls as a step list. It carries the agent's narration
@@ -11,7 +27,7 @@ and its answer. Nothing to configure — no chart value, no flag, no scope — a
 it back on: **rollback is the previous image**.
 
 What people see: while the agent runs tools and has written nothing, the thread shows only
-Slack's working indicator (and, in text progress mode, the `Working…` placeholder). A tool call
+Slack's working indicator. A tool call
 that fails is no longer marked in the thread; the agent's answer is what says so. The
 **Inspect agent steps** shortcut (⋯ menu → Apps) is unchanged and is now the only place that
 shows the calls.

@@ -66,12 +66,6 @@ func TestRenderFailedNote_EscapesTheReason(t *testing.T) {
 		renderFailedNote(errors.New("a <b> & c")))
 }
 
-// In text mode a /stop before any answer posts the command's note and
-// replaces the placeholder: the two must not be the same line.
-func TestStopNotesDiffer(t *testing.T) {
-	require.NotEqual(t, stoppedNote, stopStoppedNotice)
-}
-
 // A turn that failed after its reply started says it is over and names what
 // broke by its class only, never by the error's text.
 func TestInterruptedFailureNote(t *testing.T) {

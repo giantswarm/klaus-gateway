@@ -129,10 +129,6 @@ type Adapter struct {
 	// (prompt rewrite plus auto-resume). Empty keeps the plain-link behavior.
 	PublicBaseURL string
 
-	// ProgressMode selects how turn progress is shown: "auto" (default; reactions
-	// with a text fallback when reactions:write is unavailable), "reactions", or
-	// "text".
-	ProgressMode string
 	// WorkingEmoji, DoneEmoji, FailedEmoji override the progress reaction emoji
 	// names (no surrounding colons). Empty uses the defaults.
 	WorkingEmoji string
@@ -226,8 +222,8 @@ type Adapter struct {
 	parkedDropNoticedMu sync.Mutex
 	parkedDropNoticed   map[string]ttlEntry[struct{}]
 
-	// reactionsUnsupported caches the auto-mode downgrade to text progress after
-	// a reactions.add returns missing_scope, so later turns skip the failed call.
+	// reactionsUnsupported caches that reactions.add returned missing_scope, so
+	// later turns skip the failed call and show progress without reactions.
 	reactionsUnsupported atomic.Bool
 
 	// sessionStatusUnsupported caches the downgrade away from the native
@@ -420,12 +416,6 @@ func (a *Adapter) Start(ctx context.Context, gw channels.Gateway) error {
 	default:
 		return fmt.Errorf("slack: unknown ChannelMode %q: want %s, %s, or %s",
 			a.ChannelMode, ChannelModeAll, ChannelModeAllowlist, ChannelModeNone)
-	}
-	switch a.ProgressMode {
-	case "", progressModeAuto, progressModeReactions, progressModeText:
-	default:
-		return fmt.Errorf("slack: unknown ProgressMode %q: want %s, %s, or %s",
-			a.ProgressMode, progressModeAuto, progressModeReactions, progressModeText)
 	}
 	if a.Logger == nil {
 		a.Logger = slog.Default()
@@ -1772,7 +1762,7 @@ func (a *Adapter) handleSessionStopped(ctx context.Context, inner slackInnerEven
 // that creates the session; a caller that does not hold one already passes ""
 // rather than spend a store read on it.
 func (a *Adapter) setSessionStatus(ctx context.Context, channel, threadTS string, status sessionStatus, initiator string) {
-	w := newBatchedWriterWithClient(a.apiClient(), channel, "", threadTS, a.Logger)
+	w := newBatchedWriterWithClient(a.apiClient(), channel, threadTS, a.Logger)
 	w.adapter = a
 	w.sessionInitiator, w.statusOnly = initiator, true
 	w.setSessionStatus(ctx, status)
@@ -2009,8 +1999,7 @@ func (a *Adapter) threadEngaged(threadID string) bool {
 }
 
 // dispatch admits an inbound Slack message, binds it to the thread's agent,
-// posts a placeholder reply in-thread, and streams the completion into a
-// streamed message in the thread.
+// and streams the completion into a streamed message in the thread.
 func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, slackChannel string) error {
 	return a.dispatchFrom(ctx, msg, slackChannel, agentSourcePrefix)
 }
@@ -2241,7 +2230,7 @@ func (a *Adapter) dispatchFrom(ctx context.Context, msg channels.InboundMessage,
 		a.attachThreadContext(ctx, &msg, slackChannel, slackUser)
 	}
 
-	return a.runTurn(ctx, msg, slackChannel, msg.MessageID, thinkingPlaceholder, initiator, task, agentSource, turnHooks{
+	return a.runTurn(ctx, msg, slackChannel, msg.MessageID, initiator, task, agentSource, turnHooks{
 		onIdentityResolved: func(msg channels.InboundMessage) {
 			// A reply into a thread this process did not start may be resuming a
 			// kagent session that has since been evicted. Announce the "starting
@@ -2544,11 +2533,11 @@ func (a *Adapter) applyInstanceOwner(ctx context.Context, msg *channels.InboundM
 	msg.OwnerToken = ownerToken
 }
 
-// streamResponse renders turn progress (reactions on triggerTS, or a text
-// placeholder), streams deltas into one streamed Slack message, and, when the
-// agent pauses for input, registers the pending task and posts the HITL prompt.
-// Shared by dispatch (a new turn; triggerTS is the user message) and
-// handleDecision (a button-click resume; empty triggerTS uses text progress).
+// streamResponse renders turn progress (reactions on triggerTS), streams deltas
+// into one streamed Slack message, and, when the agent pauses for input,
+// registers the pending task and posts the HITL prompt. Shared by dispatch (a
+// new turn; triggerTS is the user message) and handleDecision (a button-click
+// resume; empty triggerTS, so no reaction).
 // ctx is the turn context (/stop cancels it); carried seeds the usage counters
 // when the turn resumes a paused one so /usage reports the whole turn;
 // delivered is what a previous process posted of the turn when this one
@@ -2557,7 +2546,7 @@ func (a *Adapter) applyInstanceOwner(ctx context.Context, msg *channels.InboundM
 // so the ephemeral connector prompt reaches a valid chat.postEphemeral user.
 // initiator is the thread's owner as the caller's own access check read it (""
 // when the caller holds none); it names the agent session's starter.
-func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, deltas <-chan channels.OutboundDelta, msg channels.InboundMessage, slackUser, slackChannel, threadID, triggerTS, placeholder, initiator string, carried channels.TurnUsage, delivered store.Delivered, approved []channels.HitlTool) (err error) {
+func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, deltas <-chan channels.OutboundDelta, msg channels.InboundMessage, slackUser, slackChannel, threadID, triggerTS, initiator string, carried channels.TurnUsage, delivered store.Delivered, approved []channels.HitlTool) (err error) {
 	// A turn dispatched here carries its timeline from the events POST on; the
 	// delivery of a turn a previous process left running (deliverInFlight) has
 	// none yet and gets one from here, so it leaves a turn_complete record too.
@@ -2569,12 +2558,9 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 	outcome := channels.OutcomeCompleted
 	defer func() { a.completeTurn(ctx, msg, slackUser, outcome, err) }()
 
-	// replyTS is the text-mode progress placeholder, or "" in reactions mode. The
-	// answer streams into a message of its own and retires the placeholder; what
-	// is left here is the message a terminal note replaces when no answer came.
-	prog, replyTS := a.startProgress(ctx, client, slackChannel, threadID, triggerTS, placeholder)
+	prog := a.startProgress(ctx, client, slackChannel, triggerTS)
 
-	w := newBatchedWriterWithClient(client, slackChannel, replyTS, threadID, a.Logger)
+	w := newBatchedWriterWithClient(client, slackChannel, threadID, a.Logger)
 	w.turnUsage = carried
 	w.approvedCalls = approved
 	w.adapter = a
@@ -2620,11 +2606,7 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 			outcome = channels.OutcomeRenderFailed
 			a.Logger.Error("slack: reply could not be delivered in full", "channel", slackChannel, "thread", threadID, "error", rerr.err)
 			prog.failed(cctx)
-			noteTS := replyTS
-			if w.wroteContent() {
-				noteTS = ""
-			}
-			a.postTerminalNote(cctx, client, slackChannel, threadID, noteTS, renderFailedNote(rerr.err))
+			a.postTerminalNote(cctx, client, slackChannel, threadID, renderFailedNote(rerr.err))
 			return nil
 		}
 		// A cancelled turn context means the stop was intentional (/stop, shutdown):
@@ -2635,9 +2617,8 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 			outcome = channels.OutcomeCanceled
 			prog.clear(cctx)
 			// The gateway is shutting down mid-turn. Nobody asked for this, so
-			// the thread is told — in reactions mode too, where a /stop leaves
-			// no note — and told what becomes of the answer. The note replaces
-			// the text-mode placeholder unless streamed content already did.
+			// the thread is told, unlike on a /stop, and told what becomes of
+			// the answer.
 			if errors.Is(context.Cause(ctx), channels.ErrShutdown) {
 				outcome = channels.OutcomeShutdown
 				// Land the text still buffered first: the next process continues
@@ -2646,18 +2627,8 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 				if ferr := w.finalFlush(cctx); ferr != nil {
 					a.Logger.Warn("slack: flush before the restart notice failed", "thread", threadID, "error", ferr)
 				}
-				noteTS := replyTS
-				if w.wroteContent() {
-					noteTS = ""
-				}
-				a.postTerminalNote(cctx, client, slackChannel, threadID, noteTS, a.restartedNotice(cctx, msg.AgentRef))
+				a.postTerminalNote(cctx, client, slackChannel, threadID, a.restartedNotice(cctx, msg.AgentRef))
 				return err
-			}
-			// prog.clear is a no-op in text mode (no reaction to swap), which
-			// would leave the placeholder as "thinking" forever under the
-			// "Stopped." reply.
-			if prog.reactTS == "" && !w.wroteContent() {
-				a.postTerminalNote(cctx, client, slackChannel, threadID, replyTS, stoppedNote)
 			}
 			return err
 		}
@@ -2668,7 +2639,7 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 		prog.failed(cctx)
 		// An oversize-payload rejection is actionable (the user can send a
 		// smaller file or shorter message), so it always gets its own explanatory
-		// note, in both reactions and text mode. The note names attachments only
+		// note. The note names attachments only
 		// when the message actually carried some; a text/history-only overflow
 		// gets the generic size notice instead. Every other failure gets the note
 		// of its class: failureNote before the reply started, and once it did
@@ -2685,26 +2656,16 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 				note = attachmentsTooLargeNote(msg.Attachments)
 			}
 		}
-		if prog.reactTS == "" {
-			// Replace the placeholder in place, unless it already carries streamed
-			// answer text, in which case the note posts as a new message so the
-			// delivered content survives.
-			noteTS := replyTS
-			if w.wroteContent() {
-				noteTS = ""
-			}
-			a.postTerminalNote(cctx, client, slackChannel, threadID, noteTS, note)
-		} else if oversize || !isCorruptSessionErr(err) {
-			// Reactions mode. The failed emoji alone says nothing about what to
-			// do, and it lands on the triggering message — for a conversation the
-			// gateway opened itself that is the bot's own root, which nobody
-			// watches for reactions. So the note goes into the thread too, under
-			// the incomplete reply when one streamed. A corrupt-history failure is
-			// left out: runTurn's deferred recoverCorruptSession posts its own
-			// notice (reset + "resend"), and a generic "try again" in front of it
-			// would only muddle the advice. (Text mode keeps replacing the
-			// placeholder for that error too, or "thinking" would linger.)
-			a.postTerminalNote(cctx, client, slackChannel, threadID, "", note)
+		if oversize || !isCorruptSessionErr(err) {
+			// The failed emoji alone says nothing about what to do, and it lands
+			// on the triggering message — for a conversation the gateway opened
+			// itself that is the bot's own root, which nobody watches for
+			// reactions; a turn without a reaction has no emoji at all. So the
+			// note goes into the thread, under the incomplete reply when one
+			// streamed. A corrupt-history failure is left out: runTurn's deferred
+			// recoverCorruptSession posts its own notice (reset + "resend"), and
+			// a generic "try again" in front of it would only muddle the advice.
+			a.postTerminalNote(cctx, client, slackChannel, threadID, note)
 		}
 		return err
 	}
@@ -2715,11 +2676,6 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 		cctx, cancel := cleanupCtx()
 		defer cancel()
 		prog.clear(cctx) // drop the working indicator
-		// Same text-mode gap as the stop path: without streamed content the
-		// placeholder would sit as "thinking" above the approval prompt.
-		if prog.reactTS == "" && !w.wroteContent() {
-			a.postTerminalNote(cctx, client, slackChannel, threadID, replyTS, pausedNote)
-		}
 		a.storePendingTask(threadID, &pendingTask{
 			TaskID:     pd.TaskID,
 			AgentRef:   msg.AgentRef,
@@ -2741,9 +2697,9 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 		w.retractRendered(ctx)
 		return nil
 	}
-	// A turn that produced no output would otherwise be silent (text mode leaves
-	// the "thinking" placeholder; reactions mode shows only a done emoji with no
-	// reply). Post a terminal note so the user is not left waiting. A continued
+	// A turn that produced no output would otherwise be silent (at most a done
+	// emoji with no reply). Post a terminal note so the user is not left
+	// waiting. A continued
 	// turn whose answer had landed in full before the restart did produce its
 	// reply; the note says so instead.
 	if !w.wroteContent() {
@@ -2751,22 +2707,14 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 		if w.continued() {
 			note = continuedNothingNote
 		}
-		a.postTerminalNote(ctx, client, slackChannel, threadID, replyTS, note)
+		a.postTerminalNote(ctx, client, slackChannel, threadID, note)
 	}
 	return nil
 }
 
-// postTerminalNote replaces the text-mode placeholder (replyTS) with note, or
-// posts note as a new in-thread message when no placeholder exists. Best-effort:
-// a failure is logged, not propagated.
-func (a *Adapter) postTerminalNote(ctx context.Context, client *slackAPIClient, slackChannel, threadID, replyTS, note string) {
-	if replyTS != "" {
-		note = truncateRunes(note, slackSectionTextMax)
-		if err := client.chatUpdate(ctx, slackChannel, replyTS, note, []any{contextBlock(note)}); err != nil {
-			a.Logger.Warn("slack: replace placeholder failed", "thread", threadID, "error", err)
-		}
-		return
-	}
+// postTerminalNote posts note as a new in-thread message. Best-effort: a
+// failure is logged, not propagated.
+func (a *Adapter) postTerminalNote(ctx context.Context, client *slackAPIClient, slackChannel, threadID, note string) {
 	if _, err := client.postNote(ctx, slackChannel, note, threadID); err != nil {
 		a.Logger.Warn("slack: post terminal note failed", "thread", threadID, "error", err)
 	}

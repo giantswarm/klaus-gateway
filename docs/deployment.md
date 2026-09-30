@@ -275,6 +275,9 @@ The `web`, `cli`, `lifecycle`, `upstream`, `agentgateway`, `routing.defaultTTL`,
 Slack-only release, are gone. A values file that still sets one fails the upgrade with
 `additional properties '<key>' not allowed` — see [UPGRADE.md](../UPGRADE.md).
 
+`slack.progress.mode` is accepted and has no effect (a set value logs a warning); it goes in the
+next release, with the same failure for a values file that still sets it.
+
 ### Where an installation's values come from
 
 On a Giant Swarm installation `klaus-gateway` is deployed as a component of the

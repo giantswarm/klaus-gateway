@@ -7,14 +7,14 @@ import (
 	"log/slog"
 )
 
-// progressState renders turn progress. In reactions mode it swaps an emoji on
-// the triggering message (working → done/failed); in text mode (reactTS == "")
-// the placeholder message and the streamed answer are the only signal, so the
+// progressState renders turn progress as an emoji on the triggering message
+// (working → done/failed). A turn without a reaction (reactTS == "") has
+// Slack's working indicator and the streamed answer as its only signal, so the
 // terminal hooks are no-ops.
 type progressState struct {
 	client      *slackAPIClient
 	channel     string
-	reactTS     string // triggering message ts; "" = text mode
+	reactTS     string // triggering message ts; "" = no reaction
 	working     bool   // a working reaction is currently present
 	clearOnDone bool   // on done, just remove the working reaction (no done reaction)
 	emojis      progressEmojis
@@ -63,51 +63,27 @@ func (p *progressState) removeWorking(ctx context.Context) {
 	p.working = false
 }
 
-// startProgress begins progress rendering and returns the ts of the reply
-// message the writer edits ("" means post the reply lazily on the first flush).
-// In reactions mode the working reaction is added to triggerTS; on a missing
-// scope in auto mode it caches the downgrade and falls back to a text
-// placeholder. triggerTS == "" (e.g. a button resume) always uses text mode.
-func (a *Adapter) startProgress(ctx context.Context, client *slackAPIClient, channel, threadID, triggerTS, placeholder string) (*progressState, string) {
+// startProgress adds the working reaction to triggerTS. A turn with no
+// triggering message (a button or form resume, a resume after sign-in) gets no
+// reaction; neither does one after Slack refused reactions for lack of scope,
+// which is cached so later turns skip the doomed call. No message is posted
+// either way: Slack's working indicator shows that the turn runs.
+func (a *Adapter) startProgress(ctx context.Context, client *slackAPIClient, channel, triggerTS string) *progressState {
 	p := &progressState{client: client, channel: channel, clearOnDone: a.ClearReactionOnDone, emojis: a.progressEmojis(), logger: a.Logger}
-
-	if triggerTS != "" && a.reactionsMode() {
-		switch err := client.reactionsAdd(ctx, channel, triggerTS, p.emojis.working); {
-		case err == nil:
-			p.reactTS = triggerTS
-			p.working = true
-			return p, "" // reactions mode: the answer opens its own streamed message
-		case errors.Is(err, errReactionsUnsupported):
-			if a.ProgressMode == "" || a.ProgressMode == progressModeAuto {
-				a.reactionsUnsupported.Store(true)
-			}
-			a.Logger.Warn("slack: reactions unavailable, using text progress", "error", err)
-		default:
-			a.Logger.Warn("slack: add working reaction failed", "error", err)
-		}
+	if triggerTS == "" || a.reactionsUnsupported.Load() {
+		return p
 	}
-
-	// Text mode: post the placeholder; the streamed answer replaces it. If the
-	// placeholder post fails, seed the writer lazily so the answer still lands.
-	ts, err := client.postMessage(ctx, channel, placeholder, threadID)
-	if err != nil {
-		a.Logger.Warn("slack: post placeholder failed", "error", err)
-		return p, ""
+	switch err := client.reactionsAdd(ctx, channel, triggerTS, p.emojis.working); {
+	case err == nil:
+		p.reactTS = triggerTS
+		p.working = true
+	case errors.Is(err, errReactionsUnsupported):
+		a.reactionsUnsupported.Store(true)
+		a.Logger.Warn("slack: reactions unavailable, showing progress without them", "error", err)
+	default:
+		a.Logger.Warn("slack: add working reaction failed", "error", err)
 	}
-	return p, ts
-}
-
-// reactionsMode reports whether this turn should attempt reaction-based
-// progress, honoring the configured mode and the cached auto-mode downgrade.
-func (a *Adapter) reactionsMode() bool {
-	switch a.ProgressMode {
-	case progressModeText:
-		return false
-	case progressModeReactions:
-		return true
-	default: // auto (also the zero value)
-		return !a.reactionsUnsupported.Load()
-	}
+	return p
 }
 
 func (a *Adapter) progressEmojis() progressEmojis {
