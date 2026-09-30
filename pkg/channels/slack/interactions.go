@@ -224,6 +224,9 @@ func (a *Adapter) routeInteraction(ctx context.Context, payload interactionPaylo
 	case inspectToggleAction:
 		a.handleInspectToggle(ctx, payload)
 		return
+	case inspectOpenAction:
+		a.handleInspectOpen(ctx, payload)
+		return
 	case agentSelectAction:
 		a.handleRosterSelect(ctx, payload, action.Value)
 		return
