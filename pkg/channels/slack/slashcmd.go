@@ -16,7 +16,7 @@ import (
 )
 
 // The native slash command is a second way to open a conversation, next to
-// the "@bot /agent <name> <question>" mention. Slack posts the command to
+// the agents listing's Select button. Slack posts the command to
 // /channels/slack/commands (or a slash_commands Socket Mode envelope); the
 // gateway answers with a modal — an agent picker over the live roster and a
 // question box — and, on submit, posts the conversation's root message itself
@@ -563,7 +563,7 @@ func (a *Adapter) handleAskAgentSubmission(ctx context.Context, payload interact
 
 	// The shortcut's thread exists already, so it is claimed before anything
 	// is posted: SetInitiator makes the submitter its owner, or returns the
-	// owner it already has — a /usage or /stop typed there wrote one, without
+	// owner it already has — a usage or stop typed there wrote one, without
 	// an agent. Another person's thread is refused here, with nothing echoed
 	// and nothing bound; their reply in the thread takes the normal path, where
 	// the owner is asked to allow them. Granting them instead would let the

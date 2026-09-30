@@ -2847,7 +2847,7 @@ type signInTrigger int
 
 const (
 	signInForMessage signInTrigger = iota // an unlinked user's message, held for replay
-	signInForLogin                        // the /login command: nothing is held
+	signInForLogin                        // the login command: nothing is held
 	signInForClick                        // a button click: nothing to replay, the person clicks again
 )
 

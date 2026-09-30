@@ -105,7 +105,7 @@ func (a *Adapter) bareCommandFor(msg channels.InboundMessage) *command {
 
 // isBareStop reports whether text is the word "stop" on its own — the natural
 // reply in a thread the bot answers in without a mention — allowing case and
-// trailing punctuation. Only a thread with a running turn reads it as /stop;
+// trailing punctuation. Only a thread with a running turn reads it as stop;
 // anywhere else it stays what it is today: a message for the agent, or a deny
 // word for a paused prompt.
 func isBareStop(text string) bool {
@@ -147,7 +147,7 @@ func helpGroups(agents, signIn bool) []helpGroup {
 // helpShortcutNote names the one feature that is a shortcut, not a command.
 const helpShortcutNote = "Inspect agent steps: open the ⋯ menu on any message in the thread, then Apps. Visible only to you."
 
-// helpBlocks builds the /help reply: a header, how to address the bot, one
+// helpBlocks builds the help reply: a header, how to address the bot, one
 // group per activity with the command as a code label and its effect as the
 // text, and the Inspect shortcut. botName is the bot's own display name; when
 // known the mention names it, otherwise it says "the bot" rather than
@@ -208,7 +208,7 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *command, slackUser, sl
 		}
 	}
 	// Sign-in state is caller-only information; a shared thread must not see
-	// the linked email, so /login and /logout confirm ephemerally.
+	// the linked email, so login and logout confirm ephemerally.
 	ephemeralReply := func(text string) {
 		ephemeralThread := threadID
 		if cmd.Root {
@@ -260,7 +260,7 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *command, slackUser, sl
 		}
 		// A thread paused on input-required has no in-flight turn to cancel; the
 		// paused task must be resolved with a rejection or the tool call dangles.
-		// Falling through to dispatch routes "/stop" like a typed "stop" reply,
+		// Falling through to dispatch routes "stop" like a typed "stop" reply,
 		// which decisionFromText maps to a structured reject.
 		if a.hasPendingTask(threadID) {
 			return false
@@ -303,7 +303,7 @@ func (a *Adapter) handleLoginCommand(ctx context.Context, slackUser, slackChanne
 	// likely signed in and is told to retry, not sent through a new sign-in.
 	if _, err := a.OBO.TokenFor(ctx, slackUser); err != nil {
 		if !errors.Is(err, musterlink.ErrNotLinked) {
-			a.Logger.Warn("slack: /login probe failed", "user", slackUser, "error", err)
+			a.Logger.Warn("slack: login probe failed", "user", slackUser, "error", err)
 			reply(tokenErrorNotice)
 			return true
 		}
@@ -342,7 +342,7 @@ func (a *Adapter) handleLogoutCommand(slackUser string, reply func(string)) bool
 	}
 
 	if err := a.OBO.Unlink(slackUser); err != nil {
-		a.Logger.Warn("slack: /logout could not remove the link", "user", slackUser, "error", err)
+		a.Logger.Warn("slack: logout could not remove the link", "user", slackUser, "error", err)
 		reply(logoutFailedNotice)
 		return true
 	}

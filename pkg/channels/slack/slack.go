@@ -116,7 +116,7 @@ type Adapter struct {
 	// process (valkey, bolt) a review survives a restart. Nil keeps them in
 	// process memory, as --store=memory does.
 	Reviews store.ReviewStore
-	// Models, when set, resolves the default agent's model id for /usage.
+	// Models, when set, resolves the default agent's model id for usage.
 	// Nil omits the model line.
 	Models AgentModelSource
 	// ConnectorPrompts enables the reactive "Connect <backend>" button: when the
@@ -144,10 +144,10 @@ type Adapter struct {
 	// are still named — see agentNameFor); the card's own name is deliberately
 	// not used, since kagent derives it from the resource name with hyphens
 	// replaced by underscores. When it also implements the card-info lookup
-	// (pkg/a2a.AgentCardClient does), it validates /agent selections; otherwise
-	// selection is unavailable.
+	// (pkg/a2a.AgentCardClient does), it validates a picked agent; otherwise
+	// agent selection is unavailable.
 	AgentCards AgentCardResolver
-	// Roster lists the agents selectable via the /agent command, discovered
+	// Roster lists the agents the `agents` command and the pickers offer, discovered
 	// from the kagent controller. It is also the source of the display name on
 	// per-message agent branding. Nil disables the roster listing and leaves
 	// branding to fall back to the technical name.
@@ -195,7 +195,7 @@ type Adapter struct {
 	// window, so a burst of parked messages nudges once. Entries carry the
 	// posted prompt's message coordinates so a completed link can rewrite the
 	// prompt in place. Drained for a user when their link completes, so a
-	// later /logout re-prompts.
+	// later logout re-prompts.
 	signInPromptedMu sync.Mutex
 	signInPrompted   map[string]ttlEntry[signInAnchor]
 
@@ -282,7 +282,7 @@ type Adapter struct {
 	notServedNoticed map[string]ttlEntry[struct{}]
 
 	// usageMu guards both usage maps. threadUsage keys usage by the turn's
-	// thread root; channelUsage aggregates DM channels so a top-level /usage in
+	// thread root; channelUsage aggregates DM channels so a top-level usage in
 	// a DM (which keys a brand-new thread) still has figures to report.
 	usageMu      sync.Mutex
 	threadUsage  map[string]ttlEntry[usageTotals] // keyed by threadID
@@ -300,7 +300,7 @@ type Adapter struct {
 	toolLogMu sync.Mutex
 	toolLogs  map[string]ttlEntry[*threadToolLog] // keyed by threadID
 
-	// modelMu guards modelCache, the resolved model labels shown by /usage.
+	// modelMu guards modelCache, the resolved model labels shown by usage.
 	modelMu    sync.Mutex
 	modelCache map[string]modelEntry // agentRef -> cached model label
 
@@ -320,7 +320,7 @@ type Adapter struct {
 	sessionTitleMu sync.Mutex
 	sessionTitles  map[string]ttlEntry[string] // keyed by threadID
 
-	// rosterMu guards the briefly-cached /agent roster (see rosterAgents).
+	// rosterMu guards the briefly-cached roster (see rosterAgents).
 	rosterMu      sync.Mutex
 	rosterCached  []pkga2a.AgentInfo
 	rosterExpires time.Time
@@ -911,7 +911,7 @@ func (s signInAnchor) addressable() bool { return s.ts != "" || s.ephemeral }
 
 // postSignIn posts the "Sign in" prompt for the account-linking flow and
 // records the anchor its surface needs, so the completed link is confirmed
-// where the prompt was shown. It is driven by the explicit /login command and
+// where the prompt was shown. It is driven by the explicit login command and
 // by an unlinked user's first turn (which is aborted, not run as the SA). A
 // failure to post is logged and swallowed.
 //
@@ -1111,7 +1111,7 @@ func (a *Adapter) clearSignInReservation(slackUser, threadID string) {
 
 // recordSignInAnchor stores the posted prompt's coordinates under the (user,
 // thread) key. It also arms the nudge throttle (nudgedAt), so an explicit
-// /login prompt suppresses a redundant parked-message nudge in the same
+// login prompt suppresses a redundant parked-message nudge in the same
 // thread while its link is alive.
 func (a *Adapter) recordSignInAnchor(slackUser, threadID string, anchor signInAnchor) {
 	now := time.Now()
@@ -1185,7 +1185,7 @@ func (a *Adapter) clearConnectorPrompted(slackUser, server string) {
 // takeSignInAnchors returns and clears the user's sign-in prompt entries,
 // keeping only anchors that are still addressable (posted successfully and
 // unexpired). Draining doubles as the throttle reset, so becoming unlinked
-// again (e.g. /logout) prompts anew.
+// again (e.g. logout) prompts anew.
 func (a *Adapter) takeSignInAnchors(slackUser string) []signInAnchor {
 	prefix := slackUser + "\x00"
 	now := time.Now()
@@ -1272,8 +1272,8 @@ func shouldPostSignInNudge(entry ttlEntry[signInAnchor], exists bool, now time.T
 // maybePostSignIn posts the sign-in prompt unless one with a live link was
 // already posted for this (user, thread) (see shouldPostSignInNudge), so a
 // burst of parked messages nudges once instead of once per message. The
-// explicit /login command bypasses it (postSignIn directly); a completed link
-// drains the window (takeSignInAnchors) so a /logout re-prompts. The entry is
+// explicit login command bypasses it (postSignIn directly); a completed link
+// drains the window (takeSignInAnchors) so a logout re-prompts. The entry is
 // reserved (with no anchor yet) before posting so concurrent parks nudge once;
 // postSignIn overwrites it with the posted message's coordinates. When a
 // re-nudge replaces a prompt whose link expired, the old prompt is rewritten
@@ -1705,7 +1705,7 @@ func (a *Adapter) handleContextChanged(inner slackInnerEvent) {
 // here — otherwise the indicator spins on for up to an hour.
 //
 // A thread waiting on an approval prompt is the one case that takes neither
-// branch. a stop answers such a thread by falling through to dispatch, which
+// branch. A stop answers such a thread by falling through to dispatch, which
 // rejects the paused task; the button does not, because it cannot normally
 // reach a paused thread at all — Slack draws the button only while the session
 // is processing, and a paused thread is suspended (#249) or active. The one way
@@ -2079,9 +2079,9 @@ func (a *Adapter) dispatchFrom(ctx context.Context, msg channels.InboundMessage,
 		return nil
 	}
 
-	// Resolve the turn's agent. An explicit /agent prefix travels on the
-	// message (handleAgentSelection stamped it, and only conversation-starting
-	// messages get that far); otherwise the thread's recorded binding — or the
+	// Resolve the turn's agent. A message can already carry one (a picker
+	// submission parked for a sign-in and replayed after it); otherwise the
+	// thread's recorded binding — or the
 	// configured default — applies. opener records whether this message opened
 	// its conversation: root equality cannot tell on the assistant pane, where
 	// every message carries the chat's Slack-created anchor as thread_ts.
@@ -2396,7 +2396,7 @@ type linkedIdentitySource interface {
 // gateway-side anchor for joining a turn to muster's per-call log. The muster
 // session ID is not derivable client-side from the forwarded token, so the
 // join key is (sub, thread_id, task_id, timestamp). agentSource marks how the
-// agent was chosen (see the agentSource* constants), making /agent routing
+// agent was chosen (see the agentSource* constants), making agent routing
 // observable.
 func (a *Adapter) logTurnDispatch(ctx context.Context, msg channels.InboundMessage, slackUser string, resume bool, agentSource string) {
 	var sub string
@@ -2543,7 +2543,7 @@ func (a *Adapter) applyInstanceOwner(ctx context.Context, msg *channels.InboundM
 // new turn; triggerTS is the user message) and handleDecision (a button-click
 // resume; empty triggerTS, so no reaction).
 // ctx is the turn context (a stop cancels it); carried seeds the usage counters
-// when the turn resumes a paused one so /usage reports the whole turn;
+// when the turn resumes a paused one so usage reports the whole turn;
 // delivered is what a previous process posted of the turn when this one
 // continues it after a restart (deliverInFlight), the zero value otherwise.
 // slackUser is the RAW Slack user ID (never the resolved email in msg.Subject),

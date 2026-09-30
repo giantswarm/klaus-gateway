@@ -167,7 +167,7 @@ func (a *Adapter) threadAgentBinding(ctx context.Context, channelID, threadID st
 }
 
 // boundAgentOrDefault is the recorded agent, or the default. For display-only
-// callers (the /usage model line).
+// callers (the usage model line).
 func (a *Adapter) boundAgentOrDefault(ctx context.Context, channelID, threadID string) string {
 	if ref, ok := a.threadAgentBinding(ctx, channelID, threadID); ok {
 		return ref

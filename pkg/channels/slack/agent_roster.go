@@ -42,7 +42,7 @@ const rosterListTimeout = 5 * time.Second
 
 // rosterTTL is how long a fetched roster is served from cache. Short, so a
 // newly installed agent becomes selectable without a redeploy while repeated
-// repeated listings stay off the controller.
+// listings stay off the controller.
 const rosterTTL = 30 * time.Second
 
 // rosterFailureTTL is how long a failed roster fetch is remembered before the
@@ -176,14 +176,19 @@ func (a *Adapter) rosterBlocks(agents []pkga2a.AgentInfo, selectable bool) []any
 	}
 	footer := "Select starts a conversation with that agent in this thread."
 	if !selectable {
-		footer = "This thread already has its agent. To talk to another one, send `agents` in a new thread and pick it there."
+		// A new thread in a channel starts with a top-level message, which
+		// reaches the bot only with a mention.
+		footer = "This thread already has its agent. To talk to another one, mention the bot with `agents` in a new thread and pick it there."
 	}
 	if rest := sorted[len(shown):]; len(rest) > 0 {
 		names := make([]string, len(rest))
 		for i, ag := range rest {
 			names[i] = escapeMrkdwn(agentDisplayName(ag))
 		}
-		footer = fmt.Sprintf("%d more: %s. ", len(rest), strings.Join(names, ", ")) + footer
+		// The agents past the cut have no row, so no Select button reaches
+		// them: the pickers are where they can be chosen.
+		footer = fmt.Sprintf("%d more: %s — start one of those from the app's slash command, or the ⋯ menu's *Ask an agent here*. ",
+			len(rest), strings.Join(names, ", ")) + footer
 	}
 	return append(blocks, map[string]any{bkType: bkDivider}, contextBlock(truncateRunes(footer, slackSectionTextMax)))
 }

@@ -17,7 +17,7 @@ import (
 // ErrShutdown is the cancellation cause of a turn the gateway's own shutdown
 // cut short. A channel adapter cancels its lifecycle context with it (see
 // context.WithCancelCause), so everything downstream can tell a restart from a
-// user's /stop: the facade leaves such a task running at the controller — its
+// user's stop: the facade leaves such a task running at the controller — its
 // result is delivered after the restart — where a plain cancellation cancels
 // the task server-side.
 var ErrShutdown = errors.New("channels: the gateway is shutting down")
