@@ -44,12 +44,15 @@ or `helm/`. Add a line when a review finds a new one.
   to a message sends no notification, so a notice that names a second person does not ping
   them (#332).
 - **The composer keeps a message that starts with `/` for Slack's own commands**, in a DM
-  too, so a plain `/stop` never reaches the bot. A command needs a mention first
-  (`@bot /stop`); in a thread with a running turn a plain `stop` works. The Slack API sends
-  `/stop` as text, so a test through the API does not show this (#339 live test).
+  too, so a plain `/stop` never reaches the bot. A slash form needs a mention first
+  (`@bot /stop`). The gateway's own commands are plain words for that reason: a message that
+  is exactly `usage`, `help`, `login` or `logout` runs that command wherever the bot reads,
+  and `stop` does the same in a thread with a running turn. The Slack API sends `/stop` as
+  text, so a test through the API does not show this (#339 live test).
 - **A suggested prompt that starts with `/` never reaches the bot.** Slack runs its text as
   a Slack command, the same as the composer, and it removes a leading space first, so
-  `" /agent"` fails too. A prompt cannot run a gateway command (#344 live test on glean).
+  `" /agent"` fails too. A prompt whose message is exactly one command word does run that
+  command, because Slack sends it as an ordinary message (#344 live test on glean).
 - **A `response_url` from a button on a normal message replaces that message.** A refusal
   sent through it overwrote the public roster for everyone. Answer such a click with a
   thread-scoped ephemeral, and send `"replace_original": false` on every `response_url` reply

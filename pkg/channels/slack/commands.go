@@ -120,8 +120,8 @@ func (a *Adapter) bareCommandFor(msg channels.InboundMessage) *slashCommand {
 		return nil
 	}
 	// The account commands are the only ones sign-in decides: a gateway
-	// without it lists neither in /help, so the word belongs to the agent
-	// there. usage and help the gateway answers itself, always.
+	// without it lists neither in its help reply, so the word belongs to the
+	// agent there. usage and help the gateway answers itself, always.
 	if (cmd.Name == cmdLogin || cmd.Name == cmdLogout) && a.OBO == nil {
 		return nil
 	}
@@ -170,7 +170,7 @@ type helpGroup struct {
 // them.
 func helpGroups(agents, signIn bool) []helpGroup {
 	groups := []helpGroup{{title: "In a thread", commands: []helpCommand{
-		{cmdStop, "Interrupt the turn that is running; with nothing running it is a message for the agent"},
+		{cmdStop, "Interrupt the turn that is running, or deny an open approval; with neither it is a message for the agent"},
 		{cmdUsage, "Tokens for the last turn and the session"},
 	}}}
 	if agents {

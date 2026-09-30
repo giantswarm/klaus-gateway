@@ -1864,7 +1864,8 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 		a.Logger.Info("slack: dropping duplicate message delivery", "channel", inner.Channel, "ts", msg.MessageID)
 		return
 	}
-	// A message that is the word "login" or "logout" alone is that command.
+	// A message that is one of the gateway's command words alone is that
+	// command: usage, help, login, logout (bareCommands).
 	// Slack keeps a message that starts with "/" for its own commands, so the
 	// plain word is the form a person can type without addressing the bot;
 	// the slash form still works after a mention. Read before dispatch, so a

@@ -992,6 +992,31 @@ func TestBareCommand_PausedQuestionKeepsTheWord(t *testing.T) {
 	require.Empty(t, obo.unlinked, "an answer to a question must not sign the person out")
 }
 
+// The exception holds for every command word, not only the account ones: the
+// gateway serves usage from itself, and a paused question still keeps it.
+func TestBareCommand_PausedQuestionKeepsUsage(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{sendQueue: [][]channels.OutboundDelta{
+		{{Kind: channels.DeltaPrompt, TaskID: "task-1", Prompt: &channels.HitlPrompt{
+			ToolName:  channels.AskUserToolName,
+			Questions: []channels.HitlQuestion{{Question: "Which report do you mean?"}},
+		}}},
+		{{Content: "done"}, {Done: true}},
+	}}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+
+	sendEvent(t, srv, dmEvent("U1", "report on it", "990.000"))
+	fake.waitForPath(t, "chat.postMessage", 1) // the question is up
+
+	sendEvent(t, srv, dmThreadEvent("U1", "usage", "991.000", "990.000"))
+
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 }, flowWait, 50*time.Millisecond,
+		"the answer must reach the paused task")
+
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "Token usage",
+		"the word answered the question instead of reporting tokens")
+}
+
 // A question needs no card to be a question. A turn can pause with no
 // structured prompt, and a typed reply then reaches the agent as the answer
 // itself, so the word belongs to that answer too.
@@ -1066,8 +1091,8 @@ func TestBareCommand_AttachmentCaptionReachesTheAgent(t *testing.T) {
 	require.Empty(t, obo.unlinked, "a caption must not sign the person out")
 }
 
-// A gateway without sign-in serves neither word: its /help lists no account
-// command, so the word is a message like any other.
+// A gateway without sign-in serves neither account word: its help reply
+// lists no account command, so the word is a message like any other.
 func TestBareCommand_WithoutSignInReachesTheAgent(t *testing.T) {
 	fake := newFakeSlackAPI()
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "hi"}, {Done: true}}}
