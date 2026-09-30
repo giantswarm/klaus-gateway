@@ -1,6 +1,8 @@
 package slack
 
 import (
+	"time"
+
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store/memory"
 )
@@ -32,3 +34,12 @@ func (a *Adapter) ThreadIdle(threadID string) bool {
 // FlowWait re-exports the flow tests' wait budget for the external test
 // package, so the value and its rationale live in one place.
 const FlowWait = flowWait
+
+// SetRecoverBackoff shortens the start-up recovery's backoff (first wait, cap,
+// whole window) for t, so a test drives retries and the give-up in
+// milliseconds. The tests of this package do not run in parallel.
+func SetRecoverBackoff(t interface{ Cleanup(func()) }, delay, maxDelay, window time.Duration) {
+	oldDelay, oldMax, oldWindow := recoverRetryDelay, recoverRetryMax, recoverWindow
+	recoverRetryDelay, recoverRetryMax, recoverWindow = delay, maxDelay, window
+	t.Cleanup(func() { recoverRetryDelay, recoverRetryMax, recoverWindow = oldDelay, oldMax, oldWindow })
+}

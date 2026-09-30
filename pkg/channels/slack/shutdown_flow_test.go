@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
+	slackadapter "github.com/giantswarm/klaus-gateway/pkg/channels/slack"
 )
 
 // The gateway's shutdown is not a /stop: in reactions mode, where a stop
@@ -222,4 +224,102 @@ func TestShutdown_FlushesBufferedTextBeforeTheNotice(t *testing.T) {
 	content, notice := strings.Index(texts, "counting: 1, 2, 3"), strings.Index(texts, "The gateway restarted")
 	require.GreaterOrEqual(t, content, 0, "the buffered text is delivered")
 	require.Less(t, content, notice, "the text lands before the notice")
+}
+
+// flakyOBO refuses the first failures token mints with a transient error, as
+// muster does while it rolls alongside the gateway, and mints after that.
+type flakyOBO struct {
+	mu       sync.Mutex
+	failures int
+	calls    int
+}
+
+func (o *flakyOBO) TokenFor(context.Context, string) (string, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.calls++
+	if o.calls <= o.failures {
+		return "", errors.New(`oauth2: "invalid_client" "Client authentication failed"`)
+	}
+	return "tok-u1", nil
+}
+func (o *flakyOBO) LinkURL(string) string { return "" }
+func (o *flakyOBO) Unlink(string) error   { return nil }
+
+func recoveringGateway() *stubGateway {
+	return &stubGateway{resumes: &stubResumes{
+		durable: true,
+		turns:   []channels.InFlightTurn{leftoverTurn("task-9")},
+		deltas:  map[string][]channels.OutboundDelta{"task-9": {{Content: "recovered answer"}, {Done: true}}},
+	}}
+}
+
+// A token mint that keeps failing for longer than a few tries (muster rolling
+// with the gateway) does not end the recovery: it retries for as long as the
+// turn may run and posts the result once the mint succeeds.
+func TestRecoverTurns_RetriesUntilTheTokenMints(t *testing.T) {
+	slackadapter.SetRecoverBackoff(t, time.Millisecond, 5*time.Millisecond, time.Minute)
+	fake := newFakeSlackAPI()
+	obo := &flakyOBO{failures: 6}
+	a, _ := newEventsAdapter(t, recoveringGateway(), fake.server(t).URL, func(a *slackadapter.Adapter) { a.OBO = obo })
+
+	a.RecoverTurns()
+
+	require.Eventually(t, func() bool {
+		return strings.Contains(fake.streamedText(), "recovered answer")
+	}, flowWait, 20*time.Millisecond, "the answer is delivered once the token mints")
+	obo.mu.Lock()
+	defer obo.mu.Unlock()
+	require.Equal(t, 7, obo.calls, "every failed mint is retried, the seventh succeeds")
+}
+
+// A routing store that is not reachable at start (valkey restarting with the
+// gateway) is listed again, and the turns it records are still delivered.
+func TestRecoverTurns_RetriesTheListing(t *testing.T) {
+	slackadapter.SetRecoverBackoff(t, time.Millisecond, 5*time.Millisecond, time.Minute)
+	fake := newFakeSlackAPI()
+	gw := recoveringGateway()
+	gw.resumes.listFailures = 4
+	a, _ := newEventsAdapter(t, gw, fake.server(t).URL)
+
+	a.RecoverTurns()
+
+	require.Eventually(t, func() bool {
+		return strings.Contains(fake.streamedText(), "recovered answer")
+	}, flowWait, 20*time.Millisecond, "the answer is delivered once the store answers")
+}
+
+// A recovery that gives up says so: the restart notice promised an automatic
+// post, and the thread learns that a reply brings the result instead. The
+// record stays for that reply.
+func TestRecoverTurns_GivingUpTellsTheThreadToReply(t *testing.T) {
+	slackadapter.SetRecoverBackoff(t, time.Millisecond, 2*time.Millisecond, 20*time.Millisecond)
+	fake := newFakeSlackAPI()
+	gw := recoveringGateway()
+	a, _ := newEventsAdapter(t, gw, fake.server(t).URL, func(a *slackadapter.Adapter) { a.OBO = &flakyOBO{failures: 1 << 30} })
+
+	a.RecoverTurns()
+
+	require.Eventually(t, func() bool {
+		return strings.Contains(allBlockText(fake.pathCalls("chat.postMessage")), "Reply in this thread to get it")
+	}, flowWait, 20*time.Millisecond, "the thread is told a reply brings the result")
+	require.Equal(t, "700.000", fake.pathCalls("chat.postMessage")[0].params["thread_ts"], "the note lands in the turn's thread")
+	gw.mu.Lock()
+	defer gw.mu.Unlock()
+	require.Empty(t, gw.resumes.resumedTasks, "nothing was delivered")
+	require.Len(t, gw.resumes.turns, 1, "the record stays for the reply")
+}
+
+// A turn whose user signed out cannot be delivered until they reply signed
+// in: the thread is told so at once rather than left waiting.
+func TestRecoverTurns_SignedOutUserIsToldToReply(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := recoveringGateway()
+	a, _ := newEventsAdapter(t, gw, fake.server(t).URL, func(a *slackadapter.Adapter) { a.OBO = &fakeOBO{linkedUser: "U999", token: "tok"} })
+
+	a.RecoverTurns()
+
+	require.Eventually(t, func() bool {
+		return strings.Contains(allBlockText(fake.pathCalls("chat.postMessage")), "Reply in this thread to get it")
+	}, flowWait, 20*time.Millisecond, "the thread is told a reply brings the result")
 }
