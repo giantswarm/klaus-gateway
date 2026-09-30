@@ -88,6 +88,8 @@ func parseCommand(text string) *slashCommand {
 var bareCommands = map[string]struct{}{
 	cmdLogin:  {},
 	cmdLogout: {},
+	cmdUsage:  {},
+	cmdHelp:   {},
 }
 
 // bareWord normalises a message that may be a one-word command: the word
@@ -117,10 +119,10 @@ func (a *Adapter) bareCommandFor(msg channels.InboundMessage) *slashCommand {
 	if cmd == nil {
 		return nil
 	}
-	// Every verb of the set is an account command, so sign-in decides all of
-	// them: a gateway without it keeps the word for the agent, as its /help
-	// implies. A verb that does not turn on sign-in needs its own rule here.
-	if a.OBO == nil {
+	// The account commands are the only ones sign-in decides: a gateway
+	// without it lists neither in /help, so the word belongs to the agent
+	// there. usage and help the gateway answers itself, always.
+	if (cmd.Name == cmdLogin || cmd.Name == cmdLogout) && a.OBO == nil {
 		return nil
 	}
 	// A word beside an upload is that file's caption. Consuming it would drop
@@ -168,8 +170,8 @@ type helpGroup struct {
 // them.
 func helpGroups(agents, signIn bool) []helpGroup {
 	groups := []helpGroup{{title: "In a thread", commands: []helpCommand{
-		{"/stop", "Interrupt the running turn; a plain stop in its thread works too"},
-		{"/usage", "Tokens for the last turn and the session"},
+		{cmdStop, "Interrupt the turn that is running; with nothing running it is a message for the agent"},
+		{cmdUsage, "Tokens for the last turn and the session"},
 	}}}
 	if agents {
 		groups = append(groups, helpGroup{title: "Agents", commands: []helpCommand{
@@ -195,16 +197,18 @@ const helpShortcutNote = "Inspect agent steps: open the ⋯ menu on any message 
 // known the mention names it, otherwise it says "the bot" rather than
 // hardcoding one. The returned text is the notification fallback.
 func helpBlocks(botName string, agents, signIn bool) (string, []any) {
-	// Slack's composer takes a message that starts with / as one of Slack's
-	// own commands, in a DM too, so a command with a slash reaches the bot
-	// only after a mention. A command that is a plain word does not, which is
-	// why the account commands carry no slash.
-	address := "Mention the bot first for a command that starts with /: a message that starts with / goes to Slack's own commands."
+	// A plain word reaches the bot wherever it reads messages, which is a DM
+	// and a thread it is in; a top-level channel message reaches it only with
+	// a mention. Slack's composer takes a message that starts with / as one
+	// of Slack's own commands, in a DM too, so /agent — the one command that
+	// keeps a slash — needs the mention everywhere.
+	who := "the bot"
 	if botName != "" {
-		address = fmt.Sprintf("Mention @%s first for a command that starts with /, as in `@%s /stop`: a message that starts with / goes to Slack's own commands.", botName, botName)
+		who = "@" + botName
 	}
-	if signIn {
-		address += " A command without a slash needs no mention in a thread the bot is in."
+	address := fmt.Sprintf("Send a command as the word alone, in a direct message or in a thread %s is in; anywhere else mention %s first.", who, who)
+	if agents {
+		address += " `/agent` always needs the mention: Slack keeps a message that starts with / for its own commands."
 	}
 	var lines []string
 	var elements []any

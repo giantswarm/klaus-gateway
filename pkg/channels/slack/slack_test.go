@@ -1079,6 +1079,55 @@ func TestBareCommand_WithoutSignInReachesTheAgent(t *testing.T) {
 		"without sign-in the word belongs to the agent")
 }
 
+// The thread commands are words too: a message that is only "usage" answers
+// with the thread's token report.
+func TestBareUsage_AnswersInThread(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+
+	sendEvent(t, srv, dmEvent("U1", "Usage?", "980.000"))
+
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Token usage")
+	}, flowWait, 50*time.Millisecond, "a plain usage must answer with the token report")
+
+	require.Zero(t, gw.dispatchCount(), "a plain usage must be consumed, not dispatched to the agent")
+}
+
+// A message that is only "help" answers with the command list, the same as
+// /help after a mention.
+func TestBareHelp_AnswersWithTheCommandList(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+
+	sendEvent(t, srv, dmEvent("U1", "help", "981.000"))
+
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Commands: ")
+	}, flowWait, 50*time.Millisecond, "a plain help must answer with the command list")
+
+	require.Zero(t, gw.dispatchCount(), "a plain help must be consumed, not dispatched to the agent")
+}
+
+// Sign-in decides the account commands alone. A gateway without it still
+// answers "help" and "usage", which it serves from itself.
+func TestBareCommand_WithoutSignInStillAnswersHelp(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{}
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+	require.Nil(t, a.OBO, "this gateway has no sign-in")
+
+	sendEvent(t, srv, dmEvent("U1", "help", "982.000"))
+
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Commands: ")
+	}, flowWait, 50*time.Millisecond, "help does not depend on sign-in")
+
+	require.Zero(t, gw.dispatchCount(), "help must be consumed, not dispatched to the agent")
+}
+
 // A word the gateway does not own, and a sentence that only contains one,
 // stay messages for the agent.
 func TestBareCommand_OnlyTheWordAlone(t *testing.T) {

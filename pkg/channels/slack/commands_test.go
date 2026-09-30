@@ -40,15 +40,15 @@ func TestHelpBlocks(t *testing.T) {
 	text, blocks := helpBlocks("swarmgeist", true, true)
 	require.Len(t, blocks, 4)
 	require.Equal(t, "header", blocks[0].(map[string]any)[bkType])
-	require.Equal(t, "Mention @swarmgeist first for a command that starts with /, as in `@swarmgeist /stop`: a message that starts with / goes to Slack's own commands. A command without a slash needs no mention in a thread the bot is in.", contextText(blocks[1]))
+	require.Equal(t, "Send a command as the word alone, in a direct message or in a thread @swarmgeist is in; anywhere else mention @swarmgeist first. `/agent` always needs the mention: Slack keeps a message that starts with / for its own commands.", contextText(blocks[1]))
 	require.Equal(t, []string{"In a thread", "Agents", "Account"}, groups(blocks))
 	require.Equal(t, helpShortcutNote, contextText(blocks[3]))
-	require.Equal(t, `Commands: /stop, /usage, /agent, /agent "Name" question, login, logout`, text,
-		"the account commands are plain words, so nothing in Slack's composer intercepts them")
+	require.Equal(t, `Commands: stop, usage, /agent, /agent "Name" question, login, logout`, text,
+		"every command but /agent is a plain word, so nothing in Slack's composer intercepts it")
 
 	_, blocks = helpBlocks("", false, false)
-	require.Equal(t, "Mention the bot first for a command that starts with /: a message that starts with / goes to Slack's own commands.", contextText(blocks[1]),
-		"without sign-in every command has a slash, so the help does not talk about words")
+	require.Equal(t, "Send a command as the word alone, in a direct message or in a thread the bot is in; anywhere else mention the bot first.", contextText(blocks[1]),
+		"without agent selection no listed command has a slash, so the help does not talk about slashes")
 	require.Equal(t, []string{"In a thread"}, groups(blocks), "no agent selection, no sign-in")
 }
 
@@ -537,7 +537,7 @@ func TestIsBareStop(t *testing.T) {
 	}
 }
 
-// The account commands are read as the word alone, in any case, with trailing
+// The commands are read as the word alone, in any case, with trailing
 // punctuation: Slack's composer keeps a message that starts with "/" for its
 // own commands, so a plain word is what a person can type. A sentence around
 // the word is a message for the agent, and "stop" is not in the set: it is a
@@ -552,12 +552,18 @@ func TestParseBareCommand(t *testing.T) {
 		{"Login.", cmdLogin},
 		{"logout", cmdLogout},
 		{"Logout!", cmdLogout},
+		{"usage", cmdUsage},
+		{"Usage?", cmdUsage},
+		{"help", cmdHelp},
+		{"HELP!", cmdHelp},
 		{"/login", ""},
+		{"/help", ""},
 		{"please login", ""},
 		{"how do I login to the cluster?", ""},
 		{"logins", ""},
+		{"help me with the nodes", ""},
 		{"stop", ""},
-		{"usage", ""},
+		{"agent", ""},
 		{"", ""},
 	} {
 		cmd := parseBareCommand(tc.text)

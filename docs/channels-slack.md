@@ -31,7 +31,7 @@ DMs and channels are two independent surfaces, gated separately:
 For an **Agent-type Slack app** the DM surface *is* the assistant pane: Slack
 replaces the top-level DM composer, so every user message arrives threaded
 (`thread_ts` is always set) and plain top-level DMs do not occur. The
-per-message-thread DM path (and the channel `/usage` fallback that goes with it)
+per-message-thread DM path (and the channel `usage` fallback that goes with it)
 applies only to non-Agent deployments.
 
 While a turn runs, the thread carries Slack's **native working indicator**. It
@@ -678,30 +678,36 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
 
 ### Identity, HITL, and channel behavior
 
-- **Commands and notes.** `/help` answers with a header, how to address the bot ("Mention
-  @Swarmgeist first for a command that starts with /, as in `@Swarmgeist /stop`": Slack's
-  composer takes a message that starts with
+- **Commands and notes.** `help` answers with a header, how to address the bot ("Send a command
+  as the word alone, in a direct message or in a thread @Swarmgeist is in; anywhere else mention
+  @Swarmgeist first"), a second sentence for `/agent`, the one command that keeps a slash
+  (Slack's composer takes a message that starts with
   `/` as one of Slack's own commands, in a DM too), the commands
-  grouped by what the person is doing (In a thread: `/stop`, `/usage`; Agents: `/agent`, only
+  grouped by what the person is doing (In a thread: `stop`, `usage`; Agents: `/agent`, only
   with agent selection; Account: `login`, `logout`, only with sign-in), each command as a code
   label with its effect as text, and a context line for the **Inspect agent steps** shortcut.
   The gateway's own notes (a stop, a failure, a refusal, a busy thread) are one short context
   line in Slack's small muted text, written in the third person without emoji: they name what
   happened and the one thing to do next, apart from the agent's answer.
-- **Account commands are plain words.** `login` and `logout` are read from a message that is
-  that word alone, in any case and with trailing punctuation (`Login.`), so they need no
-  slash and no mention wherever the bot reads: a DM, or a thread it is in. `/login` and
-  `/logout` also work after a mention. Three messages keep the word instead: a sentence that
+- **Commands are plain words.** `usage`, `help`, `login` and `logout` are read from a message
+  that is that word alone, in any case and with trailing punctuation (`Login.`), so they need no
+  slash and no mention wherever the bot reads: a DM, or a thread it is in. The slash forms
+  (`/usage`, `/help`, `/login`, `/logout`) also work after a mention. `stop` is the word with a
+  condition: dispatch reads it only in a thread whose turn is still running, and anywhere else
+  it stays a message for the agent (see [Restarts and `/stop`](#restarts-and-stop)). `/agent`
+  keeps its slash, because it carries a quoted name and a question.
+  Three messages keep the word instead: a sentence that
   contains it, a caption on an upload, and an answer in a thread paused on a **question** —
   the `ask_user` card, or a question without one, whose typed reply reaches the agent as the
-  answer itself — where one word is what the question asked for. In such a thread the command is `/login`
-  after a mention, because the word alone is the answer with or without one — the sign-in
+  answer itself — where one word is what the question asked for. In such a thread the command is
+  the slash form after a mention (`/login`),
+  because the word alone is the answer with or without one — the sign-in
   notices name the mention form, so that one line of advice is the one to read as the slash
   form there. A thread paused on an **approval card** is not a question: any text beside a
   card is read as a rejection carrying that text, so the word stays the command, the person
-  is signed out and the card is left to decide (`slack-hitl-surface.md`). A gateway without
-  sign-in serves neither word and passes both to the agent. The same shape serves `stop`,
-  which is a command only while a turn runs (see [Restarts and `/stop`](#restarts-and-stop)).
+  is signed out and the card is left to decide (`slack-hitl-surface.md`). Sign-in decides the
+  account words alone: a gateway without it passes `login` and `logout` to the agent, while
+  `usage` and `help`, which it answers from itself, keep working.
 - **Per-message branding.** Agent replies and the agent's own confirmation prompts are posted
   under the agent's display name, so they read as the agent speaking
   rather than the app. The name is the `Agent` CR's `ui.giantswarm.io/display-name` annotation
@@ -732,7 +738,7 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
   (giantswarm/kagent-upstream#71).
 - **Channel intro.** When the bot is added to a channel it posts a one-time introduction
   (requires the `member_joined_channel` bot event). It names the default agent, the one a plain
-  mention reaches, by its roster name, and ends with how to reach `/help`. The assistant-pane
+  mention reaches, by its roster name, and ends with how to reach `help`. The assistant-pane
   greeting does the same and also points at `/agent`. Both name the bot by its mention, so each
   Slack app shows its own name.
 - **Sign-in prompt.** An unlinked user's first message is answered with a "Sign in to Giant
