@@ -683,19 +683,23 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
   @Swarmgeist first"), a second sentence for `/agent`, the one command that keeps a slash
   (Slack's composer takes a message that starts with
   `/` as one of Slack's own commands, in a DM too), the commands
-  grouped by what the person is doing (In a thread: `stop`, `usage`; Agents: `/agent`, only
-  with agent selection; Account: `login`, `logout`, only with sign-in), each command as a code
+  grouped by what the person is doing (In a thread: `stop`, `usage`; Agents: `agents` and the
+  `/agent "Name" question` selector, only with agent selection; Account: `login`, `logout`,
+  only with sign-in), each command as a code
   label with its effect as text, and a context line for the **Inspect agent steps** shortcut.
   The gateway's own notes (a stop, a failure, a refusal, a busy thread) are one short context
   line in Slack's small muted text, written in the third person without emoji: they name what
   happened and the one thing to do next, apart from the agent's answer.
-- **Commands are plain words.** `usage`, `help`, `login` and `logout` are read from a message
+- **Commands are plain words.** `usage`, `help`, `agents`, `login` and `logout` are read from a
+  message
   that is that word alone, in any case and with trailing punctuation (`Login.`), so they need no
   slash and no mention wherever the bot reads: a DM, or a thread it is in. The slash forms
-  (`/usage`, `/help`, `/login`, `/logout`) also work after a mention. `stop` is the word with a
+  (`/usage`, `/help`, `/login`, `/logout`) also work after a mention; `agents` is new and has
+  none. `stop` is the word with a
   condition: dispatch reads it only in a thread whose turn is still running, and anywhere else
   it stays a message for the agent (see [Restarts and `/stop`](#restarts-and-stop)). `/agent`
-  keeps its slash, because it carries a quoted name and a question.
+  keeps its slash, because it carries a quoted name and a question; its bare form posts the same
+  roster listing as `agents`.
   Three messages keep the word instead: a sentence that
   contains it, a caption on an upload, and an answer in a thread paused on a **question** —
   the `ask_user` card, or a question without one, whose typed reply reaches the agent as the
@@ -751,7 +755,7 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
 - **Channel intro.** When the bot is added to a channel it posts a one-time introduction
   (requires the `member_joined_channel` bot event). It names the default agent, the one a plain
   mention reaches, by its roster name, and ends with how to reach `help`. The assistant-pane
-  greeting does the same and also points at `/agent`. Both name the bot by its mention, so each
+  greeting does the same and also points at `agents`. Both name the bot by its mention, so each
   Slack app shows its own name.
 - **Sign-in prompt.** An unlinked user's first message is answered with a "Sign in to Giant
   Swarm" card: the agent runs its tools with the person's permissions, the link lasts 15

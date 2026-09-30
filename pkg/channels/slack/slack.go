@@ -1865,7 +1865,7 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 		return
 	}
 	// A message that is one of the gateway's command words alone is that
-	// command: usage, help, login, logout (bareCommands).
+	// command: usage, help, login, logout, agents (bareCommands).
 	// Slack keeps a message that starts with "/" for its own commands, so the
 	// plain word is the form a person can type without addressing the bot;
 	// the slash form still works after a mention. Read before dispatch, so a
@@ -1873,6 +1873,16 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 	// bareCommandFor names the messages that keep the word instead.
 	if bare := a.bareCommandFor(msg); bare != nil {
 		bare.Root = msg.MessageID == msg.ThreadID
+		// "agents" is the roster listing, which the /agent command serves for
+		// its bare form. That form never dispatches, so the word is consumed
+		// here. The listing reads the agent catalogue at the kagent
+		// controller, which serves it to a human identity, so it runs as the
+		// caller, like the slash form below.
+		if bare.Name == cmdAgents {
+			a.handleAgentSelection(a.withCallerToken(ctx, msg.Subject), &slashCommand{Name: cmdAgent}, &msg, inner.Channel)
+			a.Logger.Debug("slack: bare command consumed", "command", bare.Name, "channel", inner.Channel, "thread", msg.ThreadID)
+			return
+		}
 		if a.handleCommand(ctx, bare, msg.Subject, inner.Channel, msg.ThreadID) {
 			a.Logger.Debug("slack: bare command consumed", "command", bare.Name, "channel", inner.Channel, "thread", msg.ThreadID)
 			return

@@ -46,7 +46,7 @@ or `helm/`. Add a line when a review finds a new one.
 - **The composer keeps a message that starts with `/` for Slack's own commands**, in a DM
   too, so a plain `/stop` never reaches the bot. A slash form needs a mention first
   (`@bot /stop`). The gateway's own commands are plain words for that reason: a message that
-  is exactly `usage`, `help`, `login` or `logout` runs that command wherever the bot reads,
+  is exactly `usage`, `help`, `agents`, `login` or `logout` runs that command wherever the bot reads,
   and `stop` does the same in a thread with a running turn. The Slack API sends `/stop` as
   text, so a test through the API does not show this (#339 live test).
 - **A suggested prompt that starts with `/` never reaches the bot.** Slack runs its text as

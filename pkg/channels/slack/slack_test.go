@@ -23,6 +23,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/require"
 
+	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 	"github.com/giantswarm/klaus-gateway/pkg/auth/musterlink"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 	slackadapter "github.com/giantswarm/klaus-gateway/pkg/channels/slack"
@@ -1151,6 +1152,66 @@ func TestBareCommand_WithoutSignInStillAnswersHelp(t *testing.T) {
 	}, flowWait, 50*time.Millisecond, "help does not depend on sign-in")
 
 	require.Zero(t, gw.dispatchCount(), "help must be consumed, not dispatched to the agent")
+}
+
+// "agents" lists the roster, the listing a bare /agent posts. Starting a
+// conversation moves to the app's own slash command and the shortcut, so the
+// listing is the one thing the word has to carry.
+func TestBareAgents_ListsTheRoster(t *testing.T) {
+	fake := newFakeSlackAPI()
+	cards := &fakeCards{known: map[string]string{"kagent/sre-agent": "SRE Agent"}}
+	roster := &fakeRoster{agents: []pkga2a.AgentInfo{{Name: "sre-agent", Namespace: "kagent"}}}
+	gw := &stubGateway{}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, withSelection(roster, cards))
+
+	sendEvent(t, srv, dmEvent("U1", "Agents?", "1000.000"))
+
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Available agents")
+	}, flowWait, 50*time.Millisecond, "a plain agents must post the roster")
+
+	require.Zero(t, gw.dispatchCount(), "the listing must not reach the agent as a turn")
+}
+
+// A gateway with no roster source cannot list anything, and its help reply
+// names no agent command, so the word belongs to the agent there.
+func TestBareAgents_WithoutARosterReachesTheAgent(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "hi"}, {Done: true}}}
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+	require.Nil(t, a.Roster, "this gateway lists no agents")
+
+	sendEvent(t, srv, dmEvent("U1", "agents", "1001.000"))
+
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond,
+		"without a roster the word belongs to the agent")
+}
+
+// The exceptions hold for the new word too: a thread paused on a question
+// keeps it for the answer.
+func TestBareAgents_PausedQuestionKeepsTheWord(t *testing.T) {
+	fake := newFakeSlackAPI()
+	cards := &fakeCards{known: map[string]string{"kagent/sre-agent": "SRE Agent"}}
+	roster := &fakeRoster{agents: []pkga2a.AgentInfo{{Name: "sre-agent", Namespace: "kagent"}}}
+	gw := &stubGateway{sendQueue: [][]channels.OutboundDelta{
+		{{Kind: channels.DeltaPrompt, TaskID: "task-1", Prompt: &channels.HitlPrompt{
+			ToolName:  channels.AskUserToolName,
+			Questions: []channels.HitlQuestion{{Question: "Which list do you mean?"}},
+		}}},
+		{{Content: "done"}, {Done: true}},
+	}}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, withSelection(roster, cards))
+
+	sendEvent(t, srv, dmEvent("U1", "list them", "1002.000"))
+	fake.waitForPath(t, "chat.postMessage", 1) // the question is up
+
+	sendEvent(t, srv, dmThreadEvent("U1", "agents", "1003.000", "1002.000"))
+
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 }, flowWait, 50*time.Millisecond,
+		"the answer must reach the paused task")
+
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "Available agents",
+		"the word answered the question instead of listing the roster")
 }
 
 // A word the gateway does not own, and a sentence that only contains one,

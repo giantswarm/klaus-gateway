@@ -43,7 +43,7 @@ func TestHelpBlocks(t *testing.T) {
 	require.Equal(t, "Send a command as the word alone, in a direct message or in a thread @swarmgeist is in; anywhere else mention @swarmgeist first. `/agent` always needs the mention: Slack keeps a message that starts with / for its own commands.", contextText(blocks[1]))
 	require.Equal(t, []string{"In a thread", "Agents", "Account"}, groups(blocks))
 	require.Equal(t, helpShortcutNote, contextText(blocks[3]))
-	require.Equal(t, `Commands: stop, usage, /agent, /agent "Name" question, login, logout`, text,
+	require.Equal(t, `Commands: stop, usage, agents, /agent "Name" question, login, logout`, text,
 		"every command but /agent is a plain word, so nothing in Slack's composer intercepts it")
 
 	_, blocks = helpBlocks("", false, false)
@@ -556,6 +556,8 @@ func TestParseBareCommand(t *testing.T) {
 		{"Usage?", cmdUsage},
 		{"help", cmdHelp},
 		{"HELP!", cmdHelp},
+		{"agents", cmdAgents},
+		{"Agents?", cmdAgents},
 		{"/login", ""},
 		{"/help", ""},
 		{"please login", ""},

@@ -18,7 +18,8 @@ const (
 	cmdLogin  = "login"  // OBO account linking: sign in
 	cmdLogout = "logout" // OBO account linking: sign out
 	cmdUsage  = "usage"
-	cmdAgent  = "agent" // agent selection; handled by handleAgentSelection, not handleCommand
+	cmdAgent  = "agent"  // agent selection; handled by handleAgentSelection, not handleCommand
+	cmdAgents = "agents" // the roster listing as a word; handleAgentSelection serves it too
 )
 
 // knownCommands is the verb set the gateway owns.
@@ -90,6 +91,7 @@ var bareCommands = map[string]struct{}{
 	cmdLogout: {},
 	cmdUsage:  {},
 	cmdHelp:   {},
+	cmdAgents: {},
 }
 
 // bareWord normalises a message that may be a one-word command: the word
@@ -119,11 +121,18 @@ func (a *Adapter) bareCommandFor(msg channels.InboundMessage) *slashCommand {
 	if cmd == nil {
 		return nil
 	}
-	// The account commands are the only ones sign-in decides: a gateway
-	// without it lists neither in its help reply, so the word belongs to the
-	// agent there. usage and help the gateway answers itself, always.
-	if (cmd.Name == cmdLogin || cmd.Name == cmdLogout) && a.OBO == nil {
-		return nil
+	// A word this gateway cannot serve belongs to the agent: its help reply
+	// does not list the command either. usage and help it answers from
+	// itself, always.
+	switch cmd.Name {
+	case cmdLogin, cmdLogout:
+		if a.OBO == nil {
+			return nil
+		}
+	case cmdAgents:
+		if a.Roster == nil {
+			return nil
+		}
 	}
 	// A word beside an upload is that file's caption. Consuming it would drop
 	// the file without a word to its sender.
@@ -175,7 +184,7 @@ func helpGroups(agents, signIn bool) []helpGroup {
 	}}}
 	if agents {
 		groups = append(groups, helpGroup{title: "Agents", commands: []helpCommand{
-			{"/agent", "List the agents"},
+			{cmdAgents, "List the agents, with a button to start a conversation with one"},
 			{`/agent "Name" question`, "Start a conversation with a named agent"},
 		}})
 	}
