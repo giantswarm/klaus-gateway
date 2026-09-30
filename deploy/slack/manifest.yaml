@@ -35,8 +35,8 @@ features:
     messages_tab_read_only_enabled: false
   # Message shortcuts (⋯ menu → Apps on any message). Delivered as
   # message_action interaction payloads to the interactivity request URL:
-  # "Inspect agent steps" replies with an ephemeral rendering of the thread's
-  # retained tool-call log, "Ask an agent here" opens the agent picker and
+  # "Inspect agent steps" opens a modal with the thread's retained tool-call
+  # log, "Ask an agent here" opens the agent picker and
   # starts the conversation in that message's thread. The display names are
   # per app — rename them if you like; the gateway routes on the callback_id
   # alone. Slack lists a shortcut under "Connect to apps" in the ⋯ menu only

@@ -231,6 +231,13 @@ const pickerOpenBudget = 2500 * time.Millisecond
 // retained tool-call log (see inspect.go).
 const inspectShortcutCallbackID = "inspect_agent_steps"
 
+// inspectViewCallbackID names the inspection modal, and inspectToggleAction
+// its "Show details" / "Hide" buttons, whose value is the call's entry id.
+const (
+	inspectViewCallbackID = "inspect_agent_steps_view"
+	inspectToggleAction   = "inspect_toggle"
+)
+
 // askAgentShortcutCallbackID is the callback_id of the "Ask an agent here"
 // message shortcut registered in deploy/slack/manifest.yaml. Invoked on any
 // message, it opens the agent picker and starts the conversation inside that
@@ -646,7 +653,9 @@ const (
 	paramUnfurlMedia = "unfurl_media"
 
 	paramTriggerID = "trigger_id" // views.open
-	paramView      = "view"       // views.open
+	paramView      = "view"       // views.open, views.update
+	paramViewID    = "view_id"    // views.update
+	paramHash      = "hash"       // views.update
 
 	paramLimit  = "limit"  // conversations.replies page size
 	paramCursor = "cursor" // conversations.replies paging cursor
@@ -689,7 +698,7 @@ const (
 // Block Kit type values.
 const (
 	bkSection        = "section"
-	bkContext        = "context" // small muted text; carries the tool-activity entries
+	bkContext        = "context" // small muted text
 	bkHeader         = "header"
 	bkDivider        = "divider"
 	bkActions        = "actions"
