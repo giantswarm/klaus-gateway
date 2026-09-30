@@ -1,6 +1,7 @@
 package slack_test
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -9,14 +10,15 @@ import (
 	"github.com/stretchr/testify/require"
 
 	slackadapter "github.com/giantswarm/klaus-gateway/pkg/channels/slack"
+	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
 )
 
-// A conversation opened with /agent INSIDE an existing thread (root by someone
-// else), a grant to a colleague, then a "restart": a second adapter over the
-// same records. The colleague's reply runs on the same agent with no consent
-// prompt, and Slack history is never read to recover any of that — the
-// opener's one read is the thread context handed to the agent, and the
-// restarted gateway reads nothing at all.
+// A conversation bound to an agent that is not the default, INSIDE an existing
+// thread (root by someone else), a grant to a colleague, then a "restart": a
+// second adapter over the same records. The colleague's reply runs on the same
+// agent with no consent prompt, and Slack history is never read to recover any
+// of that — the opener's one read is the thread context handed to the agent,
+// and the restarted gateway reads nothing at all.
 func TestThreadRecord_AgentInitiatorAndGrantSurviveRestart(t *testing.T) {
 	fake := newFakeSlackAPI()
 	api := fake.server(t)
@@ -29,9 +31,17 @@ func TestThreadRecord_AgentInitiatorAndGrantSurviveRestart(t *testing.T) {
 	_, srv1 := newEventsAdapter(t, gw1, api.URL, channelMode, withSelection(&fakeRoster{}, cards()),
 		func(a *slackadapter.Adapter) { a.DefaultAgent = "sre-agent" })
 
-	// A reply inside an existing thread: the /agent prefix still opens the
-	// conversation, because nothing is recorded for the thread yet.
-	sendEvent(t, srv1, mention("U1", "/agent issue-agent what happened?", "900.2", "900.1"))
+	// The conversation is bound to an agent that is not this gateway's default,
+	// the way a pick in the agent picker binds it.
+	require.NoError(t, shared.UpdateThreadRecord(context.Background(), "slack", "C1", "900.1",
+		func(e *store.Entry, _ bool) bool {
+			e.AgentRef = "issue-agent"
+			return true
+		}))
+
+	// A reply inside an existing thread opens the conversation: no initiator
+	// and no grant are recorded for the thread yet.
+	sendEvent(t, srv1, mention("U1", "what happened?", "900.2", "900.1"))
 	require.Eventually(t, func() bool { return gw1.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
 	require.Equal(t, "issue-agent", dispatched1()[0].AgentRef)
 	sendAccessInteraction(t, srv1, "U1", accessAllowAction, "900.1", "U2", api.URL+"/response")

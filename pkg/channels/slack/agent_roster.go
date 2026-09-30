@@ -99,35 +99,24 @@ const (
 	rosterDescMax = 300
 )
 
-// postRoster posts the roster as rows under lead (a notice such as an unknown
-// agent's; "" for a bare listing) in the thread. selectable adds the Select
-// buttons; a thread that already has its conversation gets the rows without
-// them, since the picker refuses such a thread. A roster that cannot be
-// listed, or lists no agent, leaves lead on its own; with no lead either, the
-// empty roster says so. The error is the roster fetch's, for the caller to
-// answer a bare listing that failed.
-func (a *Adapter) postRoster(ctx context.Context, channel, threadID, lead string, selectable bool) error {
+// postRoster posts the roster as rows in the thread. selectable adds the
+// Select buttons; a thread that already has its conversation gets the rows
+// without them, since the picker refuses such a thread. A roster that lists no
+// agent says so, and one that cannot be listed leaves the reply to the caller,
+// which answers the returned error.
+func (a *Adapter) postRoster(ctx context.Context, channel, threadID string, selectable bool) error {
 	agents, err := a.rosterAgents(ctx)
 	client := a.apiClient()
 	if err != nil || len(agents) == 0 {
-		text := lead
-		if err == nil && text == "" {
-			text = agentRosterEmpty
-		}
-		if text != "" {
-			if _, perr := client.postMessage(ctx, channel, text, threadID); perr != nil {
+		if err == nil {
+			if _, perr := client.postMessage(ctx, channel, agentRosterEmpty, threadID); perr != nil {
 				a.Logger.Warn("slack: post roster reply failed", "thread", threadID, "error", perr)
 			}
 		}
 		return err
 	}
-	var blocks []any
 	fallback := rosterText(agents)
-	if lead != "" {
-		blocks = append(blocks, map[string]any{bkType: bkSection, bkText: map[string]any{bkType: bkMrkdwn, bkText: truncateRunes(lead, slackSectionTextMax)}})
-		fallback = lead + "\n\n" + fallback
-	}
-	blocks = append(blocks, a.rosterBlocks(agents, selectable)...)
+	blocks := a.rosterBlocks(agents, selectable)
 	if _, perr := client.postBlocks(ctx, channel, threadID, truncateRunes(fallback, slackSectionTextMax), blocks); perr != nil {
 		a.Logger.Warn("slack: post roster failed", "thread", threadID, "error", perr)
 	}
@@ -389,37 +378,6 @@ func (a *Adapter) rosterAgentsBestEffort(ctx context.Context) ([]pkga2a.AgentInf
 	return a.rosterAgents(ctx)
 }
 
-// agentRefsForSelector resolves a quoted /agent selector against the roster,
-// matching display names and technical names case-insensitively with
-// whitespace runs collapsed. Both kinds match in one pass — no precedence — so
-// a selector naming two different agents is reported as ambiguous (fail-stop)
-// instead of quietly resolved by a tie-break rule that a later cluster change
-// could flip to a different agent. Refs are deduped: matching one agent by
-// both its display and technical name is a single match.
-func (a *Adapter) agentRefsForSelector(ctx context.Context, selector string) ([]string, error) {
-	want := foldAgentSelector(selector)
-	if want == "" {
-		return nil, nil
-	}
-	agents, err := a.rosterAgents(ctx)
-	if err != nil {
-		return nil, err
-	}
-	var refs []string
-	seen := make(map[string]bool)
-	for _, ag := range agents {
-		if foldAgentSelector(ag.DisplayName) != want && foldAgentSelector(ag.Name) != want {
-			continue
-		}
-		ref := a.agentInfoRef(ag)
-		if !seen[ref] {
-			seen[ref] = true
-			refs = append(refs, ref)
-		}
-	}
-	return refs, nil
-}
-
 // refShape renders (namespace, name) in the deployment's ref shape. An empty
 // namespace means the served one: it takes the default agent's namespace, so
 // the ref is bare under a bare default and qualified under a qualified one. A
@@ -445,10 +403,4 @@ func (a *Adapter) agentInfoRef(ag pkga2a.AgentInfo) string {
 		return ag.Name
 	}
 	return a.refShape(ag.Namespace, ag.Name)
-}
-
-// foldAgentSelector normalizes a selector or agent name for matching:
-// lowercased, outer whitespace dropped, internal runs collapsed to one space.
-func foldAgentSelector(s string) string {
-	return strings.ToLower(strings.Join(strings.Fields(s), " "))
 }

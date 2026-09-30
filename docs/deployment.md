@@ -211,7 +211,7 @@ ServiceMonitor). Beside the public mux's `klaus_gateway_requests_total` /
 `klaus_gateway_request_duration_seconds`, every Slack turn feeds:
 
 - `klaus_gateway_turn_total{channel, outcome, failure_class}` -- turns that ended, by outcome:
-  `completed`, `input_required` (paused on a prompt), `canceled` (`/stop`, the stop button, a
+  `completed`, `input_required` (paused on a prompt), `canceled` (the `stop` word, the stop button, a
   closed stream), `shutdown` (the gateway's restart cut it short), `timeout` (the 30-minute turn
   deadline), `failed` (the task failed or the stream broke), `render_failed` (the task completed
   but the channel refused part of the answer) and `send_failed` (the turn died before it was

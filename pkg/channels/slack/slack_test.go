@@ -802,7 +802,7 @@ func TestLogout_Unlinks(t *testing.T) {
 	a, srv := newEventsAdapter(t, gw, fakeSlack.URL, channelMode)
 	a.OBO = obo
 
-	payload := `{"type":"event_callback","event":{"type":"app_mention","user":"U123","text":"<@BOT> /logout","channel":"C1","ts":"111.222"}}`
+	payload := `{"type":"event_callback","event":{"type":"app_mention","user":"U123","text":"<@BOT> logout","channel":"C1","ts":"111.222"}}`
 	body := []byte(payload)
 	stamp, sig := signBody(t, "signing-secret", body)
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/channels/slack/events", bytes.NewReader(body))
@@ -829,7 +829,7 @@ func TestLogin_PostsSignInPrompt(t *testing.T) {
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
 	a.OBO = &fakeOBO{linkedUser: "U999", linkURL: "https://gw.example.com/auth/slack/link?u=xyz"}
 
-	payload := `{"type":"event_callback","event":{"type":"app_mention","user":"U123","text":"<@BOT> /login","channel":"C1","ts":"111.222"}}`
+	payload := `{"type":"event_callback","event":{"type":"app_mention","user":"U123","text":"<@BOT> login","channel":"C1","ts":"111.222"}}`
 	body := []byte(payload)
 	stamp, sig := signBody(t, "signing-secret", body)
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/channels/slack/events", bytes.NewReader(body))
@@ -2232,34 +2232,31 @@ func TestDispatch_PreStreamFailurePostsNote(t *testing.T) {
 	}, flowWait, 20*time.Millisecond, "a pre-stream dispatch failure must post the failure note")
 }
 
-// A slash command the gateway does not own ("/invite", a typo) must not fall
-// through to the agent (a full turn spent explaining Slack commands); it gets
-// a short notice instead. A prompt merely starting with a path still
-// dispatches.
-func TestHandleInbound_UnknownSlashCommandIntercepted(t *testing.T) {
+// The gateway owns no slash command, so a message that starts with one is
+// text: it reaches the agent, and nothing is intercepted. Only the app's own
+// slash command (/swarmgeist) still belongs to the gateway, and Slack delivers
+// that on its own endpoint.
+func TestHandleInbound_SlashMessageReachesTheAgent(t *testing.T) {
 	fake := newFakeSlackAPI()
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok"}, {Done: true}}}
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
 
-	sendEvent(t, srv, mention("U1", "/invite <@U2>", "100.000", ""))
-	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "is not a command")
-	}, flowWait, 20*time.Millisecond, "an unknown command replies with a notice")
-	require.Zero(t, gw.dispatchCount(), "an unknown slash command must not reach the agent")
-
-	sendEvent(t, srv, mention("U1", "/etc/hosts on node X is broken", "101.000", ""))
+	sendEvent(t, srv, mention("U1", "/etc/hosts on node X is broken", "100.000", ""))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
-		flowWait, 20*time.Millisecond, "a path-shaped prompt still dispatches")
+		flowWait, 20*time.Millisecond, "a path-shaped prompt dispatches")
 
-	// The roster listing is the word `agents`; no slash form was added for it,
-	// so the slash spelling gets the notice that points at the help reply.
-	before := len(fake.pathCalls("chat.postMessage"))
-	sendEvent(t, srv, mention("U1", "/agents", "102.000", ""))
-	require.Eventually(t, func() bool {
-		return len(fake.pathCalls("chat.postMessage")) > before
-	}, flowWait, 20*time.Millisecond, "`/agents` is not a command")
-	require.Contains(t, allText(fake.pathCalls("chat.postMessage")), "`/agents` is not a command")
-	require.Equal(t, 1, gw.dispatchCount(), "the slash spelling must not reach the agent")
+	// The gateway owns no slash command any more, so the spelling of a retired
+	// one is text like any other: the agent answers it, and nothing in the
+	// gateway intercepts it.
+	sendEvent(t, srv, mention("U1", "/agent sre-agent what broke?", "101.000", ""))
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 },
+		flowWait, 20*time.Millisecond, "a retired slash form reaches the agent")
+
+	sendEvent(t, srv, mention("U1", "/login", "102.000", ""))
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 3 },
+		flowWait, 20*time.Millisecond, "so does a retired account command")
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "is not a command",
+		"no notice is posted for a slash message")
 }
 
 // A plain (non-mention) reply in a thread the bot has no trace of stays fully
@@ -2352,7 +2349,7 @@ func TestStop_NoReactionPostsOnlyTheCommandNote(t *testing.T) {
 	fake.waitForPath(t, "reactions.add", 1)
 	waitTurnStreaming(t, fake)
 
-	sendEvent(t, srv, dmThreadEvent("U1", "/stop", "101.000", "100.000"))
+	sendEvent(t, srv, dmThreadEvent("U1", "stop", "101.000", "100.000"))
 	require.Eventually(t, func() bool { return len(gw.sendCauseList()) == 1 }, flowWait, 20*time.Millisecond)
 	require.Empty(t, fake.pathCalls("chat.update"), "no placeholder to replace")
 	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "Working", "no placeholder posted")
@@ -2565,7 +2562,7 @@ func TestUsage_DMTopLevelReportsSession(t *testing.T) {
 	}, flowWait, 20*time.Millisecond, "the turn must complete before /usage is sent")
 
 	// /usage typed as a new top-level DM message: its own ts is the threadID.
-	sendEvent(t, srv, dmEvent("U1", "/usage", "200.000"))
+	sendEvent(t, srv, dmEvent("U1", "usage", "200.000"))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Last turn — in 10 · out 5 · total 15")
 	}, flowWait, 20*time.Millisecond, "a top-level DM /usage must report the channel's usage")
@@ -2577,7 +2574,7 @@ func TestUsage_ChannelFreshThreadGetsGuidance(t *testing.T) {
 	fake := newFakeSlackAPI()
 	_, srv := newEventsAdapter(t, &stubGateway{}, fake.server(t).URL, channelMode)
 
-	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_mention","user":"U1","text":"<@UBOT> /usage","channel":"C1","ts":"300.000"}}`)
+	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_mention","user":"U1","text":"<@UBOT> usage","channel":"C1","ts":"300.000"}}`)
 
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "in a reply inside the agent's thread")
@@ -2601,7 +2598,7 @@ func TestUsage_InThreadStillWorks(t *testing.T) {
 		return strings.Contains(fake.streamedText(), "done.")
 	}, flowWait, 20*time.Millisecond, "the turn must complete before /usage is sent")
 
-	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","user":"U1","text":"/usage","channel":"C1","ts":"101.000","thread_ts":"100.000"}}`)
+	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","user":"U1","text":"usage","channel":"C1","ts":"101.000","thread_ts":"100.000"}}`)
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Last turn — in 7 · out 3 · total 10")
 	}, flowWait, 20*time.Millisecond)

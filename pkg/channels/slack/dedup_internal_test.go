@@ -68,7 +68,7 @@ func TestHandleInbound_ThreadMentionSurvivesMessageCopyGateDrop(t *testing.T) {
 
 	messageCopy := slackInnerEvent{
 		Type: evtMessage, Channel: "C1", TS: "9.100", ThreadTS: "T9",
-		User: "U1", Text: "<@UBOT> /login",
+		User: "U1", Text: "<@UBOT> login",
 	}
 	a.handleInbound(t.Context(), messageCopy, "Ev1")
 

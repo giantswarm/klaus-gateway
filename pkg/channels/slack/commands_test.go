@@ -40,11 +40,11 @@ func TestHelpBlocks(t *testing.T) {
 	text, blocks := helpBlocks("swarmgeist", true, true)
 	require.Len(t, blocks, 4)
 	require.Equal(t, "header", blocks[0].(map[string]any)[bkType])
-	require.Equal(t, "Send a command as the word alone, in a direct message or in a thread @swarmgeist is in; anywhere else mention @swarmgeist first. `/agent` always needs the mention: Slack keeps a message that starts with / for its own commands.", contextText(blocks[1]))
+	require.Equal(t, "Send a command as the word alone, in a direct message or in a thread @swarmgeist is in; anywhere else mention @swarmgeist first.", contextText(blocks[1]))
 	require.Equal(t, []string{"In a thread", "Agents", "Account"}, groups(blocks))
 	require.Equal(t, helpShortcutNote, contextText(blocks[3]))
-	require.Equal(t, `Commands: stop, usage, agents, /agent "Name" question, login, logout`, text,
-		"every command but /agent is a plain word, so nothing in Slack's composer intercepts it")
+	require.Equal(t, "Commands: stop, usage, agents, login, logout", text,
+		"every command is a plain word, so nothing in Slack's composer intercepts one")
 
 	_, blocks = helpBlocks("", false, false)
 	require.Equal(t, "Send a command as the word alone, in a direct message or in a thread the bot is in; anywhere else mention the bot first.", contextText(blocks[1]),
@@ -91,38 +91,6 @@ func TestResolveIdentity_RetriesNameLookupAfterTransientFailure(t *testing.T) {
 	_, name = a.resolveIdentity(t.Context())
 	require.Equal(t, "Swarmgeist", name)
 	require.Equal(t, int32(2), usersInfoCalls.Load(), "the resolved identity is cached")
-}
-
-func TestParseCommand(t *testing.T) {
-	tests := []struct {
-		input   string
-		wantNil bool
-		name    string
-		args    []string
-	}{
-		{input: "/stop", name: "stop", args: nil},
-		{input: "/help", name: "help", args: nil},
-		{input: "/agent list", name: "agent", args: []string{"list"}},
-		{input: "/LOGIN", name: "login", args: nil},
-		{input: "  /logout  ", name: "logout", args: nil},
-		{input: "hello /stop", wantNil: true},
-		{input: "!stop", wantNil: true},
-		{input: "", wantNil: true},
-		{input: "/", wantNil: true},
-		{input: "no command here", wantNil: true},
-	}
-	for _, tc := range tests {
-		t.Run(tc.input, func(t *testing.T) {
-			cmd := parseCommand(tc.input)
-			if tc.wantNil {
-				require.Nil(t, cmd)
-				return
-			}
-			require.NotNil(t, cmd)
-			require.Equal(t, tc.name, cmd.Name)
-			require.Equal(t, tc.args, cmd.Args)
-		})
-	}
 }
 
 // fakeSlackServer records postMessage and postEphemeral calls and returns
@@ -209,17 +177,10 @@ func newTestAdapter(t *testing.T) (*Adapter, *fakeSlackServer) {
 
 func TestHandleCommand_Help(t *testing.T) {
 	a, srv := newTestAdapter(t)
-	cmd := &slashCommand{Name: "help"}
+	cmd := &command{Name: "help"}
 	consumed := a.handleCommand(t.Context(), cmd, "U001", "C001", "T001")
 	require.True(t, consumed)
 	require.Equal(t, int32(1), srv.posts.Load())
-}
-
-func TestHandleCommand_UnknownCommand(t *testing.T) {
-	a, _ := newTestAdapter(t)
-	cmd := &slashCommand{Name: "frobulate"}
-	consumed := a.handleCommand(t.Context(), cmd, "U001", "C001", "T001")
-	require.False(t, consumed)
 }
 
 func TestHandleCommand_Stop_CancelsInFlightTurn(t *testing.T) {
@@ -233,7 +194,7 @@ func TestHandleCommand_Stop_CancelsInFlightTurn(t *testing.T) {
 	a.threadsMu.Unlock()
 
 	// U001 is the first to interact, so becomes the initiator and is permitted.
-	cmd := &slashCommand{Name: "stop"}
+	cmd := &command{Name: "stop"}
 	consumed := a.handleCommand(t.Context(), cmd, "U001", "C001", "T001")
 	require.True(t, consumed)
 	select {
@@ -246,7 +207,7 @@ func TestHandleCommand_Stop_CancelsInFlightTurn(t *testing.T) {
 
 func TestHandleCommand_Stop_NoTurnIsNoop(t *testing.T) {
 	a, srv := newTestAdapter(t)
-	cmd := &slashCommand{Name: "stop"}
+	cmd := &command{Name: "stop"}
 	consumed := a.handleCommand(t.Context(), cmd, "U001", "C001", "T001")
 	require.True(t, consumed)
 	require.Equal(t, int32(1), srv.posts.Load(), `the idle thread gets the "nothing is running" reply`)
@@ -318,7 +279,7 @@ func TestHandleCommand_Stop_DuringSenderMint_ReportsNothingRunning(t *testing.T)
 	go func() { dispatchDone <- a.dispatch(t.Context(), msg, "C001") }()
 	<-obo.entered
 
-	consumed := a.handleCommand(t.Context(), &slashCommand{Name: "stop"}, "U001", "C001", "T001")
+	consumed := a.handleCommand(t.Context(), &command{Name: "stop"}, "U001", "C001", "T001")
 	require.True(t, consumed)
 	srv.mu.Lock()
 	texts := append([]string(nil), srv.postTexts...)
@@ -331,7 +292,7 @@ func TestHandleCommand_Stop_DuringSenderMint_ReportsNothingRunning(t *testing.T)
 
 func TestHandleCommand_Usage_Consumed(t *testing.T) {
 	a, srv := newTestAdapter(t)
-	consumed := a.handleCommand(t.Context(), &slashCommand{Name: "usage"}, "U1", "C1", "T1")
+	consumed := a.handleCommand(t.Context(), &command{Name: "usage"}, "U1", "C1", "T1")
 	require.True(t, consumed)
 	require.Equal(t, int32(1), srv.posts.Load())
 }
@@ -344,7 +305,7 @@ func TestHandleCommand_OnlookerRefused(t *testing.T) {
 	a.accessPolicy().SetInitiator(t.Context(), "C001", "T001", "U001") // U001 initiates
 
 	for _, name := range []string{"stop", "usage"} {
-		require.True(t, a.handleCommand(t.Context(), &slashCommand{Name: name}, "U002", "C001", "T001"))
+		require.True(t, a.handleCommand(t.Context(), &command{Name: name}, "U002", "C001", "T001"))
 	}
 	require.Equal(t, int32(2), srv.posts.Load(), "each refusal posts one message")
 }
@@ -356,7 +317,7 @@ func TestHandleCommand_GrantedUserAllowed(t *testing.T) {
 	a.accessPolicy().SetInitiator(t.Context(), "C001", "T001", "U001")
 	a.accessPolicy().Grant(t.Context(), "C001", "T001", "U002")
 
-	require.True(t, a.handleCommand(t.Context(), &slashCommand{Name: "usage"}, "U002", "C001", "T001"))
+	require.True(t, a.handleCommand(t.Context(), &command{Name: "usage"}, "U002", "C001", "T001"))
 	require.Equal(t, int32(1), srv.posts.Load(), "a granted collaborator can run the gated commands")
 }
 
@@ -365,8 +326,8 @@ func TestHandleCommand_GrantedUserAllowed(t *testing.T) {
 // dispatching to the agent.
 func TestHandleCommand_LoginLogout_OBODisabled(t *testing.T) {
 	a, srv := newTestAdapter(t)
-	require.True(t, a.handleCommand(t.Context(), &slashCommand{Name: "login"}, "U1", "C1", "T1"))
-	require.True(t, a.handleCommand(t.Context(), &slashCommand{Name: "logout"}, "U1", "C1", "T1"))
+	require.True(t, a.handleCommand(t.Context(), &command{Name: "login"}, "U1", "C1", "T1"))
+	require.True(t, a.handleCommand(t.Context(), &command{Name: "logout"}, "U1", "C1", "T1"))
 	require.Equal(t, int32(2), srv.ephemerals.Load())
 	require.Equal(t, int32(0), srv.posts.Load())
 }
@@ -377,7 +338,7 @@ func TestHandleCommand_LoginLinkedConfirmsEphemerally(t *testing.T) {
 	a, srv := newTestAdapter(t)
 	a.OBO = identOBO{}
 
-	require.True(t, a.handleCommand(t.Context(), &slashCommand{Name: "login"}, "U1", "C1", "T1"))
+	require.True(t, a.handleCommand(t.Context(), &command{Name: "login"}, "U1", "C1", "T1"))
 	require.Equal(t, int32(0), srv.posts.Load(), "the identity confirmation must not be a public message")
 	require.Equal(t, int32(1), srv.ephemerals.Load())
 	srv.mu.Lock()
@@ -413,7 +374,7 @@ func TestHandleCommand_LoginLinkedButDeadTokenRepromptsSignIn(t *testing.T) {
 	a, srv := newTestAdapter(t)
 	a.OBO = deadLinkOBO{}
 
-	require.True(t, a.handleCommand(t.Context(), &slashCommand{Name: "login"}, "U1", "C1", "T1"))
+	require.True(t, a.handleCommand(t.Context(), &command{Name: "login"}, "U1", "C1", "T1"))
 	require.Equal(t, int32(1), srv.ephemerals.Load(), "the sign-in prompt reaches the caller only")
 	srv.mu.Lock()
 	defer srv.mu.Unlock()
@@ -428,7 +389,7 @@ func TestHandleCommand_LogoutConfirmsEphemerally(t *testing.T) {
 	a, srv := newTestAdapter(t)
 	a.OBO = identOBO{}
 
-	require.True(t, a.handleCommand(t.Context(), &slashCommand{Name: "logout"}, "U1", "C1", "T1"))
+	require.True(t, a.handleCommand(t.Context(), &command{Name: "logout"}, "U1", "C1", "T1"))
 	require.Equal(t, int32(0), srv.posts.Load())
 	require.Equal(t, int32(1), srv.ephemerals.Load())
 	srv.mu.Lock()
@@ -443,7 +404,7 @@ func TestHandleCommand_LoginStoreDownRepliesTransientNotice(t *testing.T) {
 	a, srv := newTestAdapter(t)
 	a.OBO = storeDownOBO{}
 
-	require.True(t, a.handleCommand(t.Context(), &slashCommand{Name: "login"}, "U1", "C1", "T1"))
+	require.True(t, a.handleCommand(t.Context(), &command{Name: "login"}, "U1", "C1", "T1"))
 	require.Equal(t, int32(0), srv.posts.Load(), "no sign-in prompt anchor: the person is not asked to sign in")
 	require.Equal(t, int32(1), srv.ephemerals.Load())
 	srv.mu.Lock()
@@ -458,7 +419,7 @@ func TestHandleCommand_LogoutStoreDownReportsFailure(t *testing.T) {
 	a, srv := newTestAdapter(t)
 	a.OBO = storeDownOBO{}
 
-	require.True(t, a.handleCommand(t.Context(), &slashCommand{Name: "logout"}, "U1", "C1", "T1"))
+	require.True(t, a.handleCommand(t.Context(), &command{Name: "logout"}, "U1", "C1", "T1"))
 	require.Equal(t, int32(0), srv.posts.Load())
 	require.Equal(t, int32(1), srv.ephemerals.Load())
 	srv.mu.Lock()
@@ -474,7 +435,7 @@ func TestHandleCommand_Stop_PausedThreadFallsThroughToDispatch(t *testing.T) {
 	a, srv := newTestAdapter(t)
 	a.storePendingTask("T001", &pendingTask{TaskID: "task-1", AgentRef: "worker", ChannelID: "C001"})
 
-	cmd := &slashCommand{Name: "stop"}
+	cmd := &command{Name: "stop"}
 	consumed := a.handleCommand(t.Context(), cmd, "U001", "C001", "T001")
 	require.False(t, consumed, "/stop on a paused thread must be dispatched as a deny")
 	require.NotNil(t, a.takePendingTask("T001"), "the pending task is resolved by dispatch, not the command handler")
@@ -491,7 +452,7 @@ func TestHandleCommand_Stop_RunningTurnStillCancels(t *testing.T) {
 	a.threads["T001"].slot = &turnSlot{turn: &turn{cancel: func() { close(cancelled) }}}
 	a.threadsMu.Unlock()
 
-	cmd := &slashCommand{Name: "stop"}
+	cmd := &command{Name: "stop"}
 	require.True(t, a.handleCommand(t.Context(), cmd, "U001", "C001", "T001"))
 	select {
 	case <-cancelled:
@@ -576,7 +537,6 @@ func TestParseBareCommand(t *testing.T) {
 		}
 		require.NotNil(t, cmd, "%q", tc.text)
 		require.Equal(t, tc.want, cmd.Name, "%q", tc.text)
-		require.Empty(t, cmd.Args, "%q", tc.text)
 	}
 }
 
@@ -604,7 +564,7 @@ func TestHandleCommand_RootCommandRepliesInTheChannel(t *testing.T) {
 			t.Cleanup(srv.Close)
 			a := &Adapter{APIBase: srv.URL, Secrets: Secrets{BotToken: "t"}, Logger: slog.New(slog.DiscardHandler), OBO: identOBO{}}
 
-			require.True(t, a.handleCommand(t.Context(), &slashCommand{Name: "logout", Root: tc.root}, "U1", "C1", "T1"))
+			require.True(t, a.handleCommand(t.Context(), &command{Name: "logout", Root: tc.root}, "U1", "C1", "T1"))
 			require.Equal(t, logoutNotice, body["text"])
 			require.Equal(t, tc.thread, body["thread_ts"])
 		})

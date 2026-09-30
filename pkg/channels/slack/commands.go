@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"regexp"
 	"strings"
 
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
@@ -18,39 +17,12 @@ const (
 	cmdLogin  = "login"  // OBO account linking: sign in
 	cmdLogout = "logout" // OBO account linking: sign out
 	cmdUsage  = "usage"
-	cmdAgent  = "agent"  // agent selection; handled by handleAgentSelection, not handleCommand
-	cmdAgents = "agents" // the roster listing as a word; handleAgentSelection serves it too
+	cmdAgents = "agents" // the roster listing; listAgents serves it, not handleCommand
 )
 
-// knownCommands is the verb set the gateway owns.
-var knownCommands = map[string]struct{}{
-	cmdHelp:   {},
-	cmdStop:   {},
-	cmdLogin:  {},
-	cmdLogout: {},
-	cmdUsage:  {},
-	cmdAgent:  {},
-}
-
-// commandShapeRe matches a verb that reads as a command word. A path or URL
-// fragment ("/etc/hosts", "/api/v1/pods") contains characters outside it, so a
-// real prompt that happens to start with "/" still reaches the agent.
-var commandShapeRe = regexp.MustCompile(`^[a-z][a-z0-9_-]*$`)
-
-// isUnknownCommand reports whether cmd carries a command-shaped verb the
-// gateway does not own (a Slack built-in like /invite, or a typo). Dispatching
-// such a message burns a full agent turn on explaining slash commands.
-func isUnknownCommand(cmd *slashCommand) bool {
-	if _, ok := knownCommands[cmd.Name]; ok {
-		return false
-	}
-	return commandShapeRe.MatchString(cmd.Name)
-}
-
-// slashCommand is a parsed in-thread command.
-type slashCommand struct {
-	Name string   // lower-case command name, e.g. "stop", "usage"
-	Args []string // remaining tokens, e.g. ["<@U123456>"]
+// command is an in-thread command: one word, no arguments.
+type command struct {
+	Name string // lower-case command name, e.g. "stop", "usage"
 	// Root is set when the command message is its thread's root: a top-level
 	// message, whose thread has no replies yet. Slack does not show a
 	// thread-scoped ephemeral in such a thread (klaus-gateway#156), so a
@@ -58,34 +30,11 @@ type slashCommand struct {
 	Root bool
 }
 
-// parseCommand extracts a leading /command from text. Commands are always
-// mention-prefixed in use ("@bot /stop"); StripMention removes the mention
-// before this runs, leaving the leading "/" intact. Addressing the bot also
-// keeps Slack from intercepting the message as a native slash command, so the
-// same form works in channels and DMs. Returns nil when the text does not
-// start with a slash.
-func parseCommand(text string) *slashCommand {
-	text = strings.TrimSpace(text)
-	if !strings.HasPrefix(text, "/") {
-		return nil
-	}
-	parts := strings.Fields(text[1:])
-	if len(parts) == 0 {
-		return nil
-	}
-	var args []string
-	if len(parts) > 1 {
-		args = parts[1:]
-	}
-	return &slashCommand{Name: strings.ToLower(parts[0]), Args: args}
-}
-
-// bareCommands are the verbs a message carries as the word alone, with no
-// slash. Slack's composer keeps a message that starts with "/" for its own
-// commands, in a DM too, so a slash form reaches the bot only after a mention;
-// the plain word is the form a person can type wherever the bot reads. "stop"
-// is not one of them: it is a command only while a turn runs, which dispatch
-// decides (see isBareStop).
+// bareCommands are the verbs the gateway answers. A command is the word alone:
+// Slack's composer keeps a message that starts with "/" for its own commands,
+// in a DM too, so a slash form would reach the bot only after a mention, and
+// none is served any more. "stop" is not one of them: it is a command only
+// while a turn runs, which dispatch decides (see isBareStop).
 var bareCommands = map[string]struct{}{
 	cmdLogin:  {},
 	cmdLogout: {},
@@ -105,18 +54,18 @@ func bareWord(text string) string {
 // parseBareCommand returns the command a message carries as a plain word, or
 // nil when it carries none. The whole message must be that word: a sentence
 // around it is a message for the agent.
-func parseBareCommand(text string) *slashCommand {
+func parseBareCommand(text string) *command {
 	word := bareWord(text)
 	if _, ok := bareCommands[word]; !ok {
 		return nil
 	}
-	return &slashCommand{Name: word}
+	return &command{Name: word}
 }
 
 // bareCommandFor returns the command msg runs as a plain word, or nil when the
 // message is something else. Three messages keep the word for what they
 // carry, since a consumed message is one the agent never sees.
-func (a *Adapter) bareCommandFor(msg channels.InboundMessage) *slashCommand {
+func (a *Adapter) bareCommandFor(msg channels.InboundMessage) *command {
 	cmd := parseBareCommand(msg.Text)
 	if cmd == nil {
 		return nil
@@ -184,7 +133,6 @@ func helpGroups(agents, signIn bool) []helpGroup {
 	if agents {
 		groups = append(groups, helpGroup{title: "Agents", commands: []helpCommand{
 			{cmdAgents, "List the agents; in a new thread each row starts a conversation"},
-			{`/agent "Name" question`, "Start a conversation with a named agent"},
 		}})
 	}
 	if signIn {
@@ -205,19 +153,15 @@ const helpShortcutNote = "Inspect agent steps: open the ⋯ menu on any message 
 // known the mention names it, otherwise it says "the bot" rather than
 // hardcoding one. The returned text is the notification fallback.
 func helpBlocks(botName string, agents, signIn bool) (string, []any) {
-	// A plain word reaches the bot wherever it reads messages, which is a DM
+	// A command word reaches the bot wherever it reads messages, which is a DM
 	// and a thread it is in; a top-level channel message reaches it only with
-	// a mention. Slack's composer takes a message that starts with / as one
-	// of Slack's own commands, in a DM too, so /agent — the one command that
-	// keeps a slash — needs the mention everywhere.
+	// a mention. No command carries a slash: Slack's composer takes a message
+	// that starts with / as one of Slack's own commands, in a DM too.
 	who := "the bot"
 	if botName != "" {
 		who = "@" + botName
 	}
 	address := fmt.Sprintf("Send a command as the word alone, in a direct message or in a thread %s is in; anywhere else mention %s first.", who, who)
-	if agents {
-		address += " `/agent` always needs the mention: Slack keeps a message that starts with / for its own commands."
-	}
 	var lines []string
 	var elements []any
 	for _, g := range helpGroups(agents, signIn) {
@@ -249,7 +193,7 @@ func helpBlocks(botName string, agents, signIn bool) (string, []any) {
 
 // handleCommand processes a slash command and posts a reply in-thread.
 // Returns true when the command was consumed (caller should not dispatch).
-func (a *Adapter) handleCommand(ctx context.Context, cmd *slashCommand, slackUser, slackChannel, threadID string) bool {
+func (a *Adapter) handleCommand(ctx context.Context, cmd *command, slackUser, slackChannel, threadID string) bool {
 	client := a.apiClient()
 	reply := func(text string) {
 		if _, err := client.postMessage(ctx, slackChannel, text, threadID); err != nil {

@@ -4,6 +4,19 @@ Breaking or operator-visible changes between releases, newest first. The
 `CHANGELOG.md` lists every change; this file covers what an operator has to
 do or decide.
 
+## Next — the in-message slash commands are gone
+
+The gateway no longer reads `/login`, `/logout`, `/usage`, `/help`, `/stop` or `/agent` from a
+message. Every command is the word alone: `login`, `logout`, `usage`, `help`, `agents`, and
+`stop` while a turn runs. A conversation with a chosen agent starts from the `agents` listing,
+from the app's own `/swarmgeist` command, or from the **Ask an agent here** shortcut.
+
+Nothing to configure, and no values key changes. What an operator has to decide is whether to
+tell their users: a person who types `@bot /login` out of habit now sends that text to the
+agent, which answers it as a question instead of signing them in. `help` lists the words.
+
+The app's own slash command (`/swarmgeist`) is untouched, and so is the message shortcut.
+
 ## Next — the Slack progress mode has no effect (`slack.progress.mode`)
 
 Every turn tries the progress reactions on its triggering message, and no turn posts the
