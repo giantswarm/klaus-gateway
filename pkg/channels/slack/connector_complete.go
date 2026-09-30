@@ -37,8 +37,11 @@ type connectorCompletion struct {
 	// was needed to submit a decision: the landing then resubmits that
 	// decision — an approval, or a denial with its reason — as the person
 	// instead of resuming a conversation.
-	review          string
-	decision        teamReviewDecision
+	review   string
+	decision teamReviewDecision
+	// answer, set with review naming a decision, is the answer the sign-in
+	// was needed for: the landing submits it again.
+	answer          *decisionAnswer
 	responseURL     string // recorded by the Connect click; empty until it arrives
 	completed       bool   // landing arrived; the one-shot resume fired
 	promptRewritten bool   // the ephemeral prompt was rewritten to the confirmation
@@ -167,10 +170,18 @@ func (a *Adapter) handleConnectorComplete(w http.ResponseWriter, r *http.Request
 	}
 	message := "You can close this tab and return to Slack. The conversation continues there."
 	if entry.review != "" {
-		message = "You can close this tab and return to Slack; your " + entry.decision.noun() + " is being submitted there."
+		noun := entry.decision.noun()
+		if entry.answer != nil {
+			noun = "answer"
+		}
+		message = "You can close this tab and return to Slack; your " + noun + " is being submitted there."
 	}
 	if resume {
 		a.background(func(ctx context.Context) {
+			if entry.answer != nil {
+				a.resumeDecisionAnswer(ctx, entry)
+				return
+			}
 			if entry.review != "" {
 				a.resumeTeamReviewDecision(ctx, entry)
 				return

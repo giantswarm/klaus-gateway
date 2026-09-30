@@ -2206,6 +2206,33 @@ func (c *slackAPIClient) lookupUserEmail(ctx context.Context, userID string) (st
 	return result.User.Profile.Email, nil
 }
 
+// lookupUserByEmail returns the Slack user ID of the workspace member with
+// email; users_not_found is ErrAddresseeNotFound. Needs users:read.email.
+func (c *slackAPIClient) lookupUserByEmail(ctx context.Context, email string) (string, error) {
+	params := url.Values{"email": {email}}
+	body, err := c.call(ctx, "users.lookupByEmail", "application/x-www-form-urlencoded", params.Encode())
+	if err != nil {
+		return "", err
+	}
+	var result struct {
+		OK   bool   `json:"ok"`
+		Err  string `json:"error,omitempty"`
+		User struct {
+			ID string `json:"id"`
+		} `json:"user"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", fmt.Errorf("slack users.lookupByEmail: decode: %w", err)
+	}
+	switch {
+	case result.Err == "users_not_found":
+		return "", channels.ErrAddresseeNotFound
+	case !result.OK:
+		return "", &apiError{method: "users.lookupByEmail", code: result.Err}
+	}
+	return result.User.ID, nil
+}
+
 // lookupUserDisplayName returns the human-facing name from the user's Slack
 // profile, preferring the display name and falling back to the real name. Used
 // to name the bot itself in help text so the example matches what people see in
@@ -2856,6 +2883,7 @@ const (
 	signInForMessage signInTrigger = iota // an unlinked user's message, held for replay
 	signInForLogin                        // the /login command: nothing is held
 	signInForClick                        // a button click: nothing to replay, the person clicks again
+	signInForReply                        // a decision answered in its thread: nothing held, the person replies again
 )
 
 // signInPromptBody builds the sign-in card's Slack post body: when it replaces
@@ -2869,6 +2897,8 @@ func signInPromptBody(channel, threadID, linkURL, promptID string, supersedes bo
 		text += " " + signInForMessageLine
 	case signInForClick:
 		text += " " + signInForClickLine
+	case signInForReply:
+		text += " " + signInForReplyLine
 	}
 	signInButton := map[string]any{
 		bkType:     bkButton,
@@ -3180,6 +3210,15 @@ func (c *slackAPIClient) chatUpdate(ctx context.Context, channel, ts, text strin
 }
 
 func (c *slackAPIClient) postJSON(ctx context.Context, method string, body any) (string, error) {
+	resp, err := c.postJSONResponse(ctx, method, body)
+	return resp.Ts, err
+}
+
+// postJSONResponse is postJSON answering with the whole response: the
+// conversation a message landed in as well as its ts. A direct message is
+// addressed by the person's user ID, and only the response names the D…
+// channel that later edits of the message need.
+func (c *slackAPIClient) postJSONResponse(ctx context.Context, method string, body any) (slackResponse, error) {
 	// The identity fields go onto a clone so the caller's map stays untouched —
 	// which also keeps the original available for the unbranded retry below.
 	m, isMap := body.(map[string]any)
@@ -3209,23 +3248,24 @@ func (c *slackAPIClient) postJSON(ctx context.Context, method string, body any) 
 	payload, branded := build(true)
 	data, err := json.Marshal(payload)
 	if err != nil {
-		return "", fmt.Errorf("slack %s: marshal: %w", method, err)
+		return slackResponse{}, fmt.Errorf("slack %s: marshal: %w", method, err)
 	}
-	ts, err := c.send(ctx, method, "application/json; charset=utf-8", string(data))
+	resp, err := c.sendResponse(ctx, method, "application/json; charset=utf-8", string(data))
 	if branded && identityRejectedErr(err) {
 		c.noteIdentityRejected(err)
 		payload, _ = build(false)
 		if data, merr := json.Marshal(payload); merr == nil {
-			return c.send(ctx, method, "application/json; charset=utf-8", string(data))
+			return c.sendResponse(ctx, method, "application/json; charset=utf-8", string(data))
 		}
 	}
-	return ts, err
+	return resp, err
 }
 
 type slackResponse struct {
-	OK    bool   `json:"ok"`
-	Ts    string `json:"ts"`
-	Error string `json:"error,omitempty"`
+	OK      bool   `json:"ok"`
+	Ts      string `json:"ts"`
+	Channel string `json:"channel,omitempty"`
+	Error   string `json:"error,omitempty"`
 }
 
 func (c *slackAPIClient) post(ctx context.Context, method string, params url.Values) (string, error) {
@@ -3255,18 +3295,24 @@ const rateLimitRetryCap = 30 * time.Second
 // send executes one Slack Web API call and returns the ts of the affected
 // message, for methods whose response carries one.
 func (c *slackAPIClient) send(ctx context.Context, method, contentType, payload string) (string, error) {
+	resp, err := c.sendResponse(ctx, method, contentType, payload)
+	return resp.Ts, err
+}
+
+// sendResponse is send answering with the decoded response.
+func (c *slackAPIClient) sendResponse(ctx context.Context, method, contentType, payload string) (slackResponse, error) {
 	body, err := c.call(ctx, method, contentType, payload)
 	if err != nil {
-		return "", err
+		return slackResponse{}, err
 	}
 	var result slackResponse
 	if err := json.Unmarshal(body, &result); err != nil {
-		return "", fmt.Errorf("slack %s: decode response: %w", method, err)
+		return slackResponse{}, fmt.Errorf("slack %s: decode response: %w", method, err)
 	}
 	if !result.OK {
-		return "", &apiError{method: method, code: result.Error}
+		return slackResponse{}, &apiError{method: method, code: result.Error}
 	}
-	return result.Ts, nil
+	return result, nil
 }
 
 // apiError is a Slack Web API refusal (`ok: false`) carrying the error code
