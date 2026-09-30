@@ -125,6 +125,7 @@ go build ./...
 make test                    # what CI runs: go test ./... (race detector when cgo is available)
 make lint                    # golangci-lint with gosec + goconst
 helm lint helm/klaus-gateway && helm template t helm/klaus-gateway   # CI also runs the chart on kind (tests/)
+pre-commit run --all-files   # after a values.yaml change: regenerates the chart README, checks values.schema.json
 CGO_ENABLED=0 go build -o klaus-gateway-linux-amd64 . && docker build -t klaus-gateway:dev .   # the image copies the prebuilt binary
 ```
 
