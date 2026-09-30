@@ -1682,7 +1682,7 @@ func (w *batchedWriter) resetStream() {
 
 // failedCallsBlocks is the muted line the reply's last message ends with when
 // tool calls of this reply failed, and where to see them; nil when none did.
-// The reply no longer shows the calls, so without it a failure is visible only
+// The reply does not show the calls, so without it a failure is visible only
 // when the agent says so.
 func (w *batchedWriter) failedCallsBlocks() []any {
 	if w.failedCalls == 0 {

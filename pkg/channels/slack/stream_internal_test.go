@@ -1134,6 +1134,7 @@ type streamCall struct {
 	markdown      string
 	chunkTypes    []string
 	blocks        capturedMessage // the text of the blocks a stop adds below the stream
+	blockTypes    []string        // and their types
 	status        string
 	threadTS      string
 	recipientUser string
@@ -1327,7 +1328,7 @@ func (f *fakeThread) handler() http.HandlerFunc {
 		case methodChatAppendStream, methodChatStopStream:
 			f.streamCalls = append(f.streamCalls, streamCall{
 				method: method, ts: ts, markdown: chunkMD, chunkTypes: chunkTypes,
-				status: body.SessionStatus, blocks: texts,
+				status: body.SessionStatus, blocks: texts, blockTypes: blockTypesOf(body.Blocks),
 			})
 			switch {
 			case f.stoppedByUser:
@@ -3005,6 +3006,8 @@ func TestFailedCalls_TheReplyEndsWithOneLine(t *testing.T) {
 		channels.OutboundDelta{Kind: channels.DeltaText, Content: "done "},
 	)
 	require.Equal(t, []capturedMessage{{failedCallsNote(2)}}, ft.stopBlocks())
+	calls := ft.streams()
+	require.Equal(t, []string{bkContext}, calls[len(calls)-1].blockTypes, "the line is a muted context block")
 	require.Equal(t, "⚠️ 2 tool calls failed · To see them: ⋯ on this message → Apps → *Inspect agent steps*", failedCallsNote(2))
 	require.Equal(t, "⚠️ 1 tool call failed · To see it: ⋯ on this message → Apps → *Inspect agent steps*", failedCallsNote(1))
 }
@@ -3071,4 +3074,43 @@ func TestFailedCalls_NoReplyNoLine(t *testing.T) {
 	ft, _ := captureStream(t, toolCallDeltaWith("get", "c1", nil), failedResultDelta("get", "c1"))
 	require.Empty(t, ft.streams())
 	require.Equal(t, 0, ft.postCount())
+}
+
+// blockTypesOf returns the type of each block in a request body.
+func blockTypesOf(blocks []json.RawMessage) []string {
+	var out []string
+	for _, raw := range blocks {
+		var b struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(raw, &b); err == nil {
+			out = append(out, b.Type)
+		}
+	}
+	return out
+}
+
+// Slack refusing the final stop as too long moves the rest of the reply to a
+// new message, and the line goes with it: the full message closes without it.
+func TestFailedCalls_FollowTheReplyOntoAnOverflowMessage(t *testing.T) {
+	ft := &fakeThread{sizeLimit: 4000} // under the writer's own budget
+	w := streamWriter(t, ft, "D1")
+	w.failedCalls = 1
+
+	w.queueAnswer(strings.Repeat("a", 3500) + " ")
+	require.NoError(t, w.flush(t.Context()))
+	w.queueAnswer(strings.Repeat("b", 1000) + " ")
+	require.NoError(t, w.closeStream(t.Context()))
+
+	require.Equal(t, 1, ft.refusedTooLong(), "the final stop was refused as too long")
+	require.Equal(t, []string{
+		methodChatStartStream, methodChatStopStream, // the refused final stop
+		methodChatStopStream,                        // closes the full message
+		methodChatStartStream, methodChatStopStream, // the rest, on a new message
+	}, ft.streamMethods())
+	require.Equal(t, []capturedMessage{
+		{failedCallsNote(1)}, // refused with the rest of the text
+		nil,                  // the full message closes without the line
+		{failedCallsNote(1)}, // the line ends the reply on its new message
+	}, ft.stopBlocks())
 }

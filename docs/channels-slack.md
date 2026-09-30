@@ -506,9 +506,11 @@ any string that begins with `Slack bot`, `Slack app-level`, or `Slack user`.
    message → Apps → Inspect agent steps`. It is a context block the final `chat.stopStream`
    adds below the streamed text (its `blocks` argument), so it is part of the reply and
    everyone in the thread sees it. It counts every failed call of the reply, also one the
-   agent recovered from with a later call, and starts from zero for each reply. A reply
-   that rolls over carries it on its last message; a turn without prose has no reply to
-   carry it, and a final stop that fails loses it.
+   agent recovered from with a later call, and starts from zero for each reply; after a
+   gateway restart during the turn, it counts only the calls after the restart. The line
+   stays in the thread, but the calls it points to are kept for 24 hours only. A reply that
+   rolls over carries it on its last message; a turn without prose has no reply to carry
+   it, and a final stop that fails loses it.
 
    Each append carries only what is new, and answer text is sent up to the last whitespace
    boundary — an unfinished word waits for the next append, so nothing is ever half-written.
