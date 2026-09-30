@@ -709,7 +709,7 @@ const (
 // Block Kit type values.
 const (
 	bkSection        = "section"
-	bkContext        = "context" // small muted text; carries the tool-activity entries
+	bkContext        = "context" // small muted text
 	bkHeader         = "header"
 	bkDivider        = "divider"
 	bkActions        = "actions"

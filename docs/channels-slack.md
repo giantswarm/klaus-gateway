@@ -695,11 +695,18 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
   redirect, the channel intro) keep the app's default identity. Requires `chat:write.customize`.
 - **Inspect agent steps.** The reply does not show the agent's tool calls. To see them,
   invoke the **Inspect agent steps** message shortcut (⋯ menu → Apps) on any message in the
-  thread: the gateway replies with an ephemeral, invoker-only rendering of the retained
-  tool-call log — per call, the tool name with its arguments and a result preview, grouped
-  per turn. The log is in-memory and bounded: the last
-  100 calls per thread, kept for up to 24 hours and not surviving a gateway restart. When
-  nothing is retained the reply says so. The shortcut is registered in
+  thread: the gateway opens an **Agent steps** modal for the invoker alone, and posts nothing
+  in the thread. Each turn has a header ("Turn 2 · 3 calls"), and each call one section: a
+  status (✅ done, ❌ error, ⏸ asked for approval, ⏳ no result yet), the plain-language title
+  with the raw tool name ("via muster" when `call_tool` wrapped it), the arguments as
+  indented JSON and the result preview, each in a code block. A result pairs with its call by
+  call id; one the stream gave no id closes the oldest running call of the same tool. The log
+  is in-memory and bounded: the last 100 calls per thread, kept for up to 24 hours and not
+  surviving a gateway restart; a log of many short turns shows its most recent calls, as
+  many as a modal's 100 blocks hold, and says how many it leaves out. When nothing is
+  retained the modal says so. Should Slack refuse the modal (its `trigger_id` lives 3
+  seconds), the same content goes out as ephemeral messages in the thread. The shortcut is
+  registered in
   `deploy/slack/manifest.yaml`, next to **Ask an agent here** (which starts a
   conversation in the message's thread, see [Agent routing](#agent-routing)); changing the
   manifest requires re-syncing the app config at api.slack.com/apps. Slack lists a shortcut

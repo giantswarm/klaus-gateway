@@ -115,7 +115,11 @@ func TestBatchedWriter_ToolCallsPutNothingOnTheThread(t *testing.T) {
 	require.Empty(t, ft.streams(), "no message is opened for tool calls")
 	require.Equal(t, 0, ft.postCount(), "and none is posted")
 	entries, dropped := a.toolLogSnapshot("T1")
-	require.Equal(t, 2*calls, len(entries)+dropped, "every call and result is recorded for the inspection shortcut")
+	require.Zero(t, dropped)
+	require.Len(t, entries, calls, "every call is recorded for the inspection shortcut")
+	for _, e := range entries {
+		require.Equal(t, toolDone, e.state, "with its result")
+	}
 }
 
 func TestCompactJSON_TruncatesAndEmpty(t *testing.T) {
