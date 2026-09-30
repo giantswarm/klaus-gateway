@@ -1110,14 +1110,6 @@ func TestUnwrapCallTool(t *testing.T) {
 	}
 }
 
-func TestSpaceStructuralJSON(t *testing.T) {
-	require.Equal(t, `{"a": "b", "c": "d"}`, spaceStructuralJSON([]byte(`{"a":"b","c":"d"}`)))
-	// ':' and ',' inside a string value stay untouched.
-	require.Equal(t, `{"k": "a,b:c"}`, spaceStructuralJSON([]byte(`{"k":"a,b:c"}`)))
-	// An escaped quote does not end the string, so its trailing ',' is left alone.
-	require.Equal(t, `{"k": "a\"b,c"}`, spaceStructuralJSON([]byte(`{"k":"a\"b,c"}`)))
-}
-
 // capturedMessage is one thread message's final content: the text of each of
 // its blocks (context elements flattened), after all in-place updates.
 type capturedMessage []string
@@ -1538,7 +1530,7 @@ func captureStream(t *testing.T, deltas ...channels.OutboundDelta) (*fakeThread,
 }
 
 // captureToolLog returns every entry the turn retained in the thread's tool
-// log — the rendering the "Inspect agent steps" shortcut shows — in stream
+// log, rendered as the "Inspect agent steps" shortcut shows it, in stream
 // order.
 func captureToolLog(t *testing.T, deltas ...channels.OutboundDelta) []string {
 	t.Helper()
@@ -1560,7 +1552,7 @@ func captureToolLog(t *testing.T, deltas ...channels.OutboundDelta) []string {
 	entries, _ := a.toolLogSnapshot("T1")
 	out := make([]string, 0, len(entries))
 	for _, e := range entries {
-		out = append(out, e.md)
+		out = append(out, callSectionText(e))
 	}
 	return out
 }
@@ -1806,8 +1798,8 @@ func TestRenderToolActivity_UnwrapsCallTool(t *testing.T) {
 		},
 	})
 	require.Len(t, posts, 1)
-	require.Contains(t, posts[0], "*`x_kubernetes_get`* (via muster)")
-	require.Contains(t, posts[0], `{"namespace": "flux-giantswarm", "resourceType": "helmreleases"}`)
+	require.Contains(t, posts[0], "*Kubernetes get*  ·  `x_kubernetes_get`  via muster")
+	require.Contains(t, posts[0], "\"namespace\": \"flux-giantswarm\",\n  \"resourceType\": \"helmreleases\"")
 	require.NotContains(t, posts[0], "call_tool")
 }
 
@@ -1817,7 +1809,7 @@ func TestRenderToolActivity_DirectToolUnchanged(t *testing.T) {
 		Tool: &channels.ToolActivity{Kind: channels.ToolCall, Name: "list_pods"},
 	})
 	require.Len(t, posts, 1)
-	require.Contains(t, posts[0], "*`list_pods`*")
+	require.Contains(t, posts[0], "`list_pods`")
 	require.NotContains(t, posts[0], "via muster")
 }
 
@@ -1832,11 +1824,10 @@ func TestRenderToolActivity_UnwrapsCallToolResult(t *testing.T) {
 			Response: map[string]any{"output": "ok"},
 		}},
 	)
-	require.Len(t, posts, 2)
-	require.Contains(t, posts[0], "*`x_kubernetes_get`* (via muster)")
-	require.Contains(t, posts[1], "↳ *`x_kubernetes_get`* result (via muster)")
-	require.Contains(t, posts[1], "`ok`", "the output wrap is unwrapped to the bare payload")
-	require.NotContains(t, posts[1], `{"output"`)
+	require.Len(t, posts, 1, "the result closes its call")
+	require.Contains(t, posts[0], "✅ *Kubernetes get*  ·  `x_kubernetes_get`  via muster")
+	require.Contains(t, posts[0], "*Result*\n```ok```", "the output wrap is unwrapped to the bare payload")
+	require.NotContains(t, posts[0], `{"output"`)
 }
 
 // mcpEnvelope builds an MCP tool-result envelope carrying one text item, the
@@ -1862,13 +1853,13 @@ func TestToolResultPreview(t *testing.T) {
 
 	t.Run("non-envelope payloads keep the raw JSON rendering", func(t *testing.T) {
 		preview, isErr := toolResultPreview(map[string]any{"items": "3 pods"}, 100)
-		require.Equal(t, `{"items": "3 pods"}`, preview)
+		require.JSONEq(t, `{"items": "3 pods"}`, preview)
 		require.False(t, isErr)
 	})
 
 	t.Run("output wrap with extra keys is not a text carrier", func(t *testing.T) {
 		preview, _ := toolResultPreview(map[string]any{"output": "x", "status": "ok"}, 100)
-		require.Equal(t, `{"output": "x", "status": "ok"}`, preview)
+		require.JSONEq(t, `{"output": "x", "status": "ok"}`, preview)
 	})
 
 	t.Run("output wrap unwraps to the bare text", func(t *testing.T) {
@@ -1901,7 +1892,7 @@ func TestToolResultPreview(t *testing.T) {
 
 	t.Run("error wrap with extra keys is not a text carrier", func(t *testing.T) {
 		preview, isErr := toolResultPreview(map[string]any{"error": "x", "status": "failed"}, 100)
-		require.Equal(t, `{"error": "x", "status": "failed"}`, preview)
+		require.JSONEq(t, `{"error": "x", "status": "failed"}`, preview)
 		require.False(t, isErr)
 	})
 
@@ -1915,19 +1906,19 @@ func TestToolResultPreview(t *testing.T) {
 
 	t.Run("harness runtime: a structured result keeps the raw rendering and the flag", func(t *testing.T) {
 		preview, isErr := toolResultPreview(map[string]any{"result": map[string]any{"code": 7}, "isError": true}, 100)
-		require.Equal(t, `{"isError": true, "result": {"code": 7}}`, preview)
+		require.JSONEq(t, `{"isError": true, "result": {"code": 7}}`, preview)
 		require.True(t, isErr)
 	})
 
 	t.Run("the flag is the only key allowed beside a wrap", func(t *testing.T) {
 		preview, isErr := toolResultPreview(map[string]any{"result": "x", "isError": false, "status": "ok"}, 100)
-		require.Equal(t, `{"isError": false, "result": "x", "status": "ok"}`, preview)
+		require.JSONEq(t, `{"isError": false, "result": "x", "status": "ok"}`, preview)
 		require.False(t, isErr)
 	})
 
 	t.Run("a non-boolean flag does not make a wrap a text carrier", func(t *testing.T) {
 		preview, isErr := toolResultPreview(map[string]any{"result": "x", "isError": "yes"}, 100)
-		require.Equal(t, `{"isError": "yes", "result": "x"}`, preview)
+		require.JSONEq(t, `{"isError": "yes", "result": "x"}`, preview)
 		require.False(t, isErr)
 	})
 
@@ -1936,13 +1927,13 @@ func TestToolResultPreview(t *testing.T) {
 		// output wrap: not a text carrier itself, but its flag must not be lost.
 		inner := `{"result": {"code": 7}, "isError": true}`
 		preview, isErr := toolResultPreview(map[string]any{"output": inner}, 100)
-		require.Equal(t, `{"isError": true, "result": {"code": 7}}`, preview)
+		require.JSONEq(t, `{"isError": true, "result": {"code": 7}}`, preview)
 		require.True(t, isErr)
 	})
 
 	t.Run("result wrap with extra keys is not a text carrier", func(t *testing.T) {
 		preview, _ := toolResultPreview(map[string]any{"result": "x", "status": "ok"}, 100)
-		require.Equal(t, `{"result": "x", "status": "ok"}`, preview)
+		require.JSONEq(t, `{"result": "x", "status": "ok"}`, preview)
 	})
 
 	t.Run("envelope text renders without the content boilerplate", func(t *testing.T) {
@@ -1951,22 +1942,22 @@ func TestToolResultPreview(t *testing.T) {
 		require.False(t, isErr)
 	})
 
-	t.Run("JSON text decodes to compact JSON with real quotes", func(t *testing.T) {
-		preview, _ := toolResultPreview(mcpEnvelope("{\n  \"filters\": {\n    \"query\": \"list clusters\"\n  }\n}", false), 100)
-		require.Equal(t, `{"filters": {"query": "list clusters"}}`, preview)
+	t.Run("JSON text decodes to indented JSON with real quotes", func(t *testing.T) {
+		preview, _ := toolResultPreview(mcpEnvelope(`{"filters":{"query":"list clusters"}}`, false), 100)
+		require.Equal(t, "{\n  \"filters\": {\n    \"query\": \"list clusters\"\n  }\n}", preview)
 	})
 
 	t.Run("muster double wrap unwraps to the innermost payload", func(t *testing.T) {
 		resp := mcpEnvelope(serialize(t, mcpEnvelope(clusters, false)), false)
 		preview, isErr := toolResultPreview(resp, 100)
-		require.Equal(t, `{"clusters": ["alpha", "beta"]}`, preview)
+		require.JSONEq(t, `{"clusters": ["alpha", "beta"]}`, preview)
 		require.False(t, isErr)
 	})
 
 	t.Run("triple wrap unwraps too", func(t *testing.T) {
 		resp := mcpEnvelope(serialize(t, mcpEnvelope(serialize(t, mcpEnvelope(clusters, false)), false)), false)
 		preview, _ := toolResultPreview(resp, 100)
-		require.Equal(t, `{"clusters": ["alpha", "beta"]}`, preview)
+		require.JSONEq(t, `{"clusters": ["alpha", "beta"]}`, preview)
 	})
 
 	t.Run("inner isError surfaces through the wrap", func(t *testing.T) {
@@ -2011,13 +2002,13 @@ func TestToolResultPreview(t *testing.T) {
 
 	t.Run("empty content falls back to the raw payload", func(t *testing.T) {
 		preview, isErr := toolResultPreview(map[string]any{"content": []any{}, "isError": true}, 100)
-		require.Equal(t, `{"content": [], "isError": true}`, preview)
+		require.JSONEq(t, `{"content": [], "isError": true}`, preview)
 		require.True(t, isErr)
 	})
 
 	t.Run("malformed content items keep the raw rendering", func(t *testing.T) {
 		preview, _ := toolResultPreview(map[string]any{"content": []any{"not a map"}}, 100)
-		require.Equal(t, `{"content": ["not a map"]}`, preview)
+		require.JSONEq(t, `{"content": ["not a map"]}`, preview)
 	})
 }
 
@@ -2031,11 +2022,11 @@ func TestRenderToolActivity_UnwrapsMCPResultEnvelope(t *testing.T) {
 			Response: mcpEnvelope("{\n  \"filters\": {\n    \"query\": \"list clusters\"\n  }\n}", false),
 		}},
 	)
-	require.Len(t, posts, 2)
-	require.Contains(t, posts[1], "↳ *`filter_tools`* result")
-	require.Contains(t, posts[1], `{"filters": {"query": "list clusters"}}`)
-	require.NotContains(t, posts[1], "content", "no envelope boilerplate in the preview")
-	require.NotContains(t, posts[1], `\n`, "no literal escape sequences in the preview")
+	require.Len(t, posts, 1, "a result without an id closes the running call of its tool")
+	require.Contains(t, posts[0], "✅ *Finding the right tool*  ·  `filter_tools`")
+	require.Contains(t, posts[0], "```{\n  \"filters\": {\n    \"query\": \"list clusters\"\n  }\n}```")
+	require.NotContains(t, posts[0], "content", "no envelope boilerplate in the preview")
+	require.NotContains(t, posts[0], `\n`, "no literal escape sequences in the preview")
 }
 
 // A muster call_tool result is an envelope whose text is the serialized inner
@@ -2052,10 +2043,10 @@ func TestRenderToolActivity_UnwrapsMusterDoubleWrappedResult(t *testing.T) {
 			Response: mcpEnvelope(inner, false),
 		}},
 	)
-	require.Len(t, posts, 2)
-	require.Contains(t, posts[1], "↳ *`x_kubernetes_capi_list_clusters`* result (via muster)")
-	require.Contains(t, posts[1], `{"clusters": ["alpha", "beta"]}`)
-	require.NotContains(t, posts[1], `\"`, "no double-escaped quotes in the preview")
+	require.Len(t, posts, 1)
+	require.Contains(t, posts[0], "`x_kubernetes_capi_list_clusters`  via muster")
+	require.Contains(t, posts[0], "```{\n  \"clusters\": [\n    \"alpha\",\n    \"beta\"\n  ]\n}```")
+	require.NotContains(t, posts[0], `\"`, "no double-escaped quotes in the preview")
 }
 
 // A result the tool flagged as an error is marked visibly.
@@ -2067,9 +2058,9 @@ func TestRenderToolActivity_FlagsErrorResults(t *testing.T) {
 			Response: mcpEnvelope("forbidden: access denied", true),
 		}},
 	)
-	require.Len(t, posts, 2)
-	require.Contains(t, posts[1], "↳ *`kube_get`* result (error)")
-	require.Contains(t, posts[1], "forbidden: access denied")
+	require.Len(t, posts, 1)
+	require.True(t, strings.HasPrefix(posts[0], "❌"), posts[0])
+	require.Contains(t, posts[0], "*Error*\n```forbidden: access denied```")
 }
 
 // Unwrapped result text is MCP-server-controlled and no longer neutralised by
@@ -2082,18 +2073,18 @@ func TestRenderToolActivity_UnwrappedResultEscapesHostileText(t *testing.T) {
 			Response: mcpEnvelope("ping <!channel> then `break`\nout <@U1>", false),
 		}},
 	)
-	require.Len(t, posts, 2)
-	require.NotContains(t, posts[1], "<!channel>")
-	require.NotContains(t, posts[1], "<@U1>")
-	require.Contains(t, posts[1], "&lt;!channel&gt;")
-	require.NotContains(t, posts[1], "`break`", "backticks must not terminate the code span")
-	require.NotContains(t, posts[1], "\nout", "newlines must not carry content out of the span")
+	require.Len(t, posts, 1)
+	require.NotContains(t, posts[0], "<!channel>")
+	require.NotContains(t, posts[0], "<@U1>")
+	require.Contains(t, posts[0], "&lt;!channel&gt;")
+	require.NotContains(t, posts[0], "`break`", "backticks must not close the code block")
+	require.NotContains(t, posts[0], "\nout", "the preview is one line")
 }
 
 // Tool names and payload previews are agent- and MCP-server-controlled text
-// entering an mrkdwn context block: mrkdwn control sequences must arrive
-// escaped so a quoted <!channel> cannot notify, and backticks cannot break out
-// of the code span.
+// entering an mrkdwn section: mrkdwn control sequences must arrive escaped so a
+// quoted <!channel> cannot notify, and backticks cannot break out of the code
+// span.
 func TestRenderToolActivity_EscapesMrkdwnAndCodeSpans(t *testing.T) {
 	entries := captureToolLog(t, channels.OutboundDelta{
 		Kind: channels.DeltaToolActivity,

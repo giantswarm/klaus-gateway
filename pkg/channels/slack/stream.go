@@ -491,13 +491,14 @@ func (w *batchedWriter) finalFlush(ctx context.Context) error {
 	}
 }
 
-// Caps of the tool log's renderings of a call's arguments and result.
+// Caps, in runes, of what the tool log keeps of a call's arguments (as indented
+// JSON) and of its result preview.
 const (
-	toolArgsMax   = 500
+	toolArgsMax   = 800
 	toolResultMax = 800
-	// maxActivityBlocks bounds the context blocks of one in-thread Block Kit
-	// message, comfortably under Slack's 50-blocks-per-message limit; the tool
-	// log's inspection posts roll over into a further message past it.
+	// maxActivityBlocks bounds the blocks of one ephemeral inspection message,
+	// comfortably under Slack's 50-blocks-per-message limit; an inspection
+	// posted in the thread rolls over into a further message past it.
 	maxActivityBlocks = 24
 	// maxNarrationMessages bounds narration chunks per turn, so a long
 	// tool-calling loop does not bury the answer under interim prose. Past it
@@ -516,82 +517,75 @@ const narrationLimitNote = "Narration limit reached: the rest of this turn's ste
 // renderToolActivity records a tool call, or its result, in the adapter's
 // per-thread tool log, which the "Inspect agent steps" shortcut shows. Nothing
 // of it goes on the reply. A result that only asks for the person's approval is
-// not the tool's output, and the approval prompt already shows it, so it is not
-// recorded.
+// not the tool's output: it marks the call as stopped at the approval.
 func (w *batchedWriter) renderToolActivity(tool *channels.ToolActivity) {
 	if tool == nil {
 		return
 	}
 	switch tool.Kind {
 	case channels.ToolCall:
-		displayName, viaMuster := tool.Name, false
+		name, viaMuster := tool.Name, false
 		args := tool.Args
 		if inner, innerArgs, ok := unwrapCallTool(tool); ok {
 			// Record the call→inner mapping so the result (which carries no
 			// Args) can resolve the inner name via effectiveToolName,
 			// independent of whether connector prompts are enabled.
 			w.noteCallToolTarget(tool)
-			displayName, viaMuster, args = inner, true, innerArgs
+			name, viaMuster, args = inner, true, innerArgs
 		}
-		w.recordToolLog(toolCallMarkdown(displayName, viaMuster, args))
+		w.recordToolCall(toolLogEntry{
+			callID: tool.CallID, name: name, viaMuster: viaMuster,
+			called: true, args: indentJSON(args, toolArgsMax),
+		})
 	case channels.ToolResult:
-		if tool.AwaitsApproval {
-			return
+		name := w.effectiveToolName(tool)
+		e := toolLogEntry{
+			callID: tool.CallID, name: name,
+			viaMuster: tool.Name == musterCallToolMetaTool && name != tool.Name,
+			state:     toolAwaitingApproval,
 		}
-		preview, isErr := toolResultPreview(tool.Response, toolResultMax)
-		if md, ok := w.toolResultMarkdown(tool, preview, isErr); ok {
-			w.recordToolLog(md)
+		if !tool.AwaitsApproval {
+			var isErr bool
+			e.result, isErr = toolResultPreview(tool.Response, toolResultMax)
+			e.state = toolDone
+			if isErr {
+				e.state = toolFailed
+			}
 		}
+		w.recordToolResult(e)
 	}
 }
 
-// toolCallMarkdown renders one tool call as the tool log's entry: the name
-// with an args code span. Name and args are agent- and MCP-controlled, so
-// everything is escaped for the mrkdwn context block the log lands in.
-func toolCallMarkdown(displayName string, viaMuster bool, args map[string]any) string {
-	md := toolLabel(displayName)
-	if viaMuster {
-		md += " (via muster)"
-	}
-	if summary := compactJSON(args, toolArgsMax); summary != "" {
-		md += "\n" + inlineCode(summary)
-	}
-	return md
-}
-
-// toolResultMarkdown renders one tool result as the tool log's entry: "↳ name
-// result" with the payload preview the caller already unwrapped, "(error)"
-// marking a result the tool reported as an error. ok is false when the result carries no
-// preview, so nothing is recorded for it.
-func (w *batchedWriter) toolResultMarkdown(tool *channels.ToolActivity, preview string, isErr bool) (md string, ok bool) {
-	if preview == "" {
-		return "", false
-	}
-	resultName := w.effectiveToolName(tool)
-	md = "↳ " + toolLabel(resultName) + " result"
-	if isErr {
-		md += " (error)"
-	}
-	if tool.Name == musterCallToolMetaTool && resultName != tool.Name {
-		md += " (via muster)"
-	}
-	return md + "\n" + inlineCode(preview), true
-}
-
-// recordToolLog retains one rendered entry in the adapter's per-thread tool
-// log, opening the turn's log slot on first use. w.threadTS is the thread root,
-// the same key the shortcut resolves. Only called from run()'s goroutine, so
-// toolLogTurn needs no lock; a resumed run() segment over the same writer (an
-// auto-approved prompt) keeps recording into the same turn. Nil adapter means
-// a direct-writer test; nothing to record into.
-func (w *batchedWriter) recordToolLog(md string) {
+// recordToolCall retains a call in the adapter's per-thread tool log, opening
+// the turn's log slot on first use. w.threadTS is the thread root, the same key
+// the shortcut resolves. Only called from run()'s goroutine, so toolLogTurn
+// needs no lock; a resumed run() segment over the same writer (an auto-approved
+// prompt) keeps recording into the same turn. Nil adapter means a direct-writer
+// test; nothing to record into.
+func (w *batchedWriter) recordToolCall(e toolLogEntry) {
 	if w.adapter == nil || w.threadTS == "" {
 		return
 	}
+	e.turn = w.logTurn()
+	w.adapter.appendToolLog(w.threadTS, e)
+}
+
+// recordToolResult retains a result: it completes its call's entry in this
+// turn, or stands on its own when no running call of this turn matches it.
+func (w *batchedWriter) recordToolResult(e toolLogEntry) {
+	if w.adapter == nil || w.threadTS == "" {
+		return
+	}
+	e.turn = w.logTurn()
+	w.adapter.completeToolLog(w.threadTS, e)
+}
+
+// logTurn is this turn's ordinal in the tool log, opened on first use.
+func (w *batchedWriter) logTurn() int {
 	if w.toolLogTurn == 0 {
 		w.toolLogTurn = w.adapter.beginToolLogTurn(w.threadTS)
 	}
-	w.adapter.appendToolLog(w.threadTS, w.toolLogTurn, md)
+	return w.toolLogTurn
 }
 
 // exitSessionStatus is the state the session lands in when run() returns:
@@ -794,20 +788,6 @@ func (w *batchedWriter) maybeConnectorPrompt(tool *channels.ToolActivity) {
 type callToolTarget struct {
 	name   string
 	server string
-}
-
-// toolLabel renders a tool name as a bold code span. The name is agent- and
-// MCP-server-controlled text entering an mrkdwn context block: &, <, > must be
-// escaped so quoted content cannot trigger notifications, and a backtick or
-// newline would break out of the code span and inject markdown into the thread.
-func toolLabel(name string) string {
-	return "*`" + codeSpanSafe(escapeMrkdwn(name)) + "`*"
-}
-
-// inlineCode renders an untrusted single-line payload preview as an mrkdwn code
-// span, escaped and sanitised like toolLabel.
-func inlineCode(s string) string {
-	return "`" + codeSpanSafe(escapeMrkdwn(s)) + "`"
 }
 
 // unwrapCallTool returns the inner muster tool name and arguments a call_tool
@@ -1015,34 +995,31 @@ func validLoginURL(raw string) string {
 	return raw
 }
 
-// compactJSON marshals a tool payload to a single readable line: one space after
-// each structural ':' and ',' (outside string literals), truncated to max runes.
-// Returns "" for an empty or unmarshalable payload.
-func compactJSON(v map[string]any, max int) string {
+// indentJSON renders a call's arguments as indented JSON, one key per line,
+// truncated to max runes; "" for a call without arguments.
+func indentJSON(v map[string]any, max int) string {
 	if len(v) == 0 {
 		return ""
 	}
-	return compactJSONValue(v, max)
+	return indentJSONValue(v, max)
 }
 
-// compactJSONValue is compactJSON over any JSON value, so unwrapped payloads
-// that are arrays render the same single readable line as objects.
-func compactJSONValue(v any, max int) string {
+// indentJSONValue is indentJSON over any JSON value, so a result that is an
+// array renders like one that is an object; "" for a value that does not
+// marshal.
+func indentJSONValue(v any, max int) string {
 	// json.Marshal is HTML-safe: it spells <, > and & as \u003c, \u003e and
-	// \u0026. That neutralising is the wrong layer here — every place this
-	// preview lands escapes it for mrkdwn itself (escapeMrkdwn) — and it put
-	// the agent's own PromQL on screen as "\u003e 0.5" (graveler, 2026-09-22).
+	// \u0026. That neutralising is the wrong layer here — the inspection
+	// escapes every payload for mrkdwn itself (escapeMrkdwn) — and it put the
+	// agent's own PromQL on screen as "\u003e 0.5" (graveler, 2026-09-22).
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
 	if err := enc.Encode(v); err != nil {
 		return ""
 	}
-	rs := []rune(spaceStructuralJSON(bytes.TrimRight(buf.Bytes(), "\n")))
-	if len(rs) > max {
-		return string(rs[:max]) + "…"
-	}
-	return string(rs)
+	return truncateRunes(strings.TrimRight(buf.String(), "\n"), max)
 }
 
 // maxMCPResultUnwrapDepth bounds the unwrapping of nested serialized MCP
@@ -1052,22 +1029,22 @@ func compactJSONValue(v any, max int) string {
 // input, rendered as-is.
 const maxMCPResultUnwrapDepth = 4
 
-// toolResultPreview renders a tool result payload as a single readable line,
-// spending the max budget on the innermost actual payload instead of envelope
+// toolResultPreview renders a tool result payload for the tool log, spending
+// the max budget on the innermost actual payload instead of envelope
 // boilerplate. An MCP result envelope ({"content": [...], "isError": ...}) or
 // kagent's plain-output wrap ({"output": text}) is reduced to its text; text
 // that is itself a serialized JSON document (muster's call_tool re-wrap) is
 // decoded and unwrapped again up to maxMCPResultUnwrapDepth. The innermost
-// payload renders as compact JSON when it is a JSON document and as
-// whitespace-collapsed plain text otherwise. isErr reports whether any
-// unwrapped envelope flagged the result as an error. Payloads with any other
-// shape render unchanged via compactJSON.
+// payload renders as indented JSON when it is a JSON document, like the call's
+// arguments, and as whitespace-collapsed plain text otherwise. isErr reports
+// whether any unwrapped envelope flagged the result as an error. Payloads with
+// any other shape render unchanged as indented JSON.
 func toolResultPreview(resp map[string]any, max int) (preview string, isErr bool) {
 	text, isErr, ok := toolResultText(resp)
 	if !ok {
 		// Not a text carrier, but the error flag is honoured wherever the
 		// payload carries it.
-		return compactJSON(resp, max), isErr
+		return indentJSON(resp, max), isErr
 	}
 	for depth := 0; depth < maxMCPResultUnwrapDepth; depth++ {
 		v, isJSON := decodeJSONDocument(text)
@@ -1082,13 +1059,13 @@ func toolResultPreview(resp map[string]any, max int) (preview string, isErr bool
 				continue
 			}
 		}
-		return compactJSONValue(v, max), isErr
+		return indentJSONValue(v, max), isErr
 	}
 	text = strings.Join(strings.Fields(text), " ")
 	if text == "" {
 		// An envelope with no text content (empty content list, non-text items
 		// only): fall back to the raw payload so the entry still shows something.
-		return compactJSON(resp, max), isErr
+		return indentJSON(resp, max), isErr
 	}
 	return truncateRunes(text, max), isErr
 }
@@ -1158,37 +1135,6 @@ func decodeJSONDocument(text string) (v any, ok bool) {
 		return nil, false
 	}
 	return v, true
-}
-
-// spaceStructuralJSON inserts one space after ':' and ',' that fall outside
-// string literals in compact JSON, yielding a readable single line without
-// indentation. String contents (which may themselves contain ':', ',' or
-// escaped quotes) are left untouched.
-func spaceStructuralJSON(b []byte) string {
-	var out strings.Builder
-	out.Grow(len(b) + len(b)/8)
-	inString, escaped := false, false
-	for _, c := range b {
-		out.WriteByte(c)
-		if inString {
-			switch {
-			case escaped:
-				escaped = false
-			case c == '\\':
-				escaped = true
-			case c == '"':
-				inString = false
-			}
-			continue
-		}
-		switch c {
-		case '"':
-			inString = true
-		case ':', ',':
-			out.WriteByte(' ')
-		}
-	}
-	return out.String()
 }
 
 // wroteContent reports whether this writer left a message of its own in the
@@ -1996,6 +1942,17 @@ func (c *slackAPIClient) postMessage(ctx context.Context, channel, text, threadT
 // lookups before calling this.
 func (c *slackAPIClient) viewsOpen(ctx context.Context, triggerID string, view map[string]any) error {
 	_, err := c.postJSON(ctx, "views.open", map[string]any{paramTriggerID: triggerID, paramView: view})
+	return err
+}
+
+// viewsUpdate replaces an open modal's view. hash is the version the caller
+// saw: Slack refuses the update (hash_conflict) when the view changed since.
+func (c *slackAPIClient) viewsUpdate(ctx context.Context, viewID, hash string, view map[string]any) error {
+	body := map[string]any{paramViewID: viewID, paramView: view}
+	if hash != "" {
+		body[paramHash] = hash
+	}
+	_, err := c.postJSON(ctx, "views.update", body)
 	return err
 }
 
