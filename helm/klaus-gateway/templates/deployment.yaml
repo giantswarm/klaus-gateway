@@ -173,10 +173,6 @@ spec:
         - name: KLAUS_GATEWAY_SLACK_DROP_STALE
           value: "true"
         {{- end }}
-        {{- if and .Values.slack.enabled (.Values.slack.progress).mode }}
-        - name: KLAUS_GATEWAY_SLACK_PROGRESS_MODE
-          value: {{ .Values.slack.progress.mode | quote }}
-        {{- end }}
         {{- if and .Values.slack.enabled ((.Values.slack.progress).emojis).working }}
         - name: KLAUS_GATEWAY_SLACK_WORKING_EMOJI
           value: {{ .Values.slack.progress.emojis.working | quote }}

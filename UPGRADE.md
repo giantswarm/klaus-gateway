@@ -4,6 +4,22 @@ Breaking or operator-visible changes between releases, newest first. The
 `CHANGELOG.md` lists every change; this file covers what an operator has to
 do or decide.
 
+## Next — `slack.progress.mode` is deleted (breaking)
+
+The values key the chart has accepted and ignored since 3.13.0 is removed from `values.yaml`
+and from the values schema, and the binary drops `--slack-progress-mode` and
+`SLACK_PROGRESS_MODE`. Behaviour does not change: every turn already tries the progress
+reactions.
+
+A values file that still sets the key fails the upgrade before anything is installed:
+`at '/slack/progress': additional properties 'mode' not allowed`. A deployment that starts the
+binary with `--slack-progress-mode` fails to start (unknown flag); a set
+`KLAUS_GATEWAY_SLACK_PROGRESS_MODE` is ignored. No installation sets any of them: agent-platform,
+shared-configs and the installation patches in giantswarm-configs were checked.
+
+The release reaches an installation only once agent-platform admits the 4.x line
+(`components.klaus-gateway.versionRange`).
+
 ## Next — the Slack progress mode has no effect (`slack.progress.mode`)
 
 Every turn tries the progress reactions on its triggering message, and no turn posts the

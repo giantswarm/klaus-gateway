@@ -670,7 +670,6 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
 
 | Flag | Env var | Default |
 |------|---------|---------|
-| `--slack-progress-mode` | `SLACK_PROGRESS_MODE` | deprecated, no effect (a set value logs a warning); removed in the next major release |
 | `--slack-working-emoji` | `SLACK_WORKING_EMOJI` | `eyes` |
 | `--slack-done-emoji` | `SLACK_DONE_EMOJI` | `white_check_mark` |
 | `--slack-failed-emoji` | `SLACK_FAILED_EMOJI` | `x` |
