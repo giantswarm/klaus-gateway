@@ -501,9 +501,9 @@ func failureNote(err error) string {
 }
 
 // interruptedNote is posted when a turn fails after its reply had started:
-// the steps, narration or part of the answer on screen do not say that the
-// turn is over, and the failed emoji alone is easy to miss under them. It
-// names what broke by its class, never by the error's text.
+// the narration or part of the answer on screen do not say that the turn is
+// over, and the failed emoji alone is easy to miss under them. It names what
+// broke by its class, never by the error's text.
 const interruptedNote = "The turn ended with %s before the agent finished. What it did so far is in the Dev Portal; reply here to try again."
 
 // interruptedFailureNote is the note of a turn that failed with err after its
@@ -646,9 +646,8 @@ const (
 	paramInitiatorUserID = "initiator_user_id"
 
 	// Streamed reply parameters (chat.startStream / appendStream / stopStream).
-	// chunks carries everything the reply adds — the agent's prose as
-	// markdown_text chunks, its tool steps as task_update chunks — in one
-	// ordered array. It is the alternative to the plain markdown_text field,
+	// chunks carries everything the reply adds — the agent's narration and
+	// answer as markdown_text chunks — in one ordered array. It is the alternative to the plain markdown_text field,
 	// and the two may not be combined; a message uses one of them from its
 	// first call to its last.
 	paramChunks = "chunks"

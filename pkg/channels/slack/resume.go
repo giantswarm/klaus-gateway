@@ -187,9 +187,8 @@ func (a *Adapter) recoveryToken(ctx context.Context, slackUser, fallback string)
 // left of it — or its finished answer — into the thread, with the same
 // progress rendering as the turn it continues (the working reaction on the
 // original message, when the record names one), from where the previous
-// process left the reply: the answer text it posted is not posted again and
-// the step ids count on (turn.Delivered). The caller holds the thread's
-// slot. The thread is marked active under the recorded user, so plain replies
+// process left the reply: the answer text it posted is not posted again
+// (turn.Delivered). The caller holds the thread's slot. The thread is marked active under the recorded user, so plain replies
 // into it are served again after the restart.
 func (a *Adapter) deliverInFlight(ctx context.Context, turn channels.InFlightTurn, token string) recoverOutcome {
 	slackUser := turn.Msg.Resume[resumeKeyUser]
@@ -229,8 +228,8 @@ func (a *Adapter) deliverInFlight(ctx context.Context, turn channels.InFlightTur
 	a.Logger.Info("slack: delivering a turn left running by the previous process",
 		"record", "turn_resume", "agent", msg.AgentRef, "slack_user", slackUser,
 		"channel_id", msg.ChannelID, "thread_id", threadID, "task_id", turn.TaskID,
-		"delivered_text_len", turn.Delivered.TextLen, "delivered_tool_steps", turn.Delivered.ToolSteps)
-	if err := a.streamResponse(turnCtx, client, deltas, msg, slackUser, slackChannel, threadID, triggerTS, thinkingPlaceholder, initiator, channels.TurnUsage{}, turn.Delivered, nil); err != nil && !errors.Is(err, context.Canceled) {
+		"delivered_text_len", turn.Delivered.TextLen)
+	if err := a.streamResponse(turnCtx, client, deltas, msg, slackUser, slackChannel, threadID, triggerTS, thinkingPlaceholder, initiator, channels.TurnUsage{}, turn.Delivered); err != nil && !errors.Is(err, context.Canceled) {
 		a.Logger.Warn("slack: delivery of a turn left running failed", "thread", threadID, "task", turn.TaskID, "error", err)
 	}
 	return recoverDone

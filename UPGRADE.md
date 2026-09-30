@@ -4,6 +4,23 @@ Breaking or operator-visible changes between releases, newest first. The
 `CHANGELOG.md` lists every change; this file covers what an operator has to
 do or decide.
 
+## Next — the agent's tool calls leave the Slack reply
+
+A reply no longer shows the agent's tool calls as a step list. It carries the agent's narration
+and its answer. Nothing to configure — no chart value, no flag, no scope — and no way to turn
+it back on: **rollback is the previous image**.
+
+What people see: while the agent runs tools and has written nothing, the thread shows only
+Slack's working indicator (and, in text progress mode, the `Working…` placeholder). A tool call
+that fails is no longer marked in the thread; the agent's answer is what says so. The
+**Inspect agent steps** shortcut (⋯ menu → Apps) is unchanged and is now the only place that
+shows the calls.
+
+A rolling upgrade needs no care: the old pod closes the steps of a turn in flight when it shuts
+down. Only a turn whose old pod is killed without a graceful shutdown can keep one step shown as
+running on its reply, because the new pod does not close steps any more. That reply is otherwise
+complete.
+
 ## Next — a turn's token covers the turn (`obo.minTokenLifetime`)
 
 A turn is dispatched with a human token that has at least `obo.minTokenLifetime` left (25m by

@@ -58,11 +58,12 @@ and channel threads alike, because `channel_id` and `thread_ts` are always sent
 (the bot must be a member of the channel).
 
 The indicator carries no text of its own — it says only *that* the agent is
-working. What it is working on is said by the reply's own **step list** (see
-[Message flow](#message-flow)), so the two are independent: installs
-where the method is unavailable — the scope missing from the bot token, the
-wrong token type, or agent messaging disabled for the workspace — drop the
-native indicator for the rest of the process lifetime and keep the steps. A
+working. While the agent runs tools and writes no prose, it is the only sign of
+progress in the thread: the tool calls are not shown in the reply (see
+[Message flow](#message-flow)). Installs where the method is unavailable — the
+scope missing from the bot token, the wrong token type, or agent messaging
+disabled for the workspace — drop the native indicator for the rest of the
+process lifetime; the reply is unaffected. A
 `not_authorized` rejection (the bot is not a member of that one channel) only
 costs that call.
 
@@ -482,66 +483,24 @@ any string that begins with `Slack bot`, `Slack app-level`, or `Slack user`.
    tick (one second), and `chat.stopStream` closes it with the answer's last words, naming
    the session's exit status. Slack animates the message while the stream is open.
 
-   The stream carries a list of typed **chunks**, not a plain text field — a message uses one
-   of the two from its first call to its last, and Slack refuses a mode change mid-message —
-   so everything the turn produces queues up in the order the agent produced it and goes out
-   together:
+   The stream carries a list of typed **chunks**, not a plain text field: the answer and the
+   agent's interim narration (the prose it writes before firing a tool call), as
+   `markdown_text` chunks in the order the agent produced them. The stream opens at the first
+   narration passage or answer text, whichever comes first.
 
-   - the answer, and the agent's interim narration (the prose it writes before firing a tool
-     call), as `markdown_text` chunks;
-   - each tool call as a `task_update` chunk, which Slack renders as a **step** of a task list
-     attached to the reply: `in_progress` when the call starts, `complete` — or `error` when
-     the tool reported one (an MCP result with `isError`, or the `{"error": …}` result the ADK
-     runtime sends for every failed call) — when its result arrives. The two updates share an id, so Slack
-     replaces the step rather than listing the call twice. Slack collapses the list once the
-     answer is done. Slack never ends a task on its own, so **every step still running when the
-     turn ends is closed by its last flush**, before the message is stopped. What it is closed
-     as follows from how the turn ended: `complete` on a normal end, on a pause for a HITL
-     prompt (the call did its work; the answer is what is awaited) and on a **gateway shutdown**
-     (the tool call is not cancelled — the task keeps running at the controller and another
-     process delivers its answer); `error` on a turn that failed and on one a `/stop` or the
-     per-turn deadline cancelled, where the result really is never coming. That rule is also
-     what closes a call the stream gave no id, which no result can be matched to. A call to a
-     tool that needs approval is the exception: the runtime answers it with its confirmation
-     request (`requires confirmation, please approve or reject`) before the task pauses, so its
-     step ends as `complete` with the title "Asked for approval: …": what completed is the
-     ask, not the tool. Slack has no waiting state (`pending` renders as an error). Once the
-     prompt is approved, the resumed turn's message opens a step for the call, which its real
-     result closes; a denied call gets no second step. For the same reason the **Inspect agent
-     steps** log shows an approved call twice: in the turn that asked for approval, without a
-     result, and in the resumed turn, with the call and its result. A turn is capped at 100
-     steps; past it one note in the reply says the rest are not shown and the calls still reach
-     the **Inspect agent steps** log, which keeps the most recent 100 per thread.
-
-   The stream therefore opens at the **first** thing the turn produces — a tool call, a
-   narration passage or the first answer text, whichever comes first — because tools usually
-   run before any answer text and the steps have to live in the reply.
-
-   Step titles are plain language, as Slack's agent design guide asks: muster's meta-tools get
-   phrases of their own (`filter_tools` → "Finding the right tool"), a `call_tool` wrapper is
-   unwrapped to the tool it really runs, and every other name is humanised by dropping the
-   `x_`/`workflow_` namespace and capitalising the rest (`x_kubernetes_list` → "Kubernetes
-   list"). Every step carries the raw tool name and its arguments as its details and the
-   result preview as its output, each cut to Slack's 256-character chunk limit without ever
-   splitting an escape sequence. The fields are plain mrkdwn text, escaped like the title, so
-   a `<@U…>` in a payload stays literal; a tool's own `*` or `_` renders as Slack formatting,
-   since Slack has no escape for those in plain text. Nothing is hidden by a per-thread
-   setting.
-
-   The **Inspect agent steps** shortcut is the audit view, with the fuller retained payloads.
+   **The tool calls are not in the reply.** A call and its result go to the thread's tool log
+   alone, which the **Inspect agent steps** shortcut shows with the arguments and a result
+   preview. A turn that only calls tools opens no message until it writes prose; in text mode
+   the `Working…` placeholder stays until then.
 
    Each append carries only what is new, and answer text is sent up to the last whitespace
    boundary — an unfinished word waits for the next append, so nothing is ever half-written.
    Replies over 12,000 characters roll over into a further streamed message; the intermediate
-   close carries `processing`, so the working indicator stays on mid-answer. The steps count
-   toward that budget too, at an estimate of the task card Slack stores for each (far more
-   than their characters). No new message starts while a step on the full one is running, for
-   a step or for prose, so every result reaches its card; the first step of a group of calls
-   started together is priced with the whole group, so the group starts where it fits. Should
-   Slack still answer `msg_too_long`, the steps that batch closes reach their cards without the
-   output preview, a step still running there is shown as done (its result gets a card on the
-   next message), the full message is closed, and the rest continues in a new one in the same
-   flush, whose size then bounds the turn's later messages. Every narration
+   close carries `processing`, so the working indicator stays on mid-answer. Slack refused a
+   streamed message near 13,800 characters of text in a replay on graveler, so the 12,000 cap
+   leaves a margin. Should Slack still answer `msg_too_long`, the full message is closed and
+   the rest continues in a new one in the same flush, whose size then bounds the turn's later
+   messages. Every narration
    passage ends in a paragraph break, so two passages — or a passage and the answer after it —
    never run together in the message body. Narration counts toward that per-message limit like
    any other prose, but never toward the answer length the delivery record carries — a process
@@ -636,7 +595,7 @@ controller and the actor when `observability.otlpEndpoint` is set.
 A turn ends early for one of two reasons, and the thread can tell them apart:
 
 - **`/stop`** is the user's decision. The working reaction is cleared, the reply's stream is
-  closed where it stands (its steps stay as they were), nothing else is posted in reactions
+  closed where it stands, nothing else is posted in reactions
   mode (the context line `Stopped.` replaces the placeholder in text mode), and the task is cancelled at the
   controller so the agent stops working.
 - **An error** before any answer text (an agent that did not start in time, a controller
@@ -660,7 +619,7 @@ A turn ends early for one of two reasons, and the thread can tell them apart:
   conversation stays where it is. Only when the second attempt fails too does the note go out.
   A stream that broke is not sent again (the task may still run at the controller), and neither
   is a HITL decision (the paused task it answers is gone once it failed).
-  Once the reply has started (steps, narration or part of the answer), the failed reaction marks
+  Once the reply has started (narration or part of the answer), the failed reaction marks
   it and one note goes under it, in both progress modes: `The turn ended with <a platform error>
   before the agent finished. What it did so far is in the Dev Portal; reply here to try again.`
   It names the class (a tool connection error, a platform error, a model error, a policy
@@ -676,15 +635,9 @@ A turn ends early for one of two reasons, and the thread can tell them apart:
   original message while it does. The answer text arrives whole when the task completes (the
   resubscription does not replay what streamed before it), so the process continues the
   reply where its predecessor left it rather than repeating it: the thread's row records, as
-  a turn streams, how much answer text has landed, which streamed message it is landing in,
-  and how many step ids have been handed out; the continuing process posts only the text after
-  that mark — without the paragraph break the cut leaves in front — and numbers its own steps
-  on from the recorded count, so no id already on the reply is reused. The record also names
-  the step that was **running** when it was written, and clears it when that step ends: the
-  continuing process closes exactly that one on the adopted message, under the title it was
-  opened with, and leaves every step that had already finished alone. It does so even when it
-  has nothing else to add, so a reply completed just before the restart is not left with a step
-  spinning. A message the previous
+  a turn streams, how much answer text has landed and which streamed message it is landing
+  in; the continuing process posts only the text after that mark — without the paragraph break
+  the cut leaves in front. A message the previous
   process left open is adopted, so the reply goes on in the same bubble; if Slack closed it in
   the meantime the
   rest opens a message of its own. An adopted message is always closed, even when nothing is
@@ -697,8 +650,8 @@ A turn ends early for one of two reasons, and the thread can tell them apart:
 
 The recovery rides on the thread's routing-store binding, which records the task in flight
 while a turn runs, and with it what of the reply has landed (`delivered`: the answer text's
-length in bytes, the streamed message and its length, the count of step ids handed out and the
-step still running, written after every flush and every step). It therefore needs a routing store that outlives the process
+length in bytes and the streamed message and its length, written after every flush). It
+therefore needs a routing store that outlives the process
 (`routing.store: valkey` or `bolt`); with `memory` the record dies with the pod and
 the notice says so ("I cannot bring it into this thread"). The pod's
 `terminationGracePeriodSeconds` must leave room for the notice: the shutdown drains the HTTP
@@ -738,12 +691,11 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
   identity, so the app and its namesake agent — typically the default agent — never appear as
   two faces with one name in a thread. Swarmgeist's other messages (sign-in, errors, the DM
   redirect, the channel intro) keep the app's default identity. Requires `chat:write.customize`.
-- **Inspect agent steps.** A turn's step list shows each tool call's arguments and result
-  preview, cut to fit Slack's inline display. To see the fuller payloads after the fact,
+- **Inspect agent steps.** The reply does not show the agent's tool calls. To see them,
   invoke the **Inspect agent steps** message shortcut (⋯ menu → Apps) on any message in the
   thread: the gateway replies with an ephemeral, invoker-only rendering of the retained
   tool-call log — per call, the tool name with its arguments and a result preview, grouped
-  per turn, fuller than what a step has room for. The log is in-memory and bounded: the last
+  per turn. The log is in-memory and bounded: the last
   100 calls per thread, kept for up to 24 hours and not surviving a gateway restart. When
   nothing is retained the reply says so. The shortcut is registered in
   `deploy/slack/manifest.yaml`, next to **Ask an agent here** (which starts a

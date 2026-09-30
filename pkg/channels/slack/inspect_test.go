@@ -77,11 +77,11 @@ func TestRenderToolActivity_RecordsCallAndResult(t *testing.T) {
 	w := newBatchedWriterWithClient(a.apiClient(), "C1", "", "T1", testLogger())
 	w.adapter = a
 
-	w.renderToolActivity(t.Context(), &channels.ToolActivity{
+	w.renderToolActivity(&channels.ToolActivity{
 		Kind: channels.ToolCall, Name: "kube_get", CallID: "c1",
 		Args: map[string]any{"resource": "pods"},
 	})
-	w.renderToolActivity(t.Context(), &channels.ToolActivity{
+	w.renderToolActivity(&channels.ToolActivity{
 		Kind: channels.ToolResult, Name: "kube_get", CallID: "c1",
 		Response: map[string]any{"items": "3 pods"},
 	})
@@ -104,7 +104,7 @@ func TestRenderToolActivity_RecordedEntryEscapesHostileContent(t *testing.T) {
 	w := newBatchedWriterWithClient(a.apiClient(), "C1", "", "T1", testLogger())
 	w.adapter = a
 
-	w.renderToolActivity(t.Context(), &channels.ToolActivity{
+	w.renderToolActivity(&channels.ToolActivity{
 		Kind: channels.ToolCall, Name: "evil`<!channel>`\ntool",
 		Args: map[string]any{"cmd": "a&b <script>"},
 	})
@@ -125,17 +125,17 @@ func TestRenderToolActivity_RecordedEntryEscapesHostileContent(t *testing.T) {
 }
 
 // A call_tool invocation is unwrapped to the inner muster tool in the log,
-// matching the step's details rendering.
+// so the log names the tool that really ran.
 func TestRenderToolActivity_RecordsUnwrappedCallTool(t *testing.T) {
 	a, _ := newInspectTestAdapter(t)
 	w := newBatchedWriterWithClient(a.apiClient(), "C1", "", "T1", testLogger())
 	w.adapter = a
 
-	w.renderToolActivity(t.Context(), &channels.ToolActivity{
+	w.renderToolActivity(&channels.ToolActivity{
 		Kind: channels.ToolCall, Name: musterCallToolMetaTool, CallID: "c1",
 		Args: map[string]any{"name": "x_prometheus_query", "arguments": map[string]any{"query": "up"}},
 	})
-	w.renderToolActivity(t.Context(), &channels.ToolActivity{
+	w.renderToolActivity(&channels.ToolActivity{
 		Kind: channels.ToolResult, Name: musterCallToolMetaTool, CallID: "c1",
 		Response: map[string]any{"output": "1"},
 	})

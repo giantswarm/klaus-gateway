@@ -4,7 +4,6 @@ import (
 	"context"
 	"log/slog"
 	"net/http/httptest"
-	"slices"
 	"sync"
 	"testing"
 
@@ -52,92 +51,27 @@ func textDelta(text string) channels.OutboundDelta {
 }
 
 // A writer continuing a turn drops the answer text the previous process
-// posted — the whole answer arrives at completion — and numbers its steps on
-// from the recorded count, so no id already on the reply is reused
-// (klaus-gateway#301).
-func TestContinueFrom_PostsOnlyWhatFollowsAndCountsOn(t *testing.T) {
+// posted — the whole answer arrives at completion — so the reply does not
+// repeat it (klaus-gateway#301).
+func TestContinueFrom_PostsOnlyWhatFollows(t *testing.T) {
 	const opening = "Created. One thing to flag: the repository is private."
 	const tail = "Next: rotate the deploy token."
-	carried := store.Delivered{TextLen: len(opening), ToolSteps: 2}
+	carried := store.Delivered{TextLen: len(opening)}
 
 	ft := &fakeThread{}
 	_, records, _ := runContinuedOn(t, ft, carried, toolCallDelta("team"), textDelta(opening+"\n\n"+tail))
 
-	require.Equal(t, []taskChunk{
-		{id: "step-3", title: "Team", status: stepInProgress},
-		{id: "step-3", title: "Team", status: stepComplete},
-	}, ft.stepShapes(), "the step counts on from the recorded ones; the record named none as open")
 	require.Equal(t, tail, ft.streamedText(),
 		"only the text after the recorded length is sent, without the paragraph break in front")
 
 	last := records[len(records)-1]
 	require.Equal(t, len(opening+"\n\n"+tail), last.TextLen, "the record covers the whole answer, the dropped break included")
-	require.Equal(t, 3, last.ToolSteps)
 }
 
-// The previous process died with a step still running on the message this one
-// adopts, and the record names it. That step is closed under its own title
-// before anything else goes out — Slack would keep it spinning otherwise — and
-// the turn's next call opens the step after it.
-func TestContinueFrom_ClosesTheCarriedStepThenCountsOn(t *testing.T) {
-	ft := &fakeThread{}
-	ts := openStreamOn(t, ft, "Looking. ")
-	carried := store.Delivered{
-		TextLen: 9, StreamTS: ts, StreamLen: 9, ToolSteps: 3,
-		OpenStepID: "step-3", OpenStepTitle: "Prometheus query",
-	}
-
-	_, records, _ := runContinuedOn(t, ft, carried, toolCallDelta("x_kubernetes_list"), textDelta("Looking. Done."))
-
-	require.Equal(t, []taskChunk{
-		{id: "step-3", title: "Prometheus query", status: stepComplete},
-		{id: "step-4", title: "Kubernetes list", status: stepInProgress},
-		{id: "step-4", title: "Kubernetes list", status: stepComplete},
-	}, ft.stepShapes(), "the carried step is closed under its real title, the new one counts on")
-	require.Equal(t, ts, ft.streams()[1].ts, "both ride the adopted stream")
-
-	last := records[len(records)-1]
-	require.Equal(t, 4, last.ToolSteps)
-	require.Empty(t, last.OpenStepID, "nothing is left running")
-}
-
-// A restart that fell between a step's result and the answer's last words
-// leaves no step running, so the continuation touches none of them — a finished
-// step keeps its real title and an error step stays an error.
-func TestContinueFrom_NoOpenStepTouchesNoStep(t *testing.T) {
-	ft := &fakeThread{}
-	ts := openStreamOn(t, ft, "Looking. ")
-	carried := store.Delivered{TextLen: 9, StreamTS: ts, StreamLen: 9, ToolSteps: 3}
-
-	msgs, _, _ := runContinuedOn(t, ft, carried, textDelta("Looking. Done."))
-
-	require.Empty(t, ft.steps(), "the record named no open step, so none is rewritten")
-	require.Equal(t, []capturedMessage{{"Looking. Done."}}, msgs, "only the text after the recorded length is added")
-}
-
-// The whole answer had landed before the restart, so the continuation adds
-// nothing — but the step the previous process was running still has to be
-// closed on the adopted message before it is stopped.
-func TestContinueFrom_NothingToAddStillClosesTheOpenStep(t *testing.T) {
-	const answer = "All three clusters run the same chart version."
-	ft := &fakeThread{}
-	ts := openStreamOn(t, ft, answer)
-	carried := store.Delivered{
-		TextLen: len(answer), StreamTS: ts, StreamLen: len(answer), ToolSteps: 2,
-		OpenStepID: "step-2", OpenStepTitle: "Kubernetes get",
-	}
-
-	_, _, w := runContinuedOn(t, ft, carried, textDelta(answer))
-
-	require.Equal(t, []taskChunk{{id: "step-2", title: "Kubernetes get", status: stepComplete}}, ft.steps())
-	require.Equal(t, []string{methodChatStartStream, methodChatAppendStream, methodChatStopStream}, ft.streamMethods(),
-		"the close rides an append on the adopted message, which is then stopped")
-	require.False(t, w.wroteContent(), "closing a step is not a reply of this process's own")
-}
-
-// A writer that continues nothing works as before: no text is dropped, the
-// step count starts at one, and every step and flush is recorded for a restart.
-func TestNoteDelivered_RecordsTextAndTheStepCount(t *testing.T) {
+// A writer that continues nothing works as before: no text is dropped, and
+// every flush is recorded for a restart. Narration and tool calls do not count
+// toward the recorded answer length.
+func TestNoteDelivered_RecordsTheAnswerText(t *testing.T) {
 	ft := &fakeThread{}
 	_, records, _ := runContinuedOn(t, ft, store.Delivered{},
 		toolCallDelta("get"), toolCallDelta("get"),
@@ -147,11 +81,8 @@ func TestNoteDelivered_RecordsTextAndTheStepCount(t *testing.T) {
 	)
 
 	require.Contains(t, ft.streamedText(), "hello")
-	require.Equal(t, store.Delivered{TextLen: 5, ToolSteps: 3}, records[len(records)-1],
-		"the last record is the answer text and every step id issued, the stream closed")
-	require.True(t, slices.ContainsFunc(records, func(d store.Delivered) bool {
-		return d.ToolSteps == 2 && d.TextLen == 0
-	}), "the steps were recorded as they happened: %v", records)
+	require.Equal(t, store.Delivered{TextLen: 5}, records[len(records)-1],
+		"the last record is the answer text, the stream closed")
 }
 
 // Without a sink nothing is recorded and the writer behaves as before.

@@ -2088,7 +2088,8 @@ func toolActivityDeltas() []channels.OutboundDelta {
 	}
 }
 
-func TestToolActivity_RendersSteps(t *testing.T) {
+// A tool call puts nothing on the thread; only the answer lands there.
+func TestToolActivity_PutsOnlyTheAnswerOnTheThread(t *testing.T) {
 	fake := newFakeSlackAPI()
 	gw := &stubGateway{deltas: toolActivityDeltas()}
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
@@ -2096,11 +2097,9 @@ func TestToolActivity_RendersSteps(t *testing.T) {
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","channel_type":"im","user":"U1","text":"list pods","channel":"D1","ts":"111.000"}}`)
 
 	require.Eventually(t, func() bool {
-		steps := fake.streamedSteps()
-		return len(steps) == 2 && steps[0]["title"] == "List pods" &&
-			steps[0]["status"] == "in_progress" && steps[1]["status"] == "complete" &&
-			strings.Contains(fake.threadText(), "Found 3 pods.")
-	}, flowWait, 20*time.Millisecond, "the tool step and the answer should render")
+		return strings.Contains(fake.threadText(), "Found 3 pods.")
+	}, flowWait, 20*time.Millisecond, "the answer should render")
+	require.Empty(t, fake.streamedSteps(), "and no step goes with it")
 }
 
 func TestResume_PostsStartingFreshWhenSessionGone(t *testing.T) {

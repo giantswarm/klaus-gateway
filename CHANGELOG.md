@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Slack: a channel thread reply that starts with a mention of another person (`@alice can you check?`) gets no answer from the agent and does not answer a pending question or approval. A reply that also mentions the bot still reaches the agent (klaus-gateway#194).
 - Slack: the app's slash command (`/swarmgeist`) opens the agent picker in a direct message too. Slack offers the command in the agent pane's composer, where it used to answer that it starts conversations in channels and to type the question instead — leaving the pane with no way to reach an agent other than the default. The conversation it starts is the pane's own: the submitted question is posted there as the root, under the chosen agent, without the "Asked by" line a channel needs. An installation that does not serve direct messages refuses the command there privately, with the redirect notice. Slack offers the command in a direct message with another person too, where the bot cannot post: that says where the command works instead of asking for a retry that cannot succeed.
 
+### Removed
+
+- Slack: a reply no longer shows the agent's tool calls as steps. It carries the agent's narration and its answer only; while tools run, Slack's working indicator is the thread's progress sign. The **Inspect agent steps** shortcut still shows every call with its arguments and result.
+
 ### Security
 
 - The thread's AgentInstance share token is stored in the thread's row sealed with AES-256-GCM, under a key derived from the OBO link-store key (`--obo-store-key-file`). An installation whose link store is `memory` seals it under a key for the process alone, and a share that no longer opens is replaced on the next collaborator turn (klaus-gateway#350).
