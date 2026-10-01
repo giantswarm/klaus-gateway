@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/giantswarm/klaus-gateway/pkg/a2a"
+	"github.com/giantswarm/klaus-gateway/pkg/channels"
 )
 
 // DMMode selects how Slack direct messages are handled. Mirrors the adapter's
@@ -284,7 +285,7 @@ func Defaults() Config {
 		Store:         StoreMemory,
 		BoltPath:      "/var/lib/klaus-gateway/routes.bolt",
 		Valkey:        ValkeyConfig{Timeout: 2 * time.Second},
-		ThreadTTL:     90 * 24 * time.Hour,
+		ThreadTTL:     channels.DefaultThreadTTL,
 		Slack: SlackConfig{
 			Enabled:             false,
 			Mode:                "events",

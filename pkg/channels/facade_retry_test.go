@@ -35,8 +35,8 @@ func answered(text string) []a2apkg.Event {
 // turn's deltas and its timer.
 func sendTimed(t *testing.T, f *channels.Facade, msg channels.InboundMessage) ([]channels.OutboundDelta, *channels.TurnTimer, error) {
 	t.Helper()
-	timer := channels.NewTurnTimer(time.Time{})
-	ch, err := f.SendCompletion(channels.WithTurnTimer(t.Context(), timer), msg)
+	ctx, timer := channels.BeginTurn(t.Context(), "slack", time.Time{})
+	ch, err := f.SendCompletion(ctx, msg)
 	if err != nil {
 		return nil, timer, err
 	}

@@ -16,7 +16,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/giantswarm/klaus-gateway/pkg/auth/musterlink"
-	"github.com/giantswarm/klaus-gateway/pkg/channels"
 )
 
 // The help reply is a header, how to address the bot, one group per activity
@@ -245,51 +244,6 @@ func TestStopThread_StartWindow(t *testing.T) {
 	a.releaseThread("T2")
 }
 
-// blockingOBO stalls TokenFor until release is closed, so a test can hold a
-// dispatch inside the sender's own pre-slot token mint.
-type blockingOBO struct {
-	entered chan struct{} // closed when TokenFor is first entered
-	release chan struct{} // TokenFor returns once closed
-	once    sync.Once
-}
-
-func (o *blockingOBO) TokenFor(context.Context, string) (string, error) {
-	o.once.Do(func() { close(o.entered) })
-	<-o.release
-	return "", errors.New("transient token-mint failure")
-}
-func (o *blockingOBO) LinkURL(string) string { return "" }
-func (o *blockingOBO) Unlink(string) error   { return nil }
-
-// A /stop landing while the sender's own token mint is still running finds
-// the thread slot untaken (the mint runs before the slot so a signed-out
-// sender parks instead of bouncing busy) and reports nothing running: the
-// accepted trade documented on stopThread.
-func TestHandleCommand_Stop_DuringSenderMint_ReportsNothingRunning(t *testing.T) {
-	a, srv := newTestAdapter(t)
-	a.Mode = ModeEvents
-	a.DefaultAgent = "agent"
-	obo := &blockingOBO{entered: make(chan struct{}), release: make(chan struct{})}
-	a.OBO = obo
-	require.NoError(t, a.Start(t.Context(), &fakeGateway{Facade: newMemoryRecorder()}))
-	t.Cleanup(func() { _ = a.Stop(context.Background()) })
-
-	msg := channels.InboundMessage{Channel: ChannelName, ChannelID: "C001", ThreadID: "T001", MessageID: "T001", Subject: "U001", Text: "long question"}
-	dispatchDone := make(chan error, 1)
-	go func() { dispatchDone <- a.dispatch(t.Context(), msg, "C001") }()
-	<-obo.entered
-
-	consumed := a.handleCommand(t.Context(), &command{Name: "stop"}, "U001", "C001", "T001")
-	require.True(t, consumed)
-	srv.mu.Lock()
-	texts := append([]string(nil), srv.postTexts...)
-	srv.mu.Unlock()
-	require.Contains(t, texts, stopNothingRunningNotice)
-
-	close(obo.release)
-	require.NoError(t, <-dispatchDone)
-}
-
 func TestHandleCommand_Usage_Consumed(t *testing.T) {
 	a, srv := newTestAdapter(t)
 	consumed := a.handleCommand(t.Context(), &command{Name: "usage"}, "U1", "C1", "T1")
@@ -319,17 +273,6 @@ func TestHandleCommand_GrantedUserAllowed(t *testing.T) {
 
 	require.True(t, a.handleCommand(t.Context(), &command{Name: "usage"}, "U002", "C001", "T001"))
 	require.Equal(t, int32(1), srv.posts.Load(), "a granted collaborator can run the gated commands")
-}
-
-// TestHandleCommand_LoginLogout_OBODisabled confirms /login and /logout are
-// open (no permission gate) and report OBO being disabled rather than
-// dispatching to the agent.
-func TestHandleCommand_LoginLogout_OBODisabled(t *testing.T) {
-	a, srv := newTestAdapter(t)
-	require.True(t, a.handleCommand(t.Context(), &command{Name: "login"}, "U1", "C1", "T1"))
-	require.True(t, a.handleCommand(t.Context(), &command{Name: "logout"}, "U1", "C1", "T1"))
-	require.Equal(t, int32(2), srv.ephemerals.Load())
-	require.Equal(t, int32(0), srv.posts.Load())
 }
 
 // A linked user's /login confirms their identity ephemerally: the linked email

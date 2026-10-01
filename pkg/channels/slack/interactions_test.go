@@ -1201,20 +1201,24 @@ func TestHandleDecision_OnlookerEmptySubmitIsRefused(t *testing.T) {
 	require.True(t, a.hasPendingTask("T001"), "onlooker submit must leave the task pending")
 }
 
-func TestIsActiveThread(t *testing.T) {
+func TestThreadGate_Active(t *testing.T) {
 	a := &Adapter{}
 	a.gw = newMemoryRecorder()
+	active := func(threadID string) bool {
+		got, _, _ := a.threadGate(t.Context(), "C001", threadID)
+		return got
+	}
 
-	require.False(t, a.isActiveThread(t.Context(), "C001", "T001"))
+	require.False(t, active("T001"))
 
 	// A known initiator makes it active.
 	a.accessPolicy().SetInitiator(t.Context(), "C001", "T001", "U001")
-	require.True(t, a.isActiveThread(t.Context(), "C001", "T001"))
+	require.True(t, active("T001"))
 
 	// Pending task on a different thread.
 	a.storePendingTask("T002", &pendingTask{TaskID: "x"})
-	require.True(t, a.isActiveThread(t.Context(), "C001", "T002"))
-	require.False(t, a.isActiveThread(t.Context(), "C001", "T003"))
+	require.True(t, active("T002"))
+	require.False(t, active("T003"))
 }
 
 func TestThreadReplyRoutedWithoutMention(t *testing.T) {

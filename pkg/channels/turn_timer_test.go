@@ -84,7 +84,7 @@ func installTestTracer(t *testing.T) *tracetest.InMemoryExporter {
 // up over its calls, and the nil timer of a context without one takes every
 // call without effect.
 func TestTurnTimer_MarksOnceSpansAccumulate(t *testing.T) {
-	timer := NewTurnTimer(time.Now().Add(-time.Second))
+	timer := newTurnTimer(time.Now().Add(-time.Second))
 	timer.Mark(PhaseFirstText)
 	first, ok := timer.Phase(PhaseFirstText)
 	require.True(t, ok)
@@ -125,7 +125,6 @@ func TestTurnTimer_MarksOnceSpansAccumulate(t *testing.T) {
 	require.Nil(t, none.Phases())
 	require.Nil(t, none.LogAttrs())
 	require.Nil(t, TurnTimerFromContext(context.Background()))
-	require.Equal(t, context.Background(), WithTurnTimer(context.Background(), nil))
 }
 
 // A turn begun on a context ends once: the record carries the outcome, the
