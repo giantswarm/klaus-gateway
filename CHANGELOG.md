@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `turn_complete` carries a failed turn's `failure_class`, and `klaus_gateway_turn_total` gains the `failure_class` label (empty unless the turn failed or its send did), so a burst of tool-set failures across people can alert apart from a one-off model error (klaus-gateway#329).
 - Chart: `serviceMonitor.labels`, labels on the ServiceMonitor beside the chart's own. The Giant Swarm observability platform routes a scrape to a Mimir tenant by `observability.giantswarm.io/tenant`, and the monitor carried no way to set it, so the gateway's `klaus_gateway_*` series reached no tenant on every installation.
 - Slack: a reply whose turn had failed tool calls ends with one muted line that counts them (`⚠️ 2 tool calls failed`) and a **Show tool calls** button that opens the "Agent steps" modal for the person who clicks it. Everyone in the thread sees them. A reply without a failed call is unchanged.
+- `turn_complete` carries the turn's token usage: `input_tokens`, `output_tokens` and `total_tokens`, summed over its LLM calls, and 0 when the agent's runtime reports none. At `--log-level=debug` the gateway also logs one `a2a_event` record per A2A event with the metadata keys it carries (never their values).
 
 ### Changed
 

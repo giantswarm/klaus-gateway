@@ -14,6 +14,38 @@ func dataPart(t *testing.T, kagentType string, data map[string]any) *a2apkg.Part
 	return p
 }
 
+// The keys of an event's own metadata and of its status message's, sorted,
+// and never a value.
+func TestEventMetadataKeys(t *testing.T) {
+	ev := &a2apkg.TaskStatusUpdateEvent{
+		Metadata: map[string]any{mdUsageCanonical: map[string]any{"promptTokenCount": 3}, "kagent.dev/a2a/timeline-position": "x"},
+		Status: a2apkg.TaskStatus{
+			State:   a2apkg.TaskStateWorking,
+			Message: &a2apkg.Message{Metadata: map[string]any{mdPartialKagent: true}},
+		},
+	}
+	require.Equal(t, []string{"kagent.dev/a2a/timeline-position", mdUsageCanonical, "message." + mdPartialKagent}, eventMetadataKeys(ev))
+
+	task := &a2apkg.Task{
+		Metadata: map[string]any{"kagent.dev/a2a/task-created-at": "x"},
+		Status: a2apkg.TaskStatus{
+			State:   a2apkg.TaskStateCompleted,
+			Message: &a2apkg.Message{Metadata: map[string]any{mdUsageCanonical: map[string]any{}}},
+		},
+	}
+	require.Equal(t, []string{"kagent.dev/a2a/task-created-at", "message." + mdUsageCanonical}, eventMetadataKeys(task),
+		"a whole task's status message is a carrier too")
+
+	artifact := &a2apkg.TaskArtifactUpdateEvent{
+		Metadata: map[string]any{"kagent.dev/a2a/timeline-position": "x"},
+		Artifact: &a2apkg.Artifact{Metadata: map[string]any{mdUsageCanonical: map[string]any{}}},
+	}
+	require.Equal(t, []string{"artifact." + mdUsageCanonical, "kagent.dev/a2a/timeline-position"}, eventMetadataKeys(artifact),
+		"an artifact update's artifact is a carrier too")
+
+	require.Empty(t, eventMetadataKeys(&a2apkg.Task{}), "an event without metadata lists no key")
+}
+
 func usageMeta(prompt, completion, total float64) map[string]any {
 	return map[string]any{
 		mdUsageKagent: map[string]any{

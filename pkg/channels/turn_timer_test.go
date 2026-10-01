@@ -230,6 +230,29 @@ func TestCompleteTurn_ErrorAbandonAndNoTimer(t *testing.T) {
 	require.Len(t, h.find("record", RecordTurnComplete), 1)
 }
 
+// The record carries the turn's token usage, summed over its LLM calls, so a
+// turn whose runtime reported none shows zero in the log instead of nothing.
+func TestCompleteTurn_RecordsTokenUsage(t *testing.T) {
+	h := &recordingHandler{}
+	ctx, timer := BeginTurn(context.Background(), "slack", time.Time{})
+	timer.AddUsage(TurnUsage{InputTokens: 100, OutputTokens: 20, TotalTokens: 120})
+	timer.AddUsage(TurnUsage{InputTokens: 50, OutputTokens: 5, TotalTokens: 55})
+	CompleteTurn(ctx, slog.New(h), nil, "slack", OutcomeCompleted, nil)
+
+	records := h.find("record", RecordTurnComplete)
+	require.Len(t, records, 1)
+	require.Equal(t, int64(150), records[0]["input_tokens"])
+	require.Equal(t, int64(25), records[0]["output_tokens"])
+	require.Equal(t, int64(175), records[0]["total_tokens"])
+
+	h = &recordingHandler{}
+	ctx, _ = BeginTurn(context.Background(), "slack", time.Time{})
+	CompleteTurn(ctx, slog.New(h), nil, "slack", OutcomeCompleted, nil)
+	records = h.find("record", RecordTurnComplete)
+	require.Len(t, records, 1)
+	require.Equal(t, int64(0), records[0]["total_tokens"], "a turn with no reported usage logs zero")
+}
+
 // A turn sent a second time counts the retry, and its task_done and
 // stream_end are the second attempt's; a failed turn's record, metric and
 // span carry the class of its failure.

@@ -567,13 +567,20 @@ Three structured log records (`record=…`, JSON fields) tell a turn's story; jo
   [deployment.md](deployment.md#observability) for the values), `failure_class` on a `failed`
   or `send_failed` turn (below), `agent`, `slack_user`, `subject`, `channel_id`, `thread_id`,
   `message_id`, `task_id` (the A2A task the controller named), `tool_calls`, `streamed_chars`,
-  `retries` (how often the turn was sent again), `trace_id`, `error` on a failure, and the phases as
+  `retries` (how often the turn was sent again), `input_tokens`, `output_tokens` and
+  `total_tokens` (summed over the turn's LLM calls; 0 when the agent's runtime reports no usage,
+  which is also when `usage` has nothing to show), `trace_id`, `error` on a failure, and the phases as
   milliseconds since the events POST (or the Socket Mode frame) arrived: `token_mint_ms`,
   `roster_ms`, `dispatch_ms`, `create_instance_ms`, `first_event_ms`,
   `first_text_ms`, `task_done_ms`, `stream_end_ms`, `final_flush_ms`, `total_ms`. A phase that
   did not happen (no instance created on a follow-up) is absent. A turn a
   previous process left running and this one delivered after a restart gets a record too, its
   timeline starting at the delivery.
+- `a2a_event` (debug level only, `--log-level=debug`) -- one per A2A event a turn receives:
+  `event` (its Go type), `task_id`, and `metadata_keys`, the metadata keys of the event, of its
+  status message (`message.` prefix) and of its artifact (`artifact.` prefix), never their values.
+  It shows which keys a runtime sends,
+  for example whether any event carries `kagent.dev/a2a/usage`.
 - `turn_retry` -- a fresh turn failed before it showed anything on a failure a second attempt
   may get past, and is sent once more on the same AgentInstance: `channel`, `channel_id`,
   `thread`, `agent`, `failure_class`, `error` (the first attempt's). The thread sees only the

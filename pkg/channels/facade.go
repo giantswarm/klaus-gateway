@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"iter"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -579,6 +580,10 @@ func (f *Facade) streamTask(ctx context.Context, key store.Key, instanceID strin
 				timer.SetTaskID(string(taskID))
 				f.rememberTask(ctx, key, taskID, resume)
 			}
+			if slog.Default().Enabled(ctx, slog.LevelDebug) {
+				slog.DebugContext(ctx, "channels: a2a event", "record", RecordA2AEvent,
+					"event", fmt.Sprintf("%T", event), "task_id", string(taskID), "metadata_keys", eventMetadataKeys(event))
+			}
 			_, whole := event.(*a2apkg.Task) // a quiesced task arriving whole already carries its full answer
 			for _, delta := range mapper.deltas(event) {
 				if delta.isZero() {
@@ -1051,6 +1056,38 @@ func isPartialStatusUpdate(ev *a2apkg.TaskStatusUpdateEvent) bool {
 		return true
 	}
 	return ev.Status.Message != nil && isPartialMeta(ev.Status.Message.Metadata)
+}
+
+// eventMetadataKeys lists every metadata key an event carries, sorted: its
+// own, its status message's under a "message." prefix (a status update or a
+// whole task), and its artifact's under an "artifact." prefix. Keys only,
+// never values: a value can hold the person's or the agent's text. The debug
+// record of every event is what tells a runtime that sends no usage apart
+// from a usage key the gateway does not read, so no carrier may be left out.
+func eventMetadataKeys(event a2apkg.Event) []string {
+	var keys []string
+	add := func(prefix string, md map[string]any) {
+		for k := range md {
+			keys = append(keys, prefix+k)
+		}
+	}
+	add("", event.Meta())
+	switch ev := event.(type) {
+	case *a2apkg.TaskStatusUpdateEvent:
+		if ev.Status.Message != nil {
+			add("message.", ev.Status.Message.Metadata)
+		}
+	case *a2apkg.Task:
+		if ev.Status.Message != nil {
+			add("message.", ev.Status.Message.Metadata)
+		}
+	case *a2apkg.TaskArtifactUpdateEvent:
+		if ev.Artifact != nil {
+			add("artifact.", ev.Artifact.Metadata)
+		}
+	}
+	slices.Sort(keys)
+	return keys
 }
 
 // toolActivityDeltas maps each function_call/function_response DataPart to a
