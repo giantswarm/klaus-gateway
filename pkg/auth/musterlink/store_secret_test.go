@@ -331,20 +331,3 @@ func TestImportBoltFileSkipsUndecodableRecordsAndMissingFile(t *testing.T) {
 	_, statErr := os.Stat(t.TempDir() + "/absent.bolt")
 	require.True(t, os.IsNotExist(statErr), "a read-only open must not create the file")
 }
-
-func TestBoltStoreEach(t *testing.T) {
-	path := t.TempDir() + "/links.bolt"
-	bs, err := OpenBoltStore(path, key32(), nil)
-	require.NoError(t, err)
-	require.NoError(t, bs.Put("U1", &Link{RefreshToken: "rt-1"}))
-	require.NoError(t, bs.Put("U2", &Link{RefreshToken: "rt-2"}))
-	seen := map[string]string{}
-	require.NoError(t, bs.Each(func(id string, l *Link) error {
-		seen[id] = l.RefreshToken
-		return nil
-	}))
-	require.Equal(t, map[string]string{"U1": "rt-1", "U2": "rt-2"}, seen)
-	stop := errors.New("stop")
-	require.ErrorIs(t, bs.Each(func(string, *Link) error { return stop }), stop)
-	require.NoError(t, bs.Close())
-}

@@ -8,6 +8,5 @@ package version
 
 import "github.com/giantswarm/klaus-gateway/pkg/project"
 
-func Version() string        { return project.Version() }
-func GitSHA() string         { return project.GitSHA() }
-func BuildTimestamp() string { return project.BuildTimestamp() }
+func Version() string { return project.Version() }
+func GitSHA() string  { return project.GitSHA() }

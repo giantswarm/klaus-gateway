@@ -471,7 +471,6 @@ func TestFacade_SendCompletionViaA2A_ForwardsIdentity(t *testing.T) {
 	require.NoError(t, err)
 	drain(t, ch)
 
-	require.Equal(t, "kagent/worker", pkga2a.AgentRefFromContext(agent.streamCtx))
 	require.Equal(t, "user-jwt", pkga2a.ForwardedTokenFromContext(agent.streamCtx))
 }
 

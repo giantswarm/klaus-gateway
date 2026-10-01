@@ -12,8 +12,8 @@ import (
 )
 
 // EvictionInterval is how often the background goroutine scans for expired
-// entries. It is a var so tests can shorten it.
-var EvictionInterval = time.Minute
+// entries.
+const EvictionInterval = time.Minute
 
 // Store is a concurrency-safe in-memory routing store with TTL eviction.
 type Store struct {
@@ -191,6 +191,3 @@ func (s *Store) SetNowFunc(f func() time.Time) {
 	defer s.mu.Unlock()
 	s.now = f
 }
-
-// EvictNow triggers a synchronous eviction pass, for tests.
-func (s *Store) EvictNow() { s.evict() }
