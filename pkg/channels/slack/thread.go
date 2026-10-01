@@ -121,7 +121,9 @@ func (a *Adapter) releaseThread(threadID string) {
 // one to stop. A turn spends its network-bound start window (email lookup,
 // initiator token mint, resume check, agent resolve) holding the slot before
 // it registers a cancelable turn; a stop landing in that window is recorded
-// on the slot for registerTurn to consume, so it still stops the turn.
+// on the slot for registerTurn to consume, so it still stops the turn. The
+// sender's own token mint runs before the slot is taken, so a "stop" sent
+// during it finds no turn and is dispatched as a message.
 func (a *Adapter) stopThread(threadID string) bool {
 	stopped := false
 	a.withThread(threadID, func(st *threadState) {
