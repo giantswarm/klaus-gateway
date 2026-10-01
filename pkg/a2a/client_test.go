@@ -252,8 +252,8 @@ func TestClient_AgentModel(t *testing.T) {
 }
 
 // The controller dedupes a create by its request id; the client's part is to
-// send it, with the template and the Harness that admits it.
-func TestClient_CreateInstance_SendsTheTemplateHarnessAndRequestID(t *testing.T) {
+// send it, with the template, the Harness that admits it and the name.
+func TestClient_CreateInstance_SendsTheTemplateHarnessRequestIDAndName(t *testing.T) {
 	f := readyFake(t)
 	client := f.serve(t, pkga2a.Config{})
 	ctx := asUser(t.Context(), userToken)
