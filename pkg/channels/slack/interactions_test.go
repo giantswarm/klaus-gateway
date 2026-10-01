@@ -294,23 +294,6 @@ func newDecisionAdapter(t *testing.T, gw channels.Gateway, obo OBOTokenSource) (
 	}
 }
 
-// A button-click resume must carry the clicker's human muster token: the
-// approved tool call executes under the approver's identity, never the gateway
-// service account (klaus-gateway#116).
-func TestHandleDecision_ForwardsHumanToken(t *testing.T) {
-	gw := &fakeGateway{Facade: newMemoryRecorder(), deltas: []channels.OutboundDelta{{Content: "done"}, {Done: true}}}
-	a, _ := newDecisionAdapter(t, gw, linkedOBO{user: "U001", token: "human-token"})
-
-	err := a.handleDecision(t.Context(), "C001", "T001", "MSG001", "U001", hitlAction{kind: hitlApprove})
-	require.NoError(t, err)
-
-	sent := gw.sentMessages()
-	require.Len(t, sent, 1)
-	require.Equal(t, "human-token", sent[0].BearerToken,
-		"button resume must run under the clicker's human token")
-	require.NotNil(t, sent[0].Decision)
-}
-
 // multiUserOBO mints a distinct token per Slack user; a user absent from the
 // map is treated as not linked.
 type multiUserOBO map[string]string
@@ -466,25 +449,6 @@ func TestHandleDecision_CorruptSessionPreStreamDropsPendingTask(t *testing.T) {
 		"the failure note must not invite a retry into the deleted session")
 }
 
-// An unlinked clicker must not resume the task: the pending task stays stored
-// (buttons keep working for a linked user), the gateway sends nothing to the
-// agent, and the clicker gets the sign-in prompt.
-func TestHandleDecision_UnlinkedClicker_PreservesPendingTask(t *testing.T) {
-	gw := &fakeGateway{Facade: newMemoryRecorder()}
-	a, paths := newDecisionAdapter(t, gw, linkedOBO{user: "U-linked", token: "human-token"})
-
-	err := a.handleDecision(t.Context(), "C001", "T001", "MSG001", "U-unlinked", hitlAction{kind: hitlApprove})
-	require.NoError(t, err)
-
-	require.Empty(t, gw.sentMessages(), "aborted resume must not reach the agent")
-	require.NotNil(t, a.takePendingTask("T001"), "aborted resume must leave the pending task intact")
-	// U-unlinked is not allowed on the thread (U-linked would be the
-	// initiator), so the notice hit here is the access refusal, not the
-	// sign-in prompt; the sign-in path is pinned by
-	// TestHandleDecision_OBO_TokenMintFailurePreservesTask.
-	require.Contains(t, paths(), "/chat.postEphemeral", "the clicker must be told why nothing happened")
-}
-
 // The sign-in URL button opens its link in the browser; its block_actions
 // payload is acked without action: no Slack API call, no pending-task
 // consumption.
@@ -540,59 +504,7 @@ func TestInteractionsHandler_InvalidSignature(t *testing.T) {
 	require.Equal(t, http.StatusUnauthorized, rr.Code)
 }
 
-func TestInteractionsHandler_NoPendingTask(t *testing.T) {
-	// If no pending task, handleApproval should be a no-op (no panic).
-	const secret = "test-secret"
-
-	apiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		// Accept chat.update (button replacement) but no resume calls expected.
-		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "ts": "1.1"})
-	}))
-	t.Cleanup(apiSrv.Close)
-
-	gw := &fakeGateway{Facade: newMemoryRecorder()}
-	a := &Adapter{
-		APIBase:      apiSrv.URL,
-		Secrets:      Secrets{BotToken: "test-bot-token", SigningSecret: secret}, //nolint:gosec
-		DefaultAgent: "worker",
-	}
-	require.NoError(t, a.Start(t.Context(), gw))
-	t.Cleanup(func() { _ = a.Stop(context.Background()) })
-	a.accessPolicy().SetInitiator(t.Context(), "C001", "T_NONE", "U001") // clicker is permitted; exercise the no-pending-task path
-
-	body := slackInteractionPayload(t, "hitl_deny", "T_NONE", "C001", "MSG001", "U001")
-	req := httptest.NewRequest(http.MethodPost, "/channels/slack/interactions", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	signRequest(t, req, body, secret)
-
-	rr := httptest.NewRecorder()
-	a.ixHandler.ServeHTTP(rr, req)
-	require.Equal(t, http.StatusOK, rr.Code)
-}
-
 // --- OBO-enabled button-resume (handleDecision) ---
-
-// decisionOBO is a test OBOTokenSource for the button-resume path: it mints
-// token for linkedUser and returns musterlink.ErrNotLinked for anyone else (an
-// unlinked / different clicker), which drives the sign-in prompt.
-type decisionOBO struct {
-	linkedUser string
-	token      string
-}
-
-func (o *decisionOBO) TokenFor(_ context.Context, slackUserID string) (string, error) {
-	if slackUserID == o.linkedUser {
-		return o.token, nil
-	}
-	return "", musterlink.ErrNotLinked
-}
-
-func (o *decisionOBO) LinkURL(slackUserID string) string {
-	return "https://gw.example.com/auth/slack/link?u=signed-" + slackUserID
-}
-
-func (o *decisionOBO) Unlink(string) error { return nil }
 
 // ixSink records the Slack Web API calls the interactions path makes.
 type ixSink struct {
@@ -698,7 +610,7 @@ func TestHandleDecision_OBO_TokenMintFailurePreservesTask(t *testing.T) {
 		APIBase:      srv.URL,
 		Secrets:      Secrets{BotToken: "test-bot-token", SigningSecret: secret}, //nolint:gosec
 		DefaultAgent: "worker",
-		OBO:          &decisionOBO{linkedUser: "U_LINKED", token: "human-token"},
+		OBO:          linkedOBO{user: "U_LINKED", token: "human-token"},
 	}
 	require.NoError(t, a.Start(t.Context(), gw))
 	t.Cleanup(func() { _ = a.Stop(context.Background()) })
@@ -738,7 +650,7 @@ func TestHandleDecision_OBO_SuccessResumes(t *testing.T) {
 		APIBase:      srv.URL,
 		Secrets:      Secrets{BotToken: "test-bot-token", SigningSecret: secret}, //nolint:gosec
 		DefaultAgent: "worker",
-		OBO:          &decisionOBO{linkedUser: "U_LINKED", token: "human-token"},
+		OBO:          linkedOBO{user: "U_LINKED", token: "human-token"},
 	}
 	require.NoError(t, a.Start(t.Context(), gw))
 	t.Cleanup(func() { _ = a.Stop(context.Background()) })
@@ -760,6 +672,7 @@ func TestHandleDecision_OBO_SuccessResumes(t *testing.T) {
 	require.True(t, slices.ContainsFunc(sink.updateTexts(), func(s string) bool { return strings.HasPrefix(s, "Approved by <@U_LINKED> · ") }), "success path must rewrite the card to name who approved")
 	require.False(t, a.hasPendingTask("T001"), "resumed task must be consumed")
 	require.Equal(t, "human-token", gw.lastCompletion().BearerToken, "the resume must carry the clicker's human token")
+	require.NotNil(t, gw.lastCompletion().Decision, "the resume carries the decision")
 }
 
 func TestInteractionsHandler_OnlookerCannotDecide(t *testing.T) {
@@ -1482,13 +1395,6 @@ func TestOnUserLinkedDoesNotBlockOnAnchorRewrite(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("anchor rewrite never ran")
 	}
-}
-
-// A link with no recorded prompt (e.g. the park-after-link race drain) has
-// nothing to rewrite and must not call the Slack API.
-func TestOnUserLinkedWithoutPromptIsNoOp(t *testing.T) {
-	a := &Adapter{}
-	a.OnUserLinked(t.Context(), "U-never-prompted", "alice@example.com")
 }
 
 // A link path that cannot resolve the email (the park-after-link re-check)

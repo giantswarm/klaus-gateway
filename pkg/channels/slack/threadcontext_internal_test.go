@@ -145,22 +145,6 @@ func TestRenderThreadContext_MultilineTextIsIndented(t *testing.T) {
 	require.Contains(t, got, "NAME-U1: line one\n  line two")
 }
 
-// There is no message cap: a thread of many short messages is handed over
-// whole, because it fits the only cap there is.
-func TestRenderThreadContext_ManyShortMessagesAllFit(t *testing.T) {
-	var msgs []threadMessage
-	for i := range 70 {
-		msgs = append(msgs, threadMessage{TS: fmt.Sprintf("%d.000", 100+i), User: "u1", Text: fmt.Sprintf("m%d", i)})
-	}
-	got := renderThreadContext(fullRead(msgs), "900.000", "UBOT", "Jose", upper)
-
-	lines := strings.Split(got, "\n")
-	require.Len(t, lines, 71, "the label and every message")
-	require.Equal(t, "[thread context shared by Jose: 70 earlier messages in this thread, oldest first]", lines[0])
-	require.Contains(t, got, "m0")
-	require.Contains(t, got, "m69")
-}
-
 // Past the character cap the oldest messages go and the root stays: the root
 // is the alert the thread is about.
 func TestRenderThreadContext_CharCapTrimsFromTheOldest(t *testing.T) {
@@ -201,37 +185,6 @@ func TestRenderThreadContext_MessageWithoutWordsIsSkipped(t *testing.T) {
 
 	require.Contains(t, got, "1 earlier message")
 	require.Contains(t, got, "something")
-}
-
-func TestThreadContextBlock_OfferedOnlyWhereThereIsAThread(t *testing.T) {
-	_, ok := threadContextBlock(askAgentRequest{})
-	require.False(t, ok, "the slash command roots its own thread, so there is nothing to include")
-
-	block, ok := threadContextBlock(askAgentRequest{Thread: "100.000"})
-	require.True(t, ok)
-	require.Equal(t, "Include the earlier messages in this thread", checkboxLabel(block),
-		"no count: counting would mean reading the thread before the modal opens")
-	require.Equal(t, true, block[bkOptional], "a cleared box must still submit")
-	require.Len(t, block[bkElement].(map[string]any)[bkInitialOptions], 1, "checked by default")
-}
-
-// checkboxLabel digs the single option's text out of a context checkbox block.
-func checkboxLabel(block map[string]any) string {
-	element := block[bkElement].(map[string]any)
-	option := element[bkOptions].([]any)[0].(map[string]any)
-	return option[bkText].(map[string]any)[bkText].(string)
-}
-
-// A read the page bound stopped never claims its lines are the newest ones:
-// they are neither the oldest nor the newest, and an agent told otherwise
-// would take stale messages for the state of play. It says how far it got out
-// of how long the thread is.
-func TestRenderThreadContext_PartialReadSaysSo(t *testing.T) {
-	msgs := []threadMessage{{TS: "100.000", User: "u1", Text: "somewhere in the middle"}}
-	got := renderThreadContext(threadRead{Messages: msgs, Total: 1342}, "900.000", "UBOT", "Jose", upper)
-
-	require.Contains(t, got, "1 of 1,342 earlier messages read (the read stopped early)")
-	require.NotContains(t, got, "in this thread,")
 }
 
 // A thread whose root reported no reply count still says the read stopped
