@@ -281,16 +281,12 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *command, slackUser, sl
 	return false
 }
 
-// handleLoginCommand handles the login command. It always consumes it. When
-// OBO is disabled it says so rather than dispatching to the agent. An unlinked
+// handleLoginCommand handles the login command. It always consumes it; the
+// word is a command only when OBO is enabled (bareCommandFor). An unlinked
 // user gets the sign-in prompt; a linked user gets a confirmation of their
 // signed-in identity. reply is ephemeral: the identity confirmation carries
 // the caller's email, which a shared thread must not see.
 func (a *Adapter) handleLoginCommand(ctx context.Context, slackUser, slackChannel, threadID string, reply func(string)) bool {
-	if a.OBO == nil {
-		reply(oboDisabledNotice)
-		return true
-	}
 	if slackUser == "" {
 		reply(noSlackUserNotice)
 		return true
@@ -332,10 +328,6 @@ func (a *Adapter) linkedEmail(slackUser string) string {
 // handleLogoutCommand handles the logout command: it signs the user out of their muster
 // link, so the gateway asks them to sign in again before acting as them.
 func (a *Adapter) handleLogoutCommand(slackUser string, reply func(string)) bool {
-	if a.OBO == nil {
-		reply(oboDisabledNotice)
-		return true
-	}
 	if slackUser == "" {
 		reply(noSlackUserNotice)
 		return true

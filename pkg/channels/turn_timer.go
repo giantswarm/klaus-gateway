@@ -95,9 +95,9 @@ type TurnTimer struct {
 	usage     TurnUsage
 }
 
-// NewTurnTimer starts a timeline at start (the moment the channel received
+// newTurnTimer starts a timeline at start (the moment the channel received
 // the message; the zero time means now).
-func NewTurnTimer(start time.Time) *TurnTimer {
+func newTurnTimer(start time.Time) *TurnTimer {
 	if start.IsZero() {
 		start = time.Now()
 	}
@@ -317,15 +317,6 @@ func turnFailureClass(outcome string, err error) FailureClass {
 
 type turnTimerKey struct{}
 
-// WithTurnTimer attaches the turn's timeline to ctx, for the layers below the
-// channel adapter to mark their phases.
-func WithTurnTimer(ctx context.Context, t *TurnTimer) context.Context {
-	if t == nil {
-		return ctx
-	}
-	return context.WithValue(ctx, turnTimerKey{}, t)
-}
-
 // TurnTimerFromContext is the turn's timeline, or nil (whose methods are
 // no-ops) when ctx carries none.
 func TurnTimerFromContext(ctx context.Context) *TurnTimer {
@@ -342,7 +333,7 @@ const tracerName = "github.com/giantswarm/klaus-gateway/pkg/channels"
 // is traced, so the controller's SendStreamingMessage trace hangs off the
 // gateway's. The returned context carries both.
 func BeginTurn(ctx context.Context, channel string, start time.Time, attrs ...attribute.KeyValue) (context.Context, *TurnTimer) {
-	t := NewTurnTimer(start)
+	t := newTurnTimer(start)
 	opts := []trace.SpanStartOption{
 		trace.WithSpanKind(trace.SpanKindServer),
 		trace.WithAttributes(append([]attribute.KeyValue{attribute.String("klaus_gateway.channel", channel)}, attrs...)...),
@@ -351,7 +342,7 @@ func BeginTurn(ctx context.Context, channel string, start time.Time, attrs ...at
 		opts = append(opts, trace.WithTimestamp(start))
 	}
 	ctx, t.span = otel.Tracer(tracerName).Start(ctx, channel+".turn", opts...)
-	return WithTurnTimer(ctx, t), t
+	return context.WithValue(ctx, turnTimerKey{}, t), t
 }
 
 // CompleteTurn ends the turn on ctx: it writes the turn_complete record
