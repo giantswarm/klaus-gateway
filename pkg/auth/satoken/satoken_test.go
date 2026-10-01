@@ -46,7 +46,7 @@ func TestAuthenticate_NamesTheServiceAccount(t *testing.T) {
 func TestAuthenticate_Refusals(t *testing.T) {
 	cases := map[string]authv1.TokenReviewStatus{
 		"not authenticated":         {Authenticated: false},
-		"error from the API server": {Authenticated: false, Error: "token has expired"},
+		"error from the API server": {Authenticated: true, Audiences: []string{"klaus-gateway"}, Error: "token has expired"},
 		"other audience":            {Authenticated: true, Audiences: []string{"kagent"}},
 	}
 	for name, status := range cases {
