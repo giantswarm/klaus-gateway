@@ -193,6 +193,8 @@ func helpBlocks(botName string, agents, signIn bool) (string, []any) {
 
 // handleCommand runs a command and posts a reply in-thread.
 // Returns true when the command was consumed (caller should not dispatch).
+// login and logout need a.OBO: bareCommandFor makes them commands only then,
+// and a caller that builds them itself must check it too.
 func (a *Adapter) handleCommand(ctx context.Context, cmd *command, slackUser, slackChannel, threadID string) bool {
 	client := a.apiClient()
 	reply := func(text string) {
