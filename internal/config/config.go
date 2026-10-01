@@ -108,11 +108,6 @@ type SlackConfig struct {
 	// so a restart never replays messages queued while it was down.
 	// SLACK_DROP_STALE=true. Default false.
 	DropStaleEvents bool
-	// ProgressMode is deprecated and has no effect: every turn tries the
-	// progress reactions. Still read so a deployment that sets it keeps
-	// starting; main logs a warning.
-	// SLACK_PROGRESS_MODE.
-	ProgressMode string
 	// WorkingEmoji, DoneEmoji, FailedEmoji override the progress reaction emoji
 	// names (no surrounding colons). Empty uses the defaults (eyes /
 	// white_check_mark / x). SLACK_WORKING_EMOJI etc.
@@ -347,7 +342,6 @@ func Load(args []string) (Config, error) {
 		cfg.Slack.ChannelAllowlist = splitCommaList(v)
 		return nil
 	})
-	fs.StringVar(&cfg.Slack.ProgressMode, "slack-progress-mode", cfg.Slack.ProgressMode, "Deprecated, no effect: every turn tries the progress reactions.")
 	fs.StringVar(&cfg.Slack.WorkingEmoji, "slack-working-emoji", cfg.Slack.WorkingEmoji, "Slack reaction emoji name for a turn in progress (no colons). Empty uses the default.")
 	fs.StringVar(&cfg.Slack.DoneEmoji, "slack-done-emoji", cfg.Slack.DoneEmoji, "Slack reaction emoji name for a completed turn (no colons). Empty uses the default.")
 	fs.StringVar(&cfg.Slack.FailedEmoji, "slack-failed-emoji", cfg.Slack.FailedEmoji, "Slack reaction emoji name for a failed turn (no colons). Empty uses the default.")
@@ -472,9 +466,6 @@ func applyEnv(cfg *Config) {
 	}
 	if v, ok := lookup("SLACK_DROP_STALE"); ok {
 		cfg.Slack.DropStaleEvents = strings.EqualFold(v, "true") || v == "1"
-	}
-	if v, ok := lookup("SLACK_PROGRESS_MODE"); ok {
-		cfg.Slack.ProgressMode = v
 	}
 	if v, ok := lookup("SLACK_WORKING_EMOJI"); ok {
 		cfg.Slack.WorkingEmoji = v
