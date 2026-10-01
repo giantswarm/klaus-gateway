@@ -386,7 +386,7 @@ func TestSlashCommand_InvalidSignatureRejected(t *testing.T) {
 }
 
 // Submitting the picker opens the conversation: the gateway posts the root
-// under the agent's identity, the submitter is the initiator, the thread is
+// under the app's own identity, the submitter is the initiator, the thread is
 // bound, and the question is the first turn. Replies then behave as in any
 // conversation: the submitter's reply inherits the agent, a newcomer waits for
 // the submitter's consent.
@@ -403,13 +403,22 @@ func TestAskAgentSubmission_OpensConversation(t *testing.T) {
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 50*time.Millisecond, "the submission dispatches the first turn")
 
-	// The root: the question as a branded message, who asked as context
-	// under it. The binding and the initiator live in the thread record.
+	// The root: who asked which agent, and the question, under the app's
+	// own identity. The binding and the initiator live in the thread record.
 	root := fake.pathCalls("chat.postMessage")[0]
 	require.Equal(t, "C1", root.params["channel"])
 	require.Nil(t, root.params["thread_ts"], "the root is a top-level message")
-	require.Equal(t, "SRE Agent", root.params["username"], "posted under the agent's identity")
 	requireQuestionMessage(t, root.params, "why are pods crashlooping?", "U1")
+
+	// The agent's answer in the thread keeps the agent's identity.
+	require.Eventually(t, func() bool {
+		for _, c := range append(fake.pathCalls("chat.startStream"), fake.pathCalls("chat.postMessage")[1:]...) {
+			if c.params["username"] == "SRE Agent" {
+				return true
+			}
+		}
+		return false
+	}, flowWait, 50*time.Millisecond, "the answer is posted under the agent's identity")
 
 	msgs := dispatched()
 	require.Equal(t, "kagent/sre-agent", msgs[0].AgentRef)
@@ -462,9 +471,7 @@ func TestAskAgentSubmission_DMOpensConversation(t *testing.T) {
 	root := fake.pathCalls("chat.postMessage")[0]
 	require.Equal(t, "D1", root.params["channel"])
 	require.Nil(t, root.params["thread_ts"], "the root is a top-level message")
-	require.Equal(t, "SRE Agent", root.params["username"], "posted under the agent's identity")
-	require.Len(t, root.params["blocks"].([]any), 1,
-		"no \"Asked by\" line: the one person who can read it is the one who asked")
+	requireQuestionMessage(t, root.params, "why are pods crashlooping?", "U1")
 
 	msgs := dispatched()
 	require.Equal(t, "kagent/sre-agent", msgs[0].AgentRef, "the picked agent, not the default")
@@ -648,17 +655,17 @@ func TestAskAgentSubmission_NotRunnableAgentIsRefusedWithReason(t *testing.T) {
 }
 
 // requireQuestionMessage checks the message that opens a conversation from the
-// picker: the question as the message and its fallback text, who asked as the
-// only context line under it.
+// picker: under the app's own identity, one section naming who asked which
+// agent, then the question as a quote; the same text as the fallback.
 func requireQuestionMessage(t *testing.T, params map[string]any, question, user string) {
 	t.Helper()
-	require.Equal(t, question, params["text"])
+	require.Nil(t, params["username"], "posted under the app's identity, not the agent's")
+	require.Nil(t, params["icon_url"], "posted under the app's identity, not the agent's")
+	want := "<@" + user + "> asked *SRE Agent*:\n>" + question
+	require.Equal(t, want, params["text"])
 	blocks := params["blocks"].([]any)
-	require.Len(t, blocks, 2)
+	require.Len(t, blocks, 1, "no separate \"Asked by\" line")
 	section := blocks[0].(map[string]any)
 	require.Equal(t, "section", section["type"])
-	require.Equal(t, question, section["text"].(map[string]any)["text"])
-	ctxBlock := blocks[1].(map[string]any)
-	require.Equal(t, "context", ctxBlock["type"])
-	require.Equal(t, "Asked by <@"+user+">", ctxBlock["elements"].([]any)[0].(map[string]any)["text"])
+	require.Equal(t, want, section["text"].(map[string]any)["text"])
 }

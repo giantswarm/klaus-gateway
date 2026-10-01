@@ -552,10 +552,11 @@ clearing the box still submits.
 }
 ```
 
-Submitting posts the question as the message, in a channel with a context block
-`Asked by <@U123>` under it (a direct message has one reader, who asked), under the agent's
-identity — a new root message for the slash command, a reply in the carried thread for the
-shortcut — and runs the question as the thread's first turn. With the box ticked,
+Submitting posts `<@U123> asked *SRE Agent*:` with the question quoted under it, under the
+app's own identity: the words are the person's, so the agent's name and icon are not on the
+message. It is a new root message for the slash command and a reply in the carried thread for
+the shortcut. The question then runs as the thread's first turn, and the agent's answers keep
+the agent's identity. With the box ticked,
 the messages the thread held before that question message travel with the question as a labelled
 part of the turn (see [the Slack adapter](channels-slack.md)); nothing about them is posted in the
 thread.
