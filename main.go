@@ -297,7 +297,7 @@ func run(args []string) error {
 // stopSlack stops the Slack adapter, when one runs, once the servers have
 // drained and before the deferred closes take the kagent client, the link
 // store and the routing store away: a Slack turn the shutdown cuts short still
-// posts its notice, and a /stop-issued cancel still reaches the controller. The
+// posts its notice, and a stop-issued cancel still reaches the controller. The
 // pod's termination grace has to cover the server drain plus this stop (both
 // DefaultShutdownTimeout).
 func stopSlack(a *slackchannel.Adapter, logger *slog.Logger) {

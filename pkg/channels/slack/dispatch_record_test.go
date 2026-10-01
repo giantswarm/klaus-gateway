@@ -93,9 +93,10 @@ func TestDispatch_EmitsTurnDispatchRecord(t *testing.T) {
 	require.Equal(t, agentSourceDefault, rec["agent_source"])
 }
 
-// The agent_source field marks how the turn's agent was chosen: a message
-// carrying an /agent prefix logs "prefix", a reply inheriting its
-// conversation's binding logs "thread", everything else "default".
+// The agent_source field marks how the turn's agent was chosen: a message that
+// already carries its agent (a picker submission replayed after a sign-in)
+// logs "replay", a reply inheriting its conversation's binding logs "thread",
+// everything else "default".
 func TestDispatch_TurnDispatchRecord_AgentSource(t *testing.T) {
 	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -116,14 +117,14 @@ func TestDispatch_TurnDispatchRecord_AgentSource(t *testing.T) {
 		return a, h
 	}
 
-	t.Run("prefix", func(t *testing.T) {
+	t.Run("replay", func(t *testing.T) {
 		a, h := newRecorded(t)
-		// handleAgentSelection stamps the ref before dispatch.
+		// The picker stamped the ref before the message was parked.
 		msg := channels.InboundMessage{Channel: ChannelName, ChannelID: "C1", ThreadID: "T1", MessageID: "T1", Subject: "U1", Text: "hi", AgentRef: "sre-agent"}
 		require.NoError(t, a.dispatch(t.Context(), msg, "C1"))
 		rec := h.find("record", "turn_dispatch")
 		require.NotNil(t, rec)
-		require.Equal(t, agentSourcePrefix, rec["agent_source"])
+		require.Equal(t, agentSourceReplay, rec["agent_source"])
 		require.Equal(t, "sre-agent", rec["agent"])
 	})
 

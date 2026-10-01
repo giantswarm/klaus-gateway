@@ -54,7 +54,7 @@ const (
 const (
 	OutcomeCompleted     = "completed"      // the task completed and the answer landed
 	OutcomeInputRequired = "input_required" // the task paused on a prompt to the person
-	OutcomeCanceled      = "canceled"       // the person stopped the turn (/stop, the stop button, a closed stream)
+	OutcomeCanceled      = "canceled"       // the person stopped the turn (the stop command, the stop button, a closed stream)
 	OutcomeShutdown      = "shutdown"       // the gateway's shutdown cut the turn short
 	OutcomeTimeout       = "timeout"        // the turn ran into the gateway's turn deadline
 	OutcomeFailed        = "failed"         // the task failed, or the stream broke

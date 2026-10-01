@@ -98,7 +98,7 @@ func TestStop_IsAPlainCancellationNotAShutdown(t *testing.T) {
 	fake.waitForPath(t, "reactions.add", 1)
 	waitTurnStreaming(t, fake)
 
-	sendEvent(t, srv, dmThreadEvent("U1", "/stop", "556.000", "555.000"))
+	sendEvent(t, srv, dmThreadEvent("U1", "stop", "556.000", "555.000"))
 	fake.waitForPath(t, "reactions.remove", 1)
 
 	require.Eventually(t, func() bool { return len(gw.sendCauseList()) == 1 }, flowWait, 20*time.Millisecond)

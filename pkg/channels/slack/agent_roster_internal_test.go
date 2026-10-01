@@ -232,7 +232,7 @@ func TestRosterBlocks(t *testing.T) {
 	button := rows[0].(map[string]any)[bkAccessory].(map[string]any)
 	require.Equal(t, agentSelectAction, button[bkActionID])
 	require.Equal(t, "zeta", button[bkValue])
-	require.Equal(t, "3 more: x5, x6, x7. Or mention the bot with `/agent \"Name\" question`.", text(blocks[len(blocks)-1]))
+	require.Equal(t, "3 more: x5, x6, x7 — start one of those from the app's slash command, or the ⋯ menu's *Ask an agent here*. Select starts a conversation with that agent in this thread.", text(blocks[len(blocks)-1]))
 
 	// In a thread that already has its conversation the picker refuses, so
 	// the rows carry no button and the footer points at a new thread.
@@ -241,7 +241,7 @@ func TestRosterBlocks(t *testing.T) {
 		_, button := b.(map[string]any)[bkAccessory]
 		require.False(t, button, "no Select button in a bound thread")
 	}
-	require.Equal(t, "This thread already has its agent. To talk to another one, mention the bot with `/agent \"Name\" question` in a new thread.", text(blocks[len(blocks)-1]))
+	require.Equal(t, "This thread already has its agent. To talk to another one, mention the bot with `agents` in a new thread and pick it there.", text(blocks[len(blocks)-1]))
 }
 
 func TestFirstSentence(t *testing.T) {

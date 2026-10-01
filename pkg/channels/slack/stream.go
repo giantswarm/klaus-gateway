@@ -42,7 +42,7 @@ const (
 	// streamCallTimeout bounds one write to the turn's streamed message. Those
 	// writes are detached from the turn's cancellation (streamCallCtx), so a
 	// cancelled turn waits for the one in flight before it exits: shorter than
-	// the 30 s of slackHTTPClient, because that wait is what a /stop costs.
+	// the 30 s of slackHTTPClient, because that wait is what a stop costs.
 	streamCallTimeout = 10 * time.Second
 	slackAPIBase      = "https://slack.com/api"
 	// downloadSizeMargin is the headroom over Slack's declared file size that a
@@ -308,7 +308,7 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 	ticker := time.NewTicker(streamAppendInterval)
 	defer ticker.Stop()
 	// The session leaves "processing" on EVERY exit — stream done, stream error,
-	// /stop, and the HITL prompt pause. Slack's agent loading UX does not clear
+	// a stop, and the HITL prompt pause. Slack's agent loading UX does not clear
 	// itself when the app posts any more, so a missing exit status leaves the
 	// thread spinning for up to an hour. chat.stopStream carries a session
 	// status of its own, but observed on graveler 2026-09-21 it does not clear
@@ -1250,7 +1250,7 @@ func (w *batchedWriter) closeStream(ctx context.Context) error {
 	return nil
 }
 
-// endStream closes a stream a turn left open. A cancelled turn (a /stop, the
+// endStream closes a stream a turn left open. A cancelled turn (a stop, the
 // gateway shutting down) returns without a terminal flush, so without this the
 // message would keep animating and everything queued since the last append
 // would be lost. It runs on a context outliving the cancellation.
@@ -2425,21 +2425,14 @@ func (a *Adapter) takeSessionTitle(threadID string) string {
 // where an untitled session reads as nothing at all. It also names the thread's
 // kagent conversation, so both surfaces list the thread under the same line.
 //
-// The command scaffolding a user types to address the bot says nothing about
-// the conversation, so the mention and a leading slash verb (the /agent
-// selector, or any other command-shaped verb) are dropped and only the
-// question survives; channels.TitleFrom does the rest. Returns "" when nothing
-// survives, in which case no title is sent and Slack names the session itself.
+// The mention a user types to address the bot says nothing about the
+// conversation, so it is dropped and only the question survives;
+// channels.TitleFrom does the rest. A command never reaches a turn — the word
+// is consumed before dispatch — so nothing else has to be stripped. Returns ""
+// when nothing survives, in which case no title is sent and Slack names the
+// session itself.
 func sessionTitleFrom(text string) string {
-	s := StripMention(strings.TrimSpace(text))
-	if cmd := parseCommand(s); cmd != nil && commandShapeRe.MatchString(cmd.Name) {
-		if cmd.Name == cmdAgent {
-			_, _, s = splitAgentCommand(s)
-		} else {
-			s = strings.Join(cmd.Args, " ")
-		}
-	}
-	return channels.TitleFrom(s, sessionTitleMax)
+	return channels.TitleFrom(StripMention(strings.TrimSpace(text)), sessionTitleMax)
 }
 
 // setSessionStatus sets the thread's agent session status, creating the
@@ -2921,7 +2914,7 @@ type signInTrigger int
 
 const (
 	signInForMessage signInTrigger = iota // an unlinked user's message, held for replay
-	signInForLogin                        // the /login command: nothing is held
+	signInForLogin                        // the login command: nothing is held
 	signInForClick                        // a button click: nothing to replay, the person clicks again
 	signInForReply                        // a decision answered in its thread: nothing held, the person replies again
 )

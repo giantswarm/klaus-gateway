@@ -324,18 +324,18 @@ const parkedDropNotice = "Only your last %d messages are held here; earlier ones
 // dropped message.
 const parkedDropNoticeTTL = time.Hour
 
-// stopNothingRunningNotice replies to a /stop in a thread with no in-flight
+// stopNothingRunningNotice replies to a stop in a thread with no in-flight
 // turn and no pending prompt, instead of falsely confirming a stop.
 const stopNothingRunningNotice = "Nothing is running in this thread."
 
-// stopStoppedNotice confirms a turn interrupted by the /stop command. The
+// stopStoppedNotice confirms a turn interrupted by the stop command. The
 // command's own message is in the thread above it, so the thread can already
 // see who asked.
 const stopStoppedNotice = "Stopped."
 
 // stopStoppedByNotice confirms a turn interrupted with the native stop button.
 // %s is the presser's Slack user ID. The press leaves no message of its own, so
-// unlike /stop this notice is the thread's only record of who stopped the turn.
+// unlike a stop this notice is the thread's only record of who stopped the turn.
 const stopStoppedByNotice = "Stopped by <@%s>"
 
 // notPermittedNotice refuses a caller who may read the thread but was never let

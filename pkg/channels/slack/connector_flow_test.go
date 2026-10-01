@@ -333,7 +333,7 @@ func TestLoginCommand_LinkedConfirmation(t *testing.T) {
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok"}, {Done: true}}}
 	fake, srv := connectorAdapter(t, gw)
 
-	sendEvent(t, srv, dmEvent("U1", "/login", "110.000"))
+	sendEvent(t, srv, dmEvent("U1", "login", "110.000"))
 
 	require.Eventually(t, func() bool {
 		return strings.Contains(ephemeralJSON(fake), "Signed in")
@@ -352,7 +352,7 @@ func TestLoginCommand_UnlinkedGetsSignIn(t *testing.T) {
 		a.ConnectorPrompts = true
 	})
 
-	sendEvent(t, srv, dmEvent("U1", "/login", "111.000"))
+	sendEvent(t, srv, dmEvent("U1", "login", "111.000"))
 
 	require.Eventually(t, func() bool {
 		return strings.Contains(postMessageJSON(fake), "obo_sign_in")

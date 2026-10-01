@@ -13,6 +13,21 @@ the Slack app did not ask for: add `users:read` and `users:read.email` (in
 `deploy/slack/manifest.yaml`) and **re-install the app**. Until then a person's decision answers
 `502` and the log says `missing_scope`; a team's decision needs no new scope.
 
+## Next — the in-message slash commands are gone
+
+The gateway no longer reads `/login`, `/logout`, `/usage`, `/help`, `/stop` or `/agent` from a
+message. Every command is the word alone: `login`, `logout`, `usage`, `help`, `agents`, and
+`stop` while a turn runs. A conversation with a chosen agent starts from the `agents` listing,
+from the app's own `/swarmgeist` command, or from the **Ask an agent here** shortcut.
+
+Nothing to configure, and no values key changes. What an operator has to decide is whether to
+tell their users: a person who types `@bot /usage` or `@bot /agent "SRE" …` out of habit now
+sends that text to the agent, which answers it as a question instead of running the command.
+`help` lists the words. One habit still lands softly: `/login` from a signed-out person is read
+as a request to sign in, like the word, and is not passed on to the agent afterwards.
+
+The app's own slash command (`/swarmgeist`) is untouched, and so is the message shortcut.
+
 ## Next — the Slack progress mode has no effect (`slack.progress.mode`)
 
 Every turn tries the progress reactions on its triggering message, and no turn posts the

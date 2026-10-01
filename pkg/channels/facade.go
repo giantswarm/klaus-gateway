@@ -534,7 +534,7 @@ func (f *Facade) ResumeTurn(ctx context.Context, msg InboundMessage, taskID stri
 // stream live. A consumer that goes away before a
 // terminal delta stopped the turn: the gateway's shutdown (context cause
 // ErrShutdown) leaves the task running and its record in place for the next
-// process to resubscribe to, a plain cancellation (/stop) cancels the task at
+// process to resubscribe to, a plain cancellation (stop) cancels the task at
 // the controller. A context cancelled after the terminal delta is the turn
 // being torn down and touches the task not at all.
 func (f *Facade) streamTask(ctx context.Context, key store.Key, instanceID string, known a2apkg.TaskID, resume map[string]string, events iter.Seq2[a2apkg.Event, error]) (<-chan OutboundDelta, error) {
@@ -614,7 +614,7 @@ func (f *Facade) streamTask(ctx context.Context, key store.Key, instanceID strin
 			}
 		}
 		if ctx.Err() != nil {
-			// The channel stopped listening (/stop, the gateway's shutdown). A
+			// The channel stopped listening (stop, the gateway's shutdown). A
 			// task still running is cancelled server-side so the agent does not
 			// work on unobserved — unless the shutdown is what stopped the
 			// channel: then the task runs on and its record stays for the next

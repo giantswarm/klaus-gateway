@@ -63,6 +63,6 @@
 //
 // runTurn is everything that runs the same way regardless of entrypoint:
 // resolve the sender's email, mark a collaborator's turn, resolve the
-// agent, register the turn for /stop, send, and stream. It owns the
+// agent, register the turn for stop, send, and stream. It owns the
 // restore-on-failure guard for the taken task and corrupt-session recovery.
 package slack
