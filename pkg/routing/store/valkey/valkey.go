@@ -37,10 +37,6 @@ const (
 	// routing key starts with the channel, so one SCAN by channel prefix lists
 	// a channel's entries.
 	DefaultKeyPrefix = "klaus-gateway:route:"
-	// DefaultReviewKeyPrefix is prepended to every review id. It sits next to
-	// the routing keys, not under them, so the routing SCAN never reads a
-	// review.
-	DefaultReviewKeyPrefix = "klaus-gateway:review:"
 	// DefaultTimeout bounds the dial and every command.
 	DefaultTimeout = 2 * time.Second
 
@@ -86,12 +82,12 @@ type Options struct {
 // Store persists routing entries in Valkey.
 type Store struct {
 	opts Options
-	now  func() time.Time
 	// reviewPrefix namespaces the review keys. It is derived from KeyPrefix:
 	// a prefix ending in "route:" swaps that for "review:"
-	// (DefaultReviewKeyPrefix for the default), any other has "review:"
+	// ("klaus-gateway:review:" for the default), any other has "review:"
 	// appended — so a gateway that moves its routing keys moves its reviews
-	// with them.
+	// with them. It sits next to the routing keys, not under them, so the
+	// routing SCAN never reads a review.
 	reviewPrefix string
 
 	mu     sync.Mutex
@@ -118,7 +114,6 @@ func New(opts Options) (*Store, error) {
 	}
 	return &Store{
 		opts:         opts,
-		now:          time.Now,
 		reviewPrefix: strings.TrimSuffix(opts.KeyPrefix, routeSuffix) + reviewSuffix,
 	}, nil
 }
@@ -140,7 +135,7 @@ func (s *Store) Get(ctx context.Context, k store.Key) (store.Entry, bool, error)
 	if err := json.Unmarshal(raw, &e); err != nil {
 		return store.Entry{}, false, fmt.Errorf("valkey: decode entry: %w", err)
 	}
-	if e.Expired(s.now()) {
+	if e.Expired(time.Now()) {
 		return store.Entry{}, false, nil
 	}
 	return e, true, nil
@@ -150,7 +145,7 @@ func (s *Store) Get(ctx context.Context, k store.Key) (store.Entry, bool, error)
 // left of it (TTL counted from LastSeen, the contract Entry.Expired states);
 // an entry that has already expired removes the key instead.
 func (s *Store) put(ctx context.Context, k store.Key, e store.Entry) error {
-	now := s.now()
+	now := time.Now()
 	if e.Expired(now) {
 		return s.del(ctx, k)
 	}
@@ -233,7 +228,7 @@ func (s *Store) List(ctx context.Context) ([]store.KeyEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	now := s.now()
+	now := time.Now()
 	out := make([]store.KeyEntry, 0, len(keys))
 	skipped := 0
 	for start := 0; start < len(keys); start += mgetBatch {
@@ -277,7 +272,7 @@ func (s *Store) PutReview(ctx context.Context, r store.Review) error {
 	if err != nil {
 		return err
 	}
-	now := s.now()
+	now := time.Now()
 	if r.Expired(now) {
 		if err := s.do(ctx, c, c.B().Del().Key(s.reviewKey(r.ID)).Build()).Error(); err != nil {
 			return fmt.Errorf("valkey: del review: %w", err)
@@ -327,7 +322,7 @@ func (s *Store) UpdateReview(ctx context.Context, id string, mutate func(r *stor
 		if err != nil {
 			return true, fmt.Errorf("valkey: encode review: %w", err)
 		}
-		px := remaining(r.TTL, r.PostedAt, s.now())
+		px := remaining(r.TTL, r.PostedAt, time.Now())
 		cmd := c.B().Eval().Script(reviewCAS).Numkeys(1).Key(key).
 			Arg(string(raw), string(buf), fmt.Sprint(px.Milliseconds())).Build()
 		written, err := s.do(ctx, c, cmd).AsInt64()
@@ -355,7 +350,7 @@ func (s *Store) readReview(ctx context.Context, c valkeygo.Client, key string) (
 	if err := json.Unmarshal(raw, &r); err != nil {
 		return nil, store.Review{}, false, fmt.Errorf("valkey: decode review: %w", err)
 	}
-	if r.Expired(s.now()) {
+	if r.Expired(time.Now()) {
 		return nil, store.Review{}, false, nil
 	}
 	return raw, r, true, nil

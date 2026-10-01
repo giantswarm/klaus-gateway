@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
 	"sync"
 	"time"
 
@@ -175,13 +174,6 @@ func openBoltStore(path string, key []byte, logger *slog.Logger, readOnly bool) 
 	c, err := newLinkCipher(key)
 	if err != nil {
 		return nil, err
-	}
-	if readOnly {
-		// bolt refuses to open a missing file read-only only after creating it;
-		// check first so a read-only open never leaves an empty database behind.
-		if _, err := os.Stat(path); err != nil {
-			return nil, fmt.Errorf("musterlink: open bolt %s: %w", path, err)
-		}
 	}
 	db, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: 5 * time.Second, ReadOnly: readOnly})
 	if err != nil {
