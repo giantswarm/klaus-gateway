@@ -27,8 +27,7 @@ var (
 
 // Store is a bbolt-backed routing store.
 type Store struct {
-	db  *bolt.DB
-	now func() time.Time
+	db *bolt.DB
 
 	stopOnce  sync.Once
 	stopEvict chan struct{}
@@ -54,7 +53,6 @@ func Open(path string) (*Store, error) {
 	}
 	s := &Store{
 		db:        db,
-		now:       time.Now,
 		stopEvict: make(chan struct{}),
 		evictDone: make(chan struct{}),
 	}
@@ -84,7 +82,7 @@ func (s *Store) Get(_ context.Context, k store.Key) (store.Entry, bool, error) {
 	if !found {
 		return store.Entry{}, false, nil
 	}
-	if e.Expired(s.now()) {
+	if e.Expired(time.Now()) {
 		return store.Entry{}, false, nil
 	}
 	return e, true, nil
@@ -102,7 +100,7 @@ func (s *Store) Update(_ context.Context, k store.Key, mutate func(e *store.Entr
 			if err := json.Unmarshal(v, &e); err != nil {
 				return err
 			}
-			found = !e.Expired(s.now())
+			found = !e.Expired(time.Now())
 		}
 		if !found {
 			e = store.Entry{}
@@ -122,7 +120,7 @@ func (s *Store) Update(_ context.Context, k store.Key, mutate func(e *store.Entr
 // the background eviction pass handles deletion.
 func (s *Store) List(_ context.Context) ([]store.KeyEntry, error) {
 	var out []store.KeyEntry
-	now := s.now()
+	now := time.Now()
 	skipped := 0
 	err := s.db.View(func(tx *bolt.Tx) error {
 		return tx.Bucket(bucketName).ForEach(func(k, v []byte) error {
@@ -148,7 +146,7 @@ func (s *Store) List(_ context.Context) ([]store.KeyEntry, error) {
 
 // PutReview upserts a review record; an expired one is removed instead.
 func (s *Store) PutReview(_ context.Context, r store.Review) error {
-	if r.Expired(s.now()) {
+	if r.Expired(time.Now()) {
 		return s.db.Update(func(tx *bolt.Tx) error {
 			return tx.Bucket(reviewsBucket).Delete([]byte(r.ID))
 		})
@@ -174,7 +172,7 @@ func (s *Store) GetReview(_ context.Context, id string) (store.Review, bool, err
 		if err := json.Unmarshal(v, &r); err != nil {
 			return err
 		}
-		found = !r.Expired(s.now())
+		found = !r.Expired(time.Now())
 		return nil
 	})
 	if err != nil || !found {
@@ -197,7 +195,7 @@ func (s *Store) UpdateReview(_ context.Context, id string, mutate func(r *store.
 		if err := json.Unmarshal(v, &r); err != nil {
 			return err
 		}
-		if r.Expired(s.now()) {
+		if r.Expired(time.Now()) {
 			return nil
 		}
 		found = true
@@ -238,7 +236,7 @@ func (s *Store) evictLoop() {
 
 // evict scans both buckets and deletes expired entries and reviews.
 func (s *Store) evict() error {
-	now := s.now()
+	now := time.Now()
 	expiredEntry := func(v []byte) (bool, error) {
 		var e store.Entry
 		err := json.Unmarshal(v, &e)
