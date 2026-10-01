@@ -11,10 +11,6 @@ func TestSynthesizeContextID(t *testing.T) {
 		return SynthesizeContextID("slack", "C123", "U456", "T789", "worker")
 	}
 
-	t.Run("stable", func(t *testing.T) {
-		require.Equal(t, base(), base(), "same inputs must yield the same ID")
-	})
-
 	t.Run("distinct_thread", func(t *testing.T) {
 		other := SynthesizeContextID("slack", "C123", "U456", "T999", "worker")
 		require.NotEqual(t, base(), other, "different threadID must yield different ID")

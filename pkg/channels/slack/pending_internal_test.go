@@ -92,7 +92,7 @@ func TestIsBareAuthUtterance(t *testing.T) {
 		"Sign In",
 		"signin",
 		"connect",
-		"login",
+		"/login",
 		"login!",
 		"  sign in.  ",
 		"<@BOT123> login",

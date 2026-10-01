@@ -66,3 +66,20 @@ func TestToInboundMessageRejectsEmptyUser(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, "U123", msg.Subject)
 }
+
+// A bot's message never becomes a turn, or the bot answers its own posts in a
+// loop. Slack sets user on a bot's message too, so the user check does not
+// stand in for this one.
+func TestToInboundMessageRejectsBotMessages(t *testing.T) {
+	for _, event := range []slackInnerEvent{
+		{Type: evtMessage, ChannelType: "im", User: "U123", Text: "hi", Channel: "D1", TS: "1.2"},
+		{Type: evtAppMention, User: "U123", Text: "<@BOT> hi", Channel: "C1", TS: "1.2"},
+	} {
+		_, ok := event.toInboundMessage(false)
+		require.True(t, ok, "%s from a person routes", event.Type)
+
+		event.BotID = "B001"
+		_, ok = event.toInboundMessage(false)
+		require.False(t, ok, "%s from a bot is dropped", event.Type)
+	}
+}
