@@ -326,9 +326,10 @@ func TestImportBoltFileSkipsUndecodableRecordsAndMissingFile(t *testing.T) {
 	require.Equal(t, 1, total, "the record under another key is skipped, not fatal")
 	require.Equal(t, 1, added)
 
-	_, _, err = ImportBoltFile(t.TempDir()+"/absent.bolt", key32(), dst, nil)
+	absent := t.TempDir() + "/absent.bolt"
+	_, _, err = ImportBoltFile(absent, key32(), dst, nil)
 	require.Error(t, err)
-	_, statErr := os.Stat(t.TempDir() + "/absent.bolt")
+	_, statErr := os.Stat(absent)
 	require.True(t, os.IsNotExist(statErr), "a read-only open must not create the file")
 }
 
