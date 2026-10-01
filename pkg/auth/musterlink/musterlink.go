@@ -651,7 +651,7 @@ func (l *Linker) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	link, err := l.Exchange(ctx, q.Get(responseTypeCode), verifier)
+	link, err := l.exchange(ctx, q.Get(responseTypeCode), verifier)
 	if err != nil {
 		l.logger.Error("musterlink: code exchange failed", "err", err)
 		l.renderPage(w, http.StatusBadGateway, Page{
@@ -710,11 +710,11 @@ func (l *Linker) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, CallbackPath+"?done="+url.QueryEscape(l.putDone(link.Email)), http.StatusSeeOther)
 }
 
-// Exchange trades an authorization code (with its PKCE verifier) for muster
+// exchange trades an authorization code (with its PKCE verifier) for muster
 // tokens and resolves the muster identity (sub, email) via the userinfo
 // endpoint. The returned Link has no LinkedAt set; the caller stamps and stores
 // it after any email-match check.
-func (l *Linker) Exchange(ctx context.Context, code, codeVerifier string) (*Link, error) {
+func (l *Linker) exchange(ctx context.Context, code, codeVerifier string) (*Link, error) {
 	if err := l.ensureEndpoints(ctx); err != nil {
 		return nil, err
 	}

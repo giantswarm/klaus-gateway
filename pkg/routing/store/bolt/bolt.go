@@ -17,8 +17,8 @@ import (
 )
 
 // EvictionInterval is how often the background goroutine scans for expired
-// entries. It is a var so tests can shorten it.
-var EvictionInterval = time.Minute
+// entries.
+const EvictionInterval = time.Minute
 
 var (
 	bucketName    = []byte("routes")
@@ -231,14 +231,13 @@ func (s *Store) evictLoop() {
 		case <-s.stopEvict:
 			return
 		case <-t.C:
-			_ = s.Evict()
+			_ = s.evict()
 		}
 	}
 }
 
-// Evict scans both buckets and deletes expired entries and reviews. Exposed
-// for tests.
-func (s *Store) Evict() error {
+// evict scans both buckets and deletes expired entries and reviews.
+func (s *Store) evict() error {
 	now := s.now()
 	expiredEntry := func(v []byte) (bool, error) {
 		var e store.Entry
@@ -288,6 +287,3 @@ func (s *Store) evictBucket(bucket []byte, expired func(v []byte) (bool, error))
 		return nil
 	})
 }
-
-// SetNowFunc is a test hook to override the clock.
-func (s *Store) SetNowFunc(f func() time.Time) { s.now = f }

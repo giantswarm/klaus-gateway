@@ -350,29 +350,6 @@ func TestTokenForMissingIDTokenErrors(t *testing.T) {
 	require.Equal(t, "muster-sub", jwtSub(t, tok))
 }
 
-func TestTokenForReusesCachedToken(t *testing.T) {
-	stub := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
-	store := NewMemStore()
-	require.NoError(t, store.Put("U1", &Link{Sub: "muster-sub", Email: "a@example.com", RefreshToken: "refresh-0"}))
-	l := newTestLinker(t, stub, store, nil)
-
-	tok1, err := l.TokenFor(context.Background(), "U1")
-	require.NoError(t, err)
-	require.Equal(t, "muster-sub", jwtSub(t, tok1))
-
-	// A second call within the token's lifetime reuses the cached id_token and
-	// must not spend the (rotating) refresh token again -- doing so would race
-	// muster's rotation and burn the link.
-	tok2, err := l.TokenFor(context.Background(), "U1")
-	require.NoError(t, err)
-	require.Equal(t, tok1, tok2)
-
-	stub.mu.Lock()
-	calls := stub.counter
-	stub.mu.Unlock()
-	require.Equal(t, 1, calls, "second TokenFor must reuse the cached token, not refresh")
-}
-
 // A cached token that still covers a turn (the default minimum is 25m) is
 // handed out as it is: no call to muster.
 func TestTokenForReusesTokenThatCoversATurn(t *testing.T) {
@@ -625,16 +602,6 @@ func TestCallbackRejectsMissingIDToken(t *testing.T) {
 	driveCallback(t, l, "U1", http.StatusBadGateway)
 	_, gerr := store.Get("U1")
 	require.ErrorIs(t, gerr, ErrNotLinked, "a link without an id_token must not be stored")
-}
-
-func TestExchangeMissingIDTokenErrors(t *testing.T) {
-	stub := newMusterStub(t, "klaus-gateway", "alice@example.com", "muster-sub")
-	stub.omitIDToken = true
-	l := newTestLinker(t, stub, NewMemStore(), nil)
-
-	_, err := l.Exchange(t.Context(), "auth-code", "verifier")
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "id_token")
 }
 
 func TestCallbackRejectsEmailMismatch(t *testing.T) {

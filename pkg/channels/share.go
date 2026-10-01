@@ -15,7 +15,6 @@ func withOwnerAuth(ctx context.Context, msg InboundMessage) context.Context {
 	if msg.OwnerToken == "" {
 		return withCallerAuth(ctx, msg)
 	}
-	ctx = pkga2a.WithAgentRef(ctx, msg.AgentRef)
 	return pkga2a.WithForwardedToken(ctx, msg.OwnerToken)
 }
 

@@ -26,7 +26,7 @@ const devel = "(devel)"
 var (
 	version        = dev
 	gitSHA         = dev
-	buildTimestamp = "unknown"
+	buildTimestamp = "unknown" //nolint:unused // stamped by the ldflags above; the binary does not read it
 )
 
 // Version returns the best human-readable build identifier available, in
@@ -63,7 +63,3 @@ var buildInfoVersion = func() string {
 
 // GitSHA returns the commit SHA the binary was built from.
 func GitSHA() string { return gitSHA }
-
-// BuildTimestamp returns the UTC build time in RFC 3339 format, or
-// "unknown" when no ldflag was injected.
-func BuildTimestamp() string { return buildTimestamp }
