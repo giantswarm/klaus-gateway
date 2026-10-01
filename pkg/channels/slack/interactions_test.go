@@ -1161,6 +1161,7 @@ func TestHandleDecision_SubmitWithNoSelectionIsNudged(t *testing.T) {
 		_, _, eph := sink.counts()
 		return eph >= 1
 	}, flowWait, 10*time.Millisecond, "empty submit must nudge the user")
+	require.Contains(t, sink.ephemeralTexts(), choiceSelectNudge, "the nudge asks for a choice")
 	require.Zero(t, gw.sendCount(), "empty submit must not resume the task")
 	require.True(t, a.hasPendingTask("T001"), "empty submit must leave the task pending")
 }

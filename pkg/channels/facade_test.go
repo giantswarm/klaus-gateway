@@ -275,6 +275,7 @@ func TestFacade_SendCompletionViaA2A_FirstTurnCreatesTheInstance(t *testing.T) {
 	)
 	f, routes := newA2AFacade(agent)
 	msg := slackMsg("hi")
+	msg.SenderID, msg.Subject = "U1", "sub-1"
 
 	ch, err := f.SendCompletion(t.Context(), msg)
 	require.NoError(t, err)
@@ -293,7 +294,10 @@ func TestFacade_SendCompletionViaA2A_FirstTurnCreatesTheInstance(t *testing.T) {
 	// The instance was created with the synthesized context id as the
 	// idempotency key (thread-scoped: empty user slot), the turn ran on it,
 	// and the binding is persisted for the next turn and the next process.
-	wantRequest := channels.SynthesizeContextID("slack", "C1", "", "1700.0001", "kagent/worker")
+	// The id is fixed: every live thread is bound by it, so a change to its
+	// encoding hands each one a new, empty instance (docs/invariants.md).
+	// printf '5:slack|2:C1|0:|9:1700.0001|13:kagent/worker|' | shasum -a 256
+	const wantRequest = "84393e8104d7c8645e2f4e69d95afc4613c1c8ebe488e0d64a4c382c0c9a654c"
 	require.Equal(t, []string{wantRequest}, agent.createRequests)
 	require.Equal(t, []string{"hi"}, agent.createNames, "the conversation is named after the message that opened it")
 	require.Equal(t, []string{"inst-kagent/worker-1"}, agent.streamedOn)
