@@ -42,7 +42,7 @@ const (
 	// streamCallTimeout bounds one write to the turn's streamed message. Those
 	// writes are detached from the turn's cancellation (streamCallCtx), so a
 	// cancelled turn waits for the one in flight before it exits: shorter than
-	// the 30 s of slackHTTPClient, because that wait is what a /stop costs.
+	// the 30 s of slackHTTPClient, because that wait is what a stop costs.
 	streamCallTimeout = 10 * time.Second
 	slackAPIBase      = "https://slack.com/api"
 	// downloadSizeMargin is the headroom over Slack's declared file size that a
@@ -241,6 +241,10 @@ type batchedWriter struct {
 	streamRecovered bool
 	streamStopped   bool
 	streamFailed    bool
+	// failedCalls counts the tool calls whose result was an error since this
+	// reply began, so its last message can say so (failedCallsBlocks). Only
+	// touched from run()'s goroutine and the terminal flush after it.
+	failedCalls int
 
 	// Continuation across a restart (continuation.go). carried is what the
 	// previous process delivered of the turn this writer continues; skipText
@@ -304,7 +308,7 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 	ticker := time.NewTicker(streamAppendInterval)
 	defer ticker.Stop()
 	// The session leaves "processing" on EVERY exit — stream done, stream error,
-	// /stop, and the HITL prompt pause. Slack's agent loading UX does not clear
+	// a stop, and the HITL prompt pause. Slack's agent loading UX does not clear
 	// itself when the app posts any more, so a missing exit status leaves the
 	// thread spinning for up to an hour. chat.stopStream carries a session
 	// status of its own, but observed on graveler 2026-09-21 it does not clear
@@ -550,6 +554,7 @@ func (w *batchedWriter) renderToolActivity(tool *channels.ToolActivity) {
 			e.state = toolDone
 			if isErr {
 				e.state = toolFailed
+				w.failedCalls++
 			}
 		}
 		w.recordToolResult(e)
@@ -1176,7 +1181,7 @@ func (w *batchedWriter) retractRendered(ctx context.Context) {
 	// on a successful stop and on a stream-gone refusal, and the retract is
 	// only reached on a turn that ended normally.
 	if w.streamTS != "" {
-		if err := w.stopStream(ctx, nil, 0, sessionProcessing); err != nil {
+		if err := w.stopStream(ctx, nil, nil, 0, sessionProcessing); err != nil {
 			w.logger.Warn("slack: stop the reply stream before retracting it failed", "error", err)
 		}
 	}
@@ -1245,7 +1250,7 @@ func (w *batchedWriter) closeStream(ctx context.Context) error {
 	return nil
 }
 
-// endStream closes a stream a turn left open. A cancelled turn (a /stop, the
+// endStream closes a stream a turn left open. A cancelled turn (a stop, the
 // gateway shutting down) returns without a terminal flush, so without this the
 // message would keep animating and everything queued since the last append
 // would be lost. It runs on a context outliving the cancellation.
@@ -1500,7 +1505,7 @@ func (w *batchedWriter) rollOverStream(ctx context.Context) error {
 	if w.streamTS == "" {
 		return nil
 	}
-	if err := w.stopStream(ctx, nil, 0, sessionProcessing); err != nil {
+	if err := w.stopStream(ctx, nil, nil, 0, sessionProcessing); err != nil {
 		if !streamGone(err) {
 			return err
 		}
@@ -1527,7 +1532,7 @@ func (w *batchedWriter) closeBatch(ctx context.Context, b *streamBatch) (unsent 
 	// graveler 2026-09-21 that Slack accepts session_status here but the
 	// working indicator does not clear, so that call is the source of truth.
 	chunks, _ := w.chunkBodies(b.items)
-	err = w.stopStream(ctx, chunks, b.answerRaw, w.exitSessionStatus())
+	err = w.stopStream(ctx, chunks, w.failedCallsBlocks(), b.answerRaw, w.exitSessionStatus())
 	switch {
 	case err == nil:
 		b.reset()
@@ -1601,9 +1606,9 @@ func (w *batchedWriter) openStream(ctx context.Context, b *streamBatch, chunks [
 // out, and the delivery record counts the answer's own bytes. The status is
 // always explicit: Slack defaults it to active, which on an intermediate stop
 // would clear the working indicator while the turn keeps running.
-func (w *batchedWriter) stopStream(ctx context.Context, chunks []any, rawLen int, status sessionStatus) error {
+func (w *batchedWriter) stopStream(ctx context.Context, chunks, blocks []any, rawLen int, status sessionStatus) error {
 	sctx, cancel := streamCallCtx(ctx)
-	err := w.client.stopStream(sctx, w.channel, w.streamTS, chunks, status)
+	err := w.client.stopStream(sctx, w.channel, w.streamTS, chunks, blocks, status)
 	cancel()
 	switch {
 	case err == nil:
@@ -1672,6 +1677,39 @@ func (w *batchedWriter) dropStream() {
 func (w *batchedWriter) resetStream() {
 	w.dropStream()
 	w.streamRecovered, w.streamStopped, w.streamFailed = false, false, false
+	w.failedCalls = 0
+}
+
+// failedCallsBlocks is what the reply's last message ends with when tool calls
+// of this reply failed: a muted line that counts them and a button that opens
+// the thread's "Agent steps" modal; nil when none did. The reply does not show
+// the calls, so without it a failure is visible only when the agent says so.
+func (w *batchedWriter) failedCallsBlocks() []any {
+	if w.failedCalls == 0 {
+		return nil
+	}
+	return []any{
+		contextBlock(failedCallsNote(w.failedCalls)),
+		map[string]any{
+			bkType: bkActions,
+			bkElements: []any{map[string]any{
+				bkType:     bkButton,
+				bkText:     plainTextObj(failedCallsButton),
+				bkActionID: inspectOpenAction,
+			}},
+		},
+	}
+}
+
+// failedCallsButton labels the button of failedCallsBlocks.
+const failedCallsButton = "Show tool calls"
+
+// failedCallsNote is the text of failedCallsBlocks for n failed calls.
+func failedCallsNote(n int) string {
+	if n == 1 {
+		return "⚠️ 1 tool call failed"
+	}
+	return fmt.Sprintf("⚠️ %d tool calls failed", n)
 }
 
 // streamGone reports whether err says the message is not streaming any more:
@@ -2206,6 +2244,33 @@ func (c *slackAPIClient) lookupUserEmail(ctx context.Context, userID string) (st
 	return result.User.Profile.Email, nil
 }
 
+// lookupUserByEmail returns the Slack user ID of the workspace member with
+// email; users_not_found is ErrAddresseeNotFound. Needs users:read.email.
+func (c *slackAPIClient) lookupUserByEmail(ctx context.Context, email string) (string, error) {
+	params := url.Values{"email": {email}}
+	body, err := c.call(ctx, "users.lookupByEmail", "application/x-www-form-urlencoded", params.Encode())
+	if err != nil {
+		return "", err
+	}
+	var result struct {
+		OK   bool   `json:"ok"`
+		Err  string `json:"error,omitempty"`
+		User struct {
+			ID string `json:"id"`
+		} `json:"user"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", fmt.Errorf("slack users.lookupByEmail: decode: %w", err)
+	}
+	switch {
+	case result.Err == "users_not_found":
+		return "", channels.ErrAddresseeNotFound
+	case !result.OK:
+		return "", &apiError{method: "users.lookupByEmail", code: result.Err}
+	}
+	return result.User.ID, nil
+}
+
 // lookupUserDisplayName returns the human-facing name from the user's Slack
 // profile, preferring the display name and falling back to the real name. Used
 // to name the bot itself in help text so the example matches what people see in
@@ -2360,21 +2425,14 @@ func (a *Adapter) takeSessionTitle(threadID string) string {
 // where an untitled session reads as nothing at all. It also names the thread's
 // kagent conversation, so both surfaces list the thread under the same line.
 //
-// The command scaffolding a user types to address the bot says nothing about
-// the conversation, so the mention and a leading slash verb (the /agent
-// selector, or any other command-shaped verb) are dropped and only the
-// question survives; channels.TitleFrom does the rest. Returns "" when nothing
-// survives, in which case no title is sent and Slack names the session itself.
+// The mention a user types to address the bot says nothing about the
+// conversation, so it is dropped and only the question survives;
+// channels.TitleFrom does the rest. A command never reaches a turn — the word
+// is consumed before dispatch — so nothing else has to be stripped. Returns ""
+// when nothing survives, in which case no title is sent and Slack names the
+// session itself.
 func sessionTitleFrom(text string) string {
-	s := StripMention(strings.TrimSpace(text))
-	if cmd := parseCommand(s); cmd != nil && commandShapeRe.MatchString(cmd.Name) {
-		if cmd.Name == cmdAgent {
-			_, _, s = splitAgentCommand(s)
-		} else {
-			s = strings.Join(cmd.Args, " ")
-		}
-	}
-	return channels.TitleFrom(s, sessionTitleMax)
+	return channels.TitleFrom(StripMention(strings.TrimSpace(text)), sessionTitleMax)
 }
 
 // setSessionStatus sets the thread's agent session status, creating the
@@ -2518,13 +2576,14 @@ func (c *slackAPIClient) postMarkdown(ctx context.Context, channel, md, threadTS
 }
 
 // postQuestion posts the question that opens a conversation from the agent
-// picker: the question as the message, and in a channel who asked as a context
-// line under it. A direct message leaves that line out — the message already
-// carries the agent's name, and the only person who can read it is the one who
-// asked.
-func (c *slackAPIClient) postQuestion(ctx context.Context, channel, question, user, threadTS string) (string, error) {
-	// Escaping can grow a question the modal capped at slackSectionTextMax.
-	text := escapeMrkdwn(question)
+// picker: a line naming who asked which agent, then the question as a quote.
+// It goes out under the app's own identity, not the agent's: the words are the
+// person's, and the agent's name is in the first line instead.
+func (c *slackAPIClient) postQuestion(ctx context.Context, channel, question, user, agentName, threadTS string) (string, error) {
+	text := fmt.Sprintf(askAgentAskedBy, user, escapeMrkdwn(agentName)) + "\n>" +
+		strings.ReplaceAll(escapeMrkdwn(question), "\n", "\n>")
+	// Escaping and the quote marks can grow a question the modal capped at
+	// slackSectionTextMax.
 	if r := []rune(text); len(r) > slackSectionTextMax {
 		cut := string(r[:slackSectionTextMax-1])
 		// An entity cut in half would show as "&am…". After escaping, every
@@ -2534,17 +2593,13 @@ func (c *slackAPIClient) postQuestion(ctx context.Context, channel, question, us
 		}
 		text = cut + "…"
 	}
-	blocks := []any{map[string]any{
-		bkType: bkSection,
-		bkText: map[string]any{bkType: bkMrkdwn, bkText: text},
-	}}
-	if !isDMChannelID(channel) {
-		blocks = append(blocks, contextBlock(fmt.Sprintf(askAgentAskedBy, user)))
-	}
 	body := map[string]any{
 		paramChannel: channel,
 		paramText:    text,
-		paramBlocks:  blocks,
+		paramBlocks: []any{map[string]any{
+			bkType: bkSection,
+			bkText: map[string]any{bkType: bkMrkdwn, bkText: text},
+		}},
 	}
 	if threadTS != "" {
 		body[paramThreadTS] = threadTS
@@ -2625,7 +2680,7 @@ func (c *slackAPIClient) appendStream(ctx context.Context, channel, ts string, c
 // rolls the answer over into a new message. Observed on graveler 2026-09-21
 // that Slack accepts the field but the working indicator does not clear with
 // it, so the turn also ends the session through agents.sessions.setStatus.
-func (c *slackAPIClient) stopStream(ctx context.Context, channel, ts string, chunks []any, status sessionStatus) error {
+func (c *slackAPIClient) stopStream(ctx context.Context, channel, ts string, chunks, blocks []any, status sessionStatus) error {
 	body := map[string]any{
 		paramChannel:       channel,
 		paramTS:            ts,
@@ -2633,6 +2688,11 @@ func (c *slackAPIClient) stopStream(ctx context.Context, channel, ts string, chu
 	}
 	if len(chunks) > 0 {
 		body[paramChunks] = chunks
+	}
+	// blocks render at the bottom of the finalized message (the method
+	// reference), below everything the stream carried.
+	if len(blocks) > 0 {
+		body[paramBlocks] = blocks
 	}
 	_, err := c.postJSON(ctx, methodChatStopStream, body)
 	return streamErr(err)
@@ -2854,8 +2914,9 @@ type signInTrigger int
 
 const (
 	signInForMessage signInTrigger = iota // an unlinked user's message, held for replay
-	signInForLogin                        // the /login command: nothing is held
+	signInForLogin                        // the login command: nothing is held
 	signInForClick                        // a button click: nothing to replay, the person clicks again
+	signInForReply                        // a decision answered in its thread: nothing held, the person replies again
 )
 
 // signInPromptBody builds the sign-in card's Slack post body: when it replaces
@@ -2869,6 +2930,8 @@ func signInPromptBody(channel, threadID, linkURL, promptID string, supersedes bo
 		text += " " + signInForMessageLine
 	case signInForClick:
 		text += " " + signInForClickLine
+	case signInForReply:
+		text += " " + signInForReplyLine
 	}
 	signInButton := map[string]any{
 		bkType:     bkButton,
@@ -3180,6 +3243,15 @@ func (c *slackAPIClient) chatUpdate(ctx context.Context, channel, ts, text strin
 }
 
 func (c *slackAPIClient) postJSON(ctx context.Context, method string, body any) (string, error) {
+	resp, err := c.postJSONResponse(ctx, method, body)
+	return resp.Ts, err
+}
+
+// postJSONResponse is postJSON answering with the whole response: the
+// conversation a message landed in as well as its ts. A direct message is
+// addressed by the person's user ID, and only the response names the D…
+// channel that later edits of the message need.
+func (c *slackAPIClient) postJSONResponse(ctx context.Context, method string, body any) (slackResponse, error) {
 	// The identity fields go onto a clone so the caller's map stays untouched —
 	// which also keeps the original available for the unbranded retry below.
 	m, isMap := body.(map[string]any)
@@ -3209,23 +3281,24 @@ func (c *slackAPIClient) postJSON(ctx context.Context, method string, body any) 
 	payload, branded := build(true)
 	data, err := json.Marshal(payload)
 	if err != nil {
-		return "", fmt.Errorf("slack %s: marshal: %w", method, err)
+		return slackResponse{}, fmt.Errorf("slack %s: marshal: %w", method, err)
 	}
-	ts, err := c.send(ctx, method, "application/json; charset=utf-8", string(data))
+	resp, err := c.sendResponse(ctx, method, "application/json; charset=utf-8", string(data))
 	if branded && identityRejectedErr(err) {
 		c.noteIdentityRejected(err)
 		payload, _ = build(false)
 		if data, merr := json.Marshal(payload); merr == nil {
-			return c.send(ctx, method, "application/json; charset=utf-8", string(data))
+			return c.sendResponse(ctx, method, "application/json; charset=utf-8", string(data))
 		}
 	}
-	return ts, err
+	return resp, err
 }
 
 type slackResponse struct {
-	OK    bool   `json:"ok"`
-	Ts    string `json:"ts"`
-	Error string `json:"error,omitempty"`
+	OK      bool   `json:"ok"`
+	Ts      string `json:"ts"`
+	Channel string `json:"channel,omitempty"`
+	Error   string `json:"error,omitempty"`
 }
 
 func (c *slackAPIClient) post(ctx context.Context, method string, params url.Values) (string, error) {
@@ -3255,18 +3328,24 @@ const rateLimitRetryCap = 30 * time.Second
 // send executes one Slack Web API call and returns the ts of the affected
 // message, for methods whose response carries one.
 func (c *slackAPIClient) send(ctx context.Context, method, contentType, payload string) (string, error) {
+	resp, err := c.sendResponse(ctx, method, contentType, payload)
+	return resp.Ts, err
+}
+
+// sendResponse is send answering with the decoded response.
+func (c *slackAPIClient) sendResponse(ctx context.Context, method, contentType, payload string) (slackResponse, error) {
 	body, err := c.call(ctx, method, contentType, payload)
 	if err != nil {
-		return "", err
+		return slackResponse{}, err
 	}
 	var result slackResponse
 	if err := json.Unmarshal(body, &result); err != nil {
-		return "", fmt.Errorf("slack %s: decode response: %w", method, err)
+		return slackResponse{}, fmt.Errorf("slack %s: decode response: %w", method, err)
 	}
 	if !result.OK {
-		return "", &apiError{method: method, code: result.Error}
+		return slackResponse{}, &apiError{method: method, code: result.Error}
 	}
-	return result.Ts, nil
+	return result, nil
 }
 
 // apiError is a Slack Web API refusal (`ok: false`) carrying the error code

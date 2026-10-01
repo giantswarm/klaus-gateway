@@ -19,21 +19,21 @@ type AgentRosterSource interface {
 	ListAgents(ctx context.Context) ([]pkga2a.AgentInfo, error)
 }
 
-// agentRosterUnavailable answers a bare /agent when the roster fetch failed.
+// agentRosterUnavailable answers the agents command when the roster fetch failed.
 const agentRosterUnavailable = "The agents cannot be listed right now. Try again in a moment."
 
 // rosterSignInLead opens every notice that sends an unidentified caller to
 // sign in before the roster can be listed: the controller serves the roster to
 // a human identity, so a retry cannot help them. Each surface appends its own
-// tail (the slash command's slashCommandSignInNotice, /agent's
+// tail (the slash command's slashCommandSignInNotice, the listing's
 // agentRosterSignIn), so a wording change lands on all of them.
-const rosterSignInLead = "The agents are listed with your permissions, so sign in first: mention the bot with `/login`"
+const rosterSignInLead = "The agents are listed with your permissions, so sign in first: mention the bot with `login`"
 
-// agentRosterSignIn answers a bare or quoted /agent from a caller the gateway
+// agentRosterSignIn answers the agents command from a caller the gateway
 // cannot identify.
-const agentRosterSignIn = rosterSignInLead + ", sign in, then mention the bot with `/agent` again."
+const agentRosterSignIn = rosterSignInLead + ", sign in, then send what you typed again."
 
-// agentRosterEmpty answers a bare /agent when the controller reports no agents.
+// agentRosterEmpty answers the agents command when the controller reports no agents.
 const agentRosterEmpty = "No agents are installed."
 
 // rosterListTimeout bounds the list-agents call behind a roster listing or a
@@ -42,7 +42,7 @@ const rosterListTimeout = 5 * time.Second
 
 // rosterTTL is how long a fetched roster is served from cache. Short, so a
 // newly installed agent becomes selectable without a redeploy while repeated
-// /agent listings stay off the controller.
+// listings stay off the controller.
 const rosterTTL = 30 * time.Second
 
 // rosterFailureTTL is how long a failed roster fetch is remembered before the
@@ -51,7 +51,7 @@ const rosterTTL = 30 * time.Second
 // against an unreachable controller pays the full rosterListTimeout.
 //
 // Only rosterAgentsBestEffort honours it. Callers whose failure is user-facing
-// and blocks the turn — /agent selection and opener re-resolution — keep
+// and blocks the turn — the listing and opener re-resolution — keep
 // re-attempting, because refusing several messages in a row over one blip is
 // worse than paying the timeout.
 const rosterFailureTTL = 45 * time.Second
@@ -77,7 +77,7 @@ func rosterText(agents []pkga2a.AgentInfo) string {
 		return agentRosterEmpty
 	}
 	var b strings.Builder
-	b.WriteString("*Available agents* — start a new conversation with `/agent \"<name>\" <question>`:")
+	b.WriteString("*Available agents*:")
 	for _, ag := range agents {
 		b.WriteString("\n• *" + escapeMrkdwn(agentDisplayName(ag)) + "*")
 		if ag.Description != "" {
@@ -99,35 +99,24 @@ const (
 	rosterDescMax = 300
 )
 
-// postRoster posts the roster as rows under lead (a notice such as an unknown
-// agent's; "" for a bare listing) in the thread. selectable adds the Select
-// buttons; a thread that already has its conversation gets the rows without
-// them, since the picker refuses such a thread. A roster that cannot be
-// listed, or lists no agent, leaves lead on its own; with no lead either, the
-// empty roster says so. The error is the roster fetch's, for the caller to
-// answer a bare listing that failed.
-func (a *Adapter) postRoster(ctx context.Context, channel, threadID, lead string, selectable bool) error {
+// postRoster posts the roster as rows in the thread. selectable adds the
+// Select buttons; a thread that already has its conversation gets the rows
+// without them, since the picker refuses such a thread. A roster that lists no
+// agent says so, and one that cannot be listed leaves the reply to the caller,
+// which answers the returned error.
+func (a *Adapter) postRoster(ctx context.Context, channel, threadID string, selectable bool) error {
 	agents, err := a.rosterAgents(ctx)
 	client := a.apiClient()
 	if err != nil || len(agents) == 0 {
-		text := lead
-		if err == nil && text == "" {
-			text = agentRosterEmpty
-		}
-		if text != "" {
-			if _, perr := client.postMessage(ctx, channel, text, threadID); perr != nil {
+		if err == nil {
+			if _, perr := client.postMessage(ctx, channel, agentRosterEmpty, threadID); perr != nil {
 				a.Logger.Warn("slack: post roster reply failed", "thread", threadID, "error", perr)
 			}
 		}
 		return err
 	}
-	var blocks []any
 	fallback := rosterText(agents)
-	if lead != "" {
-		blocks = append(blocks, map[string]any{bkType: bkSection, bkText: map[string]any{bkType: bkMrkdwn, bkText: truncateRunes(lead, slackSectionTextMax)}})
-		fallback = lead + "\n\n" + fallback
-	}
-	blocks = append(blocks, a.rosterBlocks(agents, selectable)...)
+	blocks := a.rosterBlocks(agents, selectable)
 	if _, perr := client.postBlocks(ctx, channel, threadID, truncateRunes(fallback, slackSectionTextMax), blocks); perr != nil {
 		a.Logger.Warn("slack: post roster failed", "thread", threadID, "error", perr)
 	}
@@ -185,16 +174,21 @@ func (a *Adapter) rosterBlocks(agents []pkga2a.AgentInfo, selectable bool) []any
 		}
 		blocks = append(blocks, row)
 	}
-	footer := "Or mention the bot with `/agent \"Name\" question`."
+	footer := "Select starts a conversation with that agent in this thread."
 	if !selectable {
-		footer = "This thread already has its agent. To talk to another one, mention the bot with `/agent \"Name\" question` in a new thread."
+		// A new thread in a channel starts with a top-level message, which
+		// reaches the bot only with a mention.
+		footer = "This thread already has its agent. To talk to another one, mention the bot with `agents` in a new thread and pick it there."
 	}
 	if rest := sorted[len(shown):]; len(rest) > 0 {
 		names := make([]string, len(rest))
 		for i, ag := range rest {
 			names[i] = escapeMrkdwn(agentDisplayName(ag))
 		}
-		footer = fmt.Sprintf("%d more: %s. ", len(rest), strings.Join(names, ", ")) + footer
+		// The agents past the cut have no row, so no Select button reaches
+		// them: the pickers are where they can be chosen.
+		footer = fmt.Sprintf("%d more: %s — start one of those from the app's slash command, or the ⋯ menu's *Ask an agent here*. ",
+			len(rest), strings.Join(names, ", ")) + footer
 	}
 	return append(blocks, map[string]any{bkType: bkDivider}, contextBlock(truncateRunes(footer, slackSectionTextMax)))
 }
@@ -259,7 +253,7 @@ func agentDisplayName(ag pkga2a.AgentInfo) string {
 // reports, or agentRef's bare technical name when the roster has nothing for it.
 //
 // The name is the AgentTemplate's display-name annotation — the same source the
-// roster lists and /agent accepts — so no surface ever shows a spelling another
+// roster lists — so no surface ever shows a spelling another
 // one refuses.
 func (a *Adapter) agentNameFor(ctx context.Context, agentRef string) string {
 	if name := a.rosterDisplayName(ctx, agentRef); name != "" {
@@ -289,7 +283,7 @@ func (a *Adapter) rosterDisplayName(ctx context.Context, agentRef string) string
 }
 
 // bareAgentName drops any qualifier from agentRef, leaving the Agent
-// resource's own name — the spelling the CR carries and /agent accepts. The
+// resource's own name — the spelling the CR carries. The
 // last path segment is taken, so the result never contains a slash whatever
 // shape an unvalidated ref arrives in. Refs bound from a selection are
 // DNS-1123 validated, so this is that name exactly.
@@ -389,37 +383,6 @@ func (a *Adapter) rosterAgentsBestEffort(ctx context.Context) ([]pkga2a.AgentInf
 	return a.rosterAgents(ctx)
 }
 
-// agentRefsForSelector resolves a quoted /agent selector against the roster,
-// matching display names and technical names case-insensitively with
-// whitespace runs collapsed. Both kinds match in one pass — no precedence — so
-// a selector naming two different agents is reported as ambiguous (fail-stop)
-// instead of quietly resolved by a tie-break rule that a later cluster change
-// could flip to a different agent. Refs are deduped: matching one agent by
-// both its display and technical name is a single match.
-func (a *Adapter) agentRefsForSelector(ctx context.Context, selector string) ([]string, error) {
-	want := foldAgentSelector(selector)
-	if want == "" {
-		return nil, nil
-	}
-	agents, err := a.rosterAgents(ctx)
-	if err != nil {
-		return nil, err
-	}
-	var refs []string
-	seen := make(map[string]bool)
-	for _, ag := range agents {
-		if foldAgentSelector(ag.DisplayName) != want && foldAgentSelector(ag.Name) != want {
-			continue
-		}
-		ref := a.agentInfoRef(ag)
-		if !seen[ref] {
-			seen[ref] = true
-			refs = append(refs, ref)
-		}
-	}
-	return refs, nil
-}
-
 // refShape renders (namespace, name) in the deployment's ref shape. An empty
 // namespace means the served one: it takes the default agent's namespace, so
 // the ref is bare under a bare default and qualified under a qualified one. A
@@ -445,10 +408,4 @@ func (a *Adapter) agentInfoRef(ag pkga2a.AgentInfo) string {
 		return ag.Name
 	}
 	return a.refShape(ag.Namespace, ag.Name)
-}
-
-// foldAgentSelector normalizes a selector or agent name for matching:
-// lowercased, outer whitespace dropped, internal runs collapsed to one space.
-func foldAgentSelector(s string) string {
-	return strings.ToLower(strings.Join(strings.Fields(s), " "))
 }

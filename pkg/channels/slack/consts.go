@@ -186,12 +186,12 @@ const (
 	modalQuestionMax    = 3000
 	modalHintMax        = 2000 // an input block's hint text
 
-	// askAgentAskedBy is the context line under the question the gateway posts
-	// on submit. The agent is the message's author, so it is not repeated.
-	askAgentAskedBy = "Asked by <@%s>"
+	// askAgentAskedBy is the first line of the question the gateway posts on
+	// submit, above the quoted question: who asked, and which agent.
+	askAgentAskedBy = "<@%s> asked *%s*:"
 
 	// The command runs in a channel and in a direct message, so its sign-in
-	// notice names neither: the bot answers `/login` on both surfaces.
+	// notice names neither: the bot answers `login` on both surfaces.
 	slashCommandSignInNotice     = rosterSignInLead + ", then run the command again."
 	slashCommandSlowNotice       = "Listing the agents took too long for Slack's picker. Run the command again."
 	slashCommandOpenFailedNotice = "The agent picker did not open. Run the command again."
@@ -237,6 +237,11 @@ const (
 	inspectViewCallbackID = "inspect_agent_steps_view"
 	inspectToggleAction   = "inspect_toggle"
 )
+
+// inspectOpenAction is the "Show tool calls" button a reply with failed tool
+// calls ends with; a click opens the thread's inspection modal, as the
+// shortcut does.
+const inspectOpenAction = "inspect_open"
 
 // askAgentShortcutCallbackID is the callback_id of the "Ask an agent here"
 // message shortcut registered in deploy/slack/manifest.yaml. Invoked on any
@@ -290,11 +295,11 @@ const busyNotice = "Still answering the previous message. Send this one again on
 // could not record the thread, so the turn was not run. Ephemeral, in-thread.
 const storeUnavailableNotice = "The thread state could not be read, so your message was not sent to the agent. Try again in a moment."
 
-const tokenErrorNotice = "Your Giant Swarm sign-in could not be refreshed. Try again in a moment. If it keeps failing, mention the bot with `/login` to sign in again."
+const tokenErrorNotice = "Your Giant Swarm sign-in could not be refreshed. Try again in a moment. If it keeps failing, mention the bot with `login` to sign in again."
 
-// logoutFailedNotice is shown (ephemerally) when /logout could not remove the
+// logoutFailedNotice is shown (ephemerally) when logout could not remove the
 // link from the store, so the person does not believe they are signed out.
-const logoutFailedNotice = "The sign-out failed: your sign-in could not be removed. Mention the bot with `/logout` again in a moment."
+const logoutFailedNotice = "The sign-out failed: your sign-in could not be removed. Mention the bot with `logout` again in a moment."
 
 // accessDecisionRefusal is shown (ephemerally) when a user who is not permitted
 // in the thread clicks an in-thread tool Approve/Deny button.
@@ -319,18 +324,18 @@ const parkedDropNotice = "Only your last %d messages are held here; earlier ones
 // dropped message.
 const parkedDropNoticeTTL = time.Hour
 
-// stopNothingRunningNotice replies to a /stop in a thread with no in-flight
+// stopNothingRunningNotice replies to a stop in a thread with no in-flight
 // turn and no pending prompt, instead of falsely confirming a stop.
 const stopNothingRunningNotice = "Nothing is running in this thread."
 
-// stopStoppedNotice confirms a turn interrupted by the /stop command. The
+// stopStoppedNotice confirms a turn interrupted by the stop command. The
 // command's own message is in the thread above it, so the thread can already
 // see who asked.
 const stopStoppedNotice = "Stopped."
 
 // stopStoppedByNotice confirms a turn interrupted with the native stop button.
 // %s is the presser's Slack user ID. The press leaves no message of its own, so
-// unlike /stop this notice is the thread's only record of who stopped the turn.
+// unlike a stop this notice is the thread's only record of who stopped the turn.
 const stopStoppedByNotice = "Stopped by <@%s>"
 
 // notPermittedNotice refuses a caller who may read the thread but was never let
@@ -359,6 +364,7 @@ const (
 	signInPromptBodyFormat = "The agent runs its tools with your own permissions, so it needs your sign-in once. The link is valid for %d minutes."
 	signInForMessageLine   = "Your message runs as soon as you sign in."
 	signInForClickLine     = "Sign in, then click the button again."
+	signInForReplyLine     = "Sign in, then send your answer again."
 	signInSessionHint      = "Signed in before? Your session may have expired."
 )
 
@@ -373,14 +379,14 @@ const (
 	signInSignedInFormat = "%s signed in to Giant Swarm"
 )
 
-// oboDisabledNotice and noSlackUserNotice answer /login and /logout when
+// oboDisabledNotice and noSlackUserNotice answer login and logout when
 // sign-in cannot run at all.
 const (
 	oboDisabledNotice = "Sign-in is not enabled on this gateway."
 	noSlackUserNotice = "Your Slack user could not be read, so sign-in is not available."
 )
 
-// The /login and /logout replies. They are ephemeral: the first carries the
+// The login and logout replies. They are ephemeral: the first carries the
 // caller's email, which a shared thread must not see.
 const (
 	loginSignedInAsNotice = "Signed in as %s."
@@ -594,11 +600,11 @@ func countOf(n int64, unit string) string {
 // plain mention reaches, and say how to reach the commands and the roster.
 // The %[1]s verbs take the bot's mention, %[2]s the default agent's name.
 const (
-	channelIntroText    = "Swarmgeist connects this channel to Giant Swarm's agents. Mention %[1]s to start a thread with *%[2]s*, or mention it with `/agent` to pick another agent. Agents work with your permissions and ask before making changes."
-	channelIntroContext = "%[1]s `/help` lists the commands"
+	channelIntroText    = "Swarmgeist connects this channel to Giant Swarm's agents. Mention %[1]s to start a thread with *%[2]s*, or mention it with `agents` to pick another agent. Agents work with your permissions and ask before making changes."
+	channelIntroContext = "%[1]s `help` lists the commands"
 
 	assistantGreetingText    = "Ask about a cluster, an alert or a deployment. Swarmgeist routes each conversation to an agent, *%[2]s* by default. Agents work with your permissions and ask before making changes."
-	assistantGreetingContext = "%[1]s `/help` lists the commands · %[1]s `/agent` lists the agents"
+	assistantGreetingContext = "%[1]s `help` lists the commands · %[1]s `agents` lists the agents"
 )
 
 // homeGreetingTTL bounds how often the assistant-pane greeting repeats per

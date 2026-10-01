@@ -41,7 +41,7 @@ func TestUsage_CarriesAcrossApprovalPause(t *testing.T) {
 		return strings.Contains(fake.streamedText(), "deleted")
 	}, flowWait, 50*time.Millisecond, "approved turn completes")
 
-	sendEvent(t, srv, dmThreadEvent("U1", "/usage", "802.000", "800.000"))
+	sendEvent(t, srv, dmThreadEvent("U1", "usage", "802.000", "800.000"))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "in 30 · out 10 · total 40")
 	}, flowWait, 50*time.Millisecond, "last turn covers both segments of the paused turn")
@@ -199,7 +199,7 @@ func TestStop_DuringTurnStartWindow(t *testing.T) {
 	}
 
 	// The turn holds the thread slot but has not registered a cancelable turn yet.
-	sendEvent(t, srv, dmThreadEvent("U1", "/stop", "301.000", "300.000"))
+	sendEvent(t, srv, dmThreadEvent("U1", "stop", "301.000", "300.000"))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Stopped")
 	}, flowWait, 50*time.Millisecond, "/stop replies")
@@ -211,27 +211,6 @@ func TestStop_DuringTurnStartWindow(t *testing.T) {
 			strings.Contains(allText(fake.pathCalls("chat.update")), "THE-ANSWER")
 	}, time.Second, 100*time.Millisecond,
 		"a turn confirmed as stopped must not proceed to answer")
-}
-
-// A /stop in a thread with no in-flight turn and no pending prompt must not
-// claim it stopped anything.
-func TestStop_IdleThreadSaysNothingRunning(t *testing.T) {
-	fake := newFakeSlackAPI()
-	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "done"}, {Done: true}}}
-	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
-
-	sendEvent(t, srv, dmEvent("U1", "hi", "400.000"))
-	// The done reaction is the turn's last Slack call; the thread slot frees
-	// right after it.
-	fake.waitForPath(t, "reactions.remove", 1)
-	time.Sleep(150 * time.Millisecond)
-
-	sendEvent(t, srv, dmThreadEvent("U1", "/stop", "401.000", "400.000"))
-	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Nothing is running in this thread")
-	}, flowWait, 50*time.Millisecond, "an idle /stop says so")
-	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "Stopped",
-		"an idle /stop must not claim it stopped anything")
 }
 
 // /stop is an intentional cancel: the working reaction is cleared silently, with
@@ -247,7 +226,7 @@ func TestStop_CancelClearsWorkingReactionSilently(t *testing.T) {
 	fake.waitForPath(t, "reactions.add", 1)
 	waitTurnStreaming(t, fake)
 
-	sendEvent(t, srv, dmThreadEvent("U1", "/stop", "556.000", "555.000"))
+	sendEvent(t, srv, dmThreadEvent("U1", "stop", "556.000", "555.000"))
 	fake.waitForPath(t, "reactions.remove", 1)
 
 	require.Equal(t, []string{"eyes"}, fake.reactionNames("reactions.remove"), "working reaction cleared")

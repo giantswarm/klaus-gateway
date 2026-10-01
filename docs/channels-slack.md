@@ -31,14 +31,14 @@ DMs and channels are two independent surfaces, gated separately:
 For an **Agent-type Slack app** the DM surface *is* the assistant pane: Slack
 replaces the top-level DM composer, so every user message arrives threaded
 (`thread_ts` is always set) and plain top-level DMs do not occur. The
-per-message-thread DM path (and the channel `/usage` fallback that goes with it)
+per-message-thread DM path (and the channel `usage` fallback that goes with it)
 applies only to non-Agent deployments.
 
 While a turn runs, the thread carries Slack's **native working indicator**. It
 is driven by the agent session's lifecycle status
 (`agents.sessions.setStatus`, granular bot token with `chat:write`), which the
 adapter sets to `processing` when the turn starts and back to `active` on exit:
-normal end, stream error, `/stop`. Every turn makes that exit call, right after
+normal end, stream error, a stop. Every turn makes that exit call, right after
 the `chat.stopStream` that closes its answer. The stop names the same status in
 its own `session_status` field, but Slack was observed (graveler, 2026-09-21) to
 accept that field without clearing the indicator, so the status call is what
@@ -71,11 +71,11 @@ The indicator also carries Slack's **native stop button**, but only for an app
 subscribed to the `agent_session_stopped` bot event — the subscription is what
 draws the button, so an existing Slack app must have it added by hand (Event
 Subscriptions → Subscribe to bot events) before users see it. Pressing it is
-equivalent to `/stop`: the adapter cancels the thread's in-flight turn and
+equivalent to the `stop` word: the adapter cancels the thread's in-flight turn and
 confirms with the context line `Stopped by @presser` in the thread — the notice names the
-presser because, unlike a typed `/stop`, the press leaves no message of its own,
+presser because, unlike a typed `stop`, the press leaves no message of its own,
 so it is the thread's only record of who stopped the turn. It carries the same
-per-thread access rule as `/stop` — only the thread owner and the people they
+per-thread access rule as `stop` — only the thread owner and the people they
 allowed can interrupt the agent — and refuses anyone else ephemerally, since a
 press nobody saw being made should not get an answer the whole thread reads.
 Slack does not move the session out of `processing` by itself, so a press that
@@ -83,14 +83,14 @@ finds nothing running (a stranded indicator, or one racing the turn's last exit)
 sets `active` directly instead of posting anything. A thread waiting on an
 approval prompt is left exactly as it is: the button cannot normally reach one,
 and in the race where it does, the prompt is still on screen and the user
-answers it or types `/stop`.
+answers it or types `stop`.
 
 The `processing` call of a conversation's first turn also **names the
 session** (`agents.sessions.setStatus` takes a `title`), so the Messages tab
 timeline lists conversations as "Investigate CPU alert on gazelle" rather than
 untitled. The title is the conversation's opening message, normalised: the bot
-mention, an `/agent "<name>"` selector and any other leading slash verb are
-stripped (they address the bot, they do not describe the conversation),
+mention is
+stripped (it addresses the bot, it does not describe the conversation),
 whitespace collapses to single spaces, and the result is cut at a word boundary
 to Slack's 200-character limit with a trailing `…`. It is sent only with the
 turn that opens the conversation — a channel mention rooting its own thread, the
@@ -186,7 +186,7 @@ creates one, which a turn that switches agents does mid-thread.
   instead — "An earlier interrupted turn corrupted this conversation's history … I've
   reset the session: please resend your message …" — so the person knows to resend.
 - **The thread's earlier messages go to the agent.** When a conversation opens inside a thread that
-  already has messages — the **Ask an agent here** shortcut, an `/agent "<name>" <question>` reply,
+  already has messages — the **Ask an agent here** shortcut, a pick in the agent picker,
   a bare mention under an alert — the adapter reads that thread once, on the opening turn, and hands
   the messages written before the opener to the agent as a labelled part of its own (`[thread
   context shared by <name>: N earlier messages in this thread, oldest first]`, one line per message
@@ -253,7 +253,7 @@ creates one, which a turn that switches agents does mid-thread.
 
 These are independent; a user can have completed one and not the other.
 
-1. **The gateway's account link** (`/login`, musterlink): binds a Slack user to
+1. **The gateway's account link** (`login`, musterlink): binds a Slack user to
    a Giant Swarm identity. The callback enforces an email match between the
    OAuth identity and the Slack profile email. GitHub-backed sign-in releases
    the GitHub *primary* email by default, which is the usual mismatch cause;
@@ -292,32 +292,22 @@ reinstall.
 ## Agent routing
 
 Every Slack thread is routed to a single agent via the A2A executor. A conversation picks its
-agent when it opens, through one of three entry points, and keeps it for life:
+agent when it opens, and keeps it for life. A plain mention reaches the default agent
+(`slack.defaultAgent`); choosing another one happens through one of these entry points:
 
-- **Mention with a prefix**: `@bot /agent "<display name>" <question>` or
-  `@bot /agent <technical-name> <question>` starts a conversation in any thread with no agent
-  recorded yet — a root `@`-mention, or a reply inside an existing thread that has none of its
-  own (an alert another app posted, say). The technical name may carry the served
-  namespace (`kagent/sre-agent`); it names the same agent as the bare name. Without a prefix the conversation goes to the default
-  agent (`slack.defaultAgent`). Inside a thread that already has a conversation, naming its own
-  agent again is a no-op — the turn dispatches as a normal reply — and naming a different agent
-  is refused: the thread's row binds one agent and one AgentInstance, and a different agent
-  would need a different instance, so the switch is refused rather than forking the
-  conversation.
-- **The roster**: `@bot /agent` alone lists the agents as rows, and so do the notices of a
-  failed selection (an unknown name, an agent that cannot run): an "Agents" header, how many
+- **The roster**: `agents` lists the agents as rows: an "Agents" header, how many
   there are and which one a plain mention reaches, then one row per agent, the default first
   and the rest A–Z: the display name, the first sentence of its description, and a **Select**
-  button. At most 8 rows; the rest are named in the footer, with the typed form (`@bot /agent
-  "Name" question`). Select opens the same picker as the shortcut below, for the thread the
+  button. At most 8 rows; the rest are named in the footer. Select opens the same picker as the
+  shortcut below, for the thread the
   roster was posted in, with that agent preselected (the default, when that agent has left the
   roster since); a thread that belongs to someone else is refused privately. In a thread that
   already has its conversation the rows carry no button, and the footer points at a new thread.
   The picker's own notices, sent through its `response_url`, keep the roster as a text list.
 - **Slash command**: `/swarmgeist [question]` opens a modal with an agent select over the live
   roster (the default agent preselected) and a **Prompt** box, titled "New conversation". On
-  submit the gateway posts the conversation root itself, under the agent's identity (the
-  question, and in a channel "Asked by @user" as context under it), makes the submitter the
+  submit the gateway posts the conversation root itself, under the app's own identity
+  ("@user asked *Agent*:" and the question as a quote), makes the submitter the
   thread initiator, and runs the question as the first turn. It works in a channel and in a direct
   message — Slack offers the command in the agent pane's composer, and the root the submission
   posts is the conversation the pane then shows — but never inside a thread: Slack sends no
@@ -340,16 +330,15 @@ agent when it opens, through one of three entry points, and keeps it for life:
   **reply** in that thread, makes the submitter the thread initiator, and runs the
   question as the first turn. Two kinds of thread are refused, with nothing posted: one that
   already talks to an agent — reply in it to ask that agent, a second conversation would fork the
-  one it has — and one that already belongs to someone else (a `/usage` or `/stop` typed there
+  one it has — and one that already belongs to someone else (a `usage` or `stop` typed there
   made them its initiator) — reply in it, so the owner is asked to allow you, since a conversation
   opened by the picker would run in the owner's conversation. Refusals and failures
   are private to the invoker, like the command's. The shortcut works in DMs too when DMs are
   served.
 
 An agent that is installed but that no Harness admits, or whose compiled revision is not ready,
-is refused with that reason instead of as an unknown name, on the technical-name form and on
-the pickers. The quoted display-name form still reports an unknown name in that case, because
-it resolves the name against the roster, which lists selectable agents only.
+is refused by the pickers with that reason instead of as an unknown name. The roster lists
+selectable agents only, so such an agent has no row to pick in the first place.
 
 A thread's agent binding is not re-derived after a restart — it does not need to be. It lives
 in the thread's row in the routing store (see [Threads and conversations](#threads-and-conversations)),
@@ -500,6 +489,21 @@ any string that begins with `Slack bot`, `Slack app-level`, or `Slack user`.
    needs approval shows in the log twice: in the turn that asked for approval, without a
    result, and in the resumed turn, with the call and its result.
 
+   A reply whose tool calls include failed ones — a result the tool or the runtime reported as
+   an error, ❌ in the log; an approval request is not one — ends with one muted line that
+   counts them, `⚠️ 2 tool calls failed`, and a **Show tool calls** button. The button opens
+   the thread's **Agent steps** modal for the person who clicks it, as the shortcut does:
+   the click brings the `trigger_id` a modal needs, and the thread is the clicked message's.
+   Line and button are a context block and an actions block the final `chat.stopStream`
+   adds below the streamed text (its `blocks` argument), so they are part of the reply and
+   everyone in the thread sees them. It counts every failed call of the reply, also one the
+   agent recovered from with a later call, and starts from zero for each reply; after a
+   gateway restart during the turn, it counts only the calls after the restart. The button
+   stays in the thread, but the calls it opens are kept for 24 hours only; a later click
+   opens the modal with the "No tool activity is kept" notice. A reply that
+   rolls over carries it on its last message; a turn without prose has no reply to carry
+   it, and a final stop that fails loses it.
+
    Each append carries only what is new, and answer text is sent up to the last whitespace
    boundary — an unfinished word waits for the next append, so nothing is ever half-written.
    Replies over 12,000 characters roll over into a further streamed message; the intermediate
@@ -546,7 +550,7 @@ any string that begins with `Slack bot`, `Slack app-level`, or `Slack user`.
 
 Turns are serialized per thread: a message that arrives while the thread's previous turn is
 still running gets a brief "still working" notice rather than starting an overlapping turn; the
-notice names `/stop`, and a reply that is just `stop` there interrupts the running turn like `/stop`.
+notice names `stop`, and a reply that is just that word interrupts the running turn.
 A signed-out sender's message is held for sign-in instead (no busy notice) and replays once
 they link and the running turn finishes.
 
@@ -556,7 +560,7 @@ Three structured log records (`record=…`, JSON fields) tell a turn's story; jo
 `thread_id` (the Slack `thread_ts`) and `trace_id`:
 
 - `turn_dispatch` -- the turn is admitted and about to be sent: `agent`, `agent_source`
-  (`prefix`, `command`, `shortcut`, `thread`, `default`, `task`), `slack_user`, `subject` (the resolved
+  (`command`, `shortcut`, `thread`, `default`, `task`, `replay`), `slack_user`, `subject` (the resolved
   e-mail), `sub` (the linked muster identity), `channel_id`, `thread_id`, `message_id`,
   `task_id` (on a resume), `resume`, `trace_id`, `dispatch_ms` (since the event arrived).
 - `turn_complete` -- one per turn, whatever its end: `outcome` (see
@@ -596,11 +600,11 @@ The same phases feed the `klaus_gateway_turn_phase_seconds` histograms and the o
 failure class the `klaus_gateway_turn_total` counter; the trace the records name spans the gateway, the kagent
 controller and the actor when `observability.otlpEndpoint` is set.
 
-### Restarts and `/stop`
+### Restarts and stopping
 
 A turn ends early for one of two reasons, and the thread can tell them apart:
 
-- **`/stop`** is the user's decision. The working reaction is cleared, the reply's stream is
+- **A stop** is the user's decision. The working reaction is cleared, the reply's stream is
   closed where it stands, nothing else is posted, and the task is cancelled at the
   controller so the agent stops working.
 - **An error** before any answer text (an agent that did not start in time, a controller
@@ -677,15 +681,36 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
 
 ### Identity, HITL, and channel behavior
 
-- **Commands and notes.** `/help` answers with a header, how to address the bot ("Mention
-  @Swarmgeist first, as in `@Swarmgeist /stop`": Slack's composer takes a message that starts with
-  `/` as one of Slack's own commands, in a DM too), the commands
-  grouped by what the person is doing (In a thread: `/stop`, `/usage`; Agents: `/agent`, only
-  with agent selection; Account: `/login`, `/logout`, only with sign-in), each command as a code
+- **Commands and notes.** `help` answers with a header, how to address the bot ("Send a command
+  as the word alone, in a direct message or in a thread @Swarmgeist is in; anywhere else mention
+  @Swarmgeist first"), the commands
+  grouped by what the person is doing (In a thread: `stop`, `usage`; Agents: `agents`, only
+  with agent selection; Account: `login`, `logout`,
+  only with sign-in), each command as a code
   label with its effect as text, and a context line for the **Inspect agent steps** shortcut.
   The gateway's own notes (a stop, a failure, a refusal, a busy thread) are one short context
   line in Slack's small muted text, written in the third person without emoji: they name what
   happened and the one thing to do next, apart from the agent's answer.
+- **Every command is a plain word.** `usage`, `help`, `agents`, `login` and `logout` are read
+  from a
+  message that is that word alone, in any case and with trailing punctuation (`Login.`), so they
+  need no slash and no mention wherever the bot reads: a DM, or a thread it is in. The gateway
+  owns no in-message slash command: Slack's composer keeps a message that starts with `/` for
+  its own commands, so such a message only ever reached the bot after a mention, and one that
+  does now goes to the agent like any other text. `stop` is the word with a
+  condition: dispatch reads it only in a thread whose turn is still running, and anywhere else
+  it stays a message for the agent (see [Restarts and stopping](#restarts-and-stopping)).
+  Three messages keep the word instead: a sentence that
+  contains it, a caption on an upload, and an answer in a thread paused on a **question** —
+  the `ask_user` card, or a question without one, whose typed reply reaches the agent as the
+  answer itself — where one word is what the question asked for. There the command is out of
+  reach until the question is answered, which is what a question asks for. A thread paused on an
+  **approval card** is not a question: any text beside a
+  card is read as a rejection carrying that text, so the word stays the command, the person
+  is signed out and the card is left to decide (`slack-hitl-surface.md`). What a gateway serves decides which
+  words are commands on it: one without sign-in passes `login` and `logout` to the agent, one
+  that lists no agents passes `agents`, and `usage` and `help`, which it answers from itself,
+  always work.
 - **Per-message branding.** Agent replies and the agent's own confirmation prompts are posted
   under the agent's display name, so they read as the agent speaking
   rather than the app. The name is the `Agent` CR's `ui.giantswarm.io/display-name` annotation
@@ -728,14 +753,14 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
   (giantswarm/kagent-upstream#71).
 - **Channel intro.** When the bot is added to a channel it posts a one-time introduction
   (requires the `member_joined_channel` bot event). It names the default agent, the one a plain
-  mention reaches, by its roster name, and ends with how to reach `/help`. The assistant-pane
-  greeting does the same and also points at `/agent`. Both name the bot by its mention, so each
+  mention reaches, by its roster name, and ends with how to reach `help`. The assistant-pane
+  greeting does the same and also points at `agents`. Both name the bot by its mention, so each
   Slack app shows its own name.
 - **Sign-in prompt.** An unlinked user's first message is answered with a "Sign in to Giant
   Swarm" card: the agent runs its tools with the person's permissions, the link lasts 15
   minutes, and a last line that depends on the trigger ("Your message runs as soon as you sign
   in." for a held message, "Sign in, then click the button again." for a button click, nothing
-  for `/login`). In a channel the prompt is ephemeral, so only that user sees the link; a
+  for `login`). In a channel the prompt is ephemeral, so only that user sees the link; a
   context line in the thread names who the thread waits for ("Waiting for @Pau to sign in to
   Giant Swarm"), carries no link, and gives the ephemeral something to render against. The
   thread has one notice for every unlinked user in it: it adds a second person, drops each
@@ -759,8 +784,8 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
 - **Transient sign-in failures.** When a linked person's token cannot be minted right now —
   muster's token endpoint or the gateway's link store not answering — they get an ephemeral
   "Your Giant Swarm sign-in could not be refreshed" notice and their message is not held;
-  the sign-in prompt is reserved for people with no link. `/login` answers the same way, and
-  `/logout` reports a sign-out the link store refused instead of confirming it. The gateway
+  the sign-in prompt is reserved for people with no link. `login` answers the same way, and
+  `logout` reports a sign-out the link store refused instead of confirming it. The gateway
   keeps a process-local copy of every link it has served, so a store outage does not reach the
   people it already knows and a refresh token the store failed to take is written later rather
   than lost (see `deployment.md`, "OBO link store").
@@ -789,6 +814,8 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
 | `mpim:history`   | The same read in a group DM                            |
 | `channels:join`  | Join public channels on invite                        |
 | `files:read`     | Download message attachments (`url_private`) to forward to the agent |
+| `users:read`     | Name the bot in help text; required beside `users:read.email` |
+| `users:read.email` | Find the person a decision is for by their email (`users.lookupByEmail`) |
 
 The `member_joined_channel` bot event must also be subscribed for the channel intro.
 `groups:history` and `mpim:history` are new: Slack grants a scope only on re-install, so an app

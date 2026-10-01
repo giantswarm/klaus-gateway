@@ -66,7 +66,7 @@ func TestInitiator_CollaboratorTurnRunsAsTheCollaborator(t *testing.T) {
 		flowWait, 50*time.Millisecond, "initiator's mention dispatches")
 
 	// Collaborator posts: held pending consent, then approved by the initiator.
-	sendEvent(t, srv, mention("U002", "help", "200.000", "100.000"))
+	sendEvent(t, srv, mention("U002", "what broke?", "200.000", "100.000"))
 	fake.waitForPath(t, "chat.postEphemeral", 1)
 	sendAccessInteraction(t, srv, "U001", accessAllowAction, "100.000", "U002", fakeURL+"/response")
 	// The click is acknowledged before the grant is written; the prompt rewrite
@@ -124,7 +124,7 @@ func TestInitiator_FallsBackToSenderWhenTokenUnavailable(t *testing.T) {
 	}, flowWait, 50*time.Millisecond, "the unlinked initiator is prompted to sign in")
 
 	// Collaborator posts, held pending consent; the initiator approves.
-	sendEvent(t, srv, mention("U002", "help", "200.000", "100.000"))
+	sendEvent(t, srv, mention("U002", "what broke?", "200.000", "100.000"))
 	fake.waitForPath(t, "chat.postEphemeral", 1)
 	sendAccessInteraction(t, srv, "U001", accessAllowAction, "100.000", "U002", fakeURL+"/response")
 	// The click is acknowledged before the grant is written; the prompt rewrite
@@ -196,7 +196,7 @@ func TestInitiator_CollaboratorWithoutShareIsToldWhy(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return signInPrompted(fake)
 	}, flowWait, 50*time.Millisecond, "the unlinked initiator is prompted to sign in")
-	sendEvent(t, srv, mention("U002", "help", "200.000", "100.000"))
+	sendEvent(t, srv, mention("U002", "what broke?", "200.000", "100.000"))
 	fake.waitForPath(t, "chat.postEphemeral", 1)
 	sendAccessInteraction(t, srv, "U001", accessAllowAction, "100.000", "U002", fakeURL+"/response")
 
@@ -339,7 +339,7 @@ func TestInitiator_FirstSightCollaboratorWithoutShareKeepsTheBinding(t *testing.
 	obo := perUserOBO{tokens: map[string]string{"U002": "tok-collab"}, unlinked: map[string]bool{"U001": true}}
 	_, srv := newEventsAdapter(t, facade, fakeURL, channelMode, func(a *slackadapter.Adapter) { a.OBO = obo })
 
-	sendEvent(t, srv, mention("U002", "help", "200.000", "100.000"))
+	sendEvent(t, srv, mention("U002", "what broke?", "200.000", "100.000"))
 
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "only be opened to you while they are signed in")

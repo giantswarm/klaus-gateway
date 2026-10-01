@@ -399,9 +399,10 @@ func TestPostApprovalPrompt_EscapesMrkdwn(t *testing.T) {
 }
 
 // The picker's question enters an mrkdwn section and the fallback text, so it
-// is escaped, and the escaped text stays inside the section limit without
-// cutting an entity in half.
-func TestPostQuestion_EscapesAndTruncates(t *testing.T) {
+// is escaped and quoted line by line under a line naming who asked which agent,
+// and the whole text stays inside the section limit without cutting an entity
+// in half.
+func TestPostQuestion_EscapesQuotesAndTruncates(t *testing.T) {
 	var body atomic.Value
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw, _ := io.ReadAll(r.Body)
@@ -412,9 +413,9 @@ func TestPostQuestion_EscapesAndTruncates(t *testing.T) {
 	defer srv.Close()
 	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
 
-	post := func(question string) (text, section string) {
+	post := func(channel, question string) (text, section string) {
 		t.Helper()
-		_, err := client.postQuestion(t.Context(), "C1", question, "U1", "")
+		_, err := client.postQuestion(t.Context(), channel, question, "U1", "SRE <Agent>", "")
 		require.NoError(t, err)
 		raw, _ := body.Load().(string)
 		var payload struct {
@@ -426,16 +427,22 @@ func TestPostQuestion_EscapesAndTruncates(t *testing.T) {
 			} `json:"blocks"`
 		}
 		require.NoError(t, json.Unmarshal([]byte(raw), &payload))
-		require.Len(t, payload.Blocks, 2)
+		require.Len(t, payload.Blocks, 1)
 		return payload.Text, payload.Blocks[0].Text.Text
 	}
 
-	text, section := post("ping <!channel> now")
-	require.Equal(t, "ping &lt;!channel&gt; now", text)
+	const lead = "<@U1> asked *SRE &lt;Agent&gt;*:\n>"
+
+	text, section := post("C1", "ping <!channel> now\nsecond line")
+	require.Equal(t, lead+"ping &lt;!channel&gt; now\n>second line", text)
 	require.Equal(t, text, section)
 
-	text, section = post(strings.Repeat("&", slackSectionTextMax))
+	text, _ = post("D1", "hi")
+	require.Equal(t, lead+"hi", text, "a direct message names who asked which agent too")
+
+	text, section = post("C1", strings.Repeat("&", slackSectionTextMax))
 	require.Equal(t, text, section)
+	require.True(t, strings.HasPrefix(text, lead))
 	require.LessOrEqual(t, utf8.RuneCountInString(text), slackSectionTextMax)
 	require.True(t, strings.HasSuffix(text, "&amp;…"), "the cut falls between two entities")
 }
@@ -1133,6 +1140,8 @@ type streamCall struct {
 	ts            string
 	markdown      string
 	chunkTypes    []string
+	blocks        capturedMessage // the text of the blocks a stop adds below the stream
+	blockTypes    []string        // and their types
 	status        string
 	threadTS      string
 	recipientUser string
@@ -1326,7 +1335,7 @@ func (f *fakeThread) handler() http.HandlerFunc {
 		case methodChatAppendStream, methodChatStopStream:
 			f.streamCalls = append(f.streamCalls, streamCall{
 				method: method, ts: ts, markdown: chunkMD, chunkTypes: chunkTypes,
-				status: body.SessionStatus,
+				status: body.SessionStatus, blocks: texts, blockTypes: blockTypesOf(body.Blocks),
 			})
 			switch {
 			case f.stoppedByUser:
@@ -2289,13 +2298,8 @@ func TestSessionTitleFrom(t *testing.T) {
 	}{
 		{"plain question", "why is gazelle paging", "why is gazelle paging"},
 		{"leading mention", "<@U123> investigate the CPU alert", "investigate the CPU alert"},
-		{"agent selector", `/agent "Swarm Helper" investigate the CPU alert`, "investigate the CPU alert"},
-		{"unquoted agent selector", "/agent helper check the disk", "check the disk"},
-		{"mention and agent selector", `<@U123> /agent "Helper" check the disk`, "check the disk"},
-		{"other slash verb", "/mute alerts and then look at the logs", "alerts and then look at the logs"},
-		{"bare slash verb", "/help", ""},
-		{"selector with no question", `/agent "Helper"`, ""},
-		{"a path is not a command", "/etc/hosts is missing an entry", "/etc/hosts is missing an entry"},
+		{"a slash is text now", "/mute alerts and then look at the logs", "/mute alerts and then look at the logs"},
+		{"a path is text too", "/etc/hosts is missing an entry", "/etc/hosts is missing an entry"},
 		{"collapsed whitespace", "why is\n\n  gazelle   paging?\n", "why is gazelle paging?"},
 		{"empty", "   ", ""},
 		{"multi-byte runes survive", "¿por qué está caído el nodo 🇪🇸?", "¿por qué está caído el nodo 🇪🇸?"},
@@ -2974,4 +2978,146 @@ func TestRespondToURL_NeverReplacesTheSource(t *testing.T) {
 	require.NoError(t, client.respondToURL(t.Context(), srv.URL, "hello"))
 	require.Equal(t, false, body["replace_original"])
 	require.Equal(t, "ephemeral", body["response_type"])
+}
+
+// failedResultDelta is a tool result the runtime reports as an error.
+func failedResultDelta(name, callID string) channels.OutboundDelta {
+	return toolResultDelta(name, callID, map[string]any{"error": "boom"})
+}
+
+// stopBlocks returns the blocks each chat.stopStream added below its message,
+// in order.
+func (f *fakeThread) stopBlocks() []capturedMessage {
+	var out []capturedMessage
+	for _, c := range f.streams() {
+		if c.method == methodChatStopStream {
+			out = append(out, c.blocks)
+		}
+	}
+	return out
+}
+
+// A reply whose turn had failed tool calls ends with one muted line that
+// counts them and a button that opens the tool calls; both are blocks of the
+// final stop, so they are part of the reply itself.
+func TestFailedCalls_TheReplyEndsWithOneLine(t *testing.T) {
+	ft, _ := captureStream(t,
+		toolCallDeltaWith("get", "c1", nil), failedResultDelta("get", "c1"),
+		toolCallDeltaWith("get", "c2", nil), toolResultDelta("get", "c2", map[string]any{"output": "ok"}),
+		toolCallDeltaWith("list", "c3", nil), failedResultDelta("list", "c3"),
+		channels.OutboundDelta{Kind: channels.DeltaText, Content: "done "},
+	)
+	require.Equal(t, []capturedMessage{{failedCallsNote(2)}}, ft.stopBlocks())
+	calls := ft.streams()
+	require.Equal(t, []string{bkContext, bkActions}, calls[len(calls)-1].blockTypes, "a muted context line, then the button")
+	w := &batchedWriter{failedCalls: 1}
+	button, err := json.Marshal(w.failedCallsBlocks()[1])
+	require.NoError(t, err)
+	require.Contains(t, string(button), `"action_id":"inspect_open"`)
+	require.Contains(t, string(button), failedCallsButton)
+	require.Equal(t, "⚠️ 2 tool calls failed", failedCallsNote(2))
+	require.Equal(t, "⚠️ 1 tool call failed", failedCallsNote(1))
+}
+
+// A turn without a failed call, or whose only error is the runtime's request
+// for approval, ends as before: no line.
+func TestFailedCalls_NoFailureNoLine(t *testing.T) {
+	ft, _ := captureStream(t,
+		toolCallDeltaWith("get", "c1", nil), toolResultDelta("get", "c1", map[string]any{"output": "ok"}),
+		channels.OutboundDelta{Kind: channels.DeltaText, Content: "done "},
+	)
+	require.Equal(t, []capturedMessage{nil}, ft.stopBlocks())
+
+	approval := toolResultDelta("restart", "c1", map[string]any{"error": "requires confirmation, please approve or reject"})
+	approval.Tool.AwaitsApproval = true
+	ft, _ = captureStream(t,
+		toolCallDeltaWith("restart", "c1", nil), approval,
+		channels.OutboundDelta{Kind: channels.DeltaText, Content: "may I? "},
+	)
+	require.Equal(t, []capturedMessage{nil}, ft.stopBlocks(), "an approval request is not a failed call")
+}
+
+// A reply that rolls over into further messages gets the line on its last
+// message only.
+func TestFailedCalls_TheLastMessageOfALongReply(t *testing.T) {
+	ft, _ := captureStream(t,
+		toolCallDeltaWith("get", "c1", nil), failedResultDelta("get", "c1"),
+		channels.OutboundDelta{Kind: channels.DeltaText, Content: strings.Repeat("word ", slackMarkdownBlockMax/5+500)},
+	)
+	stops := ft.stopBlocks()
+	require.GreaterOrEqual(t, len(stops), 2, "the reply rolled over")
+	for _, b := range stops[:len(stops)-1] {
+		require.Empty(t, b, "a roll-over stop adds no line")
+	}
+	require.Equal(t, capturedMessage{failedCallsNote(1)}, stops[len(stops)-1])
+}
+
+// The count is per reply: a second run() cycle over the same writer (an
+// auto-approved prompt) starts from zero.
+func TestFailedCalls_CountedPerReply(t *testing.T) {
+	ft := &fakeThread{}
+	w := streamWriter(t, ft, "D1")
+	run := func(deltas ...channels.OutboundDelta) {
+		ch := make(chan channels.OutboundDelta, len(deltas))
+		for _, d := range deltas {
+			ch <- d
+		}
+		close(ch)
+		require.NoError(t, w.run(t.Context(), ch))
+	}
+
+	run(toolCallDeltaWith("get", "c1", nil), failedResultDelta("get", "c1"),
+		channels.OutboundDelta{Kind: channels.DeltaText, Content: "may I delete it? "},
+		channels.OutboundDelta{Kind: channels.DeltaPrompt, TaskID: "task-1"})
+	w.promptDelta = nil
+	run(channels.OutboundDelta{Kind: channels.DeltaText, Content: "deleted "}, doneDelta())
+
+	require.Equal(t, []capturedMessage{{failedCallsNote(1)}, nil}, ft.stopBlocks())
+}
+
+// A turn that only calls tools opens no reply message, so there is nothing to
+// put the line on and nothing is posted for it.
+func TestFailedCalls_NoReplyNoLine(t *testing.T) {
+	ft, _ := captureStream(t, toolCallDeltaWith("get", "c1", nil), failedResultDelta("get", "c1"))
+	require.Empty(t, ft.streams())
+	require.Equal(t, 0, ft.postCount())
+}
+
+// blockTypesOf returns the type of each block in a request body.
+func blockTypesOf(blocks []json.RawMessage) []string {
+	var out []string
+	for _, raw := range blocks {
+		var b struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(raw, &b); err == nil {
+			out = append(out, b.Type)
+		}
+	}
+	return out
+}
+
+// Slack refusing the final stop as too long moves the rest of the reply to a
+// new message, and the line goes with it: the full message closes without it.
+func TestFailedCalls_FollowTheReplyOntoAnOverflowMessage(t *testing.T) {
+	ft := &fakeThread{sizeLimit: 4000} // under the writer's own budget
+	w := streamWriter(t, ft, "D1")
+	w.failedCalls = 1
+
+	w.queueAnswer(strings.Repeat("a", 3500) + " ")
+	require.NoError(t, w.flush(t.Context()))
+	w.queueAnswer(strings.Repeat("b", 1000) + " ")
+	require.NoError(t, w.closeStream(t.Context()))
+
+	require.Equal(t, 1, ft.refusedTooLong(), "the final stop was refused as too long")
+	require.Equal(t, []string{
+		methodChatStartStream, methodChatStopStream, // the refused final stop
+		methodChatStopStream,                        // closes the full message
+		methodChatStartStream, methodChatStopStream, // the rest, on a new message
+	}, ft.streamMethods())
+	require.Equal(t, []capturedMessage{
+		{failedCallsNote(1)}, // refused with the rest of the text
+		nil,                  // the full message closes without the line
+		{failedCallsNote(1)}, // the line ends the reply on its new message
+	}, ft.stopBlocks())
 }

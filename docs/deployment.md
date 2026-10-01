@@ -83,7 +83,7 @@ failure never costs a person their sign-in:
 - A store that fails to read serves the link the gateway already knows (`link store read
   failed, serving the link this process knows`). A person it has never seen is not treated as
   unlinked: in Slack they get the transient "couldn't refresh your sign-in" notice, not the
-  sign-in prompt, and `/login` answers the same way. `/logout` reports a sign-out the store
+  sign-in prompt, and `login` answers the same way. `logout` reports a sign-out the store
   refused instead of confirming it.
 - Reads are served from the copy for 30 s, so a Slack turn costs one Secret read rather than
   one per lookup. Before a link is dropped on `invalid_grant` the store is re-read, so a token
@@ -211,7 +211,7 @@ ServiceMonitor). Beside the public mux's `klaus_gateway_requests_total` /
 `klaus_gateway_request_duration_seconds`, every Slack turn feeds:
 
 - `klaus_gateway_turn_total{channel, outcome, failure_class}` -- turns that ended, by outcome:
-  `completed`, `input_required` (paused on a prompt), `canceled` (`/stop`, the stop button, a
+  `completed`, `input_required` (paused on a prompt), `canceled` (the `stop` word, the stop button, a
   closed stream), `shutdown` (the gateway's restart cut it short), `timeout` (the 30-minute turn
   deadline), `failed` (the task failed or the stream broke), `render_failed` (the task completed
   but the channel refused part of the answer) and `send_failed` (the turn died before it was

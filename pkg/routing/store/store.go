@@ -238,6 +238,14 @@ type Review struct {
 	// that did not decide the review. "" shows none.
 	Status string `json:"status,omitempty"`
 
+	// Decision is set on a decision — a question put to a person or a team
+	// through POST /decisions — and nil on a team review. A decision keeps the
+	// review's fields for what they are there: Channel and TS its message,
+	// Team the team it went to ("" for a person), Text the question, Tool and
+	// Arguments the answer tool, and the claim (DecidedBy, ClaimedAt, Done,
+	// Status) as for a review.
+	Decision *Decision `json:"decision,omitempty"`
+
 	PostedAt time.Time     `json:"posted_at"`
 	TTL      time.Duration `json:"ttl"`
 }
@@ -251,7 +259,46 @@ func (r Review) Expired(now time.Time) bool {
 	return now.Sub(r.PostedAt) > r.TTL
 }
 
-// ReviewStore keeps team-review records (Review) by id.
+// Decision is what a decision adds to its record: the question's context,
+// the options, the due time with its default, and how it closed.
+type Decision struct {
+	// Note names the asker's note the decision is, for the message's context
+	// line.
+	Note      string           `json:"note,omitempty"`
+	StatusQuo string           `json:"status_quo"`
+	Options   []DecisionOption `json:"options,omitempty"`
+	// Recommend is the recommended option, 1-based; 0 recommends none.
+	Recommend int       `json:"recommend,omitempty"`
+	Due       time.Time `json:"due"`
+	Default   string    `json:"default"`
+	AskedBy   string    `json:"asked_by"`
+
+	// Outcome is how the decision closed (DecisionAnswered, DecisionDefaulted,
+	// DecisionWithdrawn); "" while it is open. Choice (1-based, 0 for none)
+	// and Answer are what the person answered here, ClosedAt when it closed,
+	// and CloseText the text its close carried.
+	Outcome   string    `json:"outcome,omitempty"`
+	Choice    int       `json:"choice,omitempty"`
+	Answer    string    `json:"answer,omitempty"`
+	CloseText string    `json:"close_text,omitempty"`
+	ClosedAt  time.Time `json:"closed_at,omitzero"`
+}
+
+// DecisionOption is one answer a decision offers: a short label and what
+// choosing it does.
+type DecisionOption struct {
+	Label       string `json:"label"`
+	Consequence string `json:"consequence,omitempty"`
+}
+
+// The outcomes a decision closes with.
+const (
+	DecisionAnswered  = "answered"
+	DecisionDefaulted = "defaulted"
+	DecisionWithdrawn = "withdrawn"
+)
+
+// ReviewStore keeps team-review records (Review), decisions among them, by id.
 type ReviewStore interface {
 	// PutReview upserts a review record; one that has already expired is
 	// removed instead.

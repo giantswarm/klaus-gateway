@@ -17,8 +17,32 @@ binary with `--slack-progress-mode` fails to start (unknown flag); a set
 `KLAUS_GATEWAY_SLACK_PROGRESS_MODE` is ignored. No installation sets any of them: agent-platform,
 shared-configs and the installation patches in giantswarm-configs were checked.
 
-The release reaches an installation only once agent-platform admits the 4.x line
-(`components.klaus-gateway.versionRange`).
+The release reaches an installation only through an agent-platform that admits the 4.x line
+(`components.klaus-gateway.versionRange`): 4.105.0 and later (agent-platform#767).
+
+## Next — decisions for people (`POST /decisions`)
+
+`POST /decisions` is mounted with the team-review endpoint (`reviews.enabled`) and admits the
+same callers (`reviews.allowedCallers`); add the ServiceAccount of the service that puts
+decisions there. A decision for a person finds them by their email, which needs two bot scopes
+the Slack app did not ask for: add `users:read` and `users:read.email` (in
+`deploy/slack/manifest.yaml`) and **re-install the app**. Until then a person's decision answers
+`502` and the log says `missing_scope`; a team's decision needs no new scope.
+
+## Next — the in-message slash commands are gone
+
+The gateway no longer reads `/login`, `/logout`, `/usage`, `/help`, `/stop` or `/agent` from a
+message. Every command is the word alone: `login`, `logout`, `usage`, `help`, `agents`, and
+`stop` while a turn runs. A conversation with a chosen agent starts from the `agents` listing,
+from the app's own `/swarmgeist` command, or from the **Ask an agent here** shortcut.
+
+Nothing to configure, and no values key changes. What an operator has to decide is whether to
+tell their users: a person who types `@bot /usage` or `@bot /agent "SRE" …` out of habit now
+sends that text to the agent, which answers it as a question instead of running the command.
+`help` lists the words. One habit still lands softly: `/login` from a signed-out person is read
+as a request to sign in, like the word, and is not passed on to the agent afterwards.
+
+The app's own slash command (`/swarmgeist`) is untouched, and so is the message shortcut.
 
 ## Next — the Slack progress mode has no effect (`slack.progress.mode`)
 

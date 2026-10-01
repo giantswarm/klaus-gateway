@@ -16,7 +16,7 @@ import (
 )
 
 // The native slash command is a second way to open a conversation, next to
-// the "@bot /agent <name> <question>" mention. Slack posts the command to
+// the agents listing's Select button. Slack posts the command to
 // /channels/slack/commands (or a slash_commands Socket Mode envelope); the
 // gateway answers with a modal — an agent picker over the live roster and a
 // question box — and, on submit, posts the conversation's root message itself
@@ -486,7 +486,7 @@ func threadContextBlock(req askAgentRequest) (map[string]any, bool) {
 
 // handleAskAgentSubmission opens the conversation a submitted picker
 // describes: validate the agent (loud failure, never a substitute), post the
-// echo under the agent's identity with the conversation metadata, make the
+// echo under the app's own identity with the conversation metadata, make the
 // submitter the initiator, bind the thread, and dispatch the question as the
 // first turn through the same path a mention takes. The slash command's echo
 // is a new root and its ts is the thread; the shortcut's is a reply in the
@@ -563,7 +563,7 @@ func (a *Adapter) handleAskAgentSubmission(ctx context.Context, payload interact
 
 	// The shortcut's thread exists already, so it is claimed before anything
 	// is posted: SetInitiator makes the submitter its owner, or returns the
-	// owner it already has — a /usage or /stop typed there wrote one, without
+	// owner it already has — a usage or stop typed there wrote one, without
 	// an agent. Another person's thread is refused here, with nothing echoed
 	// and nothing bound; their reply in the thread takes the normal path, where
 	// the owner is asked to allow them. Granting them instead would let the
@@ -576,8 +576,8 @@ func (a *Adapter) handleAskAgentSubmission(ctx context.Context, payload interact
 	}
 
 	name := a.agentNameFor(ctx, ref)
-	client := a.agentClientNamed(ctx, ref, name)
-	echoTS, err := client.postQuestion(ctx, pm.Channel, question, user, pm.Thread)
+	client := a.apiClient()
+	echoTS, err := client.postQuestion(ctx, pm.Channel, question, user, name, pm.Thread)
 	if err != nil && isDMChannelID(pm.Channel) {
 		// Slack offers a command in every conversation the person is in,
 		// including a direct message with somebody else, whose channel id is a
@@ -601,7 +601,7 @@ func (a *Adapter) handleAskAgentSubmission(ctx context.Context, payload interact
 			notify(askAgentInviteNotice)
 			return
 		}
-		echoTS, err = client.postQuestion(ctx, pm.Channel, question, user, pm.Thread)
+		echoTS, err = client.postQuestion(ctx, pm.Channel, question, user, name, pm.Thread)
 	}
 	if err != nil {
 		a.Logger.Warn("slack: ask-agent echo post failed", "channel", pm.Channel, "error", err)

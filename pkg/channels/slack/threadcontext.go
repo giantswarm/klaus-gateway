@@ -13,7 +13,7 @@ import (
 )
 
 // A conversation can open inside a thread other people wrote: the "Ask an
-// agent here" shortcut, an `/agent <name> <question>` reply, a bare mention
+// agent here" shortcut, a pick in the agent picker, a bare mention
 // under an alert. The agent is then pulled into a discussion it cannot see —
 // which alert fired, what was already tried — so the opener's turn carries the
 // messages the thread already held as a labelled part of its own.

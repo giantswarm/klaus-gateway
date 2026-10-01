@@ -69,7 +69,7 @@ func (u usageTotals) add(turn channels.TurnUsage) usageTotals {
 
 // recordTurnUsage stores a turn's summed token counts as the thread's last-turn
 // usage and adds them to the thread's session total. For a DM the counts are
-// additionally aggregated per channel: a top-level `/usage` in a DM keys a
+// additionally aggregated per channel: a top-level `usage` in a DM keys a
 // brand-new thread (its own ts), so the channel aggregate is what makes the
 // command answerable there. A zero turn (no usage reported) is ignored so it
 // does not clobber a previous turn's figures.
@@ -93,9 +93,9 @@ func (a *Adapter) recordTurnUsage(threadID, channelID string, turn channels.Turn
 	}
 }
 
-const usageGuidance = "No token usage recorded for this thread yet. Mention the bot with `/usage` in a reply inside the agent's thread."
+const usageGuidance = "No token usage recorded for this thread yet. Send `usage` in a reply inside the agent's thread."
 
-// usageReport renders the /usage reply. The lookup is thread-first; a miss in
+// usageReport renders the usage reply. The lookup is thread-first; a miss in
 // a DM falls back to the channel's aggregated usage, because a top-level DM
 // message carries no thread_ts and so keys a thread no turn ever ran in. A
 // miss in a regular channel means the command was typed outside the agent's
@@ -140,7 +140,7 @@ const agentModelTTL = 10 * time.Minute
 // agentModelLabel returns "provider/model" (or just the model when the
 // provider is not reported) for agentRef — the thread's bound agent, or the
 // default — or "" when no model source is configured, the agent exposes no
-// model, or the lookup fails. Results are cached per agent so /usage does not
+// model, or the lookup fails. Results are cached per agent so usage does not
 // hit the kagent controller on every call.
 func (a *Adapter) agentModelLabel(ctx context.Context, agentRef string) string {
 	if a.Models == nil || agentRef == "" {

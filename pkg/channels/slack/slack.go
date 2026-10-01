@@ -116,7 +116,7 @@ type Adapter struct {
 	// process (valkey, bolt) a review survives a restart. Nil keeps them in
 	// process memory, as --store=memory does.
 	Reviews store.ReviewStore
-	// Models, when set, resolves the default agent's model id for /usage.
+	// Models, when set, resolves the default agent's model id for usage.
 	// Nil omits the model line.
 	Models AgentModelSource
 	// ConnectorPrompts enables the reactive "Connect <backend>" button: when the
@@ -144,10 +144,10 @@ type Adapter struct {
 	// are still named — see agentNameFor); the card's own name is deliberately
 	// not used, since kagent derives it from the resource name with hyphens
 	// replaced by underscores. When it also implements the card-info lookup
-	// (pkg/a2a.AgentCardClient does), it validates /agent selections; otherwise
-	// selection is unavailable.
+	// (pkg/a2a.AgentCardClient does), it validates a picked agent; otherwise
+	// agent selection is unavailable.
 	AgentCards AgentCardResolver
-	// Roster lists the agents selectable via the /agent command, discovered
+	// Roster lists the agents the `agents` command and the pickers offer, discovered
 	// from the kagent controller. It is also the source of the display name on
 	// per-message agent branding. Nil disables the roster listing and leaves
 	// branding to fall back to the technical name.
@@ -172,7 +172,7 @@ type Adapter struct {
 
 	// bgMu guards the background-goroutine lifecycle. cancel cancels baseCtx,
 	// naming channels.ErrShutdown as the cause so a turn cut short can tell the
-	// restart from a /stop; bgWG tracks every goroutine started via background
+	// restart from a stop; bgWG tracks every goroutine started via background
 	// so Stop can join them, and bgStopped drops late spawns once Stop has
 	// begun. Without the join a goroutine outlives the adapter that spawned it.
 	bgMu       sync.Mutex
@@ -195,7 +195,7 @@ type Adapter struct {
 	// window, so a burst of parked messages nudges once. Entries carry the
 	// posted prompt's message coordinates so a completed link can rewrite the
 	// prompt in place. Drained for a user when their link completes, so a
-	// later /logout re-prompts.
+	// later logout re-prompts.
 	signInPromptedMu sync.Mutex
 	signInPrompted   map[string]ttlEntry[signInAnchor]
 
@@ -282,7 +282,7 @@ type Adapter struct {
 	notServedNoticed map[string]ttlEntry[struct{}]
 
 	// usageMu guards both usage maps. threadUsage keys usage by the turn's
-	// thread root; channelUsage aggregates DM channels so a top-level /usage in
+	// thread root; channelUsage aggregates DM channels so a top-level usage in
 	// a DM (which keys a brand-new thread) still has figures to report.
 	usageMu      sync.Mutex
 	threadUsage  map[string]ttlEntry[usageTotals] // keyed by threadID
@@ -300,7 +300,7 @@ type Adapter struct {
 	toolLogMu sync.Mutex
 	toolLogs  map[string]ttlEntry[*threadToolLog] // keyed by threadID
 
-	// modelMu guards modelCache, the resolved model labels shown by /usage.
+	// modelMu guards modelCache, the resolved model labels shown by usage.
 	modelMu    sync.Mutex
 	modelCache map[string]modelEntry // agentRef -> cached model label
 
@@ -320,7 +320,7 @@ type Adapter struct {
 	sessionTitleMu sync.Mutex
 	sessionTitles  map[string]ttlEntry[string] // keyed by threadID
 
-	// rosterMu guards the briefly-cached /agent roster (see rosterAgents).
+	// rosterMu guards the briefly-cached roster (see rosterAgents).
 	rosterMu      sync.Mutex
 	rosterCached  []pkga2a.AgentInfo
 	rosterExpires time.Time
@@ -425,7 +425,7 @@ func (a *Adapter) Start(ctx context.Context, gw channels.Gateway) error {
 	// process signal must not reach the turns before Stop has named the cause.
 	// Stop cancels with channels.ErrShutdown, which is how a turn's stop branch
 	// (a notice instead of silence) and the facade (the task is left running,
-	// not cancelled) tell a restart from a /stop. ctx's values are kept.
+	// not cancelled) tell a restart from a stop. ctx's values are kept.
 	ctx, cancel := context.WithCancelCause(context.WithoutCancel(ctx))
 	a.baseCtx = ctx
 	a.bgMu.Lock()
@@ -911,7 +911,7 @@ func (s signInAnchor) addressable() bool { return s.ts != "" || s.ephemeral }
 
 // postSignIn posts the "Sign in" prompt for the account-linking flow and
 // records the anchor its surface needs, so the completed link is confirmed
-// where the prompt was shown. It is driven by the explicit /login command and
+// where the prompt was shown. It is driven by the explicit login command and
 // by an unlinked user's first turn (which is aborted, not run as the SA). A
 // failure to post is logged and swallowed.
 //
@@ -1111,7 +1111,7 @@ func (a *Adapter) clearSignInReservation(slackUser, threadID string) {
 
 // recordSignInAnchor stores the posted prompt's coordinates under the (user,
 // thread) key. It also arms the nudge throttle (nudgedAt), so an explicit
-// /login prompt suppresses a redundant parked-message nudge in the same
+// login prompt suppresses a redundant parked-message nudge in the same
 // thread while its link is alive.
 func (a *Adapter) recordSignInAnchor(slackUser, threadID string, anchor signInAnchor) {
 	now := time.Now()
@@ -1185,7 +1185,7 @@ func (a *Adapter) clearConnectorPrompted(slackUser, server string) {
 // takeSignInAnchors returns and clears the user's sign-in prompt entries,
 // keeping only anchors that are still addressable (posted successfully and
 // unexpired). Draining doubles as the throttle reset, so becoming unlinked
-// again (e.g. /logout) prompts anew.
+// again (e.g. logout) prompts anew.
 func (a *Adapter) takeSignInAnchors(slackUser string) []signInAnchor {
 	prefix := slackUser + "\x00"
 	now := time.Now()
@@ -1272,8 +1272,8 @@ func shouldPostSignInNudge(entry ttlEntry[signInAnchor], exists bool, now time.T
 // maybePostSignIn posts the sign-in prompt unless one with a live link was
 // already posted for this (user, thread) (see shouldPostSignInNudge), so a
 // burst of parked messages nudges once instead of once per message. The
-// explicit /login command bypasses it (postSignIn directly); a completed link
-// drains the window (takeSignInAnchors) so a /logout re-prompts. The entry is
+// explicit login command bypasses it (postSignIn directly); a completed link
+// drains the window (takeSignInAnchors) so a logout re-prompts. The entry is
 // reserved (with no anchor yet) before posting so concurrent parks nudge once;
 // postSignIn overwrites it with the posted message's coordinates. When a
 // re-nudge replaces a prompt whose link expired, the old prompt is rewritten
@@ -1627,7 +1627,10 @@ func (a *Adapter) OnUserLinked(_ context.Context, slackUser, _ string) {
 
 // authUtterances are messages that are nothing but a request to sign in. A
 // parked one is satisfied by the link completing, so it is dropped at replay
-// instead of confusing the agent with a stale "login".
+// instead of confusing the agent with a stale "login". The slash spelling is
+// in the set although no slash command is served any more: a signed-out person
+// who types it means the same thing, and replaying it to the agent would be
+// noise. Signed in, it is text like any other and reaches the agent.
 var authUtterances = map[string]struct{}{
 	cmdLogin:       {},
 	"log in":       {},
@@ -1683,14 +1686,14 @@ func (a *Adapter) handleContextChanged(inner slackInnerEvent) {
 }
 
 // handleSessionStopped reacts to the user pressing the stop button Slack
-// renders on the native working indicator. It is the /stop command by another
+// renders on the native working indicator. It is the stop command by another
 // route, so it takes the same path: the same per-thread access rule, then
 // cancel the thread's in-flight turn and confirm the interruption in the
-// thread. The confirmation names the presser, which /stop's does not need to:
+// thread. The confirmation names the presser, which a stop's does not need to:
 // a press leaves no message of its own, so without the name the thread would
 // show a turn stopping with no record of who stopped it.
 //
-// The refusal is ephemeral, unlike /stop's: the presser typed nothing visible,
+// The refusal is ephemeral, unlike a stop's: the presser typed nothing visible,
 // so a reply in the thread would be an answer to a question nobody there saw
 // being asked. A refused press sends no status — the session stays in
 // processing because the turn really is still running, which is correct.
@@ -1702,7 +1705,7 @@ func (a *Adapter) handleContextChanged(inner slackInnerEvent) {
 // here — otherwise the indicator spins on for up to an hour.
 //
 // A thread waiting on an approval prompt is the one case that takes neither
-// branch. /stop answers such a thread by falling through to dispatch, which
+// branch. A stop answers such a thread by falling through to dispatch, which
 // rejects the paused task; the button does not, because it cannot normally
 // reach a paused thread at all — Slack draws the button only while the session
 // is processing, and a paused thread is suspended (#249) or active. The one way
@@ -1711,7 +1714,7 @@ func (a *Adapter) handleContextChanged(inner slackInnerEvent) {
 // there would erase the suspended state the exit path just wrote and tell the
 // user the thread is idle while a tool call waits on their answer. So a pending
 // task means: touch nothing. The prompt is still on screen, and the user
-// answers it or types /stop, which does have the reject path.
+// answers it or types a stop, which does have the reject path.
 //
 // Stale-event dropping deliberately does not apply: a press older than this
 // process is exactly the stranded indicator this handler exists to clear.
@@ -1723,7 +1726,7 @@ func (a *Adapter) handleSessionStopped(ctx context.Context, inner slackInnerEven
 	}
 	a.Logger.Debug("slack: agent session stopped", "channel", inner.Channel, "thread", inner.ThreadTS,
 		"user", inner.User, "streaming_message_ts", inner.StreamingMessageTS)
-	// Same first-sight rule /stop uses: the first caller of any interaction
+	// Same first-sight rule a stop uses: the first caller of any interaction
 	// becomes the thread's initiator, and only they (or someone they let in)
 	// may interrupt the agent there.
 	access := a.accessPolicy()
@@ -1800,6 +1803,11 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 	if !a.acceptEvent(inner) {
 		return
 	}
+	// A reply under a decision is an answer, in a DM or a channel, served or
+	// not: the decision went there on purpose.
+	if a.answerDecisionReply(ctx, inner) {
+		return
+	}
 	if inner.isDM() {
 		switch a.dmMode() {
 		case DMModeRedirect:
@@ -1864,37 +1872,38 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 		a.Logger.Info("slack: dropping duplicate message delivery", "channel", inner.Channel, "ts", msg.MessageID)
 		return
 	}
-	if cmd := parseCommand(msg.Text); cmd != nil {
-		cmd.Root = msg.MessageID == msg.ThreadID
-		// /agent is not a consumed command: the select form mutates msg (agent
-		// ref stamped, prefix stripped) and continues into dispatch as the
-		// conversation's first turn.
-		// Selection reads the agent catalogue (roster, card) at the kagent
-		// controller, which serves it to a human identity; run those reads as
-		// the caller so a cold roster cache does not refuse a valid pick.
-		if cmd.Name == cmdAgent {
-			if !a.handleAgentSelection(a.withCallerToken(ctx, msg.Subject), cmd, &msg, inner.Channel) {
-				return
-			}
-		} else if a.handleCommand(ctx, cmd, msg.Subject, inner.Channel, msg.ThreadID) {
-			a.Logger.Debug("slack: command consumed", "command", cmd.Name, "channel", inner.Channel, "thread", msg.ThreadID)
-			return
-		} else if isUnknownCommand(cmd) {
-			text := fmt.Sprintf("`/%s` is not a command; mention the bot with `/help` for the list. If it was meant for the agent, send it again without the leading slash.", cmd.Name)
-			if _, err := a.apiClient().postNote(ctx, inner.Channel, text, msg.ThreadID); err != nil {
-				a.Logger.Warn("slack: post unknown-command notice failed", "error", err)
-			}
+	// A message that is one of the gateway's command words alone is that
+	// command: usage, help, login, logout, agents (bareCommands). There is no
+	// slash form of any of them: Slack's composer keeps a message that starts
+	// with "/" for its own commands, so such a message reached the bot only
+	// after a mention, and anything it carries now goes to the agent like any
+	// other text. Read before dispatch, so a busy thread answers the command
+	// instead of the busy notice; bareCommandFor names the messages that keep
+	// the word instead.
+	if bare := a.bareCommandFor(msg); bare != nil {
+		bare.Root = msg.MessageID == msg.ThreadID
+		consumed := false
+		if bare.Name == cmdAgents {
+			// The listing reads the agent catalogue at the kagent controller,
+			// which serves it to a human identity, so it runs as the caller.
+			a.listAgents(a.withCallerToken(ctx, msg.Subject), msg, inner.Channel)
+			consumed = true
+		} else {
+			consumed = a.handleCommand(ctx, bare, msg.Subject, inner.Channel, msg.ThreadID)
+		}
+		if consumed {
+			a.Logger.Debug("slack: command consumed", "command", bare.Name, "channel", inner.Channel, "thread", msg.ThreadID)
 			return
 		}
 	}
 	if err := a.dispatch(ctx, msg, inner.Channel); err != nil {
 		switch {
 		case errors.Is(err, errThreadBusy):
-			// A bare "stop" while a turn runs means /stop; it is read here, where
+			// A bare "stop" while a turn runs means a stop; it is read here, where
 			// the busy state is decided, so an idle thread still hands the word to
 			// the agent (or to a paused prompt as a deny) as before.
-			if isBareStop(msg.Text) && a.handleCommand(ctx, &slashCommand{Name: cmdStop}, msg.Subject, inner.Channel, msg.ThreadID) {
-				a.Logger.Debug("slack: bare stop consumed as /stop", "channel", inner.Channel, "thread", msg.ThreadID)
+			if isBareStop(msg.Text) && a.handleCommand(ctx, &command{Name: cmdStop}, msg.Subject, inner.Channel, msg.ThreadID) {
+				a.Logger.Debug("slack: bare stop consumed as the stop command", "channel", inner.Channel, "thread", msg.ThreadID)
 				return
 			}
 			if _, perr := a.apiClient().postNote(ctx, inner.Channel, busyNotice, msg.ThreadID); perr != nil {
@@ -2001,12 +2010,12 @@ func (a *Adapter) threadEngaged(threadID string) bool {
 // dispatch admits an inbound Slack message, binds it to the thread's agent,
 // and streams the completion into a streamed message in the thread.
 func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, slackChannel string) error {
-	return a.dispatchFrom(ctx, msg, slackChannel, agentSourcePrefix)
+	return a.dispatchFrom(ctx, msg, slackChannel, agentSourceReplay)
 }
 
 // dispatchFrom is dispatch for a message whose AgentRef the caller already
 // stamped; explicitSource is the agent_source the dispatch record carries for
-// it (agentSourcePrefix for an /agent prefix, agentSourceCommand for the slash
+// it (agentSourceReplay for an agent the message already carried, agentSourceCommand for the slash
 // command's picker). Ignored when AgentRef is empty: the conversation binding
 // or the default decides, and names its own source.
 func (a *Adapter) dispatchFrom(ctx context.Context, msg channels.InboundMessage, slackChannel, explicitSource string) error {
@@ -2075,9 +2084,9 @@ func (a *Adapter) dispatchFrom(ctx context.Context, msg channels.InboundMessage,
 		return nil
 	}
 
-	// Resolve the turn's agent. An explicit /agent prefix travels on the
-	// message (handleAgentSelection stamped it, and only conversation-starting
-	// messages get that far); otherwise the thread's recorded binding — or the
+	// Resolve the turn's agent. A message can already carry one (a picker
+	// submission parked for a sign-in and replayed after it); otherwise the
+	// thread's recorded binding — or the
 	// configured default — applies. opener records whether this message opened
 	// its conversation: root equality cannot tell on the assistant pane, where
 	// every message carries the chat's Slack-created anchor as thread_ts.
@@ -2219,8 +2228,8 @@ func (a *Adapter) dispatchFrom(ctx context.Context, msg channels.InboundMessage,
 		}
 	}
 
-	// A conversation opening inside a thread other people wrote — an /agent
-	// reply or a bare mention under an alert — hands the agent what the thread
+	// A conversation opening inside a thread other people wrote — a bare
+	// mention under an alert, say — hands the agent what the thread
 	// already said. Read here, with the attachments, for the same reason: the
 	// turn is committed to run, so a message that was parked for a sign-in or
 	// bounced busy never spends a Slack call on it. The picker's own
@@ -2392,7 +2401,7 @@ type linkedIdentitySource interface {
 // gateway-side anchor for joining a turn to muster's per-call log. The muster
 // session ID is not derivable client-side from the forwarded token, so the
 // join key is (sub, thread_id, task_id, timestamp). agentSource marks how the
-// agent was chosen (see the agentSource* constants), making /agent routing
+// agent was chosen (see the agentSource* constants), making agent routing
 // observable.
 func (a *Adapter) logTurnDispatch(ctx context.Context, msg channels.InboundMessage, slackUser string, resume bool, agentSource string) {
 	var sub string
@@ -2538,8 +2547,8 @@ func (a *Adapter) applyInstanceOwner(ctx context.Context, msg *channels.InboundM
 // registers the pending task and posts the HITL prompt. Shared by dispatch (a
 // new turn; triggerTS is the user message) and handleDecision (a button-click
 // resume; empty triggerTS, so no reaction).
-// ctx is the turn context (/stop cancels it); carried seeds the usage counters
-// when the turn resumes a paused one so /usage reports the whole turn;
+// ctx is the turn context (a stop cancels it); carried seeds the usage counters
+// when the turn resumes a paused one so usage reports the whole turn;
 // delivered is what a previous process posted of the turn when this one
 // continues it after a restart (deliverInFlight), the zero value otherwise.
 // slackUser is the RAW Slack user ID (never the resolved email in msg.Subject),
@@ -2582,7 +2591,7 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 	w.continueFrom(delivered)
 	w.onDelivered = func(ctx context.Context, d store.Delivered) { a.recordDelivered(ctx, slackChannel, threadID, d) }
 
-	// cleanupCtx survives the turn context so a /stop-cancelled turn still gets
+	// cleanupCtx survives the turn context so a stop-cancelled turn still gets
 	// its progress indicator cleared and terminal notes posted.
 	cleanupCtx := func() (context.Context, context.CancelFunc) {
 		return context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
@@ -2609,7 +2618,7 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 			a.postTerminalNote(cctx, client, slackChannel, threadID, renderFailedNote(rerr.err))
 			return nil
 		}
-		// A cancelled turn context means the stop was intentional (/stop, shutdown):
+		// A cancelled turn context means the stop was intentional (a stop, shutdown):
 		// clear the working indicator instead of signalling a failure. A
 		// deadline expiry (maxTurnDuration backstop) is a failure, not a stop, and
 		// falls through to the failure signalling below.
@@ -2617,7 +2626,7 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 			outcome = channels.OutcomeCanceled
 			prog.clear(cctx)
 			// The gateway is shutting down mid-turn. Nobody asked for this, so
-			// the thread is told, unlike on a /stop, and told what becomes of
+			// the thread is told, unlike on a stop, and told what becomes of
 			// the answer.
 			if errors.Is(context.Cause(ctx), channels.ErrShutdown) {
 				outcome = channels.OutcomeShutdown
@@ -2731,6 +2740,8 @@ type slackInnerEvent struct {
 	ChannelType string `json:"channel_type,omitempty"`
 	TS          string `json:"ts"`
 	ThreadTS    string `json:"thread_ts,omitempty"`
+	// ParentUserID is the author of a thread reply's root message.
+	ParentUserID string `json:"parent_user_id,omitempty"`
 	// EventTS is the event envelope timestamp; for events like
 	// member_joined_channel and app_home_opened it is the only timestamp carried.
 	EventTS string `json:"event_ts,omitempty"`

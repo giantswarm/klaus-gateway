@@ -1,10 +1,13 @@
 // Package reviews is the inbound endpoint through which a manager posts a
 // team review or a notice into a team's channel, and an action's result into
-// its review's thread:
+// its review's thread, and through which a service puts a decision to a person
+// or a team:
 //
 //	POST /reviews               -- an ask with Approve (and Deny) buttons and the tool calls they make
 //	POST /notices               -- a message without a decision
 //	POST /reviews/{id}/results  -- the outcome of the action, as a follow-up in the review's thread
+//	POST /decisions             -- a question with its options, answered by a click or in the person's own words
+//	POST /decisions/{id}/close  -- the decision's outcome: answered, defaulted or withdrawn
 //
 // The caller is a service identity: a Kubernetes ServiceAccount whose
 // projected token the API server verifies (TokenReview), allow-listed by
@@ -19,6 +22,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -41,12 +45,15 @@ type Handler struct {
 	// nobody.
 	AllowedCallers []string
 	Poster         channels.TeamReviewPoster
+	// Decisions serves POST /decisions; nil leaves those routes unmounted.
+	Decisions channels.DecisionPoster
 }
 
 const maxBodyBytes = 1 << 20
 
 // Mount attaches POST /reviews, POST /notices and POST /reviews/{id}/results
-// to r.
+// to r, and POST /decisions and POST /decisions/{id}/close when the handler
+// has a DecisionPoster.
 func (h *Handler) Mount(r chi.Router) {
 	if h.Logger == nil {
 		h.Logger = slog.Default()
@@ -54,6 +61,71 @@ func (h *Handler) Mount(r chi.Router) {
 	r.Post("/reviews", h.postReview)
 	r.Post("/reviews/{id}/results", h.postResult)
 	r.Post("/notices", h.postNotice)
+	if h.Decisions != nil {
+		r.Post("/decisions", h.postDecision)
+		r.Post("/decisions/{id}/close", h.closeDecision)
+	}
+}
+
+func (h *Handler) postDecision(w http.ResponseWriter, r *http.Request) {
+	caller, ok := h.authenticate(w, r)
+	if !ok {
+		return
+	}
+	var decision channels.Decision
+	if !decodeBody(w, r, &decision) {
+		return
+	}
+	if err := decision.Validate(time.Now()); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	receipt, err := h.Decisions.PostDecision(r.Context(), decision)
+	switch {
+	case errors.Is(err, channels.ErrAddresseeNotFound):
+		http.Error(w, "person: "+err.Error(), http.StatusUnprocessableEntity)
+		return
+	case err != nil:
+		h.Logger.Error("decision: post failed", "caller", caller.Username, "note", decision.Note, "team", decision.Team, "channel", decision.Channel, "error", err)
+		http.Error(w, "posting the decision failed", http.StatusBadGateway)
+		return
+	}
+	h.Logger.Info("decision posted", "record", "decision_posted",
+		"caller", caller.Username, "decision", receipt.ID, "note", decision.Note, "team", decision.Team, "channel", receipt.Channel, "ts", receipt.TS,
+		"options", len(decision.Options), "due", decision.Due, "tool", decision.Answer.Tool)
+	writeJSON(w, http.StatusCreated, receipt)
+}
+
+// closeDecision rewrites a decision's message to its outcome. A decision the
+// gateway holds no record of — unknown, or past its due time plus seven days
+// — is a 404.
+func (h *Handler) closeDecision(w http.ResponseWriter, r *http.Request) {
+	caller, ok := h.authenticate(w, r)
+	if !ok {
+		return
+	}
+	id := chi.URLParam(r, "id")
+	var closing channels.DecisionClose
+	if !decodeBody(w, r, &closing) {
+		return
+	}
+	if err := closing.Validate(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	receipt, err := h.Decisions.CloseDecision(r.Context(), id, closing)
+	switch {
+	case errors.Is(err, channels.ErrDecisionNotFound):
+		http.Error(w, "no such decision; it may have expired", http.StatusNotFound)
+		return
+	case err != nil:
+		h.Logger.Error("decision close: rewrite failed", "caller", caller.Username, "decision", id, "error", err)
+		http.Error(w, "closing the decision failed", http.StatusBadGateway)
+		return
+	}
+	h.Logger.Info("decision closed", "record", "decision_closed",
+		"caller", caller.Username, "decision", id, "outcome", closing.Outcome, "channel", receipt.Channel, "ts", receipt.TS)
+	writeJSON(w, http.StatusOK, receipt)
 }
 
 func (h *Handler) postReview(w http.ResponseWriter, r *http.Request) {
@@ -160,7 +232,7 @@ func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request) (satoken.
 	}
 	if !slices.Contains(h.AllowedCallers, caller.Username) {
 		h.Logger.Warn("team review: caller not allowed", "caller", caller.Username)
-		http.Error(w, "this ServiceAccount may not post team reviews", http.StatusForbidden)
+		http.Error(w, "this ServiceAccount may not post to this endpoint", http.StatusForbidden)
 		return satoken.Identity{}, false
 	}
 	return caller, true
@@ -186,7 +258,11 @@ func decodeBody(w http.ResponseWriter, r *http.Request, into any) bool {
 }
 
 func writeReceipt(w http.ResponseWriter, receipt channels.PostReceipt) {
+	writeJSON(w, http.StatusCreated, receipt)
+}
+
+func writeJSON(w http.ResponseWriter, status int, receipt channels.PostReceipt) {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
+	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(receipt)
 }

@@ -76,7 +76,9 @@ features:
     agent_description: Routes each conversation to one of Giant Swarm's agents, which work with your permissions and ask before making changes.
     # Pinned at the top of the assistant Messages tab; clicking one sends its
     # message as a normal DM turn. A message that starts with "/" never reaches
-    # the bot (docs/invariants.md), so no prompt runs a gateway command.
+    # the bot (docs/invariants.md), and a message that is exactly one command
+    # word (usage, help, agents, login, logout) runs that command instead of
+    # reaching the agent, so a prompt's message is a sentence.
     suggested_prompts:
       - title: Check cluster health
         message: How are my clusters doing right now?
@@ -98,7 +100,7 @@ oauth_config:
       - channels:history
       # Read the messages a thread already held when a conversation opens
       # inside it, so the agent is given what the thread said (the "Ask an
-      # agent here" shortcut, an /agent reply, a mention under an alert).
+      # agent here" shortcut, a pick in the agent picker, a mention under an alert).
       # channels:history above covers public channels; these two add private
       # channels and group DMs. A 1:1 DM is never read this way — its chat has
       # no thread that predates the conversation. Slack applies a new scope
@@ -116,6 +118,11 @@ oauth_config:
       - channels:join
       # Assistant surface (agent_view); Slack adds this scope with the feature.
       - assistant:write
+      # Decisions (POST /decisions) reach a person by their email:
+      # users.lookupByEmail needs users:read.email, and Slack grants it only
+      # with users:read beside it. users:read also names the bot in help text.
+      - users:read
+      - users:read.email
       # Slash commands and shortcuts. Already granted on installs that carry the
       # message shortcut (Slack adds it with the feature); listed so a fresh
       # install gets it.

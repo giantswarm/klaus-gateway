@@ -212,7 +212,8 @@ func run(args []string) error {
 	if cfg.Reviews.Enabled {
 		// The team-review endpoint: a manager posts an ask as its own
 		// ServiceAccount (verified through TokenReview); the Approve click calls
-		// the manager's tool through muster as the clicking, linked member.
+		// the manager's tool through muster as the clicking, linked member. The
+		// same surface puts decisions to a person or a team (POST /decisions).
 		restCfg, err := buildKubeConfig()
 		if err != nil {
 			return fmt.Errorf("team reviews: %w", err)
@@ -227,6 +228,7 @@ func run(args []string) error {
 			Auth:           &satoken.Authenticator{Reviews: kclient.AuthenticationV1().TokenReviews(), Audiences: []string{cfg.Reviews.ResolvedAudience()}},
 			AllowedCallers: cfg.Reviews.AllowedCallers,
 			Poster:         slackAdapter,
+			Decisions:      slackAdapter,
 		}
 		reviewsHandler.Mount(publicMux)
 		logger.Info("team-review endpoint mounted",
@@ -292,7 +294,7 @@ func run(args []string) error {
 // stopSlack stops the Slack adapter, when one runs, once the servers have
 // drained and before the deferred closes take the kagent client, the link
 // store and the routing store away: a Slack turn the shutdown cuts short still
-// posts its notice, and a /stop-issued cancel still reaches the controller. The
+// posts its notice, and a stop-issued cancel still reaches the controller. The
 // pod's termination grace has to cover the server drain plus this stop (both
 // DefaultShutdownTimeout).
 func stopSlack(a *slackchannel.Adapter, logger *slog.Logger) {

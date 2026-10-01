@@ -4,11 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"regexp"
 	"strings"
 
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 	"github.com/giantswarm/klaus-gateway/pkg/auth/musterlink"
+	"github.com/giantswarm/klaus-gateway/pkg/channels"
 )
 
 const (
@@ -17,38 +17,12 @@ const (
 	cmdLogin  = "login"  // OBO account linking: sign in
 	cmdLogout = "logout" // OBO account linking: sign out
 	cmdUsage  = "usage"
-	cmdAgent  = "agent" // agent selection; handled by handleAgentSelection, not handleCommand
+	cmdAgents = "agents" // the roster listing; listAgents serves it, not handleCommand
 )
 
-// knownCommands is the verb set the gateway owns.
-var knownCommands = map[string]struct{}{
-	cmdHelp:   {},
-	cmdStop:   {},
-	cmdLogin:  {},
-	cmdLogout: {},
-	cmdUsage:  {},
-	cmdAgent:  {},
-}
-
-// commandShapeRe matches a verb that reads as a command word. A path or URL
-// fragment ("/etc/hosts", "/api/v1/pods") contains characters outside it, so a
-// real prompt that happens to start with "/" still reaches the agent.
-var commandShapeRe = regexp.MustCompile(`^[a-z][a-z0-9_-]*$`)
-
-// isUnknownCommand reports whether cmd carries a command-shaped verb the
-// gateway does not own (a Slack built-in like /invite, or a typo). Dispatching
-// such a message burns a full agent turn on explaining slash commands.
-func isUnknownCommand(cmd *slashCommand) bool {
-	if _, ok := knownCommands[cmd.Name]; ok {
-		return false
-	}
-	return commandShapeRe.MatchString(cmd.Name)
-}
-
-// slashCommand is a parsed in-thread command.
-type slashCommand struct {
-	Name string   // lower-case command name, e.g. "stop", "usage"
-	Args []string // remaining tokens, e.g. ["<@U123456>"]
+// command is an in-thread command: one word, no arguments.
+type command struct {
+	Name string // lower-case command name, e.g. "stop", "usage"
 	// Root is set when the command message is its thread's root: a top-level
 	// message, whose thread has no replies yet. Slack does not show a
 	// thread-scoped ephemeral in such a thread (klaus-gateway#156), so a
@@ -56,36 +30,86 @@ type slashCommand struct {
 	Root bool
 }
 
-// parseCommand extracts a leading /command from text. Commands are always
-// mention-prefixed in use ("@bot /stop"); StripMention removes the mention
-// before this runs, leaving the leading "/" intact. Addressing the bot also
-// keeps Slack from intercepting the message as a native slash command, so the
-// same form works in channels and DMs. Returns nil when the text does not
-// start with a slash.
-func parseCommand(text string) *slashCommand {
-	text = strings.TrimSpace(text)
-	if !strings.HasPrefix(text, "/") {
+// bareCommands are the verbs the gateway answers. A command is the word alone:
+// Slack's composer keeps a message that starts with "/" for its own commands,
+// in a DM too, so a slash form would reach the bot only after a mention, and
+// none is served any more. "stop" is not one of them: it is a command only
+// while a turn runs, which dispatch decides (see isBareStop).
+var bareCommands = map[string]struct{}{
+	cmdLogin:  {},
+	cmdLogout: {},
+	cmdUsage:  {},
+	cmdHelp:   {},
+	cmdAgents: {},
+}
+
+// bareWord normalises a message that may be a one-word command: the word
+// alone, in any case, with trailing sentence punctuation allowed. Anything
+// longer comes back unchanged apart from the trim, so it matches no verb.
+func bareWord(text string) string {
+	text = strings.TrimRight(strings.TrimSpace(text), ".!?")
+	return strings.ToLower(strings.TrimSpace(text))
+}
+
+// parseBareCommand returns the command a message carries as a plain word, or
+// nil when it carries none. The whole message must be that word: a sentence
+// around it is a message for the agent.
+func parseBareCommand(text string) *command {
+	word := bareWord(text)
+	if _, ok := bareCommands[word]; !ok {
 		return nil
 	}
-	parts := strings.Fields(text[1:])
-	if len(parts) == 0 {
+	return &command{Name: word}
+}
+
+// bareCommandFor returns the command msg runs as a plain word, or nil when the
+// message is something else. Three messages keep the word for what they
+// carry, since a consumed message is one the agent never sees.
+func (a *Adapter) bareCommandFor(msg channels.InboundMessage) *command {
+	cmd := parseBareCommand(msg.Text)
+	if cmd == nil {
 		return nil
 	}
-	var args []string
-	if len(parts) > 1 {
-		args = parts[1:]
+	// A word this gateway cannot serve belongs to the agent. usage and help it
+	// answers from itself, always.
+	switch cmd.Name {
+	case cmdLogin, cmdLogout:
+		if a.OBO == nil {
+			return nil
+		}
+	case cmdAgents:
+		if !a.agentSelectionReady() {
+			return nil
+		}
 	}
-	return &slashCommand{Name: strings.ToLower(parts[0]), Args: args}
+	// A word beside an upload is that file's caption. Consuming it would drop
+	// the file without a word to its sender.
+	if len(msg.Attachments) > 0 {
+		return nil
+	}
+	// A thread paused on a question keeps the word for its answer: one word
+	// is the shape the question asks for, and the paused task must be
+	// resolved or the tool call dangles. The command waits until the question
+	// is answered: with no slash form left, the word alone is that answer
+	// whether or not it addresses the bot. Both kinds of question count: the ask_user card, and a
+	// pause with no structured prompt, whose typed reply reaches the agent as
+	// the answer itself (decisionFromText maps a nil prompt to no decision).
+	// An approval card is not a question: any text beside it is read as a
+	// rejection carrying that text, so the word stays the command and the
+	// card stays open.
+	if task := a.peekPendingTask(msg.ThreadID); task != nil && (task.Prompt == nil || task.Prompt.IsAskUser()) {
+		return nil
+	}
+	return cmd
 }
 
 // isBareStop reports whether text is the word "stop" on its own — the natural
 // reply in a thread the bot answers in without a mention — allowing case and
-// trailing punctuation. Only a thread with a running turn reads it as /stop;
+// trailing punctuation. Only a thread with a running turn reads it as stop;
 // anywhere else it stays what it is today: a message for the agent, or a deny
 // word for a paused prompt.
 func isBareStop(text string) bool {
-	text = strings.TrimRight(strings.TrimSpace(text), ".!?")
-	return strings.EqualFold(strings.TrimSpace(text), cmdStop)
+	return bareWord(text) == cmdStop
 }
 
 // helpCommand is one command in the help reply: the command as it is typed,
@@ -103,19 +127,18 @@ type helpGroup struct {
 // them.
 func helpGroups(agents, signIn bool) []helpGroup {
 	groups := []helpGroup{{title: "In a thread", commands: []helpCommand{
-		{"/stop", "Interrupt the running turn; a plain stop in its thread works too"},
-		{"/usage", "Tokens for the last turn and the session"},
+		{cmdStop, "Interrupt the turn that is running, or deny an open approval; with neither it is a message for the agent"},
+		{cmdUsage, "Tokens for the last turn and the session"},
 	}}}
 	if agents {
 		groups = append(groups, helpGroup{title: "Agents", commands: []helpCommand{
-			{"/agent", "List the agents"},
-			{`/agent "Name" question`, "Start a conversation with a named agent"},
+			{cmdAgents, "List the agents; in a new thread each row starts a conversation"},
 		}})
 	}
 	if signIn {
 		groups = append(groups, helpGroup{title: "Account", commands: []helpCommand{
-			{"/login", "Sign in to Giant Swarm; the agent then acts with your permissions"},
-			{"/logout", "Sign out"},
+			{cmdLogin, "Sign in to Giant Swarm; the agent then acts with your permissions"},
+			{cmdLogout, "Sign out"},
 		}})
 	}
 	return groups
@@ -124,19 +147,21 @@ func helpGroups(agents, signIn bool) []helpGroup {
 // helpShortcutNote names the one feature that is a shortcut, not a command.
 const helpShortcutNote = "Inspect agent steps: open the ⋯ menu on any message in the thread, then Apps. Visible only to you."
 
-// helpBlocks builds the /help reply: a header, how to address the bot, one
+// helpBlocks builds the help reply: a header, how to address the bot, one
 // group per activity with the command as a code label and its effect as the
 // text, and the Inspect shortcut. botName is the bot's own display name; when
 // known the mention names it, otherwise it says "the bot" rather than
 // hardcoding one. The returned text is the notification fallback.
 func helpBlocks(botName string, agents, signIn bool) (string, []any) {
-	// Slack's composer takes a message that starts with / as one of Slack's
-	// own commands, in a DM too, so a command reaches the bot only after a
-	// mention.
-	address := "Mention the bot first, then the command: a message that starts with / goes to Slack's own commands."
+	// A command word reaches the bot wherever it reads messages, which is a DM
+	// and a thread it is in; a top-level channel message reaches it only with
+	// a mention. No command carries a slash: Slack's composer takes a message
+	// that starts with / as one of Slack's own commands, in a DM too.
+	who := "the bot"
 	if botName != "" {
-		address = fmt.Sprintf("Mention @%s first, as in `@%s /stop`: a message that starts with / goes to Slack's own commands.", botName, botName)
+		who = "@" + botName
 	}
+	address := fmt.Sprintf("Send a command as the word alone, in a direct message or in a thread %s is in; anywhere else mention %s first.", who, who)
 	var lines []string
 	var elements []any
 	for _, g := range helpGroups(agents, signIn) {
@@ -166,9 +191,9 @@ func helpBlocks(botName string, agents, signIn bool) (string, []any) {
 	return "Commands: " + strings.Join(lines, ", "), blocks
 }
 
-// handleCommand processes a slash command and posts a reply in-thread.
+// handleCommand runs a command and posts a reply in-thread.
 // Returns true when the command was consumed (caller should not dispatch).
-func (a *Adapter) handleCommand(ctx context.Context, cmd *slashCommand, slackUser, slackChannel, threadID string) bool {
+func (a *Adapter) handleCommand(ctx context.Context, cmd *command, slackUser, slackChannel, threadID string) bool {
 	client := a.apiClient()
 	reply := func(text string) {
 		if _, err := client.postMessage(ctx, slackChannel, text, threadID); err != nil {
@@ -183,7 +208,7 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *slashCommand, slackUse
 		}
 	}
 	// Sign-in state is caller-only information; a shared thread must not see
-	// the linked email, so /login and /logout confirm ephemerally.
+	// the linked email, so login and logout confirm ephemerally.
 	ephemeralReply := func(text string) {
 		ephemeralThread := threadID
 		if cmd.Root {
@@ -235,7 +260,7 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *slashCommand, slackUse
 		}
 		// A thread paused on input-required has no in-flight turn to cancel; the
 		// paused task must be resolved with a rejection or the tool call dangles.
-		// Falling through to dispatch routes "/stop" like a typed "stop" reply,
+		// Falling through to dispatch routes "stop" like a typed "stop" reply,
 		// which decisionFromText maps to a structured reject.
 		if a.hasPendingTask(threadID) {
 			return false
@@ -256,7 +281,7 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *slashCommand, slackUse
 	return false
 }
 
-// handleLoginCommand handles `/login`. It always consumes the command. When
+// handleLoginCommand handles the login command. It always consumes it. When
 // OBO is disabled it says so rather than dispatching to the agent. An unlinked
 // user gets the sign-in prompt; a linked user gets a confirmation of their
 // signed-in identity. reply is ephemeral: the identity confirmation carries
@@ -278,7 +303,7 @@ func (a *Adapter) handleLoginCommand(ctx context.Context, slackUser, slackChanne
 	// likely signed in and is told to retry, not sent through a new sign-in.
 	if _, err := a.OBO.TokenFor(ctx, slackUser); err != nil {
 		if !errors.Is(err, musterlink.ErrNotLinked) {
-			a.Logger.Warn("slack: /login probe failed", "user", slackUser, "error", err)
+			a.Logger.Warn("slack: login probe failed", "user", slackUser, "error", err)
 			reply(tokenErrorNotice)
 			return true
 		}
@@ -304,7 +329,7 @@ func (a *Adapter) linkedEmail(slackUser string) string {
 	return ""
 }
 
-// handleLogoutCommand handles `/logout`: it signs the user out of their muster
+// handleLogoutCommand handles the logout command: it signs the user out of their muster
 // link, so the gateway asks them to sign in again before acting as them.
 func (a *Adapter) handleLogoutCommand(slackUser string, reply func(string)) bool {
 	if a.OBO == nil {
@@ -317,7 +342,7 @@ func (a *Adapter) handleLogoutCommand(slackUser string, reply func(string)) bool
 	}
 
 	if err := a.OBO.Unlink(slackUser); err != nil {
-		a.Logger.Warn("slack: /logout could not remove the link", "user", slackUser, "error", err)
+		a.Logger.Warn("slack: logout could not remove the link", "user", slackUser, "error", err)
 		reply(logoutFailedNotice)
 		return true
 	}
