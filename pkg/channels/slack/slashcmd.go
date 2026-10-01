@@ -576,8 +576,8 @@ func (a *Adapter) handleAskAgentSubmission(ctx context.Context, payload interact
 	}
 
 	name := a.agentNameFor(ctx, ref)
-	client := a.agentClientNamed(ctx, ref, name)
-	echoTS, err := client.postQuestion(ctx, pm.Channel, question, user, pm.Thread)
+	client := a.apiClient()
+	echoTS, err := client.postQuestion(ctx, pm.Channel, question, user, name, pm.Thread)
 	if err != nil && isDMChannelID(pm.Channel) {
 		// Slack offers a command in every conversation the person is in,
 		// including a direct message with somebody else, whose channel id is a
@@ -601,7 +601,7 @@ func (a *Adapter) handleAskAgentSubmission(ctx context.Context, payload interact
 			notify(askAgentInviteNotice)
 			return
 		}
-		echoTS, err = client.postQuestion(ctx, pm.Channel, question, user, pm.Thread)
+		echoTS, err = client.postQuestion(ctx, pm.Channel, question, user, name, pm.Thread)
 	}
 	if err != nil {
 		a.Logger.Warn("slack: ask-agent echo post failed", "channel", pm.Channel, "error", err)

@@ -316,8 +316,8 @@ agent when it opens, through one of three entry points, and keeps it for life:
   The picker's own notices, sent through its `response_url`, keep the roster as a text list.
 - **Slash command**: `/swarmgeist [question]` opens a modal with an agent select over the live
   roster (the default agent preselected) and a **Prompt** box, titled "New conversation". On
-  submit the gateway posts the conversation root itself, under the agent's identity (the
-  question, and in a channel "Asked by @user" as context under it), makes the submitter the
+  submit the gateway posts the conversation root itself, under the app's own identity
+  ("@user asked *Agent*:" and the question as a quote), makes the submitter the
   thread initiator, and runs the question as the first turn. It works in a channel and in a direct
   message — Slack offers the command in the agent pane's composer, and the root the submission
   posts is the conversation the pane then shows — but never inside a thread: Slack sends no

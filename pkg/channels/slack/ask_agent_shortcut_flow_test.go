@@ -104,7 +104,6 @@ func TestAskAgentShortcut_StartsConversationInTheMessageThread(t *testing.T) {
 	echo := fake.pathCalls("chat.postMessage")[0]
 	require.Equal(t, "C1", echo.params["channel"])
 	require.Equal(t, "100.000", echo.params["thread_ts"], "the echo is a reply in the target thread")
-	require.Equal(t, "SRE Agent", echo.params["username"], "posted under the agent's identity")
 	requireQuestionMessage(t, echo.params, "why are pods crashlooping?", "U1")
 
 	msgs := dispatched()
