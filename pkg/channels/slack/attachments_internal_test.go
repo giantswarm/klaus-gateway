@@ -1,6 +1,9 @@
 package slack
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +13,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 )
 
@@ -188,6 +192,40 @@ func TestAttachmentsTooLargeNote_QuotesTotalSize(t *testing.T) {
 	require.Contains(t, note, "12.0 MB")
 	require.Contains(t, note, "too large")
 	require.NotEqual(t, failedNote, note)
+}
+
+// A turn refused as too large before its stream started says so, and names the
+// attachments when the message carried some. A parked message replayed after a
+// sign-in or a grant gets the same note in place of "send it again", which
+// would fail the same way; any other replay failure is left to the caller.
+func TestPostDispatchFailureNote_Oversize(t *testing.T) {
+	tooLarge := fmt.Errorf("%w: rpc error: code = ResourceExhausted", pkga2a.ErrPayloadTooLarge)
+	files := []channels.Attachment{{Filename: "a.png", Bytes: make([]byte, 3<<20)}}
+	replay := context.WithValue(context.Background(), replayContextKey{}, true)
+	for _, tc := range []struct {
+		name        string
+		ctx         context.Context
+		attachments []channels.Attachment
+		cause       error
+		want        []string
+	}{
+		{"text", context.Background(), nil, tooLarge, []string{payloadTooLargeNote}},
+		{"attachments", context.Background(), files, tooLarge, []string{"Those attachments (3.0 MB in total) were too large for the agent to accept, so they were not sent. Try again with smaller files."}},
+		{"replayed", replay, nil, tooLarge, []string{payloadTooLargeNote}},
+		{"replayed, other failure", replay, nil, errors.New("boom"), []string{"Your message could not be picked up again. Send it again."}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, srv := newTestAdapter(t)
+			a.postDispatchFailureNote(tc.ctx, "C1", "T1", tc.attachments, tc.cause)
+			if isReplayContext(tc.ctx) {
+				// What a replay caller does once dispatch returned the error.
+				a.postReplayFailureNote(tc.ctx, "C1", "T1", tc.cause)
+			}
+			srv.mu.Lock()
+			defer srv.mu.Unlock()
+			require.Equal(t, tc.want, srv.postTexts)
+		})
+	}
 }
 
 func TestDownloadFile_UnknownSize_AllowsBeyondMargin(t *testing.T) {
