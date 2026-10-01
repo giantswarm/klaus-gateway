@@ -304,12 +304,16 @@ func TestAgentSelection_HelpListsTheAgentsCommand(t *testing.T) {
 		"the help reply omits the agents command when selection is unavailable")
 }
 
-// Without an agent-card client the gateway lists no agents, so the word is not
-// a command: it reaches the agent like any other message.
+// A roster without an agent-card client cannot check a pick, so the gateway
+// lists no agents and the word is not a command: it reaches the agent like any
+// other message.
 func TestAgentSelection_WordReachesTheAgentWithoutCards(t *testing.T) {
 	fake := newFakeSlackAPI()
 	gw, _ := capturingGateway()
-	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
+	rosterOnly := func(a *slackadapter.Adapter) {
+		a.Roster = &fakeRoster{agents: []pkga2a.AgentInfo{{Name: "swarmgeist", Namespace: "kagent"}}}
+	}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, rosterOnly)
 
 	sendEvent(t, srv, mention("U1", "agents", "100.000", ""))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond,
