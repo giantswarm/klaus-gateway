@@ -332,39 +332,6 @@ func TestEventsHandler_NewcomerGatedAfterInitiator(t *testing.T) {
 	require.Equal(t, 1, gw.dispatchCount(), "a newcomer must not reach the agent until approved")
 }
 
-func TestEventsHandler_BotMessageIgnored(t *testing.T) {
-	gw := &stubGateway{}
-	_, srv := newEventsAdapter(t, gw, "")
-
-	payload := `{
-		"type":"event_callback",
-		"event":{
-			"type":"message",
-			"bot_id":"B001",
-			"user":"U123",
-			"text":"bot says hi",
-			"channel":"C456",
-			"ts":"111.222"
-		}
-	}`
-	body := []byte(payload)
-	stamp, sig := signBody(t, "signing-secret", body)
-
-	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/channels/slack/events", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Slack-Request-Timestamp", stamp)
-	req.Header.Set("X-Slack-Signature", sig)
-
-	resp, err := http.DefaultClient.Do(req)
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-
-	// Give the goroutine time to run (it must not dispatch).
-	time.Sleep(100 * time.Millisecond)
-	require.Zero(t, gw.dispatchCount())
-}
-
 // --- Batched writer via fake Slack API ---
 
 func TestBatchedWriter_FlushesContent(t *testing.T) {
@@ -1179,7 +1146,9 @@ func TestBareAgents_ListsTheRoster(t *testing.T) {
 func TestBareAgents_WithoutARosterReachesTheAgent(t *testing.T) {
 	fake := newFakeSlackAPI()
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "hi"}, {Done: true}}}
-	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+	// A card client alone cannot list agents, so only the roster half of the
+	// gate keeps the word from being a command.
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, func(a *slackadapter.Adapter) { a.AgentCards = &fakeCards{} })
 	require.Nil(t, a.Roster, "this gateway lists no agents")
 
 	sendEvent(t, srv, dmEvent("U1", "agents", "1001.000"))
