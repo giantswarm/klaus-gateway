@@ -49,7 +49,7 @@ const (
 	minExpiry = time.Millisecond
 
 	// routeSuffix is the last segment of the default routing prefix; the
-	// review prefix is derived by swapping it (see ReviewKeyPrefix).
+	// review prefix is derived by swapping it (see Store.reviewPrefix).
 	routeSuffix  = "route:"
 	reviewSuffix = "review:"
 	// reviewUpdateAttempts bounds how often UpdateReview re-reads a record
@@ -79,12 +79,6 @@ type Options struct {
 	TLS *tls.Config
 	// KeyPrefix namespaces the routing keys; DefaultKeyPrefix when empty.
 	KeyPrefix string
-	// ReviewKeyPrefix namespaces the review keys. Empty derives it from
-	// KeyPrefix: a prefix ending in "route:" swaps that for "review:"
-	// (DefaultReviewKeyPrefix for the default), any other has "review:"
-	// appended — so a gateway that moves its routing keys moves its reviews
-	// with them.
-	ReviewKeyPrefix string
 	// Timeout bounds the dial and every command; DefaultTimeout when zero.
 	Timeout time.Duration
 }
@@ -93,6 +87,12 @@ type Options struct {
 type Store struct {
 	opts Options
 	now  func() time.Time
+	// reviewPrefix namespaces the review keys. It is derived from KeyPrefix:
+	// a prefix ending in "route:" swaps that for "review:"
+	// (DefaultReviewKeyPrefix for the default), any other has "review:"
+	// appended — so a gateway that moves its routing keys moves its reviews
+	// with them.
+	reviewPrefix string
 
 	mu     sync.Mutex
 	client valkeygo.Client
@@ -113,13 +113,14 @@ func New(opts Options) (*Store, error) {
 	if opts.KeyPrefix == "" {
 		opts.KeyPrefix = DefaultKeyPrefix
 	}
-	if opts.ReviewKeyPrefix == "" {
-		opts.ReviewKeyPrefix = strings.TrimSuffix(opts.KeyPrefix, routeSuffix) + reviewSuffix
-	}
 	if opts.Timeout <= 0 {
 		opts.Timeout = DefaultTimeout
 	}
-	return &Store{opts: opts, now: time.Now}, nil
+	return &Store{
+		opts:         opts,
+		now:          time.Now,
+		reviewPrefix: strings.TrimSuffix(opts.KeyPrefix, routeSuffix) + reviewSuffix,
+	}, nil
 }
 
 // Get returns the entry for k, or (_, false, nil) when absent or expired.
@@ -384,12 +385,9 @@ func (s *Store) Close() error {
 	return nil
 }
 
-// SetNowFunc is a test hook to override the clock.
-func (s *Store) SetNowFunc(f func() time.Time) { s.now = f }
-
 func (s *Store) key(k store.Key) string { return s.opts.KeyPrefix + k.String() }
 
-func (s *Store) reviewKey(id string) string { return s.opts.ReviewKeyPrefix + id }
+func (s *Store) reviewKey(id string) string { return s.reviewPrefix + id }
 
 // conn returns the client, dialing on first use. A failed dial is not
 // remembered: the next call tries again.

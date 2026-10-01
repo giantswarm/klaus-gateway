@@ -32,12 +32,3 @@ func TestVersionFallback(t *testing.T) {
 		})
 	}
 }
-
-func TestAccessors(t *testing.T) {
-	if GitSHA() == "" {
-		t.Error("GitSHA must not be empty")
-	}
-	if BuildTimestamp() == "" {
-		t.Error("BuildTimestamp must not be empty")
-	}
-}

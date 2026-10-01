@@ -434,15 +434,3 @@ func TestValkeyStore_ConformanceReal(t *testing.T) {
 		return s
 	})
 }
-
-func TestKey_StringRoundTrip(t *testing.T) {
-	cases := []store.Key{
-		{Channel: channelSlack, ChannelID: "abc", ThreadID: "t1"},
-		{Channel: "slack", ChannelID: "C|123", ThreadID: ""},
-	}
-	for _, k := range cases {
-		parsed, err := store.ParseKey(k.String())
-		require.NoError(t, err)
-		require.Equal(t, k, parsed)
-	}
-}

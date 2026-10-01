@@ -767,13 +767,11 @@ func (f *Facade) outboundMessage(ctx context.Context, instanceID string, msg Inb
 // is not paused on a prompt any more.
 var ErrNoPendingPrompt = errors.New("a2a: the task is not waiting for a decision")
 
-// withCallerAuth seeds ctx with the target agent ref and the caller's forwarded
-// bearer token for the A2A client. A turn without the token is refused by the
-// client (a Slack turn without a forwarded token never runs).
+// withCallerAuth seeds ctx with the caller's forwarded bearer token for the A2A
+// client. A turn without the token is refused by the client (a Slack turn
+// without a forwarded token never runs).
 func withCallerAuth(ctx context.Context, msg InboundMessage) context.Context {
-	ctx = pkga2a.WithAgentRef(ctx, msg.AgentRef)
-	ctx = pkga2a.WithForwardedToken(ctx, msg.BearerToken)
-	return ctx
+	return pkga2a.WithForwardedToken(ctx, msg.BearerToken)
 }
 
 // eventMapper converts a task's A2A streaming events to OutboundDeltas. It

@@ -173,12 +173,6 @@ func TestReviewKeyPrefixFollowsRoutePrefix(t *testing.T) {
 		require.Equal(t, []string{want + "r"}, m.Keys(), "routing prefix %q", routes)
 		_ = s.Close()
 	}
-	m := miniredis.RunT(t)
-	s, err := valkeystore.New(valkeystore.Options{URL: m.Addr(), ReviewKeyPrefix: "elsewhere:", Timeout: testTimeout})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = s.Close() })
-	require.NoError(t, s.PutReview(context.Background(), store.Review{ID: "r", PostedAt: time.Now(), TTL: time.Hour}))
-	require.Equal(t, []string{"elsewhere:r"}, m.Keys(), "an explicit review prefix stands")
 }
 
 // An update that finds the record changed under it — another replica's click

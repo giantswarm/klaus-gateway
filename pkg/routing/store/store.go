@@ -11,16 +11,12 @@ package store
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
 	"time"
 )
-
-// ErrNotFound is returned by Get when no entry matches the key.
-var ErrNotFound = errors.New("routing entry not found")
 
 // Key identifies a conversation thread. A thread is shared by its
 // participants, so every participant reaches the same row.
