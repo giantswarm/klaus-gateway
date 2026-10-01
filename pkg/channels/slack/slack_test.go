@@ -1101,6 +1101,7 @@ func TestBareHelp_AnswersWithTheCommandList(t *testing.T) {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Commands: ")
 	}, flowWait, 50*time.Millisecond, "a plain help must answer with the command list")
 
+	require.Len(t, fake.pathCalls("chat.postMessage"), 1, "help is posted once")
 	require.Zero(t, gw.dispatchCount(), "a plain help must be consumed, not dispatched to the agent")
 }
 

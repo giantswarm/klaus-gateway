@@ -321,5 +321,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Code only tests reached: the Slack client's `postMarkdown`, `Adapter.isActiveThread`, the login and logout replies for a gateway without sign-in (the words reach the agent there), and the exported `channels.NewTurnTimer` and `channels.WithTurnTimer` (`channels.BeginTurn` opens a turn's timeline). The `--thread-ttl` default reads `channels.DefaultThreadTTL`.
 - Tests: the muster link import checks the file it opened, only the `Status.Error` check refuses the TokenReview API-server-error case, and the AgentInstance create test checks what the client sends.
 - More code only tests reached: `a2a.WithAgentRef` and `a2a.AgentRefFromContext`, `store.ErrNotFound`, the memory store's `EvictNow`, the bolt and Valkey stores' `SetNowFunc`, the Valkey `Options.ReviewKeyPrefix` (the review prefix is still derived from the routing prefix), and `BuildTimestamp` in `pkg/project` and `internal/version`. `musterlink.Linker.Exchange` and the bolt store's `Evict` are unexported, and the stores' `EvictionInterval` is a constant.
+- Tests: the Slack adapter and channel tests that a stronger test already covers are removed, and the help flow test checks that help is posted once.
 
 [Unreleased]: https://github.com/giantswarm/REPOSITORY_NAME/tree/main
