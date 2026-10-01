@@ -1962,6 +1962,10 @@ func TestProgress_FailureNoteNamesTheClass(t *testing.T) {
 		{"policy", &stubGateway{deltas: []channels.OutboundDelta{{Err: errors.New("OpenAI chat completion request failed: 403 authorization failed")}}}, "A platform policy refused this request", "The turn failed"},
 		{"platform, before the stream", &stubGateway{dispatchErr: errors.New("rpc error: code = Unavailable desc = connection refused")}, "agent platform could not be reached", "The turn failed"},
 		{"unknown", &stubGateway{deltas: []channels.OutboundDelta{{Err: errors.New("boom")}}}, "The turn failed before an answer", "⚠️"},
+		// The controller refuses an oversize request on the stream's first
+		// read, before SendCompletion returns.
+		{"oversize, before the stream", &stubGateway{dispatchErr: fmt.Errorf("%w: rpc error: code = ResourceExhausted", pkga2a.ErrPayloadTooLarge)}, "That was too large for the agent to accept, so it was not sent.", "The turn failed"},
+		{"oversize, in the stream", &stubGateway{deltas: []channels.OutboundDelta{{Err: fmt.Errorf("%w: rpc error: code = ResourceExhausted", pkga2a.ErrPayloadTooLarge)}}}, "That was too large for the agent to accept, so it was not sent.", "The turn failed"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fake := newFakeSlackAPI()
