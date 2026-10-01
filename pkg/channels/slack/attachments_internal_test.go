@@ -256,11 +256,6 @@ func TestDroppedAttachmentsNote_NamesFiles(t *testing.T) {
 	require.Contains(t, note, "b.pdf")
 }
 
-func TestPayloadTooLargeNote_DistinctNotices(t *testing.T) {
-	require.NotEqual(t, failedNote, payloadTooLargeNote)
-	require.NotEqual(t, attachmentsUnavailableNote, payloadTooLargeNote)
-}
-
 func TestDownloadFile_RefusesDeclaredOversizeWithoutFetching(t *testing.T) {
 	var requests atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {

@@ -1913,12 +1913,17 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 // note a pre-stream failure is invisible to the thread. Skipped on the replay
 // path, where the caller posts the more specific postReplayFailureNote.
 // Best-effort, and silent on shutdown (a canceled context means nobody is
-// waiting for it).
-func (a *Adapter) postDispatchFailureNote(ctx context.Context, slackChannel, threadID string, cause error) {
+// waiting for it). The controller refuses an oversize request here, on the
+// stream's first read, so this path gets the oversize note too.
+func (a *Adapter) postDispatchFailureNote(ctx context.Context, slackChannel, threadID string, attachments []channels.Attachment, cause error) {
 	if ctx.Err() != nil || isReplayContext(ctx) {
 		return
 	}
-	if _, err := a.apiClient().postNote(ctx, slackChannel, failureNote(cause), threadID); err != nil {
+	note := failureNote(cause)
+	if errors.Is(cause, pkga2a.ErrPayloadTooLarge) {
+		note = tooLargeNote(attachments)
+	}
+	if _, err := a.apiClient().postNote(ctx, slackChannel, note, threadID); err != nil {
 		a.Logger.Warn("slack: post dispatch failure note failed", "thread", threadID, "error", err)
 	}
 }
@@ -2247,7 +2252,7 @@ func (a *Adapter) dispatchFrom(ctx context.Context, msg channels.InboundMessage,
 				a.maybeAnnounceResume(ctx, msg, slackChannel)
 			}
 		},
-		onFailure: func(err error) { a.postDispatchFailureNote(ctx, slackChannel, msg.ThreadID, err) },
+		onFailure: func(err error) { a.postDispatchFailureNote(ctx, slackChannel, msg.ThreadID, msg.Attachments, err) },
 	})
 }
 
@@ -2321,6 +2326,16 @@ func droppedAttachmentsNote(names []string) string {
 // never receives the file and the user must re-share it afterwards.
 func hitlAttachmentsNotForwardedNote(names []string) string {
 	return fmt.Sprintf("A confirmation reply carries only your decision, so the agent did not receive: %s. Share the files again after this step.", strings.Join(names, ", "))
+}
+
+// tooLargeNote is the note of a turn the agent refused as too large. It names
+// the attachments only when the message carried some; a text or history
+// overflow gets the generic size notice.
+func tooLargeNote(attachments []channels.Attachment) string {
+	if len(attachments) > 0 {
+		return attachmentsTooLargeNote(attachments)
+	}
+	return payloadTooLargeNote
 }
 
 // attachmentsTooLargeNote renders the notice posted when kagent rejects a turn
@@ -2640,9 +2655,7 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 		prog.failed(cctx)
 		// An oversize-payload rejection is actionable (the user can send a
 		// smaller file or shorter message), so it always gets its own explanatory
-		// note. The note names attachments only when the message actually
-		// carried some; a text/history-only overflow gets the generic size
-		// notice instead. Every other failure gets the note of its class:
+		// note (tooLargeNote). Every other failure gets the note of its class:
 		// failureNote before the reply started, and once it did
 		// (narration, part of the answer) interruptedFailureNote, which
 		// says the turn is over and where its progress is.
@@ -2652,10 +2665,7 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 			note = interruptedFailureNote(err)
 		}
 		if oversize {
-			note = payloadTooLargeNote
-			if len(msg.Attachments) > 0 {
-				note = attachmentsTooLargeNote(msg.Attachments)
-			}
+			note = tooLargeNote(msg.Attachments)
 		}
 		if oversize || !isCorruptSessionErr(err) {
 			// The failed emoji alone says nothing about what to do, and it lands
