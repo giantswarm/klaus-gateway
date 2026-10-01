@@ -275,7 +275,7 @@ func TestFacade_SendCompletionViaA2A_FirstTurnCreatesTheInstance(t *testing.T) {
 	)
 	f, routes := newA2AFacade(agent)
 	msg := slackMsg("hi")
-	msg.SenderID = "U1"
+	msg.SenderID, msg.Subject = "U1", "sub-1"
 
 	ch, err := f.SendCompletion(t.Context(), msg)
 	require.NoError(t, err)

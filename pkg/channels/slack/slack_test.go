@@ -1146,7 +1146,9 @@ func TestBareAgents_ListsTheRoster(t *testing.T) {
 func TestBareAgents_WithoutARosterReachesTheAgent(t *testing.T) {
 	fake := newFakeSlackAPI()
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "hi"}, {Done: true}}}
-	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+	// A card client alone cannot list agents, so only the roster half of the
+	// gate keeps the word from being a command.
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, func(a *slackadapter.Adapter) { a.AgentCards = &fakeCards{} })
 	require.Nil(t, a.Roster, "this gateway lists no agents")
 
 	sendEvent(t, srv, dmEvent("U1", "agents", "1001.000"))
