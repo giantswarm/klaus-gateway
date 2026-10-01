@@ -399,9 +399,10 @@ func TestPostApprovalPrompt_EscapesMrkdwn(t *testing.T) {
 }
 
 // The picker's question enters an mrkdwn section and the fallback text, so it
-// is escaped, and the escaped text stays inside the section limit without
-// cutting an entity in half.
-func TestPostQuestion_EscapesAndTruncates(t *testing.T) {
+// is escaped and quoted line by line under a line naming who asked which agent,
+// and the whole text stays inside the section limit without cutting an entity
+// in half.
+func TestPostQuestion_EscapesQuotesAndTruncates(t *testing.T) {
 	var body atomic.Value
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw, _ := io.ReadAll(r.Body)
@@ -412,9 +413,9 @@ func TestPostQuestion_EscapesAndTruncates(t *testing.T) {
 	defer srv.Close()
 	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
 
-	post := func(question string) (text, section string) {
+	post := func(channel, question string) (text, section string) {
 		t.Helper()
-		_, err := client.postQuestion(t.Context(), "C1", question, "U1", "")
+		_, err := client.postQuestion(t.Context(), channel, question, "U1", "SRE <Agent>", "")
 		require.NoError(t, err)
 		raw, _ := body.Load().(string)
 		var payload struct {
@@ -426,16 +427,22 @@ func TestPostQuestion_EscapesAndTruncates(t *testing.T) {
 			} `json:"blocks"`
 		}
 		require.NoError(t, json.Unmarshal([]byte(raw), &payload))
-		require.Len(t, payload.Blocks, 2)
+		require.Len(t, payload.Blocks, 1)
 		return payload.Text, payload.Blocks[0].Text.Text
 	}
 
-	text, section := post("ping <!channel> now")
-	require.Equal(t, "ping &lt;!channel&gt; now", text)
+	const lead = "<@U1> asked *SRE &lt;Agent&gt;*:\n>"
+
+	text, section := post("C1", "ping <!channel> now\nsecond line")
+	require.Equal(t, lead+"ping &lt;!channel&gt; now\n>second line", text)
 	require.Equal(t, text, section)
 
-	text, section = post(strings.Repeat("&", slackSectionTextMax))
+	text, _ = post("D1", "hi")
+	require.Equal(t, lead+"hi", text, "a direct message names who asked which agent too")
+
+	text, section = post("C1", strings.Repeat("&", slackSectionTextMax))
 	require.Equal(t, text, section)
+	require.True(t, strings.HasPrefix(text, lead))
 	require.LessOrEqual(t, utf8.RuneCountInString(text), slackSectionTextMax)
 	require.True(t, strings.HasSuffix(text, "&amp;…"), "the cut falls between two entities")
 }

@@ -186,9 +186,9 @@ const (
 	modalQuestionMax    = 3000
 	modalHintMax        = 2000 // an input block's hint text
 
-	// askAgentAskedBy is the context line under the question the gateway posts
-	// on submit. The agent is the message's author, so it is not repeated.
-	askAgentAskedBy = "Asked by <@%s>"
+	// askAgentAskedBy is the first line of the question the gateway posts on
+	// submit, above the quoted question: who asked, and which agent.
+	askAgentAskedBy = "<@%s> asked *%s*:"
 
 	// The command runs in a channel and in a direct message, so its sign-in
 	// notice names neither: the bot answers `login` on both surfaces.
