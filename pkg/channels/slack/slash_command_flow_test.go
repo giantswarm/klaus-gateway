@@ -386,7 +386,7 @@ func TestSlashCommand_InvalidSignatureRejected(t *testing.T) {
 }
 
 // Submitting the picker opens the conversation: the gateway posts the root
-// under the agent's identity, the submitter is the initiator, the thread is
+// under the app's own identity, the submitter is the initiator, the thread is
 // bound, and the question is the first turn. Replies then behave as in any
 // conversation: the submitter's reply inherits the agent, a newcomer waits for
 // the submitter's consent.

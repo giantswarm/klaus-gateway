@@ -75,7 +75,7 @@ func TestAskAgentShortcut_ForeignDMSaysWhereAConversationStarts(t *testing.T) {
 
 // Invoked on a reply inside a thread nobody has bound, the shortcut carries
 // that thread through the modal: the submission echoes the question as a reply
-// in it, under the agent's identity, and runs the first turn there.
+// in it, under the app's own identity, and runs the first turn there.
 func TestAskAgentShortcut_StartsConversationInTheMessageThread(t *testing.T) {
 	fake := newFakeSlackAPI()
 	api := fake.server(t)
