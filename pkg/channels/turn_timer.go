@@ -70,6 +70,10 @@ const RecordTurnComplete = "turn_complete"
 // second time (Facade.SendCompletion).
 const RecordTurnRetry = "turn_retry"
 
+// RecordA2AEvent is the `record` value of the debug line written for every
+// A2A event a turn receives (Facade.streamTask).
+const RecordA2AEvent = "a2a_event"
+
 // TurnTimer is the telemetry handle of one turn: when it started, which phase
 // was reached when, how long the steps took, the counters the turn_complete
 // record carries, and the turn's root span. It travels on the context from
@@ -88,6 +92,7 @@ type TurnTimer struct {
 	toolCalls int
 	chars     int
 	retries   int
+	usage     TurnUsage
 }
 
 // NewTurnTimer starts a timeline at start (the moment the channel received
@@ -179,6 +184,29 @@ func (t *TurnTimer) AddChars(n int) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.chars += n
+}
+
+// AddUsage adds the token usage one LLM call of the turn reported.
+func (t *TurnTimer) AddUsage(u TurnUsage) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.usage.InputTokens += u.InputTokens
+	t.usage.OutputTokens += u.OutputTokens
+	t.usage.TotalTokens += u.TotalTokens
+}
+
+// Usage is the token usage the turn's LLM calls reported so far; zero when
+// the runtime reports none.
+func (t *TurnTimer) Usage() TurnUsage {
+	if t == nil {
+		return TurnUsage{}
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.usage
 }
 
 // Retry counts a second attempt of the turn and forgets when the failed
@@ -342,6 +370,7 @@ func CompleteTurn(ctx context.Context, logger *slog.Logger, rec TurnRecorder, ch
 	t.Mark(PhaseTotal)
 	phases := t.Phases()
 	toolCalls, chars := t.Counters()
+	usage := t.Usage()
 	class := turnFailureClass(outcome, err)
 	fields := []any{
 		"record", RecordTurnComplete,
@@ -356,6 +385,9 @@ func CompleteTurn(ctx context.Context, logger *slog.Logger, rec TurnRecorder, ch
 		"tool_calls", toolCalls,
 		"streamed_chars", chars,
 		"retries", t.Retries(),
+		"input_tokens", usage.InputTokens,
+		"output_tokens", usage.OutputTokens,
+		"total_tokens", usage.TotalTokens,
 	)
 	if id := t.TraceID(); id != "" {
 		fields = append(fields, "trace_id", id)

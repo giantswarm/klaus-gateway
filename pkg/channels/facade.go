@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"iter"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -579,6 +580,10 @@ func (f *Facade) streamTask(ctx context.Context, key store.Key, instanceID strin
 				timer.SetTaskID(string(taskID))
 				f.rememberTask(ctx, key, taskID, resume)
 			}
+			if slog.Default().Enabled(ctx, slog.LevelDebug) {
+				slog.DebugContext(ctx, "channels: a2a event", "record", RecordA2AEvent,
+					"event", fmt.Sprintf("%T", event), "task_id", string(taskID), "metadata_keys", eventMetadataKeys(event))
+			}
 			_, whole := event.(*a2apkg.Task) // a quiesced task arriving whole already carries its full answer
 			for _, delta := range mapper.deltas(event) {
 				if delta.isZero() {
@@ -1051,6 +1056,25 @@ func isPartialStatusUpdate(ev *a2apkg.TaskStatusUpdateEvent) bool {
 		return true
 	}
 	return ev.Status.Message != nil && isPartialMeta(ev.Status.Message.Metadata)
+}
+
+// eventMetadataKeys lists the metadata keys an event carries, sorted: its own,
+// and for a status update its status message's under a "message." prefix.
+// Keys only, never values: a value can hold the person's or the agent's text.
+// The debug record of every event is what tells a runtime that sends no usage
+// apart from a usage key the gateway does not read.
+func eventMetadataKeys(event a2apkg.Event) []string {
+	var keys []string
+	for k := range event.Meta() {
+		keys = append(keys, k)
+	}
+	if ev, ok := event.(*a2apkg.TaskStatusUpdateEvent); ok && ev.Status.Message != nil {
+		for k := range ev.Status.Message.Metadata {
+			keys = append(keys, "message."+k)
+		}
+	}
+	slices.Sort(keys)
+	return keys
 }
 
 // toolActivityDeltas maps each function_call/function_response DataPart to a

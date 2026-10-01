@@ -340,6 +340,7 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 				w.turnUsage.InputTokens += d.Usage.InputTokens
 				w.turnUsage.OutputTokens += d.Usage.OutputTokens
 				w.turnUsage.TotalTokens += d.Usage.TotalTokens
+				w.timer.AddUsage(*d.Usage)
 			}
 			if d.Err != nil {
 				// Flush text buffered since the last tick before surfacing the

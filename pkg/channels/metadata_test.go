@@ -14,6 +14,21 @@ func dataPart(t *testing.T, kagentType string, data map[string]any) *a2apkg.Part
 	return p
 }
 
+// The keys of an event's own metadata and of its status message's, sorted,
+// and never a value.
+func TestEventMetadataKeys(t *testing.T) {
+	ev := &a2apkg.TaskStatusUpdateEvent{
+		Metadata: map[string]any{mdUsageCanonical: map[string]any{"promptTokenCount": 3}, "kagent.dev/a2a/timeline-position": "x"},
+		Status: a2apkg.TaskStatus{
+			State:   a2apkg.TaskStateWorking,
+			Message: &a2apkg.Message{Metadata: map[string]any{mdPartialKagent: true}},
+		},
+	}
+	require.Equal(t, []string{"kagent.dev/a2a/timeline-position", mdUsageCanonical, "message." + mdPartialKagent}, eventMetadataKeys(ev))
+
+	require.Empty(t, eventMetadataKeys(&a2apkg.Task{}), "an event without metadata lists no key")
+}
+
 func usageMeta(prompt, completion, total float64) map[string]any {
 	return map[string]any{
 		mdUsageKagent: map[string]any{

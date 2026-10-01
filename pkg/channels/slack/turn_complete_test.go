@@ -95,7 +95,7 @@ func newRecordedAdapter(t *testing.T, gw channels.Gateway) (*Adapter, *recording
 
 // Every dispatched turn ends with exactly one turn_complete record carrying
 // the audit-join fields of turn_dispatch, the outcome, the task, the tool
-// calls and streamed characters, and the phases as <phase>_ms measured from
+// calls, streamed characters and token usage, and the phases as <phase>_ms measured from
 // the moment Slack's event arrived; the turn metrics see the same outcome and
 // phases, and the dispatch record carries the trace id the complete record
 // carries.
@@ -103,8 +103,10 @@ func TestDispatch_EmitsTurnCompleteRecord(t *testing.T) {
 	gw := &fakeGateway{Facade: newMemoryRecorder(), deltas: []channels.OutboundDelta{
 		{Kind: channels.DeltaToolActivity, Tool: &channels.ToolActivity{Name: "get_pods", Kind: channels.ToolCall, CallID: "c1"}},
 		{Kind: channels.DeltaToolActivity, Tool: &channels.ToolActivity{Name: "get_pods", Kind: channels.ToolResult, CallID: "c1"}},
+		{Usage: &channels.TurnUsage{InputTokens: 100, OutputTokens: 50, TotalTokens: 150}},
 		{Content: "pong"},
 		{Content: "!"},
+		{Usage: &channels.TurnUsage{InputTokens: 30, OutputTokens: 20, TotalTokens: 50}},
 		{Done: true},
 	}}
 	a, h, rec := newRecordedAdapter(t, gw)
@@ -125,6 +127,9 @@ func TestDispatch_EmitsTurnCompleteRecord(t *testing.T) {
 	require.Equal(t, "M1", r["message_id"])
 	require.Equal(t, int64(1), r["tool_calls"], "a call counts, its result does not")
 	require.Equal(t, int64(5), r["streamed_chars"])
+	require.Equal(t, int64(130), r["input_tokens"], "usage is summed over the turn's LLM calls")
+	require.Equal(t, int64(70), r["output_tokens"])
+	require.Equal(t, int64(200), r["total_tokens"])
 	for _, phase := range []string{"token_mint_ms", "roster_ms", "dispatch_ms", "first_text_ms", "final_flush_ms", "total_ms"} {
 		require.Contains(t, r, phase, "phase %s missing from the record", phase)
 	}
