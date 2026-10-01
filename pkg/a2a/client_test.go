@@ -251,28 +251,22 @@ func TestClient_AgentModel(t *testing.T) {
 	require.ErrorIs(t, err, pkga2a.ErrAgentUnknown)
 }
 
-func TestClient_CreateInstance_IdempotentPerRequestID(t *testing.T) {
+// The controller dedupes a create by its request id; the client's part is to
+// send it, with the template, the Harness that admits it and the name.
+func TestClient_CreateInstance_SendsTheTemplateHarnessRequestIDAndName(t *testing.T) {
 	f := readyFake(t)
 	client := f.serve(t, pkga2a.Config{})
 	ctx := asUser(t.Context(), userToken)
 	requestID := "1d2c7a1e5e1a4b7b8c9d0e1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d"
 
-	first, err := client.CreateInstance(ctx, "sre-agent", requestID, "restart the kong pods on gazelle")
+	inst, err := client.CreateInstance(ctx, "sre-agent", requestID, "restart the kong pods on gazelle")
 	require.NoError(t, err)
-	require.True(t, first.Ready())
-	again, err := client.CreateInstance(ctx, "sre-agent", requestID, "restart the kong pods on gazelle")
-	require.NoError(t, err)
-	require.Equal(t, first.ID, again.ID, "a retried create returns the same instance")
-	require.Len(t, f.created, 2)
+	require.True(t, inst.Ready())
+	require.Len(t, f.created, 1)
 	require.Equal(t, "kagent", f.created[0].GetHarness().GetName(), "the admitting Harness from the template's status")
 	require.Equal(t, "sre-agent", f.created[0].GetAgentTemplate().GetName())
 	require.Equal(t, requestID, f.created[0].GetRequestId())
 	require.Equal(t, "restart the kong pods on gazelle", f.created[0].GetName(), "the conversation is named after the message that opened it")
-
-	// A different creator with the same request id is a different conversation.
-	other, err := client.CreateInstance(asUser(t.Context(), "someone-else"), "sre-agent", requestID, "")
-	require.NoError(t, err)
-	require.NotEqual(t, first.ID, other.ID)
 }
 
 func TestClient_CreateInstance_WaitsForReady(t *testing.T) {

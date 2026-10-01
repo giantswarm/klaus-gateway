@@ -44,7 +44,6 @@ type fakeKagent struct {
 	templates    []*apiv1alpha1.AgentTemplate
 	modelConfigs map[string]map[string]any // name -> spec
 	instances    map[string]*apiv1alpha1.AgentInstance
-	byRequest    map[string]string // creator|request_id -> instance id
 	tasks        map[string]*a2apkg.Task
 	events       []a2apkg.Event // played back by SendStreamingMessage
 	busy         bool           // refuse a new task: one is active
@@ -64,7 +63,6 @@ func newFakeKagent() *fakeKagent {
 	return &fakeKagent{
 		modelConfigs: map[string]map[string]any{},
 		instances:    map[string]*apiv1alpha1.AgentInstance{},
-		byRequest:    map[string]string{},
 		tasks:        map[string]*a2apkg.Task{},
 		shares:       map[string]string{},
 		calls:        map[string][]metadata.MD{},
@@ -332,14 +330,6 @@ func (f *fakeKagent) CreateAgentInstance(ctx context.Context, req *apiv1alpha1.C
 			return nil, status.Error(codes.InvalidArgument, "name must be at most 200 characters and hold no control characters")
 		}
 	}
-	key := who + "|" + req.GetRequestId()
-	if id, ok := f.byRequest[key]; ok {
-		existing := f.instances[id]
-		if existing.GetHarness().GetName() != req.GetHarness().GetName() || existing.GetAgentTemplate().GetName() != req.GetAgentTemplate().GetName() {
-			return nil, status.Error(codes.AlreadyExists, "request_id was already used for a different AgentInstance")
-		}
-		return &apiv1alpha1.CreateAgentInstanceResponse{AgentInstance: existing}, nil
-	}
 	if req.GetHarness().GetName() == "unready" {
 		return nil, status.Error(codes.FailedPrecondition, "AgentTemplate and Harness do not have a ready prepared revision")
 	}
@@ -353,7 +343,6 @@ func (f *fakeKagent) CreateAgentInstance(ctx context.Context, req *apiv1alpha1.C
 		ContextId:     fmt.Sprintf("ctx-%d", len(f.instances)+1),
 	}
 	f.instances[inst.Id] = inst
-	f.byRequest[key] = inst.Id
 	return &apiv1alpha1.CreateAgentInstanceResponse{AgentInstance: inst}, nil
 }
 
