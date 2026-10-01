@@ -577,8 +577,9 @@ Three structured log records (`record=…`, JSON fields) tell a turn's story; jo
   previous process left running and this one delivered after a restart gets a record too, its
   timeline starting at the delivery.
 - `a2a_event` (debug level only, `--log-level=debug`) -- one per A2A event a turn receives:
-  `event` (its Go type), `task_id`, and `metadata_keys`, the metadata keys of the event and of its
-  status message (`message.` prefix), never their values. It shows which keys a runtime sends,
+  `event` (its Go type), `task_id`, and `metadata_keys`, the metadata keys of the event, of its
+  status message (`message.` prefix) and of its artifact (`artifact.` prefix), never their values.
+  It shows which keys a runtime sends,
   for example whether any event carries `kagent.dev/a2a/usage`.
 - `turn_retry` -- a fresh turn failed before it showed anything on a failure a second attempt
   may get past, and is sent once more on the same AgentInstance: `channel`, `channel_id`,

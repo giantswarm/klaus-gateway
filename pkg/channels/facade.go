@@ -1058,19 +1058,32 @@ func isPartialStatusUpdate(ev *a2apkg.TaskStatusUpdateEvent) bool {
 	return ev.Status.Message != nil && isPartialMeta(ev.Status.Message.Metadata)
 }
 
-// eventMetadataKeys lists the metadata keys an event carries, sorted: its own,
-// and for a status update its status message's under a "message." prefix.
-// Keys only, never values: a value can hold the person's or the agent's text.
-// The debug record of every event is what tells a runtime that sends no usage
-// apart from a usage key the gateway does not read.
+// eventMetadataKeys lists every metadata key an event carries, sorted: its
+// own, its status message's under a "message." prefix (a status update or a
+// whole task), and its artifact's under an "artifact." prefix. Keys only,
+// never values: a value can hold the person's or the agent's text. The debug
+// record of every event is what tells a runtime that sends no usage apart
+// from a usage key the gateway does not read, so no carrier may be left out.
 func eventMetadataKeys(event a2apkg.Event) []string {
 	var keys []string
-	for k := range event.Meta() {
-		keys = append(keys, k)
+	add := func(prefix string, md map[string]any) {
+		for k := range md {
+			keys = append(keys, prefix+k)
+		}
 	}
-	if ev, ok := event.(*a2apkg.TaskStatusUpdateEvent); ok && ev.Status.Message != nil {
-		for k := range ev.Status.Message.Metadata {
-			keys = append(keys, "message."+k)
+	add("", event.Meta())
+	switch ev := event.(type) {
+	case *a2apkg.TaskStatusUpdateEvent:
+		if ev.Status.Message != nil {
+			add("message.", ev.Status.Message.Metadata)
+		}
+	case *a2apkg.Task:
+		if ev.Status.Message != nil {
+			add("message.", ev.Status.Message.Metadata)
+		}
+	case *a2apkg.TaskArtifactUpdateEvent:
+		if ev.Artifact != nil {
+			add("artifact.", ev.Artifact.Metadata)
 		}
 	}
 	slices.Sort(keys)

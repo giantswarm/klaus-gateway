@@ -26,6 +26,23 @@ func TestEventMetadataKeys(t *testing.T) {
 	}
 	require.Equal(t, []string{"kagent.dev/a2a/timeline-position", mdUsageCanonical, "message." + mdPartialKagent}, eventMetadataKeys(ev))
 
+	task := &a2apkg.Task{
+		Metadata: map[string]any{"kagent.dev/a2a/task-created-at": "x"},
+		Status: a2apkg.TaskStatus{
+			State:   a2apkg.TaskStateCompleted,
+			Message: &a2apkg.Message{Metadata: map[string]any{mdUsageCanonical: map[string]any{}}},
+		},
+	}
+	require.Equal(t, []string{"kagent.dev/a2a/task-created-at", "message." + mdUsageCanonical}, eventMetadataKeys(task),
+		"a whole task's status message is a carrier too")
+
+	artifact := &a2apkg.TaskArtifactUpdateEvent{
+		Metadata: map[string]any{"kagent.dev/a2a/timeline-position": "x"},
+		Artifact: &a2apkg.Artifact{Metadata: map[string]any{mdUsageCanonical: map[string]any{}}},
+	}
+	require.Equal(t, []string{"artifact." + mdUsageCanonical, "kagent.dev/a2a/timeline-position"}, eventMetadataKeys(artifact),
+		"an artifact update's artifact is a carrier too")
+
 	require.Empty(t, eventMetadataKeys(&a2apkg.Task{}), "an event without metadata lists no key")
 }
 
