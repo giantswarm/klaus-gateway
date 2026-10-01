@@ -450,24 +450,6 @@ func TestPostQuestion_EscapesQuotesAndTruncates(t *testing.T) {
 // The top-level text of a markdown-block message is the notification fallback
 // and is mrkdwn-parsed by Slack, so it must be escaped even though the markdown
 // block itself carries the raw text.
-func TestPostMarkdown_EscapesFallbackText(t *testing.T) {
-	var body atomic.Value
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		raw, _ := io.ReadAll(r.Body)
-		body.Store(string(raw))
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{"ok":true,"ts":"1.2"}`)
-	}))
-	defer srv.Close()
-
-	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
-	_, err := client.postMarkdown(t.Context(), "C1", "ping <!channel> now", "1.0")
-	require.NoError(t, err)
-	payload := decodeBlocksPayload(t, body)
-	require.Equal(t, "ping &lt;!channel&gt; now", payload.Text)
-	require.Equal(t, "ping <!channel> now", payload.Blocks[0].Text, "markdown block keeps the raw text")
-}
-
 func TestChatUpdateMarkdown_EscapesFallbackText(t *testing.T) {
 	var body atomic.Value
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

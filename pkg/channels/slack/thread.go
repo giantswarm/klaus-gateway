@@ -122,9 +122,10 @@ func (a *Adapter) releaseThread(threadID string) {
 // initiator token mint, resume check, agent resolve) holding the slot before
 // it registers a cancelable turn; a stop landing in that window is recorded
 // on the slot for registerTurn to consume, so it still stops the turn. The
-// sender's own token mint runs before the slot is taken (so a signed-out
-// sender parks instead of bouncing busy); a stop during that mint finds the
-// thread idle and reports nothing running, an accepted trade of the ordering.
+// sender's own token mint runs before the slot is taken, so a "stop" sent
+// during it finds no turn: it is dispatched like any message and races the
+// first for the slot, so it becomes a turn for the agent, or it finds the
+// thread busy and stops the turn.
 func (a *Adapter) stopThread(threadID string) bool {
 	stopped := false
 	a.withThread(threadID, func(st *threadState) {

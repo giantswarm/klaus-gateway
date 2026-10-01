@@ -1397,14 +1397,6 @@ func (a *Adapter) threadGate(ctx context.Context, channelID, threadID string) (a
 	return false, st.Closed, st.Lifetime
 }
 
-// isActiveThread reports whether the bot has an active session in threadID.
-// Used to decide whether to route message.channels thread replies without
-// requiring an @-mention.
-func (a *Adapter) isActiveThread(ctx context.Context, channelID, threadID string) bool {
-	active, _, _ := a.threadGate(ctx, channelID, threadID)
-	return active
-}
-
 // storePendingAccess appends a newcomer's message to their parked queue for the
 // thread while the initiator is asked to approve them. Bounded per (thread,
 // user) by maxParkedPerThread (oldest dropped past the cap). first is true when

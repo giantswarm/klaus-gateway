@@ -379,12 +379,9 @@ const (
 	signInSignedInFormat = "%s signed in to Giant Swarm"
 )
 
-// oboDisabledNotice and noSlackUserNotice answer login and logout when
-// sign-in cannot run at all.
-const (
-	oboDisabledNotice = "Sign-in is not enabled on this gateway."
-	noSlackUserNotice = "Your Slack user could not be read, so sign-in is not available."
-)
+// noSlackUserNotice answers login and logout when the sender's Slack user
+// cannot be read, so sign-in cannot run at all.
+const noSlackUserNotice = "Your Slack user could not be read, so sign-in is not available."
 
 // The login and logout replies. They are ephemeral: the first carries the
 // caller's email, which a shared thread must not see.

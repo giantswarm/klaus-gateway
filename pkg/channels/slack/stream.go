@@ -2563,19 +2563,6 @@ func fallbackText(md string) string {
 	return cut + "…"
 }
 
-// postMarkdown posts a new in-thread message rendered as a markdown block.
-func (c *slackAPIClient) postMarkdown(ctx context.Context, channel, md, threadTS string) (string, error) {
-	body := map[string]any{
-		paramChannel: channel,
-		paramText:    fallbackText(md),
-		paramBlocks:  markdownBlocks(md),
-	}
-	if threadTS != "" {
-		body[paramThreadTS] = threadTS
-	}
-	return c.postJSON(ctx, methodChatPostMessage, body)
-}
-
 // postQuestion posts the question that opens a conversation from the agent
 // picker: a line naming who asked which agent, then the question as a quote.
 // It goes out under the app's own identity, not the agent's: the words are the
