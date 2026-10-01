@@ -26,7 +26,7 @@ const devel = "(devel)"
 var (
 	version        = dev
 	gitSHA         = dev
-	buildTimestamp = "unknown" //nolint:unused // stamped by the ldflags above; nothing reads it yet
+	buildTimestamp = "unknown" //nolint:unused // stamped by the ldflags above; the binary does not read it
 )
 
 // Version returns the best human-readable build identifier available, in
