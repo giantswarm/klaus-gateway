@@ -24,7 +24,7 @@ import (
 const testTimeout = 300 * time.Millisecond
 
 func newStore(t *testing.T, addr string) *valkeystore.Store {
-	return newStoreWithTimeout(t, addr, 0)
+	return newStoreWithTimeout(t, addr, valkeystore.DefaultTimeout)
 }
 
 func newStoreWithTimeout(t *testing.T, addr string, timeout time.Duration) *valkeystore.Store {
@@ -312,7 +312,11 @@ func TestOutageFailsFastAndRecovers(t *testing.T) {
 	s := newStoreWithTimeout(t, m.Addr(), testTimeout)
 	ctx := context.Background()
 	k := store.Key{Channel: "slack", ChannelID: "c", ThreadID: "t"}
-	require.NoError(t, storetest.Put(ctx, s, k, store.Entry{AgentInstanceID: "i", LastSeen: time.Now()}))
+	// The first command dials within testTimeout, which a loaded runner can
+	// miss; only the commands after the outage are under test.
+	require.Eventually(t, func() bool {
+		return storetest.Put(ctx, s, k, store.Entry{AgentInstanceID: "i", LastSeen: time.Now()}) == nil
+	}, 5*time.Second, 50*time.Millisecond)
 
 	m.Close()
 	start := time.Now()
