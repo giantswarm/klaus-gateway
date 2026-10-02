@@ -181,6 +181,9 @@ func (a *Adapter) relayConversationReply(ctx context.Context, rv store.Review, i
 	}
 }
 
+// a2aPartText is an A2A text part's kind and the key of its text.
+const a2aPartText = "text"
+
 // conversationMessage is a reply as an A2A Message: its id names the Slack
 // message, so a redelivered event is the same message; its contextId the
 // conversation, which the agent answers through
@@ -190,7 +193,7 @@ func conversationMessage(id, channel, ts, text string) map[string]any {
 		"messageId": "slack-" + channel + "-" + ts,
 		"role":      "user",
 		"contextId": id,
-		"parts":     []any{map[string]any{"kind": "text", "text": text}},
+		"parts":     []any{map[string]any{"kind": a2aPartText, a2aPartText: text}},
 		"metadata":  map[string]any{"source": "slack", "conversation": id},
 	}
 }
