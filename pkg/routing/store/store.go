@@ -241,6 +241,12 @@ type Review struct {
 	// Arguments the answer tool, and the claim (DecidedBy, ClaimedAt, Done,
 	// Status) as for a review.
 	Decision *Decision `json:"decision,omitempty"`
+	// Conversation is set on a conversation — a thread a service holds with
+	// one person through POST /conversations — and nil otherwise. It keeps
+	// the review's fields for what they are there: Channel and TS its opening
+	// message, Text the opening text, Tool and Arguments the tool a reply of
+	// the person's calls. Its TTL slides with every message.
+	Conversation *Conversation `json:"conversation,omitempty"`
 
 	PostedAt time.Time     `json:"posted_at"`
 	TTL      time.Duration `json:"ttl"`
@@ -278,6 +284,17 @@ type Decision struct {
 	Answer    string    `json:"answer,omitempty"`
 	CloseText string    `json:"close_text,omitempty"`
 	ClosedAt  time.Time `json:"closed_at,omitzero"`
+}
+
+// Conversation is what a conversation adds to its record: whom it is with
+// and who talks to them.
+type Conversation struct {
+	// Person is the email of the person the conversation is with, and
+	// SlackUser their Slack user: only their replies are delivered.
+	Person    string `json:"person"`
+	SlackUser string `json:"slack_user"`
+	// From names the agent the person talks to.
+	From string `json:"from"`
 }
 
 // DecisionOption is one answer a decision offers: a short label and what

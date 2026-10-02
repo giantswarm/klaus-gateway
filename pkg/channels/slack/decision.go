@@ -464,7 +464,8 @@ func (a *Adapter) handleDecisionAnswerSubmission(ctx context.Context, payload in
 }
 
 // answerDecisionReply takes a reply in a decision's thread as the replier's
-// answer in their own words, and reports whether it did. Only a reply under a
+// answer in their own words, relays a reply in a conversation's thread to its
+// agent, and reports whether it did either. Only a reply under a
 // message of the bot's own is looked up, so every other message costs no
 // store read here; the app_mention twin of a reply that mentions the bot is
 // consumed with it.
@@ -480,10 +481,14 @@ func (a *Adapter) answerDecisionReply(ctx context.Context, inner slackInnerEvent
 		a.Logger.Warn("slack: decision lookup failed", "record", "decision_store_failed", "decision", id, "slack_user", inner.User, "error", err)
 		return false
 	}
-	if !found || rv.Decision == nil {
+	if !found || (rv.Decision == nil && rv.Conversation == nil) {
 		return false
 	}
 	if a.seenMessage(inner.Channel, inner.TS) {
+		return true
+	}
+	if rv.Conversation != nil {
+		a.relayConversationReply(ctx, rv, inner)
 		return true
 	}
 	text := strings.TrimSpace(slackTextUnescaper.Replace(inner.Text))

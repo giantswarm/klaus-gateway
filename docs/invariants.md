@@ -66,7 +66,8 @@ or `helm/`. Add a line when a review finds a new one.
   (#358, replays on graveler, 2026-09-28).
 - **Every message in a served channel reaches the inactive-thread gate.** That path is the
   most frequent one the gateway runs; it costs at most one store read (#307). A reply under the
-  bot's own message (`parent_user_id`) costs one more: the lookup of a decision it may answer (#360).
+  bot's own message (`parent_user_id`) costs one more: the lookup of a decision it may answer or a
+  conversation it belongs to, one record under one id (#360, #369).
 
 ## Thread state and the store
 

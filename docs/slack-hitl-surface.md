@@ -631,6 +631,34 @@ due time plus seven days. Thread replies reach the gateway in a DM and in a publ
 (`message.im`, `message.channels`); a team decision in a private channel is answered by click or
 modal only.
 
+## 14. Conversation (a person's thread with an agent the gateway does not run)
+
+Opened by a service through [`POST /conversations`](api.md#conversations) on behalf of an agent
+that runs elsewhere, such as a person's guide on their own machine: a direct message from the app
+to the person, found by their email. The opening message is the agent's text as a markdown
+block, with a context line `<from> · reply in this thread`. The service posts every later message
+of the agent's into that thread (`POST /conversations/{id}/messages`).
+
+A reply of the person's in the thread calls the conversation's reply tool through muster as the
+person, with its arguments plus `message`: the reply as an A2A Message, `messageId`
+`slack-<channel>-<ts>` (a redelivered event is the same message), `role` `user`, `contextId` the
+conversation's id, one text part and `metadata` `{"source": "slack", "conversation": <id>}`. The
+tool decides whom the person may reach and the agent answers through the conversation's id.
+
+- **Delivered:** an `:incoming_envelope:` reaction on the reply.
+- **Refused** (no agent of theirs running, someone else's agent): a note in the thread,
+  `Not delivered to <from>: <the tool's reason>`. Nothing is queued anywhere else.
+- **Not reached** (muster or the tool did not answer): `Not delivered to <from>: it could not be
+  reached right now. Send it again in a moment.`
+- **Unlinked:** the sign-in card, in the thread; the person sends the reply again once signed in.
+  A backend they have not connected is a *Connect* prompt in the thread, and they send it again.
+- **Someone else** writing in the thread is told privately that it is the person's conversation;
+  nothing is sent.
+
+A conversation is named by its opening message, `<channel>-<ts>`, the same as a decision, so the
+one lookup a reply under the bot's own message costs finds either. The record lives in the routing
+store for 30 days after its latest message.
+
 ## Answering: click and reply
 
 On a click, Slack POSTs a `block_actions` payload to `/channels/slack/interactions`. The

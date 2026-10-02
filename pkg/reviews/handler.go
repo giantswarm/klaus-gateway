@@ -8,6 +8,8 @@
 //	POST /reviews/{id}/results  -- the outcome of the action, as a follow-up in the review's thread
 //	POST /decisions             -- a question with its options, answered by a click or in the person's own words
 //	POST /decisions/{id}/close  -- the decision's outcome: answered, defaulted or withdrawn
+//	POST /conversations         -- a thread with one person, whose replies go to the caller's reply tool
+//	POST /conversations/{id}/messages -- a message into the conversation's thread
 //
 // The caller is a service identity: a Kubernetes ServiceAccount whose
 // projected token the API server verifies (TokenReview), allow-listed by
@@ -47,13 +49,17 @@ type Handler struct {
 	Poster         channels.TeamReviewPoster
 	// Decisions serves POST /decisions; nil leaves those routes unmounted.
 	Decisions channels.DecisionPoster
+	// Conversations serves POST /conversations; nil leaves those routes
+	// unmounted.
+	Conversations channels.ConversationPoster
 }
 
 const maxBodyBytes = 1 << 20
 
 // Mount attaches POST /reviews, POST /notices and POST /reviews/{id}/results
-// to r, and POST /decisions and POST /decisions/{id}/close when the handler
-// has a DecisionPoster.
+// to r, POST /decisions and POST /decisions/{id}/close when the handler has a
+// DecisionPoster, and POST /conversations and POST /conversations/{id}/messages
+// when it has a ConversationPoster.
 func (h *Handler) Mount(r chi.Router) {
 	if h.Logger == nil {
 		h.Logger = slog.Default()
@@ -65,6 +71,70 @@ func (h *Handler) Mount(r chi.Router) {
 		r.Post("/decisions", h.postDecision)
 		r.Post("/decisions/{id}/close", h.closeDecision)
 	}
+	if h.Conversations != nil {
+		r.Post("/conversations", h.openConversation)
+		r.Post("/conversations/{id}/messages", h.postConversationMessage)
+	}
+}
+
+func (h *Handler) openConversation(w http.ResponseWriter, r *http.Request) {
+	caller, ok := h.authenticate(w, r)
+	if !ok {
+		return
+	}
+	var conversation channels.Conversation
+	if !decodeBody(w, r, &conversation) {
+		return
+	}
+	if err := conversation.Validate(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	receipt, err := h.Conversations.OpenConversation(r.Context(), conversation)
+	switch {
+	case errors.Is(err, channels.ErrAddresseeNotFound):
+		http.Error(w, "person: "+err.Error(), http.StatusUnprocessableEntity)
+		return
+	case err != nil:
+		h.Logger.Error("conversation: open failed", "caller", caller.Username, "from", conversation.From, "error", err)
+		http.Error(w, "opening the conversation failed", http.StatusBadGateway)
+		return
+	}
+	h.Logger.Info("conversation opened", "record", "conversation_opened",
+		"caller", caller.Username, "conversation", receipt.ID, "from", conversation.From, "channel", receipt.Channel, "ts", receipt.TS, "tool", conversation.Reply.Tool)
+	writeJSON(w, http.StatusCreated, receipt)
+}
+
+// postConversationMessage posts into a conversation's thread. A conversation
+// the gateway holds no record of — unknown, or quiet past its keep — is a
+// 404.
+func (h *Handler) postConversationMessage(w http.ResponseWriter, r *http.Request) {
+	caller, ok := h.authenticate(w, r)
+	if !ok {
+		return
+	}
+	id := chi.URLParam(r, "id")
+	var message channels.ConversationMessage
+	if !decodeBody(w, r, &message) {
+		return
+	}
+	if err := message.Validate(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	receipt, err := h.Conversations.PostConversationMessage(r.Context(), id, message)
+	switch {
+	case errors.Is(err, channels.ErrConversationNotFound):
+		http.Error(w, "no such conversation; it may have expired", http.StatusNotFound)
+		return
+	case err != nil:
+		h.Logger.Error("conversation message: post failed", "caller", caller.Username, "conversation", id, "error", err)
+		http.Error(w, "posting the message failed", http.StatusBadGateway)
+		return
+	}
+	h.Logger.Info("conversation message posted", "record", "conversation_message_posted",
+		"caller", caller.Username, "conversation", id, "channel", receipt.Channel, "ts", receipt.TS)
+	writeJSON(w, http.StatusCreated, receipt)
 }
 
 func (h *Handler) postDecision(w http.ResponseWriter, r *http.Request) {

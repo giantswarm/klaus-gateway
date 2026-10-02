@@ -213,7 +213,8 @@ func run(args []string) error {
 		// The team-review endpoint: a manager posts an ask as its own
 		// ServiceAccount (verified through TokenReview); the Approve click calls
 		// the manager's tool through muster as the clicking, linked member. The
-		// same surface puts decisions to a person or a team (POST /decisions).
+		// same surface puts decisions to a person or a team (POST /decisions)
+		// and holds conversations with a person (POST /conversations).
 		restCfg, err := buildKubeConfig()
 		if err != nil {
 			return fmt.Errorf("team reviews: %w", err)
@@ -229,6 +230,7 @@ func run(args []string) error {
 			AllowedCallers: cfg.Reviews.AllowedCallers,
 			Poster:         slackAdapter,
 			Decisions:      slackAdapter,
+			Conversations:  slackAdapter,
 		}
 		reviewsHandler.Mount(publicMux)
 		logger.Info("team-review endpoint mounted",

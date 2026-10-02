@@ -268,7 +268,7 @@ type queuedChunk struct {
 
 // textChunk renders a piece of prose as a streamed chunk.
 func textChunk(md string) map[string]any {
-	return map[string]any{"type": chunkTypeMarkdownText, "text": md}
+	return map[string]any{bkType: chunkTypeMarkdownText, bkText: md}
 }
 
 func newBatchedWriterWithClient(client *slackAPIClient, channel, threadTS string, logger *slog.Logger) *batchedWriter {

@@ -1795,8 +1795,9 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 	if !a.acceptEvent(inner) {
 		return
 	}
-	// A reply under a decision is an answer, in a DM or a channel, served or
-	// not: the decision went there on purpose.
+	// A reply under a decision is an answer, and one under a conversation a
+	// message to its agent, in a DM or a channel, served or not: the decision
+	// or the conversation went there on purpose.
 	if a.answerDecisionReply(ctx, inner) {
 		return
 	}
