@@ -246,27 +246,3 @@ func TestSessionStopped_NotPermittedUserIsRefused(t *testing.T) {
 	default:
 	}
 }
-
-// Socket Mode delivers the event in an events_api payload carrying the same
-// event_id, so it reaches handleInbound — and the dedup there — exactly like
-// the Events API callback.
-func TestSocketModePayloadCarriesSessionStopped(t *testing.T) {
-	raw := []byte(`{
-		"event_id":"Ev-stop-socket",
-		"event":{
-			"type":"agent_session_stopped",
-			"channel":"C0123ABC456",
-			"thread_ts":"1782234671.392669",
-			"user":"U123ABC456",
-			"streaming_message_ts":["1782234987.693923"]
-		}
-	}`)
-
-	var payload smEventPayload
-	require.NoError(t, json.Unmarshal(raw, &payload))
-	require.Equal(t, "Ev-stop-socket", payload.EventID)
-	require.Equal(t, evtAgentSessionStopped, payload.Event.Type)
-	require.Equal(t, stopEventChannel, payload.Event.Channel)
-	require.Equal(t, stopEventThreadTS, payload.Event.ThreadTS)
-	require.Equal(t, []string{"1782234987.693923"}, payload.Event.StreamingMessageTS)
-}

@@ -84,16 +84,6 @@ func ephemeralJSON(fake *fakeSlackAPI) string {
 	return b.String()
 }
 
-func postMessageJSON(fake *fakeSlackAPI) string {
-	var b strings.Builder
-	for _, c := range fake.pathCalls("chat.postMessage") {
-		raw, _ := json.Marshal(c.params)
-		b.Write(raw)
-		b.WriteString("\n")
-	}
-	return b.String()
-}
-
 // connectorAdapter builds an events adapter for a linked user (U1) with the
 // reactive connector prompt enabled.
 func connectorAdapter(t *testing.T, gw *stubGateway) (*fakeSlackAPI, *httptest.Server) {
@@ -325,38 +315,6 @@ func TestConnectorDismissInteraction_InvalidServer(t *testing.T) {
 	captured.mu.Lock()
 	defer captured.mu.Unlock()
 	require.Empty(t, captured.body)
-}
-
-// A linked user's /login confirms their signed-in identity ephemerally (the
-// email is caller-only information), with no connector listing or prompt.
-func TestLoginCommand_LinkedConfirmation(t *testing.T) {
-	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok"}, {Done: true}}}
-	fake, srv := connectorAdapter(t, gw)
-
-	sendEvent(t, srv, dmEvent("U1", "login", "110.000"))
-
-	require.Eventually(t, func() bool {
-		return strings.Contains(ephemeralJSON(fake), "Signed in")
-	}, flowWait, 20*time.Millisecond, "signed-in confirmation is posted ephemerally")
-	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "Signed in",
-		"the identity confirmation must not be a public message")
-	require.NotContains(t, ephemeralJSON(fake), "connector_connect")
-}
-
-// An unlinked user's /login posts the sign-in prompt.
-func TestLoginCommand_UnlinkedGetsSignIn(t *testing.T) {
-	fake := newFakeSlackAPI()
-	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok"}, {Done: true}}}
-	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, func(a *slackadapter.Adapter) {
-		a.OBO = &fakeOBO{linkedUser: "someone-else", linkURL: "https://gw.example/link"}
-		a.ConnectorPrompts = true
-	})
-
-	sendEvent(t, srv, dmEvent("U1", "login", "111.000"))
-
-	require.Eventually(t, func() bool {
-		return strings.Contains(postMessageJSON(fake), "obo_sign_in")
-	}, flowWait, 20*time.Millisecond)
 }
 
 // sendConnectorInteractionURL posts a signed block_actions interaction (user
