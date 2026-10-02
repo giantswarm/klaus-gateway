@@ -18,11 +18,18 @@ import (
 	valkeystore "github.com/giantswarm/klaus-gateway/pkg/routing/store/valkey"
 )
 
+// testTimeout is the store timeout of the outage tests, short so that a
+// timeout fails them fast. Other tests keep the default: the first command
+// dials, and a loaded CI runner can take more than testTimeout to connect.
 const testTimeout = 300 * time.Millisecond
 
 func newStore(t *testing.T, addr string) *valkeystore.Store {
+	return newStoreWithTimeout(t, addr, valkeystore.DefaultTimeout)
+}
+
+func newStoreWithTimeout(t *testing.T, addr string, timeout time.Duration) *valkeystore.Store {
 	t.Helper()
-	s, err := valkeystore.New(valkeystore.Options{URL: addr, Timeout: testTimeout})
+	s, err := valkeystore.New(valkeystore.Options{URL: addr, Timeout: timeout})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = s.Close() })
 	return s
@@ -80,7 +87,7 @@ func got0(m *miniredis.Miniredis) string { return m.Keys()[0] }
 
 func TestKeyPrefixOption(t *testing.T) {
 	m := miniredis.RunT(t)
-	s, err := valkeystore.New(valkeystore.Options{URL: m.Addr(), KeyPrefix: "other[1]:", Timeout: testTimeout})
+	s, err := valkeystore.New(valkeystore.Options{URL: m.Addr(), KeyPrefix: "other[1]:"})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = s.Close() })
 	ctx := context.Background()
@@ -167,7 +174,7 @@ func TestReviewKeyPrefixFollowsRoutePrefix(t *testing.T) {
 		"team-a:klaus-gateway:route:": "team-a:klaus-gateway:review:",
 	} {
 		m := miniredis.RunT(t)
-		s, err := valkeystore.New(valkeystore.Options{URL: m.Addr(), KeyPrefix: routes, Timeout: testTimeout})
+		s, err := valkeystore.New(valkeystore.Options{URL: m.Addr(), KeyPrefix: routes})
 		require.NoError(t, err)
 		require.NoError(t, s.PutReview(context.Background(), store.Review{ID: "r", PostedAt: time.Now(), TTL: time.Hour}))
 		require.Equal(t, []string{want + "r"}, m.Keys(), "routing prefix %q", routes)
@@ -287,12 +294,12 @@ func TestPing(t *testing.T) {
 func TestAuth(t *testing.T) {
 	m := miniredis.RunT(t)
 	m.RequireUserAuth("gateway", "s3cret")
-	s, err := valkeystore.New(valkeystore.Options{URL: m.Addr(), Username: "gateway", Password: "s3cret", Timeout: testTimeout})
+	s, err := valkeystore.New(valkeystore.Options{URL: m.Addr(), Username: "gateway", Password: "s3cret"})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = s.Close() })
 	require.NoError(t, s.Ping(context.Background()))
 
-	wrong, err := valkeystore.New(valkeystore.Options{URL: m.Addr(), Username: "gateway", Password: "nope", Timeout: testTimeout})
+	wrong, err := valkeystore.New(valkeystore.Options{URL: m.Addr(), Username: "gateway", Password: "nope"})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = wrong.Close() })
 	require.Error(t, wrong.Ping(context.Background()))
@@ -302,10 +309,14 @@ func TestAuth(t *testing.T) {
 // reopening the store: the next call after the server is back succeeds.
 func TestOutageFailsFastAndRecovers(t *testing.T) {
 	m := miniredis.RunT(t)
-	s := newStore(t, m.Addr())
+	s := newStoreWithTimeout(t, m.Addr(), testTimeout)
 	ctx := context.Background()
 	k := store.Key{Channel: "slack", ChannelID: "c", ThreadID: "t"}
-	require.NoError(t, storetest.Put(ctx, s, k, store.Entry{AgentInstanceID: "i", LastSeen: time.Now()}))
+	// The first command dials within testTimeout, which a loaded runner can
+	// miss; only the commands after the outage are under test.
+	require.Eventually(t, func() bool {
+		return storetest.Put(ctx, s, k, store.Entry{AgentInstanceID: "i", LastSeen: time.Now()}) == nil
+	}, 5*time.Second, 50*time.Millisecond)
 
 	m.Close()
 	start := time.Now()
@@ -338,7 +349,7 @@ func TestHangingServerTimesOut(t *testing.T) {
 			defer func() { _ = c.Close() }()
 		}
 	}()
-	s := newStore(t, ln.Addr().String())
+	s := newStoreWithTimeout(t, ln.Addr().String(), testTimeout)
 	start := time.Now()
 	_, _, err = s.Get(context.Background(), store.Key{Channel: "slack", ChannelID: "c", ThreadID: "t"})
 	require.Error(t, err)
