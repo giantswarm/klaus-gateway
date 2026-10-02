@@ -47,7 +47,11 @@ type fakeKagent struct {
 	tasks        map[string]*a2apkg.Task
 	events       []a2apkg.Event // played back by SendStreamingMessage
 	busy         bool           // refuse a new task: one is active
+	refuse       error          // returned by SendStreamingMessage and SubscribeToTask
 	createState  apiv1alpha1.AgentInstanceState
+
+	serverOpts []grpc.ServerOption // the controller's gRPC options (size limits)
+	clientOpts []grpc.DialOption   // the client connection's extra options
 
 	calls    map[string][]metadata.MD // method -> incoming metadata per call
 	sent     []*a2apkg.Message
@@ -74,20 +78,15 @@ func newFakeKagent() *fakeKagent {
 func (f *fakeKagent) serve(t *testing.T, cfg pkga2a.Config) *pkga2a.Client {
 	t.Helper()
 	lis := bufconn.Listen(1 << 20)
-	srv := grpc.NewServer()
-	a2apb.RegisterA2AServiceServer(srv, f)
-	apiv1alpha1.RegisterAgentTemplateServiceServer(srv, f)
-	apiv1alpha1.RegisterAgentInstanceServiceServer(srv, f)
-	apiv1alpha1.RegisterModelServiceServer(srv, f)
-	go func() { _ = srv.Serve(lis) }()
-	t.Cleanup(srv.Stop)
+	f.serveOn(t, lis)
 
 	// The stats handler is the one Dial installs: the wire the tests assert is
 	// the wire an installation sees, trace context included.
-	conn, err := grpc.NewClient("passthrough:///bufnet",
+	conn, err := grpc.NewClient("passthrough:///bufnet", append([]grpc.DialOption{
 		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return lis.Dial() }),
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithStatsHandler(otelgrpc.NewClientHandler()))
+		grpc.WithStatsHandler(otelgrpc.NewClientHandler()),
+	}, f.clientOpts...)...)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close() })
 
@@ -100,6 +99,18 @@ func (f *fakeKagent) serve(t *testing.T, cfg pkga2a.Config) *pkga2a.Client {
 	client, err := pkga2a.NewClient(conn, cfg)
 	require.NoError(t, err)
 	return client
+}
+
+// serveOn serves the fake's services on lis until the test ends.
+func (f *fakeKagent) serveOn(t *testing.T, lis net.Listener) {
+	t.Helper()
+	srv := grpc.NewServer(f.serverOpts...)
+	a2apb.RegisterA2AServiceServer(srv, f)
+	apiv1alpha1.RegisterAgentTemplateServiceServer(srv, f)
+	apiv1alpha1.RegisterAgentInstanceServiceServer(srv, f)
+	apiv1alpha1.RegisterModelServiceServer(srv, f)
+	go func() { _ = srv.Serve(lis) }()
+	t.Cleanup(srv.Stop)
 }
 
 func (f *fakeKagent) record(ctx context.Context, method string) {
@@ -172,8 +183,11 @@ func (f *fakeKagent) SendStreamingMessage(req *a2apb.SendMessageRequest, stream 
 	}
 	f.mu.Lock()
 	f.sent = append(f.sent, msg)
-	busy, events := f.busy, f.events
+	busy, events, refuse := f.busy, f.events, f.refuse
 	f.mu.Unlock()
+	if refuse != nil {
+		return refuse
+	}
 	if busy && msg.TaskID == "" {
 		return unsupportedOperation(fmt.Sprintf("AgentInstance %s already has an active task: conflict", inst.GetId()))
 	}
@@ -224,8 +238,11 @@ func (f *fakeKagent) SubscribeToTask(req *a2apb.SubscribeToTaskRequest, stream g
 	}
 	f.mu.Lock()
 	task, ok := f.tasks[req.GetId()]
-	events := f.events
+	events, refuse := f.events, f.refuse
 	f.mu.Unlock()
+	if refuse != nil {
+		return refuse
+	}
 	if !ok {
 		return status.Error(codes.NotFound, "task not found")
 	}

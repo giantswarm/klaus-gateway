@@ -30,11 +30,9 @@ import (
 	a2apb "github.com/a2aproject/a2a-go/v2/a2apb/v1"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
-	"google.golang.org/grpc/status"
 
 	apiv1alpha1 "github.com/giantswarm/klaus-gateway/pkg/kagent/gen/kagent/api/v1alpha1"
 )
@@ -47,6 +45,11 @@ const InstanceIDHeader = "x-kagent-agent-instance-id"
 // share token. The controller authorizes a call carrying it on the shared
 // instance while the caller stays authenticated as themselves.
 const ShareTokenHeader = "x-share-token"
+
+// maxMessageBytes is the largest message the client receives: the
+// controller's own gRPC limit (MaxMessageBytes, 16 MiB), so any event the
+// controller can send arrives. gRPC's default is 4 MiB.
+const maxMessageBytes = 16 << 20
 
 // Target schemes accepted by ParseTarget.
 const (
@@ -61,9 +64,9 @@ var (
 	ErrNoIdentity = errors.New("a2a: no caller identity for the kagent controller")
 
 	// ErrPayloadTooLarge is returned when the controller rejects a turn because
-	// its request exceeds the message size the route accepts. Channels match it
-	// with errors.Is to render an actionable "too large" notice instead of the
-	// generic turn-failed message.
+	// its request exceeds the message size it accepts (gRPC's size limit, on the
+	// stream's first read). Channels match it with errors.Is to render an
+	// actionable "too large" notice instead of the generic turn-failed message.
 	ErrPayloadTooLarge = errors.New("a2a: request payload too large")
 
 	// ErrInstanceBusy is returned when the controller refuses a new task because
@@ -178,7 +181,8 @@ func Dial(cfg Config) (*Client, error) {
 	// span, and carries its trace context to the controller as traceparent,
 	// so the controller's own SendStreamingMessage trace continues the
 	// gateway's instead of starting a new one.
-	conn, err := grpc.NewClient(hostPort, grpc.WithTransportCredentials(creds), grpc.WithStatsHandler(otelgrpc.NewClientHandler()))
+	conn, err := grpc.NewClient(hostPort, grpc.WithTransportCredentials(creds), grpc.WithStatsHandler(otelgrpc.NewClientHandler()),
+		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(maxMessageBytes)))
 	if err != nil {
 		return nil, fmt.Errorf("a2a: dial %s: %w", cfg.Target, err)
 	}
@@ -313,11 +317,19 @@ func (c *Client) Stream(ctx context.Context, instanceID string, msg *a2apkg.Mess
 			return
 		}
 		c.refreshRosterInBackground(ctx)
+		first := true
 		for event, err := range c.a2a.SendStreamingMessage(callCtx, &a2apkg.SendMessageRequest{Message: msg}) {
 			if err != nil {
+				// The controller refuses an oversize request on the stream's first
+				// read. The same refusal later is an event too large for this
+				// client, which is not the person's message.
+				if first && isSizeRefusal(err) {
+					err = fmt.Errorf("%w: %s", ErrPayloadTooLarge, err.Error())
+				}
 				yield(nil, mapA2AError(err))
 				return
 			}
+			first = false
 			if !yield(event, nil) {
 				return
 			}
@@ -382,11 +394,18 @@ func mapA2AError(err error) error {
 		return nil
 	case errors.Is(err, a2apkg.ErrUnsupportedOperation) && strings.Contains(err.Error(), "already has an active task"):
 		return fmt.Errorf("%w: %s", ErrInstanceBusy, err.Error())
-	case status.Code(err) == codes.ResourceExhausted:
-		return fmt.Errorf("%w: %s", ErrPayloadTooLarge, err.Error())
 	default:
 		return err
 	}
+}
+
+// isSizeRefusal reports whether err is gRPC's own message-size limit. a2a-go
+// turns a gRPC status it has no A2A error for, ResourceExhausted among them,
+// into ErrInternalError with the status message alone, so the limit is known by
+// gRPC's text ("larger than max"). A quota or rate-limit refusal carries the
+// same code and is not about size.
+func isSizeRefusal(err error) bool {
+	return errors.Is(err, a2apkg.ErrInternalError) && strings.Contains(err.Error(), "larger than max")
 }
 
 // rosterCache is the last fetched AgentTemplate roster. Discovery runs as the
