@@ -42,8 +42,16 @@ func authLoginResult(output string) channels.OutboundDelta {
 // callToolLoginTurn models how the auth challenge actually reaches the stream
 // on a live install: the agent invokes muster's call_tool meta-tool with the
 // inner tool in the arguments, and the result (named call_tool, no arguments)
-// nests the challenge text in an MCP-style content list.
-func callToolLoginTurn(output string) []channels.OutboundDelta {
+// is muster's envelope, serialized into an MCP-style content list: the inner
+// result with the challenge text, and the tool muster dispatched.
+func callToolLoginTurn(t *testing.T, dispatched, output string) []channels.OutboundDelta {
+	t.Helper()
+	envelope, err := json.Marshal(map[string]any{
+		"isError": false,
+		"content": []any{map[string]any{"type": "text", "text": output}},
+		"tool":    map[string]any{"name": dispatched},
+	})
+	require.NoError(t, err)
 	return []channels.OutboundDelta{
 		{
 			Kind: channels.DeltaToolActivity,
@@ -52,7 +60,7 @@ func callToolLoginTurn(output string) []channels.OutboundDelta {
 				Kind:   channels.ToolCall,
 				CallID: "call-1",
 				Args: map[string]any{
-					"name":      "core_auth_login",
+					"name":      dispatched,
 					"arguments": map[string]any{"server": "gazelle-mcp-pro"},
 				},
 			},
@@ -64,7 +72,7 @@ func callToolLoginTurn(output string) []channels.OutboundDelta {
 				Kind:   channels.ToolResult,
 				CallID: "call-1",
 				Response: map[string]any{
-					"content": []any{map[string]any{"type": "text", "text": output}},
+					"content": []any{map[string]any{"type": "text", "text": string(envelope)}},
 					"isError": false,
 				},
 			},
@@ -122,7 +130,7 @@ func TestConnectorPrompt_PostedFromToolResult(t *testing.T) {
 // arguments, text nested in an MCP content list) also yields the prompt.
 func TestConnectorPrompt_PostedFromCallToolResult(t *testing.T) {
 	gw := &stubGateway{deltas: append(
-		callToolLoginTurn(authChallengeOutput),
+		callToolLoginTurn(t, "core_auth_login", authChallengeOutput),
 		channels.OutboundDelta{Content: "ok"}, channels.OutboundDelta{Done: true},
 	)}
 	fake, srv := connectorAdapter(t, gw)
@@ -138,11 +146,10 @@ func TestConnectorPrompt_PostedFromCallToolResult(t *testing.T) {
 	require.Contains(t, blob, "https://pro.example.com/authorize?state=abc")
 }
 
-// A call_tool result whose recorded inner tool is not core_auth_login yields
+// A call_tool result whose dispatched tool is not core_auth_login yields
 // no prompt, even when its payload happens to carry a URL.
 func TestConnectorPrompt_CallToolOtherToolNoPrompt(t *testing.T) {
-	turn := callToolLoginTurn("see https://pro.example.com/docs for details")
-	turn[0].Tool.Args["name"] = "list_tools"
+	turn := callToolLoginTurn(t, "list_tools", "see https://pro.example.com/docs for details")
 	gw := &stubGateway{deltas: append(turn,
 		channels.OutboundDelta{Content: "ok"}, channels.OutboundDelta{Done: true},
 	)}

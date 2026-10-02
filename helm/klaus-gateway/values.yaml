@@ -358,7 +358,8 @@ obo:
   # connectors enables the reactive Slack connector UX: the gateway detects a
   # core_auth_login challenge in the agent's response stream and offers a
   # "Connect <backend>" button from the login link the agent relays. The
-  # gateway does not call muster.
+  # gateway does not call muster. Requires muster 5.36.0 or later: the
+  # call_tool result names the tool it ran.
   connectors:
     enabled: false
 

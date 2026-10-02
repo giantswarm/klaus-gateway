@@ -163,11 +163,6 @@ type batchedWriter struct {
 	// call is the call that can create the session, so it carries the
 	// initiator although it is not a processing call.
 	statusOnly bool
-	// callToolInner maps a call_tool invocation's CallID to the inner muster
-	// tool it targets, taken from the call arguments. Result deltas carry no
-	// arguments, so this is how a call_tool result is attributed to
-	// core_auth_login. Only touched from run()'s goroutine.
-	callToolInner map[string]callToolTarget
 	// loginURLs collects the backend login URLs surfaced as Connect buttons
 	// this turn. flush scrubs them out of the agent's prose: the URL is a
 	// single-use OAuth authorize link, and a second surface (or Slack's unfurl
@@ -532,10 +527,6 @@ func (w *batchedWriter) renderToolActivity(tool *channels.ToolActivity) {
 		name, viaMuster := tool.Name, false
 		args := tool.Args
 		if inner, innerArgs, ok := unwrapCallTool(tool); ok {
-			// Record the call→inner mapping so the result (which carries no
-			// Args) can resolve the inner name via effectiveToolName,
-			// independent of whether connector prompts are enabled.
-			w.noteCallToolTarget(tool)
 			name, viaMuster, args = inner, true, innerArgs
 		}
 		w.recordToolCall(toolLogEntry{
@@ -543,7 +534,7 @@ func (w *batchedWriter) renderToolActivity(tool *channels.ToolActivity) {
 			called: true, args: indentJSON(args, toolArgsMax),
 		})
 	case channels.ToolResult:
-		name := w.effectiveToolName(tool)
+		name := effectiveToolName(tool)
 		e := toolLogEntry{
 			callID: tool.CallID, name: name,
 			viaMuster: tool.Name == musterCallToolMetaTool && name != tool.Name,
@@ -734,11 +725,7 @@ func (w *batchedWriter) maybeConnectorPrompt(tool *channels.ToolActivity) {
 	if !w.connectorPrompts || tool == nil {
 		return
 	}
-	if tool.Kind == channels.ToolCall {
-		w.noteCallToolTarget(tool)
-		return
-	}
-	if tool.Kind != channels.ToolResult || w.effectiveToolName(tool) != musterAuthLoginTool {
+	if tool.Kind != channels.ToolResult || effectiveToolName(tool) != musterAuthLoginTool {
 		return
 	}
 	server, loginURL := parseAuthChallengePayload(tool.Response, 0)
@@ -747,11 +734,6 @@ func (w *batchedWriter) maybeConnectorPrompt(tool *channels.ToolActivity) {
 		return
 	}
 	w.loginURLs = append(w.loginURLs, loginURL)
-	if server == "" {
-		// The challenge text carries no "Server:" line; the call arguments
-		// recorded for this CallID name the backend exactly.
-		server = w.callToolInner[tool.CallID].server
-	}
 	if server == "" {
 		server = "the requested tools"
 	}
@@ -788,14 +770,6 @@ func (w *batchedWriter) maybeConnectorPrompt(tool *channels.ToolActivity) {
 	})
 }
 
-// callToolTarget is the inner muster tool a call_tool invocation addresses:
-// the tool name, and the backend server for tools that take one (such as
-// core_auth_login, whose result text does not always name the server).
-type callToolTarget struct {
-	name   string
-	server string
-}
-
 // unwrapCallTool returns the inner muster tool name and arguments a call_tool
 // invocation targets. ok is false unless the tool is call_tool and both the
 // inner name and an arguments map are present, so callers fall back to the raw
@@ -812,40 +786,85 @@ func unwrapCallTool(tool *channels.ToolActivity) (name string, args map[string]a
 	return name, args, true
 }
 
-// noteCallToolTarget records the inner muster tool a call_tool invocation
-// targets, keyed by CallID, so the matching result can be attributed to it.
-func (w *batchedWriter) noteCallToolTarget(tool *channels.ToolActivity) {
-	if tool.CallID == "" {
-		return
-	}
-	inner, args, ok := unwrapCallTool(tool)
-	if !ok {
-		return
-	}
-	target := callToolTarget{name: inner}
-	target.server, _ = args["server"].(string)
-	if w.callToolInner == nil {
-		w.callToolInner = make(map[string]callToolTarget)
-	}
-	w.callToolInner[tool.CallID] = target
-}
+// musterDispatchedToolMetaKey is the _meta key under which muster (≥ 5.36.0)
+// names the tool a call_tool call ran: {name, server, serverTool}. The same
+// object is the call_tool envelope's last field, "tool".
+const musterDispatchedToolMetaKey = "muster.giantswarm.io/tool"
 
 // effectiveToolName resolves the muster tool a result belongs to: the stream's
-// tool name directly, or the recorded inner target when the agent went through
-// the call_tool meta-tool.
-func (w *batchedWriter) effectiveToolName(tool *channels.ToolActivity) string {
+// tool name directly, or, for a result of the call_tool meta-tool, the tool
+// muster reports it dispatched.
+func effectiveToolName(tool *channels.ToolActivity) string {
 	if tool.Name == musterCallToolMetaTool {
-		if target, ok := w.callToolInner[tool.CallID]; ok {
-			return target.name
+		if name := dispatchedToolName(tool.Response, 0); name != "" {
+			return name
 		}
 	}
 	return tool.Name
 }
 
+// dispatchedToolName returns the name of the tool a muster call_tool result
+// says it ran, from the result's _meta or the envelope's tool field. The
+// envelope reaches the gateway as the text of the result's content (or the
+// ADK's output wrap around it), so a leading text holding a JSON object is
+// decoded and searched in turn. Yields "" for a result that names no tool: an
+// error the runtime raised before muster answered.
+func dispatchedToolName(resp map[string]any, depth int) string {
+	if depth >= maxMCPResultUnwrapDepth {
+		return ""
+	}
+	if meta, ok := resp["_meta"].(map[string]any); ok {
+		if name := toolObjectName(meta[musterDispatchedToolMetaKey]); name != "" {
+			return name
+		}
+	}
+	if name := toolObjectName(resp["tool"]); name != "" {
+		return name
+	}
+	if inner, isMap := decodeJSONObject(leadingResultText(resp)); isMap {
+		return dispatchedToolName(inner, depth+1)
+	}
+	return ""
+}
+
+// leadingResultText is the text a result payload leads with: its first content
+// item's text, where muster puts the call_tool envelope ahead of any native
+// image or audio items, or the ADK/kagent single-key wrap's text.
+func leadingResultText(resp map[string]any) string {
+	if items, ok := resp["content"].([]any); ok {
+		if len(items) == 0 {
+			return ""
+		}
+		first, _ := items[0].(map[string]any)
+		text, _ := first["text"].(string)
+		return text
+	}
+	text, _, _ := toolResultText(resp)
+	return text
+}
+
+// toolObjectName reads the name of muster's dispatched-tool object.
+func toolObjectName(v any) string {
+	tool, _ := v.(map[string]any)
+	name, _ := tool["name"].(string)
+	return name
+}
+
+// decodeJSONObject decodes text that is a JSON object.
+func decodeJSONObject(text string) (map[string]any, bool) {
+	v, ok := decodeJSONDocument(text)
+	if !ok {
+		return nil, false
+	}
+	m, ok := v.(map[string]any)
+	return m, ok
+}
+
 // maxChallengePayloadDepth bounds the walk over a tool result payload; real
 // payloads nest the challenge text at most a few levels down (direct
-// {"output": text}, or an MCP content list under call_tool).
-const maxChallengePayloadDepth = 6
+// {"output": text}, or under call_tool an MCP content list whose text is
+// muster's envelope around the inner result's own content list).
+const maxChallengePayloadDepth = 10
 
 // parseAuthChallengePayload walks a tool result payload's string values and
 // returns the first auth challenge that carries a login URL. The challenge is
@@ -858,6 +877,14 @@ func parseAuthChallengePayload(v any, depth int) (server, loginURL string) {
 	}
 	switch t := v.(type) {
 	case string:
+		// muster's call_tool envelope is a JSON document in the result's text;
+		// decoded, its content carries the challenge with real line breaks, so
+		// the "Server:" line is found.
+		if doc, ok := decodeJSONDocument(t); ok {
+			if s, u := parseAuthChallengePayload(doc, depth+1); u != "" {
+				return s, u
+			}
+		}
 		if s, u := parseAuthChallenge(t); u != "" {
 			return s, u
 		}
