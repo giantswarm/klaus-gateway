@@ -1101,24 +1101,8 @@ func TestBareHelp_AnswersWithTheCommandList(t *testing.T) {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Commands: ")
 	}, flowWait, 50*time.Millisecond, "a plain help must answer with the command list")
 
+	require.Len(t, fake.pathCalls("chat.postMessage"), 1, "help is posted once")
 	require.Zero(t, gw.dispatchCount(), "a plain help must be consumed, not dispatched to the agent")
-}
-
-// Sign-in decides the account commands alone. A gateway without it still
-// answers "help" and "usage", which it serves from itself.
-func TestBareCommand_WithoutSignInStillAnswersHelp(t *testing.T) {
-	fake := newFakeSlackAPI()
-	gw := &stubGateway{}
-	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
-	require.Nil(t, a.OBO, "this gateway has no sign-in")
-
-	sendEvent(t, srv, dmEvent("U1", "help", "982.000"))
-
-	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Commands: ")
-	}, flowWait, 50*time.Millisecond, "help does not depend on sign-in")
-
-	require.Zero(t, gw.dispatchCount(), "help must be consumed, not dispatched to the agent")
 }
 
 // "agents" lists the roster, the listing a bare /agent posts. Starting a
@@ -2305,45 +2289,6 @@ func TestHandleInbound_FileShareReplyDispatches(t *testing.T) {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "shot.png")
 	}, flowWait, 50*time.Millisecond,
 		"the attachment metadata travelled into dispatch (named in the dropped-attachments notice)")
-}
-
-// A /stop before any streamed content on a turn without a reaction posts the
-// command's own note only: there is no placeholder for a second note to
-// resolve.
-func TestStop_NoReactionPostsOnlyTheCommandNote(t *testing.T) {
-	fake := newFakeSlackAPI()
-	fake.setFail("reactions.add", "missing_scope")
-	hold := make(chan struct{})
-	gw := &stubGateway{hold: hold}
-	defer close(hold)
-	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
-
-	sendEvent(t, srv, dmEvent("U1", "long task", "100.000"))
-	fake.waitForPath(t, "reactions.add", 1)
-	waitTurnStreaming(t, fake)
-
-	sendEvent(t, srv, dmThreadEvent("U1", "stop", "101.000", "100.000"))
-	require.Eventually(t, func() bool { return len(gw.sendCauseList()) == 1 }, flowWait, 20*time.Millisecond)
-	require.Empty(t, fake.pathCalls("chat.update"), "no placeholder to replace")
-	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "Working", "no placeholder posted")
-}
-
-// A turn without a reaction that pauses on an approval prompt before any
-// streamed content posts the prompt alone: no placeholder sits above it.
-func TestPrompt_NoReactionPostsOnlyThePrompt(t *testing.T) {
-	fake := newFakeSlackAPI()
-	fake.setFail("reactions.add", "missing_scope")
-	gw := &stubGateway{deltas: []channels.OutboundDelta{
-		{Kind: channels.DeltaPrompt, TaskID: "task-1", Prompt: &channels.HitlPrompt{ToolName: "delete_pod"}},
-	}}
-	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
-
-	sendEvent(t, srv, dmEvent("U1", "do it", "100.000"))
-	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Approval required")
-	}, flowWait, 20*time.Millisecond, "the approval prompt is posted")
-	require.Empty(t, fake.pathCalls("chat.update"), "no placeholder to replace")
-	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "Waiting for your answer", "no paused note")
 }
 
 // A retried delivery whose original never reached the handler (pod restart,

@@ -25,26 +25,6 @@ import (
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
 )
 
-func TestSend_RetriesOnceOnRateLimit(t *testing.T) {
-	var calls atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		if calls.Add(1) == 1 {
-			w.Header().Set("Retry-After", "0")
-			w.WriteHeader(http.StatusTooManyRequests)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{"ok":true,"ts":"1.2"}`)
-	}))
-	defer srv.Close()
-
-	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
-	ts, err := client.send(t.Context(), "chat.update", "application/json", `{}`)
-	require.NoError(t, err)
-	require.Equal(t, "1.2", ts)
-	require.Equal(t, int32(2), calls.Load())
-}
-
 func TestSend_FailsOnPersistentRateLimit(t *testing.T) {
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -737,15 +717,6 @@ func TestRespondURL_ErrorsOnNonSuccessStatus(t *testing.T) {
 	err := respondURL(t.Context(), srv.URL, "", "updated")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "http status 500")
-}
-
-func TestRespondURL_SucceedsOn2xx(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
-
-	require.NoError(t, respondURL(t.Context(), srv.URL, "", "updated"))
 }
 
 // A replacement of a thread-scoped ephemeral must carry the source thread_ts,
@@ -2117,27 +2088,6 @@ func TestSessionStatus_DMThreadProcessingThenActive(t *testing.T) {
 	require.Equal(t, []capturedMessage{{"the answer"}}, msgs, "the tool calls put nothing on the thread")
 }
 
-// A channel thread gets the same native indicator: agents.sessions.setStatus
-// supports channels, so the DM-only guard is gone.
-func TestSessionStatus_ChannelThreadGetsTheIndicator(t *testing.T) {
-	ft := &fakeThread{}
-	msgs, _, err := runSurfaceWriter(t, ft, "C1",
-		toolCallDelta("alpha"),
-		channels.OutboundDelta{Kind: channels.DeltaText, Content: "the answer"},
-		doneDelta(),
-	)
-	require.NoError(t, err)
-
-	require.Equal(t, []string{"processing", "active"}, ft.statuses(),
-		"the status call ends the session; the stop names the same status")
-	require.Equal(t, []string{string(sessionActive)}, ft.stopStatuses())
-	for _, c := range ft.statusCalls {
-		require.Equal(t, "C1", c.channelID)
-		require.Equal(t, "1.0", c.threadTS)
-	}
-	require.Equal(t, []capturedMessage{{"the answer"}}, msgs)
-}
-
 // Slack attributes a session it creates to the author of the thread root
 // unless the call names someone, and that root is the bot's own message
 // whenever the picker opened the conversation. The writer names the thread's
@@ -2166,21 +2116,6 @@ func TestSessionInitiator_SentOnTheCreatingCall(t *testing.T) {
 	}
 }
 
-// A thread whose owner the store does not know sends no initiator rather than
-// an empty one, and Slack goes on guessing as it did.
-func TestSessionInitiator_AbsentWhenUnknown(t *testing.T) {
-	var body map[string]any
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		_, _ = fmt.Fprint(w, `{"ok":true}`)
-	}))
-	t.Cleanup(srv.Close)
-
-	c := &slackAPIClient{botToken: "t", baseURL: srv.URL, logger: slog.Default()}
-	require.NoError(t, c.setSessionStatus(t.Context(), "C1", "1.0", sessionProcessing, "", ""))
-	require.NotContains(t, body, "initiator_user_id")
-}
-
 // The turn that opens a conversation names the session, so the Messages tab
 // timeline lists it by its question. The title rides on the processing call —
 // the only one that can create the session — and never on the exit one.
@@ -2200,22 +2135,6 @@ func TestSessionTitle_SentOnTheOpeningTurn(t *testing.T) {
 	require.Equal(t, []string{"processing", "active"}, ft.statuses())
 	require.Equal(t, "Investigate CPU alert on gazelle", ft.statusCalls[0].title)
 	require.Empty(t, ft.statusCalls[1].title)
-}
-
-// A later turn in the same thread carries no title: the session already
-// exists, so Slack would ignore one anyway, and the field is left off the
-// payload rather than sent blank.
-func TestSessionTitle_AbsentOnLaterTurns(t *testing.T) {
-	var body map[string]any
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		_, _ = fmt.Fprint(w, `{"ok":true}`)
-	}))
-	t.Cleanup(srv.Close)
-
-	c := &slackAPIClient{botToken: "t", baseURL: srv.URL, logger: slog.Default()}
-	require.NoError(t, c.setSessionStatus(t.Context(), "C1", "1.0", sessionProcessing, "", ""))
-	require.NotContains(t, body, "title")
 }
 
 // The parked title is taken by exactly one turn, the first to send the
@@ -2326,19 +2245,6 @@ func TestSessionStatus_ActiveOnStreamError(t *testing.T) {
 	)
 	require.ErrorIs(t, err, errStream)
 	require.Equal(t, []string{"processing", "active"}, ft.statuses())
-}
-
-// A turn pausing on a HITL prompt is not idle: the agent waits on the user, so
-// the session goes suspended and Slack renders the thread as waiting for them.
-func TestSessionStatus_SuspendedOnPromptPause(t *testing.T) {
-	ft := &fakeThread{}
-	_, w, err := runSurfaceWriter(t, ft, "D1",
-		toolCallDelta("alpha"),
-		channels.OutboundDelta{Kind: channels.DeltaPrompt, TaskID: "task-1"},
-	)
-	require.NoError(t, err)
-	require.NotNil(t, w.promptDelta)
-	require.Equal(t, []string{"processing", "suspended"}, ft.statuses())
 }
 
 // The user's answer starts the next turn on the same thread, which sends

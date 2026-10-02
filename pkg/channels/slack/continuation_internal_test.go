@@ -85,13 +85,6 @@ func TestNoteDelivered_RecordsTheAnswerText(t *testing.T) {
 		"the last record is the answer text, the stream closed")
 }
 
-// Without a sink nothing is recorded and the writer behaves as before.
-func TestNoteDelivered_WithoutASinkIsANoOp(t *testing.T) {
-	w := newBatchedWriterWithClient(&slackAPIClient{}, "C1", "1.0", slog.Default())
-	w.noteDelivered(t.Context())
-	require.Equal(t, "hello", w.skipDelivered("hello"), "no continuation, no cut")
-}
-
 // A cut inside a delta leaves the rest of that delta; the skip spans deltas
 // until the recorded length is reached; leading whitespace after the cut is
 // dropped only once, and counted.

@@ -19,7 +19,6 @@ import (
 
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 	"github.com/giantswarm/klaus-gateway/pkg/auth/musterlink"
-	"github.com/giantswarm/klaus-gateway/pkg/channels"
 	slackadapter "github.com/giantswarm/klaus-gateway/pkg/channels/slack"
 )
 
@@ -625,8 +624,6 @@ func (s *syncBuffer) String() string {
 	defer s.mu.Unlock()
 	return s.b.String()
 }
-
-var _ = channels.InboundMessage{}
 
 // A picked agent that stopped being runnable between the listing and the
 // submit is refused with the reason, through the response URL: no root, no

@@ -619,9 +619,6 @@ func TestFacade_StoppedTurnCancelsTheTaskServerSide(t *testing.T) {
 	require.NotNil(t, agent.streamCtx)
 }
 
-// smoke test that the compile-time interface assertions hold.
-var _ store.Store = memory.New()
-
 func TestFacade_SessionResumable(t *testing.T) {
 	msg := slackMsg("still there?")
 	key := store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700.0001"}

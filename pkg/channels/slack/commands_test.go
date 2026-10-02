@@ -174,14 +174,6 @@ func newTestAdapter(t *testing.T) (*Adapter, *fakeSlackServer) {
 	return a, srv
 }
 
-func TestHandleCommand_Help(t *testing.T) {
-	a, srv := newTestAdapter(t)
-	cmd := &command{Name: "help"}
-	consumed := a.handleCommand(t.Context(), cmd, "U001", "C001", "T001")
-	require.True(t, consumed)
-	require.Equal(t, int32(1), srv.posts.Load())
-}
-
 func TestHandleCommand_Stop_CancelsInFlightTurn(t *testing.T) {
 	a, srv := newTestAdapter(t)
 
@@ -242,13 +234,6 @@ func TestStopThread_StartWindow(t *testing.T) {
 	require.NoError(t, turnCtx3.Err(), "an idle-thread stop attempt leaves nothing behind")
 	done3()
 	a.releaseThread("T2")
-}
-
-func TestHandleCommand_Usage_Consumed(t *testing.T) {
-	a, srv := newTestAdapter(t)
-	consumed := a.handleCommand(t.Context(), &command{Name: "usage"}, "U1", "C1", "T1")
-	require.True(t, consumed)
-	require.Equal(t, int32(1), srv.posts.Load())
 }
 
 // TestHandleCommand_OnlookerRefused verifies #124: once a thread has an

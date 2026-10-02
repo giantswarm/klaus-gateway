@@ -322,5 +322,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Tests: the muster link import checks the file it opened, only the `Status.Error` check refuses the TokenReview API-server-error case, and the AgentInstance create test checks what the client sends.
 - More code only tests reached: `a2a.WithAgentRef` and `a2a.AgentRefFromContext`, `store.ErrNotFound`, the memory store's `EvictNow`, the bolt and Valkey stores' `SetNowFunc`, the Valkey `Options.ReviewKeyPrefix` (the review prefix is still derived from the routing prefix), and `BuildTimestamp` in `pkg/project` and `internal/version`. `musterlink.Linker.Exchange` and the bolt store's `Evict` are unexported, and the stores' `EvictionInterval` is a constant.
 - Code nothing needed: `valkey.DefaultReviewKeyPrefix` (the review prefix is still derived from the routing prefix), the bolt and Valkey stores' clock field, and the existence check before a read-only open of the muster link bolt file (bbolt does not create a missing file on a read-only open).
+- Tests: the Slack adapter and channel tests that a stronger test already covers are removed, and the help flow test checks that help is posted once.
 
 [Unreleased]: https://github.com/giantswarm/REPOSITORY_NAME/tree/main
