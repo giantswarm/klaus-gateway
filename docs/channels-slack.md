@@ -830,7 +830,7 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
 | `channels:join`  | Join public channels on invite                        |
 | `files:read`     | Download message attachments (`url_private`) to forward to the agent |
 | `users:read`     | Name the bot in help text; required beside `users:read.email` |
-| `users:read.email` | Find the person a decision is for by their email (`users.lookupByEmail`) |
+| `users:read.email` | Find the person a decision or a conversation is for by their email (`users.lookupByEmail`) |
 
 The `member_joined_channel` bot event must also be subscribed for the channel intro.
 `groups:history` and `mpim:history` are new: Slack grants a scope only on re-install, so an app

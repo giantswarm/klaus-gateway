@@ -224,6 +224,49 @@ including an answer given through the message, which keeps the answer and who ga
 `200` with `id`, `channel` and `ts`; `404` for a decision the gateway does not hold — unknown, or
 past its due time plus seven days.
 
+## Conversations
+
+Through the same surface, with the same authentication, a service holds a conversation with one
+person on behalf of an agent the gateway does not run, such as the person's guide on their own
+machine: a direct message from the app whose thread is bound to the conversation. A reply of the
+person's in that thread calls the conversation's reply tool through muster as the person; the
+service posts the agent's answers back into the thread. What it looks like:
+[slack-hitl-surface.md](slack-hitl-surface.md#14-conversation-a-persons-thread-with-an-agent-the-gateway-does-not-run).
+
+### `POST /conversations`
+
+```json
+{
+  "person": "alex@example.com",
+  "from": "Your guide",
+  "text": "The supervisor asks whether the rollout goes ahead **tonight**.",
+  "reply": {"tool": "x_beekeeper_send_message", "arguments": {"to": "local:<machine>/<guide>"}}
+}
+```
+
+- `person` — the email of the person the conversation is with. Required.
+- `from` — the agent the person talks to, one line of at most 200 characters, shown under the
+  opening message. Required.
+- `text` — the opening message, Slack markdown, at most 12000 characters. Required.
+- `reply` — the muster tool a reply of the person's calls as the person, with `arguments` plus
+  `message`: the reply as an A2A Message (`messageId`, `role`, `contextId` — the conversation's
+  id —, `parts`, `metadata.source` `slack`). `arguments` must not carry `message`. Required.
+
+Unknown fields are refused. Response `201` with `id` (`<channel>-<ts>`), `channel` (the person's
+direct message conversation) and `ts`; `422` when no member of the Slack workspace has the
+person's email.
+
+### `POST /conversations/{id}/messages`
+
+```json
+{"text": "Noted; I hand it to the supervisor."}
+```
+
+`text`, Slack markdown of at most 12000 characters, is posted into the conversation's thread.
+Response `201` with `id`, `channel` and the message's `ts`; `404` for a conversation the gateway
+does not hold — unknown, or quiet for 30 days. Each message, and each reply delivered, keeps the
+conversation another 30 days.
+
 ## Admin surface
 
 Served on the admin port (default `:8081`):
