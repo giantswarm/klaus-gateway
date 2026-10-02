@@ -399,13 +399,19 @@ func mapA2AError(err error) error {
 	}
 }
 
-// isSizeRefusal reports whether err is gRPC's own message-size limit. a2a-go
-// turns a gRPC status it has no A2A error for, ResourceExhausted among them,
-// into ErrInternalError with the status message alone, so the limit is known by
-// gRPC's text ("larger than max"). A quota or rate-limit refusal carries the
-// same code and is not about size.
+// isSizeRefusal reports whether err is gRPC's receive-side message-size limit.
+// a2a-go turns a gRPC status it has no A2A error for, ResourceExhausted among
+// them, into ErrInternalError with the status message alone, so the limit is
+// known by gRPC's text. A quota or rate-limit refusal carries the same code and
+// is not about size, and the controller failing to send its own first event (a
+// resumed task's snapshot over its send limit, "trying to send message larger
+// than max") is not the person's message either. A first event over this
+// client's own receive limit would match too; the controller's send limit is
+// the same 16 MiB, so it cannot send one.
 func isSizeRefusal(err error) bool {
-	return errors.Is(err, a2apkg.ErrInternalError) && strings.Contains(err.Error(), "larger than max")
+	msg := err.Error()
+	return errors.Is(err, a2apkg.ErrInternalError) &&
+		(strings.Contains(msg, "grpc: received message") || strings.Contains(msg, "grpc: message after decompression"))
 }
 
 // rosterCache is the last fetched AgentTemplate roster. Discovery runs as the

@@ -172,10 +172,30 @@ func TestClient_ResourceExhaustedWithoutTheSizeLimitIsNotTooLarge(t *testing.T) 
 	// A subscribe sends no message of the person's, so not even gRPC's size
 	// text makes it "too large".
 	f.refuse = status.Error(codes.ResourceExhausted, "grpc: received message larger than max (5 vs. 4)")
+	var subErr error
 	for _, err := range client.Subscribe(asUser(t.Context(), userToken), instanceID, "task-1") {
-		require.Error(t, err)
-		require.NotErrorIs(t, err, pkga2a.ErrPayloadTooLarge)
+		subErr = err
 	}
+	require.ErrorContains(t, subErr, "larger than max")
+	require.NotErrorIs(t, subErr, pkga2a.ErrPayloadTooLarge)
+}
+
+// The controller can fail to send its own first event: a resumed task's
+// snapshot carries its whole history. The person's message was accepted, so
+// that is not "too large".
+func TestClient_Stream_ControllerSendRefusalIsNotTooLarge(t *testing.T) {
+	f := readyFake(t)
+	info := a2apkg.TaskInfo{TaskID: "task-1", ContextID: "ctx-1"}
+	history := a2apkg.NewMessage(a2apkg.MessageRoleAgent, a2apkg.NewTextPart(strings.Repeat("x", 4<<10)))
+	f.events = []a2apkg.Event{
+		&a2apkg.Task{ID: info.TaskID, ContextID: info.ContextID, Status: a2apkg.TaskStatus{State: a2apkg.TaskStateWorking}, History: []*a2apkg.Message{history}},
+	}
+	f.serverOpts = []grpc.ServerOption{grpc.MaxSendMsgSize(1 << 10)}
+	client := f.serve(t, pkga2a.Config{})
+
+	_, err := streamErr(t, client, "approve")
+	require.ErrorContains(t, err, "trying to send message larger than max")
+	require.NotErrorIs(t, err, pkga2a.ErrPayloadTooLarge)
 }
 
 // An event over this client's receive limit fails in the middle of the turn.
@@ -197,13 +217,14 @@ func TestClient_Stream_OversizeEventMidStreamIsNotTooLarge(t *testing.T) {
 }
 
 // Dial receives an event up to the controller's own limit (16 MiB), past
-// gRPC's default of 4 MiB.
-func TestDial_ReceivesEventsPastTheGRPCDefault(t *testing.T) {
+// gRPC's default of 4 MiB, and no larger.
+func TestDial_ReceivesEventsUpToTheControllerLimit(t *testing.T) {
 	f := readyFake(t)
 	info := a2apkg.TaskInfo{TaskID: "task-1", ContextID: "ctx-1"}
 	f.events = []a2apkg.Event{
 		&a2apkg.Task{ID: info.TaskID, ContextID: info.ContextID, Status: a2apkg.TaskStatus{State: a2apkg.TaskStateSubmitted}},
 		a2apkg.NewArtifactEvent(info, a2apkg.NewTextPart(strings.Repeat("x", 5<<20))),
+		a2apkg.NewArtifactEvent(info, a2apkg.NewTextPart(strings.Repeat("x", 17<<20))),
 	}
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
@@ -213,8 +234,9 @@ func TestDial_ReceivesEventsPastTheGRPCDefault(t *testing.T) {
 	t.Cleanup(func() { _ = client.Close() })
 
 	events, err := streamErr(t, client, "hi")
-	require.NoError(t, err)
-	require.Len(t, events, 2)
+	require.Len(t, events, 2, "the 5 MiB event arrived")
+	require.ErrorContains(t, err, "grpc: received message larger than max", "the 17 MiB event is over the limit")
+	require.NotErrorIs(t, err, pkga2a.ErrPayloadTooLarge)
 }
 
 func TestClient_GetAndCancelTask(t *testing.T) {
