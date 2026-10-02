@@ -265,6 +265,13 @@ These are independent; a user can have completed one and not the other.
    user. It is separate from layer 1 and is triggered by the agent, not the
    sign-in prompt.
 
+The gateway learns which tool a `call_tool` result belongs to from the result itself: muster
+5.36.0 and later end the `call_tool` envelope with the dispatched tool (`tool`: `name`, and
+for a backend's tool `server` and `serverTool`) and carry it in the result's `_meta` under
+`muster.giantswarm.io/tool`. The Connect prompt and the Inspect agent steps log rely on it, so
+both need muster 5.36.0 or later; against an older muster a `call_tool` result names no tool,
+its call still pairs with it by call id, and no Connect prompt is offered.
+
 ## Slack app setup
 
 Use `deploy/slack/manifest.yaml` to create and configure the Slack app in one step:
@@ -740,8 +747,9 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
   call's arguments and result preview open, each in a code block, JSON indented; **Hide**
   closes them. Several calls can be open at once: the modal keeps their entry ids in its
   `private_metadata`, and each redraw reads the log as it is then. A result pairs with its call by
-  call id; one the stream gave no id closes the oldest running call of the same tool (of any
-  tool muster ran, for a `call_tool` result). The log
+  call id; one the stream gave no id closes the oldest running call of the tool it names (for a
+  `call_tool` result, the tool muster reports it dispatched; one that names none closes the
+  oldest call muster ran). The log
   is in-memory and bounded: the last 100 calls per thread, kept for up to 24 hours and not
   surviving a gateway restart; a log of many short turns shows its most recent calls, as
   many as a modal's 100 blocks hold, and says how many it leaves out. When nothing is

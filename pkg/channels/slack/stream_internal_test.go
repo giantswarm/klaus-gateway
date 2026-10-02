@@ -885,18 +885,68 @@ func TestScrubLoginURLs_ReencodedVariants(t *testing.T) {
 	require.Empty(t, out, "every line carried the link, so nothing is left")
 }
 
-func TestNoteCallToolTarget_RecordsServerArgument(t *testing.T) {
-	w := &batchedWriter{}
-	w.noteCallToolTarget(&channels.ToolActivity{
-		Kind:   channels.ToolCall,
-		Name:   musterCallToolMetaTool,
-		CallID: "c1",
-		Args: map[string]any{
-			"name":      musterAuthLoginTool,
-			"arguments": map[string]any{"server": "gazelle-mcp-pro"},
-		},
-	})
-	require.Equal(t, callToolTarget{name: musterAuthLoginTool, server: "gazelle-mcp-pro"}, w.callToolInner["c1"])
+// musterCallToolResult is a call_tool result as muster (≥ 5.36.0) returns it:
+// the envelope, serialized into the result's leading text item, ending with
+// the tool muster dispatched.
+func musterCallToolResult(t *testing.T, dispatched map[string]any, innerText string) map[string]any {
+	t.Helper()
+	return mcpEnvelope(serialize(t, map[string]any{
+		"isError": false,
+		"content": []any{map[string]any{"type": "text", "text": innerText}},
+		"tool":    dispatched,
+	}), false)
+}
+
+func TestEffectiveToolName(t *testing.T) {
+	login := map[string]any{"name": musterAuthLoginTool}
+	cases := []struct {
+		name string
+		tool *channels.ToolActivity
+		want string
+	}{
+		{"envelope tool field", &channels.ToolActivity{
+			Name: musterCallToolMetaTool, Response: musterCallToolResult(t, login, "Authentication Required"),
+		}, musterAuthLoginTool},
+		{"envelope ahead of a native image", &channels.ToolActivity{
+			Name: musterCallToolMetaTool, Response: func() map[string]any {
+				r := musterCallToolResult(t, map[string]any{"name": "x_rich_render_graph", "server": "rich", "serverTool": "render_graph"}, "graph")
+				r["content"] = append(r["content"].([]any), map[string]any{"type": "image", "data": "aGk=", "mimeType": "image/png"})
+				return r
+			}(),
+		}, "x_rich_render_graph"},
+		{"envelope under the ADK output wrap", &channels.ToolActivity{
+			Name: musterCallToolMetaTool, Response: map[string]any{"output": serialize(t, map[string]any{
+				"isError": false, "content": []any{}, "tool": map[string]any{"name": "x_kubernetes_get", "server": "kubernetes"},
+			})},
+		}, "x_kubernetes_get"},
+		{"result _meta", &channels.ToolActivity{
+			Name: musterCallToolMetaTool, Response: map[string]any{
+				"content": []any{map[string]any{"type": "text", "text": "not json"}},
+				"_meta":   map[string]any{musterDispatchedToolMetaKey: map[string]any{"name": "x_kubernetes_get"}},
+			},
+		}, "x_kubernetes_get"},
+		{"runtime error before muster answered", &channels.ToolActivity{
+			Name: musterCallToolMetaTool, Response: map[string]any{"error": "context deadline exceeded"},
+		}, musterCallToolMetaTool},
+		{"a direct tool keeps its name", &channels.ToolActivity{
+			Name: "list_pods", Response: musterCallToolResult(t, login, "pods"),
+		}, "list_pods"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, effectiveToolName(tc.tool))
+		})
+	}
+}
+
+// muster's envelope carries the challenge JSON-encoded, its line breaks as
+// literal \n escapes; decoded, the "Server:" line names the backend.
+func TestParseAuthChallengePayload_ServerFromMusterEnvelope(t *testing.T) {
+	challenge := "Authentication Required\n\nServer: gazelle-mcp-pro\nStatus: needs sign-in\n\n" +
+		"https://pro.example.com/authorize?state=abc\n\nAfter signing in, run this tool again."
+	server, loginURL := parseAuthChallengePayload(musterCallToolResult(t, map[string]any{"name": musterAuthLoginTool}, challenge), 0)
+	require.Equal(t, "gazelle-mcp-pro", server)
+	require.Equal(t, "https://pro.example.com/authorize?state=abc", loginURL)
 }
 
 func TestScrubLoginURLs(t *testing.T) {

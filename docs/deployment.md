@@ -13,6 +13,9 @@ helm upgrade --install klaus-gateway helm/klaus-gateway \
   --namespace klaus-gateway --create-namespace
 ```
 
+The gateway needs muster 5.36.0 or later behind the agents: it attributes a `call_tool` result
+to the tool muster reports it dispatched (see [channels-slack.md](channels-slack.md)).
+
 Traffic lands on the `klaus-gateway` `Service` (port 80, container port `server.port`). On an
 installation the agent platform routes to it; standalone, expose it with whatever you already
 use (`Ingress`, `LoadBalancer` service, port-forward).
