@@ -106,10 +106,14 @@ const (
 )
 
 // RecoverTurns delivers, in the background, the results of the turns a
-// previous process left running at the controller. Call it once the gateway
-// is fully wired (kagent client, account linking, roster): a resubscription
-// needs all of them.
+// previous process left running at the controller, and restores what it held
+// for its threads (restoreHeld). Call it once the gateway is fully wired
+// (kagent client, account linking, roster): a resubscription and a replay
+// need all of them.
 func (a *Adapter) RecoverTurns() {
+	restored := make(chan struct{})
+	a.heldRestored.Store(&restored)
+	a.background(a.restoreHeld)
 	a.background(a.recoverTurns)
 }
 

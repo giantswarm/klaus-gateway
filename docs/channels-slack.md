@@ -350,7 +350,14 @@ selectable agents only, so such an agent has no row to pick in the first place.
 A thread's agent binding is not re-derived after a restart — it does not need to be. It lives
 in the thread's row in the routing store (see [Threads and conversations](#threads-and-conversations)),
 so on a persistent store (`routing.store: valkey` or `bolt`) a restart changes nothing: same
-agent, same initiator, same grants. The gateway never reads Slack history — no
+agent, same initiator, same grants, and the same messages held for the thread — those parked
+while their sender signs in or while the initiator decides on a newcomer, and the prompt a
+paused task waits on. The adapter keeps that held state in the row's `held` field, rewrites it
+after every change and reads it back at start, so a sign-in, an Allow or an Approve after a
+restart replays or resumes as it would have before it, and a sign-in completed while the
+gateway was down replays at start. Parked messages and a paused prompt still expire after 24
+hours. A parked message is stored without its sender's token and without attachment bytes it
+can download again. The gateway never reads Slack history — no
 `conversations.replies`, no re-parsing the opening message or the slash command's root — to
 recover any of it; the routing-store row is the only carrier. On `routing.store: memory` a
 restart loses this state, and every thread starts fresh from its next message. On any store a

@@ -60,8 +60,8 @@ Three backends are supported (set via `--store` / `KLAUS_GATEWAY_STORE`):
 | Bolt        | `bolt`      | yes        | no             | Local file; path via `--bolt-path`          |
 
 The store key is `<channel>|<channelID>|<threadID>` (three parts; the user slot went with the
-per-user web and CLI routes). A Slack thread's agent, initiator, grants, AgentInstance binding
-and in-flight task are one row in the store, sharing one sliding lifetime (`routing.threadTTL`, default 90 days). Every writer
+per-user web and CLI routes). A Slack thread's agent, initiator, grants, AgentInstance binding,
+in-flight task and held state (messages parked for a sign-in or an approval, a paused prompt) are one row in the store, sharing one sliding lifetime (`routing.threadTTL`, default 90 days). Every writer
 of that row (a channel's grant, the facade's task record, the binding) goes through
 `Store.Update`, which serialises a read-modify-write per key inside the process.
 

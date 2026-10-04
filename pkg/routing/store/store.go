@@ -11,6 +11,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -135,6 +136,12 @@ type Entry struct {
 	// the facts it cannot recover after a restart.
 	Initiator string   `json:"initiator,omitempty"`
 	Granted   []string `json:"granted,omitempty"`
+	// Held is what the channel adapter holds for the thread between turns
+	// and must not lose across a restart: the messages it parked while their
+	// sender signs in or the initiator decides on them, and the prompt a
+	// paused task waits on. The adapter owns its shape and the expiry of what
+	// it holds.
+	Held json.RawMessage `json:"held,omitempty"`
 
 	CreatedAt time.Time     `json:"created_at"`
 	LastSeen  time.Time     `json:"last_seen"`

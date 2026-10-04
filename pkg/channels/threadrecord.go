@@ -147,3 +147,23 @@ func (f *Facade) UpdateThreadRecord(ctx context.Context, channel, channelID, thr
 	}
 	return nil
 }
+
+// ThreadRecords lists channel's thread rows whose conversation has not ended:
+// a channel adapter reads them once at start for the state it holds in them.
+func (f *Facade) ThreadRecords(ctx context.Context, channel string) ([]store.KeyEntry, error) {
+	if f == nil || f.Routes == nil {
+		return nil, errNoThreadStore
+	}
+	entries, err := f.Routes.List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("channels: list thread records: %w", err)
+	}
+	now := f.clock()
+	live := entries[:0]
+	for _, ke := range entries {
+		if ke.Key.Channel == channel && !f.threadClosed(ke.Entry, now) {
+			live = append(live, ke)
+		}
+	}
+	return live, nil
+}

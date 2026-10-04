@@ -64,6 +64,9 @@ type Gateway interface {
 	// it as absent) — the lifetime it ended after. The one use of a closed
 	// row: telling the author of a reply that the conversation is over.
 	ThreadState(ctx context.Context, channel, channelID, threadID string) (ThreadState, error)
+	// ThreadRecords lists channel's live thread rows, for the state an
+	// adapter keeps in them to read back after a restart.
+	ThreadRecords(ctx context.Context, channel string) ([]store.KeyEntry, error)
 }
 
 // InboundMessage is the normalised shape each adapter hands to the gateway.

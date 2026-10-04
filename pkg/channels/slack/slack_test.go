@@ -1267,6 +1267,13 @@ func (s *stubGateway) UpdateThreadRecord(ctx context.Context, ch, cid, tid strin
 	return s.rec().UpdateThreadRecord(ctx, ch, cid, tid, mutate)
 }
 
+func (s *stubGateway) ThreadRecords(ctx context.Context, ch string) ([]store.KeyEntry, error) {
+	if s.recordsErr != nil {
+		return nil, s.recordsErr
+	}
+	return s.rec().ThreadRecords(ctx, ch)
+}
+
 func (s *stubGateway) ThreadState(ctx context.Context, ch, cid, tid string) (channels.ThreadState, error) {
 	if s.recordsErr != nil {
 		return channels.ThreadState{}, s.recordsErr

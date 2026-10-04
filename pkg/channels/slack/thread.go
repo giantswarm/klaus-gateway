@@ -225,6 +225,7 @@ func (a *Adapter) storePendingTask(threadID string, task *pendingTask) {
 		}
 	}
 	a.threadsMu.Unlock()
+	a.persistHeld(task.Channel, threadID)
 
 	// Outside the lock: a status call must never run under threadsMu, and it
 	// belongs to no turn, so it goes on the adapter's background context.
@@ -239,11 +240,14 @@ func (a *Adapter) storePendingTask(threadID string, task *pendingTask) {
 // The task is stored before the prompt posts, so this finds it; a task that
 // was taken or replaced meanwhile (another task id) is left alone.
 func (a *Adapter) notePromptTS(threadID, taskID, ts string) {
+	slackChannel := ""
 	a.withThread(threadID, func(st *threadState) {
 		if st.pending != nil && st.pending.TaskID == taskID {
 			st.pending.PromptTS = ts
+			slackChannel = st.pending.Channel
 		}
 	})
+	a.persistHeld(slackChannel, threadID)
 }
 
 // takePendingTask atomically retrieves and removes a pending task for a thread.
@@ -254,6 +258,9 @@ func (a *Adapter) takePendingTask(threadID string) *pendingTask {
 		task = st.pending
 		st.pending = nil
 	})
+	if task != nil {
+		a.persistHeld(task.Channel, threadID)
+	}
 	return task
 }
 
