@@ -190,6 +190,11 @@ type Adapter struct {
 	pendingLoginMu sync.Mutex
 	pendingLogin   map[string]map[string][]*pendingLoginReq // slackUserID -> threadID -> messages parked (in order) while the user signs in
 
+	// heldRestored closes once restoreHeld has read back what the previous
+	// process held (held.go); nil when no restore runs. persistHeld waits
+	// for it.
+	heldRestored atomic.Pointer[chan struct{}]
+
 	// signInPromptedMu guards signInPrompted, the (user, thread) pairs already
 	// given a parked-message sign-in prompt within the current pendingTTL
 	// window, so a burst of parked messages nudges once. Entries carry the
@@ -1441,6 +1446,7 @@ func (a *Adapter) storePendingAccess(threadID, userID string, req *pendingAccess
 			delete(a.pendingAccess, thread)
 		}
 	}
+	a.persistHeld(req.slackChannel, threadID)
 	return !existed, dropped
 }
 
@@ -1457,6 +1463,9 @@ func (a *Adapter) takePendingAccess(threadID, userID string) []*pendingAccessReq
 	delete(byUser, userID)
 	if len(byUser) == 0 {
 		delete(a.pendingAccess, threadID)
+	}
+	if len(queue) > 0 {
+		a.persistHeld(queue[0].slackChannel, threadID)
 	}
 	fresh := queue[:0]
 	for _, r := range queue {
@@ -1508,6 +1517,7 @@ func (a *Adapter) parkPendingLogin(slackUser string, req *pendingLoginReq) (drop
 			delete(a.pendingLogin, user)
 		}
 	}
+	a.persistHeld(req.slackChannel, req.msg.ThreadID)
 	return dropped
 }
 
@@ -1559,6 +1569,9 @@ func (a *Adapter) takePendingLogin(slackUser string) map[string][]*pendingLoginR
 	byThread := a.pendingLogin[slackUser]
 	delete(a.pendingLogin, slackUser)
 	for thread, queue := range byThread {
+		if len(queue) > 0 {
+			a.persistHeld(queue[0].slackChannel, thread)
+		}
 		kept := queue[:0]
 		for _, r := range queue {
 			if time.Since(r.storedAt) <= pendingTTL {

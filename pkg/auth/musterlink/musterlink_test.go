@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"golang.org/x/oauth2"
 )
 
 // musterStub is a minimal muster-like OAuth 2.1 authorization server: RFC 8414
@@ -38,6 +39,8 @@ type musterStub struct {
 	// lastRefresh is the refresh token presented most recently.
 	spent       map[string]bool
 	lastRefresh string
+	// lastVerifier is the PKCE code_verifier of the last code exchange.
+	lastVerifier string
 }
 
 func newMusterStub(t *testing.T, clientID, email, sub string) *musterStub {
@@ -56,6 +59,9 @@ func newMusterStub(t *testing.T, clientID, email, sub string) *musterStub {
 	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
 		s.mu.Lock()
+		if r.Form.Get("grant_type") == "authorization_code" {
+			s.lastVerifier = r.Form.Get("code_verifier")
+		}
 		hang := s.hangRefresh
 		s.mu.Unlock()
 		if r.Form.Get("grant_type") == "refresh_token" && hang {
@@ -540,6 +546,40 @@ func TestCallbackRedirectsToCodeFreeSuccessPage(t *testing.T) {
 	require.Contains(t, rrec.Body.String(), "Signed in to Giant Swarm")
 	require.NotContains(t, rrec.Body.String(), "alice@example.com",
 		"a reload must not replay the identity confirmation")
+}
+
+// A sign-in whose callback reaches another process than its authorize
+// redirect did (a restart between the two, another replica) completes: the
+// verifier the callback presents is the one the challenge was made from.
+func TestCallbackOnAnotherProcessCompletesPKCE(t *testing.T) {
+	stub := newMusterStub(t, "klaus-gateway", "alice@example.com", "muster-sub")
+	store := NewMemStore()
+	email := func(context.Context, string) (string, error) { return "alice@example.com", nil }
+	before := newTestLinker(t, stub, store, email)
+
+	state := before.SignState("U1")
+	lrec := httptest.NewRecorder()
+	before.HandleLink(lrec, httptest.NewRequest(http.MethodGet, LinkPath+"?u="+url.QueryEscape(state), nil))
+	require.Equal(t, http.StatusFound, lrec.Code)
+	authorize, err := url.Parse(lrec.Header().Get("Location"))
+	require.NoError(t, err)
+	challenge := authorize.Query().Get("code_challenge")
+	require.Equal(t, "S256", authorize.Query().Get("code_challenge_method"))
+
+	after := newTestLinker(t, stub, store, email)
+	crec := httptest.NewRecorder()
+	q := url.Values{"state": {state}, "code": {"auth-code"}}
+	after.HandleCallback(crec, httptest.NewRequest(http.MethodGet, CallbackPath+"?"+q.Encode(), nil))
+	require.Equal(t, http.StatusSeeOther, crec.Code, crec.Body.String())
+
+	stub.mu.Lock()
+	verifier := stub.lastVerifier
+	stub.mu.Unlock()
+	require.GreaterOrEqual(t, len(verifier), 43, "RFC 7636: a verifier is at least 43 characters")
+	require.Equal(t, oauth2.S256ChallengeFromVerifier(verifier), challenge,
+		"the callback presents the verifier the challenge was made from")
+	_, err = store.Get("U1")
+	require.NoError(t, err, "the link is stored")
 }
 
 func TestCallbackFiresOnLinkedHook(t *testing.T) {

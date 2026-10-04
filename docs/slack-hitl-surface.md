@@ -67,8 +67,8 @@ gateway posts an approval card:
 
 `value` is the JSON `{"t":"<thread>","id":"<task>"}`; the task binds the buttons to the
 prompt they render, so a click on a superseded prompt is refused instead of answering a newer
-one. The card states no expiry: the pending task is held in the gateway's memory, so a restart
-loses it (klaus-gateway#132).
+one. The card states no expiry. The pending task is kept for 24 hours in the thread's row in
+the routing store, so on a persistent store a click after a restart still answers it.
 
 ```json
 {
@@ -357,8 +357,10 @@ it came from and a click on an older card in the thread cannot take the current 
 
 Ephemeral, shown only to the thread initiator. Allow grants the newcomer (additively) and
 replays their held message; Decline discards it and tells the newcomer (ephemerally) that the
-owner declined. A click on a prompt whose thread state the gateway no longer holds (pod
-restart, expiry) rewrites the prompt to say the approval expired. Each button's `value` is
+owner declined. The held message is kept in the thread's row, so a click after a restart on a
+persistent store still replays it. A click on a prompt whose thread state the gateway no longer
+holds (a restart on `routing.store: memory`, expiry) rewrites the prompt to say the approval
+expired. Each button's `value` is
 the JSON `{"t":"<thread>","u":"<newcomer>"}`, since one initiator can have several pending
 approvals at once.
 

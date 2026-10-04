@@ -245,9 +245,6 @@ type Linker struct {
 	discoverMu sync.Mutex
 	discovered bool
 
-	mu      sync.Mutex
-	pending map[string]pendingAuth // state -> PKCE verifier
-
 	// doneMu guards done, the one-time nonces carrying the linked email from
 	// the callback to its post-redirect success landing, so the landing can
 	// confirm which account linked without the email (PII) riding in the URL.
@@ -282,18 +279,6 @@ type Linker struct {
 	// closes when it has exited.
 	refreshStop chan struct{}
 	refreshDone chan struct{}
-}
-
-// pendingAuth holds the PKCE code verifier between the authorize redirect and
-// the callback. It lives in memory only; a restart mid-flow forces the user to
-// retry the link (the signed state itself is stateless and survives).
-//
-// ponytail: in-memory pending map -> a multi-replica gateway would lose the
-// verifier if authorize and callback hit different replicas. Move to the Store
-// (or a shared cache) if the gateway is scaled out.
-type pendingAuth struct {
-	verifier string
-	expires  time.Time
 }
 
 // doneNotice is the linked email held for the success landing behind a
@@ -420,7 +405,6 @@ func New(cfg Config) (*Linker, error) {
 		onLinked:      cfg.OnLinked,
 		logger:        logger,
 		now:           time.Now,
-		pending:       map[string]pendingAuth{},
 		refreshLocks:  map[string]*sync.Mutex{},
 		links:         map[string]*cachedLink{},
 		cacheTTL:      linkCacheTTL,
@@ -566,7 +550,7 @@ func (l *Linker) Unlink(slackUserID string) error {
 	return l.drop(slackUserID)
 }
 
-// HandleLink verifies the signed state, generates a PKCE verifier, and
+// HandleLink verifies the signed state, derives its PKCE verifier, and
 // redirects the browser to the muster authorization endpoint.
 func (l *Linker) HandleLink(w http.ResponseWriter, r *http.Request) {
 	state := r.URL.Query().Get("u")
@@ -588,9 +572,7 @@ func (l *Linker) HandleLink(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	verifier := oauth2.GenerateVerifier()
-	l.putPending(state, verifier)
-	url := l.oauth.AuthCodeURL(state, oauth2.S256ChallengeOption(verifier))
+	url := l.oauth.AuthCodeURL(state, oauth2.S256ChallengeOption(l.verifier(state)))
 	// G710: the redirect target is muster's discovered authorize endpoint built
 	// by oauth2, not user-controlled input.
 	http.Redirect(w, r, url, http.StatusFound) //nolint:gosec
@@ -640,18 +622,8 @@ func (l *Linker) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	verifier, ok := l.takePending(state)
-	if !ok {
-		l.renderPage(w, http.StatusBadRequest, Page{
-			Heading: "Session expired",
-			Title:   "Sign-in expired",
-			Message: "Your sign-in session expired before it could complete. Return to Slack and try again.",
-		})
-		return
-	}
-
 	ctx := r.Context()
-	link, err := l.exchange(ctx, q.Get(responseTypeCode), verifier)
+	link, err := l.exchange(ctx, q.Get(responseTypeCode), l.verifier(state))
 	if err != nil {
 		l.logger.Error("musterlink: code exchange failed", "err", err)
 		l.renderPage(w, http.StatusBadGateway, Page{
@@ -1041,28 +1013,12 @@ func (l *Linker) verifyState(state string) (string, error) {
 	return parts[0], nil
 }
 
-func (l *Linker) putPending(state, verifier string) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	now := l.now()
-	for k, p := range l.pending { // opportunistic prune
-		if now.After(p.expires) {
-			delete(l.pending, k)
-		}
-	}
-	l.pending[state] = pendingAuth{verifier: verifier, expires: now.Add(l.stateTTL)}
-}
-
-func (l *Linker) takePending(state string) (string, bool) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	p, ok := l.pending[state]
-	if !ok {
-		return "", false
-	}
-	delete(l.pending, state)
-	if l.now().After(p.expires) {
-		return "", false
-	}
-	return p.verifier, true
+// verifier is the PKCE code verifier of the sign-in that state starts: a MAC
+// of the signed state under the state key, so the callback derives the same
+// verifier the authorize redirect did without holding it anywhere. A restart
+// between the two, or another replica serving the callback, loses nothing,
+// and only a holder of the state key can compute it. 32 bytes encode to the
+// 43 characters RFC 7636 asks of a verifier at least.
+func (l *Linker) verifier(state string) string {
+	return base64.RawURLEncoding.EncodeToString(l.mac("pkce-verifier\x00" + state))
 }

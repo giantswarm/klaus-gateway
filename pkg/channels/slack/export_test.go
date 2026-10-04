@@ -43,3 +43,11 @@ func SetRecoverBackoff(t interface{ Cleanup(func()) }, delay, maxDelay, window t
 	recoverRetryDelay, recoverRetryMax, recoverWindow = delay, maxDelay, window
 	t.Cleanup(func() { recoverRetryDelay, recoverRetryMax, recoverWindow = oldDelay, oldMax, oldWindow })
 }
+
+// WaitHeldRestored blocks until RecoverTurns' restore of the held thread state
+// has read the rows back, so a test acts on the restored state.
+func (a *Adapter) WaitHeldRestored() {
+	if ch := a.heldRestored.Load(); ch != nil {
+		<-*ch
+	}
+}

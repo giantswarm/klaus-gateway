@@ -7,6 +7,10 @@ or `helm/`. Add a line when a review finds a new one.
 
 ## Slack
 
+- **Nothing a person waits on lives only in memory.** A message parked for a sign-in or an
+  approval and a paused prompt are written to the thread's row (`Entry.Held`) on every
+  change and read back at start; the sign-in's PKCE verifier is derived from its signed
+  state. A new piece of per-thread state a restart must not lose goes there too (#132).
 - **A mention inside a thread arrives twice**, as `app_mention` and as `message.channels`.
   A gate on the plain-message copy must skip text that mentions the bot, or it answers the
   mention with a request to mention (#307).
