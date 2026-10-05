@@ -379,6 +379,33 @@ func TestEventMapper_ArtifactReplaceRendersTheRunOnce(t *testing.T) {
 	require.Equal(t, []string{"I'll look for ", "the right tools."}, got)
 }
 
+// The Go ADK streams a run as append chunks and re-sends it whole on the same
+// artifact. With the call's usage on that final replace, the run counts its
+// call once: one usage delta, its text not repeated.
+func TestEventMapper_ArtifactReplaceCountsTheCallOnce(t *testing.T) {
+	m := newEventMapper()
+	final := artifactUpdate("a", false, true, a2apkg.NewTextPart("I'll look for the right tools."))
+	final.Artifact.Metadata = usageMeta(120, 30, 150)
+	var usages []TurnUsage
+	var text []string
+	for _, ev := range []a2apkg.Event{
+		artifactUpdate("a", false, false, a2apkg.NewTextPart("I'll look for ")),
+		artifactUpdate("a", true, false, a2apkg.NewTextPart("the right tools.")),
+		final,
+	} {
+		for _, d := range m.deltas(ev) {
+			if d.Usage != nil {
+				usages = append(usages, *d.Usage)
+			}
+			if d.Kind == DeltaText && d.Content != "" {
+				text = append(text, d.Content)
+			}
+		}
+	}
+	require.Equal(t, []TurnUsage{{InputTokens: 120, OutputTokens: 30, TotalTokens: 150}}, usages)
+	require.Equal(t, []string{"I'll look for ", "the right tools."}, text)
+}
+
 // The finished run's replace carries the tool calls the run ended in; those
 // still render as tool activity even though the text adds nothing.
 func TestEventMapper_ArtifactReplaceKeepsToolActivity(t *testing.T) {

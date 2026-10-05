@@ -218,9 +218,6 @@ func (f *Facade) retryUnshown(ctx context.Context, msg InboundMessage, deltas <-
 				retried = true
 				drainDeltas(deltas)
 				noteRetry(ctx, msg, d.Err)
-				if d.Usage != nil && !f.emit(ctx, out, OutboundDelta{Usage: d.Usage}) {
-					return
-				}
 				next, err := f.sendViaA2A(ctx, msg)
 				if err == nil {
 					f.forward(ctx, out, next)
