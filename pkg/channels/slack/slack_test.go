@@ -2502,7 +2502,7 @@ func TestUsage_ChannelFreshThreadGetsGuidance(t *testing.T) {
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_mention","user":"U1","text":"<@UBOT> usage","channel":"C1","ts":"300.000"}}`)
 
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "in a reply inside the agent's thread")
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "counts the agent's answers in the thread it is sent in")
 	}, flowWait, 20*time.Millisecond)
 	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "not available yet")
 }

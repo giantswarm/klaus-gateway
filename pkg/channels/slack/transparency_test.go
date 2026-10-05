@@ -60,7 +60,7 @@ func TestUsageReport_ChannelMissGivesGuidance(t *testing.T) {
 	a.recordTurnUsage("100.000", "C1", channels.TurnUsage{TotalTokens: 5})
 
 	report := a.usageReport(t.Context(), "999.000", "C1")
-	require.Contains(t, report, "in a reply inside the agent's thread")
+	require.Contains(t, report, "counts the agent's answers in the thread it is sent in")
 	require.NotContains(t, report, "not available yet")
 
 	// Channel turns must not leak into a DM-style channel aggregate.

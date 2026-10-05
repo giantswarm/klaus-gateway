@@ -93,14 +93,14 @@ func (a *Adapter) recordTurnUsage(threadID, channelID string, turn channels.Turn
 	}
 }
 
-const usageGuidance = "No token usage recorded for this thread yet. Send `usage` in a reply inside the agent's thread."
+const usageGuidance = "No token usage recorded for this thread yet. `usage` counts the agent's answers in the thread it is sent in, so it has figures once the agent has answered there."
 
 // usageReport renders the usage reply. The lookup is thread-first; a miss in
 // a DM falls back to the channel's aggregated usage, because a top-level DM
 // message carries no thread_ts and so keys a thread no turn ever ran in. A
-// miss in a regular channel means the command was typed outside the agent's
-// thread, so the reply says where to run it instead of claiming no usage
-// exists.
+// miss in a regular channel is a thread the agent has not answered in yet, or
+// a message outside the agent's thread, so the reply says which thread the
+// command reads instead of claiming no usage exists.
 func (a *Adapter) usageReport(ctx context.Context, threadID, channelID string) string {
 	a.usageMu.Lock()
 	entry, ok := a.threadUsage[threadID]
