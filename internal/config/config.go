@@ -49,7 +49,7 @@ const (
 type A2AConfig struct {
 	// Enabled gates all A2A behaviour.
 	Enabled bool
-	// DefaultAgent is the AgentTemplate a channel turn runs on when the channel
+	// DefaultAgent is the Agent a channel turn runs on when the channel
 	// names none: a bare name in Namespace, or "namespace/name". Defaults to
 	// "sre-agent".
 	DefaultAgent string
@@ -60,12 +60,12 @@ type A2AConfig struct {
 	// CAFile optionally names a PEM bundle trusted for a grpcs:// URL in
 	// addition to the system roots.
 	CAFile string
-	// Namespace is the namespace whose AgentTemplates are served. Defaults to
+	// Namespace is the namespace whose Agents are served. Defaults to
 	// "kagent".
 	Namespace string
-	// FallbackIconURLTemplate is used when an AgentTemplate carries no icon-URL
-	// annotation. "{agent}" is replaced with the agent's technical name. Empty
-	// disables the fallback.
+	// FallbackIconURLTemplate is used when neither the Agent nor its AgentTemplate
+	// carries an icon-URL annotation. "{agent}" is replaced with the agent's
+	// technical name. Empty disables the fallback.
 	FallbackIconURLTemplate string
 }
 
@@ -348,11 +348,11 @@ func Load(args []string) (Config, error) {
 	fs.StringVar(&cfg.Slack.FailedEmoji, "slack-failed-emoji", cfg.Slack.FailedEmoji, "Slack reaction emoji name for a failed turn (no colons). Empty uses the default.")
 	fs.BoolVar(&cfg.Slack.ClearReactionOnDone, "slack-clear-reaction-on-done", cfg.Slack.ClearReactionOnDone, "On a successful turn, remove the working reaction without adding a done reaction (default true). Set false to swap in the done emoji.")
 	fs.BoolVar(&cfg.A2A.Enabled, "a2a-enabled", cfg.A2A.Enabled, "Enable the A2A client surface.")
-	fs.StringVar(&cfg.A2A.DefaultAgent, "a2a-default-agent", cfg.A2A.DefaultAgent, "AgentTemplate a turn runs on when the channel names none: a bare name in --a2a-namespace, or namespace/name.")
+	fs.StringVar(&cfg.A2A.DefaultAgent, "a2a-default-agent", cfg.A2A.DefaultAgent, "Agent a turn runs on when the channel names none: a bare name in --a2a-namespace, or namespace/name.")
 	fs.StringVar(&cfg.A2A.URL, "a2a-url", cfg.A2A.URL, "kagent controller gRPC target through agentgateway: grpc://host:port (h2c) or grpcs://host[:port] (TLS, 443 by default).")
 	fs.StringVar(&cfg.A2A.CAFile, "a2a-ca-file", cfg.A2A.CAFile, "PEM bundle trusted for a grpcs:// --a2a-url in addition to the system roots. Empty uses the system roots only.")
-	fs.StringVar(&cfg.A2A.Namespace, "a2a-namespace", cfg.A2A.Namespace, "Namespace whose AgentTemplates are served.")
-	fs.StringVar(&cfg.A2A.FallbackIconURLTemplate, "a2a-fallback-icon-url-template", cfg.A2A.FallbackIconURLTemplate, "Fallback agent icon URL used when the AgentTemplate has no icon-URL annotation. \"{agent}\" is replaced with the agent's technical name. Empty disables the fallback.")
+	fs.StringVar(&cfg.A2A.Namespace, "a2a-namespace", cfg.A2A.Namespace, "Namespace whose Agents are served.")
+	fs.StringVar(&cfg.A2A.FallbackIconURLTemplate, "a2a-fallback-icon-url-template", cfg.A2A.FallbackIconURLTemplate, "Fallback agent icon URL used when neither the Agent nor its AgentTemplate has an icon-URL annotation. \"{agent}\" is replaced with the agent's technical name. Empty disables the fallback.")
 	fs.BoolVar(&cfg.OBO.Enabled, "obo-enabled", cfg.OBO.Enabled, "Enable Slack on-behalf-of muster account linking and the /auth/slack/* routes.")
 	fs.StringVar(&cfg.OBO.MusterURL, "obo-muster-url", cfg.OBO.MusterURL, "muster authorization-server base URL (RFC 8414 discovery).")
 	fs.StringVar(&cfg.OBO.ClientID, "obo-client-id", cfg.OBO.ClientID, "Gateway's muster OAuth client ID. Optional: defaults to the self-hosted CIMD document URL (callback base URL + /auth/slack/client.json).")
