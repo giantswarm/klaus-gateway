@@ -593,10 +593,8 @@ func (f *Facade) streamTask(ctx context.Context, key store.Key, instanceID strin
 					terminal = true
 					timer.Mark(PhaseTaskDone)
 				}
-				if resumed && !whole && delta.Done {
-					if text := f.finalText(ctx, instanceID, taskID); text != "" && !f.emit(ctx, out, OutboundDelta{Content: text}) {
-						break
-					}
+				if resumed && !whole && delta.Done && !f.emitFinal(ctx, out, mapper, instanceID, taskID) {
+					break
 				}
 				if !f.emit(ctx, out, delta) {
 					break
@@ -648,19 +646,28 @@ func (f *Facade) streamTask(ctx context.Context, key store.Key, instanceID strin
 	return out, nil
 }
 
-// finalText reads a completed task back from the controller and returns its
+// emitFinal reads a completed task back from the controller and delivers its
 // answer, for a resubscribed turn whose streamed text is not trusted to be
-// whole. A failed read is logged and yields nothing: the terminal delta still
-// closes the turn.
-func (f *Facade) finalText(ctx context.Context, instanceID string, taskID a2apkg.TaskID) string {
+// whole, and the usage of the calls the stream did not deliver. It reports
+// whether every delta was delivered. A failed read is logged and delivers
+// nothing: the terminal delta still closes the turn.
+func (f *Facade) emitFinal(ctx context.Context, out chan<- OutboundDelta, mapper *eventMapper, instanceID string, taskID a2apkg.TaskID) bool {
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), bindingWriteTimeout)
 	defer cancel()
 	task, err := f.Agent.GetTask(rctx, instanceID, taskID)
 	if err != nil {
 		slog.Warn("a2a: read the completed task's answer failed", "instance", instanceID, "task", taskID, "error", err)
-		return ""
+		return true
 	}
-	return taskResultText(task)
+	if text := taskResultText(task); text != "" && !f.emit(ctx, out, OutboundDelta{Content: text}) {
+		return false
+	}
+	for _, delta := range mapper.taskUsageDeltas(task) {
+		if !f.emit(ctx, out, delta) {
+			return false
+		}
+	}
+	return true
 }
 
 // rememberTask records taskID as the task in flight on key's thread, with the
@@ -773,13 +780,16 @@ func withCallerAuth(ctx context.Context, msg InboundMessage) context.Context {
 
 // eventMapper converts a task's A2A streaming events to OutboundDeltas. It
 // keeps the per-stream state the conversion needs: the text each artifact has
-// delivered so far, so an artifact update renders as what it adds.
+// delivered so far, so an artifact update renders as what it adds, and the
+// artifacts whose usage the stream delivered, so a whole task does not count
+// it again.
 type eventMapper struct {
 	artifacts artifactText
+	counted   map[a2apkg.ArtifactID]bool
 }
 
 func newEventMapper() *eventMapper {
-	return &eventMapper{artifacts: newArtifactText()}
+	return &eventMapper{artifacts: newArtifactText(), counted: map[a2apkg.ArtifactID]bool{}}
 }
 
 // deltas converts a single A2A streaming event to zero or more OutboundDeltas.
@@ -801,6 +811,7 @@ func (m *eventMapper) deltas(event a2apkg.Event) []OutboundDelta {
 		}
 		deltas := append(textDeltaOf(m.artifacts.delta(ev)), toolActivityDeltas(ev.Artifact.Parts)...)
 		if usage := parseTurnUsage(ev.Artifact.Metadata); usage != nil {
+			m.counted[ev.Artifact.ID] = true
 			deltas = append(deltas, OutboundDelta{Usage: usage})
 		}
 		return deltas
@@ -825,7 +836,7 @@ func (m *eventMapper) deltas(event a2apkg.Event) []OutboundDelta {
 		}
 		deltas := mapTaskStatus(ev.ID, ev.Status, func() []OutboundDelta { return nil })
 		if ev.Status.State == a2apkg.TaskStateCompleted {
-			deltas = append(m.taskResultDeltas(ev), deltas...)
+			deltas = append(append(m.taskResultDeltas(ev), m.taskUsageDeltas(ev)...), deltas...)
 		}
 		return deltas
 	case *a2apkg.Message:
@@ -889,6 +900,23 @@ func (m *eventMapper) taskResultDeltas(task *a2apkg.Task) []OutboundDelta {
 		return deltas
 	}
 	return textDeltaOf(lastAgentText(task.History))
+}
+
+// taskUsageDeltas returns a usage-only delta for each of a completed task's
+// artifacts whose usage the stream did not deliver: the calls made while no
+// gateway was listening.
+func (m *eventMapper) taskUsageDeltas(task *a2apkg.Task) []OutboundDelta {
+	var deltas []OutboundDelta
+	for _, artifact := range task.Artifacts {
+		if artifact == nil || m.counted[artifact.ID] {
+			continue
+		}
+		if usage := parseTurnUsage(artifact.Metadata); usage != nil {
+			m.counted[artifact.ID] = true
+			deltas = append(deltas, OutboundDelta{Usage: usage})
+		}
+	}
+	return deltas
 }
 
 // taskResultText is the whole answer of a completed task, rendered as the

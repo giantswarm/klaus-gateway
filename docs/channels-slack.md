@@ -590,7 +590,9 @@ Three structured log records (`record=…`, JSON fields) tell a turn's story; jo
   `first_text_ms`, `task_done_ms`, `stream_end_ms`, `final_flush_ms`, `total_ms`. A phase that
   did not happen (no instance created on a follow-up) is absent. A turn a
   previous process left running and this one delivered after a restart gets a record too, its
-  timeline starting at the delivery.
+  timeline starting at the delivery. Its tokens are the turn's full total, the calls made before
+  the restart included; the previous process's `shutdown` record of the same `task_id` holds only
+  the calls it saw, so do not sum the two.
 - `a2a_event` (debug level only, `--log-level=debug`) -- one per A2A event a turn receives:
   `event` (its Go type), `task_id`, and `metadata_keys`, the metadata keys of the event, of its
   status message (`message.` prefix) and of its artifact (`artifact.` prefix), never their values.
