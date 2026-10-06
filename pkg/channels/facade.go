@@ -218,9 +218,6 @@ func (f *Facade) retryUnshown(ctx context.Context, msg InboundMessage, deltas <-
 				retried = true
 				drainDeltas(deltas)
 				noteRetry(ctx, msg, d.Err)
-				if d.Usage != nil && !f.emit(ctx, out, OutboundDelta{Usage: d.Usage}) {
-					return
-				}
 				next, err := f.sendViaA2A(ctx, msg)
 				if err == nil {
 					f.forward(ctx, out, next)
@@ -791,11 +788,9 @@ func newEventMapper() *eventMapper {
 // rejected, canceled) map to an error delta so channels surface them rather
 // than silently closing.
 //
-// kagent attaches token usage to the event/message metadata (not to a part),
-// as per-LLM-call deltas on interim working events; the terminal completed
-// event carries no usage, so consumers sum the interim deltas. Partial
-// (streaming) events mirror their call's usage and are skipped to avoid
-// counting one call several times. Tool activity rides on
+// kagent (1.2.2 and later) attaches each LLM call's token usage to the
+// metadata of an artifact update's artifact, once per call, so consumers sum
+// the usage-only deltas over the turn. Tool activity rides on
 // function_call/function_response DataParts. A paused task's prompt rides on
 // the input-required status message as the HITL extension payload.
 func (m *eventMapper) deltas(event a2apkg.Event) []OutboundDelta {
@@ -804,26 +799,17 @@ func (m *eventMapper) deltas(event a2apkg.Event) []OutboundDelta {
 		if ev.Artifact == nil {
 			return nil
 		}
-		return append(textDeltaOf(m.artifacts.delta(ev)), toolActivityDeltas(ev.Artifact.Parts)...)
-	case *a2apkg.TaskStatusUpdateEvent:
-		var usage *TurnUsage
-		if !isPartialStatusUpdate(ev) {
-			usage = parseTurnUsage(ev.Metadata)
-			if usage == nil && ev.Status.Message != nil {
-				usage = parseTurnUsage(ev.Status.Message.Metadata)
-			}
+		deltas := append(textDeltaOf(m.artifacts.delta(ev)), toolActivityDeltas(ev.Artifact.Parts)...)
+		if usage := parseTurnUsage(ev.Artifact.Metadata); usage != nil {
+			deltas = append(deltas, OutboundDelta{Usage: usage})
 		}
-		return mapTaskStatus(ev.TaskID, ev.Status, usage, func() []OutboundDelta {
+		return deltas
+	case *a2apkg.TaskStatusUpdateEvent:
+		return mapTaskStatus(ev.TaskID, ev.Status, func() []OutboundDelta {
 			// Interim working event: surface the narration the agent wrote for the
-			// tool calls the same message carries, the tool activity itself, and a
-			// usage-only delta when the event reports usage.
+			// tool calls the same message carries, and the tool activity itself.
 			parts := messageParts(ev.Status.Message)
-			deltas := narrationDeltas(ev, parts)
-			deltas = append(deltas, toolActivityDeltas(parts)...)
-			if usage != nil {
-				deltas = append(deltas, OutboundDelta{Usage: usage})
-			}
-			return deltas
+			return append(narrationDeltas(ev, parts), toolActivityDeltas(parts)...)
 		})
 	case *a2apkg.Task:
 		// A whole task arrives as the first event of a stream (the submitted
@@ -837,7 +823,7 @@ func (m *eventMapper) deltas(event a2apkg.Event) []OutboundDelta {
 		if ev.Status.State == a2apkg.TaskStateSubmitted || ev.Status.State == a2apkg.TaskStateWorking {
 			return nil
 		}
-		deltas := mapTaskStatus(ev.ID, ev.Status, parseTurnUsage(ev.Metadata), func() []OutboundDelta { return nil })
+		deltas := mapTaskStatus(ev.ID, ev.Status, func() []OutboundDelta { return nil })
 		if ev.Status.State == a2apkg.TaskStateCompleted {
 			deltas = append(m.taskResultDeltas(ev), deltas...)
 		}
@@ -852,10 +838,10 @@ func (m *eventMapper) deltas(event a2apkg.Event) []OutboundDelta {
 // mapTaskStatus maps a task state to deltas: completed closes the turn,
 // input-required/auth-required pauses it on a prompt, any other terminal state
 // fails it, and a working state is left to interim.
-func mapTaskStatus(taskID a2apkg.TaskID, status a2apkg.TaskStatus, usage *TurnUsage, interim func() []OutboundDelta) []OutboundDelta {
+func mapTaskStatus(taskID a2apkg.TaskID, status a2apkg.TaskStatus, interim func() []OutboundDelta) []OutboundDelta {
 	switch status.State {
 	case a2apkg.TaskStateCompleted:
-		return []OutboundDelta{{Done: true, Usage: usage}}
+		return []OutboundDelta{{Done: true}}
 	case a2apkg.TaskStateInputRequired, a2apkg.TaskStateAuthRequired:
 		var hitl *HitlPrompt
 		text := ""
@@ -871,7 +857,7 @@ func mapTaskStatus(taskID a2apkg.TaskID, status a2apkg.TaskStatus, usage *TurnUs
 		if text == "" && hitl != nil {
 			text = hitl.summary()
 		}
-		return []OutboundDelta{{Kind: DeltaPrompt, Content: text, TaskID: string(taskID), Prompt: hitl, Usage: usage}}
+		return []OutboundDelta{{Kind: DeltaPrompt, Content: text, TaskID: string(taskID), Prompt: hitl}}
 	default:
 		if status.State.Terminal() {
 			msg := fmt.Sprintf("a2a: task ended with state %s", status.State)
@@ -880,7 +866,7 @@ func mapTaskStatus(taskID a2apkg.TaskID, status a2apkg.TaskStatus, usage *TurnUs
 					msg = text
 				}
 			}
-			return []OutboundDelta{{Err: &taskEnded{state: status.State, reason: msg}, Usage: usage}}
+			return []OutboundDelta{{Err: &taskEnded{state: status.State, reason: msg}}}
 		}
 		return interim()
 	}

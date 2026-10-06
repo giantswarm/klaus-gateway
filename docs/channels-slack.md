@@ -583,7 +583,8 @@ Three structured log records (`record=…`, JSON fields) tell a turn's story; jo
   `message_id`, `task_id` (the A2A task the controller named), `tool_calls`, `streamed_chars`,
   `retries` (how often the turn was sent again), `input_tokens`, `output_tokens` and
   `total_tokens` (summed over the turn's LLM calls; 0 when the agent's runtime reports no usage,
-  which is also when `usage` has nothing to show), `trace_id`, `error` on a failure, and the phases as
+  which is also when `usage` has nothing to show; `total_tokens` is also 0 for an Anthropic
+  model, which reports no total, so the `usage` card shows only in and out), `trace_id`, `error` on a failure, and the phases as
   milliseconds since the events POST (or the Socket Mode frame) arrived: `token_mint_ms`,
   `roster_ms`, `dispatch_ms`, `create_instance_ms`, `first_event_ms`,
   `first_text_ms`, `task_done_ms`, `stream_end_ms`, `final_flush_ms`, `total_ms`. A phase that

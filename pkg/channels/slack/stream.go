@@ -330,8 +330,8 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 				return w.finish(ctx)
 			}
 			if d.Usage != nil {
-				// kagent reports usage per LLM call, so sum across the turn for
-				// the turn total (the terminal event alone under-counts).
+				// kagent reports usage on each LLM call's artifact; add them for
+				// the turn total.
 				w.turnUsage.InputTokens += d.Usage.InputTokens
 				w.turnUsage.OutputTokens += d.Usage.OutputTokens
 				w.turnUsage.TotalTokens += d.Usage.TotalTokens

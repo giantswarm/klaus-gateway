@@ -23,14 +23,12 @@ const (
 	mdTypeFunctionResponse = "function_response"
 )
 
-// Event/message-level metadata keys kagent sets for token usage, canonical
-// first as for the part type. Every key holds the same flat object with the
-// camelCase field names below. The partial markers have no canonical key.
+// The artifact metadata key kagent sets for one LLM call's token usage: a flat
+// object with the camelCase field names below.
 const (
 	mdUsageCanonical = "kagent.dev/a2a/usage"
-	mdUsageKagent    = "kagent_usage_metadata"
-	mdUsageADK       = "adk_usage_metadata"
 
+	// The partial markers have no canonical key.
 	mdPartialKagent = "kagent_partial"
 	mdPartialADK    = "adk_partial"
 
@@ -267,29 +265,18 @@ func (p *HitlPrompt) summary() string {
 }
 
 // isPartialMeta reports whether metadata marks the event as a partial
-// (streaming) chunk. Partial events mirror the usage metadata of the LLM call
-// they belong to, so counting usage on them would tally the same call multiple
-// times; kagent's own task store filters on the same keys.
+// (streaming) chunk; kagent's own task store filters on the same keys.
 func isPartialMeta(md map[string]any) bool {
 	partial, _ := firstBool(md, mdPartialKagent, mdPartialADK)
 	return partial
 }
 
-// parseTurnUsage reads a kagent usage-metadata object from event or message
-// metadata. Returns nil when no usage object is present. Every field is
-// optional (a provider populates only what it reports).
+// parseTurnUsage reads kagent's usage object from an artifact's metadata.
+// Returns nil when no usage object is present. Every field is optional (a
+// provider populates only what it reports).
 func parseTurnUsage(md map[string]any) *TurnUsage {
-	if md == nil {
-		return nil
-	}
-	var raw map[string]any
-	for _, k := range []string{mdUsageCanonical, mdUsageKagent, mdUsageADK} {
-		if v, ok := md[k].(map[string]any); ok {
-			raw = v
-			break
-		}
-	}
-	if raw == nil {
+	raw, ok := md[mdUsageCanonical].(map[string]any)
+	if !ok {
 		return nil
 	}
 	return &TurnUsage{

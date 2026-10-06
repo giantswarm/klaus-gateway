@@ -24,12 +24,13 @@ func TestRecordTurnUsage_LastAndSession(t *testing.T) {
 	a.recordTurnUsage("T1", "C1", channels.TurnUsage{InputTokens: 30, OutputTokens: 20, TotalTokens: 50})
 
 	report := a.usageReport(t.Context(), "T1", "C1")
-	require.Contains(t, report, "Last turn — in 30 · out 20 · total 50")
-	require.Contains(t, report, "Session — in 130 · out 70 · total 200")
+	require.Contains(t, report, "Last turn — in 30 · out 20")
+	require.Contains(t, report, "Session — in 130 · out 70")
+	require.NotContains(t, report, "total", "the card shows no total: Anthropic models report none")
 
 	// An empty turn must not clobber the last-turn figures.
 	a.recordTurnUsage("T1", "C1", channels.TurnUsage{})
-	require.Contains(t, a.usageReport(t.Context(), "T1", "C1"), "Last turn — in 30 · out 20 · total 50")
+	require.Contains(t, a.usageReport(t.Context(), "T1", "C1"), "Last turn — in 30 · out 20")
 }
 
 // A top-level /usage in a DM keys a brand-new thread (its own ts); the report
@@ -43,24 +44,24 @@ func TestUsageReport_DMTopLevelFallsBackToChannel(t *testing.T) {
 
 	// "300.000" is the /usage message's own ts: no turn ever ran in that thread.
 	report := a.usageReport(t.Context(), "300.000", "D1")
-	require.Contains(t, report, "Last turn — in 30 · out 20 · total 50")
-	require.Contains(t, report, "Session — in 40 · out 25 · total 65",
+	require.Contains(t, report, "Last turn — in 30 · out 20")
+	require.Contains(t, report, "Session — in 40 · out 25",
 		"the DM fallback reports the channel aggregate across threads")
 
 	// An in-thread /usage in the DM still reports that thread's own figures.
 	inThread := a.usageReport(t.Context(), "100.000", "D1")
-	require.Contains(t, inThread, "Session — in 10 · out 5 · total 15")
+	require.Contains(t, inThread, "Session — in 10 · out 5")
 }
 
-// In a regular channel a missed lookup means the command was typed outside the
-// agent's thread; the reply guides the user there instead of the misleading
-// "not available yet".
+// In a regular channel a missed lookup is a thread the agent has not answered
+// in yet, or a message outside the agent's thread; the reply says which thread
+// the command reads instead of the misleading "not available yet".
 func TestUsageReport_ChannelMissGivesGuidance(t *testing.T) {
 	a := &Adapter{}
 	a.recordTurnUsage("100.000", "C1", channels.TurnUsage{TotalTokens: 5})
 
 	report := a.usageReport(t.Context(), "999.000", "C1")
-	require.Contains(t, report, "in a reply inside the agent's thread")
+	require.Contains(t, report, "counts the agent's answers in the thread it is sent in")
 	require.NotContains(t, report, "not available yet")
 
 	// Channel turns must not leak into a DM-style channel aggregate.

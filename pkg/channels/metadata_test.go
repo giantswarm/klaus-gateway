@@ -48,7 +48,7 @@ func TestEventMetadataKeys(t *testing.T) {
 
 func usageMeta(prompt, completion, total float64) map[string]any {
 	return map[string]any{
-		mdUsageKagent: map[string]any{
+		mdUsageCanonical: map[string]any{
 			usagePromptTokens:     prompt,
 			usageCompletionTokens: completion,
 			usageTotalTokens:      total,
@@ -56,18 +56,78 @@ func usageMeta(prompt, completion, total float64) map[string]any {
 	}
 }
 
-func TestMapA2AEvent_CompletedCarriesUsage(t *testing.T) {
-	ev := &a2apkg.TaskStatusUpdateEvent{
-		TaskID:   "task-1",
-		Metadata: usageMeta(10, 5, 15),
-		Status:   a2apkg.TaskStatus{State: a2apkg.TaskStateCompleted},
+// kagent puts each LLM call's usage on the artifact of an artifact update,
+// beside the text that call produced; it maps to one usage-only delta.
+func TestMapA2AEvent_ArtifactCarriesUsage(t *testing.T) {
+	ev := &a2apkg.TaskArtifactUpdateEvent{
+		Artifact: &a2apkg.Artifact{
+			ID:       "a1",
+			Metadata: usageMeta(10, 5, 15),
+			Parts:    a2apkg.ContentParts{a2apkg.NewTextPart("16 nodes")},
+		},
 	}
 
 	deltas := newEventMapper().deltas(ev)
+	require.Len(t, deltas, 2)
+	require.Equal(t, DeltaText, deltas[0].Kind)
+	require.Equal(t, "16 nodes", deltas[0].Content)
+	require.NotNil(t, deltas[1].Usage)
+	require.Equal(t, TurnUsage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15}, *deltas[1].Usage)
+}
+
+// One usage delta per artifact that carries usage, so a turn of four LLM calls
+// sums four calls, never one call twice.
+func TestMapA2AEvent_OneUsageDeltaPerCall(t *testing.T) {
+	m := newEventMapper()
+	var usages []TurnUsage
+	for i := range 4 {
+		ev := &a2apkg.TaskArtifactUpdateEvent{Artifact: &a2apkg.Artifact{
+			ID:       a2apkg.ArtifactID(string(rune('a' + i))),
+			Metadata: usageMeta(float64(10*(i+1)), 1, float64(10*(i+1)+1)),
+		}}
+		for _, d := range m.deltas(ev) {
+			if d.Usage != nil {
+				usages = append(usages, *d.Usage)
+			}
+		}
+		// An artifact update without usage adds none.
+		for _, d := range m.deltas(&a2apkg.TaskArtifactUpdateEvent{Artifact: &a2apkg.Artifact{ID: "plain"}}) {
+			require.Nil(t, d.Usage)
+		}
+	}
+	require.Len(t, usages, 4)
+	require.Equal(t, 100, usages[0].InputTokens+usages[1].InputTokens+usages[2].InputTokens+usages[3].InputTokens)
+}
+
+// Usage is read from the artifact only: a status update or a whole task that
+// carried the key would be a second copy of a call already counted.
+func TestMapA2AEvent_UsageOnlyFromTheArtifact(t *testing.T) {
+	working := &a2apkg.TaskStatusUpdateEvent{
+		Metadata: usageMeta(3, 4, 7),
+		Status: a2apkg.TaskStatus{
+			State:   a2apkg.TaskStateWorking,
+			Message: &a2apkg.Message{Metadata: usageMeta(3, 4, 7)},
+		},
+	}
+	require.Empty(t, newEventMapper().deltas(working))
+
+	completed := &a2apkg.TaskStatusUpdateEvent{
+		Metadata: usageMeta(10, 5, 15),
+		Status:   a2apkg.TaskStatus{State: a2apkg.TaskStateCompleted},
+	}
+	deltas := newEventMapper().deltas(completed)
 	require.Len(t, deltas, 1)
 	require.True(t, deltas[0].Done)
-	require.NotNil(t, deltas[0].Usage)
-	require.Equal(t, TurnUsage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15}, *deltas[0].Usage)
+	require.Nil(t, deltas[0].Usage)
+
+	failed := &a2apkg.TaskStatusUpdateEvent{
+		Metadata: usageMeta(10, 5, 15),
+		Status:   a2apkg.TaskStatus{State: a2apkg.TaskStateFailed},
+	}
+	deltas = newEventMapper().deltas(failed)
+	require.Len(t, deltas, 1)
+	require.Error(t, deltas[0].Err)
+	require.Nil(t, deltas[0].Usage)
 }
 
 func TestMapA2AEvent_ArtifactTextAndToolActivity(t *testing.T) {
@@ -95,14 +155,13 @@ func TestMapA2AEvent_ArtifactTextAndToolActivity(t *testing.T) {
 	require.Equal(t, "pods", deltas[1].Tool.Args["resource"])
 }
 
-func TestMapA2AEvent_InterimToolActivityAndUsage(t *testing.T) {
+func TestMapA2AEvent_InterimToolActivity(t *testing.T) {
 	resp := dataPart(t, mdTypeFunctionResponse, map[string]any{
 		"name":     "kubectl_get",
 		"response": map[string]any{"output": "pod/foo"},
 		"id":       "call-1",
 	})
 	ev := &a2apkg.TaskStatusUpdateEvent{
-		Metadata: usageMeta(3, 4, 7),
 		Status: a2apkg.TaskStatus{
 			State:   a2apkg.TaskStateWorking,
 			Message: &a2apkg.Message{Parts: a2apkg.ContentParts{resp}},
@@ -110,12 +169,10 @@ func TestMapA2AEvent_InterimToolActivityAndUsage(t *testing.T) {
 	}
 
 	deltas := newEventMapper().deltas(ev)
-	require.Len(t, deltas, 2)
+	require.Len(t, deltas, 1)
 	require.Equal(t, DeltaToolActivity, deltas[0].Kind)
 	require.Equal(t, ToolResult, deltas[0].Tool.Kind)
 	require.Equal(t, "kubectl_get", deltas[0].Tool.Name)
-	require.NotNil(t, deltas[1].Usage)
-	require.Equal(t, 7, deltas[1].Usage.TotalTokens)
 }
 
 func TestMapA2AEvent_ConfirmationPartIsNotToolActivity(t *testing.T) {
@@ -159,7 +216,6 @@ func TestMapA2AEvent_NarrationPrecedesToolActivity(t *testing.T) {
 		return dataPart(t, mdTypeFunctionCall, map[string]any{"name": "kubectl_get", "id": id})
 	}
 	ev := &a2apkg.TaskStatusUpdateEvent{
-		Metadata: usageMeta(3, 4, 7),
 		Status: a2apkg.TaskStatus{
 			State: a2apkg.TaskStateWorking,
 			Message: a2apkg.NewMessage(a2apkg.MessageRoleAgent,
@@ -169,14 +225,13 @@ func TestMapA2AEvent_NarrationPrecedesToolActivity(t *testing.T) {
 	}
 
 	deltas := newEventMapper().deltas(ev)
-	require.Len(t, deltas, 4)
+	require.Len(t, deltas, 3)
 	require.Equal(t, DeltaNarration, deltas[0].Kind)
 	require.Equal(t, "Let me pull the HelmRelease from both clusters simultaneously.", deltas[0].Content)
 	require.Equal(t, DeltaToolActivity, deltas[1].Kind)
 	require.Equal(t, "call-1", deltas[1].Tool.CallID)
 	require.Equal(t, DeltaToolActivity, deltas[2].Kind)
 	require.Equal(t, "call-2", deltas[2].Tool.CallID)
-	require.NotNil(t, deltas[3].Usage)
 }
 
 // kagent mirrors the final answer as a text-only working event and then re-sends
@@ -251,22 +306,6 @@ func TestMapA2AEvent_TextBesideToolResultEmitsNoNarration(t *testing.T) {
 	require.Equal(t, DeltaToolActivity, deltas[0].Kind)
 }
 
-// A partial chunk mirrors the usage of the LLM call it belongs to, wherever
-// kagent stamped the flag; counting it would tally one call several times.
-func TestMapA2AEvent_MessagePartialUsageSkipped(t *testing.T) {
-	for _, key := range []string{mdPartialKagent, mdPartialADK} {
-		t.Run(key, func(t *testing.T) {
-			msg := a2apkg.NewMessage(a2apkg.MessageRoleAgent, a2apkg.NewTextPart("thinking"))
-			msg.Metadata = usageMeta(3, 4, 7)
-			msg.Metadata[key] = true
-			ev := &a2apkg.TaskStatusUpdateEvent{
-				Status: a2apkg.TaskStatus{State: a2apkg.TaskStateWorking, Message: msg},
-			}
-			require.Empty(t, newEventMapper().deltas(ev), "usage on a partial message must not be counted")
-		})
-	}
-}
-
 // A whole task arrives as the first event of a stream (the submitted snapshot)
 // and as the controller's answer from its store; only a quiescent state renders.
 func TestMapA2AEvent_TaskSnapshots(t *testing.T) {
@@ -301,53 +340,6 @@ func TestOutboundDelta_IsZero(t *testing.T) {
 	require.False(t, OutboundDelta{Usage: &TurnUsage{}}.isZero())
 	require.False(t, OutboundDelta{Kind: DeltaToolActivity, Content: "x"}.isZero())
 	require.False(t, OutboundDelta{Tool: &ToolActivity{Name: "x"}}.isZero())
-}
-
-// Partial (streaming) events mirror the usage metadata of the LLM call they
-// belong to; counting them would tally one call several times. kagent marks
-// them with adk_partial/kagent_partial.
-func TestMapA2AEvent_PartialEventUsageSkipped(t *testing.T) {
-	for _, key := range []string{mdPartialKagent, mdPartialADK} {
-		t.Run(key, func(t *testing.T) {
-			meta := usageMeta(3, 4, 7)
-			meta[key] = true
-			ev := &a2apkg.TaskStatusUpdateEvent{
-				Metadata: meta,
-				Status:   a2apkg.TaskStatus{State: a2apkg.TaskStateWorking},
-			}
-			require.Empty(t, newEventMapper().deltas(ev), "partial event must not emit a usage delta")
-		})
-	}
-}
-
-func TestMapA2AEvent_FailedTerminalCarriesUsage(t *testing.T) {
-	for _, state := range []a2apkg.TaskState{a2apkg.TaskStateFailed, a2apkg.TaskStateRejected, a2apkg.TaskStateCanceled} {
-		t.Run(string(state), func(t *testing.T) {
-			ev := &a2apkg.TaskStatusUpdateEvent{
-				Metadata: usageMeta(10, 5, 15),
-				Status:   a2apkg.TaskStatus{State: state},
-			}
-
-			deltas := newEventMapper().deltas(ev)
-			require.Len(t, deltas, 1)
-			require.Error(t, deltas[0].Err)
-			require.NotNil(t, deltas[0].Usage)
-			require.Equal(t, TurnUsage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15}, *deltas[0].Usage)
-		})
-	}
-}
-
-func TestMapA2AEvent_NonPartialWorkingEventEmitsUsage(t *testing.T) {
-	meta := usageMeta(3, 4, 7)
-	meta[mdPartialADK] = false
-	ev := &a2apkg.TaskStatusUpdateEvent{
-		Metadata: meta,
-		Status:   a2apkg.TaskStatus{State: a2apkg.TaskStateWorking},
-	}
-	deltas := newEventMapper().deltas(ev)
-	require.Len(t, deltas, 1)
-	require.NotNil(t, deltas[0].Usage)
-	require.Equal(t, 7, deltas[0].Usage.TotalTokens)
 }
 
 func artifactUpdate(id a2apkg.ArtifactID, appendTo, last bool, parts ...*a2apkg.Part) *a2apkg.TaskArtifactUpdateEvent {
@@ -385,6 +377,33 @@ func TestEventMapper_ArtifactReplaceRendersTheRunOnce(t *testing.T) {
 		artifactUpdate("a", false, true, a2apkg.NewTextPart("I'll look for the right tools.")),
 	)
 	require.Equal(t, []string{"I'll look for ", "the right tools."}, got)
+}
+
+// The Go ADK streams a run as append chunks and re-sends it whole on the same
+// artifact. With the call's usage on that final replace, the run counts its
+// call once: one usage delta, its text not repeated.
+func TestEventMapper_ArtifactReplaceCountsTheCallOnce(t *testing.T) {
+	m := newEventMapper()
+	final := artifactUpdate("a", false, true, a2apkg.NewTextPart("I'll look for the right tools."))
+	final.Artifact.Metadata = usageMeta(120, 30, 150)
+	var usages []TurnUsage
+	var text []string
+	for _, ev := range []a2apkg.Event{
+		artifactUpdate("a", false, false, a2apkg.NewTextPart("I'll look for ")),
+		artifactUpdate("a", true, false, a2apkg.NewTextPart("the right tools.")),
+		final,
+	} {
+		for _, d := range m.deltas(ev) {
+			if d.Usage != nil {
+				usages = append(usages, *d.Usage)
+			}
+			if d.Kind == DeltaText && d.Content != "" {
+				text = append(text, d.Content)
+			}
+		}
+	}
+	require.Equal(t, []TurnUsage{{InputTokens: 120, OutputTokens: 30, TotalTokens: 150}}, usages)
+	require.Equal(t, []string{"I'll look for ", "the right tools."}, text)
 }
 
 // The finished run's replace carries the tool calls the run ended in; those
@@ -453,27 +472,15 @@ func TestCommonPrefixLen(t *testing.T) {
 	require.Equal(t, 1, commonPrefixLen("aö", "aü"))
 }
 
-// kagent 1.1 and later mark tool activity and usage with the canonical
-// kagent.dev/a2a/ keys only; older releases use the kagent_ or adk_ prefix.
-// Every spelling maps to the same deltas.
-func TestMapA2AEvent_ReadsEveryMetadataKeySpelling(t *testing.T) {
-	cases := []struct {
-		name     string
-		typeKey  string
-		usageKey string
-	}{
-		{name: "canonical", typeKey: mdTypeCanonical, usageKey: mdUsageCanonical},
-		{name: "kagent prefix", typeKey: mdTypeKagent, usageKey: mdUsageKagent},
-		{name: "adk prefix", typeKey: mdTypeADK, usageKey: mdUsageADK},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
+// kagent 1.1 and later mark tool activity with the canonical kagent.dev/a2a/
+// key only; older releases use the kagent_ or adk_ prefix. Every spelling maps
+// to the same delta.
+func TestMapA2AEvent_ReadsEveryPartTypeKeySpelling(t *testing.T) {
+	for _, typeKey := range []string{mdTypeCanonical, mdTypeKagent, mdTypeADK} {
+		t.Run(typeKey, func(t *testing.T) {
 			call := a2apkg.NewDataPart(map[string]any{"name": "kubectl_get", "id": "call-1"})
-			call.Metadata = map[string]any{tc.typeKey: mdTypeFunctionCall}
+			call.Metadata = map[string]any{typeKey: mdTypeFunctionCall}
 			ev := &a2apkg.TaskStatusUpdateEvent{
-				Metadata: map[string]any{tc.usageKey: map[string]any{
-					usagePromptTokens: float64(3), usageCompletionTokens: float64(4), usageTotalTokens: float64(7),
-				}},
 				Status: a2apkg.TaskStatus{
 					State:   a2apkg.TaskStateWorking,
 					Message: &a2apkg.Message{Parts: a2apkg.ContentParts{call}},
@@ -481,12 +488,10 @@ func TestMapA2AEvent_ReadsEveryMetadataKeySpelling(t *testing.T) {
 			}
 
 			deltas := newEventMapper().deltas(ev)
-			require.Len(t, deltas, 2)
+			require.Len(t, deltas, 1)
 			require.Equal(t, DeltaToolActivity, deltas[0].Kind)
 			require.Equal(t, ToolCall, deltas[0].Tool.Kind)
 			require.Equal(t, "kubectl_get", deltas[0].Tool.Name)
-			require.NotNil(t, deltas[1].Usage)
-			require.Equal(t, TurnUsage{InputTokens: 3, OutputTokens: 4, TotalTokens: 7}, *deltas[1].Usage)
 		})
 	}
 }
