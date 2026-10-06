@@ -66,6 +66,15 @@ func TestRenderFailedNote_EscapesTheReason(t *testing.T) {
 		renderFailedNote(errors.New("a <b> & c")))
 }
 
+// A credentials refusal is a platform problem a retry does not fix, so its
+// note says that instead of the model note's "try again in a minute".
+func TestFailureNote_ModelCredentials(t *testing.T) {
+	require.Equal(t, modelAuthFailedNote,
+		failureNote(errors.New(`llm error response (code STREAM_ERROR): "401 Unauthorized {\"type\":\"authentication_error\"}"`)))
+	require.Equal(t, modelFailedNote,
+		failureNote(errors.New(`anthropic API error: 529 {"type":"overloaded_error"}`)))
+}
+
 // A turn that failed after its reply started says it is over and names what
 // broke by its class only, never by the error's text.
 func TestInterruptedFailureNote(t *testing.T) {
@@ -75,6 +84,7 @@ func TestInterruptedFailureNote(t *testing.T) {
 	}{
 		{errors.New("stream terminated by RST_STREAM with error code: INTERNAL_ERROR"), "a platform error"},
 		{errors.New(`anthropic API error: 529 {"type":"overloaded_error"}`), "a model error"},
+		{errors.New(`llm error response (code STREAM_ERROR): "401 Unauthorized {\"type\":\"authentication_error\"}"`), "a model error"},
 		{errors.New("failed to list MCP tools: connection reset by peer"), "a tool connection error"},
 		{errors.New("403 authorization failed"), "a policy refusal"},
 		{errors.New("boom"), "an error"},

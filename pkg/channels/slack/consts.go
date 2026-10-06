@@ -464,6 +464,8 @@ const (
 	platformFailedNote = "The agent platform could not be reached, so the agent did not work on your message. The problem is on the platform side, not in your message, and a retry right now does not help."
 	modelFailedNote    = "The model behind this agent returned an error instead of an answer. This is usually temporary: try again in a minute."
 	policyFailedNote   = "A platform policy refused this request, so the agent did not answer it. Sending it again does not change that."
+
+	modelAuthFailedNote = "The model provider refused the platform's credentials, so the agent did not work on your message. The problem is on the platform side, not in your message, and a retry does not help."
 )
 
 // shareUnavailableNote is posted when a collaborator's turn cannot reach the
@@ -483,6 +485,9 @@ func failureNote(err error) string {
 	case channels.FailurePlatform:
 		return platformFailedNote
 	case channels.FailureModel:
+		if channels.ModelCredentialsRefused(err) {
+			return modelAuthFailedNote
+		}
 		return modelFailedNote
 	case channels.FailurePolicy:
 		return policyFailedNote
