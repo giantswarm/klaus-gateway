@@ -1014,9 +1014,9 @@ func commonPrefixLen(a, b string) int {
 // carries. Requiring a function_call part is what separates narration from
 // kagent's other text-bearing working events — the text-only mirror of the final
 // answer (rendered from the artifact, so this would duplicate it) and the echo of
-// the user's own message. It also keeps narration off function_response
-// messages, whose payload records the login URLs a channel scrubs out of
-// prose: narration is emitted first, so a message mixing a call
+// the user's own message. It also keeps narration
+// off function_response messages, whose payload records the login URLs a channel
+// scrubs out of prose: narration is emitted first, so a message mixing a call
 // with a response would post an unscrubbed link. Only ADK emitting tool results
 // as their own data-only events rules that shape out — preserve the exclusion if
 // widening this gate. A request for confirmation never reaches this path: the
