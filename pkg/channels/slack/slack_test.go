@@ -2489,7 +2489,7 @@ func TestUsage_DMTopLevelReportsSession(t *testing.T) {
 	// /usage typed as a new top-level DM message: its own ts is the threadID.
 	sendEvent(t, srv, dmEvent("U1", "usage", "200.000"))
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Last turn — in 10 · out 5 · total 15")
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Last turn — in 10 · out 5")
 	}, flowWait, 20*time.Millisecond, "a top-level DM /usage must report the channel's usage")
 }
 
@@ -2525,7 +2525,7 @@ func TestUsage_InThreadStillWorks(t *testing.T) {
 
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","user":"U1","text":"usage","channel":"C1","ts":"101.000","thread_ts":"100.000"}}`)
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Last turn — in 7 · out 3 · total 10")
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Last turn — in 7 · out 3")
 	}, flowWait, 20*time.Millisecond)
 }
 

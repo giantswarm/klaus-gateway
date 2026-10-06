@@ -43,12 +43,12 @@ func TestUsage_CarriesAcrossApprovalPause(t *testing.T) {
 
 	sendEvent(t, srv, dmThreadEvent("U1", "usage", "802.000", "800.000"))
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "in 30 · out 10 · total 40")
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "in 30 · out 10")
 	}, flowWait, 50*time.Millisecond, "last turn covers both segments of the paused turn")
 	// The pause itself must not have been recorded as a separate turn: session
 	// total equals the single turn.
 	usageReplies := allText(fake.pathCalls("chat.postMessage"))
-	require.Equal(t, 2, strings.Count(usageReplies, "in 30 · out 10 · total 40"),
+	require.Equal(t, 2, strings.Count(usageReplies, "in 30 · out 10"),
 		"session total matches the single turn (no double count)")
 }
 

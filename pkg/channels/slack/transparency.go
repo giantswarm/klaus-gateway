@@ -123,7 +123,7 @@ func (a *Adapter) usageReport(ctx context.Context, threadID, channelID string) s
 }
 
 func formatUsage(u channels.TurnUsage) string {
-	return fmt.Sprintf("in %d · out %d · total %d", u.InputTokens, u.OutputTokens, u.TotalTokens)
+	return fmt.Sprintf("in %d · out %d", u.InputTokens, u.OutputTokens)
 }
 
 // AgentModelSource resolves the model id and provider behind an agent.
