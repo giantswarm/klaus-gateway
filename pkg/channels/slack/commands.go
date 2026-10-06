@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
@@ -43,11 +44,35 @@ var bareCommands = map[string]struct{}{
 	cmdAgents: {},
 }
 
+// clientSuffix matches the footer a client appends to what it sends for a
+// person, on a line of its own: "Sent using Claude", in plain, emphasised or
+// link form ("_Sent using <https://claude.ai|Claude>_").
+var clientSuffix = regexp.MustCompile(`(?i)^[\s_*~>]*sent (?:using|via|from)\W.*claude.*$`)
+
+// firstLine returns the message's first non-blank line, provided every other
+// line is blank or a known client suffix. A message with more content is not
+// a command: its extra lines are the person's words for the agent.
+func firstLine(text string) string {
+	first, found := "", false
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case line == "" || clientSuffix.MatchString(line):
+		case !found:
+			first, found = line, true
+		default:
+			return text
+		}
+	}
+	return first
+}
+
 // bareWord normalises a message that may be a one-word command: the word
-// alone, in any case, with trailing sentence punctuation allowed. Anything
-// longer comes back unchanged apart from the trim, so it matches no verb.
+// alone, in any case, with trailing sentence punctuation and a client suffix
+// allowed. Anything longer comes back unchanged apart from the trim, so it
+// matches no verb.
 func bareWord(text string) string {
-	text = strings.TrimRight(strings.TrimSpace(text), ".!?")
+	text = strings.TrimRight(strings.TrimSpace(firstLine(text)), ".!?")
 	return strings.ToLower(strings.TrimSpace(text))
 }
 
