@@ -786,9 +786,16 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
   Swarm" card: the agent runs its tools with the person's permissions, the link lasts 15
   minutes, and a last line that depends on the trigger ("Your message runs as soon as you sign
   in." for a held message, "Sign in, then click the button again." for a button click, nothing
-  for `login`). In a channel the prompt is ephemeral, so only that user sees the link; a
-  context line in the thread names who the thread waits for ("Waiting for @Pau to sign in to
-  Giant Swarm"), carries no link, and gives the ephemeral something to render against. The
+  for `login`). In a channel the prompt is ephemeral, so only that user sees the link. An
+  ephemeral reaches only a Slack client that is open when it is sent, so the same card also
+  goes to the person's DM with the app, led by a line that links the thread it was asked in;
+  it waits there for a client that was closed. A later message of the person's in the thread,
+  30 seconds or more after the last prompt, re-issues the ephemeral and refreshes the DM card
+  to the fresh link in place, so the DM holds one live card. A
+  context line in the thread names who the thread waits for and where the link is ("Waiting
+  for @Pau to sign in to Giant Swarm (the sign-in link is in a direct message from the app)";
+  the parenthesis is left out when a DM could not be sent), carries no link, and gives the
+  ephemeral something to render against. The
   thread has one notice for every unlinked user in it: it adds a second person, drops each
   person who signs in, and once nobody waits it names who signed in ("@Pau signed in to Giant
   Swarm"). The list is in memory, so after a restart a notice can keep naming someone until
@@ -803,7 +810,8 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
   callback also verifies the OAuth identity's email against the Slack profile email. The
   link in the button expires after 15 minutes; a message sent after that gets a fresh
   prompt. A DM prompt is rewritten to say its link expired; a channel prompt cannot be
-  rewritten, so the fresh ephemeral says the earlier link expired instead. Messages sent
+  rewritten, so the fresh ephemeral says the earlier link expired instead, and its DM card
+  is refreshed to the fresh link. Messages sent
   before
   signing in are held and replayed after the link completes; only the last 5 per thread are
   kept, and the user is told when earlier ones are dropped.

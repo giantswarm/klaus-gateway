@@ -3045,6 +3045,63 @@ func (c *slackAPIClient) postSignInPrompt(ctx context.Context, channel, threadID
 	return c.postJSON(ctx, methodChatPostMessage, signInPromptBody(channel, threadID, linkURL, "", false, trigger))
 }
 
+// signInDMPromptBody is the sign-in card a channel prompt sends to its user's
+// DM: the card itself, led by a context line naming where the sign-in was asked
+// for, since the person may open it long after leaving that thread.
+func signInDMPromptBody(user, linkURL, origin string, trigger signInTrigger) map[string]any {
+	body := signInPromptBody(user, "", linkURL, "", false, trigger)
+	blocks, _ := body[paramBlocks].([]any)
+	body[paramBlocks] = append([]any{contextBlock(origin)}, blocks...)
+	return body
+}
+
+// postSignInPromptDM posts a channel prompt's sign-in card to user's DM, a
+// real message that waits there for a Slack client that was closed when the
+// ephemeral was sent. The DM is addressed by user ID, so the D… conversation
+// Slack put it in comes back with its ts for the rewrites.
+func (c *slackAPIClient) postSignInPromptDM(ctx context.Context, user, linkURL, origin string, trigger signInTrigger) (channel, ts string, err error) {
+	resp, err := c.postJSONResponse(ctx, methodChatPostMessage, signInDMPromptBody(user, linkURL, origin, trigger))
+	if err != nil {
+		return "", "", err
+	}
+	if resp.Channel == "" {
+		resp.Channel = user
+	}
+	return resp.Channel, resp.Ts, nil
+}
+
+// updateSignInPromptDM rewrites the DM sign-in card at (channel, ts) to carry
+// a fresh link, so a re-issued prompt leaves one live card in the DM instead
+// of a stack of them.
+func (c *slackAPIClient) updateSignInPromptDM(ctx context.Context, user, channel, ts, linkURL, origin string, trigger signInTrigger) error {
+	body := signInDMPromptBody(user, linkURL, origin, trigger)
+	blocks, _ := body[paramBlocks].([]any)
+	text, _ := body[paramText].(string)
+	return c.chatUpdate(ctx, channel, ts, text, blocks)
+}
+
+// permalink returns the URL of the message at (channel, ts), the way back to a
+// thread from a DM.
+func (c *slackAPIClient) permalink(ctx context.Context, channel, ts string) (string, error) {
+	params := url.Values{paramChannel: {channel}, "message_ts": {ts}}
+	body, err := c.call(ctx, "chat.getPermalink", "application/x-www-form-urlencoded", params.Encode())
+	if err != nil {
+		return "", err
+	}
+	var result struct {
+		OK        bool   `json:"ok"`
+		Permalink string `json:"permalink"`
+		Err       string `json:"error"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", fmt.Errorf("slack chat.getPermalink: decode: %w", err)
+	}
+	if !result.OK {
+		return "", &apiError{method: "chat.getPermalink", code: result.Err}
+	}
+	return result.Permalink, nil
+}
+
 // postSignInPromptEphemeral posts the sign-in prompt visible to user only. It
 // is the channel form: the link is minted for one identity, so a thread full
 // of bystanders must not see it (klaus-gateway#185). An ephemeral has no

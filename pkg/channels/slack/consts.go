@@ -372,12 +372,30 @@ const (
 // Slack does not surface a thread-scoped ephemeral in a thread with no
 // messages (klaus-gateway#156). It names who the thread is waiting for, and
 // after the last of them signs in, who signed in. It never carries the link,
-// which is minted for one identity and stays in the ephemeral
-// (klaus-gateway#185). %s is the people, as mentions.
+// which is minted for one identity and stays in the ephemeral and the DM
+// (klaus-gateway#185); while everyone it waits for has the DM it says so, for a
+// person whose Slack client was closed when the ephemeral went out. %s is the
+// people, as mentions.
 const (
 	signInWaitingFormat  = "Waiting for %s to sign in to Giant Swarm"
+	signInWaitingDMHint  = " (the sign-in link is in a direct message from the app)"
 	signInSignedInFormat = "%s signed in to Giant Swarm"
 )
+
+// The context line that leads a channel prompt's DM card: where the sign-in was
+// asked for. The thread is linked when its permalink could be read.
+const (
+	signInOriginThreadLinkFormat = "Asked in <%s|a thread> in <#%s>."
+	signInOriginThreadFormat     = "Asked in a thread in <#%s>."
+	signInOriginChannelFormat    = "Asked in <#%s>."
+)
+
+// signInReissueAfter is how soon a later message from a person still waiting
+// in a channel thread re-issues their sign-in prompt while its link is alive:
+// an ephemeral reaches only a Slack client that was open when it went out, so
+// writing again is how a person asks for it again. A burst of messages inside
+// it still prompts once.
+const signInReissueAfter = 30 * time.Second
 
 // noSlackUserNotice answers login and logout when the sender's Slack user
 // cannot be read, so sign-in cannot run at all.

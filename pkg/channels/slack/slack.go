@@ -201,8 +201,14 @@ type Adapter struct {
 	// posted prompt's message coordinates so a completed link can rewrite the
 	// prompt in place. Drained for a user when their link completes, so a
 	// later logout re-prompts.
+	//
+	// signInDMs, under the same lock and key, holds the DM card a channel
+	// prompt sent to its user: a second anchor for the same (user, thread),
+	// refreshed in place by a re-issued prompt and rewritten by the completed
+	// link, kept apart so the throttle reservation never overwrites it.
 	signInPromptedMu sync.Mutex
 	signInPrompted   map[string]ttlEntry[signInAnchor]
+	signInDMs        map[string]ttlEntry[signInAnchor]
 
 	// signInNoticesMu guards signInNotices, the thread notice that anchors a
 	// channel's ephemeral sign-in prompts, keyed by (channel, thread). One
@@ -888,7 +894,8 @@ func (a *Adapter) isAppName(ctx context.Context, name string) bool {
 // addresses it and the completed link rewrites it in place (chat.update). A
 // channel prompt is ephemeral and has no addressable ts: it is marked by
 // ephemeral, and the thread notice that anchors it (klaus-gateway#156) is
-// tracked per thread in signInNotices, not here.
+// tracked per thread in signInNotices, not here. The DM card a channel prompt
+// sends along is a real message too, marked by dm and kept in signInDMs.
 //
 // The entry plays two roles with different lifetimes: as a rewrite anchor it
 // must stay addressable for pendingTTL (a link can complete long after the
@@ -900,6 +907,7 @@ type signInAnchor struct {
 	ts        string
 	threadID  string
 	ephemeral bool
+	dm        bool // a channel prompt's DM card, kept in signInDMs
 	// promptID names the ephemeral prompt in its button value, so only a click
 	// on this card fills responseURL.
 	promptID string
@@ -957,12 +965,14 @@ func (a *Adapter) postSignIn(ctx context.Context, slackChannel, threadID, slackU
 // and the returned ts lets the completed link rewrite the prompt in place.
 //
 // In a channel the link is minted for one identity, so the prompt is ephemeral
-// and the thread's bystanders never see it (klaus-gateway#185). Slack does not
+// and the thread's bystanders never see it (klaus-gateway#185). An ephemeral
+// reaches only a Slack client that is open when it is sent, so the same card
+// also goes to the person's DM, where it waits (sendSignInDM). Slack does not
 // surface a thread-scoped ephemeral in a thread that shows no message, so a
 // notice that carries no link is posted first (klaus-gateway#156). One notice
-// serves the whole thread and names everyone it is waiting for. A prompt
-// outside a thread needs no notice: Slack shows a channel-scoped ephemeral on
-// its own.
+// serves the whole thread, names everyone it is waiting for and says where
+// their links are. A prompt outside a thread needs no notice: Slack shows a
+// channel-scoped ephemeral on its own.
 func (a *Adapter) postSignInPrompt(ctx context.Context, slackChannel, threadID, slackUser, url string, supersedes bool, trigger signInTrigger) (signInAnchor, error) {
 	client := a.apiClient()
 	if isDMChannelID(slackChannel) {
@@ -972,8 +982,9 @@ func (a *Adapter) postSignInPrompt(ctx context.Context, slackChannel, threadID, 
 		}
 		return signInAnchor{channel: slackChannel, ts: ts}, nil
 	}
+	dmed := a.sendSignInDM(ctx, client, slackChannel, threadID, slackUser, url, trigger)
 	if threadID != "" {
-		if err := a.ensureSignInNotice(ctx, client, slackChannel, threadID, slackUser); err != nil {
+		if err := a.ensureSignInNotice(ctx, client, slackChannel, threadID, slackUser, dmed); err != nil {
 			return signInAnchor{}, err
 		}
 	}
@@ -982,6 +993,70 @@ func (a *Adapter) postSignInPrompt(ctx context.Context, slackChannel, threadID, 
 		return signInAnchor{}, err
 	}
 	return signInAnchor{channel: slackChannel, ephemeral: true, promptID: promptID}, nil
+}
+
+// sendSignInDM puts a channel prompt's sign-in card into slackUser's DM and
+// reports whether it is there. A card already sent for this (user, thread) is
+// rewritten to the fresh link, so the DM holds one live card however often the
+// prompt is re-issued; a card that cannot be rewritten (deleted, say) is
+// replaced by a new one. A failure costs only the DM: the ephemeral still goes
+// out, and the thread notice does not point at a DM that is not there.
+func (a *Adapter) sendSignInDM(ctx context.Context, client *slackAPIClient, slackChannel, threadID, slackUser, url string, trigger signInTrigger) bool {
+	origin := a.signInOrigin(ctx, client, slackChannel, threadID)
+	if prev, ok := a.signInDMFor(slackUser, threadID); ok {
+		err := client.updateSignInPromptDM(ctx, slackUser, prev.channel, prev.ts, url, origin, trigger)
+		if err == nil {
+			a.recordSignInDM(slackUser, threadID, prev)
+			return true
+		}
+		a.Logger.Warn("slack: refresh sign-in DM failed, posting a new one", "user", slackUser, "thread", threadID, "error", err)
+	}
+	channel, ts, err := client.postSignInPromptDM(ctx, slackUser, url, origin, trigger)
+	if err != nil {
+		a.Logger.Warn("slack: post sign-in DM failed", "user", slackUser, "thread", threadID, "error", err)
+		return false
+	}
+	a.recordSignInDM(slackUser, threadID, signInAnchor{channel: channel, ts: ts, dm: true})
+	return true
+}
+
+// signInOrigin is the DM card's line naming where the sign-in was asked for:
+// the thread, linked when its permalink can be read, or the channel.
+func (a *Adapter) signInOrigin(ctx context.Context, client *slackAPIClient, slackChannel, threadID string) string {
+	if threadID == "" {
+		return fmt.Sprintf(signInOriginChannelFormat, slackChannel)
+	}
+	link, err := client.permalink(ctx, slackChannel, threadID)
+	if err != nil || link == "" {
+		a.Logger.Debug("slack: thread permalink for sign-in DM unavailable", "channel", slackChannel, "thread", threadID, "error", err)
+		return fmt.Sprintf(signInOriginThreadFormat, slackChannel)
+	}
+	return fmt.Sprintf(signInOriginThreadLinkFormat, link, slackChannel)
+}
+
+// signInDMFor returns the live DM card sent for (slackUser, threadID).
+func (a *Adapter) signInDMFor(slackUser, threadID string) (signInAnchor, bool) {
+	a.signInPromptedMu.Lock()
+	defer a.signInPromptedMu.Unlock()
+	entry, ok := a.signInDMs[slackUser+"\x00"+threadID]
+	if !ok || !time.Now().Before(entry.expires) {
+		return signInAnchor{}, false
+	}
+	return entry.value, true
+}
+
+// recordSignInDM stores the DM card sent for (slackUser, threadID) for the
+// anchor's pendingTTL, so the completed link can rewrite it.
+func (a *Adapter) recordSignInDM(slackUser, threadID string, anchor signInAnchor) {
+	now := time.Now()
+	anchor.threadID = ""
+	a.signInPromptedMu.Lock()
+	defer a.signInPromptedMu.Unlock()
+	if a.signInDMs == nil {
+		a.signInDMs = make(map[string]ttlEntry[signInAnchor])
+	}
+	sweepExpired(a.signInDMs, now)
+	a.signInDMs[slackUser+"\x00"+threadID] = ttlEntry[signInAnchor]{value: anchor, expires: now.Add(pendingTTL)}
 }
 
 // signInNotice is a thread's sign-in notice: the message, and the people it
@@ -993,14 +1068,20 @@ type signInNotice struct {
 	channel  string
 	ts       string
 	waiting  []string // users with a sign-in prompt in the thread, in order
+	noDM     []string // waiting users whose sign-in card did not reach their DM
 	signedIn []string // users who signed in while the notice named them
 }
 
 // text is the notice for its current people: who the thread is waiting for,
-// or, once nobody is, who signed in.
+// and where their links are when every one of them has the DM card; or, once
+// nobody is waiting, who signed in.
 func (n *signInNotice) text() string {
 	if len(n.waiting) > 0 {
-		return fmt.Sprintf(signInWaitingFormat, joinMentions(n.waiting))
+		text := fmt.Sprintf(signInWaitingFormat, joinMentions(n.waiting))
+		if len(n.noDM) == 0 {
+			text += signInWaitingDMHint
+		}
+		return text
 	}
 	return fmt.Sprintf(signInSignedInFormat, joinMentions(n.signedIn))
 }
@@ -1038,26 +1119,32 @@ func (a *Adapter) signInNoticeFor(slackChannel, threadID string) *signInNotice {
 }
 
 // ensureSignInNotice makes the thread's notice name slackUser among the people
-// it waits for: it posts the notice when the thread has none, and rewrites it
-// when the user is not named yet. It is kept per thread rather than per
-// prompt: the notice outlives any one prompt, and a second unlinked user joins
-// the one notice instead of repeating it. A failed first post is returned, so
-// the prompt is not posted into a thread that would not show it; a failed
-// rewrite only costs the name.
-func (a *Adapter) ensureSignInNotice(ctx context.Context, client *slackAPIClient, slackChannel, threadID, slackUser string) error {
+// it waits for, and whether their card reached their DM (dmed): it posts the
+// notice when the thread has none, and rewrites it when either changed. It is
+// kept per thread rather than per prompt: the notice outlives any one prompt,
+// and a second unlinked user joins the one notice instead of repeating it. A
+// failed first post is returned, so the prompt is not posted into a thread
+// that would not show it; a failed rewrite only costs the name.
+func (a *Adapter) ensureSignInNotice(ctx context.Context, client *slackAPIClient, slackChannel, threadID, slackUser string, dmed bool) error {
 	n := a.signInNoticeFor(slackChannel, threadID)
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	if n.ts != "" && slices.Contains(n.waiting, slackUser) {
+	isUser := func(u string) bool { return u == slackUser }
+	if n.ts != "" && slices.Contains(n.waiting, slackUser) && slices.Contains(n.noDM, slackUser) != dmed {
 		return nil
 	}
-	n.waiting = append(slices.DeleteFunc(n.waiting, func(u string) bool { return u == slackUser }), slackUser)
-	n.signedIn = slices.DeleteFunc(n.signedIn, func(u string) bool { return u == slackUser })
+	waiting, noDM := slices.Clone(n.waiting), slices.Clone(n.noDM)
+	n.waiting = append(slices.DeleteFunc(n.waiting, isUser), slackUser)
+	n.noDM = slices.DeleteFunc(n.noDM, isUser)
+	if !dmed {
+		n.noDM = append(n.noDM, slackUser)
+	}
+	n.signedIn = slices.DeleteFunc(n.signedIn, isUser)
 	text := n.text()
 	if n.ts == "" {
 		ts, err := client.postContextMessage(ctx, slackChannel, threadID, text)
 		if err != nil {
-			n.waiting = n.waiting[:len(n.waiting)-1]
+			n.waiting, n.noDM = waiting, noDM
 			return err
 		}
 		n.ts = ts
@@ -1091,6 +1178,7 @@ func (a *Adapter) noteSignedIn(ctx context.Context, slackUser string, anchors []
 		n.mu.Lock()
 		if n.ts != "" && slices.Contains(n.waiting, slackUser) {
 			n.waiting = slices.DeleteFunc(n.waiting, func(u string) bool { return u == slackUser })
+			n.noDM = slices.DeleteFunc(n.noDM, func(u string) bool { return u == slackUser })
 			n.signedIn = append(n.signedIn, slackUser)
 			text := n.text()
 			if err := client.chatUpdate(ctx, n.channel, n.ts, text, []any{contextBlock(text)}); err != nil {
@@ -1187,25 +1275,27 @@ func (a *Adapter) clearConnectorPrompted(slackUser, server string) {
 	delete(a.connectorPrompted[slackUser], server)
 }
 
-// takeSignInAnchors returns and clears the user's sign-in prompt entries,
-// keeping only anchors that are still addressable (posted successfully and
-// unexpired). Draining doubles as the throttle reset, so becoming unlinked
-// again (e.g. logout) prompts anew.
+// takeSignInAnchors returns and clears the user's sign-in prompt entries and
+// DM cards, keeping only anchors that are still addressable (posted
+// successfully and unexpired). Draining doubles as the throttle reset, so
+// becoming unlinked again (e.g. logout) prompts anew.
 func (a *Adapter) takeSignInAnchors(slackUser string) []signInAnchor {
 	prefix := slackUser + "\x00"
 	now := time.Now()
 	a.signInPromptedMu.Lock()
 	defer a.signInPromptedMu.Unlock()
 	var anchors []signInAnchor
-	for key, entry := range a.signInPrompted {
-		if !strings.HasPrefix(key, prefix) {
-			continue
-		}
-		delete(a.signInPrompted, key)
-		if entry.value.addressable() && now.Before(entry.expires) {
-			anchor := entry.value
-			anchor.threadID = strings.TrimPrefix(key, prefix)
-			anchors = append(anchors, anchor)
+	for _, entries := range []map[string]ttlEntry[signInAnchor]{a.signInPrompted, a.signInDMs} {
+		for key, entry := range entries {
+			if !strings.HasPrefix(key, prefix) {
+				continue
+			}
+			delete(entries, key)
+			if entry.value.addressable() && now.Before(entry.expires) {
+				anchor := entry.value
+				anchor.threadID = strings.TrimPrefix(key, prefix)
+				anchors = append(anchors, anchor)
+			}
 		}
 	}
 	return anchors
@@ -1256,6 +1346,10 @@ func (a *Adapter) updateSignInAnchors(ctx context.Context, slackUser string) {
 			// The anchor was drained before the update; without it the thread
 			// would keep a live sign-in button for a linked user forever.
 			// Re-recording lets the next convergence pass retry the rewrite.
+			if anchor.dm {
+				a.recordSignInDM(slackUser, anchor.threadID, signInAnchor{channel: anchor.channel, ts: anchor.ts, dm: true})
+				continue
+			}
 			a.recordSignInAnchor(slackUser, anchor.threadID, signInAnchor{channel: anchor.channel, ts: anchor.ts})
 		}
 	}
@@ -1266,17 +1360,22 @@ func (a *Adapter) updateSignInAnchors(ctx context.Context, slackUser string) {
 // is recorded). The throttle re-arms on signInNudgeTTL, the link URL's state
 // lifetime, not on the entry's own pendingTTL expiry: the entry outlives the
 // link by design (it doubles as the rewrite anchor), and suppressing the nudge
-// for that long would leave the user parked behind a dead button.
+// for that long would leave the user parked behind a dead button. A channel
+// prompt is ephemeral, gone from a client that was closed when it went out, so
+// a later message re-issues it after signInReissueAfter; a DM prompt is a
+// message that stays.
 func shouldPostSignInNudge(entry ttlEntry[signInAnchor], exists bool, now time.Time) bool {
 	if !exists || now.After(entry.expires) {
 		return true
 	}
-	return now.Sub(entry.value.nudgedAt) >= signInNudgeTTL
+	since := now.Sub(entry.value.nudgedAt)
+	return since >= signInNudgeTTL || entry.value.ephemeral && since >= signInReissueAfter
 }
 
 // maybePostSignIn posts the sign-in prompt unless one with a live link was
 // already posted for this (user, thread) (see shouldPostSignInNudge), so a
-// burst of parked messages nudges once instead of once per message. The
+// burst of parked messages nudges once instead of once per message; a later
+// message in a channel thread re-issues the ephemeral all the same. The
 // explicit login command bypasses it (postSignIn directly); a completed link
 // drains the window (takeSignInAnchors) so a logout re-prompts. The entry is
 // reserved (with no anchor yet) before posting so concurrent parks nudge once;
@@ -1293,7 +1392,7 @@ func (a *Adapter) maybePostSignIn(ctx context.Context, slackChannel, threadID, s
 		return
 	}
 	var expired signInAnchor
-	if prompted && now.Before(entry.expires) {
+	if prompted && now.Before(entry.expires) && now.Sub(entry.value.nudgedAt) >= signInNudgeTTL {
 		expired = entry.value
 	}
 	if a.signInPrompted == nil {

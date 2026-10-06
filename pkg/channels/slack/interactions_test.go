@@ -631,9 +631,17 @@ func TestHandleDecision_OBO_TokenMintFailurePreservesTask(t *testing.T) {
 		return strings.Contains(strings.Join(sink.ephemeralTexts(), "\n"), signInForClickLine)
 	}, flowWait, 10*time.Millisecond, "token-mint failure must drive a sign-in prompt")
 
-	posts, updates, _ := sink.counts()
+	_, updates, _ := sink.counts()
 	require.Zero(t, updates, "buttons must not be rewritten on token-mint failure")
-	require.Equal(t, 1, posts, "the thread notice must be the only message posted (no resume placeholder)")
+	sink.mu.Lock()
+	var threadPosts []map[string]any
+	for _, p := range sink.posts {
+		if p["channel"] != "U_OTHER" { // the sign-in card in the clicker's DM
+			threadPosts = append(threadPosts, p)
+		}
+	}
+	sink.mu.Unlock()
+	require.Len(t, threadPosts, 1, "the thread notice must be the only message posted in the thread (no resume placeholder)")
 	require.True(t, a.hasPendingTask("T001"), "pending task must be preserved for retry")
 	require.Zero(t, gw.sendCount(), "the paused task must not be resumed on token-mint failure")
 }
