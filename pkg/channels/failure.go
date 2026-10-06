@@ -52,10 +52,17 @@ var (
 		"openai chat completion request failed",
 		"openai responses request failed",
 		"sap ai core",
+		"llm error response", // the Go ADK's failed model response
 		"invalid_request_error",
 		"overloaded_error",
 		"rate_limit_error",
 		"resource_exhausted",
+	}
+	// The provider refused the platform's own credentials (Anthropic's error
+	// types of a 401 and a 403): a model failure no retry gets past.
+	credentialsMarkers = []string{
+		"authentication_error",
+		"permission_error",
 	}
 	transportMarkers = []string{
 		"connection reset",
@@ -82,12 +89,18 @@ func ClassifyFailure(err error) FailureClass {
 		return FailureTools
 	case containsAny(text, policyMarkers):
 		return FailurePolicy
-	case containsAny(text, modelMarkers):
+	case containsAny(text, modelMarkers), containsAny(text, credentialsMarkers):
 		return FailureModel
 	case containsAny(text, transportMarkers):
 		return FailurePlatform
 	}
 	return FailureUnknown
+}
+
+// ModelCredentialsRefused reports whether err is a model failure in which the
+// provider refused the platform's credentials, such as an invalid API key.
+func ModelCredentialsRefused(err error) bool {
+	return ClassifyFailure(err) == FailureModel && containsAny(strings.ToLower(err.Error()), credentialsMarkers)
 }
 
 // Retryable reports whether a second attempt of a turn that failed with

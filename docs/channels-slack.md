@@ -640,6 +640,7 @@ A turn ends early for one of two reasons, and the thread can tell them apart:
   | `tools` | the agent's tool set: the MCP `initialize` or tool listing failed, an MCP server asked for authorization | The agent could not connect to its tools … a retry right now does not help |
   | `platform` | the connection between the gateway, the controller and the runtime (connection refused or reset, gRPC `Unavailable`) | The agent platform could not be reached … a retry right now does not help |
   | `model` | the model or its provider returned an error | The model behind this agent returned an error … try again in a minute |
+  | `model` | the provider refused the platform's credentials (Anthropic `authentication_error` or `permission_error`, such as an invalid API key) | The model provider refused the platform's credentials … a retry does not help |
   | `policy` | a gateway policy refused the request (authorization, a prompt guard, a rate limit) | A platform policy refused this request … sending it again does not change that |
   | `unknown` | anything else | The turn failed before an answer. Send the message again to retry. |
 

@@ -30,6 +30,11 @@ func TestClassifyFailure(t *testing.T) {
 		{"model call reset", errors.New(`OpenAI chat completion request failed: Post "http://agentgateway/v1/chat/completions": read: connection reset by peer`), channels.FailureModel},
 		{"gemini quota", errors.New("failed to call model: Error 429, Message: quota, Status: RESOURCE_EXHAUSTED"), channels.FailureModel},
 		{"corrupt history", errors.New(`anthropic API error: 400 {"type":"error","error":{"type":"invalid_request_error","message":"tool_use ids were found without tool_result blocks"}}`), channels.FailureModel},
+		{"provider refuses the API key", errors.New(authRefusal), channels.FailureModel},
+		{"provider refuses the key's permissions", errors.New(`anthropic API error: 403 {"type":"error","error":{"type":"permission_error","message":"Your API key does not have permission to use the specified resource."}}`), channels.FailureModel},
+		{"failed model response", errors.New(`llm error response (code STREAM_ERROR): "unexpected EOF"`), channels.FailureModel},
+		{"model call unreachable", errors.New(`llm error response (code STREAM_ERROR): "Post \"http://agentgateway.agent-platform.svc:8081/v1/messages\": dial tcp 10.0.0.4:8081: connect: connection refused"`), channels.FailureModel},
+		{"gateway authorization of a model call", errors.New(gatewayRefusedModelCall), channels.FailurePolicy},
 		{"prompt guard", errors.New(`OpenAI chat completion request failed: 403 The request was rejected due to inappropriate content`), channels.FailurePolicy},
 		{"gateway authorization", errors.New(`OpenAI chat completion request failed: 403 Forbidden: authorization failed`), channels.FailurePolicy},
 		{"gateway rate limit", errors.New(`OpenAI chat completion request failed: 429 rate limit exceeded`), channels.FailurePolicy},
@@ -39,6 +44,25 @@ func TestClassifyFailure(t *testing.T) {
 			require.Equal(t, tc.want, channels.ClassifyFailure(tc.err))
 		})
 	}
+}
+
+// The text kagent's runtime reported on graveler on 2026-10-05 when the
+// provider refused agentgateway's Anthropic API key.
+const authRefusal = `llm error response (code STREAM_ERROR): "POST \"http://agentgateway.agent-platform.svc:8081/v1/messages\": 401 Unauthorized {\"type\":\"error\",\"error\":{\"type\":\"authentication_error\",\"message\":\"API key is invalid.\"},\"request_id\":null}"`
+
+// agentgateway's authorization policy refusing the runtime's model call, as
+// the Go ADK reports it.
+const gatewayRefusedModelCall = `llm error response (code STREAM_ERROR): "POST \"http://agentgateway.agent-platform.svc:8081/v1/messages\": 403 Forbidden: authorization failed"`
+
+// A credentials refusal is told apart from the model's other failures; a
+// policy's refusal on the way to the model is not one.
+func TestModelCredentialsRefused(t *testing.T) {
+	require.True(t, channels.ModelCredentialsRefused(errors.New(authRefusal)))
+	require.True(t, channels.ModelCredentialsRefused(errors.New(`anthropic API error: 403 {"type":"error","error":{"type":"permission_error"}}`)))
+	require.False(t, channels.ModelCredentialsRefused(errors.New(`anthropic API error: 529 {"type":"error","error":{"type":"overloaded_error"}}`)))
+	require.False(t, channels.ModelCredentialsRefused(errors.New(`OpenAI chat completion request failed: 403 Forbidden: authorization failed`)))
+	require.False(t, channels.ModelCredentialsRefused(errors.New(gatewayRefusedModelCall)))
+	require.False(t, channels.ModelCredentialsRefused(nil))
 }
 
 // Only a broken connection is worth a second attempt.
