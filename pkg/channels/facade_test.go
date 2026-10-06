@@ -1073,6 +1073,45 @@ func TestFacade_ResumeTurnDeliversAFinishedTask(t *testing.T) {
 		require.Equal(t, []a2apkg.TaskID{"task-7"}, agent.gotTasks, "the answer is read back once the task completed")
 	})
 
+	// The calls made before the resubscription are in the snapshot only; the
+	// task read back at completion counts them, and the call that streamed
+	// counts once.
+	t.Run("still running, usage", func(t *testing.T) {
+		usage := func(prompt, completion int) map[string]any {
+			return map[string]any{"kagent.dev/a2a/usage": map[string]any{
+				"promptTokenCount": float64(prompt), "candidatesTokenCount": float64(completion), "totalTokenCount": float64(prompt + completion),
+			}}
+		}
+		before := &a2apkg.Artifact{ID: "a1", Metadata: usage(100, 20), Parts: a2apkg.ContentParts{a2apkg.NewTextPart("Let me check.")}}
+		streamed := &a2apkg.Artifact{ID: "a2", Metadata: usage(200, 40), Parts: a2apkg.ContentParts{a2apkg.NewTextPart("7 nodes.")}}
+		agent := newFakeAgent()
+		info := a2apkg.TaskInfo{TaskID: "task-7", ContextID: "ctx-1"}
+		agent.subscribeEvents = []a2apkg.Event{
+			&a2apkg.Task{ID: "task-7", ContextID: "ctx-1", Status: a2apkg.TaskStatus{State: a2apkg.TaskStateWorking}, Artifacts: []*a2apkg.Artifact{before}},
+			&a2apkg.TaskArtifactUpdateEvent{TaskID: "task-7", ContextID: "ctx-1", Artifact: streamed},
+			a2apkg.NewStatusUpdateEvent(info, a2apkg.TaskStateCompleted, nil),
+		}
+		agent.tasks["task-7"] = &a2apkg.Task{
+			ID: "task-7", ContextID: "ctx-1", Status: a2apkg.TaskStatus{State: a2apkg.TaskStateCompleted},
+			Artifacts: []*a2apkg.Artifact{before, streamed},
+		}
+		f, _ := seed(t, agent)
+		ch, err := f.ResumeTurn(t.Context(), slackMsg(""), "task-7")
+		require.NoError(t, err)
+		deltas := drain(t, ch)
+		var usages []channels.TurnUsage
+		for _, d := range deltas {
+			if d.Usage != nil {
+				usages = append(usages, *d.Usage)
+			}
+		}
+		require.ElementsMatch(t, []channels.TurnUsage{
+			{InputTokens: 100, OutputTokens: 20, TotalTokens: 120},
+			{InputTokens: 200, OutputTokens: 40, TotalTokens: 240},
+		}, usages)
+		require.True(t, deltas[len(deltas)-1].Done)
+	})
+
 	t.Run("gone at the controller", func(t *testing.T) {
 		agent := newFakeAgent()
 		agent.subscribeErr = a2apkg.ErrTaskNotFound
