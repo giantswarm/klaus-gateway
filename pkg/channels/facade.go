@@ -809,7 +809,7 @@ func (m *eventMapper) deltas(event a2apkg.Event) []OutboundDelta {
 			// Interim working event: surface the narration the agent wrote for the
 			// tool calls the same message carries, and the tool activity itself.
 			parts := messageParts(ev.Status.Message)
-			return append(narrationDeltas(ev, parts), toolActivityDeltas(parts)...)
+			return append(narrationDeltas(parts), toolActivityDeltas(parts)...)
 		})
 	case *a2apkg.Task:
 		// A whole task arrives as the first event of a stream (the submitted
@@ -1013,16 +1013,16 @@ func commonPrefixLen(a, b string) int {
 // message: the text it wrote just before the tool calls the same message
 // carries. Requiring a function_call part is what separates narration from
 // kagent's other text-bearing working events — the text-only mirror of the final
-// answer (rendered from the artifact, so this would duplicate it), the echo of
-// the user's own message, and partial streaming chunks. It also keeps narration
-// off function_response messages, whose payload records the login URLs a channel
-// scrubs out of prose: narration is emitted first, so a message mixing a call
+// answer (rendered from the artifact, so this would duplicate it) and the echo of
+// the user's own message. It also keeps narration off function_response
+// messages, whose payload records the login URLs a channel scrubs out of
+// prose: narration is emitted first, so a message mixing a call
 // with a response would post an unscrubbed link. Only ADK emitting tool results
 // as their own data-only events rules that shape out — preserve the exclusion if
 // widening this gate. A request for confirmation never reaches this path: the
 // runtime pauses the task at input-required with the prompt instead.
-func narrationDeltas(ev *a2apkg.TaskStatusUpdateEvent, parts a2apkg.ContentParts) []OutboundDelta {
-	if !hasFunctionCallPart(parts) || isPartialStatusUpdate(ev) {
+func narrationDeltas(parts a2apkg.ContentParts) []OutboundDelta {
+	if !hasFunctionCallPart(parts) {
 		return nil
 	}
 	text := extractTextFromA2AParts(parts)
@@ -1030,16 +1030,6 @@ func narrationDeltas(ev *a2apkg.TaskStatusUpdateEvent, parts a2apkg.ContentParts
 		return nil
 	}
 	return []OutboundDelta{{Kind: DeltaNarration, Content: text}}
-}
-
-// isPartialStatusUpdate reports whether a status update is a streaming chunk.
-// kagent stamps the flag on the event, on its status message, or on both,
-// depending on the emitting runtime.
-func isPartialStatusUpdate(ev *a2apkg.TaskStatusUpdateEvent) bool {
-	if isPartialMeta(ev.Metadata) {
-		return true
-	}
-	return ev.Status.Message != nil && isPartialMeta(ev.Status.Message.Metadata)
 }
 
 // eventMetadataKeys lists every metadata key an event carries, sorted: its
