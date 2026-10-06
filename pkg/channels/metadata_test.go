@@ -406,6 +406,52 @@ func TestEventMapper_ArtifactReplaceCountsTheCallOnce(t *testing.T) {
 	require.Equal(t, []string{"I'll look for ", "the right tools."}, text)
 }
 
+func usagesOf(deltas []OutboundDelta) []TurnUsage {
+	var usages []TurnUsage
+	for _, d := range deltas {
+		if d.Usage != nil {
+			usages = append(usages, *d.Usage)
+		}
+	}
+	return usages
+}
+
+func completedTaskWithUsage() *a2apkg.Task {
+	return &a2apkg.Task{
+		ID:     "t1",
+		Status: a2apkg.TaskStatus{State: a2apkg.TaskStateCompleted},
+		Artifacts: []*a2apkg.Artifact{
+			{ID: "a", Metadata: usageMeta(100, 20, 120), Parts: a2apkg.ContentParts{a2apkg.NewTextPart("Let me check.")}},
+			{ID: "b", Metadata: usageMeta(200, 40, 240), Parts: a2apkg.ContentParts{a2apkg.NewTextPart("7 nodes.")}},
+		},
+	}
+}
+
+// A turn recovered as a whole completed task (start-up recovery, a
+// resubscription) counts the usage each of its artifacts carries, ahead of
+// the terminal delta.
+func TestEventMapper_CompletedTaskCountsArtifactUsage(t *testing.T) {
+	deltas := newEventMapper().deltas(completedTaskWithUsage())
+	require.Equal(t, []TurnUsage{
+		{InputTokens: 100, OutputTokens: 20, TotalTokens: 120},
+		{InputTokens: 200, OutputTokens: 40, TotalTokens: 240},
+	}, usagesOf(deltas))
+	require.True(t, deltas[len(deltas)-1].Done)
+}
+
+// A completed task after a stream that delivered its artifacts' usage counts
+// none of it again.
+func TestEventMapper_CompletedTaskAfterStreamCountsNoUsage(t *testing.T) {
+	m := newEventMapper()
+	task := completedTaskWithUsage()
+	for _, artifact := range task.Artifacts {
+		require.Len(t, usagesOf(m.deltas(&a2apkg.TaskArtifactUpdateEvent{Artifact: artifact})), 1)
+	}
+	deltas := m.deltas(task)
+	require.Empty(t, usagesOf(deltas))
+	require.True(t, deltas[len(deltas)-1].Done)
+}
+
 // The finished run's replace carries the tool calls the run ended in; those
 // still render as tool activity even though the text adds nothing.
 func TestEventMapper_ArtifactReplaceKeepsToolActivity(t *testing.T) {

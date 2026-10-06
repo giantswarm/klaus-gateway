@@ -773,13 +773,16 @@ func withCallerAuth(ctx context.Context, msg InboundMessage) context.Context {
 
 // eventMapper converts a task's A2A streaming events to OutboundDeltas. It
 // keeps the per-stream state the conversion needs: the text each artifact has
-// delivered so far, so an artifact update renders as what it adds.
+// delivered so far, so an artifact update renders as what it adds, and the
+// artifacts whose usage the stream delivered, so a whole task does not count
+// it again.
 type eventMapper struct {
 	artifacts artifactText
+	counted   map[a2apkg.ArtifactID]bool
 }
 
 func newEventMapper() *eventMapper {
-	return &eventMapper{artifacts: newArtifactText()}
+	return &eventMapper{artifacts: newArtifactText(), counted: map[a2apkg.ArtifactID]bool{}}
 }
 
 // deltas converts a single A2A streaming event to zero or more OutboundDeltas.
@@ -801,6 +804,7 @@ func (m *eventMapper) deltas(event a2apkg.Event) []OutboundDelta {
 		}
 		deltas := append(textDeltaOf(m.artifacts.delta(ev)), toolActivityDeltas(ev.Artifact.Parts)...)
 		if usage := parseTurnUsage(ev.Artifact.Metadata); usage != nil {
+			m.counted[ev.Artifact.ID] = true
 			deltas = append(deltas, OutboundDelta{Usage: usage})
 		}
 		return deltas
@@ -877,12 +881,16 @@ func mapTaskStatus(taskID a2apkg.TaskID, status a2apkg.TaskStatus, interim func(
 // so a task arriving whole after its chunks streamed adds nothing, and one
 // arriving as the only event (a resubscription to a task that finished in
 // between) renders in full. A runtime that records the reply in the history
-// alone yields the last agent message.
+// alone yields the last agent message. An artifact's usage counts unless the
+// stream already delivered that artifact's usage.
 func (m *eventMapper) taskResultDeltas(task *a2apkg.Task) []OutboundDelta {
 	var deltas []OutboundDelta
 	for _, artifact := range task.Artifacts {
 		if artifact != nil {
 			deltas = append(deltas, textDeltaOf(m.artifacts.delta(&a2apkg.TaskArtifactUpdateEvent{Artifact: artifact}))...)
+			if usage := parseTurnUsage(artifact.Metadata); usage != nil && !m.counted[artifact.ID] {
+				deltas = append(deltas, OutboundDelta{Usage: usage})
+			}
 		}
 	}
 	if len(task.Artifacts) > 0 {
