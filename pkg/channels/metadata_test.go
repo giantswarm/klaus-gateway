@@ -21,10 +21,10 @@ func TestEventMetadataKeys(t *testing.T) {
 		Metadata: map[string]any{mdUsageCanonical: map[string]any{"promptTokenCount": 3}, "kagent.dev/a2a/timeline-position": "x"},
 		Status: a2apkg.TaskStatus{
 			State:   a2apkg.TaskStateWorking,
-			Message: &a2apkg.Message{Metadata: map[string]any{mdPartialKagent: true}},
+			Message: &a2apkg.Message{Metadata: map[string]any{mdTypeKagent: mdTypeFunctionCall}},
 		},
 	}
-	require.Equal(t, []string{"kagent.dev/a2a/timeline-position", mdUsageCanonical, "message." + mdPartialKagent}, eventMetadataKeys(ev))
+	require.Equal(t, []string{"kagent.dev/a2a/timeline-position", mdUsageCanonical, "message." + mdTypeKagent}, eventMetadataKeys(ev))
 
 	task := &a2apkg.Task{
 		Metadata: map[string]any{"kagent.dev/a2a/task-created-at": "x"},
@@ -256,31 +256,6 @@ func TestMapA2AEvent_UserEchoEmitsNothing(t *testing.T) {
 		},
 	}
 	require.Empty(t, newEventMapper().deltas(ev))
-}
-
-// A streaming chunk is repeated in full by the non-partial event that follows it,
-// so its text is not narration. Tool activity on such an event is unaffected.
-func TestMapA2AEvent_PartialNarrationSkipped(t *testing.T) {
-	for _, key := range []string{mdPartialKagent, mdPartialADK} {
-		for _, on := range []string{"event", "message"} {
-			t.Run(key+"/"+on, func(t *testing.T) {
-				call := dataPart(t, mdTypeFunctionCall, map[string]any{"name": "kubectl_get", "id": "call-1"})
-				msg := a2apkg.NewMessage(a2apkg.MessageRoleAgent, a2apkg.NewTextPart("let me look"), call)
-				ev := &a2apkg.TaskStatusUpdateEvent{
-					Status: a2apkg.TaskStatus{State: a2apkg.TaskStateWorking, Message: msg},
-				}
-				if on == "event" {
-					ev.Metadata = map[string]any{key: true}
-				} else {
-					msg.Metadata = map[string]any{key: true}
-				}
-
-				deltas := newEventMapper().deltas(ev)
-				require.Len(t, deltas, 1)
-				require.Equal(t, DeltaToolActivity, deltas[0].Kind)
-			})
-		}
-	}
 }
 
 // Tool results arrive as their own data-only events, so text beside a

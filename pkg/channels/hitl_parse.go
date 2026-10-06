@@ -28,10 +28,6 @@ const (
 const (
 	mdUsageCanonical = "kagent.dev/a2a/usage"
 
-	// The partial markers have no canonical key.
-	mdPartialKagent = "kagent_partial"
-	mdPartialADK    = "adk_partial"
-
 	usagePromptTokens     = "promptTokenCount"
 	usageCompletionTokens = "candidatesTokenCount"
 	usageTotalTokens      = "totalTokenCount"
@@ -262,13 +258,6 @@ func (p *HitlPrompt) summary() string {
 		return strings.Join(names, ", ")
 	}
 	return p.ToolName
-}
-
-// isPartialMeta reports whether metadata marks the event as a partial
-// (streaming) chunk; kagent's own task store filters on the same keys.
-func isPartialMeta(md map[string]any) bool {
-	partial, _ := firstBool(md, mdPartialKagent, mdPartialADK)
-	return partial
 }
 
 // parseTurnUsage reads kagent's usage object from an artifact's metadata.
