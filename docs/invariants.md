@@ -27,6 +27,10 @@ or `helm/`. Add a line when a review finds a new one.
   or share revoke under a collaborator's token without a share gets NotFound for an instance
   that exists. Never read that as "gone": do not clear the binding, report a reset or log a
   revoke on it. Only the creator's token, or a share, makes the answer mean something (#356).
+- **kagent 1.2.2 and later report token usage only on the artifact.** `kagent.dev/a2a/usage`
+  rides on an artifact update's artifact metadata, once per LLM call; status updates and the
+  whole task do not carry it. Read it there, or every turn counts 0 tokens and `usage` has
+  nothing to show (#397).
 - **A turn that an approval resumes streams the approved call's result, not the call.** The
   call arrived in the turn that asked for approval. The writer of the resumed turn takes it
   from the pending task (`approvedCalls`, replayed at the start of `run()`), and that replay
