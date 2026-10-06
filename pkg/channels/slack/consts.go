@@ -458,7 +458,8 @@ const failedNote = "The turn failed before an answer. Send the message again to 
 // (channels.ClassifyFailure). They replace failedNote because they say what
 // broke and whether trying again helps: a tools or platform failure was
 // already retried once and is not the person's to fix, a model error usually
-// passes, a policy refusal stays.
+// passes (except a credentials refusal, which stays until the platform fixes
+// it), a policy refusal stays.
 const (
 	toolsFailedNote    = "The agent could not connect to its tools, so it did not work on your message. The problem is on the platform side, not in your message, and a retry right now does not help."
 	platformFailedNote = "The agent platform could not be reached, so the agent did not work on your message. The problem is on the platform side, not in your message, and a retry right now does not help."
