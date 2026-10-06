@@ -53,9 +53,9 @@ func TestUsageReport_DMTopLevelFallsBackToChannel(t *testing.T) {
 	require.Contains(t, inThread, "Session — in 10 · out 5")
 }
 
-// In a regular channel a missed lookup means the command was typed outside the
-// agent's thread; the reply guides the user there instead of the misleading
-// "not available yet".
+// In a regular channel a missed lookup is a thread the agent has not answered
+// in yet, or a message outside the agent's thread; the reply says which thread
+// the command reads instead of the misleading "not available yet".
 func TestUsageReport_ChannelMissGivesGuidance(t *testing.T) {
 	a := &Adapter{}
 	a.recordTurnUsage("100.000", "C1", channels.TurnUsage{TotalTokens: 5})

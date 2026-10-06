@@ -218,8 +218,8 @@ type OutboundDelta struct {
 	// carried a structured adk_request_confirmation DataPart (tool approval or
 	// ask_user). Nil for a plain-text prompt.
 	Prompt *HitlPrompt
-	// Usage carries the token counts reported for the turn. Populated on the
-	// terminal delta (and any interim event that reports usage); nil otherwise.
+	// Usage is set on a usage-only delta, one for each LLM call whose artifact
+	// carries usage; nil otherwise.
 	Usage *TurnUsage
 	// Tool is populated on DeltaToolActivity deltas with the tool call or result;
 	// nil otherwise.

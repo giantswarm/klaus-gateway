@@ -24,11 +24,11 @@ const (
 )
 
 // The artifact metadata key kagent sets for one LLM call's token usage: a flat
-// object with the camelCase field names below. The partial markers have no
-// canonical key.
+// object with the camelCase field names below.
 const (
 	mdUsageCanonical = "kagent.dev/a2a/usage"
 
+	// The partial markers have no canonical key.
 	mdPartialKagent = "kagent_partial"
 	mdPartialADK    = "adk_partial"
 
