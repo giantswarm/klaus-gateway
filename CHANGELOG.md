@@ -330,5 +330,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Code nothing needed: `valkey.DefaultReviewKeyPrefix` (the review prefix is still derived from the routing prefix), the bolt and Valkey stores' clock field, and the existence check before a read-only open of the muster link bolt file (bbolt does not create a missing file on a read-only open).
 - Tests: the Slack adapter and channel tests that a stronger test already covers are removed, and the help flow test checks that help is posted once.
 - Tests: only the Valkey outage tests run the store with a short timeout; the other Valkey tests connect within the default timeout.
+- Narration no longer checks a status update for the `kagent_partial` and `adk_partial` markers (klaus-gateway#402).
 
 [Unreleased]: https://github.com/giantswarm/REPOSITORY_NAME/tree/main
