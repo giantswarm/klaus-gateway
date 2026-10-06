@@ -47,6 +47,25 @@ func TestShouldPostSignInNudge(t *testing.T) {
 	}
 	require.True(t, shouldPostSignInNudge(expired, true, now),
 		"an expired entry nudges")
+
+	burst := ttlEntry[signInAnchor]{
+		value:   signInAnchor{channel: "C1", ephemeral: true, nudgedAt: now.Add(-signInReissueAfter + time.Second)},
+		expires: now.Add(pendingTTL),
+	}
+	require.False(t, shouldPostSignInNudge(burst, true, now),
+		"a burst of messages right after a channel prompt prompts once")
+
+	later := burst
+	later.value.nudgedAt = now.Add(-signInReissueAfter)
+	require.True(t, shouldPostSignInNudge(later, true, now),
+		"a later message re-issues a channel prompt, which an ephemeral cannot keep")
+
+	dmLater := ttlEntry[signInAnchor]{
+		value:   signInAnchor{channel: "D1", ts: "1.1", nudgedAt: now.Add(-signInReissueAfter)},
+		expires: now.Add(pendingTTL),
+	}
+	require.False(t, shouldPostSignInNudge(dmLater, true, now),
+		"a DM prompt is a message that stays, so its live link is not re-issued")
 }
 
 // A re-nudge replaces the dead prompt: the new prompt posts, the throttle
@@ -92,7 +111,7 @@ func TestPostSignIn_ChannelPromptStaysPrivate(t *testing.T) {
 	srv.mu.Lock()
 	notice, prompt, bodies := srv.postTexts[0], srv.ephemeralTexts[0], strings.Join(srv.postBodies, "\n")
 	srv.mu.Unlock()
-	require.Equal(t, "Waiting for <@U1> to sign in to Giant Swarm", notice)
+	require.Equal(t, "Waiting for <@U1> to sign in to Giant Swarm"+signInWaitingDMHint, notice)
 	require.NotContains(t, bodies, "example.test/link", "the link must not reach a public message")
 	require.Contains(t, prompt, "*Sign in to Giant Swarm*")
 	require.Contains(t, prompt, "The link is valid for 15 minutes.")
@@ -100,8 +119,9 @@ func TestPostSignIn_ChannelPromptStaysPrivate(t *testing.T) {
 
 	a.postSignIn(t.Context(), "C1", "T1", "U1", false, signInForMessage)
 	require.Equal(t, int32(1), srv.posts.Load(), "a re-prompt reuses the notice already in the thread")
-	require.Zero(t, srv.updates.Load(), "the notice already names the user")
+	require.Equal(t, int32(1), srv.updates.Load(), "the notice already names the user; only the DM card is refreshed")
 	require.Equal(t, int32(2), srv.ephemerals.Load(), "each re-prompt posts a fresh ephemeral")
+	require.Equal(t, int32(1), srv.dms.Load(), "the DM holds one card")
 }
 
 // A DM thread has one reader, so the prompt stays a real message there: an
@@ -285,13 +305,20 @@ func TestPostSignIn_ThreadNoticeNamesWhoItWaitsFor(t *testing.T) {
 	a.postSignIn(t.Context(), "C1", "T1", "U1", false, signInForMessage)
 	a.postSignIn(t.Context(), "C1", "T1", "U2", false, signInForMessage)
 	require.Equal(t, int32(1), srv.posts.Load(), "a second unlinked user joins the thread's notice")
-	require.Equal(t, "Waiting for <@U1> and <@U2> to sign in to Giant Swarm", latest())
+	require.Equal(t, "Waiting for <@U1> and <@U2> to sign in to Giant Swarm"+signInWaitingDMHint, latest())
 
-	a.updateSignInAnchors(t.Context(), "U1") // U1's link completes
-	require.Equal(t, "Waiting for <@U2> to sign in to Giant Swarm", latest())
+	a.updateSignInAnchors(t.Context(), "U1") // U1's link completes: the notice, then U1's DM card
+	srv.mu.Lock()
+	notice := srv.updateTexts[len(srv.updateTexts)-2]
+	srv.mu.Unlock()
+	require.Equal(t, "Waiting for <@U2> to sign in to Giant Swarm"+signInWaitingDMHint, notice)
+	require.Equal(t, signedInNotice, latest(), "U1's DM card confirms the sign-in")
 
 	a.updateSignInAnchors(t.Context(), "U2")
-	require.Equal(t, "<@U1> and <@U2> signed in to Giant Swarm", latest())
+	srv.mu.Lock()
+	notice = srv.updateTexts[len(srv.updateTexts)-2]
+	srv.mu.Unlock()
+	require.Equal(t, "<@U1> and <@U2> signed in to Giant Swarm", notice)
 
 	updates := srv.updates.Load()
 	a.updateSignInAnchors(t.Context(), "U2")
@@ -299,7 +326,7 @@ func TestPostSignIn_ThreadNoticeNamesWhoItWaitsFor(t *testing.T) {
 
 	a.postSignIn(t.Context(), "C1", "T1", "U1", false, signInForMessage) // U1 signed out and writes again
 	require.Equal(t, int32(1), srv.posts.Load(), "the thread keeps its one notice")
-	require.Equal(t, "Waiting for <@U1> to sign in to Giant Swarm", latest())
+	require.Equal(t, "Waiting for <@U1> to sign in to Giant Swarm"+signInWaitingDMHint, latest())
 
 	a.postSignIn(t.Context(), "C2", "T2", "U1", false, signInForMessage)
 	require.Equal(t, int32(2), srv.posts.Load(), "a different thread gets its own notice")
@@ -389,4 +416,138 @@ func TestMaybePostSignIn_SupersededChannelPromptWarnsOnTheFreshOne(t *testing.T)
 	require.Contains(t, srv.ephemeralTexts[0], signInLinkSupersededNote,
 		"the fresh prompt tells the user which button is live")
 	require.Contains(t, srv.ephemeralTexts[0], "*Sign in to Giant Swarm*")
+}
+
+// An ephemeral reaches only a Slack client that is open when it is sent, so a
+// channel prompt also puts its card into the person's DM, where it waits; the
+// thread notice says so, and links nothing (klaus-gateway#406). The DM card
+// names the thread it came from, holds one live card however often the prompt
+// is re-issued, and confirms the completed link in place.
+func TestPostSignIn_ChannelPromptWaitsInTheDM(t *testing.T) {
+	a, srv := newTestAdapter(t)
+	a.OBO = deadLinkOBO{}
+
+	a.postSignIn(t.Context(), "C1", "T1", "U1", false, signInForMessage)
+
+	require.Equal(t, int32(1), srv.dms.Load(), "the card goes to the person's DM")
+	require.Equal(t, int32(1), srv.ephemerals.Load(), "the ephemeral still reaches an open client")
+	srv.mu.Lock()
+	dm, notice := srv.dmBodies[0], srv.postTexts[0]
+	srv.mu.Unlock()
+	require.Contains(t, dm, "example.test/link", "the DM card carries the link")
+	require.Contains(t, dm, "https://slack.test/archives/C1/pT1", "the DM card links back to the thread")
+	require.Equal(t, "Waiting for <@U1> to sign in to Giant Swarm"+signInWaitingDMHint, notice)
+
+	a.postSignIn(t.Context(), "C1", "T1", "U1", false, signInForMessage)
+	require.Equal(t, int32(1), srv.dms.Load(), "a re-issued prompt refreshes the DM card instead of adding one")
+	srv.mu.Lock()
+	refresh := srv.updateBodies[len(srv.updateBodies)-1]
+	srv.mu.Unlock()
+	require.Contains(t, refresh, `"channel":"D1"`, "the refresh edits the card in the D… conversation Slack named")
+	require.Contains(t, refresh, `"ts":"dm.0001"`)
+	require.Contains(t, refresh, "example.test/link", "the refreshed card carries the fresh link")
+
+	a.updateSignInAnchors(t.Context(), "U1") // the link completes
+	srv.mu.Lock()
+	confirm, confirmBody := srv.updateTexts[len(srv.updateTexts)-1], srv.updateBodies[len(srv.updateBodies)-1]
+	srv.mu.Unlock()
+	require.Equal(t, signedInNotice, confirm, "the DM card confirms the sign-in in place")
+	require.Contains(t, confirmBody, `"channel":"D1"`)
+	require.NotContains(t, confirmBody, "example.test/link", "the confirmed card drops its button")
+}
+
+// A person still waiting who writes again in the thread after the burst window
+// gets the prompt again: a fresh ephemeral for the client they have open now,
+// and the DM card refreshed to the same fresh link. The old link is still
+// valid, so the fresh card does not call it expired.
+func TestMaybePostSignIn_LaterMentionReissuesTheChannelPrompt(t *testing.T) {
+	a, srv := newTestAdapter(t)
+	a.OBO = deadLinkOBO{}
+
+	a.maybePostSignIn(t.Context(), "C1", "T1", "U1", signInForMessage)
+	a.maybePostSignIn(t.Context(), "C1", "T1", "U1", signInForMessage)
+	require.Equal(t, int32(1), srv.ephemerals.Load(), "a burst prompts once")
+
+	a.signInPromptedMu.Lock()
+	entry := a.signInPrompted["U1\x00T1"]
+	entry.value.nudgedAt = time.Now().Add(-signInReissueAfter)
+	a.signInPrompted["U1\x00T1"] = entry
+	a.signInPromptedMu.Unlock()
+	updates := srv.updates.Load()
+
+	a.maybePostSignIn(t.Context(), "C1", "T1", "U1", signInForMessage)
+
+	require.Equal(t, int32(2), srv.ephemerals.Load(), "the later mention re-issues the prompt")
+	require.Equal(t, int32(1), srv.dms.Load(), "the DM keeps one card")
+	require.Equal(t, updates+1, srv.updates.Load(), "the DM card is refreshed; the notice already names the user")
+	require.Equal(t, int32(1), srv.posts.Load(), "the thread keeps its one notice")
+	srv.mu.Lock()
+	reissued := srv.ephemeralTexts[1]
+	srv.mu.Unlock()
+	require.Contains(t, reissued, "*Sign in to Giant Swarm*")
+	require.NotContains(t, reissued, signInLinkSupersededNote, "the earlier link is still alive")
+}
+
+// A DM that cannot be sent costs only the DM: the ephemeral still goes out, and
+// the thread notice does not point at a card that is not there.
+func TestPostSignIn_FailedDMLeavesTheNoticeHintOut(t *testing.T) {
+	fake := newFakeSlackServerFailingDMs()
+	a, _ := newTestAdapter(t)
+	a.APIBase = fake.URL
+	a.OBO = deadLinkOBO{}
+
+	a.postSignIn(t.Context(), "C1", "T1", "U1", false, signInForMessage)
+
+	require.Equal(t, []string{"Waiting for <@U1> to sign in to Giant Swarm"}, fake.threadTexts())
+	require.Equal(t, 1, fake.ephemeralCount(), "the ephemeral prompt still posts")
+	anchors := a.takeSignInAnchors("U1")
+	require.Len(t, anchors, 1, "only the ephemeral is anchored")
+	require.True(t, anchors[0].ephemeral)
+}
+
+// failingDMServer is a Slack API that refuses every post addressed to a user,
+// the way a workspace that turned the app's messages tab off does.
+type failingDMServer struct {
+	*httptest.Server
+	mu         sync.Mutex
+	threads    []string
+	ephemerals int
+}
+
+func newFakeSlackServerFailingDMs() *failingDMServer {
+	f := &failingDMServer{}
+	f.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		channel, _ := body["channel"].(string)
+		text, _ := body["text"].(string)
+		w.Header().Set("Content-Type", "application/json")
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		switch {
+		case strings.HasSuffix(r.URL.Path, "chat.postMessage") && strings.HasPrefix(channel, "U"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "messages_tab_disabled"})
+		case strings.HasSuffix(r.URL.Path, "chat.postMessage"):
+			f.threads = append(f.threads, text)
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "ts": "1234.5678"})
+		case strings.HasSuffix(r.URL.Path, "chat.postEphemeral"):
+			f.ephemerals++
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		default:
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		}
+	}))
+	return f
+}
+
+func (f *failingDMServer) threadTexts() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.threads...)
+}
+
+func (f *failingDMServer) ephemeralCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.ephemerals
 }

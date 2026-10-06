@@ -314,15 +314,17 @@ func TestSignInPrompt_ThrottledPerThreadUser(t *testing.T) {
 	a.OBO = &fakeOBO{linkedUser: "U123", token: "tok", notYetLinked: true}
 
 	sendEvent(t, srv, mention("U123", "first question", "100.000", ""))
-	fake.waitForPath(t, "chat.postMessage", 1)
-	// The prompt is a real threaded reply anchoring the mention's thread.
-	prompt := fake.pathCalls("chat.postMessage")[0]
-	require.Equal(t, "100.000", prompt.params["thread_ts"])
+	fake.waitForPath(t, "chat.postEphemeral", 1)
+	// The thread notice is a real threaded reply anchoring the mention's thread.
+	notice := threadPosts(fake.pathCalls("chat.postMessage"))[0]
+	require.Equal(t, "100.000", notice.params["thread_ts"])
 	sendEvent(t, srv, mention("U123", "second question", "101.000", "100.000"))
 
 	time.Sleep(200 * time.Millisecond)
-	require.Len(t, fake.pathCalls("chat.postMessage"), 1,
-		"a second parked message within the window must not re-prompt")
+	require.Len(t, fake.pathCalls("chat.postEphemeral"), 1,
+		"a second parked message within the burst window must not re-prompt")
+	require.Len(t, fake.pathCalls("chat.postMessage"), 2, "one thread notice and one DM card")
+	require.Len(t, dmPosts(fake.pathCalls("chat.postMessage")), 1)
 	require.Zero(t, gw.dispatchCount(), "both messages stay parked")
 }
 

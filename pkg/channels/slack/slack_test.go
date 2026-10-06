@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -504,10 +505,19 @@ func TestDispatch_OBO_UnlinkedUserPromptsSignInAndDoesNotDispatch(t *testing.T) 
 	prompt := fake.pathCalls("chat.postEphemeral")[0]
 	require.Equal(t, "111.222", prompt.params["thread_ts"])
 	require.Equal(t, "U123", prompt.params["user"])
-	notice := fake.pathCalls("chat.postMessage")[0]
+	posts := threadPosts(fake.pathCalls("chat.postMessage"))
+	notice := posts[0]
 	require.Equal(t, "111.222", notice.params["thread_ts"])
-	require.Contains(t, allText(fake.pathCalls("chat.postMessage")), "Waiting for <@U123> to sign in to Giant Swarm")
-	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "http")
+	require.Contains(t, allText(posts), "Waiting for <@U123> to sign in to Giant Swarm (the sign-in link is in a direct message from the app)",
+		"the notice says where the link waits for a person whose client was closed")
+	require.NotContains(t, allText(posts), "http")
+	// The ephemeral reaches only an open Slack client, so the card also waits
+	// in the person's DM (klaus-gateway#406).
+	dms := dmPosts(fake.pathCalls("chat.postMessage"))
+	require.Len(t, dms, 1)
+	require.Equal(t, "U123", dms[0].params["channel"])
+	require.Contains(t, allBlockText(dms), "https://gw.example.com/auth/slack/link?u=xyz")
+	require.Contains(t, allBlockText(dms), "Asked in a thread in \\u003c#C1\\u003e", "the DM card names where the sign-in was asked for")
 	require.Zero(t, gw.dispatchCount(), "unlinked turn must not reach the agent (no M2M fallback)")
 }
 
@@ -1805,6 +1815,22 @@ const signInPromptPrefix = "*Sign in to Giant Swarm*"
 func signInPrompted(fake *fakeSlackAPI) bool {
 	return strings.Contains(allText(fake.pathCalls("chat.postEphemeral")), signInPromptPrefix) ||
 		strings.Contains(allText(fake.pathCalls("chat.postMessage")), signInPromptPrefix)
+}
+
+// threadPosts and dmPosts split chat.postMessage calls by audience: a post
+// addressed by user ID is a DM (the sign-in card a channel prompt sends along),
+// every other post lands in a conversation.
+func threadPosts(calls []recordedCall) []recordedCall {
+	return slices.DeleteFunc(slices.Clone(calls), isDMPost)
+}
+
+func dmPosts(calls []recordedCall) []recordedCall {
+	return slices.DeleteFunc(slices.Clone(calls), func(c recordedCall) bool { return !isDMPost(c) })
+}
+
+func isDMPost(c recordedCall) bool {
+	channel, _ := c.params["channel"].(string)
+	return strings.HasPrefix(channel, "U")
 }
 
 // allText concatenates the "text" param of the given calls.

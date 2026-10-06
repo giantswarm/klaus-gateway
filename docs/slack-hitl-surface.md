@@ -316,9 +316,12 @@ for the Builder to accept it.
 ## 8. OBO sign-in (act-as-user account linking)
 
 Posted when a turn needs the user's token but they haven't linked their account. In a
-channel it is ephemeral to that user, anchored by a thread notice (a context line) that
-names who the thread waits for ("Waiting for @Pau and @Jose to sign in to Giant Swarm"),
-carries no link and is posted once per thread; it drops each person who signs in, and once
+channel it is ephemeral to that user, and the same card, led by "Asked in a thread in
+#channel." (the thread linked), goes to the user's DM, where it waits for a Slack client that
+was closed; a later message in the thread re-issues the ephemeral and refreshes the DM card in
+place. A thread notice (a context line) anchors the ephemeral and
+names who the thread waits for ("Waiting for @Pau and @Jose to sign in to Giant Swarm (the
+sign-in link is in a direct message from the app)"), carries no link and is posted once per thread; it drops each person who signs in, and once
 nobody waits it reads "@Pau and @Jose signed in to Giant Swarm". In a DM it is a threaded
 message. The card's last line depends on what asked for it: "Your message runs as soon as
 you sign in." for a held message, "Sign in, then click the button again." for a button

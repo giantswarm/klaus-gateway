@@ -95,15 +95,18 @@ func TestResolveIdentity_RetriesNameLookupAfterTransientFailure(t *testing.T) {
 // fakeSlackServer records postMessage and postEphemeral calls and returns
 // minimal OK responses.
 type fakeSlackServer struct {
-	posts      atomic.Int32
+	posts      atomic.Int32 // posts into a conversation; a DM addressed by user ID counts in dms
+	dms        atomic.Int32
 	ephemerals atomic.Int32
 	updates    atomic.Int32
 
 	mu             sync.Mutex
 	postTexts      []string
 	postBodies     []string
+	dmBodies       []string
 	ephemeralTexts []string
 	updateTexts    []string
+	updateBodies   []string
 }
 
 // requestText is the text field of a form or JSON Slack call, and the raw body
@@ -123,8 +126,23 @@ func requestText(r *http.Request) (text, raw string) {
 func (f *fakeSlackServer) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/chat.postMessage", func(w http.ResponseWriter, r *http.Request) {
-		f.posts.Add(1)
 		text, raw := requestText(r)
+		// A post addressed by user ID is a DM: Slack answers with the D…
+		// conversation it opened.
+		var addressed struct {
+			Channel string `json:"channel"`
+		}
+		_ = json.Unmarshal([]byte(raw), &addressed)
+		if user, ok := strings.CutPrefix(addressed.Channel, "U"); ok {
+			f.dms.Add(1)
+			f.mu.Lock()
+			f.dmBodies = append(f.dmBodies, raw)
+			f.mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "ts": "dm.0001", "channel": "D" + user})
+			return
+		}
+		f.posts.Add(1)
 		f.mu.Lock()
 		f.postBodies = append(f.postBodies, raw)
 		f.mu.Unlock()
@@ -150,12 +168,19 @@ func (f *fakeSlackServer) handler() http.Handler {
 	})
 	mux.HandleFunc("/chat.update", func(w http.ResponseWriter, r *http.Request) {
 		f.updates.Add(1)
-		text, _ := requestText(r)
+		text, raw := requestText(r)
 		f.mu.Lock()
 		f.updateTexts = append(f.updateTexts, text)
+		f.updateBodies = append(f.updateBodies, raw)
 		f.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "ts": "1234.5678"})
+	})
+	mux.HandleFunc("/chat.getPermalink", func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true,
+			"permalink": "https://slack.test/archives/" + r.PostFormValue("channel") + "/p" + r.PostFormValue("message_ts")})
 	})
 	return mux
 }
