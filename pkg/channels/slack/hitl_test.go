@@ -73,7 +73,8 @@ func TestFormRenderable(t *testing.T) {
 	}{
 		{"two widgetable questions", []channels.HitlQuestion{q(false, "a", "b"), q(true, "c", "d")}, true},
 		{"single question is not a form", []channels.HitlQuestion{q(false, "a", "b")}, false},
-		{"a free-text question blocks the form", []channels.HitlQuestion{q(false, "a", "b"), q(false)}, false},
+		{"a free-text question is a text input of the form", []channels.HitlQuestion{q(false, "a", "b"), q(false)}, true},
+		{"free-text questions alone make a form", []channels.HitlQuestion{q(false), q(false)}, true},
 		{"an over-long label blocks the form", []channels.HitlQuestion{q(false, "a"), q(false, longLabel)}, false},
 		{"an over-count question blocks the form", []channels.HitlQuestion{q(false, "a", "b"), q(false, manyChoices...)}, false},
 		{"too many questions falls back to text", manyQuestions, false},
@@ -166,6 +167,25 @@ func TestBuildButtonDecision_SubmitForm(t *testing.T) {
 	require.Equal(t, channels.DecisionApprove, decision.Type)
 	require.Equal(t, [][]string{{"MySQL"}, {"Auth", "Caching"}}, decision.AskUserAnswers)
 	require.Equal(t, "MySQL; Auth, Caching", resume)
+}
+
+// A form question without choices takes its typed text as its answer; one left
+// empty is an empty slot, not a blocked Submit.
+func TestBuildButtonDecision_SubmitFormWithText(t *testing.T) {
+	prompt := &channels.HitlPrompt{
+		ToolName: channels.AskUserToolName,
+		Questions: []channels.HitlQuestion{
+			{Question: "Database?", Choices: []string{"PostgreSQL", "MySQL"}},
+			{Question: "Why?"},
+			{Question: "Anything else?"},
+		},
+	}
+	act := hitlAction{kind: hitlSubmit, answers: map[int][]int{0: {1}}, texts: map[int]string{1: "It is what we run"}}
+
+	require.Empty(t, submitIncompleteNudge(prompt, act))
+	decision, resume := buildButtonDecision(act, prompt)
+	require.Equal(t, [][]string{{"MySQL"}, {"It is what we run"}, {}}, decision.AskUserAnswers)
+	require.Equal(t, "MySQL; It is what we run; ", resume)
 }
 
 // An answered question keeps its question and names the answer, who gave it

@@ -617,6 +617,55 @@ func TestPostChoiceFormPrompt_PerQuestionBlocks(t *testing.T) {
 	require.True(t, submit, "single Submit button present")
 }
 
+// A form question without choices posts an optional multi-line text input,
+// block_id-tagged with its question index like a widget.
+func TestPostChoiceFormPrompt_FreeTextQuestionIsTextInput(t *testing.T) {
+	var body atomic.Value
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		body.Store(string(raw))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"ok":true,"ts":"1.2"}`)
+	}))
+	defer srv.Close()
+
+	client := &slackAPIClient{botToken: "t", baseURL: srv.URL}
+	questions := []channels.HitlQuestion{
+		{Question: "Which do you like best?", Choices: []string{"Option A", "Option B"}},
+		{Question: "Anything else?"},
+	}
+	_, err := client.postChoiceFormPrompt(t.Context(), "C1", "T1", "task-1", questions)
+	require.NoError(t, err)
+
+	var p struct {
+		Blocks []struct {
+			Type     string `json:"type"`
+			BlockID  string `json:"block_id"`
+			Optional bool   `json:"optional"`
+			Text     struct{ Text string }
+			Elements []struct {
+				Type string `json:"type"`
+			} `json:"elements"`
+			Element struct {
+				Type      string `json:"type"`
+				ActionID  string `json:"action_id"`
+				Multiline bool   `json:"multiline"`
+			} `json:"element"`
+		} `json:"blocks"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(body.Load().(string)), &p))
+	require.Len(t, p.Blocks, 5, "a section and a control per question, plus Submit")
+	require.Equal(t, "*Anything else?*", p.Blocks[2].Text.Text)
+	input := p.Blocks[3]
+	require.Equal(t, bkInput, input.Type)
+	require.Equal(t, hitlQGroupPrefix+"_1", input.BlockID)
+	require.True(t, input.Optional)
+	require.Equal(t, bkPlainTextInput, input.Element.Type)
+	require.Equal(t, hitlText, input.Element.ActionID)
+	require.True(t, input.Element.Multiline)
+	require.Equal(t, bkRadioButtons, p.Blocks[1].Elements[0].Type)
+}
+
 func TestPostChoiceWidgetPrompt_TruncatesOversizedQuestion(t *testing.T) {
 	var body atomic.Value
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -50,6 +50,7 @@ const (
 	hitlChoice  = "hitl_choice" // ask_user single long-text choice (section accessory button, per index)
 	hitlSubmit  = "hitl_submit" // ask_user radio/checkbox Submit button
 	hitlGroup   = "hitl_group"  // ask_user radio_buttons/checkboxes element action_id
+	hitlText    = "hitl_text"   // ask_user form plain_text_input element action_id, for a question without choices
 )
 
 // hitlGroupBlock is the block_id of an ask_user radio/checkbox block. The
@@ -260,8 +261,7 @@ const wordYes = "yes"
 // maxChoiceOptions caps how many ask_user choices render as an interactive
 // widget (radio_buttons/checkboxes cap at 10 options; the section-per-choice
 // long-text layout stays under the 50-blocks-per-message limit). Beyond this,
-// or for multi-question prompts, choices render as text and the user replies
-// free-text in-thread.
+// choices render as text and the user replies free-text in-thread.
 const maxChoiceOptions = 10
 
 // choiceLabelWidgetMax is the Block Kit option-object text limit (75 runes for
@@ -272,10 +272,18 @@ const choiceLabelWidgetMax = 75
 
 // maxFormQuestions caps how many questions a multi-question ask_user prompt
 // renders as a single interactive form. Each question costs a section plus a
-// widget block, and the form adds one Submit (2N+1 blocks), so this keeps a
+// widget or text input block, and the form adds one Submit (2N+1 blocks), so this keeps a
 // full form under the 50-blocks-per-message limit. A prompt with more questions
 // renders as text.
 const maxFormQuestions = 20
+
+// formTextAnswerMax caps a form's free-text answer: the plain_text_input
+// max_length, Slack's ceiling for the element.
+const formTextAnswerMax = 3000
+
+// formTextAnswerLabel labels the text input of a form question without
+// choices; the question itself is the section above it.
+const formTextAnswerLabel = "Your answer"
 
 // Default progress reaction emoji names (no surrounding colons). Overridable
 // via config so a workspace can pick emoji its members recognise.

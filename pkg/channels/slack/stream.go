@@ -2855,15 +2855,21 @@ func (c *slackAPIClient) postChoiceWidgetPrompt(ctx context.Context, channel, th
 }
 
 // postChoiceFormPrompt posts a multi-question ask_user prompt as a single form:
-// a question section plus a radio/checkbox widget per question, all committed by
-// one Submit. Each question's widget block_id encodes its question index
-// (hitlQGroupPrefix + "_<qi>") so the handler maps each selection back to its
-// question. The caller (formRenderable) guarantees every question is widgetable.
+// a question section plus a radio/checkbox widget per question, or a text input
+// for a question without choices, all committed by one Submit. Each question's
+// block_id encodes its question index (hitlQGroupPrefix + "_<qi>") so the
+// handler maps each answer back to its question. The caller (formRenderable)
+// guarantees every question with choices is widgetable.
 func (c *slackAPIClient) postChoiceFormPrompt(ctx context.Context, channel, threadID, taskID string, questions []channels.HitlQuestion) (string, error) {
 	blocks := make([]any, 0, 2*len(questions)+1)
 	for qi, q := range questions {
+		blockID := fmt.Sprintf("%s_%d", hitlQGroupPrefix, qi)
 		blocks = append(blocks, questionSection(q.Question))
-		blocks = append(blocks, choiceWidgetBlock(fmt.Sprintf("%s_%d", hitlQGroupPrefix, qi), q.Choices, q.Multiple))
+		if len(q.Choices) == 0 {
+			blocks = append(blocks, textAnswerBlock(blockID))
+			continue
+		}
+		blocks = append(blocks, choiceWidgetBlock(blockID, q.Choices, q.Multiple))
 	}
 	blocks = append(blocks, submitActions(threadID, taskID))
 	body := map[string]any{
@@ -2873,6 +2879,24 @@ func (c *slackAPIClient) postChoiceFormPrompt(ctx context.Context, channel, thre
 		paramBlocks:   blocks,
 	}
 	return c.postJSON(ctx, methodChatPostMessage, body)
+}
+
+// textAnswerBlock builds the optional text input of a form question without
+// choices. Its text reaches the handler in state.values with the Submit click;
+// typing alone sends nothing.
+func textAnswerBlock(blockID string) map[string]any {
+	return map[string]any{
+		bkType:     bkInput,
+		bkBlockID:  blockID,
+		bkOptional: true,
+		bkLabel:    plainTextObj(formTextAnswerLabel),
+		bkElement: map[string]any{
+			bkType:      bkPlainTextInput,
+			bkActionID:  hitlText,
+			bkMultiline: true,
+			bkMaxLength: formTextAnswerMax,
+		},
+	}
 }
 
 // postChoiceSectionPrompt posts an ask_user question whose choices are too long
