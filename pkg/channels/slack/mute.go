@@ -2,7 +2,10 @@ package slack
 
 import (
 	"context"
+	"strconv"
+	"strings"
 
+	"github.com/giantswarm/klaus-gateway/pkg/channels"
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
 )
 
@@ -69,16 +72,26 @@ func (a *Adapter) muteThread(ctx context.Context, ts, slackUser, slackChannel, t
 	}
 }
 
-// endMute ends threadID's mute, if it has one, and says so in the thread. A
-// store that cannot be written leaves the thread muted; the turn still runs.
-// A direct message is never muted, so it costs no store call.
-func (a *Adapter) endMute(ctx context.Context, slackChannel, threadID string) {
+// isMuteCommand reports whether msg runs as the mute command. It reads only
+// what the process holds, so the gate that asks costs no store call.
+func (a *Adapter) isMuteCommand(msg channels.InboundMessage) bool {
+	cmd := a.bareCommandFor(msg)
+	return cmd != nil && cmd.Name == cmdMute
+}
+
+// endMute ends threadID's mute when the message at ts was written after it,
+// and says so in the thread. A message from before the mute — one that passed
+// the gate just before the mute was written, or a replay of one parked
+// earlier — leaves it. A store that cannot be written leaves the thread
+// muted; the turn still runs. A direct message is never muted, so it costs no
+// store call.
+func (a *Adapter) endMute(ctx context.Context, slackChannel, threadID, ts string) {
 	if isDMChannelID(slackChannel) {
 		return
 	}
 	ended := false
 	err := a.gw.UpdateThreadRecord(ctx, ChannelName, slackChannel, threadID, func(e *store.Entry, found bool) bool {
-		if !found || e.MutedAt == "" {
+		if !found || e.MutedAt == "" || !tsAfter(ts, e.MutedAt) {
 			return false
 		}
 		e.MutedAt = ""
@@ -96,4 +109,30 @@ func (a *Adapter) endMute(ctx context.Context, slackChannel, threadID string) {
 	if _, err := a.apiClient().postNote(ctx, slackChannel, muteEndedNotice, threadID); err != nil {
 		a.Logger.Warn("slack: post unmute note failed", "thread", threadID, "error", err)
 	}
+}
+
+// tsAfter reports whether Slack timestamp ts is later than ref. A timestamp is
+// "<seconds>.<micro>", and its parts are compared as numbers: a float would
+// round away the microseconds. One that does not parse is not later.
+func tsAfter(ts, ref string) bool {
+	s1, f1, ok1 := parseTS(ts)
+	s2, f2, ok2 := parseTS(ref)
+	if !ok1 || !ok2 {
+		return false
+	}
+	return s1 > s2 || (s1 == s2 && f1 > f2)
+}
+
+// parseTS splits a Slack timestamp into its seconds and its microseconds.
+func parseTS(ts string) (sec, micro int64, ok bool) {
+	whole, frac, _ := strings.Cut(ts, ".")
+	sec, err := strconv.ParseInt(whole, 10, 64)
+	if err != nil || len(frac) > 6 {
+		return 0, 0, false
+	}
+	if frac == "" {
+		return sec, 0, true
+	}
+	micro, err = strconv.ParseInt(frac+strings.Repeat("0", 6-len(frac)), 10, 64)
+	return sec, micro, err == nil
 }

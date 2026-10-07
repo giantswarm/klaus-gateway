@@ -1977,9 +1977,10 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 		// is dropped before the access check and the dedup claim, so it starts
 		// no turn, parks nothing and asks nobody for consent. A mention passes
 		// (its message twin must not take the app_mention twin's dedup slot,
-		// as above), and so does the word mute, so a repeat or a stranger's is
-		// answered.
-		if muted && !a.mentionsBot(ctx, inner.Text) && bareWord(msg.Text) != cmdMute {
+		// as above), and so does a mute command, so a repeat or a stranger's is
+		// answered; the word as a caption or a question's answer is no command
+		// and is dropped with the rest.
+		if muted && !a.mentionsBot(ctx, inner.Text) && !a.isMuteCommand(msg) {
 			a.Logger.Debug("slack: reply in muted thread ignored", "channel", inner.Channel, "thread", msg.ThreadID)
 			return
 		}
@@ -1989,7 +1990,7 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 		return
 	}
 	// A message that is one of the gateway's command words alone is that
-	// command: usage, help, login, logout, agents (bareCommands). There is no
+	// command: usage, help, login, logout, agents, mute (bareCommands). There is no
 	// slash form of any of them: Slack's composer keeps a message that starts
 	// with "/" for its own commands, so such a message reached the bot only
 	// after a mention, and anything it carries now goes to the agent like any
@@ -2352,10 +2353,11 @@ func (a *Adapter) dispatchFrom(ctx context.Context, msg channels.InboundMessage,
 		}
 	}
 
-	// In a muted thread only a mention gets this far, so this turn ends the
-	// mute. Cleared before the turn is sent: a turn that fails leaves the
-	// thread answering again, not silent.
-	a.endMute(ctx, slackChannel, msg.ThreadID)
+	// A message written after the mute that gets this far ends it: in a muted
+	// thread that is a mention, or a parked one's replay. Cleared before the
+	// turn is sent: a turn that fails leaves the thread answering again, not
+	// silent.
+	a.endMute(ctx, slackChannel, msg.ThreadID, msg.MessageID)
 
 	// A conversation opening inside a thread other people wrote — a bare
 	// mention under an alert, say — hands the agent what the thread
