@@ -57,7 +57,7 @@ or `helm/`. Add a line when a review finds a new one.
   too, so such a message reaches the bot only after a mention. The gateway's own commands are
   plain words for that reason: a message that
   is exactly `usage`, `help`, `agents`, `login` or `logout` runs that command wherever the bot reads,
-  and `stop` does the same in a thread with a running turn. No in-message slash command is
+  `mute` does the same in a channel thread, and `stop` in a thread with a running turn. No in-message slash command is
   served any more, so a message that starts with one goes to the agent. The Slack API sends
   `/stop` as text, so a test through the API does not show this (#339 live test).
 - **A suggested prompt that starts with `/` never reaches the bot.** Slack runs its text as
@@ -89,6 +89,10 @@ or `helm/`. Add a line when a review finds a new one.
 - **The AgentInstance request id is `SynthesizeContextID(channel, channelID, "", threadID, agentRef)`**
   with an empty user slot. It is the controller's idempotency key: change it, and every live
   thread asks for an instance the controller does not hold (#320).
+- **A thread's mute is the row's `muted_at`, its own field, not part of `held`.** The
+  inactive-thread gate reads it from the one row it already reads, so the gate path still costs
+  one store read; `held` is rewritten from the adapter's memory on every change of a parked
+  queue, and a mute kept there would be lost on the next one (#410).
 - **The controller's create is idempotent per caller and request id.** The same person gets
   the earlier instance back; a different person gets a new one (giantswarm#37896).
 

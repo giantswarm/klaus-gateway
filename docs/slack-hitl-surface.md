@@ -54,7 +54,7 @@ gateway posts an approval card:
   question" button. A typed reply that is not "approve" or "deny" is sent as a rejection with
   the text as its reason, but the Go ADK runtime drops that reason, so the model sees only
   "call is rejected" (giantswarm/kagent-upstream#71). The commands are the exception:
-  a reply that is only a command word (`usage`, `help`, `agents`, `login`, `logout`) runs that command
+  a reply that is only a command word (`usage`, `help`, `mute`, `agents`, `login`, `logout`) runs that command
   and leaves the card open, since rejecting a call with the reason "logout" is what nobody
   meant. Beside a **question** — the
   `ask_user` card, or one without a card, where a typed reply is the answer — those words stay

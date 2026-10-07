@@ -42,7 +42,7 @@ func TestHelpBlocks(t *testing.T) {
 	require.Equal(t, "Send a command as the word alone, in a direct message or in a thread @swarmgeist is in; anywhere else mention @swarmgeist first.", contextText(blocks[1]))
 	require.Equal(t, []string{"In a thread", "Agents", "Account"}, groups(blocks))
 	require.Equal(t, helpShortcutNote, contextText(blocks[3]))
-	require.Equal(t, "Commands: stop, usage, agents, login, logout", text,
+	require.Equal(t, "Commands: stop, usage, mute, agents, login, logout", text,
 		"every command is a plain word, so nothing in Slack's composer intercepts one")
 
 	_, blocks = helpBlocks("", false, false)
