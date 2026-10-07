@@ -2090,10 +2090,15 @@ func isReplayContext(ctx context.Context) bool {
 // retries, including after losing the re-acquire race to a concurrently
 // arriving turn. Blocking (a replayed turn runs to completion inside the
 // dispatch call), which lets a caller drain a queue in order; run it off any
-// latency-sensitive goroutine.
+// latency-sensitive goroutine. A message written before the thread's mute,
+// taken just before the mute dropped the rest or waiting here for the slot
+// the mute's stop freed, runs nothing (droppedByMute).
 func (a *Adapter) replayDispatch(ctx context.Context, msg channels.InboundMessage, slackChannel string) error {
 	ctx = context.WithValue(ctx, replayContextKey{}, true)
 	for {
+		if a.droppedByMute(ctx, msg, slackChannel) {
+			return nil
+		}
 		err := a.dispatch(ctx, msg, slackChannel)
 		if !errors.Is(err, errThreadBusy) {
 			return err

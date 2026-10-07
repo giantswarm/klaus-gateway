@@ -119,21 +119,26 @@ func (a *Adapter) persistHeld(slackChannel, threadID string) {
 				return
 			}
 		}
-		err := a.gw.UpdateThreadRecord(ctx, ChannelName, slackChannel, threadID, func(e *store.Entry, _ bool) bool {
-			held, err := a.heldSnapshot(threadID).marshal()
-			if err != nil {
-				a.Logger.Warn("slack: encode held thread state failed", "thread", threadID, "error", err)
-				return false
-			}
-			if bytes.Equal(held, e.Held) {
-				return false
-			}
-			e.Held = held
-			return true
-		})
-		if err != nil {
+		if err := a.writeHeld(ctx, slackChannel, threadID); err != nil {
 			a.Logger.Warn("slack: held thread state not persisted; a restart would lose it", "thread", threadID, "error", err)
 		}
+	})
+}
+
+// writeHeld writes what the adapter holds for threadID into the thread's row
+// now; persistHeld runs it in the background.
+func (a *Adapter) writeHeld(ctx context.Context, slackChannel, threadID string) error {
+	return a.gw.UpdateThreadRecord(ctx, ChannelName, slackChannel, threadID, func(e *store.Entry, _ bool) bool {
+		held, err := a.heldSnapshot(threadID).marshal()
+		if err != nil {
+			a.Logger.Warn("slack: encode held thread state failed", "thread", threadID, "error", err)
+			return false
+		}
+		if bytes.Equal(held, e.Held) {
+			return false
+		}
+		e.Held = held
+		return true
 	})
 }
 
