@@ -241,6 +241,18 @@ func TestMuteBusy_AlreadyMutedStopsTheResumedTurn(t *testing.T) {
 	require.Equal(t, "500.001", mutedAt(t, gw.rec(), "500.000"))
 }
 
+// A mention whose upload carries the caption "mute" is a message for the
+// agent, not the command, so it ends the mute like any other mention.
+func TestMuteBusy_CaptionedMentionEndsTheMute(t *testing.T) {
+	fake, gw, a, srv, _ := startMutedThread(t)
+
+	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","subtype":"file_share","channel_type":"channel","user":"U1","text":"<@UBOT> mute","channel":"C1","ts":"500.007","thread_ts":"500.000","files":[{"name":"graph.png","mimetype":"image/png","url_private":"https://files.slack.com/f.png","size":10}]}}`)
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 }, flowWait, 20*time.Millisecond)
+	waitThreadIdle(t, a, "500.000")
+	require.Empty(t, mutedAt(t, gw.rec(), "500.000"))
+	require.Contains(t, allText(fake.pathCalls("chat.postMessage")), unmutedNote)
+}
+
 // restartWithPrompt pauses thread 600.000 on prompt in one adapter, stops it,
 // and starts a second adapter over the same store with the prompt restored.
 func restartWithPrompt(t *testing.T, prompt channels.OutboundDelta) (*fakeSlackAPI, *stubGateway, func() []channels.InboundMessage, *slackadapter.Adapter, *httptest.Server) {
