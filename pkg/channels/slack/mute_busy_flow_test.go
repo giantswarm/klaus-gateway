@@ -59,7 +59,8 @@ func TestMuteBusy_RunningTurnIsStopped(t *testing.T) {
 	}, flowWait, 20*time.Millisecond)
 	waitThreadIdle(t, a, "500.000")
 
-	require.Len(t, gw.sendCauseList(), 1, "the running turn's send was cancelled")
+	require.Len(t, gw.sendCauseList(), 1)
+	require.ErrorIs(t, gw.sendCauseList()[0], context.Canceled, "the running turn's send was cancelled")
 	require.Equal(t, "500.001", mutedAt(t, gw.rec(), "500.000"))
 	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), mutedNote, "one note, not two")
 	require.Equal(t, 1, gw.dispatchCount(), "the word is consumed")
@@ -128,6 +129,116 @@ func TestMuteBusy_OpenQuestionRefuses(t *testing.T) {
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 }, flowWait, 20*time.Millisecond,
 		"the question is still open and takes its answer")
 	require.Equal(t, [][]string{{"graveler"}}, dispatched()[1].Decision.AskUserAnswers)
+}
+
+// A question without a structured prompt — the typed reply is its answer —
+// refuses the mute too.
+func TestMuteBusy_UnstructuredQuestionRefuses(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw, _ := capturingGateway()
+	gw.sendQueue = [][]channels.OutboundDelta{{{Kind: channels.DeltaPrompt, TaskID: "task-1"}}}
+	a, srv := openThread(t, gw, fake)
+	waitThreadIdle(t, a, "500.000")
+
+	sendEvent(t, srv, threadReply("U1", "mute", "500.001", "500.000"))
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postEphemeral")), questionOpenNote)
+	}, flowWait, 20*time.Millisecond)
+	require.Never(t, func() bool { return gw.dispatchCount() > 1 }, 500*time.Millisecond, 20*time.Millisecond)
+	require.Empty(t, mutedAt(t, gw.rec(), "500.000"))
+}
+
+// Someone who may not instruct the agent cannot reject the card by muting.
+func TestMuteBusy_NotPermittedRejectsNothing(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw, _ := capturingGateway()
+	gw.sendQueue = [][]channels.OutboundDelta{{approvalDelta()}}
+	a, srv := openThread(t, gw, fake)
+	waitThreadIdle(t, a, "500.000")
+
+	sendEvent(t, srv, threadReply("U2", "mute", "500.001", "500.000"))
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), notPermittedShort)
+	}, flowWait, 20*time.Millisecond)
+	require.Never(t, func() bool { return gw.dispatchCount() > 1 }, 500*time.Millisecond, 20*time.Millisecond,
+		"the card is not rejected")
+	require.Empty(t, fake.pathCalls("chat.update"))
+	require.Empty(t, mutedAt(t, gw.rec(), "500.000"))
+}
+
+// muteRejectsIntoPrompt mutes thread 500.000 beside an approval card whose
+// rejected task's resumed turn sends then.
+func muteRejectsIntoPrompt(t *testing.T, then []channels.OutboundDelta) (*fakeSlackAPI, *stubGateway, func() []channels.InboundMessage, *slackadapter.Adapter, *httptest.Server) {
+	t.Helper()
+	fake := newFakeSlackAPI()
+	gw, dispatched := capturingGateway()
+	gw.sendQueue = [][]channels.OutboundDelta{{approvalDelta()}, then}
+	a, srv := openThread(t, gw, fake)
+	waitThreadIdle(t, a, "500.000")
+	sendEvent(t, srv, threadReply("U1", "mute", "500.001", "500.000"))
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 }, flowWait, 20*time.Millisecond)
+	waitThreadIdle(t, a, "500.000")
+	require.Equal(t, "500.001", mutedAt(t, gw.rec(), "500.000"))
+	return fake, gw, dispatched, a, srv
+}
+
+// The rejected task's resumed turn can ask a question in the muted thread. A
+// repeat of mute there says the thread is muted, which it is.
+func TestMuteBusy_AlreadyMutedBesideAQuestion(t *testing.T) {
+	fake, gw, _, _, srv := muteRejectsIntoPrompt(t, []channels.OutboundDelta{questionDelta()})
+
+	sendEvent(t, srv, threadReply("U1", "mute", "500.002", "500.000"))
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postEphemeral")), "Already muted.")
+	}, flowWait, 20*time.Millisecond)
+	require.NotContains(t, allText(fake.pathCalls("chat.postEphemeral")), questionOpenNote)
+	require.Never(t, func() bool { return gw.dispatchCount() > 2 }, 500*time.Millisecond, 20*time.Millisecond)
+	require.Equal(t, "500.001", mutedAt(t, gw.rec(), "500.000"))
+}
+
+// The rejected task's resumed turn can ask for another approval. A repeat of
+// mute rejects that card too, and the thread stays muted from the first mute.
+func TestMuteBusy_AlreadyMutedRejectsAnotherCard(t *testing.T) {
+	second := channels.OutboundDelta{Kind: channels.DeltaPrompt, TaskID: "task-2",
+		Prompt: &channels.HitlPrompt{ToolName: "kubectl_scale"}}
+	fake, gw, dispatched, a, srv := muteRejectsIntoPrompt(t, []channels.OutboundDelta{second})
+
+	sendEvent(t, srv, threadReply("U1", "mute", "500.002", "500.000"))
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 3 }, flowWait, 20*time.Millisecond)
+	waitThreadIdle(t, a, "500.000")
+
+	require.Equal(t, "task-2", dispatched()[2].TaskID)
+	require.Equal(t, &channels.HitlDecision{Type: channels.DecisionReject}, dispatched()[2].Decision)
+	require.Contains(t, allText(fake.pathCalls("chat.postEphemeral")), "Already muted.")
+	require.Equal(t, "500.001", mutedAt(t, gw.rec(), "500.000"), "the word does not end the mute")
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), unmutedNote)
+}
+
+// A repeat of mute while the rejected task's resumed turn runs stops it.
+func TestMuteBusy_AlreadyMutedStopsTheResumedTurn(t *testing.T) {
+	fake := newFakeSlackAPI()
+	gw, _ := capturingGateway()
+	gw.sendQueue = [][]channels.OutboundDelta{{approvalDelta()}, {{Content: "on it"}}}
+	a, srv := openThread(t, gw, fake)
+	waitThreadIdle(t, a, "500.000")
+	hold := make(chan struct{})
+	defer close(hold)
+	gw.mu.Lock()
+	gw.hold = hold
+	gw.mu.Unlock()
+
+	sendEvent(t, srv, threadReply("U1", "mute", "500.001", "500.000"))
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 }, flowWait, 20*time.Millisecond,
+		"the resumed turn runs and holds the thread")
+	sendEvent(t, srv, threadReply("U1", "mute", "500.002", "500.000"))
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), stoppedMutedNote)
+	}, flowWait, 20*time.Millisecond)
+	waitThreadIdle(t, a, "500.000")
+
+	require.Len(t, gw.sendCauseList(), 1)
+	require.ErrorIs(t, gw.sendCauseList()[0], context.Canceled)
+	require.Equal(t, "500.001", mutedAt(t, gw.rec(), "500.000"))
 }
 
 // restartWithPrompt pauses thread 600.000 on prompt in one adapter, stops it,

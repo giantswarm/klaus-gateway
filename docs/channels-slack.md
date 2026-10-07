@@ -257,7 +257,8 @@ creates one, which a turn that switches agents does mid-thread.
   muted too: a running turn is stopped the way `stop` stops it, and the note says so ("Stopped and
   muted. I won't reply here until someone mentions me."); an open approval card is rejected the way
   a deny word rejects it, and the resumed task's turn runs on the `mute` message, which does not end
-  the mute. Beside an open question (`ask_user`, or one without a card) `mute` refuses privately
+  the mute. That turn runs in the muted thread and may ask again: a repeat of `mute` there stops it
+  or rejects its card the same way, and answers "Already muted." for the rest. Beside an open question (`ask_user`, or one without a card) `mute` refuses privately
   ("The agent asked a question here. Answer it, or mention the agent, before you mute."), is not
   sent as the answer, and the thread stays unmuted. A prompt restored after a restart counts the
   same. While the thread

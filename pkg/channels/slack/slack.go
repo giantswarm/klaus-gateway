@@ -2356,8 +2356,12 @@ func (a *Adapter) dispatchFrom(ctx context.Context, msg channels.InboundMessage,
 	// A message written after the mute that gets this far ends it: in a muted
 	// thread that is a mention, or a parked one's replay. Cleared before the
 	// turn is sent: a turn that fails leaves the thread answering again, not
-	// silent.
-	mutedAt := a.endMute(ctx, slackChannel, msg.ThreadID, msg.MessageID)
+	// silent. The word mute itself never ends it: it gets here only to reject
+	// an open approval card (muteThread), also in a thread muted earlier.
+	mutedAt := ""
+	if bareWord(msg.Text) != cmdMute {
+		mutedAt = a.endMute(ctx, slackChannel, msg.ThreadID, msg.MessageID)
+	}
 
 	// A conversation opening inside a thread other people wrote — a bare
 	// mention under an alert, say — hands the agent what the thread
