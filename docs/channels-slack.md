@@ -253,10 +253,17 @@ creates one, which a turn that switches agents does mid-thread.
   thread that has a conversation with the agent, and the gateway says so in the thread ("Muted. I
   won't reply here until someone mentions me."). Anyone else gets the not-permitted note; a thread
   with no conversation ("There is no conversation with the agent in this thread to mute.") and one
-  already muted ("Already muted.") are told privately, and the first writes no row. While the thread
+  already muted ("Already muted.") are told privately, and the first writes no row. A busy thread is
+  muted too: a running turn is stopped the way `stop` stops it, and the note says so ("Stopped and
+  muted. I won't reply here until someone mentions me."); an open approval card is rejected the way
+  a deny word rejects it, and the resumed task's turn runs on the `mute` message, which does not end
+  the mute. Beside an open question (`ask_user`, or one without a card) `mute` refuses privately
+  ("The agent asked a question here. Answer it, or mention the agent, before you mute."), is not
+  sent as the answer, and the thread stays unmuted. A prompt restored after a restart counts the
+  same. While the thread
   is muted, a reply that does not mention the bot is dropped before the access check: no turn, no
   consent prompt for a newcomer, no note, and command words without a mention (`usage`, `stop`) go
-  with it, and so does the word as an upload's caption or as the answer to an open question. A
+  with it, and so does the word as an upload's caption. A
   mention passes. A mentioned command word is answered and keeps the mute; any other message
   written after the mute that reaches a turn ends it — in a muted thread that is a mention — and
   the gateway posts "Unmuted. I'll reply to messages in this thread again." and the agent answers,
@@ -759,7 +766,8 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
   contains it, a caption on an upload, and an answer in a thread paused on a **question** —
   the `ask_user` card, or a question without one, whose typed reply reaches the agent as the
   answer itself — where one word is what the question asked for. There the command is out of
-  reach until the question is answered, which is what a question asks for. A thread paused on an
+  reach until the question is answered, which is what a question asks for; `mute` alone stays the
+  command there, only to refuse (see the muted-thread entry above). A thread paused on an
   **approval card** is not a question: any text beside a
   card is read as a rejection carrying that text, so the word stays the command, the person
   is signed out and the card is left to decide (`slack-hitl-surface.md`). What a gateway serves decides which

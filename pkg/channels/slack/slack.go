@@ -1978,8 +1978,8 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 		// no turn, parks nothing and asks nobody for consent. A mention passes
 		// (its message twin must not take the app_mention twin's dedup slot,
 		// as above), and so does a mute command, so a repeat or a stranger's is
-		// answered; the word as a caption or a question's answer is no command
-		// and is dropped with the rest.
+		// answered; the word as a caption is no command and is dropped with
+		// the rest.
 		if muted && !a.mentionsBot(ctx, inner.Text) && !a.isMuteCommand(msg) {
 			a.Logger.Debug("slack: reply in muted thread ignored", "channel", inner.Channel, "thread", msg.ThreadID)
 			return

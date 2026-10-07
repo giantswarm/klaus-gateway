@@ -102,24 +102,33 @@ func TestMuteCatchUp_ReadFailureRunsTheTurnAndNotifies(t *testing.T) {
 		"The messages written while the agent was muted could not be read (`missing_scope`)")
 }
 
-// A mention that answers an approval the agent left open before the mute
-// ends the mute and reaches the agent as the decision alone, which carries
-// no context, so the thread is not read for it.
+// A muted thread can hold an open approval: mute rejects the open card, and
+// the turn that resumes the rejected task may ask for another. A mention that
+// answers it ends the mute and reaches the agent as the decision alone, which
+// carries no context, so the thread is not read for it.
 func TestMuteCatchUp_AnswerToAnOpenPromptIsNotRead(t *testing.T) {
 	fake := newFakeSlackAPI()
 	fake.withThread(mutedThread(), 50)
 	gw, dispatched := capturingGateway()
 	gw.sendQueue = [][]channels.OutboundDelta{
 		{{Kind: channels.DeltaPrompt, TaskID: "task-1", Prompt: &channels.HitlPrompt{ToolName: "kubectl_delete"}}},
+		{{Kind: channels.DeltaPrompt, TaskID: "task-2", Prompt: &channels.HitlPrompt{ToolName: "kubectl_scale"}}},
 		{{Content: "done"}, {Done: true}},
 	}
-	a, srv, _ := startMutedThreadWith(t, fake, gw)
+	a, srv := openThread(t, gw, fake)
+	waitThreadIdle(t, a, "500.000")
+	sendEvent(t, srv, threadReply("U1", "mute", "500.001", "500.000"))
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 }, flowWait, 20*time.Millisecond,
+		"the mute rejects the first card, and the resumed turn asks for another")
+	waitThreadIdle(t, a, "500.000")
+	require.Equal(t, "500.001", mutedAt(t, gw.rec(), "500.000"))
 
 	sendEvent(t, srv, mention("U1", "<@UBOT> approve", "500.010", "500.000"))
-	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 }, flowWait, 20*time.Millisecond)
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 3 }, flowWait, 20*time.Millisecond)
 	waitThreadIdle(t, a, "500.000")
 
-	msg := dispatched()[1]
+	msg := dispatched()[2]
+	require.Equal(t, "task-2", msg.TaskID)
 	require.NotNil(t, msg.Decision, "the mention answers the open approval")
 	require.Empty(t, msg.Context)
 	require.Empty(t, fake.pathCalls("conversations.replies"), "the thread is not read for a decision")
