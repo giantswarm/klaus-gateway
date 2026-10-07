@@ -2,6 +2,8 @@ package slack
 
 import (
 	"context"
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -25,6 +27,7 @@ const (
 	muteAlreadyNotice        = "Already muted."
 	muteNoConversationNotice = "There is no conversation with the agent in this thread to mute."
 	muteQuestionOpenNotice   = "The agent asked a question here. Answer it, or mention the agent, before you mute."
+	muteParkedDroppedNotice  = "The thread was muted; mention the agent to ask again."
 )
 
 // muteThread runs the mute command sent as the message at ts, and reports
@@ -40,6 +43,10 @@ const (
 // the mute: a paused task can only be answered, and the word is not that
 // answer. A thread already muted is stopped and its card rejected the same
 // way; only the note differs.
+//
+// The messages parked in the thread — for the initiator's consent or for
+// their sender's sign-in — are dropped (dropParked), so one written before
+// the mute does not run a turn in it later.
 func (a *Adapter) muteThread(ctx context.Context, ts, slackUser, slackChannel, threadID string, note, ephemeral func(string)) bool {
 	st, err := a.gw.ThreadState(ctx, ChannelName, slackChannel, threadID)
 	if err != nil {
@@ -96,8 +103,15 @@ func (a *Adapter) muteThread(ctx context.Context, ts, slackUser, slackChannel, t
 	stopped := a.stopThread(threadID)
 	task := a.peekPendingTask(threadID)
 	rejects := !stopped && task != nil && task.Prompt != nil && !task.Prompt.IsAskUser()
+	senders := a.dropParked(ctx, slackChannel, threadID)
 	a.Logger.Info("slack: thread muted", "record", "thread_muted", "channel_id", slackChannel, "thread", threadID,
-		"user", slackUser, "already", already, "stopped_turn", stopped, "rejects_approval", rejects)
+		"user", slackUser, "already", already, "stopped_turn", stopped, "rejects_approval", rejects,
+		"dropped_parked_senders", len(senders))
+	for _, sender := range senders {
+		if err := a.apiClient().postEphemeralText(ctx, slackChannel, sender, threadID, muteParkedDroppedNotice); err != nil {
+			a.Logger.Warn("slack: post parked-dropped notice failed", "thread", threadID, "user", sender, "error", err)
+		}
+	}
 	switch {
 	case stopped:
 		note(muteStoppedNotice)
@@ -107,6 +121,53 @@ func (a *Adapter) muteThread(ctx context.Context, ts, slackUser, slackChannel, t
 		note(muteNotice)
 	}
 	return !rejects
+}
+
+// dropParked removes the messages parked in threadID, for consent and for
+// sign-in, from the process and from the thread's row, and returns their
+// senders, each once. It waits for the restore of the held state first: a
+// drop before it would leave the row's messages to be read back afterwards
+// and replayed. A sign-in that completed in between has nothing to replay,
+// on this process or after a restart. One window stays open, narrow: a
+// sign-in or an Allow that took its messages just before the drop replays
+// them in the muted thread; they are older than the mute, so they run a turn
+// but do not end it.
+func (a *Adapter) dropParked(ctx context.Context, slackChannel, threadID string) []string {
+	if ch := a.heldRestored.Load(); ch != nil {
+		select {
+		case <-*ch:
+		case <-ctx.Done():
+			return nil
+		}
+	}
+	senders := map[string]bool{}
+
+	a.pendingLoginMu.Lock()
+	for user, threads := range a.pendingLogin {
+		if len(threads[threadID]) == 0 {
+			continue
+		}
+		delete(threads, threadID)
+		if len(threads) == 0 {
+			delete(a.pendingLogin, user)
+		}
+		senders[user] = true
+	}
+	a.pendingLoginMu.Unlock()
+
+	a.pendingAccessMu.Lock()
+	for user, queue := range a.pendingAccess[threadID] {
+		if len(queue) > 0 {
+			senders[user] = true
+		}
+	}
+	delete(a.pendingAccess, threadID)
+	a.pendingAccessMu.Unlock()
+
+	if len(senders) > 0 {
+		a.persistHeld(slackChannel, threadID)
+	}
+	return slices.Sorted(maps.Keys(senders))
 }
 
 // isMuteCommand reports whether msg runs as the mute command. It reads only

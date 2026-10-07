@@ -269,8 +269,13 @@ creates one, which a turn that switches agents does mid-thread.
   written after the mute that reaches a turn ends it — in a muted thread that is a mention — and
   the gateway posts "Unmuted. I'll reply to messages in this thread again." and the agent answers,
   and replies without a mention reach it again after that. A newcomer's mention goes through the
-  access prompt first: Deny keeps the thread muted, Allow ends the mute. A message written before
-  the mute keeps it when it runs later (a newcomer's reply allowed after the mute). The mute is
+  access prompt first: Deny keeps the thread muted, Allow ends the mute. `mute` drops the messages
+  parked in the thread — a newcomer's waiting for the initiator's Allow, a signed-out sender's
+  waiting for their sign-in — in the process and in the thread's row, and tells each sender
+  privately: "The thread was muted; mention the agent to ask again." A sign-in that completes
+  later, on this process or after a restart, replays nothing; an access prompt left open stays,
+  and its Allow grants the newcomer and runs nothing, so the thread stays muted. A message written
+  before the mute that still runs keeps it. The mute is
   cleared before the turn is sent, so a turn that fails leaves the thread unmuted. The turn that
   ends the mute carries what the people wrote while it lasted, read the way an opener reads its
   thread: `conversations.replies` with `oldest` set to the mute's `ts` on every page, the messages
