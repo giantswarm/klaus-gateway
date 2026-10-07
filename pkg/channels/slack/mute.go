@@ -69,16 +69,16 @@ func (a *Adapter) muteThread(ctx context.Context, ts, slackUser, slackChannel, t
 		ephemeral(muteQuestionOpenNotice)
 		return true
 	}
-	muted, already := false, false
+	muted, already, mutedAt := false, false, ""
 	err = a.gw.UpdateThreadRecord(ctx, ChannelName, slackChannel, threadID, func(e *store.Entry, found bool) bool {
 		switch {
 		case !found || e.Initiator == "":
 			return false
 		case e.MutedAt != "":
-			already = true
+			already, mutedAt = true, e.MutedAt
 			return false
 		}
-		e.MutedAt = ts
+		e.MutedAt, mutedAt = ts, ts
 		muted = true
 		return true
 	})
@@ -114,11 +114,23 @@ func (a *Adapter) muteThread(ctx context.Context, ts, slackUser, slackChannel, t
 		note(muteNotice)
 	}
 	for _, sender := range a.dropParked(ctx, slackChannel, threadID) {
-		if err := a.apiClient().postEphemeralText(ctx, slackChannel, sender, threadID, muteParkedDroppedNotice); err != nil {
-			a.Logger.Warn("slack: post parked-dropped notice failed", "thread", threadID, "user", sender, "error", err)
-		}
+		a.tellParkedDropped(ctx, slackChannel, threadID, mutedAt, sender)
 	}
 	return !rejects
+}
+
+// tellParkedDropped tells sender, privately and once per mute, that the mute
+// dropped their parked messages: the drop and the replays that find a message
+// older than the mute (droppedByMute) share the key, so a sender with several
+// messages hears it once.
+func (a *Adapter) tellParkedDropped(ctx context.Context, slackChannel, threadID, mutedAt, sender string) {
+	key := sender + "\x00" + threadID + "\x00" + mutedAt
+	if !markOnce(&a.mutedDropNoticedMu, &a.mutedDropNoticed, key, pendingTTL) {
+		return
+	}
+	if err := a.apiClient().postEphemeralText(ctx, slackChannel, sender, threadID, muteParkedDroppedNotice); err != nil {
+		a.Logger.Warn("slack: post parked-dropped notice failed", "thread", threadID, "user", sender, "error", err)
+	}
 }
 
 // dropParked removes the messages parked in threadID, for consent and for
@@ -176,7 +188,10 @@ func (a *Adapter) dropParked(ctx context.Context, slackChannel, threadID string)
 // droppedByMute reports whether msg, a parked message about to replay, was
 // written before its thread's mute: such a message runs no turn, and its
 // sender is told as the mute tells the senders it drops. A store that cannot
-// be read, or a message without a Slack ts, lets the replay run.
+// be read, or a message without a Slack ts, lets the replay run. It compares
+// with the mute's start only: a repeat mute in a muted thread drops what is
+// parked, but a mention written during the mute that an Allow took before
+// the repeat still runs when its turn comes, and ends the mute.
 func (a *Adapter) droppedByMute(ctx context.Context, msg channels.InboundMessage, slackChannel string) bool {
 	if isDMChannelID(slackChannel) || msg.ThreadID == "" {
 		return false
@@ -189,9 +204,7 @@ func (a *Adapter) droppedByMute(ctx context.Context, msg channels.InboundMessage
 		return false
 	}
 	a.Logger.Info("slack: parked message written before the mute dropped", "thread", msg.ThreadID, "user", msg.Subject)
-	if err := a.apiClient().postEphemeralText(ctx, slackChannel, msg.Subject, msg.ThreadID, muteParkedDroppedNotice); err != nil {
-		a.Logger.Warn("slack: post parked-dropped notice failed", "thread", msg.ThreadID, "user", msg.Subject, "error", err)
-	}
+	a.tellParkedDropped(ctx, slackChannel, msg.ThreadID, row.MutedAt, msg.Subject)
 	return true
 }
 

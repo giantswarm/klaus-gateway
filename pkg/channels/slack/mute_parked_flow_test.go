@@ -194,20 +194,24 @@ func TestMuteParked_EachSenderIsToldOnce(t *testing.T) {
 	}, flowWait, 20*time.Millisecond, "U2 waits in both queues")
 
 	muteAndDrop(t, fake, gw, srv, "U2")
-	require.Never(t, func() bool {
-		n := 0
-		for _, c := range fake.pathCalls("chat.postEphemeral") {
-			if c.params["user"] == "U2" && strings.Contains(allText([]recordedCall{c}), parkedDroppedNote) {
-				n++
-			}
-		}
-		return n != 1
-	}, 300*time.Millisecond, 20*time.Millisecond, "one note per sender")
+	require.Never(t, func() bool { return droppedNotesTo(fake, "U2") != 1 },
+		300*time.Millisecond, 20*time.Millisecond, "one note per sender")
 }
 
-// An Allow taken while a turn runs leaves the newcomer's message waiting for
+// droppedNotesTo counts the parked-dropped notes sent to user.
+func droppedNotesTo(fake *fakeSlackAPI, user string) int {
+	n := 0
+	for _, c := range fake.pathCalls("chat.postEphemeral") {
+		if c.params["user"] == user && strings.Contains(allText([]recordedCall{c}), parkedDroppedNote) {
+			n++
+		}
+	}
+	return n
+}
+
+// An Allow taken while a turn runs leaves the newcomer's messages waiting for
 // the thread's slot. A mute that stops the turn frees the slot, and the
-// message, written before the mute, runs nothing; its sender is told.
+// messages, written before the mute, run nothing; their sender is told once.
 func TestMuteParked_ReplayWaitingForTheSlotIsDropped(t *testing.T) {
 	fake := newFakeSlackAPI()
 	hold := make(chan struct{})
@@ -219,16 +223,20 @@ func TestMuteParked_ReplayWaitingForTheSlotIsDropped(t *testing.T) {
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 20*time.Millisecond)
 
 	sendEvent(t, srv, mention("U2", "<@UBOT> can I ask too?", "600.010", "600.000"))
-	require.Eventually(t, func() bool { return heldIn(t, gw.rec(), "C1", "600.000") }, flowWait, 20*time.Millisecond)
+	sendEvent(t, srv, mention("U2", "<@UBOT> hello?", "600.011", "600.000"))
+	require.Eventually(t, func() bool {
+		row, _, err := gw.rec().ThreadRecord(t.Context(), "slack", "C1", "600.000")
+		return err == nil && strings.Contains(string(row.Held), "hello?")
+	}, flowWait, 20*time.Millisecond, "both mentions are parked")
 	sendAccessInteraction(t, srv, "U1", accessAllowAction, "600.000", "U2", api.URL+"/response")
 	require.Eventually(t, func() bool { return !heldIn(t, gw.rec(), "C1", "600.000") },
-		flowWait, 20*time.Millisecond, "the Allow took the message; its replay waits for the slot")
+		flowWait, 20*time.Millisecond, "the Allow took the messages; their replay waits for the slot")
 
 	sendEvent(t, srv, threadReply("U1", "mute", "600.020", "600.000"))
 	require.Eventually(t, func() bool { return ephemeralTo(fake, "U2", parkedDroppedNote) },
 		flowWait, 20*time.Millisecond, "the waiting sender is told")
 	waitThreadIdle(t, a, "600.000")
-	require.Never(t, func() bool { return gw.dispatchCount() > 1 }, 500*time.Millisecond, 20*time.Millisecond,
-		"the waiting replay runs nothing")
+	require.Never(t, func() bool { return gw.dispatchCount() > 1 || droppedNotesTo(fake, "U2") != 1 },
+		500*time.Millisecond, 20*time.Millisecond, "the waiting replays run nothing, and the sender is told once")
 	require.Equal(t, "600.020", mutedAt(t, gw.rec(), "600.000"))
 }

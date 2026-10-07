@@ -233,6 +233,11 @@ type Adapter struct {
 	parkedDropNoticedMu sync.Mutex
 	parkedDropNoticed   map[string]ttlEntry[struct{}]
 
+	// mutedDropNoticedMu guards mutedDropNoticed, the (user, thread, mute)
+	// triples already told that a mute dropped their parked messages.
+	mutedDropNoticedMu sync.Mutex
+	mutedDropNoticed   map[string]ttlEntry[struct{}]
+
 	// reactionsUnsupported caches that reactions.add returned missing_scope, so
 	// later turns skip the failed call and show progress without reactions.
 	reactionsUnsupported atomic.Bool
