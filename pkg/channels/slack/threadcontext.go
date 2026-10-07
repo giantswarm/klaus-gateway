@@ -72,8 +72,9 @@ const (
 	// the page bound or Slack stopped the read. A catch-up read starts at the
 	// mute, so the thread's own reply count says nothing about it, and the
 	// lines are the oldest of the muted period, not its newest.
-	catchUpRead    = "%s %s"
-	catchUpPartial = " (the read stopped early)"
+	catchUpRead           = "%s %s"
+	catchUpPartial        = " (the read stopped early)"
+	catchUpPartialTrimmed = ", cut to %s characters, oldest first"
 )
 
 // mentionRe matches a Slack user mention, with or without the "|label" form
@@ -126,9 +127,17 @@ func (a *Adapter) threadContext(ctx context.Context, channelID, threadID, opener
 // people wrote in the thread while it was muted: the messages after mutedAt
 // and before msg. A message that already carries context (a shortcut's shared
 // thread) holds those messages already, and a mute with nothing written
-// after it leaves the turn with its own message only.
+// after it leaves the turn with its own message only. A message that answers
+// a prompt the agent left open reaches it as the decision alone, which
+// carries no context, so the thread is not read for it and the log says the
+// catch-up was not delivered.
 func (a *Adapter) attachCatchUp(ctx context.Context, msg *channels.InboundMessage, slackChannel, asker, mutedAt string) {
 	if mutedAt == "" || msg.Context != "" {
+		return
+	}
+	if msg.Decision != nil {
+		a.Logger.Info("slack: catch-up not delivered, the message answers an open prompt",
+			"channel_id", slackChannel, "thread_id", msg.ThreadID, "slack_user", asker)
 		return
 	}
 	msg.Context = a.readThreadFor(ctx, threadReadSpec{
@@ -330,7 +339,12 @@ func renderCatchUp(read threadRead, rootTS, mutedAt, untilTS, botUserID string, 
 		shared += catchUpPartial
 	}
 	shortened := threadContextOldestFirst
-	if cut || len(kept) < total {
+	switch {
+	case (cut || len(kept) < total) && !read.Complete:
+		// A partial read holds the oldest part of the muted period, so what the
+		// cap kept of it is not the most recent of anything.
+		shortened = fmt.Sprintf(catchUpPartialTrimmed, thousands(threadContextMaxChars))
+	case cut || len(kept) < total:
 		shortened = fmt.Sprintf(threadContextTrimmed, thousands(threadContextMaxChars))
 	}
 	return fmt.Sprintf(catchUpLabel, shared, shortened) + "\n" + strings.Join(kept, "\n")

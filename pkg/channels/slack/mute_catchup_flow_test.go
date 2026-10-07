@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/giantswarm/klaus-gateway/pkg/channels"
 )
 
 // The turn that ends a mute hands the agent what the people wrote while the
@@ -98,6 +100,30 @@ func TestMuteCatchUp_ReadFailureRunsTheTurnAndNotifies(t *testing.T) {
 	require.Empty(t, mutedAt(t, gw.rec(), "500.000"), "the mute is over")
 	require.Contains(t, allText(fake.pathCalls("chat.postEphemeral")),
 		"The messages written while the agent was muted could not be read (`missing_scope`)")
+}
+
+// A mention that answers an approval the agent left open before the mute
+// ends the mute and reaches the agent as the decision alone, which carries
+// no context, so the thread is not read for it.
+func TestMuteCatchUp_AnswerToAnOpenPromptIsNotRead(t *testing.T) {
+	fake := newFakeSlackAPI()
+	fake.withThread(mutedThread(), 50)
+	gw, dispatched := capturingGateway()
+	gw.sendQueue = [][]channels.OutboundDelta{
+		{{Kind: channels.DeltaPrompt, TaskID: "task-1", Prompt: &channels.HitlPrompt{ToolName: "kubectl_delete"}}},
+		{{Content: "done"}, {Done: true}},
+	}
+	a, srv, _ := startMutedThreadWith(t, fake, gw)
+
+	sendEvent(t, srv, mention("U1", "<@UBOT> approve", "500.010", "500.000"))
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 }, flowWait, 20*time.Millisecond)
+	waitThreadIdle(t, a, "500.000")
+
+	msg := dispatched()[1]
+	require.NotNil(t, msg.Decision, "the mention answers the open approval")
+	require.Empty(t, msg.Context)
+	require.Empty(t, fake.pathCalls("conversations.replies"), "the thread is not read for a decision")
+	require.Empty(t, mutedAt(t, gw.rec(), "500.000"), "the mute is over")
 }
 
 // Only the turn that ends the mute catches up: the next reply is a turn of

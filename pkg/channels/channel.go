@@ -81,10 +81,11 @@ type InboundMessage struct {
 	Attachments []Attachment
 	// Context, when non-empty, is shared material the channel gathered for
 	// this turn alone — the Slack adapter renders the messages a thread
-	// already held when a conversation opened inside it. It reaches the agent
-	// as a labelled leading part, so the model can tell what other people
-	// wrote from what the user is asking. It is never thread state: only the
-	// turn that opens a conversation carries it.
+	// already held when a conversation opened inside it, or what was written
+	// in a thread while it was muted. It reaches the agent as a labelled
+	// leading part, so the model can tell what other people wrote from what
+	// the user is asking. It is never thread state: only the turn that opens a
+	// conversation, or the turn that ends a mute, carries it.
 	Context string
 	// Subject is the authenticated user's OAuth `sub` when available.
 	Subject string

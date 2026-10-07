@@ -271,11 +271,13 @@ creates one, which a turn that switches agents does mid-thread.
   first]`). The same filters, the same 5-second budget and the same 12,000-character cap apply,
   with no root pinned: the newest lines are kept. A read that fails runs the turn without them and
   tells the person who mentioned the bot privately; a mute with nothing written after it adds no
-  label. Later turns read nothing. Muting keeps the agent, the session and the grants, and it is the row's `muted_at` (the
+  label. Later turns read nothing. A mention that answers an approval or a question the agent left
+  open reaches it as that answer alone, without the catch-up. Muting keeps the agent, the session and the grants, and it is the row's `muted_at` (the
   `ts` of the `mute` message), so it survives a restart on a persistent store and ends with the
   conversation: a mention after the thread lifetime starts the thread over, unmuted. In a DM `mute`
   is a message for the agent. In a private channel the app reads only mentions anyway, so a mute
-  there changes nothing anyone sees.
+  there silences nothing, but the mention that ends it still brings the catch-up of what was
+  written meanwhile (read with `groups:history`).
 
 ### Two auth layers
 

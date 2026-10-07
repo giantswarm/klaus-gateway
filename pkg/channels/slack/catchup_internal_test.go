@@ -80,6 +80,20 @@ func TestRenderCatchUp_PartialReadSaysSo(t *testing.T) {
 	require.Contains(t, got, "[messages written in this thread while the agent was muted: 2 messages (the read stopped early), oldest first]")
 }
 
+// A partial read holds the oldest part of the muted period, so a cap on it
+// does not claim to show the most recent characters.
+func TestRenderCatchUp_PartialAndTrimmedClaimsNoRecency(t *testing.T) {
+	long := strings.Repeat("x", 4000)
+	var msgs []threadMessage
+	for i := range 5 {
+		msgs = append(msgs, threadMessage{TS: fmt.Sprintf("100.%03d", 100+i), User: "u1", Text: long})
+	}
+	got := renderCatchUp(threadRead{Messages: msgs}, "100.000", "100.010", "100.900", "UBOT", upper)
+
+	require.Contains(t, got, "[messages written in this thread while the agent was muted: 5 messages (the read stopped early), cut to 12,000 characters, oldest first]")
+	require.NotContains(t, got, "most recent")
+}
+
 func TestRenderCatchUp_NothingWrittenRendersNothing(t *testing.T) {
 	require.Empty(t, renderCatchUp(fullRead([]threadMessage{
 		{TS: "100.000", User: "u1", Text: "the root"},
