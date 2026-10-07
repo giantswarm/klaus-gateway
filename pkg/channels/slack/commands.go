@@ -164,7 +164,7 @@ func helpGroups(agents, signIn bool) []helpGroup {
 	groups := []helpGroup{{title: "In a thread", commands: []helpCommand{
 		{cmdStop, "Interrupt the turn that is running, or deny an open approval; with neither it is a message for the agent"},
 		{cmdUsage, "Tokens for the last turn and the session"},
-		{cmdMute, "Stop replying to messages here until someone mentions the bot"},
+		{cmdMute, "Stop replying to messages here; the next mention brings the bot back with what was said meanwhile"},
 	}}}
 	if agents {
 		groups = append(groups, helpGroup{title: "Agents", commands: []helpCommand{

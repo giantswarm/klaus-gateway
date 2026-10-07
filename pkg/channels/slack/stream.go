@@ -2142,8 +2142,10 @@ type threadRead struct {
 // to the agent a conversation pulls into the thread (see threadcontext.go). A
 // page that fails after the first one yields what was read so far, marked
 // incomplete: part of a thread is worth more to the agent than none, as long
-// as the transcript does not claim to be the newest part.
-func (c *slackAPIClient) threadReplies(ctx context.Context, channel, threadTS string) (threadRead, error) {
+// as the transcript does not claim to be the newest part. A non-empty oldest
+// reads only the messages after it (the catch-up of a muted thread), on every
+// page: the cursor alone does not carry it.
+func (c *slackAPIClient) threadReplies(ctx context.Context, channel, threadTS, oldest string) (threadRead, error) {
 	read := threadRead{}
 	cursor := ""
 	for page := 0; page < threadContextMaxPages; page++ {
@@ -2154,6 +2156,9 @@ func (c *slackAPIClient) threadReplies(ctx context.Context, channel, threadTS st
 		}
 		if cursor != "" {
 			params.Set(paramCursor, cursor)
+		}
+		if oldest != "" {
+			params.Set(paramOldest, oldest)
 		}
 		result, err := c.repliesPage(ctx, params)
 		if err != nil {

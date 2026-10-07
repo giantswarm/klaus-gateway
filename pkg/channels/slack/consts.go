@@ -219,6 +219,10 @@ const (
 	// without what the thread already said. %s is Slack's reason. The turn
 	// itself runs regardless, which is why this is a notice and not a refusal.
 	threadContextFailedNotice = "The earlier messages in this thread could not be read (`%s`), so the agent sees only your question."
+	// catchUpFailedNotice tells the person whose message ended a thread's
+	// mute that what was written while it was muted could not be read, so the
+	// agent answers without it. %s is Slack's reason.
+	catchUpFailedNotice = "The messages written while the agent was muted could not be read (`%s`), so the agent sees only your message."
 )
 
 // pickerOpenBudget bounds the work between a slash command arriving and
@@ -686,6 +690,7 @@ const (
 
 	paramLimit  = "limit"  // conversations.replies page size
 	paramCursor = "cursor" // conversations.replies paging cursor
+	paramOldest = "oldest" // conversations.replies: only messages after this ts
 )
 
 // bkURL is the Block Kit button "url" field (opens a link on click).

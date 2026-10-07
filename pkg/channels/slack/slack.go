@@ -2357,7 +2357,7 @@ func (a *Adapter) dispatchFrom(ctx context.Context, msg channels.InboundMessage,
 	// thread that is a mention, or a parked one's replay. Cleared before the
 	// turn is sent: a turn that fails leaves the thread answering again, not
 	// silent.
-	a.endMute(ctx, slackChannel, msg.ThreadID, msg.MessageID)
+	mutedAt := a.endMute(ctx, slackChannel, msg.ThreadID, msg.MessageID)
 
 	// A conversation opening inside a thread other people wrote — a bare
 	// mention under an alert, say — hands the agent what the thread
@@ -2369,6 +2369,9 @@ func (a *Adapter) dispatchFrom(ctx context.Context, msg channels.InboundMessage,
 	if explicitSource != agentSourceCommand && explicitSource != agentSourceShortcut {
 		a.attachThreadContext(ctx, &msg, slackChannel, slackUser)
 	}
+	// The turn that ended a mute hands the agent what the people wrote while
+	// it was muted, the way an opener hands it the thread.
+	a.attachCatchUp(ctx, &msg, slackChannel, slackUser, mutedAt)
 
 	return a.runTurn(ctx, msg, slackChannel, msg.MessageID, initiator, task, agentSource, turnHooks{
 		onIdentityResolved: func(msg channels.InboundMessage) {
