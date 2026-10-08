@@ -241,10 +241,13 @@ choices, and there are 2–20 of them, the whole prompt renders as one form: a s
 question, then a radio/checkbox group for a question with choices or an optional multi-line
 text input (`input` block, `plain_text_input` with `action_id` `hitl_text`) for a question
 without, committed by a single Submit. Each group's and input's `block_id` is
-`hitl_q_<question index>` so the handler maps each answer back to its question. The Submit
-resumes only once every question with choices is answered; an incomplete Submit nudges and
-leaves the form pending. A text input left empty answers its question with an empty slot. The
-`*bold*` wrapping each question is added by the gateway.
+`hitl_q_<question index>` so the handler maps each answer back to its question. A muted line
+under the Submit says a reply in the thread answers the form too, one line per question. The
+Submit resumes only once every question with choices is answered; an incomplete Submit nudges
+("Choose an answer for every question with options") and leaves the form pending. A text input
+left empty answers its question with an empty slot, but a form whose questions all lack choices
+needs at least one typed answer ("Type at least one answer"). The `*bold*` wrapping each
+question is added by the gateway.
 
 ```json
 {
@@ -292,7 +295,8 @@ leaves the form pending. A text input left empty answers its question with an em
       "elements": [
         { "type": "button", "text": { "type": "plain_text", "text": "Submit" }, "style": "primary", "action_id": "hitl_submit", "value": "{\"t\":\"THREAD_TS\",\"id\":\"TASK_ID\"}" }
       ]
-    }
+    },
+    { "type": "context", "elements": [ { "type": "mrkdwn", "text": "Or reply in this thread, one line per question." } ] }
   ]
 }
 ```

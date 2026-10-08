@@ -750,7 +750,7 @@ func TestSelectedChoiceIndices(t *testing.T) {
 		Values map[string]map[string]blockActionState `json:"values"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(raw), &state))
-	flat, _ := choiceSelections(state)
+	flat, _, _ := submitState(state)
 	require.Equal(t, []int{0, 1, 2}, flat)
 }
 
@@ -767,11 +767,11 @@ func TestSelectedChoicesByQuestion(t *testing.T) {
 		Values map[string]map[string]blockActionState `json:"values"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(raw), &state))
-	_, byQuestion := choiceSelections(state)
+	_, byQuestion, _ := submitState(state)
 	require.Equal(t, map[int][]int{0: {0, 2}, 1: {1}}, byQuestion, "only hitl_q_<qi> blocks are grouped per question")
 }
 
-func TestFormTextAnswers(t *testing.T) {
+func TestSubmitStateTexts(t *testing.T) {
 	raw := `{"values":{
 		"` + hitlQGroupPrefix + `_1":{"` + hitlText + `":{"type":"plain_text_input","value":"  It is what we run \n"}},
 		"` + hitlQGroupPrefix + `_2":{"` + hitlText + `":{"type":"plain_text_input","value":null}},
@@ -782,7 +782,9 @@ func TestFormTextAnswers(t *testing.T) {
 		Values map[string]map[string]blockActionState `json:"values"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(raw), &state))
-	require.Equal(t, map[int]string{1: "It is what we run"}, formTextAnswers(state))
+	_, byQuestion, texts := submitState(state)
+	require.Equal(t, map[int]string{1: "It is what we run"}, texts)
+	require.Equal(t, map[int][]int{0: {1}}, byQuestion)
 }
 
 // A form question without choices is answered in its text input: the Submit

@@ -2871,7 +2871,7 @@ func (c *slackAPIClient) postChoiceFormPrompt(ctx context.Context, channel, thre
 		}
 		blocks = append(blocks, choiceWidgetBlock(blockID, q.Choices, q.Multiple))
 	}
-	blocks = append(blocks, submitActions(threadID, taskID))
+	blocks = append(blocks, submitActions(threadID, taskID), contextBlock(formReplyHint))
 	body := map[string]any{
 		paramChannel:  channel,
 		paramThreadTS: threadID,
@@ -2885,16 +2885,22 @@ func (c *slackAPIClient) postChoiceFormPrompt(ctx context.Context, channel, thre
 // choices. Its text reaches the handler in state.values with the Submit click;
 // typing alone sends nothing.
 func textAnswerBlock(blockID string) map[string]any {
+	block := textInputBlock(blockID, hitlText, formTextAnswerLabel, plainTextInputMax)
+	block[bkOptional] = true
+	return block
+}
+
+// textInputBlock builds an input block holding a multi-line plain_text_input.
+func textInputBlock(blockID, actionID, label string, maxLength int) map[string]any {
 	return map[string]any{
-		bkType:     bkInput,
-		bkBlockID:  blockID,
-		bkOptional: true,
-		bkLabel:    plainTextObj(formTextAnswerLabel),
+		bkType:    bkInput,
+		bkBlockID: blockID,
+		bkLabel:   plainTextObj(label),
 		bkElement: map[string]any{
 			bkType:      bkPlainTextInput,
-			bkActionID:  hitlText,
+			bkActionID:  actionID,
 			bkMultiline: true,
-			bkMaxLength: formTextAnswerMax,
+			bkMaxLength: maxLength,
 		},
 	}
 }

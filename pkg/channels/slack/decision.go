@@ -396,17 +396,7 @@ func (a *Adapter) handleDecisionOwnWordsClick(ctx context.Context, channel, ts, 
 func decisionAnswerView(rv store.Review) map[string]any {
 	blocks := []any{
 		map[string]any{bkType: bkSection, bkText: map[string]any{bkType: bkMrkdwn, bkText: "*" + escapeMrkdwn(rv.Text) + "*"}},
-		map[string]any{
-			bkType:    bkInput,
-			bkBlockID: decisionAnswerTextBlockID,
-			bkLabel:   plainTextObj(decisionModalTextLabel),
-			bkElement: map[string]any{
-				bkType:      bkPlainTextInput,
-				bkActionID:  decisionAnswerTextActionID,
-				bkMultiline: true,
-				bkMaxLength: channels.DecisionAnswerMax,
-			},
-		},
+		textInputBlock(decisionAnswerTextBlockID, decisionAnswerTextActionID, decisionModalTextLabel, channels.DecisionAnswerMax),
 	}
 	if options := rv.Decision.Options; len(options) > 0 {
 		items := make([]any, 0, len(options))

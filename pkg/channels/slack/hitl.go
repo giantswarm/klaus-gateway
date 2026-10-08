@@ -308,7 +308,8 @@ func questionAnsweredBlocks(p *channels.HitlPrompt, answers [][]string, user str
 			if strings.TrimSpace(a) == "" {
 				a = formNoAnswer
 			}
-			text := truncateRunes("*"+escapeMrkdwn(q.Question)+"*\n"+escapeMrkdwn(a), slackSectionTextMax)
+			head := "*" + escapeMrkdwnCapped(q.Question, slackSectionTextMax/2) + "*\n"
+			text := head + escapeMrkdwnCapped(a, slackSectionTextMax-utf8.RuneCountInString(head))
 			blocks = append(blocks, map[string]any{bkType: bkSection, bkText: map[string]any{bkType: bkMrkdwn, bkText: text}})
 		}
 		line = fmt.Sprintf(formAnsweredFormat, user, slackTime(at))
@@ -317,7 +318,7 @@ func questionAnsweredBlocks(p *channels.HitlPrompt, answers [][]string, user str
 			blocks = append(blocks, questionSection(questions[0].Question))
 		}
 		rest := utf8.RuneCountInString(fmt.Sprintf(questionAnsweredFormat, "", user, slackTime(at)))
-		line = fmt.Sprintf(questionAnsweredFormat, truncateRunes(escapeMrkdwn(answer(0)), slackSectionTextMax-rest), user, slackTime(at))
+		line = fmt.Sprintf(questionAnsweredFormat, escapeMrkdwnCapped(answer(0), slackSectionTextMax-rest), user, slackTime(at))
 	}
 	return line, append(blocks, contextBlock(line))
 }

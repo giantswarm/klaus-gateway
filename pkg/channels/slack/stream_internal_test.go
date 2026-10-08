@@ -654,7 +654,8 @@ func TestPostChoiceFormPrompt_FreeTextQuestionIsTextInput(t *testing.T) {
 		} `json:"blocks"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(body.Load().(string)), &p))
-	require.Len(t, p.Blocks, 5, "a section and a control per question, plus Submit")
+	require.Len(t, p.Blocks, 6, "a section and a control per question, the Submit and the reply hint")
+	require.Equal(t, bkContext, p.Blocks[5].Type)
 	require.Equal(t, "*Anything else?*", p.Blocks[2].Text.Text)
 	input := p.Blocks[3]
 	require.Equal(t, bkInput, input.Type)
