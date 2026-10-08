@@ -99,7 +99,7 @@ func TestClosedThread_MentionStartsTheThreadOver(t *testing.T) {
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 20*time.Millisecond)
 	waitThreadIdle(t, a, "810.000")
 
-	// The conversation as it stood: bound to an agent and its instance, with
+	// The conversation as it stood: bound to an agent and its session, with
 	// a colleague the initiator allowed in.
 	require.NoError(t, rec.UpdateThreadRecord(ctx, "slack", "C1", "810.000", func(e *store.Entry, _ bool) bool {
 		e.AgentRef, e.AgentInstanceID = "issue-agent", "inst-old"
@@ -118,7 +118,7 @@ func TestClosedThread_MentionStartsTheThreadOver(t *testing.T) {
 	require.True(t, ok, "the mention re-opened the thread")
 	require.Equal(t, "U3", row.Initiator, "the mentioner is the new initiator")
 	require.Empty(t, row.Granted, "no grant of the ended conversation is carried over")
-	require.Empty(t, row.AgentInstanceID, "the binding is cleared, so the turn binds a fresh instance")
+	require.Empty(t, row.AgentInstanceID, "the binding is cleared, so the turn binds a fresh session")
 	require.Equal(t, "test-agent", dispatched()[1].AgentRef, "and the turn runs on the default agent, not the ended conversation's")
 
 	// The colleague the old initiator had allowed is a newcomer again.

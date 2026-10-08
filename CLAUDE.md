@@ -10,7 +10,7 @@ roles separate when reading or writing code:
 
 - **agentgateway** — proxies A2A, MCP and the OpenAI surface; enforces JWT/Cedar policy.
 - **klaus-gateway** — runs the Slack adapter, keys every thread by
-  `(channel, channelID, threadID)`, binds it to one agent and one kagent AgentInstance, and
+  `(channel, channelID, threadID)`, binds it to one agent and one kagent Session, and
   runs the turn as A2A v1 over gRPC through agentgateway.
 
 Slack is the only channel. There is no web or CLI adapter, no OpenAI-compatible `/v1` front
@@ -29,7 +29,7 @@ release (issue #319).
 
 ```
 main.go                 entrypoint; wires the store, the kagent client, the Slack adapter, the server
-pkg/a2a/                kagent API v2 client: A2A v1 over gRPC turns, AgentTemplate roster, AgentInstance per thread, HITL payloads
+pkg/a2a/                kagent API v2 client: A2A v1 over gRPC turns, Agent roster, Session per thread, HITL payloads
 pkg/kagent/gen/         generated kagent.api.v1alpha1 gRPC stubs (make generate-kagent; pin in its README)
 pkg/channels/           Gateway interface (turns, resumes, sessions, thread records) + its Facade
 pkg/channels/slack/     Slack channel adapter (/channels/slack/*); Events API + Socket Mode
@@ -60,7 +60,7 @@ Three backends are supported (set via `--store` / `KLAUS_GATEWAY_STORE`):
 | Bolt        | `bolt`      | yes        | no             | Local file; path via `--bolt-path`          |
 
 The store key is `<channel>|<channelID>|<threadID>` (three parts; the user slot went with the
-per-user web and CLI routes). A Slack thread's agent, initiator, grants, AgentInstance binding,
+per-user web and CLI routes). A Slack thread's agent, initiator, grants, Session binding,
 in-flight task and held state (messages parked for a sign-in or an approval, a paused prompt) are one row in the store, sharing one sliding lifetime (`routing.threadTTL`, default 90 days). Every writer
 of that row (a channel's grant, the facade's task record, the binding) goes through
 `Store.Update`, which serialises a read-modify-write per key inside the process.
@@ -114,7 +114,7 @@ Everything is in this repo:
   values come from" is the values contract with agent-platform (why deleting a values key is a major)
 - `docs/channels-slack.md` and `docs/slack-hitl-surface.md` — the Slack adapter and every interactive prompt it posts
 - `docs/api.md` — the team-review endpoint and the admin surface
-- `docs/kagent-a2a.md` — A2A v1 over gRPC, the AgentTemplate roster, one AgentInstance per thread, HITL and stop
+- `docs/kagent-a2a.md` — A2A v1 over gRPC, the Agent roster, one Session per thread, HITL and stop
 - `docs/development.md` — build, test, the HTTP surface, adding an adapter
 - `UPGRADE.md` — what an operator has to do or decide between releases; `CHANGELOG.md` lists every change
 

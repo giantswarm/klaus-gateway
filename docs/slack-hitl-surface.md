@@ -2,7 +2,7 @@
 
 Every interactive prompt klaus-gateway can post to Slack (as the **Swarmgeist** app), when it
 appears, and how the user answers it. The gateway receives a neutral stream of deltas from the
-thread's kagent AgentInstance (over A2A); when a turn pauses for the user, the Slack adapter renders one of
+thread's kagent Session (over A2A); when a turn pauses for the user, the Slack adapter renders one of
 the prompts below. Prompt building lives in `pkg/channels/slack/` (`stream.go`, `hitl.go`);
 click handling lives in `interactions.go`.
 
@@ -369,7 +369,7 @@ the JSON `{"t":"<thread>","u":"<newcomer>"}`, since one initiator can have sever
 approvals at once.
 
 A granted collaborator's turns run in the initiator's conversation under the collaborator's
-own identity: the gateway sends their own token together with the thread's AgentInstance
+own identity: the gateway sends their own token together with the thread's Session
 share, and names them to the agent as attribution. See
 [Threads and conversations](channels-slack.md#threads-and-conversations).
 

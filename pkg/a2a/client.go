@@ -1,12 +1,14 @@
 // Package a2a is klaus-gateway's client for a kagent API v2 controller: the
 // A2A v1 protocol over gRPC for the agent turns, and kagent's own gRPC
-// services (kagent.api.v1alpha1) for the AgentTemplate roster, the
-// AgentInstance that holds a conversation, and the model behind a template.
+// services (kagent.api.v1alpha1) for the Agent roster, the Session that holds
+// a conversation, and the model behind an agent.
 //
 // Every call is made as the person behind the channel turn: the caller's Dex
-// id_token rides as the `authorization` metadata entry and, on the A2A calls,
-// the conversation's AgentInstance id as `x-kagent-agent-instance-id`. The
-// gateway never presents its own machine identity to the controller.
+// id_token rides as the `authorization` metadata entry. An A2A call names the
+// Agent it is for as the request's tenant (`namespace/name`, the agent ref
+// WithAgentRef put on the context) and the conversation as the message's
+// context id, the Session's. The gateway never presents its own machine
+// identity to the controller.
 package a2a
 
 import (
@@ -37,13 +39,9 @@ import (
 	apiv1alpha1 "github.com/giantswarm/klaus-gateway/pkg/kagent/gen/kagent/api/v1alpha1"
 )
 
-// InstanceIDHeader is the gRPC metadata entry that routes an A2A call to the
-// AgentInstance holding the conversation. The controller requires exactly one.
-const InstanceIDHeader = "x-kagent-agent-instance-id"
-
-// ShareTokenHeader is the gRPC metadata entry that presents an AgentInstance
-// share token. The controller authorizes a call carrying it on the shared
-// instance while the caller stays authenticated as themselves.
+// ShareTokenHeader is the gRPC metadata entry that presents a Session share
+// token. The controller authorizes a call carrying it on the shared session
+// while the caller stays authenticated as themselves.
 const ShareTokenHeader = "x-share-token"
 
 // maxMessageBytes is the largest message the client receives: the
@@ -69,29 +67,29 @@ var (
 	// actionable "too large" notice instead of the generic turn-failed message.
 	ErrPayloadTooLarge = errors.New("a2a: request payload too large")
 
-	// ErrInstanceBusy is returned when the controller refuses a new task because
-	// the AgentInstance already has an active one. One task runs per instance;
+	// ErrSessionBusy is returned when the controller refuses a new task because
+	// the Session already has an active one. One task runs per session;
 	// channels map it to their "still working" notice.
-	ErrInstanceBusy = errors.New("a2a: the conversation's agent is still working on a previous message")
+	ErrSessionBusy = errors.New("a2a: the conversation's agent is still working on a previous message")
 
-	// ErrInstanceNotFound is returned when the AgentInstance a thread is bound to
-	// no longer exists at the controller.
-	ErrInstanceNotFound = errors.New("a2a: agent instance not found")
+	// ErrSessionNotFound is returned when the Session a thread is bound to no
+	// longer exists at the controller.
+	ErrSessionNotFound = errors.New("a2a: session not found")
 
-	// ErrAgentUnknown is returned when an agent ref names no AgentTemplate in
-	// the served namespace.
+	// ErrAgentUnknown is returned when an agent ref names no Agent in the
+	// served namespace.
 	ErrAgentUnknown = errors.New("a2a: unknown agent")
 
-	// ErrAgentUnavailable is returned when an AgentTemplate exists but cannot be
-	// selected: no Harness admits it, or the admitting Harness has not compiled
-	// a ready revision yet. The error message carries the reason.
+	// ErrAgentUnavailable is returned when an Agent exists but cannot be
+	// selected: its Ready condition is not True, so it has no revision a
+	// Session can be created from. The error message carries the reason.
 	ErrAgentUnavailable = errors.New("a2a: agent unavailable")
 )
 
-// AgentUnavailableError says why a template that exists cannot start a
-// conversation: no Harness admits it, or the admitting Harness has not
-// compiled a ready revision. It matches ErrAgentUnavailable in errors.Is, so a
-// channel can render the reason instead of parsing the message.
+// AgentUnavailableError says why an Agent that exists cannot start a
+// conversation: its Ready condition is not True. It matches
+// ErrAgentUnavailable in errors.Is, so a channel can render the reason instead
+// of parsing the message.
 type AgentUnavailableError struct {
 	// Ref is the agent ref as selected.
 	Ref string
@@ -113,11 +111,11 @@ type Config struct {
 	// CAFile optionally names a PEM bundle trusted for a grpcs target in
 	// addition to the system roots.
 	CAFile string
-	// Namespace is the namespace whose AgentTemplates are served; a bare agent
-	// ref is resolved in it.
+	// Namespace is the namespace whose Agents are served; a bare agent ref is
+	// resolved in it.
 	Namespace string
-	// FallbackIconURLTemplate supplies an agent icon when the AgentTemplate
-	// carries no icon-URL annotation. "{agent}" is replaced with the agent's
+	// FallbackIconURLTemplate supplies an agent icon when neither the Agent
+	// nor its AgentTemplate carries an icon-URL annotation. "{agent}" is replaced with the agent's
 	// technical name. Empty leaves the icon empty.
 	FallbackIconURLTemplate string
 	Logger                  *slog.Logger
@@ -126,8 +124,9 @@ type Config struct {
 // Client speaks to one kagent controller. It is safe for concurrent use.
 type Client struct {
 	a2a       *a2aclient.Client
+	agents    apiv1alpha1.AgentServiceClient
 	templates apiv1alpha1.AgentTemplateServiceClient
-	instances apiv1alpha1.AgentInstanceServiceClient
+	sessions  apiv1alpha1.SessionServiceClient
 	models    apiv1alpha1.ModelServiceClient
 
 	namespace    string
@@ -218,8 +217,9 @@ func NewClient(conn grpc.ClientConnInterface, cfg Config) (*Client, error) {
 	}
 	return &Client{
 		a2a:          a2aClient,
+		agents:       apiv1alpha1.NewAgentServiceClient(conn),
 		templates:    apiv1alpha1.NewAgentTemplateServiceClient(conn),
-		instances:    apiv1alpha1.NewAgentInstanceServiceClient(conn),
+		sessions:     apiv1alpha1.NewSessionServiceClient(conn),
 		models:       apiv1alpha1.NewModelServiceClient(conn),
 		namespace:    cfg.Namespace,
 		iconTemplate: cfg.FallbackIconURLTemplate,
@@ -233,7 +233,7 @@ func (c *Client) Close() error {
 	return c.closeConn()
 }
 
-// Namespace is the namespace whose AgentTemplates the client serves.
+// Namespace is the namespace whose Agents the client serves.
 func (c *Client) Namespace() string { return c.namespace }
 
 func transportCredentials(useTLS bool, hostPort, caFile string) (credentials.TransportCredentials, error) {
@@ -284,19 +284,17 @@ func (c *Client) serviceCtx(ctx context.Context) (context.Context, error) {
 	return metadata.AppendToOutgoingContext(ctx, kv...), nil
 }
 
-// a2aCtx attaches the A2A service parameters of a call on instanceID: the
-// caller's bearer, the share token ctx carries, the instance route, and the
-// HITL extension request. The
-// gRPC transport carries them as metadata (keys lower-cased), so the
-// extension request lands as `a2a-extensions`.
-func (c *Client) a2aCtx(ctx context.Context, instanceID string) (context.Context, error) {
+// a2aCtx attaches the A2A service parameters of a call: the caller's bearer,
+// the share token ctx carries, and the HITL extension request. The gRPC
+// transport carries them as metadata (keys lower-cased), so the extension
+// request lands as `a2a-extensions`.
+func (c *Client) a2aCtx(ctx context.Context) (context.Context, error) {
 	token, err := c.bearer(ctx)
 	if err != nil {
 		return nil, err
 	}
 	params := a2aclient.ServiceParams{
 		"authorization":           {"Bearer " + token},
-		InstanceIDHeader:          {instanceID},
 		a2apkg.SvcParamExtensions: {HITLExtensionURI},
 	}
 	if share := ShareTokenFromContext(ctx); share != "" {
@@ -305,50 +303,105 @@ func (c *Client) a2aCtx(ctx context.Context, instanceID string) (context.Context
 	return a2aclient.AttachServiceParams(ctx, params), nil
 }
 
-// Stream sends msg to the AgentInstance and yields the task's events. A
-// message without a TaskID starts a new task; one carrying the id of a paused
-// task resumes it. The message's ContextID stays empty: the controller owns
-// the conversation's context id and rejects any other value.
-func (c *Client) Stream(ctx context.Context, instanceID string, msg *a2apkg.Message) iter.Seq2[a2apkg.Event, error] {
+// tenant is the A2A tenant of the agent ref ctx carries (WithAgentRef):
+// `namespace/name` of the Agent, which the controller routes the call by.
+func (c *Client) tenant(ctx context.Context) (string, error) {
+	namespace, name, err := c.splitRef(AgentRefFromContext(ctx))
+	if err != nil {
+		return "", err
+	}
+	return namespace + "/" + name, nil
+}
+
+// Stream sends msg to the Session and yields the task's events. A message
+// without a TaskID starts a new task; one carrying the id of a paused task
+// resumes it. The message's ContextID is set to the session's: the controller
+// owns the conversation's context id, equal to the session id, and rejects any
+// other value. A session the controller reports SUSPENDED is resumed once and
+// the message sent again.
+func (c *Client) Stream(ctx context.Context, sessionID string, msg *a2apkg.Message) iter.Seq2[a2apkg.Event, error] {
 	return func(yield func(a2apkg.Event, error) bool) {
-		callCtx, err := c.a2aCtx(ctx, instanceID)
+		callCtx, err := c.a2aCtx(ctx)
+		if err != nil {
+			yield(nil, err)
+			return
+		}
+		tenant, err := c.tenant(ctx)
 		if err != nil {
 			yield(nil, err)
 			return
 		}
 		c.refreshRosterInBackground(ctx)
-		first := true
-		for event, err := range c.a2a.SendStreamingMessage(callCtx, &a2apkg.SendMessageRequest{Message: msg}) {
-			if err != nil {
-				// The controller refuses an oversize request on the stream's first
-				// read. The same refusal later is an event too large for this
-				// client, which is not the person's message.
-				if first && isSizeRefusal(err) {
-					err = fmt.Errorf("%w: %s", ErrPayloadTooLarge, err.Error())
+		msg.ContextID = sessionID
+		resumed := false
+		for {
+			var refused error
+			first := true
+			for event, err := range c.a2a.SendStreamingMessage(callCtx, &a2apkg.SendMessageRequest{Tenant: tenant, Message: msg}) {
+				if err != nil {
+					// The controller refuses an oversize request on the stream's first
+					// read. The same refusal later is an event too large for this
+					// client, which is not the person's message.
+					if first && isSizeRefusal(err) {
+						err = fmt.Errorf("%w: %s", ErrPayloadTooLarge, err.Error())
+					}
+					refused = mapA2AError(err)
+					break
 				}
-				yield(nil, mapA2AError(err))
+				first = false
+				if !yield(event, nil) {
+					return
+				}
+			}
+			if refused == nil {
 				return
 			}
-			first = false
-			if !yield(event, nil) {
+			if resumed || !c.resumeIfSuspended(ctx, sessionID, refused) {
+				yield(nil, refused)
 				return
 			}
+			resumed = true
 		}
 	}
 }
 
-// Subscribe attaches to a task the AgentInstance is already running and yields
-// its events from here on: a task that has since quiesced arrives whole, as its
+// resumeIfSuspended reports whether refusal is the controller declining a
+// send on a SUSPENDED session, after resuming it. Only the protocol's
+// unsupported-operation refusal is looked into; the busy refusal has its own
+// sentinel and any other reason is the caller's to report.
+func (c *Client) resumeIfSuspended(ctx context.Context, sessionID string, refusal error) bool {
+	if errors.Is(refusal, ErrSessionBusy) || !errors.Is(refusal, a2apkg.ErrUnsupportedOperation) {
+		return false
+	}
+	session, err := c.GetSession(ctx, sessionID)
+	if err != nil || session.State != apiv1alpha1.RuntimeState_RUNTIME_STATE_SUSPENDED.String() {
+		return false
+	}
+	c.logger.Info("a2a: resuming the suspended session before the turn", "session", sessionID)
+	if _, err := c.ResumeSession(ctx, sessionID); err != nil {
+		c.logger.Warn("a2a: resume the suspended session failed", "session", sessionID, "error", err)
+		return false
+	}
+	return true
+}
+
+// Subscribe attaches to a task the Session is already running and yields its
+// events from here on: a task that has since quiesced arrives whole, as its
 // one and only event. This is how a restarted gateway picks up the turns its
 // predecessor left running.
-func (c *Client) Subscribe(ctx context.Context, instanceID string, taskID a2apkg.TaskID) iter.Seq2[a2apkg.Event, error] {
+func (c *Client) Subscribe(ctx context.Context, taskID a2apkg.TaskID) iter.Seq2[a2apkg.Event, error] {
 	return func(yield func(a2apkg.Event, error) bool) {
-		callCtx, err := c.a2aCtx(ctx, instanceID)
+		callCtx, err := c.a2aCtx(ctx)
 		if err != nil {
 			yield(nil, err)
 			return
 		}
-		for event, err := range c.a2a.SubscribeToTask(callCtx, &a2apkg.SubscribeToTaskRequest{ID: taskID}) {
+		tenant, err := c.tenant(ctx)
+		if err != nil {
+			yield(nil, err)
+			return
+		}
+		for event, err := range c.a2a.SubscribeToTask(callCtx, &a2apkg.SubscribeToTaskRequest{Tenant: tenant, ID: taskID}) {
 			if err != nil {
 				yield(nil, mapA2AError(err))
 				return
@@ -360,13 +413,17 @@ func (c *Client) Subscribe(ctx context.Context, instanceID string, taskID a2apkg
 	}
 }
 
-// GetTask returns a task of the AgentInstance.
-func (c *Client) GetTask(ctx context.Context, instanceID string, taskID a2apkg.TaskID) (*a2apkg.Task, error) {
-	callCtx, err := c.a2aCtx(ctx, instanceID)
+// GetTask returns a task of the agent's, found by its id.
+func (c *Client) GetTask(ctx context.Context, taskID a2apkg.TaskID) (*a2apkg.Task, error) {
+	callCtx, err := c.a2aCtx(ctx)
 	if err != nil {
 		return nil, err
 	}
-	task, err := c.a2a.GetTask(callCtx, &a2apkg.GetTaskRequest{ID: taskID})
+	tenant, err := c.tenant(ctx)
+	if err != nil {
+		return nil, err
+	}
+	task, err := c.a2a.GetTask(callCtx, &a2apkg.GetTaskRequest{Tenant: tenant, ID: taskID})
 	if err != nil {
 		return nil, mapA2AError(err)
 	}
@@ -374,12 +431,16 @@ func (c *Client) GetTask(ctx context.Context, instanceID string, taskID a2apkg.T
 }
 
 // CancelTask cancels a running task server-side and returns its final state.
-func (c *Client) CancelTask(ctx context.Context, instanceID string, taskID a2apkg.TaskID) (*a2apkg.Task, error) {
-	callCtx, err := c.a2aCtx(ctx, instanceID)
+func (c *Client) CancelTask(ctx context.Context, taskID a2apkg.TaskID) (*a2apkg.Task, error) {
+	callCtx, err := c.a2aCtx(ctx)
 	if err != nil {
 		return nil, err
 	}
-	task, err := c.a2a.CancelTask(callCtx, &a2apkg.CancelTaskRequest{ID: taskID})
+	tenant, err := c.tenant(ctx)
+	if err != nil {
+		return nil, err
+	}
+	task, err := c.a2a.CancelTask(callCtx, &a2apkg.CancelTaskRequest{Tenant: tenant, ID: taskID})
 	if err != nil {
 		return nil, mapA2AError(err)
 	}
@@ -393,7 +454,7 @@ func mapA2AError(err error) error {
 	case err == nil:
 		return nil
 	case errors.Is(err, a2apkg.ErrUnsupportedOperation) && strings.Contains(err.Error(), "already has an active task"):
-		return fmt.Errorf("%w: %s", ErrInstanceBusy, err.Error())
+		return fmt.Errorf("%w: %s", ErrSessionBusy, err.Error())
 	default:
 		return err
 	}
@@ -414,7 +475,7 @@ func isSizeRefusal(err error) bool {
 		(strings.Contains(msg, "grpc: received message") || strings.Contains(msg, "grpc: message after decompression"))
 }
 
-// rosterCache is the last fetched AgentTemplate roster. Discovery runs as the
+// rosterCache is the last fetched Agent roster. Discovery runs as the
 // person behind a call, but branding a reply and recovering a thread's agent
 // after a restart happen where no person's token is at hand, so those callers
 // are served from the cache, which every authenticated call refreshes once it
@@ -474,7 +535,7 @@ func (c *Client) refreshRosterInBackground(ctx context.Context) {
 			c.roster.refreshing = false
 			c.roster.mu.Unlock()
 		}()
-		if _, err := c.fetchTemplates(bctx); err != nil {
+		if _, err := c.fetchRoster(bctx); err != nil {
 			c.logger.Warn("a2a: background roster refresh failed", "error", err)
 		}
 	}()

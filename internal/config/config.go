@@ -49,7 +49,7 @@ const (
 type A2AConfig struct {
 	// Enabled gates all A2A behaviour.
 	Enabled bool
-	// DefaultAgent is the AgentTemplate a channel turn runs on when the channel
+	// DefaultAgent is the Agent a channel turn runs on when the channel
 	// names none: a bare name in Namespace, or "namespace/name". Defaults to
 	// "sre-agent".
 	DefaultAgent string
@@ -60,12 +60,12 @@ type A2AConfig struct {
 	// CAFile optionally names a PEM bundle trusted for a grpcs:// URL in
 	// addition to the system roots.
 	CAFile string
-	// Namespace is the namespace whose AgentTemplates are served. Defaults to
+	// Namespace is the namespace whose Agents are served. Defaults to
 	// "kagent".
 	Namespace string
-	// FallbackIconURLTemplate is used when an AgentTemplate carries no icon-URL
-	// annotation. "{agent}" is replaced with the agent's technical name. Empty
-	// disables the fallback.
+	// FallbackIconURLTemplate is used when neither the Agent nor its AgentTemplate
+	// carries an icon-URL annotation. "{agent}" is replaced with the agent's
+	// technical name. Empty disables the fallback.
 	FallbackIconURLTemplate string
 }
 
@@ -325,7 +325,7 @@ func Load(args []string) (Config, error) {
 	fs.DurationVar(&cfg.Valkey.Timeout, "valkey-timeout", cfg.Valkey.Timeout, "Bound on the Valkey dial and on every command.")
 	fs.StringVar(&cfg.OTLPEndpoint, "otel-otlp-endpoint", cfg.OTLPEndpoint, "OTLP gRPC endpoint for traces: a URL (http:// plaintext, https:// TLS) or host:port (plaintext). Empty exports no traces.")
 	fs.StringVar(&cfg.OTLPHeaders, "otel-otlp-headers", cfg.OTLPHeaders, "Headers sent with every trace export, as key=value,key=value (e.g. X-Scope-OrgID=giantswarm).")
-	fs.DurationVar(&cfg.ThreadTTL, "thread-ttl", cfg.ThreadTTL, "Sliding lifetime of a channel thread's conversation: its agent, initiator, grants and AgentInstance binding. Refreshed on every handled message; after it the conversation has ended and the next mention starts the thread over. The row itself is kept for twice as long, so a reply in a thread that ended gets a notice rather than silence, and is then dropped. 0 means never expire.")
+	fs.DurationVar(&cfg.ThreadTTL, "thread-ttl", cfg.ThreadTTL, "Sliding lifetime of a channel thread's conversation: its agent, initiator, grants and Session binding. Refreshed on every handled message; after it the conversation has ended and the next mention starts the thread over. The row itself is kept for twice as long, so a reply in a thread that ended gets a notice rather than silence, and is then dropped. It is also the lifetime of the Session share a thread's collaborators run their turns through. 0 means never expire, and the share is then minted without an expiry.")
 	fs.BoolVar(&cfg.ShowVersion, "version", false, "Print version information and exit.")
 	fs.BoolVar(&cfg.Slack.Enabled, "slack-enabled", cfg.Slack.Enabled, "Enable the Slack channel adapter.")
 	fs.StringVar(&cfg.Slack.Mode, "slack-mode", cfg.Slack.Mode, "Slack connection mode: events or socketmode.")
@@ -348,11 +348,11 @@ func Load(args []string) (Config, error) {
 	fs.StringVar(&cfg.Slack.FailedEmoji, "slack-failed-emoji", cfg.Slack.FailedEmoji, "Slack reaction emoji name for a failed turn (no colons). Empty uses the default.")
 	fs.BoolVar(&cfg.Slack.ClearReactionOnDone, "slack-clear-reaction-on-done", cfg.Slack.ClearReactionOnDone, "On a successful turn, remove the working reaction without adding a done reaction (default true). Set false to swap in the done emoji.")
 	fs.BoolVar(&cfg.A2A.Enabled, "a2a-enabled", cfg.A2A.Enabled, "Enable the A2A client surface.")
-	fs.StringVar(&cfg.A2A.DefaultAgent, "a2a-default-agent", cfg.A2A.DefaultAgent, "AgentTemplate a turn runs on when the channel names none: a bare name in --a2a-namespace, or namespace/name.")
+	fs.StringVar(&cfg.A2A.DefaultAgent, "a2a-default-agent", cfg.A2A.DefaultAgent, "Agent a turn runs on when the channel names none: a bare name in --a2a-namespace, or namespace/name.")
 	fs.StringVar(&cfg.A2A.URL, "a2a-url", cfg.A2A.URL, "kagent controller gRPC target through agentgateway: grpc://host:port (h2c) or grpcs://host[:port] (TLS, 443 by default).")
 	fs.StringVar(&cfg.A2A.CAFile, "a2a-ca-file", cfg.A2A.CAFile, "PEM bundle trusted for a grpcs:// --a2a-url in addition to the system roots. Empty uses the system roots only.")
-	fs.StringVar(&cfg.A2A.Namespace, "a2a-namespace", cfg.A2A.Namespace, "Namespace whose AgentTemplates are served.")
-	fs.StringVar(&cfg.A2A.FallbackIconURLTemplate, "a2a-fallback-icon-url-template", cfg.A2A.FallbackIconURLTemplate, "Fallback agent icon URL used when the AgentTemplate has no icon-URL annotation. \"{agent}\" is replaced with the agent's technical name. Empty disables the fallback.")
+	fs.StringVar(&cfg.A2A.Namespace, "a2a-namespace", cfg.A2A.Namespace, "Namespace whose Agents are served.")
+	fs.StringVar(&cfg.A2A.FallbackIconURLTemplate, "a2a-fallback-icon-url-template", cfg.A2A.FallbackIconURLTemplate, "Fallback agent icon URL used when neither the Agent nor its AgentTemplate has an icon-URL annotation. \"{agent}\" is replaced with the agent's technical name. Empty disables the fallback.")
 	fs.BoolVar(&cfg.OBO.Enabled, "obo-enabled", cfg.OBO.Enabled, "Enable Slack on-behalf-of muster account linking and the /auth/slack/* routes.")
 	fs.StringVar(&cfg.OBO.MusterURL, "obo-muster-url", cfg.OBO.MusterURL, "muster authorization-server base URL (RFC 8414 discovery).")
 	fs.StringVar(&cfg.OBO.ClientID, "obo-client-id", cfg.OBO.ClientID, "Gateway's muster OAuth client ID. Optional: defaults to the self-hosted CIMD document URL (callback base URL + /auth/slack/client.json).")
@@ -360,7 +360,7 @@ func Load(args []string) (Config, error) {
 	fs.StringVar(&cfg.OBO.CallbackBaseURL, "obo-callback-base-url", cfg.OBO.CallbackBaseURL, "Gateway's public base URL; the muster redirect URI is this joined with /auth/slack/callback.")
 	fs.StringVar(&cfg.OBO.Store, "obo-store", cfg.OBO.Store, "Link-store backend: memory, bolt (a file at --obo-store-path) or secret (one Kubernetes Secret, --obo-store-secret). Empty means bolt when --obo-store-path is set, memory otherwise.")
 	fs.StringVar(&cfg.OBO.StorePath, "obo-store-path", cfg.OBO.StorePath, "Path to the encrypted bolt link store (bolt backend). With --obo-store=secret: an existing bolt file to import links from on start.")
-	fs.StringVar(&cfg.OBO.StoreKeyFile, "obo-store-key-file", cfg.OBO.StoreKeyFile, "Path to the 32-byte AES-256 key file for the link store (required with the bolt and secret backends). The key the thread rows' AgentInstance shares are sealed under is derived from it.")
+	fs.StringVar(&cfg.OBO.StoreKeyFile, "obo-store-key-file", cfg.OBO.StoreKeyFile, "Path to the 32-byte AES-256 key file for the link store (required with the bolt and secret backends). The key the thread rows' Session shares are sealed under is derived from it.")
 	fs.StringVar(&cfg.OBO.StoreSecretName, "obo-store-secret", cfg.OBO.StoreSecretName, "Name of the Secret holding the links (secret backend).")
 	fs.StringVar(&cfg.OBO.StoreSecretNamespace, "obo-store-secret-namespace", cfg.OBO.StoreSecretNamespace, "Namespace of the link Secret (secret backend). Empty means the pod's own namespace.")
 	fs.StringVar(&cfg.OBO.StateKeyFile, "obo-state-key-file", cfg.OBO.StateKeyFile, "Path to the HMAC key file used to sign link state (required with --obo-enabled).")

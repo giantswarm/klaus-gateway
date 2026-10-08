@@ -4,8 +4,8 @@
 # hack/kagent-proto/ are copied from. Bump it, run `make generate-kagent`, and
 # commit hack/kagent-proto/ and pkg/kagent/gen/ together.
 KAGENT_PROTO_REPO ?= https://github.com/giantswarm/kagent-upstream.git
-KAGENT_PROTO_COMMIT ?= 0ac524031db451634359df3081d7d5d08cea4c93
-KAGENT_PROTO_FILES := common agent_instances agent_templates models system harnesses
+KAGENT_PROTO_COMMIT ?= f7bf3dafd6a8c21e084015a9310f4692778ebaeb
+KAGENT_PROTO_FILES := common runtime agents sessions agent_templates models harnesses
 
 .PHONY: generate-kagent
 generate-kagent: ## Refresh the kagent protos from KAGENT_PROTO_COMMIT and regenerate pkg/kagent/gen.
@@ -13,7 +13,10 @@ generate-kagent: ## Refresh the kagent protos from KAGENT_PROTO_COMMIT and regen
 	  && git -C $$tmp checkout -q $(KAGENT_PROTO_COMMIT) -- proto/kagent/api/v1alpha1 proto/buf.lock \
 	  && for f in $(KAGENT_PROTO_FILES); do cp $$tmp/proto/kagent/api/v1alpha1/$$f.proto hack/kagent-proto/kagent/api/v1alpha1/; done \
 	  && rm -rf $$tmp
-	cd hack/kagent-proto && PATH="$$(go env GOPATH)/bin:$$PATH" buf generate
+	# buf.gen.yaml's clean empties pkg/kagent/gen, README.md included.
+	cp pkg/kagent/gen/README.md hack/kagent-proto/README.gen.md
+	cd hack/kagent-proto && PATH="$$(go env GOPATH)/bin:$$PATH" buf generate; status=$$?; \
+	  mv README.gen.md ../../pkg/kagent/gen/README.md; exit $$status
 	# The repo's CI checks every Go file with goimports; protoc-gen-go groups
 	# imports differently, so the generated files are formatted once here.
 	go run golang.org/x/tools/cmd/goimports@v0.50.0 -local github.com/giantswarm/klaus-gateway -w pkg/kagent/gen

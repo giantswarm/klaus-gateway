@@ -156,7 +156,7 @@ func run(args []string) error {
 		// every store that outlives the process.
 		slackAdapter.Reviews = routeStore
 		if cfg.Store == config.StoreMemory {
-			logger.Warn("slack: the routing store is memory, so every thread's agent, initiator, grants and instance binding, and every open team review, are lost on a restart; installations run routing.store: valkey")
+			logger.Warn("slack: the routing store is memory, so every thread's agent, initiator, grants and session binding, and every open team review, are lost on a restart; installations run routing.store: valkey")
 		}
 		if err := slackAdapter.Start(ctx, facade); err != nil {
 			return fmt.Errorf("start slack adapter: %w", err)
@@ -414,12 +414,12 @@ func buildOBOLinker(cfg config.OBOConfig, logger *slog.Logger,
 	return linker, closeAll, nil
 }
 
-// shareSealInfo derives the key the thread rows' AgentInstance shares are
+// shareSealInfo derives the key the thread rows' Session shares are
 // sealed under from the link-store key, so neither secret is encrypted under
 // the other's key.
 const shareSealInfo = "klaus-gateway agent instance share token"
 
-// buildShareSealer returns the sealer for the AgentInstance share a thread's
+// buildShareSealer returns the sealer for the Session share a thread's
 // collaborators run their turns through. Collaborators exist only with account
 // linking, so without it there is none. A link store with no key (memory) gets
 // a key for this process alone: a share stored before a restart then no longer

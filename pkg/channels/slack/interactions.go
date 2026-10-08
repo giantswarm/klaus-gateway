@@ -616,7 +616,7 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 	}
 
 	// runTurn resolves the clicker's email, marks a collaborator's decision
-	// (it resumes the initiator's instance through the thread's share, under
+	// (it resumes the initiator's session through the thread's share, under
 	// the clicker's own token, just like a typed turn), and re-stores the taken
 	// task on a pre-stream failure: the buttons already show the decision, so
 	// the failure note tells the user a typed reply can still resume it. The
