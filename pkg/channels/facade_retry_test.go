@@ -56,7 +56,7 @@ func answerOf(deltas []channels.OutboundDelta) (text string, done bool, err erro
 }
 
 // A turn whose tool set could not be set up is sent once more on the same
-// instance before anything was shown, and the channel sees only the attempt
+// session before anything was shown, and the channel sees only the attempt
 // that answered.
 func TestFacade_ToolSetFailureIsRetriedOnce(t *testing.T) {
 	agent := newFakeAgent()
@@ -74,8 +74,8 @@ func TestFacade_ToolSetFailureIsRetriedOnce(t *testing.T) {
 	require.True(t, done)
 	require.Equal(t, "7 nodes, all Ready.", text)
 	require.Len(t, agent.streamed, 2)
-	require.Equal(t, agent.streamedOn[0], agent.streamedOn[1], "the retry runs on the thread's instance: a new one would start the conversation over")
-	require.Equal(t, 1, agent.created, "the instance is created once")
+	require.Equal(t, agent.streamedOn[0], agent.streamedOn[1], "the retry runs on the thread's session: a new one would start the conversation over")
+	require.Equal(t, 1, agent.created, "the session is created once")
 	require.Equal(t, 1, timer.Retries())
 }
 

@@ -259,7 +259,7 @@ func (a *Adapter) deliverInFlight(ctx context.Context, turn channels.InFlightTur
 		initiator = a.accessPolicy().SetInitiator(ctx, slackChannel, threadID, slackUser)
 		// A collaborator's turn resubscribes the way it ran: as them, through
 		// the thread's share.
-		a.applyInstanceOwner(ctx, &msg, threadID, slackUser)
+		a.applySessionOwner(ctx, &msg, threadID, slackUser)
 	}
 
 	turnCtx, done := a.registerTurn(ctx, threadID)

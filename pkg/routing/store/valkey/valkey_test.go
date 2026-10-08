@@ -43,7 +43,7 @@ func TestNew_RequiresURL(t *testing.T) {
 // The key layout is the contract the issue fixes: prefix + Key.String(), so a
 // channel's entries share one prefix (klaus-gateway:route:slack|…) and the
 // value is the same JSON the other stores hold: one row per thread, with the
-// agent it is bound to, its AgentInstance, the task in flight and the
+// agent it is bound to, its Session, the task in flight and the
 // channel's initiator and grants.
 func TestKeyLayout(t *testing.T) {
 	m := miniredis.RunT(t)

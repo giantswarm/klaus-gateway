@@ -77,21 +77,21 @@ func TestTitleFrom_SatisfiesTheControllerContract(t *testing.T) {
 	}
 }
 
-func TestInstanceName(t *testing.T) {
+func TestSessionName(t *testing.T) {
 	t.Run("an_adapter_title_wins", func(t *testing.T) {
 		msg := InboundMessage{Text: "/agent \"sre\" why is kong down?", Title: "why is kong down?"}
-		require.Equal(t, "why is kong down?", instanceName(msg))
+		require.Equal(t, "why is kong down?", sessionName(msg))
 	})
 
 	t.Run("falls_back_to_the_text", func(t *testing.T) {
-		require.Equal(t, "why is kong down?", instanceName(InboundMessage{Text: "why is kong down?\n"}))
+		require.Equal(t, "why is kong down?", sessionName(InboundMessage{Text: "why is kong down?\n"}))
 	})
 
 	t.Run("an_adapter_title_is_normalised_too", func(t *testing.T) {
-		require.Equal(t, "two lines", instanceName(InboundMessage{Title: " two\nlines "}))
+		require.Equal(t, "two lines", sessionName(InboundMessage{Title: " two\nlines "}))
 	})
 
 	t.Run("nothing_to_name_it_after", func(t *testing.T) {
-		require.Empty(t, instanceName(InboundMessage{Attachments: []Attachment{{Filename: "graph.png"}}}))
+		require.Empty(t, sessionName(InboundMessage{Attachments: []Attachment{{Filename: "graph.png"}}}))
 	})
 }
