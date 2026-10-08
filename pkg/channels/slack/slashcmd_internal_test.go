@@ -67,14 +67,14 @@ func TestAskAgentModal_PrefillAndNoDefault(t *testing.T) {
 	a := pickerAdapter("kagent/elsewhere")
 	agents := []pkga2a.AgentInfo{{Name: "sre-agent", Namespace: "kagent", DisplayName: "SRE Agent"}}
 
-	view, err := a.askAgentModal(agents, askAgentRequest{Channel: "C1", User: "U1", Prefill: "  " + strings.Repeat("q", modalQuestionMax+10) + "  "})
+	view, err := a.askAgentModal(agents, askAgentRequest{Channel: "C1", User: "U1", Prefill: "  " + strings.Repeat("q", plainTextInputMax+10) + "  "})
 	require.NoError(t, err)
 	_, _, initial := modalOptions(t, view)
 	require.Empty(t, initial)
 	_, hinted := view[bkBlocks].([]any)[1].(map[string]any)[bkHint]
 	require.False(t, hinted, "no default on the list, no hint naming one")
 	question := view[bkBlocks].([]any)[2].(map[string]any)[bkElement].(map[string]any)
-	require.Equal(t, modalQuestionMax, len([]rune(question[bkInitialValue].(string))))
+	require.Equal(t, plainTextInputMax, len([]rune(question[bkInitialValue].(string))))
 
 	view, err = a.askAgentModal(agents, askAgentRequest{Channel: "C1", User: "U1", Prefill: "   "})
 	require.NoError(t, err)

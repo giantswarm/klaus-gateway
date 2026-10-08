@@ -148,6 +148,27 @@ func escapeMrkdwn(s string) string {
 	return s
 }
 
+// escapeMrkdwnCapped escapes s like escapeMrkdwn and keeps the result within
+// max runes, cutting before an escape rather than through it and ending a cut
+// text with "…".
+func escapeMrkdwnCapped(s string, max int) string {
+	escaped := escapeMrkdwn(s)
+	if utf8.RuneCountInString(escaped) <= max {
+		return escaped
+	}
+	var b strings.Builder
+	n := 0
+	for _, r := range s {
+		e := escapeMrkdwn(string(r))
+		if n+utf8.RuneCountInString(e) > max-1 {
+			break
+		}
+		b.WriteString(e)
+		n += utf8.RuneCountInString(e)
+	}
+	return b.String() + "…"
+}
+
 // codeSpanSafe makes untrusted text safe to embed in a `code span`: backticks
 // would terminate the span and newlines would carry injected markdown onto
 // their own line, so both are replaced.

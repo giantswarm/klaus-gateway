@@ -28,7 +28,8 @@ type slackOption struct {
 type blockActionState struct {
 	SelectedOption  *slackOption  `json:"selected_option"`
 	SelectedOptions []slackOption `json:"selected_options"`
-	// Value is the text of a plain_text_input, reported on a view_submission.
+	// Value is the text of a plain_text_input, reported on a view_submission
+	// and, for a form's text input, on the Submit click.
 	Value string `json:"value"`
 }
 
@@ -105,19 +106,21 @@ func questionIndexFromBlockID(blockID string) (int, bool) {
 	return i, true
 }
 
-// choiceSelections reads a Submit's widget state in a single pass. flat is the
-// de-duplicated choice indices selected across every radio/checkbox block, used
-// for the single-question decision and the nothing-selected check; the section
-// multi-select layout spreads one checkbox per block, so every block counts.
-// byQuestion groups the indices per question for a multi-question form, reading
-// only blocks whose block_id encodes a question index (see
+// submitState reads a Submit's widget and text input state in a single pass.
+// flat is the de-duplicated choice indices selected across every radio/checkbox
+// block, used for the single-question decision and the nothing-selected check;
+// the section multi-select layout spreads one checkbox per block, so every
+// block counts. byQuestion groups the indices per question for a multi-question
+// form, and texts holds a form's trimmed, non-empty typed answers per question;
+// both read only blocks whose block_id encodes a question index (see
 // questionIndexFromBlockID). Option values are choice indices; a value that is
 // not an index is ignored. Indices are de-duplicated and ordered throughout.
-func choiceSelections(state struct {
+func submitState(state struct {
 	Values map[string]map[string]blockActionState `json:"values"`
-}) (flat []int, byQuestion map[int][]int) {
+}) (flat []int, byQuestion map[int][]int, texts map[int]string) {
 	flatSet := map[int]struct{}{}
 	perQuestion := map[int]map[int]struct{}{}
+	texts = map[int]string{}
 	record := func(qi int, isForm bool, v string) {
 		ci, err := strconv.Atoi(v)
 		if err != nil {
@@ -133,6 +136,9 @@ func choiceSelections(state struct {
 	}
 	for blockID, actions := range state.Values {
 		qi, isForm := questionIndexFromBlockID(blockID)
+		if text := strings.TrimSpace(actions[hitlText].Value); isForm && text != "" {
+			texts[qi] = text
+		}
 		for _, st := range actions {
 			if st.SelectedOption != nil {
 				record(qi, isForm, st.SelectedOption.Value)
@@ -146,7 +152,7 @@ func choiceSelections(state struct {
 	for qi, set := range perQuestion {
 		byQuestion[qi] = slices.Sorted(maps.Keys(set))
 	}
-	return slices.Sorted(maps.Keys(flatSet)), byQuestion
+	return slices.Sorted(maps.Keys(flatSet)), byQuestion, texts
 }
 
 // interactionsHandler serves POST /channels/slack/interactions.
@@ -304,7 +310,7 @@ func (a *Adapter) routeInteraction(ctx context.Context, payload interactionPaylo
 		// single-question decision); answers keeps selections grouped per question
 		// for a multi-question form. handleDecision gates completeness once the
 		// pending prompt is known, so the right nudge is chosen per layout.
-		act.choices, act.answers = choiceSelections(payload.State)
+		act.choices, act.answers, act.texts = submitState(payload.State)
 	}
 
 	if err := a.handleDecision(ctx, payload.Channel.ID, threadID, payload.Container.MessageTS, payload.User.ID, act); err != nil {
@@ -322,8 +328,9 @@ type hitlAction struct {
 	// question's), kept when a click that decides nothing retires the prompt.
 	sections []any
 	choice   choiceValue
-	choices  []int         // selected choice indices, for a single-question hitlSubmit
-	answers  map[int][]int // selected choice indices per question, for a multi-question form hitlSubmit
+	choices  []int          // selected choice indices, for a single-question hitlSubmit
+	answers  map[int][]int  // selected choice indices per question, for a multi-question form hitlSubmit
+	texts    map[int]string // typed answers per question without choices, for a multi-question form hitlSubmit
 }
 
 // classifyAction maps a Block Kit action_id to a hitlAction.
@@ -549,9 +556,10 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 	}
 
 	// A Submit must resolve to a complete answer before it resumes: a
-	// multi-question form needs every question answered, a single-question widget
-	// needs at least one selectable choice. Either way an incomplete Submit would
-	// reach the agent as an empty answer slot. Nudge and leave the form pending,
+	// multi-question form needs every question with choices answered and, when
+	// none has choices, one typed answer; a single-question widget needs at
+	// least one selectable choice. Otherwise the Submit would reach the agent as
+	// an empty answer. Nudge and leave the form pending,
 	// without minting a token or taking the task.
 	if act.kind == hitlSubmit {
 		if nudge := submitIncompleteNudge(pending.Prompt, act); nudge != "" {
@@ -664,7 +672,7 @@ func buildButtonDecision(act hitlAction, prompt *channels.HitlPrompt) (*channels
 		return decision, label
 	case hitlSubmit:
 		if prompt != nil && len(prompt.Questions) > 1 {
-			answers := answersByQuestion(prompt, act.answers)
+			answers := answersByQuestion(prompt, act.answers, act.texts)
 			decision := &channels.HitlDecision{
 				Type:           channels.DecisionApprove,
 				AskUserAnswers: answers,
@@ -718,13 +726,17 @@ func choiceLabels(prompt *channels.HitlPrompt, indices []int) []string {
 
 // submitIncompleteNudge returns the ephemeral nudge for a Submit that cannot
 // resolve to a complete answer, or "" when it is complete. A multi-question form
-// needs every question answered (formIncompleteNudge); any other Submit
+// needs every question with choices answered (formIncompleteNudge) and, when
+// none has choices, a typed answer (formBlankNudge); any other Submit
 // (single-question widget or section) needs at least one selectable choice
 // (choiceSelectNudge).
 func submitIncompleteNudge(prompt *channels.HitlPrompt, act hitlAction) string {
 	if prompt != nil && len(prompt.Questions) > 1 {
 		if unansweredQuestions(prompt, act.answers) {
 			return formIncompleteNudge
+		}
+		if blankForm(prompt, act.texts) {
+			return formBlankNudge
 		}
 		return ""
 	}
@@ -738,17 +750,29 @@ func submitIncompleteNudge(prompt *channels.HitlPrompt, act hitlAction) string {
 	return ""
 }
 
-// unansweredQuestions reports whether any question of a multi-question form lacks
-// a selection that resolves to one of its choices. An index out of range for the
-// currently pending prompt (e.g. a Submit on a stale form message) counts as
-// unanswered, so the form is nudged rather than resumed with an empty slot.
+// unansweredQuestions reports whether any question of a multi-question form with
+// choices lacks a selection that resolves to one of them; a question without
+// choices is optional. An index out of range for the currently pending prompt
+// (e.g. a Submit on a stale form message) counts as unanswered, so the form is
+// nudged rather than resumed with an empty slot.
 func unansweredQuestions(prompt *channels.HitlPrompt, selected map[int][]int) bool {
 	for qi, q := range prompt.Questions {
-		if !hasResolvableChoice(q.Choices, selected[qi]) {
+		if len(q.Choices) > 0 && !hasResolvableChoice(q.Choices, selected[qi]) {
 			return true
 		}
 	}
 	return false
+}
+
+// blankForm reports whether a form whose questions all lack choices was
+// submitted with every text input empty.
+func blankForm(prompt *channels.HitlPrompt, texts map[int]string) bool {
+	for qi, q := range prompt.Questions {
+		if len(q.Choices) > 0 || texts[qi] != "" {
+			return false
+		}
+	}
+	return true
 }
 
 // hasResolvableChoice reports whether any index is in range for choices.
@@ -762,11 +786,19 @@ func hasResolvableChoice(choices []string, indices []int) bool {
 }
 
 // answersByQuestion resolves each question's selected choice indices into option
-// labels, one slot per question in order. Out-of-range indices are dropped; a
-// question with no resolvable selection yields an empty slot.
-func answersByQuestion(prompt *channels.HitlPrompt, selected map[int][]int) [][]string {
+// labels, or a question without choices to its typed text, one slot per
+// question in order. Out-of-range indices are dropped; a question with no
+// resolvable selection or no text yields an empty slot.
+func answersByQuestion(prompt *channels.HitlPrompt, selected map[int][]int, texts map[int]string) [][]string {
 	answers := make([][]string, len(prompt.Questions))
 	for qi, q := range prompt.Questions {
+		if len(q.Choices) == 0 {
+			answers[qi] = []string{}
+			if text, ok := texts[qi]; ok {
+				answers[qi] = []string{text}
+			}
+			continue
+		}
 		labels := make([]string, 0, len(selected[qi]))
 		for _, ci := range selected[qi] {
 			if ci >= 0 && ci < len(q.Choices) {

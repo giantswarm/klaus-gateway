@@ -110,15 +110,16 @@ func chooseChoiceRender(q channels.HitlQuestion) choiceRender {
 
 // formRenderable reports whether a multi-question ask_user prompt can render as
 // a single interactive form: every question must be a radio/checkbox widget
-// (1..maxChoiceOptions choices, each label within choiceLabelWidgetMax runes),
-// and the question count must stay within the per-message block budget. A prompt
-// with any free-text, over-long, or over-count question renders as text instead.
+// (1..maxChoiceOptions choices, each label within choiceLabelWidgetMax runes)
+// or a free-text question (no choices, a text input), and the question count
+// must stay within the per-message block budget. A prompt with any over-long
+// or over-count question renders as text instead.
 func formRenderable(p *channels.HitlPrompt) bool {
 	if len(p.Questions) < 2 || len(p.Questions) > maxFormQuestions {
 		return false
 	}
 	for _, q := range p.Questions {
-		if chooseChoiceRender(q) != renderWidget {
+		if len(q.Choices) > 0 && chooseChoiceRender(q) != renderWidget {
 			return false
 		}
 	}
@@ -128,8 +129,9 @@ func formRenderable(p *channels.HitlPrompt) bool {
 // postHitlPrompt renders the appropriate Slack prompt for a paused
 // input-required task: an interactive choice widget for a single-question
 // ask_user, a form for a multi-question ask_user whose questions all fit a
-// widget, Approve/Deny for a generic tool approval, and a free-text fallback for
-// everything else. The user can always answer by replying in-thread.
+// widget or a text input, Approve/Deny for a generic tool approval, and a
+// free-text fallback for everything else. The user can always answer by
+// replying in-thread.
 func (a *Adapter) postHitlPrompt(ctx context.Context, client *slackAPIClient, slackChannel, threadID string, pd *channels.OutboundDelta) error {
 	p := pd.Prompt
 
@@ -306,7 +308,8 @@ func questionAnsweredBlocks(p *channels.HitlPrompt, answers [][]string, user str
 			if strings.TrimSpace(a) == "" {
 				a = formNoAnswer
 			}
-			text := truncateRunes("*"+escapeMrkdwn(q.Question)+"*\n"+escapeMrkdwn(a), slackSectionTextMax)
+			head := "*" + escapeMrkdwnCapped(q.Question, slackSectionTextMax/2) + "*\n"
+			text := head + escapeMrkdwnCapped(a, slackSectionTextMax-utf8.RuneCountInString(head))
 			blocks = append(blocks, map[string]any{bkType: bkSection, bkText: map[string]any{bkType: bkMrkdwn, bkText: text}})
 		}
 		line = fmt.Sprintf(formAnsweredFormat, user, slackTime(at))
@@ -315,7 +318,7 @@ func questionAnsweredBlocks(p *channels.HitlPrompt, answers [][]string, user str
 			blocks = append(blocks, questionSection(questions[0].Question))
 		}
 		rest := utf8.RuneCountInString(fmt.Sprintf(questionAnsweredFormat, "", user, slackTime(at)))
-		line = fmt.Sprintf(questionAnsweredFormat, truncateRunes(escapeMrkdwn(answer(0)), slackSectionTextMax-rest), user, slackTime(at))
+		line = fmt.Sprintf(questionAnsweredFormat, escapeMrkdwnCapped(answer(0), slackSectionTextMax-rest), user, slackTime(at))
 	}
 	return line, append(blocks, contextBlock(line))
 }
