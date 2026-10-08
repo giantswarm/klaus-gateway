@@ -27,7 +27,7 @@ const (
 )
 
 // turnPhaseBuckets spans a turn's phases: a cache hit in single-digit
-// milliseconds, a token refresh or an instance create in seconds, a
+// milliseconds, a token refresh or a session create in seconds, a
 // tool-calling turn in minutes.
 var turnPhaseBuckets = []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 20, 30, 60, 120, 300}
 
@@ -85,7 +85,7 @@ func NewMetrics() *Metrics {
 	phase := prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: metricNamespace,
 		Name:      "turn_phase_seconds",
-		Help:      "Phases of a channel turn's timeline, labelled by channel and phase: marks since the message arrived (dispatch, first_event, first_text, task_done, stream_end, final_flush, total) and the duration of steps (token_mint, roster, create_instance).",
+		Help:      "Phases of a channel turn's timeline, labelled by channel and phase: marks since the message arrived (dispatch, first_event, first_text, task_done, stream_end, final_flush, total) and the duration of steps (token_mint, roster, create_session).",
 		Buckets:   turnPhaseBuckets,
 	}, []string{labelChannel, labelPhase})
 

@@ -63,7 +63,7 @@ serviceMonitor:
   # `observability.giantswarm.io/tenant`; a monitor without it writes to no tenant.
   labels: {}  # @schema additionalProperties: true
 
-# Routing table: the binding of every thread to its agent instance and, while a
+# Routing table: the binding of every thread to its session and, while a
 # turn runs, the record of the task in flight (delivered after a restart). The
 # store decides whether either outlives the pod.
 #
@@ -83,7 +83,7 @@ routing:
   store: memory  # @schema enum: [memory, valkey, bolt]
   boltPath: /var/lib/klaus-gateway/routes.bolt
   # Sliding lifetime of a channel thread's state: its agent, initiator, grants
-  # and AgentInstance binding, refreshed on every turn. After this long without
+  # and Session binding, refreshed on every turn. After this long without
   # a message the conversation has ended and the next mention starts the thread
   # over (new initiator, no grants). The row itself is kept for twice this long
   # — that is the key expiry, so size the store for it — so that a reply in a
@@ -174,8 +174,8 @@ securityContext:
       - ALL
 
 # kagent client surface. When enabled, the gateway runs channel turns on a
-# kagent API v2 controller: the AgentTemplate roster is discovered over
-# kagent's gRPC services, every thread is bound to one AgentInstance, and the
+# kagent API v2 controller: the Agent roster is discovered over
+# kagent's gRPC services, every thread is bound to one Session, and the
 # turns travel as A2A v1 over gRPC. No A2A server is started on the gateway.
 #
 # Every call to the controller is made as the person behind the turn: the Dex
@@ -184,7 +184,7 @@ securityContext:
 # route's JWT policy needs no second issuer.
 a2a:
   enabled: false
-  # defaultAgent is the AgentTemplate a turn runs on when the channel names
+  # defaultAgent is the Agent a turn runs on when the channel names
   # none: a bare name in a2a.namespace, or "namespace/name".
   defaultAgent: "sre-agent"
   # url is the controller's gRPC target, reached through agentgateway
@@ -195,7 +195,7 @@ a2a:
   #   grpc://agentgateway.agent-platform.svc.cluster.local:8080
   #   grpcs://agentgateway.<domain>:443   (the controller route's public hostname; a lab: grpcs://agentgateway.127.0.0.1.nip.io:8445)
   url: ""
-  # namespace is the namespace whose AgentTemplates are served; defaultAgent
+  # namespace is the namespace whose Agents are served; defaultAgent
   # and bare agent names resolve in it.
   namespace: "kagent"
   # caSecret names a Secret (key ca.crt) with a CA bundle trusted for a
@@ -205,8 +205,8 @@ a2a:
   # caFile is a path inside the container to a CA bundle for a grpcs:// url,
   # for images or mounts that already carry one. caSecret takes precedence.
   caFile: ""
-  # fallbackIconUrlTemplate is used when an AgentTemplate carries no
-  # ui.giantswarm.io/icon-url annotation. "{agent}" is replaced with the
+  # fallbackIconUrlTemplate is used when neither an Agent nor its
+  # AgentTemplate carries a ui.giantswarm.io/icon-url annotation. "{agent}" is replaced with the
   # agent's technical name. Empty disables the fallback (the channel uses its
   # own default icon).
   # Example: https://avatars.example.com/v1/{agent}.png

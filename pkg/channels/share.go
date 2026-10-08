@@ -3,49 +3,51 @@ package channels
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
 )
 
-// withOwnerAuth is withCallerAuth for the calls on a thread's AgentInstance
+// withOwnerAuth is withCallerAuth for the calls on a thread's Session
 // that only its creator may make: on a collaborator turn they run under
 // OwnerToken, and under the sender's own token when there is none.
 func withOwnerAuth(ctx context.Context, msg InboundMessage) context.Context {
 	if msg.OwnerToken == "" {
 		return withCallerAuth(ctx, msg)
 	}
+	ctx = pkga2a.WithAgentRef(ctx, msg.AgentRef)
 	return pkga2a.WithForwardedToken(ctx, msg.OwnerToken)
 }
 
-// withShare adds the thread's AgentInstance share to ctx on a collaborator
+// withShare adds the thread's Session share to ctx on a collaborator
 // turn, minting it under OwnerToken when the thread holds none for
-// instanceID. It returns ErrShareUnavailable when the thread holds none and
+// sessionID. It returns ErrShareUnavailable when the thread holds none and
 // OwnerToken is empty. A share that cannot be minted is logged, and the turn
 // goes out under the sender's token alone for the controller to decide.
-func (f *Facade) withShare(ctx context.Context, msg InboundMessage, instanceID string) (context.Context, error) {
-	if !msg.Collaborator || f.Sealer == nil || instanceID == "" {
+func (f *Facade) withShare(ctx context.Context, msg InboundMessage, sessionID string) (context.Context, error) {
+	if !msg.Collaborator || f.Sealer == nil || sessionID == "" {
 		return ctx, nil
 	}
-	token, err := f.shareFor(ctx, msg, instanceID)
+	token, err := f.shareFor(ctx, msg, sessionID)
 	if err != nil {
 		return nil, err
 	}
 	return pkga2a.WithShareToken(ctx, token), nil
 }
 
-// withInstanceAuth adds to ctx what a call on the thread's bound instance
+// withSessionAuth adds to ctx what a call on the thread's bound session
 // needs besides the identity withOwnerAuth set: on a collaborator turn
-// without the instance creator's token, the share the thread holds for it,
+// without the session creator's token, the share the thread holds for it,
 // without minting one. ok is false when that turn holds no usable share: its
-// own token cannot reach the instance, so the controller's answer would say
-// nothing about the instance.
-func (f *Facade) withInstanceAuth(ctx context.Context, msg InboundMessage, entry store.Entry) (_ context.Context, ok bool) {
+// own token cannot reach the session, so the controller's answer would say
+// nothing about the session.
+func (f *Facade) withSessionAuth(ctx context.Context, msg InboundMessage, entry store.Entry) (_ context.Context, ok bool) {
 	if !msg.Collaborator || msg.OwnerToken != "" {
 		return ctx, true
 	}
 	key := threadKey(msg.Channel, msg.ChannelID, msg.ThreadID)
-	token, opened := f.openShare(key, entry.Share, entry.AgentInstanceID)
+	token, opened := f.openShare(key, entry.Share, entry.AgentInstanceID, f.shareExpiryMargin())
 	if !opened {
 		return ctx, false
 	}
@@ -53,7 +55,7 @@ func (f *Facade) withInstanceAuth(ctx context.Context, msg InboundMessage, entry
 }
 
 // creatorID is the channel user whose token withOwnerAuth puts on ctx: the
-// person who creates the thread's instance when this turn needs one.
+// person who creates the thread's session when this turn needs one.
 func creatorID(msg InboundMessage) string {
 	if msg.OwnerToken != "" {
 		return msg.OwnerID
@@ -61,7 +63,7 @@ func creatorID(msg InboundMessage) string {
 	return msg.SenderID
 }
 
-// recordedCreator is the channel user who created entry's instance.
+// recordedCreator is the channel user who created entry's session.
 func recordedCreator(entry store.Entry) string {
 	if entry.InstanceCreator != "" {
 		return entry.InstanceCreator
@@ -69,10 +71,10 @@ func recordedCreator(entry store.Entry) string {
 	return entry.Initiator
 }
 
-// shareFor returns the token of the thread's share of instanceID: the one the
+// shareFor returns the token of the thread's share of sessionID: the one the
 // row holds, or a new one minted under OwnerToken and stored sealed. It
-// returns "" for an instance the sender created, and when minting fails.
-func (f *Facade) shareFor(ctx context.Context, msg InboundMessage, instanceID string) (string, error) {
+// returns "" for a session the sender created, and when minting fails.
+func (f *Facade) shareFor(ctx context.Context, msg InboundMessage, sessionID string) (string, error) {
 	key := threadKey(msg.Channel, msg.ChannelID, msg.ThreadID)
 	entry, ok, err := f.Routes.Get(ctx, key)
 	if err != nil {
@@ -81,26 +83,32 @@ func (f *Facade) shareFor(ctx context.Context, msg InboundMessage, instanceID st
 	}
 	var held *store.Share
 	if ok {
-		if entry.AgentInstanceID == instanceID && msg.SenderID != "" && msg.SenderID == entry.InstanceCreator {
+		if entry.AgentInstanceID == sessionID && msg.SenderID != "" && msg.SenderID == entry.InstanceCreator {
 			return "", nil
 		}
 		held = entry.Share
-		if token, opened := f.openShare(key, held, instanceID); opened {
+		// Without the creator's token no replacement can be minted, so a
+		// share is used until shortly before it expires.
+		margin := f.shareExpiryMargin()
+		if msg.OwnerToken != "" {
+			margin = f.shareRenewal()
+		}
+		if token, opened := f.openShare(key, held, sessionID, margin); opened {
 			return token, nil
 		}
 	}
 	if msg.OwnerToken == "" {
-		slog.Info("channels: collaborator turn refused, the thread holds no share and the instance creator's token is unavailable",
-			"thread", msg.ThreadID, "instance", instanceID)
+		slog.Info("channels: collaborator turn refused, the thread holds no share and the session creator's token is unavailable",
+			"thread", msg.ThreadID, "session", sessionID)
 		return "", ErrShareUnavailable
 	}
 	ownerCtx := withOwnerAuth(ctx, msg)
-	share, err := f.Agent.CreateShare(ownerCtx, instanceID)
+	share, err := f.Agent.CreateShare(ownerCtx, sessionID, f.ThreadTTL)
 	if err != nil {
-		slog.Warn("channels: share the thread's agent instance failed", "thread", msg.ThreadID, "instance", instanceID, "error", err)
+		slog.Warn("channels: share the thread's session failed", "thread", msg.ThreadID, "session", sessionID, "error", err)
 		return "", nil
 	}
-	sealed, err := f.Sealer.Seal([]byte(share.Token), shareAAD(key, instanceID))
+	sealed, err := f.Sealer.Seal([]byte(share.Token), shareAAD(key, sessionID))
 	if err != nil {
 		slog.Warn("channels: seal the thread's share failed", "thread", msg.ThreadID, "error", err)
 		f.revokeShare(ownerCtx, msg.ThreadID, share.ID)
@@ -110,20 +118,20 @@ func (f *Facade) shareFor(ctx context.Context, msg InboundMessage, instanceID st
 	var displaced *store.Share
 	if err := f.Routes.Update(ctx, key, func(e *store.Entry, found bool) bool {
 		moved, winner, displaced = false, "", nil
-		if !found || e.AgentInstanceID != instanceID {
+		if !found || e.AgentInstanceID != sessionID {
 			moved = true
 			return false
 		}
 		if e.Share != nil && (held == nil || e.Share.ID != held.ID) {
-			// Another turn stored a share of this instance meanwhile. One this
+			// Another turn stored a share of this session meanwhile. One this
 			// process cannot open is overwritten, and revoked below.
-			if token, opened := f.openShare(key, e.Share, instanceID); opened {
+			if token, opened := f.openShare(key, e.Share, sessionID, 0); opened {
 				winner = token
 				return false
 			}
 			displaced = e.Share
 		}
-		e.Share = &store.Share{ID: share.ID, InstanceID: instanceID, Sealed: sealed}
+		e.Share = &store.Share{ID: share.ID, InstanceID: sessionID, Sealed: sealed, ExpiresAt: share.ExpiresAt}
 		return true
 	}); err != nil {
 		// The turn still uses the share; the next one mints another.
@@ -135,30 +143,59 @@ func (f *Facade) shareFor(ctx context.Context, msg InboundMessage, instanceID st
 		return winner, nil
 	}
 	if moved {
-		// The thread left instanceID while the share was minted.
+		// The thread left sessionID while the share was minted.
 		f.revokeShare(ownerCtx, msg.ThreadID, share.ID)
 		return "", nil
 	}
 	if held != nil {
-		// A share the row held but could not open (another instance, or sealed
-		// under a key this process does not have) is replaced by this one.
-		f.revokeShare(ownerCtx, msg.ThreadID, held.ID)
+		// A share the row held but could not open (another session, sealed
+		// under a key this process does not have, or expired) is revoked. One
+		// replaced only for renewal stays valid until its expiry: a turn
+		// already running on it keeps working.
+		if _, valid := f.openShare(key, held, sessionID, 0); !valid {
+			f.revokeShare(ownerCtx, msg.ThreadID, held.ID)
+		}
 	}
 	if displaced != nil {
 		f.revokeShare(ownerCtx, msg.ThreadID, displaced.ID)
 	}
-	slog.Info("channels: shared the thread's agent instance with its collaborators", "record", "instance_shared",
-		"thread", msg.ThreadID, "instance", instanceID, "share", share.ID)
+	slog.Info("channels: shared the thread's session with its collaborators", "record", "session_shared",
+		"thread", msg.ThreadID, "session", sessionID, "share", share.ID)
 	return share.Token, nil
 }
 
+// shareRenewal is how long before its expiry a share is replaced when the
+// session's creator can mint the next one: an hour, or half the thread
+// lifetime when that is shorter, so a fresh share is never due at once.
+func (f *Facade) shareRenewal() time.Duration {
+	if f.ThreadTTL > 0 {
+		return min(time.Hour, f.ThreadTTL/2)
+	}
+	return time.Hour
+}
+
+// shareExpiryMargin is how long a share must still be valid for a turn to
+// start on it when no replacement can be minted: kagent checks the share on
+// every call, and a turn's later calls (a stop, the final read, a
+// resubscription after a restart) must not outlive it, clock skew between the
+// gateway and the controller's database included. Five minutes, or the
+// renewal window when that is shorter.
+func (f *Facade) shareExpiryMargin() time.Duration {
+	return min(5*time.Minute, f.shareRenewal())
+}
+
 // openShare returns the token of share when it is the thread's share of
-// instanceID and opens under this process's key.
-func (f *Facade) openShare(key store.Key, share *store.Share, instanceID string) (string, bool) {
-	if f.Sealer == nil || share == nil || instanceID == "" || share.InstanceID != instanceID {
+// sessionID, grants access for at least margin more, and opens under this
+// process's key.
+func (f *Facade) openShare(key store.Key, share *store.Share, sessionID string, margin time.Duration) (string, bool) {
+	if f.Sealer == nil || share == nil || sessionID == "" || share.InstanceID != sessionID {
 		return "", false
 	}
-	token, err := f.Sealer.Open(share.Sealed, shareAAD(key, instanceID))
+	if !share.ExpiresAt.IsZero() && !f.clock().Add(margin).Before(share.ExpiresAt) {
+		slog.Info("channels: the thread's share is expired or about to", "thread", key.ThreadID, "share", share.ID, "expires_at", share.ExpiresAt)
+		return "", false
+	}
+	token, err := f.Sealer.Open(share.Sealed, shareAAD(key, sessionID))
 	if err != nil {
 		slog.Warn("channels: the thread's share does not open under this process's key", "thread", key.ThreadID, "share", share.ID, "error", err)
 		return "", false
@@ -166,14 +203,14 @@ func (f *Facade) openShare(key store.Key, share *store.Share, instanceID string)
 	return string(token), true
 }
 
-// revokeLeftShare revokes the share of an instance the thread leaves, created
-// by creator. Only the instance's creator may revoke its shares, and
+// revokeLeftShare revokes the share of a session the thread leaves, created
+// by creator. Only the session's creator may revoke its shares, and
 // kagent answers anyone else NotFound, which reads as success: under
 // another identity the revoke is skipped and logged instead.
 func (f *Facade) revokeLeftShare(ctx context.Context, msg InboundMessage, share *store.Share, creator string) {
 	if creator != "" && creatorID(msg) != creator {
-		slog.Warn("channels: a share the thread no longer uses stays valid at the controller, this turn does not hold its instance creator's token",
-			"thread", msg.ThreadID, "share", share.ID, "instance", share.InstanceID)
+		slog.Warn("channels: a share the thread no longer uses stays valid at the controller, this turn does not hold its session creator's token",
+			"thread", msg.ThreadID, "share", share.ID, "session", share.InstanceID)
 		return
 	}
 	f.revokeShare(ctx, msg.ThreadID, share.ID)
@@ -194,8 +231,8 @@ func (f *Facade) revokeShare(ctx context.Context, threadID, shareID string) {
 	slog.Info("channels: revoked a share the thread no longer uses", "record", "share_revoked", "thread", threadID, "share", shareID)
 }
 
-// shareAAD binds a sealed share token to its thread and instance, so a token
+// shareAAD binds a sealed share token to its thread and session, so a token
 // copied into another row does not open.
-func shareAAD(key store.Key, instanceID string) []byte {
-	return []byte(key.Channel + "\x00" + key.ChannelID + "\x00" + key.ThreadID + "\x00" + instanceID)
+func shareAAD(key store.Key, sessionID string) []byte {
+	return []byte(key.Channel + "\x00" + key.ChannelID + "\x00" + key.ThreadID + "\x00" + sessionID)
 }

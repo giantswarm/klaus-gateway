@@ -23,8 +23,8 @@ use (`Ingress`, `LoadBalancer` service, port-forward).
 ## kagent (agent conversations)
 
 With `a2a.enabled: true` the gateway runs Slack turns on a kagent API v2 controller through
-the platform's agentgateway: A2A v1 over gRPC, the AgentTemplate roster over kagent's gRPC
-services, one AgentInstance per thread. The full model is in [kagent-a2a.md](kagent-a2a.md).
+the platform's agentgateway: A2A v1 over gRPC, the Agent roster over kagent's gRPC
+services, one Session per thread. The full model is in [kagent-a2a.md](kagent-a2a.md).
 
 ```yaml
 a2a:
@@ -34,14 +34,17 @@ a2a:
   # or public: TLS to the kagent hostname (add caSecret for a private CA)
   # url: grpcs://agentgateway.<domain>:443
   # caSecret: kagent-ca        # Secret with key ca.crt
-  namespace: kagent            # the AgentTemplates served
+  namespace: kagent            # the Agents served
   defaultAgent: sre-agent
 ```
 
 The gateway speaks to the controller only as the person behind the turn (their Dex id_token),
 so the route's JWT policy validates one issuer and no ServiceAccount token is presented to it.
-The route must carry native gRPC over HTTP/2 and preserve the `authorization` and
-`x-kagent-agent-instance-id` metadata. Thread bindings live in the routing store, so a
+The route must carry native gRPC over HTTP/2, match the `lf.a2a.v1.A2AService` and the
+`kagent.api.v1alpha1` `AgentService`, `AgentTemplateService`, `SessionService` and
+`ModelService`, and preserve the `authorization` and `x-share-token` metadata. An A2A call
+names the Agent as its tenant and the Session as the message's context id; there is no
+routing header. Thread bindings live in the routing store, so a
 persistent store (`valkey`) keeps conversations across restarts — and lets a
 restarted gateway pick up the turns its predecessor left running, see
 [Shutdown and restarts](#shutdown-and-restarts).
@@ -65,7 +68,7 @@ the turn's session when it expires, so set it above the longest turn you expect.
 less left is refreshed before the turn starts, and the background refresher keeps recently
 active people above the minimum (see `token_refresh` in [channels-slack.md](channels-slack.md)).
 
-The routing store's thread rows hold one more secret: the AgentInstance share a thread's granted
+The routing store's thread rows hold one more secret: the Session share a thread's granted
 collaborators run their turns through. It is sealed under a key derived from `store-key`
 (HKDF-SHA256), so a Valkey dump does not hand it out. Rotating `store-key` makes the stored
 shares unreadable; the next collaborator turn in each thread mints a new share under the
@@ -94,11 +97,11 @@ failure never costs a person their sign-in:
 
 ## Routing store
 
-The routing table maps `(channel, channelID, threadID)` to the kagent AgentInstance that holds
+The routing table maps `(channel, channelID, threadID)` to the kagent Session that holds
 the thread's conversation, together with the record of the task in flight on that thread and of
 how much of its reply has landed (continued, not repeated, after a restart, see
 [Shutdown and restarts](#shutdown-and-restarts)). The same store also holds the thread's agent, its initiator, and the collaborators the initiator allowed: agent,
-initiator, grants, the AgentInstance and its in-flight task are one row, with one sliding
+initiator, grants, the Session and its in-flight task are one row, with one sliding
 lifetime — `routing.threadTTL` (`--thread-ttl`, 90 days by default; `0` never expires) —
 refreshed on every turn. While the thread lives, the initiator and the people they allowed reply
 without mentioning the bot again, and after that long of silence the conversation ends: the next
@@ -233,8 +236,8 @@ ServiceMonitor). Beside the public mux's `klaus_gateway_requests_total` /
   `stream_end` (the A2A stream closed), `final_flush` (the last edit of the answer in the
   channel) and `total`; and the durations of the steps `token_mint` (the person's muster token,
   ~0 on a cache hit, a round trip to muster on a refresh), `roster` (agent resolution) and
-  `create_instance` (the
-  controller's `CreateAgentInstance` on a thread's first turn). Buckets run from 5 ms to 5 min.
+  `create_session` (the
+  controller's `CreateSession` on a thread's first turn). Buckets run from 5 ms to 5 min.
   "Message received → answer landed" is `phase="final_flush"`; p50/p95 of it is the panel to
   watch.
 

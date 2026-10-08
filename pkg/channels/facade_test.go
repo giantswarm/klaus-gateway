@@ -21,7 +21,7 @@ import (
 )
 
 // fakeAgent is the kagent client at the facade's seam: it records the message
-// and instance every turn is sent with, hands out instances keyed by request
+// and session every turn is sent with, hands out sessions keyed by request
 // id like the controller's idempotent create, and plays back a fixed event
 // sequence.
 type fakeAgent struct {
@@ -35,7 +35,7 @@ type fakeAgent struct {
 	// plays attempts[n] instead of events and streamErr.
 	attempts []streamAttempt
 
-	instances map[string]pkga2a.Instance
+	sessions  map[string]pkga2a.Session
 	byRequest map[string]string
 	createErr error
 	getErr    error
@@ -60,10 +60,12 @@ type fakeAgent struct {
 	gotTasks        []a2apkg.TaskID
 	created, gotIns int
 
-	// createdAs is the bearer each CreateInstance ran under; sharedAs the
+	// createdAs is the bearer each CreateSession ran under; sharedAs the
 	// bearer of each CreateShare, shares the ids minted, revoked the revokes.
 	createdAs []string
 	sharedAs  []string
+	sharedTTL []time.Duration
+	shareExp  func(ttl time.Duration) time.Time
 	shareErr  error
 	shares    []string
 	revoked   []string
@@ -82,18 +84,18 @@ type streamAttempt struct {
 func newFakeAgent(events ...a2apkg.Event) *fakeAgent {
 	return &fakeAgent{
 		events:    events,
-		instances: map[string]pkga2a.Instance{},
+		sessions:  map[string]pkga2a.Session{},
 		byRequest: map[string]string{},
 		tasks:     map[a2apkg.TaskID]*a2apkg.Task{},
 	}
 }
 
-func (a *fakeAgent) Stream(ctx context.Context, instanceID string, msg *a2apkg.Message) iter.Seq2[a2apkg.Event, error] {
+func (a *fakeAgent) Stream(ctx context.Context, sessionID string, msg *a2apkg.Message) iter.Seq2[a2apkg.Event, error] {
 	return func(yield func(a2apkg.Event, error) bool) {
 		a.mu.Lock()
 		a.streamCtx = ctx
 		a.streamed = append(a.streamed, msg)
-		a.streamedOn = append(a.streamedOn, instanceID)
+		a.streamedOn = append(a.streamedOn, sessionID)
 		events, streamErr, tailErr, hold := a.events, a.streamErr, a.tailErr, a.hold
 		if n := len(a.streamed) - 1; n < len(a.attempts) {
 			events, streamErr = a.attempts[n].events, a.attempts[n].err
@@ -122,12 +124,12 @@ func (a *fakeAgent) Stream(ctx context.Context, instanceID string, msg *a2apkg.M
 	}
 }
 
-func (a *fakeAgent) Subscribe(ctx context.Context, instanceID string, taskID a2apkg.TaskID) iter.Seq2[a2apkg.Event, error] {
+func (a *fakeAgent) Subscribe(ctx context.Context, taskID a2apkg.TaskID) iter.Seq2[a2apkg.Event, error] {
 	return func(yield func(a2apkg.Event, error) bool) {
 		a.mu.Lock()
 		a.streamCtx = ctx
 		a.subscribed = append(a.subscribed, taskID)
-		a.subscribedOn = append(a.subscribedOn, instanceID)
+		a.subscribedOn = append(a.subscribedOn, pkga2a.AgentRefFromContext(ctx))
 		events, streamErr, hold := a.subscribeEvents, a.subscribeErr, a.hold
 		a.mu.Unlock()
 		if streamErr != nil {
@@ -149,7 +151,7 @@ func (a *fakeAgent) Subscribe(ctx context.Context, instanceID string, taskID a2a
 	}
 }
 
-func (a *fakeAgent) GetTask(_ context.Context, _ string, taskID a2apkg.TaskID) (*a2apkg.Task, error) {
+func (a *fakeAgent) GetTask(_ context.Context, taskID a2apkg.TaskID) (*a2apkg.Task, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.gotTasks = append(a.gotTasks, taskID)
@@ -160,74 +162,79 @@ func (a *fakeAgent) GetTask(_ context.Context, _ string, taskID a2apkg.TaskID) (
 	return task, nil
 }
 
-func (a *fakeAgent) CancelTask(_ context.Context, instanceID string, taskID a2apkg.TaskID) (*a2apkg.Task, error) {
+func (a *fakeAgent) CancelTask(ctx context.Context, taskID a2apkg.TaskID) (*a2apkg.Task, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.canceled = append(a.canceled, taskID)
-	a.canceledOn = append(a.canceledOn, instanceID)
+	a.canceledOn = append(a.canceledOn, pkga2a.AgentRefFromContext(ctx))
 	return &a2apkg.Task{ID: taskID, Status: a2apkg.TaskStatus{State: a2apkg.TaskStateCanceled}}, nil
 }
 
-func (a *fakeAgent) CreateInstance(ctx context.Context, agentRef, requestID, name string) (pkga2a.Instance, error) {
+func (a *fakeAgent) CreateSession(ctx context.Context, agentRef, requestID, name string) (pkga2a.Session, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.createdAs = append(a.createdAs, pkga2a.ForwardedTokenFromContext(ctx))
 	a.createRequests = append(a.createRequests, requestID)
 	a.createNames = append(a.createNames, name)
 	if a.createErr != nil {
-		return pkga2a.Instance{}, a.createErr
+		return pkga2a.Session{}, a.createErr
 	}
 	if id, ok := a.byRequest[requestID]; ok {
-		return a.instances[id], nil
+		return a.sessions[id], nil
 	}
 	a.created++
-	inst := pkga2a.Instance{ID: fmt.Sprintf("inst-%s-%d", agentRef, a.created), State: "AGENT_INSTANCE_STATE_READY"}
-	a.instances[inst.ID] = inst
+	inst := pkga2a.Session{ID: fmt.Sprintf("inst-%s-%d", agentRef, a.created), State: "RUNTIME_STATE_READY"}
+	a.sessions[inst.ID] = inst
 	a.byRequest[requestID] = inst.ID
 	return inst, nil
 }
 
-func (a *fakeAgent) GetInstance(_ context.Context, id string) (pkga2a.Instance, error) {
+func (a *fakeAgent) GetSession(_ context.Context, id string) (pkga2a.Session, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.gotIns++
 	if a.getErr != nil {
-		return pkga2a.Instance{}, a.getErr
+		return pkga2a.Session{}, a.getErr
 	}
-	inst, ok := a.instances[id]
+	inst, ok := a.sessions[id]
 	if !ok {
-		return pkga2a.Instance{}, fmt.Errorf("%w: %s", pkga2a.ErrInstanceNotFound, id)
+		return pkga2a.Session{}, fmt.Errorf("%w: %s", pkga2a.ErrSessionNotFound, id)
 	}
 	return inst, nil
 }
 
-func (a *fakeAgent) DeleteInstance(_ context.Context, id string) error {
+func (a *fakeAgent) DeleteSession(_ context.Context, id string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.deleted = append(a.deleted, id)
 	if a.deleteErr != nil {
 		return a.deleteErr
 	}
-	delete(a.instances, id)
+	delete(a.sessions, id)
 	return nil
 }
 
-func (a *fakeAgent) CreateShare(ctx context.Context, instanceID string) (pkga2a.Share, error) {
+func (a *fakeAgent) CreateShare(ctx context.Context, sessionID string, ttl time.Duration) (pkga2a.Share, error) {
 	a.mu.Lock()
 	a.sharedAs = append(a.sharedAs, pkga2a.ForwardedTokenFromContext(ctx))
+	a.sharedTTL = append(a.sharedTTL, ttl)
 	if a.shareErr != nil {
 		a.mu.Unlock()
 		return pkga2a.Share{}, a.shareErr
 	}
 	id := fmt.Sprintf("share-%d", len(a.shares)+1)
 	a.shares = append(a.shares, id)
+	share := pkga2a.Share{ID: id, Token: "token-" + id + "-" + sessionID}
+	if a.shareExp != nil {
+		share.ExpiresAt = a.shareExp(ttl)
+	}
 	hook := a.onShare
 	a.onShare = nil
 	a.mu.Unlock()
 	if hook != nil {
 		hook()
 	}
-	return pkga2a.Share{ID: id, Token: "token-" + id + "-" + instanceID}, nil
+	return share, nil
 }
 
 func (a *fakeAgent) RevokeShare(_ context.Context, shareID string) error {
@@ -267,7 +274,7 @@ func drain(t *testing.T, ch <-chan channels.OutboundDelta) []channels.OutboundDe
 	return deltas
 }
 
-func TestFacade_SendCompletionViaA2A_FirstTurnCreatesTheInstance(t *testing.T) {
+func TestFacade_SendCompletionViaA2A_FirstTurnCreatesTheSession(t *testing.T) {
 	agent := newFakeAgent(
 		&a2apkg.Task{ID: taskInfo.TaskID, ContextID: taskInfo.ContextID, Status: a2apkg.TaskStatus{State: a2apkg.TaskStateSubmitted}},
 		a2apkg.NewArtifactEvent(taskInfo, a2apkg.NewTextPart("hello world")),
@@ -291,7 +298,7 @@ func TestFacade_SendCompletionViaA2A_FirstTurnCreatesTheInstance(t *testing.T) {
 	require.Equal(t, "hello world", content.String())
 	require.True(t, done)
 
-	// The instance was created with the synthesized context id as the
+	// The session was created with the synthesized context id as the
 	// idempotency key (thread-scoped: empty user slot), the turn ran on it,
 	// and the binding is persisted for the next turn and the next process.
 	// The id is fixed: every live thread is bound by it, so a change to its
@@ -374,13 +381,13 @@ func TestFacade_SendCompletionViaA2A_LaterTurnsReuseTheBinding(t *testing.T) {
 	require.NoError(t, err)
 	drain(t, ch)
 
-	require.Empty(t, agent.createRequests, "a bound thread creates no instance")
+	require.Empty(t, agent.createRequests, "a bound thread creates no session")
 	require.Equal(t, []string{"inst-from-before-the-restart"}, agent.streamedOn)
 }
 
 // A retried first turn (the binding was not written, or the process died in
 // between) reaches the controller with the same request id and gets the same
-// instance back instead of a second one.
+// session back instead of a second one.
 func TestFacade_SendCompletionViaA2A_RetriedFirstTurnIsIdempotent(t *testing.T) {
 	agent := newFakeAgent(a2apkg.NewStatusUpdateEvent(taskInfo, a2apkg.TaskStateCompleted, nil))
 	f, routes := newA2AFacade(agent)
@@ -394,7 +401,7 @@ func TestFacade_SendCompletionViaA2A_RetriedFirstTurnIsIdempotent(t *testing.T) 
 	}
 	require.Len(t, agent.createRequests, 2)
 	require.Equal(t, agent.createRequests[0], agent.createRequests[1])
-	require.Equal(t, 1, agent.created, "the same request id yields the same instance")
+	require.Equal(t, 1, agent.created, "the same request id yields the same session")
 	require.Equal(t, []string{"inst-kagent/worker-1", "inst-kagent/worker-1"}, agent.streamedOn)
 }
 
@@ -482,18 +489,18 @@ func TestFacade_SendCompletionViaA2A_ForwardsIdentity(t *testing.T) {
 // returned synchronously so channels render it as the turn's outcome.
 func TestFacade_SendCompletionViaA2A_RefusalIsSynchronous(t *testing.T) {
 	agent := newFakeAgent()
-	agent.streamErr = fmt.Errorf("%w: AgentInstance x already has an active task", pkga2a.ErrInstanceBusy)
+	agent.streamErr = fmt.Errorf("%w: Session x already has an active task", pkga2a.ErrSessionBusy)
 	f, _ := newA2AFacade(agent)
 
 	_, err := f.SendCompletion(t.Context(), slackMsg("hi"))
-	require.ErrorIs(t, err, pkga2a.ErrInstanceBusy)
+	require.ErrorIs(t, err, pkga2a.ErrSessionBusy)
 
 	agent = newFakeAgent()
 	agent.createErr = fmt.Errorf("%w: kagent/worker: no Harness admits this AgentTemplate", pkga2a.ErrAgentUnavailable)
 	f, _ = newA2AFacade(agent)
 	_, err = f.SendCompletion(t.Context(), slackMsg("hi"))
 	require.ErrorIs(t, err, pkga2a.ErrAgentUnavailable)
-	require.Empty(t, agent.streamed, "a refused instance never gets a turn")
+	require.Empty(t, agent.streamed, "a refused session never gets a turn")
 }
 
 func TestFacade_SendCompletionViaA2A_MidStreamErrorPropagated(t *testing.T) {
@@ -615,7 +622,7 @@ func TestFacade_StoppedTurnCancelsTheTaskServerSide(t *testing.T) {
 		return len(agent.canceled) == 1
 	}, 2*time.Second, 10*time.Millisecond)
 	require.Equal(t, []a2apkg.TaskID{taskInfo.TaskID}, agent.canceled)
-	require.Equal(t, []string{"inst-kagent/worker-1"}, agent.canceledOn)
+	require.Equal(t, []string{"kagent/worker"}, agent.canceledOn, "the cancel is addressed to the thread's agent")
 	require.NotNil(t, agent.streamCtx)
 }
 
@@ -630,9 +637,9 @@ func TestFacade_SessionResumable(t *testing.T) {
 		require.False(t, exists)
 	})
 
-	t.Run("bound to a live instance", func(t *testing.T) {
+	t.Run("bound to a live session", func(t *testing.T) {
 		agent := newFakeAgent()
-		agent.instances["inst-1"] = pkga2a.Instance{ID: "inst-1", State: "AGENT_INSTANCE_STATE_SUSPENDED"}
+		agent.sessions["inst-1"] = pkga2a.Session{ID: "inst-1", State: "RUNTIME_STATE_SUSPENDED"}
 		f, routes := newA2AFacade(agent)
 		require.NoError(t, storetest.Put(t.Context(), routes, key, store.Entry{AgentRef: "kagent/worker", AgentInstanceID: "inst-1"}))
 		exists, checked := f.SessionResumable(t.Context(), msg)
@@ -640,7 +647,7 @@ func TestFacade_SessionResumable(t *testing.T) {
 		require.True(t, exists)
 	})
 
-	t.Run("bound to a deleted instance clears the binding and keeps the thread", func(t *testing.T) {
+	t.Run("bound to a deleted session clears the binding and keeps the thread", func(t *testing.T) {
 		f, routes := newA2AFacade(newFakeAgent())
 		require.NoError(t, storetest.Put(t.Context(), routes, key, store.Entry{AgentRef: "kagent/worker", AgentInstanceID: "inst-gone", Initiator: "U1"}))
 		exists, checked := f.SessionResumable(t.Context(), msg)
@@ -649,7 +656,7 @@ func TestFacade_SessionResumable(t *testing.T) {
 		entry, ok, err := routes.Get(t.Context(), key)
 		require.NoError(t, err)
 		require.True(t, ok)
-		require.Empty(t, entry.AgentInstanceID, "the next turn must create a fresh instance")
+		require.Empty(t, entry.AgentInstanceID, "the next turn must create a fresh session")
 		require.Equal(t, "kagent/worker", entry.AgentRef, "the thread keeps its agent")
 		require.Equal(t, "U1", entry.Initiator, "and its initiator")
 	})
@@ -673,9 +680,9 @@ func TestFacade_ResetSession(t *testing.T) {
 	msg := slackMsg("resend")
 	key := store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700.0001"}
 
-	t.Run("deletes the instance and clears the binding", func(t *testing.T) {
+	t.Run("deletes the session and clears the binding", func(t *testing.T) {
 		agent := newFakeAgent()
-		agent.instances["inst-1"] = pkga2a.Instance{ID: "inst-1"}
+		agent.sessions["inst-1"] = pkga2a.Session{ID: "inst-1"}
 		f, routes := newA2AFacade(agent)
 		require.NoError(t, storetest.Put(t.Context(), routes, key, store.Entry{AgentRef: "kagent/worker", AgentInstanceID: "inst-1", Initiator: "U1"}))
 		reset, err := f.ResetSession(t.Context(), msg)
@@ -980,7 +987,7 @@ func TestFacade_ResumeTurnDeliversAFinishedTask(t *testing.T) {
 
 		agent.mu.Lock()
 		require.Equal(t, []a2apkg.TaskID{"task-7"}, agent.subscribed)
-		require.Equal(t, []string{"inst-1"}, agent.subscribedOn, "the resubscription goes to the thread's instance")
+		require.Equal(t, []string{"kagent/worker"}, agent.subscribedOn, "the resubscription is addressed to the thread's agent")
 		agent.mu.Unlock()
 		entry, ok, err := routes.Get(t.Context(), key)
 		require.NoError(t, err)
@@ -1145,8 +1152,8 @@ func TestFacade_ResumesTurns(t *testing.T) {
 }
 
 // A thread has one row: the channel's own facts, the agent it is bound to and
-// its AgentInstance live side by side, and no writer erases another's fields.
-func TestInstanceFor_OneRowPerThread(t *testing.T) {
+// its Session live side by side, and no writer erases another's fields.
+func TestSessionFor_OneRowPerThread(t *testing.T) {
 	agent := newFakeAgent(a2apkg.NewStatusUpdateEvent(taskInfo, a2apkg.TaskStateCompleted, nil))
 	f, routes := newA2AFacade(agent)
 	key := store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700.0001"}
@@ -1177,7 +1184,7 @@ func TestInstanceFor_OneRowPerThread(t *testing.T) {
 	require.NoError(t, err)
 	drain(t, ch)
 
-	require.Len(t, agent.createRequests, 1, "a bound thread creates no second instance")
+	require.Len(t, agent.createRequests, 1, "a bound thread creates no second session")
 	entry, _, err = routes.Get(t.Context(), key)
 	require.NoError(t, err)
 	require.WithinDuration(t, time.Now(), entry.LastSeen, time.Minute, "the turn refreshed the row")

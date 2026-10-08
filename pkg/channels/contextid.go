@@ -13,10 +13,10 @@ import (
 //
 // The userID slot is always "": a thread is shared by its participants, so all
 // of them must reach the same conversation. It is a parameter rather than a
-// dropped one because the hash is the AgentInstance idempotency key of every
+// dropped one because the hash is the Session idempotency key of every
 // release so far, and every live thread depends on it staying the same —
 // removing the slot changes every hash and hands every thread a fresh, empty
-// AgentInstance. See the call in Facade.instanceFor.
+// Session. See the call in Facade.sessionFor.
 func SynthesizeContextID(channel, channelID, userID, threadID, agentRef string) string {
 	h := sha256.New()
 	for _, s := range []string{channel, channelID, userID, threadID, agentRef} {

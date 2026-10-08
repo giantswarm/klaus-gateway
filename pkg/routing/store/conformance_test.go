@@ -74,8 +74,8 @@ func runConformance(t *testing.T, factory func(t *testing.T) store.Store) {
 		require.Equal(t, "inst", got.AgentInstanceID)
 	})
 
-	t.Run("agent-instance-round-trip", func(t *testing.T) {
-		// A thread is bound to an AgentInstance; the id must survive the
+	t.Run("session-round-trip", func(t *testing.T) {
+		// A thread is bound to a Session; the id must survive the
 		// backend's serialisation.
 		s := factory(t)
 		ctx := context.Background()
@@ -96,7 +96,7 @@ func runConformance(t *testing.T, factory func(t *testing.T) store.Store) {
 	})
 
 	t.Run("one-row-per-thread", func(t *testing.T) {
-		// A thread has one row: the agent it is bound to, the AgentInstance and
+		// A thread has one row: the agent it is bound to, the Session and
 		// the task in flight on it, and the channel's initiator and grants.
 		s := factory(t)
 		ctx := context.Background()

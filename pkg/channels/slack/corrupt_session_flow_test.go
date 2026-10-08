@@ -85,10 +85,10 @@ func TestCorruptSession_ContinuedTurnResetsAndNotices(t *testing.T) {
 }
 
 // A granted collaborator's turn on a shared thread runs on the initiator's
-// instance; when it fails on corrupt session history, the reset carries the
-// initiator's token as the owner's, since only the instance's creator deletes
+// session; when it fails on corrupt session history, the reset carries the
+// initiator's token as the owner's, since only the session's creator deletes
 // it outright.
-func TestCorruptSession_CollaboratorTurnResetsAsTheInstanceOwner(t *testing.T) {
+func TestCorruptSession_CollaboratorTurnResetsAsTheSessionOwner(t *testing.T) {
 	fake := newFakeSlackAPI()
 	fakeURL := fake.server(t).URL
 	var mu sync.Mutex
@@ -133,7 +133,7 @@ func TestCorruptSession_CollaboratorTurnResetsAsTheInstanceOwner(t *testing.T) {
 	require.Equal(t, "tok2", resets[0].BearerToken, "the turn and its reset run as the collaborator")
 	require.True(t, resets[0].Collaborator)
 	require.Equal(t, "tok1", resets[0].OwnerToken,
-		"the reset deletes the initiator's instance under the initiator's token")
+		"the reset deletes the initiator's session under the initiator's token")
 }
 
 // When the session cannot be deleted, the notice advises a new thread rather

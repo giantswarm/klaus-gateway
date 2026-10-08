@@ -37,7 +37,7 @@ func TestClient_Stream_PropagatesTraceContext(t *testing.T) {
 	client := f.serve(t, pkga2a.Config{})
 
 	ctx, turn := tp.Tracer("test").Start(asUser(t.Context(), userToken), "slack.turn")
-	for _, err := range client.Stream(ctx, instanceID, a2apkg.NewMessage(a2apkg.MessageRoleUser, a2apkg.NewTextPart("ping"))) {
+	for _, err := range client.Stream(ctx, sessionID, a2apkg.NewMessage(a2apkg.MessageRoleUser, a2apkg.NewTextPart("ping"))) {
 		require.NoError(t, err)
 	}
 	turn.End()

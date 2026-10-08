@@ -222,7 +222,7 @@ type Adapter struct {
 	// seenThreadsMu guards seenThreads, the threads this process has handled a
 	// turn in. Deliberately in-memory: "first sight" means first sight by THIS
 	// process, which is what the post-restart checks (a leftover turn to
-	// deliver, an instance to confirm) are about — the thread record in the
+	// deliver, a session to confirm) are about — the thread record in the
 	// store survives the restart and cannot tell.
 	seenThreadsMu sync.Mutex
 	seenThreads   map[string]ttlEntry[struct{}]
@@ -2666,24 +2666,24 @@ func (a *Adapter) humanToken(ctx context.Context, slackChannel, threadID, slackU
 	}
 }
 
-// applyInstanceOwner marks a granted collaborator's turn as one on a
-// conversation that is not theirs. The thread is bound to one AgentInstance,
+// applySessionOwner marks a granted collaborator's turn as one on a
+// conversation that is not theirs. The thread is bound to one Session,
 // which its creator (the initiator, or the collaborator whose turn opened the
 // binding while the initiator was signed out) owns; the turn keeps the
 // sender's own token, so the agent acts with the sender's rights, and reaches
-// the instance through the thread's share (see
+// the session through the thread's share (see
 // channels.InboundMessage.Collaborator). The creator's token rides along as
-// OwnerToken for what only the instance's creator may do (creating the
-// instance, minting and revoking its share); when it cannot be minted, the
+// OwnerToken for what only the session's creator may do (creating the
+// session, minting and revoking its share); when it cannot be minted, the
 // share the thread already holds is what the turn goes through. The sender
 // (msg.Subject, best-effort resolved to an email) is recorded as attribution.
 // Call after the sender's token and email are resolved.
-func (a *Adapter) applyInstanceOwner(ctx context.Context, msg *channels.InboundMessage, threadID, slackUser string) {
+func (a *Adapter) applySessionOwner(ctx context.Context, msg *channels.InboundMessage, threadID, slackUser string) {
 	msg.SenderID = slackUser
 	if a.OBO == nil {
 		return
 	}
-	owner := a.accessPolicy().InstanceOwner(ctx, msg.ChannelID, threadID, msg.AgentRef)
+	owner := a.accessPolicy().SessionOwner(ctx, msg.ChannelID, threadID, msg.AgentRef)
 	if owner == "" || owner == slackUser {
 		return
 	}
@@ -2694,7 +2694,7 @@ func (a *Adapter) applyInstanceOwner(ctx context.Context, msg *channels.InboundM
 	ownerToken, err := a.OBO.TokenFor(ctx, owner)
 	mint()
 	if err != nil || ownerToken == "" {
-		a.Logger.Info("slack: instance creator token unavailable, collaborator turn relies on the thread's share",
+		a.Logger.Info("slack: session creator token unavailable, collaborator turn relies on the thread's share",
 			"owner", owner, "sender", slackUser)
 		return
 	}
