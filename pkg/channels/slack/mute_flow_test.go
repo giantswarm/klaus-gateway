@@ -93,35 +93,6 @@ func TestMute_CaptionIsDropped(t *testing.T) {
 	require.Equal(t, "500.001", mutedAt(t, gw.rec(), "500.000"), "and it does not end the mute")
 }
 
-// A message written before the mute does not end it when it reaches a turn
-// later: here a newcomer's reply, parked for the initiator's consent before
-// the mute, runs on Allow and the thread stays muted.
-func TestMute_EarlierMessageDoesNotEndTheMute(t *testing.T) {
-	fake := newFakeSlackAPI()
-	api := fake.server(t)
-	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok", Done: true}}}
-	a, srv := newEventsAdapter(t, gw, api.URL, channelMode)
-
-	sendEvent(t, srv, mention("U1", "why is the cluster unhappy?", "550.000", ""))
-	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 20*time.Millisecond)
-	waitThreadIdle(t, a, "550.000")
-	sendEvent(t, srv, threadReply("U2", "is it the disk?", "550.001", "550.000"))
-	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postEphemeral")), "waiting for the thread owner")
-	}, flowWait, 20*time.Millisecond, "the newcomer's reply is parked")
-
-	sendEvent(t, srv, threadReply("U1", "mute", "550.002", "550.000"))
-	require.Eventually(t, func() bool { return mutedAt(t, gw.rec(), "550.000") == "550.002" },
-		flowWait, 20*time.Millisecond)
-
-	sendAccessInteraction(t, srv, "U1", accessAllowAction, "550.000", "U2", api.URL+"/response")
-	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 }, flowWait, 20*time.Millisecond,
-		"the parked reply runs on Allow")
-	waitThreadIdle(t, a, "550.000")
-	require.Equal(t, "550.002", mutedAt(t, gw.rec(), "550.000"), "a reply from before the mute does not end it")
-	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), unmutedNote)
-}
-
 // A conversation that ends after the thread lifetime takes its mute with it:
 // the next mention starts the thread over, unmuted, and replies without a
 // mention reach the agent again.

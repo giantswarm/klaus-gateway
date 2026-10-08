@@ -278,8 +278,15 @@ creates one, which a turn that switches agents does mid-thread.
   written after the mute that reaches a turn ends it — in a muted thread that is a mention — and
   the gateway posts "Unmuted. I'll reply to messages in this thread again." and the agent answers,
   and replies without a mention reach it again after that. A newcomer's mention goes through the
-  access prompt first: Deny keeps the thread muted, Allow ends the mute. A message written before
-  the mute keeps it when it runs later (a newcomer's reply allowed after the mute). The mute is
+  access prompt first: Deny keeps the thread muted, Allow ends the mute. `mute` drops the messages
+  parked in the thread — a newcomer's waiting for the initiator's Allow, a signed-out sender's
+  waiting for their sign-in — in the process and in the thread's row, and tells each sender
+  privately: "The thread was muted; mention the agent to ask again." A sign-in that completes
+  later, on this process or after a restart, replays nothing; an access prompt left open stays,
+  and its Allow grants the newcomer and runs nothing, so the thread stays muted. A replay already
+  under way — an Allow or a sign-in that took its messages before the mute, waiting for the
+  thread's turn to end — runs nothing for a message written before the mute, and its sender gets
+  the same note. A message written before the mute that still runs keeps it. The mute is
   cleared before the turn is sent, so a turn that fails leaves the thread unmuted. The turn that
   ends the mute carries what the people wrote while it lasted, read the way an opener reads its
   thread: `conversations.replies` with `oldest` set to the mute's `ts` on every page, the messages
@@ -402,7 +409,9 @@ while their sender signs in or while the initiator decides on a newcomer, and th
 paused task waits on. The adapter keeps that held state in the row's `held` field, rewrites it
 after every change and reads it back at start, so a sign-in, an Allow or an Approve after a
 restart replays or resumes as it would have before it, and a sign-in completed while the
-gateway was down replays at start. Parked messages and a paused prompt still expire after 24
+gateway was down replays at start; a `mute` drops the thread's parked messages from the row,
+and a replay of a message written before the thread's mute runs nothing (see the muted-thread
+entry under [Threads and conversations](#threads-and-conversations)). Parked messages and a paused prompt still expire after 24
 hours. A parked message is stored without its sender's token and without attachment bytes it
 can download again. The gateway never reads Slack history — no
 `conversations.replies`, no re-parsing the opening message or the slash command's root — to
@@ -861,8 +870,9 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
   rewritten, so the fresh ephemeral says the earlier link expired instead, and its DM card
   is refreshed to the fresh link. Messages sent
   before
-  signing in are held and replayed after the link completes; only the last 5 per thread are
-  kept, and the user is told when earlier ones are dropped.
+  signing in are held and replayed after the link completes, unless a `mute` in their thread
+  dropped them; only the last 5 per thread are kept, and the user is told when earlier ones
+  are dropped.
 - **Transient sign-in failures.** When a linked person's token cannot be minted right now —
   muster's token endpoint or the gateway's link store not answering — they get an ephemeral
   "Your Giant Swarm sign-in could not be refreshed" notice and their message is not held;
