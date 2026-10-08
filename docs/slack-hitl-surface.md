@@ -24,8 +24,8 @@ A single ask_user question picks its layout by choice count, select mode, and la
 | 1 | 1–10 | single | >75 | section per choice + accessory **button** | click (immediate) |
 | 1 | 1–10 | multi | >75 | section per choice + accessory **checkbox** | Submit |
 | 1 | >10 | — | — | numbered text + free-text reply | reply |
-| 2–20 | each 1–10 | any | each ≤75 | single **form** (one group per question) | one Submit |
-| >20, or any question free-text / >10 / label >75 | — | — | — | numbered text + free-text reply | reply |
+| 2–20 | each 0 or 1–10 | any | each ≤75 | single **form** (a group per question with choices, a text input per question without) | one Submit |
+| >20, or any question >10 / label >75 | — | — | — | numbered text + free-text reply | reply |
 
 Generic (non-`ask_user`) tool approvals always render as the approval card, with Approve and
 Deny buttons.
@@ -236,12 +236,18 @@ by a Submit that gathers the selected rows.
 
 ## 6. ask_user — multiple questions, single form
 
-When every question is widget-renderable (1–10 choices, each label ≤75 runes) and there are
-2–20 of them, the whole prompt renders as one form: a section + radio/checkbox group per
-question, committed by a single Submit. Each group's `block_id` is `hitl_q_<question index>`
-so the handler maps each selection back to its question. The Submit resumes only once every
-question is answered; an incomplete Submit nudges and leaves the form pending. The `*bold*`
-wrapping each question is added by the gateway.
+When every question is widget-renderable (1–10 choices, each label ≤75 runes) or has no
+choices, and there are 2–20 of them, the whole prompt renders as one form: a section per
+question, then a radio/checkbox group for a question with choices or an optional multi-line
+text input (`input` block, `plain_text_input` with `action_id` `hitl_text`) for a question
+without, committed by a single Submit. Each group's and input's `block_id` is
+`hitl_q_<question index>` so the handler maps each answer back to its question. A muted line
+under the Submit says a reply in the thread answers the form too, one line per question. The
+Submit resumes only once every question with choices is answered; an incomplete Submit nudges
+("Choose an answer for every question with options") and leaves the form pending. A text input
+left empty answers its question with an empty slot, but a form whose questions all lack choices
+needs at least one typed answer ("Type at least one answer"). The `*bold*` wrapping each
+question is added by the gateway.
 
 ```json
 {
@@ -276,12 +282,21 @@ wrapping each question is added by the gateway.
         }
       ]
     },
+    { "type": "section", "text": { "type": "mrkdwn", "text": "*Anything else?*" } },
+    {
+      "type": "input",
+      "block_id": "hitl_q_2",
+      "optional": true,
+      "label": { "type": "plain_text", "text": "Your answer" },
+      "element": { "type": "plain_text_input", "action_id": "hitl_text", "multiline": true, "max_length": 3000 }
+    },
     {
       "type": "actions",
       "elements": [
         { "type": "button", "text": { "type": "plain_text", "text": "Submit" }, "style": "primary", "action_id": "hitl_submit", "value": "{\"t\":\"THREAD_TS\",\"id\":\"TASK_ID\"}" }
       ]
-    }
+    },
+    { "type": "context", "elements": [ { "type": "mrkdwn", "text": "Or reply in this thread, one line per question." } ] }
   ]
 }
 ```
@@ -670,7 +685,7 @@ On a click, Slack POSTs a `block_actions` payload to `/channels/slack/interactio
 handler checks the clicking user is permitted, then routes by `action_id` (a
 `team_review_approve` click is resolved against the review record instead, see section 10): approve/deny/chat
 decide the tool call directly; a `hitl_choice_<i>` button commits that one choice; a
-`hitl_submit` reads the selection(s) out of `state.values` (grouped per question for a form)
+`hitl_submit` reads the selection(s) and a form's typed answers out of `state.values` (grouped per question for a form)
 and resumes the paused task with one answer slot per question. An incomplete Submit is nudged
 and the form is left pending. The prompt message is then rewritten in place. The question stays
 and its controls go: one context line names the answer, who gave it and when (`gazelle ·

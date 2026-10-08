@@ -50,6 +50,7 @@ const (
 	hitlChoice  = "hitl_choice" // ask_user single long-text choice (section accessory button, per index)
 	hitlSubmit  = "hitl_submit" // ask_user radio/checkbox Submit button
 	hitlGroup   = "hitl_group"  // ask_user radio_buttons/checkboxes element action_id
+	hitlText    = "hitl_text"   // ask_user form plain_text_input element action_id, for a question without choices
 )
 
 // hitlGroupBlock is the block_id of an ask_user radio/checkbox block. The
@@ -60,7 +61,7 @@ const hitlGroupBlock = "hitl_group_block"
 // hitlQGroupPrefix prefixes the block_id of one question's widget in a
 // multi-question ask_user form: the full id is hitlQGroupPrefix + "_<question
 // index>". The handler maps each selection back to its question by parsing the
-// index out of the block_id (see choiceSelections). The prefix is
+// index out of the block_id (see submitState). The prefix is
 // distinct from hitlGroupBlock so the single-question and form readers never
 // cross-read one another's state.
 const hitlQGroupPrefix = "hitl_q"
@@ -180,10 +181,10 @@ const (
 	askAgentContextOption = "Include the earlier messages in this thread"
 
 	// modalMaxAgents is Slack's static_select option cap; modalOptionLabelMax
-	// its option label cap; modalQuestionMax the plain_text_input max_length.
+	// its option label cap; plainTextInputMax the plain_text_input max_length.
 	modalMaxAgents      = 100
 	modalOptionLabelMax = 75
-	modalQuestionMax    = 3000
+	plainTextInputMax   = 3000
 	modalHintMax        = 2000 // an input block's hint text
 
 	// askAgentAskedBy is the first line of the question the gateway posts on
@@ -264,8 +265,7 @@ const wordYes = "yes"
 // maxChoiceOptions caps how many ask_user choices render as an interactive
 // widget (radio_buttons/checkboxes cap at 10 options; the section-per-choice
 // long-text layout stays under the 50-blocks-per-message limit). Beyond this,
-// or for multi-question prompts, choices render as text and the user replies
-// free-text in-thread.
+// choices render as text and the user replies free-text in-thread.
 const maxChoiceOptions = 10
 
 // choiceLabelWidgetMax is the Block Kit option-object text limit (75 runes for
@@ -276,10 +276,19 @@ const choiceLabelWidgetMax = 75
 
 // maxFormQuestions caps how many questions a multi-question ask_user prompt
 // renders as a single interactive form. Each question costs a section plus a
-// widget block, and the form adds one Submit (2N+1 blocks), so this keeps a
-// full form under the 50-blocks-per-message limit. A prompt with more questions
+// widget or text input block, and the form adds the Submit and the reply hint
+// (2N+2 blocks), so this keeps a full form under the 50-blocks-per-message
+// limit. A prompt with more questions
 // renders as text.
 const maxFormQuestions = 20
+
+// formTextAnswerLabel labels the text input of a form question without
+// choices; the question itself is the section above it.
+const formTextAnswerLabel = "Your answer"
+
+// formReplyHint closes a form: a reply in the thread answers it too, read one
+// line per question (answersFromText).
+const formReplyHint = "Or reply in this thread, one line per question."
 
 // Default progress reaction emoji names (no surrounding colons). Overridable
 // via config so a workspace can pick emoji its members recognise.
@@ -437,9 +446,14 @@ const promptSupersededNotice = "A newer prompt replaced this one. Answer the lat
 const promptAnsweredNotice = "Already answered."
 
 // formIncompleteNudge is shown (ephemerally) when a user clicks Submit on a
-// multi-question ask_user form with a question still unanswered; the form stays
-// pending so the user can complete it and submit again.
-const formIncompleteNudge = "Answer every question, then click Submit."
+// multi-question ask_user form with a question with choices still unanswered;
+// the form stays pending so the user can complete it and submit again. A text
+// input is optional, so the nudge names only the questions with choices.
+const formIncompleteNudge = "Choose an answer for every question with options, then click Submit."
+
+// formBlankNudge is shown (ephemerally) when a form whose questions all lack
+// choices is submitted with every text input empty.
+const formBlankNudge = "Type at least one answer, then click Submit."
 
 // The line that replaces a question prompt's controls once it is answered:
 // the answer (a single question) or nothing (a form, whose answers sit under
@@ -447,8 +461,9 @@ const formIncompleteNudge = "Answer every question, then click Submit."
 const (
 	questionAnsweredFormat = "%s · answered by <@%s> · %s"
 	formAnsweredFormat     = "Answered by <@%s> · %s"
-	// formNoAnswer stands under a form question a typed reply left without an
-	// answer (one line per question), so the thread sees what the agent got.
+	// formNoAnswer stands under a form question left without an answer (an
+	// empty text input, or a typed reply without a line for it), so the thread
+	// sees what the agent got.
 	formNoAnswer = "No answer"
 )
 
