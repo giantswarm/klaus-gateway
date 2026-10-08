@@ -54,12 +54,13 @@ gateway posts an approval card:
   question" button. A typed reply that is not "approve" or "deny" is sent as a rejection with
   the text as its reason, but the Go ADK runtime drops that reason, so the model sees only
   "call is rejected" (giantswarm/kagent-upstream#71). The commands are the exception:
-  a reply that is only a command word (`usage`, `help`, `mute`, `agents`, `login`, `logout`) runs that command
+  a reply that is only a command word (`usage`, `help`, `agents`, `login`, `logout`) runs that command
   and leaves the card open, since rejecting a call with the reason "logout" is what nobody
-  meant. Beside a **question** — the
+  meant. `mute` is the one command that decides the card: it mutes the thread and rejects the
+  card the way a deny word does. Beside a **question** — the
   `ask_user` card, or one without a card, where a typed reply is the answer — those words stay
   answers, and the command waits until the question is answered (`channels-slack.md`, "Every
-  command is a plain word").
+  command is a plain word"); `mute` there refuses instead, privately, and is not the answer.
 - **After a decision:** the buttons go and a context line names who decided, for a click and
   for a typed reply alike: `Approved by <@U123> · <time>` for "approve", `Denied by <@U123> ·
   <time>` for "deny" and for any other reply. A card posted for a status without a structured

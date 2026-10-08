@@ -131,8 +131,9 @@ func (a *Adapter) bareCommandFor(msg channels.InboundMessage) *command {
 	// the answer itself (decisionFromText maps a nil prompt to no decision).
 	// An approval card is not a question: any text beside it is read as a
 	// rejection carrying that text, so the word stays the command and the
-	// card stays open.
-	if task := a.peekPendingTask(msg.ThreadID); task != nil && (task.Prompt == nil || task.Prompt.IsAskUser()) {
+	// card stays open. mute stays the command beside a question too, only to
+	// refuse: muting would leave the question unanswered (muteThread).
+	if task := a.peekPendingTask(msg.ThreadID); cmd.Name != cmdMute && task != nil && (task.Prompt == nil || task.Prompt.IsAskUser()) {
 		return nil
 	}
 	return cmd
@@ -307,8 +308,7 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *command, slackUser, sl
 		return true
 
 	case cmdMute:
-		a.muteThread(ctx, cmd.TS, slackUser, slackChannel, threadID, note, ephemeralReply)
-		return true
+		return a.muteThread(ctx, cmd.TS, slackUser, slackChannel, threadID, note, ephemeralReply)
 
 	case cmdUsage:
 		if !permittedOnly() {

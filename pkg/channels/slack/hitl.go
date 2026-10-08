@@ -453,7 +453,7 @@ var approveWords = map[string]bool{
 
 var denyWords = map[string]bool{
 	"deny": true, "denied": true, "no": true, "n": true, "reject": true,
-	"cancel": true, "abort": true, cmdStop: true,
+	"cancel": true, "abort": true, cmdStop: true, cmdMute: true,
 }
 
 func isApproveWord(text string) bool {

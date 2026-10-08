@@ -20,29 +20,47 @@ import (
 // What a mute and its end say.
 const (
 	muteNotice               = "Muted. I won't reply here until someone mentions me."
+	muteStoppedNotice        = "Stopped and muted. I won't reply here until someone mentions me."
 	muteEndedNotice          = "Unmuted. I'll reply to messages in this thread again."
 	muteAlreadyNotice        = "Already muted."
 	muteNoConversationNotice = "There is no conversation with the agent in this thread to mute."
+	muteQuestionOpenNotice   = "The agent asked a question here. Answer it, or mention the agent, before you mute."
 )
 
-// muteThread runs the mute command sent as the message at ts. note posts a
-// line in the thread, ephemeral one only the sender sees. A thread with no
-// conversation is not given one: no row is written, so the sender does not
-// become its initiator.
-func (a *Adapter) muteThread(ctx context.Context, ts, slackUser, slackChannel, threadID string, note, ephemeral func(string)) {
+// muteThread runs the mute command sent as the message at ts, and reports
+// whether it consumed the message. note posts a line in the thread,
+// ephemeral one only the sender sees. A thread with no conversation is not
+// given one: no row is written, so the sender does not become its initiator.
+//
+// A busy thread is muted too. A running turn is stopped the way stop stops
+// it. An open approval card is rejected the way a typed deny word rejects
+// it: the message is left unconsumed, so dispatch takes the paused task and
+// reads "mute" as a deny word, the way stop falls through; dispatch does not
+// let the word end the mute. An open question refuses
+// the mute: a paused task can only be answered, and the word is not that
+// answer. A thread already muted is stopped and its card rejected the same
+// way; only the note differs.
+func (a *Adapter) muteThread(ctx context.Context, ts, slackUser, slackChannel, threadID string, note, ephemeral func(string)) bool {
 	st, err := a.gw.ThreadState(ctx, ChannelName, slackChannel, threadID)
 	if err != nil {
 		a.Logger.Warn("slack: read thread state for mute failed", "thread", threadID, "error", err)
 		ephemeral(storeUnavailableNotice)
-		return
+		return true
 	}
 	if !st.Found || st.Entry.Initiator == "" {
 		ephemeral(muteNoConversationNotice)
-		return
+		return true
 	}
 	if !a.accessPolicy().Allowed(ctx, slackChannel, threadID, slackUser) {
 		note(notPermittedNotice)
-		return
+		return true
+	}
+	// A thread already muted is answered as such, a question open or not: it
+	// can be busy all the same, since the turn that resumes a rejected task
+	// runs in it and may ask again.
+	if task := a.peekPendingTask(threadID); st.Entry.MutedAt == "" && task != nil && (task.Prompt == nil || task.Prompt.IsAskUser()) {
+		ephemeral(muteQuestionOpenNotice)
+		return true
 	}
 	muted, already := false, false
 	err = a.gw.UpdateThreadRecord(ctx, ChannelName, slackChannel, threadID, func(e *store.Entry, found bool) bool {
@@ -61,15 +79,34 @@ func (a *Adapter) muteThread(ctx context.Context, ts, slackUser, slackChannel, t
 	case err != nil:
 		a.Logger.Warn("slack: write mute failed", "thread", threadID, "error", err)
 		ephemeral(storeUnavailableNotice)
-	case already:
-		ephemeral(muteAlreadyNotice)
-	case !muted:
+		return true
+	case !muted && !already:
 		// The conversation ended between the read and the write.
 		ephemeral(muteNoConversationNotice)
+		return true
+	}
+
+	// The turn is stopped and the paused task read only after the write, so a
+	// turn that ended in between has left its prompt to read here, and an
+	// approval it left is rejected all the same. Two windows stay open, both
+	// narrow: a turn that ends with a question in between leaves the thread
+	// muted beside it (the question still takes its answer, or a mention),
+	// and a click that takes the approval before dispatch does leaves "mute"
+	// to reach the agent as text, which keeps the mute.
+	stopped := a.stopThread(threadID)
+	task := a.peekPendingTask(threadID)
+	rejects := !stopped && task != nil && task.Prompt != nil && !task.Prompt.IsAskUser()
+	a.Logger.Info("slack: thread muted", "record", "thread_muted", "channel_id", slackChannel, "thread", threadID,
+		"user", slackUser, "already", already, "stopped_turn", stopped, "rejects_approval", rejects)
+	switch {
+	case stopped:
+		note(muteStoppedNotice)
+	case already:
+		ephemeral(muteAlreadyNotice)
 	default:
-		a.Logger.Info("slack: thread muted", "record", "thread_muted", "channel_id", slackChannel, "thread", threadID, "user", slackUser)
 		note(muteNotice)
 	}
+	return !rejects
 }
 
 // isMuteCommand reports whether msg runs as the mute command. It reads only

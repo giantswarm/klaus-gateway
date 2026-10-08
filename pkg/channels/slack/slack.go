@@ -1978,8 +1978,8 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 		// no turn, parks nothing and asks nobody for consent. A mention passes
 		// (its message twin must not take the app_mention twin's dedup slot,
 		// as above), and so does a mute command, so a repeat or a stranger's is
-		// answered; the word as a caption or a question's answer is no command
-		// and is dropped with the rest.
+		// answered; the word as a caption is no command and is dropped with
+		// the rest.
 		if muted && !a.mentionsBot(ctx, inner.Text) && !a.isMuteCommand(msg) {
 			a.Logger.Debug("slack: reply in muted thread ignored", "channel", inner.Channel, "thread", msg.ThreadID)
 			return
@@ -2356,8 +2356,13 @@ func (a *Adapter) dispatchFrom(ctx context.Context, msg channels.InboundMessage,
 	// A message written after the mute that gets this far ends it: in a muted
 	// thread that is a mention, or a parked one's replay. Cleared before the
 	// turn is sent: a turn that fails leaves the thread answering again, not
-	// silent.
-	mutedAt := a.endMute(ctx, slackChannel, msg.ThreadID, msg.MessageID)
+	// silent. The word mute that rejects an open approval card (muteThread)
+	// never ends it, also in a thread muted earlier; the same word as an
+	// upload's caption is a message like any other.
+	mutedAt := ""
+	if msg.Decision == nil || bareWord(msg.Text) != cmdMute {
+		mutedAt = a.endMute(ctx, slackChannel, msg.ThreadID, msg.MessageID)
+	}
 
 	// A conversation opening inside a thread other people wrote — a bare
 	// mention under an alert, say — hands the agent what the thread
