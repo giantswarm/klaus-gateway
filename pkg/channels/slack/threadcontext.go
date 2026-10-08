@@ -18,8 +18,10 @@ import (
 // which alert fired, what was already tried — so the opener's turn carries the
 // messages the thread already held as a labelled part of its own.
 //
-// The read happens once, on the opener, and only there: every later message in
-// a bound thread is a turn of the conversation already. It is NOT the history
+// The read happens once, on the opener: every later message in a bound thread
+// is a turn of the conversation already. The one other read is the catch-up
+// of a muted thread, on the turn that ends the mute, of the messages the gate
+// dropped while it lasted (see mute.go). It is NOT the history
 // fallback the adapter deliberately does not have (see doc.go): routing state
 // keeps its single source of truth in the thread record, and nothing read here
 // is ever written back.
@@ -59,6 +61,20 @@ const (
 	// threadContextTrimmed ends one the character cap shortened.
 	threadContextOldestFirst = ", oldest first"
 	threadContextTrimmed     = ", the most recent %s characters shown"
+
+	// catchUpLabel introduces what the people wrote in a muted thread, handed
+	// to the turn that ends the mute. %s are what was shared and how it was
+	// shortened. Its own label: the lines are not the thread's opening, and
+	// the agent must not read them as the asker's words either.
+	catchUpLabel = "[messages written in this thread while the agent was muted: %s%s]"
+
+	// catchUpRead counts the messages shared; catchUpPartial follows it when
+	// the page bound or Slack stopped the read. A catch-up read starts at the
+	// mute, so the thread's own reply count says nothing about it, and the
+	// lines are the oldest of the muted period, not its newest.
+	catchUpRead           = "%s %s"
+	catchUpPartial        = " (the read stopped early)"
+	catchUpPartialTrimmed = ", cut to %s characters, oldest first"
 )
 
 // mentionRe matches a Slack user mention, with or without the "|label" form
@@ -96,11 +112,61 @@ func (a *Adapter) attachThreadContext(ctx context.Context, msg *channels.Inbound
 }
 
 // threadContext reads the messages written in threadID before openerTS and
-// renders them as the opener turn's shared context. A failure — a missing
-// scope, a channel the bot is not in, a slow Slack — never blocks the turn:
-// it returns an empty transcript, tells the initiator once why the agent only
-// sees their question, and logs the reason. No retry, no parking.
+// renders them as the opener turn's shared context.
 func (a *Adapter) threadContext(ctx context.Context, channelID, threadID, openerTS, initiator string) string {
+	return a.readThreadFor(ctx, threadReadSpec{
+		what: "thread context", channelID: channelID, threadID: threadID, asker: initiator,
+		failedNotice: threadContextFailedNotice,
+		render: func(read threadRead, botUserID string, name func(string) string) string {
+			return renderThreadContext(read, openerTS, botUserID, name(initiator), name)
+		},
+	})
+}
+
+// attachCatchUp gives msg, the message that ended its thread's mute, what the
+// people wrote in the thread while it was muted: the messages after mutedAt
+// and before msg. A message that already carries context (a shortcut's shared
+// thread) holds those messages already, and a mute with nothing written
+// after it leaves the turn with its own message only. A message that answers
+// a prompt the agent left open reaches it as the decision alone, which
+// carries no context, so the thread is not read for it and the log says the
+// catch-up was not delivered.
+func (a *Adapter) attachCatchUp(ctx context.Context, msg *channels.InboundMessage, slackChannel, asker, mutedAt string) {
+	if mutedAt == "" || msg.Context != "" {
+		return
+	}
+	if msg.Decision != nil {
+		a.Logger.Info("slack: catch-up not delivered, the message answers an open prompt",
+			"channel_id", slackChannel, "thread_id", msg.ThreadID, "slack_user", asker)
+		return
+	}
+	msg.Context = a.readThreadFor(ctx, threadReadSpec{
+		what: "catch-up", channelID: slackChannel, threadID: msg.ThreadID, oldest: mutedAt, asker: asker,
+		failedNotice: catchUpFailedNotice,
+		render: func(read threadRead, botUserID string, name func(string) string) string {
+			return renderCatchUp(read, msg.ThreadID, mutedAt, msg.MessageID, botUserID, name)
+		},
+	})
+}
+
+// threadReadSpec is one read of a thread's messages for a turn: what the log
+// calls it, the thread, the ts the read starts after ("" for the whole
+// thread), the person told when it fails and the notice they get, and how
+// the read becomes the turn's context.
+type threadReadSpec struct {
+	what                string
+	channelID, threadID string
+	oldest, asker       string
+	failedNotice        string
+	render              func(read threadRead, botUserID string, name func(string) string) string
+}
+
+// readThreadFor reads a thread and renders it for a turn. A failure — a
+// missing scope, a channel the bot is not in, a slow Slack — never blocks the
+// turn: it returns an empty transcript, tells the asker once why the agent
+// only sees their message, and logs the reason. No retry, no parking.
+func (a *Adapter) readThreadFor(ctx context.Context, spec threadReadSpec) string {
+	channelID, threadID, initiator := spec.channelID, spec.threadID, spec.asker
 	rctx, cancel := context.WithTimeout(ctx, threadContextReadTimeout)
 	defer cancel()
 
@@ -110,13 +176,13 @@ func (a *Adapter) threadContext(ctx context.Context, channelID, threadID, opener
 	// cannot hold the first reply past the budget — past it an author is named
 	// by their ID, which is the fallback anyway.
 	botUserID := a.botID(rctx)
-	read, err := a.apiClient().threadReplies(rctx, channelID, threadID)
+	read, err := a.apiClient().threadReplies(rctx, channelID, threadID, spec.oldest)
 	if err != nil {
 		reason := threadContextFailureReason(rctx, err)
-		a.Logger.Warn("slack: thread context read failed, the turn runs without it",
+		a.Logger.Warn("slack: "+spec.what+" read failed, the turn runs without it",
 			"channel_id", channelID, "thread_id", threadID, "slack_user", initiator, "reason", reason, "error", err)
-		if perr := a.apiClient().postEphemeralText(ctx, channelID, initiator, threadID, fmt.Sprintf(threadContextFailedNotice, reason)); perr != nil {
-			a.Logger.Warn("slack: post thread-context notice failed", "thread_id", threadID, "error", perr)
+		if perr := a.apiClient().postEphemeralText(ctx, channelID, initiator, threadID, fmt.Sprintf(spec.failedNotice, reason)); perr != nil {
+			a.Logger.Warn("slack: post "+spec.what+" notice failed", "thread_id", threadID, "error", perr)
 		}
 		return ""
 	}
@@ -124,18 +190,18 @@ func (a *Adapter) threadContext(ctx context.Context, channelID, threadID, opener
 		// The read has messages, so the turn gets a partial transcript and the
 		// label says so — but an operator must be able to tell a read the page
 		// bound stopped from one Slack cut short.
-		a.Logger.Warn("slack: thread context read stopped early, the turn gets part of the thread",
+		a.Logger.Warn("slack: "+spec.what+" read stopped early, the turn gets part of the thread",
 			"channel_id", channelID, "thread_id", threadID, "slack_user", initiator,
 			"reason", threadContextFailureReason(rctx, read.Err), "messages", len(read.Messages), "error", read.Err)
 	}
 	name := func(userID string) string { return a.displayName(rctx, userID) }
-	transcript := renderThreadContext(read, openerTS, botUserID, name(initiator), name)
+	transcript := spec.render(read, botUserID, name)
 	if transcript != "" {
 		// The transcript is never posted anywhere a person sees it, so this
-		// record is the only trace that the opener carried the thread. lines
+		// record is the only trace that the turn carried the thread. lines
 		// is what the agent was given (one per message shared, after the
 		// skips and the cap), not the number of messages the read returned.
-		a.Logger.Info("slack: thread context attached to the opener",
+		a.Logger.Info("slack: "+spec.what+" attached to the turn",
 			"channel_id", channelID, "thread_id", threadID, "slack_user", initiator,
 			"lines", strings.Count(transcript, "\n"), "complete", read.Complete, "chars", utf8.RuneCountInString(transcript))
 	}
@@ -160,18 +226,7 @@ func threadContextFailureReason(ctx context.Context, err error) string {
 // gateway's own Slack user, whose posts are left out — the agent wrote or is
 // about to write them. name resolves a Slack user ID to a display name.
 func renderThreadContext(read threadRead, openerTS, botUserID, initiator string, name func(string) string) string {
-	var lines []string
-	for _, m := range read.Messages {
-		if !earlierThan(m.TS, openerTS) || !contentfulSubtypes[m.SubType] {
-			continue
-		}
-		if botUserID != "" && m.User == botUserID {
-			continue
-		}
-		if line := renderThreadMessage(m, name); line != "" {
-			lines = append(lines, line)
-		}
-	}
+	lines := renderThreadLines(read, botUserID, name, func(m threadMessage) bool { return earlierThan(m.TS, openerTS) })
 	if len(lines) == 0 {
 		return ""
 	}
@@ -232,9 +287,18 @@ func capThreadContext(lines []string) []string {
 	}
 	// The joined transcript costs the root plus, for every other line, its own
 	// length and the newline before it.
-	budget := threadContextMaxChars - utf8.RuneCountInString(lines[0])
+	rest := newestWithin(lines[1:], threadContextMaxChars-utf8.RuneCountInString(lines[0]))
+	if len(rest) == 0 {
+		return []string{truncateRunes(lines[0], threadContextMaxChars)}
+	}
+	return append(lines[:1:1], rest...)
+}
+
+// newestWithin keeps the newest lines whose lengths, each with one newline,
+// fit budget, measured from the newest backwards.
+func newestWithin(lines []string, budget int) []string {
 	first := len(lines)
-	for i := len(lines) - 1; i >= 1; i-- {
+	for i := len(lines) - 1; i >= 0; i-- {
 		cost := utf8.RuneCountInString(lines[i]) + 1
 		if cost > budget {
 			break
@@ -242,10 +306,67 @@ func capThreadContext(lines []string) []string {
 		budget -= cost
 		first = i
 	}
-	if first == len(lines) {
-		return []string{truncateRunes(lines[0], threadContextMaxChars)}
+	return lines[first:]
+}
+
+// renderCatchUp renders the messages of a muted thread written after mutedAt
+// and before untilTS — the message that ended the mute — as the catch-up
+// handed to the agent, or "" when there are none. The thread's root is left
+// out by its ts, whether or not Slack returns it for a later oldest, and
+// nothing is pinned: the newest lines are kept under the character cap, and
+// a newest line over the cap on its own is cut rather than dropped.
+func renderCatchUp(read threadRead, rootTS, mutedAt, untilTS, botUserID string, name func(string) string) string {
+	lines := renderThreadLines(read, botUserID, name, func(m threadMessage) bool {
+		return m.TS != rootTS && tsAfter(m.TS, mutedAt) && tsAfter(untilTS, m.TS)
+	})
+	if len(lines) == 0 {
+		return ""
 	}
-	return append(lines[:1:1], lines[first:]...)
+	total := len(lines)
+	// The joined lines cost one newline fewer than they number.
+	kept := newestWithin(lines, threadContextMaxChars+1)
+	cut := len(kept) == 0
+	if cut {
+		kept = []string{truncateRunes(lines[total-1], threadContextMaxChars)}
+	}
+
+	noun := "messages"
+	if total == 1 {
+		noun = "message"
+	}
+	shared := fmt.Sprintf(catchUpRead, thousands(total), noun)
+	if !read.Complete {
+		shared += catchUpPartial
+	}
+	shortened := threadContextOldestFirst
+	switch {
+	case (cut || len(kept) < total) && !read.Complete:
+		// A partial read holds the oldest part of the muted period, so what the
+		// cap kept of it is not the most recent of anything.
+		shortened = fmt.Sprintf(catchUpPartialTrimmed, thousands(threadContextMaxChars))
+	case cut || len(kept) < total:
+		shortened = fmt.Sprintf(threadContextTrimmed, thousands(threadContextMaxChars))
+	}
+	return fmt.Sprintf(catchUpLabel, shared, shortened) + "\n" + strings.Join(kept, "\n")
+}
+
+// renderThreadLines renders the messages of a read that keep passes, one line
+// each, oldest first. Channel events, the gateway's own posts (the agent
+// wrote them) and messages with no words are left out.
+func renderThreadLines(read threadRead, botUserID string, name func(string) string, keep func(threadMessage) bool) []string {
+	var lines []string
+	for _, m := range read.Messages {
+		if !keep(m) || !contentfulSubtypes[m.SubType] {
+			continue
+		}
+		if botUserID != "" && m.User == botUserID {
+			continue
+		}
+		if line := renderThreadMessage(m, name); line != "" {
+			lines = append(lines, line)
+		}
+	}
+	return lines
 }
 
 // renderThreadMessage renders one message as "YYYY-MM-DD HH:MM author: text"

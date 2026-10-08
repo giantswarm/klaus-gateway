@@ -35,8 +35,16 @@ func mutedAt(t *testing.T, rec *slackadapter.MemoryRecorder, threadID string) st
 func startMutedThread(t *testing.T) (*fakeSlackAPI, *stubGateway, *slackadapter.Adapter, *httptest.Server, string) {
 	t.Helper()
 	fake := newFakeSlackAPI()
-	api := fake.server(t)
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok", Done: true}}}
+	a, srv, apiURL := startMutedThreadWith(t, fake, gw)
+	return fake, gw, a, srv, apiURL
+}
+
+// startMutedThreadWith is startMutedThread over a fake and a gateway the test
+// set up first.
+func startMutedThreadWith(t *testing.T, fake *fakeSlackAPI, gw *stubGateway) (*slackadapter.Adapter, *httptest.Server, string) {
+	t.Helper()
+	api := fake.server(t)
 	a, srv := newEventsAdapter(t, gw, api.URL, channelMode)
 
 	sendEvent(t, srv, mention("U1", "why is the cluster unhappy?", "500.000", ""))
@@ -49,7 +57,7 @@ func startMutedThread(t *testing.T) (*fakeSlackAPI, *stubGateway, *slackadapter.
 	}, flowWait, 20*time.Millisecond, "the mute is confirmed in the thread")
 	require.Equal(t, "500.001", mutedAt(t, gw.rec(), "500.000"), "the row keeps the mute message's ts")
 	require.Equal(t, 1, gw.dispatchCount(), "the word is consumed, not sent to the agent")
-	return fake, gw, a, srv, api.URL
+	return a, srv, api.URL
 }
 
 // The initiator mutes the thread. A reply that does not mention the bot then

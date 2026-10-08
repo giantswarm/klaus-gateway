@@ -80,35 +80,36 @@ func (a *Adapter) isMuteCommand(msg channels.InboundMessage) bool {
 }
 
 // endMute ends threadID's mute when the message at ts was written after it,
-// and says so in the thread. A message from before the mute — one that passed
-// the gate just before the mute was written, or a replay of one parked
-// earlier — leaves it. A store that cannot be written leaves the thread
-// muted; the turn still runs. A direct message is never muted, so it costs no
-// store call.
-func (a *Adapter) endMute(ctx context.Context, slackChannel, threadID, ts string) {
+// says so in the thread, and returns the mute's own ts so the turn can catch
+// up on what was written since; "" when it ended no mute. A message from
+// before the mute — one that passed the gate just before the mute was
+// written, or a replay of one parked earlier — leaves it. A store that cannot
+// be written leaves the thread muted; the turn still runs. A direct message
+// is never muted, so it costs no store call.
+func (a *Adapter) endMute(ctx context.Context, slackChannel, threadID, ts string) string {
 	if isDMChannelID(slackChannel) {
-		return
+		return ""
 	}
-	ended := false
+	mutedAt := ""
 	err := a.gw.UpdateThreadRecord(ctx, ChannelName, slackChannel, threadID, func(e *store.Entry, found bool) bool {
 		if !found || e.MutedAt == "" || !tsAfter(ts, e.MutedAt) {
 			return false
 		}
-		e.MutedAt = ""
-		ended = true
+		mutedAt, e.MutedAt = e.MutedAt, ""
 		return true
 	})
 	if err != nil {
 		a.Logger.Warn("slack: end mute failed; the thread stays muted", "thread", threadID, "error", err)
-		return
+		return ""
 	}
-	if !ended {
-		return
+	if mutedAt == "" {
+		return ""
 	}
 	a.Logger.Info("slack: thread unmuted", "record", "thread_unmuted", "channel_id", slackChannel, "thread", threadID)
 	if _, err := a.apiClient().postNote(ctx, slackChannel, muteEndedNotice, threadID); err != nil {
 		a.Logger.Warn("slack: post unmute note failed", "thread", threadID, "error", err)
 	}
+	return mutedAt
 }
 
 // tsAfter reports whether Slack timestamp ts is later than ref. A timestamp is
