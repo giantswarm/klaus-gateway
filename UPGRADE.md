@@ -4,6 +4,33 @@ Breaking or operator-visible changes between releases, newest first. The
 `CHANGELOG.md` lists every change; this file covers what an operator has to
 do or decide.
 
+## Next — kagent Sessions and Agents (breaking)
+
+The gateway now calls kagent's `SessionService` and `AgentService` in place of
+`AgentInstanceService` and the AgentTemplate roster, generated from giantswarm/kagent-upstream
+at the commit `Makefile.custom.mk` pins. It needs a controller that serves them, and a route in front of it
+that matches them:
+
+- the controller must serve `api.kagent.dev/v1alpha3` `Agent` objects, `SessionService`,
+  `AgentService`, `AgentTemplateService` and `ModelService` beside `lf.a2a.v1.A2AService`;
+- the GRPCRoute (or the agentgateway policy) in front of the controller must match
+  `kagent.api.v1alpha1.SessionService` and `kagent.api.v1alpha1.AgentService`, and may drop
+  `AgentInstanceService`; it must still preserve the `authorization` and `x-share-token`
+  metadata. There is no `x-kagent-agent-instance-id` header any more: an A2A call names the
+  Agent as its tenant and the Session as the message's context id.
+
+The routing store needs no migration: the thread rows keep their shape, and the fields that
+held the AgentInstance id, its creator and the share's target now hold the Session's. A
+binding written before the upgrade names a conversation the Session controller does not have,
+so the first reply in each such thread gets the starting-fresh notice and starts a new
+Session; the thread keeps its agent, its initiator and its grants. A share stored before the
+upgrade is dropped with that binding.
+
+Alerting and dashboards keyed on the turn phase `create_instance` move to `create_session`
+(`turn_complete` reports `create_session_ms`, the `klaus_gateway_turn_phase_seconds` label is
+`create_session`), and log searches on the `instance_bound` and `instance_shared` records move
+to `session_bound` and `session_shared`.
+
 ## Next — `slack.progress.mode` is deleted (breaking)
 
 The values key the chart has accepted and ignored since 3.13.0 is removed from `values.yaml`

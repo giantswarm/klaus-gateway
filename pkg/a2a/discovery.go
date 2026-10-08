@@ -9,7 +9,8 @@ import (
 	apiv1alpha1 "github.com/giantswarm/klaus-gateway/pkg/kagent/gen/kagent/api/v1alpha1"
 )
 
-// Annotations the Generic agent chart writes on an AgentTemplate for the UIs.
+// Annotations the Generic agent chart writes on an Agent, or on the
+// AgentTemplate it references, for the UIs.
 const (
 	// DisplayNameAnnotation carries the human-facing name of an agent.
 	DisplayNameAnnotation = "ui.giantswarm.io/display-name"
@@ -17,26 +18,24 @@ const (
 	IconURLAnnotation = "ui.giantswarm.io/icon-url"
 )
 
-// AgentInfo describes one AgentTemplate of the served namespace.
+// AgentInfo describes one Agent of the served namespace.
 type AgentInfo struct {
 	Name      string
 	Namespace string
-	// DisplayName is the ui.giantswarm.io/display-name annotation; empty when
-	// the template carries none.
+	// DisplayName is the ui.giantswarm.io/display-name annotation of the
+	// Agent, or of its AgentTemplate; empty when neither carries one.
 	DisplayName string
-	// IconURL is the ui.giantswarm.io/icon-url annotation, or the configured
-	// fallback template rendered for the agent; empty when neither is set.
-	IconURL     string
+	// IconURL is the ui.giantswarm.io/icon-url annotation of the Agent, or of
+	// its AgentTemplate, or the configured fallback template rendered for the
+	// agent; empty when none is set.
+	IconURL string
+	// Description is the template's description: the referenced
+	// AgentTemplate's, or the inline template's.
 	Description string
-	// Harness is the admitting Harness an AgentInstance of this template is
-	// created with: the one whose compiled revision is Ready, else the first
-	// admitting one. Empty when no Harness admits the template.
-	Harness string
 	// ModelConfig is the name of the template's ModelConfig (same namespace).
 	ModelConfig string
-	// Unavailable is empty for a selectable template. Otherwise it says why the
-	// template cannot start a conversation: no Harness admits it, or the
-	// admitting Harness has not compiled a ready revision.
+	// Unavailable is empty for a selectable agent. Otherwise it says why the
+	// Agent cannot start a conversation: its Ready condition is not True.
 	Unavailable string
 }
 
@@ -45,14 +44,13 @@ func (a AgentInfo) Ref() string {
 	return a.Namespace + "/" + a.Name
 }
 
-// ListAgents returns the selectable AgentTemplates of the served namespace:
-// the ones an admitting Harness has compiled a ready revision for. Templates
-// nobody admits, or whose revision is not ready, are left out; selecting one by
-// name is refused with the reason (CardInfo). The list is fetched as the
-// caller when the context carries a token and served from the roster cache
-// otherwise.
+// ListAgents returns the selectable Agents of the served namespace: the ones
+// whose Ready condition is True. Agents that are not ready are left out;
+// selecting one by name is refused with the reason (CardInfo). The list is
+// fetched as the caller when the context carries a token and served from the
+// roster cache otherwise.
 func (c *Client) ListAgents(ctx context.Context) ([]AgentInfo, error) {
-	agents, err := c.templatesFor(ctx)
+	agents, err := c.rosterFor(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -76,9 +74,9 @@ func (c *Client) CardIdentity(ctx context.Context, agentRef string) (username, i
 	return info.DisplayName, info.IconURL
 }
 
-// CardInfo validates an agent selection: the template must exist in the
-// served namespace and be selectable. The error names the reason so a channel
-// can refuse the selection loudly instead of substituting an agent.
+// CardInfo validates an agent selection: the Agent must exist in the served
+// namespace and be selectable. The error names the reason so a channel can
+// refuse the selection loudly instead of substituting an agent.
 func (c *Client) CardInfo(ctx context.Context, agentRef string) (name, description string, err error) {
 	info, err := c.Agent(ctx, agentRef)
 	if err != nil {
@@ -95,8 +93,8 @@ func (c *Client) CardInfo(ctx context.Context, agentRef string) (name, descripti
 }
 
 // AgentModel resolves the model id and provider behind an agent from its
-// ModelConfig. Empty strings with a nil error mean the template names no
-// ModelConfig.
+// ModelConfig. Empty strings with a nil error mean the agent's template names
+// no ModelConfig.
 func (c *Client) AgentModel(ctx context.Context, agentRef string) (model, provider string, err error) {
 	info, err := c.Agent(ctx, agentRef)
 	if err != nil {
@@ -119,14 +117,14 @@ func (c *Client) AgentModel(ctx context.Context, agentRef string) (model, provid
 	return stringAt(spec, "model"), stringAt(spec, "provider"), nil
 }
 
-// Agent returns the template agentRef names, whether or not it is selectable.
-// A bare ref is resolved in the served namespace.
+// Agent returns the Agent agentRef names, whether or not it is selectable. A
+// bare ref is resolved in the served namespace.
 func (c *Client) Agent(ctx context.Context, agentRef string) (AgentInfo, error) {
 	namespace, name, err := c.splitRef(agentRef)
 	if err != nil {
 		return AgentInfo{}, err
 	}
-	agents, err := c.templatesFor(ctx)
+	agents, err := c.rosterFor(ctx)
 	if err != nil {
 		return AgentInfo{}, err
 	}
@@ -135,7 +133,7 @@ func (c *Client) Agent(ctx context.Context, agentRef string) (AgentInfo, error) 
 			return a, nil
 		}
 	}
-	return AgentInfo{}, fmt.Errorf("%w: no AgentTemplate %s/%s", ErrAgentUnknown, namespace, name)
+	return AgentInfo{}, fmt.Errorf("%w: no Agent %s/%s", ErrAgentUnknown, namespace, name)
 }
 
 // splitRef resolves "name" or "namespace/name" against the served namespace.
@@ -164,15 +162,15 @@ func (c *Client) fallbackIcon(agentRef string) string {
 	return strings.ReplaceAll(c.iconTemplate, "{agent}", name)
 }
 
-// templatesFor returns the roster for a call: fetched as the caller when ctx
+// rosterFor returns the roster for a call: fetched as the caller when ctx
 // carries a token and the cache is stale, the cached roster otherwise. Without
 // a token and without a cache there is nothing to serve.
-func (c *Client) templatesFor(ctx context.Context) ([]AgentInfo, error) {
+func (c *Client) rosterFor(ctx context.Context) ([]AgentInfo, error) {
 	cached, ok, fresh := c.cachedRoster()
 	if ok && fresh {
 		return cached, nil
 	}
-	agents, err := c.fetchTemplates(ctx)
+	agents, err := c.fetchRoster(ctx)
 	if err == nil {
 		return agents, nil
 	}
@@ -182,95 +180,95 @@ func (c *Client) templatesFor(ctx context.Context) ([]AgentInfo, error) {
 	return nil, err
 }
 
-// fetchTemplates lists the served namespace's AgentTemplates as the caller and
-// refreshes the roster cache.
-func (c *Client) fetchTemplates(ctx context.Context) ([]AgentInfo, error) {
+// fetchRoster lists the served namespace's Agents and AgentTemplates as the
+// caller and refreshes the roster cache. The templates supply what an Agent
+// takes from the one it references: the description, the ModelConfig, and
+// the UI annotations the Agent itself does not carry.
+func (c *Client) fetchRoster(ctx context.Context) ([]AgentInfo, error) {
 	callCtx, err := c.serviceCtx(ctx)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := c.templates.ListAgentTemplates(callCtx, &apiv1alpha1.ListAgentTemplatesRequest{Namespace: c.namespace})
+	listed, err := c.agents.ListAgents(callCtx, &apiv1alpha1.ListAgentsRequest{Namespace: c.namespace})
+	if err != nil {
+		return nil, fmt.Errorf("a2a: list Agents in %s: %w", c.namespace, err)
+	}
+	templates, err := c.templates.ListAgentTemplates(callCtx, &apiv1alpha1.ListAgentTemplatesRequest{Namespace: c.namespace})
 	if err != nil {
 		return nil, fmt.Errorf("a2a: list AgentTemplates in %s: %w", c.namespace, err)
 	}
-	agents := make([]AgentInfo, 0, len(resp.GetAgentTemplates()))
-	for _, t := range resp.GetAgentTemplates() {
-		agents = append(agents, c.agentInfo(t))
+	byName := make(map[string]*apiv1alpha1.AgentTemplate, len(templates.GetAgentTemplates()))
+	for _, t := range templates.GetAgentTemplates() {
+		byName[t.GetRef().GetName()] = t
+	}
+	agents := make([]AgentInfo, 0, len(listed.GetAgents()))
+	for _, a := range listed.GetAgents() {
+		agents = append(agents, c.agentInfo(a, byName))
 	}
 	c.storeRoster(agents)
 	return agents, nil
 }
 
-// agentInfo derives the roster entry from a template: the annotations from
-// its metadata, the readiness from status.harnesses[] of the admitting
-// Harnesses the controller reports.
-func (c *Client) agentInfo(t *apiv1alpha1.AgentTemplate) AgentInfo {
-	resource := t.GetResource().GetValue().AsMap()
+// agentInfo derives the roster entry from an Agent: the annotations from its
+// metadata (its AgentTemplate's when it carries none), the description and
+// ModelConfig from the template it references or embeds, the readiness from
+// status.conditions.
+func (c *Client) agentInfo(a *apiv1alpha1.Agent, templates map[string]*apiv1alpha1.AgentTemplate) AgentInfo {
+	resource := a.GetResource().GetValue().AsMap()
+	spec := nested(resource, "spec")
 	annotations := nested(nested(resource, "metadata"), "annotations")
 	info := AgentInfo{
-		Name:        t.GetRef().GetName(),
-		Namespace:   t.GetRef().GetNamespace(),
+		Name:        a.GetRef().GetName(),
+		Namespace:   a.GetRef().GetNamespace(),
 		DisplayName: stringAt(annotations, DisplayNameAnnotation),
 		IconURL:     stringAt(annotations, IconURLAnnotation),
-		Description: t.GetDescription(),
-		ModelConfig: t.GetModelConfigRef().GetName(),
+	}
+	if inline := nested(spec, "template"); inline != nil {
+		info.Description = stringAt(inline, "description")
+		info.ModelConfig = stringAt(nested(inline, "modelConfig"), "name")
+	}
+	if t := templates[stringAt(nested(spec, "templateRef"), "name")]; t != nil {
+		info.Description = t.GetDescription()
+		info.ModelConfig = t.GetModelConfigRef().GetName()
+		templateAnnotations := nested(nested(t.GetResource().GetValue().AsMap(), "metadata"), "annotations")
+		if info.DisplayName == "" {
+			info.DisplayName = stringAt(templateAnnotations, DisplayNameAnnotation)
+		}
+		if info.IconURL == "" {
+			info.IconURL = stringAt(templateAnnotations, IconURLAnnotation)
+		}
 	}
 	if info.IconURL == "" {
 		info.IconURL = c.fallbackIcon(info.Name)
 	}
-	info.Harness, info.Unavailable = harnessReadiness(t.GetAdmittingHarnesses(), nested(resource, "status"))
+	conditions, _ := nested(resource, "status")["conditions"].([]any)
+	if ready, reason := readyCondition(conditions); !ready {
+		info.Unavailable = fmt.Sprintf("Agent %s is not ready: %s", info.Name, reason)
+	}
 	return info
 }
 
-// harnessReadiness picks the Harness a conversation is created with and
-// explains an unusable template. Readiness is the Ready condition the
-// controller writes per admitting Harness under status.harnesses[].
-func harnessReadiness(admitting []string, statusMap map[string]any) (harness, unavailable string) {
-	if len(admitting) == 0 {
-		return "", "no Harness admits this AgentTemplate (it carries no admission label a platform Harness selects)"
-	}
-	entries, _ := statusMap["harnesses"].([]any)
-	var firstReason string
-	for _, name := range admitting {
-		ready, reason := readyCondition(entries, name)
-		if ready {
-			return name, ""
-		}
-		if firstReason == "" {
-			firstReason = reason
-		}
-	}
-	return admitting[0], fmt.Sprintf("Harness %s has not compiled a ready revision: %s", admitting[0], firstReason)
-}
-
-// readyCondition reads the Ready condition of one Harness entry.
-func readyCondition(entries []any, harness string) (bool, string) {
-	for _, e := range entries {
-		entry, ok := e.(map[string]any)
-		if !ok || stringAt(entry, "harness") != harness {
+// readyCondition reads the Ready condition of an Agent's status.conditions:
+// true, or false with the reason.
+func readyCondition(conditions []any) (bool, string) {
+	for _, cond := range conditions {
+		cm, ok := cond.(map[string]any)
+		if !ok || stringAt(cm, "type") != "Ready" {
 			continue
 		}
-		conditions, _ := entry["conditions"].([]any)
-		for _, cond := range conditions {
-			cm, ok := cond.(map[string]any)
-			if !ok || stringAt(cm, "type") != "Ready" {
-				continue
-			}
-			if stringAt(cm, "status") == "True" {
-				return true, ""
-			}
-			reason := stringAt(cm, "message")
-			if reason == "" {
-				reason = stringAt(cm, "reason")
-			}
-			if reason == "" {
-				reason = "Ready=" + stringAt(cm, "status")
-			}
-			return false, reason
+		if stringAt(cm, "status") == "True" {
+			return true, ""
 		}
-		return false, "no Ready condition reported yet"
+		reason := stringAt(cm, "message")
+		if reason == "" {
+			reason = stringAt(cm, "reason")
+		}
+		if reason == "" {
+			reason = "Ready=" + stringAt(cm, "status")
+		}
+		return false, reason
 	}
-	return false, "no status reported yet"
+	return false, "no Ready condition reported yet"
 }
 
 func nested(m map[string]any, key string) map[string]any {

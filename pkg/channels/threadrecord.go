@@ -10,7 +10,7 @@ import (
 )
 
 // DefaultThreadTTL is the default of --thread-ttl: the sliding lifetime of a
-// thread's row, its channel record and its AgentInstance binding alike. Every
+// thread's row, its channel record and its Session binding alike. Every
 // turn refreshes it; after it the conversation has ended and the next mention
 // starts it over.
 const DefaultThreadTTL = 90 * 24 * time.Hour

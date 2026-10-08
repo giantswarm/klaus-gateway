@@ -18,13 +18,13 @@ or `helm/`. Add a line when a review finds a new one.
   then the handler runs in the background. A test that sends the next message on the ack
   races the write; wait for the write's own side effect, such as the `response_url` rewrite
   that follows a grant (#287).
-- **A thread's conversation is its initiator's.** Its AgentInstance is created under the
+- **A thread's conversation is its initiator's.** Its Session is created under the
   initiator's identity; a granted collaborator's turns run under their own token and reach
-  that instance through the thread's AgentInstance share (#350). Letting a person in is the
+  that session through the thread's Session share (#350). Letting a person in is the
   initiator's consent decision, taken through the Allow prompt; no entry point grants a
   newcomer as a side effect (#279).
-- **kagent answers NotFound to anyone who is not the instance's creator.** A lookup, delete
-  or share revoke under a collaborator's token without a share gets NotFound for an instance
+- **kagent answers NotFound to anyone who is not the session's creator.** A lookup, delete
+  or share revoke under a collaborator's token without a share gets NotFound for a session
   that exists. Never read that as "gone": do not clear the binding, report a reset or log a
   revoke on it. Only the creator's token, or a share, makes the answer mean something (#356).
 - **kagent 1.2.2 and later report token usage only on the artifact.** `kagent.dev/a2a/usage`
@@ -86,15 +86,19 @@ or `helm/`. Add a line when a review finds a new one.
   its messages to the agent is a different purpose and is documented as such (#288).
 - **Valkey expires and evicts silently.** The gateway acts before a row's expiry, never on
   it; a row that must outlive its conversation carries its own longer TTL (#307).
-- **The AgentInstance request id is `SynthesizeContextID(channel, channelID, "", threadID, agentRef)`**
+- **The Session request id is `SynthesizeContextID(channel, channelID, "", threadID, agentRef)`**
   with an empty user slot. It is the controller's idempotency key: change it, and every live
-  thread asks for an instance the controller does not hold (#320).
+  thread asks for a session the controller does not hold (#320).
+- **An A2A call is routed by its tenant and the message's context id.** The tenant is the
+  Agent, `namespace/name`; the context id is the Session's id, which the controller reports as
+  its `context_id`. There is no routing header, and a call whose context id names another
+  Session is refused.
 - **A thread's mute is the row's `muted_at`, its own field, not part of `held`.** The
   inactive-thread gate reads it from the one row it already reads, so the gate path still costs
   one store read; `held` is rewritten from the adapter's memory on every change of a parked
   queue, and a mute kept there would be lost on the next one (#410).
 - **The controller's create is idempotent per caller and request id.** The same person gets
-  the earlier instance back; a different person gets a new one (giantswarm#37896).
+  the earlier session back; a different person gets a new one (giantswarm#37896).
 
 ## Tests
 
