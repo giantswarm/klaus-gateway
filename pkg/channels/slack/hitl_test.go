@@ -73,7 +73,8 @@ func TestFormRenderable(t *testing.T) {
 	}{
 		{"two widgetable questions", []channels.HitlQuestion{q(false, "a", "b"), q(true, "c", "d")}, true},
 		{"single question is not a form", []channels.HitlQuestion{q(false, "a", "b")}, false},
-		{"a free-text question blocks the form", []channels.HitlQuestion{q(false, "a", "b"), q(false)}, false},
+		{"a free-text question is a text input of the form", []channels.HitlQuestion{q(false, "a", "b"), q(false)}, true},
+		{"free-text questions alone make a form", []channels.HitlQuestion{q(false), q(false)}, true},
 		{"an over-long label blocks the form", []channels.HitlQuestion{q(false, "a"), q(false, longLabel)}, false},
 		{"an over-count question blocks the form", []channels.HitlQuestion{q(false, "a", "b"), q(false, manyChoices...)}, false},
 		{"too many questions falls back to text", manyQuestions, false},
@@ -166,6 +167,52 @@ func TestBuildButtonDecision_SubmitForm(t *testing.T) {
 	require.Equal(t, channels.DecisionApprove, decision.Type)
 	require.Equal(t, [][]string{{"MySQL"}, {"Auth", "Caching"}}, decision.AskUserAnswers)
 	require.Equal(t, "MySQL; Auth, Caching", resume)
+}
+
+// A form question without choices takes its typed text as its answer; one left
+// empty is an empty slot, not a blocked Submit.
+func TestBuildButtonDecision_SubmitFormWithText(t *testing.T) {
+	prompt := &channels.HitlPrompt{
+		ToolName: channels.AskUserToolName,
+		Questions: []channels.HitlQuestion{
+			{Question: "Database?", Choices: []string{"PostgreSQL", "MySQL"}},
+			{Question: "Why?"},
+			{Question: "Anything else?"},
+		},
+	}
+	act := hitlAction{kind: hitlSubmit, answers: map[int][]int{0: {1}}, texts: map[int]string{1: "It is what we run"}}
+
+	require.Empty(t, submitIncompleteNudge(prompt, act))
+	require.Equal(t, formIncompleteNudge, submitIncompleteNudge(prompt, hitlAction{kind: hitlSubmit, texts: act.texts}),
+		"a question with choices stays required next to a typed answer")
+	decision, resume := buildButtonDecision(act, prompt)
+	require.Equal(t, [][]string{{"MySQL"}, {"It is what we run"}, {}}, decision.AskUserAnswers)
+	require.Equal(t, "MySQL; It is what we run; ", resume)
+}
+
+// A form of questions without choices needs one typed answer: a Submit with
+// every text input empty is nudged instead of resuming with nothing.
+func TestSubmitIncompleteNudge_BlankTextForm(t *testing.T) {
+	prompt := &channels.HitlPrompt{
+		ToolName:  channels.AskUserToolName,
+		Questions: []channels.HitlQuestion{{Question: "Why?"}, {Question: "Anything else?"}},
+	}
+	require.Equal(t, formBlankNudge, submitIncompleteNudge(prompt, hitlAction{kind: hitlSubmit}))
+	require.Empty(t, submitIncompleteNudge(prompt, hitlAction{kind: hitlSubmit, texts: map[int]string{1: "no"}}))
+}
+
+// A long typed answer is cut within the section limit, and never through an
+// escape it needed.
+func TestQuestionAnsweredBlocks_LongAnswerCutBeforeEscape(t *testing.T) {
+	form := &channels.HitlPrompt{
+		ToolName:  channels.AskUserToolName,
+		Questions: []channels.HitlQuestion{{Question: "Logs?"}, {Question: "Anything else?"}},
+	}
+	long := strings.Repeat("&", slackSectionTextMax)
+	_, blocks := questionAnsweredBlocks(form, [][]string{{long}, {}}, "U1", time.Now())
+	text := blocks[0].(map[string]any)[bkText].(map[string]any)[bkText].(string)
+	require.LessOrEqual(t, utf8.RuneCountInString(text), slackSectionTextMax)
+	require.True(t, strings.HasSuffix(text, "&amp;…"), "cut after a whole escape: %q", text[len(text)-12:])
 }
 
 // An answered question keeps its question and names the answer, who gave it

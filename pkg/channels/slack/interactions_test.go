@@ -750,7 +750,7 @@ func TestSelectedChoiceIndices(t *testing.T) {
 		Values map[string]map[string]blockActionState `json:"values"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(raw), &state))
-	flat, _ := choiceSelections(state)
+	flat, _, _ := submitState(state)
 	require.Equal(t, []int{0, 1, 2}, flat)
 }
 
@@ -767,8 +767,92 @@ func TestSelectedChoicesByQuestion(t *testing.T) {
 		Values map[string]map[string]blockActionState `json:"values"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(raw), &state))
-	_, byQuestion := choiceSelections(state)
+	_, byQuestion, _ := submitState(state)
 	require.Equal(t, map[int][]int{0: {0, 2}, 1: {1}}, byQuestion, "only hitl_q_<qi> blocks are grouped per question")
+}
+
+func TestSubmitStateTexts(t *testing.T) {
+	raw := `{"values":{
+		"` + hitlQGroupPrefix + `_1":{"` + hitlText + `":{"type":"plain_text_input","value":"  It is what we run \n"}},
+		"` + hitlQGroupPrefix + `_2":{"` + hitlText + `":{"type":"plain_text_input","value":null}},
+		"` + hitlQGroupPrefix + `_0":{"` + hitlGroup + `":{"selected_option":{"value":"1"}}},
+		"` + hitlGroupBlock + `":{"` + hitlText + `":{"value":"not a form question"}}
+	}}`
+	var state struct {
+		Values map[string]map[string]blockActionState `json:"values"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(raw), &state))
+	_, byQuestion, texts := submitState(state)
+	require.Equal(t, map[int]string{1: "It is what we run"}, texts)
+	require.Equal(t, map[int][]int{0: {1}}, byQuestion)
+}
+
+// A form question without choices is answered in its text input: the Submit
+// resumes with the typed text in its slot, or an empty slot when it was left
+// empty.
+func TestHandleDecision_FormResumesWithTypedAnswer(t *testing.T) {
+	const secret = "test-secret"
+	for _, tc := range []struct {
+		name  string
+		text  any
+		want1 []string
+	}{
+		{"typed", "Nothing, thanks", []string{"Nothing, thanks"}},
+		{"left empty", nil, []string{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, _ := newIxSlackServer(t)
+			gw := &fakeGateway{Facade: newMemoryRecorder(), deltas: []channels.OutboundDelta{{Content: "done"}, {Done: true}}}
+			a := &Adapter{
+				APIBase:      srv.URL,
+				Secrets:      Secrets{BotToken: "test-bot-token", SigningSecret: secret}, //nolint:gosec
+				DefaultAgent: "worker",
+			}
+			require.NoError(t, a.Start(t.Context(), gw))
+			a.accessPolicy().SetInitiator(t.Context(), "C001", "T001", "U001")
+			a.storePendingTask("T001", &pendingTask{
+				TaskID: "task-abc", AgentRef: "worker", Channel: "C001", ChannelID: "C001",
+				Prompt: &channels.HitlPrompt{
+					ToolName: channels.AskUserToolName,
+					Questions: []channels.HitlQuestion{
+						{Question: "Which do you like best?", Choices: []string{"Option A", "Option B"}},
+						{Question: "Anything else?"},
+					},
+				},
+			})
+
+			inner := map[string]any{
+				"type":      "block_actions",
+				"user":      map[string]any{"id": "U001"},
+				"channel":   map[string]any{"id": "C001"},
+				"container": map[string]any{"message_ts": "MSG001"},
+				"message":   map[string]any{"thread_ts": "T001"},
+				"actions":   []any{map[string]any{"action_id": hitlSubmit, "value": "T001"}},
+				"state": map[string]any{"values": map[string]any{
+					hitlQGroupPrefix + "_0": map[string]any{hitlGroup: map[string]any{
+						"selected_option": map[string]any{"value": "1"},
+					}},
+					hitlQGroupPrefix + "_1": map[string]any{hitlText: map[string]any{
+						"type": "plain_text_input", "value": tc.text,
+					}},
+				}},
+			}
+			data, err := json.Marshal(inner)
+			require.NoError(t, err)
+			body := []byte("payload=" + url.QueryEscape(string(data)))
+			req := httptest.NewRequest(http.MethodPost, "/channels/slack/interactions", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			signRequest(t, req, body, secret)
+			rr := httptest.NewRecorder()
+			a.ixHandler.ServeHTTP(rr, req)
+			require.Equal(t, http.StatusOK, rr.Code)
+
+			require.Eventually(t, func() bool { return gw.sendCount() >= 1 }, flowWait, 10*time.Millisecond)
+			msg := gw.lastCompletion()
+			require.NotNil(t, msg.Decision)
+			require.Equal(t, [][]string{{"Option B"}, tc.want1}, msg.Decision.AskUserAnswers)
+		})
+	}
 }
 
 // A multi-question ask_user form resumes with one answer slot per question, in

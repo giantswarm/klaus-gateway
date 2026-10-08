@@ -398,10 +398,10 @@ func (a *Adapter) askAgentModal(agents []pkga2a.AgentInfo, req askAgentRequest) 
 		bkType:        bkPlainTextInput,
 		bkActionID:    askAgentQuestionActionID,
 		bkMultiline:   true,
-		bkMaxLength:   modalQuestionMax,
+		bkMaxLength:   plainTextInputMax,
 		bkPlaceholder: plainTextObj(askAgentQuestionPlaceholder),
 	}
-	if text := truncateRunes(strings.TrimSpace(req.Prefill), modalQuestionMax); text != "" {
+	if text := truncateRunes(strings.TrimSpace(req.Prefill), plainTextInputMax); text != "" {
 		question[bkInitialValue] = text
 	}
 	agentInput := map[string]any{bkType: bkInput, bkBlockID: askAgentAgentBlockID, bkLabel: plainTextObj(askAgentAgentLabel), bkElement: agentSelect}
