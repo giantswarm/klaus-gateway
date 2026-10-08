@@ -51,7 +51,7 @@ func initiatorMsg(text string) channels.InboundMessage {
 	return msg
 }
 
-// collaboratorMsg is a collaborator's turn on the initiator's instance, with
+// collaboratorMsg is a collaborator's turn on the initiator's session, with
 // the initiator's token as ownerToken ("" while they are signed out).
 func collaboratorMsg(text, ownerToken string) channels.InboundMessage {
 	msg := slackMsg(text)
@@ -80,7 +80,7 @@ func runTurn(t *testing.T, f *channels.Facade, msg channels.InboundMessage) {
 }
 
 // A collaborator's turn runs under their own token and the thread's share,
-// which the instance's creator minted; the row keeps the share sealed.
+// which the session's creator minted; the row keeps the share sealed.
 func TestFacade_CollaboratorTurnRunsAsTheCollaboratorThroughAShare(t *testing.T) {
 	agent := newFakeAgent(completedTurn()...)
 	f, routes := newSharingFacade(t, agent)
@@ -92,8 +92,8 @@ func TestFacade_CollaboratorTurnRunsAsTheCollaboratorThroughAShare(t *testing.T)
 	require.Equal(t, collaboratorJWT, pkga2a.ForwardedTokenFromContext(agent.streamCtx), "the turn runs as the collaborator")
 	share := pkga2a.ShareTokenFromContext(agent.streamCtx)
 	require.NotEmpty(t, share)
-	require.Equal(t, []string{ownerJWT}, agent.sharedAs, "only the instance's creator may share it")
-	require.Equal(t, 1, agent.created, "the collaborator's turn stays on the creator's instance")
+	require.Equal(t, []string{ownerJWT}, agent.sharedAs, "only the session's creator may share it")
+	require.Equal(t, 1, agent.created, "the collaborator's turn stays on the creator's session")
 
 	row := threadRow(t, routes)
 	require.NotNil(t, row.Share)
@@ -134,9 +134,9 @@ func TestFacade_CollaboratorTurnWithoutShareOrOwnerToken(t *testing.T) {
 }
 
 // A collaborator who opens the thread's binding while the initiator is signed
-// out creates the instance under their own token: it is theirs, so their
+// out creates the session under their own token: it is theirs, so their
 // turns need no share, now or once the initiator is back.
-func TestFacade_CollaboratorCreatedInstanceNeedsNoShare(t *testing.T) {
+func TestFacade_CollaboratorCreatedSessionNeedsNoShare(t *testing.T) {
 	agent := newFakeAgent(completedTurn()...)
 	f, routes := newSharingFacade(t, agent)
 
@@ -146,7 +146,7 @@ func TestFacade_CollaboratorCreatedInstanceNeedsNoShare(t *testing.T) {
 
 	runTurn(t, f, collaboratorMsg("again", ownerJWT))
 
-	require.Empty(t, agent.sharedAs, "no share is minted of the collaborator's own instance")
+	require.Empty(t, agent.sharedAs, "no share is minted of the collaborator's own session")
 	require.Empty(t, pkga2a.ShareTokenFromContext(agent.streamCtx))
 }
 
@@ -166,9 +166,9 @@ func TestFacade_ConcurrentShareMintKeepsOne(t *testing.T) {
 	require.Contains(t, pkga2a.ShareTokenFromContext(agent.streamCtx), "share-2")
 }
 
-// A share minted for an instance the thread left meanwhile is revoked at once,
+// A share minted for a session the thread left meanwhile is revoked at once,
 // not stored or used.
-func TestFacade_ShareOfALeftInstanceIsRevoked(t *testing.T) {
+func TestFacade_ShareOfALeftSessionIsRevoked(t *testing.T) {
 	agent := newFakeAgent(completedTurn()...)
 	f, routes := newSharingFacade(t, agent)
 	runTurn(t, f, initiatorMsg("open"))
@@ -200,9 +200,9 @@ func TestFacade_CollaboratorTurnWithSharesOff(t *testing.T) {
 	require.Empty(t, agent.sharedAs)
 }
 
-// A collaborator's turn that opens the binding creates the instance under its
+// A collaborator's turn that opens the binding creates the session under its
 // creator's token, so the thread's conversation stays theirs.
-func TestFacade_CollaboratorTurnCreatesTheInstanceAsItsCreator(t *testing.T) {
+func TestFacade_CollaboratorTurnCreatesTheSessionAsItsCreator(t *testing.T) {
 	agent := newFakeAgent(completedTurn()...)
 	f, _ := newSharingFacade(t, agent)
 
@@ -232,7 +232,7 @@ func TestFacade_UnopenableShareIsReplaced(t *testing.T) {
 	require.NotEqual(t, old, threadRow(t, routes).Share.ID)
 }
 
-// A rebind to another agent leaves the old instance behind, and its share is
+// A rebind to another agent leaves the old session behind, and its share is
 // revoked.
 func TestFacade_RebindRevokesTheOldShare(t *testing.T) {
 	agent := newFakeAgent(completedTurn()...)
@@ -249,7 +249,7 @@ func TestFacade_RebindRevokesTheOldShare(t *testing.T) {
 	require.Nil(t, threadRow(t, routes).Share)
 }
 
-// A reset deletes the instance and its share with it; the row forgets both.
+// A reset deletes the session and its share with it; the row forgets both.
 func TestFacade_ResetSessionDropsTheShare(t *testing.T) {
 	agent := newFakeAgent(completedTurn()...)
 	f, routes := newSharingFacade(t, agent)
@@ -264,7 +264,7 @@ func TestFacade_ResetSessionDropsTheShare(t *testing.T) {
 }
 
 // The next turn after the conversation ended revokes the share of the
-// instance the thread no longer uses.
+// session the thread no longer uses.
 func TestFacade_ClosedThreadRevokesItsShare(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		agent := newFakeAgent(completedTurn()...)
@@ -282,7 +282,7 @@ func TestFacade_ClosedThreadRevokesItsShare(t *testing.T) {
 }
 
 // A collaborator without the creator's token or a share cannot see the
-// instance, so the resume check is indeterminate: the controller is not asked,
+// session, so the resume check is indeterminate: the controller is not asked,
 // and the initiator's binding stays.
 func TestFacade_SessionResumableWithoutShareOrOwnerTokenIsIndeterminate(t *testing.T) {
 	agent := newFakeAgent(completedTurn()...)
@@ -298,7 +298,7 @@ func TestFacade_SessionResumableWithoutShareOrOwnerTokenIsIndeterminate(t *testi
 	require.Equal(t, bound, threadRow(t, routes).AgentInstanceID, "the binding stays")
 }
 
-// With the thread's share, the collaborator's resume check reads the instance
+// With the thread's share, the collaborator's resume check reads the session
 // through it.
 func TestFacade_SessionResumableThroughTheStoredShare(t *testing.T) {
 	agent := newFakeAgent(completedTurn()...)
@@ -329,9 +329,9 @@ func TestFacade_ResetSessionWithoutShareOrOwnerTokenIsRefused(t *testing.T) {
 	require.Equal(t, bound, threadRow(t, routes).AgentInstanceID)
 }
 
-// A share is revoked only under its instance creator's token: a collaborator
+// A share is revoked only under its session creator's token: a collaborator
 // who rebinds the thread while the initiator is signed out leaves the old
-// share alone, and the new instance is recorded as theirs.
+// share alone, and the new session is recorded as theirs.
 func TestFacade_RebindWithoutTheCreatorsTokenKeepsTheOldShare(t *testing.T) {
 	agent := newFakeAgent(completedTurn()...)
 	f, routes := newSharingFacade(t, agent)
@@ -348,7 +348,7 @@ func TestFacade_RebindWithoutTheCreatorsTokenKeepsTheOldShare(t *testing.T) {
 	require.Equal(t, collaboratorID, row.InstanceCreator)
 }
 
-// The instance's creator is recorded: the initiator for their own turn, and
+// The session's creator is recorded: the initiator for their own turn, and
 // the initiator too for a collaborator turn that creates it under the
 // initiator's token.
 func TestFacade_InstanceCreatorIsRecorded(t *testing.T) {
@@ -402,5 +402,142 @@ func TestFacade_ClosedThreadReopenedBySomeoneElseKeepsTheOldShare(t *testing.T) 
 		row := threadRow(t, routes)
 		require.Nil(t, row.Share)
 		require.Equal(t, "U003", row.InstanceCreator)
+	})
+}
+
+// A share is minted to expire with the thread's lifetime, and the expiry the
+// controller hands back is kept in the row.
+func TestFacade_ShareExpiresWithTheThread(t *testing.T) {
+	agent := newFakeAgent(completedTurn()...)
+	expires := time.Now().Add(channels.DefaultThreadTTL)
+	agent.shareExp = func(time.Duration) time.Time { return expires }
+	f, routes := newSharingFacade(t, agent)
+	runTurn(t, f, initiatorMsg("open"))
+
+	runTurn(t, f, collaboratorMsg("join", ownerJWT))
+
+	require.Equal(t, []time.Duration{channels.DefaultThreadTTL}, agent.sharedTTL)
+	require.True(t, expires.Equal(threadRow(t, routes).Share.ExpiresAt))
+}
+
+// A share about to expire is replaced under the creator's token, and the old
+// one, still valid, is left to expire so a turn running on it keeps working.
+// Without that token the old share is used until it expires.
+func TestFacade_ShareAboutToExpireIsReplaced(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		agent := newFakeAgent(completedTurn()...)
+		agent.shareExp = func(time.Duration) time.Time { return time.Now().Add(2 * time.Hour) }
+		f, routes := newSharingFacade(t, agent)
+		runTurn(t, f, initiatorMsg("open"))
+		runTurn(t, f, collaboratorMsg("join", ownerJWT))
+		old := threadRow(t, routes).Share.ID
+
+		time.Sleep(90 * time.Minute)
+		runTurn(t, f, collaboratorMsg("initiator signed out", ""))
+		require.Contains(t, pkga2a.ShareTokenFromContext(agent.streamCtx), old, "a share still valid is used when no replacement can be minted")
+		require.Len(t, agent.shares, 1)
+
+		runTurn(t, f, collaboratorMsg("again", ownerJWT))
+		require.Len(t, agent.shares, 2, "a new share is minted")
+		require.Empty(t, agent.revoked)
+		require.NotEqual(t, old, threadRow(t, routes).Share.ID)
+		require.Contains(t, pkga2a.ShareTokenFromContext(agent.streamCtx), threadRow(t, routes).Share.ID)
+	})
+}
+
+// An expired share is replaced under the creator's token and revoked.
+func TestFacade_ExpiredShareIsReplacedAndRevoked(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		agent := newFakeAgent(completedTurn()...)
+		agent.shareExp = func(time.Duration) time.Time { return time.Now().Add(2 * time.Hour) }
+		f, routes := newSharingFacade(t, agent)
+		runTurn(t, f, initiatorMsg("open"))
+		runTurn(t, f, collaboratorMsg("join", ownerJWT))
+		old := threadRow(t, routes).Share.ID
+
+		time.Sleep(2 * time.Hour)
+		runTurn(t, f, collaboratorMsg("late", ownerJWT))
+
+		require.Len(t, agent.shares, 2)
+		require.Equal(t, []string{old}, agent.revoked)
+	})
+}
+
+// An expired share with no creator's token to replace it refuses the turn.
+func TestFacade_ExpiredShareWithoutOwnerTokenIsRefused(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		agent := newFakeAgent(completedTurn()...)
+		agent.shareExp = func(time.Duration) time.Time { return time.Now().Add(2 * time.Hour) }
+		f, _ := newSharingFacade(t, agent)
+		runTurn(t, f, initiatorMsg("open"))
+		runTurn(t, f, collaboratorMsg("join", ownerJWT))
+
+		time.Sleep(2 * time.Hour)
+		_, err := f.SendCompletion(t.Context(), collaboratorMsg("late", ""))
+
+		require.ErrorIs(t, err, channels.ErrShareUnavailable)
+	})
+}
+
+// A thread lifetime shorter than an hour shrinks the renewal window, so a
+// share minted for it is not replaced on every turn.
+func TestFacade_ShortThreadTTLKeepsItsShare(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		agent := newFakeAgent(completedTurn()...)
+		agent.shareExp = func(ttl time.Duration) time.Time { return time.Now().Add(ttl) }
+		f, _ := newSharingFacade(t, agent)
+		f.ThreadTTL = 30 * time.Minute
+		runTurn(t, f, initiatorMsg("open"))
+		runTurn(t, f, collaboratorMsg("join", ownerJWT))
+
+		time.Sleep(10 * time.Minute)
+		runTurn(t, f, collaboratorMsg("again", ownerJWT))
+		require.Len(t, agent.shares, 1)
+
+		time.Sleep(10 * time.Minute)
+		runTurn(t, f, collaboratorMsg("later", ownerJWT))
+		require.Len(t, agent.shares, 2, "within half the lifetime of its expiry the share is replaced")
+	})
+}
+
+// Without the creator's token a turn does not start on a share that expires
+// within the margin: its later calls would outlive it.
+func TestFacade_ShareAboutToExpireWithoutOwnerTokenIsRefused(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		agent := newFakeAgent(completedTurn()...)
+		agent.shareExp = func(time.Duration) time.Time { return time.Now().Add(2 * time.Hour) }
+		f, _ := newSharingFacade(t, agent)
+		runTurn(t, f, initiatorMsg("open"))
+		runTurn(t, f, collaboratorMsg("join", ownerJWT))
+
+		time.Sleep(2*time.Hour - 3*time.Minute)
+		_, err := f.SendCompletion(t.Context(), collaboratorMsg("late", ""))
+
+		require.ErrorIs(t, err, channels.ErrShareUnavailable)
+	})
+}
+
+// An expired share is no share: without the creator's token the resume check
+// is indeterminate and a reset is refused, and the binding stays.
+func TestFacade_ExpiredShareLeavesTheBindingAlone(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		agent := newFakeAgent(completedTurn()...)
+		agent.shareExp = func(time.Duration) time.Time { return time.Now().Add(2 * time.Hour) }
+		f, routes := newSharingFacade(t, agent)
+		runTurn(t, f, initiatorMsg("open"))
+		runTurn(t, f, collaboratorMsg("join", ownerJWT))
+		bound := threadRow(t, routes).AgentInstanceID
+
+		time.Sleep(2 * time.Hour)
+		exists, checked := f.SessionResumable(t.Context(), collaboratorMsg("back", ""))
+		require.False(t, checked)
+		require.False(t, exists)
+		require.Zero(t, agent.gotIns)
+
+		reset, err := f.ResetSession(t.Context(), collaboratorMsg("reset", ""))
+		require.ErrorIs(t, err, channels.ErrShareUnavailable)
+		require.False(t, reset)
+		require.Empty(t, agent.deleted)
+		require.Equal(t, bound, threadRow(t, routes).AgentInstanceID)
 	})
 }

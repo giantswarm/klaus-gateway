@@ -42,11 +42,11 @@ func TitleFrom(text string, max int) string {
 	return head + "…"
 }
 
-// instanceName is the display name the conversation msg opens is created with:
+// sessionName is the display name the conversation msg opens is created with:
 // what the adapter made of the message where it renders a title itself, the
 // message's own text everywhere else. Normalised either way, so an adapter
 // cannot hand the controller a name it refuses.
-func instanceName(msg InboundMessage) string {
+func sessionName(msg InboundMessage) string {
 	text := msg.Title
 	if text == "" {
 		text = msg.Text

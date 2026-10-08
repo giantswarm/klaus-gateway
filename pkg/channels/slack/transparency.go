@@ -202,8 +202,8 @@ func (a *Adapter) maybeAnnounceResume(ctx context.Context, msg channels.InboundM
 		return
 	}
 	// A miss here for a thread that visibly has history means the thread has no
-	// AgentInstance binding (a conversation from before the cut-over, or one
-	// whose instance was deleted), so surface the conclusive outcome at info.
+	// Session binding (a conversation from before the cut-over, or one
+	// whose session was deleted), so surface the conclusive outcome at info.
 	a.Logger.Info("slack: session resume check", "record", "resume_check",
 		"thread", msg.ThreadID, "channel_id", msg.ChannelID, "subject", msg.Subject, "exists", exists)
 

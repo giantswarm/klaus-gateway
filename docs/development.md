@@ -58,7 +58,7 @@ pkg/auth/satoken/       TokenReview verifier of the team-review endpoint
 pkg/reviews/            the team-review endpoint
 pkg/muster/             muster tool client used by an approved review
 pkg/server/             http.Server wiring, middleware, admin mux
-pkg/a2a/                kagent API v2 client (A2A v1 gRPC, AgentTemplates, AgentInstances, HITL)
+pkg/a2a/                kagent API v2 client (A2A v1 gRPC, Agents, Sessions, HITL)
 pkg/kagent/gen/         generated kagent.api.v1alpha1 stubs (`make generate-kagent`)
 pkg/observability/      OTel traces + Prometheus metrics
 internal/config/        env-var + flag config (KLAUS_GATEWAY_* prefix)
