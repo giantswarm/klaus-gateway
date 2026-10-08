@@ -19,6 +19,7 @@ const (
 	cmdLogout = "logout" // OBO account linking: sign out
 	cmdUsage  = "usage"
 	cmdAgents = "agents" // the roster listing; listAgents serves it, not handleCommand
+	cmdMute   = "mute"   // mute the thread until the next mention (mute.go)
 )
 
 // command is an in-thread command: one word, no arguments.
@@ -29,6 +30,8 @@ type command struct {
 	// thread-scoped ephemeral in such a thread (klaus-gateway#156), so a
 	// private reply goes to the channel instead.
 	Root bool
+	// TS is the command message's own timestamp.
+	TS string
 }
 
 // bareCommands are the verbs the gateway answers. A command is the word alone:
@@ -42,6 +45,7 @@ var bareCommands = map[string]struct{}{
 	cmdUsage:  {},
 	cmdHelp:   {},
 	cmdAgents: {},
+	cmdMute:   {},
 }
 
 // clientSuffix matches the footer a client appends to what it sends for a
@@ -106,6 +110,12 @@ func (a *Adapter) bareCommandFor(msg channels.InboundMessage) *command {
 		if !a.agentSelectionReady() {
 			return nil
 		}
+	case cmdMute:
+		// A direct message has nobody else to talk to: the word is for the
+		// agent there.
+		if isDMChannelID(msg.ChannelID) {
+			return nil
+		}
 	}
 	// A word beside an upload is that file's caption. Consuming it would drop
 	// the file without a word to its sender.
@@ -154,6 +164,7 @@ func helpGroups(agents, signIn bool) []helpGroup {
 	groups := []helpGroup{{title: "In a thread", commands: []helpCommand{
 		{cmdStop, "Interrupt the turn that is running, or deny an open approval; with neither it is a message for the agent"},
 		{cmdUsage, "Tokens for the last turn and the session"},
+		{cmdMute, "Stop replying to messages here until someone mentions the bot"},
 	}}}
 	if agents {
 		groups = append(groups, helpGroup{title: "Agents", commands: []helpCommand{
@@ -293,6 +304,10 @@ func (a *Adapter) handleCommand(ctx context.Context, cmd *command, slackUser, sl
 			return false
 		}
 		note(stopNothingRunningNotice)
+		return true
+
+	case cmdMute:
+		a.muteThread(ctx, cmd.TS, slackUser, slackChannel, threadID, note, ephemeralReply)
 		return true
 
 	case cmdUsage:

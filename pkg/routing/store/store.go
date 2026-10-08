@@ -143,6 +143,12 @@ type Entry struct {
 	// paused task waits on. The adapter owns its shape and the expiry of what
 	// it holds.
 	Held json.RawMessage `json:"held,omitempty"`
+	// MutedAt is the channel's timestamp of the message that muted the
+	// thread, "" while it is not muted: the agent then answers only messages
+	// that mention it, and the first one to reach a turn ends the mute. Its
+	// own field, not part of Held: it lives only in the row, and the gate that
+	// reads it on every thread reply does not decode Held.
+	MutedAt string `json:"muted_at,omitempty"`
 
 	CreatedAt time.Time     `json:"created_at"`
 	LastSeen  time.Time     `json:"last_seen"`

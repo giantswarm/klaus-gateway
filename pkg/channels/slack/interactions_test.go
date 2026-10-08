@@ -1126,7 +1126,7 @@ func TestThreadGate_Active(t *testing.T) {
 	a := &Adapter{}
 	a.gw = newMemoryRecorder()
 	active := func(threadID string) bool {
-		got, _, _ := a.threadGate(t.Context(), "C001", threadID)
+		got, _, _, _ := a.threadGate(t.Context(), "C001", threadID)
 		return got
 	}
 

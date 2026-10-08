@@ -1480,25 +1480,26 @@ func (a *Adapter) addressesOtherUser(ctx context.Context, text string) bool {
 // threadGate reads the thread's row once and reports what the inactive-thread
 // gate needs of it: whether the bot has an active session in threadID — a
 // known initiator (it was mentioned at some point) or a pending input-required
-// task — and, when it has not, whether the row is still there with its
-// conversation ended, and the lifetime it ended after. One read serves both:
-// this runs for every thread reply in every served channel, which under
-// channelMode "all" is the most frequent message the gateway sees.
-func (a *Adapter) threadGate(ctx context.Context, channelID, threadID string) (active, closed bool, lifetime time.Duration) {
+// task — and whether that session is muted, and, when it has not, whether the
+// row is still there with its conversation ended, and the lifetime it ended
+// after. One read serves all three: this runs for every thread reply in every
+// served channel, which under channelMode "all" is the most frequent message
+// the gateway sees.
+func (a *Adapter) threadGate(ctx context.Context, channelID, threadID string) (active, muted, closed bool, lifetime time.Duration) {
 	st, err := a.gw.ThreadState(ctx, ChannelName, channelID, threadID)
 	if err != nil {
 		// A store outage reads as no row, as the access policy does: the
 		// thread is not active and nothing is claimed about its end.
 		a.Logger.Warn("slack: read thread state failed", "thread", threadID, "error", err)
-		return a.hasPendingTask(threadID), false, 0
+		return a.hasPendingTask(threadID), false, false, 0
 	}
 	if st.Found && st.Entry.Initiator != "" {
-		return true, false, 0
+		return true, st.Entry.MutedAt != "", false, 0
 	}
 	if a.hasPendingTask(threadID) {
-		return true, false, 0
+		return true, false, false, 0
 	}
-	return false, st.Closed, st.Lifetime
+	return false, false, st.Closed, st.Lifetime
 }
 
 // storePendingAccess appends a newcomer's message to their parked queue for the
@@ -1960,7 +1961,7 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 			a.Logger.Debug("slack: reply addressed to another user ignored", "channel", inner.Channel, "thread", msg.ThreadID)
 			return
 		}
-		active, closed, lifetime := a.threadGate(ctx, inner.Channel, msg.ThreadID)
+		active, muted, closed, lifetime := a.threadGate(ctx, inner.Channel, msg.ThreadID)
 		if !active {
 			// A mention is not told the conversation ended: its app_mention
 			// twin starts the thread over, so the notice would tell its
@@ -1972,13 +1973,24 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 			a.Logger.Debug("slack: reply in inactive thread ignored", "channel", inner.Channel, "thread", msg.ThreadID)
 			return
 		}
+		// A muted thread is the people's: a reply that does not mention the bot
+		// is dropped before the access check and the dedup claim, so it starts
+		// no turn, parks nothing and asks nobody for consent. A mention passes
+		// (its message twin must not take the app_mention twin's dedup slot,
+		// as above), and so does a mute command, so a repeat or a stranger's is
+		// answered; the word as a caption or a question's answer is no command
+		// and is dropped with the rest.
+		if muted && !a.mentionsBot(ctx, inner.Text) && !a.isMuteCommand(msg) {
+			a.Logger.Debug("slack: reply in muted thread ignored", "channel", inner.Channel, "thread", msg.ThreadID)
+			return
+		}
 	}
 	if a.seenMessage(inner.Channel, msg.MessageID) {
 		a.Logger.Info("slack: dropping duplicate message delivery", "channel", inner.Channel, "ts", msg.MessageID)
 		return
 	}
 	// A message that is one of the gateway's command words alone is that
-	// command: usage, help, login, logout, agents (bareCommands). There is no
+	// command: usage, help, login, logout, agents, mute (bareCommands). There is no
 	// slash form of any of them: Slack's composer keeps a message that starts
 	// with "/" for its own commands, so such a message reached the bot only
 	// after a mention, and anything it carries now goes to the agent like any
@@ -1987,6 +1999,7 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 	// the word instead.
 	if bare := a.bareCommandFor(msg); bare != nil {
 		bare.Root = msg.MessageID == msg.ThreadID
+		bare.TS = msg.MessageID
 		consumed := false
 		if bare.Name == cmdAgents {
 			// The listing reads the agent catalogue at the kagent controller,
@@ -2339,6 +2352,12 @@ func (a *Adapter) dispatchFrom(ctx context.Context, msg channels.InboundMessage,
 			a.Logger.Warn("slack: post dropped-attachment note failed", "thread", msg.ThreadID, "error", err)
 		}
 	}
+
+	// A message written after the mute that gets this far ends it: in a muted
+	// thread that is a mention, or a parked one's replay. Cleared before the
+	// turn is sent: a turn that fails leaves the thread answering again, not
+	// silent.
+	a.endMute(ctx, slackChannel, msg.ThreadID, msg.MessageID)
 
 	// A conversation opening inside a thread other people wrote — a bare
 	// mention under an alert, say — hands the agent what the thread

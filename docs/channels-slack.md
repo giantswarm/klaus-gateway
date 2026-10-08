@@ -257,6 +257,26 @@ creates one, which a turn that switches agents does mid-thread.
   the bot anywhere in the reply (`@alice @bot look too`) still addresses the bot. Direct
   messages are not affected. Only a person's mention counts: a reply that opens with a user group
   (`@oncall`) or `@here` still reaches the agent.
+- **A muted thread is the people's until someone mentions the bot.** `mute` — the word alone, or
+  after a mention — from the thread initiator or a collaborator they allowed in, mutes a channel
+  thread that has a conversation with the agent, and the gateway says so in the thread ("Muted. I
+  won't reply here until someone mentions me."). Anyone else gets the not-permitted note; a thread
+  with no conversation ("There is no conversation with the agent in this thread to mute.") and one
+  already muted ("Already muted.") are told privately, and the first writes no row. While the thread
+  is muted, a reply that does not mention the bot is dropped before the access check: no turn, no
+  consent prompt for a newcomer, no note, and command words without a mention (`usage`, `stop`) go
+  with it, and so does the word as an upload's caption or as the answer to an open question. A
+  mention passes. A mentioned command word is answered and keeps the mute; any other message
+  written after the mute that reaches a turn ends it — in a muted thread that is a mention — and
+  the gateway posts "Unmuted. I'll reply to messages in this thread again." and the agent answers,
+  and replies without a mention reach it again after that. A newcomer's mention goes through the
+  access prompt first: Deny keeps the thread muted, Allow ends the mute. A message written before
+  the mute keeps it when it runs later (a newcomer's reply allowed after the mute). The mute is
+  cleared before the turn is sent, so a turn that fails leaves the thread unmuted. Muting keeps the agent, the session and the grants, and it is the row's `muted_at` (the
+  `ts` of the `mute` message), so it survives a restart on a persistent store and ends with the
+  conversation: a mention after the thread lifetime starts the thread over, unmuted. In a DM `mute`
+  is a message for the agent. In a private channel the app reads only mentions anyway, so a mute
+  there changes nothing anyone sees.
 
 ### Two auth layers
 
@@ -718,14 +738,14 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
 - **Commands and notes.** `help` answers with a header, how to address the bot ("Send a command
   as the word alone, in a direct message or in a thread @Swarmgeist is in; anywhere else mention
   @Swarmgeist first"), the commands
-  grouped by what the person is doing (In a thread: `stop`, `usage`; Agents: `agents`, only
+  grouped by what the person is doing (In a thread: `stop`, `usage`, `mute`; Agents: `agents`, only
   with agent selection; Account: `login`, `logout`,
   only with sign-in), each command as a code
   label with its effect as text, and a context line for the **Inspect agent steps** shortcut.
   The gateway's own notes (a stop, a failure, a refusal, a busy thread) are one short context
   line in Slack's small muted text, written in the third person without emoji: they name what
   happened and the one thing to do next, apart from the agent's answer.
-- **Every command is a plain word.** `usage`, `help`, `agents`, `login` and `logout` are read
+- **Every command is a plain word.** `usage`, `help`, `mute`, `agents`, `login` and `logout` are read
   from a
   message that is that word alone, in any case and with trailing punctuation (`Login.`), so they
   need no slash and no mention wherever the bot reads: a DM, or a thread it is in. The gateway
