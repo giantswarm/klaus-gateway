@@ -116,6 +116,10 @@ type InboundMessage struct {
 	OwnerToken string
 	// AgentRef is the target agent name: the agent the turn runs on.
 	AgentRef string
+	// Workspace is the workspace choice this turn makes for its thread's
+	// Session. nil makes none: the thread's recorded choice stands. A choice
+	// that differs from the recorded one starts a new Session.
+	Workspace *store.WorkspaceChoice
 	// Opener is set by a channel adapter when this message starts its
 	// thread's conversation (no agent recorded for the thread before it): the
 	// session title keys on it.

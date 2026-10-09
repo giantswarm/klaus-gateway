@@ -132,6 +132,11 @@ type Entry struct {
 	// written before it was recorded, which reads as the initiator. Dropped
 	// with the binding.
 	InstanceCreator string `json:"instance_creator,omitempty"`
+	// Workspace is the workspace the thread's Session runs in: a chosen one,
+	// or None for an explicit "no workspace". nil means the thread was not
+	// asked yet. Written with the binding and dropped with it, like Share and
+	// InstanceCreator.
+	Workspace *WorkspaceChoice `json:"workspace,omitempty"`
 	// Initiator is the user whose mention launched the thread, and Granted the
 	// users that initiator allowed into it. Written by the channel adapter:
 	// the facts it cannot recover after a restart.
@@ -169,6 +174,41 @@ type Share struct {
 	// ExpiresAt is when the controller stops honouring the token; zero means
 	// never.
 	ExpiresAt time.Time `json:"expires_at,omitzero"`
+}
+
+// WorkspaceChoice is what a thread chose for its Session's workspace: the
+// workspace by namespace and name, or None for "no workspace".
+type WorkspaceChoice struct {
+	Namespace string `json:"namespace,omitempty"`
+	Name      string `json:"name,omitempty"`
+	None      bool   `json:"none,omitempty"`
+}
+
+// Chosen reports whether w names a workspace: false for nil (not asked yet)
+// and for None.
+func (w *WorkspaceChoice) Chosen() bool {
+	return w != nil && !w.None
+}
+
+// Equal reports whether w and o are the same choice; nil equals only nil.
+func (w *WorkspaceChoice) Equal(o *WorkspaceChoice) bool {
+	if w == nil || o == nil {
+		return w == o
+	}
+	return *w == *o
+}
+
+// String renders the choice for logs: "" for nil, "none", or
+// "namespace/name".
+func (w *WorkspaceChoice) String() string {
+	switch {
+	case w == nil:
+		return ""
+	case w.None:
+		return "none"
+	default:
+		return w.Namespace + "/" + w.Name
+	}
 }
 
 // Delivered is the part of an in-flight turn's reply that has reached the

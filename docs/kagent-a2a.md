@@ -72,7 +72,8 @@ thread to exactly one session:
 
 1. The thread's first turn calls `CreateSession` with the Agent and `request_id` = the
    gateway's synthesized context id (a SHA-256 hex over `channel, channelID, "", threadID,
-   agentRef`). The controller's create is idempotent per `(creator, request_id)`, so a retried
+   agentRef`, followed by the workspace's namespace and name when the thread chose one). The
+   controller's create is idempotent per `(creator, request_id)`, so a retried
    first turn — the binding was not written, the process died in between — gets the same
    session back instead of a second one. The call returns once the session is READY. The
    controller pins the Agent's latest successful revision to the session; an Agent without one
@@ -100,6 +101,13 @@ thread to exactly one session:
    person in that thread gets it back through the idempotent create — the request id has no
    per-conversation part — while another person gets a new session and the old one stays in
    the controller unreferenced.
+
+   The thread's workspace choice is part of the binding (`store.Entry.Workspace`, JSON
+   `workspace`): a workspace by namespace and name, `none: true` for an explicit "no
+   workspace", absent when the thread was not asked. A turn that makes no choice keeps the
+   recorded one and its session; a turn whose choice differs starts a new session and records
+   it. A thread without a workspace, or with an explicit none, keeps the request id it always
+   had, so its session survives the field's introduction.
 3. Every later turn of the thread routes to that session. An A2A call names the Agent as the
    request's tenant (`namespace/name`) and the session as the message's `contextId`: the
    controller reports the session's `context_id`, equal to its id, and rejects a message whose
@@ -118,7 +126,7 @@ cut-over to Sessions sees: its earlier conversation is gone and the turn starts 
 A binding whose session the controller no longer has (`GetSession` → not found) is treated the
 same way, and so is the corrupt-session recovery (`ResetSession`, which also calls
 `DeleteSession`). Both clear only the row's binding fields (`agent_instance_id`, `task_id`,
-`resume`, `share`, `instance_creator`) rather than the whole row: the thread keeps its agent,
+`resume`, `share`, `instance_creator`, `workspace`) rather than the whole row: the thread keeps its agent,
 and any channel-owned facts on the row survive (a Slack thread's initiator and grants), so the
 next turn creates a fresh session.
 

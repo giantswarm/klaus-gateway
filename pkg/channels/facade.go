@@ -285,7 +285,7 @@ func clearBinding(e *store.Entry, found bool) bool {
 	if !found {
 		return false
 	}
-	e.AgentInstanceID, e.TaskID, e.Resume, e.Share, e.InstanceCreator = "", "", nil, nil, ""
+	e.AgentInstanceID, e.TaskID, e.Resume, e.Share, e.InstanceCreator, e.Workspace = "", "", nil, nil, "", nil
 	return true
 }
 
@@ -299,7 +299,10 @@ func clearBinding(e *store.Entry, found bool) bool {
 // with the thread's lifetime: every turn refreshes it, the conversation ends
 // after ThreadTTL of silence, and the next mention asks the controller for an
 // session again — the idempotent create hands the same person the earlier one
-// back while the controller still holds it. ctx carries the identity the
+// back while the controller still holds it. The thread's workspace choice is
+// part of the binding: a turn that makes none keeps the recorded one, a turn
+// whose choice differs from it starts a new session, and the choice enters
+// the create's key only when it names a workspace. ctx carries the identity the
 // session is created under: on a collaborator turn, its creator's. A share of
 // a session the thread leaves, on a rebind or when the conversation ended,
 // is revoked when ctx is that session's creator's.
@@ -321,7 +324,11 @@ func (f *Facade) sessionFor(ctx context.Context, msg InboundMessage) (string, er
 		}
 		entry, ok = store.Entry{}, false
 	}
-	if ok && entry.AgentInstanceID != "" && entry.AgentRef == msg.AgentRef {
+	workspace := msg.Workspace
+	if workspace == nil && entry.AgentRef == msg.AgentRef {
+		workspace = entry.Workspace
+	}
+	if ok && entry.AgentInstanceID != "" && entry.AgentRef == msg.AgentRef && workspace.Equal(entry.Workspace) {
 		if err := f.Routes.Update(ctx, key, func(e *store.Entry, found bool) bool {
 			if !found {
 				return false
@@ -344,7 +351,7 @@ func (f *Facade) sessionFor(ctx context.Context, msg InboundMessage) (string, er
 	// it, or drop the parameter, and every hash changes — every live thread
 	// then asks for a session the controller does not have and starts its
 	// conversation over, empty.
-	requestID := SynthesizeContextID(msg.Channel, msg.ChannelID, "", msg.ThreadID, msg.AgentRef)
+	requestID := SynthesizeContextID(msg.Channel, msg.ChannelID, "", msg.ThreadID, msg.AgentRef, workspace)
 	created := TurnTimerFromContext(ctx).Span(PhaseCreateSession)
 	session, err := f.Agent.CreateSession(ctx, msg.AgentRef, requestID, sessionName(msg))
 	created()
@@ -369,7 +376,7 @@ func (f *Facade) sessionFor(ctx context.Context, msg InboundMessage) (string, er
 		if e.AgentInstanceID != session.ID {
 			e.InstanceCreator = creatorID(msg)
 		}
-		e.AgentRef, e.AgentInstanceID, e.LastSeen = msg.AgentRef, session.ID, now
+		e.AgentRef, e.AgentInstanceID, e.Workspace, e.LastSeen = msg.AgentRef, session.ID, workspace, now
 		if e.CreatedAt.IsZero() {
 			e.CreatedAt = now
 		}
@@ -384,7 +391,7 @@ func (f *Facade) sessionFor(ctx context.Context, msg InboundMessage) (string, er
 		f.revokeLeftShare(ctx, msg, left, leftCreator)
 	}
 	slog.Info("channels: thread bound to session", "record", "session_bound",
-		"channel", msg.Channel, "channel_id", msg.ChannelID, "thread", msg.ThreadID, "agent", msg.AgentRef, "session", session.ID)
+		"channel", msg.Channel, "channel_id", msg.ChannelID, "thread", msg.ThreadID, "agent", msg.AgentRef, "workspace", workspace.String(), "session", session.ID)
 	return session.ID, nil
 }
 
