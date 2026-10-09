@@ -22,7 +22,7 @@ import (
 // authChallengeOutput is the free text a core_auth_login result carries: a
 // human-readable challenge with the backend name and the login URL.
 const authChallengeOutput = "Authentication Required\n\n" +
-	"Server: gazelle-mcp-pro\nStatus: needs sign-in\n\n" +
+	"Server: mcp-pro\nStatus: needs sign-in\n\n" +
 	"Please sign in to connect to this server:\n\n" +
 	"https://pro.example.com/authorize?state=abc\n\n" +
 	"After signing in, run this tool again to complete the connection."
@@ -61,7 +61,7 @@ func callToolLoginTurn(t *testing.T, dispatched, output string) []channels.Outbo
 				CallID: "call-1",
 				Args: map[string]any{
 					"name":      dispatched,
-					"arguments": map[string]any{"server": "gazelle-mcp-pro"},
+					"arguments": map[string]any{"server": "mcp-pro"},
 				},
 			},
 		},
@@ -120,7 +120,7 @@ func TestConnectorPrompt_PostedFromToolResult(t *testing.T) {
 	}, flowWait, 20*time.Millisecond, "connect prompt is posted")
 
 	blob := ephemeralJSON(fake)
-	require.Contains(t, blob, "gazelle-mcp-pro")
+	require.Contains(t, blob, "mcp-pro")
 	require.Contains(t, blob, "connector_dismiss")
 	require.Contains(t, blob, "https://pro.example.com/authorize?state=abc")
 }
@@ -142,7 +142,7 @@ func TestConnectorPrompt_PostedFromCallToolResult(t *testing.T) {
 	}, flowWait, 20*time.Millisecond, "connect prompt is posted")
 
 	blob := ephemeralJSON(fake)
-	require.Contains(t, blob, "gazelle-mcp-pro")
+	require.Contains(t, blob, "mcp-pro")
 	require.Contains(t, blob, "https://pro.example.com/authorize?state=abc")
 }
 
@@ -287,7 +287,7 @@ func TestConnectorDismissInteraction(t *testing.T) {
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok"}, {Done: true}}}
 	_, srv := connectorAdapter(t, gw)
 
-	sendConnectorInteractionURL(t, srv, "connector_dismiss", "gazelle-mcp-pro", responseSrv.URL)
+	sendConnectorInteractionURL(t, srv, "connector_dismiss", "mcp-pro", responseSrv.URL)
 
 	require.Eventually(t, func() bool {
 		captured.mu.Lock()
@@ -433,7 +433,7 @@ func TestConnectorPrompt_DecoratedURLAndStateValue(t *testing.T) {
 
 	buttonURL, stateID := promptConnector(t, fake, srv, "130.000")
 
-	require.NotEqual(t, "gazelle-mcp-pro", stateID, "the button value is the state ID, not the server name")
+	require.NotEqual(t, "mcp-pro", stateID, "the button value is the state ID, not the server name")
 	parsed, err := url.Parse(buttonURL)
 	require.NoError(t, err)
 	require.Equal(t, "abc", parsed.Query().Get("state"), "the login URL's own params survive decoration")
@@ -464,21 +464,21 @@ func TestConnectorComplete_RewritesPromptAndResumes(t *testing.T) {
 	_, stateID := promptConnector(t, fake, srv, "131.000")
 	sendConnectorInteractionURL(t, srv, "connector_connect", stateID, responseSrv.URL)
 
-	resp, err := http.Get(srv.URL + "/connectors/complete?s=" + url.QueryEscape(stateID) + "&server=gazelle-mcp-pro")
+	resp, err := http.Get(srv.URL + "/connectors/complete?s=" + url.QueryEscape(stateID) + "&server=mcp-pro")
 	require.NoError(t, err)
 	page, _ := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
-	require.Contains(t, string(page), "Signed in to gazelle-mcp-pro")
+	require.Contains(t, string(page), "Signed in to mcp-pro")
 
 	require.Eventually(t, func() bool {
-		return strings.Contains(capturedBody(), "Signed in to gazelle-mcp-pro")
+		return strings.Contains(capturedBody(), "Signed in to mcp-pro")
 	}, flowWait, 20*time.Millisecond, "the ephemeral prompt is rewritten via the response_url")
 	require.Eventually(t, func() bool {
 		dispatched.mu.Lock()
 		defer dispatched.mu.Unlock()
 		for _, text := range dispatched.texts {
-			if strings.Contains(text, "I've signed in to gazelle-mcp-pro, continue") {
+			if strings.Contains(text, "I've signed in to mcp-pro, continue") {
 				return true
 			}
 		}
@@ -507,7 +507,7 @@ func TestConnectorComplete_LandingBeforeClick(t *testing.T) {
 
 	sendConnectorInteractionURL(t, srv, "connector_connect", stateID, responseSrv.URL)
 	require.Eventually(t, func() bool {
-		return strings.Contains(capturedBody(), "Signed in to gazelle-mcp-pro")
+		return strings.Contains(capturedBody(), "Signed in to mcp-pro")
 	}, flowWait, 20*time.Millisecond, "the late click owns the prompt rewrite")
 }
 
@@ -574,7 +574,7 @@ func TestConnectorConnect_LegacyValueNoOp(t *testing.T) {
 	_, srv := connectorAdapter(t, gw)
 	responseSrv, capturedBody := newResponseURLCapture(t)
 
-	sendConnectorInteractionURL(t, srv, "connector_connect", "gazelle-mcp-pro", responseSrv.URL)
+	sendConnectorInteractionURL(t, srv, "connector_connect", "mcp-pro", responseSrv.URL)
 
 	time.Sleep(100 * time.Millisecond)
 	require.Empty(t, capturedBody(), "a legacy Connect click must not touch the response_url")
