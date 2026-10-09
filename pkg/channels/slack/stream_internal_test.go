@@ -823,9 +823,9 @@ func TestPostJSON_IdentityDoesNotMutateCallerBody(t *testing.T) {
 }
 
 func TestParseAuthChallenge(t *testing.T) {
-	server, loginURL := parseAuthChallenge("Authentication Required\n\nServer: gazelle-mcp-pro\n\n" +
+	server, loginURL := parseAuthChallenge("Authentication Required\n\nServer: mcp-pro\n\n" +
 		"Please sign in:\n\nhttps://pro.example.com/authorize?state=abc\n\nThen retry.")
-	require.Equal(t, "gazelle-mcp-pro", server)
+	require.Equal(t, "mcp-pro", server)
 	require.Equal(t, "https://pro.example.com/authorize?state=abc", loginURL)
 }
 
@@ -903,7 +903,7 @@ func TestParseAuthChallenge_TerminatesAtJSONEscapedWhitespace(t *testing.T) {
 	// there, the parsed URL carries `\n\nAfter...`; decorating it with the
 	// completion redirect then re-encodes the garbage into the state query and
 	// muster rejects the mangled state as "session expired".
-	challenge := `Authentication is required for gazelle-mcp-pro.\n\n` +
+	challenge := `Authentication is required for mcp-pro.\n\n` +
 		`https://muster.gazelle.awsprod.gigantic.io/oauth/proxy/start?state=abc123\n\nAfter you've signed in, let me know.`
 	_, loginURL := parseAuthChallenge(challenge)
 	require.Equal(t, "https://muster.gazelle.awsprod.gigantic.io/oauth/proxy/start?state=abc123", loginURL)
@@ -992,10 +992,10 @@ func TestEffectiveToolName(t *testing.T) {
 // muster's envelope carries the challenge JSON-encoded, its line breaks as
 // literal \n escapes; decoded, the "Server:" line names the backend.
 func TestParseAuthChallengePayload_ServerFromMusterEnvelope(t *testing.T) {
-	challenge := "Authentication Required\n\nServer: gazelle-mcp-pro\nStatus: needs sign-in\n\n" +
+	challenge := "Authentication Required\n\nServer: mcp-pro\nStatus: needs sign-in\n\n" +
 		"https://pro.example.com/authorize?state=abc\n\nAfter signing in, run this tool again."
 	server, loginURL := parseAuthChallengePayload(musterCallToolResult(t, map[string]any{"name": musterAuthLoginTool}, challenge), 0)
-	require.Equal(t, "gazelle-mcp-pro", server)
+	require.Equal(t, "mcp-pro", server)
 	require.Equal(t, "https://pro.example.com/authorize?state=abc", loginURL)
 }
 
