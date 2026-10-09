@@ -86,9 +86,10 @@ or `helm/`. Add a line when a review finds a new one.
   its messages to the agent is a different purpose and is documented as such (#288).
 - **Valkey expires and evicts silently.** The gateway acts before a row's expiry, never on
   it; a row that must outlive its conversation carries its own longer TTL (#307).
-- **The Session request id is `SynthesizeContextID(channel, channelID, "", threadID, agentRef)`**
-  with an empty user slot. It is the controller's idempotency key: change it, and every live
-  thread asks for a session the controller does not hold (#320).
+- **The Session request id is `SynthesizeContextID(channel, channelID, "", threadID, agentRef, workspace)`**
+  with an empty user slot, and the workspace hashed only when one is chosen. It is the
+  controller's idempotency key: change it, and every live thread asks for a session the
+  controller does not hold (#320, #428).
 - **An A2A call is routed by its tenant and the message's context id.** The tenant is the
   Agent, `namespace/name`; the context id is the Session's id, which the controller reports as
   its `context_id`. There is no routing header, and a call whose context id names another

@@ -684,7 +684,10 @@ func TestFacade_ResetSession(t *testing.T) {
 		agent := newFakeAgent()
 		agent.sessions["inst-1"] = pkga2a.Session{ID: "inst-1"}
 		f, routes := newA2AFacade(agent)
-		require.NoError(t, storetest.Put(t.Context(), routes, key, store.Entry{AgentRef: "kagent/worker", AgentInstanceID: "inst-1", Initiator: "U1"}))
+		require.NoError(t, storetest.Put(t.Context(), routes, key, store.Entry{
+			AgentRef: "kagent/worker", AgentInstanceID: "inst-1", Initiator: "U1",
+			Workspace: &store.WorkspaceChoice{Namespace: "kagent", Name: "klaus-dev"},
+		}))
 		reset, err := f.ResetSession(t.Context(), msg)
 		require.NoError(t, err)
 		require.True(t, reset)
@@ -693,6 +696,7 @@ func TestFacade_ResetSession(t *testing.T) {
 		require.NoError(t, err)
 		require.True(t, ok)
 		require.Empty(t, entry.AgentInstanceID)
+		require.Nil(t, entry.Workspace, "the workspace choice goes with the binding: the thread is asked again")
 		require.Equal(t, "U1", entry.Initiator, "the thread keeps its initiator")
 	})
 

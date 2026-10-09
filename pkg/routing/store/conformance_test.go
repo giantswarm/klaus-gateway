@@ -131,6 +131,34 @@ func runConformance(t *testing.T, factory func(t *testing.T) store.Store) {
 		require.Equal(t, in.Initiator, entries[0].Entry.Initiator)
 	})
 
+	t.Run("workspace-choice-round-trip", func(t *testing.T) {
+		// A thread's workspace choice is three states: a workspace, an
+		// explicit none, and not asked yet. Each must read back as written.
+		s := factory(t)
+		ctx := context.Background()
+		for name, ws := range map[string]*store.WorkspaceChoice{
+			"chosen": {Namespace: "kagent", Name: "klaus-dev"},
+			"none":   {None: true},
+			"unset":  nil,
+		} {
+			k := store.Key{Channel: channelSlack, ChannelID: "C1", ThreadID: name}
+			require.NoError(t, storetest.Put(ctx, s, k, store.Entry{
+				AgentRef: "kagent/worker", AgentInstanceID: "i-" + name, Workspace: ws,
+				LastSeen: time.Now(), TTL: time.Hour,
+			}))
+			got, ok, err := s.Get(ctx, k)
+			require.NoError(t, err)
+			require.True(t, ok)
+			require.Equal(t, ws, got.Workspace, name)
+		}
+		entries, err := s.List(ctx)
+		require.NoError(t, err)
+		require.Len(t, entries, 3)
+		for _, ke := range entries {
+			require.Equal(t, ke.Key.ThreadID == "unset", ke.Entry.Workspace == nil, ke.Key.ThreadID)
+		}
+	})
+
 	t.Run("update-creates-and-merges", func(t *testing.T) {
 		s := factory(t)
 		ctx := context.Background()
