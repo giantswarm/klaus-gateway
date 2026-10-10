@@ -161,12 +161,14 @@ func TestLoad_SlackSurfaceEnv(t *testing.T) {
 	t.Setenv("KLAUS_GATEWAY_SLACK_DM_MODE", "redirect")
 	t.Setenv("KLAUS_GATEWAY_SLACK_CHANNEL_MODE", "allowlist")
 	t.Setenv("KLAUS_GATEWAY_SLACK_CHANNEL_ALLOWLIST", "C1, C2,,C3 ")
+	t.Setenv("KLAUS_GATEWAY_SLACK_CONTEXT_BOT_IDS", "B01ALERTS, B02PAGER")
 
 	cfg, err := config.Load(nil)
 	require.NoError(t, err)
 	require.Equal(t, config.DMModeRedirect, cfg.Slack.DMMode)
 	require.Equal(t, config.ChannelModeAllowlist, cfg.Slack.ChannelMode)
 	require.Equal(t, []string{"C1", "C2", "C3"}, cfg.Slack.ChannelAllowlist)
+	require.Equal(t, []string{"B01ALERTS", "B02PAGER"}, cfg.Slack.ContextBotIDs)
 }
 
 func TestValidate_OBO(t *testing.T) {

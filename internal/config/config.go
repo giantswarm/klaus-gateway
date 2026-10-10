@@ -105,6 +105,11 @@ type SlackConfig struct {
 	// ChannelAllowlist lists the Slack channel IDs (C…) served when
 	// ChannelMode is "allowlist". SLACK_CHANNEL_ALLOWLIST (comma-separated).
 	ChannelAllowlist []string
+	// ContextBotIDs lists the Slack bot_ids (B…) whose posts a thread read
+	// hands to the agent, the alerting integrations conversations are opened
+	// under; every other bot's post is left out. SLACK_CONTEXT_BOT_IDS
+	// (comma-separated). Empty shares no bot's post.
+	ContextBotIDs []string
 	// DropStaleEvents ignores Slack events older than the gateway's start time,
 	// so a restart never replays messages queued while it was down.
 	// SLACK_DROP_STALE=true. Default false.
@@ -343,6 +348,10 @@ func Load(args []string) (Config, error) {
 		cfg.Slack.ChannelAllowlist = splitCommaList(v)
 		return nil
 	})
+	fs.Func("slack-context-bot-ids", "Comma-separated Slack bot_ids (B…) whose posts a thread read hands to the agent; every other bot's post is left out.", func(v string) error {
+		cfg.Slack.ContextBotIDs = splitCommaList(v)
+		return nil
+	})
 	fs.StringVar(&cfg.Slack.WorkingEmoji, "slack-working-emoji", cfg.Slack.WorkingEmoji, "Slack reaction emoji name for a turn in progress (no colons). Empty uses the default.")
 	fs.StringVar(&cfg.Slack.DoneEmoji, "slack-done-emoji", cfg.Slack.DoneEmoji, "Slack reaction emoji name for a completed turn (no colons). Empty uses the default.")
 	fs.StringVar(&cfg.Slack.FailedEmoji, "slack-failed-emoji", cfg.Slack.FailedEmoji, "Slack reaction emoji name for a failed turn (no colons). Empty uses the default.")
@@ -464,6 +473,9 @@ func applyEnv(cfg *Config) {
 	}
 	if v, ok := lookup("SLACK_CHANNEL_ALLOWLIST"); ok {
 		cfg.Slack.ChannelAllowlist = splitCommaList(v)
+	}
+	if v, ok := lookup("SLACK_CONTEXT_BOT_IDS"); ok {
+		cfg.Slack.ContextBotIDs = splitCommaList(v)
 	}
 	if v, ok := lookup("SLACK_DROP_STALE"); ok {
 		cfg.Slack.DropStaleEvents = strings.EqualFold(v, "true") || v == "1"

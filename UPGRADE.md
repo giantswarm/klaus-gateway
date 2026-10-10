@@ -4,6 +4,19 @@ Breaking or operator-visible changes between releases, newest first. The
 `CHANGELOG.md` lists every change; this file covers what an operator has to
 do or decide.
 
+## Next — collaborators on coding agents, bot posts in the thread context
+
+- The route in front of the kagent controller must match `kagent.api.v1alpha1.HarnessService`
+  beside the services listed below. The gateway reads an agent's Harness runtime through
+  `ListHarnesses` on every turn by someone other than the Session's creator, and refuses that
+  turn when the read fails, so without the route no collaborator's turn runs on any agent.
+  The roster and the owner's own turns do not need it.
+- Bot posts reach the agent only from the bot_ids `slack.contextBotIDs` lists. An installation
+  whose conversations are opened under alerts (Alertmanager, PagerDuty) lists those
+  integrations' bot_ids (the `bot_id` of one of their posts, from `conversations.replies` or
+  the message's JSON in Slack); until then the agent sees the people's messages under an alert
+  but not the alert.
+
 ## Next — kagent Sessions and Agents (breaking)
 
 The gateway now calls kagent's `SessionService` and `AgentService` in place of

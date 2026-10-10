@@ -511,6 +511,9 @@
                 "channelMode": {
                     "type": "string"
                 },
+                "contextBotIDs": {
+                    "type": "array"
+                },
                 "dmMode": {
                     "type": "string"
                 },

@@ -154,7 +154,7 @@ func TestThreadContext_ShortcutSharesTheThread(t *testing.T) {
 	fake.withUserNames(map[string]string{"U1": "Jose", "U2": "Marta", "U3": "Piotr"}, nil)
 	api := fake.server(t)
 	gw, dispatched := capturingGateway()
-	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
+	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()), withContextBots("B1"))
 
 	sendAskAgentShortcut(t, srv, "C1", "U1", "103.000", "100.000", api.URL+"/response_url")
 	pmRaw := openedView(t, fake)["private_metadata"].(string)
@@ -173,6 +173,32 @@ func TestThreadContext_ShortcutSharesTheThread(t *testing.T) {
 	require.Less(t, strings.Index(got, "Marta"), strings.Index(got, "Piotr"), "oldest first")
 }
 
+// withContextBots names the bots whose posts a thread read shares.
+func withContextBots(ids ...string) func(*slackadapter.Adapter) {
+	return func(a *slackadapter.Adapter) { a.ContextBotIDs = ids }
+}
+
+// A bot the gateway does not name by bot_id never reaches the agent, whatever
+// name it posts under; the people under it still do.
+func TestThreadContext_UnlistedBotIsLeftOut(t *testing.T) {
+	fake := newFakeSlackAPI()
+	fake.withThread(alertThread(), 200)
+	fake.withUserNames(map[string]string{"U1": "Jose", "U2": "Marta", "U3": "Piotr"}, nil)
+	api := fake.server(t)
+	gw, dispatched := capturingGateway()
+	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()), withContextBots("B7"))
+
+	sendAskAgentShortcut(t, srv, "C1", "U1", "103.000", "100.000", api.URL+"/response_url")
+	pmRaw := openedView(t, fake)["private_metadata"].(string)
+	sendAskAgentSubmissionWithContext(t, srv, "U1", pmRaw, "kagent/sre-agent", "which release introduced it?", true)
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
+
+	got := dispatched()[0].Context
+	require.Equal(t, "[thread context shared by Jose: 2 earlier messages in this thread, oldest first]", strings.Split(got, "\n")[0])
+	require.NotContains(t, got, "TRIGGERED", "the bot B1 is not on the list")
+	require.Contains(t, got, "Marta: the pod restarts every 40 s")
+}
+
 // The same shortcut with the box cleared: nothing of the thread is shared, and
 // the submission reads no history at all — only the picker's own count call
 // was made, before the person decided.
@@ -181,7 +207,7 @@ func TestThreadContext_ShortcutCheckboxOffSharesNothing(t *testing.T) {
 	fake.withThread(alertThread(), 200)
 	api := fake.server(t)
 	gw, dispatched := capturingGateway()
-	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
+	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()), withContextBots("B1"))
 
 	sendAskAgentShortcut(t, srv, "C1", "U1", "103.000", "100.000", api.URL+"/response_url")
 	pmRaw := openedView(t, fake)["private_metadata"].(string)
@@ -201,7 +227,7 @@ func TestThreadContext_PickerOffersTheCheckbox(t *testing.T) {
 	fake.withThread(alertThread(), 50)
 	api := fake.server(t)
 	gw, _ := capturingGateway()
-	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
+	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()), withContextBots("B1"))
 
 	sendAskAgentShortcut(t, srv, "C1", "U1", "103.000", "100.000", api.URL+"/response_url")
 
@@ -225,7 +251,7 @@ func TestThreadContext_SlashCommandHasNoThreadToShare(t *testing.T) {
 	fake.withThread(alertThread(), 200)
 	api := fake.server(t)
 	gw, dispatched := capturingGateway()
-	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
+	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()), withContextBots("B1"))
 
 	require.Equal(t, http.StatusOK, sendSlashCommand(t, srv, "C1", "U1", "why are pods crashlooping?", api.URL+"/response_url"))
 	pmRaw := openedView(t, fake)["private_metadata"].(string)
@@ -248,7 +274,7 @@ func TestThreadContext_AgentSelectionReplySharesTheThread(t *testing.T) {
 	fake.withUserNames(map[string]string{"U1": "Jose", "U2": "Marta", "U3": "Piotr"}, nil)
 	api := fake.server(t)
 	gw, dispatched := capturingGateway()
-	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
+	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()), withContextBots("B1"))
 
 	sendEvent(t, srv, mention("U1", "/agent \"SRE Agent\" what happened?", "104.000", "100.000"))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
@@ -267,7 +293,7 @@ func TestThreadContext_BareMentionReplySharesTheThread(t *testing.T) {
 	fake.withUserNames(map[string]string{"U1": "Jose", "U2": "Marta", "U3": "Piotr"}, nil)
 	api := fake.server(t)
 	gw, dispatched := capturingGateway()
-	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
+	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()), withContextBots("B1"))
 
 	sendEvent(t, srv, mention("U1", "what happened here?", "104.000", "100.000"))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
@@ -282,7 +308,7 @@ func TestThreadContext_LaterRepliesDoNotReadAgain(t *testing.T) {
 	fake.withThread(alertThread(), 200)
 	api := fake.server(t)
 	gw, dispatched := capturingGateway()
-	a, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
+	a, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()), withContextBots("B1"))
 
 	sendEvent(t, srv, mention("U1", "what happened here?", "104.000", "100.000"))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
@@ -309,7 +335,7 @@ func TestThreadContext_ManyShortMessagesAllFit(t *testing.T) {
 	fake.withUserNames(map[string]string{"U1": "Jose", "U2": "Marta"}, nil)
 	api := fake.server(t)
 	gw, dispatched := capturingGateway()
-	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
+	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()), withContextBots("B1"))
 
 	sendEvent(t, srv, mention("U1", "what happened here?", "900.000", "100.000"))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
@@ -335,7 +361,7 @@ func TestThreadContext_LongMessagesAreCutFromTheOldest(t *testing.T) {
 	fake.withUserNames(map[string]string{"U1": "Jose", "U2": "Marta"}, nil)
 	api := fake.server(t)
 	gw, dispatched := capturingGateway()
-	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
+	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()), withContextBots("B1"))
 
 	sendEvent(t, srv, mention("U1", "what happened here?", "900.000", "100.000"))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
@@ -360,7 +386,7 @@ func TestThreadContext_PagesThroughTheWholeThread(t *testing.T) {
 	fake.withUserNames(map[string]string{"U1": "Jose", "U2": "Marta"}, nil)
 	api := fake.server(t)
 	gw, dispatched := capturingGateway()
-	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
+	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()), withContextBots("B1"))
 
 	sendEvent(t, srv, mention("U1", "what happened here?", "900.000", "100.000"))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
@@ -378,7 +404,7 @@ func TestThreadContext_ReadFailureRunsTheTurnAndNotifies(t *testing.T) {
 	fake.setFail("conversations.replies", "missing_scope")
 	api := fake.server(t)
 	gw, dispatched := capturingGateway()
-	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
+	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()), withContextBots("B1"))
 
 	sendEvent(t, srv, mention("U1", "what happened here?", "104.000", "100.000"))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
@@ -397,7 +423,7 @@ func TestThreadContext_UnresolvableAuthorFallsBackToTheID(t *testing.T) {
 	fake.withUserNames(map[string]string{"U1": "Jose", "U3": "Piotr"}, map[string]bool{"U2": true})
 	api := fake.server(t)
 	gw, dispatched := capturingGateway()
-	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
+	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()), withContextBots("B1"))
 
 	sendEvent(t, srv, mention("U1", "what happened here?", "104.000", "100.000"))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
@@ -424,7 +450,7 @@ func TestThreadContext_HangingNameLookupEndsWithTheBudget(t *testing.T) {
 	})
 	api := fake.server(t)
 	gw, dispatched := capturingGateway()
-	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
+	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()), withContextBots("B1"))
 
 	sendEvent(t, srv, mention("U1", "what happened here?", "104.000", "100.000"))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond,
@@ -450,7 +476,7 @@ func TestThreadContext_ThreadTooLongToReadIsLabelledPartial(t *testing.T) {
 	fake.withUserNames(map[string]string{"U1": "Jose", "U2": "Marta"}, nil)
 	api := fake.server(t)
 	gw, dispatched := capturingGateway()
-	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
+	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()), withContextBots("B1"))
 
 	sendEvent(t, srv, mention("U1", "what happened here?", "9000.000", "1000.000"))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
@@ -475,7 +501,7 @@ func TestThreadContext_LongButReadableThreadIsCountedInFull(t *testing.T) {
 	fake.withUserNames(map[string]string{"U1": "Jose", "U2": "Marta"}, nil)
 	api := fake.server(t)
 	gw, dispatched := capturingGateway()
-	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
+	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()), withContextBots("B1"))
 
 	sendEvent(t, srv, mention("U1", "what happened here?", "9000.000", "1000.000"))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
@@ -564,7 +590,7 @@ func TestThreadContext_PageFailureMidReadKeepsWhatWasRead(t *testing.T) {
 	}
 	api := fake.server(t)
 	gw, dispatched := capturingGateway()
-	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
+	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()), withContextBots("B1"))
 
 	sendEvent(t, srv, mention("U1", "what happened here?", "9000.000", "1000.000"))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
@@ -590,7 +616,7 @@ func TestThreadContext_UnexpectedFieldShapeKeepsTheThread(t *testing.T) {
 	fake.withUserNames(map[string]string{"U1": "Jose", "U2": "Marta"}, nil)
 	api := fake.server(t)
 	gw, dispatched := capturingGateway()
-	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
+	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()), withContextBots("B1"))
 
 	sendAskAgentShortcut(t, srv, "C1", "U1", "103.000", "100.000", api.URL+"/response_url")
 	pmRaw := openedView(t, fake)["private_metadata"].(string)

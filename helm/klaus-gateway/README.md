@@ -80,6 +80,7 @@ Slack channel gateway for the Agent Platform's kagent agents
 | slack.dmMode | string | `""` |  |
 | slack.channelMode | string | `""` |  |
 | slack.channelAllowlist | list | `[]` |  |
+| slack.contextBotIDs | list | `[]` |  |
 | slack.dropStale | bool | `false` |  |
 | slack.progress.emojis.working | string | `""` |  |
 | slack.progress.emojis.done | string | `""` |  |

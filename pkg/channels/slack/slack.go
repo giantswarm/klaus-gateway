@@ -99,6 +99,12 @@ type Adapter struct {
 	// ChannelAllowlist lists the Slack channel IDs (C…) served when
 	// ChannelMode is ChannelModeAllowlist.
 	ChannelAllowlist []string
+	// ContextBotIDs lists the Slack bot_ids (B…) whose posts a thread read
+	// hands to the agent: the alerting integrations a conversation is opened
+	// under. Every human's message is shared; any other bot's post is left out
+	// of the thread context and the catch-up of a muted thread. Empty shares
+	// no bot's post.
+	ContextBotIDs []string
 	// DropStaleEvents, when true, ignores events whose Slack ts predates this
 	// process. Socket Mode can redeliver events that were queued/unacked while
 	// a consumer was disconnected, so without this a restart replays — and
@@ -2180,6 +2186,9 @@ func (a *Adapter) dispatchFrom(ctx context.Context, msg channels.InboundMessage,
 	access := a.accessPolicy()
 	initiator := access.SetInitiator(ctx, slackChannel, msg.ThreadID, slackUser)
 	if !access.Allowed(ctx, slackChannel, msg.ThreadID, slackUser) {
+		if initiator != slackUser && a.refuseNewcomer(ctx, slackChannel, msg.ThreadID, slackUser) {
+			return nil
+		}
 		if initiator == slackUser {
 			// The policy names the author as initiator yet does not allow them:
 			// only a store that could not be written or read does that. Parking

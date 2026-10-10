@@ -65,6 +65,15 @@ func (a *Adapter) runTurn(ctx context.Context, msg channels.InboundMessage, slac
 		a.recoverCorruptSession(ctx, msg, slackChannel)
 	}()
 
+	// A turn on a Session that is not the sender's is refused outright when
+	// the agent shares none; the taken task stays for its owner to resume.
+	if a.refuseCollaborator(ctx, msg, slackChannel, slackUser) {
+		if task != nil {
+			a.storePendingTask(msg.ThreadID, task)
+		}
+		return nil
+	}
+
 	a.resolveSubjectEmail(ctx, &msg)
 
 	a.applySessionOwner(ctx, &msg, msg.ThreadID, slackUser)

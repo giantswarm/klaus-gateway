@@ -12,6 +12,7 @@ sees; nothing there depends on the carrier.
 |---|---|
 | Turns | A2A v1 over gRPC (`lf.a2a.v1.A2AService`: `SendStreamingMessage`, `GetTask`, `CancelTask`) through the `a2a-go/v2` client on its gRPC transport |
 | Agent roster | `kagent.api.v1alpha1.AgentService/ListAgents`, with `AgentTemplateService/ListAgentTemplates` for what an Agent takes from the template it references |
+| Harness runtime (who may instruct an agent) | `kagent.api.v1alpha1.HarnessService/ListHarnesses`, on a turn by anyone but the Session's creator |
 | Conversations | `kagent.api.v1alpha1.SessionService` (`CreateSession`, `GetSession`, `ResumeSession`, `DeleteSession`, `CreateSessionShare`, `RevokeSessionShare`) |
 | Model line (`usage`) | `kagent.api.v1alpha1.ModelService/GetModelConfig` |
 
@@ -64,6 +65,12 @@ references:
 
 The template's `modelConfig` reference backs the `usage` model line through `GetModelConfig`
 (`spec.provider/spec.model`).
+
+The roster does not read Harnesses. Whether anyone but a Session's creator may instruct an agent
+is read on such a turn: the runtime of the Harness the Agent embeds, or of the one `harnessRef`
+names as `ListHarnesses` of its namespace reports it, as the sender. An agent on a `claude` Harness
+takes its owner's turns only; an Agent whose Harness cannot be read, or names one the namespace
+does not hold, refuses the turn too (`RefusesCollaborators` in `pkg/a2a/discovery.go`).
 
 ## Conversations: one Session per thread
 

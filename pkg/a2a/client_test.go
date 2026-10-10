@@ -353,12 +353,12 @@ func TestClient_ListAgents_ReadinessAndAnnotations(t *testing.T) {
 	require.Len(t, agents, 2, "only an Agent whose Ready condition is True is offered")
 	require.Equal(t, pkga2a.AgentInfo{
 		Name: "sre-agent", Namespace: "kagent", DisplayName: "SRE Agent", IconURL: "https://icons.example/sre.png",
-		Description: "Investigates sre-template", ModelConfig: "default-model-config",
+		Description: "Investigates sre-template", ModelConfig: "default-model-config", Harness: "kagent",
 	}, agents[0])
 	require.Equal(t, "kagent/sre-agent", agents[0].Ref())
 	require.Equal(t, pkga2a.AgentInfo{
 		Name: "branded-template", Namespace: "kagent", DisplayName: "Branded", IconURL: "https://icons.example/branded.png",
-		Description: "Investigates branded", ModelConfig: "other-model-config",
+		Description: "Investigates branded", ModelConfig: "other-model-config", Harness: "kagent",
 	}, agents[1], "an Agent without annotations of its own is branded by its AgentTemplate's")
 	require.Equal(t, []string{"Bearer " + userToken}, f.lastMD("ListAgents").Get("authorization"))
 	require.Equal(t, []string{"Bearer " + userToken}, f.lastMD("ListAgentTemplates").Get("authorization"))
@@ -413,6 +413,62 @@ func TestClient_ListAgents_InlineTemplate(t *testing.T) {
 	require.Len(t, agents, 1)
 	require.Equal(t, "Embedded", agents[0].Description)
 	require.Equal(t, "embedded-model", agents[0].ModelConfig)
+}
+
+// An Agent's runtime is its Harness's: the one harnessRef names, as the
+// HarnessService lists it, or the one spec.harness embeds. Only a claude
+// Harness refuses collaborators. The roster itself never reads Harnesses, so
+// a controller that does not serve HarnessService still offers every agent.
+func TestClient_RefusesCollaborators_ByHarnessRuntime(t *testing.T) {
+	f := newFakeKagent()
+	embedded := agent(t, "embedded-coder", nil, "sre-template", "", readyCondition(true, "Ready", ""))
+	spec := embedded.GetResource().GetValue().GetFields()["spec"].GetStructValue()
+	delete(spec.GetFields(), "harnessRef")
+	spec.GetFields()["harness"] = structValue(t, map[string]any{"claude": map[string]any{}, "workload": map[string]any{"image": "claude"}})
+	f.agents = []*apiv1alpha1.Agent{
+		agent(t, "sre-agent", nil, "sre-template", "kagent", readyCondition(true, "Ready", "")),
+		agent(t, "coder", nil, "sre-template", "claude-code", readyCondition(true, "Ready", "")),
+		agent(t, "dangling", nil, "sre-template", "gone", readyCondition(true, "Ready", "")),
+		embedded,
+	}
+	f.templates = []*apiv1alpha1.AgentTemplate{template(t, "sre-template", nil, "")}
+	f.harnesses = []*apiv1alpha1.Harness{harness("kagent", "kagent"), harness("claude-code", pkga2a.HarnessRuntimeClaude)}
+	client := f.serve(t, pkga2a.Config{})
+	ctx := asUser(t.Context(), userToken)
+
+	agents, err := client.ListAgents(ctx)
+	require.NoError(t, err)
+	require.Len(t, agents, 4)
+	require.Zero(t, f.callCount("ListHarnesses"), "the roster reads no Harness")
+
+	for ref, want := range map[string]bool{"sre-agent": false, "coder": true, "kagent/embedded-coder": true} {
+		got, err := client.RefusesCollaborators(ctx, ref)
+		require.NoError(t, err, ref)
+		require.Equal(t, want, got, ref)
+	}
+	require.Equal(t, []string{"Bearer " + userToken}, f.lastMD("ListHarnesses").Get("authorization"), "the Harnesses are read as the caller")
+
+	_, err = client.RefusesCollaborators(ctx, "dangling")
+	require.ErrorContains(t, err, "names Harness gone, which kagent does not hold", "an unknown Harness is not taken for a Declarative one")
+	_, err = client.RefusesCollaborators(ctx, "nobody")
+	require.ErrorIs(t, err, pkga2a.ErrAgentUnknown)
+}
+
+// A controller route that does not serve HarnessService fails the lookup, not
+// the roster.
+func TestClient_RefusesCollaborators_HarnessServiceUnavailable(t *testing.T) {
+	f := newFakeKagent()
+	f.agents = []*apiv1alpha1.Agent{agent(t, "sre-agent", nil, "sre-template", "kagent", readyCondition(true, "Ready", ""))}
+	f.templates = []*apiv1alpha1.AgentTemplate{template(t, "sre-template", nil, "")}
+	f.harnessesErr = status.Error(codes.Unimplemented, "unknown service kagent.api.v1alpha1.HarnessService")
+	client := f.serve(t, pkga2a.Config{})
+	ctx := asUser(t.Context(), userToken)
+
+	agents, err := client.ListAgents(ctx)
+	require.NoError(t, err)
+	require.Len(t, agents, 1)
+	_, err = client.RefusesCollaborators(ctx, "sre-agent")
+	require.ErrorContains(t, err, "list Harnesses in kagent")
 }
 
 // The roster is fetched as the caller and cached; a call without a token,
