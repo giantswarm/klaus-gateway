@@ -117,8 +117,8 @@ func (a *Adapter) threadContext(ctx context.Context, channelID, threadID, opener
 	return a.readThreadFor(ctx, threadReadSpec{
 		what: "thread context", channelID: channelID, threadID: threadID, asker: initiator,
 		failedNotice: threadContextFailedNotice,
-		render: func(read threadRead, botUserID string, name func(string) string) string {
-			return renderThreadContext(read, openerTS, botUserID, name(initiator), name)
+		render: func(read threadRead, authors contextAuthors, name func(string) string) string {
+			return renderThreadContext(read, openerTS, authors, name(initiator), name)
 		},
 	})
 }
@@ -143,8 +143,8 @@ func (a *Adapter) attachCatchUp(ctx context.Context, msg *channels.InboundMessag
 	msg.Context = a.readThreadFor(ctx, threadReadSpec{
 		what: "catch-up", channelID: slackChannel, threadID: msg.ThreadID, oldest: mutedAt, asker: asker,
 		failedNotice: catchUpFailedNotice,
-		render: func(read threadRead, botUserID string, name func(string) string) string {
-			return renderCatchUp(read, msg.ThreadID, mutedAt, msg.MessageID, botUserID, name)
+		render: func(read threadRead, authors contextAuthors, name func(string) string) string {
+			return renderCatchUp(read, msg.ThreadID, mutedAt, msg.MessageID, authors, name)
 		},
 	})
 }
@@ -158,7 +158,41 @@ type threadReadSpec struct {
 	channelID, threadID string
 	oldest, asker       string
 	failedNotice        string
-	render              func(read threadRead, botUserID string, name func(string) string) string
+	render              func(read threadRead, authors contextAuthors, name func(string) string) string
+}
+
+// contextAuthors decides whose messages a thread read hands to the agent:
+// every human's, and of the bots only the ones bots names by Slack bot_id —
+// the alerting integrations a conversation is opened under. A bot's display
+// name is whatever it posts under, so only its bot_id identifies it. Every
+// other bot's post is left out, and so are the gateway's own (self, its Slack
+// user): the agent wrote them.
+type contextAuthors struct {
+	self string
+	bots map[string]bool
+}
+
+// admit reports whether m's author is one the agent is given. A message with
+// a bot_id or the bot_message subtype is a bot's, whatever user it carries
+// (an app posts as its bot user).
+func (c contextAuthors) admit(m threadMessage) bool {
+	if c.self != "" && m.User == c.self {
+		return false
+	}
+	if m.BotID != "" || m.SubType == "bot_message" {
+		return c.bots[m.BotID]
+	}
+	return true
+}
+
+// contextAuthors is the adapter's admission of thread authors: its own Slack
+// user out, the ContextBotIDs in.
+func (a *Adapter) contextAuthors(self string) contextAuthors {
+	bots := make(map[string]bool, len(a.ContextBotIDs))
+	for _, id := range a.ContextBotIDs {
+		bots[id] = true
+	}
+	return contextAuthors{self: self, bots: bots}
 }
 
 // readThreadFor reads a thread and renders it for a turn. A failure — a
@@ -175,7 +209,7 @@ func (a *Adapter) readThreadFor(ctx context.Context, spec threadReadSpec) string
 	// 429 wait honours the context it was given, so a rate-limited users.info
 	// cannot hold the first reply past the budget — past it an author is named
 	// by their ID, which is the fallback anyway.
-	botUserID := a.botID(rctx)
+	authors := a.contextAuthors(a.botID(rctx))
 	read, err := a.apiClient().threadReplies(rctx, channelID, threadID, spec.oldest)
 	if err != nil {
 		reason := threadContextFailureReason(rctx, err)
@@ -195,7 +229,7 @@ func (a *Adapter) readThreadFor(ctx context.Context, spec threadReadSpec) string
 			"reason", threadContextFailureReason(rctx, read.Err), "messages", len(read.Messages), "error", read.Err)
 	}
 	name := func(userID string) string { return a.displayName(rctx, userID) }
-	transcript := spec.render(read, botUserID, name)
+	transcript := spec.render(read, authors, name)
 	if transcript != "" {
 		// The transcript is never posted anywhere a person sees it, so this
 		// record is the only trace that the turn carried the thread. lines
@@ -222,11 +256,10 @@ func threadContextFailureReason(ctx context.Context, err error) string {
 
 // renderThreadContext renders the messages of a thread that precede openerTS
 // as the transcript handed to the agent, or "" when there are none. The read
-// holds them oldest first (conversations.replies order); botUserID is the
-// gateway's own Slack user, whose posts are left out — the agent wrote or is
-// about to write them. name resolves a Slack user ID to a display name.
-func renderThreadContext(read threadRead, openerTS, botUserID, initiator string, name func(string) string) string {
-	lines := renderThreadLines(read, botUserID, name, func(m threadMessage) bool { return earlierThan(m.TS, openerTS) })
+// holds them oldest first (conversations.replies order); authors admits whose
+// messages are shared. name resolves a Slack user ID to a display name.
+func renderThreadContext(read threadRead, openerTS string, authors contextAuthors, initiator string, name func(string) string) string {
+	lines := renderThreadLines(read, authors, name, func(m threadMessage) bool { return earlierThan(m.TS, openerTS) })
 	if len(lines) == 0 {
 		return ""
 	}
@@ -315,8 +348,8 @@ func newestWithin(lines []string, budget int) []string {
 // out by its ts, whether or not Slack returns it for a later oldest, and
 // nothing is pinned: the newest lines are kept under the character cap, and
 // a newest line over the cap on its own is cut rather than dropped.
-func renderCatchUp(read threadRead, rootTS, mutedAt, untilTS, botUserID string, name func(string) string) string {
-	lines := renderThreadLines(read, botUserID, name, func(m threadMessage) bool {
+func renderCatchUp(read threadRead, rootTS, mutedAt, untilTS string, authors contextAuthors, name func(string) string) string {
+	lines := renderThreadLines(read, authors, name, func(m threadMessage) bool {
 		return m.TS != rootTS && tsAfter(m.TS, mutedAt) && tsAfter(untilTS, m.TS)
 	})
 	if len(lines) == 0 {
@@ -351,15 +384,12 @@ func renderCatchUp(read threadRead, rootTS, mutedAt, untilTS, botUserID string, 
 }
 
 // renderThreadLines renders the messages of a read that keep passes, one line
-// each, oldest first. Channel events, the gateway's own posts (the agent
-// wrote them) and messages with no words are left out.
-func renderThreadLines(read threadRead, botUserID string, name func(string) string, keep func(threadMessage) bool) []string {
+// each, oldest first. Channel events, the posts of authors the agent is not
+// given (see contextAuthors) and messages with no words are left out.
+func renderThreadLines(read threadRead, authors contextAuthors, name func(string) string, keep func(threadMessage) bool) []string {
 	var lines []string
 	for _, m := range read.Messages {
-		if !keep(m) || !contentfulSubtypes[m.SubType] {
-			continue
-		}
-		if botUserID != "" && m.User == botUserID {
+		if !keep(m) || !contentfulSubtypes[m.SubType] || !authors.admit(m) {
 			continue
 		}
 		if line := renderThreadMessage(m, name); line != "" {

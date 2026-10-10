@@ -182,6 +182,18 @@ creates one, which a turn that switches agents does mid-thread.
   session through the share, the same recovery an initiator's turn runs;
   without the share or the creator's token the reset is refused and the
   thread is told to start a new one.
+- **An agent whose Harness runs code takes its owner's turns only.** When the Agent's
+  Harness has the `claude` runtime (a coding agent), its workspace carries code as well as
+  data from one turn to the next — a git hook, a Makefile target, a background process —
+  and every turn runs as the same user, so a collaborator's turn would run what the
+  owner's left behind under the collaborator's credential. A newcomer in such a thread is
+  answered privately "Start your own thread to work with it." and the initiator gets no
+  access prompt; any other turn by someone who is not the Session's creator (a grant from
+  before, a decision click) is refused the same way before it reaches the agent, and a
+  paused task stays for its owner. The runtime is read per such turn through kagent's
+  `HarnessService`, as the sender (`collaborators.go`); when it cannot be read, the turn is
+  refused with a note that the agent could not be looked up. Declarative agents keep the
+  grants and the share above.
 - The agent still sees the session creator in `X-User-Id` on a collaborator's
   turn (kagent#2459), so anything that names the person from that header names
   the initiator.
@@ -199,7 +211,10 @@ creates one, which a turn that switches agents does mid-thread.
   a bare mention under an alert — the adapter reads that thread once, on the opening turn, and hands
   the messages written before the opener to the agent as a labelled part of its own (`[thread
   context shared by <name>: N earlier messages in this thread, oldest first]`, one line per message
-  with a UTC time and the author's display name). A bot's alert is flattened out of its attachments
+  with a UTC time and the author's display name). Every human's message is shared; of the bots,
+  only the ones `slack.contextBotIDs` names by Slack `bot_id` (the alerting integrations), since a
+  bot's display name is whatever it posts under; any other bot's post is left out, and the
+  catch-up of a muted thread admits the same authors. An allowed bot's alert is flattened out of its attachments
   and blocks, which is where PagerDuty and friends put the text; `<@U…>` mentions become names; the
   gateway's own posts and content-less events are left out; files are named, never downloaded. At
   most 12,000 characters, oldest dropped first, root always kept — a constant, not configuration;

@@ -34,6 +34,9 @@
 //   - collaborator: a user the initiator granted. Their turns run under
 //     their own token, reach the initiator's session through the thread's
 //     Session share, and are attributed to them (msg.Author).
+//     An agent whose Harness runs code (claude) has none: anyone but the
+//     Session's creator is refused and pointed at a thread of their own
+//     (collaborators.go).
 //   - thread record: the thread's durable state in the routing store — its
 //     agent binding, its initiator and their grants. It is the only carrier:
 //     Slack history is never read to recover any of them, so on a persistent

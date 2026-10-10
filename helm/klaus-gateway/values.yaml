@@ -243,6 +243,12 @@ slack:
   # "About" tab) served when channelMode is "allowlist". Rendered as
   # SLACK_CHANNEL_ALLOWLIST.
   channelAllowlist: []
+  # contextBotIDs lists the Slack bot_ids (B…) whose posts a thread read hands
+  # to the agent: the alerting integrations a conversation is opened under
+  # (Alertmanager, PagerDuty). Every human's message is shared; any other bot's
+  # post is left out, since a display name is whatever a bot posts under.
+  # Rendered as SLACK_CONTEXT_BOT_IDS. Empty shares no bot's post.
+  contextBotIDs: []
   # dropStale ignores Slack events older than the gateway's start time, so a
   # restart never replays messages queued while it was down. Rendered as
   # SLACK_DROP_STALE. Default false.

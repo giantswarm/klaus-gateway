@@ -32,7 +32,7 @@ import (
 )
 
 // fakeKagent is an in-process kagent API v2 controller: the A2A v1 service
-// and the Agent, AgentTemplate, Session and Model services, served over gRPC
+// and the Agent, AgentTemplate, Harness, Session and Model services, served over gRPC
 // on a bufconn. It records the metadata of every call so tests can assert the
 // wire contract, and implements the controller's idempotent create, its
 // tenant and context-id routing, its one-active-task refusal and its error
@@ -41,6 +41,7 @@ type fakeKagent struct {
 	a2apb.UnimplementedA2AServiceServer
 	apiv1alpha1.UnimplementedAgentServiceServer
 	apiv1alpha1.UnimplementedAgentTemplateServiceServer
+	apiv1alpha1.UnimplementedHarnessServiceServer
 	apiv1alpha1.UnimplementedSessionServiceServer
 	apiv1alpha1.UnimplementedModelServiceServer
 
@@ -48,6 +49,8 @@ type fakeKagent struct {
 
 	agents       []*apiv1alpha1.Agent
 	templates    []*apiv1alpha1.AgentTemplate
+	harnesses    []*apiv1alpha1.Harness
+	harnessesErr error                     // returned by ListHarnesses
 	modelConfigs map[string]map[string]any // name -> spec
 	sessions     map[string]*apiv1alpha1.Session
 	byRequest    map[string]string // creator|request_id -> session id
@@ -121,6 +124,7 @@ func (f *fakeKagent) serveOn(t *testing.T, lis net.Listener) {
 	a2apb.RegisterA2AServiceServer(srv, f)
 	apiv1alpha1.RegisterAgentServiceServer(srv, f)
 	apiv1alpha1.RegisterAgentTemplateServiceServer(srv, f)
+	apiv1alpha1.RegisterHarnessServiceServer(srv, f)
 	apiv1alpha1.RegisterSessionServiceServer(srv, f)
 	apiv1alpha1.RegisterModelServiceServer(srv, f)
 	go func() { _ = srv.Serve(lis) }()
@@ -372,6 +376,27 @@ func (f *fakeKagent) ListAgentTemplates(ctx context.Context, req *apiv1alpha1.Li
 	return &apiv1alpha1.ListAgentTemplatesResponse{AgentTemplates: out}, nil
 }
 
+// --- kagent.api.v1alpha1.HarnessService ---
+
+func (f *fakeKagent) ListHarnesses(ctx context.Context, req *apiv1alpha1.ListHarnessesRequest) (*apiv1alpha1.ListHarnessesResponse, error) {
+	f.record(ctx, "ListHarnesses")
+	if _, err := creator(ctx); err != nil {
+		return nil, err
+	}
+	if f.harnessesErr != nil {
+		return nil, f.harnessesErr
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []*apiv1alpha1.Harness
+	for _, h := range f.harnesses {
+		if h.GetRef().GetNamespace() == req.GetNamespace() {
+			out = append(out, h)
+		}
+	}
+	return &apiv1alpha1.ListHarnessesResponse{Harnesses: out}, nil
+}
+
 // --- kagent.api.v1alpha1.ModelService ---
 
 func (f *fakeKagent) GetModelConfig(ctx context.Context, req *apiv1alpha1.GetModelConfigRequest) (*apiv1alpha1.GetModelConfigResponse, error) {
@@ -610,6 +635,16 @@ func template(t *testing.T, name string, annotations map[string]any, modelConfig
 		Resource:       &apiv1alpha1.StructuredObject{ApiVersion: "api.kagent.dev/v1alpha3", Kind: "AgentTemplate", Value: value},
 		ModelConfigRef: modelRef,
 		Description:    "Investigates " + name,
+	}
+}
+
+// harness builds a Harness the way the controller lists it: its ref and the
+// denormalised runtime the spec selects.
+func harness(name, runtime string) *apiv1alpha1.Harness {
+	return &apiv1alpha1.Harness{
+		Ref:     &apiv1alpha1.ResourceReference{Namespace: "kagent", Name: name},
+		Runtime: runtime,
+		Ready:   true,
 	}
 }
 
