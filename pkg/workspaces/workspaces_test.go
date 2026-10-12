@@ -19,8 +19,8 @@ import (
 const (
 	prefix = "x_workspace-manager_"
 	bearer = "id-token-alice"
-	// grantToken stands for the workspace-manager's signed grant.
-	grantToken = "grant-eyJhbGciOiJFUzI1NiJ9.c2VjcmV0.c2ln"
+	// signedGrant stands for the workspace-manager's signed grant.
+	signedGrant = "signed-grant-of-workspace-platform"
 )
 
 var expires = time.Date(2026, 10, 12, 14, 5, 0, 0, time.UTC)
@@ -68,7 +68,7 @@ func authorize(args map[string]any) mustertest.Answer {
 	switch name {
 	case "platform":
 		return mustertest.Answer{Text: "Granted for workspace platform until 14:05:00 UTC: 2 repositories, 1 changed since the last sync.",
-			Structured: map[string]any{"workspace": name, "outcome": "granted", "grant": grantToken, "expiresAt": expires.Format(time.RFC3339),
+			Structured: map[string]any{"workspace": name, "outcome": "granted", "grant": signedGrant, "expiresAt": expires.Format(time.RFC3339),
 				"repositories": []any{"giantswarm/klaus-gateway", "giantswarm/muster"}, "changed": []any{"giantswarm/muster"}}}
 	case "secret":
 		return mustertest.Answer{Text: "you cannot read 1 repository of workspace secret: giantswarm/vault",
@@ -135,7 +135,7 @@ func TestAuthorize_TheFourAnswers(t *testing.T) {
 	granted, err := c.Authorize(ctx, bearer, "platform")
 	require.NoError(t, err)
 	require.Equal(t, Granted, granted.Outcome)
-	require.Equal(t, grantToken, granted.Grant.Token())
+	require.Equal(t, signedGrant, granted.Grant.Token())
 	require.Equal(t, expires, granted.ExpiresAt)
 	require.Equal(t, []string{"giantswarm/klaus-gateway", "giantswarm/muster"}, granted.Repositories)
 	require.Equal(t, []string{"giantswarm/muster"}, granted.Changed)
@@ -182,27 +182,27 @@ func TestAuthorize_GrantNeverLeaves(t *testing.T) {
 		l.Info("workspace authorized", "authorization", *a)
 	}
 	fmt.Fprintf(&logs, "%v %+v %#v %s", a, *a, *a, a.Grant)
-	require.NotContains(t, logs.String(), grantToken)
+	require.NotContains(t, logs.String(), signedGrant)
 	require.Contains(t, logs.String(), grantRedacted)
 
 	_, err = json.Marshal(a)
 	require.Error(t, err, "an authorization carrying a grant cannot be serialised into a row")
 	row, err := json.Marshal(store.Entry{Workspace: &store.WorkspaceChoice{Name: a.Workspace}})
 	require.NoError(t, err)
-	require.NotContains(t, string(row), grantToken, "the row records the choice, never the grant")
+	require.NotContains(t, string(row), signedGrant, "the row records the choice, never the grant")
 
 	// A malformed answer around a grant: the error names what is wrong, not
 	// the answer.
 	srv := mustertest.New(map[string]func(map[string]any) mustertest.Answer{
 		prefix + "authorize_workspace": func(map[string]any) mustertest.Answer {
-			return mustertest.Answer{Structured: map[string]any{"workspace": "platform", "outcome": "granted", "grant": grantToken}}
+			return mustertest.Answer{Structured: map[string]any{"workspace": "platform", "outcome": "granted", "grant": signedGrant}}
 		},
 	})
 	defer srv.Close()
 	_, err = New(muster.NewClient(srv.URL), prefix).Authorize(context.Background(), bearer, "platform")
 	var malformed *MalformedError
 	require.ErrorAs(t, err, &malformed)
-	require.NotContains(t, err.Error(), grantToken)
+	require.NotContains(t, err.Error(), signedGrant)
 }
 
 func TestNoPrefix_NoCall(t *testing.T) {

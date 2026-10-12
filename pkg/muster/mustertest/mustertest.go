@@ -90,8 +90,12 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func textContent(text string) []any {
+	return []any{map[string]any{"type": "text", "text": text}}
+}
+
 func result(a Answer) map[string]any {
-	inner := map[string]any{"isError": a.IsError, "content": []any{map[string]any{"type": "text", "text": a.Text}}}
+	inner := map[string]any{"isError": a.IsError, "content": textContent(a.Text)}
 	if a.Undispatched {
 		return inner
 	}
@@ -99,7 +103,7 @@ func result(a Answer) map[string]any {
 		inner["structuredContent"] = a.Structured
 	}
 	envelope, _ := json.Marshal(inner)
-	return map[string]any{"isError": a.IsError, "content": []any{map[string]any{"type": "text", "text": string(envelope)}}}
+	return map[string]any{"isError": a.IsError, "content": textContent(string(envelope))}
 }
 
 func reply(w http.ResponseWriter, id, res any) {
