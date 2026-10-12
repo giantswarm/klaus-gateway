@@ -124,7 +124,11 @@ creates one, which a turn that switches agents does mid-thread.
 - A thread is bound to exactly one agent and exactly one **Session** — the
   running conversation the kagent controller creates and owns, which holds the
   agent's memory of that thread (see [kagent A2A](kagent-a2a.md)). The thread's
-  first turn creates the session; the create is idempotent per person and
+  first turn starts the session through agent-manager's `start_session` tool,
+  called through muster as the person behind the turn, with the agent, the
+  thread's request id and the conversation's name; agent-manager creates it at
+  the controller as that person, and the session id it answers is what the
+  thread binds. The start is idempotent per person and
   thread, so a retried first turn — the binding was not written, the process died
   in between — gets the same session back instead of a second one. The session
   id and the agent ref are written into the thread's row, every later turn of the
@@ -132,7 +136,7 @@ creates one, which a turn that switches agents does mid-thread.
   persistent store (`valkey` or `bolt`), because the row carries it, not the process.
 - In a DM every top-level message opens its own thread and therefore its own
   session; a "New chat" in the assistant pane likewise.
-- The session is created under the thread **initiator's** identity, and kagent
+- The session is started under the thread **initiator's** identity, and kagent
   lets only its creator act on it. A granted collaborator's turn runs under the
   collaborator's own token and reaches the session through an **Session
   share**: the first collaborator turn mints a read-write share under the
@@ -171,7 +175,7 @@ creates one, which a turn that switches agents does mid-thread.
   session), so it neither posts the starting-fresh notice nor clears the
   binding.
 - A collaborator whose turn opens the thread's binding while the initiator is
-  signed out creates the session under their own token. The row records that
+  signed out starts the session under their own token. The row records that
   collaborator as the session's creator (`instance_creator`): their turns need
   no share, and every other person's turn in the thread, the initiator's
   included, is a collaborator's turn that borrows the creator's token for the

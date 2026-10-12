@@ -4,6 +4,17 @@ Breaking or operator-visible changes between releases, newest first. The
 `CHANGELOG.md` lists every change; this file covers what an operator has to
 do or decide.
 
+## Next — every Session starts through agent-manager
+
+- A thread's Session is started through agent-manager's `start_session`, called through muster
+  as the linked person, in place of the controller's `CreateSession`. The installation needs an
+  agent-manager whose `start_session` accepts a call without `message` (it then only creates
+  the Session), its tools reachable through the gateway's muster (`obo.musterUrl`) to every
+  person who uses the gateway, and `obo.enabled`: without it no Session starts.
+- `a2a.agentManagerToolsPrefix` names agent-manager's tools behind muster; empty keeps
+  `x_agent-manager_`, the Agent Platform's server name. An installation that registers
+  agent-manager in muster under another name sets it.
+
 ## Next — collaborators on coding agents, bot posts in the thread context
 
 - The route in front of the kagent controller must match `kagent.api.v1alpha1.HarnessService`

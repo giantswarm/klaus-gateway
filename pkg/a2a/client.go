@@ -80,6 +80,16 @@ var (
 	// served namespace.
 	ErrAgentUnknown = errors.New("a2a: unknown agent")
 
+	// ErrInvalidSessionName is returned by a SessionStarter whose start was
+	// refused as an invalid request: the display name is the only free text
+	// of a start, so StartSession goes again unnamed.
+	ErrInvalidSessionName = errors.New("a2a: session start refused as invalid")
+
+	// ErrNoStarter is returned by StartSession on a Client configured without
+	// a SessionStarter: the gateway starts a Session only through
+	// agent-manager.
+	ErrNoStarter = errors.New("a2a: no session starter configured (agent-manager's start_session through muster)")
+
 	// ErrAgentUnavailable is returned when an Agent exists but cannot be
 	// selected: its Ready condition is not True, so it has no revision a
 	// Session can be created from. The error message carries the reason.
@@ -118,7 +128,22 @@ type Config struct {
 	// nor its AgentTemplate carries an icon-URL annotation. "{agent}" is replaced with the agent's
 	// technical name. Empty leaves the icon empty.
 	FallbackIconURLTemplate string
-	Logger                  *slog.Logger
+	// Starter starts a thread's Session: agent-manager's start_session,
+	// called through muster as the person. Without one StartSession refuses
+	// with ErrNoStarter.
+	Starter SessionStarter
+	Logger  *slog.Logger
+}
+
+// SessionStarter starts the Session of a conversation as the person bearer
+// belongs to, with the Agent namespace/name, keyed by requestID (a retried
+// start answers the Session the first one created) and named sessionName
+// (empty: unnamed). It returns the Session as created, ready or not. Its
+// refusals are the errors a channel renders: AgentUnavailableError,
+// ErrNoIdentity, ErrAgentUnknown, ErrInvalidSessionName.
+// *agentmanager.Starter satisfies it.
+type SessionStarter interface {
+	StartSession(ctx context.Context, bearer, namespace, name, requestID, sessionName string) (Session, error)
 }
 
 // Client speaks to one kagent controller. It is safe for concurrent use.
@@ -129,6 +154,7 @@ type Client struct {
 	harnesses apiv1alpha1.HarnessServiceClient
 	sessions  apiv1alpha1.SessionServiceClient
 	models    apiv1alpha1.ModelServiceClient
+	starter   SessionStarter
 
 	namespace    string
 	iconTemplate string
@@ -223,6 +249,7 @@ func NewClient(conn grpc.ClientConnInterface, cfg Config) (*Client, error) {
 		harnesses:    apiv1alpha1.NewHarnessServiceClient(conn),
 		sessions:     apiv1alpha1.NewSessionServiceClient(conn),
 		models:       apiv1alpha1.NewModelServiceClient(conn),
+		starter:      cfg.Starter,
 		namespace:    cfg.Namespace,
 		iconTemplate: cfg.FallbackIconURLTemplate,
 		logger:       logger,

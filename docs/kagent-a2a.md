@@ -13,7 +13,8 @@ sees; nothing there depends on the carrier.
 | Turns | A2A v1 over gRPC (`lf.a2a.v1.A2AService`: `SendStreamingMessage`, `GetTask`, `CancelTask`) through the `a2a-go/v2` client on its gRPC transport |
 | Agent roster | `kagent.api.v1alpha1.AgentService/ListAgents`, with `AgentTemplateService/ListAgentTemplates` for what an Agent takes from the template it references |
 | Harness runtime (who may instruct an agent) | `kagent.api.v1alpha1.HarnessService/ListHarnesses`, on a turn by anyone but the Session's creator |
-| Conversations | `kagent.api.v1alpha1.SessionService` (`CreateSession`, `GetSession`, `ResumeSession`, `DeleteSession`, `CreateSessionShare`, `RevokeSessionShare`) |
+| Starting a conversation | agent-manager's `start_session` MCP tool, called through muster as the person (see below); the gateway never calls `CreateSession` itself |
+| Conversations | `kagent.api.v1alpha1.SessionService` (`GetSession`, `ResumeSession`, `DeleteSession`, `CreateSessionShare`, `RevokeSessionShare`) |
 | Model line (`usage`) | `kagent.api.v1alpha1.ModelService/GetModelConfig` |
 
 All of it goes to one gRPC target, `a2a.url`, reached through the platform's agentgateway:
@@ -77,22 +78,35 @@ does not hold, refuses the turn too (`RefusesCollaborators` in `pkg/a2a/discover
 A conversation is a `Session` the controller creates and owns. The gateway binds each channel
 thread to exactly one session:
 
-1. The thread's first turn calls `CreateSession` with the Agent and `request_id` = the
-   gateway's synthesized context id (a SHA-256 hex over `channel, channelID, "", threadID,
-   agentRef`, followed by the workspace's namespace and name when the thread chose one). The
-   controller's create is idempotent per `(creator, request_id)`, so a retried
-   first turn — the binding was not written, the process died in between — gets the same
-   session back instead of a second one. The call returns once the session is READY. The
-   controller pins the Agent's latest successful revision to the session; an Agent without one
-   is refused with `FailedPrecondition`, which the gateway reports as the agent being
-   unavailable.
+1. The thread's first turn starts the session through agent-manager's `start_session` tool,
+   called through muster (`/mcp`, its `call_tool` meta-tool) with the person's own token, the
+   same way the gateway calls every muster tool as a linked person. agent-manager runs the
+   checks every surface shares — a workspace grant must name its caller — and creates the
+   session at the controller as that person, so the gateway has one way to start a session and
+   no surface can skip those checks. The call names the Agent (`namespace`, `name`), the
+   `requestId` = the gateway's synthesized context id (a SHA-256 hex over `channel,
+   channelID, "", threadID, agentRef`, followed by the workspace's namespace and name when the
+   thread chose one) and the `sessionName`, and no `message`: without one `start_session`
+   only creates the session and answers `{session}`, and the gateway sends the turn itself,
+   attachments included, over A2A as on every later turn. The tool is
+   `<a2a.agentManagerToolsPrefix>start_session`, `x_agent-manager_start_session` by default.
+   The controller's create is idempotent per `(creator, request_id)`, so a retried first turn
+   — the binding was not written, the process died in between — gets the same session back
+   instead of a second one. The answer's session id is what the thread binds, and the gateway
+   polls `GetSession` until the session is READY. The controller pins the Agent's latest
+   successful revision to the session. An Agent the roster already shows without one is
+   refused before anything is started; the controller's own refusal (agent-manager's
+   `conflict`) is reported the same way, as the agent being unavailable. A caller muster or
+   agent-manager cannot act as (an HTTP 401 or 403 from muster, agent-manager's
+   `unauthenticated` or `auth_required`) is a caller without an identity, the condition a
+   channel answers with its sign-in prompt.
 
-   The create also carries `name`, the conversation's display name: the message that opened the
+   The start also carries `sessionName`, the conversation's display name: the message that opened the
    thread, rendered on one line and cut at the controller's 200-character limit on a word
    boundary: the line Slack titles its own session with, the mention and the command
    stripped. A message with nothing to name a conversation after — an upload with no caption —
-   creates it unnamed, and a name the controller refuses is dropped and the create retried
-   unnamed rather than failing the turn.
+   starts it unnamed, and a name agent-manager refuses (`invalid_request`) is dropped and the
+   start retried unnamed, with the same request id, rather than failing the turn.
 2. The session id and the agent it belongs to are persisted as fields of the thread's row in
    the routing store (`store.Entry.AgentInstanceID` and `.AgentRef`, the field keeping the
    name it is stored under; key

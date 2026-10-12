@@ -29,6 +29,7 @@ import (
 
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 	apiv1alpha1 "github.com/giantswarm/klaus-gateway/pkg/kagent/gen/kagent/api/v1alpha1"
+	"github.com/giantswarm/klaus-gateway/pkg/muster/mustertest"
 )
 
 // fakeKagent is an in-process kagent API v2 controller: the A2A v1 service
@@ -67,6 +68,7 @@ type fakeKagent struct {
 	sent      []*a2apkg.Message
 	tenants   []string // the tenant of every A2A call, in order
 	created   []*apiv1alpha1.CreateSessionRequest
+	muster    *mustertest.Server // the fake agent-manager behind muster (agentManager)
 	canceled  []string
 	deleted   []string
 	resumed   []string
@@ -111,6 +113,9 @@ func (f *fakeKagent) serve(t *testing.T, cfg pkga2a.Config) *pkga2a.Client {
 	}
 	if cfg.Namespace == "" {
 		cfg.Namespace = "kagent"
+	}
+	if cfg.Starter == nil {
+		cfg.Starter = f.agentManager(t)
 	}
 	client, err := pkga2a.NewClient(conn, cfg)
 	require.NoError(t, err)

@@ -7,6 +7,9 @@
             "type": "object",
             "additionalProperties": false,
             "properties": {
+                "agentManagerToolsPrefix": {
+                    "type": "string"
+                },
                 "caFile": {
                     "type": "string"
                 },

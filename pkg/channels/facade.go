@@ -35,10 +35,11 @@ type AgentClient interface {
 	GetTask(ctx context.Context, taskID a2apkg.TaskID) (*a2apkg.Task, error)
 	// CancelTask cancels a running task server-side.
 	CancelTask(ctx context.Context, taskID a2apkg.TaskID) (*a2apkg.Task, error)
-	// CreateSession creates (idempotently per requestID) the session for a
-	// conversation with agentRef, named name, and returns it once it is ready.
-	// An empty name leaves the conversation unnamed.
-	CreateSession(ctx context.Context, agentRef, requestID, name string) (pkga2a.Session, error)
+	// StartSession starts (idempotently per requestID) the session for a
+	// conversation with agentRef, named name, through agent-manager's
+	// start_session as the caller, and returns it once it is ready. An empty
+	// name leaves the conversation unnamed.
+	StartSession(ctx context.Context, agentRef, requestID, name string) (pkga2a.Session, error)
 	// GetSession returns a session; pkga2a.ErrSessionNotFound when gone.
 	GetSession(ctx context.Context, id string) (pkga2a.Session, error)
 	// DeleteSession removes a session; a missing one is not an error.
@@ -294,16 +295,17 @@ func clearBinding(e *store.Entry, found bool) bool {
 // it. A thread binds one agent; a turn that names another one rebinds it, and
 // the task in flight on the old session goes with it — the conversation the
 // rebind creates is named after the message that asked for it, that being its
-// own first message. The create is keyed by the synthesized context id, so
-// a retried first turn does not create a second session. The binding slides
+// own first message. The session is started through agent-manager's
+// start_session, as the person, keyed by the synthesized context id, so a
+// retried first turn does not start a second session. The binding slides
 // with the thread's lifetime: every turn refreshes it, the conversation ends
-// after ThreadTTL of silence, and the next mention asks the controller for an
-// session again — the idempotent create hands the same person the earlier one
+// after ThreadTTL of silence, and the next mention asks agent-manager for a
+// session again — the idempotent start hands the same person the earlier one
 // back while the controller still holds it. The thread's workspace choice is
 // part of the binding: a turn that makes none keeps the recorded one, a turn
 // whose choice differs from it starts a new session, and the choice enters
-// the create's key only when it names a workspace. ctx carries the identity the
-// session is created under: on a collaborator turn, its creator's. A share of
+// the start's key only when it names a workspace. ctx carries the identity the
+// session is started under: on a collaborator turn, its creator's. A share of
 // a session the thread leaves, on a rebind or when the conversation ended,
 // is revoked when ctx is that session's creator's.
 func (f *Facade) sessionFor(ctx context.Context, msg InboundMessage) (string, error) {
@@ -346,14 +348,14 @@ func (f *Facade) sessionFor(ctx context.Context, msg InboundMessage) (string, er
 		return entry.AgentInstanceID, nil
 	}
 	// The empty user slot is load-bearing, and not a leftover of the field
-	// InboundMessage no longer has: this hash is the create's idempotency key,
+	// InboundMessage no longer has: this hash is the start's idempotency key,
 	// and it has been computed with an empty user slot on every release. Fill
 	// it, or drop the parameter, and every hash changes — every live thread
 	// then asks for a session the controller does not have and starts its
 	// conversation over, empty.
 	requestID := SynthesizeContextID(msg.Channel, msg.ChannelID, "", msg.ThreadID, msg.AgentRef, workspace)
 	created := TurnTimerFromContext(ctx).Span(PhaseCreateSession)
-	session, err := f.Agent.CreateSession(ctx, msg.AgentRef, requestID, sessionName(msg))
+	session, err := f.Agent.StartSession(ctx, msg.AgentRef, requestID, sessionName(msg))
 	created()
 	if err != nil {
 		return "", err

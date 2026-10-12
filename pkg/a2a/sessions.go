@@ -39,14 +39,18 @@ const sessionReadyTimeout = 90 * time.Second
 // sessionPollInterval is the GetSession cadence while waiting for READY.
 const sessionPollInterval = 2 * time.Second
 
-// CreateSession creates the Session for a conversation with the Agent
-// agentRef names, keyed by requestID. The create is idempotent per (caller,
-// requestID): a retried first turn returns the session the first attempt
-// created instead of a second one. name is the conversation's display name;
-// an empty one leaves it unnamed, identified by its id. An Agent that is not
-// selectable is refused with ErrAgentUnavailable and the reason. The call
-// returns once the session is READY.
-func (c *Client) CreateSession(ctx context.Context, agentRef, requestID, name string) (Session, error) {
+// StartSession starts the Session for a conversation with the Agent agentRef
+// names, keyed by requestID, through the configured SessionStarter
+// (agent-manager's start_session, as the caller). The start is idempotent per
+// (caller, requestID): a retried first turn returns the session the first
+// attempt started instead of a second one. name is the conversation's display
+// name; an empty one leaves it unnamed, identified by its id. An Agent that is
+// not selectable is refused with ErrAgentUnavailable and the reason before
+// anything is started. The call returns once the session is READY.
+func (c *Client) StartSession(ctx context.Context, agentRef, requestID, name string) (Session, error) {
+	if c.starter == nil {
+		return Session{}, ErrNoStarter
+	}
 	info, err := c.Agent(ctx, agentRef)
 	if err != nil {
 		return Session{}, err
@@ -54,45 +58,30 @@ func (c *Client) CreateSession(ctx context.Context, agentRef, requestID, name st
 	if info.Unavailable != "" {
 		return Session{}, &AgentUnavailableError{Ref: agentRef, Reason: info.Unavailable}
 	}
-	callCtx, err := c.serviceCtx(ctx)
+	token, err := c.bearer(ctx)
 	if err != nil {
 		return Session{}, err
 	}
-	req := &apiv1alpha1.CreateSessionRequest{
-		Agent:     &apiv1alpha1.ResourceReference{Namespace: info.Namespace, Name: info.Name},
-		RequestId: requestID,
-		Name:      name,
-	}
-	resp, err := c.sessions.CreateSession(callCtx, req)
-	if err != nil && req.GetName() != "" && status.Code(err) == codes.InvalidArgument {
+	session, err := c.starter.StartSession(ctx, token, info.Namespace, info.Name, requestID, name)
+	if err != nil && name != "" && errors.Is(err, ErrInvalidSessionName) {
 		// A name the controller will not take costs the name, never the
-		// conversation, so a rejected create goes again unnamed. The request id
-		// is reused because the controller validates the request in an
-		// interceptor, ahead of the handler that reserves it: a rejected
-		// create reserved nothing. The retry is the whole of what is known
-		// here: the rejection may just as well be about something else, in
-		// which case it comes back the same way and is returned below.
-		c.logger.Warn("a2a: create refused, retrying it unnamed", "agent", agentRef, "error", err)
-		req.Name = ""
-		resp, err = c.sessions.CreateSession(callCtx, req)
+		// conversation, so a refused start goes again unnamed. The request id
+		// is reused: a refused start reserved nothing. The retry is the whole
+		// of what is known here: the refusal may just as well be about
+		// something else, in which case it comes back the same way and is
+		// returned below.
+		c.logger.Warn("a2a: session start refused, retrying it unnamed", "agent", agentRef, "error", err)
+		session, err = c.starter.StartSession(ctx, token, info.Namespace, info.Name, requestID, "")
 	}
 	if err != nil {
-		switch status.Code(err) {
-		case codes.FailedPrecondition:
-			return Session{}, &AgentUnavailableError{Ref: agentRef, Reason: status.Convert(err).Message()}
-		case codes.AlreadyExists:
-			return Session{}, fmt.Errorf("a2a: create Session for %s: request id %s was already used for a different conversation: %w", agentRef, requestID, err)
+		var unavailable *AgentUnavailableError
+		if errors.As(err, &unavailable) {
+			unavailable.Ref = agentRef
 		}
-		return Session{}, fmt.Errorf("a2a: create Session for %s: %w", agentRef, err)
-	}
-	session := resp.GetSession()
-	// The routing store keeps the session id alone and every later turn
-	// names it as the message's context id, so the two must be the same.
-	if contextID := session.GetContextId(); contextID != "" && contextID != session.GetId() {
-		return Session{}, fmt.Errorf("a2a: create Session for %s: the controller returned context id %s for session %s", agentRef, contextID, session.GetId())
+		return Session{}, err
 	}
 	c.refreshRosterInBackground(ctx)
-	return c.awaitReady(ctx, fromProtoSession(session))
+	return c.awaitReady(ctx, session)
 }
 
 // awaitReady polls the session until it is READY, FAILED, or the deadline

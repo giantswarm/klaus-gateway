@@ -18,8 +18,8 @@ or `helm/`. Add a line when a review finds a new one.
   then the handler runs in the background. A test that sends the next message on the ack
   races the write; wait for the write's own side effect, such as the `response_url` rewrite
   that follows a grant (#287).
-- **A thread's conversation is its initiator's.** Its Session is created under the
-  initiator's identity; a granted collaborator's turns run under their own token and reach
+- **A thread's conversation is its initiator's.** Its Session is started under the
+  initiator's identity, through agent-manager's `start_session` as that person; a granted collaborator's turns run under their own token and reach
   that session through the thread's Session share (#350). Letting a person in is the
   initiator's consent decision, taken through the Allow prompt; no entry point grants a
   newcomer as a side effect (#279).
