@@ -253,7 +253,8 @@ ServiceMonitor). Beside the public mux's `klaus_gateway_requests_total` /
   channel) and `total`; and the durations of the steps `token_mint` (the person's muster token,
   ~0 on a cache hit, a round trip to muster on a refresh), `roster` (agent resolution) and
   `create_session` (the
-  controller's `CreateSession` on a thread's first turn). Buckets run from 5 ms to 5 min.
+  session start on a thread's first turn: agent-manager's `start_session` through muster and the
+  wait for READY). Buckets run from 5 ms to 5 min.
   "Message received → answer landed" is `phase="final_flush"`; p50/p95 of it is the panel to
   watch.
 

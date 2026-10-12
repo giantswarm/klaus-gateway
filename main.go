@@ -21,6 +21,7 @@ import (
 	"github.com/giantswarm/klaus-gateway/internal/config"
 	"github.com/giantswarm/klaus-gateway/internal/version"
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
+	"github.com/giantswarm/klaus-gateway/pkg/agentmanager"
 	"github.com/giantswarm/klaus-gateway/pkg/auth/musterlink"
 	"github.com/giantswarm/klaus-gateway/pkg/auth/satoken"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
@@ -125,6 +126,14 @@ func run(args []string) error {
 
 	publicMux := chi.NewRouter()
 
+	// One muster client serves every tool the gateway calls as the linked
+	// person: agent-manager's start_session, the workspace-manager's tools and
+	// a team review's approval.
+	var musterClient *muster.Client
+	if cfg.OBO.Enabled {
+		musterClient = muster.NewClient(cfg.OBO.MusterURL)
+	}
+
 	var slackAdapter *slackchannel.Adapter
 	if cfg.Slack.Enabled {
 		secrets, err := slackchannel.LoadSecrets(cfg.Slack.SecretsFile)
@@ -212,7 +221,7 @@ func run(args []string) error {
 	}
 
 	if cfg.Workspaces.ToolsPrefix != "" && slackAdapter != nil {
-		slackAdapter.Workspaces = workspaces.New(muster.NewClient(cfg.OBO.MusterURL), cfg.Workspaces.ToolsPrefix)
+		slackAdapter.Workspaces = workspaces.New(musterClient, cfg.Workspaces.ToolsPrefix)
 		logger.Info("workspaces enabled", "tools_prefix", cfg.Workspaces.ToolsPrefix, "muster_url", cfg.OBO.MusterURL)
 	}
 
@@ -230,7 +239,7 @@ func run(args []string) error {
 		if err != nil {
 			return fmt.Errorf("team reviews: %w", err)
 		}
-		slackAdapter.Tools = muster.NewClient(cfg.OBO.MusterURL)
+		slackAdapter.Tools = musterClient
 		reviewsHandler := &reviews.Handler{
 			Logger:         logger,
 			Auth:           &satoken.Authenticator{Reviews: kclient.AuthenticationV1().TokenReviews(), Audiences: []string{cfg.Reviews.ResolvedAudience()}},
@@ -251,8 +260,18 @@ func run(args []string) error {
 		// The controller is spoken to as the person behind the turn only: the
 		// forwarded Dex id_token is the sole credential. A turn without one is
 		// refused instead of running as the gateway's machine identity.
+		// A Session is started through agent-manager's start_session, as the
+		// person: the checks every surface shares run there. Without OBO there
+		// is no person to start it as, and no turn would run either.
+		var starter pkga2a.SessionStarter
+		if musterClient != nil {
+			starter = agentmanager.New(musterClient, cfg.A2A.AgentManagerToolsPrefix)
+		} else {
+			logger.Warn("kagent client without obo: no Session can be started (agent-manager's start_session runs as the linked person)")
+		}
 		kagentClient, err := pkga2a.Dial(pkga2a.Config{
 			Target:                  cfg.A2A.URL,
+			Starter:                 starter,
 			CAFile:                  cfg.A2A.CAFile,
 			Namespace:               cfg.A2A.Namespace,
 			FallbackIconURLTemplate: cfg.A2A.FallbackIconURLTemplate,
@@ -277,6 +296,7 @@ func run(args []string) error {
 			"namespace", cfg.A2A.Namespace,
 			"default_agent", cfg.A2A.DefaultAgent,
 			"ca_file", cfg.A2A.CAFile,
+			"agent_manager_tools_prefix", cfg.A2A.AgentManagerToolsPrefix,
 		)
 	}
 

@@ -170,7 +170,7 @@ func (a *fakeAgent) CancelTask(ctx context.Context, taskID a2apkg.TaskID) (*a2ap
 	return &a2apkg.Task{ID: taskID, Status: a2apkg.TaskStatus{State: a2apkg.TaskStateCanceled}}, nil
 }
 
-func (a *fakeAgent) CreateSession(ctx context.Context, agentRef, requestID, name string) (pkga2a.Session, error) {
+func (a *fakeAgent) StartSession(ctx context.Context, agentRef, requestID, name string) (pkga2a.Session, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.createdAs = append(a.createdAs, pkga2a.ForwardedTokenFromContext(ctx))

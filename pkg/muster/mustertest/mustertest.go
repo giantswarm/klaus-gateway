@@ -28,10 +28,13 @@ type Call struct {
 }
 
 // Server is the fake. Tools answers each tool by name; a tool it does not
-// list is refused like muster refuses an unknown one.
+// list is refused like muster refuses an unknown one. CallTools answers a tool
+// from the whole call, the caller's bearer included, for a fake that acts as
+// the caller; it is consulted before Tools.
 type Server struct {
 	*httptest.Server
-	Tools map[string]func(args map[string]any) Answer
+	Tools     map[string]func(args map[string]any) Answer
+	CallTools map[string]func(call Call) Answer
 
 	mu    sync.Mutex
 	calls []Call
@@ -75,14 +78,18 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Mcp-Session-Id", "fake-session")
 		reply(w, req.ID, map[string]any{"protocolVersion": "2025-03-26", "capabilities": map[string]any{}})
 	case "tools/call":
-		tool := req.Params.Arguments.Name
+		call := Call{Bearer: r.Header.Get("Authorization"), Tool: req.Params.Arguments.Name, Args: req.Params.Arguments.Arguments}
 		s.mu.Lock()
-		s.calls = append(s.calls, Call{Bearer: r.Header.Get("Authorization"), Tool: tool, Args: req.Params.Arguments.Arguments})
-		answer, ok := s.Tools[tool]
+		s.calls = append(s.calls, call)
+		byCall, viaCall := s.CallTools[call.Tool]
+		answer, ok := s.Tools[call.Tool]
 		s.mu.Unlock()
-		a := Answer{Text: "Tool execution failed: tool not found: " + tool, IsError: true, Undispatched: true}
-		if ok {
-			a = answer(req.Params.Arguments.Arguments)
+		a := Answer{Text: "Tool execution failed: tool not found: " + call.Tool, IsError: true, Undispatched: true}
+		switch {
+		case viaCall:
+			a = byCall(call)
+		case ok:
+			a = answer(call.Args)
 		}
 		reply(w, req.ID, result(a))
 	default:

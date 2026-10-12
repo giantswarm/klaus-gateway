@@ -26,8 +26,10 @@ const (
 	// PhaseRoster is the time spent resolving the turn's agent: the roster
 	// lookup and the conversation's binding. A span.
 	PhaseRoster = "roster"
-	// PhaseCreateSession is the controller's CreateSession on a
-	// thread's first turn. A span; absent on a follow-up.
+	// PhaseCreateSession is the Session start on a thread's first turn
+	// (agent-manager's start_session through muster, and the wait for READY).
+	// A span; absent on a follow-up. The value predates the start through
+	// agent-manager and stays, so the timings read the same.
 	PhaseCreateSession = "create_session"
 	// PhaseDispatch marks the turn_dispatch record: admission, identity and
 	// agent resolved, the completion about to be sent.

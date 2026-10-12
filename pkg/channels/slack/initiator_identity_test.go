@@ -283,7 +283,7 @@ func (k *ownedKagent) CancelTask(context.Context, a2apkg.TaskID) (*a2apkg.Task, 
 	return nil, a2apkg.ErrTaskNotFound
 }
 
-func (k *ownedKagent) CreateSession(ctx context.Context, _, _, _ string) (pkga2a.Session, error) {
+func (k *ownedKagent) StartSession(ctx context.Context, _, _, _ string) (pkga2a.Session, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	k.created++

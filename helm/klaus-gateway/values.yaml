@@ -211,6 +211,12 @@ a2a:
   # own default icon).
   # Example: https://avatars.example.com/v1/{agent}.png
   fallbackIconUrlTemplate: ""
+  # agentManagerToolsPrefix is what muster puts before agent-manager's tool
+  # names, x_<muster server name>_. Every Session a thread runs on is started
+  # through agent-manager's start_session, called through muster as the
+  # linked person (requires obo.enabled). Empty keeps the gateway's default,
+  # x_agent-manager_ (the Agent Platform's server name).
+  agentManagerToolsPrefix: ""
 
 # Slack channel adapter.
 # Disabled by default. To enable, set slack.enabled: true and provide a

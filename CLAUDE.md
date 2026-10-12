@@ -39,6 +39,7 @@ pkg/auth/satoken/       TokenReview verifier of the team-review endpoint
 pkg/reviews/            the team-review endpoint (POST /reviews, /notices), decisions (POST /decisions) and conversations (POST /conversations)
 pkg/muster/             muster tool client an approved review calls through; mustertest/ is a fake muster for tests
 pkg/workspaces/         the workspace-manager's tools over pkg/muster, as the person: list, authorize, providers
+pkg/agentmanager/       agent-manager's start_session over pkg/muster, as the person: how every Session starts
 pkg/server/             http.Server wiring, middleware, admin mux
 pkg/observability/      OTel traces + Prometheus metrics
 pkg/project/            build identifiers: ldflags target for version, git SHA and build timestamp; version falls back to the Go build info

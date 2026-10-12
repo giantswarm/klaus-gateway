@@ -67,7 +67,16 @@ type A2AConfig struct {
 	// carries an icon-URL annotation. "{agent}" is replaced with the agent's
 	// technical name. Empty disables the fallback.
 	FallbackIconURLTemplate string
+	// AgentManagerToolsPrefix is what muster puts before agent-manager's tool
+	// names (x_agent-manager_ for start_session as
+	// x_agent-manager_start_session). Every Session a thread runs on is started
+	// through that tool, as the person behind the turn, so it needs OBO.
+	AgentManagerToolsPrefix string
 }
+
+// DefaultAgentManagerToolsPrefix is the prefix of the Agent Platform's
+// agent-manager behind muster, whose server is named agent-manager.
+const DefaultAgentManagerToolsPrefix = "x_agent-manager_"
 
 // ValidateURL checks the gRPC target shape of URL, the way the client parses
 // it: grpc://host:port or grpcs://host[:port], no path.
@@ -311,8 +320,9 @@ func Defaults() Config {
 			ClearReactionOnDone: true,
 		},
 		A2A: A2AConfig{
-			DefaultAgent: "sre-agent",
-			Namespace:    "kagent",
+			DefaultAgent:            "sre-agent",
+			Namespace:               "kagent",
+			AgentManagerToolsPrefix: DefaultAgentManagerToolsPrefix,
 		},
 		OBO: OBOConfig{
 			StoreSecretName: "klaus-gateway-obo-links",
@@ -372,6 +382,7 @@ func Load(args []string) (Config, error) {
 	fs.StringVar(&cfg.A2A.URL, "a2a-url", cfg.A2A.URL, "kagent controller gRPC target through agentgateway: grpc://host:port (h2c) or grpcs://host[:port] (TLS, 443 by default).")
 	fs.StringVar(&cfg.A2A.CAFile, "a2a-ca-file", cfg.A2A.CAFile, "PEM bundle trusted for a grpcs:// --a2a-url in addition to the system roots. Empty uses the system roots only.")
 	fs.StringVar(&cfg.A2A.Namespace, "a2a-namespace", cfg.A2A.Namespace, "Namespace whose Agents are served.")
+	fs.StringVar(&cfg.A2A.AgentManagerToolsPrefix, "a2a-agent-manager-tools-prefix", cfg.A2A.AgentManagerToolsPrefix, "Prefix muster puts before agent-manager's tool names; every Session is started through its start_session as the linked person (requires --obo-enabled).")
 	fs.StringVar(&cfg.A2A.FallbackIconURLTemplate, "a2a-fallback-icon-url-template", cfg.A2A.FallbackIconURLTemplate, "Fallback agent icon URL used when neither the Agent nor its AgentTemplate has an icon-URL annotation. \"{agent}\" is replaced with the agent's technical name. Empty disables the fallback.")
 	fs.BoolVar(&cfg.OBO.Enabled, "obo-enabled", cfg.OBO.Enabled, "Enable Slack on-behalf-of muster account linking and the /auth/slack/* routes.")
 	fs.StringVar(&cfg.OBO.MusterURL, "obo-muster-url", cfg.OBO.MusterURL, "muster authorization-server base URL (RFC 8414 discovery).")
@@ -522,6 +533,9 @@ func applyEnv(cfg *Config) {
 	if v, ok := lookup("A2A_FALLBACK_ICON_URL_TEMPLATE"); ok {
 		cfg.A2A.FallbackIconURLTemplate = v
 	}
+	if v, ok := lookup("A2A_AGENT_MANAGER_TOOLS_PREFIX"); ok {
+		cfg.A2A.AgentManagerToolsPrefix = v
+	}
 	if v, ok := lookup("OBO_ENABLED"); ok {
 		cfg.OBO.Enabled = strings.EqualFold(v, "true") || v == "1"
 	}
@@ -611,6 +625,9 @@ func (c Config) Validate() error {
 		}
 		if c.A2A.Namespace == "" {
 			return fmt.Errorf("--a2a-namespace is required with --a2a-enabled")
+		}
+		if c.A2A.AgentManagerToolsPrefix == "" {
+			return fmt.Errorf("--a2a-agent-manager-tools-prefix is required with --a2a-enabled (every Session is started through agent-manager's start_session)")
 		}
 	}
 	if c.A2A.FallbackIconURLTemplate != "" && !strings.Contains(c.A2A.FallbackIconURLTemplate, "{agent}") {

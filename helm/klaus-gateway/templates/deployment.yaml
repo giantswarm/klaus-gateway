@@ -117,6 +117,9 @@ spec:
         {{- if .Values.a2a.fallbackIconUrlTemplate }}
         - --a2a-fallback-icon-url-template={{ .Values.a2a.fallbackIconUrlTemplate }}
         {{- end }}
+        {{- if .Values.a2a.agentManagerToolsPrefix }}
+        - --a2a-agent-manager-tools-prefix={{ .Values.a2a.agentManagerToolsPrefix }}
+        {{- end }}
         {{- end }}
         ports:
         - name: http
