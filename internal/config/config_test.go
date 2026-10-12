@@ -197,6 +197,14 @@ func TestValidate_OBO(t *testing.T) {
 		require.Error(t, cfg.Validate())
 	})
 
+	t.Run("workspace tools prefix runs as the linked person", func(t *testing.T) {
+		cfg := base
+		cfg.Workspaces.ToolsPrefix = "x_workspace-manager_"
+		require.NoError(t, cfg.Validate())
+		cfg.OBO.Enabled = false
+		require.ErrorContains(t, cfg.Validate(), "--workspace-tools-prefix")
+	})
+
 	t.Run("client id is optional (derived from CIMD url)", func(t *testing.T) {
 		cfg := base
 		cfg.OBO.ClientID = ""
@@ -399,4 +407,19 @@ func TestOBOMinTokenLifetime_FlagEnvValidate(t *testing.T) {
 	bad.Slack.Enabled = true
 	bad.OBO = config.OBOConfig{Enabled: true, MusterURL: "https://muster.example.com", CallbackBaseURL: "https://gateway.example.com", StateKeyFile: "/k", MinTokenLifetime: -time.Minute}
 	require.Error(t, bad.Validate())
+}
+
+func TestLoad_WorkspaceToolsPrefix(t *testing.T) {
+	cfg, err := config.Load(nil)
+	require.NoError(t, err)
+	require.Empty(t, cfg.Workspaces.ToolsPrefix, "workspaces are off by default")
+
+	t.Setenv("KLAUS_GATEWAY_WORKSPACE_TOOLS_PREFIX", "x_wm_")
+	cfg, err = config.Load(nil)
+	require.NoError(t, err)
+	require.Equal(t, "x_wm_", cfg.Workspaces.ToolsPrefix)
+
+	cfg, err = config.Load([]string{"--workspace-tools-prefix", "x_workspace-manager_"})
+	require.NoError(t, err)
+	require.Equal(t, "x_workspace-manager_", cfg.Workspaces.ToolsPrefix, "the flag wins over the env")
 }

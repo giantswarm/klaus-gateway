@@ -95,6 +95,22 @@ failure never costs a person their sign-in:
   one per lookup. Before a link is dropped on `invalid_grant` the store is re-read, so a token
   rotated by another writer (a second replica, the import) is retried rather than burned.
 
+## Workspaces
+
+The workspace-manager is an MCP server behind muster, beside agent-manager. The gateway calls three
+of its tools as the linked person (`pkg/workspaces`): `list_workspaces` (the workspaces of the
+person's Organizations, the providers their sources are on and when their last sync succeeded),
+`authorize_workspace` (granted with a short-lived grant for `start_session`, refused naming the
+repositories the person cannot read, connect the named providers first, or unavailable: not synced
+yet, being deleted, volume not ready) and `list_providers` (each provider and whether the person is
+connected, with its connect link). The grant is never logged, stored or shown.
+
+`workspaces.toolsPrefix` (`--workspace-tools-prefix`, `KLAUS_GATEWAY_WORKSPACE_TOOLS_PREFIX`) is what
+muster puts before the tool names: `x_<muster server name>_`, `x_workspace-manager_` on the Agent
+Platform. Empty, the default, turns workspaces off and the gateway never asks the workspace-manager.
+It requires `obo.enabled`. Nothing in the Slack adapter asks yet: the `/swarmgeist` modal's
+Workspace select and the thread's connect prompt are the client's first callers.
+
 ## Routing store
 
 The routing table maps `(channel, channelID, threadID)` to the kagent Session that holds

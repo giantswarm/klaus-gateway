@@ -238,6 +238,10 @@ spec:
         - name: KLAUS_GATEWAY_OBO_CONNECTORS_ENABLED
           value: "true"
         {{- end }}
+        {{- if (.Values.workspaces).toolsPrefix }}
+        - name: KLAUS_GATEWAY_WORKSPACE_TOOLS_PREFIX
+          value: {{ .Values.workspaces.toolsPrefix | quote }}
+        {{- end }}
         {{- end }}
         livenessProbe:
           httpGet:

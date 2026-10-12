@@ -34,6 +34,7 @@ import (
 	valkeystore "github.com/giantswarm/klaus-gateway/pkg/routing/store/valkey"
 	"github.com/giantswarm/klaus-gateway/pkg/seal"
 	"github.com/giantswarm/klaus-gateway/pkg/server"
+	"github.com/giantswarm/klaus-gateway/pkg/workspaces"
 )
 
 func main() {
@@ -208,6 +209,11 @@ func run(args []string) error {
 			slackAdapter.PublicBaseURL = cfg.OBO.CallbackBaseURL
 			logger.Info("slack connector prompts enabled")
 		}
+	}
+
+	if cfg.Workspaces.ToolsPrefix != "" && slackAdapter != nil {
+		slackAdapter.Workspaces = workspaces.New(muster.NewClient(cfg.OBO.MusterURL), cfg.Workspaces.ToolsPrefix)
+		logger.Info("workspaces enabled", "tools_prefix", cfg.Workspaces.ToolsPrefix, "muster_url", cfg.OBO.MusterURL)
 	}
 
 	if cfg.Reviews.Enabled {

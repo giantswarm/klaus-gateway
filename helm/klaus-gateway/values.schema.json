@@ -570,6 +570,15 @@
         },
         "tolerations": {
             "type": "array"
+        },
+        "workspaces": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "toolsPrefix": {
+                    "type": "string"
+                }
+            }
         }
     }
 }

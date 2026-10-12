@@ -229,6 +229,16 @@ func (r ReviewsConfig) ResolvedAudience() string {
 	return DefaultReviewsAudience
 }
 
+// WorkspacesConfig locates the workspace-manager's tools behind muster, which
+// the Slack adapter calls as the linked person.
+type WorkspacesConfig struct {
+	// ToolsPrefix is what muster puts before the workspace-manager's tool
+	// names (x_workspace-manager_ for list_workspaces as
+	// x_workspace-manager_list_workspaces). Empty turns workspaces off: the
+	// gateway never asks the workspace-manager.
+	ToolsPrefix string
+}
+
 // Config is the fully resolved runtime configuration.
 type Config struct {
 	ListenAddress string
@@ -249,10 +259,11 @@ type Config struct {
 	ThreadTTL   time.Duration
 	ShowVersion bool
 
-	Slack   SlackConfig
-	A2A     A2AConfig
-	OBO     OBOConfig
-	Reviews ReviewsConfig
+	Slack      SlackConfig
+	A2A        A2AConfig
+	OBO        OBOConfig
+	Reviews    ReviewsConfig
+	Workspaces WorkspacesConfig
 }
 
 // ValkeyConfig locates the Valkey server of the valkey routing store
@@ -381,6 +392,7 @@ func Load(args []string) (Config, error) {
 		cfg.Reviews.AllowedCallers = splitCommaList(v)
 		return nil
 	})
+	fs.StringVar(&cfg.Workspaces.ToolsPrefix, "workspace-tools-prefix", cfg.Workspaces.ToolsPrefix, "Prefix muster puts before the workspace-manager's tool names (e.g. x_workspace-manager_). Empty turns workspaces off. Requires --obo-enabled: the tools run as the linked person.")
 
 	fs.Usage = func() {
 		_, _ = fmt.Fprintf(fs.Output(), "klaus-gateway -- Slack channel gateway for the Agent Platform's kagent agents.\n\n")
@@ -525,6 +537,9 @@ func applyEnv(cfg *Config) {
 	if v, ok := lookup("REVIEWS_ALLOWED_CALLERS"); ok {
 		cfg.Reviews.AllowedCallers = splitCommaList(v)
 	}
+	if v, ok := lookup("WORKSPACE_TOOLS_PREFIX"); ok {
+		cfg.Workspaces.ToolsPrefix = v
+	}
 	if v, ok := lookup("OBO_CLIENT_ID"); ok {
 		cfg.OBO.ClientID = v
 	}
@@ -662,6 +677,9 @@ func (c Config) Validate() error {
 		if len(c.Reviews.AllowedCallers) == 0 {
 			return fmt.Errorf("--reviews-allowed-callers is required with --reviews-enabled (the ServiceAccounts that may post, system:serviceaccount:<namespace>:<name>)")
 		}
+	}
+	if c.Workspaces.ToolsPrefix != "" && !c.OBO.Enabled {
+		return fmt.Errorf("--obo-enabled is required with --workspace-tools-prefix (the workspace-manager's tools run through muster as the linked person)")
 	}
 	if c.OBO.ConnectorsEnabled && !c.OBO.Enabled {
 		return fmt.Errorf("--obo-enabled is required with --obo-connectors-enabled (the connector UX renders a Connect button for the linked user from the login link the agent relays)")

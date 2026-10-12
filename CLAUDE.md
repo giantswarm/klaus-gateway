@@ -37,7 +37,8 @@ pkg/routing/store/      Store interface + three backends (memory, valkey, bolt);
 pkg/auth/musterlink/    Slack OBO: muster account linking + the link Store (memory, bolt file, Kubernetes Secret)
 pkg/auth/satoken/       TokenReview verifier of the team-review endpoint
 pkg/reviews/            the team-review endpoint (POST /reviews, /notices), decisions (POST /decisions) and conversations (POST /conversations)
-pkg/muster/             muster tool client an approved review calls through
+pkg/muster/             muster tool client an approved review calls through; mustertest/ is a fake muster for tests
+pkg/workspaces/         the workspace-manager's tools over pkg/muster, as the person: list, authorize, providers
 pkg/server/             http.Server wiring, middleware, admin mux
 pkg/observability/      OTel traces + Prometheus metrics
 pkg/project/            build identifiers: ldflags target for version, git SHA and build timestamp; version falls back to the Go build info
