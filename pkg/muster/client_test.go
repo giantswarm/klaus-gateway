@@ -104,7 +104,7 @@ func TestCallTool_RunsAsThePersonAndClosesTheSession(t *testing.T) {
 
 			res, err := NewClient(srv.URL+"/").CallTool(context.Background(), "id-token-alice", "x_repo_approve_change", map[string]any{"pr": 7})
 			require.NoError(t, err)
-			require.Equal(t, Result{Text: "review submitted"}, res)
+			require.Equal(t, Result{Text: "review submitted", Dispatched: true}, res)
 
 			fake.mu.Lock()
 			defer fake.mu.Unlock()
@@ -130,7 +130,26 @@ func TestCallTool_ToolRefusalIsAResultNotAnError(t *testing.T) {
 	res, err := NewClient(srv.URL).CallTool(context.Background(), "id-token-alice", "x_repo_approve_change", nil)
 	require.NoError(t, err)
 	require.True(t, res.IsError)
+	require.True(t, res.Dispatched, "the tool itself refused")
 	require.Equal(t, "alice is not a member of team-bumblebee", res.Text)
+}
+
+// A tool's structuredContent rides inside call_tool's envelope and comes back
+// as the tool sent it.
+func TestCallTool_StructuredContentOfTheTool(t *testing.T) {
+	fake := &fakeMuster{callResult: envelope(map[string]any{
+		"isError":           false,
+		"content":           []any{map[string]any{"type": "text", "text": "2 workspaces"}},
+		"structuredContent": map[string]any{"workspaces": []any{map[string]any{"name": "a"}}},
+	}, false)}
+	srv := httptest.NewServer(fake.handler())
+	defer srv.Close()
+
+	res, err := NewClient(srv.URL).CallTool(context.Background(), "id-token-alice", "x_ws_list_workspaces", nil)
+	require.NoError(t, err)
+	require.Equal(t, "2 workspaces", res.Text)
+	require.JSONEq(t, `{"workspaces":[{"name":"a"}]}`, string(res.Structured))
+	require.True(t, res.Dispatched)
 }
 
 // muster's own refusal (an unknown tool, one outside the caller's toolset)

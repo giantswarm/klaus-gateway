@@ -22,6 +22,7 @@ import (
 	"github.com/giantswarm/klaus-gateway/pkg/auth/musterlink"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
+	"github.com/giantswarm/klaus-gateway/pkg/workspaces"
 )
 
 // ChannelName identifies the Slack adapter in routing keys.
@@ -117,6 +118,10 @@ type Adapter struct {
 	// Tools calls a muster tool as a linked person; the team-review Approve
 	// click runs the review's tool through it. Nil disables team reviews.
 	Tools ToolCaller
+	// Workspaces asks the workspace-manager, as the linked person, which
+	// workspaces they may pick and whether they may start a Session on one.
+	// Nil, the default, is workspaces off.
+	Workspaces *workspaces.Client
 	// Reviews keeps the team reviews posted through PostTeamReview for their
 	// TTL: the gateway's routing store, so on a store that outlives the
 	// process (valkey, bolt) a review survives a restart. Nil keeps them in

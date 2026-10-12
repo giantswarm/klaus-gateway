@@ -25,12 +25,16 @@ const (
 	defaultTimeout  = 60 * time.Second
 )
 
-// Result is a tool's answer: its text content joined, and whether the tool
-// reported it as an error (a refusal is an error result, not a transport
-// failure).
+// Result is a tool's answer: its text content joined, its structured content
+// as the tool sent it, and whether the tool reported it as an error (a refusal
+// is an error result, not a transport failure). Dispatched tells the target
+// tool's own answer from call_tool's: false is muster refusing the call itself
+// (an unknown tool, one outside the caller's toolset), the tool never ran.
 type Result struct {
-	Text    string
-	IsError bool
+	Text       string
+	Structured json.RawMessage
+	IsError    bool
+	Dispatched bool
 }
 
 // Client calls muster tools. One client is safe to share.
@@ -86,6 +90,7 @@ func (c *Client) CallTool(ctx context.Context, bearer, tool string, args map[str
 		return Result{}, fmt.Errorf("muster: call %s: decode result: %w", tool, err)
 	}
 	if inner, ok := unwrapEnvelope(outer); ok {
+		inner.Dispatched = true
 		return inner, nil
 	}
 	// call_tool's own refusal — an unknown tool, one outside the caller's
@@ -109,7 +114,8 @@ type toolResult struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	} `json:"content"`
-	IsError bool `json:"isError"`
+	StructuredContent json.RawMessage `json:"structuredContent,omitempty"`
+	IsError           bool            `json:"isError"`
 }
 
 func decodeResult(raw json.RawMessage) (Result, error) {
@@ -136,7 +142,11 @@ func (r toolResult) flatten() Result {
 			texts = append(texts, part.Text)
 		}
 	}
-	return Result{Text: strings.Join(texts, "\n"), IsError: r.IsError}
+	res := Result{Text: strings.Join(texts, "\n"), IsError: r.IsError}
+	if len(r.StructuredContent) > 0 && string(r.StructuredContent) != "null" {
+		res.Structured = r.StructuredContent
+	}
+	return res
 }
 
 // session is one streamable-HTTP exchange: the session id muster hands out at

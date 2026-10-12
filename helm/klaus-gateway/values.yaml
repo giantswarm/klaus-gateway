@@ -392,6 +392,16 @@ reviews:
   allowedCallers:
     - system:serviceaccount:giantswarm-platform-manager:giantswarm-platform-manager
 
+# Workspaces: the workspace-manager's tools, which the Slack adapter calls
+# through muster as the linked person (which workspaces the person may pick,
+# whether they may start a Session on one, their provider connections).
+# toolsPrefix is what muster puts before the workspace-manager's tool names,
+# x_<muster server name>_ (x_workspace-manager_ for the Agent Platform's).
+# Empty, the default, turns workspaces off: the gateway never asks the
+# workspace-manager. Requires obo.enabled.
+workspaces:
+  toolsPrefix: ""
+
 global:  # @schema additionalProperties: true
   podSecurityStandards:
     enforced: false
