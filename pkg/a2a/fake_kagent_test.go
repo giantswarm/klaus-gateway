@@ -28,8 +28,8 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
-	"github.com/giantswarm/klaus-gateway/pkg/muster/mustertest"
 	apiv1alpha1 "github.com/giantswarm/klaus-gateway/pkg/kagent/gen/kagent/api/v1alpha1"
+	"github.com/giantswarm/klaus-gateway/pkg/muster/mustertest"
 )
 
 // fakeKagent is an in-process kagent API v2 controller: the A2A v1 service
