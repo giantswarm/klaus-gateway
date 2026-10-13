@@ -329,6 +329,20 @@ thread's Session runs in the workspace its initiator picks, or in none. A Sessio
 workspace works in its own directory on the workspace's volume, with the workspace's
 repositories as read-only mirrors beside it.
 
+- **In the agent picker.** The slash command, the message shortcut and a roster row's Select
+  open the picker ([the surface](slack-hitl-surface.md#12-agent-picker-starting-a-conversation)),
+  which carries the choice itself: a **Workspace** select under the agent, offered when the
+  person has workspaces and the listing (as them, beside the roster) answers within 1.5 s of
+  the trigger. **No workspace** comes first, then the workspaces as in the prompt below. It is
+  preset to the workspace the person last started the selected agent with from the picker, while
+  it is still listed, else to **No workspace**, and a change of agent redraws the picker
+  (`views.update`) with that agent's preset. On submit a workspace is authorized as the person
+  before anything is posted; a refusal is answered privately with the reason and the prompt
+  quoted back, and nothing starts. The thread then starts with the choice and is not asked. The
+  last choice per person and agent is a row of its own in the routing store (channel
+  `slack-workspace-pref`, the person and the agent as its key, the name or `none`, never a grant),
+  which ends with the thread lifetime. A picker opened without the select (the listing was late
+  or failed) leaves the choice to the prompt, as a mention does.
 - **Who is asked, and when.** The initiator's message that would start the thread's Session —
   no Session bound and no choice recorded yet, and the message carries none itself — lists
   the initiator's workspaces (`list_workspaces`, as them). With none, or when they cannot be

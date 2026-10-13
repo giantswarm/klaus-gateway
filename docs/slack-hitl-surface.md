@@ -515,8 +515,10 @@ this thread in #channel…" for the shortcut in a thread, "Starts this message's
 #channel…" for the shortcut on a top-level message without replies (Slack sends no `thread_ts`
 for it), and in a DM the same without the channel and without "Anyone in the channel can read
 it…", because a DM has no other readers. The select lists the live roster as the caller, the
-default agent preselected and named in the select's hint ("SRE Agent is the default for this
-workspace.", only when the default is on the list). The submit button reads **Start thread** for
+default agent preselected and named in the select's hint ("SRE Agent is the default agent.", only
+when the default is on the list). Both selects in the picker are `static_select`s, which Slack
+filters as the person types, so each is one search-and-dropdown field with no round trip per
+keystroke; their placeholders say so ("Type to search or pick an agent"). The submit button reads **Start thread** for
 the slash command and **Start conversation** for the shortcut, whose thread exists already.
 `private_metadata` carries where the picker was opened, how to answer the user privately, and —
 for the shortcut — the thread the conversation starts in. In a channel, the shortcut's view
@@ -542,11 +544,11 @@ clearing the box still submits.
       "type": "input",
       "block_id": "ask_agent_agent",
       "label": { "type": "plain_text", "text": "Agent" },
-      "hint": { "type": "plain_text", "text": "SRE Agent is the default for this workspace." },
+      "hint": { "type": "plain_text", "text": "SRE Agent is the default agent." },
       "element": {
         "type": "static_select",
         "action_id": "agent",
-        "placeholder": { "type": "plain_text", "text": "Pick an agent" },
+        "placeholder": { "type": "plain_text", "text": "Type to search or pick an agent" },
         "options": [ { "text": { "type": "plain_text", "text": "SRE Agent" }, "value": "kagent/sre-agent" } ],
         "initial_option": { "text": { "type": "plain_text", "text": "SRE Agent" }, "value": "kagent/sre-agent" }
       }
@@ -573,6 +575,36 @@ clearing the box still submits.
 }
 ```
 
+With workspaces on and at least one workspace listed for the person, a **Workspace** select sits
+between Agent and Prompt, and the agent input gains `"dispatch_action": true`: a change of agent
+reaches the gateway, which redraws the view (`views.update` with the view's `hash`) with the
+new agent's preset under the next `block_id` revision, because Slack keeps a person's pick in an
+input whose `block_id` stays. The select is optional; **No workspace** (`*none*`) comes first,
+in a group of its own when the workspaces are grouped by Organization; the hint names the agent
+when the preset is the workspace last used with it:
+
+```json
+{
+  "type": "input",
+  "block_id": "ask_agent_workspace.0",
+  "optional": true,
+  "label": { "type": "plain_text", "text": "Workspace" },
+  "hint": { "type": "plain_text", "text": "Last used with SRE Agent." },
+  "element": {
+    "type": "static_select",
+    "action_id": "workspace",
+    "placeholder": { "type": "plain_text", "text": "Type to search or pick a workspace" },
+    "option_groups": [
+      { "label": { "type": "plain_text", "text": "Without a workspace" },
+        "options": [ { "text": { "type": "plain_text", "text": "No workspace" }, "value": "*none*" } ] },
+      { "label": { "type": "plain_text", "text": "giantswarm" },
+        "options": [ { "text": { "type": "plain_text", "text": "platform · synced 3 h ago" }, "value": "platform" } ] }
+    ],
+    "initial_option": { "text": { "type": "plain_text", "text": "platform · synced 3 h ago" }, "value": "platform" }
+  }
+}
+```
+
 Submitting posts `<@U123> asked *SRE Agent*:` with the question quoted under it, under the
 app's own identity: the words are the person's, so the agent's name and icon are not on the
 message. It is a new root message for the slash command and a reply in the carried thread for
@@ -596,6 +628,7 @@ Everything the picker cannot do is said privately to the invoker, through the in
 | the roster is unreachable, or empty | "The agents cannot be listed right now…" / "No agents are installed." |
 | on submit: the picked agent no longer validates | "No agent named `…` is available…", with the current roster |
 | on submit: the picked agent is installed but cannot run | "*Agent* is installed but cannot start a conversation right now: <reason>. Nothing was started." (+ the roster when it lists agents) |
+| on submit: the picked workspace is not granted, or could not be checked | "Cannot start in workspace *name*: <reason>. Nothing was started; …", then "Your prompt:" and the prompt quoted |
 | on submit: the bot is not in the channel and cannot join | "Invite the bot to the channel and try again." |
 
 One more notice reaches the person who opened the conversation, as an ephemeral in the thread

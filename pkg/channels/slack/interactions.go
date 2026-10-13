@@ -74,6 +74,12 @@ type interactionPayload struct {
 	// state.values holds every input, keyed like State above.
 	View struct {
 		ID string `json:"id"`
+		// Title, Submit, Close and Blocks are the open view as Slack holds
+		// it, sent back by a redraw (the agent picker's change of agent).
+		Title  map[string]any   `json:"title"`
+		Submit map[string]any   `json:"submit"`
+		Close  map[string]any   `json:"close"`
+		Blocks []map[string]any `json:"blocks"`
 		// Hash is the view's version, which views.update checks so a redraw
 		// cannot overwrite a newer one.
 		Hash            string `json:"hash"`
@@ -242,6 +248,13 @@ func (a *Adapter) routeInteraction(ctx context.Context, payload interactionPaylo
 		return
 	case agentSelectAction:
 		a.handleRosterSelect(ctx, payload, action.Value)
+		return
+	case askAgentAgentActionID:
+		// The picker's agent select dispatches its change only while the
+		// picker shows a Workspace select.
+		if payload.View.CallbackID == askAgentCallbackID {
+			a.handleAskAgentAgentChange(ctx, payload, action.SelectedOption.Value)
+		}
 		return
 	case workspaceSelectAction:
 		if v, ok := decodeWorkspaceValue(action.SelectedOption.Value); ok {

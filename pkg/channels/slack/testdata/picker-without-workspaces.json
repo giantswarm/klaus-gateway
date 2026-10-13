@@ -1,0 +1,97 @@
+{
+  "blocks": [
+    {
+      "elements": [
+        {
+          "text": "Starts a thread in \u003c#C1\u003e under the agent's name. Anyone in the channel can read it; you decide who may instruct the agent.",
+          "type": "mrkdwn"
+        }
+      ],
+      "type": "context"
+    },
+    {
+      "block_id": "ask_agent_agent",
+      "element": {
+        "action_id": "agent",
+        "initial_option": {
+          "text": {
+            "text": "Swarmgeist",
+            "type": "plain_text"
+          },
+          "value": "kagent/swarmgeist"
+        },
+        "options": [
+          {
+            "text": {
+              "text": "Swarmgeist",
+              "type": "plain_text"
+            },
+            "value": "kagent/swarmgeist"
+          },
+          {
+            "text": {
+              "text": "SRE Agent",
+              "type": "plain_text"
+            },
+            "value": "kagent/sre-agent"
+          },
+          {
+            "text": {
+              "text": "grill-master",
+              "type": "plain_text"
+            },
+            "value": "kagent/grill-master"
+          }
+        ],
+        "placeholder": {
+          "text": "Type to search or pick an agent",
+          "type": "plain_text"
+        },
+        "type": "static_select"
+      },
+      "hint": {
+        "text": "Swarmgeist is the default agent.",
+        "type": "plain_text"
+      },
+      "label": {
+        "text": "Agent",
+        "type": "plain_text"
+      },
+      "type": "input"
+    },
+    {
+      "block_id": "ask_agent_question",
+      "element": {
+        "action_id": "question",
+        "initial_value": "why are pods crashlooping?",
+        "max_length": 3000,
+        "multiline": true,
+        "placeholder": {
+          "text": "What should the agent look into?",
+          "type": "plain_text"
+        },
+        "type": "plain_text_input"
+      },
+      "label": {
+        "text": "Prompt",
+        "type": "plain_text"
+      },
+      "type": "input"
+    }
+  ],
+  "callback_id": "ask_agent",
+  "close": {
+    "text": "Cancel",
+    "type": "plain_text"
+  },
+  "private_metadata": "{\"c\":\"C1\",\"u\":\"U001\",\"r\":\"https://hooks.example.com/r\"}",
+  "submit": {
+    "text": "Start thread",
+    "type": "plain_text"
+  },
+  "title": {
+    "text": "New conversation",
+    "type": "plain_text"
+  },
+  "type": "modal"
+}

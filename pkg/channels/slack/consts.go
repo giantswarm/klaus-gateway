@@ -150,18 +150,41 @@ const (
 	askAgentContextBlockID   = "ask_agent_context"
 	askAgentContextActionID  = "context"
 	askAgentContextValue     = "include"
+	// askAgentWorkspaceBlockID prefixes the Workspace input's block_id, which
+	// gains a revision on every redraw for a new agent: Slack keeps what a
+	// person picked in an input whose block_id stays, so only a new one takes
+	// the new preset.
+	askAgentWorkspaceBlockID  = "ask_agent_workspace"
+	askAgentWorkspaceActionID = "workspace"
+	// askAgentWorkspaceNoneValue is the No workspace option's value; no
+	// workspace name (a Kubernetes name) can be it.
+	askAgentWorkspaceNoneValue = "*none*"
 
-	askAgentModalTitle          = "New conversation" // modal titles and button labels are capped at 24 chars
-	askAgentSubmitLabel         = "Start thread"
-	askAgentShortcutSubmitLabel = "Start conversation" // the shortcut's thread exists already
-	askAgentCloseLabel          = "Cancel"
-	askAgentAgentLabel          = "Agent"
-	askAgentAgentPlaceholder    = "Pick an agent"
-	askAgentQuestionLabel       = "Prompt"
-	askAgentQuestionPlaceholder = "What should the agent look into?"
+	askAgentModalTitle           = "New conversation" // modal titles and button labels are capped at 24 chars
+	askAgentSubmitLabel          = "Start thread"
+	askAgentShortcutSubmitLabel  = "Start conversation" // the shortcut's thread exists already
+	askAgentCloseLabel           = "Cancel"
+	askAgentAgentLabel           = "Agent"
+	askAgentAgentPlaceholder     = "Type to search or pick an agent"
+	askAgentWorkspaceLabel       = "Workspace"
+	askAgentWorkspacePlaceholder = "Type to search or pick a workspace"
+	// askAgentWorkspaceNoneGroup heads the No workspace option when the
+	// workspaces are grouped by Organization.
+	askAgentWorkspaceNoneGroup = "Without a workspace"
+	// askAgentWorkspaceLastHint sits under the Workspace select when its
+	// preset is the workspace the person last started the agent with; %s is
+	// the agent's display name.
+	askAgentWorkspaceLastHint = "Last used with %s."
+	// askAgentWorkspacePromptQuote follows a workspace refusal sent privately
+	// after a submission: the modal is gone, so the prompt is handed back,
+	// quoted.
+	askAgentWorkspacePromptQuote = "\nYour prompt:\n>%s"
+	askAgentQuestionLabel        = "Prompt"
+	askAgentQuestionPlaceholder  = "What should the agent look into?"
 	// askAgentDefaultHint sits under the agent select when the default agent
-	// is on the list; %s is its display name.
-	askAgentDefaultHint = "%s is the default for this workspace."
+	// is on the list; %s is its display name. "Workspace" is the agent's
+	// workspace beside it, so the hint does not call Slack's one that.
+	askAgentDefaultHint = "%s is the default agent."
 	// The line that opens the modal: where the conversation lands. %s is the
 	// channel, rendered by Slack from its <#id> mention. In a channel the line
 	// ends with askAgentLeadAudience; a DM has no other readers and no one else
@@ -797,6 +820,7 @@ const (
 	bkMaxLength       = "max_length"
 	bkHint            = "hint"
 	bkOptionGroups    = "option_groups"
+	bkDispatchAction  = "dispatch_action"
 )
 
 // Block Kit type values.
