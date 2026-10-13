@@ -16,12 +16,14 @@ type threadState struct {
 	pending *pendingTask
 	// idleWaiters are deferred replays, run when the slot frees.
 	idleWaiters []func()
+	// workspace is the open workspace prompt and the messages it holds.
+	workspace *workspacePrompt
 }
 
 // empty reports whether the thread carries no live turn state; an empty entry
 // is dropped from the threads map.
 func (st *threadState) empty() bool {
-	return st.slot == nil && st.pending == nil && len(st.idleWaiters) == 0
+	return st.slot == nil && st.pending == nil && len(st.idleWaiters) == 0 && st.workspace == nil
 }
 
 // turnSlot is the state that lives exactly as long as one turn holds the

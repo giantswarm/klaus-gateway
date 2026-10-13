@@ -86,7 +86,9 @@ thread to exactly one session:
    no surface can skip those checks. The call names the Agent (`namespace`, `name`), the
    `requestId` = the gateway's synthesized context id (a SHA-256 hex over `channel,
    channelID, "", threadID, agentRef`, followed by the workspace's namespace and name when the
-   thread chose one) and the `sessionName`, and no `message`: without one `start_session`
+   thread chose one) and the `sessionName`, for a thread that chose a workspace the
+   `workspaceGrant` `authorize_workspace` answered the initiator (a Session keyed to a
+   workspace is never started without it), and no `message`: without one `start_session`
    only creates the session and answers `{session}`, and the gateway sends the turn itself,
    attachments included, over A2A as on every later turn. The tool is
    `<a2a.agentManagerToolsPrefix>start_session`, `x_agent-manager_start_session` by default.

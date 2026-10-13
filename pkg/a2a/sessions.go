@@ -11,6 +11,7 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	apiv1alpha1 "github.com/giantswarm/klaus-gateway/pkg/kagent/gen/kagent/api/v1alpha1"
+	"github.com/giantswarm/klaus-gateway/pkg/workspaces"
 )
 
 // Session is the slice of a kagent Session the gateway acts on.
@@ -46,8 +47,9 @@ const sessionPollInterval = 2 * time.Second
 // attempt started instead of a second one. name is the conversation's display
 // name; an empty one leaves it unnamed, identified by its id. An Agent that is
 // not selectable is refused with ErrAgentUnavailable and the reason before
-// anything is started. The call returns once the session is READY.
-func (c *Client) StartSession(ctx context.Context, agentRef, requestID, name string) (Session, error) {
+// anything is started. A non-zero grant starts the session in the workspace it
+// admits the caller to. The call returns once the session is READY.
+func (c *Client) StartSession(ctx context.Context, agentRef, requestID, name string, grant workspaces.Grant) (Session, error) {
 	if c.starter == nil {
 		return Session{}, ErrNoStarter
 	}
@@ -62,7 +64,7 @@ func (c *Client) StartSession(ctx context.Context, agentRef, requestID, name str
 	if err != nil {
 		return Session{}, err
 	}
-	session, err := c.starter.StartSession(ctx, token, info.Namespace, info.Name, requestID, name)
+	session, err := c.starter.StartSession(ctx, token, info.Namespace, info.Name, requestID, name, grant)
 	if err != nil && name != "" && errors.Is(err, ErrInvalidSessionName) {
 		// A name the controller will not take costs the name, never the
 		// conversation, so a refused start goes again unnamed. The request id
@@ -71,7 +73,7 @@ func (c *Client) StartSession(ctx context.Context, agentRef, requestID, name str
 		// something else, in which case it comes back the same way and is
 		// returned below.
 		c.logger.Warn("a2a: session start refused, retrying it unnamed", "agent", agentRef, "error", err)
-		session, err = c.starter.StartSession(ctx, token, info.Namespace, info.Name, requestID, "")
+		session, err = c.starter.StartSession(ctx, token, info.Namespace, info.Name, requestID, "", grant)
 	}
 	if err != nil {
 		var unavailable *AgentUnavailableError

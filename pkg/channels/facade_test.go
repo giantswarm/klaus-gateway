@@ -18,6 +18,7 @@ import (
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store/memory"
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store/storetest"
+	"github.com/giantswarm/klaus-gateway/pkg/workspaces"
 )
 
 // fakeAgent is the kagent client at the facade's seam: it records the message
@@ -54,6 +55,7 @@ type fakeAgent struct {
 	streamedOn      []string
 	createRequests  []string
 	createNames     []string
+	createGrants    []workspaces.Grant
 	canceled        []a2apkg.TaskID
 	canceledOn      []string
 	deleted         []string
@@ -170,9 +172,10 @@ func (a *fakeAgent) CancelTask(ctx context.Context, taskID a2apkg.TaskID) (*a2ap
 	return &a2apkg.Task{ID: taskID, Status: a2apkg.TaskStatus{State: a2apkg.TaskStateCanceled}}, nil
 }
 
-func (a *fakeAgent) StartSession(ctx context.Context, agentRef, requestID, name string) (pkga2a.Session, error) {
+func (a *fakeAgent) StartSession(ctx context.Context, agentRef, requestID, name string, grant workspaces.Grant) (pkga2a.Session, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.createGrants = append(a.createGrants, grant)
 	a.createdAs = append(a.createdAs, pkga2a.ForwardedTokenFromContext(ctx))
 	a.createRequests = append(a.createRequests, requestID)
 	a.createNames = append(a.createNames, name)

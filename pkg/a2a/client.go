@@ -37,6 +37,7 @@ import (
 	"google.golang.org/grpc/metadata"
 
 	apiv1alpha1 "github.com/giantswarm/klaus-gateway/pkg/kagent/gen/kagent/api/v1alpha1"
+	"github.com/giantswarm/klaus-gateway/pkg/workspaces"
 )
 
 // ShareTokenHeader is the gRPC metadata entry that presents a Session share
@@ -138,12 +139,12 @@ type Config struct {
 // SessionStarter starts the Session of a conversation as the person bearer
 // belongs to, with the Agent namespace/name, keyed by requestID (a retried
 // start answers the Session the first one created) and named sessionName
-// (empty: unnamed). It returns the Session as created, ready or not. Its
-// refusals are the errors a channel renders: AgentUnavailableError,
-// ErrNoIdentity, ErrAgentUnknown, ErrInvalidSessionName.
-// *agentmanager.Starter satisfies it.
+// (empty: unnamed), in the workspace grant admits it to (zero: none). It
+// returns the Session as created, ready or not. Its refusals are the errors a
+// channel renders: AgentUnavailableError, ErrNoIdentity, ErrAgentUnknown,
+// ErrInvalidSessionName. *agentmanager.Starter satisfies it.
 type SessionStarter interface {
-	StartSession(ctx context.Context, bearer, namespace, name, requestID, sessionName string) (Session, error)
+	StartSession(ctx context.Context, bearer, namespace, name, requestID, sessionName string, grant workspaces.Grant) (Session, error)
 }
 
 // Client speaks to one kagent controller. It is safe for concurrent use.

@@ -17,6 +17,7 @@ import (
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
 	"github.com/giantswarm/klaus-gateway/pkg/seal"
+	"github.com/giantswarm/klaus-gateway/pkg/workspaces"
 )
 
 // AgentClient is the slice of pkg/a2a.Client the Facade needs to run a
@@ -38,8 +39,9 @@ type AgentClient interface {
 	// StartSession starts (idempotently per requestID) the session for a
 	// conversation with agentRef, named name, through agent-manager's
 	// start_session as the caller, and returns it once it is ready. An empty
-	// name leaves the conversation unnamed.
-	StartSession(ctx context.Context, agentRef, requestID, name string) (pkga2a.Session, error)
+	// name leaves the conversation unnamed; a non-zero grant starts it in
+	// the workspace the grant admits the caller to.
+	StartSession(ctx context.Context, agentRef, requestID, name string, grant workspaces.Grant) (pkga2a.Session, error)
 	// GetSession returns a session; pkga2a.ErrSessionNotFound when gone.
 	GetSession(ctx context.Context, id string) (pkga2a.Session, error)
 	// DeleteSession removes a session; a missing one is not an error.
@@ -354,8 +356,13 @@ func (f *Facade) sessionFor(ctx context.Context, msg InboundMessage) (string, er
 	// then asks for a session the controller does not have and starts its
 	// conversation over, empty.
 	requestID := SynthesizeContextID(msg.Channel, msg.ChannelID, "", msg.ThreadID, msg.AgentRef, workspace)
+	// A Session keyed to a workspace starts in it or not at all: without the
+	// grant it would run without one under the workspace's key.
+	if workspace.Chosen() && msg.WorkspaceGrant.IsZero() {
+		return "", fmt.Errorf("%w: %s", ErrNoWorkspaceGrant, workspace)
+	}
 	created := TurnTimerFromContext(ctx).Span(PhaseCreateSession)
-	session, err := f.Agent.StartSession(ctx, msg.AgentRef, requestID, sessionName(msg))
+	session, err := f.Agent.StartSession(ctx, msg.AgentRef, requestID, sessionName(msg), msg.WorkspaceGrant)
 	created()
 	if err != nil {
 		return "", err

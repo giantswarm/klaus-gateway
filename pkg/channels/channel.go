@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
+	"github.com/giantswarm/klaus-gateway/pkg/workspaces"
 )
 
 // ErrShutdown is the cancellation cause of a turn the gateway's own shutdown
@@ -27,6 +28,11 @@ var ErrShutdown = errors.New("channels: the gateway is shutting down")
 // without either, the controller refuses the collaborator on a session that
 // is not theirs.
 var ErrShareUnavailable = errors.New("channels: the thread's session is not shared yet and its creator is signed out")
+
+// ErrNoWorkspaceGrant refuses the start of a Session in a chosen workspace
+// whose turn carries no grant for it: the Session would run without the
+// workspace under its key.
+var ErrNoWorkspaceGrant = errors.New("channels: no workspace grant for the Session's workspace")
 
 // Gateway is the server-side surface adapters call back into. The wiring in
 // main.go provides the concrete implementation (Facade).
@@ -120,6 +126,10 @@ type InboundMessage struct {
 	// Session. nil makes none: the thread's recorded choice stands. A choice
 	// that differs from the recorded one starts a new Session.
 	Workspace *store.WorkspaceChoice
+	// WorkspaceGrant is the grant authorize_workspace answered the person for
+	// Workspace, which the start of a Session in it takes. It never leaves the
+	// process: a parked copy of the message drops it.
+	WorkspaceGrant workspaces.Grant `json:"-"`
 	// Opener is set by a channel adapter when this message starts its
 	// thread's conversation (no agent recorded for the thread before it): the
 	// session title keys on it.

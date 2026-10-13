@@ -177,7 +177,9 @@ type Share struct {
 }
 
 // WorkspaceChoice is what a thread chose for its Session's workspace: the
-// workspace by namespace and name, or None for "no workspace".
+// workspace by namespace and name, or None for "no workspace". The Slack
+// prompt records the name alone: the workspace-manager names a workspace
+// uniquely in the installation.
 type WorkspaceChoice struct {
 	Namespace string `json:"namespace,omitempty"`
 	Name      string `json:"name,omitempty"`
@@ -198,7 +200,7 @@ func (w *WorkspaceChoice) Equal(o *WorkspaceChoice) bool {
 	return *w == *o
 }
 
-// String renders the choice for logs: "" for nil, "none", or
+// String renders the choice for logs: "" for nil, "none", "name", or
 // "namespace/name".
 func (w *WorkspaceChoice) String() string {
 	switch {
@@ -206,6 +208,8 @@ func (w *WorkspaceChoice) String() string {
 		return ""
 	case w.None:
 		return "none"
+	case w.Namespace == "":
+		return w.Name
 	default:
 		return w.Namespace + "/" + w.Name
 	}

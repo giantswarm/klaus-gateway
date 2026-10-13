@@ -195,10 +195,7 @@ func signInClick(user, threadID, responseURL string) interactionPayload {
 	p.User.ID = user
 	p.Channel.ID = "C1"
 	p.ResponseURL = responseURL
-	p.Actions = append(p.Actions, struct {
-		ActionID string `json:"action_id"`
-		Value    string `json:"value"`
-	}{ActionID: oboSignIn, Value: threadID})
+	p.Actions = append(p.Actions, interactionAction{ActionID: oboSignIn, Value: threadID})
 	return p
 }
 

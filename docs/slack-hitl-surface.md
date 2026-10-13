@@ -680,6 +680,51 @@ A conversation is named by its opening message, `<channel>-<ts>`, the same as a 
 one lookup a reply under the bot's own message costs finds either. The record lives in the routing
 store for 30 days after its latest message.
 
+## 15. Workspace (a new thread's Session)
+
+A normal thread message, posted when the initiator's message would start the thread's Session
+and the initiator has workspaces to pick from
+([Selecting a workspace](channels-slack.md#selecting-a-workspace)). The select's options are
+grouped by Organization (`option_groups`, at most 100 workspaces), each labelled with the
+workspace and the age of its last successful sync; an option's `value` is the JSON
+`{"t":"<thread>","w":"<workspace>"}`, the button's `value` the thread. Picking an option is the
+choice: there is no submit. Only the initiator's click counts; anyone else gets an ephemeral
+"Only @…, who started this thread, chooses its workspace." On the choice the message is
+rewritten to the start notice (a context block): "Working in workspace *platform*, chosen by
+@…." or "Working without a workspace, chosen by @….". A workspace the workspace-manager does
+not grant gets the thread note "Cannot start in workspace *secret*: <reason>. Nothing was
+started; pick another workspace or *No workspace*." and the prompt stays. A click on a prompt
+that is no longer open is answered with an ephemeral that it expired, and the message is
+rewritten to say so.
+
+```json
+{
+  "blocks": [
+    { "type": "section", "text": { "type": "mrkdwn", "text": "*Which workspace should this conversation work in?*\nThe agent starts once <@U0INITIATOR> picks one, or *No workspace*. The list shows when each workspace last synced its repositories." } },
+    {
+      "type": "actions",
+      "block_id": "workspace_prompt",
+      "elements": [
+        {
+          "type": "static_select",
+          "action_id": "workspace_select",
+          "placeholder": { "type": "plain_text", "text": "Pick a workspace" },
+          "option_groups": [
+            { "label": { "type": "plain_text", "text": "acme" }, "options": [
+              { "text": { "type": "plain_text", "text": "shop · never synced" }, "value": "{\"t\":\"THREAD_TS\",\"w\":\"shop\"}" }
+            ] },
+            { "label": { "type": "plain_text", "text": "giantswarm" }, "options": [
+              { "text": { "type": "plain_text", "text": "platform · synced 3 h ago" }, "value": "{\"t\":\"THREAD_TS\",\"w\":\"platform\"}" }
+            ] }
+          ]
+        },
+        { "type": "button", "text": { "type": "plain_text", "text": "No workspace" }, "action_id": "workspace_none", "value": "THREAD_TS" }
+      ]
+    }
+  ]
+}
+```
+
 ## Answering: click and reply
 
 On a click, Slack POSTs a `block_actions` payload to `/channels/slack/interactions`. The

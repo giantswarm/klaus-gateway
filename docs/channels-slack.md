@@ -322,6 +322,42 @@ creates one, which a turn that switches agents does mid-thread.
   there silences nothing, but the mention that ends it still brings the catch-up of what was
   written meanwhile (read with `groups:history`).
 
+### Selecting a workspace
+
+With workspaces on (`workspaces.toolsPrefix`, see [deployment](deployment.md#workspaces)), a
+thread's Session runs in the workspace its initiator picks, or in none. A Session in a
+workspace works in its own directory on the workspace's volume, with the workspace's
+repositories as read-only mirrors beside it.
+
+- **Who is asked, and when.** The initiator's message that would start the thread's Session —
+  no Session bound and no choice recorded yet, and the message carries none itself — lists
+  the initiator's workspaces (`list_workspaces`, as them). With none, or when they cannot be
+  listed, the Session starts without a workspace and nobody is asked (the second case with a
+  note in the thread). Otherwise the message is held and the thread gets one prompt. Nothing
+  is read from the message: a workspace named in its text neither narrows the offer nor
+  picks one.
+- **The prompt.** A select of the workspaces, grouped by Organization, each with how long
+  ago its last sync succeeded ("platform · synced 3 h ago", "never synced"); a workspace
+  being deleted is not offered. Beside it a **No workspace** button. The prompt is a normal
+  message in the thread ([the surface](slack-hitl-surface.md#15-workspace-a-new-threads-session)).
+- **Only the initiator's click counts.** Anyone else's click is answered privately that the
+  choice is the initiator's. A workspace is authorized as the initiator
+  (`authorize_workspace`); its short-lived grant goes to `start_session` with the held
+  message, which is the Session's first turn. A workspace that is not granted (the
+  initiator cannot read some of its repositories, a provider is not connected, it has not
+  synced yet) gets a note in the thread with the reason, starts nothing and leaves the
+  prompt open for another pick. **No workspace** starts the Session without a grant.
+- **After the choice.** The prompt is replaced by the start notice ("Working in workspace
+  *platform*, chosen by @…", or "Working without a workspace…"). The choice is written to
+  the thread's row with its Session (`store.Entry.Workspace`), so the later turns of the
+  thread run on that Session without asking. Messages written while the prompt was open are
+  held with it and follow the first message in order.
+- **Restarts and expiry.** The held messages and the prompt are kept in the thread's row
+  (`held.workspace`), so a click after a restart on a persistent store completes the start.
+  The prompt expires with its held messages after a day; a click on an expired prompt says
+  so, and the next mention asks again. A thread whose Session binding is dropped (a reset,
+  the conversation ended) drops its choice with it, and its next Session asks again.
+
 ### Two auth layers
 
 These are independent; a user can have completed one and not the other.

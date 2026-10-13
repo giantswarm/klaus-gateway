@@ -318,6 +318,51 @@ const logoutFailedNotice = "The sign-out failed: your sign-in could not be remov
 // in the thread clicks an in-thread tool Approve/Deny button.
 const accessDecisionRefusal = "Only the thread owner and the people they allowed can approve or deny this action."
 
+// Workspace prompt (workspace_prompt.go): the select of the initiator's
+// workspaces and the No workspace button a new thread's Session waits on.
+const (
+	workspaceSelectAction  = "workspace_select"
+	workspaceNoneAction    = "workspace_none"
+	workspacePromptBlockID = "workspace_prompt"
+	workspaceNoneLabel     = "No workspace"
+	// workspaceNoOrganization groups the workspaces that name no
+	// Organization.
+	workspaceNoOrganization = "Other"
+)
+
+// workspacePromptText asks the initiator (%s) for the thread's workspace.
+const workspacePromptText = "*Which workspace should this conversation work in?*\nThe agent starts once <@%s> picks one, or *No workspace*. The list shows when each workspace last synced its repositories."
+
+// workspaceChosenNotice replaces the prompt once a workspace (%s) is chosen,
+// by the initiator (%s); workspaceNoneNotice once none is.
+const (
+	workspaceChosenNotice = "Working in workspace *%s*, chosen by <@%s>."
+	workspaceNoneNotice   = "Working without a workspace, chosen by <@%s>."
+)
+
+// workspaceChoiceRefusal answers a click on another person's prompt; %s is
+// the initiator.
+const workspaceChoiceRefusal = "Only <@%s>, who started this thread, chooses its workspace."
+
+// workspacePromptExpiredNotice answers a click on a prompt that is no longer
+// open, and workspacePromptClosedText replaces that prompt.
+const (
+	workspacePromptExpiredNotice = "This workspace choice has expired. Mention me again to start; you will be asked again."
+	workspacePromptClosedText    = "This workspace choice has expired."
+)
+
+// workspaceRefusedNote is the thread note for a workspace (%s) the
+// workspace-manager did not grant, with its reason (%s); the prompt stays
+// open. workspaceCheckFailedNote is the same when it could not be asked.
+const (
+	workspaceRefusedNote     = "Cannot start in workspace *%s*: %s. Nothing was started; pick another workspace or *No workspace*."
+	workspaceCheckFailedNote = "Could not check workspace *%s* right now. Nothing was started; pick it again or choose another."
+)
+
+// workspacesUnavailableNote is the thread note when the initiator's
+// workspaces cannot be listed: the Session starts without one.
+const workspacesUnavailableNote = "Your workspaces could not be listed right now, so this conversation starts without one."
+
 // accessPromptExpiredNotice replaces an access-consent prompt whose thread
 // state this process no longer holds (restart or TTL sweep), so the clicker is
 // not left with a button that silently does nothing.
@@ -751,6 +796,7 @@ const (
 	bkMultiline       = "multiline"
 	bkMaxLength       = "max_length"
 	bkHint            = "hint"
+	bkOptionGroups    = "option_groups"
 )
 
 // Block Kit type values.
