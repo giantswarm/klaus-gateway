@@ -416,7 +416,7 @@ func (a *Adapter) chooseWorkspace(ctx context.Context, threadID string, p *works
 	var grant workspaces.Grant
 	if workspace != "" {
 		var denial *workspaceDenial
-		grant, denial = a.authorizeWorkspace(ctx, initiator, workspace)
+		grant, denial = a.authorizeWorkspace(ctx, initiator, workspace, chooserWorkspaceNotes)
 		if grant.IsZero() {
 			retry := ""
 			if len(denial.connect) > 0 {
@@ -471,13 +471,27 @@ type workspaceDenial struct {
 	connect []workspaces.Connect
 }
 
+// workspaceNotes are the answers to a denial, worded for whoever asked: the
+// refusal naming the workspace and the repositories, the workspace unavailable
+// and why, and the check that could not be made.
+type workspaceNotes struct {
+	refused, unavailable, checkFailed string
+}
+
+// chooserWorkspaceNotes answer the initiator choosing a workspace;
+// collaboratorWorkspaceNotes a collaborator on a thread's workspace.
+var (
+	chooserWorkspaceNotes      = workspaceNotes{workspaceRefusedNote, workspaceUnavailableNote, workspaceCheckFailedNote}
+	collaboratorWorkspaceNotes = workspaceNotes{collaboratorWorkspaceRefusedNote, collaboratorWorkspaceUnavailableNote, collaboratorWorkspaceCheckFailedNote}
+)
+
 // authorizeWorkspace asks the workspace-manager, as slackUser, for a grant on
-// workspace. A zero grant comes with the denial that says why there is none.
-// Repository names reach the log at debug only: a refusal must not tell
-// anyone else which repositories exist.
-func (a *Adapter) authorizeWorkspace(ctx context.Context, slackUser, workspace string) (workspaces.Grant, *workspaceDenial) {
+// workspace. A zero grant comes with the denial that says why there is none,
+// in notes. Repository names reach the log at debug only: a refusal must not
+// tell anyone else which repositories exist.
+func (a *Adapter) authorizeWorkspace(ctx context.Context, slackUser, workspace string, notes workspaceNotes) (workspaces.Grant, *workspaceDenial) {
 	name := escapeMrkdwn(workspace)
-	failed := &workspaceDenial{text: fmt.Sprintf(workspaceCheckFailedNote, name)}
+	failed := &workspaceDenial{text: fmt.Sprintf(notes.checkFailed, name)}
 	if a.OBO == nil {
 		return workspaces.Grant{}, failed
 	}
@@ -504,7 +518,7 @@ func (a *Adapter) authorizeWorkspace(ctx context.Context, slackUser, workspace s
 		for i, r := range auth.Unreadable {
 			repos[i] = "`" + strings.ReplaceAll(r, "`", "'") + "`"
 		}
-		return workspaces.Grant{}, &workspaceDenial{text: fmt.Sprintf(workspaceRefusedNote, name, strings.Join(repos, ", "))}
+		return workspaces.Grant{}, &workspaceDenial{text: fmt.Sprintf(notes.refused, name, strings.Join(repos, ", "))}
 	case workspaces.ConnectRequired:
 		providers := make([]string, len(auth.Connect))
 		for i, c := range auth.Connect {
@@ -529,7 +543,7 @@ func (a *Adapter) authorizeWorkspace(ctx context.Context, slackUser, workspace s
 	if reason == "" {
 		reason = workspaceNotSyncedReason
 	}
-	return workspaces.Grant{}, &workspaceDenial{text: fmt.Sprintf(workspaceUnavailableNote, name, escapeMrkdwn(reason))}
+	return workspaces.Grant{}, &workspaceDenial{text: fmt.Sprintf(notes.unavailable, name, escapeMrkdwn(reason))}
 }
 
 // answerWorkspaceDenial tells user, alone where Slack allows it, why their
@@ -540,19 +554,7 @@ func (a *Adapter) authorizeWorkspace(ctx context.Context, slackUser, workspace s
 func (a *Adapter) answerWorkspaceDenial(ctx context.Context, slackChannel, threadID, user, workspace string, d *workspaceDenial) {
 	client := a.apiClient()
 	if len(d.connect) > 0 {
-		name := escapeMrkdwn(workspace)
-		for _, c := range d.connect {
-			text := fmt.Sprintf(workspaceConnectNote, escapeMrkdwn(c.Provider), name) + workspaceConnectTail
-			var err error
-			if c.URL != "" {
-				err = client.postConnectPrompt(ctx, slackChannel, threadID, user, text, c.Provider, c.URL, c.Provider, false)
-			} else {
-				err = client.postEphemeralText(ctx, slackChannel, user, threadID, text)
-			}
-			if err != nil {
-				a.Logger.Warn("slack: post workspace connect prompt failed", "thread", threadID, "provider", c.Provider, "error", err)
-			}
-		}
+		a.postWorkspaceConnectPrompts(ctx, slackChannel, threadID, user, workspace, d.connect, workspaceConnectTail)
 		return
 	}
 	text := truncateRunes(d.text+workspacePickAgainTail, slackSectionTextMax)
@@ -575,5 +577,25 @@ func (a *Adapter) answerWorkspaceDenial(ctx context.Context, slackChannel, threa
 	}
 	if err != nil {
 		a.Logger.Warn("slack: post workspace refusal failed", "thread", threadID, "error", err)
+	}
+}
+
+// postWorkspaceConnectPrompts asks user, privately in the thread, to connect
+// each provider workspace waits on, with its link when the workspace-manager
+// gave one; tail says how their message goes on.
+func (a *Adapter) postWorkspaceConnectPrompts(ctx context.Context, slackChannel, threadID, user, workspace string, connect []workspaces.Connect, tail string) {
+	client := a.apiClient()
+	name := escapeMrkdwn(workspace)
+	for _, c := range connect {
+		text := fmt.Sprintf(workspaceConnectNote, escapeMrkdwn(c.Provider), name) + tail
+		var err error
+		if c.URL != "" {
+			err = client.postConnectPrompt(ctx, slackChannel, threadID, user, text, c.Provider, c.URL, c.Provider, false)
+		} else {
+			err = client.postEphemeralText(ctx, slackChannel, user, threadID, text)
+		}
+		if err != nil {
+			a.Logger.Warn("slack: post workspace connect prompt failed", "thread", threadID, "provider", c.Provider, "error", err)
+		}
 	}
 }

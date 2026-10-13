@@ -116,6 +116,35 @@ func TestSessionFor_RebindDropsTheWorkspace(t *testing.T) {
 	require.Nil(t, row.Workspace)
 }
 
+// The collaborators the workspace-manager found able to read the thread's
+// workspace stay while the thread keeps it, and go when the turn moves the
+// thread to another workspace or none, or to another agent.
+func TestSessionFor_WorkspaceReadersGoWithTheWorkspace(t *testing.T) {
+	agent := newFakeAgent(a2apkg.NewStatusUpdateEvent(taskInfo, a2apkg.TaskStateCompleted, nil))
+	f, routes := newA2AFacade(agent)
+	readers := func() {
+		t.Helper()
+		require.NoError(t, routes.Update(t.Context(), threadKey, func(e *store.Entry, found bool) bool {
+			e.WorkspaceReaders = []string{"U002"}
+			return found
+		}))
+	}
+
+	runTurn(t, f, withWorkspace(t, slackMsg("hi"), klausDev))
+	readers()
+	runTurn(t, f, slackMsg("and now?"))
+	require.Equal(t, []string{"U002"}, readRow(t, routes).WorkspaceReaders, "the same workspace keeps them")
+
+	runTurn(t, f, withWorkspace(t, slackMsg("elsewhere"), &store.WorkspaceChoice{Namespace: "kagent", Name: "other"}))
+	require.Empty(t, readRow(t, routes).WorkspaceReaders, "another workspace drops them")
+
+	readers()
+	other := slackMsg("you then")
+	other.AgentRef = "kagent/other"
+	runTurn(t, f, other)
+	require.Empty(t, readRow(t, routes).WorkspaceReaders, "a rebind drops them")
+}
+
 // A gateway restart on a durable store keeps the thread's choice and its
 // Session: the next process's turn, which makes no choice, runs on the
 // Session the first one created, and creates none.

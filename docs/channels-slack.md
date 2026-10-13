@@ -375,6 +375,19 @@ repositories as read-only mirrors beside it.
   the thread's row with its Session (`store.Entry.Workspace`), so the later turns of the
   thread run on that Session without asking. Messages written while the prompt was open are
   held with it and follow the first message in order.
+- **Collaborators.** A collaborator's turn runs on the initiator's Session, whose directory
+  holds clones of repositories the initiator may read. Their first turn on a thread with a
+  workspace asks `authorize_workspace` as them on the thread's workspace. A pass is
+  remembered in the thread's row by name (`store.Entry.WorkspaceReaders`, never the grant)
+  while the thread keeps that workspace, so their later turns ask nothing; another workspace,
+  a rebind or a dropped binding forgets it. Anything else is answered to them alone and their
+  turn does not run: a refusal names the workspace and the repositories they cannot read, a
+  provider they have not connected gets the connect prompt and their next message after
+  connecting asks again, and a check that could not be made says so. A refusal is not
+  remembered: their next turn asks again. The initiator's "allowed" on such a thread says
+  the person still needs access to the workspace. Each refusal logs
+  `record=workspace_collaborator_refused` beside the outcome's own record. The initiator and
+  a thread without a workspace are not asked.
 - **Restarts and expiry.** The held messages and the prompt are kept in the thread's row
   (`held.workspace`), so a click after a restart on a persistent store completes the start.
   The prompt expires with its held messages after a day; a click on an expired prompt says

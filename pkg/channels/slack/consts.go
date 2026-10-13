@@ -399,6 +399,22 @@ const (
 	workspaceConnectTail     = " Your message is kept: once connected, pick the workspace again or mention me."
 )
 
+// The answers to a collaborator whose turn on a thread's workspace (the first
+// %s) authorize_workspace did not grant, told to them alone; the turn does not
+// run. collaboratorWorkspaceRefusedNote names the repositories they cannot
+// read (%s), collaboratorWorkspaceUnavailableNote says why the check could
+// not decide (%s), collaboratorWorkspaceCheckFailedNote is the answer when
+// nobody could be asked, and collaboratorWorkspaceConnectTail follows the
+// connect prompt. collaboratorWorkspaceAllowedTail follows the initiator's
+// "allowed" on a thread with a workspace (%s).
+const (
+	collaboratorWorkspaceRefusedNote     = "This thread works in workspace *%s*, which holds repositories you cannot read: %s. The agent does not act on your messages here; mention me in a new thread to start your own."
+	collaboratorWorkspaceUnavailableNote = "Could not check your access to workspace *%s*, which this thread works in: %s. Your message was not passed on; send it again later."
+	collaboratorWorkspaceCheckFailedNote = "Could not check your access to workspace *%s*, which this thread works in, right now. Your message was not passed on; send it again later."
+	collaboratorWorkspaceConnectTail     = " Your message was not passed on: once connected, send it again."
+	collaboratorWorkspaceAllowedTail     = " This thread works in workspace *%s*: the agent acts on their messages once the workspace-manager confirms they can read its repositories."
+)
+
 // workspacesUnavailableNote is the thread note when the initiator's
 // workspaces cannot be listed: the Session starts without one.
 const workspacesUnavailableNote = "Your workspaces could not be listed right now, so this conversation starts without one."
