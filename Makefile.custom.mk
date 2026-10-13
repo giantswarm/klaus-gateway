@@ -38,3 +38,20 @@ ldflags-version:
 	fi
 
 test: ldflags-version
+
+# A released UPGRADE.md heads each section with its version. A stable tag
+# (gitsemver prints no pre-release part) whose UPGRADE.md still has a `## Next`
+# section with content is refused: the change that prepares the release renames
+# it to the version. Release candidates and branch builds are not checked, as
+# every PR adds its notes under `## Next`. The empty `## Next` heading is allowed.
+.PHONY: check-upgrade-notes
+check-upgrade-notes: ## Fails on a stable tag whose UPGRADE.md still has a Next section with content.
+	@if printf '%s' "$(VERSION)" | grep -Eq '^v?[0-9]+\.[0-9]+\.[0-9]+$$'; then \
+		awk 'function flush() { if (head != "" && filled) { printf "UPGRADE.md:%d: %s\n", at, head; bad=1 } head=""; filled=0 } \
+		/^## /{ flush(); if ($$0 ~ /^## Next/) { head=$$0; at=NR; filled = ($$0 !~ /^## Next[[:space:]]*$$/) } next } \
+		head != "" && NF { filled=1 } \
+		END { flush(); exit bad }' UPGRADE.md \
+		|| { echo "$@: UPGRADE.md still has Next sections with content; rename them to $(VERSION)" >&2; exit 1; }; \
+	fi
+
+test: check-upgrade-notes
