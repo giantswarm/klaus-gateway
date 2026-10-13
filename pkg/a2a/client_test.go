@@ -417,32 +417,56 @@ func TestClient_ListAgents_InlineTemplate(t *testing.T) {
 }
 
 // An Agent's runtime is its Harness's: the one harnessRef names, as the
-// HarnessService lists it, or the one spec.harness embeds. Only a claude
-// Harness refuses collaborators. The roster itself never reads Harnesses, so
-// a controller that does not serve HarnessService still offers every agent.
+// HarnessService lists it, or the one spec.harness embeds. Every runtime but
+// kagent's refuses collaborators, as kagent's CreateSessionShare does, and so
+// does a Harness whose runtime the controller does not report. The roster
+// itself never reads Harnesses, so a controller that does not serve
+// HarnessService still offers every agent.
 func TestClient_RefusesCollaborators_ByHarnessRuntime(t *testing.T) {
 	f := newFakeKagent()
 	embedded := agent(t, "embedded-coder", nil, "sre-template", "", readyCondition(true, "Ready", ""))
 	spec := embedded.GetResource().GetValue().GetFields()["spec"].GetStructValue()
 	delete(spec.GetFields(), "harnessRef")
 	spec.GetFields()["harness"] = structValue(t, map[string]any{"claude": map[string]any{}, "workload": map[string]any{"image": "claude"}})
+	embeddedDeclarative := agent(t, "embedded-declarative", nil, "sre-template", "", readyCondition(true, "Ready", ""))
+	spec = embeddedDeclarative.GetResource().GetValue().GetFields()["spec"].GetStructValue()
+	delete(spec.GetFields(), "harnessRef")
+	spec.GetFields()["harness"] = structValue(t, map[string]any{"kagent": map[string]any{}})
 	f.agents = []*apiv1alpha1.Agent{
 		agent(t, "sre-agent", nil, "sre-template", "kagent", readyCondition(true, "Ready", "")),
 		agent(t, "coder", nil, "sre-template", "claude-code", readyCondition(true, "Ready", "")),
+		agent(t, "codex-coder", nil, "sre-template", "codex", readyCondition(true, "Ready", "")),
+		agent(t, "byo-coder", nil, "sre-template", "byo", readyCondition(true, "Ready", "")),
+		agent(t, "unreported", nil, "sre-template", "unreported", readyCondition(true, "Ready", "")),
 		agent(t, "dangling", nil, "sre-template", "gone", readyCondition(true, "Ready", "")),
 		embedded,
+		embeddedDeclarative,
 	}
 	f.templates = []*apiv1alpha1.AgentTemplate{template(t, "sre-template", nil, "")}
-	f.harnesses = []*apiv1alpha1.Harness{harness("kagent", "kagent"), harness("claude-code", pkga2a.HarnessRuntimeClaude)}
+	f.harnesses = []*apiv1alpha1.Harness{
+		harness("kagent", pkga2a.HarnessRuntimeKagent),
+		harness("claude-code", pkga2a.HarnessRuntimeClaude),
+		harness("codex", pkga2a.HarnessRuntimeCodex),
+		harness("byo", pkga2a.HarnessRuntimeBYO),
+		harness("unreported", ""),
+	}
 	client := f.serve(t, pkga2a.Config{})
 	ctx := asUser(t.Context(), userToken)
 
 	agents, err := client.ListAgents(ctx)
 	require.NoError(t, err)
-	require.Len(t, agents, 4)
+	require.Len(t, agents, 8)
 	require.Zero(t, f.callCount("ListHarnesses"), "the roster reads no Harness")
 
-	for ref, want := range map[string]bool{"sre-agent": false, "coder": true, "kagent/embedded-coder": true} {
+	for ref, want := range map[string]bool{
+		"sre-agent":                   false,
+		"coder":                       true,
+		"codex-coder":                 true,
+		"byo-coder":                   true,
+		"unreported":                  true,
+		"kagent/embedded-coder":       true,
+		"kagent/embedded-declarative": false,
+	} {
 		got, err := client.RefusesCollaborators(ctx, ref)
 		require.NoError(t, err, ref)
 		require.Equal(t, want, got, ref)

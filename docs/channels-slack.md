@@ -187,7 +187,8 @@ creates one, which a turn that switches agents does mid-thread.
   without the share or the creator's token the reset is refused and the
   thread is told to start a new one.
 - **An agent whose Harness runs code takes its owner's turns only.** When the Agent's
-  Harness has the `claude` runtime (a coding agent), its workspace carries code as well as
+  Harness has any runtime but `kagent` (`claude` for a coding agent, `codex`, `byo`, or one
+  the controller does not report), its workspace carries code as well as
   data from one turn to the next — a git hook, a Makefile target, a background process —
   and every turn runs as the same user, so a collaborator's turn would run what the
   owner's left behind under the collaborator's credential. A newcomer in such a thread is
@@ -196,8 +197,9 @@ creates one, which a turn that switches agents does mid-thread.
   before, a decision click) is refused the same way before it reaches the agent, and a
   paused task stays for its owner. The runtime is read per such turn through kagent's
   `HarnessService`, as the sender (`collaborators.go`); when it cannot be read, the turn is
-  refused with a note that the agent could not be looked up. Declarative agents keep the
-  grants and the share above.
+  refused with a note that the agent could not be looked up. Agents on the `kagent`
+  runtime keep the grants and the share above; kagent's `CreateSessionShare` refuses a
+  share on any other runtime, so the gateway's rule is the controller's.
 - The agent still sees the session creator in `X-User-Id` on a collaborator's
   turn (kagent#2459), so anything that names the person from that header names
   the initiator.
