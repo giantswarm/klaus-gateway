@@ -18,19 +18,6 @@ const (
 	IconURLAnnotation = "ui.giantswarm.io/icon-url"
 )
 
-// The runtimes a Harness spec selects exactly one of, under the key of the
-// same name: kagent's declarative runtime, and the ones that run code in the
-// Session's workspace (the Claude Code harness of coding agents, Codex, and
-// a bring-your-own image).
-const (
-	HarnessRuntimeKagent = "kagent"
-	HarnessRuntimeCodex  = "codex"
-	HarnessRuntimeClaude = "claude"
-	HarnessRuntimeBYO    = "byo"
-)
-
-var harnessRuntimes = []string{HarnessRuntimeKagent, HarnessRuntimeCodex, HarnessRuntimeClaude, HarnessRuntimeBYO}
-
 // AgentInfo describes one Agent of the served namespace.
 type AgentInfo struct {
 	Name      string
@@ -50,10 +37,6 @@ type AgentInfo struct {
 	// Harness is the name of the Harness spec.harnessRef names; empty when the
 	// Agent embeds its Harness.
 	Harness string
-	// Runtime is the runtime of the Harness the Agent embeds (spec.harness):
-	// kagent, codex, claude or byo. Empty for a referenced Harness, whose
-	// runtime HarnessRuntime reads.
-	Runtime string
 	// Unavailable is empty for a selectable agent. Otherwise it says why the
 	// Agent cannot start a conversation: its Ready condition is not True.
 	Unavailable string
@@ -62,59 +45,6 @@ type AgentInfo struct {
 // Ref is the agent ref ("namespace/name") channels route a conversation with.
 func (a AgentInfo) Ref() string {
 	return a.Namespace + "/" + a.Name
-}
-
-// RefusesCollaborators reports whether only the person whose Session it is may
-// instruct agentRef's agent (RuntimeRefusesCollaborators of its Harness's
-// runtime). The error is HarnessRuntime's.
-func (c *Client) RefusesCollaborators(ctx context.Context, agentRef string) (bool, error) {
-	runtime, err := c.HarnessRuntime(ctx, agentRef)
-	if err != nil {
-		return false, err
-	}
-	return RuntimeRefusesCollaborators(runtime), nil
-}
-
-// RuntimeRefusesCollaborators reports whether a Harness of runtime takes
-// turns from the owner of its Session only: every runtime but kagent's. The
-// others run code in the Session's workspace, so a git hook or a background
-// process one sender's turn leaves would run under the next sender's
-// credential, and kagent's CreateSessionShare refuses to share their
-// Sessions. An empty or unknown runtime refuses too, as the controller does.
-func RuntimeRefusesCollaborators(runtime string) bool {
-	return runtime != HarnessRuntimeKagent
-}
-
-// HarnessRuntime returns the runtime of agentRef's Harness: the embedded
-// one's, or the referenced one's as kagent's HarnessService lists it, read as
-// the caller. The roster does not carry it, so a controller route that does
-// not serve HarnessService costs this lookup and nothing else. A Harness the
-// Agent names and the namespace does not hold is an error.
-func (c *Client) HarnessRuntime(ctx context.Context, agentRef string) (string, error) {
-	info, err := c.Agent(ctx, agentRef)
-	if err != nil {
-		return "", err
-	}
-	if info.Harness == "" {
-		if info.Runtime == "" {
-			return "", fmt.Errorf("a2a: Agent %s names no Harness", info.Ref())
-		}
-		return info.Runtime, nil
-	}
-	callCtx, err := c.serviceCtx(ctx)
-	if err != nil {
-		return "", err
-	}
-	listed, err := c.harnesses.ListHarnesses(callCtx, &apiv1alpha1.ListHarnessesRequest{Namespace: info.Namespace})
-	if err != nil {
-		return "", fmt.Errorf("a2a: list Harnesses in %s: %w", info.Namespace, err)
-	}
-	for _, h := range listed.GetHarnesses() {
-		if h.GetRef().GetName() == info.Harness {
-			return h.GetRuntime(), nil
-		}
-	}
-	return "", fmt.Errorf("a2a: Agent %s names Harness %s, which %s does not hold", info.Ref(), info.Harness, info.Namespace)
 }
 
 // ListAgents returns the selectable Agents of the served namespace: the ones
@@ -313,9 +243,6 @@ func (c *Client) agentInfo(a *apiv1alpha1.Agent, templates map[string]*apiv1alph
 		}
 	}
 	info.Harness = stringAt(nested(spec, "harnessRef"), "name")
-	if info.Harness == "" {
-		info.Runtime = inlineRuntime(nested(spec, "harness"))
-	}
 	if info.IconURL == "" {
 		info.IconURL = c.fallbackIcon(info.Name)
 	}
@@ -324,17 +251,6 @@ func (c *Client) agentInfo(a *apiv1alpha1.Agent, templates map[string]*apiv1alph
 		info.Unavailable = fmt.Sprintf("Agent %s is not ready: %s", info.Name, reason)
 	}
 	return info
-}
-
-// inlineRuntime is the runtime of an embedded Harness spec: the one runtime
-// key it sets. "" for no spec.
-func inlineRuntime(harness map[string]any) string {
-	for _, runtime := range harnessRuntimes {
-		if nested(harness, runtime) != nil {
-			return runtime
-		}
-	}
-	return ""
 }
 
 // readyCondition reads the Ready condition of an Agent's status.conditions:

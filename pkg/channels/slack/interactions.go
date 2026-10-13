@@ -511,8 +511,8 @@ func (a *Adapter) postResumeFailureNote(ctx context.Context, client *slackAPICli
 		return
 	}
 	text := "The decision did not reach the agent. Reply in this thread to try again."
-	if errors.Is(cause, channels.ErrShareUnavailable) {
-		text = shareUnavailableNote
+	if note, ok := shareNote(cause); ok {
+		text = note
 	}
 	if _, err := client.postNote(ctx, slackChannel, text, threadID); err != nil {
 		a.Logger.Warn("slack: post resume failure note failed", "thread", threadID, "error", err)

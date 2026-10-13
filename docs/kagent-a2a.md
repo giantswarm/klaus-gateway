@@ -67,11 +67,10 @@ references:
 The template's `modelConfig` reference backs the `usage` model line through `GetModelConfig`
 (`spec.provider/spec.model`).
 
-The roster does not read Harnesses. Whether anyone but a Session's creator may instruct an agent
-is read on such a turn: the runtime of the Harness the Agent embeds, or of the one `harnessRef`
-names as `ListHarnesses` of its namespace reports it, as the sender. An agent on a `claude` Harness
-takes its owner's turns only; an Agent whose Harness cannot be read, or names one the namespace
-does not hold, refuses the turn too (`RefusesCollaborators` in `pkg/a2a/discovery.go`).
+The gateway reads no Harness. Whether anyone but a Session's creator may instruct an agent is
+the controller's answer to `CreateSessionShare`: a `FailedPrecondition` refusal is
+`*a2a.ShareRefusedError`, whose reason the channel shows (`ShareRefusal` in
+`pkg/a2a/sessions.go`).
 
 ## Conversations: one Session per thread
 

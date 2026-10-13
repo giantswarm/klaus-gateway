@@ -192,11 +192,35 @@ type Share struct {
 	ExpiresAt time.Time
 }
 
+// ShareRefusedError is the controller's refusal to share a Session at all,
+// whoever asks: its agent's Harness may run code a turn leaves behind, or the
+// agent is gone. Reason is the controller's own text, written for the person
+// the refusal is shown to.
+type ShareRefusedError struct {
+	SessionID string
+	Reason    string
+}
+
+func (e *ShareRefusedError) Error() string {
+	return fmt.Sprintf("a2a: share Session %s refused: %s", e.SessionID, e.Reason)
+}
+
+// ShareRefusal returns the controller's reason when err is its refusal to
+// share a Session.
+func ShareRefusal(err error) (string, bool) {
+	var refused *ShareRefusedError
+	if errors.As(err, &refused) {
+		return refused.Reason, true
+	}
+	return "", false
+}
+
 // CreateShare mints a read-write share of the session, which lets a caller
 // other than its creator send and cancel turns on it as themselves. Only the
 // session's creator may create one. A positive ttl asks the controller to
 // expire the share that long after its creation; without one the share lasts
-// until it is revoked or the session deleted.
+// until it is revoked or the session deleted. A session the controller
+// refuses to share is a *ShareRefusedError.
 func (c *Client) CreateShare(ctx context.Context, sessionID string, ttl time.Duration) (Share, error) {
 	callCtx, err := c.serviceCtx(ctx)
 	if err != nil {
@@ -211,8 +235,11 @@ func (c *Client) CreateShare(ctx context.Context, sessionID string, ttl time.Dur
 	}
 	resp, err := c.sessions.CreateSessionShare(callCtx, req)
 	if err != nil {
-		if status.Code(err) == codes.NotFound {
+		switch status.Code(err) {
+		case codes.NotFound:
 			return Share{}, fmt.Errorf("%w: %s", ErrSessionNotFound, sessionID)
+		case codes.FailedPrecondition:
+			return Share{}, &ShareRefusedError{SessionID: sessionID, Reason: status.Convert(err).Message()}
 		}
 		return Share{}, fmt.Errorf("a2a: share Session %s: %w", sessionID, err)
 	}

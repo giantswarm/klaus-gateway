@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 	"github.com/giantswarm/klaus-gateway/pkg/auth/musterlink"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 )
@@ -616,22 +617,25 @@ const (
 // initiator's sign-in, which shares it, has lapsed.
 const shareUnavailableNote = "This conversation belongs to the person who started it, and it can only be opened to you while they are signed in. Ask them to send a message here, which signs them in again if needed, then send yours again."
 
-// collaboratorRefusedNote answers anyone but the conversation's owner in a
-// thread whose agent runs code (any Harness runtime but kagent): its workspace carries what
-// one sender's turn left behind into the next sender's, so nobody else may
-// instruct it there.
-const collaboratorRefusedNote = "This agent works in a workspace that belongs to the person who started this conversation, so only they can instruct it here. Start your own thread to work with it."
-
-// collaboratorCheckFailedNote answers a collaborator's turn whose agent could
-// not be looked up: whether it shares its conversation is unknown, so the
-// message is not passed on.
-const collaboratorCheckFailedNote = "Your message was not passed on: the agent of this conversation could not be looked up, so it is unknown whether it takes messages from anyone but the person who started it. Try again in a minute."
+// shareNote is the note of a collaborator's turn the thread's Session could
+// not be opened to: the controller's reason when it refuses to share the
+// Session, or shareUnavailableNote when the share needs the initiator's
+// sign-in.
+func shareNote(err error) (string, bool) {
+	if reason, refused := pkga2a.ShareRefusal(err); refused {
+		return reason, true
+	}
+	if errors.Is(err, channels.ErrShareUnavailable) {
+		return shareUnavailableNote, true
+	}
+	return "", false
+}
 
 // failureNote is the note of a turn that failed with err before the agent
 // answered: the class's own note, or failedNote when no class names it.
 func failureNote(err error) string {
-	if errors.Is(err, channels.ErrShareUnavailable) {
-		return shareUnavailableNote
+	if note, ok := shareNote(err); ok {
+		return note
 	}
 	switch channels.ClassifyFailure(err) {
 	case channels.FailureTools:
