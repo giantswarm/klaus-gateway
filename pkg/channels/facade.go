@@ -288,7 +288,7 @@ func clearBinding(e *store.Entry, found bool) bool {
 	if !found {
 		return false
 	}
-	e.AgentInstanceID, e.TaskID, e.Resume, e.Share, e.InstanceCreator, e.Workspace, e.WorkspaceReaders = "", "", nil, nil, "", nil, nil
+	e.AgentInstanceID, e.TaskID, e.Resume, e.Share, e.ShareRefusal, e.InstanceCreator, e.Workspace, e.WorkspaceReaders = "", "", nil, nil, nil, "", nil, nil
 	return true
 }
 
@@ -381,6 +381,9 @@ func (f *Facade) sessionFor(ctx context.Context, msg InboundMessage) (string, er
 		left, leftCreator = nil, ""
 		if e.Share != nil && e.Share.InstanceID != session.ID {
 			left, leftCreator, e.Share = e.Share, recordedCreator(*e), nil
+		}
+		if e.ShareRefusal != nil && e.ShareRefusal.InstanceID != session.ID {
+			e.ShareRefusal = nil
 		}
 		if e.AgentInstanceID != session.ID {
 			e.InstanceCreator = creatorID(msg)

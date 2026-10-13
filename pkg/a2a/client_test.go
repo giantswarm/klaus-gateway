@@ -416,86 +416,6 @@ func TestClient_ListAgents_InlineTemplate(t *testing.T) {
 	require.Equal(t, "embedded-model", agents[0].ModelConfig)
 }
 
-// An Agent's runtime is its Harness's: the one harnessRef names, as the
-// HarnessService lists it, or the one spec.harness embeds. Every runtime but
-// kagent's refuses collaborators, as kagent's CreateSessionShare does, and so
-// does a Harness whose runtime the controller does not report. The roster
-// itself never reads Harnesses, so a controller that does not serve
-// HarnessService still offers every agent.
-func TestClient_RefusesCollaborators_ByHarnessRuntime(t *testing.T) {
-	f := newFakeKagent()
-	embedded := agent(t, "embedded-coder", nil, "sre-template", "", readyCondition(true, "Ready", ""))
-	spec := embedded.GetResource().GetValue().GetFields()["spec"].GetStructValue()
-	delete(spec.GetFields(), "harnessRef")
-	spec.GetFields()["harness"] = structValue(t, map[string]any{"claude": map[string]any{}, "workload": map[string]any{"image": "claude"}})
-	embeddedDeclarative := agent(t, "embedded-declarative", nil, "sre-template", "", readyCondition(true, "Ready", ""))
-	spec = embeddedDeclarative.GetResource().GetValue().GetFields()["spec"].GetStructValue()
-	delete(spec.GetFields(), "harnessRef")
-	spec.GetFields()["harness"] = structValue(t, map[string]any{"kagent": map[string]any{}})
-	f.agents = []*apiv1alpha1.Agent{
-		agent(t, "sre-agent", nil, "sre-template", "kagent", readyCondition(true, "Ready", "")),
-		agent(t, "coder", nil, "sre-template", "claude-code", readyCondition(true, "Ready", "")),
-		agent(t, "codex-coder", nil, "sre-template", "codex", readyCondition(true, "Ready", "")),
-		agent(t, "byo-coder", nil, "sre-template", "byo", readyCondition(true, "Ready", "")),
-		agent(t, "unreported", nil, "sre-template", "unreported", readyCondition(true, "Ready", "")),
-		agent(t, "dangling", nil, "sre-template", "gone", readyCondition(true, "Ready", "")),
-		embedded,
-		embeddedDeclarative,
-	}
-	f.templates = []*apiv1alpha1.AgentTemplate{template(t, "sre-template", nil, "")}
-	f.harnesses = []*apiv1alpha1.Harness{
-		harness("kagent", pkga2a.HarnessRuntimeKagent),
-		harness("claude-code", pkga2a.HarnessRuntimeClaude),
-		harness("codex", pkga2a.HarnessRuntimeCodex),
-		harness("byo", pkga2a.HarnessRuntimeBYO),
-		harness("unreported", ""),
-	}
-	client := f.serve(t, pkga2a.Config{})
-	ctx := asUser(t.Context(), userToken)
-
-	agents, err := client.ListAgents(ctx)
-	require.NoError(t, err)
-	require.Len(t, agents, 8)
-	require.Zero(t, f.callCount("ListHarnesses"), "the roster reads no Harness")
-
-	for ref, want := range map[string]bool{
-		"sre-agent":                   false,
-		"coder":                       true,
-		"codex-coder":                 true,
-		"byo-coder":                   true,
-		"unreported":                  true,
-		"kagent/embedded-coder":       true,
-		"kagent/embedded-declarative": false,
-	} {
-		got, err := client.RefusesCollaborators(ctx, ref)
-		require.NoError(t, err, ref)
-		require.Equal(t, want, got, ref)
-	}
-	require.Equal(t, []string{"Bearer " + userToken}, f.lastMD("ListHarnesses").Get("authorization"), "the Harnesses are read as the caller")
-
-	_, err = client.RefusesCollaborators(ctx, "dangling")
-	require.ErrorContains(t, err, "names Harness gone, which kagent does not hold", "an unknown Harness is not taken for a Declarative one")
-	_, err = client.RefusesCollaborators(ctx, "nobody")
-	require.ErrorIs(t, err, pkga2a.ErrAgentUnknown)
-}
-
-// A controller route that does not serve HarnessService fails the lookup, not
-// the roster.
-func TestClient_RefusesCollaborators_HarnessServiceUnavailable(t *testing.T) {
-	f := newFakeKagent()
-	f.agents = []*apiv1alpha1.Agent{agent(t, "sre-agent", nil, "sre-template", "kagent", readyCondition(true, "Ready", ""))}
-	f.templates = []*apiv1alpha1.AgentTemplate{template(t, "sre-template", nil, "")}
-	f.harnessesErr = status.Error(codes.Unimplemented, "unknown service kagent.api.v1alpha1.HarnessService")
-	client := f.serve(t, pkga2a.Config{})
-	ctx := asUser(t.Context(), userToken)
-
-	agents, err := client.ListAgents(ctx)
-	require.NoError(t, err)
-	require.Len(t, agents, 1)
-	_, err = client.RefusesCollaborators(ctx, "sre-agent")
-	require.ErrorContains(t, err, "list Harnesses in kagent")
-}
-
 // The roster is fetched as the caller and cached; a call without a token,
 // branding a reply, recovering a thread's agent, is served from the cache.
 func TestClient_ListAgents_CacheServesCallsWithoutIdentity(t *testing.T) {
@@ -689,6 +609,27 @@ func TestClient_CreateShare_AsksForAnExpiry(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, time.Hour, f.sharedTTL[0].AsDuration())
 	require.WithinRange(t, share.ExpiresAt, before.Add(time.Hour), time.Now().Add(time.Hour), "the controller's expiry is handed back")
+}
+
+// The controller's refusal to share a session reaches the caller as a
+// ShareRefusedError carrying the controller's own text; a session the caller
+// did not create stays ErrSessionNotFound.
+func TestClient_CreateShare_RefusedByTheController(t *testing.T) {
+	const reason = "This Session cannot be shared: its agent runs code from each turn. Ask the others to start a Session of their own."
+	f := readyFake(t)
+	f.shareRefusal = reason
+	client := f.serve(t, pkga2a.Config{})
+
+	_, err := client.CreateShare(asUser(t.Context(), userToken), sessionID, time.Hour)
+	got, refused := pkga2a.ShareRefusal(err)
+	require.True(t, refused, "got %v", err)
+	require.Equal(t, reason, got)
+	require.False(t, pkga2a.IsNotFound(err))
+
+	_, err = client.CreateShare(asUser(t.Context(), "collaborator-jwt"), sessionID, time.Hour)
+	require.True(t, pkga2a.IsNotFound(err), "got %v", err)
+	_, refused = pkga2a.ShareRefusal(err)
+	require.False(t, refused)
 }
 
 // A share token in the context rides on every call as x-share-token, next to

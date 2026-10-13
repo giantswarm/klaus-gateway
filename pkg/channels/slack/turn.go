@@ -66,9 +66,10 @@ func (a *Adapter) runTurn(ctx context.Context, msg channels.InboundMessage, slac
 	}()
 
 	// A turn on a Session that is not the sender's is refused outright when
-	// the agent shares none, or works in a workspace the sender cannot read;
-	// the taken task stays for its owner to resume.
-	if a.refuseCollaborator(ctx, msg, slackChannel, slackUser) || a.refuseCollaboratorWorkspace(ctx, msg, slackChannel, slackUser) {
+	// it works in a workspace the sender cannot read; the taken task stays for
+	// its owner to resume. A Session the controller refuses to share is
+	// refused when the turn asks for its share.
+	if a.refuseCollaboratorWorkspace(ctx, msg, slackChannel, slackUser) {
 		if task != nil {
 			a.storePendingTask(msg.ThreadID, task)
 		}

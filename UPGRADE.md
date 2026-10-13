@@ -9,6 +9,14 @@ that adds notes heads them `## Next — <title>`; the change that prepares a rel
 renames each `Next` to that version, and `make check-upgrade-notes` refuses a
 stable release tag while a `Next` section with content is left.
 
+## Next — kagent decides which Sessions are shared
+
+- A Slack collaborator is refused on an agent only when kagent's `CreateSessionShare` refuses to
+  share its Session; the gateway no longer refuses by the Harness runtime itself. kagent refuses
+  those shares from 1.11.1 on. Install kagent 1.11.1 or later before this release: on an older
+  kagent, a collaborator in a coding agent's thread gets the thread's share and instructs the
+  agent.
+
 ## 4.4.0 — a new thread asks for its workspace
 
 - With `workspaces.toolsPrefix` set, every new Slack thread of a person who has workspaces asks

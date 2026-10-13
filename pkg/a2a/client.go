@@ -152,7 +152,6 @@ type Client struct {
 	a2a       *a2aclient.Client
 	agents    apiv1alpha1.AgentServiceClient
 	templates apiv1alpha1.AgentTemplateServiceClient
-	harnesses apiv1alpha1.HarnessServiceClient
 	sessions  apiv1alpha1.SessionServiceClient
 	models    apiv1alpha1.ModelServiceClient
 	starter   SessionStarter
@@ -247,7 +246,6 @@ func NewClient(conn grpc.ClientConnInterface, cfg Config) (*Client, error) {
 		a2a:          a2aClient,
 		agents:       apiv1alpha1.NewAgentServiceClient(conn),
 		templates:    apiv1alpha1.NewAgentTemplateServiceClient(conn),
-		harnesses:    apiv1alpha1.NewHarnessServiceClient(conn),
 		sessions:     apiv1alpha1.NewSessionServiceClient(conn),
 		models:       apiv1alpha1.NewModelServiceClient(conn),
 		starter:      cfg.Starter,

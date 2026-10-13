@@ -2077,8 +2077,8 @@ func (a *Adapter) postReplayFailureNote(ctx context.Context, slackChannel, threa
 		return
 	}
 	text := "Your message could not be picked up again. Send it again."
-	if errors.Is(cause, channels.ErrShareUnavailable) {
-		text = shareUnavailableNote
+	if note, ok := shareNote(cause); ok {
+		text = note
 	}
 	if _, err := a.apiClient().postNote(ctx, slackChannel, text, threadID); err != nil {
 		a.Logger.Warn("slack: post replay failure note failed", "thread", threadID, "error", err)

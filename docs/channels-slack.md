@@ -186,20 +186,17 @@ creates one, which a turn that switches agents does mid-thread.
   session through the share, the same recovery an initiator's turn runs;
   without the share or the creator's token the reset is refused and the
   thread is told to start a new one.
-- **An agent whose Harness runs code takes its owner's turns only.** When the Agent's
-  Harness has any runtime but `kagent` (`claude` for a coding agent, `codex`, `byo`, or one
-  the controller does not report), its workspace carries code as well as
-  data from one turn to the next — a git hook, a Makefile target, a background process —
-  and every turn runs as the same user, so a collaborator's turn would run what the
-  owner's left behind under the collaborator's credential. A newcomer in such a thread is
-  answered privately "Start your own thread to work with it." and the initiator gets no
-  access prompt; any other turn by someone who is not the Session's creator (a grant from
-  before, a decision click) is refused the same way before it reaches the agent, and a
-  paused task stays for its owner. The runtime is read per such turn through kagent's
-  `HarnessService`, as the sender (`collaborators.go`); when it cannot be read, the turn is
-  refused with a note that the agent could not be looked up. Agents on the `kagent`
-  runtime keep the grants and the share above; kagent's `CreateSessionShare` refuses a
-  share on any other runtime, so the gateway's rule is the controller's.
+- **A Session the controller will not share takes its owner's turns only.** kagent's
+  `CreateSessionShare` (1.11.1 and later) refuses a share of a Session whose Agent's Harness
+  may run code a turn leaves behind (every runtime but `kagent`), or whose Agent is gone,
+  with `FailedPrecondition` and a reason written for the person it is shown to. A
+  collaborator's turn meets that refusal when it asks for the thread's share: the turn is
+  not passed on, and the thread is told the controller's reason. The row records it
+  (`share_refusal`, bound to the session and dropped with the binding), so later
+  collaborator turns are refused from the row, and a newcomer is answered privately with
+  the same reason instead of the initiator getting an access prompt. The gateway reads no
+  Harness and names no runtime: which agents share their Sessions is the controller's
+  decision.
 - The agent still sees the session creator in `X-User-Id` on a collaborator's
   turn (kagent#2459), so anything that names the person from that header names
   the initiator.

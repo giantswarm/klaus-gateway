@@ -22,9 +22,11 @@ func withOwnerAuth(ctx context.Context, msg InboundMessage) context.Context {
 
 // withShare adds the thread's Session share to ctx on a collaborator
 // turn, minting it under OwnerToken when the thread holds none for
-// sessionID. It returns ErrShareUnavailable when the thread holds none and
-// OwnerToken is empty. A share that cannot be minted is logged, and the turn
-// goes out under the sender's token alone for the controller to decide.
+// sessionID. It returns the controller's *pkga2a.ShareRefusedError when it
+// refuses to share the session, and ErrShareUnavailable when the thread holds
+// no share and OwnerToken is empty. A share that cannot be minted for another
+// reason is logged, and the turn goes out under the sender's token alone for
+// the controller to decide.
 func (f *Facade) withShare(ctx context.Context, msg InboundMessage, sessionID string) (context.Context, error) {
 	if !msg.Collaborator || f.Sealer == nil || sessionID == "" {
 		return ctx, nil
@@ -73,7 +75,9 @@ func recordedCreator(entry store.Entry) string {
 
 // shareFor returns the token of the thread's share of sessionID: the one the
 // row holds, or a new one minted under OwnerToken and stored sealed. It
-// returns "" for a session the sender created, and when minting fails.
+// returns "" for a session the sender created, and when minting fails. The
+// controller's refusal to share the session is recorded on the row and
+// returned, then answered from the row without asking the controller again.
 func (f *Facade) shareFor(ctx context.Context, msg InboundMessage, sessionID string) (string, error) {
 	key := threadKey(msg.Channel, msg.ChannelID, msg.ThreadID)
 	entry, ok, err := f.Routes.Get(ctx, key)
@@ -85,6 +89,9 @@ func (f *Facade) shareFor(ctx context.Context, msg InboundMessage, sessionID str
 	if ok {
 		if entry.AgentInstanceID == sessionID && msg.SenderID != "" && msg.SenderID == entry.InstanceCreator {
 			return "", nil
+		}
+		if r := entry.ShareRefusal; r != nil && r.InstanceID == sessionID {
+			return "", &pkga2a.ShareRefusedError{SessionID: sessionID, Reason: r.Reason}
 		}
 		held = entry.Share
 		// Without the creator's token no replacement can be minted, so a
@@ -104,6 +111,12 @@ func (f *Facade) shareFor(ctx context.Context, msg InboundMessage, sessionID str
 	}
 	ownerCtx := withOwnerAuth(ctx, msg)
 	share, err := f.Agent.CreateShare(ownerCtx, sessionID, f.ThreadTTL)
+	if reason, refused := pkga2a.ShareRefusal(err); refused {
+		slog.Info("channels: the controller refuses to share the thread's session, collaborator turn refused", "record", "share_refused",
+			"thread", msg.ThreadID, "session", sessionID, "reason", reason)
+		f.recordShareRefusal(ctx, key, sessionID, reason)
+		return "", err
+	}
 	if err != nil {
 		slog.Warn("channels: share the thread's session failed", "thread", msg.ThreadID, "session", sessionID, "error", err)
 		return "", nil
@@ -162,6 +175,21 @@ func (f *Facade) shareFor(ctx context.Context, msg InboundMessage, sessionID str
 	slog.Info("channels: shared the thread's session with its collaborators", "record", "session_shared",
 		"thread", msg.ThreadID, "session", sessionID, "share", share.ID)
 	return share.Token, nil
+}
+
+// recordShareRefusal stores the controller's refusal to share sessionID on
+// the thread's row, while the row is still bound to it. Best effort: without
+// it the next collaborator turn asks the controller again.
+func (f *Facade) recordShareRefusal(ctx context.Context, key store.Key, sessionID, reason string) {
+	if err := f.Routes.Update(ctx, key, func(e *store.Entry, found bool) bool {
+		if !found || e.AgentInstanceID != sessionID {
+			return false
+		}
+		e.ShareRefusal = &store.ShareRefusal{InstanceID: sessionID, Reason: reason}
+		return true
+	}); err != nil {
+		slog.Warn("channels: store the controller's share refusal failed", "thread", key.ThreadID, "error", err)
+	}
 }
 
 // shareRenewal is how long before its expiry a share is replaced when the

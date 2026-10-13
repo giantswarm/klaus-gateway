@@ -541,3 +541,75 @@ func TestFacade_ExpiredShareLeavesTheBindingAlone(t *testing.T) {
 		require.Equal(t, bound, threadRow(t, routes).AgentInstanceID)
 	})
 }
+
+const shareRefusal = "This Session cannot be shared: its agent runs code from each turn. Ask the others to start a Session of their own."
+
+// The controller's refusal to share the session refuses the collaborator's
+// turn with the controller's reason, and the row records it: the next
+// collaborator turn is refused from the row, without the creator's token and
+// without asking the controller again. The creator's own turns still run.
+func TestFacade_ShareRefusedByTheControllerRefusesCollaboratorTurns(t *testing.T) {
+	agent := newFakeAgent(completedTurn()...)
+	agent.shareErr = &pkga2a.ShareRefusedError{SessionID: "ignored", Reason: shareRefusal}
+	f, routes := newSharingFacade(t, agent)
+	runTurn(t, f, initiatorMsg("open"))
+	streamed := len(agent.streamed)
+
+	_, err := f.SendCompletion(t.Context(), collaboratorMsg("join", ownerJWT))
+	reason, refused := pkga2a.ShareRefusal(err)
+	require.True(t, refused, "got %v", err)
+	require.Equal(t, shareRefusal, reason)
+	require.Len(t, agent.streamed, streamed, "the refused turn is not sent")
+
+	row := threadRow(t, routes)
+	require.Equal(t, &store.ShareRefusal{InstanceID: row.AgentInstanceID, Reason: shareRefusal}, row.ShareRefusal)
+	require.Nil(t, row.Share)
+
+	_, err = f.SendCompletion(t.Context(), collaboratorMsg("again", ""))
+	reason, refused = pkga2a.ShareRefusal(err)
+	require.True(t, refused, "got %v", err)
+	require.Equal(t, shareRefusal, reason)
+	require.Len(t, agent.sharedAs, 1, "the recorded refusal answers without asking the controller")
+
+	runTurn(t, f, initiatorMsg("mine"))
+	require.Len(t, agent.streamed, streamed+1, "the creator's turn runs")
+}
+
+// A refusal is bound to the session it was met on: a rebind to another
+// agent drops it, so the new session's collaborators ask the controller again.
+func TestFacade_RebindDropsTheShareRefusal(t *testing.T) {
+	agent := newFakeAgent(completedTurn()...)
+	agent.shareErr = &pkga2a.ShareRefusedError{Reason: shareRefusal}
+	f, routes := newSharingFacade(t, agent)
+	runTurn(t, f, initiatorMsg("open"))
+	_, err := f.SendCompletion(t.Context(), collaboratorMsg("join", ownerJWT))
+	_, refused := pkga2a.ShareRefusal(err)
+	require.True(t, refused)
+
+	msg := initiatorMsg("other agent")
+	msg.AgentRef = "kagent/other"
+	runTurn(t, f, msg)
+	require.Nil(t, threadRow(t, routes).ShareRefusal)
+
+	agent.mu.Lock()
+	agent.shareErr = nil
+	agent.mu.Unlock()
+	runTurn(t, f, collaboratorMsg("join again", ownerJWT))
+	require.NotEmpty(t, pkga2a.ShareTokenFromContext(agent.streamCtx), "the new session is shared")
+}
+
+// A reset drops the refusal with the session it was met on.
+func TestFacade_ResetSessionDropsTheShareRefusal(t *testing.T) {
+	agent := newFakeAgent(completedTurn()...)
+	agent.shareErr = &pkga2a.ShareRefusedError{Reason: shareRefusal}
+	f, routes := newSharingFacade(t, agent)
+	runTurn(t, f, initiatorMsg("open"))
+	_, err := f.SendCompletion(t.Context(), collaboratorMsg("join", ownerJWT))
+	_, refused := pkga2a.ShareRefusal(err)
+	require.True(t, refused)
+
+	reset, err := f.ResetSession(t.Context(), initiatorMsg("reset"))
+	require.NoError(t, err)
+	require.True(t, reset)
+	require.Nil(t, threadRow(t, routes).ShareRefusal)
+}

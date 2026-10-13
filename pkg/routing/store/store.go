@@ -124,6 +124,11 @@ type Entry struct {
 	// another person act on it as themselves. Bound to AgentInstanceID and
 	// dropped with the binding.
 	Share *Share `json:"share,omitempty"`
+	// ShareRefusal is the controller's refusal to share AgentInstanceID, met
+	// by a collaborator's turn: nobody but the session's creator may instruct
+	// it, so a newcomer is refused at once instead of asking the initiator to
+	// let them in. Bound to AgentInstanceID and dropped with the binding.
+	ShareRefusal *ShareRefusal `json:"share_refusal,omitempty"`
 	// InstanceCreator is the channel user whose token created
 	// AgentInstanceID: the session is theirs, so their turns need no share
 	// and its lifecycle (minting and revoking the share, a reset) runs under
@@ -179,6 +184,14 @@ type Share struct {
 	// ExpiresAt is when the controller stops honouring the token; zero means
 	// never.
 	ExpiresAt time.Time `json:"expires_at,omitzero"`
+}
+
+// ShareRefusal records the controller's refusal to share a Session.
+type ShareRefusal struct {
+	// InstanceID is the Session the controller refused to share.
+	InstanceID string `json:"instance_id"`
+	// Reason is the controller's text, shown to whoever the refusal stops.
+	Reason string `json:"reason"`
 }
 
 // WorkspaceChoice is what a thread chose for its Session's workspace: the
