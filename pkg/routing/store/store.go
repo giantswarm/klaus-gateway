@@ -137,6 +137,11 @@ type Entry struct {
 	// asked yet. Written with the binding and dropped with it, like Share and
 	// InstanceCreator.
 	Workspace *WorkspaceChoice `json:"workspace,omitempty"`
+	// WorkspaceReaders are the users besides the initiator the workspace-manager
+	// found able to read every repository of Workspace: their turns on the
+	// Session pass without asking again. Names only, never a grant. Dropped
+	// with the binding, and whenever Workspace changes.
+	WorkspaceReaders []string `json:"workspace_readers,omitempty"`
 	// Initiator is the user whose mention launched the thread, and Granted the
 	// users that initiator allowed into it. Written by the channel adapter:
 	// the facts it cannot recover after a restart.

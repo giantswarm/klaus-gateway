@@ -590,7 +590,7 @@ func (a *Adapter) handleAskAgentSubmission(ctx context.Context, payload interact
 	var grant workspaces.Grant
 	if workspace.Chosen() {
 		var denial *workspaceDenial
-		if grant, denial = a.authorizeWorkspace(ctx, user, workspace.Name); grant.IsZero() {
+		if grant, denial = a.authorizeWorkspace(ctx, user, workspace.Name, chooserWorkspaceNotes); grant.IsZero() {
 			tail := workspacePickAgainTail
 			if len(denial.connect) > 0 {
 				tail = askAgentWorkspaceConnectTail

@@ -475,7 +475,13 @@ func (a *Adapter) handleAccessDecision(ctx context.Context, slackChannel, thread
 	}
 
 	a.accessPolicy().Grant(ctx, slackChannel, threadID, newcomerID)
-	if err := respondURL(ctx, responseURL, threadID, fmt.Sprintf("<@%s> allowed.", newcomerID)); err != nil {
+	allowed := fmt.Sprintf("<@%s> allowed.", newcomerID)
+	if a.Workspaces.Enabled() && a.gw != nil {
+		if row, ok, err := a.gw.ThreadRecord(ctx, ChannelName, slackChannel, threadID); err == nil && ok && row.Workspace.Chosen() {
+			allowed += fmt.Sprintf(collaboratorWorkspaceAllowedTail, escapeMrkdwn(row.Workspace.Name))
+		}
+	}
+	if err := respondURL(ctx, responseURL, threadID, allowed); err != nil {
 		a.Logger.Warn("slack: update access prompt (allowed) failed", "thread", threadID, "error", err)
 	}
 

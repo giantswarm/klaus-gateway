@@ -38,11 +38,30 @@ var workspaceLinked = map[string]string{"U001": "tok1", "U002": "tok2"}
 // authorize_workspace grants platform and klaus-dev, refuses secret (two
 // repositories the caller cannot read), answers fresh as not synced yet, and
 // asks to connect GitLab for gitlab-ws until the caller is marked connected.
+// A caller marked blind reads none of a workspace's repositories, and one
+// marked unconnected connects GitLab first, whatever the workspace.
 type fakeWorkspaceManager struct {
 	*mustertest.Server
-	mu        sync.Mutex
-	lists     map[string][]any
-	connected map[string]bool
+	mu          sync.Mutex
+	lists       map[string][]any
+	connected   map[string]bool
+	blind       map[string]bool
+	unconnected map[string]bool
+}
+
+// blindTo marks the person behind token unable to read any repository.
+func (wm *fakeWorkspaceManager) blindTo(token string) {
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
+	wm.blind[token] = true
+}
+
+// disconnect marks the person behind token not connected to GitLab, for every
+// workspace.
+func (wm *fakeWorkspaceManager) disconnect(token string) {
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
+	wm.unconnected[token] = true
 }
 
 // connect marks the person behind token connected to GitLab.
@@ -50,11 +69,12 @@ func (wm *fakeWorkspaceManager) connect(token string) {
 	wm.mu.Lock()
 	defer wm.mu.Unlock()
 	wm.connected[token] = true
+	delete(wm.unconnected, token)
 }
 
 func newFakeWorkspaceManager(t *testing.T) *fakeWorkspaceManager {
 	t.Helper()
-	wm := &fakeWorkspaceManager{lists: map[string][]any{}, connected: map[string]bool{}}
+	wm := &fakeWorkspaceManager{lists: map[string][]any{}, connected: map[string]bool{}, blind: map[string]bool{}, unconnected: map[string]bool{}}
 	synced := func(ago time.Duration) map[string]any {
 		return map[string]any{"time": time.Now().Add(-ago).UTC().Format(time.RFC3339), "result": "Succeeded"}
 	}
@@ -78,6 +98,14 @@ func newFakeWorkspaceManager(t *testing.T) *fakeWorkspaceManager {
 		workspaceToolsPrefix + "authorize_workspace": func(call mustertest.Call) mustertest.Answer {
 			name, _ := call.Args["workspace"].(string)
 			token := strings.TrimPrefix(call.Bearer, "Bearer ")
+			wm.mu.Lock()
+			blind, unconnected := wm.blind[token], wm.unconnected[token]
+			wm.mu.Unlock()
+			if blind {
+				name = "secret"
+			} else if unconnected {
+				name = "gitlab-ws"
+			}
 			switch name {
 			case "secret":
 				reason := "you cannot read 2 repositories of workspace secret"
