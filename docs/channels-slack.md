@@ -337,7 +337,8 @@ repositories as read-only mirrors beside it.
   preset to the workspace the person last started the selected agent with from the picker, while
   it is still listed, else to **No workspace**, and a change of agent redraws the picker
   (`views.update`) with that agent's preset. On submit a workspace is authorized as the person
-  before anything is posted; a refusal is answered privately with the reason and the prompt
+  before anything is posted; a denial is answered privately as in the thread below (the
+  unreadable repositories, not synced yet, or each provider's connect link) with the prompt
   quoted back, and nothing starts. The thread then starts with the choice and is not asked. The
   last choice per person and agent is a row of its own in the routing store (channel
   `slack-workspace-pref`, the person and the agent as its key, the name or `none`, never a grant),
@@ -357,10 +358,18 @@ repositories as read-only mirrors beside it.
 - **Only the initiator's click counts.** Anyone else's click is answered privately that the
   choice is the initiator's. A workspace is authorized as the initiator
   (`authorize_workspace`); its short-lived grant goes to `start_session` with the held
-  message, which is the Session's first turn. A workspace that is not granted (the
-  initiator cannot read some of its repositories, a provider is not connected, it has not
-  synced yet) gets a note in the thread with the reason, starts nothing and leaves the
-  prompt open for another pick. **No workspace** starts the Session without a grant.
+  message, which is the Session's first turn. A workspace that is not granted starts
+  nothing: no `start_session`, no binding, the message stays held and the prompt open. The
+  initiator alone is answered in the thread (ephemeral in a channel, so the channel does not
+  learn which repositories exist): a refusal names the workspace and every repository they
+  cannot read; one that has not synced yet says so; both offer **No workspace** again beside
+  the prompt's select. A provider they have not connected gets the connect prompt with each
+  provider's link from the workspace-manager; once connected, their next pick or mention in
+  the thread authorizes it again and starts the Session with the held message, as a sign-in
+  replays a held message. Each outcome logs a `record` (`workspace_granted`,
+  `workspace_refused`, `workspace_connect_required`, `workspace_unavailable`,
+  `workspace_check_failed`); repository names are logged at debug only. **No workspace**
+  starts the Session without a grant.
 - **After the choice.** The prompt is replaced by the start notice ("Working in workspace
   *platform*, chosen by @…", or "Working without a workspace…"). The choice is written to
   the thread's row with its Session (`store.Entry.Workspace`), so the later turns of the

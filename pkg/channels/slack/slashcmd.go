@@ -583,14 +583,19 @@ func (a *Adapter) handleAskAgentSubmission(ctx context.Context, payload interact
 	}
 
 	// A workspace picked in the modal is authorized as the submitter before
-	// anything is posted or claimed, on the thread prompt's path: a refusal
-	// starts nothing and says why, with the prompt handed back.
+	// anything is posted or claimed, on the thread prompt's path: a denial
+	// starts nothing and says why privately, with each provider's connect link
+	// when that is why, and the prompt handed back.
 	workspace := submittedWorkspace(payload.View.State.Values)
 	var grant workspaces.Grant
 	if workspace.Chosen() {
-		var refusal string
-		if grant, refusal = a.authorizeWorkspace(ctx, user, workspace.Name); grant.IsZero() {
-			notify(refusal + fmt.Sprintf(askAgentWorkspacePromptQuote, strings.ReplaceAll(escapeMrkdwn(question), "\n", "\n>")))
+		var denial *workspaceDenial
+		if grant, denial = a.authorizeWorkspace(ctx, user, workspace.Name); grant.IsZero() {
+			tail := workspacePickAgainTail
+			if len(denial.connect) > 0 {
+				tail = askAgentWorkspaceConnectTail
+			}
+			notify(denial.text + tail + fmt.Sprintf(askAgentWorkspacePromptQuote, strings.ReplaceAll(escapeMrkdwn(question), "\n", "\n>")))
 			return
 		}
 	}

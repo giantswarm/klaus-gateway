@@ -179,6 +179,10 @@ const (
 	// after a submission: the modal is gone, so the prompt is handed back,
 	// quoted.
 	askAgentWorkspacePromptQuote = "\nYour prompt:\n>%s"
+	// askAgentWorkspaceConnectTail follows the connect links of a submission
+	// whose workspace waits on a provider: nothing holds the prompt, so the
+	// person starts again once connected.
+	askAgentWorkspaceConnectTail = " Nothing was started; once connected, start again with the workspace."
 	askAgentQuestionLabel        = "Prompt"
 	askAgentQuestionPlaceholder  = "What should the agent look into?"
 	// askAgentDefaultHint sits under the agent select when the default agent
@@ -374,12 +378,25 @@ const (
 	workspacePromptClosedText    = "This workspace choice has expired."
 )
 
-// workspaceRefusedNote is the thread note for a workspace (%s) the
-// workspace-manager did not grant, with its reason (%s); the prompt stays
-// open. workspaceCheckFailedNote is the same when it could not be asked.
+// The answers to a workspace (the first %s) authorize_workspace did not grant,
+// told to the initiator alone; the choice stays open and nothing starts.
+// workspaceRefusedNote names the repositories they cannot read (%s);
+// workspaceUnavailableNote says why no Session can start on it yet (%s),
+// workspaceNotSyncedReason when the workspace-manager gives no reason;
+// workspaceConnectNote asks them to connect a provider (%s) first, and
+// workspaceConnectLink is its link (%s) and name (%s) in a private notice;
+// workspaceCheckFailedNote is the answer when nobody could be asked.
+// workspacePickAgainTail offers the choice again, and workspaceConnectTail
+// says how the held message goes on once connected.
 const (
-	workspaceRefusedNote     = "Cannot start in workspace *%s*: %s. Nothing was started; pick another workspace or *No workspace*."
-	workspaceCheckFailedNote = "Could not check workspace *%s* right now. Nothing was started; pick it again or choose another."
+	workspaceRefusedNote     = "You cannot start in workspace *%s*: you cannot read %s."
+	workspaceUnavailableNote = "Cannot start in workspace *%s* yet: %s."
+	workspaceNotSyncedReason = "it has not synced yet"
+	workspaceConnectNote     = "Connect *%s* first, so the agent can work in workspace *%s* as you."
+	workspaceConnectLink     = " <%s|Connect %s>"
+	workspaceCheckFailedNote = "Could not check workspace *%s* right now."
+	workspacePickAgainTail   = " Nothing was started; pick another workspace or *No workspace*."
+	workspaceConnectTail     = " Your message is kept: once connected, pick the workspace again or mention me."
 )
 
 // workspacesUnavailableNote is the thread note when the initiator's
