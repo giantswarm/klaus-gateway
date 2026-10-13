@@ -35,16 +35,26 @@ var workspaceLinked = map[string]string{"U001": "tok1", "U002": "tok2"}
 
 // fakeWorkspaceManager is the workspace-manager behind a fake muster:
 // list_workspaces answers each caller's workspaces by bearer token, and
-// authorize_workspace grants platform and klaus-dev and refuses secret.
+// authorize_workspace grants platform and klaus-dev, refuses secret (two
+// repositories the caller cannot read), answers fresh as not synced yet, and
+// asks to connect GitLab for gitlab-ws until the caller is marked connected.
 type fakeWorkspaceManager struct {
 	*mustertest.Server
-	mu    sync.Mutex
-	lists map[string][]any
+	mu        sync.Mutex
+	lists     map[string][]any
+	connected map[string]bool
+}
+
+// connect marks the person behind token connected to GitLab.
+func (wm *fakeWorkspaceManager) connect(token string) {
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
+	wm.connected[token] = true
 }
 
 func newFakeWorkspaceManager(t *testing.T) *fakeWorkspaceManager {
 	t.Helper()
-	wm := &fakeWorkspaceManager{lists: map[string][]any{}}
+	wm := &fakeWorkspaceManager{lists: map[string][]any{}, connected: map[string]bool{}}
 	synced := func(ago time.Duration) map[string]any {
 		return map[string]any{"time": time.Now().Add(-ago).UTC().Format(time.RFC3339), "result": "Succeeded"}
 	}
@@ -67,13 +77,26 @@ func newFakeWorkspaceManager(t *testing.T) *fakeWorkspaceManager {
 		},
 		workspaceToolsPrefix + "authorize_workspace": func(call mustertest.Call) mustertest.Answer {
 			name, _ := call.Args["workspace"].(string)
-			if name == "secret" {
-				reason := "you cannot read 1 repository of workspace secret: giantswarm/vault"
+			token := strings.TrimPrefix(call.Bearer, "Bearer ")
+			switch name {
+			case "secret":
+				reason := "you cannot read 2 repositories of workspace secret"
 				return mustertest.Answer{Text: reason, Structured: map[string]any{"workspace": name, "outcome": "refused", "reason": reason,
-					"unreadable": []any{"giantswarm/vault"}}}
+					"unreadable": []any{"giantswarm/vault", "giantswarm/keys"}}}
+			case "fresh":
+				reason := "workspace fresh has not synced yet"
+				return mustertest.Answer{Text: reason, Structured: map[string]any{"workspace": name, "outcome": "refused", "reason": reason}}
+			case "gitlab-ws":
+				wm.mu.Lock()
+				connected := wm.connected[token]
+				wm.mu.Unlock()
+				if !connected {
+					return mustertest.Answer{Structured: map[string]any{"workspace": name, "outcome": "connect_required", "reason": "connect gitlab first",
+						"connect": []any{map[string]any{"provider": "gitlab", "url": "https://wm.example/connect/gitlab"}}}}
+				}
 			}
 			return mustertest.Answer{Structured: map[string]any{"workspace": name, "outcome": "granted",
-				"grant":     "grant-of-" + name + "-for-" + strings.TrimPrefix(call.Bearer, "Bearer "),
+				"grant":     "grant-of-" + name + "-for-" + token,
 				"expiresAt": time.Now().Add(5 * time.Minute).UTC().Format(time.RFC3339)}}
 		},
 	}
@@ -345,7 +368,7 @@ func TestWorkspace_OnlyTheInitiatorChoosesAndARefusalKeepsThePrompt(t *testing.T
 
 	sendWorkspaceClick(t, srv, "U001", "100.000", "secret")
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Cannot start in workspace *secret*: you cannot read 1 repository of workspace secret: giantswarm/vault.")
+		return strings.Contains(allText(fake.pathCalls("chat.postEphemeral")), "You cannot start in workspace *secret*: you cannot read `giantswarm/vault`, `giantswarm/keys`.")
 	}, flowWait, 20*time.Millisecond)
 	require.Empty(t, captured(), "a refusal starts nothing")
 

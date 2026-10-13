@@ -725,8 +725,21 @@ choice: there is no submit. Only the initiator's click counts; anyone else gets 
 "Only @…, who started this thread, chooses its workspace." On the choice the message is
 rewritten to the start notice (a context block): "Working in workspace *platform*, chosen by
 @…." or "Working without a workspace, chosen by @….". A workspace the workspace-manager does
-not grant gets the thread note "Cannot start in workspace *secret*: <reason>. Nothing was
-started; pick another workspace or *No workspace*." and the prompt stays. A click on a prompt
+not grant starts nothing, the prompt stays, and the initiator alone (an ephemeral in a channel,
+a thread reply in a DM) is answered by the outcome:
+
+- **Refused:** "You cannot start in workspace *secret*: you cannot read `giantswarm/vault`,
+  `giantswarm/keys`. Nothing was started; pick another workspace or *No workspace*." with a
+  **No workspace** button (`workspace_none`, the thread as its `value`).
+- **Not synced yet** (or otherwise unavailable): "Cannot start in workspace *fresh* yet: <the
+  workspace-manager's reason, else it has not synced yet>. Nothing was started; …" with the same button.
+- **A provider not connected:** the connect prompt (section on connectors, `connector_connect` URL
+  button to the workspace-manager's `connect_provider` link), one per provider: "Connect *gitlab*
+  first, so the agent can work in workspace *gitlab-ws* as you. Your message is kept: once
+  connected, pick the workspace again or mention me." The initiator's next pick or mention in the
+  thread authorizes it again and starts the Session with the held message.
+
+A click on a prompt
 that is no longer open is answered with an ephemeral that it expired, and the message is
 rewritten to say so.
 

@@ -36,6 +36,9 @@ type workspacePrompt struct {
 	PromptTS     string        `json:"prompt_ts,omitempty"`
 	Messages     []heldMessage `json:"messages"`
 	StoredAt     time.Time     `json:"stored_at"`
+	// Retry is the workspace that waited on a provider the initiator had not
+	// connected: their next mention chooses it again.
+	Retry string `json:"retry,omitempty"`
 
 	choosing bool
 }
@@ -70,6 +73,15 @@ func (a *Adapter) holdForWorkspace(ctx context.Context, msg channels.InboundMess
 			a.notifyParkedDrop(ctx, slackChannel, msg.ThreadID, slackUser)
 		}
 		a.persistHeld(slackChannel, msg.ThreadID)
+		// A mention of the initiator retries the workspace that waited on a
+		// provider they connect, as their sign-in retries a held message. It
+		// runs beside this message's slot, which the start waits for.
+		if p := a.openWorkspacePrompt(msg.ThreadID); p != nil && slackUser == p.Initiator {
+			if retry := a.workspaceRetry(msg.ThreadID, p); retry != "" {
+				a.Logger.Info("slack: workspace retried on a mention", "thread", msg.ThreadID, "user", slackUser, "workspace", retry)
+				a.background(func(ctx context.Context) { a.chooseWorkspace(ctx, msg.ThreadID, p, retry) })
+			}
+		}
 		return true
 	}
 	if slackUser != initiator {
@@ -223,13 +235,27 @@ func (a *Adapter) claimWorkspacePrompt(threadID string, p *workspacePrompt) (fir
 }
 
 // unclaimWorkspacePrompt gives first back to p after a choice that could not
-// start the Session, so the initiator can pick again.
-func (a *Adapter) unclaimWorkspacePrompt(threadID string, p *workspacePrompt, first heldMessage) {
+// start the Session, so the initiator can pick again; retry is the workspace
+// their next mention tries again, "" for none.
+func (a *Adapter) unclaimWorkspacePrompt(threadID string, p *workspacePrompt, first heldMessage, retry string) {
 	a.withThread(threadID, func(st *threadState) {
 		p.choosing = false
+		p.Retry = retry
 		p.Messages = append([]heldMessage{first}, p.Messages...)
 	})
 	a.persistHeld(p.SlackChannel, threadID)
+}
+
+// workspaceRetry is the workspace the open prompt p retries on a mention of
+// its initiator, "" when there is none or a choice is under way.
+func (a *Adapter) workspaceRetry(threadID string, p *workspacePrompt) string {
+	retry := ""
+	a.withThread(threadID, func(st *threadState) {
+		if st.workspace == p && !p.choosing {
+			retry = p.Retry
+		}
+	})
+	return retry
 }
 
 // offeredWorkspaces are the workspaces a Session can be started on, by
@@ -371,6 +397,16 @@ func (a *Adapter) handleWorkspaceChoice(ctx context.Context, payload interaction
 		}
 		return
 	}
+	a.chooseWorkspace(ctx, threadID, p, workspace)
+}
+
+// chooseWorkspace makes the initiator's choice on the open prompt p: a
+// workspace, or none (workspace ""). A workspace is authorized as them first;
+// a denial is answered to them, leaves the prompt open and starts nothing, and
+// one that waits on a provider they connect is retried on their next mention.
+func (a *Adapter) chooseWorkspace(ctx context.Context, threadID string, p *workspacePrompt, workspace string) {
+	client := a.apiClient()
+	initiator := p.Initiator
 	first, ok := a.claimWorkspacePrompt(threadID, p)
 	if !ok {
 		return
@@ -379,22 +415,25 @@ func (a *Adapter) handleWorkspaceChoice(ctx context.Context, payload interaction
 	choice := &store.WorkspaceChoice{None: true}
 	var grant workspaces.Grant
 	if workspace != "" {
-		var refusal string
-		grant, refusal = a.authorizeWorkspace(ctx, clicker, workspace)
+		var denial *workspaceDenial
+		grant, denial = a.authorizeWorkspace(ctx, initiator, workspace)
 		if grant.IsZero() {
-			a.unclaimWorkspacePrompt(threadID, p, first)
-			if _, err := client.postNote(ctx, p.SlackChannel, refusal, threadID); err != nil {
-				a.Logger.Warn("slack: post workspace refusal failed", "thread", threadID, "error", err)
+			retry := ""
+			if len(denial.connect) > 0 {
+				retry = workspace
 			}
+			a.unclaimWorkspacePrompt(threadID, p, first, retry)
+			a.Logger.Info("slack: workspace choice started nothing", "thread", threadID, "user", initiator, "workspace", workspace)
+			a.answerWorkspaceDenial(ctx, p.SlackChannel, threadID, initiator, workspace, denial)
 			return
 		}
 		choice = &store.WorkspaceChoice{Name: workspace}
 	}
-	a.Logger.Info("slack: workspace chosen", "thread", threadID, "user", clicker, "workspace", choice.String())
+	a.Logger.Info("slack: workspace chosen", "record", "workspace_chosen", "thread", threadID, "user", initiator, "workspace", choice.String())
 
-	notice := fmt.Sprintf(workspaceNoneNotice, clicker)
+	notice := fmt.Sprintf(workspaceNoneNotice, initiator)
 	if choice.Chosen() {
-		notice = fmt.Sprintf(workspaceChosenNotice, escapeMrkdwn(workspace), clicker)
+		notice = fmt.Sprintf(workspaceChosenNotice, escapeMrkdwn(workspace), initiator)
 	}
 	if p.PromptTS != "" {
 		if err := client.chatUpdate(ctx, p.SlackChannel, p.PromptTS, notice, []any{contextBlock(notice)}); err != nil {
@@ -424,33 +463,117 @@ func (a *Adapter) replayHeld(ctx context.Context, threadID string, msg channels.
 	}
 }
 
+// workspaceDenial is why a workspace choice starts nothing: the answer for the
+// person, without the way on, and the providers they connect first when that
+// is why.
+type workspaceDenial struct {
+	text    string
+	connect []workspaces.Connect
+}
+
 // authorizeWorkspace asks the workspace-manager, as slackUser, for a grant on
-// workspace. A zero grant comes with the thread note that says why there is
-// none.
-func (a *Adapter) authorizeWorkspace(ctx context.Context, slackUser, workspace string) (workspaces.Grant, string) {
+// workspace. A zero grant comes with the denial that says why there is none.
+// Repository names reach the log at debug only: a refusal must not tell
+// anyone else which repositories exist.
+func (a *Adapter) authorizeWorkspace(ctx context.Context, slackUser, workspace string) (workspaces.Grant, *workspaceDenial) {
 	name := escapeMrkdwn(workspace)
+	failed := &workspaceDenial{text: fmt.Sprintf(workspaceCheckFailedNote, name)}
 	if a.OBO == nil {
-		return workspaces.Grant{}, fmt.Sprintf(workspaceCheckFailedNote, name)
+		return workspaces.Grant{}, failed
 	}
 	token, err := a.OBO.TokenFor(ctx, slackUser)
 	if err != nil {
-		a.Logger.Warn("slack: token for workspace authorization unavailable", "user", slackUser, "error", err)
-		return workspaces.Grant{}, tokenErrorNotice
+		a.Logger.Warn("slack: token for workspace authorization unavailable", "record", "workspace_check_failed", "user", slackUser, "error", err)
+		return workspaces.Grant{}, &workspaceDenial{text: tokenErrorNotice}
 	}
 	actx, cancel := context.WithTimeout(ctx, workspaceAuthorizeTimeout)
 	defer cancel()
 	auth, err := a.Workspaces.Authorize(actx, token, workspace)
 	if err != nil {
-		a.Logger.Warn("slack: workspace authorization failed", "user", slackUser, "workspace", workspace, "error", err)
-		return workspaces.Grant{}, fmt.Sprintf(workspaceCheckFailedNote, name)
+		a.Logger.Warn("slack: workspace authorization failed", "record", "workspace_check_failed", "user", slackUser, "workspace", workspace, "error", err)
+		return workspaces.Grant{}, failed
 	}
-	if auth.Outcome == workspaces.Granted {
-		return auth.Grant, ""
+	switch auth.Outcome {
+	case workspaces.Granted:
+		a.Logger.Info("slack: workspace granted", "record", "workspace_granted", "user", slackUser, "workspace", workspace)
+		return auth.Grant, nil
+	case workspaces.Refused:
+		a.Logger.Info("slack: workspace refused", "record", "workspace_refused", "user", slackUser, "workspace", workspace, "unreadable", len(auth.Unreadable))
+		a.Logger.Debug("slack: workspace refused", "record", "workspace_refused", "user", slackUser, "workspace", workspace, "repositories", auth.Unreadable)
+		repos := make([]string, len(auth.Unreadable))
+		for i, r := range auth.Unreadable {
+			repos[i] = "`" + strings.ReplaceAll(r, "`", "'") + "`"
+		}
+		return workspaces.Grant{}, &workspaceDenial{text: fmt.Sprintf(workspaceRefusedNote, name, strings.Join(repos, ", "))}
+	case workspaces.ConnectRequired:
+		providers := make([]string, len(auth.Connect))
+		for i, c := range auth.Connect {
+			providers[i] = c.Provider
+		}
+		a.Logger.Info("slack: workspace needs a provider connected", "record", "workspace_connect_required", "user", slackUser, "workspace", workspace, "providers", providers)
+		var text strings.Builder
+		for _, c := range auth.Connect {
+			if text.Len() > 0 {
+				text.WriteString(" ")
+			}
+			fmt.Fprintf(&text, workspaceConnectNote, escapeMrkdwn(c.Provider), name)
+			if c.URL != "" {
+				fmt.Fprintf(&text, workspaceConnectLink, c.URL, escapeMrkdwn(c.Provider))
+			}
+		}
+		return workspaces.Grant{}, &workspaceDenial{text: text.String(), connect: auth.Connect}
 	}
-	a.Logger.Info("slack: workspace not granted", "user", slackUser, "workspace", workspace, "outcome", auth.Outcome.String())
+	a.Logger.Info("slack: workspace unavailable", "record", "workspace_unavailable", "user", slackUser, "workspace", workspace)
+	a.Logger.Debug("slack: workspace unavailable", "record", "workspace_unavailable", "user", slackUser, "workspace", workspace, "reason", auth.Reason)
 	reason := strings.TrimSuffix(strings.TrimSpace(auth.Reason), ".")
 	if reason == "" {
-		reason = auth.Outcome.String()
+		reason = workspaceNotSyncedReason
 	}
-	return workspaces.Grant{}, fmt.Sprintf(workspaceRefusedNote, name, escapeMrkdwn(reason))
+	return workspaces.Grant{}, &workspaceDenial{text: fmt.Sprintf(workspaceUnavailableNote, name, escapeMrkdwn(reason))}
+}
+
+// answerWorkspaceDenial tells user, alone where Slack allows it, why their
+// choice of workspace started nothing, in the thread. Providers to connect get
+// the connect prompt, one per provider, and the held message waits for the
+// next click or mention; any other denial offers the choice again: the
+// prompt's select stays open above, and the answer carries No workspace.
+func (a *Adapter) answerWorkspaceDenial(ctx context.Context, slackChannel, threadID, user, workspace string, d *workspaceDenial) {
+	client := a.apiClient()
+	if len(d.connect) > 0 {
+		name := escapeMrkdwn(workspace)
+		for _, c := range d.connect {
+			text := fmt.Sprintf(workspaceConnectNote, escapeMrkdwn(c.Provider), name) + workspaceConnectTail
+			var err error
+			if c.URL != "" {
+				err = client.postConnectPrompt(ctx, slackChannel, threadID, user, text, c.Provider, c.URL, c.Provider, false)
+			} else {
+				err = client.postEphemeralText(ctx, slackChannel, user, threadID, text)
+			}
+			if err != nil {
+				a.Logger.Warn("slack: post workspace connect prompt failed", "thread", threadID, "provider", c.Provider, "error", err)
+			}
+		}
+		return
+	}
+	text := truncateRunes(d.text+workspacePickAgainTail, slackSectionTextMax)
+	blocks := []any{
+		map[string]any{bkType: bkSection, bkText: map[string]any{bkType: bkMrkdwn, bkText: text}},
+		map[string]any{bkType: bkActions, bkElements: []any{map[string]any{
+			bkType:     bkButton,
+			bkText:     map[string]any{bkType: bkPlainText, bkText: workspaceNoneLabel},
+			bkActionID: workspaceNoneAction,
+			bkValue:    threadID,
+		}}},
+	}
+	var err error
+	if isDMChannelID(slackChannel) {
+		// A DM thread has one reader, and only its real replies render in the
+		// assistant pane.
+		_, err = client.postBlocks(ctx, slackChannel, threadID, text, blocks)
+	} else {
+		err = client.postEphemeralBlocks(ctx, slackChannel, user, threadID, text, blocks)
+	}
+	if err != nil {
+		a.Logger.Warn("slack: post workspace refusal failed", "thread", threadID, "error", err)
+	}
 }
