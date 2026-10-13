@@ -18,12 +18,15 @@ type threadState struct {
 	idleWaiters []func()
 	// workspace is the open workspace prompt and the messages it holds.
 	workspace *workspacePrompt
+	// workspaceConnect holds, by collaborator, the messages that wait for them
+	// to connect a provider the thread's workspace needs.
+	workspaceConnect map[string][]heldMessage
 }
 
 // empty reports whether the thread carries no live turn state; an empty entry
 // is dropped from the threads map.
 func (st *threadState) empty() bool {
-	return st.slot == nil && st.pending == nil && len(st.idleWaiters) == 0 && st.workspace == nil
+	return st.slot == nil && st.pending == nil && len(st.idleWaiters) == 0 && st.workspace == nil && len(st.workspaceConnect) == 0
 }
 
 // turnSlot is the state that lives exactly as long as one turn holds the

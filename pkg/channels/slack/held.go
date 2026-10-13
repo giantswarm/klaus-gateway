@@ -15,8 +15,9 @@ import (
 // in the thread's row (store.Entry.Held) so a gateway restart loses none of
 // it: the messages parked while their sender signs in (Login) or while the
 // initiator decides on them (Access), each by sender in arrival order, the
-// task paused on a prompt (Pending), and the workspace prompt with the
-// messages it holds (Workspace). Every entry keeps the time it was stored,
+// task paused on a prompt (Pending), the workspace prompt with the messages it
+// holds (Workspace), and the messages of collaborators who connect a provider
+// the thread's workspace needs first (WorkspaceConnect), each by sender. Every entry keeps the time it was stored,
 // so pendingTTL runs on across a restart.
 //
 // The process's maps stay the working copy; the row is written after every
@@ -27,7 +28,8 @@ type heldState struct {
 	Pending *heldTask                `json:"pending,omitempty"`
 	// Workspace keeps its messages in arrival order, the thread's first one
 	// first.
-	Workspace *workspacePrompt `json:"workspace,omitempty"`
+	Workspace        *workspacePrompt         `json:"workspace,omitempty"`
+	WorkspaceConnect map[string][]heldMessage `json:"workspace_connect,omitempty"`
 }
 
 // heldMessage is a parked message as the row keeps it.
@@ -44,7 +46,7 @@ type heldTask struct {
 }
 
 func (h heldState) empty() bool {
-	return len(h.Login) == 0 && len(h.Access) == 0 && h.Pending == nil && h.Workspace == nil
+	return len(h.Login) == 0 && len(h.Access) == 0 && h.Pending == nil && h.Workspace == nil && len(h.WorkspaceConnect) == 0
 }
 
 // marshal encodes h for the row; nil when it holds nothing, so the row drops
@@ -104,6 +106,12 @@ func (a *Adapter) heldSnapshot(threadID string) heldState {
 			p := *st.workspace
 			p.Messages = slices.Clone(p.Messages)
 			h.Workspace = &p
+		}
+		for user, held := range st.workspaceConnect {
+			if h.WorkspaceConnect == nil {
+				h.WorkspaceConnect = make(map[string][]heldMessage)
+			}
+			h.WorkspaceConnect[user] = slices.Clone(held)
 		}
 	}
 	a.threadsMu.Unlock()
@@ -246,6 +254,19 @@ func (a *Adapter) restoreHeld(ctx context.Context) {
 				if st.workspace == nil {
 					st.workspace = p
 				}
+			})
+		}
+
+		for user, held := range h.WorkspaceConnect {
+			held = slices.DeleteFunc(slices.Clone(held), func(m heldMessage) bool { return !fresh(m.StoredAt) })
+			if len(held) == 0 {
+				continue
+			}
+			a.withThread(threadID, func(st *threadState) {
+				if st.workspaceConnect == nil {
+					st.workspaceConnect = make(map[string][]heldMessage)
+				}
+				st.workspaceConnect[user] = lastN(append(held, st.workspaceConnect[user]...), maxParkedPerThread)
 			})
 		}
 

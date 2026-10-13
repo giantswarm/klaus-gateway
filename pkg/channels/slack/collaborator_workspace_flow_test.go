@@ -1,7 +1,10 @@
 package slack_test
 
 import (
+	"context"
+	"fmt"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -71,6 +74,15 @@ func (f *collaboratorFlow) ephemerals(user string) []recordedCall {
 	return out
 }
 
+// waitHeld waits until the thread's row holds text for a collaborator's connect.
+func (f *collaboratorFlow) waitHeld(t *testing.T, text string) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		held := string(f.row(t).Held)
+		return strings.Contains(held, "workspace_connect") && strings.Contains(held, text)
+	}, flowWait, 20*time.Millisecond, "the thread's row holds %q", text)
+}
+
 func (f *collaboratorFlow) row(t *testing.T) store.Entry {
 	t.Helper()
 	row, ok, err := f.facade.ThreadRecord(t.Context(), "slack", "C1", "100.000")
@@ -133,26 +145,83 @@ func TestCollaboratorWorkspace_RefusedPrivatelyAndNoTurnRuns(t *testing.T) {
 }
 
 // A collaborator who has not connected the workspace's provider gets the
-// connect prompt and no turn; once connected, their next message runs.
-func TestCollaboratorWorkspace_ConnectPromptThenTheNextMessageRuns(t *testing.T) {
+// connect prompt and no turn; their message is held, and once connected their
+// next mention runs it first, then itself, without a resend.
+func TestCollaboratorWorkspace_ConnectPromptThenTheHeldMessageRuns(t *testing.T) {
 	f := newCollaboratorFlow(t, "platform")
 	f.wm.disconnect("tok2")
 
 	f.allow(t)
 	require.Eventually(t, func() bool { return len(f.ephemerals("U002")) == 2 }, flowWait, 20*time.Millisecond)
 	prompt := allBlockText(f.ephemerals("U002")[1:])
-	require.Contains(t, prompt, "Connect *gitlab* first, so the agent can work in workspace *platform* as you. Your message was not passed on: once connected, send it again.")
+	require.Contains(t, prompt, "Connect *gitlab* first, so the agent can work in workspace *platform* as you. Your message is kept for a day: once connected, mention me here and it runs.")
 	require.Contains(t, prompt, `"connector_connect"`)
-	waitThreadIdle(t, f.a, "100.000")
+	f.waitHeld(t, "and on staging?")
 	_, _, turns := f.kagent.state()
 	require.Len(t, turns, 1)
 
 	f.wm.connect("tok2")
 	sendEvent(t, f.srv, mention("U002", "<@UBOT> connected now", "102.000", "100.000"))
-	f.waitTurns(t, 2)
+	f.waitTurns(t, 3)
 	_, _, turns = f.kagent.state()
-	require.Contains(t, turns[1], "connected now")
+	require.Contains(t, turns[1], "and on staging?", "the held message runs first")
+	require.Contains(t, turns[2], "connected now")
 	require.Equal(t, []string{"U002"}, f.row(t).WorkspaceReaders)
+	require.Contains(t, f.log.String(), "record=workspace_collaborator_held_run")
+	require.Eventually(t, func() bool { return !strings.Contains(string(f.row(t).Held), "workspace_connect") }, flowWait, 20*time.Millisecond, "nothing held any more")
+}
+
+// A collaborator who never connects has no turn run and loses no message
+// silently: each message of theirs is held behind a connect prompt that says
+// so, past the cap they are told the oldest went, and an answer that drops
+// what is held says so.
+func TestCollaboratorWorkspace_NeverConnectedRunsNothingAndLosesNothingSilently(t *testing.T) {
+	f := newCollaboratorFlow(t, "platform")
+	f.wm.disconnect("tok2")
+
+	f.allow(t)
+	require.Eventually(t, func() bool { return len(f.ephemerals("U002")) == 2 }, flowWait, 20*time.Millisecond)
+	for i := range 5 {
+		sendEvent(t, f.srv, mention("U002", fmt.Sprintf("<@UBOT> still there %d?", i), fmt.Sprintf("10%d.500", 2+i), "100.000"))
+		f.waitHeld(t, fmt.Sprintf("still there %d?", i))
+		waitThreadIdle(t, f.a, "100.000")
+	}
+	require.Eventually(t, func() bool { return len(f.ephemerals("U002")) == 8 }, flowWait, 20*time.Millisecond, "a prompt per message and one drop notice")
+	require.Contains(t, allText(f.ephemerals("U002")), "Only your last 5 messages are held here; earlier ones were dropped.")
+	f.waitHeld(t, "still there 4?")
+	require.NotContains(t, string(f.row(t).Held), "and on staging?", "the oldest went past the cap")
+	_, _, turns := f.kagent.state()
+	require.Len(t, turns, 1, "only the initiator's turn reached the agent")
+
+	f.wm.blindTo("tok2")
+	sendEvent(t, f.srv, mention("U002", "<@UBOT> now?", "108.000", "100.000"))
+	require.Eventually(t, func() bool { return len(f.ephemerals("U002")) == 9 }, flowWait, 20*time.Millisecond)
+	require.Contains(t, allText(f.ephemerals("U002")[8:]), "The messages held while you were asked to connect were not passed on either.")
+	require.Eventually(t, func() bool { return !strings.Contains(string(f.row(t).Held), "workspace_connect") }, flowWait, 20*time.Millisecond)
+	waitThreadIdle(t, f.a, "100.000")
+	_, _, turns = f.kagent.state()
+	require.Len(t, turns, 1)
+}
+
+// A collaborator's held message is kept in the thread's row: after a restart
+// their mention once connected still runs it first.
+func TestCollaboratorWorkspace_HeldMessageSurvivesARestart(t *testing.T) {
+	f := newCollaboratorFlow(t, "platform")
+	f.wm.disconnect("tok2")
+	f.allow(t)
+	f.waitHeld(t, "and on staging?")
+	waitThreadIdle(t, f.a, "100.000")
+	require.NoError(t, f.a.Stop(context.Background()))
+
+	a2, srv2 := newEventsAdapter(t, f.facade, f.fakeURL, withWorkspaces(f.wm), withInfoLog(f.log))
+	a2.RecoverTurns()
+	a2.WaitHeldRestored()
+	f.wm.connect("tok2")
+	sendEvent(t, srv2, mention("U002", "<@UBOT> connected now", "102.000", "100.000"))
+	require.Eventually(t, func() bool { _, _, turns := f.kagent.state(); return len(turns) == 3 }, flowWait, 20*time.Millisecond)
+	_, _, turns := f.kagent.state()
+	require.Contains(t, turns[1], "and on staging?")
+	require.Contains(t, turns[2], "connected now")
 }
 
 // A collaborator in a thread without a workspace is not asked.

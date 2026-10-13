@@ -405,13 +405,17 @@ const (
 // read (%s), collaboratorWorkspaceUnavailableNote says why the check could
 // not decide (%s), collaboratorWorkspaceCheckFailedNote is the answer when
 // nobody could be asked, and collaboratorWorkspaceConnectTail follows the
-// connect prompt. collaboratorWorkspaceAllowedTail follows the initiator's
+// connect prompt, whose message is held for pendingTTL;
+// collaboratorWorkspaceHeldDroppedTail follows any other answer that drops
+// the messages held meanwhile. collaboratorWorkspaceAllowedTail follows the
+// initiator's
 // "allowed" on a thread with a workspace (%s).
 const (
 	collaboratorWorkspaceRefusedNote     = "This thread works in workspace *%s*, which holds repositories you cannot read: %s. The agent does not act on your messages here; mention me in a new thread to start your own."
 	collaboratorWorkspaceUnavailableNote = "Could not check your access to workspace *%s*, which this thread works in: %s. Your message was not passed on; send it again later."
 	collaboratorWorkspaceCheckFailedNote = "Could not check your access to workspace *%s*, which this thread works in, right now. Your message was not passed on; send it again later."
-	collaboratorWorkspaceConnectTail     = " Your message was not passed on: once connected, send it again."
+	collaboratorWorkspaceConnectTail     = " Your message is kept for a day: once connected, mention me here and it runs."
+	collaboratorWorkspaceHeldDroppedTail = " The messages held while you were asked to connect were not passed on either."
 	collaboratorWorkspaceAllowedTail     = " This thread works in workspace *%s*: the agent acts on their messages once the workspace-manager confirms they can read its repositories."
 )
 

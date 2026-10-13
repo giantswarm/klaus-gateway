@@ -382,9 +382,14 @@ repositories as read-only mirrors beside it.
   while the thread keeps that workspace, so their later turns ask nothing; another workspace,
   a rebind or a dropped binding forgets it. Anything else is answered to them alone and their
   turn does not run: a refusal names the workspace and the repositories they cannot read, a
-  provider they have not connected gets the connect prompt and their next message after
-  connecting asks again, and a check that could not be made says so. A refusal is not
-  remembered: their next turn asks again. The initiator's "allowed" on such a thread says
+  provider they have not connected gets the connect prompt, and a check that could not be
+  made says so. A refusal is not remembered: their next turn asks again.
+- **A collaborator connecting.** Behind the connect prompt the collaborator's messages are
+  held for a day, their last five, in the thread's row (`held.workspace_connect`, by person),
+  and the prompt says so; past five they are told the oldest went. Their first turn that
+  passes the check, typically their mention once connected, runs the held messages in order
+  and then itself, logging `record=workspace_collaborator_held_run`. Any other answer drops
+  what is held and says so; a collaborator who never connects has no turn run. The initiator's "allowed" on such a thread says
   the person still needs access to the workspace. Each refusal logs
   `record=workspace_collaborator_refused` beside the outcome's own record. The initiator and
   a thread without a workspace are not asked.
