@@ -44,7 +44,7 @@ func TestAskAgentModal_OptionsCapDedupAndDefault(t *testing.T) {
 	agents[7].DisplayName = ""                    // falls back to the technical name
 	agents[8].DisplayName = strings.Repeat("x", 120)
 
-	view, err := a.askAgentModal(agents, askAgentRequest{Channel: "C1", User: "U1", ResponseURL: "https://hooks/r"})
+	view, err := a.askAgentModal(agents, askAgentRequest{Channel: "C1", User: "U1", ResponseURL: "https://hooks/r"}, nil)
 	require.NoError(t, err)
 
 	labels, values, initial := modalOptions(t, view)
@@ -67,7 +67,7 @@ func TestAskAgentModal_PrefillAndNoDefault(t *testing.T) {
 	a := pickerAdapter("kagent/elsewhere")
 	agents := []pkga2a.AgentInfo{{Name: "sre-agent", Namespace: "kagent", DisplayName: "SRE Agent"}}
 
-	view, err := a.askAgentModal(agents, askAgentRequest{Channel: "C1", User: "U1", Prefill: "  " + strings.Repeat("q", plainTextInputMax+10) + "  "})
+	view, err := a.askAgentModal(agents, askAgentRequest{Channel: "C1", User: "U1", Prefill: "  " + strings.Repeat("q", plainTextInputMax+10) + "  "}, nil)
 	require.NoError(t, err)
 	_, _, initial := modalOptions(t, view)
 	require.Empty(t, initial)
@@ -76,7 +76,7 @@ func TestAskAgentModal_PrefillAndNoDefault(t *testing.T) {
 	question := view[bkBlocks].([]any)[2].(map[string]any)[bkElement].(map[string]any)
 	require.Equal(t, plainTextInputMax, len([]rune(question[bkInitialValue].(string))))
 
-	view, err = a.askAgentModal(agents, askAgentRequest{Channel: "C1", User: "U1", Prefill: "   "})
+	view, err = a.askAgentModal(agents, askAgentRequest{Channel: "C1", User: "U1", Prefill: "   "}, nil)
 	require.NoError(t, err)
 	question = view[bkBlocks].([]any)[2].(map[string]any)[bkElement].(map[string]any)
 	_, has := question[bkInitialValue]
@@ -104,7 +104,7 @@ func TestAskAgentModal_DefaultPastCapIsKept(t *testing.T) {
 	for i := 0; i < modalMaxAgents+3; i++ {
 		agents = append(agents, pkga2a.AgentInfo{Name: fmt.Sprintf("a-%03d", i), Namespace: "kagent"})
 	}
-	view, err := a.askAgentModal(agents, askAgentRequest{Channel: "C1", User: "U1"})
+	view, err := a.askAgentModal(agents, askAgentRequest{Channel: "C1", User: "U1"}, nil)
 	require.NoError(t, err)
 	_, values, initial := modalOptions(t, view)
 	require.Len(t, values, modalMaxAgents)
@@ -140,15 +140,15 @@ func TestAskAgentLead(t *testing.T) {
 func TestAskAgentModal_Preselect(t *testing.T) {
 	a := pickerAdapter("kagent/a")
 	agents := []pkga2a.AgentInfo{{Name: "a", Namespace: "kagent", DisplayName: "A"}, {Name: "b", Namespace: "kagent", DisplayName: "B"}}
-	view, err := a.askAgentModal(agents, askAgentRequest{Channel: "C1", User: "U1", Thread: "1.0", ThreadStarted: true, Preselect: "kagent/b"})
+	view, err := a.askAgentModal(agents, askAgentRequest{Channel: "C1", User: "U1", Thread: "1.0", ThreadStarted: true, Preselect: "kagent/b"}, nil)
 	require.NoError(t, err)
 	_, _, initial := modalOptions(t, view)
 	require.Equal(t, "kagent/b", initial)
-	require.Equal(t, "A is the default for this workspace.", view[bkBlocks].([]any)[1].(map[string]any)[bkHint].(map[string]any)[bkText])
+	require.Equal(t, "A is the default agent.", view[bkBlocks].([]any)[1].(map[string]any)[bkHint].(map[string]any)[bkText])
 
 	// A row posted before its agent left the roster: the default is chosen,
 	// not an empty select.
-	view, err = a.askAgentModal(agents, askAgentRequest{Channel: "C1", User: "U1", Thread: "1.0", ThreadStarted: true, Preselect: "kagent/gone"})
+	view, err = a.askAgentModal(agents, askAgentRequest{Channel: "C1", User: "U1", Thread: "1.0", ThreadStarted: true, Preselect: "kagent/gone"}, nil)
 	require.NoError(t, err)
 	_, _, initial = modalOptions(t, view)
 	require.Equal(t, "kagent/a", initial)

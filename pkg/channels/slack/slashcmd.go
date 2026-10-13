@@ -13,6 +13,7 @@ import (
 
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
+	"github.com/giantswarm/klaus-gateway/pkg/workspaces"
 )
 
 // The native slash command is a second way to open a conversation, next to
@@ -301,6 +302,18 @@ func (a *Adapter) openAgentPicker(ctx context.Context, req askAgentRequest, noti
 			return
 		}
 	}
+	// The person's workspaces are listed beside the roster, under a budget of
+	// their own: a late listing opens the picker without the Workspace
+	// select, and the thread asks instead.
+	type listed struct {
+		ws *modalWorkspaces
+		ok bool
+	}
+	wsc := make(chan listed, 1)
+	go func() {
+		ws, ok := a.pickerWorkspaces(pctx, req.User)
+		wsc <- listed{ws, ok}
+	}()
 	agents, err := a.rosterAgentsBestEffort(pctx)
 	if err != nil {
 		a.Logger.Warn("slack: agent picker roster unavailable", "user", req.User, "error", err)
@@ -318,7 +331,11 @@ func (a *Adapter) openAgentPicker(ctx context.Context, req askAgentRequest, noti
 		notify(agentRosterEmpty)
 		return
 	}
-	view, err := a.askAgentModal(agents, req)
+	var ws *modalWorkspaces
+	if l := <-wsc; l.ok {
+		ws = l.ws
+	}
+	view, err := a.askAgentModal(agents, req, ws)
 	if err != nil {
 		a.Logger.Warn("slack: build agent picker modal failed", "error", err)
 		notify(slashCommandOpenFailedNotice)
@@ -339,8 +356,10 @@ func (a *Adapter) openAgentPicker(ctx context.Context, req askAgentRequest, noti
 // value, the default agent preselected and named in a hint) and a multiline
 // prompt box prefilled with the request's text, if any. A
 // static_select holds at most modalMaxAgents options; a larger roster is cut,
-// with a warning, rather than refused.
-func (a *Adapter) askAgentModal(agents []pkga2a.AgentInfo, req askAgentRequest) (map[string]any, error) {
+// with a warning, rather than refused. With ws, the Workspace select follows
+// the agent select, preset for the selected agent, and the agent select
+// dispatches its changes so the preset can follow them.
+func (a *Adapter) askAgentModal(agents []pkga2a.AgentInfo, req askAgentRequest, ws *modalWorkspaces) (map[string]any, error) {
 	pm, err := json.Marshal(askAgentPrivateMetadata{Channel: req.Channel, User: req.User, ResponseURL: req.ResponseURL, Thread: req.Thread})
 	if err != nil {
 		return nil, err
@@ -353,7 +372,7 @@ func (a *Adapter) askAgentModal(agents []pkga2a.AgentInfo, req askAgentRequest) 
 	}
 	options := make([]any, 0, len(agents))
 	var initial map[string]any
-	var defaultLabel string
+	var defaultLabel, selectedLabel string
 	initialIdx := -1
 	seen := make(map[string]bool, len(agents))
 	for _, ag := range agents {
@@ -368,7 +387,7 @@ func (a *Adapter) askAgentModal(agents []pkga2a.AgentInfo, req askAgentRequest) 
 		}
 		opt := map[string]any{bkText: plainTextObj(truncateRunes(label, modalOptionLabelMax)), bkValue: ref}
 		if ref == selected {
-			initial, initialIdx = opt, len(options)
+			initial, initialIdx, selectedLabel = opt, len(options), label
 		}
 		if ref == a.DefaultAgent {
 			defaultLabel = label
@@ -408,11 +427,13 @@ func (a *Adapter) askAgentModal(agents []pkga2a.AgentInfo, req askAgentRequest) 
 	if defaultLabel != "" {
 		agentInput[bkHint] = plainTextObj(truncateRunes(fmt.Sprintf(askAgentDefaultHint, defaultLabel), modalHintMax))
 	}
-	blocks := []any{
-		contextBlock(askAgentLead(req)),
-		agentInput,
-		map[string]any{bkType: bkInput, bkBlockID: askAgentQuestionBlockID, bkLabel: plainTextObj(askAgentQuestionLabel), bkElement: question},
+	blocks := []any{contextBlock(askAgentLead(req)), agentInput}
+	if ws != nil {
+		agentInput[bkDispatchAction] = true
+		preset, lastUsed := ws.preset(selected)
+		blocks = append(blocks, workspaceInput(ws, 0, preset, lastUsed, selectedLabel))
 	}
+	blocks = append(blocks, map[string]any{bkType: bkInput, bkBlockID: askAgentQuestionBlockID, bkLabel: plainTextObj(askAgentQuestionLabel), bkElement: question})
 	if block, ok := threadContextBlock(req); ok {
 		blocks = append(blocks, block)
 	}
@@ -561,6 +582,19 @@ func (a *Adapter) handleAskAgentSubmission(ctx context.Context, payload interact
 		return
 	}
 
+	// A workspace picked in the modal is authorized as the submitter before
+	// anything is posted or claimed, on the thread prompt's path: a refusal
+	// starts nothing and says why, with the prompt handed back.
+	workspace := submittedWorkspace(payload.View.State.Values)
+	var grant workspaces.Grant
+	if workspace.Chosen() {
+		var refusal string
+		if grant, refusal = a.authorizeWorkspace(ctx, user, workspace.Name); grant.IsZero() {
+			notify(refusal + fmt.Sprintf(askAgentWorkspacePromptQuote, strings.ReplaceAll(escapeMrkdwn(question), "\n", "\n>")))
+			return
+		}
+	}
+
 	// The shortcut's thread exists already, so it is claimed before anything
 	// is posted: SetInitiator makes the submitter its owner, or returns the
 	// owner it already has — a usage or stop typed there wrote one, without
@@ -622,6 +656,9 @@ func (a *Adapter) handleAskAgentSubmission(ctx context.Context, payload interact
 	// thread was claimed above), and the thread is bound to the chosen agent.
 	a.accessPolicy().SetInitiator(ctx, pm.Channel, threadTS, user)
 	a.bindThreadAgent(ctx, pm.Channel, threadTS, ref)
+	if workspace != nil {
+		a.recordLastWorkspace(ctx, user, ref, workspace)
+	}
 
 	// The thread the picker was opened on is read now, with the echo as the
 	// opener: it was just posted, so only the messages that were already there
@@ -646,6 +683,10 @@ func (a *Adapter) handleAskAgentSubmission(ctx context.Context, payload interact
 		// The question opens the conversation: it names the agent session and
 		// the session title keys on it.
 		Opener: true,
+		// The modal's choice: the Session starts in it, and the thread asks
+		// no more. Nil when the modal had no Workspace select.
+		Workspace:      workspace,
+		WorkspaceGrant: grant,
 	}
 	if err := a.dispatchFrom(ctx, msg, pm.Channel, source); err != nil && !errors.Is(err, context.Canceled) {
 		a.Logger.Error("slack: ask-agent dispatch error", "thread", threadTS, "error", err)

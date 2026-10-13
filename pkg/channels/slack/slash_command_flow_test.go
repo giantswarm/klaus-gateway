@@ -144,7 +144,7 @@ func TestSlashCommand_OpensAgentPicker(t *testing.T) {
 	require.Equal(t, "Starts a thread in <#C1> under the agent's name. Anyone in the channel can read it; you decide who may instruct the agent.",
 		lead["elements"].([]any)[0].(map[string]any)["text"], "the line names where the conversation lands")
 	agentInput := blocks[1].(map[string]any)
-	require.Equal(t, "Swarmgeist is the default for this workspace.", agentInput["hint"].(map[string]any)["text"])
+	require.Equal(t, "Swarmgeist is the default agent.", agentInput["hint"].(map[string]any)["text"])
 	agentSelect := agentInput["element"].(map[string]any)
 	require.Equal(t, "static_select", agentSelect["type"])
 	var labels, values []string
