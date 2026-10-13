@@ -5,7 +5,6 @@ import (
 	"flag"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -374,7 +373,7 @@ func TestPickerWorkspace_LateListingFallsBackToTheThreadPrompt(t *testing.T) {
 // A person without workspaces, and an installation without them, get the
 // picker exactly as it is without the feature (the golden view).
 func TestPickerWorkspace_WithoutWorkspacesThePickerIsUnchanged(t *testing.T) {
-	golden := filepath.Join("testdata", "picker-without-workspaces.json")
+	const golden = "testdata/picker-without-workspaces.json"
 	for name, opts := range map[string][]func(*slackadapter.Adapter){
 		"workspaces off": {channelMode},
 		"none listed":    nil,
