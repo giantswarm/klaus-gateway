@@ -18,13 +18,18 @@ const (
 	IconURLAnnotation = "ui.giantswarm.io/icon-url"
 )
 
-// HarnessRuntimeClaude is the runtime of a Harness with spec.claude: the
-// Claude Code harness of coding agents.
-const HarnessRuntimeClaude = "claude"
+// The runtimes a Harness spec selects exactly one of, under the key of the
+// same name: kagent's declarative runtime, and the ones that run code in the
+// Session's workspace (the Claude Code harness of coding agents, Codex, and
+// a bring-your-own image).
+const (
+	HarnessRuntimeKagent = "kagent"
+	HarnessRuntimeCodex  = "codex"
+	HarnessRuntimeClaude = "claude"
+	HarnessRuntimeBYO    = "byo"
+)
 
-// harnessRuntimes are the runtime adapters a Harness spec selects exactly one
-// of, under the key of the same name.
-var harnessRuntimes = []string{"kagent", "codex", HarnessRuntimeClaude, "byo"}
+var harnessRuntimes = []string{HarnessRuntimeKagent, HarnessRuntimeCodex, HarnessRuntimeClaude, HarnessRuntimeBYO}
 
 // AgentInfo describes one Agent of the served namespace.
 type AgentInfo struct {
@@ -60,17 +65,24 @@ func (a AgentInfo) Ref() string {
 }
 
 // RefusesCollaborators reports whether only the person whose Session it is may
-// instruct agentRef's agent: whether its Harness has the claude runtime. A
-// claude Harness runs code in the Session's workspace, so a git hook or a
-// background process one sender's turn leaves would run under the next
-// sender's credential: its Sessions are never shared. Every other runtime
-// keeps the thread's collaborators. The error is HarnessRuntime's.
+// instruct agentRef's agent (RuntimeRefusesCollaborators of its Harness's
+// runtime). The error is HarnessRuntime's.
 func (c *Client) RefusesCollaborators(ctx context.Context, agentRef string) (bool, error) {
 	runtime, err := c.HarnessRuntime(ctx, agentRef)
 	if err != nil {
 		return false, err
 	}
-	return runtime == HarnessRuntimeClaude, nil
+	return RuntimeRefusesCollaborators(runtime), nil
+}
+
+// RuntimeRefusesCollaborators reports whether a Harness of runtime takes
+// turns from the owner of its Session only: every runtime but kagent's. The
+// others run code in the Session's workspace, so a git hook or a background
+// process one sender's turn leaves would run under the next sender's
+// credential, and kagent's CreateSessionShare refuses to share their
+// Sessions. An empty or unknown runtime refuses too, as the controller does.
+func RuntimeRefusesCollaborators(runtime string) bool {
+	return runtime != HarnessRuntimeKagent
 }
 
 // HarnessRuntime returns the runtime of agentRef's Harness: the embedded

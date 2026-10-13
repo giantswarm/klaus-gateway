@@ -7,14 +7,14 @@ import (
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 )
 
-// An agent whose Harness runs code (a claude Harness) takes turns from one
-// person only: the one whose Session the thread is bound to. Its workspace
+// An agent whose Harness runs code (any runtime but kagent's) takes turns from
+// one person only: the one whose Session the thread is bound to. Its workspace
 // carries code as well as data across turns — a git hook, a Makefile target,
 // a background process — and every turn's processes run as the same user, so
 // a collaborator's turn would run what the owner's left behind under the
 // collaborator's credential, and the other way round. The thread's grants and
-// Session share stay for every other agent; for this one a collaborator is
-// refused and pointed at a thread of their own.
+// Session share stay for agents on kagent's runtime; for any other a
+// collaborator is refused and pointed at a thread of their own.
 
 // collaboratorPolicy reports whether an agent takes turns from the owner of
 // its Session only. pkg/a2a.Client implements it, from the agent's Harness.

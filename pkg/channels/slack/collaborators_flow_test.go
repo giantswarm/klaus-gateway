@@ -35,7 +35,7 @@ func (r *runtimeRoster) ListAgents(context.Context) ([]pkga2a.AgentInfo, error) 
 func (r *runtimeRoster) RefusesCollaborators(context.Context, string) (bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.runtime == pkga2a.HarnessRuntimeClaude, r.err
+	return pkga2a.RuntimeRefusesCollaborators(r.runtime), r.err
 }
 
 func withRuntimeRoster(r *runtimeRoster) func(*slackadapter.Adapter) {
@@ -77,7 +77,7 @@ func TestCollaborators_GrantedCollaboratorOnCodingAgentIsRefused(t *testing.T) {
 	fake := newFakeSlackAPI()
 	fakeURL := fake.server(t).URL
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok", Done: true}}}
-	roster := &runtimeRoster{runtime: "kagent"}
+	roster := &runtimeRoster{runtime: pkga2a.HarnessRuntimeKagent}
 	_, srv := newEventsAdapter(t, gw, fakeURL, channelMode, withRuntimeRoster(roster))
 
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
@@ -100,7 +100,7 @@ func TestCollaborators_LookupFailureRefusesTheCollaboratorTurn(t *testing.T) {
 	fake := newFakeSlackAPI()
 	fakeURL := fake.server(t).URL
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok", Done: true}}}
-	roster := &runtimeRoster{runtime: "kagent"}
+	roster := &runtimeRoster{runtime: pkga2a.HarnessRuntimeKagent}
 	_, srv := newEventsAdapter(t, gw, fakeURL, channelMode, withRuntimeRoster(roster))
 
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
@@ -130,7 +130,7 @@ func TestCollaborators_DeclarativeAgentKeepsCollaborators(t *testing.T) {
 		onDispatch: func(m channels.InboundMessage) { mu.Lock(); msgs = append(msgs, m); mu.Unlock() },
 	}
 	obo := perUserOBO{tokens: map[string]string{"U001": "tok-initiator", "U002": "tok-collab"}}
-	roster := &runtimeRoster{runtime: "kagent"}
+	roster := &runtimeRoster{runtime: pkga2a.HarnessRuntimeKagent}
 	_, srv := newEventsAdapter(t, gw, fakeURL, channelMode, withRuntimeRoster(roster),
 		func(a *slackadapter.Adapter) { a.OBO = obo })
 
