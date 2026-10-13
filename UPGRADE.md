@@ -4,7 +4,12 @@ Breaking or operator-visible changes between releases, newest first. The
 `CHANGELOG.md` lists every change; this file covers what an operator has to
 do or decide.
 
-## Next — a new thread asks for its workspace
+A section is headed with the version that ships it (`## 4.4.0 — <title>`). A PR
+that adds notes heads them `## Next — <title>`; the change that prepares a release
+renames each `Next` to that version, and `make check-upgrade-notes` refuses a
+stable release tag while a `Next` section with content is left.
+
+## 4.4.0 — a new thread asks for its workspace
 
 - With `workspaces.toolsPrefix` set, every new Slack thread of a person who has workspaces asks
   them which workspace its Session runs in before the agent answers. The Session is started
@@ -12,7 +17,7 @@ do or decide.
   v1.12.0 or later and a kagent that admits workspace grants. Leave the value empty until
   both are installed: the threads then start without a workspace, as before.
 
-## Next — every Session starts through agent-manager
+## 4.3.0 — every Session starts through agent-manager
 
 - A thread's Session is started through agent-manager's `start_session`, called through muster
   as the linked person, in place of the controller's `CreateSession`. The installation needs an
@@ -23,7 +28,7 @@ do or decide.
   `x_agent-manager_`, the Agent Platform's server name. An installation that registers
   agent-manager in muster under another name sets it.
 
-## Next — collaborators on coding agents, bot posts in the thread context
+## 4.2.0 — collaborators on coding agents, bot posts in the thread context
 
 - The route in front of the kagent controller must match `kagent.api.v1alpha1.HarnessService`
   beside the services listed below. The gateway reads an agent's Harness runtime through
@@ -36,7 +41,7 @@ do or decide.
   the message's JSON in Slack); until then the agent sees the people's messages under an alert
   but not the alert.
 
-## Next — kagent Sessions and Agents (breaking)
+## 4.1.0 — kagent Sessions and Agents (breaking)
 
 The gateway now calls kagent's `SessionService` and `AgentService` in place of
 `AgentInstanceService` and the AgentTemplate roster, generated from giantswarm/kagent-upstream
@@ -63,7 +68,7 @@ Alerting and dashboards keyed on the turn phase `create_instance` move to `creat
 `create_session`), and log searches on the `instance_bound` and `instance_shared` records move
 to `session_bound` and `session_shared`.
 
-## Next — `slack.progress.mode` is deleted (breaking)
+## 4.0.0 — `slack.progress.mode` is deleted (breaking)
 
 The values key the chart has accepted and ignored since 3.13.0 is removed from `values.yaml`
 and from the values schema, and the binary drops `--slack-progress-mode` and
@@ -79,7 +84,7 @@ shared-configs and the installation patches in giantswarm-configs were checked.
 The release reaches an installation only through an agent-platform that admits the 4.x line
 (`components.klaus-gateway.versionRange`): 4.105.0 and later (agent-platform#767).
 
-## Next — decisions for people (`POST /decisions`)
+## 3.13.0 — decisions for people (`POST /decisions`)
 
 `POST /decisions` is mounted with the team-review endpoint (`reviews.enabled`) and admits the
 same callers (`reviews.allowedCallers`); add the ServiceAccount of the service that puts
@@ -88,7 +93,7 @@ the Slack app did not ask for: add `users:read` and `users:read.email` (in
 `deploy/slack/manifest.yaml`) and **re-install the app**. Until then a person's decision answers
 `502` and the log says `missing_scope`; a team's decision needs no new scope.
 
-## Next — the in-message slash commands are gone
+## 4.0.0 — the in-message slash commands are gone
 
 The gateway no longer reads `/login`, `/logout`, `/usage`, `/help`, `/stop` or `/agent` from a
 message. Every command is the word alone: `login`, `logout`, `usage`, `help`, `agents`, and
@@ -103,7 +108,7 @@ as a request to sign in, like the word, and is not passed on to the agent afterw
 
 The app's own slash command (`/swarmgeist`) is untouched, and so is the message shortcut.
 
-## Next — the Slack progress mode has no effect (`slack.progress.mode`)
+## 3.13.0 — the Slack progress mode has no effect (`slack.progress.mode`)
 
 Every turn tries the progress reactions on its triggering message, and no turn posts the
 `Working…` placeholder any more. `slack.progress.mode` (`SLACK_PROGRESS_MODE`,
@@ -122,7 +127,7 @@ pause on a prompt posts nothing of its own. The indicator needs the agent sessio
 log says `agent session status unavailable` and such a turn shows nothing until its answer
 streams. Rollback is the previous image.
 
-## Next — the agent's tool calls leave the Slack reply
+## 3.12.0 — the agent's tool calls leave the Slack reply
 
 A reply no longer shows the agent's tool calls as a step list. It carries the agent's narration
 and its answer. Nothing to configure — no chart value, no flag, no scope — and no way to turn
@@ -140,7 +145,7 @@ down. Only a turn whose old pod is killed without a graceful shutdown can keep o
 running on its reply, because the new pod does not close steps any more. That reply is otherwise
 complete.
 
-## Next — a turn's token covers the turn (`obo.minTokenLifetime`)
+## 3.9.2 — a turn's token covers the turn (`obo.minTokenLifetime`)
 
 A turn is dispatched with a human token that has at least `obo.minTokenLifetime` left (25m by
 default), since the agent keeps it for the whole turn. With muster's 30-minute tokens this
@@ -150,7 +155,7 @@ cached token has less than the minimum left refreshes on its own path. Set the v
 longest turn an installation runs; `id_token refreshed below the turn minimum` in the log means
 muster did not return a token that long-lived.
 
-## Next — the ignored Slack-only values keys are deleted (breaking)
+## 3.0.0 — the ignored Slack-only values keys are deleted (breaking)
 
 Nine values keys the chart has accepted and ignored since the Slack-only release are removed from
 `values.yaml` and from the values schema: `web`, `cli`, `lifecycle`, `upstream`, `agentgateway`,
@@ -192,7 +197,7 @@ patches), `nodeSelector`, `tolerations` and `global` — are all still declared 
 giantswarm/agent-platform#643), so Flux pulls chart 3.0.0 at once on an installation whose
 umbrella is 4.63.0 or later; an installation on an older umbrella keeps the release it runs.
 
-## Next — the agent's steps move inside the Slack reply
+## 1.21.0 — the agent's steps move inside the Slack reply
 
 A turn's tool calls are now steps of Slack's native task list, attached to the reply message
 itself, instead of the gateway's own progress messages. Nothing to configure — no chart value,
@@ -225,7 +230,7 @@ meaning. A turn is capped at 100 steps; past it one line in the reply says the r
 and the calls still reach the **Inspect agent steps** log, which keeps the most recent 100 per
 thread.
 
-## Next — Slack only
+## 2.0.0 — Slack only
 
 The gateway serves Slack and nothing else. This release removes the web and CLI channels, the
 OpenAI-compatible `/v1` front door and the whole Klaus instance path. klausctl, the only client
@@ -277,7 +282,7 @@ earlier one returns.
 The stale rows expire on their own TTL (180 days by default) and can be deleted at any time; on
 Valkey they are the `klaus-gateway:route:` keys with four pipe-separated parts.
 
-## Next — Slack replies are streamed (chat.startStream)
+## 1.17.0 — Slack replies are streamed (chat.startStream)
 
 Agent replies are written with Slack's streaming API instead of a message edited every 250 ms:
 `chat.startStream` opens the answer on the turn's first text, `chat.appendStream` adds what has
@@ -309,7 +314,7 @@ as `klaus_gateway_slack_rate_limited_total{method,outcome}`, `retried` when the 
 one and `exhausted` when the call was given up, so throttling that used to leave no trace can
 be alerted on.
 
-## Next — a Slack thread's row lives twice as long
+## 1.16.0 — a Slack thread's row lives twice as long
 
 A Slack thread's conversation still ends after `routing.threadTTL` (`--thread-ttl`, 90 days by
 default): the agent, the initiator, the grants and the AgentInstance binding all read as absent
@@ -334,7 +339,7 @@ every other thread row, so on the Klaus (non-kagent) path a Slack row that lived
 died after 24 hours, and the thread then asked for consent again while people were still talking
 in it. `routing.defaultTTL` still governs the web and CLI routes, which are keyed per user.
 
-## Next — two new Slack scopes for the thread a conversation opens in
+## 1.15.0 — two new Slack scopes for the thread a conversation opens in
 
 A conversation that opens inside an existing thread now hands that thread's earlier messages to
 the agent, which means reading the thread: `channels:history` (already granted) covers public
@@ -351,7 +356,7 @@ There is no opt-out per channel. The person starting the session decides: the pi
 ticked by default and one click clears it, the transcript is labelled with who shared it, and the
 echo is posted in the thread in the open, as before.
 
-## Next — the "Ask an agent here" Slack shortcut
+## 1.13.0 — the "Ask an agent here" Slack shortcut
 
 The Slack app gains a second message shortcut, `ask_agent_here`, which starts a conversation with
 a chosen agent inside any message's thread. Slack does not apply manifests by itself, so an
@@ -363,7 +368,7 @@ gateway routes on the callback ID alone — so name it whatever suits your works
 shortcut under "Connect to apps" in a message's ⋯ menu only after a person has used it once;
 until then it sits behind "More message shortcuts…".
 
-## Next — Slack thread state lives in the routing store
+## 1.12.0 — Slack thread state lives in the routing store
 
 Every Slack thread now has one row in the routing store: its agent, its initiator, the
 collaborators the initiator allowed, its AgentInstance binding, and the task in flight on it. Run
@@ -395,7 +400,7 @@ so Valkey keeps them until removed by hand; they are harmless, and doing so is o
 example `valkey-cli --scan --pattern 'klaus-gateway:route:*' | awk -F'|' 'NF==5' | xargs -r
 valkey-cli del` (adapt to the installation's Valkey auth).
 
-## Next — the crd and configmap routing stores are gone
+## 1.10.3 — the crd and configmap routing stores are gone
 
 `routing.store: crd` and `routing.store: configmap` no longer exist; the gateway refuses to start
 with `invalid --store`. The `controller.enabled` and `crd.install` values are gone too; a values

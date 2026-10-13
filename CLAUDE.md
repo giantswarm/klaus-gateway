@@ -86,7 +86,9 @@ is the chart smoke test CI runs on a kind cluster through app-test-suite (`tests
 - Branch naming: `klaus/agent/<timestamp>` for agent-authored branches
 - PR titles: Conventional Commits (`feat:`, `fix:`, `docs:`, `chore:`, …); the semantic PR title check is required
 - Changelog: every user-visible change gets an entry under `## [Unreleased]` in `CHANGELOG.md`;
-  a change an operator has to act on or decide about also gets a section in `UPGRADE.md`
+  a change an operator has to act on or decide about also gets a section in `UPGRADE.md`, headed
+  `## Next — <title>`; the change that prepares a release renames `Next` to its version, and the
+  `make test` run of a stable tag fails on a `Next` section with content (`check-upgrade-notes`)
 - Versioning: build metadata via `-ldflags` into `pkg/project`; in CI the orb's `.ldflags` gets `version`
   from `make test` (`ldflags-version` in `Makefile.custom.mk`)
 - Comments: explain non-obvious intent only; don't narrate code
