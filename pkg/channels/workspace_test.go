@@ -8,9 +8,12 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
+	"github.com/giantswarm/klaus-gateway/pkg/muster"
+	"github.com/giantswarm/klaus-gateway/pkg/muster/mustertest"
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
 	boltstore "github.com/giantswarm/klaus-gateway/pkg/routing/store/bolt"
 	valkeystore "github.com/giantswarm/klaus-gateway/pkg/routing/store/valkey"
+	"github.com/giantswarm/klaus-gateway/pkg/workspaces"
 )
 
 var (
@@ -18,9 +21,32 @@ var (
 	klausDev  = &store.WorkspaceChoice{Namespace: "kagent", Name: "klaus-dev"}
 )
 
-func withWorkspace(msg channels.InboundMessage, ws *store.WorkspaceChoice) channels.InboundMessage {
+// withWorkspace makes msg choose ws, with the grant authorize_workspace
+// answers for a chosen one.
+func withWorkspace(t *testing.T, msg channels.InboundMessage, ws *store.WorkspaceChoice) channels.InboundMessage {
+	t.Helper()
 	msg.Workspace = ws
+	if ws.Chosen() {
+		msg.WorkspaceGrant = grantFor(t, ws.Name)
+	}
 	return msg
+}
+
+// grantFor is the grant a fake workspace-manager behind a fake muster grants
+// for workspace.
+func grantFor(t *testing.T, workspace string) workspaces.Grant {
+	t.Helper()
+	srv := mustertest.New(map[string]func(map[string]any) mustertest.Answer{
+		"x_workspace-manager_authorize_workspace": func(args map[string]any) mustertest.Answer {
+			return mustertest.Answer{Structured: map[string]any{"workspace": args["workspace"], "outcome": "granted",
+				"grant": "grant-of-" + workspace, "expiresAt": "2026-10-13T12:00:00Z"}}
+		},
+	})
+	t.Cleanup(srv.Close)
+	auth, err := workspaces.New(muster.NewClient(srv.URL), "x_workspace-manager_").Authorize(t.Context(), "id-token", workspace)
+	require.NoError(t, err)
+	require.Equal(t, workspaces.Granted, auth.Outcome)
+	return auth.Grant
 }
 
 func readRow(t *testing.T, s store.Store) store.Entry {
@@ -38,18 +64,19 @@ func TestSessionFor_WorkspaceChoice(t *testing.T) {
 	agent := newFakeAgent(a2apkg.NewStatusUpdateEvent(taskInfo, a2apkg.TaskStateCompleted, nil))
 	f, routes := newA2AFacade(agent)
 
-	runTurn(t, f, withWorkspace(slackMsg("hi"), klausDev))
+	runTurn(t, f, withWorkspace(t, slackMsg("hi"), klausDev))
 	row := readRow(t, routes)
 	require.Equal(t, klausDev, row.Workspace)
 	require.Equal(t, "inst-kagent/worker-1", row.AgentInstanceID)
+	require.Equal(t, "grant-of-klaus-dev", agent.createGrants[0].Token(), "the Session starts with the workspace's grant")
 
 	runTurn(t, f, slackMsg("and now?"))
-	runTurn(t, f, withWorkspace(slackMsg("again"), &store.WorkspaceChoice{Namespace: "kagent", Name: "klaus-dev"}))
+	runTurn(t, f, withWorkspace(t, slackMsg("again"), &store.WorkspaceChoice{Namespace: "kagent", Name: "klaus-dev"}))
 	require.Len(t, agent.createRequests, 1, "a turn without a choice, or with the same one, reuses the Session")
 	require.Equal(t, klausDev, readRow(t, routes).Workspace)
 
 	other := &store.WorkspaceChoice{Namespace: "kagent", Name: "other"}
-	runTurn(t, f, withWorkspace(slackMsg("elsewhere"), other))
+	runTurn(t, f, withWorkspace(t, slackMsg("elsewhere"), other))
 	require.Len(t, agent.createRequests, 2)
 	require.NotEqual(t, agent.createRequests[0], agent.createRequests[1], "another workspace, another key")
 	row = readRow(t, routes)
@@ -66,7 +93,7 @@ func TestSessionFor_NoWorkspaceKeepsTheSession(t *testing.T) {
 	runTurn(t, f, slackMsg("hi"))
 	require.Nil(t, readRow(t, routes).Workspace)
 
-	runTurn(t, f, withWorkspace(slackMsg("no workspace"), &store.WorkspaceChoice{None: true}))
+	runTurn(t, f, withWorkspace(t, slackMsg("no workspace"), &store.WorkspaceChoice{None: true}))
 	require.Equal(t, 1, agent.created, "an explicit none gets the thread's Session back")
 	row := readRow(t, routes)
 	require.Equal(t, &store.WorkspaceChoice{None: true}, row.Workspace)
@@ -79,7 +106,7 @@ func TestSessionFor_RebindDropsTheWorkspace(t *testing.T) {
 	agent := newFakeAgent(a2apkg.NewStatusUpdateEvent(taskInfo, a2apkg.TaskStateCompleted, nil))
 	f, routes := newA2AFacade(agent)
 
-	runTurn(t, f, withWorkspace(slackMsg("hi"), klausDev))
+	runTurn(t, f, withWorkspace(t, slackMsg("hi"), klausDev))
 	other := slackMsg("you then")
 	other.AgentRef = "kagent/other"
 	runTurn(t, f, other)
@@ -117,7 +144,7 @@ func TestSessionFor_WorkspaceSurvivesRestart(t *testing.T) {
 
 			s1 := reopen()
 			runTurn(t, &channels.Facade{Agent: agent, Routes: s1, ThreadTTL: channels.DefaultThreadTTL, Durable: true},
-				withWorkspace(slackMsg("hi"), klausDev))
+				withWorkspace(t, slackMsg("hi"), klausDev))
 			require.NoError(t, s1.Close())
 
 			s2 := reopen()
@@ -133,4 +160,22 @@ func TestSessionFor_WorkspaceSurvivesRestart(t *testing.T) {
 			require.Equal(t, klausDev, readRow(t, s2).Workspace)
 		})
 	}
+}
+
+// A turn that chooses a workspace without its grant starts nothing: the
+// Session would run without the workspace under the workspace's key.
+func TestSessionFor_ChosenWorkspaceNeedsItsGrant(t *testing.T) {
+	agent := newFakeAgent(a2apkg.NewStatusUpdateEvent(taskInfo, a2apkg.TaskStateCompleted, nil))
+	f, routes := newA2AFacade(agent)
+
+	runTurn(t, f, withWorkspace(t, slackMsg("hi"), &store.WorkspaceChoice{None: true}))
+	msg := slackMsg("in klaus-dev")
+	msg.ThreadID = "1700.0002"
+	msg.Workspace = klausDev
+	_, err := f.SendCompletion(t.Context(), msg)
+	require.ErrorIs(t, err, channels.ErrNoWorkspaceGrant)
+	require.Len(t, agent.createRequests, 1, "nothing is started without the grant")
+	_, ok, err := routes.Get(t.Context(), store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700.0002"})
+	require.NoError(t, err)
+	require.False(t, ok, "no binding is written")
 }

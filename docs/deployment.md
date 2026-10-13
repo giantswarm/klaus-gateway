@@ -108,8 +108,8 @@ connected, with its connect link). The grant is never logged, stored or shown.
 `workspaces.toolsPrefix` (`--workspace-tools-prefix`, `KLAUS_GATEWAY_WORKSPACE_TOOLS_PREFIX`) is what
 muster puts before the tool names: `x_<muster server name>_`, `x_workspace-manager_` on the Agent
 Platform. Empty, the default, turns workspaces off and the gateway never asks the workspace-manager.
-It requires `obo.enabled`. Nothing in the Slack adapter asks yet: the `/swarmgeist` modal's
-Workspace select and the thread's connect prompt are the client's first callers.
+It requires `obo.enabled`. With it on, a new thread asks its initiator for the workspace its
+Session runs in ([Selecting a workspace](channels-slack.md#selecting-a-workspace)).
 
 ## Routing store
 

@@ -2312,6 +2312,12 @@ func (a *Adapter) dispatchFrom(ctx context.Context, msg channels.InboundMessage,
 		a.deliverLeftoverTurn(ctx, msg, slackChannel, slackUser)
 	}
 
+	// A thread whose Session is about to start without a workspace choice
+	// asks its initiator for one first; the message waits with the prompt.
+	if a.holdForWorkspace(ctx, msg, slackChannel, slackUser, initiator) {
+		return nil
+	}
+
 	// An attachment-only reply into a thread with a paused confirmation cannot
 	// express a decision: decisionFromText on empty text would silently reject
 	// a generic prompt (or approve an ask_user one with empty answers). Leave

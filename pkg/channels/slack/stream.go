@@ -3158,6 +3158,10 @@ func (c *slackAPIClient) postSignInPromptEphemeral(ctx context.Context, channel,
 // longer text gets the whole message rejected with invalid_blocks.
 const slackSectionTextMax = 3000
 
+// slackOptionTextMax is Slack's bound on a select option's text and an option
+// group's label.
+const slackOptionTextMax = 75
+
 // postConnectorPrompt posts the agent's Connect prompt: an ephemeral offering
 // to connect a muster backend the agent cannot use for the user yet, with a
 // "Not now" dismissal (the prompt cooldown then holds it back).

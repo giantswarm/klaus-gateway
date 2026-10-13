@@ -14,8 +14,9 @@ import (
 // heldState is what the adapter holds for one thread between turns, persisted
 // in the thread's row (store.Entry.Held) so a gateway restart loses none of
 // it: the messages parked while their sender signs in (Login) or while the
-// initiator decides on them (Access), each by sender in arrival order, and the
-// task paused on a prompt (Pending). Every entry keeps the time it was stored,
+// initiator decides on them (Access), each by sender in arrival order, the
+// task paused on a prompt (Pending), and the workspace prompt with the
+// messages it holds (Workspace). Every entry keeps the time it was stored,
 // so pendingTTL runs on across a restart.
 //
 // The process's maps stay the working copy; the row is written after every
@@ -24,6 +25,9 @@ type heldState struct {
 	Login   map[string][]heldMessage `json:"login,omitempty"`
 	Access  map[string][]heldMessage `json:"access,omitempty"`
 	Pending *heldTask                `json:"pending,omitempty"`
+	// Workspace keeps its messages in arrival order, the thread's first one
+	// first.
+	Workspace *workspacePrompt `json:"workspace,omitempty"`
 }
 
 // heldMessage is a parked message as the row keeps it.
@@ -40,7 +44,7 @@ type heldTask struct {
 }
 
 func (h heldState) empty() bool {
-	return len(h.Login) == 0 && len(h.Access) == 0 && h.Pending == nil
+	return len(h.Login) == 0 && len(h.Access) == 0 && h.Pending == nil && h.Workspace == nil
 }
 
 // marshal encodes h for the row; nil when it holds nothing, so the row drops
@@ -92,8 +96,15 @@ func (a *Adapter) heldSnapshot(threadID string) heldState {
 	a.pendingAccessMu.Unlock()
 
 	a.threadsMu.Lock()
-	if st := a.threads[threadID]; st != nil && st.pending != nil {
-		h.Pending = &heldTask{Task: *st.pending, StoredAt: st.pending.storedAt}
+	if st := a.threads[threadID]; st != nil {
+		if st.pending != nil {
+			h.Pending = &heldTask{Task: *st.pending, StoredAt: st.pending.storedAt}
+		}
+		if st.workspace != nil {
+			p := *st.workspace
+			p.Messages = slices.Clone(p.Messages)
+			h.Workspace = &p
+		}
 	}
 	a.threadsMu.Unlock()
 	return h
@@ -228,6 +239,15 @@ func (a *Adapter) restoreHeld(ctx context.Context) {
 			a.pendingAccess[threadID][user] = lastN(append(queue, a.pendingAccess[threadID][user]...), maxParkedPerThread)
 		}
 		a.pendingAccessMu.Unlock()
+
+		if h.Workspace != nil && fresh(h.Workspace.StoredAt) && len(h.Workspace.Messages) > 0 {
+			p := h.Workspace
+			a.withThread(threadID, func(st *threadState) {
+				if st.workspace == nil {
+					st.workspace = p
+				}
+			})
+		}
 
 		if h.Pending != nil && fresh(h.Pending.StoredAt) {
 			task := h.Pending.Task

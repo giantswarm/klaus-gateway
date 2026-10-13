@@ -4,6 +4,14 @@ Breaking or operator-visible changes between releases, newest first. The
 `CHANGELOG.md` lists every change; this file covers what an operator has to
 do or decide.
 
+## Next — a new thread asks for its workspace
+
+- With `workspaces.toolsPrefix` set, every new Slack thread of a person who has workspaces asks
+  them which workspace its Session runs in before the agent answers. The Session is started
+  with the workspace's grant as `start_session`'s `workspaceGrant`, which needs agent-manager
+  v1.12.0 or later and a kagent that admits workspace grants. Leave the value empty until
+  both are installed: the threads then start without a workspace, as before.
+
 ## Next — every Session starts through agent-manager
 
 - A thread's Session is started through agent-manager's `start_session`, called through muster

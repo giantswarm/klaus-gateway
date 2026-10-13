@@ -62,13 +62,8 @@ type interactionPayload struct {
 	} `json:"message"`
 	// ResponseURL updates the source message. Ephemeral messages (the
 	// access-consent prompt) have no addressable ts, so they are updated this way.
-	ResponseURL string `json:"response_url"`
-	Actions     []struct {
-		ActionID string `json:"action_id"`
-		// Value carries the button payload: a raw threadID for approve/deny/submit,
-		// or JSON for choice ({t,c}) and access ({t,u}) buttons.
-		Value string `json:"value"`
-	} `json:"actions"`
+	ResponseURL string              `json:"response_url"`
+	Actions     []interactionAction `json:"actions"`
 	// State carries the current selection of stateful widgets (radio/checkbox),
 	// keyed state.values[block_id][action_id]. Read on a Submit click.
 	State struct {
@@ -88,6 +83,18 @@ type interactionPayload struct {
 			Values map[string]map[string]blockActionState `json:"values"`
 		} `json:"state"`
 	} `json:"view"`
+}
+
+// interactionAction is one action of a block_actions payload.
+type interactionAction struct {
+	ActionID string `json:"action_id"`
+	// Value carries the button payload: a raw threadID for approve/deny/submit,
+	// or JSON for choice ({t,c}) and access ({t,u}) buttons.
+	Value string `json:"value"`
+	// SelectedOption is a select's pick; its value is the option's.
+	SelectedOption struct {
+		Value string `json:"value"`
+	} `json:"selected_option"`
 }
 
 // questionIndexFromBlockID extracts the question index from a multi-question
@@ -235,6 +242,16 @@ func (a *Adapter) routeInteraction(ctx context.Context, payload interactionPaylo
 		return
 	case agentSelectAction:
 		a.handleRosterSelect(ctx, payload, action.Value)
+		return
+	case workspaceSelectAction:
+		if v, ok := decodeWorkspaceValue(action.SelectedOption.Value); ok {
+			a.handleWorkspaceChoice(ctx, payload, v.Thread, v.Workspace)
+		}
+		return
+	case workspaceNoneAction:
+		if action.Value != "" {
+			a.handleWorkspaceChoice(ctx, payload, action.Value, "")
+		}
 		return
 	case oboSignIn:
 		// URL button: the browser opens the link itself. A DM prompt is

@@ -18,6 +18,7 @@ import (
 
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 	"github.com/giantswarm/klaus-gateway/pkg/muster"
+	"github.com/giantswarm/klaus-gateway/pkg/workspaces"
 )
 
 // toolStartSession is agent-manager's tool, by its own name.
@@ -45,17 +46,21 @@ func New(tools ToolCaller, prefix string) *Starter {
 
 // StartSession starts the Session of a conversation with the Agent
 // namespace/name as the person bearer belongs to, keyed by requestID and
-// named name (empty: unnamed). It sends no message: the gateway sends the
-// turn itself. agent-manager's refusals map onto the a2a errors a channel
+// named name (empty: unnamed), in the workspace a non-zero grant admits the
+// person to (start_session's workspaceGrant). It sends no message: the gateway
+// sends the turn itself. agent-manager's refusals map onto the a2a errors a channel
 // renders: an Agent that cannot run onto pkga2a.AgentUnavailableError, a
 // caller muster or the controller does not know onto pkga2a.ErrNoIdentity, an
 // unknown Agent onto pkga2a.ErrAgentUnknown, a refused name onto
 // pkga2a.ErrInvalidSessionName.
-func (s *Starter) StartSession(ctx context.Context, bearer, namespace, name, requestID, sessionName string) (pkga2a.Session, error) {
+func (s *Starter) StartSession(ctx context.Context, bearer, namespace, name, requestID, sessionName string, grant workspaces.Grant) (pkga2a.Session, error) {
 	ref := namespace + "/" + name
 	args := map[string]any{"namespace": namespace, "name": name, "requestId": requestID}
 	if sessionName != "" {
 		args["sessionName"] = sessionName
+	}
+	if !grant.IsZero() {
+		args["workspaceGrant"] = grant.Token()
 	}
 	res, err := s.tools.CallTool(ctx, bearer, s.tool, args)
 	if err != nil {

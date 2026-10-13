@@ -14,6 +14,7 @@ import (
 
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 	apiv1alpha1 "github.com/giantswarm/klaus-gateway/pkg/kagent/gen/kagent/api/v1alpha1"
+	"github.com/giantswarm/klaus-gateway/pkg/workspaces"
 )
 
 const (
@@ -517,10 +518,10 @@ func TestClient_StartSession_ThroughAgentManagerIdempotentPerRequestID(t *testin
 	ctx := asUser(t.Context(), userToken)
 	requestID := "1d2c7a1e5e1a4b7b8c9d0e1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d"
 
-	first, err := client.StartSession(ctx, "sre-agent", requestID, "restart the kong pods on gazelle")
+	first, err := client.StartSession(ctx, "sre-agent", requestID, "restart the kong pods on gazelle", workspaces.Grant{})
 	require.NoError(t, err)
 	require.True(t, first.Ready())
-	again, err := client.StartSession(ctx, "sre-agent", requestID, "restart the kong pods on gazelle")
+	again, err := client.StartSession(ctx, "sre-agent", requestID, "restart the kong pods on gazelle", workspaces.Grant{})
 	require.NoError(t, err)
 	require.Equal(t, first.ID, again.ID, "a retried start returns the same session")
 
@@ -538,7 +539,7 @@ func TestClient_StartSession_ThroughAgentManagerIdempotentPerRequestID(t *testin
 	require.Equal(t, "Bearer "+userToken, f.sessions[first.ID].GetCreator(), "the session is the person's")
 
 	// A different creator with the same request id is a different conversation.
-	other, err := client.StartSession(asUser(t.Context(), "someone-else"), "sre-agent", requestID, "")
+	other, err := client.StartSession(asUser(t.Context(), "someone-else"), "sre-agent", requestID, "", workspaces.Grant{})
 	require.NoError(t, err)
 	require.NotEqual(t, first.ID, other.ID)
 	_, named := f.muster.Calls()[2].Args["sessionName"]
@@ -550,7 +551,7 @@ func TestClient_StartSession_WaitsForReady(t *testing.T) {
 	f.createState = apiv1alpha1.RuntimeState_RUNTIME_STATE_CREATING
 	client := f.serve(t, pkga2a.Config{})
 
-	session, err := client.StartSession(asUser(t.Context(), userToken), "sre-agent", "req-1", "")
+	session, err := client.StartSession(asUser(t.Context(), userToken), "sre-agent", "req-1", "", workspaces.Grant{})
 	require.NoError(t, err)
 	require.True(t, session.Ready())
 	require.GreaterOrEqual(t, f.callCount("GetSession"), 1, "a CREATING session is polled until READY")
@@ -564,7 +565,7 @@ func TestClient_StartSession_FallsBackWhenTheNameIsRefused(t *testing.T) {
 	client := f.serve(t, pkga2a.Config{})
 	tooLong := strings.Repeat("x", 201)
 
-	session, err := client.StartSession(asUser(t.Context(), userToken), "sre-agent", "req-1", tooLong)
+	session, err := client.StartSession(asUser(t.Context(), userToken), "sre-agent", "req-1", tooLong, workspaces.Grant{})
 	require.NoError(t, err)
 	require.True(t, session.Ready())
 	calls := f.muster.Calls()
@@ -584,17 +585,17 @@ func TestClient_StartSession_RefusesAnUnavailableAgent(t *testing.T) {
 	client := f.serve(t, pkga2a.Config{})
 	ctx := asUser(t.Context(), userToken)
 
-	_, err := client.StartSession(ctx, "compiling", "req-1", "")
+	_, err := client.StartSession(ctx, "compiling", "req-1", "", workspaces.Grant{})
 	require.ErrorIs(t, err, pkga2a.ErrAgentUnavailable)
 	require.Empty(t, f.muster.Calls(), "an Agent that is not ready is refused before agent-manager is asked")
 
-	_, err = client.StartSession(ctx, "nobody", "req-1", "")
+	_, err = client.StartSession(ctx, "nobody", "req-1", "", workspaces.Grant{})
 	require.ErrorIs(t, err, pkga2a.ErrAgentUnknown)
 
 	// The controller's own refusal through agent-manager (the revision went
 	// away between the roster read and the start) maps the same way, with the
 	// controller's sentence as the reason and the ref as selected.
-	_, err = client.StartSession(ctx, "racy", "req-2", "")
+	_, err = client.StartSession(ctx, "racy", "req-2", "", workspaces.Grant{})
 	require.ErrorIs(t, err, pkga2a.ErrAgentUnavailable)
 	var unavailable *pkga2a.AgentUnavailableError
 	require.ErrorAs(t, err, &unavailable)
@@ -609,7 +610,7 @@ func TestClient_StartSession_RefusesWithoutIdentity(t *testing.T) {
 	client := f.serve(t, pkga2a.Config{})
 	ctx := pkga2a.WithAgentRef(t.Context(), "sre-agent")
 
-	_, err := client.StartSession(ctx, "sre-agent", "req-1", "")
+	_, err := client.StartSession(ctx, "sre-agent", "req-1", "", workspaces.Grant{})
 	require.ErrorIs(t, err, pkga2a.ErrNoIdentity)
 	require.Empty(t, f.muster.Calls())
 }

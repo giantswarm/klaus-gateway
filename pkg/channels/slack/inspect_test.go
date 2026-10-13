@@ -584,10 +584,7 @@ func togglePayload(state, value string) interactionPayload {
 	p.View.Hash = "hash-1"
 	p.View.CallbackID = inspectViewCallbackID
 	p.View.PrivateMetadata = state
-	p.Actions = append(p.Actions, struct {
-		ActionID string `json:"action_id"`
-		Value    string `json:"value"`
-	}{ActionID: inspectToggleAction, Value: value})
+	p.Actions = append(p.Actions, interactionAction{ActionID: inspectToggleAction, Value: value})
 	return p
 }
 
@@ -601,10 +598,7 @@ func openClickPayload(threadTS string) interactionPayload {
 	p.Channel.ID = "C1"
 	p.Message.ThreadTS = threadTS
 	p.Message.TS = "100.500"
-	p.Actions = append(p.Actions, struct {
-		ActionID string `json:"action_id"`
-		Value    string `json:"value"`
-	}{ActionID: inspectOpenAction})
+	p.Actions = append(p.Actions, interactionAction{ActionID: inspectOpenAction})
 	return p
 }
 

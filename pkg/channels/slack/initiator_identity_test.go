@@ -20,6 +20,7 @@ import (
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store/memory"
 	"github.com/giantswarm/klaus-gateway/pkg/seal"
+	"github.com/giantswarm/klaus-gateway/pkg/workspaces"
 )
 
 // perUserOBO mints a distinct token per Slack user so a test can tell whose
@@ -283,7 +284,7 @@ func (k *ownedKagent) CancelTask(context.Context, a2apkg.TaskID) (*a2apkg.Task, 
 	return nil, a2apkg.ErrTaskNotFound
 }
 
-func (k *ownedKagent) StartSession(ctx context.Context, _, _, _ string) (pkga2a.Session, error) {
+func (k *ownedKagent) StartSession(ctx context.Context, _, _, _ string, _ workspaces.Grant) (pkga2a.Session, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	k.created++
