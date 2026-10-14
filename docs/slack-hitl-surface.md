@@ -323,10 +323,12 @@ conversation; a later message gets a card of its own, and the earlier one is rew
 the same card, led by "Asked in a thread in #channel." (the thread linked), also goes to the
 person's DM with the app, and a context line in the thread says whom it waits for and where
 the button is ("Waiting for @Jose to connect *agent-manager* (the Connect button is in a
-direct message from the app)"); a later message of the person's refreshes the card and the
-line in place. Once the person has connected, by the link's landing or by their next turn
-that starts the Session, the line reads "@Jose connected *agent-manager*." and the card
-"Connected *agent-manager*. Your message is on its way to the agent." The ephemeral's button
+direct message from the app)"); a later message of the person's refreshes the DM card in
+place, and the line stays. Once the person has connected, the line reads "@Jose connected
+*agent-manager*." and the card is a confirmation: "Connected *agent-manager*. Your message is
+on its way to the agent." when the link's landing runs the held message, "Connected
+*agent-manager*." when their next turn that starts the Session found them connected and the
+held message stays unsent. The ephemeral's button
 carries the completion state in its `value`, so a click on it is replaced through its
 `response_url`; the cards' buttons carry the server name and are rewritten in place.
 

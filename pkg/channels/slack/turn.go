@@ -125,8 +125,9 @@ func (a *Adapter) runTurn(ctx context.Context, msg channels.InboundMessage, slac
 	}
 
 	// A Session start that went through settles the thread's Connect prompt
-	// surfaces, however the person connected.
-	a.settleSessionConnect(ctx, slackUser, msg.ThreadID)
+	// surfaces, however the person connected; the message a prompt held
+	// stays unsent, this turn is the new message.
+	a.settleSessionConnect(ctx, slackUser, msg.ThreadID, false)
 
 	// The turn context feeds the whole stream so a stop cancels the turn, and an
 	// aborted consumer releases the producer goroutine. The branding client is

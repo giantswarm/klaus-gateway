@@ -246,15 +246,21 @@ func TestSessionConnect_RepromptRefreshesTheCard(t *testing.T) {
 
 // A person who connected some other way (another thread's prompt, another
 // muster client) sends again: the start goes through, and the thread's line
-// and the DM card settle without any landing.
+// and the DM card settle without any landing. The held message stays unsent,
+// so the card does not say it is on its way, and the stale button's landing
+// runs nothing.
 func TestSessionConnect_NextTurnSettlesTheSurfaces(t *testing.T) {
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok"}, {Done: true}}}
 	gw.dispatchErr = sessionConnectChallenge()
 	fake, srv, _ := sessionConnectAdapter(t, gw)
 
 	sendEvent(t, srv, mention("U1", "how many nodes in gazelle?", "170.000", ""))
-	require.Eventually(t, func() bool { _, _, ok := connectButton(fake); return ok },
-		flowWait, 20*time.Millisecond, "the prompt is posted")
+	var stateID string
+	require.Eventually(t, func() bool {
+		var ok bool
+		_, stateID, ok = connectButton(fake)
+		return ok
+	}, flowWait, 20*time.Millisecond, "the prompt is posted")
 
 	gw.mu.Lock()
 	gw.dispatchErr = nil
@@ -264,8 +270,18 @@ func TestSessionConnect_NextTurnSettlesTheSurfaces(t *testing.T) {
 		return strings.Contains(allText(updatesIn(fake, "C1")), "<@U1> connected *agent-manager*.") &&
 			strings.Contains(allText(updatesIn(fake, "U1")), "Connected *agent-manager*.")
 	}, flowWait, 20*time.Millisecond, "the line and the card settle on the turn that went through")
+	require.NotContains(t, allText(updatesIn(fake, "U1")), "on its way", "the held message stays unsent")
 	require.Eventually(t, func() bool { return strings.Contains(fake.streamedText(), "ok") },
 		flowWait, 20*time.Millisecond, "the agent answers")
+
+	resp, err := http.Get(srv.URL + "/connectors/complete?s=" + url.QueryEscape(stateID))
+	require.NoError(t, err)
+	page, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	require.Equal(t, http.StatusNotFound, resp.StatusCode, "the stale prompt's state is gone")
+	require.Contains(t, string(page), "Link expired")
+	time.Sleep(100 * time.Millisecond)
+	require.Equal(t, 2, gw.dispatchCount(), "the held message is not run after the fact")
 }
 
 // In a direct message with the app the Connect card is a message of the

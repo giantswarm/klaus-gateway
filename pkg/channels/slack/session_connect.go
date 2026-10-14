@@ -27,6 +27,10 @@ type sessionConnectSurfaces struct {
 	// posted.
 	cardChannel string
 	cardTS      string
+	// states are the completion states the prompts minted, each holding the
+	// message of its turn: dropped once the consent is settled, so a stale
+	// button runs no message twice.
+	states []string
 }
 
 func sessionConnectKey(slackUser, threadID string) string { return slackUser + "\x00" + threadID }
@@ -89,8 +93,8 @@ func (a *Adapter) takeSessionConnect(slackUser, threadID string) (sessionConnect
 // ephemeral reaches only a Slack client that is open when it goes out and
 // shows nothing from the channel, so the same card also goes to the person's
 // DM, and a line everyone in the thread sees says whom it waits for and where
-// the button is. A re-issued prompt refreshes the DM card and the line in
-// place. Only the ephemeral's button carries the completion state in its
+// the button is. A re-issued prompt refreshes the DM card in place; the line
+// stays. Only the ephemeral's button carries the completion state in its
 // value: a click on it records the response_url that replaces it, while the
 // cards, real messages, are rewritten in place by settleSessionConnect.
 //
@@ -117,6 +121,8 @@ func (a *Adapter) promptSessionConnect(ctx context.Context, msg channels.Inbound
 		}
 		return
 	}
+	surfaces, _ := a.sessionConnectFor(slackUser, msg.ThreadID)
+	surfaces.server, surfaces.channel, surfaces.threadTS = server, slackChannel, msg.ThreadID
 	promptURL, connectValue, tail := challenge.LoginURL, server, sessionConnectResendTail
 	if base := a.PublicBaseURL; base != "" {
 		held := heldMessageOf(msg, slackChannel, time.Now())
@@ -125,23 +131,24 @@ func (a *Adapter) promptSessionConnect(ctx context.Context, msg channels.Inbound
 			a.Logger.Warn("slack: session connect login URL decoration failed, posting plain link", "server", server, "error", err)
 		} else {
 			promptURL, connectValue, tail = decorated, stateID, sessionConnectResumeTail
+			surfaces.states = append(surfaces.states, stateID)
 		}
 	}
 	text := fmt.Sprintf(sessionConnectNote, escapeMrkdwn(server)) + tail
-	surfaces, _ := a.sessionConnectFor(slackUser, msg.ThreadID)
-	surfaces.server, surfaces.channel, surfaces.threadTS = server, slackChannel, msg.ThreadID
 
 	if isDMChannelID(slackChannel) {
+		ts, err := client.postConnectPromptMessage(ctx, slackChannel, msg.ThreadID, text, server, promptURL, server)
+		if err != nil {
+			a.Logger.Warn("slack: post session connect prompt failed", "thread", msg.ThreadID, "server", server, "error", err)
+			a.recordSessionConnect(slackUser, msg.ThreadID, surfaces)
+			return
+		}
+		// The earlier card loses its button only once the new one is there.
 		if surfaces.cardTS != "" {
 			superseded := fmt.Sprintf(sessionConnectSupersededNote, escapeMrkdwn(server))
 			if err := client.chatUpdate(ctx, surfaces.cardChannel, surfaces.cardTS, superseded, []any{sectionBlock(superseded)}); err != nil {
 				a.Logger.Warn("slack: retire earlier session connect card failed", "thread", msg.ThreadID, "error", err)
 			}
-		}
-		ts, err := client.postConnectPromptMessage(ctx, slackChannel, msg.ThreadID, text, server, promptURL, server)
-		if err != nil {
-			a.Logger.Warn("slack: post session connect prompt failed", "thread", msg.ThreadID, "server", server, "error", err)
-			return
 		}
 		surfaces.cardChannel, surfaces.cardTS = slackChannel, ts
 		a.recordSessionConnect(slackUser, msg.ThreadID, surfaces)
@@ -211,16 +218,20 @@ func (a *Adapter) ensureSessionConnectLine(ctx context.Context, client *slackAPI
 // settleSessionConnect rewrites the surfaces of the prompt (slackUser,
 // threadID) got, once the consent is given: the waiting line to who
 // connected, the card to the confirmation. Called by the landing of the
-// prompt's own link, and by the person's next turn in the thread that starts
-// its Session, however they connected (another thread's prompt, another
-// muster client, a gateway without a public base URL). The ephemeral is
-// replaced through its click's response_url by the landing, when the click
-// reached this process.
-func (a *Adapter) settleSessionConnect(ctx context.Context, slackUser, threadID string) {
+// prompt's own link, which then runs the held message (delivered), and by
+// the person's next turn in the thread that starts its Session, however they
+// connected (another thread's prompt, another muster client, a gateway
+// without a public base URL), when the held message stays unsent and the
+// card must not say otherwise. The prompts' completion states go with the
+// surfaces, so a stale button runs no held message after the fact. The
+// ephemeral is replaced through its click's response_url by the landing,
+// when the click reached this process.
+func (a *Adapter) settleSessionConnect(ctx context.Context, slackUser, threadID string, delivered bool) {
 	s, ok := a.takeSessionConnect(slackUser, threadID)
 	if !ok {
 		return
 	}
+	a.dropConnectorCompletions(s.states)
 	client := a.apiClient()
 	if s.lineTS != "" {
 		text := fmt.Sprintf(sessionConnectConnectedFormat, slackUser, escapeMrkdwn(s.server))
@@ -229,7 +240,10 @@ func (a *Adapter) settleSessionConnect(ctx context.Context, slackUser, threadID 
 		}
 	}
 	if s.cardTS != "" {
-		text := fmt.Sprintf(sessionConnectCardDone, escapeMrkdwn(s.server))
+		text := fmt.Sprintf(sessionConnectCardConnected, escapeMrkdwn(s.server))
+		if delivered {
+			text = fmt.Sprintf(sessionConnectCardDone, escapeMrkdwn(s.server))
+		}
 		if err := client.chatUpdate(ctx, s.cardChannel, s.cardTS, text, []any{sectionBlock(text)}); err != nil {
 			a.Logger.Warn("slack: rewrite session connect card after sign-in failed", "thread", s.threadTS, "error", err)
 		}

@@ -75,6 +75,16 @@ func (a *Adapter) mintConnectorCompletion(entry connectorCompletion) string {
 	return stateID
 }
 
+// dropConnectorCompletions forgets the completion states named, so the
+// buttons that carry them lead to the expired page and resume nothing.
+func (a *Adapter) dropConnectorCompletions(stateIDs []string) {
+	a.connectorCompletionsMu.Lock()
+	defer a.connectorCompletionsMu.Unlock()
+	for _, id := range stateIDs {
+		delete(a.connectorCompletions, id)
+	}
+}
+
 // recordConnectorConnectClick stores a Connect click's response_url under
 // stateID. ok is false for an unknown or expired stateID (including legacy
 // buttons whose value is the server name) and for a clicker who is not the
@@ -195,7 +205,7 @@ func (a *Adapter) handleConnectorComplete(w http.ResponseWriter, r *http.Request
 				return
 			}
 			if entry.held != nil {
-				a.settleSessionConnect(ctx, entry.slackUser, entry.threadTS)
+				a.settleSessionConnect(ctx, entry.slackUser, entry.threadTS, true)
 			}
 			a.resumeAfterConnectorSignIn(ctx, entry)
 		})
