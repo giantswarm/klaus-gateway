@@ -44,13 +44,16 @@ type ToolCaller interface {
 type Starter struct {
 	tools ToolCaller
 	tool  string
+	// server is the muster server the tool is of, as the prefix names it
+	// (x_<server>_): what a sign-in challenge that names none is for.
+	server string
 }
 
 var _ pkga2a.SessionStarter = (*Starter)(nil)
 
 // New returns a Starter that calls prefix + start_session through tools.
 func New(tools ToolCaller, prefix string) *Starter {
-	return &Starter{tools: tools, tool: prefix + toolStartSession}
+	return &Starter{tools: tools, tool: prefix + toolStartSession, server: strings.TrimSuffix(strings.TrimPrefix(prefix, "x_"), "_")}
 }
 
 // StartSession starts the Session of a conversation with the Agent
@@ -81,7 +84,7 @@ func (s *Starter) StartSession(ctx context.Context, bearer, namespace, name, req
 		}
 		return pkga2a.Session{}, fmt.Errorf("agentmanager: start a Session of %s: %w", ref, err)
 	}
-	if challenge := signInChallenge(res); challenge != nil {
+	if challenge := signInChallenge(res, s.server); challenge != nil {
 		return pkga2a.Session{}, challenge
 	}
 	if !res.Dispatched {
@@ -125,10 +128,11 @@ func (s *Starter) StartSession(ctx context.Context, bearer, namespace, name, req
 // signInChallenge reads muster's sign-in challenge out of the answer: an
 // error result whose structured content says auth_required and names the
 // server and the link, the text saying the same (and alone, when the answer
-// is muster refusing the call before any envelope). A challenge that carries
-// no link is not one the person can act on from a prompt: nil, so the answer
-// is mapped as a refusal.
-func signInChallenge(res muster.Result) *pkga2a.ConnectRequiredError {
+// is muster refusing the call before any envelope). A challenge that names no
+// server is for the tool's own. A challenge that carries no link is not one
+// the person can act on from a prompt: nil, so the answer is mapped as a
+// refusal.
+func signInChallenge(res muster.Result, server string) *pkga2a.ConnectRequiredError {
 	if !res.IsError {
 		return nil
 	}
@@ -146,8 +150,12 @@ func signInChallenge(res muster.Result) *pkga2a.ConnectRequiredError {
 			challenge.Server = m[1] + m[2]
 		}
 	}
+	if challenge.Server == "" {
+		challenge.Server = server
+	}
 	if challenge.AuthURL == "" {
-		challenge.AuthURL = challengeURLRe.FindString(res.Text)
+		// The link ends its line in muster's prose; a stop after it is prose too.
+		challenge.AuthURL = strings.TrimRight(challengeURLRe.FindString(res.Text), ".,;:)")
 	}
 	if challenge.AuthURL == "" {
 		return nil

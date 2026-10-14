@@ -142,6 +142,11 @@ const (
 	sessionConnectResendTail = " Connect it, then send your message again."
 )
 
+// sessionConnectOwnerNote answers a collaborator whose turn would start the
+// thread owner's Session: the consent is the owner's to give, so no link for
+// the sender; %s are the owner's Slack user ID and the server.
+const sessionConnectOwnerNote = "The conversation can't start yet: <@%s> needs to connect *%s* once. Ask them to mention the agent here, then send your message again."
+
 // payloadTypeBlockActions is the interaction payload type for Block Kit button
 // clicks; payloadTypeMessageAction is the type for message shortcuts (the ⋯ →
 // Apps menu); payloadTypeViewSubmission is the type for a submitted modal (the

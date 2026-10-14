@@ -155,10 +155,18 @@ func TestStartSession_MusterSignInChallengeIsConnectRequired(t *testing.T) {
 		})
 	}
 
+	// A challenge that names no server is for the tool's own, the one the
+	// prefix names; a stop after the link is prose, not the link.
+	starter, _ := starterAnswering(t, mustertest.Answer{IsError: true, Undispatched: true, Text: "auth_required: sign in first: " + link + "."})
+	_, err := starter.StartSession(context.Background(), bearer, "kagent", "sre-agent", "req-1", "", workspaces.Grant{})
+	var connect *pkga2a.ConnectRequiredError
+	require.ErrorAs(t, err, &connect)
+	require.Equal(t, &pkga2a.ConnectRequiredError{Server: "agent-manager", LoginURL: link}, connect)
+
 	// agent-manager's own auth_required, without a link, is a caller the
 	// gateway cannot act for: no identity, as before.
-	starter, _ := starterAnswering(t, mustertest.Answer{IsError: true, Text: "auth_required: auth required: a commit without the caller's GitHub authorization"})
-	_, err := starter.StartSession(context.Background(), bearer, "kagent", "sre-agent", "req-1", "", workspaces.Grant{})
+	starter, _ = starterAnswering(t, mustertest.Answer{IsError: true, Text: "auth_required: auth required: a commit without the caller's GitHub authorization"})
+	_, err = starter.StartSession(context.Background(), bearer, "kagent", "sre-agent", "req-1", "", workspaces.Grant{})
 	require.ErrorIs(t, err, pkga2a.ErrNoIdentity)
 }
 

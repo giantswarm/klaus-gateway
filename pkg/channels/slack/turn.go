@@ -50,6 +50,9 @@ func (a *Adapter) runTurn(ctx context.Context, msg channels.InboundMessage, slac
 	// Subject is rewritten to the resolved email below; the raw ID keys access
 	// control and progress surfaces throughout.
 	slackUser := msg.Subject
+	// The message as admitted, before the identities below are resolved onto
+	// it: what a hold keeps, since a replay admits it again from the raw ID.
+	admitted := msg
 
 	// Corrupt-session recovery lives here, not in the callers: the reset must
 	// present the identities the turn ran with (on a collaborator's turn, the
@@ -111,7 +114,7 @@ func (a *Adapter) runTurn(ctx context.Context, msg channels.InboundMessage, slac
 		var connect *pkga2a.ConnectRequiredError
 		if errors.As(err, &connect) {
 			a.completeTurn(ctx, msg, slackUser, channels.OutcomeConnectRequired, err)
-			a.promptSessionConnect(ctx, msg, slackChannel, slackUser, connect)
+			a.promptSessionConnect(ctx, admitted, slackChannel, slackUser, msg.OwnerID, msg.OwnerToken != "", connect)
 			return nil
 		}
 		if hooks.onFailure != nil && !isCorruptSessionErr(err) {

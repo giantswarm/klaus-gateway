@@ -133,7 +133,10 @@ creates one, which a turn that switches agents does mid-thread.
   Connect prompt for it, to the person alone, with the message held behind it: the sign-in's
   landing on the gateway runs it as the thread's first turn, and without a public base URL
   the prompt says to send it again once connected. The hold is the process's own; after a
-  restart the landing says the link is gone. The start is idempotent per person and
+  restart the landing says the link is gone. A collaborator whose turn would start the
+  owner's Session (nothing bound yet) meets the owner's challenge: they get a private note
+  naming the owner and no link, and the owner's own next message gets the prompt. The start
+  is idempotent per person and
   thread, so a retried first turn — the binding was not written, the process died
   in between — gets the same session back instead of a second one. The session
   id and the agent ref are written into the thread's row, every later turn of the
@@ -751,6 +754,9 @@ Three structured log records (`record=…`, JSON fields) tell a turn's story; jo
   timeline starting at the delivery. Its tokens are the turn's full total, the calls made before
   the restart included; the previous process's `shutdown` record of the same `task_id` holds only
   the calls it saw, so do not sum the two.
+- `session_connect_required` -- a Session start muster refused with its sign-in challenge for
+  a server, the turn ending as `connect_required`: `server`, `agent`, `slack_user`, `owner`
+  (the thread owner the start ran as, on a collaborator's turn), `channel_id`, `thread_id`.
 - `a2a_event` (debug level only, `--log-level=debug`) -- one per A2A event a turn receives:
   `event` (its Go type), `task_id`, and `metadata_keys`, the metadata keys of the event, of its
   status message (`message.` prefix) and of its artifact (`artifact.` prefix), never their values.
