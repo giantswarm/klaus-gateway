@@ -99,8 +99,13 @@ thread to exactly one session:
    refused before anything is started; the controller's own refusal (agent-manager's
    `conflict`) is reported the same way, as the agent being unavailable. A caller muster or
    agent-manager cannot act as (an HTTP 401 or 403 from muster, agent-manager's
-   `unauthenticated` or `auth_required`) is a caller without an identity, the condition a
-   channel answers with its sign-in prompt.
+   `unauthenticated`, or an `auth_required` without a sign-in link) is a caller without an
+   identity, the condition a channel answers with its sign-in prompt. muster's own sign-in
+   challenge for agent-manager (`auth_required` with the link: the server is pinned to a
+   GitHub App, so muster runs its tools for a person only after their one-time consent) is
+   `ConnectRequiredError`, the server and the link. The person is signed in, so the channel
+   answers with its Connect prompt for the server, never the sign-in prompt, and runs the
+   turn again once they have connected.
 
    The start also carries `sessionName`, the conversation's display name: the message that opened the
    thread, rendered on one line and cut at the controller's 200-character limit on a word

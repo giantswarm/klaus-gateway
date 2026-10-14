@@ -54,14 +54,15 @@ const (
 
 // The outcomes a turn ends with (`klaus_gateway_turn_total{outcome}`).
 const (
-	OutcomeCompleted     = "completed"      // the task completed and the answer landed
-	OutcomeInputRequired = "input_required" // the task paused on a prompt to the person
-	OutcomeCanceled      = "canceled"       // the person stopped the turn (the stop command, the stop button, a closed stream)
-	OutcomeShutdown      = "shutdown"       // the gateway's shutdown cut the turn short
-	OutcomeTimeout       = "timeout"        // the turn ran into the gateway's turn deadline
-	OutcomeFailed        = "failed"         // the task failed, or the stream broke
-	OutcomeRenderFailed  = "render_failed"  // the task completed but the channel refused (part of) the answer
-	OutcomeSendFailed    = "send_failed"    // the turn died before it was sent: the controller refused it
+	OutcomeCompleted       = "completed"        // the task completed and the answer landed
+	OutcomeInputRequired   = "input_required"   // the task paused on a prompt to the person
+	OutcomeCanceled        = "canceled"         // the person stopped the turn (the stop command, the stop button, a closed stream)
+	OutcomeShutdown        = "shutdown"         // the gateway's shutdown cut the turn short
+	OutcomeTimeout         = "timeout"          // the turn ran into the gateway's turn deadline
+	OutcomeFailed          = "failed"           // the task failed, or the stream broke
+	OutcomeRenderFailed    = "render_failed"    // the task completed but the channel refused (part of) the answer
+	OutcomeSendFailed      = "send_failed"      // the turn died before it was sent: the controller refused it
+	OutcomeConnectRequired = "connect_required" // the Session could not start: a muster server waits for the person's consent, the Connect prompt went out and the message is held
 )
 
 // RecordTurnComplete is the `record` value of the log line every turn ends

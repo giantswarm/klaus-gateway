@@ -41,7 +41,12 @@ type connectorCompletion struct {
 	decision teamReviewDecision
 	// answer, set with review naming a decision, is the answer the sign-in
 	// was needed for: the landing submits it again.
-	answer          *decisionAnswer
+	answer *decisionAnswer
+	// held, set for the prompt that answered a Session start muster refused
+	// with its sign-in challenge, is the message the start was for: the
+	// landing runs it as the thread's first turn in place of the synthetic
+	// continuation.
+	held            *heldMessage
 	responseURL     string // recorded by the Connect click; empty until it arrives
 	completed       bool   // landing arrived; the one-shot resume fired
 	promptRewritten bool   // the ephemeral prompt was rewritten to the confirmation
@@ -199,8 +204,9 @@ func (a *Adapter) handleConnectorComplete(w http.ResponseWriter, r *http.Request
 
 // resumeAfterConnectorSignIn dispatches the synthetic continuation into the
 // thread that hit the auth challenge, so the agent retries the blocked tools
-// without the user retyping. Blocking (a replayed turn runs to completion),
-// so it runs on the adapter lifecycle context via background.
+// without the user retyping; for a prompt that held a Session start's
+// message, that message itself. Blocking (a replayed turn runs to
+// completion), so it runs on the adapter lifecycle context via background.
 func (a *Adapter) resumeAfterConnectorSignIn(ctx context.Context, entry connectorCompletion) {
 	msg := channels.InboundMessage{
 		Channel:   ChannelName,
@@ -209,9 +215,13 @@ func (a *Adapter) resumeAfterConnectorSignIn(ctx context.Context, entry connecto
 		Text:      fmt.Sprintf(connectorResumeText, entry.server),
 		Subject:   entry.slackUser,
 	}
-	if err := a.replayDispatch(ctx, msg, entry.channel); err != nil && !errors.Is(err, context.Canceled) {
+	slackChannel := entry.channel
+	if entry.held != nil {
+		msg, slackChannel = entry.held.Msg, entry.held.SlackChannel
+	}
+	if err := a.replayDispatch(ctx, msg, slackChannel); err != nil && !errors.Is(err, context.Canceled) {
 		a.Logger.Error("slack: connector sign-in resume failed", "user", entry.slackUser, "thread", entry.threadTS, "error", err)
-		a.postReplayFailureNote(ctx, entry.channel, entry.threadTS, err)
+		a.postReplayFailureNote(ctx, slackChannel, entry.threadTS, err)
 	}
 }
 

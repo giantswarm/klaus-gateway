@@ -128,7 +128,15 @@ creates one, which a turn that switches agents does mid-thread.
   called through muster as the person behind the turn, with the agent, the
   thread's request id and the conversation's name; agent-manager creates it at
   the controller as that person, and the session id it answers is what the
-  thread binds. The start is idempotent per person and
+  thread binds. A start muster refuses with its sign-in challenge for agent-manager (the
+  server is pinned to a GitHub App and waits for the person's one-time consent) gets the
+  Connect prompt for it, to the person alone, with the message held behind it: the sign-in's
+  landing on the gateway runs it as the thread's first turn, and without a public base URL
+  the prompt says to send it again once connected. The hold is the process's own; after a
+  restart the landing says the link is gone. A collaborator whose turn would start the
+  owner's Session (nothing bound yet) meets the owner's challenge: they get a private note
+  naming the owner and no link, and the owner's own next message gets the prompt. The start
+  is idempotent per person and
   thread, so a retried first turn — the binding was not written, the process died
   in between — gets the same session back instead of a second one. The session
   id and the agent ref are written into the thread's row, every later turn of the
@@ -419,7 +427,9 @@ The gateway learns which tool a `call_tool` result belongs to from the result it
 for a backend's tool `server` and `serverTool`) and carry it in the result's `_meta` under
 `muster.giantswarm.io/tool`. The Connect prompt and the Inspect agent steps log rely on it, so
 both need muster 5.36.0 or later; against an older muster a `call_tool` result names no tool,
-its call still pairs with it by call id, and no Connect prompt is offered.
+its call still pairs with it by call id, and no Connect prompt is offered. The Connect prompt
+that answers a Session start reads muster's challenge from the `start_session` answer itself
+(its structured content, or its text), so it needs no tool name.
 
 ## Slack app setup
 
@@ -744,6 +754,9 @@ Three structured log records (`record=…`, JSON fields) tell a turn's story; jo
   timeline starting at the delivery. Its tokens are the turn's full total, the calls made before
   the restart included; the previous process's `shutdown` record of the same `task_id` holds only
   the calls it saw, so do not sum the two.
+- `session_connect_required` -- a Session start muster refused with its sign-in challenge for
+  a server, the turn ending as `connect_required`: `server`, `agent`, `slack_user`, `owner`
+  (the thread owner the start ran as, on a collaborator's turn), `channel_id`, `thread_id`.
 - `a2a_event` (debug level only, `--log-level=debug`) -- one per A2A event a turn receives:
   `event` (its Go type), `task_id`, and `metadata_keys`, the metadata keys of the event, of its
   status message (`message.` prefix) and of its artifact (`artifact.` prefix), never their values.

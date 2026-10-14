@@ -2,6 +2,7 @@ package slack
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
@@ -49,6 +50,9 @@ func (a *Adapter) runTurn(ctx context.Context, msg channels.InboundMessage, slac
 	// Subject is rewritten to the resolved email below; the raw ID keys access
 	// control and progress surfaces throughout.
 	slackUser := msg.Subject
+	// The message as admitted, before the identities below are resolved onto
+	// it: what a hold keeps, since a replay admits it again from the raw ID.
+	admitted := msg
 
 	// Corrupt-session recovery lives here, not in the callers: the reset must
 	// present the identities the turn ran with (on a collaborator's turn, the
@@ -104,6 +108,15 @@ func (a *Adapter) runTurn(ctx context.Context, msg channels.InboundMessage, slac
 	deltas, err := a.gw.SendCompletion(turnCtx, msg)
 	if err != nil {
 		restoreTask()
+		// Not a failure: the person is signed in, and a muster server the
+		// Session start goes through waits for their consent. The message is
+		// held behind the Connect prompt, which runs it once they have.
+		var connect *pkga2a.ConnectRequiredError
+		if errors.As(err, &connect) {
+			a.completeTurn(ctx, msg, slackUser, channels.OutcomeConnectRequired, err)
+			a.promptSessionConnect(ctx, admitted, slackChannel, slackUser, msg.OwnerID, msg.OwnerToken != "", connect)
+			return nil
+		}
 		if hooks.onFailure != nil && !isCorruptSessionErr(err) {
 			hooks.onFailure(err)
 		}

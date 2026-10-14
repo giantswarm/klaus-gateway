@@ -114,6 +114,23 @@ func (e *AgentUnavailableError) Error() string {
 
 func (e *AgentUnavailableError) Is(target error) bool { return target == ErrAgentUnavailable }
 
+// ConnectRequiredError is muster's sign-in challenge on the way to the
+// controller: the caller is signed in, but the muster server a call goes
+// through (agent-manager, for a Session start) waits for their one-time
+// consent, which LoginURL is where they give. Not ErrNoIdentity: a channel
+// answers it with its Connect prompt for the server, never the sign-in
+// prompt, and runs the turn again once they have connected.
+type ConnectRequiredError struct {
+	// Server is the muster server awaiting the consent.
+	Server string
+	// LoginURL is muster's sign-in link for it.
+	LoginURL string
+}
+
+func (e *ConnectRequiredError) Error() string {
+	return fmt.Sprintf("a2a: muster server %s waits for the caller's sign-in", e.Server)
+}
+
 // Config configures a Client.
 type Config struct {
 	// Target is the controller's gRPC endpoint, reached through agentgateway:

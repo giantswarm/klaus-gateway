@@ -236,8 +236,10 @@ ServiceMonitor). Beside the public mux's `klaus_gateway_requests_total` /
   `completed`, `input_required` (paused on a prompt), `canceled` (the `stop` word, the stop button, a
   closed stream), `shutdown` (the gateway's restart cut it short), `timeout` (the 30-minute turn
   deadline), `failed` (the task failed or the stream broke), `render_failed` (the task completed
-  but the channel refused part of the answer) and `send_failed` (the turn died before it was
-  sent: the controller refused it). A `failed` or `send_failed` turn carries what broke as
+  but the channel refused part of the answer), `send_failed` (the turn died before it was
+  sent: the controller refused it) and `connect_required` (the Session could not start: a
+  muster server waits for the person's consent, the Connect prompt went out and the message
+  is held). A `failed` or `send_failed` turn carries what broke as
   `failure_class`: `tools` (the agent's MCP tool set), `platform` (the connection to the
   controller or the runtime), `model` (the model or its provider), `policy` (a gateway policy
   refused it) or `unknown`; every other turn has none. One person's model error is noise; a

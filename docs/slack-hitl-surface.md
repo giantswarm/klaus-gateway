@@ -312,6 +312,13 @@ consent flow in the browser; Not now dismisses it (a per-user/per-backend cooldo
 re-prompts). Both button `value`s carry the backend name; replace `https://…` with a real URL
 for the Builder to accept it.
 
+The same prompt, without *Not now*, answers a Session start that muster refused with its
+sign-in challenge for agent-manager (the person has not consented to the server's GitHub App):
+"The conversation can't start yet: *agent-manager* needs you to connect your account once.
+Connect it, and your message is sent to the agent." The message is held and the sign-in's
+landing runs it as the thread's first turn; without a public base URL the text ends "Connect
+it, then send your message again." instead.
+
 ```json
 {
   "blocks": [

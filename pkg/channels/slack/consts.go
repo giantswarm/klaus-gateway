@@ -130,6 +130,23 @@ func connectorDismissedNotice() string {
 // without the user retyping; %s is the backend name.
 const connectorResumeText = "I've signed in to %s, continue"
 
+// sessionConnectNote leads the Connect prompt that answers a Session start
+// muster refused with its sign-in challenge: the person is signed in, but the
+// server the start goes through waits for their one-time consent; %s is the
+// server. One of the tails follows: the resume tail when the link lands back
+// on the gateway, which runs the held message by itself, the resend tail when
+// it cannot (no public base URL).
+const (
+	sessionConnectNote       = "The conversation can't start yet: *%s* needs you to connect your account once."
+	sessionConnectResumeTail = " Connect it, and your message is sent to the agent."
+	sessionConnectResendTail = " Connect it, then send your message again."
+)
+
+// sessionConnectOwnerNote answers a collaborator whose turn would start the
+// thread owner's Session: the consent is the owner's to give, so no link for
+// the sender; %s are the owner's Slack user ID and the server.
+const sessionConnectOwnerNote = "The conversation can't start yet: <@%s> needs to connect *%s* once. Ask them to mention the agent here, then send your message again."
+
 // payloadTypeBlockActions is the interaction payload type for Block Kit button
 // clicks; payloadTypeMessageAction is the type for message shortcuts (the ⋯ →
 // Apps menu); payloadTypeViewSubmission is the type for a submitted modal (the
