@@ -3177,6 +3177,23 @@ func (c *slackAPIClient) postConnectorPrompt(ctx context.Context, channel, threa
 // completion-state ID when the login URL carries a post-login redirect, else
 // the server name (the click stays a no-op then).
 func (c *slackAPIClient) postConnectPrompt(ctx context.Context, channel, threadID, user, text, server, loginURL, connectValue string, dismiss bool) error {
+	body := map[string]any{
+		paramChannel: channel,
+		paramUser:    user,
+		paramText:    text,
+		paramBlocks:  connectPromptBlocks(text, server, loginURL, connectValue, dismiss),
+	}
+	if threadID != "" {
+		body[paramThreadTS] = threadID
+	}
+	_, err := c.postJSON(ctx, "chat.postEphemeral", body)
+	return err
+}
+
+// connectPromptBlocks are a Connect prompt's blocks: text over a
+// "Connect <server>" URL button opening loginURL with connectValue as its
+// value, and a "Not now" button when dismiss is set.
+func connectPromptBlocks(text, server, loginURL, connectValue string, dismiss bool) []any {
 	elements := []any{
 		map[string]any{
 			bkType:     bkButton,
@@ -3195,23 +3212,13 @@ func (c *slackAPIClient) postConnectPrompt(ctx context.Context, channel, threadI
 			bkValue:    server,
 		})
 	}
-	body := map[string]any{
-		paramChannel: channel,
-		paramUser:    user,
-		paramText:    text,
-		paramBlocks: []any{
-			map[string]any{
-				bkType: bkSection,
-				bkText: map[string]any{bkType: bkMrkdwn, bkText: text},
-			},
-			map[string]any{bkType: bkActions, bkElements: elements},
+	return []any{
+		map[string]any{
+			bkType: bkSection,
+			bkText: map[string]any{bkType: bkMrkdwn, bkText: text},
 		},
+		map[string]any{bkType: bkActions, bkElements: elements},
 	}
-	if threadID != "" {
-		body[paramThreadTS] = threadID
-	}
-	_, err := c.postJSON(ctx, "chat.postEphemeral", body)
-	return err
 }
 
 // postEphemeralText posts a plain in-thread message visible only to user.

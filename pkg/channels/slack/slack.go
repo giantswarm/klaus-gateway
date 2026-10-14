@@ -230,6 +230,13 @@ type Adapter struct {
 	signInNoticesMu sync.Mutex
 	signInNotices   map[string]ttlEntry[*signInNotice]
 
+	// sessionConnectMu guards sessionConnects, where a Session start's Connect
+	// prompt put its button per (user, thread): the thread's waiting line and
+	// the person's card, refreshed in place by a re-issued prompt and rewritten
+	// by the completed sign-in (session_connect.go).
+	sessionConnectMu sync.Mutex
+	sessionConnects  map[string]ttlEntry[sessionConnectSurfaces]
+
 	// seenThreadsMu guards seenThreads, the threads this process has handled a
 	// turn in. Deliberately in-memory: "first sight" means first sight by THIS
 	// process, which is what the post-restart checks (a leftover turn to

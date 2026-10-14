@@ -174,6 +174,9 @@ func (a *Adapter) handleConnectorComplete(w http.ResponseWriter, r *http.Request
 		})
 	}
 	message := "You can close this tab and return to Slack. The conversation continues there."
+	if entry.held != nil {
+		message = "You can close this tab and return to Slack. Your message is on its way to the agent there."
+	}
 	if entry.review != "" {
 		noun := entry.decision.noun()
 		if entry.answer != nil {
@@ -190,6 +193,9 @@ func (a *Adapter) handleConnectorComplete(w http.ResponseWriter, r *http.Request
 			if entry.review != "" {
 				a.resumeTeamReviewDecision(ctx, entry)
 				return
+			}
+			if entry.held != nil {
+				a.completeSessionConnect(ctx, entry)
 			}
 			a.resumeAfterConnectorSignIn(ctx, entry)
 		})

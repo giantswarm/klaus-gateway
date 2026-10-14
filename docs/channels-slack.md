@@ -133,7 +133,15 @@ creates one, which a turn that switches agents does mid-thread.
   Connect prompt for it, to the person alone, with the message held behind it: the sign-in's
   landing on the gateway runs it as the thread's first turn, and without a public base URL
   the prompt says to send it again once connected. The hold is the process's own; after a
-  restart the landing says the link is gone. A collaborator whose turn would start the
+  restart the landing says the link is gone. Where the prompt goes follows the sign-in
+  prompt: in a DM the card is a message of the conversation; in a channel thread the card is
+  ephemeral, so it also goes to the person's DM with the app, led by a line that links the
+  thread, and a line everyone in the thread sees says whom it waits for and where the button
+  is ("Waiting for @Jose to connect *agent-manager* (the Connect button is in a direct message
+  from the app)"). A later message of the person's before they connect posts the ephemeral
+  again and refreshes the DM card and the line in place; the landing rewrites the line to
+  "@Jose connected *agent-manager*." and the card to a confirmation, and replaces the clicked
+  prompt through its click's `response_url`. A collaborator whose turn would start the
   owner's Session (nothing bound yet) meets the owner's challenge: they get a private note
   naming the owner and no link, and the owner's own next message gets the prompt. The start
   is idempotent per person and
