@@ -9,7 +9,7 @@ that adds notes heads them `## Next — <title>`; the change that prepares a rel
 renames each `Next` to that version, and `make check-upgrade-notes` refuses a
 stable release tag while a `Next` section with content is left.
 
-## Next — the authorize modal needs muster's core_auth_status
+## 4.7.0 — the authorize modal needs muster's core_auth_status
 
 - With `obo.connectorsEnabled`, Slack offers the authorize modal (every server waiting for the
   person's grant, in one place) after sign-in, on `/<command> connect` and beside every Connect
