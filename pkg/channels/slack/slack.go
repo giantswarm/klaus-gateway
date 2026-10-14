@@ -118,6 +118,12 @@ type Adapter struct {
 	// Tools calls a muster tool as a linked person; the team-review Approve
 	// click runs the review's tool through it. Nil disables team reviews.
 	Tools ToolCaller
+	// Grants asks muster, as the linked person, which MCP servers still need
+	// their one-time grant and which link starts each (core_auth_status). Set
+	// with ConnectorPrompts, it offers the authorize modal: after sign-in,
+	// from `/<command> connect` and beside every Connect prompt. Nil, the
+	// default, offers none.
+	Grants ToolCaller
 	// Workspaces asks the workspace-manager, as the linked person, which
 	// workspaces they may pick and whether they may start a Session on one.
 	// Nil, the default, is workspaces off.
@@ -370,6 +376,9 @@ type Adapter struct {
 	// later posts skip the doomed branded attempt and go straight to the app
 	// identity. Same auto-downgrade shape as reactionsUnsupported.
 	customizeUnsupported atomic.Bool
+	// grantsUnsupported is latched when muster refuses core_auth_status as
+	// an unknown tool: the authorize modal is then not offered.
+	grantsUnsupported atomic.Bool
 
 	// connectorCompletionsMu guards connectorCompletions: short-lived state
 	// minted when a Connect button is decorated with a post-login redirect,
@@ -378,6 +387,12 @@ type Adapter struct {
 	// browser landing marks it completed and fires the one-shot resume.
 	connectorCompletionsMu sync.Mutex
 	connectorCompletions   map[string]ttlEntry[connectorCompletion]
+
+	// authorizeModalsMu guards authorizeModals: the open authorize modals by
+	// view ID, so a grant's browser landing can redraw the modal it was
+	// started from.
+	authorizeModalsMu sync.Mutex
+	authorizeModals   map[string]ttlEntry[*authorizeModal]
 }
 
 // connectorPromptRecord is the last connect prompt surfaced for a
@@ -702,7 +717,7 @@ func (a *Adapter) apiClient() *slackAPIClient {
 	if base == "" {
 		base = slackAPIBase
 	}
-	return &slackAPIClient{botToken: a.Secrets.BotToken, baseURL: base, logger: a.Logger, customizeUnsupported: &a.customizeUnsupported, rateLimits: a.RateLimits}
+	return &slackAPIClient{botToken: a.Secrets.BotToken, baseURL: base, logger: a.Logger, customizeUnsupported: &a.customizeUnsupported, rateLimits: a.RateLimits, authorizeAll: a.authorizeModalOffered()}
 }
 
 // AgentCardResolver yields an agent's display identity from its A2A AgentCard.
@@ -1734,6 +1749,7 @@ func (a *Adapter) OnUserLinked(_ context.Context, slackUser, _ string) {
 	// immaterial: the prompt and the agent's thread reply are independent
 	// messages.
 	a.background(func(ctx context.Context) { a.updateSignInAnchors(ctx, slackUser) })
+	a.background(func(ctx context.Context) { a.offerAuthorizeAfterSignIn(ctx, slackUser) })
 	for _, queue := range queues {
 		a.background(func(ctx context.Context) {
 			for _, req := range queue {

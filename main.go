@@ -216,6 +216,9 @@ func run(args []string) error {
 		if cfg.OBO.ConnectorsEnabled && slackAdapter != nil {
 			slackAdapter.ConnectorPrompts = true
 			slackAdapter.PublicBaseURL = cfg.OBO.CallbackBaseURL
+			// The authorize modal reads the person's grant status from muster
+			// (core_auth_status) and lands every grant like a Connect prompt.
+			slackAdapter.Grants = musterClient
 			logger.Info("slack connector prompts enabled")
 		}
 	}

@@ -349,6 +349,40 @@ carries the completion state in its `value`, so a click on it is replaced throug
 
 <img width="721" height="159" alt="image" src="https://github.com/user-attachments/assets/64649be1-74d6-4012-86d2-14f8d0998a84" />
 
+Where the gateway can read the person's grant status (see the authorize modal below), every
+Connect prompt carries *Authorize all* after its Connect button (`action_id`
+`authorize_all_open`, `value` the prompt's completion state, or empty).
+
+### Authorize your tools (modal)
+
+A modal (`callback_id` `authorize_modal`, close button *Done*), opened by *Authorize all*, by
+`/<command> connect` and from the direct message after sign-in. It reads "*1 of 2* tools are
+authorized. Authorize each one once; the agent can use it for you from then on, in every
+conversation.", then one section per server reached with a grant of the person's: its name and
+state (*Authorized*, *Needs your authorization*, *Authorize again*, *Deactivated by its
+administrator*, *Not reachable right now*, or muster's reason), and while the grant is missing
+an *Authorize* URL button (`action_id` `authorize_grant_open`, `value` the server). A context
+line counts the servers that come with the sign-in; *Refresh* (`authorize_refresh`) redraws it
+with new links. Each grant's landing redraws the modal by its view ID.
+
+```json
+{
+  "type": "modal",
+  "callback_id": "authorize_modal",
+  "title": { "type": "plain_text", "text": "Authorize your tools" },
+  "close": { "type": "plain_text", "text": "Done" },
+  "blocks": [
+    { "type": "section", "text": { "type": "mrkdwn", "text": "*1 of 2* tools are authorized. Authorize each one once; the agent can use it for you from then on, in every conversation." } },
+    { "type": "divider" },
+    { "type": "section", "text": { "type": "mrkdwn", "text": "*agent-manager*\n:large_orange_circle: Needs your authorization" },
+      "accessory": { "type": "button", "text": { "type": "plain_text", "text": "Authorize" }, "style": "primary", "action_id": "authorize_grant_open", "value": "agent-manager", "url": "https://example.com/connect" } },
+    { "type": "section", "text": { "type": "mrkdwn", "text": "*github*\n:large_green_circle: Authorized" } },
+    { "type": "context", "elements": [ { "type": "mrkdwn", "text": "3 more come with your sign-in and need nothing else." } ] },
+    { "type": "actions", "elements": [ { "type": "button", "text": { "type": "plain_text", "text": "Refresh" }, "action_id": "authorize_refresh" } ] }
+  ]
+}
+```
+
 ## 8. OBO sign-in (act-as-user account linking)
 
 Posted when a turn needs the user's token but they haven't linked their account. In a

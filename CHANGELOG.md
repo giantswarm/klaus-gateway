@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Slack: the authorize modal lists every muster server the person reaches with a grant of their own (each GitHub App behind a `*-manager` server, GitHub, Slack, …), its state and an *Authorize* button with the link that starts the grant, so the person grants everything once in one place instead of meeting one Connect prompt per server after a failed turn. It opens from the direct message after sign-in when a grant is missing, from `/<command> connect`, and from *Authorize all* beside every Connect prompt; each grant's landing redraws it. Opened from the prompt that held a Session start's message, granting that server from the modal runs the message. Needs `obo.connectorsEnabled` and a muster with `core_auth_status` (giantswarm/muster#1507); an older muster withdraws the offer (giantswarm/klaus-gateway#468).
+
 ### Changed
 
 - Slack: whether a thread's collaborators may instruct its agent is kagent's decision, not the gateway's. A collaborator's turn whose share kagent's `CreateSessionShare` refuses (`FailedPrecondition`: from kagent 1.11.1, a Session on any Harness runtime but `kagent`, or of an Agent that is gone) is not passed on, and the thread is told kagent's reason. The refusal is recorded on the thread's row (`share_refusal`, dropped with the binding), so later collaborator turns are refused from the row and a newcomer gets the reason privately instead of an access prompt. Needs kagent 1.11.1 or later, see UPGRADE.md.
