@@ -147,6 +147,28 @@ const (
 // the sender; %s are the owner's Slack user ID and the server.
 const sessionConnectOwnerNote = "The conversation can't start yet: <@%s> needs to connect *%s* once. Ask them to mention the agent here, then send your message again."
 
+// The waiting line a Session start's Connect prompt posts in a channel
+// thread, which everyone sees: whom the thread waits for and, while their DM
+// holds the card, where the button is; it never carries the link, which is
+// the person's alone. Once the sign-in lands it says who connected. %s are
+// the person's Slack user ID and the server. The card is rewritten once the
+// consent is settled: sessionConnectCardDone when the prompt's own link
+// landed and the held message runs, sessionConnectCardConnected when the
+// person's next turn found them connected and the held message stays
+// unsent; %s is the server.
+const (
+	sessionConnectWaitingFormat   = "Waiting for <@%s> to connect *%s*"
+	sessionConnectWaitingDMHint   = " (the Connect button is in a direct message from the app)"
+	sessionConnectConnectedFormat = "<@%s> connected *%s*."
+	sessionConnectCardDone        = "Connected *%s*. Your message is on its way to the agent."
+	sessionConnectCardConnected   = "Connected *%s*."
+)
+
+// sessionConnectSupersededNote replaces the earlier card of a DM
+// conversation when a later message gets a card of its own, so one button is
+// live; %s is the server.
+const sessionConnectSupersededNote = "Connect *%s* with the newer prompt below."
+
 // payloadTypeBlockActions is the interaction payload type for Block Kit button
 // clicks; payloadTypeMessageAction is the type for message shortcuts (the ⋯ →
 // Apps menu); payloadTypeViewSubmission is the type for a submitted modal (the
