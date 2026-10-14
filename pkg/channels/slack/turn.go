@@ -2,6 +2,7 @@ package slack
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
@@ -104,6 +105,15 @@ func (a *Adapter) runTurn(ctx context.Context, msg channels.InboundMessage, slac
 	deltas, err := a.gw.SendCompletion(turnCtx, msg)
 	if err != nil {
 		restoreTask()
+		// Not a failure: the person is signed in, and a muster server the
+		// Session start goes through waits for their consent. The message is
+		// held behind the Connect prompt, which runs it once they have.
+		var connect *pkga2a.ConnectRequiredError
+		if errors.As(err, &connect) {
+			a.completeTurn(ctx, msg, slackUser, channels.OutcomeConnectRequired, err)
+			a.promptSessionConnect(ctx, msg, slackChannel, slackUser, connect)
+			return nil
+		}
 		if hooks.onFailure != nil && !isCorruptSessionErr(err) {
 			hooks.onFailure(err)
 		}
