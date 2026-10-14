@@ -195,7 +195,7 @@ func (a *Adapter) handleConnectorComplete(w http.ResponseWriter, r *http.Request
 				return
 			}
 			if entry.held != nil {
-				a.completeSessionConnect(ctx, entry)
+				a.settleSessionConnect(ctx, entry.slackUser, entry.threadTS)
 			}
 			a.resumeAfterConnectorSignIn(ctx, entry)
 		})

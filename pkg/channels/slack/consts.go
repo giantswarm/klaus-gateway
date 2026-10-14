@@ -160,6 +160,11 @@ const (
 	sessionConnectCardDone        = "Connected *%s*. Your message is on its way to the agent."
 )
 
+// sessionConnectSupersededNote replaces the earlier card of a DM
+// conversation when a later message gets a card of its own, so one button is
+// live; %s is the server.
+const sessionConnectSupersededNote = "Connect *%s* with the newer prompt below."
+
 // payloadTypeBlockActions is the interaction payload type for Block Kit button
 // clicks; payloadTypeMessageAction is the type for message shortcuts (the ⋯ →
 // Apps menu); payloadTypeViewSubmission is the type for a submitted modal (the

@@ -12,15 +12,19 @@ import (
 // sessionConnectSurfaces is where a Session start's Connect prompt put its
 // button so the person finds it, per (user, thread): in a channel thread the
 // waiting line everyone sees and the card in the person's DM, in a DM
-// conversation the card itself, a message of the conversation. A re-issued
-// prompt refreshes them in place, and the completed sign-in rewrites them.
+// conversation the latest card, a message of the conversation. A re-issued
+// prompt refreshes the line and the DM card in place, and the settled
+// consent rewrites them. Kept for pendingTTL, the lifetime of a parked
+// message: the link's own expiry only ends the landing.
 type sessionConnectSurfaces struct {
 	server   string
 	channel  string // the thread's channel
 	threadTS string
 	lineTS   string // the waiting line in the thread; "" when none was posted
+	dmed     bool   // the line says the DM holds the card
 	// cardChannel and cardTS address the card: the DM card of a channel
-	// prompt, or the message of a DM conversation; "" when none was posted.
+	// prompt, or the latest message of a DM conversation; "" when none was
+	// posted.
 	cardChannel string
 	cardTS      string
 }
@@ -38,8 +42,7 @@ func (a *Adapter) sessionConnectFor(slackUser, threadID string) (sessionConnectS
 	return entry.value, true
 }
 
-// recordSessionConnect keeps the surfaces of (slackUser, threadID) for the
-// link's lifetime, the window a landing can arrive in.
+// recordSessionConnect keeps the surfaces of (slackUser, threadID).
 func (a *Adapter) recordSessionConnect(slackUser, threadID string, s sessionConnectSurfaces) {
 	now := time.Now()
 	a.sessionConnectMu.Lock()
@@ -48,12 +51,12 @@ func (a *Adapter) recordSessionConnect(slackUser, threadID string, s sessionConn
 		a.sessionConnects = make(map[string]ttlEntry[sessionConnectSurfaces])
 	}
 	sweepExpired(a.sessionConnects, now)
-	a.sessionConnects[sessionConnectKey(slackUser, threadID)] = ttlEntry[sessionConnectSurfaces]{value: s, expires: now.Add(connectorCompletionTTL)}
+	a.sessionConnects[sessionConnectKey(slackUser, threadID)] = ttlEntry[sessionConnectSurfaces]{value: s, expires: now.Add(pendingTTL)}
 }
 
 // takeSessionConnect returns and forgets the surfaces of (slackUser,
-// threadID), so the completed sign-in rewrites them once and a later prompt
-// in the thread starts afresh.
+// threadID), so the settled consent rewrites them once and a later prompt in
+// the thread starts afresh.
 func (a *Adapter) takeSessionConnect(slackUser, threadID string) (sessionConnectSurfaces, bool) {
 	a.sessionConnectMu.Lock()
 	defer a.sessionConnectMu.Unlock()
@@ -80,12 +83,16 @@ func (a *Adapter) takeSessionConnect(slackUser, threadID string) (sessionConnect
 //
 // Where the prompt goes follows the sign-in prompt (klaus-gateway#406). In a
 // DM conversation the card is a message of the conversation: one reader, and
-// only real messages render in the assistant pane. In a channel thread the
-// link is the person's alone, so the card is ephemeral; an ephemeral reaches
-// only a Slack client that is open when it goes out and shows nothing from
-// the channel, so the same card also goes to the person's DM, and a line
-// everyone in the thread sees says whom it waits for and where the button is.
-// A re-issued prompt refreshes the card and the line in place.
+// only real messages render in the assistant pane; a later message gets a
+// card of its own under it, and the earlier card loses its button. In a
+// channel thread the link is the person's alone, so the card is ephemeral; an
+// ephemeral reaches only a Slack client that is open when it goes out and
+// shows nothing from the channel, so the same card also goes to the person's
+// DM, and a line everyone in the thread sees says whom it waits for and where
+// the button is. A re-issued prompt refreshes the DM card and the line in
+// place. Only the ephemeral's button carries the completion state in its
+// value: a click on it records the response_url that replaces it, while the
+// cards, real messages, are rewritten in place by settleSessionConnect.
 //
 // When the start ran as the thread's owner (asOwner: a collaborator's turn
 // that starts the owner's Session), the challenge and its link are the
@@ -121,24 +128,28 @@ func (a *Adapter) promptSessionConnect(ctx context.Context, msg channels.Inbound
 		}
 	}
 	text := fmt.Sprintf(sessionConnectNote, escapeMrkdwn(server)) + tail
-	prev, _ := a.sessionConnectFor(slackUser, msg.ThreadID)
-	surfaces := sessionConnectSurfaces{server: server, channel: slackChannel, threadTS: msg.ThreadID, lineTS: prev.lineTS, cardChannel: prev.cardChannel, cardTS: prev.cardTS}
+	surfaces, _ := a.sessionConnectFor(slackUser, msg.ThreadID)
+	surfaces.server, surfaces.channel, surfaces.threadTS = server, slackChannel, msg.ThreadID
 
 	if isDMChannelID(slackChannel) {
-		if surfaces.cardTS == "" || client.updateConnectPrompt(ctx, surfaces.cardChannel, surfaces.cardTS, "", text, server, promptURL, connectValue) != nil {
-			ts, err := client.postConnectPromptMessage(ctx, slackChannel, msg.ThreadID, text, server, promptURL, connectValue)
-			if err != nil {
-				a.Logger.Warn("slack: post session connect prompt failed", "thread", msg.ThreadID, "server", server, "error", err)
-				return
+		if surfaces.cardTS != "" {
+			superseded := fmt.Sprintf(sessionConnectSupersededNote, escapeMrkdwn(server))
+			if err := client.chatUpdate(ctx, surfaces.cardChannel, surfaces.cardTS, superseded, []any{sectionBlock(superseded)}); err != nil {
+				a.Logger.Warn("slack: retire earlier session connect card failed", "thread", msg.ThreadID, "error", err)
 			}
-			surfaces.cardChannel, surfaces.cardTS = slackChannel, ts
 		}
+		ts, err := client.postConnectPromptMessage(ctx, slackChannel, msg.ThreadID, text, server, promptURL, server)
+		if err != nil {
+			a.Logger.Warn("slack: post session connect prompt failed", "thread", msg.ThreadID, "server", server, "error", err)
+			return
+		}
+		surfaces.cardChannel, surfaces.cardTS = slackChannel, ts
 		a.recordSessionConnect(slackUser, msg.ThreadID, surfaces)
 		return
 	}
 
 	origin := a.signInOrigin(ctx, client, slackChannel, msg.ThreadID)
-	dmed := a.sendSessionConnectDM(ctx, client, &surfaces, slackUser, origin, text, promptURL, connectValue)
+	dmed := a.sendSessionConnectDM(ctx, client, &surfaces, slackUser, origin, text, promptURL)
 	a.ensureSessionConnectLine(ctx, client, &surfaces, slackUser, dmed)
 	a.recordSessionConnect(slackUser, msg.ThreadID, surfaces)
 	if err := client.postConnectPrompt(ctx, slackChannel, msg.ThreadID, slackUser, text, server, promptURL, connectValue, false); err != nil {
@@ -152,15 +163,15 @@ func (a *Adapter) promptSessionConnect(ctx context.Context, msg channels.Inbound
 // live card however often the prompt is re-issued; one that cannot be
 // refreshed is replaced. A failure costs only the DM: the ephemeral still
 // goes out, and the line does not point at a DM that is not there.
-func (a *Adapter) sendSessionConnectDM(ctx context.Context, client *slackAPIClient, s *sessionConnectSurfaces, slackUser, origin, text, loginURL, connectValue string) bool {
+func (a *Adapter) sendSessionConnectDM(ctx context.Context, client *slackAPIClient, s *sessionConnectSurfaces, slackUser, origin, text, loginURL string) bool {
 	if s.cardTS != "" {
-		err := client.updateConnectPrompt(ctx, s.cardChannel, s.cardTS, origin, text, s.server, loginURL, connectValue)
+		err := client.updateConnectPrompt(ctx, s.cardChannel, s.cardTS, origin, text, s.server, loginURL, s.server)
 		if err == nil {
 			return true
 		}
 		a.Logger.Warn("slack: refresh session connect DM failed, posting a new one", "user", slackUser, "thread", s.threadTS, "error", err)
 	}
-	channel, ts, err := client.postConnectPromptDM(ctx, slackUser, origin, text, s.server, loginURL, connectValue)
+	channel, ts, err := client.postConnectPromptDM(ctx, slackUser, origin, text, s.server, loginURL, s.server)
 	if err != nil {
 		a.Logger.Warn("slack: post session connect DM failed", "user", slackUser, "thread", s.threadTS, "error", err)
 		s.cardChannel, s.cardTS = "", ""
@@ -174,6 +185,9 @@ func (a *Adapter) sendSessionConnectDM(ctx context.Context, client *slackAPIClie
 // one there when whether the DM holds the card changed. The line carries no
 // link: that is the person's alone.
 func (a *Adapter) ensureSessionConnectLine(ctx context.Context, client *slackAPIClient, s *sessionConnectSurfaces, slackUser string, dmed bool) {
+	if s.lineTS != "" && s.dmed == dmed {
+		return
+	}
 	text := fmt.Sprintf(sessionConnectWaitingFormat, slackUser, escapeMrkdwn(s.server))
 	if dmed {
 		text += sessionConnectWaitingDMHint
@@ -184,26 +198,32 @@ func (a *Adapter) ensureSessionConnectLine(ctx context.Context, client *slackAPI
 			a.Logger.Warn("slack: post session connect line failed", "thread", s.threadTS, "error", err)
 			return
 		}
-		s.lineTS = ts
+		s.lineTS, s.dmed = ts, dmed
 		return
 	}
 	if err := client.chatUpdate(ctx, s.channel, s.lineTS, text, []any{contextBlock(text)}); err != nil {
 		a.Logger.Warn("slack: rewrite session connect line failed", "thread", s.threadTS, "error", err)
+		return
 	}
+	s.dmed = dmed
 }
 
-// completeSessionConnect rewrites the surfaces of the prompt entry answered
-// once its sign-in landed: the waiting line to who connected, the card to the
-// confirmation. The ephemeral is replaced through its click's response_url by
-// the caller, when the click reached this process.
-func (a *Adapter) completeSessionConnect(ctx context.Context, entry connectorCompletion) {
-	s, ok := a.takeSessionConnect(entry.slackUser, entry.threadTS)
+// settleSessionConnect rewrites the surfaces of the prompt (slackUser,
+// threadID) got, once the consent is given: the waiting line to who
+// connected, the card to the confirmation. Called by the landing of the
+// prompt's own link, and by the person's next turn in the thread that starts
+// its Session, however they connected (another thread's prompt, another
+// muster client, a gateway without a public base URL). The ephemeral is
+// replaced through its click's response_url by the landing, when the click
+// reached this process.
+func (a *Adapter) settleSessionConnect(ctx context.Context, slackUser, threadID string) {
+	s, ok := a.takeSessionConnect(slackUser, threadID)
 	if !ok {
 		return
 	}
 	client := a.apiClient()
 	if s.lineTS != "" {
-		text := fmt.Sprintf(sessionConnectConnectedFormat, entry.slackUser, escapeMrkdwn(s.server))
+		text := fmt.Sprintf(sessionConnectConnectedFormat, slackUser, escapeMrkdwn(s.server))
 		if err := client.chatUpdate(ctx, s.channel, s.lineTS, text, []any{contextBlock(text)}); err != nil {
 			a.Logger.Warn("slack: rewrite session connect line after sign-in failed", "thread", s.threadTS, "error", err)
 		}

@@ -318,14 +318,17 @@ sign-in challenge for agent-manager (the person has not consented to the server'
 Connect it, and your message is sent to the agent." The message is held and the sign-in's
 landing runs it as the thread's first turn; without a public base URL the text ends "Connect
 it, then send your message again." instead. In a DM the card is a message of the
-conversation. In a channel thread it is ephemeral, so the same card, led by "Asked in a thread
-in #channel." (the thread linked), also goes to the person's DM with the app, and a context
-line in the thread says whom it waits for and where the button is ("Waiting for @Jose to
-connect *agent-manager* (the Connect button is in a direct message from the app)"); a later
-message of the person's refreshes the card and the line in place. Once the sign-in lands, the
-line reads "@Jose connected *agent-manager*.", the card "Connected *agent-manager*. Your
-message is on its way to the agent.", and the clicked prompt is replaced through its
-`response_url`.
+conversation; a later message gets a card of its own, and the earlier one is rewritten to
+"Connect *agent-manager* with the newer prompt below." In a channel thread it is ephemeral, so
+the same card, led by "Asked in a thread in #channel." (the thread linked), also goes to the
+person's DM with the app, and a context line in the thread says whom it waits for and where
+the button is ("Waiting for @Jose to connect *agent-manager* (the Connect button is in a
+direct message from the app)"); a later message of the person's refreshes the card and the
+line in place. Once the person has connected, by the link's landing or by their next turn
+that starts the Session, the line reads "@Jose connected *agent-manager*." and the card
+"Connected *agent-manager*. Your message is on its way to the agent." The ephemeral's button
+carries the completion state in its `value`, so a click on it is replaced through its
+`response_url`; the cards' buttons carry the server name and are rewritten in place.
 
 ```json
 {

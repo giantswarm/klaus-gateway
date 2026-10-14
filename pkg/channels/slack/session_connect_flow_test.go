@@ -81,10 +81,31 @@ func connectButtonIn(calls []recordedCall) (buttonURL, buttonValue string, call 
 	return "", "", recordedCall{}, false
 }
 
+// stateOf is the completion state a decorated login URL lands with.
+func stateOf(t *testing.T, buttonURL string) string {
+	t.Helper()
+	parsed, err := url.Parse(buttonURL)
+	require.NoError(t, err)
+	landing, err := url.Parse(parsed.Query().Get("redirect"))
+	require.NoError(t, err)
+	return landing.Query().Get("s")
+}
+
 // postsTo are the chat.postMessage calls into channel.
 func postsTo(fake *fakeSlackAPI, channel string) []recordedCall {
 	var calls []recordedCall
 	for _, c := range fake.pathCalls("chat.postMessage") {
+		if c.params["channel"] == channel {
+			calls = append(calls, c)
+		}
+	}
+	return calls
+}
+
+// updatesIn are the chat.update calls into channel.
+func updatesIn(fake *fakeSlackAPI, channel string) []recordedCall {
+	var calls []recordedCall
+	for _, c := range fake.pathCalls("chat.update") {
 		if c.params["channel"] == channel {
 			calls = append(calls, c)
 		}
@@ -125,16 +146,16 @@ func TestSessionConnect_ChannelThreadPromptsEverywhereAndRunsTheHeldMessage(t *t
 	ephemeral := allText(fake.pathCalls("chat.postEphemeral"))
 	require.Contains(t, ephemeral, "*agent-manager* needs you to connect your account once")
 	require.Contains(t, ephemeral, "your message is sent to the agent")
-	require.NotEqual(t, "agent-manager", stateID, "the button value is the completion state, not the server name")
+	require.NotEqual(t, "agent-manager", stateID, "the ephemeral's button value is the completion state")
+	require.Equal(t, stateID, stateOf(t, buttonURL), "the state the link lands with")
 	parsed, err := url.Parse(buttonURL)
 	require.NoError(t, err)
 	require.Equal(t, "abc", parsed.Query().Get("state"), "muster's own link survives decoration")
-	require.Equal(t, "https://gw.example/connectors/complete?s="+stateID, parsed.Query().Get("redirect"))
 
-	dmURL, dmState, dmCard, ok := connectButtonIn(postsTo(fake, "U1"))
+	dmURL, dmValue, dmCard, ok := connectButtonIn(postsTo(fake, "U1"))
 	require.True(t, ok, "the same card goes to the person's DM")
 	require.Equal(t, buttonURL, dmURL, "the DM card carries the same decorated link")
-	require.Equal(t, stateID, dmState, "and the same completion state")
+	require.Equal(t, "agent-manager", dmValue, "the card's button carries the server, not the state: its click records no response_url")
 	require.Contains(t, fmt.Sprint(dmCard.params["blocks"]), "Asked in a thread in <#C1>.", "the card says where it was asked")
 	require.Len(t, postsTo(fake, "U1"), 1)
 
@@ -172,20 +193,11 @@ func TestSessionConnect_ChannelThreadPromptsEverywhereAndRunsTheHeldMessage(t *t
 
 	require.Eventually(t, func() bool {
 		return strings.Contains(capturedBody(), "Signed in to agent-manager")
-	}, flowWait, 20*time.Millisecond, "the clicked prompt is rewritten to the confirmation")
+	}, flowWait, 20*time.Millisecond, "the clicked ephemeral is replaced with the confirmation")
 	require.Eventually(t, func() bool {
-		updates := allText(fake.pathCalls("chat.update"))
-		return strings.Contains(updates, "<@U1> connected *agent-manager*.") &&
-			strings.Contains(updates, "Connected *agent-manager*. Your message is on its way to the agent.")
+		return strings.Contains(allText(updatesIn(fake, "C1")), "<@U1> connected *agent-manager*.") &&
+			strings.Contains(allText(updatesIn(fake, "U1")), "Connected *agent-manager*. Your message is on its way to the agent.")
 	}, flowWait, 20*time.Millisecond, "the line and the DM card are rewritten")
-	for _, c := range fake.pathCalls("chat.update") {
-		if strings.Contains(allText([]recordedCall{c}), "<@U1> connected") {
-			require.Equal(t, "C1", c.params["channel"], "the line is rewritten in the thread's channel")
-		}
-		if strings.Contains(allText([]recordedCall{c}), "Connected *agent-manager*") {
-			require.Equal(t, "U1", c.params["channel"], "the card is rewritten in the DM")
-		}
-	}
 	require.Eventually(t, func() bool {
 		dispatched.mu.Lock()
 		defer dispatched.mu.Unlock()
@@ -201,19 +213,20 @@ func TestSessionConnect_ChannelThreadPromptsEverywhereAndRunsTheHeldMessage(t *t
 	require.Eventually(t, func() bool {
 		return strings.Contains(fake.streamedText(), "ok")
 	}, flowWait, 20*time.Millisecond, "the agent's answer lands in the thread")
+	require.Len(t, updatesIn(fake, "C1"), 1, "the replayed turn finds nothing left to settle")
 }
 
 // A second message in the thread before the person connects posts the
-// ephemeral again, and refreshes the DM card and the line in place instead
-// of stacking them.
-func TestSessionConnect_RepromptRefreshesTheCardAndTheLine(t *testing.T) {
+// ephemeral again, and refreshes the DM card in place instead of stacking
+// cards; the line, unchanged, is left alone.
+func TestSessionConnect_RepromptRefreshesTheCard(t *testing.T) {
 	gw := &stubGateway{dispatchErr: sessionConnectChallenge()}
 	fake, srv, _ := sessionConnectAdapter(t, gw)
 
 	sendEvent(t, srv, mention("U1", "how many nodes in gazelle?", "150.000", ""))
 	require.Eventually(t, func() bool { _, _, ok := connectButton(fake); return ok },
 		flowWait, 20*time.Millisecond, "the first prompt is posted")
-	_, firstState, _, ok := connectButtonIn(postsTo(fake, "U1"))
+	firstURL, _, _, ok := connectButtonIn(postsTo(fake, "U1"))
 	require.True(t, ok)
 
 	sendEvent(t, srv, mention("U1", "still there?", "151.000", "150.000"))
@@ -222,32 +235,57 @@ func TestSessionConnect_RepromptRefreshesTheCardAndTheLine(t *testing.T) {
 	require.Len(t, postsTo(fake, "U1"), 1, "the DM holds one card")
 	require.Len(t, postsTo(fake, "C1"), 1, "the thread holds one line")
 
-	var updates []recordedCall
+	var refreshedURL string
 	require.Eventually(t, func() bool {
-		updates = fake.pathCalls("chat.update")
-		return len(updates) >= 1
+		refreshedURL, _, _, ok = connectButtonIn(updatesIn(fake, "U1"))
+		return ok
 	}, flowWait, 20*time.Millisecond, "the DM card is refreshed")
-	_, refreshedState, card, ok := connectButtonIn(updates)
-	require.True(t, ok, "the refreshed card carries the button")
-	require.Equal(t, "U1", card.params["channel"])
-	require.NotEqual(t, firstState, refreshedState, "with the fresh completion state")
+	require.NotEqual(t, stateOf(t, firstURL), stateOf(t, refreshedURL), "with the fresh completion state")
+	require.Empty(t, updatesIn(fake, "C1"), "the line reads the same, so it is not rewritten")
+}
+
+// A person who connected some other way (another thread's prompt, another
+// muster client) sends again: the start goes through, and the thread's line
+// and the DM card settle without any landing.
+func TestSessionConnect_NextTurnSettlesTheSurfaces(t *testing.T) {
+	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok"}, {Done: true}}}
+	gw.dispatchErr = sessionConnectChallenge()
+	fake, srv, _ := sessionConnectAdapter(t, gw)
+
+	sendEvent(t, srv, mention("U1", "how many nodes in gazelle?", "170.000", ""))
+	require.Eventually(t, func() bool { _, _, ok := connectButton(fake); return ok },
+		flowWait, 20*time.Millisecond, "the prompt is posted")
+
+	gw.mu.Lock()
+	gw.dispatchErr = nil
+	gw.mu.Unlock()
+	sendEvent(t, srv, mention("U1", "connected, try again", "171.000", "170.000"))
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(updatesIn(fake, "C1")), "<@U1> connected *agent-manager*.") &&
+			strings.Contains(allText(updatesIn(fake, "U1")), "Connected *agent-manager*.")
+	}, flowWait, 20*time.Millisecond, "the line and the card settle on the turn that went through")
+	require.Eventually(t, func() bool { return strings.Contains(fake.streamedText(), "ok") },
+		flowWait, 20*time.Millisecond, "the agent answers")
 }
 
 // In a direct message with the app the Connect card is a message of the
-// conversation: one reader, so no ephemeral, no DM card and no line. The
-// sign-in's landing rewrites it and runs the held message.
+// conversation: one reader, so no ephemeral, no DM card and no line. A later
+// message gets a card of its own and the earlier one loses its button. The
+// card's click records no response_url; the sign-in's landing rewrites the
+// card in place and runs the held message.
 func TestSessionConnect_DMPostsTheCardAsAMessage(t *testing.T) {
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok"}, {Done: true}}}
 	gw.dispatchErr = sessionConnectChallenge()
 	fake, srv := decoratedConnectorAdapter(t, gw)
+	responseSrv, capturedBody := newResponseURLCapture(t)
 
 	sendEvent(t, srv, dmEvent("U1", "how many nodes in gazelle?", "160.000"))
 
-	var stateID string
+	var firstURL string
 	var card recordedCall
 	var ok bool
 	require.Eventually(t, func() bool {
-		_, stateID, card, ok = connectButtonIn(fake.pathCalls("chat.postMessage"))
+		firstURL, _, card, ok = connectButtonIn(fake.pathCalls("chat.postMessage"))
 		return ok
 	}, flowWait, 20*time.Millisecond, "the card is posted as a message")
 	require.Equal(t, "D1", card.params["channel"])
@@ -256,18 +294,34 @@ func TestSessionConnect_DMPostsTheCardAsAMessage(t *testing.T) {
 	require.Empty(t, fake.pathCalls("chat.postEphemeral"), "no ephemeral in a DM")
 	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "Waiting for", "no line in a DM")
 
+	sendEvent(t, srv, dmThreadEvent("U1", "still there?", "161.000", "160.000"))
+	require.Eventually(t, func() bool { return len(postsTo(fake, "D1")) == 2 },
+		flowWait, 20*time.Millisecond, "the later message gets a card of its own under it")
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(updatesIn(fake, "D1")), "Connect *agent-manager* with the newer prompt below.")
+	}, flowWait, 20*time.Millisecond, "the earlier card loses its button")
+	_, _, _, hasButton := connectButtonIn(updatesIn(fake, "D1"))
+	require.False(t, hasButton)
+	secondURL, value, _, ok := connectButtonIn(postsTo(fake, "D1")[1:])
+	require.True(t, ok)
+	require.Equal(t, "agent-manager", value, "the card's button carries the server: its click records no response_url")
+	stateID := stateOf(t, secondURL)
+	require.NotEqual(t, stateOf(t, firstURL), stateID)
+
 	gw.mu.Lock()
 	gw.dispatchErr = nil
 	gw.mu.Unlock()
+	sendConnectorInteractionURL(t, srv, "connector_connect", value, responseSrv.URL)
 	resp, err := http.Get(srv.URL + "/connectors/complete?s=" + url.QueryEscape(stateID))
 	require.NoError(t, err)
 	_ = resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.update")), "Connected *agent-manager*. Your message is on its way to the agent.")
-	}, flowWait, 20*time.Millisecond, "the card is rewritten")
-	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 },
+		return strings.Contains(allText(updatesIn(fake, "D1")), "Connected *agent-manager*. Your message is on its way to the agent.")
+	}, flowWait, 20*time.Millisecond, "the card is rewritten in place")
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 3 },
 		flowWait, 20*time.Millisecond, "the held message runs")
+	require.Empty(t, capturedBody(), "nothing is sent through the card's response_url")
 }
 
 // Without a public base URL the link cannot land back on the gateway: the

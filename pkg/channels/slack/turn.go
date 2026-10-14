@@ -124,6 +124,10 @@ func (a *Adapter) runTurn(ctx context.Context, msg channels.InboundMessage, slac
 		return fmt.Errorf("slack: send completion: %w", err)
 	}
 
+	// A Session start that went through settles the thread's Connect prompt
+	// surfaces, however the person connected.
+	a.settleSessionConnect(ctx, slackUser, msg.ThreadID)
+
 	// The turn context feeds the whole stream so a stop cancels the turn, and an
 	// aborted consumer releases the producer goroutine. The branding client is
 	// resolved under the turn's forwarded identity: the roster it reads is
