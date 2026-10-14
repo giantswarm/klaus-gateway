@@ -33,6 +33,16 @@ type sessionConnectSurfaces struct {
 	states []string
 }
 
+// lastState is the completion state of the latest prompt, "" when none was
+// minted: the cards' Authorize all carries it, so a grant from the modal it
+// opens runs the held message as the prompt's own link would.
+func (s sessionConnectSurfaces) lastState() string {
+	if len(s.states) == 0 {
+		return ""
+	}
+	return s.states[len(s.states)-1]
+}
+
 func sessionConnectKey(slackUser, threadID string) string { return slackUser + "\x00" + threadID }
 
 // sessionConnectFor returns the live surfaces of (slackUser, threadID).
@@ -94,9 +104,11 @@ func (a *Adapter) takeSessionConnect(slackUser, threadID string) (sessionConnect
 // shows nothing from the channel, so the same card also goes to the person's
 // DM, and a line everyone in the thread sees says whom it waits for and where
 // the button is. A re-issued prompt refreshes the DM card in place; the line
-// stays. Only the ephemeral's button carries the completion state in its
-// value: a click on it records the response_url that replaces it, while the
-// cards, real messages, are rewritten in place by settleSessionConnect.
+// stays. Only the ephemeral's Connect button carries the completion state in
+// its value: a click on it records the response_url that replaces it, while
+// the cards, real messages, are rewritten in place by settleSessionConnect.
+// Every surface's Authorize all carries the state, so the modal it opens
+// grants the server on the prompt's own completion.
 //
 // When the start ran as the thread's owner (asOwner: a collaborator's turn
 // that starts the owner's Session), the challenge and its link are the
@@ -137,7 +149,7 @@ func (a *Adapter) promptSessionConnect(ctx context.Context, msg channels.Inbound
 	text := fmt.Sprintf(sessionConnectNote, escapeMrkdwn(server)) + tail
 
 	if isDMChannelID(slackChannel) {
-		ts, err := client.postConnectPromptMessage(ctx, slackChannel, msg.ThreadID, text, server, promptURL, server)
+		ts, err := client.postConnectPromptMessage(ctx, slackChannel, msg.ThreadID, text, server, promptURL, server, surfaces.lastState())
 		if err != nil {
 			a.Logger.Warn("slack: post session connect prompt failed", "thread", msg.ThreadID, "server", server, "error", err)
 			a.recordSessionConnect(slackUser, msg.ThreadID, surfaces)
@@ -172,13 +184,13 @@ func (a *Adapter) promptSessionConnect(ctx context.Context, msg channels.Inbound
 // goes out, and the line does not point at a DM that is not there.
 func (a *Adapter) sendSessionConnectDM(ctx context.Context, client *slackAPIClient, s *sessionConnectSurfaces, slackUser, origin, text, loginURL string) bool {
 	if s.cardTS != "" {
-		err := client.updateConnectPrompt(ctx, s.cardChannel, s.cardTS, origin, text, s.server, loginURL, s.server)
+		err := client.updateConnectPrompt(ctx, s.cardChannel, s.cardTS, origin, text, s.server, loginURL, s.server, s.lastState())
 		if err == nil {
 			return true
 		}
 		a.Logger.Warn("slack: refresh session connect DM failed, posting a new one", "user", slackUser, "thread", s.threadTS, "error", err)
 	}
-	channel, ts, err := client.postConnectPromptDM(ctx, slackUser, origin, text, s.server, loginURL, s.server)
+	channel, ts, err := client.postConnectPromptDM(ctx, slackUser, origin, text, s.server, loginURL, s.server, s.lastState())
 	if err != nil {
 		a.Logger.Warn("slack: post session connect DM failed", "user", slackUser, "thread", s.threadTS, "error", err)
 		s.cardChannel, s.cardTS = "", ""
@@ -252,16 +264,16 @@ func (a *Adapter) settleSessionConnect(ctx context.Context, slackUser, threadID 
 
 // postConnectPromptMessage posts a Connect prompt as a message of the
 // conversation, in threadID when set, and returns its ts.
-func (c *slackAPIClient) postConnectPromptMessage(ctx context.Context, channel, threadID, text, server, loginURL, connectValue string) (string, error) {
-	return c.postBlocks(ctx, channel, threadID, text, connectPromptBlocks(text, server, loginURL, connectValue, false, c.authorizeAll))
+func (c *slackAPIClient) postConnectPromptMessage(ctx context.Context, channel, threadID, text, server, loginURL, connectValue, authorizeOrigin string) (string, error) {
+	return c.postBlocks(ctx, channel, threadID, text, connectPromptBlocks(text, server, loginURL, connectValue, authorizeOrigin, false, c.authorizeAll))
 }
 
 // postConnectPromptDM posts a Connect prompt's card to user's DM, led by
 // origin, where it waits for a Slack client that was closed when the
 // ephemeral went out. The DM is addressed by user ID, so the D… conversation
 // Slack put it in comes back with its ts for the rewrites.
-func (c *slackAPIClient) postConnectPromptDM(ctx context.Context, user, origin, text, server, loginURL, connectValue string) (channel, ts string, err error) {
-	blocks := append([]any{contextBlock(origin)}, connectPromptBlocks(text, server, loginURL, connectValue, false, c.authorizeAll)...)
+func (c *slackAPIClient) postConnectPromptDM(ctx context.Context, user, origin, text, server, loginURL, connectValue, authorizeOrigin string) (channel, ts string, err error) {
+	blocks := append([]any{contextBlock(origin)}, connectPromptBlocks(text, server, loginURL, connectValue, authorizeOrigin, false, c.authorizeAll)...)
 	resp, err := c.postJSONResponse(ctx, methodChatPostMessage, map[string]any{paramChannel: user, paramText: text, paramBlocks: blocks})
 	if err != nil {
 		return "", "", err
@@ -274,8 +286,8 @@ func (c *slackAPIClient) postConnectPromptDM(ctx context.Context, user, origin, 
 
 // updateConnectPrompt rewrites the Connect card at (channel, ts) to a fresh
 // button, led by origin when there is one.
-func (c *slackAPIClient) updateConnectPrompt(ctx context.Context, channel, ts, origin, text, server, loginURL, connectValue string) error {
-	blocks := connectPromptBlocks(text, server, loginURL, connectValue, false, c.authorizeAll)
+func (c *slackAPIClient) updateConnectPrompt(ctx context.Context, channel, ts, origin, text, server, loginURL, connectValue, authorizeOrigin string) error {
+	blocks := connectPromptBlocks(text, server, loginURL, connectValue, authorizeOrigin, false, c.authorizeAll)
 	if origin != "" {
 		blocks = append([]any{contextBlock(origin)}, blocks...)
 	}

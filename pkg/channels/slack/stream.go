@@ -3193,7 +3193,7 @@ func (c *slackAPIClient) postConnectPrompt(ctx context.Context, channel, threadI
 		paramChannel: channel,
 		paramUser:    user,
 		paramText:    text,
-		paramBlocks:  connectPromptBlocks(text, server, loginURL, connectValue, dismiss, c.authorizeAll),
+		paramBlocks:  connectPromptBlocks(text, server, loginURL, connectValue, connectValue, dismiss, c.authorizeAll),
 	}
 	if threadID != "" {
 		body[paramThreadTS] = threadID
@@ -3205,8 +3205,9 @@ func (c *slackAPIClient) postConnectPrompt(ctx context.Context, channel, threadI
 // connectPromptBlocks are a Connect prompt's blocks: text over a
 // "Connect <server>" URL button opening loginURL with connectValue as its
 // value, an "Authorize all" button opening the authorize modal when
-// authorizeAll is set, and a "Not now" button when dismiss is set.
-func connectPromptBlocks(text, server, loginURL, connectValue string, dismiss, authorizeAll bool) []any {
+// authorizeAll is set (its value authorizeOrigin, the prompt's completion
+// state or empty), and a "Not now" button when dismiss is set.
+func connectPromptBlocks(text, server, loginURL, connectValue, authorizeOrigin string, dismiss, authorizeAll bool) []any {
 	elements := []any{
 		map[string]any{
 			bkType:     bkButton,
@@ -3218,7 +3219,7 @@ func connectPromptBlocks(text, server, loginURL, connectValue string, dismiss, a
 		},
 	}
 	if authorizeAll {
-		elements = append(elements, authorizeAllButton(connectValue))
+		elements = append(elements, authorizeAllButton(authorizeOrigin))
 	}
 	if dismiss {
 		elements = append(elements, map[string]any{

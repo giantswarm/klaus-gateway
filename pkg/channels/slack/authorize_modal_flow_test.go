@@ -218,6 +218,14 @@ func TestAuthorizeModal_FromTheSessionConnectPromptRunsTheHeldMessage(t *testing
 	ephemeral := fmt.Sprint(fake.pathCalls("chat.postEphemeral")[0].params["blocks"])
 	require.Contains(t, ephemeral, "authorize_all_open", "the Connect prompt offers the modal")
 	require.Contains(t, ephemeral, stateID, "Authorize all carries the prompt's completion")
+	var card string
+	for _, c := range fake.pathCalls("chat.postMessage") {
+		if blocks := fmt.Sprint(c.params["blocks"]); strings.Contains(blocks, "authorize_all_open") {
+			card = blocks
+		}
+	}
+	require.NotEmpty(t, card, "the DM card offers the modal too")
+	require.Contains(t, card, "value:"+stateID, "the card's Authorize all carries the prompt's completion, its Connect button the server")
 
 	gw.mu.Lock()
 	gw.dispatchErr = nil
