@@ -276,6 +276,18 @@ func (a *Adapter) routeInteraction(ctx context.Context, payload interactionPaylo
 	case connectorDismiss:
 		a.handleConnectorDismiss(ctx, payload.User.ID, action.Value, payload.Message.ThreadTS, payload.ResponseURL)
 		return
+	case authorizeAllOpen:
+		a.openAuthorizeModal(ctx, payload.User.ID, payload.TriggerID, action.Value)
+		return
+	case authorizeGrantOpen:
+		// URL button: the browser opens the grant flow itself; the landing
+		// redraws the modal.
+		return
+	case authorizeRefresh:
+		if err := a.handleAuthorizeRefresh(ctx, payload.User.ID, payload.View.ID); err != nil {
+			a.Logger.Warn("slack: authorize modal refresh refused", "user", payload.User.ID, "error", err)
+		}
+		return
 	case connectorConnect:
 		// URL button: the browser opens the consent flow itself. The click's
 		// response_url is the only handle that can rewrite the ephemeral

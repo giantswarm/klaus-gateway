@@ -46,7 +46,12 @@ type connectorCompletion struct {
 	// with its sign-in challenge, is the message the start was for: the
 	// landing runs it as the thread's first turn in place of the synthetic
 	// continuation.
-	held            *heldMessage
+	held *heldMessage
+	// modalView is the authorize modal the link was issued from: the landing
+	// redraws it. A row of the modal has no prompt and no thread (channel is
+	// empty), so its landing resumes nothing; a prompt's own completion the
+	// modal reused for the prompt's server resumes as the prompt would.
+	modalView       string
 	responseURL     string // recorded by the Connect click; empty until it arrives
 	completed       bool   // landing arrived; the one-shot resume fired
 	promptRewritten bool   // the ephemeral prompt was rewritten to the confirmation
@@ -73,6 +78,22 @@ func (a *Adapter) mintConnectorCompletion(entry connectorCompletion) string {
 	sweepExpired(a.connectorCompletions, now)
 	a.connectorCompletions[stateID] = ttlEntry[connectorCompletion]{value: entry, expires: now.Add(connectorCompletionTTL)}
 	return stateID
+}
+
+// attachAuthorizeModal records that the authorize modal viewID issued a link
+// for stateID's completion, so its landing redraws the modal as well. ok is
+// false for an unknown or expired stateID, or one minted for another person.
+func (a *Adapter) attachAuthorizeModal(stateID, slackUser, viewID string) (connectorCompletion, bool) {
+	now := time.Now()
+	a.connectorCompletionsMu.Lock()
+	defer a.connectorCompletionsMu.Unlock()
+	stored, found := a.connectorCompletions[stateID]
+	if !found || now.After(stored.expires) || stored.value.slackUser != slackUser {
+		return connectorCompletion{}, false
+	}
+	stored.value.modalView = viewID
+	a.connectorCompletions[stateID] = stored
+	return stored.value, true
 }
 
 // dropConnectorCompletions forgets the completion states named, so the
@@ -183,7 +204,16 @@ func (a *Adapter) handleConnectorComplete(w http.ResponseWriter, r *http.Request
 			}
 		})
 	}
+	if entry.modalView != "" {
+		viewID := entry.modalView
+		a.background(func(ctx context.Context) { a.refreshAuthorizeModal(ctx, viewID) })
+	}
 	message := "You can close this tab and return to Slack. The conversation continues there."
+	if entry.channel == "" && entry.review == "" {
+		// A row of the authorize modal: no conversation waits on it.
+		message = "You can close this tab and return to Slack. The list of your tools there shows it connected."
+		resume = false
+	}
 	if entry.held != nil {
 		message = "You can close this tab and return to Slack. Your message is on its way to the agent there."
 	}

@@ -135,6 +135,12 @@ func (a *Adapter) handleSlashCommand(ctx context.Context, p slashCommandPayload)
 	if !a.started.Load() {
 		return
 	}
+	if isAuthorizeCommand(p.Text) && a.authorizeModalOffered() {
+		// `/<command> connect` opens the authorize modal wherever it is
+		// typed: it asks nothing of the channel and opens no conversation.
+		a.openAuthorizeModal(ctx, p.UserID, p.TriggerID, "")
+		return
+	}
 	req := askAgentRequest{Channel: p.ChannelID, User: p.UserID, ResponseURL: p.ResponseURL, TriggerID: p.TriggerID, Prefill: p.Text}
 	notify := a.askAgentNotifier(ctx, req, "slash command")
 	if notice, ok := a.conversationServed(p.ChannelID); !ok {
@@ -146,6 +152,16 @@ func (a *Adapter) handleSlashCommand(ctx context.Context, p slashCommandPayload)
 		return
 	}
 	a.openAgentPicker(ctx, req, notify)
+}
+
+// isAuthorizeCommand reports whether a slash command's text asks for the
+// authorize modal rather than for an agent.
+func isAuthorizeCommand(text string) bool {
+	switch strings.ToLower(strings.TrimSpace(text)) {
+	case "connect", "authorize":
+		return true
+	}
+	return false
 }
 
 // conversationServed reports whether the gateway opens conversations in this

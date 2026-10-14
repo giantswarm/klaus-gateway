@@ -9,6 +9,17 @@ that adds notes heads them `## Next — <title>`; the change that prepares a rel
 renames each `Next` to that version, and `make check-upgrade-notes` refuses a
 stable release tag while a `Next` section with content is left.
 
+## Next — the authorize modal needs muster's core_auth_status
+
+- With `obo.connectorsEnabled`, Slack offers the authorize modal (every server waiting for the
+  person's grant, in one place) after sign-in, on `/<command> connect` and beside every Connect
+  prompt. It reads muster's `core_auth_status`: roll out the muster release that has it
+  (giantswarm/muster#1507) before or with this one. Against an older muster the first read is
+  refused as an unknown tool, the gateway logs it once and stops offering the modal until it
+  restarts; the Connect prompts work as before.
+- Nothing to configure: the modal's links land on `/connectors/complete`, which muster's
+  `oauth.mcpClient.postLoginRedirectAllowlist` already admits where the Connect prompts land.
+
 ## 4.6.2 — kagent decides which Sessions are shared
 
 - A Slack collaborator is refused on an agent only when kagent's `CreateSessionShare` refuses to

@@ -1940,6 +1940,10 @@ type slackAPIClient struct {
 	// that construct the client directly; every client the adapter builds
 	// carries the adapter's recorder.
 	rateLimits RateLimitRecorder
+	// authorizeAll adds the "Authorize all" button to every Connect prompt:
+	// the modal it opens lists each muster server the person still has to
+	// grant. Set when the adapter can read the person's grant status.
+	authorizeAll bool
 }
 
 // noteRateLimited counts one 429 under what the client did about it. A client
@@ -2007,8 +2011,16 @@ func (c *slackAPIClient) postMessage(ctx context.Context, channel, text, threadT
 // expires 3 seconds after Slack issued it, so callers must not block on slow
 // lookups before calling this.
 func (c *slackAPIClient) viewsOpen(ctx context.Context, triggerID string, view map[string]any) error {
-	_, err := c.postJSON(ctx, "views.open", map[string]any{paramTriggerID: triggerID, paramView: view})
+	_, err := c.viewsOpenID(ctx, triggerID, view)
 	return err
+}
+
+// viewsOpenID is viewsOpen answering with the opened view's ID, the handle a
+// later views.update needs when no interaction carries it (a browser landing
+// that refreshes the modal).
+func (c *slackAPIClient) viewsOpenID(ctx context.Context, triggerID string, view map[string]any) (string, error) {
+	resp, err := c.postJSONResponse(ctx, "views.open", map[string]any{paramTriggerID: triggerID, paramView: view})
+	return resp.View.ID, err
 }
 
 // viewsUpdate replaces an open modal's view. hash is the version the caller
@@ -3181,7 +3193,7 @@ func (c *slackAPIClient) postConnectPrompt(ctx context.Context, channel, threadI
 		paramChannel: channel,
 		paramUser:    user,
 		paramText:    text,
-		paramBlocks:  connectPromptBlocks(text, server, loginURL, connectValue, dismiss),
+		paramBlocks:  connectPromptBlocks(text, server, loginURL, connectValue, dismiss, c.authorizeAll),
 	}
 	if threadID != "" {
 		body[paramThreadTS] = threadID
@@ -3192,8 +3204,9 @@ func (c *slackAPIClient) postConnectPrompt(ctx context.Context, channel, threadI
 
 // connectPromptBlocks are a Connect prompt's blocks: text over a
 // "Connect <server>" URL button opening loginURL with connectValue as its
-// value, and a "Not now" button when dismiss is set.
-func connectPromptBlocks(text, server, loginURL, connectValue string, dismiss bool) []any {
+// value, an "Authorize all" button opening the authorize modal when
+// authorizeAll is set, and a "Not now" button when dismiss is set.
+func connectPromptBlocks(text, server, loginURL, connectValue string, dismiss, authorizeAll bool) []any {
 	elements := []any{
 		map[string]any{
 			bkType:     bkButton,
@@ -3203,6 +3216,9 @@ func connectPromptBlocks(text, server, loginURL, connectValue string, dismiss bo
 			bkValue:    connectValue,
 			bkURL:      loginURL,
 		},
+	}
+	if authorizeAll {
+		elements = append(elements, authorizeAllButton(connectValue))
 	}
 	if dismiss {
 		elements = append(elements, map[string]any{
@@ -3417,6 +3433,10 @@ type slackResponse struct {
 	Ts      string `json:"ts"`
 	Channel string `json:"channel,omitempty"`
 	Error   string `json:"error,omitempty"`
+	// View is the view views.open and views.update answer with.
+	View struct {
+		ID string `json:"id"`
+	} `json:"view"`
 }
 
 func (c *slackAPIClient) post(ctx context.Context, method string, params url.Values) (string, error) {
