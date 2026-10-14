@@ -590,7 +590,7 @@ func (a *Adapter) postWorkspaceConnectPrompts(ctx context.Context, slackChannel,
 		text := fmt.Sprintf(workspaceConnectNote, escapeMrkdwn(c.Provider), name) + tail
 		var err error
 		if c.URL != "" {
-			err = client.postConnectPrompt(ctx, slackChannel, threadID, user, text, c.Provider, c.URL, c.Provider, false)
+			err = client.postProviderConnectPrompt(ctx, slackChannel, threadID, user, text, c.Provider, c.URL)
 		} else {
 			err = client.postEphemeralText(ctx, slackChannel, user, threadID, text)
 		}

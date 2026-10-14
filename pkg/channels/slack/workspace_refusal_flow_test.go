@@ -52,14 +52,15 @@ type refusalFlow struct {
 	srv    *httptest.Server
 }
 
-func newRefusalFlow(t *testing.T) *refusalFlow {
+func newRefusalFlow(t *testing.T, opts ...func(*slackadapter.Adapter)) *refusalFlow {
 	t.Helper()
 	f := &refusalFlow{fake: newFakeSlackAPI(), wm: newFakeWorkspaceManager(t), kagent: newWorkspaceKagent(), log: &lockedLog{}}
 	api := f.fake.server(t)
 	routes := memory.New()
 	t.Cleanup(func() { _ = routes.Close() })
 	f.facade = &channels.Facade{Agent: f.kagent, Routes: routes, ThreadTTL: channels.DefaultThreadTTL}
-	a, srv := newEventsAdapter(t, f.facade, api.URL, withWorkspaces(f.wm), withInfoLog(f.log))
+	opts = append([]func(*slackadapter.Adapter){withWorkspaces(f.wm), withInfoLog(f.log)}, opts...)
+	a, srv := newEventsAdapter(t, f.facade, api.URL, opts...)
 	f.a, f.srv = a, srv
 
 	sendEvent(t, srv, mention("U001", "<@UBOT> what failed on prod?", "100.000", ""))
@@ -149,6 +150,31 @@ func TestWorkspaceRefusal_ConnectPromptThenTheNextClickStarts(t *testing.T) {
 	require.Equal(t, 1, created)
 	require.Equal(t, []string{"grant-of-gitlab-ws-for-tok1"}, grants)
 	require.Contains(t, turns[0], "what failed on prod?", "the held message is the first turn")
+}
+
+// Where muster's Connect prompts offer Authorize all, a provider's Connect
+// prompt still offers the provider's sign-in alone: the modal grants muster
+// servers, not a provider account.
+func TestWorkspaceRefusal_ProviderConnectPromptOffersNoAuthorizeAll(t *testing.T) {
+	f := newRefusalFlow(t, withGrants(&recordingTools{}), func(a *slackadapter.Adapter) {
+		a.ConnectorPrompts = true
+		a.PublicBaseURL = "https://gw.example"
+	})
+	sendWorkspaceClick(t, f.srv, "U001", "100.000", "gitlab-ws")
+	require.Eventually(t, func() bool { return len(f.ephemerals("U001")) == 1 }, flowWait, 20*time.Millisecond)
+
+	blocks, _ := f.ephemerals("U001")[0].params["blocks"].([]any)
+	require.Len(t, blocks, 2, "the note over one actions block")
+	actions, _ := blocks[1].(map[string]any)
+	elements, _ := actions["elements"].([]any)
+	require.Len(t, elements, 1, "the provider's Connect button alone")
+	button, _ := elements[0].(map[string]any)
+	require.Equal(t, "connector_connect", button["action_id"])
+	require.Equal(t, "https://wm.example/connect/gitlab", button["url"])
+	require.Equal(t, "gitlab", button["value"])
+	label, _ := button["text"].(map[string]any)
+	require.Equal(t, "Connect gitlab", label["text"])
+	require.NotContains(t, allBlockText(f.ephemerals("U001")), "authorize_all_open")
 }
 
 // Once connected, the initiator's next mention retries the workspace that

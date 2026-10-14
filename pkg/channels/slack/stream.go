@@ -1940,7 +1940,8 @@ type slackAPIClient struct {
 	// that construct the client directly; every client the adapter builds
 	// carries the adapter's recorder.
 	rateLimits RateLimitRecorder
-	// authorizeAll adds the "Authorize all" button to every Connect prompt:
+	// authorizeAll adds the "Authorize all" button to every muster server's
+	// Connect prompt (a workspace provider's has none):
 	// the modal it opens lists each muster server the person still has to
 	// grant. Set when the adapter can read the person's grant status.
 	authorizeAll bool
@@ -3189,11 +3190,24 @@ func (c *slackAPIClient) postConnectorPrompt(ctx context.Context, channel, threa
 // completion-state ID when the login URL carries a post-login redirect, else
 // the server name (the click stays a no-op then).
 func (c *slackAPIClient) postConnectPrompt(ctx context.Context, channel, threadID, user, text, server, loginURL, connectValue string, dismiss bool) error {
+	return c.postConnectEphemeral(ctx, channel, threadID, user, text, connectPromptBlocks(text, server, loginURL, connectValue, connectValue, dismiss, c.authorizeAll))
+}
+
+// postProviderConnectPrompt posts a workspace provider's Connect prompt: its
+// "Connect <provider>" sign-in alone. "Authorize all" grants muster servers,
+// not a provider account, so it has no place here.
+func (c *slackAPIClient) postProviderConnectPrompt(ctx context.Context, channel, threadID, user, text, provider, loginURL string) error {
+	return c.postConnectEphemeral(ctx, channel, threadID, user, text, connectPromptBlocks(text, provider, loginURL, provider, "", false, false))
+}
+
+// postConnectEphemeral posts a Connect prompt's blocks to user alone, in
+// threadID when set.
+func (c *slackAPIClient) postConnectEphemeral(ctx context.Context, channel, threadID, user, text string, blocks []any) error {
 	body := map[string]any{
 		paramChannel: channel,
 		paramUser:    user,
 		paramText:    text,
-		paramBlocks:  connectPromptBlocks(text, server, loginURL, connectValue, connectValue, dismiss, c.authorizeAll),
+		paramBlocks:  blocks,
 	}
 	if threadID != "" {
 		body[paramThreadTS] = threadID

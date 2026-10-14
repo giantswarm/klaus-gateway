@@ -450,7 +450,8 @@ opens from:
 - the direct message right after the sign-in, when a grant is still missing ("You're signed
   in. 2 tools need your one-time authorization …", button *Authorize all*);
 - `/<command> connect` (or `authorize`), anywhere;
-- *Authorize all* beside every Connect prompt's button. Opened from the prompt that held a
+- *Authorize all* beside every muster server's Connect prompt's button (a workspace
+  provider's Connect prompt offers the provider's sign-in alone). Opened from the prompt that held a
   Session start's message, the modal's row for that server lands on the prompt's own
   completion, so granting it from the modal runs the held message.
 

@@ -350,8 +350,9 @@ carries the completion state in its `value`, so a click on it is replaced throug
 <img width="721" height="159" alt="image" src="https://github.com/user-attachments/assets/64649be1-74d6-4012-86d2-14f8d0998a84" />
 
 Where the gateway can read the person's grant status (see the authorize modal below), every
-Connect prompt carries *Authorize all* after its Connect button (`action_id`
-`authorize_all_open`, `value` the prompt's completion state, or empty).
+muster server's Connect prompt carries *Authorize all* after its Connect button (`action_id`
+`authorize_all_open`, `value` the prompt's completion state, or empty). A workspace
+provider's Connect prompt does not: the modal grants muster servers, not a provider account.
 
 ### Authorize your tools (modal)
 
