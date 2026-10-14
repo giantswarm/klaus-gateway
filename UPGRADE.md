@@ -9,7 +9,7 @@ that adds notes heads them `## Next — <title>`; the change that prepares a rel
 renames each `Next` to that version, and `make check-upgrade-notes` refuses a
 stable release tag while a `Next` section with content is left.
 
-## Next — kagent decides which Sessions are shared
+## 4.6.2 — kagent decides which Sessions are shared
 
 - A Slack collaborator is refused on an agent only when kagent's `CreateSessionShare` refuses to
   share its Session; the gateway no longer refuses by the Harness runtime itself. kagent refuses
