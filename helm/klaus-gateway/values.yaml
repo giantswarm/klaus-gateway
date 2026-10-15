@@ -255,6 +255,13 @@ slack:
   # post is left out, since a display name is whatever a bot posts under.
   # Rendered as SLACK_CONTEXT_BOT_IDS. Empty shares no bot's post.
   contextBotIDs: []
+  # contextBotNames lists patterns (path.Match syntax: *, ?, [..];
+  # case-insensitive) matched against a bot's Slack profile name, the app's own
+  # bot name rather than the name a post sets, whose posts a thread read hands
+  # to the agent beside contextBotIDs'. One entry admits an integration that
+  # runs one Slack app per installation: "*-alertmanager" admits every
+  # installation's Alertmanager. Rendered as SLACK_CONTEXT_BOT_NAMES.
+  contextBotNames: []
   # dropStale ignores Slack events older than the gateway's start time, so a
   # restart never replays messages queued while it was down. Rendered as
   # SLACK_DROP_STALE. Default false.

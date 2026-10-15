@@ -3,6 +3,7 @@ package slack
 import (
 	"context"
 	"fmt"
+	"path"
 	"regexp"
 	"strconv"
 	"strings"
@@ -162,14 +163,16 @@ type threadReadSpec struct {
 }
 
 // contextAuthors decides whose messages a thread read hands to the agent:
-// every human's, and of the bots only the ones bots names by Slack bot_id —
-// the alerting integrations a conversation is opened under. A bot's display
-// name is whatever it posts under, so only its bot_id identifies it. Every
-// other bot's post is left out, and so are the gateway's own (self, its Slack
-// user): the agent wrote them.
+// every human's, and of the bots only the ones bots names by Slack bot_id or
+// botNames matches by bot profile name — the alerting integrations a
+// conversation is opened under. The profile name is the Slack app's own bot
+// name; the name a post sets (username) is whatever it posts under, so it
+// never admits a bot. Every other bot's post is left out, and so are the
+// gateway's own (self, its Slack user): the agent wrote them.
 type contextAuthors struct {
-	self string
-	bots map[string]bool
+	self     string
+	bots     map[string]bool
+	botNames []string // lower-cased path.Match patterns
 }
 
 // admit reports whether m's author is one the agent is given. A message with
@@ -180,19 +183,38 @@ func (c contextAuthors) admit(m threadMessage) bool {
 		return false
 	}
 	if m.BotID != "" || m.SubType == "bot_message" {
-		return c.bots[m.BotID]
+		return c.bots[m.BotID] || c.admitsBotName(m.BotProfile.Name)
 	}
 	return true
 }
 
+// admitsBotName reports whether a bot profile name matches one of botNames.
+// A post without a bot profile has no name to match.
+func (c contextAuthors) admitsBotName(name string) bool {
+	if name == "" {
+		return false
+	}
+	name = strings.ToLower(name)
+	for _, p := range c.botNames {
+		if ok, _ := path.Match(p, name); ok {
+			return true
+		}
+	}
+	return false
+}
+
 // contextAuthors is the adapter's admission of thread authors: its own Slack
-// user out, the ContextBotIDs in.
+// user out, the ContextBotIDs and ContextBotNames in.
 func (a *Adapter) contextAuthors(self string) contextAuthors {
 	bots := make(map[string]bool, len(a.ContextBotIDs))
 	for _, id := range a.ContextBotIDs {
 		bots[id] = true
 	}
-	return contextAuthors{self: self, bots: bots}
+	names := make([]string, 0, len(a.ContextBotNames))
+	for _, p := range a.ContextBotNames {
+		names = append(names, strings.ToLower(p))
+	}
+	return contextAuthors{self: self, bots: bots, botNames: names}
 }
 
 // readThreadFor reads a thread and renders it for a turn. A failure — a

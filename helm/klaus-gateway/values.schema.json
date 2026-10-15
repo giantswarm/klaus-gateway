@@ -517,6 +517,9 @@
                 "contextBotIDs": {
                     "type": "array"
                 },
+                "contextBotNames": {
+                    "type": "array"
+                },
                 "dmMode": {
                     "type": "string"
                 },

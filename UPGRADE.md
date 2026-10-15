@@ -9,6 +9,15 @@ that adds notes heads them `## Next — <title>`; the change that prepares a rel
 renames each `Next` to that version, and `make check-upgrade-notes` refuses a
 stable release tag while a `Next` section with content is left.
 
+## Next — alert bots matched by profile name
+
+- `slack.contextBotNames` admits a bot's posts to the thread context by its Slack profile name
+  (the app's own bot name, `path.Match` patterns, case-insensitive) beside `slack.contextBotIDs`.
+  An installation whose conversations open under Alertmanager posts can replace the per-installation
+  Alertmanager bot_ids with `contextBotNames: ["*-alertmanager"]`; listed bot_ids keep working.
+- The gateway reads only threads in channels its bot is a member of: for alert posts to reach an
+  agent, the gateway's bot is invited to the alert channels it should serve.
+
 ## 4.7.0 — the authorize modal needs muster's core_auth_status
 
 - With `obo.connectorsEnabled`, Slack offers the authorize modal (every server waiting for the

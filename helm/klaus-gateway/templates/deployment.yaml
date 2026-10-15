@@ -176,6 +176,10 @@ spec:
         - name: KLAUS_GATEWAY_SLACK_CONTEXT_BOT_IDS
           value: {{ join "," .Values.slack.contextBotIDs | quote }}
         {{- end }}
+        {{- if and .Values.slack.enabled .Values.slack.contextBotNames }}
+        - name: KLAUS_GATEWAY_SLACK_CONTEXT_BOT_NAMES
+          value: {{ join "," .Values.slack.contextBotNames | quote }}
+        {{- end }}
         {{- if and .Values.slack.enabled .Values.slack.dropStale }}
         - name: KLAUS_GATEWAY_SLACK_DROP_STALE
           value: "true"

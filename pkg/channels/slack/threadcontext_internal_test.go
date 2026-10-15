@@ -59,6 +59,49 @@ func TestRenderThreadContext_AdmitsHumansAndAllowedBotsOnly(t *testing.T) {
 	require.Contains(t, got, "NAME-U1: on it")
 }
 
+// A bot profile name pattern admits every installation's Alertmanager app,
+// each with its own bot_id, with one entry. It matches the Slack app's own bot
+// name, case-insensitively, never the name a post sets: a bot posting under an
+// Alertmanager username is still left out, and so is the gateway's own post
+// when its name matches.
+func TestRenderThreadContext_AdmitsBotsByProfileName(t *testing.T) {
+	authors := contextAuthors{self: "UBOT", bots: map[string]bool{"BPAGER": true}, botNames: []string{"*-alertmanager"}}
+	msg := func(ts, user, botID, profile, username, text string) threadMessage {
+		m := threadMessage{TS: ts, User: user, BotID: botID, Username: username, Text: text}
+		m.BotProfile.Name = profile
+		return m
+	}
+	got := renderThreadContext(fullRead([]threadMessage{
+		msg("100.000", "UGAZ", "BGAZELLE", "gazelle-alertmanager", "", "FIRING gazelle"),
+		msg("101.000", "UALBA", "BALBA", "Alba-Alertmanager", "", "FIRING alba"),
+		msg("102.000", "", "BPAGER", "", "PagerDuty", "paged by bot_id"),
+		msg("103.000", "", "BSPOOF", "random-app", "gazelle-alertmanager", "spoofed username"),
+		msg("104.000", "", "BNONE", "", "", "no profile"),
+		msg("105.000", "UBOT", "BSELF", "klaus-alertmanager", "", "the agent's own reply"),
+		{TS: "106.000", User: "u1", Text: "looking at it"},
+	}), "200.000", authors, "Jose", upper)
+
+	for _, want := range []string{"FIRING gazelle", "FIRING alba", "paged by bot_id", "NAME-U1: looking at it"} {
+		require.Contains(t, got, want)
+	}
+	for _, never := range []string{"spoofed username", "no profile", "own reply"} {
+		require.NotContains(t, got, never)
+	}
+}
+
+// The adapter lower-cases its ContextBotNames once, so a pattern written in
+// any case matches.
+func TestAdapterContextAuthors_BotNames(t *testing.T) {
+	a := &Adapter{ContextBotIDs: []string{"B1"}, ContextBotNames: []string{"*-AlertManager", "incident.io"}}
+	c := a.contextAuthors("UBOT")
+	require.True(t, c.bots["B1"])
+	require.True(t, c.admitsBotName("graveler-alertmanager"))
+	require.True(t, c.admitsBotName("incident.io"))
+	require.False(t, c.admitsBotName("alertmanager"))
+	require.False(t, c.admitsBotName(""))
+	require.False(t, (&Adapter{}).contextAuthors("UBOT").admitsBotName("gazelle-alertmanager"))
+}
+
 // The catch-up of a muted thread admits the same authors as the opener's
 // context.
 func TestRenderCatchUp_AdmitsHumansAndAllowedBotsOnly(t *testing.T) {
