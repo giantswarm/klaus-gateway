@@ -371,3 +371,36 @@ func TestThreadMessage_DecodesPagerDutyBlocks(t *testing.T) {
 	require.Contains(t, got, "Triggered via Grafana")
 	require.NotContains(t, got, "Reopen", "button labels are not prose")
 }
+
+// The log line a thread read leaves is the only proof a configured bot's post
+// reached the turn, so it counts the bot messages admitted and dropped, and
+// names the admitted bot ids at debug level.
+func TestReadThreadFor_LogsAdmittedAndDroppedBotMessages(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "conversations.replies") {
+			_, _ = fmt.Fprint(w, `{"ok":true,"messages":[
+				{"ts":"100.000","bot_id":"BALERT","username":"Alertmanager","subtype":"bot_message","text":"FIRING"},
+				{"ts":"101.000","bot_id":"BOTHER","username":"Other","subtype":"bot_message","text":"noise"},
+				{"ts":"102.000","user":"u1","text":"on it"}]}`)
+			return
+		}
+		_, _ = fmt.Fprint(w, `{"ok":true}`)
+	}))
+	defer srv.Close()
+	logs := &strings.Builder{}
+	a := &Adapter{
+		APIBase: srv.URL, Secrets: Secrets{BotToken: "t"}, //nolint:gosec // dummy test creds
+		ContextBotIDs: []string{"BALERT"},
+		Logger:        slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
+	}
+
+	got := a.threadContext(t.Context(), "C1", "100.000", "200.000", "u1")
+
+	require.Contains(t, got, "Alertmanager: FIRING")
+	require.NotContains(t, got, "noise")
+	require.Contains(t, logs.String(), "thread context attached to the turn")
+	require.Contains(t, logs.String(), "admitted_bot=1")
+	require.Contains(t, logs.String(), "dropped_bot=1")
+	require.Contains(t, logs.String(), "admitted_bot_ids=[BALERT]")
+}

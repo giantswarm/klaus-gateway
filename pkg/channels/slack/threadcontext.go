@@ -173,6 +173,28 @@ type contextAuthors struct {
 	self     string
 	bots     map[string]bool
 	botNames []string // lower-cased path.Match patterns
+	tally    *botTally
+}
+
+// botTally counts the bot-authored messages one thread read offered to admit:
+// how many the agent is given and how many were left out, so a log line can
+// show that a configured bot's post reached the turn. A nil tally counts
+// nothing.
+type botTally struct {
+	admitted, dropped int
+	admittedIDs       []string
+}
+
+func (t *botTally) record(m threadMessage, admitted bool) {
+	if t == nil {
+		return
+	}
+	if !admitted {
+		t.dropped++
+		return
+	}
+	t.admitted++
+	t.admittedIDs = append(t.admittedIDs, m.BotID)
 }
 
 // admit reports whether m's author is one the agent is given. A message with
@@ -183,7 +205,9 @@ func (c contextAuthors) admit(m threadMessage) bool {
 		return false
 	}
 	if m.BotID != "" || m.SubType == "bot_message" {
-		return c.bots[m.BotID] || c.admitsBotName(m.BotProfile.Name)
+		ok := c.bots[m.BotID] || c.admitsBotName(m.BotProfile.Name)
+		c.tally.record(m, ok)
+		return ok
 	}
 	return true
 }
@@ -214,7 +238,7 @@ func (a *Adapter) contextAuthors(self string) contextAuthors {
 	for _, p := range a.ContextBotNames {
 		names = append(names, strings.ToLower(p))
 	}
-	return contextAuthors{self: self, bots: bots, botNames: names}
+	return contextAuthors{self: self, bots: bots, botNames: names, tally: &botTally{}}
 }
 
 // readThreadFor reads a thread and renders it for a turn. A failure — a
@@ -259,7 +283,10 @@ func (a *Adapter) readThreadFor(ctx context.Context, spec threadReadSpec) string
 		// skips and the cap), not the number of messages the read returned.
 		a.Logger.Info("slack: "+spec.what+" attached to the turn",
 			"channel_id", channelID, "thread_id", threadID, "slack_user", initiator,
-			"lines", strings.Count(transcript, "\n"), "complete", read.Complete, "chars", utf8.RuneCountInString(transcript))
+			"lines", strings.Count(transcript, "\n"), "complete", read.Complete, "chars", utf8.RuneCountInString(transcript),
+			"admitted_bot", authors.tally.admitted, "dropped_bot", authors.tally.dropped)
+		a.Logger.Debug("slack: "+spec.what+" admitted bots",
+			"channel_id", channelID, "thread_id", threadID, "admitted_bot_ids", authors.tally.admittedIDs)
 	}
 	return transcript
 }
