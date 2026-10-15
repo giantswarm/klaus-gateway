@@ -266,7 +266,7 @@ func (a *Adapter) resumeAfterConnectorSignIn(ctx context.Context, entry connecto
 		msg, slackChannel = entry.held.Msg, entry.held.SlackChannel
 	}
 	if err := a.replayDispatch(ctx, msg, slackChannel); err != nil && !errors.Is(err, context.Canceled) {
-		a.Logger.Error("slack: connector sign-in resume failed", "user", entry.slackUser, "thread", entry.threadTS, "error", err)
+		a.Logger.Log(ctx, failureLogLevel(err), "slack: connector sign-in resume failed", "user", entry.slackUser, "thread", entry.threadTS, "error", err)
 		a.postReplayFailureNote(ctx, slackChannel, entry.threadTS, err)
 	}
 }

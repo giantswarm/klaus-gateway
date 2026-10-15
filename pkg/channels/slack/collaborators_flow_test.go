@@ -1,6 +1,7 @@
 package slack_test
 
 import (
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -116,6 +117,54 @@ func TestCollaborators_GrantedCollaboratorMeetsTheControllersRefusal(t *testing.
 	mu.Lock()
 	defer mu.Unlock()
 	require.Equal(t, 1, collaboratorTurns, "the collaborator's turn went to the gateway once")
+}
+
+// A collaborator's turn the controller refuses to share is not a failure of
+// the platform: the parked message replayed after the access grant and a
+// later message both end as share_refused with no failure class, and are
+// logged at INFO, not ERROR. The thread is told the reason once per turn.
+func TestCollaborators_ShareRefusalIsNotAFailure(t *testing.T) {
+	fake := newFakeSlackAPI()
+	fakeURL := fake.server(t).URL
+	logs := &syncBuffer{}
+	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok", Done: true}}}
+	obo := perUserOBO{tokens: map[string]string{"U001": "tok-initiator", "U002": "tok-collab"}}
+	_, srv := newEventsAdapter(t, gw, fakeURL, channelMode, func(a *slackadapter.Adapter) {
+		a.OBO = obo
+		a.Logger = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	})
+	refusalNotes := func() int {
+		return strings.Count(allText(fake.pathCalls("chat.postMessage")), shareRefusal)
+	}
+
+	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
+		flowWait, 50*time.Millisecond, "the initiator's turn runs")
+	sendEvent(t, srv, mention("U002", "what broke?", "200.000", "100.000"))
+	fake.waitForPath(t, "chat.postEphemeral", 1)
+
+	gw.mu.Lock()
+	gw.dispatchErr = &pkga2a.ShareRefusedError{SessionID: "session-1", Reason: shareRefusal}
+	gw.mu.Unlock()
+	sendAccessInteraction(t, srv, "U001", accessAllowAction, "100.000", "U002", fakeURL+"/response")
+	require.Eventually(t, func() bool { return refusalNotes() == 1 },
+		flowWait, 50*time.Millisecond, "the replay tells the thread the controller's reason")
+	require.Eventually(t, func() bool {
+		return logLine(logs, "level=INFO", "replay after access grant failed") != ""
+	}, flowWait, 50*time.Millisecond)
+
+	sendEvent(t, srv, mention("U002", "and now?", "300.000", "100.000"))
+	require.Eventually(t, func() bool { return refusalNotes() == 2 },
+		flowWait, 50*time.Millisecond, "a later turn is told the reason too")
+	require.Eventually(t, func() bool {
+		return logLine(logs, "level=INFO", "collaborator turn refused") != ""
+	}, flowWait, 50*time.Millisecond)
+
+	require.Empty(t, logLine(logs, "level=ERROR"))
+	require.Empty(t, logLine(logs, "outcome=send_failed"))
+	require.Equal(t, 2, strings.Count(logs.String(), "outcome=share_refused"))
+	require.NotContains(t, logLine(logs, "outcome=share_refused"), "failure_class")
+	require.Equal(t, 2, refusalNotes(), "each refused turn posts one note")
 }
 
 // A Declarative agent keeps its thread's collaborators: the newcomer is held

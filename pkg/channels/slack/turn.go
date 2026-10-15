@@ -120,7 +120,11 @@ func (a *Adapter) runTurn(ctx context.Context, msg channels.InboundMessage, slac
 		if hooks.onFailure != nil && !isCorruptSessionErr(err) {
 			hooks.onFailure(err)
 		}
-		a.completeTurn(ctx, msg, slackUser, channels.OutcomeSendFailed, err)
+		outcome := channels.OutcomeSendFailed
+		if isShareRefusal(err) {
+			outcome = channels.OutcomeShareRefused
+		}
+		a.completeTurn(ctx, msg, slackUser, outcome, err)
 		return fmt.Errorf("slack: send completion: %w", err)
 	}
 

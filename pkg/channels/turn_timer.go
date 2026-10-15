@@ -63,6 +63,7 @@ const (
 	OutcomeRenderFailed    = "render_failed"    // the task completed but the channel refused (part of) the answer
 	OutcomeSendFailed      = "send_failed"      // the turn died before it was sent: the controller refused it
 	OutcomeConnectRequired = "connect_required" // the Session could not start: a muster server waits for the person's consent, the Connect prompt went out and the message is held
+	OutcomeShareRefused    = "share_refused"    // a collaborator's turn the thread's Session could not be opened to: the controller refused to share it, or the share needs the initiator's sign-in; the thread was told why
 )
 
 // RecordTurnComplete is the `record` value of the log line every turn ends

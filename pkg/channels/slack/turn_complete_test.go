@@ -14,6 +14,7 @@ import (
 	"go.opentelemetry.io/otel"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
+	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 )
 
@@ -154,8 +155,9 @@ func TestDispatch_EmitsTurnCompleteRecord(t *testing.T) {
 // A turn the controller refuses before its stream starts still leaves a
 // record, with the send_failed outcome and the error; so does one whose
 // stream fails, with failed; a turn paused on a prompt ends with
-// input_required. A failed turn's record and metric carry its failure class,
-// any other turn's none.
+// input_required; a collaborator's turn the Session could not be opened to
+// ends with share_refused. A failed turn's record and metric carry its
+// failure class, any other turn's none.
 func TestDispatch_TurnCompleteOutcomes(t *testing.T) {
 	const toolSet = `failed to extract tools from the tool set "mcp_tool_set": failed to list MCP tools: failed to init MCP session: calling "initialize": read: connection reset by peer`
 	cases := []struct {
@@ -169,6 +171,8 @@ func TestDispatch_TurnCompleteOutcomes(t *testing.T) {
 		{"send unreachable", &fakeGateway{Facade: newMemoryRecorder(), sendErr: errors.New("rpc error: code = Unavailable desc = connection refused")}, channels.OutcomeSendFailed, true, channels.FailurePlatform},
 		{"stream failed", &fakeGateway{Facade: newMemoryRecorder(), deltas: []channels.OutboundDelta{{Content: "par"}, {Err: errors.New("task failed")}}}, channels.OutcomeFailed, true, channels.FailureUnknown},
 		{"tool set failed", &fakeGateway{Facade: newMemoryRecorder(), deltas: []channels.OutboundDelta{{Err: errors.New(toolSet)}}}, channels.OutcomeFailed, true, channels.FailureTools},
+		{"share refused", &fakeGateway{Facade: newMemoryRecorder(), sendErr: &pkga2a.ShareRefusedError{SessionID: "session-1", Reason: "cannot be shared"}}, channels.OutcomeShareRefused, true, channels.FailureNone},
+		{"share unavailable", &fakeGateway{Facade: newMemoryRecorder(), sendErr: channels.ErrShareUnavailable}, channels.OutcomeShareRefused, true, channels.FailureNone},
 		{"prompt", &fakeGateway{Facade: newMemoryRecorder(), deltas: []channels.OutboundDelta{{Kind: channels.DeltaPrompt, Content: "approve?", TaskID: "task-1"}}}, channels.OutcomeInputRequired, false, channels.FailureNone},
 	}
 	for _, tc := range cases {
