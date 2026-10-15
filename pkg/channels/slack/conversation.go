@@ -124,7 +124,10 @@ func (a *Adapter) relayConversationReply(ctx context.Context, rv store.Review, i
 	conv := rv.Conversation
 	from := "*" + escapeMrkdwn(conv.From) + "*"
 	if inner.User != conv.SlackUser {
-		a.tellClickerIn(ctx, rv.Channel, rv.ID, inner.User, fmt.Sprintf(conversationNotYours, conv.SlackUser, from))
+		notice := fmt.Sprintf(conversationNotYours, conv.SlackUser, from)
+		if err := a.apiClient().postEphemeralText(ctx, rv.Channel, inner.User, rv.TS, notice); err != nil {
+			a.Logger.Warn("slack: conversation notice failed", "conversation", rv.ID, "user", inner.User, "error", err)
+		}
 		return
 	}
 	text := strings.TrimSpace(slackTextUnescaper.Replace(inner.Text))
