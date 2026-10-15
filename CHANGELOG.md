@@ -37,6 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Slack: the notice that only a conversation's person can write to it is posted into the conversation's thread (`thread_ts`), not the channel (giantswarm/klaus-gateway#454).
 - Slack: a collaborator's turn whose Session kagent refuses to share, or whose share needs the initiator's lapsed sign-in, ends as `share_refused` instead of `send_failed`: `turn_complete` and `klaus_gateway_turn_total` carry no `failure_class` for it, and the dispatch and replay logs record it at INFO instead of ERROR. The thread is still told why (giantswarm/klaus-gateway#481).
 
 ### Added

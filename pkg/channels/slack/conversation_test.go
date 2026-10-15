@@ -149,6 +149,11 @@ func TestConversation_OnlyThePersonReachesTheAgent(t *testing.T) {
 	waitFor(t, "the other person is told", func() bool {
 		return ephemeralTo(fake, "U2", "This thread is <@U1>'s conversation with *Your guide*; only they can write to it.")
 	})
+	for _, e := range fake.pathCalls("chat.postEphemeral") {
+		if e.params["user"] == "U2" {
+			require.Equal(t, receipt.TS, e.params["thread_ts"], "the notice lands in the thread, not the channel")
+		}
+	}
 	require.Empty(t, tools.recorded())
 }
 
