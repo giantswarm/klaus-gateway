@@ -35,6 +35,7 @@ type replyMsg struct {
 	Attachments []map[string]any `json:"attachments,omitempty"`
 	Blocks      []map[string]any `json:"blocks,omitempty"`
 	Files       []map[string]any `json:"files,omitempty"`
+	BotProfile  map[string]any   `json:"bot_profile,omitempty"`
 }
 
 // withThread makes the fake serve msgs (oldest first) as the thread's
@@ -197,6 +198,43 @@ func TestThreadContext_UnlistedBotIsLeftOut(t *testing.T) {
 	require.Equal(t, "[thread context shared by Jose: 2 earlier messages in this thread, oldest first]", strings.Split(got, "\n")[0])
 	require.NotContains(t, got, "TRIGGERED", "the bot B1 is not on the list")
 	require.Contains(t, got, "Marta: the pod restarts every 40 s")
+}
+
+// Alertmanager posts from every installation as a Slack app of its own, each
+// with its own bot_id: one bot profile name pattern admits them all, a bot
+// posting under an Alertmanager username does not pass, and the bot_id list
+// keeps working beside it.
+func TestThreadContext_AlertBotsAdmittedByProfileName(t *testing.T) {
+	alert := func(ts, user, botID, installation, state string) replyMsg {
+		return replyMsg{TS: ts, User: user, BotID: botID, BotProfile: map[string]any{"id": botID, "app_id": "A" + botID, "name": installation + "-alertmanager"},
+			Attachments: []map[string]any{{"title": state + "[1] MusterMCPServerFailed - Team bumblebee", "text": "*Cluster:* " + installation}}}
+	}
+	fake := newFakeSlackAPI()
+	fake.withThread([]replyMsg{
+		alert("100.000", "UGAZ", "BGAZELLE", "gazelle", "FIRING"),
+		alert("101.000", "UALBA", "BALBA", "alba", "RESOLVED"),
+		{TS: "101.500", BotID: "BSPOOF", Username: "graveler-alertmanager", SubType: "bot_message", Text: "spoofed alert"},
+		{TS: "101.700", BotID: "B1", Username: "PagerDuty", SubType: "bot_message", Text: "paged"},
+		{TS: "102.000", User: "U2", Text: "looking at it"},
+	}, 200)
+	fake.withUserNames(map[string]string{"U1": "Jose", "U2": "Marta"}, nil)
+	api := fake.server(t)
+	gw, dispatched := capturingGateway()
+	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()), withContextBots("B1"),
+		func(a *slackadapter.Adapter) { a.ContextBotNames = []string{"*-alertmanager"} })
+
+	sendAskAgentShortcut(t, srv, "C1", "U1", "103.000", "100.000", api.URL+"/response_url")
+	pmRaw := openedView(t, fake)["private_metadata"].(string)
+	sendAskAgentSubmissionWithContext(t, srv, "U1", pmRaw, "kagent/sre-agent", "what fired?", true)
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond)
+
+	got := dispatched()[0].Context
+	require.Equal(t, "[thread context shared by Jose: 4 earlier messages in this thread, oldest first]", strings.Split(got, "\n")[0])
+	require.Contains(t, got, "gazelle-alertmanager: FIRING[1] MusterMCPServerFailed")
+	require.Contains(t, got, "alba-alertmanager: RESOLVED[1] MusterMCPServerFailed")
+	require.Contains(t, got, "PagerDuty: paged")
+	require.Contains(t, got, "Marta: looking at it")
+	require.NotContains(t, got, "spoofed alert", "a username is not a bot profile name")
 }
 
 // The same shortcut with the box cleared: nothing of the thread is shared, and
