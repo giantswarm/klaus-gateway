@@ -9,7 +9,7 @@ that adds notes heads them `## Next — <title>`; the change that prepares a rel
 renames each `Next` to that version, and `make check-upgrade-notes` refuses a
 stable release tag while a `Next` section with content is left.
 
-## Next — alert bots matched by profile name
+## 4.8.1 — alert bots matched by profile name
 
 - `slack.contextBotNames` admits a bot's posts to the thread context by its Slack profile name
   (the app's own bot name, `path.Match` patterns, case-insensitive) beside `slack.contextBotIDs`.
