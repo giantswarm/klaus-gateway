@@ -357,7 +357,7 @@ func (a *Adapter) routeInteraction(ctx context.Context, payload interactionPaylo
 
 	if err := a.handleDecision(ctx, payload.Channel.ID, threadID, payload.Container.MessageTS, payload.User.ID, act); err != nil {
 		if !errors.Is(err, context.Canceled) {
-			a.Logger.Error("slack interactions: decision error", "thread", threadID, "error", err)
+			a.Logger.Log(ctx, failureLogLevel(err), "slack interactions: decision error", "thread", threadID, "error", err)
 		}
 	}
 }
@@ -508,7 +508,7 @@ func (a *Adapter) handleAccessDecision(ctx context.Context, slackChannel, thread
 	// interaction's own goroutine, so waiting here stalls nothing else.
 	for _, req := range parked {
 		if err := a.replayDispatch(ctx, req.msg, req.slackChannel); err != nil && !errors.Is(err, context.Canceled) {
-			a.Logger.Error("slack: replay after access grant failed",
+			a.Logger.Log(ctx, failureLogLevel(err), "slack: replay after access grant failed",
 				"thread", threadID, "user", newcomerID, "error", err)
 			a.postReplayFailureNote(ctx, req.slackChannel, req.msg.ThreadID, err)
 		}

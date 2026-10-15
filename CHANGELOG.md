@@ -35,6 +35,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The gateway no longer reads Harnesses or names a runtime: `a2a.Client.RefusesCollaborators`, `HarnessRuntime`, `RuntimeRefusesCollaborators`, the `HarnessRuntime*` constants and `AgentInfo.Runtime` are gone, and so are the Slack notes "Start your own thread to work with it." and "the agent of this conversation could not be looked up".
 
+### Fixed
+
+- Slack: a collaborator's turn whose Session kagent refuses to share, or whose share needs the initiator's lapsed sign-in, ends as `share_refused` instead of `send_failed`: `turn_complete` and `klaus_gateway_turn_total` carry no `failure_class` for it, and the dispatch and replay logs record it at INFO instead of ERROR. The thread is still told why (giantswarm/klaus-gateway#481).
+
 ### Added
 
 - Slack: with workspaces on, the agent picker (the slash command, the message shortcut, a roster row's Select) has a **Workspace** select under the agent, so the person picks the agent and the workspace in one step and the thread asks nothing afterwards. It lists **No workspace** and the person's workspaces as the thread prompt does, preset to the workspace the person last started the selected agent with, else No workspace, and follows a change of agent. A workspace is authorized as the person on submit; a refusal starts nothing and is answered privately with the prompt quoted back. The select is shown only when the person has workspaces and the listing answers within 1.5 s; otherwise the picker opens without it and the thread prompt asks as before. The last choice per person and agent is kept in the routing store, a name or `none` and never a grant (klaus-gateway#430).

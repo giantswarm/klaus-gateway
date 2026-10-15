@@ -458,7 +458,7 @@ func (a *Adapter) chooseWorkspace(ctx context.Context, threadID string, p *works
 // when it fails.
 func (a *Adapter) replayHeld(ctx context.Context, threadID string, msg channels.InboundMessage, slackChannel string) {
 	if err := a.replayDispatch(ctx, msg, slackChannel); err != nil && !errors.Is(err, context.Canceled) {
-		a.Logger.Error("slack: replay after workspace choice failed", "thread", threadID, "error", err)
+		a.Logger.Log(ctx, failureLogLevel(err), "slack: replay after workspace choice failed", "thread", threadID, "error", err)
 		a.postReplayFailureNote(ctx, slackChannel, threadID, err)
 	}
 }

@@ -1768,7 +1768,7 @@ func (a *Adapter) OnUserLinked(_ context.Context, slackUser, _ string) {
 					continue
 				}
 				if err := a.replayDispatch(ctx, req.msg, req.slackChannel); err != nil && !errors.Is(err, context.Canceled) {
-					a.Logger.Error("slack: replay after sign-in failed", "user", slackUser, "thread", req.msg.ThreadID, "error", err)
+					a.Logger.Log(ctx, failureLogLevel(err), "slack: replay after sign-in failed", "user", slackUser, "thread", req.msg.ThreadID, "error", err)
 					a.postReplayFailureNote(ctx, req.slackChannel, req.msg.ThreadID, err)
 				}
 			}
@@ -2073,6 +2073,8 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 			if _, perr := a.apiClient().postNote(ctx, inner.Channel, busyNotice, msg.ThreadID); perr != nil {
 				a.Logger.Warn("slack: post busy notice failed", "thread", msg.ThreadID, "error", perr)
 			}
+		case isShareRefusal(err):
+			a.Logger.Info("slack: collaborator turn refused", "channel", inner.Channel, "thread", msg.ThreadID, "error", err)
 		case !errors.Is(err, context.Canceled):
 			a.Logger.Error("slack: dispatch error", "channel", inner.Channel, "failure_class", channels.ClassifyFailure(err), "error", err)
 		}

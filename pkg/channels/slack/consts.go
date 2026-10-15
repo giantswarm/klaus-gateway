@@ -3,6 +3,7 @@ package slack
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
@@ -668,6 +669,23 @@ func shareNote(err error) (string, bool) {
 		return shareUnavailableNote, true
 	}
 	return "", false
+}
+
+// isShareRefusal reports whether err is a collaborator's turn the thread's
+// Session could not be opened to, which the thread is told about and which
+// is not a failure of the platform.
+func isShareRefusal(err error) bool {
+	_, ok := shareNote(err)
+	return ok
+}
+
+// failureLogLevel is the level a turn's err is logged at: Info for a share
+// refusal, Error for anything else.
+func failureLogLevel(err error) slog.Level {
+	if isShareRefusal(err) {
+		return slog.LevelInfo
+	}
+	return slog.LevelError
 }
 
 // failureNote is the note of a turn that failed with err before the agent
