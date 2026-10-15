@@ -238,8 +238,10 @@ creates one, which a turn that switches agents does mid-thread.
   the messages written before the opener to the agent as a labelled part of its own (`[thread
   context shared by <name>: N earlier messages in this thread, oldest first]`, one line per message
   with a UTC time and the author's display name). Every human's message is shared; of the bots,
-  only the ones `slack.contextBotIDs` names by Slack `bot_id` (the alerting integrations), since a
-  bot's display name is whatever it posts under; any other bot's post is left out, and the
+  only the ones `slack.contextBotIDs` names by Slack `bot_id` or `slack.contextBotNames` matches by
+  bot profile name (the alerting integrations; `*-alertmanager` admits every installation's
+  Alertmanager app, each with its own `bot_id`). The profile name is the Slack app's own bot name;
+  the name a post sets is whatever it posts under and never admits a bot; any other bot's post is left out, and the
   catch-up of a muted thread admits the same authors. An allowed bot's alert is flattened out of its attachments
   and blocks, which is where PagerDuty and friends put the text; `<@U…>` mentions become names; the
   gateway's own posts and content-less events are left out; files are named, never downloaded. At

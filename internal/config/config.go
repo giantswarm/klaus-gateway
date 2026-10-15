@@ -10,6 +10,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -119,6 +120,13 @@ type SlackConfig struct {
 	// under; every other bot's post is left out. SLACK_CONTEXT_BOT_IDS
 	// (comma-separated). Empty shares no bot's post.
 	ContextBotIDs []string
+	// ContextBotNames lists patterns (path.Match syntax, case-insensitive)
+	// matched against a bot's profile name — its Slack app's configured bot
+	// name, not the name a post sets — whose posts a thread read hands to the
+	// agent beside ContextBotIDs': "*-alertmanager" admits every
+	// installation's Alertmanager app. SLACK_CONTEXT_BOT_NAMES
+	// (comma-separated). Empty matches no bot by name.
+	ContextBotNames []string
 	// DropStaleEvents ignores Slack events older than the gateway's start time,
 	// so a restart never replays messages queued while it was down.
 	// SLACK_DROP_STALE=true. Default false.
@@ -373,6 +381,10 @@ func Load(args []string) (Config, error) {
 		cfg.Slack.ContextBotIDs = splitCommaList(v)
 		return nil
 	})
+	fs.Func("slack-context-bot-names", "Comma-separated patterns (path.Match syntax, case-insensitive) matched against a bot's Slack profile name whose posts a thread read hands to the agent, e.g. *-alertmanager.", func(v string) error {
+		cfg.Slack.ContextBotNames = splitCommaList(v)
+		return nil
+	})
 	fs.StringVar(&cfg.Slack.WorkingEmoji, "slack-working-emoji", cfg.Slack.WorkingEmoji, "Slack reaction emoji name for a turn in progress (no colons). Empty uses the default.")
 	fs.StringVar(&cfg.Slack.DoneEmoji, "slack-done-emoji", cfg.Slack.DoneEmoji, "Slack reaction emoji name for a completed turn (no colons). Empty uses the default.")
 	fs.StringVar(&cfg.Slack.FailedEmoji, "slack-failed-emoji", cfg.Slack.FailedEmoji, "Slack reaction emoji name for a failed turn (no colons). Empty uses the default.")
@@ -499,6 +511,9 @@ func applyEnv(cfg *Config) {
 	}
 	if v, ok := lookup("SLACK_CONTEXT_BOT_IDS"); ok {
 		cfg.Slack.ContextBotIDs = splitCommaList(v)
+	}
+	if v, ok := lookup("SLACK_CONTEXT_BOT_NAMES"); ok {
+		cfg.Slack.ContextBotNames = splitCommaList(v)
 	}
 	if v, ok := lookup("SLACK_DROP_STALE"); ok {
 		cfg.Slack.DropStaleEvents = strings.EqualFold(v, "true") || v == "1"
@@ -652,6 +667,11 @@ func (c Config) Validate() error {
 		}
 		if c.Slack.ChannelMode == ChannelModeNone && c.Slack.DMMode != DMModeServe && c.Slack.DMMode != "" {
 			return fmt.Errorf("--slack-channel-mode=none requires --slack-dm-mode=serve: with DMs on %q the bot would have no served surface", c.Slack.DMMode)
+		}
+		for _, p := range c.Slack.ContextBotNames {
+			if _, err := path.Match(p, ""); err != nil {
+				return fmt.Errorf("--slack-context-bot-names: invalid pattern %q: %w", p, err)
+			}
 		}
 	}
 	if c.OBO.Enabled {

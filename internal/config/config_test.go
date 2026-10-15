@@ -162,6 +162,7 @@ func TestLoad_SlackSurfaceEnv(t *testing.T) {
 	t.Setenv("KLAUS_GATEWAY_SLACK_CHANNEL_MODE", "allowlist")
 	t.Setenv("KLAUS_GATEWAY_SLACK_CHANNEL_ALLOWLIST", "C1, C2,,C3 ")
 	t.Setenv("KLAUS_GATEWAY_SLACK_CONTEXT_BOT_IDS", "B01ALERTS, B02PAGER")
+	t.Setenv("KLAUS_GATEWAY_SLACK_CONTEXT_BOT_NAMES", "*-alertmanager, incident.io")
 
 	cfg, err := config.Load(nil)
 	require.NoError(t, err)
@@ -169,6 +170,17 @@ func TestLoad_SlackSurfaceEnv(t *testing.T) {
 	require.Equal(t, config.ChannelModeAllowlist, cfg.Slack.ChannelMode)
 	require.Equal(t, []string{"C1", "C2", "C3"}, cfg.Slack.ChannelAllowlist)
 	require.Equal(t, []string{"B01ALERTS", "B02PAGER"}, cfg.Slack.ContextBotIDs)
+	require.Equal(t, []string{"*-alertmanager", "incident.io"}, cfg.Slack.ContextBotNames)
+}
+
+func TestValidate_SlackContextBotNames(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Slack.Enabled = true
+	cfg.Slack.ContextBotNames = []string{"*-alertmanager"}
+	require.NoError(t, cfg.Validate())
+
+	cfg.Slack.ContextBotNames = []string{"[alert"}
+	require.ErrorContains(t, cfg.Validate(), `invalid pattern "[alert"`)
 }
 
 func TestValidate_OBO(t *testing.T) {

@@ -106,6 +106,13 @@ type Adapter struct {
 	// of the thread context and the catch-up of a muted thread. Empty shares
 	// no bot's post.
 	ContextBotIDs []string
+	// ContextBotNames lists patterns (path.Match syntax, case-insensitive)
+	// matched against a bot's profile name — its Slack app's configured bot
+	// name, never the name a post sets — admitting that bot's posts like a
+	// ContextBotIDs entry. One pattern admits an integration that runs one
+	// Slack app per installation ("*-alertmanager"), whose bot_ids grow with
+	// the fleet.
+	ContextBotNames []string
 	// DropStaleEvents, when true, ignores events whose Slack ts predates this
 	// process. Socket Mode can redeliver events that were queued/unacked while
 	// a consumer was disconnected, so without this a restart replays — and

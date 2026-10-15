@@ -149,6 +149,7 @@ func run(args []string) error {
 			ChannelMode:         slackchannel.ChannelMode(cfg.Slack.ChannelMode),
 			ChannelAllowlist:    cfg.Slack.ChannelAllowlist,
 			ContextBotIDs:       cfg.Slack.ContextBotIDs,
+			ContextBotNames:     cfg.Slack.ContextBotNames,
 			DropStaleEvents:     cfg.Slack.DropStaleEvents,
 			WorkingEmoji:        cfg.Slack.WorkingEmoji,
 			DoneEmoji:           cfg.Slack.DoneEmoji,
