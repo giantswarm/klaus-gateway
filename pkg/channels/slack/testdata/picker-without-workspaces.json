@@ -15,7 +15,7 @@
         "action_id": "agent",
         "initial_option": {
           "text": {
-            "text": "Swarmgeist",
+            "text": "Swarmgeist (platform)",
             "type": "plain_text"
           },
           "value": "kagent/swarmgeist"
@@ -23,21 +23,21 @@
         "options": [
           {
             "text": {
-              "text": "Swarmgeist",
+              "text": "Swarmgeist (platform)",
               "type": "plain_text"
             },
             "value": "kagent/swarmgeist"
           },
           {
             "text": {
-              "text": "SRE Agent",
+              "text": "SRE Agent (platform)",
               "type": "plain_text"
             },
             "value": "kagent/sre-agent"
           },
           {
             "text": {
-              "text": "grill-master",
+              "text": "grill-master (platform)",
               "type": "plain_text"
             },
             "value": "kagent/grill-master"

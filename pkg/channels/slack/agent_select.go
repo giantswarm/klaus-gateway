@@ -57,9 +57,10 @@ const agentValidateTimeout = 10 * time.Second
 
 // listAgents posts the roster in the thread: the whole answer to the "agents"
 // command. Discovery is deliberately ungated, like the help reply: the roster
-// is global information, not thread state, so the permittedOnly gate the
-// state-changing commands use would only swap this reply for its own in-thread
-// refusal — while making the caller the thread initiator as a side effect.
+// is the caller's own answer from the controller, not thread state, so the
+// permittedOnly gate the state-changing commands use would only swap this
+// reply for its own in-thread refusal — while making the caller the thread
+// initiator as a side effect.
 //
 // Each row carries a button that starts a conversation with that agent, which
 // is what makes the listing the one part of the retired /agent command worth
@@ -114,8 +115,8 @@ func (a *Adapter) agentNotRunnableLead(ctx context.Context, ref string, err erro
 	// compile error can span lines and end with a period, and it lands in the
 	// middle of one sentence here.
 	reason := strings.TrimSuffix(strings.Join(strings.Fields(ue.Reason), " "), ".")
-	// The roster's cache can still hold the agent's display name (the picker
-	// listed it seconds ago); the technical name the user typed is the fallback.
+	// How the agent last looked gives its display name (the picker listed it
+	// seconds ago); the technical name the user typed is the fallback.
 	return fmt.Sprintf(agentNotRunnableNotice, escapeMrkdwn(a.agentNameFor(ctx, ref)), escapeMrkdwn(reason)), true
 }
 

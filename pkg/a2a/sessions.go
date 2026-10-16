@@ -80,9 +80,12 @@ func (c *Client) StartSession(ctx context.Context, agentRef, requestID, name str
 		if errors.As(err, &unavailable) {
 			unavailable.Ref = agentRef
 		}
+		var notPermitted *AgentNotPermittedError
+		if errors.Is(err, ErrAgentNotPermitted) && !errors.As(err, &notPermitted) {
+			return Session{}, c.notPermitted(agentRef, err)
+		}
 		return Session{}, err
 	}
-	c.refreshRosterInBackground(ctx)
 	return c.awaitReady(ctx, session)
 }
 

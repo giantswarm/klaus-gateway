@@ -2,9 +2,9 @@ package a2a
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	apiv1alpha1 "github.com/giantswarm/klaus-gateway/pkg/kagent/gen/kagent/api/v1alpha1"
 )
@@ -18,10 +18,12 @@ const (
 	IconURLAnnotation = "ui.giantswarm.io/icon-url"
 )
 
-// AgentInfo describes one Agent of the served namespace.
+// AgentInfo describes one Agent of the caller's roster.
 type AgentInfo struct {
 	Name      string
 	Namespace string
+	// Tenant is the tenant of the Agent's namespace (Client.Tenant).
+	Tenant string
 	// DisplayName is the ui.giantswarm.io/display-name annotation of the
 	// Agent, or of its AgentTemplate; empty when neither carries one.
 	DisplayName string
@@ -47,13 +49,14 @@ func (a AgentInfo) Ref() string {
 	return a.Namespace + "/" + a.Name
 }
 
-// ListAgents returns the selectable Agents of the served namespace: the ones
-// whose Ready condition is True. Agents that are not ready are left out;
-// selecting one by name is refused with the reason (CardInfo). The list is
-// fetched as the caller when the context carries a token and served from the
-// roster cache otherwise.
+// ListAgents returns the selectable Agents of the caller's roster: the ones
+// whose Ready condition is True, in every namespace the controller lets the
+// caller list. Agents that are not ready are left out; selecting one by name
+// is refused with the reason (CardInfo). The roster is fetched as the caller
+// on every call: the controller answers each person with their own Agents, so
+// no answer is kept for another call.
 func (c *Client) ListAgents(ctx context.Context) ([]AgentInfo, error) {
-	agents, err := c.rosterFor(ctx)
+	agents, err := c.fetchRoster(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -67,18 +70,28 @@ func (c *Client) ListAgents(ctx context.Context) ([]AgentInfo, error) {
 }
 
 // CardIdentity returns the agent's display name and icon URL for branding a
-// reply. Branding never blocks or fails a turn: an unknown agent yields empty
-// values (the icon still falls back to the configured template).
+// reply. Branding never blocks or fails a turn and needs no caller: it is how
+// the agent looked in the last roster any caller fetched, or, before one has,
+// the caller's own roster when ctx carries a token. An unknown agent yields
+// an empty name and the configured fallback icon.
 func (c *Client) CardIdentity(ctx context.Context, agentRef string) (username, iconURL string) {
-	info, err := c.Agent(ctx, agentRef)
+	namespace, name, err := c.splitRef(agentRef)
 	if err != nil {
 		return "", c.fallbackIcon(agentRef)
 	}
-	return info.DisplayName, info.IconURL
+	if look, ok := c.looks.get(namespace, name); ok {
+		return look.displayName, look.iconURL
+	}
+	if _, err := c.fetchRoster(ctx); err == nil {
+		if look, ok := c.looks.get(namespace, name); ok {
+			return look.displayName, look.iconURL
+		}
+	}
+	return "", c.fallbackIcon(agentRef)
 }
 
-// CardInfo validates an agent selection: the Agent must exist in the served
-// namespace and be selectable. The error names the reason so a channel can
+// CardInfo validates an agent selection as the caller: the Agent must be in
+// their roster and be selectable. The error names the reason so a channel can
 // refuse the selection loudly instead of substituting an agent.
 func (c *Client) CardInfo(ctx context.Context, agentRef string) (name, description string, err error) {
 	info, err := c.Agent(ctx, agentRef)
@@ -120,14 +133,18 @@ func (c *Client) AgentModel(ctx context.Context, agentRef string) (model, provid
 	return stringAt(spec, "model"), stringAt(spec, "provider"), nil
 }
 
-// Agent returns the Agent agentRef names, whether or not it is selectable. A
-// bare ref is resolved in the served namespace.
+// Agent returns the Agent agentRef names from the caller's roster, whether or
+// not it is selectable. A bare ref is resolved in the platform tenant's
+// namespace. An Agent the roster does not list is an AgentNotPermittedError:
+// the controller lists every Agent the caller may use, so one it leaves out
+// either does not exist or is not the caller's to use, and the two are not
+// told apart.
 func (c *Client) Agent(ctx context.Context, agentRef string) (AgentInfo, error) {
 	namespace, name, err := c.splitRef(agentRef)
 	if err != nil {
 		return AgentInfo{}, err
 	}
-	agents, err := c.rosterFor(ctx)
+	agents, err := c.fetchRoster(ctx)
 	if err != nil {
 		return AgentInfo{}, err
 	}
@@ -136,20 +153,31 @@ func (c *Client) Agent(ctx context.Context, agentRef string) (AgentInfo, error) 
 			return a, nil
 		}
 	}
-	return AgentInfo{}, fmt.Errorf("%w: no Agent %s/%s", ErrAgentUnknown, namespace, name)
+	return AgentInfo{}, c.notPermitted(agentRef, nil)
 }
 
-// splitRef resolves "name" or "namespace/name" against the served namespace.
+// notPermitted is the refusal of agentRef for the caller, cause the
+// controller's or agent-manager's own when there is one.
+func (c *Client) notPermitted(agentRef string, cause error) *AgentNotPermittedError {
+	e := &AgentNotPermittedError{Ref: agentRef, Name: agentRef, Cause: cause}
+	if namespace, name, err := c.splitRef(agentRef); err == nil {
+		e.Name, e.Tenant = name, c.Tenant(namespace)
+		if look, ok := c.looks.get(namespace, name); ok {
+			e.DisplayName = look.displayName
+		}
+	}
+	return e
+}
+
+// splitRef resolves "name" or "namespace/name"; a bare name is in the
+// platform tenant's namespace.
 func (c *Client) splitRef(agentRef string) (namespace, name string, err error) {
 	namespace, name = c.namespace, agentRef
 	if ns, n, ok := strings.Cut(agentRef, "/"); ok {
 		namespace, name = ns, n
 	}
-	if name == "" || namespace == "" {
-		return "", "", fmt.Errorf("%w: agent ref %q is empty", ErrAgentUnknown, agentRef)
-	}
-	if namespace != c.namespace {
-		return "", "", fmt.Errorf("%w: %s is not in the served namespace %s", ErrAgentUnknown, agentRef, c.namespace)
+	if name == "" || namespace == "" || strings.Contains(name, "/") {
+		return "", "", fmt.Errorf("%w: agent ref %q is not name or namespace/name", ErrAgentUnknown, agentRef)
 	}
 	return namespace, name, nil
 }
@@ -165,50 +193,34 @@ func (c *Client) fallbackIcon(agentRef string) string {
 	return strings.ReplaceAll(c.iconTemplate, "{agent}", name)
 }
 
-// rosterFor returns the roster for a call: fetched as the caller when ctx
-// carries a token and the cache is stale, the cached roster otherwise. Without
-// a token and without a cache there is nothing to serve.
-func (c *Client) rosterFor(ctx context.Context) ([]AgentInfo, error) {
-	cached, ok, fresh := c.cachedRoster()
-	if ok && fresh {
-		return cached, nil
-	}
-	agents, err := c.fetchRoster(ctx)
-	if err == nil {
-		return agents, nil
-	}
-	if ok && errors.Is(err, ErrNoIdentity) {
-		return cached, nil
-	}
-	return nil, err
-}
-
-// fetchRoster lists the served namespace's Agents and AgentTemplates as the
-// caller and refreshes the roster cache. The templates supply what an Agent
-// takes from the one it references: the description, the ModelConfig, and
-// the UI annotations the Agent itself does not carry.
+// fetchRoster lists the Agents and AgentTemplates of every namespace the
+// controller lets the caller list, as the caller, and records how each Agent
+// looks (agentLooks). The templates supply what an Agent takes from the one it
+// references, in its own namespace: the description, the ModelConfig, and the
+// UI annotations the Agent itself does not carry.
 func (c *Client) fetchRoster(ctx context.Context) ([]AgentInfo, error) {
 	callCtx, err := c.serviceCtx(ctx)
 	if err != nil {
 		return nil, err
 	}
-	listed, err := c.agents.ListAgents(callCtx, &apiv1alpha1.ListAgentsRequest{Namespace: c.namespace})
+	listed, err := c.agents.ListAgents(callCtx, &apiv1alpha1.ListAgentsRequest{})
 	if err != nil {
-		return nil, fmt.Errorf("a2a: list Agents in %s: %w", c.namespace, err)
+		return nil, fmt.Errorf("a2a: list Agents: %w", err)
 	}
-	templates, err := c.templates.ListAgentTemplates(callCtx, &apiv1alpha1.ListAgentTemplatesRequest{Namespace: c.namespace})
+	templates, err := c.templates.ListAgentTemplates(callCtx, &apiv1alpha1.ListAgentTemplatesRequest{})
 	if err != nil {
-		return nil, fmt.Errorf("a2a: list AgentTemplates in %s: %w", c.namespace, err)
+		return nil, fmt.Errorf("a2a: list AgentTemplates: %w", err)
 	}
-	byName := make(map[string]*apiv1alpha1.AgentTemplate, len(templates.GetAgentTemplates()))
+	byRef := make(map[string]*apiv1alpha1.AgentTemplate, len(templates.GetAgentTemplates()))
 	for _, t := range templates.GetAgentTemplates() {
-		byName[t.GetRef().GetName()] = t
+		byRef[t.GetRef().GetNamespace()+"/"+t.GetRef().GetName()] = t
 	}
 	agents := make([]AgentInfo, 0, len(listed.GetAgents()))
 	for _, a := range listed.GetAgents() {
-		agents = append(agents, c.agentInfo(a, byName))
+		info := c.agentInfo(a, byRef)
+		c.looks.put(info)
+		agents = append(agents, info)
 	}
-	c.storeRoster(agents)
 	return agents, nil
 }
 
@@ -224,6 +236,7 @@ func (c *Client) agentInfo(a *apiv1alpha1.Agent, templates map[string]*apiv1alph
 	info := AgentInfo{
 		Name:        a.GetRef().GetName(),
 		Namespace:   a.GetRef().GetNamespace(),
+		Tenant:      c.Tenant(a.GetRef().GetNamespace()),
 		DisplayName: stringAt(annotations, DisplayNameAnnotation),
 		IconURL:     stringAt(annotations, IconURLAnnotation),
 	}
@@ -231,7 +244,7 @@ func (c *Client) agentInfo(a *apiv1alpha1.Agent, templates map[string]*apiv1alph
 		info.Description = stringAt(inline, "description")
 		info.ModelConfig = stringAt(nested(inline, "modelConfig"), "name")
 	}
-	if t := templates[stringAt(nested(spec, "templateRef"), "name")]; t != nil {
+	if t := templates[info.Namespace+"/"+stringAt(nested(spec, "templateRef"), "name")]; t != nil {
 		info.Description = t.GetDescription()
 		info.ModelConfig = t.GetModelConfigRef().GetName()
 		templateAnnotations := nested(nested(t.GetResource().GetValue().AsMap(), "metadata"), "annotations")
@@ -290,4 +303,35 @@ func stringAt(m map[string]any, key string) string {
 	}
 	s, _ := m[key].(string)
 	return s
+}
+
+// agentLook is how an Agent looks on a channel: its display name and icon.
+type agentLook struct {
+	displayName, iconURL string
+}
+
+// agentLooks remembers how each Agent looked in the last roster any caller
+// fetched, by namespace and name. It labels replies and notices where no
+// caller's token is at hand; it never says which Agents a caller may see or
+// use, which only the caller's own roster does. An Agent leaves it only when
+// the process restarts: a stale entry costs a label, never access.
+type agentLooks struct {
+	mu    sync.Mutex
+	looks map[string]agentLook
+}
+
+func (l *agentLooks) put(info AgentInfo) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.looks == nil {
+		l.looks = map[string]agentLook{}
+	}
+	l.looks[info.Namespace+"/"+info.Name] = agentLook{displayName: info.DisplayName, iconURL: info.IconURL}
+}
+
+func (l *agentLooks) get(namespace, name string) (agentLook, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	look, ok := l.looks[namespace+"/"+name]
+	return look, ok
 }

@@ -23,8 +23,6 @@ import (
 	"net/url"
 	"os"
 	"strings"
-	"sync"
-	"time"
 
 	a2apkg "github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2aclient"
@@ -95,7 +93,46 @@ var (
 	// selected: its Ready condition is not True, so it has no revision a
 	// Session can be created from. The error message carries the reason.
 	ErrAgentUnavailable = errors.New("a2a: agent unavailable")
+
+	// ErrAgentNotPermitted is returned when the caller may not use an Agent:
+	// their roster does not list it, or the controller refused the call with
+	// PermissionDenied. The two are one answer, since the controller lists
+	// only the Agents a caller may use.
+	ErrAgentNotPermitted = errors.New("a2a: agent not permitted for the caller")
 )
+
+// AgentNotPermittedError names the Agent and its tenant a caller may not use.
+// It matches ErrAgentNotPermitted in errors.Is.
+type AgentNotPermittedError struct {
+	// Ref is the agent ref as selected.
+	Ref string
+	// Name is the Agent's name, and DisplayName its display name when the
+	// gateway has seen one.
+	Name, DisplayName string
+	// Tenant is the tenant of the Agent's namespace (Tenant).
+	Tenant string
+	// Cause is the controller's or agent-manager's refusal, nil for an Agent
+	// the caller's roster does not list.
+	Cause error
+}
+
+func (e *AgentNotPermittedError) Error() string {
+	if e.Cause != nil {
+		return fmt.Sprintf("%s: %s: %v", ErrAgentNotPermitted.Error(), e.Ref, e.Cause)
+	}
+	return fmt.Sprintf("%s: %s is not in the caller's roster", ErrAgentNotPermitted.Error(), e.Ref)
+}
+
+func (e *AgentNotPermittedError) Is(target error) bool { return target == ErrAgentNotPermitted }
+
+func (e *AgentNotPermittedError) Unwrap() error { return e.Cause }
+
+// PlatformTenant is the tenant of the served namespace: the platform's own
+// agents, which every signed-in person may use.
+const PlatformTenant = "platform"
+
+// organizationPrefix is the prefix of a Giant Swarm Organization's namespace.
+const organizationPrefix = "org-"
 
 // AgentUnavailableError says why an Agent that exists cannot start a
 // conversation: its Ready condition is not True. It matches
@@ -139,8 +176,9 @@ type Config struct {
 	// CAFile optionally names a PEM bundle trusted for a grpcs target in
 	// addition to the system roots.
 	CAFile string
-	// Namespace is the namespace whose Agents are served; a bare agent ref is
-	// resolved in it.
+	// Namespace is the platform tenant's namespace; a bare agent ref is
+	// resolved in it. The roster spans every namespace the controller lets the
+	// caller list.
 	Namespace string
 	// FallbackIconURLTemplate supplies an agent icon when neither the Agent
 	// nor its AgentTemplate carries an icon-URL annotation. "{agent}" is replaced with the agent's
@@ -159,7 +197,8 @@ type Config struct {
 // (empty: unnamed), in the workspace grant admits it to (zero: none). It
 // returns the Session as created, ready or not. Its refusals are the errors a
 // channel renders: AgentUnavailableError, ErrNoIdentity, ErrAgentUnknown,
-// ErrInvalidSessionName. *agentmanager.Starter satisfies it.
+// ErrInvalidSessionName, and ErrAgentNotPermitted for a caller the controller
+// refuses the Agent to. *agentmanager.Starter satisfies it.
 type SessionStarter interface {
 	StartSession(ctx context.Context, bearer, namespace, name, requestID, sessionName string, grant workspaces.Grant) (Session, error)
 }
@@ -178,7 +217,7 @@ type Client struct {
 	logger       *slog.Logger
 	closeConn    func() error
 
-	roster rosterCache
+	looks agentLooks
 }
 
 // ParseTarget splits a grpc:// or grpcs:// target into the host:port the gRPC
@@ -278,8 +317,21 @@ func (c *Client) Close() error {
 	return c.closeConn()
 }
 
-// Namespace is the namespace whose Agents the client serves.
+// Namespace is the platform tenant's namespace, the one a bare ref names.
 func (c *Client) Namespace() string { return c.namespace }
+
+// Tenant is the tenant an Agent of namespace belongs to: PlatformTenant for
+// the served namespace, the organization's name for an org-<name> namespace,
+// the namespace itself otherwise.
+func (c *Client) Tenant(namespace string) string {
+	if namespace == c.namespace {
+		return PlatformTenant
+	}
+	if org, ok := strings.CutPrefix(namespace, organizationPrefix); ok && org != "" {
+		return "organization " + org
+	}
+	return "namespace " + namespace
+}
 
 func transportCredentials(useTLS bool, hostPort, caFile string) (credentials.TransportCredentials, error) {
 	if !useTLS {
@@ -376,7 +428,6 @@ func (c *Client) Stream(ctx context.Context, sessionID string, msg *a2apkg.Messa
 			yield(nil, err)
 			return
 		}
-		c.refreshRosterInBackground(ctx)
 		msg.ContextID = sessionID
 		resumed := false
 		for {
@@ -390,7 +441,7 @@ func (c *Client) Stream(ctx context.Context, sessionID string, msg *a2apkg.Messa
 					if first && isSizeRefusal(err) {
 						err = fmt.Errorf("%w: %s", ErrPayloadTooLarge, err.Error())
 					}
-					refused = mapA2AError(err)
+					refused = c.mapA2AError(ctx, err)
 					break
 				}
 				first = false
@@ -448,7 +499,7 @@ func (c *Client) Subscribe(ctx context.Context, taskID a2apkg.TaskID) iter.Seq2[
 		}
 		for event, err := range c.a2a.SubscribeToTask(callCtx, &a2apkg.SubscribeToTaskRequest{Tenant: tenant, ID: taskID}) {
 			if err != nil {
-				yield(nil, mapA2AError(err))
+				yield(nil, c.mapA2AError(ctx, err))
 				return
 			}
 			if !yield(event, nil) {
@@ -470,7 +521,7 @@ func (c *Client) GetTask(ctx context.Context, taskID a2apkg.TaskID) (*a2apkg.Tas
 	}
 	task, err := c.a2a.GetTask(callCtx, &a2apkg.GetTaskRequest{Tenant: tenant, ID: taskID})
 	if err != nil {
-		return nil, mapA2AError(err)
+		return nil, c.mapA2AError(ctx, err)
 	}
 	return task, nil
 }
@@ -487,19 +538,23 @@ func (c *Client) CancelTask(ctx context.Context, taskID a2apkg.TaskID) (*a2apkg.
 	}
 	task, err := c.a2a.CancelTask(callCtx, &a2apkg.CancelTaskRequest{Tenant: tenant, ID: taskID})
 	if err != nil {
-		return nil, mapA2AError(err)
+		return nil, c.mapA2AError(ctx, err)
 	}
 	return task, nil
 }
 
 // mapA2AError translates the controller's refusals into the sentinels
-// channels act on; everything else passes through.
-func mapA2AError(err error) error {
+// channels act on; everything else passes through. A PermissionDenied is the
+// caller's lack of access to the Agent ctx names (WithAgentRef): the
+// controller reviews every turn's sender against the Agent.
+func (c *Client) mapA2AError(ctx context.Context, err error) error {
 	switch {
 	case err == nil:
 		return nil
 	case errors.Is(err, a2apkg.ErrUnsupportedOperation) && strings.Contains(err.Error(), "already has an active task"):
 		return fmt.Errorf("%w: %s", ErrSessionBusy, err.Error())
+	case errors.Is(err, a2apkg.ErrUnauthorized):
+		return c.notPermitted(AgentRefFromContext(ctx), err)
 	default:
 		return err
 	}
@@ -518,70 +573,4 @@ func isSizeRefusal(err error) bool {
 	msg := err.Error()
 	return errors.Is(err, a2apkg.ErrInternalError) &&
 		(strings.Contains(msg, "grpc: received message") || strings.Contains(msg, "grpc: message after decompression"))
-}
-
-// rosterCache is the last fetched Agent roster. Discovery runs as the
-// person behind a call, but branding a reply and recovering a thread's agent
-// after a restart happen where no person's token is at hand, so those callers
-// are served from the cache, which every authenticated call refreshes once it
-// is older than rosterTTL.
-type rosterCache struct {
-	mu         sync.Mutex
-	agents     []AgentInfo
-	fetchedAt  time.Time
-	refreshing bool
-}
-
-// rosterTTL is how long a fetched roster is considered current.
-const rosterTTL = 30 * time.Second
-
-// rosterRefreshTimeout bounds a background roster refresh.
-const rosterRefreshTimeout = 10 * time.Second
-
-func (c *Client) cachedRoster() ([]AgentInfo, bool, bool) {
-	c.roster.mu.Lock()
-	defer c.roster.mu.Unlock()
-	if c.roster.agents == nil {
-		return nil, false, false
-	}
-	return c.roster.agents, true, time.Since(c.roster.fetchedAt) < rosterTTL
-}
-
-func (c *Client) storeRoster(agents []AgentInfo) {
-	c.roster.mu.Lock()
-	defer c.roster.mu.Unlock()
-	c.roster.agents = agents
-	c.roster.fetchedAt = time.Now()
-}
-
-// refreshRosterInBackground refreshes a stale roster under the caller's token
-// without blocking the call that carried it. One refresh runs at a time. The
-// refresh keeps the call's identity but not its cancellation: a turn that ends
-// early must not leave the roster stale.
-func (c *Client) refreshRosterInBackground(ctx context.Context) {
-	if _, cached, fresh := c.cachedRoster(); cached && fresh {
-		return
-	}
-	if _, err := c.bearer(ctx); err != nil {
-		return
-	}
-	c.roster.mu.Lock()
-	if c.roster.refreshing {
-		c.roster.mu.Unlock()
-		return
-	}
-	c.roster.refreshing = true
-	c.roster.mu.Unlock()
-	bctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rosterRefreshTimeout)
-	go func() {
-		defer cancel()
-		defer func() {
-			c.roster.mu.Lock()
-			c.roster.refreshing = false
-			c.roster.mu.Unlock()
-		}()
-		if _, err := c.fetchRoster(bctx); err != nil {
-			c.logger.Warn("a2a: background roster refresh failed", "error", err)
-		}
-	}()
 }

@@ -2,13 +2,11 @@ package slack
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -46,157 +44,66 @@ func TestBareAgentName(t *testing.T) {
 	}
 }
 
-// rosterErrThenAgents fails until unblocked, then serves agents.
-type rosterErrThenAgents struct {
+// rosterPerCaller answers each caller, known by the token their context
+// carries, with their own Agents, as the controller does.
+type rosterPerCaller struct {
 	mu     sync.Mutex
-	agents []pkga2a.AgentInfo
-	fail   bool
+	byUser map[string][]pkga2a.AgentInfo
 	calls  int
 }
 
-func (r *rosterErrThenAgents) ListAgents(context.Context) ([]pkga2a.AgentInfo, error) {
+func (r *rosterPerCaller) ListAgents(ctx context.Context) ([]pkga2a.AgentInfo, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls++
-	if r.fail {
-		return nil, errors.New("controller unreachable")
-	}
-	return r.agents, nil
-}
-
-func testAdapterWithRoster(r AgentRosterSource) *Adapter {
-	a := &Adapter{Roster: r, Logger: slog.New(slog.DiscardHandler)}
-	a.gw = newMemoryRecorder()
-	return a
-}
-
-// A stale roster is served as the last known good one even while the negative
-// cache is armed: a transient fetch failure must not flap an agent's name
-// mid-conversation (the label keeps its last good value; only a roster never
-// fetched at all falls back to the technical name).
-func TestRosterBestEffort_ServesStaleCacheThroughFailure(t *testing.T) {
-	roster := &rosterErrThenAgents{fail: true}
-	a := testAdapterWithRoster(roster)
-	known := []pkga2a.AgentInfo{{Name: "sre-agent", DisplayName: "SRE Assistant"}}
-	a.rosterCached = known
-	a.rosterExpires = time.Now().Add(-time.Minute)         // positive cache expired
-	a.rosterFailedUntil = time.Now().Add(rosterFailureTTL) // negative cache armed
-	got, err := a.rosterAgentsBestEffort(context.Background())
-	require.NoError(t, err, "the last known roster is served, not refused")
-	require.Equal(t, known, got)
-	require.Zero(t, roster.calls, "the armed negative cache defers the refresh")
-}
-
-// A stale roster triggers exactly one background refresh while the stale data
-// is returned immediately — branding never waits on the controller.
-func TestRosterBestEffort_StaleServesImmediatelyAndRefreshesOnce(t *testing.T) {
-	fresh := []pkga2a.AgentInfo{{Name: "sre-agent", DisplayName: "SRE Assistant v2"}}
-	roster := &rosterErrThenAgents{agents: fresh}
-	a := testAdapterWithRoster(roster)
-	old := []pkga2a.AgentInfo{{Name: "sre-agent", DisplayName: "SRE Assistant"}}
-	a.rosterCached = old
-	a.rosterExpires = time.Now().Add(-time.Minute)
-
-	got, err := a.rosterAgentsBestEffort(context.Background())
-	require.NoError(t, err)
-	require.Equal(t, old, got, "the stale roster is served without waiting")
-
-	require.Eventually(t, func() bool {
-		a.rosterMu.Lock()
-		defer a.rosterMu.Unlock()
-		return len(a.rosterCached) == 1 && a.rosterCached[0].DisplayName == "SRE Assistant v2"
-	}, flowWait, 10*time.Millisecond, "the background refresh lands")
-
-	roster.mu.Lock()
-	calls := roster.calls
-	roster.mu.Unlock()
-	require.Equal(t, 1, calls, "one refresh, not one per caller")
-}
-
-// With no roster ever fetched, an armed negative cache short-circuits: the
-// cold path is the only one allowed to refuse.
-func TestRosterBestEffort_ColdWithArmedNegativeCacheRefuses(t *testing.T) {
-	roster := &rosterErrThenAgents{fail: true}
-	a := testAdapterWithRoster(roster)
-	a.rosterFailedUntil = time.Now().Add(rosterFailureTTL)
-	_, err := a.rosterAgentsBestEffort(context.Background())
-	require.Error(t, err)
-	require.Zero(t, roster.calls, "no fetch while the failure is remembered")
-}
-
-// rosterNoIdentityThenAgents answers ErrNoIdentity until linked is set: an
-// unlinked caller, then the same caller right after signing in.
-type rosterNoIdentityThenAgents struct {
-	mu     sync.Mutex
-	linked bool
-	agents []pkga2a.AgentInfo
-}
-
-func (r *rosterNoIdentityThenAgents) ListAgents(context.Context) ([]pkga2a.AgentInfo, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if !r.linked {
+	token := pkga2a.ForwardedTokenFromContext(ctx)
+	if token == "" {
 		return nil, pkga2a.ErrNoIdentity
 	}
-	return r.agents, nil
+	return r.byUser[token], nil
 }
 
-// A caller without an identity says nothing about the roster's health, so it
-// must not arm the negative cache: the same person, signed in seconds later,
-// gets the roster instead of "not retrying before …" (the slash command's
-// cold path after /login).
-func TestRosterAgents_NoIdentityDoesNotArmTheNegativeCache(t *testing.T) {
-	roster := &rosterNoIdentityThenAgents{agents: []pkga2a.AgentInfo{{Name: "sre-agent", DisplayName: "SRE Agent"}}}
-	a := testAdapterWithRoster(roster)
-	ctx := context.Background()
+// Two people asking at once get their own rosters: nothing one was answered
+// is served to the other, so every listing asks.
+func TestRosterAgents_EachCallersOwn(t *testing.T) {
+	alice := []pkga2a.AgentInfo{{Name: "billing", Namespace: "org-acme", Tenant: "organization acme"}}
+	bob := []pkga2a.AgentInfo{{Name: "billing", Namespace: "org-beta", Tenant: "organization beta"}}
+	roster := &rosterPerCaller{byUser: map[string][]pkga2a.AgentInfo{"alice": alice, "bob": bob}}
+	a := &Adapter{Roster: roster, Logger: slog.New(slog.DiscardHandler)}
 
-	_, err := a.rosterAgentsBestEffort(ctx)
-	require.ErrorIs(t, err, pkga2a.ErrNoIdentity, "the unlinked caller is told to sign in")
-	a.rosterMu.Lock()
-	armed := !a.rosterFailedUntil.IsZero()
-	a.rosterMu.Unlock()
-	require.False(t, armed, "an identity failure must not be remembered against the roster")
-
-	roster.mu.Lock()
-	roster.linked = true
-	roster.mu.Unlock()
-	got, err := a.rosterAgentsBestEffort(ctx)
-	require.NoError(t, err, "the signed-in caller is served at once")
-	require.Equal(t, "SRE Agent", got[0].DisplayName)
-}
-
-// rosterFails answers every listing with err.
-type rosterFails struct{ err error }
-
-func (r rosterFails) ListAgents(context.Context) ([]pkga2a.AgentInfo, error) { return nil, r.err }
-
-// The three outcomes of a failed fetch: a controller failure arms the negative
-// cache; a caller without an identity and a caller whose own context ended
-// say nothing about the roster and leave it unarmed.
-func TestRosterAgents_WhichFailuresArmTheNegativeCache(t *testing.T) {
-	cancelled, cancel := context.WithCancel(context.Background())
-	cancel()
-	cases := []struct {
-		name  string
-		err   error
-		ctx   context.Context
-		armed bool
-	}{
-		{"controller failure", errors.New("controller unreachable"), context.Background(), true},
-		{"no caller identity", pkga2a.ErrNoIdentity, context.Background(), false},
-		{"caller ran out of time", errors.New("rpc error: context canceled"), cancelled, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			a := testAdapterWithRoster(rosterFails{err: tc.err})
-			_, err := a.rosterAgents(tc.ctx)
-			require.Error(t, err)
-			a.rosterMu.Lock()
-			armed := !a.rosterFailedUntil.IsZero()
-			a.rosterMu.Unlock()
-			require.Equal(t, tc.armed, armed)
+	var wg sync.WaitGroup
+	got := make([][]pkga2a.AgentInfo, 2)
+	errs := make([]error, 2)
+	for i, user := range []string{"alice", "bob"} {
+		wg.Go(func() {
+			got[i], errs[i] = a.rosterAgents(pkga2a.WithForwardedToken(context.Background(), user))
 		})
 	}
+	wg.Wait()
+	require.NoError(t, errs[0])
+	require.NoError(t, errs[1])
+	require.Equal(t, alice, got[0])
+	require.Equal(t, bob, got[1])
+
+	_, err := a.rosterAgents(context.Background())
+	require.ErrorIs(t, err, pkga2a.ErrNoIdentity, "no roster without a caller")
+	require.Equal(t, 3, roster.calls)
+}
+
+// A ref keeps the deployment's shape for an Agent of the platform tenant, so
+// the refs threads already carry keep their spelling, and is namespace/name
+// for an Agent of any other tenant, so two Agents of one name stay two refs.
+func TestAgentInfoRef(t *testing.T) {
+	acme := pkga2a.AgentInfo{Name: "billing", Namespace: "org-acme"}
+	platform := pkga2a.AgentInfo{Name: "sre-agent", Namespace: "kagent"}
+	bare := &Adapter{DefaultAgent: "sre-agent", Namespace: "kagent"}
+	require.Equal(t, "sre-agent", bare.agentInfoRef(platform))
+	require.Equal(t, "org-acme/billing", bare.agentInfoRef(acme))
+	qualified := &Adapter{DefaultAgent: "kagent/sre-agent", Namespace: "kagent"}
+	require.Equal(t, "kagent/sre-agent", qualified.agentInfoRef(platform))
+	require.Equal(t, "org-acme/billing", qualified.agentInfoRef(acme))
+	unset := &Adapter{DefaultAgent: "kagent/sre-agent"}
+	require.Equal(t, "kagent/sre-agent", unset.agentInfoRef(platform), "the default's namespace is the platform's when Namespace is unset")
 }
 
 // The roster rows: a header and a summary naming the default, the default
@@ -226,9 +133,9 @@ func TestRosterBlocks(t *testing.T) {
 		}
 	}
 	require.Len(t, rows, rosterRowsMax)
-	require.Equal(t, "*Zeta* · default", text(rows[0]))
-	require.Equal(t, "*alpha*", text(rows[1]))
-	require.Equal(t, "*beta*\nChecks things.", text(rows[2]), "one sentence of the description")
+	require.Equal(t, "*Zeta* · platform · default", text(rows[0]))
+	require.Equal(t, "*alpha* · platform", text(rows[1]))
+	require.Equal(t, "*beta* · platform\nChecks things.", text(rows[2]), "one sentence of the description")
 	button := rows[0].(map[string]any)[bkAccessory].(map[string]any)
 	require.Equal(t, agentSelectAction, button[bkActionID])
 	require.Equal(t, "zeta", button[bkValue])

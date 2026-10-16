@@ -2,15 +2,30 @@ package slack
 
 import (
 	"context"
+	"log/slog"
 	"testing"
 
 	"github.com/stretchr/testify/require"
-
-	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 )
 
+// knownLooks is an AgentCardResolver that knows how some agents look, the
+// way the a2a client does once any caller's roster listed them.
+type knownLooks map[string]string
+
+func (k knownLooks) CardIdentity(_ context.Context, agentRef string) (string, string) {
+	return k[agentRef], ""
+}
+
+// introAdapter is an adapter whose card resolver knows the SRE agent's look.
+func introAdapter() *Adapter {
+	a := &Adapter{AgentCards: knownLooks{"sre-agent": "SRE Agent"}, Logger: slog.New(slog.DiscardHandler)}
+	a.gw = newMemoryRecorder()
+	return a
+}
+
+// The intro and the greeting run where no person's token is at hand; the
+// default agent is named by how it last looked.
 func TestIntroBlocks(t *testing.T) {
-	roster := &rosterErrThenAgents{agents: []pkga2a.AgentInfo{{Name: "sre-agent", DisplayName: "SRE Agent"}}}
 	text := func(b any) string {
 		m := b.(map[string]any)
 		if m[bkType] == bkContext {
@@ -39,7 +54,7 @@ func TestIntroBlocks(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			a := testAdapterWithRoster(roster)
+			a := introAdapter()
 			a.DefaultAgent = tc.dflt
 			a.botUserID, a.botResolved = "UBOT", true
 			fallback, blocks := a.introBlocks(context.Background(), tc.body, tc.hints)
@@ -54,7 +69,7 @@ func TestIntroBlocks(t *testing.T) {
 
 // Without the bot's ID the hints cannot say what to type, so they are left off.
 func TestIntroBlocks_NoBotIDDropsTheHints(t *testing.T) {
-	a := testAdapterWithRoster(&rosterErrThenAgents{agents: []pkga2a.AgentInfo{{Name: "sre-agent", DisplayName: "SRE Agent"}}})
+	a := introAdapter()
 	a.DefaultAgent = "sre-agent"
 	a.botResolved = true
 	_, blocks := a.introBlocks(context.Background(), assistantGreetingText, assistantGreetingContext)

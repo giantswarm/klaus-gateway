@@ -54,6 +54,7 @@ func (f *fakeKagent) startSession(call mustertest.Call) mustertest.Answer {
 			codes.FailedPrecondition: "conflict",
 			codes.AlreadyExists:      "conflict",
 			codes.Unauthenticated:    "unauthenticated",
+			codes.PermissionDenied:   "forbidden",
 			codes.NotFound:           "not_found",
 			codes.InvalidArgument:    "invalid_request",
 		}[status.Code(err)]

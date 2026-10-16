@@ -115,9 +115,10 @@ func TestClient_Stream_WireContractAndEvents(t *testing.T) {
 	require.Equal(t, "ping", f.sent[0].Parts[0].Text())
 }
 
-// The tenant is the agent ref the context carries, resolved in the served
-// namespace; a bare name and a namespaced ref name the same Agent, and an
-// Agent of another namespace is refused before the controller is asked.
+// The tenant is the agent ref the context carries; a bare name is resolved in
+// the served namespace, so it and the namespaced ref name the same Agent. An
+// Agent of another namespace goes to the controller as it is, which refuses
+// it here: the caller may not use it.
 func TestClient_Stream_TenantIsTheContextsAgent(t *testing.T) {
 	f := readyFake(t)
 	f.events = []a2apkg.Event{&a2apkg.Task{ID: "task-1", ContextID: sessionID, Status: a2apkg.TaskStatus{State: a2apkg.TaskStateCompleted}}}
@@ -129,12 +130,15 @@ func TestClient_Stream_TenantIsTheContextsAgent(t *testing.T) {
 	require.Equal(t, []string{sreTenant}, f.tenants)
 
 	for _, err := range client.Stream(asUserOf(t.Context(), userToken, "other/sre-agent"), sessionID, a2apkg.NewMessage(a2apkg.MessageRoleUser)) {
-		require.ErrorIs(t, err, pkga2a.ErrAgentUnknown)
+		var refused *pkga2a.AgentNotPermittedError
+		require.ErrorAs(t, err, &refused)
+		require.Equal(t, "namespace other", refused.Tenant)
 	}
+	require.Equal(t, []string{sreTenant, "other/sre-agent"}, f.tenants)
 	for _, err := range client.Stream(pkga2a.WithForwardedToken(t.Context(), userToken), sessionID, a2apkg.NewMessage(a2apkg.MessageRoleUser)) {
 		require.ErrorIs(t, err, pkga2a.ErrAgentUnknown, "a call without an agent ref names no tenant")
 	}
-	require.Len(t, f.tenants, 1, "neither reached the controller")
+	require.Len(t, f.tenants, 2, "a call without a tenant does not reach the controller")
 
 	// A session of another Agent is not reachable under this tenant.
 	f.sessions["other"] = &apiv1alpha1.Session{
@@ -353,12 +357,12 @@ func TestClient_ListAgents_ReadinessAndAnnotations(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, agents, 2, "only an Agent whose Ready condition is True is offered")
 	require.Equal(t, pkga2a.AgentInfo{
-		Name: "sre-agent", Namespace: "kagent", DisplayName: "SRE Agent", IconURL: "https://icons.example/sre.png",
+		Name: "sre-agent", Namespace: "kagent", Tenant: pkga2a.PlatformTenant, DisplayName: "SRE Agent", IconURL: "https://icons.example/sre.png",
 		Description: "Investigates sre-template", ModelConfig: "default-model-config", Harness: "kagent",
 	}, agents[0])
 	require.Equal(t, "kagent/sre-agent", agents[0].Ref())
 	require.Equal(t, pkga2a.AgentInfo{
-		Name: "branded-template", Namespace: "kagent", DisplayName: "Branded", IconURL: "https://icons.example/branded.png",
+		Name: "branded-template", Namespace: "kagent", Tenant: pkga2a.PlatformTenant, DisplayName: "Branded", IconURL: "https://icons.example/branded.png",
 		Description: "Investigates branded", ModelConfig: "other-model-config", Harness: "kagent",
 	}, agents[1], "an Agent without annotations of its own is branded by its AgentTemplate's")
 	require.Equal(t, []string{"Bearer " + userToken}, f.lastMD("ListAgents").Get("authorization"))
@@ -378,9 +382,9 @@ func TestClient_ListAgents_ReadinessAndAnnotations(t *testing.T) {
 	require.ErrorIs(t, err, pkga2a.ErrAgentUnavailable)
 	require.ErrorContains(t, err, "no Ready condition reported yet")
 	_, _, err = client.CardInfo(ctx, "nobody")
-	require.ErrorIs(t, err, pkga2a.ErrAgentUnknown)
+	require.ErrorIs(t, err, pkga2a.ErrAgentNotPermitted, "an Agent the roster does not list is not the caller's")
 	_, _, err = client.CardInfo(ctx, "other-namespace/sre-agent")
-	require.ErrorIs(t, err, pkga2a.ErrAgentUnknown, "only the served namespace is offered")
+	require.ErrorIs(t, err, pkga2a.ErrAgentNotPermitted)
 
 	name, description, err := client.CardInfo(ctx, "sre-agent")
 	require.NoError(t, err)
@@ -416,25 +420,112 @@ func TestClient_ListAgents_InlineTemplate(t *testing.T) {
 	require.Equal(t, "embedded-model", agents[0].ModelConfig)
 }
 
-// The roster is fetched as the caller and cached; a call without a token,
-// branding a reply, recovering a thread's agent, is served from the cache.
-func TestClient_ListAgents_CacheServesCallsWithoutIdentity(t *testing.T) {
-	f := readyFake(t)
+// tenantsFake is a fake controller with an Agent in the platform tenant and
+// one in each of two organizations, alice permitted the platform and acme,
+// bob the platform and beta.
+func tenantsFake(t *testing.T) *fakeKagent {
+	t.Helper()
+	f := newFakeKagent()
+	f.agents = []*apiv1alpha1.Agent{
+		agent(t, "sre-agent", nil, "sre-template", "kagent", readyCondition(true, "Ready", "")),
+		inNamespace(agent(t, "billing", map[string]any{pkga2a.DisplayNameAnnotation: "Billing"}, "acme-template", "kagent", readyCondition(true, "Ready", "")), "org-acme"),
+		inNamespace(agent(t, "billing", nil, "beta-template", "kagent", readyCondition(true, "Ready", "")), "org-beta"),
+	}
+	f.templates = []*apiv1alpha1.AgentTemplate{
+		template(t, "sre-template", nil, "default-model-config"),
+		inNamespace(template(t, "acme-template", nil, "acme-model"), "org-acme"),
+		inNamespace(template(t, "beta-template", nil, "beta-model"), "org-beta"),
+	}
+	f.permitted = map[string][]string{
+		"Bearer alice": {"kagent", "org-acme"},
+		"Bearer bob":   {"kagent", "org-beta"},
+	}
+	return f
+}
+
+func refsOf(agents []pkga2a.AgentInfo) []string {
+	refs := make([]string, len(agents))
+	for i, a := range agents {
+		refs[i] = a.Ref() + " " + a.Tenant
+	}
+	return refs
+}
+
+// Each person's roster is the controller's answer to them, across every
+// namespace they may list, and is asked for on every call: one person's
+// answer is never served to another.
+func TestClient_ListAgents_IsEachCallersOwn(t *testing.T) {
+	f := tenantsFake(t)
 	client := f.serve(t, pkga2a.Config{})
 
-	_, err := client.ListAgents(t.Context())
-	require.ErrorIs(t, err, pkga2a.ErrNoIdentity)
-
-	agents, err := client.ListAgents(asUser(t.Context(), userToken))
+	alice, err := client.ListAgents(asUser(t.Context(), "alice"))
 	require.NoError(t, err)
-	require.Len(t, agents, 1)
+	bob, err := client.ListAgents(asUser(t.Context(), "bob"))
+	require.NoError(t, err)
+	again, err := client.ListAgents(asUser(t.Context(), "alice"))
+	require.NoError(t, err)
 
-	agents, err = client.ListAgents(t.Context())
-	require.NoError(t, err, "the cached roster serves an identity-less call")
-	require.Len(t, agents, 1)
-	username, _ := client.CardIdentity(t.Context(), "sre-agent")
-	require.Equal(t, "SRE Agent", username)
-	require.Equal(t, 1, f.callCount("ListAgents"), "a fresh cache is not re-fetched")
+	require.Equal(t, []string{"kagent/sre-agent platform", "org-acme/billing organization acme"}, refsOf(alice))
+	require.Equal(t, []string{"kagent/sre-agent platform", "org-beta/billing organization beta"}, refsOf(bob))
+	require.Equal(t, alice, again)
+	require.Equal(t, 3, f.callCount("ListAgents"), "every roster is asked for")
+}
+
+// An Agent of another tenant is refused to the caller with the Agent and its
+// tenant named, and no Session is started for it.
+func TestClient_StartSession_RefusesAnotherTenantsAgent(t *testing.T) {
+	f := tenantsFake(t)
+	client := f.serve(t, pkga2a.Config{})
+	_, err := client.ListAgents(asUser(t.Context(), "alice"))
+	require.NoError(t, err)
+
+	_, err = client.StartSession(asUser(t.Context(), "bob"), "org-acme/billing", "req-1", "", workspaces.Grant{})
+	var refused *pkga2a.AgentNotPermittedError
+	require.ErrorAs(t, err, &refused)
+	require.Equal(t, pkga2a.AgentNotPermittedError{Ref: "org-acme/billing", Name: "billing", DisplayName: "Billing", Tenant: "organization acme"}, *refused,
+		"the refusal names how the Agent looked to another caller, never more")
+	require.Empty(t, f.muster.Calls(), "nothing is started")
+
+	_, err = client.StartSession(asUser(t.Context(), "bob"), "org-beta/billing", "req-1", "", workspaces.Grant{})
+	require.NoError(t, err, "bob's own organization's Agent of the same name")
+}
+
+// The controller's refusal through agent-manager, an Agent the roster listed
+// but whose access went away before the start, is the same refusal.
+func TestClient_StartSession_MapsTheControllersRefusal(t *testing.T) {
+	f := tenantsFake(t)
+	f.createDenied = true
+	client := f.serve(t, pkga2a.Config{})
+
+	_, err := client.StartSession(asUser(t.Context(), "alice"), "org-acme/billing", "req-1", "", workspaces.Grant{})
+	var refused *pkga2a.AgentNotPermittedError
+	require.ErrorAs(t, err, &refused)
+	require.Equal(t, "organization acme", refused.Tenant)
+	require.Equal(t, "Billing", refused.DisplayName)
+	require.ErrorContains(t, err, "not authorized", "the controller's reason is kept for the log")
+	require.Len(t, f.muster.Calls(), 1, "agent-manager was asked once")
+}
+
+// How an Agent looks is the one thing kept between calls: it labels a reply
+// where no caller is at hand, and says nothing of who may use the Agent.
+func TestClient_CardIdentity_WithoutACaller(t *testing.T) {
+	f := tenantsFake(t)
+	client := f.serve(t, pkga2a.Config{FallbackIconURLTemplate: "https://avatars.example/{agent}.png"})
+
+	username, icon := client.CardIdentity(t.Context(), "org-acme/billing")
+	require.Empty(t, username, "nothing is known before any roster")
+	require.Equal(t, "https://avatars.example/billing.png", icon)
+
+	_, err := client.ListAgents(asUser(t.Context(), "alice"))
+	require.NoError(t, err)
+	username, _ = client.CardIdentity(t.Context(), "org-acme/billing")
+	require.Equal(t, "Billing", username)
+	require.Equal(t, 1, f.callCount("ListAgents"), "a known look asks nothing")
+
+	_, err = client.ListAgents(t.Context())
+	require.ErrorIs(t, err, pkga2a.ErrNoIdentity, "the look is no roster")
+	_, _, err = client.CardInfo(asUser(t.Context(), "bob"), "org-acme/billing")
+	require.ErrorIs(t, err, pkga2a.ErrAgentNotPermitted, "nor any access")
 }
 
 func TestClient_AgentModel(t *testing.T) {
@@ -450,7 +541,7 @@ func TestClient_AgentModel(t *testing.T) {
 	require.Equal(t, []string{"Bearer " + userToken}, f.lastMD("GetModelConfig").Get("authorization"))
 
 	_, _, err = client.AgentModel(ctx, "nobody")
-	require.ErrorIs(t, err, pkga2a.ErrAgentUnknown)
+	require.ErrorIs(t, err, pkga2a.ErrAgentNotPermitted)
 }
 
 // Every Session starts through agent-manager's start_session, called through
@@ -534,7 +625,7 @@ func TestClient_StartSession_RefusesAnUnavailableAgent(t *testing.T) {
 	require.Empty(t, f.muster.Calls(), "an Agent that is not ready is refused before agent-manager is asked")
 
 	_, err = client.StartSession(ctx, "nobody", "req-1", "", workspaces.Grant{})
-	require.ErrorIs(t, err, pkga2a.ErrAgentUnknown)
+	require.ErrorIs(t, err, pkga2a.ErrAgentNotPermitted)
 
 	// The controller's own refusal through agent-manager (the revision went
 	// away between the roster read and the start) maps the same way, with the
@@ -732,4 +823,29 @@ func TestClient_Subscribe_ServesAQuiescentTaskWhole(t *testing.T) {
 	for _, err := range client.Subscribe(ctx, "no-such-task") {
 		require.ErrorIs(t, err, a2apkg.ErrTaskNotFound)
 	}
+}
+
+// A collaborator's turn runs as the collaborator through the share, and the
+// controller reviews them against the Agent: the share opens the session,
+// never the Agent the owner may use and they may not.
+func TestClient_Stream_RefusesACollaboratorWithoutTheAgent(t *testing.T) {
+	f := readyFake(t)
+	f.events = []a2apkg.Event{&a2apkg.Task{ID: "task-1", ContextID: sessionID, Status: a2apkg.TaskStatus{State: a2apkg.TaskStateCompleted}}}
+	f.permitted = map[string][]string{"Bearer " + userToken: {"kagent"}, "Bearer colleague": {"kagent"}}
+	client := f.serve(t, pkga2a.Config{})
+	share, err := client.CreateShare(asUser(t.Context(), userToken), sessionID, 0)
+	require.NoError(t, err)
+
+	for _, err := range client.Stream(pkga2a.WithShareToken(asUser(t.Context(), "outsider"), share.Token), sessionID, a2apkg.NewMessage(a2apkg.MessageRoleUser)) {
+		var refused *pkga2a.AgentNotPermittedError
+		require.ErrorAs(t, err, &refused)
+		require.Equal(t, "sre-agent", refused.Name)
+		require.Equal(t, pkga2a.PlatformTenant, refused.Tenant)
+	}
+	require.Empty(t, f.sent, "no turn reached the agent")
+
+	for _, err := range client.Stream(pkga2a.WithShareToken(asUser(t.Context(), "colleague"), share.Token), sessionID, a2apkg.NewMessage(a2apkg.MessageRoleUser)) {
+		require.NoError(t, err, "a collaborator who may use the Agent is served")
+	}
+	require.Len(t, f.sent, 1)
 }

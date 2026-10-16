@@ -153,7 +153,7 @@ func TestSlashCommand_OpensAgentPicker(t *testing.T) {
 		labels = append(labels, opt["text"].(map[string]any)["text"].(string))
 		values = append(values, opt["value"].(string))
 	}
-	require.Equal(t, []string{"Swarmgeist", "SRE Agent", "grill-master"}, labels, "display name, technical name when none")
+	require.Equal(t, []string{"Swarmgeist (platform)", "SRE Agent (platform)", "grill-master (platform)"}, labels, "display name, technical name when none, and the tenant")
 	require.Equal(t, []string{"kagent/swarmgeist", "kagent/sre-agent", "kagent/grill-master"}, values, "values are the A2A refs")
 	require.Equal(t, "kagent/swarmgeist", agentSelect["initial_option"].(map[string]any)["value"], "the default agent is preselected")
 

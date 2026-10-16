@@ -503,8 +503,9 @@ agent when it opens, and keeps it for life. A plain mention reaches the default 
 
 - **The roster**: `agents` lists the agents as rows: an "Agents" header, how many
   there are and which one a plain mention reaches, then one row per agent, the default first
-  and the rest A–Z: the display name, the first sentence of its description, and a **Select**
-  button. At most 8 rows; the rest are named in the footer. Select opens the same picker as the
+  and the rest A–Z: the display name, its tenant, the first sentence of its description, and a
+  **Select** button. The roster is the person's own: it is listed as them, across the platform
+  tenant and their organizations, each time. At most 8 rows; the rest are named in the footer. Select opens the same picker as the
   shortcut below, for the thread the
   roster was posted in, with that agent preselected (the default, when that agent has left the
   roster since); a thread that belongs to someone else is refused privately. In a thread that
@@ -944,10 +945,10 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
 - **Per-message branding.** Agent replies and the agent's own confirmation prompts are posted
   under the agent's display name, so they read as the agent speaking
   rather than the app. The name is the `Agent` CR's `ui.giantswarm.io/display-name` annotation
-  (as reported by the roster), falling back to the resource's own name — `sre-agent`, not the
-  underscored `sre_agent` the AgentCard publishes. The AgentCard supplies only the icon, which
-  therefore stays keyed to the technical name: renaming an agent relabels it without changing
-  how it looks. When no icon is available the app's own icon is kept. An agent whose display
+  as the last roster the gateway fetched listed it (no person's token is needed to label a
+  reply), falling back to the resource's own name, `sre-agent`. The icon comes from the
+  `ui.giantswarm.io/icon-url` annotation the same way, or `a2a.fallbackIconUrlTemplate` keyed
+  to the technical name. When no icon is available the app's own icon is kept. An agent whose display
   name is the app's own name (the bot user's profile name, or its handle when `users:read` is
   not granted; compared case-insensitively) is not branded at all: it posts under the app
   identity, so the app and its namesake agent — typically the default agent — never appear as

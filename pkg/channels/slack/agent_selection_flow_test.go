@@ -182,20 +182,19 @@ func TestAgentSelection_BareAgentListsRoster(t *testing.T) {
 	listing := allText(fake.pathCalls("chat.postMessage"))
 	require.NotContains(t, listing, "/agent",
 		"the listing advertises no command the gateway stopped serving")
-	require.Contains(t, listing, "*SRE Agent* — Investigates infra issues",
-		"display name and description")
-	require.Contains(t, listing, "*k8s-agent* — Kubernetes specialist",
+	require.Contains(t, listing, "*SRE Agent* (platform) — Investigates infra issues",
+		"display name, tenant and description")
+	require.Contains(t, listing, "*k8s-agent* (platform) — Kubernetes specialist",
 		"an agent without a display-name annotation lists by technical name")
 	require.NotContains(t, listing, "kagent", "namespaces never appear in the roster")
 	require.Zero(t, gw.dispatchCount(), "listing the roster dispatches nothing")
 
-	// A second listing within the cache window is served without another
-	// controller call.
+	// A second listing asks the controller again: the roster is the caller's.
 	sendEvent(t, srv, mention("U1", "agents", "200.000", ""))
 	require.Eventually(t, func() bool {
 		return strings.Count(allText(fake.pathCalls("chat.postMessage")), "Available agents") == 2
 	}, flowWait, 50*time.Millisecond)
-	require.Equal(t, 1, roster.listCalls(), "the roster is briefly cached")
+	require.Equal(t, 2, roster.listCalls(), "no roster is kept between listings")
 }
 
 // A failing roster fetch degrades to an honest error, not an empty listing.

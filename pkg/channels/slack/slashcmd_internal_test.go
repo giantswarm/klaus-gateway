@@ -50,8 +50,9 @@ func TestAskAgentModal_OptionsCapDedupAndDefault(t *testing.T) {
 	labels, values, initial := modalOptions(t, view)
 	require.Len(t, values, modalMaxAgents, "the list is cut at the static_select cap")
 	require.Equal(t, "kagent/a-000", values[0])
-	require.Equal(t, "a-007", labels[7], "no display name: the technical name labels the option")
+	require.Equal(t, "a-007 (platform)", labels[7], "no display name: the technical name labels the option")
 	require.Equal(t, modalOptionLabelMax, len([]rune(labels[8])), "long labels are cut to Slack's option label cap")
+	require.True(t, strings.HasSuffix(labels[8], "… (platform)"), "the name is cut, the tenant kept: %q", labels[8])
 	require.Equal(t, "kagent/a-050", initial, "the default agent is preselected")
 	seen := map[string]bool{}
 	for _, v := range values {
