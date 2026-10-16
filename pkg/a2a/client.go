@@ -75,8 +75,10 @@ var (
 	// longer exists at the controller.
 	ErrSessionNotFound = errors.New("a2a: session not found")
 
-	// ErrAgentUnknown is returned when an agent ref names no Agent in the
-	// served namespace.
+	// ErrAgentUnknown is returned for an agent ref that is not name or
+	// namespace/name (a call that carries none among them), and for
+	// agent-manager's not_found. An Agent the caller's roster does not list is
+	// ErrAgentNotPermitted.
 	ErrAgentUnknown = errors.New("a2a: unknown agent")
 
 	// ErrInvalidSessionName is returned by a SessionStarter whose start was
@@ -545,8 +547,10 @@ func (c *Client) CancelTask(ctx context.Context, taskID a2apkg.TaskID) (*a2apkg.
 
 // mapA2AError translates the controller's refusals into the sentinels
 // channels act on; everything else passes through. A PermissionDenied is the
-// caller's lack of access to the Agent ctx names (WithAgentRef): the
-// controller reviews every turn's sender against the Agent.
+// caller's lack of access to the Agent ctx names (WithAgentRef) only when
+// their roster does not list it: the controller reviews every turn's sender
+// against the Agent, but answers a session the caller cannot reach (deleted,
+// another Agent's, a share that did not come through) the same way.
 func (c *Client) mapA2AError(ctx context.Context, err error) error {
 	switch {
 	case err == nil:
@@ -554,7 +558,11 @@ func (c *Client) mapA2AError(ctx context.Context, err error) error {
 	case errors.Is(err, a2apkg.ErrUnsupportedOperation) && strings.Contains(err.Error(), "already has an active task"):
 		return fmt.Errorf("%w: %s", ErrSessionBusy, err.Error())
 	case errors.Is(err, a2apkg.ErrUnauthorized):
-		return c.notPermitted(AgentRefFromContext(ctx), err)
+		ref := AgentRefFromContext(ctx)
+		if _, lerr := c.Agent(ctx, ref); !errors.Is(lerr, ErrAgentNotPermitted) {
+			return err
+		}
+		return c.notPermitted(ref, err)
 	default:
 		return err
 	}

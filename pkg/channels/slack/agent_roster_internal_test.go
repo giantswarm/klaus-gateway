@@ -102,6 +102,8 @@ func TestAgentInfoRef(t *testing.T) {
 	qualified := &Adapter{DefaultAgent: "kagent/sre-agent", Namespace: "kagent"}
 	require.Equal(t, "kagent/sre-agent", qualified.agentInfoRef(platform))
 	require.Equal(t, "org-acme/billing", qualified.agentInfoRef(acme))
+	elsewhere := &Adapter{DefaultAgent: "ops/sre-agent", Namespace: "kagent"}
+	require.Equal(t, "kagent/sre-agent", elsewhere.agentInfoRef(platform), "a qualified default elsewhere keeps the Agent's own namespace")
 	unset := &Adapter{DefaultAgent: "kagent/sre-agent"}
 	require.Equal(t, "kagent/sre-agent", unset.agentInfoRef(platform), "the default's namespace is the platform's when Namespace is unset")
 }

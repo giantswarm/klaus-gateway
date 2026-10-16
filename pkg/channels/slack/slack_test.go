@@ -1978,6 +1978,7 @@ func TestProgress_FailureNoteNamesTheClass(t *testing.T) {
 		{"model", &stubGateway{deltas: []channels.OutboundDelta{{Err: errors.New(`anthropic API error: 529 {"type":"overloaded_error"}`)}}}, "The model behind this agent returned an error", "The turn failed"},
 		{"policy", &stubGateway{deltas: []channels.OutboundDelta{{Err: errors.New("OpenAI chat completion request failed: 403 authorization failed")}}}, "A platform policy refused this request", "The turn failed"},
 		{"platform, before the stream", &stubGateway{dispatchErr: errors.New("rpc error: code = Unavailable desc = connection refused")}, "agent platform could not be reached", "The turn failed"},
+		{"agent not the sender's, before the stream", &stubGateway{dispatchErr: &pkga2a.AgentNotPermittedError{Ref: "org-acme/billing", Name: "billing", Tenant: "organization acme"}}, "You cannot use *billing* (organization acme)", "The turn failed"},
 		{"unknown", &stubGateway{deltas: []channels.OutboundDelta{{Err: errors.New("boom")}}}, "The turn failed before an answer", "⚠️"},
 		// The controller refuses an oversize request on the stream's first
 		// read, before SendCompletion returns.

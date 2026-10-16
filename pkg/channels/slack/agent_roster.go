@@ -289,17 +289,17 @@ func (a *Adapter) rosterAgents(ctx context.Context) ([]pkga2a.AgentInfo, error) 
 }
 
 // refShape renders (namespace, name) in the deployment's ref shape. An empty
-// namespace means the served one. An Agent of the served namespace takes the
-// default agent's shape, bare under a bare default and qualified under a
-// qualified one, so the refs threads already carry keep their spelling (a
-// session's context id hashes it). An Agent of any other namespace (an
-// organization's) is always namespace/name. Every ref the adapter binds,
-// compares or persists goes through here, so one Agent has one spelling.
+// namespace means the served one. An Agent of the served namespace is bare
+// under a bare default and qualified under a qualified one, so the refs
+// threads already carry keep their spelling (a session's context id hashes
+// it). An Agent of any other namespace (an organization's) is always
+// namespace/name. Every ref the adapter binds, compares or persists goes
+// through here, so one Agent has one spelling.
 func (a *Adapter) refShape(namespace, name string) string {
-	if namespace == "" || namespace == a.servedNamespace() {
-		namespace = a.defaultAgentNamespace()
-	}
 	if namespace == "" {
+		namespace = a.servedNamespace()
+	}
+	if namespace == a.servedNamespace() && a.defaultAgentNamespace() == "" {
 		return name
 	}
 	return namespace + "/" + name

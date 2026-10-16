@@ -867,19 +867,11 @@ func (a *Adapter) postChannelNotServed(ctx context.Context, slackChannel, userID
 }
 
 // agentClient returns a Slack client that posts under the agent's display
-// identity, for the agent's own replies and confirmation prompts. The name
-// comes from agentNameFor; the icon still comes from the AgentCard, so a
-// display rename relabels an agent without changing how it looks.
-func (a *Adapter) agentClient(ctx context.Context, agentRef string) *slackAPIClient {
-	return a.agentClientNamed(ctx, agentRef, a.agentNameFor(ctx, agentRef))
-}
-
-// agentClientNamed is agentClient for a caller that has already resolved the
-// name and also renders it into the message text: passing the resolved name in
-// keeps one lookup per message, so the text and the username carrying it cannot
-// disagree when the agent's look changes between two lookups. When a branded post has been rejected
-// with missing_scope, branding is skipped entirely and the agent posts under
-// the app identity — unbranded but delivered.
+// identity, for the agent's own replies and confirmation prompts: the name
+// agentNameFor gives and the icon, both from one look-up of how the agent
+// looks, so a post costs one look-up at most. When a branded post has been
+// rejected with missing_scope, branding is skipped entirely and the agent
+// posts under the app identity — unbranded but delivered.
 //
 // An agent that carries the app's own name posts under the app identity as
 // well. To the reader, the app and its namesake agent are one persona; branding
@@ -887,15 +879,20 @@ func (a *Adapter) agentClient(ctx context.Context, agentRef string) *slackAPICli
 // thread's reply pile, its "is working…" indicator and the sign-in and access
 // prompts, all under the same name. Agents named differently keep their own
 // name and icon, so a hand-off to them stays visible.
-func (a *Adapter) agentClientNamed(ctx context.Context, agentRef, username string) *slackAPIClient {
+func (a *Adapter) agentClient(ctx context.Context, agentRef string) *slackAPIClient {
+	var name, icon string
+	if a.AgentCards != nil && agentRef != "" {
+		name, icon = a.AgentCards.CardIdentity(ctx, agentRef)
+	}
+	username := sanitizeDisplayName(name)
+	if username == "" {
+		username = bareAgentName(agentRef)
+	}
 	c := a.apiClient()
 	if a.customizeUnsupported.Load() || a.isAppName(ctx, username) {
 		return c
 	}
-	c.username = username
-	if a.AgentCards != nil {
-		_, c.iconURL = a.AgentCards.CardIdentity(ctx, agentRef)
-	}
+	c.username, c.iconURL = username, icon
 	return c
 }
 

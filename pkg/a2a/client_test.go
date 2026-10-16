@@ -148,6 +148,7 @@ func TestClient_Stream_TenantIsTheContextsAgent(t *testing.T) {
 	}
 	for _, err := range client.Stream(asUser(t.Context(), userToken), "other", a2apkg.NewMessage(a2apkg.MessageRoleUser)) {
 		require.ErrorIs(t, err, a2apkg.ErrUnauthorized)
+		require.NotErrorIs(t, err, pkga2a.ErrAgentNotPermitted, "the caller may use the Agent: the session is what they cannot reach")
 	}
 }
 
@@ -482,8 +483,8 @@ func TestClient_StartSession_RefusesAnotherTenantsAgent(t *testing.T) {
 	_, err = client.StartSession(asUser(t.Context(), "bob"), "org-acme/billing", "req-1", "", workspaces.Grant{})
 	var refused *pkga2a.AgentNotPermittedError
 	require.ErrorAs(t, err, &refused)
-	require.Equal(t, pkga2a.AgentNotPermittedError{Ref: "org-acme/billing", Name: "billing", DisplayName: "Billing", Tenant: "organization acme"}, *refused,
-		"the refusal names how the Agent looked to another caller, never more")
+	require.Equal(t, pkga2a.AgentNotPermittedError{Ref: "org-acme/billing", Name: "billing", Tenant: "organization acme"}, *refused,
+		"no display name another caller's roster listed: the refusal does not say the Agent exists")
 	require.Empty(t, f.muster.Calls(), "nothing is started")
 
 	_, err = client.StartSession(asUser(t.Context(), "bob"), "org-beta/billing", "req-1", "", workspaces.Grant{})

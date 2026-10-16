@@ -361,6 +361,15 @@ func TestAgentSelection_UnlinkedListingAsksToSignIn(t *testing.T) {
 
 // notRunnableCards is a card client whose template exists but cannot start a
 // conversation: no Harness admits it, the reason the a2a layer reports.
+// notPermittedCards refuses every selection as an agent of another tenant,
+// as the a2a client does for one the caller's roster does not list.
+type notPermittedCards struct{}
+
+func (notPermittedCards) CardIdentity(context.Context, string) (string, string) { return "", "" }
+func (notPermittedCards) CardInfo(_ context.Context, ref string) (string, string, error) {
+	return "", "", &pkga2a.AgentNotPermittedError{Ref: ref, Name: "billing", Tenant: "organization acme"}
+}
+
 type notRunnableCards struct{}
 
 func (notRunnableCards) CardIdentity(context.Context, string) (string, string) { return "", "" }

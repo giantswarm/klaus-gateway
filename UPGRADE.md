@@ -18,6 +18,9 @@ stable release tag while a `Next` section with content is left.
   every namespace for everyone: an installation with Agents outside `a2a.namespace` (an
   Organization's `org-<name>` namespace) turns the controller's `kubernetes` mode on before or
   with this release, or those Agents are offered to every person in Slack.
+- The roster is read with no namespace, which kagent accepts from 1.11.4 on: kagent 1.11.1 to
+  1.11.3 refuse it, and no roster, picker or new conversation works there. The agent-platform
+  meta chart's kagent range is already above that.
 - Nothing of the roster is kept between calls: every listing, picker and session start asks
   the controller as the person, so the controller sees one roster read per `agents` command,
   picker and new conversation.

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	apiv1alpha1 "github.com/giantswarm/klaus-gateway/pkg/kagent/gen/kagent/api/v1alpha1"
 )
@@ -82,13 +83,19 @@ func (c *Client) CardIdentity(ctx context.Context, agentRef string) (username, i
 	if look, ok := c.looks.get(namespace, name); ok {
 		return look.displayName, look.iconURL
 	}
-	if _, err := c.fetchRoster(ctx); err == nil {
+	fctx, cancel := context.WithTimeout(ctx, cardIdentityTimeout)
+	defer cancel()
+	if _, err := c.fetchRoster(fctx); err == nil {
 		if look, ok := c.looks.get(namespace, name); ok {
 			return look.displayName, look.iconURL
 		}
 	}
 	return "", c.fallbackIcon(agentRef)
 }
+
+// cardIdentityTimeout bounds the roster read behind a look nobody's roster
+// listed yet: branding must not hold a turn up.
+const cardIdentityTimeout = 5 * time.Second
 
 // CardInfo validates an agent selection as the caller: the Agent must be in
 // their roster and be selectable. The error names the reason so a channel can
@@ -162,7 +169,10 @@ func (c *Client) notPermitted(agentRef string, cause error) *AgentNotPermittedEr
 	e := &AgentNotPermittedError{Ref: agentRef, Name: agentRef, Cause: cause}
 	if namespace, name, err := c.splitRef(agentRef); err == nil {
 		e.Name, e.Tenant = name, c.Tenant(namespace)
-		if look, ok := c.looks.get(namespace, name); ok {
+		// The controller's refusal names an Agent the caller already reached;
+		// a roster miss shows nothing another caller's roster listed, so it
+		// does not tell an Agent that exists from one that does not.
+		if look, ok := c.looks.get(namespace, name); ok && cause != nil {
 			e.DisplayName = look.displayName
 		}
 	}
