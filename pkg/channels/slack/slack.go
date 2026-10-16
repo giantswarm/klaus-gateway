@@ -81,10 +81,9 @@ type Adapter struct {
 	// DefaultAgent is the agentRef every Slack thread routes to. Must be
 	// non-empty; Start returns an error when it is unset.
 	DefaultAgent string
-	// Namespace is the namespace whose AgentTemplates the A2A client serves
-	// (--a2a-namespace). A typed "<namespace>/<name>" selector that names it
-	// collapses to the deployment's ref shape; any other namespace is left as
-	// typed so the controller refuses it.
+	// Namespace is the platform tenant's namespace (--a2a-namespace). An Agent
+	// in it takes the deployment's ref shape (refShape); an Agent of any other
+	// namespace is referred to as namespace/name.
 	Namespace string
 	// APIBase overrides the Slack Web API base URL. Empty uses the default
 	// (https://slack.com/api). Set in tests to point at a fake server.
@@ -163,18 +162,14 @@ type Adapter struct {
 	// reaction is swapped for DoneEmoji. The failed reaction is unaffected.
 	ClearReactionOnDone bool
 
-	// AgentCards resolves an agentRef to its A2A AgentCard, the source of the
-	// icon on per-message agent branding. Nil leaves messages icon-less (they
-	// are still named — see agentNameFor); the card's own name is deliberately
-	// not used, since kagent derives it from the resource name with hyphens
-	// replaced by underscores. When it also implements the card-info lookup
+	// AgentCards resolves an agentRef to how the agent looks, the display name
+	// and icon on per-message agent branding. Nil leaves messages icon-less and
+	// named by the technical name (agentNameFor). When it also implements the card-info lookup
 	// (pkg/a2a.AgentCardClient does), it validates a picked agent; otherwise
 	// agent selection is unavailable.
 	AgentCards AgentCardResolver
-	// Roster lists the agents the `agents` command and the pickers offer, discovered
-	// from the kagent controller. It is also the source of the display name on
-	// per-message agent branding. Nil disables the roster listing and leaves
-	// branding to fall back to the technical name.
+	// Roster lists the agents the `agents` command and the pickers offer, as
+	// the caller, from the kagent controller. Nil disables the roster listing.
 	Roster AgentRosterSource
 	// Turns takes every finished turn's outcome and phase durations (the
 	// Prometheus turn counter and phase histograms). Nil records nothing; the
@@ -347,10 +342,6 @@ type Adapter struct {
 	toolLogMu sync.Mutex
 	toolLogs  map[string]ttlEntry[*threadToolLog] // keyed by threadID
 
-	// modelMu guards modelCache, the resolved model labels shown by usage.
-	modelMu    sync.Mutex
-	modelCache map[string]modelEntry // agentRef -> cached model label
-
 	// connectorMu guards connectorPrompted: the last connect prompt per
 	// (user, backend), bounding re-prompts for a backend the user neither
 	// connects nor dismisses. Each record keeps the surfaced login URL: a new
@@ -366,17 +357,6 @@ type Adapter struct {
 	// turn). Entries idle past threadStateTTL are evicted.
 	sessionTitleMu sync.Mutex
 	sessionTitles  map[string]ttlEntry[string] // keyed by threadID
-
-	// rosterMu guards the briefly-cached roster (see rosterAgents).
-	rosterMu      sync.Mutex
-	rosterCached  []pkga2a.AgentInfo
-	rosterExpires time.Time
-	// rosterFailedUntil is the negative cache deadline honoured only by
-	// rosterAgentsBestEffort; see rosterFailureTTL.
-	rosterFailedUntil time.Time
-	// rosterRefreshing guards the single background refresh
-	// rosterAgentsBestEffort keeps in flight while serving a stale roster.
-	rosterRefreshing bool
 
 	// customizeUnsupported records that a branded post was rejected with
 	// missing_scope (the workspace's install predates chat:write.customize), so
@@ -887,19 +867,11 @@ func (a *Adapter) postChannelNotServed(ctx context.Context, slackChannel, userID
 }
 
 // agentClient returns a Slack client that posts under the agent's display
-// identity, for the agent's own replies and confirmation prompts. The name
-// comes from agentNameFor; the icon still comes from the AgentCard, so a
-// display rename relabels an agent without changing how it looks.
-func (a *Adapter) agentClient(ctx context.Context, agentRef string) *slackAPIClient {
-	return a.agentClientNamed(ctx, agentRef, a.agentNameFor(ctx, agentRef))
-}
-
-// agentClientNamed is agentClient for a caller that has already resolved the
-// name and also renders it into the message text: passing the resolved name in
-// keeps one lookup per message, so the text and the username carrying it cannot
-// disagree across a roster cache expiry. When a branded post has been rejected
-// with missing_scope, branding is skipped entirely and the agent posts under
-// the app identity — unbranded but delivered.
+// identity, for the agent's own replies and confirmation prompts: the name
+// agentNameFor gives and the icon, both from one look-up of how the agent
+// looks, so a post costs one look-up at most. When a branded post has been
+// rejected with missing_scope, branding is skipped entirely and the agent
+// posts under the app identity — unbranded but delivered.
 //
 // An agent that carries the app's own name posts under the app identity as
 // well. To the reader, the app and its namesake agent are one persona; branding
@@ -907,15 +879,20 @@ func (a *Adapter) agentClient(ctx context.Context, agentRef string) *slackAPICli
 // thread's reply pile, its "is working…" indicator and the sign-in and access
 // prompts, all under the same name. Agents named differently keep their own
 // name and icon, so a hand-off to them stays visible.
-func (a *Adapter) agentClientNamed(ctx context.Context, agentRef, username string) *slackAPIClient {
+func (a *Adapter) agentClient(ctx context.Context, agentRef string) *slackAPIClient {
+	var name, icon string
+	if a.AgentCards != nil && agentRef != "" {
+		name, icon = a.AgentCards.CardIdentity(ctx, agentRef)
+	}
+	username := sanitizeDisplayName(name)
+	if username == "" {
+		username = bareAgentName(agentRef)
+	}
 	c := a.apiClient()
 	if a.customizeUnsupported.Load() || a.isAppName(ctx, username) {
 		return c
 	}
-	c.username = username
-	if a.AgentCards != nil {
-		_, c.iconURL = a.AgentCards.CardIdentity(ctx, agentRef)
-	}
+	c.username, c.iconURL = username, icon
 	return c
 }
 

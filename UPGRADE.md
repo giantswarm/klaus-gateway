@@ -9,6 +9,22 @@ that adds notes heads them `## Next — <title>`; the change that prepares a rel
 renames each `Next` to that version, and `make check-upgrade-notes` refuses a
 stable release tag while a `Next` section with content is left.
 
+## Next — the roster spans every namespace the caller may list
+
+- The Slack roster and the agent picker list the Agents of every namespace the kagent
+  controller lets the person list, not only `a2a.namespace`. With the controller's
+  `kubernetes` authorization mode (giantswarm/kagent-upstream#571, kagent 1.14.0) that is the
+  platform tenant and the person's organizations. With its `noop` mode, the default, it is
+  every namespace for everyone: an installation with Agents outside `a2a.namespace` (an
+  Organization's `org-<name>` namespace) turns the controller's `kubernetes` mode on before or
+  with this release, or those Agents are offered to every person in Slack.
+- The roster is read with no namespace, which kagent accepts from 1.11.4 on: kagent 1.11.1 to
+  1.11.3 refuse it, and no roster, picker or new conversation works there. The agent-platform
+  meta chart's kagent range is already above that.
+- Nothing of the roster is kept between calls: every listing, picker and session start asks
+  the controller as the person, so the controller sees one roster read per `agents` command,
+  picker and new conversation.
+
 ## 4.8.1 — alert bots matched by profile name
 
 - `slack.contextBotNames` admits a bot's posts to the thread context by its Slack profile name

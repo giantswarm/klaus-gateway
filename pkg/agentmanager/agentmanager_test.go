@@ -99,6 +99,10 @@ func TestStartSession_MapsRefusals(t *testing.T) {
 			answer: mustertest.Answer{IsError: true, Text: "not_found: not found: kagent: a session of agent kagent/gone: agent not found"},
 			is:     pkga2a.ErrAgentUnknown,
 		},
+		"agent not the caller's": {
+			answer: mustertest.Answer{IsError: true, Text: "forbidden: forbidden: kagent: a session of agent org-acme/billing: not authorized"},
+			is:     pkga2a.ErrAgentNotPermitted,
+		},
 		"name refused": {
 			answer: mustertest.Answer{IsError: true, Text: "invalid_request: invalid request: sessionName is longer than 200 characters"},
 			is:     pkga2a.ErrInvalidSessionName,

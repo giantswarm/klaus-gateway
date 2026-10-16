@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 )
 
@@ -35,6 +36,7 @@ func TestClassifyFailure(t *testing.T) {
 		{"failed model response", errors.New(`llm error response (code STREAM_ERROR): "unexpected EOF"`), channels.FailureModel},
 		{"model call unreachable", errors.New(`llm error response (code STREAM_ERROR): "Post \"http://agentgateway.agent-platform.svc:8081/v1/messages\": dial tcp 10.0.0.4:8081: connect: connection refused"`), channels.FailureModel},
 		{"gateway authorization of a model call", errors.New(gatewayRefusedModelCall), channels.FailurePolicy},
+		{"agent not the sender's", fmt.Errorf("slack: send completion: %w", &pkga2a.AgentNotPermittedError{Ref: "org-acme/billing", Cause: errors.New("permission denied")}), channels.FailurePolicy},
 		{"prompt guard", errors.New(`OpenAI chat completion request failed: 403 The request was rejected due to inappropriate content`), channels.FailurePolicy},
 		{"gateway authorization", errors.New(`OpenAI chat completion request failed: 403 Forbidden: authorization failed`), channels.FailurePolicy},
 		{"gateway rate limit", errors.New(`OpenAI chat completion request failed: 429 rate limit exceeded`), channels.FailurePolicy},

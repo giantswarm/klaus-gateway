@@ -1,7 +1,10 @@
 package channels
 
 import (
+	"errors"
 	"strings"
+
+	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 )
 
 // FailureClass names what a failed turn broke on: the note a channel posts
@@ -23,7 +26,7 @@ const (
 	// FailureModel: the model or its provider returned an error.
 	FailureModel FailureClass = "model"
 	// FailurePolicy: a gateway policy refused the request (authorization, a
-	// prompt guard, a rate limit).
+	// prompt guard, a rate limit), or the sender may not use the agent.
 	FailurePolicy FailureClass = "policy"
 	// FailureUnknown: nothing above matched.
 	FailureUnknown FailureClass = "unknown"
@@ -82,6 +85,9 @@ var (
 func ClassifyFailure(err error) FailureClass {
 	if err == nil {
 		return FailureNone
+	}
+	if errors.Is(err, pkga2a.ErrAgentNotPermitted) {
+		return FailurePolicy
 	}
 	text := strings.ToLower(err.Error())
 	switch {

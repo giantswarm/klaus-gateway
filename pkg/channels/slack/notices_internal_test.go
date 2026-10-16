@@ -2,10 +2,14 @@ package slack
 
 import (
 	"errors"
+	"fmt"
+	"log/slog"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 )
 
 // The notice names the lifetime an operator configured, never a shorter one:
@@ -73,6 +77,18 @@ func TestFailureNote_ModelCredentials(t *testing.T) {
 		failureNote(errors.New(`llm error response (code STREAM_ERROR): "401 Unauthorized {\"type\":\"authentication_error\"}"`)))
 	require.Equal(t, modelFailedNote,
 		failureNote(errors.New(`anthropic API error: 529 {"type":"overloaded_error"}`)))
+}
+
+// An agent the sender may not use is refused by name and tenant, wrapped or
+// not, and is logged as the person's state rather than a platform error.
+func TestFailureNote_AgentNotPermitted(t *testing.T) {
+	acme := &pkga2a.AgentNotPermittedError{Ref: "org-acme/billing", Name: "billing", DisplayName: "Billing <ops>", Tenant: "organization acme"}
+	require.Equal(t, "You cannot use *Billing &lt;ops&gt;* (organization acme): it is not one of the agents you have access to. Nothing was sent to it. Ask an admin of the organization acme for access, or mention the bot with `agents` to list the agents you can use.",
+		failureNote(fmt.Errorf("slack: send completion: %w", acme)))
+	require.Equal(t, "You cannot use *sre-agent* (platform): it is not one of the agents you have access to. Nothing was sent to it. Ask an admin of the platform for access, or mention the bot with `agents` to list the agents you can use.",
+		failureNote(&pkga2a.AgentNotPermittedError{Ref: "sre-agent", Name: "sre-agent", Tenant: pkga2a.PlatformTenant}),
+		"no display name seen: the technical name")
+	require.Equal(t, slog.LevelInfo, failureLogLevel(acme))
 }
 
 // A turn that failed after its reply started says it is over and names what

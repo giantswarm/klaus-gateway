@@ -36,23 +36,31 @@ mints rides as the `authorization` metadata entry. The gateway never presents it
 ServiceAccount to the controller, so the controller route's JWT policy needs no second issuer,
 and a turn without a person's token is refused instead of running as a machine identity.
 
-Discovery is a person's call too. The roster is fetched as the caller and cached briefly
-(`ListAgents` and `ListAgentTemplates` of `a2a.namespace`); reads that happen where no person's token is at hand
-— branding a reply with the agent's display name and icon — are served from that cache, which
-every authenticated call refreshes once it is older than 30 seconds. Right after a start,
-before any turn has run, a roster listing without a token reports the roster as unavailable
-until a turn has warmed the cache.
+Discovery is a person's call too. The roster is fetched as the caller on every listing, every
+picker and every session start (`ListAgents` and `ListAgentTemplates` with no namespace, which
+the controller answers with the Agents of every namespace the caller may list), and nothing of
+one caller's roster is served to another: with the controller's `kubernetes` authorization
+mode each person gets their own Agents. The `usage` model line is looked up as the caller too.
+What is kept is how each Agent looked in the last roster any caller fetched, its display name
+and icon, by namespace and name. It labels replies and notices where no person's token is at
+hand (branding a reply, the channel intro, the assistant greeting, the notes after a restart),
+and it decides nothing about which Agents anyone sees or may use.
 
 ## Agents: the Agent roster
 
-An agent is an `Agent` (`api.kagent.dev/v1alpha3`) in `a2a.namespace` (default `kagent`): the
-runnable pairing of an AgentTemplate (referenced by `templateRef`, or embedded as `template`)
+An agent is an `Agent` (`api.kagent.dev/v1alpha3`) in any namespace the caller may list:
+`a2a.namespace` (default `kagent`) is the platform tenant, and an Organization's `org-<name>`
+namespace is that organization's tenant. It is the runnable pairing of an AgentTemplate (referenced by `templateRef`, or embedded as `template`)
 and a Harness (`harnessRef`, or embedded). The roster a channel offers is derived from
 `ListAgents`, with `ListAgentTemplates` for what an Agent takes from the template it
 references:
 
-- technical name and namespace from the Agent's ref; `a2a.defaultAgent` is a bare name in
-  that namespace (or `namespace/name`);
+- technical name and namespace from the Agent's ref, and the tenant from the namespace
+  (`platform` for `a2a.namespace`, `organization <name>` for `org-<name>`), which the roster
+  and the picker show beside each agent; `a2a.defaultAgent` is a bare name in the platform
+  tenant's namespace (or `namespace/name`). An Agent of the platform tenant is referred to in
+  the default agent's shape, so the refs live threads carry keep their spelling; an Agent of
+  any other namespace is always `namespace/name`;
 - display name from the `ui.giantswarm.io/display-name` annotation, icon from
   `ui.giantswarm.io/icon-url`, read on the Agent first and on its AgentTemplate when the Agent
   carries none (falling back to `a2a.fallbackIconUrlTemplate` with `{agent}` replaced by the
@@ -63,6 +71,15 @@ references:
   be created from. An Agent that is not ready is not offered; selecting it by name is refused
   with the condition's message (`Agent <name> is not ready: <message>`) in the gateway's log,
   and the channel shows its unknown-agent notice with the roster.
+
+An Agent the caller's roster does not list is refused to them as
+`*a2a.AgentNotPermittedError`, which names the Agent and its tenant, and nothing is started:
+the controller lists every Agent a caller may use, so one it leaves out does not exist or is
+not theirs, and the two are not told apart. The controller's own `PermissionDenied` maps the
+same way: on a turn (it reviews every turn's sender against the Agent, a thread collaborator
+who reaches the Session through its share included) and on a session start, which
+agent-manager answers as `forbidden`. The channel refuses the turn or the picked agent with a
+note that names the agent and its tenant; no other agent is put in its place.
 
 The template's `modelConfig` reference backs the `usage` model line through `GetModelConfig`
 (`spec.provider/spec.model`).
