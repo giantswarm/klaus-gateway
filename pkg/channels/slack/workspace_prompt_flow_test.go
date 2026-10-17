@@ -39,7 +39,10 @@ var workspaceLinked = map[string]string{"U001": "tok1", "U002": "tok2"}
 // repositories the caller cannot read), answers fresh as not synced yet, and
 // asks to connect GitLab for gitlab-ws until the caller is marked connected.
 // A caller marked blind reads none of a workspace's repositories, and one
-// marked unconnected connects GitLab first, whatever the workspace.
+// marked unconnected connects GitLab first, whatever the workspace. Its
+// connect answer's signIn names muster's core_auth_login for gitlab-manager,
+// which the fake muster answers with gitlabSignInLink, until unpinned: then
+// muster holds no grant for GitLab.
 type fakeWorkspaceManager struct {
 	*mustertest.Server
 	mu          sync.Mutex
@@ -47,6 +50,19 @@ type fakeWorkspaceManager struct {
 	connected   map[string]bool
 	blind       map[string]bool
 	unconnected map[string]bool
+	unpinned    bool
+}
+
+// gitlabSignInLink is the link muster's core_auth_login answers for
+// gitlab-manager.
+const gitlabSignInLink = "https://muster.example/oauth/proxy/start?state=gitlab"
+
+// unpin pins the workspace-manager to no provider's App: muster holds no
+// grant for GitLab, so its signIn names no muster server.
+func (wm *fakeWorkspaceManager) unpin() {
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
+	wm.unpinned = true
 }
 
 // blindTo marks the person behind token unable to read any repository.
@@ -119,13 +135,23 @@ func newFakeWorkspaceManager(t *testing.T) *fakeWorkspaceManager {
 				connected := wm.connected[token]
 				wm.mu.Unlock()
 				if !connected {
-					return mustertest.Answer{Structured: map[string]any{"workspace": name, "outcome": "connect_required", "reason": "connect gitlab first",
-						"connect": []any{map[string]any{"provider": "gitlab", "url": "https://wm.example/connect/gitlab"}}}}
+					signIn := "grant the App of provider gitlab once in muster: core_auth_login server=gitlab-manager"
+					if wm.unpinned {
+						signIn = "muster holds no grant for provider gitlab: this installation pins the workspace-manager to no provider's App"
+					}
+					return mustertest.Answer{Structured: map[string]any{"workspace": name, "outcome": "connect_required", "reason": "grant gitlab in muster first",
+						"connect": []any{map[string]any{"provider": "gitlab", "signIn": signIn}}}}
 				}
 			}
 			return mustertest.Answer{Structured: map[string]any{"workspace": name, "outcome": "granted",
 				"grant":     "grant-of-" + name + "-for-" + token,
 				"expiresAt": time.Now().Add(5 * time.Minute).UTC().Format(time.RFC3339)}}
+		}, "core_auth_login": func(call mustertest.Call) mustertest.Answer {
+			if call.Args["server"] != "gitlab-manager" {
+				return mustertest.Answer{IsError: true, Text: "server not found"}
+			}
+			return mustertest.Answer{Text: "Authentication Required\n\nServer: gitlab-manager\n\n" + gitlabSignInLink,
+				Structured: map[string]any{"authUrl": gitlabSignInLink}}
 		},
 	}
 	t.Cleanup(wm.Close)

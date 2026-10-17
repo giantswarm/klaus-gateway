@@ -425,7 +425,8 @@ const (
 // workspaceUnavailableNote says why no Session can start on it yet (%s),
 // workspaceNotSyncedReason when the workspace-manager gives no reason;
 // workspaceConnectNote asks them to connect a provider (%s) first, and
-// workspaceConnectLink is its link (%s) and name (%s) in a private notice;
+// workspaceConnectHow adds the workspace-manager's word on how (%s) when
+// muster issued no sign-in link for it;
 // workspaceCheckFailedNote is the answer when nobody could be asked.
 // workspacePickAgainTail offers the choice again, and workspaceConnectTail
 // says how the held message goes on once connected.
@@ -434,7 +435,7 @@ const (
 	workspaceUnavailableNote = "Cannot start in workspace *%s* yet: %s."
 	workspaceNotSyncedReason = "it has not synced yet"
 	workspaceConnectNote     = "Connect *%s* first, so the agent can work in workspace *%s* as you."
-	workspaceConnectLink     = " <%s|Connect %s>"
+	workspaceConnectHow      = " The workspace-manager says: %s."
 	workspaceCheckFailedNote = "Could not check workspace *%s* right now."
 	workspacePickAgainTail   = " Nothing was started; pick another workspace or *No workspace*."
 	workspaceConnectTail     = " Your message is kept: once connected, pick the workspace again or mention me."

@@ -362,7 +362,7 @@ repositories as read-only mirrors beside it.
   it is still listed, else to **No workspace**, and a change of agent redraws the picker
   (`views.update`) with that agent's preset. On submit a workspace is authorized as the person
   before anything is posted; a denial is answered privately as in the thread below (the
-  unreadable repositories, not synced yet, or each provider's connect link) with the prompt
+  unreadable repositories, not synced yet, or each provider's sign-in link) with the prompt
   quoted back, and nothing starts. The thread then starts with the choice and is not asked. The
   last choice per person and agent is a row of its own in the routing store (channel
   `slack-workspace-pref`, the person and the agent as its key, the name or `none`, never a grant),
@@ -387,8 +387,11 @@ repositories as read-only mirrors beside it.
   initiator alone is answered in the thread (ephemeral in a channel, so the channel does not
   learn which repositories exist): a refusal names the workspace and every repository they
   cannot read; one that has not synced yet says so; both offer **No workspace** again beside
-  the prompt's select. A provider they have not connected gets the connect prompt with each
-  provider's link from the workspace-manager; once connected, their next pick or mention in
+  the prompt's select. A provider they have not connected gets the connect prompt, one per provider in
+  `authorize_workspace`'s `connect`: its button opens the link muster's `core_auth_login`
+  answers, called as the person for the server the entry's `signIn` names; a `signIn` that names
+  no muster server (muster holds no grant for that provider) is quoted instead, without a button.
+  Once connected, their next pick or mention in
   the thread authorizes it again and starts the Session with the held message, as a sign-in
   replays a held message. Each outcome logs a `record` (`workspace_granted`,
   `workspace_refused`, `workspace_connect_required`, `workspace_unavailable`,

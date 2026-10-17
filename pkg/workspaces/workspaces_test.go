@@ -56,8 +56,8 @@ func listing(map[string]any) mustertest.Answer {
 
 func providers(map[string]any) mustertest.Answer {
 	return mustertest.Answer{Text: "2 providers", Structured: map[string]any{"providers": []any{
-		map[string]any{"name": "github", "kind": "github", "connected": true, "connectURL": "https://wm.example/connect/github"},
-		map[string]any{"name": "gitlab", "kind": "gitlab", "connected": false, "connectURL": "https://wm.example/connect/gitlab"},
+		map[string]any{"name": "github", "kind": "github", "connected": true},
+		map[string]any{"name": "gitlab", "kind": "gitlab", "connected": false, "signIn": gitlabSignIn},
 	}}}
 }
 
@@ -77,12 +77,33 @@ func authorize(args map[string]any) mustertest.Answer {
 	case "mixed":
 		return mustertest.Answer{Text: "connect gitlab to use workspace mixed: the Session works as you there",
 			Structured: map[string]any{"workspace": name, "outcome": "connect_required", "reason": "connect gitlab to use workspace mixed: the Session works as you there",
-				"repositories": []any{"infra/tools"}, "connect": []any{map[string]any{"provider": "gitlab", "url": "https://wm.example/connect/gitlab"}}}}
+				"repositories": []any{"infra/tools"}, "connect": []any{map[string]any{"provider": "gitlab", "signIn": gitlabSignIn}}}}
 	case "fresh":
 		return mustertest.Answer{Text: "workspace fresh has not synced yet: its repositories are not on its volume",
 			Structured: map[string]any{"workspace": name, "outcome": "refused", "reason": "workspace fresh has not synced yet: its repositories are not on its volume"}}
 	}
 	return mustertest.Answer{IsError: true, Text: fmt.Sprintf("authorize workspace: workspaces.workspace-manager.giantswarm.io %q not found", name)}
+}
+
+// gitlabSignIn is the workspace-manager's signIn for the provider its
+// registration is pinned to; gitlabLink is the link muster's core_auth_login
+// answers for that registration.
+const (
+	gitlabSignIn = "grant the App of provider gitlab once in muster: core_auth_login server=gitlab-manager"
+	gitlabLink   = "https://muster.example/oauth/proxy/start?state=gitlab"
+)
+
+// authLogin answers muster's core_auth_login: the sign-in link of
+// gitlab-manager, the person already connected to github-manager.
+func authLogin(args map[string]any) mustertest.Answer {
+	switch args["server"] {
+	case "gitlab-manager":
+		return mustertest.Answer{Text: "Authentication Required\n\nServer: gitlab-manager\n\n" + gitlabLink,
+			Structured: map[string]any{"authUrl": gitlabLink}}
+	case "github-manager":
+		return mustertest.Answer{Text: "Server 'github-manager' is already authenticated."}
+	}
+	return mustertest.Answer{IsError: true, Text: "server not found"}
 }
 
 func fakeMuster(t *testing.T) *mustertest.Server {
@@ -91,6 +112,7 @@ func fakeMuster(t *testing.T) *mustertest.Server {
 		prefix + "list_workspaces":     listing,
 		prefix + "list_providers":      providers,
 		prefix + "authorize_workspace": authorize,
+		"core_auth_login":              authLogin,
 	})
 	t.Cleanup(srv.Close)
 	return srv
@@ -122,8 +144,8 @@ func TestProviders(t *testing.T) {
 	list, err := newClient(t, fakeMuster(t)).Providers(context.Background(), bearer)
 	require.NoError(t, err)
 	require.Equal(t, []Provider{
-		{Name: "github", Kind: "github", Connected: true, ConnectURL: "https://wm.example/connect/github"},
-		{Name: "gitlab", Kind: "gitlab", ConnectURL: "https://wm.example/connect/gitlab"},
+		{Name: "github", Kind: "github", Connected: true},
+		{Name: "gitlab", Kind: "gitlab", SignIn: gitlabSignIn},
 	}, list)
 }
 
@@ -149,7 +171,7 @@ func TestAuthorize_TheFourAnswers(t *testing.T) {
 	connect, err := c.Authorize(ctx, bearer, "mixed")
 	require.NoError(t, err)
 	require.Equal(t, ConnectRequired, connect.Outcome)
-	require.Equal(t, []Connect{{Provider: "gitlab", URL: "https://wm.example/connect/gitlab"}}, connect.Connect)
+	require.Equal(t, []Connect{{Provider: "gitlab", SignIn: gitlabSignIn}}, connect.Connect)
 
 	notSynced, err := c.Authorize(ctx, bearer, "fresh")
 	require.NoError(t, err)
@@ -274,4 +296,31 @@ func TestErrors(t *testing.T) {
 		_, err := New(muster.NewClient("http://127.0.0.1:1"), prefix).List(ctx, bearer)
 		require.Error(t, err)
 	})
+}
+
+func TestSignInLink(t *testing.T) {
+	srv := fakeMuster(t)
+	c := newClient(t, srv)
+	ctx := context.Background()
+
+	link, err := c.SignInLink(ctx, bearer, gitlabSignIn)
+	require.NoError(t, err)
+	require.Equal(t, gitlabLink, link, "muster's sign-in link for the server signIn names")
+	calls := srv.Calls()
+	require.Equal(t, mustertest.Call{Bearer: "Bearer " + bearer, Tool: "core_auth_login", Args: map[string]any{"server": "gitlab-manager"}},
+		calls[len(calls)-1], "core_auth_login runs as the person")
+
+	link, err = c.SignInLink(ctx, bearer, "grant the App of provider github once in muster: core_auth_login server=github-manager")
+	require.NoError(t, err)
+	require.Empty(t, link, "a grant muster holds already has no link")
+
+	before := len(srv.Calls())
+	link, err = c.SignInLink(ctx, bearer, "muster holds no grant for provider gitea: the workspace-manager is pinned to the App of provider gitlab only")
+	require.NoError(t, err)
+	require.Empty(t, link, "no muster server named, no link")
+	require.Len(t, srv.Calls(), before, "and muster is not asked")
+
+	_, err = c.SignInLink(ctx, bearer, "core_auth_login server=nowhere")
+	var toolErr *ToolError
+	require.ErrorAs(t, err, &toolErr)
 }

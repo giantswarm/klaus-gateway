@@ -103,7 +103,10 @@ person's Organizations, the providers their sources are on and when their last s
 `authorize_workspace` (granted with a short-lived grant for `start_session`, refused naming the
 repositories the person cannot read, connect the named providers first, or unavailable: not synced
 yet, being deleted, volume not ready) and `list_providers` (each provider and whether the person is
-connected, with its connect link). The grant is never logged, stored or shown.
+connected, with its `signIn`). An `authorize_workspace` answer naming providers to connect has, per provider, a
+`signIn`; when it names `core_auth_login server=<name>`, the gateway calls muster's `core_auth_login` for
+that server as the person and the Connect button opens the sign-in link it answers. Needs a workspace-manager
+that answers `signIn` (v0.10.0 or later). The grant is never logged, stored or shown.
 
 `workspaces.toolsPrefix` (`--workspace-tools-prefix`, `KLAUS_GATEWAY_WORKSPACE_TOOLS_PREFIX`) is what
 muster puts before the tool names: `x_<muster server name>_`, `x_workspace-manager_` on the Agent

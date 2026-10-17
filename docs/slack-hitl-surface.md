@@ -789,9 +789,12 @@ a thread reply in a DM) is answered by the outcome:
 - **Not synced yet** (or otherwise unavailable): "Cannot start in workspace *fresh* yet: <the
   workspace-manager's reason, else it has not synced yet>. Nothing was started; …" with the same button.
 - **A provider not connected:** the connect prompt (section on connectors, `connector_connect` URL
-  button to the workspace-manager's `connect_provider` link), one per provider: "Connect *gitlab*
-  first, so the agent can work in workspace *gitlab-ws* as you. Your message is kept: once
-  connected, pick the workspace again or mention me." The initiator's next pick or mention in the
+  button to the sign-in link muster's `core_auth_login` answers for the server the provider's
+  `signIn` names), one per provider: "Connect *gitlab* first, so the agent can work in workspace
+  *gitlab-ws* as you. Your message is kept: once connected, pick the workspace again or mention
+  me." A `signIn` that names no muster server gets the same text without a button, the
+  workspace-manager's words added: "The workspace-manager says: muster holds no grant for
+  provider gitlab: …." The initiator's next pick or mention in the
   thread authorizes it again and starts the Session with the held message.
 
 A click on a prompt

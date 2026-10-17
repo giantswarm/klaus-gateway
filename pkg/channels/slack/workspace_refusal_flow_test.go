@@ -126,7 +126,8 @@ func TestWorkspaceRefusal_NamesEveryRepositoryPrivatelyAndStartsNoSession(t *tes
 }
 
 // A provider the initiator has not connected shows the connect prompt with
-// the workspace-manager's link and starts nothing. Once connected, the next
+// the sign-in link muster issues for the server the workspace-manager's
+// signIn names, and starts nothing. Once connected, the next
 // click starts the Session with the held message.
 func TestWorkspaceRefusal_ConnectPromptThenTheNextClickStarts(t *testing.T) {
 	f := newRefusalFlow(t)
@@ -136,7 +137,7 @@ func TestWorkspaceRefusal_ConnectPromptThenTheNextClickStarts(t *testing.T) {
 
 	prompt := allBlockText(f.ephemerals("U001"))
 	require.Contains(t, prompt, "Connect *gitlab* first, so the agent can work in workspace *gitlab-ws* as you.")
-	require.Contains(t, prompt, `"https://wm.example/connect/gitlab"`, "the workspace-manager's connect link")
+	require.Contains(t, prompt, `"`+gitlabSignInLink+`"`, "muster's sign-in link")
 	require.Contains(t, prompt, `"connector_connect"`, "the existing connect prompt")
 	created, _, _ := f.kagent.state()
 	require.Zero(t, created, "no start_session")
@@ -170,11 +171,29 @@ func TestWorkspaceRefusal_ProviderConnectPromptOffersNoAuthorizeAll(t *testing.T
 	require.Len(t, elements, 1, "the provider's Connect button alone")
 	button, _ := elements[0].(map[string]any)
 	require.Equal(t, "connector_connect", button["action_id"])
-	require.Equal(t, "https://wm.example/connect/gitlab", button["url"])
+	require.Equal(t, gitlabSignInLink, button["url"])
 	require.Equal(t, "gitlab", button["value"])
 	label, _ := button["text"].(map[string]any)
 	require.Equal(t, "Connect gitlab", label["text"])
 	require.NotContains(t, allBlockText(f.ephemerals("U001")), "authorize_all_open")
+}
+
+// A provider muster holds no grant for has no link: the private notice says
+// so in the workspace-manager's words, with no button, and starts nothing.
+func TestWorkspaceRefusal_NoSignInLinkSaysWhy(t *testing.T) {
+	f := newRefusalFlow(t)
+	f.wm.unpin()
+	sendWorkspaceClick(t, f.srv, "U001", "100.000", "gitlab-ws")
+	require.Eventually(t, func() bool { return len(f.ephemerals("U001")) == 1 }, flowWait, 20*time.Millisecond)
+
+	notice := f.ephemerals("U001")[0]
+	require.Nil(t, notice.params["blocks"], "no Connect button")
+	text, _ := notice.params["text"].(string)
+	require.Contains(t, text, "Connect *gitlab* first, so the agent can work in workspace *gitlab-ws* as you.")
+	require.Contains(t, text, "The workspace-manager says: muster holds no grant for provider gitlab: this installation pins the workspace-manager to no provider's App.")
+	require.Contains(t, text, "Your message is kept")
+	created, _, _ := f.kagent.state()
+	require.Zero(t, created, "no start_session")
 }
 
 // Once connected, the initiator's next mention retries the workspace that

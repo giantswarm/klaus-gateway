@@ -468,7 +468,14 @@ func (a *Adapter) replayHeld(ctx context.Context, threadID string, msg channels.
 // is why.
 type workspaceDenial struct {
 	text    string
-	connect []workspaces.Connect
+	connect []providerConnect
+}
+
+// providerConnect is a provider the person grants in muster before the
+// workspace is theirs: the workspace-manager's word on how (signIn), and the
+// link muster issued for it, empty when it issued none.
+type providerConnect struct {
+	provider, signIn, link string
 }
 
 // workspaceNotes are the answers to a denial, worded for whoever asked: the
@@ -526,16 +533,19 @@ func (a *Adapter) authorizeWorkspace(ctx context.Context, slackUser, workspace s
 		}
 		a.Logger.Info("slack: workspace needs a provider connected", "record", "workspace_connect_required", "user", slackUser, "workspace", workspace, "providers", providers)
 		var text strings.Builder
-		for _, c := range auth.Connect {
+		connect := make([]providerConnect, len(auth.Connect))
+		for i, c := range auth.Connect {
 			if text.Len() > 0 {
 				text.WriteString(" ")
 			}
 			fmt.Fprintf(&text, workspaceConnectNote, escapeMrkdwn(c.Provider), name)
-			if c.URL != "" {
-				fmt.Fprintf(&text, workspaceConnectLink, c.URL, escapeMrkdwn(c.Provider))
+			link, err := a.Workspaces.SignInLink(actx, token, c.SignIn)
+			if err != nil {
+				a.Logger.Warn("slack: provider sign-in link unavailable", "user", slackUser, "workspace", workspace, "provider", c.Provider, "error", err)
 			}
+			connect[i] = providerConnect{provider: c.Provider, signIn: c.SignIn, link: link}
 		}
-		return workspaces.Grant{}, &workspaceDenial{text: text.String(), connect: auth.Connect}
+		return workspaces.Grant{}, &workspaceDenial{text: text.String(), connect: connect}
 	}
 	a.Logger.Info("slack: workspace unavailable", "record", "workspace_unavailable", "user", slackUser, "workspace", workspace)
 	a.Logger.Debug("slack: workspace unavailable", "record", "workspace_unavailable", "user", slackUser, "workspace", workspace, "reason", auth.Reason)
@@ -581,21 +591,25 @@ func (a *Adapter) answerWorkspaceDenial(ctx context.Context, slackChannel, threa
 }
 
 // postWorkspaceConnectPrompts asks user, privately in the thread, to connect
-// each provider workspace waits on, with its link when the workspace-manager
-// gave one; tail says how their message goes on.
-func (a *Adapter) postWorkspaceConnectPrompts(ctx context.Context, slackChannel, threadID, user, workspace string, connect []workspaces.Connect, tail string) {
+// each provider workspace waits on: with muster's sign-in link when it issued
+// one, else with the workspace-manager's word on why there is none; tail says
+// how their message goes on.
+func (a *Adapter) postWorkspaceConnectPrompts(ctx context.Context, slackChannel, threadID, user, workspace string, connect []providerConnect, tail string) {
 	client := a.apiClient()
 	name := escapeMrkdwn(workspace)
 	for _, c := range connect {
-		text := fmt.Sprintf(workspaceConnectNote, escapeMrkdwn(c.Provider), name) + tail
+		text := fmt.Sprintf(workspaceConnectNote, escapeMrkdwn(c.provider), name)
 		var err error
-		if c.URL != "" {
-			err = client.postProviderConnectPrompt(ctx, slackChannel, threadID, user, text, c.Provider, c.URL)
+		if c.link != "" {
+			err = client.postProviderConnectPrompt(ctx, slackChannel, threadID, user, text+tail, c.provider, c.link)
 		} else {
-			err = client.postEphemeralText(ctx, slackChannel, user, threadID, text)
+			if how := strings.TrimSuffix(strings.TrimSpace(c.signIn), "."); how != "" {
+				text += fmt.Sprintf(workspaceConnectHow, escapeMrkdwn(how))
+			}
+			err = client.postEphemeralText(ctx, slackChannel, user, threadID, text+tail)
 		}
 		if err != nil {
-			a.Logger.Warn("slack: post workspace connect prompt failed", "thread", threadID, "provider", c.Provider, "error", err)
+			a.Logger.Warn("slack: post workspace connect prompt failed", "thread", threadID, "provider", c.provider, "error", err)
 		}
 	}
 }
