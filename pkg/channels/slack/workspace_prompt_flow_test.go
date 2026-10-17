@@ -550,6 +550,16 @@ func TestWorkspace_SignInChallengeOnTheListingGetsTheConnectPrompt(t *testing.T)
 	require.NoError(t, err)
 	require.Equal(t, "wm", parsed.Query().Get("state"), "muster's own sign-in link, decorated")
 	require.Contains(t, allText(fake.pathCalls("chat.postEphemeral")), "*workspace-manager*")
+	cards := 0
+	for _, call := range append(fake.pathCalls("chat.postEphemeral"), fake.pathCalls("chat.postMessage")...) {
+		if _, _, _, ok := connectButtonIn([]recordedCall{call}); !ok {
+			continue
+		}
+		cards++
+		require.Equal(t, 1, strings.Count(slackRendered(call), "The conversation can't start yet"),
+			"%s: the Connect prompt says its lead sentence once", call.path)
+	}
+	require.Equal(t, 2, cards, "the ephemeral and the DM card")
 	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "could not be listed")
 	require.Empty(t, workspacePrompts(fake))
 	created, _, _ := kagent.state()
