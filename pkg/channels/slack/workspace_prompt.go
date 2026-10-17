@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
 	"github.com/giantswarm/klaus-gateway/pkg/workspaces"
@@ -62,7 +63,11 @@ const workspaceOptionsMax = 100
 // message of the initiator whose thread has no Session and no choice yet, and
 // that makes no choice itself, opens one when the initiator has workspaces to
 // pick from; without any, or when they cannot be listed, the Session starts
-// without one and nobody is asked. The caller holds the thread's slot.
+// without one and nobody is asked. A listing muster answers with its sign-in
+// challenge for the workspace-manager (the person has not granted its App)
+// holds msg behind that server's Connect prompt instead, as a Session start's
+// challenge does; once connected, the replay lists again. The caller holds
+// the thread's slot.
 func (a *Adapter) holdForWorkspace(ctx context.Context, msg channels.InboundMessage, slackChannel, slackUser, initiator string) bool {
 	if !a.Workspaces.Enabled() || msg.Workspace != nil || msg.TaskID != "" {
 		return false
@@ -99,6 +104,10 @@ func (a *Adapter) holdForWorkspace(ctx context.Context, msg channels.InboundMess
 	lctx, cancel := context.WithTimeout(ctx, workspaceListTimeout)
 	list, err := a.Workspaces.List(lctx, msg.BearerToken)
 	cancel()
+	if challenge := workspaceChallenge(err); challenge != nil {
+		a.promptSessionConnect(ctx, msg, slackChannel, slackUser, initiator, false, challenge)
+		return true
+	}
 	if err != nil {
 		a.Logger.Warn("slack: workspaces not listed, the Session starts without one", "thread", msg.ThreadID, "user", slackUser, "error", err)
 		if _, perr := a.apiClient().postNote(ctx, slackChannel, workspacesUnavailableNote, msg.ThreadID); perr != nil {
@@ -471,6 +480,17 @@ type workspaceDenial struct {
 	connect []providerConnect
 }
 
+// workspaceChallenge is muster's sign-in challenge for the workspace-manager
+// in err, as the Connect prompt takes it; nil for any other error and for a
+// challenge without a link, which the person cannot act on from a prompt.
+func workspaceChallenge(err error) *pkga2a.ConnectRequiredError {
+	var challenge *workspaces.AuthRequiredError
+	if !errors.As(err, &challenge) || challenge.LoginURL == "" {
+		return nil
+	}
+	return &pkga2a.ConnectRequiredError{Server: challenge.Server, LoginURL: challenge.LoginURL}
+}
+
 // providerConnect is a provider the person grants in muster before the
 // workspace is theirs: the workspace-manager's word on how (signIn), and the
 // link muster issued for it, empty when it issued none.
@@ -510,6 +530,11 @@ func (a *Adapter) authorizeWorkspace(ctx context.Context, slackUser, workspace s
 	actx, cancel := context.WithTimeout(ctx, workspaceAuthorizeTimeout)
 	defer cancel()
 	auth, err := a.Workspaces.Authorize(actx, token, workspace)
+	if challenge := workspaceChallenge(err); challenge != nil {
+		a.Logger.Info("slack: workspace needs the workspace-manager connected", "record", "workspace_connect_required", "user", slackUser, "workspace", workspace, "server", challenge.Server)
+		return workspaces.Grant{}, &workspaceDenial{text: fmt.Sprintf(workspaceConnectNote, escapeMrkdwn(challenge.Server), name),
+			connect: []providerConnect{{provider: challenge.Server, link: challenge.LoginURL}}}
+	}
 	if err != nil {
 		a.Logger.Warn("slack: workspace authorization failed", "record", "workspace_check_failed", "user", slackUser, "workspace", workspace, "error", err)
 		return workspaces.Grant{}, failed

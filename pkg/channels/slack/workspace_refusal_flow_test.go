@@ -233,3 +233,26 @@ func TestWorkspaceRefusal_NotSyncedStartsNothing(t *testing.T) {
 	require.NotContains(t, f.heldMessage(t), `"retry"`, "a mention retries nothing")
 	require.Contains(t, f.log.String(), "record=workspace_unavailable")
 }
+
+// A pick muster answers with its sign-in challenge for the workspace-manager
+// gets the Connect prompt with muster's link, starts nothing and keeps the
+// message for the next pick or mention.
+func TestWorkspaceRefusal_SignInChallengeOnTheAuthorizationGetsTheConnectPrompt(t *testing.T) {
+	f := newRefusalFlow(t)
+	f.wm.challenge("tok1", true)
+	sendWorkspaceClick(t, f.srv, "U001", "100.000", "platform")
+	require.Eventually(t, func() bool { return len(f.ephemerals("U001")) == 1 }, flowWait, 20*time.Millisecond)
+
+	prompt := allBlockText(f.ephemerals("U001"))
+	require.Contains(t, prompt, "Connect *workspace-manager* first, so the agent can work in workspace *platform* as you.")
+	require.Contains(t, prompt, `"`+workspaceManagerSignInLink+`"`, "muster's sign-in link")
+	require.Contains(t, prompt, `"connector_connect"`)
+	require.Contains(t, f.log.String(), "record=workspace_connect_required")
+	created, _, _ := f.kagent.state()
+	require.Zero(t, created, "no start_session")
+	require.Contains(t, f.heldMessage(t), "what failed on prod?", "the held message survives")
+
+	f.wm.challenge("tok1", false)
+	sendWorkspaceClick(t, f.srv, "U001", "100.000", "platform")
+	require.Eventually(t, func() bool { _, _, turns := f.kagent.state(); return len(turns) == 1 }, flowWait, 20*time.Millisecond)
+}

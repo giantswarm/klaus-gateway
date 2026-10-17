@@ -398,6 +398,12 @@ func (e *AuthRequiredError) Error() string {
 	return fmt.Sprintf("workspaces: sign-in to %s required", e.Server)
 }
 
+// server is the workspace-manager's server name in muster, the prefix's:
+// x_workspace-manager_ is workspace-manager.
+func (c *Client) server() string {
+	return strings.TrimSuffix(strings.TrimPrefix(c.prefix, "x_"), "_")
+}
+
 // call runs the tool as the person and decodes its structured result into
 // out. Its errors never carry the result's content, which may hold a grant.
 func (c *Client) call(ctx context.Context, bearer, tool string, args map[string]any, out any) error {
@@ -410,6 +416,9 @@ func (c *Client) call(ctx context.Context, bearer, tool string, args map[string]
 		return fmt.Errorf("workspaces: %s: %w", name, err)
 	}
 	if challenge := authChallengeOf(res); challenge != nil {
+		if challenge.Server == "" {
+			challenge.Server = c.server()
+		}
 		return challenge
 	}
 	if res.IsError {

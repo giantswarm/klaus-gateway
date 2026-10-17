@@ -372,7 +372,11 @@ repositories as read-only mirrors beside it.
   no Session bound and no choice recorded yet, and the message carries none itself — lists
   the initiator's workspaces (`list_workspaces`, as them). With none, or when they cannot be
   listed, the Session starts without a workspace and nobody is asked (the second case with a
-  note in the thread). Otherwise the message is held and the thread gets one prompt. Nothing
+  note in the thread). A listing muster answers with its sign-in challenge for the
+  workspace-manager (the person has not granted its App) is no failure: the message is held
+  behind the workspace-manager's Connect prompt, as a Session start's challenge is
+  (`session_connect_required`), and once connected it is replayed, lists again and gets the
+  prompt. Otherwise the message is held and the thread gets one prompt. Nothing
   is read from the message: a workspace named in its text neither narrows the offer nor
   picks one.
 - **The prompt.** A select of the workspaces, grouped by Organization, each with how long
@@ -391,6 +395,8 @@ repositories as read-only mirrors beside it.
   `authorize_workspace`'s `connect`: its button opens the link muster's `core_auth_login`
   answers, called as the person for the server the entry's `signIn` names; a `signIn` that names
   no muster server (muster holds no grant for that provider) is quoted instead, without a button.
+  An `authorize_workspace` muster answers with its sign-in challenge for the workspace-manager
+  gets the same connect prompt for the workspace-manager, with muster's link.
   Once connected, their next pick or mention in
   the thread authorizes it again and starts the Session with the held message, as a sign-in
   replays a held message. Each outcome logs a `record` (`workspace_granted`,
