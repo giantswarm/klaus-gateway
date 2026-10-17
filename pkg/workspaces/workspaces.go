@@ -14,6 +14,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -27,6 +29,10 @@ const (
 	toolAuthorizeWorkspace = "authorize_workspace"
 	toolListProviders      = "list_providers"
 )
+
+// musterAuthLoginTool is muster's core tool that answers the link starting a
+// person's grant for one of its servers.
+const musterAuthLoginTool = "core_auth_login"
 
 // ToolCaller calls a muster tool as the person whose bearer token it is
 // given. *muster.Client satisfies it.
@@ -120,8 +126,9 @@ type Provider struct {
 	Name      string
 	Kind      string
 	Connected bool
-	// ConnectURL is the page where the person connects it.
-	ConnectURL string
+	// SignIn says how the person grants the provider's App in muster, while
+	// they have not.
+	SignIn string
 }
 
 // Providers lists the installation's workspace providers, each with whether
@@ -129,10 +136,10 @@ type Provider struct {
 func (c *Client) Providers(ctx context.Context, bearer string) ([]Provider, error) {
 	var out struct {
 		Providers *[]struct {
-			Name       string `json:"name"`
-			Kind       string `json:"kind"`
-			Connected  bool   `json:"connected"`
-			ConnectURL string `json:"connectURL"`
+			Name      string `json:"name"`
+			Kind      string `json:"kind"`
+			Connected bool   `json:"connected"`
+			SignIn    string `json:"signIn"`
 		} `json:"providers"`
 	}
 	if err := c.call(ctx, bearer, toolListProviders, nil, &out); err != nil {
@@ -146,7 +153,7 @@ func (c *Client) Providers(ctx context.Context, bearer string) ([]Provider, erro
 		if p.Name == "" {
 			return nil, &MalformedError{Tool: c.prefix + toolListProviders, Reason: "a provider without a name"}
 		}
-		list = append(list, Provider{Name: p.Name, Kind: p.Kind, Connected: p.Connected, ConnectURL: p.ConnectURL})
+		list = append(list, Provider{Name: p.Name, Kind: p.Kind, Connected: p.Connected, SignIn: p.SignIn})
 	}
 	return list, nil
 }
@@ -184,10 +191,14 @@ func (o Outcome) String() string {
 	return "unknown"
 }
 
-// Connect is a provider the person connects before the workspace is theirs.
+// Connect is a provider whose App the person grants in muster before the
+// workspace is theirs.
 type Connect struct {
 	Provider string
-	URL      string
+	// SignIn says how, in the workspace-manager's words: for the provider its
+	// registration is pinned to, muster's core_auth_login for that
+	// registration (SignInLink); for any other, that muster holds no grant.
+	SignIn string
 }
 
 // Authorization is the workspace-manager's answer whether the person may start
@@ -234,7 +245,7 @@ func (c *Client) Authorize(ctx context.Context, bearer, workspace string) (*Auth
 		Unreadable   []string   `json:"unreadable"`
 		Connect      []struct {
 			Provider string `json:"provider"`
-			URL      string `json:"url"`
+			SignIn   string `json:"signIn"`
 		} `json:"connect"`
 	}
 	if err := c.call(ctx, bearer, toolAuthorizeWorkspace, map[string]any{"workspace": workspace}, &out); err != nil {
@@ -255,7 +266,7 @@ func (c *Client) Authorize(ctx context.Context, bearer, workspace string) (*Auth
 		}
 		a.Outcome = ConnectRequired
 		for _, p := range out.Connect {
-			a.Connect = append(a.Connect, Connect{Provider: p.Provider, URL: p.URL})
+			a.Connect = append(a.Connect, Connect{Provider: p.Provider, SignIn: p.SignIn})
 		}
 	case "refused":
 		// A refusal names the unreadable repositories, or none when the
@@ -329,6 +340,42 @@ func (e *ToolError) Error() string {
 	return fmt.Sprintf("workspaces: %s: %s", e.Tool, e.Message)
 }
 
+// signInServerRe finds the muster server a Connect's SignIn names:
+// "core_auth_login server=<name>".
+var signInServerRe = regexp.MustCompile(`\b` + musterAuthLoginTool + `\s+server=([^\s,;]+)`)
+
+// SignInLink is the link that starts the person's grant of a Connect's
+// provider App: muster's core_auth_login, called as the person for the server
+// signIn names. A signIn that names none (muster holds no grant for the
+// provider) has no link: "" without an error. A person whose grant muster
+// already holds gets "" too, and so does an answer without a plain https link.
+func (c *Client) SignInLink(ctx context.Context, bearer, signIn string) (string, error) {
+	if !c.Enabled() {
+		return "", ErrDisabled
+	}
+	m := signInServerRe.FindStringSubmatch(signIn)
+	if m == nil {
+		return "", nil
+	}
+	res, err := c.tools.CallTool(ctx, bearer, musterAuthLoginTool, map[string]any{"server": m[1]})
+	if err != nil {
+		return "", fmt.Errorf("workspaces: %s %s: %w", musterAuthLoginTool, m[1], err)
+	}
+	if res.IsError {
+		return "", &ToolError{Tool: musterAuthLoginTool, Message: res.Text}
+	}
+	var out struct {
+		AuthURL string `json:"authUrl"`
+	}
+	if len(res.Structured) == 0 || json.Unmarshal(res.Structured, &out) != nil {
+		return "", nil
+	}
+	if u, err := url.Parse(out.AuthURL); err != nil || u.Scheme != "https" || u.Host == "" {
+		return "", nil
+	}
+	return out.AuthURL, nil
+}
+
 // MalformedError is an answer that is not the tool's documented result.
 type MalformedError struct {
 	Tool   string
@@ -351,6 +398,12 @@ func (e *AuthRequiredError) Error() string {
 	return fmt.Sprintf("workspaces: sign-in to %s required", e.Server)
 }
 
+// server is the workspace-manager's server name in muster, the prefix's:
+// x_workspace-manager_ is workspace-manager.
+func (c *Client) server() string {
+	return strings.TrimSuffix(strings.TrimPrefix(c.prefix, "x_"), "_")
+}
+
 // call runs the tool as the person and decodes its structured result into
 // out. Its errors never carry the result's content, which may hold a grant.
 func (c *Client) call(ctx context.Context, bearer, tool string, args map[string]any, out any) error {
@@ -363,6 +416,9 @@ func (c *Client) call(ctx context.Context, bearer, tool string, args map[string]
 		return fmt.Errorf("workspaces: %s: %w", name, err)
 	}
 	if challenge := authChallengeOf(res); challenge != nil {
+		if challenge.Server == "" {
+			challenge.Server = c.server()
+		}
 		return challenge
 	}
 	if res.IsError {
