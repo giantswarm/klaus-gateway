@@ -9,7 +9,7 @@ that adds notes heads them `## Next — <title>`; the change that prepares a rel
 renames each `Next` to that version, and `make check-upgrade-notes` refuses a
 stable release tag while a `Next` section with content is left.
 
-## Next — workspace provider sign-in through muster
+## 4.9.0 — workspace provider sign-in through muster
 
 - A workspace provider's Connect button opens muster's sign-in link: the gateway reads the
   workspace-manager's `signIn` and asks muster's `core_auth_login` for the link, as the person.
