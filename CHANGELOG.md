@@ -9,214 +9,1291 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-
-- Slack: `slack.contextBotNames` (`--slack-context-bot-names`, `SLACK_CONTEXT_BOT_NAMES`) admits a bot's posts to the thread context and the catch-up of a muted thread by its Slack profile name, the app's own bot name, matched case-insensitively against `path.Match` patterns, beside `slack.contextBotIDs`. One entry such as `*-alertmanager` admits every installation's Alertmanager, each a Slack app with its own `bot_id`, so the allowlist no longer grows with the fleet; the name a post sets never admits a bot. An invalid pattern fails start-up (giantswarm/klaus-gateway#475).
-- Slack: the authorize modal lists every muster server the person reaches with a grant of their own (each GitHub App behind a `*-manager` server, GitHub, Slack, …), its state and an *Authorize* button with the link that starts the grant, so the person grants everything once in one place instead of meeting one Connect prompt per server after a failed turn. It opens from the direct message after sign-in when a grant is missing, from `/<command> connect`, and from *Authorize all* beside every muster server's Connect prompt (a workspace provider's Connect prompt offers its own sign-in only, giantswarm/klaus-gateway#470); each grant's landing redraws it. Opened from the prompt that held a Session start's message, granting that server from the modal runs the message. Needs `obo.connectorsEnabled` and a muster with `core_auth_status` (giantswarm/muster#1507); an older muster withdraws the offer (giantswarm/klaus-gateway#468).
-- Slack: the "attached to the turn" log line of a thread read (thread context and catch-up) carries `admitted_bot` and `dropped_bot`, the bot-authored messages the read admitted and left out, and a debug line names the admitted bot ids, so one log line shows whether a `slack.contextBotIDs` or `slack.contextBotNames` setting took effect (giantswarm/klaus-gateway#443).
+## [4.9.0-rc.1] - 2026-10-17
 
 ### Changed
 
 - Slack: workspace Connect prompts follow the workspace-manager's sign-in move to muster (giantswarm/workspace-manager#115). The gateway reads `signIn` from `authorize_workspace`'s `connect` entries and `list_providers` instead of the workspace-manager's retired connect links; where `signIn` names `core_auth_login server=<name>`, it calls muster's `core_auth_login` for that server as the person and the Connect button opens the sign-in link muster answers. A provider muster holds no grant for gets the notice with the workspace-manager's reason and no button. A `list_workspaces` or `authorize_workspace` muster answers with its sign-in challenge for the workspace-manager (the person has not granted its App) gets the workspace-manager's Connect prompt with muster's link instead of "Your workspaces could not be listed right now" or "Could not check workspace": the listing's holds the message and replays it once connected, the pick's keeps the message for the next pick or mention. Needs workspace-manager v0.10.0 or later, see UPGRADE.md (giantswarm/klaus-gateway#488).
-- Slack: whether a thread's collaborators may instruct its agent is kagent's decision, not the gateway's. A collaborator's turn whose share kagent's `CreateSessionShare` refuses (`FailedPrecondition`: from kagent 1.11.1, a Session on any Harness runtime but `kagent`, or of an Agent that is gone) is not passed on, and the thread is told kagent's reason. The refusal is recorded on the thread's row (`share_refusal`, dropped with the binding), so later collaborator turns are refused from the row and a newcomer gets the reason privately instead of an access prompt. Needs kagent 1.11.1 or later, see UPGRADE.md.
-- The kagent protos are copied from giantswarm/kagent-upstream v1.11.1 (`cf04bc3c`). Only `sessions.proto` changed, additively (a Session's workspace volume, providers and last turn time); the gateway sets none of the new fields.
-- Slack: a thread collaborator who gets the connect prompt for the provider the thread's workspace needs no longer has to resend their message. It is held for a day (their last five, in the thread's row as `held.workspace_connect`, so a restart keeps it), the prompt says so, and their first turn that passes the workspace check once connected, typically their next mention, runs the held messages in order before itself. Past five they are told the oldest went, and a refusal or a check that could not be made says the held messages were not passed on; a collaborator who never connects has no turn run (giantswarm/klaus-gateway#457).
-- Slack: a collaborator's first turn in a thread whose Session works in a workspace asks `authorize_workspace` as them on that workspace. A pass is remembered by name in the thread's row (`workspace_readers`, never the grant) while the thread keeps the workspace; a refusal names the repositories they cannot read to them alone and runs no turn, a provider they have not connected gets the connect prompt, and their next message asks again. The initiator's "allowed" on such a thread says the person still needs access to the workspace. The initiator and threads without a workspace are not asked (giantswarm/klaus-gateway#432).
-- Slack: a workspace `authorize_workspace` does not grant is answered in the thread to the initiator alone (ephemeral in a channel) and starts no Session: a refusal names the workspace and every repository they cannot read, a workspace that has not synced yet says so, both offering **No workspace** again; a provider not connected gets the connect prompt with each provider's link from the workspace-manager, and the initiator's next pick or mention once connected starts the Session with the held message. The agent picker answers the same outcomes privately with the prompt quoted back. Each outcome logs a `record` (`workspace_granted`, `workspace_refused`, `workspace_connect_required`, `workspace_unavailable`, `workspace_check_failed`), repository names at debug only (giantswarm/klaus-gateway#431).
-- Slack: the agent picker's selects say they can be searched ("Type to search or pick an agent"), and the agent hint reads "SRE Agent is the default agent." instead of naming the Slack workspace.
-- Every Session a thread runs on is started through agent-manager's `start_session` tool, called through muster as the person behind the turn, with the agent, the thread's request id and its name; the gateway no longer calls the controller's `CreateSession` itself. The request id is unchanged, so no live thread starts its conversation over; an agent that cannot run is still answered with the agent-not-runnable notice, and a caller who is not signed in with the sign-in prompt. The tool is `<a2a.agentManagerToolsPrefix>start_session` (`--a2a-agent-manager-tools-prefix`, `KLAUS_GATEWAY_A2A_AGENT_MANAGER_TOOLS_PREFIX`, default `x_agent-manager_`); it needs an agent-manager whose `start_session` takes no message and needs `obo.enabled`.
-- Slack: an agent whose Harness has the `claude` runtime takes turns from the person whose Session the thread is bound to only. A newcomer in its thread is answered privately "Start your own thread to work with it." and the initiator gets no access prompt; any other turn by someone else, a grant from before or a decision click, is refused the same way, and a paused task stays for its owner. The runtime is read through kagent's `HarnessService/ListHarnesses` as the sender, on such a turn only; when it cannot be read the turn is refused with a note that the agent could not be looked up. Declarative agents keep their collaborators and the Session share (giantswarm/giantswarm#38059).
-- Slack: the thread context and the catch-up of a muted thread hand the agent every human's message and, of the bots, only the posts of the bot_ids in `slack.contextBotIDs` (`--slack-context-bot-ids`, `SLACK_CONTEXT_BOT_IDS`), since a bot's display name is whatever it posts under. Empty, the default, shares no bot's post (giantswarm/giantswarm#38059).
 
-- The Slack connector tests name the MCP server `mcp-pro`, its name without the installation prefix.
-- The gateway speaks kagent's Session and Agent API. A thread's conversation is a `Session` of an `Agent` (`api.kagent.dev/v1alpha3`, the explicit pairing of an AgentTemplate and a Harness), created with `SessionService/CreateSession`, looked up, resumed and deleted through the same service, and shared with a thread's collaborators through `CreateSessionShare` with the thread lifetime as `ttl`. An A2A call names the Agent as its tenant (`namespace/name`) and the Session as the message's `contextId`; the `x-kagent-agent-instance-id` header is gone. A session the controller reports `SUSPENDED` is resumed before the turn. The generated stubs move to a provisional commit of the kagent re-pin candidate (`pkg/kagent/gen/README.md`).
-- The agent roster is the namespace's `Agent` objects (`AgentService/ListAgents`), branded by the Agent's `ui.giantswarm.io/*` annotations or, when it carries none, its AgentTemplate's. An agent is offered when the Agent's `Ready` condition is `True`; one that is not ready is refused by name with the condition's message (`Agent <name> is not ready: <message>`) in place of the Harness admission and revision wording.
-- The thread's row keeps its stored shape: `agent_instance_id`, `instance_creator` and the share's `instance_id` now hold the Session's id and creator. Bindings written before this release name conversations the Session controller does not have, so the first reply in such a thread gets the starting-fresh notice and a new Session. The log records `instance_bound` and `instance_shared` are `session_bound` and `session_shared`, their `instance` attribute is `session`, and the turn phase `create_instance` (`create_instance_ms` in `turn_complete`, the `klaus_gateway_turn_phase_seconds` label) is `create_session`.
+## [4.8.2-rc.3] - 2026-10-15
+
+### Added
+
+- Slack: the "attached to the turn" log line of a thread read (thread context and catch-up) carries `admitted_bot` and `dropped_bot`, the bot-authored messages the read admitted and left out, and a debug line names the admitted bot ids, so one log line shows whether a `slack.contextBotIDs` or `slack.contextBotNames` setting took effect (giantswarm/klaus-gateway#443).
+
+## [4.8.2-rc.2] - 2026-10-15
+
+### Fixed
+
+- Slack: the notice that only a conversation's person can write to it is posted into the conversation's thread (`thread_ts`), not the channel (giantswarm/klaus-gateway#454).
+
+## [4.8.2-rc.1] - 2026-10-15
+
+### Fixed
+
+- Slack: a collaborator's turn whose Session kagent refuses to share, or whose share needs the initiator's lapsed sign-in, ends as `share_refused` instead of `send_failed`: `turn_complete` and `klaus_gateway_turn_total` carry no `failure_class` for it, and the dispatch and replay logs record it at INFO instead of ERROR. The thread is still told why (giantswarm/klaus-gateway#481).
+
+## [4.8.0] - 2026-10-15
+
+### Added
+
+- Slack: `slack.contextBotNames` (`--slack-context-bot-names`, `SLACK_CONTEXT_BOT_NAMES`) admits a bot's posts to the thread context and the catch-up of a muted thread by its Slack profile name, the app's own bot name, matched case-insensitively against `path.Match` patterns, beside `slack.contextBotIDs`. One entry such as `*-alertmanager` admits every installation's Alertmanager, each a Slack app with its own `bot_id`, so the allowlist no longer grows with the fleet; the name a post sets never admits a bot. An invalid pattern fails start-up (giantswarm/klaus-gateway#475).
+
+## [4.7.1] - 2026-10-15
+
+### Added
+
+- Slack: the authorize modal lists every muster server the person reaches with a grant of their own (each GitHub App behind a `*-manager` server, GitHub, Slack, …), its state and an *Authorize* button with the link that starts the grant, so the person grants everything once in one place instead of meeting one Connect prompt per server after a failed turn. It opens from the direct message after sign-in when a grant is missing, from `/<command> connect`, and from *Authorize all* beside every muster server's Connect prompt (a workspace provider's Connect prompt offers its own sign-in only, giantswarm/klaus-gateway#470); each grant's landing redraws it. Opened from the prompt that held a Session start's message, granting that server from the modal runs the message. Needs `obo.connectorsEnabled` and a muster with `core_auth_status` (giantswarm/muster#1507); an older muster withdraws the offer (giantswarm/klaus-gateway#468).
+
+## [4.6.3-rc.1] - 2026-10-14
+
+### Fixed
+
+- Slack: a Session start that muster answers with its sign-in challenge for agent-manager posts the Connect prompt for it, its link to the person alone, and holds their message: the sign-in's landing runs it as the thread's first turn (without a public base URL the prompt says to send it again once connected). A collaborator whose turn would start the thread owner's Session gets a private note naming the owner instead. `turn_complete` ends such a turn as `connect_required`, with a `session_connect_required` record naming the server (klaus-gateway#464).
+- Slack: the Connect prompt of a Session start is found from anywhere, not only in the thread view. In a channel thread the card also goes to the person's DM with the app, led by a line that links the thread, and a line everyone in the thread sees says whom it waits for and where the button is; a later message of the person's refreshes both in place. In a DM the card is a message of the conversation, and a later message gets a card of its own. Once the person has connected, by the prompt's link or any other way, the line says who connected and the card is a confirmation (klaus-gateway#464).
+
+## [4.6.2-rc.3] - 2026-10-13
+
+### Changed
+
+- Slack: whether a thread's collaborators may instruct its agent is kagent's decision, not the gateway's. A collaborator's turn whose share kagent's `CreateSessionShare` refuses (`FailedPrecondition`: from kagent 1.11.1, a Session on any Harness runtime but `kagent`, or of an Agent that is gone) is not passed on, and the thread is told kagent's reason. The refusal is recorded on the thread's row (`share_refusal`, dropped with the binding), so later collaborator turns are refused from the row and a newcomer gets the reason privately instead of an access prompt. Needs kagent 1.11.1 or later, see UPGRADE.md.
 
 ### Removed
 
 - The gateway no longer reads Harnesses or names a runtime: `a2a.Client.RefusesCollaborators`, `HarnessRuntime`, `RuntimeRefusesCollaborators`, the `HarnessRuntime*` constants and `AgentInfo.Runtime` are gone, and so are the Slack notes "Start your own thread to work with it." and "the agent of this conversation could not be looked up".
 
-### Fixed
+## [4.6.2-rc.1] - 2026-10-13
 
-- Slack: the notice that only a conversation's person can write to it is posted into the conversation's thread (`thread_ts`), not the channel (giantswarm/klaus-gateway#454).
-- Slack: a collaborator's turn whose Session kagent refuses to share, or whose share needs the initiator's lapsed sign-in, ends as `share_refused` instead of `send_failed`: `turn_complete` and `klaus_gateway_turn_total` carry no `failure_class` for it, and the dispatch and replay logs record it at INFO instead of ERROR. The thread is still told why (giantswarm/klaus-gateway#481).
+### Changed
+
+- The kagent protos are copied from giantswarm/kagent-upstream v1.11.1 (`cf04bc3c`). Only `sessions.proto` changed, additively (a Session's workspace volume, providers and last turn time); the gateway sets none of the new fields.
+
+## [4.6.1] - 2026-10-13
+
+### Changed
+
+- Slack: a thread collaborator who gets the connect prompt for the provider the thread's workspace needs no longer has to resend their message. It is held for a day (their last five, in the thread's row as `held.workspace_connect`, so a restart keeps it), the prompt says so, and their first turn that passes the workspace check once connected, typically their next mention, runs the held messages in order before itself. Past five they are told the oldest went, and a refusal or a check that could not be made says the held messages were not passed on; a collaborator who never connects has no turn run (giantswarm/klaus-gateway#457).
+
+## [4.6.0] - 2026-10-13
+
+### Changed
+
+- Slack: a collaborator's first turn in a thread whose Session works in a workspace asks `authorize_workspace` as them on that workspace. A pass is remembered by name in the thread's row (`workspace_readers`, never the grant) while the thread keeps the workspace; a refusal names the repositories they cannot read to them alone and runs no turn, a provider they have not connected gets the connect prompt, and their next message asks again. The initiator's "allowed" on such a thread says the person still needs access to the workspace. The initiator and threads without a workspace are not asked (giantswarm/klaus-gateway#432).
+
+## [4.5.0] - 2026-10-13
+
+### Changed
+
+- Slack: a workspace `authorize_workspace` does not grant is answered in the thread to the initiator alone (ephemeral in a channel) and starts no Session: a refusal names the workspace and every repository they cannot read, a workspace that has not synced yet says so, both offering **No workspace** again; a provider not connected gets the connect prompt with each provider's link from the workspace-manager, and the initiator's next pick or mention once connected starts the Session with the held message. The agent picker answers the same outcomes privately with the prompt quoted back. Each outcome logs a `record` (`workspace_granted`, `workspace_refused`, `workspace_connect_required`, `workspace_unavailable`, `workspace_check_failed`), repository names at debug only (giantswarm/klaus-gateway#431).
+
+## [4.5.0-rc.1] - 2026-10-13
 
 ### Added
 
 - Slack: with workspaces on, the agent picker (the slash command, the message shortcut, a roster row's Select) has a **Workspace** select under the agent, so the person picks the agent and the workspace in one step and the thread asks nothing afterwards. It lists **No workspace** and the person's workspaces as the thread prompt does, preset to the workspace the person last started the selected agent with, else No workspace, and follows a change of agent. A workspace is authorized as the person on submit; a refusal starts nothing and is answered privately with the prompt quoted back. The select is shown only when the person has workspaces and the listing answers within 1.5 s; otherwise the picker opens without it and the thread prompt asks as before. The last choice per person and agent is kept in the routing store, a name or `none` and never a grant (klaus-gateway#430).
 
+### Changed
+
+- Slack: the agent picker's selects say they can be searched ("Type to search or pick an agent"), and the agent hint reads "SRE Agent is the default agent." instead of naming the Slack workspace.
+
+## [4.4.0-rc.1] - 2026-10-13
+
+### Added
+
 - Slack: with workspaces on, a thread whose Session is about to start asks its initiator once which workspace it works in. The initiator's workspaces are offered in a select grouped by Organization, each with the age of its last sync, beside a **No workspace** button; nothing is read from the message. The first message waits in the thread's row until the choice, so a restart in between loses nothing. Only the initiator's click counts. A workspace is authorized as the initiator and its grant goes to agent-manager's `start_session` (`workspaceGrant`), with the held message as the Session's first turn; a workspace that is not granted gets a note with the reason and the prompt stays open. The choice is recorded with the Session, so the thread's later turns ask nothing. A person without workspaces is never asked (klaus-gateway#429).
+
+## [4.3.0] - 2026-10-12
+
+### Changed
+
+- Every Session a thread runs on is started through agent-manager's `start_session` tool, called through muster as the person behind the turn, with the agent, the thread's request id and its name; the gateway no longer calls the controller's `CreateSession` itself. The request id is unchanged, so no live thread starts its conversation over; an agent that cannot run is still answered with the agent-not-runnable notice, and a caller who is not signed in with the sign-in prompt. The tool is `<a2a.agentManagerToolsPrefix>start_session` (`--a2a-agent-manager-tools-prefix`, `KLAUS_GATEWAY_A2A_AGENT_MANAGER_TOOLS_PREFIX`, default `x_agent-manager_`); it needs an agent-manager whose `start_session` takes no message and needs `obo.enabled`.
+
+## [4.3.0-rc.1] - 2026-10-12
+
+### Added
+
 - `pkg/workspaces`: the workspace-manager's client over muster, every call as the linked person. `List` (`list_workspaces`: name, Organization, when the last sync succeeded, the providers the sources are on), `Authorize` (`authorize_workspace`: granted with an opaque short-lived grant that never reaches a log line, an error or a store; refused naming the unreadable repositories; connect required with each provider's link; unavailable while the workspace has not synced, is being deleted or has no volume yet) and `Providers` (`list_providers`). A missing tool, a malformed result and muster's sign-in challenge are typed errors. The chart value `workspaces.toolsPrefix` (`--workspace-tools-prefix`) names the tools' prefix in muster, `x_workspace-manager_` on the Agent Platform; empty, the default, turns workspaces off. Nothing calls the client yet (klaus-gateway#427).
 - The muster client hands back a tool's `structuredContent` and tells the tool's own answer from muster's refusal of the call.
 
-- The thread's row records its workspace choice (`workspace`: namespace and name, or `none`), written with the Session binding and dropped with it on a reset, a rebind or an ended conversation. A later turn reuses the Session while its choice matches the row's, and a different choice starts a new one. The Session's request id includes the workspace only when one is chosen, so every existing thread and every thread without a workspace keeps its Session (klaus-gateway#428).
-- Slack: `mute` in a channel thread, from the thread initiator or a collaborator, stops the agent answering replies that do not mention it, so the people in the thread can talk to each other; newcomers' replies send no access prompt meanwhile. The next mention that reaches the agent ends the mute with an "Unmuted." note and the agent answers it. The thread keeps its agent, session and grants, and the mute survives a restart on a persistent store. `help` lists the word (klaus-gateway#410).
-- Slack: the mention that ends a thread's mute hands the agent what the people wrote in the thread while it was muted, labelled as such, so the agent answers with the conversation it missed. When Slack cannot be read, the person who mentioned the bot is told privately and the agent answers the mention alone (klaus-gateway#411).
-- Slack: `mute` in a busy thread stops the turn that is running ("Stopped and muted.") and rejects an open approval card the way a deny word does, also one restored after a restart. Beside an open question it refuses privately and is not sent as the answer, and the thread stays unmuted (klaus-gateway#412).
-- Slack: `mute` drops the messages waiting in the thread for the initiator's Allow or for their sender's sign-in, and tells each sender privately to mention the agent to ask again. A later sign-in, also after a restart, replays nothing, and a later Allow grants the newcomer and runs nothing, so the thread stays muted; a replay already waiting for the thread's turn, written before the mute, runs nothing either (klaus-gateway#413).
-- Slack: a sign-in prompt in a channel also sends its card to the person's DM with the app, led by a line that links the thread it was asked in, so a person whose Slack client was closed when the ephemeral went out finds it later; the thread's waiting line says where the link is. A later message of theirs in the thread re-issues the ephemeral and refreshes the DM card to the fresh link in place. The completed link rewrites the DM card to the confirmation (klaus-gateway#406).
+## [4.2.0] - 2026-10-10
 
-- `POST /conversations` and `POST /conversations/{id}/messages`: a service holds a Slack conversation with one person on behalf of an agent the gateway does not run, such as the person's guide on their own machine. The opening message is a direct message from the app; a reply of the person's in its thread calls the conversation's reply tool through muster as the person, with the reply as an A2A Message whose `contextId` is the conversation, and the service posts the agent's answers into the same thread. Only the person's own replies are sent; a refusal (no agent of theirs running) is a note in the thread saying the reply was not delivered and why. Mounted with the team-review endpoint ([docs/api.md](docs/api.md#conversations), klaus-gateway#369).
-- `POST /decisions` and `POST /decisions/{id}/close`: a service puts a decision to a person (a direct message, found by their email) or to a team (its channel) — the question, the status quo, a *Choose* button per option with the recommended one marked, *Answer in my own words*, the due time and the default. An answer — a click, the modal or a reply in the message's thread — calls the decision's answer tool through muster as the person who answered, with `choice` and `text`; the close rewrites the message to how the decision closed (answered, defaulted, withdrawn). Mounted with the team-review endpoint; the Slack app needs `users:read` and `users:read.email` for a person's decision ([docs/api.md](docs/api.md#decisions), klaus-gateway#360).
-- Slack: a turn that fails before the agent answered says what broke instead of always asking the person to try again. The note names the failure's class — the agent's tools (`tools`), the connection to the platform (`platform`), the model or its provider (`model`), a gateway policy (`policy`) — and whether trying again helps; `_(the turn failed; please try again)_` is left for a failure no class names (klaus-gateway#329).
-- A fresh turn that fails on its tools or on the platform connection before anything of it was shown is sent once more on the thread's AgentInstance before the note goes out; the runtime sets its tool set up again on every run. The `turn_retry` record logs it, and `turn_complete` counts it as `retries` (klaus-gateway#329).
-- `turn_complete` carries a failed turn's `failure_class`, and `klaus_gateway_turn_total` gains the `failure_class` label (empty unless the turn failed or its send did), so a burst of tool-set failures across people can alert apart from a one-off model error (klaus-gateway#329).
-- Chart: `serviceMonitor.labels`, labels on the ServiceMonitor beside the chart's own. The Giant Swarm observability platform routes a scrape to a Mimir tenant by `observability.giantswarm.io/tenant`, and the monitor carried no way to set it, so the gateway's `klaus_gateway_*` series reached no tenant on every installation.
-- Slack: a reply whose turn had failed tool calls ends with one muted line that counts them (`⚠️ 2 tool calls failed`) and a **Show tool calls** button that opens the "Agent steps" modal for the person who clicks it. Everyone in the thread sees them. A reply without a failed call is unchanged.
-- `turn_complete` carries the turn's token usage: `input_tokens`, `output_tokens` and `total_tokens`, summed over its LLM calls, and 0 when the agent's runtime reports none. At `--log-level=debug` the gateway also logs one `a2a_event` record per A2A event with the metadata keys it carries (never their values).
+### Changed
+
+- Slack: an agent whose Harness has the `claude` runtime takes turns from the person whose Session the thread is bound to only. A newcomer in its thread is answered privately "Start your own thread to work with it." and the initiator gets no access prompt; any other turn by someone else, a grant from before or a decision click, is refused the same way, and a paused task stays for its owner. The runtime is read through kagent's `HarnessService/ListHarnesses` as the sender, on such a turn only; when it cannot be read the turn is refused with a note that the agent could not be looked up. Declarative agents keep their collaborators and the Session share (giantswarm/giantswarm#38059).
+- Slack: the thread context and the catch-up of a muted thread hand the agent every human's message and, of the bots, only the posts of the bot_ids in `slack.contextBotIDs` (`--slack-context-bot-ids`, `SLACK_CONTEXT_BOT_IDS`), since a bot's display name is whatever it posts under. Empty, the default, shares no bot's post (giantswarm/giantswarm#38059).
+
+## [4.2.0-rc.1] - 2026-10-09
+
+### Added
+
+- The thread's row records its workspace choice (`workspace`: namespace and name, or `none`), written with the Session binding and dropped with it on a reset, a rebind or an ended conversation. A later turn reuses the Session while its choice matches the row's, and a different choice starts a new one. The Session's request id includes the workspace only when one is chosen, so every existing thread and every thread without a workspace keeps its Session (klaus-gateway#428).
+
+## [4.1.1-rc.5] - 2026-10-09
+
+### Changed
+
+- The Slack connector tests name the MCP server `mcp-pro`, its name without the installation prefix.
+
+## [4.1.0] - 2026-10-08
+
+### Added
+
+- Slack: `mute` drops the messages waiting in the thread for the initiator's Allow or for their sender's sign-in, and tells each sender privately to mention the agent to ask again. A later sign-in, also after a restart, replays nothing, and a later Allow grants the newcomer and runs nothing, so the thread stays muted; a replay already waiting for the thread's turn, written before the mute, runs nothing either (klaus-gateway#413).
+
+## [4.1.0-rc.29] - 2026-10-08
+
+### Added
+
+- Slack: `mute` in a busy thread stops the turn that is running ("Stopped and muted.") and rejects an open approval card the way a deny word does, also one restored after a restart. Beside an open question it refuses privately and is not sent as the answer, and the thread stays unmuted (klaus-gateway#412).
+
+## [4.1.0-rc.28] - 2026-10-08
+
+### Added
+
+- Slack: the mention that ends a thread's mute hands the agent what the people wrote in the thread while it was muted, labelled as such, so the agent answers with the conversation it missed. When Slack cannot be read, the person who mentioned the bot is told privately and the agent answers the mention alone (klaus-gateway#411).
+
+## [4.1.0-rc.27] - 2026-10-08
 
 ### Changed
 
 - Slack: an `ask_user` prompt with several questions renders as one form also when some of its questions have no choices. Such a question gets an optional text input under it, and the questions with choices keep their radio buttons or checkboxes; before, one question without choices turned the whole prompt into a numbered text list answered by a reply with one line per question. A form whose questions all lack choices needs at least one typed answer, every form ends with a muted line saying a reply in the thread answers it too (one line per question), and the incomplete-Submit nudge names only the questions with options.
-- Slack: a `call_tool` result is attributed to the tool muster reports it dispatched (the envelope's `tool` field, or `muster.giantswarm.io/tool` in the result's `_meta`) instead of a per-stream map from call ID to the call's arguments. The Connect prompt and the Inspect agent steps log need muster 5.36.0 or later; the challenge's backend is read from muster's decoded envelope (klaus-gateway#390).
-- Slack: the gateway serves no in-message slash command. `/login`, `/logout`, `/usage`, `/help`, `/stop` and `/agent`, including the `/agent "Name" question` selector, are gone; the words `login`, `logout`, `usage`, `help`, `agents` and `stop` are the whole surface, and a conversation with a chosen agent starts from the `agents` listing, the app's `/swarmgeist` command or the **Ask an agent here** shortcut. A message that starts with a slash now reaches the agent like any other text, with no notice from the gateway.
+
+## [4.1.0-rc.26] - 2026-10-08
+
+### Added
+
+- Slack: `mute` in a channel thread, from the thread initiator or a collaborator, stops the agent answering replies that do not mention it, so the people in the thread can talk to each other; newcomers' replies send no access prompt meanwhile. The next mention that reaches the agent ends the mute with an "Unmuted." note and the agent answers it. The thread keeps its agent, session and grants, and the mute survives a restart on a persistent store. `help` lists the word (klaus-gateway#410).
+
+## [4.1.0-rc.25] - 2026-10-08
+
+### Changed
+
+- The gateway speaks kagent's Session and Agent API. A thread's conversation is a `Session` of an `Agent` (`api.kagent.dev/v1alpha3`, the explicit pairing of an AgentTemplate and a Harness), created with `SessionService/CreateSession`, looked up, resumed and deleted through the same service, and shared with a thread's collaborators through `CreateSessionShare` with the thread lifetime as `ttl`. An A2A call names the Agent as its tenant (`namespace/name`) and the Session as the message's `contextId`; the `x-kagent-agent-instance-id` header is gone. A session the controller reports `SUSPENDED` is resumed before the turn. The generated stubs move to a provisional commit of the kagent re-pin candidate (`pkg/kagent/gen/README.md`).
+- The agent roster is the namespace's `Agent` objects (`AgentService/ListAgents`), branded by the Agent's `ui.giantswarm.io/*` annotations or, when it carries none, its AgentTemplate's. An agent is offered when the Agent's `Ready` condition is `True`; one that is not ready is refused by name with the condition's message (`Agent <name> is not ready: <message>`) in place of the Harness admission and revision wording.
+- The thread's row keeps its stored shape: `agent_instance_id`, `instance_creator` and the share's `instance_id` now hold the Session's id and creator. Bindings written before this release name conversations the Session controller does not have, so the first reply in such a thread gets the starting-fresh notice and a new Session. The log records `instance_bound` and `instance_shared` are `session_bound` and `session_shared`, their `instance` attribute is `session`, and the turn phase `create_instance` (`create_instance_ms` in `turn_complete`, the `klaus_gateway_turn_phase_seconds` label) is `create_session`.
 - Slack: a granted collaborator's tool calls now run, and are audited by muster, as the collaborator instead of the thread initiator. The access prompt says the newcomer would instruct the agent under their own sign-in. A collaborator's turn on a thread the initiator has not yet opened to collaborators, or whose opening expired with the thread's lifetime (`--thread-ttl`), while the initiator is signed out, is refused with a note that the initiator has to be signed in. How the conversation is shared is in [docs/channels-slack.md](docs/channels-slack.md) (klaus-gateway#350).
-- Slack: the channel intro and the assistant-pane greeting describe Swarmgeist without emoji or a first-person voice, name the default agent a plain mention reaches, and show the command hints as a muted line. The hints use the app's own mention, so each Slack app shows its own name. The app manifest's agent description is rewritten, and its "See what I can do" (`/help`) suggested prompt is removed: Slack runs a prompt that starts with `/` as a Slack command, so it never reached the bot.
-- Slack: a channel thread reply that starts with a mention of another person (`@alice can you check?`) gets no answer from the agent and does not answer a pending question or approval. A reply that also mentions the bot still reaches the agent (klaus-gateway#194).
-- Slack: the app's slash command (`/swarmgeist`) opens the agent picker in a direct message too. Slack offers the command in the agent pane's composer, where it used to answer that it starts conversations in channels and to type the question instead — leaving the pane with no way to reach an agent other than the default. The conversation it starts is the pane's own: the submitted question is posted there as the root. An installation that does not serve direct messages refuses the command there privately, with the redirect notice. Slack offers the command in a direct message with another person too, where the bot cannot post: that says where the command works instead of asking for a retry that cannot succeed.
-- Slack: the commands are plain words — `usage`, `help`, `agents`, `login` and `logout` — with no slash and no mention. `agents` is new: it lists the agents with a button to start a conversation with one. A message that is that word alone, in any case and with trailing punctuation, runs the command wherever the bot reads: a direct message, or a thread it is in. The help reply lists the words. `stop` is unchanged: it is the command only in a thread whose turn is running. A sentence that contains the word, a caption on an upload and an answer in a thread waiting on a question still reach the agent. Beside an approval card the word is the command: the card is left to decide. A gateway without sign-in passes `login` and `logout` to the agent, and one that lists no agents passes `agents`; `usage` and `help` it always answers.
-- Slack: the **Inspect agent steps** shortcut opens an "Agent steps" modal, visible only to the person who used it, instead of posting grey text in the thread. Each call is one line with a status (✅ done, ❌ error, ⏸ asked for approval, ⏳ no result yet) and a plain-language title beside the raw tool name, grouped under a header per turn; **Show details** opens that call's arguments and result, JSON indented, and **Hide** closes them. If Slack refuses the modal, the log is posted in the thread for that person only, every call with its details.
-- Slack: no turn posts a `Working…` message. A turn that continues after a click (Approve, Deny, a form) or after a sign-in, and every turn on an installation without the `reactions:write` scope, shows only Slack's working indicator while it runs. Its failure, empty-output and restart notes post as messages in the thread; a stop or a pause on a prompt posts no note of its own.
-- Chart: `slack.progress.mode` (`SLACK_PROGRESS_MODE`, `--slack-progress-mode`) has no effect: every turn tries the progress reactions. A set value logs a warning. The key goes in the next major release; see `UPGRADE.md`. That major release is the one under Removed: the key is gone.
-- Slack: the question that the slash command or the **Ask an agent here** shortcut posts shows the Slack app's name and icon, not the agent's. Its first line names the person and the agent (`@Jose asked *SRE Agent*:`), and the question follows as a quote. The separate "Asked by" line is gone, and a direct message shows the first line too. The agent's answers in the thread keep the agent's name and icon.
 
-### Security
-
-- The thread's AgentInstance share token is stored in the thread's row sealed with AES-256-GCM, under a key derived from the OBO link-store key (`--obo-store-key-file`). An installation whose link store is `memory` seals it under a key for the process alone, and a share that no longer opens is replaced on the next collaborator turn (klaus-gateway#350).
+## [4.1.0-rc.22] - 2026-10-07
 
 ### Fixed
 
 - Slack: a command word (`agents`, `help`, `usage`, `login`, `logout`, `stop`) sent through a client that appends a "Sent using Claude" footer runs as a command instead of reaching the agent as a prompt; the footer and blank lines around the word are ignored, any other extra line keeps the message a prompt (klaus-gateway#407).
 
+## [4.1.0-rc.21] - 2026-10-07
+
+### Added
+
+- Slack: a sign-in prompt in a channel also sends its card to the person's DM with the app, led by a line that links the thread it was asked in, so a person whose Slack client was closed when the ephemeral went out finds it later; the thread's waiting line says where the link is. A later message of theirs in the thread re-issues the ephemeral and refreshes the DM card to the fresh link in place. The completed link rewrites the DM card to the confirmation (klaus-gateway#406).
+
+## [4.1.0-rc.20] - 2026-10-06
+
+### Fixed
+
+- Slack: a turn delivered after a gateway restart counts the token usage of all its LLM calls, also the calls made while no gateway was listening: its `turn_complete` logs it and `usage` shows it. No call is counted twice in that record (klaus-gateway#401).
+
+## [4.1.0-rc.19] - 2026-10-06
+
+### Refactored
+
+- Narration no longer checks a status update for the `kagent_partial` and `adk_partial` markers (klaus-gateway#402).
+
+## [4.1.0-rc.18] - 2026-10-06
+
+### Fixed
+
+- Slack: a turn that fails because the model provider refuses the platform's credentials, such as an invalid API key, is counted as `failure_class: model` instead of `unknown`, and its thread is told that the problem is on the platform side and that a retry does not help. A failed model response that kagent's Go runtime reports (`llm error response`) is counted as `model` too, also when the model could not be reached, so such a turn is not sent again (klaus-gateway#399).
+
+## [4.1.0-rc.17] - 2026-10-06
+
+### Fixed
+
 - Slack: `usage` shows the input and output token counts again (`in N · out N`, no total), and `turn_complete` logs them. A kagent older than 1.2.2 reports no usage. With no usage recorded, the reply says that `usage` counts the agent's answers in the thread it is sent in.
+
+## [4.1.0-rc.15] - 2026-10-04
+
+### Fixed
+
 - Slack: a gateway restart loses nothing a person is waiting on. The messages parked while their sender signs in, a newcomer's messages parked while the thread's initiator decides on them, and a paused task's approval, question or form are kept in the thread's row in the routing store, so on `routing.store: valkey` or `bolt` a sign-in completed after a restart replays the parked messages, the initiator's Allow replays the newcomer's, and Approve, Deny or Submit resumes the paused task instead of answering "Already answered". A sign-in completed while the gateway was down replays at start. The sign-in's PKCE verifier is derived from its signed state, so a callback after a restart, or on another replica, completes the sign-in instead of asking to start over (klaus-gateway#132).
+
+## [4.1.0-rc.12] - 2026-10-02
+
+### Added
+
+- `POST /conversations` and `POST /conversations/{id}/messages`: a service holds a Slack conversation with one person on behalf of an agent the gateway does not run, such as the person's guide on their own machine. The opening message is a direct message from the app; a reply of the person's in its thread calls the conversation's reply tool through muster as the person, with the reply as an A2A Message whose `contextId` is the conversation, and the service posts the agent's answers into the same thread. Only the person's own replies are sent; a refusal (no agent of theirs running) is a note in the thread saying the reply was not delivered and why. Mounted with the team-review endpoint ([docs/api.md](docs/api.md#conversations), klaus-gateway#369).
+
+## [4.1.0-rc.11] - 2026-10-02
+
+### Changed
+
+- Slack: a `call_tool` result is attributed to the tool muster reports it dispatched (the envelope's `tool` field, or `muster.giantswarm.io/tool` in the result's `_meta`) instead of a per-stream map from call ID to the call's arguments. The Connect prompt and the Inspect agent steps log need muster 5.36.0 or later; the challenge's backend is read from muster's decoded envelope (klaus-gateway#390).
+
+## [4.1.0-rc.10] - 2026-10-02
+
+### Fixed
+
+- Slack: a turn whose agent sends an event between 4 and 16 MiB, such as a large tool result or answer, reaches the thread. Before, the turn failed with "The turn failed before an answer" or "The turn ended with an error". The gateway now receives events up to the controller's own limit of 16 MiB.
+
+## [4.1.0-rc.9] - 2026-10-02
+
+### Refactored
+
+- Tests: only the Valkey outage tests run the store with a short timeout; the other Valkey tests connect within the default timeout.
+
+## [4.1.0-rc.8] - 2026-10-01
+
+### Refactored
+
+- Tests: the Slack adapter and channel tests that a stronger test already covers are removed, and the help flow test checks that help is posted once.
+
+## [4.1.0-rc.7] - 2026-10-01
+
+### Refactored
+
+- Code nothing needed: `valkey.DefaultReviewKeyPrefix` (the review prefix is still derived from the routing prefix), the bolt and Valkey stores' clock field, and the existence check before a read-only open of the muster link bolt file (bbolt does not create a missing file on a read-only open).
+
+## [4.1.0-rc.6] - 2026-10-01
+
+### Fixed
+
+- Slack: a message the agent refuses as too large gets the note that says so: "That was too large for the agent to accept, so it was not sent. Try a shorter message, or start a new thread.", or the note that names the total size of the attachments. This also holds for a message replayed after a sign-in or an access grant. Before, such a refusal posted "The turn failed before an answer. Send the message again to retry." (or "Your message could not be picked up again. Send it again." for a replayed message), and sending it again failed in the same way.
+
+## [4.1.0-rc.5] - 2026-10-01
+
+### Refactored
+
+- More code only tests reached: `a2a.WithAgentRef` and `a2a.AgentRefFromContext`, `store.ErrNotFound`, the memory store's `EvictNow`, the bolt and Valkey stores' `SetNowFunc`, the Valkey `Options.ReviewKeyPrefix` (the review prefix is still derived from the routing prefix), and `BuildTimestamp` in `pkg/project` and `internal/version`. `musterlink.Linker.Exchange` and the bolt store's `Evict` are unexported, and the stores' `EvictionInterval` is a constant.
+
+## [4.1.0-rc.4] - 2026-10-01
+
+### Refactored
+
+- Tests: the muster link import checks the file it opened, only the `Status.Error` check refuses the TokenReview API-server-error case, and the AgentInstance create test checks what the client sends.
+
+## [4.1.0-rc.2] - 2026-10-01
+
+### Refactored
+
+- Code only tests reached: the Slack client's `postMarkdown`, `Adapter.isActiveThread`, the login and logout replies for a gateway without sign-in (the words reach the agent there), and the exported `channels.NewTurnTimer` and `channels.WithTurnTimer` (`channels.BeginTurn` opens a turn's timeline). The `--thread-ttl` default reads `channels.DefaultThreadTTL`.
+
+## [4.1.0-rc.1] - 2026-10-01
+
+### Added
+
+- `turn_complete` carries the turn's token usage: `input_tokens`, `output_tokens` and `total_tokens`, summed over its LLM calls, and 0 when the agent's runtime reports none. At `--log-level=debug` the gateway also logs one `a2a_event` record per A2A event with the metadata keys it carries (never their values).
+
+## [4.0.0] - 2026-10-01
+
+### Changed
+
+- Chart: `slack.progress.mode` (`SLACK_PROGRESS_MODE`, `--slack-progress-mode`) has no effect: every turn tries the progress reactions. A set value logs a warning. The key goes in the next major release; see `UPGRADE.md`. That major release is the one under Removed: the key is gone.
+
+### Removed
+
+- **Breaking:** the chart's values schema no longer accepts `slack.progress.mode`, and the binary no longer accepts `--slack-progress-mode` or reads `SLACK_PROGRESS_MODE`. They had no effect since 3.13.0; a values file that still sets the key now fails the upgrade with `additional properties 'mode' not allowed`, and a start with the flag fails. No installation sets them; see `UPGRADE.md`.
+
+## [4.0.0-rc.1] - 2026-10-01
+
+### Changed
+
+- Slack: the gateway serves no in-message slash command. `/login`, `/logout`, `/usage`, `/help`, `/stop` and `/agent`, including the `/agent "Name" question` selector, are gone; the words `login`, `logout`, `usage`, `help`, `agents` and `stop` are the whole surface, and a conversation with a chosen agent starts from the `agents` listing, the app's `/swarmgeist` command or the **Ask an agent here** shortcut. A message that starts with a slash now reaches the agent like any other text, with no notice from the gateway.
+- Slack: the commands are plain words — `usage`, `help`, `agents`, `login` and `logout` — with no slash and no mention. `agents` is new: it lists the agents with a button to start a conversation with one. A message that is that word alone, in any case and with trailing punctuation, runs the command wherever the bot reads: a direct message, or a thread it is in. The help reply lists the words. `stop` is unchanged: it is the command only in a thread whose turn is running. A sentence that contains the word, a caption on an upload and an answer in a thread waiting on a question still reach the agent. Beside an approval card the word is the command: the card is left to decide. A gateway without sign-in passes `login` and `logout` to the agent, and one that lists no agents passes `agents`; `usage` and `help` it always answers.
+
+## [3.14.0-rc.2] - 2026-10-01
+
+### Changed
+
+- Slack: the app's slash command (`/swarmgeist`) opens the agent picker in a direct message too. Slack offers the command in the agent pane's composer, where it used to answer that it starts conversations in channels and to type the question instead — leaving the pane with no way to reach an agent other than the default. The conversation it starts is the pane's own: the submitted question is posted there as the root. An installation that does not serve direct messages refuses the command there privately, with the redirect notice. Slack offers the command in a direct message with another person too, where the bot cannot post: that says where the command works instead of asking for a retry that cannot succeed.
+- Slack: the question that the slash command or the **Ask an agent here** shortcut posts shows the Slack app's name and icon, not the agent's. Its first line names the person and the agent (`@Jose asked *SRE Agent*:`), and the question follows as a quote. The separate "Asked by" line is gone, and a direct message shows the first line too. The agent's answers in the thread keep the agent's name and icon.
+
+## [3.14.0-rc.1] - 2026-09-30
+
+### Added
+
+- Slack: a reply whose turn had failed tool calls ends with one muted line that counts them (`⚠️ 2 tool calls failed`) and a **Show tool calls** button that opens the "Agent steps" modal for the person who clicks it. Everyone in the thread sees them. A reply without a failed call is unchanged.
+
+## [3.13.0] - 2026-09-30
+
+### Added
+
+- `POST /decisions` and `POST /decisions/{id}/close`: a service puts a decision to a person (a direct message, found by their email) or to a team (its channel) — the question, the status quo, a *Choose* button per option with the recommended one marked, *Answer in my own words*, the due time and the default. An answer — a click, the modal or a reply in the message's thread — calls the decision's answer tool through muster as the person who answered, with `choice` and `text`; the close rewrites the message to how the decision closed (answered, defaulted, withdrawn). Mounted with the team-review endpoint; the Slack app needs `users:read` and `users:read.email` for a person's decision ([docs/api.md](docs/api.md#decisions), klaus-gateway#360).
+
+## [3.13.0-rc.2] - 2026-09-30
+
+### Changed
+
+- Slack: the **Inspect agent steps** shortcut opens an "Agent steps" modal, visible only to the person who used it, instead of posting grey text in the thread. Each call is one line with a status (✅ done, ❌ error, ⏸ asked for approval, ⏳ no result yet) and a plain-language title beside the raw tool name, grouped under a header per turn; **Show details** opens that call's arguments and result, JSON indented, and **Hide** closes them. If Slack refuses the modal, the log is posted in the thread for that person only, every call with its details.
+
+## [3.13.0-rc.1] - 2026-09-30
+
+### Changed
+
+- Slack: no turn posts a `Working…` message. A turn that continues after a click (Approve, Deny, a form) or after a sign-in, and every turn on an installation without the `reactions:write` scope, shows only Slack's working indicator while it runs. Its failure, empty-output and restart notes post as messages in the thread; a stop or a pause on a prompt posts no note of its own.
+
+## [3.12.0] - 2026-09-30
+
+### Fixed
+
 - Slack: a turn left running by a gateway restart is posted in its thread when it ends, also when the platform is out of reach for a while after the restart (muster refusing the token refresh while it rolls alongside the gateway, the routing store or the controller not up yet). The start-up recovery keeps trying, from 10 s apart up to 2 min apart, for as long as the turn may run (30 min) instead of giving up after three tries 10 s apart, and it lists the routing store again when that is not reachable yet. If it gives up after all, or the person is signed out, the thread is told to reply to get the result, instead of waiting for the automatic post the restart notice promised (klaus-gateway#362).
 
+## [3.12.0-rc.1] - 2026-09-30
+
+### Removed
+
+- Slack: a reply no longer shows the agent's tool calls as steps. It carries the agent's narration and its answer only; while tools run, Slack's working indicator is the thread's progress sign. The **Inspect agent steps** shortcut still shows every call with its arguments and result. See `UPGRADE.md`.
+
+## [3.11.1] - 2026-09-29
+
+### Fixed
+
 - Slack: a turn that fails after its reply started tells the thread. The failed emoji under the tool steps or the partial answer was all a person saw in reactions mode, and text mode posted the note meant for a failure before any answer. Such a turn now posts one note in its thread: the turn ended with an error of a named class (tools, platform, model, policy), its progress is in the Dev Portal, and a reply retries. A controller stream reset mid-turn (`RST_STREAM`) counts as a platform failure (klaus-gateway#363).
+
+## [3.11.0] - 2026-09-29
+
+### Changed
+
+- Slack: a channel thread reply that starts with a mention of another person (`@alice can you check?`) gets no answer from the agent and does not answer a pending question or approval. A reply that also mentions the bot still reaches the agent (klaus-gateway#194).
+
+## [3.10.0] - 2026-09-29
+
+### Security
+
+- The thread's AgentInstance share token is stored in the thread's row sealed with AES-256-GCM, under a key derived from the OBO link-store key (`--obo-store-key-file`). An installation whose link store is `memory` seals it under a key for the process alone, and a share that no longer opens is replaced on the next collaborator turn (klaus-gateway#350).
+
+## [3.9.2] - 2026-09-29
+
+### Fixed
+
 - Slack: a long turn keeps its tools to the end. A turn was dispatched with the person's cached token as long as it had a minute left, and the agent keeps that token for the whole turn, so a 10 to 20 minute turn could outlive it: muster ended the turn's session at its expiry and every tool call after it failed. A turn now gets a token with at least `obo.minTokenLifetime` left (`--obo-min-token-lifetime`, `KLAUS_GATEWAY_OBO_MIN_TOKEN_LIFETIME`, 25m by default), refreshed first when the cached one has less, and the background refresher keeps recently active people above that minimum. The refresher also no longer forgets a person after refreshing their token once.
 
-- Slack tool steps and turn usage show again on kagent 1.1 and later, which marks tool calls, tool results and usage with the canonical `kagent.dev/a2a/part-type` and `kagent.dev/a2a/usage` keys for every runtime (ADK and Claude Code) instead of the `kagent_`/`adk_` prefixes. The prefixed keys are still read, for older kagent. The runtime's approval call (`adk_request_confirmation`) is recognised by its name, since the canonical metadata no longer marks it long-running.
-- Release images log their own version. The start record, `--version` and the OTel `service.version` of `3.2.0` and `3.3.0` reported a v1 pseudo-version (`v1.21.1-0.20260923163143-9bf2b7ad2008`): the architect orb links the release binary without a `pkg/project.version` ldflag, and the Go build info cannot stand in, because the module path has no `/v3` suffix and the toolchain ignores the v2+ tags. `make test`, which the orb's build job runs before it links, now appends the gitsemver version to the orb's `.ldflags` (`Makefile.custom.mk`), so a binary reports the same string as its image tag: the release version on a tag build, the dev version on a branch build (klaus-gateway#335).
-- Slack: `/login` and `/logout` sent as a top-level channel message show their private reply, in the channel. Before, nothing appeared.
-- Slack: on an installation that serves an allowlist of channels, a picker submission in a direct message is no longer refused as a channel that is not enabled. The picker now asks whether direct messages are served, which is a different setting from the channel allowlist that no direct message is ever on; the "Ask an agent here" shortcut could open the picker there and then lose the submission.
-- Slack: a tool call that waits for approval no longer shows as done in the reply's task list. Its step reads "Asked for approval: …", and once the prompt is approved the next message shows the call running and its result. Before, the step showed as complete before the tool ran, and the approved run did not show at all.
-- Slack: a tool call that fails behind the kagent runtime shows as failed (✗) in the reply's task list. Before, such a call showed as done (✓), for example a call without a required argument.
-- Slack: the answer a resubscribed turn reads back whole at completion is rendered as the live stream renders it — a paragraph break between two artifacts — so a continued reply no longer runs two sentences together ("…roles.Here's the full picture"), and the cut at what the previous process had posted falls on the right byte when more than one artifact streamed before the restart (klaus-gateway#301).
-- Slack: a turn continued after a gateway restart no longer repeats its reply. The process that resubscribed to a turn left running was handed the whole answer when the task completed and none of the tool calls it had missed, so the thread showed the opening the previous process had already streamed a second time, and the step receipt started over at the calls made after the restart. The thread's routing-store row now records, as the turn streams, how much of the answer text has landed and the state of the open step receipt (`delivered`, reset and cleared with the task record); the process that continues the turn posts only the text after that mark — without the paragraph break the cut leaves in front — and its receipt counts on from the recorded steps, names included. A turn whose whole answer had landed before the restart closes with `_(done — the reply above is complete)_` instead of the answer again or a "finished without a reply" (klaus-gateway#301).
-- Slack: the busy notice names the way out — "… or reply `/stop` to interrupt it" — and a reply that is just `stop` (any case, trailing punctuation allowed) in a thread whose turn is still running interrupts that turn like `/stop` instead of being bounced with the notice; in a thread with nothing running the word stays what it was, a message for the agent (klaus-gateway#299).
-- Team review: an open review survives a gateway restart. The record — the ask, its message, the decision state and the status line — lived in the process's memory, so every release, which rolls the pod, left the posted messages with buttons that read "expired" on the first click, and the asker had to run the action again for the manager to post the ask twice. The record now lives in the routing store (`--store`) for its seven days: on `valkey` one key per review (`klaus-gateway:review:<id>`, the prefix following `routing.valkey.keyPrefix`, the TTL as the key's expiry) and on `bolt` a second bucket, so a review posted before a restart is approved by a click after it and a click on one decided before the restart is told who decided; `memory` keeps today's behaviour. A click's claim on the record is a compare-and-set on Valkey, so of two clicks on two replicas exactly one calls the tool; a claim a process died with is taken over after five minutes instead of holding the review for a week. A store that does not answer a click is not an expiry: the clicker is told to click again in a moment and the message keeps its buttons, and a review the gateway posted but could not record is rewritten to say so rather than left with a dead button. The completion state behind a review's *Connect* button stays in memory; after a restart the landing says the link is gone and to click the button again. `docs/api.md` states which stores keep reviews across restarts (klaus-gateway#295).
-- Team review: a refused or failed approval is reported once. The status line under the buttons already names the clicker and the manager's reason, so the ephemeral that repeated the same text to the clicker is gone; a channel-level ephemeral is reserved for what is the clicker's alone — a sign-in or Connect button, or a click on a review somebody else decided. The status line carries up to 500 characters of the reason (was 300), and a backend that still challenges after the Connect sign-in is named in it.
-- Team review: the approved message shows what the tool *said*, not its data. A manager's approve tool answers agents with a JSON object; the message rendered that object raw, in italics. The gateway now shows a plain-text answer as written, a JSON object by its `message` field, and nothing of structured data without one (`docs/api.md`, team-review endpoint).
-- Team review: an Approve click by a member who has not connected the manager's backend in muster yet no longer dies as a refusal nobody sees. muster answers such a call with its sign-in challenge; the gateway showed its text — "auth_required … Please visit the link below" — as `❌ Your approval was not accepted`, cut to 500 characters with the link inside, as an ephemeral in the message's thread, which Slack shows only once the thread is opened. The challenge is now recognised: the clicker gets an ephemeral *Connect <server>* button where they clicked; with a public base URL the sign-in lands back on the gateway (`/connectors/complete`) and the approval is submitted again as the person, so one click and one consent land it; without one the prompt says to click *Approve* again. A backend that still challenges after the landing is reported once, not looped. Every notice to a clicker — refusal, sign-in, "already approved" — is a channel-level ephemeral now. The team sees the attempts too: a status line under the buttons names who is connecting, whose approval the manager refused and why, or whose could not be submitted, replaced on every attempt and gone once the review is approved; the approved message keeps the *Open PR* link as small print. Log records `team_review_connect` and `team_review_approved` (`resumed`).
-- Slack: a step's argument or result preview cut at the limit no longer ends in a broken escape such as `&am…`; it ends in a plain ellipsis. A tool result that carries an error flag beside its output — kagent's harness runtime reports failures that way — now closes its step as failed instead of done, and one carrying the flag as `false` beside its output unwraps to that output instead of showing as raw JSON.
-- Slack: in a channel, the sign-in card is replaced with "Signed in to Giant Swarm. The agent now acts with your permissions." once the sign-in completes, so its **Sign in** button goes and no second private message appears under it. When the click on the card reached another gateway process, or the replacement fails, the confirmation still posts as its own message (klaus-gateway#334).
-- Slack: an approval card decided by a typed "approve" or "deny" in the thread shows the decision like a click does: its buttons go, and the line under it reads "Approved by @person · time" or "Denied by @person · time". A reply that is not "approve" denies, so the card says denied; a card for a request without a structured prompt reads "Answered by @person · time". Before, the card kept its live Approve and Deny buttons.
+## [3.9.1] - 2026-09-28
+
+### Fixed
+
 - Slack: a reply with many tool steps no longer stops halfway with "Slack refused the rest of the reply: msg_too_long". The steps count toward the size of a streamed message, so the reply continues in a new message before Slack refuses it. The new message starts only when no step on the full one is still running, and a group of tool calls that start together starts where the whole group fits. Should Slack still refuse the message, its steps are closed without their result preview (the Inspect agent steps shortcut still has it) and the rest of the reply continues in a new message. Before, the answer was lost and the last steps kept spinning.
-- Slack: a message the agent refuses as too large gets the note that says so: "That was too large for the agent to accept, so it was not sent. Try a shorter message, or start a new thread.", or the note that names the total size of the attachments. This also holds for a message replayed after a sign-in or an access grant. Before, such a refusal posted "The turn failed before an answer. Send the message again to retry." (or "Your message could not be picked up again. Send it again." for a replayed message), and sending it again failed in the same way.
-- Slack: a turn whose agent sends an event between 4 and 16 MiB, such as a large tool result or answer, reaches the thread. Before, the turn failed with "The turn failed before an answer" or "The turn ended with an error". The gateway now receives events up to the controller's own limit of 16 MiB.
-- Slack: a turn that fails because the model provider refuses the platform's credentials, such as an invalid API key, is counted as `failure_class: model` instead of `unknown`, and its thread is told that the problem is on the platform side and that a retry does not help. A failed model response that kagent's Go runtime reports (`llm error response`) is counted as `model` too, also when the model could not be reached, so such a turn is not sent again (klaus-gateway#399).
-- Slack: a turn delivered after a gateway restart counts the token usage of all its LLM calls, also the calls made while no gateway was listening: its `turn_complete` logs it and `usage` shows it. No call is counted twice in that record (klaus-gateway#401).
-- Slack: a Session start that muster answers with its sign-in challenge for agent-manager posts the Connect prompt for it, its link to the person alone, and holds their message: the sign-in's landing runs it as the thread's first turn (without a public base URL the prompt says to send it again once connected). A collaborator whose turn would start the thread owner's Session gets a private note naming the owner instead. `turn_complete` ends such a turn as `connect_required`, with a `session_connect_required` record naming the server (klaus-gateway#464).
-- Slack: the Connect prompt of a Session start is found from anywhere, not only in the thread view. In a channel thread the card also goes to the person's DM with the app, led by a line that links the thread, and a line everyone in the thread sees says whom it waits for and where the button is; a later message of the person's refreshes both in place. In a DM the card is a message of the conversation, and a later message gets a card of its own. Once the person has connected, by the prompt's link or any other way, the line says who connected and the card is a confirmation (klaus-gateway#464).
+
+## [3.9.0] - 2026-09-27
+
+### Fixed
+
+- Slack: on an installation that serves an allowlist of channels, a picker submission in a direct message is no longer refused as a channel that is not enabled. The picker now asks whether direct messages are served, which is a different setting from the channel allowlist that no direct message is ever on; the "Ask an agent here" shortcut could open the picker there and then lose the submission.
+
+## [3.8.7] - 2026-09-25
+
+### Refactored
+
+- `channels.Gateway` names every method the facade offers an adapter (turns, resumes, sessions, thread records). `channels.ChannelAdapter` and `Adapter.Name()` are removed, and `main.go` stops the Slack adapter directly. `Metrics.Middleware` takes no argument; the label stays `public`.
+
+## [3.8.6] - 2026-09-25
+
+### Fixed
+
+- Slack tool steps and turn usage show again on kagent 1.1 and later, which marks tool calls, tool results and usage with the canonical `kagent.dev/a2a/part-type` and `kagent.dev/a2a/usage` keys for every runtime (ADK and Claude Code) instead of the `kagent_`/`adk_` prefixes. The prefixed keys are still read, for older kagent. The runtime's approval call (`adk_request_confirmation`) is recognised by its name, since the canonical metadata no longer marks it long-running.
+
+## [3.8.5] - 2026-09-25
+
+### Refactored
+
+- Code the Slack-only release left without a caller: `channels.BearerToken`, `InboundMessage.ReplyTo`, `Facade.ListAgents` (and `ListAgents` on the facade's `AgentClient`), `Put` and `Delete` on the routing `Store` interface and its backends (every write goes through `Store.Update`), and the `Flush` forwarders of the metrics and access-log response writers.
+
+## [3.8.4] - 2026-09-25
+
+### Removed
+
+- `pkg/a2a`: the `TokenSource` interface, `FileTokenSource`, `ForwardedTokenSource`, `Config.TokenSource`, `WithChannel` and `ChannelFromContext`. The client reads the caller's token from the context (`WithForwardedToken`), and a call without one is refused with `ErrNoIdentity`, as before.
+
+## [3.8.3] - 2026-09-24
+
+### Fixed
+
+- Slack: an approval card decided by a typed "approve" or "deny" in the thread shows the decision like a click does: its buttons go, and the line under it reads "Approved by @person · time" or "Denied by @person · time". A reply that is not "approve" denies, so the card says denied; a card for a request without a structured prompt reads "Answered by @person · time". Before, the card kept its live Approve and Deny buttons.
+
+## [3.8.2] - 2026-09-24
+
+### Fixed
+
+- Slack: in a channel, the sign-in card is replaced with "Signed in to Giant Swarm. The agent now acts with your permissions." once the sign-in completes, so its **Sign in** button goes and no second private message appears under it. When the click on the card reached another gateway process, or the replacement fails, the confirmation still posts as its own message (klaus-gateway#334).
+
+## [3.8.1] - 2026-09-24
+
+### Changed
+
+- Slack: the channel intro and the assistant-pane greeting describe Swarmgeist without emoji or a first-person voice, name the default agent a plain mention reaches, and show the command hints as a muted line. The hints use the app's own mention, so each Slack app shows its own name. The app manifest's agent description is rewritten, and its "See what I can do" (`/help`) suggested prompt is removed: Slack runs a prompt that starts with `/` as a Slack command, so it never reached the bot.
+
+## [3.7.0] - 2026-09-24
+
+### Changed
+
+- Slack: `/agent` lists the agents as rows with a **Select** button, in place of a list of names to retype. The default agent comes first, then the others A–Z, each with the first sentence of its description; past 8 agents, the rest are named in one line. Select opens the agent picker for that thread with the agent already chosen. The notices of an unknown agent, or of one that cannot run, show the same rows.
+
+## [3.6.3] - 2026-09-24
+
+### Fixed
+
+- Slack: a step's argument or result preview cut at the limit no longer ends in a broken escape such as `&am…`; it ends in a plain ellipsis. A tool result that carries an error flag beside its output — kagent's harness runtime reports failures that way — now closes its step as failed instead of done, and one carrying the flag as `false` beside its output unwraps to that output instead of showing as raw JSON.
+
+## [3.6.0] - 2026-09-24
+
+### Changed
+
+- Slack: `/help` is a reference card: a "Commands" header, how to address the bot, the commands grouped by what you do (In a thread, Agents, Account) with each command and its effect, and a line for the Inspect agent steps shortcut. The gateway's notes and replies (stops, failures, busy and refusal notices, prompt nudges, sign-in and picker notices) no longer use emoji, italics in brackets or "I": each is a short line that says what happened and what to do next, and the notes posted in a thread show as small grey text. For example, "⏹ Stopped by @user." is now "Stopped by @user", a placeholder stopped before any answer reads "Stopped before an answer.", and "_(the turn failed; please try again)_" is now "The turn failed before an answer. Send the message again to retry." The waiting placeholder reads "Working…". A notice that names a command says to mention the bot with it, because Slack's composer keeps a message that starts with `/` for its own commands. The access prompt asks "@user wants to join this thread" with Allow and Decline, and the team-review buttons and status lines have no emoji.
+- Slack: the sign-in prompt is a "Sign in to Giant Swarm" card. It says that the agent runs its tools with your permissions and that the link is valid for 15 minutes, with a last line for what asked for it ("Your message runs as soon as you sign in.", or "Sign in, then click the button again." after a button click), and "Signed in before? Your session may have expired." under the button. In a channel, the thread line names who it waits for ("Waiting for @Pau to sign in to Giant Swarm") and changes as people sign in, ending with "@Pau signed in to Giant Swarm". The confirmation reads "Signed in to Giant Swarm. The agent now acts with your permissions.", and `/login` and `/logout` reply without emoji ("Signed in as …", "Signed out. The agent asks you to sign in again before it acts for you.").
+
+## [3.5.0] - 2026-09-23
+
+### Changed
+
+- Slack: an answered question keeps its question. The buttons change to one line with the answer, who gave it and when ("gazelle · answered by @user · 21:43", in each reader's time zone), in place of "👉 _gazelle_". A form keeps each question with its answer under it. A typed answer in the thread updates the question the same way, so its buttons no longer stay live. In the reply's task list, the question shows as the step "Question for you", not "Ask user".
+
+## [3.4.0] - 2026-09-23
+
+### Fixed
+
+- Slack: `/login` and `/logout` sent as a top-level channel message show their private reply, in the channel. Before, nothing appeared.
+
+## [3.3.1] - 2026-09-23
+
+### Fixed
+
+- Release images log their own version. The start record, `--version` and the OTel `service.version` of `3.2.0` and `3.3.0` reported a v1 pseudo-version (`v1.21.1-0.20260923163143-9bf2b7ad2008`): the architect orb links the release binary without a `pkg/project.version` ldflag, and the Go build info cannot stand in, because the module path has no `/v3` suffix and the toolchain ignores the v2+ tags. `make test`, which the orb's build job runs before it links, now appends the gitsemver version to the orb's `.ldflags` (`Makefile.custom.mk`), so a binary reports the same string as its image tag: the release version on a tag build, the dev version on a branch build (klaus-gateway#335).
+
+## [3.3.0] - 2026-09-23
+
+### Added
+
+- Slack: a turn that fails before the agent answered says what broke instead of always asking the person to try again. The note names the failure's class — the agent's tools (`tools`), the connection to the platform (`platform`), the model or its provider (`model`), a gateway policy (`policy`) — and whether trying again helps; `_(the turn failed; please try again)_` is left for a failure no class names (klaus-gateway#329).
+- A fresh turn that fails on its tools or on the platform connection before anything of it was shown is sent once more on the thread's AgentInstance before the note goes out; the runtime sets its tool set up again on every run. The `turn_retry` record logs it, and `turn_complete` counts it as `retries` (klaus-gateway#329).
+- `turn_complete` carries a failed turn's `failure_class`, and `klaus_gateway_turn_total` gains the `failure_class` label (empty unless the turn failed or its send did), so a burst of tool-set failures across people can alert apart from a one-off model error (klaus-gateway#329).
+
+## [3.2.0] - 2026-09-23
+
+### Changed
+
+- Slack: the agent picker (`/swarmgeist` and **Ask an agent here**) is titled "New conversation". A line at the top says where the conversation lands ("Starts a thread in #channel under the agent's name…", or for the shortcut "Continues this thread…" or "Starts this message's thread…"). A hint under the agent select names the default agent. The question box is now **Prompt** ("What should the agent look into?"), and the submit button reads **Start thread**, or **Start conversation** for the shortcut.
+
+## [3.1.0] - 2026-09-23
+
+### Removed
+
+- Slack: the `/details on|off|full` command is gone; the agent's tool calls and their result previews now always show as the step list inside the reply. The **Inspect agent steps** shortcut still shows the fuller retained payloads.
+
+## [3.0.0] - 2026-09-23
+
+### Removed
+
+- The chart still accepts `web`, `cli`, `lifecycle`, `upstream`, `agentgateway`, `routing.defaultTTL`, `routing.autoCreate`, `a2a.saToken` and `a2a.tokenPath` and ignores them, so an installation whose umbrella forwards them keeps installing. The next major release deletes them, and the schema then refuses a values file that still sets one; drop them from your values before it (`UPGRADE.md`). That major release is the one below: the keys are gone.
+- **Breaking:** the chart's values schema no longer accepts `web`, `cli`, `lifecycle`, `upstream`, `agentgateway`, `routing.defaultTTL`, `routing.autoCreate`, `a2a.saToken` and `a2a.tokenPath`. They were accepted and ignored since the Slack-only release; a values file that still sets one now fails the upgrade with `additional properties '<key>' not allowed`. The `agent-platform` umbrella stops forwarding them in 4.62.0, so an installation on that umbrella or later has nothing to change; see `UPGRADE.md`.
+
+## [2.2.0] - 2026-09-23
+
+### Changed
+
+- Slack: a tool approval is a card. The title says "Approval required" and names the tools as the reply's task list names them ("Approval required · Capi list clusters"). A context line says who can decide ("@initiator or the people they allowed can decide"), and the buttons are Approve and Deny, without emoji. The "💬 Chat" button is removed. The runtime's technical default hint ("Please approve or reject the tool call call_tool() by responding with a FunctionResponse…") is not shown. After a click, the card stays and the buttons change to "Approved by @user · 16:30" or "Denied by @user · 16:30", in each reader's time zone.
+
+## [2.1.3] - 2026-09-23
+
+### Fixed
+
+- Slack: a tool call that fails behind the kagent runtime shows as failed (✗) in the reply's task list. Before, such a call showed as done (✓), for example a call without a required argument.
+
+## [2.1.1] - 2026-09-23
+
+### Fixed
+
+- Slack: a tool call that waits for approval no longer shows as done in the reply's task list. Its step reads "Asked for approval: …", and once the prompt is approved the next message shows the call running and its result. Before, the step showed as complete before the tool ran, and the approved run did not show at all.
+
+## [2.1.0] - 2026-09-23
+
+### Changed
+
+- Slack: the message that opens a conversation from the agent picker (the `/swarmgeist` command or the **Ask an agent here** shortcut) is the question itself, with "Asked by @user" as small print under it, instead of "💬 @user asked *Agent*:" and the question as a quote.
+
+## [2.0.0] - 2026-09-23
+
+### Removed
+
+- **Breaking:** the web and CLI channels. `POST /web/messages`, `GET /web/messages`, `GET /web/healthz`, `POST /cli/v1/{instance}/run`, `POST /cli/v1/{instance}/messages` and `GET /cli/v1/healthz` are gone, with the `--web-enabled` / `--cli-enabled` flags and the `KLAUS_GATEWAY_WEB_ENABLED` / `KLAUS_GATEWAY_CLI_ENABLED` environment variables. Slack is the only channel.
+- **Breaking:** the OpenAI-compatible front door. `POST /v1/{instance}/chat/completions` and `POST /v1/{instance}/chat/messages` are gone; an OpenAI client pointed at the gateway now gets a 404. The OpenAI surface belongs to agentgateway.
+- **Breaking:** the Klaus instance path — the instance HTTP client, the routing table that mapped a conversation to an instance, the agentgateway URL rewriter and every lifecycle driver (`klausctl`, `operator`, `static`). The `--driver`, `--klausctl-bin`, `--operator-mcp-url`, `--operator-mcp-token`, `--static-instances`, `--agentgateway-url`, `--auto-create`, `--default-ttl` and `--a2a-token-path` flags and their `KLAUS_GATEWAY_*` variables are gone. A thread runs on its kagent AgentInstance and nothing else.
+- **Breaking:** the chart no longer renders Kubernetes Gateway API or agentgateway resources of its own (`Gateway`, `HTTPRoute`, `AgentgatewayPolicy`, `AgentgatewayBackend`). They were off on every installation; the routes that carry `/channels/slack` and `/auth/slack/` belong to the agent-platform-connectivity chart. The projected ServiceAccount token the pod mounted for the Klaus-instance paths goes with them.
+- **Breaking:** the routing-store key loses its user slot: it is `<channel>|<channelID>|<threadID>`, three parts. A row written with the old four-part key no longer parses and is skipped, so a thread's first message after the upgrade writes a new row — a new initiator, no grants carried over, and no delivery of a turn that was in flight. The agent's conversation survives: the AgentInstance is keyed by the thread, not by the store row, so the controller hands the same one back (a thread that had been switched to a non-default agent runs on the default again, since the switch lived in the lost row). See `UPGRADE.md`.
+- The compose smoke harness (`deploy/docker-compose.yml`, the Klaus stub, the standalone agentgateway config, `hack/wait-for`, `hack/smoke-completion`) and `hack/helm-template-tests`. `make test` plus the chart smoke test CI runs on kind is the end-to-end check.
+
+## [1.21.0] - 2026-09-23
+
+### Changed
+
+- Slack: the agent's tool calls show as a step list inside the reply — "Listing the available tools", "Kubernetes list", each turning from running to done, or to an error when the tool failed, and collapsed by Slack once the answer is complete — instead of a separate hourglass message that kept changing (`⏳ filter_tools… · step 3`) and the receipt it left behind (`🛠️ 8 steps · x_kubernetes_list, …`). One message per answer instead of two, in plain language rather than API names. `/details on` (the default) shows the step titles, `/details full` adds each call's arguments and a result preview to its step and no longer posts the separate JSON messages, and `/details off` shows no steps at all; **Inspect agent steps** is unchanged and still carries the fuller payloads (klaus-gateway#314).
+
+## [1.20.0] - 2026-09-22
+
+### Added
+
+- Chart: `serviceMonitor.labels`, labels on the ServiceMonitor beside the chart's own. The Giant Swarm observability platform routes a scrape to a Mimir tenant by `observability.giantswarm.io/tenant`, and the monitor carried no way to set it, so the gateway's `klaus_gateway_*` series reached no tenant on every installation.
+
+## [1.19.0] - 2026-09-21
 
 ### Added
 
 - `/metrics` shows when Slack rate-limits the gateway. `klaus_gateway_slack_rate_limited_total{method,outcome}` counts every call the Slack Web API client makes that Slack answers with a 429, under the method it answered (`method`: `chat.appendStream`, `chat.startStream`, …) and what the gateway did about it (`outcome`): `retried`, it waited the `Retry-After` and called again, so nothing failed; or `exhausted`, it gave up — the four attempts spent or the requested wait over the 30-second cap — and the call failed. Each 429 also writes a debug log line with the method, the wait and the attempt.
+
+## [1.18.0] - 2026-09-21
+
+### Changed
+
+- Slack: a conversation's agent session is attributed to the person who started it, also when it was opened from the slash-command picker or the **Ask an agent here** shortcut. No new scope and nothing to configure.
+
+## [1.17.0] - 2026-09-21
+
+### Changed
+
+- Slack agent replies are written with Slack's streaming API: the answer appears as a single message that Slack animates while the agent writes into it, growing about once a second, instead of a message rewritten over and over. Text lands on word boundaries, so half-written words no longer flicker; an answer over 12,000 characters still continues in a follow-up message; and the working indicator clears when the answer ends. Pressing the stop button ends the answer there, with the thread's "Stopped by @user" notice as before. In text-progress mode the `_thinking…_` placeholder is removed once the answer has a message of its own. A turn continued after a restart goes on in the message the previous process left open where Slack still has it open, and a turn that resumes after an approval prompt now writes its continuation as a second message instead of editing the first. `/metrics` gains `klaus_gateway_slack_stream_total{event}` (`started`, `stopped`, `stopped_by_user`, `recovered`).
+
+## [1.16.0] - 2026-09-21
+
+### Added
+
 - Slack: a reply in a thread whose conversation ended no longer goes unanswered. A thread is alive for `routing.threadTTL` (`--thread-ttl`, 90 days by default) of silence, as before; its row now stays in the store for twice that, so the gateway can tell a thread whose conversation has ended from a thread it was never in. A reply without a mention in one of the former gets one private line — "This conversation ended after 90 days without messages. Mention me to start a new one." (it names the configured lifetime) — instead of the silence that read as an outage. The notice is ephemeral, posted on every such reply, and writes nothing; a mention starts the thread over exactly as before, with a new initiator, no grants carried over and a fresh agent binding. Past twice the lifetime the row is gone and the thread is a stranger again. There is no warning before the end. Operators sizing Valkey should know the keys now live twice as long (`UPGRADE.md`); a thread's row adopts the configured lifetime on its next message, so a change to `routing.threadTTL` reaches the threads people keep using. A Slack thread's row is also its Klaus-instance route, so on the Klaus (non-kagent) path that row now expires under the thread lifetime (180 days by default) instead of `routing.defaultTTL` (24 hours) — which also stops a thread's initiator and grants dying after a day while people are still talking in it (klaus-gateway#193).
-- Team review: what a manager's *action* needs — one review over several pull requests, decided by a second person (klaus-gateway#291). `POST /reviews` takes `pullRequests` (rendered as links, `owner/repo#n`), an `actor` (the email of the person whose action it is; their own *Approve* is refused with a status line under the buttons, a second person decides; their *Deny* withdraws it), a `deny` tool (a *Deny* button opens a modal with one required reason box, and the tool is called as the member with the arguments plus `reason`) and a `noticeChannel` (the same text, pull requests and link as a notice without buttons, posted first). `POST /reviews/{id}/results` posts the action's outcome — merged, rolled out, probes green or the failing probe — as a reply in the review's thread, so one thread carries the whole action; `404` for a review the gateway does not hold. A late click is told who decided and how. The link button and the inline link read what their URL points to — *Open PR*, *Open run*, *Open issue*, *Open repository*, *Open link* — instead of *Open PR* for everything (klaus-gateway#289). Chart: `reviews.allowedCallers` lists the platform manager's ServiceAccount by default. `docs/api.md` and `docs/slack-hitl-surface.md` carry the contract.
+
+## [1.15.0] - 2026-09-18
+
+### Added
+
 - Slack: an agent pulled into a thread that other people wrote now gets that thread. When a conversation opens inside an existing thread (the **Ask an agent here** shortcut, an `/agent "<name>"` reply, a bare mention under an alert), the messages written before it travel with the first question as a labelled part of their own: author, time and text per message, bot alerts flattened from their attachments and blocks, trimmed from the oldest to the most recent 12,000 characters with the root always kept. The picker shows a ticked checkbox to leave the thread out. Private channels and group DMs need the new `groups:history` and `mpim:history` scopes (see `UPGRADE.md`); without them the conversation still opens and the person who started it is told the agent only sees their question (klaus-gateway#286).
+
+## [1.14.3] - 2026-09-18
+
+### Fixed
+
+- Slack: the answer a resubscribed turn reads back whole at completion is rendered as the live stream renders it — a paragraph break between two artifacts — so a continued reply no longer runs two sentences together ("…roles.Here's the full picture"), and the cut at what the previous process had posted falls on the right byte when more than one artifact streamed before the restart (klaus-gateway#301).
+
+## [1.14.2] - 2026-09-18
+
+### Fixed
+
+- Slack: a turn continued after a gateway restart no longer repeats its reply. The process that resubscribed to a turn left running was handed the whole answer when the task completed and none of the tool calls it had missed, so the thread showed the opening the previous process had already streamed a second time, and the step receipt started over at the calls made after the restart. The thread's routing-store row now records, as the turn streams, how much of the answer text has landed and the state of the open step receipt (`delivered`, reset and cleared with the task record); the process that continues the turn posts only the text after that mark — without the paragraph break the cut leaves in front — and its receipt counts on from the recorded steps, names included. A turn whose whole answer had landed before the restart closes with `_(done — the reply above is complete)_` instead of the answer again or a "finished without a reply" (klaus-gateway#301).
+
+## [1.14.1] - 2026-09-18
+
+### Fixed
+
+- Slack: the busy notice names the way out — "… or reply `/stop` to interrupt it" — and a reply that is just `stop` (any case, trailing punctuation allowed) in a thread whose turn is still running interrupts that turn like `/stop` instead of being bounced with the notice; in a thread with nothing running the word stays what it was, a message for the agent (klaus-gateway#299).
+
+## [1.14.0] - 2026-09-18
+
+### Added
+
+- Team review: what a manager's *action* needs — one review over several pull requests, decided by a second person (klaus-gateway#291). `POST /reviews` takes `pullRequests` (rendered as links, `owner/repo#n`), an `actor` (the email of the person whose action it is; their own *Approve* is refused with a status line under the buttons, a second person decides; their *Deny* withdraws it), a `deny` tool (a *Deny* button opens a modal with one required reason box, and the tool is called as the member with the arguments plus `reason`) and a `noticeChannel` (the same text, pull requests and link as a notice without buttons, posted first). `POST /reviews/{id}/results` posts the action's outcome — merged, rolled out, probes green or the failing probe — as a reply in the review's thread, so one thread carries the whole action; `404` for a review the gateway does not hold. A late click is told who decided and how. The link button and the inline link read what their URL points to — *Open PR*, *Open run*, *Open issue*, *Open repository*, *Open link* — instead of *Open PR* for everything (klaus-gateway#289). Chart: `reviews.allowedCallers` lists the platform manager's ServiceAccount by default. `docs/api.md` and `docs/slack-hitl-surface.md` carry the contract.
+
+## [1.13.11] - 2026-09-18
+
+### Fixed
+
+- Team review: an open review survives a gateway restart. The record — the ask, its message, the decision state and the status line — lived in the process's memory, so every release, which rolls the pod, left the posted messages with buttons that read "expired" on the first click, and the asker had to run the action again for the manager to post the ask twice. The record now lives in the routing store (`--store`) for its seven days: on `valkey` one key per review (`klaus-gateway:review:<id>`, the prefix following `routing.valkey.keyPrefix`, the TTL as the key's expiry) and on `bolt` a second bucket, so a review posted before a restart is approved by a click after it and a click on one decided before the restart is told who decided; `memory` keeps today's behaviour. A click's claim on the record is a compare-and-set on Valkey, so of two clicks on two replicas exactly one calls the tool; a claim a process died with is taken over after five minutes instead of holding the review for a week. A store that does not answer a click is not an expiry: the clicker is told to click again in a moment and the message keeps its buttons, and a review the gateway posted but could not record is rewritten to say so rather than left with a dead button. The completion state behind a review's *Connect* button stays in memory; after a restart the landing says the link is gone and to click the button again. `docs/api.md` states which stores keep reviews across restarts (klaus-gateway#295).
+
+## [1.13.10] - 2026-09-18
+
+### Fixed
+
+- Conversations the gateway starts in kagent are named after the message that opened them again, so the kagent conversation list reads "why did the CPU alert fire on gazelle" instead of an untitled row. Naming them was the kagent 0.10 controller's doing: on API v2 a conversation is an `AgentInstance` the gateway creates, and its display name is the client's to set — so every conversation started from Slack, the web channel or the CLI was created unnamed. The name is the turn's message rendered on one line and cut at the controller's 200-character limit on a word boundary; from Slack it is the same line that titles the Slack session, the mention and the command stripped. A message with nothing to name a conversation after (an upload with no caption) still creates one unnamed, and a name the controller refuses is dropped and the create retried unnamed rather than failing the turn.
+
+## [1.13.9] - 2026-09-18
+
+### Fixed
+
+- Team review: the approved message shows what the tool *said*, not its data. A manager's approve tool answers agents with a JSON object; the message rendered that object raw, in italics. The gateway now shows a plain-text answer as written, a JSON object by its `message` field, and nothing of structured data without one (`docs/api.md`, team-review endpoint).
+
+## [1.13.8] - 2026-09-18
+
+### Fixed
+
+- Team review: a refused or failed approval is reported once. The status line under the buttons already names the clicker and the manager's reason, so the ephemeral that repeated the same text to the clicker is gone; a channel-level ephemeral is reserved for what is the clicker's alone — a sign-in or Connect button, or a click on a review somebody else decided. The status line carries up to 500 characters of the reason (was 300), and a backend that still challenges after the Connect sign-in is named in it.
+
+## [1.13.7] - 2026-09-18
+
+### Fixed
+
+- Team review: an Approve click by a member who has not connected the manager's backend in muster yet no longer dies as a refusal nobody sees. muster answers such a call with its sign-in challenge; the gateway showed its text — "auth_required … Please visit the link below" — as `❌ Your approval was not accepted`, cut to 500 characters with the link inside, as an ephemeral in the message's thread, which Slack shows only once the thread is opened. The challenge is now recognised: the clicker gets an ephemeral *Connect <server>* button where they clicked; with a public base URL the sign-in lands back on the gateway (`/connectors/complete`) and the approval is submitted again as the person, so one click and one consent land it; without one the prompt says to click *Approve* again. A backend that still challenges after the landing is reported once, not looped. Every notice to a clicker — refusal, sign-in, "already approved" — is a channel-level ephemeral now. The team sees the attempts too: a status line under the buttons names who is connecting, whose approval the manager refused and why, or whose could not be submitted, replaced on every attempt and gone once the review is approved; the approved message keeps the *Open PR* link as small print. Log records `team_review_connect` and `team_review_approved` (`resumed`).
+
+## [1.13.1] - 2026-09-17
+
+### Fixed
+
+- Slack: `/agent <name>` and the agent picker no longer answer "I don't know an agent named …" for an agent that exists but cannot run. The reply now names the agent and says why — no Harness admits its AgentTemplate, or no ready revision has been compiled for it — so a correctly typed name is not reported as unknown (klaus-gateway#239).
+
+## [1.13.0] - 2026-09-17
+
+### Added
+
 - Slack: an **Ask an agent here** message shortcut (⋯ menu → Apps on any message) starts a conversation with a chosen agent inside that message's thread — an alert thread, a running discussion — instead of a new root message. It opens the same picker the slash command opens (the live roster, the default agent preselected, a question box); on submit the question is echoed as a reply in that thread under the agent's identity and runs as the thread's first turn, with the submitter as its initiator. A thread that already talks to an agent is refused with a note to reply in it instead. The app needs the new `ask_agent_here` shortcut from `deploy/slack/manifest.yaml`; an existing app has it added by hand.
+
+## [1.12.5] - 2026-09-17
+
+### Fixed
+
+- Slack: every `/agent` form from a person who has not signed in now asks them to sign in with `/login` — the bare listing instead of "I can't list the available agents right now", a quoted selection like `/agent "SRE Agent" …` instead of "I couldn't check the available agents just now", and an unquoted `/agent sre-agent …` instead of "I don't know an agent named …", which named the wrong cause. The slash command's picker does the same when the agent check, not the roster, is what finds no identity.
+
+## [1.12.4] - 2026-09-17
+
+### Changed
+
+- Slack: an agent whose display name is the app's own name — on most installations the default agent, `Swarmgeist` — posts under the app identity instead of a branded copy of it. Until now its replies, its confirmation prompts and the `/agent` root message carried the agent's own icon while Slack's thread furniture (the reply pile, the "is working…" indicator, the sign-in and access prompts) carried the app's, so one conversation showed two faces with the same name. Agents named differently keep their own name and icon. The bot's own `users.info` refused for a missing scope is now taken as final instead of being retried on every lookup.
+
+## [1.12.3] - 2026-09-17
+
+### Fixed
+
+- Slack: the agent picker (slash command) no longer answers "I can't list the available agents right now" to a person who has just signed in. A roster request from an unlinked caller — a picker attempt or a bare `/agent` — was remembered as a roster failure for 45 seconds and refused the picker's retry after `/login`; it is not remembered any more.
+
+## [1.12.2] - 2026-09-17
+
+### Fixed
+
+- Valkey routing store: a command whose connection was closed by a Valkey restart or failover is retried once inside the same `--valkey-timeout`, so the first turn after the restart no longer fails with `valkey: get: EOF`. The store holds one connection, so the readiness check proves the connection the next command uses and the retry is deterministic. An outage still fails within the timeout (klaus-gateway#261).
+
+## [1.12.0] - 2026-09-17
+
+### Changed
+
+- A Slack thread's agent, its initiator, the people they allowed, its AgentInstance and the task in flight on it now live in one row in the routing store (`slack|<channelID>||<threadID>`), so on a persistent store (`routing.store: valkey` or `bolt`) a restart keeps routing the thread to its agent, keeps the consent already given, and reads no Slack history to reconstruct any of it. The row has one sliding lifetime — `routing.threadTTL` (`--thread-ttl`), 90 days by default and `0` to never expire — refreshed by every turn. After that long without a message the thread is forgotten: the next mention starts it over with a new initiator and no grants, while the agent's session stays the controller's — the same person gets the earlier session back while the controller still holds it. `/agent "<name>" <question>` now starts a conversation in any thread with no agent yet, including as a reply inside a thread someone else rooted (klaus-gateway#193, #266, #267).
+
+### Removed
+
+- The gateway no longer recovers a thread's agent from the root message or its initiator from the first human author after a restart, and the slash-command root no longer carries a hidden conversation marker. On `routing.store: memory` that state is lost on restart, and the gateway logs a warning at start.
+- The 24-hour access window: the initiator and the people they allowed no longer have to mention the bot again after a day of silence, and grants no longer lapse; a thread's state lives for `routing.threadTTL`. The ephemeral "I'm not active in this thread" hint goes with it: a reply in a thread the bot has no record of is dropped silently.
+- The "🚀 Bringing in *Agent* to help…" launch announcement at the start of a channel conversation. It posted under the agent's own name and read as the agent introducing itself; the agent's first reply, under the agent's name, now opens the thread, and the progress reaction or working indicator remains the immediate acknowledgement. The `intro_post` phase leaves the `turn_complete` record and the `klaus_gateway_turn_phase_seconds` histogram.
+- The five-part routing-store key (`…|<agentRef>`) that held a thread's AgentInstance binding apart from its record is gone: a thread now has one row. Keys written in the old layout are ignored and safe to delete; see `UPGRADE.md`.
+
+## [1.11.0] - 2026-09-16
+
+### Added
+
 - The team-review prompt: a manager posts an ask into a team's Slack channel through `POST /reviews` — the change spelled out, an *Approve* button and an *Open PR* link — or a notice without buttons through `POST /notices`. The caller is a service identity: its own Kubernetes ServiceAccount token, verified through the TokenReview API for the gateway's audience and admitted by an allow-list (`--reviews-enabled`, `--reviews-audience`, `--reviews-allowed-callers`; chart `reviews.*`, which also grants the ServiceAccount `create` on `tokenreviews`); no personal token, no shared secret. The prompt has no initiator: any linked member may decide, the click calls the review's muster tool as that member (their own dex id_token, so the manager checks the team membership under the person's GitHub grant), a refusal by the tool is shown to the clicker alone and leaves the ask open, one approval closes it and a second click is told who decided. `docs/api.md` and `docs/slack-hitl-surface.md` carry the contract. The click reaches the tool through muster's `call_tool` meta-tool, the way every aggregated tool is exposed (klaus-gateway#273).
+
+## [1.10.3] - 2026-09-16
+
+### Added
+
+- A gateway that restarts mid-turn delivers the turn's result afterwards. The thread's routing-store binding now records the A2A task in flight (`task_id`, with the channel's `resume` data), written when the controller names the task and cleared when it quiesces. On start the Slack adapter resubscribes to every recorded task (A2A `SubscribeToTask` on the thread's AgentInstance, under the recorded user's freshly minted token) and streams what is left of it — or, for a task that finished meanwhile, the whole answer — into the thread, with the working reaction back on the original message; a turn it cannot reach then (its user signed out, the controller not up yet after three tries) is delivered by the thread's next reply, ahead of the reply itself. Needs a routing store that outlives the process (`routing.store: valkey` or `bolt`); with `memory` the record dies with the pod (klaus-gateway#244).
+
+### Changed
+
+- **Breaking:** the gateway speaks kagent API v2. Agent turns travel as A2A v1 over gRPC through agentgateway (`a2a.url` is now a gRPC target: `grpc://host:port` for the in-cluster agentgateway Service, `grpcs://host:port` for the public hostname, with `a2a.caSecret`/`a2a.caFile` for a private CA), the `/agent` roster comes from `AgentTemplateService.ListAgentTemplates` of the served namespace (new `a2a.namespace`, default `kagent`; display name and icon from the `ui.giantswarm.io/display-name` and `ui.giantswarm.io/icon-url` annotations, readiness from `status.harnesses[]` — a template no Harness admits, or whose revision is not ready, is not offered and is refused by name), the `/usage` model line comes from `ModelService.GetModelConfig`, and every thread is bound to one `AgentInstance` created on its first turn (`CreateAgentInstance` keyed by the synthesized context id, so a retried first turn creates no second instance) and persisted as `agentInstanceID` on the thread's routing-store entry across the bolt and Valkey stores. Tool approvals and `ask_user` questions use kagent's HITL extension (`https://kagent.dev/extensions/hitl/v1`, requested on every call): the typed request is parsed from the paused task and the decision travels as the typed response on a message carrying the paused task's id, so the task resumes in place. `/stop` cancels the running task at the controller (`CancelTask`) before cancelling the client stream. The controller is spoken to only as the person behind the turn; the ServiceAccount token is never presented to it. **Requires a kagent API v2 controller behind a gRPC-capable route** (`kagent.dev/v1alpha3`); the 0.10 JSON-RPC/REST surface, the `/api/sessions` and `/api/agents` calls, the `/.well-known` AgentCard fetch, `--a2a-rest-url` and `ResolvedRESTURL` are gone. **Conversations from before the cut-over are not migrated**: the first reply in such a thread gets the starting-fresh notice and starts a new instance (klaus-gateway#234). Documented in `docs/kagent-a2a.md`.
+
+### Removed
+
+- **Breaking:** the `crd` and `configmap` routing stores, the `ChannelRoute` CRD and type, the embedded controller (`controller.enabled`, `--controller`) and the `--namespace` flag. The chart's values schema refuses `crd.*` and `controller.*`, so a values file that still sets them fails the upgrade; see `UPGRADE.md`. Installations run `routing.store: valkey`; `memory` and `bolt` remain for local development.
+
+## [1.10.2] - 2026-09-16
+
+### Fixed
+
+- `/agent <namespace>/<name>` with the served namespace now names the same agent as `/agent <name>`: repeating it inside a thread bound to that agent is a re-selection, not a refused switch, and both spellings persist one routing key (klaus-gateway#269).
+
+## [1.10.0] - 2026-09-15
+
+### Added
+
 - Every channel turn ends with one `turn_complete` log record and feeds two Prometheus collectors, so a Slack round trip can be read from the gateway's own output instead of five other logs (klaus-gateway#263). The record carries the audit-join fields of `turn_dispatch` (`agent`, `slack_user`, `subject`, `channel_id`, `thread_id`, `message_id`), the `outcome` (`completed`, `input_required`, `canceled`, `shutdown`, `timeout`, `failed`, `render_failed`, `resolve_failed`, `send_failed`), the A2A `task_id`, `tool_calls`, `streamed_chars`, the `trace_id` and every phase of the turn's timeline in milliseconds since Slack's event arrived: `token_mint_ms`, `roster_ms`, `intro_post_ms`, `dispatch_ms`, `create_instance_ms`, `first_event_ms`, `first_text_ms`, `task_done_ms`, `stream_end_ms`, `final_flush_ms`, `total_ms`. `turn_dispatch` gains `trace_id` and `dispatch_ms`. `/metrics` exposes `klaus_gateway_turn_total{channel,outcome}` and `klaus_gateway_turn_phase_seconds{channel,phase}` (buckets 5 ms – 5 min); the web and CLI channels record the same. A message that never became a turn (parked for a sign-in, bounced busy) leaves no record.
 - Every turn is one trace. The gateway opens a `<channel>.turn` span when the message arrives; the A2A calls to the kagent controller run as `otelgrpc` client spans and carry the W3C `traceparent`, so the controller's `SendStreamingMessage` trace — and the actor's spans under it — continues the gateway's; the Slack Web API calls (`slack.<method>`) and a muster token refresh (`musterlink.<endpoint>`) are client spans in the same trace. `observability.otlpEndpoint` now also takes a URL (`http://otlp-gateway.kube-system.svc:4317`; the scheme decides TLS, a bare `host:port` stays plaintext) and `observability.otlpHeaders` (`--otel-otlp-headers`, `OTEL_EXPORTER_OTLP_HEADERS`) adds headers to every export, such as the `X-Scope-OrgID` tenant of the platform's OTLP gateway. Without an endpoint the trace ids in the records are still real and the `traceparent` still reaches the controller; nothing is exported.
 - The person's muster id_token is refreshed ahead of its expiry, off the turn's path (klaus-gateway#263). Until now `musterlink.TokenFor` refreshed only when a turn found the cached token about to expire, and that turn waited ~1.2 s for muster's token endpoint (a `POST /oauth/token`, including muster fetching the gateway's CIMD document). A background refresher now sweeps every minute over the links this process handed to a turn in the last 48 hours and refreshes those within five minutes of expiry — under the same per-user lock and through the same store write as a turn's refresh, so the rotating refresh token is never raced or lost — so the turn's `token_mint_ms` stays at a cache hit. A refresher that cannot reach muster in time leaves the turn's own refresh as the fallback; a refusal drops the link the way a turn's would. Every refresh, ahead or on a turn, logs a `token_refresh` record (`trigger`, `duration_ms`, `expires_in_s`).
-- A Valkey-backed routing store for installations (`routing.store: valkey`, `--store=valkey`): one key per thread (`klaus-gateway:route:` + the routing key) holding the JSON entry, the entry's TTL as the key's expiry, `SCAN` by prefix for the start-up resubscription and a `PING` for readiness. No volume, no API-server access, shared by replicas; the agent platform's `muster-valkey` serves it. Every dial and command is bounded by `--valkey-timeout` (2 s), so a Valkey outage fails the turn with a clear error and fails readiness instead of hanging the thread, and both recover with the server. The chart takes `routing.valkey.*` (`url`, `existingSecret`/`passwordKey` passed as `KLAUS_GATEWAY_VALKEY_PASSWORD`, `username`, `db`, `tls`, `keyPrefix`, `timeout`) and documents which stores are meant for installations; the store's conformance test runs against a server speaking the real protocol (miniredis) and, with `KLAUS_GATEWAY_TEST_VALKEY_URL`, a real Valkey (klaus-gateway#252).
-- The OBO link store can live in a Kubernetes Secret instead of a bolt file on a ReadWriteOnce volume (`obo.store: secret`, `--obo-store=secret`): one entry per linked Slack user, sealed with `store-key` as before, written with `resourceVersion` optimistic concurrency so a second replica can share it. The chart renders the Secret (`<release>-obo-links`, `helm.sh/resource-policy: keep`) and a Role/RoleBinding granting the ServiceAccount `get`/`update`/`patch` on exactly that Secret, mounts no volume and drops the `Recreate` strategy once `obo.persistence` is off, so a pod that dies with its node is replaced on any node within seconds instead of waiting four minutes on a `Multi-Attach` error. On the first start with the Secret backend an existing bolt file (`obo.storePath`, mounted read-only) is imported without a sign-in for anyone; the file is left untouched and only counts are logged. `UPGRADE.md` describes the two-step switch (klaus-gateway#245).
-- A gateway that restarts mid-turn delivers the turn's result afterwards. The thread's routing-store binding now records the A2A task in flight (`task_id`, with the channel's `resume` data), written when the controller names the task and cleared when it quiesces. On start the Slack adapter resubscribes to every recorded task (A2A `SubscribeToTask` on the thread's AgentInstance, under the recorded user's freshly minted token) and streams what is left of it — or, for a task that finished meanwhile, the whole answer — into the thread, with the working reaction back on the original message; a turn it cannot reach then (its user signed out, the controller not up yet after three tries) is delivered by the thread's next reply, ahead of the reply itself. Needs a routing store that outlives the process (`routing.store: valkey` or `bolt`); with `memory` the record dies with the pod (klaus-gateway#244).
-- Chart: `terminationGracePeriodSeconds` (default 45, was a hard-coded 10). The shutdown drains the HTTP servers, then stops the channel adapters — which is when a Slack turn cut short posts its restart notice — before the kagent client and the stores close; the default covers both drain windows (klaus-gateway#244).
-- Web channel: a turn paused on a tool approval or question ends its stream with an `event: prompt` (task id, hint, tools or questions); `POST /web/messages` accepts `taskId` and `decision` to resume it; `GET /web/agents` lists the selectable agents as the caller.
-- Slack slash command (`/swarmgeist` in the manifest; the name is per app): opens an agent picker modal — a select over the live roster, the default agent preselected, and a question box prefilled with any text after the command — and, on submit, starts a conversation in the channel with the chosen agent: a root message under the agent's identity, the submitter as thread initiator, the question as the first turn, and replies that keep working after a gateway restart. Requires the `commands` scope and the `slash_commands` entry from the updated Slack app manifest.
-- Chart: `podAnnotations` (merged onto the pod template) and a `podDisruptionBudget` knob (`enabled`, exactly one of `minAvailable` / `maxUnavailable`, optional `unhealthyPodEvictionPolicy`; off by default). The agent platform uses them to keep Karpenter's consolidation away from the pod that carries live channel turns (`karpenter.sh/do-not-disrupt`) and to refuse voluntary evictions of the single replica (giantswarm/agent-platform#431).
-- Slack: the working indicator now carries Slack's native stop button. Pressing it interrupts the running turn like `/stop` and confirms with `⏹ Stopped by @presser.` in the thread — the press leaves no message of its own, so the notice is the only record of who stopped the turn. A press with nothing left to stop clears the indicator instead of spinning on, and a thread waiting on an approval prompt is left alone. It obeys the same per-thread access rule as `/stop` — only the thread owner and the people they allowed can interrupt the agent, and anyone else is refused privately. The app must subscribe to the `agent_session_stopped` bot event — that subscription is what draws the button — which `deploy/slack/manifest.yaml` now does; an already-created app needs it added by hand under Event Subscriptions.
+
+## [1.9.1] - 2026-09-14
+
+### Fixed
+
+- A Slack turn that fails before any answer text now also posts `_(the turn failed; please try again)_` in the thread when progress is shown with reactions, instead of only turning the working emoji into a red cross — which says nothing about what to do and, for a conversation started with the slash command, sits on the bot's own root message. A failure after streamed content still shows the reaction alone.
+
+## [1.9.0] - 2026-09-14
+
+### Added
+
 - Slack conversations are now named in the Messages tab timeline, so the list reads "Investigate CPU alert on gazelle" instead of untitled entries. The name is the thread's first message with the bot mention, an `/agent "<name>"` selector and any other leading slash verb stripped, whitespace collapsed, and a word-boundary cut at Slack's 200-character limit. It is set when the conversation's session is created, so renaming a conversation by hand in Slack sticks.
+
+## [1.8.1] - 2026-09-14
+
+### Fixed
+
+- The binary knows its release version. Released images logged `"version":"dev"` at start (and `--version` printed `klaus-gateway dev (<sha>)`) because the architect orb's release build stamps only the git SHA and the build timestamp into `pkg/project`, never the version, and the devctl Makefile's `-X …pkg/project.version` flag is not what CI links with. `pkg/project.Version()` now resolves an injected `version` ldflag first, then the main-module version Go stamps into the build info from the VCS tag (`v1.7.1` on a tag build, a pseudo-version on a branch build), then the git SHA, then `dev`; the files the CI writes into the tree before linking (`.ldflags`, `.platforms`, the built binaries) are ignored so the build info stays clean instead of `vX.Y.Z+dirty`. The start record and `--version` agree (klaus-gateway#259).
+
+## [1.8.0] - 2026-09-14
+
+### Changed
+
+- Slack channel threads now show the native "working" indicator while the agent runs, not just DMs. It is driven by the agent-messaging session status (`agents.sessions.setStatus`, `chat:write` on the bot token): the session is set to `processing` when a turn starts and back to `active` when it ends, fails, or is stopped with `/stop`, so a thread is never left spinning. The tool ticker (`⏳ tool… · step N`) and its receipt (`🛠️ N steps · …`) stay in the thread on every surface, since the indicator carries no text of its own. Workspaces whose install cannot set the status keep the message ticker alone.
+- A Slack thread whose agent is waiting for an answer — a tool approval, an `ask_user` question, a form — is now marked *waiting for you* instead of idle, so the conversations that need the user are visible next to the ones that finished. The thread goes back to *working* as soon as the answer is given, and an answer that never comes no longer strands the mark: the prompt's expiry, and a click on a prompt the gateway no longer holds, return the thread to idle.
+
+## [1.7.0] - 2026-09-14
+
+### Added
+
+- Slack: the working indicator now carries Slack's native stop button. Pressing it interrupts the running turn like `/stop` and confirms with `⏹ Stopped by @presser.` in the thread — the press leaves no message of its own, so the notice is the only record of who stopped the turn. A press with nothing left to stop clears the indicator instead of spinning on, and a thread waiting on an approval prompt is left alone. It obeys the same per-thread access rule as `/stop` — only the thread owner and the people they allowed can interrupt the agent, and anyone else is refused privately. The app must subscribe to the `agent_session_stopped` bot event — that subscription is what draws the button — which `deploy/slack/manifest.yaml` now does; an already-created app needs it added by hand under Event Subscriptions.
+
+## [1.6.0] - 2026-09-14
+
+### Added
+
+- A Valkey-backed routing store for installations (`routing.store: valkey`, `--store=valkey`): one key per thread (`klaus-gateway:route:` + the routing key) holding the JSON entry, the entry's TTL as the key's expiry, `SCAN` by prefix for the start-up resubscription and a `PING` for readiness. No volume, no API-server access, shared by replicas; the agent platform's `muster-valkey` serves it. Every dial and command is bounded by `--valkey-timeout` (2 s), so a Valkey outage fails the turn with a clear error and fails readiness instead of hanging the thread, and both recover with the server. The chart takes `routing.valkey.*` (`url`, `existingSecret`/`passwordKey` passed as `KLAUS_GATEWAY_VALKEY_PASSWORD`, `username`, `db`, `tls`, `keyPrefix`, `timeout`) and documents which stores are meant for installations; the store's conformance test runs against a server speaking the real protocol (miniredis) and, with `KLAUS_GATEWAY_TEST_VALKEY_URL`, a real Valkey (klaus-gateway#252).
+
+## [1.5.1] - 2026-09-14
+
+### Fixed
+
+- The OBO link store no longer turns a failed read or write into a silent cache miss. `Store.Get`/`Put`/`Delete` report their errors, and the gateway keeps a process-local copy of every link it has read or written: a refresh token muster has already rotated is kept in memory when the store (the Kubernetes Secret on an apiserver hiccup, the bolt file on a full disk) refuses the write, the write is retried in the background and once more on shutdown, and the next refresh uses the rotated token instead of failing `invalid_grant` and signing the person out — the same for the link a sign-in has just created. A store that fails to read serves the link the gateway already knows; a person it has never seen gets the transient "couldn't refresh your sign-in" notice in Slack instead of the sign-in prompt (their message is not parked), and `/login` answers the same way. `/logout` reports a sign-out the store refused instead of confirming it. Before dropping a link on `invalid_grant` the gateway re-reads the store, so a token rotated by another writer (a second replica, the import) is retried rather than burned. Reads are served from the copy for 30 s, so a Slack turn costs one Secret read rather than two or three (klaus-gateway#256).
+
+## [1.4.0] - 2026-09-14
+
+### Added
+
+- Chart: `terminationGracePeriodSeconds` (default 45, was a hard-coded 10). The shutdown drains the HTTP servers, then stops the channel adapters — which is when a Slack turn cut short posts its restart notice — before the kagent client and the stores close; the default covers both drain windows (klaus-gateway#244).
+
+### Fixed
+
+- The ConfigMap routing store (`routing.store: configmap`) could not persist a single binding: it used the routing key's pipe-separated form as the ConfigMap data key, which the API server rejects (`a valid config key must consist of alphanumeric characters, '-', '_' or '.'`), so every turn on that store failed before it reached the agent. Data keys are now base64url-encoded and decoded on `List` (klaus-gateway#244).
+- A Slack turn cut short by the gateway's own shutdown (a pod restart, a node loss with a grace period) is no longer treated like a `/stop`. The thread gets a one-line notice — `⚠️ I was restarted while **<agent>** was working. It keeps going — the result is in the Dev Portal, and I post it here when it is done.` — in reactions mode too (a `/stop` there stays silent by design), the working reaction is cleared and the status ticker collapses into its receipt instead of freezing at `⏳ … step N`, and the task is left running at the controller rather than cancelled over a connection that was already closing. The notice does not promise the delivery when the routing store is `memory`. A `/stop` still cancels the task (`CancelTask`), and a turn that already completed is never cancelled by its own teardown (klaus-gateway#244).
+
+## [1.3.3] - 2026-09-14
+
+### Fixed
+
+- The chart's `nodeSelector` and `affinity` take arbitrary keys again: the generated values schema declared both maps with `additionalProperties: false`, so any node label (`karpenter.sh/capacity-type: on-demand`, a zone) or affinity term failed the release with `additional properties … not allowed` — the knobs were unusable. Both are annotated free-form like `podAnnotations`.
+
+## [1.3.1] - 2026-09-14
+
+### Fixed
+
+- On kagent API v2 every streamed text run reached Slack (and the web and CLI channels) twice: the Go ADK streams a run as appended artifact chunks and then re-sends the finished run whole on the same artifact (`append: false`, `lastChunk: true`), and the gateway rendered both. The A2A artifact update semantics are now honoured — a replace renders only what the artifact has not delivered yet — so each run appears once, and text runs separated by tool calls are separated by a paragraph instead of running into each other (klaus-gateway#242).
+- A long streamed Slack reply no longer ends in `chat.update: msg_too_long`: the message's notification fallback text (the escaped reply) is cut to Slack's 4,000-character limit for that field, while the reply itself stays in the markdown block (12,000 characters per message, rolling over into follow-up messages). Should Slack still refuse a message as too long, the reply is re-split into smaller messages instead of being re-sent unchanged every tick (klaus-gateway#242).
+- A Slack failure while rendering the reply no longer fails the turn. Flushes keep retrying until the agent finishes (slowing to one attempt every 5 s after three failures), and only a final flush that still fails is reported: the thread gets a note that the reply is incomplete and the failed reaction, while the turn counts as completed. Previously three consecutive failures aborted the turn, which cancelled the agent's task server-side, so a finished answer showed as Canceled in the person's session (klaus-gateway#242).
+- A task that already completed or paused on a prompt is no longer cancelled server-side when its channel stops listening right after the terminal event; only a task still running is.
+- A `grpcs://` A2A target without a port now means port 443, the way an https URL does; 1.1.0 refused it (`must be grpcs://host:port`), which also failed agentlab's `klaus-gateway-test` against a 1.1.x build. A plaintext `grpc://` target still has to name its port.
+
+## [1.3.0] - 2026-09-14
+
+### Added
+
+- The OBO link store can live in a Kubernetes Secret instead of a bolt file on a ReadWriteOnce volume (`obo.store: secret`, `--obo-store=secret`): one entry per linked Slack user, sealed with `store-key` as before, written with `resourceVersion` optimistic concurrency so a second replica can share it. The chart renders the Secret (`<release>-obo-links`, `helm.sh/resource-policy: keep`) and a Role/RoleBinding granting the ServiceAccount `get`/`update`/`patch` on exactly that Secret, mounts no volume and drops the `Recreate` strategy once `obo.persistence` is off, so a pod that dies with its node is replaced on any node within seconds instead of waiting four minutes on a `Multi-Attach` error. On the first start with the Secret backend an existing bolt file (`obo.storePath`, mounted read-only) is imported without a sign-in for anyone; the file is left untouched and only counts are logged. `UPGRADE.md` describes the two-step switch (klaus-gateway#245).
+
+## [1.2.0] - 2026-09-14
+
+### Added
+
+- Slack slash command (`/swarmgeist` in the manifest; the name is per app): opens an agent picker modal — a select over the live roster, the default agent preselected, and a question box prefilled with any text after the command — and, on submit, starts a conversation in the channel with the chosen agent: a root message under the agent's identity, the submitter as thread initiator, the question as the first turn, and replies that keep working after a gateway restart. Requires the `commands` scope and the `slash_commands` entry from the updated Slack app manifest.
+
+### Fixed
+
+- The Slack `/agent` roster listing, a selection by technical or display name, and the recovery of a quoted opener after a restart no longer fail on a fresh gateway pod ("I can't list the available agents", "I couldn't check the available agents", or a false "I don't know an agent named …"): the catalogue reads run as the calling Slack user, which the kagent controller requires, instead of relying on a roster cache that only a previous turn could have warmed.
+
+## [1.1.1] - 2026-09-14
+
+### Fixed
+
+- The Slack sign-in prompt in a channel is now ephemeral to the user it is minted for, so the thread's other readers no longer see a login link bound to someone else's identity. A short notice in the thread says the agent is waiting for a sign-in; it names nobody, carries no link, and is posted once per thread for every unlinked user in it. The completed link is confirmed to the same user with a fresh ephemeral, since an ephemeral cannot be rewritten in place; for the same reason a channel prompt that replaces an expired one says so on itself rather than by rewriting its predecessor. The DM prompt is unchanged (klaus-gateway#185).
+
+## [1.1.0] - 2026-09-13
+
+### Added
+
+- Chart: `podAnnotations` (merged onto the pod template) and a `podDisruptionBudget` knob (`enabled`, exactly one of `minAvailable` / `maxUnavailable`, optional `unhealthyPodEvictionPolicy`; off by default). The agent platform uses them to keep Karpenter's consolidation away from the pod that carries live channel turns (`karpenter.sh/do-not-disrupt`) and to refuse voluntary evictions of the single replica (giantswarm/agent-platform#431).
+
+## [1.0.0] - 2026-09-11
+
+### Added
+
+- Web channel: a turn paused on a tool approval or question ends its stream with an `event: prompt` (task id, hint, tools or questions); `POST /web/messages` accepts `taskId` and `decision` to resume it; `GET /web/agents` lists the selectable agents as the caller.
+
+## [0.39.0] - 2026-09-06
+
+### Added
+
 - `obo.existingSecret`: the name of a pre-created Secret holding the OBO keys (`state-key`, and `store-key` when `obo.storePath` is set). When set, the chart renders no `<release>-obo` Secret and mounts the named one, so the keys never pass through Helm values or the release manifest, the same way `slack.secretName` with an empty `slack.botToken` already works for the Slack credentials. `obo.enabled` now fails the render when neither `obo.existingSecret` nor `obo.stateKey` is set, instead of rendering an empty Secret the gateway cannot start from.
+
+## [0.30.18] - 2026-08-28
+
+### Fixed
+
+- The sign-in "Email mismatch" page now tells the user the actual fix — add the Slack email to their GitHub account (Settings > Emails) and verify it, falling back to making it the primary email on deployments whose dex GitHub connector does not set `preferredEmailDomain` — instead of only suggesting to change the GitHub primary email (giantswarm/giantswarm#37543).
+
+## [0.30.5] - 2026-08-10
+
+### Fixed
+
+- The agent's interim narration in Slack — the prose it writes just before firing tool calls ("Let me pull the HelmRelease from both clusters simultaneously.") — now reaches the thread instead of being dropped. It is posted as its own in-thread message, in order with the tool-activity posts it introduces, and is shown at every `/details` level, since it is the agent talking rather than tool transparency. The answer still lands as the turn's last message and is not duplicated: only a status update that also carries tool calls counts as narration, so the agent's text-only mirror of the answer, the echo of the user's own message, and streamed partial chunks stay ignored. At most 10 narration messages are posted per turn, with a note where the rest are hidden; an outsized narration is split across messages like the main reply rather than rejected by Slack. A sign-in link quoted in narration is stripped as it is in the main reply, so the single-use OAuth link is never duplicated next to the Connect button, and narration written after a sign-in challenge is retracted with the reply when a connector prompt auto-resumes the turn (narration explaining earlier tool calls stays) (klaus-gateway#197).
+- Token usage is no longer counted off a streaming chunk that kagent marks as partial on the status message alone rather than on the event, which would have inflated `/usage` by roughly the number of chunks.
+
+## [0.30.2] - 2026-07-29
+
+### Fixed
+
+- Slack file attachments now reach the agent when the message does not mention the bot: an image sent as a plain thread reply or as a DM (Slack marks these with the `file_share` message subtype, which was previously filtered out) starts a turn like any other reply. Previously only files attached to an `@`-mention were forwarded. An image-only DM in redirect mode now also receives the channel-redirect notice instead of silence.
+
+## [0.30.0] - 2026-07-29
+
+### Changed
+
+- Agent messages in Slack (replies, confirmation prompts, and the launch announcement) are named by the `Agent` CR's `ui.giantswarm.io/display-name` annotation — `SRE Assistant` — instead of the underscored `sre_agent` the A2A AgentCard publishes. Without the annotation the name is the resource's own spelling, `sre-agent`, which is what `/agent` accepts. The agent's icon still follows the technical name, so renaming an agent relabels it without changing how it looks.
+
+### Fixed
+
+- A Slack workspace whose app install predates the `chat:write.customize` scope now receives agent replies under the app's own identity instead of failed posts: a branded post rejected for a scope or username problem is retried unbranded, and the downgrade is remembered for the rest of the process.
+
+## [0.29.0] - 2026-07-23
+
+### Changed
+
+- The Slack connector sign-in turn renders more cleanly. When the Connect button carries a working post-login auto-resume, the agent's now-redundant sign-in narration ("visit this link…, then tell me") is removed after the turn, leaving only the sign-in prompt; the conversation continues by itself once the user signs in. When auto-resume is not available, the sign-in narration is kept but the login-link line (and its lead-in) is dropped cleanly — the "(login link removed; use the Connect button above)" placeholder note is gone. Requires muster ≥ 1.3.1 with `oauth.mcpClient.postLoginRedirectAllowlist` pointing at the gateway's `/connectors/complete` landing for the auto-resume path.
+
+## [0.28.1] - 2026-07-23
+
+### Fixed
+
+- The Slack `/help` reply no longer shows a hardcoded `@klaus` mention. It uses the bot's own display name resolved at runtime (e.g. `@Swarmgeist`), falling back to a name-free example when the name cannot be resolved (klaus-gateway#182).
+
+## [0.28.0] - 2026-07-23
+
+### Added
+
 - Slack `/agent` command: `/agent "<name>" <question>` starts a new conversation with the named agent, selected by quoted display name or unquoted technical name (in a DM, start the message with a space so Slack does not intercept the leading slash). A bare `/agent` lists the available agents by display name. An unknown, ambiguous, or unreachable agent fails loudly with the roster and never substitutes another agent. Replies inherit the conversation's agent; switching mid-conversation is refused, but a bare `/agent` in a fresh chat does not claim the conversation, so selecting right after listing the roster works. The `turn_dispatch` log record gains an `agent_source` field.
+
+## [0.27.0] - 2026-07-23
+
+### Added
+
 - Completing a backend sign-in started from the Slack "Connect <backend>" button now lands the browser back on the gateway (`GET /connectors/complete`): the ephemeral prompt is rewritten into a signed-in confirmation and the agent automatically continues in the thread with "I've signed in to <backend>, continue", so the blocked tools are retried without re-typing. Requires muster's `oauth.mcpClient.postLoginRedirectAllowlist` to include `https://<gateway-host>/connectors/complete`; without it (or without the OBO callback base URL) the Connect button keeps the previous plain-link behavior.
+
+### Fixed
+
+- The Slack "Connect <backend>" button no longer opens a broken login link when the agent's sign-in challenge arrives as an undecoded JSON string.
+
+## [0.26.0] - 2026-07-23
+
+### Added
+
 - Files attached to a Slack message are forwarded to the agent, so a vision-capable model can use images as input. Image and other binary files are sent as A2A file parts; text files (yaml, json, source, …) are sent as a text part carrying their content, since model backends reject a `text/*` binary blob and a text file is only useful to the agent as readable text. A message carrying only an attachment (no caption) now starts a turn instead of being dropped. When the agent rejects a turn because its attachments exceed the agent's payload limit, the thread gets a size-specific notice rather than the generic failure message. File parts echoed back by the agent (e.g. the uploaded attachment in the turn's status message) are tolerated in the response stream instead of failing the turn. Forwarding requires the `files:read` bot scope; the download sends an `Accept` header and keeps its bearer token across `*.slack.com` redirects so Slack returns the file rather than its HTML sign-in page, and a sign-in page that slips through is detected and the attachment dropped rather than forwarded as garbage bytes.
+
+## [0.25.1] - 2026-07-23
+
+### Added
+
+- Slack posts a short launch announcement when a new channel thread starts, making the hand-off from Swarmgeist to the agent explicit. It is posted under the agent's display identity (same as the agent's replies), so the channel thread face pile shows one avatar instead of two. It is posted only once the agent has resolved, so a failed launch does not announce an agent that never arrives.
+
+## [0.25.0] - 2026-07-23
+
+### Changed
+
+- The default agent (binary default and Helm `a2a.defaultAgent`) is now `sre-agent` instead of `klaud-coding`.
+
+## [0.24.0] - 2026-07-23
+
+### Added
+
 - Slack assistant-surface (Agent view) lifecycle events are handled: opening the assistant pane (`app_home_opened` on the Messages tab) posts a one-time greeting when DMs are served, or the channel-redirect notice when DMs are in redirect mode, and switching the active assistant context no longer produces not-routable warning logs. The app manifest gains the `agent_view` feature block with declared suggested prompts, the `assistant:write` bot scope, and subscriptions to both events (klaus-gateway#158).
+
+## [0.23.3] - 2026-07-23
+
+### Changed
+
+- The signed-in confirmation that replaces the "Sign in" prompt is always the same fixed phrase. It no longer sometimes appends a "Bringing in **<agent>** to help." notice when a held message is about to be replayed; the replay's launch announcement names the agent.
+
+## [0.23.1] - 2026-07-23
+
+### Fixed
+
+- A Slack message from a signed-out user that arrives while the thread is briefly busy is parked for sign-in instead of being rejected with a busy notice and dropped. The sign-in gate previously ran after the per-thread turn lock, so the message was lost until the user resent it.
+- A button-click resume that fails on corrupt session history now resets the session and tells the thread, the same recovery a typed message gets, instead of leaving the thread failing forever.
+
+## [0.23.0] - 2026-07-23
+
+### Changed
+
+- Slack tool-activity posts now unwrap muster's `call_tool` meta-tool: the inner tool name is the headline with a `(via muster)` suffix and its arguments render directly, instead of the wrapped `{"name":...,"arguments":...}` object. At `full` detail the result line is unwrapped the same way. Tool names are bold, and payload JSON is spaced after colons and commas for readability (klaus-gateway#163).
+
+## [0.22.4] - 2026-07-22
+
+### Fixed
+
+- A granted collaborator's turn in a shared Slack thread now runs under the thread initiator's identity instead of the collaborator's, so the thread stays one session: the initiator's token is forwarded on the collaborator's turn (kagent has no per-caller identity within a session), and the real author is attached to the message so the agent still sees who spoke. If the initiator's token cannot be minted, the turn falls back to the sender's own identity rather than the gateway service account.
+
+## [0.22.3] - 2026-07-22
+
+### Fixed
+
+- Stopping the Slack adapter cancels its lifecycle context and waits for in-flight background work (inbound dispatch, post-sign-in replay, sign-in prompt rewrites) to finish, bounded by the passed context, instead of returning while those goroutines keep running.
+
+## [0.22.2] - 2026-07-22
+
+### Fixed
+
+- A Slack turn that pauses for input right as the buffered reply text fails to post no longer loses the pause: the approval stays answerable by a reply or click, and only the buffered prose is lost. Previously the paused task was discarded, the next reply started a fresh turn, and the abandoned task could corrupt the conversation's history.
+- Slack thread replies sent with "Also send to #channel" (`thread_broadcast`) now reach the agent like any other reply instead of being silently dropped.
+- `/stop` sent while a turn is still starting up (before it is cancellable) now actually stops that turn instead of replying "Stopped." and letting it run to completion. `/stop` in a thread with nothing running replies "Nothing is running in this thread." instead of a false "Stopped.".
+- Clicking an access-consent button after the gateway lost the thread's state (restart, 24h expiry) rewrites the prompt to say the approval expired and who should resend their message, instead of doing nothing. A consent click by someone other than the thread owner now gets the "not allowed" note instead of silence.
+- A newcomer whose request the thread owner declines is now told so (ephemerally), instead of waiting forever on the "your message is waiting" ack.
+- When messages held during sign-in or pending approval overflow the 5-per-thread cap, the user is told which ones will not replay and to resend them, instead of the oldest being dropped silently.
+- The "I'm not active in this thread" hint is no longer posted for a message whose `app_mention` twin is acting on it, so a mention is not answered and contradicted at the same time.
+- The sign-in button's link expires after 15 minutes, but the prompt was suppressed for 24 hours: a user returning later was stuck behind a dead button, with new messages parking silently. A message sent after the link expired now posts a fresh prompt and rewrites the stale one.
+
+## [0.22.0] - 2026-07-22
+
+### Added
+
+- The "Sign in" prompt is rewritten into a signed-in confirmation once the account link completes, whether or not the link started from the prompt's button.
+
+### Changed
+
+- A Slack `ask_user` prompt with several questions, each offering choices, now renders as a single form (one radio/checkbox group per question) that you answer with one Submit, instead of a numbered list answered one line per question. Submit is accepted only once every question is answered. A prompt with more than 20 questions, or where any question is free-text, has more than 10 choices, or a choice longer than 75 characters, still renders as the numbered-list text path (klaus-gateway#152).
+
+### Fixed
+
+- A tool-approval or ask_user prompt whose Block Kit post fails falls back to a plain-text prompt, so a paused task is never left invisible in the thread (a free-text reply resolves it the same way). The multi-question form now takes the same fallback; previously a failed form post left the paused task with no visible prompt.
+- HITL button values carry the task the prompt renders, and a click on a prompt whose task was already resumed (the thread paused again on a newer prompt) rewrites that message as superseded instead of answering the newer prompt with selections the user never saw. Buttons posted by older gateway versions keep working; they skip the staleness check.
+
+## [0.21.4] - 2026-07-22
+
+### Changed
+
+- Slack `ask_user` questions now render their choices as a vertical `radio_buttons` (single-select) or `checkboxes` (multi-select) list with a Submit button, instead of a horizontal row of buttons that Slack truncated to about 39 characters. A choice longer than 75 characters renders one per section with its full text intact. Multi-select questions are now answerable by clicking (previously only by typing a comma-separated reply). More than 10 choices, or a prompt with multiple questions, still renders as a numbered list you answer in-thread (klaus-gateway#151).
+
+## [0.21.3] - 2026-07-22
+
+### Changed
+
+- The tool-activity truncation notice no longer reads as if details were off; it now says the per-turn limit was reached, that details are still on, and that `/details off` mutes tool posts entirely.
+
+### Fixed
+
+- The sign-in prompt for an unlinked user is now a real threaded message instead of an ephemeral. For a fresh channel mention the previous thread-scoped ephemeral was attached to a thread with no visible messages, so Slack never surfaced it and the bot appeared to ignore the user. The prompt now anchors the reply thread (a threaded reply in channels and in the Slack Assistant DM pane alike), is addressed to the user it is for (the link is minted for them; a bystander's click fails the email match), and, once the user signs in, is updated in place to the signed-in confirmation with the agent hand-off folded in, replacing the separate button-click ephemeral replacement.
+- A repeated backend auth challenge carrying a new login URL re-posts the Connect button instead of being suppressed by the per-backend cooldown. The auth server invalidates the previous single-use link when issuing a new one, so the suppressed prompt left only a dead button while the fresh link was scrubbed from the agent's prose.
+- The decision text that replaces a thread-scoped ephemeral prompt (access allow/deny, connector dismissal) now carries the thread timestamp, so Slack no longer renders it at channel top level in addition to the thread.
+- A plain (non-mention) reply in a channel thread the bot was part of but that is not active (a command-only thread, or one whose activation expired) now gets a one-time ephemeral "mention me to start" hint instead of being dropped in complete silence. Threads with no trace of the bot stay silent.
+- A slash command the gateway does not own (`/invite`, typos) no longer falls through to the agent, which spent a full turn explaining that Slack commands do not work in chat; the gateway replies with a short notice instead. Messages that merely start with a path (`/etc/hosts ...`) still reach the agent.
+- In text-progress mode, the "thinking" placeholder is resolved when a turn is stopped or pauses on an approval prompt before any content streamed, instead of lingering forever.
+
+## [0.21.2] - 2026-07-22
+
+### Fixed
+
+- Slack no longer handles the same message twice when it is delivered as both an `app_mention` and a `message` event with distinct event ids. The duplicate could run a second turn against the agent or answer a single message with a busy notice; messages are now deduplicated by channel and timestamp across event types.
+- A turn that fails before its stream starts (agent resolve or send fails) posts the failure note in the thread instead of being logged silently, so a backend outage no longer reads as the bot ignoring people.
+- An approval button click whose resume cannot reach the agent posts a failure note saying a typed reply retries it, instead of leaving the message showing the decision with nothing happening. The pending task stays resumable either way.
+- One transient Slack API failure while streaming a reply no longer aborts the turn and discards the rest of the answer: mid-stream flushes are retried on the next tick, the final flush is retried in place, and only three consecutive failures give up.
+
+## [0.21.1] - 2026-07-22
+
+### Changed
+
+- Slack `/login` and `/logout` confirmations are ephemeral. The signed-in identity (including the linked email) is visible only to the caller instead of being posted into the shared thread.
+- The unlinked-user sign-in decision and the session resume existence-check outcome are logged at info level (previously debug), so a session that kagent reports missing is visible in default-level logs.
+
+### Fixed
+
+- A parked Slack message whose replay fails after sign-in or after an access grant now posts a failure note in the thread asking the user to resend, instead of failing silently.
+- A failed rewrite of the sign-in prompt after account linking no longer strands a live "Sign in" button: the prompt's anchor is kept and the user's next successful turn retries the rewrite.
+- The "email mismatch" sign-in failure page now names the two emails being compared (the OAuth identity's email and the Slack profile email) and hints at the GitHub primary email as the usual cause; the corresponding log line carries both emails too.
+- The sign-in success page confirms which account you signed in as; the in-thread Slack confirmation no longer repeats the email, so a sign-in in a shared channel does not post your address to the whole thread.
+
+## [0.21.0] - 2026-07-22
+
+### Added
+
+- `--a2a-fallback-icon-url-template` flag / `KLAUS_GATEWAY_A2A_FALLBACK_ICON_URL_TEMPLATE` env / Helm `a2a.fallbackIconUrlTemplate` value set an agent icon URL used when the AgentCard has no `iconUrl` (or its card cannot be fetched). `{agent}` is replaced with the agentRef. Empty (the default) keeps the channel's own default icon. The card's own `iconUrl` always takes precedence.
+
+## [0.20.1] - 2026-07-21
+
+### Added
+
 - `--web-enabled` flag / `KLAUS_GATEWAY_WEB_ENABLED` env / Helm `web.enabled` value gate the web channel adapter, which previously always started. The binary default stays true (local development); the chart default is false, matching `cli.enabled`. The chart now also actually renders `KLAUS_GATEWAY_CLI_ENABLED` from `cli.enabled`, which was previously a dead value.
+
+### Fixed
+
+- A turn that fails after part of the answer was already streamed no longer overwrites that content with the failure note; the note is posted as a new message in the thread instead. The placeholder is still replaced when nothing was streamed yet.
+- Consecutive Slack rate limits no longer kill the turn: a 429 is retried honouring Retry-After for up to 4 attempts (previously a second consecutive 429 failed the call and aborted the stream mid-answer).
+- Corrupt-session recovery (which deletes the kagent session) now requires the model API's `invalid_request_error` class in the failure, so an error that merely quotes agent output mentioning tool_use/tool_result can no longer trigger an irreversible session delete.
+
+## [0.20.0] - 2026-07-21
+
+### Added
+
 - Slack DM and channel surfaces are configured independently. `SLACK_DM_MODE` (`--slack-dm-mode`, Helm `slack.dmMode`) selects the DM behaviour: `serve` (answer DMs, the default), `redirect` (point the user to channels), or `ignore` (drop silently). `SLACK_CHANNEL_MODE` (`--slack-channel-mode`, Helm `slack.channelMode`) selects the channels served: `all` (every channel the bot is invited to, the default), `allowlist` (only the channel IDs in `SLACK_CHANNEL_ALLOWLIST` / `slack.channelAllowlist`), or `none` (DM-only deployments). A mention in a channel outside the allowlist gets a one-time ephemeral notice; the channel intro and all other activity are suppressed there. Config validation rejects unknown modes, an empty allowlist in `allowlist` mode, a non-empty allowlist in any other mode, and combinations that leave the bot with no served surface.
+
+### Changed
+
+- A Slack thread's active state (initiator and on-the-fly access grants) expires after 24 hours without interaction, so the bot stops consuming un-mentioned replies in abandoned threads on a long-lived pod. Any handled message refreshes the deadline; an expired thread re-engages with a fresh `@`-mention, which re-establishes the initiator.
+- A reply into a channel thread the gateway has no record of establishes the thread root's author (fetched from Slack) as the initiator, instead of whoever posts first, so a reply cannot take over an existing thread. This is restart recovery: it applies only within the thread-activation window (24h) of process start, so a thread that was instead expired by that window's TTL is re-established by the fresh `@`-mention, not by its stale root author. Multi-participant threads only; in a 1:1 DM the sole human always becomes the initiator. When the root author cannot be determined or the root is bot-authored, the first poster still becomes the initiator.
+
+### Removed
+
+- `SLACK_DM_ONLY` and the Helm `slack.dmOnly` value, replaced by `SLACK_DM_MODE` and `SLACK_CHANNEL_MODE`. `dmOnly: true` maps to `dmMode: serve` + `channelMode: none`; the old `dmOnly: false` behaviour (channels served, DMs redirected) maps to `dmMode: redirect` + `channelMode: all`. A leftover `slack.dmOnly` in Helm values is ignored.
+
+## [0.19.2] - 2026-07-21
+
+### Fixed
+
+- Helm: the `helm.sh/chart` label no longer ends in a `.` or `-` when a long dev chart version is truncated at 63 characters, which made the label invalid and the App CR undeployable (ATS hung at "Deploying App CR").
+- Outbound Slack Web API and muster OAuth calls are now bounded by a 30s HTTP timeout instead of the timeout-less `http.DefaultClient`. A blackholed connection could previously block forever: the OBO refresh holds a per-user lock across the token call, so one hung refresh wedged that user permanently (every later message queued behind the lock, leaking a goroutine each, until pod restart), and a hung `users.info` during dispatch wedged its thread slot the same way. The oauth2 refresh and code-exchange calls are routed through the configured client via `oauth2.HTTPClient`; previously they always used `http.DefaultClient` regardless of `musterlink.Config.HTTPClient`.
+
+## [0.19.0] - 2026-07-20
+
+### Added
+
 - When the agent reports that a tool needs you to sign in to a backend (e.g. pro), Slack shows an ephemeral "Connect <backend>" button with the login link instead of a raw URL. A "Not now" button dismisses it, and an ignored prompt re-posts at most hourly. `/login` confirms your signed-in identity; `/logout` signs you out. Enabled with `obo.connectors.enabled` (requires OBO).
 - Every dispatched Slack turn emits a structured `turn_dispatch` log record (agent, Slack user, muster subject, channel, thread, message, task, resume flag), the gateway-side anchor for joining a turn to muster's per-call log.
-- The "Sign in" prompt is rewritten into a signed-in confirmation once the account link completes, whether or not the link started from the prompt's button.
+
+### Fixed
+
+- A turn is no longer cut off after 5 minutes. The A2A streaming request ran on an HTTP client with a 5-minute overall timeout, which severs the SSE stream mid-turn on long tool-heavy turns and leaves the agent session with a tool call that has no result, corrupting the conversation history. The stream now has no overall timeout (connection establishment stays bounded); a 30-minute per-turn backstop frees the thread slot if the upstream wedges without closing the connection.
+- A Slack thread whose agent session history has become unreadable (a tool call left without a result by an interrupted turn, rejected by the model API with HTTP 400 on every message) now recovers: the gateway detects the failure, deletes the kagent session, and tells the user to resend their message, instead of the thread failing silently forever. When the session cannot be deleted the notice advises starting a new thread.
+
+## [0.17.0] - 2026-07-20
+
+### Added
+
+- A Slack message sent before signing in is now held and answered once the user links their Giant Swarm identity, instead of being dropped so the user has to re-type it. Up to 5 messages are held per thread (oldest dropped past the cap) and replayed in order once sign-in completes; a replay landing while another turn is running in the thread waits for it instead of being dropped with a busy notice. A burst of held messages posts a single sign-in prompt rather than one per message, and a held message that was itself just a sign-in request ("login", "sign in", ...) is not replayed, since completing the link already answered it. A newcomer who signs in mid-thread still needs the initiator's approval before instructing the agent; on approval every message they sent while waiting (up to the same cap of 5) is replayed in order, not just the last one. Held messages are swept after 24h and are not retained across a restart (klaus-gateway#132).
+
+## [0.16.0] - 2026-07-20
+
+### Added
+
+- Helm chart values for the Slack adapter's turn-progress settings, rendered as the corresponding `KLAUS_GATEWAY_SLACK_*` environment variables: `slack.progress.mode` (`auto`, `reactions`, or `text`), `slack.progress.emojis.working` / `done` / `failed`, `slack.progress.clearReactionOnDone`, and `slack.dropStale`. Empty emoji values and a null `clearReactionOnDone` (the defaults) let the binary decide (`auto`; `eyes` / `white_check_mark` / `x`; clear-on-done true).
+
+## [0.15.0] - 2026-07-20
+
+### Added
+
 - Slack tool-approval prompts gain a **Chat** button alongside Approve/Deny: it holds the pending tool call and invites a follow-up question in the thread. The reply is routed to the paused task (a question resolves it as a reject carrying the question, so the agent answers and asks to confirm again; a plain approve/deny still decides).
 - Slack agent replies and the agent's own confirmation prompts are posted under the agent's display name (from its A2A AgentCard), distinct from Swarmgeist's own messages (`chat:write.customize`). The card supplies the name; when it exposes no icon the app's own icon is kept. Requires the `chat:write.customize` bot scope.
 - Slack posts a one-time introduction when the bot is added to a channel (`member_joined_channel`), so members know what it is and how to reach it. Requires subscribing to the `member_joined_channel` bot event.
-- Slack posts a short launch announcement when a new channel thread starts, making the hand-off from Swarmgeist to the agent explicit. It is posted under the agent's display identity (same as the agent's replies), so the channel thread face pile shows one avatar instead of two. It is posted only once the agent has resolved, so a failed launch does not announce an agent that never arrives.
 - A direct message to the bot receives a polite redirect to use it in a channel, unless `SLACK_DM_ONLY` is set (which serves DMs). The redirect is posted at most once per conversation per hour, so replying to the redirect does not produce another one.
+
+### Fixed
+
+- The one-time channel introduction respects the stale-event gate, so a Socket Mode reconnect replaying an old `member_joined_channel` event no longer double-posts it.
+- AgentCard fetch failures are remembered for 45 seconds, so an unreachable card endpoint no longer adds up to two HTTP timeouts of latency to every turn while the agent's display identity is being resolved.
+- Clicking "Chat" on an approval prompt releases the thread slot before the Slack round-trip that swaps the buttons for the reply hint, so a question typed immediately after the click resumes the held task instead of bouncing off the "still working" notice.
+
+## [0.14.0] - 2026-07-20
+
+### Added
+
+- Slack access control. A thread's initiator (the person whose `@`-mention started it) instructs the agent freely. When someone else tries to instruct it, the gateway prompts them to sign in if it does not yet know them, then asks the initiator, with an ephemeral Yes/No, whether to allow them; on Yes their held message is delivered and they may instruct the agent for the rest of the session. Approvals happen on the fly, per thread, and are additive. Only the initiator can approve an access request, and only the initiator or an allowed user can approve or deny the agent's tool calls in the thread; an onlooker who clicks a button gets a private "not allowed" note and the turn is unaffected.
+
+### Changed
+
+- Slack `/klaus login` and `/klaus logout` are now `/login` and `/logout`.
+- A message from someone not allowed to instruct the agent in a thread is no longer silently dropped; it prompts sign-in or an initiator approval instead.
+
+### Removed
+
+- Slack `/invite`, `/lock`, and `/quit` commands, the locked/open/observe access modes, and the `SLACK_ALLOWED_USERS` and `SLACK_DEFAULT_ACCESS_MODE` settings, replaced by the initiator-plus-approval access model.
+
+### Fixed
+
+- Slack `/details`, `/usage`, and `/stop` now require permission to instruct the agent in the thread, so a channel onlooker can no longer change thread-wide verbosity, read token usage, or cancel a turn (#124).
+- Slack's transient "couldn't refresh your sign-in" message is now ephemeral (visible only to the affected user) instead of posted in-thread.
+- A newcomer's message approved while the thread's current turn is still running is delivered once that turn finishes, instead of being dropped with a busy notice right after the initiator's approval.
+- `/stop` clears the working reaction silently; a stopped turn is no longer marked with the failed reaction.
+- A newcomer whose sign-in hits a transient token failure gets the error immediately (ephemeral), instead of their message being parked for approval and failing after the initiator's consent.
+- A failed update of the access-consent prompt via the interaction `response_url` (non-2xx response) is logged instead of treated as success.
+- `/usage` no longer double-counts a turn that paused for approval: the pre-pause token counts travel with the pending task and the resumed segment adds to them, so both the last-turn and session figures cover the whole turn exactly once.
+- A resume that fails before its stream starts (token mint, gateway resolve, send) re-stores the paused task instead of stranding it, so a retry or button click can still resume the agent.
+- Parked newcomer messages and paused approval tasks are swept after 24 hours, so the per-thread maps no longer grow for the process lifetime.
+
+## [0.13.0] - 2026-07-20
+
+### Added
+
 - Slack `/details on|off|full` command controls whether the agent's tool activity is shown in a thread. On by default; `off` quiets it, `full` also shows tool results. Rendered as fenced code blocks so Slack collapses long payloads. The setting applies to the whole thread.
 - Slack `/usage` command reports token counts for the last turn and the accumulated session total, on demand. When the kagent REST API exposes the agent's model (declarative agents), the report also names the model and provider; a BYO agent omits the line.
 - Slack `/stop` on a thread paused at an approval prompt resolves the pending tool call as a structured rejection (same as replying "stop"), instead of replying "Stopped." while leaving the prompt armed.
 - Slack posts a "starting fresh" notice when an `@`-mention or DM reply continues a thread this gateway has no in-memory record of (e.g. after a restart) and its kagent session no longer exists, instead of silently losing context. Checked at most once per thread; never blocks the turn.
 - `--a2a-rest-url` flag and `KLAUS_GATEWAY_A2A_REST_URL` env var set the kagent controller REST base URL used by the resume check. When unset it is derived from `--a2a-url`.
-- `--a2a-fallback-icon-url-template` flag / `KLAUS_GATEWAY_A2A_FALLBACK_ICON_URL_TEMPLATE` env / Helm `a2a.fallbackIconUrlTemplate` value set an agent icon URL used when the AgentCard has no `iconUrl` (or its card cannot be fetched). `{agent}` is replaced with the agentRef. Empty (the default) keeps the channel's own default icon. The card's own `iconUrl` always takes precedence.
-- Slack access control. A thread's initiator (the person whose `@`-mention started it) instructs the agent freely. When someone else tries to instruct it, the gateway prompts them to sign in if it does not yet know them, then asks the initiator, with an ephemeral Yes/No, whether to allow them; on Yes their held message is delivered and they may instruct the agent for the rest of the session. Approvals happen on the fly, per thread, and are additive. Only the initiator can approve an access request, and only the initiator or an allowed user can approve or deny the agent's tool calls in the thread; an onlooker who clicks a button gets a private "not allowed" note and the turn is unaffected.
-- Helm chart values for the Slack adapter's turn-progress settings, rendered as the corresponding `KLAUS_GATEWAY_SLACK_*` environment variables: `slack.progress.mode` (`auto`, `reactions`, or `text`), `slack.progress.emojis.working` / `done` / `failed`, `slack.progress.clearReactionOnDone`, and `slack.dropStale`. Empty emoji values and a null `clearReactionOnDone` (the defaults) let the binary decide (`auto`; `eyes` / `white_check_mark` / `x`; clear-on-done true).
-- A Slack message sent before signing in is now held and answered once the user links their Giant Swarm identity, instead of being dropped so the user has to re-type it. Up to 5 messages are held per thread (oldest dropped past the cap) and replayed in order once sign-in completes; a replay landing while another turn is running in the thread waits for it instead of being dropped with a busy notice. A burst of held messages posts a single sign-in prompt rather than one per message, and a held message that was itself just a sign-in request ("login", "sign in", ...) is not replayed, since completing the link already answered it. A newcomer who signs in mid-thread still needs the initiator's approval before instructing the agent; on approval every message they sent while waiting (up to the same cap of 5) is replayed in order, not just the last one. Held messages are swept after 24h and are not retained across a restart (klaus-gateway#132).
+
+### Changed
+
+- Per-thread `/details` settings, `/usage` figures, and resume-check marks are dropped after 24 hours of thread inactivity, so a long-lived gateway's memory stays bounded. An active thread refreshes its state on every turn.
+
+### Fixed
+
+- Slack `/usage` sent as a new top-level message in a DM now reports the conversation's token usage. Usage is keyed by the turn's thread root, and a top-level DM message keys a brand-new thread, so the command always answered "Token usage not available yet."; DM usage is now also aggregated per conversation. In a regular channel, `/usage` typed outside the agent's thread replies with guidance to run it as a reply inside the thread.
+- A transient failure of the resume existence-check no longer suppresses the "starting fresh" notice for that thread forever. Only a conclusive result (session present or gone) marks the thread as checked; an indeterminate check is retried on the thread's next message.
+
+## [0.12.0] - 2026-07-20
+
+### Added
+
 - `SLACK_WORKING_EMOJI` / `SLACK_DONE_EMOJI` / `SLACK_FAILED_EMOJI` (and the matching `--slack-working-emoji` etc. flags) override the progress reaction emoji names; empty uses `eyes` / `white_check_mark` / `x`.
 - kagent token usage (`kagent_usage_metadata`) and tool-call activity (`kagent_type` function_call/response DataParts) are parsed from A2A events into `OutboundDelta`: a new `Usage *TurnUsage`, a typed `Tool *ToolActivity` (name/args/response, provider-neutral), and a `DeltaToolActivity` kind. `mapA2AEvent` now returns `[]OutboundDelta` (an event may carry both text and tool activity).
+
+### Changed
+
+- Slack shows turn progress with message reactions on the triggering message (a working emoji added while the turn runs) instead of a `_thinking…_` placeholder. On success the working reaction is removed with no residual emoji by default; set `SLACK_CLEAR_REACTION_ON_DONE=false` to swap in a done reaction instead. A failed turn swaps in the failed reaction. `SLACK_PROGRESS_MODE` selects `auto` (default), `reactions`, or `text`; `auto` falls back to a text placeholder when the `reactions:write` scope is unavailable. Requires the new `reactions:write` bot scope.
+- Slack agent replies render as Block Kit `markdown` blocks (Slack's native Markdown: bold, italic, lists, tables, code blocks) instead of the lossy mrkdwn conversion, chunked at 12,000 characters with code-fence-aware rollover into follow-up in-thread messages.
+
+### Fixed
+
+- Slack turns are serialized per thread. A message that arrives while the thread's previous turn is still running gets a brief "still working" notice instead of starting a second, overlapping turn; concurrent turns on one thread share a kagent session and would otherwise interleave its event log into incoherent history.
+- A Slack thread's paused input-required task is no longer consumed by a typed reply that then aborts on a transient human-token error. The pending task is taken only once the turn is committed to run, so a later button click can still resume it instead of finding nothing.
+- A rate-limited Slack Web API call (HTTP 429) no longer aborts the turn and discards the agent's work. The call is retried once after honoring `Retry-After`, unless the server asks to wait more than 30s (then it fails fast rather than stalling the writer), and a failed flush keeps its content pending so the next flush re-sends it instead of dropping the delta.
+- Slack deliveries are deduplicated by `event_id` in the shared inbound pipeline, so a duplicate delivery never starts a second turn on either transport (Events API and Socket Mode) while a retry whose original delivery was lost (pod restart, ingress failure mid-request) is still processed. Dedup previously lived only in the Events API handler, so Socket Mode redeliveries could start a duplicate turn (klaus-gateway#131). An Events API retry without an `event_id` is still dropped at the HTTP handler.
+- Slack HITL button clicks resume the paused task with the clicker's human muster token. Previously the button path skipped the on-behalf-of token resolution, so an approved mutating tool call executed as the gateway service account instead of the approver; an unlinked clicker is now prompted to sign in and the pending prompt stays answerable.
+- Agent replies chunked into Block Kit `markdown` blocks can no longer exceed Slack's 12,000-character block limit when a chunk boundary falls inside a fenced code block with a long info string; the fence close and reopened fence line are budgeted inside the cap, so the flush is never rejected.
+- Leading Slack link and channel tokens (`<https://...>`, `<#C...>`) in a mention are no longer stripped with the `<@USERID>` mention prefix; a message consisting of a mention plus a URL reaches the agent instead of being dropped as empty.
+- Token usage is no longer over-counted when the model provider reports usage on streaming chunks: usage deltas skip partial events, which mirror the same LLM call's counts on every chunk.
+- Token usage reported on a failed, rejected, or canceled terminal event is now carried on the error delta and counted before the turn aborts, instead of being discarded so a failed turn's tokens never reached usage accounting.
+- Agent-rendered text is escaped before entering Slack mrkdwn contexts (approval prompts, ask_user questions and choices, decision labels), so quoted content containing `<!channel>`, `<!here>`, or `<@U...>` renders literally instead of triggering notifications.
+- `users.info` lookups go through the same 429-retrying Slack transport as every other Web API call.
+- A non-2xx Slack Web API response (other than 429) surfaces as an error carrying the HTTP status code instead of a JSON decode failure on a non-API body.
+- The notification fallback text of agent replies is escaped, so agent output containing `<!channel>`, `<!here>`, or `<@U...>` can no longer trigger notifications through the fallback while the rendered blocks stay literal.
+- HITL approval and choice prompts truncate their text to Slack's 3000-character section limit (rune-safe, with a trailing ellipsis), so an oversized prompt posts instead of being rejected with `invalid_blocks` and stranding the paused task.
+- A transient failure removing the working progress reaction no longer strands it; the removal is retried on the next progress update.
+- A fence info string too long for the chunk budget degrades the continuation to a plain split instead of emitting a block over Slack's limit, and a fence-open line longer than the budget still toggles fence state, so prose after the fence is no longer wrapped in reopened code fences.
+- A Slack turn that ends in error while in text-progress mode replaces its `_thinking…_` placeholder with a failure note instead of leaving it dangling with no signal (reactions mode already swaps in the failed emoji). An intentional `/stop` still cancels silently.
+
+## [0.11.2] - 2026-07-20
+
+### Changed
+
+- `a2a.ForwardedTokenSource` gains `ForwardedOnlyChannels`: requests from a listed channel never use the fallback token source, a missing forwarded token is an error. The originating channel travels on the egress context via `a2a.WithChannel` / `a2a.ChannelFromContext`. With OBO linking enabled the gateway lists the Slack channel, so a Slack turn can never fall back to the gateway ServiceAccount identity; the web and cli channels keep the fallback for anonymous callers.
+
+### Fixed
+
+- Slack OBO: the gateway forwards the dex id_token on the A2A request instead of muster's opaque access token. kagent's A2A edge validates the caller by decoding the JWT and reading its `sub` claim; the opaque muster token is not a JWT, so it was rejected with 401 and linked users' turns never reached the agent. The id_token is the dex-issued token muster returns alongside its access token; the access token is still used only to read the linked identity from the userinfo endpoint. A token response without an id_token now fails loudly instead of forwarding an unusable credential.
+- Slack OBO: the sign-in callback now fails when muster's token response carries no id_token (missing `openid` scope or upstream IdP misconfiguration), instead of storing a link that reports "Signed in to Giant Swarm" and then errors on every turn. No link is persisted in that case.
+- Slack events without a user ID are ignored; an anonymous event can no longer start a turn.
+- Button-click resumes of paused tool approvals carry the clicking user's human token when linking is enabled, the same as typed replies; a resume without one is aborted instead of running as the gateway service account.
+
+## [0.11.0] - 2026-07-16
+
+### Changed
+
+- Slack OBO: the browser-facing sign-in outcomes at `/auth/slack/link` and `/auth/slack/callback` now render a branded, responsive light/dark HTML page (embedded via `//go:embed`), adapted from the platform gateway-api error template. This replaces the bare inline success HTML and the plain-text error responses, so both success and error cases (expired link, email mismatch, sign-in cancelled/failed) share the same Giant Swarm-styled page.
+
+## [0.10.5] - 2026-07-08
+
+### Fixed
+
+- Slack OBO: when a linked user's muster refresh token is rejected (`invalid_grant`), the gateway now drops the dead link and prompts sign-in with the Block Kit button on the same turn, instead of posting a "couldn't refresh, try again" message and only showing the button one turn later. A transient token-endpoint failure (5xx, network) still keeps the link and returns the retryable error.
+
+## [0.10.3] - 2026-06-30
+
+### Added
+
 - Helm: `obo.persistence` backs the link store with a PersistentVolumeClaim so links survive pod recreation (rollouts, node drains), not just in-process restarts. Disabled by default (emptyDir, unchanged behaviour). When enabled with a single ReadWriteOnce claim the Deployment switches to the `Recreate` strategy and sets `fsGroup` so the non-root runtime user can write the encrypted bolt file. `obo.persistence.existingClaim` reuses a pre-provisioned PVC.
-- Helm: `slack.dmOnly` value renders the `SLACK_DM_ONLY` env, restricting the Slack adapter to direct messages (channel messages and @-mentions are ignored). The binary already honoured `SLACK_DM_ONLY`; this exposes it through the chart.
+
+### Fixed
+
+- Slack human-token forwarding no longer silently falls back to the M2M service-account identity. When linking is enabled, the human's muster token is the only credential forwarded; a turn without a valid one is aborted instead of degraded — an unlinked user is prompted to sign in, and a linked user hitting a transient token-mint failure gets a clear error in-thread. This removes a confusing, privilege-broadening fallback that also masked real failures (klaus-gateway#116).
+- Link-store key accepts a base64- or hex-encoded 32-byte AES-256 key, not only 32 raw bytes. A SOPS-staged 44-char base64 `obo.storeKey` previously crashed the gateway on boot (`encryption key must be 32 bytes, got 44`), forcing the in-memory store (links lost on every restart). The key is now normalized at startup; a value that does not resolve to exactly 32 bytes still fails loudly.
+
+## [0.10.1] - 2026-06-26
+
+### Fixed
+
+- Slack OBO: the gateway caches the short-lived human muster access token and serializes refreshes per Slack user instead of refreshing on every message. `TokenFor` previously ran a `refresh_token` grant on every call; because muster rotates refresh tokens and a single Slack turn drives several `TokenFor` calls (the Events API retries an event the agent takes >3s to answer, and concurrent messages overlap), the second refresh reused an already-rotated token, failed `invalid_grant`, and dropped the link. The gateway then silently fell back to the M2M service-account identity, which muster's `/mcp` edge rejected (`audience [kagent]`), leaving the agent with no muster tools. Tool calls now stay attributed to the human for the access token's full lifetime, refreshing at most once per token.
+
+## [0.10.0] - 2026-06-25
+
+### Added
+
 - Helm: `slack.botToken` / `slack.signingSecret` / `slack.appToken` values render the `slack.secretName` Secret (keys `bot-token` / `signing-secret` / `app-token`) when supplied — typically SOPS-encrypted via the agentic-platform umbrella. Mirrors the existing `obo` secret rendering. When `botToken` is empty the chart still references an externally-managed Secret of that name, so existing deployments are unaffected.
+
+## [0.9.0] - 2026-06-25
+
+### Added
+
+- Helm: `slack.dmOnly` value renders the `SLACK_DM_ONLY` env, restricting the Slack adapter to direct messages (channel messages and @-mentions are ignored). The binary already honoured `SLACK_DM_ONLY`; this exposes it through the chart.
+
+## [0.8.1] - 2026-06-24
+
+### Fixed
+
+- Slack replies larger than a single Slack message no longer fail the `chat.update` call; the batched writer rolls the overflow over into stable follow-up in-thread messages, and an in-progress (unterminated) code fence is left unformatted instead of being mangled by mrkdwn transforms. The rollover never splits a multi-byte UTF-8 rune when a single line exceeds the message limit.
+- Avoid a potential panic from comparing `OutboundDelta` (which embeds an error interface) against its zero value on the A2A error path.
+
+### Refactored
+
+- Factor the duplicated Slack inbound pipeline (Events API + Socket Mode) into a single `Adapter.handleInbound` so both transports behave identically.
+
+## [0.2.0] - 2026-06-16
+
+### Added
+
 - A2A egress forwards the caller's inbound bearer token: `InboundMessage.BearerToken` is captured from the `Authorization` header by the web and CLI adapters and sent as `Authorization` on the A2A request, so kagent (trusted-proxy) sees the end-user identity. Channels with no per-user token (Slack) fall back to the `--a2a-token-path` ServiceAccount token. New API in `pkg/a2a`: `TokenSource`, `FileTokenSource`, `ForwardedTokenSource`, `WithForwardedToken`, `ForwardedTokenFromContext`.
+
+### Changed
+
+- `a2a.A2AClient.TokenPath` (string) is replaced by `a2a.A2AClient.TokenSource` (the `a2a.TokenSource` interface). `a2a.FileTokenSource` reproduces the previous per-request file read; `a2a.ForwardedTokenSource` prefers a caller token from the request context and falls back to a `TokenSource`.
+
+## [0.1.5] - 2026-06-16
+
+### Changed
+
+- `--driver=static` no longer requires `--static-instances` to be non-empty. An empty static instance set is valid and acts as a no-op lifecycle manager, allowing A2A-only deployments (Slack/CLI/web → kagent) without any Klaus instance management.
+
+### Fixed
+
+- Updated `tests/test-values.yaml`: removed stale `lifecycle.operatorMCPURL` override and bumped `image.tag` from `0.0.44` to `0.1.4`. The old pin ran the binary that rejected `--driver=static` with empty instances, causing CrashLoopBackOff.
+
+## [0.1.2] - 2026-06-15
+
+### Fixed
+
+- Pin container name in the Deployment template to the literal `klaus-gateway` rather than
+  `{{ .Chart.Name }}`. When the chart is consumed as a Helm dependency under a camelCase
+  alias (e.g. `alias: klausGateway`), Helm sets `.Chart.Name` to the alias, producing an
+  RFC 1123-invalid container name that prevents the Deployment from being applied.
+
+## [0.1.0] - 2026-06-15
+
+### Added
+
 - `channels.SynthesizeContextID` derives a stable A2A contextID from `(channel, channelID, userID, threadID, agentRef)` using length-prefixed SHA-256 encoding.
 - `slack.defaultAgent` config (`--slack-default-agent` / `KLAUS_GATEWAY_SLACK_DEFAULT_AGENT`): every Slack thread routes to this named agent. Required when Slack is enabled; validated against the static instance set at startup when `--driver=static`.
 - Channel turns are now routed through the A2A executor (`ForwardingExecutor.Execute`) when `Facade.Executor` is set and `InboundMessage.AgentRef` is non-empty. Artifact events map to `OutboundDelta{Content}` and terminal status events map to `OutboundDelta{Done: true}`.
 
 ### Changed
 
-- Slack: `/agent` lists the agents as rows with a **Select** button, in place of a list of names to retype. The default agent comes first, then the others A–Z, each with the first sentence of its description; past 8 agents, the rest are named in one line. Select opens the agent picker for that thread with the agent already chosen. The notices of an unknown agent, or of one that cannot run, show the same rows.
-- Slack: `/help` is a reference card: a "Commands" header, how to address the bot, the commands grouped by what you do (In a thread, Agents, Account) with each command and its effect, and a line for the Inspect agent steps shortcut. The gateway's notes and replies (stops, failures, busy and refusal notices, prompt nudges, sign-in and picker notices) no longer use emoji, italics in brackets or "I": each is a short line that says what happened and what to do next, and the notes posted in a thread show as small grey text. For example, "⏹ Stopped by @user." is now "Stopped by @user", a placeholder stopped before any answer reads "Stopped before an answer.", and "_(the turn failed; please try again)_" is now "The turn failed before an answer. Send the message again to retry." The waiting placeholder reads "Working…". A notice that names a command says to mention the bot with it, because Slack's composer keeps a message that starts with `/` for its own commands. The access prompt asks "@user wants to join this thread" with Allow and Decline, and the team-review buttons and status lines have no emoji.
-- Slack: an answered question keeps its question. The buttons change to one line with the answer, who gave it and when ("gazelle · answered by @user · 21:43", in each reader's time zone), in place of "👉 _gazelle_". A form keeps each question with its answer under it. A typed answer in the thread updates the question the same way, so its buttons no longer stay live. In the reply's task list, the question shows as the step "Question for you", not "Ask user".
-- Slack: the sign-in prompt is a "Sign in to Giant Swarm" card. It says that the agent runs its tools with your permissions and that the link is valid for 15 minutes, with a last line for what asked for it ("Your message runs as soon as you sign in.", or "Sign in, then click the button again." after a button click), and "Signed in before? Your session may have expired." under the button. In a channel, the thread line names who it waits for ("Waiting for @Pau to sign in to Giant Swarm") and changes as people sign in, ending with "@Pau signed in to Giant Swarm". The confirmation reads "Signed in to Giant Swarm. The agent now acts with your permissions.", and `/login` and `/logout` reply without emoji ("Signed in as …", "Signed out. The agent asks you to sign in again before it acts for you.").
-- Slack: the agent picker (`/swarmgeist` and **Ask an agent here**) is titled "New conversation". A line at the top says where the conversation lands ("Starts a thread in #channel under the agent's name…", or for the shortcut "Continues this thread…" or "Starts this message's thread…"). A hint under the agent select names the default agent. The question box is now **Prompt** ("What should the agent look into?"), and the submit button reads **Start thread**, or **Start conversation** for the shortcut.
-- Slack: a tool approval is a card. The title says "Approval required" and names the tools as the reply's task list names them ("Approval required · Capi list clusters"). A context line says who can decide ("@initiator or the people they allowed can decide"), and the buttons are Approve and Deny, without emoji. The "💬 Chat" button is removed. The runtime's technical default hint ("Please approve or reject the tool call call_tool() by responding with a FunctionResponse…") is not shown. After a click, the card stays and the buttons change to "Approved by @user · 16:30" or "Denied by @user · 16:30", in each reader's time zone.
-- Slack: the message that opens a conversation from the agent picker (the `/swarmgeist` command or the **Ask an agent here** shortcut) is the question itself, with "Asked by @user" as small print under it, instead of "💬 @user asked *Agent*:" and the question as a quote.
-- Slack agent replies are written with Slack's streaming API: the answer appears as a single message that Slack animates while the agent writes into it, growing about once a second, instead of a message rewritten over and over. Text lands on word boundaries, so half-written words no longer flicker; an answer over 12,000 characters still continues in a follow-up message; and the working indicator clears when the answer ends. Pressing the stop button ends the answer there, with the thread's "Stopped by @user" notice as before. In text-progress mode the `_thinking…_` placeholder is removed once the answer has a message of its own. A turn continued after a restart goes on in the message the previous process left open where Slack still has it open, and a turn that resumes after an approval prompt now writes its continuation as a second message instead of editing the first. `/metrics` gains `klaus_gateway_slack_stream_total{event}` (`started`, `stopped`, `stopped_by_user`, `recovered`).
-- Slack: an agent whose display name is the app's own name — on most installations the default agent, `Swarmgeist` — posts under the app identity instead of a branded copy of it. Until now its replies, its confirmation prompts and the `/agent` root message carried the agent's own icon while Slack's thread furniture (the reply pile, the "is working…" indicator, the sign-in and access prompts) carried the app's, so one conversation showed two faces with the same name. Agents named differently keep their own name and icon. The bot's own `users.info` refused for a missing scope is now taken as final instead of being retried on every lookup.
-- Slack: the agent's tool calls show as a step list inside the reply — "Listing the available tools", "Kubernetes list", each turning from running to done, or to an error when the tool failed, and collapsed by Slack once the answer is complete — instead of a separate hourglass message that kept changing (`⏳ filter_tools… · step 3`) and the receipt it left behind (`🛠️ 8 steps · x_kubernetes_list, …`). One message per answer instead of two, in plain language rather than API names. `/details on` (the default) shows the step titles, `/details full` adds each call's arguments and a result preview to its step and no longer posts the separate JSON messages, and `/details off` shows no steps at all; **Inspect agent steps** is unchanged and still carries the fuller payloads (klaus-gateway#314).
-- A Slack thread's agent, its initiator, the people they allowed, its AgentInstance and the task in flight on it now live in one row in the routing store (`slack|<channelID>||<threadID>`), so on a persistent store (`routing.store: valkey` or `bolt`) a restart keeps routing the thread to its agent, keeps the consent already given, and reads no Slack history to reconstruct any of it. The row has one sliding lifetime — `routing.threadTTL` (`--thread-ttl`), 90 days by default and `0` to never expire — refreshed by every turn. After that long without a message the thread is forgotten: the next mention starts it over with a new initiator and no grants, while the agent's session stays the controller's — the same person gets the earlier session back while the controller still holds it. `/agent "<name>" <question>` now starts a conversation in any thread with no agent yet, including as a reply inside a thread someone else rooted (klaus-gateway#193, #266, #267).
-- **Breaking:** the gateway speaks kagent API v2. Agent turns travel as A2A v1 over gRPC through agentgateway (`a2a.url` is now a gRPC target: `grpc://host:port` for the in-cluster agentgateway Service, `grpcs://host:port` for the public hostname, with `a2a.caSecret`/`a2a.caFile` for a private CA), the `/agent` roster comes from `AgentTemplateService.ListAgentTemplates` of the served namespace (new `a2a.namespace`, default `kagent`; display name and icon from the `ui.giantswarm.io/display-name` and `ui.giantswarm.io/icon-url` annotations, readiness from `status.harnesses[]` — a template no Harness admits, or whose revision is not ready, is not offered and is refused by name), the `/usage` model line comes from `ModelService.GetModelConfig`, and every thread is bound to one `AgentInstance` created on its first turn (`CreateAgentInstance` keyed by the synthesized context id, so a retried first turn creates no second instance) and persisted as `agentInstanceID` on the thread's routing-store entry across the bolt and Valkey stores. Tool approvals and `ask_user` questions use kagent's HITL extension (`https://kagent.dev/extensions/hitl/v1`, requested on every call): the typed request is parsed from the paused task and the decision travels as the typed response on a message carrying the paused task's id, so the task resumes in place. `/stop` cancels the running task at the controller (`CancelTask`) before cancelling the client stream. The controller is spoken to only as the person behind the turn; the ServiceAccount token is never presented to it. **Requires a kagent API v2 controller behind a gRPC-capable route** (`kagent.dev/v1alpha3`); the 0.10 JSON-RPC/REST surface, the `/api/sessions` and `/api/agents` calls, the `/.well-known` AgentCard fetch, `--a2a-rest-url` and `ResolvedRESTURL` are gone. **Conversations from before the cut-over are not migrated**: the first reply in such a thread gets the starting-fresh notice and starts a new instance (klaus-gateway#234). Documented in `docs/kagent-a2a.md`.
-- Slack channel threads now show the native "working" indicator while the agent runs, not just DMs. It is driven by the agent-messaging session status (`agents.sessions.setStatus`, `chat:write` on the bot token): the session is set to `processing` when a turn starts and back to `active` when it ends, fails, or is stopped with `/stop`, so a thread is never left spinning. The tool ticker (`⏳ tool… · step N`) and its receipt (`🛠️ N steps · …`) stay in the thread on every surface, since the indicator carries no text of its own. Workspaces whose install cannot set the status keep the message ticker alone.
-- A Slack thread whose agent is waiting for an answer — a tool approval, an `ask_user` question, a form — is now marked *waiting for you* instead of idle, so the conversations that need the user are visible next to the ones that finished. The thread goes back to *working* as soon as the answer is given, and an answer that never comes no longer strands the mark: the prompt's expiry, and a click on a prompt the gateway no longer holds, return the thread to idle.
-- Agent messages in Slack (replies, confirmation prompts, and the launch announcement) are named by the `Agent` CR's `ui.giantswarm.io/display-name` annotation — `SRE Assistant` — instead of the underscored `sre_agent` the A2A AgentCard publishes. Without the annotation the name is the resource's own spelling, `sre-agent`, which is what `/agent` accepts. The agent's icon still follows the technical name, so renaming an agent relabels it without changing how it looks.
-- The Slack connector sign-in turn renders more cleanly. When the Connect button carries a working post-login auto-resume, the agent's now-redundant sign-in narration ("visit this link…, then tell me") is removed after the turn, leaving only the sign-in prompt; the conversation continues by itself once the user signs in. When auto-resume is not available, the sign-in narration is kept but the login-link line (and its lead-in) is dropped cleanly — the "(login link removed; use the Connect button above)" placeholder note is gone. Requires muster ≥ 1.3.1 with `oauth.mcpClient.postLoginRedirectAllowlist` pointing at the gateway's `/connectors/complete` landing for the auto-resume path.
-- The default agent (binary default and Helm `a2a.defaultAgent`) is now `sre-agent` instead of `klaud-coding`.
-- The signed-in confirmation that replaces the "Sign in" prompt is always the same fixed phrase. It no longer sometimes appends a "Bringing in **<agent>** to help." notice when a held message is about to be replayed; the replay's launch announcement names the agent.
-- Slack tool-activity posts now unwrap muster's `call_tool` meta-tool: the inner tool name is the headline with a `(via muster)` suffix and its arguments render directly, instead of the wrapped `{"name":...,"arguments":...}` object. At `full` detail the result line is unwrapped the same way. Tool names are bold, and payload JSON is spaced after colons and commas for readability (klaus-gateway#163).
-- Slack `ask_user` questions now render their choices as a vertical `radio_buttons` (single-select) or `checkboxes` (multi-select) list with a Submit button, instead of a horizontal row of buttons that Slack truncated to about 39 characters. A choice longer than 75 characters renders one per section with its full text intact. Multi-select questions are now answerable by clicking (previously only by typing a comma-separated reply). More than 10 choices, or a prompt with multiple questions, still renders as a numbered list you answer in-thread (klaus-gateway#151).
-- A Slack `ask_user` prompt with several questions, each offering choices, now renders as a single form (one radio/checkbox group per question) that you answer with one Submit, instead of a numbered list answered one line per question. Submit is accepted only once every question is answered. A prompt with more than 20 questions, or where any question is free-text, has more than 10 choices, or a choice longer than 75 characters, still renders as the numbered-list text path (klaus-gateway#152).
-- Slack `/login` and `/logout` confirmations are ephemeral. The signed-in identity (including the linked email) is visible only to the caller instead of being posted into the shared thread.
-- The tool-activity truncation notice no longer reads as if details were off; it now says the per-turn limit was reached, that details are still on, and that `/details off` mutes tool posts entirely.
-- A Slack thread's active state (initiator and on-the-fly access grants) expires after 24 hours without interaction, so the bot stops consuming un-mentioned replies in abandoned threads on a long-lived pod. Any handled message refreshes the deadline; an expired thread re-engages with a fresh `@`-mention, which re-establishes the initiator.
-- Slack `/klaus login` and `/klaus logout` are now `/login` and `/logout`.
-- A message from someone not allowed to instruct the agent in a thread is no longer silently dropped; it prompts sign-in or an initiator approval instead.
-- Per-thread `/details` settings, `/usage` figures, and resume-check marks are dropped after 24 hours of thread inactivity, so a long-lived gateway's memory stays bounded. An active thread refreshes its state on every turn.
-- A reply into a channel thread the gateway has no record of establishes the thread root's author (fetched from Slack) as the initiator, instead of whoever posts first, so a reply cannot take over an existing thread. This is restart recovery: it applies only within the thread-activation window (24h) of process start, so a thread that was instead expired by that window's TTL is re-established by the fresh `@`-mention, not by its stale root author. Multi-participant threads only; in a 1:1 DM the sole human always becomes the initiator. When the root author cannot be determined or the root is bot-authored, the first poster still becomes the initiator.
-- Slack OBO: the browser-facing sign-in outcomes at `/auth/slack/link` and `/auth/slack/callback` now render a branded, responsive light/dark HTML page (embedded via `//go:embed`), adapted from the platform gateway-api error template. This replaces the bare inline success HTML and the plain-text error responses, so both success and error cases (expired link, email mismatch, sign-in cancelled/failed) share the same Giant Swarm-styled page.
-- The unlinked-user sign-in decision and the session resume existence-check outcome are logged at info level (previously debug), so a session that kagent reports missing is visible in default-level logs.
-- Slack shows turn progress with message reactions on the triggering message (a working emoji added while the turn runs) instead of a `_thinking…_` placeholder. On success the working reaction is removed with no residual emoji by default; set `SLACK_CLEAR_REACTION_ON_DONE=false` to swap in a done reaction instead. A failed turn swaps in the failed reaction. `SLACK_PROGRESS_MODE` selects `auto` (default), `reactions`, or `text`; `auto` falls back to a text placeholder when the `reactions:write` scope is unavailable. Requires the new `reactions:write` bot scope.
-- Slack agent replies render as Block Kit `markdown` blocks (Slack's native Markdown: bold, italic, lists, tables, code blocks) instead of the lossy mrkdwn conversion, chunked at 12,000 characters with code-fence-aware rollover into follow-up in-thread messages.
-- `--driver=static` no longer requires `--static-instances` to be non-empty. An empty static instance set is valid and acts as a no-op lifecycle manager, allowing A2A-only deployments (Slack/CLI/web → kagent) without any Klaus instance management.
-- `a2a.A2AClient.TokenPath` (string) is replaced by `a2a.A2AClient.TokenSource` (the `a2a.TokenSource` interface). `a2a.FileTokenSource` reproduces the previous per-request file read; `a2a.ForwardedTokenSource` prefers a caller token from the request context and falls back to a `TokenSource`.
-- `a2a.ForwardedTokenSource` gains `ForwardedOnlyChannels`: requests from a listed channel never use the fallback token source, a missing forwarded token is an error. The originating channel travels on the egress context via `a2a.WithChannel` / `a2a.ChannelFromContext`. With OBO linking enabled the gateway lists the Slack channel, so a Slack turn can never fall back to the gateway ServiceAccount identity; the web and cli channels keep the fallback for anonymous callers.
 - `Facade.SendCompletion` dispatches through A2A when the inbound message carries a non-empty `AgentRef` and `Facade.Executor` is set. Requests with no `AgentRef` (web and CLI channels) continue to use the OpenAI `/v1` SSE path unchanged.
+
+## [0.0.27] - 2026-05-19
+
+### Changed
+
 - Bump `giantswarm/architect` orb to `8.2.2` and re-enable cosign keyless chart signing (`sign: false` removed from every `push-to-app-catalog*` invocation). v8.2.2 ships [architect-orb#772](https://github.com/giantswarm/architect-orb/pull/772) which upgrades the `app-build-suite` executor image from `1.8.0-circleci` to `1.8.1-circleci` -- the new image includes the `cosign` binary that v8.2.0's chart signing defaults require. Closes [architect-orb#769](https://github.com/giantswarm/architect-orb/issues/769).
+
+## [0.0.26] - 2026-05-19
+
+### Changed
+
 - Disable cosign keyless chart signing on the `push-to-app-catalog*` jobs (`sign: false`). The architect orb's `push-to-app-catalog` defaults `sign` to `true` since v8.2.0 and shells out to `cosign`, but this repo uses `executor: app-build-suite` (so the `app_build_suite` Python CLI is available to package the chart with metadata) and the `app-build-suite` image doesn't ship `cosign`. Without this opt-out, every chart push fails on the `Mint Sigstore OIDC token` step with `cosign: command not found`. To be removed once architect-orb makes `cosign-prepare` resilient to a missing binary (or ships cosign in the `app-build-suite` executor).
 - Bump `giantswarm/architect` orb to `8.2.1` to pick up [architect-orb#767](https://github.com/giantswarm/architect-orb/pull/767): `image-login-to-registries` is now POSIX-portable, unblocking `architect/sync-china-registry` (the gsoci -> Aliyun mirror via the in-China `giantswarm/galaxy-runner`). The v8.1.0 refactor accidentally introduced bash-only `${!var}` indirect expansion in the shared login command, which BusyBox `/bin/sh` (used by the regctl executor) rejected with `bad substitution` -- so no Aliyun mirror has been happening since the migration to `split-china-push: true`. v8.2.x also enables cosign keyless signing, SLSA provenance, and SBOM attestations by default for public images and charts.
+
+## [0.0.25] - 2026-05-18
+
+### Changed
+
 - Replace the `push-to-gsoci-release` + `push-to-all-registries-release` workaround pair (gsoci-only push gating the chart, plus a parallel best-effort all-registries push to dodge Aliyun timeouts) with a single `push-to-registries-release` job using `split-china-push: true` and a companion `sync-china-registry` job. The cross-Pacific `docker buildx` push to the Aliyun mirror is gone; the in-China `giantswarm/galaxy-runner` runs `regctl image copy` from gsoci to Aliyun via the Singapore geo-replica. The chart catalog publish still does not gate on Aliyun.
+
+## [0.0.24] - 2026-05-18
+
+### Changed
+
 - Bump `giantswarm/architect` orb to `8.1.0` and migrate image pushes from the deprecated `push-to-registries-multiarch` job to `push-to-registries` with `multiarch: true`. Picks up the v8.1.0 QEMU/binfmt auto-registration, hardened buildx bootstrap, and standard OCI image labels.
+
+## [0.0.6] - 2026-04-25
+
+### Fixed
+
+- Add `.abs/main.yaml` with `replace-chart-version-with-git` /
+  `replace-app-version-with-git` enabled. Without this config app-build-suite
+  packaged the chart with the literal `0.1.0` placeholder from `Chart.yaml`,
+  which left the published chart's `appVersion` (and thus the default
+  `image.tag`) pointing at the non-existent `:0.1.0` image. The same flag is
+  used by `klaus` and `mcp-prometheus`.
+
+## [0.0.5] - 2026-04-25
+
+### Changed
+
 - Switch the chart catalog jobs to the `app-build-suite` executor (mirrors the
   klaus and mcp-prometheus pattern). `app-build-suite` rewrites `Chart.yaml`'s
   `version` and `appVersion` from the git tag at build time, which finally
@@ -230,158 +1307,180 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that gates the chart catalog release, and a separate "all registries" push
   that also covers the slow China mirror. The chart push no longer waits for
   the China mirror, so a slow mirror only delays itself.
-- Slack: a conversation's agent session is attributed to the person who started it, also when it was opened from the slash-command picker or the **Ask an agent here** shortcut. No new scope and nothing to configure.
 
-### Fixed
-
-- Conversations the gateway starts in kagent are named after the message that opened them again, so the kagent conversation list reads "why did the CPU alert fire on gazelle" instead of an untitled row. Naming them was the kagent 0.10 controller's doing: on API v2 a conversation is an `AgentInstance` the gateway creates, and its display name is the client's to set — so every conversation started from Slack, the web channel or the CLI was created unnamed. The name is the turn's message rendered on one line and cut at the controller's 200-character limit on a word boundary; from Slack it is the same line that titles the Slack session, the mention and the command stripped. A message with nothing to name a conversation after (an upload with no caption) still creates one unnamed, and a name the controller refuses is dropped and the create retried unnamed rather than failing the turn.
-- Slack: `/agent <name>` and the agent picker no longer answer "I don't know an agent named …" for an agent that exists but cannot run. The reply now names the agent and says why — no Harness admits its AgentTemplate, or no ready revision has been compiled for it — so a correctly typed name is not reported as unknown (klaus-gateway#239).
-- A Slack turn that fails before any answer text now also posts `_(the turn failed; please try again)_` in the thread when progress is shown with reactions, instead of only turning the working emoji into a red cross — which says nothing about what to do and, for a conversation started with the slash command, sits on the bot's own root message. A failure after streamed content still shows the reaction alone.
-- The binary knows its release version. Released images logged `"version":"dev"` at start (and `--version` printed `klaus-gateway dev (<sha>)`) because the architect orb's release build stamps only the git SHA and the build timestamp into `pkg/project`, never the version, and the devctl Makefile's `-X …pkg/project.version` flag is not what CI links with. `pkg/project.Version()` now resolves an injected `version` ldflag first, then the main-module version Go stamps into the build info from the VCS tag (`v1.7.1` on a tag build, a pseudo-version on a branch build), then the git SHA, then `dev`; the files the CI writes into the tree before linking (`.ldflags`, `.platforms`, the built binaries) are ignored so the build info stays clean instead of `vX.Y.Z+dirty`. The start record and `--version` agree (klaus-gateway#259).
-- The OBO link store no longer turns a failed read or write into a silent cache miss. `Store.Get`/`Put`/`Delete` report their errors, and the gateway keeps a process-local copy of every link it has read or written: a refresh token muster has already rotated is kept in memory when the store (the Kubernetes Secret on an apiserver hiccup, the bolt file on a full disk) refuses the write, the write is retried in the background and once more on shutdown, and the next refresh uses the rotated token instead of failing `invalid_grant` and signing the person out — the same for the link a sign-in has just created. A store that fails to read serves the link the gateway already knows; a person it has never seen gets the transient "couldn't refresh your sign-in" notice in Slack instead of the sign-in prompt (their message is not parked), and `/login` answers the same way. `/logout` reports a sign-out the store refused instead of confirming it. Before dropping a link on `invalid_grant` the gateway re-reads the store, so a token rotated by another writer (a second replica, the import) is retried rather than burned. Reads are served from the copy for 30 s, so a Slack turn costs one Secret read rather than two or three (klaus-gateway#256).
-- The chart's `nodeSelector` and `affinity` take arbitrary keys again: the generated values schema declared both maps with `additionalProperties: false`, so any node label (`karpenter.sh/capacity-type: on-demand`, a zone) or affinity term failed the release with `additional properties … not allowed` — the knobs were unusable. Both are annotated free-form like `podAnnotations`.
-- The Slack sign-in prompt in a channel is now ephemeral to the user it is minted for, so the thread's other readers no longer see a login link bound to someone else's identity. A short notice in the thread says the agent is waiting for a sign-in; it names nobody, carries no link, and is posted once per thread for every unlinked user in it. The completed link is confirmed to the same user with a fresh ephemeral, since an ephemeral cannot be rewritten in place; for the same reason a channel prompt that replaces an expired one says so on itself rather than by rewriting its predecessor. The DM prompt is unchanged (klaus-gateway#185).
-- On kagent API v2 every streamed text run reached Slack (and the web and CLI channels) twice: the Go ADK streams a run as appended artifact chunks and then re-sends the finished run whole on the same artifact (`append: false`, `lastChunk: true`), and the gateway rendered both. The A2A artifact update semantics are now honoured — a replace renders only what the artifact has not delivered yet — so each run appears once, and text runs separated by tool calls are separated by a paragraph instead of running into each other (klaus-gateway#242).
-- A long streamed Slack reply no longer ends in `chat.update: msg_too_long`: the message's notification fallback text (the escaped reply) is cut to Slack's 4,000-character limit for that field, while the reply itself stays in the markdown block (12,000 characters per message, rolling over into follow-up messages). Should Slack still refuse a message as too long, the reply is re-split into smaller messages instead of being re-sent unchanged every tick (klaus-gateway#242).
-- A Slack failure while rendering the reply no longer fails the turn. Flushes keep retrying until the agent finishes (slowing to one attempt every 5 s after three failures), and only a final flush that still fails is reported: the thread gets a note that the reply is incomplete and the failed reaction, while the turn counts as completed. Previously three consecutive failures aborted the turn, which cancelled the agent's task server-side, so a finished answer showed as Canceled in the person's session (klaus-gateway#242).
-- A task that already completed or paused on a prompt is no longer cancelled server-side when its channel stops listening right after the terminal event; only a task still running is.
-- A `grpcs://` A2A target without a port now means port 443, the way an https URL does; 1.1.0 refused it (`must be grpcs://host:port`), which also failed agentlab's `klaus-gateway-test` against a 1.1.x build. A plaintext `grpc://` target still has to name its port.
-- The ConfigMap routing store (`routing.store: configmap`) could not persist a single binding: it used the routing key's pipe-separated form as the ConfigMap data key, which the API server rejects (`a valid config key must consist of alphanumeric characters, '-', '_' or '.'`), so every turn on that store failed before it reached the agent. Data keys are now base64url-encoded and decoded on `List` (klaus-gateway#244).
-- A Slack turn cut short by the gateway's own shutdown (a pod restart, a node loss with a grace period) is no longer treated like a `/stop`. The thread gets a one-line notice — `⚠️ I was restarted while **<agent>** was working. It keeps going — the result is in the Dev Portal, and I post it here when it is done.` — in reactions mode too (a `/stop` there stays silent by design), the working reaction is cleared and the status ticker collapses into its receipt instead of freezing at `⏳ … step N`, and the task is left running at the controller rather than cancelled over a connection that was already closing. The notice does not promise the delivery when the routing store is `memory`. A `/stop` still cancels the task (`CancelTask`), and a turn that already completed is never cancelled by its own teardown (klaus-gateway#244).
-- The sign-in "Email mismatch" page now tells the user the actual fix — add the Slack email to their GitHub account (Settings > Emails) and verify it, falling back to making it the primary email on deployments whose dex GitHub connector does not set `preferredEmailDomain` — instead of only suggesting to change the GitHub primary email (giantswarm/giantswarm#37543).
-- The agent's interim narration in Slack — the prose it writes just before firing tool calls ("Let me pull the HelmRelease from both clusters simultaneously.") — now reaches the thread instead of being dropped. It is posted as its own in-thread message, in order with the tool-activity posts it introduces, and is shown at every `/details` level, since it is the agent talking rather than tool transparency. The answer still lands as the turn's last message and is not duplicated: only a status update that also carries tool calls counts as narration, so the agent's text-only mirror of the answer, the echo of the user's own message, and streamed partial chunks stay ignored. At most 10 narration messages are posted per turn, with a note where the rest are hidden; an outsized narration is split across messages like the main reply rather than rejected by Slack. A sign-in link quoted in narration is stripped as it is in the main reply, so the single-use OAuth link is never duplicated next to the Connect button, and narration written after a sign-in challenge is retracted with the reply when a connector prompt auto-resumes the turn (narration explaining earlier tool calls stays) (klaus-gateway#197).
-- Token usage is no longer counted off a streaming chunk that kagent marks as partial on the status message alone rather than on the event, which would have inflated `/usage` by roughly the number of chunks.
-- Slack file attachments now reach the agent when the message does not mention the bot: an image sent as a plain thread reply or as a DM (Slack marks these with the `file_share` message subtype, which was previously filtered out) starts a turn like any other reply. Previously only files attached to an `@`-mention were forwarded. An image-only DM in redirect mode now also receives the channel-redirect notice instead of silence.
-- A Slack workspace whose app install predates the `chat:write.customize` scope now receives agent replies under the app's own identity instead of failed posts: a branded post rejected for a scope or username problem is retried unbranded, and the downgrade is remembered for the rest of the process.
-- The Slack "Connect <backend>" button no longer opens a broken login link when the agent's sign-in challenge arrives as an undecoded JSON string.
-- The Slack `/agent` roster listing, a selection by technical or display name, and the recovery of a quoted opener after a restart no longer fail on a fresh gateway pod ("I can't list the available agents", "I couldn't check the available agents", or a false "I don't know an agent named …"): the catalogue reads run as the calling Slack user, which the kagent controller requires, instead of relying on a roster cache that only a previous turn could have warmed.
-- The Slack `/help` reply no longer shows a hardcoded `@klaus` mention. It uses the bot's own display name resolved at runtime (e.g. `@Swarmgeist`), falling back to a name-free example when the name cannot be resolved (klaus-gateway#182).
-- A Slack message from a signed-out user that arrives while the thread is briefly busy is parked for sign-in instead of being rejected with a busy notice and dropped. The sign-in gate previously ran after the per-thread turn lock, so the message was lost until the user resent it.
-- A button-click resume that fails on corrupt session history now resets the session and tells the thread, the same recovery a typed message gets, instead of leaving the thread failing forever.
-- A Slack turn that pauses for input right as the buffered reply text fails to post no longer loses the pause: the approval stays answerable by a reply or click, and only the buffered prose is lost. Previously the paused task was discarded, the next reply started a fresh turn, and the abandoned task could corrupt the conversation's history.
-- Slack thread replies sent with "Also send to #channel" (`thread_broadcast`) now reach the agent like any other reply instead of being silently dropped.
-- `/stop` sent while a turn is still starting up (before it is cancellable) now actually stops that turn instead of replying "Stopped." and letting it run to completion. `/stop` in a thread with nothing running replies "Nothing is running in this thread." instead of a false "Stopped.".
-- Clicking an access-consent button after the gateway lost the thread's state (restart, 24h expiry) rewrites the prompt to say the approval expired and who should resend their message, instead of doing nothing. A consent click by someone other than the thread owner now gets the "not allowed" note instead of silence.
-- A newcomer whose request the thread owner declines is now told so (ephemerally), instead of waiting forever on the "your message is waiting" ack.
-- When messages held during sign-in or pending approval overflow the 5-per-thread cap, the user is told which ones will not replay and to resend them, instead of the oldest being dropped silently.
-- The "I'm not active in this thread" hint is no longer posted for a message whose `app_mention` twin is acting on it, so a mention is not answered and contradicted at the same time.
-- The sign-in button's link expires after 15 minutes, but the prompt was suppressed for 24 hours: a user returning later was stuck behind a dead button, with new messages parking silently. A message sent after the link expired now posts a fresh prompt and rewrites the stale one.
-- A granted collaborator's turn in a shared Slack thread now runs under the thread initiator's identity instead of the collaborator's, so the thread stays one session: the initiator's token is forwarded on the collaborator's turn (kagent has no per-caller identity within a session), and the real author is attached to the message so the agent still sees who spoke. If the initiator's token cannot be minted, the turn falls back to the sender's own identity rather than the gateway service account.
-- Slack no longer handles the same message twice when it is delivered as both an `app_mention` and a `message` event with distinct event ids. The duplicate could run a second turn against the agent or answer a single message with a busy notice; messages are now deduplicated by channel and timestamp across event types.
-- A turn that fails before its stream starts (agent resolve or send fails) posts the failure note in the thread instead of being logged silently, so a backend outage no longer reads as the bot ignoring people.
-- An approval button click whose resume cannot reach the agent posts a failure note saying a typed reply retries it, instead of leaving the message showing the decision with nothing happening. The pending task stays resumable either way.
-- A tool-approval or ask_user prompt whose Block Kit post fails falls back to a plain-text prompt, so a paused task is never left invisible in the thread (a free-text reply resolves it the same way). The multi-question form now takes the same fallback; previously a failed form post left the paused task with no visible prompt.
-- HITL button values carry the task the prompt renders, and a click on a prompt whose task was already resumed (the thread paused again on a newer prompt) rewrites that message as superseded instead of answering the newer prompt with selections the user never saw. Buttons posted by older gateway versions keep working; they skip the staleness check.
-- One transient Slack API failure while streaming a reply no longer aborts the turn and discards the rest of the answer: mid-stream flushes are retried on the next tick, the final flush is retried in place, and only three consecutive failures give up.
-- A parked Slack message whose replay fails after sign-in or after an access grant now posts a failure note in the thread asking the user to resend, instead of failing silently.
-- A failed rewrite of the sign-in prompt after account linking no longer strands a live "Sign in" button: the prompt's anchor is kept and the user's next successful turn retries the rewrite.
-- The sign-in prompt for an unlinked user is now a real threaded message instead of an ephemeral. For a fresh channel mention the previous thread-scoped ephemeral was attached to a thread with no visible messages, so Slack never surfaced it and the bot appeared to ignore the user. The prompt now anchors the reply thread (a threaded reply in channels and in the Slack Assistant DM pane alike), is addressed to the user it is for (the link is minted for them; a bystander's click fails the email match), and, once the user signs in, is updated in place to the signed-in confirmation with the agent hand-off folded in, replacing the separate button-click ephemeral replacement.
-- The "email mismatch" sign-in failure page now names the two emails being compared (the OAuth identity's email and the Slack profile email) and hints at the GitHub primary email as the usual cause; the corresponding log line carries both emails too.
-- The sign-in success page confirms which account you signed in as; the in-thread Slack confirmation no longer repeats the email, so a sign-in in a shared channel does not post your address to the whole thread.
-- A repeated backend auth challenge carrying a new login URL re-posts the Connect button instead of being suppressed by the per-backend cooldown. The auth server invalidates the previous single-use link when issuing a new one, so the suppressed prompt left only a dead button while the fresh link was scrubbed from the agent's prose.
-- The decision text that replaces a thread-scoped ephemeral prompt (access allow/deny, connector dismissal) now carries the thread timestamp, so Slack no longer renders it at channel top level in addition to the thread.
-- A plain (non-mention) reply in a channel thread the bot was part of but that is not active (a command-only thread, or one whose activation expired) now gets a one-time ephemeral "mention me to start" hint instead of being dropped in complete silence. Threads with no trace of the bot stay silent.
-- A slash command the gateway does not own (`/invite`, typos) no longer falls through to the agent, which spent a full turn explaining that Slack commands do not work in chat; the gateway replies with a short notice instead. Messages that merely start with a path (`/etc/hosts ...`) still reach the agent.
-- In text-progress mode, the "thinking" placeholder is resolved when a turn is stopped or pauses on an approval prompt before any content streamed, instead of lingering forever.
-- A turn that fails after part of the answer was already streamed no longer overwrites that content with the failure note; the note is posted as a new message in the thread instead. The placeholder is still replaced when nothing was streamed yet.
-- Consecutive Slack rate limits no longer kill the turn: a 429 is retried honouring Retry-After for up to 4 attempts (previously a second consecutive 429 failed the call and aborted the stream mid-answer).
-- Corrupt-session recovery (which deletes the kagent session) now requires the model API's `invalid_request_error` class in the failure, so an error that merely quotes agent output mentioning tool_use/tool_result can no longer trigger an irreversible session delete.
-- Helm: the `helm.sh/chart` label no longer ends in a `.` or `-` when a long dev chart version is truncated at 63 characters, which made the label invalid and the App CR undeployable (ATS hung at "Deploying App CR").
-- Outbound Slack Web API and muster OAuth calls are now bounded by a 30s HTTP timeout instead of the timeout-less `http.DefaultClient`. A blackholed connection could previously block forever: the OBO refresh holds a per-user lock across the token call, so one hung refresh wedged that user permanently (every later message queued behind the lock, leaking a goroutine each, until pod restart), and a hung `users.info` during dispatch wedged its thread slot the same way. The oauth2 refresh and code-exchange calls are routed through the configured client via `oauth2.HTTPClient`; previously they always used `http.DefaultClient` regardless of `musterlink.Config.HTTPClient`.
-- A turn is no longer cut off after 5 minutes. The A2A streaming request ran on an HTTP client with a 5-minute overall timeout, which severs the SSE stream mid-turn on long tool-heavy turns and leaves the agent session with a tool call that has no result, corrupting the conversation history. The stream now has no overall timeout (connection establishment stays bounded); a 30-minute per-turn backstop frees the thread slot if the upstream wedges without closing the connection.
-- A Slack thread whose agent session history has become unreadable (a tool call left without a result by an interrupted turn, rejected by the model API with HTTP 400 on every message) now recovers: the gateway detects the failure, deletes the kagent session, and tells the user to resend their message, instead of the thread failing silently forever. When the session cannot be deleted the notice advises starting a new thread.
-- Slack `/usage` sent as a new top-level message in a DM now reports the conversation's token usage. Usage is keyed by the turn's thread root, and a top-level DM message keys a brand-new thread, so the command always answered "Token usage not available yet."; DM usage is now also aggregated per conversation. In a regular channel, `/usage` typed outside the agent's thread replies with guidance to run it as a reply inside the thread.
-- A transient failure of the resume existence-check no longer suppresses the "starting fresh" notice for that thread forever. Only a conclusive result (session present or gone) marks the thread as checked; an indeterminate check is retried on the thread's next message.
-- Slack OBO: the gateway forwards the dex id_token on the A2A request instead of muster's opaque access token. kagent's A2A edge validates the caller by decoding the JWT and reading its `sub` claim; the opaque muster token is not a JWT, so it was rejected with 401 and linked users' turns never reached the agent. The id_token is the dex-issued token muster returns alongside its access token; the access token is still used only to read the linked identity from the userinfo endpoint. A token response without an id_token now fails loudly instead of forwarding an unusable credential.
-- The one-time channel introduction respects the stale-event gate, so a Socket Mode reconnect replaying an old `member_joined_channel` event no longer double-posts it.
-- AgentCard fetch failures are remembered for 45 seconds, so an unreachable card endpoint no longer adds up to two HTTP timeouts of latency to every turn while the agent's display identity is being resolved.
-- Slack OBO: the sign-in callback now fails when muster's token response carries no id_token (missing `openid` scope or upstream IdP misconfiguration), instead of storing a link that reports "Signed in to Giant Swarm" and then errors on every turn. No link is persisted in that case.
-- Slack events without a user ID are ignored; an anonymous event can no longer start a turn.
-- Button-click resumes of paused tool approvals carry the clicking user's human token when linking is enabled, the same as typed replies; a resume without one is aborted instead of running as the gateway service account.
-- Slack OBO: when a linked user's muster refresh token is rejected (`invalid_grant`), the gateway now drops the dead link and prompts sign-in with the Block Kit button on the same turn, instead of posting a "couldn't refresh, try again" message and only showing the button one turn later. A transient token-endpoint failure (5xx, network) still keeps the link and returns the retryable error.
-- Slack human-token forwarding no longer silently falls back to the M2M service-account identity. When linking is enabled, the human's muster token is the only credential forwarded; a turn without a valid one is aborted instead of degraded — an unlinked user is prompted to sign in, and a linked user hitting a transient token-mint failure gets a clear error in-thread. This removes a confusing, privilege-broadening fallback that also masked real failures (klaus-gateway#116).
-- Link-store key accepts a base64- or hex-encoded 32-byte AES-256 key, not only 32 raw bytes. A SOPS-staged 44-char base64 `obo.storeKey` previously crashed the gateway on boot (`encryption key must be 32 bytes, got 44`), forcing the in-memory store (links lost on every restart). The key is now normalized at startup; a value that does not resolve to exactly 32 bytes still fails loudly.
-- Slack OBO: the gateway caches the short-lived human muster access token and serializes refreshes per Slack user instead of refreshing on every message. `TokenFor` previously ran a `refresh_token` grant on every call; because muster rotates refresh tokens and a single Slack turn drives several `TokenFor` calls (the Events API retries an event the agent takes >3s to answer, and concurrent messages overlap), the second refresh reused an already-rotated token, failed `invalid_grant`, and dropped the link. The gateway then silently fell back to the M2M service-account identity, which muster's `/mcp` edge rejected (`audience [kagent]`), leaving the agent with no muster tools. Tool calls now stay attributed to the human for the access token's full lifetime, refreshing at most once per token.
-- Updated `tests/test-values.yaml`: removed stale `lifecycle.operatorMCPURL` override and bumped `image.tag` from `0.0.44` to `0.1.4`. The old pin ran the binary that rejected `--driver=static` with empty instances, causing CrashLoopBackOff.
-- Slack replies larger than a single Slack message no longer fail the `chat.update` call; the batched writer rolls the overflow over into stable follow-up in-thread messages, and an in-progress (unterminated) code fence is left unformatted instead of being mangled by mrkdwn transforms. The rollover never splits a multi-byte UTF-8 rune when a single line exceeds the message limit.
-- Avoid a potential panic from comparing `OutboundDelta` (which embeds an error interface) against its zero value on the A2A error path.
-- Slack `/details`, `/usage`, and `/stop` now require permission to instruct the agent in the thread, so a channel onlooker can no longer change thread-wide verbosity, read token usage, or cancel a turn (#124).
-- Slack's transient "couldn't refresh your sign-in" message is now ephemeral (visible only to the affected user) instead of posted in-thread.
-- Slack turns are serialized per thread. A message that arrives while the thread's previous turn is still running gets a brief "still working" notice instead of starting a second, overlapping turn; concurrent turns on one thread share a kagent session and would otherwise interleave its event log into incoherent history.
-- A Slack thread's paused input-required task is no longer consumed by a typed reply that then aborts on a transient human-token error. The pending task is taken only once the turn is committed to run, so a later button click can still resume it instead of finding nothing.
-- A rate-limited Slack Web API call (HTTP 429) no longer aborts the turn and discards the agent's work. The call is retried once after honoring `Retry-After`, unless the server asks to wait more than 30s (then it fails fast rather than stalling the writer), and a failed flush keeps its content pending so the next flush re-sends it instead of dropping the delta.
-- Slack deliveries are deduplicated by `event_id` in the shared inbound pipeline, so a duplicate delivery never starts a second turn on either transport (Events API and Socket Mode) while a retry whose original delivery was lost (pod restart, ingress failure mid-request) is still processed. Dedup previously lived only in the Events API handler, so Socket Mode redeliveries could start a duplicate turn (klaus-gateway#131). An Events API retry without an `event_id` is still dropped at the HTTP handler.
-- Slack HITL button clicks resume the paused task with the clicker's human muster token. Previously the button path skipped the on-behalf-of token resolution, so an approved mutating tool call executed as the gateway service account instead of the approver; an unlinked clicker is now prompted to sign in and the pending prompt stays answerable.
-- Agent replies chunked into Block Kit `markdown` blocks can no longer exceed Slack's 12,000-character block limit when a chunk boundary falls inside a fenced code block with a long info string; the fence close and reopened fence line are budgeted inside the cap, so the flush is never rejected.
-- Leading Slack link and channel tokens (`<https://...>`, `<#C...>`) in a mention are no longer stripped with the `<@USERID>` mention prefix; a message consisting of a mention plus a URL reaches the agent instead of being dropped as empty.
-- Token usage is no longer over-counted when the model provider reports usage on streaming chunks: usage deltas skip partial events, which mirror the same LLM call's counts on every chunk.
-- Token usage reported on a failed, rejected, or canceled terminal event is now carried on the error delta and counted before the turn aborts, instead of being discarded so a failed turn's tokens never reached usage accounting.
-- Agent-rendered text is escaped before entering Slack mrkdwn contexts (approval prompts, ask_user questions and choices, decision labels), so quoted content containing `<!channel>`, `<!here>`, or `<@U...>` renders literally instead of triggering notifications.
-- A newcomer's message approved while the thread's current turn is still running is delivered once that turn finishes, instead of being dropped with a busy notice right after the initiator's approval.
-- `/stop` clears the working reaction silently; a stopped turn is no longer marked with the failed reaction.
-- A newcomer whose sign-in hits a transient token failure gets the error immediately (ephemeral), instead of their message being parked for approval and failing after the initiator's consent.
-- A failed update of the access-consent prompt via the interaction `response_url` (non-2xx response) is logged instead of treated as success.
-- `users.info` lookups go through the same 429-retrying Slack transport as every other Web API call.
-- A non-2xx Slack Web API response (other than 429) surfaces as an error carrying the HTTP status code instead of a JSON decode failure on a non-API body.
-- The notification fallback text of agent replies is escaped, so agent output containing `<!channel>`, `<!here>`, or `<@U...>` can no longer trigger notifications through the fallback while the rendered blocks stay literal.
-- HITL approval and choice prompts truncate their text to Slack's 3000-character section limit (rune-safe, with a trailing ellipsis), so an oversized prompt posts instead of being rejected with `invalid_blocks` and stranding the paused task.
-- A transient failure removing the working progress reaction no longer strands it; the removal is retried on the next progress update.
-- A fence info string too long for the chunk budget degrades the continuation to a plain split instead of emitting a block over Slack's limit, and a fence-open line longer than the budget still toggles fence state, so prose after the fence is no longer wrapped in reopened code fences.
-- A Slack turn that ends in error while in text-progress mode replaces its `_thinking…_` placeholder with a failure note instead of leaving it dangling with no signal (reactions mode already swaps in the failed emoji). An intentional `/stop` still cancels silently.
-- `/usage` no longer double-counts a turn that paused for approval: the pre-pause token counts travel with the pending task and the resumed segment adds to them, so both the last-turn and session figures cover the whole turn exactly once.
-- A resume that fails before its stream starts (token mint, gateway resolve, send) re-stores the paused task instead of stranding it, so a retry or button click can still resume the agent.
-- Parked newcomer messages and paused approval tasks are swept after 24 hours, so the per-thread maps no longer grow for the process lifetime.
-- Clicking "Chat" on an approval prompt releases the thread slot before the Slack round-trip that swaps the buttons for the reply hint, so a question typed immediately after the click resumes the held task instead of bouncing off the "still working" notice.
-- Stopping the Slack adapter cancels its lifecycle context and waits for in-flight background work (inbound dispatch, post-sign-in replay, sign-in prompt rewrites) to finish, bounded by the passed context, instead of returning while those goroutines keep running.
-- Pin container name in the Deployment template to the literal `klaus-gateway` rather than
-  `{{ .Chart.Name }}`. When the chart is consumed as a Helm dependency under a camelCase
-  alias (e.g. `alias: klausGateway`), Helm sets `.Chart.Name` to the alias, producing an
-  RFC 1123-invalid container name that prevents the Deployment from being applied.
-
-- Add `.abs/main.yaml` with `replace-chart-version-with-git` /
-  `replace-app-version-with-git` enabled. Without this config app-build-suite
-  packaged the chart with the literal `0.1.0` placeholder from `Chart.yaml`,
-  which left the published chart's `appVersion` (and thus the default
-  `image.tag`) pointing at the non-existent `:0.1.0` image. The same flag is
-  used by `klaus` and `mcp-prometheus`.
-- `/agent <namespace>/<name>` with the served namespace now names the same agent as `/agent <name>`: repeating it inside a thread bound to that agent is a re-selection, not a refused switch, and both spellings persist one routing key (klaus-gateway#269).
-- Valkey routing store: a command whose connection was closed by a Valkey restart or failover is retried once inside the same `--valkey-timeout`, so the first turn after the restart no longer fails with `valkey: get: EOF`. The store holds one connection, so the readiness check proves the connection the next command uses and the retry is deterministic. An outage still fails within the timeout (klaus-gateway#261).
-- Slack: every `/agent` form from a person who has not signed in now asks them to sign in with `/login` — the bare listing instead of "I can't list the available agents right now", a quoted selection like `/agent "SRE Agent" …` instead of "I couldn't check the available agents just now", and an unquoted `/agent sre-agent …` instead of "I don't know an agent named …", which named the wrong cause. The slash command's picker does the same when the agent check, not the roster, is what finds no identity.
-- Slack: the agent picker (slash command) no longer answers "I can't list the available agents right now" to a person who has just signed in. A roster request from an unlinked caller — a picker attempt or a bare `/agent` — was remembered as a roster failure for 45 seconds and refused the picker's retry after `/login`; it is not remembered any more.
-
-### Removed
-
-- `SLACK_DM_ONLY` and the Helm `slack.dmOnly` value, replaced by `SLACK_DM_MODE` and `SLACK_CHANNEL_MODE`. `dmOnly: true` maps to `dmMode: serve` + `channelMode: none`; the old `dmOnly: false` behaviour (channels served, DMs redirected) maps to `dmMode: redirect` + `channelMode: all`. A leftover `slack.dmOnly` in Helm values is ignored.
-- Slack `/invite`, `/lock`, and `/quit` commands, the locked/open/observe access modes, and the `SLACK_ALLOWED_USERS` and `SLACK_DEFAULT_ACCESS_MODE` settings, replaced by the initiator-plus-approval access model.
-- **Breaking:** the `crd` and `configmap` routing stores, the `ChannelRoute` CRD and type, the embedded controller (`controller.enabled`, `--controller`) and the `--namespace` flag. The chart's values schema refuses `crd.*` and `controller.*`, so a values file that still sets them fails the upgrade; see `UPGRADE.md`. Installations run `routing.store: valkey`; `memory` and `bolt` remain for local development.
-- The gateway no longer recovers a thread's agent from the root message or its initiator from the first human author after a restart, and the slash-command root no longer carries a hidden conversation marker. On `routing.store: memory` that state is lost on restart, and the gateway logs a warning at start.
-- The 24-hour access window: the initiator and the people they allowed no longer have to mention the bot again after a day of silence, and grants no longer lapse; a thread's state lives for `routing.threadTTL`. The ephemeral "I'm not active in this thread" hint goes with it: a reply in a thread the bot has no record of is dropped silently.
-- The "🚀 Bringing in *Agent* to help…" launch announcement at the start of a channel conversation. It posted under the agent's own name and read as the agent introducing itself; the agent's first reply, under the agent's name, now opens the thread, and the progress reaction or working indicator remains the immediate acknowledgement. The `intro_post` phase leaves the `turn_complete` record and the `klaus_gateway_turn_phase_seconds` histogram.
-- The five-part routing-store key (`…|<agentRef>`) that held a thread's AgentInstance binding apart from its record is gone: a thread now has one row. Keys written in the old layout are ignored and safe to delete; see `UPGRADE.md`.
-- **Breaking:** the web and CLI channels. `POST /web/messages`, `GET /web/messages`, `GET /web/healthz`, `POST /cli/v1/{instance}/run`, `POST /cli/v1/{instance}/messages` and `GET /cli/v1/healthz` are gone, with the `--web-enabled` / `--cli-enabled` flags and the `KLAUS_GATEWAY_WEB_ENABLED` / `KLAUS_GATEWAY_CLI_ENABLED` environment variables. Slack is the only channel.
-- **Breaking:** the OpenAI-compatible front door. `POST /v1/{instance}/chat/completions` and `POST /v1/{instance}/chat/messages` are gone; an OpenAI client pointed at the gateway now gets a 404. The OpenAI surface belongs to agentgateway.
-- **Breaking:** the Klaus instance path — the instance HTTP client, the routing table that mapped a conversation to an instance, the agentgateway URL rewriter and every lifecycle driver (`klausctl`, `operator`, `static`). The `--driver`, `--klausctl-bin`, `--operator-mcp-url`, `--operator-mcp-token`, `--static-instances`, `--agentgateway-url`, `--auto-create`, `--default-ttl` and `--a2a-token-path` flags and their `KLAUS_GATEWAY_*` variables are gone. A thread runs on its kagent AgentInstance and nothing else.
-- **Breaking:** the chart no longer renders Kubernetes Gateway API or agentgateway resources of its own (`Gateway`, `HTTPRoute`, `AgentgatewayPolicy`, `AgentgatewayBackend`). They were off on every installation; the routes that carry `/channels/slack` and `/auth/slack/` belong to the agent-platform-connectivity chart. The projected ServiceAccount token the pod mounted for the Klaus-instance paths goes with them.
-- The chart still accepts `web`, `cli`, `lifecycle`, `upstream`, `agentgateway`, `routing.defaultTTL`, `routing.autoCreate`, `a2a.saToken` and `a2a.tokenPath` and ignores them, so an installation whose umbrella forwards them keeps installing. The next major release deletes them, and the schema then refuses a values file that still sets one; drop them from your values before it (`UPGRADE.md`). That major release is the one below: the keys are gone.
-- **Breaking:** the routing-store key loses its user slot: it is `<channel>|<channelID>|<threadID>`, three parts. A row written with the old four-part key no longer parses and is skipped, so a thread's first message after the upgrade writes a new row — a new initiator, no grants carried over, and no delivery of a turn that was in flight. The agent's conversation survives: the AgentInstance is keyed by the thread, not by the store row, so the controller hands the same one back (a thread that had been switched to a non-default agent runs on the default again, since the switch lived in the lost row). See `UPGRADE.md`.
-- The compose smoke harness (`deploy/docker-compose.yml`, the Klaus stub, the standalone agentgateway config, `hack/wait-for`, `hack/smoke-completion`) and `hack/helm-template-tests`. `make test` plus the chart smoke test CI runs on kind is the end-to-end check.
-- **Breaking:** the chart's values schema no longer accepts `web`, `cli`, `lifecycle`, `upstream`, `agentgateway`, `routing.defaultTTL`, `routing.autoCreate`, `a2a.saToken` and `a2a.tokenPath`. They were accepted and ignored since the Slack-only release; a values file that still sets one now fails the upgrade with `additional properties '<key>' not allowed`. The `agent-platform` umbrella stops forwarding them in 4.62.0, so an installation on that umbrella or later has nothing to change; see `UPGRADE.md`.
-- Slack: the `/details on|off|full` command is gone; the agent's tool calls and their result previews now always show as the step list inside the reply. The **Inspect agent steps** shortcut still shows the fuller retained payloads.
-- `pkg/a2a`: the `TokenSource` interface, `FileTokenSource`, `ForwardedTokenSource`, `Config.TokenSource`, `WithChannel` and `ChannelFromContext`. The client reads the caller's token from the context (`WithForwardedToken`), and a call without one is refused with `ErrNoIdentity`, as before.
-- Slack: a reply no longer shows the agent's tool calls as steps. It carries the agent's narration and its answer only; while tools run, Slack's working indicator is the thread's progress sign. The **Inspect agent steps** shortcut still shows every call with its arguments and result. See `UPGRADE.md`.
-- **Breaking:** the chart's values schema no longer accepts `slack.progress.mode`, and the binary no longer accepts `--slack-progress-mode` or reads `SLACK_PROGRESS_MODE`. They had no effect since 3.13.0; a values file that still sets the key now fails the upgrade with `additional properties 'mode' not allowed`, and a start with the flag fails. No installation sets them; see `UPGRADE.md`.
-
-### Refactored
-
-- Factor the duplicated Slack inbound pipeline (Events API + Socket Mode) into a single `Adapter.handleInbound` so both transports behave identically.
-- Code the Slack-only release left without a caller: `channels.BearerToken`, `InboundMessage.ReplyTo`, `Facade.ListAgents` (and `ListAgents` on the facade's `AgentClient`), `Put` and `Delete` on the routing `Store` interface and its backends (every write goes through `Store.Update`), and the `Flush` forwarders of the metrics and access-log response writers.
-- `channels.Gateway` names every method the facade offers an adapter (turns, resumes, sessions, thread records). `channels.ChannelAdapter` and `Adapter.Name()` are removed, and `main.go` stops the Slack adapter directly. `Metrics.Middleware` takes no argument; the label stays `public`.
-- Code only tests reached: the Slack client's `postMarkdown`, `Adapter.isActiveThread`, the login and logout replies for a gateway without sign-in (the words reach the agent there), and the exported `channels.NewTurnTimer` and `channels.WithTurnTimer` (`channels.BeginTurn` opens a turn's timeline). The `--thread-ttl` default reads `channels.DefaultThreadTTL`.
-- Tests: the muster link import checks the file it opened, only the `Status.Error` check refuses the TokenReview API-server-error case, and the AgentInstance create test checks what the client sends.
-- More code only tests reached: `a2a.WithAgentRef` and `a2a.AgentRefFromContext`, `store.ErrNotFound`, the memory store's `EvictNow`, the bolt and Valkey stores' `SetNowFunc`, the Valkey `Options.ReviewKeyPrefix` (the review prefix is still derived from the routing prefix), and `BuildTimestamp` in `pkg/project` and `internal/version`. `musterlink.Linker.Exchange` and the bolt store's `Evict` are unexported, and the stores' `EvictionInterval` is a constant.
-- Code nothing needed: `valkey.DefaultReviewKeyPrefix` (the review prefix is still derived from the routing prefix), the bolt and Valkey stores' clock field, and the existence check before a read-only open of the muster link bolt file (bbolt does not create a missing file on a read-only open).
-- Tests: the Slack adapter and channel tests that a stronger test already covers are removed, and the help flow test checks that help is posted once.
-- Tests: only the Valkey outage tests run the store with a short timeout; the other Valkey tests connect within the default timeout.
-- Narration no longer checks a status update for the `kagent_partial` and `adk_partial` markers (klaus-gateway#402).
-
-[Unreleased]: https://github.com/giantswarm/REPOSITORY_NAME/tree/main
+[Unreleased]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v4.9.0-rc.1...HEAD
+[4.9.0-rc.1]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v4.8.2-rc.3...v4.9.0-rc.1
+[4.8.2-rc.3]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v4.8.2-rc.2...v4.8.2-rc.3
+[4.8.2-rc.2]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v4.8.2-rc.1...v4.8.2-rc.2
+[4.8.2-rc.1]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v4.8.0...v4.8.2-rc.1
+[4.8.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v4.7.1...v4.8.0
+[4.7.1]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v4.6.3-rc.1...v4.7.1
+[4.6.3-rc.1]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v4.6.2-rc.3...v4.6.3-rc.1
+[4.6.2-rc.3]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v4.6.2-rc.1...v4.6.2-rc.3
+[4.6.2-rc.1]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v4.6.1...v4.6.2-rc.1
+[4.6.1]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v4.6.0...v4.6.1
+[4.6.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v4.5.0...v4.6.0
+[4.5.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v4.5.0-rc.1...v4.5.0
+[4.5.0-rc.1]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v4.4.0-rc.1...v4.5.0-rc.1
+[4.4.0-rc.1]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v4.3.0...v4.4.0-rc.1
+[4.3.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v4.3.0-rc.1...v4.3.0
+[4.3.0-rc.1]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v4.2.0...v4.3.0-rc.1
+[4.2.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v4.2.0-rc.1...v4.2.0
+[4.2.0-rc.1]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v4.1.1-rc.5...v4.2.0-rc.1
+[4.1.1-rc.5]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v4.1.0...v4.1.1-rc.5
+[4.1.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v4.1.0-rc.29...v4.1.0
+[4.1.0-rc.29]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v4.1.0-rc.28...v4.1.0-rc.29
+[4.1.0-rc.28]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v4.1.0-rc.27...v4.1.0-rc.28
+[4.1.0-rc.27]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v4.1.0-rc.26...v4.1.0-rc.27
+[4.1.0-rc.26]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v4.1.0-rc.25...v4.1.0-rc.26
+[4.1.0-rc.25]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v4.1.0-rc.22...v4.1.0-rc.25
+[4.1.0-rc.22]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v4.1.0-rc.21...v4.1.0-rc.22
+[4.1.0-rc.21]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v4.1.0-rc.20...v4.1.0-rc.21
+[4.1.0-rc.20]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v4.1.0-rc.19...v4.1.0-rc.20
+[4.1.0-rc.19]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v4.1.0-rc.18...v4.1.0-rc.19
+[4.1.0-rc.18]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v4.1.0-rc.17...v4.1.0-rc.18
+[4.1.0-rc.17]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v4.1.0-rc.15...v4.1.0-rc.17
+[4.1.0-rc.15]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v4.1.0-rc.12...v4.1.0-rc.15
+[4.1.0-rc.12]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v4.1.0-rc.11...v4.1.0-rc.12
+[4.1.0-rc.11]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v4.1.0-rc.10...v4.1.0-rc.11
+[4.1.0-rc.10]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v4.1.0-rc.9...v4.1.0-rc.10
+[4.1.0-rc.9]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v4.1.0-rc.8...v4.1.0-rc.9
+[4.1.0-rc.8]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v4.1.0-rc.7...v4.1.0-rc.8
+[4.1.0-rc.7]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v4.1.0-rc.6...v4.1.0-rc.7
+[4.1.0-rc.6]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v4.1.0-rc.5...v4.1.0-rc.6
+[4.1.0-rc.5]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v4.1.0-rc.4...v4.1.0-rc.5
+[4.1.0-rc.4]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v4.1.0-rc.2...v4.1.0-rc.4
+[4.1.0-rc.2]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v4.1.0-rc.1...v4.1.0-rc.2
+[4.1.0-rc.1]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v4.0.0...v4.1.0-rc.1
+[4.0.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v4.0.0-rc.1...v4.0.0
+[4.0.0-rc.1]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v3.14.0-rc.2...v4.0.0-rc.1
+[3.14.0-rc.2]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v3.14.0-rc.1...v3.14.0-rc.2
+[3.14.0-rc.1]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v3.13.0...v3.14.0-rc.1
+[3.13.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v3.13.0-rc.2...v3.13.0
+[3.13.0-rc.2]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v3.13.0-rc.1...v3.13.0-rc.2
+[3.13.0-rc.1]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v3.12.0...v3.13.0-rc.1
+[3.12.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v3.12.0-rc.1...v3.12.0
+[3.12.0-rc.1]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v3.11.1...v3.12.0-rc.1
+[3.11.1]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v3.11.0...v3.11.1
+[3.11.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v3.10.0...v3.11.0
+[3.10.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v3.9.2...v3.10.0
+[3.9.2]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v3.9.1...v3.9.2
+[3.9.1]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v3.9.0...v3.9.1
+[3.9.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v3.8.7...v3.9.0
+[3.8.7]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v3.8.6...v3.8.7
+[3.8.6]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v3.8.5...v3.8.6
+[3.8.5]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v3.8.4...v3.8.5
+[3.8.4]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v3.8.3...v3.8.4
+[3.8.3]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v3.8.2...v3.8.3
+[3.8.2]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v3.8.1...v3.8.2
+[3.8.1]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v3.7.0...v3.8.1
+[3.7.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v3.6.3...v3.7.0
+[3.6.3]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v3.6.0...v3.6.3
+[3.6.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v3.5.0...v3.6.0
+[3.5.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v3.4.0...v3.5.0
+[3.4.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v3.3.1...v3.4.0
+[3.3.1]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v3.3.0...v3.3.1
+[3.3.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v3.2.0...v3.3.0
+[3.2.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v3.1.0...v3.2.0
+[3.1.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v3.0.0...v3.1.0
+[3.0.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v2.2.0...v3.0.0
+[2.2.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v2.1.3...v2.2.0
+[2.1.3]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v2.1.1...v2.1.3
+[2.1.1]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v2.1.0...v2.1.1
+[2.1.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v2.0.0...v2.1.0
+[2.0.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v1.21.0...v2.0.0
+[1.21.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v1.20.0...v1.21.0
+[1.20.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v1.19.0...v1.20.0
+[1.19.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v1.18.0...v1.19.0
+[1.18.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v1.17.0...v1.18.0
+[1.17.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v1.16.0...v1.17.0
+[1.16.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v1.15.0...v1.16.0
+[1.15.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v1.14.3...v1.15.0
+[1.14.3]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v1.14.2...v1.14.3
+[1.14.2]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v1.14.1...v1.14.2
+[1.14.1]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v1.14.0...v1.14.1
+[1.14.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v1.13.11...v1.14.0
+[1.13.11]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v1.13.10...v1.13.11
+[1.13.10]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v1.13.9...v1.13.10
+[1.13.9]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v1.13.8...v1.13.9
+[1.13.8]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v1.13.7...v1.13.8
+[1.13.7]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v1.13.1...v1.13.7
+[1.13.1]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v1.13.0...v1.13.1
+[1.13.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v1.12.5...v1.13.0
+[1.12.5]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v1.12.4...v1.12.5
+[1.12.4]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v1.12.3...v1.12.4
+[1.12.3]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v1.12.2...v1.12.3
+[1.12.2]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v1.12.0...v1.12.2
+[1.12.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v1.11.0...v1.12.0
+[1.11.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v1.10.3...v1.11.0
+[1.10.3]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v1.10.2...v1.10.3
+[1.10.2]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v1.10.0...v1.10.2
+[1.10.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v1.9.1...v1.10.0
+[1.9.1]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v1.9.0...v1.9.1
+[1.9.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v1.8.1...v1.9.0
+[1.8.1]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v1.8.0...v1.8.1
+[1.8.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v1.7.0...v1.8.0
+[1.7.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v1.6.0...v1.7.0
+[1.6.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v1.5.1...v1.6.0
+[1.5.1]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v1.4.0...v1.5.1
+[1.4.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v1.3.3...v1.4.0
+[1.3.3]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v1.3.1...v1.3.3
+[1.3.1]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v1.3.0...v1.3.1
+[1.3.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v1.2.0...v1.3.0
+[1.2.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v1.1.1...v1.2.0
+[1.1.1]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v1.1.0...v1.1.1
+[1.1.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v1.0.0...v1.1.0
+[1.0.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v0.39.0...v1.0.0
+[0.39.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v0.30.18...v0.39.0
+[0.30.18]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v0.30.5...v0.30.18
+[0.30.5]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v0.30.2...v0.30.5
+[0.30.2]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v0.30.0...v0.30.2
+[0.30.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v0.29.0...v0.30.0
+[0.29.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v0.28.1...v0.29.0
+[0.28.1]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v0.28.0...v0.28.1
+[0.28.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v0.27.0...v0.28.0
+[0.27.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v0.26.0...v0.27.0
+[0.26.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v0.25.1...v0.26.0
+[0.25.1]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v0.25.0...v0.25.1
+[0.25.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v0.24.0...v0.25.0
+[0.24.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v0.23.3...v0.24.0
+[0.23.3]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v0.23.1...v0.23.3
+[0.23.1]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v0.23.0...v0.23.1
+[0.23.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v0.22.4...v0.23.0
+[0.22.4]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v0.22.3...v0.22.4
+[0.22.3]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v0.22.2...v0.22.3
+[0.22.2]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v0.22.0...v0.22.2
+[0.22.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v0.21.4...v0.22.0
+[0.21.4]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v0.21.3...v0.21.4
+[0.21.3]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v0.21.2...v0.21.3
+[0.21.2]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v0.21.1...v0.21.2
+[0.21.1]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v0.21.0...v0.21.1
+[0.21.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v0.20.1...v0.21.0
+[0.20.1]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v0.20.0...v0.20.1
+[0.20.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v0.19.2...v0.20.0
+[0.19.2]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v0.19.0...v0.19.2
+[0.19.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v0.17.0...v0.19.0
+[0.17.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v0.16.0...v0.17.0
+[0.16.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v0.15.0...v0.16.0
+[0.15.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v0.14.0...v0.15.0
+[0.14.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v0.13.0...v0.14.0
+[0.13.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v0.12.0...v0.13.0
+[0.12.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v0.11.2...v0.12.0
+[0.11.2]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v0.11.0...v0.11.2
+[0.11.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v0.10.5...v0.11.0
+[0.10.5]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v0.10.3...v0.10.5
+[0.10.3]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v0.10.1...v0.10.3
+[0.10.1]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v0.10.0...v0.10.1
+[0.10.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v0.9.0...v0.10.0
+[0.9.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v0.8.1...v0.9.0
+[0.8.1]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v0.2.0...v0.8.1
+[0.2.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v0.1.5...v0.2.0
+[0.1.5]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v0.1.2...v0.1.5
+[0.1.2]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v0.1.0...v0.1.2
+[0.1.0]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v0.0.27...v0.1.0
+[0.0.27]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v0.0.26...v0.0.27
+[0.0.26]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v0.0.25...v0.0.26
+[0.0.25]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v0.0.24...v0.0.25
+[0.0.24]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v0.0.6...v0.0.24
+[0.0.6]: https://github.com/giantswarm/REPOSITORY_NAME/compare/v0.0.5...v0.0.6
+[0.0.5]: https://github.com/giantswarm/REPOSITORY_NAME/releases/tag/v0.0.5
