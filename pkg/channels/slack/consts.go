@@ -680,10 +680,36 @@ func isShareRefusal(err error) bool {
 	return ok
 }
 
+// agentNotPermittedNotice refuses a turn or a selection on an agent the
+// person may not use; %s are the agent's name and its tenant.
+const agentNotPermittedNotice = "You cannot use *%s* (%s): it is not one of the agents you have access to. Nothing was sent to it. Ask an admin of %s for access, or mention the bot with `agents` to list the agents you can use."
+
+// notPermittedNote is the refusal of an agent err names that the person may
+// not use, when err is one.
+func notPermittedNote(err error) (string, bool) {
+	var np *pkga2a.AgentNotPermittedError
+	if !errors.As(err, &np) {
+		return "", false
+	}
+	name := sanitizeDisplayName(np.DisplayName)
+	if name == "" {
+		name = bareAgentName(np.Name)
+	}
+	tenant := np.Tenant
+	if tenant == "" {
+		tenant = pkga2a.PlatformTenant
+	}
+	admin := "the " + tenant
+	if tenant == pkga2a.PlatformTenant {
+		admin = "the platform"
+	}
+	return fmt.Sprintf(agentNotPermittedNotice, escapeMrkdwn(name), escapeMrkdwn(tenant), escapeMrkdwn(admin)), true
+}
+
 // failureLogLevel is the level a turn's err is logged at: Info for a share
-// refusal, Error for anything else.
+// refusal or an agent the sender may not use, Error for anything else.
 func failureLogLevel(err error) slog.Level {
-	if isShareRefusal(err) {
+	if isShareRefusal(err) || errors.Is(err, pkga2a.ErrAgentNotPermitted) {
 		return slog.LevelInfo
 	}
 	return slog.LevelError
@@ -692,6 +718,9 @@ func failureLogLevel(err error) slog.Level {
 // failureNote is the note of a turn that failed with err before the agent
 // answered: the class's own note, or failedNote when no class names it.
 func failureNote(err error) string {
+	if note, ok := notPermittedNote(err); ok {
+		return note
+	}
 	if note, ok := shareNote(err); ok {
 		return note
 	}

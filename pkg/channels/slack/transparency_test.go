@@ -148,7 +148,9 @@ func (f *fakeModelSource) AgentModel(_ context.Context, _ string) (string, strin
 	return f.model, f.provider, nil
 }
 
-func TestUsageReport_IncludesModelLineAndCaches(t *testing.T) {
+// The model is looked up as the caller on every report: whether the agent is
+// theirs is the controller's answer to them.
+func TestUsageReport_IncludesModelLineAsTheCaller(t *testing.T) {
 	source := &fakeModelSource{model: "gpt-5", provider: "OpenAI"}
 	a := &Adapter{DefaultAgent: "kagent/sre-agent", Models: source}
 	a.gw = newMemoryRecorder()
@@ -158,7 +160,7 @@ func TestUsageReport_IncludesModelLineAndCaches(t *testing.T) {
 	require.Contains(t, report, "Model — OpenAI/gpt-5")
 
 	_ = a.usageReport(t.Context(), "T1", "C1")
-	require.Equal(t, int32(1), source.calls.Load(), "model lookups must be cached")
+	require.Equal(t, int32(2), source.calls.Load(), "no label is kept for another report")
 }
 
 // perRefModelSource returns a distinct model per agentRef, so a test can tell

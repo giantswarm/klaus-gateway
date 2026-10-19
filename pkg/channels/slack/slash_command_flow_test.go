@@ -153,7 +153,7 @@ func TestSlashCommand_OpensAgentPicker(t *testing.T) {
 		labels = append(labels, opt["text"].(map[string]any)["text"].(string))
 		values = append(values, opt["value"].(string))
 	}
-	require.Equal(t, []string{"Swarmgeist", "SRE Agent", "grill-master"}, labels, "display name, technical name when none")
+	require.Equal(t, []string{"Swarmgeist (platform)", "SRE Agent (platform)", "grill-master (platform)"}, labels, "display name, technical name when none, and the tenant")
 	require.Equal(t, []string{"kagent/swarmgeist", "kagent/sre-agent", "kagent/grill-master"}, values, "values are the A2A refs")
 	require.Equal(t, "kagent/swarmgeist", agentSelect["initial_option"].(map[string]any)["value"], "the default agent is preselected")
 
@@ -646,6 +646,31 @@ func TestAskAgentSubmission_NotRunnableAgentIsRefusedWithReason(t *testing.T) {
 	fake.waitForPath(t, "response_url", 1)
 	require.Contains(t, responseURLTexts(fake),
 		"is installed but cannot start a conversation right now: no Harness admits this AgentTemplate")
+	require.NotContains(t, responseURLTexts(fake), "No agent named")
+	require.Empty(t, fake.pathCalls("chat.postMessage"), "no root is posted")
+	require.Equal(t, 0, gw.dispatchCount())
+}
+
+// A picked agent the person may not use (a crafted submission, or access
+// revoked since the picker listed it) is refused naming the agent and its
+// tenant, through the response URL: no root, no turn, no other agent.
+func TestAskAgentSubmission_AgentNotPermittedIsRefusedWithTheTenant(t *testing.T) {
+	fake := newFakeSlackAPI()
+	api := fake.server(t)
+	gw, _ := capturingGateway()
+	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, func(a *slackadapter.Adapter) {
+		a.DefaultAgent = "kagent/swarmgeist"
+		a.Roster = pickerRoster()
+		a.AgentCards = notPermittedCards{}
+	})
+
+	sendSlashCommand(t, srv, "C1", "U1", "", api.URL+"/response_url")
+	pm := openedView(t, fake)["private_metadata"].(string)
+
+	sendAskAgentSubmission(t, srv, "U1", pm, "org-acme/billing", "what did we spend?")
+
+	fake.waitForPath(t, "response_url", 1)
+	require.Contains(t, responseURLTexts(fake), "You cannot use *billing* (organization acme)")
 	require.NotContains(t, responseURLTexts(fake), "No agent named")
 	require.Empty(t, fake.pathCalls("chat.postMessage"), "no root is posted")
 	require.Equal(t, 0, gw.dispatchCount())

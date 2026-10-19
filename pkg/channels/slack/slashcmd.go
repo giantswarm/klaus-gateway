@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
@@ -285,20 +286,17 @@ func (a *Adapter) agentSelectionReady() bool {
 }
 
 // openAgentPicker lists the roster as the caller and opens the picker modal —
-// the half both entry points share. The roster comes from the 30s cache
-// (rosterAgentsBestEffort) because the trigger_id expires 3 seconds after
-// Slack issued it. Every failure is reported through notify.
+// the half both entry points share. Every failure is reported through notify.
 func (a *Adapter) openAgentPicker(ctx context.Context, req askAgentRequest, notify func(string)) {
 	// Everything before views.open shares one budget: Slack invalidates the
-	// trigger_id 3 seconds after issuing it, and on a cold roster cache the
-	// token mint and the controller list both go to the network. Past the
-	// budget the user is told to retry (the next attempt finds the cache warm
-	// or the roster read still in flight), not that the picker is broken.
+	// trigger_id 3 seconds after issuing it, and the token mint and the
+	// controller list both go to the network. Past the budget the user is told
+	// to retry, not that the picker is broken.
 	pctx, cancel := context.WithTimeout(ctx, pickerOpenBudget)
 	defer cancel()
-	// The roster is listed as the caller: the kagent controller serves
-	// AgentTemplates to a human identity, and without one only a warm cache
-	// answers. An unlinked caller on a cold cache is told to sign in.
+	// The roster is listed as the caller: the kagent controller answers each
+	// person with the Agents they may use. An unlinked caller is told to sign
+	// in.
 	pctx = a.withCallerToken(pctx, req.User)
 	// A shortcut targets an existing thread: one that already talks to an
 	// agent is refused, because a second conversation would fork it; one that
@@ -330,7 +328,7 @@ func (a *Adapter) openAgentPicker(ctx context.Context, req askAgentRequest, noti
 		ws, ok := a.pickerWorkspaces(pctx, req.User)
 		wsc <- listed{ws, ok}
 	}()
-	agents, err := a.rosterAgentsBestEffort(pctx)
+	agents, err := a.rosterAgents(pctx)
 	if err != nil {
 		a.Logger.Warn("slack: agent picker roster unavailable", "user", req.User, "error", err)
 		switch {
@@ -401,7 +399,11 @@ func (a *Adapter) askAgentModal(agents []pkga2a.AgentInfo, req askAgentRequest, 
 		if label == "" {
 			label = ag.Name
 		}
-		opt := map[string]any{bkText: plainTextObj(truncateRunes(label, modalOptionLabelMax)), bkValue: ref}
+		// Two tenants can each have an agent of one name; the tenant tells them
+		// apart, so a long name is cut and the tenant is kept.
+		tenant := " (" + agentTenant(ag) + ")"
+		text := truncateRunes(label, max(1, modalOptionLabelMax-utf8.RuneCountInString(tenant))) + tenant
+		opt := map[string]any{bkText: plainTextObj(truncateRunes(text, modalOptionLabelMax)), bkValue: ref}
 		if ref == selected {
 			initial, initialIdx, selectedLabel = opt, len(options), label
 		}
@@ -582,10 +584,15 @@ func (a *Adapter) handleAskAgentSubmission(ctx context.Context, payload interact
 	if _, _, err := checker.CardInfo(vctx, ref); err != nil {
 		a.Logger.Info("slack: ask-agent selection failed validation", "agent", ref, "user", user, "error", err)
 		if errors.Is(err, pkga2a.ErrNoIdentity) {
-			// The picker opened on a cached roster, but this replica — another
-			// one, or this one after a restart — holds a cold cache, so the card
-			// read needs the caller's identity. Not an unknown agent: a sign-in.
+			// The caller's sign-in lapsed between the picker opening and the
+			// submit. Not an unknown agent: a sign-in.
 			notify(slashCommandSignInNotice)
+			return
+		}
+		// A picked agent the person may not use: a crafted submission, or
+		// access revoked since the picker listed it.
+		if text, ok := notPermittedNote(err); ok {
+			notify(text)
 			return
 		}
 		// The picker never offers an unavailable template, so this only fires

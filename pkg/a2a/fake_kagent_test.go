@@ -60,6 +60,14 @@ type fakeKagent struct {
 	shareRefusal string
 	refuse       error // returned by SendStreamingMessage and SubscribeToTask
 	createState  apiv1alpha1.RuntimeState
+	// permitted, when set, is the controller's RBAC answer: per caller (the
+	// authorization metadata, "Bearer <token>"), the namespaces whose Agents
+	// they may list and use. A caller it does not name may use none. Unset,
+	// every caller may use every namespace.
+	permitted map[string][]string
+	// createDenied refuses every Session create with PermissionDenied: access
+	// revoked between the roster read and the start.
+	createDenied bool
 
 	serverOpts []grpc.ServerOption // the controller's gRPC options (size limits)
 	clientOpts []grpc.DialOption   // the client connection's extra options
@@ -169,6 +177,30 @@ func creator(ctx context.Context) (string, error) {
 	return auth[0], nil
 }
 
+// permits mirrors the controller's authorizer: whether the caller of ctx may
+// list and use the Agents of namespace. The caller holds f.mu.
+func (f *fakeKagent) permits(ctx context.Context, namespace string) bool {
+	if f.permitted == nil {
+		return true
+	}
+	who, err := creator(ctx)
+	if err != nil {
+		return false
+	}
+	for _, ns := range f.permitted[who] {
+		if ns == namespace {
+			return true
+		}
+	}
+	return false
+}
+
+// listed mirrors a collection read: the namespace a request names, or every
+// namespace when it names none, narrowed to the ones the caller may list.
+func (f *fakeKagent) listed(ctx context.Context, requested, namespace string) bool {
+	return (requested == "" || requested == namespace) && f.permits(ctx, namespace)
+}
+
 // reaches mirrors the controller's ownership check: a session is reachable
 // by its creator, and by anyone presenting one of its share tokens. The
 // caller holds f.mu.
@@ -213,7 +245,7 @@ func (f *fakeKagent) routedSession(ctx context.Context, tenant, contextID, taskI
 	if !ok || !f.reaches(ctx, session) {
 		return nil, status.Error(codes.PermissionDenied, "not authorized")
 	}
-	if session.GetAgent().GetNamespace() != namespace || session.GetAgent().GetName() != name {
+	if session.GetAgent().GetNamespace() != namespace || session.GetAgent().GetName() != name || !f.permits(ctx, namespace) {
 		return nil, status.Error(codes.PermissionDenied, "not authorized")
 	}
 	return session, nil
@@ -355,7 +387,7 @@ func (f *fakeKagent) ListAgents(ctx context.Context, req *apiv1alpha1.ListAgents
 	defer f.mu.Unlock()
 	var out []*apiv1alpha1.Agent
 	for _, a := range f.agents {
-		if a.GetRef().GetNamespace() == req.GetNamespace() {
+		if f.listed(ctx, req.GetNamespace(), a.GetRef().GetNamespace()) {
 			out = append(out, a)
 		}
 	}
@@ -373,7 +405,7 @@ func (f *fakeKagent) ListAgentTemplates(ctx context.Context, req *apiv1alpha1.Li
 	defer f.mu.Unlock()
 	var out []*apiv1alpha1.AgentTemplate
 	for _, t := range f.templates {
-		if t.GetRef().GetNamespace() == req.GetNamespace() {
+		if f.listed(ctx, req.GetNamespace(), t.GetRef().GetNamespace()) {
 			out = append(out, t)
 		}
 	}
@@ -417,6 +449,9 @@ func (f *fakeKagent) CreateSession(ctx context.Context, req *apiv1alpha1.CreateS
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.created = append(f.created, req)
+	if f.createDenied || !f.permits(ctx, req.GetAgent().GetNamespace()) {
+		return nil, status.Error(codes.PermissionDenied, "not authorized")
+	}
 	// The controller's display-name contract, as protovalidate enforces it:
 	// at most 200 characters, no control characters, no leading or trailing
 	// whitespace. Checked after the attempt is recorded so a test can see both
@@ -583,6 +618,17 @@ func agent(t *testing.T, name string, annotations map[string]any, template, harn
 		Ref:      &apiv1alpha1.ResourceReference{Namespace: "kagent", Name: name},
 		Resource: &apiv1alpha1.StructuredObject{ApiVersion: "api.kagent.dev/v1alpha3", Kind: "Agent", Value: value},
 	}
+}
+
+// inNamespace moves an Agent or AgentTemplate the helpers above build into
+// namespace, in its ref and in its metadata.
+func inNamespace[T interface {
+	GetRef() *apiv1alpha1.ResourceReference
+	GetResource() *apiv1alpha1.StructuredObject
+}](obj T, namespace string) T {
+	obj.GetRef().Namespace = namespace
+	obj.GetResource().GetValue().GetFields()["metadata"].GetStructValue().GetFields()["namespace"] = structpb.NewStringValue(namespace)
+	return obj
 }
 
 // readyCondition is the Ready condition of an Agent's status as the

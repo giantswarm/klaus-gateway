@@ -133,51 +133,24 @@ type AgentModelSource interface {
 	AgentModel(ctx context.Context, agentRef string) (model, provider string, err error)
 }
 
-// agentModelTTL bounds how long a resolved model label is served from cache.
-// The model comes from the template's ModelConfig, which changes rarely.
-const agentModelTTL = 10 * time.Minute
-
 // agentModelLabel returns "provider/model" (or just the model when the
 // provider is not reported) for agentRef — the thread's bound agent, or the
 // default — or "" when no model source is configured, the agent exposes no
-// model, or the lookup fails. Results are cached per agent so usage does not
-// hit the kagent controller on every call.
+// model, or the lookup fails. It is looked up as the caller each time: the
+// agent is one of theirs only if the controller says so.
 func (a *Adapter) agentModelLabel(ctx context.Context, agentRef string) string {
 	if a.Models == nil || agentRef == "" {
 		return ""
 	}
-
-	now := time.Now()
-	a.modelMu.Lock()
-	if e, ok := a.modelCache[agentRef]; ok && now.Before(e.expires) {
-		a.modelMu.Unlock()
-		return e.label
-	}
-	a.modelMu.Unlock()
-
 	model, provider, err := a.Models.AgentModel(ctx, agentRef)
 	if err != nil {
 		a.Logger.Warn("slack: agent model lookup failed", "agent", agentRef, "error", err)
 		return ""
 	}
-	label := model
 	if provider != "" && model != "" {
-		label = provider + "/" + model
+		return provider + "/" + model
 	}
-
-	a.modelMu.Lock()
-	if a.modelCache == nil {
-		a.modelCache = make(map[string]modelEntry)
-	}
-	a.modelCache[agentRef] = modelEntry{label: label, expires: now.Add(agentModelTTL)}
-	a.modelMu.Unlock()
-	return label
-}
-
-// modelEntry is a cached agent model label with its expiry.
-type modelEntry struct {
-	label   string
-	expires time.Time
+	return model
 }
 
 // maybeAnnounceResume runs the resume existence-check at most once per thread.

@@ -63,7 +63,8 @@ func New(tools ToolCaller, prefix string) *Starter {
 // sends the turn itself. agent-manager's refusals map onto the a2a errors a channel
 // renders: an Agent that cannot run onto pkga2a.AgentUnavailableError, a
 // caller muster or the controller does not know onto pkga2a.ErrNoIdentity, an
-// unknown Agent onto pkga2a.ErrAgentUnknown, a refused name onto
+// unknown Agent onto pkga2a.ErrAgentUnknown, an Agent the caller may not use
+// onto pkga2a.ErrAgentNotPermitted, a refused name onto
 // pkga2a.ErrInvalidSessionName. muster's own sign-in challenge for the server
 // (the person has not connected it; the link says where) is a
 // pkga2a.ConnectRequiredError.
@@ -165,7 +166,8 @@ func signInChallenge(res muster.Result, server string) *pkga2a.ConnectRequiredEr
 
 // refusal maps start_session's error answer, "<code>: <reason>", onto the a2a
 // errors. The codes are agent-manager's: conflict is the controller's
-// FailedPrecondition (the Agent has no ready revision), unauthenticated and
+// FailedPrecondition (the Agent has no ready revision), forbidden its
+// PermissionDenied (the caller may not use the Agent), unauthenticated and
 // auth_required a caller it cannot act as.
 func refusal(ref, text string) error {
 	code, reason, _ := strings.Cut(text, ": ")
@@ -176,6 +178,8 @@ func refusal(ref, text string) error {
 		return fmt.Errorf("%w: agent-manager: %s", pkga2a.ErrNoIdentity, reason)
 	case "not_found":
 		return fmt.Errorf("%w: agent-manager: %s", pkga2a.ErrAgentUnknown, reason)
+	case "forbidden":
+		return fmt.Errorf("%w: agent-manager: %s", pkga2a.ErrAgentNotPermitted, reason)
 	case "invalid_request":
 		return fmt.Errorf("%w: agent-manager: %s", pkga2a.ErrInvalidSessionName, reason)
 	}
