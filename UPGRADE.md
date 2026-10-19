@@ -9,6 +9,24 @@ that adds notes heads them `## Next — <title>`; the change that prepares a rel
 renames each `Next` to that version, and `make check-upgrade-notes` refuses a
 stable release tag while a `Next` section with content is left.
 
+## Next — the sign-in asks for `groups`
+
+- The muster sign-in asks for `openid profile email groups offline_access`; the gateway's client
+  metadata document (`/auth/slack/client.json`) lists the same scopes. The kagent controller reads
+  the `groups` claim of the id_token the gateway forwards; without it, the controller reviews only
+  `system:authenticated` and the person sees only the platform tenant's agents. Nothing to configure:
+  the scopes are not a setting.
+- Existing links keep working, and nobody has to sign in again because of this release. A refresh
+  sends no scope: muster refreshes the Dex token of the original sign-in, and Dex keeps that
+  sign-in's scopes. A link carries `groups` from its next sign-in on. Links made through a muster
+  whose Dex scopes already include `groups` (muster's own default) carry it today.
+- A person whose link lacks `groups` sees only the platform tenant's agents in the roster, or the
+  refusal "You cannot use *X* (organization …)" on an agent of their organization. They mention the
+  bot with `logout`, then sign in again.
+- muster caches the client metadata document (5 minutes by default). While the rollout runs and up to
+  that cache's lifetime after it, a sign-in can be refused with `invalid_scope`, because muster still
+  holds the old document without `groups`. Signing in again after the cache expired works.
+
 ## Next — the roster spans every namespace the caller may list
 
 - The Slack roster and the agent picker list the Agents of every namespace the kagent

@@ -1745,7 +1745,7 @@ func (a *Adapter) OnUserLinked(_ context.Context, slackUser, _ string) {
 					continue
 				}
 				if err := a.replayDispatch(ctx, req.msg, req.slackChannel); err != nil && !errors.Is(err, context.Canceled) {
-					a.Logger.Log(ctx, failureLogLevel(err), "slack: replay after sign-in failed", "user", slackUser, "thread", req.msg.ThreadID, "error", err)
+					a.Logger.Log(ctx, failureLogLevel(err), "slack: replay after sign-in failed", "user", slackUser, "thread", req.msg.ThreadID, "failure_class", channels.ClassifyFailure(err), "error", err)
 					a.postReplayFailureNote(ctx, req.slackChannel, req.msg.ThreadID, err)
 				}
 			}
@@ -2053,7 +2053,8 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 		case isShareRefusal(err):
 			a.Logger.Info("slack: collaborator turn refused", "channel", inner.Channel, "thread", msg.ThreadID, "error", err)
 		case !errors.Is(err, context.Canceled):
-			a.Logger.Error("slack: dispatch error", "channel", inner.Channel, "failure_class", channels.ClassifyFailure(err), "error", err)
+			// An agent the sender may not use is a refusal, not a failure.
+			a.Logger.Log(ctx, failureLogLevel(err), "slack: dispatch error", "channel", inner.Channel, "failure_class", channels.ClassifyFailure(err), "error", err)
 		}
 	}
 }
@@ -2079,14 +2080,17 @@ func (a *Adapter) postDispatchFailureNote(ctx context.Context, slackChannel, thr
 // postReplayFailureNote tells the thread a parked message could not be
 // replayed, so a sign-in or access grant that just promised action does not
 // end in silence. An oversize refusal already has its note from dispatch, and
-// "send it again" would fail the same way. Best-effort: a post failure is only
-// logged.
+// "send it again" would fail the same way. An agent the person may not use, or
+// a Session that cannot be shared with them, gets the refusal note of a live
+// turn. Best-effort: a post failure is only logged.
 func (a *Adapter) postReplayFailureNote(ctx context.Context, slackChannel, threadID string, cause error) {
 	if errors.Is(cause, pkga2a.ErrPayloadTooLarge) {
 		return
 	}
 	text := "Your message could not be picked up again. Send it again."
-	if note, ok := shareNote(cause); ok {
+	if note, ok := notPermittedNote(cause); ok {
+		text = note
+	} else if note, ok := shareNote(cause); ok {
 		text = note
 	}
 	if _, err := a.apiClient().postNote(ctx, slackChannel, text, threadID); err != nil {
