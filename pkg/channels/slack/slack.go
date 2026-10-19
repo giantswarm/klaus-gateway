@@ -139,6 +139,9 @@ type Adapter struct {
 	// process (valkey, bolt) a review survives a restart. Nil keeps them in
 	// process memory, as --store=memory does.
 	Reviews store.ReviewStore
+	// RefusalWindow is how long one egress refusal notice covers its agent
+	// and destination; zero is DefaultRefusalWindow.
+	RefusalWindow time.Duration
 	// Models, when set, resolves the default agent's model id for usage.
 	// Nil omits the model line.
 	Models AgentModelSource

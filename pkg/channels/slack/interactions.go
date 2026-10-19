@@ -294,7 +294,7 @@ func (a *Adapter) routeInteraction(ctx context.Context, payload interactionPaylo
 		// prompt later, so it is recorded under the button's completion state.
 		a.handleConnectorConnect(ctx, payload.User.ID, action.Value, payload.ResponseURL)
 		return
-	case teamReviewOpen:
+	case teamReviewOpen, refusalOpenAgent:
 		// URL button: the browser opens the link itself.
 		return
 	case teamReviewApprove:

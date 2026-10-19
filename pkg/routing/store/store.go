@@ -326,6 +326,12 @@ type Review struct {
 	// message, Text the opening text, Tool and Arguments the tool a reply of
 	// the person's calls. Its TTL slides with every message.
 	Conversation *Conversation `json:"conversation,omitempty"`
+	// Refusal is set on an egress refusal notice — the direct message that
+	// tells an agent's creator about a destination its egress refused — and
+	// nil otherwise. Channel and TS are the message, rewritten in place as
+	// refusals within the window are counted into it; the TTL is the window,
+	// so the next refusal after it is a new notice.
+	Refusal *Refusal `json:"refusal,omitempty"`
 
 	PostedAt time.Time     `json:"posted_at"`
 	TTL      time.Duration `json:"ttl"`
@@ -375,6 +381,32 @@ type Conversation struct {
 	// From names the agent the person talks to.
 	From string `json:"from"`
 }
+
+// Refusal is what an egress refusal notice adds to its record: the agent
+// and destination it is about, and what was refused since it was posted.
+type Refusal struct {
+	Namespace   string `json:"namespace"`
+	Agent       string `json:"agent"`
+	DisplayName string `json:"display_name,omitempty"`
+	Creator     string `json:"creator"`
+	Scheme      string `json:"scheme"`
+	Host        string `json:"host"`
+	Port        int    `json:"port"`
+	AgentURL    string `json:"agent_url,omitempty"`
+	// Count is the requests refused since the notice; Sessions the distinct
+	// Sessions they came from, at most RefusalSessionsMax kept, and
+	// MoreSessions how many beyond those.
+	Count        int      `json:"count"`
+	Sessions     []string `json:"sessions,omitempty"`
+	MoreSessions int      `json:"more_sessions,omitempty"`
+	// FirstAt and LastAt are when the first and the latest of them were
+	// observed.
+	FirstAt time.Time `json:"first_at"`
+	LastAt  time.Time `json:"last_at"`
+}
+
+// RefusalSessionsMax bounds the Sessions a refusal record names.
+const RefusalSessionsMax = 50
 
 // DecisionOption is one answer a decision offers: a short label and what
 // choosing it does.

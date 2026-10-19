@@ -14,6 +14,9 @@ import (
 	"syscall"
 
 	"github.com/go-chi/chi/v5"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -28,6 +31,7 @@ import (
 	slackchannel "github.com/giantswarm/klaus-gateway/pkg/channels/slack"
 	"github.com/giantswarm/klaus-gateway/pkg/muster"
 	"github.com/giantswarm/klaus-gateway/pkg/observability"
+	"github.com/giantswarm/klaus-gateway/pkg/refusals"
 	"github.com/giantswarm/klaus-gateway/pkg/reviews"
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
 	boltstore "github.com/giantswarm/klaus-gateway/pkg/routing/store/bolt"
@@ -257,6 +261,22 @@ func run(args []string) error {
 			"audience", cfg.Reviews.ResolvedAudience(),
 			"allowed_callers", cfg.Reviews.AllowedCallers,
 			"muster_url", cfg.OBO.MusterURL,
+		)
+	}
+
+	if cfg.Refusals.Enabled {
+		slackAdapter.RefusalWindow = cfg.Refusals.Window
+		watcher, closeWatcher, err := refusalWatcher(cfg.Refusals, slackAdapter, metrics, logger)
+		if err != nil {
+			return fmt.Errorf("egress refusals: %w", err)
+		}
+		defer closeWatcher()
+		go watcher.Run(ctx)
+		logger.Info("egress refusal notices enabled",
+			"egress_service", cfg.Refusals.EgressService,
+			"kagent_target", cfg.Refusals.KagentTarget,
+			"window", cfg.Refusals.Window,
+			"interval", cfg.Refusals.Interval,
 		)
 	}
 
@@ -555,6 +575,39 @@ func podNamespace() string {
 		}
 	}
 	return "default"
+}
+
+// refusalWatcher builds the egress refusal watcher: the egress pods read
+// through the Kubernetes API, the kagent controller asked as this gateway's
+// ServiceAccount, the notices posted by the Slack adapter.
+func refusalWatcher(cfg config.RefusalsConfig, notifier channels.RefusalNotifier, metrics *observability.Metrics, logger *slog.Logger) (*refusals.Watcher, func(), error) {
+	restCfg, err := buildKubeConfig()
+	if err != nil {
+		return nil, nil, err
+	}
+	kclient, err := kubernetes.NewForConfig(restCfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	dclient, err := dynamic.NewForConfig(restCfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	conn, err := grpc.NewClient(cfg.KagentTarget, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return nil, nil, fmt.Errorf("dial kagent %s: %w", cfg.KagentTarget, err)
+	}
+	namespace, service, _ := strings.Cut(cfg.EgressService, "/")
+	return &refusals.Watcher{
+		Source:   &refusals.EgressPods{Client: kclient, Namespace: namespace, Service: service, Port: cfg.StatsPort, Path: cfg.MetricsPath},
+		Sessions: &refusals.KagentSessions{Conn: conn, TokenFile: cfg.KagentTokenFile},
+		Agents:   &refusals.KubeAgents{Client: dclient},
+		Notifier: notifier,
+		AgentURL: cfg.AgentURLTemplate,
+		Interval: cfg.Interval,
+		Logger:   logger,
+		Record:   metrics.RecordRefusal,
+	}, func() { _ = conn.Close() }, nil
 }
 
 // buildKubeConfig returns a *rest.Config using in-cluster config when running
