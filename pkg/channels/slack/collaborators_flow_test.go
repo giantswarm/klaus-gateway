@@ -197,7 +197,7 @@ func TestCollaborators_ReplayedTurnOnAgentNotPermittedIsRefused(t *testing.T) {
 	require.Eventually(t, func() bool { return refusals() == 1 },
 		flowWait, 50*time.Millisecond, "the replay names the agent and its tenant")
 	require.Eventually(t, func() bool {
-		return logLine(logs, "level=INFO", "replay after access grant failed") != ""
+		return logLine(logs, "level=INFO", "replay after access grant failed", "failure_class=policy") != ""
 	}, flowWait, 50*time.Millisecond)
 	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "could not be picked up again")
 

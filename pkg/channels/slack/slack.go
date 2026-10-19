@@ -1745,7 +1745,7 @@ func (a *Adapter) OnUserLinked(_ context.Context, slackUser, _ string) {
 					continue
 				}
 				if err := a.replayDispatch(ctx, req.msg, req.slackChannel); err != nil && !errors.Is(err, context.Canceled) {
-					a.Logger.Log(ctx, failureLogLevel(err), "slack: replay after sign-in failed", "user", slackUser, "thread", req.msg.ThreadID, "error", err)
+					a.Logger.Log(ctx, failureLogLevel(err), "slack: replay after sign-in failed", "user", slackUser, "thread", req.msg.ThreadID, "failure_class", channels.ClassifyFailure(err), "error", err)
 					a.postReplayFailureNote(ctx, req.slackChannel, req.msg.ThreadID, err)
 				}
 			}
@@ -2080,9 +2080,9 @@ func (a *Adapter) postDispatchFailureNote(ctx context.Context, slackChannel, thr
 // postReplayFailureNote tells the thread a parked message could not be
 // replayed, so a sign-in or access grant that just promised action does not
 // end in silence. An oversize refusal already has its note from dispatch, and
-// "send it again" would fail the same way, as it would on an agent the person
-// may not use or a Session that cannot be shared with them: those get the
-// refusal a live turn gets. Best-effort: a post failure is only logged.
+// "send it again" would fail the same way. An agent the person may not use, or
+// a Session that cannot be shared with them, gets the refusal note of a live
+// turn. Best-effort: a post failure is only logged.
 func (a *Adapter) postReplayFailureNote(ctx context.Context, slackChannel, threadID string, cause error) {
 	if errors.Is(cause, pkga2a.ErrPayloadTooLarge) {
 		return
