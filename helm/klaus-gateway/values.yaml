@@ -415,7 +415,8 @@ reviews:
 # audience `kagentAudience`), which Agent a refusing Session runs; the
 # controller must admit this ServiceAccount as its session reader. While on,
 # the chart grants the ServiceAccount `get` on api.kagent.dev agents and
-# `list` on the egress namespace's EndpointSlices. Requires slack.enabled.
+# `list` on the egress namespace's EndpointSlices. Without slack.enabled it
+# renders nothing.
 refusals:
   enabled: false
   # egressService is the Substrate egress's Service, <namespace>/<name>.

@@ -1,4 +1,4 @@
-{{- if .Values.refusals.enabled }}
+{{- if include "refusals.on" . }}
 {{- $egressNamespace := (split "/" .Values.refusals.egressService)._0 }}
 # The egress refusal notices read an Agent's creator from the Agent, in any
 # namespace an agent runs in; the ClusterRole is named per release namespace

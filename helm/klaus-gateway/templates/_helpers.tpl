@@ -55,3 +55,9 @@ app.kubernetes.io/instance: {{ .Release.Name | quote }}
 {{- define "obo.linksSecretName" -}}
 {{- .Values.obo.storeSecretName | default (printf "%s-obo-links" (include "resource.default.name" .)) -}}
 {{- end -}}
+
+{{/* refusals.on renders "true" when refusal notices run: they are Slack DMs,
+     so they need Slack as well as refusals.enabled. */}}
+{{- define "refusals.on" -}}
+{{- if and .Values.refusals.enabled .Values.slack.enabled -}}true{{- end -}}
+{{- end -}}
