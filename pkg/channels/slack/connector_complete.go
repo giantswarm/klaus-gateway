@@ -106,6 +106,24 @@ func (a *Adapter) dropConnectorCompletions(stateIDs []string) {
 	}
 }
 
+// takeHeldMessage forgets the completion states named and returns the held
+// message of the latest one whose landing has not run it, nil when none is
+// left: expired, already landed, or never held.
+func (a *Adapter) takeHeldMessage(stateIDs []string) *heldMessage {
+	now := time.Now()
+	a.connectorCompletionsMu.Lock()
+	defer a.connectorCompletionsMu.Unlock()
+	var held *heldMessage
+	for i := len(stateIDs) - 1; i >= 0; i-- {
+		stored, found := a.connectorCompletions[stateIDs[i]]
+		delete(a.connectorCompletions, stateIDs[i])
+		if held == nil && found && !now.After(stored.expires) && !stored.value.completed {
+			held = stored.value.held
+		}
+	}
+	return held
+}
+
 // recordConnectorConnectClick stores a Connect click's response_url under
 // stateID. ok is false for an unknown or expired stateID (including legacy
 // buttons whose value is the server name) and for a clicker who is not the
@@ -236,6 +254,7 @@ func (a *Adapter) handleConnectorComplete(w http.ResponseWriter, r *http.Request
 			}
 			if entry.held != nil {
 				a.settleSessionConnect(ctx, entry.slackUser, entry.threadTS, true)
+				a.settleOtherSessionConnects(ctx, entry.slackUser, entry.server, entry.threadTS)
 			}
 			a.resumeAfterConnectorSignIn(ctx, entry)
 		})
