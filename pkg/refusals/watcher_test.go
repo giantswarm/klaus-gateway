@@ -173,3 +173,24 @@ agentgateway_requests_total{status="403"} 99
 	require.NoError(t, err)
 	require.Empty(t, none)
 }
+
+// The egress serves OpenMetrics: the counter's family is named without
+// _total, an info family sits on the same page and the page ends in # EOF.
+func TestParseRefusalsOpenMetrics(t *testing.T) {
+	page := `# HELP agentgateway_build Agentgateway build information.
+# TYPE agentgateway_build info
+agentgateway_build_info{tag="dev"} 1
+# HELP agentgateway_atenet_egress_refusals Refusals.
+# TYPE agentgateway_atenet_egress_refusals counter
+agentgateway_atenet_egress_refusals_total{ate_atespace="kagent",ate_actor_name="session-abc",scheme="https",host="example.org",port="443"} 3 # {trace_id="x"} 1
+agentgateway_atenet_egress_refusals_created{ate_atespace="kagent",ate_actor_name="session-abc",scheme="https",host="example.org",port="443"} 1.7e9
+# TYPE agentgateway_requests counter
+agentgateway_requests_total{status="403"} 99
+# EOF
+`
+	got, err := refusals.ParseRefusals("10.0.0.1", strings.NewReader(page))
+	require.NoError(t, err)
+	require.Equal(t, []refusals.Series{
+		{Source: "10.0.0.1", Atespace: "kagent", Actor: "session-abc", Scheme: "https", Host: "example.org", Port: 443, Value: 3},
+	}, got)
+}

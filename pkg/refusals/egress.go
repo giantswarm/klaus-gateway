@@ -1,6 +1,7 @@
 package refusals
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	dto "github.com/prometheus/client_model/go"
@@ -104,11 +106,22 @@ func (e *EgressPods) read(ctx context.Context, addr string) ([]Series, error) {
 	return ParseRefusals(addr, io.LimitReader(resp.Body, maxMetricsBytes))
 }
 
-// ParseRefusals reads the RefusalsMetric series of one metrics page in the
-// Prometheus text format, attributed to source.
+// ParseRefusals reads the RefusalsMetric series of one metrics page,
+// attributed to source. The page is the Prometheus text format or
+// OpenMetrics, which the egress serves whatever the Accept header says: only
+// the RefusalsMetric samples are kept, without exemplars, under a TYPE line
+// of their own, so the rest of the page (OpenMetrics' info and EOF, a family
+// named without _total) never reaches the text parser.
 func ParseRefusals(source string, page io.Reader) ([]Series, error) {
+	samples, err := refusalSamples(page)
+	if err != nil {
+		return nil, fmt.Errorf("refusals: read the metrics of %s: %w", source, err)
+	}
+	if samples == "" {
+		return nil, nil
+	}
 	parser := expfmt.NewTextParser(model.UTF8Validation)
-	families, err := parser.TextToMetricFamilies(page)
+	families, err := parser.TextToMetricFamilies(strings.NewReader("# TYPE " + RefusalsMetric + " counter\n" + samples))
 	if err != nil {
 		return nil, fmt.Errorf("refusals: parse the metrics of %s: %w", source, err)
 	}
@@ -131,6 +144,27 @@ func ParseRefusals(source string, page io.Reader) ([]Series, error) {
 		})
 	}
 	return out, nil
+}
+
+// refusalSamples returns the page's RefusalsMetric sample lines, each cut
+// before an OpenMetrics exemplar.
+func refusalSamples(page io.Reader) (string, error) {
+	var b strings.Builder
+	scanner := bufio.NewScanner(page)
+	scanner.Buffer(make([]byte, 0, 64<<10), maxMetricsBytes)
+	for scanner.Scan() {
+		line := scanner.Text()
+		rest, ok := strings.CutPrefix(line, RefusalsMetric)
+		if !ok || (!strings.HasPrefix(rest, "{") && !strings.HasPrefix(rest, " ")) {
+			continue
+		}
+		if i := strings.Index(line, " # "); i >= 0 {
+			line = line[:i]
+		}
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	return b.String(), scanner.Err()
 }
 
 func labelMap(m *dto.Metric) map[string]string {
