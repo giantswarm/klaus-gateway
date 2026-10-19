@@ -158,13 +158,35 @@ func refusalSamples(page io.Reader) (string, error) {
 		if !ok || (!strings.HasPrefix(rest, "{") && !strings.HasPrefix(rest, " ")) {
 			continue
 		}
-		if i := strings.Index(line, " # "); i >= 0 {
-			line = line[:i]
+		end := len(RefusalsMetric) + labelSetEnd(rest)
+		if i := strings.Index(line[end:], " # "); i >= 0 {
+			line = line[:end+i]
 		}
 		b.WriteString(line)
 		b.WriteByte('\n')
 	}
 	return b.String(), scanner.Err()
+}
+
+// labelSetEnd is the length of s's leading label set ({...}), its quoted
+// values and their escapes skipped, so a label value never reads as an
+// exemplar marker; 0 without one.
+func labelSetEnd(s string) int {
+	if !strings.HasPrefix(s, "{") {
+		return 0
+	}
+	quoted := false
+	for i := 1; i < len(s); i++ {
+		switch {
+		case quoted && s[i] == '\\':
+			i++
+		case s[i] == '"':
+			quoted = !quoted
+		case !quoted && s[i] == '}':
+			return i + 1
+		}
+	}
+	return len(s)
 }
 
 func labelMap(m *dto.Metric) map[string]string {

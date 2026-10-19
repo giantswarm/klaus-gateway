@@ -183,6 +183,7 @@ agentgateway_build_info{tag="dev"} 1
 # HELP agentgateway_atenet_egress_refusals Refusals.
 # TYPE agentgateway_atenet_egress_refusals counter
 agentgateway_atenet_egress_refusals_total{ate_atespace="kagent",ate_actor_name="session-abc",scheme="https",host="example.org",port="443"} 3 # {trace_id="x"} 1
+agentgateway_atenet_egress_refusals_total{ate_atespace="kagent",ate_actor_name="session-abc",scheme="https",host="a # \"b}",port="443"} 2
 agentgateway_atenet_egress_refusals_created{ate_atespace="kagent",ate_actor_name="session-abc",scheme="https",host="example.org",port="443"} 1.7e9
 # TYPE agentgateway_requests counter
 agentgateway_requests_total{status="403"} 99
@@ -192,5 +193,6 @@ agentgateway_requests_total{status="403"} 99
 	require.NoError(t, err)
 	require.Equal(t, []refusals.Series{
 		{Source: "10.0.0.1", Atespace: "kagent", Actor: "session-abc", Scheme: "https", Host: "example.org", Port: 443, Value: 3},
-	}, got)
+		{Source: "10.0.0.1", Atespace: "kagent", Actor: "session-abc", Scheme: "https", Host: `a # "b}`, Port: 443, Value: 2},
+	}, got, "a host carrying the exemplar marker, a quote or a brace stays one sample")
 }
