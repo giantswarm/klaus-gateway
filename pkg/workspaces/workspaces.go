@@ -415,11 +415,8 @@ func (c *Client) call(ctx context.Context, bearer, tool string, args map[string]
 	if err != nil {
 		return fmt.Errorf("workspaces: %s: %w", name, err)
 	}
-	if challenge := authChallengeOf(res); challenge != nil {
-		if challenge.Server == "" {
-			challenge.Server = c.server()
-		}
-		return challenge
+	if server, loginURL, ok := res.SignInChallenge(c.server()); ok {
+		return &AuthRequiredError{Server: server, LoginURL: loginURL}
 	}
 	if res.IsError {
 		if !res.Dispatched {
@@ -436,28 +433,6 @@ func (c *Client) call(ctx context.Context, bearer, tool string, args map[string]
 			return &MalformedError{Tool: name, Reason: fmt.Sprintf("field %s is not a %s", typeErr.Field, typeErr.Type)}
 		}
 		return &MalformedError{Tool: name, Reason: "not a JSON object"}
-	}
-	return nil
-}
-
-// authChallengeOf reads muster's auth_required answer: an error result whose
-// structured content names the server and the sign-in link (muster puts the
-// link both there and in the text, which the Slack adapter's tool calls
-// parse).
-func authChallengeOf(res muster.Result) *AuthRequiredError {
-	if !res.IsError {
-		return nil
-	}
-	var challenge struct {
-		Status  string `json:"status"`
-		Server  string `json:"server"`
-		AuthURL string `json:"authUrl"`
-	}
-	if len(res.Structured) > 0 && json.Unmarshal(res.Structured, &challenge) == nil && challenge.Status == "auth_required" {
-		return &AuthRequiredError{Server: challenge.Server, LoginURL: challenge.AuthURL}
-	}
-	if strings.HasPrefix(res.Text, "auth_required") {
-		return &AuthRequiredError{}
 	}
 	return nil
 }
