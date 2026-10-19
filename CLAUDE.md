@@ -40,6 +40,7 @@ pkg/reviews/            the team-review endpoint (POST /reviews, /notices), deci
 pkg/muster/             muster tool client an approved review calls through; mustertest/ is a fake muster for tests
 pkg/workspaces/         the workspace-manager's tools over pkg/muster, as the person: list, authorize, providers
 pkg/agentmanager/       agent-manager's start_session over pkg/muster, as the person: how every Session starts
+pkg/refusals/           egress refusal notices: reads the egress's refusal counter, resolves actor → Session → Agent → creator, hands each agent and destination to the Slack adapter
 pkg/server/             http.Server wiring, middleware, admin mux
 pkg/observability/      OTel traces + Prometheus metrics
 pkg/project/            build identifiers: ldflags target for version, git SHA and build timestamp; version falls back to the Go build info

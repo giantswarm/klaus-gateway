@@ -246,6 +246,45 @@ func (r ReviewsConfig) ResolvedAudience() string {
 	return DefaultReviewsAudience
 }
 
+// RefusalsConfig configures the egress refusal notices: the gateway reads
+// the Substrate egress's refusal counter, resolves each refusing Session to
+// its Agent, and tells the Agent's creator by direct message, one notice per
+// agent and destination within Window.
+type RefusalsConfig struct {
+	// Enabled starts the watcher. Requires Slack.
+	Enabled bool
+	// EgressService is the egress's Service as <namespace>/<name>; its
+	// EndpointSlices name the pods whose stats port is read.
+	EgressService string
+	// StatsPort and MetricsPath locate each egress pod's metrics.
+	StatsPort   int
+	MetricsPath string
+	// KagentTarget is the kagent controller's gRPC address (host:port,
+	// plaintext), called directly with the token at KagentTokenFile: the
+	// controller's session reader admits this gateway's ServiceAccount.
+	KagentTarget    string
+	KagentTokenFile string
+	// Window is how long one notice covers its agent and destination;
+	// Interval how often the egress is read.
+	Window   time.Duration
+	Interval time.Duration
+	// AgentURLTemplate opens an agent where its egress is edited;
+	// "{namespace}" and "{name}" are replaced. Empty offers no link.
+	AgentURLTemplate string
+}
+
+// DefaultRefusalsConfig is RefusalsConfig as an installation of the agent
+// platform runs it, off.
+var DefaultRefusalsConfig = RefusalsConfig{
+	EgressService:   "ate-system/atenet-egress",
+	StatsPort:       15020,
+	MetricsPath:     "/metrics",
+	KagentTarget:    "kagent-controller.kagent.svc:8083",
+	KagentTokenFile: "/var/run/secrets/kagent/token", // #nosec G101 -- a path, not a credential
+	Window:          24 * time.Hour,
+	Interval:        time.Minute,
+}
+
 // WorkspacesConfig locates the workspace-manager's tools behind muster, which
 // the Slack adapter calls as the linked person.
 type WorkspacesConfig struct {
@@ -280,6 +319,7 @@ type Config struct {
 	A2A        A2AConfig
 	OBO        OBOConfig
 	Reviews    ReviewsConfig
+	Refusals   RefusalsConfig
 	Workspaces WorkspacesConfig
 }
 
@@ -335,6 +375,7 @@ func Defaults() Config {
 		OBO: OBOConfig{
 			StoreSecretName: "klaus-gateway-obo-links",
 		},
+		Refusals: DefaultRefusalsConfig,
 	}
 }
 
@@ -415,6 +456,15 @@ func Load(args []string) (Config, error) {
 		cfg.Reviews.AllowedCallers = splitCommaList(v)
 		return nil
 	})
+	fs.BoolVar(&cfg.Refusals.Enabled, "refusals-enabled", cfg.Refusals.Enabled, "Tell an agent's creator by direct message when the Substrate egress refuses a destination the agent's egress does not declare, one notice per agent and destination within --refusals-window. Requires --slack-enabled.")
+	fs.StringVar(&cfg.Refusals.EgressService, "refusals-egress-service", cfg.Refusals.EgressService, "The Substrate egress's Service as <namespace>/<name>; the stats port of every pod behind it is read.")
+	fs.IntVar(&cfg.Refusals.StatsPort, "refusals-egress-stats-port", cfg.Refusals.StatsPort, "The egress pods' stats port.")
+	fs.StringVar(&cfg.Refusals.MetricsPath, "refusals-egress-metrics-path", cfg.Refusals.MetricsPath, "The metrics path on the egress pods' stats port.")
+	fs.StringVar(&cfg.Refusals.KagentTarget, "refusals-kagent-target", cfg.Refusals.KagentTarget, "The kagent controller's gRPC address (host:port, plaintext) the gateway asks, as its own ServiceAccount, which Agent a refusing Session runs.")
+	fs.StringVar(&cfg.Refusals.KagentTokenFile, "refusals-kagent-token-file", cfg.Refusals.KagentTokenFile, "The projected ServiceAccount token (audience kagent) sent to the kagent controller.")
+	fs.DurationVar(&cfg.Refusals.Window, "refusals-window", cfg.Refusals.Window, "How long one refusal notice covers its agent and destination; later refusals inside it are counted into the notice.")
+	fs.DurationVar(&cfg.Refusals.Interval, "refusals-interval", cfg.Refusals.Interval, "How often the egress's refusal counter is read.")
+	fs.StringVar(&cfg.Refusals.AgentURLTemplate, "refusals-agent-url-template", cfg.Refusals.AgentURLTemplate, "URL of an agent where its egress is edited, with \"{namespace}\" and \"{name}\" replaced; the notice's Open agent button. Empty offers none.")
 	fs.StringVar(&cfg.Workspaces.ToolsPrefix, "workspace-tools-prefix", cfg.Workspaces.ToolsPrefix, "Prefix muster puts before the workspace-manager's tool names (e.g. x_workspace-manager_). Empty turns workspaces off. Requires --obo-enabled: the tools run as the linked person.")
 
 	fs.Usage = func() {
@@ -566,6 +616,39 @@ func applyEnv(cfg *Config) {
 	if v, ok := lookup("REVIEWS_ALLOWED_CALLERS"); ok {
 		cfg.Reviews.AllowedCallers = splitCommaList(v)
 	}
+	if v, ok := lookup("REFUSALS_ENABLED"); ok {
+		cfg.Refusals.Enabled = strings.EqualFold(v, "true") || v == "1"
+	}
+	if v, ok := lookup("REFUSALS_EGRESS_SERVICE"); ok {
+		cfg.Refusals.EgressService = v
+	}
+	if v, ok := lookup("REFUSALS_EGRESS_STATS_PORT"); ok {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Refusals.StatsPort = n
+		}
+	}
+	if v, ok := lookup("REFUSALS_EGRESS_METRICS_PATH"); ok {
+		cfg.Refusals.MetricsPath = v
+	}
+	if v, ok := lookup("REFUSALS_KAGENT_TARGET"); ok {
+		cfg.Refusals.KagentTarget = v
+	}
+	if v, ok := lookup("REFUSALS_KAGENT_TOKEN_FILE"); ok {
+		cfg.Refusals.KagentTokenFile = v
+	}
+	if v, ok := lookup("REFUSALS_WINDOW"); ok {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.Refusals.Window = d
+		}
+	}
+	if v, ok := lookup("REFUSALS_INTERVAL"); ok {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.Refusals.Interval = d
+		}
+	}
+	if v, ok := lookup("REFUSALS_AGENT_URL_TEMPLATE"); ok {
+		cfg.Refusals.AgentURLTemplate = v
+	}
 	if v, ok := lookup("WORKSPACE_TOOLS_PREFIX"); ok {
 		cfg.Workspaces.ToolsPrefix = v
 	}
@@ -713,6 +796,23 @@ func (c Config) Validate() error {
 		}
 		if len(c.Reviews.AllowedCallers) == 0 {
 			return fmt.Errorf("--reviews-allowed-callers is required with --reviews-enabled (the ServiceAccounts that may post, system:serviceaccount:<namespace>:<name>)")
+		}
+	}
+	if c.Refusals.Enabled {
+		if !c.Slack.Enabled {
+			return fmt.Errorf("--slack-enabled is required with --refusals-enabled (a refusal notice is a Slack direct message)")
+		}
+		if ns, name, ok := strings.Cut(c.Refusals.EgressService, "/"); !ok || ns == "" || name == "" {
+			return fmt.Errorf("--refusals-egress-service %q must be <namespace>/<name>", c.Refusals.EgressService)
+		}
+		if c.Refusals.StatsPort <= 0 || c.Refusals.StatsPort > 65535 {
+			return fmt.Errorf("--refusals-egress-stats-port %d is not a port", c.Refusals.StatsPort)
+		}
+		if c.Refusals.KagentTarget == "" || c.Refusals.KagentTokenFile == "" {
+			return fmt.Errorf("--refusals-kagent-target and --refusals-kagent-token-file are required with --refusals-enabled (the gateway asks kagent which Agent a refusing Session runs)")
+		}
+		if c.Refusals.Window <= 0 || c.Refusals.Interval <= 0 {
+			return fmt.Errorf("--refusals-window and --refusals-interval must be positive")
 		}
 	}
 	if c.Workspaces.ToolsPrefix != "" && !c.OBO.Enabled {

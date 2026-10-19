@@ -1051,6 +1051,37 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
   channel outside the allowlist gets a one-time ephemeral notice; the channel intro and all
   other activity are suppressed there.
 
+## Egress refusal notices
+
+With `refusals.enabled` (`--refusals-enabled`), the creator of an agent learns by direct message
+from the app when the Substrate egress refuses a destination the agent's egress
+(`Agent.spec.egress`) does not declare: the destination, the reason, how many requests in how
+many Sessions since when, and an *Open agent* button (`refusals.agentURLTemplate`). There is one
+notice per agent and destination within `refusals.window` (24 h): later refusals inside it rewrite
+that message with the new count and time, and the first refusal after it posts a new one. A
+second destination of the same agent is a second notice. Nothing goes through Alertmanager.
+
+- **Source.** Every `refusals.interval` (1 min) the gateway reads
+  `agentgateway_atenet_egress_refusals_total` (one series per actor and destination: `ate_atespace`,
+  `ate_actor_name`, `scheme`, `host`, `port`) from the stats port of every pod behind
+  `refusals.egressService`, found through its EndpointSlices, and counts each series' increase
+  since the previous read; a series it sees for the first time counts whole. The egress folds
+  destinations and actors beyond its bounds into `other`, which name nothing to notify.
+- **Agent and creator.** kagent names a Session's actor `session-<Session id>`; the gateway asks
+  the kagent controller (`refusals.kagentTarget`, gRPC `SessionService/GetSession`) which Agent the
+  Session runs, as its own ServiceAccount with a token projected for `refusals.kagentAudience`,
+  which the controller admits as its session reader. An actor that is no Session kagent knows (a
+  sandbox's) is skipped. The creator is the email in the Agent's
+  `agent-platform.giantswarm.io/created-by` annotation (agent-manager records it); an Agent
+  without one is counted (`klaus_gateway_egress_refusals_total{outcome="no_creator"}`) and
+  nobody is told. The creator is found in Slack by that email (`users:read.email`).
+- **Record.** The notice is a record in the review store (`refusal-<hash of agent and
+  destination>`, the window as its TTL), so on `valkey` and `bolt` a restart keeps the
+  deduplication. A notice Slack or kagent could not take is retried on the next read with the
+  refusals since; a creator Slack does not know is not.
+- **Outcomes** are counted in `klaus_gateway_egress_refusals_total{outcome}`: `noted`, `failed`,
+  `no_creator`, `not_session`.
+
 ## Required bot OAuth scopes
 
 | Scope            | Purpose                                               |

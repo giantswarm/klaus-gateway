@@ -310,6 +310,39 @@
         "provider": {
             "type": "string"
         },
+        "refusals": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "agentURLTemplate": {
+                    "type": "string"
+                },
+                "egressService": {
+                    "type": "string"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "interval": {
+                    "type": "string"
+                },
+                "kagentAudience": {
+                    "type": "string"
+                },
+                "kagentTarget": {
+                    "type": "string"
+                },
+                "metricsPath": {
+                    "type": "string"
+                },
+                "statsPort": {
+                    "type": "integer"
+                },
+                "window": {
+                    "type": "string"
+                }
+            }
+        },
         "replicaCount": {
             "type": "integer"
         },

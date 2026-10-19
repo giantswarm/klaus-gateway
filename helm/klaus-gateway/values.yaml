@@ -405,6 +405,37 @@ reviews:
   allowedCallers:
     - system:serviceaccount:giantswarm-platform-manager:giantswarm-platform-manager
 
+# Egress refusal notices: when the Substrate egress refuses a destination an
+# agent's egress does not declare, the agent's creator (the Agent's
+# agent-platform.giantswarm.io/created-by annotation) gets a direct message
+# from the app, one per agent and destination within `window`; later refusals
+# inside it are counted into that message. The gateway reads the refusal
+# counter from the stats port of every pod behind `egressService` and asks
+# the kagent controller, as its own ServiceAccount (a projected token for
+# audience `kagentAudience`), which Agent a refusing Session runs; the
+# controller must admit this ServiceAccount as its session reader. While on,
+# the chart grants the ServiceAccount `get` on api.kagent.dev agents and
+# `list` on the egress namespace's EndpointSlices. Without slack.enabled it
+# renders nothing.
+refusals:
+  enabled: false
+  # egressService is the Substrate egress's Service, <namespace>/<name>.
+  egressService: ate-system/atenet-egress
+  # statsPort and metricsPath locate each egress pod's metrics.
+  statsPort: 15020
+  metricsPath: /metrics
+  # kagentTarget is the kagent controller's gRPC address (plaintext).
+  kagentTarget: kagent-controller.kagent.svc:8083
+  kagentAudience: kagent
+  # window is how long one notice covers its agent and destination; interval
+  # how often the egress is read.
+  window: 24h
+  interval: 1m
+  # agentURLTemplate opens an agent where its egress is edited, with
+  # {namespace} and {name} replaced: the notice's Open agent button. Empty
+  # offers none.
+  agentURLTemplate: ""
+
 # Workspaces: the workspace-manager's tools, which the Slack adapter calls
 # through muster as the linked person (which workspaces the person may pick,
 # whether they may start a Session on one, their provider connections).

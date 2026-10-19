@@ -208,6 +208,26 @@ spec:
         - name: KLAUS_GATEWAY_REVIEWS_ALLOWED_CALLERS
           value: {{ join "," .Values.reviews.allowedCallers | quote }}
         {{- end }}
+        {{- if include "refusals.on" . }}
+        - name: KLAUS_GATEWAY_REFUSALS_ENABLED
+          value: "true"
+        - name: KLAUS_GATEWAY_REFUSALS_EGRESS_SERVICE
+          value: {{ .Values.refusals.egressService | quote }}
+        - name: KLAUS_GATEWAY_REFUSALS_EGRESS_STATS_PORT
+          value: {{ .Values.refusals.statsPort | quote }}
+        - name: KLAUS_GATEWAY_REFUSALS_EGRESS_METRICS_PATH
+          value: {{ .Values.refusals.metricsPath | quote }}
+        - name: KLAUS_GATEWAY_REFUSALS_KAGENT_TARGET
+          value: {{ .Values.refusals.kagentTarget | quote }}
+        - name: KLAUS_GATEWAY_REFUSALS_KAGENT_TOKEN_FILE
+          value: /var/run/secrets/kagent/token
+        - name: KLAUS_GATEWAY_REFUSALS_WINDOW
+          value: {{ .Values.refusals.window | quote }}
+        - name: KLAUS_GATEWAY_REFUSALS_INTERVAL
+          value: {{ .Values.refusals.interval | quote }}
+        - name: KLAUS_GATEWAY_REFUSALS_AGENT_URL_TEMPLATE
+          value: {{ .Values.refusals.agentURLTemplate | quote }}
+        {{- end }}
         {{- if .Values.obo.enabled }}
         # Slack OBO. client_id is auto-derived from the callback base URL (CIMD),
         # so no client-id value is wired here.
@@ -268,7 +288,7 @@ spec:
           {{- with .Values.securityContext }}
             {{- . | toYaml | nindent 10 }}
           {{- end }}
-        {{- if or .Values.a2a.caSecret .Values.obo.enabled }}
+        {{- if or .Values.a2a.caSecret .Values.obo.enabled (include "refusals.on" .) }}
         volumeMounts:
         {{- if .Values.a2a.caSecret }}
         - name: kagent-ca
@@ -288,8 +308,13 @@ spec:
           {{- end }}
         {{- end }}
         {{- end }}
+        {{- if include "refusals.on" . }}
+        - name: kagent-token
+          mountPath: /var/run/secrets/kagent
+          readOnly: true
         {{- end }}
-      {{- if or .Values.a2a.caSecret .Values.obo.enabled }}
+        {{- end }}
+      {{- if or .Values.a2a.caSecret .Values.obo.enabled (include "refusals.on" .) }}
       volumes:
       {{- if .Values.a2a.caSecret }}
       - name: kagent-ca
@@ -312,6 +337,17 @@ spec:
         emptyDir: {}
         {{- end }}
       {{- end }}
+      {{- end }}
+      {{- if include "refusals.on" . }}
+      # The kagent controller's session reader admits this ServiceAccount by
+      # a token projected for its audience.
+      - name: kagent-token
+        projected:
+          sources:
+          - serviceAccountToken:
+              audience: {{ .Values.refusals.kagentAudience | quote }}
+              expirationSeconds: 3600
+              path: token
       {{- end }}
       {{- end }}
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}

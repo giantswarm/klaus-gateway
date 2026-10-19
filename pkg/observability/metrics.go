@@ -53,6 +53,10 @@ type Metrics struct {
 	// other trace, so this counter is what says whether a workspace is being
 	// throttled at all.
 	SlackRateLimitedTotal *prometheus.CounterVec
+	// RefusalsTotal counts each agent and destination an egress refusal
+	// observation handled, by outcome (refusals.Outcome*), fed by
+	// RecordRefusal.
+	RefusalsTotal *prometheus.CounterVec
 }
 
 // NewMetrics builds and registers the default set of collectors.
@@ -101,7 +105,13 @@ func NewMetrics() *Metrics {
 		Help:      "Slack Web API calls answered with HTTP 429, labelled by method and by what the client did about it (retried, exhausted).",
 	}, []string{labelMethod, labelOutcome})
 
-	reg.MustRegister(reqs, dur, turns, phase, streams, rateLimited)
+	refusalsTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: metricNamespace,
+		Name:      "egress_refusals_total",
+		Help:      "Agents and destinations an egress refusal observation handled, labelled by outcome (noted, failed, no_creator, not_session).",
+	}, []string{labelOutcome})
+
+	reg.MustRegister(reqs, dur, turns, phase, streams, rateLimited, refusalsTotal)
 
 	return &Metrics{
 		Registry:              reg,
@@ -111,6 +121,7 @@ func NewMetrics() *Metrics {
 		TurnPhase:             phase,
 		SlackStreamsTotal:     streams,
 		SlackRateLimitedTotal: rateLimited,
+		RefusalsTotal:         refusalsTotal,
 	}
 }
 
@@ -134,6 +145,12 @@ func (m *Metrics) RecordSlackStream(event string) {
 // the Slack adapter's RateLimitRecorder.
 func (m *Metrics) RecordSlackRateLimit(method, outcome string) {
 	m.SlackRateLimitedTotal.WithLabelValues(method, outcome).Inc()
+}
+
+// RecordRefusal counts one agent and destination an egress refusal
+// observation handled.
+func (m *Metrics) RecordRefusal(outcome string) {
+	m.RefusalsTotal.WithLabelValues(outcome).Inc()
 }
 
 // Handler exposes the Prometheus /metrics endpoint.
