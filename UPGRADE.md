@@ -25,6 +25,13 @@ stable release tag while a `Next` section with content is left.
   the controller as the person, so the controller sees one roster read per `agents` command,
   picker and new conversation.
 
+## 4.9.0 — workspace provider sign-in through muster
+
+- A workspace provider's Connect button opens muster's sign-in link: the gateway reads the
+  workspace-manager's `signIn` and asks muster's `core_auth_login` for the link, as the person.
+  Roll out workspace-manager v0.10.0 or later with this release; an older one answers a connect link,
+  which the gateway no longer reads, so its Connect prompts would come without a button.
+
 ## 4.8.1 — alert bots matched by profile name
 
 - `slack.contextBotNames` admits a bot's posts to the thread context by its Slack profile name

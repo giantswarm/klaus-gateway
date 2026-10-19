@@ -362,7 +362,7 @@ repositories as read-only mirrors beside it.
   it is still listed, else to **No workspace**, and a change of agent redraws the picker
   (`views.update`) with that agent's preset. On submit a workspace is authorized as the person
   before anything is posted; a denial is answered privately as in the thread below (the
-  unreadable repositories, not synced yet, or each provider's connect link) with the prompt
+  unreadable repositories, not synced yet, or each provider's sign-in link) with the prompt
   quoted back, and nothing starts. The thread then starts with the choice and is not asked. The
   last choice per person and agent is a row of its own in the routing store (channel
   `slack-workspace-pref`, the person and the agent as its key, the name or `none`, never a grant),
@@ -372,7 +372,11 @@ repositories as read-only mirrors beside it.
   no Session bound and no choice recorded yet, and the message carries none itself — lists
   the initiator's workspaces (`list_workspaces`, as them). With none, or when they cannot be
   listed, the Session starts without a workspace and nobody is asked (the second case with a
-  note in the thread). Otherwise the message is held and the thread gets one prompt. Nothing
+  note in the thread). A listing muster answers with its sign-in challenge for the
+  workspace-manager (the person has not granted its App) is no failure: the message is held
+  behind the workspace-manager's Connect prompt, as a Session start's challenge is
+  (`session_connect_required`), and once connected it is replayed, lists again and gets the
+  prompt. Otherwise the message is held and the thread gets one prompt. Nothing
   is read from the message: a workspace named in its text neither narrows the offer nor
   picks one.
 - **The prompt.** A select of the workspaces, grouped by Organization, each with how long
@@ -387,8 +391,13 @@ repositories as read-only mirrors beside it.
   initiator alone is answered in the thread (ephemeral in a channel, so the channel does not
   learn which repositories exist): a refusal names the workspace and every repository they
   cannot read; one that has not synced yet says so; both offer **No workspace** again beside
-  the prompt's select. A provider they have not connected gets the connect prompt with each
-  provider's link from the workspace-manager; once connected, their next pick or mention in
+  the prompt's select. A provider they have not connected gets the connect prompt, one per provider in
+  `authorize_workspace`'s `connect`: its button opens the link muster's `core_auth_login`
+  answers, called as the person for the server the entry's `signIn` names; a `signIn` that names
+  no muster server (muster holds no grant for that provider) is quoted instead, without a button.
+  An `authorize_workspace` muster answers with its sign-in challenge for the workspace-manager
+  gets the same connect prompt for the workspace-manager, with muster's link.
+  Once connected, their next pick or mention in
   the thread authorizes it again and starts the Session with the held message, as a sign-in
   replays a held message. Each outcome logs a `record` (`workspace_granted`,
   `workspace_refused`, `workspace_connect_required`, `workspace_unavailable`,

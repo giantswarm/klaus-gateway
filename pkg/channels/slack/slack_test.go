@@ -1845,6 +1845,36 @@ func allText(calls []recordedCall) string {
 	return b.String()
 }
 
+// slackRendered is what Slack shows of a message: the text of its section
+// blocks and of its context blocks' mrkdwn elements, or its fallback text
+// when no block shows any; the fallback of a message with blocks only goes
+// to notifications.
+func slackRendered(c recordedCall) string {
+	var parts []string
+	blocks, _ := c.params["blocks"].([]any)
+	for _, block := range blocks {
+		b, _ := block.(map[string]any)
+		if t, ok := b["text"].(map[string]any); ok {
+			if s, _ := t["text"].(string); s != "" {
+				parts = append(parts, s)
+			}
+		}
+		elements, _ := b["elements"].([]any)
+		for _, e := range elements {
+			if el, _ := e.(map[string]any); el["type"] == "mrkdwn" {
+				if s, _ := el["text"].(string); s != "" {
+					parts = append(parts, s)
+				}
+			}
+		}
+	}
+	if len(parts) == 0 {
+		s, _ := c.params["text"].(string)
+		return s
+	}
+	return strings.Join(parts, "\n")
+}
+
 // allBlockText concatenates the fallback text and the raw blocks JSON of the
 // given calls, so assertions can find content wherever a renderer put it
 // (fallback text, markdown block, or context element).

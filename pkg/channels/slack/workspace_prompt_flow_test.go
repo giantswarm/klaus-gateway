@@ -39,7 +39,10 @@ var workspaceLinked = map[string]string{"U001": "tok1", "U002": "tok2"}
 // repositories the caller cannot read), answers fresh as not synced yet, and
 // asks to connect GitLab for gitlab-ws until the caller is marked connected.
 // A caller marked blind reads none of a workspace's repositories, and one
-// marked unconnected connects GitLab first, whatever the workspace.
+// marked unconnected connects GitLab first, whatever the workspace. Its
+// connect answer's signIn names muster's core_auth_login for gitlab-manager,
+// which the fake muster answers with gitlabSignInLink, until unpinned: then
+// muster holds no grant for GitLab.
 type fakeWorkspaceManager struct {
 	*mustertest.Server
 	mu          sync.Mutex
@@ -47,6 +50,44 @@ type fakeWorkspaceManager struct {
 	connected   map[string]bool
 	blind       map[string]bool
 	unconnected map[string]bool
+	unpinned    bool
+	challenged  map[string]bool
+}
+
+// workspaceManagerSignInLink is the link of muster's sign-in challenge for
+// the workspace-manager itself.
+const workspaceManagerSignInLink = "https://muster.example/oauth/proxy/start?state=wm"
+
+// challenge makes muster answer the person behind token with its sign-in
+// challenge for the workspace-manager: they have not granted its App.
+func (wm *fakeWorkspaceManager) challenge(token string, on bool) {
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
+	wm.challenged[token] = on
+}
+
+// challengeFor is muster's answer to a call of the person behind call's
+// token while challenged, nil otherwise.
+func (wm *fakeWorkspaceManager) challengeFor(call mustertest.Call) *mustertest.Answer {
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
+	if !wm.challenged[strings.TrimPrefix(call.Bearer, "Bearer ")] {
+		return nil
+	}
+	return &mustertest.Answer{IsError: true, Text: "auth_required: server 'workspace-manager' requires authentication\n\n" + workspaceManagerSignInLink,
+		Structured: map[string]any{"status": "auth_required", "server": "workspace-manager", "authUrl": workspaceManagerSignInLink}}
+}
+
+// gitlabSignInLink is the link muster's core_auth_login answers for
+// gitlab-manager.
+const gitlabSignInLink = "https://muster.example/oauth/proxy/start?state=gitlab"
+
+// unpin pins the workspace-manager to no provider's App: muster holds no
+// grant for GitLab, so its signIn names no muster server.
+func (wm *fakeWorkspaceManager) unpin() {
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
+	wm.unpinned = true
 }
 
 // blindTo marks the person behind token unable to read any repository.
@@ -74,7 +115,7 @@ func (wm *fakeWorkspaceManager) connect(token string) {
 
 func newFakeWorkspaceManager(t *testing.T) *fakeWorkspaceManager {
 	t.Helper()
-	wm := &fakeWorkspaceManager{lists: map[string][]any{}, connected: map[string]bool{}, blind: map[string]bool{}, unconnected: map[string]bool{}}
+	wm := &fakeWorkspaceManager{lists: map[string][]any{}, connected: map[string]bool{}, blind: map[string]bool{}, unconnected: map[string]bool{}, challenged: map[string]bool{}}
 	synced := func(ago time.Duration) map[string]any {
 		return map[string]any{"time": time.Now().Add(-ago).UTC().Format(time.RFC3339), "result": "Succeeded"}
 	}
@@ -87,6 +128,9 @@ func newFakeWorkspaceManager(t *testing.T) *fakeWorkspaceManager {
 	wm.Server = mustertest.New(nil)
 	wm.CallTools = map[string]func(mustertest.Call) mustertest.Answer{
 		workspaceToolsPrefix + "list_workspaces": func(call mustertest.Call) mustertest.Answer {
+			if c := wm.challengeFor(call); c != nil {
+				return *c
+			}
 			wm.mu.Lock()
 			defer wm.mu.Unlock()
 			list := wm.lists[strings.TrimPrefix(call.Bearer, "Bearer ")]
@@ -96,6 +140,9 @@ func newFakeWorkspaceManager(t *testing.T) *fakeWorkspaceManager {
 			return mustertest.Answer{Structured: map[string]any{"workspaces": list}}
 		},
 		workspaceToolsPrefix + "authorize_workspace": func(call mustertest.Call) mustertest.Answer {
+			if c := wm.challengeFor(call); c != nil {
+				return *c
+			}
 			name, _ := call.Args["workspace"].(string)
 			token := strings.TrimPrefix(call.Bearer, "Bearer ")
 			wm.mu.Lock()
@@ -119,13 +166,23 @@ func newFakeWorkspaceManager(t *testing.T) *fakeWorkspaceManager {
 				connected := wm.connected[token]
 				wm.mu.Unlock()
 				if !connected {
-					return mustertest.Answer{Structured: map[string]any{"workspace": name, "outcome": "connect_required", "reason": "connect gitlab first",
-						"connect": []any{map[string]any{"provider": "gitlab", "url": "https://wm.example/connect/gitlab"}}}}
+					signIn := "grant the App of provider gitlab once in muster: core_auth_login server=gitlab-manager"
+					if wm.unpinned {
+						signIn = "muster holds no grant for provider gitlab: this installation pins the workspace-manager to no provider's App"
+					}
+					return mustertest.Answer{Structured: map[string]any{"workspace": name, "outcome": "connect_required", "reason": "grant gitlab in muster first",
+						"connect": []any{map[string]any{"provider": "gitlab", "signIn": signIn}}}}
 				}
 			}
 			return mustertest.Answer{Structured: map[string]any{"workspace": name, "outcome": "granted",
 				"grant":     "grant-of-" + name + "-for-" + token,
 				"expiresAt": time.Now().Add(5 * time.Minute).UTC().Format(time.RFC3339)}}
+		}, "core_auth_login": func(call mustertest.Call) mustertest.Answer {
+			if call.Args["server"] != "gitlab-manager" {
+				return mustertest.Answer{IsError: true, Text: "server not found"}
+			}
+			return mustertest.Answer{Text: "Authentication Required\n\nServer: gitlab-manager\n\n" + gitlabSignInLink,
+				Structured: map[string]any{"authUrl": gitlabSignInLink}}
 		},
 	}
 	t.Cleanup(wm.Close)
@@ -463,4 +520,60 @@ func TestWorkspace_ClickOnAClosedPromptStartsNothing(t *testing.T) {
 	}, flowWait, 20*time.Millisecond)
 	require.Empty(t, captured())
 	require.Zero(t, wm.calls("authorize_workspace"))
+}
+
+// A person who has not granted the workspace-manager's App gets muster's
+// sign-in challenge for the listing: the thread answers with the Connect
+// prompt for it, holding the message, never "could not be listed". Once
+// connected, the landing replays the message, which lists again and asks for
+// the workspace.
+func TestWorkspace_SignInChallengeOnTheListingGetsTheConnectPrompt(t *testing.T) {
+	fake := newFakeSlackAPI()
+	api := fake.server(t)
+	wm := newFakeWorkspaceManager(t)
+	wm.challenge("tok1", true)
+	routes := memory.New()
+	t.Cleanup(func() { _ = routes.Close() })
+	kagent := newWorkspaceKagent()
+	facade := &channels.Facade{Agent: kagent, Routes: routes, ThreadTTL: channels.DefaultThreadTTL}
+	log := &lockedLog{}
+	_, srv := newEventsAdapter(t, facade, api.URL, withWorkspaces(wm), withInfoLog(log), func(a *slackadapter.Adapter) {
+		a.PublicBaseURL = "https://gw.example"
+	})
+
+	sendEvent(t, srv, mention("U001", "<@UBOT> what failed on prod?", "100.000", ""))
+	var buttonURL, stateID string
+	var ok bool
+	require.Eventually(t, func() bool { buttonURL, stateID, ok = connectButton(fake); return ok }, flowWait, 20*time.Millisecond,
+		"the Connect prompt for the workspace-manager")
+	parsed, err := url.Parse(buttonURL)
+	require.NoError(t, err)
+	require.Equal(t, "wm", parsed.Query().Get("state"), "muster's own sign-in link, decorated")
+	require.Contains(t, allText(fake.pathCalls("chat.postEphemeral")), "*workspace-manager*")
+	cards := 0
+	for _, call := range append(fake.pathCalls("chat.postEphemeral"), fake.pathCalls("chat.postMessage")...) {
+		if _, _, _, ok := connectButtonIn([]recordedCall{call}); !ok {
+			continue
+		}
+		cards++
+		require.Equal(t, 1, strings.Count(slackRendered(call), "The conversation can't start yet"),
+			"%s: the Connect prompt says its lead sentence once", call.path)
+	}
+	require.Equal(t, 2, cards, "the ephemeral and the DM card")
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "could not be listed")
+	require.Empty(t, workspacePrompts(fake))
+	created, _, _ := kagent.state()
+	require.Zero(t, created, "nothing starts before the grant")
+	require.Contains(t, log.String(), "record=session_connect_required")
+	require.Contains(t, log.String(), "server=workspace-manager")
+
+	wm.challenge("tok1", false)
+	resp, err := http.Get(srv.URL + "/connectors/complete?s=" + url.QueryEscape(stateID) + "&server=workspace-manager")
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Eventually(t, func() bool { return len(workspacePrompts(fake)) == 1 }, flowWait, 20*time.Millisecond,
+		"the replayed message lists the workspaces and asks")
+	created, _, _ = kagent.state()
+	require.Zero(t, created)
 }
