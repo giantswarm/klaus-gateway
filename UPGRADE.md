@@ -9,7 +9,7 @@ that adds notes heads them `## Next — <title>`; the change that prepares a rel
 renames each `Next` to that version, and `make check-upgrade-notes` refuses a
 stable release tag while a `Next` section with content is left.
 
-## Next — the sign-in asks for `groups`
+## 4.10.0 — the sign-in asks for `groups`
 
 - The muster sign-in asks for `openid profile email groups offline_access`; the gateway's client
   metadata document (`/auth/slack/client.json`) lists the same scopes. The kagent controller reads
@@ -27,7 +27,7 @@ stable release tag while a `Next` section with content is left.
   that cache's lifetime after it, a sign-in can be refused with `invalid_scope`, because muster still
   holds the old document without `groups`. Signing in again after the cache expired works.
 
-## Next — the roster spans every namespace the caller may list
+## 4.10.0 — the roster spans every namespace the caller may list
 
 - The Slack roster and the agent picker list the Agents of every namespace the kagent
   controller lets the person list, not only `a2a.namespace`. With the controller's
