@@ -179,8 +179,9 @@ type Config struct {
 	// relative path.
 	PublicBaseURL string
 	// Scopes requested from muster. When empty, defaults to
-	// openid, profile, email, offline_access (offline_access is required to
-	// receive a refresh token).
+	// openid, profile, email, groups, offline_access (offline_access is
+	// required to receive a refresh token; groups puts the person's groups in
+	// the forwarded id_token, which the kagent controller authorizes them by).
 	Scopes []string
 	// StateKey is the HMAC key used to sign link state. Must be non-empty.
 	StateKey []byte
@@ -372,7 +373,7 @@ func New(cfg Config) (*Linker, error) {
 	}
 	scopes := cfg.Scopes
 	if len(scopes) == 0 {
-		scopes = []string{"openid", "profile", "email", "offline_access"}
+		scopes = []string{"openid", "profile", "email", "groups", "offline_access"}
 	}
 	ttl := cfg.StateTTL
 	if ttl <= 0 {

@@ -213,7 +213,7 @@ func TestClientMetadataDocument(t *testing.T) {
 	require.Contains(t, doc.RedirectURIs, publicBase+CallbackPath)
 	require.Equal(t, "none", doc.TokenEndpointAuthMethod)
 	require.Contains(t, doc.GrantTypes, "refresh_token")
-	require.Equal(t, "openid profile email offline_access", doc.Scope)
+	require.Equal(t, "openid profile email groups offline_access", doc.Scope)
 }
 
 func TestNewDerivesClientIDAndRedirectFromPublicBaseURL(t *testing.T) {
@@ -546,6 +546,21 @@ func TestCallbackRedirectsToCodeFreeSuccessPage(t *testing.T) {
 	require.Contains(t, rrec.Body.String(), "Signed in to Giant Swarm")
 	require.NotContains(t, rrec.Body.String(), "alice@example.com",
 		"a reload must not replay the identity confirmation")
+}
+
+// The sign-in asks muster for the groups scope, so the id_token forwarded on
+// every turn carries the person's groups for the kagent controller's RBAC
+// review whatever muster's own default scopes are.
+func TestLinkAsksForGroups(t *testing.T) {
+	stub := newMusterStub(t, "klaus-gateway", "alice@example.com", "muster-sub")
+	l := newTestLinker(t, stub, NewMemStore(), nil)
+
+	rec := httptest.NewRecorder()
+	l.HandleLink(rec, httptest.NewRequest(http.MethodGet, LinkPath+"?u="+url.QueryEscape(l.SignState("U1")), nil))
+	require.Equal(t, http.StatusFound, rec.Code)
+	authorize, err := url.Parse(rec.Header().Get("Location"))
+	require.NoError(t, err)
+	require.Subset(t, strings.Fields(authorize.Query().Get("scope")), []string{"openid", "groups", "offline_access"})
 }
 
 // A sign-in whose callback reaches another process than its authorize
