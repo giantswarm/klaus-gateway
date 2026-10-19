@@ -143,8 +143,10 @@ creates one, which a turn that switches agents does mid-thread.
   the ephemeral again and refreshes the DM card in place; the line stays. Once the person
   has connected, the line reads "@Jose connected *agent-manager*." and the card is a
   confirmation: the landing of the prompt's own link does it and runs the held message
-  ("Connected *agent-manager*. Your message is on its way to the agent."), and so does the
-  person's next turn in the thread that starts its Session, however they connected, when the
+  ("Connected *agent-manager*. Your message is on its way to the agent."), and settles the
+  same way every other thread where the person waits for the same server, running that
+  thread's held message there (a thread whose held message has expired gets "Connected
+  *agent-manager*." alone); so does the person's next turn in the thread that starts its Session, however they connected, when the
   held message stays unsent ("Connected *agent-manager*.") and the prompts' stale buttons
   lead to the expired page. Only the ephemeral's button carries the completion state, so only
   it is replaced through its click's `response_url`; the cards are rewritten in place. A
