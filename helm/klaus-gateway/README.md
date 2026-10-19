@@ -110,6 +110,15 @@ Slack channel gateway for the Agent Platform's kagent agents
 | reviews.enabled | bool | `false` |  |
 | reviews.audience | string | `"klaus-gateway"` |  |
 | reviews.allowedCallers[0] | string | `"system:serviceaccount:giantswarm-platform-manager:giantswarm-platform-manager"` |  |
+| refusals.enabled | bool | `false` |  |
+| refusals.egressService | string | `"ate-system/atenet-egress"` |  |
+| refusals.statsPort | int | `15020` |  |
+| refusals.metricsPath | string | `"/metrics"` |  |
+| refusals.kagentTarget | string | `"kagent-controller.kagent.svc:8083"` |  |
+| refusals.kagentAudience | string | `"kagent"` |  |
+| refusals.window | string | `"24h"` |  |
+| refusals.interval | string | `"1m"` |  |
+| refusals.agentURLTemplate | string | `""` |  |
 | workspaces.toolsPrefix | string | `""` |  |
 | global.podSecurityStandards.enforced | bool | `false` |  |
 | nodeSelector | object | `{}` |  |

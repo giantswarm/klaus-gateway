@@ -314,34 +314,31 @@
             "type": "object",
             "additionalProperties": false,
             "properties": {
+                "agentURLTemplate": {
+                    "type": "string"
+                },
+                "egressService": {
+                    "type": "string"
+                },
                 "enabled": {
                     "type": "boolean"
                 },
-                "egressService": {
-                    "type": "string",
-                    "pattern": "^[a-z0-9-]+/[a-z0-9-]+$"
-                },
-                "statsPort": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 65535
-                },
-                "metricsPath": {
-                    "type": "string"
-                },
-                "kagentTarget": {
+                "interval": {
                     "type": "string"
                 },
                 "kagentAudience": {
                     "type": "string"
                 },
+                "kagentTarget": {
+                    "type": "string"
+                },
+                "metricsPath": {
+                    "type": "string"
+                },
+                "statsPort": {
+                    "type": "integer"
+                },
                 "window": {
-                    "type": "string"
-                },
-                "interval": {
-                    "type": "string"
-                },
-                "agentURLTemplate": {
                     "type": "string"
                 }
             }

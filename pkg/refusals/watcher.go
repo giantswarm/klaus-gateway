@@ -13,6 +13,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"slices"
 	"strconv"
 	"strings"
@@ -152,7 +153,7 @@ func (w *Watcher) Observe(ctx context.Context) {
 		if p, ok := prev[key]; ok && s.Value >= p {
 			increase = s.Value - p
 		}
-		if increase <= 0 || s.Host == foldedValue || s.Actor == foldedValue {
+		if increase <= 0 || s.Host == foldedValue || s.Actor == foldedValue || !validHost(s.Host) {
 			continue
 		}
 		sessionID, ok := strings.CutPrefix(s.Actor, sessionActorPrefix)
@@ -240,6 +241,23 @@ func (w *Watcher) agentURL(namespace, name string) string {
 		return ""
 	}
 	return strings.NewReplacer("{namespace}", namespace, "{name}", name).Replace(w.AgentURL)
+}
+
+// validHost admits what the egress writes as a host: a lowercased DNS name
+// or an IP address. Anything else is not rendered into a message.
+func validHost(host string) bool {
+	if host == "" || len(host) > 253 {
+		return false
+	}
+	if net.ParseIP(host) != nil {
+		return true
+	}
+	for _, r := range host {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' && r != '.' {
+			return false
+		}
+	}
+	return true
 }
 
 func seriesKey(s Series) string {

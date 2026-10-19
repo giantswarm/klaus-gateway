@@ -154,7 +154,12 @@ func refusalOrigin(rec store.Refusal) string {
 }
 
 // defaultPorts are the ports an origin of the scheme leaves out.
-var defaultPorts = map[string]int{"http": 80, "https": 443}
+var defaultPorts = map[string]int{schemeHTTP: 80, schemeHTTPS: 443}
+
+const (
+	schemeHTTP  = "http"
+	schemeHTTPS = schemeHTTP + "s"
+)
 
 // refusalDestination is the destination as the notice names it.
 func refusalDestination(rec store.Refusal) string {

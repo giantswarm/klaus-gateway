@@ -106,6 +106,7 @@ func TestWatcher_SkipsWhatItCannotName(t *testing.T) {
 		series("session-gone", "proxy.golang.org", 1),
 		series("other", "proxy.golang.org", 1),
 		series("session-s1", "other", 1),
+		series("session-s1", "evil`*host*", 1),
 		series("session-s3", "proxy.golang.org", 1),
 	}}
 	n := &fakeNotifier{}
