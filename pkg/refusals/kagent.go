@@ -22,7 +22,9 @@ import (
 // runs one Agent for its whole life, so an answer never goes stale.
 const sessionCacheMax = 4096
 
-// KagentSessions asks the kagent controller which Agent a Session runs, as
+// KagentSessions asks the kagent controller which Agent a Session runs, or
+// ran: a deleted Session answers with its tombstone (RUNTIME_STATE_DELETED),
+// which still names the Agent. It asks as
 // the gateway's own ServiceAccount: the controller admits that one account
 // to read any creator's Session (its session reader), with the projected
 // token at TokenFile as the bearer.
