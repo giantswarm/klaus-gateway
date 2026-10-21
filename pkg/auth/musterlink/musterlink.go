@@ -544,7 +544,14 @@ func (l *Linker) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if e := q.Get("error"); e != "" {
-		renderFailed(w, http.StatusBadRequest, "The sign-in was denied or failed", messageStartAgain, e)
+		l.logger.Warn("musterlink: authorization server refused the sign-in", "error", e, "error_description", q.Get("error_description"))
+		// The authorization server's own trouble is worth retrying as it is;
+		// any other refusal needs a new sign-in.
+		status, message := http.StatusBadRequest, messageStartAgain
+		if e == "server_error" || e == "temporarily_unavailable" {
+			status, message = http.StatusBadGateway, messageTryLater
+		}
+		renderFailed(w, status, "The sign-in was denied or failed", message, e)
 		return
 	}
 	state := q.Get("state")
@@ -569,7 +576,13 @@ func (l *Linker) HandleCallback(w http.ResponseWriter, r *http.Request) {
 			renderFailed(w, http.StatusBadGateway, "The sign-in could not be completed", messageTryLater, "")
 			return
 		}
-		if want == "" || !strings.EqualFold(want, link.Email) {
+		if want == "" {
+			l.logger.Warn("musterlink: slack profile has no email", "slackUser", slackUser, "identityEmail", link.Email)
+			renderFailed(w, http.StatusForbidden, "Your Slack profile has no email address",
+				"Add an email address to your Slack profile, then start the sign-in again from Slack.", "")
+			return
+		}
+		if !strings.EqualFold(want, link.Email) {
 			l.logger.Warn("musterlink: email mismatch", "slackUser", slackUser, "slackEmail", want, "identityEmail", link.Email)
 			renderFailed(w, http.StatusForbidden, "Your account email does not match Slack", fmt.Sprintf("The account you signed in with reports %s, but your Slack profile email is %s. "+
 				"Sign in with the account whose email matches your Slack email. "+
