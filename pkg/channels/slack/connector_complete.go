@@ -11,7 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/giantswarm/klaus-gateway/pkg/auth/musterlink"
+	"github.com/giantswarm/pagekit"
+
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 )
 
@@ -185,10 +186,11 @@ func (a *Adapter) handleConnectorComplete(w http.ResponseWriter, r *http.Request
 	stateID := r.URL.Query().Get("s")
 	entry, resume, rewrite, ok := a.completeConnectorLanding(stateID)
 	if !ok {
-		musterlink.RenderPage(w, http.StatusNotFound, musterlink.Page{
+		pagekit.Render(w, http.StatusNotFound, pagekit.Page{
 			Title:   "Sign-in confirmation expired",
 			Heading: "Link expired",
-			Message: "This confirmation link is invalid or has expired. Return to Slack and continue there: reply in the conversation, or click the button you came from again.",
+			Summary: "This confirmation link is invalid or has expired",
+			Message: "Return to Slack and continue there: reply in the conversation, or click the button you came from again.",
 		})
 		return
 	}
@@ -241,9 +243,10 @@ func (a *Adapter) handleConnectorComplete(w http.ResponseWriter, r *http.Request
 		})
 	}
 
-	musterlink.RenderPage(w, http.StatusOK, musterlink.Page{
+	pagekit.Render(w, http.StatusOK, pagekit.Page{
 		Title:   "Signed in to " + entry.server,
 		Heading: "Signed in",
+		Summary: entry.server + " is now connected",
 		Message: message,
 	})
 }
