@@ -1,8 +1,10 @@
 package refusals_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
+	apiv1alpha1 "github.com/giantswarm/klaus-gateway/pkg/kagent/gen/kagent/api/v1alpha1"
 	"github.com/giantswarm/klaus-gateway/pkg/refusals"
 )
 
@@ -195,4 +198,63 @@ agentgateway_requests_total{status="403"} 99
 		{Source: "10.0.0.1", Atespace: "kagent", Actor: "session-abc", Scheme: "https", Host: "example.org", Port: 443, Value: 3},
 		{Source: "10.0.0.1", Atespace: "kagent", Actor: "session-abc", Scheme: "https", Host: `a # "b}`, Port: 443, Value: 2},
 	}, got, "a host carrying the exemplar marker, a quote or a brace stays one sample")
+}
+
+// The issue's case: refusal-probe is refused in two Sessions, and the first
+// is deleted before the watcher's read. Its tombstone still names the Agent,
+// so both refusals count into one notice.
+func TestWatcher_SessionDeletedBeforeTheReadStillCountsIntoTheNotice(t *testing.T) {
+	controller := &fakeController{sessions: map[string]*apiv1alpha1.Session{
+		"gone": {
+			Id:    "gone",
+			State: apiv1alpha1.RuntimeState_RUNTIME_STATE_DELETED,
+			Agent: &apiv1alpha1.ResourceReference{Namespace: "org-otter", Name: "otter-coder"},
+		},
+		"kept": {
+			Id:    "kept",
+			State: apiv1alpha1.RuntimeState_RUNTIME_STATE_READY,
+			Agent: &apiv1alpha1.ResourceReference{Namespace: "org-otter", Name: "otter-coder"},
+		},
+	}}
+	src := &fakeSource{series: []refusals.Series{
+		series("session-gone", "example.net", 1),
+		series("session-kept", "example.net", 1),
+	}}
+	n := &fakeNotifier{}
+	var outcomes []string
+	w := watcher(src, n, &outcomes)
+	w.Sessions = kagentSessions(t, controller)
+
+	w.Observe(context.Background())
+	require.Len(t, n.noted, 1, "exactly one notice for the agent and destination")
+	require.Equal(t, "otter-coder", n.noted[0].Agent)
+	require.Equal(t, 2, n.noted[0].Count, "the deleted Session's refusal is counted")
+	require.Equal(t, []string{"gone", "kept"}, n.noted[0].Sessions)
+	require.Equal(t, []string{refusals.OutcomeNoted}, outcomes)
+
+	n.noted = nil
+	w.Observe(context.Background())
+	require.Empty(t, n.noted, "no second notice for the same refusals")
+}
+
+func TestWatcher_LogsARefusalItCannotAttributeOnce(t *testing.T) {
+	src := &fakeSource{series: []refusals.Series{series("session-gone", "example.net", 1)}}
+	n := &fakeNotifier{}
+	var outcomes []string
+	var logs bytes.Buffer
+	w := watcher(src, n, &outcomes)
+	w.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+
+	w.Observe(context.Background())
+	w.Observe(context.Background())
+	require.Empty(t, n.noted)
+	require.Equal(t, []string{refusals.OutcomeNotSession}, outcomes)
+	require.Equal(t, 1, strings.Count(logs.String(), "no Session kagent knows"), "logged once, not on every read")
+	for _, field := range []string{"actor=session-gone", "host=example.net", "port=443", "count=1", "reason="} {
+		require.Contains(t, logs.String(), field)
+	}
+
+	src.series[0].Value = 3
+	w.Observe(context.Background())
+	require.Contains(t, logs.String(), "count=2", "a new refusal is logged with the increase")
 }
