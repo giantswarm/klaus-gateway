@@ -479,7 +479,7 @@ func (a *Adapter) handleAccessDecision(ctx context.Context, slackChannel, thread
 			noticeChannel = parked[0].slackChannel
 		}
 		if noticeChannel != "" {
-			if err := a.apiClient().postEphemeralText(ctx, noticeChannel, newcomerID, threadID, accessDeniedNewcomerNotice); err != nil {
+			if err := a.apiClient().postEphemeralText(ctx, noticeChannel, newcomerID, threadID, fmt.Sprintf(accessDeniedNewcomerNotice, a.slashCommand())); err != nil {
 				a.Logger.Warn("slack: post access denied notice failed", "thread", threadID, "newcomer", newcomerID, "error", err)
 			}
 		}

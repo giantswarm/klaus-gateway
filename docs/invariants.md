@@ -13,7 +13,12 @@ or `helm/`. Add a line when a review finds a new one.
   state. A new piece of per-thread state a restart must not lose goes there too (#132).
 - **A mention inside a thread arrives twice**, as `app_mention` and as `message.channels`.
   A gate on the plain-message copy must skip text that mentions the bot, or it answers the
-  mention with a request to mention (#307).
+  mention twice (#307).
+- **Only the agent picker opens a conversation.** The slash command and the Ask an agent here
+  shortcut bind the thread's agent before they dispatch; dispatch answers any other message
+  whose thread names no agent with the help and writes nothing. A new entry point that opens a
+  conversation binds the agent first, and a notice that says how to start one names the slash
+  command (`slack.slashCommand`), never a mention (#508).
 - **Slack acknowledges an interaction before the gateway acts on it.** The 200 goes out,
   then the handler runs in the background. A test that sends the next message on the ack
   races the write; wait for the write's own side effect, such as the `response_url` rewrite

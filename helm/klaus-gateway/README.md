@@ -81,6 +81,7 @@ Slack channel gateway for the Agent Platform's kagent agents
 | slack.dmMode | string | `""` |  |
 | slack.channelMode | string | `""` |  |
 | slack.channelAllowlist | list | `[]` |  |
+| slack.slashCommand | string | `""` |  |
 | slack.contextBotIDs | list | `[]` |  |
 | slack.contextBotNames | list | `[]` |  |
 | slack.dropStale | bool | `false` |  |

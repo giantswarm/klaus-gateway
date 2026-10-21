@@ -42,6 +42,7 @@ func TestDispatch_TransientOBOError_PreservesPendingTask(t *testing.T) {
 	require.NoError(t, a.Start(t.Context(), &fakeGateway{Facade: newMemoryRecorder()}))
 	t.Cleanup(func() { _ = a.Stop(context.Background()) })
 
+	a.bindThreadAgent(t.Context(), "D1", "T1", "agent")
 	a.storePendingTask("T1", &pendingTask{TaskID: "task-1", AgentRef: "agent", Channel: "D1", ChannelID: "D1"})
 
 	msg := channels.InboundMessage{Channel: ChannelName, ChannelID: "D1", ThreadID: "T1", Subject: "U1", Text: "my answer"}
@@ -62,6 +63,7 @@ func TestDispatch_BusyThread_TransientTokenErrorSurfaces(t *testing.T) {
 	require.NoError(t, a.Start(t.Context(), &fakeGateway{Facade: newMemoryRecorder()}))
 	t.Cleanup(func() { _ = a.Stop(context.Background()) })
 
+	a.bindThreadAgent(t.Context(), "C1", "T1", "agent")
 	require.True(t, a.acquireThread("T1"))
 	t.Cleanup(func() { a.releaseThread("T1") })
 

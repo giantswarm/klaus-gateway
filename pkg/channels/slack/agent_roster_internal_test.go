@@ -127,7 +127,7 @@ func TestRosterBlocks(t *testing.T) {
 		return m[bkText].(map[string]any)[bkText].(string)
 	}
 	require.Equal(t, "header", blocks[0].(map[string]any)[bkType])
-	require.Equal(t, "11 agents available · Zeta answers plain mentions", text(blocks[1]))
+	require.Equal(t, "11 agents available · Zeta is preselected in the picker", text(blocks[1]))
 	var rows []any
 	for _, b := range blocks {
 		if _, ok := b.(map[string]any)[bkAccessory]; ok {
@@ -150,7 +150,7 @@ func TestRosterBlocks(t *testing.T) {
 		_, button := b.(map[string]any)[bkAccessory]
 		require.False(t, button, "no Select button in a bound thread")
 	}
-	require.Equal(t, "This thread already has its agent. To talk to another one, mention the bot with `agents` in a new thread and pick it there.", text(blocks[len(blocks)-1]))
+	require.Equal(t, "This thread already has its agent. To talk to another one, start a new conversation with `/swarmgeist` and pick it there.", text(blocks[len(blocks)-1]))
 }
 
 func TestFirstSentence(t *testing.T) {

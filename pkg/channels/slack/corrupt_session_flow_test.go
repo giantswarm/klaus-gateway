@@ -33,6 +33,7 @@ func TestCorruptSession_ResetAndNotice(t *testing.T) {
 	}
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
+	gw.openConversation(t, "D1", "700.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "list my epics", "700.000"))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "The session is reset")
@@ -110,6 +111,7 @@ func TestCorruptSession_CollaboratorTurnResetsAsTheSessionOwner(t *testing.T) {
 	a, srv := newEventsAdapter(t, gw, fakeURL, channelMode)
 	a.OBO = &multiUserOBO{linked: map[string]string{"U001": "tok1", "U999": "tok2"}}
 
+	gw.openConversation(t, "C1", "100.000", "U001", "test-agent")
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
 	require.Eventually(t, func() bool {
 		names := fake.reactionNames("reactions.add")
@@ -143,6 +145,7 @@ func TestCorruptSession_ResetUnavailableAdvisesNewThread(t *testing.T) {
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Err: errCorruptHistory}}}
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
+	gw.openConversation(t, "D1", "701.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "list my epics", "701.000"))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Start a new thread")
@@ -165,6 +168,7 @@ func TestCorruptSession_OtherErrorsDoNotReset(t *testing.T) {
 	}
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
+	gw.openConversation(t, "D1", "702.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "list my epics", "702.000"))
 	require.Eventually(t, func() bool {
 		names := fake.reactionNames("reactions.add")
@@ -194,6 +198,7 @@ func TestCorruptSession_QuotedToolWordsDoNotReset(t *testing.T) {
 	}
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
+	gw.openConversation(t, "D1", "703.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "explain tool pairing", "703.000"))
 	require.Eventually(t, func() bool {
 		names := fake.reactionNames("reactions.add")

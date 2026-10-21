@@ -78,9 +78,15 @@ type Adapter struct {
 	Logger  *slog.Logger
 	Mode    string
 	Secrets Secrets
-	// DefaultAgent is the agentRef every Slack thread routes to. Must be
-	// non-empty; Start returns an error when it is unset.
+	// DefaultAgent is the agentRef the agent picker preselects, the roster
+	// lists first and the intro names. Must be non-empty; Start returns an
+	// error when it is unset.
 	DefaultAgent string
+	// SlashCommand is the app's slash command as the manifest declares it
+	// ("/swarmgeist"), the way a conversation starts: the help and the
+	// notices name it. Slack sends the name only with an invocation, so it is
+	// configured. Empty means defaultSlashCommand.
+	SlashCommand string
 	// Namespace is the platform tenant's namespace (--a2a-namespace). An Agent
 	// in it takes the deployment's ref shape (refShape); an Agent of any other
 	// namespace is referred to as namespace/name.
@@ -527,6 +533,19 @@ func (a *Adapter) dmMode() DMMode {
 	return a.DMMode
 }
 
+// slashCommand is the app's slash command the help and the notices name.
+func (a *Adapter) slashCommand() string {
+	if a.SlashCommand == "" {
+		return defaultSlashCommand
+	}
+	return a.SlashCommand
+}
+
+// dmRedirectText is the DM redirect, naming the slash command.
+func (a *Adapter) dmRedirectText() string {
+	return fmt.Sprintf(dmRedirect, a.slashCommand())
+}
+
 // channelServed reports whether the bot serves the given (non-DM) channel
 // under the configured ChannelMode. Unknown modes are rejected by Start.
 func (a *Adapter) channelServed(channel string) bool {
@@ -805,16 +824,17 @@ func (a *Adapter) postChannelIntro(ctx context.Context, slackChannel string) {
 // introBlocks renders the channel intro or the assistant greeting: the body as a
 // section, the command hints as context. The bot is named by its mention, so
 // each app shows its own name; the default agent by its roster name, so the
-// text names the agent a plain mention really reaches. text is the
-// notification fallback. When the bot's ID cannot be resolved the hints are
-// left off: they say what to type, and without the mention they cannot.
+// text names the agent the picker really preselects; the slash command as
+// configured. text is the notification fallback. When the bot's ID cannot be
+// resolved the hints are left off: they say what to type, and without the
+// mention they cannot.
 func (a *Adapter) introBlocks(ctx context.Context, body, hints string) (text string, blocks []any) {
 	id := a.botID(ctx)
 	mention := "the bot"
 	if id != "" {
 		mention = "<@" + id + ">"
 	}
-	text = fmt.Sprintf(body, mention, escapeMrkdwn(a.agentNameFor(ctx, a.DefaultAgent)))
+	text = fmt.Sprintf(body, mention, escapeMrkdwn(a.agentNameFor(ctx, a.DefaultAgent)), a.slashCommand())
 	blocks = []any{map[string]any{bkType: bkSection, bkText: map[string]any{bkType: bkMrkdwn, bkText: text}}}
 	if id != "" {
 		blocks = append(blocks, contextBlock(fmt.Sprintf(hints, mention)))
@@ -833,7 +853,7 @@ func (a *Adapter) postDMRedirect(ctx context.Context, slackChannel string) {
 	if !markOnce(&a.dmRedirectMu, &a.dmRedirected, slackChannel, dmRedirectTTL) {
 		return
 	}
-	if _, err := a.apiClient().postMessage(ctx, slackChannel, dmRedirect, ""); err != nil {
+	if _, err := a.apiClient().postMessage(ctx, slackChannel, a.dmRedirectText(), ""); err != nil {
 		a.Logger.Warn("slack: post DM redirect failed", "channel", slackChannel, "error", err)
 	}
 }
@@ -1467,7 +1487,7 @@ func (a *Adapter) noticeThreadClosed(ctx context.Context, slackChannel, threadID
 	}
 	a.Logger.Info("slack: reply in a closed thread", "record", "thread_closed",
 		"channel_id", slackChannel, "thread", threadID, "user", userID)
-	if err := a.apiClient().postEphemeralText(ctx, slackChannel, userID, threadID, threadClosedNotice(lifetime)); err != nil {
+	if err := a.apiClient().postEphemeralText(ctx, slackChannel, userID, threadID, threadClosedNotice(lifetime, a.slashCommand())); err != nil {
 		a.Logger.Warn("slack: post thread-closed notice failed", "thread", threadID, "error", err)
 	}
 }
@@ -1978,7 +1998,8 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 	// the store has forgotten entirely, and nothing durable tells the two
 	// apart. A thread whose row is still there but whose conversation ended
 	// after the lifetime is the one case that is known, and its author is
-	// told. A mention re-opens the conversation either way.
+	// told. A mention passes either way, and dispatch answers it with the
+	// help, which says how a conversation starts.
 	if threadReplyOnly {
 		// A reply that opens by mentioning someone else talks to that person,
 		// not to the agent, even in the agent's own thread. A mention of the
@@ -1990,9 +2011,10 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 		active, muted, closed, lifetime := a.threadGate(ctx, inner.Channel, msg.ThreadID)
 		if !active {
 			// A mention is not told the conversation ended: its app_mention
-			// twin starts the thread over, so the notice would tell its
-			// author to do what they just did. Which twin lands first is a
-			// race, so the message copy has to recognise the mention itself.
+			// twin gets the help, which says how to start a new one, so the
+			// notice would answer the same message twice. Which twin lands
+			// first is a race, so the message copy has to recognise the
+			// mention itself.
 			if closed && !a.mentionsBot(ctx, inner.Text) {
 				a.noticeThreadClosed(ctx, inner.Channel, msg.ThreadID, inner.User, lifetime)
 			}
@@ -2193,6 +2215,39 @@ func (a *Adapter) dispatchFrom(ctx context.Context, msg channels.InboundMessage,
 	ctx, _ = a.beginTurn(ctx, msg.ReceivedAt, msg.ChannelID, msg.ThreadID, slackUser)
 	defer channels.AbandonTurn(ctx, "not_dispatched")
 
+	// A conversation opens only through the agent picker (the slash command,
+	// the Ask an agent here shortcut): its submission carries the agent and
+	// binds the thread before it dispatches. A message that carries no agent
+	// takes the thread's recorded one, which every later turn of the
+	// conversation reads. A row that names none — a mention on a channel
+	// message or under an alert, a new chat in the assistant pane, a reply
+	// after the conversation ended — starts nothing: the message is answered
+	// with the help, which says how to start one, and nothing is written, so
+	// the thread stays free for the picker. A row that cannot be read is not
+	// "no conversation": the turn is not handled and its author is told, as
+	// the access check tells them when the store is down.
+	agentSource := explicitSource
+	if msg.AgentRef == "" {
+		roster := channels.TurnTimerFromContext(ctx).Span(channels.PhaseRoster)
+		e, found, err := a.gw.ThreadRecord(ctx, ChannelName, slackChannel, msg.ThreadID)
+		roster()
+		if err != nil {
+			a.Logger.Warn("slack: read thread record failed, turn not handled", "thread", msg.ThreadID, "user", slackUser, "error", err)
+			if perr := a.apiClient().postEphemeralText(ctx, slackChannel, slackUser, msg.ThreadID, storeUnavailableNotice); perr != nil {
+				a.Logger.Warn("slack: post store-unavailable notice failed", "user", slackUser, "error", perr)
+			}
+			return nil
+		}
+		if !found || e.AgentRef == "" {
+			a.Logger.Info("slack: message outside a conversation answered with the help", "record", "no_conversation",
+				"channel_id", slackChannel, "thread_id", msg.ThreadID, "slack_user", slackUser)
+			channels.AbandonTurn(ctx, "no_conversation")
+			a.postHelp(ctx, slackChannel, msg.ThreadID, noConversationLead)
+			return nil
+		}
+		msg.AgentRef, agentSource = e.AgentRef, agentSourceThread
+	}
+
 	// True the first time THIS process handles a turn in the thread (typically a
 	// reply after a restart): the case the leftover-turn delivery and the resume
 	// check target. Kept in memory on purpose — the thread record in the store
@@ -2249,33 +2304,25 @@ func (a *Adapter) dispatchFrom(ctx context.Context, msg channels.InboundMessage,
 		return nil
 	}
 
-	// Resolve the turn's agent. A message can already carry one (a picker
-	// submission parked for a sign-in and replayed after it); otherwise the
-	// thread's recorded binding — or the
-	// configured default — applies. opener records whether this message opened
-	// its conversation: root equality cannot tell on the assistant pane, where
-	// every message carries the chat's Slack-created anchor as thread_ts.
-	// From here on the catalogue reads (branding) run as the caller: the
-	// controller serves the roster to a human identity, and a plain context
-	// only gets a warm cache. Best-effort — an unlinked caller keeps the plain
-	// context, and the turn itself still mints its own token.
+	// opener records whether this message opened its conversation: the
+	// picker's submission says so, and nothing else opens one. Root equality
+	// cannot tell on the assistant pane, where every message carries the
+	// chat's Slack-created anchor as thread_ts. From here on the catalogue
+	// reads (branding) run as the caller: the controller serves the roster to
+	// a human identity, and a plain context only gets a warm cache.
+	// Best-effort — an unlinked caller keeps the plain context, and the turn
+	// itself still mints its own token.
 	ctx = a.withCallerToken(ctx, slackUser)
-	agentSource, opener := explicitSource, msg.Opener
-	if msg.AgentRef == "" {
-		roster := channels.TurnTimerFromContext(ctx).Span(channels.PhaseRoster)
-		msg.AgentRef, agentSource, opener = a.threadAgent(ctx, msg, slackChannel)
-		roster()
-		msg.Opener = opener
-	}
+	opener := msg.Opener
 
 	// The title names the conversation on both surfaces, so every turn carries
 	// one: the gateway names a kagent conversation when it creates one, which a
 	// turn switching agents does mid-thread. Slack takes one only from the
-	// opening message. Root equality rides along with opener because a channel
-	// root parked for sign-in replays after its binding is recorded, where
-	// threadAgent no longer reports it as the opener; on the assistant pane only
-	// opener can tell, the first message of a chat never being its own thread
-	// root.
+	// opening message. The picker's flag travels with a held copy of the
+	// message, so opener alone decides; root equality stays beside it because
+	// the slash command's root is its own thread, and a root inside a
+	// conversation is only ever its opener. On the assistant pane only opener
+	// can tell, the first message of a chat never being its own thread root.
 	msg.Title = sessionTitleFrom(msg.Text)
 	if opener || msg.ThreadID == msg.MessageID {
 		a.storeSessionTitle(msg.ThreadID, msg.Title)
@@ -2410,18 +2457,11 @@ func (a *Adapter) dispatchFrom(ctx context.Context, msg channels.InboundMessage,
 		mutedAt = a.endMute(ctx, slackChannel, msg.ThreadID, msg.MessageID)
 	}
 
-	// A conversation opening inside a thread other people wrote — a bare
-	// mention under an alert, say — hands the agent what the thread
-	// already said. Read here, with the attachments, for the same reason: the
-	// turn is committed to run, so a message that was parked for a sign-in or
-	// bounced busy never spends a Slack call on it. The picker's own
-	// submission decided this with its checkbox and set the context itself, so
-	// it is not read again.
-	if explicitSource != agentSourceCommand && explicitSource != agentSourceShortcut {
-		a.attachThreadContext(ctx, &msg, slackChannel, slackUser)
-	}
 	// The turn that ended a mute hands the agent what the people wrote while
-	// it was muted, the way an opener hands it the thread.
+	// it was muted, the way the picker's opener hands it the thread. Read
+	// here, with the attachments, for the same reason: the turn is committed
+	// to run, so a message that was parked for a sign-in or bounced busy never
+	// spends a Slack call on it.
 	a.attachCatchUp(ctx, &msg, slackChannel, slackUser, mutedAt)
 
 	return a.runTurn(ctx, msg, slackChannel, msg.MessageID, initiator, task, agentSource, turnHooks{

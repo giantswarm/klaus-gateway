@@ -76,6 +76,7 @@ func TestThreadRecord_StoreOutageStopsTheTurn(t *testing.T) {
 	gw.recordsErr = errors.New("valkey: connection refused")
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
 
+	gw.openConversation(t, "C1", "910.1", "U1", "test-agent")
 	sendEvent(t, srv, mention("U1", "check the cluster", "910.1", ""))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postEphemeral")), "thread state could not be read")

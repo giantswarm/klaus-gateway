@@ -249,6 +249,12 @@ slack:
   # "About" tab) served when channelMode is "allowlist". Rendered as
   # SLACK_CHANNEL_ALLOWLIST.
   channelAllowlist: []
+  # slashCommand is the app's slash command as deploy/slack/manifest.yaml
+  # declares it, the way a conversation starts: the help and the notices name
+  # it. Slack sends the name only with an invocation, so the gateway cannot
+  # learn it. Set it when the app's command is not /swarmgeist. Rendered as
+  # SLACK_SLASH_COMMAND. Empty lets the binary default (/swarmgeist).
+  slashCommand: ""
   # contextBotIDs lists the Slack bot_ids (B…) whose posts a thread read hands
   # to the agent: the alerting integrations a conversation is opened under
   # (Alertmanager, PagerDuty). Every human's message is shared; any other bot's

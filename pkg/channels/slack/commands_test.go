@@ -18,37 +18,66 @@ import (
 	"github.com/giantswarm/klaus-gateway/pkg/auth/musterlink"
 )
 
-// The help reply is a header, how to address the bot, one group per activity
-// (agent selection and sign-in only when the gateway has them) and the Inspect
-// shortcut; the mention names the bot when its name is known.
+// The help reply is a header, one group per activity — how a conversation
+// starts first, then the command words, with agent selection and sign-in only
+// when the gateway has them — how the command words reach the bot, and the
+// Inspect shortcut; the mention names the bot when its name is known. The
+// start group names the configured slash command as typed and the shortcut by
+// its name, not as something to type.
 func TestHelpBlocks(t *testing.T) {
 	contextText := func(b any) string {
 		return b.(map[string]any)[bkElements].([]any)[0].(map[string]any)[bkText].(string)
 	}
-	groups := func(blocks []any) []string {
-		var titles []string
-		for _, el := range blocks[2].(map[string]any)[bkElements].([]any) {
+	// groups returns the group titles of the rich_text block, and the first
+	// item of each group as "label|style".
+	groups := func(rich any) (titles, firsts []string) {
+		for _, el := range rich.(map[string]any)[bkElements].([]any) {
 			m := el.(map[string]any)
-			if m[bkType] == "rich_text_section" {
+			switch m[bkType] {
+			case "rich_text_section":
 				titles = append(titles, m[bkElements].([]any)[0].(map[string]any)[bkText].(string))
+			case "rich_text_list":
+				first := m[bkElements].([]any)[0].(map[string]any)[bkElements].([]any)[0].(map[string]any)
+				style := ""
+				for k := range first[bkStyle].(map[string]any) {
+					style = k
+				}
+				firsts = append(firsts, first[bkText].(string)+"|"+style)
 			}
 		}
-		return titles
+		return titles, firsts
 	}
 
-	text, blocks := helpBlocks("swarmgeist", true, true)
+	text, blocks := helpBlocks("swarmgeist", "/swarmgeist", true, true, "")
 	require.Len(t, blocks, 4)
 	require.Equal(t, "header", blocks[0].(map[string]any)[bkType])
-	require.Equal(t, "Send a command as the word alone, in a direct message or in a thread @swarmgeist is in; anywhere else mention @swarmgeist first.", contextText(blocks[1]))
-	require.Equal(t, []string{"In a thread", "Agents", "Account"}, groups(blocks))
+	titles, firsts := groups(blocks[1])
+	require.Equal(t, []string{"Start a conversation", "In a thread", "Agents", "Account"}, titles)
+	require.Equal(t, "/swarmgeist [question]|code", firsts[0], "the slash command is typed, as configured")
+	require.Equal(t, "Send a command word as the word alone, in a direct message or in a thread @swarmgeist is in; anywhere else mention @swarmgeist first.", contextText(blocks[2]))
 	require.Equal(t, helpShortcutNote, contextText(blocks[3]))
-	require.Equal(t, "Commands: stop, usage, mute, agents, login, logout", text,
-		"every command is a plain word, so nothing in Slack's composer intercepts one")
+	require.Equal(t, "Commands: /swarmgeist [question], stop, usage, mute, agents, login, logout", text,
+		"the fallback lists what is typed: every command word is a plain word, the shortcut is clicked")
 
-	_, blocks = helpBlocks("", false, false)
-	require.Equal(t, "Send a command as the word alone, in a direct message or in a thread the bot is in; anywhere else mention the bot first.", contextText(blocks[1]),
-		"without agent selection no listed command has a slash, so the help does not talk about slashes")
-	require.Equal(t, []string{"In a thread"}, groups(blocks), "no agent selection, no sign-in")
+	shortcut := blocks[1].(map[string]any)[bkElements].([]any)[1].(map[string]any)[bkElements].([]any)[1].(map[string]any)[bkElements].([]any)[0].(map[string]any)
+	require.Equal(t, helpAskAgentShortcut, shortcut[bkText])
+	require.Equal(t, map[string]any{"bold": true}, shortcut[bkStyle], "a shortcut is a name, not a code label")
+
+	_, blocks = helpBlocks("", "/agent", false, false, "")
+	titles, firsts = groups(blocks[1])
+	require.Equal(t, []string{"Start a conversation", "In a thread"}, titles, "no agent selection, no sign-in")
+	require.Equal(t, "/agent [question]|code", firsts[0])
+	require.Equal(t, "Send a command word as the word alone, in a direct message or in a thread the bot is in; anywhere else mention the bot first.", contextText(blocks[2]))
+
+	// A message that found no conversation gets the same help, led by the
+	// line that says so, in the blocks and in the notification text.
+	text, blocks = helpBlocks("swarmgeist", "/swarmgeist", true, true, noConversationLead)
+	require.Len(t, blocks, 5)
+	require.Equal(t, bkSection, blocks[1].(map[string]any)[bkType])
+	require.Equal(t, noConversationLead, blocks[1].(map[string]any)[bkText].(map[string]any)[bkText])
+	titles, _ = groups(blocks[2])
+	require.Equal(t, []string{"Start a conversation", "In a thread", "Agents", "Account"}, titles)
+	require.True(t, strings.HasPrefix(text, noConversationLead+" Commands: /swarmgeist"), text)
 }
 
 // A transient users.info failure must not be cached: the guarantee is

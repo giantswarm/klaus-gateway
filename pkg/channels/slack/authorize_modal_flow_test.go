@@ -207,6 +207,7 @@ func TestAuthorizeModal_FromTheSessionConnectPromptRunsTheHeldMessage(t *testing
 	gw.dispatchErr = sessionConnectChallenge()
 	fake, srv := authorizeAdapter(t, gw, tools)
 
+	gw.openConversation(t, "C1", "140.000", "U1", "test-agent")
 	sendEvent(t, srv, mention("U1", "how many nodes in gazelle?", "140.000", ""))
 
 	var stateID string
@@ -255,6 +256,7 @@ func TestAuthorizeModal_NotOfferedWithoutGrants(t *testing.T) {
 	gw.dispatchErr = sessionConnectChallenge()
 	fake, srv, _ := sessionConnectAdapter(t, gw)
 
+	gw.openConversation(t, "C1", "150.000", "U1", "test-agent")
 	sendEvent(t, srv, mention("U1", "hi", "150.000", ""))
 
 	require.Eventually(t, func() bool { _, _, ok := connectButton(fake); return ok }, flowWait, 20*time.Millisecond)
@@ -276,6 +278,7 @@ func TestAuthorizeModal_WithdrawnWhenMusterLacksTheTool(t *testing.T) {
 	require.Eventually(t, func() bool { return len(fake.pathCalls("views.update")) == 1 }, flowWait, 20*time.Millisecond)
 	require.Contains(t, modalText(fake), "could not be read")
 
+	gw.openConversation(t, "C1", "170.000", "U1", "test-agent")
 	sendEvent(t, srv, mention("U1", "hi", "170.000", ""))
 	require.Eventually(t, func() bool { _, _, ok := connectButton(fake); return ok }, flowWait, 20*time.Millisecond)
 	require.NotContains(t, fmt.Sprint(fake.pathCalls("chat.postEphemeral")[0].params["blocks"]), "authorize_all_open")

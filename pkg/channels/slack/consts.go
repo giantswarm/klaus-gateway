@@ -444,7 +444,8 @@ const (
 // The answers to a collaborator whose turn on a thread's workspace (the first
 // %s) authorize_workspace did not grant, told to them alone; the turn does not
 // run. collaboratorWorkspaceRefusedNote names the repositories they cannot
-// read (%s), collaboratorWorkspaceUnavailableNote says why the check could
+// read (%s), collaboratorWorkspaceOwnTail follows it with the slash command
+// that starts a conversation of their own (%s), collaboratorWorkspaceUnavailableNote says why the check could
 // not decide (%s), collaboratorWorkspaceCheckFailedNote is the answer when
 // nobody could be asked, and collaboratorWorkspaceConnectTail follows the
 // connect prompt, whose message is held for pendingTTL;
@@ -453,7 +454,8 @@ const (
 // initiator's
 // "allowed" on a thread with a workspace (%s).
 const (
-	collaboratorWorkspaceRefusedNote     = "This thread works in workspace *%s*, which holds repositories you cannot read: %s. The agent does not act on your messages here; mention me in a new thread to start your own."
+	collaboratorWorkspaceRefusedNote     = "This thread works in workspace *%s*, which holds repositories you cannot read: %s. The agent does not act on your messages here."
+	collaboratorWorkspaceOwnTail         = " Start your own conversation with `%s`."
 	collaboratorWorkspaceUnavailableNote = "Could not check your access to workspace *%s*, which this thread works in: %s. Your message was not passed on; send it again later."
 	collaboratorWorkspaceCheckFailedNote = "Could not check your access to workspace *%s*, which this thread works in, right now. Your message was not passed on; send it again later."
 	collaboratorWorkspaceConnectTail     = " Your message is kept for a day: once connected, mention me here and it runs."
@@ -472,7 +474,8 @@ const accessPromptExpiredNotice = "This request expired because the thread state
 
 // accessDeniedNewcomerNotice is shown (ephemerally) to a parked newcomer when
 // the thread owner declines them, closing the loop opened by the waiting ack.
-const accessDeniedNewcomerNotice = "The thread owner declined, so the agent does not act on your messages in this thread. Mention the bot in a new thread to start your own."
+// %s is the slash command, the way to start a conversation of their own.
+const accessDeniedNewcomerNotice = "The thread owner declined, so the agent does not act on your messages in this thread. Start your own conversation with `%s`."
 
 // parkedDropNotice is shown (ephemerally) to a user whose parked messages
 // overflowed the per-thread cap, so the drop is visible and the user knows to
@@ -805,10 +808,11 @@ const resumeStartingFreshNotice = "The earlier conversation in this thread was n
 
 // threadClosedNotice tells the author of a reply in a thread whose
 // conversation ended — no message for the whole thread lifetime — why nobody
-// answers, and how to start again. Ephemeral: the rest of the thread does not
-// need it.
-func threadClosedNotice(lifetime time.Duration) string {
-	return fmt.Sprintf("This conversation ended after %s without messages. Mention the bot to start a new one.", spellDuration(lifetime))
+// answers, and how to start again: the slash command, or the shortcut on a
+// message of this thread, which the picker takes since the thread has no agent
+// any more. Ephemeral: the rest of the thread does not need it.
+func threadClosedNotice(lifetime time.Duration, slashCommand string) string {
+	return fmt.Sprintf("This conversation ended after %s without messages. Start a new one with `%s`, or with *%s* on a message in this thread.", spellDuration(lifetime), slashCommand, helpAskAgentShortcut)
 }
 
 // spellDuration writes a thread lifetime the way the notice reads it, and
@@ -843,14 +847,16 @@ func countOf(n int64, unit string) string {
 
 // The channel intro is posted once when the bot is added to a channel, and the
 // assistant greeting into a user's assistant pane the first time they open it
-// (app_home_opened, Messages tab). Both describe the product, name the agent a
-// plain mention reaches, and say how to reach the commands and the roster.
-// The %[1]s verbs take the bot's mention, %[2]s the default agent's name.
+// (app_home_opened, Messages tab). Both describe the product, say how a
+// conversation starts (the slash command, whose picker preselects the default
+// agent; in a channel also the shortcut), and say how to reach the commands
+// and the roster. The %[1]s verbs take the bot's mention, %[2]s the default
+// agent's name, %[3]s the slash command.
 const (
-	channelIntroText    = "Swarmgeist connects this channel to Giant Swarm's agents. Mention %[1]s to start a thread with *%[2]s*, or mention it with `agents` to pick another agent. Agents work with your permissions and ask before making changes."
+	channelIntroText    = "Swarmgeist connects this channel to Giant Swarm's agents. Start a conversation with `%[3]s`, which lets you pick an agent (*%[2]s* is preselected), or with *Ask an agent here* on a message to start one in its thread. Agents work with your permissions and ask before making changes."
 	channelIntroContext = "%[1]s `help` lists the commands"
 
-	assistantGreetingText    = "Ask about a cluster, an alert or a deployment. Swarmgeist routes each conversation to an agent, *%[2]s* by default. Agents work with your permissions and ask before making changes."
+	assistantGreetingText    = "Ask about a cluster, an alert or a deployment. Swarmgeist routes each conversation to an agent: start one with `%[3]s`, which lets you pick the agent (*%[2]s* is preselected). Agents work with your permissions and ask before making changes."
 	assistantGreetingContext = "%[1]s `help` lists the commands · %[1]s `agents` lists the agents"
 )
 
@@ -859,8 +865,14 @@ const (
 const homeGreetingTTL = 24 * time.Hour
 
 // dmRedirect is posted when a user DMs the bot while DMs are in redirect mode,
-// pointing them to a channel instead.
-const dmRedirect = "Swarmgeist works in channels, not in direct messages. Invite it to a channel and mention `@Swarmgeist` there to start."
+// pointing them to a channel instead; %s is the slash command.
+const dmRedirect = "Swarmgeist works in channels, not in direct messages. Invite it to a channel and start a conversation there with `%s`."
+
+// defaultSlashCommand is the slash command deploy/slack/manifest.yaml
+// declares. The gateway learns the command's name from no Slack API (Slack
+// sends it only with an invocation), so the help and the notices name the
+// configured one (Adapter.SlashCommand), and this one when none is set.
+const defaultSlashCommand = "/swarmgeist"
 
 // channelNotServed tells a user the channel is outside the configured
 // allowlist: ephemerally on a mention, through the response_url on a slash

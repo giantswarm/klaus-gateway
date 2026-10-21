@@ -32,6 +32,7 @@ func TestLoginReplay_DropsBareAuthUtterances(t *testing.T) {
 	a.OBO = obo
 
 	// Both messages are parked while U123 is unlinked.
+	gw.openConversation(t, "C1", "100.000", "U123", "test-agent")
 	sendEvent(t, srv, mention("U123", "login", "100.000", ""))
 	fake.waitForPath(t, "chat.postMessage", 1)
 	sendEvent(t, srv, mention("U123", "login to grafana fails", "101.000", "100.000"))
@@ -60,6 +61,7 @@ func TestLoginReplay_FailurePostsNote(t *testing.T) {
 	obo := &fakeOBO{linkedUser: "U123", token: "tok", notYetLinked: true}
 	a.OBO = obo
 
+	gw.openConversation(t, "C1", "100.000", "U123", "test-agent")
 	sendEvent(t, srv, mention("U123", "what failed on prod?", "100.000", ""))
 	fake.waitForPath(t, "chat.postMessage", 1)
 	require.Zero(t, gw.dispatchCount(), "the unlinked message must be parked")
@@ -94,6 +96,7 @@ func TestAccess_MultipleParkedMessagesReplayInOrder(t *testing.T) {
 
 	// Wait for the opening turn to complete (done reaction), not just to
 	// dispatch: a later mention must not race it for the thread slot.
+	gw.openConversation(t, "C1", "100.000", "U001", "test-agent")
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
 	require.Eventually(t, func() bool {
 		names := fake.reactionNames("reactions.add")
@@ -139,6 +142,7 @@ func TestLoginReplay_WaitsForBusyThread(t *testing.T) {
 
 	// Wait for the opening turn to complete (done reaction), not just to
 	// dispatch: a later mention must not race it for the thread slot.
+	gw.openConversation(t, "C1", "100.000", "U001", "test-agent")
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
 	require.Eventually(t, func() bool {
 		names := fake.reactionNames("reactions.add")
@@ -205,6 +209,7 @@ func TestSignInPark_BusyThreadParksInsteadOfDropping(t *testing.T) {
 
 	// Wait for the opening turn to complete (done reaction), not just to
 	// dispatch: a later mention must not race it for the thread slot.
+	gw.openConversation(t, "C1", "100.000", "U001", "test-agent")
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
 	require.Eventually(t, func() bool {
 		names := fake.reactionNames("reactions.add")
@@ -289,6 +294,7 @@ func TestLoginReplay_ParkAfterLinkRaceDrainsImmediately(t *testing.T) {
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 	a.OBO = &raceLinkOBO{token: "raced-token"}
 
+	gw.openConversation(t, "D1", "700.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "what is broken?", "700.000"))
 
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
@@ -313,6 +319,7 @@ func TestSignInPrompt_ThrottledPerThreadUser(t *testing.T) {
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
 	a.OBO = &fakeOBO{linkedUser: "U123", token: "tok", notYetLinked: true}
 
+	gw.openConversation(t, "C1", "100.000", "U123", "test-agent")
 	sendEvent(t, srv, mention("U123", "first question", "100.000", ""))
 	fake.waitForPath(t, "chat.postEphemeral", 1)
 	// The thread notice is a real threaded reply anchoring the mention's thread.
@@ -349,6 +356,7 @@ func TestLoginPark_QueueCapDropIsVisible(t *testing.T) {
 
 	// Sends are spaced out so each park completes before the next event, and
 	// none of the drops below can be blamed on the thread-busy rejection.
+	gw.openConversation(t, "D1", "600.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "q1", "600.000"))
 	time.Sleep(150 * time.Millisecond)
 	for i := 2; i <= 6; i++ {

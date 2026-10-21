@@ -597,6 +597,9 @@
                 },
                 "signingSecret": {
                     "type": "string"
+                },
+                "slashCommand": {
+                    "type": "string"
                 }
             }
         },

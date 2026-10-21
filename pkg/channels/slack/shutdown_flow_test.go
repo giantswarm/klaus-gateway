@@ -25,6 +25,7 @@ func TestShutdown_PostsRestartNoticeAndLeavesTheTurnRunning(t *testing.T) {
 	gw := &stubGateway{hold: hold, resumes: &stubResumes{durable: true}}
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
+	gw.openConversation(t, "D1", "555.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "long task", "555.000"))
 	fake.waitForPath(t, "reactions.add", 1)
 	waitTurnStreaming(t, fake)
@@ -53,6 +54,7 @@ func TestShutdown_NoticeWithoutDurableStoreMakesNoPromise(t *testing.T) {
 	gw := &stubGateway{hold: hold}
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
+	gw.openConversation(t, "D1", "555.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "long task", "555.000"))
 	fake.waitForPath(t, "reactions.add", 1)
 	waitTurnStreaming(t, fake)
@@ -75,6 +77,7 @@ func TestShutdown_NoReactionPostsTheNotice(t *testing.T) {
 	gw := &stubGateway{hold: hold, resumes: &stubResumes{durable: true}}
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
+	gw.openConversation(t, "D1", "100.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "long task", "100.000"))
 	fake.waitForPath(t, "reactions.add", 1)
 	waitTurnStreaming(t, fake)
@@ -94,6 +97,7 @@ func TestStop_IsAPlainCancellationNotAShutdown(t *testing.T) {
 	gw := &stubGateway{hold: hold, resumes: &stubResumes{durable: true}}
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
+	gw.openConversation(t, "D1", "555.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "long task", "555.000"))
 	fake.waitForPath(t, "reactions.add", 1)
 	waitTurnStreaming(t, fake)
@@ -167,6 +171,7 @@ func TestReply_DeliversTheLeftoverTurnBeforeItself(t *testing.T) {
 	}
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
+	gw.openConversation(t, "D1", "700.000", "U1", "test-agent")
 	sendEvent(t, srv, dmThreadEvent("U1", "and then?", "701.000", "700.000"))
 
 	require.Eventually(t, func() bool {
@@ -211,6 +216,7 @@ func TestShutdown_FlushesBufferedTextBeforeTheNotice(t *testing.T) {
 	gw := &stubGateway{hold: hold, deltas: []channels.OutboundDelta{{Content: "counting: 1, 2, 3"}}, resumes: &stubResumes{durable: true}}
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
+	gw.openConversation(t, "D1", "555.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "count", "555.000"))
 	fake.waitForPath(t, "reactions.add", 1)
 	waitTurnStreaming(t, fake)

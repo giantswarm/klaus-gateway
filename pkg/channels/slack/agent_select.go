@@ -24,14 +24,14 @@ type agentCardChecker interface {
 // agent_source values on the turn_dispatch record: how the turn's agent was
 // chosen. "replay" is an agent the message already carried when it reached
 // dispatch — a picker submission parked for a sign-in and replayed after it —
-// "thread" the agent recorded for the thread,
-// "default" the configured default agent, "task" the agent replayed from a
+// "thread" the agent recorded for the thread, "task" the agent replayed from a
 // paused task on a button-click resume, and "command"/"shortcut" the agent
-// picked in the modal the slash command and the message shortcut open.
+// picked in the modal the slash command and the message shortcut open. The
+// configured default agent names no source: it is the picker's preselection,
+// and only the picker opens a conversation.
 const (
 	agentSourceReplay   = "replay"
 	agentSourceThread   = "thread"
-	agentSourceDefault  = "default"
 	agentSourceTask     = "task"
 	agentSourceCommand  = "command"  // chosen in the slash command's agent picker
 	agentSourceShortcut = "shortcut" // chosen in the message shortcut's agent picker
@@ -176,27 +176,14 @@ func (a *Adapter) boundAgentOrDefault(ctx context.Context, channelID, threadID s
 	return a.DefaultAgent
 }
 
-// conversationStarting reports whether msg opens a conversation in its thread:
-// no record names an agent, because the thread is new or because the gateway
-// has forgotten it after its lifetime of silence and it starts over. Only a
-// starting message may pick an agent; the roster's Select and the pickers
-// refuse a thread that already has one.
+// conversationStarting reports whether a conversation can start in msg's
+// thread: no record names an agent, because the thread is new or because the
+// gateway has forgotten it after its lifetime of silence. Only the picker
+// starts one, and the roster's Select and the pickers refuse a thread that
+// already has its agent: inheritance is load-bearing, since the session's
+// context id embeds the agent ref, so a turn on a different agent than its
+// conversation's would fork the session.
 func (a *Adapter) conversationStarting(ctx context.Context, msg channels.InboundMessage, slackChannel string) bool {
 	_, bound := a.threadAgentBinding(ctx, slackChannel, msg.ThreadID)
 	return !bound
-}
-
-// threadAgent resolves the agent of a turn that carries no explicit prefix:
-// the thread's recorded agent; else the default, which opens the conversation
-// (opener) and is recorded for the replies that follow. Inheritance is
-// load-bearing: the session's context id embeds the agent ref, so resolving a
-// reply to a different agent than its conversation would fork the session. A
-// thread the gateway has forgotten has no record, so it starts over on the
-// default like any new one.
-func (a *Adapter) threadAgent(ctx context.Context, msg channels.InboundMessage, slackChannel string) (ref, source string, opener bool) {
-	if bound, ok := a.threadAgentBinding(ctx, slackChannel, msg.ThreadID); ok {
-		return bound, agentSourceThread, false
-	}
-	a.bindThreadAgent(ctx, slackChannel, msg.ThreadID, a.DefaultAgent)
-	return a.DefaultAgent, agentSourceDefault, true
 }

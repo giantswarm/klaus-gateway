@@ -39,6 +39,7 @@ func newCollaboratorFlow(t *testing.T, workspace string) *collaboratorFlow {
 	f.facade = &channels.Facade{Agent: f.kagent, Routes: routes, ThreadTTL: channels.DefaultThreadTTL}
 	f.a, f.srv = newEventsAdapter(t, f.facade, f.fakeURL, withWorkspaces(f.wm), withInfoLog(f.log))
 
+	openConversationIn(t, f.facade, "C1", "100.000", "U001", "test-agent")
 	sendEvent(t, f.srv, mention("U001", "<@UBOT> what failed on prod?", "100.000", ""))
 	require.Eventually(t, func() bool { return len(workspacePrompts(f.fake)) == 1 }, flowWait, 20*time.Millisecond)
 	waitThreadIdle(t, f.a, "100.000")

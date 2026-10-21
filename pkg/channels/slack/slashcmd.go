@@ -176,7 +176,7 @@ func isAuthorizeCommand(text string) bool {
 func (a *Adapter) conversationServed(channel string) (string, bool) {
 	if isDMChannelID(channel) {
 		if a.dmMode() != DMModeServe {
-			return dmRedirect, false
+			return a.dmRedirectText(), false
 		}
 		return "", true
 	}

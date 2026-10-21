@@ -49,12 +49,14 @@ func TestCountOf(t *testing.T) {
 	require.Equal(t, "0 days", countOf(0, "day"))
 }
 
-// The notice reads as one sentence with the configured lifetime in it.
+// The notice names the configured lifetime and the two ways to start again:
+// the app's slash command and the shortcut on a message of the thread.
 func TestThreadClosedNotice(t *testing.T) {
 	require.Equal(t,
-		"This conversation ended after 90 days without messages. Mention the bot to start a new one.",
-		threadClosedNotice(90*24*time.Hour))
-	require.Contains(t, threadClosedNotice(36*time.Hour), "after 36 hours without messages")
+		"This conversation ended after 90 days without messages. Start a new one with `/swarmgeist`, or with *Ask an agent here* on a message in this thread.",
+		threadClosedNotice(90*24*time.Hour, "/swarmgeist"))
+	require.Contains(t, threadClosedNotice(36*time.Hour, "/agent"), "after 36 hours without messages")
+	require.Contains(t, threadClosedNotice(36*time.Hour, "/agent"), "`/agent`")
 }
 
 // The dismissed-connector note names the real cooldown, so a change to it

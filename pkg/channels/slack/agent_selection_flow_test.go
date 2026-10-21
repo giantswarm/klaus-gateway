@@ -142,6 +142,7 @@ func TestAgentSelection_OnlookerReadOnlyFormsUngated(t *testing.T) {
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, withSelection(roster, cards))
 
 	// U1 starts and owns the conversation.
+	gw.openConversation(t, "C1", "100.000", "U1", "test-agent")
 	sendEvent(t, srv, mention("U1", "start here", "100.000", ""))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 50*time.Millisecond)
@@ -174,6 +175,7 @@ func TestAgentSelection_BareAgentListsRoster(t *testing.T) {
 	gw, _ := capturingGateway()
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, withSelection(roster, &fakeCards{}))
 
+	gw.openConversation(t, "C1", "100.000", "U1", "test-agent")
 	sendEvent(t, srv, mention("U1", "agents", "100.000", ""))
 
 	require.Eventually(t, func() bool {
@@ -190,6 +192,7 @@ func TestAgentSelection_BareAgentListsRoster(t *testing.T) {
 	require.Zero(t, gw.dispatchCount(), "listing the roster dispatches nothing")
 
 	// A second listing asks the controller again: the roster is the caller's.
+	gw.openConversation(t, "C1", "200.000", "U1", "test-agent")
 	sendEvent(t, srv, mention("U1", "agents", "200.000", ""))
 	require.Eventually(t, func() bool {
 		return strings.Count(allText(fake.pathCalls("chat.postMessage")), "Available agents") == 2
@@ -204,6 +207,7 @@ func TestAgentSelection_RosterFetchFailure(t *testing.T) {
 	gw, _ := capturingGateway()
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, withSelection(roster, &fakeCards{}))
 
+	gw.openConversation(t, "C1", "100.000", "U1", "test-agent")
 	sendEvent(t, srv, mention("U1", "agents", "100.000", ""))
 
 	require.Eventually(t, func() bool {
@@ -236,28 +240,31 @@ func TestAgentSelection_PaneRosterThenSelectOpensThePicker(t *testing.T) {
 	require.Zero(t, gw.dispatchCount(), "opening the picker dispatches nothing")
 }
 
-// A new pane chat is not greeted with the "starts fresh" resume notice: its
-// first message arrives as a thread reply (the chat's Slack-created anchor is
-// its thread_ts) but it OPENS the conversation — there is no earlier session
-// to resume. A genuine reply into a thread the process does not know still
-// announces when the session is conclusively gone.
+// The conversation the picker opens is not greeted with the "starts fresh"
+// resume notice: its question OPENS the conversation — there is no earlier
+// session to resume — although in the pane it arrives as a thread reply (the
+// chat's Slack-created anchor is its thread_ts). A genuine reply into a thread
+// the process does not know still announces when the session is conclusively
+// gone.
 func TestPane_NewChatNotGreetedWithStartingFresh(t *testing.T) {
 	sessionGone := func(channels.InboundMessage) (bool, bool) { return false, true }
 
-	t.Run("first pane message is silent", func(t *testing.T) {
+	t.Run("the picker's opener is silent", func(t *testing.T) {
 		fake := newFakeSlackAPI()
 		gw := &stubGateway{
 			deltas:             []channels.OutboundDelta{{Content: "hi"}, {Done: true}},
 			onSessionResumable: sessionGone,
 		}
-		_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+		_, srv := newEventsAdapter(t, gw, fake.server(t).URL, withSelection(pickerRoster(), pickerCards()))
 
-		sendEvent(t, srv, dmThreadEvent("U1", "hello", "200.000", "100.000"))
+		sendSlashCommand(t, srv, "D1", "U1", "hello", fake.server(t).URL+"/response_url")
+		pm := openedView(t, fake)["private_metadata"].(string)
+		sendAskAgentSubmission(t, srv, "U1", pm, "kagent/sre-agent", "hello")
 		require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 			flowWait, 50*time.Millisecond)
 		time.Sleep(150 * time.Millisecond)
 		require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "starts fresh",
-			"a conversation-opening pane message must not be greeted with the resume notice")
+			"a conversation-opening message must not be greeted with the resume notice")
 	})
 
 	t.Run("genuine reply still announces", func(t *testing.T) {
@@ -288,6 +295,7 @@ func TestAgentSelection_HelpListsTheAgentsCommand(t *testing.T) {
 	gw := &stubGateway{}
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, withSelection(&fakeRoster{}, &fakeCards{}))
 
+	gw.openConversation(t, "D1", "100.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "help", "100.000"))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allBlockText(fake.pathCalls("chat.postMessage")), "List the agents")
@@ -314,6 +322,7 @@ func TestAgentSelection_WordReachesTheAgentWithoutCards(t *testing.T) {
 	}
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, rosterOnly)
 
+	gw.openConversation(t, "C1", "100.000", "U1", "test-agent")
 	sendEvent(t, srv, mention("U1", "agents", "100.000", ""))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond,
 		"without agent selection the word belongs to the agent")
@@ -335,6 +344,7 @@ func TestAgentSelection_ListingReadsTheRosterAsCaller(t *testing.T) {
 		a.OBO = oneUserOBO{user: "U1", token: "tok-u1"}
 	})
 
+	gw.openConversation(t, "C1", "100.000", "U1", "test-agent")
 	sendEvent(t, srv, mention("U1", "agents", "100.000", ""))
 	require.Eventually(t, func() bool { return len(roster.seen()) == 1 },
 		flowWait, 50*time.Millisecond, "the bare listing reads the roster")
@@ -351,6 +361,7 @@ func TestAgentSelection_UnlinkedListingAsksToSignIn(t *testing.T) {
 	gw, _ := capturingGateway()
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, withSelection(roster, &fakeCards{}))
 
+	gw.openConversation(t, "C1", "100.000", "U1", "test-agent")
 	sendEvent(t, srv, mention("U1", "agents", "100.000", ""))
 
 	require.Eventually(t, func() bool {
