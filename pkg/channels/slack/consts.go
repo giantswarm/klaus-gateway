@@ -929,6 +929,9 @@ const (
 	bkOptions   = "options"
 	bkBlockID   = "block_id"
 	bkAccessory = "accessory"
+	// bkVerbatim on a mrkdwn text object stops Slack from turning URL-like
+	// text (a host, host:port) into links.
+	bkVerbatim = "verbatim"
 
 	// Modal / input block keys (the agent picker).
 	bkCallbackID      = "callback_id"

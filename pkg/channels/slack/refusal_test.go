@@ -78,6 +78,29 @@ func TestRefusal_OneNoticePerAgentAndHostWithinTheWindow(t *testing.T) {
 	require.Len(t, fake.pathCalls("chat.postMessage"), 2, "a second host is a second notice")
 }
 
+func TestRefusal_DestinationIsNotLinkified(t *testing.T) {
+	fake, note := refusalHarness(t)
+	r := goModulesRefusal(time.Now())
+	r.Host = "api.anthropic.com"
+
+	require.NoError(t, note(r))
+	blocks := blocksOf(fake.pathCalls("chat.postMessage")[0])
+	text := messageText(blocks)
+	require.Contains(t, text, "`api.anthropic.com:443` is not one of the hosts")
+	require.NotContains(t, text, "<http", "the notice carries no link markup")
+	for _, block := range blocks {
+		switch block["type"] {
+		case "section":
+			require.Equal(t, true, block["text"].(map[string]any)["verbatim"],
+				"Slack must not turn api.anthropic.com:443 into an http://…:443 link")
+		case "context":
+			for _, el := range block["elements"].([]any) {
+				require.Equal(t, true, el.(map[string]any)["verbatim"])
+			}
+		}
+	}
+}
+
 func TestRefusal_RawTCPSaysHTTPSOnly(t *testing.T) {
 	fake, note := refusalHarness(t)
 	r := goModulesRefusal(time.Now())
