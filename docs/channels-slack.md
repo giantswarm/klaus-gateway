@@ -1072,8 +1072,9 @@ second destination of the same agent is a second notice. Nothing goes through Al
   Session runs, as its own ServiceAccount with a token projected for `refusals.kagentAudience`,
   which the controller admits as its session reader. A Session deleted before the read still
   answers, with its tombstone, which names the Agent, so a short-lived Session's refusal counts
-  into its Agent's notice (kagent-upstream on the giantswarm line from the release that admits
-  the session reader to tombstones). An actor that is no Session kagent knows (a sandbox's) is
+  into its Agent's notice (a kagent that reads tombstones for its session reader,
+  giantswarm/kagent-upstream#815; an older one answers `NotFound`). A Session a sweep deleted
+  (idle, or its Agent deleted) keeps no tombstone. An actor that is no Session kagent knows (a sandbox's) is
   logged once per increase (`atespace`, `actor`, `scheme`, `host`, `port`, `count`, `reason`) and
   counted as `not_session`. The creator is the email in the Agent's
   `agent-platform.giantswarm.io/created-by` annotation (agent-manager records it); an Agent
