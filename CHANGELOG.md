@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Egress refusal notices: a refusal by a Session deleted before the watcher's next read is no longer dropped. The kagent controller answers its session reader with a deleted Session's tombstone, which names the Agent, so the refusal counts into the Agent's notice; a refusing actor that is still no Session kagent knows is logged once per increase with its actor, host, port, count and the reason, beside the `not_session` count (giantswarm/klaus-gateway#512).
 - Egress refusal notices name the refused destination as written: Slack no longer turns `api.anthropic.com:443` into an `http://api.anthropic.com:443` link, since the notice's text is sent `verbatim`.
 
 ### Added

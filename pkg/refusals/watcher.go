@@ -45,7 +45,9 @@ type Source interface {
 }
 
 // ErrNotSession is a Sessions answer for an actor that is not a Session
-// kagent knows: a sandbox's, or one of a Session since deleted.
+// kagent knows: a sandbox's. A deleted Session is still known: the
+// controller answers its session reader with the Session's tombstone, which
+// names the Agent, so a short-lived Session's refusal is still attributed.
 var ErrNotSession = errors.New("refusals: the actor is not a known Session")
 
 // Sessions resolves a Session to the Agent it runs, as namespace and name.
@@ -162,6 +164,10 @@ func (w *Watcher) Observe(ctx context.Context) {
 		}
 		namespace, agent, err := w.Sessions.SessionAgent(ctx, sessionID)
 		if errors.Is(err, ErrNotSession) {
+			// Logged once per increase: the next read counts from this one.
+			w.logger().Info("refusals: the refusing actor is no Session kagent knows, so nobody is told",
+				"atespace", s.Atespace, "actor", s.Actor, "scheme", s.Scheme, "host", s.Host, "port", s.Port,
+				"count", int(increase), "reason", err.Error())
 			w.record(OutcomeNotSession)
 			continue
 		}
