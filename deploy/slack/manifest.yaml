@@ -75,15 +75,18 @@ features:
   agent_view:
     agent_description: Routes each conversation to one of Giant Swarm's agents, which work with your permissions and ask before making changes.
     # Pinned at the top of the assistant Messages tab; clicking one sends its
-    # message as a normal DM turn. A message that starts with "/" never reaches
-    # the bot (docs/invariants.md), and a message that is exactly one command
-    # word (usage, help, agents, login, logout) runs that command instead of
-    # reaching the agent, so a prompt's message is a sentence.
+    # message as if the person had typed it. A conversation starts only
+    # through the slash command (a plain message in a new chat is answered
+    # with the help), and Slack runs a message that starts with "/" as a
+    # Slack command (docs/invariants.md), so each prompt's message is the
+    # slash command with the question: the click opens the agent picker with
+    # the question filled in. Keep the command's name in step with the
+    # slash_commands entry above and with the gateway's slack.slashCommand.
     suggested_prompts:
       - title: Check cluster health
-        message: How are my clusters doing right now?
+        message: /swarmgeist How are my clusters doing right now?
       - title: Investigate an alert
-        message: Help me investigate a firing alert.
+        message: /swarmgeist Help me investigate a firing alert.
 
 oauth_config:
   scopes:
@@ -133,9 +136,14 @@ settings:
     # Events API request URL. Replace with your public hostname.
     request_url: https://example.com/channels/slack/events
     bot_events:
-      # Fires when a user @-mentions the bot in any channel.
+      # Fires when a user @-mentions the bot in any channel. A mention in a
+      # thread that has its conversation is a turn (a collaborator's, a
+      # newcomer's, the one that ends a mute); anywhere else it is answered
+      # with the help, which says how a conversation starts.
       - app_mention
-      # Fires for direct messages sent to the bot.
+      # Fires for direct messages sent to the bot. A message in a chat that
+      # has its conversation is a turn; a new chat's is answered with the
+      # help.
       - message.im
       # Fires for messages in public channels where the bot is a member.
       # Used to route thread replies to active bot threads without @-mention.

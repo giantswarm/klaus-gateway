@@ -93,25 +93,6 @@ var contentfulSubtypes = map[string]bool{
 	"me_message":       true,
 }
 
-// attachThreadContext gives msg the transcript of what its thread already said,
-// when msg opens a conversation inside a thread that existed before it. A
-// message that roots its own thread has nothing earlier to read, and a turn in
-// a conversation that is already running is not an opener.
-//
-// A DM is skipped whatever its thread looks like: the assistant pane roots
-// every chat at an anchor Slack creates when the chat opens, so the opener is
-// never its own thread root there and the read would only ever return the
-// person's own words back to them — one Slack call per new chat for nothing.
-func (a *Adapter) attachThreadContext(ctx context.Context, msg *channels.InboundMessage, slackChannel, initiator string) {
-	if !msg.Opener || msg.Context != "" || msg.ThreadID == "" || msg.ThreadID == msg.MessageID {
-		return
-	}
-	if isDMChannelID(slackChannel) {
-		return
-	}
-	msg.Context = a.threadContext(ctx, slackChannel, msg.ThreadID, msg.MessageID, initiator)
-}
-
 // threadContext reads the messages written in threadID before openerTS and
 // renders them as the opener turn's shared context.
 func (a *Adapter) threadContext(ctx context.Context, channelID, threadID, openerTS, initiator string) string {

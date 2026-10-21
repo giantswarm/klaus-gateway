@@ -62,6 +62,7 @@ func TestInitiator_CollaboratorTurnRunsAsTheCollaborator(t *testing.T) {
 	_, srv := newEventsAdapter(t, gw, fakeURL, channelMode, func(a *slackadapter.Adapter) { a.OBO = obo })
 
 	// Initiator starts the thread; their turn runs under their own token.
+	gw.openConversation(t, "C1", "100.000", "U001", "test-agent")
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 50*time.Millisecond, "initiator's mention dispatches")
@@ -119,6 +120,7 @@ func TestInitiator_FallsBackToSenderWhenTokenUnavailable(t *testing.T) {
 
 	// Initiator's mention records them as initiator but parks for sign-in. Wait
 	// for that prompt so U001 is the recorded initiator before U002 posts.
+	gw.openConversation(t, "C1", "100.000", "U001", "test-agent")
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
 	require.Eventually(t, func() bool {
 		return signInPrompted(fake)
@@ -193,6 +195,7 @@ func TestInitiator_CollaboratorWithoutShareIsToldWhy(t *testing.T) {
 	}
 	_, srv := newEventsAdapter(t, gw, fakeURL, channelMode, func(a *slackadapter.Adapter) { a.OBO = obo })
 
+	gw.openConversation(t, "C1", "100.000", "U001", "test-agent")
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
 	require.Eventually(t, func() bool {
 		return signInPrompted(fake)

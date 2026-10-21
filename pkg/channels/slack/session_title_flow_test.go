@@ -10,16 +10,16 @@ import (
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 )
 
-// The Messages tab lists an assistant-pane chat by its title, and every
-// message in that pane arrives as a reply under a Slack-created thread anchor:
-// the chat's first message is never its own thread root. Its turn must still
-// create the session with the title, and a later reply must not send one.
+// The Messages tab lists an assistant-pane chat by its title. The picker's
+// question is the one message that opens a conversation — in the pane the
+// slash command posts it as the chat's root — and its turn must create the
+// session with the title, while a later reply must not send one.
 //
 // The title also travels to the gateway on every turn, which is what names the
 // thread's kagent conversation: Slack takes a title only when it creates the
 // session, the gateway only when it creates the conversation, and a turn that
 // switches agents creates one mid-thread.
-func TestSessionTitle_AssistantPaneOpenerNamesTheSession(t *testing.T) {
+func TestSessionTitle_PickerOpenerNamesTheSession(t *testing.T) {
 	fake := newFakeSlackAPI()
 	var mu sync.Mutex
 	var titles []string
@@ -27,9 +27,12 @@ func TestSessionTitle_AssistantPaneOpenerNamesTheSession(t *testing.T) {
 		deltas:     []channels.OutboundDelta{{Content: "ok", Done: true}},
 		onDispatch: func(msg channels.InboundMessage) { mu.Lock(); titles = append(titles, msg.Title); mu.Unlock() },
 	}
-	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+	api := fake.server(t)
+	a, srv := newEventsAdapter(t, gw, api.URL, withSelection(pickerRoster(), pickerCards()))
 
-	sendEvent(t, srv, dmThreadEvent("U1", "why did   the CPU alert\nfire on gazelle", "300.000", "100.000"))
+	sendSlashCommand(t, srv, "D1", "U1", "", api.URL+"/response_url")
+	pm := openedView(t, fake)["private_metadata"].(string)
+	sendAskAgentSubmission(t, srv, "U1", pm, "kagent/sre-agent", "why did   the CPU alert\nfire on gazelle")
 
 	fake.waitForPath(t, "agents.sessions.setStatus", 2)
 	calls := fake.pathCalls("agents.sessions.setStatus")
@@ -38,8 +41,11 @@ func TestSessionTitle_AssistantPaneOpenerNamesTheSession(t *testing.T) {
 	require.Equal(t, "active", calls[1].params["status"])
 	require.NotContains(t, calls[1].params, "title")
 
-	waitThreadIdle(t, a, "100.000")
-	sendEvent(t, srv, dmThreadEvent("U1", "and the disk?", "301.000", "100.000"))
+	// The root the command posted is the chat, and the thread of every reply.
+	thread, _ := calls[0].params["thread_ts"].(string)
+	require.NotEmpty(t, thread)
+	waitThreadIdle(t, a, thread)
+	sendEvent(t, srv, dmThreadEvent("U1", "and the disk?", "301.000", thread))
 
 	fake.waitForPath(t, "agents.sessions.setStatus", 4)
 	calls = fake.pathCalls("agents.sessions.setStatus")
@@ -52,19 +58,24 @@ func TestSessionTitle_AssistantPaneOpenerNamesTheSession(t *testing.T) {
 		"every turn carries its own title for the gateway to name a conversation with")
 }
 
-// A first chat from a user who has not signed in yet is held and replayed
-// after the link. The replay re-enters dispatch with the conversation already
-// bound, so it no longer reads as the opener; the title must survive the hold.
+// A conversation a person who has not signed in yet opens is held and replayed
+// after the link. The replay re-enters dispatch without the agent the picker
+// stamped, reading it from the thread's row instead; the title must survive
+// the hold.
 func TestSessionTitle_SurvivesSignInReplay(t *testing.T) {
 	fake := newFakeSlackAPI()
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok", Done: true}}}
-	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+	api := fake.server(t)
+	a, srv := newEventsAdapter(t, gw, api.URL, withSelection(pickerRoster(), pickerCards()))
 	obo := &fakeOBO{linkedUser: "U1", token: "tok", notYetLinked: true}
 	a.OBO = obo
 
-	sendEvent(t, srv, dmThreadEvent("U1", "why did the CPU alert fire on gazelle", "300.000", "100.000"))
+	sendSlashCommand(t, srv, "D1", "U1", "", api.URL+"/response_url")
+	pm := openedView(t, fake)["private_metadata"].(string)
+	sendAskAgentSubmission(t, srv, "U1", pm, "kagent/sre-agent", "why did the CPU alert fire on gazelle")
 	require.Eventually(t, func() bool {
-		return len(fake.pathCalls("chat.postMessage"))+len(fake.pathCalls("chat.postEphemeral")) > 0
+		// The command's echo is one message; the sign-in prompt the other.
+		return len(fake.pathCalls("chat.postMessage"))+len(fake.pathCalls("chat.postEphemeral")) > 1
 	}, flowWait, 50*time.Millisecond, "the unlinked opener gets the sign-in prompt")
 	require.Zero(t, gw.dispatchCount(), "the unlinked opener must be held, not dispatched")
 	require.Empty(t, fake.pathCalls("agents.sessions.setStatus"), "no turn ran, so no session was created")

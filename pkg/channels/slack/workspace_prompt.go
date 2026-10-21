@@ -478,6 +478,10 @@ func (a *Adapter) replayHeld(ctx context.Context, threadID string, msg channels.
 type workspaceDenial struct {
 	text    string
 	connect []providerConnect
+	// refused is a denial on the repositories the person cannot read: the
+	// workspace is not theirs to work in, as opposed to a check that could
+	// not decide.
+	refused bool
 }
 
 // workspaceChallenge is muster's sign-in challenge for the workspace-manager
@@ -550,7 +554,7 @@ func (a *Adapter) authorizeWorkspace(ctx context.Context, slackUser, workspace s
 		for i, r := range auth.Unreadable {
 			repos[i] = "`" + strings.ReplaceAll(r, "`", "'") + "`"
 		}
-		return workspaces.Grant{}, &workspaceDenial{text: fmt.Sprintf(notes.refused, name, strings.Join(repos, ", "))}
+		return workspaces.Grant{}, &workspaceDenial{text: fmt.Sprintf(notes.refused, name, strings.Join(repos, ", ")), refused: true}
 	case workspaces.ConnectRequired:
 		providers := make([]string, len(auth.Connect))
 		for i, c := range auth.Connect {

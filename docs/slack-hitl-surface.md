@@ -699,7 +699,7 @@ writes nothing:
 
 | when | notice |
 |---|---|
-| a reply without a mention, and not opening with someone else's mention, in a thread whose conversation ended after `routing.threadTTL` (the row is still in the store, at twice the lifetime) | "This conversation ended after 90 days without messages. Mention the bot to start a new one." (the configured lifetime is named) |
+| a reply without a mention, and not opening with someone else's mention, in a thread whose conversation ended after `routing.threadTTL` (the row is still in the store, at twice the lifetime) | "This conversation ended after 90 days without messages. Start a new one with `/swarmgeist`, or with *Ask an agent here* on a message in this thread." (the configured lifetime and slash command are named) |
 
 ## 13. Decision (a question to a person or a team)
 

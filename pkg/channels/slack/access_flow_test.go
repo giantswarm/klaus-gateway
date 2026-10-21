@@ -67,6 +67,7 @@ func TestAccess_UnlinkedNewcomerPromptedToSignIn(t *testing.T) {
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
 	a.OBO = &fakeOBO{linkedUser: "U001", token: "tok"} // U001 linked, U999 not
 
+	gw.openConversation(t, "C1", "100.000", "U001", "test-agent")
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 50*time.Millisecond, "initiator's mention dispatches")
@@ -95,6 +96,7 @@ func TestAccess_NewcomerApprovedReplaysMessage(t *testing.T) {
 	// OBO nil: the newcomer is authenticated, so the flow skips sign-in.
 	_, srv := newEventsAdapter(t, gw, fakeURL, channelMode)
 
+	gw.openConversation(t, "C1", "100.000", "U001", "test-agent")
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 50*time.Millisecond, "initiator's mention dispatches")
@@ -120,6 +122,7 @@ func TestAccess_NewcomerDeclinedDropsMessage(t *testing.T) {
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok", Done: true}}}
 	_, srv := newEventsAdapter(t, gw, fakeURL, channelMode)
 
+	gw.openConversation(t, "C1", "100.000", "U001", "test-agent")
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 50*time.Millisecond, "initiator's mention dispatches")
@@ -142,6 +145,7 @@ func TestAccess_NonInitiatorCannotGrant(t *testing.T) {
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok", Done: true}}}
 	_, srv := newEventsAdapter(t, gw, fakeURL, channelMode)
 
+	gw.openConversation(t, "C1", "100.000", "U001", "test-agent")
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 50*time.Millisecond, "initiator's mention dispatches")
@@ -168,6 +172,7 @@ func TestAccess_GrantWhileThreadBusyDeliversAfterRelease(t *testing.T) {
 	_, srv := newEventsAdapter(t, gw, fakeURL, channelMode)
 
 	// The initiator's mention starts a turn that keeps the thread slot held.
+	gw.openConversation(t, "C1", "100.000", "U001", "test-agent")
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 50*time.Millisecond, "initiator's mention dispatches")
@@ -202,6 +207,7 @@ func TestAccess_NewcomerTransientTokenErrorSurfaced(t *testing.T) {
 	// recorded as initiator.
 	a.OBO = &fakeOBO{linkedUser: "U999", token: "tok", tokenErr: errors.New("refresh failed")}
 
+	gw.openConversation(t, "C1", "100.000", "U001", "test-agent")
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
 	require.Eventually(t, func() bool {
 		return signInPrompted(fake)
@@ -227,6 +233,7 @@ func TestHITL_ToolPromptSurfacedForApproval(t *testing.T) {
 	gw := &stubGateway{sendQueue: [][]channels.OutboundDelta{{prompt}}}
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
+	gw.openConversation(t, "D1", "400.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "clean up", "400.000"))
 
 	fake.waitForPath(t, "chat.postMessage", 1)
@@ -248,6 +255,7 @@ func TestHITL_ApprovedResumePostsNoPlaceholder(t *testing.T) {
 	gw := &stubGateway{sendQueue: [][]channels.OutboundDelta{{prompt}, {{Content: "deleted"}, {Done: true}}}}
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
+	gw.openConversation(t, "D1", "400.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "clean up", "400.000"))
 	fake.waitForPath(t, "chat.postMessage", 1)
 	posted := len(fake.pathCalls("chat.postMessage"))
@@ -286,6 +294,7 @@ func TestAccess_DeniedNewcomerNotified(t *testing.T) {
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "hi", Done: true}}}
 	_, srv := newEventsAdapter(t, gw, fakeURL, channelMode)
 
+	gw.openConversation(t, "C1", "500.000", "U001", "test-agent")
 	sendEvent(t, srv, mention("U001", "start", "500.000", ""))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 50*time.Millisecond, "initiator dispatches")
@@ -301,7 +310,8 @@ func TestAccess_DeniedNewcomerNotified(t *testing.T) {
 		for _, c := range calls[before:] {
 			user, _ := c.params["user"].(string)
 			text, _ := c.params["text"].(string)
-			if user == "U999" && strings.Contains(text, "declined") {
+			// The outcome, and the way to a conversation of their own.
+			if user == "U999" && strings.Contains(text, "declined") && strings.Contains(text, "Start your own conversation with `/swarmgeist`.") {
 				return true
 			}
 		}

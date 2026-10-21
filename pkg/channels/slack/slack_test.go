@@ -205,6 +205,7 @@ func TestEventsHandler_AppMentionDispatch(t *testing.T) {
 	t.Cleanup(fakeSlack.Close)
 
 	_, srv := newEventsAdapter(t, gw, fakeSlack.URL, channelMode)
+	gw.openConversation(t, "C456", "1234.5678", "U123", "test-agent")
 
 	payload := `{
 		"type":"event_callback",
@@ -243,7 +244,7 @@ func TestEventsHandler_AppMentionDispatch(t *testing.T) {
 	require.Equal(t, "C456", got.ChannelID)
 	require.Equal(t, "U123", got.Subject, "Subject carries the raw Slack user ID for access control")
 	require.Equal(t, helloText, got.Text)
-	require.Equal(t, "test-agent", got.AgentRef, "AgentRef must be set to DefaultAgent")
+	require.Equal(t, "test-agent", got.AgentRef, "AgentRef is the thread's agent")
 }
 
 func TestEventsHandler_RedeliveredEventDropped(t *testing.T) {
@@ -259,6 +260,7 @@ func TestEventsHandler_RedeliveredEventDropped(t *testing.T) {
 	t.Cleanup(fakeSlack.Close) // closed after the adapter has stopped; cleanups run LIFO
 
 	_, srv := newEventsAdapter(t, gw, fakeSlack.URL)
+	gw.openConversation(t, "C456", "1234.5678", "U123", "test-agent")
 
 	body := []byte(`{
 		"type":"event_callback",
@@ -322,7 +324,8 @@ func TestEventsHandler_NewcomerGatedAfterInitiator(t *testing.T) {
 		require.NoError(t, resp.Body.Close())
 	}
 
-	// U001 launches the thread and becomes its initiator.
+	// U001 opened the thread's conversation and owns it.
+	gw.openConversation(t, "C1", "111.222", "U001", "test-agent")
 	send(`{"type":"event_callback","event":{"type":"app_mention","user":"U001","text":"<@BOT> hi","channel":"C1","ts":"111.222"}}`)
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 50*time.Millisecond, "the initiator's mention is dispatched")
@@ -345,6 +348,7 @@ func TestBatchedWriter_FlushesContent(t *testing.T) {
 		},
 	}
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
+	gw.openConversation(t, "C1", "111.222", "U123", "test-agent")
 
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_mention","user":"U123","text":"<@BOT> go","channel":"C1","ts":"111.222"}}`)
 
@@ -441,6 +445,7 @@ func dispatchAndCaptureOBO(t *testing.T, obo slackadapter.OBOTokenSource, slackU
 	t.Cleanup(cancel)
 	t.Cleanup(srv.Close)
 	t.Cleanup(func() { _ = a.Stop(context.Background()) })
+	gw.openConversation(t, "C1", "111.222", slackUser, "test-agent")
 
 	payload := fmt.Sprintf(`{"type":"event_callback","event":{"type":"app_mention","user":%q,"text":"<@BOT> hi","channel":"C1","ts":"111.222"}}`, slackUser)
 	body := []byte(payload)
@@ -483,6 +488,7 @@ func TestDispatch_OBO_UnlinkedUserPromptsSignInAndDoesNotDispatch(t *testing.T) 
 	gw := &stubGateway{}
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
 	a.OBO = &fakeOBO{linkedUser: "U999", token: "x", linkURL: "https://gw.example.com/auth/slack/link?u=xyz"}
+	gw.openConversation(t, "C1", "111.222", "U123", "test-agent")
 
 	payload := `{"type":"event_callback","event":{"type":"app_mention","user":"U123","text":"<@BOT> hi","channel":"C1","ts":"111.222"}}`
 	body := []byte(payload)
@@ -535,6 +541,7 @@ func TestDispatch_OBO_ParksUnlinkedMessageAndReplaysAfterLink(t *testing.T) {
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
 	obo := &fakeOBO{linkedUser: "U123", token: "human-token", notYetLinked: true, linkURL: "https://gw.example.com/link"}
 	a.OBO = obo
+	gw.openConversation(t, "C1", "111.222", "U123", "test-agent")
 
 	payload := `{"type":"event_callback","event":{"type":"app_mention","user":"U123","text":"<@BOT> what is failing?","channel":"C1","ts":"111.222"}}`
 	body := []byte(payload)
@@ -639,7 +646,8 @@ func TestDispatch_OBO_NewcomerReplaysToAccessPromptNotAgent(t *testing.T) {
 		require.NoError(t, resp.Body.Close())
 	}
 
-	// The initiator (linked) starts the thread and is dispatched.
+	// The initiator (linked) opened the thread's conversation and is dispatched.
+	gw.openConversation(t, "C1", "111.222", "U1", "test-agent")
 	send(`{"type":"event_callback","event":{"type":"app_mention","user":"U1","text":"<@BOT> hi","channel":"C1","ts":"111.222"}}`)
 	require.Eventually(t, func() bool {
 		mu.Lock()
@@ -690,6 +698,7 @@ func TestDispatch_OBO_TokenErrorAbortsTurn(t *testing.T) {
 	gw := &stubGateway{}
 	a, srv := newEventsAdapter(t, gw, fakeSlack.URL, channelMode)
 	a.OBO = &fakeOBO{linkedUser: "U123", token: "x", tokenErr: errors.New("muster unreachable")}
+	gw.openConversation(t, "C1", "111.222", "U123", "test-agent")
 
 	payload := `{"type":"event_callback","event":{"type":"app_mention","user":"U123","text":"<@BOT> hi","channel":"C1","ts":"111.222"}}`
 	body := []byte(payload)
@@ -835,6 +844,7 @@ func TestBareLogout_Unlinks(t *testing.T) {
 	a, srv := newEventsAdapter(t, gw, fakeSlack.URL)
 	a.OBO = obo
 
+	gw.openConversation(t, "D1", "111.222", "U123", "test-agent")
 	sendEvent(t, srv, dmEvent("U123", "logout", "111.222"))
 
 	require.Eventually(t, func() bool {
@@ -857,6 +867,7 @@ func TestBareLogin_ConfirmsSignedIn(t *testing.T) {
 	a, srv := newEventsAdapter(t, gw, fakeSlack.URL)
 	a.OBO = &fakeOBO{linkedUser: "U123", token: "human-token"}
 
+	gw.openConversation(t, "D1", "111.222", "U123", "test-agent")
 	sendEvent(t, srv, dmEvent("U123", "Login.", "111.222"))
 
 	require.Eventually(t, func() bool {
@@ -883,6 +894,7 @@ func TestBareLogout_ChannelThreadReply(t *testing.T) {
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
 	a.OBO = obo
 
+	gw.openConversation(t, "C1", "800.000", "U123", "test-agent")
 	sendEvent(t, srv, mention("U123", "<@BOT> why is the cluster unhappy?", "800.000", ""))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 20*time.Millisecond)
 	waitThreadIdle(t, a, "800.000")
@@ -909,6 +921,7 @@ func TestBareLogout_DuringRunningTurn(t *testing.T) {
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 	a.OBO = obo
 
+	gw.openConversation(t, "D1", "700.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "long task", "700.000"))
 	fake.waitForPath(t, "reactions.add", 1)
 	waitTurnStreaming(t, fake)
@@ -951,6 +964,7 @@ func TestBareCommand_PausedQuestionKeepsTheWord(t *testing.T) {
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 	a.OBO = obo
 
+	gw.openConversation(t, "D1", "930.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "set me up", "930.000"))
 	fake.waitForPath(t, "chat.postMessage", 1) // the question is up
 
@@ -983,6 +997,7 @@ func TestBareCommand_PausedQuestionKeepsUsage(t *testing.T) {
 	}}
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
+	gw.openConversation(t, "D1", "990.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "report on it", "990.000"))
 	fake.waitForPath(t, "chat.postMessage", 1) // the question is up
 
@@ -1008,6 +1023,7 @@ func TestBareCommand_PausedQuestionWithoutACardKeepsTheWord(t *testing.T) {
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 	a.OBO = obo
 
+	gw.openConversation(t, "D1", "970.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "set me up", "970.000"))
 	fake.waitForPath(t, "chat.postMessage", 1) // the question is up, without a card
 
@@ -1034,6 +1050,7 @@ func TestBareCommand_ApprovalCardIsNotAQuestion(t *testing.T) {
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 	a.OBO = obo
 
+	gw.openConversation(t, "D1", "960.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "restart it", "960.000"))
 	fake.waitForPath(t, "chat.postMessage", 1) // the approval card is up
 
@@ -1057,6 +1074,7 @@ func TestBareCommand_AttachmentCaptionReachesTheAgent(t *testing.T) {
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 	a.OBO = obo
 
+	gw.openConversation(t, "D1", "940.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "here is the screenshot", "940.000"))
 	fake.waitForPath(t, "reactions.remove", 1)
 	sendEvent(t, srv, dmThreadFileEvent("U1", "logout", "941.000", "940.000", "login-page.png"))
@@ -1076,6 +1094,7 @@ func TestBareCommand_WithoutSignInReachesTheAgent(t *testing.T) {
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "hi"}, {Done: true}}}
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
+	gw.openConversation(t, "D1", "950.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "login", "950.000"))
 
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond,
@@ -1089,6 +1108,7 @@ func TestBareUsage_AnswersInThread(t *testing.T) {
 	gw := &stubGateway{}
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
+	gw.openConversation(t, "D1", "980.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "Usage?", "980.000"))
 
 	require.Eventually(t, func() bool {
@@ -1105,6 +1125,9 @@ func TestBareHelp_AnswersWithTheCommandList(t *testing.T) {
 	gw := &stubGateway{}
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
+	// A new chat, with no conversation: the word is still the command, and
+	// its reply is the plain help, not the one a message that found no
+	// conversation gets.
 	sendEvent(t, srv, dmEvent("U1", "help", "981.000"))
 
 	require.Eventually(t, func() bool {
@@ -1112,7 +1135,12 @@ func TestBareHelp_AnswersWithTheCommandList(t *testing.T) {
 	}, flowWait, 50*time.Millisecond, "a plain help must answer with the command list")
 
 	require.Len(t, fake.pathCalls("chat.postMessage"), 1, "help is posted once")
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "No conversation is open here",
+		"the command's reply carries no no-conversation lead")
 	require.Zero(t, gw.dispatchCount(), "a plain help must be consumed, not dispatched to the agent")
+	_, ok, err := gw.rec().ThreadRecord(context.Background(), "slack", "D1", "981.000")
+	require.NoError(t, err)
+	require.False(t, ok, "help writes no row")
 }
 
 // "agents" lists the roster, the listing a bare /agent posts. Starting a
@@ -1145,6 +1173,7 @@ func TestBareAgents_WithoutARosterReachesTheAgent(t *testing.T) {
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, func(a *slackadapter.Adapter) { a.AgentCards = &fakeCards{} })
 	require.Nil(t, a.Roster, "this gateway lists no agents")
 
+	gw.openConversation(t, "D1", "1001.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "agents", "1001.000"))
 
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 50*time.Millisecond,
@@ -1166,6 +1195,7 @@ func TestBareAgents_PausedQuestionKeepsTheWord(t *testing.T) {
 	}}
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, withSelection(roster, cards))
 
+	gw.openConversation(t, "D1", "1002.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "list them", "1002.000"))
 	fake.waitForPath(t, "chat.postMessage", 1) // the question is up
 
@@ -1189,6 +1219,7 @@ func TestBareCommand_OnlyTheWordAlone(t *testing.T) {
 	a, srv := newEventsAdapter(t, gw, fakeSlack.URL)
 	a.OBO = obo
 
+	gw.openConversation(t, "D1", "111.222", "U123", "test-agent")
 	sendEvent(t, srv, dmEvent("U123", "how do I login to the cluster?", "111.222"))
 
 	require.Eventually(t, func() bool {
@@ -1261,6 +1292,27 @@ func (s *stubGateway) rec() *slackadapter.MemoryRecorder {
 		s.records = slackadapter.NewMemoryRecorder()
 	}
 	return s.records
+}
+
+// openConversation writes the thread row the agent picker leaves behind when
+// it opens a conversation in threadID of channelID: user as the thread's
+// initiator and agent as its agent. Only the picker opens a conversation (a
+// mention or a new chat is answered with the help), and its own path is
+// proved by the picker tests; a test of what happens inside a conversation
+// starts from this state and drives the thread with plain messages.
+func (s *stubGateway) openConversation(t *testing.T, channelID, threadID, user, agent string) {
+	t.Helper()
+	openConversationIn(t, s.rec(), channelID, threadID, user, agent)
+}
+
+// openConversationIn is openConversation on any thread recorder, for a test
+// that drives the adapter with a real Facade.
+func openConversationIn(t *testing.T, rec channels.Gateway, channelID, threadID, user, agent string) {
+	t.Helper()
+	require.NoError(t, rec.UpdateThreadRecord(context.Background(), "slack", channelID, threadID, func(e *store.Entry, _ bool) bool {
+		e.Initiator, e.AgentRef = user, agent
+		return true
+	}))
 }
 
 func (s *stubGateway) ThreadRecord(ctx context.Context, ch, cid, tid string) (store.Entry, bool, error) {
@@ -1514,6 +1566,7 @@ func TestBatchedWriter_CombinesDeltas(t *testing.T) {
 
 	// A DM (channel_type "im"): top-level channel messages are intentionally
 	// dropped now, so a DM is the right way to exercise the batched writer.
+	gw.openConversation(t, "D1", "111.000", "U1", "test-agent")
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","channel_type":"im","user":"U1","text":"hi","channel":"D1","ts":"111.000"}}`)
 
 	require.Eventually(t, func() bool {
@@ -1940,6 +1993,7 @@ func TestProgress_ReactionsLifecycle(t *testing.T) {
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "done"}, {Done: true}}}
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
+	gw.openConversation(t, "D1", "222.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "hi", "222.000"))
 
 	// working reaction added, then swapped to done (working removed, done added).
@@ -1961,6 +2015,7 @@ func TestProgress_ClearReactionOnDone(t *testing.T) {
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 	a.ClearReactionOnDone = true
 
+	gw.openConversation(t, "D1", "222.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "hi", "222.000"))
 
 	// Working reaction added, then removed on completion with no done reaction.
@@ -1979,6 +2034,7 @@ func TestProgress_FailedReactionOnError(t *testing.T) {
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Err: errors.New("boom")}}}
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
+	gw.openConversation(t, "D1", "333.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "hi", "333.000"))
 
 	fake.waitForPath(t, "reactions.add", 2)
@@ -2018,6 +2074,7 @@ func TestProgress_FailureNoteNamesTheClass(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			fake := newFakeSlackAPI()
 			_, srv := newEventsAdapter(t, tc.gw, fake.server(t).URL)
+			tc.gw.openConversation(t, "D1", "335.000", "U1", "test-agent")
 
 			sendEvent(t, srv, dmEvent("U1", "hi", "335.000"))
 
@@ -2042,6 +2099,7 @@ func TestProgress_FailureAfterContentPostsInterruptedNote(t *testing.T) {
 	}
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
+	gw.openConversation(t, "D1", "444.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "hi", "444.000"))
 
 	fake.waitForPath(t, "reactions.add", 2)
@@ -2069,6 +2127,7 @@ func TestProgress_MissingScopePostsNoPlaceholder(t *testing.T) {
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "answer"}, {Done: true}}}
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
+	gw.openConversation(t, "D1", "444.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "first", "444.000"))
 	fake.waitForPath(t, pathStopStream, 1)
 	require.Contains(t, fake.streamedText(), "answer")
@@ -2076,6 +2135,7 @@ func TestProgress_MissingScopePostsNoPlaceholder(t *testing.T) {
 	require.Empty(t, fake.pathCalls("chat.delete"), "no placeholder to retire")
 
 	// Second turn must not retry reactions.add (the refusal is cached).
+	gw.openConversation(t, "D1", "445.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "second", "445.000"))
 	fake.waitForPath(t, pathStopStream, 2)
 	require.Len(t, fake.pathCalls("reactions.add"), 1, "reactions.add attempted once, then skipped")
@@ -2087,6 +2147,7 @@ func TestNoReaction_EmptyOutputPostsNote(t *testing.T) {
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Done: true}}} // no content
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
+	gw.openConversation(t, "D1", "777.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "hi", "777.000"))
 
 	fake.waitForPath(t, "chat.postMessage", 1)
@@ -2099,6 +2160,7 @@ func TestReactionsMode_EmptyOutputPostsNote(t *testing.T) {
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Done: true}}} // no content
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)              // default: auto (reactions)
 
+	gw.openConversation(t, "D1", "660.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "hi", "660.000"))
 
 	// There is no placeholder, so a zero-output turn must still post a
@@ -2116,6 +2178,7 @@ func TestNoReaction_FailedTurnPostsNote(t *testing.T) {
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Err: errors.New("boom")}}}
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
+	gw.openConversation(t, "D1", "778.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "hi", "778.000"))
 
 	fake.waitForPath(t, "chat.postMessage", 1)
@@ -2137,6 +2200,7 @@ func TestNoReaction_FailedTurnAfterContentPostsNewNote(t *testing.T) {
 	}
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
+	gw.openConversation(t, "D1", "779.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "hi", "779.000"))
 
 	require.Eventually(t, func() bool {
@@ -2161,6 +2225,7 @@ func TestNoReaction_FailedTurnFlushesBufferedContentBeforeNote(t *testing.T) {
 	}
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
+	gw.openConversation(t, "D1", "780.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "hi", "780.000"))
 
 	require.Eventually(t, func() bool {
@@ -2203,6 +2268,7 @@ func TestSerializeResumeWhileTurnInFlight(t *testing.T) {
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
 	// A typed turn holds the thread.
+	gw.openConversation(t, "D1", "999.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "first", "999.000"))
 	fake.waitForPath(t, "reactions.add", 1)
 
@@ -2224,6 +2290,7 @@ func TestSerializeTurnsPerThread(t *testing.T) {
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
 	// Turn A holds the thread (blocks in SendCompletion until hold closes).
+	gw.openConversation(t, "D1", "666.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "first", "666.000"))
 	fake.waitForPath(t, "reactions.add", 1) // A acquired the thread and started
 
@@ -2246,6 +2313,7 @@ func TestDispatch_PreStreamFailurePostsNote(t *testing.T) {
 	gw := &stubGateway{dispatchErr: errors.New("kagent unreachable")}
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
+	gw.openConversation(t, "D1", "100.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "hi", "100.000"))
 
 	require.Eventually(t, func() bool {
@@ -2262,6 +2330,7 @@ func TestHandleInbound_SlashMessageReachesTheAgent(t *testing.T) {
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok"}, {Done: true}}}
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
 
+	gw.openConversation(t, "C1", "100.000", "U1", "test-agent")
 	sendEvent(t, srv, mention("U1", "/etc/hosts on node X is broken", "100.000", ""))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 20*time.Millisecond, "a path-shaped prompt dispatches")
@@ -2269,10 +2338,12 @@ func TestHandleInbound_SlashMessageReachesTheAgent(t *testing.T) {
 	// The gateway owns no slash command any more, so the spelling of a retired
 	// one is text like any other: the agent answers it, and nothing in the
 	// gateway intercepts it.
+	gw.openConversation(t, "C1", "101.000", "U1", "test-agent")
 	sendEvent(t, srv, mention("U1", "/agent sre-agent what broke?", "101.000", ""))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 },
 		flowWait, 20*time.Millisecond, "a retired slash form reaches the agent")
 
+	gw.openConversation(t, "C1", "102.000", "U1", "test-agent")
 	sendEvent(t, srv, mention("U1", "/login", "102.000", ""))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 3 },
 		flowWait, 20*time.Millisecond, "so does a retired account command")
@@ -2303,6 +2374,7 @@ func TestHandleInbound_ThreadBroadcastReplyDispatches(t *testing.T) {
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "answer-text"}, {Done: true}}}
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
 
+	gw.openConversation(t, "C1", "400.000", "U1", "test-agent")
 	sendEvent(t, srv, mention("U1", "start", "400.000", ""))
 	require.Eventually(t, func() bool {
 		return strings.Contains(fake.streamedText(), "answer-text")
@@ -2334,6 +2406,7 @@ func TestHandleInbound_FileShareReplyDispatches(t *testing.T) {
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "answer-text"}, {Done: true}}}
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
 
+	gw.openConversation(t, "C1", "500.000", "U1", "test-agent")
 	sendEvent(t, srv, mention("U1", "start", "500.000", ""))
 	require.Eventually(t, func() bool {
 		return strings.Contains(fake.streamedText(), "answer-text")
@@ -2371,6 +2444,7 @@ func TestEventsHandler_RetryWithUnseenEventIDProcessed(t *testing.T) {
 	t.Cleanup(fakeSlack.Close) // closed after the adapter has stopped; cleanups run LIFO
 
 	_, srv := newEventsAdapter(t, gw, fakeSlack.URL, channelMode)
+	gw.openConversation(t, "C456", "1234.5678", "U123", "test-agent")
 
 	body := []byte(`{
 		"type":"event_callback",
@@ -2411,6 +2485,7 @@ func TestEventsHandler_DuplicateEventIDDropped(t *testing.T) {
 	t.Cleanup(fakeSlack.Close) // closed after the adapter has stopped; cleanups run LIFO
 
 	_, srv := newEventsAdapter(t, gw, fakeSlack.URL, channelMode)
+	gw.openConversation(t, "C456", "1234.5678", "U123", "test-agent")
 
 	body := []byte(`{
 		"type":"event_callback",
@@ -2467,6 +2542,7 @@ func TestToolActivity_PutsOnlyTheAnswerOnTheThread(t *testing.T) {
 	gw := &stubGateway{deltas: toolActivityDeltas()}
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
+	gw.openConversation(t, "D1", "111.000", "U1", "test-agent")
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","channel_type":"im","user":"U1","text":"list pods","channel":"D1","ts":"111.000"}}`)
 
 	require.Eventually(t, func() bool {
@@ -2512,19 +2588,6 @@ func TestResume_SilentWhenSessionPresent(t *testing.T) {
 	require.Equal(t, 1, gw.resumeCount())
 }
 
-func TestResume_SkippedForRootMessage(t *testing.T) {
-	fake := newFakeSlackAPI()
-	gw := &stubGateway{onSessionResumable: func(channels.InboundMessage) (bool, bool) { return false, true }}
-	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
-
-	// A fresh root message (no thread_ts) starts a new session: no resume check.
-	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","channel_type":"im","user":"U1","text":"brand new","channel":"D1","ts":"300.000"}}`)
-
-	fake.waitForPath(t, "chat.postMessage", 1)
-	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "starts fresh")
-	require.Equal(t, 0, gw.resumeCount(), "root messages must not trigger the resume check")
-}
-
 // A top-level /usage in a DM keys a brand-new thread (its own ts, no
 // thread_ts); the reply must still report the DM's usage instead of "not
 // available yet".
@@ -2538,12 +2601,14 @@ func TestUsage_DMTopLevelReportsSession(t *testing.T) {
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
 	// A completed DM turn records usage under its thread root ("100.000").
+	gw.openConversation(t, "D1", "100.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "count pods", "100.000"))
 	require.Eventually(t, func() bool {
 		return strings.Contains(fake.streamedText(), "3 pods running.")
 	}, flowWait, 20*time.Millisecond, "the turn must complete before /usage is sent")
 
 	// /usage typed as a new top-level DM message: its own ts is the threadID.
+	gw.openConversation(t, "D1", "200.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "usage", "200.000"))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Last turn — in 10 · out 5")
@@ -2575,6 +2640,7 @@ func TestUsage_InThreadStillWorks(t *testing.T) {
 	}}
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
 
+	gw.openConversation(t, "C1", "100.000", "U1", "test-agent")
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_mention","user":"U1","text":"<@UBOT> count pods","channel":"C1","ts":"100.000"}}`)
 	require.Eventually(t, func() bool {
 		return strings.Contains(fake.streamedText(), "done.")
@@ -2604,6 +2670,7 @@ func TestTurn_RenderFailureAfterCompletionIsNotAFailedTurn(t *testing.T) {
 	}
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
+	gw.openConversation(t, "D1", "555.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "how many nodes?", "555.000"))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Slack refused the rest of the reply: msg_too_long")

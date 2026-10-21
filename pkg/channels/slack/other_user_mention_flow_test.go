@@ -21,6 +21,7 @@ func TestHandleInbound_ReplyOpeningWithOtherUserMention(t *testing.T) {
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "answer-text"}, {Done: true}}}
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
 
+	gw.openConversation(t, "C1", "700.000", "U1", "test-agent")
 	sendEvent(t, srv, mention("U1", "start", "700.000", ""))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 20*time.Millisecond, "the mention starts the thread")
@@ -85,6 +86,7 @@ func TestHandleInbound_OtherUserMentionLeavesPromptPending(t *testing.T) {
 			}
 			a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
 
+			gw.openConversation(t, "C1", "800.000", "U1", "test-agent")
 			sendEvent(t, srv, mention("U1", "do the thing", "800.000", ""))
 			require.Eventually(t, func() bool {
 				return strings.Contains(allText(fake.pathCalls("chat.postMessage")), tc.posted)
@@ -115,6 +117,7 @@ func TestClosedThread_OtherUserMentionGetsNoNotice(t *testing.T) {
 	gw.records = rec
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
 
+	gw.openConversation(t, "C1", "900.000", "U1", "test-agent")
 	sendEvent(t, srv, mention("U1", "why is the cluster unhappy?", "900.000", ""))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 20*time.Millisecond)
 	waitThreadIdle(t, a, "900.000")

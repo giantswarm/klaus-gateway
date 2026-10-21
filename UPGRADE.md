@@ -9,6 +9,32 @@ that adds notes heads them `## Next — <title>`; the change that prepares a rel
 renames each `Next` to that version, and `make check-upgrade-notes` refuses a
 stable release tag while a `Next` section with content is left.
 
+## Next — a mention or a new chat starts no conversation
+
+- A conversation starts only through the agent picker: the app's slash command (`/swarmgeist`
+  in the manifest) and the **Ask an agent here** message shortcut. A mention of the bot outside a
+  conversation, and the first message of a new chat in the assistant pane, are answered with the
+  help, which says so. Every installation's Slack app must therefore carry the slash command and
+  the shortcut of `deploy/slack/manifest.yaml`; an app created from a manifest older than 1.2.0
+  has neither, and people there have no way to start a conversation until the manifest is
+  re-synced at api.slack.com/apps (the `commands` scope is added on re-install).
+- The help, the intro, the greeting and the notices name the slash command as the gateway is
+  told it: `slack.slashCommand`, `/swarmgeist` by default. An app whose command is named
+  differently sets it, or the help names a command Slack does not run. agent-platform forwards
+  the `klausGateway` block verbatim, so an installation that needs the key sets it there once
+  agent-platform's schema admits it.
+- The manifest's suggested prompts now carry the slash command (`/swarmgeist How are my clusters
+  doing right now?`): re-sync the manifest, or a click on an old prompt sends a plain message
+  and gets the help. Slack runs a prompt that starts with `/` as a command, as `docs/invariants.md`
+  records from a live test; the opened picker with the question filled in is to be confirmed on
+  the first installation that re-syncs.
+- Nothing else to configure: `a2a.defaultAgent` is still the agent the picker preselects,
+  `slack.channelMode`, `slack.channelAllowlist` and `slack.dmMode` still gate where the command
+  and the shortcut work, and `slack.contextBotIDs` and `slack.contextBotNames` still decide
+  which bots' posts the shortcut's thread read hands to the agent.
+- The agentlab proof `klaus-gateway-test` opens its conversation with a mention and fails against
+  this release until giantswarm/agentlab moves it to the shortcut.
+
 ## 4.10.0 — the sign-in asks for `groups`
 
 - The muster sign-in asks for `openid profile email groups offline_access`; the gateway's client

@@ -172,6 +172,10 @@ spec:
         - name: KLAUS_GATEWAY_SLACK_CHANNEL_ALLOWLIST
           value: {{ join "," .Values.slack.channelAllowlist | quote }}
         {{- end }}
+        {{- if and .Values.slack.enabled .Values.slack.slashCommand }}
+        - name: KLAUS_GATEWAY_SLACK_SLASH_COMMAND
+          value: {{ .Values.slack.slashCommand | quote }}
+        {{- end }}
         {{- if and .Values.slack.enabled .Values.slack.contextBotIDs }}
         - name: KLAUS_GATEWAY_SLACK_CONTEXT_BOT_IDS
           value: {{ join "," .Values.slack.contextBotIDs | quote }}

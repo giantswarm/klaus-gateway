@@ -59,6 +59,7 @@ func TestClosedThread_UnmentionedReplyGetsTheNotice(t *testing.T) {
 	gw.records = rec
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
 
+	gw.openConversation(t, "C1", "800.000", "U1", "test-agent")
 	sendEvent(t, srv, mention("U1", "why is the cluster unhappy?", "800.000", ""))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 20*time.Millisecond)
 	waitThreadIdle(t, a, "800.000")
@@ -72,7 +73,7 @@ func TestClosedThread_UnmentionedReplyGetsTheNotice(t *testing.T) {
 	}, flowWait, 20*time.Millisecond, "the reply's author is told the conversation ended")
 	text := allText(fake.pathCalls("chat.postEphemeral"))
 	require.Contains(t, text, "This conversation ended after 90 days without messages.")
-	require.Contains(t, text, "Mention the bot to start a new one.")
+	require.Contains(t, text, "Start a new one with `/swarmgeist`, or with *Ask an agent here* on a message in this thread.")
 	require.Equal(t, 1, gw.dispatchCount(), "nothing is dispatched into a conversation that ended")
 
 	sendEvent(t, srv, threadReply("U2", "anyone?", "800.002", "800.000"))
@@ -83,18 +84,21 @@ func TestClosedThread_UnmentionedReplyGetsTheNotice(t *testing.T) {
 	require.Empty(t, fake.pathCalls("conversations.replies"), "the state comes from the row, never from Slack history")
 }
 
-// A mention in a thread whose conversation ended starts the thread over: the
-// mentioner is the new initiator, nothing of the earlier conversation's agent
-// binding is kept, and the colleague the old initiator had allowed has to be
-// allowed again.
-func TestClosedThread_MentionStartsTheThreadOver(t *testing.T) {
+// A mention in a thread whose conversation ended is answered with the help:
+// nothing is dispatched and nothing is written, so the thread stays free for
+// the shortcut, which starts it over — the submitter is the new initiator,
+// nothing of the earlier conversation's agent binding is kept, and the
+// colleague the old initiator had allowed has to be allowed again.
+func TestClosedThread_MentionGetsTheHelpAndTheShortcutStartsOver(t *testing.T) {
 	fake := newFakeSlackAPI()
 	gw, dispatched := capturingGateway()
 	rec, advance := agingRecorder(t)
 	gw.records = rec
-	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
+	api := fake.server(t)
+	a, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
 	ctx := context.Background()
 
+	gw.openConversation(t, "C1", "810.000", "U1", "test-agent")
 	sendEvent(t, srv, mention("U1", "look at the nodes", "810.000", ""))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 20*time.Millisecond)
 	waitThreadIdle(t, a, "810.000")
@@ -110,16 +114,27 @@ func TestClosedThread_MentionStartsTheThreadOver(t *testing.T) {
 	advance(channels.DefaultThreadTTL + time.Hour)
 
 	sendEvent(t, srv, mention("U3", "picking this back up", "810.001", "810.000"))
+	require.Eventually(t, func() bool { return len(helpReplies(fake, "810.000")) == 1 },
+		flowWait, 20*time.Millisecond, "the mention is answered with the help in the thread")
+	require.Equal(t, 1, gw.dispatchCount(), "and dispatches nothing")
+	_, ok, err := rec.ThreadRecord(ctx, "slack", "C1", "810.000")
+	require.NoError(t, err)
+	require.False(t, ok, "the mention writes nothing: the conversation stays ended")
+
+	// The shortcut on a message of the thread starts it over.
+	sendAskAgentShortcut(t, srv, "C1", "U3", "810.001", "810.000", api.URL+"/response_url")
+	pm := openedView(t, fake)["private_metadata"].(string)
+	sendAskAgentSubmission(t, srv, "U3", pm, "kagent/sre-agent", "picking this back up")
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 }, flowWait, 20*time.Millisecond)
 	waitThreadIdle(t, a, "810.000")
 
 	row, ok, err := rec.ThreadRecord(ctx, "slack", "C1", "810.000")
 	require.NoError(t, err)
-	require.True(t, ok, "the mention re-opened the thread")
-	require.Equal(t, "U3", row.Initiator, "the mentioner is the new initiator")
+	require.True(t, ok, "the shortcut re-opened the thread")
+	require.Equal(t, "U3", row.Initiator, "the submitter is the new initiator")
 	require.Empty(t, row.Granted, "no grant of the ended conversation is carried over")
 	require.Empty(t, row.AgentInstanceID, "the binding is cleared, so the turn binds a fresh session")
-	require.Equal(t, "test-agent", dispatched()[1].AgentRef, "and the turn runs on the default agent, not the ended conversation's")
+	require.Equal(t, "kagent/sre-agent", dispatched()[1].AgentRef, "and the turn runs on the picked agent, not the ended conversation's")
 
 	// The colleague the old initiator had allowed is a newcomer again.
 	sendEvent(t, srv, threadReply("U2", "on it", "810.002", "810.000"))
@@ -147,6 +162,7 @@ func TestClosedThread_ReplyWithoutARowStaysSilent(t *testing.T) {
 	require.Zero(t, gw.dispatchCount())
 	require.Empty(t, fake.pathCalls("chat.postEphemeral"), "a thread the bot was never in is none of its business")
 
+	gw.openConversation(t, "C1", "830.000", "U1", "test-agent")
 	sendEvent(t, srv, mention("U1", "have a look", "830.000", ""))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 20*time.Millisecond)
 	waitThreadIdle(t, a, "830.000")
@@ -163,10 +179,10 @@ func TestClosedThread_ReplyWithoutARowStaysSilent(t *testing.T) {
 
 // A mention in a thread reaches the gateway twice: as message.channels and as
 // app_mention. In a thread whose conversation ended, the message twin lands on
-// the inactive-thread gate, where the notice would tell its author to mention
-// the bot — which is what they just did. Which twin arrives first is a race,
-// so the gate recognises the mention itself: the message twin says nothing and
-// only the app_mention twin acts.
+// the inactive-thread gate, where the notice would answer a message the help
+// answers too. Which twin arrives first is a race, so the gate recognises the
+// mention itself: the message twin says nothing and only the app_mention twin
+// acts, with the help.
 func TestClosedThread_MentionTwinIsNotToldTheConversationEnded(t *testing.T) {
 	fake := newFakeSlackAPI()
 	gw, _ := capturingGateway()
@@ -174,6 +190,7 @@ func TestClosedThread_MentionTwinIsNotToldTheConversationEnded(t *testing.T) {
 	gw.records = rec
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
 
+	gw.openConversation(t, "C1", "840.000", "U1", "test-agent")
 	sendEvent(t, srv, mention("U1", "why is the cluster unhappy?", "840.000", ""))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 20*time.Millisecond)
 	waitThreadIdle(t, a, "840.000")
@@ -188,13 +205,13 @@ func TestClosedThread_MentionTwinIsNotToldTheConversationEnded(t *testing.T) {
 	require.Len(t, fake.pathCalls("chat.postEphemeral"), before,
 		"the mention's message twin must not say the conversation ended")
 	require.Equal(t, 1, gw.dispatchCount(), "and it does not dispatch either")
+	require.Empty(t, helpReplies(fake, "840.000"), "nor answer with the help")
 
-	// Then the app_mention twin of the same message, which starts over.
+	// Then the app_mention twin of the same message, which gets the help.
 	sendEvent(t, srv, mention("U1", "<@UBOT> picking this back up", "840.001", "840.000"))
-	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 }, flowWait, 20*time.Millisecond,
-		"the app_mention twin starts the conversation over")
-	waitThreadIdle(t, a, "840.000")
-	require.Equal(t, 2, gw.dispatchCount(), "the agent answers once")
+	require.Eventually(t, func() bool { return len(helpReplies(fake, "840.000")) == 1 }, flowWait, 20*time.Millisecond,
+		"the app_mention twin is answered with the help")
+	require.Equal(t, 1, gw.dispatchCount(), "the conversation is not started over")
 	require.Len(t, fake.pathCalls("chat.postEphemeral"), before,
 		"and its author is never told the conversation ended")
 }

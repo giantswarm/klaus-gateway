@@ -39,6 +39,7 @@ func TestCollaborators_NewcomerOnUnshareableSessionIsRefused(t *testing.T) {
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok", Done: true}}}
 	_, srv := newEventsAdapter(t, gw, fakeURL, channelMode)
 
+	gw.openConversation(t, "C1", "100.000", "U001", "test-agent")
 	sendEvent(t, srv, mention("U001", "fix the flaky test", "100.000", ""))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 50*time.Millisecond, "the initiator's turn runs")
@@ -64,6 +65,7 @@ func TestCollaborators_RefusalOfALeftSessionIsIgnored(t *testing.T) {
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok", Done: true}}}
 	_, srv := newEventsAdapter(t, gw, fakeURL, channelMode)
 
+	gw.openConversation(t, "C1", "100.000", "U001", "test-agent")
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 50*time.Millisecond, "the initiator's turn runs")
@@ -100,6 +102,7 @@ func TestCollaborators_GrantedCollaboratorMeetsTheControllersRefusal(t *testing.
 	obo := perUserOBO{tokens: map[string]string{"U001": "tok-initiator", "U002": "tok-collab"}}
 	_, srv := newEventsAdapter(t, gw, fakeURL, channelMode, func(a *slackadapter.Adapter) { a.OBO = obo })
 
+	gw.openConversation(t, "C1", "100.000", "U001", "test-agent")
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 50*time.Millisecond, "the initiator's turn runs")
@@ -137,6 +140,7 @@ func TestCollaborators_ShareRefusalIsNotAFailure(t *testing.T) {
 		return strings.Count(allText(fake.pathCalls("chat.postMessage")), shareRefusal)
 	}
 
+	gw.openConversation(t, "C1", "100.000", "U001", "test-agent")
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 50*time.Millisecond, "the initiator's turn runs")
@@ -184,6 +188,7 @@ func TestCollaborators_ReplayedTurnOnAgentNotPermittedIsRefused(t *testing.T) {
 	const refusal = "You cannot use *billing* (organization acme)"
 	refusals := func() int { return strings.Count(allText(fake.pathCalls("chat.postMessage")), refusal) }
 
+	gw.openConversation(t, "C1", "100.000", "U001", "test-agent")
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 50*time.Millisecond, "the initiator's turn runs")
@@ -227,6 +232,7 @@ func TestCollaborators_DeclarativeAgentKeepsCollaborators(t *testing.T) {
 	obo := perUserOBO{tokens: map[string]string{"U001": "tok-initiator", "U002": "tok-collab"}}
 	_, srv := newEventsAdapter(t, gw, fakeURL, channelMode, func(a *slackadapter.Adapter) { a.OBO = obo })
 
+	gw.openConversation(t, "C1", "100.000", "U001", "test-agent")
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 50*time.Millisecond, "the initiator's turn runs")

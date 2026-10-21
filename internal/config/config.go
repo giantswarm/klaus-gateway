@@ -75,6 +75,12 @@ type A2AConfig struct {
 	AgentManagerToolsPrefix string
 }
 
+// DefaultSlashCommand is the slash command deploy/slack/manifest.yaml
+// declares; an app whose command is named differently sets SlashCommand. The
+// Slack adapter keeps the same value as its own default for an Adapter built
+// without this package.
+const DefaultSlashCommand = "/swarmgeist"
+
 // DefaultAgentManagerToolsPrefix is the prefix of the Agent Platform's
 // agent-manager behind muster, whose server is named agent-manager.
 const DefaultAgentManagerToolsPrefix = "x_agent-manager_"
@@ -127,6 +133,11 @@ type SlackConfig struct {
 	// installation's Alertmanager app. SLACK_CONTEXT_BOT_NAMES
 	// (comma-separated). Empty matches no bot by name.
 	ContextBotNames []string
+	// SlashCommand is the app's slash command as deploy/slack/manifest.yaml
+	// declares it, the way a conversation starts; the help and the notices
+	// name it. Slack sends the name only with an invocation, so it is
+	// configured. SLACK_SLASH_COMMAND. Default /swarmgeist.
+	SlashCommand string
 	// DropStaleEvents ignores Slack events older than the gateway's start time,
 	// so a restart never replays messages queued while it was down.
 	// SLACK_DROP_STALE=true. Default false.
@@ -365,6 +376,7 @@ func Defaults() Config {
 			SecretsFile:         os.ExpandEnv("$HOME/.config/klausctl/gateway/slack-secrets.yaml"),
 			DMMode:              DMModeServe,
 			ChannelMode:         ChannelModeAll,
+			SlashCommand:        DefaultSlashCommand,
 			ClearReactionOnDone: true,
 		},
 		A2A: A2AConfig{
@@ -418,6 +430,7 @@ func Load(args []string) (Config, error) {
 		cfg.Slack.ChannelAllowlist = splitCommaList(v)
 		return nil
 	})
+	fs.StringVar(&cfg.Slack.SlashCommand, "slack-slash-command", cfg.Slack.SlashCommand, "The Slack app's slash command, as the manifest declares it; the help and the notices name it as the way to start a conversation.")
 	fs.Func("slack-context-bot-ids", "Comma-separated Slack bot_ids (B…) whose posts a thread read hands to the agent; every other bot's post is left out.", func(v string) error {
 		cfg.Slack.ContextBotIDs = splitCommaList(v)
 		return nil
@@ -558,6 +571,9 @@ func applyEnv(cfg *Config) {
 	}
 	if v, ok := lookup("SLACK_CHANNEL_ALLOWLIST"); ok {
 		cfg.Slack.ChannelAllowlist = splitCommaList(v)
+	}
+	if v, ok := lookup("SLACK_SLASH_COMMAND"); ok {
+		cfg.Slack.SlashCommand = v
 	}
 	if v, ok := lookup("SLACK_CONTEXT_BOT_IDS"); ok {
 		cfg.Slack.ContextBotIDs = splitCommaList(v)
@@ -755,6 +771,11 @@ func (c Config) Validate() error {
 			if _, err := path.Match(p, ""); err != nil {
 				return fmt.Errorf("--slack-context-bot-names: invalid pattern %q: %w", p, err)
 			}
+		}
+		// Slack's command names are a slash and one word; the help quotes the
+		// value as typed, so a value Slack could not run must not be served.
+		if cmd := c.Slack.SlashCommand; !strings.HasPrefix(cmd, "/") || len(cmd) < 2 || strings.ContainsAny(cmd, " \t\n") {
+			return fmt.Errorf("--slack-slash-command must be a slash followed by the command's name, like /swarmgeist (got %q)", cmd)
 		}
 	}
 	if c.OBO.Enabled {

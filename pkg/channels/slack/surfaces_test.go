@@ -26,6 +26,7 @@ func TestEventsHandler_ChannelAllowlist(t *testing.T) {
 	gw := &stubGateway{}
 	fake := newFakeSlackAPI()
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, allowlistMode("C1"))
+	gw.openConversation(t, "C1", "111.222", "U123", "test-agent")
 
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"app_mention","user":"U123","text":"<@BOT> hi","channel":"C1","ts":"111.222"}}`)
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
@@ -51,6 +52,8 @@ func TestEventsHandler_DMServedAlongsideChannels(t *testing.T) {
 		a.DMMode = slackadapter.DMModeServe
 		a.ChannelMode = slackadapter.ChannelModeAll
 	})
+	gw.openConversation(t, "D1", "111.000", "U1", "test-agent")
+	gw.openConversation(t, "C1", "222.000", "U1", "test-agent")
 
 	sendEvent(t, srv, `{"type":"event_callback","event":{"type":"message","channel_type":"im","user":"U1","text":"hi","channel":"D1","ts":"111.000"}}`)
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
