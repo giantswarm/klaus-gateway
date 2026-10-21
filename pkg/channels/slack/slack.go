@@ -834,7 +834,7 @@ func (a *Adapter) introBlocks(ctx context.Context, body, hints string) (text str
 	if id != "" {
 		mention = "<@" + id + ">"
 	}
-	text = fmt.Sprintf(body, mention, escapeMrkdwn(a.agentNameFor(ctx, a.DefaultAgent)), a.slashCommand())
+	text = fmt.Sprintf(body, mention, escapeMrkdwn(a.agentNameFor(ctx, a.DefaultAgent)), a.slashCommand(), helpAskAgentShortcut)
 	blocks = []any{map[string]any{bkType: bkSection, bkText: map[string]any{bkType: bkMrkdwn, bkText: text}}}
 	if id != "" {
 		blocks = append(blocks, contextBlock(fmt.Sprintf(hints, mention)))
@@ -1523,9 +1523,9 @@ func (a *Adapter) addressesOtherUser(ctx context.Context, text string) bool {
 }
 
 // threadGate reads the thread's row once and reports what the inactive-thread
-// gate needs of it: whether the bot has an active session in threadID — a
-// known initiator (it was mentioned at some point) or a pending input-required
-// task — and whether that session is muted, and, when it has not, whether the
+// gate needs of it: whether the bot has a conversation in threadID — an agent
+// the picker bound to it, or a pending input-required task — and whether that
+// conversation is muted, and, when it has not, whether the
 // row is still there with its conversation ended, and the lifetime it ended
 // after. One read serves all three: this runs for every thread reply in every
 // served channel, which under channelMode "all" is the most frequent message
@@ -1538,7 +1538,11 @@ func (a *Adapter) threadGate(ctx context.Context, channelID, threadID string) (a
 		a.Logger.Warn("slack: read thread state failed", "thread", threadID, "error", err)
 		return a.hasPendingTask(threadID), false, false, 0
 	}
-	if st.Found && st.Entry.Initiator != "" {
+	// A conversation is a bound agent, not an initiator: a command word (`@bot
+	// usage`, a stop) or a shortcut whose echo failed claims a thread for its
+	// person without opening one, and a reply in such a thread is nobody's to
+	// answer — dispatch would otherwise answer every one with the help.
+	if st.Found && st.Entry.AgentRef != "" {
 		return true, st.Entry.MutedAt != "", false, 0
 	}
 	if a.hasPendingTask(threadID) {
@@ -1993,13 +1997,14 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 	// thread arrives as both a message and an app_mention event, and when the
 	// message copy lands first, having it claim the dedup slot on its way to
 	// being gate-dropped would discard the app_mention copy as a duplicate.
-	// Dropped silently: a thread with no record is either one the bot never
-	// joined (a served channel's unrelated threads must not be pinged) or one
-	// the store has forgotten entirely, and nothing durable tells the two
-	// apart. A thread whose row is still there but whose conversation ended
-	// after the lifetime is the one case that is known, and its author is
-	// told. A mention passes either way, and dispatch answers it with the
-	// help, which says how a conversation starts.
+	// Dropped silently: a thread with no conversation is one the bot never
+	// joined (a served channel's unrelated threads must not be pinged), one a
+	// command word claimed for its person without opening one, or one the
+	// store has forgotten entirely, and nothing durable tells them apart. A
+	// thread whose row is still there but whose conversation ended after the
+	// lifetime is the one case that is known, and its author is told. A
+	// mention passes either way, and dispatch answers it with the help, which
+	// says how a conversation starts.
 	if threadReplyOnly {
 		// A reply that opens by mentioning someone else talks to that person,
 		// not to the agent, even in the agent's own thread. A mention of the
@@ -2200,8 +2205,9 @@ func (a *Adapter) dispatch(ctx context.Context, msg channels.InboundMessage, sla
 // dispatchFrom is dispatch for a message whose AgentRef the caller already
 // stamped; explicitSource is the agent_source the dispatch record carries for
 // it (agentSourceReplay for an agent the message already carried, agentSourceCommand for the slash
-// command's picker). Ignored when AgentRef is empty: the conversation binding
-// or the default decides, and names its own source.
+// command's picker). Ignored when AgentRef is empty: the thread's recorded
+// agent is the turn's, recorded as agentSourceThread, and a thread that
+// records none has no conversation for the message to join.
 func (a *Adapter) dispatchFrom(ctx context.Context, msg channels.InboundMessage, slackChannel, explicitSource string) error {
 	if !a.started.Load() {
 		return errors.New("slack: adapter not started")
@@ -2225,8 +2231,10 @@ func (a *Adapter) dispatchFrom(ctx context.Context, msg channels.InboundMessage,
 	// with the help, which says how to start one, and nothing is written, so
 	// the thread stays free for the picker. A row that cannot be read is not
 	// "no conversation": the turn is not handled and its author is told, as
-	// the access check tells them when the store is down.
-	agentSource := explicitSource
+	// the access check tells them when the store is down. The agent is read
+	// here and stamped on the message only past the access check, so a copy
+	// parked there carries none and its replay reads the row again.
+	agentSource, bound := explicitSource, ""
 	if msg.AgentRef == "" {
 		roster := channels.TurnTimerFromContext(ctx).Span(channels.PhaseRoster)
 		e, found, err := a.gw.ThreadRecord(ctx, ChannelName, slackChannel, msg.ThreadID)
@@ -2245,7 +2253,7 @@ func (a *Adapter) dispatchFrom(ctx context.Context, msg channels.InboundMessage,
 			a.postHelp(ctx, slackChannel, msg.ThreadID, noConversationLead)
 			return nil
 		}
-		msg.AgentRef, agentSource = e.AgentRef, agentSourceThread
+		bound = e.AgentRef
 	}
 
 	// True the first time THIS process handles a turn in the thread (typically a
@@ -2304,7 +2312,8 @@ func (a *Adapter) dispatchFrom(ctx context.Context, msg channels.InboundMessage,
 		return nil
 	}
 
-	// opener records whether this message opened its conversation: the
+	// The turn's agent: the one the message carried, else the thread's, read
+	// above. opener records whether this message opened its conversation: the
 	// picker's submission says so, and nothing else opens one. Root equality
 	// cannot tell on the assistant pane, where every message carries the
 	// chat's Slack-created anchor as thread_ts. From here on the catalogue
@@ -2312,6 +2321,9 @@ func (a *Adapter) dispatchFrom(ctx context.Context, msg channels.InboundMessage,
 	// a human identity, and a plain context only gets a warm cache.
 	// Best-effort — an unlinked caller keeps the plain context, and the turn
 	// itself still mints its own token.
+	if msg.AgentRef == "" {
+		msg.AgentRef, agentSource = bound, agentSourceThread
+	}
 	ctx = a.withCallerToken(ctx, slackUser)
 	opener := msg.Opener
 

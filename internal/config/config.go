@@ -76,7 +76,9 @@ type A2AConfig struct {
 }
 
 // DefaultSlashCommand is the slash command deploy/slack/manifest.yaml
-// declares; an app whose command is named differently sets SlashCommand.
+// declares; an app whose command is named differently sets SlashCommand. The
+// Slack adapter keeps the same value as its own default for an Adapter built
+// without this package.
 const DefaultSlashCommand = "/swarmgeist"
 
 // DefaultAgentManagerToolsPrefix is the prefix of the Agent Platform's

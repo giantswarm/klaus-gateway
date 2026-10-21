@@ -369,14 +369,14 @@ func TestDM_RedirectInChannelMode(t *testing.T) {
 	gw := &stubGateway{}
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
 
-	gw.openConversation(t, "D1", "600.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "hey", "600.000"))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Swarmgeist works in channels")
 	}, flowWait, 20*time.Millisecond, "a DM in channel mode is redirected")
+	require.Contains(t, allText(fake.pathCalls("chat.postMessage")), "start a conversation there with `/swarmgeist`",
+		"the redirect says how a conversation starts in a channel")
 	require.Zero(t, gw.dispatchCount(), "a redirected DM never reaches the agent")
 
-	gw.openConversation(t, "D1", "601.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "why not?", "601.000"))
 	time.Sleep(150 * time.Millisecond)
 	redirects := 0

@@ -1125,7 +1125,9 @@ func TestBareHelp_AnswersWithTheCommandList(t *testing.T) {
 	gw := &stubGateway{}
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
-	gw.openConversation(t, "D1", "981.000", "U1", "test-agent")
+	// A new chat, with no conversation: the word is still the command, and
+	// its reply is the plain help, not the one a message that found no
+	// conversation gets.
 	sendEvent(t, srv, dmEvent("U1", "help", "981.000"))
 
 	require.Eventually(t, func() bool {
@@ -1133,7 +1135,12 @@ func TestBareHelp_AnswersWithTheCommandList(t *testing.T) {
 	}, flowWait, 50*time.Millisecond, "a plain help must answer with the command list")
 
 	require.Len(t, fake.pathCalls("chat.postMessage"), 1, "help is posted once")
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "No conversation is open here",
+		"the command's reply carries no no-conversation lead")
 	require.Zero(t, gw.dispatchCount(), "a plain help must be consumed, not dispatched to the agent")
+	_, ok, err := gw.rec().ThreadRecord(context.Background(), "slack", "D1", "981.000")
+	require.NoError(t, err)
+	require.False(t, ok, "help writes no row")
 }
 
 // "agents" lists the roster, the listing a bare /agent posts. Starting a

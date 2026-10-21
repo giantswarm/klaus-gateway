@@ -586,8 +586,8 @@ hours. A parked message is stored without its sender's token and without attachm
 can download again. The gateway never reads Slack history — no
 `conversations.replies`, no re-parsing the opening message or the slash command's root — to
 recover any of it; the routing-store row is the only carrier. On `routing.store: memory` a
-restart loses this state: every conversation is gone, a reply in one gets the help, and the
-thread is free for the shortcut again. On any store a
+restart loses this state: every conversation is gone, a plain reply in one gets no answer, a
+mention gets the help, and the thread is free for the shortcut again. On any store a
 thread nobody has written in for `routing.threadTTL` has ended, agent and all: a mention there
 gets the help, and the shortcut starts it over (see [Threads and conversations](#threads-and-conversations)
 for what the agent may still remember and for the notice an un-mentioned reply gets meanwhile).

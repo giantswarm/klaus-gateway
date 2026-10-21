@@ -851,9 +851,9 @@ func countOf(n int64, unit string) string {
 // conversation starts (the slash command, whose picker preselects the default
 // agent; in a channel also the shortcut), and say how to reach the commands
 // and the roster. The %[1]s verbs take the bot's mention, %[2]s the default
-// agent's name, %[3]s the slash command.
+// agent's name, %[3]s the slash command, %[4]s the shortcut's name.
 const (
-	channelIntroText    = "Swarmgeist connects this channel to Giant Swarm's agents. Start a conversation with `%[3]s`, which lets you pick an agent (*%[2]s* is preselected), or with *Ask an agent here* on a message to start one in its thread. Agents work with your permissions and ask before making changes."
+	channelIntroText    = "Swarmgeist connects this channel to Giant Swarm's agents. Start a conversation with `%[3]s`, which lets you pick an agent (*%[2]s* is preselected), or with *%[4]s* on a message to start one in its thread. Agents work with your permissions and ask before making changes."
 	channelIntroContext = "%[1]s `help` lists the commands"
 
 	assistantGreetingText    = "Ask about a cluster, an alert or a deployment. Swarmgeist routes each conversation to an agent: start one with `%[3]s`, which lets you pick the agent (*%[2]s* is preselected). Agents work with your permissions and ask before making changes."
@@ -871,7 +871,10 @@ const dmRedirect = "Swarmgeist works in channels, not in direct messages. Invite
 // defaultSlashCommand is the slash command deploy/slack/manifest.yaml
 // declares. The gateway learns the command's name from no Slack API (Slack
 // sends it only with an invocation), so the help and the notices name the
-// configured one (Adapter.SlashCommand), and this one when none is set.
+// configured one (Adapter.SlashCommand), and this one when none is set — an
+// Adapter built without main.go, as the tests do. config.DefaultSlashCommand
+// is the same value for the flag; the config package is a leaf and cannot
+// import this one.
 const defaultSlashCommand = "/swarmgeist"
 
 // channelNotServed tells a user the channel is outside the configured

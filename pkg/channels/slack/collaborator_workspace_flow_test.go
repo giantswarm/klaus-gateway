@@ -132,6 +132,7 @@ func TestCollaboratorWorkspace_RefusedPrivatelyAndNoTurnRuns(t *testing.T) {
 	require.Eventually(t, func() bool { return len(f.ephemerals("U002")) == 2 }, flowWait, 20*time.Millisecond)
 	refusal := allText(f.ephemerals("U002")[1:])
 	require.Contains(t, refusal, "This thread works in workspace *platform*, which holds repositories you cannot read: `giantswarm/vault`, `giantswarm/keys`.")
+	require.Contains(t, refusal, "The agent does not act on your messages here. Start your own conversation with `/swarmgeist`.")
 	require.NotContains(t, allBlockText(f.fake.pathCalls("chat.postMessage")), "giantswarm/vault", "the channel learns no repository")
 	require.Contains(t, f.log.String(), "record=workspace_collaborator_refused")
 	require.NotContains(t, f.log.String(), "giantswarm/vault", "no repository name above debug")

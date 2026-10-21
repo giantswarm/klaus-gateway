@@ -310,7 +310,8 @@ func TestAccess_DeniedNewcomerNotified(t *testing.T) {
 		for _, c := range calls[before:] {
 			user, _ := c.params["user"].(string)
 			text, _ := c.params["text"].(string)
-			if user == "U999" && strings.Contains(text, "declined") {
+			// The outcome, and the way to a conversation of their own.
+			if user == "U999" && strings.Contains(text, "declined") && strings.Contains(text, "Start your own conversation with `/swarmgeist`.") {
 				return true
 			}
 		}

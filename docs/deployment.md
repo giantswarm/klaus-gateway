@@ -227,8 +227,8 @@ lies inside a mounted volume. On a persistent store a restarted gateway also kee
 thread's agent, initiator and grants — for `routing.threadTTL` (90 days by default) of silence,
 after which the conversation has ended on every store: a reply without a mention gets the notice
 while the row lasts (twice the lifetime), and past that the thread is forgotten. On `memory` every
-conversation is lost at each restart: a reply in one gets the help, and the thread is free for the
-shortcut to open again.
+conversation is lost at each restart: a plain reply in one gets no answer, a mention gets the help,
+and the thread is free for the shortcut to open again.
 
 ## Observability
 

@@ -111,7 +111,7 @@ func TestDispatch_EmitsTurnCompleteRecord(t *testing.T) {
 		{Done: true},
 	}}
 	a, h, rec := newRecordedAdapter(t, gw)
-	a.bindThreadAgent(t.Context(), "D1", "T1", a.DefaultAgent)
+	require.NoError(t, a.bindThreadAgent(t.Context(), "D1", "T1", a.DefaultAgent))
 
 	received := time.Now().Add(-300 * time.Millisecond)
 	msg := channels.InboundMessage{Channel: ChannelName, ChannelID: "D1", ThreadID: "T1", MessageID: "M1", Subject: "U1", Text: "hello", ReceivedAt: received}
@@ -180,7 +180,7 @@ func TestDispatch_TurnCompleteOutcomes(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			a, h, rec := newRecordedAdapter(t, tc.gw)
-			a.bindThreadAgent(t.Context(), "D1", "T-"+tc.name, a.DefaultAgent)
+			require.NoError(t, a.bindThreadAgent(t.Context(), "D1", "T-"+tc.name, a.DefaultAgent))
 			msg := channels.InboundMessage{Channel: ChannelName, ChannelID: "D1", ThreadID: "T-" + tc.name, MessageID: "M1", Subject: "U1", Text: "hello"}
 			_ = a.dispatch(t.Context(), msg, "D1")
 			records := h.findAll("record", channels.RecordTurnComplete)
@@ -209,7 +209,7 @@ func TestDispatch_ParkedMessageLeavesNoTurnRecord(t *testing.T) {
 	gw := &fakeGateway{Facade: newMemoryRecorder(), deltas: []channels.OutboundDelta{{Content: "never"}, {Done: true}}}
 	a, h, rec := newRecordedAdapter(t, gw)
 	a.OBO = deadLinkOBO{}
-	a.bindThreadAgent(t.Context(), "D1", "T1", a.DefaultAgent)
+	require.NoError(t, a.bindThreadAgent(t.Context(), "D1", "T1", a.DefaultAgent))
 
 	msg := channels.InboundMessage{Channel: ChannelName, ChannelID: "D1", ThreadID: "T1", MessageID: "M1", Subject: "U1", Text: "hello"}
 	require.NoError(t, a.dispatch(t.Context(), msg, "D1"))

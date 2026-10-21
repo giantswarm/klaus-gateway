@@ -145,8 +145,11 @@ func (a *Adapter) defaultAgentNamespace() string {
 	return namespace
 }
 
-// bindThreadAgent records ref as the thread's agent on its row.
-func (a *Adapter) bindThreadAgent(ctx context.Context, channelID, threadID, ref string) {
+// bindThreadAgent records ref as the thread's agent on its row: what makes
+// the thread a conversation, which every message in it then joins. A write
+// that fails is the caller's to answer, since nothing else would open the
+// conversation.
+func (a *Adapter) bindThreadAgent(ctx context.Context, channelID, threadID, ref string) error {
 	err := a.gw.UpdateThreadRecord(ctx, ChannelName, channelID, threadID, func(e *store.Entry, _ bool) bool {
 		e.AgentRef = ref
 		return true
@@ -154,6 +157,7 @@ func (a *Adapter) bindThreadAgent(ctx context.Context, channelID, threadID, ref 
 	if err != nil {
 		a.Logger.Warn("slack: write agent binding failed", "thread", threadID, "agent", ref, "error", err)
 	}
+	return err
 }
 
 // threadAgentBinding is the thread's recorded agent, when its row exists and

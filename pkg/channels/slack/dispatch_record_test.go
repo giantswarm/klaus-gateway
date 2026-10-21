@@ -78,7 +78,7 @@ func TestDispatch_EmitsTurnDispatchRecord(t *testing.T) {
 	}
 	require.NoError(t, a.Start(t.Context(), &fakeGateway{Facade: newMemoryRecorder()}))
 	t.Cleanup(func() { _ = a.Stop(context.Background()) })
-	a.bindThreadAgent(t.Context(), "D1", "T1", "agent-1")
+	require.NoError(t, a.bindThreadAgent(t.Context(), "D1", "T1", "agent-1"))
 
 	msg := channels.InboundMessage{Channel: ChannelName, ChannelID: "D1", ThreadID: "T1", MessageID: "M1", Subject: "U1", Text: "hello"}
 	require.NoError(t, a.dispatch(t.Context(), msg, "D1"))
@@ -132,7 +132,7 @@ func TestDispatch_TurnDispatchRecord_AgentSource(t *testing.T) {
 
 	t.Run("thread", func(t *testing.T) {
 		a, h := newRecorded(t)
-		a.bindThreadAgent(t.Context(), "C1", "T2", "sre-agent")
+		require.NoError(t, a.bindThreadAgent(t.Context(), "C1", "T2", "sre-agent"))
 		msg := channels.InboundMessage{Channel: ChannelName, ChannelID: "C1", ThreadID: "T2", MessageID: "M2", Subject: "U1", Text: "reply"}
 		require.NoError(t, a.dispatch(t.Context(), msg, "C1"))
 		rec := h.find("record", "turn_dispatch")
@@ -174,7 +174,7 @@ func TestDispatch_TurnDispatchRecord_NoIdentitySource(t *testing.T) {
 	require.NoError(t, a.Start(t.Context(), &fakeGateway{Facade: newMemoryRecorder()}))
 	t.Cleanup(func() { _ = a.Stop(context.Background()) })
 
-	a.bindThreadAgent(t.Context(), "D1", "T2", "agent-1")
+	require.NoError(t, a.bindThreadAgent(t.Context(), "D1", "T2", "agent-1"))
 	msg := channels.InboundMessage{Channel: ChannelName, ChannelID: "D1", ThreadID: "T2", MessageID: "M2", Subject: "U2", Text: "hi"}
 	require.NoError(t, a.dispatch(t.Context(), msg, "D1"))
 
@@ -203,7 +203,7 @@ func TestDispatch_TurnDispatchRecord_Resume(t *testing.T) {
 	require.NoError(t, a.Start(t.Context(), &fakeGateway{Facade: newMemoryRecorder()}))
 	t.Cleanup(func() { _ = a.Stop(context.Background()) })
 
-	a.bindThreadAgent(t.Context(), "D1", "T3", "agent-1")
+	require.NoError(t, a.bindThreadAgent(t.Context(), "D1", "T3", "agent-1"))
 	a.storePendingTask("T3", &pendingTask{TaskID: "task-9", AgentRef: "agent-1", Channel: "D1", ChannelID: "D1"})
 
 	msg := channels.InboundMessage{Channel: ChannelName, ChannelID: "D1", ThreadID: "T3", MessageID: "M3", Subject: "U3", Text: "approve"}

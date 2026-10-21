@@ -175,7 +175,6 @@ func TestAgentSelection_BareAgentListsRoster(t *testing.T) {
 	gw, _ := capturingGateway()
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, withSelection(roster, &fakeCards{}))
 
-	gw.openConversation(t, "C1", "100.000", "U1", "test-agent")
 	sendEvent(t, srv, mention("U1", "agents", "100.000", ""))
 
 	require.Eventually(t, func() bool {
@@ -192,7 +191,6 @@ func TestAgentSelection_BareAgentListsRoster(t *testing.T) {
 	require.Zero(t, gw.dispatchCount(), "listing the roster dispatches nothing")
 
 	// A second listing asks the controller again: the roster is the caller's.
-	gw.openConversation(t, "C1", "200.000", "U1", "test-agent")
 	sendEvent(t, srv, mention("U1", "agents", "200.000", ""))
 	require.Eventually(t, func() bool {
 		return strings.Count(allText(fake.pathCalls("chat.postMessage")), "Available agents") == 2
@@ -207,7 +205,6 @@ func TestAgentSelection_RosterFetchFailure(t *testing.T) {
 	gw, _ := capturingGateway()
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, withSelection(roster, &fakeCards{}))
 
-	gw.openConversation(t, "C1", "100.000", "U1", "test-agent")
 	sendEvent(t, srv, mention("U1", "agents", "100.000", ""))
 
 	require.Eventually(t, func() bool {
@@ -295,7 +292,6 @@ func TestAgentSelection_HelpListsTheAgentsCommand(t *testing.T) {
 	gw := &stubGateway{}
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, withSelection(&fakeRoster{}, &fakeCards{}))
 
-	gw.openConversation(t, "D1", "100.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "help", "100.000"))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allBlockText(fake.pathCalls("chat.postMessage")), "List the agents")
@@ -344,7 +340,6 @@ func TestAgentSelection_ListingReadsTheRosterAsCaller(t *testing.T) {
 		a.OBO = oneUserOBO{user: "U1", token: "tok-u1"}
 	})
 
-	gw.openConversation(t, "C1", "100.000", "U1", "test-agent")
 	sendEvent(t, srv, mention("U1", "agents", "100.000", ""))
 	require.Eventually(t, func() bool { return len(roster.seen()) == 1 },
 		flowWait, 50*time.Millisecond, "the bare listing reads the roster")
@@ -361,7 +356,6 @@ func TestAgentSelection_UnlinkedListingAsksToSignIn(t *testing.T) {
 	gw, _ := capturingGateway()
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, withSelection(roster, &fakeCards{}))
 
-	gw.openConversation(t, "C1", "100.000", "U1", "test-agent")
 	sendEvent(t, srv, mention("U1", "agents", "100.000", ""))
 
 	require.Eventually(t, func() bool {

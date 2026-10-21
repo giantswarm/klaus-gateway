@@ -678,12 +678,18 @@ func (a *Adapter) handleAskAgentSubmission(ctx context.Context, payload interact
 		threadTS, source = echoTS, agentSourceCommand
 	}
 
-	// The opening message is the bot's, so the thread state a mention would
-	// carry on its own is written to the thread record here: the submitter
-	// owns the thread (the slash command's root is brand new; the shortcut's
-	// thread was claimed above), and the thread is bound to the chosen agent.
+	// The opening message is the bot's, so the thread state that makes the
+	// thread a conversation is written to the thread record here: the
+	// submitter owns the thread (the slash command's root is brand new; the
+	// shortcut's thread was claimed above), and the thread is bound to the
+	// chosen agent. The picker is the only writer of that binding, and
+	// without it every later message in the thread would get the help, so a
+	// write that fails stops the submission and says so.
 	a.accessPolicy().SetInitiator(ctx, pm.Channel, threadTS, user)
-	a.bindThreadAgent(ctx, pm.Channel, threadTS, ref)
+	if err := a.bindThreadAgent(ctx, pm.Channel, threadTS, ref); err != nil {
+		notify(storeUnavailableNotice)
+		return
+	}
 	if workspace != nil {
 		a.recordLastWorkspace(ctx, user, ref, workspace)
 	}
@@ -692,8 +698,9 @@ func (a *Adapter) handleAskAgentSubmission(ctx context.Context, payload interact
 	// opener: it was just posted, so only the messages that were already there
 	// — everyone else's — land in the transcript. A thread the submission
 	// rooted itself (the slash command) has nothing earlier to read, and a DM
-	// is never read at all — the same rule the typed entry points follow
-	// (attachThreadContext), and the reason no checkbox was offered there.
+	// is never read at all: the assistant pane roots every chat at an anchor
+	// of Slack's own, so the only earlier messages are the person's and the
+	// bot's, which is also the reason no checkbox was offered there.
 	var threadContext string
 	if pm.Thread != "" && includeContext && !isDMChannelID(pm.Channel) {
 		threadContext = a.threadContext(ctx, pm.Channel, threadTS, echoTS, user)

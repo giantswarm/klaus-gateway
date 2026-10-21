@@ -1216,8 +1216,11 @@ func TestThreadGate_Active(t *testing.T) {
 
 	require.False(t, active("T001"))
 
-	// A known initiator makes it active.
+	// An initiator alone (a command word claimed the thread) is no
+	// conversation; the agent the picker binds is.
 	a.accessPolicy().SetInitiator(t.Context(), "C001", "T001", "U001")
+	require.False(t, active("T001"))
+	require.NoError(t, a.bindThreadAgent(t.Context(), "C001", "T001", "sre-agent"))
 	require.True(t, active("T001"))
 
 	// Pending task on a different thread.
