@@ -42,6 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Builds on Go 1.27.3 (`toolchain go1.27.3`), which fixes the standard library vulnerability GO-2026-6809 that govulncheck reports for Go 1.27.2.
 - Slack: the notice that only a conversation's person can write to it is posted into the conversation's thread (`thread_ts`), not the channel (giantswarm/klaus-gateway#454).
 - Slack: a collaborator's turn whose Session kagent refuses to share, or whose share needs the initiator's lapsed sign-in, ends as `share_refused` instead of `send_failed`: `turn_complete` and `klaus_gateway_turn_total` carry no `failure_class` for it, and the dispatch and replay logs record it at INFO instead of ERROR. The thread is still told why (giantswarm/klaus-gateway#481).
 - Slack: a held message replayed after a grant, a sign-in, a workspace choice or a connect, on an agent the person may not use, gets the refusal that names the agent and its tenant, as a live turn does, instead of "Your message could not be picked up again". Nothing is sent to the agent. That refusal, replayed or live, is logged at INFO with `failure_class=policy`, not at ERROR (giantswarm/agentlab#902).

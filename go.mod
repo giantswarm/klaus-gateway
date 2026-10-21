@@ -2,6 +2,8 @@ module github.com/giantswarm/klaus-gateway
 
 go 1.26.0
 
+toolchain go1.27.3
+
 require (
 	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.12-20260825204119-511051f7f437.2
 	github.com/a2aproject/a2a-go/v2 v2.6.0
