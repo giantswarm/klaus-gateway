@@ -185,7 +185,7 @@ func (a *Adapter) refusalBlocks(rec store.Refusal) []any {
 		rec.FirstAt.UTC().Format(refusalTimeLayout), rec.LastAt.UTC().Format(refusalTimeLayout))
 	blocks := []any{
 		map[string]any{bkType: bkHeader, bkText: map[string]any{bkType: bkPlainText, bkText: truncateRunes(fmt.Sprintf(refusalTitle, refusalName(rec)), 150)}},
-		map[string]any{bkType: bkSection, bkText: map[string]any{bkType: bkMrkdwn, bkText: truncateRunes(reason+"\n"+count, slackSectionTextMax)}},
+		map[string]any{bkType: bkSection, bkText: verbatimMrkdwn(truncateRunes(reason+"\n"+count, slackSectionTextMax))},
 	}
 	if rec.AgentURL != "" {
 		blocks = append(blocks, map[string]any{
@@ -198,8 +198,18 @@ func (a *Adapter) refusalBlocks(rec store.Refusal) []any {
 			}},
 		})
 	}
-	blocks = append(blocks, contextBlock(fmt.Sprintf(refusalFooter, name, spellDuration(a.refusalWindow()))))
+	blocks = append(blocks, map[string]any{
+		bkType:     bkContext,
+		bkElements: []any{verbatimMrkdwn(fmt.Sprintf(refusalFooter, name, spellDuration(a.refusalWindow())))},
+	})
 	return blocks
+}
+
+// verbatimMrkdwn is a mrkdwn text object Slack renders as written: a refused
+// destination such as api.anthropic.com:443 stays text instead of becoming an
+// http://…:443 link.
+func verbatimMrkdwn(md string) map[string]any {
+	return map[string]any{bkType: bkMrkdwn, bkText: md, bkVerbatim: true}
 }
 
 var _ channels.RefusalNotifier = (*Adapter)(nil)

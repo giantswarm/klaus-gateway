@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Egress refusal notices name the refused destination as written: Slack no longer turns `api.anthropic.com:443` into an `http://api.anthropic.com:443` link, since the notice's text is sent `verbatim`.
+
 ### Added
 
 - Egress refusal notices: with `refusals.enabled` and `slack.enabled`, an agent's creator gets a direct message from the app when the Substrate egress refuses a destination the agent's egress does not declare, one per agent and destination within `refusals.window` (24 h), later refusals counted into it in place. The gateway reads the egress's `agentgateway_atenet_egress_refusals_total` from every egress pod, asks the kagent controller as its own ServiceAccount (the controller's session reader) which Agent a refusing Session runs, and addresses the Agent's `agent-platform.giantswarm.io/created-by` email. The chart grants `get` on `api.kagent.dev` agents and `list` on the egress namespace's EndpointSlices and projects a token for audience `kagent` (giantswarm/giantswarm#38667).
