@@ -153,7 +153,9 @@ key, so a channel's entries share a prefix) with the JSON entry as its value; an
 expires server-side. Team reviews sit next to them under `klaus-gateway:review:` + the review id
 (the seven days as the key's expiry; the prefix follows `keyPrefix`, `route:` swapped for
 `review:`), and their updates are a compare-and-set, so replicas sharing the server cannot both
-approve one review. The gateway needs no volume and no API-server access, and replicas can
+approve one review. The answers to requests sent to the team-review endpoint with an
+`Idempotency-Key` sit beside them under `klaus-gateway:receipt:` for seven days, claimed by the
+same compare-and-set ([api.md](api.md#retries-idempotency-key)). The gateway needs no volume and no API-server access, and replicas can
 share the table. The agent platform runs a Valkey for muster's token store (`muster-valkey:6379`,
 password under `valkey-password` in the platform Secret), which the gateway can share:
 

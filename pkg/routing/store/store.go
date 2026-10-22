@@ -1,6 +1,7 @@
 // Package store defines the interface for the klaus-gateway routing table and
 // the other records the gateway must not lose while their Slack message is
-// live: the team reviews.
+// live: the team reviews, and the receipts of the service requests that post
+// them.
 //
 // A routing entry maps (channel, channel-id, thread) to everything the gateway
 // holds for that conversation: the agent and the kagent Session its
@@ -422,6 +423,28 @@ const (
 	DecisionWithdrawn = "withdrawn"
 )
 
+// Receipt is the answer the gateway gave a service request sent with an
+// Idempotency-Key (pkg/reviews): the same request sent again is answered from
+// it instead of posting to Slack a second time.
+type Receipt struct {
+	// Hash identifies the request the key was first sent with: its method,
+	// path and body.
+	Hash string `json:"hash"`
+	// Status and Body are the answer; Status is 0 while the request that
+	// claimed the key has not answered.
+	Status int    `json:"status,omitempty"`
+	Body   string `json:"body,omitempty"`
+	// ClaimedAt is when the request took the key; the TTL counts from it.
+	ClaimedAt time.Time     `json:"claimed_at"`
+	TTL       time.Duration `json:"ttl"`
+}
+
+// Expired reports whether the receipt has aged past its TTL relative to now.
+// Every receipt expires: the zero Receipt already has.
+func (r Receipt) Expired(now time.Time) bool {
+	return now.Sub(r.ClaimedAt) > r.TTL
+}
+
 // ReviewStore keeps team-review records (Review), decisions among them, by id.
 type ReviewStore interface {
 	// PutReview upserts a review record; one that has already expired is
@@ -440,6 +463,20 @@ type ReviewStore interface {
 	UpdateReview(ctx context.Context, id string, mutate func(r *Review) bool) (found bool, err error)
 }
 
+// ReceiptStore keeps the receipts of service requests sent with an
+// Idempotency-Key (Receipt), by id.
+type ReceiptStore interface {
+	// UpdateReceipt applies mutate to the receipt at id — the zero Receipt,
+	// found false, when none is live — and writes the result when mutate
+	// returns true; a result that has expired removes the receipt. The
+	// read-modify-write is atomic against every other writer of the receipt,
+	// replicas included: a backend shared by processes writes only when the
+	// receipt is as it was read (still absent, when it was) and re-reads
+	// otherwise, so mutate may run more than once and must derive what it
+	// reports from the receipt it is given.
+	UpdateReceipt(ctx context.Context, id string, mutate func(r *Receipt, found bool) bool) error
+}
+
 // Store is the routing-table backend, and the review store with it: one
 // durable state for the gateway.
 type Store interface {
@@ -453,5 +490,6 @@ type Store interface {
 	// CAS here (UpdateReview has one).
 	Update(ctx context.Context, k Key, mutate func(e *Entry, found bool) bool) error
 	ReviewStore
+	ReceiptStore
 	Close() error
 }

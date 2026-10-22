@@ -366,6 +366,76 @@ func runConformance(t *testing.T, factory func(t *testing.T) store.Store) {
 		require.Equal(t, fmt.Sprintf("U%02d", winners[0]), got.DecidedBy)
 	})
 
+	t.Run("receipt-claim-answer-release", func(t *testing.T) {
+		// A request claims its key, then keeps its answer under it; an answer
+		// that is not kept is written expired, which frees the key.
+		s := factory(t)
+		ctx := context.Background()
+		claim := store.Receipt{Hash: "h1", ClaimedAt: time.Now(), TTL: time.Hour}
+		require.NoError(t, s.UpdateReceipt(ctx, "k1", func(r *store.Receipt, found bool) bool {
+			require.False(t, found)
+			require.Equal(t, store.Receipt{}, *r)
+			*r = claim
+			return true
+		}))
+		const answer = `{"id":"rv1","channel":"C1","ts":"1.000"}` + "\n"
+		require.NoError(t, s.UpdateReceipt(ctx, "k1", func(r *store.Receipt, found bool) bool {
+			require.True(t, found)
+			require.Equal(t, "h1", r.Hash)
+			require.True(t, claim.ClaimedAt.Equal(r.ClaimedAt))
+			r.Status, r.Body = 201, answer
+			return true
+		}))
+		got, found := receiptAt(t, s, "k1")
+		require.True(t, found)
+		require.Equal(t, 201, got.Status)
+		require.Equal(t, answer, got.Body, "the answer comes back byte for byte")
+
+		require.NoError(t, s.UpdateReceipt(ctx, "k1", func(r *store.Receipt, _ bool) bool {
+			*r = store.Receipt{}
+			return true
+		}))
+		_, found = receiptAt(t, s, "k1")
+		require.False(t, found, "a receipt written expired is gone")
+	})
+
+	t.Run("receipt-claimed-once-under-contention", func(t *testing.T) {
+		// Every request sent with one key tries to claim it at once; the
+		// store is the arbiter and exactly one claim lands.
+		s := factory(t)
+		ctx := context.Background()
+		const requests = 32
+		var wg sync.WaitGroup
+		wins := make([]bool, requests)
+		errs := make([]error, requests)
+		for i := range requests {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				errs[i] = s.UpdateReceipt(ctx, "k1", func(r *store.Receipt, found bool) bool {
+					wins[i] = !found
+					if found {
+						return false
+					}
+					*r = store.Receipt{Hash: fmt.Sprintf("h%02d", i), ClaimedAt: time.Now(), TTL: time.Hour}
+					return true
+				})
+			}()
+		}
+		wg.Wait()
+		var winners []int
+		for i := range requests {
+			require.NoError(t, errs[i])
+			if wins[i] {
+				winners = append(winners, i)
+			}
+		}
+		require.Len(t, winners, 1, "one claim lands, every other request finds it")
+		got, found := receiptAt(t, s, "k1")
+		require.True(t, found)
+		require.Equal(t, fmt.Sprintf("h%02d", winners[0]), got.Hash)
+	})
+
 	t.Run("ttl-expired-filtered", func(t *testing.T) {
 		s := factory(t)
 		ctx := context.Background()
@@ -400,6 +470,18 @@ func sampleReview(id string, postedAt time.Time) store.Review {
 		Status:   "",
 		PostedAt: postedAt.UTC().Truncate(time.Millisecond), TTL: 7 * 24 * time.Hour,
 	}
+}
+
+// receiptAt reads the receipt at id through an update that writes nothing.
+func receiptAt(t *testing.T, s store.Store, id string) (store.Receipt, bool) {
+	t.Helper()
+	var got store.Receipt
+	var found bool
+	require.NoError(t, s.UpdateReceipt(context.Background(), id, func(r *store.Receipt, ok bool) bool {
+		got, found = *r, ok
+		return false
+	}))
+	return got, found
 }
 
 func TestMemoryStore_Conformance(t *testing.T) {

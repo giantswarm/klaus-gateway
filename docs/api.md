@@ -42,9 +42,47 @@ volumes:
 | No bearer token, or one the API server does not vouch for | 401 (`WWW-Authenticate: Bearer`) |
 | ServiceAccount not in the allow-list | 403 |
 | API server unreachable for the review | 503 |
-| Invalid body (see below) | 400 |
+| Invalid body (see below), or an `Idempotency-Key` longer than 128 bytes | 400 |
 | A result for a review the gateway does not hold (unknown, or past its seven days) | 404 |
+| An `Idempotency-Key` sent before with another request (see below) | 409 |
 | Slack refused the post | 502 |
+| The request with this `Idempotency-Key` is still running (see below) | 503 (`Retry-After`) |
+| The `Idempotency-Key` could not be checked: the routing store did not answer | 503 |
+
+### Retries: `Idempotency-Key`
+
+Every POST of this page — the team reviews, the decisions and the conversations — takes an
+`Idempotency-Key` header: an opaque value of the caller's choosing, new for every request (a UUID
+does), at most 128 bytes; a longer one is refused with `400`.
+
+```http
+Idempotency-Key: <a new UUID for every request>
+```
+
+With a key, a request can be sent again as often as needed — after a timeout, a lost connection,
+a restart of the caller — and Slack sees it once:
+
+- The first request with a key runs, and when it succeeds its answer is kept for **seven days**.
+  The same request sent again with the key in that time posts nothing and gets that answer, the
+  same status and body byte for byte, with `Idempotency-Replayed: true`.
+- A request is the same when its method and path are and its body is, byte for byte: a body
+  encoded again with its fields in another order is another request. The key on another request
+  answers `409` with `{"error": "…"}` and posts nothing. A key is its caller's own: two
+  ServiceAccounts never share one.
+- The same request sent while the first is still running answers `503` with `Retry-After: 1` and
+  `{"error": "…"}`, and posts nothing; send it again after that.
+- Only a success is kept. Any other answer — an invalid body, a review the gateway does not hold,
+  Slack refusing the post — frees the key, and the request sent again runs again, as it does
+  without one.
+- A request with a key keeps running when its caller hangs up, so the retry finds its answer. A
+  gateway that stops between taking the key and answering (a restart, a crash), or cannot save
+  the answer, leaves the key taken: for five minutes the same request answers `503`, then it runs
+  again, although the first attempt may have reached Slack.
+
+A request without the header runs every time it is sent. The keys live in the routing store
+(`--store`, chart `routing.store`) beside the reviews: on `valkey` one key per request,
+`klaus-gateway:receipt:<hash>`, with the seven days as its expiry; on `memory` they die with the
+process.
 
 ### `POST /reviews`
 
@@ -167,8 +205,8 @@ line. Response `201` with `channel` and `ts`.
 
 ## Decisions
 
-Through the same surface, with the same authentication, a service puts a decision to a person or
-a team: one Slack message with the question, the status quo, a *Choose* button per option and an
+Through the same surface, with the same authentication and `Idempotency-Key`, a service puts a
+decision to a person or a team: one Slack message with the question, the status quo, a *Choose* button per option and an
 *Answer in my own words* button, answered by a click, the modal or a reply in its thread. Every
 answer calls the decision's answer tool through muster as the person who answered. What it looks
 like and how an answer goes: [slack-hitl-surface.md](slack-hitl-surface.md#13-decision-a-question-to-a-person-or-a-team).
@@ -226,8 +264,8 @@ past its due time plus seven days.
 
 ## Conversations
 
-Through the same surface, with the same authentication, a service holds a conversation with one
-person on behalf of an agent the gateway does not run, such as the person's guide on their own
+Through the same surface, with the same authentication and `Idempotency-Key`, a service holds a
+conversation with one person on behalf of an agent the gateway does not run, such as the person's guide on their own
 machine: a direct message from the app whose thread is bound to the conversation. A reply of the
 person's in that thread calls the conversation's reply tool through muster as the person; the
 service posts the agent's answers back into the thread. What it looks like:

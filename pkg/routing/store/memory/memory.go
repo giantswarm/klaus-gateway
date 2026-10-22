@@ -17,10 +17,11 @@ const EvictionInterval = time.Minute
 
 // Store is a concurrency-safe in-memory routing store with TTL eviction.
 type Store struct {
-	mu      sync.RWMutex
-	data    map[string]store.Entry
-	reviews map[string]store.Review
-	now     func() time.Time
+	mu       sync.RWMutex
+	data     map[string]store.Entry
+	reviews  map[string]store.Review
+	receipts map[string]store.Receipt
+	now      func() time.Time
 
 	evictOnce sync.Once
 	stopEvict chan struct{}
@@ -32,6 +33,7 @@ func New() *Store {
 	return &Store{
 		data:      make(map[string]store.Entry),
 		reviews:   make(map[string]store.Review),
+		receipts:  make(map[string]store.Receipt),
 		now:       time.Now,
 		stopEvict: make(chan struct{}),
 		evictDone: make(chan struct{}),
@@ -136,6 +138,31 @@ func (s *Store) UpdateReview(_ context.Context, id string, mutate func(r *store.
 	return true, nil
 }
 
+// UpdateReceipt applies mutate to the receipt at id under the store's lock, so
+// no two writers interleave. An expired receipt is absent, and one written
+// expired is removed.
+func (s *Store) UpdateReceipt(_ context.Context, id string, mutate func(r *store.Receipt, found bool) bool) error {
+	s.mu.Lock()
+	now := s.now()
+	r, found := s.receipts[id]
+	if found && r.Expired(now) {
+		r, found = store.Receipt{}, false
+	}
+	changed := mutate(&r, found)
+	if changed {
+		if r.Expired(now) {
+			delete(s.receipts, id)
+		} else {
+			s.receipts[id] = r
+		}
+	}
+	s.mu.Unlock()
+	if changed {
+		s.evictOnce.Do(s.startEvict)
+	}
+	return nil
+}
+
 // Close stops the eviction goroutine and releases resources.
 func (s *Store) Close() error {
 	select {
@@ -181,6 +208,11 @@ func (s *Store) evict() {
 	for id, r := range s.reviews {
 		if r.Expired(now) {
 			delete(s.reviews, id)
+		}
+	}
+	for id, r := range s.receipts {
+		if r.Expired(now) {
+			delete(s.receipts, id)
 		}
 	}
 }

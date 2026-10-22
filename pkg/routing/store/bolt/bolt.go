@@ -1,7 +1,8 @@
 // Package bolt provides a bbolt-backed implementation of routing.Store.
 // Entries survive process restarts; one bucket ("routes") holds the
 // canonicalised key -> JSON-encoded entry mapping, a second ("reviews") the
-// team-review records by id.
+// team-review records by id, a third ("receipts") the receipts of requests
+// sent with an Idempotency-Key.
 package bolt
 
 import (
@@ -21,8 +22,9 @@ import (
 const EvictionInterval = time.Minute
 
 var (
-	bucketName    = []byte("routes")
-	reviewsBucket = []byte("reviews")
+	bucketName     = []byte("routes")
+	reviewsBucket  = []byte("reviews")
+	receiptsBucket = []byte("receipts")
 )
 
 // Store is a bbolt-backed routing store.
@@ -41,7 +43,7 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("open bolt %s: %w", path, err)
 	}
 	if err := db.Update(func(tx *bolt.Tx) error {
-		for _, name := range [][]byte{bucketName, reviewsBucket} {
+		for _, name := range [][]byte{bucketName, reviewsBucket, receiptsBucket} {
 			if _, err := tx.CreateBucketIfNotExists(name); err != nil {
 				return err
 			}
@@ -211,6 +213,38 @@ func (s *Store) UpdateReview(_ context.Context, id string, mutate func(r *store.
 	return found, err
 }
 
+// UpdateReceipt applies mutate to the receipt at id inside one write
+// transaction, so no two writers interleave. An expired receipt is absent, and
+// one written expired is removed.
+func (s *Store) UpdateReceipt(_ context.Context, id string, mutate func(r *store.Receipt, found bool) bool) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(receiptsBucket)
+		now := time.Now()
+		var r store.Receipt
+		found := false
+		if v := b.Get([]byte(id)); v != nil {
+			if err := json.Unmarshal(v, &r); err != nil {
+				return err
+			}
+			found = !r.Expired(now)
+		}
+		if !found {
+			r = store.Receipt{}
+		}
+		if !mutate(&r, found) {
+			return nil
+		}
+		if r.Expired(now) {
+			return b.Delete([]byte(id))
+		}
+		buf, err := json.Marshal(r)
+		if err != nil {
+			return err
+		}
+		return b.Put([]byte(id), buf)
+	})
+}
+
 // Close stops the eviction goroutine and closes the database.
 func (s *Store) Close() error {
 	s.stopOnce.Do(func() {
@@ -234,7 +268,7 @@ func (s *Store) evictLoop() {
 	}
 }
 
-// evict scans both buckets and deletes expired entries and reviews.
+// evict scans the buckets and deletes expired entries, reviews and receipts.
 func (s *Store) evict() error {
 	now := time.Now()
 	expiredEntry := func(v []byte) (bool, error) {
@@ -247,10 +281,18 @@ func (s *Store) evict() error {
 		err := json.Unmarshal(v, &r)
 		return r.Expired(now), err
 	}
+	expiredReceipt := func(v []byte) (bool, error) {
+		var r store.Receipt
+		err := json.Unmarshal(v, &r)
+		return r.Expired(now), err
+	}
 	if err := s.evictBucket(bucketName, expiredEntry); err != nil {
 		return err
 	}
-	return s.evictBucket(reviewsBucket, expiredReview)
+	if err := s.evictBucket(reviewsBucket, expiredReview); err != nil {
+		return err
+	}
+	return s.evictBucket(receiptsBucket, expiredReceipt)
 }
 
 // evictBucket deletes the keys of bucket whose value expired reports stale.

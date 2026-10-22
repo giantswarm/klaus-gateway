@@ -79,14 +79,34 @@ func (p *recordingPoster) PostTeamReviewResult(_ context.Context, id string, res
 
 func newServer(t *testing.T, auth Authenticator, poster channels.TeamReviewPoster) *httptest.Server {
 	t.Helper()
+	return newHandlerServer(t, &Handler{Auth: auth, AllowedCallers: []string{managerSA}, Poster: poster})
+}
+
+// newHandlerServer serves h's routes.
+func newHandlerServer(t *testing.T, h *Handler) *httptest.Server {
+	t.Helper()
 	r := chi.NewRouter()
-	(&Handler{Auth: auth, AllowedCallers: []string{managerSA}, Poster: poster}).Mount(r)
+	h.Mount(r)
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
 	return srv
 }
 
 func post(t *testing.T, srv *httptest.Server, path, bearer string, body any) *http.Response {
+	t.Helper()
+	return postWithKey(t, srv, path, bearer, "", body)
+}
+
+// postWithKey is post with an Idempotency-Key, unless key is empty.
+func postWithKey(t *testing.T, srv *httptest.Server, path, bearer, key string, body any) *http.Response {
+	t.Helper()
+	resp, err := http.DefaultClient.Do(newRequest(t, srv, path, bearer, key, body))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	return resp
+}
+
+func newRequest(t *testing.T, srv *httptest.Server, path, bearer, key string, body any) *http.Request {
 	t.Helper()
 	payload, err := json.Marshal(body)
 	require.NoError(t, err)
@@ -95,10 +115,10 @@ func post(t *testing.T, srv *httptest.Server, path, bearer string, body any) *ht
 	if bearer != "" {
 		req.Header.Set("Authorization", "Bearer "+bearer)
 	}
-	resp, err := http.DefaultClient.Do(req)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = resp.Body.Close() })
-	return resp
+	if key != "" {
+		req.Header.Set("Idempotency-Key", key)
+	}
+	return req
 }
 
 func validReview() map[string]any {
