@@ -97,11 +97,11 @@ or `helm/`. Add a line when a review finds a new one.
   write refused with one is not retried: the rest of the reply is dropped, and the failure note
   comes when the agent ends the turn. Any other error, a network error, a 5xx, a 429 past its
   `Retry-After` budget or a code the table does not name, keeps the retries. A stream's `msg_too_long` roll-over and a branded post's unbranded
-  retry come before the table (#529).
+  retry come before the table (#530).
 - **Some Slack refusals say the call's effect is already in place.** `already_reacted` on
   `reactions.add`, `no_reaction` and `message_not_found` on `reactions.remove`, and
   `message_not_found` on `chat.delete` count as done; on any other method `message_not_found` is
-  permanent (#529).
+  permanent (#530).
 
 ## Thread state and the store
 
