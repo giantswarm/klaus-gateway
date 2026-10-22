@@ -607,8 +607,9 @@ func (f *Facade) streamTask(ctx context.Context, key store.Key, sessionID string
 		// listening. delivered is set once the channel received that state or
 		// the stream's failure.
 		terminal, delivered := false, false
-		// wait spaces the attempts to pick the task up again, across the turn.
-		var wait func(context.Context) bool
+		// retry spaces the attempts to pick the task up again and to read its
+		// answer back, across the turn.
+		var retry backoff
 		event, streamErr, more := first, error(nil), true
 		for {
 			if (streamErr != nil || !more) && taskID != "" && ctx.Err() == nil {
@@ -616,10 +617,7 @@ func (f *Facade) streamTask(ctx context.Context, key store.Key, sessionID string
 				if cause == nil {
 					cause = errStreamEnded
 				}
-				if wait == nil {
-					wait = pickUpBackoff()
-				}
-				if ev, n, s, picked := f.pickUp(ctx, key, taskID, cause, wait); picked {
+				if ev, n, s, picked := f.pickUp(ctx, key, taskID, cause, &retry); picked {
 					stop()
 					next, stop = n, s
 					event, streamErr, more = ev, nil, true
@@ -657,8 +655,16 @@ func (f *Facade) streamTask(ctx context.Context, key store.Key, sessionID string
 					terminal = true
 					timer.Mark(PhaseTaskDone)
 				}
-				if resumed && !whole && delta.Done && !f.emitFinal(ctx, out, mapper, sessionID, taskID) {
-					break
+				if resumed && !whole && delta.Done {
+					listening, err := f.emitFinal(ctx, out, mapper, sessionID, taskID, &retry)
+					if !listening {
+						break
+					}
+					if err != nil {
+						// The answer could not be read back: the turn ends with that
+						// failure rather than as a reply that lacks its end.
+						delta = OutboundDelta{Err: err}
+					}
 				}
 				if !f.emit(ctx, out, delta) {
 					break
@@ -709,34 +715,58 @@ func (f *Facade) streamTask(ctx context.Context, key store.Key, sessionID string
 // errStreamEnded is a task's stream that closed before the task came to rest.
 var errStreamEnded = errors.New("a2a: stream ended without terminal status")
 
-// Picking a task up again after its stream broke: the turn's first attempt
-// runs at once, every later one waits streamRecoverDelay, doubling up to
-// streamRecoverMax, for as long as the turn may run — the backoff of the
-// recovery after a restart (pkg/channels/slack).
+// Picking a task up again after its stream broke, and reading its answer
+// back: the turn's first attempt runs at once, every later one waits
+// streamRecoverDelay, doubling up to streamRecoverMax, for as long as the turn
+// may run — the backoff of the recovery after a restart (pkg/channels/slack).
 var (
 	streamRecoverDelay = 10 * time.Second
 	streamRecoverMax   = 2 * time.Minute
 )
 
-// pickUpBackoff returns the wait before each attempt to pick a turn's task up
-// again; a wait reports false when ctx ends during it.
-func pickUpBackoff() func(ctx context.Context) bool {
-	first, delay := true, streamRecoverDelay
-	return func(ctx context.Context) bool {
-		if first {
-			first = false
-			return true
-		}
-		t := time.NewTimer(delay)
-		defer t.Stop()
-		delay = min(2*delay, streamRecoverMax)
-		select {
-		case <-ctx.Done():
-			return false
-		case <-t.C:
-			return true
-		}
+// taskReadTimeout bounds one read of a task while its turn picks it up again
+// or reads its answer back: the connection to the controller has no
+// keepalive, so a read nobody answers would hold the turn until its deadline.
+const taskReadTimeout = 10 * time.Second
+
+// backoff spaces a turn's attempts to pick its task up again and to read its
+// answer back.
+type backoff struct {
+	started bool
+	delay   time.Duration
+}
+
+// wait blocks before an attempt, the turn's first not at all; it reports
+// false when ctx ends meanwhile.
+func (b *backoff) wait(ctx context.Context) bool {
+	switch {
+	case !b.started:
+		b.started = true
+		return true
+	case b.delay == 0:
+		b.delay = streamRecoverDelay
+	default:
+		b.delay = min(2*b.delay, streamRecoverMax)
 	}
+	t := time.NewTimer(b.delay)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
+}
+
+// lastingReadFailure reports whether a read of a task failed in a way a later
+// attempt by the same caller does not get past: the controller no longer has
+// the task, it refuses the caller's token or access, or the task is larger
+// than a gRPC message may be (gRPC's text for its size limits, on either side,
+// ends in "larger than max").
+func lastingReadFailure(err error) bool {
+	return errors.Is(err, a2apkg.ErrTaskNotFound) || pkga2a.IsNotFound(err) ||
+		errors.Is(err, a2apkg.ErrUnauthenticated) || errors.Is(err, a2apkg.ErrUnauthorized) ||
+		strings.Contains(err.Error(), "larger than max")
 }
 
 // pickUp picks taskID up again after the turn's stream broke with cause, as
@@ -745,12 +775,14 @@ func pickUpBackoff() func(ctx context.Context) bool {
 // (completed, paused on a prompt, failed, canceled) is the only event of what
 // follows, whole, and one still running is resubscribed to. It returns the
 // first event and the pull functions of the rest. Every attempt is a retry of
-// the turn; a failed one is tried again after wait, until the controller no
-// longer knows the task or ctx ends (false).
-func (f *Facade) pickUp(ctx context.Context, key store.Key, taskID a2apkg.TaskID, cause error, wait func(context.Context) bool) (a2apkg.Event, func() (a2apkg.Event, error, bool), func(), bool) {
-	for wait(ctx) {
+// the turn; a failed one is tried again after retry's wait, until it fails in
+// a lasting way or ctx ends (false).
+func (f *Facade) pickUp(ctx context.Context, key store.Key, taskID a2apkg.TaskID, cause error, retry *backoff) (a2apkg.Event, func() (a2apkg.Event, error, bool), func(), bool) {
+	for retry.wait(ctx) {
 		noteStreamLost(ctx, key, taskID, cause)
-		task, err := f.Agent.GetTask(ctx, taskID)
+		rctx, cancel := context.WithTimeout(ctx, taskReadTimeout)
+		task, err := f.Agent.GetTask(rctx, taskID)
+		cancel()
 		if err == nil {
 			events := f.Agent.Subscribe(ctx, taskID)
 			if state := task.Status.State; state.Terminal() || state == a2apkg.TaskStateInputRequired || state == a2apkg.TaskStateAuthRequired {
@@ -769,8 +801,8 @@ func (f *Facade) pickUp(ctx context.Context, key store.Key, taskID a2apkg.TaskID
 		if ctx.Err() != nil {
 			break
 		}
-		if errors.Is(err, a2apkg.ErrTaskNotFound) || pkga2a.IsNotFound(err) {
-			slog.Warn("channels: the task of the turn's broken stream is gone at the controller",
+		if lastingReadFailure(err) {
+			slog.Warn("channels: the task of the turn's broken stream cannot be picked up again",
 				"channel", key.Channel, "thread", key.ThreadID, "task_id", string(taskID), "error", err)
 			break
 		}
@@ -786,30 +818,39 @@ func (f *Facade) pickUp(ctx context.Context, key store.Key, taskID a2apkg.TaskID
 // against the text mapper delivered before the join, byte for byte as a
 // listener that heard the whole stream would have received it. After a
 // restart nothing was delivered, so it is the whole answer, and the channel
-// cuts off the part the previous process had posted. It reports whether every
-// delta was delivered. A failed read is logged and delivers nothing: the
-// terminal delta still closes the turn.
-func (f *Facade) emitFinal(ctx context.Context, out chan<- OutboundDelta, mapper *eventMapper, sessionID string, taskID a2apkg.TaskID) bool {
-	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), bindingWriteTimeout)
-	defer cancel()
-	task, err := f.Agent.GetTask(rctx, taskID)
-	if err != nil {
-		slog.Warn("a2a: read the completed task's answer failed", "session", sessionID, "task", taskID, "error", err)
-		return true
-	}
-	var text strings.Builder
-	for _, delta := range mapper.taskResultDeltas(task) {
-		text.WriteString(delta.Content)
-	}
-	if text.Len() > 0 && !f.emit(ctx, out, OutboundDelta{Content: text.String()}) {
-		return false
-	}
-	for _, delta := range mapper.taskUsageDeltas(task) {
-		if !f.emit(ctx, out, delta) {
-			return false
+// cuts off the part the previous process had posted. A read that fails is
+// tried again after retry's wait. It reports whether the channel still
+// listens, and, when the answer cannot be read back, the read's failure, which
+// the turn ends with instead of its completion.
+func (f *Facade) emitFinal(ctx context.Context, out chan<- OutboundDelta, mapper *eventMapper, sessionID string, taskID a2apkg.TaskID, retry *backoff) (bool, error) {
+	for {
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), taskReadTimeout)
+		task, err := f.Agent.GetTask(rctx, taskID)
+		cancel()
+		if err != nil {
+			slog.Warn("a2a: read the completed task's answer failed", "session", sessionID, "task", taskID, "error", err)
+			if lastingReadFailure(err) {
+				return true, err
+			}
+			if !retry.wait(ctx) {
+				return false, nil
+			}
+			continue
 		}
+		var text strings.Builder
+		for _, delta := range mapper.taskResultDeltas(task) {
+			text.WriteString(delta.Content)
+		}
+		if text.Len() > 0 && !f.emit(ctx, out, OutboundDelta{Content: text.String()}) {
+			return false, nil
+		}
+		for _, delta := range mapper.taskUsageDeltas(task) {
+			if !f.emit(ctx, out, delta) {
+				return false, nil
+			}
+		}
+		return true, nil
 	}
-	return true
 }
 
 // rememberTask records taskID as the task in flight on key's thread, with the

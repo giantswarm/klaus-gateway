@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
@@ -156,17 +157,21 @@ func logRecords(t *testing.T, record string) func() []map[string]any {
 // never sent again; the task is read and picked up again, by a resubscription
 // while it runs, and the channel receives what the stream had not delivered
 // of the answer, once. Every attempt is a retry of the turn and a turn_retry
-// record. A task the controller no longer has ends the turn with the stream's
-// failure, as before.
+// record; a read that may succeed later is tried again, and so is the read of
+// the answer at the end. A read that cannot succeed ends the turn at once: the
+// pick-up's with the stream's failure, as before, the answer's with its own.
 func TestFacade_BrokenStreamPicksTheTaskUpAgain(t *testing.T) {
 	channels.SetPickUpBackoff(t, time.Millisecond, time.Millisecond)
 	const opening, rest = "The cluster has ", "7 nodes, all Ready."
 	reset := errors.New("rpc error: code = Unavailable desc = read: connection reset by peer")
+	unreachable := errors.New(`rpc error: code = Unavailable desc = connection error: desc = "transport: Error while dialing: dial tcp 10.0.0.3:8083: connect: connection refused"`)
 	working := &a2apkg.Task{ID: taskInfo.TaskID, ContextID: taskInfo.ContextID, Status: a2apkg.TaskStatus{State: a2apkg.TaskStateWorking}}
 	completed := &a2apkg.Task{
 		ID: taskInfo.TaskID, ContextID: taskInfo.ContextID, Status: a2apkg.TaskStatus{State: a2apkg.TaskStateCompleted},
 		Artifacts: []*a2apkg.Artifact{{ID: "a1", Parts: a2apkg.ContentParts{a2apkg.NewTextPart(opening + rest)}}},
 	}
+	// A read that cannot succeed is followed by one that would, which a retry
+	// would reach.
 	cases := map[string]struct {
 		cut        error // how the stream breaks; nil closes it without a terminal status
 		reads      []taskRead
@@ -185,12 +190,28 @@ func TestFacade_BrokenStreamPicksTheTaskUpAgain(t *testing.T) {
 		},
 		"controller unreachable at first": {
 			cut:        reset,
-			reads:      []taskRead{{err: errors.New(`rpc error: code = Unavailable desc = connection error: desc = "transport: Error while dialing: dial tcp 10.0.0.3:8083: connect: connection refused"`)}, {task: working}, {task: completed}},
+			reads:      []taskRead{{err: unreachable}, {task: working}, {task: completed}},
 			subscribed: 1, retries: 2, text: opening + rest,
 		},
+		"answer read fails at first": {
+			cut: reset, reads: []taskRead{{task: working}, {err: unreachable}, {task: completed}},
+			subscribed: 1, retries: 1, text: opening + rest,
+		},
 		"task gone": {
-			cut: reset, reads: []taskRead{{err: a2apkg.ErrTaskNotFound}},
+			cut: reset, reads: []taskRead{{err: a2apkg.ErrTaskNotFound}, {task: completed}},
 			retries: 1, text: opening, err: "connection reset by peer",
+		},
+		"token refused": {
+			cut: reset, reads: []taskRead{{err: fmt.Errorf("%w: token expired", a2apkg.ErrUnauthenticated)}, {task: completed}},
+			retries: 1, text: opening, err: "connection reset by peer",
+		},
+		"task too large": {
+			cut: reset, reads: []taskRead{{err: errors.New("internal error: grpc: trying to send message larger than max (20971520 vs. 16777216)")}, {task: completed}},
+			retries: 1, text: opening, err: "connection reset by peer",
+		},
+		"answer gone": {
+			cut: reset, reads: []taskRead{{task: working}, {err: a2apkg.ErrTaskNotFound}, {task: completed}},
+			subscribed: 1, retries: 1, text: opening, err: "task not found",
 		},
 	}
 	for name, tc := range cases {
@@ -216,7 +237,7 @@ func TestFacade_BrokenStreamPicksTheTaskUpAgain(t *testing.T) {
 				require.True(t, done)
 			} else {
 				require.ErrorContains(t, turnErr, tc.err)
-				require.Equal(t, channels.FailurePlatform, channels.ClassifyFailure(turnErr))
+				require.False(t, done, "a turn that lacks its answer does not complete")
 			}
 			require.Len(t, agent.streamed, 1, "the message is never sent again")
 			require.Len(t, agent.subscribed, tc.subscribed)
