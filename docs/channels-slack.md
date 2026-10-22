@@ -859,7 +859,10 @@ Three structured log records (`record=…`, JSON fields) tell a turn's story; jo
 - `turn_retry` -- a fresh turn failed before it showed anything on a failure a second attempt
   may get past, and is sent once more on the same Session: `channel`, `channel_id`,
   `thread`, `agent`, `failure_class`, `error` (the first attempt's). The thread sees only the
-  second attempt; `task_done_ms` and `stream_end_ms` are that attempt's.
+  second attempt; `task_done_ms` and `stream_end_ms` are that attempt's. With
+  `reason=stream_lost` and `task_id`, the turn's stream broke and the gateway picks its task up
+  again ([kagent-a2a.md](kagent-a2a.md#a-stream-that-breaks)): one record per attempt, whose
+  `error` is the broken stream's or the previous attempt's.
 - `token_refresh` -- the person's muster id_token was refreshed: `trigger` (`ahead` for the
   background refresher, `turn` for a refresh on the turn's path), `slackUser`, `duration_ms`,
   `expires_in_s`, or `error`. A turn is dispatched only with a token that covers a turn: the
@@ -910,14 +913,16 @@ A turn ends early for one of two reasons, and the thread can tell them apart:
   Session first (`turn_retry`): the runtime sets its tool set and its MCP sessions up
   again on every run, so a connection that broke once may hold the next time, and the
   conversation stays where it is. Only when the second attempt fails too does the note go out.
-  A stream that broke is not sent again (the task may still run at the controller), and neither
-  is a HITL decision (the paused task it answers is gone once it failed).
+  A stream that broke is not sent again: the task may still run at the controller, so the
+  gateway picks it up again and the reply goes on in the same message, with no note
+  ([kagent-a2a.md](kagent-a2a.md#a-stream-that-breaks)). Neither is a HITL decision (the
+  paused task it answers is gone once it failed).
   Once the reply has started (narration or part of the answer), the failed reaction marks
   it and one note goes under it: `The turn ended with <a platform error>
   before the agent finished. What it did so far is in the Dev Portal; reply here to try again.`
   It names the class (a tool connection error, a platform error, a model error, a policy
   refusal, an unconnected ChatGPT subscription, or just an error), never the error's text. A stream reset by a controller restart
-  (`RST_STREAM`) is a `platform` failure.
+  (`RST_STREAM`) whose task cannot be picked up again is a `platform` failure.
 - **A gateway restart** (a pod restart, a node loss with a grace period) is nobody's decision.
   The thread gets a one-line notice — `The gateway restarted while *<agent>* was working. The
   agent keeps going: its result is in the Dev Portal, and it is posted here when it is done.` — the

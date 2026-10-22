@@ -1,7 +1,12 @@
 package channels_test
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -125,21 +130,126 @@ func TestFacade_NoRetryAfterOutputOrOnAnUnretryableFailure(t *testing.T) {
 	}
 }
 
+// logRecords points the default logger at a buffer for the rest of t and
+// returns a reader of the records written to it whose record is record.
+// Read it once the turn's deltas are drained: the turn's writes are done then.
+func logRecords(t *testing.T, record string) func() []map[string]any {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return func() []map[string]any {
+		var out []map[string]any
+		for line := range strings.Lines(buf.String()) {
+			var r map[string]any
+			require.NoError(t, json.Unmarshal([]byte(line), &r))
+			if r["record"] == record {
+				out = append(out, r)
+			}
+		}
+		return out
+	}
+}
+
 // A stream that breaks is not a task that ended: the task may run on at the
-// controller, and a second message would run beside it.
-func TestFacade_BrokenStreamIsNotRetried(t *testing.T) {
-	agent := newFakeAgent(submitted())
-	agent.tailErr = errors.New("rpc error: code = Unavailable desc = read: connection reset by peer")
-	f, _ := newA2AFacade(agent)
+// controller, and a second message would run beside it. So the message is
+// never sent again; the task is read and picked up again, by a resubscription
+// while it runs, and the channel receives what the stream had not delivered
+// of the answer, once. Every attempt is a retry of the turn and a turn_retry
+// record; a read that may succeed later is tried again, and so is the read of
+// the answer at the end. A read that cannot succeed ends the turn at once: the
+// pick-up's with the stream's failure, as before, the answer's with its own.
+func TestFacade_BrokenStreamPicksTheTaskUpAgain(t *testing.T) {
+	channels.SetPickUpBackoff(t, time.Millisecond, time.Millisecond)
+	const opening, rest = "The cluster has ", "7 nodes, all Ready."
+	reset := errors.New("rpc error: code = Unavailable desc = read: connection reset by peer")
+	unreachable := errors.New(`rpc error: code = Unavailable desc = connection error: desc = "transport: Error while dialing: dial tcp 10.0.0.3:8083: connect: connection refused"`)
+	working := &a2apkg.Task{ID: taskInfo.TaskID, ContextID: taskInfo.ContextID, Status: a2apkg.TaskStatus{State: a2apkg.TaskStateWorking}}
+	completed := &a2apkg.Task{
+		ID: taskInfo.TaskID, ContextID: taskInfo.ContextID, Status: a2apkg.TaskStatus{State: a2apkg.TaskStateCompleted},
+		Artifacts: []*a2apkg.Artifact{{ID: "a1", Parts: a2apkg.ContentParts{a2apkg.NewTextPart(opening + rest)}}},
+	}
+	// A read that cannot succeed is followed by one that would, which a retry
+	// would reach.
+	cases := map[string]struct {
+		cut        error // how the stream breaks; nil closes it without a terminal status
+		reads      []taskRead
+		subscribed int
+		retries    int
+		text       string
+		err        string
+	}{
+		"reset while the task runs": {
+			cut: reset, reads: []taskRead{{task: working}, {task: completed}},
+			subscribed: 1, retries: 1, text: opening + rest,
+		},
+		"closed after the task completed": {
+			reads:   []taskRead{{task: completed}},
+			retries: 1, text: opening + rest,
+		},
+		"controller unreachable at first": {
+			cut:        reset,
+			reads:      []taskRead{{err: unreachable}, {task: working}, {task: completed}},
+			subscribed: 1, retries: 2, text: opening + rest,
+		},
+		"answer read fails at first": {
+			cut: reset, reads: []taskRead{{task: working}, {err: unreachable}, {task: completed}},
+			subscribed: 1, retries: 1, text: opening + rest,
+		},
+		"task gone": {
+			cut: reset, reads: []taskRead{{err: a2apkg.ErrTaskNotFound}, {task: completed}},
+			retries: 1, text: opening, err: "connection reset by peer",
+		},
+		"token refused": {
+			cut: reset, reads: []taskRead{{err: fmt.Errorf("%w: token expired", a2apkg.ErrUnauthenticated)}, {task: completed}},
+			retries: 1, text: opening, err: "connection reset by peer",
+		},
+		"task too large": {
+			cut: reset, reads: []taskRead{{err: errors.New("internal error: grpc: trying to send message larger than max (20971520 vs. 16777216)")}, {task: completed}},
+			retries: 1, text: opening, err: "connection reset by peer",
+		},
+		"answer gone": {
+			cut: reset, reads: []taskRead{{task: working}, {err: a2apkg.ErrTaskNotFound}, {task: completed}},
+			subscribed: 1, retries: 1, text: opening, err: "task not found",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			retries := logRecords(t, channels.RecordTurnRetry)
+			agent := newFakeAgent(submitted(), a2apkg.NewArtifactUpdateEvent(taskInfo, "a1", a2apkg.NewTextPart(opening)))
+			agent.tailErr = tc.cut
+			agent.reads = tc.reads
+			agent.subscribeEvents = []a2apkg.Event{
+				working,
+				a2apkg.NewArtifactUpdateEvent(taskInfo, "a1", a2apkg.NewTextPart(rest)),
+				a2apkg.NewStatusUpdateEvent(taskInfo, a2apkg.TaskStateCompleted, nil),
+			}
+			f, _ := newA2AFacade(agent)
 
-	deltas, timer, err := sendTimed(t, f, slackMsg("hi"))
-	require.NoError(t, err)
+			deltas, timer, err := sendTimed(t, f, slackMsg("how many nodes?"))
+			require.NoError(t, err)
 
-	_, _, turnErr := answerOf(deltas)
-	require.ErrorContains(t, turnErr, "connection reset by peer")
-	require.Equal(t, channels.FailurePlatform, channels.ClassifyFailure(turnErr))
-	require.Len(t, agent.streamed, 1)
-	require.Zero(t, timer.Retries())
+			text, done, turnErr := answerOf(deltas)
+			require.Equal(t, tc.text, text, "the channel receives the answer once")
+			if tc.err == "" {
+				require.NoError(t, turnErr)
+				require.True(t, done)
+			} else {
+				require.ErrorContains(t, turnErr, tc.err)
+				require.False(t, done, "a turn that lacks its answer does not complete")
+			}
+			require.Len(t, agent.streamed, 1, "the message is never sent again")
+			require.Len(t, agent.subscribed, tc.subscribed)
+			require.Equal(t, tc.retries, timer.Retries())
+			records := retries()
+			require.Len(t, records, tc.retries)
+			for _, r := range records {
+				require.Equal(t, "stream_lost", r["reason"])
+				require.Equal(t, string(taskInfo.TaskID), r["task_id"])
+			}
+		})
+	}
 }
 
 // A controller that cannot be reached refuses the send itself; the send is

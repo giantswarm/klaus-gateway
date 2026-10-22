@@ -10,7 +10,7 @@ sees; nothing there depends on the carrier.
 
 | Concern | Carrier |
 |---|---|
-| Turns | A2A v1 over gRPC (`lf.a2a.v1.A2AService`: `SendStreamingMessage`, `GetTask`, `CancelTask`) through the `a2a-go/v2` client on its gRPC transport |
+| Turns | A2A v1 over gRPC (`lf.a2a.v1.A2AService`: `SendStreamingMessage`, `GetTask`, `SubscribeToTask`, `CancelTask`) through the `a2a-go/v2` client on its gRPC transport |
 | Agent roster | `kagent.api.v1alpha1.AgentService/ListAgents`, with `AgentTemplateService/ListAgentTemplates` for what an Agent takes from the template it references |
 | Harness runtime (who may instruct an agent) | `kagent.api.v1alpha1.HarnessService/ListHarnesses`, on a turn by anyone but the Session's creator |
 | Starting a conversation | agent-manager's `start_session` MCP tool, called through muster as the person (see below); the gateway never calls `CreateSession` itself |
@@ -207,6 +207,36 @@ positional `ask_user_response` under the request's correlation id — by reading
 (`GetTask`) and building the payload against the request it is paused on. The decision travels
 as the HITL payload of a message that **carries the paused task's id**, so the task resumes in
 place and nothing is left waiting at `input-required`.
+
+## A stream that breaks
+
+A turn's stream can break while its task runs on at the controller: a connection reset, an
+agentgateway or controller rollout, an HTTP/2 stream reset. The message is never sent again: a
+second message would start a second task beside the first. When the stream fails, or closes
+before the task came to rest, and the turn was not stopped, the gateway is not shutting down and
+the turn's deadline has not passed, the gateway picks the task up again, as the person the turn
+ran as (a collaborator through the thread's share):
+
+1. `GetTask` reads the task. A task still working is resubscribed to (`SubscribeToTask`). A task
+   that came to rest meanwhile is rendered from the read: a completed task delivers what the
+   channel has not received of its answer, a paused one its prompt, a failed or canceled one its
+   failure, with the note of that failure.
+2. A resubscription joins the task's stream midway, so its answer text is not streamed: the
+   answer is read back when the task completes, and only the text after what the channel already
+   received is delivered. Tool activity and narration stream live. The reply goes on in the same
+   message.
+3. The first attempt runs at once. A failed attempt, a stream that breaks again, or a read of
+   the answer that fails, is tried again after 10 s, doubling up to 2 min, for as long as the turn
+   may run (30 min); each read is bounded by 10 s. A read that cannot succeed ends the turn: a
+   task the controller no longer has, the person's token or access refused, a task larger than a
+   gRPC message may be. Before the pick-up the turn ends with the stream's failure, as before; at
+   the answer's read, with that read's failure, rather than as a reply that lacks its end.
+
+Each attempt to pick the task up logs `record=turn_retry` with `reason=stream_lost` and the
+`task_id`, and counts in `turn_complete`'s `retries`. The thread's record of the task in flight stays meanwhile, so a
+restart during the pick-up still delivers the turn. A turn a restarted gateway resubscribed to
+is picked up the same way when its stream breaks; only its `turn_retry` records show the
+attempts, as the timeline of such a delivery begins after the resubscription.
 
 ## Stop
 

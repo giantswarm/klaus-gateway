@@ -2,6 +2,7 @@ package channels_test
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -101,6 +102,32 @@ func TestFacade_CollaboratorTurnRunsAsTheCollaboratorThroughAShare(t *testing.T)
 	raw, err := json.Marshal(row)
 	require.NoError(t, err)
 	require.NotContains(t, string(raw), share, "the stored row holds the share sealed")
+}
+
+// A collaborator's turn whose stream breaks is picked up again the way it
+// ran: the task is read and resubscribed to as the collaborator, through the
+// thread's share.
+func TestFacade_CollaboratorTurnIsPickedUpAgainThroughTheShare(t *testing.T) {
+	agent := newFakeAgent(completedTurn()...)
+	f, _ := newSharingFacade(t, agent)
+	runTurn(t, f, initiatorMsg("open"))
+
+	agent.mu.Lock()
+	agent.events = []a2apkg.Event{submitted(), a2apkg.NewArtifactUpdateEvent(taskInfo, "a1", a2apkg.NewTextPart("Let me look."))}
+	agent.tailErr = errors.New("rpc error: code = Unavailable desc = read: connection reset by peer")
+	agent.reads = []taskRead{{task: &a2apkg.Task{ID: taskInfo.TaskID, ContextID: taskInfo.ContextID, Status: a2apkg.TaskStatus{State: a2apkg.TaskStateWorking}}}}
+	agent.subscribeEvents = []a2apkg.Event{a2apkg.NewStatusUpdateEvent(taskInfo, a2apkg.TaskStateCompleted, nil)}
+	agent.mu.Unlock()
+	runTurn(t, f, collaboratorMsg("join", ownerJWT))
+
+	agent.mu.Lock()
+	defer agent.mu.Unlock()
+	require.Len(t, agent.subscribed, 1, "the broken stream's task is resubscribed to")
+	share := pkga2a.ShareTokenFromContext(agent.streamCtx)
+	require.NotEmpty(t, share, "through the thread's share")
+	require.Equal(t, collaboratorJWT, pkga2a.ForwardedTokenFromContext(agent.streamCtx), "as the collaborator")
+	require.Equal(t, []string{collaboratorJWT, collaboratorJWT}, agent.readAs, "the task and its answer are read as the collaborator")
+	require.Equal(t, []string{share, share}, agent.readShares)
 }
 
 // The share outlives the creator's token: once minted, a collaborator's turn
