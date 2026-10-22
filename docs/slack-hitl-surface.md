@@ -635,8 +635,10 @@ between Agent and Prompt, and the agent input gains `"dispatch_action": true`: a
 reaches the gateway, which redraws the view (`views.update` with the view's `hash`) with the
 new agent's preset under the next `block_id` revision, because Slack keeps a person's pick in an
 input whose `block_id` stays. The select is optional; **No workspace** (`*none*`) comes first,
-in a group of its own when the workspaces are grouped by Organization; the hint names the agent
-when the preset is the workspace last used with it:
+in a group of its own when the workspaces are grouped by Organization. The preset is the
+person's last choice with the agent, else the agent's default workspace, else **No workspace**;
+the hint names the agent when the preset is the last choice ("Last used with SRE Agent.") or its
+default ("The default of SRE Agent."):
 
 ```json
 {
@@ -800,6 +802,17 @@ a thread reply in a DM) is answered by the outcome:
 A click on a prompt
 that is no longer open is answered with an ephemeral that it expired, and the message is
 rewritten to say so.
+
+An agent with a default workspace gets no prompt: the default is chosen as the initiator's click
+would. Granted, the thread gets a plain note, "Working in workspace *platform*, this agent's
+default. To work in another, start with `/swarmgeist` and pick it." A provider to connect gets
+the connect prompt above, ending "Your message is kept: once connected, mention me and it
+runs." Any other denial is answered to the initiator alone, with no button and the message
+quoted back, since nothing holds it: "You cannot start in workspace *platform*, this agent's
+default: you cannot read `giantswarm/vault`, `giantswarm/keys`. Nothing was started; pick
+another workspace or *No workspace* in `/swarmgeist`.\nYour prompt:\n>…" (likewise "Cannot
+start in workspace *platform*, this agent's default, yet: …" and "Could not check workspace
+*platform*, this agent's default, right now.").
 
 ```json
 {

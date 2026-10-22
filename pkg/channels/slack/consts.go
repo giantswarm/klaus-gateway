@@ -216,6 +216,9 @@ const (
 	// preset is the workspace the person last started the agent with; %s is
 	// the agent's display name.
 	askAgentWorkspaceLastHint = "Last used with %s."
+	// askAgentWorkspaceDefaultHint sits under it when its preset is the
+	// agent's default workspace; %s is the agent's name.
+	askAgentWorkspaceDefaultHint = "The default of %s."
 	// askAgentWorkspacePromptQuote follows a workspace refusal sent privately
 	// after a submission: the modal is gone, so the prompt is handed back,
 	// quoted.
@@ -439,6 +442,22 @@ const (
 	workspaceCheckFailedNote = "Could not check workspace *%s* right now."
 	workspacePickAgainTail   = " Nothing was started; pick another workspace or *No workspace*."
 	workspaceConnectTail     = " Your message is kept: once connected, pick the workspace again or mention me."
+)
+
+// The answers when the agent's default workspace (the first %s) starts
+// nothing, told to the initiator alone, as the workspaceRefusedNote family
+// is: workspaceDefaultPickTail follows any but a provider to connect with
+// the slash command (%s) that starts in another workspace or none, and
+// workspaceDefaultConnectTail follows the connect prompts. Once it starts,
+// workspaceDefaultNotice names it in the thread, with the slash command
+// (%s) that picks another.
+const (
+	workspaceDefaultRefusedNote     = "You cannot start in workspace *%s*, this agent's default: you cannot read %s."
+	workspaceDefaultUnavailableNote = "Cannot start in workspace *%s*, this agent's default, yet: %s."
+	workspaceDefaultCheckFailedNote = "Could not check workspace *%s*, this agent's default, right now."
+	workspaceDefaultPickTail        = " Nothing was started; pick another workspace or *No workspace* in `%s`."
+	workspaceDefaultConnectTail     = " Your message is kept: once connected, mention me and it runs."
+	workspaceDefaultNotice          = "Working in workspace *%s*, this agent's default. To work in another, start with `%s` and pick it."
 )
 
 // The answers to a collaborator whose turn on a thread's workspace (the first

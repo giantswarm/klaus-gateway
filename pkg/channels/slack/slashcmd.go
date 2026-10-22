@@ -448,8 +448,14 @@ func (a *Adapter) askAgentModal(agents []pkga2a.AgentInfo, req askAgentRequest, 
 	blocks := []any{contextBlock(askAgentLead(req)), agentInput}
 	if ws != nil {
 		agentInput[bkDispatchAction] = true
-		preset, lastUsed := ws.preset(selected)
-		blocks = append(blocks, workspaceInput(ws, 0, preset, lastUsed, selectedLabel))
+		ws.defaults = make(map[string]string, len(agents))
+		for _, ag := range agents {
+			if ag.DefaultWorkspace != "" {
+				ws.defaults[a.agentInfoRef(ag)] = ag.DefaultWorkspace
+			}
+		}
+		preset, source := ws.preset(selected)
+		blocks = append(blocks, workspaceInput(ws, 0, preset, source, selectedLabel))
 	}
 	blocks = append(blocks, map[string]any{bkType: bkInput, bkBlockID: askAgentQuestionBlockID, bkLabel: plainTextObj(askAgentQuestionLabel), bkElement: question})
 	if block, ok := threadContextBlock(req); ok {
