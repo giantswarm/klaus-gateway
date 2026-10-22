@@ -265,7 +265,8 @@ ServiceMonitor). Beside the public mux's `klaus_gateway_requests_total` /
   session start on a thread's first turn: agent-manager's `start_session` through muster and the
   wait for READY). Buckets run from 5 ms to 5 min.
   "Message received → answer landed" is `phase="final_flush"`; p50/p95 of it is the panel to
-  watch.
+  watch. A message that waited in its thread's inbox, behind another turn or a prompt, carries
+  the wait in every mark.
 
 The same numbers are on the `turn_complete` log record every turn ends with (see
 [channels-slack.md](channels-slack.md#records)), as `<phase>_ms` fields next to the outcome, the

@@ -1,7 +1,9 @@
 package slack_test
 
 import (
+	"context"
 	"fmt"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync"
@@ -345,28 +347,93 @@ func TestDecisionReplyWithAttachment_PostsNotForwardedNote(t *testing.T) {
 
 // A bare "stop" while a turn runs is the natural reply in a thread the bot
 // answers in without a mention; it interrupts the turn like /stop instead of
-// being bounced with the busy notice.
+// waiting behind it, and the message queued behind the turn runs next.
 func TestStop_BareWordDuringTurnInterrupts(t *testing.T) {
 	fake := newFakeSlackAPI()
 	hold := make(chan struct{})
 	defer close(hold)
-	gw := &stubGateway{hold: hold}
+	gw, dispatched := capturingGateway()
+	gw.deltas, gw.hold = nil, hold
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
 	gw.openConversation(t, "D1", "700.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "long task", "700.000"))
 	fake.waitForPath(t, "reactions.add", 1)
 	waitTurnStreaming(t, fake)
+	sendEvent(t, srv, dmThreadEvent("U1", "and the nodes?", "701.000", "700.000"))
 
-	sendEvent(t, srv, dmThreadEvent("U1", "Stop.", "701.000", "700.000"))
+	sendEvent(t, srv, dmThreadEvent("U1", "Stop.", "702.000", "700.000"))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Stopped")
 	}, flowWait, 50*time.Millisecond, "a bare stop replies like /stop")
 	fake.waitForPath(t, "reactions.remove", 1)
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 }, flowWait, 20*time.Millisecond,
+		"the queued message runs once the stopped turn ends")
 
 	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "Still answering",
 		"a bare stop is not bounced as busy")
-	require.Equal(t, 1, gw.dispatchCount(), "a bare stop never reaches the agent as a turn")
+	require.Eventually(t, func() bool { return len(gw.sendCauseList()) > 0 }, flowWait, 20*time.Millisecond)
+	require.ErrorIs(t, gw.sendCauseList()[0], context.Canceled, "the stop cancelled the running turn")
+	require.Equal(t, "and the nodes?", dispatched()[1].Text, "a bare stop never reaches the agent as a turn")
+}
+
+// queueBehindPrompt opens DM thread 900.000 on a turn that writes, waits while
+// n messages are queued behind it, then pauses on an approval card.
+func queueBehindPrompt(t *testing.T, n int) (*fakeSlackAPI, *stubGateway, func() []channels.InboundMessage, *httptest.Server) {
+	t.Helper()
+	fake := newFakeSlackAPI()
+	hold := make(chan struct{})
+	gw, dispatched := capturingGateway()
+	gw.deltas, gw.hold, gw.afterHold = []channels.OutboundDelta{{Content: "checking"}}, hold, []channels.OutboundDelta{approvalDelta()}
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+	gw.openConversation(t, "D1", "900.000", "U1", "test-agent")
+	sendEvent(t, srv, dmEvent("U1", "clean up", "900.000"))
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 20*time.Millisecond)
+	for i := 1; i <= n; i++ {
+		sendEvent(t, srv, dmThreadEvent("U1", fmt.Sprintf("q%d", i), fmt.Sprintf("900.%03d", i), "900.000"))
+	}
+	close(hold)
+	require.Eventually(t, func() bool {
+		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Approval required")
+	}, flowWait, 20*time.Millisecond, "the turn pauses on its approval card")
+	waitThreadIdle(t, a, "900.000")
+	require.Never(t, func() bool { return gw.dispatchCount() > 1 }, 300*time.Millisecond, 20*time.Millisecond,
+		"a message written before the card is not its answer")
+	return fake, gw, dispatched, srv
+}
+
+// A message written while a turn runs does not answer the approval card the
+// turn then pauses on: its sender never saw the card. It waits until the card
+// is answered, here by a click, and runs after the turn the click resumes.
+func TestQueue_MessageWaitsBehindAPromptItPredates(t *testing.T) {
+	_, gw, dispatched, srv := queueBehindPrompt(t, 1)
+
+	sendInteraction(t, srv, "hitl_approve", "900.000")
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 3 }, flowWait, 20*time.Millisecond,
+		"the queued message runs after the resumed turn")
+	got := dispatched()
+	require.Equal(t, "task-1", got[1].TaskID, "the click resumes the paused task")
+	require.Equal(t, "q1", got[2].Text)
+	require.Nil(t, got[2].Decision, "the queued message runs as a message of its own")
+}
+
+// A typed answer to the card runs first, also with the queue full: the
+// messages written before the card wait for the turn the answer resumes, then
+// run in order.
+func TestQueue_TypedAnswerRunsFirstWithTheQueueFull(t *testing.T) {
+	fake, gw, dispatched, srv := queueBehindPrompt(t, 5)
+
+	sendEvent(t, srv, dmThreadEvent("U1", "approve", "900.010", "900.000"))
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 7 }, flowWait, 20*time.Millisecond)
+	got := dispatched()
+	require.Equal(t, "task-1", got[1].TaskID, "the typed answer resumes the paused task")
+	require.NotNil(t, got[1].Decision)
+	var texts []string
+	for _, m := range got[2:] {
+		texts = append(texts, m.Text)
+	}
+	require.Equal(t, []string{"q1", "q2", "q3", "q4", "q5"}, texts)
+	require.False(t, ephemeralTo(fake, "U1", "was not queued"), "the answer is not refused")
 }
 
 // A bare "stop" in a thread with no running turn keeps today's behaviour: it

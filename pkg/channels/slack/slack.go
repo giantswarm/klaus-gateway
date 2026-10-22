@@ -197,6 +197,10 @@ type Adapter struct {
 	gw      channels.Gateway
 	baseCtx context.Context // adapter lifecycle ctx, captured in Start; OnUserLinked's background work (login-replay dispatch and the sign-in confirmation POST) derives from it so shutdown cancels it
 	started atomic.Bool
+	// stopping is the Done channel of the context Start was given, which the
+	// process signal ends: from then on the thread inboxes hand no message to
+	// dispatch (stoppingNow), and the process replacing this one runs them.
+	stopping <-chan struct{}
 
 	// bgMu guards the background-goroutine lifecycle. cancel cancels baseCtx,
 	// naming channels.ErrShutdown as the cause so a turn cut short can tell the
@@ -291,6 +295,11 @@ type Adapter struct {
 	// which owns entry creation and removal.
 	threadsMu sync.Mutex
 	threads   map[string]*threadState // keyed by threadID
+
+	// inboxMu guards inboxes: per thread, the drainer that runs its inbox
+	// (inbox.go). The inbox itself is in the thread's row only.
+	inboxMu sync.Mutex
+	inboxes map[string]*inboxState // keyed by threadID
 
 	// reviewsMu guards memReviews, the in-process review store used when
 	// Reviews is nil (see reviews in teamreview.go).
@@ -466,6 +475,7 @@ func (a *Adapter) Start(ctx context.Context, gw channels.Gateway) error {
 		a.Logger = slog.Default()
 	}
 	a.gw = gw
+	a.stopping = ctx.Done()
 	// The lifecycle context is detached from ctx's own cancellation: the
 	// process signal must not reach the turns before Stop has named the cause.
 	// Stop cancels with channels.ErrShutdown, which is how a turn's stop branch
@@ -740,8 +750,16 @@ type AgentCardResolver interface {
 // botID returns this bot's own Slack user ID (via auth.test), caching it. Used
 // to recognise the bot's own member_joined_channel event. Returns "" on lookup
 // failure (logged); the caller then cannot confirm a self-join and skips the intro.
+// A known ID is returned without the display-name lookup resolveIdentity may
+// still retry: the inbound path asks for it before Slack is answered.
 func (a *Adapter) botID(ctx context.Context) string {
-	id, _ := a.resolveIdentity(ctx)
+	a.botIDMu.Lock()
+	id := a.botUserID
+	a.botIDMu.Unlock()
+	if id != "" {
+		return id
+	}
+	id, _ = a.resolveIdentity(ctx)
 	return id
 }
 
@@ -1926,43 +1944,44 @@ func (a *Adapter) setSessionStatus(ctx context.Context, channel, threadTS string
 	w.setSessionStatus(ctx, status)
 }
 
-// handleInbound runs the shared inbound pipeline for one Slack event:
-// dedup, member-join intro, accept-gate, normalise, active-thread gate (for
-// channel thread replies), command handling, then dispatch. Both transports
-// (the Events API HTTP handler and the Socket Mode reader) call it so the two
-// behave identically, including deduplication. ctx is the adapter-lifecycle
-// context; eventID is the delivery's Slack event_id ("" when the transport
-// carries none).
-func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, eventID string) {
+// handleInbound runs the shared inbound pipeline for one Slack event up to the
+// point where Slack may be answered: dedup, member-join intro, accept-gate,
+// normalise, active-thread gate (for channel thread replies), commands, and,
+// for a message to a conversation, its place in the thread's inbox, the one
+// store write before the answer. It returns the rest, which the caller runs
+// in the background once Slack has its answer: every Slack call, the commands
+// and the turns; nil when nothing is left. Both transports (the Events API
+// HTTP handler and the Socket Mode reader) call it so the two behave
+// identically, including deduplication. ctx is the adapter-lifecycle context;
+// eventID is the delivery's Slack event_id ("" when the transport carries
+// none).
+func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, eventID string) func(context.Context) {
 	if eventID != "" && a.seenEvent(eventID) {
 		a.Logger.Info("slack: dropping duplicate event delivery", "event_id", eventID)
-		return
+		return nil
 	}
 	switch inner.Type {
 	case evtMemberJoined:
-		a.handleMemberJoined(ctx, inner)
-		return
+		return func(ctx context.Context) { a.handleMemberJoined(ctx, inner) }
 	case evtAppHomeOpened:
-		a.handleHomeOpened(ctx, inner)
-		return
+		return func(ctx context.Context) { a.handleHomeOpened(ctx, inner) }
 	case evtAppContextChanged:
 		a.handleContextChanged(inner)
-		return
+		return nil
 	case evtAgentSessionStopped:
-		a.handleSessionStopped(ctx, inner)
-		return
+		return func(ctx context.Context) { a.handleSessionStopped(ctx, inner) }
 	}
 	a.Logger.Debug("slack: inbound event", "type", inner.Type, "channel", inner.Channel,
 		"ts", inner.TS, "thread_ts", inner.ThreadTS, "user", inner.User,
 		"subtype", inner.SubType, "from_bot", inner.BotID != "")
 	if !a.acceptEvent(inner) {
-		return
+		return nil
 	}
 	// A reply under a decision is an answer, and one under a conversation a
 	// message to its agent, in a DM or a channel, served or not: the decision
 	// or the conversation went there on purpose.
-	if a.answerDecisionReply(ctx, inner) {
-		return
+	if answer, ok := a.answerDecisionReply(ctx, inner); ok {
+		return answer
 	}
 	if inner.isDM() {
 		switch a.dmMode() {
@@ -1971,27 +1990,27 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 			// loop); a file_share is a human message, so an image-only DM
 			// still gets the redirect instead of silence.
 			if inner.BotID == "" && routableSubtype(inner.SubType) {
-				a.postDMRedirect(ctx, inner.Channel)
+				return func(ctx context.Context) { a.postDMRedirect(ctx, inner.Channel) }
 			}
-			return
+			return nil
 		case DMModeIgnore:
-			return
+			return nil
 		}
 	} else if !a.channelServed(inner.Channel) {
 		// A deliberate mention in an unserved channel gets one ephemeral
 		// notice so the silence does not read as an outage; everything else
 		// is dropped.
 		if inner.Type == evtAppMention && inner.BotID == "" && inner.User != "" {
-			a.postChannelNotServed(ctx, inner.Channel, inner.User)
+			return func(ctx context.Context) { a.postChannelNotServed(ctx, inner.Channel, inner.User) }
 		}
-		return
+		return nil
 	}
 	threadReplyOnly := inner.threadReplyOnly()
 	msg, ok := inner.toInboundMessage(threadReplyOnly)
 	if !ok {
 		a.Logger.Debug("slack: event not routable as a message", "type", inner.Type,
 			"channel", inner.Channel, "ts", inner.TS, "thread_reply_only", threadReplyOnly)
-		return
+		return nil
 	}
 	// The inactive-thread gate runs before the dedup claim: a mention in a
 	// thread arrives as both a message and an app_mention event, and when the
@@ -2011,20 +2030,22 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 		// bot anywhere in it still addresses the bot.
 		if a.addressesOtherUser(ctx, inner.Text) {
 			a.Logger.Debug("slack: reply addressed to another user ignored", "channel", inner.Channel, "thread", msg.ThreadID)
-			return
+			return nil
 		}
 		active, muted, closed, lifetime := a.threadGate(ctx, inner.Channel, msg.ThreadID)
 		if !active {
+			a.Logger.Debug("slack: reply in inactive thread ignored", "channel", inner.Channel, "thread", msg.ThreadID)
 			// A mention is not told the conversation ended: its app_mention
 			// twin gets the help, which says how to start a new one, so the
 			// notice would answer the same message twice. Which twin lands
 			// first is a race, so the message copy has to recognise the
 			// mention itself.
 			if closed && !a.mentionsBot(ctx, inner.Text) {
-				a.noticeThreadClosed(ctx, inner.Channel, msg.ThreadID, inner.User, lifetime)
+				return func(ctx context.Context) {
+					a.noticeThreadClosed(ctx, inner.Channel, msg.ThreadID, inner.User, lifetime)
+				}
 			}
-			a.Logger.Debug("slack: reply in inactive thread ignored", "channel", inner.Channel, "thread", msg.ThreadID)
-			return
+			return nil
 		}
 		// A muted thread is the people's: a reply that does not mention the bot
 		// is dropped before the access check and the dedup claim, so it starts
@@ -2035,58 +2056,70 @@ func (a *Adapter) handleInbound(ctx context.Context, inner slackInnerEvent, even
 		// the rest.
 		if muted && !a.mentionsBot(ctx, inner.Text) && !a.isMuteCommand(msg) {
 			a.Logger.Debug("slack: reply in muted thread ignored", "channel", inner.Channel, "thread", msg.ThreadID)
-			return
+			return nil
 		}
 	}
 	if a.seenMessage(inner.Channel, msg.MessageID) {
 		a.Logger.Info("slack: dropping duplicate message delivery", "channel", inner.Channel, "ts", msg.MessageID)
-		return
+		return nil
 	}
 	// A message that is one of the gateway's command words alone is that
 	// command: usage, help, login, logout, agents, mute (bareCommands). There is no
 	// slash form of any of them: Slack's composer keeps a message that starts
 	// with "/" for its own commands, so such a message reached the bot only
 	// after a mention, and anything it carries now goes to the agent like any
-	// other text. Read before dispatch, so a busy thread answers the command
-	// instead of the busy notice; bareCommandFor names the messages that keep
+	// other text. A command runs at once, not behind the thread's turn; one
+	// that leaves the message to the agent (a stop or a mute beside an open
+	// approval) queues it then. bareCommandFor names the messages that keep
 	// the word instead.
 	if bare := a.bareCommandFor(msg); bare != nil {
 		bare.Root = msg.MessageID == msg.ThreadID
 		bare.TS = msg.MessageID
-		consumed := false
-		if bare.Name == cmdAgents {
-			// The listing reads the agent catalogue at the kagent controller,
-			// which serves it to a human identity, so it runs as the caller.
-			a.listAgents(a.withCallerToken(ctx, msg.Subject), msg, inner.Channel)
-			consumed = true
-		} else {
-			consumed = a.handleCommand(ctx, bare, msg.Subject, inner.Channel, msg.ThreadID)
-		}
-		if consumed {
-			a.Logger.Debug("slack: command consumed", "command", bare.Name, "channel", inner.Channel, "thread", msg.ThreadID)
-			return
+		return func(ctx context.Context) {
+			if bare.Name == cmdAgents {
+				// The listing reads the agent catalogue at the kagent controller,
+				// which serves it to a human identity, so it runs as the caller.
+				a.listAgents(a.withCallerToken(ctx, msg.Subject), msg, inner.Channel)
+				return
+			}
+			if a.handleCommand(ctx, bare, msg.Subject, inner.Channel, msg.ThreadID) {
+				a.Logger.Debug("slack: command consumed", "command", bare.Name, "channel", inner.Channel, "thread", msg.ThreadID)
+				return
+			}
+			a.queueMessage(ctx, msg, inner.Channel, eventID)(ctx)
 		}
 	}
-	if err := a.dispatch(ctx, msg, inner.Channel); err != nil {
-		switch {
-		case errors.Is(err, errThreadBusy):
-			// A bare "stop" while a turn runs means a stop; it is read here, where
-			// the busy state is decided, so an idle thread still hands the word to
-			// the agent (or to a paused prompt as a deny) as before.
-			if isBareStop(msg.Text) && a.handleCommand(ctx, &command{Name: cmdStop}, msg.Subject, inner.Channel, msg.ThreadID) {
+	// A bare "stop" while a turn runs means a stop; an idle thread still hands
+	// the word to the agent, or to a paused prompt as a deny.
+	if isBareStop(msg.Text) && a.turnRunning(msg.ThreadID) {
+		return func(ctx context.Context) {
+			if a.handleCommand(ctx, &command{Name: cmdStop}, msg.Subject, inner.Channel, msg.ThreadID) {
 				a.Logger.Debug("slack: bare stop consumed as the stop command", "channel", inner.Channel, "thread", msg.ThreadID)
 				return
 			}
-			if _, perr := a.apiClient().postNote(ctx, inner.Channel, busyNotice, msg.ThreadID); perr != nil {
-				a.Logger.Warn("slack: post busy notice failed", "thread", msg.ThreadID, "error", perr)
-			}
-		case isShareRefusal(err):
-			a.Logger.Info("slack: collaborator turn refused", "channel", inner.Channel, "thread", msg.ThreadID, "error", err)
-		case !errors.Is(err, context.Canceled):
-			// An agent the sender may not use is a refusal, not a failure.
-			a.Logger.Log(ctx, failureLogLevel(err), "slack: dispatch error", "channel", inner.Channel, "failure_class", channels.ClassifyFailure(err), "error", err)
+			a.queueMessage(ctx, msg, inner.Channel, eventID)(ctx)
 		}
 	}
+	return a.queueMessage(ctx, msg, inner.Channel, eventID)
+}
+
+// receive runs handleInbound for one event before the transport answers Slack,
+// and the rest of the event's handling in the background.
+func (a *Adapter) receive(ctx context.Context, inner slackInnerEvent, eventID string) {
+	if rest := a.handleInbound(ctx, inner, eventID); rest != nil {
+		a.background(rest)
+	}
+}
+
+// lifecycleCtx is the adapter lifecycle context background work runs on;
+// context.Background() before Start.
+func (a *Adapter) lifecycleCtx() context.Context {
+	a.bgMu.Lock()
+	defer a.bgMu.Unlock()
+	if a.baseCtx == nil {
+		return context.Background()
+	}
+	return a.baseCtx
 }
 
 // postDispatchFailureNote posts the failure note of a turn that died with
@@ -2370,9 +2403,10 @@ func (a *Adapter) dispatchFrom(ctx context.Context, msg channels.InboundMessage,
 
 	// Serialize turns per thread: a thread maps to one kagent session, and
 	// concurrent turns on one session interleave its event log into incoherent
-	// history. Reject a turn that arrives while another is in flight rather than
-	// queueing it, so a stale follow-up is not answered minutes late. Acquire
-	// before taking the pending task so a rejected turn leaves it for later.
+	// history. Reject a turn that arrives while another is in flight; its caller
+	// (the thread's inbox, a replay) waits for the slot and sends it again.
+	// Acquire before taking the pending task so a rejected turn leaves it for
+	// later.
 	if !a.acquireThread(msg.ThreadID) {
 		return errThreadBusy
 	}
@@ -2493,6 +2527,11 @@ func (a *Adapter) dispatchFrom(ctx context.Context, msg channels.InboundMessage,
 			}
 		},
 		onFailure: func(err error) { a.postDispatchFailureNote(ctx, slackChannel, msg.ThreadID, msg.Attachments, err) },
+		onSent: func() {
+			if isQueuedContext(ctx) {
+				a.unqueueTurn(ctx, slackChannel, msg.ThreadID, msg.MessageID)
+			}
+		},
 	})
 }
 

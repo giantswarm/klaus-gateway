@@ -21,13 +21,17 @@ func newMemoryRecorder() *channels.Facade {
 	return &channels.Facade{Routes: memory.New(), ThreadTTL: channels.DefaultThreadTTL}
 }
 
-// ThreadIdle reports whether threadID's single turn slot is free. A turn that
-// arrives while another holds the slot is refused as busy and never
-// dispatched, so a test that sends a follow-up into a thread it has already
-// driven waits for this before sending.
+// ThreadIdle reports whether threadID's single turn slot is free and no
+// drainer runs its inbox: every message the thread got has run, and left the
+// row's inbox, or waits behind a prompt.
 func (a *Adapter) ThreadIdle(threadID string) bool {
 	idle := false
 	a.withThread(threadID, func(st *threadState) { idle = st.slot == nil })
+	a.inboxMu.Lock()
+	defer a.inboxMu.Unlock()
+	if st := a.inboxes[threadID]; st != nil && st.draining {
+		return false
+	}
 	return idle
 }
 
@@ -42,6 +46,14 @@ func SetRecoverBackoff(t interface{ Cleanup(func()) }, delay, maxDelay, window t
 	oldDelay, oldMax, oldWindow := recoverRetryDelay, recoverRetryMax, recoverWindow
 	recoverRetryDelay, recoverRetryMax, recoverWindow = delay, maxDelay, window
 	t.Cleanup(func() { recoverRetryDelay, recoverRetryMax, recoverWindow = oldDelay, oldMax, oldWindow })
+}
+
+// SetRestoredInboxGrace shortens how long a restarted adapter leaves the
+// inboxes it read back alone, for t.
+func SetRestoredInboxGrace(t interface{ Cleanup(func()) }, grace time.Duration) {
+	old := restoredInboxGrace
+	restoredInboxGrace = grace
+	t.Cleanup(func() { restoredInboxGrace = old })
 }
 
 // WaitHeldRestored blocks until RecoverTurns' restore of the held thread state

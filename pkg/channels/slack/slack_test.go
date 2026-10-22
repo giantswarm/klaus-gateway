@@ -119,6 +119,13 @@ func channelMode(a *slackadapter.Adapter) {
 func newEventsAdapter(t *testing.T, gw channels.Gateway, fakeAPIBase string, opts ...func(*slackadapter.Adapter)) (*slackadapter.Adapter, *httptest.Server) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
+	return newEventsAdapterIn(t, ctx, cancel, gw, fakeAPIBase, opts...)
+}
+
+// newEventsAdapterIn is newEventsAdapter started with ctx, which cancel ends:
+// the process signal, for a test of what the adapter does once told to stop.
+func newEventsAdapterIn(t *testing.T, ctx context.Context, cancel context.CancelFunc, gw channels.Gateway, fakeAPIBase string, opts ...func(*slackadapter.Adapter)) (*slackadapter.Adapter, *httptest.Server) {
+	t.Helper()
 	secrets := slackadapter.Secrets{ //nolint:gosec // G101 dummy values used only in tests
 		BotToken:      "dummy-bot-token",
 		SigningSecret: "signing-secret",
@@ -1248,6 +1255,9 @@ type stubGateway struct {
 	// hold, when non-nil, keeps a turn in flight: SendCompletion streams deltas
 	// then blocks until hold is closed, so a test can hold the per-thread slot.
 	hold chan struct{}
+	// afterHold is streamed by the next turn once hold is closed, and taken by
+	// it: a turn that writes, waits, then pauses on a prompt.
+	afterHold []channels.OutboundDelta
 	// interDeltaDelay, when set, pauses between streamed deltas so the
 	// writer's batch ticker can flush mid-turn (e.g. content before an error).
 	interDeltaDelay time.Duration
@@ -1282,6 +1292,16 @@ type stubGateway struct {
 	// recordsErr, when set, fails every thread-record read and write: a
 	// routing store that is down.
 	recordsErr error
+	// listErr, when set, fails the listing of the thread records alone: a
+	// store whose scan times out while its calls on one key answer.
+	listErr error
+}
+
+// failListing makes every later listing of the thread records fail with err.
+func (s *stubGateway) failListing(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.listErr = err
 }
 
 // rec is the stub's thread recorder, created on first use.
@@ -1332,6 +1352,12 @@ func (s *stubGateway) UpdateThreadRecord(ctx context.Context, ch, cid, tid strin
 func (s *stubGateway) ThreadRecords(ctx context.Context, ch string) ([]store.KeyEntry, error) {
 	if s.recordsErr != nil {
 		return nil, s.recordsErr
+	}
+	s.mu.Lock()
+	listErr := s.listErr
+	s.mu.Unlock()
+	if listErr != nil {
+		return nil, listErr
 	}
 	return s.rec().ThreadRecords(ctx, ch)
 }
@@ -1506,7 +1532,8 @@ func (s *stubGateway) SendCompletion(ctx context.Context, msg channels.InboundMe
 	} else {
 		deltas = s.deltas
 	}
-	hold := s.hold
+	hold, afterHold := s.hold, s.afterHold
+	s.afterHold = nil
 	s.mu.Unlock()
 	if deltas == nil && hold == nil {
 		deltas = []channels.OutboundDelta{{Done: true}}
@@ -1543,6 +1570,15 @@ func (s *stubGateway) SendCompletion(ctx context.Context, msg channels.InboundMe
 			case <-hold:
 			case <-ctx.Done():
 				recordCause()
+				return
+			}
+		}
+		for _, d := range afterHold {
+			select {
+			case ch <- d:
+			case <-ctx.Done():
+				recordCause()
+				return
 			}
 		}
 	}()
@@ -2292,26 +2328,74 @@ func TestSerializeResumeWhileTurnInFlight(t *testing.T) {
 	close(hold)
 }
 
+// queuedNote is what the sender of a message that waits for the thread's
+// running turn is told, privately.
+const queuedNote = "Queued. It runs after the reply in progress."
+
+// Turns on a thread run one at a time. A message written while a turn runs
+// waits in the thread's inbox: its sender is told so, nobody is told the
+// thread is busy, and once the turn ends the waiting messages run in the order
+// they came, each as its own sender's turn.
 func TestSerializeTurnsPerThread(t *testing.T) {
 	fake := newFakeSlackAPI()
 	hold := make(chan struct{})
-	gw := &stubGateway{hold: hold}
-	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+	gw, dispatched := capturingGateway()
+	gw.deltas, gw.hold = []channels.OutboundDelta{{Content: "working"}}, hold
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
+	gw.openConversation(t, "C1", "666.000", "U1", "test-agent")
+	require.NoError(t, gw.rec().UpdateThreadRecord(t.Context(), "slack", "C1", "666.000", func(e *store.Entry, _ bool) bool {
+		e.Granted = []string{"U2"}
+		return true
+	}))
 
 	// Turn A holds the thread (blocks in SendCompletion until hold closes).
-	gw.openConversation(t, "D1", "666.000", "U1", "test-agent")
-	sendEvent(t, srv, dmEvent("U1", "first", "666.000"))
-	fake.waitForPath(t, "reactions.add", 1) // A acquired the thread and started
+	sendEvent(t, srv, mention("U1", "first", "666.000", ""))
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 20*time.Millisecond)
 
-	// Turn B on the same thread while A is in flight -> rejected with a notice.
-	// A distinct ts: a real second message is never a redelivery of the first.
-	sendEvent(t, srv, dmThreadEvent("U1", "second", "667.000", "666.000"))
+	sendEvent(t, srv, threadReply("U2", "second", "667.000", "666.000"))
+	sendEvent(t, srv, threadReply("U1", "third", "668.000", "666.000"))
 	require.Eventually(t, func() bool {
-		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Still answering")
-	}, flowWait, 20*time.Millisecond, "expected a busy notice for the second turn")
+		return ephemeralTo(fake, "U2", queuedNote) && ephemeralTo(fake, "U1", queuedNote)
+	}, flowWait, 20*time.Millisecond, "each sender is told the message waits")
+	require.Equal(t, 1, gw.dispatchCount(), "a queued message waits for the running turn")
 
-	require.Equal(t, 1, gw.dispatchCount(), "second turn is rejected before reaching the agent")
 	close(hold)
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 3 }, flowWait, 20*time.Millisecond,
+		"the queued messages run once the turn ends")
+	got := dispatched()
+	require.Equal(t, []string{"second", "third"}, []string{got[1].Text, got[2].Text}, "in the order they came")
+	require.Equal(t, []string{"U2", "U1"}, []string{got[1].SenderID, got[2].SenderID}, "each turn is its sender's")
+	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "Still answering", "nobody is told the thread is busy")
+}
+
+// Five messages wait behind a running turn at most. The sixth is not queued,
+// and its sender is told; the five run once the turn ends, in order.
+func TestSerializeTurnsPerThread_SixthQueuedMessageIsRefused(t *testing.T) {
+	fake := newFakeSlackAPI()
+	hold := make(chan struct{})
+	gw, dispatched := capturingGateway()
+	gw.deltas, gw.hold = []channels.OutboundDelta{{Content: "working"}}, hold
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
+	gw.openConversation(t, "D1", "666.000", "U1", "test-agent")
+
+	sendEvent(t, srv, dmEvent("U1", "first", "666.000"))
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 20*time.Millisecond)
+	for i := 1; i <= 6; i++ {
+		sendEvent(t, srv, dmThreadEvent("U1", fmt.Sprintf("q%d", i), fmt.Sprintf("666.%03d", i), "666.000"))
+	}
+	require.Eventually(t, func() bool {
+		return ephemeralTo(fake, "U1", "5 messages already wait for the agent in this thread, so this one was not queued.")
+	}, flowWait, 20*time.Millisecond, "the sixth sender is told the message was not queued")
+
+	close(hold)
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 6 }, flowWait, 20*time.Millisecond)
+	require.Never(t, func() bool { return gw.dispatchCount() > 6 }, 300*time.Millisecond, 20*time.Millisecond,
+		"the refused message never runs")
+	var texts []string
+	for _, m := range dispatched()[1:] {
+		texts = append(texts, m.Text)
+	}
+	require.Equal(t, []string{"q1", "q2", "q3", "q4", "q5"}, texts)
 }
 
 // A turn that dies before its stream starts (the agent lookup or the send fails) must

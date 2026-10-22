@@ -254,6 +254,7 @@ func (a *Adapter) deliverInFlight(ctx context.Context, turn channels.InFlightTur
 	msg.Subject = slackUser
 	msg.BearerToken = token
 	msg.MessageID = triggerTS
+	a.unqueueTurn(ctx, slackChannel, threadID, triggerTS)
 	var initiator string
 	if slackUser != "" {
 		initiator = a.accessPolicy().SetInitiator(ctx, slackChannel, threadID, slackUser)

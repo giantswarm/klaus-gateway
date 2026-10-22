@@ -109,7 +109,8 @@ func (a *Adapter) acquireThread(threadID string) bool {
 }
 
 // releaseThread frees the thread's turn slot and runs any deferred replays,
-// each on its own goroutine, outside the lock.
+// each on its own goroutine, outside the lock, and the thread's inbox when its
+// messages wait behind a prompt the turn may have answered.
 func (a *Adapter) releaseThread(threadID string) {
 	var waiters []func()
 	a.withThread(threadID, func(st *threadState) {
@@ -120,6 +121,7 @@ func (a *Adapter) releaseThread(threadID string) {
 	for _, waiter := range waiters {
 		a.background(func(_ context.Context) { waiter() })
 	}
+	a.wakeInbox(threadID)
 }
 
 // stopThread cancels the thread's in-flight turn, reporting whether there was
@@ -128,9 +130,8 @@ func (a *Adapter) releaseThread(threadID string) {
 // it registers a cancelable turn; a stop landing in that window is recorded
 // on the slot for registerTurn to consume, so it still stops the turn. The
 // sender's own token mint runs before the slot is taken, so a "stop" sent
-// during it finds no turn: it is dispatched like any message and races the
-// first for the slot, so it becomes a turn for the agent, or it finds the
-// thread busy and stops the turn.
+// during it finds no turn: it is queued like any message and becomes a turn
+// for the agent after the first.
 func (a *Adapter) stopThread(threadID string) bool {
 	stopped := false
 	a.withThread(threadID, func(st *threadState) {

@@ -46,25 +46,31 @@ func openThread(t *testing.T, gw *stubGateway, fake *fakeSlackAPI) (*slackadapte
 }
 
 // mute while the agent answers stops the answer the way stop does and mutes
-// the thread, with one note that says both.
+// the thread, with one note that says both. The message queued behind the
+// answer is dropped, and its sender is told.
 func TestMuteBusy_RunningTurnIsStopped(t *testing.T) {
 	fake := newFakeSlackAPI()
 	hold := make(chan struct{})
 	defer close(hold)
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "thinking"}}, hold: hold}
 	a, srv := openThread(t, gw, fake)
+	sendEvent(t, srv, threadReply("U1", "and the nodes?", "500.001", "500.000"))
 
-	sendEvent(t, srv, threadReply("U1", "mute", "500.001", "500.000"))
+	sendEvent(t, srv, threadReply("U1", "mute", "500.002", "500.000"))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), stoppedMutedNote)
 	}, flowWait, 20*time.Millisecond)
+	require.Eventually(t, func() bool { return ephemeralTo(fake, "U1", parkedDroppedNote) },
+		flowWait, 20*time.Millisecond, "the queued message's sender is told")
 	waitThreadIdle(t, a, "500.000")
 
 	require.Len(t, gw.sendCauseList(), 1)
 	require.ErrorIs(t, gw.sendCauseList()[0], context.Canceled, "the running turn's send was cancelled")
-	require.Equal(t, "500.001", mutedAt(t, gw.rec(), "500.000"))
+	require.Equal(t, "500.002", mutedAt(t, gw.rec(), "500.000"))
 	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), mutedNote, "one note, not two")
-	require.Equal(t, 1, gw.dispatchCount(), "the word is consumed")
+	require.Never(t, func() bool { return gw.dispatchCount() > 1 }, 300*time.Millisecond, 20*time.Millisecond,
+		"the word is consumed, and the queued message runs nothing")
+	require.False(t, heldIn(t, gw.rec(), "C1", "500.000"), "the queue is gone from the row")
 }
 
 // Someone who may not instruct the agent gets the not-permitted note: the
@@ -266,7 +272,7 @@ func restartWithPrompt(t *testing.T, prompt channels.OutboundDelta) (*fakeSlackA
 	a1, srv1 := newEventsAdapter(t, gw1, api.URL, channelMode)
 	gw1.openConversation(t, "C1", "600.000", "U1", "test-agent")
 	sendEvent(t, srv1, mention("U1", "clean up", "600.000", ""))
-	require.Eventually(t, func() bool { return heldIn(t, shared, "C1", "600.000") }, flowWait, 20*time.Millisecond,
+	require.Eventually(t, func() bool { return parkedIn(t, shared, "C1", "600.000", "pending") }, flowWait, 20*time.Millisecond,
 		"the paused prompt is in the thread's row")
 	waitThreadIdle(t, a1, "600.000")
 	require.NoError(t, a1.Stop(context.Background()))

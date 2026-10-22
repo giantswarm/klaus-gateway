@@ -14,11 +14,11 @@ import (
 // this package by export_test.go.
 const flowWait = slackadapter.FlowWait
 
-// waitThreadIdle blocks until the adapter's turn slot for threadID is free.
-// The adapter runs one turn per thread and refuses a turn that arrives while
-// another holds the slot with the busy notice, dropping it for good, so a test
-// that sends a follow-up into a thread it has already driven must wait for the
-// previous turn to finish rather than for it to have merely started.
+// waitThreadIdle blocks until the adapter's turn slot for threadID is free and
+// the thread's inbox is drained. The adapter runs one turn per thread and
+// queues a message that arrives while another holds the slot, so a test that
+// asserts on what a thread's turns did must wait for them to finish rather
+// than for the last one to have merely started.
 func waitThreadIdle(t *testing.T, a *slackadapter.Adapter, threadID string) {
 	t.Helper()
 	require.Eventually(t, func() bool { return a.ThreadIdle(threadID) }, flowWait, 10*time.Millisecond,
