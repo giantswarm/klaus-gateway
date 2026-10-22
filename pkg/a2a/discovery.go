@@ -41,7 +41,7 @@ type AgentInfo struct {
 	// Agent embeds its Harness.
 	Harness string
 	// Unavailable is empty for a selectable agent. Otherwise it says why the
-	// Agent cannot start a conversation: its Ready condition is not True.
+	// Agent cannot start a conversation: it never had a ready revision.
 	Unavailable string
 }
 
@@ -50,9 +50,9 @@ func (a AgentInfo) Ref() string {
 	return a.Namespace + "/" + a.Name
 }
 
-// ListAgents returns the selectable Agents of the caller's roster: the ones
-// whose Ready condition is True, in every namespace the controller lets the
-// caller list. Agents that are not ready are left out; selecting one by name
+// ListAgents returns the selectable Agents of the caller's roster (agentInfo
+// says which), in every namespace the controller lets the caller list. Agents
+// that are not selectable are left out; selecting one by name
 // is refused with the reason (CardInfo). The roster is fetched as the caller
 // on every call: the controller answers each person with their own Agents, so
 // no answer is kept for another call.
@@ -237,8 +237,10 @@ func (c *Client) fetchRoster(ctx context.Context) ([]AgentInfo, error) {
 // agentInfo derives the roster entry from an Agent: the annotations from its
 // metadata (its AgentTemplate's when it carries none), the description and
 // ModelConfig from the template it references or embeds, the Harness it
-// references or the runtime of the one it embeds, the readiness from
-// status.conditions.
+// references or the runtime of the one it embeds, the readiness from its
+// status. An Agent is selectable once it has a latestSuccessfulRevision: kagent
+// starts new Sessions on that revision while a newer one prepares (Ready=False,
+// ActorTemplatePending), as the kagent UI does; one without needs Ready=True.
 func (c *Client) agentInfo(a *apiv1alpha1.Agent, templates map[string]*apiv1alpha1.AgentTemplate) AgentInfo {
 	resource := a.GetResource().GetValue().AsMap()
 	spec := nested(resource, "spec")
@@ -269,7 +271,11 @@ func (c *Client) agentInfo(a *apiv1alpha1.Agent, templates map[string]*apiv1alph
 	if info.IconURL == "" {
 		info.IconURL = c.fallbackIcon(info.Name)
 	}
-	conditions, _ := nested(resource, "status")["conditions"].([]any)
+	status := nested(resource, "status")
+	if stringAt(status, "latestSuccessfulRevision") != "" {
+		return info
+	}
+	conditions, _ := status["conditions"].([]any)
 	if ready, reason := readyCondition(conditions); !ready {
 		info.Unavailable = fmt.Sprintf("Agent %s is not ready: %s", info.Name, reason)
 	}
