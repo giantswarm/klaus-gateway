@@ -42,11 +42,16 @@ type fakeAgent struct {
 	getErr    error
 	deleteErr error
 	tasks     map[a2apkg.TaskID]*a2apkg.Task
+	// reads, when set, script the GetTask calls one by one instead of tasks,
+	// the last one repeating.
+	reads []taskRead
 
 	// subscribeEvents are played back by Subscribe; subscribeErr is yielded as
-	// its first item instead.
+	// its first item instead. subscribeHold, when set, keeps the subscription
+	// open after its events until it is closed.
 	subscribeEvents []a2apkg.Event
 	subscribeErr    error
+	subscribeHold   chan struct{}
 	subscribed      []a2apkg.TaskID
 	subscribedOn    []string
 
@@ -81,6 +86,12 @@ type fakeAgent struct {
 type streamAttempt struct {
 	events []a2apkg.Event
 	err    error
+}
+
+// taskRead is what one GetTask call of the fake answers.
+type taskRead struct {
+	task *a2apkg.Task
+	err  error
 }
 
 func newFakeAgent(events ...a2apkg.Event) *fakeAgent {
@@ -132,7 +143,7 @@ func (a *fakeAgent) Subscribe(ctx context.Context, taskID a2apkg.TaskID) iter.Se
 		a.streamCtx = ctx
 		a.subscribed = append(a.subscribed, taskID)
 		a.subscribedOn = append(a.subscribedOn, pkga2a.AgentRefFromContext(ctx))
-		events, streamErr, hold := a.subscribeEvents, a.subscribeErr, a.hold
+		events, streamErr, hold := a.subscribeEvents, a.subscribeErr, a.subscribeHold
 		a.mu.Unlock()
 		if streamErr != nil {
 			yield(nil, streamErr)
@@ -157,6 +168,10 @@ func (a *fakeAgent) GetTask(_ context.Context, taskID a2apkg.TaskID) (*a2apkg.Ta
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.gotTasks = append(a.gotTasks, taskID)
+	if len(a.reads) > 0 {
+		read := a.reads[min(len(a.gotTasks), len(a.reads))-1]
+		return read.task, read.err
+	}
 	task, ok := a.tasks[taskID]
 	if !ok {
 		return nil, a2apkg.ErrTaskNotFound
@@ -824,7 +839,9 @@ func TestFacade_CompletedTurnIsNotCancelledWhenTheChannelLeavesLate(t *testing.T
 // A shutdown mid-turn (context cause channels.ErrShutdown) leaves the task
 // running at the controller and its record in the routing store, for the next
 // process to resubscribe to; a /stop (a plain cancellation) cancels the task
-// and drops the record.
+// and drops the record. Neither picks the task up again, although the stream
+// ends with an error under them; a shutdown while a broken stream's task is
+// being picked up again leaves it running and recorded the same way.
 func TestFacade_ShutdownLeavesTheTaskRunningAndRecorded(t *testing.T) {
 	key := store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700.0001"}
 	// run starts a turn, waits for its record, ends the turn context with
@@ -849,6 +866,10 @@ func TestFacade_ShutdownLeavesTheTaskRunningAndRecorded(t *testing.T) {
 		}, 2*time.Second, 10*time.Millisecond, "the in-flight task is recorded on the thread's binding")
 		cancel(cause)
 		drain(t, ch)
+		agent.mu.Lock()
+		require.Empty(t, agent.gotTasks, "the task is not picked up again")
+		require.Empty(t, agent.subscribed)
+		agent.mu.Unlock()
 		return agent, routes
 	}
 
@@ -876,6 +897,35 @@ func TestFacade_ShutdownLeavesTheTaskRunningAndRecorded(t *testing.T) {
 		require.True(t, ok, "the thread's binding stays")
 		require.Empty(t, entry.TaskID, "the in-flight record is dropped")
 		require.Nil(t, entry.Resume)
+	})
+
+	t.Run("shutdown while the task is picked up again", func(t *testing.T) {
+		agent := newFakeAgent(submitted(), a2apkg.NewStatusUpdateEvent(taskInfo, a2apkg.TaskStateWorking, nil))
+		agent.tailErr = errors.New("rpc error: code = Unavailable desc = read: connection reset by peer")
+		agent.reads = []taskRead{{task: &a2apkg.Task{ID: taskInfo.TaskID, ContextID: taskInfo.ContextID, Status: a2apkg.TaskStatus{State: a2apkg.TaskStateWorking}}}}
+		agent.subscribeHold = make(chan struct{})
+		f, routes := newA2AFacade(agent)
+		ctx, cancel := context.WithCancelCause(t.Context())
+		defer cancel(nil)
+		ch, err := f.SendCompletion(ctx, slackMsg("long task"))
+		require.NoError(t, err)
+		require.Eventually(t, func() bool {
+			agent.mu.Lock()
+			defer agent.mu.Unlock()
+			return len(agent.subscribed) == 1
+		}, 2*time.Second, 10*time.Millisecond, "the broken stream's task is resubscribed to")
+		entry, _, err := routes.Get(t.Context(), key)
+		require.NoError(t, err)
+		require.Equal(t, string(taskInfo.TaskID), entry.TaskID, "the record stays while the task is picked up again")
+		cancel(channels.ErrShutdown)
+		drain(t, ch)
+
+		agent.mu.Lock()
+		defer agent.mu.Unlock()
+		require.Empty(t, agent.canceled, "a shutdown leaves the task running")
+		entry, _, err = routes.Get(t.Context(), key)
+		require.NoError(t, err)
+		require.Equal(t, string(taskInfo.TaskID), entry.TaskID, "the record survives for the next process")
 	})
 }
 

@@ -71,7 +71,8 @@ const (
 const RecordTurnComplete = "turn_complete"
 
 // RecordTurnRetry is the `record` value of the log line of a turn sent a
-// second time (Facade.SendCompletion).
+// second time (Facade.SendCompletion), or whose task is picked up again after
+// its stream broke (`reason=stream_lost`).
 const RecordTurnRetry = "turn_retry"
 
 // RecordA2AEvent is the `record` value of the debug line written for every
@@ -227,7 +228,7 @@ func (t *TurnTimer) Retry() {
 	delete(t.phases, PhaseStreamEnd)
 }
 
-// Retries is how often the turn was sent again.
+// Retries is how often the turn was sent again, or its task picked up again.
 func (t *TurnTimer) Retries() int {
 	if t == nil {
 		return 0

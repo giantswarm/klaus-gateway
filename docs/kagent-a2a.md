@@ -208,6 +208,33 @@ positional `ask_user_response` under the request's correlation id — by reading
 as the HITL payload of a message that **carries the paused task's id**, so the task resumes in
 place and nothing is left waiting at `input-required`.
 
+## A stream that breaks
+
+A turn's stream can break while its task runs on at the controller: a connection reset, an
+agentgateway or controller rollout, an HTTP/2 stream reset. The message is never sent again: a
+second message would start a second task beside the first. When the stream fails, or closes
+before the task came to rest, and the turn was not stopped, the gateway is not shutting down and
+the turn's deadline has not passed, the gateway picks the task up again, as the person the turn
+ran as (a collaborator through the thread's share):
+
+1. `GetTask` reads the task. A task still working is resubscribed to (`SubscribeToTask`). A task
+   that came to rest meanwhile is rendered from the read: a completed task delivers what the
+   channel has not received of its answer, a paused one its prompt, a failed or canceled one its
+   failure, with the note of that failure.
+2. A resubscription joins the task's stream midway, so its answer text is not streamed: the
+   answer is read back when the task completes, and only the text after what the channel already
+   received is delivered. Tool activity and narration stream live. The reply goes on in the same
+   message.
+3. The first attempt runs at once. A failed attempt, or a stream that breaks again, is tried
+   again after 10 s, doubling up to 2 min, for as long as the turn may run (30 min). A task the
+   controller no longer has ends the turn with the stream's failure, as before.
+
+Each attempt logs `record=turn_retry` with `reason=stream_lost` and the `task_id`, and counts in
+`turn_complete`'s `retries`. The thread's record of the task in flight stays meanwhile, so a
+restart during the pick-up still delivers the turn. A turn a restarted gateway resubscribed to
+is picked up the same way when its stream breaks; only its `turn_retry` records show the
+attempts, as the timeline of such a delivery begins after the resubscription.
+
 ## Stop
 
 `/stop` cancels the gateway-side turn and then calls
