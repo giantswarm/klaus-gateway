@@ -193,6 +193,9 @@ type Adapter struct {
 	// otherwise, so this is what says a workspace is being throttled. Nil
 	// records nothing.
 	RateLimits RateLimitRecorder
+	// Calls counts every Web API call by method and class: ok, permanent,
+	// retryable or converged (slackErrorClass). Nil records nothing.
+	Calls CallRecorder
 
 	gw      channels.Gateway
 	baseCtx context.Context // adapter lifecycle ctx, captured in Start; OnUserLinked's background work (login-replay dispatch and the sign-in confirmation POST) derives from it so shutdown cancels it
@@ -726,7 +729,7 @@ func (a *Adapter) apiClient() *slackAPIClient {
 	if base == "" {
 		base = slackAPIBase
 	}
-	return &slackAPIClient{botToken: a.Secrets.BotToken, baseURL: base, logger: a.Logger, customizeUnsupported: &a.customizeUnsupported, rateLimits: a.RateLimits, authorizeAll: a.authorizeModalOffered()}
+	return &slackAPIClient{botToken: a.Secrets.BotToken, baseURL: base, logger: a.Logger, customizeUnsupported: &a.customizeUnsupported, rateLimits: a.RateLimits, calls: a.Calls, authorizeAll: a.authorizeModalOffered()}
 }
 
 // AgentCardResolver yields an agent's display identity from its A2A AgentCard.

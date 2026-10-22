@@ -79,6 +79,10 @@ const (
 	methodChatStartStream  = "chat.startStream"
 	methodChatAppendStream = "chat.appendStream"
 	methodChatStopStream   = "chat.stopStream"
+	// The methods a refusal can find already done (convergedSlackErrors).
+	methodReactionsAdd    = "reactions.add"
+	methodReactionsRemove = "reactions.remove"
+	methodChatDelete      = "chat.delete"
 	// slackMarkdownBlockMax caps the text of one Block Kit markdown block and
 	// of one streamed message, Slack's 12 000-char limit. A narration passage
 	// is split under it by splitMarkdown, fence close and reopen included; a
@@ -231,11 +235,12 @@ type batchedWriter struct {
 	// streamRecovered marks a stream Slack closed under us as already reopened
 	// once this turn; streamStopped closes the text path quietly for the rest
 	// of the turn (the user pressed Stop); streamFailed closes it as a failure
-	// (Slack kept closing the stream), so the terminal flush reports the reply
-	// as incomplete instead of ending the turn as if it were whole.
+	// (Slack kept closing the stream, or refused a write for good), so the
+	// terminal flush reports the reply as incomplete instead of ending the turn
+	// as if it were whole. It is what every later write returns.
 	streamRecovered bool
 	streamStopped   bool
-	streamFailed    bool
+	streamFailed    error
 	// failedCalls counts the tool calls whose result was an error since this
 	// reply began, so its last message can say so (failedCallsBlocks). Only
 	// touched from run()'s goroutine and the terminal flush after it.
@@ -432,8 +437,12 @@ func (w *batchedWriter) tickFlush(ctx context.Context, now time.Time) {
 // fatal to the turn — the agent keeps working, the reply lands once Slack
 // accepts it again, and only the final flush's failure is reported (as a
 // renderError). Aborting the turn here instead used to cancel the task
-// server-side over a rendering problem (klaus-gateway#242).
+// server-side over a rendering problem (klaus-gateway#242). A refusal no retry
+// fixes is not retried (failPermanently).
 func (w *batchedWriter) noteFlushFailure(now time.Time, err error) {
+	if w.failPermanently(err) {
+		return
+	}
 	w.flushFailures++
 	if w.flushFailures < maxFlushFailures {
 		w.logger.Warn("slack: flush failed, retrying next tick", "failures", w.flushFailures, "error", err)
@@ -443,6 +452,26 @@ func (w *batchedWriter) noteFlushFailure(now time.Time, err error) {
 		w.logger.Warn("slack: flush keeps failing, retrying until the turn ends", "every", flushRetryBackoff, "error", err)
 	}
 	w.flushRetryAt = now.Add(flushRetryBackoff)
+}
+
+// failPermanently reports whether err is a refusal of Slack's that no retry
+// of the write changes (classPermanent). The first one closes the text path
+// for the rest of the turn: what is queued is dropped, and every later write
+// returns err without a call, so the thread gets its failure note at once
+// instead of after the retries a transient failure is worth.
+func (w *batchedWriter) failPermanently(err error) bool {
+	var refusal *apiError
+	if !errors.As(err, &refusal) || slackErrorClass(refusal.method, err) != classPermanent {
+		return false
+	}
+	if w.streamFailed == nil {
+		w.streamFailed = err
+		w.dropStream()
+		w.takeQueued(true)
+		w.logger.Warn("slack: Slack refused the reply for good, the rest of this turn's text is not delivered",
+			"channel", w.channel, "thread", w.threadTS, "error", err)
+	}
+	return true
 }
 
 // finish lands the reply once the stream has ended. A final flush that fails
@@ -472,14 +501,15 @@ func (e *renderError) Unwrap() error { return e.err }
 // Retried up to maxFlushFailures attempts: no later tick will re-send that
 // tail, so a single transient Slack error here would discard it even though the
 // turn completed server-side; a short reply that never hits a ticker flush
-// would otherwise be killable by one such error.
+// would otherwise be killable by one such error. A permanent refusal is not
+// retried.
 func (w *batchedWriter) finalFlush(ctx context.Context) error {
 	var err error
 	for attempt := 1; ; attempt++ {
 		if err = w.closeStream(ctx); err == nil {
 			return nil
 		}
-		if errors.Is(err, errStreamLost) || attempt >= maxFlushFailures || ctx.Err() != nil {
+		if errors.Is(err, errStreamLost) || w.failPermanently(err) || attempt >= maxFlushFailures || ctx.Err() != nil {
 			return err
 		}
 		w.logger.Warn("slack: final flush failed, retrying", "attempt", attempt, "error", err)
@@ -1237,9 +1267,9 @@ func (w *batchedWriter) flush(ctx context.Context) error {
 		w.takeQueued(true) // the reply is closed; drop what is left
 		return nil
 	}
-	if w.streamFailed {
+	if w.streamFailed != nil {
 		w.takeQueued(true)
-		return errStreamLost
+		return w.streamFailed
 	}
 	items := w.takeQueued(false)
 	if len(items) == 0 {
@@ -1263,9 +1293,9 @@ func (w *batchedWriter) closeStream(ctx context.Context) error {
 		w.takeQueued(true)
 		return nil
 	}
-	if w.streamFailed {
+	if w.streamFailed != nil {
 		w.takeQueued(true)
-		return errStreamLost
+		return w.streamFailed
 	}
 	items := w.takeQueued(true)
 	if len(items) == 0 && w.streamTS == "" {
@@ -1666,7 +1696,7 @@ var errStreamLost = errors.New("slack: the reply stream keeps closing")
 func (w *batchedWriter) recoverStream(ctx context.Context, b *streamBatch, chunks []any) error {
 	w.dropStream()
 	if w.streamRecovered {
-		w.streamFailed = true
+		w.streamFailed = errStreamLost
 		w.logger.Warn("slack: the reply stream keeps closing, the rest of this turn's text is not delivered",
 			"channel", w.channel, "thread", w.threadTS)
 		return errStreamLost
@@ -1704,7 +1734,7 @@ func (w *batchedWriter) dropStream() {
 // run() cycle over the same writer.
 func (w *batchedWriter) resetStream() {
 	w.dropStream()
-	w.streamRecovered, w.streamStopped, w.streamFailed = false, false, false
+	w.streamRecovered, w.streamStopped, w.streamFailed = false, false, nil
 	w.failedCalls = 0
 }
 
@@ -1883,6 +1913,18 @@ const (
 	rateLimitExhausted = "exhausted"
 )
 
+// CallRecorder counts every Web API call by method and by how it ended: ok,
+// or the class of the error it failed with (slackErrorClass), so a dashboard
+// tells a refusal no retry fixes from an outage. The observability package
+// implements it with a labelled counter. Nil is fine wherever a recorder is
+// optional.
+type CallRecorder interface {
+	RecordSlackCall(method, class string)
+}
+
+// callOK is the class a call Slack accepted is counted under.
+const callOK = "ok"
+
 // slackHTTPClient bounds every Slack Web API call. Without a timeout a
 // blackholed connection blocks the calling goroutine indefinitely; some call
 // sites hold the per-thread slot while calling (e.g. the users.info lookup
@@ -1940,6 +1982,10 @@ type slackAPIClient struct {
 	// that construct the client directly; every client the adapter builds
 	// carries the adapter's recorder.
 	rateLimits RateLimitRecorder
+	// calls, when set, counts every call under its class. Nil in tests that
+	// construct the client directly; every client the adapter builds carries
+	// the adapter's recorder.
+	calls CallRecorder
 	// authorizeAll adds the "Authorize all" button to every muster server's
 	// Connect prompt (a workspace provider's has none):
 	// the modal it opens lists each muster server the person still has to
@@ -1954,6 +2000,27 @@ func (c *slackAPIClient) noteRateLimited(method, outcome string) {
 		return
 	}
 	c.rateLimits.RecordSlackRateLimit(method, outcome)
+}
+
+// noteCall counts one call under its class: ok when Slack accepted it, else
+// the class of the error it failed with, which for an answer of Slack's is
+// read off its error code. A client built without a recorder counts nothing.
+func (c *slackAPIClient) noteCall(method string, body []byte, err error) {
+	if c.calls == nil {
+		return
+	}
+	if err == nil {
+		var answer struct {
+			OK    bool   `json:"ok"`
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(body, &answer) == nil && answer.OK {
+			c.calls.RecordSlackCall(method, callOK)
+			return
+		}
+		err = &apiError{method: method, code: answer.Error}
+	}
+	c.calls.RecordSlackCall(method, string(slackErrorClass(method, err)))
 }
 
 // identityRejectedErr reports whether err is Slack rejecting a post because of
@@ -2565,11 +2632,11 @@ func (c *slackAPIClient) noteSessionStatusWarnings(r sessionStatusResponse) {
 }
 
 func (c *slackAPIClient) reactionsAdd(ctx context.Context, channel, ts, name string) error {
-	return c.reaction(ctx, "reactions.add", channel, ts, name)
+	return c.reaction(ctx, methodReactionsAdd, channel, ts, name)
 }
 
 func (c *slackAPIClient) reactionsRemove(ctx context.Context, channel, ts, name string) error {
-	return c.reaction(ctx, "reactions.remove", channel, ts, name)
+	return c.reaction(ctx, methodReactionsRemove, channel, ts, name)
 }
 
 func (c *slackAPIClient) reaction(ctx context.Context, method, channel, ts, name string) error {
@@ -2751,7 +2818,7 @@ func streamErr(err error) error {
 // retract the streamed agent bubble when a turn's only reply was a connector
 // sign-in prompt whose button carries a working auto-resume callback.
 func (c *slackAPIClient) deleteMessage(ctx context.Context, channel, ts string) error {
-	_, err := c.postJSON(ctx, "chat.delete", map[string]any{
+	_, err := c.postJSON(ctx, methodChatDelete, map[string]any{
 		paramChannel: channel,
 		paramTS:      ts,
 	})
@@ -3485,7 +3552,8 @@ func (c *slackAPIClient) send(ctx context.Context, method, contentType, payload 
 	return resp.Ts, err
 }
 
-// sendResponse is send answering with the decoded response.
+// sendResponse is send answering with the decoded response. A refusal that
+// finds the call's effect already in place (classConverged) is a success.
 func (c *slackAPIClient) sendResponse(ctx context.Context, method, contentType, payload string) (slackResponse, error) {
 	body, err := c.call(ctx, method, contentType, payload)
 	if err != nil {
@@ -3496,7 +3564,11 @@ func (c *slackAPIClient) sendResponse(ctx context.Context, method, contentType, 
 		return slackResponse{}, fmt.Errorf("slack %s: decode response: %w", method, err)
 	}
 	if !result.OK {
-		return slackResponse{}, &apiError{method: method, code: result.Error}
+		err := &apiError{method: method, code: result.Error}
+		if slackErrorClass(method, err) == classConverged {
+			return slackResponse{}, nil
+		}
+		return slackResponse{}, err
 	}
 	return result, nil
 }
@@ -3527,7 +3599,15 @@ func hasErrorCode(err error, codes ...string) bool {
 	return code != "" && slices.Contains(codes, code)
 }
 
-// call executes one Slack Web API POST and returns the raw response body. A
+// call executes one Slack Web API POST (paced) and counts it under its class
+// (CallRecorder).
+func (c *slackAPIClient) call(ctx context.Context, method, contentType, payload string) ([]byte, error) {
+	body, err := c.paced(ctx, method, contentType, payload)
+	c.noteCall(method, body, err)
+	return body, err
+}
+
+// paced executes one Slack Web API POST and returns the raw response body. A
 // 429 is retried honoring Retry-After: rate limiting is a pacing signal, not a
 // turn-fatal error, and a multi-chunk flush plus tool posts can draw several
 // consecutive 429s against chat.postMessage's ~1 msg/sec/channel limit. A
@@ -3535,7 +3615,7 @@ func hasErrorCode(err error, codes ...string) bool {
 // out, fails the call rather than waiting it out. Any other non-2xx status is
 // an error carrying the status code, not a JSON decode attempt on a non-API
 // body.
-func (c *slackAPIClient) call(ctx context.Context, method, contentType, payload string) ([]byte, error) {
+func (c *slackAPIClient) paced(ctx context.Context, method, contentType, payload string) ([]byte, error) {
 	const maxAttempts = 4
 	for attempt := 1; ; attempt++ {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/"+method, strings.NewReader(payload))

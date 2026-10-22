@@ -2669,7 +2669,7 @@ func TestStream_RecoversOnceThenReportsTheReplyCutShort(t *testing.T) {
 	ft.haltStream("msg-2")
 	w.queueAnswer("third ")
 	require.ErrorIs(t, w.flush(t.Context()), errStreamLost)
-	require.True(t, w.streamFailed)
+	require.ErrorIs(t, w.streamFailed, errStreamLost)
 	require.False(t, w.streamStopped, "the turn does not end quietly; the thread is told")
 
 	var rerr *renderError
@@ -2772,16 +2772,23 @@ func TestRetractRendered_StopsTheStreamBeforeDeleting(t *testing.T) {
 }
 
 // Slack refusing the stop costs the reply its last words, never the working
-// indicator: the session's exit status is a call of its own.
+// indicator: the session's exit status is a call of its own. A refusal another
+// attempt may fix is sent again; a permanent one is not.
 func TestStream_FailedFinalStopStillClearsTheIndicator(t *testing.T) {
-	ft := &fakeThread{failStop: "fatal_error"}
-	_, _, err := runSurfaceWriter(t, ft, "D1",
-		channels.OutboundDelta{Kind: channels.DeltaText, Content: "the answer "},
-		doneDelta(),
-	)
-	var rerr *renderError
-	require.ErrorAs(t, err, &rerr, "a stop Slack keeps refusing is a rendering failure")
-	require.Equal(t, []string{"processing", "active"}, ft.statuses(), "the indicator is cleared anyway")
+	for code, retried := range map[string]bool{"fatal_error": true, "channel_not_found": false} {
+		t.Run(code, func(t *testing.T) {
+			ft := &fakeThread{failStop: code}
+			_, _, err := runSurfaceWriter(t, ft, "D1",
+				channels.OutboundDelta{Kind: channels.DeltaText, Content: "the answer "},
+				doneDelta(),
+			)
+			var rerr *renderError
+			require.ErrorAs(t, err, &rerr, "a stop Slack keeps refusing is a rendering failure")
+			require.Equal(t, code, apiErrorCode(err), "the failure note names Slack's code")
+			require.Equal(t, retried, len(ft.stopStatuses()) > 1, "stops sent: %d", len(ft.stopStatuses()))
+			require.Equal(t, []string{"processing", "active"}, ft.statuses(), "the indicator is cleared anyway")
+		})
+	}
 }
 
 // A prompt the user approves resumes the turn over the same writer. The first

@@ -83,6 +83,25 @@ or `helm/`. Add a line when a review finds a new one.
   most frequent one the gateway runs; it costs at most one store read (#307). A reply under the
   bot's own message (`parent_user_id`) costs one more: the lookup of a decision it may answer or a
   conversation it belongs to, one record under one id (#360, #369).
+- **Some Slack errors are permanent: the same call gets the same answer however often it is
+  sent.** The bot token is refused (`account_inactive`, `invalid_auth`, `not_authed`,
+  `token_expired`, `token_revoked`); the token may not do it (`missing_scope`,
+  `not_allowed_token_type`, `team_access_not_granted`); the channel or the thread is gone or
+  closed to the bot (`channel_not_found`, `invalid_thread_ts`, `is_archived`, `not_in_channel`,
+  `restricted_action`, `restricted_action_non_threadable_channel`,
+  `restricted_action_read_only_channel`, `restricted_action_thread_locked`,
+  `restricted_action_thread_only_channel`, `thread_locked`); the message or the change is refused
+  (`as_user_not_supported`, `cant_delete_message`, `cant_update_message`,
+  `compliance_exports_prevent_deletion`, `edit_window_closed`, `invalid_blocks`,
+  `message_not_found`, `msg_too_long`, `no_text`). `slackErrorClass` holds the table; a reply
+  write refused with one is not retried, and the thread gets its failure note at once. Any other
+  error, a network error, a 5xx, a 429 past its `Retry-After` budget or a code the table does not
+  name, keeps the retries. A stream's `msg_too_long` roll-over and a branded post's unbranded
+  retry come before the table (#529).
+- **Some Slack refusals say the call's effect is already in place.** `already_reacted` on
+  `reactions.add`, `no_reaction` and `message_not_found` on `reactions.remove`, and
+  `message_not_found` on `chat.delete` count as done; on any other method `message_not_found` is
+  permanent (#529).
 
 ## Thread state and the store
 

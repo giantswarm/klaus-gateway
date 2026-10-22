@@ -794,7 +794,10 @@ any string that begins with `Slack bot`, `Slack app-level`, or `Slack user`.
    rendering never fails the turn: flushes keep retrying until the agent finishes, a message
    Slack closed under the app gets one replacement stream, and only a final flush that still
    fails is reported in the thread (the reply is incomplete, with the failed reaction) while
-   the turn still counts as completed. Pressing Slack's stop button ends the stream on Slack's
+   the turn still counts as completed. A refusal no retry fixes (`channel_not_found`,
+   `is_archived`, `invalid_blocks`, a revoked token, …; the table is in
+   [invariants](invariants.md)) is not retried: the rest of the reply is dropped and the
+   thread gets that note at once. Pressing Slack's stop button ends the stream on Slack's
    side: the adapter learns it from the `stopped_by_user` its next call is answered with and
    stops writing — quietly, since the button's own "Stopped by @user" notice already tells
    the thread. `/metrics` counts the lifecycle as
@@ -816,6 +819,14 @@ any string that begins with `Slack bot`, `Slack app-level`, or `Slack user`.
    `sum(rate(klaus_gateway_slack_rate_limited_total[5m])) > 0` for five minutes, then read the
    `method` label to see which call is being held back. Each 429 also writes a debug log line
    with the method, the wait and the attempt.
+
+   Every call through the same client is counted as `klaus_gateway_slack_call_total{method,class}`,
+   under how it ended (`class`): `ok`; `permanent`, an error no retry fixes; `retryable`, one
+   another attempt may fix (a network error, a 5xx, a 429 past its budget, a code the table
+   does not name); or `converged`, a refusal that finds the call's effect already in place (a
+   reaction already there or already gone, a message to delete that is gone), which counts as
+   done. A rise in `permanent` is a permission or configuration problem, such as a revoked
+   token, an archived channel or a missing scope; a rise in `retryable` is an outage.
 
 Turns are serialized per thread: a message that arrives while the thread's previous turn is
 still running gets a brief "still working" notice rather than starting an overlapping turn; the
