@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -164,6 +165,7 @@ func queuedIn(t *testing.T, rec *slackadapter.MemoryRecorder, channelID, threadI
 // one runs it, once. The turn that was running is not run again either: the
 // row records it as left running, and the restart's recovery delivers it.
 func TestRestart_QueuedMessageRunsOnceAfterRestart(t *testing.T) {
+	slackadapter.SetRestoredInboxGrace(t, 0)
 	fake := newFakeSlackAPI()
 	api := fake.server(t)
 	shared := slackadapter.NewMemoryRecorder()
@@ -206,6 +208,89 @@ func TestRestart_QueuedMessageRunsOnceAfterRestart(t *testing.T) {
 	require.Eventually(t, func() bool { return strings.Contains(fake.streamedText(), "the nodes are fine") },
 		flowWait, 20*time.Millisecond, "the recovery delivers the turn left running")
 	require.False(t, heldIn(t, shared, "D1", "555.000"), "the inbox is empty")
+}
+
+// A message whose turn the agent took is not sent again by the next process,
+// also when the gateway stops in the turn's last steps, after the answer
+// landed: the message left the inbox when the turn went to the agent.
+func TestRestart_TurnStoppedInItsTailDoesNotRunAgain(t *testing.T) {
+	slackadapter.SetRestoredInboxGrace(t, 0)
+	fake := newFakeSlackAPI()
+	var stopping atomic.Bool
+	tail := make(chan struct{})
+	var once sync.Once
+	fake.setDelayIf(func(path string, _ map[string]any) time.Duration {
+		if path != "reactions.remove" || stopping.Load() {
+			return 0
+		}
+		once.Do(func() { close(tail) })
+		return flowWait
+	})
+	api := fake.server(t)
+	shared := slackadapter.NewMemoryRecorder()
+	openConversationIn(t, shared, "D1", "555.000", "U1", "test-agent")
+
+	gw1, captured1 := captureDispatch(shared)
+	gw1.deltas = []channels.OutboundDelta{{Content: "the nodes are fine"}, {Done: true}}
+	a1, srv1 := newEventsAdapter(t, gw1, api.URL)
+	sendEvent(t, srv1, dmEvent("U1", "check the nodes", "555.000"))
+	select {
+	case <-tail:
+	case <-time.After(flowWait):
+		t.Fatal("the turn never reached the swap of its reaction")
+	}
+	require.Contains(t, fake.streamedText(), "the nodes are fine", "the answer landed before the stop")
+	stopping.Store(true)
+	require.NoError(t, a1.Stop(context.Background()))
+	require.Len(t, captured1(), 1)
+
+	gw2, captured2 := captureDispatch(shared)
+	a2, _ := newEventsAdapter(t, gw2, api.URL)
+	a2.RecoverTurns()
+	a2.WaitHeldRestored()
+	require.Never(t, func() bool { return len(captured2()) > 0 }, 500*time.Millisecond, 20*time.Millisecond,
+		"the message is not sent to the agent again")
+	require.False(t, queuedIn(t, shared, "D1", "555.000", "check the nodes"))
+}
+
+// In a rolling update the old process still runs a turn, with a message queued
+// behind it, when the new one starts and gets the thread's next message. The
+// new one leaves the inbox it read back alone for a while, and the old one,
+// once told to stop, starts no queued message: each queued message runs once,
+// in order, on the new process.
+func TestRestart_OverlappingProcessesRunAQueuedMessageOnce(t *testing.T) {
+	slackadapter.SetRestoredInboxGrace(t, 3*time.Second)
+	fake := newFakeSlackAPI()
+	api := fake.server(t)
+	shared := slackadapter.NewMemoryRecorder()
+	openConversationIn(t, shared, "D1", "555.000", "U1", "test-agent")
+
+	hold := make(chan struct{})
+	gw1, captured1 := captureDispatch(shared)
+	gw1.deltas, gw1.hold = []channels.OutboundDelta{{Content: "looking"}}, hold
+	ctx1, signal1 := context.WithCancel(context.Background())
+	_, srv1 := newEventsAdapterIn(t, ctx1, signal1, gw1, api.URL)
+	sendEvent(t, srv1, dmEvent("U1", "check the nodes", "555.000"))
+	require.Eventually(t, func() bool { return len(captured1()) == 1 }, flowWait, 20*time.Millisecond)
+	sendEvent(t, srv1, dmThreadEvent("U1", "and the pods?", "556.000", "555.000"))
+
+	gw2, captured2 := captureDispatch(shared)
+	a2, srv2 := newEventsAdapter(t, gw2, api.URL)
+	a2.RecoverTurns()
+	a2.WaitHeldRestored()
+	sendEvent(t, srv2, dmThreadEvent("U1", "and the logs?", "557.000", "555.000"))
+	require.Never(t, func() bool { return len(captured2()) > 0 }, 500*time.Millisecond, 20*time.Millisecond,
+		"the new process runs nothing while the old one may still run the inbox")
+
+	signal1()
+	close(hold)
+	require.Never(t, func() bool { return len(captured1()) > 1 || len(captured2()) > 0 }, 500*time.Millisecond, 20*time.Millisecond,
+		"the old process, told to stop, starts no queued message")
+	require.Eventually(t, func() bool { return len(captured2()) == 2 }, flowWait, 20*time.Millisecond,
+		"the new process runs the queued messages once the old one can no longer")
+	got := captured2()
+	require.Equal(t, []string{"and the pods?", "and the logs?"}, []string{got[0].Text, got[1].Text})
+	require.Never(t, func() bool { return len(captured1()) > 1 || len(captured2()) > 2 }, 300*time.Millisecond, 20*time.Millisecond)
 }
 
 // A prompt a task paused on stays answerable across a restart: the Approve

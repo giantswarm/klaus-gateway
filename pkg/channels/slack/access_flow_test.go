@@ -161,6 +161,32 @@ func TestAccess_NonInitiatorCannotGrant(t *testing.T) {
 	require.NotContains(t, allText(fake.pathCalls("response")), "allowed", "no grant confirmation for a non-initiator click")
 }
 
+// A newcomer's message written while a turn runs waits in the thread's inbox,
+// and the initiator is asked to let them in when it runs, not when it is
+// queued.
+func TestAccess_QueuedNewcomerIsAskedForWhenTheMessageRuns(t *testing.T) {
+	fake := newFakeSlackAPI()
+	hold := make(chan struct{})
+	gw := &stubGateway{hold: hold}
+	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
+	gw.openConversation(t, "C1", "100.000", "U001", "test-agent")
+	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
+		flowWait, 50*time.Millisecond, "the initiator's turn holds the thread")
+
+	sendEvent(t, srv, mention("U999", "what broke?", "200.000", "100.000"))
+	require.Eventually(t, func() bool { return ephemeralTo(fake, "U999", queuedNote) },
+		flowWait, 50*time.Millisecond, "the newcomer's message is queued")
+	require.False(t, ephemeralTo(fake, "U001", "wants to join this thread"), "nobody is asked while the message waits")
+
+	close(hold)
+	require.Eventually(t, func() bool {
+		return ephemeralTo(fake, "U001", "wants to join this thread") &&
+			ephemeralTo(fake, "U999", "waiting for the thread owner to allow you")
+	}, flowWait, 50*time.Millisecond, "the initiator is asked once the message runs")
+	require.Equal(t, 1, gw.dispatchCount(), "the newcomer's message does not reach the agent")
+}
+
 // A grant clicked while a turn holds the thread slot must not lose the parked
 // message: the replay is deferred and delivered once the running turn releases
 // the slot.

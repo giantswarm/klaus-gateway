@@ -48,6 +48,14 @@ func SetRecoverBackoff(t interface{ Cleanup(func()) }, delay, maxDelay, window t
 	t.Cleanup(func() { recoverRetryDelay, recoverRetryMax, recoverWindow = oldDelay, oldMax, oldWindow })
 }
 
+// SetRestoredInboxGrace shortens how long a restarted adapter leaves the
+// inboxes it read back alone, for t.
+func SetRestoredInboxGrace(t interface{ Cleanup(func()) }, grace time.Duration) {
+	old := restoredInboxGrace
+	restoredInboxGrace = grace
+	t.Cleanup(func() { restoredInboxGrace = old })
+}
+
 // WaitHeldRestored blocks until RecoverTurns' restore of the held thread state
 // has read the rows back, so a test acts on the restored state.
 func (a *Adapter) WaitHeldRestored() {

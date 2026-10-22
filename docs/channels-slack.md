@@ -823,13 +823,16 @@ any string that begins with `Slack bot`, `Slack app-level`, or `Slack user`.
 Turns are serialized per thread, and a message for the thread's conversation waits for its
 turn in the thread's **inbox**, a queue in the thread's row. The message is written there
 before Slack is answered: one store write after the inactive-thread gate's read, in both
-transports (the Events API's `200`, the Socket Mode envelope's acknowledgement). A gateway that
-dies between the answer and the turn therefore loses nothing: the next process runs the inbox
-at start, in order, and skips the message the row records as the turn left running, which the
-restart's recovery delivers. A message in a thread with no conversation writes nothing: a reply
-is dropped at the gate, a mention gets the help. A command word (`usage`, `help`, `mute`, …) is
-answered at once, not queued; a `stop` or `mute` beside an open approval card, which the word
-rejects, is queued as the card's answer.
+transports (the Events API's `200`, the Socket Mode envelope's acknowledgement). It leaves the
+inbox when its turn goes to the agent. A gateway that dies between the answer and the turn
+therefore loses nothing: on a routing store that outlives the process (`valkey`, `bolt`) the next
+process runs the inbox, in order, and the message whose turn was already the agent's is
+delivered by the restart's recovery instead. It does so a minute after it starts: in a rolling
+update the process it replaces still runs the inboxes until it is told to stop, and from then on
+that one hands no queued message to the agent. A message in a thread with no conversation writes
+nothing: a reply is dropped at the gate, a mention gets the help. A command word (`usage`,
+`help`, `mute`, …) is answered at once, not queued; a `stop` or `mute` beside an open approval
+card, which the word rejects, is queued as the card's answer.
 
 - **A message that arrives while a turn runs** waits for it and runs after it, the waiting
   messages in the order they came, each as its sender's turn. Its sender is told privately:
@@ -837,7 +840,8 @@ rejects, is queued as the card's answer.
 - **Everything about a message is decided when it runs**, not when it is queued: the access
   check (a newcomer's Allow), the sign-in, a workspace prompt.
 - **Five messages wait at most.** The sixth is not queued, and its sender is told so and to
-  send it again once the others have run. A message that waits longer than 24 hours is dropped.
+  send it again once the others have run. A message that waits longer than 24 hours is dropped,
+  and its sender is told.
 - **A prompt waits for its answer.** When the running turn pauses on an approval or a
   question, the messages written before the prompt do not answer it: the next message written
   after it, or a click, does, also when five messages wait, and the waiting messages run after
@@ -869,7 +873,8 @@ Three structured log records (`record=…`, JSON fields) tell a turn's story; jo
   milliseconds since the events POST (or the Socket Mode frame) arrived: `token_mint_ms`,
   `roster_ms`, `dispatch_ms`, `create_session_ms`, `first_event_ms`,
   `first_text_ms`, `task_done_ms`, `stream_end_ms`, `final_flush_ms`, `total_ms`. A phase that
-  did not happen (no session created on a follow-up) is absent. A turn a
+  did not happen (no session created on a follow-up) is absent. A message that waited in its
+  thread's inbox carries the wait in every mark. A turn a
   previous process left running and this one delivered after a restart gets a record too, its
   timeline starting at the delivery. Its tokens are the turn's full total, the calls made before
   the restart included; the previous process's `shutdown` record of the same `task_id` holds only

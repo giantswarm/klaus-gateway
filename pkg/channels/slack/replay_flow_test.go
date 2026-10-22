@@ -194,7 +194,7 @@ func TestLoginReplay_WaitsForBusyThread(t *testing.T) {
 // thread waits in the thread's inbox like any other, not rejected with a busy
 // notice and dropped. The sign-in gate runs when its turn comes: the sender is
 // asked to sign in then, and signing in runs it under their own token.
-func TestSignInPark_BusyThreadParksInsteadOfDropping(t *testing.T) {
+func TestSignInPark_QueuedMessageAsksForSignInWhenItRuns(t *testing.T) {
 	fake := newFakeSlackAPI()
 	fakeURL := fake.server(t).URL
 	var mu sync.Mutex

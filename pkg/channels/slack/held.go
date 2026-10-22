@@ -196,8 +196,8 @@ func (a *Adapter) writeHeldKeeping(ctx context.Context, slackChannel, threadID s
 // meanwhile. A message parked here since the start is kept after the restored
 // ones, within maxParkedPerThread. A user whose sign-in completed while
 // nobody held their messages (on the previous process, or on this one before
-// the read) is linked already: their messages replay now. Every thread whose
-// inbox holds messages runs it, in order, once the read is done.
+// the read) is linked already: their messages replay now. The inboxes run
+// once the process this one replaces is gone (holdRestoredInboxes).
 func (a *Adapter) restoreHeld(ctx context.Context) {
 	// However the read ends, the writes held back meanwhile go ahead after
 	// it; those of restored threads bring their rows to the merged state.
@@ -321,10 +321,7 @@ func (a *Adapter) restoreHeld(ctx context.Context) {
 	if len(threads) > 0 {
 		a.Logger.Info("slack: held thread state restored", "threads", len(threads), "queued_threads", len(queued))
 	}
-	// Each drainer waits for this read to end before its first message runs.
-	for _, k := range queued {
-		a.kickInbox(k.ChannelID, k.ThreadID)
-	}
+	a.holdRestoredInboxes(queued)
 
 	if a.OBO == nil {
 		return

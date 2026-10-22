@@ -23,14 +23,21 @@ import (
 // maxQueued bounds the messages that wait in one thread's inbox.
 const maxQueued = 5
 
-// inboxWriteTimeout bounds one write that takes a handled message out of the
-// inbox; it runs after the turn, also through the gateway's shutdown.
+// inboxWriteTimeout bounds one write that takes a message out of the inbox; it
+// runs also through the gateway's shutdown.
 const inboxWriteTimeout = 5 * time.Second
+
+// restoredInboxGrace is how long a process leaves the inboxes it read back at
+// start alone. In a rolling update the process it replaces still runs them
+// until its own stop, which follows this one's readiness; running them both
+// would send a message twice. A variable so tests can shorten it.
+var restoredInboxGrace = time.Minute
 
 // What the inbox tells the sender of a message, privately.
 const (
-	queuedNotice    = "Queued. It runs after the reply in progress."
-	queueFullNotice = "%d messages already wait for the agent in this thread, so this one was not queued. Send it again once they have run."
+	queuedNotice       = "Queued. It runs after the reply in progress."
+	queueFullNotice    = "%d messages already wait for the agent in this thread, so this one was not queued. Send it again once they have run."
+	queueExpiredNotice = "A message you sent here waited more than 24 hours without running, so it was dropped. Send it again if you still need it."
 )
 
 // queuedMessage is a message in a thread's inbox, kept as a parked message is
@@ -53,6 +60,18 @@ type inboxState struct {
 	// prompt the thread waits on: the end of a turn starts it again
 	// (wakeInbox), since that turn may have answered the prompt.
 	paused bool
+	// notBefore holds the inbox of a thread the restart read back until the
+	// process this one replaces is gone (restoredInboxGrace).
+	notBefore time.Time
+}
+
+// queuedContextKey marks a dispatch the thread's inbox runs, so the message
+// leaves the inbox once its turn is the agent's (dispatchFrom).
+type queuedContextKey struct{}
+
+func isQueuedContext(ctx context.Context) bool {
+	queued, _ := ctx.Value(queuedContextKey{}).(bool)
+	return queued
 }
 
 // queueOutcome is what queueing one message came to.
@@ -77,22 +96,22 @@ func (a *Adapter) queueMessage(ctx context.Context, msg channels.InboundMessage,
 	return func(ctx context.Context) { a.afterQueued(ctx, msg, slackChannel, eventID, outcome) }
 }
 
-// appendQueued appends msg to its thread's inbox in the row. A thread waiting
-// on a prompt with no turn running takes the message as the prompt's answer
-// (nextQueued), so the bound does not refuse it.
+// appendQueued appends msg to its thread's inbox in the row. The first message
+// written after the prompt a thread waits on, with no turn running, is that
+// prompt's answer (nextQueued), so the bound does not refuse it.
 func (a *Adapter) appendQueued(ctx context.Context, msg channels.InboundMessage, slackChannel, eventID string) queueOutcome {
 	threadID := msg.ThreadID
 	busy, running := a.turnRunning(threadID), a.queuedRunning(threadID)
-	pending := a.hasPendingTask(threadID)
-	answers := pending && !busy
+	prompt := a.peekPendingTask(threadID)
 	now := time.Now()
 	outcome := queueFailed
 	err := a.gw.UpdateThreadRecord(ctx, ChannelName, slackChannel, threadID, func(e *store.Entry, found bool) bool {
-		if (!found || e.AgentRef == "") && !pending {
+		if (!found || e.AgentRef == "") && prompt == nil {
 			outcome = queueNoConversation
 			return false
 		}
 		h := a.heldOf(threadID, e.Held)
+		answers := prompt != nil && !busy
 		waiting := 0
 		for _, m := range h.Inbox {
 			if m.Msg.MessageID == msg.MessageID {
@@ -101,6 +120,9 @@ func (a *Adapter) appendQueued(ctx context.Context, msg channels.InboundMessage,
 			}
 			if m.Msg.MessageID != running && now.Sub(m.StoredAt) <= pendingTTL {
 				waiting++
+			}
+			if prompt != nil && m.StoredAt.After(prompt.storedAt) {
+				answers = false
 			}
 		}
 		if waiting >= maxQueued && !answers {
@@ -150,7 +172,6 @@ func (a *Adapter) afterQueued(ctx context.Context, msg channels.InboundMessage, 
 		a.Logger.Info("slack: message not queued, the thread's inbox is full", "record", "message_queue_full",
 			"channel_id", slackChannel, "thread_id", msg.ThreadID, "slack_user", msg.Subject, "message_id", msg.MessageID)
 		a.tellSender(ctx, msg, slackChannel, fmt.Sprintf(queueFullNotice, maxQueued))
-		return
 	case queueWaits:
 		a.Logger.Info("slack: message queued behind the thread's turn", "record", "message_queued",
 			"channel_id", slackChannel, "thread_id", msg.ThreadID, "slack_user", msg.Subject, "message_id", msg.MessageID, "event_id", eventID)
@@ -204,13 +225,25 @@ func (a *Adapter) wakeInbox(threadID string) {
 	}
 }
 
+// stoppingNow reports whether the process was told to stop. The inbox then
+// hands no further message to dispatch: the process replacing this one runs
+// it, while the turns already running finish or are cut by Stop.
+func (a *Adapter) stoppingNow() bool {
+	select {
+	case <-a.stopping:
+		return true
+	default:
+		return false
+	}
+}
+
 // drainInbox runs threadID's queued messages in order, one at a time, until
 // none can run: the inbox is empty, or what is left waits behind a prompt. One
 // drainer runs per thread; a call while one runs makes that one read the inbox
 // again. It blocks for as long as the turns it runs. A message leaves the row
-// once dispatch is done with it. One that the gateway's shutdown cut short
-// stays: the next process runs it again, or skips it when the row records its
-// turn as left running, which the restart's recovery delivers.
+// once its turn is the agent's (dispatchFrom), or else once dispatch is done
+// with it, in the write that keeps what dispatch parked of it. One that the
+// gateway's shutdown cut short before either stays for the next process.
 func (a *Adapter) drainInbox(ctx context.Context, slackChannel, threadID string) {
 	if !a.claimInbox(slackChannel, threadID) {
 		return
@@ -230,8 +263,16 @@ func (a *Adapter) drainInbox(ctx context.Context, slackChannel, threadID string)
 			return
 		}
 	}
+	if wait := time.Until(a.inboxNotBefore(threadID)); wait > 0 {
+		select {
+		case <-time.After(wait):
+		case <-ctx.Done():
+			return
+		}
+	}
+	ctx = context.WithValue(ctx, queuedContextKey{}, true)
 	var retry func(context.Context) bool
-	for ctx.Err() == nil {
+	for ctx.Err() == nil && !a.stoppingNow() {
 		next, ok, behind, err := a.nextQueued(ctx, slackChannel, threadID)
 		if err != nil {
 			a.Logger.Warn("slack: thread inbox not read", "thread", threadID, "error", err)
@@ -268,7 +309,7 @@ func (a *Adapter) drainInbox(ctx context.Context, slackChannel, threadID string)
 			return
 		}
 		a.logDispatchError(ctx, next.SlackChannel, threadID, err)
-		if !a.unqueueHandled(ctx, slackChannel, threadID, next.Msg.MessageID) {
+		if !a.settleQueued(ctx, slackChannel, threadID, next.Msg.MessageID) {
 			return
 		}
 	}
@@ -278,17 +319,17 @@ func (a *Adapter) drainInbox(ctx context.Context, slackChannel, threadID string)
 // the oldest, or, while the thread waits on a prompt, the oldest written after
 // the prompt, which answers it; the ones before it wait for the turn the
 // answer runs, and behind reports them. On the way it takes out of the row the
-// messages that expired, the ones written before the thread's mute, whose
-// senders are told as the mute tells them (a mute stops the running turn
-// before it drops the queue), and the one a previous process turned into the
-// turn the row records in flight: the restart's recovery delivers that one.
+// messages that expired and the ones written before the thread's mute (a mute
+// stops the running turn before it drops the queue), telling their senders,
+// and the one a previous process turned into the turn the row records in
+// flight: the restart's recovery delivers that one.
 func (a *Adapter) nextQueued(ctx context.Context, slackChannel, threadID string) (next queuedMessage, ok, behind bool, err error) {
 	prompt := a.peekPendingTask(threadID)
 	now := time.Now()
-	var muted []string
+	var expired, muted []string
 	mutedAt := ""
 	err = a.gw.UpdateThreadRecord(ctx, ChannelName, slackChannel, threadID, func(e *store.Entry, found bool) bool {
-		next, ok, behind, muted, mutedAt = queuedMessage{}, false, false, nil, e.MutedAt
+		next, ok, behind, expired, muted, mutedAt = queuedMessage{}, false, false, nil, nil, e.MutedAt
 		if !found {
 			return false
 		}
@@ -299,6 +340,7 @@ func (a *Adapter) nextQueued(ctx context.Context, slackChannel, threadID string)
 			case now.Sub(m.StoredAt) > pendingTTL:
 				a.Logger.Info("slack: queued message expired", "record", "message_queue_expired",
 					"thread_id", threadID, "slack_user", m.Msg.Subject, "message_id", m.Msg.MessageID)
+				expired = append(expired, m.Msg.Subject)
 			case e.MutedAt != "" && tsAfter(e.MutedAt, m.Msg.MessageID):
 				muted = append(muted, m.Msg.Subject)
 			case e.TaskID != "" && e.Resume[resumeKeyMessage] == m.Msg.MessageID:
@@ -327,21 +369,31 @@ func (a *Adapter) nextQueued(ctx context.Context, slackChannel, threadID string)
 		e.Held = held
 		return true
 	})
-	if err == nil {
-		for _, sender := range muted {
-			a.tellParkedDropped(ctx, slackChannel, threadID, mutedAt, sender)
+	if err != nil {
+		return next, ok, behind, err
+	}
+	for _, sender := range muted {
+		a.tellParkedDropped(ctx, slackChannel, threadID, mutedAt, sender)
+	}
+	slices.Sort(expired)
+	for _, sender := range slices.Compact(expired) {
+		if err := a.apiClient().postEphemeralText(ctx, slackChannel, sender, threadID, queueExpiredNotice); err != nil {
+			a.Logger.Warn("slack: post expired-message notice failed", "thread", threadID, "user", sender, "error", err)
 		}
 	}
-	return next, ok, behind, err
+	return next, ok, behind, nil
 }
 
-// unqueueHandled takes a handled message out of the inbox, retrying a store
-// that fails: a message left there runs again. False when it gave up.
-func (a *Adapter) unqueueHandled(ctx context.Context, slackChannel, threadID, ts string) bool {
+// settleQueued takes a message dispatch is done with out of the inbox, in the
+// write that keeps what the adapter now holds of it (a message parked for a
+// sign-in or a consent, held behind a workspace prompt), so the row never
+// holds it twice or not at all. It retries a store that fails: a message left
+// there runs again. False when it gave up.
+func (a *Adapter) settleQueued(ctx context.Context, slackChannel, threadID, ts string) bool {
 	var retry func(context.Context) bool
 	for {
 		wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), inboxWriteTimeout)
-		err := a.unqueue(wctx, slackChannel, threadID, ts)
+		err := a.writeHeldKeeping(wctx, slackChannel, threadID, func(m queuedMessage) bool { return m.Msg.MessageID != ts })
 		cancel()
 		if err == nil {
 			return true
@@ -356,10 +408,17 @@ func (a *Adapter) unqueueHandled(ctx context.Context, slackChannel, threadID, ts
 	}
 }
 
-// unqueue takes the message at ts out of threadID's inbox in the row, and
-// leaves the rest of the row's held state as it is.
-func (a *Adapter) unqueue(ctx context.Context, slackChannel, threadID, ts string) error {
-	return a.gw.UpdateThreadRecord(ctx, ChannelName, slackChannel, threadID, func(e *store.Entry, found bool) bool {
+// unqueueTurn takes the message at ts out of threadID's inbox once its turn is
+// the agent's: a restart delivers that turn from the row's record of it, and
+// must not send the message again. Best effort: should the write fail, a
+// restart skips the entry that record names (nextQueued).
+func (a *Adapter) unqueueTurn(ctx context.Context, slackChannel, threadID, ts string) {
+	if ts == "" {
+		return
+	}
+	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), inboxWriteTimeout)
+	defer cancel()
+	err := a.gw.UpdateThreadRecord(wctx, ChannelName, slackChannel, threadID, func(e *store.Entry, found bool) bool {
 		if !found {
 			return false
 		}
@@ -377,18 +436,60 @@ func (a *Adapter) unqueue(ctx context.Context, slackChannel, threadID, ts string
 		e.Held = held
 		return true
 	})
+	if err != nil {
+		a.Logger.Warn("slack: the message of a running turn stays in the thread inbox", "thread", threadID, "message_id", ts, "error", err)
+	}
 }
 
-// unqueueDelivered takes the message a left-running turn was started by out
-// of its thread's inbox before the turn is delivered, so the inbox does not
-// run it again once the delivery clears the row's record of the turn.
-func (a *Adapter) unqueueDelivered(ctx context.Context, slackChannel, threadID, ts string) {
-	if ts == "" {
-		return
+// holdRestoredInboxes leaves the inboxes the restart read back alone for
+// restoredInboxGrace, then runs every inbox the rows hold: those, and those
+// the process this one replaced filled meanwhile and left behind when it
+// stopped.
+func (a *Adapter) holdRestoredInboxes(restored []store.Key) {
+	until := time.Now().Add(restoredInboxGrace)
+	a.inboxMu.Lock()
+	for _, k := range restored {
+		if a.inboxes == nil {
+			a.inboxes = make(map[string]*inboxState)
+		}
+		st := a.inboxes[k.ThreadID]
+		if st == nil {
+			st = &inboxState{slackChannel: k.ChannelID}
+			a.inboxes[k.ThreadID] = st
+		}
+		st.notBefore = until
 	}
-	if err := a.unqueue(ctx, slackChannel, threadID, ts); err != nil {
-		a.Logger.Warn("slack: the message of a turn left running stays in the thread inbox", "thread", threadID, "message_id", ts, "error", err)
+	a.inboxMu.Unlock()
+	a.background(func(ctx context.Context) {
+		select {
+		case <-time.After(time.Until(until)):
+		case <-ctx.Done():
+			return
+		}
+		lctx, cancel := context.WithTimeout(ctx, recoverListTimeout)
+		rows, err := a.gw.ThreadRecords(lctx, ChannelName)
+		cancel()
+		if err != nil {
+			a.Logger.Warn("slack: thread inboxes not listed; a queued message runs with the thread's next message", "error", err)
+			return
+		}
+		for _, row := range rows {
+			if len(a.heldOf(row.Key.ThreadID, row.Entry.Held).Inbox) > 0 {
+				a.kickInbox(row.Key.ChannelID, row.Key.ThreadID)
+			}
+		}
+	})
+}
+
+// inboxNotBefore is when threadID's inbox may run: the zero time, or the end
+// of restoredInboxGrace for an inbox the restart read back.
+func (a *Adapter) inboxNotBefore(threadID string) time.Time {
+	a.inboxMu.Lock()
+	defer a.inboxMu.Unlock()
+	if st := a.inboxes[threadID]; st != nil {
+		return st.notBefore
 	}
+	return time.Time{}
 }
 
 // claimInbox makes the caller threadID's drainer, unless one runs: that one

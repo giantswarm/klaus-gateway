@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -91,10 +92,22 @@ func TestTakePendingLogin_DropsExpiredEntries(t *testing.T) {
 }
 
 // A message that waited in a thread's inbox longer than pendingTTL is not run
-// when a new process reads the inbox back; the fresh one beside it is, and
-// both leave the row.
+// when a new process reads the inbox back, and its sender is told; the fresh
+// one beside it runs, and both leave the row.
 func TestRecoverTurns_ExpiredQueuedMessageIsNotRun(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	old := restoredInboxGrace
+	restoredInboxGrace = 0
+	t.Cleanup(func() { restoredInboxGrace = old })
+	var mu sync.Mutex
+	var ephemerals []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/chat.postEphemeral" {
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			mu.Lock()
+			ephemerals = append(ephemerals, body)
+			mu.Unlock()
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "ts": "1.2"})
 	}))
@@ -134,6 +147,11 @@ func TestRecoverTurns_ExpiredQueuedMessageIsNotRun(t *testing.T) {
 		row, _, err := gw.ThreadRecord(t.Context(), ChannelName, "C1", "100.000")
 		return err == nil && len(row.Held) == 0
 	}, flowWait, 10*time.Millisecond, "both leave the row")
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, ephemerals, 1, "the sender of the expired message is told, once")
+	require.Equal(t, "U1", ephemerals[0]["user"])
+	require.Equal(t, queueExpiredNotice, ephemerals[0]["text"])
 }
 
 func TestIsBareAuthUtterance(t *testing.T) {

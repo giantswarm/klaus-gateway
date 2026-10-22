@@ -23,6 +23,9 @@ type turnHooks struct {
 	// called for a corrupt-session failure, where the recovery notice speaks
 	// instead (a "retry" invitation would retry into the deleted session).
 	onFailure func(err error)
+	// onSent runs once the send was accepted: the message is the agent's
+	// task from here on, whatever happens to the stream.
+	onSent func()
 }
 
 // runTurn is the shared tail of a Slack turn: the part that runs the same
@@ -126,6 +129,9 @@ func (a *Adapter) runTurn(ctx context.Context, msg channels.InboundMessage, slac
 		}
 		a.completeTurn(ctx, msg, slackUser, outcome, err)
 		return fmt.Errorf("slack: send completion: %w", err)
+	}
+	if hooks.onSent != nil {
+		hooks.onSent()
 	}
 
 	// A Session start that went through settles the thread's Connect prompt

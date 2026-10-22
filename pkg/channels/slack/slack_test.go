@@ -119,6 +119,13 @@ func channelMode(a *slackadapter.Adapter) {
 func newEventsAdapter(t *testing.T, gw channels.Gateway, fakeAPIBase string, opts ...func(*slackadapter.Adapter)) (*slackadapter.Adapter, *httptest.Server) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
+	return newEventsAdapterIn(t, ctx, cancel, gw, fakeAPIBase, opts...)
+}
+
+// newEventsAdapterIn is newEventsAdapter started with ctx, which cancel ends:
+// the process signal, for a test of what the adapter does once told to stop.
+func newEventsAdapterIn(t *testing.T, ctx context.Context, cancel context.CancelFunc, gw channels.Gateway, fakeAPIBase string, opts ...func(*slackadapter.Adapter)) (*slackadapter.Adapter, *httptest.Server) {
+	t.Helper()
 	secrets := slackadapter.Secrets{ //nolint:gosec // G101 dummy values used only in tests
 		BotToken:      "dummy-bot-token",
 		SigningSecret: "signing-secret",

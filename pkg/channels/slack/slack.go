@@ -197,6 +197,10 @@ type Adapter struct {
 	gw      channels.Gateway
 	baseCtx context.Context // adapter lifecycle ctx, captured in Start; OnUserLinked's background work (login-replay dispatch and the sign-in confirmation POST) derives from it so shutdown cancels it
 	started atomic.Bool
+	// stopping is the Done channel of the context Start was given, which the
+	// process signal ends: from then on the thread inboxes hand no message to
+	// dispatch (stoppingNow), and the process replacing this one runs them.
+	stopping <-chan struct{}
 
 	// bgMu guards the background-goroutine lifecycle. cancel cancels baseCtx,
 	// naming channels.ErrShutdown as the cause so a turn cut short can tell the
@@ -471,6 +475,7 @@ func (a *Adapter) Start(ctx context.Context, gw channels.Gateway) error {
 		a.Logger = slog.Default()
 	}
 	a.gw = gw
+	a.stopping = ctx.Done()
 	// The lifecycle context is detached from ctx's own cancellation: the
 	// process signal must not reach the turns before Stop has named the cause.
 	// Stop cancels with channels.ErrShutdown, which is how a turn's stop branch
@@ -745,8 +750,16 @@ type AgentCardResolver interface {
 // botID returns this bot's own Slack user ID (via auth.test), caching it. Used
 // to recognise the bot's own member_joined_channel event. Returns "" on lookup
 // failure (logged); the caller then cannot confirm a self-join and skips the intro.
+// A known ID is returned without the display-name lookup resolveIdentity may
+// still retry: the inbound path asks for it before Slack is answered.
 func (a *Adapter) botID(ctx context.Context) string {
-	id, _ := a.resolveIdentity(ctx)
+	a.botIDMu.Lock()
+	id := a.botUserID
+	a.botIDMu.Unlock()
+	if id != "" {
+		return id
+	}
+	id, _ = a.resolveIdentity(ctx)
 	return id
 }
 
@@ -2514,6 +2527,11 @@ func (a *Adapter) dispatchFrom(ctx context.Context, msg channels.InboundMessage,
 			}
 		},
 		onFailure: func(err error) { a.postDispatchFailureNote(ctx, slackChannel, msg.ThreadID, msg.Attachments, err) },
+		onSent: func() {
+			if isQueuedContext(ctx) {
+				a.unqueueTurn(ctx, slackChannel, msg.ThreadID, msg.MessageID)
+			}
+		},
 	})
 }
 
