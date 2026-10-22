@@ -338,6 +338,28 @@ func TestClient_GetAndCancelTask(t *testing.T) {
 	require.ErrorIs(t, err, a2apkg.ErrTaskNotFound)
 }
 
+// An Agent's default workspace is the name its annotation gives in the
+// Agent's own namespace; one of another namespace is none.
+func TestClient_ListAgents_DefaultWorkspace(t *testing.T) {
+	f := newFakeKagent()
+	f.agents = []*apiv1alpha1.Agent{
+		agent(t, "sre-agent", map[string]any{pkga2a.DefaultWorkspaceAnnotation: "kagent/platform"}, "sre-template", "kagent", readyCondition(true, "Ready", "")),
+		agent(t, "elsewhere", map[string]any{pkga2a.DefaultWorkspaceAnnotation: "org-acme/platform"}, "sre-template", "kagent", readyCondition(true, "Ready", "")),
+		agent(t, "malformed", map[string]any{pkga2a.DefaultWorkspaceAnnotation: "platform"}, "sre-template", "kagent", readyCondition(true, "Ready", "")),
+		agent(t, "plain", nil, "sre-template", "kagent", readyCondition(true, "Ready", "")),
+	}
+	f.templates = []*apiv1alpha1.AgentTemplate{template(t, "sre-template", nil, "default-model-config")}
+	client := f.serve(t, pkga2a.Config{})
+
+	agents, err := client.ListAgents(asUser(t.Context(), userToken))
+	require.NoError(t, err)
+	defaults := map[string]string{}
+	for _, a := range agents {
+		defaults[a.Name] = a.DefaultWorkspace
+	}
+	require.Equal(t, map[string]string{"sre-agent": "platform", "elsewhere": "", "malformed": "", "plain": ""}, defaults)
+}
+
 func TestClient_ListAgents_ReadinessAndAnnotations(t *testing.T) {
 	f := newFakeKagent()
 	f.agents = []*apiv1alpha1.Agent{
@@ -578,7 +600,8 @@ func TestClient_StartSession_ThroughAgentManagerIdempotentPerRequestID(t *testin
 		"name":        "sre-agent",
 		"requestId":   requestID,
 		"sessionName": "restart the kong pods on gazelle",
-	}, calls[0].Args, "the agent, the request id and the name; no message: the gateway sends the turn itself")
+		"noWorkspace": true,
+	}, calls[0].Args, "the agent, the request id, the name and no workspace; no message: the gateway sends the turn itself")
 	require.Len(t, f.created, 2, "agent-manager's create at the controller, once per start")
 	require.Equal(t, "Bearer "+userToken, f.sessions[first.ID].GetCreator(), "the session is the person's")
 

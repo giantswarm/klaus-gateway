@@ -107,7 +107,9 @@ thread to exactly one session:
    channelID, "", threadID, agentRef`, followed by the workspace's namespace and name when the
    thread chose one) and the `sessionName`, for a thread that chose a workspace the
    `workspaceGrant` `authorize_workspace` answered the initiator (a Session keyed to a
-   workspace is never started without it), and no `message`: without one `start_session`
+   workspace is never started without it), `noWorkspace: true` for every other (agent-manager
+   would otherwise start it in the Agent's default workspace, which the gateway chooses itself,
+   as the person, with a grant), and no `message`: without one `start_session`
    only creates the session and answers `{session}`, and the gateway sends the turn itself,
    attachments included, over A2A as on every later turn. The tool is
    `<a2a.agentManagerToolsPrefix>start_session`, `x_agent-manager_start_session` by default.
