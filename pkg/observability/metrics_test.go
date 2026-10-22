@@ -64,6 +64,24 @@ func TestMetrics_RecordSlackRateLimit(t *testing.T) {
 	require.Equal(t, 3, testutil.CollectAndCount(m.SlackRateLimitedTotal, "klaus_gateway_slack_rate_limited_total"), "one series per (method, outcome)")
 }
 
+// RecordSlackCall counts each Web API call under its method and how it ended,
+// on the registry /metrics serves, so a permanent refusal is told apart from an
+// outage.
+func TestMetrics_RecordSlackCall(t *testing.T) {
+	m := NewMetrics()
+	m.RecordSlackCall("chat.appendStream", "ok")
+	m.RecordSlackCall("chat.appendStream", "ok")
+	m.RecordSlackCall("chat.appendStream", "permanent")
+	m.RecordSlackCall("reactions.add", "converged")
+
+	require.Equal(t, float64(2), testutil.ToFloat64(m.SlackCallsTotal.WithLabelValues("chat.appendStream", "ok")))
+	require.Equal(t, float64(1), testutil.ToFloat64(m.SlackCallsTotal.WithLabelValues("chat.appendStream", "permanent")))
+	require.Equal(t, float64(1), testutil.ToFloat64(m.SlackCallsTotal.WithLabelValues("reactions.add", "converged")))
+	series, err := testutil.GatherAndCount(m.Registry, "klaus_gateway_slack_call_total")
+	require.NoError(t, err)
+	require.Equal(t, 3, series, "one series per (method, class)")
+}
+
 // ParseHeaders reads the OTEL_EXPORTER_OTLP_HEADERS form and refuses an entry
 // that is not key=value.
 func TestParseHeaders(t *testing.T) {

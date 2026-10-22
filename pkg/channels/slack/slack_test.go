@@ -2664,7 +2664,9 @@ func TestUsage_InThreadStillWorks(t *testing.T) {
 // Slack refusing the reply's rendering does not fail a turn the agent
 // completed: the thread gets the failed reaction and a note that the reply is
 // incomplete, not the generic failure note, and the dispatch succeeds — so the
-// completed task is not cancelled server-side (klaus-gateway#242).
+// completed task is not cancelled server-side (klaus-gateway#242). A refusal
+// no retry fixes is sent once, not retried until the turn ends
+// (klaus-gateway#529).
 func TestTurn_RenderFailureAfterCompletionIsNotAFailedTurn(t *testing.T) {
 	fake := newFakeSlackAPI()
 	// Every rendering of the reply is refused; other posts (the note) land.
@@ -2687,6 +2689,7 @@ func TestTurn_RenderFailureAfterCompletionIsNotAFailedTurn(t *testing.T) {
 
 	require.Equal(t, []string{"eyes", "x"}, fake.reactionNames("reactions.add"), "the failed reaction marks the incomplete reply")
 	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "turn failed", "a completed turn is not reported as failed")
+	require.Len(t, fake.pathCalls(pathStartStream), 1, "msg_too_long on a message that holds nothing yet is permanent")
 }
 
 // errTaskGone is the controller's answer for a task it no longer has, as the
