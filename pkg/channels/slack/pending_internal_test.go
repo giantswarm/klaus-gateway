@@ -1,13 +1,19 @@
 package slack
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
+	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
 )
 
 func TestStorePendingTask_SweepsExpiredEntries(t *testing.T) {
@@ -82,6 +88,52 @@ func TestTakePendingLogin_DropsExpiredEntries(t *testing.T) {
 	got := a.takePendingLogin("U1")
 	require.Len(t, got["T1"], 1)
 	require.Equal(t, "fresh", got["T1"][0].msg.Text, "the expired entry is dropped, the fresh one survives")
+}
+
+// A message that waited in a thread's inbox longer than pendingTTL is not run
+// when a new process reads the inbox back; the fresh one beside it is, and
+// both leave the row.
+func TestRecoverTurns_ExpiredQueuedMessageIsNotRun(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "ts": "1.2"})
+	}))
+	t.Cleanup(srv.Close)
+	gw := &fakeGateway{Facade: newMemoryRecorder(), deltas: []channels.OutboundDelta{{Content: "ok"}, {Done: true}}}
+	a := &Adapter{
+		APIBase:      srv.URL,
+		Secrets:      Secrets{BotToken: "test-bot-token"}, //nolint:gosec
+		DefaultAgent: "worker",
+		Logger:       slog.New(slog.DiscardHandler),
+	}
+	require.NoError(t, a.Start(t.Context(), gw))
+	t.Cleanup(func() { _ = a.Stop(context.Background()) })
+	require.NoError(t, a.bindThreadAgent(t.Context(), "C1", "100.000", "worker"))
+
+	queued := func(text, ts string, at time.Time) queuedMessage {
+		msg := channels.InboundMessage{Channel: ChannelName, ChannelID: "C1", ThreadID: "100.000", MessageID: ts, Text: text, Subject: "U1"}
+		return queuedMessage{heldMessage: heldMessageOf(msg, "C1", at)}
+	}
+	held, err := heldState{Inbox: []queuedMessage{
+		queued("stale", "100.001", time.Now().Add(-pendingTTL-time.Minute)),
+		queued("fresh", "100.002", time.Now()),
+	}}.marshal()
+	require.NoError(t, err)
+	require.NoError(t, gw.UpdateThreadRecord(t.Context(), ChannelName, "C1", "100.000", func(e *store.Entry, _ bool) bool {
+		e.Held = held
+		return true
+	}))
+
+	a.RecoverTurns()
+
+	require.Eventually(t, func() bool { return gw.sendCount() > 0 }, flowWait, 10*time.Millisecond)
+	require.Never(t, func() bool { return gw.sendCount() > 1 }, 300*time.Millisecond, 10*time.Millisecond,
+		"the expired message is not run")
+	require.Equal(t, "fresh", gw.sentMessages()[0].Text)
+	require.Eventually(t, func() bool {
+		row, _, err := gw.ThreadRecord(t.Context(), ChannelName, "C1", "100.000")
+		return err == nil && len(row.Held) == 0
+	}, flowWait, 10*time.Millisecond, "both leave the row")
 }
 
 func TestIsBareAuthUtterance(t *testing.T) {

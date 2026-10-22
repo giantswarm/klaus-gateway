@@ -369,8 +369,9 @@ const (
 	defaultFailedEmoji  = "x"
 )
 
-// busyNotice is posted when a turn is rejected because another turn is already
-// in flight on the same thread (per-thread serialization).
+// busyNotice is posted when a button click is rejected because another turn
+// is already in flight on its thread (per-thread serialization); a message
+// waits in the thread's inbox instead.
 const busyNotice = "Still answering the previous message. Send this one again once the reply has landed, or reply `stop` to interrupt it."
 
 // tokenErrorNotice is shown (ephemerally) when minting a user's muster token

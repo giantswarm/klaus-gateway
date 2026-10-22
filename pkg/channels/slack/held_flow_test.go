@@ -14,12 +14,22 @@ import (
 )
 
 // heldIn reports whether the thread's row holds state for the adapter: a
-// parked message or a paused prompt.
+// parked or queued message, or a paused prompt.
 func heldIn(t *testing.T, rec *slackadapter.MemoryRecorder, channelID, threadID string) bool {
 	t.Helper()
 	row, ok, err := rec.ThreadRecord(t.Context(), "slack", channelID, threadID)
 	require.NoError(t, err)
 	return ok && len(row.Held) > 0
+}
+
+// parkedIn reports whether the thread's row holds the given kind of held
+// state: "access" or "login" for a parked message, "pending" for a paused
+// prompt.
+func parkedIn(t *testing.T, rec *slackadapter.MemoryRecorder, channelID, threadID, kind string) bool {
+	t.Helper()
+	row, ok, err := rec.ThreadRecord(t.Context(), "slack", channelID, threadID)
+	require.NoError(t, err)
+	return ok && strings.Contains(string(row.Held), `"`+kind+`"`)
 }
 
 // captureDispatch is a stub gateway over rec that records every dispatched
@@ -54,8 +64,9 @@ func TestRestart_LoginParkedMessageReplaysAfterSignIn(t *testing.T) {
 	sendEvent(t, srv1, mention("U123", "what failed on prod?", "100.000", ""))
 	sendEvent(t, srv1, mention("U123", "and on staging?", "101.000", "100.000"))
 	fake.waitForPath(t, "chat.postMessage", 1)
+	waitThreadIdle(t, a1, "100.000")
 	require.NoError(t, a1.Stop(context.Background()))
-	require.True(t, heldIn(t, shared, "C1", "100.000"), "the parked messages are in the thread's row")
+	require.True(t, parkedIn(t, shared, "C1", "100.000", "login"), "the parked messages are in the thread's row")
 
 	gw2, captured := captureDispatch(shared)
 	a2, _ := newEventsAdapter(t, gw2, api.URL, channelMode)
@@ -87,6 +98,7 @@ func TestRestart_SignInDuringRestartReplaysAtStart(t *testing.T) {
 	openConversationIn(t, shared, "C1", "100.000", "U123", "test-agent")
 	sendEvent(t, srv1, mention("U123", "what failed on prod?", "100.000", ""))
 	fake.waitForPath(t, "chat.postMessage", 1)
+	waitThreadIdle(t, a1, "100.000")
 	require.NoError(t, a1.Stop(context.Background()))
 
 	gw2, captured := captureDispatch(shared)
@@ -117,6 +129,7 @@ func TestRestart_AccessParkedMessagesReplayOnGrant(t *testing.T) {
 	sendEvent(t, srv1, mention("U999", "first ask", "200.000", "100.000"))
 	fake.waitForPath(t, "chat.postEphemeral", 2)
 	sendEvent(t, srv1, mention("U999", "second ask", "201.000", "100.000"))
+	waitThreadIdle(t, a1, "100.000")
 	require.Eventually(t, func() bool {
 		row, _, err := shared.ThreadRecord(t.Context(), "slack", "C1", "100.000")
 		return err == nil && strings.Contains(string(row.Held), "second ask")
@@ -137,6 +150,64 @@ func TestRestart_AccessParkedMessagesReplayOnGrant(t *testing.T) {
 	require.Equal(t, "second ask", got[1].Text)
 }
 
+// queuedIn reports whether the thread's row holds a message with text in its
+// inbox.
+func queuedIn(t *testing.T, rec *slackadapter.MemoryRecorder, channelID, threadID, text string) bool {
+	t.Helper()
+	row, ok, err := rec.ThreadRecord(t.Context(), "slack", channelID, threadID)
+	require.NoError(t, err)
+	return ok && strings.Contains(string(row.Held), `"inbox"`) && strings.Contains(string(row.Held), text)
+}
+
+// A message acknowledged while a turn runs is in the thread's row before Slack
+// has its answer, so a process torn down before it ran loses nothing: the next
+// one runs it, once. The turn that was running is not run again either: the
+// row records it as left running, and the restart's recovery delivers it.
+func TestRestart_QueuedMessageRunsOnceAfterRestart(t *testing.T) {
+	fake := newFakeSlackAPI()
+	api := fake.server(t)
+	shared := slackadapter.NewMemoryRecorder()
+	openConversationIn(t, shared, "D1", "555.000", "U1", "test-agent")
+
+	hold := make(chan struct{})
+	defer close(hold)
+	gw1 := &stubGateway{hold: hold, records: shared, resumes: &stubResumes{durable: true},
+		deltas:     []channels.OutboundDelta{{Content: "looking"}},
+		onDispatch: func(channels.InboundMessage) { seedInFlightRow(shared) }}
+	a1, srv1 := newEventsAdapter(t, gw1, api.URL)
+	sendEvent(t, srv1, dmEvent("U1", "check the nodes", "555.000"))
+	require.Eventually(t, func() bool { return gw1.dispatchCount() == 1 }, flowWait, 20*time.Millisecond)
+
+	sendEvent(t, srv1, dmThreadEvent("U1", "and the pods?", "556.000", "555.000"))
+	require.True(t, queuedIn(t, shared, "D1", "555.000", "and the pods?"), "the message is in the row when Slack has its answer")
+	require.NoError(t, a1.Stop(context.Background()))
+	require.Equal(t, 1, gw1.dispatchCount(), "the first process never ran it")
+
+	row, _, err := shared.ThreadRecord(t.Context(), "slack", "D1", "555.000")
+	require.NoError(t, err)
+	gw2, captured := captureDispatch(shared)
+	gw2.resumes = &stubResumes{
+		durable: true,
+		turns: []channels.InFlightTurn{{
+			Msg:    channels.InboundMessage{Channel: "slack", ChannelID: "D1", ThreadID: "555.000", AgentRef: row.AgentRef, Resume: row.Resume},
+			TaskID: row.TaskID,
+		}},
+		deltas: map[string][]channels.OutboundDelta{row.TaskID: {{Content: "the nodes are fine"}, {Done: true}}},
+	}
+	a2, _ := newEventsAdapter(t, gw2, api.URL)
+	a2.RecoverTurns()
+
+	require.Eventually(t, func() bool { return len(captured()) > 0 }, flowWait, 20*time.Millisecond,
+		"the queued message runs after the restart")
+	waitThreadIdle(t, a2, "555.000")
+	require.Never(t, func() bool { return len(captured()) > 1 }, 300*time.Millisecond, 20*time.Millisecond,
+		"it runs once, and the turn left running is not sent again")
+	require.Equal(t, "and the pods?", captured()[0].Text)
+	require.Eventually(t, func() bool { return strings.Contains(fake.streamedText(), "the nodes are fine") },
+		flowWait, 20*time.Millisecond, "the recovery delivers the turn left running")
+	require.False(t, heldIn(t, shared, "D1", "555.000"), "the inbox is empty")
+}
+
 // A prompt a task paused on stays answerable across a restart: the Approve
 // click on the new process resumes the paused task instead of reading as
 // already answered.
@@ -155,8 +226,9 @@ func TestRestart_PausedPromptAnswersAfterRestart(t *testing.T) {
 	sendEvent(t, srv1, dmEvent("U1", "clean up", "400.000"))
 	fake.waitForPath(t, "chat.postMessage", 1)
 	require.Contains(t, allText(fake.pathCalls("chat.postMessage")), "Approval required")
+	waitThreadIdle(t, a1, "400.000")
 	require.NoError(t, a1.Stop(context.Background()))
-	require.True(t, heldIn(t, shared, "D1", "400.000"), "the paused prompt is in the thread's row")
+	require.True(t, parkedIn(t, shared, "D1", "400.000", "pending"), "the paused prompt is in the thread's row")
 
 	var mu sync.Mutex
 	var resumed []channels.InboundMessage

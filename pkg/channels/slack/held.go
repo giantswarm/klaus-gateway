@@ -21,7 +21,9 @@ import (
 // so pendingTTL runs on across a restart.
 //
 // The process's maps stay the working copy; the row is written after every
-// change to them and read back once at start (restoreHeld).
+// change to them and read back once at start (restoreHeld). The thread's
+// inbox (Inbox, inbox.go) is the exception: the row is its only copy, written
+// before Slack is answered, and every write of the rest keeps it.
 type heldState struct {
 	Login   map[string][]heldMessage `json:"login,omitempty"`
 	Access  map[string][]heldMessage `json:"access,omitempty"`
@@ -30,6 +32,9 @@ type heldState struct {
 	// first.
 	Workspace        *workspacePrompt         `json:"workspace,omitempty"`
 	WorkspaceConnect map[string][]heldMessage `json:"workspace_connect,omitempty"`
+	// Inbox keeps the messages that wait for the thread's turn, in arrival
+	// order.
+	Inbox []queuedMessage `json:"inbox,omitempty"`
 }
 
 // heldMessage is a parked message as the row keeps it.
@@ -46,7 +51,21 @@ type heldTask struct {
 }
 
 func (h heldState) empty() bool {
-	return len(h.Login) == 0 && len(h.Access) == 0 && h.Pending == nil && h.Workspace == nil && len(h.WorkspaceConnect) == 0
+	return len(h.Login) == 0 && len(h.Access) == 0 && h.Pending == nil && h.Workspace == nil && len(h.WorkspaceConnect) == 0 && len(h.Inbox) == 0
+}
+
+// heldOf decodes a row's held state; one that does not decode reads as empty,
+// as restoreHeld drops it.
+func (a *Adapter) heldOf(threadID string, raw json.RawMessage) heldState {
+	var h heldState
+	if len(raw) == 0 {
+		return h
+	}
+	if err := json.Unmarshal(raw, &h); err != nil {
+		a.Logger.Warn("slack: held thread state unreadable, dropped", "thread", threadID, "error", err)
+		return heldState{}
+	}
+	return h
 }
 
 // marshal encodes h for the row; nil when it holds nothing, so the row drops
@@ -145,10 +164,21 @@ func (a *Adapter) persistHeld(slackChannel, threadID string) {
 }
 
 // writeHeld writes what the adapter holds for threadID into the thread's row
-// now; persistHeld runs it in the background.
+// now, with the row's inbox as it is; persistHeld runs it in the background.
 func (a *Adapter) writeHeld(ctx context.Context, slackChannel, threadID string) error {
+	return a.writeHeldKeeping(ctx, slackChannel, threadID, nil)
+}
+
+// writeHeldKeeping is writeHeld that keeps of the row's inbox only the
+// messages keep keeps: nil keeps them all.
+func (a *Adapter) writeHeldKeeping(ctx context.Context, slackChannel, threadID string, keep func(queuedMessage) bool) error {
 	return a.gw.UpdateThreadRecord(ctx, ChannelName, slackChannel, threadID, func(e *store.Entry, _ bool) bool {
-		held, err := a.heldSnapshot(threadID).marshal()
+		h := a.heldSnapshot(threadID)
+		h.Inbox = a.heldOf(threadID, e.Held).Inbox
+		if keep != nil {
+			h.Inbox = slices.DeleteFunc(h.Inbox, func(m queuedMessage) bool { return !keep(m) })
+		}
+		held, err := h.marshal()
 		if err != nil {
 			a.Logger.Warn("slack: encode held thread state failed", "thread", threadID, "error", err)
 			return false
@@ -166,7 +196,8 @@ func (a *Adapter) writeHeld(ctx context.Context, slackChannel, threadID string) 
 // meanwhile. A message parked here since the start is kept after the restored
 // ones, within maxParkedPerThread. A user whose sign-in completed while
 // nobody held their messages (on the previous process, or on this one before
-// the read) is linked already: their messages replay now.
+// the read) is linked already: their messages replay now. Every thread whose
+// inbox holds messages runs it, in order, once the read is done.
 func (a *Adapter) restoreHeld(ctx context.Context) {
 	// However the read ends, the writes held back meanwhile go ahead after
 	// it; those of restored threads bring their rows to the merged state.
@@ -192,7 +223,7 @@ func (a *Adapter) restoreHeld(ctx context.Context) {
 	now := time.Now()
 	fresh := func(at time.Time) bool { return now.Sub(at) <= pendingTTL }
 	linkUsers := map[string]bool{}
-	var threads []store.Key
+	var threads, queued []store.Key
 	for _, row := range rows {
 		if len(row.Entry.Held) == 0 {
 			continue
@@ -204,6 +235,9 @@ func (a *Adapter) restoreHeld(ctx context.Context) {
 		}
 		threadID := row.Key.ThreadID
 		threads = append(threads, row.Key)
+		if len(h.Inbox) > 0 {
+			queued = append(queued, row.Key)
+		}
 
 		a.pendingLoginMu.Lock()
 		for user, held := range h.Login {
@@ -285,7 +319,11 @@ func (a *Adapter) restoreHeld(ctx context.Context) {
 		a.persistHeld(k.ChannelID, k.ThreadID)
 	}
 	if len(threads) > 0 {
-		a.Logger.Info("slack: held thread state restored", "threads", len(threads))
+		a.Logger.Info("slack: held thread state restored", "threads", len(threads), "queued_threads", len(queued))
+	}
+	// Each drainer waits for this read to end before its first message runs.
+	for _, k := range queued {
+		a.kickInbox(k.ChannelID, k.ThreadID)
 	}
 
 	if a.OBO == nil {

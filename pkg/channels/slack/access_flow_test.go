@@ -167,32 +167,40 @@ func TestAccess_NonInitiatorCannotGrant(t *testing.T) {
 func TestAccess_GrantWhileThreadBusyDeliversAfterRelease(t *testing.T) {
 	fake := newFakeSlackAPI()
 	fakeURL := fake.server(t).URL
-	hold := make(chan struct{})
-	gw := &stubGateway{hold: hold}
-	_, srv := newEventsAdapter(t, gw, fakeURL, channelMode)
+	gw := &stubGateway{}
+	a, srv := newEventsAdapter(t, gw, fakeURL, channelMode)
 
-	// The initiator's mention starts a turn that keeps the thread slot held.
 	gw.openConversation(t, "C1", "100.000", "U001", "test-agent")
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 50*time.Millisecond, "initiator's mention dispatches")
+	waitThreadIdle(t, a, "100.000")
 
 	// Newcomer posts and is parked pending consent.
 	sendEvent(t, srv, mention("U999", "what broke?", "200.000", "100.000"))
 	fake.waitForPath(t, "chat.postEphemeral", 2)
 
+	// The initiator starts a turn that keeps the thread slot held.
+	hold := make(chan struct{})
+	gw.mu.Lock()
+	gw.hold = hold
+	gw.mu.Unlock()
+	sendEvent(t, srv, mention("U001", "long task", "300.000", "100.000"))
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 },
+		flowWait, 50*time.Millisecond, "the holding turn starts")
+
 	// The initiator grants while the turn is still in flight: the replay must be
 	// deferred, not rejected with the busy notice.
 	sendAccessInteraction(t, srv, "U001", accessAllowAction, "100.000", "U999", fakeURL+"/response")
 	fake.waitForPath(t, "response", 1)
-	time.Sleep(150 * time.Millisecond)
-	require.Equal(t, 1, gw.dispatchCount(), "replay must wait for the running turn")
+	require.Never(t, func() bool { return gw.dispatchCount() > 2 }, 300*time.Millisecond, 20*time.Millisecond,
+		"replay must wait for the running turn")
 	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "Still answering",
 		"a deferred replay must not post the busy notice")
 
 	// The running turn finishes; the deferred replay is delivered.
 	close(hold)
-	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 },
+	require.Eventually(t, func() bool { return gw.dispatchCount() == 3 },
 		flowWait, 50*time.Millisecond, "the parked message is delivered once the slot frees")
 }
 

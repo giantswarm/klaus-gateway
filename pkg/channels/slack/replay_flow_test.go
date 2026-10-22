@@ -191,8 +191,9 @@ func TestLoginReplay_WaitsForBusyThread(t *testing.T) {
 }
 
 // A message from a signed-out user that arrives while another turn holds the
-// thread slot is parked for sign-in, not rejected with a busy notice and
-// dropped: the sign-in gate runs before the per-thread turn lock.
+// thread waits in the thread's inbox like any other, not rejected with a busy
+// notice and dropped. The sign-in gate runs when its turn comes: the sender is
+// asked to sign in then, and signing in runs it under their own token.
 func TestSignInPark_BusyThreadParksInsteadOfDropping(t *testing.T) {
 	fake := newFakeSlackAPI()
 	fakeURL := fake.server(t).URL
@@ -231,25 +232,27 @@ func TestSignInPark_BusyThreadParksInsteadOfDropping(t *testing.T) {
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 },
 		flowWait, 50*time.Millisecond, "the holding turn starts")
 
-	// U999 (granted, unlinked) posts into the busy thread: parked for sign-in,
-	// no busy notice, nothing dispatched.
+	// U999 (granted, unlinked) posts into the busy thread: queued, no busy
+	// notice, nothing dispatched, and no sign-in asked for until it runs.
 	sendEvent(t, srv, mention("U999", "help me out", "300.000", "100.000"))
-	require.Eventually(t, func() bool {
-		return signInPrompted(fake)
-	}, flowWait, 50*time.Millisecond, "the signed-out user is prompted to sign in despite the busy thread")
+	require.Eventually(t, func() bool { return ephemeralTo(fake, "U999", queuedNote) },
+		flowWait, 50*time.Millisecond, "the signed-out user's message is queued")
+	require.False(t, signInPrompted(fake), "the sign-in gate runs when the message runs")
 	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "Still answering",
-		"a sign-in park must not post the busy notice")
+		"a queued message must not post the busy notice")
+	require.Equal(t, 2, gw.dispatchCount(), "the queued message must not be dispatched")
+
+	// The running turn ends: the message's turn comes, and its sender is
+	// asked to sign in.
+	close(hold)
+	require.Eventually(t, func() bool { return signInPrompted(fake) },
+		flowWait, 50*time.Millisecond, "the signed-out user is prompted to sign in when the message runs")
 	require.Equal(t, 2, gw.dispatchCount(), "the parked message must not be dispatched")
 
-	// The link completes mid-turn; the replay still waits for the slot.
 	obo.link("U999", "tok2")
 	a.OnUserLinked(t.Context(), "U999", "u999@example.com")
-	time.Sleep(150 * time.Millisecond)
-	require.Equal(t, 2, gw.dispatchCount(), "the replay must wait for the running turn")
-
-	close(hold)
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 3 },
-		flowWait, 50*time.Millisecond, "the parked message replays once the slot frees")
+		flowWait, 50*time.Millisecond, "the parked message replays once the sender signs in")
 	mu.Lock()
 	defer mu.Unlock()
 	require.Equal(t, "help me out", captured[2].Text)
