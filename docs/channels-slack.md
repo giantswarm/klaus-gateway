@@ -567,8 +567,8 @@ the default agent (`a2a.defaultAgent`); the picker is reached through one of the
   are private to the invoker, like the command's. The shortcut works in DMs too when DMs are
   served.
 
-An agent that is installed but whose `Agent` is not ready (its `Ready` condition is not `True`)
-is refused by the pickers with that reason instead of as an unknown name. The roster lists
+An agent that is installed but whose `Agent` never had a ready revision (no
+`status.latestSuccessfulRevision` and its `Ready` condition is not `True`) is refused by the pickers with that reason instead of as an unknown name. The roster lists
 selectable agents only, so such an agent has no row to pick in the first place.
 
 A thread's agent binding is not re-derived after a restart — it does not need to be. It lives
