@@ -248,7 +248,8 @@ ServiceMonitor). Beside the public mux's `klaus_gateway_requests_total` /
   told why). A `failed` or `send_failed` turn carries what broke as
   `failure_class`: `tools` (the agent's MCP tool set), `platform` (the connection to the
   controller or the runtime), `model` (the model or its provider), `policy` (a gateway policy
-  refused it) or `unknown`; every other turn has none. One person's model error is noise; a
+  refused it), `connection_required` (the person has not connected the provider account the
+  agent's model runs on, such as their ChatGPT subscription) or `unknown`; every other turn has none. One person's model error is noise; a
   burst of one class across people is an outage of that part of the platform, which
   `sum by (failure_class) (increase(klaus_gateway_turn_total{outcome=~"failed|send_failed"}[10m]))`
   shows (see [channels-slack.md](channels-slack.md#restarts-and-stop) for what each class tells

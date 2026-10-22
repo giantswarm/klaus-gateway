@@ -33,6 +33,10 @@ const (
 	usageTotalTokens      = "totalTokenCount"
 )
 
+// The status message metadata key kagent sets on a failed task for the
+// runtime's class of the failure, such as connection_required (ClassifyFailure).
+const mdFailureReason = "kagent.dev/a2a/failure-reason"
+
 // buildInboundParts builds the A2A message parts for an outbound user turn:
 // the shared context (when the channel gathered any) as a leading part of its
 // own, a text part (when there is text) plus one part per downloaded

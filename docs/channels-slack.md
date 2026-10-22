@@ -883,6 +883,7 @@ A turn ends early for one of two reasons, and the thread can tell them apart:
   | `model` | the model or its provider returned an error | The model behind this agent returned an error … try again in a minute |
   | `model` | the provider refused the platform's credentials (Anthropic `authentication_error` or `permission_error`, such as an invalid API key) | The model provider refused the platform's credentials … a retry does not help |
   | `policy` | a gateway policy refused the request (authorization, a prompt guard, a rate limit) | A platform policy refused this request … sending it again does not change that |
+  | `connection_required` | the agent's model runs on the person's own provider account (a ChatGPT subscription) they have not connected, so the egress refused to lend its credential: kagent's failure reason `connection_required` (`kagent.dev/a2a/failure-reason` on the failed task's status message), or the refusal's text `credential provider <authority> denied` | Connect your ChatGPT subscription in the Dev Portal to talk to this agent, then send the message again. |
   | `unknown` | anything else | The turn failed before an answer. Send the message again to retry. |
 
   A fresh turn that fails on `tools` or `platform` before anything of it was shown — the
@@ -896,7 +897,7 @@ A turn ends early for one of two reasons, and the thread can tell them apart:
   it and one note goes under it: `The turn ended with <a platform error>
   before the agent finished. What it did so far is in the Dev Portal; reply here to try again.`
   It names the class (a tool connection error, a platform error, a model error, a policy
-  refusal, or just an error), never the error's text. A stream reset by a controller restart
+  refusal, an unconnected ChatGPT subscription, or just an error), never the error's text. A stream reset by a controller restart
   (`RST_STREAM`) is a `platform` failure.
 - **A gateway restart** (a pod restart, a node loss with a grace period) is nobody's decision.
   The thread gets a one-line notice — `The gateway restarted while *<agent>* was working. The

@@ -253,13 +253,19 @@ func (f *Facade) forward(ctx context.Context, out chan<- OutboundDelta, deltas <
 }
 
 // taskEnded is a task's terminal state other than completed, with the
-// runtime's (or the controller's) account of it as the error text.
+// runtime's (or the controller's) account of it as the error text and the
+// runtime's class of it (its status message's mdFailureReason), when it gave
+// one.
 type taskEnded struct {
-	state  a2apkg.TaskState
-	reason string
+	state         a2apkg.TaskState
+	reason        string
+	failureReason string
 }
 
 func (e *taskEnded) Error() string { return e.reason }
+
+// FailureReason is the runtime's class of the failure (FailureReasoner).
+func (e *taskEnded) FailureReason() string { return e.failureReason }
 
 // isTaskFailure reports whether err is a task that ended failed.
 func isTaskFailure(err error) bool {
@@ -897,13 +903,14 @@ func mapTaskStatus(taskID a2apkg.TaskID, status a2apkg.TaskStatus, interim func(
 		return []OutboundDelta{{Kind: DeltaPrompt, Content: text, TaskID: string(taskID), Prompt: hitl}}
 	default:
 		if status.State.Terminal() {
-			msg := fmt.Sprintf("a2a: task ended with state %s", status.State)
+			ended := &taskEnded{state: status.State, reason: fmt.Sprintf("a2a: task ended with state %s", status.State)}
 			if status.Message != nil {
 				if text := extractTextFromA2AParts(status.Message.Parts); text != "" {
-					msg = text
+					ended.reason = text
 				}
+				ended.failureReason, _ = status.Message.Metadata[mdFailureReason].(string)
 			}
-			return []OutboundDelta{{Err: &taskEnded{state: status.State, reason: msg}}}
+			return []OutboundDelta{{Err: ended}}
 		}
 		return interim()
 	}
