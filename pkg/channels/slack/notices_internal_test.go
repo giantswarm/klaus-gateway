@@ -105,6 +105,7 @@ func TestInterruptedFailureNote(t *testing.T) {
 		{errors.New(`llm error response (code STREAM_ERROR): "401 Unauthorized {\"type\":\"authentication_error\"}"`), "a model error"},
 		{errors.New("failed to list MCP tools: connection reset by peer"), "a tool connection error"},
 		{errors.New("403 authorization failed"), "a policy refusal"},
+		{errors.New("credential provider muster.giantswarm.io denied: the person holds no grant for the provider"), "an unconnected ChatGPT subscription"},
 		{errors.New("boom"), "an error"},
 	} {
 		note := interruptedFailureNote(tc.err)

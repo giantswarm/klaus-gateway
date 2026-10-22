@@ -40,6 +40,11 @@ func TestClassifyFailure(t *testing.T) {
 		{"prompt guard", errors.New(`OpenAI chat completion request failed: 403 The request was rejected due to inappropriate content`), channels.FailurePolicy},
 		{"gateway authorization", errors.New(`OpenAI chat completion request failed: 403 Forbidden: authorization failed`), channels.FailurePolicy},
 		{"gateway rate limit", errors.New(`OpenAI chat completion request failed: 429 rate limit exceeded`), channels.FailurePolicy},
+		{"runtime reason connection_required", reasonedFailure{reason: "connection_required", text: "Codex execution failed: stream disconnected"}, channels.FailureConnectionRequired},
+		{"runtime reason wrapped", fmt.Errorf("slack: stream: %w", reasonedFailure{reason: "connection_required", text: "boom"}), channels.FailureConnectionRequired},
+		{"runtime reason the gateway does not know", reasonedFailure{reason: "something_new", text: "failed to call model: x"}, channels.FailureModel},
+		{"egress credential refusal", errors.New(credentialRefusal), channels.FailureConnectionRequired},
+		{"credential provider without a denial", errors.New("credential provider muster.giantswarm.io: lookup timed out: connection refused"), channels.FailurePlatform},
 		{"unknown", errors.New("a2a: task ended with state failed"), channels.FailureUnknown},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -47,6 +52,18 @@ func TestClassifyFailure(t *testing.T) {
 		})
 	}
 }
+
+// reasonedFailure is a failure that carries the runtime's own class of it,
+// as a task ended with kagent's failure reason does.
+type reasonedFailure struct{ reason, text string }
+
+func (f reasonedFailure) Error() string         { return f.text }
+func (f reasonedFailure) FailureReason() string { return f.reason }
+
+// The egress gateway's refusal of a codex model call for a person who has
+// not connected their ChatGPT subscription, as kagent's codex Harness
+// reports it.
+const credentialRefusal = `Codex execution failed: unexpected status 403 Forbidden: credential provider muster.giantswarm.io denied: the person holds no grant for the provider`
 
 // The text kagent's runtime reported on graveler on 2026-10-05 when the
 // provider refused agentgateway's Anthropic API key.
@@ -76,6 +93,8 @@ func TestFailureClass_Retryable(t *testing.T) {
 		channels.FailureModel:    false,
 		channels.FailurePolicy:   false,
 		channels.FailureUnknown:  false,
+
+		channels.FailureConnectionRequired: false,
 	} {
 		require.Equal(t, want, class.Retryable(), class)
 	}

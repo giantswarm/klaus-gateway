@@ -646,12 +646,15 @@ const failedNote = "The turn failed before an answer. Send the message again to 
 // broke and whether trying again helps: a tools or platform failure was
 // already retried once and is not the person's to fix, a model error usually
 // passes (except a credentials refusal, which stays until the platform fixes
-// it), a policy refusal stays.
+// it), a policy refusal stays, and an unconnected provider account is the
+// person's to connect.
 const (
 	toolsFailedNote    = "The agent could not connect to its tools, so it did not work on your message. The problem is on the platform side, not in your message, and a retry right now does not help."
 	platformFailedNote = "The agent platform could not be reached, so the agent did not work on your message. The problem is on the platform side, not in your message, and a retry right now does not help."
 	modelFailedNote    = "The model behind this agent returned an error instead of an answer. This is usually temporary: try again in a minute."
 	policyFailedNote   = "A platform policy refused this request, so the agent did not answer it. Sending it again does not change that."
+
+	connectionRequiredNote = "Connect your ChatGPT subscription in the Dev Portal to talk to this agent, then send the message again."
 
 	modelAuthFailedNote = "The model provider refused the platform's credentials, so the agent did not work on your message. The problem is on the platform side, not in your message, and a retry does not help."
 )
@@ -739,6 +742,8 @@ func failureNote(err error) string {
 		return modelFailedNote
 	case channels.FailurePolicy:
 		return policyFailedNote
+	case channels.FailureConnectionRequired:
+		return connectionRequiredNote
 	}
 	return failedNote
 }
@@ -762,6 +767,8 @@ func interruptedFailureNote(err error) string {
 		cause = "a model error"
 	case channels.FailurePolicy:
 		cause = "a policy refusal"
+	case channels.FailureConnectionRequired:
+		cause = "an unconnected ChatGPT subscription"
 	}
 	return fmt.Sprintf(interruptedNote, cause)
 }

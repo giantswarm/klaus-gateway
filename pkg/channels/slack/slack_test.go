@@ -2065,6 +2065,8 @@ func TestProgress_FailureNoteNamesTheClass(t *testing.T) {
 		{"policy", &stubGateway{deltas: []channels.OutboundDelta{{Err: errors.New("OpenAI chat completion request failed: 403 authorization failed")}}}, "A platform policy refused this request", "The turn failed"},
 		{"platform, before the stream", &stubGateway{dispatchErr: errors.New("rpc error: code = Unavailable desc = connection refused")}, "agent platform could not be reached", "The turn failed"},
 		{"agent not the sender's, before the stream", &stubGateway{dispatchErr: &pkga2a.AgentNotPermittedError{Ref: "org-acme/billing", Name: "billing", Tenant: "organization acme"}}, "You cannot use *billing* (organization acme)", "The turn failed"},
+		{"connection required, by the runtime's reason", &stubGateway{deltas: []channels.OutboundDelta{{Err: reasonedFailure{reason: "connection_required", text: "Codex execution failed"}}}}, "Connect your ChatGPT subscription in the Dev Portal to talk to this agent, then send the message again.", "The turn failed"},
+		{"connection required, by the egress's refusal", &stubGateway{deltas: []channels.OutboundDelta{{Err: errors.New("Codex execution failed: credential provider muster.giantswarm.io denied: the person holds no grant for the provider")}}}, "Connect your ChatGPT subscription in the Dev Portal", "The turn failed"},
 		{"unknown", &stubGateway{deltas: []channels.OutboundDelta{{Err: errors.New("boom")}}}, "The turn failed before an answer", "⚠️"},
 		// The controller refuses an oversize request on the stream's first
 		// read, before SendCompletion returns.
@@ -2085,6 +2087,13 @@ func TestProgress_FailureNoteNamesTheClass(t *testing.T) {
 		})
 	}
 }
+
+// reasonedFailure is a failure that carries the runtime's own class of it,
+// as a task kagent ended with a failure reason does.
+type reasonedFailure struct{ reason, text string }
+
+func (f reasonedFailure) Error() string         { return f.text }
+func (f reasonedFailure) FailureReason() string { return f.reason }
 
 // Once the reply has streamed, a failure with a reaction marks it with the
 // failed emoji and posts the interrupted note under it: the incomplete reply

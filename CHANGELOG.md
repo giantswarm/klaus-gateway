@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Slack: a turn that fails because the person has not connected the ChatGPT subscription the agent's model runs on gets the note "Connect your ChatGPT subscription in the Dev Portal to talk to this agent, then send the message again." instead of "The turn failed before an answer". The new failure class `connection_required` reads kagent's failure reason (`kagent.dev/a2a/failure-reason` on the failed task's status message) or, as a fallback, the egress's refusal text `credential provider … denied`; it is not retried (giantswarm/klaus-gateway#516).
 - Egress refusal notices: a refusal by a Session deleted before the watcher's next read is no longer dropped. The kagent controller answers its session reader with a deleted Session's tombstone, which names the Agent, so the refusal counts into the Agent's notice (giantswarm/kagent-upstream#815); a refusing actor that is still no Session kagent knows is logged once per increase with its actor, host, port, count and the reason, beside the `not_session` count (giantswarm/klaus-gateway#512).
 - Egress refusal notices name the refused destination as written: Slack no longer turns `api.anthropic.com:443` into an `http://api.anthropic.com:443` link, since the notice's text is sent `verbatim`.
 
