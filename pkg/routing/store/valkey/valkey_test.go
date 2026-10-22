@@ -165,6 +165,22 @@ func TestReviewKeyLayout(t *testing.T) {
 	require.Empty(t, m.Keys(), "the server dropped the key")
 }
 
+// A receipt lives next to the routing keys under its own prefix, what is left
+// of its TTL as the key's expiry: the shared server drops it on its own.
+func TestReceiptKeyLayout(t *testing.T) {
+	m := miniredis.RunT(t)
+	s := newStore(t, m.Addr())
+	require.NoError(t, s.UpdateReceipt(context.Background(), "3a7f", func(r *store.Receipt, _ bool) bool {
+		*r = store.Receipt{Hash: "h", Status: 201, Body: "{}\n", ClaimedAt: time.Now().Add(-24 * time.Hour), TTL: 7 * 24 * time.Hour}
+		return true
+	}))
+	require.Equal(t, []string{"klaus-gateway:receipt:3a7f"}, m.Keys())
+	require.InDelta(t, 6*24*time.Hour, m.TTL("klaus-gateway:receipt:3a7f"), float64(2*time.Second), "what is left of the seven days")
+
+	m.FastForward(6 * 24 * time.Hour)
+	require.Empty(t, m.Keys(), "the server dropped the key")
+}
+
 // The review prefix follows the routing prefix, so a gateway that moves its
 // keys moves its reviews with them.
 func TestReviewKeyPrefixFollowsRoutePrefix(t *testing.T) {

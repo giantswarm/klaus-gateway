@@ -14,6 +14,10 @@
 // The caller is a service identity: a Kubernetes ServiceAccount whose
 // projected token the API server verifies (TokenReview), allow-listed by
 // name. No personal token, no shared secret.
+//
+// Every POST takes an Idempotency-Key: the same request sent again with the
+// key is answered with the first one's answer and posts nothing
+// (idempotency.go).
 package reviews
 
 import (
@@ -30,6 +34,7 @@ import (
 
 	"github.com/giantswarm/klaus-gateway/pkg/auth/satoken"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
+	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
 )
 
 // Authenticator names the ServiceAccount behind a bearer token.
@@ -52,6 +57,9 @@ type Handler struct {
 	// Conversations serves POST /conversations; nil leaves those routes
 	// unmounted.
 	Conversations channels.ConversationPoster
+	// Receipts keeps the answers to requests sent with an Idempotency-Key.
+	// Required.
+	Receipts store.ReceiptStore
 }
 
 const maxBodyBytes = 1 << 20
@@ -64,24 +72,20 @@ func (h *Handler) Mount(r chi.Router) {
 	if h.Logger == nil {
 		h.Logger = slog.Default()
 	}
-	r.Post("/reviews", h.postReview)
-	r.Post("/reviews/{id}/results", h.postResult)
-	r.Post("/notices", h.postNotice)
+	r.Post("/reviews", h.serve(h.postReview))
+	r.Post("/reviews/{id}/results", h.serve(h.postResult))
+	r.Post("/notices", h.serve(h.postNotice))
 	if h.Decisions != nil {
-		r.Post("/decisions", h.postDecision)
-		r.Post("/decisions/{id}/close", h.closeDecision)
+		r.Post("/decisions", h.serve(h.postDecision))
+		r.Post("/decisions/{id}/close", h.serve(h.closeDecision))
 	}
 	if h.Conversations != nil {
-		r.Post("/conversations", h.openConversation)
-		r.Post("/conversations/{id}/messages", h.postConversationMessage)
+		r.Post("/conversations", h.serve(h.openConversation))
+		r.Post("/conversations/{id}/messages", h.serve(h.postConversationMessage))
 	}
 }
 
-func (h *Handler) openConversation(w http.ResponseWriter, r *http.Request) {
-	caller, ok := h.authenticate(w, r)
-	if !ok {
-		return
-	}
+func (h *Handler) openConversation(w http.ResponseWriter, r *http.Request, caller satoken.Identity) {
 	var conversation channels.Conversation
 	if !decodeBody(w, r, &conversation) {
 		return
@@ -108,11 +112,7 @@ func (h *Handler) openConversation(w http.ResponseWriter, r *http.Request) {
 // postConversationMessage posts into a conversation's thread. A conversation
 // the gateway holds no record of — unknown, or quiet past its keep — is a
 // 404.
-func (h *Handler) postConversationMessage(w http.ResponseWriter, r *http.Request) {
-	caller, ok := h.authenticate(w, r)
-	if !ok {
-		return
-	}
+func (h *Handler) postConversationMessage(w http.ResponseWriter, r *http.Request, caller satoken.Identity) {
 	id := chi.URLParam(r, "id")
 	var message channels.ConversationMessage
 	if !decodeBody(w, r, &message) {
@@ -137,11 +137,7 @@ func (h *Handler) postConversationMessage(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusCreated, receipt)
 }
 
-func (h *Handler) postDecision(w http.ResponseWriter, r *http.Request) {
-	caller, ok := h.authenticate(w, r)
-	if !ok {
-		return
-	}
+func (h *Handler) postDecision(w http.ResponseWriter, r *http.Request, caller satoken.Identity) {
 	var decision channels.Decision
 	if !decodeBody(w, r, &decision) {
 		return
@@ -169,11 +165,7 @@ func (h *Handler) postDecision(w http.ResponseWriter, r *http.Request) {
 // closeDecision rewrites a decision's message to its outcome. A decision the
 // gateway holds no record of — unknown, or past its due time plus seven days
 // — is a 404.
-func (h *Handler) closeDecision(w http.ResponseWriter, r *http.Request) {
-	caller, ok := h.authenticate(w, r)
-	if !ok {
-		return
-	}
+func (h *Handler) closeDecision(w http.ResponseWriter, r *http.Request, caller satoken.Identity) {
 	id := chi.URLParam(r, "id")
 	var closing channels.DecisionClose
 	if !decodeBody(w, r, &closing) {
@@ -198,11 +190,7 @@ func (h *Handler) closeDecision(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, receipt)
 }
 
-func (h *Handler) postReview(w http.ResponseWriter, r *http.Request) {
-	caller, ok := h.authenticate(w, r)
-	if !ok {
-		return
-	}
+func (h *Handler) postReview(w http.ResponseWriter, r *http.Request, caller satoken.Identity) {
 	var review channels.TeamReview
 	if !decodeBody(w, r, &review) {
 		return
@@ -223,11 +211,7 @@ func (h *Handler) postReview(w http.ResponseWriter, r *http.Request) {
 	writeReceipt(w, receipt)
 }
 
-func (h *Handler) postNotice(w http.ResponseWriter, r *http.Request) {
-	caller, ok := h.authenticate(w, r)
-	if !ok {
-		return
-	}
+func (h *Handler) postNotice(w http.ResponseWriter, r *http.Request, caller satoken.Identity) {
 	var notice channels.TeamNotice
 	if !decodeBody(w, r, &notice) {
 		return
@@ -249,11 +233,7 @@ func (h *Handler) postNotice(w http.ResponseWriter, r *http.Request) {
 
 // postResult posts an action's outcome into its review's thread. A review the
 // gateway holds no record of — unknown, or past its seven days — is a 404.
-func (h *Handler) postResult(w http.ResponseWriter, r *http.Request) {
-	caller, ok := h.authenticate(w, r)
-	if !ok {
-		return
-	}
+func (h *Handler) postResult(w http.ResponseWriter, r *http.Request, caller satoken.Identity) {
 	id := chi.URLParam(r, "id")
 	var result channels.TeamReviewResult
 	if !decodeBody(w, r, &result) {
@@ -331,8 +311,8 @@ func writeReceipt(w http.ResponseWriter, receipt channels.PostReceipt) {
 	writeJSON(w, http.StatusCreated, receipt)
 }
 
-func writeJSON(w http.ResponseWriter, status int, receipt channels.PostReceipt) {
+func writeJSON(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(receipt)
+	_ = json.NewEncoder(w).Encode(body)
 }

@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/require"
 
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
@@ -40,16 +39,12 @@ func (p *recordingDecisions) CloseDecision(_ context.Context, id string, c chann
 
 func newDecisionServer(t *testing.T, decisions channels.DecisionPoster) *httptest.Server {
 	t.Helper()
-	r := chi.NewRouter()
-	(&Handler{
+	return newHandlerServer(t, &Handler{
 		Auth:           &stubAuth{tokens: map[string]string{"good": managerSA, "other": otherSA}},
 		AllowedCallers: []string{managerSA},
 		Poster:         &recordingPoster{},
 		Decisions:      decisions,
-	}).Mount(r)
-	srv := httptest.NewServer(r)
-	t.Cleanup(srv.Close)
-	return srv
+	})
 }
 
 func validDecision() map[string]any {

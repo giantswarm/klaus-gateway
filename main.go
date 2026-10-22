@@ -256,6 +256,7 @@ func run(args []string) error {
 			Poster:         slackAdapter,
 			Decisions:      slackAdapter,
 			Conversations:  slackAdapter,
+			Receipts:       routeStore,
 		}
 		reviewsHandler.Mount(publicMux)
 		logger.Info("team-review endpoint mounted",
