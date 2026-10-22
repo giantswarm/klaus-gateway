@@ -19,6 +19,11 @@ const (
 	IconURLAnnotation = "ui.giantswarm.io/icon-url"
 )
 
+// DefaultWorkspaceAnnotation is the workspace (`<namespace>/<name>`) a Session
+// of the Agent starts in when its surface chooses none; agent-manager writes
+// it on the Agent from the agent's defaultWorkspace.
+const DefaultWorkspaceAnnotation = "agent-platform.giantswarm.io/default-workspace"
+
 // AgentInfo describes one Agent of the caller's roster.
 type AgentInfo struct {
 	Name      string
@@ -40,6 +45,11 @@ type AgentInfo struct {
 	// Harness is the name of the Harness spec.harnessRef names; empty when the
 	// Agent embeds its Harness.
 	Harness string
+	// DefaultWorkspace is the name of the workspace the Agent's
+	// DefaultWorkspaceAnnotation names in the Agent's own namespace; empty when
+	// it names none, or one of another namespace, which agent-manager never
+	// writes.
+	DefaultWorkspace string
 	// Unavailable is empty for a selectable agent. Otherwise it says why the
 	// Agent cannot start a conversation: its Ready condition is not True.
 	Unavailable string
@@ -249,6 +259,9 @@ func (c *Client) agentInfo(a *apiv1alpha1.Agent, templates map[string]*apiv1alph
 		Tenant:      c.Tenant(a.GetRef().GetNamespace()),
 		DisplayName: stringAt(annotations, DisplayNameAnnotation),
 		IconURL:     stringAt(annotations, IconURLAnnotation),
+	}
+	if ns, name, ok := strings.Cut(stringAt(annotations, DefaultWorkspaceAnnotation), "/"); ok && ns == info.Namespace && name != "" {
+		info.DefaultWorkspace = name
 	}
 	if inline := nested(spec, "template"); inline != nil {
 		info.Description = stringAt(inline, "description")

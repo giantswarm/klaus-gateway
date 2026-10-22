@@ -59,7 +59,7 @@ func New(tools ToolCaller, prefix string) *Starter {
 // StartSession starts the Session of a conversation with the Agent
 // namespace/name as the person bearer belongs to, keyed by requestID and
 // named name (empty: unnamed), in the workspace a non-zero grant admits the
-// person to (start_session's workspaceGrant). It sends no message: the gateway
+// person to (start_session's workspaceGrant), else in none (noWorkspace). It sends no message: the gateway
 // sends the turn itself. agent-manager's refusals map onto the a2a errors a channel
 // renders: an Agent that cannot run onto pkga2a.AgentUnavailableError, a
 // caller muster or the controller does not know onto pkga2a.ErrNoIdentity, an
@@ -74,7 +74,12 @@ func (s *Starter) StartSession(ctx context.Context, bearer, namespace, name, req
 	if sessionName != "" {
 		args["sessionName"] = sessionName
 	}
-	if !grant.IsZero() {
+	// A start without a grant says so: agent-manager otherwise starts it in
+	// the Agent's default workspace, which only a grant the gateway asked for
+	// as the person may do.
+	if grant.IsZero() {
+		args["noWorkspace"] = true
+	} else {
 		args["workspaceGrant"] = grant.Token()
 	}
 	res, err := s.tools.CallTool(ctx, bearer, s.tool, args)

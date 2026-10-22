@@ -364,7 +364,8 @@ creates one, which a turn that switches agents does mid-thread.
 ### Selecting a workspace
 
 With workspaces on (`workspaces.toolsPrefix`, see [deployment](deployment.md#workspaces)), a
-thread's Session runs in the workspace its initiator picks, or in none. A Session in a
+thread's Session runs in the workspace its initiator picks, or in none; an agent with a default
+workspace starts in it unless the initiator picks otherwise. A Session in a
 workspace works in its own directory on the workspace's volume, with the workspace's
 repositories as read-only mirrors beside it.
 
@@ -373,9 +374,11 @@ repositories as read-only mirrors beside it.
   which carries the choice itself: a **Workspace** select under the agent, offered when the
   person has workspaces and the listing (as them, beside the roster) answers within 1.5 s of
   the trigger. **No workspace** comes first, then the workspaces as in the prompt below. It is
-  preset to the workspace the person last started the selected agent with from the picker, while
-  it is still listed, else to **No workspace**, and a change of agent redraws the picker
-  (`views.update`) with that agent's preset. On submit a workspace is authorized as the person
+  preset to the person's last choice with the selected agent from the picker (**No workspace**,
+  or a workspace while it is still listed), else to the agent's default workspace while it is
+  listed, else to **No workspace**; the hint says which ("Last used with …", "The default of
+  …"). A change of agent redraws the picker (`views.update`) with that agent's preset, its
+  default read from the person's roster. On submit a workspace is authorized as the person
   before anything is posted; a denial is answered privately as in the thread below (the
   unreadable repositories, not synced yet, or each provider's sign-in link) with the prompt
   quoted back, and nothing starts. The thread then starts with the choice and is not asked. The
@@ -383,8 +386,23 @@ repositories as read-only mirrors beside it.
   `slack-workspace-pref`, the person and the agent as its key, the name or `none`, never a grant),
   which ends with the thread lifetime. A picker opened without the select (the listing was late
   or failed) leaves the choice to the prompt, as a mention does.
+- **The agent's default workspace.** An Agent carries it as the annotation
+  `agent-platform.giantswarm.io/default-workspace` (`<namespace>/<name>`, written by
+  agent-manager's `defaultWorkspace`); the roster reads it as the person and takes it only in
+  the Agent's own namespace. The message that would ask (below) asks nobody on such an agent:
+  it is held, and the default is chosen on it as the initiator's click would, authorized as
+  them, without listing their workspaces or posting a prompt. Granted, the Session starts in
+  it and the thread says so, with the slash command that picks another ("Working in workspace
+  *platform*, this agent's default. To work in another, start with `/swarmgeist` and pick
+  it."). A provider or the workspace-manager to connect gets the connect prompt as below, and
+  their next mention, once connected, chooses the default again with the held message. Any
+  other denial starts nothing and keeps nothing: the initiator alone is told why (the
+  repositories they cannot read, not synced yet, the check failed), never that the agent is
+  closed to them, that the slash command starts it in another workspace or in none, and their
+  message is quoted back. A roster that cannot be read is no default: the initiator is asked.
 - **Who is asked, and when.** The initiator's message that would start the thread's Session —
-  no Session bound and no choice recorded yet, and the message carries none itself — lists
+  no Session bound and no choice recorded yet, the message carries none itself, and the agent
+  has no default workspace — lists
   the initiator's workspaces (`list_workspaces`, as them). With none, or when they cannot be
   listed, the Session starts without a workspace and nobody is asked (the second case with a
   note in the thread). A listing muster answers with its sign-in challenge for the
@@ -417,7 +435,8 @@ repositories as read-only mirrors beside it.
   replays a held message. Each outcome logs a `record` (`workspace_granted`,
   `workspace_refused`, `workspace_connect_required`, `workspace_unavailable`,
   `workspace_check_failed`); repository names are logged at debug only. **No workspace**
-  starts the Session without a grant.
+  starts the Session without a grant. Every start without a grant tells `start_session`
+  `noWorkspace: true`, so agent-manager never starts it in the agent's default instead.
 - **After the choice.** The prompt is replaced by the start notice ("Working in workspace
   *platform*, chosen by @…", or "Working without a workspace…"). The choice is written to
   the thread's row with its Session (`store.Entry.Workspace`), so the later turns of the
