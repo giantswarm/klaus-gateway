@@ -368,6 +368,8 @@ func TestClient_ListAgents_ReadinessAndAnnotations(t *testing.T) {
 		agent(t, "compiling", nil, "sre-template", "kagent", readyCondition(false, "Preparing", "golden snapshot not taken yet")),
 		agent(t, "no-status-yet", nil, "sre-template", "kagent", nil),
 		agent(t, "branded-template", nil, "branded", "kagent", readyCondition(true, "Ready", "")),
+		withLatestSuccessfulRevision(agent(t, "updating", nil, "sre-template", "kagent",
+			readyCondition(false, "ActorTemplatePending", "waiting for the ActorTemplate golden snapshot")), "updating-rev-1"),
 	}
 	f.templates = []*apiv1alpha1.AgentTemplate{
 		template(t, "sre-template", nil, "default-model-config"),
@@ -378,7 +380,7 @@ func TestClient_ListAgents_ReadinessAndAnnotations(t *testing.T) {
 
 	agents, err := client.ListAgents(ctx)
 	require.NoError(t, err)
-	require.Len(t, agents, 2, "only an Agent whose Ready condition is True is offered")
+	require.Len(t, agents, 3, "only an Agent with a ready revision is offered")
 	require.Equal(t, pkga2a.AgentInfo{
 		Name: "sre-agent", Namespace: "kagent", Tenant: pkga2a.PlatformTenant, DisplayName: "SRE Agent", IconURL: "https://icons.example/sre.png",
 		Description: "Investigates sre-template", ModelConfig: "default-model-config", Harness: "kagent",
@@ -388,6 +390,9 @@ func TestClient_ListAgents_ReadinessAndAnnotations(t *testing.T) {
 		Name: "branded-template", Namespace: "kagent", Tenant: pkga2a.PlatformTenant, DisplayName: "Branded", IconURL: "https://icons.example/branded.png",
 		Description: "Investigates branded", ModelConfig: "other-model-config", Harness: "kagent",
 	}, agents[1], "an Agent without annotations of its own is branded by its AgentTemplate's")
+	require.Equal(t, "updating", agents[2].Name,
+		"an Agent preparing a new revision stays offered: kagent starts its Sessions on the latest successful one")
+	require.Empty(t, agents[2].Unavailable)
 	require.Equal(t, []string{"Bearer " + userToken}, f.lastMD("ListAgents").Get("authorization"))
 	require.Equal(t, []string{"Bearer " + userToken}, f.lastMD("ListAgentTemplates").Get("authorization"))
 
@@ -408,6 +413,9 @@ func TestClient_ListAgents_ReadinessAndAnnotations(t *testing.T) {
 	require.ErrorIs(t, err, pkga2a.ErrAgentNotPermitted, "an Agent the roster does not list is not the caller's")
 	_, _, err = client.CardInfo(ctx, "other-namespace/sre-agent")
 	require.ErrorIs(t, err, pkga2a.ErrAgentNotPermitted)
+
+	_, _, err = client.CardInfo(ctx, "updating")
+	require.NoError(t, err, "an Agent preparing a new revision is selectable by name")
 
 	name, description, err := client.CardInfo(ctx, "sre-agent")
 	require.NoError(t, err)

@@ -66,9 +66,12 @@ references:
   carries none (falling back to `a2a.fallbackIconUrlTemplate` with `{agent}` replaced by the
   technical name); description and `modelConfig` from the referenced template, or from the
   embedded one;
-- readiness from the Agent's `status.conditions`: an Agent is offered when its `Ready`
-  condition is `True`, which the controller sets once it has compiled a revision a Session can
-  be created from. An Agent that is not ready is not offered; selecting it by name is refused
+- readiness from the Agent's status: an Agent is offered once it has a
+  `status.latestSuccessfulRevision`, the revision the controller creates new Sessions from. It
+  stays offered while a newer revision prepares (`Ready=False`, `ActorTemplatePending`, after an
+  Agent spec or EgressPolicy edit), as the kagent UI shows it "updating". An Agent without one is
+  offered when its `Ready` condition is `True`. An Agent that never had a ready revision is not
+  offered; selecting it by name is refused
   with the condition's message (`Agent <name> is not ready: <message>`) in the gateway's log,
   and the channel shows its unknown-agent notice with the roster.
 
