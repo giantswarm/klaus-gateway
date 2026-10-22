@@ -9,7 +9,7 @@ that adds notes heads them `## Next — <title>`; the change that prepares a rel
 renames each `Next` to that version, and `make check-upgrade-notes` refuses a
 stable release tag while a `Next` section with content is left.
 
-## Next — a mention or a new chat starts no conversation
+## 4.13.1 — a mention or a new chat starts no conversation
 
 - A conversation starts only through the agent picker: the app's slash command (`/swarmgeist`
   in the manifest) and the **Ask an agent here** message shortcut. A mention of the bot outside a
@@ -32,8 +32,6 @@ stable release tag while a `Next` section with content is left.
   `slack.channelMode`, `slack.channelAllowlist` and `slack.dmMode` still gate where the command
   and the shortcut work, and `slack.contextBotIDs` and `slack.contextBotNames` still decide
   which bots' posts the shortcut's thread read hands to the agent.
-- The agentlab proof `klaus-gateway-test` opens its conversation with a mention and fails against
-  this release until giantswarm/agentlab moves it to the shortcut.
 
 ## 4.10.0 — the sign-in asks for `groups`
 
