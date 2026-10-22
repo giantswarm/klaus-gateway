@@ -457,8 +457,8 @@ func (w *batchedWriter) noteFlushFailure(now time.Time, err error) {
 // failPermanently reports whether err is a refusal of Slack's that no retry
 // of the write changes (classPermanent). The first one closes the text path
 // for the rest of the turn: what is queued is dropped, and every later write
-// returns err without a call, so the thread gets its failure note at once
-// instead of after the retries a transient failure is worth.
+// returns err without a call, so the turn ends in its failure note without the
+// retries a transient failure is worth.
 func (w *batchedWriter) failPermanently(err error) bool {
 	var refusal *apiError
 	if !errors.As(err, &refusal) || slackErrorClass(refusal.method, err) != classPermanent {

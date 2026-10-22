@@ -796,11 +796,11 @@ any string that begins with `Slack bot`, `Slack app-level`, or `Slack user`.
    fails is reported in the thread (the reply is incomplete, with the failed reaction) while
    the turn still counts as completed. A refusal no retry fixes (`channel_not_found`,
    `is_archived`, `invalid_blocks`, a revoked token, …; the table is in
-   [invariants](invariants.md)) is not retried: the rest of the reply is dropped and the
-   thread gets that note at once. Pressing Slack's stop button ends the stream on Slack's
-   side: the adapter learns it from the `stopped_by_user` its next call is answered with and
-   stops writing — quietly, since the button's own "Stopped by @user" notice already tells
-   the thread. `/metrics` counts the lifecycle as
+   [invariants](invariants.md)) is not retried: the rest of the reply is dropped, and the
+   thread gets that note when the agent ends the turn. Pressing Slack's stop button ends the
+   stream on Slack's side: the adapter learns it from the `stopped_by_user` its next call is
+   answered with and stops writing — quietly, since the button's own "Stopped by @user" notice
+   already tells the thread. `/metrics` counts the lifecycle as
    `klaus_gateway_slack_stream_total{event}` (`started`, `stopped`, `stopped_by_user`,
    `recovered`); `chat.startStream` and `chat.stopStream` are tier-2 methods, about 20 calls
    a minute for the whole app, so those rates are what says how close a workspace is to the
@@ -825,8 +825,10 @@ any string that begins with `Slack bot`, `Slack app-level`, or `Slack user`.
    another attempt may fix (a network error, a 5xx, a 429 past its budget, a code the table
    does not name); or `converged`, a refusal that finds the call's effect already in place (a
    reaction already there or already gone, a message to delete that is gone), which counts as
-   done. A rise in `permanent` is a permission or configuration problem, such as a revoked
-   token, an archived channel or a missing scope; a rise in `retryable` is an outage.
+   done. `retryable` also counts every code the table does not name and the calls a stopped
+   turn cancels, and `permanent` also counts expected steps, such as the `not_in_channel`
+   before the picker joins a channel and the `missing_scope` before a branded post goes out
+   unbranded. Read both by `method`: an outage shows as `retryable` on many methods at once.
 
 Turns are serialized per thread: a message that arrives while the thread's previous turn is
 still running gets a brief "still working" notice rather than starting an overlapping turn; the

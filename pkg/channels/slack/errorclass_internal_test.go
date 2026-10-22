@@ -13,10 +13,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Every code of the table in giantswarm/klaus-gateway#529 is permanent on any
-// method. The converging answers count as done on the methods they converge
-// on, and only there; an unknown code, or an error Slack never answered, is
-// worth another attempt.
+// Every code of the table in giantswarm/klaus-gateway#529 is permanent
+// (checked on chat.appendStream). The converging answers count as done on the
+// methods they converge on, and only there: message_not_found converges on a
+// delete or a reaction removal. An unknown code, or an error Slack never
+// answered, is worth another attempt.
 func TestSlackErrorClass(t *testing.T) {
 	refusal := func(method, code string) error { return &apiError{method: method, code: code} }
 	for _, code := range []string{
