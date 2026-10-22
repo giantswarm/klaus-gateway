@@ -1292,6 +1292,16 @@ type stubGateway struct {
 	// recordsErr, when set, fails every thread-record read and write: a
 	// routing store that is down.
 	recordsErr error
+	// listErr, when set, fails the listing of the thread records alone: a
+	// store whose scan times out while its calls on one key answer.
+	listErr error
+}
+
+// failListing makes every later listing of the thread records fail with err.
+func (s *stubGateway) failListing(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.listErr = err
 }
 
 // rec is the stub's thread recorder, created on first use.
@@ -1342,6 +1352,12 @@ func (s *stubGateway) UpdateThreadRecord(ctx context.Context, ch, cid, tid strin
 func (s *stubGateway) ThreadRecords(ctx context.Context, ch string) ([]store.KeyEntry, error) {
 	if s.recordsErr != nil {
 		return nil, s.recordsErr
+	}
+	s.mu.Lock()
+	listErr := s.listErr
+	s.mu.Unlock()
+	if listErr != nil {
+		return nil, listErr
 	}
 	return s.rec().ThreadRecords(ctx, ch)
 }

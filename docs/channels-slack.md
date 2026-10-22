@@ -829,10 +829,11 @@ therefore loses nothing: on a routing store that outlives the process (`valkey`,
 process runs the inbox, in order, and the message whose turn was already the agent's is
 delivered by the restart's recovery instead. It does so a minute after it starts: in a rolling
 update the process it replaces still runs the inboxes until it is told to stop, and from then on
-that one hands no queued message to the agent. A message in a thread with no conversation writes
-nothing: a reply is dropped at the gate, a mention gets the help. A command word (`usage`,
-`help`, `mute`, …) is answered at once, not queued; a `stop` or `mute` beside an open approval
-card, which the word rejects, is queued as the card's answer.
+that one hands no queued message to the agent. On the `memory` store no next process reads the
+inbox, so a process told to stop runs it on until it exits. A message in a thread with no
+conversation writes nothing: a reply is dropped at the gate, a mention gets the help. A command
+word (`usage`, `help`, `mute`, …) is answered at once, not queued; a `stop` or `mute` beside an
+open approval card, which the word rejects, is queued as the card's answer.
 
 - **A message that arrives while a turn runs** waits for it and runs after it, the waiting
   messages in the order they came, each as its sender's turn. Its sender is told privately:

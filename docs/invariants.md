@@ -123,7 +123,8 @@ or `helm/`. Add a line when a review finds a new one.
   makes it recreate), and the new process reads the rows back before the old one is told to stop.
   So the new process leaves the inboxes it read back alone for a minute, and the old one hands no
   queued message to the agent once the process signal arrives; nothing else stops the two from
-  running one message twice. More than one replica needs a claim in the store (#528).
+  running one message twice. On the `memory` store no other process reads the inbox, so the old
+  one runs it on until it exits. More than one replica needs a claim in the store (#528).
 - **The controller's create is idempotent per caller and request id.** The same person gets
   the earlier session back; a different person gets a new one (giantswarm#37896).
 
