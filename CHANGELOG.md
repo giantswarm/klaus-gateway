@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `GET /groups/{group}/members/{email}` on the service endpoint tells an allow-listed caller whether a person is in a Slack user group (`@team-bumblebee`), so beekeeper can let only a team's members answer its decisions. The app's manifest adds `usergroups:read`; an installed app needs a re-install to get it ([giantswarm/giantswarm#37985](https://github.com/giantswarm/giantswarm/issues/37985)).
+
 ### Fixed
 
 - Agent roster: an Agent preparing a new revision (`Ready=False`, e.g. `ActorTemplatePending` after an Agent spec or EgressPolicy edit) stays listed and selectable when it has a `status.latestSuccessfulRevision`, since kagent starts its new Sessions on that revision meanwhile; an Agent that never had a ready revision is still left out and refused with its Ready reason (giantswarm/klaus-gateway#523).
