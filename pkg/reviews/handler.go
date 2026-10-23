@@ -10,6 +10,7 @@
 //	POST /decisions/{id}/close  -- the decision's outcome: answered, defaulted or withdrawn
 //	POST /conversations         -- a thread with one person, whose replies go to the caller's reply tool
 //	POST /conversations/{id}/messages -- a message into the conversation's thread
+//	GET  /groups/{group}/members/{email} -- whether a person is in a workspace group (@<group>)
 //
 // The caller is a service identity: a Kubernetes ServiceAccount whose
 // projected token the API server verifies (TokenReview), allow-listed by
@@ -52,14 +53,18 @@ type Handler struct {
 	// Conversations serves POST /conversations; nil leaves those routes
 	// unmounted.
 	Conversations channels.ConversationPoster
+	// Groups serves GET /groups/{group}/members/{email}; nil leaves the route
+	// unmounted.
+	Groups channels.GroupMembers
 }
 
 const maxBodyBytes = 1 << 20
 
 // Mount attaches POST /reviews, POST /notices and POST /reviews/{id}/results
 // to r, POST /decisions and POST /decisions/{id}/close when the handler has a
-// DecisionPoster, and POST /conversations and POST /conversations/{id}/messages
-// when it has a ConversationPoster.
+// DecisionPoster, POST /conversations and POST /conversations/{id}/messages
+// when it has a ConversationPoster, and GET /groups/{group}/members/{email}
+// when it has GroupMembers.
 func (h *Handler) Mount(r chi.Router) {
 	if h.Logger == nil {
 		h.Logger = slog.Default()
@@ -75,6 +80,41 @@ func (h *Handler) Mount(r chi.Router) {
 		r.Post("/conversations", h.openConversation)
 		r.Post("/conversations/{id}/messages", h.postConversationMessage)
 	}
+	if h.Groups != nil {
+		r.Get("/groups/{group}/members/{email}", h.groupMember)
+	}
+}
+
+// Membership is GET /groups/{group}/members/{email}'s answer.
+type Membership struct {
+	Member bool `json:"member"`
+}
+
+// groupMember answers whether the person is in the group; a group the
+// workspace has no enabled one of is a 404.
+func (h *Handler) groupMember(w http.ResponseWriter, r *http.Request) {
+	caller, ok := h.authenticate(w, r)
+	if !ok {
+		return
+	}
+	group, email := chi.URLParam(r, "group"), chi.URLParam(r, "email")
+	if group == "" || !strings.Contains(email, "@") {
+		http.Error(w, "a group handle and a person's email are required", http.StatusBadRequest)
+		return
+	}
+	member, err := h.Groups.IsGroupMember(r.Context(), group, email)
+	switch {
+	case errors.Is(err, channels.ErrGroupNotFound):
+		http.Error(w, "no group @"+group+" in the workspace", http.StatusNotFound)
+		return
+	case err != nil:
+		h.Logger.Error("group member: lookup failed", "caller", caller.Username, "group", group, "error", err)
+		http.Error(w, "looking up the group failed", http.StatusBadGateway)
+		return
+	}
+	h.Logger.Info("group member checked", "record", "group_member_checked", "caller", caller.Username, "group", group, "member", member)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(Membership{Member: member})
 }
 
 func (h *Handler) openConversation(w http.ResponseWriter, r *http.Request) {

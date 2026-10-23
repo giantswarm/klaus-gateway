@@ -126,6 +126,9 @@ oauth_config:
       # with users:read beside it. users:read also names the bot in help text.
       - users:read
       - users:read.email
+      # Who is on a team (GET /groups/{group}/members/{email}): the members
+      # of a user group (@team-bumblebee), from usergroups.list.
+      - usergroups:read
       # Slash commands and shortcuts. Already granted on installs that carry the
       # message shortcut (Slack adds it with the feature); listed so a fresh
       # install gets it.

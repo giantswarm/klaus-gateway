@@ -9,6 +9,10 @@ that adds notes heads them `## Next — <title>`; the change that prepares a rel
 renames each `Next` to that version, and `make check-upgrade-notes` refuses a
 stable release tag while a `Next` section with content is left.
 
+## Next — a team's members from its Slack user group
+
+- `GET /groups/{group}/members/{email}` needs the app's `usergroups:read` scope, which `deploy/slack/manifest.yaml` now lists: update the installed app's manifest and re-install it once. Until then the endpoint answers `502` (`missing_scope`) and nothing else changes.
+
 ## 4.13.1 — a mention or a new chat starts no conversation
 
 - A conversation starts only through the agent picker: the app's slash command (`/swarmgeist`
