@@ -2944,7 +2944,7 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 			PromptText: pd.Content,
 			Usage:      w.turnUsage,
 		})
-		return a.postHitlPrompt(cctx, client, slackChannel, threadID, pd)
+		return a.postHitlPrompt(cctx, client, slackChannel, threadID, slackUser, pd)
 	}
 	a.recordTurnUsage(threadID, slackChannel, w.turnUsage)
 	prog.done(ctx)

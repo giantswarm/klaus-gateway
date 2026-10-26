@@ -3,6 +3,7 @@ package a2a
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"slices"
 
 	a2apkg "github.com/a2aproject/a2a-go/v2/a2a"
@@ -12,9 +13,10 @@ import (
 // client requests it on every call (the A2A-Extensions service parameter, gRPC
 // metadata a2a-extensions); the agent's runtime then pauses a tool that needs
 // approval — or its built-in ask_user tool — as a task in the input-required
-// state whose status message carries a typed request payload. Without the
-// request the runtime answers with a plain text notice and nothing reaches the
-// channel to decide on.
+// state whose status message carries a typed request payload, and an MCP
+// server's URL elicitation (a sign-in link) as a task in the auth-required
+// state. Without the request the runtime answers with a plain text notice and
+// nothing reaches the channel to decide on.
 const HITLExtensionURI = "https://kagent.dev/extensions/hitl/v1"
 
 // HITL payload type discriminators (the "type" field of the extension payload).
@@ -23,6 +25,16 @@ const (
 	HITLTypeAskUserRequest       = "ask_user_request"
 	HITLTypeToolApprovalResponse = "tool_approval_response"
 	HITLTypeAskUserResponse      = "ask_user_response"
+
+	HITLTypeURLElicitationRequest  = "url_elicitation_request"
+	HITLTypeURLElicitationResponse = "url_elicitation_response"
+)
+
+// URL elicitation actions, as MCP elicitation defines them.
+const (
+	URLElicitationAccept  = "accept"
+	URLElicitationDecline = "decline"
+	URLElicitationCancel  = "cancel"
 )
 
 // AskUserToolName is the name of kagent's built-in question tool, the one
@@ -118,17 +130,38 @@ type AskUserResponse struct {
 	Answers []AskUserAnswer `json:"answers,omitempty"`
 }
 
-// HITLRequest is the parsed request of a paused task: exactly one of the two
+// URLElicitationRequest is the payload of an auth-required task paused on an
+// MCP server's URL elicitation: the person opens URL, such as the server's
+// sign-in link, outside the conversation.
+type URLElicitationRequest struct {
+	Type          string `json:"type"`
+	ID            string `json:"id"`
+	Server        string `json:"server"`
+	Message       string `json:"message,omitempty"`
+	URL           string `json:"url"`
+	ElicitationID string `json:"elicitation_id,omitempty"`
+}
+
+// URLElicitationResponse answers a URLElicitationRequest. Accept means the
+// person completed the interaction at the URL.
+type URLElicitationResponse struct {
+	Type   string `json:"type"`
+	ID     string `json:"id"`
+	Action string `json:"action"`
+}
+
+// HITLRequest is the parsed request of a paused task: exactly one of the
 // fields is set.
 type HITLRequest struct {
-	ToolApproval *ToolApprovalRequest
-	AskUser      *AskUserRequest
+	ToolApproval   *ToolApprovalRequest
+	AskUser        *AskUserRequest
+	URLElicitation *URLElicitationRequest
 }
 
 // ParseHITLRequest reads the HITL request the agent attached to an
-// input-required status message. It returns nil when the message carries no
-// HITL extension payload (a plain-text prompt, or a runtime that did not
-// activate the extension).
+// input-required or auth-required status message. It returns nil when the
+// message carries no HITL extension payload (a plain-text prompt, or a runtime
+// that did not activate the extension).
 func ParseHITLRequest(msg *a2apkg.Message) (*HITLRequest, error) {
 	raw, ok := hitlPayload(msg)
 	if !ok {
@@ -153,6 +186,18 @@ func ParseHITLRequest(msg *a2apkg.Message) (*HITLRequest, error) {
 			return nil, fmt.Errorf("ask_user request has no id")
 		}
 		return &HITLRequest{AskUser: &req}, nil
+	case HITLTypeURLElicitationRequest:
+		var req URLElicitationRequest
+		if err := decodeHITLPayload(raw, &req); err != nil {
+			return nil, fmt.Errorf("decode URL elicitation request: %w", err)
+		}
+		if req.ID == "" {
+			return nil, fmt.Errorf("URL elicitation request has no id")
+		}
+		if u, err := url.Parse(req.URL); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+			return nil, fmt.Errorf("URL elicitation request has no absolute http(s) URL")
+		}
+		return &HITLRequest{URLElicitation: &req}, nil
 	default:
 		return nil, nil
 	}

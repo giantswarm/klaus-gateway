@@ -276,6 +276,9 @@ func (a *Adapter) routeInteraction(ctx context.Context, payload interactionPaylo
 	case connectorDismiss:
 		a.handleConnectorDismiss(ctx, payload.User.ID, action.Value, payload.Message.ThreadTS, payload.ResponseURL)
 		return
+	case signInDecline:
+		a.handleSignInDecline(ctx, payload.User.ID, action.Value, payload.ResponseURL)
+		return
 	case authorizeAllOpen:
 		a.openAuthorizeModal(ctx, payload.User.ID, payload.TriggerID, action.Value)
 		return

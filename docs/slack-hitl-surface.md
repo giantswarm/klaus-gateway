@@ -28,7 +28,8 @@ A single ask_user question picks its layout by choice count, select mode, and la
 | >20, or any question >10 / label >75 | — | — | — | numbered text + free-text reply | reply |
 
 Generic (non-`ask_user`) tool approvals always render as the approval card, with Approve and
-Deny buttons.
+Deny buttons. A task paused on an MCP server's sign-in link renders as the sign-in prompt of
+section 7.
 Any prompt can also be answered by replying in-thread (a reply that opens with a mention of
 someone other than the bot is not for the agent and answers nothing); a reply resolves the paused task the
 same way a click does. Only a permitted user (the thread initiator or a granted collaborator)
@@ -348,6 +349,23 @@ carries the completion state in its `value`, so a click on it is replaced throug
 ```
 
 <img width="721" height="159" alt="image" src="https://github.com/user-attachments/assets/64649be1-74d6-4012-86d2-14f8d0998a84" />
+
+### Sign-in a paused task waits on
+
+A runtime that relays MCP URL elicitations (the claude and codex Harnesses, the Go ADK) pauses
+the task at `auth-required` with the server's sign-in link (`url_elicitation_request`, see
+`docs/kagent-a2a.md`) instead of answering with a login text. The link is minted for the
+person whose turn asked, so the Connect prompt goes to them alone, ephemeral, and the thread
+gets "Waiting for @Jose to sign in to *github*.". The prompt reads "Sign in to *github* so the
+agent can continue. It picks up here once you are done." with *Connect github*, *Authorize
+all* where offered, and *Not now* (`action_id` `sign_in_decline`, `value` the thread and the
+paused task). The link's landing resumes the paused task with `accept`: the agent retries the
+call, which now runs. *Not now* resumes it with `decline`, and the prompt reads "Not signed in
+to *github*. The agent continues without it." A reply in the thread answers it too: a refusal
+(`no`, `cancel`, `not now`) declines, anything else accepts. The thread line then reads
+"@Jose signed in to *github*." or "@Jose did not sign in to *github*.". Without a public base
+URL the prompt ends "then reply here so the agent continues." instead. A landing for a task no
+longer paused on that sign-in resumes nothing.
 
 Where the gateway can read the person's grant status (see the authorize modal below), every
 muster server's Connect prompt carries *Authorize all* after its Connect button (`action_id`

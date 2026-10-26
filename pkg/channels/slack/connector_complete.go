@@ -48,6 +48,9 @@ type connectorCompletion struct {
 	// landing runs it as the thread's first turn in place of the synthetic
 	// continuation.
 	held *heldMessage
+	// signInTask, set for the prompt of a task paused on the sign-in, is that
+	// task: the landing resumes it with accept, if it is still paused on it.
+	signInTask string
 	// modalView is the authorize modal the link was issued from: the landing
 	// redraws it. A row of the modal has no prompt and no thread (channel is
 	// empty), so its landing resumes nothing; a prompt's own completion the
@@ -253,10 +256,15 @@ func (a *Adapter) handleConnectorComplete(w http.ResponseWriter, r *http.Request
 
 // resumeAfterConnectorSignIn dispatches the synthetic continuation into the
 // thread that hit the auth challenge, so the agent retries the blocked tools
-// without the user retyping; for a prompt that held a Session start's
-// message, that message itself. Blocking (a replayed turn runs to
+// without the user retyping; for a prompt that held a Session start's message,
+// that message itself. For a task paused on the sign-in the continuation is the
+// reply that resumes it with accept. Blocking (a replayed turn runs to
 // completion), so it runs on the adapter lifecycle context via background.
 func (a *Adapter) resumeAfterConnectorSignIn(ctx context.Context, entry connectorCompletion) {
+	if entry.signInTask != "" && a.pendingSignIn(entry.threadTS, entry.signInTask) == nil {
+		a.Logger.Info("slack: sign-in landed for a task no longer paused on it", "user", entry.slackUser, "thread", entry.threadTS, "task", entry.signInTask)
+		return
+	}
 	msg := channels.InboundMessage{
 		Channel:   ChannelName,
 		ChannelID: entry.channel,
