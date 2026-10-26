@@ -197,16 +197,20 @@ typed payload under the extension URI in its metadata:
 
 - `tool_approval_request` — `hint`, `tools[]` (`id`, `call_id`, `name`, `args`), optionally
   `nested` (a request propagated from a sub-agent, decided on the child's tools);
-- `ask_user_request` — `id`, `questions[]` (`question`, `choices`, `multiple`).
+- `ask_user_request` — `id`, `questions[]` (`question`, `choices`, `multiple`);
+- `url_elicitation_request` — `id`, `server`, `message`, `url`, `elicitation_id`: an MCP
+  server's URL elicitation, such as muster's sign-in link for a server the person has not
+  connected. The runtime pauses the task at `auth-required` instead of `input-required`.
 
 `pkg/channels` parses that payload into the `HitlPrompt` the channels render (Approve/Deny,
 a choice widget, a form), and the message's text part is the agent's hint. The channel's
 answer is a `HitlDecision`; the gateway turns it into the matching response — one approval per
 requested tool (all approved or all rejected together, the reason on a rejection), or the
-positional `ask_user_response` under the request's correlation id — by reading the paused task
+positional `ask_user_response` under the request's correlation id, or a
+`url_elicitation_response` with `accept` (the person signed in) or `decline` — by reading the paused task
 (`GetTask`) and building the payload against the request it is paused on. The decision travels
 as the HITL payload of a message that **carries the paused task's id**, so the task resumes in
-place and nothing is left waiting at `input-required`.
+place and nothing is left waiting at `input-required` or `auth-required`.
 
 ## Stop
 

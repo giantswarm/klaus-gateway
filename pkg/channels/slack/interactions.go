@@ -276,6 +276,9 @@ func (a *Adapter) routeInteraction(ctx context.Context, payload interactionPaylo
 	case connectorDismiss:
 		a.handleConnectorDismiss(ctx, payload.User.ID, action.Value, payload.Message.ThreadTS, payload.ResponseURL)
 		return
+	case signInDecline:
+		a.handleSignInDecline(ctx, payload.User.ID, action.Value, payload.ResponseURL)
+		return
 	case authorizeAllOpen:
 		a.openAuthorizeModal(ctx, payload.User.ID, payload.TriggerID, action.Value)
 		return
@@ -416,7 +419,7 @@ func (a *Adapter) handleConnectorConnect(ctx context.Context, slackUser, stateID
 		return
 	}
 	if rewriteNow {
-		if err := respondURL(ctx, responseURL, entry.threadTS, connectorSignedInNotice(entry.server)); err != nil {
+		if err := respondURL(ctx, responseURL, entry.threadTS, entry.signedInNotice()); err != nil {
 			a.Logger.Warn("slack: rewrite connector prompt after sign-in failed", "user", slackUser, "server", entry.server, "error", err)
 		}
 	}

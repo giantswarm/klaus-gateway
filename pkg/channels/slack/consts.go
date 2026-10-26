@@ -126,6 +126,23 @@ func connectorDismissedNotice() string {
 	return fmt.Sprintf("Not asked again for %s.", spellDuration(connectorPromptCooldown))
 }
 
+// Texts of a task paused on an MCP server's sign-in link (postMCPSignInPrompt).
+// The server is the MCP server that asked, such as an MCP gateway; what needs
+// the sign-in is in its own message, quoted after the attribution.
+// signInWaitingNote names the person (a Slack user ID) and the server.
+const (
+	signInWaitingNote     = "Waiting for <@%s> to sign in (asked by *%s*)."
+	signInPromptLead      = "*%s* asks you to sign in so the agent can continue."
+	signInPromptResumes   = "The agent picks up here once you are done."
+	signInPromptManual    = "Reply here once you are done."
+	signInAcceptedLine    = "<@%s> signed in."
+	signInDeclinedLine    = "<@%s> did not sign in."
+	signInDismissedNotice = "Not signed in. The agent continues without it."
+	signInCompletedNotice = "Signed in."
+	signInResumeText      = "I've signed in, continue"
+	signInMessageMaxRunes = 500
+)
+
 // connectorResumeText is the synthetic message dispatched into the thread
 // after a connector sign-in completes, so the agent retries the blocked tools
 // without the user retyping; %s is the backend name.

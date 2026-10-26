@@ -38,6 +38,24 @@ type HitlPrompt struct {
 	Tools []HitlTool
 	// Questions is populated only when ToolName == "ask_user".
 	Questions []HitlQuestion
+	// SignIn is set, and every other field empty, for an auth-required task
+	// paused on an MCP server's sign-in link.
+	SignIn *HitlSignIn
+}
+
+// HitlSignIn is an MCP server's URL elicitation: the person opens URL, signs
+// in to Server, and the paused task resumes. The link is minted for the
+// person whose turn asked for it.
+type HitlSignIn struct {
+	ID      string
+	Server  string
+	Message string
+	URL     string
+}
+
+// IsSignIn reports whether this prompt is an MCP server's sign-in link.
+func (p *HitlPrompt) IsSignIn() bool {
+	return p != nil && p.SignIn != nil
 }
 
 // HitlTool is one tool call awaiting approval.
@@ -68,7 +86,8 @@ type HitlQuestion struct {
 // HitlDecision is the user's structured answer to a HitlPrompt, sent back as
 // the HITL response payload on the message that resumes the paused task.
 type HitlDecision struct {
-	// Type is "approve" or "reject".
+	// Type is "approve" or "reject"; for a sign-in, "approve" means the person
+	// signed in and "reject" that they will not.
 	Type string
 	// AskUserAnswers is positional, 1:1 with HitlPrompt.Questions. Each entry is
 	// the selected (or typed) answer label(s) for that question. Only set for
@@ -86,9 +105,17 @@ const (
 
 // hitlResponse builds the typed HITL response payload for a decision on the
 // request a task is paused on: one approval per requested tool (all approved
-// or all rejected together, the reason on a rejection), or the positional
-// answers of an ask_user request under its correlation id.
+// or all rejected together, the reason on a rejection), the positional
+// answers of an ask_user request under its correlation id, or the action on a
+// URL elicitation.
 func hitlResponse(request *pkga2a.HITLRequest, decision *HitlDecision) any {
+	if signIn := request.URLElicitation; signIn != nil {
+		action := pkga2a.URLElicitationDecline
+		if decision.Type == DecisionApprove {
+			action = pkga2a.URLElicitationAccept
+		}
+		return pkga2a.URLElicitationResponse{Type: pkga2a.HITLTypeURLElicitationResponse, ID: signIn.ID, Action: action}
+	}
 	if request.AskUser != nil {
 		answers := make([]pkga2a.AskUserAnswer, 0, len(decision.AskUserAnswers))
 		for _, a := range decision.AskUserAnswers {

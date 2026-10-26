@@ -825,6 +825,32 @@ func TestAttachAndParseHITL_RoundTrip(t *testing.T) {
 	require.Equal(t, "child-q-1", request.AskUser.ResponseID(), "a propagated question is answered under the child's id")
 }
 
+func TestParseHITLRequest_URLElicitation(t *testing.T) {
+	signIn := pkga2a.URLElicitationRequest{
+		Type: pkga2a.HITLTypeURLElicitationRequest, ID: "sign-in-1", Server: "github",
+		Message: "Sign in to github", URL: "https://gateway.example/oauth/proxy/start?s=1", ElicitationID: "e1",
+	}
+	msg := a2apkg.NewMessage(a2apkg.MessageRoleAgent, a2apkg.NewTextPart("Sign in to github"))
+	require.NoError(t, pkga2a.AttachHITL(msg, signIn))
+	request, err := pkga2a.ParseHITLRequest(msg)
+	require.NoError(t, err)
+	require.Equal(t, &signIn, request.URLElicitation)
+
+	for name, broken := range map[string]pkga2a.URLElicitationRequest{
+		"no id":          {Type: pkga2a.HITLTypeURLElicitationRequest, URL: signIn.URL},
+		"no URL":         {Type: pkga2a.HITLTypeURLElicitationRequest, ID: "sign-in-1"},
+		"a relative URL": {Type: pkga2a.HITLTypeURLElicitationRequest, ID: "sign-in-1", URL: "/oauth/start"},
+		"another scheme": {Type: pkga2a.HITLTypeURLElicitationRequest, ID: "sign-in-1", URL: "javascript:alert(1)"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			msg := a2apkg.NewMessage(a2apkg.MessageRoleAgent)
+			require.NoError(t, pkga2a.AttachHITL(msg, broken))
+			_, err := pkga2a.ParseHITLRequest(msg)
+			require.Error(t, err)
+		})
+	}
+}
+
 // Subscribe resubscribes to a task of the session: the controller serves a
 // task that has quiesced whole, as the only event, and the call names the
 // same tenant and caller identity as every other A2A call.

@@ -48,6 +48,9 @@ type connectorCompletion struct {
 	// landing runs it as the thread's first turn in place of the synthetic
 	// continuation.
 	held *heldMessage
+	// signInTask, set for the prompt of a task paused on the sign-in, is that
+	// task: the landing resumes it with accept, if it is still paused on it.
+	signInTask string
 	// modalView is the authorize modal the link was issued from: the landing
 	// redraws it. A row of the modal has no prompt and no thread (channel is
 	// empty), so its landing resumes nothing; a prompt's own completion the
@@ -194,14 +197,14 @@ func (a *Adapter) handleConnectorComplete(w http.ResponseWriter, r *http.Request
 		})
 		return
 	}
-	if reported := r.URL.Query().Get("server"); reported != "" && reported != entry.server {
+	if reported := r.URL.Query().Get("server"); reported != "" && reported != entry.server && entry.signInTask == "" {
 		a.Logger.Warn("slack: connector completion server mismatch", "user", entry.slackUser, "stored", entry.server, "reported", reported)
 	}
 
 	if rewrite {
-		responseURL, threadTS, server := entry.responseURL, entry.threadTS, entry.server
+		responseURL, threadTS, server, notice := entry.responseURL, entry.threadTS, entry.server, entry.signedInNotice()
 		a.background(func(ctx context.Context) {
-			if err := respondURL(ctx, responseURL, threadTS, connectorSignedInNotice(server)); err != nil {
+			if err := respondURL(ctx, responseURL, threadTS, notice); err != nil {
 				a.Logger.Warn("slack: rewrite connector prompt after sign-in failed", "server", server, "error", err)
 			}
 		})
@@ -243,25 +246,35 @@ func (a *Adapter) handleConnectorComplete(w http.ResponseWriter, r *http.Request
 		})
 	}
 
-	pagekit.Render(w, http.StatusOK, pagekit.Page{
+	page := pagekit.Page{
 		Title:   "Signed in to " + entry.server,
 		Heading: "Signed in",
 		Summary: entry.server + " is now connected",
 		Message: message,
-	})
+	}
+	if entry.signInTask != "" {
+		// The server that asked is not what the person signed in to.
+		page.Title, page.Summary = "Signed in", "The sign-in is complete"
+	}
+	pagekit.Render(w, http.StatusOK, page)
 }
 
 // resumeAfterConnectorSignIn dispatches the synthetic continuation into the
 // thread that hit the auth challenge, so the agent retries the blocked tools
-// without the user retyping; for a prompt that held a Session start's
-// message, that message itself. Blocking (a replayed turn runs to
+// without the user retyping; for a prompt that held a Session start's message,
+// that message itself. For a task paused on the sign-in the continuation is the
+// reply that resumes it with accept. Blocking (a replayed turn runs to
 // completion), so it runs on the adapter lifecycle context via background.
 func (a *Adapter) resumeAfterConnectorSignIn(ctx context.Context, entry connectorCompletion) {
+	if entry.signInTask != "" && a.pendingSignIn(entry.threadTS, entry.signInTask) == nil {
+		a.Logger.Info("slack: sign-in landed for a task no longer paused on it", "user", entry.slackUser, "thread", entry.threadTS, "task", entry.signInTask)
+		return
+	}
 	msg := channels.InboundMessage{
 		Channel:   ChannelName,
 		ChannelID: entry.channel,
 		ThreadID:  entry.threadTS,
-		Text:      fmt.Sprintf(connectorResumeText, entry.server),
+		Text:      entry.resumeText(),
 		Subject:   entry.slackUser,
 	}
 	slackChannel := entry.channel
@@ -272,6 +285,23 @@ func (a *Adapter) resumeAfterConnectorSignIn(ctx context.Context, entry connecto
 		a.Logger.Log(ctx, failureLogLevel(err), "slack: connector sign-in resume failed", "user", entry.slackUser, "thread", entry.threadTS, "failure_class", channels.ClassifyFailure(err), "error", err)
 		a.postReplayFailureNote(ctx, slackChannel, entry.threadTS, err)
 	}
+}
+
+// signedInNotice is what the prompt is rewritten to once its sign-in
+// completed.
+func (e connectorCompletion) signedInNotice() string {
+	if e.signInTask != "" {
+		return signInCompletedNotice
+	}
+	return connectorSignedInNotice(e.server)
+}
+
+// resumeText is the message the completed sign-in sends into the thread.
+func (e connectorCompletion) resumeText() string {
+	if e.signInTask != "" {
+		return signInResumeText
+	}
+	return fmt.Sprintf(connectorResumeText, e.server)
 }
 
 // connectorSignedInNotice is the confirmation the ephemeral Connect prompt is

@@ -782,7 +782,7 @@ func (f *Facade) outboundMessage(ctx context.Context, msg InboundMessage) (*a2ap
 	if err != nil {
 		return nil, fmt.Errorf("a2a: load the paused task %s: %w", msg.TaskID, err)
 	}
-	if task.Status.State != a2apkg.TaskStateInputRequired {
+	if task.Status.State != a2apkg.TaskStateInputRequired && task.Status.State != a2apkg.TaskStateAuthRequired {
 		return nil, fmt.Errorf("%w: task %s is %s", ErrNoPendingPrompt, msg.TaskID, task.Status.State)
 	}
 	request, err := pkga2a.ParseHITLRequest(task.Status.Message)

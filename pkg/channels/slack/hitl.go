@@ -126,14 +126,17 @@ func formRenderable(p *channels.HitlPrompt) bool {
 	return true
 }
 
-// postHitlPrompt renders the appropriate Slack prompt for a paused
-// input-required task: an interactive choice widget for a single-question
-// ask_user, a form for a multi-question ask_user whose questions all fit a
-// widget or a text input, Approve/Deny for a generic tool approval, and a
-// free-text fallback for everything else. The user can always answer by
-// replying in-thread.
-func (a *Adapter) postHitlPrompt(ctx context.Context, client *slackAPIClient, slackChannel, threadID string, pd *channels.OutboundDelta) error {
+// postHitlPrompt renders the appropriate Slack prompt for a paused task: a
+// Connect prompt to slackUser for an MCP server's sign-in link, an interactive
+// choice widget for a single-question ask_user, a form for a multi-question
+// ask_user whose questions all fit a widget or a text input, Approve/Deny for a
+// generic tool approval, and a free-text fallback for everything else. The user
+// can always answer by replying in-thread.
+func (a *Adapter) postHitlPrompt(ctx context.Context, client *slackAPIClient, slackChannel, threadID, slackUser string, pd *channels.OutboundDelta) error {
 	p := pd.Prompt
+	if p.IsSignIn() {
+		return a.postMCPSignInPrompt(ctx, client, slackChannel, threadID, slackUser, pd)
+	}
 
 	// The pending task is already stored when this runs, so a prompt that never
 	// reaches the thread strands the paused task invisibly: the user has no cue
@@ -340,6 +343,9 @@ func (a *Adapter) markPromptDecided(ctx context.Context, slackChannel string, ta
 	if task.Prompt == nil {
 		line = fmt.Sprintf(formAnsweredFormat, slackUser, slackTime(now))
 		blocks = approvalCardBlocks(approvalCard(nil, task.PromptText), line)
+	} else if task.Prompt.IsSignIn() {
+		line = signInDecided(decision, slackUser)
+		blocks = []any{contextBlock(line)}
 	} else if task.Prompt.IsAskUser() {
 		line, blocks = questionAnsweredBlocks(task.Prompt, decision.AskUserAnswers, slackUser, now)
 	} else {
@@ -384,6 +390,9 @@ func renderAskUserText(p *channels.HitlPrompt) string {
 func decisionFromText(p *channels.HitlPrompt, text string) *channels.HitlDecision {
 	if p == nil {
 		return nil
+	}
+	if p.IsSignIn() {
+		return signInDecision(text)
 	}
 	if p.IsAskUser() {
 		return &channels.HitlDecision{
