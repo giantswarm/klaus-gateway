@@ -17,16 +17,18 @@ const signInDecline = "sign_in_decline"
 // with; decisionFromText reads it as a decline.
 const signInDeclineText = "Not now"
 
-// postMCPSignInPrompt renders a task paused on an MCP server's sign-in link. The
-// link is minted for slackUser, the person whose turn asked for it, so the
-// Connect prompt is theirs alone; the thread gets a note naming whom the turn
-// waits on, which also anchors the ephemeral there (klaus-gateway#156). The
-// completed sign-in resumes the task with accept, "Not now" with decline, and
-// a typed reply decides as decisionFromText reads it.
+// postMCPSignInPrompt renders a task paused on an MCP server's sign-in link.
+// The link is minted for slackUser, the person whose turn asked for it, so the
+// prompt is theirs alone; the thread gets a note naming whom the turn waits
+// on, which also anchors the ephemeral there (klaus-gateway#156). The prompt
+// quotes the server's own message, attributed to the server. The completed
+// sign-in resumes the task with accept, "Not now" with decline, and a typed
+// reply decides as decisionFromText reads it.
 func (a *Adapter) postMCPSignInPrompt(ctx context.Context, client *slackAPIClient, slackChannel, threadID, slackUser string, pd *channels.OutboundDelta) error {
-	server := pd.Prompt.SignIn.Server
+	signIn := pd.Prompt.SignIn
+	server := signIn.Server
 	if server == "" {
-		server = "the requested tools"
+		server = "An MCP server"
 	}
 	if ts, err := client.postMessage(ctx, slackChannel, fmt.Sprintf(signInWaitingNote, slackUser, escapeMrkdwn(server)), threadID); err != nil {
 		a.Logger.Warn("slack: post sign-in waiting note failed", "thread", threadID, "error", err)
@@ -34,7 +36,7 @@ func (a *Adapter) postMCPSignInPrompt(ctx context.Context, client *slackAPIClien
 		a.notePromptTS(threadID, pd.TaskID, ts)
 	}
 
-	promptURL, connectValue, resumes := pd.Prompt.SignIn.URL, server, false
+	promptURL, connectValue, resumes := signIn.URL, server, false
 	if base := a.PublicBaseURL; base != "" {
 		stateID := a.mintConnectorCompletion(connectorCompletion{slackUser: slackUser, server: server, channel: slackChannel, threadTS: threadID, signInTask: pd.TaskID})
 		if decorated, err := decorateConnectorLoginURL(promptURL, base, stateID); err != nil {
@@ -43,29 +45,56 @@ func (a *Adapter) postMCPSignInPrompt(ctx context.Context, client *slackAPIClien
 			promptURL, connectValue, resumes = decorated, stateID, true
 		}
 	}
-	text := fmt.Sprintf(signInPromptManualText, escapeMrkdwn(server))
-	if resumes {
-		text = fmt.Sprintf(signInPromptText, escapeMrkdwn(server))
+	text := mcpSignInText(server, signIn.Message, resumes)
+	elements := []any{map[string]any{
+		bkType:     bkButton,
+		bkText:     map[string]any{bkType: bkPlainText, bkText: "Sign in"},
+		bkStyle:    bkPrimary,
+		bkActionID: connectorConnect,
+		bkValue:    connectValue,
+		bkURL:      promptURL,
+	}}
+	if client.authorizeAll {
+		elements = append(elements, authorizeAllButton(connectValue))
 	}
-	blocks := connectPromptBlocks(text, server, promptURL, connectValue, connectValue, false, client.authorizeAll)
-	actions, _ := blocks[len(blocks)-1].(map[string]any)
-	actions[bkElements] = append(actions[bkElements].([]any), map[string]any{
+	elements = append(elements, map[string]any{
 		bkType:     bkButton,
 		bkText:     map[string]any{bkType: bkPlainText, bkText: "Not now"},
 		bkActionID: signInDecline,
 		bkValue:    encodeHitlValue(threadID, pd.TaskID),
 	})
+	blocks := []any{
+		map[string]any{bkType: bkSection, bkText: map[string]any{bkType: bkMrkdwn, bkText: text}},
+		map[string]any{bkType: bkActions, bkElements: elements},
+	}
 	return client.postConnectEphemeral(ctx, slackChannel, threadID, slackUser, text, blocks)
+}
+
+// mcpSignInText is the text of a sign-in prompt: the attribution, the
+// server's message quoted, and what happens once the person signed in.
+func mcpSignInText(server, message string, resumes bool) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, signInPromptLead, escapeMrkdwn(server))
+	if message = strings.TrimSpace(message); message != "" {
+		b.WriteString("\n>")
+		b.WriteString(strings.ReplaceAll(escapeMrkdwn(truncateRunes(message, signInMessageMaxRunes)), "\n", "\n>"))
+	}
+	b.WriteString("\n")
+	if resumes {
+		b.WriteString(signInPromptResumes)
+	} else {
+		b.WriteString(signInPromptManual)
+	}
+	return b.String()
 }
 
 // signInDecided is the line a sign-in prompt's thread note is rewritten to
 // once the paused task resumes.
-func signInDecided(prompt *channels.HitlPrompt, decision *channels.HitlDecision, slackUser string) string {
-	server := escapeMrkdwn(prompt.SignIn.Server)
+func signInDecided(decision *channels.HitlDecision, slackUser string) string {
 	if decision.Type == channels.DecisionApprove {
-		return fmt.Sprintf(signInAcceptedLine, slackUser, server)
+		return fmt.Sprintf(signInAcceptedLine, slackUser)
 	}
-	return fmt.Sprintf(signInDeclinedLine, slackUser, server)
+	return fmt.Sprintf(signInDeclinedLine, slackUser)
 }
 
 // signInDecision reads a typed reply to a sign-in prompt: a refusal declines,
@@ -100,7 +129,7 @@ func (a *Adapter) handleSignInDecline(ctx context.Context, slackUser, value, res
 		}
 		return
 	}
-	if err := respondURL(ctx, responseURL, v.Thread, fmt.Sprintf(signInDismissedNotice, escapeMrkdwn(task.Prompt.SignIn.Server))); err != nil {
+	if err := respondURL(ctx, responseURL, v.Thread, signInDismissedNotice); err != nil {
 		a.Logger.Warn("slack: update sign-in prompt (declined) failed", "thread", v.Thread, "error", err)
 	}
 	msg := channels.InboundMessage{

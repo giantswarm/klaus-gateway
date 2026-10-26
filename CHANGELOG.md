@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Slack: a turn paused at `auth-required` on an MCP server's sign-in link (kagent's HITL `url_elicitation_request`, sent by runtimes that relay MCP URL elicitations, such as muster's sign-in link from 5.53.0 on) gets the Connect prompt, to the person whose turn asked, and the thread says whom it waits on. The sign-in's landing resumes the paused task with `accept`, so the agent retries the call; *Not now* or a refusal in the thread resumes it with `decline` ([giantswarm/klaus-gateway#140](https://github.com/giantswarm/klaus-gateway/issues/140)).
+- Slack: a turn paused at `auth-required` on an MCP server's sign-in link (kagent's HITL `url_elicitation_request`, sent by runtimes that relay MCP URL elicitations, such as muster's sign-in link from 5.53.0 on) gets a sign-in prompt, to the person whose turn asked, quoting the server's message and naming the server that asked; the thread says whom it waits on. The sign-in's landing resumes the paused task with `accept`, so the agent retries the call; *Not now* or a refusal in the thread resumes it with `decline` ([giantswarm/klaus-gateway#140](https://github.com/giantswarm/klaus-gateway/issues/140)).
 
 - `GET /groups/{group}/members/{email}` on the service endpoint tells an allow-listed caller whether a person is in a Slack user group (`@team-bumblebee`), so beekeeper can let only a team's members answer its decisions. The app's manifest adds `usergroups:read`; an installed app needs a re-install to get it ([giantswarm/giantswarm#37985](https://github.com/giantswarm/giantswarm/issues/37985)).
 

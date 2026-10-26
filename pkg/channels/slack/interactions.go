@@ -419,7 +419,7 @@ func (a *Adapter) handleConnectorConnect(ctx context.Context, slackUser, stateID
 		return
 	}
 	if rewriteNow {
-		if err := respondURL(ctx, responseURL, entry.threadTS, connectorSignedInNotice(entry.server)); err != nil {
+		if err := respondURL(ctx, responseURL, entry.threadTS, entry.signedInNotice()); err != nil {
 			a.Logger.Warn("slack: rewrite connector prompt after sign-in failed", "user", slackUser, "server", entry.server, "error", err)
 		}
 	}

@@ -354,18 +354,21 @@ carries the completion state in its `value`, so a click on it is replaced throug
 
 A runtime that relays MCP URL elicitations (the claude and codex Harnesses, the Go ADK) pauses
 the task at `auth-required` with the server's sign-in link (`url_elicitation_request`, see
-`docs/kagent-a2a.md`) instead of answering with a login text. The link is minted for the
-person whose turn asked, so the Connect prompt goes to them alone, ephemeral, and the thread
-gets "Waiting for @Jose to sign in to *github*.". The prompt reads "Sign in to *github* so the
-agent can continue. It picks up here once you are done." with *Connect github*, *Authorize
-all* where offered, and *Not now* (`action_id` `sign_in_decline`, `value` the thread and the
-paused task). The link's landing resumes the paused task with `accept`: the agent retries the
-call, which now runs. *Not now* resumes it with `decline`, and the prompt reads "Not signed in
-to *github*. The agent continues without it." A reply in the thread answers it too: a refusal
-(`no`, `cancel`, `not now`) declines, anything else accepts. The thread line then reads
-"@Jose signed in to *github*." or "@Jose did not sign in to *github*.". Without a public base
-URL the prompt ends "then reply here so the agent continues." instead. A landing for a task no
-longer paused on that sign-in resumes nothing.
+`docs/kagent-a2a.md`) instead of answering with a login text. The server named is the MCP
+server that asked, muster for a platform agent; what needs the sign-in is in its message
+("Sign in to github to continue."). The link is minted for the person whose turn asked, so the
+prompt goes to them alone, ephemeral, and the thread gets "Waiting for @Jose to sign in (asked
+by *muster*).". The prompt reads "*muster* asks you to sign in so the agent can continue.",
+the server's message quoted under it, then "The agent picks up here once you are done.", with
+*Sign in* (`connector_connect`, the link with the post-login redirect), *Authorize all* where
+offered, and *Not now* (`action_id` `sign_in_decline`, `value` the thread and the paused task).
+The link's landing resumes the paused task with `accept` ("I've signed in, continue"): the
+agent retries the call, which now runs, and the prompt reads "Signed in.". *Not now* resumes it
+with `decline`, and the prompt reads "Not signed in. The agent continues without it." A reply
+in the thread answers it too: a refusal (`no`, `cancel`, `not now`) declines, anything else
+accepts. The thread line then reads "@Jose signed in." or "@Jose did not sign in.". Without a
+public base URL the prompt ends "Reply here once you are done." instead. A landing for a task
+no longer paused on that sign-in resumes nothing.
 
 Where the gateway can read the person's grant status (see the authorize modal below), every
 muster server's Connect prompt carries *Authorize all* after its Connect button (`action_id`

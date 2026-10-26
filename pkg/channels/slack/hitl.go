@@ -344,7 +344,7 @@ func (a *Adapter) markPromptDecided(ctx context.Context, slackChannel string, ta
 		line = fmt.Sprintf(formAnsweredFormat, slackUser, slackTime(now))
 		blocks = approvalCardBlocks(approvalCard(nil, task.PromptText), line)
 	} else if task.Prompt.IsSignIn() {
-		line = signInDecided(task.Prompt, decision, slackUser)
+		line = signInDecided(decision, slackUser)
 		blocks = []any{contextBlock(line)}
 	} else if task.Prompt.IsAskUser() {
 		line, blocks = questionAnsweredBlocks(task.Prompt, decision.AskUserAnswers, slackUser, now)

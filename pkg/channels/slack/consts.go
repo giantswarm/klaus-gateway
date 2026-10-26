@@ -127,15 +127,20 @@ func connectorDismissedNotice() string {
 }
 
 // Texts of a task paused on an MCP server's sign-in link (postMCPSignInPrompt).
-// signInWaitingNote names the person (%s, a Slack user ID) and the server in
-// the thread; the prompt texts lead their Connect prompt.
+// The server is the MCP server that asked, such as an MCP gateway; what needs
+// the sign-in is in its own message, quoted after the attribution.
+// signInWaitingNote names the person (a Slack user ID) and the server.
 const (
-	signInWaitingNote      = "Waiting for <@%s> to sign in to *%s*."
-	signInPromptText       = "Sign in to *%s* so the agent can continue. It picks up here once you are done."
-	signInPromptManualText = "Sign in to *%s*, then reply here so the agent continues."
-	signInAcceptedLine     = "<@%s> signed in to *%s*."
-	signInDeclinedLine     = "<@%s> did not sign in to *%s*."
-	signInDismissedNotice  = "Not signed in to *%s*. The agent continues without it."
+	signInWaitingNote     = "Waiting for <@%s> to sign in (asked by *%s*)."
+	signInPromptLead      = "*%s* asks you to sign in so the agent can continue."
+	signInPromptResumes   = "The agent picks up here once you are done."
+	signInPromptManual    = "Reply here once you are done."
+	signInAcceptedLine    = "<@%s> signed in."
+	signInDeclinedLine    = "<@%s> did not sign in."
+	signInDismissedNotice = "Not signed in. The agent continues without it."
+	signInCompletedNotice = "Signed in."
+	signInResumeText      = "I've signed in, continue"
+	signInMessageMaxRunes = 500
 )
 
 // connectorResumeText is the synthetic message dispatched into the thread

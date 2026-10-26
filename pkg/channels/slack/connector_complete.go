@@ -197,14 +197,14 @@ func (a *Adapter) handleConnectorComplete(w http.ResponseWriter, r *http.Request
 		})
 		return
 	}
-	if reported := r.URL.Query().Get("server"); reported != "" && reported != entry.server {
+	if reported := r.URL.Query().Get("server"); reported != "" && reported != entry.server && entry.signInTask == "" {
 		a.Logger.Warn("slack: connector completion server mismatch", "user", entry.slackUser, "stored", entry.server, "reported", reported)
 	}
 
 	if rewrite {
-		responseURL, threadTS, server := entry.responseURL, entry.threadTS, entry.server
+		responseURL, threadTS, server, notice := entry.responseURL, entry.threadTS, entry.server, entry.signedInNotice()
 		a.background(func(ctx context.Context) {
-			if err := respondURL(ctx, responseURL, threadTS, connectorSignedInNotice(server)); err != nil {
+			if err := respondURL(ctx, responseURL, threadTS, notice); err != nil {
 				a.Logger.Warn("slack: rewrite connector prompt after sign-in failed", "server", server, "error", err)
 			}
 		})
@@ -246,12 +246,17 @@ func (a *Adapter) handleConnectorComplete(w http.ResponseWriter, r *http.Request
 		})
 	}
 
-	pagekit.Render(w, http.StatusOK, pagekit.Page{
+	page := pagekit.Page{
 		Title:   "Signed in to " + entry.server,
 		Heading: "Signed in",
 		Summary: entry.server + " is now connected",
 		Message: message,
-	})
+	}
+	if entry.signInTask != "" {
+		// The server that asked is not what the person signed in to.
+		page.Title, page.Summary = "Signed in", "The sign-in is complete"
+	}
+	pagekit.Render(w, http.StatusOK, page)
 }
 
 // resumeAfterConnectorSignIn dispatches the synthetic continuation into the
@@ -269,7 +274,7 @@ func (a *Adapter) resumeAfterConnectorSignIn(ctx context.Context, entry connecto
 		Channel:   ChannelName,
 		ChannelID: entry.channel,
 		ThreadID:  entry.threadTS,
-		Text:      fmt.Sprintf(connectorResumeText, entry.server),
+		Text:      entry.resumeText(),
 		Subject:   entry.slackUser,
 	}
 	slackChannel := entry.channel
@@ -280,6 +285,23 @@ func (a *Adapter) resumeAfterConnectorSignIn(ctx context.Context, entry connecto
 		a.Logger.Log(ctx, failureLogLevel(err), "slack: connector sign-in resume failed", "user", entry.slackUser, "thread", entry.threadTS, "failure_class", channels.ClassifyFailure(err), "error", err)
 		a.postReplayFailureNote(ctx, slackChannel, entry.threadTS, err)
 	}
+}
+
+// signedInNotice is what the prompt is rewritten to once its sign-in
+// completed.
+func (e connectorCompletion) signedInNotice() string {
+	if e.signInTask != "" {
+		return signInCompletedNotice
+	}
+	return connectorSignedInNotice(e.server)
+}
+
+// resumeText is the message the completed sign-in sends into the thread.
+func (e connectorCompletion) resumeText() string {
+	if e.signInTask != "" {
+		return signInResumeText
+	}
+	return fmt.Sprintf(connectorResumeText, e.server)
 }
 
 // connectorSignedInNotice is the confirmation the ephemeral Connect prompt is

@@ -21,7 +21,7 @@ func signInTurn() [][]channels.OutboundDelta {
 		{{
 			Kind: channels.DeltaPrompt, TaskID: "task-1", Content: "Sign in to github",
 			Prompt: &channels.HitlPrompt{SignIn: &channels.HitlSignIn{
-				ID: "sign-in-1", Server: "github", Message: "Sign in to github",
+				ID: "sign-in-1", Server: "muster", Message: "Sign in to github to continue.",
 				URL: "https://gateway.example/oauth/proxy/start?s=1",
 			}},
 		}},
@@ -110,8 +110,8 @@ func TestMCPSignIn_LandingResumesThePausedTask(t *testing.T) {
 	require.Equal(t, "https://gw.example/connectors/complete?s="+stateID, parsed.Query().Get("redirect"))
 	blob := ephemeralJSON(fake)
 	require.Contains(t, blob, `"user":"U1"`)
-	require.Contains(t, blob, "Sign in to *github* so the agent can continue")
-	require.True(t, strings.Contains(fake.threadText(), "Waiting for <@U1> to sign in to *github*."), "the thread says whom the turn waits on")
+	require.Contains(t, blob, `*muster* asks you to sign in so the agent can continue.\n\u003eSign in to github to continue.\nThe agent picks up here once you are done.`, "the server's message, attributed to it")
+	require.True(t, strings.Contains(fake.threadText(), "Waiting for <@U1> to sign in (asked by *muster*)."), "the thread says whom the turn waits on")
 	require.Empty(t, sent.resumes(), "nothing resumes before the sign-in")
 
 	for range 2 {
@@ -119,15 +119,16 @@ func TestMCPSignIn_LandingResumesThePausedTask(t *testing.T) {
 		page, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
 		require.Equal(t, http.StatusOK, resp.StatusCode)
-		require.Contains(t, string(page), "Signed in to github")
+		require.Contains(t, string(page), "The sign-in is complete")
 	}
 	require.Eventually(t, func() bool { return len(sent.resumes()) == 1 }, flowWait, 20*time.Millisecond, "the landing resumes the paused task")
 	resume := sent.resumes()[0]
 	require.Equal(t, channels.DecisionApprove, resume.Decision.Type, "a completed sign-in accepts")
 	require.Equal(t, "U1", resume.Subject)
+	require.Equal(t, "I've signed in, continue", resume.Text)
 	time.Sleep(200 * time.Millisecond)
 	require.Len(t, sent.resumes(), 1, "a reload resumes nothing more")
-	require.Eventually(t, func() bool { return strings.Contains(fake.threadText(), "<@U1> signed in to *github*.") },
+	require.Eventually(t, func() bool { return strings.Contains(fake.threadText(), "<@U1> signed in.") },
 		flowWait, 20*time.Millisecond, "the thread note records the sign-in")
 }
 
@@ -142,7 +143,7 @@ func TestMCPSignIn_NotNowDeclines(t *testing.T) {
 	click("sign_in_decline", value, responseSrv.URL)
 	require.Eventually(t, func() bool { return len(sent.resumes()) == 1 }, flowWait, 20*time.Millisecond, "Not now resumes the paused task")
 	require.Equal(t, channels.DecisionReject, sent.resumes()[0].Decision.Type)
-	require.Eventually(t, func() bool { return strings.Contains(capturedBody(), "Not signed in to *github*") },
+	require.Eventually(t, func() bool { return strings.Contains(capturedBody(), "Not signed in. The agent continues without it.") },
 		flowWait, 20*time.Millisecond, "the prompt says it was declined")
 
 	resp := get("/connectors/complete?s=" + url.QueryEscape(stateID))
