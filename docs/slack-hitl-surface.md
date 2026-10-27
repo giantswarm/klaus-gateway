@@ -353,7 +353,7 @@ carries the completion state in its `value`, so a click on it is replaced throug
 ### Sign-in a paused task waits on
 
 A runtime that relays MCP URL elicitations (the claude and codex Harnesses, the Go ADK) pauses
-the task at `auth-required` with the server's sign-in link (`url_elicitation_request`, see
+the task at `input-required` with the server's sign-in link (`url_elicitation_request`, see
 `docs/kagent-a2a.md`) instead of answering with a login text. The server named is the MCP
 server that asked, muster for a platform agent; what needs the sign-in is in its message
 ("Sign in to github to continue."). The link is minted for the person whose turn asked, so the
