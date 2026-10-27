@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Slack link: muster's userinfo must answer `email_verified: true` for the link to be made. The email is what ties the muster identity to the Slack profile, and an email the identity provider never verified proved nothing.
+
 - Agent roster: an Agent preparing a new revision (`Ready=False`, e.g. `ActorTemplatePending` after an Agent spec or EgressPolicy edit) stays listed and selectable when it has a `status.latestSuccessfulRevision`, since kagent starts its new Sessions on that revision meanwhile; an Agent that never had a ready revision is still left out and refused with its Ready reason (giantswarm/klaus-gateway#523).
 - Release: a stable release whose `UPGRADE.md` still has a `## Next` section with content is refused before its tag is cut: `.github/release-gate.custom.sh`, the auto-release workflow's stable gate, runs `make check-upgrade-notes` with the version about to be tagged. Until now only the tag's own build ran it, after the tag and the GitHub release existed, so v4.13.0 was tagged with nothing built; its notes ship as 4.13.1.
 - Slack: a turn that fails because the person has not connected the ChatGPT subscription the agent's model runs on gets the note "Connect your ChatGPT subscription in the Dev Portal to talk to this agent, then send the message again." instead of "The turn failed before an answer". The new failure class `connection_required` reads kagent's failure reason (`kagent.dev/a2a/failure-reason` on the failed task's status message) or, as a fallback, the egress's refusal text `credential provider … denied`; it is not retried (giantswarm/klaus-gateway#516).

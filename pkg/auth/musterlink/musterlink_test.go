@@ -24,16 +24,17 @@ type musterStub struct {
 	server   *httptest.Server
 	clientID string
 
-	mu             sync.Mutex
-	email          string
-	sub            string
-	failRefresh    bool          // reject refresh with 400 invalid_grant (dead token)
-	failRefresh5xx bool          // reject refresh with a transient 503 (no OAuth error code)
-	hangRefresh    bool          // never answer a refresh (blackholed endpoint) until the request context ends
-	omitIDToken    bool          // omit id_token from the token response (upstream had none)
-	idTokenTTL     time.Duration // lifetime of a minted id_token; zero means an hour
-	counter        int
-	validAccess    map[string]bool
+	mu              sync.Mutex
+	email           string
+	sub             string
+	failRefresh     bool          // reject refresh with 400 invalid_grant (dead token)
+	failRefresh5xx  bool          // reject refresh with a transient 503 (no OAuth error code)
+	hangRefresh     bool          // never answer a refresh (blackholed endpoint) until the request context ends
+	omitIDToken     bool          // omit id_token from the token response (upstream had none)
+	unverifiedEmail bool          // userinfo answers email_verified: false
+	idTokenTTL      time.Duration // lifetime of a minted id_token; zero means an hour
+	counter         int
+	validAccess     map[string]bool
 	// spent holds every refresh token already presented: muster rotates on each
 	// refresh and rejects a spent token with invalid_grant, and so does the stub.
 	// lastRefresh is the refresh token presented most recently.
@@ -122,7 +123,7 @@ func newMusterStub(t *testing.T, clientID, email, sub string) *musterStub {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		writeJSON(w, map[string]any{"sub": s.sub, "email": s.email})
+		writeJSON(w, map[string]any{"sub": s.sub, "email": s.email, "email_verified": !s.unverifiedEmail})
 	})
 	s.server = httptest.NewServer(mux)
 	t.Cleanup(s.server.Close)
@@ -669,6 +670,19 @@ func TestCallbackRejectsEmailMismatch(t *testing.T) {
 	driveCallback(t, l, "U1", http.StatusForbidden)
 	_, gerr := store.Get("U1")
 	require.ErrorIs(t, gerr, ErrNotLinked, "a spoofed email must not create a link")
+}
+
+func TestCallbackRejectsUnverifiedEmail(t *testing.T) {
+	stub := newMusterStub(t, "klaus-gateway", "alice@example.com", "muster-sub")
+	stub.unverifiedEmail = true
+	store := NewMemStore()
+	l := newTestLinker(t, stub, store, func(context.Context, string) (string, error) {
+		return "alice@example.com", nil // Slack and muster agree, but muster has not verified it
+	})
+
+	driveCallback(t, l, "U1", http.StatusBadGateway)
+	_, gerr := store.Get("U1")
+	require.ErrorIs(t, gerr, ErrNotLinked, "an unverified email must not create a link")
 }
 
 // driveCallback runs HandleLink (to seed PKCE pending state) then HandleCallback
