@@ -558,8 +558,8 @@ func signInStatus(t *testing.T) *a2apkg.Message {
 	return msg
 }
 
-func TestFacade_AuthRequiredSignInEmitsASignInPrompt(t *testing.T) {
-	agent := newFakeAgent(a2apkg.NewStatusUpdateEvent(taskInfo, a2apkg.TaskStateAuthRequired, signInStatus(t)))
+func TestFacade_SignInPauseEmitsASignInPrompt(t *testing.T) {
+	agent := newFakeAgent(a2apkg.NewStatusUpdateEvent(taskInfo, a2apkg.TaskStateInputRequired, signInStatus(t)))
 	f, _ := newA2AFacade(agent)
 
 	ch, err := f.SendCompletion(t.Context(), slackMsg("hi"))
@@ -571,7 +571,7 @@ func TestFacade_AuthRequiredSignInEmitsASignInPrompt(t *testing.T) {
 	require.Empty(t, agent.canceled, "a paused task is left paused, not canceled")
 }
 
-func TestFacade_SignInDecisionResumesTheAuthRequiredTask(t *testing.T) {
+func TestFacade_SignInDecisionResumesThePausedTask(t *testing.T) {
 	for _, test := range []struct {
 		decision string
 		action   string
@@ -583,7 +583,7 @@ func TestFacade_SignInDecisionResumesTheAuthRequiredTask(t *testing.T) {
 			agent := newFakeAgent(a2apkg.NewStatusUpdateEvent(taskInfo, a2apkg.TaskStateCompleted, nil))
 			agent.tasks[taskInfo.TaskID] = &a2apkg.Task{
 				ID: taskInfo.TaskID, ContextID: taskInfo.ContextID,
-				Status: a2apkg.TaskStatus{State: a2apkg.TaskStateAuthRequired, Message: signInStatus(t)},
+				Status: a2apkg.TaskStatus{State: a2apkg.TaskStateInputRequired, Message: signInStatus(t)},
 			}
 			f, routes := newA2AFacade(agent)
 			require.NoError(t, storetest.Put(t.Context(), routes, store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700.0001"},

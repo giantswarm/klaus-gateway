@@ -12,10 +12,9 @@ import (
 // HITLExtensionURI identifies kagent's human-in-the-loop A2A extension. A
 // client requests it on every call (the A2A-Extensions service parameter, gRPC
 // metadata a2a-extensions); the agent's runtime then pauses a tool that needs
-// approval — or its built-in ask_user tool — as a task in the input-required
-// state whose status message carries a typed request payload, and an MCP
-// server's URL elicitation (a sign-in link) as a task in the auth-required
-// state. Without the request the runtime answers with a plain text notice and
+// approval, its built-in ask_user tool, or an MCP server's URL elicitation (a
+// sign-in link) as a task in the input-required state whose status message
+// carries a typed request payload. Without the request the runtime answers with a plain text notice and
 // nothing reaches the channel to decide on.
 const HITLExtensionURI = "https://kagent.dev/extensions/hitl/v1"
 
@@ -130,7 +129,7 @@ type AskUserResponse struct {
 	Answers []AskUserAnswer `json:"answers,omitempty"`
 }
 
-// URLElicitationRequest is the payload of an auth-required task paused on an
+// URLElicitationRequest is the payload of a task paused on an
 // MCP server's URL elicitation: the person opens URL, such as the server's
 // sign-in link, outside the conversation.
 type URLElicitationRequest struct {

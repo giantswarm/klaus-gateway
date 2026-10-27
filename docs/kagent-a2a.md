@@ -200,7 +200,7 @@ typed payload under the extension URI in its metadata:
 - `ask_user_request` — `id`, `questions[]` (`question`, `choices`, `multiple`);
 - `url_elicitation_request` — `id`, `server`, `message`, `url`, `elicitation_id`: an MCP
   server's URL elicitation, such as muster's sign-in link for a server the person has not
-  connected. The runtime pauses the task at `auth-required` instead of `input-required`.
+  connected.
 
 `pkg/channels` parses that payload into the `HitlPrompt` the channels render (Approve/Deny,
 a choice widget, a form), and the message's text part is the agent's hint. The channel's

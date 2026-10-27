@@ -38,8 +38,8 @@ type HitlPrompt struct {
 	Tools []HitlTool
 	// Questions is populated only when ToolName == "ask_user".
 	Questions []HitlQuestion
-	// SignIn is set, and every other field empty, for an auth-required task
-	// paused on an MCP server's sign-in link.
+	// SignIn is set, and every other field empty, for a task paused on an
+	// MCP server's sign-in link.
 	SignIn *HitlSignIn
 }
 
