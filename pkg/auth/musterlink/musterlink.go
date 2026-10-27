@@ -674,14 +674,20 @@ func (l *Linker) userinfo(ctx context.Context, accessToken string) (sub, email s
 		return "", "", fmt.Errorf("musterlink: read userinfo: %w", err)
 	}
 	var ui struct {
-		Sub   string `json:"sub"`
-		Email string `json:"email"`
+		Sub           string `json:"sub"`
+		Email         string `json:"email"`
+		EmailVerified bool   `json:"email_verified"`
 	}
 	if err := json.Unmarshal(body, &ui); err != nil {
 		return "", "", fmt.Errorf("musterlink: parse userinfo: %w", err)
 	}
 	if ui.Email == "" {
 		return "", "", errors.New("musterlink: userinfo response had no email")
+	}
+	// The email is matched against the Slack profile to decide whose identity
+	// this is, so an email the identity provider has not verified proves nothing.
+	if !ui.EmailVerified {
+		return "", "", errors.New("musterlink: userinfo email is not verified")
 	}
 	return ui.Sub, ui.Email, nil
 }
