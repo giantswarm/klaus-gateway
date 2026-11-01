@@ -163,6 +163,7 @@ func run(args []string) error {
 			Turns:               metrics,
 			Streams:             metrics,
 			RateLimits:          metrics,
+			Calls:               metrics,
 		}
 		if cfg.A2A.Enabled {
 			slackAdapter.DefaultAgent = cfg.A2A.DefaultAgent
