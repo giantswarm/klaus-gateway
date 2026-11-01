@@ -149,7 +149,7 @@ func (a *Adapter) relayConversationReply(ctx context.Context, rv store.Review, i
 
 	res, err := a.Tools.CallTool(ctx, token, rv.Tool, args)
 	note := ""
-	switch server, loginURL, challenged := authChallengeOf(res); {
+	switch server, loginURL, challenged := res.SignInChallenge(teamReviewUnknownServer); {
 	case err != nil:
 		a.Logger.Warn("slack: conversation reply tool call failed", "conversation", rv.ID, "tool", rv.Tool, "slack_user", inner.User, "error", err)
 		note = fmt.Sprintf(conversationFailed, from)
