@@ -27,11 +27,13 @@ var challengeURLTerminators = []string{`\n`, `\r`, `\t`, `\f`, `\"`}
 // SignInChallenge reads muster's sign-in challenge out of a tool's answer:
 // the server the person has to connect and the link where they do. It is an
 // error result whose structured content says auth_required and names the
-// server and the authUrl, the text saying the same (and alone, when the answer
-// is call_tool refusing the call before any envelope). A challenge that names
-// no server is for defaultServer. A challenge without an https link is not one
-// the person can act on: ok is false, as for agent-manager's own
-// "auth_required: ..." refusal.
+// server and the authUrl, or whose text carries one of muster's markers
+// ("auth_required", "Authentication Required") when the structured content
+// is not there. Naming a server and carrying a link is not enough: a
+// backend's own refusal does that too. A challenge that names no server is
+// for defaultServer. A challenge without an https link is not one the person
+// can act on: ok is false, as for agent-manager's own "auth_required: ..."
+// refusal.
 func (r Result) SignInChallenge(defaultServer string) (server, loginURL string, ok bool) {
 	if !r.IsError {
 		return "", "", false
@@ -41,28 +43,27 @@ func (r Result) SignInChallenge(defaultServer string) (server, loginURL string, 
 		Server  string `json:"server"`
 		AuthURL string `json:"authUrl"`
 	}
-	structured := len(r.Structured) > 0 && json.Unmarshal(r.Structured, &challenge) == nil && challenge.Status == "auth_required"
-	if !structured {
-		challenge.Server, challenge.AuthURL = "", ""
+	switch {
+	case len(r.Structured) > 0 && json.Unmarshal(r.Structured, &challenge) == nil && challenge.Status == "auth_required":
+		server, loginURL = challenge.Server, challenge.AuthURL
+	case !strings.Contains(r.Text, "auth_required") && !strings.Contains(r.Text, "Authentication Required"):
+		return "", "", false
 	}
-	if challenge.Server == "" {
+	if server == "" {
 		if m := challengeServerRe.FindStringSubmatch(r.Text); m != nil {
-			challenge.Server = m[1] + m[2]
+			server = m[1] + m[2]
 		}
 	}
-	if !structured && challenge.Server == "" && !strings.Contains(r.Text, "auth_required") && !strings.Contains(r.Text, "Authentication Required") {
+	if loginURL == "" {
+		loginURL = linkIn(r.Text)
+	}
+	if u, err := url.Parse(loginURL); err != nil || u.Scheme != "https" || u.Host == "" {
 		return "", "", false
 	}
-	if challenge.AuthURL == "" {
-		challenge.AuthURL = linkIn(r.Text)
+	if server == "" {
+		server = defaultServer
 	}
-	if u, err := url.Parse(challenge.AuthURL); err != nil || u.Scheme != "https" || u.Host == "" {
-		return "", "", false
-	}
-	if challenge.Server == "" {
-		challenge.Server = defaultServer
-	}
-	return challenge.Server, challenge.AuthURL, true
+	return server, loginURL, true
 }
 
 // linkIn is the first link in text, cut where it ends: at an escape of an
