@@ -9,7 +9,7 @@ that adds notes heads them `## Next — <title>`; the change that prepares a rel
 renames each `Next` to that version, and `make check-upgrade-notes` refuses a
 stable release tag while a `Next` section with content is left.
 
-## Next — a sign-in in a turn is the runtime's URL elicitation
+## 4.16.16 — a sign-in in a turn is the runtime's URL elicitation
 
 - The gateway no longer turns an agent's `core_auth_login` answer into a Connect button. A
   runtime that does not relay MCP URL elicitations (an omp Harness image older than kagent
