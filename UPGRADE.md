@@ -9,6 +9,10 @@ that adds notes heads them `## Next — <title>`; the change that prepares a rel
 renames each `Next` to that version, and `make check-upgrade-notes` refuses a
 stable release tag while a `Next` section with content is left.
 
+## Next — a sign-in in a turn needs a runtime that relays URL elicitation
+
+- The gateway no longer turns an agent's `core_auth_login` result into a Connect prompt. A sign-in inside a turn reaches Slack only as the paused task's `url_elicitation_request`. Before upgrading, check that every Harness an Agent runs on relays MCP URL elicitations: the claude and codex Harnesses and the Go ADK from kagent 1.27.0, omp from 1.28.0-rc.4 (giantswarm/kagent-upstream#927). A BYO Harness pinned to an older omp image (`gsoci.azurecr.io/giantswarm/kagent/omp-harness@sha256:...` in the installation's agent-platform values) gets no Connect prompt: move it to the omp image of the kagent release the installation runs.
+
 ## 4.15.0 — a team's members from its Slack user group
 
 - `GET /groups/{group}/members/{email}` needs the app's `usergroups:read` scope, which `deploy/slack/manifest.yaml` now lists: update the installed app's manifest and re-install it once. Until then the endpoint answers `502` (`missing_scope`) and nothing else changes.

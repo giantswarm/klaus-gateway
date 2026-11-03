@@ -259,27 +259,34 @@ func (a *Adapter) handleConnectorComplete(w http.ResponseWriter, r *http.Request
 	pagekit.Render(w, http.StatusOK, page)
 }
 
-// resumeAfterConnectorSignIn dispatches the synthetic continuation into the
-// thread that hit the auth challenge, so the agent retries the blocked tools
-// without the user retyping; for a prompt that held a Session start's message,
-// that message itself. For a task paused on the sign-in the continuation is the
-// reply that resumes it with accept. Blocking (a replayed turn runs to
+// resumeAfterConnectorSignIn resumes what waited on the sign-in: for a prompt
+// that held a Session start's message, that message; for a task paused on the
+// sign-in, the reply that resumes it with accept. A completion that holds
+// neither has nothing to resume. Blocking (a replayed turn runs to
 // completion), so it runs on the adapter lifecycle context via background.
 func (a *Adapter) resumeAfterConnectorSignIn(ctx context.Context, entry connectorCompletion) {
-	if entry.signInTask != "" && a.pendingSignIn(entry.threadTS, entry.signInTask) == nil {
-		a.Logger.Info("slack: sign-in landed for a task no longer paused on it", "user", entry.slackUser, "thread", entry.threadTS, "task", entry.signInTask)
-		return
-	}
-	msg := channels.InboundMessage{
-		Channel:   ChannelName,
-		ChannelID: entry.channel,
-		ThreadID:  entry.threadTS,
-		Text:      entry.resumeText(),
-		Subject:   entry.slackUser,
-	}
-	slackChannel := entry.channel
-	if entry.held != nil {
+	var (
+		msg          channels.InboundMessage
+		slackChannel string
+	)
+	switch {
+	case entry.held != nil:
 		msg, slackChannel = entry.held.Msg, entry.held.SlackChannel
+	case entry.signInTask != "":
+		if a.pendingSignIn(entry.threadTS, entry.signInTask) == nil {
+			a.Logger.Info("slack: sign-in landed for a task no longer paused on it", "user", entry.slackUser, "thread", entry.threadTS, "task", entry.signInTask)
+			return
+		}
+		msg = channels.InboundMessage{
+			Channel:   ChannelName,
+			ChannelID: entry.channel,
+			ThreadID:  entry.threadTS,
+			Text:      signInResumeText,
+			Subject:   entry.slackUser,
+		}
+		slackChannel = entry.channel
+	default:
+		return
 	}
 	if err := a.replayDispatch(ctx, msg, slackChannel); err != nil && !errors.Is(err, context.Canceled) {
 		a.Logger.Log(ctx, failureLogLevel(err), "slack: connector sign-in resume failed", "user", entry.slackUser, "thread", entry.threadTS, "failure_class", channels.ClassifyFailure(err), "error", err)
@@ -294,14 +301,6 @@ func (e connectorCompletion) signedInNotice() string {
 		return signInCompletedNotice
 	}
 	return connectorSignedInNotice(e.server)
-}
-
-// resumeText is the message the completed sign-in sends into the thread.
-func (e connectorCompletion) resumeText() string {
-	if e.signInTask != "" {
-		return signInResumeText
-	}
-	return fmt.Sprintf(connectorResumeText, e.server)
 }
 
 // connectorSignedInNotice is the confirmation the ephemeral Connect prompt is

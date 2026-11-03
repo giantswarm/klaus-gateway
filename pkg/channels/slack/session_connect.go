@@ -171,7 +171,7 @@ func (a *Adapter) promptSessionConnect(ctx context.Context, msg channels.Inbound
 	dmed := a.sendSessionConnectDM(ctx, client, &surfaces, slackUser, origin, text, promptURL)
 	a.ensureSessionConnectLine(ctx, client, &surfaces, slackUser, dmed)
 	a.recordSessionConnect(slackUser, msg.ThreadID, surfaces)
-	if err := client.postConnectPrompt(ctx, slackChannel, msg.ThreadID, slackUser, text, server, promptURL, connectValue, false); err != nil {
+	if err := client.postConnectPrompt(ctx, slackChannel, msg.ThreadID, slackUser, text, server, promptURL, connectValue); err != nil {
 		a.Logger.Warn("slack: post session connect prompt failed", "thread", msg.ThreadID, "server", server, "error", err)
 	}
 }
@@ -265,7 +265,7 @@ func (a *Adapter) settleSessionConnect(ctx context.Context, slackUser, threadID 
 // postConnectPromptMessage posts a Connect prompt as a message of the
 // conversation, in threadID when set, and returns its ts.
 func (c *slackAPIClient) postConnectPromptMessage(ctx context.Context, channel, threadID, text, server, loginURL, connectValue, authorizeOrigin string) (string, error) {
-	return c.postBlocks(ctx, channel, threadID, text, connectPromptBlocks(text, server, loginURL, connectValue, authorizeOrigin, false, c.authorizeAll))
+	return c.postBlocks(ctx, channel, threadID, text, connectPromptBlocks(text, server, loginURL, connectValue, authorizeOrigin, c.authorizeAll))
 }
 
 // postConnectPromptDM posts a Connect prompt's card to user's DM, led by
@@ -273,7 +273,7 @@ func (c *slackAPIClient) postConnectPromptMessage(ctx context.Context, channel, 
 // ephemeral went out. The DM is addressed by user ID, so the D… conversation
 // Slack put it in comes back with its ts for the rewrites.
 func (c *slackAPIClient) postConnectPromptDM(ctx context.Context, user, origin, text, server, loginURL, connectValue, authorizeOrigin string) (channel, ts string, err error) {
-	blocks := append([]any{contextBlock(origin)}, connectPromptBlocks(text, server, loginURL, connectValue, authorizeOrigin, false, c.authorizeAll)...)
+	blocks := append([]any{contextBlock(origin)}, connectPromptBlocks(text, server, loginURL, connectValue, authorizeOrigin, c.authorizeAll)...)
 	resp, err := c.postJSONResponse(ctx, methodChatPostMessage, map[string]any{paramChannel: user, paramText: text, paramBlocks: blocks})
 	if err != nil {
 		return "", "", err
@@ -287,7 +287,7 @@ func (c *slackAPIClient) postConnectPromptDM(ctx context.Context, user, origin, 
 // updateConnectPrompt rewrites the Connect card at (channel, ts) to a fresh
 // button, led by origin when there is one.
 func (c *slackAPIClient) updateConnectPrompt(ctx context.Context, channel, ts, origin, text, server, loginURL, connectValue, authorizeOrigin string) error {
-	blocks := connectPromptBlocks(text, server, loginURL, connectValue, authorizeOrigin, false, c.authorizeAll)
+	blocks := connectPromptBlocks(text, server, loginURL, connectValue, authorizeOrigin, c.authorizeAll)
 	if origin != "" {
 		blocks = append([]any{contextBlock(origin)}, blocks...)
 	}

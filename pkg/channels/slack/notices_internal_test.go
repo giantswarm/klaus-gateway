@@ -59,13 +59,6 @@ func TestThreadClosedNotice(t *testing.T) {
 	require.Contains(t, threadClosedNotice(36*time.Hour, "/agent"), "`/agent`")
 }
 
-// The dismissed-connector note names the real cooldown, so a change to it
-// cannot leave the note wrong.
-func TestConnectorDismissedNotice(t *testing.T) {
-	require.Equal(t, "Not asked again for 1 hour.", connectorDismissedNotice())
-	require.Contains(t, connectorDismissedNotice(), spellDuration(connectorPromptCooldown))
-}
-
 // A terminal note is mrkdwn: Slack's error text in it is escaped.
 func TestRenderFailedNote_EscapesTheReason(t *testing.T) {
 	require.Equal(t, "The agent finished, but Slack refused the rest of the reply: a &lt;b&gt; &amp; c.",

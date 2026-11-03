@@ -213,12 +213,10 @@ func run(args []string) error {
 			"email_match", slackEmail != nil,
 		)
 
-		// Connector UX: when the agent reports a backend needs the user to sign
-		// in, the adapter renders a Connect button from the login link the agent
-		// relays. The gateway does not call muster for this. The public base URL
-		// lets the button carry a post-login redirect back to the gateway's
-		// connector landing (prompt rewrite plus auto-resume); muster only honors
-		// it when the landing URL is on its post-login redirect allowlist.
+		// Connector sign-ins: the public base URL lets a Connect button carry a
+		// post-login redirect back to the gateway's connector landing (prompt
+		// rewrite plus resume); muster only honors it when the landing URL is on
+		// its post-login redirect allowlist.
 		if cfg.OBO.ConnectorsEnabled && slackAdapter != nil {
 			slackAdapter.ConnectorPrompts = true
 			slackAdapter.PublicBaseURL = cfg.OBO.CallbackBaseURL

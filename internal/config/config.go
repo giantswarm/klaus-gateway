@@ -203,10 +203,10 @@ type OBOConfig struct {
 	// first, because the agent keeps it for the whole turn. Zero uses
 	// musterlink.DefaultMinTokenLifetime (25m).
 	MinTokenLifetime time.Duration
-	// ConnectorsEnabled turns on the reactive Slack "Connect <backend>" UX: the
-	// gateway detects a core_auth_login challenge in the agent's A2A stream and
-	// renders a Connect button from the login link the agent relays. The gateway
-	// does not call muster for this. Requires Enabled.
+	// ConnectorsEnabled turns on the connector sign-in landing and the authorize
+	// modal: a Connect button carries a post-login redirect back to the gateway,
+	// so the sign-in resumes what waited on it, and the person can list and grant
+	// their MCP servers. Requires Enabled.
 	ConnectorsEnabled bool
 }
 
@@ -462,7 +462,7 @@ func Load(args []string) (Config, error) {
 	fs.StringVar(&cfg.OBO.StoreSecretNamespace, "obo-store-secret-namespace", cfg.OBO.StoreSecretNamespace, "Namespace of the link Secret (secret backend). Empty means the pod's own namespace.")
 	fs.StringVar(&cfg.OBO.StateKeyFile, "obo-state-key-file", cfg.OBO.StateKeyFile, "Path to the HMAC key file used to sign link state (required with --obo-enabled).")
 	fs.DurationVar(&cfg.OBO.MinTokenLifetime, "obo-min-token-lifetime", cfg.OBO.MinTokenLifetime, "Least remaining lifetime of the human token a turn is dispatched with; a cached token with less left is refreshed first, since the agent keeps it for the whole turn. Set it above the longest turn. 0 means 25m; values below 1m are raised to 1m.")
-	fs.BoolVar(&cfg.OBO.ConnectorsEnabled, "obo-connectors-enabled", cfg.OBO.ConnectorsEnabled, "Enable the reactive Slack connector UX: the gateway detects a core_auth_login challenge in the agent's response stream and renders a Connect button from the login link the agent relays. The gateway does not call muster. Requires --obo-enabled.")
+	fs.BoolVar(&cfg.OBO.ConnectorsEnabled, "obo-connectors-enabled", cfg.OBO.ConnectorsEnabled, "Enable the connector sign-in landing and the authorize modal: a Connect button carries a post-login redirect back to the gateway, so the sign-in resumes what waited on it, and the person can list and grant their MCP servers. Requires --obo-enabled.")
 	fs.BoolVar(&cfg.Reviews.Enabled, "reviews-enabled", cfg.Reviews.Enabled, "Enable the team-review endpoint (POST /reviews, POST /notices) for managers authenticated as a Kubernetes ServiceAccount. Requires --slack-enabled and --obo-enabled.")
 	fs.StringVar(&cfg.Reviews.Audience, "reviews-audience", cfg.Reviews.Audience, "Token audience the API server checks for the team-review endpoint (default klaus-gateway).")
 	fs.Func("reviews-allowed-callers", "Comma-separated ServiceAccounts (system:serviceaccount:<namespace>:<name>) that may post team reviews.", func(v string) error {

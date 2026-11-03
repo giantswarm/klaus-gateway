@@ -273,9 +273,6 @@ func (a *Adapter) routeInteraction(ctx context.Context, payload interactionPaylo
 		// replace it, so it is filed under the prompt's anchor.
 		a.recordSignInClick(payload.User.ID, action.Value, payload.ResponseURL)
 		return
-	case connectorDismiss:
-		a.handleConnectorDismiss(ctx, payload.User.ID, action.Value, payload.Message.ThreadTS, payload.ResponseURL)
-		return
 	case signInDecline:
 		a.handleSignInDecline(ctx, payload.User.ID, action.Value, payload.ResponseURL)
 		return
@@ -399,13 +396,6 @@ func classifyAction(actionID string) (hitlAction, bool) {
 	return hitlAction{}, false
 }
 
-// validConnectorName bounds a backend name arriving in a button value:
-// interaction payloads are attacker-shaped input, so an empty or oversized
-// value is dropped rather than persisted.
-func validConnectorName(server string) bool {
-	return server != "" && len(server) <= maxConnectorNameLen
-}
-
 // handleConnectorConnect records a Connect click's response_url under the
 // button's completion state, so the post-login landing can rewrite the
 // ephemeral prompt. A value that resolves to no state (a button without a
@@ -422,19 +412,6 @@ func (a *Adapter) handleConnectorConnect(ctx context.Context, slackUser, stateID
 		if err := respondURL(ctx, responseURL, entry.threadTS, entry.signedInNotice()); err != nil {
 			a.Logger.Warn("slack: rewrite connector prompt after sign-in failed", "user", slackUser, "server", entry.server, "error", err)
 		}
-	}
-}
-
-// handleConnectorDismiss acknowledges a "Not now" click and replaces the
-// ephemeral prompt. The prompt cooldown already suppresses re-prompts for the
-// backend, so no state is cleared here.
-func (a *Adapter) handleConnectorDismiss(ctx context.Context, slackUser, server, threadTS, responseURL string) {
-	if !validConnectorName(server) {
-		return
-	}
-	text := connectorDismissedNotice()
-	if err := respondURL(ctx, responseURL, threadTS, text); err != nil {
-		a.Logger.Warn("slack: update connector prompt (dismissed) failed", "user", slackUser, "server", server, "error", err)
 	}
 }
 
