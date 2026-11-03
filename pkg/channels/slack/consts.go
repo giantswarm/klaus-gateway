@@ -82,49 +82,21 @@ const (
 // anchor, not by the click.
 const oboSignIn = "obo_sign_in"
 
-// Connector Block Kit action IDs. The button value carries the backend name.
-// connectorConnect is a URL button (opens the backend's consent flow in the
-// browser); connectorDismiss suppresses the prompt for that backend until the
-// cooldown lapses.
-const (
-	connectorConnect = "connector_connect"
-	connectorDismiss = "connector_dismiss"
-)
-
-// musterAuthLoginTool is the muster tool whose result carries a backend login
-// link; its appearance in the agent's stream drives the Connect prompt.
-const musterAuthLoginTool = "core_auth_login"
+// connectorConnect is the Connect prompt's Block Kit action ID: a URL button
+// opening the backend's consent flow in the browser.
+const connectorConnect = "connector_connect"
 
 // musterCallToolMetaTool is muster's aggregating meta-tool. Agents typically
-// reach core_auth_login through it, so the inner tool name arrives in the
-// call's arguments ({"name": "core_auth_login", ...}) rather than as the
-// stream's tool name.
+// reach muster's tools through it, so the inner tool name arrives in the
+// call's arguments ({"name": "<tool>", ...}) rather than as the stream's tool
+// name.
 const musterCallToolMetaTool = "call_tool"
-
-// connectorPromptCooldown bounds how often the connect prompt re-posts for one
-// (user, backend) while it is neither connected nor dismissed, so an ignored
-// prompt does not repeat on every message.
-const connectorPromptCooldown = time.Hour
-
-// connectorCheckTimeout bounds the async prompt post; it runs on the adapter
-// lifecycle context, off the turn's critical path.
-const connectorCheckTimeout = 10 * time.Second
-
-// maxConnectorNameLen bounds the backend name accepted from a button value
-// (interaction payloads are attacker-shaped input).
-const maxConnectorNameLen = 128
 
 // connectorCompletionTTL bounds a connector completion state: the window
 // between the Connect prompt posting and the browser landing back on the
 // gateway. Matched to the login link's own lifetime; past it the landing
 // renders the expired page and no resume fires.
 const connectorCompletionTTL = musterlink.DefaultStateTTL
-
-// connectorDismissedNotice replaces a Connect prompt after "Not now": the
-// prompt stays away for connectorPromptCooldown.
-func connectorDismissedNotice() string {
-	return fmt.Sprintf("Not asked again for %s.", spellDuration(connectorPromptCooldown))
-}
 
 // Texts of a task paused on an MCP server's sign-in link (postMCPSignInPrompt).
 // The server is the MCP server that asked, such as an MCP gateway; what needs
@@ -142,11 +114,6 @@ const (
 	signInResumeText      = "I've signed in, continue"
 	signInMessageMaxRunes = 500
 )
-
-// connectorResumeText is the synthetic message dispatched into the thread
-// after a connector sign-in completes, so the agent retries the blocked tools
-// without the user retyping; %s is the backend name.
-const connectorResumeText = "I've signed in to %s, continue"
 
 // sessionConnectNote leads the Connect prompt that answers a Session start
 // muster refused with its sign-in challenge: the person is signed in, but the

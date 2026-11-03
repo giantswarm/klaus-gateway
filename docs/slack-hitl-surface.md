@@ -307,13 +307,12 @@ question is added by the gateway.
 
 ## 7. Connector login (agent needs a backend the user hasn't connected)
 
-Ephemeral (visible only to the user). Posted when a tool result carries a backend login URL
-for a backend the agent can't yet use on the user's behalf. Connect opens the backend's
-consent flow in the browser; Not now dismisses it (a per-user/per-backend cooldown suppresses
-re-prompts). Both button `value`s carry the backend name; replace `https://…` with a real URL
-for the Builder to accept it.
+A sign-in an agent needs in a turn is always the runtime's URL elicitation: the task pauses at
+`input-required` with the server's `url_elicitation_request`, and the gateway posts the prompt
+below ("Sign-in a paused task waits on"). The gateway reads no login link out of the agent's
+text or tool results.
 
-The same prompt, without *Not now*, answers a Session start that muster refused with its
+The Connect prompt answers a Session start that muster refused with its
 sign-in challenge for agent-manager (the person has not consented to the server's GitHub App):
 "The conversation can't start yet: *agent-manager* needs you to connect your account once.
 Connect it, and your message is sent to the agent." The message is held and the sign-in's
@@ -336,25 +335,22 @@ carries the completion state in its `value`, so a click on it is replaced throug
 ```json
 {
   "blocks": [
-    { "type": "section", "text": { "type": "mrkdwn", "text": "The agent can't use *github* for you yet. Connect your account once so those tools work." } },
+    { "type": "section", "text": { "type": "mrkdwn", "text": "The conversation can't start yet: *agent-manager* needs you to connect your account once. Connect it, and your message is sent to the agent." } },
     {
       "type": "actions",
       "elements": [
-        { "type": "button", "text": { "type": "plain_text", "text": "Connect github" }, "style": "primary", "action_id": "connector_connect", "value": "github", "url": "https://example.com/connect" },
-        { "type": "button", "text": { "type": "plain_text", "text": "Not now" }, "action_id": "connector_dismiss", "value": "github" }
+        { "type": "button", "text": { "type": "plain_text", "text": "Connect agent-manager" }, "style": "primary", "action_id": "connector_connect", "value": "agent-manager", "url": "https://example.com/connect" }
       ]
     }
   ]
 }
 ```
 
-<img width="721" height="159" alt="image" src="https://github.com/user-attachments/assets/64649be1-74d6-4012-86d2-14f8d0998a84" />
-
 ### Sign-in a paused task waits on
 
-A runtime that relays MCP URL elicitations (the claude and codex Harnesses, the Go ADK) pauses
-the task at `input-required` with the server's sign-in link (`url_elicitation_request`, see
-`docs/kagent-a2a.md`) instead of answering with a login text. The server named is the MCP
+Every runtime the platform runs (the claude, codex and omp Harnesses, the Go ADK) relays MCP URL
+elicitations: it pauses the task at `input-required` with the server's sign-in link
+(`url_elicitation_request`, see `docs/kagent-a2a.md`). The server named is the MCP
 server that asked, muster for a platform agent; what needs the sign-in is in its message
 ("Sign in to github to continue."). The link is minted for the person whose turn asked, so the
 prompt goes to them alone, ephemeral, and the thread gets "Waiting for @Jose to sign in (asked

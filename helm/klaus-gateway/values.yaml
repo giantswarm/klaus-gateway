@@ -380,11 +380,9 @@ obo:
   # Empty uses the gateway's default, 25m. When muster's tokens live shorter,
   # every turn gets a freshly refreshed one.
   minTokenLifetime: ""
-  # connectors enables the reactive Slack connector UX: the gateway detects a
-  # core_auth_login challenge in the agent's response stream and offers a
-  # "Connect <backend>" button from the login link the agent relays. The
-  # gateway does not call muster. Requires muster 5.36.0 or later: the
-  # call_tool result names the tool it ran.
+  # connectors enables the Slack connector landing: a sign-in link the gateway
+  # posts carries a redirect back to it, whose landing resumes what waited on
+  # the sign-in, and muster's grants are offered in the authorize modal.
   connectors:
     enabled: false
 

@@ -600,7 +600,7 @@ func (a *Adapter) promptDecisionConnect(ctx context.Context, rv store.Review, us
 			text = fmt.Sprintf(decisionConnectNotice, escapeMrkdwn(server))
 		}
 	}
-	if err := a.apiClient().postConnectPrompt(ctx, rv.Channel, "", user, text, server, promptURL, connectValue, false); err != nil {
+	if err := a.apiClient().postConnectPrompt(ctx, rv.Channel, "", user, text, server, promptURL, connectValue); err != nil {
 		a.Logger.Warn("slack: decision connect prompt failed", "decision", rv.ID, "user", user, "error", err)
 	}
 }

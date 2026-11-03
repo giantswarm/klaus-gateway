@@ -738,7 +738,7 @@ func (a *Adapter) promptTeamReviewConnect(ctx context.Context, rv store.Review, 
 			text = fmt.Sprintf(teamReviewConnectNotice, decision.verb(), escapeMrkdwn(server), decision.noun())
 		}
 	}
-	if err := a.apiClient().postConnectPrompt(ctx, rv.Channel, "", clicker, text, server, promptURL, connectValue, false); err != nil {
+	if err := a.apiClient().postConnectPrompt(ctx, rv.Channel, "", clicker, text, server, promptURL, connectValue); err != nil {
 		a.Logger.Warn("slack: team review connect prompt failed", "review", rv.ID, "user", clicker, "error", err)
 	}
 }

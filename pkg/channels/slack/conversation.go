@@ -157,7 +157,7 @@ func (a *Adapter) relayConversationReply(ctx context.Context, rv store.Review, i
 		a.Logger.Info("slack: conversation reply needs the person to connect the backend", "record", "conversation_connect",
 			"conversation", rv.ID, "tool", rv.Tool, "slack_user", inner.User, "server", server)
 		text := fmt.Sprintf(conversationConnectNotice, from, escapeMrkdwn(server))
-		if err := a.apiClient().postConnectPrompt(ctx, rv.Channel, rv.TS, inner.User, text, server, loginURL, server, false); err != nil {
+		if err := a.apiClient().postConnectPrompt(ctx, rv.Channel, rv.TS, inner.User, text, server, loginURL, server); err != nil {
 			a.Logger.Warn("slack: conversation connect prompt failed", "conversation", rv.ID, "error", err)
 		}
 		return
