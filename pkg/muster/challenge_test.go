@@ -44,6 +44,16 @@ func TestResult_SignInChallenge(t *testing.T) {
 		"a refusal that is no challenge": {
 			res: Result{IsError: true, Text: "not a member of team-bumblebee, see https://docs.example/teams"},
 		},
+		"a refusal naming a server, with a link": {
+			res: Result{IsError: true, Dispatched: true, Text: "rate limited by server 'pro', retry later, see https://docs.example/limits"},
+		},
+		"a refusal on a Server: line, with a link": {
+			res: Result{IsError: true, Dispatched: true, Text: "Permission denied\nServer: pro\nSee https://docs.example/permissions"},
+		},
+		"a structured link that is not https": {
+			res: Result{IsError: true, Text: "auth_required: sign in first: https://muster.example/login",
+				Structured: []byte(`{"status":"auth_required","server":"pro","authUrl":"http://muster.example/login"}`)},
+		},
 		"not an error": {
 			res: Result{Text: text},
 		},

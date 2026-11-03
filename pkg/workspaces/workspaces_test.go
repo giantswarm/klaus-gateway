@@ -265,6 +265,33 @@ func TestErrors(t *testing.T) {
 		require.ErrorAs(t, err, &challenge)
 		require.Equal(t, &AuthRequiredError{Server: "workspace-manager", LoginURL: "https://muster.example/login?s=1"}, challenge)
 	})
+	t.Run("auth challenge in the text only", func(t *testing.T) {
+		srv := mustertest.New(map[string]func(map[string]any) mustertest.Answer{
+			prefix + "list_providers": func(map[string]any) mustertest.Answer {
+				return mustertest.Answer{IsError: true, Undispatched: true,
+					Text: "auth_required: sign in first: https://muster.example/login?s=2."}
+			},
+		})
+		defer srv.Close()
+		_, err := New(muster.NewClient(srv.URL), prefix).Providers(ctx, bearer)
+		var challenge *AuthRequiredError
+		require.ErrorAs(t, err, &challenge)
+		require.Equal(t, &AuthRequiredError{Server: "workspace-manager", LoginURL: "https://muster.example/login?s=2"}, challenge)
+	})
+	t.Run("auth challenge without an https link", func(t *testing.T) {
+		srv := mustertest.New(map[string]func(map[string]any) mustertest.Answer{
+			prefix + "list_providers": func(map[string]any) mustertest.Answer {
+				return mustertest.Answer{IsError: true, Text: "auth_required: server 'workspace-manager' requires authentication",
+					Structured: map[string]any{"status": "auth_required", "server": "workspace-manager", "authUrl": "http://muster.example/login"}}
+			},
+		})
+		defer srv.Close()
+		_, err := New(muster.NewClient(srv.URL), prefix).Providers(ctx, bearer)
+		var challenge *AuthRequiredError
+		require.NotErrorAs(t, err, &challenge)
+		var toolErr *ToolError
+		require.ErrorAs(t, err, &toolErr)
+	})
 	t.Run("malformed", func(t *testing.T) {
 		for name, answer := range map[string]mustertest.Answer{
 			"no structured content": {Text: "3 workspaces"},
