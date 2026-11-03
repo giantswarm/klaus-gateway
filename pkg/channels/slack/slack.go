@@ -2366,7 +2366,7 @@ func (a *Adapter) dispatchFrom(ctx context.Context, msg channels.InboundMessage,
 	task := a.takePendingTask(msg.ThreadID)
 	if task != nil {
 		msg.TaskID = task.TaskID
-		msg.Decision = decisionFromText(task.Prompt, msg.Text)
+		msg.Decision = answering(task.Prompt, decisionFromText(task.Prompt, msg.Text))
 		a.markPromptDecided(ctx, slackChannel, task, msg.Decision, slackUser)
 	}
 

@@ -598,6 +598,11 @@ const promptSupersededNotice = "A newer prompt replaced this one. Answer the lat
 // answered, dropped by the TTL, or lost in a restart.
 const promptAnsweredNotice = "Already answered."
 
+// promptAnsweredElsewhereNote tells the thread an answer reached a task that
+// no longer waits on the prompt it answered: someone answered it elsewhere
+// first.
+const promptAnsweredElsewhereNote = "This was already answered elsewhere, so this answer was not sent to the agent."
+
 // formIncompleteNudge is shown (ephemerally) when a user clicks Submit on a
 // multi-question ask_user form with a question with choices still unanswered;
 // the form stays pending so the user can complete it and submit again. A text

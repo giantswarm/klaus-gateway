@@ -792,6 +792,9 @@ func (f *Facade) outboundMessage(ctx context.Context, msg InboundMessage) (*a2ap
 	if request == nil {
 		return nil, fmt.Errorf("%w: task %s carries no HITL request", ErrNoPendingPrompt, msg.TaskID)
 	}
+	if want := msg.Decision.RequestID; want != "" && want != request.ID() {
+		return nil, fmt.Errorf("%w: task %s waits on request %q, not %q", ErrNoPendingPrompt, msg.TaskID, request.ID(), want)
+	}
 	if err := pkga2a.AttachHITL(message, hitlResponse(request, msg.Decision)); err != nil {
 		return nil, err
 	}

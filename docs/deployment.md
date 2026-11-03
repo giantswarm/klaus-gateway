@@ -243,9 +243,10 @@ ServiceMonitor). Beside the public mux's `klaus_gateway_requests_total` /
   but the channel refused part of the answer), `send_failed` (the turn died before it was
   sent: the controller refused it), `connect_required` (the Session could not start: a
   muster server waits for the person's consent, the Connect prompt went out and the message
-  is held) and `share_refused` (a collaborator's turn the thread's Session could not be opened
+  is held), `share_refused` (a collaborator's turn the thread's Session could not be opened
   to: kagent refused to share it, or the share needs the initiator's sign-in; the thread was
-  told why). A `failed` or `send_failed` turn carries what broke as
+  told why) and `prompt_answered` (an answer to a prompt the task no longer waits on, because
+  it was answered elsewhere first; nothing was sent). A `failed` or `send_failed` turn carries what broke as
   `failure_class`: `tools` (the agent's MCP tool set), `platform` (the connection to the
   controller or the runtime), `model` (the model or its provider), `policy` (a gateway policy
   refused it), `connection_required` (the person has not connected the provider account the

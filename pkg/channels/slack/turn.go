@@ -106,6 +106,16 @@ func (a *Adapter) runTurn(ctx context.Context, msg channels.InboundMessage, slac
 	a.logTurnDispatch(ctx, msg, slackUser, task != nil, agentSource)
 
 	deltas, err := a.gw.SendCompletion(turnCtx, msg)
+	if errors.Is(err, channels.ErrNoPendingPrompt) {
+		// Not a failure: the prompt was answered elsewhere (another surface on
+		// the same task), so this answer has nothing to resume and the taken
+		// task stays dropped.
+		a.completeTurn(ctx, msg, slackUser, channels.OutcomePromptAnswered, err)
+		if _, perr := a.apiClient().postNote(ctx, slackChannel, promptAnsweredElsewhereNote, msg.ThreadID); perr != nil {
+			a.Logger.Warn("slack: post answered-elsewhere note failed", "thread", msg.ThreadID, "error", perr)
+		}
+		return nil
+	}
 	if err != nil {
 		restoreTask()
 		// Not a failure: the person is signed in, and a muster server the
