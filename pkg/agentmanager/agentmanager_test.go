@@ -173,6 +173,13 @@ func TestStartSession_MusterSignInChallengeIsConnectRequired(t *testing.T) {
 	starter, _ = starterAnswering(t, mustertest.Answer{IsError: true, Text: "auth_required: auth required: a commit without the caller's GitHub authorization"})
 	_, err = starter.StartSession(context.Background(), bearer, "kagent", "sre-agent", "req-1", "", workspaces.Grant{})
 	require.ErrorIs(t, err, pkga2a.ErrNoIdentity)
+
+	// A refusal that names a server and carries a link, without muster's
+	// sign-in markers, is no challenge: the person gets no Connect prompt.
+	starter, _ = starterAnswering(t, mustertest.Answer{IsError: true, Text: "rate limited by server 'agent-manager', see https://docs.example/limits"})
+	_, err = starter.StartSession(context.Background(), bearer, "kagent", "sre-agent", "req-1", "", workspaces.Grant{})
+	require.Error(t, err)
+	require.NotErrorAs(t, err, &connect)
 }
 
 func TestStartSession_RefusesWhatIsNoSession(t *testing.T) {
