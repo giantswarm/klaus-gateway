@@ -39,6 +39,7 @@ func questionDelta() channels.OutboundDelta {
 func openThread(t *testing.T, gw *stubGateway, fake *fakeSlackAPI) (*slackadapter.Adapter, *httptest.Server) {
 	t.Helper()
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
+	gw.openConversation(t, "C1", "500.000", "U1", "test-agent")
 	sendEvent(t, srv, mention("U1", "why is the cluster unhappy?", "500.000", ""))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 20*time.Millisecond)
 	return a, srv
@@ -263,6 +264,7 @@ func restartWithPrompt(t *testing.T, prompt channels.OutboundDelta) (*fakeSlackA
 
 	gw1 := &stubGateway{records: shared, sendQueue: [][]channels.OutboundDelta{{prompt}}}
 	a1, srv1 := newEventsAdapter(t, gw1, api.URL, channelMode)
+	gw1.openConversation(t, "C1", "600.000", "U1", "test-agent")
 	sendEvent(t, srv1, mention("U1", "clean up", "600.000", ""))
 	require.Eventually(t, func() bool { return heldIn(t, shared, "C1", "600.000") }, flowWait, 20*time.Millisecond,
 		"the paused prompt is in the thread's row")

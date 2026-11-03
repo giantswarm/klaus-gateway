@@ -47,6 +47,7 @@ func startMutedThreadWith(t *testing.T, fake *fakeSlackAPI, gw *stubGateway) (*s
 	api := fake.server(t)
 	a, srv := newEventsAdapter(t, gw, api.URL, channelMode)
 
+	gw.openConversation(t, "C1", "500.000", "U1", "test-agent")
 	sendEvent(t, srv, mention("U1", "why is the cluster unhappy?", "500.000", ""))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 20*time.Millisecond)
 	waitThreadIdle(t, a, "500.000")
@@ -101,8 +102,10 @@ func TestMute_EndedConversationStartsOverUnmuted(t *testing.T) {
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok", Done: true}}}
 	rec, advance := agingRecorder(t)
 	gw.records = rec
-	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
+	api := fake.server(t)
+	a, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
 
+	gw.openConversation(t, "C1", "560.000", "U1", "test-agent")
 	sendEvent(t, srv, mention("U1", "look at the nodes", "560.000", ""))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 20*time.Millisecond)
 	waitThreadIdle(t, a, "560.000")
@@ -111,7 +114,14 @@ func TestMute_EndedConversationStartsOverUnmuted(t *testing.T) {
 
 	advance(channels.DefaultThreadTTL + time.Hour)
 
+	// The mention gets the help, as in any thread without a conversation; the
+	// shortcut on a message of the thread starts it over.
 	sendEvent(t, srv, mention("U1", "picking this back up", "560.002", "560.000"))
+	require.Eventually(t, func() bool { return len(helpReplies(fake, "560.000")) == 1 }, flowWait, 20*time.Millisecond)
+	require.Equal(t, 1, gw.dispatchCount(), "the mention starts nothing")
+	sendAskAgentShortcut(t, srv, "C1", "U1", "560.002", "560.000", api.URL+"/response_url")
+	pm := openedView(t, fake)["private_metadata"].(string)
+	sendAskAgentSubmission(t, srv, "U1", pm, "kagent/sre-agent", "picking this back up")
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 }, flowWait, 20*time.Millisecond)
 	waitThreadIdle(t, a, "560.000")
 	require.Empty(t, mutedAt(t, rec, "560.000"), "the thread starts over unmuted")
@@ -201,6 +211,7 @@ func TestMute_NotPermittedForANewcomer(t *testing.T) {
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok", Done: true}}}
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode)
 
+	gw.openConversation(t, "C1", "510.000", "U1", "test-agent")
 	sendEvent(t, srv, mention("U1", "look at the nodes", "510.000", ""))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 20*time.Millisecond)
 	waitThreadIdle(t, a, "510.000")
@@ -251,6 +262,7 @@ func TestMute_InADirectMessageIsForTheAgent(t *testing.T) {
 	gw, dispatched := capturingGateway()
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
+	gw.openConversation(t, "D1", "530.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "mute", "530.000"))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 20*time.Millisecond)
 	require.Equal(t, "mute", dispatched()[0].Text)

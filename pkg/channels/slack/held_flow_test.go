@@ -50,6 +50,7 @@ func TestRestart_LoginParkedMessageReplaysAfterSignIn(t *testing.T) {
 
 	a1, srv1 := newEventsAdapter(t, &stubGateway{records: shared}, api.URL, channelMode)
 	a1.OBO = &fakeOBO{linkedUser: "U123", token: "tok", notYetLinked: true}
+	openConversationIn(t, shared, "C1", "100.000", "U123", "test-agent")
 	sendEvent(t, srv1, mention("U123", "what failed on prod?", "100.000", ""))
 	sendEvent(t, srv1, mention("U123", "and on staging?", "101.000", "100.000"))
 	fake.waitForPath(t, "chat.postMessage", 1)
@@ -83,6 +84,7 @@ func TestRestart_SignInDuringRestartReplaysAtStart(t *testing.T) {
 
 	a1, srv1 := newEventsAdapter(t, &stubGateway{records: shared}, api.URL, channelMode)
 	a1.OBO = &fakeOBO{linkedUser: "U123", token: "tok", notYetLinked: true}
+	openConversationIn(t, shared, "C1", "100.000", "U123", "test-agent")
 	sendEvent(t, srv1, mention("U123", "what failed on prod?", "100.000", ""))
 	fake.waitForPath(t, "chat.postMessage", 1)
 	require.NoError(t, a1.Stop(context.Background()))
@@ -108,6 +110,7 @@ func TestRestart_AccessParkedMessagesReplayOnGrant(t *testing.T) {
 	gw1 := &stubGateway{records: shared, deltas: []channels.OutboundDelta{{Content: "ok", Done: true}}}
 	a1, srv1 := newEventsAdapter(t, gw1, api.URL, channelMode)
 	a1.OBO = &multiUserOBO{linked: linked}
+	gw1.openConversation(t, "C1", "100.000", "U001", "test-agent")
 	sendEvent(t, srv1, mention("U001", "start", "100.000", ""))
 	require.Eventually(t, func() bool { return gw1.dispatchCount() == 1 && a1.ThreadIdle("100.000") },
 		flowWait, 20*time.Millisecond, "the initiator's opening turn completes")
@@ -148,6 +151,7 @@ func TestRestart_PausedPromptAnswersAfterRestart(t *testing.T) {
 	}
 
 	a1, srv1 := newEventsAdapter(t, &stubGateway{records: shared, sendQueue: [][]channels.OutboundDelta{{prompt}}}, api.URL)
+	openConversationIn(t, shared, "D1", "400.000", "U1", "test-agent")
 	sendEvent(t, srv1, dmEvent("U1", "clean up", "400.000"))
 	fake.waitForPath(t, "chat.postMessage", 1)
 	require.Contains(t, allText(fake.pathCalls("chat.postMessage")), "Approval required")

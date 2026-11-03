@@ -338,6 +338,28 @@ func TestClient_GetAndCancelTask(t *testing.T) {
 	require.ErrorIs(t, err, a2apkg.ErrTaskNotFound)
 }
 
+// An Agent's default workspace is the name its annotation gives in the
+// Agent's own namespace; one of another namespace is none.
+func TestClient_ListAgents_DefaultWorkspace(t *testing.T) {
+	f := newFakeKagent()
+	f.agents = []*apiv1alpha1.Agent{
+		agent(t, "sre-agent", map[string]any{pkga2a.DefaultWorkspaceAnnotation: "kagent/platform"}, "sre-template", "kagent", readyCondition(true, "Ready", "")),
+		agent(t, "elsewhere", map[string]any{pkga2a.DefaultWorkspaceAnnotation: "org-acme/platform"}, "sre-template", "kagent", readyCondition(true, "Ready", "")),
+		agent(t, "malformed", map[string]any{pkga2a.DefaultWorkspaceAnnotation: "platform"}, "sre-template", "kagent", readyCondition(true, "Ready", "")),
+		agent(t, "plain", nil, "sre-template", "kagent", readyCondition(true, "Ready", "")),
+	}
+	f.templates = []*apiv1alpha1.AgentTemplate{template(t, "sre-template", nil, "default-model-config")}
+	client := f.serve(t, pkga2a.Config{})
+
+	agents, err := client.ListAgents(asUser(t.Context(), userToken))
+	require.NoError(t, err)
+	defaults := map[string]string{}
+	for _, a := range agents {
+		defaults[a.Name] = a.DefaultWorkspace
+	}
+	require.Equal(t, map[string]string{"sre-agent": "platform", "elsewhere": "", "malformed": "", "plain": ""}, defaults)
+}
+
 func TestClient_ListAgents_ReadinessAndAnnotations(t *testing.T) {
 	f := newFakeKagent()
 	f.agents = []*apiv1alpha1.Agent{
@@ -346,6 +368,8 @@ func TestClient_ListAgents_ReadinessAndAnnotations(t *testing.T) {
 		agent(t, "compiling", nil, "sre-template", "kagent", readyCondition(false, "Preparing", "golden snapshot not taken yet")),
 		agent(t, "no-status-yet", nil, "sre-template", "kagent", nil),
 		agent(t, "branded-template", nil, "branded", "kagent", readyCondition(true, "Ready", "")),
+		withLatestSuccessfulRevision(agent(t, "updating", nil, "sre-template", "kagent",
+			readyCondition(false, "ActorTemplatePending", "waiting for the ActorTemplate golden snapshot")), "updating-rev-1"),
 	}
 	f.templates = []*apiv1alpha1.AgentTemplate{
 		template(t, "sre-template", nil, "default-model-config"),
@@ -356,7 +380,7 @@ func TestClient_ListAgents_ReadinessAndAnnotations(t *testing.T) {
 
 	agents, err := client.ListAgents(ctx)
 	require.NoError(t, err)
-	require.Len(t, agents, 2, "only an Agent whose Ready condition is True is offered")
+	require.Len(t, agents, 3, "only an Agent with a ready revision is offered")
 	require.Equal(t, pkga2a.AgentInfo{
 		Name: "sre-agent", Namespace: "kagent", Tenant: pkga2a.PlatformTenant, DisplayName: "SRE Agent", IconURL: "https://icons.example/sre.png",
 		Description: "Investigates sre-template", ModelConfig: "default-model-config", Harness: "kagent",
@@ -366,6 +390,9 @@ func TestClient_ListAgents_ReadinessAndAnnotations(t *testing.T) {
 		Name: "branded-template", Namespace: "kagent", Tenant: pkga2a.PlatformTenant, DisplayName: "Branded", IconURL: "https://icons.example/branded.png",
 		Description: "Investigates branded", ModelConfig: "other-model-config", Harness: "kagent",
 	}, agents[1], "an Agent without annotations of its own is branded by its AgentTemplate's")
+	require.Equal(t, "updating", agents[2].Name,
+		"an Agent preparing a new revision stays offered: kagent starts its Sessions on the latest successful one")
+	require.Empty(t, agents[2].Unavailable)
 	require.Equal(t, []string{"Bearer " + userToken}, f.lastMD("ListAgents").Get("authorization"))
 	require.Equal(t, []string{"Bearer " + userToken}, f.lastMD("ListAgentTemplates").Get("authorization"))
 
@@ -386,6 +413,9 @@ func TestClient_ListAgents_ReadinessAndAnnotations(t *testing.T) {
 	require.ErrorIs(t, err, pkga2a.ErrAgentNotPermitted, "an Agent the roster does not list is not the caller's")
 	_, _, err = client.CardInfo(ctx, "other-namespace/sre-agent")
 	require.ErrorIs(t, err, pkga2a.ErrAgentNotPermitted)
+
+	_, _, err = client.CardInfo(ctx, "updating")
+	require.NoError(t, err, "an Agent preparing a new revision is selectable by name")
 
 	name, description, err := client.CardInfo(ctx, "sre-agent")
 	require.NoError(t, err)
@@ -570,7 +600,8 @@ func TestClient_StartSession_ThroughAgentManagerIdempotentPerRequestID(t *testin
 		"name":        "sre-agent",
 		"requestId":   requestID,
 		"sessionName": "restart the kong pods on gazelle",
-	}, calls[0].Args, "the agent, the request id and the name; no message: the gateway sends the turn itself")
+		"noWorkspace": true,
+	}, calls[0].Args, "the agent, the request id, the name and no workspace; no message: the gateway sends the turn itself")
 	require.Len(t, f.created, 2, "agent-manager's create at the controller, once per start")
 	require.Equal(t, "Bearer "+userToken, f.sessions[first.ID].GetCreator(), "the session is the person's")
 
@@ -792,6 +823,32 @@ func TestAttachAndParseHITL_RoundTrip(t *testing.T) {
 	request, err = pkga2a.ParseHITLRequest(nested)
 	require.NoError(t, err)
 	require.Equal(t, "child-q-1", request.AskUser.ResponseID(), "a propagated question is answered under the child's id")
+}
+
+func TestParseHITLRequest_URLElicitation(t *testing.T) {
+	signIn := pkga2a.URLElicitationRequest{
+		Type: pkga2a.HITLTypeURLElicitationRequest, ID: "sign-in-1", Server: "github",
+		Message: "Sign in to github", URL: "https://gateway.example/oauth/proxy/start?s=1", ElicitationID: "e1",
+	}
+	msg := a2apkg.NewMessage(a2apkg.MessageRoleAgent, a2apkg.NewTextPart("Sign in to github"))
+	require.NoError(t, pkga2a.AttachHITL(msg, signIn))
+	request, err := pkga2a.ParseHITLRequest(msg)
+	require.NoError(t, err)
+	require.Equal(t, &signIn, request.URLElicitation)
+
+	for name, broken := range map[string]pkga2a.URLElicitationRequest{
+		"no id":          {Type: pkga2a.HITLTypeURLElicitationRequest, URL: signIn.URL},
+		"no URL":         {Type: pkga2a.HITLTypeURLElicitationRequest, ID: "sign-in-1"},
+		"a relative URL": {Type: pkga2a.HITLTypeURLElicitationRequest, ID: "sign-in-1", URL: "/oauth/start"},
+		"another scheme": {Type: pkga2a.HITLTypeURLElicitationRequest, ID: "sign-in-1", URL: "javascript:alert(1)"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			msg := a2apkg.NewMessage(a2apkg.MessageRoleAgent)
+			require.NoError(t, pkga2a.AttachHITL(msg, broken))
+			_, err := pkga2a.ParseHITLRequest(msg)
+			require.Error(t, err)
+		})
+	}
 }
 
 // Subscribe resubscribes to a task of the session: the controller serves a

@@ -113,6 +113,7 @@ func TestConnectorPrompt_PostedFromToolResult(t *testing.T) {
 	}}
 	fake, srv := connectorAdapter(t, gw)
 
+	gw.openConversation(t, "D1", "100.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "use the pro tools", "100.000"))
 
 	require.Eventually(t, func() bool {
@@ -135,6 +136,7 @@ func TestConnectorPrompt_PostedFromCallToolResult(t *testing.T) {
 	)}
 	fake, srv := connectorAdapter(t, gw)
 
+	gw.openConversation(t, "D1", "101.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "use the pro tools", "101.000"))
 
 	require.Eventually(t, func() bool {
@@ -155,6 +157,7 @@ func TestConnectorPrompt_CallToolOtherToolNoPrompt(t *testing.T) {
 	)}
 	fake, srv := connectorAdapter(t, gw)
 
+	gw.openConversation(t, "D1", "105.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "hi", "105.000"))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 20*time.Millisecond)
@@ -171,6 +174,7 @@ func TestConnectorPrompt_Cooldown(t *testing.T) {
 	}}
 	fake, srv := connectorAdapter(t, gw)
 
+	gw.openConversation(t, "D1", "102.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "one", "102.000"))
 	require.Eventually(t, func() bool {
 		return strings.Count(ephemeralJSON(fake), "connector_connect") == 1
@@ -209,6 +213,7 @@ func TestConnectorPrompt_NoURLNoPrompt(t *testing.T) {
 	}}
 	fake, srv := connectorAdapter(t, gw)
 
+	gw.openConversation(t, "D1", "104.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "hi", "104.000"))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 20*time.Millisecond)
@@ -233,6 +238,7 @@ func TestConnectorPrompt_AddressedToRawSlackUserID(t *testing.T) {
 	// the chat.postEphemeral user param.
 	fake.setResponse("users.info", `{"ok":true,"user":{"profile":{"email":"u1@example.com"}}}`)
 
+	gw.openConversation(t, "D1", "120.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "use the pro tools", "120.000"))
 
 	var connect *recordedCall
@@ -262,6 +268,7 @@ func TestConnectorPrompt_NonHTTPSNoPrompt(t *testing.T) {
 	}}
 	fake, srv := connectorAdapter(t, gw)
 
+	gw.openConversation(t, "D1", "106.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "hi", "106.000"))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 20*time.Millisecond)
@@ -389,8 +396,9 @@ func connectButton(fake *fakeSlackAPI) (buttonURL, buttonValue string, ok bool) 
 
 // promptConnector drives one auth-challenge turn on a decorated adapter and
 // returns the posted Connect button's url and completion-state value.
-func promptConnector(t *testing.T, fake *fakeSlackAPI, srv *httptest.Server, ts string) (buttonURL, stateID string) {
+func promptConnector(t *testing.T, fake *fakeSlackAPI, srv *httptest.Server, gw *stubGateway, ts string) (buttonURL, stateID string) {
 	t.Helper()
+	gw.openConversation(t, "D1", ts, "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "use the pro tools", ts))
 	var ok bool
 	require.Eventually(t, func() bool {
@@ -431,7 +439,7 @@ func TestConnectorPrompt_DecoratedURLAndStateValue(t *testing.T) {
 	}}
 	fake, srv := decoratedConnectorAdapter(t, gw)
 
-	buttonURL, stateID := promptConnector(t, fake, srv, "130.000")
+	buttonURL, stateID := promptConnector(t, fake, srv, gw, "130.000")
 
 	require.NotEqual(t, "mcp-pro", stateID, "the button value is the state ID, not the server name")
 	parsed, err := url.Parse(buttonURL)
@@ -461,7 +469,7 @@ func TestConnectorComplete_RewritesPromptAndResumes(t *testing.T) {
 	fake, srv := decoratedConnectorAdapter(t, gw)
 	responseSrv, capturedBody := newResponseURLCapture(t)
 
-	_, stateID := promptConnector(t, fake, srv, "131.000")
+	_, stateID := promptConnector(t, fake, srv, gw, "131.000")
 	sendConnectorInteractionURL(t, srv, "connector_connect", stateID, responseSrv.URL)
 
 	resp, err := http.Get(srv.URL + "/connectors/complete?s=" + url.QueryEscape(stateID) + "&server=mcp-pro")
@@ -496,7 +504,7 @@ func TestConnectorComplete_LandingBeforeClick(t *testing.T) {
 	fake, srv := decoratedConnectorAdapter(t, gw)
 	responseSrv, capturedBody := newResponseURLCapture(t)
 
-	_, stateID := promptConnector(t, fake, srv, "132.000")
+	_, stateID := promptConnector(t, fake, srv, gw, "132.000")
 
 	resp, err := http.Get(srv.URL + "/connectors/complete?s=" + url.QueryEscape(stateID))
 	require.NoError(t, err)
@@ -547,7 +555,7 @@ func TestConnectorComplete_ReloadIdempotent(t *testing.T) {
 	}
 	fake, srv := decoratedConnectorAdapter(t, gw)
 
-	_, stateID := promptConnector(t, fake, srv, "133.000")
+	_, stateID := promptConnector(t, fake, srv, gw, "133.000")
 
 	for range 2 {
 		resp, err := http.Get(srv.URL + "/connectors/complete?s=" + url.QueryEscape(stateID))
@@ -592,6 +600,7 @@ func TestConnectorPrompt_NewURLSupersedesCooldown(t *testing.T) {
 	}}
 	fake, srv := connectorAdapter(t, gw)
 
+	gw.openConversation(t, "D1", "102.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "one", "102.000"))
 	require.Eventually(t, func() bool {
 		return strings.Count(ephemeralJSON(fake), "connector_connect") == 1

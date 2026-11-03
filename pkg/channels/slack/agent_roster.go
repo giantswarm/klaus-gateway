@@ -105,7 +105,7 @@ func (a *Adapter) postRoster(ctx context.Context, channel, threadID string, sele
 }
 
 // rosterBlocks renders the roster rows: a header, how many agents there are
-// and which one a plain mention reaches, one row per agent (the default first,
+// and which one the picker preselects, one row per agent (the default first,
 // then A–Z) with its description's first sentence and a Select button, and a
 // line naming the agents past rosterRowsMax and the typed way to pick one.
 // Without selectable, the rows carry no button and the footer says to start a
@@ -125,7 +125,7 @@ func (a *Adapter) rosterBlocks(agents []pkga2a.AgentInfo, selectable bool) []any
 
 	summary := countOf(int64(len(sorted)), "agent") + " available"
 	if len(sorted) > 0 && isDefault(sorted[0]) {
-		summary += " · " + escapeMrkdwn(agentDisplayName(sorted[0])) + " answers plain mentions"
+		summary += " · " + escapeMrkdwn(agentDisplayName(sorted[0])) + " is preselected in the picker"
 	}
 	blocks := []any{
 		map[string]any{bkType: bkHeader, bkText: plainTextObj(rosterTitle)},
@@ -157,9 +157,9 @@ func (a *Adapter) rosterBlocks(agents []pkga2a.AgentInfo, selectable bool) []any
 	}
 	footer := "Select starts a conversation with that agent in this thread."
 	if !selectable {
-		// A new thread in a channel starts with a top-level message, which
-		// reaches the bot only with a mention.
-		footer = "This thread already has its agent. To talk to another one, mention the bot with `agents` in a new thread and pick it there."
+		// Only the picker opens a conversation, and this thread has its
+		// agent: the slash command opens one on a new root.
+		footer = fmt.Sprintf("This thread already has its agent. To talk to another one, start a new conversation with `%s` and pick it there.", a.slashCommand())
 	}
 	if rest := sorted[len(shown):]; len(rest) > 0 {
 		names := make([]string, len(rest))

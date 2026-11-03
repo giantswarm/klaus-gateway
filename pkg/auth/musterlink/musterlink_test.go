@@ -24,16 +24,17 @@ type musterStub struct {
 	server   *httptest.Server
 	clientID string
 
-	mu             sync.Mutex
-	email          string
-	sub            string
-	failRefresh    bool          // reject refresh with 400 invalid_grant (dead token)
-	failRefresh5xx bool          // reject refresh with a transient 503 (no OAuth error code)
-	hangRefresh    bool          // never answer a refresh (blackholed endpoint) until the request context ends
-	omitIDToken    bool          // omit id_token from the token response (upstream had none)
-	idTokenTTL     time.Duration // lifetime of a minted id_token; zero means an hour
-	counter        int
-	validAccess    map[string]bool
+	mu              sync.Mutex
+	email           string
+	sub             string
+	failRefresh     bool          // reject refresh with 400 invalid_grant (dead token)
+	failRefresh5xx  bool          // reject refresh with a transient 503 (no OAuth error code)
+	hangRefresh     bool          // never answer a refresh (blackholed endpoint) until the request context ends
+	omitIDToken     bool          // omit id_token from the token response (upstream had none)
+	unverifiedEmail bool          // userinfo answers email_verified: false
+	idTokenTTL      time.Duration // lifetime of a minted id_token; zero means an hour
+	counter         int
+	validAccess     map[string]bool
 	// spent holds every refresh token already presented: muster rotates on each
 	// refresh and rejects a spent token with invalid_grant, and so does the stub.
 	// lastRefresh is the refresh token presented most recently.
@@ -122,7 +123,7 @@ func newMusterStub(t *testing.T, clientID, email, sub string) *musterStub {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		writeJSON(w, map[string]any{"sub": s.sub, "email": s.email})
+		writeJSON(w, map[string]any{"sub": s.sub, "email": s.email, "email_verified": !s.unverifiedEmail})
 	})
 	s.server = httptest.NewServer(mux)
 	t.Cleanup(s.server.Close)
@@ -213,7 +214,7 @@ func TestClientMetadataDocument(t *testing.T) {
 	require.Contains(t, doc.RedirectURIs, publicBase+CallbackPath)
 	require.Equal(t, "none", doc.TokenEndpointAuthMethod)
 	require.Contains(t, doc.GrantTypes, "refresh_token")
-	require.Equal(t, "openid profile email offline_access", doc.Scope)
+	require.Equal(t, "openid profile email groups offline_access", doc.Scope)
 }
 
 func TestNewDerivesClientIDAndRedirectFromPublicBaseURL(t *testing.T) {
@@ -548,6 +549,21 @@ func TestCallbackRedirectsToCodeFreeSuccessPage(t *testing.T) {
 		"a reload must not replay the identity confirmation")
 }
 
+// The sign-in asks muster for the groups scope, so the id_token forwarded on
+// every turn carries the person's groups for the kagent controller's RBAC
+// review whatever muster's own default scopes are.
+func TestLinkAsksForGroups(t *testing.T) {
+	stub := newMusterStub(t, "klaus-gateway", "alice@example.com", "muster-sub")
+	l := newTestLinker(t, stub, NewMemStore(), nil)
+
+	rec := httptest.NewRecorder()
+	l.HandleLink(rec, httptest.NewRequest(http.MethodGet, LinkPath+"?u="+url.QueryEscape(l.SignState("U1")), nil))
+	require.Equal(t, http.StatusFound, rec.Code)
+	authorize, err := url.Parse(rec.Header().Get("Location"))
+	require.NoError(t, err)
+	require.Subset(t, strings.Fields(authorize.Query().Get("scope")), []string{"openid", "groups", "offline_access"})
+}
+
 // A sign-in whose callback reaches another process than its authorize
 // redirect did (a restart between the two, another replica) completes: the
 // verifier the callback presents is the one the challenge was made from.
@@ -654,6 +670,19 @@ func TestCallbackRejectsEmailMismatch(t *testing.T) {
 	driveCallback(t, l, "U1", http.StatusForbidden)
 	_, gerr := store.Get("U1")
 	require.ErrorIs(t, gerr, ErrNotLinked, "a spoofed email must not create a link")
+}
+
+func TestCallbackRejectsUnverifiedEmail(t *testing.T) {
+	stub := newMusterStub(t, "klaus-gateway", "alice@example.com", "muster-sub")
+	stub.unverifiedEmail = true
+	store := NewMemStore()
+	l := newTestLinker(t, stub, store, func(context.Context, string) (string, error) {
+		return "alice@example.com", nil // Slack and muster agree, but muster has not verified it
+	})
+
+	driveCallback(t, l, "U1", http.StatusBadGateway)
+	_, gerr := store.Get("U1")
+	require.ErrorIs(t, gerr, ErrNotLinked, "an unverified email must not create a link")
 }
 
 // driveCallback runs HandleLink (to seed PKCE pending state) then HandleCallback

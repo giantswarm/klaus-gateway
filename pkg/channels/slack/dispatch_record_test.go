@@ -78,6 +78,7 @@ func TestDispatch_EmitsTurnDispatchRecord(t *testing.T) {
 	}
 	require.NoError(t, a.Start(t.Context(), &fakeGateway{Facade: newMemoryRecorder()}))
 	t.Cleanup(func() { _ = a.Stop(context.Background()) })
+	require.NoError(t, a.bindThreadAgent(t.Context(), "D1", "T1", "agent-1"))
 
 	msg := channels.InboundMessage{Channel: ChannelName, ChannelID: "D1", ThreadID: "T1", MessageID: "M1", Subject: "U1", Text: "hello"}
 	require.NoError(t, a.dispatch(t.Context(), msg, "D1"))
@@ -90,13 +91,14 @@ func TestDispatch_EmitsTurnDispatchRecord(t *testing.T) {
 	require.Equal(t, "T1", rec["thread_id"])
 	require.Equal(t, "M1", rec["message_id"])
 	require.Equal(t, false, rec["resume"])
-	require.Equal(t, agentSourceDefault, rec["agent_source"])
+	require.Equal(t, agentSourceThread, rec["agent_source"])
 }
 
 // The agent_source field marks how the turn's agent was chosen: a message that
 // already carries its agent (a picker submission replayed after a sign-in)
-// logs "replay", a reply inheriting its conversation's binding logs "thread",
-// everything else "default".
+// logs "replay", a reply inheriting its conversation's binding logs "thread".
+// A message in a thread that has no conversation is no turn: it is answered
+// with the help, logged as no_conversation, and dispatches nothing.
 func TestDispatch_TurnDispatchRecord_AgentSource(t *testing.T) {
 	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -130,7 +132,7 @@ func TestDispatch_TurnDispatchRecord_AgentSource(t *testing.T) {
 
 	t.Run("thread", func(t *testing.T) {
 		a, h := newRecorded(t)
-		a.bindThreadAgent(t.Context(), "C1", "T2", "sre-agent")
+		require.NoError(t, a.bindThreadAgent(t.Context(), "C1", "T2", "sre-agent"))
 		msg := channels.InboundMessage{Channel: ChannelName, ChannelID: "C1", ThreadID: "T2", MessageID: "M2", Subject: "U1", Text: "reply"}
 		require.NoError(t, a.dispatch(t.Context(), msg, "C1"))
 		rec := h.find("record", "turn_dispatch")
@@ -139,14 +141,16 @@ func TestDispatch_TurnDispatchRecord_AgentSource(t *testing.T) {
 		require.Equal(t, "sre-agent", rec["agent"])
 	})
 
-	t.Run("default", func(t *testing.T) {
+	t.Run("no conversation", func(t *testing.T) {
 		a, h := newRecorded(t)
 		msg := channels.InboundMessage{Channel: ChannelName, ChannelID: "C1", ThreadID: "T3", MessageID: "T3", Subject: "U1", Text: "hi"}
 		require.NoError(t, a.dispatch(t.Context(), msg, "C1"))
-		rec := h.find("record", "turn_dispatch")
+		require.Nil(t, h.find("record", "turn_dispatch"), "nothing is dispatched on the default agent")
+		rec := h.find("record", "no_conversation")
 		require.NotNil(t, rec)
-		require.Equal(t, agentSourceDefault, rec["agent_source"])
-		require.Equal(t, "agent-1", rec["agent"])
+		require.Equal(t, "T3", rec["thread_id"])
+		_, bound := a.threadAgentBinding(t.Context(), "C1", "T3")
+		require.False(t, bound, "the thread is left free for the picker")
 	})
 }
 
@@ -170,6 +174,7 @@ func TestDispatch_TurnDispatchRecord_NoIdentitySource(t *testing.T) {
 	require.NoError(t, a.Start(t.Context(), &fakeGateway{Facade: newMemoryRecorder()}))
 	t.Cleanup(func() { _ = a.Stop(context.Background()) })
 
+	require.NoError(t, a.bindThreadAgent(t.Context(), "D1", "T2", "agent-1"))
 	msg := channels.InboundMessage{Channel: ChannelName, ChannelID: "D1", ThreadID: "T2", MessageID: "M2", Subject: "U2", Text: "hi"}
 	require.NoError(t, a.dispatch(t.Context(), msg, "D1"))
 
@@ -198,6 +203,7 @@ func TestDispatch_TurnDispatchRecord_Resume(t *testing.T) {
 	require.NoError(t, a.Start(t.Context(), &fakeGateway{Facade: newMemoryRecorder()}))
 	t.Cleanup(func() { _ = a.Stop(context.Background()) })
 
+	require.NoError(t, a.bindThreadAgent(t.Context(), "D1", "T3", "agent-1"))
 	a.storePendingTask("T3", &pendingTask{TaskID: "task-9", AgentRef: "agent-1", Channel: "D1", ChannelID: "D1"})
 
 	msg := channels.InboundMessage{Channel: ChannelName, ChannelID: "D1", ThreadID: "T3", MessageID: "M3", Subject: "U3", Text: "approve"}

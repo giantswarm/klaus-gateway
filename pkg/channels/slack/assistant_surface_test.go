@@ -77,6 +77,7 @@ func TestAssistantSurface_ContextChangedNoOp(t *testing.T) {
 	require.Zero(t, gw.dispatchCount(), "context changes must not dispatch")
 	require.Empty(t, fake.pathCalls("chat.postMessage"))
 
+	gw.openConversation(t, "D1", "113.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "hello", "113.000"))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 20*time.Millisecond, "a DM after context changes still dispatches")

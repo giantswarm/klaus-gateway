@@ -527,3 +527,23 @@ func TestMapA2AEvent_CanonicalConfirmationPartIsNotToolActivity(t *testing.T) {
 	}
 	require.Empty(t, newEventMapper().deltas(ev))
 }
+
+// A failed task's status message carries kagent's class of the failure; the
+// turn's error keeps it beside the message's text.
+func TestMapTaskStatus_FailureReason(t *testing.T) {
+	deltas := mapTaskStatus("t1", a2apkg.TaskStatus{
+		State: a2apkg.TaskStateFailed,
+		Message: &a2apkg.Message{
+			Parts:    []*a2apkg.Part{a2apkg.NewTextPart("Codex execution failed: credential provider muster.giantswarm.io denied: the person holds no grant for the provider")},
+			Metadata: map[string]any{mdFailureReason: "connection_required"},
+		},
+	}, nil)
+	require.Len(t, deltas, 1)
+	require.True(t, isTaskFailure(deltas[0].Err))
+	require.Contains(t, deltas[0].Err.Error(), "Codex execution failed")
+	require.Equal(t, FailureConnectionRequired, ClassifyFailure(deltas[0].Err))
+	require.False(t, ClassifyFailure(deltas[0].Err).Retryable())
+
+	noReason := mapTaskStatus("t1", a2apkg.TaskStatus{State: a2apkg.TaskStateFailed}, nil)
+	require.Equal(t, FailureUnknown, ClassifyFailure(noReason[0].Err), "a task without a reason or a message stays unknown")
+}

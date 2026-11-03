@@ -28,7 +28,8 @@ A single ask_user question picks its layout by choice count, select mode, and la
 | >20, or any question >10 / label >75 | — | — | — | numbered text + free-text reply | reply |
 
 Generic (non-`ask_user`) tool approvals always render as the approval card, with Approve and
-Deny buttons.
+Deny buttons. A task paused on an MCP server's sign-in link renders as the sign-in prompt of
+section 7.
 Any prompt can also be answered by replying in-thread (a reply that opens with a mention of
 someone other than the bot is not for the agent and answers nothing); a reply resolves the paused task the
 same way a click does. Only a permitted user (the thread initiator or a granted collaborator)
@@ -349,6 +350,26 @@ carries the completion state in its `value`, so a click on it is replaced throug
 
 <img width="721" height="159" alt="image" src="https://github.com/user-attachments/assets/64649be1-74d6-4012-86d2-14f8d0998a84" />
 
+### Sign-in a paused task waits on
+
+A runtime that relays MCP URL elicitations (the claude and codex Harnesses, the Go ADK) pauses
+the task at `input-required` with the server's sign-in link (`url_elicitation_request`, see
+`docs/kagent-a2a.md`) instead of answering with a login text. The server named is the MCP
+server that asked, muster for a platform agent; what needs the sign-in is in its message
+("Sign in to github to continue."). The link is minted for the person whose turn asked, so the
+prompt goes to them alone, ephemeral, and the thread gets "Waiting for @Jose to sign in (asked
+by *muster*).". The prompt reads "*muster* asks you to sign in so the agent can continue.",
+the server's message quoted under it, then "The agent picks up here once you are done.", with
+*Sign in* (`connector_connect`, the link with the post-login redirect), *Authorize all* where
+offered, and *Not now* (`action_id` `sign_in_decline`, `value` the thread and the paused task).
+The link's landing resumes the paused task with `accept` ("I've signed in, continue"): the
+agent retries the call, which now runs, and the prompt reads "Signed in.". *Not now* resumes it
+with `decline`, and the prompt reads "Not signed in. The agent continues without it." A reply
+in the thread answers it too: a refusal (`no`, `cancel`, `not now`) declines, anything else
+accepts. The thread line then reads "@Jose signed in." or "@Jose did not sign in.". Without a
+public base URL the prompt ends "Reply here once you are done." instead. A landing for a task
+no longer paused on that sign-in resumes nothing.
+
 Where the gateway can read the person's grant status (see the authorize modal below), every
 muster server's Connect prompt carries *Authorize all* after its Connect button (`action_id`
 `authorize_all_open`, `value` the prompt's completion state, or empty). A workspace
@@ -635,8 +656,10 @@ between Agent and Prompt, and the agent input gains `"dispatch_action": true`: a
 reaches the gateway, which redraws the view (`views.update` with the view's `hash`) with the
 new agent's preset under the next `block_id` revision, because Slack keeps a person's pick in an
 input whose `block_id` stays. The select is optional; **No workspace** (`*none*`) comes first,
-in a group of its own when the workspaces are grouped by Organization; the hint names the agent
-when the preset is the workspace last used with it:
+in a group of its own when the workspaces are grouped by Organization. The preset is the
+person's last choice with the agent, else the agent's default workspace, else **No workspace**;
+the hint names the agent when the preset is the last choice ("Last used with SRE Agent.") or its
+default ("The default of SRE Agent."):
 
 ```json
 {
@@ -699,7 +722,7 @@ writes nothing:
 
 | when | notice |
 |---|---|
-| a reply without a mention, and not opening with someone else's mention, in a thread whose conversation ended after `routing.threadTTL` (the row is still in the store, at twice the lifetime) | "This conversation ended after 90 days without messages. Mention the bot to start a new one." (the configured lifetime is named) |
+| a reply without a mention, and not opening with someone else's mention, in a thread whose conversation ended after `routing.threadTTL` (the row is still in the store, at twice the lifetime) | "This conversation ended after 90 days without messages. Start a new one with `/swarmgeist`, or with *Ask an agent here* on a message in this thread." (the configured lifetime and slash command are named) |
 
 ## 13. Decision (a question to a person or a team)
 
@@ -800,6 +823,17 @@ a thread reply in a DM) is answered by the outcome:
 A click on a prompt
 that is no longer open is answered with an ephemeral that it expired, and the message is
 rewritten to say so.
+
+An agent with a default workspace gets no prompt: the default is chosen as the initiator's click
+would. Granted, the thread gets a plain note, "Working in workspace *platform*, this agent's
+default. To work in another, start with `/swarmgeist` and pick it." A provider to connect gets
+the connect prompt above, ending "Your message is kept: once connected, mention me and it
+runs." Any other denial is answered to the initiator alone, with no button and the message
+quoted back, since nothing holds it: "You cannot start in workspace *platform*, this agent's
+default: you cannot read `giantswarm/vault`, `giantswarm/keys`. Nothing was started; pick
+another workspace or *No workspace* in `/swarmgeist`.\nYour prompt:\n>…" (likewise "Cannot
+start in workspace *platform*, this agent's default, yet: …" and "Could not check workspace
+*platform*, this agent's default, right now.").
 
 ```json
 {

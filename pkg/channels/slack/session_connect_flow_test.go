@@ -135,6 +135,7 @@ func TestSessionConnect_ChannelThreadPromptsEverywhereAndRunsTheHeldMessage(t *t
 	fake, srv, logs := sessionConnectAdapter(t, gw)
 	responseSrv, capturedBody := newResponseURLCapture(t)
 
+	gw.openConversation(t, "C1", "140.000", "U1", "test-agent")
 	sendEvent(t, srv, mention("U1", "how many nodes in gazelle?", "140.000", ""))
 
 	var buttonURL, stateID string
@@ -223,6 +224,7 @@ func TestSessionConnect_RepromptRefreshesTheCard(t *testing.T) {
 	gw := &stubGateway{dispatchErr: sessionConnectChallenge()}
 	fake, srv, _ := sessionConnectAdapter(t, gw)
 
+	gw.openConversation(t, "C1", "150.000", "U1", "test-agent")
 	sendEvent(t, srv, mention("U1", "how many nodes in gazelle?", "150.000", ""))
 	require.Eventually(t, func() bool { _, _, ok := connectButton(fake); return ok },
 		flowWait, 20*time.Millisecond, "the first prompt is posted")
@@ -254,6 +256,7 @@ func TestSessionConnect_NextTurnSettlesTheSurfaces(t *testing.T) {
 	gw.dispatchErr = sessionConnectChallenge()
 	fake, srv, _ := sessionConnectAdapter(t, gw)
 
+	gw.openConversation(t, "C1", "170.000", "U1", "test-agent")
 	sendEvent(t, srv, mention("U1", "how many nodes in gazelle?", "170.000", ""))
 	var stateID string
 	require.Eventually(t, func() bool {
@@ -295,6 +298,7 @@ func TestSessionConnect_DMPostsTheCardAsAMessage(t *testing.T) {
 	fake, srv := decoratedConnectorAdapter(t, gw)
 	responseSrv, capturedBody := newResponseURLCapture(t)
 
+	gw.openConversation(t, "D1", "160.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "how many nodes in gazelle?", "160.000"))
 
 	var firstURL string
@@ -349,6 +353,7 @@ func TestSessionConnect_WithoutLandingSaysToResend(t *testing.T) {
 		a.OBO = &fakeOBO{linkedUser: "U1", token: "tok"}
 	})
 
+	gw.openConversation(t, "D1", "141.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "how many nodes in gazelle?", "141.000"))
 
 	var buttonURL, value string
@@ -378,6 +383,7 @@ func TestSessionConnect_CollaboratorIsToldTheOwnerMustConnect(t *testing.T) {
 		a.PublicBaseURL = "https://gw.example"
 	})
 
+	gw.openConversation(t, "C1", "100.000", "U001", "test-agent")
 	sendEvent(t, srv, mention("U001", "start", "100.000", ""))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 },
 		flowWait, 50*time.Millisecond, "the initiator's turn runs")

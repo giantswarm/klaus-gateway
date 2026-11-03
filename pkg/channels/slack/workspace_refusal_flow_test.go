@@ -63,6 +63,7 @@ func newRefusalFlow(t *testing.T, opts ...func(*slackadapter.Adapter)) *refusalF
 	a, srv := newEventsAdapter(t, f.facade, api.URL, opts...)
 	f.a, f.srv = a, srv
 
+	openConversationIn(t, f.facade, "C1", "100.000", "U001", "test-agent")
 	sendEvent(t, srv, mention("U001", "<@UBOT> what failed on prod?", "100.000", ""))
 	require.Eventually(t, func() bool { return len(workspacePrompts(f.fake)) == 1 }, flowWait, 20*time.Millisecond)
 	waitThreadIdle(t, a, "100.000")

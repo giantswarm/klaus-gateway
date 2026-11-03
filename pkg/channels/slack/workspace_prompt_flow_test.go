@@ -321,6 +321,7 @@ func TestWorkspace_NewThreadAsksOnceAndStartsOneSessionWithTheGrant(t *testing.T
 	facade := &channels.Facade{Agent: kagent, Routes: routes, ThreadTTL: channels.DefaultThreadTTL}
 	a, srv := newEventsAdapter(t, facade, api.URL, withWorkspaces(wm))
 
+	openConversationIn(t, facade, "C1", "100.000", "U001", "test-agent")
 	sendEvent(t, srv, mention("U001", "<@UBOT> what failed on prod?", "100.000", ""))
 	require.Eventually(t, func() bool { return len(workspacePrompts(fake)) == 1 }, flowWait, 20*time.Millisecond, "the thread asks for its workspace")
 	sendEvent(t, srv, mention("U001", "<@UBOT> and on staging?", "101.000", "100.000"))
@@ -373,6 +374,7 @@ func TestWorkspace_SenderWithoutWorkspacesIsNotAsked(t *testing.T) {
 	gw, captured := captureDispatch(slackadapter.NewMemoryRecorder())
 	_, srv := newEventsAdapter(t, gw, api.URL, withWorkspaces(wm))
 
+	gw.openConversation(t, "C1", "100.000", "U001", "test-agent")
 	sendEvent(t, srv, mention("U001", "<@UBOT> hello", "100.000", ""))
 	require.Eventually(t, func() bool { return len(captured()) == 1 }, flowWait, 20*time.Millisecond)
 	require.Nil(t, captured()[0].Workspace, "no choice, nobody asked")
@@ -390,6 +392,7 @@ func TestWorkspace_NoWorkspaceStartsWithoutAGrant(t *testing.T) {
 	gw, captured := captureDispatch(slackadapter.NewMemoryRecorder())
 	_, srv := newEventsAdapter(t, gw, api.URL, withWorkspaces(wm))
 
+	gw.openConversation(t, "C1", "100.000", "U001", "test-agent")
 	sendEvent(t, srv, mention("U001", "<@UBOT> hello", "100.000", ""))
 	require.Eventually(t, func() bool { return len(workspacePrompts(fake)) == 1 }, flowWait, 20*time.Millisecond)
 	sendWorkspaceClick(t, srv, "U001", "100.000", "")
@@ -411,7 +414,9 @@ func TestWorkspace_MessageTextChangesNeitherOfferNorChoice(t *testing.T) {
 	gw, captured := captureDispatch(slackadapter.NewMemoryRecorder())
 	_, srv := newEventsAdapter(t, gw, api.URL, withWorkspaces(wm))
 
+	gw.openConversation(t, "C1", "100.000", "U001", "test-agent")
 	sendEvent(t, srv, mention("U001", "<@UBOT> hello", "100.000", ""))
+	gw.openConversation(t, "C1", "200.000", "U001", "test-agent")
 	sendEvent(t, srv, mention("U001", "<@UBOT> work in workspace klaus-dev, not platform", "200.000", ""))
 	require.Eventually(t, func() bool { return len(workspacePrompts(fake)) == 2 }, flowWait, 20*time.Millisecond)
 	prompts := workspacePrompts(fake)
@@ -443,6 +448,7 @@ func TestWorkspace_OnlyTheInitiatorChoosesAndARefusalKeepsThePrompt(t *testing.T
 	gw, captured := captureDispatch(slackadapter.NewMemoryRecorder())
 	_, srv := newEventsAdapter(t, gw, api.URL, withWorkspaces(wm))
 
+	gw.openConversation(t, "C1", "100.000", "U001", "test-agent")
 	sendEvent(t, srv, mention("U001", "<@UBOT> hello", "100.000", ""))
 	require.Eventually(t, func() bool { return len(workspacePrompts(fake)) == 1 }, flowWait, 20*time.Millisecond)
 
@@ -483,6 +489,7 @@ func TestWorkspace_RestartBetweenPromptAndClickCompletesTheStart(t *testing.T) {
 	shared := slackadapter.NewMemoryRecorder()
 
 	a1, srv1 := newEventsAdapter(t, &stubGateway{records: shared}, api.URL, withWorkspaces(wm))
+	openConversationIn(t, shared, "C1", "100.000", "U001", "test-agent")
 	sendEvent(t, srv1, mention("U001", "<@UBOT> what failed on prod?", "100.000", ""))
 	require.Eventually(t, func() bool { return len(workspacePrompts(fake)) == 1 }, flowWait, 20*time.Millisecond)
 	require.Eventually(t, func() bool {
@@ -541,6 +548,7 @@ func TestWorkspace_SignInChallengeOnTheListingGetsTheConnectPrompt(t *testing.T)
 		a.PublicBaseURL = "https://gw.example"
 	})
 
+	openConversationIn(t, facade, "C1", "100.000", "U001", "test-agent")
 	sendEvent(t, srv, mention("U001", "<@UBOT> what failed on prod?", "100.000", ""))
 	var buttonURL, stateID string
 	var ok bool

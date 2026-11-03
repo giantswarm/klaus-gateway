@@ -267,6 +267,14 @@ Response `201` with `id`, `channel` and the message's `ts`; `404` for a conversa
 does not hold — unknown, or quiet for 30 days. Each message, and each reply delivered, keeps the
 conversation another 30 days.
 
+### `GET /groups/{group}/members/{email}`
+
+Whether the person with `email` is in the workspace's enabled user group whose handle is `group`
+(`team-bumblebee` for `@team-bumblebee`): a service that lets a team decide asks it who is on the
+team. Response `200` with `{"member": true}` or `{"member": false}` (also for a person the
+workspace does not know); `404` when no enabled group has the handle; `502` when Slack cannot be
+asked. Needs the app's `usergroups:read` scope.
+
 ## Admin surface
 
 Served on the admin port (default `:8081`):

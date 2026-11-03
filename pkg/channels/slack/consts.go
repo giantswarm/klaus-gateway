@@ -126,6 +126,23 @@ func connectorDismissedNotice() string {
 	return fmt.Sprintf("Not asked again for %s.", spellDuration(connectorPromptCooldown))
 }
 
+// Texts of a task paused on an MCP server's sign-in link (postMCPSignInPrompt).
+// The server is the MCP server that asked, such as an MCP gateway; what needs
+// the sign-in is in its own message, quoted after the attribution.
+// signInWaitingNote names the person (a Slack user ID) and the server.
+const (
+	signInWaitingNote     = "Waiting for <@%s> to sign in (asked by *%s*)."
+	signInPromptLead      = "*%s* asks you to sign in so the agent can continue."
+	signInPromptResumes   = "The agent picks up here once you are done."
+	signInPromptManual    = "Reply here once you are done."
+	signInAcceptedLine    = "<@%s> signed in."
+	signInDeclinedLine    = "<@%s> did not sign in."
+	signInDismissedNotice = "Not signed in. The agent continues without it."
+	signInCompletedNotice = "Signed in."
+	signInResumeText      = "I've signed in, continue"
+	signInMessageMaxRunes = 500
+)
+
 // connectorResumeText is the synthetic message dispatched into the thread
 // after a connector sign-in completes, so the agent retries the blocked tools
 // without the user retyping; %s is the backend name.
@@ -216,6 +233,9 @@ const (
 	// preset is the workspace the person last started the agent with; %s is
 	// the agent's display name.
 	askAgentWorkspaceLastHint = "Last used with %s."
+	// askAgentWorkspaceDefaultHint sits under it when its preset is the
+	// agent's default workspace; %s is the agent's name.
+	askAgentWorkspaceDefaultHint = "The default of %s."
 	// askAgentWorkspacePromptQuote follows a workspace refusal sent privately
 	// after a submission: the modal is gone, so the prompt is handed back,
 	// quoted.
@@ -441,10 +461,27 @@ const (
 	workspaceConnectTail     = " Your message is kept: once connected, pick the workspace again or mention me."
 )
 
+// The answers when the agent's default workspace (the first %s) starts
+// nothing, told to the initiator alone, as the workspaceRefusedNote family
+// is: workspaceDefaultPickTail follows any but a provider to connect with
+// the slash command (%s) that starts in another workspace or none, and
+// workspaceDefaultConnectTail follows the connect prompts. Once it starts,
+// workspaceDefaultNotice names it in the thread, with the slash command
+// (%s) that picks another.
+const (
+	workspaceDefaultRefusedNote     = "You cannot start in workspace *%s*, this agent's default: you cannot read %s."
+	workspaceDefaultUnavailableNote = "Cannot start in workspace *%s*, this agent's default, yet: %s."
+	workspaceDefaultCheckFailedNote = "Could not check workspace *%s*, this agent's default, right now."
+	workspaceDefaultPickTail        = " Nothing was started; pick another workspace or *No workspace* in `%s`."
+	workspaceDefaultConnectTail     = " Your message is kept: once connected, mention me and it runs."
+	workspaceDefaultNotice          = "Working in workspace *%s*, this agent's default. To work in another, start with `%s` and pick it."
+)
+
 // The answers to a collaborator whose turn on a thread's workspace (the first
 // %s) authorize_workspace did not grant, told to them alone; the turn does not
 // run. collaboratorWorkspaceRefusedNote names the repositories they cannot
-// read (%s), collaboratorWorkspaceUnavailableNote says why the check could
+// read (%s), collaboratorWorkspaceOwnTail follows it with the slash command
+// that starts a conversation of their own (%s), collaboratorWorkspaceUnavailableNote says why the check could
 // not decide (%s), collaboratorWorkspaceCheckFailedNote is the answer when
 // nobody could be asked, and collaboratorWorkspaceConnectTail follows the
 // connect prompt, whose message is held for pendingTTL;
@@ -453,7 +490,8 @@ const (
 // initiator's
 // "allowed" on a thread with a workspace (%s).
 const (
-	collaboratorWorkspaceRefusedNote     = "This thread works in workspace *%s*, which holds repositories you cannot read: %s. The agent does not act on your messages here; mention me in a new thread to start your own."
+	collaboratorWorkspaceRefusedNote     = "This thread works in workspace *%s*, which holds repositories you cannot read: %s. The agent does not act on your messages here."
+	collaboratorWorkspaceOwnTail         = " Start your own conversation with `%s`."
 	collaboratorWorkspaceUnavailableNote = "Could not check your access to workspace *%s*, which this thread works in: %s. Your message was not passed on; send it again later."
 	collaboratorWorkspaceCheckFailedNote = "Could not check your access to workspace *%s*, which this thread works in, right now. Your message was not passed on; send it again later."
 	collaboratorWorkspaceConnectTail     = " Your message is kept for a day: once connected, mention me here and it runs."
@@ -472,7 +510,8 @@ const accessPromptExpiredNotice = "This request expired because the thread state
 
 // accessDeniedNewcomerNotice is shown (ephemerally) to a parked newcomer when
 // the thread owner declines them, closing the loop opened by the waiting ack.
-const accessDeniedNewcomerNotice = "The thread owner declined, so the agent does not act on your messages in this thread. Mention the bot in a new thread to start your own."
+// %s is the slash command, the way to start a conversation of their own.
+const accessDeniedNewcomerNotice = "The thread owner declined, so the agent does not act on your messages in this thread. Start your own conversation with `%s`."
 
 // parkedDropNotice is shown (ephemerally) to a user whose parked messages
 // overflowed the per-thread cap, so the drop is visible and the user knows to
@@ -643,12 +682,15 @@ const failedNote = "The turn failed before an answer. Send the message again to 
 // broke and whether trying again helps: a tools or platform failure was
 // already retried once and is not the person's to fix, a model error usually
 // passes (except a credentials refusal, which stays until the platform fixes
-// it), a policy refusal stays.
+// it), a policy refusal stays, and an unconnected provider account is the
+// person's to connect.
 const (
 	toolsFailedNote    = "The agent could not connect to its tools, so it did not work on your message. The problem is on the platform side, not in your message, and a retry right now does not help."
 	platformFailedNote = "The agent platform could not be reached, so the agent did not work on your message. The problem is on the platform side, not in your message, and a retry right now does not help."
 	modelFailedNote    = "The model behind this agent returned an error instead of an answer. This is usually temporary: try again in a minute."
 	policyFailedNote   = "A platform policy refused this request, so the agent did not answer it. Sending it again does not change that."
+
+	connectionRequiredNote = "Connect your ChatGPT subscription in the Dev Portal to talk to this agent, then send the message again."
 
 	modelAuthFailedNote = "The model provider refused the platform's credentials, so the agent did not work on your message. The problem is on the platform side, not in your message, and a retry does not help."
 )
@@ -736,6 +778,8 @@ func failureNote(err error) string {
 		return modelFailedNote
 	case channels.FailurePolicy:
 		return policyFailedNote
+	case channels.FailureConnectionRequired:
+		return connectionRequiredNote
 	}
 	return failedNote
 }
@@ -759,6 +803,8 @@ func interruptedFailureNote(err error) string {
 		cause = "a model error"
 	case channels.FailurePolicy:
 		cause = "a policy refusal"
+	case channels.FailureConnectionRequired:
+		cause = "an unconnected ChatGPT subscription"
 	}
 	return fmt.Sprintf(interruptedNote, cause)
 }
@@ -805,10 +851,11 @@ const resumeStartingFreshNotice = "The earlier conversation in this thread was n
 
 // threadClosedNotice tells the author of a reply in a thread whose
 // conversation ended — no message for the whole thread lifetime — why nobody
-// answers, and how to start again. Ephemeral: the rest of the thread does not
-// need it.
-func threadClosedNotice(lifetime time.Duration) string {
-	return fmt.Sprintf("This conversation ended after %s without messages. Mention the bot to start a new one.", spellDuration(lifetime))
+// answers, and how to start again: the slash command, or the shortcut on a
+// message of this thread, which the picker takes since the thread has no agent
+// any more. Ephemeral: the rest of the thread does not need it.
+func threadClosedNotice(lifetime time.Duration, slashCommand string) string {
+	return fmt.Sprintf("This conversation ended after %s without messages. Start a new one with `%s`, or with *%s* on a message in this thread.", spellDuration(lifetime), slashCommand, helpAskAgentShortcut)
 }
 
 // spellDuration writes a thread lifetime the way the notice reads it, and
@@ -843,14 +890,16 @@ func countOf(n int64, unit string) string {
 
 // The channel intro is posted once when the bot is added to a channel, and the
 // assistant greeting into a user's assistant pane the first time they open it
-// (app_home_opened, Messages tab). Both describe the product, name the agent a
-// plain mention reaches, and say how to reach the commands and the roster.
-// The %[1]s verbs take the bot's mention, %[2]s the default agent's name.
+// (app_home_opened, Messages tab). Both describe the product, say how a
+// conversation starts (the slash command, whose picker preselects the default
+// agent; in a channel also the shortcut), and say how to reach the commands
+// and the roster. The %[1]s verbs take the bot's mention, %[2]s the default
+// agent's name, %[3]s the slash command, %[4]s the shortcut's name.
 const (
-	channelIntroText    = "Swarmgeist connects this channel to Giant Swarm's agents. Mention %[1]s to start a thread with *%[2]s*, or mention it with `agents` to pick another agent. Agents work with your permissions and ask before making changes."
+	channelIntroText    = "Swarmgeist connects this channel to Giant Swarm's agents. Start a conversation with `%[3]s`, which lets you pick an agent (*%[2]s* is preselected), or with *%[4]s* on a message to start one in its thread. Agents work with your permissions and ask before making changes."
 	channelIntroContext = "%[1]s `help` lists the commands"
 
-	assistantGreetingText    = "Ask about a cluster, an alert or a deployment. Swarmgeist routes each conversation to an agent, *%[2]s* by default. Agents work with your permissions and ask before making changes."
+	assistantGreetingText    = "Ask about a cluster, an alert or a deployment. Swarmgeist routes each conversation to an agent: start one with `%[3]s`, which lets you pick the agent (*%[2]s* is preselected). Agents work with your permissions and ask before making changes."
 	assistantGreetingContext = "%[1]s `help` lists the commands · %[1]s `agents` lists the agents"
 )
 
@@ -859,8 +908,17 @@ const (
 const homeGreetingTTL = 24 * time.Hour
 
 // dmRedirect is posted when a user DMs the bot while DMs are in redirect mode,
-// pointing them to a channel instead.
-const dmRedirect = "Swarmgeist works in channels, not in direct messages. Invite it to a channel and mention `@Swarmgeist` there to start."
+// pointing them to a channel instead; %s is the slash command.
+const dmRedirect = "Swarmgeist works in channels, not in direct messages. Invite it to a channel and start a conversation there with `%s`."
+
+// defaultSlashCommand is the slash command deploy/slack/manifest.yaml
+// declares. The gateway learns the command's name from no Slack API (Slack
+// sends it only with an invocation), so the help and the notices name the
+// configured one (Adapter.SlashCommand), and this one when none is set — an
+// Adapter built without main.go, as the tests do. config.DefaultSlashCommand
+// is the same value for the flag; the config package is a leaf and cannot
+// import this one.
+const defaultSlashCommand = "/swarmgeist"
 
 // channelNotServed tells a user the channel is outside the configured
 // allowlist: ephemerally on a mention, through the response_url on a slash
@@ -929,6 +987,9 @@ const (
 	bkOptions   = "options"
 	bkBlockID   = "block_id"
 	bkAccessory = "accessory"
+	// bkVerbatim on a mrkdwn text object stops Slack from turning URL-like
+	// text (a host, host:port) into links.
+	bkVerbatim = "verbatim"
 
 	// Modal / input block keys (the agent picker).
 	bkCallbackID      = "callback_id"

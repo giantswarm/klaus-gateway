@@ -9,7 +9,53 @@ that adds notes heads them `## Next — <title>`; the change that prepares a rel
 renames each `Next` to that version, and `make check-upgrade-notes` refuses a
 stable release tag while a `Next` section with content is left.
 
-## Next — the roster spans every namespace the caller may list
+## 4.15.0 — a team's members from its Slack user group
+
+- `GET /groups/{group}/members/{email}` needs the app's `usergroups:read` scope, which `deploy/slack/manifest.yaml` now lists: update the installed app's manifest and re-install it once. Until then the endpoint answers `502` (`missing_scope`) and nothing else changes.
+
+## 4.13.1 — a mention or a new chat starts no conversation
+
+- A conversation starts only through the agent picker: the app's slash command (`/swarmgeist`
+  in the manifest) and the **Ask an agent here** message shortcut. A mention of the bot outside a
+  conversation, and the first message of a new chat in the assistant pane, are answered with the
+  help, which says so. Every installation's Slack app must therefore carry the slash command and
+  the shortcut of `deploy/slack/manifest.yaml`; an app created from a manifest older than 1.2.0
+  has neither, and people there have no way to start a conversation until the manifest is
+  re-synced at api.slack.com/apps (the `commands` scope is added on re-install).
+- The help, the intro, the greeting and the notices name the slash command as the gateway is
+  told it: `slack.slashCommand`, `/swarmgeist` by default. An app whose command is named
+  differently sets it, or the help names a command Slack does not run. agent-platform forwards
+  the `klausGateway` block verbatim, so an installation that needs the key sets it there once
+  agent-platform's schema admits it.
+- The manifest's suggested prompts now carry the slash command (`/swarmgeist How are my clusters
+  doing right now?`): re-sync the manifest, or a click on an old prompt sends a plain message
+  and gets the help. Slack runs a prompt that starts with `/` as a command, as `docs/invariants.md`
+  records from a live test; the opened picker with the question filled in is to be confirmed on
+  the first installation that re-syncs.
+- Nothing else to configure: `a2a.defaultAgent` is still the agent the picker preselects,
+  `slack.channelMode`, `slack.channelAllowlist` and `slack.dmMode` still gate where the command
+  and the shortcut work, and `slack.contextBotIDs` and `slack.contextBotNames` still decide
+  which bots' posts the shortcut's thread read hands to the agent.
+
+## 4.10.0 — the sign-in asks for `groups`
+
+- The muster sign-in asks for `openid profile email groups offline_access`; the gateway's client
+  metadata document (`/auth/slack/client.json`) lists the same scopes. The kagent controller reads
+  the `groups` claim of the id_token the gateway forwards; without it, the controller reviews only
+  `system:authenticated` and the person sees only the platform tenant's agents. Nothing to configure:
+  the scopes are not a setting.
+- Existing links keep working, and nobody has to sign in again because of this release. A refresh
+  sends no scope: muster refreshes the Dex token of the original sign-in, and Dex keeps that
+  sign-in's scopes. A link carries `groups` from its next sign-in on. Links made through a muster
+  whose Dex scopes already include `groups` (muster's own default) carry it today.
+- A person whose link lacks `groups` sees only the platform tenant's agents in the roster, or the
+  refusal "You cannot use *X* (organization …)" on an agent of their organization. They mention the
+  bot with `logout`, then sign in again.
+- muster caches the client metadata document (5 minutes by default). While the rollout runs and up to
+  that cache's lifetime after it, a sign-in can be refused with `invalid_scope`, because muster still
+  holds the old document without `groups`. Signing in again after the cache expired works.
+
+## 4.10.0 — the roster spans every namespace the caller may list
 
 - The Slack roster and the agent picker list the Agents of every namespace the kagent
   controller lets the person list, not only `a2a.namespace`. With the controller's

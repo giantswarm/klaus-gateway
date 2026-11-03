@@ -340,6 +340,7 @@ func TestRoster_BoundThreadListsWithoutButtons(t *testing.T) {
 	gw, _ := capturingGateway()
 	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, channelMode, withSelection(pickerRoster(), pickerCards()))
 
+	gw.openConversation(t, "C1", "100.000", "U1", "test-agent")
 	sendEvent(t, srv, mention("U1", "<@UBOT> start here", "100.000", ""))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 20*time.Millisecond)
 
@@ -364,6 +365,7 @@ func TestRoster_SelectRefusalLeavesTheRoster(t *testing.T) {
 	gw, _ := capturingGateway()
 	_, srv := newEventsAdapter(t, gw, api.URL, channelMode, withSelection(pickerRoster(), pickerCards()))
 
+	gw.openConversation(t, "C1", "100.000", "U1", "test-agent")
 	sendEvent(t, srv, mention("U1", "<@UBOT> start here", "100.000", ""))
 	require.Eventually(t, func() bool { return gw.dispatchCount() == 1 }, flowWait, 20*time.Millisecond)
 

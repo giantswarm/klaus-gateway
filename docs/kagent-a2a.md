@@ -66,9 +66,12 @@ references:
   carries none (falling back to `a2a.fallbackIconUrlTemplate` with `{agent}` replaced by the
   technical name); description and `modelConfig` from the referenced template, or from the
   embedded one;
-- readiness from the Agent's `status.conditions`: an Agent is offered when its `Ready`
-  condition is `True`, which the controller sets once it has compiled a revision a Session can
-  be created from. An Agent that is not ready is not offered; selecting it by name is refused
+- readiness from the Agent's status: an Agent is offered once it has a
+  `status.latestSuccessfulRevision`, the revision the controller creates new Sessions from. It
+  stays offered while a newer revision prepares (`Ready=False`, `ActorTemplatePending`, after an
+  Agent spec or EgressPolicy edit), as the kagent UI shows it "updating". An Agent without one is
+  offered when its `Ready` condition is `True`. An Agent that never had a ready revision is not
+  offered; selecting it by name is refused
   with the condition's message (`Agent <name> is not ready: <message>`) in the gateway's log,
   and the channel shows its unknown-agent notice with the roster.
 
@@ -104,7 +107,9 @@ thread to exactly one session:
    channelID, "", threadID, agentRef`, followed by the workspace's namespace and name when the
    thread chose one) and the `sessionName`, for a thread that chose a workspace the
    `workspaceGrant` `authorize_workspace` answered the initiator (a Session keyed to a
-   workspace is never started without it), and no `message`: without one `start_session`
+   workspace is never started without it), `noWorkspace: true` for every other (agent-manager
+   would otherwise start it in the Agent's default workspace, which the gateway chooses itself,
+   as the person, with a grant), and no `message`: without one `start_session`
    only creates the session and answers `{session}`, and the gateway sends the turn itself,
    attachments included, over A2A as on every later turn. The tool is
    `<a2a.agentManagerToolsPrefix>start_session`, `x_agent-manager_start_session` by default.
@@ -192,16 +197,20 @@ typed payload under the extension URI in its metadata:
 
 - `tool_approval_request` — `hint`, `tools[]` (`id`, `call_id`, `name`, `args`), optionally
   `nested` (a request propagated from a sub-agent, decided on the child's tools);
-- `ask_user_request` — `id`, `questions[]` (`question`, `choices`, `multiple`).
+- `ask_user_request` — `id`, `questions[]` (`question`, `choices`, `multiple`);
+- `url_elicitation_request` — `id`, `server`, `message`, `url`, `elicitation_id`: an MCP
+  server's URL elicitation, such as muster's sign-in link for a server the person has not
+  connected.
 
 `pkg/channels` parses that payload into the `HitlPrompt` the channels render (Approve/Deny,
 a choice widget, a form), and the message's text part is the agent's hint. The channel's
 answer is a `HitlDecision`; the gateway turns it into the matching response — one approval per
 requested tool (all approved or all rejected together, the reason on a rejection), or the
-positional `ask_user_response` under the request's correlation id — by reading the paused task
+positional `ask_user_response` under the request's correlation id, or a
+`url_elicitation_response` with `accept` (the person signed in) or `decline` — by reading the paused task
 (`GetTask`) and building the payload against the request it is paused on. The decision travels
 as the HITL payload of a message that **carries the paused task's id**, so the task resumes in
-place and nothing is left waiting at `input-required`.
+place and nothing is left waiting at `input-required` or `auth-required`.
 
 ## Stop
 

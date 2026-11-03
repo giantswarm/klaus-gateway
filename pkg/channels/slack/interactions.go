@@ -276,6 +276,9 @@ func (a *Adapter) routeInteraction(ctx context.Context, payload interactionPaylo
 	case connectorDismiss:
 		a.handleConnectorDismiss(ctx, payload.User.ID, action.Value, payload.Message.ThreadTS, payload.ResponseURL)
 		return
+	case signInDecline:
+		a.handleSignInDecline(ctx, payload.User.ID, action.Value, payload.ResponseURL)
+		return
 	case authorizeAllOpen:
 		a.openAuthorizeModal(ctx, payload.User.ID, payload.TriggerID, action.Value)
 		return
@@ -294,7 +297,7 @@ func (a *Adapter) routeInteraction(ctx context.Context, payload interactionPaylo
 		// prompt later, so it is recorded under the button's completion state.
 		a.handleConnectorConnect(ctx, payload.User.ID, action.Value, payload.ResponseURL)
 		return
-	case teamReviewOpen:
+	case teamReviewOpen, refusalOpenAgent:
 		// URL button: the browser opens the link itself.
 		return
 	case teamReviewApprove:
@@ -416,7 +419,7 @@ func (a *Adapter) handleConnectorConnect(ctx context.Context, slackUser, stateID
 		return
 	}
 	if rewriteNow {
-		if err := respondURL(ctx, responseURL, entry.threadTS, connectorSignedInNotice(entry.server)); err != nil {
+		if err := respondURL(ctx, responseURL, entry.threadTS, entry.signedInNotice()); err != nil {
 			a.Logger.Warn("slack: rewrite connector prompt after sign-in failed", "user", slackUser, "server", entry.server, "error", err)
 		}
 	}
@@ -479,7 +482,7 @@ func (a *Adapter) handleAccessDecision(ctx context.Context, slackChannel, thread
 			noticeChannel = parked[0].slackChannel
 		}
 		if noticeChannel != "" {
-			if err := a.apiClient().postEphemeralText(ctx, noticeChannel, newcomerID, threadID, accessDeniedNewcomerNotice); err != nil {
+			if err := a.apiClient().postEphemeralText(ctx, noticeChannel, newcomerID, threadID, fmt.Sprintf(accessDeniedNewcomerNotice, a.slashCommand())); err != nil {
 				a.Logger.Warn("slack: post access denied notice failed", "thread", threadID, "newcomer", newcomerID, "error", err)
 			}
 		}
@@ -509,7 +512,7 @@ func (a *Adapter) handleAccessDecision(ctx context.Context, slackChannel, thread
 	for _, req := range parked {
 		if err := a.replayDispatch(ctx, req.msg, req.slackChannel); err != nil && !errors.Is(err, context.Canceled) {
 			a.Logger.Log(ctx, failureLogLevel(err), "slack: replay after access grant failed",
-				"thread", threadID, "user", newcomerID, "error", err)
+				"thread", threadID, "user", newcomerID, "failure_class", channels.ClassifyFailure(err), "error", err)
 			a.postReplayFailureNote(ctx, req.slackChannel, req.msg.ThreadID, err)
 		}
 	}

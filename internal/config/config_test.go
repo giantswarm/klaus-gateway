@@ -149,6 +149,18 @@ func TestValidate_SlackSurfaces(t *testing.T) {
 		require.NoError(t, cfg.Validate(), "DM-only deployments stay valid")
 	})
 
+	t.Run("slash command is a slash and a name", func(t *testing.T) {
+		require.Equal(t, "/swarmgeist", base.Slack.SlashCommand, "the manifest's command is the default")
+		for _, bad := range []string{"", "swarmgeist", "/", "/swarm geist"} {
+			cfg := base
+			cfg.Slack.SlashCommand = bad
+			require.Error(t, cfg.Validate(), "the help would name a command Slack does not run: %q", bad)
+		}
+		cfg := base
+		cfg.Slack.SlashCommand = "/agent"
+		require.NoError(t, cfg.Validate())
+	})
+
 	t.Run("modes not validated when slack is disabled", func(t *testing.T) {
 		cfg := base
 		cfg.Slack.Enabled = false
@@ -163,9 +175,11 @@ func TestLoad_SlackSurfaceEnv(t *testing.T) {
 	t.Setenv("KLAUS_GATEWAY_SLACK_CHANNEL_ALLOWLIST", "C1, C2,,C3 ")
 	t.Setenv("KLAUS_GATEWAY_SLACK_CONTEXT_BOT_IDS", "B01ALERTS, B02PAGER")
 	t.Setenv("KLAUS_GATEWAY_SLACK_CONTEXT_BOT_NAMES", "*-alertmanager, incident.io")
+	t.Setenv("KLAUS_GATEWAY_SLACK_SLASH_COMMAND", "/agent")
 
 	cfg, err := config.Load(nil)
 	require.NoError(t, err)
+	require.Equal(t, "/agent", cfg.Slack.SlashCommand)
 	require.Equal(t, config.DMModeRedirect, cfg.Slack.DMMode)
 	require.Equal(t, config.ChannelModeAllowlist, cfg.Slack.ChannelMode)
 	require.Equal(t, []string{"C1", "C2", "C3"}, cfg.Slack.ChannelAllowlist)

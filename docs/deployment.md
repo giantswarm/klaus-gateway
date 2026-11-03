@@ -123,8 +123,9 @@ how much of its reply has landed (continued, not repeated, after a restart, see
 initiator, grants, the Session and its in-flight task are one row, with one sliding
 lifetime — `routing.threadTTL` (`--thread-ttl`, 90 days by default; `0` never expires) —
 refreshed on every turn. While the thread lives, the initiator and the people they allowed reply
-without mentioning the bot again, and after that long of silence the conversation ends: the next
-mention starts it over with a new initiator and no grants (what the agent still remembers is
+without mentioning the bot again, and after that long of silence the conversation ends: a mention
+gets the help, and the **Ask an agent here** shortcut starts the thread over with a new initiator
+and no grants (what the agent still remembers is
 the controller's call, see [channels-slack.md](channels-slack.md#threads-and-conversations)). The
 row itself is kept for **twice** the lifetime (180 days by default), so a reply without a mention
 in a thread whose conversation ended gets one private line saying so instead of silence; past
@@ -225,9 +226,9 @@ binding and the task with it. Installations with a Slack channel should run `val
 lies inside a mounted volume. On a persistent store a restarted gateway also keeps each Slack
 thread's agent, initiator and grants — for `routing.threadTTL` (90 days by default) of silence,
 after which the conversation has ended on every store: a reply without a mention gets the notice
-while the row lasts (twice the lifetime), and past that the thread is forgotten. On `memory` the
-thread starts fresh at each restart, and the first person to mention the bot becomes its
-initiator.
+while the row lasts (twice the lifetime), and past that the thread is forgotten. On `memory` every
+conversation is lost at each restart: a plain reply in one gets no answer, a mention gets the help,
+and the thread is free for the shortcut to open again.
 
 ## Observability
 
@@ -247,7 +248,8 @@ ServiceMonitor). Beside the public mux's `klaus_gateway_requests_total` /
   told why). A `failed` or `send_failed` turn carries what broke as
   `failure_class`: `tools` (the agent's MCP tool set), `platform` (the connection to the
   controller or the runtime), `model` (the model or its provider), `policy` (a gateway policy
-  refused it) or `unknown`; every other turn has none. One person's model error is noise; a
+  refused it), `connection_required` (the person has not connected the provider account the
+  agent's model runs on, such as their ChatGPT subscription) or `unknown`; every other turn has none. One person's model error is noise; a
   burst of one class across people is an outage of that part of the platform, which
   `sum by (failure_class) (increase(klaus_gateway_turn_total{outcome=~"failed|send_failed"}[10m]))`
   shows (see [channels-slack.md](channels-slack.md#restarts-and-stop) for what each class tells

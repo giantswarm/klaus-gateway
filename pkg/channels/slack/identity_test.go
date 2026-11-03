@@ -47,6 +47,7 @@ func TestChat_IsStaleAndAReplyRoutesAsReject(t *testing.T) {
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL) // DM-only default
 
 	// Turn 1: the tool prompt surfaces for approval.
+	gw.openConversation(t, "D1", "400.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "clean up configmaps", "400.000"))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Approval required")
@@ -85,8 +86,9 @@ func usernamesOf(calls []recordedCall) []string {
 
 // awaitAgentReply drives one DM turn and waits for the agent's answer to be
 // streamed into the thread.
-func awaitAgentReply(t *testing.T, srv *httptest.Server, fake *fakeSlackAPI, ts string) {
+func awaitAgentReply(t *testing.T, a *slackadapter.Adapter, srv *httptest.Server, fake *fakeSlackAPI, gw *stubGateway, ts string) {
 	t.Helper()
+	gw.openConversation(t, "D1", ts, "U1", a.DefaultAgent)
 	sendEvent(t, srv, dmEvent("U1", "status?", ts))
 	require.Eventually(t, func() bool {
 		return strings.Contains(fake.streamedText(), "all good")
@@ -102,11 +104,12 @@ func replyGateway() *stubGateway {
 // it). Omitting icon_url when it has no icon keeps the app's own icon.
 func TestBranding_AgentReplyCarriesDisplayName(t *testing.T) {
 	fake := newFakeSlackAPI()
-	_, srv := newEventsAdapter(t, replyGateway(), fake.server(t).URL, func(a *slackadapter.Adapter) {
+	gw := replyGateway()
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, func(a *slackadapter.Adapter) {
 		a.AgentCards = stubCards{username: "SRE Assistant"}
 	})
 
-	awaitAgentReply(t, srv, fake, "500.000")
+	awaitAgentReply(t, a, srv, fake, gw, "500.000")
 
 	names := usernamesOf(fake.pathCalls(pathStartStream))
 	require.Contains(t, names, "SRE Assistant", "the reply carries the display name")
@@ -122,11 +125,12 @@ func TestBranding_AgentReplyCarriesDisplayName(t *testing.T) {
 // spelling, the hyphenated technical name.
 func TestBranding_NoAnnotationFallsBackToTechnicalName(t *testing.T) {
 	fake := newFakeSlackAPI()
-	_, srv := newEventsAdapter(t, replyGateway(), fake.server(t).URL, func(a *slackadapter.Adapter) {
+	gw := replyGateway()
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, func(a *slackadapter.Adapter) {
 		a.AgentCards = stubCards{}
 	})
 
-	awaitAgentReply(t, srv, fake, "501.000")
+	awaitAgentReply(t, a, srv, fake, gw, "501.000")
 
 	require.Contains(t, usernamesOf(fake.pathCalls(pathStartStream)), "test-agent", "the hyphenated resource name is used")
 }
@@ -134,11 +138,12 @@ func TestBranding_NoAnnotationFallsBackToTechnicalName(t *testing.T) {
 // An all-whitespace annotation counts as absent rather than posting a blank name.
 func TestBranding_WhitespaceAnnotationCountsAsAbsent(t *testing.T) {
 	fake := newFakeSlackAPI()
-	_, srv := newEventsAdapter(t, replyGateway(), fake.server(t).URL, func(a *slackadapter.Adapter) {
+	gw := replyGateway()
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, func(a *slackadapter.Adapter) {
 		a.AgentCards = stubCards{username: "   "}
 	})
 
-	awaitAgentReply(t, srv, fake, "502.000")
+	awaitAgentReply(t, a, srv, fake, gw, "502.000")
 
 	require.Contains(t, usernamesOf(fake.pathCalls(pathStartStream)), "test-agent",
 		"a blank annotation falls through to the technical name")
@@ -148,11 +153,12 @@ func TestBranding_WhitespaceAnnotationCountsAsAbsent(t *testing.T) {
 // deployment configuration, not something a Slack reader should see.
 func TestBranding_QualifiedRefPostsBareName(t *testing.T) {
 	fake := newFakeSlackAPI()
-	_, srv := newEventsAdapter(t, replyGateway(), fake.server(t).URL, func(a *slackadapter.Adapter) {
+	gw := replyGateway()
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, func(a *slackadapter.Adapter) {
 		a.DefaultAgent = "kagent/test-agent"
 	})
 
-	awaitAgentReply(t, srv, fake, "503.000")
+	awaitAgentReply(t, a, srv, fake, gw, "503.000")
 
 	names := usernamesOf(fake.pathCalls(pathStartStream))
 	require.Contains(t, names, "test-agent", "the namespace qualifier is stripped")
@@ -163,9 +169,10 @@ func TestBranding_QualifiedRefPostsBareName(t *testing.T) {
 // falling back to the app's own identity.
 func TestBranding_NoRosterStillNamesTheAgent(t *testing.T) {
 	fake := newFakeSlackAPI()
-	_, srv := newEventsAdapter(t, replyGateway(), fake.server(t).URL)
+	gw := replyGateway()
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL)
 
-	awaitAgentReply(t, srv, fake, "504.000")
+	awaitAgentReply(t, a, srv, fake, gw, "504.000")
 
 	require.Contains(t, usernamesOf(fake.pathCalls(pathStartStream)), "test-agent",
 		"the technical name is used when no roster is configured")
@@ -187,11 +194,11 @@ func TestBranding_MissingScopeFallsBackToAppIdentity(t *testing.T) {
 		{{Content: "all good"}, {Done: true}},
 		{{Content: "all good"}, {Done: true}},
 	}}
-	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, func(a *slackadapter.Adapter) {
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, func(a *slackadapter.Adapter) {
 		a.AgentCards = stubCards{username: "SRE Assistant"}
 	})
 
-	awaitAgentReply(t, srv, fake, "600.000")
+	awaitAgentReply(t, a, srv, fake, gw, "600.000")
 
 	branded := 0
 	for _, u := range usernamesOf(fake.pathCalls(pathStartStream)) {
@@ -210,6 +217,7 @@ func TestBranding_MissingScopeFallsBackToAppIdentity(t *testing.T) {
 	require.Contains(t, fake.streamedText(), "all good", "the reply arrives")
 
 	// Second turn: the latched downgrade skips the branded attempt entirely.
+	gw.openConversation(t, "D1", "601.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "status?", "601.000"))
 	require.Eventually(t, func() bool {
 		return len(fake.pathCalls(pathStopStream)) >= 2
@@ -228,11 +236,12 @@ func TestBranding_MissingScopeFallsBackToAppIdentity(t *testing.T) {
 // shape, never the post carrying it.
 func TestBranding_DisplayNameIsSanitized(t *testing.T) {
 	fake := newFakeSlackAPI()
-	_, srv := newEventsAdapter(t, replyGateway(), fake.server(t).URL, func(a *slackadapter.Adapter) {
+	gw := replyGateway()
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, func(a *slackadapter.Adapter) {
 		a.AgentCards = stubCards{username: "SRE\nAssistant\x07 (on-call)"}
 	})
 
-	awaitAgentReply(t, srv, fake, "602.000")
+	awaitAgentReply(t, a, srv, fake, gw, "602.000")
 
 	require.Contains(t, usernamesOf(fake.pathCalls(pathStartStream)), "SRE Assistant (on-call)",
 		"control characters become spaces and runs collapse")
@@ -244,12 +253,13 @@ func TestBranding_DisplayNameIsSanitized(t *testing.T) {
 func TestBranding_DoesNotAskTheRoster(t *testing.T) {
 	fake := newFakeSlackAPI()
 	roster := &fakeRoster{err: errors.New("controller unreachable")}
-	_, srv := newEventsAdapter(t, replyGateway(), fake.server(t).URL, func(a *slackadapter.Adapter) {
+	gw := replyGateway()
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, func(a *slackadapter.Adapter) {
 		a.Roster = roster
 		a.AgentCards = stubCards{username: "SRE Assistant"}
 	})
 
-	awaitAgentReply(t, srv, fake, "505.000")
+	awaitAgentReply(t, a, srv, fake, gw, "505.000")
 	require.Contains(t, usernamesOf(fake.pathCalls(pathStartStream)), "SRE Assistant")
 	require.Zero(t, roster.listCalls())
 }
@@ -260,12 +270,13 @@ func TestBranding_DoesNotAskTheRoster(t *testing.T) {
 // handle is `swarmgeist`, the agent's display name "Swarmgeist".
 func TestBranding_AppNamesakeAgentPostsAsTheApp(t *testing.T) {
 	fake := newFakeSlackAPI() // auth.test user "swarmgeist"
-	_, srv := newEventsAdapter(t, replyGateway(), fake.server(t).URL, func(a *slackadapter.Adapter) {
+	gw := replyGateway()
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, func(a *slackadapter.Adapter) {
 		a.DefaultAgent = "swarmgeist"
 		a.AgentCards = stubCards{username: "Swarmgeist", iconURL: "https://avatars.test/v1/swarmgeist.png"}
 	})
 
-	awaitAgentReply(t, srv, fake, "507.000")
+	awaitAgentReply(t, a, srv, fake, gw, "507.000")
 
 	reply := replyPost(t, fake)
 	_, hasName := reply.params["username"]
@@ -304,12 +315,13 @@ func TestBranding_NamesakeCheckAsksUsersInfoOnceWithoutScope(t *testing.T) {
 		{{Content: "all good"}, {Done: true}},
 		{{Content: "all good"}, {Done: true}},
 	}}
-	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, func(a *slackadapter.Adapter) {
+	a, srv := newEventsAdapter(t, gw, fake.server(t).URL, func(a *slackadapter.Adapter) {
 		a.DefaultAgent = "swarmgeist"
 		a.Roster = roster
 	})
 
-	awaitAgentReply(t, srv, fake, "508.000")
+	awaitAgentReply(t, a, srv, fake, gw, "508.000")
+	gw.openConversation(t, "D1", "509.000", "U1", a.DefaultAgent)
 	sendEvent(t, srv, dmEvent("U1", "status?", "509.000"))
 	require.Eventually(t, func() bool {
 		return strings.Count(fake.streamedText(), "all good") >= 2
@@ -361,6 +373,8 @@ func TestDM_RedirectInChannelMode(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Swarmgeist works in channels")
 	}, flowWait, 20*time.Millisecond, "a DM in channel mode is redirected")
+	require.Contains(t, allText(fake.pathCalls("chat.postMessage")), "start a conversation there with `/swarmgeist`",
+		"the redirect says how a conversation starts in a channel")
 	require.Zero(t, gw.dispatchCount(), "a redirected DM never reaches the agent")
 
 	sendEvent(t, srv, dmEvent("U1", "why not?", "601.000"))
@@ -399,6 +413,7 @@ func TestTypedAnswer_RewritesTheQuestionThroughDispatch(t *testing.T) {
 	}
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL) // DM-only default
 
+	gw.openConversation(t, "D1", "400.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "check a cluster", "400.000"))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "Which cluster?")
@@ -440,6 +455,7 @@ func TestTypedApprove_RewritesTheApprovalCardThroughDispatch(t *testing.T) {
 	}
 	a, srv := newEventsAdapter(t, gw, fake.server(t).URL) // DM-only default
 
+	gw.openConversation(t, "D1", "400.000", "U1", "test-agent")
 	sendEvent(t, srv, dmEvent("U1", "delete the pod", "400.000"))
 	require.Eventually(t, func() bool {
 		return strings.Contains(allText(fake.pathCalls("chat.postMessage")), "*Approval required*")
