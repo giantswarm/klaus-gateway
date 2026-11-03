@@ -151,3 +151,21 @@ func TestMCPSignIn_NotNowDeclines(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	require.Len(t, sent.resumes(), 1, "a landing for a task no longer paused on the sign-in resumes nothing")
 }
+
+// The landing can outrun Slack's delivery of the Connect click: the paused
+// task still resumes, and the late click rewrites the prompt.
+func TestMCPSignIn_LandingBeforeClick(t *testing.T) {
+	fake, sent, get, click := pauseOnSignIn(t, "142.000")
+	responseSrv, capturedBody := newResponseURLCapture(t)
+	_, stateID, ok := connectButton(fake)
+	require.True(t, ok)
+
+	resp := get("/connectors/complete?s=" + url.QueryEscape(stateID))
+	_ = resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Eventually(t, func() bool { return len(sent.resumes()) == 1 }, flowWait, 20*time.Millisecond, "the landing resumes the paused task before the click arrives")
+
+	click("connector_connect", stateID, responseSrv.URL)
+	require.Eventually(t, func() bool { return strings.Contains(capturedBody(), "Signed in.") },
+		flowWait, 20*time.Millisecond, "the late click owns the prompt rewrite")
+}

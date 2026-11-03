@@ -12,9 +12,11 @@ stable release tag while a `Next` section with content is left.
 ## Next — a sign-in in a turn is the runtime's URL elicitation
 
 - The gateway no longer turns an agent's `core_auth_login` answer into a Connect button. A
-  runtime that does not relay MCP URL elicitations (the omp Harness before kagent 1.29.0, the
-  Python ADK, another BYO image) leaves its sign-in link in the agent's prose only. Run kagent
-  1.29.0 or later first.
+  runtime that does not relay MCP URL elicitations (an omp Harness image older than kagent
+  1.29.0, the Python ADK, another BYO image) leaves its sign-in link in the agent's prose only.
+  Run kagent 1.29.0 or later first. A BYO Harness does not follow the kagent release: an omp
+  entry in `kagent.harnesses` pins its own `omp-harness` image by digest, so move that pin to
+  the `runtimeImages.ompHarness.digest` of a 1.29.0 or later release as well.
 
 ## 4.15.0 — a team's members from its Slack user group
 
