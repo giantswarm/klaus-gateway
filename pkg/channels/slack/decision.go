@@ -548,7 +548,7 @@ func (a *Adapter) answerDecision(ctx context.Context, rv store.Review, user stri
 		a.showDecisionStatus(ctx, rv, fmt.Sprintf(decisionStatusFailed, user))
 		return
 	}
-	if server, loginURL, challenged := authChallengeOf(res); challenged {
+	if server, loginURL, challenged := res.SignInChallenge(teamReviewUnknownServer); challenged {
 		a.releaseTeamReview(ctx, rv.ID)
 		if resumed {
 			a.Logger.Warn("slack: decision answer still challenged after the connector sign-in", "decision", rv.ID, "tool", rv.Tool, "user", user, "server", server)

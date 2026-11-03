@@ -625,7 +625,7 @@ func (a *Adapter) decideTeamReview(ctx context.Context, rv store.Review, clicker
 		a.showTeamReviewStatus(ctx, rv, fmt.Sprintf(teamReviewStatusFailed, clicker, decision.noun()))
 		return
 	}
-	if server, loginURL, challenged := authChallengeOf(res); challenged {
+	if server, loginURL, challenged := res.SignInChallenge(teamReviewUnknownServer); challenged {
 		a.releaseTeamReview(ctx, rv.ID)
 		if resumed {
 			// The sign-in landed and the backend still challenges: do not loop
@@ -714,28 +714,6 @@ func decidedNotice(rv store.Review) string {
 		return fmt.Sprintf(teamReviewDeniedNotice, rv.DecidedBy)
 	}
 	return fmt.Sprintf(teamReviewApprovedNotice, rv.DecidedBy)
-}
-
-// authChallengeOf reads muster's sign-in challenge out of a tool result: the
-// backend the person has to connect and the login link. It is the answer
-// call_tool gives for a tool whose server holds no grant for the person yet —
-// an error result whose text names the server and carries the link.
-func authChallengeOf(res muster.Result) (server, loginURL string, ok bool) {
-	if !res.IsError {
-		return "", "", false
-	}
-	server, loginURL = parseAuthChallenge(res.Text)
-	if loginURL == "" {
-		return "", "", false
-	}
-	challenged := server != "" || strings.Contains(res.Text, "auth_required") || strings.Contains(res.Text, "Authentication Required")
-	if !challenged {
-		return "", "", false
-	}
-	if server == "" {
-		server = teamReviewUnknownServer
-	}
-	return server, loginURL, true
 }
 
 // promptTeamReviewConnect answers a sign-in challenge: the review is reopened
