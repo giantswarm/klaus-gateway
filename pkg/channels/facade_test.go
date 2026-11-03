@@ -660,6 +660,45 @@ func TestFacade_HitlResumeRefusedWhenTheTaskIsNotPaused(t *testing.T) {
 	require.Empty(t, agent.streamed)
 }
 
+// A decision names the request it answers. Once the task was answered
+// elsewhere and paused again on another request, the late decision is refused
+// instead of answering the new request.
+func TestFacade_HitlResumeRefusedForAnotherRequest(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		requestID string
+		refused   bool
+	}{
+		{name: "same request", requestID: "sign-in-1"},
+		{name: "unbound decision", requestID: ""},
+		{name: "another request", requestID: "sign-in-0", refused: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			agent := newFakeAgent(a2apkg.NewStatusUpdateEvent(taskInfo, a2apkg.TaskStateCompleted, nil))
+			agent.tasks[taskInfo.TaskID] = &a2apkg.Task{
+				ID: taskInfo.TaskID, ContextID: taskInfo.ContextID,
+				Status: a2apkg.TaskStatus{State: a2apkg.TaskStateInputRequired, Message: signInStatus(t)},
+			}
+			f, routes := newA2AFacade(agent)
+			require.NoError(t, storetest.Put(t.Context(), routes, store.Key{Channel: "slack", ChannelID: "C1", ThreadID: "1700.0001"},
+				store.Entry{AgentRef: "kagent/worker", AgentInstanceID: "inst-1"}))
+
+			msg := slackMsg("I've signed in, continue")
+			msg.TaskID = string(taskInfo.TaskID)
+			msg.Decision = &channels.HitlDecision{Type: channels.DecisionApprove, RequestID: test.requestID}
+			ch, err := f.SendCompletion(t.Context(), msg)
+			if test.refused {
+				require.ErrorIs(t, err, channels.ErrNoPendingPrompt)
+				require.Empty(t, agent.streamed)
+				return
+			}
+			require.NoError(t, err)
+			drain(t, ch)
+			require.Len(t, agent.streamed, 1)
+		})
+	}
+}
+
 // Stopping a turn cancels the task at the controller, not only the client
 // stream, so the agent stops working.
 func TestFacade_StoppedTurnCancelsTheTaskServerSide(t *testing.T) {

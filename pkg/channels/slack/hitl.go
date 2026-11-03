@@ -384,6 +384,15 @@ func renderAskUserText(p *channels.HitlPrompt) string {
 	return b.String()
 }
 
+// answering binds d to the request p shows, so the facade refuses it once
+// the task waits on another request (answered elsewhere, and paused again).
+func answering(p *channels.HitlPrompt, d *channels.HitlDecision) *channels.HitlDecision {
+	if p != nil && d != nil {
+		d.RequestID = p.RequestID
+	}
+	return d
+}
+
 // decisionFromText maps a free-text in-thread reply to a structured HITL
 // decision, given the prompt the thread is paused on. Returns nil when there is
 // no structured prompt (the reply is sent as plain text — the legacy path).

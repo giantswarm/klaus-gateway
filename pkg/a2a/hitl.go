@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"slices"
+	"strings"
 
 	a2apkg "github.com/a2aproject/a2a-go/v2/a2a"
 )
@@ -155,6 +156,28 @@ type HITLRequest struct {
 	ToolApproval   *ToolApprovalRequest
 	AskUser        *AskUserRequest
 	URLElicitation *URLElicitationRequest
+}
+
+// ID identifies the request among the ones a task pauses on over its life: the
+// URL elicitation's id, the ask_user correlation id, or the approval ids of
+// the decided tools.
+func (r *HITLRequest) ID() string {
+	switch {
+	case r == nil:
+		return ""
+	case r.URLElicitation != nil:
+		return r.URLElicitation.ID
+	case r.AskUser != nil:
+		return r.AskUser.ResponseID()
+	case r.ToolApproval != nil:
+		tools := r.ToolApproval.DecidedTools()
+		ids := make([]string, 0, len(tools))
+		for _, tool := range tools {
+			ids = append(ids, tool.ID)
+		}
+		return strings.Join(ids, ",")
+	}
+	return ""
 }
 
 // ParseHITLRequest reads the HITL request the agent attached to an

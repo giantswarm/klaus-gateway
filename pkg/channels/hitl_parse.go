@@ -173,17 +173,17 @@ func parseHitlPrompt(msg *a2apkg.Message) *HitlPrompt {
 		return nil
 	}
 	if signIn := request.URLElicitation; signIn != nil {
-		return &HitlPrompt{SignIn: &HitlSignIn{ID: signIn.ID, Server: signIn.Server, Message: signIn.Message, URL: signIn.URL}}
+		return &HitlPrompt{SignIn: &HitlSignIn{ID: signIn.ID, Server: signIn.Server, Message: signIn.Message, URL: signIn.URL}, RequestID: request.ID()}
 	}
 	if ask := request.AskUser; ask != nil {
-		prompt := &HitlPrompt{ToolName: AskUserToolName, OriginalCallID: ask.ResponseID()}
+		prompt := &HitlPrompt{ToolName: AskUserToolName, OriginalCallID: ask.ResponseID(), RequestID: request.ID()}
 		for _, q := range ask.Questions {
 			prompt.Questions = append(prompt.Questions, HitlQuestion{Question: q.Question, Choices: q.Choices, Multiple: q.Multiple})
 		}
 		return prompt
 	}
 	approval := request.ToolApproval
-	prompt := &HitlPrompt{Hint: approval.Hint}
+	prompt := &HitlPrompt{Hint: approval.Hint, RequestID: request.ID()}
 	for _, tool := range approval.DecidedTools() {
 		prompt.Tools = append(prompt.Tools, HitlTool{ID: tool.ID, CallID: tool.CallID, Name: tool.Name, Args: tool.Args})
 	}

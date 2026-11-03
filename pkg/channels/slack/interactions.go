@@ -622,6 +622,7 @@ func (a *Adapter) handleDecision(ctx context.Context, slackChannel, threadID, me
 	}
 
 	decision, resumeText := buildButtonDecision(act, task.Prompt)
+	decision = answering(task.Prompt, decision)
 
 	// Replace the controls with the decision: an approval card keeps its
 	// section and names who decided; a question keeps its question and names

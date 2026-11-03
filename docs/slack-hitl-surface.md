@@ -364,7 +364,10 @@ with `decline`, and the prompt reads "Not signed in. The agent continues without
 in the thread answers it too: a refusal (`no`, `cancel`, `not now`) declines, anything else
 accepts. The thread line then reads "@Jose signed in." or "@Jose did not sign in.". Without a
 public base URL the prompt ends "Reply here once you are done." instead. A landing for a task
-no longer paused on that sign-in resumes nothing.
+no longer paused on that sign-in resumes nothing. When the task was answered elsewhere first
+(Backstage answers the same request), the landing, *Not now* or a reply sends nothing, and
+the thread reads "This was already answered elsewhere, so this answer was not sent to the
+agent.". An approval or a question answered elsewhere ends the same way.
 
 Where the gateway can read the person's grant status (see the authorize modal below), every
 muster server's Connect prompt carries *Authorize all* after its Connect button (`action_id`

@@ -41,6 +41,9 @@ type HitlPrompt struct {
 	// SignIn is set, and every other field empty, for a task paused on an
 	// MCP server's sign-in link.
 	SignIn *HitlSignIn
+	// RequestID identifies the request this prompt shows; a HitlDecision
+	// answering it carries the same value.
+	RequestID string
 }
 
 // HitlSignIn is an MCP server's URL elicitation: the person opens URL, signs
@@ -95,6 +98,12 @@ type HitlDecision struct {
 	AskUserAnswers [][]string
 	// RejectionReason is an optional free-text reason attached to a reject.
 	RejectionReason string
+	// RequestID is the RequestID of the prompt the decision answers. The task
+	// may have been answered elsewhere and paused again on another request
+	// since: a decision whose RequestID is not the one the task waits on is
+	// refused with ErrNoPendingPrompt. Empty answers whatever request the task
+	// waits on.
+	RequestID string
 }
 
 // HITL decision types.

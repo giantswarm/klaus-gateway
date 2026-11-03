@@ -212,6 +212,14 @@ positional `ask_user_response` under the request's correlation id, or a
 as the HITL payload of a message that **carries the paused task's id**, so the task resumes in
 place and nothing is left waiting at `input-required` or `auth-required`.
 
+Another client can answer the same task first (Backstage shows the same request). The decision
+therefore names the request it answers (`HitlDecision.RequestID`, taken from the prompt: the
+URL elicitation's id, the `ask_user` correlation id, or the approval ids). A decision that
+reaches a task no longer paused, or paused again on another request, is refused with
+`ErrNoPendingPrompt`: nothing is sent, and the late answer cannot decide a request it never
+saw. The Slack turn then ends as `prompt_answered`, and the thread reads "This was already
+answered elsewhere, so this answer was not sent to the agent."
+
 ## Stop
 
 `/stop` cancels the gateway-side turn and then calls
