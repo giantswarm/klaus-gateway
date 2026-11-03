@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"net/url"
 	"path"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -134,15 +133,11 @@ type batchedWriter struct {
 	threadTS string // thread root — the reply and the turn's prompts hang off it
 	logger   *slog.Logger
 
-	// adapter, slackUser, and connectorPrompts back the reactive connector
-	// prompt: a core_auth_login tool result in the stream renders a Connect
-	// button to slackUser. slackUser is the RAW Slack user ID ("U…"), never the
-	// resolved email: chat.postEphemeral's user param requires a Slack ID, so an
-	// email would fail with user_not_found. connectorPrompts is false when the UX
-	// is disabled.
-	adapter          *Adapter
-	slackUser        string
-	connectorPrompts bool
+	// adapter backs the turn's tool log, session status and stream counters.
+	// slackUser is the RAW Slack user ID ("U…") the answer is for, never the
+	// resolved email: Slack's recipient params require a Slack ID.
+	adapter   *Adapter
+	slackUser string
 	// recipientTeam is the workspace of the person the answer is for (the bot's
 	// own team, from auth.test). Slack requires it next to the recipient user on
 	// a stream opened in a channel; both are left off in a DM. Slack Connect
@@ -163,18 +158,6 @@ type batchedWriter struct {
 	// call is the call that can create the session, so it carries the
 	// initiator although it is not a processing call.
 	statusOnly bool
-	// loginURLs collects the backend login URLs surfaced as Connect buttons
-	// this turn. flush scrubs them out of the agent's prose: the URL is a
-	// single-use OAuth authorize link, and a second surface (or Slack's unfurl
-	// crawler following it) can trip the auth server's reuse detection, which
-	// revokes the user's whole token family. Only touched from run()'s
-	// goroutine.
-	loginURLs []string
-	// connectorManualSignIn is set when a connector prompt this turn could not
-	// wire the auto-resume callback (no public base URL, or decoration failed),
-	// so the agent's sign-in narration must survive: the user has to sign in and
-	// say so by hand. Only touched from run()'s goroutine.
-	connectorManualSignIn bool
 
 	// turnUsage accumulates the per-LLM-call usage kagent reports across the
 	// turn into the turn total. Only touched from run()'s goroutine.
@@ -364,7 +347,6 @@ func (w *batchedWriter) run(ctx context.Context, ch <-chan channels.OutboundDelt
 					w.timer.AddToolCall()
 				}
 				w.renderToolActivity(d.Tool)
-				w.maybeConnectorPrompt(d.Tool)
 			case channels.DeltaNarration:
 				w.timer.AddChars(len(d.Content))
 				w.renderNarration(d.Content)
@@ -690,11 +672,11 @@ func (w *batchedWriter) setSessionStatus(ctx context.Context, status sessionStat
 // follows it starts a line of its own; the split pieces of a single passage get
 // none, since the cut falls mid-prose.
 func (w *batchedWriter) renderNarration(text string) {
-	scrubbed := strings.TrimSpace(w.scrubLoginURLs(text))
-	if scrubbed == "" {
+	text = strings.TrimSpace(text)
+	if text == "" {
 		return
 	}
-	pieces := splitMarkdown(scrubbed, slackMarkdownBlockMax)
+	pieces := splitMarkdown(text, slackMarkdownBlockMax)
 	for i, md := range pieces {
 		w.narrationsRendered++
 		switch {
@@ -709,65 +691,6 @@ func (w *batchedWriter) renderNarration(text string) {
 		}
 		w.queueNarration(md)
 	}
-}
-
-var (
-	authChallengeURLRe    = regexp.MustCompile(`https?://\S+`)
-	authChallengeServerRe = regexp.MustCompile(`(?m)^\s*Server:\s*(\S+)`)
-)
-
-// maybeConnectorPrompt renders a Connect button when a core_auth_login tool
-// result carries a backend login link. The link reaches the gateway only as
-// free text in the agent's stream, so the URL is parsed out of it. Throttled
-// per (user, backend) by the prompt cooldown; the post runs async on the
-// adapter lifecycle context so a slow Slack API does not stall delta draining.
-func (w *batchedWriter) maybeConnectorPrompt(tool *channels.ToolActivity) {
-	if !w.connectorPrompts || tool == nil {
-		return
-	}
-	if tool.Kind != channels.ToolResult || effectiveToolName(tool) != musterAuthLoginTool {
-		return
-	}
-	server, loginURL := parseAuthChallengePayload(tool.Response, 0)
-	if loginURL == "" {
-		w.logger.Debug("slack: connector prompt skipped, no https login URL in auth challenge", "user", w.slackUser, "tool", tool.Name)
-		return
-	}
-	w.loginURLs = append(w.loginURLs, loginURL)
-	if server == "" {
-		server = "the requested tools"
-	}
-	if !w.adapter.markConnectorPrompted(w.slackUser, server, loginURL) {
-		w.logger.Debug("slack: connector prompt skipped, cooldown active and URL unchanged", "user", w.slackUser, "server", server)
-		return
-	}
-	// The cooldown above is keyed on the raw URL so a re-challenge with the
-	// same link stays deduplicated; the posted button carries the decorated one.
-	promptURL, connectValue := loginURL, server
-	autoResume := false
-	if base := w.adapter.PublicBaseURL; base != "" {
-		stateID := w.adapter.mintConnectorCompletion(connectorCompletion{slackUser: w.slackUser, server: server, channel: w.channel, threadTS: w.threadTS})
-		if decorated, err := decorateConnectorLoginURL(loginURL, base, stateID); err != nil {
-			w.logger.Warn("slack: connector login URL decoration failed, posting plain link", "server", server, "error", err)
-		} else {
-			promptURL, connectValue, autoResume = decorated, stateID, true
-		}
-	}
-	// A button without a post-login redirect is a no-op: no landing fires, so the
-	// turn does not auto-resume and the user must sign in and say so. Keep the
-	// agent's sign-in narration in that case; only a resumable prompt makes it
-	// redundant enough to retract.
-	if !autoResume {
-		w.connectorManualSignIn = true
-	}
-	w.adapter.background(func(bg context.Context) {
-		ctx, cancel := context.WithTimeout(bg, connectorCheckTimeout)
-		defer cancel()
-		if err := w.client.postConnectorPrompt(ctx, w.channel, w.threadTS, w.slackUser, server, promptURL, connectValue); err != nil {
-			w.adapter.clearConnectorPrompted(w.slackUser, server)
-			w.logger.Warn("slack: post connector prompt failed", "user", w.slackUser, "server", server, "error", err)
-		}
-	})
 }
 
 // unwrapCallTool returns the inner muster tool name and arguments a call_tool
@@ -858,174 +781,6 @@ func decodeJSONObject(text string) (map[string]any, bool) {
 	}
 	m, ok := v.(map[string]any)
 	return m, ok
-}
-
-// maxChallengePayloadDepth bounds the walk over a tool result payload; real
-// payloads nest the challenge text at most a few levels down (direct
-// {"output": text}, or under call_tool an MCP content list whose text is
-// muster's envelope around the inner result's own content list).
-const maxChallengePayloadDepth = 10
-
-// parseAuthChallengePayload walks a tool result payload's string values and
-// returns the first auth challenge that carries a login URL. The challenge is
-// free text whose nesting differs by call path, so every nested string is a
-// candidate rather than assuming one key. Yields "" when no string carries a
-// URL.
-func parseAuthChallengePayload(v any, depth int) (server, loginURL string) {
-	if depth > maxChallengePayloadDepth {
-		return "", ""
-	}
-	switch t := v.(type) {
-	case string:
-		// muster's call_tool envelope is a JSON document in the result's text;
-		// decoded, its content carries the challenge with real line breaks, so
-		// the "Server:" line is found.
-		if doc, ok := decodeJSONDocument(t); ok {
-			if s, u := parseAuthChallengePayload(doc, depth+1); u != "" {
-				return s, u
-			}
-		}
-		if s, u := parseAuthChallenge(t); u != "" {
-			return s, u
-		}
-	case map[string]any:
-		for _, e := range t {
-			if s, u := parseAuthChallengePayload(e, depth+1); u != "" {
-				return s, u
-			}
-		}
-	case []any:
-		for _, e := range t {
-			if s, u := parseAuthChallengePayload(e, depth+1); u != "" {
-				return s, u
-			}
-		}
-	}
-	return "", ""
-}
-
-// parseAuthChallenge extracts the backend name and login URL from a
-// core_auth_login result. The URL is the first http(s) link, with trailing
-// punctuation trimmed; the server comes from a "Server: <name>" line and is
-// empty when the challenge does not name one (the caller falls back to the
-// recorded call arguments). A missing or non-https URL yields "".
-func parseAuthChallenge(output string) (server, loginURL string) {
-	if m := authChallengeURLRe.FindString(output); m != "" {
-		// Challenge text that embeds a JSON-encoded blob carries Go's HTML-safe
-		// escaping, so each & arrives as the literal six characters \u0026; the
-		// button must open the real URL.
-		// The challenge often reaches here as an undecoded JSON string, so the
-		// whitespace ending the URL is a literal two-character escape (\n, \t)
-		// rather than a byte \S+ stops at, and the match runs on into the
-		// following prose. Cut at the first such escape before decoding the URL.
-		m = cutAtLoginURLTerminator(m)
-		m = strings.ReplaceAll(m, jsonEscapedAmp, "&")
-		loginURL = validLoginURL(strings.TrimRight(m, ").,]}>\"'"))
-	}
-	if m := authChallengeServerRe.FindStringSubmatch(output); m != nil {
-		server = m[1]
-	}
-	return server, loginURL
-}
-
-// scrubLoginURLs removes the login link the Connect button already carries from
-// the agent's prose. The URL is a single-use OAuth authorize link: duplicating
-// it in text lets a second click or Slack's unfurl crawler redeem or replay it,
-// which the auth server answers by revoking the user's whole token family.
-//
-// The whole line carrying the link is dropped, not just the URL token: agents
-// present the link on its own line (a bullet, an emoji, a markdown link), so
-// stripping only the URL leaves dangling scaffolding ("here is the link:" then
-// nothing). A single line that just introduces the link (ends with ":") is
-// dropped with it. Nothing is left in its place: the Connect button prompt
-// already tells the user how to sign in, and any surrounding prose the agent
-// wrote (such as "tell me once you're signed in") is kept.
-//
-// Matching is by authorize-endpoint prefix (everything up to and including
-// "?"): the agent re-encodes the query string freely (JSON-escaped ampersands,
-// percent-encoded padding), so an exact match cannot be relied on. The prefix
-// stops before the first "?", so query re-encoding never affects the match.
-func (w *batchedWriter) scrubLoginURLs(text string) string {
-	if len(w.loginURLs) == 0 {
-		return text
-	}
-	prefixes := make([]string, 0, len(w.loginURLs))
-	for _, loginURL := range w.loginURLs {
-		prefix := loginURL
-		if i := strings.IndexByte(prefix, '?'); i >= 0 {
-			prefix = prefix[:i+1]
-		}
-		prefixes = append(prefixes, prefix)
-	}
-
-	lines := strings.Split(text, "\n")
-	kept := make([]string, 0, len(lines))
-	for _, line := range lines {
-		if !lineHasAnyPrefix(line, prefixes) {
-			kept = append(kept, line)
-			continue
-		}
-		// Drop a lead-in line whose only purpose was to introduce the link.
-		if n := len(kept); n > 0 {
-			if prev := strings.TrimSpace(kept[n-1]); strings.HasSuffix(prev, ":") {
-				kept = kept[:n-1]
-			}
-		}
-	}
-	return collapseBlankLines(strings.Join(kept, "\n"))
-}
-
-// lineHasAnyPrefix reports whether line carries any of the authorize-endpoint
-// prefixes in any spelling (bare, markdown link, Slack "<url|label>").
-func lineHasAnyPrefix(line string, prefixes []string) bool {
-	for _, prefix := range prefixes {
-		if strings.Contains(line, prefix) {
-			return true
-		}
-	}
-	return false
-}
-
-// multiBlankLineRe matches a run of two or more blank lines.
-var multiBlankLineRe = regexp.MustCompile(`\n[ \t]*\n([ \t]*\n)+`)
-
-// collapseBlankLines trims a run of blank lines left by a removal to a single
-// blank, and strips leading and trailing blank lines.
-func collapseBlankLines(text string) string {
-	return strings.Trim(multiBlankLineRe.ReplaceAllString(text, "\n\n"), "\n")
-}
-
-// jsonEscapedAmp is how Go's HTML-safe JSON encoding spells "&" inside a
-// string value.
-const jsonEscapedAmp = `\u0026`
-
-// loginURLTerminators are the JSON string escapes that end a login URL embedded
-// in an undecoded challenge payload: the escape's backslash and letter are
-// non-whitespace, so the URL regex swallows them and the prose that follows.
-// jsonEscapedAmp is decoded separately and is deliberately not listed.
-var loginURLTerminators = []string{`\n`, `\r`, `\t`, `\f`, `\"`}
-
-// cutAtLoginURLTerminator returns s truncated at the first login-URL terminator.
-func cutAtLoginURLTerminator(s string) string {
-	cut := len(s)
-	for _, esc := range loginURLTerminators {
-		if i := strings.Index(s, esc); i >= 0 && i < cut {
-			cut = i
-		}
-	}
-	return s[:cut]
-}
-
-// validLoginURL returns raw when it is a well-formed absolute https URL with a
-// host, and "" otherwise. The Connect button opens agent- and tool-controlled
-// text as a browser URL, so anything that is not plainly https (http, a bare
-// scheme, a malformed link) is rejected rather than rendered as a button.
-func validLoginURL(raw string) string {
-	u, err := url.Parse(raw)
-	if err != nil || u.Scheme != "https" || u.Host == "" {
-		return ""
-	}
-	return raw
 }
 
 // indentJSON renders a call's arguments as indented JSON, one key per line,
@@ -1184,54 +939,11 @@ func (w *batchedWriter) wroteContent() bool {
 	return w.appendedLen > 0 || w.streamOpened
 }
 
-// connectorReplyRetractable reports whether this turn's visible reply was only
-// a connector sign-in prompt whose button auto-resumes: the ephemeral prompt
-// and the post-login resume are the whole exchange, so the streamed agent
-// narration is redundant and can be retracted. False when no connector prompt
-// was surfaced, or when one was but without a working callback (the user still
-// needs the "sign in, then tell me" narration).
-func (w *batchedWriter) connectorReplyRetractable() bool {
-	return len(w.loginURLs) > 0 && !w.connectorManualSignIn
-}
-
-// retractRendered deletes the turn's streamed messages, leaving the thread to
-// the connector prompt alone: the reply is where the sign-in narration the
-// button contradicts lives. The tool log the "Inspect
-// agent steps" shortcut shows is untouched — it is a transparency record, not
-// prose on screen. Best-effort: a delete failure is logged, not propagated.
-func (w *batchedWriter) retractRendered(ctx context.Context) {
-	// A message still streaming cannot be retracted, so close it first. The
-	// turn is being taken over by the sign-in prompt and is not over, hence
-	// processing rather than Slack's active default. Beware the ordering: this
-	// runs after run() has set the session's exit status, so the day Slack
-	// honours session_status on a stop, this one would re-arm an indicator the
-	// turn just cleared. It is unreachable today — closeStream clears streamTS
-	// on a successful stop and on a stream-gone refusal, and the retract is
-	// only reached on a turn that ended normally.
-	if w.streamTS != "" {
-		if err := w.stopStream(ctx, nil, nil, 0, sessionProcessing); err != nil {
-			w.logger.Warn("slack: stop the reply stream before retracting it failed", "error", err)
-		}
-	}
-	w.dropStream()
-	w.mu.Lock()
-	messages := w.streamMessages
-	w.streamMessages, w.streamOpened, w.appendedLen = nil, false, 0
-	w.mu.Unlock()
-	// The row must stop naming text and a message the thread no longer has.
-	w.noteDelivered(ctx)
-	for _, ts := range messages {
-		if err := w.client.deleteMessage(ctx, w.channel, ts); err != nil {
-			w.logger.Warn("slack: retract connector reply failed", "ts", ts, "error", err)
-		}
-	}
-}
-
 // flush sends everything queued since the last one to the turn's stream,
 // opening the stream on the first call. The answer text after the last
 // whitespace is held back: an append is final — unlike the chat.update it
-// replaces, which re-rendered the whole reply every tick — so a login URL must
-// never be sent half-scrubbed and a word never cut in two.
+// replaces, which re-rendered the whole reply every tick — so a word is never
+// cut in two.
 func (w *batchedWriter) flush(ctx context.Context) error {
 	if w.streamStopped {
 		w.takeQueued(true) // the reply is closed; drop what is left
@@ -1400,10 +1112,7 @@ func (w *batchedWriter) sendQueuedOnce(ctx context.Context, items []queuedChunk,
 		raw, answer := items[i].text, items[i].answer
 		for raw != "" {
 			piece, rest := cutPiece(raw, w.budget())
-			// streamed counts the agent's bytes, not the shorter text Slack
-			// sees: scrubbing only ever removes, so the count over-estimates and
-			// rolls the reply over a little early — the safe side of Slack's
-			// per-message cap. Should Slack refuse it all the same,
+			// Should Slack refuse a piece that fits the budget all the same,
 			// overflowStream moves it on.
 			if len(piece) > w.room(&batch) {
 				// No room for this piece. Land what the batch already holds
@@ -1431,20 +1140,17 @@ func (w *batchedWriter) sendQueuedOnce(ctx context.Context, items []queuedChunk,
 	return nil, nil
 }
 
-// chunkBodies renders the batch's pieces as streamed chunks. This turn's login
-// URLs are scrubbed out of every piece of prose here, at the last moment, so a
-// link the agent surfaced after a passage was queued is caught too; a piece
-// scrubbing empties carries nothing and is left out. visible reports whether
-// the batch holds anything a message can be opened on — prose that is
-// whitespace alone never is.
+// chunkBodies renders the batch's pieces as streamed chunks; an empty piece
+// carries nothing and is left out. visible reports whether the batch holds
+// anything a message can be opened on — prose that is whitespace alone never
+// is.
 func (w *batchedWriter) chunkBodies(items []queuedChunk) (chunks []any, visible bool) {
 	for _, it := range items {
-		md := w.scrubLoginURLs(it.text)
-		if md == "" {
+		if it.text == "" {
 			continue
 		}
-		chunks = append(chunks, textChunk(md))
-		visible = visible || strings.TrimSpace(md) != ""
+		chunks = append(chunks, textChunk(it.text))
+		visible = visible || strings.TrimSpace(it.text) != ""
 	}
 	return chunks, visible
 }
@@ -1456,10 +1162,8 @@ func (w *batchedWriter) deliverBatch(ctx context.Context, b *streamBatch) error 
 		return nil
 	}
 	chunks, visible := w.chunkBodies(b.items)
-	// Scrubbing a pure sign-in passage can empty a piece, and a stream does not
-	// open on whitespace alone. Nothing reaches Slack, but the bytes count as
-	// delivered all the same: a process continuing the turn would only scrub
-	// them away again.
+	// A stream does not open on whitespace alone. Nothing reaches Slack, but
+	// the bytes count as delivered all the same.
 	if len(chunks) == 0 || (w.streamTS == "" && !visible) {
 		w.noteAppended(b.answerRaw)
 		w.noteDelivered(ctx)
@@ -1582,9 +1286,8 @@ func (w *batchedWriter) closeBatch(ctx context.Context, b *streamBatch) (unsent 
 }
 
 // cutPiece takes the first at most budget bytes of s, cutting at the last
-// whitespace inside the budget so a word stays whole — and a login URL, which
-// holds no whitespace, is never handed to the scrubbing in halves. A single
-// token longer than the budget is cut at the budget, on a rune boundary.
+// whitespace inside the budget so a word stays whole. A single token longer
+// than the budget is cut at the budget, on a rune boundary.
 //
 // An oversize append is deliberately NOT balanced as Markdown (splitMarkdown):
 // on a stream the next piece continues the same message, so a closing fence
@@ -1630,8 +1333,7 @@ func (w *batchedWriter) openStream(ctx context.Context, b *streamBatch, chunks [
 
 // stopStream closes the open stream with a last batch of chunks and the session
 // status the stop leaves the thread in. rawLen is the answer bytes the chunks
-// stand for — it differs from what Slack receives when a login URL was scrubbed
-// out, and the delivery record counts the answer's own bytes. The status is
+// stand for, which the delivery record counts. The status is
 // always explicit: Slack defaults it to active, which on an intermediate stop
 // would clear the working indicator while the turn keeps running.
 func (w *batchedWriter) stopStream(ctx context.Context, chunks, blocks []any, rawLen int, status sessionStatus) error {
@@ -1780,7 +1482,7 @@ func (w *batchedWriter) queueNarration(md string) {
 
 // takeQueued removes the content to send from the queue. Unless final, a
 // trailing answer chunk keeps everything after its last whitespace: it may be
-// half a word or half a login URL, and an appended chunk cannot be taken back.
+// half a word, and an appended chunk cannot be taken back.
 // Narration is complete when it is queued, so nothing is ever held back for
 // it.
 func (w *batchedWriter) takeQueued(final bool) []queuedChunk {
@@ -2747,17 +2449,6 @@ func streamErr(err error) error {
 	return err
 }
 
-// deleteMessage removes a message the gateway posted (chat.delete). Used to
-// retract the streamed agent bubble when a turn's only reply was a connector
-// sign-in prompt whose button carries a working auto-resume callback.
-func (c *slackAPIClient) deleteMessage(ctx context.Context, channel, ts string) error {
-	_, err := c.postJSON(ctx, "chat.delete", map[string]any{
-		paramChannel: channel,
-		paramTS:      ts,
-	})
-	return err
-}
-
 // postApprovalPrompt posts the approval card of a HITL tool approval: the
 // section card (approvalCard), who may decide, and the Approve and Deny
 // buttons. The button values encode the thread (routing) and the task
@@ -3175,29 +2866,20 @@ const slackSectionTextMax = 3000
 // group's label.
 const slackOptionTextMax = 75
 
-// postConnectorPrompt posts the agent's Connect prompt: an ephemeral offering
-// to connect a muster backend the agent cannot use for the user yet, with a
-// "Not now" dismissal (the prompt cooldown then holds it back).
-func (c *slackAPIClient) postConnectorPrompt(ctx context.Context, channel, threadID, user, server, loginURL, connectValue string) error {
-	text := fmt.Sprintf("The agent can't use *%s* for you yet. Connect your account once so those tools work.", escapeMrkdwn(server))
-	return c.postConnectPrompt(ctx, channel, threadID, user, text, server, loginURL, connectValue, true)
-}
-
 // postConnectPrompt posts an ephemeral (target-user-only) Block Kit message
-// with a "Connect <server>" URL button opening loginURL under text, and a
-// "Not now" button when dismiss is set. When threadID is set the prompt is
-// posted in-thread. connectValue is the Connect button's value: the
-// completion-state ID when the login URL carries a post-login redirect, else
-// the server name (the click stays a no-op then).
-func (c *slackAPIClient) postConnectPrompt(ctx context.Context, channel, threadID, user, text, server, loginURL, connectValue string, dismiss bool) error {
-	return c.postConnectEphemeral(ctx, channel, threadID, user, text, connectPromptBlocks(text, server, loginURL, connectValue, connectValue, dismiss, c.authorizeAll))
+// with a "Connect <server>" URL button opening loginURL under text. When
+// threadID is set the prompt is posted in-thread. connectValue is the Connect
+// button's value: the completion-state ID when the login URL carries a
+// post-login redirect, else the server name (the click stays a no-op then).
+func (c *slackAPIClient) postConnectPrompt(ctx context.Context, channel, threadID, user, text, server, loginURL, connectValue string) error {
+	return c.postConnectEphemeral(ctx, channel, threadID, user, text, connectPromptBlocks(text, server, loginURL, connectValue, connectValue, c.authorizeAll))
 }
 
 // postProviderConnectPrompt posts a workspace provider's Connect prompt: its
 // "Connect <provider>" sign-in alone. "Authorize all" grants muster servers,
 // not a provider account, so it has no place here.
 func (c *slackAPIClient) postProviderConnectPrompt(ctx context.Context, channel, threadID, user, text, provider, loginURL string) error {
-	return c.postConnectEphemeral(ctx, channel, threadID, user, text, connectPromptBlocks(text, provider, loginURL, provider, "", false, false))
+	return c.postConnectEphemeral(ctx, channel, threadID, user, text, connectPromptBlocks(text, provider, loginURL, provider, "", false))
 }
 
 // postConnectEphemeral posts a Connect prompt's blocks to user alone, in
@@ -3220,8 +2902,8 @@ func (c *slackAPIClient) postConnectEphemeral(ctx context.Context, channel, thre
 // "Connect <server>" URL button opening loginURL with connectValue as its
 // value, an "Authorize all" button opening the authorize modal when
 // authorizeAll is set (its value authorizeOrigin, the prompt's completion
-// state or empty), and a "Not now" button when dismiss is set.
-func connectPromptBlocks(text, server, loginURL, connectValue, authorizeOrigin string, dismiss, authorizeAll bool) []any {
+// state or empty).
+func connectPromptBlocks(text, server, loginURL, connectValue, authorizeOrigin string, authorizeAll bool) []any {
 	elements := []any{
 		map[string]any{
 			bkType:     bkButton,
@@ -3234,14 +2916,6 @@ func connectPromptBlocks(text, server, loginURL, connectValue, authorizeOrigin s
 	}
 	if authorizeAll {
 		elements = append(elements, authorizeAllButton(authorizeOrigin))
-	}
-	if dismiss {
-		elements = append(elements, map[string]any{
-			bkType:     bkButton,
-			bkText:     map[string]any{bkType: bkPlainText, bkText: "Not now"},
-			bkActionID: connectorDismiss,
-			bkValue:    server,
-		})
 	}
 	return []any{
 		map[string]any{

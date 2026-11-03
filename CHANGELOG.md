@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `GET /groups/{group}/members/{email}` on the service endpoint tells an allow-listed caller whether a person is in a Slack user group (`@team-bumblebee`), so beekeeper can let only a team's members answer its decisions. The app's manifest adds `usergroups:read`; an installed app needs a re-install to get it ([giantswarm/giantswarm#37985](https://github.com/giantswarm/giantswarm/issues/37985)).
 
+### Removed
+
+- Slack: the Connect prompt read out of an agent's `core_auth_login` text, and the synthetic "I've signed in to <server>, continue" message its landing sent. A sign-in an agent needs in a turn is only the runtime's `url_elicitation_request`. The prompt's *Not now* (`connector_dismiss`) and its hourly cooldown go with it ([giantswarm/klaus-gateway#476](https://github.com/giantswarm/klaus-gateway/issues/476)).
+
 ### Fixed
 
 - Slack link: muster's userinfo must answer `email_verified: true` for the link to be made. The email is what ties the muster identity to the Slack profile, and an email the identity provider never verified proved nothing.

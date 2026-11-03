@@ -508,11 +508,11 @@ unknown withdraws the offer until the gateway restarts.
 The gateway learns which tool a `call_tool` result belongs to from the result itself: muster
 5.36.0 and later end the `call_tool` envelope with the dispatched tool (`tool`: `name`, and
 for a backend's tool `server` and `serverTool`) and carry it in the result's `_meta` under
-`muster.giantswarm.io/tool`. The Connect prompt and the Inspect agent steps log rely on it, so
-both need muster 5.36.0 or later; against an older muster a `call_tool` result names no tool,
-its call still pairs with it by call id, and no Connect prompt is offered. The Connect prompt
-that answers a Session start reads muster's challenge from the `start_session` answer itself
-(its structured content, or its text), so it needs no tool name.
+`muster.giantswarm.io/tool`. The Inspect agent steps log relies on it, so it needs muster
+5.36.0 or later; against an older muster a `call_tool` result names no tool, and its call still
+pairs with it by call id. The Connect prompt that answers a Session start reads muster's
+challenge from the `start_session` answer itself (its structured content, or its text), so it
+needs no tool name.
 
 ## Slack app setup
 
