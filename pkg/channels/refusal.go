@@ -8,7 +8,7 @@ import (
 // EgressRefusal is what the egress gateway refused one agent within one
 // observation: a destination the agent's egress does not declare, the
 // requests refused, and the Sessions that made them. The refusal notice
-// addresses the agent's creator, who may declare the destination.
+// addresses the agent's creator with what they can do about it.
 type EgressRefusal struct {
 	// Namespace and Agent name the kagent Agent; DisplayName is how people
 	// know it ("" falls back to Agent).
@@ -17,6 +17,12 @@ type EgressRefusal struct {
 	DisplayName string
 	// Creator is the email of the person who created the Agent.
 	Creator string
+	// Runtime is the runtime of the Agent's Harness (kagent, claude, codex,
+	// byo), "" when it is not known: an agent on any runtime but kagent's is
+	// a coding agent, whose egress is the platform's list for its Harness.
+	// HarnessTitle is the Harness's display name, "" for none.
+	Runtime      string
+	HarnessTitle string
 	// Scheme is http, https or tcp; Host and Port the refused destination.
 	Scheme string
 	Host   string

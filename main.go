@@ -601,7 +601,7 @@ func refusalWatcher(cfg config.RefusalsConfig, notifier channels.RefusalNotifier
 	return &refusals.Watcher{
 		Source:   &refusals.EgressPods{Client: kclient, Namespace: namespace, Service: service, Port: cfg.StatsPort, Path: cfg.MetricsPath},
 		Sessions: &refusals.KagentSessions{Conn: conn, TokenFile: cfg.KagentTokenFile},
-		Agents:   &refusals.KubeAgents{Client: dclient},
+		Agents:   &refusals.KubeAgents{Client: dclient, Logger: logger},
 		Notifier: notifier,
 		AgentURL: cfg.AgentURLTemplate,
 		Interval: cfg.Interval,

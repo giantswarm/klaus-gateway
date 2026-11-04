@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Egress refusal notices give the remedy that applies, worded as the Dev Portal's Session alert: the title is "Outgoing connection to <host> blocked", the count is in attempts, and the destination and origin move to technical details. A coding agent (a Harness on any runtime but `kagent`: Claude Code, Codex, a custom image) is told only the platform team can allow the host, and gets no edit button, since agent-manager refuses any origin outside its Harness's platform list; an agent on the kagent runtime is told to add the origin to its Extra egress origins, with an *Edit <agent>* button; an agent whose Harness is not found gets no promise. A raw TCP destination is allowed to no agent, so its notice says no egress setting can allow it and suggests HTTPS instead, with no button. The gateway reads the Agent's Harness for its runtime, and the chart grants `get` on `api.kagent.dev` harnesses ([giantswarm/giantswarm#38814](https://github.com/giantswarm/giantswarm/issues/38814)).
+
 ### Added
 
 - Slack: a turn paused on an MCP server's sign-in link (kagent's HITL `url_elicitation_request`, sent by runtimes that relay MCP URL elicitations, such as muster's sign-in link from 5.53.0 on) gets a sign-in prompt, to the person whose turn asked, quoting the server's message and naming the server that asked; the thread says whom it waits on. The sign-in's landing resumes the paused task with `accept`, so the agent retries the call; *Not now* or a refusal in the thread resumes it with `decline` ([giantswarm/klaus-gateway#140](https://github.com/giantswarm/klaus-gateway/issues/140)).
