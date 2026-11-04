@@ -1121,15 +1121,16 @@ second destination of the same agent is a second notice. Nothing goes through Al
   | Harness runtime | Remedy | Button |
   | --- | --- | --- |
   | `kagent`, http(s) | You can allow it: add `<origin>` to <agent>’s Extra egress origins. | *Edit <agent>* (`refusals.agentURLTemplate`) |
-  | `kagent`, raw TCP | <agent>’s egress settings list the HTTP and HTTPS origins it may reach. | *Edit <agent>* |
   | any other (`claude`, `codex`, `byo`): a coding agent | <agent> can only reach the addresses the platform allows for <runtime>. Ask your platform team to allow <host>. | none |
   | not known (the Harness is not found, or the gateway may not read it) | If <agent> needs <host>, ask your platform team. | none |
+  | any, raw TCP | No egress setting can allow it. If <host> offers HTTPS, have <agent> use that instead. | none |
 
   A coding agent's egress is the platform's list for its Harness (agent-manager's
   `harness.egress.<harness>`), which refuses any other origin, so no editor can add one. `<runtime>`
   is the Harness's `ui.giantswarm.io/display-name`, else Claude Code, Codex or Custom image. The
   portal's toolchain remedy is not offered: the gateway does not know whether the installation's
-  Sessions mount toolchains.
+  Sessions mount toolchains. Raw TCP is allowed to no agent: kagent's egress declares HTTP and
+  HTTPS origins only, so neither the agent's settings nor the platform's list can add it.
 - **Source.** Every `refusals.interval` (1 min) the gateway reads
   `agentgateway_atenet_egress_refusals_total` (one series per actor and destination: `ate_atespace`,
   `ate_actor_name`, `scheme`, `host`, `port`) from the stats port of every pod behind

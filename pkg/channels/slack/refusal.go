@@ -21,7 +21,8 @@ import (
 // platform's list for its Harness, so only the platform team can widen it; an
 // agent on the kagent runtime is allowed the destination on its edit page,
 // which the notice's button opens; an agent whose Harness is not known gets
-// no promise.
+// no promise. Raw TCP is allowed to no agent, whatever its runtime: kagent's
+// egress declares HTTP and HTTPS origins only.
 // There is one notice per agent and destination within the window
 // (RefusalWindow): refusals inside it are counted into the notice, which is
 // rewritten in place, and the first refusal after it posts a new one. The
@@ -43,7 +44,7 @@ const (
 	refusalCountLine  = "%s in %s since %s, last at %s"
 	refusalPlatform   = "%s can only reach the addresses the platform allows for %s. Ask your platform team to allow %s."
 	refusalEdit       = "You can allow it: add `%s` to %s’s Extra egress origins."
-	refusalEditTCP    = "%s’s egress settings list the HTTP and HTTPS origins it may reach."
+	refusalTCP        = "No egress setting can allow it. If %s offers HTTPS, have %s use that instead."
 	refusalNeutral    = "If %s needs %s, ask your platform team."
 	refusalDetails    = "Technical details: destination `%s:%d (%s)`"
 	refusalDetailsURL = refusalDetails + ", origin `%s`"
@@ -204,12 +205,12 @@ func refusalRuntime(rec store.Refusal) string {
 // the agent's edit page is where they do it.
 func refusalRemedy(rec store.Refusal, name string) (string, bool) {
 	switch {
+	case rec.Scheme == schemeTCP:
+		return fmt.Sprintf(refusalTCP, rec.Host, name), false
 	case rec.Runtime == "":
 		return fmt.Sprintf(refusalNeutral, name, rec.Host), false
 	case rec.Runtime != kagentRuntime:
 		return fmt.Sprintf(refusalPlatform, name, escapeMrkdwn(refusalRuntime(rec)), rec.Host), false
-	case rec.Scheme == schemeTCP:
-		return fmt.Sprintf(refusalEditTCP, name), true
 	default:
 		return fmt.Sprintf(refusalEdit, refusalOrigin(rec), name), true
 	}

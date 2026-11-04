@@ -151,24 +151,25 @@ func TestRefusal_LaterRefusalUpdatesTheRemedy(t *testing.T) {
 	require.Contains(t, latestUpdateText(fake, "1700000200.000001"), "allows for Claude Code. Ask your platform team")
 }
 
-func TestRefusal_RawTCP(t *testing.T) {
-	fake, note := refusalHarness(t)
-	r := goModulesRefusal(time.Now())
-	r.Scheme, r.Host, r.Port = "tcp", "github.com", 22
+func TestRefusal_RawTCPIsAllowedToNoAgent(t *testing.T) {
+	for _, runtime := range []string{"kagent", "claude", ""} {
+		t.Run("runtime "+runtime, func(t *testing.T) {
+			fake, note := refusalHarness(t)
+			r := goModulesRefusal(time.Now())
+			r.Scheme, r.Host, r.Port = "tcp", "github.com", 22
+			r.Runtime = runtime
 
-	require.NoError(t, note(r))
-	blocks := blocksOf(fake.pathCalls("chat.postMessage")[0])
-	text := messageText(blocks)
-	require.Contains(t, text, "Raw TCP connections are not available to agents · 3 attempts")
-	require.Contains(t, text, "Otter Coder’s egress settings list the HTTP and HTTPS origins it may reach.")
-	require.Contains(t, text, "Technical details: destination `github.com:22 (tcp)`")
-	require.NotContains(t, text, "origin `")
-	require.Equal(t, []string{"refusal_open_agent"}, actionIDs(blocks))
-
-	fake, note = refusalHarness(t)
-	r.AgentURL = ""
-	require.NoError(t, note(r))
-	require.Empty(t, actionIDs(blocksOf(fake.pathCalls("chat.postMessage")[0])), "no link without an agent URL")
+			require.NoError(t, note(r))
+			blocks := blocksOf(fake.pathCalls("chat.postMessage")[0])
+			text := messageText(blocks)
+			require.Contains(t, text, "Raw TCP connections are not available to agents · 3 attempts")
+			require.Contains(t, text, "No egress setting can allow it. If github.com offers HTTPS, have Otter Coder use that instead.")
+			require.NotContains(t, text, "platform team")
+			require.Contains(t, text, "Technical details: destination `github.com:22 (tcp)`")
+			require.NotContains(t, text, "origin `")
+			require.Empty(t, actionIDs(blocks), "no edit button: no egress setting allows raw TCP")
+		})
+	}
 }
 
 func TestRefusal_UnknownCreatorIsAddresseeNotFound(t *testing.T) {
