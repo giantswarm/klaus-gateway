@@ -1148,8 +1148,10 @@ second destination of the same agent is a second notice. Nothing goes through Al
   counted as `not_session`. The creator is the email in the Agent's
   `agent-platform.giantswarm.io/created-by` annotation (agent-manager records it); an Agent
   without one is counted (`klaus_gateway_egress_refusals_total{outcome="no_creator"}`) and
-  nobody is told. The Agent's Harness is read from the same namespace; a Harness that cannot be
-  read for another reason than its absence or a refused read is retried on the next read. The creator is found in Slack by that email (`users:read.email`).
+  nobody is told. The creator is found in Slack by that email (`users:read.email`). For an Agent
+  with a creator the gateway reads its Harness, in the Agent's namespace: one that is not found
+  leaves the runtime unknown, one it may not read too, logged with the missing grant; any other
+  failure is retried on the next read.
 - **Record.** The notice is a record in the review store (`refusal-<hash of agent and
   destination>`, the window as its TTL), so on `valkey` and `bolt` a restart keeps the
   deduplication. A notice Slack or kagent could not take is retried on the next read with the

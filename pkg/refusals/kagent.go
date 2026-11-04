@@ -3,6 +3,7 @@ package refusals
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"slices"
 	"strings"
@@ -92,11 +93,13 @@ var (
 // KubeAgents reads Agents and their Harnesses from the Kubernetes API.
 type KubeAgents struct {
 	Client dynamic.Interface
+	Logger *slog.Logger
 }
 
-// Agent implements Agents. A Harness that is not found, or that the gateway
-// may not read, leaves the runtime unknown; any other failure to read it is
-// an error, so the refusal is noted on a later read rather than with a
+// Agent implements Agents. The Harness is read only for an Agent with a
+// creator, the one a notice goes to. A Harness that is not found, or that the
+// gateway may not read, leaves the runtime unknown; any other failure to read
+// it is an error, so the refusal is noted on a later read rather than with a
 // remedy that may be wrong.
 func (k *KubeAgents) Agent(ctx context.Context, namespace, name string) (Agent, error) {
 	obj, err := k.Client.Resource(AgentsGVR).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
@@ -106,12 +109,16 @@ func (k *KubeAgents) Agent(ctx context.Context, namespace, name string) (Agent, 
 	annotations := obj.GetAnnotations()
 	out := Agent{DisplayName: annotations[DisplayNameAnnotation], Creator: annotations[CreatedByAnnotation]}
 	harness, _, _ := unstructured.NestedString(obj.Object, "spec", "harnessRef", "name")
-	if harness == "" {
+	if out.Creator == "" || harness == "" {
 		return out, nil
 	}
 	h, err := k.Client.Resource(HarnessesGVR).Namespace(namespace).Get(ctx, harness, metav1.GetOptions{})
 	switch {
-	case apierrors.IsNotFound(err), apierrors.IsForbidden(err):
+	case apierrors.IsNotFound(err):
+		return out, nil
+	case apierrors.IsForbidden(err):
+		k.logger().Warn("refusals: the gateway may not read the Agent's Harness, so the notice names no remedy: grant get on api.kagent.dev harnesses",
+			"agent", namespace+"/"+name, "harness", harness, "error", err)
 		return out, nil
 	case err != nil:
 		return Agent{}, fmt.Errorf("refusals: get Harness %s/%s of Agent %s: %w", namespace, harness, name, err)
@@ -140,4 +147,11 @@ func harnessRuntime(h *unstructured.Unstructured) string {
 	}
 	slices.Sort(keys)
 	return keys[0]
+}
+
+func (k *KubeAgents) logger() *slog.Logger {
+	if k.Logger != nil {
+		return k.Logger
+	}
+	return slog.Default()
 }

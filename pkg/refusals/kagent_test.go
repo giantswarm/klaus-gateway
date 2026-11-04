@@ -133,6 +133,19 @@ func TestKubeAgents_ReadsTheRuntimeOfTheAgentsHarness(t *testing.T) {
 	}
 }
 
+func TestKubeAgents_NoCreatorReadsNoHarness(t *testing.T) {
+	obj := agentObject("coding")
+	obj.SetAnnotations(nil)
+	agents := kubeAgents(obj)
+	agents.Client.(*dynamicfake.FakeDynamicClient).PrependReactor("get", "harnesses", func(k8stesting.Action) (bool, runtime.Object, error) {
+		t.Fatal("an Agent nobody is told about needs no Harness")
+		return true, nil, nil
+	})
+	agent, err := agents.Agent(context.Background(), "org-otter", "otter-coder")
+	require.NoError(t, err)
+	require.Empty(t, agent.Creator)
+}
+
 func TestKubeAgents_MissingHarnessLeavesTheRuntimeUnknown(t *testing.T) {
 	agent, err := kubeAgents(agentObject("gone")).Agent(context.Background(), "org-otter", "otter-coder")
 	require.NoError(t, err)
