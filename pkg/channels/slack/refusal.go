@@ -15,8 +15,13 @@ import (
 
 // An egress refusal notice tells an agent's creator, by direct message from
 // the app, that the egress gateway refused a destination the agent's egress
-// does not declare: the destination, why, how many requests in how many
-// Sessions, and a button that opens the agent where its egress is edited.
+// does not declare: the destination, how many attempts in how many Sessions,
+// and what they can do about it, worded as the Dev Portal's Session alert
+// words it (giantswarm/giantswarm#38814). A coding agent reaches only the
+// platform's list for its Harness, so only the platform team can widen it; an
+// agent on the kagent runtime is allowed the destination on its edit page,
+// which the notice's button opens; an agent whose Harness is not known gets
+// no promise.
 // There is one notice per agent and destination within the window
 // (RefusalWindow): refusals inside it are counted into the notice, which is
 // rewritten in place, and the first refusal after it posts a new one. The
@@ -32,14 +37,31 @@ const DefaultRefusalWindow = 24 * time.Hour
 const refusalOpenAgent = "refusal_open_agent"
 
 const (
-	refusalTitle        = "Egress refused for %s"
-	refusalReasonOrigin = "%s is not one of the hosts *%s* may reach. Declare `%s` in the agent's egress to allow it."
-	refusalReasonTCP    = "*%s* opened a raw TCP connection to %s; agents reach hosts over HTTPS only."
-	refusalCountLine    = "%s in %s since %s, last at %s."
-	refusalFooter       = "You get this because you created *%s*. Further refusals of this host are counted here; the next notice for it comes after %s."
-	refusalOpenLabel    = "Open agent"
-	refusalTimeLayout   = "Jan 2 15:04 UTC"
+	refusalTitle      = "Outgoing connection to %s blocked"
+	refusalReason     = "%s is not allowed to reach this address"
+	refusalReasonTCP  = "Raw TCP connections are not available to agents"
+	refusalCountLine  = "%s in %s since %s, last at %s"
+	refusalPlatform   = "%s can only reach the addresses the platform allows for %s. Ask your platform team to allow %s."
+	refusalEdit       = "You can allow it: add `%s` to %s’s Extra egress origins."
+	refusalEditTCP    = "%s’s egress settings list the HTTP and HTTPS origins it may reach."
+	refusalNeutral    = "If %s needs %s, ask your platform team."
+	refusalDetails    = "Technical details: destination `%s:%d (%s)`"
+	refusalDetailsURL = refusalDetails + ", origin `%s`"
+	refusalFooter     = "You get this because you created *%s*. Further refusals of this host are counted here; the next notice for it comes after %s."
+	refusalEditLabel  = "Edit %s"
+	refusalTimeLayout = "Jan 2 15:04 UTC"
 )
+
+// kagentRuntime is the Harness runtime of an agent that is no coding agent.
+const kagentRuntime = "kagent"
+
+// runtimeTitles name a Harness runtime as the Dev Portal does, for a
+// Harness without a display name.
+var runtimeTitles = map[string]string{
+	"claude": "Claude Code",
+	"codex":  "Codex",
+	"byo":    "Custom image",
+}
 
 // refusalID is the record of the notice for one agent and destination.
 func refusalID(r channels.EgressRefusal) string {
@@ -77,6 +99,7 @@ func (a *Adapter) NoteRefusal(ctx context.Context, r channels.EgressRefusal) err
 	}
 	rec := store.Refusal{
 		Namespace: r.Namespace, Agent: r.Agent, DisplayName: r.DisplayName, Creator: r.Creator,
+		Runtime: r.Runtime, HarnessTitle: r.HarnessTitle,
 		Scheme: r.Scheme, Host: r.Host, Port: r.Port, AgentURL: r.AgentURL,
 	}
 	countRefusal(&rec, r)
@@ -117,6 +140,9 @@ func countRefusal(rec *store.Refusal, r channels.EgressRefusal) {
 	}
 	if r.DisplayName != "" {
 		rec.DisplayName = r.DisplayName
+	}
+	if r.Runtime != "" {
+		rec.Runtime, rec.HarnessTitle = r.Runtime, r.HarnessTitle
 	}
 	for _, s := range r.Sessions {
 		switch {
@@ -159,48 +185,74 @@ var defaultPorts = map[string]int{schemeHTTP: 80, schemeHTTPS: 443}
 const (
 	schemeHTTP  = "http"
 	schemeHTTPS = schemeHTTP + "s"
+	schemeTCP   = "tcp"
 )
 
-// refusalDestination is the destination as the notice names it.
-func refusalDestination(rec store.Refusal) string {
-	if rec.Port == 0 {
-		return "`" + rec.Host + "`"
+// refusalRuntime names the agent's Harness: its display name, else its
+// runtime's title, else the runtime as written.
+func refusalRuntime(rec store.Refusal) string {
+	if rec.HarnessTitle != "" {
+		return rec.HarnessTitle
 	}
-	return "`" + rec.Host + ":" + strconv.Itoa(rec.Port) + "`"
+	if title, ok := runtimeTitles[rec.Runtime]; ok {
+		return title
+	}
+	return rec.Runtime
+}
+
+// refusalRemedy is what the creator can do about the refusal, and whether
+// the agent's edit page is where they do it.
+func refusalRemedy(rec store.Refusal, name string) (string, bool) {
+	switch {
+	case rec.Runtime == "":
+		return fmt.Sprintf(refusalNeutral, name, rec.Host), false
+	case rec.Runtime != kagentRuntime:
+		return fmt.Sprintf(refusalPlatform, name, escapeMrkdwn(refusalRuntime(rec)), rec.Host), false
+	case rec.Scheme == schemeTCP:
+		return fmt.Sprintf(refusalEditTCP, name), true
+	default:
+		return fmt.Sprintf(refusalEdit, refusalOrigin(rec), name), true
+	}
 }
 
 func refusalFallback(rec store.Refusal) string {
-	return truncateRunes(fmt.Sprintf(refusalTitle, refusalName(rec))+": "+rec.Host, slackSectionTextMax)
+	return truncateRunes(fmt.Sprintf(refusalTitle, rec.Host)+" ("+refusalName(rec)+")", slackSectionTextMax)
 }
 
 func (a *Adapter) refusalBlocks(rec store.Refusal) []any {
 	name := escapeMrkdwn(refusalName(rec))
-	reason := fmt.Sprintf(refusalReasonOrigin, refusalDestination(rec), name, refusalOrigin(rec))
-	if rec.Scheme == "tcp" {
-		reason = fmt.Sprintf(refusalReasonTCP, name, refusalDestination(rec))
+	reason := fmt.Sprintf(refusalReason, name)
+	details := fmt.Sprintf(refusalDetailsURL, rec.Host, rec.Port, rec.Scheme, refusalOrigin(rec))
+	if rec.Scheme == schemeTCP {
+		reason = refusalReasonTCP
+		details = fmt.Sprintf(refusalDetails, rec.Host, rec.Port, rec.Scheme)
 	}
 	sessions := len(rec.Sessions) + rec.MoreSessions
 	count := fmt.Sprintf(refusalCountLine,
-		countOf(int64(rec.Count), "request"), countOf(int64(sessions), "Session"),
+		countOf(int64(rec.Count), "attempt"), countOf(int64(sessions), "Session"),
 		rec.FirstAt.UTC().Format(refusalTimeLayout), rec.LastAt.UTC().Format(refusalTimeLayout))
+	remedy, edit := refusalRemedy(rec, name)
 	blocks := []any{
-		map[string]any{bkType: bkHeader, bkText: map[string]any{bkType: bkPlainText, bkText: truncateRunes(fmt.Sprintf(refusalTitle, refusalName(rec)), 150)}},
-		map[string]any{bkType: bkSection, bkText: verbatimMrkdwn(truncateRunes(reason+"\n"+count, slackSectionTextMax))},
+		map[string]any{bkType: bkHeader, bkText: map[string]any{bkType: bkPlainText, bkText: truncateRunes(fmt.Sprintf(refusalTitle, rec.Host), 150)}},
+		map[string]any{bkType: bkSection, bkText: verbatimMrkdwn(truncateRunes(reason+" · "+count+"\n"+remedy, slackSectionTextMax))},
 	}
-	if rec.AgentURL != "" {
+	if edit && rec.AgentURL != "" {
 		blocks = append(blocks, map[string]any{
 			bkType: bkActions,
 			bkElements: []any{map[string]any{
 				bkType:     bkButton,
-				bkText:     map[string]any{bkType: bkPlainText, bkText: refusalOpenLabel},
+				bkText:     map[string]any{bkType: bkPlainText, bkText: truncateRunes(fmt.Sprintf(refusalEditLabel, refusalName(rec)), 75)},
 				bkActionID: refusalOpenAgent,
 				bkURL:      rec.AgentURL,
 			}},
 		})
 	}
 	blocks = append(blocks, map[string]any{
-		bkType:     bkContext,
-		bkElements: []any{verbatimMrkdwn(fmt.Sprintf(refusalFooter, name, spellDuration(a.refusalWindow())))},
+		bkType: bkContext,
+		bkElements: []any{
+			verbatimMrkdwn(details),
+			verbatimMrkdwn(fmt.Sprintf(refusalFooter, name, spellDuration(a.refusalWindow()))),
+		},
 	})
 	return blocks
 }

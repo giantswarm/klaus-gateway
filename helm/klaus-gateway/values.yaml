@@ -436,8 +436,9 @@ refusals:
   window: 24h
   interval: 1m
   # agentURLTemplate opens an agent where its egress is edited, with
-  # {namespace} and {name} replaced: the notice's Open agent button. Empty
-  # offers none.
+  # {namespace} and {name} replaced: the notice's Edit button, offered for an
+  # agent on the kagent runtime (a coding agent's egress is the platform's).
+  # Empty offers none.
   agentURLTemplate: ""
 
 # Workspaces: the workspace-manager's tools, which the Slack adapter calls

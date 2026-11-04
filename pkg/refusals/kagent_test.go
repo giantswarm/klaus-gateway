@@ -12,6 +12,12 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	dynamicfake "k8s.io/client-go/dynamic/fake"
+	k8stesting "k8s.io/client-go/testing"
 
 	apiv1alpha1 "github.com/giantswarm/klaus-gateway/pkg/kagent/gen/kagent/api/v1alpha1"
 	"github.com/giantswarm/klaus-gateway/pkg/refusals"
@@ -70,4 +76,85 @@ func TestKagentSessions_DeletedSessionAnswersWithItsTombstone(t *testing.T) {
 func TestKagentSessions_UnknownSessionIsNotASession(t *testing.T) {
 	_, _, err := kagentSessions(t, &fakeController{}).SessionAgent(context.Background(), "never-was")
 	require.ErrorIs(t, err, refusals.ErrNotSession)
+}
+
+func kubeAgents(objects ...runtime.Object) *refusals.KubeAgents {
+	scheme := runtime.NewScheme()
+	return &refusals.KubeAgents{Client: dynamicfake.NewSimpleDynamicClientWithCustomListKinds(scheme, map[schema.GroupVersionResource]string{
+		refusals.AgentsGVR:    "AgentList",
+		refusals.HarnessesGVR: "HarnessList",
+	}, objects...)}
+}
+
+func agentObject(harness string) *unstructured.Unstructured {
+	return &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "api.kagent.dev/v1alpha3", "kind": "Agent",
+		"metadata": map[string]any{
+			"namespace": "org-otter", "name": "otter-coder",
+			"annotations": map[string]any{
+				refusals.CreatedByAnnotation:   "badger@example.com",
+				refusals.DisplayNameAnnotation: "Otter Coder",
+			},
+		},
+		"spec": map[string]any{"harnessRef": map[string]any{"name": harness}},
+	}}
+}
+
+func harnessObject(name string, spec map[string]any, annotations map[string]any) *unstructured.Unstructured {
+	return &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "api.kagent.dev/v1alpha3", "kind": "Harness",
+		"metadata": map[string]any{"namespace": "org-otter", "name": name, "annotations": annotations},
+		"spec":     spec,
+	}}
+}
+
+func TestKubeAgents_ReadsTheRuntimeOfTheAgentsHarness(t *testing.T) {
+	substrate := map[string]any{"profile": "default"}
+	for _, tc := range []struct {
+		name         string
+		spec         map[string]any
+		annotations  map[string]any
+		runtime      string
+		harnessTitle string
+	}{
+		{"claude", map[string]any{"claude": map[string]any{}, "substrate": substrate, "workload": map[string]any{"image": "x"}}, nil, "claude", ""},
+		{"kagent", map[string]any{"kagent": map[string]any{}, "substrate": substrate, "env": []any{}}, nil, "kagent", ""},
+		{"display name", map[string]any{"codex": map[string]any{}, "substrate": substrate}, map[string]any{refusals.DisplayNameAnnotation: "Codex with Go"}, "codex", "Codex with Go"},
+		{"no runtime", map[string]any{"substrate": substrate}, nil, "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			agent, err := kubeAgents(agentObject("coding"), harnessObject("coding", tc.spec, tc.annotations)).Agent(context.Background(), "org-otter", "otter-coder")
+			require.NoError(t, err)
+			require.Equal(t, refusals.Agent{
+				DisplayName: "Otter Coder", Creator: "badger@example.com",
+				Runtime: tc.runtime, HarnessTitle: tc.harnessTitle,
+			}, agent)
+		})
+	}
+}
+
+func TestKubeAgents_MissingHarnessLeavesTheRuntimeUnknown(t *testing.T) {
+	agent, err := kubeAgents(agentObject("gone")).Agent(context.Background(), "org-otter", "otter-coder")
+	require.NoError(t, err)
+	require.Equal(t, "badger@example.com", agent.Creator)
+	require.Empty(t, agent.Runtime)
+}
+
+func TestKubeAgents_ForbiddenHarnessLeavesTheRuntimeUnknown(t *testing.T) {
+	agents := kubeAgents(agentObject("coding"))
+	agents.Client.(*dynamicfake.FakeDynamicClient).PrependReactor("get", "harnesses", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewForbidden(refusals.HarnessesGVR.GroupResource(), "coding", errors.New("no RBAC"))
+	})
+	agent, err := agents.Agent(context.Background(), "org-otter", "otter-coder")
+	require.NoError(t, err, "a ClusterRole without harnesses still notes the refusal")
+	require.Empty(t, agent.Runtime)
+}
+
+func TestKubeAgents_HarnessReadFailureIsRetried(t *testing.T) {
+	agents := kubeAgents(agentObject("coding"))
+	agents.Client.(*dynamicfake.FakeDynamicClient).PrependReactor("get", "harnesses", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewServiceUnavailable("apiserver restarting")
+	})
+	_, err := agents.Agent(context.Background(), "org-otter", "otter-coder")
+	require.Error(t, err)
 }

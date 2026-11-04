@@ -1106,12 +1106,30 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
 
 With `refusals.enabled` (`--refusals-enabled`), the creator of an agent learns by direct message
 from the app when the Substrate egress refuses a destination the agent's egress
-(`Agent.spec.egress`) does not declare: the destination, the reason, how many requests in how
-many Sessions since when, and an *Open agent* button (`refusals.agentURLTemplate`). There is one
+does not declare: *Outgoing connection to <host> blocked*, how many attempts in how many
+Sessions since when, what they can do about it, and the destination and origin under
+*Technical details*. There is one
 notice per agent and destination within `refusals.window` (24 h): later refusals inside it rewrite
 that message with the new count and time, and the first refusal after it posts a new one. A
 second destination of the same agent is a second notice. Nothing goes through Alertmanager.
 
+- **Remedy.** The notice words it as the Dev Portal's Session alert does
+  (`plugins/agent-platform/src/lib/egressCopy.ts` in giantswarm/backstage,
+  giantswarm/giantswarm#38814), by the runtime of the Agent's Harness (`spec.harnessRef`; the
+  runtime is the Harness spec's one key besides `workload`, `env` and `substrate`):
+
+  | Harness runtime | Remedy | Button |
+  | --- | --- | --- |
+  | `kagent`, http(s) | You can allow it: add `<origin>` to <agent>’s Extra egress origins. | *Edit <agent>* (`refusals.agentURLTemplate`) |
+  | `kagent`, raw TCP | <agent>’s egress settings list the HTTP and HTTPS origins it may reach. | *Edit <agent>* |
+  | any other (`claude`, `codex`, `byo`): a coding agent | <agent> can only reach the addresses the platform allows for <runtime>. Ask your platform team to allow <host>. | none |
+  | not known (the Harness is not found, or the gateway may not read it) | If <agent> needs <host>, ask your platform team. | none |
+
+  A coding agent's egress is the platform's list for its Harness (agent-manager's
+  `harness.egress.<harness>`), which refuses any other origin, so no editor can add one. `<runtime>`
+  is the Harness's `ui.giantswarm.io/display-name`, else Claude Code, Codex or Custom image. The
+  portal's toolchain remedy is not offered: the gateway does not know whether the installation's
+  Sessions mount toolchains.
 - **Source.** Every `refusals.interval` (1 min) the gateway reads
   `agentgateway_atenet_egress_refusals_total` (one series per actor and destination: `ate_atespace`,
   `ate_actor_name`, `scheme`, `host`, `port`) from the stats port of every pod behind
@@ -1130,7 +1148,8 @@ second destination of the same agent is a second notice. Nothing goes through Al
   counted as `not_session`. The creator is the email in the Agent's
   `agent-platform.giantswarm.io/created-by` annotation (agent-manager records it); an Agent
   without one is counted (`klaus_gateway_egress_refusals_total{outcome="no_creator"}`) and
-  nobody is told. The creator is found in Slack by that email (`users:read.email`).
+  nobody is told. The Agent's Harness is read from the same namespace; a Harness that cannot be
+  read for another reason than its absence or a refused read is retried on the next read. The creator is found in Slack by that email (`users:read.email`).
 - **Record.** The notice is a record in the review store (`refusal-<hash of agent and
   destination>`, the window as its TTL), so on `valkey` and `bolt` a restart keeps the
   deduplication. A notice Slack or kagent could not take is retried on the next read with the

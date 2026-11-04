@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 
@@ -11,7 +12,9 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 
@@ -71,27 +74,70 @@ func (k *KagentSessions) SessionAgent(ctx context.Context, sessionID string) (st
 	return agent.GetNamespace(), agent.GetName(), nil
 }
 
-// The Agent annotations a notice reads: the creator agent-manager records,
-// and the display name the agent chart renders.
+// The annotations a notice reads: the creator agent-manager records on an
+// Agent, and the display name the agent chart renders on an Agent and an
+// admin may set on a Harness.
 const (
 	CreatedByAnnotation   = "agent-platform.giantswarm.io/created-by"
 	DisplayNameAnnotation = "ui.giantswarm.io/display-name"
 )
 
-// AgentsGVR is the kagent Agent resource.
-var AgentsGVR = schema.GroupVersionResource{Group: "api.kagent.dev", Version: "v1alpha3", Resource: "agents"}
+// AgentsGVR is the kagent Agent resource and HarnessesGVR the Harness an
+// Agent names in spec.harnessRef, in its own namespace.
+var (
+	AgentsGVR    = schema.GroupVersionResource{Group: "api.kagent.dev", Version: "v1alpha3", Resource: "agents"}
+	HarnessesGVR = schema.GroupVersionResource{Group: "api.kagent.dev", Version: "v1alpha3", Resource: "harnesses"}
+)
 
-// KubeAgents reads Agents from the Kubernetes API.
+// KubeAgents reads Agents and their Harnesses from the Kubernetes API.
 type KubeAgents struct {
 	Client dynamic.Interface
 }
 
-// Agent implements Agents.
+// Agent implements Agents. A Harness that is not found, or that the gateway
+// may not read, leaves the runtime unknown; any other failure to read it is
+// an error, so the refusal is noted on a later read rather than with a
+// remedy that may be wrong.
 func (k *KubeAgents) Agent(ctx context.Context, namespace, name string) (Agent, error) {
 	obj, err := k.Client.Resource(AgentsGVR).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return Agent{}, fmt.Errorf("refusals: get Agent %s/%s: %w", namespace, name, err)
 	}
 	annotations := obj.GetAnnotations()
-	return Agent{DisplayName: annotations[DisplayNameAnnotation], Creator: annotations[CreatedByAnnotation]}, nil
+	out := Agent{DisplayName: annotations[DisplayNameAnnotation], Creator: annotations[CreatedByAnnotation]}
+	harness, _, _ := unstructured.NestedString(obj.Object, "spec", "harnessRef", "name")
+	if harness == "" {
+		return out, nil
+	}
+	h, err := k.Client.Resource(HarnessesGVR).Namespace(namespace).Get(ctx, harness, metav1.GetOptions{})
+	switch {
+	case apierrors.IsNotFound(err), apierrors.IsForbidden(err):
+		return out, nil
+	case err != nil:
+		return Agent{}, fmt.Errorf("refusals: get Harness %s/%s of Agent %s: %w", namespace, harness, name, err)
+	}
+	out.Runtime = harnessRuntime(h)
+	out.HarnessTitle = h.GetAnnotations()[DisplayNameAnnotation]
+	return out, nil
+}
+
+// harnessSpecFields are the Harness spec fields that select no runtime.
+var harnessSpecFields = map[string]bool{"workload": true, "env": true, "substrate": true}
+
+// harnessRuntime is the runtime a Harness selects: the one key of its spec
+// besides harnessSpecFields (kagent, claude, codex, byo), as agent-manager
+// reads it; "" for none.
+func harnessRuntime(h *unstructured.Unstructured) string {
+	spec, _, _ := unstructured.NestedMap(h.Object, "spec")
+	keys := make([]string, 0, 1)
+	for key := range spec {
+		if !harnessSpecFields[key] {
+			keys = append(keys, key)
+		}
+	}
+	if len(keys) == 0 {
+		return ""
+	}
+	slices.Sort(keys)
+	return keys[0]
 }
