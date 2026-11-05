@@ -328,7 +328,9 @@ place, and the line stays. Once the person has connected, the line reads "@Jose 
 *agent-manager*." and the card is a confirmation: "Connected *agent-manager*. Your message is
 on its way to the agent." when the link's landing runs the held message, "Connected
 *agent-manager*." when their next turn that starts the Session found them connected and the
-held message stays unsent. The ephemeral's button
+held message stays unsent. The landing settles every other thread where the person waits for
+the same server too, and runs each thread's held message there; a thread whose held message
+has expired gets "Connected *agent-manager*." alone. The ephemeral's button
 carries the completion state in its `value`, so a click on it is replaced through its
 `response_url`; the cards' buttons carry the server name and are rewritten in place.
 

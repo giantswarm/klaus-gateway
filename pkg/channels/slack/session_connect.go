@@ -3,6 +3,7 @@ package slack
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
@@ -80,6 +81,24 @@ func (a *Adapter) takeSessionConnect(slackUser, threadID string) (sessionConnect
 		return sessionConnectSurfaces{}, false
 	}
 	return entry.value, true
+}
+
+// takeOtherSessionConnects returns and forgets the live surfaces of every
+// thread but threadID where slackUser waits for server.
+func (a *Adapter) takeOtherSessionConnects(slackUser, server, threadID string) []sessionConnectSurfaces {
+	now := time.Now()
+	prefix := sessionConnectKey(slackUser, "")
+	a.sessionConnectMu.Lock()
+	defer a.sessionConnectMu.Unlock()
+	var taken []sessionConnectSurfaces
+	for key, entry := range a.sessionConnects {
+		if !strings.HasPrefix(key, prefix) || entry.value.server != server || entry.value.threadTS == threadID || !now.Before(entry.expires) {
+			continue
+		}
+		taken = append(taken, entry.value)
+		delete(a.sessionConnects, key)
+	}
+	return taken
 }
 
 // promptSessionConnect answers a Session start muster refused with its
@@ -232,8 +251,8 @@ func (a *Adapter) ensureSessionConnectLine(ctx context.Context, client *slackAPI
 // connected, the card to the confirmation. Called by the landing of the
 // prompt's own link, which then runs the held message (delivered), and by
 // the person's next turn in the thread that starts its Session, however they
-// connected (another thread's prompt, another muster client, a gateway
-// without a public base URL), when the held message stays unsent and the
+// connected (another muster client, a gateway without a public base URL),
+// when the held message stays unsent and the
 // card must not say otherwise. The prompts' completion states go with the
 // surfaces, so a stale button runs no held message after the fact. The
 // ephemeral is replaced through its click's response_url by the landing,
@@ -244,6 +263,29 @@ func (a *Adapter) settleSessionConnect(ctx context.Context, slackUser, threadID 
 		return
 	}
 	a.dropConnectorCompletions(s.states)
+	a.rewriteSessionConnect(ctx, slackUser, s, delivered)
+}
+
+// settleOtherSessionConnects settles, once a landing settled its own thread,
+// every other thread where slackUser waits for server: the consent is the
+// person's per server, not per thread. Each thread's held message, the one
+// of its latest prompt, runs as the person in that thread, as the landing
+// runs its own; a thread whose held message has expired gets the confirmation
+// alone.
+func (a *Adapter) settleOtherSessionConnects(ctx context.Context, slackUser, server, threadID string) {
+	for _, s := range a.takeOtherSessionConnects(slackUser, server, threadID) {
+		held := a.takeHeldMessage(s.states)
+		a.rewriteSessionConnect(ctx, slackUser, s, held != nil)
+		if held == nil {
+			continue
+		}
+		entry := connectorCompletion{slackUser: slackUser, server: server, channel: s.channel, threadTS: s.threadTS, held: held}
+		a.background(func(ctx context.Context) { a.resumeAfterConnectorSignIn(ctx, entry) })
+	}
+}
+
+// rewriteSessionConnect rewrites the line and the card of s to who connected.
+func (a *Adapter) rewriteSessionConnect(ctx context.Context, slackUser string, s sessionConnectSurfaces, delivered bool) {
 	client := a.apiClient()
 	if s.lineTS != "" {
 		text := fmt.Sprintf(sessionConnectConnectedFormat, slackUser, escapeMrkdwn(s.server))
