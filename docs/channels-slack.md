@@ -337,7 +337,8 @@ creates one, which a turn that switches agents does mid-thread.
   and replies without a mention reach it again after that. A newcomer's mention goes through the
   access prompt first: Deny keeps the thread muted, Allow ends the mute. `mute` drops the messages
   parked in the thread — a newcomer's waiting for the initiator's Allow, a signed-out sender's
-  waiting for their sign-in — in the process and in the thread's row, and tells each sender
+  waiting for their sign-in, every message queued behind the running turn — in the process and in
+  the thread's row, and tells each sender
   privately: "The thread was muted; mention the agent to ask again." A sign-in that completes
   later, on this process or after a restart, replays nothing; an access prompt left open stays,
   and its Allow grants the newcomer and runs nothing, so the thread stays muted. A replay already
@@ -594,15 +595,17 @@ A thread's agent binding is not re-derived after a restart — it does not need 
 in the thread's row in the routing store (see [Threads and conversations](#threads-and-conversations)),
 so on a persistent store (`routing.store: valkey` or `bolt`) a restart changes nothing: same
 agent, same initiator, same grants, and the same messages held for the thread — those parked
-while their sender signs in or while the initiator decides on a newcomer, and the prompt a
-paused task waits on. The adapter keeps that held state in the row's `held` field, rewrites it
-after every change and reads it back at start, so a sign-in, an Allow or an Approve after a
-restart replays or resumes as it would have before it, and a sign-in completed while the
-gateway was down replays at start; a `mute` drops the thread's parked messages from the row,
-and a replay of a message written before the thread's mute runs nothing (see the muted-thread
-entry under [Threads and conversations](#threads-and-conversations)). Parked messages and a paused prompt still expire after 24
-hours. A parked message is stored without its sender's token and without attachment bytes it
-can download again. The gateway never reads Slack history — no
+while their sender signs in or while the initiator decides on a newcomer, those queued in the
+thread's inbox, and the prompt a paused task waits on. The adapter keeps that held state in the
+row's `held` field, rewrites it after every change and reads it back at start, so a sign-in, an
+Allow or an Approve after a restart replays or resumes as it would have before it, a sign-in
+completed while the gateway was down replays at start, and the queued messages run at start, in
+order (see [Message flow](#message-flow)); a `mute` drops the thread's parked and queued
+messages from the row, and a replay of a message written before the thread's mute runs nothing
+(see the muted-thread entry under [Threads and conversations](#threads-and-conversations)).
+Parked and queued messages and a paused prompt still expire after 24 hours. A parked or queued
+message is stored without its sender's token and without attachment bytes it can download again.
+The gateway never reads Slack history — no
 `conversations.replies`, no re-parsing the opening message or the slash command's root — to
 recover any of it; the routing-store row is the only carrier. On `routing.store: memory` a
 restart loses this state: every conversation is gone, a plain reply in one gets no answer, a
@@ -817,11 +820,39 @@ any string that begins with `Slack bot`, `Slack app-level`, or `Slack user`.
    `method` label to see which call is being held back. Each 429 also writes a debug log line
    with the method, the wait and the attempt.
 
-Turns are serialized per thread: a message that arrives while the thread's previous turn is
-still running gets a brief "still working" notice rather than starting an overlapping turn; the
-notice names `stop`, and a reply that is just that word interrupts the running turn.
-A signed-out sender's message is held for sign-in instead (no busy notice) and replays once
-they link and the running turn finishes.
+Turns are serialized per thread, and a message for the thread's conversation waits for its
+turn in the thread's **inbox**, a queue in the thread's row. The message is written there
+before Slack is answered: one store write after the inactive-thread gate's read, in both
+transports (the Events API's `200`, the Socket Mode envelope's acknowledgement). It leaves the
+inbox when its turn goes to the agent. A gateway that dies between the answer and the turn
+therefore loses nothing: on a routing store that outlives the process (`valkey`, `bolt`) the next
+process runs the inbox, in order, and the message whose turn was already the agent's is
+delivered by the restart's recovery instead. It does so a minute after it starts: in a rolling
+update the process it replaces still runs the inboxes until it is told to stop, and from then on
+that one hands no queued message to the agent. On the `memory` store no next process reads the
+inbox, so a process told to stop runs it on until it exits. A message in a thread with no
+conversation writes nothing: a reply is dropped at the gate, a mention gets the help. A command
+word (`usage`, `help`, `mute`, …) is answered at once, not queued; a `stop` or `mute` beside an
+open approval card, which the word rejects, is queued as the card's answer.
+
+- **A message that arrives while a turn runs** waits for it and runs after it, the waiting
+  messages in the order they came, each as its sender's turn. Its sender is told privately:
+  "Queued. It runs after the reply in progress." Nobody is told the thread is busy.
+- **Everything about a message is decided when it runs**, not when it is queued: the access
+  check (a newcomer's Allow), the sign-in, a workspace prompt.
+- **Five messages wait at most.** The sixth is not queued, and its sender is told so and to
+  send it again once the others have run. A message that waits longer than 24 hours is dropped,
+  and its sender is told.
+- **A prompt waits for its answer.** When the running turn pauses on an approval or a
+  question, the messages written before the prompt do not answer it: the next message written
+  after it, or a click, does, also when five messages wait, and the waiting messages run after
+  the turn the answer resumes.
+- **`stop` interrupts the running turn**, and the next queued message then runs. `mute` stops
+  the turn too and drops the queue, telling each sender (see the muted-thread entry under
+  [Threads and conversations](#threads-and-conversations)).
+
+A button click on a thread whose turn still runs gets the busy notice: a click has nothing to
+queue.
 
 ### Records
 
@@ -843,7 +874,8 @@ Three structured log records (`record=…`, JSON fields) tell a turn's story; jo
   milliseconds since the events POST (or the Socket Mode frame) arrived: `token_mint_ms`,
   `roster_ms`, `dispatch_ms`, `create_session_ms`, `first_event_ms`,
   `first_text_ms`, `task_done_ms`, `stream_end_ms`, `final_flush_ms`, `total_ms`. A phase that
-  did not happen (no session created on a follow-up) is absent. A turn a
+  did not happen (no session created on a follow-up) is absent. A message that waited in its
+  thread's inbox carries the wait in every mark. A turn a
   previous process left running and this one delivered after a restart gets a record too, its
   timeline starting at the delivery. Its tokens are the turn's full total, the calls made before
   the restart included; the previous process's `shutdown` record of the same `task_id` holds only
@@ -986,7 +1018,7 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
   owns no in-message slash command: Slack's composer keeps a message that starts with `/` for
   its own commands, so such a message only ever reached the bot after a mention, and one that
   does now goes to the agent like any other text. `stop` is the word with a
-  condition: dispatch reads it only in a thread whose turn is still running, and anywhere else
+  condition: the gateway reads it only in a thread whose turn is still running, and anywhere else
   it stays a message for the agent (see [Restarts and stopping](#restarts-and-stopping)).
   Three messages keep the word instead: a sentence that
   contains it, a caption on an upload, and an answer in a thread paused on a **question** —

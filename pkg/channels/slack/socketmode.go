@@ -130,10 +130,16 @@ func (c *socketModeClient) readLoop(ctx context.Context, ws *websocket.Conn) {
 			continue
 		}
 
-		// Acknowledge the envelope before any further processing.
-		if env.EnvelopeID != "" {
-			ack := `{"envelope_id":"` + env.EnvelopeID + `"}`
-			_ = websocket.Message.Send(ws, ack) //nolint:staticcheck
+		// An event is acknowledged once a message for a conversation is in
+		// its thread's inbox (handleInbound); every other envelope before any
+		// further processing.
+		ack := func() {
+			if env.EnvelopeID != "" {
+				_ = websocket.Message.Send(ws, `{"envelope_id":"`+env.EnvelopeID+`"}`) //nolint:staticcheck
+			}
+		}
+		if env.Type != "events_api" {
+			ack()
 		}
 
 		// Slack load-balances events across every open Socket Mode connection
@@ -188,11 +194,13 @@ func (c *socketModeClient) readLoop(ctx context.Context, ws *websocket.Conn) {
 
 		var payload smEventPayload
 		if err := json.Unmarshal(env.Payload, &payload); err != nil {
+			ack()
 			continue
 		}
 
 		ev := payload.Event
 		ev.receivedAt = time.Now()
-		c.adapter.background(func(ctx context.Context) { c.adapter.handleInbound(ctx, ev, payload.EventID) })
+		c.adapter.receive(ctx, ev, payload.EventID)
+		ack()
 	}
 }

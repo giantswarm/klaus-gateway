@@ -21,8 +21,9 @@
 //     identity.
 //   - turn: one inbound trigger (a typed message or a button click) and the
 //     completion streamed back for it. At most one turn runs per thread at a
-//     time (the thread's turn slot, threadState in thread.go); a concurrent
-//     trigger is rejected busy.
+//     time (the thread's turn slot, threadState in thread.go); a message that
+//     arrives meanwhile waits in the thread's inbox (inbox.go), a click is
+//     rejected busy.
 //   - task: an A2A task. A turn that pauses at input-required leaves a
 //     pending task on the thread; a later turn (a typed reply or a button
 //     click) resumes it. A task can span several turns; a turn serves at
@@ -55,8 +56,9 @@
 // Two entrypoints admit turns, each with its own gates, and converge on the
 // shared tail, runTurn (turn.go):
 //
-//   - dispatch (slack.go), a typed message: access gate (initiator or
-//     granted collaborator; newcomers park for consent), sign-in gate (a
+//   - dispatch (slack.go), a typed message, run in order from the thread's
+//     inbox: access gate (initiator or granted collaborator; newcomers park
+//     for consent), sign-in gate (a
 //     signed-out sender's message parks for replay after linking), thread
 //     slot, then take the thread's pending task, mapping the reply text to
 //     a HITL decision.

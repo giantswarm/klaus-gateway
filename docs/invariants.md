@@ -11,6 +11,15 @@ or `helm/`. Add a line when a review finds a new one.
   approval and a paused prompt are written to the thread's row (`Entry.Held`) on every
   change and read back at start; the sign-in's PKCE verifier is derived from its signed
   state. A new piece of per-thread state a restart must not lose goes there too (#132).
+- **A message the gateway acknowledged is handled, or its sender is told.** Slack sends nothing
+  again after the events `200` or the Socket Mode envelope's acknowledgement, so a message for a
+  conversation is written into the thread's inbox (`held.inbox` in its row) before either goes
+  out. It leaves the inbox once its turn is the agent's, or else once dispatch is done with it
+  (parked, refused), in the write that keeps what dispatch parked of it; one that cannot be
+  queued (the store refuses the write, five messages wait already) or that waited 24 hours is
+  answered privately. A command word is answered after the acknowledgement, and a `stop` or
+  `mute` that rejects an open approval card is queued after it too: a crash in between leaves
+  the card open (#528).
 - **A mention inside a thread arrives twice**, as `app_mention` and as `message.channels`.
   A gate on the plain-message copy must skip text that mentions the bot, or it answers the
   mention twice (#307).
@@ -82,7 +91,10 @@ or `helm/`. Add a line when a review finds a new one.
 - **Every message in a served channel reaches the inactive-thread gate.** That path is the
   most frequent one the gateway runs; it costs at most one store read (#307). A reply under the
   bot's own message (`parent_user_id`) costs one more: the lookup of a decision it may answer or a
-  conversation it belongs to, one record under one id (#360, #369).
+  conversation it belongs to, one record under one id (#360, #369). A message the gate admits
+  costs one read-modify-write more before Slack is answered (a GET and a SET on Valkey), its place
+  in the thread's inbox; a mention or a direct message, which skip the gate, cost that read too and
+  write only into a conversation. One the gate drops writes nothing (#528).
 
 ## Thread state and the store
 
@@ -103,6 +115,16 @@ or `helm/`. Add a line when a review finds a new one.
   inactive-thread gate reads it from the one row it already reads, so the gate path still costs
   one store read; `held` is rewritten from the adapter's memory on every change of a parked
   queue, and a mute kept there would be lost on the next one (#410).
+- **A thread's inbox is the one part of `held` only the row holds.** A rewrite of `held` from the
+  adapter's memory keeps the row's `inbox`, and an inbox write keeps the rest of the row's `held`
+  as it is: the inbox is written before Slack is answered, also before the start-up restore has
+  read the row back (#528).
+- **Two gateway processes overlap in a rolling update.** The chart rolls (only a bolt volume
+  makes it recreate), and the new process reads the rows back before the old one is told to stop.
+  So the new process leaves the inboxes it read back alone for a minute, and the old one hands no
+  queued message to the agent once the process signal arrives; nothing else stops the two from
+  running one message twice. On the `memory` store no other process reads the inbox, so the old
+  one runs it on until it exits. More than one replica needs a claim in the store (#528).
 - **The controller's create is idempotent per caller and request id.** The same person gets
   the earlier session back; a different person gets a new one (giantswarm#37896).
 

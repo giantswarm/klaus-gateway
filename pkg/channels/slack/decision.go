@@ -455,38 +455,40 @@ func (a *Adapter) handleDecisionAnswerSubmission(ctx context.Context, payload in
 
 // answerDecisionReply takes a reply in a decision's thread as the replier's
 // answer in their own words, relays a reply in a conversation's thread to its
-// agent, and reports whether it did either. Only a reply under a
+// agent, and reports whether it does either. The record is read now, before
+// Slack is answered; the answer or the relay is returned to run after (nil
+// when there is nothing to do). Only a reply under a
 // message of the bot's own is looked up, so every other message costs no
 // store read here; the app_mention twin of a reply that mentions the bot is
 // consumed with it.
-func (a *Adapter) answerDecisionReply(ctx context.Context, inner slackInnerEvent) bool {
+func (a *Adapter) answerDecisionReply(ctx context.Context, inner slackInnerEvent) (func(context.Context), bool) {
 	if (inner.Type != evtMessage && inner.Type != evtAppMention) || inner.ThreadTS == "" || inner.ThreadTS == inner.TS ||
 		inner.BotID != "" || inner.User == "" || !routableSubtype(inner.SubType) ||
 		inner.ParentUserID == "" || inner.ParentUserID != a.botID(ctx) {
-		return false
+		return nil, false
 	}
 	id := decisionID(inner.Channel, inner.ThreadTS)
 	rv, found, err := a.reviews().GetReview(ctx, id)
 	if err != nil {
 		a.Logger.Warn("slack: decision lookup failed", "record", "decision_store_failed", "decision", id, "slack_user", inner.User, "error", err)
-		return false
+		return nil, false
 	}
 	if !found || (rv.Decision == nil && rv.Conversation == nil) {
-		return false
+		return nil, false
 	}
 	if a.seenMessage(inner.Channel, inner.TS) {
-		return true
+		return nil, true
 	}
 	if rv.Conversation != nil {
-		a.relayConversationReply(ctx, rv, inner)
-		return true
+		return func(ctx context.Context) { a.relayConversationReply(ctx, rv, inner) }, true
 	}
 	text := strings.TrimSpace(slackTextUnescaper.Replace(inner.Text))
 	if text == "" || a.Tools == nil {
-		return true
+		return nil, true
 	}
-	a.answerDecision(ctx, rv, inner.User, decisionAnswer{text: truncateRunes(text, channels.DecisionAnswerMax)}, signInForReply, false)
-	return true
+	return func(ctx context.Context) {
+		a.answerDecision(ctx, rv, inner.User, decisionAnswer{text: truncateRunes(text, channels.DecisionAnswerMax)}, signInForReply, false)
+	}, true
 }
 
 // slackTextUnescaper turns a message's text as Slack sends it back into what

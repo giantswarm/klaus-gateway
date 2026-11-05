@@ -1,7 +1,6 @@
 package slack
 
 import (
-	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -50,11 +49,11 @@ func (h *eventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Slack redelivers an event up to 3 times when the ack is slow or fails.
-	// Handling is asynchronous (ack-first), so a duplicate delivery would start
-	// a duplicate turn; handleInbound dedups on event_id for both transports. A
-	// retry without an event_id cannot be deduped there, so it is dropped here:
-	// it cannot be distinguished from an already-handled delivery.
+	// Slack redelivers an event up to 3 times when the ack is slow or fails, so
+	// a duplicate delivery would start a duplicate turn; handleInbound dedups
+	// on event_id for both transports. A retry without an event_id cannot be
+	// deduped there, so it is dropped here: it cannot be distinguished from an
+	// already-handled delivery.
 	if r.Header.Get("X-Slack-Retry-Num") != "" && env.EventID == "" {
 		h.logger.Info("slack: dropping redelivered event without event_id",
 			"retry_num", r.Header.Get("X-Slack-Retry-Num"),
@@ -64,14 +63,15 @@ func (h *eventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Acknowledge immediately; Slack requires a 200 within 3 seconds.
-	w.WriteHeader(http.StatusOK)
-
+	// Slack requires a 200 within 3 seconds, and sends nothing again after
+	// one: a message for a conversation is in its thread's inbox before the
+	// 200, and everything else about the event runs after it.
 	if env.Type == "event_callback" && env.Event != nil {
 		ev := *env.Event
 		ev.receivedAt = time.Now()
-		h.adapter.background(func(ctx context.Context) { h.adapter.handleInbound(ctx, ev, env.EventID) })
+		h.adapter.receive(h.adapter.lifecycleCtx(), ev, env.EventID)
 	}
+	w.WriteHeader(http.StatusOK)
 }
 
 // VerifySignature validates an inbound request using the Slack signing secret

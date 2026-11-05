@@ -496,6 +496,7 @@ func TestWorkspace_RestartBetweenPromptAndClickCompletesTheStart(t *testing.T) {
 		row, _, err := shared.ThreadRecord(t.Context(), "slack", "C1", "100.000")
 		return err == nil && strings.Contains(string(row.Held), "what failed on prod?") && strings.Contains(string(row.Held), "prompt_ts")
 	}, flowWait, 20*time.Millisecond, "the held message and its prompt reach the thread's row")
+	waitThreadIdle(t, a1, "100.000")
 	require.NoError(t, a1.Stop(context.Background()))
 
 	gw2, captured := captureDispatch(shared)
