@@ -25,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Slack link: a refused refresh token no longer signs the person out when another replica has just rotated it. A link store that cannot be re-read keeps the link and fails the turn as transient, and the link is deleted only while the store still holds the refused token, so a rotation that lands in between is kept.
+
 - Slack: an answer to a prompt that was answered elsewhere first (Backstage, on the same task) sends nothing and the thread reads "This was already answered elsewhere, so this answer was not sent to the agent." instead of a failure note. A late answer to a task that has paused again on another request is no longer applied to that new request. The turn ends as `prompt_answered` in `turn_complete` and `klaus_gateway_turn_total` ([giantswarm/klaus-gateway#140](https://github.com/giantswarm/klaus-gateway/issues/140)).
 
 - Slack link: muster's userinfo must answer `email_verified: true` for the link to be made. The email is what ties the muster identity to the Slack profile, and an email the identity provider never verified proved nothing.

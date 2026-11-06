@@ -160,6 +160,31 @@ func (s *SecretStore) Delete(slackUserID string) error {
 	return nil
 }
 
+// CompareAndDelete removes the link when it still holds refreshToken. The
+// match and the delete run against one resourceVersion of the Secret, so a
+// link another writer rotated in between is never deleted. A record that does
+// not decode matches no token and is left for a re-link to overwrite.
+func (s *SecretStore) CompareAndDelete(slackUserID, refreshToken string) (bool, error) {
+	deleted := false
+	if err := s.mutate(func(data map[string][]byte) bool {
+		deleted = false
+		record, ok := data[slackUserID]
+		if !ok {
+			return false
+		}
+		link, err := s.cipher.openLink(record)
+		if err != nil || link.RefreshToken != refreshToken {
+			return false
+		}
+		delete(data, slackUserID)
+		deleted = true
+		return true
+	}); err != nil {
+		return false, fmt.Errorf("musterlink: delete from secret %s: %w", s.Ref(), err)
+	}
+	return deleted, nil
+}
+
 // Import adds every link in links that the Secret does not hold yet, in one
 // write, and returns how many it added. An entry already present wins: it may
 // carry a refresh token rotated after the source was last written, and

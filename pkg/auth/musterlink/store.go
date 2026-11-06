@@ -40,7 +40,9 @@ type Link struct {
 // report: Get returns ErrNotLinked when no link is stored for the user and any
 // other error when the backend failed to answer (a Kubernetes API call that did
 // not go through, a bolt file that cannot be read), and Put and Delete return
-// the backend's error. What a failure means -- a link served from memory, a
+// the backend's error. CompareAndDelete deletes a link only while it still
+// holds the given refresh token, as one atomic step of the backend, and
+// reports whether it deleted it. What a failure means -- a link served from memory, a
 // write retried, a transient error to the person -- is the Linker's call. The
 // interface is kept narrow so backends (bolt file, Kubernetes Secret,
 // in-memory) are interchangeable without touching callers.
@@ -48,6 +50,7 @@ type Store interface {
 	Get(slackUserID string) (*Link, error)
 	Put(slackUserID string, link *Link) error
 	Delete(slackUserID string) error
+	CompareAndDelete(slackUserID, refreshToken string) (deleted bool, err error)
 }
 
 // MemStore is an in-memory Store. It loses all links on restart, forcing every
@@ -85,6 +88,17 @@ func (s *MemStore) Delete(slackUserID string) error {
 	defer s.mu.Unlock()
 	delete(s.m, slackUserID)
 	return nil
+}
+
+// CompareAndDelete removes the link when it still holds refreshToken.
+func (s *MemStore) CompareAndDelete(slackUserID, refreshToken string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if l, ok := s.m[slackUserID]; !ok || l.RefreshToken != refreshToken {
+		return false, nil
+	}
+	delete(s.m, slackUserID)
+	return true, nil
 }
 
 // linkCipher turns a Link into an AES-256-GCM sealed record and back. Both
@@ -249,6 +263,29 @@ func (s *BoltStore) Delete(slackUserID string) error {
 		return fmt.Errorf("musterlink: bolt delete: %w", err)
 	}
 	return nil
+}
+
+// CompareAndDelete removes the link when it still holds refreshToken, reading
+// and deleting in one bolt transaction. A record that does not decode matches
+// no token and is left for a re-link to overwrite.
+func (s *BoltStore) CompareAndDelete(slackUserID, refreshToken string) (bool, error) {
+	deleted := false
+	if err := s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(linkBucket)
+		v := b.Get([]byte(slackUserID))
+		if v == nil {
+			return nil
+		}
+		link, err := s.cipher.openLink(v)
+		if err != nil || link.RefreshToken != refreshToken {
+			return nil
+		}
+		deleted = true
+		return b.Delete([]byte(slackUserID))
+	}); err != nil {
+		return false, fmt.Errorf("musterlink: bolt delete: %w", err)
+	}
+	return deleted, nil
 }
 
 // Each calls fn for every link in the store. A record that does not decrypt

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"k8s.io/client-go/kubernetes/fake"
 )
 
 func key32() []byte {
@@ -143,4 +144,44 @@ func TestMemStore(t *testing.T) {
 	require.NoError(t, s.Delete("U1"))
 	_, err = s.Get("U1")
 	require.ErrorIs(t, err, ErrNotLinked)
+}
+
+// CompareAndDelete removes a link only while it still holds the given refresh
+// token, on every backend.
+func TestStoreCompareAndDelete(t *testing.T) {
+	backends := map[string]func(t *testing.T) Store{
+		"memory": func(*testing.T) Store { return NewMemStore() },
+		"bolt": func(t *testing.T) Store {
+			s, err := OpenBoltStore(t.TempDir()+"/links.bolt", key32(), nil)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = s.Close() })
+			return s
+		},
+		"secret": func(t *testing.T) Store {
+			return newSecretStoreFor(t, fake.NewClientset(linkSecret(nil)), key32())
+		},
+	}
+	for name, open := range backends {
+		t.Run(name, func(t *testing.T) {
+			s := open(t)
+
+			deleted, err := s.CompareAndDelete("U1", "rt-0")
+			require.NoError(t, err)
+			require.False(t, deleted)
+
+			require.NoError(t, s.Put("U1", &Link{RefreshToken: "rt-1"}))
+			deleted, err = s.CompareAndDelete("U1", "rt-0")
+			require.NoError(t, err)
+			require.False(t, deleted, "a link under another token is kept")
+			got, err := s.Get("U1")
+			require.NoError(t, err)
+			require.Equal(t, "rt-1", got.RefreshToken)
+
+			deleted, err = s.CompareAndDelete("U1", "rt-1")
+			require.NoError(t, err)
+			require.True(t, deleted)
+			_, err = s.Get("U1")
+			require.ErrorIs(t, err, ErrNotLinked)
+		})
+	}
 }

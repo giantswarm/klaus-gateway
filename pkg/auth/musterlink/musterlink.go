@@ -783,13 +783,21 @@ func (l *Linker) refreshLink(ctx context.Context, slackUserID string, link *Link
 		// the token since this process last read it, and then the stored one is
 		// the live one.
 		stored, serr := l.reload(slackUserID)
-		if serr != nil || stored.RefreshToken == link.RefreshToken {
-			return "", time.Time{}, l.dropDead(slackUserID)
+		switch {
+		case errors.Is(serr, ErrNotLinked):
+			l.forget(slackUserID)
+			return "", time.Time{}, ErrNotLinked
+		case serr != nil:
+			// The store cannot say whether another writer rotated the token, so
+			// the link is kept and the turn fails as transient.
+			return "", time.Time{}, fmt.Errorf("musterlink: re-read link after invalid_grant: %w", serr)
+		case stored.RefreshToken == link.RefreshToken:
+			return "", time.Time{}, l.dropDead(slackUserID, link.RefreshToken)
 		}
 		l.logger.Info("musterlink: refresh token rotated by another writer, retrying with the stored one", "slackUser", slackUserID)
 		link = stored
 		if tok, err = l.refresh(ctx, link.RefreshToken); isInvalidGrant(err) {
-			return "", time.Time{}, l.dropDead(slackUserID)
+			return "", time.Time{}, l.dropDead(slackUserID, link.RefreshToken)
 		}
 	}
 	if err != nil {
@@ -834,14 +842,26 @@ func isInvalidGrant(err error) bool {
 
 // dropDead removes a link whose refresh token muster rejected and returns
 // ErrNotLinked, so the caller prompts sign-in on this same turn rather than a
-// turn later. A store that refuses the delete is logged: the next read finds
-// the dead link again and lands here again, which is harmless.
-func (l *Linker) dropDead(slackUserID string) error {
-	if err := l.drop(slackUserID); err != nil {
+// turn later. When the store no longer holds the spent token (a writer rotated
+// the link since this process read it), the link is kept and the turn fails as
+// transient; the next one reads the live token. A store that refuses the
+// delete is logged: the next read finds the dead link again and lands here
+// again, which is harmless.
+func (l *Linker) dropDead(slackUserID, spent string) error {
+	deleted, err := l.dropSpent(slackUserID, spent)
+	if err != nil {
 		l.logger.Warn("musterlink: dropping a dead link from the store failed", "slackUser", slackUserID, "err", err)
+		return ErrNotLinked
+	}
+	if !deleted {
+		return errLinkRotated
 	}
 	return ErrNotLinked
 }
+
+// errLinkRotated is a transient refresh failure: the refresh token this
+// process spent was rotated by another writer while it was being dropped.
+var errLinkRotated = errors.New("musterlink: link rotated by another writer during refresh")
 
 // LinkedIdentity returns the muster identity (subject and email) stored for a
 // linked Slack user. ok is false when the user has no link or the store could

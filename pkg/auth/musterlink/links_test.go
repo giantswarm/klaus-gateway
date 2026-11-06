@@ -22,6 +22,9 @@ type flakyStore struct {
 	mu                           sync.Mutex
 	failGet, failPut, failDelete bool
 	gets                         int
+	// beforeCompareAndDelete runs at the start of CompareAndDelete, the moment a second
+	// replica's write can land between this process's re-read and its delete.
+	beforeCompareAndDelete func()
 }
 
 func newFlakyStore(inner Store) *flakyStore { return &flakyStore{inner: inner} }
@@ -67,6 +70,19 @@ func (f *flakyStore) Delete(id string) error {
 		return errStoreDown
 	}
 	return f.inner.Delete(id)
+}
+
+func (f *flakyStore) CompareAndDelete(id, refreshToken string) (bool, error) {
+	f.mu.Lock()
+	fail, hook := f.failDelete, f.beforeCompareAndDelete
+	f.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	if fail {
+		return false, errStoreDown
+	}
+	return f.inner.CompareAndDelete(id, refreshToken)
 }
 
 // clock is a movable now for the linker: advancing it past the id_token's
@@ -302,6 +318,66 @@ func TestTokenForInvalidGrantRereadsStoreBeforeDroppingLink(t *testing.T) {
 	require.Equal(t, "muster-sub", jwtSub(t, tok))
 	require.Equal(t, "refresh-2", stub.presented())
 	require.Equal(t, "refresh-3", storedRefresh(t, store))
+}
+
+// invalid_grant followed by a store re-read that fails says nothing about the
+// stored link: another replica may have rotated it. The link stays in the
+// store and the turn fails as transient; once the store answers again the
+// rotated token is used.
+func TestTokenForInvalidGrantKeepsLinkWhenRereadFails(t *testing.T) {
+	stub := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
+	mem, fs := seeded(t)
+	a, clkA := newFlakyLinker(t, stub, fs, nil)
+	a.cacheTTL = 24 * time.Hour
+	_, err := a.TokenFor(context.Background(), "U1")
+	require.NoError(t, err)
+
+	b := newTestLinker(t, stub, mem, nil)
+	clkB := newClock()
+	clkB.advance(2 * time.Hour)
+	b.now = clkB.now
+	_, err = b.TokenFor(context.Background(), "U1")
+	require.NoError(t, err)
+	require.Equal(t, "refresh-2", storedRefresh(t, mem))
+
+	fs.set(func(f *flakyStore) { f.failGet = true })
+	clkA.advance(2 * time.Hour)
+	_, err = a.TokenFor(context.Background(), "U1")
+	require.ErrorIs(t, err, errStoreDown)
+	require.NotErrorIs(t, err, ErrNotLinked)
+	require.Equal(t, "refresh-2", storedRefresh(t, mem), "the rotated link survives a failed re-read")
+
+	fs.set(func(f *flakyStore) { f.failGet = false })
+	_, err = a.TokenFor(context.Background(), "U1")
+	require.NoError(t, err)
+	require.Equal(t, "refresh-2", stub.presented())
+	require.Equal(t, "refresh-3", storedRefresh(t, mem))
+}
+
+// A replica that rotates the link between this process's re-read (which still
+// saw the spent token) and its delete keeps the link: the delete only removes
+// the spent token, and the turn fails as transient instead of prompting a
+// sign-in.
+func TestTokenForInvalidGrantKeepsLinkRotatedDuringDrop(t *testing.T) {
+	stub := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
+	stub.spent["refresh-0"] = true
+	mem, fs := seeded(t)
+	fs.set(func(f *flakyStore) {
+		f.beforeCompareAndDelete = func() {
+			require.NoError(t, mem.Put("U1", &Link{Sub: "muster-sub", Email: "a@example.com", RefreshToken: "refresh-live"}))
+		}
+	})
+	l, _ := newFlakyLinker(t, stub, fs, nil)
+
+	_, err := l.TokenFor(context.Background(), "U1")
+	require.ErrorIs(t, err, errLinkRotated)
+	require.NotErrorIs(t, err, ErrNotLinked)
+	require.Equal(t, "refresh-live", storedRefresh(t, mem))
+
+	fs.set(func(f *flakyStore) { f.beforeCompareAndDelete = nil })
+	_, err = l.TokenFor(context.Background(), "U1")
+	require.NoError(t, err)
+	require.Equal(t, "refresh-live", stub.presented())
 }
 
 // A sign-in whose link the store refuses to take still signs the person in

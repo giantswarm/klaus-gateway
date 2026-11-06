@@ -153,13 +153,31 @@ func (l *Linker) markClean(slackUserID string) {
 // drop forgets slackUserID in the process-local copy and deletes it from the
 // store, returning the store's error. The caller holds the per-user lock.
 func (l *Linker) drop(slackUserID string) error {
-	l.linksMu.Lock()
-	delete(l.links, slackUserID)
-	l.linksMu.Unlock()
+	l.forget(slackUserID)
 	if err := l.store.Delete(slackUserID); err != nil {
 		return fmt.Errorf("musterlink: delete link: %w", err)
 	}
 	return nil
+}
+
+// dropSpent forgets slackUserID in the process-local copy and deletes it from
+// the store only while the store still holds the spent refreshToken. deleted
+// is false when the store no longer holds that token: a writer rotated the
+// link after this process read it. The caller holds the per-user lock.
+func (l *Linker) dropSpent(slackUserID, refreshToken string) (deleted bool, err error) {
+	l.forget(slackUserID)
+	deleted, err = l.store.CompareAndDelete(slackUserID, refreshToken)
+	if err != nil {
+		return false, fmt.Errorf("musterlink: delete link: %w", err)
+	}
+	return deleted, nil
+}
+
+// forget drops slackUserID from the process-local copy.
+func (l *Linker) forget(slackUserID string) {
+	l.linksMu.Lock()
+	delete(l.links, slackUserID)
+	l.linksMu.Unlock()
 }
 
 // dirtyIDs lists the users whose link the store does not hold yet.
