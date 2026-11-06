@@ -22,6 +22,11 @@ const (
 	// refreshTriggerAhead one the refresher ran ahead of expiry.
 	refreshTriggerTurn  = "turn"
 	refreshTriggerAhead = "ahead"
+	// refreshSourceRequest is a token this process obtained by sending the
+	// refresh request; refreshSourceStore one another writer obtained and put
+	// in the link store, which this process served instead (lease.go).
+	refreshSourceRequest = "request"
+	refreshSourceStore   = "store"
 
 	// refreshSweepInterval is how often the refresher looks for due tokens. A
 	// token is due one interval before it drops below the turn minimum, so the

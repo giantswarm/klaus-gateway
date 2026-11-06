@@ -772,8 +772,9 @@ func (l *Linker) TokenFor(ctx context.Context, slackUserID string) (string, erro
 // holds the user's lock.
 func (l *Linker) refreshLink(ctx context.Context, slackUserID string, link *Link, trigger string) (idToken string, expiry time.Time, err error) {
 	began := l.now()
+	source := refreshSourceRequest
 	defer func() {
-		fields := []any{"record", recordTokenRefresh, "trigger", trigger, "slackUser", slackUserID, "duration_ms", l.now().Sub(began).Milliseconds()}
+		fields := []any{"record", recordTokenRefresh, "trigger", trigger, "source", source, "slackUser", slackUserID, "duration_ms", l.now().Sub(began).Milliseconds()}
 		if err != nil {
 			l.logger.Warn("musterlink: id_token refresh failed", append(fields, "error", err.Error())...)
 			return
@@ -807,6 +808,7 @@ func (l *Linker) refreshLink(ctx context.Context, slackUserID string, link *Link
 		// turn, else its refresh token is the one to present.
 		link = adopted
 		if cached := l.reusableToken(slackUserID, link, l.now()); cached != "" {
+			source = refreshSourceStore
 			return cached, link.Expiry, nil
 		}
 		if attempt == refreshAttempts {

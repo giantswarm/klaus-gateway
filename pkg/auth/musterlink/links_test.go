@@ -1,10 +1,14 @@
 package musterlink
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -712,4 +716,78 @@ func TestTokenForCollapsesStoreReadsWithinTTL(t *testing.T) {
 	_, err = l.TokenFor(context.Background(), "U2")
 	require.ErrorIs(t, err, ErrNotLinked)
 	require.Greater(t, fs.reads(), after)
+}
+
+// syncBuffer is a log sink safe for the linker's background goroutines.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+// tokenRefreshSources lists the source of every token_refresh record logged.
+func (b *syncBuffer) tokenRefreshSources(t *testing.T) []string {
+	t.Helper()
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	var sources []string
+	for _, line := range strings.Split(strings.TrimSpace(b.buf.String()), "\n") {
+		if line == "" {
+			continue
+		}
+		var record struct {
+			Record string `json:"record"`
+			Source string `json:"source"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(line), &record))
+		if record.Record == recordTokenRefresh {
+			sources = append(sources, record.Source)
+		}
+	}
+	return sources
+}
+
+func newLoggingLinker(t *testing.T, stub *musterStub, store Store, logs *syncBuffer) *Linker {
+	t.Helper()
+	l, err := New(Config{
+		BaseURL:      stub.server.URL,
+		ClientID:     stub.clientID,
+		ClientSecret: "secret",
+		RedirectURL:  "https://gw.example.com" + CallbackPath,
+		StateKey:     []byte("hmac-state-key"),
+		Store:        store,
+		Logger:       slog.New(slog.NewJSONHandler(logs, nil)),
+	})
+	require.NoError(t, err)
+	return l
+}
+
+// A token another replica obtained and this one served from the store is
+// logged as such: its token_refresh record says source=store, the replica
+// that sent the refresh request says source=request.
+func TestTokenRefreshRecordNamesItsSource(t *testing.T) {
+	stub := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
+	store := NewMemStore()
+	require.NoError(t, store.Put("U1", &Link{Sub: "muster-sub", Email: "a@example.com", RefreshToken: "refresh-0"}))
+
+	var logsA, logsB syncBuffer
+	a := newLoggingLinker(t, stub, store, &logsA)
+	a.cacheTTL = 24 * time.Hour
+	_, _, ok := a.LinkedIdentity("U1")
+	require.True(t, ok, "a holds the link without a token")
+
+	b := newLoggingLinker(t, stub, store, &logsB)
+	_, err := b.TokenFor(t.Context(), "U1")
+	require.NoError(t, err)
+
+	_, err = a.TokenFor(t.Context(), "U1")
+	require.NoError(t, err)
+	require.Equal(t, 1, stub.issued(), "only b sent a refresh request")
+	require.Equal(t, []string{refreshSourceRequest}, logsB.tokenRefreshSources(t))
+	require.Equal(t, []string{refreshSourceStore}, logsA.tokenRefreshSources(t))
 }
