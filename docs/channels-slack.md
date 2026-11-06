@@ -860,11 +860,15 @@ Three structured log records (`record=…`, JSON fields) tell a turn's story; jo
   may get past, and is sent once more on the same Session: `channel`, `channel_id`,
   `thread`, `agent`, `failure_class`, `error` (the first attempt's). The thread sees only the
   second attempt; `task_done_ms` and `stream_end_ms` are that attempt's.
-- `token_refresh` -- the person's muster id_token was refreshed: `trigger` (`ahead` for the
-  background refresher, `turn` for a refresh on the turn's path), `source` (`request` when this
-  replica sent the refresh request to muster, `store` when another replica had refreshed the
-  link and this one served the token it found in the link store), `slackUser`, `duration_ms`,
-  `expires_in_s`, or `error`. A turn is dispatched only with a token that covers a turn: the
+- `token_refresh` -- a refresh of the person's muster id_token was attempted: `trigger`
+  (`ahead` for the background refresher, `turn` for a refresh on the turn's path), `source`
+  (`request` when the returned token came from this replica's refresh request, `store` when
+  it came from a link another writer stored, `none` on failure), `refresh_requests` (the number
+  of refresh requests this replica attempted, including failed ones), `slackUser`,
+  `duration_ms`, `expires_in_s`, or `error`. Sum `refresh_requests` to count requests: a
+  discovery or lease failure has zero, and a concurrent sign-in can yield `source=store`
+  after a refresh request was already sent. These fields are always logged; no flag is
+  required. A turn is dispatched only with a token that covers a turn: the
   agent keeps the token it starts with until the turn ends, and muster ends the turn's session
   (and its tools) when that token expires, so a cached token with less than
   `obo.minTokenLifetime` left (`--obo-min-token-lifetime`, 25 minutes by default) is refreshed

@@ -22,9 +22,9 @@ const (
 	// refreshTriggerAhead one the refresher ran ahead of expiry.
 	refreshTriggerTurn  = "turn"
 	refreshTriggerAhead = "ahead"
-	// refreshSourceRequest is a token this process obtained by sending the
-	// refresh request; refreshSourceStore one another writer obtained and put
-	// in the link store, which this process served instead (lease.go).
+	// The source describes the returned token, independently of how many
+	// refresh requests this process attempted.
+	refreshSourceNone    = "none"
 	refreshSourceRequest = "request"
 	refreshSourceStore   = "store"
 

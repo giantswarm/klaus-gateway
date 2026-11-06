@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- The `token_refresh` record carries `source`: `request` when this replica sent the refresh request to muster, `store` when another replica had refreshed the link and this one served the token it found in the link store. Before, both read as a refresh this replica made.
+- The `token_refresh` record carries `source` (`request` for a token returned by this replica's refresh request, `store` for one adopted from the link store, `none` on failure) and `refresh_requests`, the number of refresh requests this replica attempted, including failed ones.
 
 - Slack: a turn paused on an MCP server's sign-in link (kagent's HITL `url_elicitation_request`, sent by runtimes that relay MCP URL elicitations, such as muster's sign-in link from 5.53.0 on) gets a sign-in prompt, to the person whose turn asked, quoting the server's message and naming the server that asked; the thread says whom it waits on. The sign-in's landing resumes the paused task with `accept`, so the agent retries the call; *Not now* or a refusal in the thread resumes it with `decline` ([giantswarm/klaus-gateway#140](https://github.com/giantswarm/klaus-gateway/issues/140)).
 
