@@ -1,11 +1,16 @@
 package musterlink
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -712,4 +717,166 @@ func TestTokenForCollapsesStoreReadsWithinTTL(t *testing.T) {
 	_, err = l.TokenFor(context.Background(), "U2")
 	require.ErrorIs(t, err, ErrNotLinked)
 	require.Greater(t, fs.reads(), after)
+}
+
+// syncBuffer is a log sink safe for the linker's background goroutines.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+type tokenRefreshRecord struct {
+	Record          string `json:"record"`
+	Source          string `json:"source"`
+	RefreshRequests int    `json:"refresh_requests"`
+}
+
+func (b *syncBuffer) tokenRefreshRecords(t *testing.T) []tokenRefreshRecord {
+	t.Helper()
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	var records []tokenRefreshRecord
+	for _, line := range strings.Split(strings.TrimSpace(b.buf.String()), "\n") {
+		if line == "" {
+			continue
+		}
+		var record tokenRefreshRecord
+		require.NoError(t, json.Unmarshal([]byte(line), &record))
+		if record.Record == recordTokenRefresh {
+			records = append(records, record)
+		}
+	}
+	return records
+}
+
+func newLoggingLinker(t *testing.T, stub *musterStub, store Store, logs *syncBuffer) *Linker {
+	t.Helper()
+	l, err := New(Config{
+		BaseURL:      stub.server.URL,
+		ClientID:     stub.clientID,
+		ClientSecret: "secret",
+		RedirectURL:  "https://gw.example.com" + CallbackPath,
+		StateKey:     []byte("hmac-state-key"),
+		Store:        store,
+		Logger:       slog.New(slog.NewJSONHandler(logs, nil)),
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, l.Close()) })
+	return l
+}
+
+func TestTokenRefreshRecordNamesItsSource(t *testing.T) {
+	stub := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
+	store := NewMemStore()
+	require.NoError(t, store.Put("U1", &Link{Sub: "muster-sub", Email: "a@example.com", RefreshToken: "refresh-0"}))
+
+	var logsA, logsB syncBuffer
+	a := newLoggingLinker(t, stub, store, &logsA)
+	a.cacheTTL = 24 * time.Hour
+	_, _, ok := a.LinkedIdentity("U1")
+	require.True(t, ok, "a holds the link without a token")
+
+	b := newLoggingLinker(t, stub, store, &logsB)
+	_, err := b.TokenFor(t.Context(), "U1")
+	require.NoError(t, err)
+
+	_, err = a.TokenFor(t.Context(), "U1")
+	require.NoError(t, err)
+	require.Equal(t, 1, stub.issued(), "only b sent a refresh request")
+	require.Equal(t, []tokenRefreshRecord{{Record: recordTokenRefresh, Source: refreshSourceRequest, RefreshRequests: 1}}, logsB.tokenRefreshRecords(t))
+	require.Equal(t, []tokenRefreshRecord{{Record: recordTokenRefresh, Source: refreshSourceStore}}, logsA.tokenRefreshRecords(t))
+}
+
+func TestTokenRefreshRecordBeforeRequestFailure(t *testing.T) {
+	for _, failure := range []string{"discovery", "store", "lease", "signout"} {
+		t.Run(failure, func(t *testing.T) {
+			stub := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
+			store, flaky := seeded(t)
+			var logs syncBuffer
+			linker := newLoggingLinker(t, stub, flaky, &logs)
+			linker.cacheTTL = 24 * time.Hour
+			_, _, linked := linker.LinkedIdentity("U1")
+			require.True(t, linked)
+
+			switch failure {
+			case "discovery":
+				stub.server.Close()
+			case "store":
+				flaky.set(func(store *flakyStore) { store.failGet = true })
+			case "lease":
+				require.NoError(t, store.Update("U1", func(link *Link) (*Link, bool) {
+					link.Lease = &RefreshLease{Holder: "other", Until: time.Now().Add(time.Hour)}
+					return link, true
+				}))
+				linker.leaseWait, linker.leasePoll = time.Millisecond, time.Millisecond
+			case "signout":
+				require.NoError(t, store.Delete("U1"))
+			}
+
+			_, err := linker.TokenFor(t.Context(), "U1")
+			require.Error(t, err)
+			require.Zero(t, stub.issued())
+			require.Equal(t, []tokenRefreshRecord{{Record: recordTokenRefresh, Source: "none"}}, logs.tokenRefreshRecords(t))
+		})
+	}
+}
+
+func TestTokenRefreshRecordAfterRequest(t *testing.T) {
+	for _, outcome := range []string{"success", "refused", "unavailable", "missing_id_token", "relinked", "refused_relinked", "signout", "contended"} {
+		t.Run(outcome, func(t *testing.T) {
+			stub := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
+			store, _ := seeded(t)
+			var logs syncBuffer
+			linker := newLoggingLinker(t, stub, store, &logs)
+			source := "none"
+			wantError := true
+			wantRequests := 1
+			var requests atomic.Int64
+			stub.mu.Lock()
+			stub.onRefresh = func() {
+				requestNumber := requests.Add(1)
+				switch outcome {
+				case "relinked", "refused_relinked":
+					_ = store.Put("U1", &Link{Sub: "muster-sub", Email: "a@example.com", RefreshToken: "relinked", IDToken: makeIDToken("muster-sub", time.Now().Add(time.Hour)), Expiry: time.Now().Add(time.Hour)})
+				case "signout":
+					_ = store.Delete("U1")
+				case "contended":
+					_ = store.Put("U1", &Link{Sub: "muster-sub", Email: "a@example.com", RefreshToken: fmt.Sprintf("relinked-%d", requestNumber)})
+				}
+			}
+			switch outcome {
+			case "success":
+				source, wantError = refreshSourceRequest, false
+			case "refused":
+				stub.failRefresh = true
+			case "unavailable":
+				stub.failRefresh5xx = true
+			case "missing_id_token":
+				stub.omitIDToken = true
+			case "refused_relinked":
+				stub.failRefresh = true
+				source, wantError = refreshSourceStore, false
+			case "relinked":
+				source, wantError = refreshSourceStore, false
+			case "contended":
+				wantRequests = refreshAttempts
+			}
+			stub.mu.Unlock()
+
+			_, err := linker.TokenFor(t.Context(), "U1")
+			if wantError {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+			require.EqualValues(t, wantRequests, requests.Load())
+			require.Equal(t, []tokenRefreshRecord{{Record: recordTokenRefresh, Source: source, RefreshRequests: wantRequests}}, logs.tokenRefreshRecords(t))
+		})
+	}
 }
