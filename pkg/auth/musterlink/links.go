@@ -32,7 +32,8 @@ import (
 // process-local copy before the store is asked again. Short, so a link written
 // by another process (a second replica's refresh, a sign-out) is picked up
 // within a turn or two; a refresh token rotated elsewhere in the meantime is
-// handled by TokenFor's re-read on invalid_grant.
+// caught by the refresh lease (lease.go), which compares against the store
+// before any token is presented.
 const linkCacheTTL = 30 * time.Second
 
 // writeRetryDelay is the first delay before a failed store write is retried;
@@ -50,16 +51,25 @@ type cachedLink struct {
 	served  time.Time // when TokenFor last handed this user's token to a turn
 	// refreshed is when this process last refreshed this user's id_token.
 	refreshed time.Time
+	// storedRefreshToken is the refresh token the store still holds while a
+	// dirty entry carries the token muster rotated it into; empty when the
+	// dirty entry is a sign-in, which replaces whatever the store holds.
+	storedRefreshToken string
 }
 
 // put replaces slackUserID's entry with link, carrying over what the process
 // knows beyond the store (when the token was served and refreshed), so a store
-// read or write does not drop the person from the refresher. The caller holds
-// linksMu.
+// read or write does not drop the person from the refresher. The copy never
+// holds a refresh lease, so no write from it carries one back to the store.
+// The caller holds linksMu.
 func (l *Linker) put(slackUserID string, link Link, checked time.Time, dirty bool) {
+	link.Lease = nil
 	c := &cachedLink{link: link, checked: checked, dirty: dirty}
 	if old, ok := l.links[slackUserID]; ok {
 		c.served, c.refreshed = old.served, old.refreshed
+		if dirty && old.dirty {
+			c.storedRefreshToken = old.storedRefreshToken
+		}
 	}
 	l.links[slackUserID] = c
 }
@@ -109,20 +119,6 @@ func (l *Linker) load(slackUserID string) (*Link, error) {
 	}
 }
 
-// reload reads slackUserID from the store past the process-local copy and
-// replaces the copy with what the store holds. TokenFor uses it before
-// dropping a link on invalid_grant. The caller holds the per-user lock.
-func (l *Linker) reload(slackUserID string) (*Link, error) {
-	link, err := l.store.Get(slackUserID)
-	if err != nil {
-		return nil, err
-	}
-	l.linksMu.Lock()
-	l.put(slackUserID, *link, l.now(), false)
-	l.linksMu.Unlock()
-	return link, nil
-}
-
 // save records link as this process's current version for slackUserID and
 // writes it to the store. A failed write keeps the link, marked dirty, and
 // schedules a retry: the refresh token in it is the one muster holds now, and
@@ -153,13 +149,18 @@ func (l *Linker) markClean(slackUserID string) {
 // drop forgets slackUserID in the process-local copy and deletes it from the
 // store, returning the store's error. The caller holds the per-user lock.
 func (l *Linker) drop(slackUserID string) error {
-	l.linksMu.Lock()
-	delete(l.links, slackUserID)
-	l.linksMu.Unlock()
+	l.forget(slackUserID)
 	if err := l.store.Delete(slackUserID); err != nil {
 		return fmt.Errorf("musterlink: delete link: %w", err)
 	}
 	return nil
+}
+
+// forget drops slackUserID from the process-local copy.
+func (l *Linker) forget(slackUserID string) {
+	l.linksMu.Lock()
+	delete(l.links, slackUserID)
+	l.linksMu.Unlock()
 }
 
 // dirtyIDs lists the users whose link the store does not hold yet.
@@ -190,6 +191,8 @@ func (l *Linker) Flush() int {
 
 // flushOne retries the store write for one user under their lock and reports
 // whether the store holds the link afterwards (or nothing was left to write).
+// A rotated link is written only while the store still holds the token it was
+// rotated from: a sign-in or sign-out that landed meanwhile wins.
 func (l *Linker) flushOne(slackUserID string) bool {
 	unlock := l.lockUser(slackUserID)
 	defer unlock()
@@ -199,8 +202,11 @@ func (l *Linker) flushOne(slackUserID string) bool {
 		l.linksMu.Unlock()
 		return true
 	}
-	link := c.link
+	link, stored := c.link, c.storedRefreshToken
 	l.linksMu.Unlock()
+	if stored != "" {
+		return l.flushRotated(slackUserID, stored, &link)
+	}
 	if err := l.store.Put(slackUserID, &link); err != nil {
 		l.logger.Warn("musterlink: link store write retry failed", "slackUser", slackUserID, "err", err)
 		return false
@@ -208,6 +214,46 @@ func (l *Linker) flushOne(slackUserID string) bool {
 	l.logger.Info("musterlink: link store write retry succeeded", "slackUser", slackUserID)
 	l.markClean(slackUserID)
 	return true
+}
+
+// flushRotated writes link, rotated from the stored refresh token stored,
+// only while the store still holds stored, and reports whether anything is
+// left to write. The caller holds the per-user lock.
+func (l *Linker) flushRotated(slackUserID, stored string, link *Link) bool {
+	var current *Link
+	err := l.store.Update(slackUserID, func(c *Link) (*Link, bool) {
+		current = c
+		if c == nil || c.RefreshToken != stored {
+			return nil, false
+		}
+		return link, true
+	})
+	switch {
+	case err != nil:
+		l.logger.Warn("musterlink: link store write retry failed", "slackUser", slackUserID, "err", err)
+		return false
+	case current == nil:
+		l.logger.Info("musterlink: link removed from the store while its write was pending, dropping it", "slackUser", slackUserID)
+		l.forget(slackUserID)
+	case current.RefreshToken != stored && current.RefreshToken != link.RefreshToken:
+		l.logger.Info("musterlink: link replaced in the store while its write was pending, keeping the stored one", "slackUser", slackUserID)
+		l.adopt(slackUserID, current)
+	default:
+		l.logger.Info("musterlink: link store write retry succeeded", "slackUser", slackUserID)
+		l.markClean(slackUserID)
+	}
+	return true
+}
+
+// storedRefreshTokenOf returns the refresh token the store holds for a dirty
+// rotated entry, "" otherwise.
+func (l *Linker) storedRefreshTokenOf(slackUserID string) string {
+	l.linksMu.Lock()
+	defer l.linksMu.Unlock()
+	if c, ok := l.links[slackUserID]; ok && c.dirty {
+		return c.storedRefreshToken
+	}
+	return ""
 }
 
 // scheduleFlush arms one background Flush after the current retry delay unless

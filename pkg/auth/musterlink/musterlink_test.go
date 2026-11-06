@@ -36,17 +36,29 @@ type musterStub struct {
 	counter         int
 	validAccess     map[string]bool
 	// spent holds every refresh token already presented: muster rotates on each
-	// refresh and rejects a spent token with invalid_grant, and so does the stub.
+	// refresh, and a spent token presented again revokes its whole family (the
+	// token it was rotated into included) and fails invalid_grant, as
+	// mcp-oauth's reuse detection does. family maps a refresh token to its
+	// family, revoked holds the revoked families, reused counts the replays.
 	// lastRefresh is the refresh token presented most recently.
 	spent       map[string]bool
+	family      map[string]int
+	revoked     map[int]bool
+	families    int
+	reused      int
 	lastRefresh string
+	// onRefresh, when set, runs at the start of every refresh request, before
+	// the stub answers it.
+	onRefresh func()
+	// refreshRequests counts the refresh_token grant requests the stub saw.
+	refreshRequests int
 	// lastVerifier is the PKCE code_verifier of the last code exchange.
 	lastVerifier string
 }
 
 func newMusterStub(t *testing.T, clientID, email, sub string) *musterStub {
 	t.Helper()
-	s := &musterStub{clientID: clientID, email: email, sub: sub, validAccess: map[string]bool{}, spent: map[string]bool{}}
+	s := &musterStub{clientID: clientID, email: email, sub: sub, validAccess: map[string]bool{}, spent: map[string]bool{}, family: map[string]int{}, revoked: map[int]bool{}}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, _ *http.Request) {
@@ -63,8 +75,11 @@ func newMusterStub(t *testing.T, clientID, email, sub string) *musterStub {
 		if r.Form.Get("grant_type") == "authorization_code" {
 			s.lastVerifier = r.Form.Get("code_verifier")
 		}
-		hang := s.hangRefresh
+		hang, hook := s.hangRefresh, s.onRefresh
 		s.mu.Unlock()
+		if r.Form.Get("grant_type") == "refresh_token" && hook != nil {
+			hook()
+		}
 		if r.Form.Get("grant_type") == "refresh_token" && hang {
 			<-r.Context().Done()
 			return
@@ -81,9 +96,21 @@ func newMusterStub(t *testing.T, clientID, email, sub string) *musterStub {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
+		var familyID int
 		if r.Form.Get("grant_type") == "refresh_token" {
+			s.refreshRequests++
 			rt := r.Form.Get("refresh_token")
-			if s.spent[rt] {
+			presented, known := s.family[rt]
+			if !known {
+				s.families++
+				presented = s.families
+				s.family[rt] = presented
+			}
+			if s.spent[rt] && !s.revoked[presented] {
+				s.revoked[presented] = true
+				s.reused++
+			}
+			if s.revoked[presented] {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusBadRequest)
 				_, _ = w.Write([]byte(`{"error":"invalid_grant"}`))
@@ -91,10 +118,15 @@ func newMusterStub(t *testing.T, clientID, email, sub string) *musterStub {
 			}
 			s.spent[rt] = true
 			s.lastRefresh = rt
+			familyID = presented
+		} else {
+			s.families++
+			familyID = s.families
 		}
 		s.counter++
 		at := fmt.Sprintf("access-%d", s.counter)
 		rt := fmt.Sprintf("refresh-%d", s.counter)
+		s.family[rt] = familyID
 		s.validAccess[at] = true
 		resp := map[string]any{
 			"access_token":  at,
@@ -487,6 +519,7 @@ func TestTokenForTransientRefreshErrorKeepsLink(t *testing.T) {
 	got, err := store.Get("U1")
 	require.NoError(t, err, "a transient refresh failure must retain the link")
 	require.Equal(t, "refresh-0", got.RefreshToken)
+	require.Nil(t, got.Lease, "the unspent token is released for other processes")
 }
 
 func TestCallbackStoresLinkOnEmailMatch(t *testing.T) {
