@@ -112,6 +112,8 @@ will fail the scan.
 
 Everything is in this repo:
 
+- `GLOSSARY.md` — the domain terms and the spec or upstream each name comes from. A new
+  identifier for a protocol or domain concept uses the term there, or adds one with its source
 - `docs/invariants.md` — facts about Slack, the store and the meta chart that every change must
   respect, one line each with the PR that proved it. Read it before touching `pkg/channels/slack`,
   `pkg/routing` or `helm/`; a review that finds a new one adds a line
