@@ -34,15 +34,29 @@ type Link struct {
 	IDToken string `json:"id_token,omitempty"`
 	// Expiry is when IDToken expires. Zero means unknown -> always refresh.
 	Expiry time.Time `json:"expiry,omitzero"`
+	// Lease marks a refresh request for RefreshToken in flight at muster by
+	// one gateway process. muster revokes the whole grant, the newly rotated
+	// token included, when a refresh token it has already rotated is
+	// presented again, so another process that finds the lease waits for the
+	// outcome instead of presenting the same token.
+	Lease *RefreshLease `json:"lease,omitempty"`
+}
+
+// RefreshLease is one process's hold on a link's refresh token: Holder names
+// the process, Until is when the lease expires if the holder never finishes.
+type RefreshLease struct {
+	Holder string    `json:"holder"`
+	Until  time.Time `json:"until"`
 }
 
 // Store persists Slack-user -> muster Link associations. Backends only
 // report: Get returns ErrNotLinked when no link is stored for the user and any
 // other error when the backend failed to answer (a Kubernetes API call that did
 // not go through, a bolt file that cannot be read), and Put and Delete return
-// the backend's error. CompareAndDelete deletes a link only while it still
-// holds the given refresh token, as one atomic step of the backend, and
-// reports whether it deleted it. What a failure means -- a link served from memory, a
+// the backend's error. Update reads a link and writes fn's answer as one
+// atomic step of the backend: it is how one process takes a refresh lease or
+// replaces a link only while it still holds the token it expects, without
+// overwriting another process's write. What a failure means -- a link served from memory, a
 // write retried, a transient error to the person -- is the Linker's call. The
 // interface is kept narrow so backends (bolt file, Kubernetes Secret,
 // in-memory) are interchangeable without touching callers.
@@ -50,8 +64,16 @@ type Store interface {
 	Get(slackUserID string) (*Link, error)
 	Put(slackUserID string, link *Link) error
 	Delete(slackUserID string) error
-	CompareAndDelete(slackUserID, refreshToken string) (deleted bool, err error)
+	// Update hands fn the stored link (nil when none is stored or the record
+	// does not decode) and then writes fn's answer: next replaces the link,
+	// a nil next deletes it, write false leaves the store as it is. fn may run
+	// more than once when the backend retries a conflicting write.
+	Update(slackUserID string, fn func(current *Link) (next *Link, write bool)) error
 }
+
+// errStoreConflict marks a write the backend gave up on because other writers
+// kept changing the record under it: the store answered, it was contended.
+var errStoreConflict = errors.New("musterlink: link store write kept conflicting with other writers")
 
 // MemStore is an in-memory Store. It loses all links on restart, forcing every
 // user to re-link; use it only for tests and ephemeral single-process runs.
@@ -90,15 +112,24 @@ func (s *MemStore) Delete(slackUserID string) error {
 	return nil
 }
 
-// CompareAndDelete removes the link when it still holds refreshToken.
-func (s *MemStore) CompareAndDelete(slackUserID, refreshToken string) (bool, error) {
+// Update runs fn on a copy of the stored link and applies its answer under
+// one lock.
+func (s *MemStore) Update(slackUserID string, fn func(*Link) (*Link, bool)) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if l, ok := s.m[slackUserID]; !ok || l.RefreshToken != refreshToken {
-		return false, nil
+	var current *Link
+	if l, ok := s.m[slackUserID]; ok {
+		current = &l
 	}
-	delete(s.m, slackUserID)
-	return true, nil
+	next, write := fn(current)
+	switch {
+	case !write:
+	case next == nil:
+		delete(s.m, slackUserID)
+	default:
+		s.m[slackUserID] = *next
+	}
+	return nil
 }
 
 // linkCipher turns a Link into an AES-256-GCM sealed record and back. Both
@@ -265,27 +296,34 @@ func (s *BoltStore) Delete(slackUserID string) error {
 	return nil
 }
 
-// CompareAndDelete removes the link when it still holds refreshToken, reading
-// and deleting in one bolt transaction. A record that does not decode matches
-// no token and is left for a re-link to overwrite.
-func (s *BoltStore) CompareAndDelete(slackUserID, refreshToken string) (bool, error) {
-	deleted := false
+// Update runs fn on the stored link and applies its answer in one bolt
+// transaction.
+func (s *BoltStore) Update(slackUserID string, fn func(*Link) (*Link, bool)) error {
+	key := []byte(slackUserID)
 	if err := s.db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(linkBucket)
-		v := b.Get([]byte(slackUserID))
-		if v == nil {
-			return nil
+		var current *Link
+		if v := b.Get(key); v != nil {
+			if link, err := s.cipher.openLink(v); err == nil {
+				current = link
+			}
 		}
-		link, err := s.cipher.openLink(v)
-		if err != nil || link.RefreshToken != refreshToken {
+		next, write := fn(current)
+		switch {
+		case !write:
 			return nil
+		case next == nil:
+			return b.Delete(key)
 		}
-		deleted = true
-		return b.Delete([]byte(slackUserID))
+		record, err := s.cipher.sealLink(next)
+		if err != nil {
+			return err
+		}
+		return b.Put(key, record)
 	}); err != nil {
-		return false, fmt.Errorf("musterlink: bolt delete: %w", err)
+		return fmt.Errorf("musterlink: bolt update: %w", err)
 	}
-	return deleted, nil
+	return nil
 }
 
 // Each calls fn for every link in the store. A record that does not decrypt

@@ -146,9 +146,10 @@ func TestMemStore(t *testing.T) {
 	require.ErrorIs(t, err, ErrNotLinked)
 }
 
-// CompareAndDelete removes a link only while it still holds the given refresh
-// token, on every backend.
-func TestStoreCompareAndDelete(t *testing.T) {
+// Update hands fn the stored link and applies its answer on every backend: a
+// write, a delete, or nothing; a lease survives the round trip through the
+// sealed record.
+func TestStoreUpdate(t *testing.T) {
 	backends := map[string]func(t *testing.T) Store{
 		"memory": func(*testing.T) Store { return NewMemStore() },
 		"bolt": func(t *testing.T) Store {
@@ -165,21 +166,34 @@ func TestStoreCompareAndDelete(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			s := open(t)
 
-			deleted, err := s.CompareAndDelete("U1", "rt-0")
-			require.NoError(t, err)
-			require.False(t, deleted)
+			var seen *Link
+			require.NoError(t, s.Update("U1", func(current *Link) (*Link, bool) {
+				seen = current
+				return nil, false
+			}))
+			require.Nil(t, seen, "no link is stored yet")
 
-			require.NoError(t, s.Put("U1", &Link{RefreshToken: "rt-1"}))
-			deleted, err = s.CompareAndDelete("U1", "rt-0")
-			require.NoError(t, err)
-			require.False(t, deleted, "a link under another token is kept")
+			until := time.Now().Add(time.Minute).Truncate(time.Second)
+			require.NoError(t, s.Update("U1", func(*Link) (*Link, bool) {
+				return &Link{RefreshToken: "rt-1", Lease: &RefreshLease{Holder: "p1", Until: until}}, true
+			}))
 			got, err := s.Get("U1")
 			require.NoError(t, err)
 			require.Equal(t, "rt-1", got.RefreshToken)
+			require.NotNil(t, got.Lease)
+			require.Equal(t, "p1", got.Lease.Holder)
+			require.True(t, until.Equal(got.Lease.Until))
 
-			deleted, err = s.CompareAndDelete("U1", "rt-1")
+			require.NoError(t, s.Update("U1", func(current *Link) (*Link, bool) {
+				seen = current
+				return nil, false
+			}))
+			require.Equal(t, "rt-1", seen.RefreshToken)
+			got, err = s.Get("U1")
 			require.NoError(t, err)
-			require.True(t, deleted)
+			require.Equal(t, "rt-1", got.RefreshToken, "write false leaves the link as it is")
+
+			require.NoError(t, s.Update("U1", func(*Link) (*Link, bool) { return nil, true }))
 			_, err = s.Get("U1")
 			require.ErrorIs(t, err, ErrNotLinked)
 		})

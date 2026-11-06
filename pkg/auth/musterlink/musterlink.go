@@ -39,6 +39,7 @@ package musterlink
 import (
 	"context"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
@@ -228,6 +229,15 @@ type Linker struct {
 	flushTimer *time.Timer
 	closed     bool
 
+	// leaseHolder names this process in the refresh leases it writes
+	// (lease.go); leaseTTL is how long a lease holds before it expires,
+	// leaseWait how long a lease held by another process is waited for, and
+	// leasePoll how often the store is re-read meanwhile.
+	leaseHolder string
+	leaseTTL    time.Duration
+	leaseWait   time.Duration
+	leasePoll   time.Duration
+
 	// refreshStop ends the background refresher (refresh.go); refreshDone
 	// closes when it has exited.
 	refreshStop chan struct{}
@@ -363,6 +373,10 @@ func New(cfg Config) (*Linker, error) {
 		cacheTTL:      linkCacheTTL,
 		retryDelay:    writeRetryDelay,
 		nextDelay:     writeRetryDelay,
+		leaseHolder:   rand.Text(),
+		leaseTTL:      refreshLeaseTTL,
+		leaseWait:     leaseWaitTimeout,
+		leasePoll:     leasePollInterval,
 		refreshStop:   make(chan struct{}),
 		refreshDone:   make(chan struct{}),
 	}
@@ -707,9 +721,10 @@ func (l *Linker) userinfo(ctx context.Context, accessToken string) (sub, email s
 // it (save): a store that fails to read serves the link this process knows, and
 // a rotated refresh token the store fails to take is kept and written later
 // rather than lost -- lost, the next refresh would fail invalid_grant and sign
-// the person out. Before a link is dropped on invalid_grant the store is
-// re-read: a token rotated by another writer meanwhile (a second replica, the
-// import) is retried, not burned.
+// the person out. Across processes sharing the store, a refresh first takes
+// the refresh lease on the stored token (lease.go), so no process presents a
+// token another one is presenting or has presented; muster would revoke the
+// person's sign-in for that replay.
 //
 // Refreshes are serialized per user: a Slack turn can drive several TokenFor
 // calls (event retries, concurrent messages), and muster invalidates the old
@@ -748,10 +763,11 @@ func (l *Linker) TokenFor(ctx context.Context, slackUserID string) (string, erro
 	return idToken, nil
 }
 
-// refreshLink spends link's refresh token at muster's token endpoint, caches
-// the new id_token with its expiry, rotates the stored refresh token and
-// persists both through save. It returns ErrNotLinked (the link dropped) on a
-// hard refusal, a retryable error on a transient one, and logs one
+// refreshLink takes the refresh lease on link's refresh token, sends the
+// refresh request to muster's token endpoint, caches the new id_token with its expiry and persists the
+// rotated link. When another process wrote the link meanwhile it serves that
+// link's id_token, or refreshes with that link's token instead. It returns
+// ErrNotLinked (the link dropped) on a hard refusal, a retryable error on a transient one, and logs one
 // token_refresh record either way with the trigger that ran it. The caller
 // holds the user's lock.
 func (l *Linker) refreshLink(ctx context.Context, slackUserID string, link *Link, trigger string) (idToken string, expiry time.Time, err error) {
@@ -776,54 +792,80 @@ func (l *Linker) refreshLink(ctx context.Context, slackUserID string, link *Link
 	if err := l.ensureEndpoints(ctx); err != nil {
 		return "", time.Time{}, fmt.Errorf("musterlink: discover endpoints: %w", err)
 	}
-	tok, err := l.refresh(ctx, link.RefreshToken)
+	for attempt := 1; ; attempt++ {
+		lease, adopted, err := l.acquireRefreshLease(ctx, slackUserID, link)
+		if err != nil {
+			return "", time.Time{}, err
+		}
+		if lease != leaseAdopted {
+			idToken, expiry, adopted, err = l.sendRefreshRequest(ctx, slackUserID, link, lease == leaseHeld)
+			if adopted == nil {
+				return idToken, expiry, err
+			}
+		}
+		// Another process wrote the link: its id_token may already cover the
+		// turn, else its refresh token is the one to present.
+		link = adopted
+		if cached := l.reusableToken(slackUserID, link, l.now()); cached != "" {
+			return cached, link.Expiry, nil
+		}
+		if attempt == refreshAttempts {
+			return "", time.Time{}, errRefreshContended
+		}
+	}
+}
+
+// sendRefreshRequest presents link's refresh token at muster's token endpoint
+// (RFC 6749 section 6) and records the outcome: the rotated link, or the link
+// dropped on invalid_grant. leased says this process holds the refresh lease
+// on the token (lease.go); then the store is only written while it still
+// holds the presented token, and adopted is the link another writer put there
+// meanwhile, for the caller to retry with.
+func (l *Linker) sendRefreshRequest(ctx context.Context, slackUserID string, link *Link, leased bool) (idToken string, expiry time.Time, adopted *Link, err error) {
+	rctx, cancel := context.WithTimeout(ctx, refreshTimeout)
+	defer cancel()
+	token, err := l.refresh(rctx, link.RefreshToken)
 	if isInvalidGrant(err) {
-		// muster rejected the refresh token. Before declaring the link dead, ask
-		// the store past the process-local copy: another writer may have rotated
-		// the token since this process last read it, and then the stored one is
-		// the live one.
-		stored, serr := l.reload(slackUserID)
-		switch {
-		case errors.Is(serr, ErrNotLinked):
-			l.forget(slackUserID)
-			return "", time.Time{}, ErrNotLinked
-		case serr != nil:
-			// The store cannot say whether another writer rotated the token, so
-			// the link is kept and the turn fails as transient.
-			return "", time.Time{}, fmt.Errorf("musterlink: re-read link after invalid_grant: %w", serr)
-		case stored.RefreshToken == link.RefreshToken:
-			return "", time.Time{}, l.dropDead(slackUserID, link.RefreshToken)
-		}
-		l.logger.Info("musterlink: refresh token rotated by another writer, retrying with the stored one", "slackUser", slackUserID)
-		link = stored
-		if tok, err = l.refresh(ctx, link.RefreshToken); isInvalidGrant(err) {
-			return "", time.Time{}, l.dropDead(slackUserID, link.RefreshToken)
-		}
+		adopted, err = l.dropRefused(slackUserID, link.RefreshToken)
+		return "", time.Time{}, adopted, err
 	}
 	if err != nil {
 		// A non-invalid_grant token-endpoint error (transient 5xx, network)
 		// keeps the link and stays retryable.
-		return "", time.Time{}, fmt.Errorf("musterlink: refresh token for slack user: %w", err)
+		if leased {
+			l.releaseRefreshLease(slackUserID, link.RefreshToken)
+		}
+		return "", time.Time{}, nil, fmt.Errorf("musterlink: refresh token for slack user: %w", err)
 	}
 	// The refresh succeeded, so muster has already rotated the refresh token
 	// server-side; persist it even when the response is unusable, or the stored
 	// token is spent and the next refresh burns the link with invalid_grant.
 	updated := *link
-	if tok.RefreshToken != "" {
-		updated.RefreshToken = tok.RefreshToken
+	updated.Lease = nil
+	if token.RefreshToken != "" {
+		updated.RefreshToken = token.RefreshToken
 	}
-	idToken, _ = tok.Extra("id_token").(string)
+	idToken, _ = token.Extra("id_token").(string)
 	if idToken == "" {
 		updated.IDToken = ""
 		updated.Expiry = time.Time{}
-		l.save(slackUserID, &updated)
-		return "", time.Time{}, errors.New("musterlink: refresh response carried no id_token")
+	} else {
+		updated.IDToken = idToken
+		updated.Expiry = idTokenExpiry(idToken, token.Expiry)
 	}
-	updated.IDToken = idToken
-	updated.Expiry = idTokenExpiry(idToken, tok.Expiry)
-	l.save(slackUserID, &updated)
+	if leased {
+		adopted, err = l.saveRotated(slackUserID, link.RefreshToken, &updated)
+		if adopted != nil || err != nil {
+			return "", time.Time{}, adopted, err
+		}
+	} else {
+		l.save(slackUserID, &updated)
+	}
+	if idToken == "" {
+		return "", time.Time{}, nil, errors.New("musterlink: refresh response carried no id_token")
+	}
 	l.noteRefreshed(slackUserID)
-	return idToken, updated.Expiry, nil
+	return idToken, updated.Expiry, nil, nil
 }
 
 // refresh spends refreshToken at muster's token endpoint and returns the new
@@ -839,29 +881,6 @@ func isInvalidGrant(err error) bool {
 	var re *oauth2.RetrieveError
 	return errors.As(err, &re) && re.ErrorCode == "invalid_grant"
 }
-
-// dropDead removes a link whose refresh token muster rejected and returns
-// ErrNotLinked, so the caller prompts sign-in on this same turn rather than a
-// turn later. When the store no longer holds the spent token (a writer rotated
-// the link since this process read it), the link is kept and the turn fails as
-// transient; the next one reads the live token. A store that refuses the
-// delete is logged: the next read finds the dead link again and lands here
-// again, which is harmless.
-func (l *Linker) dropDead(slackUserID, spent string) error {
-	deleted, err := l.dropSpent(slackUserID, spent)
-	if err != nil {
-		l.logger.Warn("musterlink: dropping a dead link from the store failed", "slackUser", slackUserID, "err", err)
-		return ErrNotLinked
-	}
-	if !deleted {
-		return errLinkRotated
-	}
-	return ErrNotLinked
-}
-
-// errLinkRotated is a transient refresh failure: the refresh token this
-// process spent was rotated by another writer while it was being dropped.
-var errLinkRotated = errors.New("musterlink: link rotated by another writer during refresh")
 
 // LinkedIdentity returns the muster identity (subject and email) stored for a
 // linked Slack user. ok is false when the user has no link or the store could

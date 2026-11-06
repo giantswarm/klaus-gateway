@@ -160,29 +160,41 @@ func (s *SecretStore) Delete(slackUserID string) error {
 	return nil
 }
 
-// CompareAndDelete removes the link when it still holds refreshToken. The
-// match and the delete run against one resourceVersion of the Secret, so a
-// link another writer rotated in between is never deleted. A record that does
-// not decode matches no token and is left for a re-link to overwrite.
-func (s *SecretStore) CompareAndDelete(slackUserID, refreshToken string) (bool, error) {
-	deleted := false
+// Update runs fn on the stored link and writes its answer against the
+// resourceVersion fn read, so a write another process made in between makes
+// the update retry on the newer Secret instead of being overwritten.
+func (s *SecretStore) Update(slackUserID string, fn func(*Link) (*Link, bool)) error {
+	var sealErr error
 	if err := s.mutate(func(data map[string][]byte) bool {
-		deleted = false
-		record, ok := data[slackUserID]
-		if !ok {
+		sealErr = nil
+		var current *Link
+		if record, ok := data[slackUserID]; ok {
+			if link, err := s.cipher.openLink(record); err == nil {
+				current = link
+			}
+		}
+		next, write := fn(current)
+		switch {
+		case !write:
+			return false
+		case next == nil:
+			if _, ok := data[slackUserID]; !ok {
+				return false
+			}
+			delete(data, slackUserID)
+			return true
+		}
+		record, err := s.cipher.sealLink(next)
+		if err != nil {
+			sealErr = err
 			return false
 		}
-		link, err := s.cipher.openLink(record)
-		if err != nil || link.RefreshToken != refreshToken {
-			return false
-		}
-		delete(data, slackUserID)
-		deleted = true
+		data[slackUserID] = record
 		return true
 	}); err != nil {
-		return false, fmt.Errorf("musterlink: delete from secret %s: %w", s.Ref(), err)
+		return fmt.Errorf("musterlink: update secret %s: %w", s.Ref(), err)
 	}
-	return deleted, nil
+	return sealErr
 }
 
 // Import adds every link in links that the Secret does not hold yet, in one
@@ -251,5 +263,5 @@ func (s *SecretStore) mutate(fn func(data map[string][]byte) bool) error {
 			return err
 		}
 	}
-	return fmt.Errorf("secret %s: conflict retry limit exceeded", s.Ref())
+	return fmt.Errorf("secret %s: conflict retry limit exceeded: %w", s.Ref(), errStoreConflict)
 }

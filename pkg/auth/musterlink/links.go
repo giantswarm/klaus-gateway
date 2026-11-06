@@ -32,7 +32,8 @@ import (
 // process-local copy before the store is asked again. Short, so a link written
 // by another process (a second replica's refresh, a sign-out) is picked up
 // within a turn or two; a refresh token rotated elsewhere in the meantime is
-// handled by TokenFor's re-read on invalid_grant.
+// caught by the refresh lease (lease.go), which compares against the store
+// before any token is presented.
 const linkCacheTTL = 30 * time.Second
 
 // writeRetryDelay is the first delay before a failed store write is retried;
@@ -54,9 +55,11 @@ type cachedLink struct {
 
 // put replaces slackUserID's entry with link, carrying over what the process
 // knows beyond the store (when the token was served and refreshed), so a store
-// read or write does not drop the person from the refresher. The caller holds
-// linksMu.
+// read or write does not drop the person from the refresher. The copy never
+// holds a refresh lease, so no write from it carries one back to the store.
+// The caller holds linksMu.
 func (l *Linker) put(slackUserID string, link Link, checked time.Time, dirty bool) {
+	link.Lease = nil
 	c := &cachedLink{link: link, checked: checked, dirty: dirty}
 	if old, ok := l.links[slackUserID]; ok {
 		c.served, c.refreshed = old.served, old.refreshed
@@ -109,20 +112,6 @@ func (l *Linker) load(slackUserID string) (*Link, error) {
 	}
 }
 
-// reload reads slackUserID from the store past the process-local copy and
-// replaces the copy with what the store holds. TokenFor uses it before
-// dropping a link on invalid_grant. The caller holds the per-user lock.
-func (l *Linker) reload(slackUserID string) (*Link, error) {
-	link, err := l.store.Get(slackUserID)
-	if err != nil {
-		return nil, err
-	}
-	l.linksMu.Lock()
-	l.put(slackUserID, *link, l.now(), false)
-	l.linksMu.Unlock()
-	return link, nil
-}
-
 // save records link as this process's current version for slackUserID and
 // writes it to the store. A failed write keeps the link, marked dirty, and
 // schedules a retry: the refresh token in it is the one muster holds now, and
@@ -158,19 +147,6 @@ func (l *Linker) drop(slackUserID string) error {
 		return fmt.Errorf("musterlink: delete link: %w", err)
 	}
 	return nil
-}
-
-// dropSpent forgets slackUserID in the process-local copy and deletes it from
-// the store only while the store still holds the spent refreshToken. deleted
-// is false when the store no longer holds that token: a writer rotated the
-// link after this process read it. The caller holds the per-user lock.
-func (l *Linker) dropSpent(slackUserID, refreshToken string) (deleted bool, err error) {
-	l.forget(slackUserID)
-	deleted, err = l.store.CompareAndDelete(slackUserID, refreshToken)
-	if err != nil {
-		return false, fmt.Errorf("musterlink: delete link: %w", err)
-	}
-	return deleted, nil
 }
 
 // forget drops slackUserID from the process-local copy.

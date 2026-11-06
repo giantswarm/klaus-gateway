@@ -163,10 +163,12 @@ func TestSecretStoreGivesUpAfterRetryLimit(t *testing.T) {
 	// Exhausted retries are the caller's to handle: the write is reported
 	// failed, and the Secret holds nothing for the user.
 	err = s.Put("U1", &Link{RefreshToken: "rt"})
-	require.Error(t, err)
+	require.ErrorIs(t, err, errStoreConflict, "a contended store is told apart from one that did not answer")
 	require.NotErrorIs(t, err, ErrNotLinked)
 	_, err = s.Get("U1")
 	require.ErrorIs(t, err, ErrNotLinked)
+	err = s.Update("U1", func(*Link) (*Link, bool) { return &Link{RefreshToken: "rt"}, true })
+	require.ErrorIs(t, err, errStoreConflict)
 }
 
 func TestSecretStoreMissingSecretIsNotCreated(t *testing.T) {

@@ -92,8 +92,19 @@ failure never costs a person their sign-in:
   sign-in prompt, and `login` answers the same way. `logout` reports a sign-out the store
   refused instead of confirming it.
 - Reads are served from the copy for 30 s, so a Slack turn costs one Secret read rather than
-  one per lookup. Before a link is dropped on `invalid_grant` the store is re-read, so a token
-  rotated by another writer (a second replica, the import) is retried rather than burned.
+  one per lookup.
+- Replicas sharing the Secret never present the same refresh token. muster revokes the whole
+  sign-in when a refresh token it has already rotated is presented again, so before a refresh
+  the gateway writes a refresh lease on the token into the link, and only while the Secret still
+  holds that token. A replica that finds another one's lease waits for its rotated link (up to
+  60 s, when an unfinished lease expires) and serves its token; one that finds a newer token adopts
+  it. The rotated link is written, and a refused one deleted, only while the Secret still holds
+  the token that was presented, so a sign-in that lands meanwhile is kept. A Secret that cannot be
+  read or written for the lease does not block the refresh: the turn keeps working, and two
+  replicas cut off from the Secret at the same moment can still race. A Secret whose writes keep
+  conflicting is contended, not down: the lease is retried until the wait runs out, and the
+  turn then fails as transient without presenting the token. Pod clocks must agree
+  within 30 s.
 
 ## Workspaces
 
