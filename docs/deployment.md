@@ -100,11 +100,14 @@ failure never costs a person their sign-in:
   60 s, when an unfinished lease expires) and serves its token; one that finds a newer token adopts
   it. The rotated link is written, and a refused one deleted, only while the Secret still holds
   the token that was presented, so a sign-in that lands meanwhile is kept. A Secret that cannot be
-  read or written for the lease does not block the refresh: the turn keeps working, and two
-  replicas cut off from the Secret at the same moment can still race. A Secret whose writes keep
-  conflicting is contended, not down: the lease is retried until the wait runs out, and the
-  turn then fails as transient without presenting the token. Pod clocks must agree
-  within 30 s.
+  read or written for the lease fails the refresh as transient without presenting the token:
+  another replica that can reach the Secret may be presenting it. A cached id_token that still
+  covers a turn is served as before, so only a person whose token is due waits for the Secret.
+  A Secret whose writes keep conflicting is waited out the same way, up to 60 s. A rotated link
+  the Secret refuses is kept in memory and written later only while the Secret still holds the
+  token it was rotated from. One case stays open: when the Secret refuses that write for longer
+  than 60 s, the lease expires and another replica presents the rotated-away token, which signs
+  the person out. Pod clocks must agree within 30 s.
 
 ## Workspaces
 

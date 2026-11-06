@@ -26,6 +26,10 @@ type flakyStore struct {
 	// conflicts is how many Update calls still answer errStoreConflict, as a
 	// Secret store contended past its retries does.
 	conflicts int
+	// leaseWrites lets an Update that writes a refresh lease through while
+	// failPut fails every other write: the refresh runs, its rotated link is
+	// refused.
+	leaseWrites bool
 }
 
 func newFlakyStore(inner Store) *flakyStore { return &flakyStore{inner: inner} }
@@ -77,19 +81,34 @@ func (f *flakyStore) Delete(id string) error {
 // it does both.
 func (f *flakyStore) Update(id string, fn func(*Link) (*Link, bool)) error {
 	f.mu.Lock()
-	fail := f.failGet || f.failPut
+	failRead, failWrite, leaseWrites := f.failGet, f.failPut, f.leaseWrites
 	conflict := f.conflicts > 0
 	if conflict {
 		f.conflicts--
 	}
 	f.mu.Unlock()
-	if fail {
+	if failRead {
 		return errStoreDown
 	}
 	if conflict {
 		return fmt.Errorf("secret: conflict retry limit exceeded: %w", errStoreConflict)
 	}
-	return f.inner.Update(id, fn)
+	refused := false
+	if err := f.inner.Update(id, func(current *Link) (*Link, bool) {
+		refused = false
+		next, write := fn(current)
+		if write && failWrite && (!leaseWrites || next == nil || next.Lease == nil) {
+			refused = true
+			return nil, false
+		}
+		return next, write
+	}); err != nil {
+		return err
+	}
+	if refused {
+		return errStoreDown
+	}
+	return nil
 }
 
 // clock is a movable now for the linker: advancing it past the id_token's
@@ -222,7 +241,7 @@ func TestTokenForKeepsRotatedTokenWhenStoreWriteFails(t *testing.T) {
 	stub := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
 	mem, fs := seeded(t)
 	l, clk := newFlakyLinker(t, stub, fs, nil)
-	fs.set(func(f *flakyStore) { f.failPut = true })
+	fs.set(func(f *flakyStore) { f.failPut, f.leaseWrites = true, true })
 
 	tok, err := l.TokenFor(context.Background(), "U1")
 	require.NoError(t, err, "muster minted the token; only the store failed")
@@ -257,7 +276,7 @@ func TestTokenForRetriesFailedWriteInBackground(t *testing.T) {
 	stub := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
 	mem, fs := seeded(t)
 	l, _ := newFlakyLinker(t, stub, fs, nil)
-	fs.set(func(f *flakyStore) { f.failPut = true })
+	fs.set(func(f *flakyStore) { f.failPut, f.leaseWrites = true, true })
 
 	_, err := l.TokenFor(context.Background(), "U1")
 	require.NoError(t, err)
@@ -276,7 +295,7 @@ func TestCloseFlushesPendingWrites(t *testing.T) {
 
 	mem, fs := seeded(t)
 	l := newTestLinker(t, stub, fs, nil)
-	fs.set(func(f *flakyStore) { f.failPut = true })
+	fs.set(func(f *flakyStore) { f.failPut, f.leaseWrites = true, true })
 	_, err := l.TokenFor(context.Background(), "U1")
 	require.NoError(t, err)
 	fs.set(func(f *flakyStore) { f.failPut = false })
@@ -288,7 +307,7 @@ func TestCloseFlushesPendingWrites(t *testing.T) {
 	stub2 := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
 	mem2, fs2 := seeded(t)
 	l2 := newTestLinker(t, stub2, fs2, nil)
-	fs2.set(func(f *flakyStore) { f.failPut = true })
+	fs2.set(func(f *flakyStore) { f.failPut, f.leaseWrites = true, true })
 	_, err = l2.TokenFor(context.Background(), "U1")
 	require.NoError(t, err)
 	err = l2.Close()
@@ -470,6 +489,108 @@ func TestTokenForGivesUpOnContendedLease(t *testing.T) {
 	require.NotErrorIs(t, err, ErrNotLinked)
 	require.Equal(t, 0, stub.issued(), "nothing was presented at muster")
 	require.Equal(t, "refresh-0", storedRefresh(t, mem))
+}
+
+// A store this replica cannot reach is no licence to present the token: the
+// store holds it, and a replica that can reach the store may have rotated it.
+// The refresh fails as transient and nothing is presented, so the other
+// replica's rotation survives.
+func TestTokenForStoreFailureDuringLeaseIsTransient(t *testing.T) {
+	stub := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
+	mem, fs := seeded(t)
+	a, clkA := newFlakyLinker(t, stub, fs, nil)
+	a.cacheTTL = 24 * time.Hour
+	_, err := a.TokenFor(context.Background(), "U1")
+	require.NoError(t, err)
+
+	b := newTestLinker(t, stub, mem, nil)
+	clkB := newClock()
+	clkB.advance(2 * time.Hour)
+	b.now = clkB.now
+	_, err = b.TokenFor(context.Background(), "U1")
+	require.NoError(t, err)
+	require.Equal(t, "refresh-2", storedRefresh(t, mem))
+
+	fs.set(func(f *flakyStore) { f.failGet = true })
+	clkA.advance(2 * time.Hour)
+	before := stub.issued()
+	_, err = a.TokenFor(context.Background(), "U1")
+	require.ErrorIs(t, err, errStoreDown)
+	require.NotErrorIs(t, err, ErrNotLinked)
+	require.Equal(t, before, stub.issued(), "nothing was presented at muster")
+	require.Equal(t, 0, stub.reuses())
+
+	clkB.advance(2 * time.Hour)
+	_, err = b.TokenFor(context.Background(), "U1")
+	require.NoError(t, err, "the other replica's rotation survived")
+}
+
+// A rotated link whose write was refused is written later only while the
+// store still holds the token it was rotated from: a sign-in that landed in
+// the meantime is kept, not overwritten by the older sign-in's rotation.
+func TestFlushKeepsSignInThatLandedWhileDirty(t *testing.T) {
+	stub := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
+	mem, fs := seeded(t)
+	l, _ := newFlakyLinker(t, stub, fs, nil)
+	l.retryDelay, l.nextDelay = time.Hour, time.Hour
+	fs.set(func(f *flakyStore) { f.failPut, f.leaseWrites = true, true })
+	_, err := l.TokenFor(context.Background(), "U1")
+	require.NoError(t, err)
+	require.Equal(t, "refresh-0", storedRefresh(t, mem))
+
+	relinked := &Link{Sub: "muster-sub", Email: "a@example.com", RefreshToken: "relinked"}
+	require.NoError(t, mem.Put("U1", relinked))
+	fs.set(func(f *flakyStore) { f.failPut = false })
+	require.Equal(t, 0, l.Flush())
+	require.Equal(t, "relinked", storedRefresh(t, mem))
+	link, err := l.load("U1")
+	require.NoError(t, err)
+	require.Equal(t, "relinked", link.RefreshToken, "this process serves the sign-in too")
+}
+
+// invalid_grant on a rotated token the store never took kills the link
+// without presenting the token it was rotated from: that one is spent too,
+// and presenting it again would only replay it.
+func TestTokenForInvalidGrantOnDirtyLinkDoesNotReplayStoredToken(t *testing.T) {
+	stub := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
+	mem, fs := seeded(t)
+	l, clk := newFlakyLinker(t, stub, fs, nil)
+	l.retryDelay, l.nextDelay = time.Hour, time.Hour
+	fs.set(func(f *flakyStore) { f.failPut, f.leaseWrites = true, true })
+	_, err := l.TokenFor(context.Background(), "U1")
+	require.NoError(t, err)
+	fs.set(func(f *flakyStore) { f.failPut = false })
+
+	stub.mu.Lock()
+	stub.revoked[stub.family["refresh-1"]] = true
+	requests := stub.refreshRequests
+	stub.mu.Unlock()
+	clk.advance(2 * time.Hour)
+	_, err = l.TokenFor(context.Background(), "U1")
+	require.ErrorIs(t, err, ErrNotLinked)
+	stub.mu.Lock()
+	require.Equal(t, requests+1, stub.refreshRequests, "only the rotated token was presented")
+	stub.mu.Unlock()
+	_, err = mem.Get("U1")
+	require.ErrorIs(t, err, ErrNotLinked, "the dead link is dropped from the store")
+}
+
+// A refresh request, once sent, is not cut short by its caller: muster may
+// rotate the token whatever the caller does, and a request abandoned halfway
+// would leave the store holding the token muster just spent.
+func TestTokenForFinishesRefreshRequestAfterCallerCancels(t *testing.T) {
+	stub := newMusterStub(t, "klaus-gateway", "a@example.com", "muster-sub")
+	store := NewMemStore()
+	require.NoError(t, store.Put("U1", &Link{Sub: "muster-sub", Email: "a@example.com", RefreshToken: "refresh-0"}))
+	ctx, cancel := context.WithCancel(t.Context())
+	stub.mu.Lock()
+	stub.onRefresh = cancel
+	stub.mu.Unlock()
+	l := newTestLinker(t, stub, store, nil)
+
+	_, err := l.TokenFor(ctx, "U1")
+	require.NoError(t, err)
+	require.Equal(t, "refresh-1", storedRefresh(t, store), "the rotated token muster issued is kept")
 }
 
 // A sign-in that lands while this process refreshes the old link wins: the

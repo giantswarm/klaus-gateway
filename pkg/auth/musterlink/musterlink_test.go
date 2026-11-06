@@ -50,6 +50,8 @@ type musterStub struct {
 	// onRefresh, when set, runs at the start of every refresh request, before
 	// the stub answers it.
 	onRefresh func()
+	// refreshRequests counts the refresh_token grant requests the stub saw.
+	refreshRequests int
 	// lastVerifier is the PKCE code_verifier of the last code exchange.
 	lastVerifier string
 }
@@ -96,6 +98,7 @@ func newMusterStub(t *testing.T, clientID, email, sub string) *musterStub {
 		}
 		var familyID int
 		if r.Form.Get("grant_type") == "refresh_token" {
+			s.refreshRequests++
 			rt := r.Form.Get("refresh_token")
 			presented, known := s.family[rt]
 			if !known {

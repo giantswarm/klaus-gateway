@@ -108,8 +108,8 @@ or `helm/`. Add a line when a review finds a new one.
 - **muster revokes a sign-in when a rotated refresh token comes back.** mcp-oauth's reuse
   detection revokes the token's whole family, the token it has just issued included, and
   answers `invalid_grant`. Retrying with the newer token after that fails too, so a process
-  must never present a refresh token another one may be spending: every refresh takes the
-  link's refresh lease first (`pkg/auth/musterlink/lease.go`), and a test stub that answers a replay
+  must never present a refresh token another one may be presenting: every refresh of a link the
+  store holds takes the link's refresh lease first (`pkg/auth/musterlink/lease.go`), and a test stub that answers a replay
   with a plain `invalid_grant` hides the bug (#568).
 
 ## Tests

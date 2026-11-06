@@ -11,10 +11,12 @@ import (
 // rotated token presented again as a replay: it revokes the token's whole
 // family, the token it has just issued included (refresh token rotation with
 // reuse detection, RFC 9700 section 4.14.2, as mcp-oauth implements it).
-// Gateway processes that share a link store must therefore never present a
-// refresh token another process is presenting or has presented. The per-user
-// lock orders the refresh requests of one process; the refresh lease below
-// orders them across processes, through the store's Update:
+// mcp-oauth calls the tokens descended from one sign-in a token family; RFC
+// 9700 has no name for it. Gateway processes that share a link store must
+// therefore never present a refresh token another process is presenting or
+// has presented. The per-user lock orders the refresh requests of one
+// process; the refresh lease below orders them across processes, through the
+// store's Update:
 //
 //   - Before presenting a refresh token, a process writes a lease on it into
 //     the stored link, and only if the store still holds that token and no
@@ -35,13 +37,17 @@ import (
 // most that long. Pods whose clocks drift apart by more than leaseTTL minus
 // refreshTimeout can both present it.
 //
-// Two cases present the token without a lease: a link this process holds
-// dirty (only this process knows its token, so nobody else can present it),
-// and a store that fails the lease's read or write (the refresh then keeps
-// the turn working, at the risk of racing a second replica that is cut off
-// from the store at the same moment). A store that answers but stays
-// contended is not such a failure: the lease is retried until the wait runs
-// out.
+// Only a link this process holds dirty is presented without a lease: only
+// this process knows its token, so nobody else can present it. A store that
+// fails the lease's read or write fails the refresh as transient, never
+// presents the token: the store holds it, and another replica that can reach
+// the store may be presenting it right now. A store that answers but stays
+// contended is waited out until the wait runs out.
+//
+// One case stays open: a holder whose rotated link the store refuses for
+// longer than leaseTTL. The lease then expires on a token muster has already
+// rotated, and the next process presents it. Renewing the lease would need
+// the very write that is failing.
 
 // refreshAttempts bounds how many times one refresh adopts a link another
 // process wrote and tries again.
@@ -70,8 +76,8 @@ type leaseResult int
 const (
 	// leaseHeld: this process holds the lease; present the token.
 	leaseHeld leaseResult = iota
-	// leaseSkipped: no lease was taken (the link is dirty here, or the store
-	// failed); present the token without one.
+	// leaseSkipped: no lease was taken because the link is dirty here;
+	// present the token without one.
 	leaseSkipped
 	// leaseAdopted: the store holds a newer link, returned alongside; use it
 	// instead of presenting the token.
@@ -117,8 +123,7 @@ func (l *Linker) acquireRefreshLease(ctx context.Context, slackUserID string, li
 		case errors.Is(err, errStoreConflict):
 			busy = true
 		case err != nil:
-			l.logger.Warn("musterlink: taking the refresh lease failed, refreshing without one", "slackUser", slackUserID, "err", err)
-			return leaseSkipped, nil, nil
+			return leaseSkipped, nil, fmt.Errorf("musterlink: take the refresh lease: %w", err)
 		case absent:
 			l.forget(slackUserID)
 			return leaseSkipped, nil, ErrNotLinked
@@ -141,8 +146,10 @@ func (l *Linker) acquireRefreshLease(ctx context.Context, slackUserID string, li
 }
 
 // releaseRefreshLease clears this process's lease on presented after a
-// refresh request that left the token valid, so other processes need not wait
-// for the lease to expire. Best effort: a lease it cannot clear expires on its
+// refresh request that failed without an answer from muster about the token
+// (a 5xx, a timeout, a dropped connection). Whether muster rotated it is
+// unknown: when it did, the next presenter replays it, and keeping the lease
+// would only delay that. Best effort: a lease it cannot clear expires on its
 // own.
 func (l *Linker) releaseRefreshLease(slackUserID, presented string) {
 	if err := l.store.Update(slackUserID, func(current *Link) (*Link, bool) {
@@ -165,6 +172,7 @@ func (l *Linker) releaseRefreshLease(slackUserID, presented string) {
 func (l *Linker) saveRotated(slackUserID, presented string, updated *Link) (*Link, error) {
 	l.linksMu.Lock()
 	l.put(slackUserID, *updated, l.now(), true)
+	l.links[slackUserID].storedRefreshToken = presented
 	l.linksMu.Unlock()
 	var (
 		absent bool

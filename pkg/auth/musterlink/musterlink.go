@@ -822,17 +822,27 @@ func (l *Linker) refreshLink(ctx context.Context, slackUserID string, link *Link
 // holds the presented token, and adopted is the link another writer put there
 // meanwhile, for the caller to retry with.
 func (l *Linker) sendRefreshRequest(ctx context.Context, slackUserID string, link *Link, leased bool) (idToken string, expiry time.Time, adopted *Link, err error) {
-	rctx, cancel := context.WithTimeout(ctx, refreshTimeout)
+	// A request once sent runs to its own bound whatever is left of the
+	// caller's: cut short, muster may have rotated the token without the
+	// gateway learning the new one.
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), refreshTimeout)
 	defer cancel()
 	token, err := l.refresh(rctx, link.RefreshToken)
 	if isInvalidGrant(err) {
-		adopted, err = l.dropRefused(slackUserID, link.RefreshToken)
+		refused := link.RefreshToken
+		if stored := l.storedRefreshTokenOf(slackUserID); !leased && stored != "" {
+			// The store never held the refused token; it holds the one this
+			// was rotated from, as dead now, and presenting it would replay it.
+			refused = stored
+		}
+		adopted, err = l.dropRefused(slackUserID, refused)
 		return "", time.Time{}, adopted, err
 	}
 	if err != nil {
 		// A non-invalid_grant token-endpoint error (transient 5xx, network)
 		// keeps the link and stays retryable.
 		if leased {
+			l.logger.Warn("musterlink: refresh request failed, the refresh token's state at muster is unknown", "slackUser", slackUserID, "err", err)
 			l.releaseRefreshLease(slackUserID, link.RefreshToken)
 		}
 		return "", time.Time{}, nil, fmt.Errorf("musterlink: refresh token for slack user: %w", err)
