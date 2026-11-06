@@ -1,3 +1,4 @@
 CVE-2026-84445 until=2026-12-31
 CVE-2026-116586 until=2026-11-27 # github.com/go-jose/go-jose/v4@v4.1.4 since=2026-10-28
 CVE-2026-116585 until=2026-11-27 # github.com/go-jose/go-jose/v4@v4.1.4 since=2026-10-28
+CVE-2026-122132 until=2026-12-06 # github.com/go-chi/chi/v5@v5.5.0 since=2026-11-06
