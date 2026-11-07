@@ -79,8 +79,9 @@ func (k *KagentSessions) SessionAgent(ctx context.Context, sessionID string) (st
 // Agent, and the display name the agent chart renders on an Agent and an
 // admin may set on a Harness.
 const (
-	CreatedByAnnotation   = "agent-platform.giantswarm.io/created-by"
-	DisplayNameAnnotation = "ui.giantswarm.io/display-name"
+	CreatedByAnnotation      = "agent-platform.giantswarm.io/created-by"
+	DisplayNameAnnotation    = "ui.giantswarm.io/display-name"
+	NotifyRefusalsAnnotation = "klaus.giantswarm.io/notify-egress-refusals"
 )
 
 // AgentsGVR is the kagent Agent resource and HarnessesGVR the Harness an
@@ -108,8 +109,9 @@ func (k *KubeAgents) Agent(ctx context.Context, namespace, name string) (Agent, 
 	}
 	annotations := obj.GetAnnotations()
 	out := Agent{DisplayName: annotations[DisplayNameAnnotation], Creator: annotations[CreatedByAnnotation]}
+	out.NotifyRefusals = annotations[NotifyRefusalsAnnotation] == "true"
 	harness, _, _ := unstructured.NestedString(obj.Object, "spec", "harnessRef", "name")
-	if out.Creator == "" || harness == "" {
+	if out.Creator == "" || !out.NotifyRefusals || harness == "" {
 		return out, nil
 	}
 	h, err := k.Client.Resource(HarnessesGVR).Namespace(namespace).Get(ctx, harness, metav1.GetOptions{})

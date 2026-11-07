@@ -35,6 +35,15 @@ type EgressRefusal struct {
 	At time.Time
 	// AgentURL opens the agent where its egress is edited; "" for none.
 	AgentURL string
+	Counters []RefusalCounter
+}
+
+// RefusalCounter identifies one process/actor/destination counter. Increase is
+// used when no durable baseline exists; Value makes replay idempotent.
+type RefusalCounter struct {
+	Key      string
+	Value    float64
+	Increase float64
 }
 
 // RefusalNotifier tells an agent's creator about its egress refusals: one

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"time"
@@ -76,21 +77,34 @@ func refusalID(r channels.EgressRefusal) string {
 // channels.ErrAddresseeNotFound.
 func (a *Adapter) NoteRefusal(ctx context.Context, r channels.EgressRefusal) error {
 	id := refusalID(r)
+	now := time.Now()
+	retention := max(a.refusalWindow(), DefaultRefusalWindow)
 	var updated store.Review
 	found, err := a.reviews().UpdateReview(ctx, id, func(rv *store.Review) bool {
 		if rv.Refusal == nil {
 			return false
 		}
 		next := *rv.Refusal
+		previousCount := next.Count
 		countRefusal(&next, r)
+		increase := next.Count - previousCount
+		if increase > 0 && r.At.Sub(rv.Refusal.FirstAt) >= a.refusalWindow() {
+			next.Count, next.Sessions, next.MoreSessions = 0, nil, 0
+			next.FirstAt, next.LastAt = time.Time{}, time.Time{}
+			current := r
+			current.Count, current.Counters = increase, nil
+			countRefusal(&next, current)
+			rv.Channel, rv.TS = "", ""
+		}
 		rv.Refusal = &next
+		rv.TTL = now.Sub(rv.PostedAt) + retention
 		updated = *rv
 		return true
 	})
 	if err != nil {
 		return fmt.Errorf("slack: look up refusal notice: %w", err)
 	}
-	if found && updated.Refusal != nil {
+	if found && updated.Refusal != nil && updated.TS != "" {
 		return a.apiClient().chatUpdate(ctx, updated.Channel, updated.TS, refusalFallback(*updated.Refusal), a.refusalBlocks(*updated.Refusal))
 	}
 
@@ -103,7 +117,11 @@ func (a *Adapter) NoteRefusal(ctx context.Context, r channels.EgressRefusal) err
 		Runtime: r.Runtime, HarnessTitle: r.HarnessTitle,
 		Scheme: r.Scheme, Host: r.Host, Port: r.Port, AgentURL: r.AgentURL,
 	}
-	countRefusal(&rec, r)
+	if found && updated.Refusal != nil {
+		rec = *updated.Refusal
+	} else {
+		countRefusal(&rec, r)
+	}
 	resp, err := a.apiClient().postJSONResponse(ctx, methodChatPostMessage, map[string]any{
 		paramChannel: user,
 		paramText:    refusalFallback(rec),
@@ -115,7 +133,7 @@ func (a *Adapter) NoteRefusal(ctx context.Context, r channels.EgressRefusal) err
 	rv := store.Review{
 		ID: id, Channel: resp.Channel, TS: resp.Ts,
 		Text: refusalFallback(rec), Refusal: &rec,
-		PostedAt: time.Now(), TTL: a.refusalWindow(),
+		PostedAt: now, TTL: retention,
 	}
 	if rv.Channel == "" {
 		rv.Channel = user
@@ -132,7 +150,38 @@ func (a *Adapter) NoteRefusal(ctx context.Context, r channels.EgressRefusal) err
 
 // countRefusal adds the requests and Sessions of r to rec.
 func countRefusal(rec *store.Refusal, r channels.EgressRefusal) {
-	rec.Count += r.Count
+	increase := r.Count
+	if len(r.Counters) > 0 {
+		increase = 0
+		baselineOnly := rec.Count > 0 && len(rec.Counters) == 0
+		counters := maps.Clone(rec.Counters)
+		if counters == nil {
+			counters = make(map[string]store.RefusalCounter)
+		}
+		for key, counter := range counters {
+			if r.At.Sub(counter.ObservedAt) > DefaultRefusalWindow {
+				delete(counters, key)
+			}
+		}
+		for _, counter := range r.Counters {
+			delta := counter.Increase
+			if previous, ok := counters[counter.Key]; ok {
+				delta = counter.Value
+				if counter.Value >= previous.Value {
+					delta -= previous.Value
+				}
+			}
+			if !baselineOnly {
+				increase += int(delta)
+			}
+			counters[counter.Key] = store.RefusalCounter{Value: counter.Value, ObservedAt: r.At}
+		}
+		rec.Counters = counters
+	}
+	if increase <= 0 {
+		return
+	}
+	rec.Count += increase
 	if rec.FirstAt.IsZero() || r.At.Before(rec.FirstAt) {
 		rec.FirstAt = r.At
 	}

@@ -404,8 +404,16 @@ type Refusal struct {
 	MoreSessions int      `json:"more_sessions,omitempty"`
 	// FirstAt and LastAt are when the first and the latest of them were
 	// observed.
-	FirstAt time.Time `json:"first_at"`
-	LastAt  time.Time `json:"last_at"`
+	FirstAt  time.Time                 `json:"first_at"`
+	LastAt   time.Time                 `json:"last_at"`
+	Counters map[string]RefusalCounter `json:"counters,omitempty"`
+}
+
+// RefusalCounter survives notice windows and gateway restarts. ObservedAt
+// bounds how long an inactive series retains its baseline.
+type RefusalCounter struct {
+	Value      float64   `json:"value"`
+	ObservedAt time.Time `json:"observed_at"`
 }
 
 // RefusalSessionsMax bounds the Sessions a refusal record names.

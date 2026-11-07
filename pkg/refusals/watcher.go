@@ -60,7 +60,8 @@ type Agent struct {
 	DisplayName string
 	// Creator is the email of the person who created the Agent; "" when it
 	// records none (an Agent applied without agent-manager).
-	Creator string
+	Creator        string
+	NotifyRefusals bool
 	// Runtime is the runtime of the Agent's Harness (kagent, claude, codex,
 	// byo), "" when it is not known; HarnessTitle the Harness's display
 	// name, "" for none.
@@ -96,10 +97,11 @@ type Watcher struct {
 
 // The outcomes Record is called with.
 const (
-	OutcomeNoted      = "noted"
-	OutcomeFailed     = "failed"
-	OutcomeNoCreator  = "no_creator"
-	OutcomeNotSession = "not_session"
+	OutcomeNoted         = "noted"
+	OutcomeFailed        = "failed"
+	OutcomeNoCreator     = "no_creator"
+	OutcomeNotSession    = "not_session"
+	OutcomeNotSubscribed = "not_subscribed"
 )
 
 // sessionActorPrefix starts the name kagent gives a Session's actor.
@@ -136,7 +138,8 @@ type group struct {
 	sessions         []string
 	// keys are the series counted into the group: a group that could not be
 	// noted keeps their previous values, so the next read counts it again.
-	keys []string
+	keys     []string
+	counters []channels.RefusalCounter
 }
 
 // Observe reads the egress once and notes the refusals since the previous
@@ -191,6 +194,7 @@ func (w *Watcher) Observe(ctx context.Context) {
 		}
 		g.count += increase
 		g.keys = append(g.keys, key)
+		g.counters = append(g.counters, channels.RefusalCounter{Key: key, Value: s.Value, Increase: increase})
 		if !slices.Contains(g.sessions, sessionID) {
 			g.sessions = append(g.sessions, sessionID)
 		}
@@ -231,11 +235,16 @@ func (w *Watcher) note(ctx context.Context, g *group, now time.Time) bool {
 		w.record(OutcomeNoCreator)
 		return true
 	}
+	if !agent.NotifyRefusals {
+		w.record(OutcomeNotSubscribed)
+		return true
+	}
 	err = w.Notifier.NoteRefusal(ctx, channels.EgressRefusal{
 		Namespace: g.namespace, Agent: g.agent, DisplayName: agent.DisplayName, Creator: agent.Creator,
 		Runtime: agent.Runtime, HarnessTitle: agent.HarnessTitle,
 		Scheme: g.scheme, Host: g.host, Port: g.port,
 		Count: int(g.count), Sessions: g.sessions, At: now,
+		Counters: g.counters,
 		AgentURL: w.agentURL(g.namespace, g.agent),
 	})
 	if err != nil {

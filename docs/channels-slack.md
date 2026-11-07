@@ -1110,8 +1110,10 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
 
 ## Egress refusal notices
 
-With `refusals.enabled` (`--refusals-enabled`), the creator of an agent learns by direct message
-from the app when the Substrate egress refuses a destination the agent's egress
+With `refusals.enabled` (`--refusals-enabled`), an Agent opts into creator direct messages
+with the annotation `klaus.giantswarm.io/notify-egress-refusals: "true"`. Without this annotation,
+refusals remain visible in the Session and egress metrics, and no Slack notice is sent.
+For an opted-in Agent, the creator learns from the app when the Substrate egress refuses a destination the agent's egress
 does not declare: *Outgoing connection to <host> blocked*, how many attempts in how many
 Sessions since when, what they can do about it, and the destination and origin under
 *Technical details*. There is one
@@ -1160,11 +1162,13 @@ second destination of the same agent is a second notice. Nothing goes through Al
   leaves the runtime unknown, one it may not read too, logged with the missing grant; any other
   failure is retried on the next read.
 - **Record.** The notice is a record in the review store (`refusal-<hash of agent and
-  destination>`, the window as its TTL), so on `valkey` and `bolt` a restart keeps the
-  deduplication. A notice Slack or kagent could not take is retried on the next read with the
+  destination>`). Counter baselines persist with the record across gateway restarts, Slack
+  update retries and notification windows. Inactive baselines are retained for at least 24 h.
+  Records without saved baselines establish them on the first observation while preserving
+  their existing count; counts missed before that observation cannot be reconstructed. A notice Slack or kagent could not take is retried on the next read with the
   refusals since; a creator Slack does not know is not.
 - **Outcomes** are counted in `klaus_gateway_egress_refusals_total{outcome}`: `noted`, `failed`,
-  `no_creator`, `not_session`.
+  `no_creator`, `not_session`, `not_subscribed`.
 
 ## Required bot OAuth scopes
 

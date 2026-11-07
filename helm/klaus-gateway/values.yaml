@@ -410,9 +410,10 @@ reviews:
     - system:serviceaccount:giantswarm-platform-manager:giantswarm-platform-manager
 
 # Egress refusal notices: when the Substrate egress refuses a destination an
-# agent's egress does not declare, the agent's creator (the Agent's
-# agent-platform.giantswarm.io/created-by annotation) gets a direct message
-# from the app, one per agent and destination within `window`; later refusals
+# agent's egress does not declare, an Agent annotated with
+# klaus.giantswarm.io/notify-egress-refusals: "true" opts its creator into
+# direct messages from the app, one per agent and destination within `window`.
+# The creator is agent-platform.giantswarm.io/created-by. Later refusals
 # inside it are counted into that message. The gateway reads the refusal
 # counter from the stats port of every pod behind `egressService` and asks
 # the kagent controller, as its own ServiceAccount (a projected token for

@@ -1,7 +1,6 @@
 package slack_test
 
 import (
-	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -37,7 +36,7 @@ func refusalHarness(t *testing.T) (*fakeSlackAPI, func(channels.EgressRefusal) e
 		return fmt.Sprintf(`{"ok":true,"channel":"DBADGER","ts":"1700000200.00000%d"}`, posted)
 	})
 	a.RefusalWindow = time.Hour
-	return fake, func(r channels.EgressRefusal) error { return a.NoteRefusal(context.Background(), r) }
+	return fake, func(r channels.EgressRefusal) error { return a.NoteRefusal(t.Context(), r) }
 }
 
 func messageText(blocks []map[string]any) string {
@@ -77,6 +76,64 @@ func TestRefusal_OneNoticePerAgentAndHostWithinTheWindow(t *testing.T) {
 	other.Host = "sum.golang.org"
 	require.NoError(t, note(other))
 	require.Len(t, fake.pathCalls("chat.postMessage"), 2, "a second host is a second notice")
+}
+
+func TestRefusal_CounterReplayAndReset(t *testing.T) {
+	fake, note := refusalHarness(t)
+	at := time.Now()
+	observation := goModulesRefusal(at)
+	observation.Counters = []channels.RefusalCounter{{Key: "pod/session-s1", Value: 3, Increase: 3}}
+	require.NoError(t, note(observation))
+	require.NoError(t, note(observation))
+	require.Contains(t, latestUpdateText(fake, "1700000200.000001"), "3 attempts in 1 Session")
+
+	observation.At = at.Add(time.Minute)
+	observation.Counters[0].Value, observation.Counters[0].Increase = 5, 5
+	require.NoError(t, note(observation))
+	require.Contains(t, latestUpdateText(fake, "1700000200.000001"), "5 attempts in 1 Session")
+
+	observation.At = at.Add(2 * time.Minute)
+	observation.Counters[0].Value, observation.Counters[0].Increase = 1, 1
+	require.NoError(t, note(observation))
+	require.Contains(t, latestUpdateText(fake, "1700000200.000001"), "6 attempts in 1 Session")
+}
+
+func TestRefusal_SlackUpdateRetryDoesNotRecount(t *testing.T) {
+	fake, note := refusalHarness(t)
+	observation := goModulesRefusal(time.Now())
+	observation.Counters = []channels.RefusalCounter{{Key: "pod/session-s1", Value: 3, Increase: 3}}
+	require.NoError(t, note(observation))
+	observation.Counters[0].Value, observation.Counters[0].Increase = 5, 2
+	fake.setResponder("chat.update", func(map[string]any) string { return `{"ok":false,"error":"channel_not_found"}` })
+	require.Error(t, note(observation))
+	fake.setResponder("chat.update", func(map[string]any) string { return `{"ok":true}` })
+	require.NoError(t, note(observation))
+	require.Contains(t, latestUpdateText(fake, "1700000200.000001"), "5 attempts in 1 Session")
+}
+
+func TestRefusal_NewWindowKeepsCounterBaseline(t *testing.T) {
+	fake, note := refusalHarness(t)
+	observation := goModulesRefusal(time.Now())
+	observation.Counters = []channels.RefusalCounter{{Key: "pod/session-s1", Value: 3, Increase: 3}}
+	require.NoError(t, note(observation))
+	observation.At = observation.At.Add(time.Hour + time.Second)
+	observation.Counters[0].Value, observation.Counters[0].Increase = 4, 4
+	require.NoError(t, note(observation))
+	posts := fake.pathCalls("chat.postMessage")
+	require.Len(t, posts, 2)
+	require.Contains(t, messageText(blocksOf(posts[1])), "1 attempt in 1 Session")
+}
+
+func TestRefusal_LegacyNoticeStartsCounterBaseline(t *testing.T) {
+	fake, note := refusalHarness(t)
+	observation := goModulesRefusal(time.Now())
+	require.NoError(t, note(observation))
+	observation.Counters = []channels.RefusalCounter{{Key: "pod/session-s1", Value: 5, Increase: 5}}
+	require.NoError(t, note(observation))
+	require.Contains(t, latestUpdateText(fake, "1700000200.000001"), "3 attempts in 1 Session")
+	observation.Counters[0].Value, observation.Counters[0].Increase = 6, 1
+	require.NoError(t, note(observation))
+	require.Contains(t, latestUpdateText(fake, "1700000200.000001"), "4 attempts in 1 Session")
 }
 
 func TestRefusal_DestinationIsNotLinkified(t *testing.T) {

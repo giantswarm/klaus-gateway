@@ -61,7 +61,7 @@ func watcher(src *fakeSource, n *fakeNotifier, outcomes *[]string) *refusals.Wat
 			"s3": {"org-otter", "orphan"},
 		},
 		Agents: fakeAgents{
-			"org-otter/otter-coder": {DisplayName: "Otter Coder", Creator: "badger@example.com", Runtime: "claude", HarnessTitle: "Claude Code with Go"},
+			"org-otter/otter-coder": {DisplayName: "Otter Coder", Creator: "badger@example.com", NotifyRefusals: true, Runtime: "claude", HarnessTitle: "Claude Code with Go"},
 		},
 		Notifier: n,
 		AgentURL: "https://portal.example.com/agents/{namespace}/{name}",
@@ -119,6 +119,23 @@ func TestWatcher_SkipsWhatItCannotName(t *testing.T) {
 	watcher(src, n, &outcomes).Observe(context.Background())
 	require.Empty(t, n.noted)
 	require.Equal(t, []string{refusals.OutcomeNotSession, refusals.OutcomeNoCreator}, outcomes)
+}
+
+func TestWatcher_RequiresAgentOptIn(t *testing.T) {
+	source := &fakeSource{series: []refusals.Series{series("session-s1", "example.com", 2)}}
+	notifier := &fakeNotifier{}
+	var outcomes []string
+	observer := watcher(source, notifier, &outcomes)
+	observer.Agents = fakeAgents{"org-otter/otter-coder": {Creator: "badger@example.com"}}
+	observer.Observe(t.Context())
+	require.Empty(t, notifier.noted)
+	require.Equal(t, []string{refusals.OutcomeNotSubscribed}, outcomes)
+	observer.Agents = fakeAgents{"org-otter/otter-coder": {Creator: "badger@example.com", NotifyRefusals: true}}
+	source.series[0].Value = 3
+	observer.Observe(t.Context())
+	require.Len(t, notifier.noted, 1)
+	require.Equal(t, 1, notifier.noted[0].Count)
+	require.Equal(t, []channels.RefusalCounter{{Key: notifier.noted[0].Counters[0].Key, Value: 3, Increase: 1}}, notifier.noted[0].Counters)
 }
 
 func TestWatcher_RetriesWhatTheNotifierCouldNotNote(t *testing.T) {

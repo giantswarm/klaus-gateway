@@ -92,8 +92,9 @@ func agentObject(harness string) *unstructured.Unstructured {
 		"metadata": map[string]any{
 			"namespace": "org-otter", "name": "otter-coder",
 			"annotations": map[string]any{
-				refusals.CreatedByAnnotation:   "badger@example.com",
-				refusals.DisplayNameAnnotation: "Otter Coder",
+				refusals.CreatedByAnnotation:      "badger@example.com",
+				refusals.DisplayNameAnnotation:    "Otter Coder",
+				refusals.NotifyRefusalsAnnotation: "true",
 			},
 		},
 		"spec": map[string]any{"harnessRef": map[string]any{"name": harness}},
@@ -127,7 +128,8 @@ func TestKubeAgents_ReadsTheRuntimeOfTheAgentsHarness(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, refusals.Agent{
 				DisplayName: "Otter Coder", Creator: "badger@example.com",
-				Runtime: tc.runtime, HarnessTitle: tc.harnessTitle,
+				NotifyRefusals: true,
+				Runtime:        tc.runtime, HarnessTitle: tc.harnessTitle,
 			}, agent)
 		})
 	}
@@ -144,6 +146,20 @@ func TestKubeAgents_NoCreatorReadsNoHarness(t *testing.T) {
 	agent, err := agents.Agent(context.Background(), "org-otter", "otter-coder")
 	require.NoError(t, err)
 	require.Empty(t, agent.Creator)
+}
+
+func TestKubeAgents_NotificationOptIn(t *testing.T) {
+	for _, value := range []string{"", "false", "True", "true"} {
+		t.Run(value, func(t *testing.T) {
+			object := agentObject("")
+			annotations := object.GetAnnotations()
+			annotations[refusals.NotifyRefusalsAnnotation] = value
+			object.SetAnnotations(annotations)
+			agent, err := kubeAgents(object).Agent(t.Context(), "org-otter", "otter-coder")
+			require.NoError(t, err)
+			require.Equal(t, value == "true", agent.NotifyRefusals)
+		})
+	}
 }
 
 func TestKubeAgents_MissingHarnessLeavesTheRuntimeUnknown(t *testing.T) {
