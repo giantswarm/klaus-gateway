@@ -255,7 +255,9 @@ creates one, which a turn that switches agents does mid-thread.
   bot profile name (the alerting integrations; `*-alertmanager` admits every installation's
   Alertmanager app, each with its own `bot_id`). The profile name is the Slack app's own bot name;
   the name a post sets is whatever it posts under and never admits a bot; any other bot's post is left out, and the
-  catch-up of a muted thread admits the same authors. An allowed bot's alert is flattened out of its attachments
+  catch-up of a muted thread admits the same authors. Either list admits posts only in threads the gateway can
+  read, which are those in channels its bot is a member of: for alert posts to reach an agent, the gateway's bot is
+  invited to each alert or incident channel it should serve. An allowed bot's alert is flattened out of its attachments
   and blocks, which is where PagerDuty and friends put the text; `<@U…>` mentions become names; the
   gateway's own posts and content-less events are left out; files are named, never downloaded. At
   most 12,000 characters, oldest dropped first, root always kept — a constant, not configuration;
