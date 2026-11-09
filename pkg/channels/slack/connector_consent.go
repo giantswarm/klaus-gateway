@@ -48,7 +48,12 @@ type connectorCompletion struct {
 	// is that task: the continuation resumes it with accept, if it is still
 	// paused on it.
 	signInTask string
-	consented  bool
+	// conversation, set for the prompt of a conversation reply muster asked
+	// a sign-in for, is the conversation's ID and reply the reply: the
+	// continuation accepts the sign-in, which delivers it.
+	conversation string
+	reply        conversationReply
+	consented    bool
 }
 
 // mintConnectorCompletion stores fresh completion state for a Connect prompt
@@ -169,6 +174,8 @@ func (a *Adapter) continueAfterConsent(ctx context.Context, entry connectorCompl
 		return
 	}
 	switch {
+	case entry.conversation != "":
+		a.resumeConversationReply(ctx, entry)
 	case entry.answer != nil:
 		a.resumeDecisionAnswer(ctx, entry)
 	case entry.review != "":

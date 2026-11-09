@@ -817,7 +817,10 @@ tool decides whom the person may reach and the agent answers through the convers
 - **Not reached** (muster or the tool did not answer): `Not delivered to <from>: it could not be
   reached right now. Send it again in a moment.`
 - **Unlinked:** the sign-in card, in the thread; the person sends the reply again once signed in.
-  A backend they have not connected is a *Connect* prompt in the thread, and they send it again.
+  A sign-in muster asks for first is a *Connect* prompt in the thread showing muster's link; the
+  click on *Sign in* accepts it, and muster delivers the reply once the person signed in. A sign-in
+  that does not finish in time is `Not delivered to <from>: the sign-in did not finish in time.`;
+  *Not now* declines it and nothing is sent.
 - **Someone else** writing in the thread is told privately that it is the person's conversation;
   nothing is sent.
 

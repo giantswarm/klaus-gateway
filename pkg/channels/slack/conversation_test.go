@@ -202,3 +202,69 @@ func TestConversation_MessagesGoIntoTheThread(t *testing.T) {
 	_, err = a.PostConversationMessage(context.Background(), d.ID, channels.ConversationMessage{Text: "hi"})
 	require.ErrorIs(t, err, channels.ErrConversationNotFound, "a decision is not a conversation")
 }
+
+// A reply muster asks a sign-in for is a Connect prompt showing muster's
+// link; the click on Sign in accepts the sign-in as the person, and the reply
+// is delivered once they signed in, without being sent again.
+func TestConversation_SignInThenDelivers(t *testing.T) {
+	tools := &recordingTools{results: []muster.Result{reviewSignIn(), {Text: "sent: delivery 4"}}}
+	a, srv, fake := conversationHarness(t, tools)
+	receipt, err := a.OpenConversation(context.Background(), guideConversation())
+	require.NoError(t, err)
+
+	replyInConversation(t, srv, receipt, "U1", "1800000000.000002", "Are you there?")
+
+	var buttonURL, stateID string
+	waitFor(t, "a Connect prompt is posted to the person", func() bool {
+		var ok bool
+		buttonURL, stateID, ok = connectButton(fake)
+		return ok
+	})
+	prompt := fake.pathCalls("chat.postEphemeral")[0]
+	require.Contains(t, prompt.params["text"], "Opens *muster.example*\n`"+reviewSignInLink+"`")
+	require.Contains(t, prompt.params["text"], "your reply goes to *Your guide* once you're signed in")
+	require.Equal(t, []string{"connector_connect", "connector_decline"}, actionIDs(blocksOf(prompt)))
+	require.Equal(t, reviewSignInLink, buttonURL, "muster's link, unchanged")
+
+	sendClick(t, srv, "connector_connect", stateID, "", true)
+
+	waitFor(t, "the sign-in is accepted as the person", func() bool { return len(tools.recorded()) == 2 })
+	accepted := tools.recorded()[1]
+	require.Equal(t, "id-token-U1", accepted.bearer)
+	require.NotNil(t, accepted.accepted)
+	require.Equal(t, reviewSignInLink, accepted.accepted.URL)
+	waitFor(t, "the reply is marked delivered", func() bool {
+		for _, r := range fake.pathCalls("reactions.add") {
+			if r.params["timestamp"] == "1800000000.000002" && r.params["name"] == "incoming_envelope" {
+				return true
+			}
+		}
+		return false
+	})
+	require.Empty(t, threadNotes(fake, receipt.TS))
+}
+
+// A sign-in that did not finish while muster waited is a note, not another
+// prompt.
+func TestConversation_UnfinishedSignInIsNotDelivered(t *testing.T) {
+	tools := &recordingTools{results: []muster.Result{reviewSignIn(), reviewSignIn()}}
+	a, srv, fake := conversationHarness(t, tools)
+	receipt, err := a.OpenConversation(context.Background(), guideConversation())
+	require.NoError(t, err)
+
+	replyInConversation(t, srv, receipt, "U1", "1800000000.000002", "Are you there?")
+	var stateID string
+	waitFor(t, "a Connect prompt is posted", func() bool {
+		var ok bool
+		_, stateID, ok = connectButton(fake)
+		return ok
+	})
+	sendClick(t, srv, "connector_connect", stateID, "", true)
+
+	waitFor(t, "the thread says the sign-in did not finish", func() bool {
+		notes := threadNotes(fake, receipt.TS)
+		return len(notes) == 1 && notes[0] == "Not delivered to *Your guide*: the sign-in did not finish in time. Send it again once you're signed in."
+	})
+	require.Len(t, fake.pathCalls("chat.postEphemeral"), 1, "no second prompt")
+	require.Empty(t, fake.pathCalls("reactions.add"))
+}
