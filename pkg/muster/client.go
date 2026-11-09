@@ -1,102 +1,278 @@
 // Package muster calls one muster tool as a person. Each call is its own MCP
-// streamable-HTTP exchange against muster's /mcp endpoint — initialize,
-// tools/call, session close — authenticated with the person's dex id_token, so
-// muster sees the person and not the gateway and the tool runs under the
-// person's own grants.
+// exchange against muster's /mcp endpoint, authenticated with the person's dex
+// id_token, so muster sees the person and not the gateway and the tool runs
+// under the person's own grants.
+//
+// The client declares URL mode elicitation. A call muster cannot run until
+// the person signs in somewhere is answered with that sign-in as a URL
+// elicitation (SignIn) instead of a tool result; the caller shows the link,
+// and once the person agreed to open it retries the call with Accept.
 package muster
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
+
+	mcpclient "github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/client/transport"
+	"github.com/mark3labs/mcp-go/mcp"
 )
 
 const (
-	sessionHeader   = "Mcp-Session-Id"
-	protocolVersion = "2025-03-26"
-	maxResponse     = 1 << 20
-	defaultTimeout  = 60 * time.Second
+	defaultTimeout = 60 * time.Second
+	maxResponse    = 1 << 20
+	clientName     = "klaus-gateway"
 )
+
+// AcceptTimeout bounds Accept: muster waits up to five minutes for the
+// sign-in before it runs the call.
+const AcceptTimeout = 6 * time.Minute
 
 // Result is a tool's answer: its text content joined, its structured content
 // as the tool sent it, and whether the tool reported it as an error (a refusal
 // is an error result, not a transport failure). Dispatched tells the target
 // tool's own answer from call_tool's: false is muster refusing the call itself
 // (an unknown tool, one outside the caller's toolset), the tool never ran.
+//
+// SignIn, when set, is the sign-in muster needs before it runs the call: the
+// call did not run, and the other fields are empty.
 type Result struct {
 	Text       string
 	Structured json.RawMessage
 	IsError    bool
 	Dispatched bool
+	SignIn     *SignIn
 }
+
+// SignIn is a URL mode elicitation muster answered a call with. The person
+// opens URL, exactly as given, after they agreed to; Accept then retries the
+// call that asked for it.
+type SignIn struct {
+	// Message is muster's own words on why, to show attributed to muster.
+	Message string
+	// URL is the page the person signs in on.
+	URL string
+
+	tool         string
+	args         map[string]any
+	inputKey     string
+	requestState string
+}
+
+// ErrUnusableSignIn is a sign-in muster asked for that the gateway will not
+// show: not one URL mode elicitation, or a link that is not https (http only
+// on a loopback host) or that carries credentials.
+var ErrUnusableSignIn = errors.New("muster: unusable sign-in elicitation")
 
 // Client calls muster tools. One client is safe to share.
 type Client struct {
 	// BaseURL is muster's base URL; the MCP endpoint is BaseURL + /mcp.
 	BaseURL string
-	HTTP    *http.Client
+	// HTTP carries the requests; each call bounds itself with its context.
+	HTTP *http.Client
 }
 
 // NewClient returns a Client for the muster at baseURL.
 func NewClient(baseURL string) *Client {
-	return &Client{BaseURL: baseURL, HTTP: &http.Client{Timeout: defaultTimeout}}
+	return &Client{BaseURL: baseURL, HTTP: &http.Client{}}
 }
 
 // CallTool calls tool with args as the person whose bearer token is given.
-// The transport is initialized per call and the session, when muster issues
-// one, is closed afterwards.
 func (c *Client) CallTool(ctx context.Context, bearer, tool string, args map[string]any) (Result, error) {
-	if bearer == "" {
-		return Result{}, errors.New("muster: no bearer token for the tool call")
-	}
 	if args == nil {
 		args = map[string]any{}
 	}
-	endpoint := strings.TrimRight(c.BaseURL, "/") + "/mcp"
-	s := session{client: c, endpoint: endpoint, bearer: bearer}
+	ctx, cancel := context.WithTimeout(ctx, defaultTimeout)
+	defer cancel()
+	return c.call(ctx, bearer, tool, args, mcp.MultiRoundTripParams{})
+}
 
-	if _, err := s.request(ctx, 1, "initialize", map[string]any{
-		"protocolVersion": protocolVersion,
-		"capabilities":    map[string]any{},
-		"clientInfo":      map[string]any{nameKey: "klaus-gateway", "version": "team-review"},
-	}); err != nil {
-		return Result{}, fmt.Errorf("muster: initialize: %w", err)
+// Accept retries the call signIn was asked for with the person's accept: they
+// agreed to open the link. muster waits for the sign-in to complete before it
+// runs the call; a sign-in that did not complete in time is asked again, as a
+// Result with a new SignIn.
+func (c *Client) Accept(ctx context.Context, bearer string, signIn *SignIn) (Result, error) {
+	ctx, cancel := context.WithTimeout(ctx, AcceptTimeout)
+	defer cancel()
+	return c.answer(ctx, bearer, signIn, mcp.ElicitationResponseActionAccept)
+}
+
+// Decline answers the call signIn was asked for with the person's decline:
+// they will not open the link. muster runs nothing and answers with a tool
+// error, which is the expected outcome and not returned as an error.
+func (c *Client) Decline(ctx context.Context, bearer string, signIn *SignIn) error {
+	ctx, cancel := context.WithTimeout(ctx, defaultTimeout)
+	defer cancel()
+	_, err := c.answer(ctx, bearer, signIn, mcp.ElicitationResponseActionDecline)
+	return err
+}
+
+func (c *Client) answer(ctx context.Context, bearer string, signIn *SignIn, action mcp.ElicitationResponseAction) (Result, error) {
+	if signIn == nil || signIn.tool == "" {
+		return Result{}, errors.New("muster: no sign-in to answer")
 	}
-	defer s.close()
-	if err := s.notify(ctx, "notifications/initialized"); err != nil {
-		return Result{}, fmt.Errorf("muster: initialized: %w", err)
+	answer := mcp.NewElicitationInputResponse(mcp.ElicitationResult{
+		ElicitationResponse: mcp.ElicitationResponse{Action: action},
+	})
+	return c.call(ctx, bearer, signIn.tool, signIn.args, mcp.MultiRoundTripParams{
+		InputResponses: mcp.InputResponses{signIn.inputKey: answer},
+		RequestState:   signIn.requestState,
+	})
+}
+
+func (c *Client) call(ctx context.Context, bearer, tool string, args map[string]any, roundTrip mcp.MultiRoundTripParams) (Result, error) {
+	if bearer == "" {
+		return Result{}, errors.New("muster: no bearer token for the tool call")
 	}
+	session, err := c.connect(ctx, bearer)
+	if err != nil {
+		return Result{}, err
+	}
+	defer func() { _ = session.Close() }()
 
 	// muster exposes every aggregated server tool (x_<server>_<tool>) and every
 	// core tool through its call_tool meta-tool, not under its own name: the
 	// target's result comes back serialised in the meta-tool's text content,
 	// its isError verdict inside.
-	raw, err := s.request(ctx, 2, "tools/call", map[string]any{
-		nameKey:      metaCallTool,
-		argumentsKey: map[string]any{nameKey: tool, argumentsKey: args},
-	})
+	request := mcp.CallToolRequest{}
+	request.Params.Name = metaCallTool
+	request.Params.Arguments = map[string]any{nameKey: tool, argumentsKey: args}
+	request.Params.MultiRoundTripParams = roundTrip
+	res, err := session.CallTool(ctx, request)
 	if err != nil {
 		return Result{}, fmt.Errorf("muster: call %s: %w", tool, err)
 	}
-	outer, err := decodeResult(raw)
-	if err != nil {
-		return Result{}, fmt.Errorf("muster: call %s: decode result: %w", tool, err)
+	if res.NeedsInput() {
+		signIn, err := signInOf(res, tool, args)
+		if err != nil {
+			return Result{}, fmt.Errorf("muster: call %s: %w", tool, err)
+		}
+		return Result{SignIn: signIn}, nil
 	}
+	outer := flatten(res.Content, res.IsError)
 	if inner, ok := unwrapEnvelope(outer); ok {
 		inner.Dispatched = true
 		return inner, nil
 	}
-	// call_tool's own refusal — an unknown tool, one outside the caller's
-	// toolset — is plain text with the meta-tool's isError set; a result that
+	// call_tool's own refusal (an unknown tool, one outside the caller's
+	// toolset) is plain text with the meta-tool's isError set; a result that
 	// is no envelope is handed back as it is.
 	return outer, nil
+}
+
+// connect opens an MCP client to muster as the person, declaring URL mode
+// elicitation and answering input requests by hand.
+func (c *Client) connect(ctx context.Context, bearer string) (*mcpclient.Client, error) {
+	httpClient := c.HTTP
+	if httpClient == nil {
+		httpClient = &http.Client{}
+	}
+	bounded := *httpClient
+	bounded.Transport = musterTransport{next: httpClient.Transport}
+	endpoint := strings.TrimRight(c.BaseURL, "/") + "/mcp"
+	t, err := transport.NewStreamableHTTP(endpoint,
+		transport.WithHTTPBasicClient(&bounded),
+		transport.WithHTTPHeaders(map[string]string{"Authorization": "Bearer " + bearer}),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("muster: transport: %w", err)
+	}
+	session := mcpclient.NewClient(t,
+		mcpclient.WithManualInputRoundTrips(),
+		mcpclient.WithClientCapabilities(mcp.ClientCapabilities{
+			Elicitation: &mcp.ElicitationCapability{URL: &struct{}{}},
+		}),
+	)
+	if err := session.Start(ctx); err != nil {
+		return nil, fmt.Errorf("muster: start: %w", err)
+	}
+	initialize := mcp.InitializeRequest{}
+	initialize.Params.ClientInfo = mcp.Implementation{Name: clientName}
+	if _, err := session.Initialize(ctx, initialize); err != nil {
+		_ = session.Close()
+		return nil, fmt.Errorf("muster: initialize: %w", err)
+	}
+	return session, nil
+}
+
+// signInOf reads the one URL mode elicitation an input_required answer
+// carries.
+func signInOf(res *mcp.CallToolResult, tool string, args map[string]any) (*SignIn, error) {
+	if len(res.InputRequests) != 1 {
+		return nil, fmt.Errorf("%w: %d input requests", ErrUnusableSignIn, len(res.InputRequests))
+	}
+	for key, request := range res.InputRequests {
+		e := request.Elicitation
+		if request.Method != mcp.MethodElicitationCreate || e == nil || e.Mode != mcp.ElicitationModeURL {
+			return nil, fmt.Errorf("%w: not a URL elicitation", ErrUnusableSignIn)
+		}
+		if err := ValidateSignInURL(e.URL); err != nil {
+			return nil, err
+		}
+		return &SignIn{
+			Message:      e.Message,
+			URL:          e.URL,
+			tool:         tool,
+			args:         args,
+			inputKey:     key,
+			requestState: res.RequestState,
+		}, nil
+	}
+	return nil, ErrUnusableSignIn
+}
+
+// SignInURLMaxBytes bounds a sign-in link as a client writes it in markup,
+// each & as &amp;, so that the client can always show it whole next to the
+// server's message.
+const SignInURLMaxBytes = 2000
+
+// ValidateSignInURL accepts a link the person may be asked to open: absolute
+// https, or http on a loopback host, without credentials in it, at most
+// SignInURLMaxBytes long written in markup, and nothing a client could not
+// show exactly as written: spaces, control and format characters
+// (bidirectional overrides and zero-width characters reorder or hide what is
+// shown), backticks, and the < and > that RFC 3986 leaves out of a URL.
+func ValidateSignInURL(link string) error {
+	if len(link)+len("amp;")*strings.Count(link, "&") > SignInURLMaxBytes {
+		return fmt.Errorf("%w: the URL is longer than %d bytes", ErrUnusableSignIn, SignInURLMaxBytes)
+	}
+	if strings.ContainsFunc(link, unshowable) {
+		return fmt.Errorf("%w: the URL cannot be shown as written", ErrUnusableSignIn)
+	}
+	u, err := url.Parse(link)
+	if err != nil || u.Host == "" {
+		return fmt.Errorf("%w: not an absolute URL", ErrUnusableSignIn)
+	}
+	if u.User != nil {
+		return fmt.Errorf("%w: the URL carries credentials", ErrUnusableSignIn)
+	}
+	switch u.Scheme {
+	case "https":
+		return nil
+	case "http":
+		if ip := net.ParseIP(u.Hostname()); (ip != nil && ip.IsLoopback()) || u.Hostname() == "localhost" {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: scheme %q", ErrUnusableSignIn, u.Scheme)
+}
+
+func unshowable(r rune) bool {
+	switch r {
+	case '`', '<', '>':
+		return true
+	}
+	return unicode.IsSpace(r) || unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || r == utf8.RuneError
 }
 
 // metaCallTool is muster's meta-tool that runs any aggregated or core tool;
@@ -107,9 +283,8 @@ const (
 	argumentsKey = "arguments"
 )
 
-// toolResult is the shape of an MCP tools/call result and of the envelope
-// call_tool serialises the target's result into.
-type toolResult struct {
+// envelope is the target tool's result as call_tool serialises it.
+type envelope struct {
 	Content []struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
@@ -118,131 +293,37 @@ type toolResult struct {
 	IsError           bool            `json:"isError"`
 }
 
-func decodeResult(raw json.RawMessage) (Result, error) {
-	var result toolResult
-	if err := json.Unmarshal(raw, &result); err != nil {
-		return Result{}, err
-	}
-	return result.flatten(), nil
-}
-
 // unwrapEnvelope reads the target tool's own result out of call_tool's text.
 func unwrapEnvelope(outer Result) (Result, bool) {
-	var env toolResult
+	var env envelope
 	if err := json.Unmarshal([]byte(outer.Text), &env); err != nil || len(env.Content) == 0 {
 		return Result{}, false
 	}
-	return env.flatten(), true
-}
-
-func (r toolResult) flatten() Result {
 	var texts []string
-	for _, part := range r.Content {
+	for _, part := range env.Content {
 		if part.Type == "text" && part.Text != "" {
 			texts = append(texts, part.Text)
 		}
 	}
-	res := Result{Text: strings.Join(texts, "\n"), IsError: r.IsError}
-	if len(r.StructuredContent) > 0 && string(r.StructuredContent) != "null" {
-		res.Structured = r.StructuredContent
+	res := Result{Text: strings.Join(texts, "\n"), IsError: env.IsError}
+	if len(env.StructuredContent) > 0 && string(env.StructuredContent) != "null" {
+		res.Structured = env.StructuredContent
 	}
-	return res
+	return res, true
 }
 
-// session is one streamable-HTTP exchange: the session id muster hands out at
-// initialize rides on every later request.
-type session struct {
-	client    *Client
-	endpoint  string
-	bearer    string
-	sessionID string
+func flatten(content []mcp.Content, isError bool) Result {
+	var texts []string
+	for _, part := range content {
+		if text, ok := mcp.AsTextContent(part); ok && text.Text != "" {
+			texts = append(texts, text.Text)
+		}
+	}
+	return Result{Text: strings.Join(texts, "\n"), IsError: isError}
 }
 
-// request sends one JSON-RPC request and returns its result. A JSON-RPC error
-// is returned as an error carrying the server's message.
-func (s *session) request(ctx context.Context, id int, method string, params any) (json.RawMessage, error) {
-	resp, err := s.post(ctx, map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": params})
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if sid := resp.Header.Get(sessionHeader); sid != "" {
-		s.sessionID = sid
-	}
-	var envelope struct {
-		Result json.RawMessage `json:"result"`
-		Error  *struct {
-			Code    int    `json:"code"`
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-	if err := decodeRPCResponse(resp, &envelope); err != nil {
-		return nil, err
-	}
-	if envelope.Error != nil {
-		return nil, fmt.Errorf("%s (code %d)", envelope.Error.Message, envelope.Error.Code)
-	}
-	return envelope.Result, nil
-}
-
-// notify sends a JSON-RPC notification; the server answers with no body.
-func (s *session) notify(ctx context.Context, method string) error {
-	resp, err := s.post(ctx, map[string]any{"jsonrpc": "2.0", "method": method})
-	if err != nil {
-		return err
-	}
-	_ = resp.Body.Close()
-	return nil
-}
-
-func (s *session) post(ctx context.Context, body any) (*http.Response, error) {
-	payload, err := json.Marshal(body)
-	if err != nil {
-		return nil, err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.endpoint, bytes.NewReader(payload))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json, text/event-stream")
-	req.Header.Set("Authorization", "Bearer "+s.bearer)
-	if s.sessionID != "" {
-		req.Header.Set(sessionHeader, s.sessionID)
-	}
-	resp, err := s.client.HTTP.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode >= 300 {
-		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		_ = resp.Body.Close()
-		return nil, &HTTPError{Status: resp.StatusCode, Body: strings.TrimSpace(string(snippet))}
-	}
-	return resp, nil
-}
-
-// close ends the session muster issued, best-effort; a server that issued
-// none (stateless) gets no request.
-func (s *session) close() {
-	if s.sessionID == "" {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, s.endpoint, nil)
-	if err != nil {
-		return
-	}
-	req.Header.Set("Authorization", "Bearer "+s.bearer)
-	req.Header.Set(sessionHeader, s.sessionID)
-	if resp, err := s.client.HTTP.Do(req); err == nil {
-		_ = resp.Body.Close()
-	}
-}
-
-// HTTPError is a non-2xx answer from muster's MCP endpoint; 401/403 mean the
-// person's token was refused.
+// HTTPError is muster refusing the person's token at its MCP endpoint (401 or
+// 403).
 type HTTPError struct {
 	Status int
 	Body   string
@@ -255,47 +336,32 @@ func (e *HTTPError) Error() string {
 	return fmt.Sprintf("status %d: %s", e.Status, e.Body)
 }
 
-// decodeRPCResponse reads the JSON-RPC response out of either a JSON body or
-// an SSE stream (the first data: event carrying a response).
-func decodeRPCResponse(resp *http.Response, into any) error {
-	body := io.LimitReader(resp.Body, maxResponse)
-	if !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
-		return json.NewDecoder(body).Decode(into)
+// musterTransport turns a 401 or 403 answer into an HTTPError, so a refused
+// token is told apart from any other failure, and reads at most maxResponse
+// bytes of any other answer: a longer one fails to decode.
+type musterTransport struct {
+	next http.RoundTripper
+}
+
+func (t musterTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	next := t.next
+	if next == nil {
+		next = http.DefaultTransport
 	}
-	scanner := bufio.NewScanner(body)
-	scanner.Buffer(make([]byte, 0, 64*1024), maxResponse)
-	var data strings.Builder
-	flush := func() (bool, error) {
-		if data.Len() == 0 {
-			return false, nil
-		}
-		raw := data.String()
-		data.Reset()
-		var probe struct {
-			ID json.RawMessage `json:"id"`
-		}
-		// Notifications the server interleaves carry no id; the response does.
-		if err := json.Unmarshal([]byte(raw), &probe); err != nil || len(probe.ID) == 0 || string(probe.ID) == "null" {
-			return false, nil
-		}
-		return true, json.Unmarshal([]byte(raw), into)
+	resp, err := next.RoundTrip(req)
+	if err != nil {
+		return nil, err
 	}
-	for scanner.Scan() {
-		line := scanner.Text()
-		switch {
-		case strings.HasPrefix(line, "data:"):
-			data.WriteString(strings.TrimPrefix(strings.TrimPrefix(line, "data:"), " "))
-		case line == "":
-			if done, err := flush(); done || err != nil {
-				return err
-			}
-		}
+	if resp.StatusCode != http.StatusUnauthorized && resp.StatusCode != http.StatusForbidden {
+		resp.Body = limitedBody{Reader: io.LimitReader(resp.Body, maxResponse), Closer: resp.Body}
+		return resp, nil
 	}
-	if err := scanner.Err(); err != nil {
-		return err
-	}
-	if done, err := flush(); done || err != nil {
-		return err
-	}
-	return errors.New("event stream ended without a response")
+	snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+	_ = resp.Body.Close()
+	return nil, &HTTPError{Status: resp.StatusCode, Body: strings.TrimSpace(string(snippet))}
+}
+
+type limitedBody struct {
+	io.Reader
+	io.Closer
 }

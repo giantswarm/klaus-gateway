@@ -98,8 +98,7 @@ const (
 func authLogin(args map[string]any) mustertest.Answer {
 	switch args["server"] {
 	case "gitlab-manager":
-		return mustertest.Answer{Text: "Authentication Required\n\nServer: gitlab-manager\n\n" + gitlabLink,
-			Structured: map[string]any{"authUrl": gitlabLink}}
+		return mustertest.Answer{SignIn: &mustertest.SignIn{Message: "Sign in to gitlab-manager to continue.", URL: gitlabLink}}
 	case "github-manager":
 		return mustertest.Answer{Text: "Server 'github-manager' is already authenticated."}
 	}
@@ -251,38 +250,23 @@ func TestErrors(t *testing.T) {
 		require.ErrorAs(t, err, &unavailable)
 		require.Equal(t, prefix+"list_workspaces", unavailable.Tool)
 	})
-	t.Run("auth challenge", func(t *testing.T) {
+	t.Run("sign-in", func(t *testing.T) {
 		srv := mustertest.New(map[string]func(map[string]any) mustertest.Answer{
 			prefix + "list_providers": func(map[string]any) mustertest.Answer {
-				return mustertest.Answer{IsError: true,
-					Text:       "auth_required: server 'workspace-manager' requires authentication before its tools can be called (not connected).\n\nAuthentication Required\n\nServer: workspace-manager",
-					Structured: map[string]any{"status": "auth_required", "server": "workspace-manager", "authUrl": "https://muster.example/login?s=1"}}
+				return mustertest.Answer{SignIn: &mustertest.SignIn{Message: "Sign in to workspace-manager to continue.", URL: "https://muster.example/login?s=1"}}
 			},
 		})
 		defer srv.Close()
 		_, err := New(muster.NewClient(srv.URL), prefix).Providers(ctx, bearer)
 		var challenge *AuthRequiredError
 		require.ErrorAs(t, err, &challenge)
-		require.Equal(t, &AuthRequiredError{Server: "workspace-manager", LoginURL: "https://muster.example/login?s=1"}, challenge)
+		require.Equal(t, "https://muster.example/login?s=1", challenge.SignIn.URL)
+		require.Equal(t, "Sign in to workspace-manager to continue.", challenge.SignIn.Message)
 	})
-	t.Run("auth challenge in the text only", func(t *testing.T) {
+	t.Run("auth_required text is a refusal, not a sign-in", func(t *testing.T) {
 		srv := mustertest.New(map[string]func(map[string]any) mustertest.Answer{
 			prefix + "list_providers": func(map[string]any) mustertest.Answer {
-				return mustertest.Answer{IsError: true, Undispatched: true,
-					Text: "auth_required: sign in first: https://muster.example/login?s=2."}
-			},
-		})
-		defer srv.Close()
-		_, err := New(muster.NewClient(srv.URL), prefix).Providers(ctx, bearer)
-		var challenge *AuthRequiredError
-		require.ErrorAs(t, err, &challenge)
-		require.Equal(t, &AuthRequiredError{Server: "workspace-manager", LoginURL: "https://muster.example/login?s=2"}, challenge)
-	})
-	t.Run("auth challenge without an https link", func(t *testing.T) {
-		srv := mustertest.New(map[string]func(map[string]any) mustertest.Answer{
-			prefix + "list_providers": func(map[string]any) mustertest.Answer {
-				return mustertest.Answer{IsError: true, Text: "auth_required: server 'workspace-manager' requires authentication",
-					Structured: map[string]any{"status": "auth_required", "server": "workspace-manager", "authUrl": "http://muster.example/login"}}
+				return mustertest.Answer{IsError: true, Text: "auth_required: sign in first: https://muster.example/login?s=2."}
 			},
 		})
 		defer srv.Close()
@@ -291,6 +275,18 @@ func TestErrors(t *testing.T) {
 		require.NotErrorAs(t, err, &challenge)
 		var toolErr *ToolError
 		require.ErrorAs(t, err, &toolErr)
+	})
+	t.Run("sign-in without an https link", func(t *testing.T) {
+		srv := mustertest.New(map[string]func(map[string]any) mustertest.Answer{
+			prefix + "list_providers": func(map[string]any) mustertest.Answer {
+				return mustertest.Answer{SignIn: &mustertest.SignIn{Message: "Sign in.", URL: "http://muster.example/login"}}
+			},
+		})
+		defer srv.Close()
+		_, err := New(muster.NewClient(srv.URL), prefix).Providers(ctx, bearer)
+		var challenge *AuthRequiredError
+		require.NotErrorAs(t, err, &challenge)
+		require.ErrorIs(t, err, muster.ErrUnusableSignIn)
 	})
 	t.Run("malformed", func(t *testing.T) {
 		for name, answer := range map[string]mustertest.Answer{

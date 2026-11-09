@@ -2,6 +2,7 @@ package slack_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 	slackadapter "github.com/giantswarm/klaus-gateway/pkg/channels/slack"
+	"github.com/giantswarm/klaus-gateway/pkg/muster"
 )
 
 // ephemeralJSON returns the JSON of every chat.postEphemeral call, for
@@ -43,15 +45,23 @@ func connectorAdapter(t *testing.T, gw *stubGateway) (*fakeSlackAPI, *httptest.S
 }
 
 // sendConnectorInteractionURL posts a signed block_actions interaction (user
-// U1, channel D1) whose button value carries a backend name. A non-empty
-// responseURL is attached as the interaction's response_url.
-func sendConnectorInteractionURL(t *testing.T, srv *httptest.Server, actionID, server, responseURL string) {
+// U1, channel D1) on an ephemeral prompt, with the button's value. A
+// non-empty responseURL is attached as the interaction's response_url.
+func sendConnectorInteractionURL(t *testing.T, srv *httptest.Server, actionID, value, responseURL string) {
+	t.Helper()
+	sendClick(t, srv, actionID, value, responseURL, true)
+}
+
+// sendClick posts a signed block_actions interaction (user U1, channel D1)
+// with the button's value, on an ephemeral prompt or on a message.
+func sendClick(t *testing.T, srv *httptest.Server, actionID, value, responseURL string, ephemeral bool) {
 	t.Helper()
 	inner := map[string]any{
-		"type":    "block_actions",
-		"user":    map[string]any{"id": "U1"},
-		"channel": map[string]any{"id": "D1"},
-		"actions": []any{map[string]any{"action_id": actionID, "value": server}},
+		"type":      "block_actions",
+		"user":      map[string]any{"id": "U1"},
+		"channel":   map[string]any{"id": "D1"},
+		"container": map[string]any{"type": "message", "is_ephemeral": ephemeral},
+		"actions":   []any{map[string]any{"action_id": actionID, "value": value}},
 	}
 	if responseURL != "" {
 		inner["response_url"] = responseURL
@@ -67,21 +77,6 @@ func sendConnectorInteractionURL(t *testing.T, srv *httptest.Server, actionID, s
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	_ = resp.Body.Close()
-}
-
-// decoratedConnectorAdapter is connectorAdapter with a public base URL, so
-// Connect buttons carry the post-login redirect and completion state. Kept
-// separate: q.Encode() reorders query params, so tests asserting the raw
-// login URL stay on the undecorated adapter.
-func decoratedConnectorAdapter(t *testing.T, gw *stubGateway) (*fakeSlackAPI, *httptest.Server) {
-	t.Helper()
-	fake := newFakeSlackAPI()
-	_, srv := newEventsAdapter(t, gw, fake.server(t).URL, func(a *slackadapter.Adapter) {
-		a.OBO = &fakeOBO{linkedUser: "U1", token: "tok"}
-		a.ConnectorPrompts = true
-		a.PublicBaseURL = "https://gw.example"
-	})
-	return fake, srv
 }
 
 // connectButton walks the recorded ephemeral posts for the Connect button and
@@ -126,25 +121,8 @@ func newResponseURLCapture(t *testing.T) (*httptest.Server, func() string) {
 	}
 }
 
-// An unknown or expired state renders the graceful expired page and dispatches
-// nothing.
-func TestConnectorComplete_UnknownState(t *testing.T) {
-	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok"}, {Done: true}}}
-	_, srv := decoratedConnectorAdapter(t, gw)
-
-	resp, err := http.Get(srv.URL + "/connectors/complete?s=bogus")
-	require.NoError(t, err)
-	page, _ := io.ReadAll(resp.Body)
-	_ = resp.Body.Close()
-	require.Equal(t, http.StatusNotFound, resp.StatusCode)
-	require.Contains(t, string(page), "Link expired")
-
-	time.Sleep(100 * time.Millisecond)
-	require.Zero(t, gw.dispatchCount(), "nothing is dispatched for an unknown state")
-}
-
-// A Connect click whose value is a plain server name (a button posted without
-// a post-login redirect) stays a no-op.
+// A Connect click whose value is no completion state (a conversation's or a
+// provider's prompt, or one minted before a restart) stays a no-op.
 func TestConnectorConnect_LegacyValueNoOp(t *testing.T) {
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok"}, {Done: true}}}
 	_, srv := connectorAdapter(t, gw)
@@ -154,4 +132,42 @@ func TestConnectorConnect_LegacyValueNoOp(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 	require.Empty(t, capturedBody(), "a legacy Connect click must not touch the response_url")
+}
+
+// fakeAccepter records the sign-ins the adapter accepts and answers each with
+// result.
+type fakeAccepter struct {
+	mu       sync.Mutex
+	result   muster.Result
+	accepted []*muster.SignIn
+	declined []*muster.SignIn
+	bearers  []string
+}
+
+func (f *fakeAccepter) Decline(_ context.Context, bearer string, signIn *muster.SignIn) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.declined = append(f.declined, signIn)
+	f.bearers = append(f.bearers, bearer)
+	return nil
+}
+
+func (f *fakeAccepter) declines() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.declined)
+}
+
+func (f *fakeAccepter) Accept(_ context.Context, bearer string, signIn *muster.SignIn) (muster.Result, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.accepted = append(f.accepted, signIn)
+	f.bearers = append(f.bearers, bearer)
+	return f.result, nil
+}
+
+func (f *fakeAccepter) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.accepted)
 }

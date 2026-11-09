@@ -154,11 +154,12 @@ type Adapter struct {
 	// ConnectorPrompts enables the connector surfaces muster's grants feed: with
 	// Grants, the authorize modal. Requires OBO.
 	ConnectorPrompts bool
-	// PublicBaseURL is the gateway's public, externally reachable base URL (the
-	// OBO callback base). When set, connector login URLs gain a redirect back to
-	// ConnectorCompletePath so the browser lands on the gateway after sign-in
-	// (prompt rewrite plus auto-resume). Empty keeps the plain-link behavior.
-	PublicBaseURL string
+	// SignIns answers, as the linked person, a sign-in muster asked one of
+	// the gateway's own calls for: accepts it once the person agreed to open
+	// its link (muster then waits for the sign-in and runs the call), declines
+	// it on their Not now. Nil leaves a Connect prompt's buttons without a
+	// continuation.
+	SignIns SignInAnswerer
 
 	// WorkingEmoji, DoneEmoji, FailedEmoji override the progress reaction emoji
 	// names (no surrounding colons). Empty uses the defaults.
@@ -368,10 +369,9 @@ type Adapter struct {
 	grantsUnsupported atomic.Bool
 
 	// connectorCompletionsMu guards connectorCompletions: short-lived state
-	// minted when a Connect button is decorated with a post-login redirect,
-	// keyed by the opaque ID carried in the redirect's s parameter and in the
-	// button value. The click records the prompt's response_url under it; the
-	// browser landing marks it completed and fires the one-shot resume.
+	// minted for a Connect prompt, keyed by the opaque ID its link button
+	// carries as its value. The first click of the person the prompt is for
+	// runs the continuation it holds.
 	connectorCompletionsMu sync.Mutex
 	connectorCompletions   map[string]ttlEntry[connectorCompletion]
 
@@ -631,12 +631,8 @@ func (a *Adapter) Stop(ctx context.Context) error {
 }
 
 // Mount attaches /channels/slack/events, /channels/slack/interactions and
-// /channels/slack/commands to r, plus the browser-facing connector sign-in
-// landing. In socketmode only the landing is mounted (no Slack HTTP handlers
-// needed, but muster still redirects the browser here after a connector
-// sign-in).
+// /channels/slack/commands to r. In socketmode nothing is mounted.
 func (a *Adapter) Mount(r chi.Router) {
-	r.Get(ConnectorCompletePath, a.handleConnectorComplete)
 	if a.evHandler == nil {
 		return
 	}

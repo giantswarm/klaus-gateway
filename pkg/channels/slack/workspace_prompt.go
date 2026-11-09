@@ -12,6 +12,7 @@ import (
 
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
+	"github.com/giantswarm/klaus-gateway/pkg/muster"
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
 	"github.com/giantswarm/klaus-gateway/pkg/workspaces"
 )
@@ -117,7 +118,7 @@ func (a *Adapter) holdForWorkspace(ctx context.Context, msg channels.InboundMess
 	list, err := a.Workspaces.List(lctx, msg.BearerToken)
 	cancel()
 	if challenge := workspaceChallenge(err); challenge != nil {
-		a.promptSessionConnect(ctx, msg, slackChannel, slackUser, initiator, false, challenge)
+		a.promptSessionConnect(ctx, msg, slackChannel, slackUser, initiator, false, &pkga2a.ConnectRequiredError{SignIn: challenge})
 		return true
 	}
 	if err != nil {
@@ -565,22 +566,23 @@ type workspaceDenial struct {
 	refused bool
 }
 
-// workspaceChallenge is muster's sign-in challenge for the workspace-manager
-// in err, as the Connect prompt takes it; nil for any other error and for a
-// challenge without a link, which the person cannot act on from a prompt.
-func workspaceChallenge(err error) *pkga2a.ConnectRequiredError {
+// workspaceChallenge is the sign-in muster asks for before it runs the
+// workspace-manager's tool, in err; nil for any other error.
+func workspaceChallenge(err error) *muster.SignIn {
 	var challenge *workspaces.AuthRequiredError
-	if !errors.As(err, &challenge) || challenge.LoginURL == "" {
+	if !errors.As(err, &challenge) || challenge.SignIn == nil {
 		return nil
 	}
-	return &pkga2a.ConnectRequiredError{Server: challenge.Server, LoginURL: challenge.LoginURL}
+	return challenge.SignIn
 }
 
-// providerConnect is a provider the person grants in muster before the
-// workspace is theirs: the workspace-manager's word on how (signIn), and the
-// link muster issued for it, empty when it issued none.
+// providerConnect is a sign-in the person gives before the workspace is
+// theirs: a provider they grant in muster, with the workspace-manager's word
+// on how (signIn) and the link muster issued for it, empty when it issued
+// none; or, with no provider, muster's own sign-in for the workspace-manager,
+// with its message.
 type providerConnect struct {
-	provider, signIn, link string
+	provider, signIn, link, message string
 }
 
 // workspaceNotes are the answers to a denial, worded for whoever asked: the
@@ -618,9 +620,9 @@ func (a *Adapter) authorizeWorkspace(ctx context.Context, slackUser, workspace s
 	defer cancel()
 	auth, err := a.Workspaces.Authorize(actx, token, workspace)
 	if challenge := workspaceChallenge(err); challenge != nil {
-		a.Logger.Info("slack: workspace needs the workspace-manager connected", "record", "workspace_connect_required", "user", slackUser, "workspace", workspace, "server", challenge.Server)
-		return workspaces.Grant{}, &workspaceDenial{text: fmt.Sprintf(workspaceConnectNote, escapeMrkdwn(challenge.Server), name),
-			connect: []providerConnect{{provider: challenge.Server, link: challenge.LoginURL}}}
+		a.Logger.Info("slack: workspace needs the person's sign-in", "record", "workspace_connect_required", "user", slackUser, "workspace", workspace)
+		return workspaces.Grant{}, &workspaceDenial{text: fmt.Sprintf(workspaceSignInNote, name),
+			connect: []providerConnect{{link: challenge.URL, message: challenge.Message}}}
 	}
 	if err != nil {
 		a.Logger.Warn("slack: workspace authorization failed", "record", "workspace_check_failed", "user", slackUser, "workspace", workspace, "error", err)
@@ -731,10 +733,18 @@ func (a *Adapter) postWorkspaceConnectPrompts(ctx context.Context, slackChannel,
 	client := a.apiClient()
 	name := escapeMrkdwn(workspace)
 	for _, c := range connect {
-		text := fmt.Sprintf(workspaceConnectNote, escapeMrkdwn(c.provider), name)
 		var err error
+		if c.provider == "" {
+			text := signInPromptText(fmt.Sprintf(workspaceSignInNote, name), c.message, c.link, strings.TrimSpace(tail))
+			err = client.postProviderConnectPrompt(ctx, slackChannel, threadID, user, text, "", c.link)
+			if err != nil {
+				a.Logger.Warn("slack: post workspace sign-in prompt failed", "thread", threadID, "error", err)
+			}
+			continue
+		}
+		text := fmt.Sprintf(workspaceConnectNote, escapeMrkdwn(c.provider), name)
 		if c.link != "" {
-			err = client.postProviderConnectPrompt(ctx, slackChannel, threadID, user, text+tail, c.provider, c.link)
+			err = client.postProviderConnectPrompt(ctx, slackChannel, threadID, user, signInPromptText(text, "", c.link, strings.TrimSpace(tail)), c.provider, c.link)
 		} else {
 			if how := strings.TrimSuffix(strings.TrimSpace(c.signIn), "."); how != "" {
 				text += fmt.Sprintf(workspaceConnectHow, escapeMrkdwn(how))
