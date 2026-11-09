@@ -205,6 +205,7 @@ func run(args []string) error {
 		// ServiceAccount identity.
 		if slackAdapter != nil {
 			slackAdapter.OBO = linker
+			slackAdapter.SignIns = musterClient
 		}
 		logger.Info("obo linking routes mounted",
 			"link_path", musterlink.LinkPath,
@@ -213,15 +214,10 @@ func run(args []string) error {
 			"email_match", slackEmail != nil,
 		)
 
-		// Connector landing: the public base URL lets a sign-in button carry a
-		// post-login redirect back to the gateway's connector landing (prompt
-		// rewrite plus auto-resume); muster only honors it when the landing URL
-		// is on its post-login redirect allowlist.
 		if cfg.OBO.ConnectorsEnabled && slackAdapter != nil {
 			slackAdapter.ConnectorPrompts = true
-			slackAdapter.PublicBaseURL = cfg.OBO.CallbackBaseURL
 			// The authorize modal reads the person's grant status from muster
-			// (core_auth_status) and lands every grant like a Connect prompt.
+			// (core_auth_status) and links every missing grant.
 			slackAdapter.Grants = musterClient
 			logger.Info("slack connector prompts enabled")
 		}

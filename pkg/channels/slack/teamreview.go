@@ -82,6 +82,11 @@ const teamReviewTTL = 7 * 24 * time.Hour
 // flight.
 const teamReviewClaimLease = 5 * time.Minute
 
+// teamReviewAcceptBudget bounds a submission that accepts a sign-in, muster's
+// wait for it included: below teamReviewClaimLease, so no other click takes
+// the claim over while the person is still signing in.
+const teamReviewAcceptBudget = 4 * time.Minute
+
 // Team-review notices to one clicker.
 const (
 	teamReviewExpiredNotice  = "_This review has expired. Ask for it to be posted again._"
@@ -94,22 +99,21 @@ const (
 	// teamReviewUnrecordedNotice replaces a review the gateway posted but
 	// could not record: its button would never resolve.
 	teamReviewUnrecordedNotice = "_This review could not be recorded and cannot be decided here. Ask for it to be posted again._"
-	// teamReviewConnectNotice heads the Connect prompt when the sign-in lands
-	// back on the gateway and the decision is resubmitted by itself;
-	// teamReviewConnectManualNotice when it does not. The verbs are the
+	// teamReviewConnectNotice heads the Connect prompt, above muster's message
+	// and the link, and teamReviewConnectTail follows them. The verbs are the
 	// decision's: approve/approval, deny/denial.
-	teamReviewConnectNotice       = "To %s as yourself, connect *%s* once. Your %s is submitted as soon as you're back."
-	teamReviewConnectManualNotice = "To %s as yourself, connect *%s* once, then click *%s* again."
+	teamReviewConnectNotice = "To %s as yourself, *muster* asks you to sign in once:"
+	teamReviewConnectTail   = "Open it with *Sign in*: your %s is submitted once you're signed in."
 )
 
 // Team-review status lines, under the buttons, read by the clicker and the
 // team alike. Each replaces the previous one; the decision's outcome replaces
 // them all. The noun is the decision's: approval or denial.
 const (
-	teamReviewStatusConnecting      = "<@%s> is connecting *%s* to %s as themselves."
+	teamReviewStatusConnecting      = "<@%s> is signing in to %s as themselves."
 	teamReviewStatusRefused         = "<@%s>'s %s was not accepted: %s"
 	teamReviewStatusFailed          = "<@%s>'s %s could not be submitted to the manager; another click may do."
-	teamReviewStatusStillChallenged = "<@%s> connected *%s*, but the manager still asks them to sign in; another click may do."
+	teamReviewStatusStillChallenged = "<@%s> did not finish signing in in time; another click may do."
 	teamReviewStatusActor           = "<@%s>'s approval was not accepted: the action is theirs, a second person decides."
 )
 
@@ -117,10 +121,6 @@ const (
 // its answer in the outcome — and the reason a member types into the Deny
 // modal.
 const teamReviewReasonMax = 500
-
-// teamReviewUnknownServer names the backend in a Connect prompt when muster's
-// challenge does not.
-const teamReviewUnknownServer = "the manager"
 
 // ToolCaller calls a muster tool as the person whose bearer token it is
 // given. *muster.Client satisfies it.
@@ -147,14 +147,6 @@ func (d teamReviewDecision) noun() string {
 		return "denial"
 	}
 	return "approval"
-}
-
-// button is the label of the button the decision is made with.
-func (d teamReviewDecision) button() string {
-	if d.deny {
-		return "Deny"
-	}
-	return "Approve"
 }
 
 // call is the tool call the decision makes on rv: the approve tool with its
@@ -476,7 +468,7 @@ func (a *Adapter) handleTeamReviewDecision(ctx context.Context, slackChannel, me
 	if !ok {
 		return
 	}
-	a.decideTeamReview(ctx, rv, clicker, teamReviewDecision{}, false)
+	a.decideTeamReview(ctx, rv, clicker, teamReviewDecision{}, nil)
 }
 
 // handleTeamReviewDenyClick answers a Deny click with the reason modal. The
@@ -563,7 +555,7 @@ func (a *Adapter) handleTeamReviewDenial(ctx context.Context, payload interactio
 		a.Logger.Error("slack: team review denial without a deny tool", "review", rv.ID)
 		return
 	}
-	a.decideTeamReview(ctx, rv, clicker, teamReviewDecision{deny: true, reason: truncateRunes(reason, teamReviewReasonMax)}, false)
+	a.decideTeamReview(ctx, rv, clicker, teamReviewDecision{deny: true, reason: truncateRunes(reason, teamReviewReasonMax)}, nil)
 }
 
 // decideTeamReview submits the decision as clicker: the clicker must have a
@@ -572,17 +564,17 @@ func (a *Adapter) handleTeamReviewDenial(ctx context.Context, payload interactio
 // open (a second click is told who decided), and the decision's tool is
 // called as the clicker.
 //
-// What the tool answers decides the rest. A sign-in challenge — muster does
-// not hold the person's grant for the tool's backend yet — turns into a
-// Connect prompt for the clicker; the sign-in lands back on the gateway and
-// the decision is submitted again (resumed=true), so the person connects once
-// and never clicks twice. A refusal — the manager finding the person outside
+// What the tool answers decides the rest. A sign-in muster asks for (it does
+// not hold the person's grant for the tool's backend yet) turns into a
+// Connect prompt for the clicker; their click on its link accepts the
+// sign-in (accepted set), which submits the decision once they signed in, so
+// the person connects once and never clicks the review twice. A refusal — the manager finding the person outside
 // the team, the author of their own change, or anything else it will not do
 // — reopens the review and is written under the buttons once, naming the
 // clicker and the reason, where the clicker and the team both read it; so is
 // a manager the gateway could not reach. A success is written into the
 // message with the decider.
-func (a *Adapter) decideTeamReview(ctx context.Context, rv store.Review, clicker string, decision teamReviewDecision, resumed bool) {
+func (a *Adapter) decideTeamReview(ctx context.Context, rv store.Review, clicker string, decision teamReviewDecision, accepted *muster.SignIn) {
 	// The person's own token is the identity the tool runs under; without a
 	// link there is nobody to act as, so the click is turned into a sign-in.
 	token, ok, signIn := a.humanToken(ctx, rv.Channel, "", clicker)
@@ -618,23 +610,24 @@ func (a *Adapter) decideTeamReview(ctx context.Context, rv store.Review, clicker
 	}
 
 	tool, args := decision.call(rv)
-	res, err := a.Tools.CallTool(ctx, token, tool, args)
+	res, err := a.callOrAccept(ctx, token, tool, args, accepted)
 	if err != nil {
 		a.releaseTeamReview(ctx, rv.ID)
 		a.Logger.Warn("slack: team review tool call failed", "review", rv.ID, "team", rv.Team, "tool", tool, "user", clicker, "error", err)
 		a.showTeamReviewStatus(ctx, rv, fmt.Sprintf(teamReviewStatusFailed, clicker, decision.noun()))
 		return
 	}
-	if server, loginURL, challenged := res.SignInChallenge(teamReviewUnknownServer); challenged {
+	if res.SignIn != nil {
 		a.releaseTeamReview(ctx, rv.ID)
-		if resumed {
-			// The sign-in landed and the backend still challenges: do not loop
-			// the person through the consent flow again on their behalf.
-			a.Logger.Warn("slack: team review still challenged after the connector sign-in", "review", rv.ID, "team", rv.Team, "tool", tool, "user", clicker, "server", server)
-			a.showTeamReviewStatus(ctx, rv, fmt.Sprintf(teamReviewStatusStillChallenged, clicker, escapeMrkdwn(server)))
+		if accepted != nil {
+			// The sign-in was accepted and muster still asks for one: it did
+			// not complete in time. Do not loop the person through it again
+			// on their behalf.
+			a.Logger.Warn("slack: team review still asks for a sign-in after the accepted one", "review", rv.ID, "team", rv.Team, "tool", tool, "user", clicker)
+			a.showTeamReviewStatus(ctx, rv, fmt.Sprintf(teamReviewStatusStillChallenged, clicker))
 			return
 		}
-		a.promptTeamReviewConnect(ctx, rv, clicker, decision, server, loginURL)
+		a.promptTeamReviewConnect(ctx, rv, clicker, decision, res.SignIn)
 		return
 	}
 	if res.IsError {
@@ -651,7 +644,7 @@ func (a *Adapter) decideTeamReview(ctx context.Context, rv store.Review, clicker
 
 	a.finishTeamReview(ctx, rv.ID, decision.deny)
 	a.Logger.Info("slack: team review decided", "record", decision.record(),
-		"review", rv.ID, "team", rv.Team, "tool", tool, "slack_user", clicker, "subject", a.linkedSubject(clicker), "resumed", resumed)
+		"review", rv.ID, "team", rv.Team, "tool", tool, "slack_user", clicker, "subject", a.linkedSubject(clicker), "resumed", accepted != nil)
 	if err := a.apiClient().chatUpdate(ctx, rv.Channel, rv.TS, teamReviewOutcome(rv, clicker, decision, res.Text), teamReviewOutcomeBlocks(rv, clicker, decision, res.Text)); err != nil {
 		a.Logger.Warn("slack: team review outcome rewrite failed", "review", rv.ID, "error", err)
 	}
@@ -716,37 +709,28 @@ func decidedNotice(rv store.Review) string {
 	return fmt.Sprintf(teamReviewApprovedNotice, rv.DecidedBy)
 }
 
-// promptTeamReviewConnect answers a sign-in challenge: the review is reopened
-// for the team, the team sees who is connecting, and the clicker gets a
-// Connect button. With a public base URL the login link is decorated with the
-// gateway's landing and the completion state remembers the review and the
-// decision, so the landing submits it again as the person; without one the
-// prompt asks them to click the button again afterwards.
-func (a *Adapter) promptTeamReviewConnect(ctx context.Context, rv store.Review, clicker string, decision teamReviewDecision, server, loginURL string) {
-	a.Logger.Info("slack: team review needs the person to connect the backend", "record", "team_review_connect",
-		"review", rv.ID, "team", rv.Team, "tool", rv.Tool, "slack_user", clicker, "server", server, "denial", decision.deny)
-	a.showTeamReviewStatus(ctx, rv, fmt.Sprintf(teamReviewStatusConnecting, clicker, escapeMrkdwn(server), decision.verb()))
+// promptTeamReviewConnect answers the sign-in muster asked a decision for:
+// the review is reopened for the team, the team sees who is signing in, and
+// the clicker gets a Connect prompt. Its completion state remembers the
+// review and the decision, so the click on its link submits the decision as
+// the person once they signed in.
+func (a *Adapter) promptTeamReviewConnect(ctx context.Context, rv store.Review, clicker string, decision teamReviewDecision, signIn *muster.SignIn) {
+	a.Logger.Info("slack: team review needs the person's sign-in", "record", "team_review_connect",
+		"review", rv.ID, "team", rv.Team, "tool", rv.Tool, "slack_user", clicker, "denial", decision.deny)
+	a.showTeamReviewStatus(ctx, rv, fmt.Sprintf(teamReviewStatusConnecting, clicker, decision.verb()))
 
-	promptURL, connectValue := loginURL, server
-	text := fmt.Sprintf(teamReviewConnectManualNotice, decision.verb(), escapeMrkdwn(server), decision.button())
-	if base := a.PublicBaseURL; base != "" {
-		stateID := a.mintConnectorCompletion(connectorCompletion{slackUser: clicker, server: server, channel: rv.Channel, review: rv.ID, decision: decision})
-		if decorated, err := decorateConnectorLoginURL(loginURL, base, stateID); err != nil {
-			a.Logger.Warn("slack: team review login URL decoration failed, posting plain link", "review", rv.ID, "server", server, "error", err)
-		} else {
-			promptURL, connectValue = decorated, stateID
-			text = fmt.Sprintf(teamReviewConnectNotice, decision.verb(), escapeMrkdwn(server), decision.noun())
-		}
-	}
-	if err := a.apiClient().postConnectPrompt(ctx, rv.Channel, "", clicker, text, server, promptURL, connectValue); err != nil {
+	stateID := a.mintConnectorCompletion(connectorCompletion{slackUser: clicker, channel: rv.Channel, signIn: signIn, review: rv.ID, decision: decision})
+	text := signInPromptText(fmt.Sprintf(teamReviewConnectNotice, decision.verb()), signIn.Message, signIn.URL, fmt.Sprintf(teamReviewConnectTail, decision.noun()))
+	if err := a.apiClient().postConnectPrompt(ctx, rv.Channel, "", clicker, text, signIn.URL, stateID); err != nil {
 		a.Logger.Warn("slack: team review connect prompt failed", "review", rv.ID, "user", clicker, "error", err)
 	}
 }
 
-// resumeTeamReviewDecision is the landing's continuation of a Connect prompt
-// posted for a review: the person signed in to the backend, so the decision
-// they clicked for is submitted again as them. A review gone meanwhile (its
-// TTL passed) is told to the person alone; so is a store that does not answer.
+// resumeTeamReviewDecision is the continuation of a Connect prompt posted for
+// a review: the person agreed to open the link, so the decision they clicked
+// for is submitted again as them, accepting the sign-in. A review gone
+// meanwhile (its TTL passed) is told to the person alone; so is a store that
+// does not answer.
 func (a *Adapter) resumeTeamReviewDecision(ctx context.Context, entry connectorCompletion) {
 	rv, found, err := a.reviews().GetReview(ctx, entry.review)
 	if err != nil {
@@ -762,7 +746,23 @@ func (a *Adapter) resumeTeamReviewDecision(ctx context.Context, entry connectorC
 		a.Logger.Error("slack: team review resume without a tool caller", "review", entry.review)
 		return
 	}
-	a.decideTeamReview(ctx, rv, entry.slackUser, entry.decision, true)
+	a.decideTeamReview(ctx, rv, entry.slackUser, entry.decision, entry.signIn)
+}
+
+// callOrAccept calls tool as the person whose token it is, or, with accepted
+// set, accepts that sign-in instead: muster waits for it, then runs the call
+// it was asked for. The wait is bounded within teamReviewAcceptBudget, so the
+// claim the caller holds outlives it.
+func (a *Adapter) callOrAccept(ctx context.Context, token, tool string, args map[string]any, accepted *muster.SignIn) (muster.Result, error) {
+	if accepted == nil {
+		return a.Tools.CallTool(ctx, token, tool, args)
+	}
+	if a.SignIns == nil {
+		return muster.Result{}, errors.New("slack: no sign-in accepter")
+	}
+	ctx, cancel := context.WithTimeout(ctx, teamReviewAcceptBudget)
+	defer cancel()
+	return a.SignIns.Accept(ctx, token, accepted)
 }
 
 // teamReviewOutcome is the text the review message is rewritten to once it is

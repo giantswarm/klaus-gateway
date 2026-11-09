@@ -45,13 +45,9 @@ const authorizeModalRowsMax = 90
 // authorizeStatusBudget bounds one read of the person's grant status.
 const authorizeStatusBudget = 20 * time.Second
 
-// authorizeModal is one open authorize modal: whose it is and, when it was
-// opened from a Connect prompt, that prompt's completion state, which the
-// modal's link for the prompt's server carries so that granting it from the
-// modal resumes what the prompt held.
+// authorizeModal is one open authorize modal: whose it is.
 type authorizeModal struct {
-	slackUser   string
-	originState string
+	slackUser string
 	// mu serialises the modal's redraws, so a late read never overwrites a
 	// newer one.
 	mu sync.Mutex
@@ -128,7 +124,7 @@ func (a *Adapter) readGrantStatus(ctx context.Context, slackUser string, withLin
 // openAuthorizeModal opens the modal for slackUser on triggerID at once, as a
 // loading view (the trigger expires three seconds after the click, muster's
 // answer can take longer), and fills it with views.update.
-func (a *Adapter) openAuthorizeModal(ctx context.Context, slackUser, triggerID, originState string) {
+func (a *Adapter) openAuthorizeModal(ctx context.Context, slackUser, triggerID string) {
 	if !a.authorizeModalOffered() || triggerID == "" {
 		return
 	}
@@ -143,7 +139,7 @@ func (a *Adapter) openAuthorizeModal(ctx context.Context, slackUser, triggerID, 
 	}
 	now := time.Now()
 	sweepExpired(a.authorizeModals, now)
-	a.authorizeModals[viewID] = ttlEntry[*authorizeModal]{value: &authorizeModal{slackUser: slackUser, originState: originState}, expires: now.Add(authorizeModalTTL)}
+	a.authorizeModals[viewID] = ttlEntry[*authorizeModal]{value: &authorizeModal{slackUser: slackUser}, expires: now.Add(authorizeModalTTL)}
 	a.authorizeModalsMu.Unlock()
 	a.background(func(ctx context.Context) { a.refreshAuthorizeModal(ctx, viewID) })
 }
@@ -176,37 +172,11 @@ func (a *Adapter) refreshAuthorizeModal(ctx context.Context, viewID string) {
 		a.Logger.Warn("slack: read grant status for the authorize modal failed", "user", modal.slackUser, "error", err)
 		blocks = authorizeFailedBlocks()
 	} else {
-		blocks = authorizeModalBlocks(servers, func(s grantServer) string { return a.grantLink(modal, viewID, s) })
+		blocks = authorizeModalBlocks(servers)
 	}
 	if err := a.apiClient().viewsUpdate(ctx, viewID, "", authorizeModalView(blocks, true)); err != nil {
 		a.Logger.Warn("slack: update authorize modal failed", "user", modal.slackUser, "error", err)
 	}
-}
-
-// grantLink is the link a row's Authorize button opens: muster's, carrying
-// the gateway's landing when the gateway has a public base URL, so the
-// landing redraws the modal. The row for the server of the prompt the modal
-// was opened from lands on that prompt's own completion, which resumes what
-// the prompt held.
-func (a *Adapter) grantLink(modal *authorizeModal, viewID string, s grantServer) string {
-	if s.AuthURL == "" || a.PublicBaseURL == "" {
-		return s.AuthURL
-	}
-	stateID := ""
-	if modal.originState != "" {
-		if origin, ok := a.attachAuthorizeModal(modal.originState, modal.slackUser, viewID); ok && origin.server == s.Name {
-			stateID = modal.originState
-		}
-	}
-	if stateID == "" {
-		stateID = a.mintConnectorCompletion(connectorCompletion{slackUser: modal.slackUser, server: s.Name, modalView: viewID})
-	}
-	decorated, err := decorateConnectorLoginURL(s.AuthURL, a.PublicBaseURL, stateID)
-	if err != nil {
-		a.Logger.Warn("slack: decorate grant link failed, the plain link is offered", "server", s.Name, "error", err)
-		return s.AuthURL
-	}
-	return decorated
 }
 
 // offerAuthorizeAfterSignIn tells a person who just signed in which servers
@@ -234,7 +204,7 @@ func (a *Adapter) offerAuthorizeAfterSignIn(ctx context.Context, slackUser strin
 	text := authorizeOfferText(waiting)
 	blocks := []any{
 		map[string]any{bkType: bkSection, bkText: map[string]any{bkType: bkMrkdwn, bkText: text}},
-		map[string]any{bkType: bkActions, bkElements: []any{authorizeAllButton("")}},
+		map[string]any{bkType: bkActions, bkElements: []any{authorizeAllButton()}},
 	}
 	if _, err := a.apiClient().postBlocks(ctx, slackUser, "", text, blocks); err != nil {
 		a.Logger.Warn("slack: post authorize offer after sign-in failed", "user", slackUser, "error", err)
@@ -250,14 +220,12 @@ func authorizeOfferText(waiting int) string {
 	return fmt.Sprintf("You're signed in. %s your one-time authorization before the agent can use them for you. Authorize them now so nothing stops a conversation later.", tools)
 }
 
-// authorizeAllButton opens the authorize modal; originState is the
-// completion state of the Connect prompt it sits on, or empty.
-func authorizeAllButton(originState string) map[string]any {
+// authorizeAllButton opens the authorize modal.
+func authorizeAllButton() map[string]any {
 	return map[string]any{
 		bkType:     bkButton,
 		bkText:     map[string]any{bkType: bkPlainText, bkText: "Authorize all"},
 		bkActionID: authorizeAllOpen,
-		bkValue:    originState,
 	}
 }
 
@@ -291,9 +259,9 @@ func authorizeFailedBlocks() []any {
 
 // authorizeModalBlocks are the filled modal's blocks: a summary, one row per
 // server the person reaches with a grant (its state, and an Authorize button
-// with link(s) while the grant is missing), and a line for the servers that
+// opening muster's link while the grant is missing), and a line for the servers that
 // come with the sign-in.
-func authorizeModalBlocks(servers []grantServer, link func(grantServer) string) []any {
+func authorizeModalBlocks(servers []grantServer) []any {
 	var grants []grantServer
 	viaSignIn := 0
 	for _, s := range servers {
@@ -325,7 +293,7 @@ func authorizeModalBlocks(servers []grantServer, link func(grantServer) string) 
 
 	shown := grants[:min(len(grants), authorizeModalRowsMax)]
 	for _, s := range shown {
-		blocks = append(blocks, authorizeRow(s, link))
+		blocks = append(blocks, authorizeRow(s))
 	}
 	var footer []string
 	if hidden := len(grants) - len(shown); hidden > 0 {
@@ -341,7 +309,7 @@ func authorizeModalBlocks(servers []grantServer, link func(grantServer) string) 
 }
 
 // authorizeRow is one server's row.
-func authorizeRow(s grantServer, link func(grantServer) string) map[string]any {
+func authorizeRow(s grantServer) map[string]any {
 	state := ":large_green_circle: Authorized"
 	switch {
 	case s.Suspended:
@@ -362,7 +330,7 @@ func authorizeRow(s grantServer, link func(grantServer) string) map[string]any {
 	if !s.needsGrant() {
 		return row
 	}
-	if url := link(s); url != "" {
+	if url := s.AuthURL; url != "" {
 		row[bkAccessory] = map[string]any{
 			bkType:     bkButton,
 			bkText:     map[string]any{bkType: bkPlainText, bkText: "Authorize"},

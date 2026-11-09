@@ -37,7 +37,8 @@ const (
 	conversationNotYours      = "This thread is <@%s>'s conversation with %s; only they can write to it."
 	conversationNotDelivered  = "Not delivered to %s: %s"
 	conversationFailed        = "Not delivered to %s: it could not be reached right now. Send it again in a moment."
-	conversationConnectNotice = "Not delivered to %s yet: connect *%s* once, then send it again."
+	conversationConnectNotice = "Not delivered to %s yet. *muster* asks you to sign in once:"
+	conversationConnectTail   = "Sign in, then send your reply again."
 	conversationDelivered     = "incoming_envelope"
 )
 
@@ -149,15 +150,15 @@ func (a *Adapter) relayConversationReply(ctx context.Context, rv store.Review, i
 
 	res, err := a.Tools.CallTool(ctx, token, rv.Tool, args)
 	note := ""
-	switch server, loginURL, challenged := res.SignInChallenge(teamReviewUnknownServer); {
+	switch {
 	case err != nil:
 		a.Logger.Warn("slack: conversation reply tool call failed", "conversation", rv.ID, "tool", rv.Tool, "slack_user", inner.User, "error", err)
 		note = fmt.Sprintf(conversationFailed, from)
-	case challenged:
-		a.Logger.Info("slack: conversation reply needs the person to connect the backend", "record", "conversation_connect",
-			"conversation", rv.ID, "tool", rv.Tool, "slack_user", inner.User, "server", server)
-		text := fmt.Sprintf(conversationConnectNotice, from, escapeMrkdwn(server))
-		if err := a.apiClient().postConnectPrompt(ctx, rv.Channel, rv.TS, inner.User, text, server, loginURL, server); err != nil {
+	case res.SignIn != nil:
+		a.Logger.Info("slack: conversation reply needs the person's sign-in", "record", "conversation_connect",
+			"conversation", rv.ID, "tool", rv.Tool, "slack_user", inner.User)
+		text := signInPromptText(fmt.Sprintf(conversationConnectNotice, from), res.SignIn.Message, res.SignIn.URL, conversationConnectTail)
+		if err := a.apiClient().postConnectPrompt(ctx, rv.Channel, rv.TS, inner.User, text, res.SignIn.URL, ""); err != nil {
 			a.Logger.Warn("slack: conversation connect prompt failed", "conversation", rv.ID, "error", err)
 		}
 		return

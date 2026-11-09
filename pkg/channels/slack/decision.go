@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
+	"github.com/giantswarm/klaus-gateway/pkg/muster"
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
 )
 
@@ -76,13 +77,13 @@ const (
 	decisionWithdrawnNotice  = "This decision was withdrawn."
 	decisionPendingNotice    = "<@%s>'s answer is being submitted right now."
 
-	decisionStatusConnecting      = "<@%s> is connecting *%s* to answer as themselves."
+	decisionStatusConnecting      = "<@%s> is signing in to answer as themselves."
 	decisionStatusRefused         = "<@%s>'s answer was not accepted: %s"
 	decisionStatusFailed          = "<@%s>'s answer could not be submitted; try again in a moment."
-	decisionStatusStillChallenged = "<@%s> connected *%s*, but the answer still asks them to sign in; try again in a moment."
+	decisionStatusStillChallenged = "<@%s> did not finish signing in in time; try again in a moment."
 
-	decisionConnectNotice       = "To answer as yourself, connect *%s* once. Your answer is submitted as soon as you're back."
-	decisionConnectManualNotice = "To answer as yourself, connect *%s* once, then answer again."
+	decisionConnectNotice = "To answer as yourself, *muster* asks you to sign in once:"
+	decisionConnectTail   = "Open it with *Sign in*: your answer is submitted once you're signed in."
 )
 
 // decisionAnswer is what a person answered: an option (1-based, 0 for none)
@@ -367,7 +368,7 @@ func (a *Adapter) handleDecisionChoose(ctx context.Context, channel, ts, clicker
 	if err != nil || n < 1 || n > len(rv.Decision.Options) {
 		return
 	}
-	a.answerDecision(ctx, rv, clicker, decisionAnswer{choice: n}, signInForClick, false)
+	a.answerDecision(ctx, rv, clicker, decisionAnswer{choice: n}, signInForClick, nil)
 }
 
 // handleDecisionOwnWordsClick opens the answer modal. The clicker must be
@@ -450,7 +451,7 @@ func (a *Adapter) handleDecisionAnswerSubmission(ctx context.Context, payload in
 	if ans.choice < 0 || ans.choice > len(rv.Decision.Options) {
 		ans.choice = 0
 	}
-	a.answerDecision(ctx, rv, clicker, ans, signInForClick, false)
+	a.answerDecision(ctx, rv, clicker, ans, signInForClick, nil)
 }
 
 // answerDecisionReply takes a reply in a decision's thread as the replier's
@@ -485,7 +486,7 @@ func (a *Adapter) answerDecisionReply(ctx context.Context, inner slackInnerEvent
 	if text == "" || a.Tools == nil {
 		return true
 	}
-	a.answerDecision(ctx, rv, inner.User, decisionAnswer{text: truncateRunes(text, channels.DecisionAnswerMax)}, signInForReply, false)
+	a.answerDecision(ctx, rv, inner.User, decisionAnswer{text: truncateRunes(text, channels.DecisionAnswerMax)}, signInForReply, nil)
 	return true
 }
 
@@ -515,11 +516,11 @@ func (a *Adapter) decisionFor(ctx context.Context, id, user string) (store.Revie
 // answerDecision submits the answer as the person who gave it: they must be
 // linked (an unlinked one is asked to sign in, the decision stays open), the
 // decision must be open (a later answer is told how it closed), and the
-// answer tool is called as them. A sign-in challenge is a Connect prompt
-// whose landing submits the answer again (resumed=true); a refusal or a
-// failure is a status line under the buttons, the decision open; a success
-// rewrites the message to the answer.
-func (a *Adapter) answerDecision(ctx context.Context, rv store.Review, user string, ans decisionAnswer, trigger signInTrigger, resumed bool) {
+// answer tool is called as them. A sign-in muster asks for is a Connect
+// prompt whose click accepts it, which submits the answer once they signed in
+// (accepted set); a refusal or a failure is a status line under the buttons,
+// the decision open; a success rewrites the message to the answer.
+func (a *Adapter) answerDecision(ctx context.Context, rv store.Review, user string, ans decisionAnswer, trigger signInTrigger, accepted *muster.SignIn) {
 	token, ok, signIn := a.humanToken(ctx, rv.Channel, "", user)
 	if signIn {
 		a.postSignIn(ctx, rv.Channel, "", user, false, trigger)
@@ -541,21 +542,21 @@ func (a *Adapter) answerDecision(ctx context.Context, rv store.Review, user stri
 		return
 	}
 
-	res, err := a.Tools.CallTool(ctx, token, rv.Tool, ans.arguments(rv))
+	res, err := a.callOrAccept(ctx, token, rv.Tool, ans.arguments(rv), accepted)
 	if err != nil {
 		a.releaseTeamReview(ctx, rv.ID)
 		a.Logger.Warn("slack: decision answer tool call failed", "decision", rv.ID, "tool", rv.Tool, "user", user, "error", err)
 		a.showDecisionStatus(ctx, rv, fmt.Sprintf(decisionStatusFailed, user))
 		return
 	}
-	if server, loginURL, challenged := res.SignInChallenge(teamReviewUnknownServer); challenged {
+	if res.SignIn != nil {
 		a.releaseTeamReview(ctx, rv.ID)
-		if resumed {
-			a.Logger.Warn("slack: decision answer still challenged after the connector sign-in", "decision", rv.ID, "tool", rv.Tool, "user", user, "server", server)
-			a.showDecisionStatus(ctx, rv, fmt.Sprintf(decisionStatusStillChallenged, user, escapeMrkdwn(server)))
+		if accepted != nil {
+			a.Logger.Warn("slack: decision answer still asks for a sign-in after the accepted one", "decision", rv.ID, "tool", rv.Tool, "user", user)
+			a.showDecisionStatus(ctx, rv, fmt.Sprintf(decisionStatusStillChallenged, user))
 			return
 		}
-		a.promptDecisionConnect(ctx, rv, user, ans, server, loginURL)
+		a.promptDecisionConnect(ctx, rv, user, ans, res.SignIn)
 		return
 	}
 	if res.IsError {
@@ -575,45 +576,36 @@ func (a *Adapter) answerDecision(ctx context.Context, rv store.Review, user stri
 		return
 	}
 	a.Logger.Info("slack: decision answered", "record", "decision_answered",
-		"decision", rv.ID, "tool", rv.Tool, "slack_user", user, "subject", a.linkedSubject(user), "choice", ans.choice, "resumed", resumed)
+		"decision", rv.ID, "tool", rv.Tool, "slack_user", user, "subject", a.linkedSubject(user), "choice", ans.choice, "resumed", accepted != nil)
 	if err := a.apiClient().chatUpdate(ctx, answered.Channel, answered.TS, decisionFallback(answered), decisionClosedBlocks(answered)); err != nil {
 		a.Logger.Warn("slack: decision answer rewrite failed", "decision", rv.ID, "error", err)
 	}
 }
 
-// promptDecisionConnect answers a sign-in challenge on an answer: the
-// decision stays open, its status line says who is connecting, and the
-// person gets a Connect button whose landing submits the answer again.
-func (a *Adapter) promptDecisionConnect(ctx context.Context, rv store.Review, user string, ans decisionAnswer, server, loginURL string) {
-	a.Logger.Info("slack: decision answer needs the person to connect the backend", "record", "decision_connect",
-		"decision", rv.ID, "tool", rv.Tool, "slack_user", user, "server", server)
-	a.showDecisionStatus(ctx, rv, fmt.Sprintf(decisionStatusConnecting, user, escapeMrkdwn(server)))
+// promptDecisionConnect answers the sign-in muster asked an answer for: the
+// decision stays open, its status line says who is signing in, and the person
+// gets a Connect prompt whose click submits the answer once they signed in.
+func (a *Adapter) promptDecisionConnect(ctx context.Context, rv store.Review, user string, ans decisionAnswer, signIn *muster.SignIn) {
+	a.Logger.Info("slack: decision answer needs the person's sign-in", "record", "decision_connect",
+		"decision", rv.ID, "tool", rv.Tool, "slack_user", user)
+	a.showDecisionStatus(ctx, rv, fmt.Sprintf(decisionStatusConnecting, user))
 
-	promptURL, connectValue := loginURL, server
-	text := fmt.Sprintf(decisionConnectManualNotice, escapeMrkdwn(server))
-	if base := a.PublicBaseURL; base != "" {
-		stateID := a.mintConnectorCompletion(connectorCompletion{slackUser: user, server: server, channel: rv.Channel, review: rv.ID, answer: &ans})
-		if decorated, err := decorateConnectorLoginURL(loginURL, base, stateID); err != nil {
-			a.Logger.Warn("slack: decision login URL decoration failed, posting plain link", "decision", rv.ID, "server", server, "error", err)
-		} else {
-			promptURL, connectValue = decorated, stateID
-			text = fmt.Sprintf(decisionConnectNotice, escapeMrkdwn(server))
-		}
-	}
-	if err := a.apiClient().postConnectPrompt(ctx, rv.Channel, "", user, text, server, promptURL, connectValue); err != nil {
+	stateID := a.mintConnectorCompletion(connectorCompletion{slackUser: user, channel: rv.Channel, signIn: signIn, review: rv.ID, answer: &ans})
+	text := signInPromptText(decisionConnectNotice, signIn.Message, signIn.URL, decisionConnectTail)
+	if err := a.apiClient().postConnectPrompt(ctx, rv.Channel, "", user, text, signIn.URL, stateID); err != nil {
 		a.Logger.Warn("slack: decision connect prompt failed", "decision", rv.ID, "user", user, "error", err)
 	}
 }
 
-// resumeDecisionAnswer is the landing's continuation of a Connect prompt
-// posted for an answer: the person signed in to the backend, so their answer
-// is submitted again.
+// resumeDecisionAnswer is the continuation of a Connect prompt posted for an
+// answer: the person agreed to open the link, so their answer is submitted
+// again, accepting the sign-in.
 func (a *Adapter) resumeDecisionAnswer(ctx context.Context, entry connectorCompletion) {
 	rv, ok := a.decisionFor(ctx, entry.review, entry.slackUser)
 	if !ok {
 		return
 	}
-	a.answerDecision(ctx, rv, entry.slackUser, *entry.answer, signInForClick, true)
+	a.answerDecision(ctx, rv, entry.slackUser, *entry.answer, signInForClick, entry.signIn)
 }
 
 // showDecisionStatus records status as the decision's status line and

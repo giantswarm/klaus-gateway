@@ -135,11 +135,11 @@ nothing of structured data without one; a denial also shows the typed reason. An
 a refusal (the manager finding the person outside the team, or the author of the change) and is
 written once, as a status line under the buttons naming the clicker, the decision and the reason,
 where the clicker and the team both read it; the review stays open.
-muster's sign-in challenge — the tool's server holds no grant for the person yet — is not a
-refusal: the clicker gets a *Connect <server>* button, and when the gateway has a public base URL
-(`obo.callbackBaseURL`) and muster's `oauth.mcpClient.postLoginRedirectAllowlist` admits
-`<base>/connectors/complete`, the sign-in lands back on the gateway and the decision — the
-approval, or the denial with its reason — is submitted again as the person without a second click.
+A sign-in muster asks for (the tool's server holds no grant for the person yet) is not a
+refusal: the clicker gets a Connect prompt with muster's link, and their click on it accepts the
+sign-in. The gateway retries the call with the `accept`, muster waits for the sign-in and runs
+it, so the decision (the approval, or the denial with its reason) is submitted as the person
+without a second click on the review.
 
 ### `POST /reviews/{id}/results`
 

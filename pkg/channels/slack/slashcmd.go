@@ -139,7 +139,7 @@ func (a *Adapter) handleSlashCommand(ctx context.Context, p slashCommandPayload)
 	if isAuthorizeCommand(p.Text) && a.authorizeModalOffered() {
 		// `/<command> connect` opens the authorize modal wherever it is
 		// typed: it asks nothing of the channel and opens no conversation.
-		a.openAuthorizeModal(ctx, p.UserID, p.TriggerID, "")
+		a.openAuthorizeModal(ctx, p.UserID, p.TriggerID)
 		return
 	}
 	req := askAgentRequest{Channel: p.ChannelID, User: p.UserID, ResponseURL: p.ResponseURL, TriggerID: p.TriggerID, Prefill: p.Text}

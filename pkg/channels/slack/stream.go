@@ -2866,20 +2866,24 @@ const slackSectionTextMax = 3000
 // group's label.
 const slackOptionTextMax = 75
 
-// postConnectPrompt posts an ephemeral (target-user-only) Block Kit message
-// with a "Connect <server>" URL button opening loginURL under text. When
-// threadID is set the prompt is posted in-thread. connectValue is the Connect
-// button's value: the completion-state ID when the login URL carries a
-// post-login redirect, else the server name (the click stays a no-op then).
-func (c *slackAPIClient) postConnectPrompt(ctx context.Context, channel, threadID, user, text, server, loginURL, connectValue string) error {
-	return c.postConnectEphemeral(ctx, channel, threadID, user, text, connectPromptBlocks(text, server, loginURL, connectValue, connectValue, c.authorizeAll))
+// postConnectPrompt posts an ephemeral (target-user-only) Connect prompt:
+// text over a "Sign in" URL button opening link, in threadID when set.
+// connectValue is the button's value, the prompt's completion state, whose
+// click is the person's consent.
+func (c *slackAPIClient) postConnectPrompt(ctx context.Context, channel, threadID, user, text, link, connectValue string) error {
+	return c.postConnectEphemeral(ctx, channel, threadID, user, text, connectPromptBlocks(text, signInButtonLabel, link, connectValue, c.authorizeAll))
 }
 
-// postProviderConnectPrompt posts a workspace provider's Connect prompt: its
-// "Connect <provider>" sign-in alone. "Authorize all" grants muster servers,
-// not a provider account, so it has no place here.
-func (c *slackAPIClient) postProviderConnectPrompt(ctx context.Context, channel, threadID, user, text, provider, loginURL string) error {
-	return c.postConnectEphemeral(ctx, channel, threadID, user, text, connectPromptBlocks(text, provider, loginURL, provider, "", false))
+// postProviderConnectPrompt posts a workspace's Connect prompt: its
+// "Connect <provider>" sign-in alone, "Sign in" for muster's own (no
+// provider). "Authorize all" grants muster servers, not a provider account,
+// so it has no place here.
+func (c *slackAPIClient) postProviderConnectPrompt(ctx context.Context, channel, threadID, user, text, provider, link string) error {
+	label := signInButtonLabel
+	if provider != "" {
+		label = "Connect " + provider
+	}
+	return c.postConnectEphemeral(ctx, channel, threadID, user, text, connectPromptBlocks(text, label, link, provider, false))
 }
 
 // postConnectEphemeral posts a Connect prompt's blocks to user alone, in
@@ -2898,29 +2902,28 @@ func (c *slackAPIClient) postConnectEphemeral(ctx context.Context, channel, thre
 	return err
 }
 
-// connectPromptBlocks are a Connect prompt's blocks: text over a
-// "Connect <server>" URL button opening loginURL with connectValue as its
-// value, an "Authorize all" button opening the authorize modal when
-// authorizeAll is set (its value authorizeOrigin, the prompt's completion
-// state or empty).
-func connectPromptBlocks(text, server, loginURL, connectValue, authorizeOrigin string, authorizeAll bool) []any {
+// connectPromptBlocks are a Connect prompt's blocks: text over a URL button
+// labelled label opening link exactly as given, with connectValue as its
+// value, and an "Authorize all" button opening the authorize modal when
+// authorizeAll is set.
+func connectPromptBlocks(text, label, link, connectValue string, authorizeAll bool) []any {
 	elements := []any{
 		map[string]any{
 			bkType:     bkButton,
-			bkText:     map[string]any{bkType: bkPlainText, bkText: truncateButtonLabel("Connect " + server)},
+			bkText:     map[string]any{bkType: bkPlainText, bkText: truncateButtonLabel(label)},
 			bkStyle:    bkPrimary,
 			bkActionID: connectorConnect,
 			bkValue:    connectValue,
-			bkURL:      loginURL,
+			bkURL:      link,
 		},
 	}
 	if authorizeAll {
-		elements = append(elements, authorizeAllButton(authorizeOrigin))
+		elements = append(elements, authorizeAllButton())
 	}
 	return []any{
 		map[string]any{
 			bkType: bkSection,
-			bkText: map[string]any{bkType: bkMrkdwn, bkText: text},
+			bkText: map[string]any{bkType: bkMrkdwn, bkText: truncateRunes(text, slackSectionTextMax)},
 		},
 		map[string]any{bkType: bkActions, bkElements: elements},
 	}

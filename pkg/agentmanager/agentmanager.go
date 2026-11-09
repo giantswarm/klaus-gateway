@@ -35,16 +35,13 @@ type ToolCaller interface {
 type Starter struct {
 	tools ToolCaller
 	tool  string
-	// server is the muster server the tool is of, as the prefix names it
-	// (x_<server>_): what a sign-in challenge that names none is for.
-	server string
 }
 
 var _ pkga2a.SessionStarter = (*Starter)(nil)
 
 // New returns a Starter that calls prefix + start_session through tools.
 func New(tools ToolCaller, prefix string) *Starter {
-	return &Starter{tools: tools, tool: prefix + toolStartSession, server: strings.TrimSuffix(strings.TrimPrefix(prefix, "x_"), "_")}
+	return &Starter{tools: tools, tool: prefix + toolStartSession}
 }
 
 // StartSession starts the Session of a conversation with the Agent
@@ -56,8 +53,8 @@ func New(tools ToolCaller, prefix string) *Starter {
 // caller muster or the controller does not know onto pkga2a.ErrNoIdentity, an
 // unknown Agent onto pkga2a.ErrAgentUnknown, an Agent the caller may not use
 // onto pkga2a.ErrAgentNotPermitted, a refused name onto
-// pkga2a.ErrInvalidSessionName. muster's own sign-in challenge for the server
-// (the person has not connected it; the link says where) is a
+// pkga2a.ErrInvalidSessionName. The sign-in muster asks for first (the person
+// has not connected a server the start goes through) is a
 // pkga2a.ConnectRequiredError.
 func (s *Starter) StartSession(ctx context.Context, bearer, namespace, name, requestID, sessionName string, grant workspaces.Grant) (pkga2a.Session, error) {
 	ref := namespace + "/" + name
@@ -81,8 +78,8 @@ func (s *Starter) StartSession(ctx context.Context, bearer, namespace, name, req
 		}
 		return pkga2a.Session{}, fmt.Errorf("agentmanager: start a Session of %s: %w", ref, err)
 	}
-	if server, loginURL, ok := res.SignInChallenge(s.server); ok {
-		return pkga2a.Session{}, &pkga2a.ConnectRequiredError{Server: server, LoginURL: loginURL}
+	if res.SignIn != nil {
+		return pkga2a.Session{}, &pkga2a.ConnectRequiredError{SignIn: res.SignIn}
 	}
 	if !res.Dispatched {
 		return pkga2a.Session{}, fmt.Errorf("agentmanager: start a Session of %s: muster did not run %s: %s", ref, s.tool, res.Text)

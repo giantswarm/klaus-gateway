@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
+	"github.com/giantswarm/klaus-gateway/pkg/muster"
 )
 
 // signInDecline is the "Not now" button of a sign-in prompt; its value is the
@@ -21,9 +22,12 @@ const signInDeclineText = "Not now"
 // The link is minted for slackUser, the person whose turn asked for it, so the
 // prompt is theirs alone; the thread gets a note naming whom the turn waits
 // on, which also anchors the ephemeral there (klaus-gateway#156). The prompt
-// quotes the server's own message, attributed to the server. The completed
-// sign-in resumes the task with accept, "Not now" with decline, and a typed
-// reply decides as decisionFromText reads it.
+// quotes the server's own message, attributed to the server, and shows the
+// whole link with its domain before the person opens it. Their click on the
+// link button opens it exactly as given and resumes the task with accept,
+// "Not now" with decline, and a typed reply decides as decisionFromText reads
+// it. A link that cannot be shown as written is not offered: the prompt says
+// so, and only "Not now" or a reply answers it.
 func (a *Adapter) postMCPSignInPrompt(ctx context.Context, client *slackAPIClient, slackChannel, threadID, slackUser string, pd *channels.OutboundDelta) error {
 	signIn := pd.Prompt.SignIn
 	server := signIn.Server
@@ -36,56 +40,29 @@ func (a *Adapter) postMCPSignInPrompt(ctx context.Context, client *slackAPIClien
 		a.notePromptTS(threadID, pd.TaskID, ts)
 	}
 
-	promptURL, connectValue, resumes := signIn.URL, server, false
-	if base := a.PublicBaseURL; base != "" {
-		stateID := a.mintConnectorCompletion(connectorCompletion{slackUser: slackUser, server: server, channel: slackChannel, threadTS: threadID, signInTask: pd.TaskID})
-		if decorated, err := decorateConnectorLoginURL(promptURL, base, stateID); err != nil {
-			a.Logger.Warn("slack: sign-in URL decoration failed, posting plain link", "server", server, "error", err)
-		} else {
-			promptURL, connectValue, resumes = decorated, stateID, true
-		}
-	}
-	text := mcpSignInText(server, signIn.Message, resumes)
-	elements := []any{map[string]any{
-		bkType:     bkButton,
-		bkText:     map[string]any{bkType: bkPlainText, bkText: "Sign in"},
-		bkStyle:    bkPrimary,
-		bkActionID: connectorConnect,
-		bkValue:    connectValue,
-		bkURL:      promptURL,
-	}}
-	if client.authorizeAll {
-		elements = append(elements, authorizeAllButton(connectValue))
-	}
-	elements = append(elements, map[string]any{
+	decline := map[string]any{
 		bkType:     bkButton,
 		bkText:     map[string]any{bkType: bkPlainText, bkText: "Not now"},
 		bkActionID: signInDecline,
 		bkValue:    encodeHitlValue(threadID, pd.TaskID),
-	})
-	blocks := []any{
-		map[string]any{bkType: bkSection, bkText: map[string]any{bkType: bkMrkdwn, bkText: text}},
-		map[string]any{bkType: bkActions, bkElements: elements},
 	}
-	return client.postConnectEphemeral(ctx, slackChannel, threadID, slackUser, text, blocks)
-}
+	lead := fmt.Sprintf(signInPromptLead, escapeMrkdwn(server))
+	if err := muster.ValidateSignInURL(signIn.URL); err != nil {
+		a.Logger.Warn("slack: sign-in link not offered", "server", server, "thread", threadID, "error", err)
+		text := lead + "\n" + signInLinkUnusableNotice
+		blocks := []any{
+			map[string]any{bkType: bkSection, bkText: map[string]any{bkType: bkMrkdwn, bkText: text}},
+			map[string]any{bkType: bkActions, bkElements: []any{decline}},
+		}
+		return client.postConnectEphemeral(ctx, slackChannel, threadID, slackUser, text, blocks)
+	}
 
-// mcpSignInText is the text of a sign-in prompt: the attribution, the
-// server's message quoted, and what happens once the person signed in.
-func mcpSignInText(server, message string, resumes bool) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, signInPromptLead, escapeMrkdwn(server))
-	if message = strings.TrimSpace(message); message != "" {
-		b.WriteString("\n>")
-		b.WriteString(strings.ReplaceAll(escapeMrkdwn(truncateRunes(message, signInMessageMaxRunes)), "\n", "\n>"))
-	}
-	b.WriteString("\n")
-	if resumes {
-		b.WriteString(signInPromptResumes)
-	} else {
-		b.WriteString(signInPromptManual)
-	}
-	return b.String()
+	stateID := a.mintConnectorCompletion(connectorCompletion{slackUser: slackUser, channel: slackChannel, threadTS: threadID, signInTask: pd.TaskID})
+	text := signInPromptText(lead, signIn.Message, signIn.URL, signInPromptTail)
+	blocks := connectPromptBlocks(text, signInButtonLabel, signIn.URL, stateID, client.authorizeAll)
+	actions, _ := blocks[len(blocks)-1].(map[string]any)
+	actions[bkElements] = append(actions[bkElements].([]any), decline)
+	return client.postConnectEphemeral(ctx, slackChannel, threadID, slackUser, text, blocks)
 }
 
 // signInDecided is the line a sign-in prompt's thread note is rewritten to
