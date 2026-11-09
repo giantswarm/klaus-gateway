@@ -30,11 +30,13 @@ import (
 
 const (
 	defaultTimeout = 60 * time.Second
-	// acceptTimeout bounds a retry carrying the person's accept: muster waits
-	// up to five minutes for the sign-in before it runs the call.
-	acceptTimeout = 6 * time.Minute
-	clientName    = "klaus-gateway"
+	maxResponse    = 1 << 20
+	clientName     = "klaus-gateway"
 )
+
+// AcceptTimeout bounds Accept: muster waits up to five minutes for the
+// sign-in before it runs the call.
+const AcceptTimeout = 6 * time.Minute
 
 // Result is a tool's answer: its text content joined, its structured content
 // as the tool sent it, and whether the tool reported it as an error (a refusal
@@ -100,7 +102,7 @@ func (c *Client) CallTool(ctx context.Context, bearer, tool string, args map[str
 // runs the call; a sign-in that did not complete in time is asked again, as a
 // Result with a new SignIn.
 func (c *Client) Accept(ctx context.Context, bearer string, signIn *SignIn) (Result, error) {
-	ctx, cancel := context.WithTimeout(ctx, acceptTimeout)
+	ctx, cancel := context.WithTimeout(ctx, AcceptTimeout)
 	defer cancel()
 	return c.answer(ctx, bearer, signIn, mcp.ElicitationResponseActionAccept)
 }
@@ -175,11 +177,11 @@ func (c *Client) connect(ctx context.Context, bearer string) (*mcpclient.Client,
 	if httpClient == nil {
 		httpClient = &http.Client{}
 	}
-	refusing := *httpClient
-	refusing.Transport = refusedTokenTransport{next: httpClient.Transport}
+	bounded := *httpClient
+	bounded.Transport = musterTransport{next: httpClient.Transport}
 	endpoint := strings.TrimRight(c.BaseURL, "/") + "/mcp"
 	t, err := transport.NewStreamableHTTP(endpoint,
-		transport.WithHTTPBasicClient(&refusing),
+		transport.WithHTTPBasicClient(&bounded),
 		transport.WithHTTPHeaders(map[string]string{"Authorization": "Bearer " + bearer}),
 	)
 	if err != nil {
@@ -334,13 +336,14 @@ func (e *HTTPError) Error() string {
 	return fmt.Sprintf("status %d: %s", e.Status, e.Body)
 }
 
-// refusedTokenTransport turns a 401 or 403 answer into an HTTPError, so a
-// refused token is told apart from any other failure.
-type refusedTokenTransport struct {
+// musterTransport turns a 401 or 403 answer into an HTTPError, so a refused
+// token is told apart from any other failure, and reads at most maxResponse
+// bytes of any other answer: a longer one fails to decode.
+type musterTransport struct {
 	next http.RoundTripper
 }
 
-func (t refusedTokenTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+func (t musterTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	next := t.next
 	if next == nil {
 		next = http.DefaultTransport
@@ -350,9 +353,15 @@ func (t refusedTokenTransport) RoundTrip(req *http.Request) (*http.Response, err
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusUnauthorized && resp.StatusCode != http.StatusForbidden {
+		resp.Body = limitedBody{Reader: io.LimitReader(resp.Body, maxResponse), Closer: resp.Body}
 		return resp, nil
 	}
 	snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 	_ = resp.Body.Close()
 	return nil, &HTTPError{Status: resp.StatusCode, Body: strings.TrimSpace(string(snippet))}
+}
+
+type limitedBody struct {
+	io.Reader
+	io.Closer
 }

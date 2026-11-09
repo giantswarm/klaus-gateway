@@ -123,8 +123,9 @@ moment, and the message keeps its buttons.
 
 One decision closes a review across replicas too: the click's claim on the record is a
 compare-and-set on the Valkey store, so of two clicks only one calls the tool and the other is
-told who decided (and how: approved or denied). A claim left without an outcome for five minutes
-— a gateway that died during the tool call, which the muster client bounds to a minute — is
+told who decided (and how: approved or denied). A claim left without an outcome for seven minutes
+— a gateway that died during the tool call, which the muster client bounds to a minute, or to six
+while muster waits for an accepted sign-in — is
 taken over by the next click instead of holding the review for the rest of its seven days. A
 *Deny* click holds nothing: the modal it opens claims the review on submission.
 

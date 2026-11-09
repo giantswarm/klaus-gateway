@@ -75,17 +75,12 @@ const (
 const teamReviewTTL = 7 * 24 * time.Hour
 
 // teamReviewClaimLease bounds how long a claim without an outcome holds the
-// review. A click's tool call is bounded by the muster client's timeout (a
-// minute), so a claim older than this was left behind by a process that died
-// mid-call — a restart during the call — and the next click may take the
-// review over instead of being told for seven days that a decision is in
-// flight.
-const teamReviewClaimLease = 5 * time.Minute
-
-// teamReviewAcceptBudget bounds a submission that accepts a sign-in, muster's
-// wait for it included: below teamReviewClaimLease, so no other click takes
-// the claim over while the person is still signing in.
-const teamReviewAcceptBudget = 4 * time.Minute
+// review. A click's tool call is bounded by the muster client's timeouts, an
+// accepted sign-in's wait included (muster.AcceptTimeout), so a claim older
+// than this was left behind by a process that died mid-call — a restart
+// during the call — and the next click may take the review over instead of
+// being told for seven days that a decision is in flight.
+const teamReviewClaimLease = muster.AcceptTimeout + time.Minute
 
 // Team-review notices to one clicker.
 const (
@@ -751,8 +746,7 @@ func (a *Adapter) resumeTeamReviewDecision(ctx context.Context, entry connectorC
 
 // callOrAccept calls tool as the person whose token it is, or, with accepted
 // set, accepts that sign-in instead: muster waits for it, then runs the call
-// it was asked for. The wait is bounded within teamReviewAcceptBudget, so the
-// claim the caller holds outlives it.
+// it was asked for.
 func (a *Adapter) callOrAccept(ctx context.Context, token, tool string, args map[string]any, accepted *muster.SignIn) (muster.Result, error) {
 	if accepted == nil {
 		return a.Tools.CallTool(ctx, token, tool, args)
@@ -760,8 +754,6 @@ func (a *Adapter) callOrAccept(ctx context.Context, token, tool string, args map
 	if a.SignIns == nil {
 		return muster.Result{}, errors.New("slack: no sign-in accepter")
 	}
-	ctx, cancel := context.WithTimeout(ctx, teamReviewAcceptBudget)
-	defer cancel()
 	return a.SignIns.Accept(ctx, token, accepted)
 }
 

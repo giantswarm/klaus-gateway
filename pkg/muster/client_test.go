@@ -82,6 +82,20 @@ func TestCallTool_RefusedTokenIsAnHTTPError(t *testing.T) {
 	require.Equal(t, http.StatusUnauthorized, httpErr.Status)
 }
 
+// An answer longer than the client reads fails the call instead of being
+// buffered whole.
+func TestCallTool_OversizedAnswerFails(t *testing.T) {
+	fake := mustertest.New(map[string]func(map[string]any) mustertest.Answer{
+		"x_repo_list": func(map[string]any) mustertest.Answer {
+			return mustertest.Answer{Text: strings.Repeat("a", 2<<20)}
+		},
+	})
+	defer fake.Close()
+
+	_, err := muster.NewClient(fake.URL).CallTool(t.Context(), personToken, "x_repo_list", nil)
+	require.Error(t, err)
+}
+
 func TestCallTool_NoBearerNoCall(t *testing.T) {
 	fake := mustertest.New(nil)
 	defer fake.Close()
