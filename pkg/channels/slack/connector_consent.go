@@ -11,10 +11,12 @@ import (
 	"github.com/giantswarm/klaus-gateway/pkg/muster"
 )
 
-// SignInAccepter retries the call a muster sign-in was asked for, with the
-// person's accept. *muster.Client satisfies it.
-type SignInAccepter interface {
+// SignInAnswerer answers a muster sign-in as the person: Accept retries the
+// call it was asked for with their accept, Decline with their decline.
+// *muster.Client satisfies it.
+type SignInAnswerer interface {
 	Accept(ctx context.Context, bearer string, signIn *muster.SignIn) (muster.Result, error)
+	Decline(ctx context.Context, bearer string, signIn *muster.SignIn) error
 }
 
 // connectorCompletion binds a Connect prompt's link button to what the
@@ -80,10 +82,10 @@ func (a *Adapter) dropConnectorCompletions(stateIDs []string) {
 	}
 }
 
-// takeConnectorConsent records slackUser's consent to stateID's link. ok is
-// true only for the first click of the person the prompt is for, on a state
-// that is still alive.
-func (a *Adapter) takeConnectorConsent(slackUser, stateID string) (connectorCompletion, bool) {
+// takeConnectorAnswer records slackUser's answer to stateID's link, their
+// consent or their decline. ok is true only for the first click of the person
+// the prompt is for, on a state that is still alive.
+func (a *Adapter) takeConnectorAnswer(slackUser, stateID string) (connectorCompletion, bool) {
 	now := time.Now()
 	a.connectorCompletionsMu.Lock()
 	defer a.connectorCompletionsMu.Unlock()
@@ -101,11 +103,54 @@ func (a *Adapter) takeConnectorConsent(slackUser, stateID string) (connectorComp
 // of the person the prompt is for runs what the prompt holds; any other is a
 // no-op.
 func (a *Adapter) handleConnectorConnect(slackUser, stateID, responseURL string) {
-	entry, ok := a.takeConnectorConsent(slackUser, stateID)
+	entry, ok := a.takeConnectorAnswer(slackUser, stateID)
 	if !ok {
 		return
 	}
 	a.background(func(ctx context.Context) { a.continueAfterConsent(ctx, entry, responseURL) })
+}
+
+// handleConnectorDecline is a click on a Connect prompt's Not now: the person
+// will not open the link. The first click of the person the prompt is for
+// declines the sign-in to muster and drops what the prompt holds; any other
+// is a no-op.
+func (a *Adapter) handleConnectorDecline(slackUser, stateID, responseURL string) {
+	entry, ok := a.takeConnectorAnswer(slackUser, stateID)
+	if !ok {
+		return
+	}
+	a.background(func(ctx context.Context) { a.dropAfterDecline(ctx, entry, responseURL) })
+}
+
+// dropAfterDecline answers muster's sign-in with decline, then settles what
+// the prompt held: a held Session start is not sent, and a decision or a team
+// review loses the status line naming the person signing in.
+func (a *Adapter) dropAfterDecline(ctx context.Context, entry connectorCompletion, responseURL string) {
+	if a.SignIns != nil && a.OBO != nil && entry.signIn != nil {
+		if token, err := a.OBO.TokenFor(ctx, entry.slackUser); err != nil {
+			a.Logger.Warn("slack: token to decline a sign-in unavailable", "user", entry.slackUser, "error", err)
+		} else if err := a.SignIns.Decline(ctx, token, entry.signIn); err != nil {
+			a.Logger.Warn("slack: decline sign-in failed", "user", entry.slackUser, "thread", entry.threadTS, "error", err)
+		}
+	}
+	switch {
+	case entry.held != nil:
+		a.settleSessionConnect(ctx, entry.slackUser, entry.threadTS, sessionConnectDeclined)
+	case entry.answer != nil:
+		if rv, ok := a.decisionFor(ctx, entry.review, entry.slackUser); ok {
+			a.showDecisionStatus(ctx, rv, "")
+		}
+	case entry.review != "":
+		if rv, found, err := a.reviews().GetReview(ctx, entry.review); err == nil && found {
+			a.showTeamReviewStatus(ctx, rv, "")
+		}
+	}
+	a.Logger.Info("slack: sign-in declined", "record", "connector_declined", "user", entry.slackUser, "thread", entry.threadTS, "review", entry.review)
+	if responseURL != "" {
+		if err := respondURL(ctx, responseURL, entry.threadTS, connectorDeclinedNotice); err != nil {
+			a.Logger.Warn("slack: rewrite connect prompt after decline failed", "thread", entry.threadTS, "error", err)
+		}
+	}
 }
 
 // continueAfterConsent runs what a Connect prompt holds once its person agreed
@@ -168,7 +213,7 @@ func (a *Adapter) acceptSignIn(ctx context.Context, entry connectorCompletion) (
 // that start.
 func (a *Adapter) resumeHeldStart(ctx context.Context, entry connectorCompletion) {
 	if res, ok := a.acceptSignIn(ctx, entry); !ok || res.SignIn == nil {
-		a.settleSessionConnect(ctx, entry.slackUser, entry.threadTS, true)
+		a.settleSessionConnect(ctx, entry.slackUser, entry.threadTS, sessionConnectDelivered)
 	}
 	if err := a.replayDispatch(ctx, entry.held.Msg, entry.held.SlackChannel); err != nil && !errors.Is(err, context.Canceled) {
 		a.Logger.Log(ctx, failureLogLevel(err), "slack: held message after sign-in failed", "user", entry.slackUser, "thread", entry.threadTS, "failure_class", channels.ClassifyFailure(err), "error", err)

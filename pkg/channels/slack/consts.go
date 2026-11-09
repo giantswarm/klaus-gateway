@@ -87,6 +87,10 @@ const oboSignIn = "obo_sign_in"
 // person's consent to it.
 const connectorConnect = "connector_connect"
 
+// connectorDecline is a Connect prompt's Not now button: the person will not
+// open the link. Its value is the prompt's completion state.
+const connectorDecline = "connector_decline"
+
 // signInButtonLabel labels a Connect prompt's link button.
 const signInButtonLabel = "Sign in"
 
@@ -110,13 +114,14 @@ const (
 	signInWaitingNote        = "Waiting for <@%s> to sign in (asked by *%s*)."
 	signInPromptLead         = "*%s* asks you to sign in so the agent can continue."
 	signInPromptTail         = "Open it with *Sign in*: the agent continues once you're signed in."
-	signInLinkUnusableNotice = "Its sign-in link is not one the app opens (it must be https, written out without spaces or credentials). Reply here or choose *Not now*."
+	signInLinkUnusableNotice = "Its sign-in link is not one the app opens (it must be https, short enough to show whole, and written out without spaces, hidden characters or credentials). Reply here or choose *Not now*."
 	signInAcceptedLine       = "<@%s> signed in."
 	signInDeclinedLine       = "<@%s> did not sign in."
 	signInDismissedNotice    = "Not signed in. The agent continues without it."
 	signInContinuingNotice   = "Opened the sign-in link. The agent continues once you're signed in."
 	signInResumeText         = "I've signed in, continue"
 	signInMessageMaxRunes    = 500
+	signInServerNameMaxRunes = 100
 )
 
 // sessionConnectNote leads the Connect prompt that answers a Session start
@@ -145,6 +150,7 @@ const (
 	sessionConnectWaitingFormat   = "Waiting for <@%s> to sign in"
 	sessionConnectWaitingDMHint   = " (the Sign in button is in a direct message from the app)"
 	sessionConnectConnectedFormat = "<@%s> signed in."
+	sessionConnectDeclinedFormat  = "<@%s> did not sign in."
 	sessionConnectCardDone        = "Signed in. Your message is on its way to the agent."
 	sessionConnectCardConnected   = "Signed in."
 )
@@ -155,8 +161,12 @@ const (
 const sessionConnectSupersededNote = "Sign in with the newer prompt below."
 
 // connectorDoneNotice replaces a Connect prompt once the call it held ran
-// after the person's sign-in.
-const connectorDoneNotice = "Signed in."
+// after the person's sign-in; connectorDeclinedNotice once the person chose
+// Not now, which dropped it.
+const (
+	connectorDoneNotice     = "Signed in."
+	connectorDeclinedNotice = "Not signed in. What waited for the sign-in was not sent; try again when you want to sign in."
+)
 
 // signInLinkOpensLead leads the domain a sign-in link opens, shown in bold
 // above the whole link; signInLinkPunycodeWarning follows an

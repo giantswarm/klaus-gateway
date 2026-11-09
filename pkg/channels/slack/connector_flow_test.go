@@ -140,7 +140,22 @@ type fakeAccepter struct {
 	mu       sync.Mutex
 	result   muster.Result
 	accepted []*muster.SignIn
+	declined []*muster.SignIn
 	bearers  []string
+}
+
+func (f *fakeAccepter) Decline(_ context.Context, bearer string, signIn *muster.SignIn) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.declined = append(f.declined, signIn)
+	f.bearers = append(f.bearers, bearer)
+	return nil
+}
+
+func (f *fakeAccepter) declines() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.declined)
 }
 
 func (f *fakeAccepter) Accept(_ context.Context, bearer string, signIn *muster.SignIn) (muster.Result, error) {

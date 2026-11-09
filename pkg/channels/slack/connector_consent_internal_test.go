@@ -1,10 +1,15 @@
 package slack
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/giantswarm/klaus-gateway/pkg/muster"
 )
 
 // The first click of the person a prompt is for is their consent; another
@@ -14,17 +19,17 @@ func TestConnectorConsent_FirstClickOfThePersonOnly(t *testing.T) {
 	a := &Adapter{}
 	stateID := a.mintConnectorCompletion(connectorCompletion{slackUser: "U1", channel: "C1", threadTS: "1.0", review: "rv-1"})
 
-	_, ok := a.takeConnectorConsent("U2", stateID)
+	_, ok := a.takeConnectorAnswer("U2", stateID)
 	require.False(t, ok, "another person's click is not the consent")
 
-	entry, ok := a.takeConnectorConsent("U1", stateID)
+	entry, ok := a.takeConnectorAnswer("U1", stateID)
 	require.True(t, ok)
 	require.Equal(t, "rv-1", entry.review)
 
-	_, ok = a.takeConnectorConsent("U1", stateID)
+	_, ok = a.takeConnectorAnswer("U1", stateID)
 	require.False(t, ok, "a second click only opens the link again")
 
-	_, ok = a.takeConnectorConsent("U1", "unknown")
+	_, ok = a.takeConnectorAnswer("U1", "unknown")
 	require.False(t, ok)
 
 	expired := a.mintConnectorCompletion(connectorCompletion{slackUser: "U1"})
@@ -33,7 +38,7 @@ func TestConnectorConsent_FirstClickOfThePersonOnly(t *testing.T) {
 	stored.expires = time.Now().Add(-time.Second)
 	a.connectorCompletions[expired] = stored
 	a.connectorCompletionsMu.Unlock()
-	_, ok = a.takeConnectorConsent("U1", expired)
+	_, ok = a.takeConnectorAnswer("U1", expired)
 	require.False(t, ok, "an expired state continues nothing")
 }
 
@@ -41,7 +46,7 @@ func TestConnectorConsent_DroppedStateContinuesNothing(t *testing.T) {
 	a := &Adapter{}
 	stateID := a.mintConnectorCompletion(connectorCompletion{slackUser: "U1"})
 	a.dropConnectorCompletions([]string{stateID})
-	_, ok := a.takeConnectorConsent("U1", stateID)
+	_, ok := a.takeConnectorAnswer("U1", stateID)
 	require.False(t, ok)
 }
 
@@ -68,4 +73,46 @@ func TestSignInLinkText(t *testing.T) {
 func TestSignInPromptText(t *testing.T) {
 	text := signInPromptText("*muster* asks you to sign in:", "Sign in to <github>.\nNow.", "https://muster.example/s", "Then continue.")
 	require.Equal(t, "*muster* asks you to sign in:\n>Sign in to &lt;github&gt;.\n>Now.\nOpens *muster.example*\n`https://muster.example/s`\nThen continue.", text)
+}
+
+func TestSignInLinkText_Warnings(t *testing.T) {
+	t.Run("upper-case ascii domain gets no warning", func(t *testing.T) {
+		text := signInLinkText("https://Muster.Example/start")
+		require.NotContains(t, text, signInLinkPunycodeWarning)
+	})
+	t.Run("unicode domain without a punycode form is shown as written, with the warning", func(t *testing.T) {
+		link := "https://\u0300muster.example/start"
+		require.NoError(t, muster.ValidateSignInURL(link))
+		text := signInLinkText(link)
+		require.Contains(t, text, "Opens *\u0300muster.example*")
+		require.Contains(t, text, signInLinkPunycodeWarning)
+	})
+}
+
+func TestSignInPromptText_LinkIsNeverCut(t *testing.T) {
+	link := "https://muster.example/s?" + strings.Repeat("a", muster.SignInURLMaxBytes-len("https://muster.example/s?"))
+	require.NoError(t, muster.ValidateSignInURL(link))
+	lead := fmt.Sprintf(signInPromptLead, strings.Repeat("&", signInServerNameMaxRunes))
+	text := signInPromptText(lead, strings.Repeat("<x>\n", 400), link, signInPromptTail)
+	require.LessOrEqual(t, utf8.RuneCountInString(text), slackSectionTextMax)
+	require.Contains(t, text, "`"+link+"`")
+	require.True(t, strings.HasSuffix(text, signInPromptTail))
+}
+
+func TestConnectPromptBlocks_TextIsVerbatim(t *testing.T) {
+	blocks := connectPromptBlocks("see https://evil.example", signInButtonLabel, "https://muster.example/s", "state", false, false)
+	section := blocks[0].(map[string]any)[bkText].(map[string]any)
+	require.Equal(t, true, section[bkVerbatim], "Slack links no URL of the text, only the button's")
+}
+
+func TestAuthorizeRow_ShowsTheLinkItOpens(t *testing.T) {
+	row := authorizeRow(grantServer{Name: "github", Status: grantStatusAuthNeeded, Kind: grantKindGrant, AuthURL: "https://muster.example/grant?s=1"})
+	text := row[bkText].(map[string]any)
+	require.Equal(t, true, text[bkVerbatim])
+	require.Contains(t, text[bkText], "Opens *muster.example*\n`https://muster.example/grant?s=1`")
+	require.Equal(t, "https://muster.example/grant?s=1", row[bkAccessory].(map[string]any)[bkURL])
+
+	row = authorizeRow(grantServer{Name: "github", Status: grantStatusAuthNeeded, Kind: grantKindGrant, AuthURL: "http://muster.example/grant"})
+	require.NotContains(t, row, bkAccessory, "a link that is not one the app opens gets no button")
+	require.Contains(t, row[bkText].(map[string]any)[bkText], authorizeLinkUnusable)
 }

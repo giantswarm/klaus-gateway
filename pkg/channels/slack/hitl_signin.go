@@ -46,12 +46,12 @@ func (a *Adapter) postMCPSignInPrompt(ctx context.Context, client *slackAPIClien
 		bkActionID: signInDecline,
 		bkValue:    encodeHitlValue(threadID, pd.TaskID),
 	}
-	lead := fmt.Sprintf(signInPromptLead, escapeMrkdwn(server))
+	lead := fmt.Sprintf(signInPromptLead, escapeMrkdwnCapped(server, signInServerNameMaxRunes))
 	if err := muster.ValidateSignInURL(signIn.URL); err != nil {
 		a.Logger.Warn("slack: sign-in link not offered", "server", server, "thread", threadID, "error", err)
 		text := lead + "\n" + signInLinkUnusableNotice
 		blocks := []any{
-			map[string]any{bkType: bkSection, bkText: map[string]any{bkType: bkMrkdwn, bkText: text}},
+			map[string]any{bkType: bkSection, bkText: verbatimMrkdwn(text)},
 			map[string]any{bkType: bkActions, bkElements: []any{decline}},
 		}
 		return client.postConnectEphemeral(ctx, slackChannel, threadID, slackUser, text, blocks)
@@ -59,7 +59,7 @@ func (a *Adapter) postMCPSignInPrompt(ctx context.Context, client *slackAPIClien
 
 	stateID := a.mintConnectorCompletion(connectorCompletion{slackUser: slackUser, channel: slackChannel, threadTS: threadID, signInTask: pd.TaskID})
 	text := signInPromptText(lead, signIn.Message, signIn.URL, signInPromptTail)
-	blocks := connectPromptBlocks(text, signInButtonLabel, signIn.URL, stateID, client.authorizeAll)
+	blocks := connectPromptBlocks(text, signInButtonLabel, signIn.URL, stateID, false, client.authorizeAll)
 	actions, _ := blocks[len(blocks)-1].(map[string]any)
 	actions[bkElements] = append(actions[bkElements].([]any), decline)
 	return client.postConnectEphemeral(ctx, slackChannel, threadID, slackUser, text, blocks)

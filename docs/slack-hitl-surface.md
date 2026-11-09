@@ -315,13 +315,27 @@ text or tool results.
 Every sign-in link follows MCP's URL mode elicitation. The prompt shows the whole link before
 the person agrees to open it: the domain it opens in bold ("Opens *muster.example*"), then the
 URL exactly as given, in code so Slack neither shortens nor links it. An internationalized
-domain is shown in its `xn--` punycode form with a warning that it may imitate another one. The
-link button (`connector_connect`, labelled *Sign in*) opens the server's URL unchanged: the
+domain is shown in its `xn--` punycode form with a warning that it may imitate another one; a
+non-ASCII domain with no punycode form is shown as written, with the same warning. The prompt's
+text is `verbatim`, so Slack links no URL in the server's message: the button is the one way to
+open a link. The server's message gets the room the section has left, so the link is never cut.
+The link button (`connector_connect`, labelled *Sign in*) opens the server's URL unchanged: the
 gateway adds no parameter to it. Its click, by the person the prompt is for, is their consent
 to open it, the `accept` of the elicitation. The first click continues what the prompt holds;
 later clicks only open the link again. A link that is not https (http only on a loopback
-host), carries credentials or cannot be shown as written (spaces, control characters,
-backticks) is not offered.
+host), carries credentials, is longer than 2000 bytes (each `&` counted as `&amp;`) or cannot be
+shown as written (spaces, control and format characters such as bidirectional overrides,
+backticks, `<` and `>`) is not offered.
+
+The gateway's own Connect prompts (a Session start, a decision, a team review) also carry *Not
+now* (`action_id` `connector_decline`, `value` the completion state). Its first click by the
+person the prompt is for declines the sign-in to muster as the person (the `decline` of the
+elicitation: muster runs nothing), drops what the prompt held and rewrites it to "Not signed in.
+What waited for the sign-in was not sent; try again when you want to sign in."; the prompt's
+*Sign in* then continues nothing. A held Session start's thread line reads "@Jose did not sign
+in." and its DM card says the same; a decision or a team review loses the status line naming the
+person and stays open. A workspace provider's Connect prompt has no *Not now*: its click
+continues nothing either.
 
 The Connect prompt answers a Session start muster asked a sign-in for (the person has not
 consented to the server's GitHub App): "The conversation can't start yet. *muster* asks you to
@@ -348,11 +362,12 @@ click `container.is_ephemeral`), the cards are rewritten in place.
 ```json
 {
   "blocks": [
-    { "type": "section", "text": { "type": "mrkdwn", "text": "The conversation can't start yet. *muster* asks you to sign in once:\n>Sign in to agent-manager to continue.\nOpens *muster.example*\n`https://muster.example/oauth/proxy/start?state=abc`\nOpen it with *Sign in*: your message goes to the agent once you're signed in." } },
+    { "type": "section", "text": { "type": "mrkdwn", "verbatim": true, "text": "The conversation can't start yet. *muster* asks you to sign in once:\n>Sign in to agent-manager to continue.\nOpens *muster.example*\n`https://muster.example/oauth/proxy/start?state=abc`\nOpen it with *Sign in*: your message goes to the agent once you're signed in." } },
     {
       "type": "actions",
       "elements": [
-        { "type": "button", "text": { "type": "plain_text", "text": "Sign in" }, "style": "primary", "action_id": "connector_connect", "value": "<completion state>", "url": "https://muster.example/oauth/proxy/start?state=abc" }
+        { "type": "button", "text": { "type": "plain_text", "text": "Sign in" }, "style": "primary", "action_id": "connector_connect", "value": "<completion state>", "url": "https://muster.example/oauth/proxy/start?state=abc" },
+        { "type": "button", "text": { "type": "plain_text", "text": "Not now" }, "action_id": "connector_decline", "value": "<completion state>" }
       ]
     }
   ]
@@ -397,10 +412,13 @@ authorized. Authorize each one once; the agent can use it for you from then on, 
 conversation.", then one section per server reached with a grant of the person's: its name and
 state (*Authorized*, *Needs your authorization*, *Authorize again*, *Deactivated by its
 administrator*, *Not reachable right now*, or muster's reason), and while the grant is missing
-an *Authorize* URL button (`action_id` `authorize_grant_open`, `value` the server). A context
-line counts the servers that come with the sign-in; *Refresh* (`authorize_refresh`) redraws it
-with new links. *Authorize* opens muster's link unchanged; the person redraws the modal with
-*Refresh* once they are back.
+the link as a Connect prompt shows it (domain in bold, the whole URL, the punycode warning) with
+an *Authorize* URL button (`action_id` `authorize_grant_open`, `value` the server). A link the
+gateway would not offer in a Connect prompt gets no button, and the row says so. A context line
+counts the servers that come with the sign-in; *Refresh* (`authorize_refresh`) redraws it with
+new links. *Authorize* opens muster's link unchanged and continues nothing in Slack: the person
+redraws the modal with *Refresh* once they are back, and a Connect prompt the modal was opened
+from still waits for its own *Sign in*.
 
 ```json
 {
@@ -411,9 +429,9 @@ with new links. *Authorize* opens muster's link unchanged; the person redraws th
   "blocks": [
     { "type": "section", "text": { "type": "mrkdwn", "text": "*1 of 2* tools are authorized. Authorize each one once; the agent can use it for you from then on, in every conversation." } },
     { "type": "divider" },
-    { "type": "section", "text": { "type": "mrkdwn", "text": "*agent-manager*\n:large_orange_circle: Needs your authorization" },
-      "accessory": { "type": "button", "text": { "type": "plain_text", "text": "Authorize" }, "style": "primary", "action_id": "authorize_grant_open", "value": "agent-manager", "url": "https://example.com/connect" } },
-    { "type": "section", "text": { "type": "mrkdwn", "text": "*github*\n:large_green_circle: Authorized" } },
+    { "type": "section", "text": { "type": "mrkdwn", "verbatim": true, "text": "*agent-manager*\n:large_orange_circle: Needs your authorization\nOpens *muster.example*\n`https://muster.example/oauth/proxy/start?state=abc`" },
+      "accessory": { "type": "button", "text": { "type": "plain_text", "text": "Authorize" }, "style": "primary", "action_id": "authorize_grant_open", "value": "agent-manager", "url": "https://muster.example/oauth/proxy/start?state=abc" } },
+    { "type": "section", "text": { "type": "mrkdwn", "verbatim": true, "text": "*github*\n:large_green_circle: Authorized" } },
     { "type": "context", "elements": [ { "type": "mrkdwn", "text": "3 more come with your sign-in and need nothing else." } ] },
     { "type": "actions", "elements": [ { "type": "button", "text": { "type": "plain_text", "text": "Refresh" }, "action_id": "authorize_refresh" } ] }
   ]

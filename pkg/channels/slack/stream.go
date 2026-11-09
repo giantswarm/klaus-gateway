@@ -2871,7 +2871,7 @@ const slackOptionTextMax = 75
 // connectValue is the button's value, the prompt's completion state, whose
 // click is the person's consent.
 func (c *slackAPIClient) postConnectPrompt(ctx context.Context, channel, threadID, user, text, link, connectValue string) error {
-	return c.postConnectEphemeral(ctx, channel, threadID, user, text, connectPromptBlocks(text, signInButtonLabel, link, connectValue, c.authorizeAll))
+	return c.postConnectEphemeral(ctx, channel, threadID, user, text, connectPromptBlocks(text, signInButtonLabel, link, connectValue, connectValue != "", c.authorizeAll))
 }
 
 // postProviderConnectPrompt posts a workspace's Connect prompt: its
@@ -2883,7 +2883,7 @@ func (c *slackAPIClient) postProviderConnectPrompt(ctx context.Context, channel,
 	if provider != "" {
 		label = "Connect " + provider
 	}
-	return c.postConnectEphemeral(ctx, channel, threadID, user, text, connectPromptBlocks(text, label, link, provider, false))
+	return c.postConnectEphemeral(ctx, channel, threadID, user, text, connectPromptBlocks(text, label, link, provider, false, false))
 }
 
 // postConnectEphemeral posts a Connect prompt's blocks to user alone, in
@@ -2902,11 +2902,13 @@ func (c *slackAPIClient) postConnectEphemeral(ctx context.Context, channel, thre
 	return err
 }
 
-// connectPromptBlocks are a Connect prompt's blocks: text over a URL button
+// connectPromptBlocks are a Connect prompt's blocks: text, verbatim so Slack
+// links no URL in it but the button's, over a URL button
 // labelled label opening link exactly as given, with connectValue as its
-// value, and an "Authorize all" button opening the authorize modal when
-// authorizeAll is set.
-func connectPromptBlocks(text, label, link, connectValue string, authorizeAll bool) []any {
+// value, a Not now button carrying the same value when declinable (the value
+// is then the prompt's completion state), and an "Authorize all" button
+// opening the authorize modal when authorizeAll is set.
+func connectPromptBlocks(text, label, link, connectValue string, declinable, authorizeAll bool) []any {
 	elements := []any{
 		map[string]any{
 			bkType:     bkButton,
@@ -2917,13 +2919,21 @@ func connectPromptBlocks(text, label, link, connectValue string, authorizeAll bo
 			bkURL:      link,
 		},
 	}
+	if declinable {
+		elements = append(elements, map[string]any{
+			bkType:     bkButton,
+			bkText:     map[string]any{bkType: bkPlainText, bkText: signInDeclineText},
+			bkActionID: connectorDecline,
+			bkValue:    connectValue,
+		})
+	}
 	if authorizeAll {
 		elements = append(elements, authorizeAllButton())
 	}
 	return []any{
 		map[string]any{
 			bkType: bkSection,
-			bkText: map[string]any{bkType: bkMrkdwn, bkText: truncateRunes(text, slackSectionTextMax)},
+			bkText: verbatimMrkdwn(truncateRunes(text, slackSectionTextMax)),
 		},
 		map[string]any{bkType: bkActions, bkElements: elements},
 	}

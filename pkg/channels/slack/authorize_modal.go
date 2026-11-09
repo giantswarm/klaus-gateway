@@ -8,19 +8,20 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/giantswarm/klaus-gateway/pkg/muster"
 )
 
 // The authorize modal lists every muster server the person reaches with a
 // grant of their own, its state and the link that starts the grant, so a
 // person signs in once and grants everything in one place instead of meeting
 // one Connect prompt per server after a failed turn. muster answers it in one
-// call (core_auth_status with auth_urls); each link lands on the gateway's
-// connector landing, which redraws the modal, so a row turns Connected as its
-// grant lands.
+// call (core_auth_status with auth_urls). Each row shows the link its
+// Authorize button opens, which ends on muster's own page; Refresh redraws
+// the modal, so a row turns Authorized once its grant landed.
 
 // Authorize modal Block Kit IDs. authorizeAllOpen is the button that opens
-// the modal (its value: the completion state of the Connect prompt it sits
-// on, or empty); authorizeGrantOpen is a row's URL button, whose click Slack
+// the modal; authorizeGrantOpen is a row's URL button, whose click Slack
 // still reports and the gateway acks without action; authorizeRefresh redraws
 // the modal with fresh links.
 const (
@@ -34,8 +35,8 @@ const (
 // server; with auth_urls it issues the sign-in link of each missing grant.
 const musterAuthStatusTool = "core_auth_status"
 
-// authorizeModalTTL bounds how long an open modal is redrawn by landings: a
-// grant link muster issues lives ten minutes, and Refresh issues new ones.
+// authorizeModalTTL bounds how long the gateway keeps an open modal's owner:
+// a grant link muster issues lives ten minutes, and Refresh issues new ones.
 const authorizeModalTTL = time.Hour
 
 // authorizeModalRowsMax bounds the rows of one modal: Slack takes 100 blocks
@@ -308,13 +309,22 @@ func authorizeModalBlocks(servers []grantServer) []any {
 	return blocks
 }
 
-// authorizeRow is one server's row.
+// authorizeRow is one server's row. A server waiting for the person's grant
+// shows the link its Authorize button opens, as signInLinkText does; a link
+// that cannot be shown as written gets no button.
 func authorizeRow(s grantServer) map[string]any {
 	state := ":large_green_circle: Authorized"
+	link := s.AuthURL
+	if link != "" && muster.ValidateSignInURL(link) != nil {
+		link = ""
+		if s.Error == "" {
+			s.Error = authorizeLinkUnusable
+		}
+	}
 	switch {
 	case s.Suspended:
 		state = ":white_circle: Deactivated by its administrator"
-	case s.needsGrant() && s.AuthURL == "" && s.Error != "":
+	case s.needsGrant() && link == "" && s.Error != "":
 		state = ":warning: " + escapeMrkdwnCapped(s.Error, 200)
 	case s.Status == grantStatusReauth:
 		state = ":large_orange_circle: Authorize again"
@@ -323,25 +333,33 @@ func authorizeRow(s grantServer) map[string]any {
 	case s.Status != grantStatusConnected:
 		state = ":white_circle: Not reachable right now"
 	}
+	text := fmt.Sprintf("*%s*\n%s", escapeMrkdwn(s.Name), state)
+	if s.needsGrant() && link != "" {
+		text += "\n" + signInLinkText(link)
+	}
 	row := map[string]any{
 		bkType: bkSection,
-		bkText: map[string]any{bkType: bkMrkdwn, bkText: fmt.Sprintf("*%s*\n%s", escapeMrkdwn(s.Name), state)},
+		bkText: verbatimMrkdwn(text),
 	}
 	if !s.needsGrant() {
 		return row
 	}
-	if url := s.AuthURL; url != "" {
+	if link != "" {
 		row[bkAccessory] = map[string]any{
 			bkType:     bkButton,
 			bkText:     map[string]any{bkType: bkPlainText, bkText: "Authorize"},
 			bkStyle:    bkPrimary,
 			bkActionID: authorizeGrantOpen,
 			bkValue:    s.Name,
-			bkURL:      url,
+			bkURL:      link,
 		}
 	}
 	return row
 }
+
+// authorizeLinkUnusable is a row's state when its grant link is not one the
+// app opens (muster.ValidateSignInURL).
+const authorizeLinkUnusable = "Its authorization link is not one the app opens. Authorize it from another muster client."
 
 // errAuthorizeModalUnknown is a Refresh on a modal the gateway no longer
 // knows (its process restarted, or it expired).

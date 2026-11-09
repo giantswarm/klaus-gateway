@@ -485,8 +485,8 @@ Layer 2 is one grant per server whose authorization server is the person's own a
 GitHub App behind a `*-manager` server, GitHub, Slack, …); muster files it under the person,
 so it is given once. The **authorize modal** collects them all in one place before the agent
 needs them. It lists every server muster reaches with a grant of the person's (`kind: grant`
-in muster's `core_auth_status`), its state, and an *Authorize* button with the link that
-starts the grant; the servers that come with the sign-in itself (token forwarding or exchange)
+in muster's `core_auth_status`), its state, and, shown whole with its domain in bold, the link
+that starts the grant with an *Authorize* button opening it; the servers that come with the sign-in itself (token forwarding or exchange)
 are a count. Each link is muster's, unchanged; *Refresh* redraws the modal, so a row turns
 *Authorized* once its grant is given, and issues new links (muster's live ten minutes). It
 opens from:
@@ -495,9 +495,9 @@ opens from:
   in. 2 tools need your one-time authorization …", button *Authorize all*);
 - `/<command> connect` (or `authorize`), anywhere;
 - *Authorize all* beside every muster server's Connect prompt's button (a workspace
-  provider's Connect prompt offers the provider's sign-in alone). Opened from the prompt that held a
-  Session start's message, the modal's row for that server lands on the prompt's own
-  completion, so granting it from the modal runs the held message.
+  provider's Connect prompt offers the provider's sign-in alone). A grant given from the modal
+  continues nothing the prompt held: the prompt's own *Sign in* does, and muster finds the
+  grant there.
 
 The modal opens on the click's `trigger_id` with a loading view and is filled by
 `views.update` once muster answers. It needs `obo.connectorsEnabled` (the Connect prompts) and

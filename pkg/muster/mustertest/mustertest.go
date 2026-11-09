@@ -35,12 +35,14 @@ type SignIn struct {
 }
 
 // Call is one tools/call the fake served. Accepted is a retry carrying the
-// person's accept of the sign-in the call was answered with.
+// person's accept of the sign-in the call was answered with, Declined one
+// carrying their decline (the tool did not run).
 type Call struct {
 	Bearer   string
 	Tool     string
 	Args     map[string]any
 	Accepted bool
+	Declined bool
 }
 
 // signInKey and signInState are the input request key and request state the
@@ -96,6 +98,10 @@ func (s *Server) callTool(ctx context.Context, req mcp.CallToolRequest) (*mcp.Ca
 	call := Call{Bearer: bearer, Tool: tool, Args: inner}
 	if answer := server.ElicitationResponse(req.Params.InputResponses, signInKey); answer != nil && req.Params.RequestState == signInState {
 		if answer.Action != mcp.ElicitationResponseActionAccept {
+			call.Declined = true
+			s.mu.Lock()
+			s.calls = append(s.calls, call)
+			s.mu.Unlock()
 			return mcp.NewToolResultError("The tool did not run: the person answered " + string(answer.Action) + " to signing in."), nil
 		}
 		call.Accepted = true

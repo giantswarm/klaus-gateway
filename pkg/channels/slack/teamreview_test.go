@@ -56,8 +56,9 @@ func (o linkedOBO) LinkedIdentity(slackUser string) (sub, email string, ok bool)
 type toolCall struct {
 	bearer, tool string
 	args         map[string]any
-	// accepted is the sign-in an Accept retried the call of.
-	accepted *muster.SignIn
+	// accepted is the sign-in an Accept retried the call of, declined the
+	// one a Decline answered.
+	accepted, declined *muster.SignIn
 }
 
 // recordingTools records tool calls and answers with the queued results, the
@@ -76,6 +77,12 @@ func (r *recordingTools) CallTool(_ context.Context, bearer, tool string, args m
 // Accept records the retry of signIn's call and answers it like a call.
 func (r *recordingTools) Accept(_ context.Context, bearer string, signIn *muster.SignIn) (muster.Result, error) {
 	return r.answer(toolCall{bearer: bearer, accepted: signIn})
+}
+
+// Decline records the decline of signIn's call.
+func (r *recordingTools) Decline(_ context.Context, bearer string, signIn *muster.SignIn) error {
+	_, err := r.answer(toolCall{bearer: bearer, declined: signIn})
+	return err
 }
 
 func (r *recordingTools) answer(call toolCall) (muster.Result, error) {
@@ -548,7 +555,7 @@ func TestTeamReview_SignInThenApproves(t *testing.T) {
 	require.Contains(t, prompts[0].params["text"], "To approve as yourself, *muster* asks you to sign in once:\n>Sign in to giantswarm-repo-manager to continue.")
 	require.Contains(t, prompts[0].params["text"], "Opens *muster.example*\n`"+reviewSignInLink+"`")
 	require.Contains(t, prompts[0].params["text"], "your approval is submitted once you're signed in")
-	require.Equal(t, []string{"connector_connect"}, actionIDs(blocksOf(prompts[0])), "no 'Not now': an ignored prompt simply lapses")
+	require.Equal(t, []string{"connector_connect", "connector_decline"}, actionIDs(blocksOf(prompts[0])))
 	require.Equal(t, reviewSignInLink, buttonURL, "muster's link, unchanged")
 	require.NotContains(t, statusLine(fake, receipt.TS), "not accepted", "a sign-in is not a refusal")
 
@@ -576,6 +583,41 @@ func TestTeamReview_SignInThenApproves(t *testing.T) {
 	sendClick(t, srv, "connector_connect", stateID, responseSrv.URL, true)
 	time.Sleep(50 * time.Millisecond)
 	require.Len(t, tools.recorded(), 2)
+}
+
+// Not now declines the sign-in to muster as the person, submits nothing, and
+// takes the status line naming them off the review, which stays open.
+func TestTeamReview_NotNowDeclines(t *testing.T) {
+	tools := &recordingTools{results: []muster.Result{reviewSignIn()}}
+	a, srv, fake := teamReviewHarness(t, tools)
+	receipt, err := a.PostTeamReview(context.Background(), archiveReview())
+	require.NoError(t, err)
+
+	clickApprove(t, srv, "U1", receipt.ID, receipt.TS)
+	var stateID string
+	waitFor(t, "a Connect prompt is posted", func() bool {
+		var ok bool
+		_, stateID, ok = connectButton(fake)
+		return ok
+	})
+	waitFor(t, "the team sees who is signing in", func() bool {
+		return strings.Contains(statusLine(fake, receipt.TS), "<@U1> is signing in")
+	})
+
+	responseSrv, capturedBody := newResponseURLCapture(t)
+	sendClick(t, srv, "connector_decline", stateID, responseSrv.URL, true)
+	waitFor(t, "the sign-in is declined as the person", func() bool { return len(tools.recorded()) == 2 })
+	calls := tools.recorded()
+	require.Equal(t, "id-token-U1", calls[1].bearer)
+	require.NotNil(t, calls[1].declined)
+	require.Nil(t, calls[1].accepted)
+	waitFor(t, "the prompt says nothing was sent", func() bool { return strings.Contains(capturedBody(), "Not signed in.") })
+	waitFor(t, "the status line is gone", func() bool { return !strings.Contains(statusLine(fake, receipt.TS), "signing in") })
+	require.Equal(t, []string{"team_review_approve", "team_review_open"}, latestButtons(fake, receipt.TS), "the review stays open")
+
+	sendClick(t, srv, "connector_connect", stateID, responseSrv.URL, true)
+	time.Sleep(50 * time.Millisecond)
+	require.Len(t, tools.recorded(), 2, "the declined prompt's Sign in submits nothing")
 }
 
 // A sign-in that did not complete in time is asked again by muster after the

@@ -378,3 +378,46 @@ func TestSessionConnect_CollaboratorIsToldTheOwnerMustConnect(t *testing.T) {
 	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "Waiting for", "no line for a consent that is not the sender's")
 	require.NotContains(t, allText(fake.pathCalls("chat.postMessage")), "The turn failed")
 }
+
+// Not now on a Session start's Connect prompt declines the sign-in to muster
+// as the person, drops the held message, and rewrites the ephemeral, the
+// line and the DM card; the Sign in button then continues nothing.
+func TestSessionConnect_NotNowDeclinesAndDropsTheHeldMessage(t *testing.T) {
+	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok"}, {Done: true}}}
+	gw.dispatchErr = sessionConnectChallenge()
+	accepter := &fakeAccepter{}
+	fake, srv, logs := sessionConnectAdapter(t, gw, accepter)
+	responseSrv, capturedBody := newResponseURLCapture(t)
+
+	gw.openConversation(t, "C1", "141.000", "U1", "test-agent")
+	sendEvent(t, srv, mention("U1", "how many nodes in gazelle?", "141.000", ""))
+
+	var stateID string
+	require.Eventually(t, func() bool {
+		var ok bool
+		_, stateID, ok = connectButton(fake)
+		return ok
+	}, flowWait, 20*time.Millisecond, "the ephemeral Connect prompt is posted")
+	require.Contains(t, fmt.Sprint(fake.pathCalls("chat.postEphemeral")[0].params["blocks"]), "action_id:connector_decline", "the prompt offers Not now")
+
+	sendConnectorInteractionURL(t, srv, "connector_decline", stateID, responseSrv.URL)
+	require.Eventually(t, func() bool { return accepter.declines() == 1 }, flowWait, 20*time.Millisecond, "Not now declines the sign-in")
+	accepter.mu.Lock()
+	require.Equal(t, sessionConnectLink, accepter.declined[0].URL)
+	require.Equal(t, "tok", accepter.bearers[0], "as the person")
+	accepter.mu.Unlock()
+	require.Eventually(t, func() bool {
+		return strings.Contains(capturedBody(), "Not signed in.") &&
+			strings.Contains(allText(updatesIn(fake, "C1")), "<@U1> did not sign in.") &&
+			strings.Contains(allText(updatesIn(fake, "U1")), "Not signed in.")
+	}, flowWait, 20*time.Millisecond, "the ephemeral, the line and the DM card say so")
+	require.NotEmpty(t, logLine(logs, "record=connector_declined", "user=U1"))
+
+	gw.mu.Lock()
+	gw.dispatchErr = nil
+	gw.mu.Unlock()
+	sendConnectorInteractionURL(t, srv, "connector_connect", stateID, responseSrv.URL)
+	time.Sleep(100 * time.Millisecond)
+	require.Zero(t, accepter.count(), "the declined prompt's Sign in accepts nothing")
+	require.Equal(t, 1, gw.dispatchCount(), "and the held message never runs")
+}

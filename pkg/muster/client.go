@@ -20,6 +20,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	mcpclient "github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/client/transport"
@@ -58,9 +60,6 @@ type SignIn struct {
 	Message string
 	// URL is the page the person signs in on.
 	URL string
-	// ElicitationID names the elicitation; the same sign-in asked again keeps
-	// it.
-	ElicitationID string
 
 	tool         string
 	args         map[string]any
@@ -101,13 +100,27 @@ func (c *Client) CallTool(ctx context.Context, bearer, tool string, args map[str
 // runs the call; a sign-in that did not complete in time is asked again, as a
 // Result with a new SignIn.
 func (c *Client) Accept(ctx context.Context, bearer string, signIn *SignIn) (Result, error) {
-	if signIn == nil || signIn.tool == "" {
-		return Result{}, errors.New("muster: no sign-in to accept")
-	}
 	ctx, cancel := context.WithTimeout(ctx, acceptTimeout)
 	defer cancel()
+	return c.answer(ctx, bearer, signIn, mcp.ElicitationResponseActionAccept)
+}
+
+// Decline answers the call signIn was asked for with the person's decline:
+// they will not open the link. muster runs nothing and answers with a tool
+// error, which is the expected outcome and not returned as an error.
+func (c *Client) Decline(ctx context.Context, bearer string, signIn *SignIn) error {
+	ctx, cancel := context.WithTimeout(ctx, defaultTimeout)
+	defer cancel()
+	_, err := c.answer(ctx, bearer, signIn, mcp.ElicitationResponseActionDecline)
+	return err
+}
+
+func (c *Client) answer(ctx context.Context, bearer string, signIn *SignIn, action mcp.ElicitationResponseAction) (Result, error) {
+	if signIn == nil || signIn.tool == "" {
+		return Result{}, errors.New("muster: no sign-in to answer")
+	}
 	answer := mcp.NewElicitationInputResponse(mcp.ElicitationResult{
-		ElicitationResponse: mcp.ElicitationResponse{Action: mcp.ElicitationResponseActionAccept},
+		ElicitationResponse: mcp.ElicitationResponse{Action: action},
 	})
 	return c.call(ctx, bearer, signIn.tool, signIn.args, mcp.MultiRoundTripParams{
 		InputResponses: mcp.InputResponses{signIn.inputKey: answer},
@@ -205,24 +218,33 @@ func signInOf(res *mcp.CallToolResult, tool string, args map[string]any) (*SignI
 			return nil, err
 		}
 		return &SignIn{
-			Message:       e.Message,
-			URL:           e.URL,
-			ElicitationID: e.ElicitationID,
-			tool:          tool,
-			args:          args,
-			inputKey:      key,
-			requestState:  res.RequestState,
+			Message:      e.Message,
+			URL:          e.URL,
+			tool:         tool,
+			args:         args,
+			inputKey:     key,
+			requestState: res.RequestState,
 		}, nil
 	}
 	return nil, ErrUnusableSignIn
 }
 
+// SignInURLMaxBytes bounds a sign-in link as a client writes it in markup,
+// each & as &amp;, so that the client can always show it whole next to the
+// server's message.
+const SignInURLMaxBytes = 2000
+
 // ValidateSignInURL accepts a link the person may be asked to open: absolute
-// https, or http on a loopback host, without credentials in it, and nothing a
-// client could not show exactly as written (spaces, control characters,
-// backticks).
+// https, or http on a loopback host, without credentials in it, at most
+// SignInURLMaxBytes long written in markup, and nothing a client could not
+// show exactly as written: spaces, control and format characters
+// (bidirectional overrides and zero-width characters reorder or hide what is
+// shown), backticks, and the < and > that RFC 3986 leaves out of a URL.
 func ValidateSignInURL(link string) error {
-	if strings.ContainsFunc(link, func(r rune) bool { return r <= ' ' || r == 0x7f || r == '`' }) {
+	if len(link)+len("amp;")*strings.Count(link, "&") > SignInURLMaxBytes {
+		return fmt.Errorf("%w: the URL is longer than %d bytes", ErrUnusableSignIn, SignInURLMaxBytes)
+	}
+	if strings.ContainsFunc(link, unshowable) {
 		return fmt.Errorf("%w: the URL cannot be shown as written", ErrUnusableSignIn)
 	}
 	u, err := url.Parse(link)
@@ -241,6 +263,14 @@ func ValidateSignInURL(link string) error {
 		}
 	}
 	return fmt.Errorf("%w: scheme %q", ErrUnusableSignIn, u.Scheme)
+}
+
+func unshowable(r rune) bool {
+	switch r {
+	case '`', '<', '>':
+		return true
+	}
+	return unicode.IsSpace(r) || unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || r == utf8.RuneError
 }
 
 // metaCallTool is muster's meta-tool that runs any aggregated or core tool;

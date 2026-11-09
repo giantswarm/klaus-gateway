@@ -300,6 +300,13 @@ func (a *Adapter) routeInteraction(ctx context.Context, payload interactionPaylo
 		}
 		a.handleConnectorConnect(payload.User.ID, action.Value, responseURL)
 		return
+	case connectorDecline:
+		responseURL := payload.ResponseURL
+		if !payload.Container.IsEphemeral {
+			responseURL = ""
+		}
+		a.handleConnectorDecline(payload.User.ID, action.Value, responseURL)
+		return
 	case teamReviewOpen, refusalOpenAgent:
 		// URL button: the browser opens the link itself.
 		return

@@ -3,6 +3,7 @@ package muster_test
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -111,7 +112,6 @@ func TestCallTool_SignInThenAccept(t *testing.T) {
 	require.NotNil(t, res.SignIn)
 	require.Equal(t, "Sign in to github to continue.", res.SignIn.Message)
 	require.Equal(t, "https://muster.example/oauth/proxy/start?s=1", res.SignIn.URL)
-	require.NotEmpty(t, res.SignIn.ElicitationID)
 	require.False(t, res.Dispatched)
 
 	res, err = client.Accept(t.Context(), personToken, res.SignIn)
@@ -151,16 +151,24 @@ func TestCallTool_UnusableSignInLinkIsAnError(t *testing.T) {
 
 func TestValidateSignInURL(t *testing.T) {
 	for link, ok := range map[string]bool{
-		"https://muster.example/start?s=1": true,
-		"http://127.0.0.1:8080/start":      true,
-		"http://localhost/start":           true,
-		"http://muster.example/start":      false,
-		"https://a:b@muster.example/":      false,
-		"https:///nohost":                  false,
-		"ftp://muster.example/":            false,
-		"https://muster.example/a b":       false,
-		"https://muster.example/`x`":       false,
-		"https://muster.example/\nx":       false,
+		"https://muster.example/start?s=1":    true,
+		"http://127.0.0.1:8080/start":         true,
+		"http://localhost/start":              true,
+		"http://muster.example/start":         false,
+		"https://a:b@muster.example/":         false,
+		"https:///nohost":                     false,
+		"ftp://muster.example/":               false,
+		"https://muster.example/a b":          false,
+		"https://muster.example/`x`":          false,
+		"https://muster.example/\nx":          false,
+		"https://muster.example/\u202eetadpu": false,
+		"https://muster.example/a\u200bb":     false,
+		"https://muster.example/a\u00a0b":     false,
+		"https://muster.example/<x>":          false,
+		"https://muster.example/\xff":         false,
+		"https://müster.example/start":        true,
+		"https://muster.example/" + strings.Repeat("a", muster.SignInURLMaxBytes-len("https://muster.example/")):   true,
+		"https://muster.example/" + strings.Repeat("a", muster.SignInURLMaxBytes-len("https://muster.example/")+1): false,
 	} {
 		err := muster.ValidateSignInURL(link)
 		if ok {
@@ -174,4 +182,26 @@ func TestValidateSignInURL(t *testing.T) {
 func TestAccept_NoSignIn(t *testing.T) {
 	_, err := muster.NewClient("http://unused").Accept(t.Context(), personToken, nil)
 	require.Error(t, err)
+}
+
+func TestDecline_AnswersTheSignInAndRunsNothing(t *testing.T) {
+	fake := mustertest.New(nil)
+	defer fake.Close()
+	fake.CallTools = map[string]func(mustertest.Call) mustertest.Answer{
+		"x_tool": func(mustertest.Call) mustertest.Answer {
+			return mustertest.Answer{SignIn: &mustertest.SignIn{Message: "Sign in.", URL: "https://muster.example/s"}}
+		},
+	}
+	client := muster.NewClient(fake.URL)
+	res, err := client.CallTool(t.Context(), personToken, "x_tool", map[string]any{"a": "b"})
+	require.NoError(t, err)
+	require.NotNil(t, res.SignIn)
+
+	require.NoError(t, client.Decline(t.Context(), personToken, res.SignIn))
+	calls := fake.Calls()
+	require.Len(t, calls, 2)
+	require.True(t, calls[1].Declined, "the retry carries the person's decline")
+	require.Equal(t, map[string]any{"a": "b"}, calls[1].Args)
+
+	require.Error(t, client.Decline(t.Context(), personToken, nil))
 }

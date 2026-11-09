@@ -154,11 +154,12 @@ type Adapter struct {
 	// ConnectorPrompts enables the connector surfaces muster's grants feed: with
 	// Grants, the authorize modal. Requires OBO.
 	ConnectorPrompts bool
-	// SignIns accepts, as the linked person, a sign-in muster asked one of
-	// the gateway's own calls for, once the person agreed to open its link:
-	// muster then waits for the sign-in and runs the call. Nil leaves a
-	// Connect prompt's click without a continuation.
-	SignIns SignInAccepter
+	// SignIns answers, as the linked person, a sign-in muster asked one of
+	// the gateway's own calls for: accepts it once the person agreed to open
+	// its link (muster then waits for the sign-in and runs the call), declines
+	// it on their Not now. Nil leaves a Connect prompt's buttons without a
+	// continuation.
+	SignIns SignInAnswerer
 
 	// WorkingEmoji, DoneEmoji, FailedEmoji override the progress reaction emoji
 	// names (no surrounding colons). Empty uses the defaults.

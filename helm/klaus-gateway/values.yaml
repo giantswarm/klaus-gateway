@@ -380,9 +380,8 @@ obo:
   # Empty uses the gateway's default, 25m. When muster's tokens live shorter,
   # every turn gets a freshly refreshed one.
   minTokenLifetime: ""
-  # connectors enables the Slack connector landing: a sign-in link the gateway
-  # posts carries a redirect back to it, whose landing resumes what waited on
-  # the sign-in, and muster's grants are offered in the authorize modal.
+  # connectors offers muster's grants in the Slack authorize modal (and
+  # Authorize all on Connect prompts).
   connectors:
     enabled: false
 
