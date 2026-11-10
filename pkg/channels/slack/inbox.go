@@ -58,8 +58,11 @@ type inboxState struct {
 	running string
 	// paused is set when the drainer stopped with messages left behind a
 	// prompt the thread waits on: the end of a turn starts it again
-	// (wakeInbox), since that turn may have answered the prompt.
+	// (wakeInbox), since that turn may have answered the prompt, and so does
+	// expiry, once the oldest of them has waited pendingTTL, so its sender is
+	// told even when nobody answers the prompt.
 	paused bool
+	expiry *time.Timer
 	// notBefore holds the inbox of a thread the restart read back until the
 	// process this one replaces is gone (restoredInboxGrace).
 	notBefore time.Time
@@ -205,8 +208,9 @@ func (a *Adapter) kickInbox(slackChannel, threadID string) {
 }
 
 // wakeInbox starts threadID's drainer again when it stopped with messages
-// behind a prompt. releaseThread calls it at the end of every turn: the turn
-// may have answered the prompt. A drainer still running reads the inbox once
+// behind a prompt. releaseThread calls it at the end of every turn, since the
+// turn may have answered the prompt, and the paused inbox's expiry timer once
+// the oldest message behind the prompt expires. A drainer still running reads the inbox once
 // more before it stops, since it may have read the prompt before the turn.
 func (a *Adapter) wakeInbox(threadID string) {
 	a.inboxMu.Lock()
@@ -276,7 +280,7 @@ func (a *Adapter) drainInbox(ctx context.Context, slackChannel, threadID string)
 	ctx = context.WithValue(ctx, queuedContextKey{}, true)
 	var retry func(context.Context) bool
 	for ctx.Err() == nil && !a.stoppingNow() {
-		next, ok, behind, err := a.nextQueued(ctx, slackChannel, threadID)
+		next, ok, behindUntil, err := a.nextQueued(ctx, slackChannel, threadID)
 		if err != nil {
 			a.Logger.Warn("slack: thread inbox not read", "thread", threadID, "error", err)
 			if retry == nil {
@@ -288,7 +292,7 @@ func (a *Adapter) drainInbox(ctx context.Context, slackChannel, threadID string)
 			continue
 		}
 		if !ok {
-			if settled = a.settleInbox(threadID, behind); settled {
+			if settled = a.settleInbox(threadID, behindUntil); settled {
 				return
 			}
 			continue
@@ -324,18 +328,19 @@ func (a *Adapter) drainInbox(ctx context.Context, slackChannel, threadID string)
 // nextQueued reads threadID's inbox and returns the message that runs next:
 // the oldest, or, while the thread waits on a prompt, the oldest written after
 // the prompt, which answers it; the ones before it wait for the turn the
-// answer runs, and behind reports them. On the way it takes out of the row the
+// answer runs, and behindUntil is when the oldest of them expires (the zero
+// time when none waits). On the way it takes out of the row the
 // messages that expired and the ones written before the thread's mute (a mute
 // stops the running turn before it drops the queue), telling their senders,
 // and the one a previous process turned into the turn the row records in
 // flight: the restart's recovery delivers that one.
-func (a *Adapter) nextQueued(ctx context.Context, slackChannel, threadID string) (next queuedMessage, ok, behind bool, err error) {
+func (a *Adapter) nextQueued(ctx context.Context, slackChannel, threadID string) (next queuedMessage, ok bool, behindUntil time.Time, err error) {
 	promptAt, prompted := a.promptStoredAt(threadID)
 	now := time.Now()
 	var expired, muted []string
 	mutedAt := ""
 	err = a.gw.UpdateThreadRecord(ctx, ChannelName, slackChannel, threadID, func(e *store.Entry, found bool) bool {
-		next, ok, behind, expired, muted, mutedAt = queuedMessage{}, false, false, nil, nil, e.MutedAt
+		next, ok, behindUntil, expired, muted, mutedAt = queuedMessage{}, false, time.Time{}, nil, nil, e.MutedAt
 		if !found {
 			return false
 		}
@@ -362,7 +367,14 @@ func (a *Adapter) nextQueued(ctx context.Context, slackChannel, threadID string)
 				break
 			}
 		}
-		behind = !ok && len(kept) > 0
+		if !ok && len(kept) > 0 {
+			behindUntil = kept[0].StoredAt.Add(pendingTTL)
+			for _, m := range kept[1:] {
+				if until := m.StoredAt.Add(pendingTTL); until.Before(behindUntil) {
+					behindUntil = until
+				}
+			}
+		}
 		if len(kept) == len(h.Inbox) {
 			return false
 		}
@@ -376,7 +388,7 @@ func (a *Adapter) nextQueued(ctx context.Context, slackChannel, threadID string)
 		return true
 	})
 	if err != nil {
-		return next, ok, behind, err
+		return next, ok, behindUntil, err
 	}
 	for _, sender := range muted {
 		a.tellParkedDropped(ctx, slackChannel, threadID, mutedAt, sender)
@@ -387,7 +399,7 @@ func (a *Adapter) nextQueued(ctx context.Context, slackChannel, threadID string)
 			a.Logger.Warn("slack: post expired-message notice failed", "thread", threadID, "user", sender, "error", err)
 		}
 	}
-	return next, ok, behind, nil
+	return next, ok, behindUntil, nil
 }
 
 // settleQueued takes a message dispatch is done with out of the inbox, in the
@@ -554,13 +566,18 @@ func (a *Adapter) claimInbox(slackChannel, threadID string) bool {
 		return false
 	}
 	st.draining, st.again, st.paused = true, false, false
+	if st.expiry != nil {
+		st.expiry.Stop()
+		st.expiry = nil
+	}
 	return true
 }
 
 // settleInbox ends the drainer's run unless the inbox may have changed since
-// it read it (again), and reports whether it did. behind keeps the thread's
-// state for wakeInbox: messages wait behind a prompt.
-func (a *Adapter) settleInbox(threadID string, behind bool) bool {
+// it read it (again), and reports whether it did. A non-zero behindUntil keeps
+// the thread's state for wakeInbox, messages wait behind a prompt, and wakes
+// the inbox when the oldest of them expires.
+func (a *Adapter) settleInbox(threadID string, behindUntil time.Time) bool {
 	a.inboxMu.Lock()
 	defer a.inboxMu.Unlock()
 	st := a.inboxes[threadID]
@@ -569,11 +586,12 @@ func (a *Adapter) settleInbox(threadID string, behind bool) bool {
 		return false
 	}
 	st.draining = false
-	if behind {
-		st.paused = true
-	} else {
+	if behindUntil.IsZero() {
 		delete(a.inboxes, threadID)
+		return true
 	}
+	st.paused = true
+	st.expiry = time.AfterFunc(time.Until(behindUntil), func() { a.wakeInbox(threadID) })
 	return true
 }
 
@@ -582,6 +600,9 @@ func (a *Adapter) settleInbox(threadID string, behind bool) bool {
 func (a *Adapter) abandonInbox(threadID string) {
 	a.inboxMu.Lock()
 	defer a.inboxMu.Unlock()
+	if st := a.inboxes[threadID]; st != nil && st.expiry != nil {
+		st.expiry.Stop()
+	}
 	delete(a.inboxes, threadID)
 }
 
