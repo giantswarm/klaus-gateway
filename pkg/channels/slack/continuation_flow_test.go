@@ -58,15 +58,16 @@ func toolStep(name string) channels.OutboundDelta {
 }
 
 // seedInFlightRow records the task in flight on DM thread 555.000, as the
-// facade does before the first delta reaches the adapter; the stub gateway has
-// no facade, so the test writes the row the adapter's records build on.
-func seedInFlightRow(t *testing.T, rec *slackadapter.MemoryRecorder) {
-	t.Helper()
-	require.NoError(t, rec.UpdateThreadRecord(t.Context(), "slack", "D1", "555.000", func(e *store.Entry, _ bool) bool {
+// facade does once the turn is sent, before its first delta reaches the
+// adapter; the stub gateway has no facade, so the test writes the row the
+// adapter's records build on. It runs on the turn's goroutine: a failed write
+// shows as the delivered text the row then lacks.
+func seedInFlightRow(rec *slackadapter.MemoryRecorder) {
+	_ = rec.UpdateThreadRecord(context.Background(), "slack", "D1", "555.000", func(e *store.Entry, _ bool) bool {
 		e.AgentRef, e.AgentInstanceID, e.TaskID = "test-agent", "inst-1", "task-9"
 		e.Resume = map[string]string{"slack_user": "U1", "message_ts": "555.000"}
 		return true
-	}))
+	})
 }
 
 // A restart in the middle of a turn: the first process streams the opening of
@@ -78,14 +79,15 @@ func TestRestart_ContinuedTurnPostsOnlyWhatFollows(t *testing.T) {
 	fake := newFakeSlackAPI()
 	api := fake.server(t)
 	shared := slackadapter.NewMemoryRecorder()
-	seedInFlightRow(t, shared)
+	openConversationIn(t, shared, "D1", "555.000", "U1", "test-agent")
 	const opening = "Created. One thing to flag: the repository is private.\n\n"
 	const tail = "Next: rotate the deploy token."
 
 	hold := make(chan struct{})
 	defer close(hold)
 	gw1 := &stubGateway{hold: hold, records: shared, resumes: &stubResumes{durable: true},
-		deltas: []channels.OutboundDelta{{Content: opening}, toolStep("create"), toolStep("protect")}}
+		deltas:     []channels.OutboundDelta{{Content: opening}, toolStep("create"), toolStep("protect")},
+		onDispatch: func(channels.InboundMessage) { seedInFlightRow(shared) }}
 	a1, srv1 := newEventsAdapter(t, gw1, api.URL)
 	sendEvent(t, srv1, dmEvent("U1", "create the repository", "555.000"))
 	require.Eventually(t, func() bool {

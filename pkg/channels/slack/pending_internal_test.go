@@ -1,13 +1,21 @@
 package slack
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"slices"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
+	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
 )
 
 func TestStorePendingTask_SweepsExpiredEntries(t *testing.T) {
@@ -82,6 +90,115 @@ func TestTakePendingLogin_DropsExpiredEntries(t *testing.T) {
 	got := a.takePendingLogin("U1")
 	require.Len(t, got["T1"], 1)
 	require.Equal(t, "fresh", got["T1"][0].msg.Text, "the expired entry is dropped, the fresh one survives")
+}
+
+// inboxHarness is a started adapter on a memory recorder whose thread
+// 100.000 in C1 is bound to an agent, and the ephemerals it posts.
+type inboxHarness struct {
+	adapter *Adapter
+	gw      *fakeGateway
+
+	mu         sync.Mutex
+	ephemerals []map[string]any
+}
+
+func newInboxHarness(t *testing.T) *inboxHarness {
+	t.Helper()
+	h := &inboxHarness{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/chat.postEphemeral" {
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			h.mu.Lock()
+			h.ephemerals = append(h.ephemerals, body)
+			h.mu.Unlock()
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "ts": "1.2"})
+	}))
+	t.Cleanup(srv.Close)
+	h.gw = &fakeGateway{Facade: newMemoryRecorder(), deltas: []channels.OutboundDelta{{Content: "ok"}, {Done: true}}}
+	h.adapter = &Adapter{
+		APIBase:      srv.URL,
+		Secrets:      Secrets{BotToken: "test-bot-token"}, //nolint:gosec
+		DefaultAgent: "worker",
+		Logger:       slog.New(slog.DiscardHandler),
+	}
+	require.NoError(t, h.adapter.Start(t.Context(), h.gw))
+	t.Cleanup(func() { _ = h.adapter.Stop(context.Background()) })
+	require.NoError(t, h.adapter.bindThreadAgent(t.Context(), "C1", "100.000", "worker"))
+	return h
+}
+
+// queue writes messages into the thread's inbox in the row.
+func (h *inboxHarness) queue(t *testing.T, messages ...queuedMessage) {
+	t.Helper()
+	held, err := heldState{Inbox: messages}.marshal()
+	require.NoError(t, err)
+	require.NoError(t, h.gw.UpdateThreadRecord(t.Context(), ChannelName, "C1", "100.000", func(e *store.Entry, _ bool) bool {
+		e.Held = held
+		return true
+	}))
+}
+
+func (h *inboxHarness) inboxEmpty(t *testing.T) bool {
+	row, _, err := h.gw.ThreadRecord(t.Context(), ChannelName, "C1", "100.000")
+	return err == nil && len(h.adapter.heldOf("100.000", row.Held).Inbox) == 0
+}
+
+func (h *inboxHarness) sentEphemerals() []map[string]any {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return slices.Clone(h.ephemerals)
+}
+
+func queuedAt(text, ts string, at time.Time) queuedMessage {
+	msg := channels.InboundMessage{Channel: ChannelName, ChannelID: "C1", ThreadID: "100.000", MessageID: ts, Text: text, Subject: "U1"}
+	return queuedMessage{heldMessage: heldMessageOf(msg, "C1", at)}
+}
+
+// A message that waited in a thread's inbox longer than pendingTTL is not run
+// when a new process reads the inbox back, and its sender is told; the fresh
+// one beside it runs, and both leave the row.
+func TestRecoverTurns_ExpiredQueuedMessageIsNotRun(t *testing.T) {
+	old := restoredInboxGrace
+	restoredInboxGrace = 0
+	t.Cleanup(func() { restoredInboxGrace = old })
+	h := newInboxHarness(t)
+	h.queue(t,
+		queuedAt("stale", "100.001", time.Now().Add(-pendingTTL-time.Minute)),
+		queuedAt("fresh", "100.002", time.Now()),
+	)
+
+	h.adapter.RecoverTurns()
+
+	require.Eventually(t, func() bool { return h.gw.sendCount() > 0 }, flowWait, 10*time.Millisecond)
+	require.Never(t, func() bool { return h.gw.sendCount() > 1 }, 300*time.Millisecond, 10*time.Millisecond,
+		"the expired message is not run")
+	require.Equal(t, "fresh", h.gw.sentMessages()[0].Text)
+	require.Eventually(t, func() bool { return h.inboxEmpty(t) }, flowWait, 10*time.Millisecond, "both leave the row")
+	ephemerals := h.sentEphemerals()
+	require.Len(t, ephemerals, 1, "the sender of the expired message is told, once")
+	require.Equal(t, "U1", ephemerals[0]["user"])
+	require.Equal(t, queueExpiredNotice, ephemerals[0]["text"])
+}
+
+// A message that waits behind a prompt nobody answers expires on time: its
+// sender is told when it has waited pendingTTL, with no further event in the
+// thread, and it leaves the row without running.
+func TestQueue_MessageBehindAnUnansweredPromptExpiresOnTime(t *testing.T) {
+	h := newInboxHarness(t)
+	const expiresIn = 300 * time.Millisecond
+	h.queue(t, queuedAt("before the prompt", "100.001", time.Now().Add(-pendingTTL+expiresIn)))
+	h.adapter.storePendingTask("100.000", &pendingTask{TaskID: "task-1", AgentRef: "worker", Channel: "C1", ChannelID: "C1"})
+
+	h.adapter.kickInbox("C1", "100.000")
+
+	require.Eventually(t, func() bool { return len(h.sentEphemerals()) == 1 }, flowWait+expiresIn, 10*time.Millisecond,
+		"the sender is told once the message expired")
+	require.Equal(t, queueExpiredNotice, h.sentEphemerals()[0]["text"])
+	require.Eventually(t, func() bool { return h.inboxEmpty(t) }, flowWait, 10*time.Millisecond, "it leaves the row")
+	require.Zero(t, h.gw.sendCount(), "it does not run")
 }
 
 func TestIsBareAuthUtterance(t *testing.T) {

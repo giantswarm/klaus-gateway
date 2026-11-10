@@ -134,8 +134,9 @@ func (a *Adapter) tellParkedDropped(ctx context.Context, slackChannel, threadID,
 }
 
 // dropParked removes the messages parked in threadID, for consent and for
-// sign-in, from the process and from the thread's row, and returns their
-// senders, each once. It runs after the mute's note, since it waits for the
+// sign-in, from the process and from the thread's row, and the messages
+// queued in its inbox but the one whose turn runs, and returns their senders,
+// each once. It runs after the mute's note, since it waits for the
 // restore of the held state first: a drop before it would leave the row's
 // messages to be read back afterwards and replayed. The row is written before
 // it returns, not in the background, so a shutdown right after the mute does
@@ -175,11 +176,21 @@ func (a *Adapter) dropParked(ctx context.Context, slackChannel, threadID string)
 	delete(a.pendingAccess, threadID)
 	a.pendingAccessMu.Unlock()
 
+	running := a.queuedRunning(threadID)
+	queued := map[string]bool{}
+	err := a.writeHeldKeeping(ctx, slackChannel, threadID, func(m queuedMessage) bool {
+		if m.Msg.MessageID == running {
+			return true
+		}
+		queued[m.Msg.Subject] = true
+		return false
+	})
+	if err != nil {
+		a.Logger.Warn("slack: dropped parked messages stay in the row; a restart reads them back", "thread", threadID, "error", err)
+	}
+	maps.Copy(senders, queued)
 	if len(senders) == 0 {
 		return nil
-	}
-	if err := a.writeHeld(ctx, slackChannel, threadID); err != nil {
-		a.Logger.Warn("slack: dropped parked messages stay in the row; a restart reads them back", "thread", threadID, "error", err)
 	}
 	a.Logger.Info("slack: parked messages dropped by the mute", "thread", threadID, "senders", len(senders))
 	return slices.Sorted(maps.Keys(senders))
