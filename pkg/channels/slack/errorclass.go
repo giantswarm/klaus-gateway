@@ -32,8 +32,8 @@ var permanentSlackErrors = []string{
 	"token_expired",
 	"token_revoked",
 	// The token may not do this.
-	"missing_scope",
-	"not_allowed_token_type",
+	errCodeMissingScope,
+	errCodeNotAllowedTokenType,
 	"team_access_not_granted",
 	// The channel or the thread is gone, or the bot may not post there.
 	"channel_not_found",
@@ -54,7 +54,7 @@ var permanentSlackErrors = []string{
 	"edit_window_closed",
 	"invalid_blocks",
 	errCodeMessageNotFound,
-	"msg_too_long",
+	errCodeMsgTooLong,
 	"no_text",
 }
 
