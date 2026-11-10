@@ -147,8 +147,8 @@ creates one, which a turn that switches agents does mid-thread.
   runs the held message ("Signed in. Your message is on its way to the agent."), and so does
   the person's next turn in the thread that starts its Session, however they signed in, when
   the held message stays unsent ("Signed in.") and the prompts' stale buttons continue nothing.
-  Every surface's button carries the completion state; the ephemeral is replaced through its
-  click's `response_url`, the cards are rewritten in place. A
+  Every surface's button carries the completion state; the ephemeral is replaced at the click
+  through its `response_url` ("Opened the sign-in link. ..."), the cards are rewritten in place. A
   collaborator whose turn would start the
   owner's Session (nothing bound yet) meets the owner's challenge: they get a private note
   naming the owner and no link, and the owner's own next message gets the prompt. The start
