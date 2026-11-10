@@ -338,6 +338,30 @@ func TestClient_GetAndCancelTask(t *testing.T) {
 	require.ErrorIs(t, err, a2apkg.ErrTaskNotFound)
 }
 
+// A task over gRPC's message size, on the controller's send side or this
+// client's receive side, is ErrTaskTooLarge: reading it again does not help.
+func TestClient_GetTask_OverTheMessageSizeIsErrTaskTooLarge(t *testing.T) {
+	cases := map[string]func(f *fakeKagent){
+		"controller send limit": func(f *fakeKagent) { f.serverOpts = []grpc.ServerOption{grpc.MaxSendMsgSize(1 << 10)} },
+		"client receive limit": func(f *fakeKagent) {
+			f.clientOpts = []grpc.DialOption{grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(1 << 10))}
+		},
+	}
+	for name, limit := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := readyFake(t)
+			answer := &a2apkg.Artifact{ID: "a1", Parts: a2apkg.ContentParts{a2apkg.NewTextPart(strings.Repeat("x", 4<<10))}}
+			f.tasks["task-1"] = &a2apkg.Task{ID: "task-1", ContextID: sessionID, Status: a2apkg.TaskStatus{State: a2apkg.TaskStateCompleted}, Artifacts: []*a2apkg.Artifact{answer}}
+			limit(f)
+			client := f.serve(t, pkga2a.Config{})
+
+			_, err := client.GetTask(asUser(t.Context(), userToken), "task-1")
+			require.ErrorIs(t, err, pkga2a.ErrTaskTooLarge)
+			require.ErrorContains(t, err, "larger than max")
+		})
+	}
+}
+
 // An Agent's default workspace is the name its annotation gives in the
 // Agent's own namespace; one of another namespace is none.
 func TestClient_ListAgents_DefaultWorkspace(t *testing.T) {

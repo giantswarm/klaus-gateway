@@ -1,16 +1,21 @@
 package slack_test
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"iter"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	a2apkg "github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/stretchr/testify/require"
 
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
+	"github.com/giantswarm/klaus-gateway/pkg/routing/store/memory"
 )
 
 // Usage recorded across a human-approval pause covers the whole turn: the
@@ -518,4 +523,111 @@ func TestStreamedReply_StreamLostTwiceReportsTheReplyCutShort(t *testing.T) {
 	}
 	require.Equal(t, []string{"processing", "active"}, statuses,
 		"no stop carried the exit status, so the turn's own call clears the indicator")
+}
+
+// The answer cutKagent's task writes, and the task: its stream breaks after
+// the opening.
+const cutOpening, cutRest = "The cluster has ", "7 nodes, all Ready."
+
+var cutTask = a2apkg.TaskInfo{TaskID: "task-1", ContextID: "ctx-1"}
+
+// cutKagent is a kagent controller whose turn stream breaks after the opening
+// of the answer while the task goes on: a read finds the task working until a
+// resubscription has played the rest of it, which ends the task as ended.
+type cutKagent struct {
+	*ownedKagent
+	ended *a2apkg.Task
+	over  bool // under mu
+}
+
+func newCutKagent(ended *a2apkg.Task) *cutKagent {
+	return &cutKagent{ownedKagent: &ownedKagent{owners: map[string]string{}, shares: map[string]string{}}, ended: ended}
+}
+
+func cutWorking() *a2apkg.Task {
+	return &a2apkg.Task{ID: cutTask.TaskID, ContextID: cutTask.ContextID, Status: a2apkg.TaskStatus{State: a2apkg.TaskStateWorking}}
+}
+
+func (k *cutKagent) Stream(context.Context, string, *a2apkg.Message) iter.Seq2[a2apkg.Event, error] {
+	return func(yield func(a2apkg.Event, error) bool) {
+		submitted := &a2apkg.Task{ID: cutTask.TaskID, ContextID: cutTask.ContextID, Status: a2apkg.TaskStatus{State: a2apkg.TaskStateSubmitted}}
+		if yield(submitted, nil) && yield(a2apkg.NewArtifactUpdateEvent(cutTask, "a1", a2apkg.NewTextPart(cutOpening)), nil) {
+			yield(nil, errors.New("rpc error: code = Unavailable desc = read: connection reset by peer"))
+		}
+	}
+}
+
+func (k *cutKagent) GetTask(context.Context, a2apkg.TaskID) (*a2apkg.Task, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.over {
+		return k.ended, nil
+	}
+	return cutWorking(), nil
+}
+
+func (k *cutKagent) Subscribe(context.Context, a2apkg.TaskID) iter.Seq2[a2apkg.Event, error] {
+	return func(yield func(a2apkg.Event, error) bool) {
+		if !yield(cutWorking(), nil) || !yield(a2apkg.NewArtifactUpdateEvent(cutTask, "a1", a2apkg.NewTextPart(cutRest)), nil) {
+			return
+		}
+		k.mu.Lock()
+		k.over = true
+		k.mu.Unlock()
+		yield(a2apkg.NewStatusUpdateEvent(cutTask, k.ended.Status.State, k.ended.Status.Message), nil)
+	}
+}
+
+// A turn whose A2A stream breaks after the opening of the answer, while its
+// task goes on at kagent, is not cut short: the task is picked up again and
+// the rest of the answer lands in the same streamed message, once, with no
+// failure note. A task that then fails gets the failure note, once.
+func TestStreamedReply_BrokenA2AStreamFinishesTheReply(t *testing.T) {
+	cases := map[string]struct {
+		ended    *a2apkg.Task
+		reaction string
+		answer   string
+		note     string // the failure note, "" for none
+	}{
+		"the task completes": {
+			ended: &a2apkg.Task{
+				ID: cutTask.TaskID, ContextID: cutTask.ContextID, Status: a2apkg.TaskStatus{State: a2apkg.TaskStateCompleted},
+				Artifacts: []*a2apkg.Artifact{{ID: "a1", Parts: a2apkg.ContentParts{a2apkg.NewTextPart(cutOpening + cutRest)}}},
+			},
+			reaction: "white_check_mark", answer: cutOpening + cutRest,
+		},
+		"the task fails": {
+			ended: &a2apkg.Task{ID: cutTask.TaskID, ContextID: cutTask.ContextID, Status: a2apkg.TaskStatus{
+				State:   a2apkg.TaskStateFailed,
+				Message: a2apkg.NewMessage(a2apkg.MessageRoleAgent, a2apkg.NewTextPart(`anthropic API error: 529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`)),
+			}},
+			reaction: "x", answer: cutOpening, note: "The turn ended with a model error before the agent finished.",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			fake := newFakeSlackAPI()
+			routes := memory.New()
+			t.Cleanup(func() { _ = routes.Close() })
+			facade := &channels.Facade{Agent: newCutKagent(tc.ended), Routes: routes, ThreadTTL: channels.DefaultThreadTTL}
+			a, srv := newEventsAdapter(t, facade, fake.server(t).URL)
+
+			openConversationIn(t, facade, "D1", "940.000", "U1", "test-agent")
+			sendEvent(t, srv, dmEvent("U1", "how many nodes?", "940.000"))
+			require.Eventually(t, func() bool {
+				return slices.Contains(fake.reactionNames("reactions.add"), tc.reaction)
+			}, flowWait, 20*time.Millisecond, "the turn ends")
+			waitThreadIdle(t, a, "940.000")
+
+			require.Equal(t, tc.answer, fake.streamedText(), "the answer lands once")
+			require.Len(t, fake.pathCalls(pathStartStream), 1, "in one streamed message")
+			posted := fake.pathCalls("chat.postMessage")
+			if tc.note == "" {
+				require.Zero(t, callsCarrying(posted, "The turn ended with"), "no failure note")
+				return
+			}
+			require.Equal(t, 1, callsCarrying(posted, "The turn ended with"), "one failure note")
+			require.Contains(t, allText(posted), tc.note)
+		})
+	}
 }
