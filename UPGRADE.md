@@ -9,7 +9,7 @@ that adds notes heads them `## Next — <title>`; the change that prepares a rel
 renames each `Next` to that version, and `make check-upgrade-notes` refuses a
 stable release tag while a `Next` section with content is left.
 
-## Next — sign-in links open unchanged
+## 4.16.32 — sign-in links open unchanged
 
 - The gateway's muster client declares URL mode elicitation on MCP protocol 2026-07-28 and no
   longer reads `auth_required` text. Run muster 5.55.0 or later (mcp-go 1.5.0, which answers
