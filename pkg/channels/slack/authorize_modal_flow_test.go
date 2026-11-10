@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -49,7 +48,7 @@ func withGrants(tools *recordingTools) func(*slackadapter.Adapter) {
 // that answers the modal's view ID.
 func authorizeAdapter(t *testing.T, gw *stubGateway, tools *recordingTools) (*fakeSlackAPI, *httptest.Server) {
 	t.Helper()
-	fake, srv, _ := sessionConnectAdapter(t, gw, withGrants(tools))
+	fake, srv, _ := sessionConnectAdapter(t, gw, &fakeAccepter{}, withGrants(tools))
 	fake.setResponse("views.open", `{"ok":true,"view":{"id":"V1"}}`)
 	return fake, srv
 }
@@ -92,11 +91,11 @@ func modalText(fake *fakeSlackAPI) string {
 }
 
 // The modal opens at once on the click, then lists every server the person
-// reaches with a grant: the waiting one with an Authorize button whose link
-// lands on the gateway, the authorized one without, and the servers that come
-// with the sign-in as a count. Granting from the modal redraws it, with no
-// conversation resumed.
-func TestAuthorizeModal_ListsGrantsAndRedrawsAsEachLands(t *testing.T) {
+// reaches with a grant: the waiting one with an Authorize button opening
+// muster's link unchanged, the authorized one without, and the servers that
+// come with the sign-in as a count. Refresh redraws it, with no conversation
+// resumed.
+func TestAuthorizeModal_ListsGrantsAndRedrawsOnRefresh(t *testing.T) {
 	tools := &recordingTools{results: []muster.Result{
 		grantStatus(t, waitingGrant("agent-manager"), connectedGrant("github"), signInServer("kubernetes")),
 		grantStatus(t, connectedGrant("agent-manager"), connectedGrant("github"), signInServer("kubernetes")),
@@ -124,22 +123,16 @@ func TestAuthorizeModal_ListsGrantsAndRedrawsAsEachLands(t *testing.T) {
 	rows := modalRows(t, fake)
 	require.Len(t, rows, 2, "one row per grant server; the sign-in servers are a count")
 	require.Empty(t, rows["github"], "an authorized server has no button")
-	link := rows["agent-manager"]
-	require.NotEmpty(t, link)
-	parsed, err := url.Parse(link)
-	require.NoError(t, err)
-	require.Equal(t, "agent-manager", parsed.Query().Get("state"), "muster's own link survives decoration")
-	require.True(t, strings.HasPrefix(parsed.Query().Get("redirect"), "https://gw.example/connectors/complete?s="), "the link lands on the gateway")
+	require.Equal(t, "https://muster.example/oauth/proxy/start?state=agent-manager", rows["agent-manager"], "muster's link, unchanged")
 	text := modalText(fake)
 	require.Contains(t, text, "1 of 2")
 	require.Contains(t, text, "1 more come with your sign-in")
 
-	resp, err := http.Get(srv.URL + "/connectors/complete?s=" + url.QueryEscape(stateOf(t, link)) + "&server=agent-manager")
-	require.NoError(t, err)
-	_ = resp.Body.Close()
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-
-	require.Eventually(t, func() bool { return len(fake.pathCalls("views.update")) == 2 }, flowWait, 20*time.Millisecond, "the landing redraws the modal")
+	postInteraction(t, srv, map[string]any{
+		"type": "block_actions", "user": map[string]any{"id": "U1"}, "view": map[string]any{"id": "V1"},
+		"actions": []any{map[string]any{"action_id": "authorize_refresh", "value": ""}},
+	})
+	require.Eventually(t, func() bool { return len(fake.pathCalls("views.update")) == 2 }, flowWait, 20*time.Millisecond, "Refresh redraws the modal")
 	require.Empty(t, modalRows(t, fake)["agent-manager"], "the granted server has no button any more")
 	require.Contains(t, modalText(fake), "Every tool here is authorized")
 	require.Zero(t, gw.dispatchCount(), "a modal row resumes no conversation")
@@ -175,7 +168,6 @@ func TestAuthorizeModal_OfferedAfterSignIn(t *testing.T) {
 			a, _ := newEventsAdapter(t, &stubGateway{}, fake.server(t).URL, func(a *slackadapter.Adapter) {
 				a.OBO = &fakeOBO{linkedUser: "U1", token: "tok"}
 				a.ConnectorPrompts = true
-				a.PublicBaseURL = "https://gw.example"
 				a.Grants = tools
 			})
 
@@ -195,13 +187,12 @@ func TestAuthorizeModal_OfferedAfterSignIn(t *testing.T) {
 	}
 }
 
-// A Session start muster refuses carries "Authorize all" beside its Connect
-// button. Granting the refused server from the modal lands on the prompt's
-// own completion: the held message runs, as the Connect button would have.
-func TestAuthorizeModal_FromTheSessionConnectPromptRunsTheHeldMessage(t *testing.T) {
+// A Session start muster asks a sign-in for carries "Authorize all" beside its
+// link button, on the ephemeral and on the DM card; the modal it opens lists
+// muster's own links.
+func TestAuthorizeModal_OfferedBesideTheSessionConnectPrompt(t *testing.T) {
 	tools := &recordingTools{results: []muster.Result{
 		grantStatus(t, waitingGrant("agent-manager"), waitingGrant("github")),
-		grantStatus(t, connectedGrant("agent-manager"), waitingGrant("github")),
 	}}
 	gw := &stubGateway{deltas: []channels.OutboundDelta{{Content: "ok"}, {Done: true}}}
 	gw.dispatchErr = sessionConnectChallenge()
@@ -210,51 +201,29 @@ func TestAuthorizeModal_FromTheSessionConnectPromptRunsTheHeldMessage(t *testing
 	gw.openConversation(t, "C1", "140.000", "U1", "test-agent")
 	sendEvent(t, srv, mention("U1", "how many nodes in gazelle?", "140.000", ""))
 
-	var stateID string
-	require.Eventually(t, func() bool {
-		var ok bool
-		_, stateID, ok = connectButton(fake)
-		return ok
-	}, flowWait, 20*time.Millisecond)
-	ephemeral := fmt.Sprint(fake.pathCalls("chat.postEphemeral")[0].params["blocks"])
-	require.Contains(t, ephemeral, "authorize_all_open", "the Connect prompt offers the modal")
-	require.Contains(t, ephemeral, stateID, "Authorize all carries the prompt's completion")
-	var card string
+	require.Eventually(t, func() bool { _, _, ok := connectButton(fake); return ok }, flowWait, 20*time.Millisecond)
+	require.Contains(t, fmt.Sprint(fake.pathCalls("chat.postEphemeral")[0].params["blocks"]), "authorize_all_open", "the Connect prompt offers the modal")
+	card := false
 	for _, c := range fake.pathCalls("chat.postMessage") {
-		if blocks := fmt.Sprint(c.params["blocks"]); strings.Contains(blocks, "authorize_all_open") {
-			card = blocks
-		}
+		card = card || strings.Contains(fmt.Sprint(c.params["blocks"]), "authorize_all_open")
 	}
-	require.NotEmpty(t, card, "the DM card offers the modal too")
-	require.Contains(t, card, "value:"+stateID, "the card's Authorize all carries the prompt's completion, its Connect button the server")
+	require.True(t, card, "the DM card offers the modal too")
 
-	gw.mu.Lock()
-	gw.dispatchErr = nil
-	gw.mu.Unlock()
 	postInteraction(t, srv, map[string]any{
 		"type": "block_actions", "trigger_id": "trigger-U1", "user": map[string]any{"id": "U1"},
-		"actions": []any{map[string]any{"action_id": "authorize_all_open", "value": stateID}},
+		"actions": []any{map[string]any{"action_id": "authorize_all_open", "value": ""}},
 	})
 	require.Eventually(t, func() bool { return len(fake.pathCalls("views.update")) == 1 }, flowWait, 20*time.Millisecond)
 	rows := modalRows(t, fake)
-	require.Equal(t, stateID, stateOf(t, rows["agent-manager"]), "the refused server's row lands on the prompt's completion")
-	require.NotEqual(t, stateID, stateOf(t, rows["github"]), "another server's row has a completion of its own")
-
-	resp, err := http.Get(srv.URL + "/connectors/complete?s=" + url.QueryEscape(stateID) + "&server=agent-manager")
-	require.NoError(t, err)
-	_ = resp.Body.Close()
-
-	require.Eventually(t, func() bool { return gw.dispatchCount() == 2 }, flowWait, 20*time.Millisecond, "the held message runs")
-	require.Eventually(t, func() bool { return len(fake.pathCalls("views.update")) == 2 }, flowWait, 20*time.Millisecond, "and the modal redraws")
-	require.Empty(t, modalRows(t, fake)["agent-manager"])
-	require.NotEmpty(t, modalRows(t, fake)["github"])
+	require.Equal(t, "https://muster.example/oauth/proxy/start?state=agent-manager", rows["agent-manager"])
+	require.Equal(t, "https://muster.example/oauth/proxy/start?state=github", rows["github"])
 }
 
 // Without a grant status reader the Connect prompts stay as they were.
 func TestAuthorizeModal_NotOfferedWithoutGrants(t *testing.T) {
 	gw := &stubGateway{}
 	gw.dispatchErr = sessionConnectChallenge()
-	fake, srv, _ := sessionConnectAdapter(t, gw)
+	fake, srv, _ := sessionConnectAdapter(t, gw, &fakeAccepter{})
 
 	gw.openConversation(t, "C1", "150.000", "U1", "test-agent")
 	sendEvent(t, srv, mention("U1", "hi", "150.000", ""))

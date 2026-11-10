@@ -129,26 +129,26 @@ creates one, which a turn that switches agents does mid-thread.
   called through muster as the person behind the turn, with the agent, the
   thread's request id and the conversation's name; agent-manager creates it at
   the controller as that person, and the session id it answers is what the
-  thread binds. A start muster refuses with its sign-in challenge for agent-manager (the
-  server is pinned to a GitHub App and waits for the person's one-time consent) gets the
-  Connect prompt for it, to the person alone, with the message held behind it: the sign-in's
-  landing on the gateway runs it as the thread's first turn, and without a public base URL
-  the prompt says to send it again once connected. The hold is the process's own; after a
-  restart the landing says the link is gone. Where the prompt goes follows the sign-in
+  thread binds. A start muster asks a sign-in for (the server is pinned to a GitHub App and
+  waits for the person's one-time consent) gets the Connect prompt, to the person alone, with
+  muster's message, the whole link and the message held behind it. The person's click on the
+  link button is their consent: the gateway accepts the sign-in (it retries the start with
+  muster's `requestState` and the `accept`, and muster waits for the sign-in before it runs the
+  start), then runs the held message as the thread's first turn. The hold is the process's own;
+  after a restart the click continues nothing. Where the prompt goes follows the sign-in
   prompt: in a DM the card is a message of the conversation, and a later message of the
   person's gets a card of its own while the earlier one loses its button; in a channel thread
   the card is ephemeral, so it also goes to the person's DM with the app, led by a line that
   links the thread, and a line everyone in the thread sees says whom it waits for and where
-  the button is ("Waiting for @Jose to connect *agent-manager* (the Connect button is in a
-  direct message from the app)"). A later message of the person's before they connect posts
-  the ephemeral again and refreshes the DM card in place; the line stays. Once the person
-  has connected, the line reads "@Jose connected *agent-manager*." and the card is a
-  confirmation: the landing of the prompt's own link does it and runs the held message
-  ("Connected *agent-manager*. Your message is on its way to the agent."), and so does the
-  person's next turn in the thread that starts its Session, however they connected, when the
-  held message stays unsent ("Connected *agent-manager*.") and the prompts' stale buttons
-  lead to the expired page. Only the ephemeral's button carries the completion state, so only
-  it is replaced through its click's `response_url`; the cards are rewritten in place. A
+  the button is ("Waiting for @Jose to sign in (the Sign in button is in a direct message from
+  the app)"). A later message of the person's before they sign in posts the ephemeral again
+  and refreshes the DM card in place; the line stays. Once the person has signed in, the line
+  reads "@Jose signed in." and the card is a confirmation: the click's continuation does it and
+  runs the held message ("Signed in. Your message is on its way to the agent."), and so does
+  the person's next turn in the thread that starts its Session, however they signed in, when
+  the held message stays unsent ("Signed in.") and the prompts' stale buttons continue nothing.
+  Every surface's button carries the completion state; the ephemeral is replaced through its
+  click's `response_url`, the cards are rewritten in place. A
   collaborator whose turn would start the
   owner's Session (nothing bound yet) meets the owner's challenge: they get a private note
   naming the owner and no link, and the owner's own next message gets the prompt. The start
@@ -407,11 +407,10 @@ repositories as read-only mirrors beside it.
   has no default workspace — lists
   the initiator's workspaces (`list_workspaces`, as them). With none, or when they cannot be
   listed, the Session starts without a workspace and nobody is asked (the second case with a
-  note in the thread). A listing muster answers with its sign-in challenge for the
-  workspace-manager (the person has not granted its App) is no failure: the message is held
-  behind the workspace-manager's Connect prompt, as a Session start's challenge is
-  (`session_connect_required`), and once connected it is replayed, lists again and gets the
-  prompt. Otherwise the message is held and the thread gets one prompt. Nothing
+  note in the thread). A listing muster answers with a sign-in for the workspace-manager (the
+  person has not granted its App) is no failure: the message is held behind the Connect
+  prompt, as a Session start's sign-in is (`session_connect_required`), and the person's click
+  accepts the sign-in, then replays the message, which lists again and gets the prompt. Otherwise the message is held and the thread gets one prompt. Nothing
   is read from the message: a workspace named in its text neither narrows the offer nor
   picks one.
 - **The prompt.** A select of the workspaces, grouped by Organization, each with how long
@@ -430,8 +429,8 @@ repositories as read-only mirrors beside it.
   `authorize_workspace`'s `connect`: its button opens the link muster's `core_auth_login`
   answers, called as the person for the server the entry's `signIn` names; a `signIn` that names
   no muster server (muster holds no grant for that provider) is quoted instead, without a button.
-  An `authorize_workspace` muster answers with its sign-in challenge for the workspace-manager
-  gets the same connect prompt for the workspace-manager, with muster's link.
+  An `authorize_workspace` muster answers with a sign-in for the workspace-manager gets a
+  Connect prompt with muster's message and link.
   Once connected, their next pick or mention in
   the thread authorizes it again and starts the Session with the held message, as a sign-in
   replays a held message. Each outcome logs a `record` (`workspace_granted`,
@@ -488,19 +487,19 @@ Layer 2 is one grant per server whose authorization server is the person's own a
 GitHub App behind a `*-manager` server, GitHub, Slack, …); muster files it under the person,
 so it is given once. The **authorize modal** collects them all in one place before the agent
 needs them. It lists every server muster reaches with a grant of the person's (`kind: grant`
-in muster's `core_auth_status`), its state, and an *Authorize* button with the link that
-starts the grant; the servers that come with the sign-in itself (token forwarding or exchange)
-are a count. Each link lands on `/connectors/complete`, which redraws the modal, so a row turns
-*Authorized* as its grant lands; *Refresh* issues new links (muster's live ten minutes). It
+in muster's `core_auth_status`), its state, and, shown whole with its domain in bold, the link
+that starts the grant with an *Authorize* button opening it; the servers that come with the sign-in itself (token forwarding or exchange)
+are a count. Each link is muster's, unchanged; *Refresh* redraws the modal, so a row turns
+*Authorized* once its grant is given, and issues new links (muster's live ten minutes). It
 opens from:
 
 - the direct message right after the sign-in, when a grant is still missing ("You're signed
   in. 2 tools need your one-time authorization …", button *Authorize all*);
 - `/<command> connect` (or `authorize`), anywhere;
 - *Authorize all* beside every muster server's Connect prompt's button (a workspace
-  provider's Connect prompt offers the provider's sign-in alone). Opened from the prompt that held a
-  Session start's message, the modal's row for that server lands on the prompt's own
-  completion, so granting it from the modal runs the held message.
+  provider's Connect prompt offers the provider's sign-in alone). A grant given from the modal
+  continues nothing the prompt held: the prompt's own *Sign in* does, and muster finds the
+  grant there.
 
 The modal opens on the click's `trigger_id` with a loading view and is filled by
 `views.update` once muster answers. It needs `obo.connectorsEnabled` (the Connect prompts) and
@@ -850,8 +849,8 @@ Three structured log records (`record=…`, JSON fields) tell a turn's story; jo
   timeline starting at the delivery. Its tokens are the turn's full total, the calls made before
   the restart included; the previous process's `shutdown` record of the same `task_id` holds only
   the calls it saw, so do not sum the two.
-- `session_connect_required` -- a Session start muster refused with its sign-in challenge for
-  a server, the turn ending as `connect_required`: `server`, `agent`, `slack_user`, `owner`
+- `session_connect_required` -- a Session start muster asked a sign-in for, the turn ending as
+  `connect_required`: `agent`, `slack_user`, `owner`
   (the thread owner the start ran as, on a collaborator's turn), `channel_id`, `thread_id`.
 - `a2a_event` (debug level only, `--log-level=debug`) -- one per A2A event a turn receives:
   `event` (its Go type), `task_id`, and `metadata_keys`, the metadata keys of the event, of its

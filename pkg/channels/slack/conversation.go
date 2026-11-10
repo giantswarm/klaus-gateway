@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
+	"github.com/giantswarm/klaus-gateway/pkg/muster"
 	"github.com/giantswarm/klaus-gateway/pkg/routing/store"
 )
 
@@ -33,12 +34,14 @@ const conversationKeep = 30 * 24 * time.Hour
 
 // What a conversation's messages and notes say.
 const (
-	conversationFromLine      = "%s · reply in this thread"
-	conversationNotYours      = "This thread is <@%s>'s conversation with %s; only they can write to it."
-	conversationNotDelivered  = "Not delivered to %s: %s"
-	conversationFailed        = "Not delivered to %s: it could not be reached right now. Send it again in a moment."
-	conversationConnectNotice = "Not delivered to %s yet: connect *%s* once, then send it again."
-	conversationDelivered     = "incoming_envelope"
+	conversationFromLine         = "%s · reply in this thread"
+	conversationNotYours         = "This thread is <@%s>'s conversation with %s; only they can write to it."
+	conversationNotDelivered     = "Not delivered to %s: %s"
+	conversationFailed           = "Not delivered to %s: it could not be reached right now. Send it again in a moment."
+	conversationConnectNotice    = "Not delivered to %s yet. *muster* asks you to sign in once:"
+	conversationConnectTail      = "Open it with *Sign in*: your reply goes to %s once you're signed in."
+	conversationSignInUnfinished = "Not delivered to %s: the sign-in did not finish in time. Send it again once you're signed in."
+	conversationDelivered        = "incoming_envelope"
 )
 
 // OpenConversation sends the opening message to the person by direct message
@@ -148,22 +151,42 @@ func (a *Adapter) relayConversationReply(ctx context.Context, rv store.Review, i
 	args["message"] = conversationMessage(rv.ID, inner.Channel, inner.TS, truncateRunes(text, channels.ConversationTextMax))
 
 	res, err := a.Tools.CallTool(ctx, token, rv.Tool, args)
+	a.settleConversationReply(ctx, rv, inner.User, conversationReply{channel: inner.Channel, ts: inner.TS}, res, err, false)
+}
+
+// conversationReply is a reply of the person's in a conversation's thread:
+// the Slack message it was.
+type conversationReply struct {
+	channel, ts string
+}
+
+// settleConversationReply tells the person what became of their reply: a
+// note when it was not delivered, a Connect prompt when muster asks for a
+// sign-in first, the delivered reaction otherwise. accepted is true when res
+// answers the retry that accepted such a sign-in: muster asking again then
+// means the sign-in did not complete in time, and is not prompted again.
+func (a *Adapter) settleConversationReply(ctx context.Context, rv store.Review, user string, reply conversationReply, res muster.Result, err error, accepted bool) {
+	from := "*" + escapeMrkdwn(rv.Conversation.From) + "*"
 	note := ""
-	switch server, loginURL, challenged := res.SignInChallenge(teamReviewUnknownServer); {
+	switch {
 	case err != nil:
-		a.Logger.Warn("slack: conversation reply tool call failed", "conversation", rv.ID, "tool", rv.Tool, "slack_user", inner.User, "error", err)
+		a.Logger.Warn("slack: conversation reply tool call failed", "conversation", rv.ID, "tool", rv.Tool, "slack_user", user, "error", err)
 		note = fmt.Sprintf(conversationFailed, from)
-	case challenged:
-		a.Logger.Info("slack: conversation reply needs the person to connect the backend", "record", "conversation_connect",
-			"conversation", rv.ID, "tool", rv.Tool, "slack_user", inner.User, "server", server)
-		text := fmt.Sprintf(conversationConnectNotice, from, escapeMrkdwn(server))
-		if err := a.apiClient().postConnectPrompt(ctx, rv.Channel, rv.TS, inner.User, text, server, loginURL, server); err != nil {
+	case res.SignIn != nil && accepted:
+		a.Logger.Warn("slack: conversation reply still asks for a sign-in after the accepted one", "conversation", rv.ID, "tool", rv.Tool, "slack_user", user)
+		note = fmt.Sprintf(conversationSignInUnfinished, from)
+	case res.SignIn != nil:
+		a.Logger.Info("slack: conversation reply needs the person's sign-in", "record", "conversation_connect",
+			"conversation", rv.ID, "tool", rv.Tool, "slack_user", user)
+		stateID := a.mintConnectorCompletion(connectorCompletion{slackUser: user, channel: rv.Channel, threadTS: rv.TS, signIn: res.SignIn, conversation: rv.ID, reply: reply})
+		text := signInPromptText(fmt.Sprintf(conversationConnectNotice, from), res.SignIn.Message, res.SignIn.URL, fmt.Sprintf(conversationConnectTail, from))
+		if err := a.apiClient().postConnectPrompt(ctx, rv.Channel, rv.TS, user, text, res.SignIn.URL, stateID); err != nil {
 			a.Logger.Warn("slack: conversation connect prompt failed", "conversation", rv.ID, "error", err)
 		}
 		return
 	case res.IsError:
 		a.Logger.Info("slack: conversation reply refused by the tool", "record", "conversation_refused",
-			"conversation", rv.ID, "tool", rv.Tool, "slack_user", inner.User, "reason", res.Text)
+			"conversation", rv.ID, "tool", rv.Tool, "slack_user", user, "reason", res.Text)
 		reason := "the recipient refused it"
 		if res.Text != "" {
 			reason = truncateRunes(escapeMrkdwn(res.Text), teamReviewReasonMax)
@@ -177,11 +200,31 @@ func (a *Adapter) relayConversationReply(ctx context.Context, rv store.Review, i
 		return
 	}
 	a.Logger.Info("slack: conversation reply delivered", "record", "conversation_delivered",
-		"conversation", rv.ID, "tool", rv.Tool, "slack_user", inner.User, "subject", a.linkedSubject(inner.User))
+		"conversation", rv.ID, "tool", rv.Tool, "slack_user", user, "subject", a.linkedSubject(user), "resumed", accepted)
 	a.keepConversation(ctx, rv.ID)
-	if err := a.apiClient().reactionsAdd(ctx, inner.Channel, inner.TS, conversationDelivered); err != nil {
+	if err := a.apiClient().reactionsAdd(ctx, reply.channel, reply.ts, conversationDelivered); err != nil {
 		a.Logger.Debug("slack: conversation delivered reaction failed", "conversation", rv.ID, "error", err)
 	}
+}
+
+// resumeConversationReply accepts the sign-in a conversation reply was asked
+// for, as its writer: muster waits for the sign-in, then delivers the reply.
+func (a *Adapter) resumeConversationReply(ctx context.Context, entry connectorCompletion) {
+	rv, found, err := a.reviews().GetReview(ctx, entry.conversation)
+	if err != nil || !found || rv.Conversation == nil {
+		a.Logger.Warn("slack: conversation lookup after sign-in failed", "conversation", entry.conversation, "found", found, "error", err)
+		return
+	}
+	if a.SignIns == nil || a.OBO == nil {
+		return
+	}
+	token, err := a.OBO.TokenFor(ctx, entry.slackUser)
+	if err != nil {
+		a.Logger.Warn("slack: token to accept a sign-in unavailable", "user", entry.slackUser, "error", err)
+		return
+	}
+	res, err := a.SignIns.Accept(ctx, token, entry.signIn)
+	a.settleConversationReply(ctx, rv, entry.slackUser, entry.reply, res, err, true)
 }
 
 // a2aPartText is an A2A text part's kind and the key of its text.
