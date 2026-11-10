@@ -67,6 +67,11 @@ var (
 	// actionable "too large" notice instead of the generic turn-failed message.
 	ErrPayloadTooLarge = errors.New("a2a: request payload too large")
 
+	// ErrTaskTooLarge is returned by GetTask when the task does not fit in a
+	// gRPC message, on the controller's send side or this client's receive
+	// side. Reading it again does not get past the limit.
+	ErrTaskTooLarge = errors.New("a2a: task larger than a gRPC message")
+
 	// ErrSessionBusy is returned when the controller refuses a new task because
 	// the Session already has an active one. One task runs per session;
 	// channels map it to their "still working" notice.
@@ -521,6 +526,9 @@ func (c *Client) GetTask(ctx context.Context, taskID a2apkg.TaskID) (*a2apkg.Tas
 	}
 	task, err := c.a2a.GetTask(callCtx, &a2apkg.GetTaskRequest{Tenant: tenant, ID: taskID})
 	if err != nil {
+		if isMessageSizeLimit(err) {
+			return nil, fmt.Errorf("%w: %s", ErrTaskTooLarge, err.Error())
+		}
 		return nil, c.mapA2AError(ctx, err)
 	}
 	return task, nil
@@ -579,4 +587,12 @@ func isSizeRefusal(err error) bool {
 	msg := err.Error()
 	return errors.Is(err, a2apkg.ErrInternalError) &&
 		(strings.Contains(msg, "grpc: received message") || strings.Contains(msg, "grpc: message after decompression"))
+}
+
+// isMessageSizeLimit reports whether err is gRPC's message-size limit on
+// either side of the call. a2a-go keeps only the status message of a
+// ResourceExhausted, under ErrInternalError, and gRPC's text for each of its
+// size limits says "larger than max".
+func isMessageSizeLimit(err error) bool {
+	return errors.Is(err, a2apkg.ErrInternalError) && strings.Contains(err.Error(), "larger than max")
 }

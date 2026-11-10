@@ -8,11 +8,13 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	a2apkg "github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/stretchr/testify/require"
 
+	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
 	"github.com/giantswarm/klaus-gateway/pkg/channels"
 )
 
@@ -158,10 +160,10 @@ func logRecords(t *testing.T, record string) func() []map[string]any {
 // while it runs, and the channel receives what the stream had not delivered
 // of the answer, once. Every attempt is a retry of the turn and a turn_retry
 // record; a read that may succeed later is tried again, and so is the read of
-// the answer at the end. A read that cannot succeed ends the turn at once: the
-// pick-up's with the stream's failure, as before, the answer's with its own.
+// the answer at the end, after 10 s doubling. A read that cannot succeed ends
+// the turn at once: the pick-up's with the stream's failure, the answer's
+// with its own.
 func TestFacade_BrokenStreamPicksTheTaskUpAgain(t *testing.T) {
-	channels.SetPickUpBackoff(t, time.Millisecond, time.Millisecond)
 	const opening, rest = "The cluster has ", "7 nodes, all Ready."
 	reset := errors.New("rpc error: code = Unavailable desc = read: connection reset by peer")
 	unreachable := errors.New(`rpc error: code = Unavailable desc = connection error: desc = "transport: Error while dialing: dial tcp 10.0.0.3:8083: connect: connection refused"`)
@@ -173,12 +175,14 @@ func TestFacade_BrokenStreamPicksTheTaskUpAgain(t *testing.T) {
 	// A read that cannot succeed is followed by one that would, which a retry
 	// would reach.
 	cases := map[string]struct {
-		cut        error // how the stream breaks; nil closes it without a terminal status
-		reads      []taskRead
-		subscribed int
-		retries    int
-		text       string
-		err        string
+		cut          error // how the stream breaks; nil closes it without a terminal status
+		reads        []taskRead
+		subscribed   int
+		subscribeErr error
+		retries      int
+		waited       time.Duration
+		text         string
+		err          string
 	}{
 		"reset while the task runs": {
 			cut: reset, reads: []taskRead{{task: working}, {task: completed}},
@@ -191,11 +195,21 @@ func TestFacade_BrokenStreamPicksTheTaskUpAgain(t *testing.T) {
 		"controller unreachable at first": {
 			cut:        reset,
 			reads:      []taskRead{{err: unreachable}, {task: working}, {task: completed}},
-			subscribed: 1, retries: 2, text: opening + rest,
+			subscribed: 1, retries: 2, waited: 10 * time.Second, text: opening + rest,
+		},
+		"controller unreachable twice": {
+			cut:        reset,
+			reads:      []taskRead{{err: unreachable}, {err: unreachable}, {task: working}, {task: completed}},
+			subscribed: 1, retries: 3, waited: 30 * time.Second, text: opening + rest,
 		},
 		"answer read fails at first": {
 			cut: reset, reads: []taskRead{{task: working}, {err: unreachable}, {task: completed}},
-			subscribed: 1, retries: 1, text: opening + rest,
+			subscribed: 1, retries: 1, waited: 10 * time.Second, text: opening + rest,
+		},
+		"completed between the read and the subscription": {
+			cut: reset, reads: []taskRead{{task: working}, {task: completed}},
+			subscribeErr: fmt.Errorf("%w: task is in a terminal state", a2apkg.ErrUnsupportedOperation),
+			subscribed:   1, retries: 1, text: opening + rest,
 		},
 		"task gone": {
 			cut: reset, reads: []taskRead{{err: a2apkg.ErrTaskNotFound}, {task: completed}},
@@ -206,7 +220,7 @@ func TestFacade_BrokenStreamPicksTheTaskUpAgain(t *testing.T) {
 			retries: 1, text: opening, err: "connection reset by peer",
 		},
 		"task too large": {
-			cut: reset, reads: []taskRead{{err: errors.New("internal error: grpc: trying to send message larger than max (20971520 vs. 16777216)")}, {task: completed}},
+			cut: reset, reads: []taskRead{{err: fmt.Errorf("%w: grpc: trying to send message larger than max (20971520 vs. 16777216)", pkga2a.ErrTaskTooLarge)}, {task: completed}},
 			retries: 1, text: opening, err: "connection reset by peer",
 		},
 		"answer gone": {
@@ -216,38 +230,43 @@ func TestFacade_BrokenStreamPicksTheTaskUpAgain(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			retries := logRecords(t, channels.RecordTurnRetry)
-			agent := newFakeAgent(submitted(), a2apkg.NewArtifactUpdateEvent(taskInfo, "a1", a2apkg.NewTextPart(opening)))
-			agent.tailErr = tc.cut
-			agent.reads = tc.reads
-			agent.subscribeEvents = []a2apkg.Event{
-				working,
-				a2apkg.NewArtifactUpdateEvent(taskInfo, "a1", a2apkg.NewTextPart(rest)),
-				a2apkg.NewStatusUpdateEvent(taskInfo, a2apkg.TaskStateCompleted, nil),
-			}
-			f, _ := newA2AFacade(agent)
+			synctest.Test(t, func(t *testing.T) {
+				retries := logRecords(t, channels.RecordTurnRetry)
+				agent := newFakeAgent(submitted(), a2apkg.NewArtifactUpdateEvent(taskInfo, "a1", a2apkg.NewTextPart(opening)))
+				agent.tailErr = tc.cut
+				agent.reads = tc.reads
+				agent.subscribeErr = tc.subscribeErr
+				agent.subscribeEvents = []a2apkg.Event{
+					working,
+					a2apkg.NewArtifactUpdateEvent(taskInfo, "a1", a2apkg.NewTextPart(rest)),
+					a2apkg.NewStatusUpdateEvent(taskInfo, a2apkg.TaskStateCompleted, nil),
+				}
+				f, _ := newSharingFacade(t, agent)
 
-			deltas, timer, err := sendTimed(t, f, slackMsg("how many nodes?"))
-			require.NoError(t, err)
+				start := time.Now()
+				deltas, timer, err := sendTimed(t, f, slackMsg("how many nodes?"))
+				require.NoError(t, err)
+				require.Equal(t, tc.waited, time.Since(start), "the attempts after the first wait 10 s, doubling")
 
-			text, done, turnErr := answerOf(deltas)
-			require.Equal(t, tc.text, text, "the channel receives the answer once")
-			if tc.err == "" {
-				require.NoError(t, turnErr)
-				require.True(t, done)
-			} else {
-				require.ErrorContains(t, turnErr, tc.err)
-				require.False(t, done, "a turn that lacks its answer does not complete")
-			}
-			require.Len(t, agent.streamed, 1, "the message is never sent again")
-			require.Len(t, agent.subscribed, tc.subscribed)
-			require.Equal(t, tc.retries, timer.Retries())
-			records := retries()
-			require.Len(t, records, tc.retries)
-			for _, r := range records {
-				require.Equal(t, "stream_lost", r["reason"])
-				require.Equal(t, string(taskInfo.TaskID), r["task_id"])
-			}
+				text, done, turnErr := answerOf(deltas)
+				require.Equal(t, tc.text, text, "the channel receives the answer once")
+				if tc.err == "" {
+					require.NoError(t, turnErr)
+					require.True(t, done)
+				} else {
+					require.ErrorContains(t, turnErr, tc.err)
+					require.False(t, done, "a turn that lacks its answer does not complete")
+				}
+				require.Len(t, agent.streamed, 1, "the message is never sent again")
+				require.Len(t, agent.subscribed, tc.subscribed)
+				require.Equal(t, tc.retries, timer.Retries())
+				records := retries()
+				require.Len(t, records, tc.retries)
+				for _, r := range records {
+					require.Equal(t, "stream_lost", r["reason"])
+					require.Equal(t, string(taskInfo.TaskID), r["task_id"])
+				}
+			})
 		})
 	}
 }

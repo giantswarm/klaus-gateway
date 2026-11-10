@@ -234,7 +234,9 @@ ran as (a collaborator through the thread's share):
 1. `GetTask` reads the task. A task still working is resubscribed to (`SubscribeToTask`). A task
    that came to rest meanwhile is rendered from the read: a completed task delivers what the
    channel has not received of its answer, a paused one its prompt, a failed or canceled one its
-   failure, with the note of that failure.
+   failure, with the note of that failure. A subscription to a task that reached a terminal state
+   between the read and the subscription is refused (`UnsupportedOperation`), so the task is read
+   once more.
 2. A resubscription joins the task's stream midway, so its answer text is not streamed: the
    answer is read back when the task completes, and only the text after what the channel already
    received is delivered. Tool activity and narration stream live. The reply goes on in the same
