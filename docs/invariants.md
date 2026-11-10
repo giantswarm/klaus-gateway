@@ -96,12 +96,11 @@ or `helm/`. Add a line when a review finds a new one.
   `message_not_found`, `msg_too_long`, `no_text`). `slackErrorClass` holds the table; a reply
   write refused with one is not retried: the rest of the reply is dropped, and the failure note
   comes when the agent ends the turn. Any other error, a network error, a 5xx, a 429 past its
-  `Retry-After` budget or a code the table does not name, keeps the retries. A stream's `msg_too_long` roll-over and a branded post's unbranded
-  retry come before the table (#530).
+  `Retry-After` budget or a code the table does not name, keeps the retries. A stream's
+  `msg_too_long` roll-over and a branded post's unbranded retry come before the table (#530).
 - **Some Slack refusals say the call's effect is already in place.** `already_reacted` on
-  `reactions.add`, `no_reaction` and `message_not_found` on `reactions.remove`, and
-  `message_not_found` on `chat.delete` count as done; on any other method `message_not_found` is
-  permanent (#530).
+  `reactions.add`, and `no_reaction` and `message_not_found` on `reactions.remove`, count as
+  done; on any other method `message_not_found` is permanent (#530).
 
 ## Thread state and the store
 
@@ -124,6 +123,12 @@ or `helm/`. Add a line when a review finds a new one.
   queue, and a mute kept there would be lost on the next one (#410).
 - **The controller's create is idempotent per caller and request id.** The same person gets
   the earlier session back; a different person gets a new one (giantswarm#37896).
+- **muster revokes a sign-in when a rotated refresh token comes back.** mcp-oauth's reuse
+  detection revokes the token's whole family, the token it has just issued included, and
+  answers `invalid_grant`. Retrying with the newer token after that fails too, so a process
+  must never present a refresh token another one may be presenting: every refresh of a link the
+  store holds takes the link's refresh lease first (`pkg/auth/musterlink/lease.go`), and a test stub that answers a replay
+  with a plain `invalid_grant` hides the bug (#568).
 
 ## Tests
 

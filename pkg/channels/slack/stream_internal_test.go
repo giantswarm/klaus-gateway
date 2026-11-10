@@ -822,119 +822,6 @@ func TestPostJSON_IdentityDoesNotMutateCallerBody(t *testing.T) {
 		"the caller's body map must stay unmodified")
 }
 
-func TestParseAuthChallenge(t *testing.T) {
-	server, loginURL := parseAuthChallenge("Authentication Required\n\nServer: mcp-pro\n\n" +
-		"Please sign in:\n\nhttps://pro.example.com/authorize?state=abc\n\nThen retry.")
-	require.Equal(t, "mcp-pro", server)
-	require.Equal(t, "https://pro.example.com/authorize?state=abc", loginURL)
-}
-
-func TestParseAuthChallenge_TrimsTrailingPunctuation(t *testing.T) {
-	_, loginURL := parseAuthChallenge("Sign in here: (https://x.example/auth?s=1).")
-	require.Equal(t, "https://x.example/auth?s=1", loginURL)
-}
-
-func TestParseAuthChallenge_NoURL(t *testing.T) {
-	server, loginURL := parseAuthChallenge("Server: pro\nno link present")
-	require.Equal(t, "pro", server)
-	require.Empty(t, loginURL)
-}
-
-func TestParseAuthChallenge_NoServerLine(t *testing.T) {
-	server, loginURL := parseAuthChallenge("please visit https://x.example/auth")
-	require.Empty(t, server, "no Server: line yields empty; the caller falls back to the call arguments")
-	require.Equal(t, "https://x.example/auth", loginURL)
-}
-
-func TestParseAuthChallenge_RejectsNonHTTPS(t *testing.T) {
-	// An http:// link is rejected: the Connect button must not open a non-https
-	// URL scraped from agent/tool-controlled text.
-	_, loginURL := parseAuthChallenge("Server: pro\nSign in: http://pro.example.com/authorize")
-	require.Empty(t, loginURL)
-
-	// A URL matching the scheme regex but with no host is rejected.
-	_, loginURL = parseAuthChallenge("Server: pro\nSign in: https://?state=abc")
-	require.Empty(t, loginURL)
-
-	// A malformed (bad percent-escape) https URL is rejected.
-	_, loginURL = parseAuthChallenge("Server: pro\nSign in: https://%zz")
-	require.Empty(t, loginURL)
-}
-
-func TestParseAuthChallengePayload_DirectOutput(t *testing.T) {
-	server, loginURL := parseAuthChallengePayload(map[string]any{
-		"output": "Server: pro\nhttps://x.example/auth",
-	}, 0)
-	require.Equal(t, "pro", server)
-	require.Equal(t, "https://x.example/auth", loginURL)
-}
-
-func TestParseAuthChallengePayload_MCPContentList(t *testing.T) {
-	server, loginURL := parseAuthChallengePayload(map[string]any{
-		"content": []any{map[string]any{"type": "text", "text": "Server: pro\nhttps://x.example/auth"}},
-		"isError": false,
-	}, 0)
-	require.Equal(t, "pro", server)
-	require.Equal(t, "https://x.example/auth", loginURL)
-}
-
-func TestParseAuthChallengePayload_NoURL(t *testing.T) {
-	server, loginURL := parseAuthChallengePayload(map[string]any{
-		"output": "Server 'pro' is already authenticated.",
-	}, 0)
-	require.Empty(t, server)
-	require.Empty(t, loginURL)
-}
-
-func TestParseAuthChallenge_JSONEscapedAmpersand(t *testing.T) {
-	// muster's challenge text embeds a JSON-encoded blob, so Go's HTML-safe
-	// encoding turns each & into a literal escape sequence; the button must
-	// still open the real URL.
-	challenge := "Server: pro\nSign in: https://x.example/auth?a=1" + jsonEscapedAmp + "b=2"
-	server, loginURL := parseAuthChallenge(challenge)
-	require.Equal(t, "pro", server)
-	require.Equal(t, "https://x.example/auth?a=1&b=2", loginURL)
-}
-
-func TestParseAuthChallenge_TerminatesAtJSONEscapedWhitespace(t *testing.T) {
-	// muster's core_auth_login result reaches the gateway as an undecoded JSON
-	// string, so the newline separating the URL from the trailing instructions
-	// is the literal escape `\n`, which \S+ does not stop at. Without cutting
-	// there, the parsed URL carries `\n\nAfter...`; decorating it with the
-	// completion redirect then re-encodes the garbage into the state query and
-	// muster rejects the mangled state as "session expired".
-	challenge := `Authentication is required for mcp-pro.\n\n` +
-		`https://muster.gazelle.awsprod.gigantic.io/oauth/proxy/start?state=abc123\n\nAfter you've signed in, let me know.`
-	_, loginURL := parseAuthChallenge(challenge)
-	require.Equal(t, "https://muster.gazelle.awsprod.gigantic.io/oauth/proxy/start?state=abc123", loginURL)
-}
-
-func TestParseAuthChallenge_TerminatesBeforeJSONQuote(t *testing.T) {
-	// A URL that ends at the closing quote of its JSON string value.
-	_, loginURL := parseAuthChallenge(`{"login":"https://x.example/auth?s=1"}`)
-	require.Equal(t, "https://x.example/auth?s=1", loginURL)
-}
-
-func TestParseAuthChallenge_JSONEscapedAmpersandBeforeTerminator(t *testing.T) {
-	// The & inside the query survives while the trailing escaped newline is cut.
-	challenge := `https://x.example/auth?a=1` + jsonEscapedAmp + `b=2\nthen retry`
-	_, loginURL := parseAuthChallenge(challenge)
-	require.Equal(t, "https://x.example/auth?a=1&b=2", loginURL)
-}
-
-func TestScrubLoginURLs_ReencodedVariants(t *testing.T) {
-	// The agent re-encodes the recorded URL's query freely: JSON-escaped
-	// ampersands, percent-encoded base64 padding. Prefix matching must catch
-	// every spelling.
-	const loginURL = "https://pro.example/authorize?a=1&state=abc="
-	w := &batchedWriter{loginURLs: []string{loginURL}}
-	escaped := strings.ReplaceAll(loginURL, "&", jsonEscapedAmp)
-	percent := "https://pro.example/authorize?a=1&state=abc%3D"
-	out := w.scrubLoginURLs("raw: " + escaped + "\npercent: <" + percent + "|sign in>\nlink: [sign in](" + loginURL + ")")
-	require.NotContains(t, out, "pro.example")
-	require.Empty(t, out, "every line carried the link, so nothing is left")
-}
-
 // musterCallToolResult is a call_tool result as muster (≥ 5.36.0) returns it:
 // the envelope, serialized into the result's leading text item, ending with
 // the tool muster dispatched.
@@ -948,7 +835,7 @@ func musterCallToolResult(t *testing.T, dispatched map[string]any, innerText str
 }
 
 func TestEffectiveToolName(t *testing.T) {
-	login := map[string]any{"name": musterAuthLoginTool}
+	login := map[string]any{"name": "core_auth_login"}
 	cases := []struct {
 		name string
 		tool *channels.ToolActivity
@@ -956,7 +843,7 @@ func TestEffectiveToolName(t *testing.T) {
 	}{
 		{"envelope tool field", &channels.ToolActivity{
 			Name: musterCallToolMetaTool, Response: musterCallToolResult(t, login, "Authentication Required"),
-		}, musterAuthLoginTool},
+		}, "core_auth_login"},
 		{"envelope ahead of a native image", &channels.ToolActivity{
 			Name: musterCallToolMetaTool, Response: func() map[string]any {
 				r := musterCallToolResult(t, map[string]any{"name": "x_rich_render_graph", "server": "rich", "serverTool": "render_graph"}, "graph")
@@ -987,110 +874,6 @@ func TestEffectiveToolName(t *testing.T) {
 			require.Equal(t, tc.want, effectiveToolName(tc.tool))
 		})
 	}
-}
-
-// muster's envelope carries the challenge JSON-encoded, its line breaks as
-// literal \n escapes; decoded, the "Server:" line names the backend.
-func TestParseAuthChallengePayload_ServerFromMusterEnvelope(t *testing.T) {
-	challenge := "Authentication Required\n\nServer: mcp-pro\nStatus: needs sign-in\n\n" +
-		"https://pro.example.com/authorize?state=abc\n\nAfter signing in, run this tool again."
-	server, loginURL := parseAuthChallengePayload(musterCallToolResult(t, map[string]any{"name": musterAuthLoginTool}, challenge), 0)
-	require.Equal(t, "mcp-pro", server)
-	require.Equal(t, "https://pro.example.com/authorize?state=abc", loginURL)
-}
-
-func TestScrubLoginURLs(t *testing.T) {
-	const loginURL = "https://pro.example/authorize?state=abc&code_challenge=xyz"
-	w := &batchedWriter{loginURLs: []string{loginURL}}
-
-	// Markdown link, Slack mrkdwn link, and a bare occurrence are all removed with
-	// their lines; unrelated links survive. Nothing is left in their place.
-	in := "Please [sign in](" + loginURL + ") first.\n" +
-		"Or <" + loginURL + "|click here>.\n" +
-		"Raw: " + loginURL + "\n" +
-		"Docs: https://example.com/docs"
-	out := w.scrubLoginURLs(in)
-	require.NotContains(t, out, loginURL)
-	require.Equal(t, "Docs: https://example.com/docs", out)
-	require.NotContains(t, out, "[sign in]", "no dangling markdown link label")
-
-	// No recorded URLs: text passes through untouched.
-	require.Equal(t, in, (&batchedWriter{}).scrubLoginURLs(in))
-}
-
-func TestScrubLoginURLs_DropsLinkLineAndLeadIn(t *testing.T) {
-	const loginURL = "https://pro.example/authorize?state=abc"
-	w := &batchedWriter{loginURLs: []string{loginURL}}
-
-	// The link sits on its own line after a lead-in ending in ":". Both go; the
-	// Connect button prompt is the only sign-in affordance the user needs.
-	in := "To list your issues, I need to authenticate first. Please visit the following link to sign in:\n" +
-		":point_right: " + loginURL
-	require.Empty(t, w.scrubLoginURLs(in))
-}
-
-func TestScrubLoginURLs_KeepsSurroundingContent(t *testing.T) {
-	const loginURL = "https://pro.example/authorize?state=abc"
-	w := &batchedWriter{loginURLs: []string{loginURL}}
-
-	// A real intro line that does not end in ":" survives; only the link line and
-	// the "here is the link:" lead-in are removed. The actionable outro ("tell me
-	// once you're signed in") is preserved for the no-auto-resume case.
-	in := "Here is what I found.\n" +
-		"Sign in here:\n" +
-		loginURL + "\n" +
-		"Once you've signed in, let me know."
-	out := w.scrubLoginURLs(in)
-	require.Equal(t, "Here is what I found.\nOnce you've signed in, let me know.", out)
-	require.NotContains(t, out, "Sign in here:")
-}
-
-func TestConnectorReplyRetractable(t *testing.T) {
-	// No connector prompt this turn: nothing to retract.
-	require.False(t, (&batchedWriter{}).connectorReplyRetractable())
-
-	// A prompt with a working auto-resume callback: the narration is redundant.
-	require.True(t, (&batchedWriter{loginURLs: []string{"https://x/authorize"}}).connectorReplyRetractable())
-
-	// A prompt without a callback (no-op button): keep the narration so the user
-	// knows to sign in and say so.
-	manual := &batchedWriter{loginURLs: []string{"https://x/authorize"}, connectorManualSignIn: true}
-	require.False(t, manual.connectorReplyRetractable())
-}
-
-func TestRetractRendered_DeletesEveryStreamedMessage(t *testing.T) {
-	var deleted []string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "chat.delete") {
-			var body struct {
-				TS string `json:"ts"`
-			}
-			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
-			deleted = append(deleted, body.TS)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"ok":true}`))
-	}))
-	t.Cleanup(srv.Close)
-
-	w := newBatchedWriterWithClient(&slackAPIClient{baseURL: srv.URL}, "C1", "T1", nil)
-	w.streamMessages = []string{"stream-1", "stream-2"}
-	w.appendedLen = 12
-
-	w.retractRendered(t.Context())
-
-	require.ElementsMatch(t, []string{"stream-1", "stream-2"}, deleted)
-	require.Empty(t, w.streamMessages)
-	require.False(t, w.wroteContent())
-}
-
-func TestParseAuthChallengePayload_DepthBounded(t *testing.T) {
-	nested := any("Server: pro\nhttps://x.example/auth")
-	for range maxChallengePayloadDepth + 2 {
-		nested = map[string]any{"inner": nested}
-	}
-	_, loginURL := parseAuthChallengePayload(nested, 0)
-	require.Empty(t, loginURL)
 }
 
 // A transient Slack failure on the final flush must not abort the turn: a
@@ -1238,7 +1021,6 @@ type fakeThread struct {
 	streaming map[string]bool
 	nextTS    int
 	posts     int
-	deletes   []string
 	history   []capturedMessage
 	// statusCalls records agents.sessions.setStatus invocations in order;
 	// streamCalls the streaming ones.
@@ -1366,7 +1148,6 @@ func (f *fakeThread) handler() http.HandlerFunc {
 			f.messages[ts] = texts
 			f.history = append(f.history, texts)
 		case "chat.delete":
-			f.deletes = append(f.deletes, ts)
 			delete(f.messages, ts)
 			f.order = slices.DeleteFunc(f.order, func(id string) bool { return id == ts })
 		case methodChatStartStream:
@@ -1495,13 +1276,6 @@ func (f *fakeThread) stopStatuses() []string {
 		}
 	}
 	return out
-}
-
-// deleted returns the ts of every chat.delete, in order.
-func (f *fakeThread) deleted() []string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return slices.Clone(f.deletes)
 }
 
 // statuses returns the status texts of every recorded setStatus call, in order.
@@ -1804,46 +1578,6 @@ func TestRenderNarration_SplitChunksShareTheBudget(t *testing.T) {
 
 	require.Equal(t, maxNarrationMessages+1, ft.narrationChunks())
 	require.True(t, strings.HasSuffix(strings.TrimSpace(ft.streamedText()), narrationLimitNote))
-}
-
-// A single-use login link must not be duplicated next to the Connect button, in
-// narration any more than in the answer. Narration that is nothing but the link
-// sends nothing and keeps its budget.
-func TestRenderNarration_ScrubsLoginURL(t *testing.T) {
-	const loginURL = "https://auth.example/authorize?client_id=x"
-	ft := &fakeThread{}
-	srv := httptest.NewServer(ft.handler())
-	t.Cleanup(srv.Close)
-
-	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "C1", "1.0", slog.Default())
-	w.loginURLs = []string{loginURL}
-	w.renderNarration(loginURL)
-	w.renderNarration("Sign in here:\n" + loginURL + "\nThen tell me once you are done.")
-	require.NoError(t, w.closeStream(t.Context()))
-
-	require.Equal(t, 1, w.narrationsRendered, "a link-only narration keeps its budget")
-	text := ft.streamedText()
-	require.NotContains(t, text, "auth.example")
-	require.NotContains(t, text, "Sign in here:")
-	require.Contains(t, text, "Then tell me once you are done.")
-}
-
-// The sign-in prose the Connect button contradicts lives in the reply now, so
-// retracting the reply retracts it.
-func TestRetractRendered_TakesTheNarrationWithTheReply(t *testing.T) {
-	ft := &fakeThread{}
-	srv := httptest.NewServer(ft.handler())
-	t.Cleanup(srv.Close)
-
-	w := newBatchedWriterWithClient(&slackAPIClient{botToken: "t", baseURL: srv.URL}, "C1", "1.0", slog.Default())
-	w.renderNarration("Sign in, then tell me once you are done.")
-	require.NoError(t, w.flush(t.Context()))
-	require.Equal(t, "Sign in, then tell me once you are done."+passageBreak, ft.streamedText())
-
-	w.retractRendered(t.Context())
-
-	require.Equal(t, []string{"msg-1"}, ft.deleted())
-	require.Empty(t, ft.finalMessages(), "nothing of the reply is left in the thread")
 }
 
 func TestRenderToolActivity_UnwrapsCallTool(t *testing.T) {
@@ -2756,21 +2490,6 @@ func TestStream_CancelledDuringAnAppendSendsTheTextOnce(t *testing.T) {
 		"the appended chunk lands exactly once")
 }
 
-// A streaming message cannot be deleted, so the retract stops it first — mid
-// turn, hence processing — and then removes it.
-func TestRetractRendered_StopsTheStreamBeforeDeleting(t *testing.T) {
-	ft := &fakeThread{}
-	w := streamWriter(t, ft, "D1")
-
-	w.queueAnswer("visit the link ")
-	require.NoError(t, w.flush(t.Context()))
-	w.retractRendered(t.Context())
-
-	require.Equal(t, []string{string(sessionProcessing)}, ft.stopStatuses())
-	require.Equal(t, []string{"msg-1"}, ft.deleted())
-	require.False(t, w.wroteContent())
-}
-
 // Slack refusing the stop costs the reply its last words, never the working
 // indicator: the session's exit status is a call of its own. A refusal another
 // attempt may fix is sent again; a permanent one is not.
@@ -2914,27 +2633,6 @@ func TestStream_OversizeAppendIsCutOnRawBytes(t *testing.T) {
 	require.Equal(t, 2, fences, "the agent's own two fence markers, none injected at the cut")
 	require.Equal(t, len(answer), records[len(records)-1].TextLen,
 		"the record counts the bytes the agent produced")
-}
-
-// A login URL scrubbed out of an append shortens what Slack receives but not
-// what the turn has delivered: a continuation cuts the replayed answer at the
-// agent's own byte offset, so it neither repeats nor drops text.
-func TestStream_ScrubbedAppendStillCountsItsRawBytes(t *testing.T) {
-	ft := &fakeThread{}
-	w := streamWriter(t, ft, "D1")
-	var records []store.Delivered
-	w.onDelivered = func(_ context.Context, d store.Delivered) { records = append(records, d) }
-	w.loginURLs = []string{"https://login.example/auth?code=abc"}
-
-	const answer = "Here is what I found.\nhttps://login.example/auth?code=abc\nTell me once you are in. "
-	w.queueAnswer(answer)
-	require.NoError(t, w.flush(t.Context()))
-
-	sent := ft.streams()[0].markdown
-	require.NotContains(t, sent, "login.example", "the URL never reaches Slack")
-	require.Less(t, len(sent), len(answer), "so Slack saw fewer bytes than the agent produced")
-	require.Equal(t, len(answer), records[len(records)-1].TextLen,
-		"the record counts the answer's own bytes, not the shorter text Slack saw")
 }
 
 // A gateway note is posted in the metadata register: one context block, with

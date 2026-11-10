@@ -61,7 +61,7 @@ func watcher(src *fakeSource, n *fakeNotifier, outcomes *[]string) *refusals.Wat
 			"s3": {"org-otter", "orphan"},
 		},
 		Agents: fakeAgents{
-			"org-otter/otter-coder": {DisplayName: "Otter Coder", Creator: "badger@example.com"},
+			"org-otter/otter-coder": {DisplayName: "Otter Coder", Creator: "badger@example.com", Runtime: "claude", HarnessTitle: "Claude Code with Go"},
 		},
 		Notifier: n,
 		AgentURL: "https://portal.example.com/agents/{namespace}/{name}",
@@ -85,6 +85,8 @@ func TestWatcher_SumsAgentAndHostAcrossSessionsAndCountsIncreases(t *testing.T) 
 	first := n.noted[0]
 	require.Equal(t, "otter-coder", first.Agent)
 	require.Equal(t, "Otter Coder", first.DisplayName)
+	require.Equal(t, "claude", first.Runtime, "the notice words its remedy by the Harness's runtime")
+	require.Equal(t, "Claude Code with Go", first.HarnessTitle)
 	require.Equal(t, "badger@example.com", first.Creator)
 	require.Equal(t, "proxy.golang.org", first.Host)
 	require.Equal(t, 3, first.Count, "a series seen for the first time counts whole")

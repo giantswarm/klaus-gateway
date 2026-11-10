@@ -9,6 +9,33 @@ that adds notes heads them `## Next — <title>`; the change that prepares a rel
 renames each `Next` to that version, and `make check-upgrade-notes` refuses a
 stable release tag while a `Next` section with content is left.
 
+## Next — sign-in links open unchanged
+
+- The gateway's muster client declares URL mode elicitation on MCP protocol 2026-07-28 and no
+  longer reads `auth_required` text. Run muster 5.55.0 or later (mcp-go 1.5.0, which answers
+  that protocol) before or with this release; against an older muster a call that needs a
+  sign-in fails instead of offering one.
+- Sign-in links are opened exactly as the server gave them: the gateway no longer adds
+  `redirect=` and no longer serves `/connectors/complete`. The click on a prompt's *Sign in*
+  button continues the conversation; the person closes the browser tab after signing in.
+  `<obo.callbackBaseURL>/connectors/complete` can be removed from muster's
+  `oauth.mcpClient.postLoginRedirectAllowlist`. A link posted before the upgrade still signs
+  the person in, then ends on a not-found page; the prompt's button continues nothing, and the
+  person sends their message or clicks again.
+
+## 4.16.16 — a sign-in in a turn is the runtime's URL elicitation
+
+- The gateway no longer turns an agent's `core_auth_login` answer into a Connect button. A
+  runtime that does not relay MCP URL elicitations (an omp Harness image older than kagent
+  1.29.0, the Python ADK, another BYO image) leaves its sign-in link in the agent's prose only.
+  Run kagent 1.29.0 or later first. A BYO Harness does not follow the kagent release: an omp
+  entry in `kagent.harnesses` pins its own `omp-harness` image by digest, so move that pin to
+  the `runtimeImages.ompHarness.digest` of a 1.29.0 or later release as well.
+
+## 4.15.0 — a team's members from its Slack user group
+
+- `GET /groups/{group}/members/{email}` needs the app's `usergroups:read` scope, which `deploy/slack/manifest.yaml` now lists: update the installed app's manifest and re-install it once. Until then the endpoint answers `502` (`missing_scope`) and nothing else changes.
+
 ## 4.13.1 — a mention or a new chat starts no conversation
 
 - A conversation starts only through the agent picker: the app's slash command (`/swarmgeist`

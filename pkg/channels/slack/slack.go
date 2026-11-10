@@ -151,15 +151,15 @@ type Adapter struct {
 	// Models, when set, resolves the default agent's model id for usage.
 	// Nil omits the model line.
 	Models AgentModelSource
-	// ConnectorPrompts enables the reactive "Connect <backend>" button: when the
-	// agent reports a backend needs the user's sign-in, the adapter renders the
-	// login link it relays as a button. Requires OBO.
+	// ConnectorPrompts enables the connector surfaces muster's grants feed: with
+	// Grants, the authorize modal. Requires OBO.
 	ConnectorPrompts bool
-	// PublicBaseURL is the gateway's public, externally reachable base URL (the
-	// OBO callback base). When set, connector login URLs gain a redirect back to
-	// ConnectorCompletePath so the browser lands on the gateway after sign-in
-	// (prompt rewrite plus auto-resume). Empty keeps the plain-link behavior.
-	PublicBaseURL string
+	// SignIns answers, as the linked person, a sign-in muster asked one of
+	// the gateway's own calls for: accepts it once the person agreed to open
+	// its link (muster then waits for the sign-in and runs the call), declines
+	// it on their Not now. Nil leaves a Connect prompt's buttons without a
+	// continuation.
+	SignIns SignInAnswerer
 
 	// WorkingEmoji, DoneEmoji, FailedEmoji override the progress reaction emoji
 	// names (no surrounding colons). Empty uses the defaults.
@@ -354,14 +354,6 @@ type Adapter struct {
 	toolLogMu sync.Mutex
 	toolLogs  map[string]ttlEntry[*threadToolLog] // keyed by threadID
 
-	// connectorMu guards connectorPrompted: the last connect prompt per
-	// (user, backend), bounding re-prompts for a backend the user neither
-	// connects nor dismisses. Each record keeps the surfaced login URL: a new
-	// challenge mints a new single-use URL and invalidates the old one, so a
-	// changed URL must bypass the cooldown or the only visible button is dead.
-	connectorMu       sync.Mutex
-	connectorPrompted map[string]map[string]connectorPromptRecord
-
 	// sessionTitleMu guards sessionTitles: per thread, the title the
 	// conversation's first turn creates its agent session with. Dispatch parks
 	// it on the opening message and the turn that sends the processing status
@@ -380,10 +372,9 @@ type Adapter struct {
 	grantsUnsupported atomic.Bool
 
 	// connectorCompletionsMu guards connectorCompletions: short-lived state
-	// minted when a Connect button is decorated with a post-login redirect,
-	// keyed by the opaque ID carried in the redirect's s parameter and in the
-	// button value. The click records the prompt's response_url under it; the
-	// browser landing marks it completed and fires the one-shot resume.
+	// minted for a Connect prompt, keyed by the opaque ID its link button
+	// carries as its value. The first click of the person the prompt is for
+	// runs the continuation it holds.
 	connectorCompletionsMu sync.Mutex
 	connectorCompletions   map[string]ttlEntry[connectorCompletion]
 
@@ -392,13 +383,6 @@ type Adapter struct {
 	// started from.
 	authorizeModalsMu sync.Mutex
 	authorizeModals   map[string]ttlEntry[*authorizeModal]
-}
-
-// connectorPromptRecord is the last connect prompt surfaced for a
-// (user, backend): when it posted and which login URL its button carries.
-type connectorPromptRecord struct {
-	at  time.Time
-	url string
 }
 
 // emailEntry is a cached Slack user email with its expiry.
@@ -650,12 +634,8 @@ func (a *Adapter) Stop(ctx context.Context) error {
 }
 
 // Mount attaches /channels/slack/events, /channels/slack/interactions and
-// /channels/slack/commands to r, plus the browser-facing connector sign-in
-// landing. In socketmode only the landing is mounted (no Slack HTTP handlers
-// needed, but muster still redirects the browser here after a connector
-// sign-in).
+// /channels/slack/commands to r. In socketmode nothing is mounted.
 func (a *Adapter) Mount(r chi.Router) {
-	r.Get(ConnectorCompletePath, a.handleConnectorComplete)
 	if a.evHandler == nil {
 		return
 	}
@@ -1288,39 +1268,6 @@ func (a *Adapter) recordSignInClick(slackUser, value, responseURL string) {
 	}
 	entry.value.responseURL = responseURL
 	a.signInPrompted[key] = entry
-}
-
-// markConnectorPrompted records a prompt attempt for (user, server) and
-// reports whether one is allowed now: outside the cooldown, or carrying a
-// login URL different from the last surfaced button (the auth server issued
-// a new single-use URL, so the posted button is dead and must be superseded).
-// Check and set are atomic so concurrent turns post at most one prompt per
-// URL.
-func (a *Adapter) markConnectorPrompted(slackUser, server, loginURL string) bool {
-	now := time.Now()
-	a.connectorMu.Lock()
-	defer a.connectorMu.Unlock()
-	if last, ok := a.connectorPrompted[slackUser][server]; ok &&
-		now.Sub(last.at) < connectorPromptCooldown && last.url == loginURL {
-		return false
-	}
-	if a.connectorPrompted == nil {
-		a.connectorPrompted = make(map[string]map[string]connectorPromptRecord)
-	}
-	if a.connectorPrompted[slackUser] == nil {
-		a.connectorPrompted[slackUser] = make(map[string]connectorPromptRecord)
-	}
-	a.connectorPrompted[slackUser][server] = connectorPromptRecord{at: now, url: loginURL}
-	return true
-}
-
-// clearConnectorPrompted forgets a prompt attempt (fetch or post failed, the
-// user dismissed, or the backend connected) so the next trigger may prompt
-// again.
-func (a *Adapter) clearConnectorPrompted(slackUser, server string) {
-	a.connectorMu.Lock()
-	defer a.connectorMu.Unlock()
-	delete(a.connectorPrompted[slackUser], server)
 }
 
 // takeSignInAnchors returns and clears the user's sign-in prompt entries and
@@ -2418,7 +2365,7 @@ func (a *Adapter) dispatchFrom(ctx context.Context, msg channels.InboundMessage,
 	task := a.takePendingTask(msg.ThreadID)
 	if task != nil {
 		msg.TaskID = task.TaskID
-		msg.Decision = decisionFromText(task.Prompt, msg.Text)
+		msg.Decision = answering(task.Prompt, decisionFromText(task.Prompt, msg.Text))
 		a.markPromptDecided(ctx, slackChannel, task, msg.Decision, slackUser)
 	}
 
@@ -2834,7 +2781,6 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 	w.approvedCalls = approved
 	w.adapter = a
 	w.slackUser = slackUser
-	w.connectorPrompts = a.ConnectorPrompts
 	w.sessionTitle = a.takeSessionTitle(threadID)
 	// Slack attributes a session it creates to the thread root's author unless
 	// told otherwise, and the root is the bot's own message when the picker
@@ -2947,18 +2893,10 @@ func (a *Adapter) streamResponse(ctx context.Context, client *slackAPIClient, de
 			PromptText: pd.Content,
 			Usage:      w.turnUsage,
 		})
-		return a.postHitlPrompt(cctx, client, slackChannel, threadID, pd)
+		return a.postHitlPrompt(cctx, client, slackChannel, threadID, slackUser, pd)
 	}
 	a.recordTurnUsage(threadID, slackChannel, w.turnUsage)
 	prog.done(ctx)
-	// The turn's only reply was a connector sign-in prompt that auto-resumes on
-	// callback: the ephemeral prompt plus the post-login resume are the whole
-	// exchange, so retract the streamed narration ("visit this link", "tell me
-	// once you're signed in") rather than leave it contradicting the button.
-	if w.connectorReplyRetractable() {
-		w.retractRendered(ctx)
-		return nil
-	}
 	// A turn that produced no output would otherwise be silent (at most a done
 	// emoji with no reply). Post a terminal note so the user is not left
 	// waiting. A continued turn whose answer had landed in full before the

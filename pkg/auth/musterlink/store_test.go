@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"k8s.io/client-go/kubernetes/fake"
 )
 
 func key32() []byte {
@@ -143,4 +144,58 @@ func TestMemStore(t *testing.T) {
 	require.NoError(t, s.Delete("U1"))
 	_, err = s.Get("U1")
 	require.ErrorIs(t, err, ErrNotLinked)
+}
+
+// Update hands fn the stored link and applies its answer on every backend: a
+// write, a delete, or nothing; a lease survives the round trip through the
+// sealed record.
+func TestStoreUpdate(t *testing.T) {
+	backends := map[string]func(t *testing.T) Store{
+		"memory": func(*testing.T) Store { return NewMemStore() },
+		"bolt": func(t *testing.T) Store {
+			s, err := OpenBoltStore(t.TempDir()+"/links.bolt", key32(), nil)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = s.Close() })
+			return s
+		},
+		"secret": func(t *testing.T) Store {
+			return newSecretStoreFor(t, fake.NewClientset(linkSecret(nil)), key32())
+		},
+	}
+	for name, open := range backends {
+		t.Run(name, func(t *testing.T) {
+			s := open(t)
+
+			var seen *Link
+			require.NoError(t, s.Update("U1", func(current *Link) (*Link, bool) {
+				seen = current
+				return nil, false
+			}))
+			require.Nil(t, seen, "no link is stored yet")
+
+			until := time.Now().Add(time.Minute).Truncate(time.Second)
+			require.NoError(t, s.Update("U1", func(*Link) (*Link, bool) {
+				return &Link{RefreshToken: "rt-1", Lease: &RefreshLease{Holder: "p1", Until: until}}, true
+			}))
+			got, err := s.Get("U1")
+			require.NoError(t, err)
+			require.Equal(t, "rt-1", got.RefreshToken)
+			require.NotNil(t, got.Lease)
+			require.Equal(t, "p1", got.Lease.Holder)
+			require.True(t, until.Equal(got.Lease.Until))
+
+			require.NoError(t, s.Update("U1", func(current *Link) (*Link, bool) {
+				seen = current
+				return nil, false
+			}))
+			require.Equal(t, "rt-1", seen.RefreshToken)
+			got, err = s.Get("U1")
+			require.NoError(t, err)
+			require.Equal(t, "rt-1", got.RefreshToken, "write false leaves the link as it is")
+
+			require.NoError(t, s.Update("U1", func(*Link) (*Link, bool) { return nil, true }))
+			_, err = s.Get("U1")
+			require.ErrorIs(t, err, ErrNotLinked)
+		})
+	}
 }

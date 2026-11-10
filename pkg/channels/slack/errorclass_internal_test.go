@@ -16,7 +16,7 @@ import (
 // Every code of the table in giantswarm/klaus-gateway#529 is permanent
 // (checked on chat.appendStream). The converging answers count as done on the
 // methods they converge on, and only there: message_not_found converges on a
-// delete or a reaction removal. An unknown code, or an error Slack never
+// reaction removal. An unknown code, or an error Slack never
 // answered, is worth another attempt.
 func TestSlackErrorClass(t *testing.T) {
 	refusal := func(method, code string) error { return &apiError{method: method, code: code} }
@@ -39,7 +39,6 @@ func TestSlackErrorClass(t *testing.T) {
 		{methodReactionsAdd, "already_reacted", classConverged},
 		{methodReactionsRemove, "no_reaction", classConverged},
 		{methodReactionsRemove, "message_not_found", classConverged},
-		{methodChatDelete, "message_not_found", classConverged},
 		{"chat.update", "message_not_found", classPermanent},
 		{methodReactionsRemove, "already_reacted", classRetryable},
 		{methodChatPostMessage, "internal_error", classRetryable},
@@ -72,8 +71,8 @@ func (r *recordingCalls) recorded() []string {
 
 // Every Web API call is counted under how it ended, and a refusal that finds
 // the call's effect already in place is a success: a reaction already there,
-// one already gone, a delete of a message that is gone. A gone message is a
-// failure for an update, which cannot converge.
+// one already gone. A gone message is a failure for an update, which cannot
+// converge.
 func TestClient_CountsEveryCallUnderItsClass(t *testing.T) {
 	postNote := func(ctx context.Context, c *slackAPIClient) error {
 		_, err := c.postNote(ctx, "C1", "a note", "1.0")
@@ -96,11 +95,6 @@ func TestClient_CountsEveryCallUnderItsClass(t *testing.T) {
 			name: "reaction already gone", answer: `{"ok":false,"error":"no_reaction"}`,
 			call: func(ctx context.Context, c *slackAPIClient) error { return c.reactionsRemove(ctx, "C1", "1.0", "eyes") },
 			want: "reactions.remove converged",
-		},
-		{
-			name: "message to delete is gone", answer: `{"ok":false,"error":"message_not_found"}`,
-			call: func(ctx context.Context, c *slackAPIClient) error { return c.deleteMessage(ctx, "C1", "1.0") },
-			want: "chat.delete converged",
 		},
 		{
 			name: "message to update is gone", answer: `{"ok":false,"error":"message_not_found"}`,

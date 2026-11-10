@@ -58,17 +58,15 @@ var permanentSlackErrors = []string{
 	"no_text",
 }
 
-// errCodeMessageNotFound is permanent, except where the call removes the
-// message or something on it (convergedSlackErrors).
+// errCodeMessageNotFound is permanent, except on a reaction's removal, where
+// a gone message takes its reactions with it (convergedSlackErrors).
 const errCodeMessageNotFound = "message_not_found"
 
 // convergedSlackErrors are, per method, the codes that say the call's effect
-// is already in place: the reaction is there, or gone, or so is its message,
-// or the message to delete.
+// is already in place: the reaction is there, or gone, or so is its message.
 var convergedSlackErrors = map[string][]string{
 	methodReactionsAdd:    {"already_reacted"},
 	methodReactionsRemove: {"no_reaction", errCodeMessageNotFound},
-	methodChatDelete:      {errCodeMessageNotFound},
 }
 
 // slackErrorClass classifies the error a call to method failed with. Only an

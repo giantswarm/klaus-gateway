@@ -162,24 +162,28 @@ func withAuthor(author, text string) string {
 	return "[message from " + author + "]\n" + text
 }
 
-// parseHitlPrompt extracts the structured request from an input-required A2A
-// status message: the HITL extension payload kagent attaches when the client
-// requested the extension. Returns nil when the message carries none (a
-// plain-text prompt, or a malformed payload — the text is still rendered).
+// parseHitlPrompt extracts the structured request from an input-required or
+// auth-required A2A status message: the HITL extension payload kagent attaches
+// when the client requested the extension. Returns nil when the message carries
+// none (a plain-text prompt, or a malformed payload — the text is still
+// rendered).
 func parseHitlPrompt(msg *a2apkg.Message) *HitlPrompt {
 	request, err := pkga2a.ParseHITLRequest(msg)
 	if err != nil || request == nil {
 		return nil
 	}
+	if signIn := request.URLElicitation; signIn != nil {
+		return &HitlPrompt{SignIn: &HitlSignIn{ID: signIn.ID, Server: signIn.Server, Message: signIn.Message, URL: signIn.URL}, RequestID: request.ID()}
+	}
 	if ask := request.AskUser; ask != nil {
-		prompt := &HitlPrompt{ToolName: AskUserToolName, OriginalCallID: ask.ResponseID()}
+		prompt := &HitlPrompt{ToolName: AskUserToolName, OriginalCallID: ask.ResponseID(), RequestID: request.ID()}
 		for _, q := range ask.Questions {
 			prompt.Questions = append(prompt.Questions, HitlQuestion{Question: q.Question, Choices: q.Choices, Multiple: q.Multiple})
 		}
 		return prompt
 	}
 	approval := request.ToolApproval
-	prompt := &HitlPrompt{Hint: approval.Hint}
+	prompt := &HitlPrompt{Hint: approval.Hint, RequestID: request.ID()}
 	for _, tool := range approval.DecidedTools() {
 		prompt.Tools = append(prompt.Tools, HitlTool{ID: tool.ID, CallID: tool.CallID, Name: tool.Name, Args: tool.Args})
 	}
@@ -235,6 +239,12 @@ func hasFunctionCallPart(parts a2apkg.ContentParts) bool {
 func (p *HitlPrompt) summary() string {
 	if p == nil {
 		return ""
+	}
+	if p.IsSignIn() {
+		if p.SignIn.Message != "" {
+			return p.SignIn.Message
+		}
+		return "Sign in to " + p.SignIn.Server + " to continue."
 	}
 	if p.IsAskUser() {
 		var b strings.Builder

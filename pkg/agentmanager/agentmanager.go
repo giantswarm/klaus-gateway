@@ -14,7 +14,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"regexp"
 	"strings"
 
 	pkga2a "github.com/giantswarm/klaus-gateway/pkg/a2a"
@@ -24,14 +23,6 @@ import (
 
 // toolStartSession is agent-manager's tool, by its own name.
 const toolStartSession = "start_session"
-
-// What muster's sign-in challenge says in its text when its structured
-// content is not there to read: the server on its "Server:" line or in the
-// first sentence, and the sign-in link on a line of its own.
-var (
-	challengeServerRe = regexp.MustCompile(`(?m)^Server:\s*(\S+)|server '([^']+)'`)
-	challengeURLRe    = regexp.MustCompile(`https://\S+`)
-)
 
 // ToolCaller calls a muster tool as the person whose bearer token it is
 // given. *muster.Client satisfies it.
@@ -44,16 +35,13 @@ type ToolCaller interface {
 type Starter struct {
 	tools ToolCaller
 	tool  string
-	// server is the muster server the tool is of, as the prefix names it
-	// (x_<server>_): what a sign-in challenge that names none is for.
-	server string
 }
 
 var _ pkga2a.SessionStarter = (*Starter)(nil)
 
 // New returns a Starter that calls prefix + start_session through tools.
 func New(tools ToolCaller, prefix string) *Starter {
-	return &Starter{tools: tools, tool: prefix + toolStartSession, server: strings.TrimSuffix(strings.TrimPrefix(prefix, "x_"), "_")}
+	return &Starter{tools: tools, tool: prefix + toolStartSession}
 }
 
 // StartSession starts the Session of a conversation with the Agent
@@ -65,8 +53,8 @@ func New(tools ToolCaller, prefix string) *Starter {
 // caller muster or the controller does not know onto pkga2a.ErrNoIdentity, an
 // unknown Agent onto pkga2a.ErrAgentUnknown, an Agent the caller may not use
 // onto pkga2a.ErrAgentNotPermitted, a refused name onto
-// pkga2a.ErrInvalidSessionName. muster's own sign-in challenge for the server
-// (the person has not connected it; the link says where) is a
+// pkga2a.ErrInvalidSessionName. The sign-in muster asks for first (the person
+// has not connected a server the start goes through) is a
 // pkga2a.ConnectRequiredError.
 func (s *Starter) StartSession(ctx context.Context, bearer, namespace, name, requestID, sessionName string, grant workspaces.Grant) (pkga2a.Session, error) {
 	ref := namespace + "/" + name
@@ -90,8 +78,8 @@ func (s *Starter) StartSession(ctx context.Context, bearer, namespace, name, req
 		}
 		return pkga2a.Session{}, fmt.Errorf("agentmanager: start a Session of %s: %w", ref, err)
 	}
-	if challenge := signInChallenge(res, s.server); challenge != nil {
-		return pkga2a.Session{}, challenge
+	if res.SignIn != nil {
+		return pkga2a.Session{}, &pkga2a.ConnectRequiredError{SignIn: res.SignIn}
 	}
 	if !res.Dispatched {
 		return pkga2a.Session{}, fmt.Errorf("agentmanager: start a Session of %s: muster did not run %s: %s", ref, s.tool, res.Text)
@@ -129,44 +117,6 @@ func (s *Starter) StartSession(ctx context.Context, bearer, namespace, name, req
 		}
 	}
 	return session, nil
-}
-
-// signInChallenge reads muster's sign-in challenge out of the answer: an
-// error result whose structured content says auth_required and names the
-// server and the link, the text saying the same (and alone, when the answer
-// is muster refusing the call before any envelope). A challenge that names no
-// server is for the tool's own. A challenge that carries no link is not one
-// the person can act on from a prompt: nil, so the answer is mapped as a
-// refusal.
-func signInChallenge(res muster.Result, server string) *pkga2a.ConnectRequiredError {
-	if !res.IsError {
-		return nil
-	}
-	var challenge struct {
-		Status  string `json:"status"`
-		Server  string `json:"server"`
-		AuthURL string `json:"authUrl"`
-	}
-	structured := len(res.Structured) > 0 && json.Unmarshal(res.Structured, &challenge) == nil && challenge.Status == "auth_required"
-	if !structured && !strings.HasPrefix(res.Text, "auth_required") {
-		return nil
-	}
-	if challenge.Server == "" {
-		if m := challengeServerRe.FindStringSubmatch(res.Text); m != nil {
-			challenge.Server = m[1] + m[2]
-		}
-	}
-	if challenge.Server == "" {
-		challenge.Server = server
-	}
-	if challenge.AuthURL == "" {
-		// The link ends its line in muster's prose; a stop after it is prose too.
-		challenge.AuthURL = strings.TrimRight(challengeURLRe.FindString(res.Text), ".,;:)")
-	}
-	if challenge.AuthURL == "" {
-		return nil
-	}
-	return &pkga2a.ConnectRequiredError{Server: challenge.Server, LoginURL: challenge.AuthURL}
 }
 
 // refusal maps start_session's error answer, "<code>: <reason>", onto the a2a
