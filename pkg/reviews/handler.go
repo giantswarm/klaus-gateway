@@ -351,8 +351,8 @@ func writeReceipt(w http.ResponseWriter, receipt channels.PostReceipt) {
 	writeJSON(w, http.StatusCreated, receipt)
 }
 
-func writeJSON(w http.ResponseWriter, status int, body any) {
+func writeJSON(w http.ResponseWriter, status int, receipt channels.PostReceipt) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(body)
+	_ = json.NewEncoder(w).Encode(receipt)
 }
