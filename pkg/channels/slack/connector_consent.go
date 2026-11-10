@@ -87,6 +87,32 @@ func (a *Adapter) dropConnectorCompletions(stateIDs []string) {
 	}
 }
 
+// takeHeldStart forgets the completion states named and returns the held
+// message of the latest one while it is alive and unanswered. continuing is
+// true when a click on any of them already continues the start, which runs
+// its own held message.
+func (a *Adapter) takeHeldStart(stateIDs []string) (held *heldMessage, continuing bool) {
+	now := time.Now()
+	a.connectorCompletionsMu.Lock()
+	defer a.connectorCompletionsMu.Unlock()
+	for i, id := range stateIDs {
+		stored, found := a.connectorCompletions[id]
+		delete(a.connectorCompletions, id)
+		if !found || now.After(stored.expires) {
+			continue
+		}
+		if stored.value.consented {
+			continuing = true
+		} else if i == len(stateIDs)-1 {
+			held = stored.value.held
+		}
+	}
+	if continuing {
+		return nil, true
+	}
+	return held, false
+}
+
 // takeConnectorAnswer records slackUser's answer to stateID's link, their
 // consent or their decline. ok is true only for the first click of the person
 // the prompt is for, on a state that is still alive.
@@ -214,15 +240,23 @@ func (a *Adapter) acceptSignIn(ctx context.Context, entry connectorCompletion) (
 // waits for it, then runs the held message as the thread's first turn. The
 // replayed start names the same request, so it finds the Session the accepted
 // start made. The surfaces settle as delivered only when the accept ran the
-// start; otherwise the replayed start settles them or, still asked for the
-// sign-in, refreshes them with a new prompt.
+// start, and so do the person's other threads waiting on the same tool;
+// otherwise the replayed start settles them or, still asked for the sign-in,
+// refreshes them with a new prompt.
 func (a *Adapter) resumeHeldStart(ctx context.Context, entry connectorCompletion) {
 	if res, ok := a.acceptSignIn(ctx, entry); ok && res.SignIn == nil {
 		a.settleSessionConnect(ctx, entry.slackUser, entry.threadTS, sessionConnectDelivered)
+		a.settleOtherSessionConnects(ctx, entry.slackUser, entry.signIn.Tool(), entry.threadTS)
 	}
-	if err := a.replayDispatch(ctx, entry.held.Msg, entry.held.SlackChannel); err != nil && !errors.Is(err, context.Canceled) {
-		a.Logger.Log(ctx, failureLogLevel(err), "slack: held message after sign-in failed", "user", entry.slackUser, "thread", entry.threadTS, "failure_class", channels.ClassifyFailure(err), "error", err)
-		a.postReplayFailureNote(ctx, entry.held.SlackChannel, entry.threadTS, err)
+	a.runHeldMessage(ctx, entry.slackUser, entry.threadTS, entry.held)
+}
+
+// runHeldMessage runs held as the person in its thread; a failure is logged
+// and told in the thread.
+func (a *Adapter) runHeldMessage(ctx context.Context, slackUser, threadTS string, held *heldMessage) {
+	if err := a.replayDispatch(ctx, held.Msg, held.SlackChannel); err != nil && !errors.Is(err, context.Canceled) {
+		a.Logger.Log(ctx, failureLogLevel(err), "slack: held message after sign-in failed", "user", slackUser, "thread", threadTS, "failure_class", channels.ClassifyFailure(err), "error", err)
+		a.postReplayFailureNote(ctx, held.SlackChannel, threadTS, err)
 	}
 }
 

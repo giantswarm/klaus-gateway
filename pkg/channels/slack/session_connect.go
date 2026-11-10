@@ -30,6 +30,10 @@ type sessionConnectSurfaces struct {
 	// message of its turn: dropped once the consent is settled, so a stale
 	// button runs no message twice.
 	states []string
+	// tool is the muster tool whose call the latest prompt's sign-in was
+	// asked for: a sign-in completed for the person on one thread's call of
+	// it is the one every other thread waiting on that tool waits for.
+	tool string
 }
 
 // lastState is the completion state of the latest prompt, "" when none was
@@ -79,6 +83,27 @@ func (a *Adapter) takeSessionConnect(slackUser, threadID string) (sessionConnect
 		return sessionConnectSurfaces{}, false
 	}
 	return entry.value, true
+}
+
+// takeOtherSessionConnects returns and forgets the live surfaces of every
+// thread but threadID where slackUser waits for a sign-in to tool.
+func (a *Adapter) takeOtherSessionConnects(slackUser, tool, threadID string) []sessionConnectSurfaces {
+	if tool == "" {
+		return nil
+	}
+	now := time.Now()
+	a.sessionConnectMu.Lock()
+	defer a.sessionConnectMu.Unlock()
+	var taken []sessionConnectSurfaces
+	for key, entry := range a.sessionConnects {
+		surfaces := entry.value
+		if surfaces.threadTS == threadID || surfaces.tool != tool || key != sessionConnectKey(slackUser, surfaces.threadTS) || !now.Before(entry.expires) {
+			continue
+		}
+		taken = append(taken, surfaces)
+		delete(a.sessionConnects, key)
+	}
+	return taken
 }
 
 // promptSessionConnect answers a Session start muster asked a sign-in for:
@@ -133,6 +158,7 @@ func (a *Adapter) promptSessionConnect(ctx context.Context, msg channels.Inbound
 	held := heldMessageOf(msg, slackChannel, time.Now())
 	stateID := a.mintConnectorCompletion(connectorCompletion{slackUser: slackUser, channel: slackChannel, threadTS: msg.ThreadID, signIn: signIn, held: &held})
 	surfaces.states = append(surfaces.states, stateID)
+	surfaces.tool = signIn.Tool()
 	text := signInPromptText(sessionConnectNote, signIn.Message, signIn.URL, sessionConnectTail)
 
 	if isDMChannelID(slackChannel) {
@@ -233,17 +259,43 @@ const (
 // not, the card to the outcome. Called by the continuation of the prompt's
 // own click, which then runs the held message, by its Not now, and by the
 // person's next turn in the thread that starts its Session, however they
-// signed in (another thread's prompt, another muster client), when the held
-// message stays unsent and the card must not say otherwise. The prompts'
-// completion states go with the surfaces, so a stale button runs no held
-// message after the fact. The ephemeral is replaced through its click's
-// response_url by the continuation.
+// signed in (another muster client, another thread's prompt for another
+// tool), when the held message stays unsent and the card must not say
+// otherwise. The prompts' completion states go with the
+// surfaces, so a stale button runs no held message after the fact. The
+// ephemeral is replaced through its click's response_url by the continuation.
 func (a *Adapter) settleSessionConnect(ctx context.Context, slackUser, threadID string, outcome sessionConnectOutcome) {
 	s, ok := a.takeSessionConnect(slackUser, threadID)
 	if !ok {
 		return
 	}
 	a.dropConnectorCompletions(s.states)
+	a.rewriteSessionConnect(ctx, slackUser, s, outcome)
+}
+
+// settleOtherSessionConnects settles, once slackUser signed in through the
+// prompt of threadID, every other thread where they wait for a sign-in to the
+// same tool: the sign-in is the person's, not the thread's. A thread's held
+// message, the one of its latest prompt, runs as the person in that thread;
+// a thread whose held message expired gets the confirmation alone, and one
+// whose own click already continues it is only rewritten.
+func (a *Adapter) settleOtherSessionConnects(ctx context.Context, slackUser, tool, threadID string) {
+	for _, s := range a.takeOtherSessionConnects(slackUser, tool, threadID) {
+		held, continuing := a.takeHeldStart(s.states)
+		outcome := sessionConnectSignedIn
+		if held != nil || continuing {
+			outcome = sessionConnectDelivered
+		}
+		a.rewriteSessionConnect(ctx, slackUser, s, outcome)
+		if held != nil {
+			threadTS := s.threadTS
+			a.background(func(ctx context.Context) { a.runHeldMessage(ctx, slackUser, threadTS, held) })
+		}
+	}
+}
+
+// rewriteSessionConnect rewrites the line and the card of s to outcome.
+func (a *Adapter) rewriteSessionConnect(ctx context.Context, slackUser string, s sessionConnectSurfaces, outcome sessionConnectOutcome) {
 	client := a.apiClient()
 	line, card := sessionConnectConnectedFormat, sessionConnectCardConnected
 	switch outcome {
