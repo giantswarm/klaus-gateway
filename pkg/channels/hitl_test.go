@@ -48,6 +48,7 @@ func TestParseHitlPrompt_AskUser(t *testing.T) {
 	require.NotNil(t, got)
 	require.True(t, got.IsAskUser())
 	require.Equal(t, "adk-123", got.OriginalCallID)
+	require.Equal(t, "adk-123", got.RequestID)
 	require.Len(t, got.Questions, 1)
 	require.Equal(t, "How would you like me to proceed?", got.Questions[0].Question)
 	require.False(t, got.Questions[0].Multiple)
@@ -64,6 +65,7 @@ func TestParseHitlPrompt_ToolApproval(t *testing.T) {
 	require.Equal(t, map[string]any{"pod": "web-1"}, got.Args)
 	require.Len(t, got.Tools, 2, "every call the decision covers is kept")
 	require.Equal(t, "approval-2", got.Tools[1].ID)
+	require.Equal(t, "approval-1,approval-2", got.RequestID, "the request is named by every approval it decides")
 }
 
 func TestParseHitlPrompt_IgnoresPlainText(t *testing.T) {

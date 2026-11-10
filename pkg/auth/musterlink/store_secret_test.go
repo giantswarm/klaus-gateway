@@ -163,10 +163,12 @@ func TestSecretStoreGivesUpAfterRetryLimit(t *testing.T) {
 	// Exhausted retries are the caller's to handle: the write is reported
 	// failed, and the Secret holds nothing for the user.
 	err = s.Put("U1", &Link{RefreshToken: "rt"})
-	require.Error(t, err)
+	require.ErrorIs(t, err, errStoreConflict, "a contended store is told apart from one that did not answer")
 	require.NotErrorIs(t, err, ErrNotLinked)
 	_, err = s.Get("U1")
 	require.ErrorIs(t, err, ErrNotLinked)
+	err = s.Update("U1", func(*Link) (*Link, bool) { return &Link{RefreshToken: "rt"}, true })
+	require.ErrorIs(t, err, errStoreConflict)
 }
 
 func TestSecretStoreMissingSecretIsNotCreated(t *testing.T) {
@@ -331,4 +333,42 @@ func TestImportBoltFileSkipsUndecodableRecordsAndMissingFile(t *testing.T) {
 	require.Error(t, err)
 	_, statErr := os.Stat(absent)
 	require.True(t, os.IsNotExist(statErr), "a read-only open must not create the file")
+}
+
+// Update runs fn again on the Secret another writer changed under it: the
+// conflicting write is retried against the newer record, never written over
+// it, so a compare-and-set on a stale read cannot clobber a rotation.
+func TestSecretStoreUpdateRerunsOnFresherRecord(t *testing.T) {
+	client := fake.NewClientset(linkSecret(nil))
+	s := newSecretStoreFor(t, client, key32())
+	require.NoError(t, s.Put("U1", &Link{RefreshToken: "rt-0"}))
+	rotated, err := s.cipher.sealLink(&Link{RefreshToken: "rt-other"})
+	require.NoError(t, err)
+	secrets := corev1.SchemeGroupVersion.WithResource("secrets")
+	injected := false
+	client.PrependReactor("update", "secrets", func(k8stesting.Action) (bool, runtime.Object, error) {
+		if injected {
+			return false, nil, nil
+		}
+		injected = true
+		obj, err := client.Tracker().Get(secrets, testNS, testSecret)
+		require.NoError(t, err)
+		sec := obj.(*corev1.Secret).DeepCopy()
+		sec.Data["U1"] = rotated
+		require.NoError(t, client.Tracker().Update(secrets, sec, testNS))
+		return true, nil, apierrors.NewConflict(schema.GroupResource{Resource: "secrets"}, testSecret, errors.New("changed"))
+	})
+
+	var seen []string
+	require.NoError(t, s.Update("U1", func(current *Link) (*Link, bool) {
+		seen = append(seen, current.RefreshToken)
+		if current.RefreshToken != "rt-0" {
+			return nil, false
+		}
+		return &Link{RefreshToken: "rt-1"}, true
+	}))
+	require.Equal(t, []string{"rt-0", "rt-other"}, seen, "fn ran again on the newer record")
+	got, err := s.Get("U1")
+	require.NoError(t, err)
+	require.Equal(t, "rt-other", got.RefreshToken)
 }

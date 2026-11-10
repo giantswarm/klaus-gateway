@@ -205,6 +205,7 @@ func run(args []string) error {
 		// ServiceAccount identity.
 		if slackAdapter != nil {
 			slackAdapter.OBO = linker
+			slackAdapter.SignIns = musterClient
 		}
 		logger.Info("obo linking routes mounted",
 			"link_path", musterlink.LinkPath,
@@ -213,17 +214,10 @@ func run(args []string) error {
 			"email_match", slackEmail != nil,
 		)
 
-		// Connector UX: when the agent reports a backend needs the user to sign
-		// in, the adapter renders a Connect button from the login link the agent
-		// relays. The gateway does not call muster for this. The public base URL
-		// lets the button carry a post-login redirect back to the gateway's
-		// connector landing (prompt rewrite plus auto-resume); muster only honors
-		// it when the landing URL is on its post-login redirect allowlist.
 		if cfg.OBO.ConnectorsEnabled && slackAdapter != nil {
 			slackAdapter.ConnectorPrompts = true
-			slackAdapter.PublicBaseURL = cfg.OBO.CallbackBaseURL
 			// The authorize modal reads the person's grant status from muster
-			// (core_auth_status) and lands every grant like a Connect prompt.
+			// (core_auth_status) and links every missing grant.
 			slackAdapter.Grants = musterClient
 			logger.Info("slack connector prompts enabled")
 		}
@@ -256,6 +250,7 @@ func run(args []string) error {
 			Poster:         slackAdapter,
 			Decisions:      slackAdapter,
 			Conversations:  slackAdapter,
+			Groups:         slackAdapter,
 		}
 		reviewsHandler.Mount(publicMux)
 		logger.Info("team-review endpoint mounted",
@@ -602,7 +597,7 @@ func refusalWatcher(cfg config.RefusalsConfig, notifier channels.RefusalNotifier
 	return &refusals.Watcher{
 		Source:   &refusals.EgressPods{Client: kclient, Namespace: namespace, Service: service, Port: cfg.StatsPort, Path: cfg.MetricsPath},
 		Sessions: &refusals.KagentSessions{Conn: conn, TokenFile: cfg.KagentTokenFile},
-		Agents:   &refusals.KubeAgents{Client: dclient},
+		Agents:   &refusals.KubeAgents{Client: dclient, Logger: logger},
 		Notifier: notifier,
 		AgentURL: cfg.AgentURLTemplate,
 		Interval: cfg.Interval,

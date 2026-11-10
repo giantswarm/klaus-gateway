@@ -36,7 +36,7 @@ pkg/channels/slack/     Slack channel adapter (/channels/slack/*); Events API + 
 pkg/routing/store/      Store interface + three backends (memory, valkey, bolt); thread state + team reviews, decisions and conversations
 pkg/auth/musterlink/    Slack OBO: muster account linking + the link Store (memory, bolt file, Kubernetes Secret)
 pkg/auth/satoken/       TokenReview verifier of the team-review endpoint
-pkg/reviews/            the team-review endpoint (POST /reviews, /notices), decisions (POST /decisions) and conversations (POST /conversations)
+pkg/reviews/            the team-review endpoint (POST /reviews, /notices), decisions (POST /decisions), conversations (POST /conversations) and group members (GET /groups/{group}/members/{email})
 pkg/muster/             muster tool client an approved review calls through; mustertest/ is a fake muster for tests
 pkg/workspaces/         the workspace-manager's tools over pkg/muster, as the person: list, authorize, providers
 pkg/agentmanager/       agent-manager's start_session over pkg/muster, as the person: how every Session starts

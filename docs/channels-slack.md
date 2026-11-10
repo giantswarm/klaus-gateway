@@ -129,26 +129,26 @@ creates one, which a turn that switches agents does mid-thread.
   called through muster as the person behind the turn, with the agent, the
   thread's request id and the conversation's name; agent-manager creates it at
   the controller as that person, and the session id it answers is what the
-  thread binds. A start muster refuses with its sign-in challenge for agent-manager (the
-  server is pinned to a GitHub App and waits for the person's one-time consent) gets the
-  Connect prompt for it, to the person alone, with the message held behind it: the sign-in's
-  landing on the gateway runs it as the thread's first turn, and without a public base URL
-  the prompt says to send it again once connected. The hold is the process's own; after a
-  restart the landing says the link is gone. Where the prompt goes follows the sign-in
+  thread binds. A start muster asks a sign-in for (the server is pinned to a GitHub App and
+  waits for the person's one-time consent) gets the Connect prompt, to the person alone, with
+  muster's message, the whole link and the message held behind it. The person's click on the
+  link button is their consent: the gateway accepts the sign-in (it retries the start with
+  muster's `requestState` and the `accept`, and muster waits for the sign-in before it runs the
+  start), then runs the held message as the thread's first turn. The hold is the process's own;
+  after a restart the click continues nothing. Where the prompt goes follows the sign-in
   prompt: in a DM the card is a message of the conversation, and a later message of the
   person's gets a card of its own while the earlier one loses its button; in a channel thread
   the card is ephemeral, so it also goes to the person's DM with the app, led by a line that
   links the thread, and a line everyone in the thread sees says whom it waits for and where
-  the button is ("Waiting for @Jose to connect *agent-manager* (the Connect button is in a
-  direct message from the app)"). A later message of the person's before they connect posts
-  the ephemeral again and refreshes the DM card in place; the line stays. Once the person
-  has connected, the line reads "@Jose connected *agent-manager*." and the card is a
-  confirmation: the landing of the prompt's own link does it and runs the held message
-  ("Connected *agent-manager*. Your message is on its way to the agent."), and so does the
-  person's next turn in the thread that starts its Session, however they connected, when the
-  held message stays unsent ("Connected *agent-manager*.") and the prompts' stale buttons
-  lead to the expired page. Only the ephemeral's button carries the completion state, so only
-  it is replaced through its click's `response_url`; the cards are rewritten in place. A
+  the button is ("Waiting for @Jose to sign in (the Sign in button is in a direct message from
+  the app)"). A later message of the person's before they sign in posts the ephemeral again
+  and refreshes the DM card in place; the line stays. Once the person has signed in, the line
+  reads "@Jose signed in." and the card is a confirmation: the click's continuation does it and
+  runs the held message ("Signed in. Your message is on its way to the agent."), and so does
+  the person's next turn in the thread that starts its Session, however they signed in, when
+  the held message stays unsent ("Signed in.") and the prompts' stale buttons continue nothing.
+  Every surface's button carries the completion state; the ephemeral is replaced at the click
+  through its `response_url` ("Opened the sign-in link. ..."), the cards are rewritten in place. A
   collaborator whose turn would start the
   owner's Session (nothing bound yet) meets the owner's challenge: they get a private note
   naming the owner and no link, and the owner's own next message gets the prompt. The start
@@ -255,7 +255,9 @@ creates one, which a turn that switches agents does mid-thread.
   bot profile name (the alerting integrations; `*-alertmanager` admits every installation's
   Alertmanager app, each with its own `bot_id`). The profile name is the Slack app's own bot name;
   the name a post sets is whatever it posts under and never admits a bot; any other bot's post is left out, and the
-  catch-up of a muted thread admits the same authors. An allowed bot's alert is flattened out of its attachments
+  catch-up of a muted thread admits the same authors. Either list admits posts only in threads the gateway can
+  read, which are those in channels its bot is a member of: for alert posts to reach an agent, the gateway's bot is
+  invited to each alert or incident channel it should serve. An allowed bot's alert is flattened out of its attachments
   and blocks, which is where PagerDuty and friends put the text; `<@U…>` mentions become names; the
   gateway's own posts and content-less events are left out; files are named, never downloaded. At
   most 12,000 characters, oldest dropped first, root always kept — a constant, not configuration;
@@ -405,11 +407,10 @@ repositories as read-only mirrors beside it.
   has no default workspace — lists
   the initiator's workspaces (`list_workspaces`, as them). With none, or when they cannot be
   listed, the Session starts without a workspace and nobody is asked (the second case with a
-  note in the thread). A listing muster answers with its sign-in challenge for the
-  workspace-manager (the person has not granted its App) is no failure: the message is held
-  behind the workspace-manager's Connect prompt, as a Session start's challenge is
-  (`session_connect_required`), and once connected it is replayed, lists again and gets the
-  prompt. Otherwise the message is held and the thread gets one prompt. Nothing
+  note in the thread). A listing muster answers with a sign-in for the workspace-manager (the
+  person has not granted its App) is no failure: the message is held behind the Connect
+  prompt, as a Session start's sign-in is (`session_connect_required`), and the person's click
+  accepts the sign-in, then replays the message, which lists again and gets the prompt. Otherwise the message is held and the thread gets one prompt. Nothing
   is read from the message: a workspace named in its text neither narrows the offer nor
   picks one.
 - **The prompt.** A select of the workspaces, grouped by Organization, each with how long
@@ -428,8 +429,8 @@ repositories as read-only mirrors beside it.
   `authorize_workspace`'s `connect`: its button opens the link muster's `core_auth_login`
   answers, called as the person for the server the entry's `signIn` names; a `signIn` that names
   no muster server (muster holds no grant for that provider) is quoted instead, without a button.
-  An `authorize_workspace` muster answers with its sign-in challenge for the workspace-manager
-  gets the same connect prompt for the workspace-manager, with muster's link.
+  An `authorize_workspace` muster answers with a sign-in for the workspace-manager gets a
+  Connect prompt with muster's message and link.
   Once connected, their next pick or mention in
   the thread authorizes it again and starts the Session with the held message, as a sign-in
   replays a held message. Each outcome logs a `record` (`workspace_granted`,
@@ -486,19 +487,19 @@ Layer 2 is one grant per server whose authorization server is the person's own a
 GitHub App behind a `*-manager` server, GitHub, Slack, …); muster files it under the person,
 so it is given once. The **authorize modal** collects them all in one place before the agent
 needs them. It lists every server muster reaches with a grant of the person's (`kind: grant`
-in muster's `core_auth_status`), its state, and an *Authorize* button with the link that
-starts the grant; the servers that come with the sign-in itself (token forwarding or exchange)
-are a count. Each link lands on `/connectors/complete`, which redraws the modal, so a row turns
-*Authorized* as its grant lands; *Refresh* issues new links (muster's live ten minutes). It
+in muster's `core_auth_status`), its state, and, shown whole with its domain in bold, the link
+that starts the grant with an *Authorize* button opening it; the servers that come with the sign-in itself (token forwarding or exchange)
+are a count. Each link is muster's, unchanged; *Refresh* redraws the modal, so a row turns
+*Authorized* once its grant is given, and issues new links (muster's live ten minutes). It
 opens from:
 
 - the direct message right after the sign-in, when a grant is still missing ("You're signed
   in. 2 tools need your one-time authorization …", button *Authorize all*);
 - `/<command> connect` (or `authorize`), anywhere;
 - *Authorize all* beside every muster server's Connect prompt's button (a workspace
-  provider's Connect prompt offers the provider's sign-in alone). Opened from the prompt that held a
-  Session start's message, the modal's row for that server lands on the prompt's own
-  completion, so granting it from the modal runs the held message.
+  provider's Connect prompt offers the provider's sign-in alone). A grant given from the modal
+  continues nothing the prompt held: the prompt's own *Sign in* does, and muster finds the
+  grant there.
 
 The modal opens on the click's `trigger_id` with a loading view and is filled by
 `views.update` once muster answers. It needs `obo.connectorsEnabled` (the Connect prompts) and
@@ -508,11 +509,11 @@ unknown withdraws the offer until the gateway restarts.
 The gateway learns which tool a `call_tool` result belongs to from the result itself: muster
 5.36.0 and later end the `call_tool` envelope with the dispatched tool (`tool`: `name`, and
 for a backend's tool `server` and `serverTool`) and carry it in the result's `_meta` under
-`muster.giantswarm.io/tool`. The Connect prompt and the Inspect agent steps log rely on it, so
-both need muster 5.36.0 or later; against an older muster a `call_tool` result names no tool,
-its call still pairs with it by call id, and no Connect prompt is offered. The Connect prompt
-that answers a Session start reads muster's challenge from the `start_session` answer itself
-(its structured content, or its text), so it needs no tool name.
+`muster.giantswarm.io/tool`. The Inspect agent steps log relies on it, so it needs muster
+5.36.0 or later; against an older muster a `call_tool` result names no tool, and its call still
+pairs with it by call id. The Connect prompt that answers a Session start reads muster's
+challenge from the `start_session` answer itself (its structured content, or its text), so it
+needs no tool name.
 
 ## Slack app setup
 
@@ -848,8 +849,8 @@ Three structured log records (`record=…`, JSON fields) tell a turn's story; jo
   timeline starting at the delivery. Its tokens are the turn's full total, the calls made before
   the restart included; the previous process's `shutdown` record of the same `task_id` holds only
   the calls it saw, so do not sum the two.
-- `session_connect_required` -- a Session start muster refused with its sign-in challenge for
-  a server, the turn ending as `connect_required`: `server`, `agent`, `slack_user`, `owner`
+- `session_connect_required` -- a Session start muster asked a sign-in for, the turn ending as
+  `connect_required`: `agent`, `slack_user`, `owner`
   (the thread owner the start ran as, on a collaborator's turn), `channel_id`, `thread_id`.
 - `a2a_event` (debug level only, `--log-level=debug`) -- one per A2A event a turn receives:
   `event` (its Go type), `task_id`, and `metadata_keys`, the metadata keys of the event, of its
@@ -863,9 +864,15 @@ Three structured log records (`record=…`, JSON fields) tell a turn's story; jo
   `reason=stream_lost` and `task_id`, the turn's stream broke and the gateway picks its task up
   again ([kagent-a2a.md](kagent-a2a.md#a-stream-that-breaks)): one record per attempt, whose
   `error` is the broken stream's or the previous attempt's.
-- `token_refresh` -- the person's muster id_token was refreshed: `trigger` (`ahead` for the
-  background refresher, `turn` for a refresh on the turn's path), `slackUser`, `duration_ms`,
-  `expires_in_s`, or `error`. A turn is dispatched only with a token that covers a turn: the
+- `token_refresh` -- a refresh of the person's muster id_token was attempted: `trigger`
+  (`ahead` for the background refresher, `turn` for a refresh on the turn's path), `source`
+  (`request` when the returned token came from this replica's refresh request, `store` when
+  it came from a link another writer stored, `none` on failure), `refresh_requests` (the number
+  of refresh requests this replica attempted, including failed ones), `slackUser`,
+  `duration_ms`, `expires_in_s`, or `error`. Sum `refresh_requests` to count requests: a
+  discovery or lease failure has zero, and a concurrent sign-in can yield `source=store`
+  after a refresh request was already sent. These fields are always logged; no flag is
+  required. A turn is dispatched only with a token that covers a turn: the
   agent keeps the token it starts with until the turn ends, and muster ends the turn's session
   (and its tools) when that token expires, so a cached token with less than
   `obo.minTokenLifetime` left (`--obo-min-token-lifetime`, 25 minutes by default) is refreshed
@@ -1111,12 +1118,31 @@ servers first (up to 15 s) and stops the Slack adapter after that (up to 15 s mo
 
 With `refusals.enabled` (`--refusals-enabled`), the creator of an agent learns by direct message
 from the app when the Substrate egress refuses a destination the agent's egress
-(`Agent.spec.egress`) does not declare: the destination, the reason, how many requests in how
-many Sessions since when, and an *Open agent* button (`refusals.agentURLTemplate`). There is one
+does not declare: *Outgoing connection to <host> blocked*, how many attempts in how many
+Sessions since when, what they can do about it, and the destination and origin under
+*Technical details*. There is one
 notice per agent and destination within `refusals.window` (24 h): later refusals inside it rewrite
 that message with the new count and time, and the first refusal after it posts a new one. A
 second destination of the same agent is a second notice. Nothing goes through Alertmanager.
 
+- **Remedy.** The notice words it as the Dev Portal's Session alert does
+  (`plugins/agent-platform/src/lib/egressCopy.ts` in giantswarm/backstage,
+  giantswarm/giantswarm#38814), by the runtime of the Agent's Harness (`spec.harnessRef`; the
+  runtime is the Harness spec's one key besides `workload`, `env` and `substrate`):
+
+  | Harness runtime | Remedy | Button |
+  | --- | --- | --- |
+  | `kagent`, http(s) | You can allow it: add `<origin>` to <agent>’s Extra egress origins. | *Edit <agent>* (`refusals.agentURLTemplate`) |
+  | any other (`claude`, `codex`, `byo`): a coding agent | <agent> can only reach the addresses the platform allows for <runtime>. Ask your platform team to allow <host>. | none |
+  | not known (the Harness is not found, or the gateway may not read it) | If <agent> needs <host>, ask your platform team. | none |
+  | any, raw TCP | No egress setting can allow it. If <host> offers HTTPS, have <agent> use that instead. | none |
+
+  A coding agent's egress is the platform's list for its Harness (agent-manager's
+  `harness.egress.<harness>`), which refuses any other origin, so no editor can add one. `<runtime>`
+  is the Harness's `ui.giantswarm.io/display-name`, else Claude Code, Codex or Custom image. The
+  portal's toolchain remedy is not offered: the gateway does not know whether the installation's
+  Sessions mount toolchains. Raw TCP is allowed to no agent: kagent's egress declares HTTP and
+  HTTPS origins only, so neither the agent's settings nor the platform's list can add it.
 - **Source.** Every `refusals.interval` (1 min) the gateway reads
   `agentgateway_atenet_egress_refusals_total` (one series per actor and destination: `ate_atespace`,
   `ate_actor_name`, `scheme`, `host`, `port`) from the stats port of every pod behind
@@ -1135,7 +1161,10 @@ second destination of the same agent is a second notice. Nothing goes through Al
   counted as `not_session`. The creator is the email in the Agent's
   `agent-platform.giantswarm.io/created-by` annotation (agent-manager records it); an Agent
   without one is counted (`klaus_gateway_egress_refusals_total{outcome="no_creator"}`) and
-  nobody is told. The creator is found in Slack by that email (`users:read.email`).
+  nobody is told. The creator is found in Slack by that email (`users:read.email`). For an Agent
+  with a creator the gateway reads its Harness, in the Agent's namespace: one that is not found
+  leaves the runtime unknown, one it may not read too, logged with the missing grant; any other
+  failure is retried on the next read.
 - **Record.** The notice is a record in the review store (`refusal-<hash of agent and
   destination>`, the window as its TTL), so on `valkey` and `bolt` a restart keeps the
   deduplication. A notice Slack or kagent could not take is retried on the next read with the

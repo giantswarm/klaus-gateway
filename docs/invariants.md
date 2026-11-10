@@ -105,6 +105,12 @@ or `helm/`. Add a line when a review finds a new one.
   queue, and a mute kept there would be lost on the next one (#410).
 - **The controller's create is idempotent per caller and request id.** The same person gets
   the earlier session back; a different person gets a new one (giantswarm#37896).
+- **muster revokes a sign-in when a rotated refresh token comes back.** mcp-oauth's reuse
+  detection revokes the token's whole family, the token it has just issued included, and
+  answers `invalid_grant`. Retrying with the newer token after that fails too, so a process
+  must never present a refresh token another one may be presenting: every refresh of a link the
+  store holds takes the link's refresh lease first (`pkg/auth/musterlink/lease.go`), and a test stub that answers a replay
+  with a plain `invalid_grant` hides the bug (#568).
 
 ## Tests
 
