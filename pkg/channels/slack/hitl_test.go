@@ -129,6 +129,17 @@ func TestDecisionFromText_GenericApproveDeny(t *testing.T) {
 	require.Equal(t, "maybe later", amb.RejectionReason)
 }
 
+func TestDecisionFromText_SignIn(t *testing.T) {
+	signIn := &channels.HitlPrompt{SignIn: &channels.HitlSignIn{ID: "sign-in-1", Server: "github", URL: "https://gateway.example/s"}}
+
+	for _, text := range []string{"done", "I've signed in to github, continue", "what next?"} {
+		require.Equal(t, channels.DecisionApprove, decisionFromText(signIn, text).Type, text)
+	}
+	for _, text := range []string{"no", "cancel", "Not now", "not now"} {
+		require.Equal(t, channels.DecisionReject, decisionFromText(signIn, text).Type, text)
+	}
+}
+
 func TestDecisionFromText_NilPromptIsPlainText(t *testing.T) {
 	require.Nil(t, decisionFromText(nil, "anything"))
 }
@@ -312,20 +323,20 @@ func TestPostHitlPrompt_FallsBackToTextOnBlockKitFailure(t *testing.T) {
 	a.gw = newMemoryRecorder()
 
 	// Generic tool approval: Approve/Deny buttons fail, plain text lands.
-	err := a.postHitlPrompt(t.Context(), a.apiClient(), "C1", "T1", &channels.OutboundDelta{
+	err := a.postHitlPrompt(t.Context(), a.apiClient(), "C1", "T1", "U1", &channels.OutboundDelta{
 		Content: "Run kubectl delete?",
 		Prompt:  &channels.HitlPrompt{StatusText: "Run kubectl delete?"},
 	})
 	require.NoError(t, err)
 
 	// Single-select ask_user: choice buttons fail, text rendering lands.
-	err = a.postHitlPrompt(t.Context(), a.apiClient(), "C1", "T1", &channels.OutboundDelta{
+	err = a.postHitlPrompt(t.Context(), a.apiClient(), "C1", "T1", "U1", &channels.OutboundDelta{
 		Prompt: askUserPrompt(false, "yes", "no"),
 	})
 	require.NoError(t, err)
 
 	// Multi-question form: the form post fails, text rendering lands.
-	err = a.postHitlPrompt(t.Context(), a.apiClient(), "C1", "T1", &channels.OutboundDelta{
+	err = a.postHitlPrompt(t.Context(), a.apiClient(), "C1", "T1", "U1", &channels.OutboundDelta{
 		Prompt: &channels.HitlPrompt{
 			ToolName: channels.AskUserToolName,
 			Questions: []channels.HitlQuestion{
@@ -485,7 +496,7 @@ func TestTypedAnswerRewritesTheQuestion(t *testing.T) {
 
 	prompt := askUserPrompt(false, "gazelle", "graveler")
 	a.storePendingTask("T1", &pendingTask{TaskID: "task-1", Prompt: prompt})
-	require.NoError(t, a.postHitlPrompt(t.Context(), a.apiClient(), "C1", "T1", &channels.OutboundDelta{TaskID: "task-1", Prompt: prompt}))
+	require.NoError(t, a.postHitlPrompt(t.Context(), a.apiClient(), "C1", "T1", "U1", &channels.OutboundDelta{TaskID: "task-1", Prompt: prompt}))
 	task := a.takePendingTask("T1")
 	require.Equal(t, "555.000", task.PromptTS, "the posted question is recorded on its task")
 
@@ -541,7 +552,7 @@ func TestTypedDecisionRewritesTheApprovalCard(t *testing.T) {
 			updates = nil
 			mu.Unlock()
 			a.storePendingTask("T1", &pendingTask{TaskID: "task-2", Prompt: tc.prompt, PromptText: "Delete the pod?"})
-			require.NoError(t, a.postHitlPrompt(t.Context(), a.apiClient(), "C1", "T1", &channels.OutboundDelta{TaskID: "task-2", Prompt: tc.prompt, Content: "Delete the pod?"}))
+			require.NoError(t, a.postHitlPrompt(t.Context(), a.apiClient(), "C1", "T1", "U1", &channels.OutboundDelta{TaskID: "task-2", Prompt: tc.prompt, Content: "Delete the pod?"}))
 			task := a.takePendingTask("T1")
 			require.Equal(t, "556.000", task.PromptTS, "the posted card is recorded on its task")
 

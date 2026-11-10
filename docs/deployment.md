@@ -92,8 +92,22 @@ failure never costs a person their sign-in:
   sign-in prompt, and `login` answers the same way. `logout` reports a sign-out the store
   refused instead of confirming it.
 - Reads are served from the copy for 30 s, so a Slack turn costs one Secret read rather than
-  one per lookup. Before a link is dropped on `invalid_grant` the store is re-read, so a token
-  rotated by another writer (a second replica, the import) is retried rather than burned.
+  one per lookup.
+- Replicas sharing the Secret never present the same refresh token. muster revokes the whole
+  sign-in when a refresh token it has already rotated is presented again, so before a refresh
+  the gateway writes a refresh lease on the token into the link, and only while the Secret still
+  holds that token. A replica that finds another one's lease waits for its rotated link (up to
+  60 s, when an unfinished lease expires) and serves its token; one that finds a newer token adopts
+  it. The rotated link is written, and a refused one deleted, only while the Secret still holds
+  the token that was presented, so a sign-in that lands meanwhile is kept. A Secret that cannot be
+  read or written for the lease fails the refresh as transient without presenting the token:
+  another replica that can reach the Secret may be presenting it. A cached id_token that still
+  covers a turn is served as before, so only a person whose token is due waits for the Secret.
+  A Secret whose writes keep conflicting is waited out the same way, up to 60 s. A rotated link
+  the Secret refuses is kept in memory and written later only while the Secret still holds the
+  token it was rotated from. One case stays open: when the Secret refuses that write for longer
+  than 60 s, the lease expires and another replica presents the rotated-away token, which signs
+  the person out. Pod clocks must agree within 30 s.
 
 ## Workspaces
 
@@ -245,9 +259,10 @@ ServiceMonitor). Beside the public mux's `klaus_gateway_requests_total` /
   but the channel refused part of the answer), `send_failed` (the turn died before it was
   sent: the controller refused it), `connect_required` (the Session could not start: a
   muster server waits for the person's consent, the Connect prompt went out and the message
-  is held) and `share_refused` (a collaborator's turn the thread's Session could not be opened
+  is held), `share_refused` (a collaborator's turn the thread's Session could not be opened
   to: kagent refused to share it, or the share needs the initiator's sign-in; the thread was
-  told why). A `failed` or `send_failed` turn carries what broke as
+  told why) and `prompt_answered` (an answer to a prompt the task no longer waits on, because
+  it was answered elsewhere first; nothing was sent). A `failed` or `send_failed` turn carries what broke as
   `failure_class`: `tools` (the agent's MCP tool set), `platform` (the connection to the
   controller or the runtime), `model` (the model or its provider), `policy` (a gateway policy
   refused it), `connection_required` (the person has not connected the provider account the

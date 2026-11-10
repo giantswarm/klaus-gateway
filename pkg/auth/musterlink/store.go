@@ -34,13 +34,29 @@ type Link struct {
 	IDToken string `json:"id_token,omitempty"`
 	// Expiry is when IDToken expires. Zero means unknown -> always refresh.
 	Expiry time.Time `json:"expiry,omitzero"`
+	// Lease marks a refresh request for RefreshToken in flight at muster by
+	// one gateway process. muster revokes the whole grant, the newly rotated
+	// token included, when a refresh token it has already rotated is
+	// presented again, so another process that finds the lease waits for the
+	// outcome instead of presenting the same token.
+	Lease *RefreshLease `json:"lease,omitempty"`
+}
+
+// RefreshLease is one process's hold on a link's refresh token: Holder names
+// the process, Until is when the lease expires if the holder never finishes.
+type RefreshLease struct {
+	Holder string    `json:"holder"`
+	Until  time.Time `json:"until"`
 }
 
 // Store persists Slack-user -> muster Link associations. Backends only
 // report: Get returns ErrNotLinked when no link is stored for the user and any
 // other error when the backend failed to answer (a Kubernetes API call that did
 // not go through, a bolt file that cannot be read), and Put and Delete return
-// the backend's error. What a failure means -- a link served from memory, a
+// the backend's error. Update reads a link and writes fn's answer as one
+// atomic step of the backend: it is how one process takes a refresh lease or
+// replaces a link only while it still holds the token it expects, without
+// overwriting another process's write. What a failure means -- a link served from memory, a
 // write retried, a transient error to the person -- is the Linker's call. The
 // interface is kept narrow so backends (bolt file, Kubernetes Secret,
 // in-memory) are interchangeable without touching callers.
@@ -48,7 +64,16 @@ type Store interface {
 	Get(slackUserID string) (*Link, error)
 	Put(slackUserID string, link *Link) error
 	Delete(slackUserID string) error
+	// Update hands fn the stored link (nil when none is stored or the record
+	// does not decode) and then writes fn's answer: next replaces the link,
+	// a nil next deletes it, write false leaves the store as it is. fn may run
+	// more than once when the backend retries a conflicting write.
+	Update(slackUserID string, fn func(current *Link) (next *Link, write bool)) error
 }
+
+// errStoreConflict marks a write the backend gave up on because other writers
+// kept changing the record under it: the store answered, it was contended.
+var errStoreConflict = errors.New("musterlink: link store write kept conflicting with other writers")
 
 // MemStore is an in-memory Store. It loses all links on restart, forcing every
 // user to re-link; use it only for tests and ephemeral single-process runs.
@@ -84,6 +109,26 @@ func (s *MemStore) Delete(slackUserID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.m, slackUserID)
+	return nil
+}
+
+// Update runs fn on a copy of the stored link and applies its answer under
+// one lock.
+func (s *MemStore) Update(slackUserID string, fn func(*Link) (*Link, bool)) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var current *Link
+	if l, ok := s.m[slackUserID]; ok {
+		current = &l
+	}
+	next, write := fn(current)
+	switch {
+	case !write:
+	case next == nil:
+		delete(s.m, slackUserID)
+	default:
+		s.m[slackUserID] = *next
+	}
 	return nil
 }
 
@@ -247,6 +292,36 @@ func (s *BoltStore) Delete(slackUserID string) error {
 		return tx.Bucket(linkBucket).Delete([]byte(slackUserID))
 	}); err != nil {
 		return fmt.Errorf("musterlink: bolt delete: %w", err)
+	}
+	return nil
+}
+
+// Update runs fn on the stored link and applies its answer in one bolt
+// transaction.
+func (s *BoltStore) Update(slackUserID string, fn func(*Link) (*Link, bool)) error {
+	key := []byte(slackUserID)
+	if err := s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(linkBucket)
+		var current *Link
+		if v := b.Get(key); v != nil {
+			if link, err := s.cipher.openLink(v); err == nil {
+				current = link
+			}
+		}
+		next, write := fn(current)
+		switch {
+		case !write:
+			return nil
+		case next == nil:
+			return b.Delete(key)
+		}
+		record, err := s.cipher.sealLink(next)
+		if err != nil {
+			return err
+		}
+		return b.Put(key, record)
+	}); err != nil {
+		return fmt.Errorf("musterlink: bolt update: %w", err)
 	}
 	return nil
 }

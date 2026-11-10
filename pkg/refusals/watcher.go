@@ -61,6 +61,11 @@ type Agent struct {
 	// Creator is the email of the person who created the Agent; "" when it
 	// records none (an Agent applied without agent-manager).
 	Creator string
+	// Runtime is the runtime of the Agent's Harness (kagent, claude, codex,
+	// byo), "" when it is not known; HarnessTitle the Harness's display
+	// name, "" for none.
+	Runtime      string
+	HarnessTitle string
 }
 
 // Agents reads a kagent Agent.
@@ -228,6 +233,7 @@ func (w *Watcher) note(ctx context.Context, g *group, now time.Time) bool {
 	}
 	err = w.Notifier.NoteRefusal(ctx, channels.EgressRefusal{
 		Namespace: g.namespace, Agent: g.agent, DisplayName: agent.DisplayName, Creator: agent.Creator,
+		Runtime: agent.Runtime, HarnessTitle: agent.HarnessTitle,
 		Scheme: g.scheme, Host: g.host, Port: g.port,
 		Count: int(g.count), Sessions: g.sessions, At: now,
 		AgentURL: w.agentURL(g.namespace, g.agent),
