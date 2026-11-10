@@ -124,7 +124,10 @@ or `helm/`. Add a line when a review finds a new one.
   So the new process leaves the inboxes it read back alone for a minute, and the old one hands no
   queued message to the agent once the process signal arrives; nothing else stops the two from
   running one message twice. On the `memory` store no other process reads the inbox, so the old
-  one runs it on until it exits. More than one replica needs a claim in the store (#528).
+  one runs it on until it exits. `Store.Update` serialises a row's writers inside one process
+  only, so in that overlap a row write by one process can overwrite an inbox entry the other
+  wrote a moment before. More than one replica needs a claim and a compare-and-set on the row in
+  the store (#528).
 - **The controller's create is idempotent per caller and request id.** The same person gets
   the earlier session back; a different person gets a new one (giantswarm#37896).
 - **muster revokes a sign-in when a rotated refresh token comes back.** mcp-oauth's reuse

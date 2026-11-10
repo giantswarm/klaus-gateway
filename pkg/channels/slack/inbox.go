@@ -210,8 +210,9 @@ func (a *Adapter) kickInbox(slackChannel, threadID string) {
 // wakeInbox starts threadID's drainer again when it stopped with messages
 // behind a prompt. releaseThread calls it at the end of every turn, since the
 // turn may have answered the prompt, and the paused inbox's expiry timer once
-// the oldest message behind the prompt expires. A drainer still running reads the inbox once
-// more before it stops, since it may have read the prompt before the turn.
+// the oldest message behind the prompt expires. A drainer still running reads
+// the inbox once more before it stops, since it may have read the prompt
+// before the turn.
 func (a *Adapter) wakeInbox(threadID string) {
 	a.inboxMu.Lock()
 	st := a.inboxes[threadID]
