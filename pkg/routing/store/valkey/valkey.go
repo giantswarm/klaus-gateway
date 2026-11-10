@@ -1,7 +1,8 @@
 // Package valkey provides a Valkey-backed implementation of store.Store: one
 // key per routing entry, the JSON-encoded entry as its value, the entry's TTL
 // as the key's expiry; team reviews the same way under their own prefix, their
-// updates a compare-and-set so replicas cannot both claim one review. It is
+// updates a compare-and-set so replicas cannot both claim one review; the
+// receipts of requests sent with an Idempotency-Key likewise, under theirs. It is
 // the store installations run: the platform already operates a Valkey for
 // muster's token store, so the routing table shares it and survives a gateway
 // restart without a volume or API-server access.
@@ -46,10 +47,11 @@ const (
 
 	// routeSuffix is the last segment of the default routing prefix; the
 	// review prefix is derived by swapping it (see Store.reviewPrefix).
-	routeSuffix  = "route:"
-	reviewSuffix = "review:"
-	// reviewUpdateAttempts bounds how often UpdateReview re-reads a record
-	// another writer changed under it before giving up.
+	routeSuffix   = "route:"
+	reviewSuffix  = "review:"
+	receiptSuffix = "receipt:"
+	// reviewUpdateAttempts bounds how often UpdateReview and UpdateReceipt
+	// re-read a record another writer changed under them before giving up.
 	reviewUpdateAttempts = 8
 )
 
@@ -59,6 +61,14 @@ const (
 // script, the compare and the write cannot interleave with another client's.
 const reviewCAS = `if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
 if tonumber(ARGV[3]) > 0 then redis.call('SET', KEYS[1], ARGV[2], 'PX', ARGV[3]) else redis.call('SET', KEYS[1], ARGV[2]) end
+return 1`
+
+// receiptCAS is reviewCAS for receipts, which are also created and removed by
+// it: ARGV[1] is empty for a key that was absent, and an empty ARGV[2] removes
+// the key. It answers 1 when it wrote and 0 when the receipt appeared,
+// changed or vanished meanwhile.
+const receiptCAS = `if (redis.call('GET', KEYS[1]) or '') ~= ARGV[1] then return 0 end
+if ARGV[2] == '' then redis.call('DEL', KEYS[1]) else redis.call('SET', KEYS[1], ARGV[2], 'PX', ARGV[3]) end
 return 1`
 
 // Options configure the Valkey-backed store.
@@ -89,6 +99,9 @@ type Store struct {
 	// with them. It sits next to the routing keys, not under them, so the
 	// routing SCAN never reads a review.
 	reviewPrefix string
+	// receiptPrefix namespaces the receipt keys, derived like reviewPrefix
+	// ("klaus-gateway:receipt:" for the default).
+	receiptPrefix string
 
 	mu     sync.Mutex
 	client valkeygo.Client
@@ -112,9 +125,11 @@ func New(opts Options) (*Store, error) {
 	if opts.Timeout <= 0 {
 		opts.Timeout = DefaultTimeout
 	}
+	base := strings.TrimSuffix(opts.KeyPrefix, routeSuffix)
 	return &Store{
-		opts:         opts,
-		reviewPrefix: strings.TrimSuffix(opts.KeyPrefix, routeSuffix) + reviewSuffix,
+		opts:          opts,
+		reviewPrefix:  base + reviewSuffix,
+		receiptPrefix: base + receiptSuffix,
 	}, nil
 }
 
@@ -336,6 +351,62 @@ func (s *Store) UpdateReview(ctx context.Context, id string, mutate func(r *stor
 	return true, fmt.Errorf("valkey: review %s kept changing under %d update attempts", id, reviewUpdateAttempts)
 }
 
+// UpdateReceipt applies mutate to the receipt at id and writes the result as a
+// compare-and-set on the receipt's bytes (receiptCAS), an absent receipt
+// included: a receipt another client created, changed or removed between the
+// read and the write is not overwritten but re-read, and mutate runs again on
+// it. Of replicas racing to claim one key, one wins. What is left of the TTL
+// (counted from ClaimedAt) is the key's expiry; a result that has expired
+// removes the key.
+func (s *Store) UpdateReceipt(ctx context.Context, id string, mutate func(r *store.Receipt, found bool) bool) error {
+	c, err := s.conn()
+	if err != nil {
+		return err
+	}
+	key := s.receiptKey(id)
+	for range reviewUpdateAttempts {
+		raw, err := s.do(ctx, c, c.B().Get().Key(key).Build()).AsBytes()
+		if valkeygo.IsValkeyNil(err) {
+			raw, err = nil, nil
+		}
+		if err != nil {
+			return fmt.Errorf("valkey: get receipt: %w", err)
+		}
+		now := time.Now()
+		var r store.Receipt
+		if raw != nil {
+			if err := json.Unmarshal(raw, &r); err != nil {
+				return fmt.Errorf("valkey: decode receipt: %w", err)
+			}
+		}
+		found := raw != nil && !r.Expired(now)
+		if !found {
+			r = store.Receipt{}
+		}
+		if !mutate(&r, found) {
+			return nil
+		}
+		var buf []byte
+		var px time.Duration
+		if !r.Expired(now) {
+			if buf, err = json.Marshal(r); err != nil {
+				return fmt.Errorf("valkey: encode receipt: %w", err)
+			}
+			px = remaining(r.TTL, r.ClaimedAt, now)
+		}
+		cmd := c.B().Eval().Script(receiptCAS).Numkeys(1).Key(key).
+			Arg(string(raw), string(buf), fmt.Sprint(px.Milliseconds())).Build()
+		written, err := s.do(ctx, c, cmd).AsInt64()
+		if err != nil {
+			return fmt.Errorf("valkey: update receipt: %w", err)
+		}
+		if written == 1 {
+			return nil
+		}
+	}
+	return fmt.Errorf("valkey: receipt %s kept changing under %d update attempts", id, reviewUpdateAttempts)
+}
+
 // readReview returns the record at key with the bytes it was decoded from —
 // the value the compare-and-set in UpdateReview compares against.
 func (s *Store) readReview(ctx context.Context, c valkeygo.Client, key string) ([]byte, store.Review, bool, error) {
@@ -383,6 +454,8 @@ func (s *Store) Close() error {
 func (s *Store) key(k store.Key) string { return s.opts.KeyPrefix + k.String() }
 
 func (s *Store) reviewKey(id string) string { return s.reviewPrefix + id }
+
+func (s *Store) receiptKey(id string) string { return s.receiptPrefix + id }
 
 // conn returns the client, dialing on first use. A failed dial is not
 // remembered: the next call tries again.

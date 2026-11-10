@@ -250,6 +250,7 @@ func run(args []string) error {
 			Poster:         slackAdapter,
 			Decisions:      slackAdapter,
 			Conversations:  slackAdapter,
+			Receipts:       routeStore,
 			Groups:         slackAdapter,
 		}
 		reviewsHandler.Mount(publicMux)
